@@ -41,7 +41,7 @@ const _m4 = new THREE.Matrix4();
 const _eul = new THREE.Euler();
 const _col = new THREE.Color();
 
-const DEG = Math.PI / 180;
+export const DEG = Math.PI / 180;
 const damp = THREE.MathUtils.damp;
 const clamp = THREE.MathUtils.clamp;
 const ZERO2 = Object.freeze({ x: 0, y: 0 });
@@ -51,7 +51,7 @@ const ZERO2 = Object.freeze({ x: 0, y: 0 });
 /* ------------------------------------------------------------------ */
 
 /** Deterministic 2D hash in [0,1). Cheap, and good enough for surface noise. */
-function hash2(x, y, seed) {
+export function hash2(x, y, seed) {
   let h = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263) + Math.imul(seed | 0, 1442695041);
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
@@ -73,7 +73,7 @@ function smoothNoise(x, y, seed) {
   return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
 
-function fbm(x, y, seed, octaves, lacunarity = 2.03, gain = 0.5) {
+export function fbm(x, y, seed, octaves, lacunarity = 2.03, gain = 0.5) {
   let sum = 0;
   let amp = 1;
   let norm = 0;
@@ -89,14 +89,14 @@ function fbm(x, y, seed, octaves, lacunarity = 2.03, gain = 0.5) {
   return sum / norm;
 }
 
-function makeCanvas(size) {
+export function makeCanvas(size) {
   const c = document.createElement('canvas');
   c.width = size;
   c.height = size;
   return c;
 }
 
-function finishTexture(tex, renderer, srgb, repeat) {
+export function finishTexture(tex, renderer, srgb, repeat) {
   tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
@@ -112,7 +112,7 @@ function finishTexture(tex, renderer, srgb, repeat) {
 }
 
 /** Sobel a height field into a tangent-space normal map. */
-function heightToNormal(height, size, strength, renderer) {
+export function heightToNormal(height, size, strength, renderer) {
   const data = new Uint8Array(size * size * 4);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
@@ -147,7 +147,7 @@ function heightToNormal(height, size, strength, renderer) {
  * the derived normal map is kept shallow so the surface stays flat under the
  * specular highlight.
  */
-function makeMetalMaps(renderer, size, seed, opts = {}) {
+export function makeMetalMaps(renderer, size, seed, opts = {}) {
   const baseR = opts.r ?? 0.30;
   const baseG = opts.g ?? 0.31;
   const baseB = opts.b ?? 0.34;
@@ -236,7 +236,7 @@ function makeMetalMaps(renderer, size, seed, opts = {}) {
 }
 
 /** Moulded polymer: pebble stipple, matte in the recesses, sheen on the domes. */
-function makePolymerMaps(renderer, size, seed, tint = { r: 0.24, g: 0.25, b: 0.28 }) {
+export function makePolymerMaps(renderer, size, seed, tint = { r: 0.24, g: 0.25, b: 0.28 }) {
   const albedo = makeCanvas(size);
   const actx = albedo.getContext('2d');
   const aimg = actx.createImageData(size, size);
@@ -390,7 +390,7 @@ function makeReticleTexture(renderer) {
 /* ------------------------------------------------------------------ */
 
 /** Damped spring toward a 2D target, integrated semi-implicitly. */
-function spring2(cur, vel, target, k, c, dt) {
+export function spring2(cur, vel, target, k, c, dt) {
   vel.x += (target.x - cur.x) * k * dt - vel.x * c * dt;
   vel.y += (target.y - cur.y) * k * dt - vel.y * c * dt;
   cur.x += vel.x * dt;
@@ -398,20 +398,20 @@ function spring2(cur, vel, target, k, c, dt) {
 }
 
 /** Damped spring back to the origin for a 3D offset. */
-function spring3(cur, vel, k, c, dt) {
+export function spring3(cur, vel, k, c, dt) {
   vel.x += -cur.x * k * dt - vel.x * c * dt;
   vel.y += -cur.y * k * dt - vel.y * c * dt;
   vel.z += -cur.z * k * dt - vel.z * c * dt;
   cur.addScaledVector(vel, dt);
 }
 
-const sstep = (a, b, x) => {
+export const sstep = (a, b, x) => {
   const u = clamp((x - a) / (b - a), 0, 1);
   return u * u * (3 - 2 * u);
 };
 
 /** 0 -> 1 -> 0 across [a,b]; the backbone of the reload timeline. */
-const pulse = (a, b, x) => {
+export const pulse = (a, b, x) => {
   const mid = (a + b) * 0.5;
   return sstep(a, mid, x) * (1 - sstep(mid, b, x));
 };
@@ -421,7 +421,7 @@ const pulse = (a, b, x) => {
 /* ------------------------------------------------------------------ */
 
 /** Strip anything `mergeGeometries` cannot reconcile, and de-index. */
-function prep(geo) {
+export function prep(geo) {
   let g = geo;
   if (geo.index) {
     g = geo.toNonIndexed();
@@ -438,7 +438,7 @@ function prep(geo) {
  * a raw `BoxGeometry` edge reads as programmer art the moment a specular
  * highlight runs along it.
  */
-function place(bucket, geo, x, y, z, rx = 0, ry = 0, rz = 0) {
+export function place(bucket, geo, x, y, z, rx = 0, ry = 0, rz = 0) {
   const g = prep(geo);
   _eul.set(rx, ry, rz, 'XYZ');
   _q1.setFromEuler(_eul);
@@ -450,21 +450,21 @@ function place(bucket, geo, x, y, z, rx = 0, ry = 0, rz = 0) {
   return g;
 }
 
-const chamfer = (w, h, d, r = 0.005, seg = 1) =>
+export const chamfer = (w, h, d, r = 0.005, seg = 1) =>
   new RoundedBoxGeometry(w, h, d, seg, Math.min(r, w / 2.05, h / 2.05, d / 2.05));
 
 /** Cylinder whose axis runs along Z - the barrel axis of this model. */
-function tubeZ(rTop, rBot, len, seg = 14, open = false) {
+export function tubeZ(rTop, rBot, len, seg = 14, open = false) {
   const g = new THREE.CylinderGeometry(rTop, rBot, len, seg, 1, open);
   g.rotateX(Math.PI / 2);
   return g;
 }
 
 /** Torus lying in the XY plane, i.e. a ring around the Z (barrel) axis. */
-const ringZ = (radius, thickness, seg = 8, tubular = 20, arc = Math.PI * 2) =>
+export const ringZ = (radius, thickness, seg = 8, tubular = 20, arc = Math.PI * 2) =>
   new THREE.TorusGeometry(radius, thickness, seg, tubular, arc);
 
-function mergeBucket(bucket) {
+export function mergeBucket(bucket) {
   if (bucket.length === 0) return null;
   const merged = mergeGeometries(bucket, false);
   for (const g of bucket) g.dispose();
@@ -489,7 +489,7 @@ const VM_DEPTH_CHUNK = `#include <project_vertex>
 	}`;
 
 /** Make a material draw inside the near depth slice reserved for the viewmodel. */
-function patchViewmodelDepth(material) {
+export function patchViewmodelDepth(material) {
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', VM_DEPTH_CHUNK);
   };
@@ -522,7 +522,7 @@ const PORT_POS = new THREE.Vector3(0.042, 0.088, -0.045);
  * from the eye and shrinks the whole silhouette to the ~22% of frame a
  * first-person weapon should occupy.
  */
-const VM_SCALE = 0.62;
+export const VM_SCALE = 0.62;
 
 // Lower-right ready pose: the butt stock and firing forearm leave the frame at
 // the bottom-right corner, the receiver sits below the crosshair and the muzzle
@@ -608,6 +608,19 @@ export class Weapon {
     this._flashRoll = 0;
     this._flashScale = 1;
     this._dryT = 0;
+
+    /**
+     * Draw animation, 1 immediately after `onSelect()` and decaying to 0. The
+     * loadout can hand control to any weapon at any moment, so the equip dip is
+     * a decay rather than a timeline - interrupting it mid-swap is harmless.
+     */
+    this._equipT = 0;
+    /**
+     * Guard against being driven twice in one frame. `Player` still calls
+     * `update()` on whatever `player.weapon` resolves to, and `Loadout` calls it
+     * on the active weapon; running the springs twice would double every rate.
+     */
+    this._lastUpdateAt = -1;
 
     this._disposables = [];
 
@@ -1294,6 +1307,9 @@ export class Weapon {
     rim.position.set(-0.35, -0.12, -0.55);
     key.castShadow = false;
     rim.castShadow = false;
+    key.userData.baseIntensity = key.intensity;
+    rim.userData.baseIntensity = rim.intensity;
+    this._rigLights = [key, rim];
     this._lightRig.add(key, rim);
     this.camera.add(this._lightRig);
   }
@@ -1402,15 +1418,28 @@ export class Weapon {
     this._enabled = on;
   }
 
-  /** Show/hide the whole viewmodel - used by the screenshot harness. */
+  /**
+   * Show/hide the whole viewmodel - used by the screenshot harness and by the
+   * loadout when this weapon is stowed.
+   *
+   * The fill rig is dimmed rather than hidden: flipping a light's `visible` flag
+   * changes the renderer's light count, which invalidates and recompiles every
+   * program in the scene. That is a visible hitch on every weapon switch, and a
+   * zero-intensity light costs a few ALU ops instead.
+   */
   setVisible(on) {
     this.root.visible = on;
-    this._lightRig.visible = on;
+    for (const l of this._rigLights) l.intensity = on ? l.userData.baseIntensity : 0;
   }
 
   update(dt, elapsed) {
     this._time = elapsed;
     if (dt <= 0) return;
+    // See `_lastUpdateAt`: idempotent per engine frame.
+    if (elapsed === this._lastUpdateAt) return;
+    this._lastUpdateAt = elapsed;
+
+    this._equipT = Math.max(0, this._equipT - dt * 3.4);
 
     let reloadT = -1;
     if (this._reloading) {
@@ -1519,6 +1548,15 @@ export class Weapon {
     if (this._dryT > 0) {
       _v3.z += this._dryT * 0.004;
       _v2.x += this._dryT * 0.02;
+    }
+
+    // Draw-in: the weapon swings up from below the frame after a switch.
+    if (this._equipT > 0) {
+      const e = this._equipT * this._equipT;
+      _v3.y -= e * 0.36;
+      _v3.z += e * 0.12;
+      _v2.x -= e * 0.85;
+      _v2.z += e * 0.45;
     }
 
     if (reloadT >= 0) this._applyReloadPose(reloadT, _v3, _v2);
@@ -1763,6 +1801,11 @@ export class Weapon {
       damage: SPEC.damage,
       range: SPEC.range,
       headshotMultiplier: SPEC.headshotMultiplier,
+      weaponId: 'machinegun',
+      // Combat resolves this event as a hitscan round. Projectile weapons never
+      // raise `weapon:fired`, but flagging it explicitly means a future one
+      // cannot accidentally be resolved twice.
+      hitscan: true,
     });
     this._emitAmmo();
 
@@ -1901,6 +1944,61 @@ export class Weapon {
     m.userData.spin = (Math.random() - 0.5) * 1.6;
     m.userData.roll = Math.random() * Math.PI * 2;
     m.visible = true;
+  }
+
+  /* ================================================================ */
+  /* Shared weapon interface (CONTRACTS-V2 §3.2)                       */
+  /* ================================================================ */
+
+  /** Stable identifier used by the loadout, the HUD and save games. */
+  get id() {
+    return 'machinegun';
+  }
+
+  /** Icon hint for the HUD's procedurally drawn slot strip. */
+  get icon() {
+    return 'rifle';
+  }
+
+  /** Accent colour the HUD may tint this weapon's slot with. */
+  get accent() {
+    return '#ff9d3c';
+  }
+
+  /** Hitscan weapon: never charges. Present so the loadout can poll uniformly. */
+  get chargeLevel() {
+    return 0;
+  }
+
+  /** Ammunition model, for a HUD that renders magazines and pools differently. */
+  get ammoKind() {
+    return 'magazine';
+  }
+
+  /** No-op: the machine gun is fully automatic, so the release carries nothing. */
+  releaseFire() {
+    return false;
+  }
+
+  /** Raised by the loadout. Plays the draw animation and refreshes the HUD. */
+  onSelect() {
+    this._enabled = true;
+    this._equipT = 1;
+    this._lowered = 1;
+    this._loweredTarget = 0;
+    this.setVisible(true);
+    this._emitAmmo();
+  }
+
+  /** Stowed by the loadout. Cancels any in-flight aim and hides the model. */
+  onDeselect() {
+    this._aimTarget = 0;
+    this._aim = 0;
+    this._dryT = 0;
+    this._flashT = 0;
+    this._flashGroup.visible = false;
+    this._flashLight.intensity = 0;
+    this.setVisible(false);
   }
 
   /* ================================================================ */

@@ -79,7 +79,10 @@ export class Minimap {
     return this.baseRange / this.zoomLevel * 0.5;
   }
 
-  /** Mouse-wheel zoom. `delta` is the sign returned by `input.consumeWheel()`. */
+  /**
+   * Zoom by one step. `delta > 0` zooms out. Driven by the `[` / `]` keys —
+   * the mouse wheel belongs to weapon switching (CONTRACTS-V2 §1).
+   */
   zoom(delta) {
     if (!delta) return;
     const step = CONFIG.minimap.zoomStep;

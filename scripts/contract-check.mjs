@@ -69,6 +69,27 @@ const CONTRACT = [
   { file: 'src/worlds/SportsWorld.js', exports: ['SportsWorld'], methods: ['build'] },
 ];
 
+/** Feature set v2 — see CONTRACTS-V2.md. Absent until those agents land. */
+const CONTRACT_V2 = [
+  { file: 'src/player/CameraRig.js', exports: ['CameraRig'], methods: ['update', 'setMode', 'toggle'] },
+  { file: 'src/player/PlayerAvatar.js', exports: ['PlayerAvatar'], methods: ['update', 'setVisible'] },
+  { file: 'src/player/Loadout.js', exports: ['Loadout'], methods: ['update', 'select', 'next', 'prev'] },
+  { file: 'src/weapons/Fireball.js', exports: [], methods: ['tryFire'] },
+  { file: 'src/weapons/Bow.js', exports: [], methods: ['tryFire'] },
+  { file: 'src/systems/Projectiles.js', exports: ['ProjectileSystem'], methods: ['spawn', 'fixedUpdate'] },
+  { file: 'src/systems/Economy.js', exports: ['Economy'], methods: ['add', 'serialize', 'deserialize'] },
+  { file: 'src/systems/SaveGame.js', exports: ['SaveGame'], methods: ['save', 'load', 'hasSave'] },
+  { file: 'src/systems/Unstuck.js', exports: ['UnstuckSystem'], methods: ['fixedUpdate', 'unstuck'] },
+  { file: 'src/mounts/MountManager.js', exports: ['MountManager'], methods: ['summon', 'dismount', 'update'] },
+  { file: 'src/mounts/Hoverboard.js', exports: [], methods: [] },
+  { file: 'src/mounts/Dragon.js', exports: [], methods: [] },
+  { file: 'src/ui/WeaponWheel.js', exports: [], methods: [] },
+];
+// v2 files are only enforced once they exist, so this script stays useful mid-build.
+for (const entry of CONTRACT_V2) {
+  if (existsSync(path.join(root, entry.file))) CONTRACT.push(entry);
+}
+
 const problems = [];
 const missing = [];
 let checked = 0;

@@ -111,8 +111,51 @@ export class Player {
     this._harnessFrozen = false;
     this._frozenApplied = false;
 
+    /* ---- external drivers ---- */
+    /**
+     * Set true by `MountManager` while a mount owns the player's movement.
+     * Contract: CONTRACTS-V2.md 3.3. While it is set this class integrates
+     * nothing - the mount writes `position` (and optionally `yaw`) directly -
+     * but the capsule is still resolved so you cannot ride through a wall.
+     * @type {boolean}
+     */
+    this.movementOverride = false;
+    /** Let a mount opt out of the capsule resolve (free flight well clear of geometry). */
+    this.movementOverrideCollide = true;
+    /** Let a mount own yaw/pitch entirely instead of taking mouse-look from here. */
+    this.movementOverrideLook = true;
+
+    /** @type {import('./CameraRig.js').CameraRig|null} set by CameraRig's constructor. */
+    this.cameraRig = null;
+
+    /**
+     * Set by main.js once the weapon Loadout exists. Its presence transfers
+     * ownership of the viewmodel and fire input away from `_driveWeapon`.
+     */
+    this.loadout = null;
+    /** @type {import('./PlayerAvatar.js').PlayerAvatar|null} set by PlayerAvatar's constructor. */
+    this.avatar = null;
+
+    /** Engine time of the last shot. The avatar uses it to hold an aim pose. */
+    this._lastFiredAt = -999;
+
     // Combat resolves hits, but the player owns the health model and the weapon.
     this._weapon = new Weapon({ scene, camera, bus, materials, engine, input });
+
+    // Third-person parallax correction.
+    //
+    // ORDERING IS LOAD-BEARING: this subscription must be registered before
+    // CombatSystem's so that Combat resolves the corrected origin/direction.
+    // `main.js` constructs the Player before the CombatSystem and EventBus
+    // dispatches in subscription order, which is what makes that true. The
+    // payload is rewritten in place rather than re-emitted because a second
+    // `weapon:fired` would double the tracer, the HUD kick and the NPC alert.
+    // Anything that would rather resolve the shot itself can call
+    // `player.resolveShot(origin, direction)` and skip this path entirely.
+    this._offFired = bus.on('weapon:fired', (evt) => {
+      this._lastFiredAt = this._elapsed;
+      this.cameraRig?.correctShotEvent(evt);
+    });
 
     this.camera.rotation.order = 'YXZ';
     this._applyCamera(0);
@@ -191,6 +234,97 @@ export class Player {
     );
   }
 
+  /* ---- view state, read by CameraRig and PlayerAvatar ------------- */
+
+  /** Current (smoothed) eye height above the feet, in metres. */
+  get eyeHeight() {
+    return this._eyeHeight;
+  }
+
+  /** Current (smoothed) capsule height. Shrinks on crouch. */
+  get capsuleHeight() {
+    return this._capsuleHeight;
+  }
+
+  /** Residual stair-step absorption the camera is still paying off. */
+  get stepSmoothing() {
+    return this._stepSmooth;
+  }
+
+  /** Landing-dip spring offset, negative while absorbing an impact. */
+  get viewDip() {
+    return this._dip;
+  }
+
+  /** Strafe roll in radians. */
+  get viewRoll() {
+    return this._roll;
+  }
+
+  get bobPhase() {
+    return this._bobPhase;
+  }
+
+  get bobWeight() {
+    return this._bobWeight;
+  }
+
+  /** Stance blend, 0 standing to 1 fully crouched. Follows the capsule, so it is smooth. */
+  get crouchAmount() {
+    return clamp((STAND_HEIGHT - this._capsuleHeight) / (STAND_HEIGHT - CROUCH_HEIGHT), 0, 1);
+  }
+
+  /** True while the aim (RMB) input is held and usable. */
+  get isAiming() {
+    return !this._dead && !this.input.textCaptured && !!this.input.state.aim;
+  }
+
+  /** ADS blend, 0..1, sourced from the weapon so FOV and boom agree. */
+  get aimProgress() {
+    return this._weapon?.aimProgress ?? 0;
+  }
+
+  /** Engine time of the last shot fired. */
+  get lastFiredAt() {
+    return this._lastFiredAt;
+  }
+
+  get isThirdPerson() {
+    return this.cameraRig?.isThird ?? false;
+  }
+
+  /** World point the crosshair is over, or null before the rig exists. */
+  get aimPoint() {
+    return this.cameraRig?.aimPoint ?? null;
+  }
+
+  /** Yaw setter for mounts, which own orientation while `movementOverride` is set. */
+  setYaw(y) {
+    this._yaw = y;
+  }
+
+  setPitch(p) {
+    this._pitch = clamp(p, -MAX_PITCH, MAX_PITCH);
+  }
+
+  /**
+   * Where the player's next shot starts and which way it travels.
+   *
+   * First person is the camera line, unchanged. Third person is the avatar's
+   * muzzle aimed at whatever the crosshair is over. Weapons that emit their own
+   * `weapon:fired` should call this rather than reading the camera directly.
+   *
+   * @param {THREE.Vector3} outOrigin
+   * @param {THREE.Vector3} outDirection
+   * @returns {boolean} true if the shot was corrected for third-person parallax
+   */
+  resolveShot(outOrigin, outDirection) {
+    if (this.cameraRig) return this.cameraRig.resolveShot(outOrigin, outDirection);
+    this.camera.getWorldPosition(outOrigin);
+    this.camera.getWorldDirection(outDirection);
+    return false;
+  }
+
   /* ================================================================ */
   /* Fixed-rate simulation                                             */
   /* ================================================================ */
@@ -213,6 +347,27 @@ export class Player {
       this._position.addScaledVector(this._velocity, dt);
       this.physics.resolveCapsule(this._position, P.radius, CROUCH_HEIGHT);
       if (elapsed - this._deathAt > RESPAWN_DELAY) this.respawn();
+      return;
+    }
+
+    // A mount owns movement: it has already written `position` (and possibly
+    // `velocity` and `yaw`) this step. We contribute only the collision resolve,
+    // so a rider still cannot pass through a wall, and the stance/bob state that
+    // the avatar and the HUD read.
+    if (this.movementOverride) {
+      this._crouching = false;
+      this._sprinting = false;
+      this._capsuleHeight = damp(this._capsuleHeight, STAND_HEIGHT, 16, dt);
+      if (this.movementOverrideCollide) {
+        const res = this.physics.resolveCapsule(this._position, P.radius, this._capsuleHeight);
+        this._wasGrounded = this._grounded;
+        this._grounded = res.grounded;
+        this._groundNormal.copy(res.groundNormal);
+      }
+      this._coyote = 0;
+      this._jumpBuffer = 0;
+      this._jumpHeld = !!this.input.state.jump;
+      this._bobWeight = damp(this._bobWeight, 0, 9, dt);
       return;
     }
 
@@ -558,6 +713,9 @@ export class Player {
       this._spawnYaw = yaw;
     }
     this._applyCamera(0);
+    // Collapse the third-person spring: without this the boom would sweep
+    // across the entire world between the old position and the new one.
+    this.cameraRig?.snap();
     this.bus.emit('player:spawned', { position: this._position });
   }
 
@@ -573,7 +731,8 @@ export class Player {
     this._elapsed = elapsed;
 
     const look = this.input.consumeLook();
-    if (!this._harnessFrozen && !this._dead) {
+    const lookOwned = this.movementOverride && !this.movementOverrideLook;
+    if (!this._harnessFrozen && !this._dead && !lookOwned) {
       this._yaw -= look.dx;
       this._pitch = clamp(this._pitch - look.dy, -MAX_PITCH, MAX_PITCH);
     }
@@ -601,7 +760,12 @@ export class Player {
 
     this._driveWeapon(dt, elapsed, speed);
     this._applyFov(dt);
-    this._applyCamera(dt);
+    // In third person the rig owns the transform outright, so composing the eye
+    // pose first would be wasted work overwritten a line later.
+    if (!this.isThirdPerson) this._applyCamera(dt);
+    // Contract 3.1: the rig runs after movement has resolved. It is idempotent
+    // per frame, so main.js listing it in the frame order as well is harmless.
+    this.cameraRig?.update(dt, elapsed);
   }
 
   _tickDip(dt) {
@@ -615,11 +779,20 @@ export class Player {
   }
 
   _driveWeapon(dt, elapsed, speed) {
+    // A Loadout, once attached, owns everything in the player's hands - including
+    // this machine gun, which it adopts rather than rebuilding. Driving the weapon
+    // from here as well would double the fire rate and fight over the viewmodel
+    // pose every frame, so this method stands down entirely.
+    if (this.loadout) return;
+
     const w = this._weapon;
     const s = this.input.state;
     const usable = !this._dead && !this.input.textCaptured;
 
-    w.setVisible(!this._harnessFrozen);
+    // The viewmodel is a first-person object composed against the eye. In third
+    // person the avatar carries a real weapon in its hand instead, so the
+    // viewmodel is hidden outright rather than left floating at the boom pivot.
+    w.setVisible(!this._harnessFrozen && !this.isThirdPerson);
     if (this._harnessFrozen) return;
 
     w.setAim(usable && !!s.aim);
@@ -707,6 +880,8 @@ export class Player {
   }
 
   dispose() {
+    this._offFired?.();
+    this._offFired = null;
     this._weapon.dispose();
   }
 }

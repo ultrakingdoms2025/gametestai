@@ -223,6 +223,9 @@ export class CombatSystem {
   _onWeaponFired(evt) {
     if (!evt || !evt.origin || !evt.direction) return;
     if (this.player?.isDead) return;
+    // Projectile weapons never raise `weapon:fired`, but an explicit opt-out
+    // means a future one cannot be silently resolved as a hitscan round too.
+    if (evt.hitscan === false) return;
 
     const gun = CONFIG.weapon.machinegun;
     _origin.copy(evt.origin);
@@ -324,7 +327,6 @@ export class CombatSystem {
 
     this.vfx.bloodImpact(_hitPoint, _normal, dir);
     this._bloodSplatterBehind(_hitPoint, dir);
-    this._flashNPC(npc);
 
     const point = _hitPoint.clone();
     this.bus.emit('weapon:hit', {
@@ -335,8 +337,18 @@ export class CombatSystem {
       damage,
     });
 
-    const killed = this._applyNPCDamage(npc, damage, isHeadshot);
-    this.bus.emit('combat:hitmarker', { isHeadshot, isKill: killed, damage, point });
+    const res = this.applyNPCDamage(npc, damage, {
+      isHeadshot,
+      sourcePosition: _hitPoint,
+      weaponId: 'machinegun',
+      byPlayer: true,
+    });
+    this.bus.emit('combat:hitmarker', {
+      isHeadshot,
+      isKill: res.killed,
+      damage,
+      point,
+    });
   }
 
   /** Look for a wall behind the target and paint an exit splatter on it. */
@@ -347,31 +359,91 @@ export class CombatSystem {
     this.decals.spawn(behind.point, behind.normal, 0.34 + Math.random() * 0.34, DECAL.BLOOD, 26);
   }
 
-  _applyNPCDamage(npc, amount, isHeadshot) {
+  /**
+   * The single route by which an NPC takes damage from the player.
+   *
+   * Hitscan (`_resolveNPCHit`) and every projectile in `ProjectileSystem` come
+   * through here, which is what guarantees `npc:damaged` and `npc:killed` are
+   * emitted exactly once per event no matter which weapon dealt the blow. The
+   * Economy keys credits off `npc:killed.byPlayer`, so a second emission - or a
+   * missing `byPlayer` - would corrupt the player's balance rather than merely
+   * duplicating a HUD line.
+   *
+   * @param {any} npc target
+   * @param {number} amount final damage; falloff and multipliers are the
+   *   caller's business, exactly as `NPC.applyDamage` expects
+   * @param {{isHeadshot?:boolean, sourcePosition?:THREE.Vector3,
+   *          weaponId?:string, byPlayer?:boolean, flash?:boolean}} [opts]
+   * @returns {{applied:number, health:number, killed:boolean}}
+   */
+  applyNPCDamage(npc, amount, opts = {}) {
+    if (!npc || !(amount > 0) || npc.isDead === true) {
+      return { applied: 0, health: npc?.health ?? 0, killed: false };
+    }
+
+    const isHeadshot = opts.isHeadshot === true;
+    const weaponId = opts.weaponId ?? 'unknown';
+    const byPlayer = opts.byPlayer !== false;
+
     const wasDead = npc.isDead === true;
+    const before = Number.isFinite(npc.health) ? npc.health : 0;
     this._sawNpcDamaged = false;
     this._sawNpcKilled = false;
 
+    if (opts.flash !== false) this._flashNPC(npc);
+
+    /*
+     * The NPC keeps `source` as `lastDamageSource` and reads `.position` off it
+     * later to pick a threat, so it must be a live object with a stable
+     * position - never a pooled scratch vector. The player is exactly that, and
+     * for a player-owned projectile the player is also the correct attacker.
+     */
+    const source = byPlayer ? this.player : (opts.source ?? null);
+
     try {
-      npc.applyDamage?.(amount, isHeadshot, this.player);
+      npc.applyDamage?.(amount, isHeadshot, source);
     } catch (err) {
       console.warn('[Combat] npc.applyDamage threw:', err);
     }
 
     const health = Number.isFinite(npc.health) ? npc.health : 0;
+    const applied = Math.max(0, before - health);
+
     if (!this._sawNpcDamaged) {
-      this.bus.emit('npc:damaged', { npc, amount, health, isHeadshot });
+      this.bus.emit('npc:damaged', { npc, amount, health, isHeadshot, weaponId });
     }
 
     const killed = npc.isDead === true && !wasDead;
     if (killed) {
-      if (!this._sawNpcKilled) this.bus.emit('npc:killed', { npc, byPlayer: true });
+      if (!this._sawNpcKilled) this.bus.emit('npc:killed', { npc, byPlayer, weaponId });
       this.bus.emit('hud:notify', {
         text: `Eliminated ${npc.name ?? 'hostile'}${isHeadshot ? '  • HEADSHOT' : ''}`,
         tone: 'kill',
       });
     }
-    return killed;
+    return { applied, health, killed };
+  }
+
+  /**
+   * Surface-correct impact burst for a non-bullet hit (arrows, debris).
+   * Exposed so other systems get the same material response the machine gun
+   * gets without duplicating the classification table.
+   *
+   * @param {THREE.Vector3} point
+   * @param {THREE.Vector3} normal
+   * @param {any} collider the collider that was hit, or null
+   * @param {number} [intensity] 0..1 scale on particle counts
+   * @param {boolean} [decal] stamp a bullet hole as well
+   */
+  impactFX(point, normal, collider, intensity = 1, decal = true) {
+    try {
+      const surface = this._surfaceOf(collider);
+      this.vfx.impact(point, normal, surface, this._tintFor(surface), intensity);
+      if (decal) this._stampDecal(point, normal, surface);
+    } catch (err) {
+      // Best-effort decoration: it must never be able to break the frame loop.
+      console.warn('[Combat] impactFX failed:', err);
+    }
   }
 
   /* ---------------------------------------------------------------- */

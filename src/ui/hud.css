@@ -15,6 +15,8 @@
   --red-glow: rgba(255, 61, 85, 0.6);
   --mag: #d46bff;
   --lime: #b6ff5a;
+  /* Fireball accent — sits between amber and red so the palette stays warm. */
+  --ember: #ff7d3c;
 
   --ink-0: #04070d;
   --ink-1: #080d17;
@@ -1711,7 +1713,8 @@ body {
    ========================================================================== */
 .debug {
   left: 30px;
-  top: 30px;
+  /* Sits under the credits ledger, which now owns the top-left corner. */
+  top: 100px;
   min-width: 244px;
   padding: 10px 14px 12px;
   clip-path: var(--clip-tr);
@@ -2152,6 +2155,1033 @@ body {
 }
 
 /* ==========================================================================
+   PROCEDURAL ICON SET (WeaponWheel.makeIcon)
+   Every glyph is inline SVG path data; colour comes from the host element so
+   one icon reads correctly in a dim slot, an active slot and the mount panel.
+   ========================================================================== */
+.gicon {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.gicon .gi-solid {
+  fill: currentColor;
+}
+
+.gicon .gi-dim {
+  fill: currentColor;
+  opacity: 0.5;
+}
+
+.gicon .gi-hot {
+  fill: var(--acc, var(--amber));
+}
+
+.gicon .gi-dark {
+  fill: #06121c;
+}
+
+.gicon .gi-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gicon .gi-thick {
+  stroke-width: 3.4;
+}
+
+.gicon .gi-thin {
+  stroke-width: 1.4;
+  opacity: 0.66;
+}
+
+/* ==========================================================================
+   WEAPON SELECTOR STRIP  (bottom-centre)
+   Lives above the pause overlay: pointer lock eats mouse clicks, so the only
+   time a slot can be pressed is while the cursor is free — which is exactly
+   when the pause veil is up.
+   ========================================================================== */
+.wstrip {
+  position: absolute;
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%);
+  z-index: 62;
+  display: flex;
+  align-items: flex-end;
+  gap: 9px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.55s ease 0.2s, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wstrip.is-live {
+  opacity: 1;
+}
+
+.wstrip.hidden {
+  opacity: 0;
+  transform: translate(-50%, 14px);
+  transition-delay: 0s;
+}
+
+/* Hairline rail the slots appear to be mounted on. */
+.wstrip-rule {
+  position: absolute;
+  left: -18px;
+  right: -18px;
+  bottom: -7px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--rule-soft) 18%, var(--rule) 50%, var(--rule-soft) 82%, transparent);
+}
+
+.wslot {
+  --acc: var(--amber);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 176px;
+  padding: 8px 11px 9px 9px;
+  margin: 0;
+  appearance: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--f-ui);
+  color: var(--txt);
+  background: linear-gradient(155deg, var(--glass-hi), var(--glass));
+  border: 1px solid var(--rule-soft);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  clip-path: var(--clip-tr);
+  backdrop-filter: blur(7px) saturate(1.25);
+  -webkit-backdrop-filter: blur(7px) saturate(1.25);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45), 0 12px 30px rgba(0, 0, 0, 0.5);
+  opacity: 0.58;
+  transform: translateY(7px) scale(0.965);
+  transform-origin: 50% 100%;
+  transition: opacity 0.22s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 0.22s, box-shadow 0.22s, background 0.22s;
+}
+
+.wslot:hover {
+  opacity: 0.86;
+  transform: translateY(3px) scale(0.985);
+}
+
+.wslot::before {
+  /* Accent rule along the top edge — lights with the slot. */
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 14px;
+  top: 0;
+  height: 2px;
+  background: var(--acc);
+  box-shadow: 0 0 10px var(--acc);
+  opacity: 0;
+  transition: opacity 0.22s;
+}
+
+.wslot.active {
+  opacity: 1;
+  transform: none;
+  border-color: rgba(82, 233, 255, 0.42);
+  background: linear-gradient(155deg, rgba(30, 52, 74, 0.55), rgba(7, 13, 22, 0.62));
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.5),
+    0 0 26px rgba(82, 233, 255, 0.16),
+    0 16px 38px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.wslot.active::before {
+  opacity: 1;
+}
+
+.wslot.locked {
+  opacity: 0.26;
+  filter: grayscale(0.7);
+  cursor: default;
+}
+
+/* Switch pop — a short overshoot so a weapon change registers physically. */
+.wslot.just {
+  animation: wslot-pop 0.42s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes wslot-pop {
+  0% {
+    transform: translateY(5px) scale(0.96);
+    filter: brightness(1.5);
+  }
+  45% {
+    transform: translateY(-4px) scale(1.045);
+    filter: brightness(1.22);
+  }
+  100% {
+    transform: none;
+    filter: none;
+  }
+}
+
+.wslot-key {
+  position: absolute;
+  left: 8px;
+  top: -8px;
+  font-family: var(--f-disp);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--txt-dim);
+  background: linear-gradient(180deg, rgba(12, 22, 34, 0.95), rgba(6, 11, 18, 0.95));
+  border: 1px solid var(--rule-soft);
+  padding: 1px 6px 0;
+  line-height: 1.5;
+  transition: color 0.22s, border-color 0.22s, box-shadow 0.22s;
+}
+
+.wslot.active .wslot-key {
+  color: #eefaff;
+  border-color: rgba(82, 233, 255, 0.55);
+  box-shadow: 0 0 12px rgba(82, 233, 255, 0.32);
+}
+
+.wslot-ico {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 25px;
+  color: var(--txt-dim);
+  transition: color 0.22s, filter 0.22s;
+}
+
+.wslot.active .wslot-ico {
+  color: #e6f6ff;
+  filter: drop-shadow(0 0 6px var(--acc));
+}
+
+.wslot-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: block;
+}
+
+.wslot-name {
+  display: block;
+  font-family: var(--f-disp);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--txt-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.22s;
+}
+
+.wslot.active .wslot-name {
+  color: var(--txt);
+}
+
+.wslot-ammo {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  font-family: var(--f-disp);
+  line-height: 1.05;
+}
+
+.wslot-ammo b {
+  font-size: 19px;
+  font-weight: 700;
+  color: #dcecf6;
+  text-shadow: 0 2px 5px rgba(0, 0, 0, 0.7);
+  transition: color 0.22s, text-shadow 0.22s;
+}
+
+.wslot.active .wslot-ammo b {
+  color: #f6fdff;
+  text-shadow: 0 0 12px var(--acc), 0 2px 5px rgba(0, 0, 0, 0.8);
+}
+
+.wslot.low .wslot-ammo b {
+  color: var(--red);
+  text-shadow: 0 0 12px var(--red-glow);
+}
+
+.wslot-ammo i {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(140, 172, 190, 0.7);
+}
+
+.wslot-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.wslot-bar i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: 0 50%;
+  transform: scaleX(0);
+  background: linear-gradient(90deg, var(--acc), #fff);
+  box-shadow: 0 0 8px var(--acc);
+  opacity: 0.55;
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.22s;
+}
+
+.wslot.active .wslot-bar i {
+  opacity: 1;
+}
+
+/* Per-weapon accents. */
+.w-machinegun {
+  --acc: var(--amber);
+}
+.w-fireball {
+  --acc: var(--ember);
+}
+.w-bow {
+  --acc: var(--lime);
+}
+
+/* ==========================================================================
+   CHARGE METER (fireball / bow)  — orbits the crosshair
+   ========================================================================== */
+.charge {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 150px;
+  height: 150px;
+  margin: -75px 0 0 -75px;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(0.9);
+  transition: opacity 0.12s linear, transform 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  --acc: var(--ember);
+}
+
+.hud[data-weapon='bow'] .charge {
+  --acc: var(--lime);
+}
+
+.charge.show {
+  opacity: 1;
+  transform: none;
+}
+
+.charge-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.charge-svg circle {
+  fill: none;
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
+}
+
+.charge-svg .ctrk {
+  stroke: rgba(6, 14, 24, 0.72);
+  stroke-width: 4.4;
+}
+
+.charge-svg .cval {
+  stroke: var(--acc);
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 5px var(--acc));
+}
+
+.charge-svg .ctick {
+  stroke: rgba(255, 255, 255, 0.26);
+  stroke-width: 1.4;
+}
+
+/* At full draw the ring goes white-hot and the release cue appears. */
+.charge.full .charge-svg .cval {
+  stroke: #ffffff;
+  stroke-width: 4;
+  filter: drop-shadow(0 0 10px var(--acc)) drop-shadow(0 0 22px var(--acc));
+  animation: charge-throb 0.62s ease-in-out infinite;
+}
+
+@keyframes charge-throb {
+  0%,
+  100% {
+    opacity: 0.82;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.charge-tag {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 12px;
+  text-align: center;
+  font-family: var(--f-disp);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.32em;
+  text-indent: 0.32em;
+  color: #ffffff;
+  text-shadow: 0 0 12px var(--acc), 0 1px 4px #000;
+  opacity: 0;
+  transition: opacity 0.16s;
+}
+
+.charge.full .charge-tag {
+  opacity: 1;
+  animation: pause-blink 0.9s ease-in-out infinite;
+}
+
+/* Discharge flare on release. */
+.charge-flare {
+  position: absolute;
+  inset: 22px;
+  border: 2px solid var(--acc);
+  border-radius: 50%;
+  opacity: 0;
+}
+
+.charge.fire .charge-flare {
+  animation: charge-burst 0.42s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes charge-burst {
+  0% {
+    opacity: 0.95;
+    transform: scale(0.82);
+    box-shadow: 0 0 26px var(--acc);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.55);
+    box-shadow: 0 0 0 var(--acc);
+  }
+}
+
+/* Crosshair picks up the active weapon's accent. */
+.hud[data-weapon='fireball'] .xhair-blade,
+.hud[data-weapon='fireball'] .xhair-dot {
+  background: #ffd9c2;
+}
+
+.hud[data-weapon='bow'] .xhair-blade,
+.hud[data-weapon='bow'] .xhair-dot {
+  background: #e6ffcb;
+}
+
+/* ==========================================================================
+   CAMERA MODE PILL
+   ========================================================================== */
+.cammode {
+  position: absolute;
+  left: 50%;
+  top: 57%;
+  transform: translate(-50%, 6px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 4px 5px;
+  font-family: var(--f-disp);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.26em;
+  text-indent: 0.26em;
+  color: var(--txt-dim);
+  background: linear-gradient(150deg, rgba(18, 32, 48, 0.5), rgba(4, 9, 16, 0.62));
+  border: 1px solid var(--rule-soft);
+  clip-path: var(--clip-tr);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.22s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.22s;
+}
+
+.cammode.show {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
+.cammode.third {
+  color: var(--cy);
+  border-color: rgba(82, 233, 255, 0.32);
+}
+
+.cammode-key {
+  font-style: normal;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-indent: 0;
+  color: #e9f7ff;
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.22), rgba(82, 233, 255, 0.05));
+  border: 1px solid rgba(82, 233, 255, 0.36);
+  padding: 2px 6px 1px;
+}
+
+/* ==========================================================================
+   CREDITS  (top-left)
+   ========================================================================== */
+.credits {
+  left: 30px;
+  top: 30px;
+  min-width: 196px;
+  padding: 9px 14px 10px 11px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  clip-path: var(--clip-br);
+}
+
+.credits::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, var(--amber), transparent);
+  box-shadow: 0 0 10px rgba(255, 180, 74, 0.5);
+}
+
+.credits.bump {
+  animation: credits-bump 0.44s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes credits-bump {
+  0% {
+    transform: scale(1);
+  }
+  28% {
+    transform: scale(1.045);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.credits-ico {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  overflow: visible;
+}
+
+.credits-ico .ci-outer {
+  fill: none;
+  stroke: var(--amber);
+  stroke-width: 1.3;
+  opacity: 0.75;
+}
+
+.credits-ico .ci-inner {
+  fill: rgba(255, 180, 74, 0.16);
+  stroke: var(--amber);
+  stroke-width: 0.9;
+}
+
+.credits-ico .ci-core {
+  fill: #ffe3b6;
+}
+
+.credits.bump .credits-ico {
+  animation: credits-spin 0.5s cubic-bezier(0.3, 0.9, 0.3, 1);
+}
+
+@keyframes credits-spin {
+  from {
+    transform: rotateY(0deg) scale(1);
+    filter: brightness(2.4);
+  }
+  to {
+    transform: rotateY(180deg) scale(1);
+    filter: brightness(1);
+  }
+}
+
+.credits-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.credits-val {
+  font-family: var(--f-disp);
+  font-weight: 700;
+  font-size: 23px;
+  letter-spacing: 0.04em;
+  color: #ffedcf;
+  text-shadow: 0 0 14px rgba(255, 180, 74, 0.4), 0 2px 5px rgba(0, 0, 0, 0.8);
+}
+
+/* Autosave pip — dark until a write lands, then a single amber breath. */
+.credits-pip {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(120, 150, 168, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  transition: background 0.4s;
+}
+
+.credits-pip.on {
+  background: var(--lime);
+  animation: pip-flash 1.5s ease-out;
+}
+
+@keyframes pip-flash {
+  0% {
+    box-shadow: 0 0 0 0 rgba(182, 255, 90, 0.75);
+    transform: scale(1.5);
+  }
+  30% {
+    box-shadow: 0 0 12px 2px rgba(182, 255, 90, 0.5);
+    transform: scale(1);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(182, 255, 90, 0);
+    transform: scale(1);
+  }
+}
+
+/* Anchored to the panel's lower edge so the increment rises *into* the ledger
+   rather than off the top of the screen. */
+.credits-floats {
+  position: absolute;
+  left: 72%;
+  top: 100%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.credit-float {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-family: var(--f-disp);
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: 0.05em;
+  color: var(--lime);
+  text-shadow: 0 0 16px rgba(182, 255, 90, 0.75), 0 2px 6px rgba(0, 0, 0, 0.85);
+  animation: credit-rise 1.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.credit-float.neg {
+  color: var(--red);
+  text-shadow: 0 0 16px var(--red-glow), 0 2px 6px rgba(0, 0, 0, 0.85);
+}
+
+@keyframes credit-rise {
+  0% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--dx, 0px)), 6px) scale(0.7);
+  }
+  18% {
+    opacity: 1;
+    transform: translate(calc(-50% + var(--dx, 0px)), -6px) scale(1.12);
+  }
+  40% {
+    transform: translate(calc(-50% + var(--dx, 0px)), -16px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--dx, 0px)), -44px) scale(0.94);
+  }
+}
+
+/* ==========================================================================
+   MOUNT INDICATOR  (centre, above the weapon strip)
+   ========================================================================== */
+.mount {
+  left: 50%;
+  bottom: 112px;
+  width: 262px;
+  margin-left: -131px;
+  padding: 9px 13px 10px;
+  clip-path: var(--clip-tr);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(12px) scale(0.97);
+  transition: opacity 0.26s ease, transform 0.36s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.26s;
+}
+
+.mount.show {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
+
+.mount::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 14px;
+  top: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--cy), transparent);
+  box-shadow: 0 0 10px var(--cy-glow);
+}
+
+.mount.in {
+  animation: wslot-pop 0.5s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.mount-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mount-ico {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 26px;
+  color: #d9eefa;
+  --acc: var(--cy);
+  filter: drop-shadow(0 0 7px rgba(82, 233, 255, 0.45));
+}
+
+.mount-names {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.mount-name {
+  font-family: var(--f-disp);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #eaf8ff;
+  text-shadow: 0 0 12px var(--cy-glow);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mount-boost {
+  position: relative;
+  height: 7px;
+  margin-top: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.mount-boost i {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 50%;
+  background: linear-gradient(180deg, #d6fbff, var(--cy) 45%, #0f88a6);
+  box-shadow: 0 0 12px var(--cy-glow);
+  transition: background 0.25s, box-shadow 0.25s;
+}
+
+.mount-boost u {
+  /* Notch mask, matching the health bar's segmented language. */
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0,
+    transparent calc(12.5% - 2px),
+    rgba(3, 8, 14, 0.9) calc(12.5% - 2px),
+    rgba(3, 8, 14, 0.9) 12.5%
+  );
+}
+
+.mount.boosting .mount-boost i {
+  background: linear-gradient(180deg, #fff2d4, var(--amber) 45%, #b06a12);
+  box-shadow: 0 0 16px rgba(255, 180, 74, 0.7);
+}
+
+.mount.empty .mount-boost i {
+  background: linear-gradient(180deg, #ffc0c8, var(--red) 45%, #8c1120);
+  box-shadow: 0 0 12px var(--red-glow);
+}
+
+.mount-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--txt-dim);
+}
+
+.mount-key {
+  font-family: var(--f-disp);
+  font-weight: 700;
+  font-size: 11px;
+  color: #eefaff;
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.28), rgba(82, 233, 255, 0.06));
+  border: 1px solid rgba(82, 233, 255, 0.5);
+  border-bottom-width: 2px;
+  padding: 1px 8px 0;
+  animation: key-breathe 2.1s ease-in-out infinite;
+}
+
+.mount-tag {
+  margin-left: auto;
+  font-family: var(--f-disp);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  color: var(--txt-dim);
+  transition: color 0.2s;
+}
+
+.mount.boosting .mount-tag {
+  color: var(--amber);
+  text-shadow: 0 0 10px rgba(255, 180, 74, 0.6);
+}
+
+.mount.empty .mount-tag {
+  color: var(--red);
+}
+
+/* Lift the interaction prompt clear of the mount readout. */
+.hud.mounted .prompt {
+  bottom: 27%;
+}
+
+/* ==========================================================================
+   UNSTUCK PROMPT + CONFIRMATION
+   ========================================================================== */
+.stuck {
+  position: absolute;
+  left: 50%;
+  bottom: 32%;
+  transform: translate(-50%, 8px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px 7px 8px;
+  background: linear-gradient(150deg, rgba(52, 26, 10, 0.6), rgba(14, 7, 4, 0.72));
+  border: 1px solid rgba(255, 180, 74, 0.3);
+  border-top-color: rgba(255, 180, 74, 0.6);
+  clip-path: var(--clip-tr);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.2s;
+}
+
+.stuck.show {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
+.stuck-key {
+  font-family: var(--f-disp);
+  font-weight: 700;
+  font-size: 14px;
+  color: #fff4e2;
+  background: linear-gradient(180deg, rgba(255, 180, 74, 0.32), rgba(255, 180, 74, 0.07));
+  border: 1px solid rgba(255, 180, 74, 0.62);
+  border-bottom-width: 3px;
+  padding: 3px 0 2px;
+  width: 30px;
+  text-align: center;
+  animation: key-breathe 1.5s ease-in-out infinite;
+}
+
+.stuck-text {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #ffe6c2;
+}
+
+/* Confirmation shockwave on player:unstuck. It carries its own label so the
+   HUD does not double up on the toast UnstuckSystem already raises. */
+.unstuck-fx {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 120px;
+  height: 120px;
+  margin: -60px 0 0 -60px;
+  border: 2px solid var(--cy);
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.unstuck-fx b {
+  position: absolute;
+  left: 50%;
+  top: -34px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-family: var(--f-disp);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  color: #eafaff;
+  text-shadow: 0 0 16px var(--cy-glow), 0 2px 6px #000;
+  opacity: 0;
+}
+
+.unstuck-fx.run {
+  animation: unstuck-ring 0.72s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.unstuck-fx.run b {
+  animation: unstuck-label 1.05s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes unstuck-label {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+  22%,
+  62% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -10px);
+  }
+}
+
+@keyframes unstuck-ring {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.35);
+    box-shadow: 0 0 30px var(--cy-glow), inset 0 0 22px var(--cy-glow);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.4);
+    box-shadow: 0 0 0 rgba(82, 233, 255, 0);
+  }
+}
+
+/* ==========================================================================
+   SAVE / LOAD TOAST VARIANTS
+   ========================================================================== */
+.toast.save {
+  border-left-color: var(--lime);
+  color: #e6ffd2;
+}
+
+.toast.save::before {
+  content: '⭗';
+  font-size: 12px;
+  color: var(--lime);
+  text-shadow: 0 0 9px rgba(182, 255, 90, 0.7);
+}
+
+.toast.error {
+  border-left-color: var(--red);
+  color: #ffd6db;
+}
+
+.toast.error::before {
+  content: '⛒';
+  font-size: 12px;
+  color: var(--red);
+  text-shadow: 0 0 9px var(--red-glow);
+}
+
+/* Autosave — deliberately quiet, it happens every half minute. */
+.toast.quiet {
+  padding: 5px 13px 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(150, 190, 210, 0.8);
+  border-left-color: rgba(120, 180, 210, 0.45);
+  background: linear-gradient(150deg, rgba(14, 24, 38, 0.45), rgba(5, 10, 18, 0.6));
+}
+
+.toast.quiet::before {
+  content: '◇';
+  color: rgba(150, 190, 210, 0.7);
+  text-shadow: none;
+}
+
+/* ==========================================================================
+   AMMO PANEL — weapon-swap flourish
+   ========================================================================== */
+.ammo.swap .ammo-name,
+.ammo.swap .ammo-count {
+  animation: ammo-swap 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes ammo-swap {
+  0% {
+    opacity: 0;
+    transform: translateX(16px);
+    filter: blur(3px);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+/* ==========================================================================
+   MINIMAP — bracket-key zoom feedback
+   ========================================================================== */
+.minimap.zoomed canvas {
+  animation: map-zoom 0.32s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes map-zoom {
+  0% {
+    filter: drop-shadow(0 12px 30px rgba(0, 0, 0, 0.65)) brightness(1.5);
+    transform: scale(0.985);
+  }
+  100% {
+    filter: drop-shadow(0 12px 30px rgba(0, 0, 0, 0.65)) brightness(1);
+    transform: none;
+  }
+}
+
+/* ==========================================================================
    ACCESSIBILITY
    ========================================================================== */
 @media (prefers-reduced-motion: reduce) {
@@ -2164,7 +3194,13 @@ body {
   .health.crit .health-num,
   .ammo.low .ammo-cur,
   .health.regen .health-regen,
-  .chat-typing i {
+  .chat-typing i,
+  .mount-key,
+  .stuck-key,
+  .charge.full .charge-svg .cval,
+  .charge.full .charge-tag,
+  .credits.bump .credits-ico,
+  .credits-pip.on {
     animation: none !important;
   }
   * {
@@ -2183,5 +3219,30 @@ body {
   }
   .hud.chatting .health {
     bottom: 366px;
+  }
+  .wstrip {
+    bottom: 20px;
+  }
+  .mount {
+    bottom: 96px;
+  }
+  .stuck {
+    bottom: 27%;
+  }
+}
+
+/* Narrow viewports: shrink the strip before it collides with health/ammo. */
+@media (max-width: 1280px) {
+  .wslot {
+    width: 132px;
+    gap: 7px;
+    padding: 7px 9px 8px 8px;
+  }
+  .wslot-ico {
+    width: 34px;
+    height: 21px;
+  }
+  .wslot-ammo b {
+    font-size: 17px;
   }
 }

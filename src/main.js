@@ -15,6 +15,14 @@ import { NPCManager } from './npc/NPCManager.js';
 import { PortalSystem } from './systems/Portals.js';
 import { CombatSystem } from './systems/Combat.js';
 import { HUD } from './ui/HUD.js';
+import { CameraRig } from './player/CameraRig.js';
+import { PlayerAvatar } from './player/PlayerAvatar.js';
+import { Loadout } from './player/Loadout.js';
+import { ProjectileSystem } from './systems/Projectiles.js';
+import { Economy } from './systems/Economy.js';
+import { SaveGame } from './systems/SaveGame.js';
+import { UnstuckSystem } from './systems/Unstuck.js';
+import { MountManager } from './mounts/MountManager.js';
 
 /**
  * AETHER NEXUS - bootstrap.
@@ -48,6 +56,32 @@ const player = new Player({ ...ctx, camera: engine.camera });
 const npcManager = new NPCManager({ ...ctx, player });
 const portals = new PortalSystem({ ...ctx, player, worldManager });
 const combat = new CombatSystem({ ...ctx, player, npcManager });
+
+/* ------------------------------------------------------------------ */
+/* Feature set v2 - see CONTRACTS-V2.md                                */
+/* ------------------------------------------------------------------ */
+
+// Camera modes and the visible third-person body. The rig is attached back onto
+// the player because Player asks it for the aim correction on every shot: in
+// third person the muzzle is offset from the camera, so firing along the camera
+// forward vector would miss whatever the crosshair is on.
+const cameraRig = new CameraRig({ engine, camera: engine.camera, player, input, bus, physics, npcManager });
+const avatar = new PlayerAvatar({ ...ctx, player });
+player.cameraRig = cameraRig;
+player.avatar = avatar;
+
+const economy = new Economy({ bus });
+const projectiles = new ProjectileSystem({ ...ctx, player, npcManager, combat });
+
+// Loadout adopts the machine gun Player already built rather than making a
+// second one, and from here on owns the viewmodel and the fire input.
+const loadout = new Loadout({ ...ctx, camera: engine.camera, player, npcManager, projectiles, cameraRig });
+player.loadout = loadout;
+
+const mounts = new MountManager({ ...ctx, player, camera: engine.camera, cameraRig, avatar, npcManager });
+const unstuck = new UnstuckSystem({ bus, player, physics, worldManager, input });
+const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts, input });
+
 const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, portals });
 
 // Late injection breaks what would otherwise be a circular import between the
@@ -55,7 +89,10 @@ const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, po
 worldManager.attach?.({ npcManager, portals, player });
 
 // Expose for the automated screenshot/critique harness and for debugging.
-window.GAME = { engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG };
+window.GAME = {
+  engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
+  cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save,
+};
 
 if (overrides.dev) {
   import('./dev/Harness.js').then(({ installHarness }) => installHarness(window.GAME));
@@ -128,17 +165,30 @@ function scheduleBackgroundBuilds(startWorld) {
 /* Frame wiring                                                        */
 /* ------------------------------------------------------------------ */
 
+// Mounts run first: while ridden they own the player's position, so they must
+// have written it before the player integrates its own movement and before
+// anything downstream reads where the player is.
 engine.onFixedUpdate((dt, elapsed) => {
+  mounts.fixedUpdate(dt, elapsed);
   player.fixedUpdate(dt, elapsed);
   npcManager.fixedUpdate(dt, elapsed);
   combat.fixedUpdate(dt, elapsed);
+  projectiles.fixedUpdate(dt, elapsed);
+  unstuck.fixedUpdate(dt, elapsed);
   portals.fixedUpdate(dt, elapsed);
 });
 
 engine.onFrameUpdate((dt, elapsed) => {
   materials.update?.(dt, elapsed);
   player.update(dt, elapsed);
+  // The rig reads the player's final position, and the avatar and mounts then
+  // pose against the camera the rig just placed.
+  cameraRig.update(dt, elapsed);
+  avatar.update(dt, elapsed);
+  mounts.update(dt, elapsed);
   npcManager.update(dt, elapsed);
+  projectiles.update(dt, elapsed);
+  loadout.update(dt, elapsed);
   portals.update(dt, elapsed);
   combat.update(dt, elapsed);
   worldManager.active?.update(dt, elapsed);

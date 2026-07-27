@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.vite/
+
+# Secrets - never commit
+.env
+.env.local
+.env.*.local
+
+# Automated visual-review output
+review/
+*.log

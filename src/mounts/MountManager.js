@@ -337,6 +337,53 @@ export class MountManager {
     return null;
   }
 
+  /**
+   * Build every mount and the rider proxy up front, without spawning or
+   * mounting anything.
+   *
+   * A dragon costs ~235 ms of geometry to construct and, far worse, its
+   * materials only compile the first time they reach the renderer - which was
+   * happening mid-game on the first `G` press and stalling the frame for
+   * seconds. Constructing here and parking each root in the scene (hidden) lets
+   * the boot-time `compileAsync` see the materials and pay that cost behind the
+   * loading screen instead.
+   *
+   * @param {string[]} ids Mount ids to build.
+   * @returns {THREE.Object3D[]} Roots that were parked, for the caller to unpark.
+   */
+  prebuild(ids = ['hoverboard', 'dragon']) {
+    const parked = [];
+    for (const id of ids) {
+      if (this._mounts.has(id)) continue;
+      let mount = null;
+      try {
+        mount = this._create(id);
+      } catch (err) {
+        console.warn(`[mounts] prebuild of "${id}" failed:`, err?.message ?? err);
+        continue;
+      }
+      if (!mount) continue;
+      this._mounts.set(id, mount);
+      try {
+        this._ensureRider(mount);
+      } catch { /* rider is optional - never block the prebuild on it */ }
+      const root = mount.root ?? mount.mesh;
+      if (root && !root.parent) {
+        root.visible = false;
+        this.scene.add(root);
+        parked.push(root);
+      }
+    }
+    return parked;
+  }
+
+  /** Remove roots parked by `prebuild` once their shaders are compiled. */
+  unpark(roots) {
+    for (const r of roots ?? []) {
+      if (r?.parent === this.scene) this.scene.remove(r);
+    }
+  }
+
   _readKeys() {
     const input = this.input;
     if (!input || input.textCaptured) return;

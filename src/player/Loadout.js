@@ -116,6 +116,18 @@ export class Loadout {
   /* ================================================================ */
 
   /** @returns {any} the live weapon instance */
+  /**
+   * The live weapon instances, not the HUD descriptors from `weapons`.
+   *
+   * Exposed so boot-time warmup can make every viewmodel visible for a few
+   * frames and force its shadow/depth shader variants to compile before the
+   * player ever selects it.
+   * @returns {Array<object>}
+   */
+  get instances() {
+    return this._weapons;
+  }
+
   get current() {
     return this._weapons[this._index] ?? null;
   }

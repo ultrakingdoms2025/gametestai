@@ -121,8 +121,11 @@ async function boot() {
     loader.setStatus('Spawning inhabitants', 0.75);
     await worldManager.activate(startWorld);
 
-    loader.setStatus('Calibrating optics', 0.9);
+    loader.setStatus('Calibrating optics', 0.88);
     await nextFrame();
+
+    loader.setStatus('Compiling shaders', 0.92);
+    await prewarm();
 
     loader.setStatus('Ready', 1);
     loader.showStartPrompt(worldManager.active.displayName);
@@ -135,6 +138,107 @@ async function boot() {
     console.error('[boot] failed:', err);
     loader.showError(err);
   }
+}
+
+/**
+ * Pay every first-use cost behind the loading screen.
+ *
+ * Materials only build their GPU program the first time the renderer sees them,
+ * and measured on this build that was catastrophic in-game: selecting the bow
+ * for the first time stalled the next frame for 63 s, the first dismount for
+ * 75 s, and the first third-person toggle for 7.6 s. Second use of the same
+ * system was ~20 ms, which is the signature of one-off shader compilation
+ * rather than slow logic.
+ *
+ * `renderer.compile()` walks with `scene.traverse` (not `traverseVisible`), so
+ * hidden objects still compile - the viewmodels and the avatar only need to be
+ * parented, not shown. Mounts are the exception: they do not enter the scene
+ * until `spawn()`, so they get built and parked first. `compileAsync` resolves
+ * via KHR_parallel_shader_compile where available, so this does not block the
+ * main thread the way a synchronous compile would.
+ */
+async function prewarm() {
+  const t0 = performance.now();
+  let parked = [];
+  try {
+    parked = mounts.prebuild?.(['hoverboard', 'dragon']) ?? [];
+  } catch (err) {
+    console.warn('[prewarm] mount prebuild failed:', err);
+  }
+
+  // The avatar is hidden in first person; make sure it is parented so the
+  // skinned + rim/fill shader variants are included in this pass.
+  try {
+    avatar?.setVisible?.(true);
+  } catch { /* non-fatal */ }
+
+  try {
+    await engine.renderer.compileAsync(engine.scene, engine.camera);
+  } catch (err) {
+    // Never let a warmup failure stop the game booting - the cost simply
+    // reverts to being paid on first use.
+    console.warn('[prewarm] compileAsync failed, falling back to lazy compile:', err);
+  }
+
+  // compileAsync only prepares the material variants that exist for the CURRENT
+  // scene configuration - and the thing that actually bites here is lights.
+  // Selecting a weapon parents its light rig to the camera, and Three keys the
+  // program cache on light counts, so every material in view is invalidated at
+  // once: measured at 53 new programs and 12 s of compilation on the first bow
+  // draw. Mount lights do the same on summon/dismount.
+  //
+  // The only reliable warmup is therefore to put the game through each real
+  // configuration and render frames in it, rather than to compile a single
+  // static snapshot.
+  const warmFrames = async (n = 2) => {
+    for (let i = 0; i < n; i++) {
+      try {
+        if (engine.postfx) engine.postfx.render(1 / 60);
+        else engine.renderer.render(engine.scene, engine.camera);
+      } catch { /* a warmup frame must never abort the boot */ }
+      await nextFrame();
+    }
+  };
+
+  const startWeapon = loadout.current?.id ?? null;
+  const startPos = player.position.clone();
+  const startYaw = player.yaw;
+
+  try {
+    for (const inst of loadout.instances ?? []) {
+      loadout.select(inst.id);
+      await warmFrames(2);
+    }
+    if (startWeapon) loadout.select(startWeapon);
+    await warmFrames(1);
+
+    // Mount and dismount each one: both transitions change the light set.
+    for (const id of ['hoverboard', 'dragon']) {
+      try {
+        mounts.summon(id);
+        await warmFrames(2);
+        mounts.dismount();
+        await warmFrames(2);
+      } catch (err) {
+        console.warn(`[prewarm] mount warm "${id}" failed:`, err);
+      }
+    }
+  } catch (err) {
+    console.warn('[prewarm] configuration warmup failed:', err);
+  }
+
+  try {
+    for (const root of parked) root.visible = false;
+    avatar?.setVisible?.(false);
+    mounts.unpark?.(parked);
+    // Warmup mounted and moved the player; put them back exactly.
+    player.teleport(startPos, startYaw);
+    cameraRig.setMode('first');
+  } catch (err) {
+    console.warn('[prewarm] restore failed:', err);
+  }
+
+  console.info(`[prewarm] shader warmup took ${Math.round(performance.now() - t0)}ms`);
 }
 
 function scheduleBackgroundBuilds(startWorld) {

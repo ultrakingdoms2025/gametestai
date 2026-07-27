@@ -135,6 +135,8 @@ export class CameraRig {
     this._mountScaleTarget = 1;
     this._mountLift = 0;
     this._mountLiftTarget = 0;
+    /** How much of the requested boom the sweep is actually granting, 0..1. */
+    this._boomFrac = 1;
 
     /** Live world point the crosshair is over. Read by PlayerAvatar and by shots. */
     this.aimPoint = new THREE.Vector3(0, 1.6, -AIM_RANGE);
@@ -322,9 +324,15 @@ export class CameraRig {
     // Sweep origin is the body centre line, *not* the offset shoulder: a player
     // pressed against a wall has their shoulder inside it, and a sweep that
     // starts inside geometry reports no hit and lets the camera through.
+    // The mount lift rides the *achieved* boom fraction, not the requested one.
+    // Raising the pivot by two and a half metres is right when the arm is fully
+    // extended behind a dragon; indoors, where the sweep collapses the arm to a
+    // couple of metres, the same lift parks the camera inside the animal's back.
+    // Last frame's fraction is used because the sweep needs the pivot first.
     _cpPivot.set(
       p.position.x,
-      p.position.y + p.eyeHeight - p.stepSmoothing - BOOM.pivotDrop + p.viewDip * 0.4 + this._mountLift,
+      p.position.y + p.eyeHeight - p.stepSmoothing - BOOM.pivotDrop + p.viewDip * 0.4 +
+        this._mountLift * (this._boomFrac ?? 1),
       p.position.z
     );
 
@@ -346,6 +354,7 @@ export class CameraRig {
     const rate = allowed < this._length ? BOOM_IN_RATE : BOOM_OUT_RATE;
     this._length = damp(this._length, allowed, rate, dt);
     this._length = clamp(this._length, BOOM.minLength, wantLen);
+    this._boomFrac = damp(this._boomFrac ?? 1, clamp(this._length / wantLen, 0, 1), 8, dt);
 
     cam.position.copy(_cpPivot).addScaledVector(_cpDir, this._length);
 

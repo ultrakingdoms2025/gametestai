@@ -27,8 +27,21 @@ const _fu1 = new THREE.Vector3(); // fixedUpdate seat
 const _dm1 = new THREE.Vector3(); // _dismount placement
 const _sp1 = new THREE.Vector3(); // summon placement
 const _up1 = new THREE.Vector3(); // update re-assert
+/* IK-only. Nothing outside `_solveIK` may borrow these. */
+const _ikTarget = new THREE.Vector3();
+const _ikT = new THREE.Vector3();
+const _ikU = new THREE.Vector3();
+const _ikP = new THREE.Vector3();
+const _ikD1 = new THREE.Vector3();
+const _ikD2 = new THREE.Vector3();
+const _ikR1 = new THREE.Vector3();
+const _ikR2 = new THREE.Vector3();
+const _ikQ1 = new THREE.Quaternion();
+const _ikQ2 = new THREE.Quaternion();
+const _ikQ3 = new THREE.Quaternion();
 
 const damp = THREE.MathUtils.damp;
+const clamp = THREE.MathUtils.clamp;
 
 /** Rider poses, in bone-space radians. Rest pose is arms-down, legs straight. */
 const POSE = {
@@ -125,6 +138,12 @@ export class MountManager {
 
     this._rider = null;
     this._riderPose = null;
+    /** Hip height of the rider proxy - how far it drops onto a saddle anchor. */
+    this._riderDrop = 0.99;
+    this._lean = 0;
+    this._rollLean = 0;
+    /** Parent-space rotation of the last solved chain's middle bone. */
+    this._ikTipFrame = new THREE.Quaternion();
 
     // Mounts are bound to the world they were summoned in; a portal jump has to
     // take them away or they are left floating at stale coordinates.
@@ -375,6 +394,11 @@ export class MountManager {
     if (rig) {
       this._prevCameraMode = rig.mode ?? null;
       rig.setMode?.('third');
+      // A dragon is ten metres of animal: the on-foot boom frames its shoulder
+      // blades and nothing else. The mount asks for the framing it needs and
+      // the hoverboard, which asks for nothing, stays exactly as punchy as it is.
+      const hint = mount.cameraHint ?? null;
+      rig.setMountFraming?.(hint?.scale ?? 1, hint?.lift ?? 0);
     }
     this._showAvatar(false);
     mount.onMount?.(this.player);
@@ -404,6 +428,7 @@ export class MountManager {
     this.player.movementOverride = false;
 
     const rig = this._rig();
+    rig?.setMountFraming?.(1, 0);
     if (rig && this._prevCameraMode && this._prevCameraMode !== rig.mode) {
       rig.setMode?.(this._prevCameraMode);
     }
@@ -487,7 +512,18 @@ export class MountManager {
     }
     mount.riderAnchor.add(this._rider.root);
     this._riderPose = mount.id === 'dragon' ? 'ride' : 'hover';
+
+    // The humanoid's origin is the soles of its feet, but a saddle anchor marks
+    // where the *pelvis* goes. Without this the whole figure hangs a hip height
+    // above the tack - which is precisely the "floating rider" the seat pose was
+    // blamed for: the bones were posed correctly all along, the body was simply
+    // parked in mid-air where nothing it could reach was under it.
+    const pelvis = this._rider.bones.get('pelvis');
+    this._riderDrop = pelvis ? pelvis.position.y * (this._rider.heightScale ?? 1) : 0.99;
+    mount.setRiderDrop?.(this._riderDrop);
+
     this._applyPose(this._riderPose, 1);
+    this._lean = 0;
   }
 
   _detachRider() {
@@ -499,6 +535,10 @@ export class MountManager {
   _poseRider(dt, mount) {
     const r = this._rider;
     if (!r || !this._riderPose) return;
+    if (this._riderPose === 'ride') {
+      this._poseSeated(dt, mount);
+      return;
+    }
     const pose = POSE[this._riderPose];
     const root = r.root;
     root.position.set(pose.root[0], pose.root[1], pose.root[2]);
@@ -506,22 +546,164 @@ export class MountManager {
 
     const speed01 = mount.speed01 ?? 0;
     const boost = mount.boost01 ?? 0;
-    if (this._riderPose === 'hover') {
-      // Crouch deeper and tuck forward the faster the board goes.
-      root.position.y = pose.root[1] - speed01 * 0.1 - boost * 0.06;
-      root.rotation.x = pose.rootRot[0] + speed01 * 0.16 + boost * 0.12;
-      const arm = 0.95 + speed01 * 0.25;
-      this._setBone('upperArmR', -0.25, 0.1, arm);
-      this._setBone('upperArmL', -0.3, -0.1, -arm - 0.1);
-      this._setBone('calfR', -0.72 - speed01 * 0.22, 0, 0);
-      this._setBone('calfL', -0.8 - speed01 * 0.22, 0, 0);
-    } else {
-      // Seated: lean forward into the wind, and duck on boost.
-      root.rotation.x = pose.rootRot[0] + speed01 * 0.22 + boost * 0.18;
-      this._setBone('spine02', 0.07 + speed01 * 0.12, 0, 0);
-      this._setBone('neck', -0.08 - speed01 * 0.06, 0, 0);
-    }
+    // Crouch deeper and tuck forward the faster the board goes.
+    root.position.y = pose.root[1] - speed01 * 0.1 - boost * 0.06;
+    root.rotation.x = pose.rootRot[0] + speed01 * 0.16 + boost * 0.12;
+    const arm = 0.95 + speed01 * 0.25;
+    this._setBone('upperArmR', -0.25, 0.1, arm);
+    this._setBone('upperArmL', -0.3, -0.1, -arm - 0.1);
+    this._setBone('calfR', -0.72 - speed01 * 0.22, 0, 0);
+    this._setBone('calfL', -0.8 - speed01 * 0.22, 0, 0);
     void dt;
+  }
+
+  /**
+   * Seat the rider in the dragon's harness.
+   *
+   * The torso is keyframed, but the limbs are *solved*: the feet are placed into
+   * the stirrup irons and the hands onto the grab bar by two-bone IK against
+   * the world positions the harness reports. That is the difference between a
+   * pose that happens to line up with one saddle and a rider that stays in the
+   * tack when the saddle moves - and the saddle moves constantly, because the
+   * whole harness rides the body group that breathes, banks and recoils against
+   * every wingbeat.
+   *
+   * @param {number} dt
+   * @param {import('./Dragon.js').Dragon} mount
+   */
+  _poseSeated(dt, mount) {
+    const r = this._rider;
+    const root = r.root;
+    const speed01 = mount.speed01 ?? 0;
+    const boost = mount.boost01 ?? 0;
+    const flap = mount.flap01 ?? 0;
+    const roll = mount.bankRoll ?? 0;
+
+    this._lean = damp(this._lean ?? 0, speed01 * 0.24 + boost * 0.26, 4, dt);
+    this._rollLean = damp(this._rollLean ?? 0, clamp(roll, -0.85, 0.85), 4.5, dt);
+    const lean = this._lean;
+    const rl = this._rollLean;
+
+    // Sit *down* onto the saddle, and let the legs take the wingbeat: a rider
+    // welded to the seat reads as a decal, one that absorbs a couple of
+    // centimetres reads as weight.
+    root.position.set(0, -this._riderDrop + flap * 0.024, 0);
+    root.rotation.set(0, 0, 0);
+
+    /* ---- torso: forward over the withers, leaning into the bank ---- */
+    this._setBone('pelvis', -0.10 + lean * 0.12, 0, 0);
+    this._setBone('spine01', 0.10 + lean * 0.22 - flap * 0.02, rl * 0.05, -rl * 0.11);
+    this._setBone('spine02', 0.09 + lean * 0.28 - flap * 0.025, rl * 0.06, -rl * 0.13);
+    this._setBone('spine03', 0.06 + lean * 0.18, rl * 0.04, -rl * 0.08);
+    this._setBone('neck', -0.12 - lean * 0.24, -rl * 0.06, rl * 0.09);
+    this._setBone('head', -0.06 - lean * 0.14, -rl * 0.14, rl * 0.11);
+    this._setBone('clavicleR', 0, 0, 0.07 + lean * 0.05);
+    this._setBone('clavicleL', 0, 0, -0.07 - lean * 0.05);
+
+    // Bone world matrices have to be current before anything is solved against
+    // a world-space target, and the whole chain above the rider (harness, body,
+    // bank, dragon root) may have moved this frame.
+    root.updateWorldMatrix(true, true);
+
+    /* ---- legs into the stirrups ---- */
+    for (const side of [1, -1]) {
+      const s = side > 0 ? 'R' : 'L';
+      if (!mount.getStirrupWorld?.(side, _ikTarget)) {
+        this._applyPose('ride', 1);
+        break;
+      }
+      if (this._solveIK(`thigh${s}`, `calf${s}`, `foot${s}`, _ikTarget, side, -0.45, -0.35)) {
+        // Toe forward and a shade up - a heel-down stirrup seat.
+        this._aimTip(`foot${s}`, `toe${s}`, side * 0.12, -0.34 - lean * 0.1, -1);
+      }
+    }
+
+    /* ---- hands onto the grab bar ---- */
+    for (const side of [1, -1]) {
+      const s = side > 0 ? 'R' : 'L';
+      if (!mount.getGripWorld?.(side, _ikTarget)) break;
+      if (this._solveIK(`upperArm${s}`, `foreArm${s}`, `hand${s}`, _ikTarget, side * 0.8, -0.5, 0.8)) {
+        // The hand closes over the bar rather than continuing the forearm.
+        this._setBone(`hand${s}`, 0.34, 0, side * -0.22);
+      }
+    }
+  }
+
+  /**
+   * Analytic two-bone IK, written straight onto the bone quaternions.
+   *
+   * The skeleton has no per-bone orientation - every bone inherits the character
+   * frame and its rest direction is simply the offset of its child - so the
+   * solve is expressed entirely in rest-direction terms and works unchanged for
+   * a leg (rest -Y) and an arm (rest -Y with an outward X component).
+   *
+   * `pole` names the side the joint bends toward, in the root bone's parent
+   * space. It is what stops a knee from inverting through the saddle.
+   *
+   * @returns {boolean} true if the chain was solved
+   */
+  _solveIK(rootName, midName, tipName, targetWorld, poleX, poleY, poleZ) {
+    const R = this._rider;
+    const rootB = R.bones.get(rootName);
+    const midB = R.bones.get(midName);
+    const tipB = R.bones.get(tipName);
+    if (!rootB || !midB || !tipB || !rootB.parent) return false;
+
+    const parent = rootB.parent;
+    parent.updateWorldMatrix(true, false);
+    _ikT.copy(targetWorld);
+    parent.worldToLocal(_ikT);
+    _ikT.sub(rootB.position);
+
+    const L1 = midB.position.length();
+    const L2 = tipB.position.length();
+    const d = _ikT.length();
+    if (d < 1e-4 || L1 < 1e-5 || L2 < 1e-5) return false;
+    _ikU.copy(_ikT).multiplyScalar(1 / d);
+    // Clamped reach: an unreachable target must straighten the limb, not make
+    // the law of cosines return NaN and blank the character.
+    const dc = clamp(d, Math.abs(L1 - L2) + 1e-3, (L1 + L2) * 0.998);
+
+    _ikP.set(poleX, poleY, poleZ);
+    _ikP.addScaledVector(_ikU, -_ikP.dot(_ikU));
+    if (_ikP.lengthSq() < 1e-8) {
+      _ikP.set(-_ikU.y, _ikU.x, 0);
+      if (_ikP.lengthSq() < 1e-8) _ikP.set(1, 0, 0);
+    }
+    _ikP.normalize();
+
+    const cosB = clamp((L1 * L1 + dc * dc - L2 * L2) / (2 * L1 * dc), -1, 1);
+    const b = Math.acos(cosB);
+    _ikD1.copy(_ikU).multiplyScalar(Math.cos(b)).addScaledVector(_ikP, Math.sin(b));
+    _ikD2.copy(_ikU).multiplyScalar(dc).addScaledVector(_ikD1, -L1);
+    if (_ikD2.lengthSq() < 1e-10) return false;
+    _ikD2.normalize();
+
+    _ikR1.copy(midB.position).normalize();
+    _ikR2.copy(tipB.position).normalize();
+    _ikQ1.setFromUnitVectors(_ikR1, _ikD1);
+    _ikQ2.setFromUnitVectors(_ikR2, _ikD2);
+    rootB.quaternion.copy(_ikQ1);
+    midB.quaternion.copy(_ikQ3.copy(_ikQ1).invert().multiply(_ikQ2));
+    // Kept so `_aimTip` can express a tip direction in the same parent space.
+    this._ikTipFrame.copy(_ikQ2);
+    return true;
+  }
+
+  /**
+   * Point a solved chain's tip bone along a direction given in the IK root's
+   * parent space - used to set the foot angle in the stirrup.
+   */
+  _aimTip(tipName, childName, dx, dy, dz) {
+    const tip = this._rider.bones.get(tipName);
+    const child = this._rider.bones.get(childName);
+    if (!tip || !child) return;
+    _ikR1.copy(child.position);
+    if (_ikR1.lengthSq() < 1e-8) return;
+    _ikR1.normalize();
+    _ikD1.set(dx, dy, dz).normalize();
+    _ikQ1.setFromUnitVectors(_ikR1, _ikD1);
+    tip.quaternion.copy(_ikQ3.copy(this._ikTipFrame).invert().multiply(_ikQ1));
   }
 
   _applyPose(name, weight) {

@@ -47,6 +47,15 @@ const _lf1 = new THREE.Vector3(); // loftGeometry
 const _lf2 = new THREE.Vector3();
 const _lf3 = new THREE.Vector3();
 const _lf4 = new THREE.Vector3();
+const _rn1 = new THREE.Vector3(); // _updateReins
+const _rn2 = new THREE.Vector3();
+const _rn3 = new THREE.Vector3();
+const _rn4 = new THREE.Vector3();
+const _rn5 = new THREE.Vector3();
+const _rnMat = new THREE.Matrix4();
+const _hw1 = new THREE.Vector3(); // harness build scratch
+const _hw2 = new THREE.Vector3();
+const _hw3 = new THREE.Vector3();
 
 const damp = THREE.MathUtils.damp;
 const clamp = THREE.MathUtils.clamp;
@@ -61,6 +70,16 @@ const LEG_REACH = 1.15;
 /** Capsule that keeps the dragon out of walls. */
 const RIDE_RADIUS = 1.5;
 const RIDE_HEIGHT = 3.2;
+
+/**
+ * Third-person framing while ridden. `scale` multiplies the on-foot boom and
+ * `lift` raises the pivot, so the silhouette reads and the ground stays visible
+ * under the animal instead of the camera sitting between its shoulder blades.
+ */
+const DRAGON_CAMERA = { scale: 3.4, lift: 2.5 };
+
+/** Grab-handle grip point, in body space. Shared by the bar and the IK marker. */
+const GRIP = { x: 0.22, y: 1.42, z: -1.50 };
 
 /* ================================================================== */
 /* Geometry helpers                                                    */
@@ -217,6 +236,211 @@ function spikeGeometry(height, base, sweep = 0.35) {
   return loftGeometry(sections, 6, { capStart: true, capEnd: false });
 }
 
+/* ------------------------------------------------------------------ */
+/* Harness geometry                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The torso loft's cross-sections, duplicated as data.
+ *
+ * The harness has to sit *on* the animal, not near it, so every strap is
+ * derived from the same numbers the body mesh is lofted from. Duplicating the
+ * table is deliberate: `loftGeometry` consumes and forgets its sections, and a
+ * harness that guesses the barrel radius is a harness that floats.
+ * Entries are `[z, centreY, halfWidth, halfHeight]`, front (-z) last.
+ */
+const TORSO_PROFILE = [
+  [2.25, 0.05, 0.30, 0.32],
+  [1.75, 0.05, 0.55, 0.60],
+  [1.0, 0.02, 0.86, 0.88],
+  [0.2, 0.0, 1.02, 1.0],
+  [-0.6, 0.02, 1.0, 1.06],
+  [-1.35, 0.06, 0.78, 0.86],
+  [-1.95, 0.14, 0.5, 0.55],
+  [-2.25, 0.2, 0.34, 0.36],
+];
+
+/** Interpolated body cross-section at a given z. @returns {{cy:number, rx:number, ry:number}} */
+const _sec = { cy: 0, rx: 0, ry: 0 };
+function torsoAt(z) {
+  const P = TORSO_PROFILE;
+  if (z >= P[0][0]) return Object.assign(_sec, { cy: P[0][1], rx: P[0][2], ry: P[0][3] });
+  for (let i = 1; i < P.length; i++) {
+    if (z >= P[i][0]) {
+      const a = P[i - 1];
+      const b = P[i];
+      const t = (a[0] - z) / (a[0] - b[0]);
+      _sec.cy = lerp(a[1], b[1], t);
+      _sec.rx = lerp(a[2], b[2], t);
+      _sec.ry = lerp(a[3], b[3], t);
+      return _sec;
+    }
+  }
+  const l = P[P.length - 1];
+  return Object.assign(_sec, { cy: l[1], rx: l[2], ry: l[3] });
+}
+
+/**
+ * A flat strap wrapped around an elliptical cross-section in the XY plane.
+ *
+ * Four vertices per ring (outer front/back, inner front/back) swept round the
+ * ellipse, so the result is a belt with real width and thickness rather than a
+ * torus that reads as rope. Offsetting outward along the ellipse *gradient*
+ * rather than the radius is what keeps the strap standing proud of the hide by
+ * the same few millimetres all the way round a non-circular barrel.
+ */
+function strapBand({
+  rx, ry, cy = 0, cx = 0, z = 0,
+  halfWidth = 0.09, thick = 0.022, lift = 0.02,
+  a0 = 0, a1 = Math.PI * 2, seg = 44, uvRepeat = 5,
+}) {
+  const rings = seg + 1;
+  const positions = new Float32Array(rings * 4 * 3);
+  const uvs = new Float32Array(rings * 4 * 2);
+  const idx = [];
+  for (let i = 0; i < rings; i++) {
+    const t = i / seg;
+    const a = a0 + (a1 - a0) * t;
+    const ca = Math.cos(a);
+    const sa = Math.sin(a);
+    let nx = ca / rx;
+    let ny = sa / ry;
+    const nl = Math.hypot(nx, ny) || 1;
+    nx /= nl;
+    ny /= nl;
+    const px = cx + rx * ca + nx * lift;
+    const py = cy + ry * sa + ny * lift;
+    const base = i * 4;
+    const put = (k, x, y, zz, uu, vv) => {
+      positions[(base + k) * 3] = x;
+      positions[(base + k) * 3 + 1] = y;
+      positions[(base + k) * 3 + 2] = zz;
+      uvs[(base + k) * 2] = uu;
+      uvs[(base + k) * 2 + 1] = vv;
+    };
+    put(0, px + nx * thick, py + ny * thick, z - halfWidth, t * uvRepeat, 0);
+    put(1, px + nx * thick, py + ny * thick, z + halfWidth, t * uvRepeat, 0.34);
+    put(2, px, py, z + halfWidth, t * uvRepeat, 0.68);
+    put(3, px, py, z - halfWidth, t * uvRepeat, 1);
+  }
+  for (let i = 0; i < seg; i++) {
+    const a = i * 4;
+    const b = (i + 1) * 4;
+    for (let k = 0; k < 4; k++) {
+      const k2 = (k + 1) % 4;
+      idx.push(a + k, b + k, a + k2, a + k2, b + k, b + k2);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * A straight flat strap between two points, with an explicit side axis.
+ *
+ * `loftGeometry` cannot be used for these: its frames come from the tangent and
+ * world up, which degenerates for the near-vertical runs (stirrup leathers,
+ * breast-collar tugs) that make up most of the harness. Naming the side axis
+ * removes the degeneracy and also lets a strap lie flat against the flank.
+ */
+function flatStrap(a, b, halfWidth, thick, side, uvRepeat = 2) {
+  _hw1.subVectors(b, a);
+  const len = _hw1.length() || 1e-4;
+  _hw1.multiplyScalar(1 / len);
+  _hw2.copy(side).addScaledVector(_hw1, -_hw1.dot(side));
+  if (_hw2.lengthSq() < 1e-8) _hw2.set(1, 0, 0).addScaledVector(_hw1, -_hw1.x);
+  _hw2.normalize().multiplyScalar(halfWidth);
+  _hw3.crossVectors(_hw1, _hw2).normalize().multiplyScalar(thick);
+
+  const pos = new Float32Array(8 * 3);
+  const uv = new Float32Array(8 * 2);
+  let k = 0;
+  let m = 0;
+  for (let e = 0; e < 2; e++) {
+    const p = e === 0 ? a : b;
+    for (let c = 0; c < 4; c++) {
+      const sw = c === 0 || c === 3 ? 1 : -1;
+      const tw = c < 2 ? 1 : -1;
+      pos[k++] = p.x + _hw2.x * sw + _hw3.x * tw;
+      pos[k++] = p.y + _hw2.y * sw + _hw3.y * tw;
+      pos[k++] = p.z + _hw2.z * sw + _hw3.z * tw;
+      uv[m++] = c * 0.25;
+      uv[m++] = e * uvRepeat;
+    }
+  }
+  const idx = [];
+  for (let c = 0; c < 4; c++) {
+    const c2 = (c + 1) % 4;
+    idx.push(c, 4 + c, c2, c2, 4 + c, 4 + c2);
+  }
+  idx.push(0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/** A tapered metal bar between two points - handle uprights and grab rails. */
+function barBetween(ax, ay, az, bx, by, bz, r0, r1, radial = 8) {
+  _hw1.set(bx - ax, by - ay, bz - az);
+  const len = _hw1.length() || 1e-4;
+  _hw1.multiplyScalar(1 / len);
+  const g = new THREE.CylinderGeometry(r1, r0, len, radial, 1);
+  const q = new THREE.Quaternion().setFromUnitVectors(_capUp, _hw1);
+  const m = new THREE.Matrix4().makeRotationFromQuaternion(q);
+  m.setPosition((ax + bx) * 0.5, (ay + by) * 0.5, (az + bz) * 0.5);
+  g.applyMatrix4(m);
+  return g;
+}
+
+/**
+ * A stirrup iron: a wrought arch in the XY plane with a flat tread and an eye
+ * at the crown for the leather. The plane matters - the rider's foot passes
+ * through it along -Z, so the ring has to open fore-and-aft, not sideways.
+ */
+function stirrupGeometry(radius = 0.115) {
+  const arch = new THREE.TorusGeometry(radius, 0.021, 7, 20, Math.PI * 1.2);
+  arch.rotateZ(Math.PI * 0.9);
+  const tread = new THREE.BoxGeometry(radius * 1.6, 0.024, 0.10);
+  tread.translate(0, -radius + 0.006, 0);
+  const eye = new THREE.TorusGeometry(0.030, 0.012, 6, 12);
+  eye.rotateY(Math.PI / 2);
+  eye.translate(0, radius + 0.018, 0);
+  const g = mergeGeometries([arch, tread, eye], false);
+  arch.dispose();
+  tread.dispose();
+  eye.dispose();
+  return g;
+}
+
+/** A roller buckle: rectangular frame, centre bar and tongue. */
+function buckleGeometry(w = 0.13, h = 0.095) {
+  const t = 0.016;
+  const parts = [];
+  const bar = (sx, sy, x, y) => {
+    const b = new THREE.BoxGeometry(sx, sy, t);
+    b.translate(x, y, 0);
+    parts.push(b);
+  };
+  bar(w, t, 0, h * 0.5);
+  bar(w, t, 0, -h * 0.5);
+  bar(t, h, -w * 0.5, 0);
+  bar(t, h, w * 0.5, 0);
+  bar(t * 0.8, h * 0.86, 0, 0);
+  const tongue = new THREE.BoxGeometry(w * 0.62, t * 0.7, t * 0.7);
+  tongue.translate(w * 0.28, 0, 0);
+  parts.push(tongue);
+  const g = mergeGeometries(parts, false);
+  for (const p of parts) p.dispose();
+  return g;
+}
+
 /* ================================================================== */
 /* Materials                                                           */
 /* ================================================================== */
@@ -310,7 +534,75 @@ function shadeHorn(u, v, out) {
   out.ao = 0.72 + (1 - ring) * 0.28;
 }
 
+/**
+ * Saddle leather: quilted diamond panels with sunken seams, a stitch line
+ * riding each seam, and a pebbled grain over the whole hide.
+ *
+ * The quilt is authored in UV space rather than as geometry because every part
+ * of the harness is a swept band - a seam modelled as a crease would have to be
+ * re-lofted per part, and at this scale the normal map carries it perfectly.
+ */
+function shadeLeather(u, v, out) {
+  worley2D(u, v, 30, 30, 2, 3);
+  const pebble = smoothstep(0.0, 0.07, WORLEY[0]);
+  const grain = fbm01(u, v, 130, 130, 3, 31);
+  const blotch = fbm01(u, v, 6, 6, 3, 7);
+
+  // Two crossed seam families give diamond quilting; `puff` is the distance to
+  // the nearest seam, which is what makes the panel dome between them.
+  const q = 7;
+  const d1 = Math.abs((((u * q + v * q * 1.6) % 1) + 1) % 1 - 0.5) * 2;
+  const d2 = Math.abs((((u * q - v * q * 1.6) % 1) + 1) % 1 - 0.5) * 2;
+  const seam = Math.max(1 - smoothstep(0.05, 0.2, d1), 1 - smoothstep(0.05, 0.2, d2));
+  const puff = Math.min(1, Math.min(d1, d2) * 1.6);
+
+  // Stitches: dashes running along whichever seam is nearest.
+  const along = ((u + v) * q * 22) % 1;
+  const stitch = seam > 0.62 && along < 0.42 ? 1 : 0;
+
+  const base = 0.052 + blotch * 0.042 + grain * 0.013 + pebble * 0.011;
+  out.r = base * 1.62 + stitch * 0.085;
+  out.g = base * 1.06 + stitch * 0.072;
+  out.b = base * 0.70 + stitch * 0.050;
+  out.h = 0.30 + puff * 0.46 - seam * 0.28 + pebble * 0.14 + stitch * 0.16;
+  out.rough = 0.80 - puff * 0.14 + grain * 0.12 - stitch * 0.12;
+  out.metal = 0.02;
+  out.ao = 0.58 + puff * 0.42 - seam * 0.18;
+}
+
+/** Tack hardware: blackened wrought iron rubbed back to brass on the wear faces. */
+function shadeTack(u, v, out) {
+  const grain = fbm01(u, v, 64, 64, 3, 5);
+  const wear = fbm01(u, v, 7, 7, 4, 61);
+  const brass = smoothstep(0.58, 0.84, wear);
+  const pit = fbm01(u, v, 210, 210, 2, 17);
+  const base = 0.085 + grain * 0.055 + pit * 0.025;
+  out.r = base * (1 + brass * 3.4);
+  out.g = base * (1 + brass * 2.4);
+  out.b = base * (1 + brass * 0.8);
+  out.h = 0.42 + grain * 0.34 - pit * 0.24;
+  out.rough = 0.50 - brass * 0.24 + pit * 0.2;
+  out.metal = 0.85 + brass * 0.13;
+  out.ao = 0.7 + grain * 0.3;
+}
+
 function ensureMaterials(materials) {
+  if (!materials.has('dragon.leather')) {
+    const m = standardFromBake(512, shadeLeather, 2.4, {
+      name: 'dragon.leather',
+      repeat: 1,
+      // Bands are swept surfaces whose winding is generated, not authored; a
+      // one-sided material on a mis-wound strap renders as a hole.
+      side: THREE.DoubleSide,
+    });
+    m.envMapIntensity = 0.9;
+    materials.register('dragon.leather', m);
+  }
+  if (!materials.has('dragon.tack')) {
+    const m = standardFromBake(256, shadeTack, 1.6, { name: 'dragon.tack', repeat: 1 });
+    m.envMapIntensity = 1.35;
+    materials.register('dragon.tack', m);
+  }
   if (!materials.has('dragon.hide')) {
     const m = standardFromBake(512, shadeScales, 2.0, { name: 'dragon.hide', repeat: 2 });
     m.envMapIntensity = 1.1;
@@ -392,6 +684,8 @@ export class Dragon {
     this._roar = 0;
     this._headYaw = 0;
     this._headPitch = 0;
+    /** Hip height of whoever is in the saddle; refined by `setRiderDrop`. */
+    this._riderDrop = 1.0;
 
     this._geos = [];
     this._buildModel();
@@ -477,7 +771,10 @@ export class Dragon {
     const pv = new THREE.Vector3();
     for (let i = 0; i < spineCount; i++) {
       const t = i / (spineCount - 1);
-      const z = lerp(-1.7, 2.0, t);
+      // The crest starts behind the cantle: a dorsal spike inside the seat is
+      // a spike through the rider, and trimming the crest under tack is what a
+      // working harness would do anyway.
+      const z = lerp(-0.42, 2.0, t);
       const y = lerp(1.02, 0.34, smoothstep(0, 1, t) * 0.85 + t * 0.15);
       const s = 1 - Math.abs(t - 0.3) * 0.55;
       pv.set(0, y, z);
@@ -598,27 +895,8 @@ export class Dragon {
     this.legs.push(this._buildLeg(1, false, hide, horn));
     this.legs.push(this._buildLeg(-1, false, hide, horn));
 
-    /* ---- rider saddle at the base of the neck ---- */
-    this.riderAnchor = new THREE.Object3D();
-    this.riderAnchor.position.set(0, 0.92, -1.15);
-    this.body.add(this.riderAnchor);
-
-    // Saddle horn the rider holds on to - it also hides the seam where the
-    // rider's legs meet the back.
-    const saddle = this._track(
-      loftGeometry(
-        [
-          { p: [0, 0.72, -0.55], rx: 0.42, ry: 0.1 },
-          { p: [0, 0.86, -1.15], rx: 0.46, ry: 0.14 },
-          { p: [0, 0.8, -1.7], rx: 0.34, ry: 0.1 },
-        ],
-        10,
-        { uvScale: 1 }
-      )
-    );
-    const saddleMesh = new THREE.Mesh(saddle, M.get('dragon.belly'));
-    saddleMesh.castShadow = true;
-    this.body.add(saddleMesh);
+    /* ---- riding harness in the shoulder pocket ahead of the wings ---- */
+    this._buildHarness(M);
 
     /* ---- throat glow ---- */
     this._maw = new THREE.PointLight(0xff7a26, 0, 9, 2);
@@ -975,6 +1253,382 @@ export class Dragon {
     ankle.add(claws);
 
     return { side, front, rootObj, hip, knee, ankle, upperLen, lowerLen };
+  }
+
+  /**
+   * The riding harness.
+   *
+   * Everything hangs off `this.body`, so it breathes, banks and recoils with
+   * the animal for free. Every contact height is read back from `torsoAt` - the
+   * same cross-sections the torso is lofted from - so the tack sits *in* the
+   * hide rather than hovering a hand's width above it, and the girths pass
+   * under the saddle pad instead of through it.
+   *
+   * Static leather and static hardware are merged into one mesh each. The only
+   * live geometry is the pair of reins, which are re-solved per frame from the
+   * neck's actual joint positions (see `_updateReins`) because the neck flexes
+   * through more than a metre between a climb and a dive and a rigid rein would
+   * saw straight through it.
+   */
+  _buildHarness(M) {
+    const leatherMat = M.get('dragon.leather');
+    const tackMat = M.get('dragon.tack');
+
+    this.harness = new THREE.Group();
+    this.harness.name = 'dragon.harness';
+    this.body.add(this.harness);
+
+    const leather = [];
+    const tack = [];
+    const v = (x, y, z) => new THREE.Vector3(x, y, z);
+    const Z = v(0, 0, 1);
+    const put = (list, geo, mat) => {
+      if (mat) geo.applyMatrix4(mat);
+      list.push(geo);
+    };
+
+    /* ---- saddle pad: follows the back contour from withers to loin ---- */
+    leather.push(
+      loftGeometry(
+        [
+          { p: [0, 0.67, -1.95], rx: 0.22, ry: 0.10 },
+          { p: [0, 0.83, -1.80], rx: 0.30, ry: 0.11 },
+          { p: [0, 0.81, -1.60], rx: 0.36, ry: 0.115 },
+          { p: [0, 0.90, -1.35], rx: 0.40, ry: 0.12 },
+          { p: [0, 0.96, -1.10], rx: 0.42, ry: 0.12 },
+          { p: [0, 1.01, -0.85], rx: 0.43, ry: 0.12 },
+          { p: [0, 1.055, -0.62], rx: 0.42, ry: 0.12 },
+          { p: [0, 1.05, -0.50], rx: 0.32, ry: 0.09 },
+        ],
+        14,
+        { uvScale: 3.6 }
+      )
+    );
+
+    /* ---- pommel (front swell) and cantle (rear support) ---- */
+    leather.push(
+      loftGeometry(
+        [
+          { p: [0, 0.82, -1.66], rx: 0.26, ry: 0.11 },
+          { p: [0, 0.98, -1.68], rx: 0.22, ry: 0.10 },
+          { p: [0, 1.10, -1.71], rx: 0.17, ry: 0.085 },
+          { p: [0, 1.18, -1.74], rx: 0.09, ry: 0.055 },
+        ],
+        12,
+        { uvScale: 1.6 }
+      )
+    );
+    leather.push(
+      loftGeometry(
+        [
+          { p: [0, 1.06, -0.62], rx: 0.30, ry: 0.12 },
+          { p: [0, 1.21, -0.60], rx: 0.27, ry: 0.115 },
+          { p: [0, 1.33, -0.57], rx: 0.20, ry: 0.095 },
+          { p: [0, 1.41, -0.55], rx: 0.10, ry: 0.06 },
+        ],
+        12,
+        { uvScale: 1.6 }
+      )
+    );
+
+    /* ---- girths: two belts round the barrel, tucked under the pad ---- */
+    const girths = [-1.70, -0.72];
+    for (const gz of girths) {
+      const s = torsoAt(gz);
+      leather.push(
+        strapBand({
+          rx: s.rx, ry: s.ry, cy: s.cy, z: gz,
+          halfWidth: 0.105, thick: 0.026, lift: 0.03, seg: 48, uvRepeat: 14,
+        })
+      );
+    }
+
+    /* ---- breast collar round the base of the neck, tugged to the pommel ---- */
+    const cz = -2.02;
+    const cs = torsoAt(cz);
+    leather.push(
+      strapBand({
+        rx: cs.rx, ry: cs.ry, cy: cs.cy, z: cz,
+        halfWidth: 0.085, thick: 0.024, lift: 0.032, seg: 40, uvRepeat: 9,
+      })
+    );
+    for (const side of [1, -1]) {
+      leather.push(flatStrap(v(0.44 * side, 0.34, -2.00), v(0.50 * side, 0.62, -1.86), 0.042, 0.014, Z, 3));
+      leather.push(flatStrap(v(0.50 * side, 0.62, -1.86), v(0.30 * side, 1.00, -1.72), 0.042, 0.014, Z, 3));
+      // Stirrup leather: from a D-ring under the pad skirt to the iron's eye.
+      leather.push(
+        flatStrap(v(0.34 * side, 1.06, -1.62), v(0.545 * side, 0.848, -1.52), 0.042, 0.013, Z, 3)
+      );
+    }
+
+    /* ---- hardware ---- */
+    const buckle = buckleGeometry();
+    const dring = new THREE.TorusGeometry(0.042, 0.011, 7, 14);
+    const iron = stirrupGeometry();
+    const basis = (nx, ny, nz, ax, ay, az, px, py, pz) => {
+      const zAx = v(nx, ny, nz).normalize();
+      const xAx = v(ax, ay, az).normalize();
+      const yAx = new THREE.Vector3().crossVectors(zAx, xAx).normalize();
+      xAx.crossVectors(yAx, zAx).normalize();
+      const m = new THREE.Matrix4().makeBasis(xAx, yAx, zAx);
+      m.setPosition(px, py, pz);
+      return m;
+    };
+
+    for (const side of [1, -1]) {
+      // Girth buckles ride the widest point of each belt, facing out.
+      for (const gz of girths) {
+        const s = torsoAt(gz);
+        put(tack, buckle.clone(), basis(side, 0, 0, 0, 1, 0, side * (s.rx + 0.055), s.cy, gz));
+      }
+      // Breast-collar buckle where the tug meets the collar.
+      put(tack, buckle.clone(), basis(side, 0.2, 0, 0, 1, 0.3, side * 0.47, 0.42, -1.97));
+      // D-rings: stirrup hanger, and a rein ring on the pommel.
+      put(tack, dring.clone(), basis(side, 0, 0, 0, 1, 0, side * 0.345, 1.055, -1.62));
+      put(tack, dring.clone(), basis(side, 0.3, 0, 0, 1, 0, side * 0.155, 1.135, -1.755));
+      // Stirrup iron. The centre is set from the tread, not the eye: the ankle
+      // marker the rider IKs to has to end up a boot-sole above the tread bar,
+      // and getting that backwards buries the foot through the iron.
+      put(tack, iron.clone(), basis(0, 0, 1, 1, 0, 0, side * 0.55, 0.712, -1.50));
+      // Grab-handle upright.
+      tack.push(barBetween(side * 0.16, 1.12, -1.70, side * 0.28, GRIP.y, GRIP.z, 0.017, 0.014));
+    }
+    // Grab handle cross-bar the rider's hands close around. Its height is tuned
+    // against the rider's actual reach: the seated figure pitches forward at
+    // speed, which swings the shoulders down *past* a low bar and pulls the arms
+    // straight, so the bar sits high enough to stay inside the arm's envelope
+    // through the whole lean.
+    tack.push(barBetween(-0.30, GRIP.y, GRIP.z, 0.30, GRIP.y, GRIP.z, 0.016, 0.016, 10));
+    for (const side of [1, -1]) {
+      const wrap = new THREE.CylinderGeometry(0.027, 0.027, 0.115, 10, 1);
+      wrap.rotateZ(Math.PI / 2);
+      wrap.translate(side * GRIP.x, GRIP.y, GRIP.z);
+      leather.push(wrap);
+    }
+
+    buckle.dispose();
+    dring.dispose();
+    iron.dispose();
+
+    const leatherGeo = this._track(mergeGeometries(leather, false));
+    for (const g of leather) g.dispose();
+    const leatherMesh = new THREE.Mesh(leatherGeo, leatherMat);
+    leatherMesh.castShadow = true;
+    leatherMesh.receiveShadow = true;
+    this.harness.add(leatherMesh);
+
+    const tackGeo = this._track(mergeGeometries(tack, false));
+    for (const g of tack) g.dispose();
+    const tackMesh = new THREE.Mesh(tackGeo, tackMat);
+    tackMesh.castShadow = true;
+    this.harness.add(tackMesh);
+
+    /* ---- rivets: instanced, along the pad edge and the girths ---- */
+    const rivetGeo = this._track(new THREE.SphereGeometry(0.016, 8, 6));
+    rivetGeo.scale(1, 0.55, 1);
+    const RIVETS = 44;
+    const rivets = new THREE.InstancedMesh(rivetGeo, tackMat, RIVETS);
+    rivets.castShadow = true;
+    const rm = new THREE.Matrix4();
+    const rq = new THREE.Quaternion();
+    const rp = new THREE.Vector3();
+    const rs = new THREE.Vector3(1, 1, 1);
+    let ri = 0;
+    for (const side of [1, -1]) {
+      for (let i = 0; i < 11; i++) {
+        const t = i / 10;
+        const z = lerp(-1.86, -0.58, t);
+        const w = 0.24 + Math.sin(t * Math.PI) * 0.2;
+        const y = lerp(0.76, 1.10, t) + Math.sin(t * Math.PI) * 0.02;
+        rp.set(side * w, y, z);
+        rq.setFromAxisAngle(_capUp, 0);
+        rm.compose(rp, rq, rs);
+        rivets.setMatrixAt(ri++, rm);
+      }
+      for (const gz of girths) {
+        const s = torsoAt(gz);
+        for (let i = 0; i < 5; i++) {
+          const a = (-0.35 - i * 0.22) * side + (side > 0 ? 0 : Math.PI);
+          rp.set(s.rx * Math.cos(a) * 1.04, s.cy + s.ry * Math.sin(a) * 1.04, gz);
+          rq.setFromUnitVectors(_capUp, _hw1.set(Math.cos(a), Math.sin(a), 0));
+          rm.compose(rp, rq, rs);
+          rivets.setMatrixAt(ri++, rm);
+        }
+      }
+    }
+    for (; ri < RIVETS; ri++) {
+      rm.makeScale(0, 0, 0);
+      rivets.setMatrixAt(ri, rm);
+    }
+    rivets.instanceMatrix.needsUpdate = true;
+    this.harness.add(rivets);
+
+    /* ---- neck harness: a collar on the third vertebra, with rein rings ---- */
+    const neckSeg = this.neck[2] ?? this.neck[this.neck.length - 1];
+    const neckParts = [
+      strapBand({ rx: 0.30, ry: 0.318, z: -0.22, halfWidth: 0.06, thick: 0.018, lift: 0.012, seg: 28, uvRepeat: 3 }),
+    ];
+    const collarGeo = this._track(mergeGeometries(neckParts, false));
+    for (const g of neckParts) g.dispose();
+    const collarMesh = new THREE.Mesh(collarGeo, leatherMat);
+    collarMesh.castShadow = true;
+    neckSeg.add(collarMesh);
+
+    const ringGeo = this._track(new THREE.TorusGeometry(0.04, 0.011, 7, 14));
+    this._reinFront = [];
+    for (const side of [1, -1]) {
+      const ring = new THREE.Mesh(ringGeo, tackMat);
+      ring.position.set(side * 0.315, 0.02, -0.22);
+      ring.rotation.y = Math.PI / 2;
+      neckSeg.add(ring);
+      const anchor = new THREE.Object3D();
+      anchor.position.set(side * 0.35, 0.02, -0.22);
+      neckSeg.add(anchor);
+      this._reinFront.push(anchor);
+    }
+
+    /* ---- reins: solved per frame between pommel rings and neck rings ---- */
+    this._reinBack = [];
+    for (const side of [1, -1]) {
+      const a = new THREE.Object3D();
+      a.position.set(side * 0.155, 1.135, -1.755);
+      this.harness.add(a);
+      this._reinBack.push(a);
+    }
+    this._reins = this._buildReins(leatherMat);
+
+    /* ---- rider mount points ---- */
+    this.riderAnchor = new THREE.Object3D();
+    this.riderAnchor.position.set(0, 1.17, -1.15);
+    this.harness.add(this.riderAnchor);
+
+    /** Ankle rest points inside the stirrup irons; the rider IKs its feet here. */
+    this.stirrups = [];
+    /** Grip points on the handle bar; the rider IKs its hands here. */
+    this.grips = [];
+    for (const side of [1, -1]) {
+      const st = new THREE.Object3D();
+      st.position.set(side * 0.55, 0.69, -1.50);
+      this.harness.add(st);
+      this.stirrups.push(st);
+
+      const gp = new THREE.Object3D();
+      gp.position.set(side * GRIP.x, GRIP.y, GRIP.z);
+      this.harness.add(gp);
+      this.grips.push(gp);
+    }
+  }
+
+  /** Allocate the two rein strands as one dynamic tube pair. */
+  _buildReins(mat) {
+    const STRANDS = 2;
+    const SEG = 10; // samples along each rein
+    const RAD = 5; // cross-section resolution
+    const perStrand = (SEG + 1) * RAD;
+    const positions = new Float32Array(STRANDS * perStrand * 3);
+    const uvs = new Float32Array(STRANDS * perStrand * 2);
+    const index = [];
+    for (let s = 0; s < STRANDS; s++) {
+      const base = s * perStrand;
+      for (let i = 0; i <= SEG; i++) {
+        for (let r = 0; r < RAD; r++) {
+          const k = base + i * RAD + r;
+          uvs[k * 2] = r / RAD;
+          uvs[k * 2 + 1] = (i / SEG) * 5;
+        }
+      }
+      for (let i = 0; i < SEG; i++) {
+        for (let r = 0; r < RAD; r++) {
+          const r2 = (r + 1) % RAD;
+          const a = base + i * RAD + r;
+          const b = base + i * RAD + r2;
+          const c = base + (i + 1) * RAD + r;
+          const d = base + (i + 1) * RAD + r2;
+          index.push(a, c, b, b, c, d);
+        }
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(STRANDS * perStrand * 3), 3));
+    geo.setIndex(index);
+    geo.getAttribute('position').setUsage(THREE.DynamicDrawUsage);
+    this._track(geo);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    mesh.frustumCulled = false;
+    this.harness.add(mesh);
+    return { mesh, geo, strands: STRANDS, seg: SEG, radial: RAD, perStrand };
+  }
+
+  /**
+   * Re-solve the reins from the live pommel and neck-ring positions.
+   *
+   * Both endpoints are read in world space and brought back into the harness's
+   * frame, so the rein tracks the neck through its full range without the two
+   * ends ever having to know about each other's parent.
+   */
+  _updateReins() {
+    const R = this._reins;
+    if (!R) return;
+    this.harness.updateWorldMatrix(true, false);
+    _rnMat.copy(this.harness.matrixWorld).invert();
+
+    const pos = R.geo.getAttribute('position');
+    const arr = pos.array;
+    const SEG = R.seg;
+    const RAD = R.radial;
+    const tubeR = 0.014;
+
+    for (let s = 0; s < R.strands; s++) {
+      const back = this._reinBack[s];
+      const front = this._reinFront[s];
+      back.updateWorldMatrix(true, false);
+      front.updateWorldMatrix(true, false);
+      _rn1.setFromMatrixPosition(back.matrixWorld).applyMatrix4(_rnMat);
+      _rn2.setFromMatrixPosition(front.matrixWorld).applyMatrix4(_rnMat);
+      // Control point: the midpoint, dropped by a fraction of the span so the
+      // rein hangs in a believable catenary rather than a taut wire.
+      _rn3.addVectors(_rn1, _rn2).multiplyScalar(0.5);
+      _rn3.y -= _rn1.distanceTo(_rn2) * 0.075 + 0.02;
+
+      const base = s * R.perStrand;
+      for (let i = 0; i <= SEG; i++) {
+        const t = i / SEG;
+        const it = 1 - t;
+        // Quadratic Bezier through the sagged control point.
+        _rn4.set(
+          it * it * _rn1.x + 2 * it * t * _rn3.x + t * t * _rn2.x,
+          it * it * _rn1.y + 2 * it * t * _rn3.y + t * t * _rn2.y,
+          it * it * _rn1.z + 2 * it * t * _rn3.z + t * t * _rn2.z
+        );
+        // Tangent, for a stable cross-section frame.
+        _rn5.set(
+          2 * it * (_rn3.x - _rn1.x) + 2 * t * (_rn2.x - _rn3.x),
+          2 * it * (_rn3.y - _rn1.y) + 2 * t * (_rn2.y - _rn3.y),
+          2 * it * (_rn3.z - _rn1.z) + 2 * t * (_rn2.z - _rn3.z)
+        );
+        if (_rn5.lengthSq() < 1e-9) _rn5.set(0, 0, -1);
+        _rn5.normalize();
+        _hw1.set(0, 1, 0);
+        _hw2.crossVectors(_rn5, _hw1);
+        if (_hw2.lengthSq() < 1e-8) _hw2.set(1, 0, 0);
+        _hw2.normalize();
+        _hw3.crossVectors(_hw2, _rn5).normalize();
+        for (let r = 0; r < RAD; r++) {
+          const a = (r / RAD) * Math.PI * 2;
+          const ca = Math.cos(a) * tubeR;
+          const sa = Math.sin(a) * tubeR * 0.55; // straps are flat, not round
+          const k = (base + i * RAD + r) * 3;
+          arr[k] = _rn4.x + _hw2.x * ca + _hw3.x * sa;
+          arr[k + 1] = _rn4.y + _hw2.y * ca + _hw3.y * sa;
+          arr[k + 2] = _rn4.z + _hw2.z * ca + _hw3.z * sa;
+        }
+      }
+    }
+    pos.needsUpdate = true;
+    R.geo.computeVertexNormals();
   }
 
   /* ---------------------------------------------------------------- */
@@ -1397,6 +2051,9 @@ export class Dragon {
       leg.ankle.rotation.z = damp(leg.ankle.rotation.z, lerp(0.9, -0.3, tuck), 6, dt);
     }
 
+    /* ---- harness: reins track the live neck pose ---- */
+    this._updateReins();
+
     /* ---- VFX ---- */
     this._embers.update(dt, this.camera);
     this._dust.update(dt, this.camera);
@@ -1534,9 +2191,13 @@ export class Dragon {
   /* ---------------------------------------------------------------- */
 
   /**
-   * Feet position for the rider. The saddle sits at the base of the neck; the
-   * player capsule is dropped so its hips land on the saddle rather than its
-   * feet, which is what makes a standing avatar read as seated astride.
+   * Feet position for the rider.
+   *
+   * `riderAnchor` is the *seat* - where the rider's pelvis rests on the saddle -
+   * so the player capsule (which is positioned by its feet) is dropped by the
+   * rider's hip height. `MountManager` measures that off the actual character it
+   * built and hands it back through `setRiderDrop`, so a taller rider does not
+   * end up with the camera in its own chest.
    */
   getSeat(out) {
     this.root.position.copy(this.position);
@@ -1544,8 +2205,63 @@ export class Dragon {
     this.bank.rotation.set(this._pitch * 0.8, 0, this._roll);
     this.root.updateMatrixWorld(true);
     out.setFromMatrixPosition(this.riderAnchor.matrixWorld);
-    out.y -= 0.88;
+    out.y -= this._riderDrop;
     return out;
+  }
+
+  /**
+   * Hip height of the figure actually sitting in the saddle, in metres.
+   * @param {number} d
+   */
+  setRiderDrop(d) {
+    if (Number.isFinite(d) && d > 0.2 && d < 1.6) this._riderDrop = d;
+  }
+
+  /**
+   * World position of a stirrup's ankle rest.
+   * @param {number} side +1 right, -1 left
+   * @param {THREE.Vector3} out
+   */
+  getStirrupWorld(side, out) {
+    const o = this.stirrups?.[side > 0 ? 0 : 1];
+    if (!o) return null;
+    o.updateWorldMatrix(true, false);
+    return out.setFromMatrixPosition(o.matrixWorld);
+  }
+
+  /**
+   * World position of a grab-handle grip.
+   * @param {number} side +1 right, -1 left
+   * @param {THREE.Vector3} out
+   */
+  getGripWorld(side, out) {
+    const o = this.grips?.[side > 0 ? 0 : 1];
+    if (!o) return null;
+    o.updateWorldMatrix(true, false);
+    return out.setFromMatrixPosition(o.matrixWorld);
+  }
+
+  /** Signed wingbeat, -1..1. The rider absorbs this through the spine. */
+  get flap01() {
+    return Math.sin(this._flapPhase) * this._flapAmp;
+  }
+
+  /** Current bank angle in radians (positive lifts the right flank). */
+  get bankRoll() {
+    return this._roll;
+  }
+
+  /** Current pitch in radians. */
+  get bankPitch() {
+    return this._pitch;
+  }
+
+  /**
+   * Third-person framing this mount wants. A dragon is ten metres of animal;
+   * the on-foot boom puts the player inside its own shoulder blades.
+   */
+  get cameraHint() {
+    return DRAGON_CAMERA;
   }
 
   get fovKick() {

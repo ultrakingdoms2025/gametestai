@@ -130,6 +130,11 @@ export class CameraRig {
     /** Current boom length in metres; damped toward the obstruction-clamped target. */
     this._length = BOOM.distance;
     this._distanceScale = 1;
+    /** Mount framing, damped toward the target so mount/dismount is not a cut. */
+    this._mountScale = 1;
+    this._mountScaleTarget = 1;
+    this._mountLift = 0;
+    this._mountLiftTarget = 0;
 
     /** Live world point the crosshair is over. Read by PlayerAvatar and by shots. */
     this.aimPoint = new THREE.Vector3(0, 1.6, -AIM_RANGE);
@@ -190,7 +195,26 @@ export class CameraRig {
    * in frame; 1 is the on-foot default.
    */
   setDistanceScale(k) {
-    this._distanceScale = clamp(k ?? 1, 0.4, 4);
+    this._distanceScale = clamp(k ?? 1, 0.4, 6);
+  }
+
+  /**
+   * Framing for a large mount.
+   *
+   * Two knobs, because pulling back alone is not enough: a boom that only grows
+   * longer stays level with the animal's spine and the ground disappears behind
+   * it. Raising the pivot as well is what puts the world back under the mount
+   * and lets the silhouette read against it.
+   *
+   * Both are damped rather than applied as a cut, and the collision sweep is
+   * untouched - a longer boom is simply a longer boom to clamp.
+   *
+   * @param {number} scale multiplier on the boom length; 1 is on foot
+   * @param {number} lift  metres to raise the boom pivot by
+   */
+  setMountFraming(scale, lift = 0) {
+    this._mountScaleTarget = clamp(scale ?? 1, 0.4, 6);
+    this._mountLiftTarget = clamp(lift ?? 0, 0, 6);
   }
 
   /** Collapse the spring instantly - used after a teleport so the boom does not lerp across the world. */
@@ -219,6 +243,13 @@ export class CameraRig {
 
     this._installTail();
     this._pollToggle();
+
+    // Damped here rather than in `_composeThird`, which only runs in third
+    // person: dismounting in first person would otherwise leave a ten-metre
+    // boom stored, and the next `V` press would swing the camera out to a
+    // dragon's framing with no dragon under it.
+    this._mountScale = damp(this._mountScale, this._mountScaleTarget, 3.2, dt);
+    this._mountLift = damp(this._mountLift, this._mountLiftTarget, 3.2, dt);
 
     // The corpse keeps the boom: a death cam that snaps back to the eye is
     // worse than one that watches the body fall.
@@ -264,7 +295,7 @@ export class CameraRig {
   /** Boom length the geometry asks for before any obstruction is considered. */
   _targetLength() {
     const aim = clamp(this.player?.aimProgress ?? 0, 0, 1);
-    return lerp(BOOM.distance, BOOM.aimDistance, aim) * this._distanceScale;
+    return lerp(BOOM.distance, BOOM.aimDistance, aim) * this._distanceScale * this._mountScale;
   }
 
   /* ---------------------------------------------------------------- */
@@ -293,7 +324,7 @@ export class CameraRig {
     // starts inside geometry reports no hit and lets the camera through.
     _cpPivot.set(
       p.position.x,
-      p.position.y + p.eyeHeight - p.stepSmoothing - BOOM.pivotDrop + p.viewDip * 0.4,
+      p.position.y + p.eyeHeight - p.stepSmoothing - BOOM.pivotDrop + p.viewDip * 0.4 + this._mountLift,
       p.position.z
     );
 

@@ -1,0 +1,914 @@
+/* ============================================================================
+   AETHER NEXUS — inventory + marketplace
+   Owned by agent INVENTORY. Imported from InventoryUI.js / MarketplaceUI.js.
+   Deliberately additive to hud.css: it reuses that file's :root tokens (with
+   literal fallbacks so a token rename degrades instead of breaking) and never
+   edits it. Same language: dark glass, clipped corners, cyan/amber rules,
+   Chakra Petch display + Rajdhani UI, motion only on state change.
+   ========================================================================== */
+
+.inv-root {
+  --iv-cy: var(--cy, #52e9ff);
+  --iv-amber: var(--amber, #ffb44a);
+  --iv-red: var(--red, #ff3d55);
+  --iv-lime: var(--lime, #b6ff5a);
+  --iv-mag: var(--mag, #d46bff);
+  --iv-txt: var(--txt, #cfe6f2);
+  --iv-dim: var(--txt-dim, #7f9db0);
+  --iv-rule: var(--rule, rgba(82, 233, 255, 0.28));
+  --iv-soft: var(--rule-soft, rgba(120, 180, 210, 0.16));
+  --iv-glass: var(--glass, rgba(9, 15, 25, 0.52));
+  --iv-glass-hi: var(--glass-hi, rgba(22, 38, 58, 0.42));
+  --iv-disp: var(--f-disp, 'Chakra Petch', 'Rajdhani', sans-serif);
+  --iv-ui: var(--f-ui, 'Rajdhani', 'Chakra Petch', sans-serif);
+
+  position: absolute;
+  inset: 0;
+  z-index: 80; /* above the pause overlay (60) and the wipe */
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.22s ease, visibility 0.22s;
+  font-family: var(--iv-ui);
+  color: var(--iv-txt);
+  font-variant-numeric: tabular-nums;
+}
+
+.inv-root.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* The scrim keeps the world readable but out of the way. */
+.inv-root::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 50% 45%, rgba(6, 14, 24, 0.5), rgba(2, 4, 9, 0.88));
+  backdrop-filter: blur(6px) saturate(0.8);
+  -webkit-backdrop-filter: blur(6px) saturate(0.8);
+}
+
+/* The HUD's pause overlay would otherwise sit on top of a menu we deliberately
+   released the pointer for. hud.css is owned by another agent, so this hides it
+   from the outside rather than editing that file. */
+body.inv-menu-open .pause {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* ------------------------------------------------------------- shell ----- */
+.inv-panel {
+  position: relative;
+  width: min(1180px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(155deg, var(--iv-glass-hi), var(--iv-glass)),
+    linear-gradient(180deg, rgba(4, 8, 14, 0.9), rgba(4, 8, 14, 0.94));
+  border: 1px solid var(--iv-soft);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.5),
+    0 30px 90px rgba(0, 0, 0, 0.66),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 26px 100%, 0 calc(100% - 26px));
+  transform: translateY(14px) scale(0.985);
+  opacity: 0;
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease;
+}
+
+.inv-root.open .inv-panel {
+  transform: none;
+  opacity: 1;
+}
+
+/* Scanlines, felt not seen — same treatment as .hud-veil. */
+.inv-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0,
+    rgba(0, 0, 0, 0) 2px,
+    rgba(0, 0, 0, 0.14) 3px,
+    rgba(0, 0, 0, 0) 4px
+  );
+  opacity: 0.5;
+  mix-blend-mode: overlay;
+}
+
+/* ------------------------------------------------------------- header ---- */
+.inv-head {
+  display: flex;
+  align-items: stretch;
+  gap: 22px;
+  padding: 16px 20px 14px 22px;
+  border-bottom: 1px solid var(--iv-soft);
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.07), transparent);
+}
+
+.inv-head::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 74px;
+  background: linear-gradient(180deg, var(--iv-cy), transparent);
+  box-shadow: 0 0 12px var(--cy-glow, rgba(82, 233, 255, 0.55));
+}
+
+.inv-title {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 210px;
+}
+
+.inv-title b {
+  font-family: var(--iv-disp);
+  font-weight: 700;
+  font-size: 24px;
+  letter-spacing: 0.16em;
+  color: #eaf9ff;
+  text-shadow: 0 0 18px rgba(82, 233, 255, 0.35), 0 2px 5px rgba(0, 0, 0, 0.8);
+}
+
+.inv-title span {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--iv-dim);
+  margin-top: 3px;
+}
+
+/* Capacity readout — the single most important thing on this panel. */
+.inv-cap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding-left: 22px;
+  border-left: 1px solid var(--iv-soft);
+}
+
+.inv-cap-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.inv-cap-val {
+  font-family: var(--iv-disp);
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.05em;
+  color: var(--iv-cy);
+  text-shadow: 0 0 14px rgba(82, 233, 255, 0.4);
+  transition: color 0.25s;
+}
+
+.inv-cap.near .inv-cap-val {
+  color: var(--iv-amber);
+  text-shadow: 0 0 14px rgba(255, 180, 74, 0.45);
+}
+
+.inv-cap.full .inv-cap-val {
+  color: var(--iv-red);
+  text-shadow: 0 0 16px rgba(255, 61, 85, 0.5);
+}
+
+.inv-cap-unit {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--iv-dim);
+}
+
+.inv-cap-note {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--iv-dim);
+}
+
+.inv-cap-note b {
+  color: #cfe6f2;
+  font-weight: 600;
+}
+
+/* 30 ticks, one per slot. Nothing states "30 slots, not 30 items" better. */
+.inv-cap-bar {
+  display: grid;
+  grid-template-columns: repeat(30, 1fr);
+  gap: 2px;
+  height: 9px;
+  width: min(420px, 100%);
+}
+
+.inv-cap-bar i {
+  background: rgba(120, 180, 210, 0.13);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.inv-cap-bar i.on {
+  background: var(--iv-cy);
+  box-shadow: 0 0 7px rgba(82, 233, 255, 0.55);
+}
+
+.inv-cap.near .inv-cap-bar i.on {
+  background: var(--iv-amber);
+  box-shadow: 0 0 7px rgba(255, 180, 74, 0.55);
+}
+
+.inv-cap.full .inv-cap-bar i.on {
+  background: var(--iv-red);
+  box-shadow: 0 0 7px rgba(255, 61, 85, 0.5);
+}
+
+.inv-credits {
+  flex: 0 0 auto;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 14px;
+  border: 1px solid rgba(255, 180, 74, 0.3);
+  background: linear-gradient(150deg, rgba(255, 180, 74, 0.13), rgba(9, 15, 25, 0.5));
+  clip-path: var(--clip-br, polygon(0 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%));
+}
+
+.inv-credits .inv-ico {
+  width: 22px;
+  height: 22px;
+}
+
+.inv-credits b {
+  font-family: var(--iv-disp);
+  font-size: 20px;
+  font-weight: 700;
+  color: #ffedcf;
+  text-shadow: 0 0 12px rgba(255, 180, 74, 0.4);
+}
+
+.inv-credits.bump {
+  animation: inv-bump 0.42s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes inv-bump {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+
+.inv-x {
+  align-self: flex-start;
+  font-family: var(--iv-disp);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--iv-dim);
+  background: rgba(9, 15, 25, 0.6);
+  border: 1px solid var(--iv-soft);
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.inv-x:hover {
+  color: #eaf9ff;
+  border-color: var(--iv-rule);
+  background: rgba(82, 233, 255, 0.12);
+}
+
+/* --------------------------------------------------------------- body ---- */
+.inv-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 54px 1fr;
+  gap: 0;
+}
+
+.inv-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 14px 18px 16px;
+}
+
+.inv-col.bag {
+  border-left: 1px solid var(--iv-soft);
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.045), transparent 42%);
+}
+
+.inv-colhead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--iv-soft);
+}
+
+.inv-colhead h3 {
+  margin: 0;
+  font-family: var(--iv-disp);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: #dff4ff;
+}
+
+.inv-col.store .inv-colhead h3 {
+  color: var(--iv-amber);
+}
+
+.inv-col.bag .inv-colhead h3 {
+  color: var(--iv-cy);
+}
+
+.inv-colsub {
+  flex: 1 1 auto;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--iv-dim);
+}
+
+.inv-btn {
+  font-family: var(--iv-disp);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--iv-txt);
+  background: rgba(9, 15, 25, 0.55);
+  border: 1px solid var(--iv-soft);
+  padding: 5px 11px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s, transform 0.12s;
+}
+
+.inv-btn:hover:not(:disabled) {
+  color: #eaf9ff;
+  border-color: var(--iv-rule);
+  background: rgba(82, 233, 255, 0.14);
+}
+
+.inv-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.inv-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* --------------------------------------------------------------- grid ---- */
+.inv-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 7px;
+  overflow-y: auto;
+  align-content: start;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(82, 233, 255, 0.35) transparent;
+}
+
+.inv-grid::-webkit-scrollbar {
+  width: 8px;
+}
+
+.inv-grid::-webkit-scrollbar-thumb {
+  background: rgba(82, 233, 255, 0.3);
+}
+
+.inv-grid.drop-target {
+  outline: 1px dashed var(--iv-rule);
+  outline-offset: 4px;
+}
+
+.inv-slot {
+  position: relative;
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 4px 5px;
+  background: linear-gradient(160deg, rgba(28, 46, 68, 0.4), rgba(6, 11, 18, 0.62));
+  border: 1px solid rgba(120, 180, 210, 0.14);
+  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 9px 100%, 0 calc(100% - 9px));
+  cursor: default;
+  transition: border-color 0.15s, background 0.15s, transform 0.12s;
+}
+
+.inv-slot.empty {
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(120, 180, 210, 0.035) 0 6px,
+    rgba(120, 180, 210, 0) 6px 12px
+  );
+  border-style: dashed;
+  border-color: rgba(120, 180, 210, 0.1);
+}
+
+.inv-slot.filled {
+  cursor: grab;
+}
+
+.inv-slot.filled:hover {
+  border-color: var(--iv-rule);
+  background: linear-gradient(160deg, rgba(46, 84, 116, 0.55), rgba(8, 16, 26, 0.7));
+  transform: translateY(-1px);
+}
+
+.inv-slot.dragging {
+  opacity: 0.35;
+}
+
+.inv-slot .inv-ico {
+  width: 40%;
+  height: auto;
+  max-width: 46px;
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.7));
+  pointer-events: none;
+}
+
+.inv-name {
+  font-size: 10px;
+  line-height: 1.1;
+  text-align: center;
+  letter-spacing: 0.03em;
+  color: var(--iv-dim);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.inv-slot.filled:hover .inv-name {
+  color: #dff4ff;
+}
+
+/* Stack count. Amber when the stack is full — a full stack is a full slot. */
+.inv-qty {
+  position: absolute;
+  right: 4px;
+  bottom: 3px;
+  font-family: var(--iv-disp);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #eaf9ff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
+}
+
+.inv-qty.max {
+  color: var(--iv-amber);
+}
+
+.inv-slots {
+  position: absolute;
+  left: 4px;
+  top: 3px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--iv-dim);
+  pointer-events: none;
+}
+
+.inv-slot.kind-ammo { box-shadow: inset 0 -2px 0 rgba(82, 233, 255, 0.45); }
+.inv-slot.kind-consumable { box-shadow: inset 0 -2px 0 rgba(182, 255, 90, 0.45); }
+.inv-slot.kind-trinket { box-shadow: inset 0 -2px 0 rgba(212, 107, 255, 0.45); }
+.inv-slot.kind-currency { box-shadow: inset 0 -2px 0 rgba(255, 180, 74, 0.45); }
+
+/* Landed-in-this-container flash, so a move is felt. */
+.inv-slot.flash {
+  animation: inv-flash 0.5s ease-out;
+}
+
+@keyframes inv-flash {
+  0% {
+    border-color: #eaf9ff;
+    background: rgba(82, 233, 255, 0.4);
+  }
+  100% {
+    border-color: rgba(120, 180, 210, 0.14);
+  }
+}
+
+/* --------------------------------------------------------- middle rail --- */
+.inv-mid {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 20px 0;
+  color: var(--iv-dim);
+}
+
+.inv-mid i {
+  font-style: normal;
+  font-size: 19px;
+  line-height: 1;
+  opacity: 0.6;
+  animation: inv-rail 3.2s ease-in-out infinite;
+}
+
+.inv-mid i:nth-child(2) {
+  animation-delay: 1.6s;
+}
+
+@keyframes inv-rail {
+  0%, 100% { opacity: 0.25; transform: translateX(0); }
+  50% { opacity: 0.8; transform: translateX(3px); }
+}
+
+.inv-mid .rule {
+  flex: 1 1 auto;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, var(--iv-soft), transparent);
+}
+
+/* ---------------------------------------------------------- inspector ---- */
+.inv-foot {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 11px 22px 12px;
+  border-top: 1px solid var(--iv-soft);
+  background: linear-gradient(0deg, rgba(82, 233, 255, 0.05), transparent);
+  min-height: 60px;
+}
+
+.inv-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.inv-detail .inv-ico {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+}
+
+.inv-detail-body {
+  min-width: 0;
+}
+
+.inv-detail-name {
+  font-family: var(--iv-disp);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #eaf9ff;
+}
+
+.inv-detail-sub {
+  font-size: 12px;
+  color: var(--iv-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inv-detail-sub b {
+  color: var(--iv-cy);
+  font-weight: 600;
+}
+
+.inv-keys {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 14px;
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  color: var(--iv-dim);
+}
+
+.inv-keys b {
+  display: inline-block;
+  min-width: 16px;
+  padding: 1px 5px;
+  margin-right: 5px;
+  text-align: center;
+  font-family: var(--iv-disp);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #dff4ff;
+  border: 1px solid var(--iv-soft);
+  background: rgba(9, 15, 25, 0.7);
+}
+
+/* A rejected action (no space, no credits) says so here, in red, briefly. */
+.inv-flash-msg {
+  color: var(--iv-red);
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.inv-flash-msg.show {
+  opacity: 1;
+  animation: inv-nudge 0.32s ease-out;
+}
+
+@keyframes inv-nudge {
+  0% { transform: translateX(-4px); }
+  50% { transform: translateX(3px); }
+  100% { transform: translateX(0); }
+}
+
+/* ==========================================================================
+   MARKETPLACE
+   ========================================================================== */
+.mkt-panel {
+  width: min(1000px, 92vw);
+}
+
+.mkt-vendor {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 240px;
+}
+
+.mkt-vendor b {
+  font-family: var(--iv-disp);
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.12em;
+  color: #ffedcf;
+  text-shadow: 0 0 16px rgba(255, 180, 74, 0.3);
+}
+
+.mkt-vendor span {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--iv-dim);
+  margin-top: 3px;
+}
+
+.mkt-head::before {
+  background: linear-gradient(180deg, var(--iv-amber), transparent) !important;
+  box-shadow: 0 0 12px rgba(255, 180, 74, 0.5) !important;
+}
+
+.mkt-head {
+  background: linear-gradient(180deg, rgba(255, 180, 74, 0.07), transparent);
+}
+
+.mkt-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 12px 22px 0;
+}
+
+.mkt-tab {
+  font-family: var(--iv-disp);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--iv-dim);
+  background: rgba(9, 15, 25, 0.5);
+  border: 1px solid var(--iv-soft);
+  border-bottom: none;
+  padding: 8px 20px;
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 11px) 0, 100% 11px, 100% 100%, 0 100%);
+  transition: color 0.16s, background 0.16s;
+}
+
+.mkt-tab:hover {
+  color: #dff4ff;
+}
+
+.mkt-tab.on {
+  color: #04070d;
+  background: linear-gradient(180deg, var(--iv-amber), #c07f22);
+  border-color: var(--iv-amber);
+}
+
+.mkt-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 22px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 180, 74, 0.35) transparent;
+}
+
+.mkt-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.mkt-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 180, 74, 0.3);
+}
+
+.mkt-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 11px 16px;
+  background: linear-gradient(160deg, rgba(28, 46, 68, 0.34), rgba(6, 11, 18, 0.58));
+  border: 1px solid rgba(120, 180, 210, 0.14);
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.mkt-row:hover {
+  border-color: var(--iv-rule);
+  background: linear-gradient(160deg, rgba(46, 84, 116, 0.44), rgba(8, 16, 26, 0.64));
+}
+
+.mkt-row.blocked {
+  opacity: 0.5;
+}
+
+.mkt-row .inv-ico {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+}
+
+.mkt-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mkt-name {
+  font-family: var(--iv-disp);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  color: #eaf9ff;
+}
+
+.mkt-blurb {
+  font-size: 12px;
+  color: var(--iv-dim);
+  letter-spacing: 0.03em;
+}
+
+.mkt-blurb b {
+  color: var(--iv-cy);
+  font-weight: 600;
+}
+
+.mkt-price {
+  flex: 0 0 auto;
+  text-align: right;
+  font-family: var(--iv-disp);
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--iv-amber);
+  min-width: 92px;
+  text-shadow: 0 0 12px rgba(255, 180, 74, 0.3);
+}
+
+.mkt-price small {
+  display: block;
+  font-family: var(--iv-ui);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  color: var(--iv-dim);
+  text-shadow: none;
+}
+
+.mkt-row.blocked .mkt-price {
+  color: var(--iv-red);
+}
+
+.mkt-acts {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.mkt-buy {
+  color: #04070d;
+  background: linear-gradient(180deg, var(--iv-amber), #c07f22);
+  border-color: rgba(255, 220, 160, 0.6);
+}
+
+.mkt-buy:hover:not(:disabled) {
+  color: #04070d;
+  background: linear-gradient(180deg, #ffd08a, var(--iv-amber));
+}
+
+.mkt-sell {
+  color: #04070d;
+  background: linear-gradient(180deg, var(--iv-lime), #6f9c2a);
+  border-color: rgba(210, 255, 160, 0.5);
+}
+
+.mkt-sell:hover:not(:disabled) {
+  color: #04070d;
+  background: linear-gradient(180deg, #d6ff9c, var(--iv-lime));
+}
+
+.mkt-empty {
+  padding: 34px 10px;
+  text-align: center;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--iv-dim);
+}
+
+.mkt-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 11px 22px 12px;
+  border-top: 1px solid var(--iv-soft);
+  font-size: 12px;
+  color: var(--iv-dim);
+}
+
+.mkt-note b {
+  color: var(--iv-lime);
+  font-weight: 600;
+}
+
+/* Trade confirmation pulse on the credits chip. */
+.inv-credits.spend {
+  animation: inv-spend 0.5s ease-out;
+}
+
+@keyframes inv-spend {
+  0% { border-color: var(--iv-red); box-shadow: 0 0 18px rgba(255, 61, 85, 0.4); }
+  100% { border-color: rgba(255, 180, 74, 0.3); }
+}
+
+.inv-credits.earn {
+  animation: inv-earn 0.5s ease-out;
+}
+
+@keyframes inv-earn {
+  0% { border-color: var(--iv-lime); box-shadow: 0 0 18px rgba(182, 255, 90, 0.4); }
+  100% { border-color: rgba(255, 180, 74, 0.3); }
+}
+
+/* ------------------------------------------------------------ narrow ----- */
+@media (max-width: 1000px) {
+  .inv-body {
+    grid-template-columns: 1fr;
+  }
+  .inv-mid {
+    display: none;
+  }
+  .inv-col.bag {
+    border-left: none;
+    border-top: 1px solid var(--iv-soft);
+  }
+  .inv-grid {
+    grid-template-columns: repeat(5, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inv-root,
+  .inv-panel,
+  .inv-slot,
+  .inv-mid i {
+    transition-duration: 0.01ms !important;
+    animation: none !important;
+  }
+}

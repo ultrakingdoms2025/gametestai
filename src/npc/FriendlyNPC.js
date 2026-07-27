@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CONFIG } from '../core/Config.js';
 import { NPC } from './NPC.js';
+import { ROLE, roleDef } from './NPCRoles.js';
 
 /**
  * Civilian / ally.
@@ -10,14 +11,30 @@ import { NPC } from './NPC.js';
  * shooting starts. Friendlies are the reason a world feels inhabited rather
  * than staged, so most of the work here is about idle behaviour reading as
  * intent rather than as a random walk.
+ *
+ * The stationary half of the population - the vendors, guards, spectators and
+ * loiterers that hold a post - used to be genuinely motionless: they picked a
+ * held pose at spawn and never did anything else, which is why a plaza full of
+ * them photographed as a rank of shop dummies. They now run an *idle life*
+ * loop instead (`_postIdle`): short strolls off the post and back, turns to
+ * look at whatever is nearby, conversation turns with a neighbour, and a
+ * re-pick of the held pose in between. Seated characters run the same loop with
+ * the walking taken out and the upper body left in.
+ *
+ * Every friendly - post-holder, sitter and wanderer alike - is a chat target.
+ * That is deliberate and is the whole point of the role system: there is no
+ * such thing here as a person-shaped prop.
  */
 
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
-const _v3 = new THREE.Vector3();
+/** `_pickStrollTarget` owns this exclusively. */
+const _p2 = new THREE.Vector3();
 
 /** Held poses a civilian can fall into while standing around. */
 const POSTURE_POOL = ['none', 'crossed', 'hips', 'pocket', 'none', 'lean', 'crossed', 'pocket'];
+/** Held poses for a seated character. Both keep the head and hands live. */
+const SEATED_POSTURES = ['sit', 'sitLean', 'sit'];
 
 export class FriendlyNPC extends NPC {
   constructor(ctx) {
@@ -48,8 +65,62 @@ export class FriendlyNPC extends NPC {
     this.gestureTimer = this.rnd() * 6;
     this.gesturing = false;
 
+    /* --- role and idle life ------------------------------------------ */
+    this.role = ctx.role ?? (this.anchored ? ROLE.LOITERER : ROLE.WANDERER);
+    this.roleDef = roleDef(this.role);
+    this.isVendor = this.role === ROLE.VENDOR;
+    this.roleLabel = this.roleDef.label;
+    /** Post-holders keep station; wanderers roam their waypoints. */
+    this.stationary = this.roleDef.stationary || this.anchored;
+    /** The bearing they face when nothing more interesting is happening. */
+    this.postYaw = this.yaw;
+    this.seated = false;
+
+    /*
+     * Per-instance look and aim points.
+     *
+     * These used to be module scratch, which meant every civilian's
+     * `_lookTarget` pointed at the same vector: the last one to run `_think`
+     * decided what all twenty-four of them were looking at when the animator
+     * read it a phase later. It was invisible while everyone happened to be
+     * looking at the player, and would have been very visible now that they
+     * look at each other.
+     */
+    this._lookPos = new THREE.Vector3();
+    this._aimPos = new THREE.Vector3();
+
+    // Staggered so twenty civilians in one square never act on the same frame.
+    this.lifeTimer = 1.5 + this.rnd() * 5;
+    this.lifeAction = 'hold';
+    this.strollHome = false;
+    this.talkPartner = null;
+    this.talkTimer = 0;
+
     this.setState('IDLE');
-    if (this.patrol.length > 1 && !this.anchored) this.nav.setPath(this.patrol);
+    if (this.patrol.length > 1 && !this.stationary) this.nav.setPath(this.patrol);
+  }
+
+  /** Human-readable role, used by the interaction prompt. */
+  get roleName() {
+    return this.roleLabel;
+  }
+
+  /** Sit down / stand up, keeping the idle loop consistent with the pose. */
+  setSeated(on, seatHeight) {
+    super.setSeated(on, seatHeight);
+    if (on) {
+      this.nav.clear();
+      this.stationary = true;
+      this.posture = SEATED_POSTURES[(this.rnd() * SEATED_POSTURES.length) | 0];
+      this.postureTimer = 5 + this.rnd() * 8;
+    } else if (this.posture === 'sit' || this.posture === 'sitLean') {
+      this.posture = POSTURE_POOL[(this.rnd() * POSTURE_POOL.length) | 0];
+    }
+  }
+
+  /** A character who is running for their life does not stay sat down. */
+  onStateEnter(next) {
+    if (next === 'FLEE' && this.seated) this.setSeated(false);
   }
 
   get player() {
@@ -99,6 +170,9 @@ export class FriendlyNPC extends NPC {
       case 'WANDER':
         this._wander(dt, dist);
         return;
+      case 'STROLL':
+        this._stroll(dt, dist);
+        return;
       default:
         this._idle(dt, dist);
     }
@@ -113,6 +187,19 @@ export class FriendlyNPC extends NPC {
    * assignment, and the animator blends the rest.
    */
   _updatePosture(dt) {
+    // A seated character never loses its pose: the legs are solved by the seat
+    // solver and the held pose is the only thing keeping the arms on the knees.
+    if (this.seated) {
+      this.postureTimer -= dt;
+      if (this.postureTimer <= 0) {
+        this.postureTimer = 8 + this.rnd() * 12;
+        this.posture = SEATED_POSTURES[(this.rnd() * SEATED_POSTURES.length) | 0];
+      }
+      this.animator.setPosture(this.posture);
+      this._updateGesture(dt, this.talkTimer > 0 || this.state === 'GREET');
+      return;
+    }
+
     const standing = this.state === 'IDLE' || this.state === 'SOCIAL' || this.state === 'GREET';
     if (!standing || this.moveSpeed > 0.35) {
       this.animator.setPosture('none');
@@ -123,19 +210,25 @@ export class FriendlyNPC extends NPC {
     this.postureTimer -= dt;
     if (this.postureTimer <= 0) {
       this.postureTimer = 7 + this.rnd() * 12;
-      // Keep an authored posture (a lounging skater stays lounging); otherwise
-      // drift between poses so a long look at a crowd never freezes.
-      if (!this.fixedPosture) {
-        this.posture = POSTURE_POOL[(this.rnd() * POSTURE_POOL.length) | 0];
-      }
+      // Re-pick from the poses that suit the role. A vendor plants their hands
+      // and a loiterer slouches; both change often enough that a long look at a
+      // crowd never freezes, which is what made them read as props before.
+      const pool = this.roleDef?.postures ?? POSTURE_POOL;
+      this.posture = pool[(this.rnd() * pool.length) | 0];
     }
     this.animator.setPosture(this.state === 'GREET' ? 'none' : this.posture);
 
     // Talking hands, but only when there is somebody to talk to.
-    const talking = this.state === 'SOCIAL' && this.nav.arrived !== false;
+    const talking =
+      (this.state === 'SOCIAL' && this.nav.arrived !== false) || this.talkTimer > 0;
+    this._updateGesture(dt, talking);
+  }
+
+  /** Conversational hand movement, gated on actually having an audience. */
+  _updateGesture(dt, talking) {
     this.gestureTimer -= dt;
     if (this.gestureTimer <= 0) {
-      this.gesturing = talking && this.rnd() < 0.55;
+      this.gesturing = talking && this.rnd() < 0.6;
       this.gestureTimer = this.gesturing ? 1.5 + this.rnd() * 2.5 : 2 + this.rnd() * 4;
     }
     this.animator.setGesturing(this.gesturing && talking);
@@ -146,7 +239,9 @@ export class FriendlyNPC extends NPC {
     if (!player || player.isDead) return false;
     // Turn toward the player well before chat range, greet inside it.
     if (dist < CONFIG.npc.chatRange * 2.4) {
-      this._lookTarget = _v3.copy(player.position).setY(player.position.y + CONFIG.player.eyeHeight);
+      this._lookTarget = this._lookPos
+        .copy(player.position)
+        .setY(player.position.y + CONFIG.player.eyeHeight);
       if (dist < CONFIG.npc.chatRange * 1.25 && this.greetCooldown <= 0) {
         this.setState('GREET');
         return true;
@@ -164,12 +259,8 @@ export class FriendlyNPC extends NPC {
     this.animator.setAimTarget(null);
     if (this._noticePlayer(dist)) return;
 
-    if (this.anchored) {
-      // Anchored civilians never wander, but they do drift back into position
-      // if something (the player, a stampede) shoved them out of it.
-      const off = this.position.distanceToSquared(this.spawnPoint);
-      if (off > 1.6 * 1.6) this.nav.setTarget(this.spawnPoint);
-      else this.nav.clear();
+    if (this.stationary) {
+      this._postIdle(dt);
       return;
     }
 
@@ -191,6 +282,180 @@ export class FriendlyNPC extends NPC {
       this.setState('WANDER');
       this._pickWanderTarget();
     }
+  }
+
+  /**
+   * Idle life for a character who holds a post.
+   *
+   * Runs a short cycle of small, cheap actions: shift the held pose, turn to
+   * look at something, take a few steps off the post and come back, or trade a
+   * conversation turn with whoever is standing next to them. None of it costs
+   * more than one navigation target and a timer, and between them they are the
+   * difference between "twelve people in a square" and "twelve statues".
+   *
+   * Seated characters run the same cycle with the stroll removed - they still
+   * look around, still gesture, still take conversation turns.
+   */
+  _postIdle(dt) {
+    // Shoved out of position (by the player, by a stampede): walk back first.
+    if (!this.seated) {
+      const off = this.position.distanceToSquared(this.spawnPoint);
+      if (off > 1.7 * 1.7) {
+        this.nav.setTarget(this.spawnPoint);
+        return;
+      }
+    }
+
+    if (this.talkTimer > 0) {
+      this.talkTimer -= dt;
+      const partner = this.talkPartner;
+      if (partner && !partner.isDead) {
+        this.faceOverride = this.seated ? null : partner.position;
+        this._lookTarget = this._lookPos
+          .copy(partner.position)
+          .setY(partner.position.y + partner.height * 0.88);
+      } else {
+        this.talkTimer = 0;
+      }
+      if (this.talkTimer <= 0) this.talkPartner = null;
+      return;
+    }
+
+    // Between actions the character holds their bearing and their pose, which
+    // is what the weight shift and breathing in the animator play against.
+    this.lifeTimer -= dt;
+    if (this.lifeTimer > 0) {
+      if (this.lifeAction === 'look' && this._lookPoint) {
+        this._lookTarget = this._lookPos.copy(this._lookPoint);
+      }
+      return;
+    }
+
+    this.nav.clear();
+    this.lifeTimer = 3.5 + this.rnd() * 6;
+    const roll = this.rnd();
+    const def = this.roleDef;
+
+    // 1. Trade a word with a neighbour.
+    const neighbour = this._nearestNeighbour(3.6);
+    if (neighbour && roll < 0.3) {
+      this.lifeAction = 'talk';
+      this.talkPartner = neighbour;
+      this.talkTimer = 3 + this.rnd() * 5;
+      neighbour.receiveConversation?.(this, this.talkTimer * 0.85);
+      return;
+    }
+
+    // 2. Take a few steps and come back. Seated characters obviously skip this.
+    if (!this.seated && roll < 0.3 + def.strollChance * 0.45) {
+      if (this._pickStrollTarget(def.strollRadius)) {
+        this.lifeAction = 'stroll';
+        this.strollHome = true;
+        this.setState('STROLL');
+        return;
+      }
+    }
+
+    // 3. Turn and look at something: a neighbour, or a bearing off the post.
+    if (roll < 0.72 || this.rnd() < def.lookAround) {
+      this.lifeAction = 'look';
+      const a = this.postYaw + (this.rnd() - 0.5) * 2.4;
+      const r = 6 + this.rnd() * 10;
+      this._lookPoint = (this._lookPoint ?? new THREE.Vector3()).set(
+        (neighbour ? neighbour.position.x : this.position.x - Math.sin(a) * r),
+        (neighbour ? neighbour.position.y + neighbour.height * 0.88 : this.position.y + 1.55),
+        (neighbour ? neighbour.position.z : this.position.z - Math.cos(a) * r)
+      );
+      this.lifeTimer = 2 + this.rnd() * 3.5;
+      return;
+    }
+
+    // 4. Otherwise just shift weight and re-pick the held pose.
+    this.lifeAction = 'hold';
+    this._lookPoint = null;
+    this.postureTimer = 0;
+  }
+
+  /**
+   * A neighbour started talking to us: face them back for a while, so a
+   * conversation reads as two people rather than one person lecturing a statue.
+   *
+   * @param {FriendlyNPC} from
+   * @param {number} seconds
+   */
+  receiveConversation(from, seconds) {
+    if (this.isDead || this.state === 'FLEE' || this.state === 'GREET') return;
+    this.talkPartner = from;
+    this.talkTimer = Math.max(this.talkTimer, seconds);
+    this.lifeTimer = Math.max(this.lifeTimer, seconds);
+  }
+
+  /** Nearest other friendly within `radius`, for looks and conversation turns. */
+  _nearestNeighbour(radius) {
+    const list = this.manager?.friendlies;
+    if (!list) return null;
+    let best = null;
+    let bestSq = radius * radius;
+    for (const other of list) {
+      if (other === this || other.isDead) continue;
+      const d = other.position.distanceToSquared(this.position);
+      if (d < bestSq && d > 0.4) {
+        bestSq = d;
+        best = other;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * A destination a few steps off the post, on ground we can actually reach.
+   * @param {number} radius
+   */
+  _pickStrollTarget(radius) {
+    for (let i = 0; i < 5; i++) {
+      const a = this.rnd() * Math.PI * 2;
+      const r = radius * (0.45 + this.rnd() * 0.55);
+      const x = this.spawnPoint.x + Math.cos(a) * r;
+      const z = this.spawnPoint.z + Math.sin(a) * r;
+      const g = this.physics.groundHeight(x, z, this.spawnPoint.y + 2.2, 5);
+      if (g === null || Math.abs(g - this.spawnPoint.y) > 1.0) continue;
+      _p2.set(x, g, z);
+      if (!this.nav._clearLine(this.position, _p2)) continue;
+      this.nav.setTarget(_p2);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Walk the short stroll out and back. Deliberately slower than a wander: a
+   * vendor stepping round their stall does not march.
+   */
+  _stroll(dt, dist) {
+    this.desiredSpeed = CONFIG.npc.walkSpeed * 0.68;
+    this.faceOverride = null;
+    this._lookTarget = null;
+    if (this._noticePlayer(dist)) return;
+
+    if (this.nav.isStuck) {
+      this.nav.acknowledgeStuck();
+      this.strollHome = false;
+      this.nav.setTarget(this.spawnPoint);
+    }
+    if (!this.nav.active) {
+      if (this.strollHome) {
+        this.strollHome = false;
+        this.nav.setTarget(this.spawnPoint);
+        return;
+      }
+      // Home again: settle facing roughly the way the post faces.
+      this.targetYaw = this.postYaw + (this.rnd() - 0.5) * 0.7;
+      this.lifeTimer = 4 + this.rnd() * 7;
+      this.lifeAction = 'hold';
+      this.postureTimer = 0;
+      this.setState('IDLE');
+    }
+    void dt;
   }
 
   _wander(dt, dist) {
@@ -233,7 +498,9 @@ export class FriendlyNPC extends NPC {
       this.nav.clear();
       this.faceOverride = partner.position;
     }
-    this._lookTarget = _v3.copy(partner.position).setY(partner.position.y + partner.height * 0.9);
+    this._lookTarget = this._lookPos
+      .copy(partner.position)
+      .setY(partner.position.y + partner.height * 0.9);
 
     this.socialTimer -= dt;
     if (this.socialTimer <= 0) {
@@ -254,16 +521,18 @@ export class FriendlyNPC extends NPC {
       return;
     }
     this.faceOverride = player.position;
-    this._lookTarget = _v3.copy(player.position).setY(player.position.y + CONFIG.player.eyeHeight);
+    this._lookTarget = this._lookPos
+      .copy(player.position)
+      .setY(player.position.y + CONFIG.player.eyeHeight);
     if (!this.hasGreeted && this.stateTime > 0.35) {
       this.hasGreeted = true;
       this.waveTimer = 1.35;
     }
     // A wave is an aim-layer pose: the arm reaches up toward the player's head.
     if (this.waveTimer > 0) {
-      _v1.copy(player.position);
-      _v1.y += CONFIG.player.eyeHeight + 0.35;
-      this.animator.setAimTarget(_v1);
+      this._aimPos.copy(player.position);
+      this._aimPos.y += CONFIG.player.eyeHeight + 0.35;
+      this.animator.setAimTarget(this._aimPos);
       this.animator.setAiming(true);
     } else {
       this.animator.setAimTarget(null);

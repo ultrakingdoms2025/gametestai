@@ -3,9 +3,19 @@ import { CONFIG } from '../core/Config.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { VFX } from './VFX.js';
 import { DecalPool, DECAL } from './DecalPool.js';
+import { WEAPON_STATS, statsFor, falloffFor, normaliseDamage } from './WeaponStats.js';
 
 /**
  * Hitscan combat resolution and every visual that hangs off it.
+ *
+ * ── Where damage numbers come from ─────────────────────────────────────────
+ * `src/systems/WeaponStats.js` is now the single source of truth for every
+ * player weapon. This file reads it directly for hitscan, and rescales the
+ * figures projectile weapons hand to `applyNPCDamage` onto the same table (see
+ * `normaliseDamage`), so *every* point of damage the player deals is traceable
+ * to one line in one file. `CONFIG.weapon.machinegun` still supplies the purely
+ * cosmetic values - spread cone, muzzle velocity for tracer pacing - which are
+ * feel, not balance.
  *
  * Responsibilities:
  *  - Resolve the player's machine gun against NPCs *and* world geometry, with
@@ -51,11 +61,6 @@ const TAU = Math.PI * 2;
  * first, `player:respawned` cancels the other.
  */
 const RESPAWN_DELAY = 3.4;
-
-/** Beyond this the round has lost enough energy for falloff to start. */
-const FALLOFF_START = 40;
-/** Damage retained at maximum range. */
-const FALLOFF_FLOOR = 0.55;
 
 const FLASH_TIME = 0.14;
 
@@ -227,14 +232,19 @@ export class CombatSystem {
     // means a future one cannot be silently resolved as a hitscan round too.
     if (evt.hitscan === false) return;
 
+    // Cosmetic tuning still lives in CONFIG; every damage figure comes from
+    // WEAPON_STATS via `stats`.
     const gun = CONFIG.weapon.machinegun;
+    const weaponId = typeof evt.weaponId === 'string' ? evt.weaponId : 'machinegun';
+    const stats = statsFor(weaponId) ?? WEAPON_STATS.machinegun;
+
     _origin.copy(evt.origin);
     _dir.copy(evt.direction).normalize();
 
     const spread = Number.isFinite(evt.spread) ? evt.spread : gun.spreadBase;
     this._coneSpread(_dir, spread, _shotDir);
 
-    const range = gun.range;
+    const range = stats.range;
     const shot = ++this._shotIndex;
 
     // NPCs first: their hit distance caps the (much more expensive) world cast,
@@ -286,7 +296,7 @@ export class CombatSystem {
       return;
     }
     if (npcHit) {
-      this._resolveNPCHit(npcHit, npcDist, _shotDir, gun);
+      this._resolveNPCHit(npcHit, npcDist, _shotDir, stats);
       return;
     }
     // Clean miss into open space - nothing further to do.
@@ -312,13 +322,19 @@ export class CombatSystem {
     });
   }
 
-  _resolveNPCHit(npcHit, distance, dir, gun) {
+  /**
+   * @param {any} npcHit result from `npcManager.raycastNPCs`
+   * @param {number} distance metres from the muzzle
+   * @param {THREE.Vector3} dir normalised shot direction
+   * @param {any} stats the firing weapon's `WEAPON_STATS` block
+   */
+  _resolveNPCHit(npcHit, distance, dir, stats) {
     const npc = npcHit.npc;
     if (!npc || npc.isDead) return;
 
     const isHeadshot = npcHit.isHeadshot === true;
-    const falloff = this._falloff(distance);
-    const damage = gun.damage * falloff * (isHeadshot ? gun.headshotMultiplier : 1);
+    const falloff = falloffFor(stats.id, distance);
+    const damage = stats.damage * falloff * (isHeadshot ? stats.headshotMul : 1);
 
     _hitPoint.copy(npcHit.point ?? npc.position);
     // NPC raycasts do not report a surface normal, so face the spray back along
@@ -340,8 +356,10 @@ export class CombatSystem {
     const res = this.applyNPCDamage(npc, damage, {
       isHeadshot,
       sourcePosition: _hitPoint,
-      weaponId: 'machinegun',
+      weaponId: stats.id,
       byPlayer: true,
+      // Already expressed in WEAPON_STATS units - do not rescale it again.
+      statsApplied: true,
     });
     this.bus.emit('combat:hitmarker', {
       isHeadshot,
@@ -369,11 +387,17 @@ export class CombatSystem {
    * missing `byPlayer` - would corrupt the player's balance rather than merely
    * duplicating a HUD line.
    *
+   * Damage is republished onto `WEAPON_STATS` on the way through unless the
+   * caller sets `statsApplied`. Projectile weapons are owned by other modules
+   * and still compute their own figures from their own charge curves, so this
+   * is the choke point that makes the table authoritative for them too - the
+   * curve is preserved, the headline number is not. See `normaliseDamage`.
+   *
    * @param {any} npc target
-   * @param {number} amount final damage; falloff and multipliers are the
-   *   caller's business, exactly as `NPC.applyDamage` expects
+   * @param {number} amount damage with the caller's own multipliers applied
    * @param {{isHeadshot?:boolean, sourcePosition?:THREE.Vector3,
-   *          weaponId?:string, byPlayer?:boolean, flash?:boolean}} [opts]
+   *          weaponId?:string, byPlayer?:boolean, flash?:boolean,
+   *          statsApplied?:boolean, source?:any}} [opts]
    * @returns {{applied:number, health:number, killed:boolean}}
    */
   applyNPCDamage(npc, amount, opts = {}) {
@@ -384,6 +408,13 @@ export class CombatSystem {
     const isHeadshot = opts.isHeadshot === true;
     const weaponId = opts.weaponId ?? 'unknown';
     const byPlayer = opts.byPlayer !== false;
+
+    if (opts.statsApplied !== true) {
+      amount = normaliseDamage(weaponId, amount, { isHeadshot });
+      if (!(amount > 0)) {
+        return { applied: 0, health: npc.health ?? 0, killed: false };
+      }
+    }
 
     const wasDead = npc.isDead === true;
     const before = Number.isFinite(npc.health) ? npc.health : 0;
@@ -435,6 +466,27 @@ export class CombatSystem {
    * @param {number} [intensity] 0..1 scale on particle counts
    * @param {boolean} [decal] stamp a bullet hole as well
    */
+  /**
+   * Blood spray for a non-bullet hit on a body (melee, thrown weapons).
+   *
+   * Exposed because the surface response for flesh is deliberately different
+   * from `impactFX` - no decal on the target, no dust tint - and every weapon
+   * that draws blood should draw the same blood.
+   *
+   * @param {THREE.Vector3} point world-space contact point
+   * @param {THREE.Vector3} normal direction the spray faces (toward the camera)
+   * @param {THREE.Vector3} [travelDir] direction the blow was travelling
+   */
+  bloodFX(point, normal, travelDir = null) {
+    try {
+      this.vfx.bloodImpact(point, normal, travelDir);
+      if (travelDir) this._bloodSplatterBehind(point, travelDir);
+    } catch (err) {
+      // Best-effort decoration: it must never break the frame loop.
+      console.warn('[Combat] bloodFX failed:', err);
+    }
+  }
+
   impactFX(point, normal, collider, intensity = 1, decal = true) {
     try {
       const surface = this._surfaceOf(collider);
@@ -715,19 +767,6 @@ export class CombatSystem {
       .addScaledVector(dir, 0.85)
       .addScaledVector(_right, 0.2)
       .addScaledVector(_upv, -0.16);
-  }
-
-  /**
-   * Damage multiplier by distance: flat to `FALLOFF_START`, then eased down to
-   * `FALLOFF_FLOOR` at maximum range. The exponent front-loads the loss so most
-   * of the drop happens over the first hundred metres, which is where fights
-   * actually happen.
-   */
-  _falloff(distance) {
-    if (distance <= FALLOFF_START) return 1;
-    const range = CONFIG.weapon.machinegun.range;
-    const t = Math.min(1, (distance - FALLOFF_START) / Math.max(1, range - FALLOFF_START));
-    return 1 - (1 - FALLOFF_FLOOR) * Math.pow(t, 0.6);
   }
 
   _stampDecal(point, normal, surface) {

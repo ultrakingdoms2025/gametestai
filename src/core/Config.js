@@ -39,6 +39,16 @@ export const CONFIG = {
     maxHealth: 100,
     healthRegenDelay: 6.0,
     healthRegenRate: 8.0,
+    // Stamina drives sprint, swimming and mantling. Regen is fast and starts
+    // almost immediately: the pool exists to punctuate movement, not to ration
+    // it. See systems/Stamina.js, which defaults these in if they are missing.
+    maxStamina: 100,
+    staminaRegenDelay: 0.9,
+    staminaRegenRate: 24,
+    sprintStaminaDrain: 15,
+    swimStaminaDrain: 2.4,
+    swimSprintStaminaDrain: 7,
+    climbStaminaCost: 18,
     mouseSensitivity: 0.0022,
     stepHeight: 0.45,
     // Head-bob and view-kick keep the camera alive without inducing nausea.

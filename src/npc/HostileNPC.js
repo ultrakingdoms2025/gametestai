@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CONFIG } from '../core/Config.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { NPC, clamp } from './NPC.js';
+import { NPC_WEAPONS, buildWeaponModel, pickWeaponId, rollDamage } from './NPCWeapons.js';
 
 /**
  * Hostile combatant.
@@ -13,6 +14,14 @@ import { NPC, clamp } from './NPC.js';
  * colliders, integrated into an awareness value so a glimpse at 40 m does not
  * instantly become a firefight. Combat telegraphs: the weapon comes up, there
  * is a beat, and only then does the burst start - so a player can react.
+ *
+ * Each hostile draws a weapon per encounter from `NPCWeapons` - sidearm, rifle,
+ * bow or staff - and everything downstream follows from it: engagement range,
+ * the band the AI tries to hold, rate of fire, magazine, reload, accuracy, the
+ * length of the telegraph, and the damage band. That is what stops a firefight
+ * being ten identical rifles delivering identical chip damage, and it is kept
+ * fair by tying damage to telegraph: the 26-point arrow takes nearly a second
+ * of visible draw, the 7-point sidearm barely pauses.
  */
 
 const _v1 = new THREE.Vector3();
@@ -22,59 +31,6 @@ const _v4 = new THREE.Vector3();
 const _aim = new THREE.Vector3();
 
 const COVER_DIRS = 10;
-
-/** Shared rifle geometry, built once and hung off the assets cache. */
-function rifleGeometry(assets) {
-  const key = 'npc.rifle';
-  let g = assets.geoCache.get(key);
-  if (g) return g;
-  const parts = [];
-  const push = (geo, x, y, z, rx = 0) => {
-    if (rx) geo.rotateX(rx);
-    geo.translate(x, y, z);
-    parts.push(geo);
-  };
-  push(new THREE.BoxGeometry(0.05, 0.075, 0.36), 0, 0, -0.06);            // receiver
-  push(new THREE.BoxGeometry(0.036, 0.05, 0.30), 0, -0.005, -0.35);       // handguard
-  push(new THREE.CylinderGeometry(0.011, 0.011, 0.26, 8), 0, 0.006, -0.58, Math.PI / 2);
-  push(new THREE.BoxGeometry(0.042, 0.10, 0.11), 0, -0.075, -0.02);       // magazine
-  push(new THREE.BoxGeometry(0.046, 0.085, 0.20), 0, -0.012, 0.20);       // stock
-  push(new THREE.BoxGeometry(0.03, 0.055, 0.045), 0, 0.055, -0.02);       // optic
-  // Merge by hand: BufferGeometryUtils would pull in an addon for six boxes.
-  let vTotal = 0;
-  let iTotal = 0;
-  for (const p of parts) {
-    vTotal += p.getAttribute('position').count;
-    iTotal += p.getIndex().count;
-  }
-  const pos = new Float32Array(vTotal * 3);
-  const nrm = new Float32Array(vTotal * 3);
-  const uv = new Float32Array(vTotal * 2);
-  const idx = new Uint16Array(iTotal);
-  let vo = 0;
-  let io = 0;
-  for (const p of parts) {
-    const pp = p.getAttribute('position');
-    const pn = p.getAttribute('normal');
-    const pu = p.getAttribute('uv');
-    const pi = p.getIndex();
-    pos.set(pp.array, vo * 3);
-    nrm.set(pn.array, vo * 3);
-    uv.set(pu.array, vo * 2);
-    for (let i = 0; i < pi.count; i++) idx[io + i] = pi.getX(i) + vo;
-    vo += pp.count;
-    io += pi.count;
-    p.dispose();
-  }
-  g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
-  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  g.setIndex(new THREE.BufferAttribute(idx, 1));
-  g.computeBoundingSphere();
-  assets.geoCache.set(key, g);
-  return g;
-}
 
 export class HostileNPC extends NPC {
   constructor(ctx) {
@@ -87,14 +43,21 @@ export class HostileNPC extends NPC {
     this.losClear = false;
     this.targetDistance = Infinity;
 
-    this.magazine = 30;
-    this.ammo = this.magazine;
     this.reloadTimer = 0;
     this.burstLeft = 0;
     this.burstTimer = 0;
     this.telegraph = 0;
     this.fireCooldown = 0;
     this.burstsSinceReload = 0;
+
+    /** Weapon ids this hostile is allowed to draw. Set by the manager. */
+    this.weaponPool = ctx.weaponPool ?? null;
+    this.weaponId = null;
+    this.weaponDef = NPC_WEAPONS.rifle;
+    this.magazine = this.weaponDef.magazine;
+    this.ammo = this.magazine;
+    this._weaponModels = new Map();
+    this._muzzleLocal = new THREE.Vector3();
 
     this.strafeDir = this.rnd() < 0.5 ? -1 : 1;
     this.strafeTimer = 1 + this.rnd() * 2;
@@ -111,16 +74,7 @@ export class HostileNPC extends NPC {
     this._muzzle = new THREE.Vector3();
     this._recoil = new THREE.Vector3();
 
-    // Weapon: parented to the right hand so the aim IK carries it.
-    const assets = this.manager?.assets;
-    if (assets) {
-      const mat = assets.metal(0x2a2e34, 'panel', 0.44);
-      this.weapon = new THREE.Mesh(rifleGeometry(assets), mat);
-      this.weapon.castShadow = true;
-      this.weapon.position.set(0.01, -0.05, -0.05);
-      this.weapon.rotation.set(-1.35, 0.06, 0.0);
-      this.humanoid.weaponMount.add(this.weapon);
-    }
+    this.selectWeapon(ctx.weaponId);
 
     this.setState('PATROL');
     if (this.patrol.length > 0) this.nav.setPath(this.patrol);
@@ -128,6 +82,82 @@ export class HostileNPC extends NPC {
 
   get target() {
     return this.manager?.player ?? null;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Weapons                                                           */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Draw a weapon for this encounter and adopt its stats wholesale.
+   *
+   * Models are built once per weapon id per character and then kept, hidden,
+   * on the hand mount. That is deliberate: Three compiles a shader program the
+   * first time a material is drawn, so building a staff for the first time in
+   * the middle of a firefight would cost a frame. Building every model this
+   * character can ever draw during world activation - behind the loading
+   * screen - means a re-roll on respawn is a `visible` flip and nothing else.
+   *
+   * @param {string} [forceId] specific weapon, otherwise rolled from the pool
+   */
+  selectWeapon(forceId) {
+    const theme = this.theme;
+    const pool = this.weaponPool;
+    let id = forceId;
+    if (!id) {
+      id = pool && pool.length ? pool[(this.rnd() * pool.length) | 0] : pickWeaponId(theme, this.rnd);
+    }
+    if (id === this.weaponId) {
+      this._resetWeaponState();
+      return;
+    }
+    this.weaponId = id;
+    this.weaponDef = NPC_WEAPONS[id] ?? NPC_WEAPONS.rifle;
+
+    const assets = this.manager?.assets;
+    if (assets) {
+      let entry = this._weaponModels.get(id);
+      if (!entry) {
+        entry = buildWeaponModel(id, assets, theme);
+        this.humanoid.weaponMount.add(entry.group);
+        this._weaponModels.set(id, entry);
+      }
+      for (const [key, e] of this._weaponModels) e.group.visible = key === id;
+      this.weapon = entry.group;
+      this._muzzleLocal.set(entry.muzzle[0], entry.muzzle[1], entry.muzzle[2]);
+      this._weaponGlow = entry.glow ?? null;
+    }
+
+    const def = this.weaponDef;
+    this.magazine = def.magazine;
+    this.accuracy = clamp(def.accuracy + (this.rnd() - 0.5) * 0.08, 0.3, 0.92);
+    this.preferredRange = def.preferredMin + this.rnd() * (def.preferredMax - def.preferredMin);
+    this._resetWeaponState();
+  }
+
+  /** Build every model this character could draw, so none compiles mid-fight. */
+  prebuildWeapons() {
+    const pool = this.weaponPool;
+    if (!pool || !this.manager?.assets) return;
+    const keep = this.weaponId;
+    for (const id of pool) {
+      if (this._weaponModels.has(id)) continue;
+      const entry = buildWeaponModel(id, this.manager.assets, this.theme);
+      entry.group.visible = false;
+      this.humanoid.weaponMount.add(entry.group);
+      this._weaponModels.set(id, entry);
+    }
+    for (const [key, e] of this._weaponModels) e.group.visible = key === keep;
+  }
+
+  _resetWeaponState() {
+    this.ammo = this.magazine;
+    this.reloadTimer = 0;
+    this.burstLeft = 0;
+    this.burstTimer = 0;
+    this.telegraph = 0;
+    this.fireCooldown = 0;
+    this.burstsSinceReload = 0;
   }
 
   /* ---------------------------------------------------------------- */
@@ -197,6 +227,11 @@ export class HostileNPC extends NPC {
     void isHeadshot;
   }
 
+  /** Fresh body, fresh loadout. */
+  onRespawned() {
+    this.selectWeapon();
+  }
+
   onDied() {
     if (this.weapon) {
       // Drop the rifle out of the hand so the corpse is not clutching it.
@@ -252,7 +287,13 @@ export class HostileNPC extends NPC {
       this.nav.acknowledgeStuck();
       this._wanderNear(this.position, 5);
     }
-    if (this.awareness > 0.5) this.setState('SUSPICIOUS');
+    if (this.awareness > 0.5) {
+      // One weapon per encounter: the draw happens as the character notices
+      // something, so a player who fights the same patrol twice does not fight
+      // the same loadout twice.
+      this.selectWeapon();
+      this.setState('SUSPICIOUS');
+    }
     void dt;
   }
 
@@ -370,56 +411,94 @@ export class HostileNPC extends NPC {
     return _aim;
   }
 
+  /**
+   * Cadence for the drawn weapon.
+   *
+   * Everything here is per-weapon: how long the wind-up is, how many rounds a
+   * burst has, how fast they leave, and how long the gap is afterwards. The
+   * telegraph is the fairness knob - the harder the weapon hits, the longer the
+   * character visibly holds still with it raised before anything happens.
+   */
   _updateFiring(dt) {
+    const def = this.weaponDef;
     if (this.reloadTimer > 0) {
       this.animator.setAiming(false);
+      this._setTelegraphGlow(0);
       return;
     }
     this.animator.setAiming(true);
     if (this.ammo <= 0) {
-      this.reloadTimer = 2.1;
-      this.ammo = this.magazine;
-      this.burstsSinceReload = 0;
-      this.burstLeft = 0;
+      this._beginReload();
       return;
     }
-    if (!this.losClear || this.targetDistance > CONFIG.npc.attackRange) {
+    if (!this.losClear || this.targetDistance > def.range) {
       this.telegraph = 0;
+      this._setTelegraphGlow(0);
       return;
     }
     // Telegraph: settle the aim before the first round of a burst.
     if (this.burstLeft <= 0) {
       if (this.fireCooldown > 0) return;
       this.telegraph += dt;
-      if (this.telegraph < 0.34) return;
+      this._setTelegraphGlow(clamp(this.telegraph / def.telegraph, 0, 1));
+      if (this.telegraph < def.telegraph) return;
       this.telegraph = 0;
-      this.burstLeft = 3 + ((this.rnd() * 3) | 0);
+      this._setTelegraphGlow(0);
+      const [lo, hi] = def.burst;
+      this.burstLeft = lo + ((this.rnd() * (hi - lo + 1)) | 0);
       this.burstTimer = 0;
       this.burstsSinceReload++;
-      if (this.burstsSinceReload >= 3 + ((this.rnd() * 2) | 0)) {
-        this.reloadTimer = 2.1;
-        this.ammo = this.magazine;
-        this.burstsSinceReload = 0;
-        this.burstLeft = 0;
+      // A one-shot weapon reloads (nocks, recharges) after every shot; a
+      // magazine weapon reloads after a few bursts.
+      const burstsPerMag = Math.max(1, Math.floor(def.magazine / Math.max(1, hi)));
+      if (this.burstsSinceReload > burstsPerMag) {
+        this._beginReload();
         return;
       }
     }
     this.burstTimer -= dt;
     if (this.burstTimer > 0) return;
-    this.burstTimer = 0.11;
+    this.burstTimer = def.burstDelay;
     this.burstLeft--;
     this.ammo--;
-    if (this.burstLeft <= 0) this.fireCooldown = 1.05 + this.rnd() * 1.35;
+    if (this.burstLeft <= 0) {
+      const [clo, chi] = def.cooldown;
+      this.fireCooldown = clo + this.rnd() * (chi - clo);
+    }
     this._fire();
+  }
+
+  _beginReload() {
+    this.reloadTimer = this.weaponDef.reload;
+    this.ammo = this.magazine;
+    this.burstsSinceReload = 0;
+    this.burstLeft = 0;
+    this.telegraph = 0;
+    this._setTelegraphGlow(0);
+  }
+
+  /**
+   * Wind the staff crystal up as the shot charges.
+   *
+   * A 21-point hit from across a courtyard has to announce itself, and a light
+   * that swells for four fifths of a second is the most readable announcement
+   * available without adding a real light to the scene - which would recompile
+   * every material in view. Scaling an emissive mesh costs nothing.
+   */
+  _setTelegraphGlow(t) {
+    const g = this._weaponGlow;
+    if (!g) return;
+    const s = 1 + t * 0.85;
+    g.scale.set(s, s, s);
   }
 
   _fire() {
     const player = this.target;
     if (!player) return;
-    // Muzzle sits at the end of the barrel in world space.
+    // Muzzle sits at the business end of whatever is being carried.
     if (this.weapon) {
       this.weapon.updateWorldMatrix(true, false);
-      this._muzzle.set(0, 0.006, -0.71).applyMatrix4(this.weapon.matrixWorld);
+      this._muzzle.copy(this._muzzleLocal).applyMatrix4(this.weapon.matrixWorld);
     } else {
       this._muzzle.copy(this.headPosition);
     }
@@ -429,17 +508,23 @@ export class HostileNPC extends NPC {
     const dist = _v2.length() || 1;
     _v2.multiplyScalar(1 / dist);
 
-    // Accuracy is a cone: 1.0 is perfect, CONFIG.npc.accuracy scales the miss.
-    // Long shots and moving while shooting both open it up.
+    // Accuracy is a cone: 1.0 is perfect, the weapon's own accuracy scales the
+    // miss. Long shots and moving while shooting both open it up, and each
+    // weapon adds its own drift on top.
+    const def = this.weaponDef;
     const spread =
-      (1 - this.accuracy) * 0.062 * (0.7 + 0.3 * clamp(dist / CONFIG.npc.attackRange, 0, 1.4)) +
+      (1 - this.accuracy) * 0.062 * (0.7 + 0.3 * clamp(dist / def.range, 0, 1.4)) +
+      def.aimDrift +
       (this.moveSpeed > 1.2 ? 0.012 : 0);
     _v3.set(this.rnd() - 0.5, this.rnd() - 0.5, this.rnd() - 0.5).multiplyScalar(spread);
     _v2.add(_v3).normalize();
 
+    // Recoil scales with the round: a sidearm nudges, a staff shoves.
     this._recoil.copy(_v2).negate();
-    this.animator.flinch(this._recoil, false);
-    this.manager?.npcFire(this, this._muzzle, _v2, CONFIG.npc.attackDamage);
+    this.animator.flinch(this._recoil, def.damage >= 20);
+    const damage = rollDamage(def, this.rnd);
+    this.lastAttackDamage = damage;
+    this.manager?.npcFire(this, this._muzzle, _v2, damage, def.id);
   }
 
   /* ---------------------------------------------------------------- */

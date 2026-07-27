@@ -23,6 +23,12 @@ import { Economy } from './systems/Economy.js';
 import { SaveGame } from './systems/SaveGame.js';
 import { UnstuckSystem } from './systems/Unstuck.js';
 import { MountManager } from './mounts/MountManager.js';
+import { WaterVolumes } from './systems/WaterVolumes.js';
+import { Stamina } from './systems/Stamina.js';
+import { Inventory } from './systems/Inventory.js';
+import { Loot } from './systems/Loot.js';
+import { Marketplace } from './systems/Marketplace.js';
+import { HelpMenu } from './ui/HelpMenu.js';
 
 /**
  * AETHER NEXUS - bootstrap.
@@ -80,7 +86,29 @@ player.loadout = loadout;
 
 const mounts = new MountManager({ ...ctx, player, camera: engine.camera, cameraRig, avatar, npcManager });
 const unstuck = new UnstuckSystem({ bus, player, physics, worldManager, input });
-const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts, input });
+
+/* ------------------------------------------------------------------ */
+/* Feature set v3 - see CONTRACTS-V3.md                                */
+/* ------------------------------------------------------------------ */
+
+// Water has no authored data: this scans each world for water surfaces and
+// publishes the derived volumes on the bus, which Player.swim listens for.
+// It subscribes to world:changed itself, so it only needs constructing.
+const waterVolumes = new WaterVolumes({ bus });
+
+// Stamina attaches itself to the player, and Player.fixedUpdate drives it -
+// deliberately NOT ticked from here, or it would drain at double rate.
+const stamina = new Stamina({ bus, player });
+
+const inventory = new Inventory({ bus, economy, input, root: uiRoot });
+const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
+const market = new Marketplace({ bus, economy, inventory, player, npcManager, input, root: uiRoot });
+const helpMenu = new HelpMenu({ root: uiRoot, bus, input });
+
+// Ammunition now comes out of the bag rather than a private per-weapon counter.
+loadout.setInventory?.(inventory);
+
+const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts, input, inventory });
 
 const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, portals });
 
@@ -92,6 +120,7 @@ worldManager.attach?.({ npcManager, portals, player });
 window.GAME = {
   engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
   cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save,
+  waterVolumes, stamina, inventory, loot, market, helpMenu,
 };
 
 if (overrides.dev) {
@@ -161,7 +190,7 @@ async function prewarm() {
   const t0 = performance.now();
   let parked = [];
   try {
-    parked = mounts.prebuild?.(['hoverboard', 'dragon']) ?? [];
+    parked = mounts.prebuild?.(['hoverboard', 'dragon', 'car']) ?? [];
   } catch (err) {
     console.warn('[prewarm] mount prebuild failed:', err);
   }
@@ -213,7 +242,9 @@ async function prewarm() {
     await warmFrames(1);
 
     // Mount and dismount each one: both transitions change the light set.
-    for (const id of ['hoverboard', 'dragon']) {
+    // The car matters most here - its headlights and brake lights are exactly
+    // the kind of runtime light churn that invalidates the program cache.
+    for (const id of ['hoverboard', 'dragon', 'car']) {
       try {
         mounts.summon(id);
         await warmFrames(2);
@@ -278,6 +309,7 @@ engine.onFixedUpdate((dt, elapsed) => {
   npcManager.fixedUpdate(dt, elapsed);
   combat.fixedUpdate(dt, elapsed);
   projectiles.fixedUpdate(dt, elapsed);
+  loot.fixedUpdate(dt, elapsed);
   unstuck.fixedUpdate(dt, elapsed);
   portals.fixedUpdate(dt, elapsed);
 });
@@ -296,6 +328,9 @@ engine.onFrameUpdate((dt, elapsed) => {
   portals.update(dt, elapsed);
   combat.update(dt, elapsed);
   worldManager.active?.update(dt, elapsed);
+  inventory.update(dt);
+  market.update(dt);
+  helpMenu.update?.(dt);
   hud.update(dt, elapsed);
   input.endFrame();
 });

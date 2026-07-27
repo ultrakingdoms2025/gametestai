@@ -32,6 +32,16 @@ const _e1 = new THREE.Euler();
 const _down = new THREE.Vector3(0, -1, 0);
 const _up = new THREE.Vector3(0, 1, 0);
 const _fwd = new THREE.Vector3(0, 0, -1);
+// `_poseSeatedLegs` owns these exclusively: it calls solveTwoBone and
+// basisQuat, both of which consume _v1.._v6 and _q1.._q3 internally, so reusing
+// the shared scratch here would silently corrupt the second leg it solves.
+const _seatFoot = new THREE.Vector3();
+const _seatPole = new THREE.Vector3();
+const _seatJoint = new THREE.Vector3();
+const _seatDir = new THREE.Vector3();
+const _seatBend = new THREE.Vector3();
+const _seatQ = new THREE.Quaternion();
+const _seatE = new THREE.Euler();
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -139,6 +149,28 @@ const POSTURES = {
     foreArm: () => [0.66, 0, 0],
     hand: (s) => [0.1, 0, -0.14 * s],
   },
+  // Sitting on a bench: hands resting on the thighs, shoulders relaxed back.
+  // The leg half of the pose is solved geometrically in `_poseSeatedLegs`,
+  // because a seat's height varies and hard-coded knee angles would leave a
+  // character hovering over a low bench or kneeling on a tall one.
+  sit: {
+    chest: 0.06,
+    hip: 0.05,
+    clavicle: (s) => [0.01, 0, -0.06 * s],
+    upperArm: (s) => [0.52, 0.1 * s, 0.28 * s],
+    foreArm: () => [0.72, 0, 0],
+    hand: (s) => [0.28, 0.06 * s, -0.12 * s],
+  },
+  // Sitting with the forearms on the knees, leaning in - the other half of the
+  // bench read, so two seated characters side by side are not the same statue.
+  sitLean: {
+    chest: 0.3,
+    hip: 0.04,
+    clavicle: (s) => [0.05, 0, -0.16 * s],
+    upperArm: (s) => [0.74, 0.16 * s, 0.24 * s],
+    foreArm: () => [1.05, 0, 0],
+    hand: (s) => [0.2, 0.12 * s, -0.14 * s],
+  },
   // Skaters and bench-sitters: knees folded, forearms resting on them.
   squat: {
     chest: 0.22,
@@ -240,6 +272,14 @@ export class NPCAnimator {
     this.gestureWeight = 0;
     this._gesturePhase = rnd() * 6.28;
 
+    // Seated state. `seatHeight` is the drop from the seat surface to the floor
+    // the feet rest on, which is what lets one solver serve a 0.38 m bench and a
+    // 0.62 m planter rim without either looking wrong.
+    this.seated = false;
+    this.seatHeight = 0.45;
+    this.seatWeight = 0;
+    this._seatSwayPhase = rnd() * 6.28;
+
     this.flinchX = 0;
     this.flinchZ = 0;
     this.flinchVX = 0;
@@ -319,7 +359,7 @@ export class NPCAnimator {
    * authority while the character is standing - it fades out the moment they
    * start walking, and the aim layer always wins over it.
    *
-   * @param {'none'|'crossed'|'hips'|'pocket'|'lean'|'squat'} kind
+   * @param {'none'|'crossed'|'hips'|'pocket'|'lean'|'squat'|'sit'|'sitLean'} kind
    */
   setPosture(kind) {
     if (kind === this.postureKind) return;
@@ -330,6 +370,23 @@ export class NPCAnimator {
   /** Conversational hand movement while talking. */
   setGesturing(on) {
     this._gestureWant = on ? 1 : 0;
+  }
+
+  /**
+   * Sit the character down on a surface `seatHeight` metres above the floor.
+   *
+   * The character root stays on the seat surface, so gameplay - the capsule,
+   * the headshot sphere, chat range, the contact shadow - needs no special
+   * case. Only the legs change: they are solved down and forward to the floor
+   * instead of being driven by the walk cycle, and the foot ground probes are
+   * skipped because a seated character's feet are not carrying it.
+   *
+   * @param {boolean} on
+   * @param {number} [seatHeight] metres from the seat surface down to the floor
+   */
+  setSeated(on, seatHeight) {
+    this.seated = !!on;
+    if (Number.isFinite(seatHeight)) this.seatHeight = clamp(seatHeight, 0.28, 0.72);
   }
 
   /** Directional hit reaction. `heavy` also throws in a stagger. */
@@ -449,7 +506,8 @@ export class NPCAnimator {
     this._poseSpine(dt, elapsed);
     this._runFK();
     if (this.aimWeight > 0.001 && this.aimTarget) this._poseAimArms();
-    this._poseLegs(dt, lod.ik !== false);
+    if (this.seated || this.seatWeight > 0.02) this._poseSeatedLegs(dt);
+    else this._poseLegs(dt, lod.ik !== false);
     this._poseHead(dt);
     if (lod.detail !== false) this._poseEyes(dt);
   }
@@ -460,6 +518,9 @@ export class NPCAnimator {
     this.moveBlend = approach(this.moveBlend, smoothstep(0.1, 0.85, s), 12, dt);
     this.aimWeight = approach(this.aimWeight, this._aimWant, 7, dt);
     this.postureWeight = approach(this.postureWeight, this.posturePose ? 1 : 0, 3.2, dt);
+    // Sitting down and standing up are both fast; the ramp exists so neither is
+    // a single-frame pop, not to animate a deliberate movement.
+    this.seatWeight = approach(this.seatWeight, this.seated ? 1 : 0, 4.5, dt);
     this.gestureWeight = approach(this.gestureWeight, this._gestureWant ?? 0, 2.6, dt);
     if (this.gestureWeight > 0.001) this._gesturePhase += dt * 2.35;
     const postureCrouch =
@@ -869,6 +930,86 @@ export class NPCAnimator {
       _e1.set(-toe * this.moveBlend, 0, 0);
       this.bones[this._idx(`toe${foot.name}`)].quaternion.setFromEuler(_e1);
     }
+  }
+
+  /* --- seated ------------------------------------------------------ */
+
+  /*
+   * Dedicated scratch for the seated solver. `_poseLegs` and `solveTwoBone`
+   * between them consume _v1.._v6 and _q1.._q3; sharing any of those here is
+   * exactly the aliasing bug the module header warns about, so the seated pose
+   * owns its own vectors outright.
+   */
+
+  /**
+   * Sit the legs down instead of walking them.
+   *
+   * The character root is on the seat surface, so the hips only have to drop to
+   * just above it, the knees go forward, and the feet reach down to the floor
+   * `seatHeight` below. Solving the ankle position geometrically rather than
+   * hard-coding joint angles is what lets the same code sit a figure on a
+   * 0.38 m bench slat and on a 0.6 m planter rim.
+   *
+   * The upper body is untouched - breathing, the posture layer, gestures, the
+   * head and eye tracking all keep running, which is the whole point: a seated
+   * character still has to look alive from the waist up.
+   */
+  _poseSeatedLegs(dt) {
+    const P = this.P;
+    const w = this.seatWeight;
+    const pelvis = this.byName.get('pelvis');
+
+    // Slow weight shift on the seat, plus the breathing already in pelvisBob.
+    this._seatSwayPhase += dt * 0.55;
+    const sway = Math.sin(this._seatSwayPhase) * 0.014 + this.idleShift * 0.012;
+    const seatHipY = 0.09 + (P.pelvisY - P.hipY);
+    pelvis.position.set(
+      lerp(this.pelvisSway, sway, w),
+      lerp(P.pelvisY + this.groundOffset + this.pelvisBob, seatHipY + this.pelvisBob * 0.4, w),
+      lerp(0, -0.035, w)
+    );
+    this._runFK();
+
+    const floorY = P.ankleY - this.seatHeight;
+    for (const foot of this.feet) {
+      const hipIdx = this._idx(`thigh${foot.name}`);
+      const hip = this._fkPos[hipIdx];
+      // Feet a little wider than the hips and set forward of the knee, which is
+      // how people actually sit; dead-vertical shins read as a mannequin.
+      const seatX = P.legSideX * foot.side * 1.25 + foot.side * 0.012 * Math.sin(this._seatSwayPhase * 0.7);
+      const seatZ = -0.30 - this.seatHeight * 0.12;
+      _seatFoot.set(
+        lerp(P.legSideX * foot.side, seatX, w),
+        lerp(P.ankleY, floorY, w),
+        lerp(0.006, seatZ, w)
+      );
+
+      // Knee pole forward and slightly up: the knee is the leading point of a
+      // seated leg, and a pole pointing anywhere else folds the shin backwards.
+      _seatPole.set(foot.side * 0.1, 0.32, -1).normalize();
+      const bend = solveTwoBone(hip, _seatFoot, this.thighLen, this.calfLen, _seatPole, _seatJoint);
+      _seatBend.copy(bend);
+
+      _seatDir.subVectors(_seatJoint, hip).normalize();
+      basisQuat(_seatDir, _seatBend, this.restThigh, _fwd, _seatQ);
+      this._setBoneFromRig(`thigh${foot.name}`, _seatQ);
+      _seatDir.subVectors(_seatFoot, _seatJoint).normalize();
+      basisQuat(_seatDir, _seatBend, this.restCalf, _fwd, _seatQ);
+      this._setBoneFromRig(`calf${foot.name}`, _seatQ);
+
+      // Foot flat on the floor: rig-space identity is the rest orientation,
+      // which is a level foot by construction.
+      _seatQ.identity();
+      this._setBoneFromRig(`foot${foot.name}`, _seatQ);
+      _seatE.set(0, 0, 0);
+      this.bones[this._idx(`toe${foot.name}`)].quaternion.setFromEuler(_seatE);
+
+      foot.groundValid = false;
+      foot.rigGround = 0;
+      foot.lift = 0;
+      foot.fwd = 0;
+    }
+    this.groundOffset = 0;
   }
 
   /* --- head, eyes -------------------------------------------------- */

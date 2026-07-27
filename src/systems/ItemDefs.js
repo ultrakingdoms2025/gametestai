@@ -1,0 +1,297 @@
+/**
+ * Item catalogue, pack prices and the procedural icon set.
+ *
+ * Everything the inventory, the loot tables and the marketplace know about an
+ * item lives here so there is exactly one place to retune economy balance. The
+ * icons are inline SVG built at call time rather than sprites, because §0
+ * forbids external assets and an SVG stays crisp at any panel size.
+ *
+ * `stack` is the single most load-bearing number in the file: the active bag is
+ * limited to 30 **slots**, and one slot holds one full stack. `bullet.stack`
+ * is 60 precisely so a 60-round pack is one slot, not sixty.
+ */
+
+/** @typedef {'ammo'|'consumable'|'trinket'|'currency'} ItemKind */
+
+/** Accent colours, shared by the UI panels and the world pickups. */
+export const KIND_ACCENT = {
+  ammo: '#52e9ff',
+  consumable: '#b6ff5a',
+  trinket: '#d46bff',
+  currency: '#ffb44a',
+};
+
+/**
+ * The catalogue. `value` is the *base* worth of one unit in credits; buy prices
+ * come from `PACKS` and sell prices from `value * SELL_RATE`.
+ *
+ * @type {Record<string, {id:string, name:string, short:string, stack:number,
+ *   icon:string, value:number, kind:ItemKind, virtual?:boolean, desc:string}>}
+ */
+export const ITEMS = {
+  credits: {
+    id: 'credits',
+    name: 'Credits',
+    short: 'CR',
+    // Virtual: credits never occupy a slot, they route straight to Economy.
+    stack: Infinity,
+    icon: 'credits',
+    value: 1,
+    kind: 'currency',
+    virtual: true,
+    desc: 'Universal Nexus scrip. Held by your account, not in your bag.',
+  },
+  bullet: {
+    id: 'bullet',
+    name: 'Rifle Rounds',
+    short: 'RND',
+    stack: 60,
+    icon: 'bullet',
+    value: 3,
+    kind: 'ammo',
+    desc: 'Caseless 6mm for the VK-7. One stack of 60 fills a single slot.',
+  },
+  arrow: {
+    id: 'arrow',
+    name: 'Broadhead Arrows',
+    short: 'ARW',
+    stack: 30,
+    icon: 'arrow',
+    value: 5,
+    kind: 'ammo',
+    desc: 'Fletched shafts with a hardened head. Recoverable, mostly.',
+  },
+  fireball_charge: {
+    id: 'fireball_charge',
+    name: 'Ember Cores',
+    short: 'EMB',
+    stack: 10,
+    icon: 'ember',
+    value: 15,
+    kind: 'ammo',
+    desc: 'Compressed pyro-cells that feed the gauntlet. Warm to the touch.',
+  },
+  medkit: {
+    id: 'medkit',
+    name: 'Field Medkit',
+    short: 'MED',
+    stack: 5,
+    icon: 'medkit',
+    value: 45,
+    kind: 'consumable',
+    desc: 'Sealed trauma pack. Restores health when used.',
+  },
+  alloy_scrap: {
+    id: 'alloy_scrap',
+    name: 'Alloy Scrap',
+    short: 'SCR',
+    stack: 20,
+    icon: 'scrap',
+    value: 12,
+    kind: 'trinket',
+    desc: 'Torn hull plate. Vendors buy it by weight and never ask where from.',
+  },
+  nexus_shard: {
+    id: 'nexus_shard',
+    name: 'Nexus Shard',
+    short: 'SHD',
+    stack: 10,
+    icon: 'shard',
+    value: 60,
+    kind: 'trinket',
+    desc: 'A splinter of portal glass. Hums faintly when a gate is near.',
+  },
+  relic_coin: {
+    id: 'relic_coin',
+    name: 'Old Crown Coin',
+    short: 'CON',
+    stack: 25,
+    icon: 'coin',
+    value: 24,
+    kind: 'trinket',
+    desc: 'Struck for a king three worlds ago. Still worth something here.',
+  },
+};
+
+/** Fraction of `value` a vendor pays when buying an item back off the player. */
+export const SELL_RATE = 0.4;
+
+/**
+ * What a vendor sells. Quantities are deliberately whole stacks so the slot
+ * arithmetic in the UI is obvious: one pack of 60 rounds is one bag slot.
+ *
+ * @type {Array<{id:string, itemId:string, qty:number, price:number, name:string, blurb:string}>}
+ */
+export const PACKS = [
+  {
+    id: 'pack_bullets',
+    itemId: 'bullet',
+    qty: 60,
+    price: 150,
+    name: 'Rifle Round Pack',
+    blurb: '60 rounds — one bag slot',
+  },
+  {
+    id: 'pack_arrows',
+    itemId: 'arrow',
+    qty: 30,
+    price: 130,
+    name: 'Arrow Bundle',
+    blurb: '30 arrows — one bag slot',
+  },
+  {
+    id: 'pack_embers',
+    itemId: 'fireball_charge',
+    qty: 10,
+    price: 170,
+    name: 'Ember Core Cell',
+    blurb: '10 charges — one bag slot',
+  },
+  {
+    id: 'pack_medkit',
+    itemId: 'medkit',
+    qty: 2,
+    price: 95,
+    name: 'Trauma Twin-Pack',
+    blurb: '2 medkits',
+  },
+];
+
+/** @param {string} id @returns {(typeof ITEMS)[keyof typeof ITEMS]|null} */
+export function itemDef(id) {
+  return ITEMS[id] ?? null;
+}
+
+/** Stack size for an id; unknown ids stack at 1 so they can never overflow a slot silently. */
+export function stackSize(id) {
+  const def = ITEMS[id];
+  return def ? def.stack : 1;
+}
+
+/**
+ * Slots consumed by `qty` of `id`. Virtual items (credits) are free.
+ * @param {string} id
+ * @param {number} qty
+ * @returns {number}
+ */
+export function slotsFor(id, qty) {
+  if (qty <= 0) return 0;
+  const def = ITEMS[id];
+  if (def?.virtual) return 0;
+  const s = stackSize(id);
+  return s === Infinity ? 1 : Math.ceil(qty / s);
+}
+
+/** Credits a vendor pays for `qty` of `id`. Always at least 1 per unit. */
+export function sellValue(id, qty = 1) {
+  const def = ITEMS[id];
+  if (!def || def.virtual) return 0;
+  return Math.max(1, Math.round(def.value * SELL_RATE)) * qty;
+}
+
+/** @param {string} packId */
+export function packDef(packId) {
+  return PACKS.find((p) => p.id === packId) ?? null;
+}
+
+/* ====================================================================== */
+/* Procedural icons                                                       */
+/* ====================================================================== */
+
+/** Gradient ids have to be unique per document, hence the counter. */
+let _iconSeq = 0;
+
+/**
+ * Inline SVG markup for an item icon.
+ *
+ * Drawn from primitives on a 32x32 grid so every icon shares a silhouette
+ * weight; the panels scale them with CSS rather than re-rendering.
+ *
+ * @param {string} id item id (or an icon key)
+ * @param {number} [size=32]
+ * @returns {string} SVG markup
+ */
+export function itemIconSVG(id, size = 32) {
+  const key = ITEMS[id]?.icon ?? id;
+  const accent = KIND_ACCENT[ITEMS[id]?.kind ?? 'ammo'] ?? '#52e9ff';
+  const g = `ig${_iconSeq++}`;
+  const body = ICONS[key]?.(g, accent) ?? ICONS.unknown(g, accent);
+  return `<svg class="inv-ico" viewBox="0 0 32 32" width="${size}" height="${size}" aria-hidden="true">${body}</svg>`;
+}
+
+/**
+ * Each entry returns the SVG body for one icon. They take the unique gradient
+ * prefix and the accent so a single definition serves every panel.
+ * @type {Record<string, (g:string, a:string) => string>}
+ */
+const ICONS = {
+  bullet: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#7a5a22"/><stop offset="1" stop-color="#ffd489"/>
+    </linearGradient></defs>
+    <g stroke="${a}" stroke-width="0.9" fill="url(#${g}a)">
+      <path d="M11 22 h10 v-7 q0 -5 -5 -9 q-5 4 -5 9 z"/>
+      <rect x="11" y="22" width="10" height="5" rx="1"/>
+    </g>
+    <path d="M11 24.5 h10" stroke="${a}" stroke-width="0.8" opacity="0.8"/>
+    <path d="M14 13 q2 -4 4 0" stroke="#fff6e0" stroke-width="0.9" fill="none" opacity="0.75"/>`,
+  arrow: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#3a4a55"/><stop offset="1" stop-color="#cfe6f2"/>
+    </linearGradient></defs>
+    <path d="M8 24 L24 8" stroke="url(#${g}a)" stroke-width="2" stroke-linecap="round"/>
+    <path d="M24 8 l-6 0.6 l1.4 1.4 l-1.6 3 l5.6 -3.2 z" fill="${a}" opacity="0.95"/>
+    <path d="M22 6 l4 0 l0 4 l-3.2 -0.8 z" fill="#e8f7ff" stroke="${a}" stroke-width="0.7"/>
+    <g stroke="${a}" stroke-width="1.3" opacity="0.85">
+      <path d="M8.5 23.5 l3 -1.2"/><path d="M10 25 l1.2 -3"/>
+    </g>`,
+  ember: (g, a) => `
+    <defs><radialGradient id="${g}a" cx="50%" cy="58%" r="55%">
+      <stop offset="0" stop-color="#fff2d0"/><stop offset="0.45" stop-color="#ff9b3c"/>
+      <stop offset="1" stop-color="#7a1f06"/>
+    </radialGradient></defs>
+    <circle cx="16" cy="17" r="8.5" fill="url(#${g}a)"/>
+    <circle cx="16" cy="17" r="8.5" fill="none" stroke="#ff7d3c" stroke-width="0.9" opacity="0.9"/>
+    <path d="M16 4 q4 5 1.6 8 q-1.4 1.8 -1.6 3 q-0.4 -1.6 -1.8 -3 Q11.6 9 16 4 z" fill="#ffb44a" opacity="0.92"/>
+    <path d="M13 18 q3 -4 6 0 q-3 3 -6 0 z" fill="#fff6e0" opacity="0.5"/>`,
+  medkit: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a2a20"/><stop offset="1" stop-color="#0b1610"/>
+    </linearGradient></defs>
+    <rect x="4.5" y="9.5" width="23" height="16" rx="2.4" fill="url(#${g}a)" stroke="${a}" stroke-width="1.1"/>
+    <path d="M12 9.5 v-2 a2 2 0 0 1 2 -2 h4 a2 2 0 0 1 2 2 v2" fill="none" stroke="${a}" stroke-width="1.1"/>
+    <path d="M14.4 13.6 h3.2 v3.2 h3.2 v3.2 h-3.2 v3.2 h-3.2 v-3.2 h-3.2 v-3.2 h3.2 z" fill="${a}"/>
+    <path d="M4.5 21 h23" stroke="${a}" stroke-width="0.6" opacity="0.35"/>`,
+  credits: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe3b6"/><stop offset="1" stop-color="#b6741a"/>
+    </linearGradient></defs>
+    <path d="M16 3.5 L27 9.5 v13 L16 28.5 L5 22.5 v-13 z" fill="url(#${g}a)" stroke="${a}" stroke-width="1"/>
+    <path d="M16 7.5 L23.5 11.6 v8.8 L16 24.5 L8.5 20.4 v-8.8 z" fill="none" stroke="#5a3a0d" stroke-width="0.8" opacity="0.7"/>
+    <path d="M13.4 12.6 h5.2 M13.4 16 h5.2 M13.4 19.4 h5.2" stroke="#3d2708" stroke-width="1.4" stroke-linecap="round"/>`,
+  scrap: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8fa6b4"/><stop offset="1" stop-color="#39505e"/>
+    </linearGradient></defs>
+    <path d="M6 20 L11 7 L24 9 L27 19 L18 26 z" fill="url(#${g}a)" stroke="${a}" stroke-width="0.9" stroke-linejoin="round"/>
+    <path d="M11 7 L15 18 L27 19" fill="none" stroke="#0b1620" stroke-width="0.9" opacity="0.65"/>
+    <circle cx="21.5" cy="13" r="1.5" fill="#0b1620" opacity="0.7"/>`,
+  shard: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f2d8ff"/><stop offset="0.5" stop-color="#c46bff"/>
+      <stop offset="1" stop-color="#4a1a75"/>
+    </linearGradient></defs>
+    <path d="M16 2.5 L23 13 L18.5 29 L13 29 L9 13 z" fill="url(#${g}a)" stroke="${a}" stroke-width="0.9" stroke-linejoin="round"/>
+    <path d="M16 2.5 L16 29 M9 13 L23 13" stroke="#f7e9ff" stroke-width="0.7" opacity="0.5"/>`,
+  coin: (g, a) => `
+    <defs><radialGradient id="${g}a" cx="38%" cy="34%" r="72%">
+      <stop offset="0" stop-color="#ffeec4"/><stop offset="1" stop-color="#8a5c1c"/>
+    </radialGradient></defs>
+    <circle cx="16" cy="16" r="11" fill="url(#${g}a)" stroke="${a}" stroke-width="1"/>
+    <circle cx="16" cy="16" r="8" fill="none" stroke="#5a3a0d" stroke-width="0.7" opacity="0.65"/>
+    <path d="M11.5 18.5 l2 -6 l2.5 4 l2.5 -4 l2 6 z" fill="#4a2f08" opacity="0.85"/>`,
+  unknown: (g, a) => `
+    <rect x="6" y="6" width="20" height="20" rx="3" fill="rgba(120,180,210,0.12)" stroke="${a}" stroke-width="1"/>
+    <path d="M16 20 v-2 q3 -1 3 -3.5 a3 3 0 1 0 -6 0" fill="none" stroke="${a}" stroke-width="1.5"/>
+    <circle cx="16" cy="23.5" r="1.2" fill="${a}"/>`,
+};

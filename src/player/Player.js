@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { CONFIG } from '../core/Config.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { Weapon } from './Weapon.js';
+import { Swim } from './Swim.js';
+import { Climb } from './Climb.js';
+import { Stamina } from '../systems/Stamina.js';
+import { WaterVolumes } from '../systems/WaterVolumes.js';
 
 /**
  * First-person player controller.
@@ -124,6 +128,20 @@ export class Player {
     this.movementOverrideCollide = true;
     /** Let a mount own yaw/pitch entirely instead of taking mouse-look from here. */
     this.movementOverrideLook = true;
+    /**
+     * True while `movementOverride` was raised by *this* class - swimming or a
+     * mantle - rather than by a mount.
+     *
+     * Reusing the mount flag is deliberate. Everything that has to stand down
+     * when another system is driving the capsule already keys off it:
+     * `UnstuckSystem` suspends its wedge and free-fall detectors (a swimmer
+     * pressing into a pool wall is textbook "wedged"), and `PlayerAvatar` drops
+     * foot IK and its free-fall starfish, both of which fight a swim pose. The
+     * flag says "the controller is not integrating normal locomotion", which is
+     * exactly true here.
+     * @type {boolean}
+     */
+    this._selfOverride = false;
 
     /** @type {import('./CameraRig.js').CameraRig|null} set by CameraRig's constructor. */
     this.cameraRig = null;
@@ -141,6 +159,58 @@ export class Player {
 
     // Combat resolves hits, but the player owns the health model and the weapon.
     this._weapon = new Weapon({ scene, camera, bus, materials, engine, input });
+
+    /* ---- movement modes owned by this controller (CONTRACTS-V3 3.1) ---- */
+    /** @type {import('./Swim.js').Swim} */
+    this.swim = new Swim({ player: this, physics, bus, input });
+    /** @type {import('./Climb.js').Climb} */
+    this.climb = new Climb({ player: this, physics, bus, input });
+    /**
+     * Shared exertion pool. `main.js` constructs the real one and it attaches
+     * itself here; if that wiring is absent the player builds its own on the
+     * first step, so sprint gating and swim drain always work.
+     * @type {import('../systems/Stamina.js').Stamina|null}
+     */
+    this.stamina = null;
+
+    /**
+     * `WaterVolumes` is constructed after the player, so it cannot be passed
+     * in. It publishes itself on the bus instead - and answers `water:request`
+     * for the case where it was constructed first and we missed the broadcast.
+     */
+    this._offWater = bus.on('water:volumes', (e) => {
+      if (!e?.water) return;
+      this.swim.setVolumes(e.water);
+      // An orchestrator-owned instance always wins over our fallback.
+      if (this._ownWater && e.water !== this._ownWater) {
+        this._ownWater.dispose();
+        this._ownWater = null;
+      }
+    });
+    /** Fallback water scanner, built only if nothing else announces one. */
+    this._ownWater = null;
+    /** Most recent active world, so a late fallback can scan it immediately. */
+    this._lastWorld = null;
+    this._offWorldReady = bus.on('world:changed', (e) => {
+      this._lastWorld = e?.world ?? null;
+    });
+    bus.emit('water:request', {});
+
+    // A mount taking over supersedes swimming and climbing outright, and owns
+    // `movementOverride` from that moment on.
+    this._offMounted = bus.on('mount:mounted', () => {
+      this._selfOverride = false;
+      this.swim.cancel();
+      this.climb.cancel();
+    });
+    this._offWorld = bus.on('world:changing', () => {
+      this.swim.cancel();
+      this.climb.cancel();
+      this._releaseMovement();
+    });
+
+    /** Installed lazily on the first frame - see `_installLatePose`. */
+    this._offLate = null;
 
     // Third-person parallax correction.
     //
@@ -293,6 +363,51 @@ export class Player {
     return this.cameraRig?.isThird ?? false;
   }
 
+  /* ---- swim / climb / stamina state, read by the HUD and the avatar --- */
+
+  /** True while the swim controller owns movement. */
+  get isSwimming() {
+    return this.swim.active;
+  }
+
+  /** Metres of water over the feet, 0 when dry. */
+  get swimDepth() {
+    return this.swim.depth;
+  }
+
+  /** True while the eyes are under a water surface. */
+  get isUnderwater() {
+    return this.swim.submerged;
+  }
+
+  /** Seconds of air remaining. Full whenever the head is out of the water. */
+  get oxygen() {
+    return this.swim.oxygen;
+  }
+
+  get maxOxygen() {
+    return this.swim.maxOxygen;
+  }
+
+  /** True while a mantle is in flight. */
+  get isClimbing() {
+    return this.climb.active;
+  }
+
+  /** The ledge in front of the player, or null. Drives the `[Space] Climb` prompt. */
+  get climbCandidate() {
+    return this.climb.candidate;
+  }
+
+  /** Current stamina as a number. `player.stamina` is the pool object itself. */
+  get staminaValue() {
+    return this.stamina?.value ?? 0;
+  }
+
+  get maxStamina() {
+    return this.stamina?.max ?? P.maxStamina;
+  }
+
   /** World point the crosshair is over, or null before the rig exists. */
   get aimPoint() {
     return this.cameraRig?.aimPoint ?? null;
@@ -337,6 +452,9 @@ export class Player {
   fixedUpdate(dt, elapsed) {
     this._elapsed = elapsed;
     this._tickHealth(dt, elapsed);
+    if (!this.stamina) new Stamina({ bus: this.bus, player: this });
+    this.stamina.fixedUpdate(dt, elapsed);
+    this._ensureWater();
 
     if (this._dead) {
       // Corpses still fall, so the camera settles on the floor rather than
@@ -354,7 +472,9 @@ export class Player {
     // `velocity` and `yaw`) this step. We contribute only the collision resolve,
     // so a rider still cannot pass through a wall, and the stance/bob state that
     // the avatar and the HUD read.
-    if (this.movementOverride) {
+    if (this.movementOverride && !this._selfOverride) {
+      if (this.swim.active) this.swim.cancel();
+      if (this.climb.active) this.climb.cancel();
       this._crouching = false;
       this._sprinting = false;
       this._capsuleHeight = damp(this._capsuleHeight, STAND_HEIGHT, 16, dt);
@@ -372,6 +492,43 @@ export class Player {
     }
 
     const s = this.input.state;
+    // Edge-detected here, once, because both the mantle and the jump buffer
+    // consume it and whichever ran first would otherwise eat the other's press.
+    const jumpEdge = !!s.jump && !this._jumpHeld;
+
+    /* ---- mantle in flight ------------------------------------------- *
+     * The hoist writes the capsule itself along a path it already proved
+     * clear, so nothing below this runs - including the collision resolve,
+     * which would eject the capsule out of the very wall it is climbing. */
+    if (this.climb.active) {
+      this._claimMovement();
+      this._jumpHeld = !!s.jump;
+      this.climb.fixedUpdate(dt, elapsed);
+      // The final step of a hoist calls `setClimbLanding`, which publishes the
+      // real ground state; only overwrite it while still in the air.
+      if (this.climb.active) {
+        this._grounded = false;
+        this._coyote = 0;
+      }
+      this._jumpBuffer = 0;
+      this._bobWeight = damp(this._bobWeight, 0, 12, dt);
+      return;
+    }
+
+    /* ---- water ------------------------------------------------------- */
+    if (this.swim.fixedUpdate(dt, elapsed)) {
+      this._claimMovement();
+      this._jumpHeld = !!s.jump;
+      // A tap of Space at a pool wall hauls the player out; holding it just
+      // swims up, so the mantle only ever consumes the leading edge.
+      if (jumpEdge && this.climb.tryStart(elapsed, { inWater: true })) {
+        this.swim.cancel();
+      } else if (s.forward > 0) {
+        this.climb.poll(true);
+      }
+      return;
+    }
+    this._releaseMovement();
 
     /* ---- stance ---------------------------------------------------- */
     const wantsCrouch = s.crouch;
@@ -402,8 +559,17 @@ export class Player {
     }
 
     const aiming = !!s.aim;
+    // Sprint is gated on stamina, and the gate latches until the pool has
+    // recovered a fifth - see the note on exhaustion in systems/Stamina.js.
     this._sprinting =
-      !!s.sprint && !aiming && !this._crouching && s.forward > 0 && wishLen > 0.1 && this._grounded;
+      !!s.sprint &&
+      !aiming &&
+      !this._crouching &&
+      s.forward > 0 &&
+      wishLen > 0.1 &&
+      this._grounded &&
+      (this.stamina ? this.stamina.canSprint : true);
+    if (this._sprinting) this.stamina?.drain(P.sprintStaminaDrain * dt, 'sprint');
 
     let wishSpeed = this._crouching ? P.crouchSpeed : this._sprinting ? P.sprintSpeed : P.walkSpeed;
     if (aiming && !this._crouching) wishSpeed *= 0.62;
@@ -417,6 +583,23 @@ export class Player {
       // Air control: same projection, far less authority.
       this._accelerate(wishX, wishZ, wishSpeed, P.airAcceleration, dt);
     }
+
+    /* ---- mantle: offered before the jump, never instead of it -------- *
+     * `tryStart` only succeeds when a real ledge is in front, above jump
+     * apex and under 2.4 m, with proven standing room. Everything else -
+     * kerbs, stair treads, skate-park transitions - fails the probe and the
+     * press falls straight through to the jump below. */
+    if (jumpEdge && this.climb.tryStart(elapsed, { inWater: false })) {
+      this._jumpHeld = true;
+      this._jumpBuffer = 0;
+      this._coyote = 0;
+      this._claimMovement();
+      return;
+    }
+    // Keep the prompt live while walking into something, and only then: the
+    // probe is three short raycasts and there is no reason to pay for it while
+    // standing still or backing away.
+    if (!this._grounded || s.forward > 0) this.climb.poll(false);
 
     /* ---- jump: coyote time + input buffering ------------------------ */
     this._coyote = this._grounded ? COYOTE_TIME : Math.max(0, this._coyote - dt);
@@ -607,6 +790,120 @@ export class Player {
   }
 
   /* ================================================================ */
+  /* Swim + climb support                                              */
+  /*                                                                   */
+  /* Small, explicit hooks rather than reaching into `_private` fields  */
+  /* from the sibling modules: the state these touch is load-bearing    */
+  /* for the camera, the HUD and the avatar, so every writer is here.   */
+  /* ================================================================ */
+
+  /**
+   * Raise `movementOverride` on our own behalf. Refuses to steal it from a
+   * mount, which is the only other owner.
+   */
+  _claimMovement() {
+    if (this._selfOverride || this.movementOverride) return;
+    this.movementOverride = true;
+    this._selfOverride = true;
+  }
+
+  /**
+   * Guarantee the swim controller has water data.
+   *
+   * `main.js` is expected to construct `WaterVolumes` (CONTRACTS-V3 4), but the
+   * feature must not be dead if that wiring lands late - and the scan is cheap
+   * and idempotent, so owning a private one until the real instance announces
+   * itself costs nothing but a few milliseconds per world change.
+   */
+  _ensureWater() {
+    if (this.swim.water || this._ownWater) return;
+    this._ownWater = new WaterVolumes({ bus: this.bus });
+    if (this._lastWorld) this._ownWater.rebuildFromWorld(this._lastWorld);
+  }
+
+  /** Hand `movementOverride` back. A no-op unless we were the ones holding it. */
+  _releaseMovement() {
+    if (!this._selfOverride) return;
+    this._selfOverride = false;
+    this.movementOverride = false;
+  }
+
+  /**
+   * Stance while swimming: never crouched, never sprinting on land terms, and
+   * no head bob. Called by `Swim` each step it owns movement.
+   * @param {number} dt
+   */
+  setStanceWet(dt) {
+    this._crouching = false;
+    this._sprinting = false;
+    this._capsuleHeight = damp(this._capsuleHeight, STAND_HEIGHT, 12, dt);
+    this._coyote = 0;
+    this._jumpBuffer = 0;
+    this._bobWeight = damp(this._bobWeight, 0, 9, dt);
+    this._stepSmooth = damp(this._stepSmooth, 0, 13, dt);
+  }
+
+  /**
+   * Ground state after a swim step. A swimmer standing on the river bed is
+   * technically grounded, and reporting that keeps the avatar and the HUD
+   * honest without letting the walk code run.
+   * @param {{grounded:boolean, groundNormal:THREE.Vector3}} res
+   */
+  setSwimContact(res) {
+    this._wasGrounded = this._grounded;
+    this._grounded = false;
+    if (res?.groundNormal) this._groundNormal.copy(res.groundNormal);
+  }
+
+  /**
+   * Stance during a mantle. `tuck` runs 0 (fully tucked) to 1 (standing) and
+   * drives the capsule height, which is what `crouchAmount` - and therefore the
+   * avatar's leg pose and the camera's eye height - are derived from.
+   * @param {number} tuck
+   * @param {number} dt
+   */
+  setClimbStance(tuck, dt) {
+    const target = THREE.MathUtils.lerp(CROUCH_HEIGHT, STAND_HEIGHT, clamp(tuck, 0, 1));
+    this._capsuleHeight = damp(this._capsuleHeight, target, 14, dt);
+    this._crouching = false;
+    this._sprinting = false;
+    this._bobWeight = damp(this._bobWeight, 0, 12, dt);
+  }
+
+  /**
+   * Called once as a mantle completes, with the settled capsule resolve.
+   * @param {{grounded:boolean, groundNormal:THREE.Vector3}} res
+   */
+  setClimbLanding(res) {
+    this._wasGrounded = this._grounded;
+    this._grounded = res?.grounded ?? true;
+    if (res?.groundNormal) this._groundNormal.copy(res.groundNormal);
+    this._coyote = COYOTE_TIME;
+    this._releaseMovement();
+    // Absorb the last few centimetres in the camera so the top of the hoist
+    // does not snap: same mechanism stairs use.
+    this._stepSmooth = Math.min(P.stepHeight * 1.3, this._stepSmooth + 0.12);
+  }
+
+  /**
+   * Install the late-frame pose pass.
+   *
+   * `PlayerAvatar` runs after this class in `main.js`'s frame order and rewrites
+   * every bone, so a swim or climb pose written from `update()` would be thrown
+   * away. Registering an extra frame updater on the *first* frame appends it
+   * behind main.js's own callback - `Engine` iterates a Set, and insertion
+   * order is call order - so this lands after the avatar has finished, and
+   * before the renderer flattens the skeleton.
+   */
+  _installLatePose() {
+    if (this._offLate || !this.engine?.onFrameUpdate) return;
+    this._offLate = this.engine.onFrameUpdate((dt, elapsed) => {
+      this.swim.applyPose(dt, elapsed);
+      this.climb.applyPose(dt, elapsed);
+    });
+  }
+
+  /* ================================================================ */
   /* Health                                                            */
   /* ================================================================ */
 
@@ -662,6 +959,9 @@ export class Player {
     this._dead = true;
     this._health = 0;
     this._deathAt = this._elapsed;
+    this.swim.cancel();
+    this.climb.cancel();
+    this._releaseMovement();
     this._velocity.set(0, this._velocity.y, 0);
     this._weapon.setEnabled(false);
     this._weapon.setAim(false);
@@ -692,6 +992,11 @@ export class Player {
    * @param {number} [yaw] radians
    */
   teleport(position, yaw = this._yaw, opts = {}) {
+    // Whatever mode we were in, the destination decides the next one. Swim
+    // re-detects on the following step from the bed depth there.
+    this.swim.cancel();
+    this.climb.cancel();
+    this._releaseMovement();
     this._position.copy(position);
     this._yaw = yaw;
     this._pitch = 0;
@@ -729,6 +1034,7 @@ export class Player {
    */
   update(dt, elapsed) {
     this._elapsed = elapsed;
+    this._installLatePose();
 
     const look = this.input.consumeLook();
     const lookOwned = this.movementOverride && !this.movementOverrideLook;
@@ -882,6 +1188,18 @@ export class Player {
   dispose() {
     this._offFired?.();
     this._offFired = null;
+    this._offWater?.();
+    this._offWater = null;
+    this._offMounted?.();
+    this._offMounted = null;
+    this._offWorld?.();
+    this._offWorld = null;
+    this._offWorldReady?.();
+    this._offWorldReady = null;
+    this._ownWater?.dispose();
+    this._ownWater = null;
+    this._offLate?.();
+    this._offLate = null;
     this._weapon.dispose();
   }
 }

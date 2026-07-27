@@ -434,6 +434,167 @@ body {
   text-align: center;
 }
 
+/* ==========================================================================
+   BOOT BUSY STATE  (v3)
+
+   The user was seeing Chrome's "page unresponsive" dialog during boot. Boot is
+   slow on purpose — the ~15 s shader warmup buys back a measured 63 s stall on
+   first weapon select — so the fix is not speed, it is *visible life*: Chrome's
+   heuristic and the player's patience both key on whether anything is moving.
+
+   RULE FOR ANYONE EDITING THIS BLOCK: every animation below runs on `transform`
+   or `opacity` only, and each animated element is promoted to its own layer.
+   That is what lets the compositor keep them moving while the main thread is
+   inside a long synchronous compile. Do not animate width, colour, filter or
+   box-shadow here, and never drive any of it from requestAnimationFrame — a
+   rAF-driven spinner freezes at exactly the moment it is needed.
+   ========================================================================== */
+.boot-busy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin: 0 0 20px;
+  min-height: 54px;
+}
+
+.boot-spinner {
+  position: relative;
+  flex: 0 0 auto;
+  width: 58px;
+  height: 58px;
+}
+
+.boot-spinner.sm {
+  width: 34px;
+  height: 34px;
+}
+
+.boot-spinner .bs-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 3px solid rgba(120, 170, 200, 0.08);
+  will-change: transform;
+  /* Own layer, so the compositor owns the animation too. */
+  transform: translateZ(0);
+}
+
+.boot-spinner.sm .bs-ring {
+  border-width: 2px;
+}
+
+.boot-spinner .bs-ring.r1 {
+  border-top-color: var(--cy);
+  border-right-color: rgba(82, 233, 255, 0.45);
+  box-shadow: 0 0 16px rgba(82, 233, 255, 0.28);
+  animation: bs-spin 0.95s linear infinite;
+}
+
+.boot-spinner .bs-ring.r2 {
+  inset: 9px;
+  border-bottom-color: var(--amber);
+  border-left-color: rgba(255, 180, 74, 0.4);
+  animation: bs-spin 1.5s linear infinite reverse;
+}
+
+.boot-spinner.sm .bs-ring.r2 {
+  inset: 6px;
+}
+
+.boot-spinner .bs-ring.r3 {
+  inset: 18px;
+  border-top-color: rgba(212, 107, 255, 0.9);
+  border-right-color: rgba(212, 107, 255, 0.3);
+  animation: bs-spin 2.2s linear infinite;
+}
+
+.boot-spinner.sm .bs-ring.r3 {
+  inset: 11px;
+}
+
+.boot-spinner .bs-core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: #eafcff;
+  box-shadow: 0 0 12px var(--cy-glow);
+  will-change: transform, opacity;
+  animation: bs-core 1.4s ease-in-out infinite;
+}
+
+@keyframes bs-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes bs-core {
+  0%,
+  100% {
+    transform: scale(0.7);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scale(1.25);
+    opacity: 1;
+  }
+}
+
+.boot-pct {
+  font-family: var(--f-disp);
+  font-weight: 700;
+  font-size: 30px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  color: #eaf8ff;
+  text-shadow: 0 0 18px var(--cy-glow);
+  min-width: 92px;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The reassurance line. Appears ~3 s in, on a pure opacity/transform keyframe
+   so it still arrives on time if the main thread is wedged when it is due. */
+.boot-patience {
+  margin: 12px auto 0;
+  max-width: 52ch;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  color: var(--txt-dim);
+  opacity: 0;
+  transform: translateY(6px);
+  will-change: transform, opacity;
+}
+
+.boot-screen.busy .boot-patience {
+  animation: boot-patience 0.7s ease-out 3s forwards;
+}
+
+@keyframes boot-patience {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Once the busy state exists the bar is supporting evidence, not the headline. */
+.boot-screen.busy .boot-bar {
+  height: 4px;
+}
+
+/* Work finished: the screen is waiting on the player, not on the machine. */
+.boot-screen:not(.busy) .boot-busy,
+.boot-screen:not(.busy) .boot-patience {
+  display: none;
+}
+
 .boot-error {
   margin-top: 24px;
   padding: 12px 16px;
@@ -689,20 +850,42 @@ body {
 }
 
 /* ==========================================================================
-   HEALTH  (bottom-left, above chat)
+   VITALS STACK  (top-left: credits > health > stamina)
+
+   v3 moves health out of the bottom-left corner and stacks the three things a
+   player checks between fights into one column with one reading order. The
+   panels are laid out by this flex column rather than by three sets of absolute
+   coordinates, so the stack cannot drift apart when a panel changes height.
    ========================================================================== */
-.health {
-  left: 34px;
-  bottom: 34px;
-  width: 316px;
-  padding: 12px 16px 14px;
-  clip-path: var(--clip-tr);
-  transition: bottom 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+.vitals {
+  position: absolute;
+  left: 30px;
+  top: 30px;
+  width: 296px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* The whole stack is one visual object; a single origin keeps any transform
+     applied to a child from shifting its neighbours. */
+  transform-origin: 0 0;
 }
 
-/* The chat panel occupies the bottom-left corner; lift the health block clear. */
-.hud.chatting .health {
-  bottom: 442px;
+/* Panels inside the stack are flow-laid, not absolutely placed. */
+.vitals > .panel {
+  position: relative;
+  left: auto;
+  right: auto;
+  top: auto;
+  bottom: auto;
+  width: 100%;
+}
+
+/* ==========================================================================
+   HEALTH  (top-left, under credits)
+   ========================================================================== */
+.health {
+  padding: 11px 15px 12px;
+  clip-path: var(--clip-br);
 }
 
 .health::before {
@@ -739,7 +922,7 @@ body {
 .health-num {
   font-family: var(--f-disp);
   font-weight: 700;
-  font-size: 42px;
+  font-size: 38px;
   line-height: 0.82;
   color: #f2fbff;
   text-shadow: 0 0 16px var(--cy-glow), 0 2px 6px rgba(0, 0, 0, 0.8);
@@ -907,6 +1090,151 @@ body {
 }
 
 /* ==========================================================================
+   STAMINA  (top-left, under health)
+
+   Deliberately slimmer and cooler than health: it is a budget, not a life
+   total, and it must not compete for the same glance.
+   ========================================================================== */
+.stamina {
+  padding: 8px 15px 10px;
+  clip-path: var(--clip-br);
+}
+
+.stamina::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, var(--lime), transparent);
+  box-shadow: 0 0 10px rgba(182, 255, 90, 0.45);
+  transition: background 0.3s;
+}
+
+.stamina.low::before {
+  background: linear-gradient(180deg, var(--amber), transparent);
+  box-shadow: 0 0 10px rgba(255, 180, 74, 0.55);
+}
+
+.stamina.empty::before {
+  background: linear-gradient(180deg, var(--red), transparent);
+  box-shadow: 0 0 12px var(--red-glow);
+}
+
+.stam-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.stam-pct {
+  font-family: var(--f-disp);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--txt-dim);
+  transition: color 0.25s;
+}
+
+.stamina.low .stam-pct {
+  color: #ffe2b8;
+}
+
+.stamina.empty .stam-pct {
+  color: #ffd2d8;
+  text-shadow: 0 0 10px var(--red-glow);
+}
+
+.stam-bar {
+  position: relative;
+  height: 7px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.stam-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 100%;
+  transform-origin: 0 50%;
+  will-change: transform;
+  background: linear-gradient(180deg, #d9ffa6, var(--lime) 45%, #5f9c1c);
+  box-shadow: 0 0 10px rgba(182, 255, 90, 0.45);
+  transition: background 0.3s, box-shadow 0.3s;
+}
+
+.stamina.low .stam-fill {
+  background: linear-gradient(180deg, #ffe0ae, var(--amber) 45%, #a86816);
+  box-shadow: 0 0 10px rgba(255, 180, 74, 0.5);
+}
+
+.stamina.empty .stam-fill {
+  background: linear-gradient(180deg, #ffb3bd, var(--red) 45%, #8e1120);
+  box-shadow: 0 0 12px var(--red-glow);
+}
+
+/* Coarser notches than health — six cells, not ten, so the two bars are never
+   mistaken for one another at a glance. */
+.stam-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0,
+    transparent calc(16.666% - 2px),
+    rgba(3, 8, 14, 0.9) calc(16.666% - 2px),
+    rgba(3, 8, 14, 0.9) 16.666%
+  );
+}
+
+.stam-gloss {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent 60%);
+}
+
+/* A short breath on the leading edge while it is actually being spent. */
+.stamina.draining .stam-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent 60%, rgba(255, 255, 255, 0.35));
+  animation: stam-pulse 0.5s ease-out infinite;
+}
+
+@keyframes stam-pulse {
+  from {
+    opacity: 0.7;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.stamina.empty {
+  animation: stam-empty 1.1s ease-in-out infinite;
+}
+
+@keyframes stam-empty {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.72;
+  }
+}
+
+/* ==========================================================================
    AMMO  (bottom-right)
    ========================================================================== */
 .ammo {
@@ -1061,6 +1389,213 @@ body {
 .ammo.low .ammo-pips i:not(.spent) {
   background: var(--red);
   box-shadow: 0 0 6px var(--red-glow);
+}
+
+/* --- v3: the reserve is the bag, so name it ------------------------------ */
+.ammo-bag {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rule-soft);
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ammo-bag-l {
+  font-family: var(--f-disp);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  text-indent: 0.28em;
+  text-transform: uppercase;
+  color: var(--txt-dim);
+}
+
+.ammo-bag-v {
+  font-family: var(--f-disp);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #dff0f8;
+  min-width: 34px;
+  text-align: right;
+}
+
+.ammo-bag.none .ammo-bag-v {
+  color: var(--red);
+  text-shadow: 0 0 10px var(--red-glow);
+}
+
+/* --- v3: dry fire (`weapon:noammo`) -------------------------------------- */
+.ammo-dry {
+  margin-top: 8px;
+  font-family: var(--f-disp);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-indent: 0.24em;
+  text-transform: uppercase;
+  color: #ffd2d8;
+  text-shadow: 0 0 12px var(--red-glow);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.14s ease, visibility 0.14s;
+}
+
+.ammo.dry .ammo-dry {
+  opacity: 1;
+  visibility: visible;
+}
+
+.ammo.dry::before {
+  background: linear-gradient(180deg, var(--red), transparent);
+  box-shadow: 0 0 14px var(--red-glow);
+}
+
+/* The shake is the tell — it reads as the trigger physically refusing. */
+.ammo.dry-kick {
+  animation: dry-kick 0.34s cubic-bezier(0.32, 0.9, 0.3, 1);
+}
+
+@keyframes dry-kick {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  18% {
+    transform: translateX(-7px);
+  }
+  42% {
+    transform: translateX(5px);
+  }
+  68% {
+    transform: translateX(-2.5px);
+  }
+}
+
+/* ==========================================================================
+   "WHAT HIT ME"  (v3 npc:attack, under the crosshair)
+
+   The damage arcs already say *where*; this says *what*, and only for as long
+   as the answer is still useful.
+   ========================================================================== */
+.attackline {
+  position: absolute;
+  left: 50%;
+  top: 62%;
+  transform: translate(-50%, 8px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 13px;
+  background: linear-gradient(150deg, rgba(52, 14, 22, 0.62), rgba(10, 4, 8, 0.7));
+  border: 1px solid rgba(255, 61, 85, 0.3);
+  border-left: 2px solid var(--red);
+  clip-path: var(--clip-tr);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.18s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.18s;
+  white-space: nowrap;
+}
+
+.attackline.show {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
+.attackline.kick {
+  animation: attack-kick 0.4s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes attack-kick {
+  0% {
+    transform: translate(-50%, 0) scale(1.09);
+  }
+  100% {
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+.attack-who {
+  font-family: var(--f-disp);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: #ffe0e5;
+}
+
+.attack-weapon {
+  font-family: var(--f-ui);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 190, 200, 0.72);
+}
+
+.attack-weapon::before {
+  content: '· ';
+  opacity: 0.6;
+}
+
+.attack-dmg {
+  font-family: var(--f-disp);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--red);
+  text-shadow: 0 0 12px var(--red-glow);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   HELP AFFORDANCE  (bottom-left, the corner health vacated)
+   ========================================================================== */
+.helpchip {
+  position: absolute;
+  left: 30px;
+  bottom: 30px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 13px 6px 7px;
+  font-family: var(--f-ui);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--txt-dim);
+  background: linear-gradient(150deg, rgba(18, 32, 48, 0.42), rgba(4, 9, 16, 0.55));
+  border: 1px solid var(--rule-soft);
+  clip-path: var(--clip-tr);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  opacity: 0.62;
+  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.helpchip b {
+  font-family: var(--f-disp);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #e9f7ff;
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.22), rgba(82, 233, 255, 0.05));
+  border: 1px solid rgba(82, 233, 255, 0.38);
+  border-bottom-width: 2px;
+  padding: 2px 8px 1px;
+}
+
+/* The chat panel takes this corner, and the panel it advertises is already up. */
+.hud.chatting .helpchip,
+.hud.helping .helpchip,
+.hud.dead .helpchip {
+  opacity: 0;
+  transform: translateY(10px);
 }
 
 /* ==========================================================================
@@ -1340,6 +1875,20 @@ body {
   text-shadow: 0 0 10px rgba(212, 107, 255, 0.7);
 }
 
+/* v3 loot pickups. Green like the credit floats, because both mean "you gained
+   something" — the palette should not make the player learn two languages. */
+.toast.loot {
+  border-left-color: var(--lime);
+  color: #e6ffcd;
+  font-variant-numeric: tabular-nums;
+}
+.toast.loot::before {
+  content: '▲';
+  font-size: 10px;
+  color: var(--lime);
+  text-shadow: 0 0 10px rgba(182, 255, 90, 0.75);
+}
+
 .toast.out {
   animation: toast-out 0.4s ease forwards;
 }
@@ -1447,19 +1996,42 @@ body {
   background: radial-gradient(ellipse at 50% 50%, rgba(120, 235, 255, 0.06), rgba(2, 5, 10, 0.98) 68%);
 }
 
-.wipe.run {
+/* v3: the transition is a *state*, not a timed animation.
+
+   Building a destination world can take seconds; the old fixed-duration wipe
+   finished long before the world did and dumped the player back into a frozen
+   scene with no evidence anything was happening. `.run` now closes the overlay
+   and holds it (`forwards` on every keyframe, no end time), and `.out` — added
+   by the HUD when `world:changed` finally lands — opens it again.
+
+   Everything that moves while it is held is `transform`/`opacity` only, for the
+   same compositor reason as the boot spinner: world generation blocks the main
+   thread, and a busy indicator that stops during the block is worse than none. */
+.wipe.run,
+.wipe.out {
   visibility: visible;
-  animation: wipe-fade var(--wipe-dur, 1.5s) ease-in-out forwards;
 }
 
-@keyframes wipe-fade {
+.wipe.run {
+  animation: wipe-in calc(var(--wipe-dur, 1.5s) * 0.45) ease-out forwards;
+}
+
+.wipe.out {
+  animation: wipe-out 0.78s ease-in forwards;
+}
+
+@keyframes wipe-in {
   0% {
     opacity: 0;
   }
-  22% {
+  55%,
+  100% {
     opacity: 1;
   }
-  72% {
+}
+
+@keyframes wipe-out {
+  0% {
     opacity: 1;
   }
   100% {
@@ -1480,16 +2052,17 @@ body {
   transform: translateX(-14%);
 }
 
+/* Held state: keep drifting, so the backdrop never looks like a still frame. */
 .wipe.run .wipe-bars {
-  animation: wipe-bars var(--wipe-dur, 1.5s) cubic-bezier(0.7, 0, 0.3, 1) forwards;
+  animation: wipe-bars 9s ease-in-out infinite alternate;
 }
 
 @keyframes wipe-bars {
   from {
-    transform: translateX(-40%) skewX(-8deg);
+    transform: translateX(-14%) skewX(-8deg);
   }
   to {
-    transform: translateX(40%) skewX(-8deg);
+    transform: translateX(14%) skewX(-8deg);
   }
 }
 
@@ -1517,34 +2090,50 @@ body {
 }
 
 .wipe.run .wipe-slab.top {
-  animation: slab-top var(--wipe-dur, 1.5s) cubic-bezier(0.65, 0, 0.35, 1) forwards;
+  animation: slab-close-top calc(var(--wipe-dur, 1.5s) * 0.45) cubic-bezier(0.65, 0, 0.35, 1) forwards;
 }
 .wipe.run .wipe-slab.bot {
-  animation: slab-bot var(--wipe-dur, 1.5s) cubic-bezier(0.65, 0, 0.35, 1) forwards;
+  animation: slab-close-bot calc(var(--wipe-dur, 1.5s) * 0.45) cubic-bezier(0.65, 0, 0.35, 1) forwards;
+}
+.wipe.out .wipe-slab.top {
+  animation: slab-open-top 0.78s cubic-bezier(0.65, 0, 0.35, 1) forwards;
+}
+.wipe.out .wipe-slab.bot {
+  animation: slab-open-bot 0.78s cubic-bezier(0.65, 0, 0.35, 1) forwards;
 }
 
-@keyframes slab-top {
-  0% {
+@keyframes slab-close-top {
+  from {
     transform: translateY(-100%);
   }
-  40%,
-  62% {
+  to {
     transform: translateY(0);
   }
-  100% {
-    transform: translateY(-100%);
-  }
 }
 
-@keyframes slab-bot {
-  0% {
+@keyframes slab-close-bot {
+  from {
     transform: translateY(100%);
   }
-  40%,
-  62% {
+  to {
     transform: translateY(0);
   }
-  100% {
+}
+
+@keyframes slab-open-top {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-100%);
+  }
+}
+
+@keyframes slab-open-bot {
+  from {
+    transform: translateY(0);
+  }
+  to {
     transform: translateY(100%);
   }
 }
@@ -1560,24 +2149,84 @@ body {
 }
 
 .wipe.run .wipe-label {
-  animation: wipe-label var(--wipe-dur, 1.5s) ease forwards;
+  animation: wipe-label calc(var(--wipe-dur, 1.5s) * 0.5) ease forwards;
+}
+
+.wipe.out .wipe-label {
+  animation: wipe-label-out 0.5s ease forwards;
 }
 
 @keyframes wipe-label {
   0%,
-  32% {
+  45% {
     opacity: 0;
-    letter-spacing: 0.1em;
-  }
-  50%,
-  62% {
-    opacity: 1;
-    letter-spacing: 0.42em;
+    transform: translateY(-50%) scale(0.97);
   }
   100% {
-    opacity: 0;
-    letter-spacing: 0.6em;
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
   }
+}
+
+@keyframes wipe-label-out {
+  from {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-50%) scale(1.04);
+  }
+}
+
+/* --- held busy state ----------------------------------------------------- */
+.wipe-busy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 13px;
+  margin-top: 26px;
+  opacity: 0;
+  will-change: opacity;
+}
+
+/* Only appears if the transition is actually taking a while — a portal into an
+   already-built world should not be dressed up as a loading screen. */
+.wipe.run .wipe-busy {
+  animation: wipe-busy-in 0.5s ease-out 0.85s forwards;
+}
+
+@keyframes wipe-busy-in {
+  to {
+    opacity: 1;
+  }
+}
+
+.wipe-stage {
+  font-family: var(--f-disp);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  text-indent: 0.3em;
+  text-transform: uppercase;
+  color: var(--cy);
+  text-shadow: 0 0 12px var(--cy-glow);
+}
+
+.wipe-patience {
+  margin: 16px auto 0;
+  max-width: 46ch;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--txt-dim);
+  opacity: 0;
+  transform: translateY(6px);
+  will-change: transform, opacity;
+}
+
+.wipe.run .wipe-patience {
+  animation: boot-patience 0.7s ease-out 3s forwards;
 }
 
 .wipe-kicker {
@@ -1610,18 +2259,16 @@ body {
 }
 
 .wipe.run .wipe-flash {
-  animation: wipe-flash var(--wipe-dur, 1.5s) ease-out forwards;
+  animation: wipe-flash calc(var(--wipe-dur, 1.5s) * 0.45) ease-out forwards;
 }
 
 @keyframes wipe-flash {
-  0%,
-  42% {
+  0% {
     opacity: 0;
   }
-  48% {
+  72% {
     opacity: 0.85;
   }
-  70%,
   100% {
     opacity: 0;
   }
@@ -2457,6 +3104,18 @@ body {
 .w-bow {
   --acc: var(--lime);
 }
+/* v3 sword: the only melee slot, so it gets the one unused accent. */
+.w-sword {
+  --acc: var(--mag);
+}
+
+/* Melee has no magazine, so the count reads as a dash rather than a zero —
+   soften it so it does not look like a broken readout. */
+.w-sword .wslot-ammo b {
+  font-size: 15px;
+  letter-spacing: 0.16em;
+  opacity: 0.8;
+}
 
 /* ==========================================================================
    CHARGE METER (fireball / bow)  — orbits the crosshair
@@ -2644,12 +3303,9 @@ body {
 }
 
 /* ==========================================================================
-   CREDITS  (top-left)
+   CREDITS  (top-left — head of the vitals stack)
    ========================================================================== */
 .credits {
-  left: 30px;
-  top: 30px;
-  min-width: 196px;
   padding: 9px 14px 10px 11px;
   display: flex;
   align-items: center;
@@ -2769,12 +3425,13 @@ body {
   }
 }
 
-/* Anchored to the panel's lower edge so the increment rises *into* the ledger
-   rather than off the top of the screen. */
+/* v3: health now sits directly under credits, so the increments moved to the
+   panel's right edge — they still rise *into* the ledger, but they no longer
+   cross the health bar on the way. */
 .credits-floats {
   position: absolute;
-  left: 72%;
-  top: 100%;
+  left: calc(100% + 30px);
+  top: 60%;
   width: 0;
   height: 0;
   pointer-events: none;
@@ -2853,6 +3510,26 @@ body {
 
 .mount.in {
   animation: wslot-pop 0.5s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+/* v3 car. Warm accent so a ground vehicle never reads as the hoverboard at a
+   glance — the boost meter behaves the same, the identity must not. */
+.mount[data-mount='car'] {
+  --acc: var(--amber);
+}
+
+.mount[data-mount='car']::before {
+  background: linear-gradient(90deg, var(--amber), transparent);
+  box-shadow: 0 0 10px rgba(255, 180, 74, 0.55);
+}
+
+.mount[data-mount='car'] .mount-ico {
+  --acc: var(--amber);
+  filter: drop-shadow(0 0 7px rgba(255, 180, 74, 0.5));
+}
+
+.mount[data-mount='car'] .mount-name {
+  text-shadow: 0 0 12px rgba(255, 180, 74, 0.55);
 }
 
 .mount-head {
@@ -3182,6 +3859,239 @@ body {
 }
 
 /* ==========================================================================
+   HELP MENU  (F1)
+
+   A reference, not a menu: it does not pause, does not take focus and does not
+   consume clicks. Six binding columns over a row of field notes, sized so the
+   whole thing fits a 1080p viewport without scrolling — a control list you have
+   to scroll is a control list nobody finishes reading.
+   ========================================================================== */
+.help {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  background: radial-gradient(ellipse 90% 80% at 50% 45%, rgba(3, 8, 16, 0.66), rgba(2, 4, 9, 0.86));
+  backdrop-filter: blur(4px) saturate(0.85);
+  -webkit-backdrop-filter: blur(4px) saturate(0.85);
+  transition: opacity 0.2s ease, visibility 0.2s;
+}
+
+.help.show {
+  opacity: 1;
+  visibility: visible;
+}
+
+.help-card {
+  position: relative;
+  width: min(1420px, 94vw);
+  max-height: 92vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 26px 34px 24px;
+  background: linear-gradient(160deg, rgba(11, 21, 35, 0.9), rgba(4, 8, 15, 0.94));
+  border: 1px solid var(--rule-soft);
+  border-top: 1px solid var(--rule);
+  clip-path: polygon(0 20px, 20px 0, calc(100% - 20px) 0, 100% 20px, 100% calc(100% - 20px), calc(100% - 20px) 100%, 20px 100%, 0 calc(100% - 20px));
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 40px 120px rgba(0, 0, 0, 0.72);
+  /* Scrolling is the only interaction it allows. */
+  pointer-events: auto;
+  transform: translateY(14px) scale(0.985);
+  transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.help.show .help-card {
+  transform: none;
+}
+
+.help-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 14px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.help-kicker {
+  font-family: var(--f-disp);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.44em;
+  text-indent: 0.44em;
+  text-transform: uppercase;
+  color: var(--amber);
+  text-shadow: 0 0 12px rgba(255, 180, 74, 0.5);
+}
+
+.help-title {
+  font-family: var(--f-disp);
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: 0.22em;
+  text-indent: 0.22em;
+  color: #eaf8ff;
+  text-shadow: 0 0 22px var(--cy-glow);
+  margin-top: 4px;
+}
+
+.help-close {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--txt-dim);
+  white-space: nowrap;
+}
+
+.help-close b {
+  font-family: var(--f-disp);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #e9f7ff;
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.22), rgba(82, 233, 255, 0.05));
+  border: 1px solid rgba(82, 233, 255, 0.4);
+  border-bottom-width: 2px;
+  padding: 3px 9px 2px;
+}
+
+.help-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 18px 26px;
+}
+
+.help-group {
+  --acc: var(--cy);
+  position: relative;
+  padding-left: 13px;
+  min-width: 0;
+}
+
+.help-group.a-amber {
+  --acc: var(--amber);
+}
+.help-group.a-mag {
+  --acc: var(--mag);
+}
+.help-group.a-lime {
+  --acc: var(--lime);
+}
+
+.help-group::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  background: linear-gradient(180deg, var(--acc), transparent 85%);
+  opacity: 0.85;
+}
+
+.help-group-t {
+  margin: 0 0 10px;
+  font-family: var(--f-disp);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-indent: 0.3em;
+  text-transform: uppercase;
+  color: var(--acc);
+}
+
+.help-rows {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 6px 10px;
+}
+
+.help-rows dt {
+  display: flex;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.help-rows dt b {
+  font-family: var(--f-disp);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #e9f7ff;
+  background: linear-gradient(180deg, rgba(120, 170, 200, 0.2), rgba(120, 170, 200, 0.05));
+  border: 1px solid rgba(140, 190, 215, 0.28);
+  border-bottom-width: 2px;
+  padding: 3px 7px 2px;
+  min-width: 24px;
+  text-align: center;
+}
+
+.help-rows dd {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--txt);
+}
+
+.help-notes {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule-soft);
+  --acc: var(--cy);
+}
+
+.help-notes-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px 26px;
+}
+
+.help-note b {
+  display: block;
+  font-family: var(--f-disp);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--amber);
+  margin-bottom: 3px;
+}
+
+.help-note p {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--txt-dim);
+}
+
+.help-foot {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule-soft);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: rgba(127, 157, 176, 0.75);
+  text-align: center;
+}
+
+/* ==========================================================================
    ACCESSIBILITY
    ========================================================================== */
 @media (prefers-reduced-motion: reduce) {
@@ -3200,11 +4110,40 @@ body {
   .charge.full .charge-svg .cval,
   .charge.full .charge-tag,
   .credits.bump .credits-ico,
-  .credits-pip.on {
+  .credits-pip.on,
+  .stamina.empty,
+  .stamina.draining .stam-bar::after,
+  .wipe.run .wipe-bars {
     animation: none !important;
+  }
+  /* The boot and transition spinners are deliberately NOT in that list: they
+     are progress indicators, and a frozen one would say "hung", not "calm".
+     They are slowed instead. */
+  .boot-spinner .bs-ring.r1 {
+    animation-duration: 2.4s;
+  }
+  .boot-spinner .bs-ring.r2 {
+    animation-duration: 3.4s;
+  }
+  .boot-spinner .bs-ring.r3 {
+    animation-duration: 4.6s;
+  }
+  .boot-spinner .bs-core {
+    animation: none;
   }
   * {
     transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-height: 900px) {
+  /* Trim the stack rather than let it reach the weapon strip. */
+  .health-num {
+    font-size: 32px;
+  }
+  .vitals {
+    width: 274px;
+    gap: 6px;
   }
 }
 
@@ -3212,13 +4151,12 @@ body {
   .chat-log {
     height: 168px;
   }
-  .health,
   .ammo,
   .chat {
     bottom: 22px;
   }
-  .hud.chatting .health {
-    bottom: 366px;
+  .helpchip {
+    bottom: 22px;
   }
   .wstrip {
     bottom: 20px;
@@ -3228,6 +4166,15 @@ body {
   }
   .stuck {
     bottom: 27%;
+  }
+  .boot-pct {
+    font-size: 24px;
+  }
+  .help-card {
+    padding: 18px 24px 18px;
+  }
+  .help-title {
+    font-size: 26px;
   }
 }
 

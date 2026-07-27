@@ -3,6 +3,7 @@ import { Minimap } from './Minimap.js';
 import { ChatBox } from './ChatBox.js';
 import { ChatClient } from '../ai/ChatClient.js';
 import { WeaponWheel, makeIcon } from './WeaponWheel.js';
+import { HelpMenu } from './HelpMenu.js';
 
 /**
  * The whole player-facing interface: crosshair, health, ammo, weapon selector,
@@ -34,10 +35,75 @@ const CHARGE_C = 2 * Math.PI * CHARGE_R;
 /** Charging weapons emit every frame; this is how long we wait before fading. */
 const CHARGE_HOLD = 0.14;
 const CAM_MODE_LIFE = 1.6;
-const MOUNT_LABELS = { hoverboard: 'Hoverboard', dragon: 'Dragon' };
+const MOUNT_LABELS = { hoverboard: 'Hoverboard', dragon: 'Dragon', car: 'Ground Car' };
 /** Boost meter fallback rates, used only when the mount exposes no charge. */
 const BOOST_DRAIN = 0.34;
 const BOOST_RECHARGE = 0.17;
+
+/** How long the "what just hit you" readout and the dry-fire warning linger. */
+const ATTACK_LIFE = 2.4;
+const NOAMMO_LIFE = 1.15;
+
+/**
+ * Human names for the item ids the inventory agent emits. Unknown ids fall
+ * through to the raw id rather than being dropped, so a new item type shows up
+ * in the HUD the day it is added instead of silently going missing.
+ */
+const ITEM_LABELS = {
+  bullet: 'bullets',
+  arrow: 'arrows',
+  fireball_charge: 'fireball charges',
+  credits: 'credits',
+  medkit: 'medkit',
+};
+
+/** Labels for the weapon ids hostiles report through `npc:attack`. */
+const NPC_WEAPON_LABELS = {
+  sidearm: 'sidearm',
+  rifle: 'rifle',
+  bow: 'bow',
+  staff: 'staff',
+  melee: 'melee',
+};
+
+/**
+ * Slots the strip shows before a real `Loadout` appears. WeaponWheel's own
+ * defaults predate the sword, so the HUD publishes the v3 set instead — the
+ * Loadout still overwrites it the moment it exists.
+ */
+const DEFAULT_SLOTS = [
+  { id: 'machinegun', name: CONFIG.weapon.machinegun.name },
+  { id: 'fireball', name: 'Ember Caster' },
+  { id: 'bow', name: 'Recurve Bow' },
+  { id: 'sword', name: 'Arc Sabre' },
+];
+
+/**
+ * Icons WeaponWheel does not ship (it is owned by another agent and predates
+ * the sword and the car). Same 64x40 authoring box and the same `gi-*` classes
+ * so they inherit the identical palette; drawn here and injected into the slot
+ * or the mount badge after the wheel has built it.
+ */
+const EXTRA_ICONS = {
+  sword: [
+    ['path', 'gi-solid', 'M8 20 L40 15.4 L46 20 L40 24.6 Z'],
+    ['path', 'gi-hot', 'M8 20 L40 18.6 L40 21.4 Z'],
+    ['path', 'gi-dim', 'M45.5 12.5h3.6v15h-3.6z'],
+    ['path', 'gi-solid', 'M49 17.6h8.5v4.8H49z'],
+    ['circle', 'gi-hot', '59.6 20 2.4'],
+    ['path', 'gi-line gi-thin', 'M50 25.5h6.5M50 14.5h6.5'],
+  ],
+  car: [
+    ['path', 'gi-solid', 'M5 22h54v7H5z'],
+    ['path', 'gi-dim', 'M14 12.5h30l8 9.5H9z'],
+    ['path', 'gi-hot', 'M17 14.5h11v6H17zM31 14.5h11l4.5 6H31z'],
+    ['circle', 'gi-solid', '18 29.5 5.2'],
+    ['circle', 'gi-solid', '46 29.5 5.2'],
+    ['circle', 'gi-dark', '18 29.5 2'],
+    ['circle', 'gi-dark', '46 29.5 2'],
+    ['path', 'gi-hot', 'M59 23.5h4v3h-4z'],
+  ],
+};
 
 function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -50,6 +116,33 @@ function svg(tag, attrs) {
   const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const k in attrs) n.setAttribute(k, attrs[k]);
   return n;
+}
+
+/**
+ * Build one of the HUD-local glyphs (`sword`, `car`) in WeaponWheel's format.
+ * Returns null for anything the wheel already knows, so callers can fall back.
+ * @param {string} id
+ * @returns {SVGSVGElement|null}
+ */
+function makeExtraIcon(id) {
+  const spec = EXTRA_ICONS[id];
+  if (!spec) return null;
+  const root = svg('svg', { class: `gicon gicon-${id}`, viewBox: '0 0 64 40', focusable: 'false' });
+  for (let i = 0; i < spec.length; i++) {
+    const [tag, cls, data] = spec[i];
+    if (tag === 'circle') {
+      const p = data.split(' ');
+      root.appendChild(svg('circle', { class: cls, cx: p[0], cy: p[1], r: p[2] }));
+    } else {
+      root.appendChild(svg('path', { class: cls, d: data }));
+    }
+  }
+  return root;
+}
+
+/** The wheel's glyph when it has one, ours otherwise. */
+function iconFor(id) {
+  return makeExtraIcon(id) ?? makeIcon(id);
 }
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -87,6 +180,14 @@ export class HUD {
     this._flashWritten = -1;
     this._dead = false;
 
+    /* -- stamina state (v3) -------------------------------------------- */
+    this._stamMax = CONFIG.player?.maxStamina ?? 100;
+    this._stamina = this._stamMax;
+    this._stamShown = 1;
+    this._stamWritten = -1;
+    this._stamPctText = -1;
+    this._stamDrain = 0;
+
     /* -- ammo state --------------------------------------------------- */
     this._ammo = -1;
     this._reserve = -1;
@@ -94,6 +195,9 @@ export class HUD {
     this._reloadT = 0;
     this._reloadDur = 0;
     this._pollT = 0;
+    this._bagText = -1;
+    this._noAmmoT = 0;
+    this._attackT = 0;
 
     /* -- crosshair ---------------------------------------------------- */
     this._gap = 6;
@@ -151,13 +255,22 @@ export class HUD {
     this._saveExpectT = 0;
     this._pipT = 0;
     this._bootPatched = false;
+    this._bootBusyPatched = false;
+    this._bootPctText = -1;
+
+    /* -- v3: portal busy hold ------------------------------------------ */
+    this._wipeHolding = false;
 
     this._build();
     this._wire();
 
     // The boot screen is created by main.js *after* the HUD, so patch its
-    // control legend on the next microtask rather than reaching for it now.
-    queueMicrotask(() => this._patchBootControls());
+    // control legend and busy state on the next microtask rather than reaching
+    // for it now.
+    queueMicrotask(() => {
+      this._patchBootControls();
+      this._patchBootBusy();
+    });
   }
 
   /**
@@ -165,7 +278,7 @@ export class HUD {
    * never called the HUD picks the same objects up off `window.GAME`, so the
    * new panels work either way.
    * @param {{loadout?:any, mounts?:any, unstuck?:any, economy?:any,
-   *          cameraRig?:any, save?:any}} systems
+   *          cameraRig?:any, save?:any, stamina?:any, inventory?:any}} systems
    */
   attach(systems = {}) {
     Object.assign(this._att, systems);
@@ -189,15 +302,15 @@ export class HUD {
     this._buildCrosshair(hud);
     this._buildCharge(hud);
     this._buildCamMode(hud);
-    this._buildHealth(hud);
+    this._buildVitals(hud);
     this._buildAmmo(hud);
-    this._buildCredits(hud);
     this._buildMinimap(hud);
     this._buildMount(hud);
     this._buildPrompt(hud);
     this._buildStuck(hud);
     this._buildToasts(hud);
     this._buildDebug(hud);
+    this._buildHelpChip(hud);
     this._buildDeadCard(hud);
 
     this.root.appendChild(hud);
@@ -213,6 +326,12 @@ export class HUD {
       bus: this.bus,
       onSelect: (id, index) => this._requestWeapon(id, index),
     });
+    // Publish the v3 slot list (the wheel's own defaults stop at the bow) and
+    // then decorate any slot whose glyph the wheel does not own.
+    this.wheel.setWeapons(DEFAULT_SLOTS, true);
+    this._decorateSlots();
+
+    this.help = new HelpMenu({ root: this.root, bus: this.bus, input: this.input });
 
     // Chat lives outside `.hud` so it is never dimmed by the HUD fade-in.
     this.client = new ChatClient(this.bus);
@@ -248,6 +367,16 @@ export class HUD {
       this._dmg.push({ el: a, life: 0, x: 0, z: 0, written: -1 });
     }
     hud.appendChild(ring);
+
+    // v3 `npc:attack`: the arcs say *where* it came from, this says *what* it
+    // was. Sits below the crosshair so both read as one answer to "what hit me".
+    const at = el('div', 'attackline');
+    this.attackWho = el('span', 'attack-who', '');
+    this.attackWeapon = el('span', 'attack-weapon', '');
+    this.attackDmg = el('span', 'attack-dmg', '');
+    at.append(this.attackWho, this.attackWeapon, this.attackDmg);
+    hud.appendChild(at);
+    this.attackLine = at;
   }
 
   /**
@@ -293,6 +422,26 @@ export class HUD {
     this.camMode = c;
   }
 
+  /**
+   * Top-left vitals stack: credits, then health, then stamina.
+   *
+   * v3 moves health out of the bottom-left corner. The three readouts a player
+   * checks between fights now share one column and one reading order, and the
+   * corner they vacated goes to the chat panel and the help affordance instead
+   * of being fought over.
+   *
+   * They are laid out by the flex column rather than by three sets of absolute
+   * coordinates, so the stack cannot drift apart when a panel's height changes.
+   */
+  _buildVitals(hud) {
+    const col = el('div', 'vitals');
+    hud.appendChild(col);
+    this.vitals = col;
+    this._buildCredits(col);
+    this._buildHealth(col);
+    this._buildStamina(col);
+  }
+
   _buildHealth(hud) {
     const p = el('div', 'panel health');
     const top = el('div', 'health-top');
@@ -318,6 +467,39 @@ export class HUD {
     this.healthPanel = p;
   }
 
+  /**
+   * Stamina, directly under health. Driven by `stamina:changed` from the
+   * movement agent, and polled from `GAME.stamina` so it self-heals if that
+   * system is built after the HUD or an event is missed.
+   *
+   * It is deliberately slimmer than the health bar: it is a budget, not a life
+   * total, and it must not compete with health for attention.
+   */
+  _buildStamina(hud) {
+    const p = el('div', 'panel stamina');
+
+    const top = el('div', 'stam-top');
+    top.appendChild(el('div', 'panel-label', 'Stamina'));
+    this.stamPct = el('div', 'stam-pct', '100%');
+    top.appendChild(this.stamPct);
+
+    const bar = el('div', 'stam-bar');
+    this.stamFill = el('div', 'stam-fill');
+    bar.append(this.stamFill, el('div', 'stam-ticks'), el('div', 'stam-gloss'));
+
+    p.append(top, bar);
+    hud.appendChild(p);
+    this.staminaPanel = p;
+  }
+
+  /** Persistent "F1 Help" affordance in the corner health used to occupy. */
+  _buildHelpChip(hud) {
+    const c = el('div', 'helpchip');
+    c.append(el('b', null, 'F1'), el('span', null, 'Help & controls'));
+    hud.appendChild(c);
+    this.helpChip = c;
+  }
+
   _buildAmmo(hud) {
     const p = el('div', 'panel ammo');
     this.ammoName = el('div', 'ammo-name', CONFIG.weapon.machinegun.name);
@@ -341,7 +523,21 @@ export class HUD {
     row.append(arc, count);
 
     this.pips = el('div', 'ammo-pips');
-    p.append(this.ammoName, row, this.pips);
+
+    // v3: the reserve number is now the bag count, so name the source. When a
+    // weapon needs no ammo at all (the sword) the row reads "melee" instead of
+    // showing a meaningless zero.
+    const bag = el('div', 'ammo-bag');
+    this.ammoBagLabel = el('span', 'ammo-bag-l', 'BAG');
+    this.ammoBagVal = el('span', 'ammo-bag-v', '—');
+    bag.append(this.ammoBagLabel, this.ammoBagVal);
+    this.ammoBag = bag;
+
+    // Dry-fire warning. Lives in the ammo panel so the player's eye is sent to
+    // the number that explains it, not to the middle of the screen.
+    this.noAmmoTag = el('div', 'ammo-dry', 'NO AMMO — PRESS R');
+
+    p.append(this.ammoName, row, this.pips, bag, this.noAmmoTag);
     hud.appendChild(p);
     this.ammoPanel = p;
   }
@@ -483,6 +679,16 @@ export class HUD {
     hud.appendChild(d);
   }
 
+  /**
+   * World transition.
+   *
+   * v3 turns this from a timed animation into a *state*. Building a destination
+   * world can take several seconds, and the old fixed-duration wipe finished
+   * long before the world did, leaving the player staring at a frozen scene
+   * with no evidence anything was happening. The overlay now closes, then holds
+   * — indefinitely, with a CSS spinner — until `world:changed` says the world
+   * is actually there.
+   */
   _buildWipe() {
     const w = el('div', 'wipe');
     w.appendChild(el('div', 'wipe-bars'));
@@ -491,7 +697,19 @@ export class HUD {
     const label = el('div', 'wipe-label');
     this.wipeKicker = el('div', 'wipe-kicker', 'Traversing the Nexus');
     this.wipeName = el('div', 'wipe-name', '');
-    label.append(this.wipeKicker, this.wipeName);
+
+    const busy = el('div', 'wipe-busy');
+    const spin = el('div', 'boot-spinner sm');
+    spin.append(el('i', 'bs-ring r1'), el('i', 'bs-ring r2'), el('i', 'bs-ring r3'), el('i', 'bs-core'));
+    this.wipeStage = el('div', 'wipe-stage', 'Generating world');
+    busy.append(spin, this.wipeStage);
+    this.wipePatience = el(
+      'div',
+      'wipe-patience',
+      'This can take a moment — the world is being generated from scratch.'
+    );
+
+    label.append(this.wipeKicker, this.wipeName, busy, this.wipePatience);
     w.appendChild(label);
     w.appendChild(el('div', 'wipe-flash'));
     this.root.appendChild(w);
@@ -605,6 +823,8 @@ export class HUD {
     this._on('portal:entering', ({ to, duration }) => this._runWipe(to, duration));
 
     this._on('world:changed', ({ id, world }) => {
+      // The destination exists now — release the transition hold.
+      this._endWipe();
       this.minimap.setWorld(world);
       this.mapLabel.textContent = (world?.displayName ?? id ?? '').toUpperCase();
       this._nearPortal = null;
@@ -634,6 +854,70 @@ export class HUD {
     });
 
     this._wireV2();
+    this._wireV3();
+  }
+
+  /* ---------------------------------------------------------------- v3 -- */
+
+  _wireV3() {
+    /* --- stamina ------------------------------------------------------- */
+    this._on('stamina:changed', ({ stamina, max }) => {
+      if (typeof max === 'number' && max > 0 && max !== this._stamMax) this._stamMax = max;
+      if (typeof stamina === 'number') {
+        // Falling stamina is the only interesting case, so only that lights up.
+        if (stamina < this._stamina - 0.01) this._stamDrain = 0.35;
+        this._stamina = stamina;
+      }
+    });
+
+    /* --- weapons: dry fire --------------------------------------------- */
+    this._on('weapon:noammo', ({ id, itemId }) => {
+      this._noAmmoT = NOAMMO_LIFE;
+      this.ammoPanel.classList.add('dry');
+      // Restart the shake even when the player is holding the trigger down.
+      this.ammoPanel.classList.remove('dry-kick');
+      void this.ammoPanel.offsetWidth;
+      this.ammoPanel.classList.add('dry-kick');
+      const what = ITEM_LABELS[itemId] ?? (itemId ? String(itemId) : 'ammunition');
+      this.noAmmoTag.textContent = `OUT OF ${String(what).toUpperCase()}`;
+      if (!this._noAmmoWarned || this._noAmmoWarned !== id) {
+        this._noAmmoWarned = id;
+        this.notify(`Out of ${what} — buy more at the marketplace (B)`, 'warn');
+      }
+    });
+
+    /* --- what just hit me ---------------------------------------------- */
+    this._on('npc:attack', ({ npc, weaponId, damage }) => {
+      this.attackWho.textContent = String(npc?.name ?? 'HOSTILE').toUpperCase();
+      this.attackWeapon.textContent = NPC_WEAPON_LABELS[weaponId] ?? String(weaponId ?? 'attack');
+      this.attackDmg.textContent = damage != null ? `−${Math.round(damage)}` : '';
+      this._attackT = ATTACK_LIFE;
+      this.attackLine.classList.add('show');
+      this.attackLine.classList.remove('kick');
+      void this.attackLine.offsetWidth;
+      this.attackLine.classList.add('kick');
+    });
+
+    /* --- loot / inventory ---------------------------------------------- */
+    this._on('loot:collected', ({ itemId, qty }) => {
+      const n = Math.max(1, Math.round(qty ?? 1));
+      const name = ITEM_LABELS[itemId] ?? String(itemId ?? 'salvage');
+      this.notify(`+${n} ${name}`, 'loot');
+    });
+    this._on('inventory:full', ({ itemId }) => {
+      const name = ITEM_LABELS[itemId] ?? String(itemId ?? 'item');
+      this.notify(`Bag full — ${name} left behind`, 'warn');
+    });
+    this._on('market:trade', ({ itemId, qty, kind }) => {
+      const name = ITEM_LABELS[itemId] ?? String(itemId ?? 'goods');
+      const n = Math.max(1, Math.round(qty ?? 1));
+      this.notify(kind === 'sell' ? `Sold ${n} ${name}` : `Bought ${n} ${name}`, 'save');
+    });
+
+    /* --- help ----------------------------------------------------------- */
+    // The chip is the affordance; dim it while the panel it advertises is open.
+    this._on('help:open', () => this.el.classList.add('helping'));
+    this._on('help:close', () => this.el.classList.remove('helping'));
   }
 
   /* ---------------------------------------------------------------- v2 -- */
@@ -727,6 +1011,25 @@ export class HUD {
     });
   }
 
+  /**
+   * Give any slot the wheel could not draw a glyph one of ours. WeaponWheel is
+   * owned by another agent and its icon table stops at the bow, so the sword
+   * would otherwise wear the machine gun's silhouette.
+   */
+  _decorateSlots() {
+    const slots = this.wheel?.slots;
+    if (!slots) return;
+    for (let i = 0; i < slots.length; i++) {
+      const s = slots[i];
+      if (!EXTRA_ICONS[s.id]) continue;
+      const ico = s.el.querySelector('.wslot-ico');
+      if (!ico || ico.dataset.hudIcon === s.id) continue;
+      ico.dataset.hudIcon = s.id;
+      ico.textContent = '';
+      ico.appendChild(makeExtraIcon(s.id));
+    }
+  }
+
   /** A slot was clicked — ask the Loadout, and announce it for anyone listening. */
   _requestWeapon(id, index) {
     this._loadout?.select?.(typeof index === 'number' ? index : id);
@@ -746,25 +1049,155 @@ export class HUD {
     list.innerHTML = [
       ['WASD', 'Move'],
       ['Shift', 'Sprint / Boost'],
-      ['Space', 'Jump / Ascend'],
+      ['Space', 'Jump / Swim / Climb'],
       ['LMB', 'Fire / Charge'],
       ['RMB', 'Aim'],
       ['R', 'Reload'],
-      ['1 2 3', 'Weapons'],
+      ['1 2 3 4', 'Weapons'],
       ['Wheel', 'Cycle weapon'],
       ['V', 'First / third person'],
       ['H', 'Hoverboard'],
       ['G', 'Dragon'],
+      ['J', 'Car'],
       ['F', 'Dismount'],
+      ['I', 'Inventory'],
+      ['B', 'Marketplace'],
       ['K', 'Unstuck'],
       ['F5 / F9', 'Save / Load'],
       ['[ ]', 'Map zoom'],
-      ['E', 'Talk / Enter portal'],
+      ['E', 'Talk / Pick up / Portal'],
       ['T', 'Chat'],
+      ['F1', 'Help'],
       ['Esc', 'Release cursor'],
     ]
       .map(([k, v]) => `<span><b>${k}</b> ${v}</span>`)
       .join('');
+  }
+
+  /* ====================================================================== */
+  /* Boot busy state                                                        */
+  /* ====================================================================== */
+
+  /**
+   * Turn main.js's progress bar into a real busy state.
+   *
+   * The user was seeing Chrome's "page unresponsive" dialog during boot, which
+   * is what Chrome shows when the main thread stops answering — and a ~15 s
+   * shader warmup does exactly that between yields. The fix is not to make the
+   * page faster (the warmup is deliberate: see the 63 s first-bow stall) but to
+   * make it *visibly alive*, because Chrome's heuristic and the player's
+   * patience both key on the same thing.
+   *
+   * Everything added here animates in CSS on `transform`/`opacity` only, so the
+   * compositor keeps it moving even while the main thread is inside a long
+   * synchronous compile. **Nothing in this path may be driven from rAF.**
+   *
+   * main.js owns the boot markup, so this adopts the elements if they are
+   * already there and creates them if they are not — the HUD works against
+   * either version of main.js. Progress and stage name are mirrored from
+   * `.boot-bar-fill`'s width and `.boot-status`'s text through a
+   * MutationObserver, so `loader.setStatus(text, progress)` stays the only hook
+   * main.js needs. `setBootStage()` is the direct route if it prefers one.
+   */
+  _patchBootBusy() {
+    if (this._bootBusyPatched) return;
+    const screen = this.root.querySelector('.boot-screen');
+    if (!screen) return;
+    this._bootBusyPatched = true;
+
+    const inner = screen.querySelector('.boot-inner') ?? screen;
+    const bar = inner.querySelector('.boot-bar');
+    const status = inner.querySelector('.boot-status');
+
+    let busy = inner.querySelector('.boot-busy');
+    if (!busy) {
+      busy = el('div', 'boot-busy');
+      const spin = el('div', 'boot-spinner');
+      // Three nested rings, each its own layer, each on a pure rotate — the
+      // cheapest thing a compositor can keep animating without the main thread.
+      spin.append(el('i', 'bs-ring r1'), el('i', 'bs-ring r2'), el('i', 'bs-ring r3'), el('i', 'bs-core'));
+      const pct = el('div', 'boot-pct', '0%');
+      busy.append(spin, pct);
+      if (bar) inner.insertBefore(busy, bar);
+      else inner.appendChild(busy);
+    }
+    this.bootBusy = busy;
+    this.bootPct = busy.querySelector('.boot-pct');
+
+    let patience = inner.querySelector('.boot-patience');
+    if (!patience) {
+      patience = el(
+        'div',
+        'boot-patience',
+        'This can take a moment — the world is being generated from scratch, and every shader is compiled up front so nothing stutters later.'
+      );
+      if (status && status.nextSibling) inner.insertBefore(patience, status.nextSibling);
+      else inner.appendChild(patience);
+    }
+    this.bootPatience = patience;
+
+    screen.classList.add('busy');
+
+    // Mirror main.js's writes. Observing costs nothing while nothing changes,
+    // and it means the orchestrator does not have to call us at all.
+    if (typeof MutationObserver === 'function' && (bar || status)) {
+      const fill = bar?.querySelector('.boot-bar-fill') ?? null;
+      const read = () => {
+        if (fill) {
+          const w = parseFloat(fill.style.width);
+          if (Number.isFinite(w)) this._writeBootPct(w);
+        }
+      };
+      const obs = new MutationObserver(read);
+      if (fill) obs.observe(fill, { attributes: true, attributeFilter: ['style'] });
+      this._bootObs = obs;
+      read();
+    }
+
+    // The moment main.js hides the screen, stop pretending to be busy.
+    if (typeof MutationObserver === 'function') {
+      const done = new MutationObserver(() => {
+        if (screen.classList.contains('boot-hide')) {
+          screen.classList.remove('busy');
+          this._bootObs?.disconnect();
+          done.disconnect();
+        }
+      });
+      done.observe(screen, { attributes: true, attributeFilter: ['class'] });
+      this._bootHideObs = done;
+    }
+  }
+
+  _writeBootPct(pct01to100) {
+    const v = Math.max(0, Math.min(100, Math.round(pct01to100)));
+    if (v === this._bootPctText || !this.bootPct) return;
+    this._bootPctText = v;
+    this.bootPct.textContent = `${v}%`;
+    // At 100% the work is done and the screen is waiting on the player. A
+    // spinner that keeps turning over "CLICK TO ENTER" would be a lie.
+    if (v >= 100) this.bootBusy?.closest('.boot-screen')?.classList.remove('busy');
+  }
+
+  /**
+   * Direct hook for main.js: report the stage the boot is in.
+   * Equivalent to `loader.setStatus(text, progress)` — either works, and using
+   * both is harmless.
+   * @param {string} [text] stage name, e.g. "Generating medieval"
+   * @param {number} [progress01] 0..1
+   */
+  setBootStage(text, progress01) {
+    this._patchBootBusy();
+    const screen = this.root.querySelector('.boot-screen');
+    if (!screen) return;
+    if (text) {
+      const status = screen.querySelector('.boot-status');
+      if (status && status.textContent !== text) status.textContent = text;
+    }
+    if (typeof progress01 === 'number') {
+      this._writeBootPct(progress01 <= 1 ? progress01 * 100 : progress01);
+      const fill = screen.querySelector('.boot-bar-fill');
+      if (fill) fill.style.width = `${Math.round(Math.min(1, Math.max(0, progress01)) * 100)}%`;
+    }
   }
 
   /** Resolve a killer id to a display name via the NPC roster. */
@@ -837,10 +1270,12 @@ export class HUD {
     // (autostart harness, hot reload), bring the HUD up anyway.
     if (!this._live && elapsed > 1.5 && !this.root.querySelector('.boot-screen')) this._goLive();
     if (!this._bootPatched) this._patchBootControls();
+    if (!this._bootBusyPatched) this._patchBootBusy();
 
     this._updateInput(dt);
     this._updateSystems(dt);
     this._updateHealth(dt, elapsed);
+    this._updateStamina(dt);
     this._updateAmmo(dt);
     this._updateCrosshair(dt);
     this._updateCharge(dt);
@@ -946,8 +1381,14 @@ export class HUD {
     this._unstuck = this._att.unstuck ?? g?.unstuck ?? null;
     this._economy = this._att.economy ?? g?.economy ?? null;
 
+    this._stam = this._att.stamina ?? g?.stamina ?? null;
+    this._inventory = this._att.inventory ?? g?.inventory ?? null;
+
     const list = this._loadout?.weapons;
-    if (Array.isArray(list) && list.length) this.wheel.setWeapons(list);
+    if (Array.isArray(list) && list.length) {
+      this.wheel.setWeapons(list);
+      this._decorateSlots();
+    }
 
     const c = this._economy?.credits;
     if (typeof c === 'number' && c !== this._credits) this._credits = c;
@@ -1081,7 +1522,8 @@ export class HUD {
     }
     this.mountName.textContent = MOUNT_LABELS[this._mountId] ?? String(this._mountId).toUpperCase();
     this.mountIco.textContent = '';
-    this.mountIco.appendChild(makeIcon(this._mountId));
+    this.mountIco.appendChild(iconFor(this._mountId));
+    this.mountPanel.dataset.mount = this._mountId;
     this.mountPanel.classList.remove('in');
     void this.mountPanel.offsetWidth;
     this.mountPanel.classList.add('in');
@@ -1203,6 +1645,50 @@ export class HUD {
     }
   }
 
+  /* ------------------------------------------------------------ stamina -- */
+
+  /**
+   * Stamina reads exactly like health so the stack has one grammar, but it is
+   * smoothed harder: it changes every frame while sprinting, and a bar that
+   * tracks that literally is visual noise.
+   */
+  _updateStamina(dt) {
+    // Poll as well as listen, so the bar is right even before the first event.
+    const s = this._stam;
+    if (s) {
+      const live = typeof s.stamina === 'number' ? s.stamina : typeof s.value === 'number' ? s.value : null;
+      const max = typeof s.max === 'number' ? s.max : typeof s.maxStamina === 'number' ? s.maxStamina : null;
+      if (max && max > 0) this._stamMax = max;
+      if (live != null) {
+        if (live < this._stamina - 0.01) this._stamDrain = 0.35;
+        this._stamina = live;
+      }
+    }
+
+    const frac = clamp01(this._stamina / Math.max(1, this._stamMax));
+    this._stamShown = approach(this._stamShown, frac, 16, dt);
+
+    if (Math.abs(this._stamShown - this._stamWritten) > 0.002) {
+      this._stamWritten = this._stamShown;
+      this.stamFill.style.transform = `scaleX(${this._stamShown.toFixed(4)})`;
+    }
+
+    const pct = Math.round(this._stamShown * 100);
+    if (pct !== this._stamPctText) {
+      this._stamPctText = pct;
+      this.stamPct.textContent = `${pct}%`;
+    }
+
+    this._stamDrain = Math.max(0, this._stamDrain - dt);
+    const cls = this.staminaPanel.classList;
+    const spent = frac < 0.3;
+    const empty = frac <= 0.02;
+    const draining = this._stamDrain > 0 && !empty;
+    if (cls.contains('low') !== spent) cls.toggle('low', spent);
+    if (cls.contains('empty') !== empty) cls.toggle('empty', empty);
+    if (cls.contains('draining') !== draining) cls.toggle('draining', draining);
+  }
+
   /* --------------------------------------------------------------- ammo -- */
 
   _setAmmo(ammo, reserve, magazine) {
@@ -1256,6 +1742,45 @@ export class HUD {
     return this._loadout?.current ?? this.player?.weapon ?? null;
   }
 
+  /**
+   * Reserve ammunition now lives in the inventory bag, so the panel names it.
+   * The weapon's `reserve` already reports the bag count under the v3 contract;
+   * asking the Inventory directly is the fallback for a weapon that has not
+   * been converted yet, and `null` means "this weapon needs no ammunition".
+   */
+  _updateBagRow(w) {
+    const ammoItem = w?.ammoItem ?? w?.ammoItemId ?? null;
+    const melee = w && ammoItem === null && (w.magazine == null || w.magazine === 0);
+
+    if (melee) {
+      if (this._bagText !== 'melee') {
+        this._bagText = 'melee';
+        this.ammoBagLabel.textContent = 'MELEE';
+        this.ammoBagVal.textContent = '∞';
+      }
+      this.ammoBag.classList.toggle('none', false);
+      return;
+    }
+
+    let n = typeof w?.reserve === 'number' ? w.reserve : null;
+    if (n == null && ammoItem && this._inventory?.bagCount) {
+      try {
+        n = this._inventory.bagCount(ammoItem);
+      } catch {
+        n = null;
+      }
+    }
+    const label = ammoItem ? (ITEM_LABELS[ammoItem] ?? ammoItem).toUpperCase() : 'BAG';
+    const text = n == null ? '—' : String(Math.max(0, Math.round(n)));
+    const key = `${label}|${text}`;
+    if (key !== this._bagText) {
+      this._bagText = key;
+      this.ammoBagLabel.textContent = label;
+      this.ammoBagVal.textContent = text;
+    }
+    this.ammoBag.classList.toggle('none', n === 0);
+  }
+
   _updateAmmo(dt) {
     // Poll the weapon so the HUD self-heals if an event is missed.
     this._pollT -= dt;
@@ -1269,10 +1794,20 @@ export class HUD {
           this.ammoName.textContent = String(w.name);
         }
       }
+      this._updateBagRow(w);
       if (w && !w.isReloading && this._reloadDur > 0) {
         this._reloadDur = 0;
         this.ammoPanel.classList.remove('reloading');
       }
+    }
+
+    if (this._noAmmoT > 0) {
+      this._noAmmoT -= dt;
+      if (this._noAmmoT <= 0) this.ammoPanel.classList.remove('dry', 'dry-kick');
+    }
+    if (this._attackT > 0) {
+      this._attackT -= dt;
+      if (this._attackT <= 0) this.attackLine.classList.remove('show', 'kick');
     }
 
     if (this._reloadDur > 0) {
@@ -1461,16 +1996,41 @@ export class HUD {
 
   /* ---------------------------------------------------------- transition */
 
+  /**
+   * Close the transition overlay and hold it. `_endWipe` reopens it once the
+   * destination reports in.
+   * @param {string} toId destination world id
+   * @param {number} [duration] the portal system's own transition length
+   */
   _runWipe(toId, duration) {
     const dur = Math.max(0.4, duration || CONFIG.portal.transitionDuration);
     const w = this.worldManager?.getWorld?.(toId);
-    this.wipeName.textContent = (w?.displayName ?? toId ?? 'Unknown Anchor').toUpperCase();
+    const name = (w?.displayName ?? toId ?? 'Unknown Anchor').toUpperCase();
+    this.wipeName.textContent = name;
+    this.wipeStage.textContent = this.worldManager?.isBuilt?.(toId)
+      ? 'Anchoring the gateway'
+      : 'Generating the world';
     this.wipe.style.setProperty('--wipe-dur', `${dur}s`);
-    this.wipe.classList.remove('run');
-    void this.wipe.offsetWidth; // restart the animation cleanly
-    this.wipe.classList.add('run');
+
     clearTimeout(this._wipeTimer);
-    this._wipeTimer = setTimeout(() => this.wipe.classList.remove('run'), dur * 1000 + 60);
+    this.wipe.classList.remove('run', 'out');
+    void this.wipe.offsetWidth; // restart the keyframes cleanly
+    this.wipe.classList.add('run');
+    this._wipeHolding = true;
+
+    // Safety net: if `world:changed` never arrives the player must not be left
+    // behind a black slab for ever.
+    this._wipeTimer = setTimeout(() => this._endWipe(), 45000);
+  }
+
+  /** Open the slabs again. Idempotent — `world:changed` can arrive twice. */
+  _endWipe() {
+    if (!this._wipeHolding) return;
+    this._wipeHolding = false;
+    clearTimeout(this._wipeTimer);
+    this.wipe.classList.remove('run');
+    this.wipe.classList.add('out');
+    this._wipeTimer = setTimeout(() => this.wipe.classList.remove('out'), 900);
   }
 
   /* --------------------------------------------------------------- chat -- */
@@ -1503,9 +2063,12 @@ export class HUD {
     this._offs.length = 0;
     clearTimeout(this._wipeTimer);
     clearTimeout(this._swapTimer);
+    this._bootObs?.disconnect();
+    this._bootHideObs?.disconnect();
     this.minimap.dispose();
     this.chatBox.dispose();
     this.wheel.dispose();
+    this.help.dispose();
     for (const f of this._creditFloats) f.el.remove();
     this._creditFloats.length = 0;
     this.el.remove();

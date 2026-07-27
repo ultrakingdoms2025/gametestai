@@ -1,9 +1,11 @@
 import { Weapon } from './Weapon.js';
 import { FireballWeapon } from '../weapons/Fireball.js';
 import { BowWeapon } from '../weapons/Bow.js';
+import { SwordWeapon } from '../weapons/Sword.js';
+import { WEAPON_STATS, AMMO_ITEMS } from '../systems/WeaponStats.js';
 
 /**
- * Holds the player's three weapons and decides which one is live.
+ * Holds the player's four weapons and decides which one is live.
  *
  * ── Why this drives the weapon rather than `Player` ────────────────────────
  * `Player` historically owned a single `Weapon` and drove it from
@@ -17,25 +19,57 @@ import { BowWeapon } from '../weapons/Bow.js';
  *
  * That also means the aim/recoil/FOV contract `Player` relies on
  * (`aimProgress`, `getRecoilOffset()`, `resupply()`, `setEnabled()`) has to be
- * satisfied by all three weapons, which it is.
+ * satisfied by all four weapons, which it is.
  *
  * Every weapon implements: `update`, `tryFire`, `releaseFire`, `reload`,
  * `onSelect`, `onDeselect`, `dispose`, and the getters `id name ammo reserve
  * magazine isReloading spread chargeLevel`.
+ *
+ * ── Why ammunition is brokered here ────────────────────────────────────────
+ * CONTRACTS-V3 §3.3 moves ammunition into the shared inventory: what the player
+ * can fire is what is in the bag, not a private per-weapon counter. `Weapon.js`,
+ * `Bow.js` and `Fireball.js` are owned by other agents, so rather than rewrite
+ * their fire control this file brokers between them and `Inventory`:
+ *
+ *   - Magazine weapons (rifle, bow) keep their magazine. Their *reserve* is
+ *     mirrored from the bag every frame, and any decrease the weapon makes to
+ *     it - which only ever happens inside a reload - is played back to the bag
+ *     as a `consumeFromBag`. Reload therefore literally pulls from the bag, and
+ *     no weapon can consume ammunition the player does not have.
+ *   - The fireball has no reserve, so it is gated at the trigger instead: an
+ *     empty bag never reaches `tryFire`, and a successful launch spends one
+ *     charge. Its mana pool survives as the rate limiter it always was.
+ *
+ * Watching the delta rather than patching the weapons is what keeps the three
+ * reviewed viewmodels untouched. The whole broker is a no-op when `Inventory`
+ * is absent, so the game is fully playable if that module lands late.
  */
 
-/** Slot order is also the 1/2/3 key order and the HUD's strip order. */
-const SLOT_KEYS = ['Digit1', 'Digit2', 'Digit3'];
+/** Slot order is also the 1/2/3/4 key order and the HUD's strip order. */
+const SLOT_KEYS = ['Digit1', 'Digit2', 'Digit3', 'Digit4'];
+
+/**
+ * Starting ammunition moved into the bag the first time an `Inventory` shows
+ * up with none. Without this a fresh game would begin with one magazine and no
+ * reserve, because the weapons' own private counters are no longer the truth.
+ * Skipped entirely when the bag already holds that item, so it can never fight
+ * with whatever the inventory or a save game seeded.
+ */
+const SEED_AMMO = { bullet: 180, arrow: 36, fireball_charge: 12 };
+
+/** Minimum gap between `weapon:noammo` emissions, seconds. */
+const NOAMMO_COOLDOWN = 0.35;
 
 export class Loadout {
   /**
    * @param {{scene:THREE.Scene, camera:THREE.PerspectiveCamera, engine:any,
    *          physics:any, bus:any, materials:any, input:any, player:any,
-   *          npcManager:any, projectiles:any, cameraRig?:any}} ctx
+   *          npcManager:any, projectiles:any, cameraRig?:any, combat?:any,
+   *          inventory?:any}} ctx
    */
   constructor({
     scene, camera, engine, physics, bus, materials, input,
-    player, npcManager, projectiles, cameraRig,
+    player, npcManager, projectiles, cameraRig, combat, inventory,
   }) {
     this.scene = scene;
     this.camera = camera ?? engine?.camera;
@@ -48,6 +82,15 @@ export class Loadout {
     this.npcManager = npcManager;
     this.projectiles = projectiles;
     this.cameraRig = cameraRig ?? null;
+    /**
+     * The sword needs `CombatSystem` to route damage through the one path that
+     * emits `npc:damaged`/`npc:killed`. main.js does not currently hand it to
+     * the loadout, so fall back to the reference `ProjectileSystem` already
+     * holds - it is the same instance.
+     */
+    this.combat = combat ?? projectiles?.combat ?? null;
+    /** @type {any} set late by `setInventory` if it is not supplied here. */
+    this.inventory = null;
 
     /**
      * Where the shot is actually aimed. In first person that is the camera's
@@ -68,6 +111,7 @@ export class Loadout {
       projectiles,
       player,
       npcManager,
+      combat: this.combat,
       aimDirection: this._aimFn,
     };
 
@@ -77,7 +121,12 @@ export class Loadout {
     const existing = player?.weapon;
     const machinegun = existing instanceof Weapon ? existing : new Weapon(ctx);
 
-    this._weapons = [machinegun, new FireballWeapon(ctx), new BowWeapon(ctx)];
+    this._weapons = [
+      machinegun,
+      new FireballWeapon(ctx),
+      new BowWeapon(ctx),
+      new SwordWeapon(ctx),
+    ];
     this._index = -1;
     this._firing = false;
     this._enabled = true;
@@ -85,11 +134,20 @@ export class Loadout {
     this._descriptors = this._weapons.map((w) => ({
       id: w.id, name: w.name, icon: w.icon, accent: w.accent,
       ammo: 0, reserve: 0, magazine: 0, ammoKind: w.ammoKind,
+      // `ammoItem` is the inventory id the slot draws from (null for melee);
+      // `bagAmmo` is how many of it are in the bag right now. Both are here so
+      // the HUD can label the reserve with what it actually is.
+      ammoItem: AMMO_ITEMS[w.id] ?? null, bagAmmo: 0,
       charge: 0, reloading: false, index: 0, active: false,
     }));
 
+    this._buildBrokers();
+    this._lastNoAmmo = -999;
+    this._time = 0;
+
     this._offs = [];
     this._bind();
+    if (inventory) this.setInventory(inventory);
     this.select(0, { silent: true });
   }
 
@@ -104,18 +162,224 @@ export class Loadout {
         w.setEnabled?.(true);
         w.resupply?.();
       }
+      // `resupply` rewrites private reserves; the bag is still the truth.
+      this._resyncBrokers();
       this.current?.onSelect?.();
     });
     // A world change interrupts whatever was in flight; a charge held across a
     // teleport would fire into the new world from the old world's aim.
     on('world:changing', () => this._releaseFire());
+
+    /*
+     * The weapons raise `weapon:dry` from inside their own fire control. That
+     * is the moment to tell the rest of the game the *bag* is empty - but only
+     * if it actually is: a dry click with rounds still in the bag simply means
+     * the magazine ran out and a reload is about to start.
+     */
+    on('weapon:dry', (e) => {
+      const id = typeof e?.id === 'string' ? e.id : this.current?.id;
+      const item = AMMO_ITEMS[id] ?? null;
+      if (!item) return;
+      if (this._bagCount(item) > 0) return;
+      this._emitNoAmmo(id, item);
+    });
+  }
+
+  /* ================================================================ */
+  /* Ammunition brokering                                              */
+  /* ================================================================ */
+
+  /**
+   * One broker per weapon that consumes ammunition.
+   *
+   * `reserveKey` names the private counter the weapon draws its magazine from,
+   * which is the only field this file touches on a weapon it does not own.
+   * `spendOnFire` marks weapons with no reserve at all, which are gated at the
+   * trigger instead.
+   */
+  _buildBrokers() {
+    /** @type {Array<{weapon:any,id:string,item:string,reserveKey:string|null,spendOnFire:boolean,last:number}>} */
+    this._brokers = [];
+    for (const w of this._weapons) {
+      const item = AMMO_ITEMS[w.id] ?? null;
+      if (!item) continue;
+      const reserveKey = Number.isFinite(w._reserve) ? '_reserve' : null;
+      this._brokers.push({
+        weapon: w,
+        id: w.id,
+        item,
+        reserveKey,
+        spendOnFire: reserveKey === null,
+        last: reserveKey ? w[reserveKey] : 0,
+      });
+    }
+    this._seeded = false;
+  }
+
+  /**
+   * Attach the shared inventory. Safe to call more than once and safe never to
+   * call at all - without it the weapons keep their private counters and the
+   * game plays exactly as it did before.
+   * @param {any} inventory
+   */
+  setInventory(inventory) {
+    if (!inventory || inventory === this.inventory) return;
+    this.inventory = inventory;
+    this._seedBag();
+    this._resyncBrokers();
+  }
+
+  /**
+   * Resolve the inventory, picking it up from `window.GAME` if the orchestrator
+   * built it after this loadout. Cheap: it only searches until it finds one.
+   * @returns {any|null}
+   */
+  _inv() {
+    if (this.inventory) return this.inventory;
+    const late = (typeof window !== 'undefined' ? window.GAME?.inventory : null) ?? null;
+    if (late) this.setInventory(late);
+    return this.inventory;
+  }
+
+  /** @returns {number} units of `item` in the active bag, 0 if unknown. */
+  _bagCount(item) {
+    const inv = this._inv();
+    if (!inv || !item) return 0;
+    const n = inv.bagCount?.(item);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  /** Put a starting kit in the bag the first time we see an empty one. */
+  _seedBag() {
+    const inv = this.inventory;
+    if (!inv || this._seeded) return;
+    this._seeded = true;
+    for (const b of this._brokers) {
+      const qty = SEED_AMMO[b.item] ?? 0;
+      if (qty <= 0) continue;
+      try {
+        if ((inv.bagCount?.(b.item) ?? 0) > 0) continue;
+        const added = inv.add?.(b.item, qty) ?? 0;
+        if (added > 0) inv.moveToBag?.(b.item, added);
+      } catch (err) {
+        console.warn(`[Loadout] could not seed "${b.item}":`, err);
+      }
+    }
+  }
+
+  /**
+   * Adopt the bag's counts without treating the difference as consumption.
+   * Used after a resupply, a save load, or the inventory arriving late.
+   */
+  _resyncBrokers() {
+    const inv = this._inv();
+    if (!inv) return;
+    for (const b of this._brokers) {
+      const bag = this._bagCount(b.item);
+      if (b.reserveKey) b.weapon[b.reserveKey] = bag;
+      b.last = bag;
+    }
+  }
+
+  /**
+   * Mirror the bag into every reserve-backed weapon and play any decrease back
+   * to the inventory. Called once per frame, before input is read, so a reload
+   * that finished this frame is already accounted for.
+   */
+  _syncAmmo() {
+    const inv = this._inv();
+    if (!inv) return;
+    for (const b of this._brokers) {
+      if (!b.reserveKey) continue;
+      const cur = b.weapon[b.reserveKey];
+      if (Number.isFinite(cur) && cur < b.last) {
+        // The only thing that decreases a reserve is a reload pulling rounds
+        // out of it, so this is exactly the quantity the bag owes.
+        const want = Math.min(b.last - cur, this._bagCount(b.item));
+        if (want > 0) {
+          try { inv.consumeFromBag?.(b.item, want); } catch (err) {
+            console.warn(`[Loadout] consumeFromBag("${b.item}") threw:`, err);
+          }
+        }
+      }
+      const bag = this._bagCount(b.item);
+      b.weapon[b.reserveKey] = bag;
+      b.last = bag;
+    }
+  }
+
+  /** @returns {object|null} the broker for a weapon id, if it needs ammunition */
+  _brokerFor(id) {
+    for (const b of this._brokers) if (b.id === id) return b;
+    return null;
+  }
+
+  _emitNoAmmo(id, item) {
+    if (this._time - this._lastNoAmmo < NOAMMO_COOLDOWN) return;
+    this._lastNoAmmo = this._time;
+    this.bus.emit('weapon:noammo', { id, itemId: item });
+  }
+
+  /**
+   * Trigger gate for weapons with no magazine to fall back on.
+   * @returns {boolean} true if the trigger may be pulled
+   */
+  _canFire(weapon) {
+    const b = this._brokerFor(weapon.id);
+    if (!b || !b.spendOnFire) return true;
+    if (this._bagCount(b.item) > 0) return true;
+    // Dry click: the same twitch the weapon plays for itself when it runs out,
+    // driven from here because the weapon has no idea the bag is empty.
+    if (this._time - this._lastNoAmmo >= NOAMMO_COOLDOWN) {
+      weapon._dryT = 1;
+      this.bus.emit('weapon:dry', { reserve: 0, id: weapon.id });
+    }
+    this._emitNoAmmo(b.id, b.item);
+    return false;
+  }
+
+  /**
+   * Release the trigger and, if that launched something, spend the charge.
+   * @returns {boolean} whether the weapon fired
+   */
+  _doRelease(weapon) {
+    if (!weapon) return false;
+    let fired = false;
+    try { fired = weapon.releaseFire?.() === true; } catch (err) {
+      console.warn('[Loadout] releaseFire threw:', err);
+    }
+    if (!fired) return false;
+    const b = this._brokerFor(weapon.id);
+    if (b?.spendOnFire) {
+      const inv = this._inv();
+      const stats = WEAPON_STATS[weapon.id];
+      const n = Math.max(1, stats?.ammoPerShot ?? 1);
+      try { inv?.consumeFromBag?.(b.item, n); } catch (err) {
+        console.warn(`[Loadout] consumeFromBag("${b.item}") threw:`, err);
+      }
+    }
+    return fired;
+  }
+
+  /**
+   * Ammunition in the bag for a slot.
+   * @param {number|string} indexOrId slot index or weapon id
+   * @returns {number} bag count, or Infinity for a weapon that needs none
+   */
+  ammoInBag(indexOrId) {
+    const w = typeof indexOrId === 'string'
+      ? this._weapons.find((x) => x.id === indexOrId)
+      : this._weapons[indexOrId];
+    if (!w) return 0;
+    const item = AMMO_ITEMS[w.id] ?? null;
+    if (!item) return Infinity;
+    return this._bagCount(item);
   }
 
   /* ================================================================ */
   /* Selection                                                         */
   /* ================================================================ */
 
-  /** @returns {any} the live weapon instance */
   /**
    * The live weapon instances, not the HUD descriptors from `weapons`.
    *
@@ -128,6 +392,7 @@ export class Loadout {
     return this._weapons;
   }
 
+  /** @returns {any} the live weapon instance */
   get current() {
     return this._weapons[this._index] ?? null;
   }
@@ -143,14 +408,28 @@ export class Loadout {
   /**
    * HUD descriptor list. The array and its objects are reused, so the HUD may
    * read them every frame without generating garbage.
+   *
+   * `reserve` is the bag count for every weapon that draws from the inventory,
+   * because the bag *is* the reserve now; `ammo` stays the loaded magazine so
+   * an existing "loaded / reserve" readout keeps meaning what it says.
+   * `bagAmmo` repeats the bag count explicitly for anything that wants it
+   * without having to know which weapons have magazines.
+   *
    * @returns {Array<{id:string,name:string,ammo:number,reserve:number,icon:string}>}
    */
   get weapons() {
+    // Without an Inventory there is no bag, and the weapons' own reserves are
+    // still the truth - reporting zero would blank the HUD's reserve readout on
+    // a build where that module has not landed yet.
+    const live = !!this._inv();
     for (let i = 0; i < this._weapons.length; i++) {
       const w = this._weapons[i];
       const d = this._descriptors[i];
+      const item = d.ammoItem;
+      const bag = (live && item) ? this._bagCount(item) : (w.reserve ?? 0);
       d.ammo = w.ammo ?? 0;
-      d.reserve = w.reserve ?? 0;
+      d.reserve = bag;
+      d.bagAmmo = bag;
       d.magazine = w.magazine ?? 0;
       d.charge = w.chargeLevel ?? 0;
       d.reloading = w.isReloading === true;
@@ -249,6 +528,13 @@ export class Loadout {
     this.cameraRig = rig ?? null;
   }
 
+  /** Late injection, because `CombatSystem` may be constructed after us. */
+  setCombat(combat) {
+    if (!combat) return;
+    this.combat = combat;
+    for (const w of this._weapons) w.setCombat?.(combat);
+  }
+
   /* ================================================================ */
   /* Frame                                                             */
   /* ================================================================ */
@@ -263,12 +549,17 @@ export class Loadout {
     const player = this.player;
     const w = this.current;
     if (!w) return;
+    this._time = elapsed;
+
+    // Reserves are mirrored from the bag before anything reads them, so a HUD
+    // that samples mid-frame never sees a stale count.
+    this._syncAmmo();
 
     const textCaptured = input?.textCaptured === true;
     const frozen = player?._harnessFrozen === true;
     const usable = this._enabled && !frozen && !textCaptured && !(player?.isDead === true);
 
-    /* ---- selection: 1/2/3 and the wheel ---- */
+    /* ---- selection: 1/2/3/4 and the wheel ---- */
     if (!textCaptured && !frozen) {
       for (let i = 0; i < SLOT_KEYS.length; i++) {
         if (input?.pressed?.(SLOT_KEYS[i])) this.select(i);
@@ -300,15 +591,16 @@ export class Loadout {
     /* ---- fire, charge and release ---- */
     const wantsFire = usable && !!input?.state?.fire;
     if (wantsFire) {
-      active.tryFire?.(elapsed);
+      // `_canFire` only ever blocks a weapon that has no magazine to fall back
+      // on; everything else dry-clicks through its own fire control.
+      if (this._canFire(active)) active.tryFire?.(elapsed);
       this._firing = true;
     } else if (this._firing) {
       this._firing = false;
       // The falling edge is what launches a charged weapon. The machine gun's
-      // `releaseFire()` is a no-op, so this is safe to call unconditionally.
-      try { active.releaseFire?.(); } catch (err) {
-        console.warn('[Loadout] releaseFire threw:', err);
-      }
+      // and the sword's `releaseFire()` are no-ops, so this is safe to call
+      // unconditionally.
+      this._doRelease(active);
     }
     if (usable && input?.pressed?.('KeyR')) active.reload?.(elapsed);
 
@@ -347,17 +639,16 @@ export class Loadout {
 
   /**
    * Fixed-rate hook. Nothing in the loadout is simulated at a fixed rate today -
-   * projectiles are `ProjectileSystem`'s business - but the contract requires
-   * the entry point and `main.js` calls it.
+   * projectiles are `ProjectileSystem`'s business, and the sword's arc sweep
+   * runs off the same clock as its animation - but the contract requires the
+   * entry point and `main.js` calls it.
    */
   fixedUpdate() {}
 
   _releaseFire() {
     if (!this._firing) return;
     this._firing = false;
-    try { this.current?.releaseFire?.(); } catch (err) {
-      console.warn('[Loadout] releaseFire threw:', err);
-    }
+    this._doRelease(this.current);
   }
 
   /** Stop the loadout responding to input (menus, cutscenes). */
@@ -396,6 +687,9 @@ export class Loadout {
         w._emitAmmo?.();
       }
     }
+    // A saved reserve is historical: the bag is the authority, and treating the
+    // difference as consumption would silently drain the player's ammunition.
+    this._resyncBrokers();
     if (typeof data.active === 'string') this.select(data.active);
   }
 
@@ -406,6 +700,7 @@ export class Loadout {
       try { w.dispose?.(); } catch (err) { console.warn('[Loadout] dispose threw:', err); }
     }
     this._weapons.length = 0;
+    this._brokers.length = 0;
     this._index = -1;
   }
 }

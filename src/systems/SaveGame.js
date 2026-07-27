@@ -36,7 +36,7 @@ export class SaveGame {
    *           player: any, worldManager: any, economy: any,
    *           loadout?: any, mounts?: any, input?: any }} ctx
    */
-  constructor({ bus, player, worldManager, economy, loadout, mounts, input }) {
+  constructor({ bus, player, worldManager, economy, loadout, mounts, input, inventory }) {
     this.bus = bus;
     this.player = player;
     this.worldManager = worldManager;
@@ -44,6 +44,8 @@ export class SaveGame {
     this.loadout = loadout ?? null;
     this.mounts = mounts ?? null;
     this.input = input ?? null;
+    /** @type {any} Optional - the game is playable without an inventory wired. */
+    this.inventory = inventory ?? null;
 
     this._autosaveTimer = null;
     this._autosaveSeconds = 0;
@@ -155,6 +157,9 @@ export class SaveGame {
       this._restorePlayer(data.player);
       this._restoreHealth(data.player);
       this._restoreEconomy(data);
+      // Before the loadout: weapons report their ammo from the bag, so the bag
+      // has to hold the saved contents by the time they are asked.
+      this._restoreInventory(data.inventory);
       this._restoreLoadout(data.weapons);
       this._restoreMounts(data.mounts);
     } catch (err) {
@@ -259,6 +264,9 @@ export class SaveGame {
       economy: safe(() => this.economy?.serialize?.()) ?? null,
       weapons: this._snapshotWeapons(),
       mounts: this._snapshotMounts(),
+      // Ammunition lives in the bag now, so a save without the inventory would
+      // restore a player who cannot fire anything they were carrying.
+      inventory: safe(() => this.inventory?.serialize?.()) ?? null,
     };
   }
 
@@ -397,6 +405,19 @@ export class SaveGame {
   }
 
   /** Ammo has no setter in the weapon contract, so try the plausible routes. */
+  /**
+   * Restore the store and the active bag. Silent no-op when the inventory is
+   * absent or the save predates it, so an old save still loads cleanly.
+   */
+  _restoreInventory(snap) {
+    if (!snap || !this.inventory?.deserialize) return;
+    try {
+      this.inventory.deserialize(snap);
+    } catch (err) {
+      console.warn('[save] inventory restore failed, leaving current contents:', err?.message ?? err);
+    }
+  }
+
   _applyAmmo(weapon, ammo, reserve) {
     if (!weapon) return;
     const a = num(ammo, NaN);

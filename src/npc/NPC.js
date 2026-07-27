@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CONFIG } from '../core/Config.js';
 import { NPCAnimator } from './NPCAnimator.js';
 import { Navigation } from './Navigation.js';
+import { auditStanding, resolveSurfaceY } from './Grounding.js';
 
 /**
  * Base character actor: body, brain-agnostic locomotion, health and damage.
@@ -101,6 +102,23 @@ export class NPC {
     this.state = 'IDLE';
     this.stateTime = 0;
 
+    /**
+     * What this character is for. Friendlies get a real role (vendor, guard,
+     * loiterer, spectator, wanderer); hostiles are always 'hostile'. Other
+     * systems - the Marketplace especially - key off this rather than off name
+     * pattern-matching, so it is set on the base class where everyone can see it.
+     */
+    this.role = ctx.role ?? (ctx.type === 'hostile' ? 'hostile' : 'wanderer');
+    /** Marketplace opens next to anything reporting this. */
+    this.isVendor = false;
+    /** Only friendlies are ever chat targets; hostiles shoot, they do not talk. */
+    this.conversational = ctx.type !== 'hostile';
+
+    /** Seat surface this character is sitting on, or null. */
+    this.seat = null;
+    /** Long-run grounding watchdog: seconds with no floor under the feet. */
+    this._noFloorTime = 0;
+
     let s = this.seed >>> 0 || 3;
     this.rnd = () => {
       s = (s * 1664525 + 1013904223) >>> 0;
@@ -127,6 +145,28 @@ export class NPC {
 
   get forward() {
     return _v3.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+  }
+
+  /**
+   * Sit this character on the surface it is standing on.
+   *
+   * The root stays where it is - on the seat - so every gameplay query (chat
+   * range, the hit capsule, the headshot sphere, the contact shadow) keeps
+   * working with no special case. Only the animator changes what it does with
+   * the legs.
+   *
+   * @param {boolean} on
+   * @param {number} [seatHeight] drop from the seat surface to the floor
+   */
+  setSeated(on, seatHeight = 0.45) {
+    if (on) {
+      this.seat = { y: this.position.y, height: seatHeight };
+      this.animator.setSeated(true, seatHeight);
+    } else {
+      this.seat = null;
+      this.animator.setSeated(false);
+    }
+    this.seated = !!on;
   }
 
   setState(next) {
@@ -331,6 +371,15 @@ export class NPC {
   }
 
   _integrate(dt) {
+    // A seated character is furniture-bound: it does not steer, so it does not
+    // need the capsule solver, and it must not have it. A bench is a narrow
+    // collider and the nearest point on it from a capsule sitting on top is
+    // often a side face, so depenetration would quietly shove sitters off their
+    // own seats. Pinning the transform is both cheaper and correct.
+    if (this.seat) {
+      this._integrateSeated(dt);
+      return;
+    }
     this.velocity.y += CONFIG.player.gravity * dt;
     if (this.velocity.y < -40) this.velocity.y = -40;
     this.position.addScaledVector(this.velocity, dt);
@@ -345,17 +394,23 @@ export class NPC {
     // A character with no floor under it for a couple of seconds has been
     // authored over a hole. Rather than fall forever, find the nearest real
     // surface and stand on it.
+    //
+    // The surface has to be chosen relative to where the character *is*, not
+    // top-down. `groundHeightOrFallback` returns the topmost surface in the
+    // column, which under a station gantry or a keep roof is the roof - so the
+    // old recovery path could take a civilian who stepped off a kerb and stand
+    // them on a rooftop 24 m up, which is precisely the "NPC in the wrong
+    // place" the player was seeing.
     if (this.grounded) {
       this._airTime = 0;
+      this._noFloorTime = 0;
     } else {
       this._airTime += dt;
+      if (this._groundY === null) this._noFloorTime += dt;
+      else this._noFloorTime = 0;
       if (this._airTime > 1.5) {
-        const y = this.physics.groundHeightOrFallback(
-          this.position.x,
-          this.position.z,
-          this.spawnPoint.y
-        );
-        this.position.y = y;
+        const y = resolveSurfaceY(this.physics, this.position.x, this.position.z, this.position.y);
+        this.position.y = y !== null ? y : this.spawnPoint.y;
         this.velocity.set(0, 0, 0);
         this._airTime = 0;
         this._sampleGround(dt, true);
@@ -372,6 +427,21 @@ export class NPC {
     this.moveSpeed = Math.hypot(this.velocity.x, this.velocity.z);
   }
 
+  /** Hold a seated character on its seat. */
+  _integrateSeated(dt) {
+    this.velocity.set(0, 0, 0);
+    this.moveSpeed = 0;
+    this.grounded = true;
+    this._airTime = 0;
+    this.groundY = this.seat.y;
+    // Re-sample occasionally so a seat that turns out not to be there (world
+    // rebuilt under us) still resolves through the watchdog.
+    this._sampleGround(dt);
+    if (Math.abs(this.position.y - this.seat.y) > 0.002) {
+      this.position.y += (this.seat.y - this.position.y) * Math.min(1, 12 * dt);
+    }
+  }
+
   _integrateDead(dt) {
     this.velocity.y += CONFIG.player.gravity * dt;
     this.velocity.x *= Math.exp(-6 * dt);
@@ -384,6 +454,46 @@ export class NPC {
     // Corpses sink through mesh terrain just as easily as the living do.
     this._followGround(dt);
     this.moveSpeed = 0;
+  }
+
+  /**
+   * Grounding watchdog, called by the manager on a slow round-robin.
+   *
+   * Steering, depenetration and the ground probe between them are enough
+   * 99.9% of the time; this is the backstop for the remaining case, where a
+   * character has ended up inside or under geometry that its own short probe
+   * cannot see out of. It re-resolves the whole surface stack at the character's
+   * column and lifts them onto the walkable surface nearest their spawn height.
+   *
+   * @returns {boolean} true if the character had to be corrected
+   */
+  auditGrounding(force = false) {
+    if (this.isDead) return false;
+    const hint = this.seat ? this.seat.y : this.spawnPoint.y;
+    const audit = auditStanding(this.physics, this.position, hint);
+    // Falling is not a fault; leave anything that is mid-air to the integrator.
+    // The spawn sweep passes `force` because a character has not been
+    // integrated yet at that point and would otherwise look airborne.
+    if (audit.ok || (!force && !this.grounded && this._airTime < 1.2)) return false;
+    if (audit.surfaceY === null) {
+      // No floor anywhere in this column at all: back to the spawn point.
+      this.position.copy(this.spawnPoint);
+      this.velocity.set(0, 0, 0);
+      this._sampleGround(0, true);
+      this._followGround(1);
+      return true;
+    }
+    // Only correct a genuine sink. Standing slightly proud of a stale sample is
+    // normal and correcting it every pass would make characters twitch.
+    if (audit.drop < 0.35) return false;
+    this.position.y = audit.surfaceY;
+    this.velocity.y = 0;
+    this._noFloorTime = 0;
+    this._airTime = 0;
+    this._sampleGround(0, true);
+    this._followGround(1);
+    if (this.seat) this.seat.y = this.position.y;
+    return true;
   }
 
   /** Frame-rate animation update. `lod` is filled in by the manager. */

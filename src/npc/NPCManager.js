@@ -4,6 +4,9 @@ import { COLLISION_LAYER } from '../physics/Physics.js';
 import { CharacterAssets, HumanoidFactory } from './Humanoid.js';
 import { FriendlyNPC } from './FriendlyNPC.js';
 import { HostileNPC } from './HostileNPC.js';
+import { resolveSpot, resolveSurfaceY, seatSurfaceAt } from './Grounding.js';
+import { ROLE, ROLE_ROTATION, castFor, roleDef } from './NPCRoles.js';
+import { WEAPON_TABLES } from './NPCWeapons.js';
 
 /**
  * Owns every NPC in the active world: spawning, budget, level of detail,
@@ -164,6 +167,16 @@ export class NPCManager {
     this._lodCursor = 0;
     this._seedCounter = 1;
 
+    /** Friendlies flagged as traders. The Marketplace keys on these. */
+    this._vendors = [];
+    /**
+     * Grounding watchdog cursor. One character re-audited per fixed step is
+     * about 0.4 s to sweep a full world at 60 Hz, which is fast enough to catch
+     * anything that slips through geometry and far too cheap to notice.
+     */
+    this._groundCursor = 0;
+    this._groundFixes = 0;
+
     // Shared contact-shadow layer. One InstancedMesh for the whole crowd - a
     // per-character decal would have cost 26 extra draw calls, and this world
     // has no headroom for that. See `_updateContactShadows`.
@@ -200,6 +213,28 @@ export class NPCManager {
   get friendlies() {
     return this._friendlies;
   }
+  /** Friendlies that trade. Marketplace opens next to one of these. */
+  get vendors() {
+    return this._vendors;
+  }
+
+  /**
+   * Nearest trader within `maxRange`, for the Marketplace proximity check.
+   * @returns {import('./NPC.js').NPC|null}
+   */
+  nearestVendor(position, maxRange = 4.5) {
+    let best = null;
+    let bestSq = maxRange * maxRange;
+    for (const npc of this._vendors) {
+      if (npc.isDead) continue;
+      const d = npc.position.distanceToSquared(position);
+      if (d < bestSq) {
+        bestSq = d;
+        best = npc;
+      }
+    }
+    return best;
+  }
 
   /* ---------------------------------------------------------------- */
   /* Spawning                                                          */
@@ -221,6 +256,11 @@ export class NPCManager {
     let hostileCount = 0;
     let nameIndex = 0;
     const names = FALLBACK_NAMES[this.theme];
+    // Deal the hostile weapons out up front so every id in the theme's table is
+    // represented and every model is built during world activation. A re-roll
+    // later then only ever picks a weapon whose material is already compiled.
+    const weaponDeal = this._dealWeapons(this.maxHostiles);
+    const weaponPool = (WEAPON_TABLES[this.theme] ?? WEAPON_TABLES.station).map(([id]) => id);
     // Reserve part of the civilian budget for standing groups. Worlds author
     // their named characters spread out along walking routes, which is right
     // for them but leaves nobody actually stood in the square talking.
@@ -245,6 +285,9 @@ export class NPCManager {
         patrol: (spec.patrol ?? []).map((p) => this._snapToGround(p)),
         yaw: spec.yaw ?? 0,
         posture: spec.posture,
+        role: spec.role ?? (hostile ? undefined : ROLE.WANDERER),
+        weaponId: hostile ? weaponDeal[hostileCount] : undefined,
+        weaponPool: hostile ? weaponPool : undefined,
       });
       npc.spawnSpec = spec;
       if (hostile) hostileCount++;
@@ -255,6 +298,113 @@ export class NPCManager {
     }
 
     this._populateHubs(anchors, this.maxFriendlies - friendlyCount);
+    for (const npc of this._hostiles) npc.prebuildWeapons?.();
+    this._seatCivilians();
+    this.validateGrounding();
+  }
+
+  /**
+   * Deal one weapon id per hostile.
+   *
+   * Every id the theme uses appears at least once before any repeats, so a
+   * player always meets the full mix, and the shuffle keeps it from being the
+   * same character carrying the same thing every time.
+   *
+   * @param {number} count
+   * @returns {string[]}
+   */
+  _dealWeapons(count) {
+    const table = WEAPON_TABLES[this.theme] ?? WEAPON_TABLES.station;
+    const ids = table.map(([id]) => id);
+    const weights = table.map(([, w]) => w);
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      if (i < ids.length) {
+        out.push(ids[i]);
+        continue;
+      }
+      let total = 0;
+      for (const w of weights) total += w;
+      let roll = Math.random() * total;
+      let picked = ids[0];
+      for (let k = 0; k < ids.length; k++) {
+        roll -= weights[k];
+        if (roll <= 0) {
+          picked = ids[k];
+          break;
+        }
+      }
+      out.push(picked);
+    }
+    // Fisher-Yates, so "the first hostile always has the sidearm" is not a rule
+    // the player can learn.
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      const t = out[i];
+      out[i] = out[j];
+      out[j] = t;
+    }
+    return out;
+  }
+
+  /**
+   * Sit a couple of civilians down on whatever the world already has to sit on.
+   *
+   * There is no authored seat data in any of these worlds, so seats are found
+   * rather than placed: `seatSurfaceAt` looks for a narrow surface a bench's
+   * height above the floor near each standing civilian. Benches, planter rims,
+   * bleacher treads and low walls all match; buildings and crates do not.
+   *
+   * Capped low on purpose - a plaza with two or three people sat down reads as
+   * a plaza, one with a dozen reads as a waiting room.
+   */
+  _seatCivilians() {
+    let seated = 0;
+    const cap = 4;
+    for (const npc of this._friendlies) {
+      if (seated >= cap) break;
+      if (!npc.roleDef?.seatable || npc.seated) continue;
+      const floor = npc.position.y;
+      let found = null;
+      // Search a short ring around the character rather than only under their
+      // feet: they were placed on open ground on purpose, and the bench is the
+      // thing they were placed *next to*.
+      for (const r of [0.9, 1.5, 2.2]) {
+        for (let i = 0; i < 6 && !found; i++) {
+          const a = (i / 6) * Math.PI * 2 + r;
+          const x = npc.position.x + Math.cos(a) * r;
+          const z = npc.position.z + Math.sin(a) * r;
+          const y = seatSurfaceAt(this.physics, x, z, floor);
+          if (y !== null) found = { x, y, z };
+        }
+        if (found) break;
+      }
+      if (!found) continue;
+      npc.position.set(found.x, found.y, found.z);
+      npc.spawnPoint.copy(npc.position);
+      npc.setSeated(true, found.y - floor);
+      seated++;
+    }
+    this._seatedCount = seated;
+  }
+
+  /**
+   * Post-spawn grounding sweep.
+   *
+   * Every character is re-audited against the full surface stack at its column
+   * the moment the world finishes spawning, and anything that resolved onto a
+   * roof, into a basement or inside a mesh is corrected before the first frame
+   * is drawn. `NPC.auditGrounding` is the same check the runtime watchdog runs.
+   *
+   * @returns {number} how many characters had to be corrected
+   */
+  validateGrounding() {
+    let fixed = 0;
+    for (const npc of this._npcs) {
+      if (npc.auditGrounding(true)) fixed++;
+    }
+    this._groundFixes += fixed;
+    return fixed;
   }
 
   /**
@@ -291,12 +441,21 @@ export class NPCManager {
       anchored: o.anchored,
       groupFocus: o.groupFocus,
       posture: o.posture,
+      role: o.role,
+      weaponId: o.weaponId,
+      weaponPool: o.weaponPool,
     };
     const npc = o.hostile ? new HostileNPC(ctx) : new FriendlyNPC(ctx);
+    // A world-authored posture is a costume note, not a life sentence: the idle
+    // loop still runs, it just starts from the pose the world asked for.
     if (o.posture) npc.fixedPosture = true;
     this._npcs.push(npc);
-    if (o.hostile) this._hostiles.push(npc);
-    else this._friendlies.push(npc);
+    if (o.hostile) {
+      this._hostiles.push(npc);
+    } else {
+      this._friendlies.push(npc);
+      if (npc.isVendor) this._vendors.push(npc);
+    }
     this.bus?.emit('npc:spawned', { npc });
     return npc;
   }
@@ -323,6 +482,8 @@ export class NPCManager {
     let made = 0;
     let nameIdx = 0;
     let guard = 0;
+    /** How many of each role have been handed out, so names do not repeat. */
+    const roleCounts = new Map();
     // Round-robin over the hubs so no single plaza gets the whole crowd.
     while (made < budget && this._npcs.length < this.maxNPCs && guard++ < 60) {
       const hub = hubs[guard % hubs.length];
@@ -343,15 +504,24 @@ export class NPCManager {
         // Face the middle of the group. Characters face -Z at yaw 0.
         _v3.subVectors(centre, spot);
         const yaw = Math.atan2(-_v3.x, -_v3.z);
+        // Every filled slot gets a job. The rotation guarantees a vendor early
+        // (the Marketplace needs one to open next to) and then spreads guards,
+        // spectators and loiterers across the hubs.
+        const role = ROLE_ROTATION[nameIdx % ROLE_ROTATION.length];
+        const def = roleDef(role);
+        const roleIdx = roleCounts.get(role) ?? 0;
+        roleCounts.set(role, roleIdx + 1);
+        const cast = castFor(this.theme, role, roleIdx);
         this._createNPC({
           hostile: false,
-          name: names[nameIdx % names.length],
-          persona: personas[nameIdx % personas.length],
+          name: cast?.name ?? names[nameIdx % names.length],
+          persona: cast?.persona ?? personas[nameIdx % personas.length],
           position: spot,
           yaw,
           anchored: true,
           groupFocus: centre,
-          posture: GROUP_POSTURES[(next() * GROUP_POSTURES.length) | 0],
+          role,
+          posture: def.postures[(next() * def.postures.length) | 0],
         });
         nameIdx++;
         placed++;
@@ -388,7 +558,10 @@ export class NPCManager {
    * @returns {THREE.Vector3|null}
    */
   _findStandingSpot(probe, expectedY) {
-    const g = this.physics.groundHeight(probe.x, probe.z, probe.y + 1.5, 6);
+    // Resolve against the whole surface stack rather than "first thing below
+    // the probe": that is what stops a civilian being filed onto the roof of
+    // the building they were meant to be standing beside.
+    const g = resolveSurfaceY(this.physics, probe.x, probe.z, expectedY);
     if (g === null || Math.abs(g - expectedY) > 1.2) return null;
     const spot = new THREE.Vector3(probe.x, g, probe.z);
     for (const npc of this._npcs) {
@@ -436,9 +609,12 @@ export class NPCManager {
   _snapToGround(p, out) {
     if (!p) return null;
     const v = out ?? new THREE.Vector3();
-    const local = this.physics.groundHeight(p.x, p.z, p.y + 2, 8);
-    const y = local !== null ? local : this.physics.groundHeightOrFallback(p.x, p.z, p.y);
-    return v.set(p.x, y, p.z);
+    const spot = resolveSpot(this.physics, p, v);
+    if (spot) return spot;
+    // Nothing standable anywhere near: keep the authored height rather than
+    // returning null, so a world that authors a spawn over a gap still gets a
+    // character (the runtime watchdog will pull them onto a surface).
+    return v.set(p.x, p.y, p.z);
   }
 
   clear() {
@@ -451,7 +627,9 @@ export class NPCManager {
     this._npcs.length = 0;
     this._hostiles.length = 0;
     this._friendlies.length = 0;
+    this._vendors.length = 0;
     this._respawnQueue.length = 0;
+    this._groundCursor = 0;
     if (this._chatNPC) {
       this._chatNPC = null;
       this.bus?.emit('chat:available', { npc: null });
@@ -467,6 +645,24 @@ export class NPCManager {
     for (const npc of this._npcs) npc.fixedUpdate(dt, elapsed);
     this._updateRespawns(dt);
     this._updateChatProximity();
+    this._updateGroundingWatchdog();
+  }
+
+  /**
+   * Re-audit one character's footing per fixed step.
+   *
+   * The per-character ground probe is a short ray under the feet and cannot see
+   * its way out of a mesh a character has somehow ended up inside. This is the
+   * backstop: it walks the full surface stack at the character's column and
+   * lifts anyone who has sunk. One NPC per step sweeps the whole world in under
+   * half a second and costs a handful of rays.
+   */
+  _updateGroundingWatchdog() {
+    const n = this._npcs.length;
+    if (n === 0) return;
+    this._groundCursor = (this._groundCursor + 1) % n;
+    const npc = this._npcs[this._groundCursor];
+    if (npc && npc.auditGrounding()) this._groundFixes++;
   }
 
   update(dt, elapsed) {
@@ -607,7 +803,9 @@ export class NPCManager {
     let best = null;
     let bestSq = maxRange * maxRange;
     for (const npc of this._friendlies) {
-      if (npc.isDead) continue;
+      // Every friendly is a chat target - stationary, seated, vendor or
+      // wanderer alike. The flag exists so a hostile can never become one.
+      if (npc.isDead || npc.conversational === false) continue;
       const d = npc.position.distanceToSquared(position);
       if (d < bestSq) {
         bestSq = d;
@@ -730,26 +928,39 @@ export class NPCManager {
    * turn into tracers and damage. If nothing is listening we resolve the shot
    * here so the AI is never toothless.
    */
-  npcFire(npc, origin, direction, damage) {
-    const payload = { npc, origin, direction, damage, spread: 1 - npc.accuracy };
+  npcFire(npc, origin, direction, damage, weaponId) {
+    const player = this.player;
+    const id = weaponId ?? npc?.weaponId ?? 'rifle';
+    // Health before and after: `bus.emit` is synchronous, so whatever resolves
+    // the shot - CombatSystem, or the fallback below - has finished by the time
+    // we read it again. That is how `npc:attack` reports what actually landed
+    // rather than what was merely fired, which is what the HUD needs to answer
+    // "what just hit me".
+    const before = Number.isFinite(player?.health) ? player.health : null;
+
+    const payload = { npc, origin, direction, damage, weaponId: id, spread: 1 - npc.accuracy };
     const handlers = this.bus?._handlers?.get('npc:fire');
     this.bus?.emit('npc:fire', payload);
     this._onGunfire(origin, 0.8);
-    if (handlers && handlers.size > 0) return;
-    if (!this._selfResolveFire) return;
 
-    // Fallback resolution: nearest of world geometry and the player.
-    const player = this.player;
-    if (!player || player.isDead) return;
-    const range = CONFIG.npc.attackRange + 12;
-    const wall = this.physics.raycast(origin, direction, range, COLLISION_LAYER.WORLD);
-    const pp = player.position;
-    _capA.set(pp.x, pp.y + CONFIG.player.radius, pp.z);
-    _capB.set(pp.x, pp.y + CONFIG.player.height - CONFIG.player.radius, pp.z);
-    const hit = raySegment(origin, direction, _capA, _capB, CONFIG.player.radius, range);
-    if (hit < 0) return;
-    if (wall && wall.distance < hit) return;
-    player.applyDamage?.(damage, origin, npc.id);
+    const resolvedElsewhere = handlers && handlers.size > 0;
+    if (!resolvedElsewhere && this._selfResolveFire && player && !player.isDead) {
+      // Fallback resolution: nearest of world geometry and the player.
+      const range = (npc?.weaponDef?.range ?? CONFIG.npc.attackRange) + 12;
+      const wall = this.physics.raycast(origin, direction, range, COLLISION_LAYER.WORLD);
+      const pp = player.position;
+      _capA.set(pp.x, pp.y + CONFIG.player.radius, pp.z);
+      _capB.set(pp.x, pp.y + CONFIG.player.height - CONFIG.player.radius, pp.z);
+      const hit = raySegment(origin, direction, _capA, _capB, CONFIG.player.radius, range);
+      if (hit >= 0 && !(wall && wall.distance < hit)) {
+        player.applyDamage?.(damage, origin, npc.id);
+      }
+    }
+
+    const after = Number.isFinite(player?.health) ? player.health : null;
+    if (before !== null && after !== null && after < before - 1e-4) {
+      this.bus?.emit('npc:attack', { npc, weaponId: id, damage: before - after });
+    }
   }
 
   /** Friendlies scatter from gunfire wherever it comes from. */

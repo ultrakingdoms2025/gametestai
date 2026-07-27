@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Hoverboard } from './Hoverboard.js';
 import { Dragon } from './Dragon.js';
+import { Car } from './Car.js';
 import { HumanoidFactory } from '../npc/Humanoid.js';
 
 /**
@@ -93,6 +94,36 @@ const POSE = {
       foreArmL: [0.42, -0.2, 0],
     },
   },
+  /**
+   * Behind the wheel. Legs forward into the footwell rather than astride,
+   * elbows dropped, torso upright against a bucket seat back. This is only the
+   * fallback silhouette - the limbs are solved onto the pedals and the wheel
+   * rim, exactly as the dragon's are solved onto its stirrups and grab bar.
+   */
+  drive: {
+    root: [0, 0, 0],
+    rootRot: [0, 0, 0],
+    bones: {
+      pelvis: [-0.06, 0, 0],
+      spine01: [0.05, 0, 0],
+      spine02: [0.04, 0, 0],
+      spine03: [0.03, 0, 0],
+      neck: [-0.05, 0, 0],
+      head: [-0.04, 0, 0],
+      thighR: [1.42, 0, -0.14],
+      calfR: [-0.92, 0, 0],
+      footR: [0.36, 0, 0],
+      thighL: [1.42, 0, 0.14],
+      calfL: [-0.92, 0, 0],
+      footL: [0.36, 0, 0],
+      clavicleR: [0, 0, 0.06],
+      upperArmR: [1.05, 0.14, 0.30],
+      foreArmR: [0.5, 0.22, 0],
+      clavicleL: [0, 0, -0.06],
+      upperArmL: [1.05, -0.14, -0.30],
+      foreArmL: [0.5, -0.22, 0],
+    },
+  },
 };
 
 export class MountManager {
@@ -118,14 +149,14 @@ export class MountManager {
     this.npcManager = npcManager ?? null;
     this._externalFactory = humanoidFactory ?? null;
 
-    /** @type {Map<string, Hoverboard|Dragon>} */
+    /** @type {Map<string, Hoverboard|Dragon|Car>} */
     this._mounts = new Map();
     this._active = null;
     this._prevCameraMode = null;
     this._fovKick = 0;
     this._lastBoost = false;
     this._landingFor = null;
-    this._unlocked = new Set(['hoverboard', 'dragon']);
+    this._unlocked = new Set(['hoverboard', 'dragon', 'car']);
 
     /** Reused control block - the mount API takes it every fixed step. */
     this._ctrl = { throttle: 0, strafe: 0, yaw: 0, pitch: 0, up: 0, boost: false };
@@ -155,7 +186,7 @@ export class MountManager {
   /* Contract API                                                      */
   /* ================================================================ */
 
-  /** @returns {Hoverboard|Dragon|null} */
+  /** @returns {Hoverboard|Dragon|Car|null} */
   get active() {
     return this._active;
   }
@@ -172,7 +203,7 @@ export class MountManager {
   /**
    * Summon a mount, or - if that mount is the one currently being ridden -
    * dismiss it. Summoning while riding something else swaps cleanly.
-   * @param {'hoverboard'|'dragon'} id
+   * @param {'hoverboard'|'dragon'|'car'} id
    * @returns {boolean} true if a mount is being ridden afterwards
    */
   summon(id) {
@@ -197,7 +228,7 @@ export class MountManager {
       this._mounts.set(id, mount);
     }
     if (!mount.alive) {
-      this._placeSpawn(_sp1);
+      this._placeSpawn(_sp1, mount);
       mount.spawn(_sp1, this.player.yaw);
       this.bus.emit('mount:summoned', { id });
     }
@@ -334,6 +365,7 @@ export class MountManager {
     };
     if (id === 'hoverboard') return new Hoverboard(ctx);
     if (id === 'dragon') return new Dragon(ctx);
+    if (id === 'car') return new Car(ctx);
     return null;
   }
 
@@ -348,10 +380,16 @@ export class MountManager {
    * the boot-time `compileAsync` see the materials and pay that cost behind the
    * loading screen instead.
    *
+   * The car has a second reason to be here: its headlight is a real light, and
+   * Three keys its shader program cache on light *counts*. The car creates that
+   * light in its constructor and never removes it, so building the car behind
+   * the loading screen is what keeps the count constant for the rest of the
+   * session. Skip it here and the first `J` press pays a full recompile.
+   *
    * @param {string[]} ids Mount ids to build.
    * @returns {THREE.Object3D[]} Roots that were parked, for the caller to unpark.
    */
-  prebuild(ids = ['hoverboard', 'dragon']) {
+  prebuild(ids = ['hoverboard', 'dragon', 'car']) {
     const parked = [];
     for (const id of ids) {
       if (this._mounts.has(id)) continue;
@@ -377,8 +415,20 @@ export class MountManager {
     return parked;
   }
 
-  /** Remove roots parked by `prebuild` once their shaders are compiled. */
+  /**
+   * Remove roots parked by `prebuild` once their shaders are compiled.
+   *
+   * The warmup does not merely render the parked mounts - it summons and
+   * dismounts each one, which leaves them *alive*. `summon` only calls `spawn`
+   * on a mount that is not alive, so an alive mount whose root has just been
+   * pulled out of the scene would be mounted invisible, at stale coordinates,
+   * on the player's first real press. Killing them here returns every mount to
+   * the state a cold boot would have left it in.
+   */
   unpark(roots) {
+    for (const m of this._mounts.values()) {
+      if (m !== this._active && m.alive) m.kill();
+    }
     for (const r of roots ?? []) {
       if (r?.parent === this.scene) this.scene.remove(r);
     }
@@ -389,6 +439,7 @@ export class MountManager {
     if (!input || input.textCaptured) return;
     if (input.pressed('KeyH')) this.summon('hoverboard');
     else if (input.pressed('KeyG')) this.summon('dragon');
+    else if (input.pressed('KeyJ')) this.summon('car');
     else if (input.pressed('KeyF') && this._active) this.dismount();
   }
 
@@ -418,11 +469,14 @@ export class MountManager {
     return c;
   }
 
-  /** Somewhere clear, a couple of metres in front of the player. */
-  _placeSpawn(out) {
+  /**
+   * Somewhere clear, in front of the player. The distance is the mount's to
+   * choose: a hoverboard drops at the player's feet, a 4.3 m car cannot.
+   */
+  _placeSpawn(out, mount = null) {
     const p = this.player.position;
     const yaw = this.player.yaw;
-    const dist = 2.6;
+    const dist = mount?.spawnDistance ?? 2.6;
     out.set(p.x - Math.sin(yaw) * dist, p.y, p.z - Math.cos(yaw) * dist);
     // Probe from the player's own feet height, so a mount summoned indoors or
     // under a gantry lands on the floor the player is standing on.
@@ -558,7 +612,7 @@ export class MountManager {
       }
     }
     mount.riderAnchor.add(this._rider.root);
-    this._riderPose = mount.id === 'dragon' ? 'ride' : 'hover';
+    this._riderPose = mount.riderPose ?? (mount.id === 'dragon' ? 'ride' : 'hover');
 
     // The humanoid's origin is the soles of its feet, but a saddle anchor marks
     // where the *pelvis* goes. Without this the whole figure hangs a hip height
@@ -584,6 +638,10 @@ export class MountManager {
     if (!r || !this._riderPose) return;
     if (this._riderPose === 'ride') {
       this._poseSeated(dt, mount);
+      return;
+    }
+    if (this._riderPose === 'drive') {
+      this._poseDriver(dt, mount);
       return;
     }
     const pose = POSE[this._riderPose];
@@ -672,6 +730,76 @@ export class MountManager {
       if (this._solveIK(`upperArm${s}`, `foreArm${s}`, `hand${s}`, _ikTarget, side * 0.8, -0.5, 0.8)) {
         // The hand closes over the bar rather than continuing the forearm.
         this._setBone(`hand${s}`, 0.34, 0, side * -0.22);
+      }
+    }
+  }
+
+  /**
+   * Seat the rider behind the wheel.
+   *
+   * Structurally identical to `_poseSeated`: torso keyframed, limbs *solved*.
+   * The car reports its pedal ankle rests through `getStirrupWorld` and its
+   * steering wheel grips through `getGripWorld` for exactly this reason - the
+   * grips are parented to the rim, so turning the wheel drags the hands round
+   * with it instead of leaving them hanging in the air where the rim used to
+   * be. A keyframed driving pose cannot do that, and it is the difference
+   * between a driver and a mannequin.
+   *
+   * @param {number} dt
+   * @param {import('./Car.js').Car} mount
+   */
+  _poseDriver(dt, mount) {
+    const r = this._rider;
+    const root = r.root;
+    const accel = mount.accel01 ?? 0;
+    const speed01 = mount.speed01 ?? 0;
+    const roll = mount.bankRoll ?? 0;
+
+    // Brace against the seat under power, forward against the belts under
+    // brakes, and lean into the corner the body is already rolling out of.
+    this._lean = damp(this._lean ?? 0, -accel * 0.16 + speed01 * 0.05, 5, dt);
+    this._rollLean = damp(this._rollLean ?? 0, clamp(roll, -0.4, 0.4), 5, dt);
+    const lean = this._lean;
+    const rl = this._rollLean;
+
+    root.position.set(0, -this._riderDrop, 0);
+    root.rotation.set(0, 0, 0);
+
+    /* ---- torso: upright in the bucket, weight moving with the car ---- */
+    this._setBone('pelvis', -0.06 + lean * 0.08, 0, 0);
+    this._setBone('spine01', 0.05 + lean * 0.16, rl * 0.06, -rl * 0.10);
+    this._setBone('spine02', 0.04 + lean * 0.18, rl * 0.07, -rl * 0.12);
+    this._setBone('spine03', 0.03 + lean * 0.12, rl * 0.05, -rl * 0.07);
+    this._setBone('neck', -0.06 - lean * 0.16, -rl * 0.08, rl * 0.08);
+    this._setBone('head', -0.03 - lean * 0.10, -rl * 0.18, rl * 0.10);
+    this._setBone('clavicleR', 0, 0, 0.06 + lean * 0.04);
+    this._setBone('clavicleL', 0, 0, -0.06 - lean * 0.04);
+
+    // Everything above the rider - cabin, body roll, chassis pitch - may have
+    // moved this frame, and a world-space solve needs current matrices.
+    root.updateWorldMatrix(true, true);
+
+    /* ---- feet onto the pedals ---- */
+    for (const side of [1, -1]) {
+      const s = side > 0 ? 'R' : 'L';
+      if (!mount.getStirrupWorld?.(side, _ikTarget)) {
+        this._applyPose('drive', 1);
+        break;
+      }
+      // Knees up and forward: the pole is what stops a seated leg solving with
+      // the joint bent backwards through the seat base.
+      if (this._solveIK(`thigh${s}`, `calf${s}`, `foot${s}`, _ikTarget, side * 0.16, 0.85, -0.5)) {
+        this._aimTip(`foot${s}`, `toe${s}`, side * 0.05, -0.55, -0.84);
+      }
+    }
+
+    /* ---- hands onto the wheel rim ---- */
+    for (const side of [1, -1]) {
+      const s = side > 0 ? 'R' : 'L';
+      if (!mount.getGripWorld?.(side, _ikTarget)) break;
+      if (this._solveIK(`upperArm${s}`, `foreArm${s}`, `hand${s}`, _ikTarget, side * 0.9, -0.75, 0.55)) {
+        // The hand closes over the rim rather than continuing the forearm.
+        this._setBone(`hand${s}`, 0.30, 0, side * -0.28);
       }
     }
   }
@@ -784,7 +912,11 @@ export class MountManager {
   deserialize(data) {
     if (!data) return;
     if (Array.isArray(data.unlocked) && data.unlocked.length) {
-      this._unlocked = new Set(data.unlocked.filter((id) => id === 'hoverboard' || id === 'dragon'));
+      this._unlocked = new Set(
+        data.unlocked.filter((id) => id === 'hoverboard' || id === 'dragon' || id === 'car')
+      );
+      // A save written before the car existed must not lock it away for good.
+      this._unlocked.add('car');
     }
     // Deferred: the world a save restores has to be live before a mount can be
     // placed in it, so the caller finishes this with `restorePending()`.

@@ -350,9 +350,28 @@ export class Eagle {
      * is how you cross the map from the great tower, and releasing it converts
      * that speed back into altitude. Making W mean "go faster and stay level"
      * would remove the only interesting decision the eagle has. */
-    let pitchIn = ridden ? -clamp(ctrl.throttle, -1, 1) : 0;
+    /* Space climbs, Ctrl dives, the mouse steers - the same contract the dragon
+     * already teaches.
+     *
+     * The first version mapped altitude onto W/S and steering onto A/D strafe
+     * alone, on the theory that a glider should be flown like a glider. In the
+     * player's hands that mount simply could not be made to go up or down: they
+     * pressed the key that flies the dragon and nothing happened, and the mouse
+     * they steer everything else in this game with did nothing either. A control
+     * scheme nobody can find is not a design decision, it is a broken mount.
+     *
+     * The glider energy model underneath is untouched and still does all the
+     * interesting work - it is now driven by the vertical control instead of
+     * being the vertical control. W and S remain as a fine pitch trim for anyone
+     * who wants to fly it on energy alone. */
+    const climb = ridden ? clamp(ctrl.up, -1, 1) : 0;
+    const trim = ridden ? -clamp(ctrl.throttle, -1, 1) : 0;
+    let pitchIn = clamp(climb * 0.85 + trim * 0.4, -1, 1);
     const steer = ridden ? -clamp(ctrl.strafe, -1, 1) : 0;
     let wantBeat = ridden && !!ctrl.boost;
+    // Asking to climb beats the wings by itself; a bird gains height by flapping,
+    // and requiring a second key for the obvious thing is the same trap again.
+    if (climb > 0.01) wantBeat = true;
 
     /* A requested landing overrides the stick.
      *
@@ -389,12 +408,25 @@ export class Eagle {
     this._pitch = damp(this._pitch, pitchIn * 0.65, PITCH_RATE * 2.2, dt);
     this._pitch = clamp(this._pitch, -0.72, 0.72);
 
-    const bankTarget = steer * MAX_BANK;
+    /* Steering: chase the camera, and bank into whatever turn that produces.
+     *
+     * The turn comes from the look direction (plus A/D as a nudge), and the roll
+     * is then derived from how hard we are actually turning. That ordering is
+     * what keeps a bird flown with the mouse from skidding flat through its
+     * turns, and it means the roll is always honest about the manoeuvre rather
+     * than being a separate thing the player has to ask for. */
+    let turn = steer * TURN_RATE;
+    if (ridden) {
+      let diff = ((ctrl.yaw - this.heading + Math.PI * 3) % TAU) - Math.PI;
+      turn += clamp(diff * 2.1, -TURN_RATE * 1.6, TURN_RATE * 1.6);
+    }
+    // Slower to answer at speed: a bird doing 40 m/s cannot pivot.
+    const authority = 1 - clamp(this.speed / MAX_SPEED, 0, 1) * 0.45;
+    turn *= authority;
+    this.heading += turn * dt;
+
+    const bankTarget = clamp(-turn / TURN_RATE, -1, 1) * MAX_BANK;
     this._bank = damp(this._bank, bankTarget, 3.4, dt);
-    // A bird turns because it is banked, not because it yaws. Deriving the turn
-    // from the roll is what makes it carve instead of skid.
-    this.heading += (this._bank / MAX_BANK) * BANK_TURN * dt
-      + steer * TURN_RATE * 0.28 * dt;
 
     /* ---- energy: height and speed trade -------------------------------- *
      * Nose down converts altitude into speed, nose up spends speed to climb.
@@ -460,7 +492,16 @@ export class Eagle {
     vy += this._beat * BEAT_CLIMB;
     vy += this._thermal;
     vy += this._pitch * this.speed * 0.55;    // nose attitude carries you
-    if (this.speed < STALL) vy -= (STALL - this.speed) * 1.4;
+    /* Stall costs height - but only while gliding.
+     *
+     * Flapping generates lift from the wing itself rather than from airspeed
+     * over it, so a bird beating hard is not stalling however slowly it is
+     * moving. Without the `1 - beat` term the two penalties for being slow
+     * (reduced lift, plus this) together outweighed BEAT_CLIMB, and the result
+     * was a bird that could not take off from a standstill: full wingbeats,
+     * stamina draining, and it sat pinned on the ground clamp. It only ever
+     * climbed in testing because those tests began already at cruise speed. */
+    if (this.speed < STALL) vy -= (STALL - this.speed) * 1.4 * (1 - this._beat);
 
     /* ---- integrate ----------------------------------------------------- */
     const fx = -Math.sin(this.heading);

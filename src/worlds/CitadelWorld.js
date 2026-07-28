@@ -74,6 +74,32 @@ const HALF = 200;
 const MESA_Y = 14;
 /** Where the plateau edge falls away to the approach road. */
 const MESA_R = 132;
+/** Horizontal distance the shoulder takes to fall from the mesa to the desert. */
+const SHOULDER = 46;
+
+/**
+ * Ground height, as a pure function of distance from the centre.
+ *
+ * The single source of truth for the shape of this world's terrain: the visible
+ * heightfield, the collision that backs it, and every prop placement all read
+ * it. That is the entire point of it existing.
+ *
+ * It was previously three separate approximations of the same slope - a
+ * smoothstep in the mesh, a square slab plus a sparse ring of boxes in the
+ * collision, and a third copy in `_groundAt`. They disagreed, and where the
+ * collision sat lower than the mesh the player walked *underneath* the visible
+ * world: 7% of sampled positions, by as much as 13 m. Radial and shared, so the
+ * three can no longer drift apart.
+ *
+ * Deliberately free of x/z noise. Dunes are built as real geometry with real
+ * colliders instead, because noise in here is noise the box colliders cannot
+ * reproduce, and that is the same bug again in a smaller size.
+ */
+function terrainH(r) {
+  if (r < MESA_R) return MESA_Y;
+  const t = Math.min(1, (r - MESA_R) / SHOULDER);
+  return MESA_Y * (1 - t * t * (3 - 2 * t));
+}
 
 /**
  * Limewash and mudbrick. Sampled from sun-bleached North African towns, where
@@ -85,6 +111,9 @@ const WASH = [
   0xd8c8a8, 0xc9b489, 0xecdfc4, 0xd2bd97, 0xdcccA6,
   0xc6ae86, 0xe6d8bb, 0xd9c9a2, 0xcfbb92,
 ];
+
+/** Weathered sandstone, for the cliff the mesa stands on. */
+const CLIFF = [0xc0ad86, 0xb6a37c, 0xcab791, 0xac9a73, 0xc4b088, 0xbaa87f];
 
 /** One of `list`, with a small per-pick lightness jitter so no two repeat exactly. */
 function pick(rnd, list) {
@@ -601,22 +630,7 @@ export class CitadelWorld extends World {
     const rnd = this.rnd;
 
     for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i);
-      const z = pos.getZ(i);
-      const r = Math.hypot(x, z);
-      // Plateau, then a steep shoulder, then desert floor.
-      let h;
-      if (r < MESA_R) {
-        h = MESA_Y;
-      } else {
-        const t = Math.min(1, (r - MESA_R) / 46);
-        h = MESA_Y * (1 - t * t * (3 - 2 * t));
-      }
-      // Dunes on the flat, and a little erosion noise on the shoulder.
-      const dune = Math.sin(x * 0.021) * Math.cos(z * 0.017) * 2.4
-        + Math.sin(x * 0.06 + z * 0.04) * 0.8;
-      h += r < MESA_R ? 0 : dune * Math.min(1, (r - MESA_R) / 30);
-      pos.setY(i, h);
+      pos.setY(i, terrainH(Math.hypot(pos.getX(i), pos.getZ(i))));
     }
     geo.computeVertexNormals();
     geo.computeBoundingSphere();
@@ -634,45 +648,120 @@ export class CitadelWorld extends World {
     ground.castShadow = false;
     this.group.add(ground);
 
-    // Plateau top as one big collider slab, so walking the town is flat and
-    // exact rather than sampling a heightfield.
-    this.track(this.physics.addBox(0, MESA_Y - 4, 0, MESA_R + 4, 4, MESA_R + 4));
+    /* ---- collision that can never sit below the mesh ------------------- *
+     *
+     * The rule for every collider below: its top is the height of the *highest*
+     * point of the mesh it covers. Then the player is always standing on or a
+     * little above what they can see, and never inside or underneath it. A
+     * collider that splits the difference looks better on paper and puts the
+     * camera under the world at the top of the slope.
+     *
+     * The plateau used to be a single square slab of half-extent MESA_R + 4.
+     * The mesa is a *circle* of radius MESA_R, so the slab's corners projected
+     * invisible floor out to r = 192 at full mesa height, while the mesh there
+     * had already fallen to the desert - and the reverse gap, mesh above
+     * collision, opened all the way round the shoulder. */
+    const PIE = 40;
+    for (let i = 0; i < PIE; i++) {
+      const a = (i / PIE) * TAU;
+      // Circumscribed half-width, so neighbouring slices overlap rather than
+      // leaving a wedge of nothing between them at the rim.
+      const halfW = MESA_R * Math.tan(Math.PI / PIE) * 1.35;
+      this.track(this.physics.addRotatedBox(
+        _v1.set(Math.cos(a) * MESA_R * 0.5, MESA_Y - 5, Math.sin(a) * MESA_R * 0.5),
+        _v2.set(MESA_R * 0.5 + 0.5, 5, halfW),
+        -a
+      ));
+    }
+
+    /* The shoulder, as concentric rings stepping down. Each ring is set to the
+     * height of its inner edge - the highest ground it spans - so the staircase
+     * is always at or above the slope it approximates. */
+    const RINGS = 16;
+    const SECT = 48;
+    for (let ring = 0; ring < RINGS; ring++) {
+      const rIn = MESA_R + (ring / RINGS) * SHOULDER;
+      const rOut = MESA_R + ((ring + 1) / RINGS) * SHOULDER;
+      const top = terrainH(rIn);
+      const mid = (rIn + rOut) * 0.5;
+      const depth = (rOut - rIn) * 0.5 + 0.6;          // overlap the next ring
+      const halfW = (Math.PI * mid) / SECT * 1.35;     // and the next sector
+      for (let s = 0; s < SECT; s++) {
+        const a = (s / SECT) * TAU;
+        this.track(this.physics.addRotatedBox(
+          _v1.set(Math.cos(a) * mid, top - 6, Math.sin(a) * mid),
+          _v2.set(depth, 6, halfW),
+          -a
+        ));
+      }
+    }
 
     /* The cliff ring: boxes stepped down the shoulder. Also the world's biggest
      * climbable face - the whole point of putting the town on a mesa. */
     // Long span: a cliff step is metres tall, so the gradient has to run the
     // whole height or it reads as a painted stripe near the base.
     const B = new Batch({ ao: 0.42, sky: 0.3, grime: 0.5, span: 9 });
-    const steps = 5;
+    const steps = 7;
     for (let s = 0; s < steps; s++) {
-      const t0 = s / steps;
-      const t1 = (s + 1) / steps;
-      const rIn = MESA_R + t0 * 40;
-      const y = MESA_Y * (1 - t0 * t0);
-      const h = MESA_Y * (1 - t0 * t0) - MESA_Y * (1 - t1 * t1);
-      if (h < 0.3) continue;
-      const n = 64;
+      // Read from the shared height function, so the visible rock and the
+      // collision rings underneath it step down together instead of each
+      // following its own curve.
+      const rIn = MESA_R + (s / steps) * SHOULDER;
+      const rOut = MESA_R + ((s + 1) / steps) * SHOULDER;
+      const y = terrainH(rIn);
+      const h = y - terrainH(rOut);
+      if (h < 0.25) continue;
+      const n = 72;
       for (let i = 0; i < n; i++) {
         const a = (i / n) * TAU;
-        const jitter = 1 + (rnd() - 0.5) * 0.06;
+        const jitter = 1 + (rnd() - 0.5) * 0.05;
         const px = Math.cos(a) * rIn * jitter;
         const pz = Math.sin(a) * rIn * jitter;
-        const w = (TAU * rIn) / n * 1.25;
-        B.box('stone.castle', w, h * 1.6, 7, px, y - h * 0.3, pz, a + Math.PI / 2,
-          0xb9a986);
+        const w = (TAU * rIn) / n * 1.3;
+        const d = (rOut - rIn) * 1.15;
+        B.box('stone.castle', w, h * 1.9, d, px, y - h * 0.45, pz, a + Math.PI / 2,
+          pick(rnd, CLIFF));
         this.track(this.physics.addRotatedBox(
-          _v1.set(px, y - h * 0.3, pz),
-          _v2.set(w * 0.5, h * 0.8, 3.5),
+          _v1.set(px, y - h * 0.45, pz),
+          _v2.set(w * 0.5, h * 0.95, d * 0.5),
           a + Math.PI / 2
         ));
       }
     }
+
+    /* Dunes, as geometry rather than as noise in the heightfield.
+     *
+     * The mesh used to carry a sine-based dune field that nothing collided
+     * with, so the desert's crests were solid to the eye and empty to the
+     * player. Built as real boxes they get real colliders, and the flat mesh
+     * underneath them is a floor that agrees with itself. */
+    for (let i = 0; i < 90; i++) {
+      const a = rnd() * TAU;
+      const r = MESA_R + SHOULDER + 6 + rnd() * 96;
+      const px = Math.cos(a) * r;
+      const pz = Math.sin(a) * r;
+      if (Math.abs(px) > HALF - 8 || Math.abs(pz) > HALF - 8) continue;
+      const dw = 14 + rnd() * 30;
+      const dd = 7 + rnd() * 13;
+      const dh = 1.1 + rnd() * 2.4;
+      const da = rnd() * TAU;
+      // Two tiers, the upper one shorter: a single box is a kerb, two is a mound.
+      B.box('dirt.ground', dw, dh, dd, px, dh * 0.5, pz, da, 0xe6d3a8);
+      this.track(this.physics.addRotatedBox(
+        _v1.set(px, dh * 0.5, pz), _v2.set(dw * 0.5, dh * 0.5, dd * 0.5), da
+      ));
+      B.box('dirt.ground', dw * 0.6, dh * 0.7, dd * 0.58, px, dh + dh * 0.35, pz, da, 0xefdcb2);
+      this.track(this.physics.addRotatedBox(
+        _v1.set(px, dh + dh * 0.35, pz),
+        _v2.set(dw * 0.3, dh * 0.35, dd * 0.29), da
+      ));
+    }
+
     B.flush(this.group, (k) => this._mat(k), 'cliff', { cast: true, recv: true });
     B.dispose();
 
-    // Desert floor collider, well below, so falling off the mesa lands you
-    // somewhere rather than through the world.
-    this.track(this.physics.addBox(0, -3, 0, HALF, 3, HALF));
+    // Desert floor collider, its top exactly on the mesh's desert level.
+    this.track(this.physics.addBox(0, -6, 0, HALF * 1.6, 6, HALF * 1.6));
 
     this.bounds = new THREE.Box3(
       new THREE.Vector3(-HALF, -10, -HALF),
@@ -1383,10 +1472,7 @@ export class CitadelWorld extends World {
 
   /** Plateau-aware ground height, without a raycast. */
   _groundAt(x, z) {
-    const r = Math.hypot(x, z);
-    if (r < MESA_R) return MESA_Y;
-    const t = Math.min(1, (r - MESA_R) / 46);
-    return MESA_Y * (1 - t * t * (3 - 2 * t));
+    return terrainH(Math.hypot(x, z));
   }
 
   /* ------------------------------------------------------------------ */

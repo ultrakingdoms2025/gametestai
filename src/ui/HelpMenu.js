@@ -82,8 +82,10 @@ const GROUPS = [
       ['C', 'Summon / dismiss eagle'],
       ['F', 'Dismount'],
       ['Shift', 'Gallop, or beat the eagle’s wings'],
-      ['W S', 'Eagle: dive and climb'],
-      ['Space', 'Climb while riding the dragon'],
+      ['Space', 'Fly up — dragon and eagle'],
+      ['Ctrl', 'Fly down — dragon and eagle'],
+      ['Mouse', 'Steer your mount'],
+      ['W S', 'Eagle: pitch trim, trades height for speed'],
     ],
   },
   {

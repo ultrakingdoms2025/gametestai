@@ -362,6 +362,19 @@ export class Horse {
       this.tilt.add(f);
       this.footAnchors.push(f);
     }
+    /* Where the rider's hands go: on the reins, just ahead of the withers.
+     *
+     * `MountManager._poseSeated` solves the arms by IK onto `getGripWorld`, and
+     * gives up entirely if the mount does not offer one - which is why the
+     * rider sat on this horse with both arms straight out to the sides. Two
+     * anchors is the whole fix. */
+    this.reinAnchors = [];
+    for (const sx of [-0.22, 0.22]) {
+      const g = new THREE.Object3D();
+      g.position.set(sx, BODY_Y + 0.5, -BARREL * 0.44);
+      this.tilt.add(g);
+      this.reinAnchors.push(g);
+    }
 
     /* ---- tail ---- */
     this.tail = new THREE.Group();
@@ -797,6 +810,31 @@ export class Horse {
     out.setFromMatrixPosition(a.matrixWorld);
     if (lift) out.y += lift;
     return out;
+  }
+
+  /** Stirrup for the rider's foot IK. @returns {boolean} */
+  getStirrupWorld(side, out) {
+    this.getFootWorld(side, out);
+    return true;
+  }
+
+  /** Rein position for the rider's hand IK. @returns {boolean} */
+  getGripWorld(side, out) {
+    const a = this.reinAnchors[side < 0 ? 0 : 1];
+    if (!a) return false;
+    this.root.updateWorldMatrix(true, true);
+    out.setFromMatrixPosition(a.matrixWorld);
+    return true;
+  }
+
+  /** 0..1 how hard the animal is working, for the rider's forward lean. */
+  get boost01() {
+    return this._gait.name === 'gallop' ? 1 : this._gait.name === 'canter' ? 0.5 : 0;
+  }
+
+  /** The body's vertical bob, so the rider absorbs it instead of being welded on. */
+  get flap01() {
+    return Math.sin(this._stridePhase * Math.PI * 4) * 0.5 + 0.5;
   }
 
   /**

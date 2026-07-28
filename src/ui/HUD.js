@@ -1055,10 +1055,20 @@ export class HUD {
     const list = this.root.querySelector('.boot-controls');
     if (!list) return;
     this._bootPatched = true;
+    /* Kept current with what the game actually has.
+     *
+     * This list is the only controls reference a player sees before they are
+     * in the world, and it had fallen a long way behind - no free-climbing, no
+     * parkour, none of the mounts or systems added since. `F1` is called out
+     * last and explicitly as the full reference, because this card can only
+     * ever be a summary. */
     list.innerHTML = [
       ['WASD', 'Move'],
       ['Shift', 'Sprint / Boost'],
-      ['Space', 'Jump / Swim / Climb'],
+      ['Space', 'Jump / Swim'],
+      ['Space', 'Hold at a wall to climb it'],
+      ['Shift Space', 'Running leap'],
+      ['Ctrl', 'Dive in air / roll on landing'],
       ['LMB', 'Fire / Charge'],
       ['RMB', 'Aim'],
       ['R', 'Reload'],
@@ -1068,16 +1078,20 @@ export class HUD {
       ['H', 'Hoverboard'],
       ['G', 'Dragon'],
       ['J', 'Car'],
+      ['X', 'Horse'],
+      ['C', 'Eagle'],
       ['F', 'Dismount'],
+      ['Space / Ctrl', 'Fly up / down'],
       ['I', 'Inventory'],
       ['B', 'Marketplace'],
       ['K', 'Unstuck'],
+      ['F4', 'Audio options'],
       ['F5 / F9', 'Save / Load'],
       ['[ ]', 'Map zoom'],
       ['E', 'Talk / Pick up / Portal'],
       ['T', 'Chat'],
-      ['F1', 'Help'],
       ['Esc', 'Release cursor'],
+      ['F1', 'Full controls, any time'],
     ]
       .map(([k, v]) => `<span><b>${k}</b> ${v}</span>`)
       .join('');

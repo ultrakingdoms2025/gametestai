@@ -59,9 +59,24 @@ const SKIN = 0.06;
 const SPEED_UP = 2.05;
 const SPEED_SIDE = 2.35;
 const SPEED_DOWN = 3.1;
-/** Stamina per second while gripping, and the extra for actually ascending. */
-const DRAIN_HOLD = 5.5;
-const DRAIN_UP = 9.5;
+/**
+ * Stamina per second while gripping, and the extra for actually ascending.
+ *
+ * These were 5.5 and 9.5, which is 15/s against a bar of 100: six and a half
+ * seconds of climbing, and at {@link SPEED_UP} that is **13.7 metres**. The
+ * minarets in this world are 30 m, the great tower is 46 m, and the mesa cliff
+ * is 14 m. Every one of them dropped the player off somewhere around halfway,
+ * every time, with no way to recover - because holding on drained too, so
+ * stopping for a breather only ran the bar down slower.
+ *
+ * Climbing is the thing that costs now, and simply hanging costs nothing at
+ * all: a climber locked off on good holds can stay there. That turns the bar
+ * into a budget for *movement* rather than a countdown to falling off, makes
+ * the ledges this world is banded with into real rest points, and means any
+ * height is reachable given the patience to pause on the way.
+ */
+const DRAIN_HOLD = 1.6;
+const DRAIN_UP = 5.4;
 /** Push-off velocity when leaping backwards off a wall. */
 const KICK_BACK = 5.2;
 const KICK_UP = 4.6;
@@ -301,9 +316,12 @@ export class FreeClimb {
     _mvTarget.copy(p.position).add(_mvDelta);
 
     /* ---- stamina ----------------------------------------------------- */
-    if (stam) {
-      const rate = DRAIN_HOLD + (climbing ? DRAIN_UP : 0);
-      stam.drain(rate * dt, 'climb');
+    /* Only movement costs. Hanging perfectly still is free, and free means the
+     * regen delay actually elapses - draining a trickle would hold the timer
+     * open forever and there would be no way to rest on a face at all. */
+    const moving = climbing || Math.abs(side) > 0.01 || up < -0.01;
+    if (stam && moving) {
+      stam.drain((DRAIN_HOLD + (climbing ? DRAIN_UP : 0)) * dt, 'climb');
     }
 
     /* ---- re-probe from where we want to be --------------------------- */

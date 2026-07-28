@@ -245,6 +245,19 @@ export class Eagle {
       this.tilt.add(f);
       this.footAnchors.push(f);
     }
+    /* Harness straps, forward at the base of the neck, for the rider's hands.
+     *
+     * Without a `getGripWorld` the seated pose leaves the arms wherever the
+     * character rig last had them, which on a bird 40 m up is a rider sitting
+     * with both arms out like a scarecrow. */
+    this.gripAnchors = [];
+    for (const sx of [-0.2, 0.2]) {
+      const g = new THREE.Object3D();
+      g.position.set(sx, 0.42, -0.52);
+      this.tilt.add(g);
+      this.gripAnchors.push(g);
+    }
+    this.tilt.add(new THREE.Mesh(box(0.5, 0.07, 0.1, 0, 0.42, -0.52), tackMat));
 
     this.root.visible = false;
   }
@@ -637,6 +650,31 @@ export class Eagle {
     out.setFromMatrixPosition(a.matrixWorld);
     if (lift) out.y += lift;
     return out;
+  }
+
+  /** Stirrup for the rider's foot IK. @returns {boolean} */
+  getStirrupWorld(side, out) {
+    this.getFootWorld(side, out);
+    return true;
+  }
+
+  /** Harness strap for the rider's hand IK. @returns {boolean} */
+  getGripWorld(side, out) {
+    const a = this.gripAnchors[side < 0 ? 0 : 1];
+    if (!a) return false;
+    this.root.updateWorldMatrix(true, true);
+    out.setFromMatrixPosition(a.matrixWorld);
+    return true;
+  }
+
+  /** Drives the rider's forward lean: hardest when beating, easiest soaring. */
+  get boost01() {
+    return this._beat;
+  }
+
+  /** The wingbeat itself, so the rider's seat absorbs each stroke. */
+  get flap01() {
+    return Math.sin(this._flapPhase * TAU) * 0.5 + 0.5;
   }
 
   /**

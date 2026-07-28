@@ -177,6 +177,10 @@ const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, po
 // world manager and the systems it has to drive on every world change.
 worldManager.attach?.({ npcManager, portals, player });
 
+// Parkour reads `world.haystacks` to know a fall is survivable, and the world
+// manager is built after the player, so it is handed over here.
+player.parkour.worldManager = worldManager;
+
 // Expose for the automated screenshot/critique harness and for debugging.
 window.GAME = {
   engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,

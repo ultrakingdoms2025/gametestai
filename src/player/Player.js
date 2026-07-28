@@ -5,6 +5,7 @@ import { Weapon } from './Weapon.js';
 import { Swim } from './Swim.js';
 import { Climb } from './Climb.js';
 import { FreeClimb } from './FreeClimb.js';
+import { Parkour } from './Parkour.js';
 import { Stamina } from '../systems/Stamina.js';
 import { WaterVolumes } from '../systems/WaterVolumes.js';
 
@@ -173,6 +174,12 @@ export class Player {
      * @type {import('./FreeClimb.js').FreeClimb}
      */
     this.freeClimb = new FreeClimb({ player: this, physics, bus, input });
+    /**
+     * Leap, dive, roll, and the fall damage that gives them a point.
+     * `worldManager` is injected later by main.js - it does not exist yet.
+     * @type {import('./Parkour.js').Parkour}
+     */
+    this.parkour = new Parkour({ player: this, bus, input, worldManager: null });
     /**
      * Shared exertion pool. `main.js` constructs the real one and it attaches
      * itself here; if that wiring is absent the player builds its own on the
@@ -535,6 +542,11 @@ export class Player {
       return;
     }
 
+    // Dive steering and the roll timer run before any movement branch claims
+    // the step: a dive is an *airborne* modifier, so it has to apply whether
+    // the player is falling normally or has just kicked off a wall.
+    this.parkour.fixedUpdate(dt);
+
     /* ---- clinging to a wall ------------------------------------------ *
      * Above water and below the mantle, because a free climb ends *in* a
      * mantle: `FreeClimb` calls `climb.tryStart` when it crests the lip, and
@@ -663,6 +675,11 @@ export class Player {
 
     if (this._jumpBuffer > 0 && this._coyote > 0) {
       this._velocity.y = P.jumpVelocity;
+      // A sprinting jump becomes a leap: `tryLeap` scales what is already in
+      // the velocity rather than setting a fixed speed, so it rewards the
+      // run-up, and it returns false (leaving an ordinary jump) if the player
+      // was not running or could not pay the stamina.
+      this.parkour.tryLeap();
       this._jumpBuffer = 0;
       this._coyote = 0;
       this._grounded = false;

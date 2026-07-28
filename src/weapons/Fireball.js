@@ -187,6 +187,27 @@ export class FireballWeapon {
     this._aimDirection = aimDirection ?? ((out) => this.camera.getWorldDirection(out));
     this.name = SPEC.name;
 
+    /**
+     * The mount the player is riding, when it wants to own the fire origin.
+     *
+     * Casting from a dragon spawned the bolt at the rider's *hand*, roughly two
+     * metres behind and above the skull, so it appeared out of nothing beside
+     * the creature's neck. A mount that implements `getFireOrigin` claims the
+     * spawn point instead; the hoverboard and car do not, because a rider on a
+     * board really is throwing it by hand.
+     *
+     * Tracked over the bus rather than injected because Loadout - and every
+     * weapon in it - is constructed before MountManager exists.
+     * @type {{getFireOrigin?:Function, flashMaw?:Function}|null}
+     */
+    this._mount = null;
+    this._mountOffs = [
+      bus?.on('mount:mounted', (e) => {
+        this._mount = typeof e?.mount?.getFireOrigin === 'function' ? e.mount : null;
+      }),
+      bus?.on('mount:dismounted', () => { this._mount = null; }),
+    ].filter(Boolean);
+
     /* ---- resource + fire control ---- */
     this._mana = SPEC.maxMana;
     this._charge = 0;
@@ -982,18 +1003,27 @@ export class FireballWeapon {
     // corrected direction; the default is simply the camera's forward axis.
     this._aimDirection(_fi1).normalize();
     this._model.updateWorldMatrix(true, false);
-    this._model.localToWorld(_fi2.copy(CORE_POS));
-    this.camera.getWorldPosition(_fi3);
+    const mount = this._mount;
+    if (mount) {
+      // Breathed, not thrown: the mount owns the spawn point.
+      mount.getFireOrigin(_fi2);
+      mount.flashMaw?.(1);
+    } else {
+      this._model.localToWorld(_fi2.copy(CORE_POS));
+      this.camera.getWorldPosition(_fi3);
 
-    // If the hand is inside or beyond a wall (backed into a corner), pull the
-    // spawn point back to the surface so the fireball never starts on the far
-    // side of it.
-    _fi4.subVectors(_fi2, _fi3);
-    const reach = _fi4.length();
-    if (reach > 1e-4) {
-      _fi4.multiplyScalar(1 / reach);
-      const hit = this.physics?.raycast?.(_fi3, _fi4, reach, COLLISION_LAYER.WORLD);
-      if (hit) _fi2.copy(_fi3).addScaledVector(_fi4, Math.max(0.05, hit.distance - 0.12));
+      // If the hand is inside or beyond a wall (backed into a corner), pull the
+      // spawn point back to the surface so the fireball never starts on the far
+      // side of it. Skipped when a mount owns the origin: the muzzle is out at
+      // the end of a dragon's neck, and a wall test from the camera to there
+      // would clip the bolt back into the player on every close-quarters shot.
+      _fi4.subVectors(_fi2, _fi3);
+      const reach = _fi4.length();
+      if (reach > 1e-4) {
+        _fi4.multiplyScalar(1 / reach);
+        const hit = this.physics?.raycast?.(_fi3, _fi4, reach, COLLISION_LAYER.WORLD);
+        if (hit) _fi2.copy(_fi3).addScaledVector(_fi4, Math.max(0.05, hit.distance - 0.12));
+      }
     }
 
     this.projectiles?.spawn?.({
@@ -1098,6 +1128,9 @@ export class FireballWeapon {
   }
 
   dispose() {
+    for (const off of this._mountOffs) off?.();
+    this._mountOffs.length = 0;
+    this._mount = null;
     this.root.removeFromParent();
     this._lightRig?.removeFromParent();
     this.root.traverse((o) => {

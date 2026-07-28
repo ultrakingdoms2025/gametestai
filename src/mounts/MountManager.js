@@ -580,7 +580,10 @@ export class MountManager {
     mount.onMount?.(this.player);
     this._applySeat(mount);
     this._ensureRider(mount);
-    this.bus.emit('mount:mounted', { id: mount.id });
+    // The mount itself rides along: a weapon that needs to fire from the
+    // creature rather than from the rider's hand has no other way to reach it,
+    // and Loadout is built before MountManager so it cannot be injected.
+    this.bus.emit('mount:mounted', { id: mount.id, mount });
     this.bus.emit('hud:notify', { text: `${mount.displayName} engaged`, tone: 'info' });
   }
 

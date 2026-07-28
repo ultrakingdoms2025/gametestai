@@ -1660,6 +1660,35 @@ export class Dragon {
     if (!v) this._maw.intensity = 0;
   }
 
+  /**
+   * Where fire leaves this creature: between the jaws, facing forward.
+   *
+   * A rider casting a fireball was spawning it at their own hand, which is
+   * about two metres behind and above the skull - so the bolt appeared out of
+   * thin air beside the dragon's neck. Anything mounted may implement this to
+   * say "projectiles come from here instead"; the hoverboard and the car do
+   * not, because a rider on a board really is throwing it by hand.
+   *
+   * Taken slightly ahead of the maw light (which sits at z = -0.5 in head
+   * space) so the bolt clears the teeth rather than being born inside the
+   * skull and colliding with it on the first step.
+   *
+   * @param {THREE.Vector3} out
+   * @returns {THREE.Vector3} `out`, in world space
+   */
+  getFireOrigin(out) {
+    this.head.updateWorldMatrix(true, false);
+    return out.set(0, -0.06, -0.78).applyMatrix4(this.head.matrixWorld);
+  }
+
+  /**
+   * Flash the throat as the breath leaves it, so the light matches the bolt.
+   * @param {number} [strength]
+   */
+  flashMaw(strength = 1) {
+    this._mawFlash = Math.max(this._mawFlash ?? 0, strength);
+  }
+
   /** Land the dragon in front of the player, then let them climb aboard. */
   spawn(position, yaw) {
     // Local probe, not a cast from the sky: overhead geometry would otherwise
@@ -2024,9 +2053,12 @@ export class Dragon {
 
     /* ---- jaw and throat ---- */
     this._roar = Math.max(0, this._roar - dt * 1.1);
-    const open = this._roar * 0.55 + Math.max(0, Math.sin(elapsed * 0.7) - 0.93) * 1.2;
+    // A cast decays faster than a roar: it is a spit of flame, not a bellow.
+    this._mawFlash = Math.max(0, (this._mawFlash ?? 0) - dt * 3.2);
+    const open = this._roar * 0.55 + this._mawFlash * 0.5
+      + Math.max(0, Math.sin(elapsed * 0.7) - 0.93) * 1.2;
     this.jaw.rotation.x = damp(this.jaw.rotation.x, -open, 9, dt);
-    this._maw.intensity = (this._roar * 14 + 1.2 + this._boost * 5) * ease;
+    this._maw.intensity = (this._roar * 14 + this._mawFlash * 16 + 1.2 + this._boost * 5) * ease;
     // Scene-parented, so walk it back into the throat while it is lit.
     this._mawAnchored.sync();
     this._auraMat.opacity = (this._roar * 0.75 + 0.12 + this._boost * 0.3) * ease;

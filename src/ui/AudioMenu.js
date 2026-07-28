@@ -8,15 +8,18 @@ import './audio.css';
  * because a second overlay that behaves differently from the first is a bug
  * report waiting to happen.
  *
- * Two things it does that the help panel does not:
+ * Opening it releases the pointer so the sliders can be used, which - as with
+ * every other menu here - raises the pause overlay behind it. That is why the
+ * panel sits at the top of the overlay ladder in `audio.css`: at the same
+ * z-index as the pause overlay the two tie, DOM order decides, and the pause
+ * overlay swallows every click meant for a slider. Music keeps playing while
+ * paused, because it runs on the audio clock rather than the render loop, so
+ * the volume sliders are still audible as you drag them.
  *
- * 1. **It does not pause.** Muting music mid-firefight is a thing players do,
- *    and a panel that stopped the world to let them do it would be worse than
- *    the problem. The sliders take effect live.
- * 2. **It unlocks audio.** Opening this panel is a user gesture, so it is a
- *    legitimate second chance to start the AudioContext for anyone whose first
- *    gesture was missed - which matters because a silent game with a working
- *    volume slider is the most confusing possible failure.
+ * It also unlocks audio: opening the panel is a user gesture, so it is a
+ * legitimate second chance to start the AudioContext for anyone whose first
+ * gesture was missed - a silent game with a working volume slider is the most
+ * confusing possible failure.
  */
 
 function el(tag, cls, text) {

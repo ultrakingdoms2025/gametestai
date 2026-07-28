@@ -4,7 +4,12 @@
 .aud {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  /* Above everything else that can be on screen at once. The overlay ladder is
+     pause 60, weapon strip 62, wipe 70, help and inventory 80, character 82 -
+     and releasing the pointer to use this panel *raises the pause overlay by
+     design*, so anything at 60 ties with it and loses on DOM order. That tie is
+     exactly what made the sliders unclickable. */
+  z-index: 84;
   display: grid;
   place-items: center;
   background: radial-gradient(ellipse at 50% 40%, rgba(6, 16, 26, 0.72), rgba(2, 6, 12, 0.9));

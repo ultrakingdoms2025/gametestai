@@ -165,6 +165,11 @@ export class HUD {
     this.portals = portals;
     this.caches = caches ?? null;
     this.contracts = contracts ?? null;
+    /** Reused by `_weapon()`; see the note there on why this is not a spread. */
+    this._weaponView = {
+      id: null, name: null, ammo: 0, reserve: 0, magazine: 0,
+      ammoItem: null, isReloading: false, spread: undefined,
+    };
 
     this._offs = [];
     this._live = false;
@@ -1742,8 +1747,49 @@ export class HUD {
   }
 
   /** The Loadout's active weapon when there is one, else the legacy slot. */
+  /**
+   * The active weapon, as the *loadout descriptor* rather than the instance.
+   *
+   * This distinction is the whole bug. A weapon instance reports its own
+   * private `reserve`, and for anything that spends straight out of the bag -
+   * the fireball - that private counter does not exist, so `Fireball.reserve`
+   * is a hard-coded `0`. The panel therefore read zero charges no matter how
+   * many were actually in the bag, and stayed at zero through a resupply.
+   *
+   * `Loadout.weapons` exists precisely to answer this: it resolves `reserve`
+   * and `bagAmmo` from the inventory for every weapon that draws from it, and
+   * reuses its objects so this is allocation-free at the 5 Hz it is polled.
+   *
+   * The instance is kept as the fallback for the pre-Loadout boot window and
+   * for fields the descriptor does not carry.
+   *
+   * @returns {object|null}
+   */
   _weapon() {
-    return this._loadout?.current ?? this.player?.weapon ?? null;
+    const inst = this._loadout?.current ?? this.player?.weapon ?? null;
+    const list = this._loadout?.weapons;
+    if (inst && list) {
+      const d = list.find((x) => x.active) ?? list.find((x) => x.id === inst.id);
+      if (d) {
+        // Copied into a reused object rather than spread: this is polled, and
+        // Loadout reuses its descriptors specifically so the HUD allocates
+        // nothing. `isReloading` is the instance's name for what the descriptor
+        // calls `reloading`, bridged here rather than at every read site.
+        const v = this._weaponView;
+        v.id = d.id;
+        v.name = d.name;
+        v.ammo = d.ammo;
+        v.reserve = d.reserve;
+        v.magazine = d.magazine;
+        v.ammoItem = d.ammoItem ?? null;
+        v.isReloading = d.reloading === true;
+        // Not on the descriptor, and the crosshair bloom reads it every frame -
+        // taking it straight off the instance keeps that working.
+        v.spread = inst.spread;
+        return v;
+      }
+    }
+    return inst;
   }
 
   /**

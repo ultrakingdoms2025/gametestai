@@ -66,6 +66,7 @@ const _color = new THREE.Color();
 
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 /** Playfield half-extent. Matches the other worlds so the minimap framing does. */
 const HALF = 200;
@@ -73,6 +74,27 @@ const HALF = 200;
 const MESA_Y = 14;
 /** Where the plateau edge falls away to the approach road. */
 const MESA_R = 132;
+
+/**
+ * Limewash and mudbrick. Sampled from sun-bleached North African towns, where
+ * the range is narrow in hue and wide in lightness - which is exactly what
+ * stops a procedural town looking either monotone or like a paint chart.
+ */
+const WASH = [
+  0xe8dcc0, 0xdfd0ae, 0xd6c49e, 0xcbb68d, 0xe3d2b2,
+  0xd8c8a8, 0xc9b489, 0xecdfc4, 0xd2bd97, 0xdcccA6,
+  0xc6ae86, 0xe6d8bb, 0xd9c9a2, 0xcfbb92,
+];
+
+/** One of `list`, with a small per-pick lightness jitter so no two repeat exactly. */
+function pick(rnd, list) {
+  const base = list[(rnd() * list.length) | 0];
+  const f = 0.9 + rnd() * 0.2;
+  const r = Math.min(255, ((base >> 16) & 255) * f) | 0;
+  const g = Math.min(255, ((base >> 8) & 255) * f) | 0;
+  const b = Math.min(255, (base & 255) * f) | 0;
+  return (r << 16) | (g << 8) | b;
+}
 
 /** Deterministic PRNG - a world has to regenerate identically every session. */
 function mulberry32(seed) {
@@ -93,10 +115,21 @@ function mulberry32(seed) {
  * souk alone is ~1400 boxes and would be unshippable one mesh at a time.
  */
 class Batch {
-  constructor() {
+  /**
+   * @param {{ao?:number, sky?:number, grime?:number, span?:number}} [shade]
+   *   Baked vertex shading applied to every geometry added to this batch.
+   *   - `ao`     how dark the foot of a surface goes (0..1)
+   *   - `sky`    how much a downward-facing surface loses relative to an
+   *              upward-facing one - a one-line hemispheric occlusion term
+   *   - `grime`  warm-to-cool shift applied with the AO, so the dark end is
+   *              dirt rather than simply less light
+   *   - `span`   metres over which the AO fades out from the foot
+   */
+  constructor(shade = null) {
     /** @type {Map<string, THREE.BufferGeometry[]>} */
     this.buckets = new Map();
     this._owned = [];
+    this.shade = shade;
   }
 
   /**
@@ -125,10 +158,59 @@ class Batch {
     _color.set(tint === null ? 0xffffff : tint);
     const n = g.attributes.position.count;
     const col = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      col[i * 3] = _color.r;
-      col[i * 3 + 1] = _color.g;
-      col[i * 3 + 2] = _color.b;
+
+    /* Baked vertex shading.
+     *
+     * Everything in this world is a box, and a box lit by one sun is four flat
+     * rectangles - the town reads as cardboard no matter how good the material
+     * is. Two cheap per-vertex terms fix that for the whole world at once:
+     *
+     *   AO    darkens the foot of every surface, so buildings sit *in* the
+     *         ground instead of resting on top of it, and alleys gain the
+     *         contact shadow that no dynamic light will ever draw for 1400
+     *         boxes.
+     *   Sky   darkens downward-facing faces against upward-facing ones. It is
+     *         a one-line hemispheric occlusion term, and it is what separates
+     *         the underside of a lintel from its top.
+     *
+     * Both are free at runtime - they are just the colour attribute that had to
+     * be written anyway - and they survive the merge into a single mesh, which
+     * a light never could. */
+    const sh = this.shade;
+    if (!sh) {
+      for (let i = 0; i < n; i++) {
+        col[i * 3] = _color.r;
+        col[i * 3 + 1] = _color.g;
+        col[i * 3 + 2] = _color.b;
+      }
+    } else {
+      const posA = g.attributes.position;
+      const nrmA = g.attributes.normal;
+      const ao = sh.ao ?? 0;
+      const sky = sh.sky ?? 0;
+      const grime = sh.grime ?? 0;
+      const span = sh.span ?? 2.2;
+      // Foot of *this* piece, in world space - so a roof lip is shaded from its
+      // own underside, not from the ground 20 m below it.
+      let minY = Infinity;
+      for (let i = 0; i < n; i++) minY = Math.min(minY, posA.getY(i));
+
+      for (let i = 0; i < n; i++) {
+        const t = clamp01((posA.getY(i) - minY) / span);
+        // smoothstep, so the gradient has no visible band where it ends
+        const rise = t * t * (3 - 2 * t);
+        let f = 1 - ao * (1 - rise);
+        if (nrmA) {
+          const ny = nrmA.getY(i);
+          f *= 1 - sky * (1 - (ny * 0.5 + 0.5));
+        }
+        // Dirt is cooler as well as darker; scaling blue least would *warm* the
+        // shadows, which is the opposite of how a shaded wall photographs.
+        const d = (1 - f) * grime;
+        col[i * 3] = _color.r * f * (1 - d * 0.15);
+        col[i * 3 + 1] = _color.g * f * (1 - d * 0.06);
+        col[i * 3 + 2] = _color.b * f;
+      }
     }
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
     let list = this.buckets.get(key);
@@ -219,13 +301,21 @@ export class CitadelWorld extends World {
     env.fogNear = 90;
     env.fogFar = 520;
     env.exposure = 1.0;
-    env.ambientColor = new THREE.Color(0x8a94a8);
-    env.ambientIntensity = 0.85;
-    env.skyColor = new THREE.Color(0xbcd2ea);
-    env.groundColor = new THREE.Color(0xb09a72);
-    env.hemiIntensity = 0.9;
-    env.sunColor = new THREE.Color(0xffe2b0);
-    env.sunIntensity = 5.6;
+    /* Shadow colour is the whole difficulty of a desert scene.
+     *
+     * The first pass used a cool blue-grey ambient, which is what daylight
+     * physically is - and over red-brown ground it rendered every shadow
+     * *purple*. Real sun-baked stone bounces a great deal of warm light back
+     * into its own shade, so the fill here is warm and the sky term carries the
+     * cool. Shadows land brown rather than violet, and the town stops looking
+     * like it is lit through a bruise. */
+    env.ambientColor = new THREE.Color(0xa8977f);
+    env.ambientIntensity = 0.7;
+    env.skyColor = new THREE.Color(0xa8c6e6);
+    env.groundColor = new THREE.Color(0xc9a173);   // hot sand bouncing upward
+    env.hemiIntensity = 1.15;
+    env.sunColor = new THREE.Color(0xffddA6);
+    env.sunIntensity = 5.9;
     env.sunDirection = new THREE.Vector3(0.55, 0.42, 0.72).normalize();
     env.envMapIntensity = 1.0;
     env.bloom = { strength: 0.42, radius: 0.5, threshold: 0.92 };
@@ -308,6 +398,9 @@ export class CitadelWorld extends World {
       'thatch.roof': 0xffe9a8,
       'fabric.banner': 0xffffff,
       'dirt.ground': 0xe0cda3,
+      // Date palm, not meadow: the library's grass is a temperate green and a
+      // desert frond is grey-olive. Same material, one tint apart.
+      'grass.field': 0x93a06a,
     };
     const t = TINT[key.split(':')[0]];
     if (t !== undefined) m.color = new THREE.Color(t);
@@ -333,23 +426,143 @@ export class CitadelWorld extends World {
    * surface, and it must never receive the sun or it will band.
    */
   _buildSky() {
+    /* Painted equirectangular, not a 1-D ramp.
+     *
+     * A vertical gradient is the same in every direction, which means the sky
+     * has no *place* in it: turn on the spot and nothing changes, and the top
+     * third of a world played on rooftops is dead pixels. A sphere's UVs are
+     * already equirectangular, so a 2-D canvas costs exactly the same one draw
+     * call and buys a sun, its glow, and cloud banding that gives the eye
+     * something to measure the horizon against. */
+    const W = 1024;
+    const H = 512;
     const cv = document.createElement('canvas');
-    cv.width = 4;
-    cv.height = 256;
+    cv.width = W;
+    cv.height = H;
     const c = cv.getContext('2d');
-    const grd = c.createLinearGradient(0, 0, 0, 256);
-    grd.addColorStop(0.0, '#3f74b8');   // zenith
-    grd.addColorStop(0.42, '#8fb4d8');
-    grd.addColorStop(0.72, '#d8cdb0');  // haze
-    grd.addColorStop(1.0, '#e4d2ac');   // dust at the horizon
+
+    const grd = c.createLinearGradient(0, 0, 0, H);
+    grd.addColorStop(0.0, '#2e63ab');   // zenith
+    grd.addColorStop(0.34, '#6fa0cf');
+    grd.addColorStop(0.60, '#a8c4d8');
+    grd.addColorStop(0.76, '#dbcfb2');  // haze
+    grd.addColorStop(1.0, '#e8d6b0');   // dust at the horizon
     c.fillStyle = grd;
-    c.fillRect(0, 0, 4, 256);
+    c.fillRect(0, 0, W, H);
+
+    /* The sun, placed where the light actually comes from.
+     *
+     * `sunDirection` is authored once in `_configureEnvironment`; deriving the
+     * disc from it means the glow in the sky and the shadows on the ground can
+     * never disagree, which is the sort of mismatch that reads as "wrong"
+     * without a player being able to say why. */
+    const sd = this.environment.sunDirection;
+    const su = ((Math.atan2(-sd.x, -sd.z) / TAU) + 0.75) % 1;
+    const sv = clamp01(0.5 - Math.asin(clamp01(sd.y)) / Math.PI);
+    const sx = su * W;
+    const sy = sv * H;
+    // Wrapped: a glow near the seam has to be painted on both sides of it.
+    for (const ox of [-W, 0, W]) {
+      const glow = c.createRadialGradient(sx + ox, sy, 0, sx + ox, sy, W * 0.30);
+      glow.addColorStop(0.00, 'rgba(255,247,225,0.95)');
+      glow.addColorStop(0.06, 'rgba(255,236,190,0.55)');
+      glow.addColorStop(0.22, 'rgba(255,224,170,0.20)');
+      glow.addColorStop(1.00, 'rgba(255,220,165,0)');
+      c.fillStyle = glow;
+      c.fillRect(sx + ox - W * 0.3, sy - W * 0.3, W * 0.6, W * 0.6);
+      const disc = c.createRadialGradient(sx + ox, sy, 0, sx + ox, sy, W * 0.017);
+      disc.addColorStop(0, 'rgba(255,253,246,1)');
+      disc.addColorStop(1, 'rgba(255,246,222,0)');
+      c.fillStyle = disc;
+      c.fillRect(sx + ox - W * 0.02, sy - W * 0.02, W * 0.04, W * 0.04);
+    }
+
+    /* Cloud banding.
+     *
+     * Stretched ellipses, squashed harder the nearer the horizon so they
+     * foreshorten the way real cloud decks do, and drawn from the world's own
+     * PRNG so the sky is identical every session like everything else here. */
+    const rnd = this.rnd;
+    c.globalCompositeOperation = 'source-over';
+    /* A deck between roughly 40 degrees of elevation and the horizon.
+     *
+     * The band matters as much as the clouds do. On an equirectangular map the
+     * rows near v = 0 are the *pole*, where the whole width of the canvas
+     * collapses to a point - a cloud painted up there wraps into a hard streak
+     * across the zenith, which is exactly what the first attempt produced. Held
+     * to the middle of the map it stays a cloud, and dividing the horizontal
+     * radius by sin(pi t) undoes what is left of the compression so they read as
+     * round overhead and foreshortened toward the horizon, like a real deck. */
+    /* Sparse, and spread over a wide band.
+     *
+     * Once the gradients actually painted, the first honest render was solid
+     * overcast: 120 clouds inside a 0.22-wide band overlap into one continuous
+     * ring around the sky, which reads as a lid rather than as weather. Fewer,
+     * smaller, fainter, and spread nearly twice as far vertically leaves the
+     * gaps that make the rest of them look like individual clouds. */
+    for (let i = 0; i < 30; i++) {
+      // Biased toward the top of the band, not the bottom: an exponent below 1
+      // pushes the distribution *up* the range, which piled every cloud into the
+      // horizon fade below and made the deck invisible.
+      const t = 0.20 + Math.pow(rnd(), 1.5) * 0.26;
+      const y = t * H;
+      const x = rnd() * W;
+      const stretch = 1 / Math.max(0.55, Math.sin(Math.PI * t));
+      const rx = (20 + rnd() * 54) * stretch;
+      const ry = rx * (0.15 + rnd() * 0.12) / stretch;
+      // Faded out near the horizon so the deck meets the haze instead of
+      // stopping at a line, but strong enough overhead to actually be weather.
+      const a = (0.16 + rnd() * 0.26) * (1 - clamp01((t - 0.38) / 0.08));
+      if (a <= 0.005) continue;
+      /* Shadowed base first, lit body offset slightly above it.
+       *
+       * A cloud painted as one soft blob is a smudge; what makes it read as a
+       * solid object with weight is a darker underside under a top that catches
+       * the sun. Two passes, and the offset between them is the whole trick.
+       *
+       * Each gradient is built *inside* the transform it is painted under. A
+       * canvas gradient lives in user space at fill time, so one created in page
+       * coordinates and then filled after `translate`/`scale` has its centre
+       * dragged somewhere else entirely and the shape comes out filled with the
+       * transparent tail - which is why the first two attempts at this painted a
+       * sky with no clouds in it at all. */
+      const puff = (cx, cy, stops) => {
+        for (const ox of [-W, 0, W]) {
+          c.save();
+          c.translate(cx + ox, cy);
+          c.scale(1, ry / rx);
+          const g2 = c.createRadialGradient(0, 0, 0, 0, 0, rx);
+          for (const [at, col] of stops) g2.addColorStop(at, col);
+          c.fillStyle = g2;
+          c.beginPath();
+          c.arc(0, 0, rx, 0, TAU);
+          c.fill();
+          c.restore();
+        }
+      };
+
+      puff(x, y + ry * 0.55, [
+        [0.0, `rgba(146,154,170,${a * 0.5})`],
+        [0.6, `rgba(160,168,182,${a * 0.2})`],
+        [1.0, 'rgba(160,168,182,0)'],
+      ]);
+      puff(x, y - ry * 0.35, [
+        [0.00, `rgba(255,254,251,${a})`],
+        [0.42, `rgba(251,247,240,${a * 0.72})`],
+        [0.78, `rgba(246,241,232,${a * 0.26})`],
+        [1.00, 'rgba(244,238,228,0)'],
+      ]);
+    }
 
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.anisotropy = 4;
     tex.needsUpdate = true;
 
-    const geo = new THREE.SphereGeometry(900, 24, 16);
+    // More segments than a plain ramp needed: the sun disc is a small feature
+    // on a big sphere and a coarse mesh gives it visibly polygonal edges.
+    const geo = new THREE.SphereGeometry(900, 48, 32);
     const mat = new THREE.MeshBasicMaterial({
       map: tex, side: THREE.BackSide, fog: false, depthWrite: false,
     });
@@ -427,7 +640,9 @@ export class CitadelWorld extends World {
 
     /* The cliff ring: boxes stepped down the shoulder. Also the world's biggest
      * climbable face - the whole point of putting the town on a mesa. */
-    const B = new Batch();
+    // Long span: a cliff step is metres tall, so the gradient has to run the
+    // whole height or it reads as a painted stripe near the base.
+    const B = new Batch({ ao: 0.42, sky: 0.3, grime: 0.5, span: 9 });
     const steps = 5;
     for (let s = 0; s < steps; s++) {
       const t0 = s / steps;
@@ -478,7 +693,7 @@ export class CitadelWorld extends World {
    * than a texture, because they are the handholds on the way up.
    */
   _buildCurtainWall() {
-    const B = new Batch();
+    const B = new Batch({ ao: 0.4, sky: 0.34, grime: 0.55, span: 5 });
     const R = 118;
     const WALL_H = 9;
     const WALL_T = 2.6;
@@ -577,7 +792,10 @@ export class CitadelWorld extends World {
    * exist to be gripped rather than looked at.
    */
   _buildSouk() {
-    const B = new Batch();
+    // The strongest of the set. The souk is where the player spends most of
+    // their time at eye level, and alley contact shadow is most of what sells
+    // a town built entirely from boxes.
+    const B = new Batch({ ao: 0.46, sky: 0.34, grime: 0.65, span: 3.4 });
     const rnd = this.rnd;
     const rings = 7;
 
@@ -605,7 +823,15 @@ export class CitadelWorld extends World {
         const d = 8 + rnd() * 5;
         const h = 5 + inward * 9 + rnd() * 3.5;
         const y0 = MESA_Y;
-        const tint = 0xd8c9a4 - ((rnd() * 0x18) << 16);
+        /* Per-building colour, drawn from a real palette.
+         *
+         * The first version subtracted a small random amount from the *red*
+         * channel only, which varies four hundred houses across a range narrower
+         * than the eye can see - the town came out one flat sheet of mustard.
+         * A hand-picked set of limewash and mudbrick tones, varied a little in
+         * lightness per building, is what makes a skyline read as a place where
+         * people paint their own houses. */
+        const tint = pick(rnd, WASH);
 
         B.box('plaster.wall', w, h, d, px, y0 + h * 0.5, pz, a, tint);
         this.track(this.physics.addRotatedBox(
@@ -632,17 +858,88 @@ export class CitadelWorld extends World {
           ));
         }
 
-        // Parapet stubs on some roofs, so the skyline is not a flat plane.
+        /* Openings.
+         *
+         * Faked rather than cut: there is no CSG here, so each opening is a
+         * near-black panel set a hand's width into the wall face, with a lintel
+         * over it and a sill under it. The panel is what the eye reads as depth
+         * and the sill is what catches the sun, and together they turn a blank
+         * rectangle into a wall of a building. At any distance past a couple of
+         * metres it is indistinguishable from a real recess, and it costs three
+         * boxes instead of a boolean operation per house.
+         *
+         * The sills are colliders. Everything on this world's facades is: the
+         * whole point of the citadel is that a wall is a route, so a detail the
+         * player can see and not grab would be a lie. */
+        /* Face directions, derived rather than guessed.
+         *
+         * A box at `rotY = a` has its local +Z pointing along world
+         * (sin a, cos a) and its local +X along (cos a, -sin a) - *not*
+         * (cos a, sin a), which is the radial direction the buildings happen to
+         * be placed on. Offsetting by the radius instead of by the local axis
+         * puts every detail on a building that is not exactly north-south out
+         * in the open air beside its own wall. That is what was wrong with the
+         * parapets and awnings below, and it is the difference between a facade
+         * and a cloud of loose boxes. */
+        const faces = [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5];
+        for (const fa of faces) {
+          const wa = a + fa;
+          const nx = Math.sin(wa);
+          const nz = Math.cos(wa);
+          const tx = Math.cos(wa);     // tangent, for spacing bays along the face
+          const tz = -Math.sin(wa);
+          // Depth of the wall we are punching into, and its width.
+          const onZ = fa === 0 || Math.abs(fa - Math.PI) < 1e-6;
+          const half = (onZ ? d : w) * 0.5;
+          const along = (onZ ? w : d) * 0.5;
+          const rows = h > 9 ? 2 : 1;
+          for (let row = 0; row < rows; row++) {
+            const wy = y0 + h * (rows === 1 ? 0.58 : row === 0 ? 0.36 : 0.68);
+            const cols = along > 5 ? 2 : 1;
+            for (let cidx = 0; cidx < cols; cidx++) {
+              if (rnd() < 0.22) continue;                 // not every bay
+              const off = cols === 1 ? 0 : (cidx - 0.5) * along * 0.95;
+              const ox = px + nx * half + tx * off;
+              const oz = pz + nz * half + tz * off;
+              const ww = 1.05 + rnd() * 0.45;
+              const wh = 1.35 + rnd() * 0.5;
+              // Recess: pushed 0.16 in, so the wall itself shades it.
+              B.box('stone.castle', ww, wh, 0.1, ox - nx * 0.16, wy, oz - nz * 0.16, wa, 0x2b2119);
+              // Lintel above, sill below - both proud, both grabbable.
+              B.box('wood.beam', ww + 0.34, 0.2, 0.24, ox + nx * 0.05, wy + wh * 0.5 + 0.1, oz + nz * 0.05, wa, 0x6a4f31);
+              B.box('stone.castle', ww + 0.42, 0.16, 0.3, ox + nx * 0.07, wy - wh * 0.5 - 0.08, oz + nz * 0.07, wa, 0xcdbb95);
+              this.track(this.physics.addRotatedBox(
+                _v1.set(ox + nx * 0.07, wy - wh * 0.5 - 0.08, oz + nz * 0.07),
+                _v2.set((ww + 0.42) * 0.5, 0.08, 0.15), wa
+              ));
+            }
+          }
+
+          // A doorway on the alley-facing side only, so the ground floor is not
+          // ringed with four front doors.
+          if (fa === 0 && rnd() < 0.75) {
+            const dw = 1.25;
+            const dh = 2.3;
+            B.box('stone.castle', dw, dh, 0.12, px + nx * (half - 0.14), y0 + dh * 0.5, pz + nz * (half - 0.14), wa, 0x241c15);
+            B.box('wood.beam', dw + 0.4, 0.26, 0.28, px + nx * (half + 0.05), y0 + dh + 0.13, pz + nz * (half + 0.05), wa, 0x6a4f31);
+          }
+        }
+
+        /* Parapet stubs on some roofs, so the skyline is not a flat plane.
+         * Offset along the building's own +Z, for the reason set out above -
+         * this one used to displace on z only, which slid the parapet clean off
+         * the roof of every building on a diagonal. */
         if (rnd() < 0.45) {
           const ph = 0.9 + rnd() * 0.6;
-          B.box('plaster.wall', w * 0.9, ph, 0.5, px, y0 + h + 0.55 + ph * 0.5,
+          B.box('plaster.wall', w * 0.9, ph, 0.5,
+            px + Math.sin(a) * d * 0.45, y0 + h + 0.55 + ph * 0.5,
             pz + Math.cos(a) * d * 0.45, a, tint);
         }
 
         // An awning over the alley, and its posts: cover, and a mid-height perch.
         if (rnd() < 0.3) {
-          const ax = px + Math.cos(a) * (d * 0.5 + 1.6);
-          const az = pz + Math.sin(a) * (d * 0.5 + 1.6);
+          const ax = px + Math.sin(a) * (d * 0.5 + 1.6);
+          const az = pz + Math.cos(a) * (d * 0.5 + 1.6);
           B.box('fabric.banner', w * 0.8, 0.12, 3.2, ax, y0 + 3.4, az, a, 0xc2543a);
           this.track(this.physics.addRotatedBox(
             _v1.set(ax, y0 + 3.4, az), _v2.set(w * 0.4, 0.06, 1.6), a
@@ -667,7 +964,7 @@ export class CitadelWorld extends World {
    * face is not a climb, it is a stamina failure with a long fall attached.
    */
   _buildCitadel() {
-    const B = new Batch();
+    const B = new Batch({ ao: 0.38, sky: 0.32, grime: 0.45, span: 7 });
     const cy = MESA_Y;
 
     // Raised inner ward, so the citadel reads as above the town it commands.
@@ -768,7 +1065,9 @@ export class CitadelWorld extends World {
    * small boxes negligible.
    */
   _buildRopeBridges() {
-    const B = new Batch();
+    // Planks and ropes are seen from above and below in equal measure, so the
+    // sky term carries this one and the ground-contact AO is nearly off.
+    const B = new Batch({ ao: 0.12, sky: 0.4, grime: 0.2, span: 1.2 });
     const minarets = this._towers.filter((t) => t.minaret);
     if (minarets.length < 2) return;
 
@@ -828,7 +1127,7 @@ export class CitadelWorld extends World {
    * `Player` reads `world.haystacks` to know a fall is survivable.
    */
   _buildDressing() {
-    const B = new Batch();
+    const B = new Batch({ ao: 0.44, sky: 0.3, grime: 0.6, span: 1.8 });
     const rnd = this.rnd;
 
     // A haystack below each viewpoint, offset toward the open side.
@@ -872,6 +1171,8 @@ export class CitadelWorld extends World {
     B.flush(this.group, (k) => this._mat(k), 'dressing');
     B.dispose();
 
+    this._buildProps();
+
     /* Banners on the keep - the one animated thing in the world, so the town
      * does not read as a still life. Kept to a handful of separate meshes
      * because they need their own per-frame transform. */
@@ -888,6 +1189,196 @@ export class CitadelWorld extends World {
       this.group.add(m);
       this._banners.push({ mesh: m, phase: i * 1.7, geo });
     }
+  }
+
+  /**
+   * A spot on the mesa that is not inside a building.
+   *
+   * Rejection sampling against the roof list, which already records every
+   * block's footprint. Returns null rather than a bad spot, so a caller that
+   * cannot be placed simply is not - a palm growing through a wall is worse
+   * than one palm fewer.
+   *
+   * @returns {{x:number, z:number}|null}
+   */
+  _openSpot(rnd, rMin, rMax, pad = 3.2) {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const a = rnd() * TAU;
+      const r = rMin + rnd() * (rMax - rMin);
+      const x = Math.cos(a) * r;
+      const z = Math.sin(a) * r;
+      let ok = true;
+      for (const b of this._roofs) {
+        const dx = x - b.x;
+        const dz = z - b.z;
+        const keep = Math.max(b.w, b.d) * 0.5 + pad;
+        if (dx * dx + dz * dz < keep * keep) { ok = false; break; }
+      }
+      if (!ok) continue;
+
+      /* And then ask the collision world, which knows about everything the roof
+       * list does not: the curtain wall, the keep, the minarets, the gate
+       * towers, the rope bridges. Checking footprints alone put palms inside the
+       * curtain wall, because a wall is not a roof and never appears in that
+       * list. A downward cast from head height finds anything solid standing on
+       * this spot regardless of which builder made it. */
+      const g = this._groundAt(x, z);
+      const hit = this.physics.groundHeight(x, z, g + 14, 22);
+      if (hit !== null && hit > g + 0.6) continue;
+
+      return { x, z };
+    }
+    return null;
+  }
+
+  /**
+   * Palms, stalls, pottery and carts.
+   *
+   * The town was structurally finished long before it was *inhabited*: from the
+   * wall the plaza read as a hundred metres of empty brown, because everything
+   * built so far is either a wall to climb or a roof to land on. None of this
+   * is climbing furniture - it exists so the ground has something on it at the
+   * scale a person occupies, which is the difference between a level and a
+   * place. Batched into the same handful of draw calls as everything else.
+   */
+  _buildProps() {
+    const B = new Batch({ ao: 0.4, sky: 0.34, grime: 0.5, span: 2.2 });
+    const rnd = this.rnd;
+
+    /* ---- date palms ---- */
+    for (let i = 0; i < 44; i++) {
+      const s = this._openSpot(rnd, 30, 122, 4.2);
+      if (!s) continue;
+      const gy = this._groundAt(s.x, s.z);
+      const segs = 5 + ((rnd() * 3) | 0);
+      const lean = (rnd() - 0.5) * 0.5;
+      const dir = rnd() * TAU;
+      let ty = gy;
+      let tx = s.x;
+      let tz = s.z;
+      for (let k = 0; k < segs; k++) {
+        const sw = 0.46 - k * 0.035;
+        const sh = 1.15;
+        // Each drum steps slightly along the lean, which is what gives a palm
+        // its curve without needing a curved primitive.
+        const off = (k / segs) * lean;
+        tx += Math.cos(dir) * off * 0.5;
+        tz += Math.sin(dir) * off * 0.5;
+        B.box('wood.beam', sw, sh, sw, tx, ty + sh * 0.5, tz, dir + k * 0.2, 0x8a6a45);
+        ty += sh * 0.94;
+      }
+      this.track(this.physics.addBox(s.x, gy + (ty - gy) * 0.5, s.z, 0.32, (ty - gy) * 0.5, 0.32));
+
+      // Crown: fronds fanned out and drooping.
+      const fronds = 7 + ((rnd() * 3) | 0);
+      for (let f = 0; f < fronds; f++) {
+        const fa = (f / fronds) * TAU + rnd() * 0.3;
+        const droop = 0.28 + rnd() * 0.4;
+        const len = 2.3 + rnd() * 1.1;
+        _e1.set(0, fa, -droop);
+        _q1.setFromEuler(_e1);
+        _v1.set(tx + Math.cos(fa) * len * 0.42, ty + 0.32 - droop * len * 0.3, tz + Math.sin(fa) * len * 0.42);
+        _v2.set(1, 1, 1);
+        _m1.compose(_v1, _q1, _v2);
+        B.add('grass.field', new THREE.BoxGeometry(len, 0.09, 0.52), _m1, 0xb9c48a);
+      }
+      // Dates, on about half of them.
+      if (rnd() < 0.5) {
+        B.box('fabric.banner', 0.5, 0.55, 0.5, tx + 0.4, ty - 0.25, tz, rnd() * TAU, 0xa8642c);
+      }
+    }
+
+    /* ---- market stalls ---- */
+    for (let i = 0; i < 22; i++) {
+      const s = this._openSpot(rnd, 34, 108, 4.6);
+      if (!s) continue;
+      const gy = this._groundAt(s.x, s.z);
+      const a = rnd() * TAU;
+      const sw = 3.2 + rnd() * 1.4;
+      const sd = 2.4 + rnd() * 0.9;
+      const ph = 2.5;
+      const cs = Math.cos(a);
+      const sn = Math.sin(a);
+      // Four posts at the corners, in the stall's own frame.
+      for (const [ox, oz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        const lx = ox * sw * 0.5;
+        const lz = oz * sd * 0.5;
+        const wx = s.x + cs * lx + sn * lz;
+        const wz = s.z - sn * lx + cs * lz;
+        B.box('wood.beam', 0.16, ph, 0.16, wx, gy + ph * 0.5, wz, a, 0x7a5a38);
+      }
+      /* Striped canopy: alternating bands, because a market awning is the one
+       * place in a sand-coloured town where saturated colour belongs, and it is
+       * what the eye picks the plaza out by from the rooftops. */
+      const bands = 5;
+      const c1 = rnd() < 0.5 ? 0xc4472e : 0x2f6ba8;
+      const c2 = 0xe8dcc0;
+      for (let b = 0; b < bands; b++) {
+        const lz = (b / (bands - 1) - 0.5) * sd;
+        const wx = s.x + sn * lz;
+        const wz = s.z + cs * lz;
+        B.box('fabric.banner', sw + 0.7, 0.09, sd / bands, wx, gy + ph + 0.12, wz, a, b % 2 ? c1 : c2);
+      }
+      this.track(this.physics.addRotatedBox(
+        _v1.set(s.x, gy + ph + 0.12, s.z), _v2.set((sw + 0.7) * 0.5, 0.06, sd * 0.5), a
+      ));
+      // Counter and the goods on it.
+      B.box('wood.plank', sw, 0.9, sd * 0.5, s.x, gy + 0.45, s.z, a, 0x8a6842);
+      this.track(this.physics.addRotatedBox(
+        _v1.set(s.x, gy + 0.45, s.z), _v2.set(sw * 0.5, 0.45, sd * 0.25), a
+      ));
+      for (let g = 0; g < 3; g++) {
+        const lx = (g / 2 - 0.5) * sw * 0.7;
+        B.box('fabric.banner', 0.5, 0.32, 0.5, s.x + cs * lx, gy + 1.06, s.z - sn * lx,
+          rnd() * TAU, pick(rnd, [0xb8452f, 0xc98a2a, 0x6d8a3a, 0x8a4a7a]));
+      }
+    }
+
+    /* ---- pottery and sacks against the walls ---- */
+    for (let i = 0; i < 40; i++) {
+      const s = this._openSpot(rnd, 28, 124, 2.4);
+      if (!s) continue;
+      const gy = this._groundAt(s.x, s.z);
+      const n = 2 + ((rnd() * 3) | 0);
+      for (let k = 0; k < n; k++) {
+        const ox = (rnd() - 0.5) * 1.8;
+        const oz = (rnd() - 0.5) * 1.8;
+        const ph = 0.5 + rnd() * 0.5;
+        const pw = 0.36 + rnd() * 0.26;
+        B.box('roof.tile', pw, ph, pw, s.x + ox, gy + ph * 0.5, s.z + oz, rnd() * TAU,
+          pick(rnd, [0x9a6a44, 0xb08050, 0x8a5a3a, 0xc09468]));
+      }
+    }
+
+    /* ---- carts ---- */
+    for (let i = 0; i < 9; i++) {
+      const s = this._openSpot(rnd, 38, 112, 5);
+      if (!s) continue;
+      const gy = this._groundAt(s.x, s.z);
+      const a = rnd() * TAU;
+      const cs = Math.cos(a);
+      const sn = Math.sin(a);
+      B.box('wood.plank', 2.8, 0.5, 1.6, s.x, gy + 0.95, s.z, a, 0x7d5f3c);
+      this.track(this.physics.addRotatedBox(
+        _v1.set(s.x, gy + 0.95, s.z), _v2.set(1.4, 0.25, 0.8), a
+      ));
+      // Sideboards, so it is a cart and not a plank on legs.
+      for (const oz of [-1, 1]) {
+        B.box('wood.plank', 2.8, 0.5, 0.12, s.x + sn * oz * 0.8, gy + 1.4, s.z + cs * oz * 0.8, a, 0x6d5133);
+      }
+      // Wheels, and the shafts a horse would sit between.
+      for (const ox of [-1, 1]) {
+        const wx = s.x + cs * ox * 0.95;
+        const wz = s.z - sn * ox * 0.95;
+        for (const oz of [-1, 1]) {
+          B.box('wood.beam', 0.14, 1.2, 1.2, wx + sn * oz * 0.86, gy + 0.6, wz + cs * oz * 0.86, a, 0x5d462c);
+        }
+      }
+      B.box('wood.beam', 2.2, 0.12, 0.12, s.x + cs * 2.4, gy + 0.8, s.z - sn * 2.4, a, 0x6d5133);
+    }
+
+    B.flush(this.group, (k) => this._mat(k), 'props');
+    B.dispose();
   }
 
   /** Plateau-aware ground height, without a raycast. */

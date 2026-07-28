@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 
 /**
@@ -101,8 +102,41 @@ const STEP_UP = 0.75;
 const GRAVITY = -22;
 const JUMP_V = 7.6;
 
+/**
+ * A rounded box, which is every part of this animal.
+ *
+ * Nothing on a horse has a sharp edge on it. Built from plain boxes the model
+ * reads as a bench with a box for a head however well it is animated, because
+ * the silhouette is all straight lines meeting at right angles - and the
+ * silhouette is the whole of what you see of a mount you are sitting on top of.
+ * The round is generous, a fifth of the smallest dimension, so slim parts like
+ * cannon bones come out genuinely cylindrical rather than merely eased.
+ */
 function box(w, h, d, x, y, z, rx = 0, ry = 0, rz = 0) {
-  const g = new THREE.BoxGeometry(w, h, d);
+  const r = Math.min(w, h, d) * 0.2;
+  const g = r > 0.012
+    ? new RoundedBoxGeometry(w, h, d, 2, r)
+    : new THREE.BoxGeometry(w, h, d);
+  if (rx) g.rotateX(rx);
+  if (ry) g.rotateY(ry);
+  if (rz) g.rotateZ(rz);
+  g.translate(x, y, z);
+  return g;
+}
+
+/** A tapered box: `w2`/`d2` are the far-end width and depth. Wedges and limbs. */
+function taper(w, h, d, w2, d2, x, y, z, rx = 0, ry = 0, rz = 0) {
+  const g = new THREE.BoxGeometry(w, h, d, 1, 1, 1);
+  const pos = g.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    // 0 at the bottom of the box, 1 at the top; scale the section by height.
+    const t = pos.getY(i) / h + 0.5;
+    const sx = THREE.MathUtils.lerp(1, w2 / w, t);
+    const sz = THREE.MathUtils.lerp(1, d2 / d, t);
+    pos.setX(i, pos.getX(i) * sx);
+    pos.setZ(i, pos.getZ(i) * sz);
+  }
+  g.computeVertexNormals();
   if (rx) g.rotateX(rx);
   if (ry) g.rotateY(ry);
   if (rz) g.rotateZ(rz);
@@ -189,12 +223,23 @@ export class Horse {
     const tack = this._mat(0x6d4522, { roughness: 0.6, metalness: 0.15 });
     const metal = this._mat(0xb9a06a, { roughness: 0.35, metalness: 0.9 });
 
-    /* ---- barrel, chest, hindquarters: one merged body ---- */
+    /* ---- barrel, chest, hindquarters: one merged body ----
+     *
+     * Seven masses rather than four, and none of them the same size. A horse
+     * is deepest at the girth just behind the shoulder and narrowest at the
+     * flank in front of the hip, and the topline dips between the withers and
+     * the croup. Built as one even slab - which is what this was - it reads as
+     * a bench, and no amount of leg animation fixes a bench. */
     const body = merge([
-      box(0.78, 0.86, BARREL, 0, BODY_Y, 0),
-      box(0.86, 0.9, 0.5, 0, BODY_Y + 0.02, -BARREL * 0.42),      // chest
-      box(0.9, 0.94, 0.62, 0, BODY_Y + 0.04, BARREL * 0.4),       // hindquarters
-      box(0.7, 0.5, 0.34, 0, BODY_Y - 0.36, -BARREL * 0.3),       // brisket
+      box(0.82, 0.92, BARREL * 0.52, 0, BODY_Y - 0.02, -BARREL * 0.12),  // girth, deepest
+      box(0.74, 0.8, BARREL * 0.4, 0, BODY_Y + 0.02, BARREL * 0.2),      // flank, tucked
+      box(0.88, 0.86, 0.46, 0, BODY_Y + 0.06, -BARREL * 0.4),            // shoulder
+      box(0.94, 0.9, 0.66, 0, BODY_Y + 0.08, BARREL * 0.4),              // haunch
+      box(0.66, 0.52, 0.44, 0, BODY_Y - 0.34, -BARREL * 0.3),            // brisket
+      // Withers: the ridge at the base of the neck a saddle sits behind.
+      box(0.5, 0.3, 0.5, 0, BODY_Y + 0.46, -BARREL * 0.32),
+      // Croup, falling away to the tail.
+      box(0.7, 0.42, 0.42, 0, BODY_Y + 0.34, BARREL * 0.52),
     ]);
     this._owned.push(body);
     const bodyMesh = new THREE.Mesh(body, coat);
@@ -206,21 +251,50 @@ export class Horse {
     this.neck = new THREE.Group();
     this.neck.position.set(0, BODY_Y + 0.3, -BARREL * 0.55);
     this.tilt.add(this.neck);
+    /* Tapered, and thicker front-to-back than side-to-side.
+     *
+     * A horse's neck is a deep blade, wide where it leaves the chest and
+     * narrowing to the throatlatch, and it is far deeper than it is broad. A
+     * uniform box gave it the cross-section of a plank. */
+    /* Note the sign: -0.42, leaning the neck *forward*.
+     *
+     * This was +0.42, which under rotateX tips the top of the neck toward +Z -
+     * backwards, over the saddle - while the head is anchored forward at
+     * z = -0.62. The two ends were 60 cm apart and the head hung in the air
+     * unattached, which is most of why the animal read as a box with a box
+     * stuck on it. Worked through, the neck's top with the sign corrected lands
+     * at (0, 0.98, -0.62), which is where the head already was. */
+    /* Shorter and much deeper than the first attempt, which reached 1.3 m above
+     * the withers on a 0.3 m section and came out a llama. A horse's neck is
+     * about as long as its head and roughly twice as deep as it is wide. */
     const neckGeo = merge([
-      box(0.42, 0.86, 0.5, 0, 0.4, -0.18, 0.42),
-      box(0.36, 0.3, 0.42, 0, 0.78, -0.5, 0.42),
+      taper(0.5, 0.78, 0.82, 0.34, 0.54, 0, 0.34, -0.16, -0.42),
+      taper(0.34, 0.3, 0.54, 0.3, 0.46, 0, 0.7, -0.46, -0.42),
+      // Crest along the top, where the mane sits.
+      box(0.24, 0.16, 0.7, 0, 0.52, -0.26, -0.42),
+      // Trapezius: blends the neck into the shoulder so the join is not a step.
+      taper(0.8, 0.36, 0.66, 0.52, 0.58, 0, 0.04, -0.02),
     ]);
     this._owned.push(neckGeo);
     const neckMesh = new THREE.Mesh(neckGeo, coat);
     neckMesh.castShadow = true;
     this.neck.add(neckMesh);
 
+    // Sits on the neck's actual top, worked out from the two tapers above
+    // rather than guessed - which is how it came to be floating 60 cm clear.
     this.head = new THREE.Group();
-    this.head.position.set(0, 0.92, -0.62);
+    this.head.position.set(0, 0.85, -0.56);
     this.neck.add(this.head);
+    /* Skull, cheek and muzzle as three masses.
+     *
+     * The give-away on a horse's head is that it narrows sharply from a broad
+     * jaw to a fine nose, with a distinct step at the cheek. Two even boxes
+     * gave it a snout of constant width, which is a dog. */
     const headGeo = merge([
-      box(0.3, 0.34, 0.62, 0, 0, -0.2, 0.2),
-      box(0.26, 0.2, 0.26, 0, -0.1, -0.48, 0.2),  // muzzle
+      taper(0.32, 0.5, 0.36, 0.26, 0.3, 0, 0.02, -0.1, 0.2),     // skull
+      box(0.3, 0.3, 0.26, 0, -0.04, -0.24, 0.2),                 // cheek
+      taper(0.24, 0.42, 0.24, 0.2, 0.2, 0, -0.16, -0.46, 0.2),   // muzzle
+      box(0.22, 0.14, 0.16, 0, -0.3, -0.6, 0.2),                 // nose
     ]);
     this._owned.push(headGeo);
     const headMesh = new THREE.Mesh(headGeo, coat);
@@ -251,9 +325,10 @@ export class Horse {
     this.mane = new THREE.Group();
     this.mane.position.set(0, 0.36, -0.12);
     this.neck.add(this.mane);
+    // Same sign correction as the neck it lies along.
     const maneGeo = merge([
-      box(0.08, 0.3, 0.8, 0, 0.14, -0.08, 0.42),
-      box(0.08, 0.22, 0.4, 0, 0.5, -0.4, 0.42),
+      box(0.09, 0.3, 0.8, 0, 0.14, -0.08, -0.42),
+      box(0.09, 0.22, 0.4, 0, 0.46, -0.42, -0.42),
     ]);
     this._owned.push(maneGeo);
     this.mane.add(new THREE.Mesh(maneGeo, hair));
@@ -313,7 +388,19 @@ export class Horse {
       const upper = new THREE.Group();
       upper.position.set(spec.x, hipY, spec.z);
       this.tilt.add(upper);
-      const upperGeo = box(0.22, 0.62, 0.24, 0, -0.31, 0);
+      /* Heavy at the top, fine at the bottom.
+       *
+       * Almost all of a horse's leg muscle is in the forearm and gaskin, and
+       * below the knee there is essentially only bone and tendon - the cannon
+       * is barely thicker than a wrist. Even-width boxes gave it four table
+       * legs. The hind pair carries a stifle mass at the top, which is what
+       * makes hindquarters read as the end that does the pushing. */
+      const upperGeo = spec.front
+        ? taper(0.28, 0.64, 0.3, 0.17, 0.19, 0, -0.32, 0)
+        : merge([
+          taper(0.32, 0.66, 0.38, 0.18, 0.2, 0, -0.33, 0),
+          box(0.3, 0.3, 0.34, 0, -0.1, 0.06),         // stifle
+        ]);
       this._owned.push(upperGeo);
       const upperMesh = new THREE.Mesh(upperGeo, coat);
       upperMesh.castShadow = true;
@@ -323,15 +410,19 @@ export class Horse {
       lower.position.set(0, -0.62, 0);
       upper.add(lower);
       const lowerGeo = merge([
-        box(0.15, 0.6, 0.16, 0, -0.3, 0),
-        box(0.2, 0.14, 0.26, 0, -0.63, 0.02),   // hoof
+        box(0.16, 0.16, 0.18, 0, -0.02, 0),           // knee / hock
+        taper(0.13, 0.5, 0.15, 0.11, 0.12, 0, -0.32, 0),  // cannon
+        box(0.13, 0.12, 0.15, 0, -0.6, 0.01),         // fetlock
+        box(0.12, 0.1, 0.14, 0, -0.68, 0.02, 0.25),   // pastern, sloped
       ]);
       this._owned.push(lowerGeo);
-      const lowerMesh = new THREE.Mesh(lowerGeo, spec.front ? coat : coat);
+      const lowerMesh = new THREE.Mesh(lowerGeo, coat);
       lowerMesh.castShadow = true;
       lower.add(lowerMesh);
-      const hoof = new THREE.Mesh(box(0.22, 0.1, 0.28, 0, -0.66, 0.02), dark);
-      lower.add(hoof);
+      // Hoof: wider than the pastern and flared at the base, like a real one.
+      const hoofGeo = taper(0.17, 0.13, 0.19, 0.21, 0.23, 0, -0.79, 0.02, Math.PI);
+      this._owned.push(hoofGeo);
+      lower.add(new THREE.Mesh(hoofGeo, dark));
 
       this.legs.push({ upper, lower, front: spec.front, prevT: 0 });
     }
@@ -353,9 +444,17 @@ export class Horse {
 
   spawn(position, yaw) {
     this.position.copy(position);
-    // Local probe, as the other mounts do: a cast from the sky finds whatever
-    // roof happens to be overhead and spawns the horse on top of it.
-    const g = this.physics.groundHeight(position.x, position.z, position.y + 1.8, 12);
+    /* Local, but not as local as it was.
+     *
+     * A cast from the sky finds whatever roof happens to be overhead and spawns
+     * the horse on top of it, so this stays a short probe. It started 1.8 m up,
+     * though, and the horse appears several metres in front of the rider - on
+     * the mesa's shoulder that is easily a step higher than the rider is
+     * standing on. The probe passed under the real surface, found nothing,
+     * fell back to the rider's own height and buried the animal two metres
+     * inside the slope, where it could not move at all. Three metres clears
+     * every step in this world and is still well under any roof. */
+    const g = this.physics.groundHeight(position.x, position.z, position.y + 3.0, 14);
     this._groundY = g === null ? position.y : g;
     this.position.y = this._groundY;
     this.heading = yaw;
@@ -488,7 +587,26 @@ export class Horse {
      * Probed from above the current position so a step up is caught, and the
      * body pitches to the slope it is standing on. */
     _gp1.set(this.position.x, this.position.y + STEP_UP + 0.4, this.position.z);
-    const g = this.physics.groundHeight(_gp1.x, _gp1.z, _gp1.y, STEP_UP + 4.5);
+    let g = this.physics.groundHeight(_gp1.x, _gp1.z, _gp1.y, STEP_UP + 4.5);
+    /* Buried-horse recovery.
+     *
+     * The probe above starts barely a metre over the horse and casts downward,
+     * so once the animal is *under* a surface it can never see it again - the
+     * ground it needs to climb back onto is above where the ray begins. Any
+     * such horse is stuck for good, which is exactly what happened on the mesa
+     * shoulder. When the near probe finds nothing, look again from well
+     * overhead and step back up onto whatever is there. Only runs in the case
+     * that was previously unrecoverable, so it costs nothing in normal riding. */
+    if (g === null) {
+      const top = this.position.y + 26;
+      const far = this.physics.groundHeight(_gp1.x, _gp1.z, top, 34);
+      if (far !== null && far > this.position.y) {
+        this.position.y = far;
+        this._vy = 0;
+        this._grounded = true;
+        g = far;
+      }
+    }
     if (g !== null && this.position.y <= g + 0.02) {
       this.position.y = g;
       this._vy = 0;

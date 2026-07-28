@@ -64,7 +64,17 @@ export class Input {
   }
 
   requestLock() {
-    if (!this._locked) this.canvas.requestPointerLock?.();
+    if (this._locked) return;
+    /* In newer browsers this returns a promise, and it rejects for reasons that
+     * are entirely normal: the document lost focus, the user pressed Escape
+     * moments ago and the engagement timer has not elapsed, or the click was
+     * not sufficiently trusted. Unhandled, each one logs "Uncaught (in
+     * promise)" - a permanent error in the console for something that is not an
+     * error and that the next click fixes anyway. */
+    try {
+      const p = this.canvas.requestPointerLock?.();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch { /* older browsers throw synchronously instead */ }
   }
 
   exitLock() {

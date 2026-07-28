@@ -268,6 +268,65 @@ export class Loadout {
   }
 
   /**
+   * Fill every weapon and top the bag back up. The admin resupply.
+   *
+   * Order matters, and it is the whole reason this is a method rather than a
+   * loop at the call site. The bag is the authority on reserve ammunition
+   * (see the header): calling `weapon.resupply()` alone would write a private
+   * reserve that `_syncAmmo` immediately overwrites from a bag that is still
+   * empty, so the magazines would refill and then drain again on the next
+   * reload. So: fill the bag first, then the weapons, then re-adopt the bag
+   * without charging the player for the difference.
+   *
+   * @param {number} [rounds] target bag count per ammo type
+   * @returns {{weapons:number, items:Object<string, number>}} what was granted
+   */
+  resupplyAll(rounds = 0) {
+    const inv = this._inv();
+    const granted = {};
+
+    if (inv) {
+      for (const b of this._brokers) {
+        if (!b.item) continue;
+        // Default to a full magazine's worth several times over, per weapon,
+        // rather than one flat number: 300 arrows is absurd, 300 rounds is a
+        // couple of minutes of suppressing fire.
+        const stat = WEAPON_STATS[b.id];
+        const want = rounds > 0
+          ? rounds
+          : Math.max(30, (stat?.magazine ?? 20) * 6);
+        const have = this._bagCount(b.item);
+        // Capped to what the *bag* will take. Overflow would land in the world
+        // store, which no reserve ever reads, and would raise `inventory:full`
+        // at the player for the privilege.
+        const need = Math.min(want - have, inv.bagRoomFor?.(b.item) ?? 0);
+        if (need <= 0) continue;
+        try {
+          const res = inv.acquire(b.item, need);
+          const took = res?.taken ?? 0;
+          if (took > 0) granted[b.item] = (granted[b.item] ?? 0) + took;
+        } catch (err) {
+          console.warn(`[Loadout] resupply could not grant "${b.item}":`, err);
+        }
+      }
+    }
+
+    let filled = 0;
+    for (const w of this._weapons) {
+      try {
+        w.resupply?.();
+        filled++;
+      } catch (err) {
+        console.warn(`[Loadout] resupply failed for "${w.id}":`, err);
+      }
+    }
+
+    this._resyncBrokers();
+    this.bus?.emit('loadout:resupplied', { weapons: filled, items: granted });
+    return { weapons: filled, items: granted };
+  }
+
+  /**
    * Adopt the bag's counts without treating the difference as consumption.
    * Used after a resupply, a save load, or the inventory arriving late.
    */

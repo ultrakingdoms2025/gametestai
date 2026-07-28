@@ -89,6 +89,7 @@ const GROUPS = [
     rows: [
       ['T', 'Open comms / chat'],
       ['F1', 'This panel'],
+      ['F4', 'Audio options'],
       ['F5', 'Save'],
       ['F9', 'Load'],
       ['Esc', 'Close this panel'],

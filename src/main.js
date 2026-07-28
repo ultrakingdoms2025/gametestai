@@ -33,6 +33,9 @@ import { CharacterMenu } from './ui/CharacterMenu.js';
 import { LightRig } from './gfx/LightRig.js';
 import { Caches } from './systems/Caches.js';
 import { Contracts } from './systems/Contracts.js';
+import { AdminCheats } from './systems/AdminCheats.js';
+import { AudioDirector } from './audio/AudioDirector.js';
+import { AudioMenu } from './ui/AudioMenu.js';
 
 /**
  * AETHER NEXUS - bootstrap.
@@ -152,6 +155,14 @@ const caches = new Caches({ bus, physics, player, loot, worldManager, waterVolum
 // Standing jobs from the people who already have names and personalities.
 const contracts = new Contracts({ bus, npcManager, player, economy, inventory, worldManager });
 
+// Typed cheat codes: "ammo" resupplies every weapon, "heal", "rich".
+const cheats = new AdminCheats({ bus, input, loadout, player, economy });
+
+// All sound is synthesised at runtime - see audio/AudioDirector.js for why
+// there is not a single audio file in this project.
+const audio = new AudioDirector({ bus, camera: engine.camera, player, worldManager, input });
+const audioMenu = new AudioMenu({ root: uiRoot, bus, input, audio });
+
 const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts, input, inventory });
 
 const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, portals, caches, contracts });
@@ -165,6 +176,7 @@ window.GAME = {
   engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
   cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
   waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu, caches, contracts,
+  cheats, audio, audioMenu,
 };
 
 if (overrides.dev) {
@@ -462,6 +474,10 @@ engine.onFrameUpdate((dt, elapsed) => {
   market.update(dt);
   caches.update(dt);
   contracts.update(dt);
+  // After the camera rig has placed the camera: the listener frame is read
+  // straight off its world matrix, and a frame-old matrix pans every sound
+  // to where the player was looking last frame.
+  audio.update(dt);
   helpMenu.update?.(dt);
   characterMenu.update?.(dt);
   hud.update(dt, elapsed);
@@ -563,7 +579,7 @@ function createLoadingScreen(root) {
         <div class="boot-controls">
           <span><b>WASD</b> Move</span><span><b>Shift</b> Sprint</span><span><b>Space</b> Jump</span>
           <span><b>LMB</b> Fire</span><span><b>RMB</b> Aim</span><span><b>R</b> Reload</span>
-          <span><b>E</b> Talk / Enter portal</span><span><b>T</b> Chat</span><span><b>Esc</b> Release cursor</span>
+          <span><b>E</b> Talk / Enter portal</span><span><b>T</b> Chat</span><span><b>F4</b> Audio</span><span><b>Esc</b> Release cursor</span>
         </div>
       </div>
       <div class="boot-error" hidden></div>

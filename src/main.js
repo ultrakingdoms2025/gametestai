@@ -30,6 +30,7 @@ import { Loot } from './systems/Loot.js';
 import { Marketplace } from './systems/Marketplace.js';
 import { HelpMenu } from './ui/HelpMenu.js';
 import { CharacterMenu } from './ui/CharacterMenu.js';
+import { LightRig } from './gfx/LightRig.js';
 
 /**
  * AETHER NEXUS - bootstrap.
@@ -52,7 +53,35 @@ const materials = new MaterialLibrary(engine.renderer);
 
 engine.postfx = createPostFX(engine);
 
-const ctx = { scene: engine.scene, engine, physics, bus, materials, input };
+/* ------------------------------------------------------------------ */
+/* Lighting                                                            */
+/*                                                                     */
+/* Built before any subsystem so that the shader program cache key is   */
+/* settled before the first material is ever seen. See gfx/LightRig.js: */
+/* the counts below are compiled into every shader in the game, and any */
+/* light created anywhere else is demoted to a *source* that feeds them.*/
+/* ------------------------------------------------------------------ */
+
+/** Ambient + sun rig is owned here so worlds only declare intent, not objects. */
+const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+const hemi = new THREE.HemisphereLight(0xffffff, 0x404040, 0.5);
+const sun = new THREE.DirectionalLight(0xffffff, 2);
+sun.name = 'sun';
+sun.castShadow = true;
+sun.shadow.mapSize.set(CONFIG.render.shadowMapSize, CONFIG.render.shadowMapSize);
+sun.shadow.camera.near = 0.5;
+sun.shadow.camera.far = 400;
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.035;
+const sunTarget = new THREE.Object3D();
+engine.scene.add(ambient, hemi, sun, sunTarget, sun.target);
+sun.target = sunTarget;
+
+// The sun becomes shadow slot 0 and stays under this file's control; every
+// other light in the game is pooled into the rig's fixed slots.
+const lightRig = new LightRig({ scene: engine.scene, camera: engine.camera, sun });
+
+const ctx = { scene: engine.scene, engine, physics, bus, materials, input, lightRig };
 
 const worldManager = new WorldManager(ctx);
 worldManager.register(StationWorld);
@@ -124,7 +153,7 @@ worldManager.attach?.({ npcManager, portals, player });
 // Expose for the automated screenshot/critique harness and for debugging.
 window.GAME = {
   engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
-  cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save,
+  cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
   waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu,
 };
 
@@ -140,31 +169,53 @@ const loader = createLoadingScreen(uiRoot);
 
 async function boot() {
   try {
-    loader.setStatus('Compiling shaders', 0.05);
-    await materials.warmup();
+    loader.setStatus('Baking surfaces', 0.04);
+    await materials.warmup((p, label) =>
+      loader.setStatus(label ?? 'Baking surfaces', 0.04 + p * 0.26)
+    );
 
     const startWorld = overrides.startWorld || 'station';
-    loader.setStatus('Generating worlds', 0.15);
+    loader.setStatus('Generating worlds', 0.3);
 
     // Build the entry world first so the player can move immediately, then
     // stream the other two in the background - portals stay locked until ready.
     await worldManager.build(startWorld, (p, label) =>
-      loader.setStatus(label ?? 'Generating world', 0.15 + p * 0.55)
+      loader.setStatus(label ?? 'Generating world', 0.3 + p * 0.5)
     );
 
-    loader.setStatus('Spawning inhabitants', 0.75);
+    loader.setStatus('Spawning inhabitants', 0.85);
     await worldManager.activate(startWorld);
 
-    loader.setStatus('Calibrating optics', 0.88);
+    loader.setStatus('Calibrating optics', 0.95);
     await nextFrame();
 
-    loader.setStatus('Compiling shaders', 0.92);
-    await prewarm();
-
+    /* --- The title card goes up *before* the shader warm, not after ------
+     *
+     * Shader compilation is by a long way the most expensive thing in the
+     * boot - 118 s of a 127 s cold start, measured - and none of it is needed
+     * to draw a title card. Putting the card up first turns "four minutes of
+     * a progress bar stuck at 92%" into "the menu appears, and finishes
+     * preparing while you read it".
+     *
+     * `compileAsync` resolves through KHR_parallel_shader_compile, so the
+     * driver links on its own threads and the card stays live throughout.
+     * Entering is gated on the warm finishing - `showStartPrompt` queues an
+     * early click rather than dropping the player into a world that is still
+     * compiling.
+     */
     loader.setStatus('Ready', 1);
     loader.showStartPrompt(worldManager.active.displayName);
+    const tMenu = performance.now();
+    console.info(`[boot] title card up at ${Math.round(tMenu)}ms`);
+
+    await prewarm();
 
     engine.start();
+    loader.warmComplete();
+    console.info(
+      `[boot] playable at ${Math.round(performance.now())}ms ` +
+      `(${Math.round(performance.now() - tMenu)}ms of that behind the menu)`
+    );
 
     // Remaining worlds build during idle time after the first frame is up.
     scheduleBackgroundBuilds(startWorld);
@@ -186,11 +237,16 @@ async function boot() {
  * only way to pre-build them was to reproduce each count for real. That warmup
  * cost 250 s on a cold PC boot, and it still did not help after a portal.
  *
- * Every light is now permanently parented and permanently visible, dimmed with
- * `intensity` instead of being added, removed or hidden (see gfx/LightAnchor.js
- * and the mount/weapon light rigs). One count means one program set, so a
- * single `compileAsync` covers every configuration the player can reach in
- * this world.
+ * Every light in the game is now pooled into the fixed slot set in
+ * gfx/LightRig.js, so the counts in the cache key are constant for the whole
+ * session - across weapons, mounts, effects *and worlds*. One count means one
+ * program set, so a single `compileAsync` covers every configuration the player
+ * can reach anywhere, and the same programs survive a portal.
+ *
+ * The slot budget is also what makes this affordable at all. Compile time
+ * scales with the light count, because Three unrolls the per-light loop into
+ * every fragment shader: measured on this scene, 42 point lights cost 59.8 s
+ * where 12 cost 19.4 s. The station used to run 65.
  *
  * Two details make the single pass sufficient:
  *   - `renderer.compile()` collects *materials* with `scene.traverse`, not
@@ -211,6 +267,7 @@ async function boot() {
  */
 async function prewarm() {
   const t0 = performance.now();
+  loader.setWarming('Preparing shaders');
   let parked = [];
   try {
     parked = mounts.prebuild?.(['hoverboard', 'dragon', 'car']) ?? [];
@@ -309,6 +366,7 @@ function scheduleBackgroundBuilds(startWorld) {
     const id = rest[i++];
     worldManager
       .build(id)
+      .then(() => warmWorld(id))
       .then(() => {
         bus.emit('world:ready', { id });
         idle(step);
@@ -319,6 +377,43 @@ function scheduleBackgroundBuilds(startWorld) {
       });
   };
   idle(step);
+}
+
+/**
+ * Compile a world's materials before the player ever portals into it.
+ *
+ * This is only possible - and only worth doing - because the light rig fixed
+ * the program cache key. Previously each world carried its own lights, so the
+ * key changed on arrival and anything compiled in advance was thrown away
+ * unused; the portal then rebuilt the entire program set in one blocking frame,
+ * measured at 83 s going from the station to the medieval world.
+ *
+ * `compileAsync(group, camera, scene)` is the three-argument form: it collects
+ * materials from `group` but resolves lights and shadows against the live
+ * `scene`, so the programs it builds are keyed exactly as the ones the world
+ * will ask for on arrival - without the group ever entering the scene graph or
+ * rendering a frame.
+ *
+ * @param {string} id
+ */
+async function warmWorld(id) {
+  const world = worldManager.getWorld(id);
+  if (!world?.group) return;
+  // Demote its lights first. A world arrives with dozens of its own, and
+  // compile() collects lights with `traverseVisible` - one live light here and
+  // every program it built would be keyed to counts that never occur.
+  lightRig.claim(world.group);
+  const t0 = performance.now();
+  try {
+    await engine.renderer.compileAsync(world.group, engine.camera, engine.scene);
+    console.info(
+      `[warm] "${id}" precompiled in ${Math.round(performance.now() - t0)}ms ` +
+      `(${engine.renderer.info.programs.length} programs total)`
+    );
+  } catch (err) {
+    // Never fatal: the cost simply reverts to being paid on arrival.
+    console.warn(`[warm] precompile of "${id}" failed:`, err);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -358,6 +453,11 @@ engine.onFrameUpdate((dt, elapsed) => {
   helpMenu.update?.(dt);
   characterMenu.update?.(dt);
   hud.update(dt, elapsed);
+  // Last, and deliberately so: every light in the game has now been moved and
+  // dimmed for this frame, so the rig is ranking final positions. It also
+  // re-hides any light that appeared since the previous frame, which is what
+  // keeps the shader program cache key constant. See gfx/LightRig.js.
+  lightRig.update(dt);
   input.endFrame();
 });
 
@@ -373,6 +473,11 @@ bus.on('input:lockchange', ({ locked }) => {
 });
 
 bus.on('world:changed', ({ world }) => {
+  // Before anything else: a world arrives carrying dozens of its own lights,
+  // and if a single frame renders with them live the whole program cache is
+  // keyed to the wrong counts and every material in view recompiles. The
+  // per-frame scan would catch them, but only after that frame.
+  lightRig.claim(world.group);
   applyEnvironment(world.environment);
   engine.postfx?.setWorldGrade(world.environment);
 });
@@ -384,20 +489,6 @@ window.addEventListener('keydown', (e) => {
     hud.setDebugVisible(CONFIG.debug.showStats);
   }
 });
-
-/** Ambient + sun rig is owned here so worlds only declare intent, not objects. */
-const ambient = new THREE.AmbientLight(0xffffff, 0.6);
-const hemi = new THREE.HemisphereLight(0xffffff, 0x404040, 0.5);
-const sun = new THREE.DirectionalLight(0xffffff, 2);
-sun.castShadow = true;
-sun.shadow.mapSize.set(CONFIG.render.shadowMapSize, CONFIG.render.shadowMapSize);
-sun.shadow.camera.near = 0.5;
-sun.shadow.camera.far = 400;
-sun.shadow.bias = -0.0004;
-sun.shadow.normalBias = 0.035;
-const sunTarget = new THREE.Object3D();
-engine.scene.add(ambient, hemi, sun, sunTarget, sun.target);
-sun.target = sunTarget;
 
 function applyEnvironment(env) {
   const scene = engine.scene;
@@ -470,24 +561,54 @@ function createLoadingScreen(root) {
   const fill = el.querySelector('.boot-bar-fill');
   const status = el.querySelector('.boot-status');
   const start = el.querySelector('.boot-start');
+  const title = el.querySelector('.boot-start-title');
   const errorEl = el.querySelector('.boot-error');
+
+  /* The card is shown while the shader warm is still running, so a click has to
+   * be able to arrive before the game is in a state to be entered. Rather than
+   * disable the card - which reads as a hang - an early click is remembered and
+   * honoured the moment the warm finishes. */
+  let warm = false;
+  let queued = false;
+  let entered = false;
+
+  const enter = () => {
+    if (entered) return;
+    entered = true;
+    el.classList.add('boot-hide');
+    setTimeout(() => el.remove(), 900);
+    input.requestLock();
+    bus.emit('game:started');
+  };
+
+  const tryEnter = () => {
+    if (warm) enter();
+    else {
+      queued = true;
+      title.textContent = 'PREPARING…';
+    }
+  };
 
   return {
     setStatus(text, progress) {
       status.textContent = text;
       fill.style.width = `${Math.round(progress * 100)}%`;
     },
+    /** Sub-line shown on the title card while shaders finish compiling. */
+    setWarming(text) {
+      status.textContent = text;
+    },
+    /** Shaders are done: unlock entry, and honour a click that already landed. */
+    warmComplete() {
+      warm = true;
+      title.textContent = 'CLICK TO ENTER';
+      if (queued) enter();
+    },
     showStartPrompt(worldName) {
       status.textContent = `Entering ${worldName}`;
       start.hidden = false;
-      const enter = () => {
-        el.classList.add('boot-hide');
-        setTimeout(() => el.remove(), 900);
-        input.requestLock();
-        bus.emit('game:started');
-      };
-      el.addEventListener('click', enter, { once: true });
-      if (overrides.autoStart) setTimeout(enter, 120);
+      el.addEventListener('click', tryEnter);
+      if (overrides.autoStart) setTimeout(tryEnter, 120);
     },
     showError(err) {
       errorEl.hidden = false;

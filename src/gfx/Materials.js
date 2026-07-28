@@ -1306,7 +1306,7 @@ export class MaterialLibrary {
    */
   async warmup(onProgress) {
     const keys = Object.keys(RECIPES);
-    const total = keys.length + ENV_MOODS_KEYS.length + 1;
+    const total = keys.length + ENV_MOODS_KEYS.length;
     let done = 0;
 
     for (const key of keys) {
@@ -1325,8 +1325,19 @@ export class MaterialLibrary {
       await yieldFrame();
     }
 
-    onProgress?.(done / total, 'Compiling shaders');
-    await this._precompile();
+    /* No shader precompile here any more.
+     *
+     * This used to build a throwaway scene of one cube per recipe and compile
+     * it, which sounds like a free head start and was in fact pure waste: that
+     * scene had one directional light and no point lights, while the real scene
+     * never has fewer than the full slot set from gfx/LightRig.js. Light counts
+     * are part of Three's program cache key, so not one of those ~46 programs
+     * could ever be reused - they were compiled, counted and abandoned.
+     *
+     * The single `prewarm()` in main.js compiles the same materials against the
+     * lighting they are actually drawn with, and now runs *behind the title
+     * card* rather than in front of it. Anything that costs time here is time
+     * the player spends looking at a progress bar instead of a menu. */
     this.ready = true;
     onProgress?.(1, 'Materials ready');
   }
@@ -1673,46 +1684,6 @@ export class MaterialLibrary {
     return rt.texture;
   }
 
-  /**
-   * Warm the shader cache. Programs compiled here are the ones actually used at
-   * runtime (same lighting shape, same env map, shadows on), so the first frame
-   * in a world does not stall on 30 fresh compiles.
-   */
-  async _precompile() {
-    try {
-      const scene = new THREE.Scene();
-      scene.environment = this.getEnvMap('daylight');
-
-      const light = new THREE.DirectionalLight(0xffffff, 1);
-      light.castShadow = true;
-      light.position.set(5, 10, 5);
-      scene.add(light, new THREE.AmbientLight(0xffffff, 0.5), new THREE.HemisphereLight(0xffffff, 0x404040, 0.4));
-
-      const geo = new THREE.BoxGeometry(1, 1, 1);
-      let i = 0;
-      for (const key of Object.keys(RECIPES)) {
-        const mesh = new THREE.Mesh(geo, this.get(key));
-        mesh.position.set((i % 8) * 2 - 8, 0, Math.floor(i / 8) * 2);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        scene.add(mesh);
-        i++;
-      }
-
-      const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
-      camera.position.set(0, 6, 18);
-      camera.lookAt(0, 0, 0);
-
-      if (this.renderer.compileAsync) await this.renderer.compileAsync(scene, camera);
-      else this.renderer.compile(scene, camera);
-
-      geo.dispose();
-      scene.clear();
-    } catch (err) {
-      // Precompilation is an optimisation, never a requirement.
-      console.warn('[Materials] shader precompile skipped:', err?.message ?? err);
-    }
-  }
 }
 
 /** Texture slots a material may own; used for cloning and disposal. */

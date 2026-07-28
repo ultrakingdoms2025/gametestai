@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { CONFIG } from '../core/Config.js';
+import { buildMatchingSlots } from '../gfx/LightRig.js';
 
 /**
  * AETHER NEXUS gateways.
@@ -1867,23 +1868,33 @@ export class PortalSystem {
   /* ---------------------------------------------------------------- */
 
   _buildPreviewRig() {
-    // A dedicated scene the destination world is briefly re-parented into. Its
-    // light rig is structurally identical to main.js's (ambient + hemi + one
-    // directional) so shared materials resolve to the same shader program and
-    // nothing recompiles when we bounce between scenes.
+    /* A dedicated scene the destination world is briefly re-parented into.
+     *
+     * The rig here has to be *count-identical* to the main scene's, not merely
+     * similar. It used to be ambient + hemi + one directional, which was
+     * described as "structurally identical to main.js's" and was not: the real
+     * scene also carries the whole point/spot/shadow slot set. Light counts are
+     * part of Three's program cache key, so every material this preview touched
+     * compiled a second complete program set on the spot - roughly a second per
+     * program on an ANGLE/D3D11 target, which is the multi-second hitch you feel
+     * walking up to a gateway.
+     *
+     * `buildMatchingSlots` mints exactly the slots gfx/LightRig.js puts in the
+     * main scene, all dark. The destination world's own lights are already
+     * demoted to `visible = false` by the rig, so nothing it brings in changes
+     * the counts either, and the preview shares programs with the live frame.
+     */
     this._previewScene = new THREE.Scene();
     this._previewAmbient = new THREE.AmbientLight(0xffffff, 0.6);
     this._previewHemi = new THREE.HemisphereLight(0xffffff, 0x404040, 0.5);
-    this._previewSun = new THREE.DirectionalLight(0xffffff, 2);
-    this._previewSun.castShadow = false; // a second shadow pass is not worth it
-    this._previewSunTarget = new THREE.Object3D();
-    this._previewSun.target = this._previewSunTarget;
-    this._previewScene.add(
-      this._previewAmbient,
-      this._previewHemi,
-      this._previewSun,
-      this._previewSunTarget
-    );
+    this._previewScene.add(this._previewAmbient, this._previewHemi);
+
+    this._previewSlots = buildMatchingSlots(this._previewScene);
+    // The preview's key light is one of the fill slots: the shadow slots stay
+    // dark so they cost a cache-key entry and never a shadow pass.
+    this._previewSun = this._previewSlots.dirFill[0];
+    this._previewSunTarget = this._previewSun.target;
+
     this._previewFog = new THREE.Fog(0x000000, 10, 400);
   }
 
@@ -1967,13 +1978,15 @@ export class PortalSystem {
       this._previewScene.fog = null;
     }
 
+    const r = this.renderer;
+    this._primePreviewShadows(cam, portal.rt);
+
     const group = world.group;
     const parent = group.parent;
     const wasVisible = group.visible;
     group.visible = true;
     this._previewScene.add(group);
 
-    const r = this.renderer;
     const prevTarget = r.getRenderTarget();
     const prevShadowAuto = r.shadowMap.autoUpdate;
     r.shadowMap.autoUpdate = false;
@@ -1988,6 +2001,42 @@ export class PortalSystem {
 
     portal.discMat.uniforms.uHasPreview.value = 1;
     portal.discMat.uniforms.uPreviewExposure.value = env.exposure ?? 1;
+  }
+
+  /**
+   * Give the preview scene's parked shadow slots a real depth attachment, once.
+   *
+   * The slots from `buildMatchingSlots` declare `castShadow` so the preview
+   * resolves shared materials to the same programs as the main scene (see
+   * `_buildPreviewRig`). That raises `numDirLightShadows`, which puts a
+   * `sampler2DShadow` in every fragment shader - and this render deliberately
+   * turns the shadow pass off, so those samplers were left bound to the
+   * renderer's default *colour* texture. Every draw then failed with
+   * `GL_INVALID_OPERATION: Mismatch between texture format and sampler type`,
+   * once per call, for as long as the player stood near a gateway.
+   *
+   * One shadow pass over the preview scene *before* the destination world is
+   * parented into it fixes that permanently: the scene is empty but for the
+   * lights, and the slots' frusta are 10 cm across, so it allocates the
+   * attachments and draws nothing. `WebGLShadowMap` clears each light's
+   * `needsUpdate` once it has rendered, so this never runs a second time.
+   *
+   * @param {THREE.Camera} cam
+   * @param {THREE.WebGLRenderTarget} rt
+   */
+  _primePreviewShadows(cam, rt) {
+    if (this._previewShadowsPrimed) return;
+    this._previewShadowsPrimed = true;
+    const r = this.renderer;
+    const prevTarget = r.getRenderTarget();
+    try {
+      r.setRenderTarget(rt);
+      r.render(this._previewScene, cam);
+    } catch (err) {
+      console.warn('[Portals] preview shadow priming failed:', err);
+    } finally {
+      r.setRenderTarget(prevTarget);
+    }
   }
 
   /* ---------------------------------------------------------------- */

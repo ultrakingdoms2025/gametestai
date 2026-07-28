@@ -1069,8 +1069,13 @@ export class SportsWorld extends World {
     this.group.updateMatrixWorld(true);
     // Worlds can be built in the background while another one is on screen, so
     // stay hidden until WorldManager calls onActivate().
+    //
+    // Scene membership is WorldManager's, not ours: it adds the group in
+    // `_activate` and removes it in the swap. Adding it here left a world the
+    // player has never visited parked in the live scene, hidden but still
+    // traversed every frame - and its lights still visible to anything that
+    // walks the scene looking for them.
     this.group.visible = this.active;
-    this.scene.add(this.group);
   }
 
   /* ---------------------------------------------------------------- */
@@ -1846,10 +1851,17 @@ export class SportsWorld extends World {
    * this always gets the last word - and refit the box to the active camera.
    */
   _installSunRig() {
-    let sun = null;
-    this.scene.traverse((o) => {
-      if (!sun && o.isDirectionalLight && o.castShadow) sun = o;
-    });
+    // By name, not by "first shadow-casting directional": the scene also holds
+    // the light rig's spare shadow slot (gfx/LightRig.js), and grabbing that one
+    // would drive a light this world does not own. Falls back to the old search
+    // so a rig-less scene still works.
+    let sun = this.scene.getObjectByName('sun');
+    if (!sun?.isDirectionalLight) {
+      sun = null;
+      this.scene.traverse((o) => {
+        if (!sun && o.isDirectionalLight && o.castShadow && !o.userData.__rigSlot) sun = o;
+      });
+    }
     this._sun = sun;
 
     const d = this.environment.sunDirection;

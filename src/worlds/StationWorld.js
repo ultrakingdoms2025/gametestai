@@ -1918,7 +1918,10 @@ export class StationWorld extends World {
     this._fillSpawns();
     this._fillEnvironment();
 
-    this.scene.add(this.group);
+    // Scene membership belongs to WorldManager - it adds this group in
+    // `_activate` and removes it on the way out. Adding it here parked a world
+    // the player may never have visited in the live scene, hidden but still
+    // traversed on every frame.
     onProgress?.(1, 'Station online');
   }
 

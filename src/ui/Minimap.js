@@ -13,6 +13,8 @@ import { CONFIG } from '../core/Config.js';
 
 /* Module-scope scratch. The draw loop runs every frame; it must not allocate. */
 const _pt = { x: 0, y: 0, dist: 0, inside: false };
+/** Traders held back for a second pass so nothing draws over them. Reused. */
+const _traders = [];
 
 const MAX_CACHE_PX = 1024;
 const HEX_SIDES = 6;
@@ -318,9 +320,16 @@ export class Minimap {
     // --- NPCs ------------------------------------------------------------
     const npcs = this.npcManager?.npcs;
     if (npcs) {
+      // Traders are held back and drawn last. They are the only NPC the player
+      // ever goes looking for - everyone else is scenery or a threat - so their
+      // marker must never end up underneath a passing wanderer's dot.
+      const traders = _traders;
+      traders.length = 0;
+
       for (let i = 0; i < npcs.length; i++) {
         const n = npcs[i];
         if (!n || n.isDead || !n.position) continue;
+        if (n.isVendor) { traders.push(n); continue; }
         this._project(n.position.x, n.position.z, px, pz, sin, cos, scale);
         const hostile = n.type === 'hostile';
 
@@ -365,6 +374,13 @@ export class Minimap {
           }
         }
       }
+
+      for (let i = 0; i < traders.length; i++) {
+        const n = traders[i];
+        this._project(n.position.x, n.position.z, px, pz, sin, cos, scale);
+        this._traderMarker(ctx, cx, cy, elapsed, _pt.inside);
+      }
+      traders.length = 0;
     }
 
     // --- player arrow + view cone ----------------------------------------
@@ -450,6 +466,77 @@ export class Minimap {
     ctx.fillRect(cx - 24, size - 15, 48, 12);
     ctx.fillStyle = 'rgba(140,215,235,0.95)';
     ctx.fillText(`${Math.round(this.range)} M`, cx, size - 6);
+  }
+
+  /**
+   * Gold coin marking a trader, at {@link _pt}.
+   *
+   * Traders are the one thing on this map the player actively navigates *to*,
+   * so unlike every other contact they stay legible off-range: instead of the
+   * generic cyan rim chevron they keep their own gold chevron with the coin
+   * riding on it, which means the map always answers "which way is a shop"
+   * however far the player has wandered or however far the map is zoomed in.
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {number} cx map centre x
+   * @param {number} cy map centre y
+   * @param {number} elapsed seconds, for the idle shimmer
+   * @param {boolean} inside whether the trader is within the mapped range
+   */
+  _traderMarker(ctx, cx, cy, elapsed, inside) {
+    const x = _pt.x;
+    const y = _pt.y;
+    ctx.save();
+    ctx.translate(x, y);
+
+    if (!inside) {
+      // Point the chevron outward, then un-rotate so the coin stays upright.
+      const a = Math.atan2(y - cy, x - cx);
+      ctx.save();
+      ctx.rotate(a);
+      ctx.fillStyle = 'rgba(255,201,92,0.9)';
+      ctx.beginPath();
+      ctx.moveTo(6.5, 0);
+      ctx.lineTo(-1.5, 4);
+      ctx.lineTo(-1.5, -4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      // Nudge the coin back toward the middle so it is not half off the dial.
+      ctx.translate(Math.cos(a) * -6, Math.sin(a) * -6);
+    }
+
+    // A slow breath keeps it findable against a busy floorplan without the
+    // twitchiness of a blink.
+    const pulse = 0.5 + 0.5 * Math.sin(elapsed * 2.2);
+    ctx.shadowColor = 'rgba(255,201,92,0.95)';
+    ctx.shadowBlur = 6 + pulse * 5;
+
+    ctx.fillStyle = '#ffc95c';
+    ctx.beginPath();
+    ctx.arc(0, 0, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(60,38,4,0.9)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(0, 0, 4.2, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Coin face: a bar through a stroked ring reads as currency at 8 px far
+    // better than a glyph does - a letterform at this size is just a smudge.
+    ctx.strokeStyle = 'rgba(60,38,4,0.95)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(0, 0, 1.9, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, -3.1);
+    ctx.lineTo(0, 3.1);
+    ctx.stroke();
+
+    ctx.restore();
   }
 
   /** Small speech bubble marking a friendly the player can talk to. */

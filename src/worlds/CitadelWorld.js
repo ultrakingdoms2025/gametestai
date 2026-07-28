@@ -1606,6 +1606,55 @@ export class CitadelWorld extends World {
   /* Spawns, portals, minimap                                            */
   /* ------------------------------------------------------------------ */
 
+  /**
+   * Move a hand-placed point off whatever it landed inside.
+   *
+   * Every spawn in this world is authored as a literal coordinate - "the keeper
+   * stands at 6, 92" - but the souk around those coordinates is generated, and
+   * a generated town moves whenever anything upstream of its PRNG changes. It
+   * has, twice. The result was NPCs standing inside houses: the audit found
+   * Rafiq the Keeper and a sentinel embedded in walls, patrolling on the spot
+   * with a roof three metres over their heads.
+   *
+   * Rather than re-authoring the coordinates against the current layout - which
+   * would only survive until the next change - the intent is kept and the point
+   * is pushed to the nearest clear ground. A spiral, so a blocked spawn ends up
+   * a couple of metres away in the street rather than somewhere unrelated.
+   *
+   * @param {THREE.Vector3} pos mutated in place
+   * @param {number} [pad] clearance wanted around the point
+   */
+  _nudgeClear(pos, pad = 1.6) {
+    const blocked = (x, z) => {
+      for (const b of this._roofs) {
+        const dx = x - b.x;
+        const dz = z - b.z;
+        const keep = Math.max(b.w, b.d) * 0.5 + pad;
+        if (dx * dx + dz * dz < keep * keep) return true;
+      }
+      // And anything else solid standing here - walls, towers, the keep.
+      const g = this._groundAt(x, z);
+      const hit = this.physics.groundHeight(x, z, g + 12, 20);
+      return hit !== null && hit > g + 0.6;
+    };
+    if (!blocked(pos.x, pos.z)) return pos;
+    // Golden-angle spiral: even coverage, and it never revisits a direction.
+    for (let i = 1; i <= 96; i++) {
+      const a = i * 2.399963;
+      const r = 1.2 + i * 0.28;
+      const x = pos.x + Math.cos(a) * r;
+      const z = pos.z + Math.sin(a) * r;
+      if (Math.hypot(x, z) > MESA_R - 4) continue;   // stay on the plateau
+      if (!blocked(x, z)) {
+        pos.x = x;
+        pos.z = z;
+        pos.y = this._groundAt(x, z) + 0.2;
+        return pos;
+      }
+    }
+    return pos;
+  }
+
   _fillSpawns() {
     /* Just inside the gate, facing the citadel.
      *
@@ -1644,6 +1693,16 @@ export class CitadelWorld extends World {
         type: 'hostile',
       });
     }
+
+    /* Every spawn, hand-placed or generated, gets pushed clear of the town.
+     *
+     * Done in one pass at the end rather than at each site so nothing can be
+     * added later and quietly skip it - which is exactly how the hostile ring
+     * came to be laid down on a fixed radius of 62 m straight through whatever
+     * the souk had generated there. */
+    for (const s of this.npcSpawns) this._nudgeClear(s.position, 1.8);
+    this._nudgeClear(this.playerSpawn, 2.2);
+    for (const p of this.portalSpecs) this._nudgeClear(p.position, 2.6);
 
     /* Minimap. The plateau, the wall ring and the citadel - enough to orient by
      * without drawing four hundred houses. */

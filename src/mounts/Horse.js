@@ -198,12 +198,40 @@ export class Horse {
   /* Build                                                               */
   /* ------------------------------------------------------------------ */
 
+  /**
+   * A surface for this animal.
+   *
+   * `surface` names a key in the shared PBR library, which bakes an albedo, a
+   * normal and a packed ORM map for it. Everything here used to be a flat
+   * `MeshStandardMaterial` with a colour and nothing else - and a flat colour
+   * with no normal map is why a model can be as dense as you like and still
+   * read as shaded plastic. Geometry gives you the silhouette; the maps are
+   * what make it look like a material.
+   *
+   * The library instance is cloned and tinted, so the coat colour still comes
+   * from here while the grain comes from the bake, and every clone shares the
+   * same GPU texture storage.
+   */
   _mat(color, opts = {}) {
+    const { surface = null, ...rest } = opts;
+    if (surface && this.materials?.get) {
+      try {
+        const base = this.materials.get(surface);
+        if (base) {
+          const m = base.clone();
+          m.color = new THREE.Color(color);
+          if (rest.roughness !== undefined) m.roughness = rest.roughness;
+          if (rest.metalness !== undefined) m.metalness = rest.metalness;
+          this._owned.push(m);
+          return m;
+        }
+      } catch { /* fall through to the flat material below */ }
+    }
     const m = new THREE.MeshStandardMaterial({
       color: new THREE.Color(color),
-      roughness: opts.roughness ?? 0.78,
-      metalness: opts.metalness ?? 0.05,
-      ...opts,
+      roughness: rest.roughness ?? 0.78,
+      metalness: rest.metalness ?? 0.05,
+      ...rest,
     });
     this._owned.push(m);
     return m;
@@ -218,9 +246,17 @@ export class Horse {
     this.tilt = new THREE.Group();
     this.root.add(this.tilt);
 
-    const coat = this._mat(0x5b4230, { roughness: 0.82 });
-    const dark = this._mat(0x2a1d14, { roughness: 0.75 });
-    const hair = this._mat(0x1d140e, { roughness: 0.9 });
+    // The coat and the hair carry the fur bake; hooves are keratin, so they
+    // stay smooth and take only a slight grain from it.
+    /* The tiling is anisotropic on purpose.
+     *
+     * A swept surface's UVs run 0..1 once around the ring and 0..1 along the
+     * whole length, so a single tile would stretch one hair across the entire
+     * animal. Repeating more around the body than along it also lines the
+     * grain up with the way a coat actually lies - down and back. */
+    const coat = this._mat(0x8a6242, { surface: 'hide.fur:6,10' });
+    const dark = this._mat(0x3a2a1e, { roughness: 0.42, metalness: 0.06 });
+    const hair = this._mat(0x2a1d13, { surface: 'hide.fur:3,7', roughness: 0.95 });
     const tack = this._mat(0x6d4522, { roughness: 0.6, metalness: 0.15 });
     const metal = this._mat(0xb9a06a, { roughness: 0.35, metalness: 0.9 });
 
@@ -380,14 +416,20 @@ export class Horse {
       { y: 0.66, z: -0.38, r: 0.23 },
       { y: 0.80, z: -0.50, r: 0.19 },
     ];
+    /* Short, and laid *on* the crest.
+     *
+     * The first version gave every lock a 36 cm fall from a crest that is only
+     * 80 cm long, so the five of them merged into a single dark sheet a metre
+     * square standing off the neck - from the side it read as a wing. A mane
+     * lies against the neck; it is a fringe, not a cape. */
     const locks = [];
     for (let i = 0; i < crest.length; i++) {
       const c = crest[i];
-      const len = 0.36 - i * 0.03;
+      const len = 0.17 - i * 0.012;
       locks.push(sweep([
-        { x: 0, y: c.y + c.r * 0.92, z: c.z, rx: 0.055, ry: 0.05 },
-        { x: 0, y: c.y + c.r * 0.5, z: c.z + len * 0.55, rx: 0.075, ry: 0.045 },
-        { x: 0, y: c.y + c.r * 0.05, z: c.z + len, rx: 0.05, ry: 0.03 },
+        { x: 0, y: c.y + c.r * 0.95, z: c.z - 0.02, rx: 0.05, ry: 0.045 },
+        { x: 0, y: c.y + c.r * 0.80, z: c.z + len * 0.6, rx: 0.062, ry: 0.04 },
+        { x: 0, y: c.y + c.r * 0.55, z: c.z + len, rx: 0.04, ry: 0.026 },
       ], 8));
     }
     const maneGeo = merge(locks);

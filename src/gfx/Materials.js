@@ -653,6 +653,91 @@ function shadeGrass(u, v, o) {
 }
 
 /** Woven banner cloth: over-under weave, slub, dye fade, sun-bleached edges. */
+/**
+ * Short animal coat, for the horse.
+ *
+ * The whole job is anisotropy. Fur is millions of near-parallel hairs, so its
+ * normal map has to be stretched hard along the lie of the coat - an isotropic
+ * noise gives velvet, or more often mud. Three octaves at increasingly extreme
+ * aspect ratios build hair, then guard hair, then the fine grain that only
+ * shows in a highlight.
+ *
+ * The colour work underneath is dappling: real coats are never one value, they
+ * carry broad low-frequency variation from the muscle and fat beneath. Without
+ * it a horse is a brown balloon whatever the mesh does.
+ */
+function shadeFur(u, v, o) {
+  // Hair, at three scales. The v-frequency dwarfs the u-frequency, which is
+  // what makes the grain lie along the body rather than swirl.
+  const hair = fbm01(u, v, 14, 220, 3, 5501, 0.55);
+  const guard = fbm01(u, v, 7, 90, 2, 5507, 0.6);
+  const fine = fbm01(u, v, 30, 460, 2, 5511, 0.5);
+  // Dapple and muscle shading, both very low frequency.
+  const dapple = fbm01(u, v, 3.5, 3.5, 3, 5519);
+  const muscle = fbm01(u, v, 1.6, 1.3, 2, 5527);
+  // Whorls, where the coat changes direction. Sparse, and they catch the light.
+  worley2D(u, v, 4, 4, 5531, 1);
+  const whorl = smoothstep(0.02, 0.30, WORLEY[0]);
+
+  const lift = 0.82 + muscle * 0.30 + dapple * 0.16;
+  const grain = hair * 0.5 + guard * 0.32 + fine * 0.18;
+
+  // Warm mid-brown base; the tint on the material carries the actual coat
+  // colour, so this stays close to neutral and does the *texture* only.
+  let r = (0.52 + grain * 0.34) * lift;
+  let g = (0.46 + grain * 0.32) * lift;
+  let b = (0.40 + grain * 0.28) * lift;
+  // Dust settles on a working animal, mostly low on the body.
+  const dust = smoothstep(0.55, 1.0, v) * dapple * 0.22;
+  r = mix(r, 0.66, dust); g = mix(g, 0.60, dust); b = mix(b, 0.50, dust);
+
+  o.r = clamp01(r); o.g = clamp01(g); o.b = clamp01(b);
+  // Height follows the hair, so the normal map reads as lie-of-coat.
+  o.h = grain * 0.7 + whorl * 0.3;
+  // Coats are matte, but the guard hairs are glossier - that variation is what
+  // makes a flank catch a rim light instead of reading as felt.
+  o.rough = clamp01(0.90 - guard * 0.22 - whorl * 0.06);
+  o.metal = 0;
+  o.ao = clamp01(0.80 + grain * 0.20);
+}
+
+/**
+ * Feather, for the eagle.
+ *
+ * A feather is a rachis with barbs running off it at a shallow angle, and the
+ * barbs zip together into a continuous vane. So: one hard central shaft, and a
+ * strongly anisotropic grain angled away from it. The vane also splits here and
+ * there, and those splits are most of what stops a wing reading as a painted
+ * board.
+ */
+function shadeFeather(u, v, o) {
+  // Barbs: very high frequency across the vane, low along it.
+  const barb = fbm01(u, v, 200, 12, 2, 6101, 0.5);
+  const barbFine = fbm01(u, v, 420, 26, 2, 6113, 0.45);
+  // Vane splits, sparse and elongated.
+  const split = smoothstep(0.62, 0.98, fbm01(u, v, 34, 5, 2, 6121, 0.6));
+  // Banding across the feather, as on a real raptor.
+  const band = smoothstep(0.35, 0.65, fbm01(u, v, 2, 9, 2, 6131));
+  // The rachis itself: a hard ridge down the middle of the tile.
+  const shaft = 1 - smoothstep(0.0, 0.045, Math.abs(u - 0.5));
+
+  const grain = barb * 0.62 + barbFine * 0.38;
+  let l = 0.40 + grain * 0.30;
+  l = mix(l, l * 0.68, band * 0.55);        // darker bars
+  l = mix(l, l * 0.45, split * 0.5);        // splits fall into shadow
+  l = mix(l, 0.74, shaft * 0.75);           // pale shaft
+
+  o.r = clamp01(l * 1.04);
+  o.g = clamp01(l * 0.97);
+  o.b = clamp01(l * 0.86);
+  o.h = clamp01(grain * 0.45 + shaft * 0.55 - split * 0.35);
+  // The shaft is smooth keratin and the vane is not, which is the single
+  // biggest tell that this is a feather rather than fabric.
+  o.rough = clamp01(0.86 - shaft * 0.42 + split * 0.08);
+  o.metal = 0;
+  o.ao = clamp01(0.82 + grain * 0.18 - split * 0.22);
+}
+
 function shadeFabric(u, v, o) {
   const n = 56;
   const fu = u * n;
@@ -1130,6 +1215,15 @@ const RECIPES = {
   }),
   'grass.field': (lib) => lib._standard(HERO, shadeGrass, {
     normalStrength: 2.4, tileMeters: 4, envMapIntensity: 0.6,
+  }),
+  /* Creature surfaces. Tiled far finer than architecture - a horse is two
+   * metres of animal, so a tile authored for three metres of wall would put one
+   * hair across its whole flank. */
+  'hide.fur': (lib) => lib._standard(HERO, shadeFur, {
+    normalStrength: 2.8, tileMeters: 0.55, envMapIntensity: 0.45,
+  }),
+  'hide.feather': (lib) => lib._standard(HERO, shadeFeather, {
+    normalStrength: 2.2, tileMeters: 0.32, envMapIntensity: 0.5,
   }),
   'fabric.banner': (lib) => {
     const s = lib._bake(SMALL, shadeFabric, { normalStrength: 1.6, name: 'fabric.banner' });

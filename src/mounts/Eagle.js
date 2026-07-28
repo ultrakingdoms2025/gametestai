@@ -122,12 +122,31 @@ export class Eagle {
     this._build();
   }
 
+  /**
+   * A surface for this bird. See the note on `Horse._mat` - same contract, same
+   * reason: a flat colour with no normal map reads as plastic no matter how
+   * dense the mesh is.
+   */
   _mat(color, opts = {}) {
+    const { surface = null, ...rest } = opts;
+    if (surface && this.materials?.get) {
+      try {
+        const base = this.materials.get(surface);
+        if (base) {
+          const m = base.clone();
+          m.color = new THREE.Color(color);
+          if (rest.roughness !== undefined) m.roughness = rest.roughness;
+          if (rest.metalness !== undefined) m.metalness = rest.metalness;
+          this._owned.push(m);
+          return m;
+        }
+      } catch { /* fall through to the flat material below */ }
+    }
     const m = new THREE.MeshStandardMaterial({
       color: new THREE.Color(color),
-      roughness: opts.roughness ?? 0.72,
-      metalness: opts.metalness ?? 0.04,
-      ...opts,
+      roughness: rest.roughness ?? 0.72,
+      metalness: rest.metalness ?? 0.04,
+      ...rest,
     });
     this._owned.push(m);
     return m;
@@ -139,10 +158,14 @@ export class Eagle {
     this.tilt = new THREE.Group();
     this.root.add(this.tilt);
 
-    const body = this._mat(0x4a3524, { roughness: 0.8 });
-    const headMat = this._mat(0xe8e2d4, { roughness: 0.72 });
-    const beakMat = this._mat(0xe2a92c, { roughness: 0.42, metalness: 0.2 });
-    const flight = this._mat(0x3a2a1c, { roughness: 0.85 });
+    // Body and head take the feather bake; the flight feathers take it too but
+    // darker, so the primaries read against the coverts. The beak is keratin.
+    /* Feathers tile far denser across a wing than along a body - see the note
+     * on the horse's coat for why the ratio is not 1:1. */
+    const body = this._mat(0x6b4c30, { surface: 'hide.feather:5,8' });
+    const headMat = this._mat(0xf2ede2, { surface: 'hide.feather:4,6' });
+    const beakMat = this._mat(0xe2a92c, { roughness: 0.38, metalness: 0.18 });
+    const flight = this._mat(0x4a3626, { surface: 'hide.feather:2,3' });
     const tackMat = this._mat(0x6d4522, { roughness: 0.6 });
 
     /* ---- torso ----

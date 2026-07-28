@@ -10,6 +10,7 @@ import { WorldManager } from './worlds/WorldManager.js';
 import { StationWorld } from './worlds/StationWorld.js';
 import { MedievalWorld } from './worlds/MedievalWorld.js';
 import { SportsWorld } from './worlds/SportsWorld.js';
+import { CitadelWorld } from './worlds/CitadelWorld.js';
 import { Player } from './player/Player.js';
 import { NPCManager } from './npc/NPCManager.js';
 import { PortalSystem } from './systems/Portals.js';
@@ -92,6 +93,7 @@ const worldManager = new WorldManager(ctx);
 worldManager.register(StationWorld);
 worldManager.register(MedievalWorld);
 worldManager.register(SportsWorld);
+worldManager.register(CitadelWorld);
 
 const player = new Player({ ...ctx, camera: engine.camera });
 const npcManager = new NPCManager({ ...ctx, player });

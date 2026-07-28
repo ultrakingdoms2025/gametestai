@@ -4885,6 +4885,68 @@ export class StationWorld extends World {
       });
       this._mmCircle(0, cz, 11, 'rgba(255,180,70,0.22)', `#${new THREE.Color(s.accent).getHexString()}`);
     }
+
+    this._buildCitadelGateway(g);
+  }
+
+  /**
+   * Third gateway: the citadel, on the -X axis.
+   *
+   * Deliberately *not* run through the loop above. That builder is written
+   * around `s.z` and `Math.sign(s.z)` - fifty-odd references decide dais
+   * orientation, cone direction, sign placement and contact patches from the
+   * Z coordinate alone - so a gateway on the X axis cannot be expressed as
+   * another entry in its spec list without rewriting it, and rewriting a
+   * working world to add a door to a new one is a bad trade.
+   *
+   * It needs far less anyway: `PortalSystem` builds the arch, disc, halo,
+   * signage, light and collider from the spec, so all a world owes a gateway is
+   * somewhere to stand and a reason for the eye to go there.
+   *
+   * @param {THREE.Group} g the gateways group
+   */
+  _buildCitadelGateway(g) {
+    const M = this.mat;
+    const B = new GeoBatch();
+    const cx = -PORTAL_R;
+    const cz = 0;
+
+    // Dais: two stepped discs, matching the language of the other two.
+    B.at('panelDark', cylGeo(11, 11, 0.5, 28, 2.2), cx, 0.25, cz);
+    B.at('panelWarm', cylGeo(8.6, 8.6, 0.55, 28, 1.8), cx, 0.55, cz);
+    B.at('trim', cylGeo(8.9, 8.9, 0.12, 28, 1.2), cx, 0.86, cz);
+    this._solid(cx, 0.4, cz, 11, 0.4, 11);
+
+    // Approach lip so the step up reads from across the plaza.
+    for (let i = 0; i < 3; i++) {
+      const r = 12.4 + i * 1.5;
+      B.at('panelDark', cylGeo(r, r, 0.18, 28, 1.4), cx, 0.09 - i * 0.06, cz);
+    }
+
+    // Four sandstone-warm standing stones, so the citadel gateway reads as
+    // older than the two beside it before the player is close enough to read
+    // the sign.
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + Math.PI * 0.25;
+      const px = cx + Math.cos(a) * 6.4;
+      const pz = cz + Math.sin(a) * 6.4;
+      B.at('panelWarm', boxGeo(1.1, 5.2, 1.1, 1.4), px, 2.6 + 0.8, pz, -a);
+      B.at('emAmber', boxGeo(0.3, 0.22, 0.3, 1), px, 5.4, pz, -a);
+      this._solidRot(px, 3.4, pz, 0.55, 2.6, 0.55, -a);
+      this._contact(px, pz, 3.0);
+    }
+
+    this._contact(cx, cz, 30);
+    B.flush(g, M, 'gateway-citadel', { cast: true, recv: true });
+
+    this.portalSpecs.push({
+      position: new THREE.Vector3(cx, 2.45, cz),
+      rotationY: Math.PI * 0.5,
+      target: 'citadel',
+      label: 'Sunspire Citadel',
+      accent: 0xffc46b,
+    });
+    this._mmCircle(cx, cz, 11, 'rgba(255,180,70,0.22)', '#ffc46b');
   }
 
   /* ---------------------------------------------------------------- */

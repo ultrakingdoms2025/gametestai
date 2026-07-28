@@ -42,6 +42,7 @@ const _v = new THREE.Vector3();
 const SUPPLY_WANTS = {
   station: [{ id: 'alloy_scrap', min: 4, max: 8 }, { id: 'nexus_shard', min: 1, max: 2 }],
   medieval: [{ id: 'alloy_scrap', min: 3, max: 6 }, { id: 'relic_coin', min: 3, max: 6 }],
+  citadel: [{ id: 'alloy_scrap', min: 4, max: 8 }, { id: 'medkit', min: 2, max: 3 }],
   sports: [{ id: 'medkit', min: 2, max: 3 }, { id: 'alloy_scrap', min: 3, max: 6 }],
 };
 

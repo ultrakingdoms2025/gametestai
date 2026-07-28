@@ -33,6 +33,7 @@ const SCALES = {
   dorian: [0, 2, 3, 5, 7, 9, 10],
   major: [0, 2, 4, 5, 7, 9, 11],
   lydian: [0, 2, 4, 6, 7, 9, 11],
+  phrygian: [0, 1, 3, 5, 7, 8, 10],
 };
 
 /** midi -> Hz */
@@ -62,6 +63,17 @@ const SCORES = {
     arp: { gain: 0.09, type: 'sine', octave: 2, density: 0.3 },
     bass: { gain: 0.24, type: 'sine' },
     bell: { gain: 0.06, density: 0.08, octave: 2 },
+  },
+  citadel: {
+    // Phrygian-flavoured: the flat second is the interval that reads as "east
+    // of here" to a western ear without tipping into pastiche. Slow, wide and
+    // mostly drone, because this world is climbed in silence and the score
+    // should stay out of the way of the wind.
+    root: 36, scale: 'phrygian', step: 1.05, chords: [0, 0, 3, 1],
+    pad: { gain: 0.2, type: 'sawtooth', cutoff: 430 },
+    arp: { gain: 0.085, type: 'triangle', octave: 3, density: 0.26 },
+    bass: { gain: 0.26, type: 'sine' },
+    bell: { gain: 0.075, density: 0.09, octave: 3 },
   },
   sports: {
     root: 40, scale: 'lydian', step: 0.5, chords: [0, 4, 5, 3],

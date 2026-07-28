@@ -1024,7 +1024,12 @@ export class PortalSystem {
 
   /** Build (once) the shared arch template + materials for a destination style. */
   _kit(target) {
-    const style = target === 'medieval' || target === 'sports' ? target : 'station';
+    // The citadel borrows the medieval arch: it is cut stone with a keystone,
+    // which is what a gateway into a fortress town should be. Anything
+    // unrecognised still falls back to the station's alloy frame.
+    const style = target === 'medieval' || target === 'citadel' ? 'medieval'
+      : target === 'sports' ? 'sports'
+        : 'station';
     let kit = this._kits.get(style);
     if (kit) return kit;
     kit = { style, template: new THREE.Group(), disposables: [] };

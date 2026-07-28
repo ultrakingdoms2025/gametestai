@@ -157,6 +157,15 @@ export const WORLD_MARKETS = {
     itemSell: { pack_arrows: 0.6 },
     note: 'No foundry — scrap and medicine fetch a premium, arrows are local.',
   },
+  citadel: {
+    label: 'Sunspire Citadel',
+    // A fortress cut off on a mesa: everything manufactured arrives by mule, and
+    // the one thing it has in surplus is antiquity.
+    buy: { trinket: 1.35, ammo: 1.3, consumable: 1.45 },
+    sell: { ammo: 1.55, consumable: 1.4 },
+    itemBuy: { alloy_scrap: 1.65, nexus_shard: 1.5, relic_coin: 0.5 },
+    note: 'Cut off on the mesa — everything manufactured is dear, relics are not.',
+  },
   sports: {
     label: 'Meridian Athletic Grounds',
     // Civilian, well supplied, and nobody here wants your hull plating.

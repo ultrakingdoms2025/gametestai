@@ -75,6 +75,12 @@ const CACHE_TABLES = {
     { id: 'arrow', min: 15, max: 30 },
     { id: 'medkit', min: 1, max: 2 },
   ],
+  citadel: [
+    { id: 'relic_coin', min: 4, max: 10 },
+    { id: 'nexus_shard', min: 1, max: 2 },
+    { id: 'arrow', min: 18, max: 34 },
+    { id: 'medkit', min: 1, max: 2 },
+  ],
   sports: [
     { id: 'medkit', min: 2, max: 3 },
     { id: 'nexus_shard', min: 1, max: 2 },

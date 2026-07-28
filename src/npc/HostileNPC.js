@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CONFIG } from '../core/Config.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { NPC, clamp } from './NPC.js';
-import { NPC_WEAPONS, buildWeaponModel, pickWeaponId, rollDamage } from './NPCWeapons.js';
+import { NPC_WEAPONS, buildWeaponModel, pickWeaponId, rollDamage, isMelee } from './NPCWeapons.js';
 
 /**
  * Hostile combatant.
@@ -134,6 +134,13 @@ export class HostileNPC extends NPC {
     this.magazine = def.magazine;
     this.accuracy = clamp(def.accuracy + (this.rnd() - 0.5) * 0.08, 0.3, 0.92);
     this.preferredRange = def.preferredMin + this.rnd() * (def.preferredMax - def.preferredMin);
+    /**
+     * Brawler or shooter. A brawler has to *commit* - it runs flat out and does
+     * not take cover, because a melee attacker that jogs and hides behind a
+     * crate is just a shooter that cannot shoot. This is the flag the movement
+     * code reads; the reach comes from the weapon table.
+     */
+    this.isMelee = isMelee(def.id);
     this._resetWeaponState();
   }
 
@@ -328,7 +335,9 @@ export class HostileNPC extends NPC {
       this.setState('PATROL');
       return;
     }
-    this.desiredSpeed = CONFIG.npc.runSpeed * 0.62;
+    // A shooter advances at a working pace because it is trading fire on the
+    // way in. A brawler has nothing to trade until it arrives, so it runs.
+    this.desiredSpeed = CONFIG.npc.runSpeed * (this.isMelee ? 1.0 : 0.62);
     this.faceOverride = this.hasLastKnown ? this.lastKnownTarget : player.position;
     this._lookTarget = player.position;
     this.animator.setAimTarget(this._aimPoint());
@@ -408,6 +417,10 @@ export class HostileNPC extends NPC {
   }
 
   _beginReposition() {
+    // Brawlers do not break off to find a firing angle - there is no angle to
+    // find, and a charger that keeps backing off to cover reads as a shooter
+    // whose gun is broken. They stay committed and keep coming.
+    if (this.isMelee) return;
     this.repositionTimer = 1.8 + this.rnd() * 2.2;
     this.coverPoint = null;
     this.setState('REPOSITION');
@@ -585,10 +598,14 @@ export class HostileNPC extends NPC {
       const r = radius * (0.35 + this.rnd() * 0.65);
       const x = origin.x + Math.cos(a) * r;
       const z = origin.z + Math.sin(a) * r;
+      // Patrols route around the river rather than through it - see the note
+      // in FriendlyNPC._pickWanderTarget.
+      if (this.nav.isDeepWaterAt(x, z)) continue;
       const ground = this.physics.groundHeight(x, z, origin.y + 6, 14);
       if (ground === null) continue;
       _v1.set(x, ground, z);
       if (!this.nav._clearLine(this.position, _v1)) continue;
+      if (!this.nav.waterFreeLine(this.position, _v1)) continue;
       this.nav.setTarget(_v1);
       return true;
     }

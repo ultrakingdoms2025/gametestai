@@ -1458,7 +1458,13 @@ function excludeEffectsFromAO(gtaoPass) {
     original.call(this);
     const cache = this._visibilityCache;
     this.scene.traverse((object) => {
-      if (!object.visible || !object.isMesh) return;
+      // Sprites too, not just meshes. GTAO's prepass renders whatever it is
+      // handed into a depth+normal buffer, and the AO term then multiplies the
+      // frame by it - so an additive *sprite* is stamped in as a hard opaque
+      // shape exactly like an additive mesh would be. Missing them here is what
+      // drew a black square around every loot halo seen close up, which the
+      // underwater caches made impossible to miss.
+      if (!object.visible || (!object.isMesh && !object.isSprite)) return;
       const m = object.material;
       if (!m) return;
       const mats = Array.isArray(m) ? m : [m];

@@ -33,12 +33,16 @@ export class Minimap {
    * @param {{ canvas: HTMLCanvasElement, player: any, worldManager: any,
    *           npcManager: any, portals: any, input: any }} ctx
    */
-  constructor({ canvas, player, worldManager, npcManager, portals }) {
+  constructor({ canvas, player, worldManager, npcManager, portals, caches, contracts }) {
     this.canvas = canvas;
     this.player = player;
     this.worldManager = worldManager;
     this.npcManager = npcManager;
     this.portals = portals;
+    /** World caches, drawn as navigation targets. @see systems/Caches.js */
+    this.caches = caches ?? null;
+    /** Standing jobs, so the giver is findable. @see systems/Contracts.js */
+    this.contracts = contracts ?? null;
 
     this.size = CONFIG.minimap.size;
     this.baseRange = CONFIG.minimap.range;
@@ -317,6 +321,20 @@ export class Minimap {
       }
     }
 
+    // --- caches ----------------------------------------------------------
+    // Drawn before the crowd so a passing civilian never hides a destination,
+    // and kept on the rim when out of range: a cache the player cannot see the
+    // bearing of is a cache they will never go and get.
+    const cacheList = this.caches?.markers;
+    if (cacheList) {
+      for (let i = 0; i < cacheList.length; i++) {
+        const c = cacheList[i];
+        if (!c.stocked || !c.position) continue;
+        this._project(c.position.x, c.position.z, px, pz, sin, cos, scale);
+        this._cacheMarker(ctx, cx, cy, elapsed, _pt.inside, c.kind, i);
+      }
+    }
+
     // --- NPCs ------------------------------------------------------------
     const npcs = this.npcManager?.npcs;
     if (npcs) {
@@ -381,6 +399,18 @@ export class Minimap {
         this._traderMarker(ctx, cx, cy, elapsed, _pt.inside);
       }
       traders.length = 0;
+
+      // Contract givers ride on top of whatever marker they already had, so a
+      // trader who is also offering a job reads as both.
+      const jobs = this.contracts?.all;
+      if (jobs) {
+        for (let i = 0; i < jobs.length; i++) {
+          const c = jobs[i];
+          if (c.state === 'done' || !c.npc || c.npc.isDead || !c.npc.position) continue;
+          this._project(c.npc.position.x, c.npc.position.z, px, pz, sin, cos, scale);
+          this._contractMarker(ctx, elapsed, c.state === 'active' && c.have >= c.need);
+        }
+      }
     }
 
     // --- player arrow + view cone ----------------------------------------
@@ -536,6 +566,109 @@ export class Minimap {
     ctx.lineTo(0, 3.1);
     ctx.stroke();
 
+    ctx.restore();
+  }
+
+  /**
+   * A world cache, at {@link _pt}.
+   *
+   * Two kinds and two silhouettes, because the difference is the whole point:
+   * a droplet means "you are going to have to swim for this", a chevron means
+   * "you are going to have to get up there". Like traders they keep a rim
+   * marker when off-range, since a cache is only ever worth drawing if the
+   * player can work out which way to walk.
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {number} cx map centre x
+   * @param {number} cy map centre y
+   * @param {number} elapsed seconds
+   * @param {boolean} inside within the mapped range
+   * @param {'sunken'|'high'} kind
+   * @param {number} i index, to decorrelate the pulses
+   */
+  _cacheMarker(ctx, cx, cy, elapsed, inside, kind, i) {
+    const sunken = kind === 'sunken';
+    const tint = sunken ? '#4fd8ff' : '#b6ff5a';
+    const x = _pt.x;
+    const y = _pt.y;
+    ctx.save();
+    ctx.translate(x, y);
+
+    if (!inside) {
+      const a = Math.atan2(y - cy, x - cx);
+      ctx.save();
+      ctx.rotate(a);
+      ctx.fillStyle = sunken ? 'rgba(79,216,255,0.85)' : 'rgba(182,255,90,0.85)';
+      ctx.beginPath();
+      ctx.moveTo(6, 0);
+      ctx.lineTo(-1.5, 3.6);
+      ctx.lineTo(-1.5, -3.6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      ctx.translate(Math.cos(a) * -6, Math.sin(a) * -6);
+    }
+
+    const pulse = 0.5 + 0.5 * Math.sin(elapsed * 1.9 + i * 1.3);
+    ctx.shadowColor = tint;
+    ctx.shadowBlur = 5 + pulse * 6;
+    ctx.fillStyle = tint;
+
+    ctx.beginPath();
+    if (sunken) {
+      // Droplet: round bottom, pointed top.
+      ctx.moveTo(0, -5);
+      ctx.quadraticCurveTo(3.6, -0.6, 3.2, 1.4);
+      ctx.arc(0, 1.4, 3.2, 0, Math.PI);
+      ctx.quadraticCurveTo(-3.6, -0.6, 0, -5);
+    } else {
+      // Double chevron pointing up: "above you".
+      ctx.moveTo(0, -4.6);
+      ctx.lineTo(4, 0.4);
+      ctx.lineTo(1.9, 0.4);
+      ctx.lineTo(0, -1.5);
+      ctx.lineTo(-1.9, 0.4);
+      ctx.lineTo(-4, 0.4);
+      ctx.closePath();
+      ctx.moveTo(0, -0.6);
+      ctx.lineTo(4, 4.4);
+      ctx.lineTo(1.9, 4.4);
+      ctx.lineTo(0, 2.5);
+      ctx.lineTo(-1.9, 4.4);
+      ctx.lineTo(-4, 4.4);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /**
+   * Ring over a contract giver at {@link _pt}. Solid once the job is ready to
+   * hand in, hollow while it is still outstanding - the same read as a quest
+   * marker in any game the player has met before.
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {number} elapsed
+   * @param {boolean} ready
+   */
+  _contractMarker(ctx, elapsed, ready) {
+    const bob = Math.sin(elapsed * 3) * 1.2;
+    ctx.save();
+    ctx.translate(_pt.x, _pt.y - 10 + bob);
+    ctx.shadowColor = 'rgba(255,180,74,0.9)';
+    ctx.shadowBlur = ready ? 8 : 4;
+    ctx.strokeStyle = '#ffb44a';
+    ctx.fillStyle = '#ffb44a';
+    ctx.lineWidth = 1.6;
+    // A bang: stem plus dot, the least ambiguous "something here" glyph there is.
+    ctx.beginPath();
+    ctx.moveTo(0, -4.4);
+    ctx.lineTo(0, 0.6);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 3, 1.25, 0, Math.PI * 2);
+    if (ready) ctx.fill();
+    else ctx.stroke();
     ctx.restore();
   }
 

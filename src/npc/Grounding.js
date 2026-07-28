@@ -154,6 +154,84 @@ export function auditStanding(physics, position, hintY) {
   return { ok: drop < 0.35 && drop > -1.2, surfaceY: y, drop };
 }
 
+/**
+ * How deep a character will wade before water counts as impassable.
+ *
+ * Knee-deep is a puddle you walk through; waist-deep is a river you go around.
+ * Characters have no swimming animation and no buoyancy - only the player does -
+ * so anything past this is somewhere they simply must not be.
+ */
+export const WADE_DEPTH = 0.75;
+
+/**
+ * Depth of standing water over the column at (x, z), in metres. 0 when dry.
+ *
+ * `WaterVolumes` knows where the *surface* is; the bed is collision geometry,
+ * which it deliberately does not own - so the depth is the gap between the two.
+ * That matters: the medieval river is 1.5 m in the channel and a few
+ * centimetres at the margins, and a character should be free to walk the
+ * margins.
+ *
+ * Cost is one grid lookup, and a raycast *only* where there is water overhead -
+ * so away from the river this is a hash miss and nothing else, which is what
+ * makes it affordable to call from steering every frame.
+ *
+ * @param {any} physics
+ * @param {{surfaceYAt:(x:number,z:number)=>number|null}|null} water
+ * @param {number} x
+ * @param {number} z
+ * @returns {number} depth in metres, 0 if dry, Infinity if the bed is missing
+ */
+export function waterDepthAt(physics, water, x, z) {
+  if (!water) return 0;
+  const surfaceY = water.surfaceYAt(x, z);
+  if (surfaceY === null) return 0;
+  const bedY = physics.groundHeight(x, z, surfaceY + 1.0, 40);
+  // Water over a hole in the collision mesh: no bed to stand on at all, so this
+  // is as impassable as it gets.
+  if (bedY === null) return Infinity;
+  const d = surfaceY - bedY;
+  return d > 0 ? d : 0;
+}
+
+/**
+ * Is this column too deep to stand in?
+ * @returns {boolean}
+ */
+export function isDeepWater(physics, water, x, z) {
+  return waterDepthAt(physics, water, x, z) > WADE_DEPTH;
+}
+
+/**
+ * Nearest dry-enough spot to `p`, searching outward in rings.
+ *
+ * Used to keep spawns and repairs out of the river. Returns the original point
+ * when it is already dry, and null when the whole neighbourhood is water - the
+ * caller decides whether that is fatal.
+ *
+ * @param {any} physics
+ * @param {any} water
+ * @param {THREE.Vector3} p
+ * @param {THREE.Vector3} [out]
+ * @returns {THREE.Vector3|null}
+ */
+export function nearestDrySpot(physics, water, p, out) {
+  const v = out ?? new THREE.Vector3();
+  if (!water || !isDeepWater(physics, water, p.x, p.z)) return v.copy(p);
+  for (const r of [2, 4, 7, 11, 16, 22, 30]) {
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      const x = p.x + Math.cos(a) * r;
+      const z = p.z + Math.sin(a) * r;
+      if (isDeepWater(physics, water, x, z)) continue;
+      const y = resolveSurfaceY(physics, x, z, p.y);
+      if (y === null) continue;
+      return v.set(x, y, z);
+    }
+  }
+  return null;
+}
+
 /** seatSurfaceAt() owns these exclusively. */
 const _seatRing = new THREE.Vector3();
 

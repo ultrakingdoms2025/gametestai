@@ -1,6 +1,8 @@
 import './inventory.css';
 import { el, menuFocusIn, menuFocusOut } from './InventoryUI.js';
-import { itemIconSVG, itemDef, sellValue, SELL_RATE } from '../systems/ItemDefs.js';
+import {
+  itemIconSVG, itemDef, sellValue, SELL_RATE, packPrice, priceSignal, marketInfo,
+} from '../systems/ItemDefs.js';
 
 /**
  * Vendor terminal: buy packs, sell salvage.
@@ -145,6 +147,18 @@ export class MarketplaceUI {
       for (let i = 0; i < ticks.length; i++) ticks[i].classList.toggle('on', i < used);
     }
     this.creditsVal.textContent = String(this.economy?.credits ?? 0);
+
+    // Regional trade note. Naming what this world is short of is what turns a
+    // price difference into a reason to walk through a portal.
+    const info = marketInfo();
+    this.note.innerHTML = info?.note
+      ? `<b>${info.label}</b> — ${info.note} Vendors buy back at <b>${Math.round(SELL_RATE * 100)}%</b> of base value.`
+      : `Vendors buy back at <b>${Math.round(SELL_RATE * 100)}%</b> of value. Sales come out of the store first, then the bag.`;
+  }
+
+  /** Re-draw if open. Called when the world (and therefore the prices) changes. */
+  refresh() {
+    if (this._open) this._render();
   }
 
   _renderBuy() {
@@ -152,7 +166,8 @@ export class MarketplaceUI {
     for (const pack of this.market.packs) {
       const def = itemDef(pack.itemId);
       const room = this.inventory?.roomFor(pack.itemId) ?? 0;
-      const poor = credits < pack.price;
+      const price = packPrice(pack);
+      const poor = credits < price;
       const cramped = room < pack.qty;
 
       const row = el('div', `mkt-row${poor || cramped ? ' blocked' : ''}`);
@@ -166,8 +181,17 @@ export class MarketplaceUI {
         : `${pack.blurb} &nbsp;·&nbsp; you hold <b>${this.inventory?.totalCount(pack.itemId) ?? 0}</b>`;
       info.appendChild(blurb);
 
-      const price = el('div', 'mkt-price', `${pack.price} CR`);
-      price.appendChild(el('small', null, poor ? 'not enough' : `${(pack.price / pack.qty).toFixed(1)} / unit`));
+      const priceEl = el('div', 'mkt-price', `${price} CR`);
+      // Show the regional discount or markup against the list price, so the
+      // player can see *why* it is worth buying arrows here and not there.
+      const mul = price / Math.max(1, pack.price);
+      if (mul <= 0.9 || mul >= 1.1) {
+        priceEl.classList.add(mul < 1 ? 'mkt-cheap' : 'mkt-dear');
+        priceEl.appendChild(el('small', null,
+          `${mul < 1 ? '' : '+'}${Math.round((mul - 1) * 100)}% here`));
+      } else {
+        priceEl.appendChild(el('small', null, poor ? 'not enough' : `${(price / pack.qty).toFixed(1)} / unit`));
+      }
 
       const acts = el('div', 'mkt-acts');
       const buy = el('button', 'inv-btn mkt-buy', 'Buy');
@@ -176,7 +200,7 @@ export class MarketplaceUI {
       buy.addEventListener('click', () => this._buy(pack.id));
       acts.appendChild(buy);
 
-      row.append(info, price, acts);
+      row.append(info, priceEl, acts);
       this.body.appendChild(row);
     }
   }
@@ -194,10 +218,16 @@ export class MarketplaceUI {
       const info = el('div', 'mkt-info');
       info.appendChild(el('div', 'mkt-name', item.def?.name ?? item.id));
       const blurb = el('div', 'mkt-blurb');
-      blurb.innerHTML = `store <b>${item.store}</b> &nbsp;·&nbsp; bag <b>${item.bag}</b> &nbsp;·&nbsp; ${item.unit} CR each`;
+      // The demand tag is the whole point of regional pricing: it tells the
+      // player which of their three destinations wants what they are carrying.
+      const sig = priceSignal(item.id);
+      const tag = sig.tone === 'flat' ? ''
+        : ` &nbsp;·&nbsp; <b class="mkt-${sig.tone}">${sig.label}</b>`;
+      blurb.innerHTML = `store <b>${item.store}</b> &nbsp;·&nbsp; bag <b>${item.bag}</b> &nbsp;·&nbsp; ${item.unit} CR each${tag}`;
       info.appendChild(blurb);
 
-      const price = el('div', 'mkt-price', `${sellValue(item.id, item.total)} CR`);
+      const price = el('div', `mkt-price${sig.tone === 'high' ? ' mkt-cheap' : sig.tone === 'low' ? ' mkt-dear' : ''}`,
+        `${sellValue(item.id, item.total)} CR`);
       price.appendChild(el('small', null, `all ${item.total}`));
 
       const acts = el('div', 'mkt-acts');

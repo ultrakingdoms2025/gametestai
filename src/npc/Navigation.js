@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { COLLISION_LAYER } from '../physics/Physics.js';
+import { waterDepthAt, isDeepWater, WADE_DEPTH } from './Grounding.js';
 
 /**
  * Per-agent steering.
@@ -75,6 +76,30 @@ const _clDir = new THREE.Vector3();
 
 /** _trackStuck() owns this exclusively. */
 const _tsDelta = new THREE.Vector3();
+
+/** _waterAvoid() owns these exclusively. */
+const _waSample = new THREE.Vector3();
+const _waAway = new THREE.Vector3();
+
+/**
+ * Where to sample for water, as (forward, lateral) metres from the agent.
+ *
+ * Sampled one per frame round-robin, exactly like the wall probe fan and for
+ * the same reason: a character near the river would otherwise pay three
+ * raycasts every frame for a question whose answer changes slowly.
+ *
+ * The lateral pair matters as much as the forward one - a character walking
+ * *along* a bank needs to know which side the water is on to slide away from
+ * it, and a purely forward probe reads clear right up until it steps in.
+ */
+const WATER_PROBES = [
+  [2.2, 0], [3.6, 0], [1.6, 1.4], [1.6, -1.4], [0, 1.8], [0, -1.8],
+];
+
+/** How fast the smoothed water response tracks the raw samples. */
+const WATER_TRACK = 6;
+/** Per-second decay when no probe has found water. */
+const WATER_DECAY = 1.5;
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
@@ -169,6 +194,19 @@ export class Navigation {
       s = (s * 1664525 + 1013904223) >>> 0;
       return s / 4294967296;
     };
+    /**
+     * Water volumes for the active world, injected by NPCManager. Null in
+     * worlds that have none, which turns every water test below into one
+     * comparison and nothing else.
+     */
+    this.water = null;
+    /** Smoothed 0..1 "how much of the way into deep water am I heading". */
+    this._waterBrake = 0;
+    /** Round-robin cursor over WATER_PROBES, one sample per agent per frame. */
+    this._waterPhase = 0;
+    /** Last direction that pointed away from water, latched like a slide side. */
+    this._waterAway = new THREE.Vector3();
+
     this._probePhase = Math.floor(this._rnd() * PROBES.length);
     this._probeHits = new Float32Array(PROBES.length);
     this._probeNormals = PROBES.map(() => new THREE.Vector3());
@@ -210,7 +248,21 @@ export class Navigation {
 
   /** Follow a waypoint list, smoothed by line-of-sight string pulling. */
   setPath(points) {
-    this.path = points ? points.map((p) => p.clone()) : [];
+    let list = points ? points.map((p) => p.clone()) : [];
+    /* Authored patrol routes predate the water volumes, and some of them ford
+     * the river. Dropping the wet waypoints here rather than at each call site
+     * covers every route in the game at once - which is what was still putting
+     * one hostile out of its depth after the destination and line checks had
+     * caught everyone else.
+     *
+     * If a route is wet end to end it is kept as authored: a patrol that goes
+     * nowhere is a worse bug than a patrol that gets its feet wet, and the
+     * steering term will still lean the agent away from the deepest part. */
+    if (this.water && list.length > 1) {
+      const dry = list.filter((p) => !this.isDeepWaterAt(p.x, p.z));
+      if (dry.length > 1) list = dry;
+    }
+    this.path = list;
     this.pathIndex = 0;
     this.hasTarget = this.path.length > 0;
     if (this.hasTarget) this.target.copy(this.path[0]);
@@ -324,6 +376,18 @@ export class Navigation {
       this.desired.addScaledVector(this.avoidPush, maxSpeed * 0.5 * brake);
     }
 
+    // --- water avoidance -------------------------------------------
+    // Applied after the wall term and before separation, so a character pinned
+    // between a wall and the river still gets pushed along the bank rather than
+    // into it. Deliberately stronger than wall avoidance: walking into a wall
+    // looks clumsy, walking into a river looks broken.
+    this._waterAvoid(position, dt);
+    if (this._waterBrake > 0.001) {
+      const wb = this._waterBrake;
+      this.desired.multiplyScalar(1 - 0.95 * wb);
+      this.desired.addScaledVector(this._waterAway, maxSpeed * 1.4 * wb);
+    }
+
     // --- neighbour separation --------------------------------------
     // Steering separation only opens up personal space while an agent is
     // actually going somewhere. Bodies that are genuinely interpenetrating are
@@ -360,8 +424,11 @@ export class Navigation {
     // Everything above may slow the agent, stop it, or push it sideways. None
     // of it is allowed to send it back the way it came: that is the oscillation
     // the player was seeing. A detour is exempt, because walking out and around
-    // is exactly what a detour is for.
-    if (this._detourTimer <= 0) {
+    // is exactly what a detour is for - and so is water, because the one case
+    // where reversing *is* the right answer is a target on the far bank. Left
+    // clamped, the agent would keep leaning into the river for as long as it
+    // held that target, which is the behaviour this whole term exists to stop.
+    if (this._detourTimer <= 0 && this._waterBrake < 0.25) {
       const along = this.desired.dot(_upSeekDir);
       if (along < 0) this.desired.addScaledVector(_upSeekDir, -along);
     }
@@ -485,8 +552,112 @@ export class Navigation {
     this.avoidBrake -= this.avoidBrake * k;
     if (this.avoidBrake < 0.002) this.avoidBrake = 0;
     this.avoidance.multiplyScalar(1 - k);
+    this._waterBrake -= this._waterBrake * (1 - Math.exp(-WATER_DECAY * dt));
+    if (this._waterBrake < 0.002) this._waterBrake = 0;
     if (this._detourTimer > 0) this._detourTimer -= dt;
     if (this.blocked && this.avoidBrake === 0) this.blocked = false;
+  }
+
+  /**
+   * Is the column at (x, z) too deep to walk into?
+   *
+   * Public because destination pickers need the same answer steering does -
+   * a wander target chosen in the middle of the river would have the agent
+   * grinding against the bank until the stuck detector re-rolled it.
+   *
+   * @param {number} x
+   * @param {number} z
+   * @returns {boolean}
+   */
+  isDeepWaterAt(x, z) {
+    return this.water ? isDeepWater(this.physics, this.water, x, z) : false;
+  }
+
+  /**
+   * Can the agent walk the straight line from `from` to `to` without swimming?
+   *
+   * Rejecting wet *destinations* is not enough on its own, and the measurement
+   * says so: with only that check three medieval characters still spent 4-18%
+   * of their time out of their depth, because a perfectly dry spot on the far
+   * bank is a perfectly valid destination and the direct route to it goes
+   * through the river. Steering then fought the seek all the way across.
+   *
+   * Sampled rather than swept - a couple of metres of stride is finer than any
+   * water body in these worlds is narrow - and capped, so a long route costs a
+   * bounded number of probes. Away from water each one is a hash miss.
+   *
+   * @param {THREE.Vector3} from
+   * @param {THREE.Vector3} to
+   * @param {number} [step] metres between samples
+   * @returns {boolean}
+   */
+  waterFreeLine(from, to, step = 2.5) {
+    if (!this.water) return true;
+    const dx = to.x - from.x;
+    const dz = to.z - from.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 1e-3) return !this.isDeepWaterAt(to.x, to.z);
+    const n = Math.min(14, Math.max(1, Math.ceil(dist / step)));
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      if (this.isDeepWaterAt(from.x + dx * t, from.z + dz * t)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Sample for deep water around the agent and build a push away from it.
+   *
+   * One sample per frame, round-robin over {@link WATER_PROBES}, smoothed the
+   * same way the wall fan is - so the response is continuous even though the
+   * evidence arrives one point at a time. `waterDepthAt` costs a hash lookup
+   * away from water, so agents nowhere near the river pay almost nothing.
+   */
+  _waterAvoid(position, dt) {
+    if (!this.water) {
+      if (this._waterBrake > 0) {
+        this._waterBrake -= this._waterBrake * (1 - Math.exp(-WATER_DECAY * dt));
+        if (this._waterBrake < 0.002) this._waterBrake = 0;
+      }
+      return;
+    }
+
+    this._waterPhase = (this._waterPhase + 1) % WATER_PROBES.length;
+    const [ahead, lateral] = WATER_PROBES[this._waterPhase];
+    // Probe in the direction of travel, not of facing: an agent being pushed
+    // sideways by separation can enter the water without ever facing it.
+    const dir = this.desired.lengthSq() > 1e-4 ? this.desired : null;
+    let fx = 0;
+    let fz = 1;
+    if (dir) {
+      const l = Math.hypot(dir.x, dir.z);
+      if (l > 1e-4) { fx = dir.x / l; fz = dir.z / l; }
+    }
+    _waSample.set(
+      position.x + fx * ahead - fz * lateral,
+      position.y,
+      position.z + fz * ahead + fx * lateral
+    );
+
+    const depth = waterDepthAt(this.physics, this.water, _waSample.x, _waSample.z);
+    const k = 1 - Math.exp(-WATER_TRACK * dt);
+    if (depth > WADE_DEPTH) {
+      // Ramp over the half-metre past wading depth so a shelving bank produces
+      // a lean rather than a wall.
+      const raw = clamp((depth - WADE_DEPTH) / 0.5, 0, 1);
+      _waAway.set(position.x - _waSample.x, 0, position.z - _waSample.z);
+      const l = _waAway.length();
+      if (l > 1e-4) {
+        _waAway.multiplyScalar(1 / l);
+        // Blend rather than replace: successive probes around a bend should
+        // average into "away from the river", not snap between sample points.
+        this._waterAway.lerp(_waAway, k).normalize();
+      }
+      this._waterBrake += (raw - this._waterBrake) * k;
+    } else {
+      this._waterBrake -= this._waterBrake * (1 - Math.exp(-WATER_DECAY * dt));
+      if (this._waterBrake < 0.002) this._waterBrake = 0;
+    }
   }
 
   _trackStuck(dt, position, desiredSpeed) {

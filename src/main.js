@@ -31,6 +31,8 @@ import { Marketplace } from './systems/Marketplace.js';
 import { HelpMenu } from './ui/HelpMenu.js';
 import { CharacterMenu } from './ui/CharacterMenu.js';
 import { LightRig } from './gfx/LightRig.js';
+import { Caches } from './systems/Caches.js';
+import { Contracts } from './systems/Contracts.js';
 
 /**
  * AETHER NEXUS - bootstrap.
@@ -142,9 +144,17 @@ const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, play
 // Ammunition now comes out of the bag rather than a private per-weapon counter.
 loadout.setInventory?.(inventory);
 
+// Reasons to dive, to fly and to come back. Caches place themselves by terrain
+// query on every world change and hand the reward to Loot, so there is no
+// authored data and nothing to keep in sync when a world regenerates.
+const caches = new Caches({ bus, physics, player, loot, worldManager, waterVolumes });
+
+// Standing jobs from the people who already have names and personalities.
+const contracts = new Contracts({ bus, npcManager, player, economy, inventory, worldManager });
+
 const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts, input, inventory });
 
-const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, portals });
+const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, portals, caches, contracts });
 
 // Late injection breaks what would otherwise be a circular import between the
 // world manager and the systems it has to drive on every world change.
@@ -154,7 +164,7 @@ worldManager.attach?.({ npcManager, portals, player });
 window.GAME = {
   engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
   cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
-  waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu,
+  waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu, caches, contracts,
 };
 
 if (overrides.dev) {
@@ -450,6 +460,8 @@ engine.onFrameUpdate((dt, elapsed) => {
   worldManager.active?.update(dt, elapsed);
   inventory.update(dt);
   market.update(dt);
+  caches.update(dt);
+  contracts.update(dt);
   helpMenu.update?.(dt);
   characterMenu.update?.(dt);
   hud.update(dt, elapsed);

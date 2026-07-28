@@ -98,6 +98,55 @@ export const NPC_WEAPONS = {
     aimDrift: 0.008,
     model: 'bow',
   },
+  /* --- melee ---------------------------------------------------------
+   *
+   * Every hostile in the build was a shooter, so every fight was the same
+   * fight: back away, trade at range, win. A brawler changes the question the
+   * player has to answer - you cannot kite something that is already inside
+   * your minimum range, so it forces movement instead of rewarding it.
+   *
+   * Mechanically these are ordinary weapons with a 2.5 m reach. `_fire` is a
+   * hitscan, so a swing that only carries two and a half metres *is* a melee
+   * hit, and the whole targeting, telegraph and cover stack works unchanged.
+   * The long telegraph is the fairness knob it always was: 30 damage is only
+   * fair if you get three quarters of a second to move out of the arc. */
+  blade: {
+    id: 'blade',
+    name: 'blade',
+    damage: 30,
+    spread: 0.3,
+    range: 2.8,
+    preferredMin: 0,
+    preferredMax: 1.9,
+    telegraph: 0.72,
+    burst: [1, 1],
+    burstDelay: 0.2,
+    cooldown: [0.7, 1.2],
+    magazine: 999,
+    reload: 0.2,
+    accuracy: 0.8,
+    aimDrift: 0.004,
+    model: 'staff',
+  },
+  baton: {
+    id: 'baton',
+    name: 'shock baton',
+    damage: 24,
+    spread: 0.3,
+    range: 2.6,
+    preferredMin: 0,
+    preferredMax: 1.8,
+    telegraph: 0.55,
+    burst: [1, 2],
+    burstDelay: 0.28,
+    cooldown: [0.6, 1.1],
+    magazine: 999,
+    reload: 0.2,
+    accuracy: 0.78,
+    aimDrift: 0.005,
+    model: 'staff',
+  },
+
   staff: {
     id: 'staff',
     name: 'staff',
@@ -130,10 +179,12 @@ export const WEAPON_TABLES = {
     ['rifle', 5],
     ['sidearm', 3],
     ['staff', 2],
+    ['baton', 3],
   ],
   medieval: [
     ['bow', 4],
     ['staff', 3],
+    ['blade', 4],
     ['sidearm', 2],
     ['rifle', 1],
   ],
@@ -141,8 +192,17 @@ export const WEAPON_TABLES = {
     ['rifle', 4],
     ['sidearm', 4],
     ['bow', 2],
+    ['baton', 2],
   ],
 };
+
+/** Ids that close to contact range rather than trading fire. */
+const MELEE_IDS = new Set(['blade', 'baton']);
+
+/** @param {string} id @returns {boolean} */
+export function isMelee(id) {
+  return MELEE_IDS.has(id);
+}
 
 /**
  * Draw a weapon id for one encounter.

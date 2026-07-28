@@ -4,7 +4,7 @@ import { COLLISION_LAYER } from '../physics/Physics.js';
 import { CharacterAssets, HumanoidFactory } from './Humanoid.js';
 import { FriendlyNPC } from './FriendlyNPC.js';
 import { HostileNPC } from './HostileNPC.js';
-import { resolveSpot, resolveSurfaceY, seatSurfaceAt } from './Grounding.js';
+import { resolveSpot, resolveSurfaceY, seatSurfaceAt, isDeepWater, nearestDrySpot } from './Grounding.js';
 import { ROLE, ROLE_ROTATION, castFor, roleDef } from './NPCRoles.js';
 import { WEAPON_TABLES } from './NPCWeapons.js';
 
@@ -21,6 +21,8 @@ import { WEAPON_TABLES } from './NPCWeapons.js';
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
+/** _snapToGround() and the water watchdog own this exclusively. */
+const _dryScratch = new THREE.Vector3();
 const _capA = new THREE.Vector3();
 const _capB = new THREE.Vector3();
 // raySegment owns these exclusively - callers must not pass them in.
@@ -207,6 +209,26 @@ export class NPCManager {
     // so the manager tops the friendly population up itself (see _populateHubs)
     // and this is the ceiling for the result.
     this.maxFriendlies = Math.max(CONFIG.npc.friendlyCount, 14);
+
+    /**
+     * Swimmable water for the active world.
+     *
+     * Characters have no swimming animation and no buoyancy - only the player
+     * does - so water is a hazard they have to be taught about, and until they
+     * were, three of the medieval crowd spent their lives walking along the
+     * riverbed. `WaterVolumes` derives the volumes from world geometry and
+     * announces them; every character's steering, destination picking and
+     * grounding consults them through here.
+     * @type {import('../systems/WaterVolumes.js').WaterVolumes|null}
+     */
+    this.water = null;
+    this._offs = [];
+    if (this.bus) {
+      this._offs.push(this.bus.on('water:volumes', ({ water }) => this.setWater(water)));
+      // WaterVolumes may already have scanned this world before we subscribed;
+      // asking makes the wiring order between the two irrelevant.
+      this.bus.emit('water:request');
+    }
 
     this._chatNPC = null;
     this._coverToken = 0;
@@ -454,6 +476,50 @@ export class NPCManager {
   }
 
   /**
+   * Adopt the active world's water volumes and push them down to every agent.
+   *
+   * Called from the `water:volumes` announcement, which fires on every world
+   * change - so this is also what *clears* the medieval river when the player
+   * portals to a world that has no water at all.
+   *
+   * @param {import('../systems/WaterVolumes.js').WaterVolumes|null} water
+   */
+  setWater(water) {
+    this.water = water || null;
+    for (const npc of this._npcs) npc.setWater(this.water);
+  }
+
+  /**
+   * Pull one character out of deep water, on the same round-robin as the
+   * grounding watchdog.
+   *
+   * Steering keeps characters from walking in, but it cannot help anyone who is
+   * already there - dropped in by a respawn, shoved off a bank by the crowd
+   * separation pass, or knocked in by an explosion. Without this they would
+   * simply live in the river.
+   *
+   * @param {import('./NPC.js').NPC} npc
+   * @returns {boolean} true if the character had to be moved
+   */
+  _auditWater(npc) {
+    if (!this.water || !npc || npc.isDead) return false;
+    const p = npc.position;
+    if (!isDeepWater(this.physics, this.water, p.x, p.z)) return false;
+    const dry = nearestDrySpot(this.physics, this.water, p, _dryScratch);
+    if (!dry) return false;
+    npc.position.copy(dry);
+    npc.velocity.set(0, 0, 0);
+    // Re-home them too: a character whose spawn point is in the river would
+    // walk straight back in the moment it next decided to go home.
+    if (isDeepWater(this.physics, this.water, npc.spawnPoint.x, npc.spawnPoint.z)) {
+      npc.spawnPoint.copy(dry);
+    }
+    npc.nav?.clear?.();
+    npc.auditGrounding(true);
+    return true;
+  }
+
+  /**
    * Build one character and file it. Everything a world can author and
    * everything the crowd filler needs goes through here.
    *
@@ -495,6 +561,9 @@ export class NPCManager {
     // A world-authored posture is a costume note, not a life sentence: the idle
     // loop still runs, it just starts from the pose the world asked for.
     if (o.posture) npc.fixedPosture = true;
+    // Before the first step it takes: a character created after the world's
+    // water was announced would otherwise steer blind until the next swap.
+    npc.setWater(this.water);
     this._npcs.push(npc);
     if (o.hostile) {
       this._hostiles.push(npc);
@@ -656,7 +725,16 @@ export class NPCManager {
     if (!p) return null;
     const v = out ?? new THREE.Vector3();
     const spot = resolveSpot(this.physics, p, v);
-    if (spot) return spot;
+    if (spot) {
+      // A spawn resolved into the river is a character that starts its life
+      // underwater and has no way out - steering can only stop them walking
+      // *in*. Walk them to the nearest bank before anyone sees them.
+      if (this.water && isDeepWater(this.physics, this.water, spot.x, spot.z)) {
+        const dry = nearestDrySpot(this.physics, this.water, spot, _dryScratch);
+        if (dry) return v.copy(dry);
+      }
+      return spot;
+    }
     // Nothing standable anywhere near: keep the authored height rather than
     // returning null, so a world that authors a spawn over a gap still gets a
     // character (the runtime watchdog will pull them onto a surface).
@@ -771,7 +849,15 @@ export class NPCManager {
     if (n === 0) return;
     this._groundCursor = (this._groundCursor + 1) % n;
     const npc = this._npcs[this._groundCursor];
-    if (npc && npc.auditGrounding()) this._groundFixes++;
+    if (!npc) return;
+    // Water first: pulling someone out of the river moves them, and the
+    // grounding audit should then run against where they ended up rather than
+    // against the riverbed they just left.
+    if (this._auditWater(npc)) {
+      this._groundFixes++;
+      return;
+    }
+    if (npc.auditGrounding()) this._groundFixes++;
   }
 
   update(dt, elapsed) {

@@ -154,7 +154,7 @@ export class HUD {
    * @param {{ bus:any, engine:any, input:any, root:HTMLElement, player:any,
    *           worldManager:any, npcManager:any, portals:any }} ctx
    */
-  constructor({ bus, engine, input, root, player, worldManager, npcManager, portals }) {
+  constructor({ bus, engine, input, root, player, worldManager, npcManager, portals, caches, contracts }) {
     this.bus = bus;
     this.engine = engine;
     this.input = input;
@@ -163,6 +163,8 @@ export class HUD {
     this.worldManager = worldManager;
     this.npcManager = npcManager;
     this.portals = portals;
+    this.caches = caches ?? null;
+    this.contracts = contracts ?? null;
 
     this._offs = [];
     this._live = false;
@@ -623,6 +625,8 @@ export class HUD {
       worldManager: this.worldManager,
       npcManager: this.npcManager,
       portals: this.portals,
+      caches: this.caches,
+      contracts: this.contracts,
     });
 
     this.killfeed = el('div', 'killfeed');

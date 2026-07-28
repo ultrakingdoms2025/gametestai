@@ -1,4 +1,4 @@
-import { ITEMS, PACKS, itemDef, packDef, sellValue } from './ItemDefs.js';
+import { ITEMS, PACKS, itemDef, packDef, sellValue, packPrice, setMarketWorld } from './ItemDefs.js';
 
 /**
  * Vendor trading: buy ammo packs, sell salvage back at a loss.
@@ -51,6 +51,17 @@ export class Marketplace {
     this._ticked = false;
     this._latch = false;
     this._keyFallback = null;
+
+    /* Regional pricing. The price tables in ItemDefs are keyed on the world the
+     * player is standing in, so this is the one place that has to keep them
+     * pointed at the right one - a shop opened in the medieval world must not
+     * quote station rates. */
+    this._offMarket = this.bus?.on('world:changed', ({ id }) => {
+      setMarketWorld(id);
+      // A shop left open through a portal would be showing the old world's
+      // prices against the new world's stock.
+      if (this._open) this.ui?.refresh?.();
+    }) ?? null;
 
     if (this._wantUI && typeof document !== 'undefined') {
       this._mountUI();
@@ -126,7 +137,7 @@ export class Marketplace {
     if (!pack || !this.inventory || !this.economy) return { ok: false, reason: 'unavailable' };
 
     const qty = pack.qty * n;
-    const cost = pack.price * n;
+    const cost = packPrice(pack) * n;
     if (this.credits < cost) return { ok: false, reason: 'credits' };
 
     // Space first: an inventory that can only take part of the pack would leave

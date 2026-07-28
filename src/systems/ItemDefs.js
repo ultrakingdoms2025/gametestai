@@ -116,6 +116,130 @@ export const ITEMS = {
 /** Fraction of `value` a vendor pays when buying an item back off the player. */
 export const SELL_RATE = 0.4;
 
+/* ====================================================================== */
+/* Regional markets                                                       */
+/* ====================================================================== */
+
+/**
+ * What each world is short of, and what it is sick of the sight of.
+ *
+ * Three worlds connected by portals and a single flat price list gave the
+ * gateways nothing to do: every vendor paid the same, so there was never a
+ * reason to carry anything through one. These multipliers give each world an
+ * economy with a direction - scrap is worthless in the station that sheds it
+ * and valuable in a village with no foundry; a medieval crown coin is junk at
+ * home and a curiosity two worlds away.
+ *
+ * `buy` scales what a vendor *pays* the player, `sell` scales what they
+ * *charge*. Both are per item `kind`, so a new item inherits its region's
+ * economy the moment it declares one.
+ *
+ * Kept deliberately tame - roughly +/-60% - because the point is to make one
+ * destination better than another, not to make trading mandatory.
+ */
+export const WORLD_MARKETS = {
+  station: {
+    label: 'Aether Nexus Station',
+    // A working port: ammunition is manufactured here, salvage is underfoot.
+    buy: { trinket: 0.65, ammo: 0.8, consumable: 1.0 },
+    sell: { ammo: 0.8, consumable: 1.1 },
+    // Relics from the other worlds are curios here, and priced like it.
+    itemBuy: { relic_coin: 1.7, nexus_shard: 1.45 },
+    note: 'Foundry port — ammunition is cheap, salvage is worthless.',
+  },
+  medieval: {
+    label: 'Aldermoor Vale',
+    // No foundry and no cartridges: metal and manufactured goods are precious.
+    buy: { trinket: 1.55, ammo: 1.15, consumable: 1.35 },
+    sell: { ammo: 1.45, consumable: 1.3 },
+    itemBuy: { alloy_scrap: 1.8, relic_coin: 0.55 },
+    // Arrows are the local product, so they are the one cheap thing.
+    itemSell: { pack_arrows: 0.6 },
+    note: 'No foundry — scrap and medicine fetch a premium, arrows are local.',
+  },
+  sports: {
+    label: 'Meridian Athletic Grounds',
+    // Civilian, well supplied, and nobody here wants your hull plating.
+    buy: { trinket: 0.9, ammo: 0.9, consumable: 0.7 },
+    sell: { ammo: 1.05, consumable: 0.65 },
+    itemBuy: { nexus_shard: 1.25 },
+    note: 'Civilian grounds — medical supplies are cheap and plentiful.',
+  },
+};
+
+/** Market in force right now. Set by Marketplace on every world change. */
+let activeMarket = null;
+let activeMarketId = null;
+
+/**
+ * Point the price tables at a world. Passing an unknown id falls back to flat
+ * pricing, so a new world trades at face value rather than throwing.
+ * @param {string|null} worldId
+ */
+export function setMarketWorld(worldId) {
+  activeMarketId = worldId ?? null;
+  activeMarket = (worldId && WORLD_MARKETS[worldId]) || null;
+}
+
+/** @returns {string|null} */
+export function marketWorldId() {
+  return activeMarketId;
+}
+
+/** @returns {typeof WORLD_MARKETS[keyof typeof WORLD_MARKETS]|null} */
+export function marketInfo() {
+  return activeMarket;
+}
+
+/**
+ * Multiplier on what a vendor pays for `id` in the active world.
+ * @param {string} id
+ * @returns {number}
+ */
+export function buyMultiplier(id) {
+  if (!activeMarket) return 1;
+  const def = ITEMS[id];
+  if (!def) return 1;
+  const perItem = activeMarket.itemBuy?.[id];
+  if (perItem !== undefined) return perItem;
+  return activeMarket.buy?.[def.kind] ?? 1;
+}
+
+/**
+ * Multiplier on a pack's asking price in the active world.
+ * @param {{id:string, itemId:string}} pack
+ * @returns {number}
+ */
+export function sellMultiplier(pack) {
+  if (!activeMarket || !pack) return 1;
+  const perPack = activeMarket.itemSell?.[pack.id];
+  if (perPack !== undefined) return perPack;
+  const def = ITEMS[pack.itemId];
+  return activeMarket.sell?.[def?.kind] ?? 1;
+}
+
+/**
+ * Asking price for a pack here and now.
+ * @param {{id:string, itemId:string, price:number}} pack
+ * @returns {number}
+ */
+export function packPrice(pack) {
+  if (!pack) return 0;
+  return Math.max(1, Math.round(pack.price * sellMultiplier(pack)));
+}
+
+/**
+ * How this world's price for `id` compares with the baseline, for the UI.
+ * @param {string} id
+ * @returns {{ mul:number, tone:'high'|'low'|'flat', label:string }}
+ */
+export function priceSignal(id) {
+  const mul = buyMultiplier(id);
+  if (mul >= 1.2) return { mul, tone: 'high', label: `in demand +${Math.round((mul - 1) * 100)}%` };
+  if (mul <= 0.85) return { mul, tone: 'low', label: `glut ${Math.round((mul - 1) * 100)}%` };
+  return { mul, tone: 'flat', label: '' };
+}
+
 /**
  * What a vendor sells. Quantities are deliberately whole stacks so the slot
  * arithmetic in the UI is obvious: one pack of 60 rounds is one bag slot.
@@ -182,8 +306,18 @@ export function slotsFor(id, qty) {
   return s === Infinity ? 1 : Math.ceil(qty / s);
 }
 
-/** Credits a vendor pays for `qty` of `id`. Always at least 1 per unit. */
+/**
+ * Credits a vendor pays for `qty` of `id`, in the active world's market.
+ * Always at least 1 per unit, so nothing is ever literally worthless.
+ */
 export function sellValue(id, qty = 1) {
+  const def = ITEMS[id];
+  if (!def || def.virtual) return 0;
+  return Math.max(1, Math.round(def.value * SELL_RATE * buyMultiplier(id))) * qty;
+}
+
+/** Baseline unit price, ignoring where the player is standing. For comparisons. */
+export function baseSellValue(id, qty = 1) {
   const def = ITEMS[id];
   if (!def || def.virtual) return 0;
   return Math.max(1, Math.round(def.value * SELL_RATE)) * qty;

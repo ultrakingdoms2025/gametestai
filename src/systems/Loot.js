@@ -28,9 +28,9 @@ const _sp = new THREE.Vector3(); // _spawnAt
 const _ck = new THREE.Vector3(); // _collectCheck
 const _dl = new THREE.Vector3(); // _dropFor
 
-const POOL_SIZE = 12;
+const POOL_SIZE = 20;
 /** Concurrent pickups. Beyond this the oldest is recycled, to hold draw calls. */
-const MAX_ACTIVE = 10;
+const MAX_ACTIVE = 18;
 /** Seconds a pickup waits to be collected before it fades away. */
 const LIFETIME = 150;
 /** Walk-over radius, metres. Generous because the player is a fast mover. */
@@ -301,9 +301,15 @@ export class Loot {
    *
    * @param {THREE.Vector3} position roughly where it should land (feet height)
    * @param {Array<{itemId:string, qty:number}>} contents
+   * @param {{persistent?:boolean, snap?:boolean, tag?:string}} [opts]
+   *   `persistent` exempts the pickup from the fade timer and from recycling -
+   *   world caches are a feature of the map, not litter from a firefight, and
+   *   must still be there when the player comes back for them. `snap:false`
+   *   keeps an authored height exactly as given, which is what a cache on a
+   *   riverbed or a rooftop ledge needs.
    * @returns {object|null} the pooled pickup, or null if the pool is exhausted
    */
-  spawn(position, contents) {
+  spawn(position, contents, opts = {}) {
     if (!contents?.length) return null;
     const p =
       this._active.length >= MAX_ACTIVE
@@ -312,9 +318,14 @@ export class Loot {
     if (!p) return null;
 
     _sp.copy(position);
-    // Snap to the surface so a pickup never floats or sinks into a ramp.
-    const g = this.physics?.groundHeight?.(_sp.x, _sp.z, _sp.y + 1.6, 6);
-    const y = g !== null && g !== undefined ? g : _sp.y;
+    let y = _sp.y;
+    if (opts.snap !== false) {
+      // Snap to the surface so a pickup never floats or sinks into a ramp.
+      const g = this.physics?.groundHeight?.(_sp.x, _sp.z, _sp.y + 1.6, 6);
+      if (g !== null && g !== undefined) y = g;
+    }
+    p.persistent = !!opts.persistent;
+    p.tag = opts.tag ?? null;
 
     p.contents = contents.map((c) => ({ itemId: c.itemId, qty: c.qty }));
     p.active = true;
@@ -338,9 +349,12 @@ export class Loot {
 
   /** Free the longest-standing pickup so a fresh drop always gets a slot. */
   _recycleOldest() {
-    if (this._active.length === 0) return null;
-    let oldest = this._active[0];
-    for (const p of this._active) if (p.age > oldest.age) oldest = p;
+    // Never evict a cache to make room for a corpse drop: the caches are the
+    // only pickups the player may have travelled a long way to reach.
+    const evictable = this._active.filter((p) => !p.persistent);
+    if (evictable.length === 0) return null;
+    let oldest = evictable[0];
+    for (const p of evictable) if (p.age > oldest.age) oldest = p;
     this._release(oldest);
     const i = this._active.indexOf(oldest);
     if (i >= 0) this._active.splice(i, 1);
@@ -425,7 +439,8 @@ export class Loot {
       const pulse = 0.92 + Math.sin(elapsed * 3.1 + p.phase) * 0.1;
       p.halo.scale.setScalar(pulse);
 
-      if (p.age > LIFETIME) {
+      // World caches are part of the map, not battlefield litter: they wait.
+      if (!p.persistent && p.age > LIFETIME) {
         p.dying = 1;
         continue;
       }
@@ -465,18 +480,21 @@ export class Loot {
   _collect(p) {
     const left = [];
     let took = 0;
+    // Survey contracts key off this: recovering a world cache is a different
+    // event from stripping a corpse, even though both arrive as pickups.
+    const fromCache = typeof p.tag === 'string' && p.tag.startsWith('cache:');
 
     for (const entry of p.contents) {
       if (entry.itemId === 'credits') {
         this.economy?.add(entry.qty, 'loot');
-        this.bus?.emit('loot:collected', { itemId: 'credits', qty: entry.qty });
+        this.bus?.emit('loot:collected', { itemId: 'credits', qty: entry.qty, fromCache, pickup: p });
         took++;
         continue;
       }
       const res = this.inventory?.acquire(entry.itemId, entry.qty) ?? { taken: 0, dropped: entry.qty };
       if (res.taken > 0) {
         took++;
-        this.bus?.emit('loot:collected', { itemId: entry.itemId, qty: res.taken });
+        this.bus?.emit('loot:collected', { itemId: entry.itemId, qty: res.taken, fromCache, pickup: p });
         this.bus?.emit('hud:notify', {
           text: `+${res.taken} ${itemDef(entry.itemId)?.name ?? entry.itemId}${res.toStore > 0 ? ' (store)' : ''}`,
           tone: 'info',

@@ -814,6 +814,33 @@ body.inv-menu-open .pause {
   color: var(--iv-red);
 }
 
+/* Regional pricing. Green reads as "good for you here" on both tabs - a cheap
+   thing to buy and a well-paid thing to sell are the same signal to the player -
+   and magenta as "this is the wrong world for that". */
+.mkt-price.mkt-cheap {
+  color: var(--iv-lime);
+  text-shadow: 0 0 12px rgba(182, 255, 90, 0.32);
+}
+
+.mkt-price.mkt-dear {
+  color: var(--iv-mag);
+  text-shadow: 0 0 12px rgba(212, 107, 255, 0.28);
+}
+
+.mkt-price.mkt-cheap small,
+.mkt-price.mkt-dear small {
+  color: inherit;
+  opacity: 0.8;
+}
+
+.mkt-blurb b.mkt-high {
+  color: var(--iv-lime);
+}
+
+.mkt-blurb b.mkt-low {
+  color: var(--iv-mag);
+}
+
 .mkt-acts {
   flex: 0 0 auto;
   display: flex;

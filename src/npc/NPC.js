@@ -22,6 +22,12 @@ const GROUND_PROBE_UP = 0.95;
 const GROUND_PROBE_DROP = 2.6;
 /** Gap that gets closed rather than fallen through. Bigger than any step. */
 const GROUND_STICK = 0.34;
+/**
+ * How far above the resolved floor a character has to be, for long enough,
+ * before the watchdog treats it as stranded rather than as falling. Well clear
+ * of stairs, slopes and the normal jitter of a stale ground sample.
+ */
+const HOVER_LIMIT = 1.5;
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const wrapPi = (a) => {
@@ -118,6 +124,8 @@ export class NPC {
 
     /** Seat surface this character is sitting on, or null. */
     this.seat = null;
+    /** Water volumes for this world; injected by NPCManager. @see setWater */
+    this.water = null;
     /** Long-run grounding watchdog: seconds with no floor under the feet. */
     this._noFloorTime = 0;
 
@@ -478,6 +486,16 @@ export class NPC {
    *
    * @returns {boolean} true if the character had to be corrected
    */
+  /**
+   * Adopt the active world's water volumes. Steering reads them through
+   * `nav.water`; the manager's watchdog reads them directly.
+   * @param {any} water
+   */
+  setWater(water) {
+    this.water = water || null;
+    if (this.nav) this.nav.water = this.water;
+  }
+
   auditGrounding(force = false) {
     if (this.isDead) return false;
     const hint = this.seat ? this.seat.y : this.spawnPoint.y;
@@ -492,6 +510,28 @@ export class NPC {
       this.velocity.set(0, 0, 0);
       this._sampleGround(0, true);
       this._followGround(1);
+      return true;
+    }
+    /* Hovering, not just sinking.
+     *
+     * This used to return here for any negative drop, so the watchdog could
+     * only ever pull a character *up* out of geometry and never *down* out of
+     * the air - it relied entirely on gravity, which does nothing for anyone
+     * whose `grounded` flag is stale or who is standing on a mesh with no
+     * collider. Measured in the medieval world: one civilian 13 m over the
+     * terrain that the watchdog had no way to see as wrong.
+     *
+     * The threshold is deliberately far outside the asymmetric tolerance in
+     * `auditStanding` - a metre and a half is unambiguous, where half a metre
+     * would fight the integrator on stairs and slopes. */
+    if (audit.drop < -HOVER_LIMIT && (force || this._airTime > 1.2)) {
+      this.position.y = audit.surfaceY;
+      this.velocity.set(0, 0, 0);
+      this._noFloorTime = 0;
+      this._airTime = 0;
+      this._sampleGround(0, true);
+      this._followGround(1);
+      if (this.seat) this.seat.y = this.position.y;
       return true;
     }
     // Only correct a genuine sink. Standing slightly proud of a stale sample is

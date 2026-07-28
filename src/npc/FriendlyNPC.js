@@ -613,20 +613,32 @@ export class FriendlyNPC extends NPC {
     if (this.patrol.length > 1 && this.rnd() < 0.65) {
       this.patrolIndex = (this.patrolIndex + 1 + ((this.rnd() * 2) | 0)) % this.patrol.length;
       const wp = this.patrol[this.patrolIndex];
-      const g = this.physics.groundHeight(wp.x, wp.z, wp.y + 6, 14);
-      _v1.set(wp.x, g ?? wp.y, wp.z);
-      this.nav.setTarget(_v1);
-      return;
+      // Authored routes predate the water volumes and a couple of them ford the
+      // river. Fall through to a free-roam pick rather than march in.
+      if (!this.nav.isDeepWaterAt(wp.x, wp.z) && this.nav.waterFreeLine(this.position, wp)) {
+        const g = this.physics.groundHeight(wp.x, wp.z, wp.y + 6, 14);
+        _v1.set(wp.x, g ?? wp.y, wp.z);
+        this.nav.setTarget(_v1);
+        return;
+      }
     }
     for (let i = 0; i < 6; i++) {
       const a = this.rnd() * Math.PI * 2;
       const r = this.homeRadius * (0.3 + this.rnd() * 0.7);
       const x = this.spawnPoint.x + Math.cos(a) * r;
       const z = this.spawnPoint.z + Math.sin(a) * r;
+      // Never stroll into the river. Steering would eventually deflect the
+      // agent off the bank, but only after it had spent seconds leaning into
+      // the water - rejecting the destination is what stops it looking like a
+      // decision to go for a swim.
+      if (this.nav.isDeepWaterAt(x, z)) continue;
       const g = this.physics.groundHeight(x, z, this.spawnPoint.y + 8, 18);
       if (g === null) continue;
       _v1.set(x, g, z);
       if (!this.nav._clearLine(this.position, _v1)) continue;
+      // ...and the route there has to be walkable too, or a dry spot on the far
+      // bank sends them straight through the river to reach it.
+      if (!this.nav.waterFreeLine(this.position, _v1)) continue;
       this.nav.setTarget(_v1);
       return;
     }

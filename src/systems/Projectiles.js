@@ -62,6 +62,16 @@ const _em3 = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 const SIDE = new THREE.Vector3(1, 0, 0);
 const FWD_Z = new THREE.Vector3(0, 0, 1);
+
+/** Arrow flight streak owns these exclusively - see the note in `_frame`. */
+const _stCam = new THREE.Vector3();
+const _stRight = new THREE.Vector3();
+const _stNormal = new THREE.Vector3();
+const _stPos = new THREE.Vector3();
+const _stX = new THREE.Vector3();
+const _stY = new THREE.Vector3();
+const _stMx = new THREE.Matrix4();
+const _stScale = new THREE.Vector3();
 const TAU = Math.PI * 2;
 const rand = (a, b) => a + Math.random() * (b - a);
 
@@ -742,6 +752,89 @@ export class ProjectileSystem {
     this._arrowMesh.count = 0;
     this.scene.add(this._arrowMesh);
 
+    /* ---- flight streak ------------------------------------------------
+     *
+     * A 30 cm dark shaft crossing the frame at 80 m/s covers its own length in
+     * four milliseconds. At 60 fps it moves 1.33 m between frames, so on any
+     * given frame it is a brown sliver against a busy background - the player
+     * sees the bow fire and the target react, with nothing legible in between.
+     *
+     * The fix is the one every game with a fast projectile uses: draw the
+     * *path*, not just the object. This is a single additive quad per live
+     * arrow, stretched backwards along its velocity and rolled to face the
+     * camera, which reads as a streak of motion the eye can actually track.
+     *
+     * Unlit and additive so it never picks up world shading or costs a light,
+     * `depthWrite` off so overlapping streaks do not cut holes in each other,
+     * and drawn after the arrow so it lays over the shaft rather than z-fighting
+     * with it. One extra draw call for the whole flight pool. */
+    const streakGeo = new THREE.PlaneGeometry(1, 1);
+    this._streakMat = new THREE.MeshBasicMaterial({
+      name: 'projectile.arrowStreak',
+      // HDR for the same reason as the head glow below.
+      color: new THREE.Color(2.1, 1.5, 0.85),
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+      fog: false,
+    });
+    this._streakMesh = new THREE.InstancedMesh(streakGeo, this._streakMat, MAX_PROJECTILES);
+    this._streakMesh.name = 'projectile:arrow-streaks';
+    this._streakMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this._streakMesh.frustumCulled = false;
+    this._streakMesh.castShadow = false;
+    this._streakMesh.receiveShadow = false;
+    this._streakMesh.renderOrder = 6;
+    this._streakMesh.count = 0;
+    this.scene.add(this._streakMesh);
+    this._disposables.push(streakGeo, this._streakMat);
+
+    /* ---- head glow ----------------------------------------------------
+     *
+     * The tracer. Neither of the other two cues survives the shot the player
+     * takes most often - straight down the view axis - because both describe
+     * the arrow's *path*, and a path seen end-on is a point. So this is a
+     * camera-facing billboard locked to the arrow head, scaled with distance so
+     * it holds a roughly constant size on screen.
+     *
+     * That is what makes an arrow followable to a target thirty metres away:
+     * not a longer streak, but a bright dot that does not shrink into nothing.
+     * Kept small and warm so it reads as a glinting broadhead catching the
+     * light rather than as a magic projectile. */
+    const glowGeo = new THREE.PlaneGeometry(1, 1);
+    this._glowMat = new THREE.MeshBasicMaterial({
+      name: 'projectile.arrowGlow',
+      /* Deliberately over 1.0.
+       *
+       * An additive quad at ordinary sRGB brightness adds almost nothing over
+       * a station deck that is already lit to white - the first version of this
+       * was on screen, centred, 28 px across, and still invisible. The scene is
+       * rendered in HDR, so a tracer has to be authored in HDR too: past the
+       * bloom threshold it both survives the grade and picks up a halo, which
+       * is what makes it findable against a busy background. */
+      color: new THREE.Color(3.4, 2.5, 1.35),
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: true,
+      toneMapped: false,
+      fog: false,
+    });
+    this._glowMesh = new THREE.InstancedMesh(glowGeo, this._glowMat, MAX_PROJECTILES);
+    this._glowMesh.name = 'projectile:arrow-glow';
+    this._glowMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this._glowMesh.frustumCulled = false;
+    this._glowMesh.castShadow = false;
+    this._glowMesh.receiveShadow = false;
+    this._glowMesh.renderOrder = 7;
+    this._glowMesh.count = 0;
+    this.scene.add(this._glowMesh);
+    this._disposables.push(glowGeo, this._glowMat);
+
     // Arrows that have stuck: their own batch so they persist independently of
     // the flight pool and can fade out on a slow timer.
     this._stuckMesh = new THREE.InstancedMesh(geo, this._arrowMat, MAX_STUCK);
@@ -1280,6 +1373,7 @@ export class ProjectileSystem {
         byPlayer: true,
       });
       this.combat?.vfx?.bloodImpact?.(point, normal, travelDir);
+      this._arrowStrikeFlash(point, normal, true);
       this.bus.emit('combat:hitmarker', {
         isHeadshot,
         isKill: res?.killed === true,
@@ -1302,6 +1396,7 @@ export class ProjectileSystem {
     // Combat owns surface classification and the shared VFX pools, so the
     // debris an arrow kicks up matches what a bullet would have kicked up.
     this.combat?.impactFX?.(point, normal, collider, 0.55, false);
+    this._arrowStrikeFlash(point, normal, false);
     for (let k = 0; k < 4; k++) {
       _em1.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).normalize();
       const sp = rand(0.6, 2.4);
@@ -1321,6 +1416,53 @@ export class ProjectileSystem {
       npc: null,
       damage: 0,
     });
+  }
+
+  /**
+   * The moment of the hit, made legible.
+   *
+   * An arrow strike was the quietest event in the game: a puff of surface dust
+   * and a shaft that was suddenly stationary. Against a wall at thirty metres
+   * there was nothing to tell you whether you had hit at all - and at that range
+   * the hitmarker is the only other feedback, which does not fire on a miss.
+   *
+   * So: one bright short-lived flash at the point of contact, and a spray of
+   * sparks along the surface normal. Warm and metallic for a world hit, cooler
+   * and tighter on a body so it does not read as striking stone. Both are two
+   * frames of light rather than an explosion - this has to survive being seen
+   * a hundred times an hour.
+   *
+   * @param {THREE.Vector3} point
+   * @param {THREE.Vector3} normal
+   * @param {boolean} onBody
+   */
+  _arrowStrikeFlash(point, normal, onBody) {
+    const n = normal ?? UP;
+    // Contact flash.
+    this.sparks.emit(
+      point.x, point.y, point.z,
+      0, 0, 0,
+      onBody ? 0.34 : 0.42, onBody ? 0.05 : 0.06,
+      1.0, onBody ? 0.55 : 0.86, onBody ? 0.42 : 0.5,
+      1.0, 0.4, 0.18,
+      onBody ? 0.1 : 0.13, 3, 0, 6, onBody ? 0.75 : 0.95, 2.2, 0
+    );
+    // Sparks off the surface, biased along the normal so they read as thrown
+    // off the impact rather than falling out of it.
+    const count = onBody ? 5 : 9;
+    for (let k = 0; k < count; k++) {
+      _em1.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).normalize();
+      _em1.addScaledVector(n, 1.25).normalize();
+      const sp = rand(2.2, 7.5);
+      this.sparks.emit(
+        point.x + n.x * 0.03, point.y + n.y * 0.03, point.z + n.z * 0.03,
+        _em1.x * sp, _em1.y * sp + 0.5, _em1.z * sp,
+        0.055, 0.008,
+        1.0, onBody ? 0.42 : 0.78, onBody ? 0.34 : 0.34,
+        1.0, 0.26, 0.1,
+        rand(0.18, 0.42), 3, -7, 1.4, 0.9, 1.5, 0
+      );
+    }
   }
 
   /** Park the arrow's transform in the persistent stuck-arrow batch. */
@@ -1380,6 +1522,8 @@ export class ProjectileSystem {
     const p = this._p;
     let cores = 0;
     let arrows = 0;
+    let streaks = 0;
+    let glows = 0;
 
     for (let i = 0; i < MAX_PROJECTILES; i++) {
       if (p.active[i] === 0) continue;
@@ -1431,6 +1575,90 @@ export class ProjectileSystem {
         _mx2.set(1, 1, 1);
         _mxm.compose(_mx1, _mxq, _mx2);
         this._arrowMesh.setMatrixAt(arrows, _mxm);
+
+        /* Vapour trail, on a distance accumulator like the fireball's.
+         *
+         * The streak below is a velocity-stretched quad, and it has one blind
+         * spot that happens to be the most important case in the game: when the
+         * player fires straight ahead, the arrow travels down the view axis,
+         * `cross(travel, viewRay)` collapses, and there is nothing to draw. The
+         * shot the player most wants to follow is exactly the shot the streak
+         * cannot show them.
+         *
+         * A trail of short-lived motes does not care about the view angle. Head
+         * on it reads as a dotted line receding to the target; from the side it
+         * thickens the streak. Together they cover every angle.
+         *
+         * Distance-based rather than per-frame, so the spacing is identical at
+         * 40 fps and at 144. */
+        p.trail[i] += sp * dt;
+        while (p.trail[i] > 0.5) {
+          p.trail[i] -= 0.5;
+          this.sparks.emit(
+            x - _em1.x * p.trail[i], y - _em1.y * p.trail[i], z - _em1.z * p.trail[i],
+            0, 0.18, 0,
+            0.16, 0.3,
+            2.4, 1.8, 1.05, 0.5, 0.6, 0.85,
+            0.42, 0, 0, 1.1, 0.85, 1.7, 0
+          );
+        }
+
+        /* Streak. Built as an explicit basis rather than a quaternion, because
+         * the quad has to do two things at once: lie along the velocity, and
+         * roll about that axis to face the camera. `right` is what achieves the
+         * second - it is perpendicular to both travel and the view ray, so the
+         * quad presents its face to the eye from any angle and never collapses
+         * to an edge-on sliver.
+         *
+         * Degenerate when looking straight down the arrow's path, where the
+         * cross product vanishes; there is nothing meaningful to draw in that
+         * case anyway, so the streak is simply skipped. */
+        const cam = this.engine?.camera;
+        if (cam) cam.getWorldPosition(_stCam);
+        else _stCam.set(0, 0, 0);
+        _stCam.sub(_mx1);
+        const camDist = _stCam.length();
+
+        /* Head glow: a quad squared up to the camera, so it is a disc from
+         * every angle including straight on. Scaled linearly with distance to
+         * hold its apparent size - the whole point is that it does not vanish
+         * at the ranges a bow is used at. */
+        if (cam) {
+          const gs = Math.min(0.85, 0.1 + camDist * 0.028);
+          _stMx.copy(cam.matrixWorld);
+          _stMx.setPosition(_mx1);
+          _stMx.scale(_stScale.set(gs, gs, gs));
+          this._glowMesh.setMatrixAt(glows, _stMx);
+          glows++;
+        }
+
+        const len = Math.min(sp * 0.055, 3.2);
+        if (len > 0.25) {
+          _stRight.crossVectors(_em1, _stCam);
+          const rl = _stRight.length();
+          if (rl > 1e-4) {
+            _stRight.multiplyScalar(1 / rl);
+            _stNormal.crossVectors(_stRight, _em1);
+            // Taper the head end slightly by pulling the quad back so the
+            // brightest part sits behind the arrow rather than on top of it.
+            _stPos.copy(_mx1).addScaledVector(_em1, -len * 0.5 + 0.1);
+            /* Width grows with distance, and that is not a cheat - it is the
+             * only way the streak survives being seen from far away. A ribbon a
+             * few centimetres across is under a pixel wide at thirty metres,
+             * which is exactly the range at which the player most needs to see
+             * where their arrow went. Widening it with distance holds it at a
+             * roughly constant apparent thickness, the same trick every tracer
+             * round in every shooter uses. Clamped so it never becomes a plank
+             * across the screen on a long shot. */
+            const width = Math.min(0.42, 0.085 + camDist * 0.011);
+            _stX.copy(_stRight).multiplyScalar(width);
+            _stY.copy(_em1).multiplyScalar(len);
+            _stMx.makeBasis(_stX, _stY, _stNormal);
+            _stMx.setPosition(_stPos);
+            this._streakMesh.setMatrixAt(streaks, _stMx);
+            streaks++;
+          }
+        }
         arrows++;
       }
     }
@@ -1438,6 +1666,10 @@ export class ProjectileSystem {
     this._coreMesh.count = cores;
     this._shellMesh.count = cores;
     this._arrowMesh.count = arrows;
+    this._streakMesh.count = streaks;
+    if (streaks > 0) this._streakMesh.instanceMatrix.needsUpdate = true;
+    this._glowMesh.count = glows;
+    if (glows > 0) this._glowMesh.instanceMatrix.needsUpdate = true;
     if (cores > 0) {
       this._coreMesh.instanceMatrix.needsUpdate = true;
       this._shellMesh.instanceMatrix.needsUpdate = true;
@@ -1589,6 +1821,8 @@ export class ProjectileSystem {
     this._coreMesh.count = 0;
     this._shellMesh.count = 0;
     this._arrowMesh.count = 0;
+    this._streakMesh.count = 0;
+    this._glowMesh.count = 0;
 
     _mxm.makeScale(0, 0, 0);
     for (let i = 0; i < MAX_STUCK; i++) {

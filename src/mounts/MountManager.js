@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { Hoverboard } from './Hoverboard.js';
 import { Dragon } from './Dragon.js';
 import { Car } from './Car.js';
+import { Horse } from './Horse.js';
+import { Eagle } from './Eagle.js';
 import { characterCreateParams, applyCharacterColors } from '../player/PlayerAvatar.js';
 import { HumanoidFactory } from '../npc/Humanoid.js';
 
@@ -189,7 +191,7 @@ export class MountManager {
     this._fovKick = 0;
     this._lastBoost = false;
     this._landingFor = null;
-    this._unlocked = new Set(['hoverboard', 'dragon', 'car']);
+    this._unlocked = new Set(['hoverboard', 'dragon', 'car', 'horse', 'eagle']);
 
     /** Reused control block - the mount API takes it every fixed step. */
     this._ctrl = { throttle: 0, strafe: 0, yaw: 0, pitch: 0, up: 0, boost: false };
@@ -441,6 +443,10 @@ export class MountManager {
     if (id === 'hoverboard') return new Hoverboard(ctx);
     if (id === 'dragon') return new Dragon(ctx);
     if (id === 'car') return new Car(ctx);
+    // The eagle needs the player: beating its wings costs stamina, and stamina
+    // lives on the player rather than on the mount.
+    if (id === 'horse') return new Horse(ctx);
+    if (id === 'eagle') return new Eagle({ ...ctx, player: this.player });
     return null;
   }
 
@@ -464,7 +470,7 @@ export class MountManager {
    * @param {string[]} ids Mount ids to build.
    * @returns {THREE.Object3D[]} Roots that were parked, for the caller to unpark.
    */
-  prebuild(ids = ['hoverboard', 'dragon', 'car']) {
+  prebuild(ids = ['hoverboard', 'dragon', 'car', 'horse', 'eagle']) {
     const parked = [];
     for (const id of ids) {
       if (this._mounts.has(id)) continue;
@@ -515,6 +521,8 @@ export class MountManager {
     if (input.pressed('KeyH')) this.summon('hoverboard');
     else if (input.pressed('KeyG')) this.summon('dragon');
     else if (input.pressed('KeyJ')) this.summon('car');
+    else if (input.pressed('KeyX')) this.summon('horse');
+    else if (input.pressed('KeyC')) this.summon('eagle');
     else if (input.pressed('KeyF') && this._active) this.dismount();
   }
 
@@ -1174,11 +1182,12 @@ export class MountManager {
   deserialize(data) {
     if (!data) return;
     if (Array.isArray(data.unlocked) && data.unlocked.length) {
-      this._unlocked = new Set(
-        data.unlocked.filter((id) => id === 'hoverboard' || id === 'dragon' || id === 'car')
-      );
-      // A save written before the car existed must not lock it away for good.
-      this._unlocked.add('car');
+      const known = new Set(['hoverboard', 'dragon', 'car', 'horse', 'eagle']);
+      this._unlocked = new Set(data.unlocked.filter((id) => known.has(id)));
+      // A save written before a mount existed must not lock it away for good.
+      // This is the same reason the car was force-added when it landed, and it
+      // now generalises rather than needing a line per mount.
+      for (const id of known) this._unlocked.add(id);
     }
     // Deferred: the world a save restores has to be live before a mount can be
     // placed in it, so the caller finishes this with `restorePending()`.

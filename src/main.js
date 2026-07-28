@@ -302,7 +302,10 @@ async function prewarm() {
   loader.setWarming('Preparing shaders');
   let parked = [];
   try {
-    parked = mounts.prebuild?.(['hoverboard', 'dragon', 'car']) ?? [];
+    // Every mount, or the first summon of the one left out pays for its
+    // geometry and its shader programs on the spot - which is the stall this
+    // whole prewarm exists to prevent.
+    parked = mounts.prebuild?.(['hoverboard', 'dragon', 'car', 'horse', 'eagle']) ?? [];
   } catch (err) {
     console.warn('[prewarm] mount prebuild failed:', err);
   }

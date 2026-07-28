@@ -51,6 +51,17 @@ const GROUPS = [
     ],
   },
   {
+    title: 'Parkour',
+    accent: 'lime',
+    rows: [
+      ['Space', 'Hold at a wall to climb it'],
+      ['Shift Space', 'Running leap — clears wide gaps'],
+      ['Ctrl', 'In the air: dive. On landing: roll'],
+      ['Ctrl', 'On the wall: let go'],
+      ['—', 'Land in hay to survive any fall'],
+    ],
+  },
+  {
     title: 'Camera',
     accent: 'cy',
     rows: [
@@ -67,8 +78,11 @@ const GROUPS = [
       ['H', 'Summon / dismiss hoverboard'],
       ['G', 'Summon / dismiss dragon'],
       ['J', 'Summon / dismiss car'],
+      ['X', 'Summon / dismiss horse'],
+      ['C', 'Summon / dismiss eagle'],
       ['F', 'Dismount'],
-      ['Shift', 'Boost while mounted'],
+      ['Shift', 'Gallop, or beat the eagle’s wings'],
+      ['W S', 'Eagle: dive and climb'],
       ['Space', 'Climb while riding the dragon'],
     ],
   },

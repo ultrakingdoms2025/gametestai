@@ -1838,7 +1838,30 @@ export class HUD {
     if (this._pollT <= 0) {
       this._pollT = 0.2;
       if (w) {
-        this._setAmmo(w.ammo, w.reserve, w.magazine);
+        /* A melee weapon has no magazine and no bag item, so every number the
+         * panel can show it is zero - and "0 / 0" on a sword reads as *out of
+         * ammo*, which is the one thing it can never be. The bag row already
+         * said "MELEE ∞" for exactly this reason; the count above it was simply
+         * missed. Same test as `_updateBagRow` uses, so the two can never
+         * disagree about what a melee weapon is. */
+        const melee = (w.ammoItem ?? null) === null && !(w.magazine > 0);
+        if (melee !== this._meleeReadout) {
+          this._meleeReadout = melee;
+          this.ammoPanel.classList.toggle('melee', melee);
+          if (melee) {
+            // Force the next ranged selection to repaint: `_setAmmo` short
+            // circuits on unchanged values, and the numbers behind the melee
+            // readout are stale by definition.
+            this._ammo = null;
+            this._reserve = null;
+            this.ammoCur.textContent = '∞';
+            this._buildPips(0);
+            this.ammoPanel.classList.remove('warn', 'low');
+          }
+        }
+        if (!melee) {
+          this._setAmmo(w.ammo, w.reserve, w.magazine);
+        }
         if (w.name && w.name !== this._ammoNameText) {
           this._ammoNameText = w.name;
           this.ammoName.textContent = String(w.name);

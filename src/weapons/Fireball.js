@@ -173,7 +173,7 @@ export class FireballWeapon {
    *          materials:any, engine:any, input:any, physics:any,
    *          projectiles:any, player:any, aimDirection?:(out:THREE.Vector3)=>THREE.Vector3}} ctx
    */
-  constructor({ scene, camera, bus, materials, engine, input, physics, projectiles, player, aimDirection }) {
+  constructor({ scene, camera, bus, materials, engine, input, physics, projectiles, player, aimDirection, aimPoint }) {
     this.scene = scene;
     this.camera = camera;
     this.bus = bus;
@@ -185,6 +185,7 @@ export class FireballWeapon {
     this.player = player;
     this.renderer = engine?.renderer ?? null;
     this._aimDirection = aimDirection ?? ((out) => this.camera.getWorldDirection(out));
+    this._aimPoint = aimPoint ?? (() => null);
     this.name = SPEC.name;
 
     /**
@@ -1008,6 +1009,26 @@ export class FireballWeapon {
       // Breathed, not thrown: the mount owns the spawn point.
       mount.getFireOrigin(_fi2);
       mount.flashMaw?.(1);
+
+      /* ...and owning the origin means owning the aim.
+       *
+       * `aimDirection` is not simply "forward": in third person the rig builds
+       * it from the *avatar's* muzzle to the point under the crosshair, so it
+       * is only correct for a projectile leaving that muzzle. A dragon breathes
+       * from a head four metres further on, and reusing the rider's vector from
+       * there threw the bolt off at an angle that got worse the closer the aim
+       * point was - at point-blank range it came out sideways.
+       *
+       * Re-aiming from the mouth to the same target fixes it. Guarded, because
+       * a target behind or on top of the muzzle has no sane direction: below a
+       * couple of metres, or anywhere behind, fall back to the camera's own
+       * forward axis. */
+      if (this._aimPoint(_fi3)) {
+        _fi4.subVectors(_fi3, _fi2);
+        const range = _fi4.length();
+        if (range > 2 && _fi4.dot(_fi1) > 0) _fi1.copy(_fi4).multiplyScalar(1 / range);
+        else this.camera.getWorldDirection(_fi1).normalize();
+      }
     } else {
       this._model.localToWorld(_fi2.copy(CORE_POS));
       this.camera.getWorldPosition(_fi3);

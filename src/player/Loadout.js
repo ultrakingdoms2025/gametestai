@@ -99,6 +99,20 @@ export class Loadout {
      * as a function so neither has to know which mode is active.
      */
     this._aimFn = (out) => this.aimDirection(out);
+    /**
+     * Where the crosshair is pointing, in world space.
+     *
+     * `aimDirection` is a *corrected* vector: the rig builds it from the
+     * avatar's muzzle to this point, so it is only valid for a projectile that
+     * actually leaves that muzzle. A weapon firing from somewhere else - a
+     * dragon breathing from its mouth, four metres ahead of the rider - has to
+     * re-aim from its own origin, and needs the target rather than the vector
+     * to do it. Returns null when there is no rig to ask.
+     */
+    this._aimPointFn = (out) => {
+      const rig = this.cameraRig ?? this.player?.cameraRig ?? null;
+      return rig && typeof rig.getAimPoint === 'function' ? rig.getAimPoint(out) : null;
+    };
 
     const ctx = {
       scene: this.scene,
@@ -113,6 +127,7 @@ export class Loadout {
       npcManager,
       combat: this.combat,
       aimDirection: this._aimFn,
+      aimPoint: this._aimPointFn,
     };
 
     // Adopt the machine gun `Player` may already have built rather than

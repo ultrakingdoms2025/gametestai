@@ -1321,6 +1321,23 @@ body {
   color: var(--txt-dim);
 }
 
+/* Melee: no magazine, no bag item, so every number the panel could show is
+   zero - and "0 / 0" on a sword reads as *out of ammo*, the one thing it can
+   never be. The count collapses to a single infinity glyph and the reload arc
+   goes with it, since there is nothing to reload either. */
+.ammo.melee .ammo-sep,
+.ammo.melee .ammo-res,
+.ammo.melee .ammo-pips,
+.ammo.melee .ammo-arc {
+  display: none;
+}
+
+.ammo.melee .ammo-cur {
+  font-size: 34px;
+  color: var(--cy);
+  text-shadow: 0 0 18px rgba(82, 233, 255, 0.55);
+}
+
 /* Reload progress arc */
 .ammo-arc {
   width: 44px;

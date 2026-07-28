@@ -27,6 +27,54 @@ export const SAVE_KEY = 'aether-nexus:save:v1';
 export const SAVE_SCHEMA = 1;
 const AUTOSAVE_DEFAULT = 30;
 
+/**
+ * Salt for the integrity tag.
+ *
+ * ── Read this before trusting the tag for anything ────────────────────────
+ *
+ * This game runs entirely on the player's own machine. There is no server, no
+ * authority anywhere but the browser tab, and every number in it - credits,
+ * ammo, inventory - lives in memory that the player owns and can edit. That is
+ * not a flaw in this file; it is what a client-only game *is*. Nothing
+ * implemented here can change it, and any claim otherwise would be false.
+ *
+ * What the tag does do is make the save a **sealed** artefact rather than an
+ * open one. Opening devtools and typing a new credit balance into the JSON now
+ * produces a save the game rejects, so the casual edit - which is the one that
+ * actually happens - stops working. Someone willing to read the bundle can find
+ * this constant and recompute the tag, and they will succeed. It is a lock on a
+ * door, not a wall.
+ *
+ * Real prevention requires the balance to live somewhere the player cannot
+ * reach, which means an account and a server that owns the number.
+ */
+const INTEGRITY_SALT = 'aether-nexus/v1/8f3c1d';
+
+/**
+ * FNV-1a over a string, as 8 hex characters.
+ *
+ * Deliberately not a cryptographic hash: a real HMAC needs a key the client
+ * cannot hold, and shipping one in the bundle would only look like security
+ * while being exactly as strong as this. Cheap and honest beats expensive and
+ * misleading.
+ */
+function tagOf(text) {
+  let h = 0x811c9dc5;
+  const s = `${INTEGRITY_SALT}:${text}`;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+/** The payload as the tag sees it: everything except the tag itself. */
+function bodyOf(payload) {
+  const { integrity, ...rest } = payload;
+  void integrity;
+  return JSON.stringify(rest);
+}
+
 /** Private to `_restorePlayer`, which hands it straight to `player.teleport`. */
 const _target = new THREE.Vector3();
 
@@ -79,9 +127,23 @@ export class SaveGame {
      * function keys, so there is no double-binding to coordinate.
      */
     this._onKeyDown = (e) => {
+      if (e.repeat) return;
+      /* Shift+F5 / Shift+F9 back the save up to a file and restore it again.
+       *
+       * A browser-stored save is one "clear site data" away from gone, and this
+       * game has no account to fall back on, so the player needs a copy they
+       * own. Kept on the same two keys as save and load because that is where
+       * anyone would look for it. */
+      if (e.shiftKey && (e.code === 'F5' || e.code === 'F9')) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.code === 'F5') this.exportToFile();
+        else this._pickImportFile();
+        return;
+      }
       if (e.code !== 'F5' && e.code !== 'F9') return;
       // Ctrl+F5 stays a hard reload - developers need an escape hatch.
-      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       // No text-focus guard: function keys never type a character, so stealing
       // them is always safe, and losing a chat message to an accidental reload
       // is a worse outcome than saving from inside the chat box.
@@ -129,6 +191,9 @@ export class SaveGame {
       this._fail('snapshot failed', err);
       return false;
     }
+
+    // Seal it. See INTEGRITY_SALT for exactly how much this is and is not worth.
+    payload.integrity = tagOf(bodyOf(payload));
 
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
@@ -549,7 +614,129 @@ export class SaveGame {
       this._fail(`save is version ${data?.version ?? '?'} or malformed`, null);
       return null;
     }
+
+    /* Integrity, checked after shape so a genuinely old save still reports the
+     * useful error rather than "tampered".
+     *
+     * A save with no tag at all is accepted: every save written before this
+     * shipped has none, and refusing them would delete the progress of every
+     * existing player to defend against an edit they did not make. A save with
+     * a *wrong* tag is refused - that is an edited one. */
+    if (typeof data.integrity === 'string') {
+      if (data.integrity !== tagOf(bodyOf(data))) {
+        this._fail('save failed its integrity check - it has been edited', null);
+        return null;
+      }
+    }
     return data;
+  }
+
+  /* ================================================================ */
+  /* Backup, because localStorage is not durable storage              */
+  /* ================================================================ */
+
+  /**
+   * Ask the browser to keep this origin's storage rather than evicting it.
+   *
+   * localStorage survives "clear cache" - cached files and site data are
+   * different buckets - but it does *not* survive "cookies and other site
+   * data", it does not survive a private window closing, and under storage
+   * pressure the browser may evict it without asking. Granting persistence
+   * removes the last of those three.
+   *
+   * The other two are the player's own deliberate action and no web API can
+   * override them, which is exactly why {@link exportToFile} exists.
+   */
+  async requestDurableStorage() {
+    try {
+      if (!navigator.storage?.persist) return false;
+      if (await navigator.storage.persisted?.()) return true;
+      return await navigator.storage.persist();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Download the current save as a file the player owns.
+   *
+   * The only honest answer to "what happens if I clear my browser data" for a
+   * game with no account behind it: a copy that lives outside the browser. It
+   * also moves a character between machines and browsers, which nothing else
+   * here can do.
+   *
+   * @returns {boolean} false if there was nothing to export
+   */
+  exportToFile() {
+    const data = this._read({ quiet: true });
+    if (!data) {
+      this.bus?.emit('hud:notify', { text: 'No save to export', tone: 'warn' });
+      return false;
+    }
+    try {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const when = new Date(data.at ?? Date.now()).toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `aether-nexus-save-${when}.json`;
+      a.click();
+      // Revoked on a timer rather than immediately: some browsers have not
+      // finished reading the blob when click() returns.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      this.bus?.emit('hud:notify', { text: 'Save exported', tone: 'info' });
+      return true;
+    } catch (err) {
+      this._fail('export failed', err, { clear: false });
+      return false;
+    }
+  }
+
+  /** Open a file picker and import whatever comes back. */
+  _pickImportFile() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.addEventListener('change', () => {
+      const f = input.files?.[0];
+      if (f) this.importFromFile(f);
+    });
+    input.click();
+  }
+
+  /**
+   * Restore from a file produced by {@link exportToFile}.
+   *
+   * Validated exactly as a stored save is, integrity tag included - importing
+   * is not a way around the seal, it is the same door.
+   *
+   * @param {File} file
+   * @returns {Promise<boolean>}
+   */
+  async importFromFile(file) {
+    let data;
+    try {
+      data = JSON.parse(await file.text());
+    } catch (err) {
+      this._fail('import is not valid JSON', err, { clear: false });
+      return false;
+    }
+    if (!this._validate(data)) {
+      this.bus?.emit('hud:notify', { text: 'That file is not a valid save', tone: 'warn' });
+      return false;
+    }
+    if (typeof data.integrity === 'string' && data.integrity !== tagOf(bodyOf(data))) {
+      this.bus?.emit('hud:notify', { text: 'That save has been edited', tone: 'warn' });
+      return false;
+    }
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    } catch (err) {
+      this._fail('storage write refused', err, { clear: false });
+      return false;
+    }
+    this.bus?.emit('hud:notify', { text: 'Save imported', tone: 'info' });
+    return this.load();
   }
 
   /** Structural check. Cheap, and it is the thing standing between us and a crash. */

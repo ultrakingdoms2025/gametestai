@@ -170,6 +170,10 @@ const audio = new AudioDirector({ bus, camera: engine.camera, player, worldManag
 const audioMenu = new AudioMenu({ root: uiRoot, bus, input, audio });
 
 const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts, input, inventory });
+/* Ask the browser not to evict this origin's storage under pressure. Fire and
+ * forget - it resolves to false on browsers that do not offer it, and nothing
+ * downstream depends on the answer. */
+save.requestDurableStorage();
 
 const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, portals, caches, contracts });
 
@@ -181,15 +185,25 @@ worldManager.attach?.({ npcManager, portals, player });
 // manager is built after the player, so it is handed over here.
 player.parkour.worldManager = worldManager;
 
-// Expose for the automated screenshot/critique harness and for debugging.
-window.GAME = {
-  engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
-  cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
-  waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu, caches, contracts,
-  cheats, audio, audioMenu, relics,
-};
-
+/* The automated screenshot/critique harness and every debugging session need a
+ * handle on the live systems - but this was published unconditionally, on every
+ * build, to every player. `GAME.economy` is right there, so awarding yourself a
+ * million credits was a single line in the console with no tools and no
+ * knowledge of the codebase at all.
+ *
+ * It is behind `?dev=1` now. That is worth being precise about: it is not a
+ * security boundary, because anyone who wants the handle can simply add the
+ * parameter. What it does is stop the game handing its own internals to
+ * everybody who ever opens devtools for an unrelated reason - which, in a game
+ * with no server, is as far as this can honestly be taken. See the note on
+ * INTEGRITY_SALT in SaveGame.js for the same argument at more length. */
 if (overrides.dev) {
+  window.GAME = {
+    engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
+    cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
+    waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu, caches, contracts,
+    cheats, audio, audioMenu, relics,
+  };
   import('./dev/Harness.js').then(({ installHarness }) => installHarness(window.GAME));
 }
 

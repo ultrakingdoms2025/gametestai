@@ -105,9 +105,12 @@ const GROUPS = [
     rows: [
       ['T', 'Open comms / chat'],
       ['F1', 'This panel'],
+      ['F2', 'Customise your character'],
       ['F4', 'Audio options'],
       ['F5', 'Save'],
       ['F9', 'Load'],
+      ['Shift F5', 'Export save to a file'],
+      ['Shift F9', 'Import a save file'],
       ['Esc', 'Close this panel'],
     ],
   },

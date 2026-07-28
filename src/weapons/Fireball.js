@@ -5,6 +5,7 @@ import {
 } from '../player/Weapon.js';
 import { CONFIG } from '../core/Config.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
+import { anchorLight } from '../gfx/LightAnchor.js';
 
 /**
  * The "Emberwright" pyromantic gauntlet.
@@ -615,11 +616,13 @@ export class FireballWeapon {
 
   _buildLights() {
     // Core light: lights the gauntlet and, at full charge, the wall in front of
-    // the player. Parented to the model so it tracks the hand exactly.
+    // the player. It tracks the hand via an anchor rather than being parented
+    // to `_model`, because `setVisible(false)` hides `root` and a light under a
+    // hidden ancestor stops being counted by the renderer - which changes
+    // `numPointLights` and recompiles every program in the scene. See
+    // gfx/LightAnchor.js.
     this._coreLight = new THREE.PointLight(0xff7a26, 0, 6, 2);
     this._coreLight.castShadow = false;
-    this._coreLight.position.copy(CORE_POS);
-    this._model.add(this._coreLight);
 
     // Viewmodel fill: two very short-range lights so the gauntlet stays legible
     // in a dark interior without noticeably lighting the world.
@@ -635,6 +638,8 @@ export class FireballWeapon {
     this._rigLights = [key, rim];
     this._lightRig.add(key, rim);
     this.camera.add(this._lightRig);
+
+    this._coreAnchored = anchorLight(this._coreLight, this._lightRig, this._model, CORE_POS);
   }
 
   /* ================================================================ */
@@ -842,6 +847,8 @@ export class FireballWeapon {
     this._coreLight.color.setRGB(1, 0.48 + g * 0.12, 0.16);
     this._coreLight.distance = 3 + g * 7;
     this._coreLight.intensity = (0.6 + g * 11 + flash * 22) * (this.root.visible ? 1 : 0);
+    // Lives on the camera rig now, so walk it onto the palm while it is lit.
+    this._coreAnchored?.sync();
 
     // Cage irises inward and spins up as the charge builds.
     for (let i = 0; i < this._cageArms.length; i++) {

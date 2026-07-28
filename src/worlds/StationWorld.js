@@ -6352,6 +6352,18 @@ export class StationWorld extends World {
     // lighting do the rest.
     const skinTones = [0xd8b394, 0xbe9070, 0x8d6448, 0x6b4630, 0xe6c6a8, 0xa07a5c];
     const push = (x, z, y = 0, scale = 1, yaw = null, variant = null) => {
+      /* Deck test, before anything is committed.
+       *
+       * Every one of the four parallel arrays below is indexed together, so
+       * the reject has to happen here rather than at instancing time. The
+       * routes are hand-authored and currently top out at r=190, well inside
+       * the r=200 deck, but the near-band loop above places off a random
+       * bearing and a random distance from the spawn and the cluster helper
+       * jitters on top of that - the pattern that puts a figure on nothing in
+       * every other world in this project. A body standing past the deck rim
+       * is standing in vacuum.
+       */
+      if (Math.hypot(x, z) > DECK_R - 4) return;
       const s = scale * (0.93 + rng() * 0.15);
       entries.push([x, y, z, 0, yaw === null ? rng() * Math.PI * 2 : yaw, 0, s, s, s]);
       colors.push(new THREE.Color(palette[Math.floor(rng() * palette.length)]));

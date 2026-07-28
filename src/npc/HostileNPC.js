@@ -61,6 +61,8 @@ export class HostileNPC extends NPC {
 
     this.strafeDir = this.rnd() < 0.5 ? -1 : 1;
     this.strafeTimer = 1 + this.rnd() * 2;
+    /** Edge detector for `nav.blocked`; see `_combat`. */
+    this._wasBlocked = false;
     this.coverTimer = 0;
     this.coverPoint = null;
     this.repositionTimer = 0;
@@ -306,7 +308,7 @@ export class HostileNPC extends NPC {
 
     if (this.hasLastKnown && this.stateTime > 0.35) {
       _v1.copy(this.lastKnownTarget);
-      if (this.position.distanceTo(_v1) > 6) this.nav.setTarget(_v1);
+      if (this.position.distanceTo(_v1) > 6) this.nav.setTargetIfNew(_v1, 0.6);
       else this.nav.clear();
     }
     if (this.awareness > 1.0) {
@@ -334,8 +336,17 @@ export class HostileNPC extends NPC {
     const dist = this.targetDistance;
 
     // --- movement: hold the preferred band and keep strafing ---------
+    //
+    // `nav.blocked` is a level, not an event. Testing it directly flipped the
+    // strafe direction on *every frame* the character was against something, so
+    // the side-step target snapped left/right at frame rate and the character
+    // stood there vibrating. Only the rising edge turns it around, and the
+    // timer is re-armed with it so a wall cannot force a flip more often than a
+    // deliberate change of direction would.
     this.strafeTimer -= dt;
-    if (this.strafeTimer <= 0 || this.nav.blocked) {
+    const blockedEdge = this.nav.blocked && !this._wasBlocked;
+    this._wasBlocked = this.nav.blocked;
+    if (this.strafeTimer <= 0 || blockedEdge) {
       this.strafeDir *= -1;
       this.strafeTimer = 1.3 + this.rnd() * 2.2;
     }
@@ -346,7 +357,10 @@ export class HostileNPC extends NPC {
     }
 
     if (this.coverPoint && this.position.distanceToSquared(this.coverPoint) > 1.2) {
-      this.nav.setTarget(this.coverPoint);
+      // A fixed destination: re-issuing it every step only served to clear
+      // `nav.arrived`, so the character kept accelerating at a point it was
+      // already standing on.
+      this.nav.setTargetIfNew(this.coverPoint);
     } else {
       _v1.subVectors(this.position, player.position);
       _v1.y = 0;

@@ -48,6 +48,21 @@ const NEAR_RANGE = CONFIG.portal.activationRange + DISC_R + 1.4;
 const PREVIEW_RANGE = 40;
 const PREVIEW_INTERVAL = 6;
 
+/**
+ * Ceiling on the post-swap shader warmup, milliseconds. Generous, because the
+ * white-out is already holding for the world build and a compile that runs long
+ * is still far better than the freeze it replaces - but finite, so a driver
+ * that never reports completion cannot strand the player mid-transition.
+ */
+const PORTAL_WARM_BUDGET_MS = 8000;
+
+/**
+ * Gateway spill lights held permanently in the scene. Must be >= the most
+ * portals any single world declares (currently two, in the station); spare
+ * entries idle at intensity 0 and cost nothing but a few ALU ops.
+ */
+const PORTAL_LIGHT_POOL = 4;
+
 /* --- walk-through detection ---------------------------------------- */
 /** Aperture the chest must be inside for a plane crossing to count as entry. */
 const ENTRY_R2 = DISC_R * DISC_R * 0.86;
@@ -638,6 +653,30 @@ export class PortalSystem {
 
     this._maxAniso = this.renderer.capabilities?.getMaxAnisotropy?.() ?? 4;
 
+    /**
+     * Gateway spill lights, pooled.
+     *
+     * These used to be created per portal and parented to the portal root, so
+     * the scene's point-light count followed however many gateways the current
+     * world happened to have - two in the station, one in the medieval world.
+     * Three keys its shader program cache on light counts, so that alone meant
+     * no program could ever be shared between worlds, and it silently defeated
+     * the destination pre-compile: everything queued for the destination was
+     * keyed to the *departure* world's portal count and thrown away on arrival.
+     *
+     * A fixed pool that is added to the scene once and never removed makes the
+     * count constant. Unused entries idle at intensity 0, which costs a few ALU
+     * ops and, unlike `visible = false`, does not change the count.
+     */
+    this._portalLights = [];
+    for (let i = 0; i < PORTAL_LIGHT_POOL; i++) {
+      const l = new THREE.PointLight(0x4de3ff, 0, 18, 1.8);
+      l.castShadow = false;
+      l.name = `portal:spill:${i}`;
+      this.scene.add(l);
+      this._portalLights.push(l);
+    }
+
     /** @type {any[]} */
     this._portals = [];
     this._worldId = null;
@@ -820,9 +859,16 @@ export class PortalSystem {
     // floor instead of dying inside the arch. Kept modest on purpose: the disc
     // is capped now, so a 20-candela spill would out-shine the thing casting it
     // and blow the dais out to white in front of the gateway.
-    const light = new THREE.PointLight(accent.getHex(), 8.5, 18, 1.8);
-    light.position.set(0, DISC_Y, 0.35);
-    root.add(light);
+    // Borrowed from the permanent pool, not created here, and positioned in
+    // world space because it deliberately does not hang off `root` - see
+    // `_portalLights`. Gateways never move, so this is set once.
+    const light = this._portalLights[index] ?? null;
+    if (light) {
+      light.color.copy(accent);
+      light.distance = 18;
+      light.decay = 1.8;
+      light.position.set(0, DISC_Y, 0.35).applyEuler(root.rotation).add(root.position);
+    }
 
     // --- destination sign --------------------------------------------
     const name = this.worldManager?.displayNameOf?.(target) ?? spec.label ?? target;
@@ -2041,6 +2087,72 @@ export class PortalSystem {
     return true;
   }
 
+  /**
+   * Compile the destination world's shaders while the warp is still white.
+   *
+   * A world the player has never stood in brings materials the renderer has
+   * never seen, and it brings its own set of lights - and Three keys its
+   * program cache on light counts, so arriving in a new world invalidates
+   * everything at once. Measured before this existed: the first weapon switch
+   * after a portal into the sports world built 71 programs and froze the frame
+   * for 24 s.
+   *
+   * This has to run *after* `activate()`, not before. `compileAsync` collects
+   * lights from the scene as it stands, so compiling the destination while the
+   * departure world is still in the scene would key every program to the sum of
+   * both light sets - the wrong key, and the work would be thrown away on the
+   * next frame. Once the swap has happened, the light set is exactly the one
+   * the player is about to render with.
+   *
+   * It does not lengthen the transition beyond what it already does for a slow
+   * world build: `_updateTransition` holds at the white-out until `settled`,
+   * the warp keeps animating throughout because `compileAsync` yields between
+   * polls, and KHR_parallel_shader_compile keeps the driver work off the main
+   * thread. The budget below caps a pathological compile so a stuck driver can
+   * never strand the player in the white-out - the remainder simply compiles
+   * lazily, exactly as it did before.
+   */
+  async _warmDestination() {
+    const renderer = this.engine?.renderer;
+    const camera = this.engine?.camera;
+    if (!renderer?.compileAsync || !camera) return;
+    const t0 = performance.now();
+    const before = renderer.info.programs.length;
+    try {
+      await Promise.race([
+        renderer.compileAsync(this.scene, camera),
+        new Promise((r) => setTimeout(r, PORTAL_WARM_BUDGET_MS)),
+      ]);
+    } catch (err) {
+      // A warmup failure must never strand a transition: fall back to the
+      // lazy compile the renderer would have done anyway.
+      console.warn('[Portals] destination warmup failed:', err);
+      return;
+    }
+
+    // `compile()` only prepares each material's beauty program. The shadow
+    // pass draws through the renderer's private `_depthMaterial` /
+    // `_distanceMaterial`, which `compile` never sees, so those programs are
+    // still built lazily - on the first real frame in the new world, which is
+    // the frame the player would have felt. Two full frames here pay for them
+    // (and for the PostFX chain, which is not part of the scene graph) while
+    // the warp is still white.
+    for (let i = 0; i < 2; i++) {
+      try {
+        if (this.engine.postfx) this.engine.postfx.render(1 / 60);
+        else renderer.render(this.scene, camera);
+      } catch { /* a warmup frame must never strand a transition */ }
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+
+    if (CONFIG.debug?.showStats) {
+      console.info(
+        `[Portals] destination warmup ${Math.round(performance.now() - t0)}ms, ` +
+        `+${renderer.info.programs.length - before} programs`
+      );
+    }
+  }
+
   _updateTransition(dt) {
     const tr = this._transition;
     const u = this._warpMat.uniforms;
@@ -2053,6 +2165,7 @@ export class PortalSystem {
         const wm = this.worldManager;
         tr.pending = wm
           .activate(tr.portal.target, { fromPortal: tr.portal })
+          .then(() => this._warmDestination())
           .catch((err) => {
             console.error('[Portals] world activation failed:', err);
           })
@@ -2198,7 +2311,7 @@ export class PortalSystem {
       // Base candela matches the constructor: the spill has to read on the dais
       // without pushing the stone past the world's bloom threshold, which is
       // what turned the whole plinth into an amber flare in review round one.
-      p.light.intensity = (p.ready ? 8.5 : 3.5) * pulse * (1 + p._proximity * 0.6);
+      if (p.light) p.light.intensity = (p.ready ? 8.5 : 3.5) * pulse * (1 + p._proximity * 0.6);
 
       p.sign.position.y = DISC_Y + ARCH_R + 0.72 + Math.sin(elapsed * 0.9 + i) * 0.05;
 
@@ -2271,7 +2384,9 @@ export class PortalSystem {
       p.haloMat.dispose();
       p.moteMat.dispose();
       p.emberMat.dispose();
-      p.light.dispose?.();
+      // The spill light is pooled and outlives the portal - hand it back dark
+      // rather than disposing it, or the count would drop on every world swap.
+      if (p.light) p.light.intensity = 0;
       // The sign material is cached and shared; only the plane is per-portal.
       p.sign.userData.geometry?.dispose();
       p.rt = null;
@@ -2288,6 +2403,11 @@ export class PortalSystem {
   /** Full teardown: also frees the shared style kits and textures. */
   dispose() {
     this.clear();
+    for (const l of this._portalLights) {
+      l.removeFromParent();
+      l.dispose?.();
+    }
+    this._portalLights.length = 0;
     if (this._transition) {
       this._transition = null;
       this.input?.setEnabled?.(true);

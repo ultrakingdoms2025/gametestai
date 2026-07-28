@@ -119,6 +119,36 @@ class Harness {
     for (let i = 0; i < settle; i++) await frame();
   }
 
+  /**
+   * Freeze absolutely everything that can move a subject out of frame.
+   *
+   * `engine.setPaused(true)` stops the fixed/frame updaters but a mount keeps
+   * driving itself, so framing a rider used to require stubbing the mount's own
+   * fixedUpdate by hand. This does that centrally: pause the engine, freeze the
+   * camera, and neutralise the active mount and the NPC manager.
+   */
+  freezeAll(on = true) {
+    const G = this.game;
+    G.engine.setPaused(on);
+    this.freezeCamera(on);
+    const mount = G.mounts?.active;
+    if (on) {
+      this._stubs = [];
+      const stub = (obj, key) => {
+        if (!obj || typeof obj[key] !== 'function') return;
+        this._stubs.push([obj, key, obj[key]]);
+        obj[key] = () => {};
+      };
+      stub(mount, 'fixedUpdate');
+      stub(mount, 'update');
+      stub(G.npcManager, 'fixedUpdate');
+    } else {
+      for (const [obj, key, fn] of this._stubs ?? []) obj[key] = fn;
+      this._stubs = [];
+    }
+    return { paused: on, mount: mount?.id ?? null };
+  }
+
   /** Suppress the player's camera writes so harness framing sticks. */
   freezeCamera(on) {
     const player = this.game.player;

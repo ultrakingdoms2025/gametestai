@@ -31,6 +31,52 @@ const _sphere = new THREE.Sphere();
 const _frustum = new THREE.Frustum();
 const _projScreen = new THREE.Matrix4();
 
+/**
+ * Minimum XZ gap between two live characters' roots.
+ *
+ * Steering separation is a *force*, and a force loses: an agent whose seek term
+ * is larger than its separation term walks straight into a neighbour and stays
+ * there, and two idle characters have no seek term at all so they never
+ * separate in the first place - `Navigation.update` returns before the
+ * separation block when there is no target. Three characters placed on the same
+ * spot measured a gap of exactly 0.000 m indefinitely, and identical skinned
+ * geometry at an identical transform z-fights, which is the flicker the player
+ * reported.
+ *
+ * So overlap is resolved as a *constraint* instead. A constraint converges in a
+ * few steps and has no feedback path into the steering, so unlike a force it
+ * cannot oscillate. 0.62 m keeps two 0.33 m bodies brushing shoulders without
+ * ever sharing a triangle, which is well inside the 0.85 m minimum the group
+ * spawner already enforces - so standing formations are untouched.
+ */
+const PERSONAL_SPACE = 0.62;
+const PERSONAL_SPACE_SQ = PERSONAL_SPACE * PERSONAL_SPACE;
+/** Fraction of the overlap resolved per step. Under 1 so simultaneous contacts settle. */
+const SEPARATION_RELAX = 0.5;
+/**
+ * Hard cap on how far one step may move a character. Keeps the correction
+ * sub-step-sized so `resolveCapsule` on the next tick can always absorb a push
+ * that happened to be into a wall, and stops it ever reading as a teleport.
+ */
+const SEPARATION_MAX_STEP = 0.06;
+/** Above this height difference the two are on different decks, not overlapping. */
+const SEPARATION_MAX_RISE = 1.2;
+
+/**
+ * LOD switch hysteresis.
+ *
+ * Every one of these used to be a single boundary, so a character sitting on
+ * the threshold toggled its eye meshes - or, at the far switch, its whole body -
+ * on and off from frame to frame. Separate in/out distances turn each switch
+ * into a band that has to be crossed properly before anything changes.
+ */
+const DETAIL_IN = 23;
+const DETAIL_OUT = 27;
+const IK_IN = 21;
+const IK_OUT = 24;
+const RENDER_IN = 125;
+const RENDER_OUT = 135;
+
 const THEME_BY_WORLD = { station: 'station', medieval: 'medieval', sports: 'sports' };
 
 /** Fallback names so a world that forgets to name its friendlies still reads. */
@@ -643,9 +689,72 @@ export class NPCManager {
   fixedUpdate(dt, elapsed) {
     this._coverToken = 0;
     for (const npc of this._npcs) npc.fixedUpdate(dt, elapsed);
+    this._separateBodies();
     this._updateRespawns(dt);
     this._updateChatProximity();
     this._updateGroundingWatchdog();
+  }
+
+  /**
+   * Pull interpenetrating characters apart.
+   *
+   * This is a positional constraint, not a steering force, and that distinction
+   * is the whole point: it writes `position` and never touches `velocity`, so
+   * nothing it does can feed back into `Navigation` and start a ping-pong. It
+   * converges in a handful of steps and then stops applying at all.
+   *
+   * It is also the thing that stops overlapping characters z-fighting. Two
+   * NPCs built from the same archetype share their geometry, so at the same
+   * transform their triangles are exactly coincident and the depth test picks a
+   * winner per-pixel per-frame - which is precisely the "NPCs flicker when they
+   * walk together" the player reported.
+   *
+   * Twenty-six characters is 325 pairs of two multiplies and a compare; it does
+   * not register against the fixed step.
+   *
+   * Skipped for the dead (a corpse is scenery and pushing it looks like it is
+   * being dragged) and for the seated (they are pinned to furniture by
+   * `_integrateSeated`, and shoving one sideways would slide it off its bench).
+   */
+  _separateBodies() {
+    const list = this._npcs;
+    const n = list.length;
+    for (let i = 0; i < n; i++) {
+      const a = list[i];
+      if (a.isDead || a.seat) continue;
+      const ap = a.position;
+      for (let j = i + 1; j < n; j++) {
+        const b = list[j];
+        if (b.isDead || b.seat) continue;
+        const bp = b.position;
+        if (Math.abs(bp.y - ap.y) > SEPARATION_MAX_RISE) continue;
+        let dx = bp.x - ap.x;
+        let dz = bp.z - ap.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 >= PERSONAL_SPACE_SQ) continue;
+        let d = Math.sqrt(d2);
+        if (d < 1e-4) {
+          // Exactly coincident, so there is no direction to separate along.
+          // Derive one from the pair's indices: it has to be deterministic
+          // (random would make the pair jitter) and it has to differ per pair,
+          // or a stack of three would push every pair the same way and stay a
+          // stack.
+          const a2 = (((i * 73856093) ^ (j * 19349663)) >>> 0) % 6283;
+          dx = Math.cos(a2 * 0.001);
+          dz = Math.sin(a2 * 0.001);
+          d = 0;
+        } else {
+          dx /= d;
+          dz /= d;
+        }
+        let push = (PERSONAL_SPACE - d) * 0.5 * SEPARATION_RELAX;
+        if (push > SEPARATION_MAX_STEP) push = SEPARATION_MAX_STEP;
+        ap.x -= dx * push;
+        ap.z -= dz * push;
+        bp.x += dx * push;
+        bp.z += dz * push;
+      }
+    }
   }
 
   /**
@@ -728,7 +837,12 @@ export class NPCManager {
       if (cam) {
         _sphere.center.copy(npc.position);
         _sphere.center.y += npc.height * 0.5;
-        _sphere.radius = npc.height * 0.75;
+        // Spatial hysteresis: a character that is already on screen is tested
+        // against a fatter sphere than one that is not, so a body grazing the
+        // frame edge has to properly leave before it is culled. Without the
+        // margin `visible` chatters, and since `detail` is gated on it, the eye
+        // meshes chattered with it.
+        _sphere.radius = npc.height * (lod.visible ? 0.95 : 0.75);
         lod.visible = _frustum.intersectsSphere(_sphere);
       } else {
         lod.visible = true;
@@ -736,13 +850,20 @@ export class NPCManager {
       // A bigger crowd has to pay for itself, but 9 m was far too aggressive:
       // an NPC filling a third of the frame at 12 m had its eyes and lids culled
       // outright and presented a blank mannequin head. Eyes are six small meshes
-      // on a bone - they stay on out to 25 m, which is well past the range where
-      // a face is still resolvable. Foot IK stops at 22 m, and anything past
-      // 130 m is not drawn at all rather than merely animated slowly.
-      lod.detail = lod.visible && d < 25;
-      lod.ik = d < 22;
+      // on a bone - they stay on out to ~25 m, which is well past the range
+      // where a face is still resolvable. Foot IK stops around 22 m, and
+      // anything past ~130 m is not drawn at all rather than merely animated
+      // slowly.
+      //
+      // Every one of those switches is now a band rather than a line. A single
+      // boundary turns any distance jitter - a neighbour nudging the character,
+      // a stride's worth of pelvis travel - into a per-frame on/off toggle,
+      // which is visible as flicker precisely when characters are crowded
+      // together and jostling.
+      lod.detail = lod.visible && (lod.detail ? d < DETAIL_OUT : d < DETAIL_IN);
+      lod.ik = lod.ik ? d < IK_OUT : d < IK_IN;
       lod.rate = !lod.visible ? 0.12 : d < 16 ? 1 : d < 34 ? 0.5 : d < 65 ? 0.25 : 0.1;
-      const render = d < 130;
+      const render = npc.root.visible ? d < RENDER_OUT : d < RENDER_IN;
       if (npc.root.visible !== render && !npc.animator.sunk) npc.root.visible = render;
     }
   }

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CONFIG } from '../core/Config.js';
+import { anchorLight } from '../gfx/LightAnchor.js';
 
 /**
  * The VK-7 "Ripper" first-person viewmodel.
@@ -1288,11 +1289,19 @@ export class Weapon {
     this._flashFace = face;
     this._disposables.push(flashTex, this._flashMat, face.geometry, fan.geometry, core.geometry);
 
-    /** Brief point light so the flash actually lights the room. */
+    /**
+     * Brief point light so the flash actually lights the room.
+     *
+     * It is NOT added to `_model`: `setVisible(false)` hides `root`, and a
+     * light under a hidden ancestor is skipped by `projectObject`, which drops
+     * the renderer's point-light count and recompiles every program in the
+     * scene. Measured: switching off the machine gun in the sports world
+     * rebuilt 71 programs and froze the next frame for 24 s. The light is
+     * pinned to the always-visible fill rig instead and follows a muzzle
+     * anchor - see gfx/LightAnchor.js.
+     */
     this._flashLight = new THREE.PointLight(0xffb066, 0, 9, 2);
-    this._flashLight.position.set(0, 0, MUZZLE_Z);
     this._flashLight.castShadow = false;
-    this._model.add(this._flashLight);
 
     /* --- viewmodel fill rig ---------------------------------------- */
     // Two very short-range lights keep the weapon readable in dark interiors
@@ -1312,6 +1321,11 @@ export class Weapon {
     this._rigLights = [key, rim];
     this._lightRig.add(key, rim);
     this.camera.add(this._lightRig);
+
+    // Muzzle flash light lives in the rig, tracks an anchor at the muzzle.
+    this._flashAnchored = anchorLight(
+      this._flashLight, this._lightRig, this._model, { x: 0, y: 0, z: MUZZLE_Z }
+    );
   }
 
   /**
@@ -1430,6 +1444,12 @@ export class Weapon {
   setVisible(on) {
     this.root.visible = on;
     for (const l of this._rigLights) l.intensity = on ? l.userData.baseIntensity : 0;
+    // The muzzle light is parented to the camera rig, so hiding `root` no
+    // longer hides it - darken it explicitly or a stowed gun keeps glowing.
+    if (!on) {
+      this._flashT = 0;
+      this._flashLight.intensity = 0;
+    }
   }
 
   update(dt, elapsed) {
@@ -1654,6 +1674,9 @@ export class Weapon {
       this._flashGroup.visible = false;
       this._flashLight.intensity = 0;
     }
+    // The light hangs off the camera, not the model, so it has to be walked
+    // onto the muzzle whenever it is actually lit.
+    this._flashAnchored?.sync();
   }
 
   _updateCasings(dt) {

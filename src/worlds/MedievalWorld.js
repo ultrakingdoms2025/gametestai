@@ -1330,8 +1330,30 @@ export class MedievalWorld extends World {
     return false;
   }
 
+  /**
+   * True when (x,z) lies inside the playable square with `inset` metres to
+   * spare.
+   *
+   * `this.bounds` is the published playable area and the terrain mesh, the
+   * collision grid and the macro texture all stop at exactly +/-HALF. Every
+   * scatter pass in this file has to ask this before it commits an instance:
+   * a sample that clears the woodland mask, the slope test and the road test
+   * and still lands at x = 206 is a prop standing on nothing, which is the
+   * single most obvious defect a landscape can have.
+   *
+   * The inset exists because a sample is a *centre*: a tree at x = 199.5 has
+   * four metres of canopy hanging over the rim.
+   */
+  _inPlayfield(x, z, inset = 0) {
+    const lim = HALF - inset;
+    return x > -lim && x < lim && z > -lim && z < lim;
+  }
+
   /** True when a point is clear of buildings, roads, water and the castle. */
   _isOpenGround(x, z, margin = 0) {
+    // Everything downstream of this asks about roads, footprints and water and
+    // then trusts the answer. Ground existing at all comes first.
+    if (!this._inPlayfield(x, z, 2 + Math.max(0, margin))) return false;
     if (this._height(x, z) < WATER_Y + 0.5) return false;
     if (rectDist(x - CASTLE.x, z - CASTLE.z, CASTLE.hx, CASTLE.hz) < 22) return false;
     if (Math.abs(z - riverZ(x)) < 11.5) return false;
@@ -3776,11 +3798,28 @@ export class MedievalWorld extends World {
         ocol.push(_col.r, _col.g, _col.b);
       }
     }
+    /* Winding.
+     *
+     * This is the bug behind "assets appear outside of land". The ring runs
+     * from +X toward +Z, which is CLOCKWISE seen from above, so the obvious
+     * (a, b, b+1) / (a, b+1, a+1) fans produce a face normal of -Y: the whole
+     * 1.9km skirt was a front-facing surface pointing at the ground. It was
+     * back-face culled from every position a player can stand in, it was
+     * back-face culled from the raycaster too, and `computeVertexNormals`
+     * below inherited the same inverted normals, so even the slivers that did
+     * survive were lit from underneath.
+     *
+     * The visible result was that the world simply stopped at the +/-200m
+     * playfield square with sky beyond it, and the three rings of backdrop
+     * conifers at r = 208-358 - which are placed on `_outerHeight`, i.e. on
+     * this sheet - hung in mid-air past the border. Reversing both triangles
+     * fixes the culling and the normals in one go.
+     */
     for (let ri = 0; ri < RR; ri++) {
       for (let ai = 0; ai < AR; ai++) {
         const a = ri * (AR + 1) + ai;
         const b = a + AR + 1;
-        oidx.push(a, b, b + 1, a, b + 1, a + 1);
+        oidx.push(a, b + 1, b, a, a + 1, b + 1);
       }
     }
     const og = new THREE.BufferGeometry();
@@ -7553,13 +7592,27 @@ export class MedievalWorld extends World {
         const lm = new THREE.InstancedMesh(pine.geo.leaf, this._mats.leaf, wanted);
         let placed = 0;
         let g3 = 0;
-        while (placed < wanted && g3++ < wanted * 40) {
+        while (placed < wanted && g3++ < wanted * 80) {
           const ang = rnd() * TAU;
           const rad = r0 + rnd() * (r1 - r0);
           const x = Math.cos(ang) * rad;
           const z = Math.sin(ang) * rad;
+          /* A circular ring crosses a square playfield.
+           *
+           * The playfield is +/-200m square, so its corners reach r = 283 and
+           * the inner two rings (208-252, 256-302) spend most of their
+           * diagonal arc *inside* the map. That put roughly 240 backdrop firs
+           * on the playable terrain: no collider, no cast shadow, sized for a
+           * quarter-kilometre of haze, and walkable straight through. They
+           * belong strictly beyond the border, so the test is the square's,
+           * not the circle's.
+           */
+          if (this._inPlayfield(x, z, -6)) continue;
           // Clump into stands: an even ring of trees reads as a fence.
           if (fbm2(x * 0.0055, z * 0.0055, 3) < 0.04 && rnd() > 0.16) continue;
+          // Ground check. Out here the skirt, not the playfield heightfield,
+          // is the surface, so `_outerHeight` is the authority - and anything
+          // that lands in the water gets dropped rather than floated.
           const y = this._outerHeight(x, z);
           if (y < WATER_Y + 2) continue;
           // 1.5-3.4 put 17-39m firs on the ridge. At a quarter-kilometre the
@@ -7706,6 +7759,11 @@ export class MedievalWorld extends World {
           const cz = z0 + rnd() * span;
           // Reject the clump centre once, then seed around it - one set of
           // spatial queries buys seven blades instead of one.
+          // The clump radius below is 1.15m, so a centre sampled right on the
+          // rim of the outermost zone throws blades past the terrain edge -
+          // the classic "jitter walks off the last valid cell". Reject the
+          // centre with the clump radius as the inset and the blades cannot.
+          if (!this._inPlayfield(cx, cz, 1.5)) continue;
           if (this._height(cx, cz) < WATER_Y + 0.35) continue;
           const settle = this._settled(cx, cz);
           // Nothing grows on ground people cross. This is the fix for a
@@ -7720,6 +7778,7 @@ export class MedievalWorld extends World {
             const rr = Math.sqrt(rnd()) * 1.15;
             const x = cx + Math.cos(a) * rr;
             const z = cz + Math.sin(a) * rr;
+            if (!this._inPlayfield(x, z, 0.4)) continue;
             const y = this._height(x, z);
             if (y < WATER_Y + 0.3) continue;
             if (this._roadDist(x, z) < 1.2) continue;
@@ -7830,6 +7889,9 @@ export class MedievalWorld extends World {
       while (rp < count && rg++ < count * 24) {
         const x = (rnd() - 0.5) * 388;
         const z = (rnd() - 0.5) * 388;
+        // Outcrops go up to 4m of scale, so 3m of inset is the minimum that
+        // keeps one from hanging over the rim.
+        if (!this._inPlayfield(x, z, 3)) continue;
         const y = this._height(x, z);
         if (y < WATER_Y - 0.6) continue;
         const slope = this._slope(x, z);
@@ -7882,8 +7944,13 @@ export class MedievalWorld extends World {
     let rp2 = 0;
     let rg2 = 0;
     while (rp2 < REED_N && rg2++ < REED_N * 8) {
-      const x = (rnd() - 0.5) * 420;
+      // Was `* 420`, i.e. +/-210 on a +/-200 playfield: 219 reed clumps stood
+      // ten metres past the rim on the distant skirt, where the river channel
+      // and the water ribbon both stop. The bank has to end where the terrain
+      // that carries it ends.
+      const x = (rnd() - 0.5) * 2 * (HALF - 3);
       const z = riverZ(x) + (rnd() < 0.5 ? -1 : 1) * (8.2 + rnd() * 6.0);
+      if (!this._inPlayfield(x, z, 3)) continue;
       const y = this._height(x, z);
       if (y < WATER_Y - 0.5 || y > WATER_Y + 1.4) continue;
       const sc = 0.8 + rnd() * 0.55;

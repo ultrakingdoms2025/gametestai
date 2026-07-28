@@ -100,9 +100,21 @@ const BLADE_Z0 = -0.052;
 const BLADE_Z1 = -0.855;
 const BLADE_HALF_W = 0.0245;
 const BLADE_HALF_T = 0.0058;
-/** Sampled for the trail ribbon: the point, and the edge just past the guard. */
+/**
+ * Sampled for the trail ribbon: the point, and a station part-way down the edge.
+ *
+ * The inner sample used to sit just past the guard, so the ribbon was as wide as
+ * the blade is long - at 0.5 scale and a 75-degree frustum that is a sheet
+ * covering a third of the screen, which is why the artefact read as a "big
+ * triangle" rather than as a streak. A real edge trail is struck by the
+ * percussion point outwards; taking the outer ~54% of the edge gives an arc with
+ * a readable inner boundary instead of a wing.
+ */
+const TRAIL_INNER_FRAC = 0.46;
 const TIP_LOCAL = new THREE.Vector3(0, 0, BLADE_Z1);
-const BASE_LOCAL = new THREE.Vector3(0, 0, BLADE_Z0 - 0.06);
+const TRAIL_INNER_LOCAL = new THREE.Vector3(
+  0, 0, BLADE_Z1 + (BLADE_Z0 - BLADE_Z1) * TRAIL_INNER_FRAC
+);
 
 /* Poses, in the machine gun's convention: model units, -Z forward. A positive
  * rotation about X lifts the point; a positive rotation about Y swings it left. */
@@ -759,12 +771,39 @@ export class SwordWeapon {
    * the player turned - which is not what a sword trail is. In root space the
    * ribbon records only the blade's motion relative to the view, which is
    * exactly the arc the player is watching.
+   *
+   * ── The "big black triangle" ────────────────────────────────────────────────
+   * Reported as opaque black wedges thrown off the blade mid-swing. The material
+   * was never the cause: it is additive, and additive blending cannot darken
+   * anything. The cause was the *ambient occlusion prepass*.
+   *
+   * `PostFX` runs a `GTAOPass`, and GTAO builds its own normal+depth G-buffer by
+   * re-rendering the whole scene through `scene.overrideMaterial =
+   * MeshNormalMaterial`. Its `_overrideVisibility()` only excludes points and
+   * lines - every transparent *mesh* is drawn into that G-buffer at full
+   * strength, blending and `depthWrite` ignored, because the override material
+   * carries its own state. This ribbon is a screen-filling mesh 0.5 m from the
+   * eye with no `normal` attribute, so it stamped a null normal over its whole
+   * silhouette; GTAO integrated that to zero visibility and the blend pass
+   * multiplied the frame by it. Hence a hard black shape in exactly the ribbon's
+   * outline, moving with the swing.
+   *
+   * Two defences, because a G-buffer artefact is expensive to diagnose twice:
+   *   1. `onBeforeRender` collapses the draw range to zero for any material that
+   *      is not ours, so the ribbon never enters an override pass at all. A
+   *      trail has no business in a G-buffer; the AO behind it should be the
+   *      world's.
+   *   2. The geometry carries a real `normal` attribute anyway. Root space is
+   *      camera space, so a constant +Z faces the eye and is correct for every
+   *      vertex - if defence 1 is ever bypassed the result is a benign
+   *      unoccluded surface rather than a black hole.
    */
   _buildTrail() {
     const S = TRAIL_SAMPLES;
     this._trailPos = new Float32Array(S * 2 * 3);
     this._trailCol = new Float32Array(S * 2 * 3);
     this._trailUv = new Float32Array(S * 2 * 2);
+    this._trailNrm = new Float32Array(S * 2 * 3);
     const idx = [];
     for (let i = 0; i < S - 1; i++) {
       const a = i * 2;
@@ -777,6 +816,9 @@ export class SwordWeapon {
       this._trailUv[i * 4 + 1] = 0.02;
       this._trailUv[i * 4 + 2] = i / (S - 1);
       this._trailUv[i * 4 + 3] = 0.98;
+      // Root space is camera space: +Z is straight out of the screen.
+      this._trailNrm[i * 6 + 2] = 1;
+      this._trailNrm[i * 6 + 5] = 1;
     }
 
     const geo = new THREE.BufferGeometry();
@@ -787,7 +829,10 @@ export class SwordWeapon {
     geo.setAttribute('position', posAttr);
     geo.setAttribute('color', colAttr);
     geo.setAttribute('uv', new THREE.BufferAttribute(this._trailUv, 2));
+    geo.setAttribute('normal', new THREE.BufferAttribute(this._trailNrm, 3));
     geo.setIndex(idx);
+    // Nothing is drawn until a swing has written at least one real segment.
+    geo.setDrawRange(0, 0);
 
     const tex = makeTrailTexture(this.renderer);
     this._trailMat = patchViewmodelDepth(new THREE.MeshBasicMaterial({
@@ -800,6 +845,8 @@ export class SwordWeapon {
       depthTest: true,
       side: THREE.DoubleSide,
       toneMapped: false,
+      // A light streak is not in the fog; a fog mix would only ever grey it.
+      fog: false,
       opacity: 0,
     }));
 
@@ -807,7 +854,16 @@ export class SwordWeapon {
     this._trail.name = 'viewmodel:sword:trail';
     this._trail.frustumCulled = false;
     this._trail.renderOrder = 120;
+    this._trail.castShadow = false;
+    this._trail.receiveShadow = false;
     this._trail.visible = false;
+
+    /** Index count `_writeTrail` authorised; see the header for why this gate. */
+    this._trailDraw = 0;
+    this._trail.onBeforeRender = (renderer, scene, camera, geometry, material) => {
+      geometry.setDrawRange(0, material === this._trailMat ? this._trailDraw : 0);
+    };
+
     this.root.add(this._trail);
 
     this._trailGeo = geo;
@@ -817,8 +873,10 @@ export class SwordWeapon {
     this._trailHead = 0;
     this._trailFilled = 0;
     this._trailFade = 0;
+    /** False until the ring has been stamped with a real blade position. */
+    this._trailSeeded = false;
     this._trailTip = new Float32Array(S * 3);
-    this._trailBase = new Float32Array(S * 3);
+    this._trailInner = new Float32Array(S * 3);
     this._disposables.push(geo, this._trailMat, tex);
   }
 
@@ -828,66 +886,108 @@ export class SwordWeapon {
     // at render time, so compose it here rather than trusting matrixWorld.
     this._model.updateMatrix();
     _tr1.copy(TIP_LOCAL).applyMatrix4(this._model.matrix);
-    _tr2.copy(BASE_LOCAL).applyMatrix4(this._model.matrix);
+    _tr2.copy(TRAIL_INNER_LOCAL).applyMatrix4(this._model.matrix);
+
+    // First sample after a reset: stamp *every* slot with the current edge. An
+    // unwritten ribbon vertex sits at the root's origin - the player's own eye -
+    // and any quad touching it is drawn from the blade back to the camera, which
+    // is a triangle the size of the screen. Seeding costs 18 writes once per
+    // swing and makes that state unreachable.
+    if (!this._trailSeeded) {
+      for (let i = 0; i < TRAIL_SAMPLES; i++) {
+        this._trailTip[i * 3] = _tr1.x;
+        this._trailTip[i * 3 + 1] = _tr1.y;
+        this._trailTip[i * 3 + 2] = _tr1.z;
+        this._trailInner[i * 3] = _tr2.x;
+        this._trailInner[i * 3 + 1] = _tr2.y;
+        this._trailInner[i * 3 + 2] = _tr2.z;
+      }
+      this._trailSeeded = true;
+      this._trailHead = 0;
+      this._trailFilled = 0;
+    }
 
     const h = this._trailHead;
     this._trailTip[h * 3] = _tr1.x;
     this._trailTip[h * 3 + 1] = _tr1.y;
     this._trailTip[h * 3 + 2] = _tr1.z;
-    this._trailBase[h * 3] = _tr2.x;
-    this._trailBase[h * 3 + 1] = _tr2.y;
-    this._trailBase[h * 3 + 2] = _tr2.z;
+    this._trailInner[h * 3] = _tr2.x;
+    this._trailInner[h * 3 + 1] = _tr2.y;
+    this._trailInner[h * 3 + 2] = _tr2.z;
     this._trailHead = (h + 1) % TRAIL_SAMPLES;
     if (this._trailFilled < TRAIL_SAMPLES) this._trailFilled++;
   }
 
-  /** Rebuild the ribbon's vertex buffers from the ring buffer. */
+  /**
+   * Rebuild the ribbon's vertex buffers from the ring buffer.
+   *
+   * Only the segments that hold two real samples are written, and the draw range
+   * is set to exactly those - the tail of the buffer is never handed to the GPU,
+   * filled or not.
+   */
   _writeTrail() {
     const S = TRAIL_SAMPLES;
     const fade = this._trailFade;
-    if (fade <= 0.001 || this._trailFilled < 2) {
+    const filled = this._trailFilled;
+    if (fade <= 0.002 || filled < 2) {
+      this._trailDraw = 0;
+      this._trailGeo.setDrawRange(0, 0);
       if (this._trail.visible) this._trail.visible = false;
       return;
     }
     this._trail.visible = true;
     this._trailMat.opacity = Math.min(1, fade);
 
-    const filled = this._trailFilled;
-    for (let i = 0; i < S; i++) {
-      // Oldest first. Slots not yet filled collapse onto the oldest real sample,
-      // which keeps the strip degenerate (and therefore invisible) rather than
-      // stretching back to the origin.
-      const age = Math.min(i, filled - 1);
-      const src = (this._trailHead - filled + age + S * 2) % S;
-      const k = filled > 1 ? age / (filled - 1) : 1; // 0 = oldest, 1 = newest
+    for (let i = 0; i < filled; i++) {
+      // Oldest first.
+      const src = (this._trailHead - filled + i + S * 2) % S;
+      const k = i / (filled - 1); // 0 = oldest, 1 = newest
 
       const d = i * 6;
       this._trailPos[d] = this._trailTip[src * 3];
       this._trailPos[d + 1] = this._trailTip[src * 3 + 1];
       this._trailPos[d + 2] = this._trailTip[src * 3 + 2];
-      this._trailPos[d + 3] = this._trailBase[src * 3];
-      this._trailPos[d + 4] = this._trailBase[src * 3 + 1];
-      this._trailPos[d + 5] = this._trailBase[src * 3 + 2];
+      this._trailPos[d + 3] = this._trailInner[src * 3];
+      this._trailPos[d + 4] = this._trailInner[src * 3 + 1];
+      this._trailPos[d + 5] = this._trailInner[src * 3 + 2];
 
-      // Newest end is a hot white-blue; the tail cools and dies. Squaring the
-      // ramp keeps the bright core short, which is what reads as speed.
-      const a = k * k * fade;
-      this._trailCol[d] = 0.85 * a;
-      this._trailCol[d + 1] = 0.95 * a;
-      this._trailCol[d + 2] = 1.0 * a;
-      const b = a * 0.42;
-      this._trailCol[d + 3] = 0.35 * b;
-      this._trailCol[d + 4] = 0.62 * b;
+      // Newest end is a hot white-blue; the tail cools and dies. A k^1.5 ramp
+      // rather than k^2: squaring lit only the last few centimetres of arc, so
+      // over a dark backdrop the streak read as a smudge behind the blade
+      // instead of as a cut. Peak values run past 1 deliberately - the material
+      // is `toneMapped: false`, so the excess is what the bloom pass blooms.
+      const a = k * Math.sqrt(k) * fade;
+      this._trailCol[d] = 1.0 * a;
+      this._trailCol[d + 1] = 1.2 * a;
+      this._trailCol[d + 2] = 1.5 * a;
+      const b = a * 0.36;
+      this._trailCol[d + 3] = 0.3 * b;
+      this._trailCol[d + 4] = 0.6 * b;
       this._trailCol[d + 5] = 1.0 * b;
     }
+    this._trailDraw = (filled - 1) * 6;
+    this._trailGeo.setDrawRange(0, this._trailDraw);
     this._trailPosAttr.needsUpdate = true;
     this._trailColAttr.needsUpdate = true;
   }
 
+  /**
+   * Drop the ribbon entirely. Called on every path that ends a swing - a new
+   * swing, a cancel, a weapon switch, a world change - so a ribbon can never
+   * stretch from the end of one swing to the start of the next, and a holstered
+   * sword can never bring a stale arc back with it.
+   */
   _resetTrail() {
+    // `CameraRig` calls `setVisible(false)` on every third-person frame, so this
+    // is on a hot path. Nothing to clear is the common case.
+    if (this._trailFilled === 0 && this._trailFade === 0
+      && this._trailDraw === 0 && !this._trailSeeded) return;
     this._trailFilled = 0;
     this._trailHead = 0;
     this._trailFade = 0;
+    this._trailSeeded = false;
+    this._trailDraw = 0;
+    this._trailGeo?.setDrawRange(0, 0);
     this._trail.visible = false;
   }
 
@@ -1081,8 +1181,19 @@ export class SwordWeapon {
     if (!on) this._cancelSwing();
   }
 
+  /**
+   * Show or hide the whole viewmodel.
+   *
+   * `root.visible` is safe to toggle: the fill lights are parented to the
+   * *camera*, not to `root`, precisely so that hiding the sword never hides a
+   * light's ancestor and never changes the scene's light count. They are dimmed
+   * to zero instead. Do not reparent them under `root`.
+   */
   setVisible(on) {
     this.root.visible = on;
+    // Holstering drops the ribbon outright, so it cannot reappear mid-fade the
+    // next time the sword is drawn.
+    if (!on) this._resetTrail();
     for (const l of this._rigLights) l.intensity = on ? l.userData.baseIntensity : 0;
   }
 
@@ -1109,10 +1220,13 @@ export class SwordWeapon {
     // pose just produced.
     if (this._swingT >= 0) {
       this._sampleTrail();
-      this._trailFade = Math.min(1, this._trailFade + dt * 9);
-    } else {
-      this._trailFade = Math.max(0, this._trailFade - dt * 4.5);
-      if (this._trailFade > 0) this._sampleTrail();
+      this._trailFade = Math.min(1, this._trailFade + dt * 12);
+    } else if (this._trailFade > 0) {
+      // Deliberately *not* sampling here. The blade is settling back to guard,
+      // and feeding those frames into the ring dragged the ribbon off the arc
+      // and back across the screen after every swing - a second, slower smear
+      // on top of the one that was reported. Freeze the arc and let it die.
+      this._trailFade = Math.max(0, this._trailFade - dt * 6.5);
     }
     this._writeTrail();
     this._updateSparks(dt);
@@ -1327,12 +1441,21 @@ export class SwordWeapon {
     });
   }
 
+  /**
+   * Abandon the current swing and everything it owns.
+   *
+   * The trail reset belongs here rather than at each call site: every way a
+   * swing can end without finishing - a weapon switch, `setEnabled(false)`, a
+   * resupply, a world change - goes through this method, and a ribbon left
+   * behind by any one of them would be drawn into the next swing.
+   */
   _cancelSwing() {
     this._swingT = -1;
     this._queued = false;
     this._hitCount = 0;
     this._hitStop = 0;
     for (let i = 0; i < this._hitThisSwing.length; i++) this._hitThisSwing[i] = null;
+    this._resetTrail();
   }
 
   /**

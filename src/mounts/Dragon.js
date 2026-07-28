@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { fbm01, clamp01, smoothstep, worley2D, WORLEY } from '../gfx/Textures.js';
 import { ParticlePool, SpeedLines, standardFromBake, makeGlowTexture } from './Hoverboard.js';
+import { anchorLight } from '../gfx/LightAnchor.js';
 
 /**
  * The rideable dragon.
@@ -899,9 +900,21 @@ export class Dragon {
     this._buildHarness(M);
 
     /* ---- throat glow ---- */
+    // Pinned to a scene-level group rather than parented to the head: `root`
+    // leaves the scene on `kill()` and is hidden by `setVisible(false)`, and
+    // either one stops the renderer counting a light beneath it. That changes
+    // `numPointLights`, which is part of Three's program cache key, so every
+    // material in view is recompiled in a single frame - measured at 79
+    // programs and a 28 s freeze on the first dismount in the sports world.
+    // See gfx/LightAnchor.js.
+    this._lightGroup = new THREE.Group();
+    this._lightGroup.name = 'dragon-lights';
+    this.scene.add(this._lightGroup);
     this._maw = new THREE.PointLight(0xff7a26, 0, 9, 2);
-    this._maw.position.set(0, -0.06, -0.5);
-    this.head.add(this._maw);
+    this._maw.castShadow = false;
+    this._mawAnchored = anchorLight(
+      this._maw, this._lightGroup, this.head, { x: 0, y: -0.06, z: -0.5 }
+    );
     this._auraTex = makeGlowTexture(128, 2.4);
     this._auraMat = new THREE.MeshBasicMaterial({
       map: this._auraTex,
@@ -1643,6 +1656,8 @@ export class Dragon {
     this.root.visible = v;
     this._embers.setVisible(v);
     this._dust.setVisible(v);
+    // The throat glow is not under `root` any more - darken it by hand.
+    if (!v) this._maw.intensity = 0;
   }
 
   /** Land the dragon in front of the player, then let them climb aboard. */
@@ -2012,6 +2027,8 @@ export class Dragon {
     const open = this._roar * 0.55 + Math.max(0, Math.sin(elapsed * 0.7) - 0.93) * 1.2;
     this.jaw.rotation.x = damp(this.jaw.rotation.x, -open, 9, dt);
     this._maw.intensity = (this._roar * 14 + 1.2 + this._boost * 5) * ease;
+    // Scene-parented, so walk it back into the throat while it is lit.
+    this._mawAnchored.sync();
     this._auraMat.opacity = (this._roar * 0.75 + 0.12 + this._boost * 0.3) * ease;
     this._aura.scale.setScalar(0.6 + this._roar * 0.9 + this._boost * 0.4);
     // Billboard in the head's frame: copying the camera quaternion straight
@@ -2295,6 +2312,8 @@ export class Dragon {
 
   dispose() {
     this.root.removeFromParent();
+    this._lightGroup.removeFromParent();
+    this._maw.dispose?.();
     for (const g of this._geos) g.dispose();
     this._geos.length = 0;
     this._eyeMat.dispose();

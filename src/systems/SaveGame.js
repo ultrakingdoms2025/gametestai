@@ -36,7 +36,7 @@ export class SaveGame {
    *           player: any, worldManager: any, economy: any,
    *           loadout?: any, mounts?: any, input?: any }} ctx
    */
-  constructor({ bus, player, worldManager, economy, loadout, mounts, input, inventory }) {
+  constructor({ bus, player, worldManager, economy, loadout, mounts, input, inventory, avatar }) {
     this.bus = bus;
     this.player = player;
     this.worldManager = worldManager;
@@ -46,6 +46,14 @@ export class SaveGame {
     this.input = input ?? null;
     /** @type {any} Optional - the game is playable without an inventory wired. */
     this.inventory = inventory ?? null;
+    /**
+     * The player's body, for the character configuration. Optional and resolved
+     * lazily by `_avatar()`: `main.js` builds the avatar before this system, but
+     * it also hangs it off the player, so there is nothing for the orchestrator
+     * to remember.
+     * @type {any}
+     */
+    this.avatar = avatar ?? null;
 
     this._autosaveTimer = null;
     this._autosaveSeconds = 0;
@@ -156,6 +164,9 @@ export class SaveGame {
       await this._restoreWorld(data.world);
       this._restorePlayer(data.player);
       this._restoreHealth(data.player);
+      // Before the mounts: the rider proxy is built from the player's character
+      // config, so restoring a mount first would seat the wrong person on it.
+      this._restoreCharacter(data.character);
       this._restoreEconomy(data);
       // Before the loadout: weapons report their ammo from the bag, so the bag
       // has to hold the saved contents by the time they are asked.
@@ -267,7 +278,19 @@ export class SaveGame {
       // Ammunition lives in the bag now, so a save without the inventory would
       // restore a player who cannot fire anything they were carrying.
       inventory: safe(() => this.inventory?.serialize?.()) ?? null,
+      // Who the player *is*: sex, build, height, skin, hair, garment colours.
+      // A flat JSON-safe object by contract - see `PlayerAvatar.characterConfig`.
+      character: safe(() => this._avatar()?.characterConfig) ?? null,
     };
+  }
+
+  /**
+   * The player's body. Resolved on each use rather than cached, because the
+   * avatar can be rebuilt (a change of sex or outfit replaces the humanoid) and
+   * because `main.js` may construct this system before it hands one over.
+   */
+  _avatar() {
+    return this.avatar ?? this.player?.avatar ?? globalThis.GAME?.avatar ?? null;
   }
 
   _snapshotWeapons() {
@@ -418,6 +441,28 @@ export class SaveGame {
     }
   }
 
+  /**
+   * Restore the player's appearance.
+   *
+   * Defensive in exactly the way `_restoreInventory` is: a save written before
+   * the character menu existed has no `character` key at all, and that has to
+   * load into the default man without a word. `setCharacterConfig` normalises
+   * whatever it is handed, so a partial or corrupt object degrades field by
+   * field rather than throwing.
+   *
+   * @param {any} snap
+   */
+  _restoreCharacter(snap) {
+    if (!snap || typeof snap !== 'object' || Array.isArray(snap)) return;
+    const avatar = this._avatar();
+    if (!avatar?.setCharacterConfig) return;
+    try {
+      avatar.setCharacterConfig(snap);
+    } catch (err) {
+      console.warn('[save] character restore skipped:', err?.message ?? err);
+    }
+  }
+
   _applyAmmo(weapon, ammo, reserve) {
     if (!weapon) return;
     const a = num(ammo, NaN);
@@ -521,6 +566,11 @@ export class SaveGame {
       return false;
     }
     if (data.mounts !== null && data.mounts !== undefined && typeof data.mounts !== 'object') {
+      return false;
+    }
+    // Absent on every save written before the character menu shipped, and that
+    // must stay a valid save - only a wrong *type* is a structural failure.
+    if (data.character !== null && data.character !== undefined && typeof data.character !== 'object') {
       return false;
     }
     return true;

@@ -29,6 +29,7 @@ import { Inventory } from './systems/Inventory.js';
 import { Loot } from './systems/Loot.js';
 import { Marketplace } from './systems/Marketplace.js';
 import { HelpMenu } from './ui/HelpMenu.js';
+import { CharacterMenu } from './ui/CharacterMenu.js';
 
 /**
  * AETHER NEXUS - bootstrap.
@@ -104,6 +105,10 @@ const inventory = new Inventory({ bus, economy, input, root: uiRoot });
 const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
 const market = new Marketplace({ bus, economy, inventory, player, npcManager, input, root: uiRoot });
 const helpMenu = new HelpMenu({ root: uiRoot, bus, input });
+// F2. Edits the avatar live and publishes `character:changed`, which SaveGame
+// snapshots and MountManager listens for so the rider on a mount is the same
+// person as the one on foot.
+const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, player });
 
 // Ammunition now comes out of the bag rather than a private per-weapon counter.
 loadout.setInventory?.(inventory);
@@ -120,7 +125,7 @@ worldManager.attach?.({ npcManager, portals, player });
 window.GAME = {
   engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
   cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save,
-  waterVolumes, stamina, inventory, loot, market, helpMenu,
+  waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu,
 };
 
 if (overrides.dev) {
@@ -170,21 +175,39 @@ async function boot() {
 }
 
 /**
- * Pay every first-use cost behind the loading screen.
+ * Pay every first-use shader cost behind the loading screen.
  *
- * Materials only build their GPU program the first time the renderer sees them,
- * and measured on this build that was catastrophic in-game: selecting the bow
- * for the first time stalled the next frame for 63 s, the first dismount for
- * 75 s, and the first third-person toggle for 7.6 s. Second use of the same
- * system was ~20 ms, which is the signature of one-off shader compilation
- * rather than slow logic.
+ * ── Why this is now one call ──────────────────────────────────────────────
+ * This used to play the game through every configuration - select each weapon,
+ * summon and dismount each mount, render frames in each state - because the
+ * light *count* changed as it went. Three pushes `numDirLights`,
+ * `numPointLights` and `numSpotLights` into its program cache key, so each
+ * distinct count needs its own copy of every program in the scene, and the
+ * only way to pre-build them was to reproduce each count for real. That warmup
+ * cost 250 s on a cold PC boot, and it still did not help after a portal.
  *
- * `renderer.compile()` walks with `scene.traverse` (not `traverseVisible`), so
- * hidden objects still compile - the viewmodels and the avatar only need to be
- * parented, not shown. Mounts are the exception: they do not enter the scene
- * until `spawn()`, so they get built and parked first. `compileAsync` resolves
- * via KHR_parallel_shader_compile where available, so this does not block the
- * main thread the way a synchronous compile would.
+ * Every light is now permanently parented and permanently visible, dimmed with
+ * `intensity` instead of being added, removed or hidden (see gfx/LightAnchor.js
+ * and the mount/weapon light rigs). One count means one program set, so a
+ * single `compileAsync` covers every configuration the player can reach in
+ * this world.
+ *
+ * Two details make the single pass sufficient:
+ *   - `renderer.compile()` collects *materials* with `scene.traverse`, not
+ *     `traverseVisible`, so hidden objects still compile. The viewmodels and
+ *     the avatar only have to be parented, not shown.
+ *   - It collects *lights* with `traverseVisible`, so the set it compiles for
+ *     is exactly the set the next real frame will use - which is only true
+ *     because that set no longer changes.
+ *
+ * Mounts are the one thing that must be built here rather than lazily: they do
+ * not enter the scene until `spawn()`, and their materials (and the dragon's
+ * ~235 ms of geometry) would otherwise land on the first `G`/`H`/`J` press.
+ *
+ * `compileAsync` resolves through KHR_parallel_shader_compile where the driver
+ * offers it, so this does not block the main thread the way a synchronous
+ * compile would. A failure here is never fatal: the cost simply reverts to
+ * being paid on first use.
  */
 async function prewarm() {
   const t0 = performance.now();
@@ -195,86 +218,88 @@ async function prewarm() {
     console.warn('[prewarm] mount prebuild failed:', err);
   }
 
-  // The avatar is hidden in first person; make sure it is parented so the
-  // skinned + rim/fill shader variants are included in this pass.
+  // Shown, not merely parented. `compile` finds materials through
+  // `scene.traverse` and does not care about visibility, but it only prepares
+  // each material's *beauty* program - the shadow pass draws through
+  // `_depthMaterial`/`_distanceMaterial`, which `compile` never sees, and
+  // `projectObject` skips hidden objects, so a mount that is only parented
+  // never reaches the shadow map and pays for its depth program on the first
+  // real summon. Two visible frames behind the loading screen buys those, plus
+  // the PostFX chain, which is not part of `engine.scene` at all.
   try {
+    for (const root of parked) {
+      // Parked roots sit at the origin, which is almost never inside the
+      // camera or the sun's shadow frustum - and a frustum-culled object is
+      // dropped by `projectObject` before it can compile anything. Stand them
+      // on the player so both passes actually reach them.
+      root.position.copy(player.position);
+      root.visible = true;
+    }
     avatar?.setVisible?.(true);
   } catch { /* non-fatal */ }
 
   try {
     await engine.renderer.compileAsync(engine.scene, engine.camera);
   } catch (err) {
-    // Never let a warmup failure stop the game booting - the cost simply
-    // reverts to being paid on first use.
     console.warn('[prewarm] compileAsync failed, falling back to lazy compile:', err);
   }
 
-  // compileAsync only prepares the material variants that exist for the CURRENT
-  // scene configuration - and the thing that actually bites here is lights.
-  // Selecting a weapon parents its light rig to the camera, and Three keys the
-  // program cache on light counts, so every material in view is invalidated at
-  // once: measured at 53 new programs and 12 s of compilation on the first bow
-  // draw. Mount lights do the same on summon/dismount.
-  //
-  // The only reliable warmup is therefore to put the game through each real
-  // configuration and render frames in it, rather than to compile a single
-  // static snapshot.
-  const warmFrames = async (n = 2) => {
-    for (let i = 0; i < n; i++) {
-      try {
-        if (engine.postfx) engine.postfx.render(1 / 60);
-        else engine.renderer.render(engine.scene, engine.camera);
-      } catch { /* a warmup frame must never abort the boot */ }
-      await nextFrame();
-    }
-  };
+  // Two frames, not the twenty-odd the old configuration walk needed: one
+  // light count means one program set, so there is nothing left to vary.
+  for (let i = 0; i < 2; i++) {
+    try {
+      if (engine.postfx) engine.postfx.render(1 / 60);
+      else engine.renderer.render(engine.scene, engine.camera);
+    } catch { /* a warmup frame must never abort the boot */ }
+    await nextFrame();
+  }
 
-  const startWeapon = loadout.current?.id ?? null;
-  const startPos = player.position.clone();
-  const startYaw = player.yaw;
-
+  // A viewmodel only reaches the renderer while its weapon is selected, so the
+  // handful of programs unique to each one still compiled on first draw -
+  // measured at 4.8 s for the bow and 3.4 s for the sword, because this driver
+  // links at roughly a second per program. Selecting each one for a frame is
+  // cheap now that the light count is fixed: it costs those few programs and
+  // nothing else, where the old walk had to rebuild the entire scene's program
+  // set for every configuration.
+  const selected = loadout.current?.id ?? null;
   try {
     for (const inst of loadout.instances ?? []) {
       loadout.select(inst.id);
-      await warmFrames(2);
-    }
-    if (startWeapon) loadout.select(startWeapon);
-    await warmFrames(1);
-
-    // Mount and dismount each one: both transitions change the light set.
-    // The car matters most here - its headlights and brake lights are exactly
-    // the kind of runtime light churn that invalidates the program cache.
-    for (const id of ['hoverboard', 'dragon', 'car']) {
-      try {
-        mounts.summon(id);
-        await warmFrames(2);
-        mounts.dismount();
-        await warmFrames(2);
-      } catch (err) {
-        console.warn(`[prewarm] mount warm "${id}" failed:`, err);
-      }
+      inst.setVisible?.(true);
+      if (engine.postfx) engine.postfx.render(1 / 60);
+      else engine.renderer.render(engine.scene, engine.camera);
+      await nextFrame();
     }
   } catch (err) {
-    console.warn('[prewarm] configuration warmup failed:', err);
+    console.warn('[prewarm] viewmodel warm failed:', err);
+  } finally {
+    if (selected) loadout.select(selected);
   }
 
   try {
     for (const root of parked) root.visible = false;
     avatar?.setVisible?.(false);
     mounts.unpark?.(parked);
-    // Warmup mounted and moved the player; put them back exactly.
-    player.teleport(startPos, startYaw);
-    cameraRig.setMode('first');
   } catch (err) {
     console.warn('[prewarm] restore failed:', err);
   }
 
-  console.info(`[prewarm] shader warmup took ${Math.round(performance.now() - t0)}ms`);
+  console.info(
+    `[prewarm] shader warmup took ${Math.round(performance.now() - t0)}ms, ` +
+    `${engine.renderer.info.programs.length} programs`
+  );
 }
 
 function scheduleBackgroundBuilds(startWorld) {
   const rest = worldManager.ids.filter((id) => id !== startWorld);
-  const idle = window.requestIdleCallback || ((fn) => setTimeout(() => fn({ timeRemaining: () => 8 }), 200));
+  // The `timeout` is not optional in practice. A 126 fps render loop leaves so
+  // little idle time that a plain `requestIdleCallback` was never firing at
+  // all: measured, the other two worlds were still unbuilt 45 s after boot, so
+  // every portal paid for generating its destination *and* compiling it on the
+  // spot. With a deadline Chrome runs the callback regardless of idleness.
+  const idle = window.requestIdleCallback
+    ? (fn) => window.requestIdleCallback(fn, { timeout: 1500 })
+    : (fn) => setTimeout(() => fn({ timeRemaining: () => 8 }), 200);
   let i = 0;
   const step = () => {
     if (i >= rest.length) {
@@ -331,6 +356,7 @@ engine.onFrameUpdate((dt, elapsed) => {
   inventory.update(dt);
   market.update(dt);
   helpMenu.update?.(dt);
+  characterMenu.update?.(dt);
   hud.update(dt, elapsed);
   input.endFrame();
 });

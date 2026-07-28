@@ -1,6 +1,12 @@
 import * as THREE from 'three';
 import { COLLISION_LAYER } from '../physics/Physics.js';
-import { HumanoidFactory } from '../npc/Humanoid.js';
+import {
+  HumanoidFactory,
+  SLOT,
+  THEME_RIM,
+  BASE_HEIGHT,
+  buildHairGeometry,
+} from '../npc/Humanoid.js';
 import { NPCAnimator } from '../npc/NPCAnimator.js';
 import { AVATAR_FADE_LENGTH } from './CameraRig.js';
 
@@ -111,6 +117,227 @@ const HAND_ROT = [-0.06, 0.03, 2.9];
 /** Places the grip, not the model origin, in the palm. */
 const HAND_POS = [-0.015, -0.056, -0.046];
 
+/* ================================================================== */
+/* Character configuration                                             */
+/* ================================================================== */
+
+/**
+ * The player is one specific person across every session and every world, so
+ * the seed is fixed. Everything a player can change about that person lives in
+ * a `CharacterConfig` (see `DEFAULT_CHARACTER`); the seed only decides the
+ * things nobody configures - skull jitter, width jitter, hair strand layout.
+ */
+export const PLAYER_SEED = 0x5ea71;
+
+/**
+ * The player's rim light never changes with the outfit.
+ *
+ * `addRim` folds the rim colour and strength into `customProgramCacheKey`, so a
+ * character wearing a medieval-rim material needs its own copy of every
+ * character program in the scene. On this driver that is roughly a second of
+ * link time per program - the exact failure mode TODO-V4 items 2/4/5 are about.
+ * One rim for the player means changing outfit costs texture generation and a
+ * geometry loft, never a shader recompile.
+ */
+const PLAYER_RIM = THEME_RIM.station;
+
+/**
+ * Which fabric each theme's garments are woven from. A private mirror of the
+ * table in `Humanoid.js`: that module is owned elsewhere and does not export
+ * it, and a three-entry lookup is not worth an import contract.
+ */
+const CLOTH_KIND = { station: 'tech', medieval: 'knit', sports: 'jersey' };
+
+/**
+ * Sexual dimorphism, expressed entirely through `makeProportions`.
+ *
+ * `frame` is the one dial the proportion system gives us for the shoulder/hip
+ * relationship - frame 0 is broad-shouldered and narrow-hipped (shoulders
+ * x1.14, hips x0.96), frame 1 is the reverse (shoulders x1.00, hips x1.08) and
+ * also carries a deeper chest through `chestF`. Pairing that with the shoulder
+ * scale and a different height band gives two genuinely different silhouettes
+ * out of the existing rig, which is the whole point: this is a menu over the
+ * character tech, not a second character tech.
+ */
+export const SEX_PROFILES = {
+  male: { label: 'Male', frame: 0, shoulderScale: 1.06, height: 1.78, build: 1, faceId: 2, hairStyle: 'crop' },
+  female: { label: 'Female', frame: 1, shoulderScale: 0.90, height: 1.66, build: 0, faceId: 4, hairStyle: 'ponytail' },
+};
+
+/**
+ * Wearable outfits, mapped onto the theme/variant pairs `Humanoid.js` already
+ * builds.
+ *
+ * `topSlot` is always `SLOT.PRIMARY` and `legSlot` always `SLOT.SECONDARY`, but
+ * what those slots actually *cover* depends on the garment - a flight suit is
+ * one piece, so its "legs" colour lands on the collar and shoulder yoke instead
+ * of on trousers. The labels below say so in the panel rather than leaving the
+ * player to discover it by dragging a swatch.
+ */
+export const OUTFITS = {
+  flightsuit: { label: 'Flight suit', theme: 'station', variant: 'eva', topLabel: 'Suit', legLabel: 'Collar & yoke' },
+  jumpsuit: { label: 'Jumpsuit', theme: 'station', variant: 'jumpsuit', topLabel: 'Suit', legLabel: 'Collar & yoke' },
+  tracksuit: { label: 'Tracksuit', theme: 'sports', variant: 'track', topLabel: 'Top', legLabel: 'Trousers' },
+  sportskit: { label: 'Sports kit', theme: 'sports', variant: 'jersey', topLabel: 'Shirt', legLabel: 'Shorts' },
+  tunic: { label: 'Tunic', theme: 'medieval', variant: 'tunic', topLabel: 'Tunic', legLabel: 'Hose' },
+  robe: { label: 'Robe', theme: 'medieval', variant: 'robe', topLabel: 'Robe', legLabel: 'Cowl' },
+};
+
+export const HAIR_STYLE_IDS = ['short', 'crop', 'buzz', 'ponytail', 'bun', 'long', 'bald'];
+
+/** Height range the capsule can carry without the eye line looking wrong. */
+export const HEIGHT_RANGE = { min: 1.52, max: 1.96 };
+
+/**
+ * The character every new session starts with: the man who was already here.
+ * The three garment colours are station palette 0, which is what
+ * `HumanoidFactory.create` used to pick for the player implicitly.
+ */
+export const DEFAULT_CHARACTER = {
+  sex: 'male',
+  build: 1,
+  height: 1.78,
+  faceId: 2,
+  skinTone: 0xd9b18e,
+  hairStyle: 'crop',
+  hairColor: 0x2e2119,
+  eyeColor: 0x4a3a2a,
+  outfit: 'flightsuit',
+  topColor: 0x2f2b26,
+  legColor: 0xc9c2b4,
+  accentColor: 0x2fe0ff,
+};
+
+const _clampInt = (v, lo, hi, fallback) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? clamp(n, lo, hi) : fallback;
+};
+const _clampNum = (v, lo, hi, fallback) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? clamp(n, lo, hi) : fallback;
+};
+/** Anything a save, a URL or a fat-fingered console call can hand us -> 24-bit hex. */
+const _hex = (v, fallback) => {
+  if (typeof v === 'string') {
+    const parsed = Number.parseInt(v.replace('#', ''), 16);
+    return Number.isFinite(parsed) ? parsed & 0xffffff : fallback;
+  }
+  const n = Number(v);
+  return Number.isFinite(n) ? (n | 0) & 0xffffff : fallback;
+};
+
+/**
+ * Coerce any object into a complete, valid character config.
+ *
+ * This is the guard that lets `SaveGame` hand a payload straight in: a save
+ * written by an older build, by a different build, or by hand is only ever
+ * going to lose the fields it got wrong, never throw.
+ *
+ * @param {any} cfg
+ * @returns {typeof DEFAULT_CHARACTER}
+ */
+export function normaliseCharacter(cfg) {
+  const src = cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+  const sex = src.sex === 'female' ? 'female' : 'male';
+  const profile = SEX_PROFILES[sex];
+  return {
+    sex,
+    build: _clampInt(src.build, 0, 2, profile.build),
+    height: _clampNum(src.height, HEIGHT_RANGE.min, HEIGHT_RANGE.max, profile.height),
+    faceId: _clampInt(src.faceId, 0, 5, profile.faceId),
+    skinTone: _hex(src.skinTone, DEFAULT_CHARACTER.skinTone),
+    hairStyle: HAIR_STYLE_IDS.includes(src.hairStyle) ? src.hairStyle : profile.hairStyle,
+    hairColor: _hex(src.hairColor, DEFAULT_CHARACTER.hairColor),
+    eyeColor: _hex(src.eyeColor, DEFAULT_CHARACTER.eyeColor),
+    outfit: OUTFITS[src.outfit] ? src.outfit : DEFAULT_CHARACTER.outfit,
+    topColor: _hex(src.topColor, DEFAULT_CHARACTER.topColor),
+    legColor: _hex(src.legColor, DEFAULT_CHARACTER.legColor),
+    accentColor: _hex(src.accentColor, DEFAULT_CHARACTER.accentColor),
+  };
+}
+
+/** Config -> the parameter object `HumanoidFactory.create` understands. */
+export function characterCreateParams(cfg) {
+  const c = normaliseCharacter(cfg);
+  const outfit = OUTFITS[c.outfit];
+  const profile = SEX_PROFILES[c.sex];
+  return {
+    seed: PLAYER_SEED,
+    theme: outfit.theme,
+    variant: outfit.variant,
+    // Slot 0 supplies the leather and metal accents; the three colours the
+    // player actually controls are overwritten by `applyCharacterColors`.
+    palette: 0,
+    rim: PLAYER_RIM,
+    height: c.height,
+    build: c.build,
+    frame: profile.frame,
+    shoulderScale: profile.shoulderScale,
+    hairStyle: c.hairStyle,
+    hairColor: c.hairColor,
+    skinTone: c.skinTone,
+    eyeColor: c.eyeColor,
+    faceId: c.faceId,
+  };
+}
+
+/**
+ * Repaint an existing humanoid to a config.
+ *
+ * `HumanoidFactory.create` only takes a palette *index*, so the three free
+ * colours are applied here by swapping the entries of the material array the
+ * `SkinnedMesh` is already drawing with. `CharacterAssets` caches by colour and
+ * every material produced here has identical shader parameters to the one it
+ * replaces, so this costs a uniform upload, not a program link.
+ *
+ * The eyelids and the hair shell hold their own references to the skin and hair
+ * materials rather than reading the array, so they are re-pointed explicitly -
+ * miss that and a change of skin tone leaves two pale eyelids on a dark face.
+ *
+ * @param {any} humanoid
+ * @param {any} assets `CharacterAssets` owned by whichever factory built it
+ * @param {typeof DEFAULT_CHARACTER} cfg already normalised
+ */
+export function applyCharacterColors(humanoid, assets, cfg) {
+  if (!humanoid || !assets) return;
+  const kind = CLOTH_KIND[humanoid.theme] ?? 'tech';
+  const mats = humanoid.materials;
+  const skin = assets.skin(cfg.skinTone, PLAYER_RIM);
+  mats[SLOT.SKIN] = skin;
+  mats[SLOT.PRIMARY] = assets.cloth(cfg.topColor, kind, PLAYER_RIM);
+  mats[SLOT.SECONDARY] = assets.cloth(cfg.legColor, kind, PLAYER_RIM);
+  mats[SLOT.GLOW] = assets.glow(cfg.accentColor, PLAYER_RIM);
+  humanoid.mesh.material = mats;
+  for (const e of humanoid.eyes ?? []) {
+    e.lidUpper.material = skin;
+    e.lidLower.material = skin;
+    e.iris.material = assets.iris(cfg.eyeColor);
+  }
+  if (humanoid.hairMesh) humanoid.hairMesh.material = assets.hair(cfg.hairColor, PLAYER_RIM);
+}
+
+/**
+ * Build a humanoid that *is* the player, using someone else's factory.
+ *
+ * This exists for the mount rider proxy, which poses its own figure on the
+ * saddle and must not be the default man once the player has changed sex or
+ * clothes. `MountManager` owns that call site; all it needs from here is one
+ * function and the config to feed it (`PlayerAvatar.buildCharacter`).
+ *
+ * @param {import('../npc/Humanoid.js').HumanoidFactory} factory
+ * @param {any} config
+ * @returns {any} a `Humanoid`
+ */
+export function createCharacter(factory, config) {
+  const cfg = normaliseCharacter(config);
+  const humanoid = factory.create(characterCreateParams(cfg));
+  applyCharacterColors(humanoid, factory.assets, cfg);
+  return humanoid;
+}
+
+/** Rotation of the body while the character panel is open, radians/second. */
+const PREVIEW_SPIN = 0.55;
+
 export class PlayerAvatar {
   /**
    * @param {{ scene: THREE.Scene, engine: import('../core/Engine.js').Engine,
@@ -119,7 +346,7 @@ export class PlayerAvatar {
    *           physics?: import('../physics/Physics.js').Physics,
    *           seed?: number }} ctx
    */
-  constructor({ scene, engine, materials, player, bus, physics = null, seed = 0x5ea71 }) {
+  constructor({ scene, engine, materials, player, bus, physics = null, character = null }) {
     this.scene = scene;
     this.engine = engine;
     this.materials = materials;
@@ -129,20 +356,14 @@ export class PlayerAvatar {
 
     this.factory = new HumanoidFactory({ renderer: engine?.renderer });
 
-    // A fixed seed: the player is one specific person across every session and
-    // every world, not a fresh random crowd member on each boot.
-    this.humanoid = this.factory.create({
-      seed,
-      theme: 'station',
-      variant: 'eva',
-      palette: 0,
-      height: 1.78,
-      build: 1,
-      frame: 1,
-      shoulderScale: 1.05,
-      hairStyle: 'crop',
-      faceId: 2,
-    });
+    /**
+     * The live character configuration. A fixed seed underneath it: the player
+     * is one specific person across every session and every world, not a fresh
+     * random crowd member on each boot.
+     * @type {typeof DEFAULT_CHARACTER}
+     */
+    this._char = normaliseCharacter(character);
+    this.humanoid = createCharacter(this.factory, this._char);
 
     this._root = this.humanoid.root;
     this._root.name = 'player.avatar';
@@ -170,6 +391,10 @@ export class PlayerAvatar {
     /** Mounts set this false and drive `root` themselves. */
     this.followPlayer = true;
     this._ridePose = 'none';
+    /** Character panel is open: hold the body in view and turn it slowly. */
+    this._preview = false;
+    /** `_visible` as it was before the preview borrowed it. */
+    this._preVisible = undefined;
 
     this._offs = [];
     if (bus) {
@@ -230,8 +455,236 @@ export class PlayerAvatar {
   }
 
   /* ================================================================ */
+  /* Character configuration                                           */
+  /* ================================================================ */
+
+  /**
+   * The player's current appearance, as a plain JSON-safe object.
+   *
+   * A copy, deliberately: `SaveGame` serialises it and `MountManager` feeds it
+   * back into a factory, and neither should be able to mutate the live config
+   * by holding onto the reference.
+   *
+   * @returns {typeof DEFAULT_CHARACTER}
+   */
+  get characterConfig() {
+    return { ...this._char };
+  }
+
+  /**
+   * Change the character. Applies immediately - there is no commit step.
+   *
+   * Three tiers of cost, decided here rather than by the caller:
+   *
+   *  - colour, hair colour, eye colour: a material swap, free.
+   *  - hair style: one cached geometry, cheap.
+   *  - height: the root scale, free.
+   *  - sex, build, outfit: the body loft and the skeleton change, so the whole
+   *    humanoid is rebuilt. Geometry is cached per archetype inside the factory,
+   *    so the second visit to a combination costs nothing.
+   *
+   * @param {Partial<typeof DEFAULT_CHARACTER>} partial
+   * @param {{silent?:boolean}} [opts] `silent` suppresses `character:changed`
+   * @returns {typeof DEFAULT_CHARACTER} the config actually applied
+   */
+  setCharacterConfig(partial, opts = {}) {
+    const prev = this._char;
+    const src = partial && typeof partial === 'object' ? partial : {};
+    // Switching sex without naming a height should move the height with it, or
+    // "Female" produces a 1.78 m woman and the option looks broken.
+    const merged = { ...prev, ...src };
+    if (src.sex && src.sex !== prev.sex && src.height === undefined) {
+      merged.height = SEX_PROFILES[src.sex === 'female' ? 'female' : 'male'].height;
+    }
+    const next = normaliseCharacter(merged);
+    this._char = next;
+
+    const needsRebuild =
+      next.sex !== prev.sex || next.build !== prev.build || next.outfit !== prev.outfit;
+
+    if (needsRebuild) {
+      this._rebuildBody();
+    } else {
+      if (next.hairStyle !== prev.hairStyle) this._setHair(next.hairStyle, next.hairColor);
+      if (next.height !== prev.height) this._applyHeight(next.height);
+      this._editMaterials(() => applyCharacterColors(this.humanoid, this.factory.assets, next));
+    }
+
+    if (!opts.silent) this.bus?.emit('character:changed', { config: this.characterConfig });
+    return this.characterConfig;
+  }
+
+  /**
+   * Build a second copy of the player, using someone else's factory.
+   *
+   * `MountManager._ensureRider` poses its own figure on the saddle because the
+   * avatar's animator drives a walk cycle from player velocity. That figure has
+   * to be *this* character or the player turns back into the default man the
+   * moment they step onto a hoverboard.
+   *
+   * @param {import('../npc/Humanoid.js').HumanoidFactory} factory
+   * @param {Partial<typeof DEFAULT_CHARACTER>} [overrides]
+   * @returns {any} a `Humanoid`, or null if the factory refused
+   */
+  buildCharacter(factory, overrides = null) {
+    if (!factory?.create) return null;
+    return createCharacter(factory, overrides ? { ...this._char, ...overrides } : this._char);
+  }
+
+  /**
+   * Character-panel preview mode.
+   *
+   * The preview is the real body, not a second render: the panel is a side
+   * drawer, the camera goes to third person, and the figure turns slowly on the
+   * spot with its arms down and its weapon stowed. That is both the cheapest
+   * preview available - no second WebGL context, no duplicate program set - and
+   * the most honest one, because what the player is looking at is exactly what
+   * they will be playing.
+   *
+   * @param {boolean} on
+   */
+  setPreview(on) {
+    const next = !!on;
+    if (next === this._preview) return;
+    this._preview = next;
+    if (this._weapon) this._weapon.visible = !next;
+
+    if (next) {
+      // `setVisible(false)` short-circuits `update()` entirely, and the boot
+      // warmup leaves the body hidden that way. A preview that silently shows
+      // nothing is worse than no preview, so the panel takes the flag and hands
+      // it back on close. Not while riding: the mount hides the body precisely
+      // because it is posing its own rider, and two bodies is not a preview.
+      this._preVisible = this._visible;
+      if (!this.player?.movementOverride) this.setVisible(true);
+      this.animator.setAimTarget(null);
+      this._airWeight = 0;
+      this._landAbsorb = 0;
+      return;
+    }
+    if (this._preVisible !== undefined) {
+      this.setVisible(this._preVisible);
+      this._preVisible = undefined;
+    }
+  }
+
+  get previewing() {
+    return this._preview;
+  }
+
+  /* ================================================================ */
   /* Build                                                             */
   /* ================================================================ */
+
+  /**
+   * Rebuild the humanoid in place.
+   *
+   * The avatar object identity is preserved because everything else in the game
+   * reaches the body through `player.avatar` and reads `.humanoid` fresh every
+   * frame (`Swim.applyPose`, `Climb.applyPose`, `CameraRig._shoulderRay`), so
+   * swapping the humanoid under a stable avatar is safe. Doing it the other way
+   * round - a new `PlayerAvatar` - would leave `MountManager` and `Player`
+   * holding a corpse.
+   */
+  _rebuildBody() {
+    const old = this.humanoid;
+    const oldWeaponGeo = this._weaponGeo;
+    const wasShadowOnly = this._shadowOnly;
+
+    // Restore before the swap: the materials being dropped are cached and
+    // shared, and a silenced one resurfacing on a later config would render an
+    // invisible character with no way to explain it.
+    this._setShadowOnly(false);
+
+    this.humanoid = createCharacter(this.factory, this._char);
+    this._root = this.humanoid.root;
+    this._root.name = 'player.avatar';
+    this._root.visible = this._visible;
+    this._root.position.copy(this.player?.position ?? _upBody.set(0, 0, 0));
+    this._root.rotation.y = this._bodyYaw;
+    this.scene.add(this._root);
+
+    this.animator = new NPCAnimator({ humanoid: this.humanoid, physics: this.physics, seed: 11 });
+    this._weapon = this._buildWeapon();
+    if (this._weapon) this._weapon.visible = !this._preview;
+
+    this._materials.length = 0;
+    this._depthWrite.length = 0;
+    this._collectMaterials();
+    this._setShadowOnly(wasShadowOnly);
+
+    old.dispose();
+    if (oldWeaponGeo && oldWeaponGeo !== this._weaponGeo) oldWeaponGeo.dispose();
+
+    // Re-assert the states the old humanoid was carrying.
+    this.setRidePose(this._ridePose);
+    if (this._dead) {
+      this._dead = false;
+      this._enterDeath();
+    }
+    this._snap();
+  }
+
+  /**
+   * Swap the hair shell. Geometry is cached in the factory's own cache under
+   * the same key `HumanoidFactory.create` uses, so a style the player has
+   * already worn is free to return to, and everything is freed by
+   * `CharacterAssets.dispose`.
+   *
+   * @param {string} style
+   * @param {number} colorHex
+   */
+  _setHair(style, colorHex) {
+    const h = this.humanoid;
+    const A = this.factory.assets;
+    const key = `hair|${style}|${h.P.key}`;
+    let geo = A.geoCache.get(key);
+    if (!geo) {
+      geo = buildHairGeometry(h.P, style, (h.seed % 9973) + 7);
+      // A style can legitimately have no geometry (bald); never cache the null.
+      if (geo) A.geoCache.set(key, geo);
+    }
+    if (!geo) {
+      if (h.hairMesh) {
+        h.hairMesh.removeFromParent();
+        h.hairMesh = null;
+      }
+      return;
+    }
+    if (!h.hairMesh) {
+      h.hairMesh = new THREE.Mesh(geo, A.hair(colorHex, PLAYER_RIM));
+      h.hairMesh.castShadow = true;
+      h.hairMesh.receiveShadow = true;
+      h.headBone.add(h.hairMesh);
+    } else {
+      h.hairMesh.geometry = geo;
+    }
+  }
+
+  /** Stature is a uniform scale on the root; no geometry depends on it. */
+  _applyHeight(height) {
+    const scale = height / BASE_HEIGHT;
+    this.humanoid.height = height;
+    this.humanoid.heightScale = scale;
+    this._root.scale.setScalar(scale);
+  }
+
+  /**
+   * Run `fn`, which may replace materials anywhere in the subtree, and put the
+   * first-person silencing back afterwards. See `_setShadowOnly` for why the
+   * state has to be lifted first.
+   *
+   * @param {() => void} fn
+   */
+  _editMaterials(fn) {
+    const was = this._shadowOnly;
+    this._setShadowOnly(false);
+    fn();
+    this._materials.length = 0;
+    this._depthWrite.length = 0;
+    this._collectMaterials();
+    this._setShadowOnly(was);
+  }
 
   /**
    * Compact carbine matching the VK-7 viewmodel's silhouette, parented to the
@@ -349,8 +802,9 @@ export class PlayerAvatar {
     const crushed = third && rig.boomLength < AVATAR_FADE_LENGTH;
     // The harness detaches the camera to frame the world, so the body is always
     // shown for a screenshot regardless of mode - otherwise every third-person
-    // review shot would be of an invisible player.
-    this._setShadowOnly((!third || crushed) && !p._harnessFrozen);
+    // review shot would be of an invisible player. The character panel needs the
+    // same exemption for the same reason: it is a preview of the body.
+    this._setShadowOnly((!third || crushed) && !p._harnessFrozen && !this._preview);
 
     if (this.followPlayer) {
       this._root.position.copy(p.position);
@@ -371,9 +825,9 @@ export class PlayerAvatar {
       // all the way down to it, so IK is off while airborne - and always while
       // riding, because a rider's feet belong to the mount, not the terrain.
       ik: this._airWeight < 0.3 && !p.movementOverride,
-      detail: third,
+      detail: third || this._preview,
     });
-    this.humanoid.setDetailVisible(third);
+    this.humanoid.setDetailVisible(third || this._preview);
 
     if (!this._dead && !p.movementOverride && this._airWeight > 0.002) this._applyAirPose();
   }
@@ -389,6 +843,16 @@ export class PlayerAvatar {
    */
   _driveYaw(dt, elapsed) {
     const p = this.player;
+    // Preview: a slow turntable, so the panel shows front, profile and back
+    // without the player having to fly the camera around their own body.
+    if (this._preview) {
+      this._bodyYaw = wrapPi(this._bodyYaw + PREVIEW_SPIN * dt);
+      // Zero, not the real rate: a turn-in-place shuffle under a turntable
+      // reads as the character fidgeting rather than as a display stand.
+      this._turnRate = 0;
+      this._root.rotation.y = this._bodyYaw;
+      return;
+    }
     const vx = p.velocity.x;
     const vz = p.velocity.z;
     const speed = Math.hypot(vx, vz);
@@ -433,16 +897,21 @@ export class PlayerAvatar {
     this._landAbsorb = approach(this._landAbsorb, 0, 7, dt);
 
     // Feet must not cycle in mid-air, and a rider's feet are planted on a board.
-    a.setLocomotion(ridden ? 0 : grounded ? speed : speed * (1 - this._airWeight), this._turnRate);
+    a.setLocomotion(
+      ridden || this._preview ? 0 : grounded ? speed : speed * (1 - this._airWeight),
+      this._turnRate
+    );
     const rideCrouch = ridden ? (this._ridePose === 'saddle' ? 2.4 : 0.85) : 0;
     a.crouchTarget = Math.max(p.crouchAmount * CROUCH_DEPTH, rideCrouch) + this._landAbsorb;
 
     // Aim layer: the arms hold the carbine on the crosshair whenever the weapon
     // is up. Sprinting and free-fall drop it so the arms swing again.
-    const lowered = (p.isSprinting && !ridden) || this._airWeight > 0.72;
+    const lowered = (p.isSprinting && !ridden) || this._airWeight > 0.72 || this._preview;
     const target = rig?.aimPoint ?? null;
     a.setAimTarget(lowered ? null : target);
-    a.setLookTarget(target);
+    // A head tracking the crosshair while the body is on a turntable reads as a
+    // stiff neck; the preview wants a neutral, forward-looking head.
+    a.setLookTarget(this._preview ? null : target);
     void third;
     void elapsed;
   }

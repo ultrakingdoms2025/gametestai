@@ -81,6 +81,8 @@ export class NPC {
     this.moveSpeed = 0;
     this.desiredSpeed = CONFIG.npc.walkSpeed;
     this.wantsToMove = false;
+    /** Latched "I am moving fast enough to steer my facing" - see `_steer`. */
+    this._facingMove = false;
 
     /** Set by NPCManager every frame; drives animation cost. */
     this.lod = { distance: 0, ik: true, detail: true, rate: 1, visible: true };
@@ -297,11 +299,20 @@ export class NPC {
     }
 
     // Facing: follow the movement direction unless something has overridden it.
+    //
+    // The speed gate is hysteretic. A single threshold sat right on top of the
+    // speed a character squeezing past an obstacle actually travels at, so the
+    // facing target switched on and off from step to step and the body twitched
+    // between "turn to face where I am going" and "hold the last bearing".
+    // Start turning at 0.3 m/s, keep turning down to 0.18 m/s.
     if (this.faceOverride) {
       _v2.subVectors(this.faceOverride, this.position);
       if (_v2.lengthSq() > 1e-4) this.targetYaw = Math.atan2(-_v2.x, -_v2.z);
-    } else if (this.velocity.lengthSq() > 0.09) {
-      this.targetYaw = Math.atan2(-this.velocity.x, -this.velocity.z);
+      this._facingMove = false;
+    } else {
+      const planar = this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z;
+      this._facingMove = this._facingMove ? planar > 0.032 : planar > 0.09;
+      if (this._facingMove) this.targetYaw = Math.atan2(-this.velocity.x, -this.velocity.z);
     }
     const delta = wrapPi(this.targetYaw - this.yaw);
     const maxTurn = (this.wantsToMove ? 5.5 : 3.4) * dt;
@@ -499,12 +510,14 @@ export class NPC {
   /** Frame-rate animation update. `lod` is filled in by the manager. */
   update(dt, elapsed) {
     const lod = this.lod;
-    if (!lod.visible && !this.isDead) {
-      // Off-screen and distant: keep the state machine running, skip the pose.
-      this._animAccum += dt;
-      if (this._animAccum < 0.2) return;
-    }
+    // One accumulate per call. The off-screen branch used to add `dt` and then
+    // fall through to a second `+= dt`, so a hidden character banked time at
+    // twice the rate and posed against a `useDt` that had never elapsed.
     this._animAccum += dt;
+    if (!lod.visible && !this.isDead && this._animAccum < 0.2) {
+      // Off-screen and distant: keep the state machine running, skip the pose.
+      return;
+    }
     const step = 1 / (60 * lod.rate);
     if (lod.rate < 1 && this._animAccum < step) return;
     const useDt = Math.min(this._animAccum, 0.25);

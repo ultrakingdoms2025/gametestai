@@ -93,6 +93,8 @@ export class FriendlyNPC extends NPC {
     this.lifeTimer = 1.5 + this.rnd() * 5;
     this.lifeAction = 'hold';
     this.strollHome = false;
+    /** Latched "walk back to my post", with hysteresis - see `_postIdle`. */
+    this.returningToPost = false;
     this.talkPartner = null;
     this.talkTimer = 0;
 
@@ -298,10 +300,20 @@ export class FriendlyNPC extends NPC {
    */
   _postIdle(dt) {
     // Shoved out of position (by the player, by a stampede): walk back first.
+    //
+    // Latched, with a wide band between "I have been pushed off my post" and
+    // "I am back on it". A bare `distance > 1.7` test re-issued the same target
+    // on every fixed step, which cleared `nav.arrived` every step so the
+    // character could never settle, and it re-engaged the moment anything
+    // nudged it back over the line - a post-holder standing in a crowd would
+    // shuffle in and out forever.
     if (!this.seated) {
       const off = this.position.distanceToSquared(this.spawnPoint);
-      if (off > 1.7 * 1.7) {
-        this.nav.setTarget(this.spawnPoint);
+      if (!this.returningToPost && off > 1.7 * 1.7) this.returningToPost = true;
+      else if (this.returningToPost && off < 0.7 * 0.7) this.returningToPost = false;
+      if (this.returningToPost) {
+        // Only actually re-targets when the destination has moved.
+        this.nav.setTargetIfNew(this.spawnPoint);
         return;
       }
     }
@@ -492,7 +504,9 @@ export class FriendlyNPC extends NPC {
     if (gap > 1.9) {
       _v1.multiplyScalar(1 / Math.max(gap, 1e-4));
       _v2.copy(partner.position).addScaledVector(_v1, 1.5);
-      this.nav.setTarget(_v2);
+      // Follows the partner, but only re-issues when they have actually moved,
+      // so a stationary pair stops rather than creeping at each other forever.
+      this.nav.setTargetIfNew(_v2, 0.35);
       this.faceOverride = null;
     } else {
       this.nav.clear();

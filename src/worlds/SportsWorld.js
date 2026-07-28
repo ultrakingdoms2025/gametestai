@@ -5429,6 +5429,7 @@ export class SportsWorld extends World {
     for (let i = 0; i < 400 && rocks.length < 16; i++) {
       const x = SKI.x0 + 6 + rrng() * (SKI.x1 - SKI.x0 - 12);
       const z = SKI.z0 + 4 + rrng() * 74;
+      if (!this._inSite(x, z, 5)) continue;
       const y = skiHeight(x, z);
       // Cliff bands live in the rock/scree altitude window, which is where the
       // slope colour ramp says bare rock should be showing through.
@@ -5456,6 +5457,7 @@ export class SportsWorld extends World {
     for (let i = 0; i < 1800 && scree.length < 70; i++) {
       const x = SKI.x0 + rrng() * (SKI.x1 - SKI.x0);
       const z = SKI.z0 + rrng() * (SKI.z1 - SKI.z0);
+      if (!this._inSite(x, z, 2)) continue;
       const y = skiHeight(x, z);
       if (y < 0.35 || y > SCREE_LINE - 0.6) continue;
       scree.push([x, y - 0.22, z, rrng(), rrng() * 6.28, rrng(), 0.7 + rrng() * 1.1]);
@@ -5575,6 +5577,10 @@ export class SportsWorld extends World {
     for (let i = 0; i < 260; i++) {
       const x = -128 + rng() * 132;
       const z = -200 + rng() * 106;
+      // The sampling window opens exactly ON bounds.min.z, so without this a
+      // handful of 9m firs straddle the site border with half their crown
+      // outside the playable area.
+      if (!this._inSite(x, z, 3)) continue;
       const y = skiHeight(x, z);
       // Conifers belong in the band between the scree and the snow line - a
       // treeline that runs to the summit is the other half of the "snow cone
@@ -7424,6 +7430,26 @@ export class SportsWorld extends World {
     return geo;
   }
 
+  /**
+   * True when (x,z) sits inside the published playable area with `inset`
+   * metres to spare.
+   *
+   * Read straight off `this.bounds` so the scatter passes and the minimap can
+   * never disagree about where the site ends. The heightfield itself runs to
+   * +/-260m - 60m of headroom past the border, which is what makes the
+   * horizon read as continuous - so this is a *composition* limit, not a
+   * "there is no ground here" limit. Both matter: a prop past the border is
+   * unreachable set dressing that still pays full draw cost, and a prop
+   * straddling the border is one the player can see the far side of.
+   */
+  _inSite(x, z, inset = 0) {
+    const b = this.bounds;
+    return (
+      x > b.min.x + inset && x < b.max.x - inset &&
+      z > b.min.z + inset && z < b.max.z - inset
+    );
+  }
+
   _isPlantable(x, z) {
     const rects = [
       [PAD.x0 - 4, PAD.z0 - 4, PAD.x1 + 4, PAD.z1 + 6],
@@ -7440,7 +7466,10 @@ export class SportsWorld extends World {
     for (const [x0, z0, x1, z1] of rects) {
       if (x > x0 && x < x1 && z > z0 && z < z1) return false;
     }
-    return Math.abs(x) < 192 && Math.abs(z) < 192;
+    // Cluster centres are jittered by an unbounded gaussian before they get
+    // here, so this is the test that actually holds the tree line inside the
+    // site - 8m of inset covers the widest canopy in the set.
+    return this._inSite(x, z, 8);
   }
 
   _buildLandscaping() {

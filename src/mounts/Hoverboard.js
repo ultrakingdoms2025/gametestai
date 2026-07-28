@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { bakeSurface, fbm01, clamp01, smoothstep } from '../gfx/Textures.js';
+import { anchorLight } from '../gfx/LightAnchor.js';
 
 /**
  * The hoverboard mount.
@@ -55,6 +56,18 @@ const REVERSE_SPEED = 4.5;
 const RIDE_RADIUS = 0.52;
 const RIDE_HEIGHT = 1.8;
 const GRAVITY = -21;
+/**
+ * Binding footprints, in deck space.
+ *
+ * `BINDING_Z` is half the stance width - the two bindings sit fore and aft of
+ * the deck centre, so the rider's feet end up ACROSS the board with the leading
+ * foot toward the nose (-Z), which is the whole point of a board stance.
+ * `BINDING_Y` is the top of the deck at that station: extrusion depth 0.05 plus
+ * the 0.016 bevel plus the nose/tail kick, with a couple of millimetres of
+ * boot sole on top.
+ */
+const BINDING_Z = 0.28;
+const BINDING_Y = 0.078;
 
 /* ================================================================== */
 /* Shared mount VFX (also used by Dragon.js)                           */
@@ -679,6 +692,8 @@ export class Hoverboard {
     this._bob = 0;
     this._lean = 0;
     this._turnRate = 0;
+    /** Suspension load, -1 (weightless) .. 1 (compressed). Drives knee absorb. */
+    this._susp = 0;
     this._trailAccum = 0;
     this._ridden = false;
     this._spawnT = 1;
@@ -790,15 +805,53 @@ export class Hoverboard {
 
     // Under-deck fill light: cheap, but it is what makes the board look like it
     // is actually pushing light onto the ground it hovers over.
+    //
+    // It does NOT hang off `bobber`. `root` is removed from the scene on
+    // `kill()` and hidden by `setVisible(false)`, and either one stops the
+    // renderer counting a light beneath it - which changes `numPointLights`
+    // and recompiles every program in the scene. Measured on this build: a
+    // first dismount in the sports world rebuilt 79 programs and froze the
+    // next frame for 28 s. The light therefore lives in a group that is added
+    // to the scene at construction and never leaves, and follows an anchor on
+    // the bobber instead. Same pattern the car already uses for its headlight.
+    this._lightGroup = new THREE.Group();
+    this._lightGroup.name = 'hoverboard-lights';
+    this.scene.add(this._lightGroup);
     this._light = new THREE.PointLight(0x58d7ff, 0, 6, 2);
-    this._light.position.set(0, -0.25, 0);
-    this.bobber.add(this._light);
+    this._light.castShadow = false;
+    this._anchoredLight = anchorLight(
+      this._light, this._lightGroup, this.bobber, { x: 0, y: -0.25, z: 0 }
+    );
 
-    // Rider anchor hangs off `tilt`, not `bobber`: the bobber is scaled by the
+    // Rider platform hangs off `tilt`, not `bobber`: the bobber is scaled by the
     // materialisation animation and a scaled anchor would scale the rider too.
+    // It still carries the deck's idle bob, so the rider's feet ride the hover
+    // spring with the board rather than hanging in a fixed plane above it.
+    this.riderPlatform = new THREE.Group();
+    this.riderPlatform.name = 'hoverboard-rider-platform';
+    this.tilt.add(this.riderPlatform);
+
     this.riderAnchor = new THREE.Object3D();
     this.riderAnchor.position.set(0, 0.06, 0);
-    this.tilt.add(this.riderAnchor);
+    this.riderPlatform.add(this.riderAnchor);
+
+    /**
+     * Sole rest points inside the bindings. The rider solves its feet onto
+     * these, exactly as the dragon's rider solves onto the stirrup irons - so
+     * the stance follows the deck instead of being keyframed to match one
+     * particular set of binding coordinates.
+     *
+     * Index 0 is the tail binding (the rider's back foot, `side > 0`), index 1
+     * the nose binding (the leading foot). Same numeric-side convention the
+     * dragon and the car already use.
+     */
+    this.footAnchors = [];
+    for (const sz of [1, -1]) {
+      const a = new THREE.Object3D();
+      a.position.set(0, BINDING_Y, sz * BINDING_Z);
+      this.riderPlatform.add(a);
+      this.footAnchors.push(a);
+    }
   }
 
   /* ---------------------------------------------------------------- */
@@ -813,6 +866,9 @@ export class Hoverboard {
     this.root.visible = v;
     this._trail.setVisible(v);
     this._sparks.setVisible(v);
+    // The under-deck light is not a child of `root` any more (see the build),
+    // so it has to be darkened by hand rather than hidden with the board.
+    if (!v) this._light.intensity = 0;
   }
 
   /**
@@ -836,6 +892,7 @@ export class Hoverboard {
     this._pitch = 0;
     this._roll = 0;
     this._boost = 0;
+    this._susp = 0;
     this._spawnT = 0;
     this._despawnT = -1;
     this._alive = true;
@@ -984,13 +1041,20 @@ export class Hoverboard {
       // The floor fell away - a ramp lip or a ledge. Let it fly.
       this._airborne = true;
       this._vy += GRAVITY * dt;
+      // Weightless: the rider's legs extend under the board rather than folding.
+      this._susp = damp(this._susp, -0.85, 7, dt);
     } else {
       if (this._airborne && this._vy < -6) this._onLanding(-this._vy);
       this._airborne = false;
       // Critically damped-ish suspension. Stiff enough to hold a kerb, soft
       // enough that the rider is never punched upward.
-      this._vy += (diffY * 62 - this._vy * 12) * dt;
+      const susp = diffY * 62 - this._vy * 12;
+      this._vy += susp * dt;
       this._vy = clamp(this._vy, -14, 9);
+      // The same spring acceleration the deck feels IS the load the rider's
+      // knees have to swallow, so the absorb signal is taken straight off it
+      // rather than re-derived from a second, subtly different filter.
+      this._susp = damp(this._susp, clamp(susp / 42, -1, 1), 13, dt);
     }
     this.position.y += this._vy * dt;
     this.position.x += this.velocity.x * dt;
@@ -1100,6 +1164,9 @@ export class Hoverboard {
     /* ---- idle bob and thruster shimmer ---- */
     this._bob = Math.sin(elapsed * 2.3) * 0.018 + Math.sin(elapsed * 5.7) * 0.006;
     this.bobber.position.y += this._bob * (this._ridden ? 0.5 : 1);
+    // The rider platform takes the bob but not the materialisation offset or
+    // scale, so the feet stay welded to the bindings while the board assembles.
+    this.riderPlatform.position.y = this._bob * (this._ridden ? 0.5 : 1);
 
     const sp01 = clamp01(Math.abs(this.speed) / BOOST_SPEED);
     const heat = 0.35 + sp01 * 0.65 + this._boost * 0.5;
@@ -1116,6 +1183,8 @@ export class Hoverboard {
 
     this._light.intensity = (2.2 + sp01 * 2 + this._boost * 6) * ease;
     this._light.distance = 5 + this._boost * 4;
+    // Parented to the scene, not the board: walk it back under the deck.
+    this._anchoredLight.sync();
 
     /* ---- ground glow tracks the floor, not the deck ---- */
     const gy = this._groundY + 0.035;
@@ -1186,6 +1255,58 @@ export class Hoverboard {
     return out.setFromMatrixPosition(this.riderAnchor.matrixWorld);
   }
 
+  /**
+   * World position of a binding's sole rest, optionally lifted along the deck's
+   * own up axis.
+   *
+   * The lift exists because the rider's IK targets its ANKLE, not its sole, and
+   * only the caller knows how tall the ankle of the figure it built is. Doing
+   * the offset here - inside the anchor's matrix - means it follows the deck
+   * through pitch and roll for free, which a world-space `+ y` could not.
+   *
+   * @param {number} side +1 back foot (tail binding), -1 leading foot (nose)
+   * @param {THREE.Vector3} out
+   * @param {number} [lift] metres above the sole rest, in deck space
+   */
+  getFootWorld(side, out, lift = 0) {
+    const o = this.footAnchors?.[side > 0 ? 0 : 1];
+    if (!o) return null;
+    o.updateWorldMatrix(true, false);
+    return out.set(0, lift, 0).applyMatrix4(o.matrixWorld);
+  }
+
+  /**
+   * The same binding, as an offset from `riderAnchor` in deck space. Both are
+   * children of the same platform, so this is exact and constant - the rider
+   * uses it to work out how far it has to crouch for its legs to reach.
+   * @param {number} side +1 back foot, -1 leading foot
+   * @param {THREE.Vector3} out
+   */
+  getFootLocal(side, out) {
+    const o = this.footAnchors?.[side > 0 ? 0 : 1];
+    if (!o) return null;
+    return out.copy(o.position).sub(this.riderAnchor.position);
+  }
+
+  /** Signed carve, -1..1. Positive is a left/heel-side turn. */
+  get carve01() {
+    return clamp(this._turnRate / 2.4 + this._lean * 2.2, -1, 1);
+  }
+
+  /** Deck bank angle in radians - the rider leans with it. */
+  get bankRoll() {
+    return this._roll;
+  }
+
+  /** Suspension load, -1 weightless .. 1 compressed. */
+  get suspension() {
+    return this._susp;
+  }
+
+  get airborne() {
+    return this._airborne;
+  }
+
   /** Extra FOV degrees the camera should take on, for the boost rush. */
   get fovKick() {
     return this._boost * 9 + clamp01(Math.abs(this.speed) / BOOST_SPEED) * 3.5;
@@ -1229,6 +1350,8 @@ export class Hoverboard {
 
   dispose() {
     this.root.removeFromParent();
+    this._lightGroup.removeFromParent();
+    this._light.dispose?.();
     for (const key in this._geo) this._geo[key].dispose();
     this._emitterMat.dispose();
     this._flareMat.dispose();

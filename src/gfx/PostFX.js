@@ -938,6 +938,7 @@ class PostFX {
           );
           this.gtaoPass.output = GTAOPass.OUTPUT.Default;
           this.gtaoPass.blendIntensity = this._aoIntensity;
+          excludeEffectsFromAO(this.gtaoPass);
           composer.addPass(this.gtaoPass);
         } catch (err) {
           console.warn('[PostFX] GTAO unavailable, continuing without AO:', err);
@@ -1426,6 +1427,51 @@ class PostFX {
  * @param {import('../core/Engine.js').Engine} engine
  * @returns {PostFX} `{ render(dt), setSize(w,h), setWorldGrade(env), composer, setEnabled(bool) }`
  */
+/**
+ * Keep transparent effect meshes out of the ambient-occlusion prepass.
+ *
+ * GTAOPass builds its normal/depth G-buffer by re-rendering the scene with
+ * `scene.overrideMaterial = MeshNormalMaterial`. Its own `_overrideVisibility`
+ * hides only Points, Line and Line2 - every transparent *mesh* is drawn into
+ * that buffer at full strength, because the override material carries its own
+ * blending and depth state and ignores the material the object actually uses.
+ *
+ * The consequence is severe and was shipped once already: the sword's edge
+ * trail had no `normal` attribute, stamped a null normal across its whole
+ * silhouette, and GTAO multiplied the frame to black in that shape - the "big
+ * black triangles" the user reported. Any additive or transparent effect is
+ * exposed to the same trap: tracers, muzzle flashes, decals, projectile trails,
+ * portal particles.
+ *
+ * Rather than require every effect author to remember a per-mesh workaround,
+ * extend the pass's own visibility override to also skip transparent and
+ * additively-blended meshes, plus anything explicitly flagged `userData.noAO`.
+ * Occlusion from a see-through effect was never wanted anyway.
+ */
+function excludeEffectsFromAO(gtaoPass) {
+  const original = gtaoPass._overrideVisibility;
+  if (typeof original !== 'function') {
+    console.warn('[PostFX] GTAOPass._overrideVisibility missing - effects may be stamped into the AO buffer');
+    return;
+  }
+  gtaoPass._overrideVisibility = function patched() {
+    original.call(this);
+    const cache = this._visibilityCache;
+    this.scene.traverse((object) => {
+      if (!object.visible || !object.isMesh) return;
+      const m = object.material;
+      if (!m) return;
+      const mats = Array.isArray(m) ? m : [m];
+      const skip = object.userData?.noAO === true ||
+        mats.some((mat) => mat && (mat.transparent === true || mat.blending === THREE.AdditiveBlending));
+      if (skip) {
+        object.visible = false;
+        cache.push(object);
+      }
+    });
+  };
+}
+
 export function createPostFX(engine) {
   return new PostFX(engine);
 }

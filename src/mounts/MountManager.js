@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Hoverboard } from './Hoverboard.js';
 import { Dragon } from './Dragon.js';
 import { Car } from './Car.js';
+import { characterCreateParams, applyCharacterColors } from '../player/PlayerAvatar.js';
 import { HumanoidFactory } from '../npc/Humanoid.js';
 
 /**
@@ -40,34 +41,66 @@ const _ikR2 = new THREE.Vector3();
 const _ikQ1 = new THREE.Quaternion();
 const _ikQ2 = new THREE.Quaternion();
 const _ikQ3 = new THREE.Quaternion();
+/* `_poseBoard` only. */
+const _bdTarget = new THREE.Vector3();
+const _bdLocal = new THREE.Vector3();
 
 const damp = THREE.MathUtils.damp;
 const clamp = THREE.MathUtils.clamp;
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/**
+ * Board stance geometry, in deck space.
+ *
+ * A board is ridden SIDEWAYS. `STANCE_YAW` turns the rider off the board's
+ * forward axis until the feet lie across the deck: -PI/2 would be dead
+ * perpendicular, and this sits a little open of that so the hips are already
+ * carrying some of the twist toward the nose. Regular stance - the LEFT foot
+ * leads, into the nose binding - which is what falls out of a negative yaw:
+ * the character's left hip ends up over the nose and its right over the tail.
+ *
+ * `TOE_*` are the binding angles, measured in deck space from the toe edge
+ * (+X) toward the nose (-Z): the leading foot is toed out ~18 degrees, the back
+ * foot sits a shade the other way. Real bindings are set exactly like this.
+ */
+const STANCE_YAW = -1.28;
+const FRONT_TOE_X = 0.951;
+const FRONT_TOE_Z = -0.309;
+const BACK_TOE_X = 0.999;
+const BACK_TOE_Z = 0.052;
 
 /** Rider poses, in bone-space radians. Rest pose is arms-down, legs straight. */
 const POSE = {
+  /**
+   * Board stance. Fallback silhouette ONLY - `_poseBoard` solves the feet onto
+   * the deck bindings and drives every one of these values live. It is kept so
+   * a board that reports no binding anchors still reads as a rider rather than
+   * the arms-out T-pose this used to be: the old values were a standing figure
+   * with a 35-degree turn and near-horizontal arms, which is exactly what was
+   * reported.
+   */
   hover: {
-    root: [0, -0.12, 0],
-    rootRot: [0.06, 0.62, 0],
+    root: [-0.10, -0.15, 0],
+    rootRot: [-0.10, STANCE_YAW, 0],
     bones: {
-      pelvis: [0.06, 0, 0],
-      spine01: [0.05, -0.12, 0],
-      spine02: [0.04, -0.14, 0.02],
-      spine03: [0.02, -0.12, 0],
-      neck: [-0.06, 0.2, 0],
-      head: [-0.05, 0.22, 0],
-      thighR: [0.34, 0.1, -0.16],
-      calfR: [-0.72, 0, 0],
-      footR: [0.36, 0, 0],
-      thighL: [0.4, -0.1, 0.2],
-      calfL: [-0.8, 0, 0],
-      footL: [0.42, 0, 0],
-      clavicleR: [0, 0, 0.12],
-      upperArmR: [-0.25, 0.1, 0.95],
-      foreArmR: [-0.35, 0, 0.25],
-      clavicleL: [0, 0, -0.12],
-      upperArmL: [-0.3, -0.1, -1.05],
-      foreArmL: [-0.4, 0, -0.3],
+      pelvis: [-0.10, 0, 0],
+      spine01: [-0.10, 0.10, 0],
+      spine02: [-0.09, 0.10, 0],
+      spine03: [-0.06, 0.08, 0],
+      neck: [0.20, 0.34, 0],
+      head: [0.12, 0.50, 0],
+      thighR: [0.66, 0.34, -0.30],
+      calfR: [-1.06, 0, 0],
+      footR: [0.44, 0, 0],
+      thighL: [0.66, -0.34, 0.30],
+      calfL: [-1.06, 0, 0],
+      footL: [0.44, 0, 0],
+      clavicleR: [0, 0, 0.10],
+      upperArmR: [-0.18, 0.05, 0.62],
+      foreArmR: [0.45, 0.10, 0.22],
+      clavicleL: [0, 0, -0.10],
+      upperArmL: [0.34, -0.05, -0.66],
+      foreArmL: [0.40, -0.10, -0.26],
     },
   },
   ride: {
@@ -173,6 +206,17 @@ export class MountManager {
     this._riderDrop = 0.99;
     this._lean = 0;
     this._rollLean = 0;
+    /**
+     * Board-stance measurements, taken off the rider that was actually built
+     * (see `_measureRider`). Defaults are the 1.78 m proxy, so a rider whose
+     * bones could not be read still crouches to a sane depth.
+     */
+    this._boardHipY = 0.97;
+    this._boardHipX = 0.097;
+    this._boardAnkleY = 0.10;
+    this._boardLegLen = 0.87;
+    this._boardSquat = 0;
+    this._boardYaw = 0;
     /** Parent-space rotation of the last solved chain's middle bone. */
     this._ikTipFrame = new THREE.Quaternion();
 
@@ -180,11 +224,42 @@ export class MountManager {
     // take them away or they are left floating at stale coordinates.
     this._onWorldChanging = () => this.clear();
     bus.on('world:changing', this._onWorldChanging);
+
+    // Whoever the player decides to be, the figure on the mount is the same
+    // person. Rebuilt lazily on the next mount rather than on every slider move.
+    this._onCharacterChanged = () => this.invalidateRider();
+    bus.on('character:changed', this._onCharacterChanged);
   }
 
   /* ================================================================ */
   /* Contract API                                                      */
   /* ================================================================ */
+
+  /**
+   * The player's chosen character, or null before one exists. Read through the
+   * avatar so there is a single source of truth for who the player looks like.
+   */
+  _characterConfig() {
+    return (
+      this.avatar?.characterConfig ??
+      this.player?.avatar?.characterConfig ??
+      globalThis.GAME?.avatar?.characterConfig ??
+      null
+    );
+  }
+
+  /**
+   * Drop the cached rider so it is rebuilt from the new config on the next
+   * mount. Rebuilding immediately would pay for a skinned character every time
+   * a colour slider moves.
+   */
+  invalidateRider() {
+    const r = this._rider;
+    if (!r) return;
+    if (this._active) return; // mid-ride: leave the figure alone until dismount
+    try { r.root?.parent?.remove(r.root); r.dispose?.(); } catch { /* non-fatal */ }
+    this._rider = null;
+  }
 
   /** @returns {Hoverboard|Dragon|Car|null} */
   get active() {
@@ -590,14 +665,24 @@ export class MountManager {
     if (!this._rider) {
       try {
         const factory = this._factory();
-        this._rider = factory.create({
-          seed: 20260726,
-          theme: 'station',
-          variant: 'rig',
-          height: 1.78,
-          build: 1,
-          hairStyle: 'short',
-        });
+        // The rider is the player, so it has to be built from whatever the
+        // character menu chose - otherwise mounting turned you back into the
+        // default man. `characterCreateParams` is the same translation
+        // `PlayerAvatar` uses, so the two figures cannot drift apart.
+        const cfg = this._characterConfig();
+        this._rider = factory.create(
+          cfg ? characterCreateParams(cfg) : {
+            seed: 20260726, theme: 'station', variant: 'rig',
+            height: 1.78, build: 1, hairStyle: 'short',
+          }
+        );
+        if (cfg) {
+          try {
+            applyCharacterColors(this._rider, factory.assets ?? this._assets, cfg);
+          } catch (err) {
+            console.warn('[mounts] rider colours unavailable:', err?.message ?? err);
+          }
+        }
         this._rider.root.traverse((o) => {
           if (o.isMesh || o.isSkinnedMesh) {
             o.castShadow = true;
@@ -622,13 +707,49 @@ export class MountManager {
     const pelvis = this._rider.bones.get('pelvis');
     this._riderDrop = pelvis ? pelvis.position.y * (this._rider.heightScale ?? 1) : 0.99;
     mount.setRiderDrop?.(this._riderDrop);
+    this._measureRider();
 
     this._applyPose(this._riderPose, 1);
     this._lean = 0;
+    this._rollLean = 0;
+    this._boardSquat = 0;
+  }
+
+  /**
+   * Measure the rider's leg once, so the board stance can be *derived* instead
+   * of guessed.
+   *
+   * Bone positions are in unscaled character units and the root carries
+   * `heightScale`, so everything is scaled here into the metres the mount
+   * anchors are expressed in. Knowing the hip height, the hip offset, the ankle
+   * height and the total leg length is enough to solve the exact crouch depth
+   * at which a given pair of bindings is reachable - which is why changing the
+   * rider's height, or the board's stance width, needs no re-tuning.
+   */
+  _measureRider() {
+    const r = this._rider;
+    if (!r) return;
+    const s = r.heightScale ?? 1;
+    const pelvis = r.bones.get('pelvis');
+    const thigh = r.bones.get('thighR');
+    const calf = r.bones.get('calfR');
+    const foot = r.bones.get('footR');
+    if (!pelvis || !thigh || !calf || !foot) return;
+    this._boardHipY = (pelvis.position.y + thigh.position.y) * s;
+    this._boardHipX = Math.abs(thigh.position.x) * s;
+    this._boardAnkleY =
+      (pelvis.position.y + thigh.position.y + calf.position.y + foot.position.y) * s;
+    this._boardLegLen = (calf.position.length() + foot.position.length()) * s;
   }
 
   _detachRider() {
-    this._rider?.root.removeFromParent();
+    const root = this._rider?.root;
+    if (root) {
+      root.removeFromParent();
+      // `_poseBoard` switches the root to YXZ; hand it back the way every other
+      // consumer of this proxy expects to find it.
+      root.rotation.order = 'XYZ';
+    }
     this._riderPose = null;
   }
 
@@ -644,22 +765,160 @@ export class MountManager {
       this._poseDriver(dt, mount);
       return;
     }
+    if (this._riderPose === 'hover') {
+      this._poseBoard(dt, mount);
+      return;
+    }
     const pose = POSE[this._riderPose];
     const root = r.root;
     root.position.set(pose.root[0], pose.root[1], pose.root[2]);
     root.rotation.set(pose.rootRot[0], pose.rootRot[1], pose.rootRot[2]);
+    void dt;
+    void mount;
+  }
+
+  /**
+   * Ride the hoverboard.
+   *
+   * Same architecture as `_poseSeated`: torso keyframed, legs *solved*. The
+   * feet are placed into the deck's two bindings by two-bone IK against the
+   * world positions the board reports through `getFootWorld`, so the stance
+   * survives the deck pitching over a kerb, banking into a carve and bobbing on
+   * its hover spring - none of which a keyframed pose can follow.
+   *
+   * The three things that make it read as riding rather than standing:
+   *
+   * 1. The rider is turned SIDEWAYS (`STANCE_YAW`) so the feet lie across the
+   *    board, leading foot into the nose binding, and the twist back toward the
+   *    direction of travel is spent up the spine and neck - hips least, head
+   *    most, exactly as a real rider carries it.
+   * 2. The crouch is not a number: the ride height is *derived* from where the
+   *    bindings are, so the legs are always folded to the depth that actually
+   *    reaches them. Deepen the squat and the whole body drops onto the deck
+   *    with the feet still planted.
+   * 3. Everything moves. Carve, boost, speed and the board's own suspension
+   *    load each push the crouch, the lean and the arms.
+   *
+   * @param {number} dt
+   * @param {import('./Hoverboard.js').Hoverboard} mount
+   */
+  _poseBoard(dt, mount) {
+    const r = this._rider;
+    const root = r.root;
 
     const speed01 = mount.speed01 ?? 0;
     const boost = mount.boost01 ?? 0;
-    // Crouch deeper and tuck forward the faster the board goes.
-    root.position.y = pose.root[1] - speed01 * 0.1 - boost * 0.06;
-    root.rotation.x = pose.rootRot[0] + speed01 * 0.16 + boost * 0.12;
-    const arm = 0.95 + speed01 * 0.25;
-    this._setBone('upperArmR', -0.25, 0.1, arm);
-    this._setBone('upperArmL', -0.3, -0.1, -arm - 0.1);
-    this._setBone('calfR', -0.72 - speed01 * 0.22, 0, 0);
-    this._setBone('calfL', -0.8 - speed01 * 0.22, 0, 0);
-    void dt;
+    const carve = clamp(mount.carve01 ?? 0, -1, 1);
+    const susp = clamp(mount.suspension ?? 0, -1, 1);
+
+    /* ---- damped ride signals ---- */
+    this._lean = damp(this._lean ?? 0, clamp01(speed01 * 0.55 + boost * 0.45), 3.5, dt);
+    this._rollLean = damp(this._rollLean ?? 0, carve, 6, dt);
+    // Bumps are swallowed fast and released slowly - that asymmetry is what
+    // reads as absorbing rather than bouncing.
+    const squatTarget = clamp01(
+      speed01 * 0.30 + boost * 0.40 + Math.abs(carve) * 0.34 + susp * 0.45
+    );
+    const prev = this._boardSquat ?? 0;
+    this._boardSquat = damp(prev, squatTarget, squatTarget > prev ? 14 : 5, dt);
+
+    const lean = this._lean;
+    const cv = this._rollLean;
+    const squat = this._boardSquat;
+
+    /* ---- stance: sideways on the deck, opening toward travel with speed ---- */
+    const yaw = STANCE_YAW + lean * 0.13 + cv * 0.08;
+    // Positive root X leans the figure BACK (the character's up tilts toward
+    // +Z). A heel-side carve is ridden sitting back over the heels; speed and
+    // boost tuck it the other way, forward over the nose.
+    const pitch = -0.08 + cv * 0.22 - lean * 0.20 - squat * 0.07;
+    // YXZ, not the default XYZ: the yaw has to be the OUTER rotation or the
+    // lean and roll end up applied about the deck's axes instead of the
+    // rider's own, and a sideways figure would tip toward the nose when it was
+    // asked to tip toward its toes.
+    root.rotation.order = 'YXZ';
+    root.rotation.set(pitch, yaw, -cv * 0.06);
+    this._boardYaw = yaw;
+
+    /* ---- ride height: crouch until the legs reach the bindings ---- */
+    // Weight moves onto the edge being carved.
+    const rootX = -cv * 0.035;
+    const reach = clamp(0.86 - squat * 0.22, 0.55, 0.95);
+    let rootY = -(this._riderDrop ?? 0.99) * 0.15;
+    if (mount.getFootLocal?.(1, _bdLocal)) {
+      // Hip of the back leg, in deck space, with the stance yaw applied.
+      const hx = rootX + this._boardHipX * Math.cos(yaw);
+      const hz = -this._boardHipX * Math.sin(yaw);
+      const dx = hx - _bdLocal.x;
+      const dz = hz - _bdLocal.z;
+      const d = this._boardLegLen * reach;
+      // Never square-root a negative: an over-wide stance just straightens the
+      // leg instead of blanking the character.
+      const vert = Math.sqrt(Math.max(0.0025, d * d - dx * dx - dz * dz));
+      rootY = _bdLocal.y + this._boardAnkleY + vert - this._boardHipY;
+    }
+    root.position.set(rootX, rootY, 0);
+
+    /* ---- torso: folded forward, twisted toward the nose, weight on an edge ---- */
+    const twist = 0.13 + lean * 0.06;
+    this._setBone('pelvis', -0.09 - lean * 0.04 + cv * 0.05, 0, cv * 0.05);
+    this._setBone('spine01', -0.10 - lean * 0.08, twist, cv * 0.07);
+    this._setBone('spine02', -0.09 - lean * 0.08, twist, cv * 0.08);
+    this._setBone('spine03', -0.06 - lean * 0.05, twist * 0.8, cv * 0.05);
+    this._setBone('clavicleR', 0, 0, 0.10 + lean * 0.05);
+    this._setBone('clavicleL', 0, 0, -0.10 - lean * 0.05);
+
+    // Look down the board, not across it: whatever twist the spine has not
+    // already spent is paid off by the neck and head, so the rider is always
+    // watching where it is going however far the hips are turned.
+    const spineTwist = twist * 2.8;
+    const rem = clamp(-0.14 - (yaw + spineTwist), -1.0, 1.0);
+    // How far the spine and root together folded forward - the neck and head
+    // pay it back so the gaze stays level however deep the tuck goes.
+    const tuck = -(0.25 + lean * 0.21) + pitch;
+    this._setBone('neck', -tuck * 0.55 + cv * 0.05, rem * 0.42, -cv * 0.06);
+    this._setBone('head', -tuck * 0.45 - 0.04, rem * 0.58, -cv * 0.09);
+
+    /* ---- arms: out and forward for balance, counter-rotating into carves ---- */
+    // The leading (left) arm reaches over the nose, the trailing arm sits back
+    // over the tail, and the pair swap as the board is turned - that counter
+    // swing is most of what sells a carve.
+    const spread = 0.64 + lean * 0.10 + squat * 0.14;
+    this._setBone('upperArmR', -0.16 - cv * 0.32 - lean * 0.08, 0.05, spread);
+    this._setBone('foreArmR', 0.62 + squat * 0.20, 0.14, 0.24);
+    this._setBone('handR', 0.14, 0, -0.10);
+    this._setBone('upperArmL', 0.40 + cv * 0.32 + lean * 0.12, -0.05, -spread - 0.05);
+    this._setBone('foreArmL', 0.56 + squat * 0.20, -0.14, -0.28);
+    this._setBone('handL', 0.14, 0, 0.10);
+
+    // Bone world matrices have to be current before anything is solved against
+    // a world-space target, and the deck under the rider moved this frame.
+    root.updateWorldMatrix(true, true);
+
+    /* ---- feet into the bindings ---- */
+    const cy = Math.cos(yaw);
+    const sy = Math.sin(yaw);
+    for (const side of [1, -1]) {
+      const s = side > 0 ? 'R' : 'L';
+      if (!mount.getFootWorld?.(side, _bdTarget, this._boardAnkleY)) {
+        this._applyPose('hover', 1);
+        break;
+      }
+      // Knees forward over the toes and slightly apart. Without the pole a deep
+      // board crouch is free to fold the knee backwards through the deck.
+      if (this._solveIK(`thigh${s}`, `calf${s}`, `foot${s}`, _bdTarget, side * 0.30, 0.20, -1)) {
+        // Binding angles are a property of the BOARD, so they are stated in
+        // deck space and rotated back through the stance yaw - that is what
+        // keeps the boots planted while the torso twists over them.
+        const bx = side > 0 ? BACK_TOE_X : FRONT_TOE_X;
+        const bz = side > 0 ? BACK_TOE_Z : FRONT_TOE_Z;
+        const dx = bx * cy - bz * sy;
+        const dz = bx * sy + bz * cy;
+        // Sole flat on the deck: cancel the body's own forward lean out of the
+        // toe direction, or the boots pitch with the chest.
+        this._aimTip(`foot${s}`, `toe${s}`, dx, pitch * dz - 0.04, dz);
+      }
+    }
   }
 
   /**

@@ -35,6 +35,7 @@ import { LightRig } from './gfx/LightRig.js';
 import { Caches } from './systems/Caches.js';
 import { Contracts } from './systems/Contracts.js';
 import { AdminCheats } from './systems/AdminCheats.js';
+import { Relics } from './systems/Relics.js';
 import { AudioDirector } from './audio/AudioDirector.js';
 import { AudioMenu } from './ui/AudioMenu.js';
 
@@ -154,6 +155,9 @@ loadout.setInventory?.(inventory);
 // authored data and nothing to keep in sync when a world regenerates.
 const caches = new Caches({ bus, physics, player, loot, worldManager, waterVolumes });
 
+// Hidden collectibles that pay on pickup - the reason to look at the skyline.
+const relics = new Relics({ scene: engine.scene, bus, physics, player, economy, worldManager });
+
 // Standing jobs from the people who already have names and personalities.
 const contracts = new Contracts({ bus, npcManager, player, economy, inventory, worldManager });
 
@@ -178,7 +182,7 @@ window.GAME = {
   engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
   cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
   waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu, caches, contracts,
-  cheats, audio, audioMenu,
+  cheats, audio, audioMenu, relics,
 };
 
 if (overrides.dev) {
@@ -476,6 +480,7 @@ engine.onFrameUpdate((dt, elapsed) => {
   market.update(dt);
   caches.update(dt);
   contracts.update(dt);
+  relics.update(dt);
   // After the camera rig has placed the camera: the listener frame is read
   // straight off its world matrix, and a frame-old matrix pans every sound
   // to where the player was looking last frame.

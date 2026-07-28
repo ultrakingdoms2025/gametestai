@@ -3342,6 +3342,203 @@ function buildBrows(part, P, originY) {
 // but a colour rather than a void.
 const BROW_DARKEN = 0.45;
 
+/**
+ * Every headgear style, in menu order. `none` is first and is the default.
+ *
+ * These are worn *over* the hair rather than replacing it, which is why every
+ * one of them sits proud of the scalp by a few millimetres: a cap at scalp
+ * radius z-fights the hair shell across the whole crown, and the artefact moves
+ * with the camera, so it reads as the head flickering.
+ */
+export const HEADGEAR_STYLES = ['none', 'band', 'cap', 'hood', 'helm', 'turban', 'circlet'];
+
+export const HEADGEAR_LABELS = {
+  none: 'None',
+  band: 'Headband',
+  cap: 'Peaked cap',
+  hood: 'Hood',
+  helm: 'Helm',
+  turban: 'Wrap',
+  circlet: 'Circlet',
+};
+
+/**
+ * A ring of quads swept around the skull at a fixed polar angle.
+ *
+ * Bands, brims and hood rims are all this shape: a closed loop that follows the
+ * head's own ellipsoid rather than a circle, because a circular band on an
+ * ellipsoid skull stands off at the temples and cuts in at the front.
+ *
+ * @param {Part} part
+ * @param {object} F headFrame
+ * @param {number} originY
+ * @param {{theta:number, lift:number, thick:number, drop:number,
+ *          front?:number, back?:number, seg?:number}} cfg
+ */
+function skullBand(part, F, originY, cfg) {
+  const seg = cfg.seg ?? 28;
+  const base = part.vertexCount;
+  const p = new THREE.Vector3();
+  // Two rings - a top and a bottom edge - swept round, then stitched into a
+  // cylinder. The band has real height so it catches a shadow on its underside.
+  for (let e = 0; e < 2; e++) {
+    const theta = cfg.theta + (e === 0 ? -cfg.drop * 0.5 : cfg.drop * 0.5);
+    for (let u = 0; u <= seg; u++) {
+      const phi = (u / seg) * Math.PI * 2;
+      const front = -Math.cos(phi);
+      // Front and back can each push the band up or down, which is what makes a
+      // cap sit back off the brow and a hood sit forward over it.
+      const th = theta + front * (front > 0 ? (cfg.front ?? 0) : -(cfg.back ?? 0));
+      const st = Math.sin(th);
+      const ct = Math.cos(th);
+      const k = 1 + cfg.lift + cfg.thick;
+      p.set(
+        F.c.x + Math.sin(phi) * st * F.r.x * k,
+        F.c.y + ct * F.r.y * k,
+        F.c.z + -Math.cos(phi) * st * F.r.z * k
+      );
+      part.pos.push(p.x, p.y - originY, p.z);
+      part.uv.push(u / seg * 3, e);
+    }
+  }
+  const row = seg + 1;
+  for (let u = 0; u < seg; u++) {
+    const a = base + u;
+    const b = base + u + 1;
+    const c = base + row + u;
+    const d = base + row + u + 1;
+    part.idx.push(a, c, b, b, c, d);
+  }
+}
+
+/**
+ * Headgear, built in the same space and on the same machinery as the hair so it
+ * can hang off the head bone unchanged.
+ *
+ * Returns null for `none`, which the caller treats as "no mesh" - cheaper than
+ * an empty geometry and it keeps the draw call off characters not wearing one.
+ *
+ * @param {object} P proportions
+ * @param {string} style one of {@link HEADGEAR_STYLES}
+ * @param {number} seed
+ * @returns {THREE.BufferGeometry|null}
+ */
+export function buildHeadgearGeometry(P, style, seed) {
+  if (!style || style === 'none') return null;
+  const rng = createRng(seed);
+  const part = new Part(0, [], 1);
+  const F = headFrame(P);
+  const originY = P.headY;
+
+  /* The domes reuse the hair shell, with the noise turned off.
+   *
+   * A hairline is the most irregular edge on a head and the shell's edge noise
+   * exists entirely to sell that; a manufactured object has a *clean* rim, and
+   * leaving the noise on is what makes a helmet look knitted. `locks: 0` for the
+   * same reason - lock ridges are strands. */
+  const dome = (cfg) => craniumShell(part, P, {
+    lumpy: 0, edgeNoise: 0, locks: 0, segU: 30, segV: 10, seed: (seed % 997) + 1, ...cfg,
+  }, rng, originY);
+
+  switch (style) {
+    case 'band':
+      skullBand(part, F, originY, { theta: 1.14, lift: 0.04, thick: 0.012, drop: 0.30, front: 0.05 });
+      break;
+
+    case 'cap':
+      // Crown, then a peak that projects forward over the brow. The peak is the
+      // whole silhouette of a cap; without it this is a beanie.
+      dome({ base: 1.30, frontAdj: -0.40, thick: 0.030 });
+      skullBand(part, F, originY, { theta: 1.30, lift: 0.05, thick: 0.02, drop: 0.16 });
+      {
+        const b = part.vertexCount;
+        const p = new THREE.Vector3();
+        const seg = 12;
+        // A flat blade swept through the forward arc only, tilted down slightly.
+        for (let e = 0; e < 2; e++) {
+          const reach = e === 0 ? 1.02 : 1.62;      // inner edge, then the tip
+          for (let u = 0; u <= seg; u++) {
+            const a = (u / seg - 0.5) * 1.9;        // ~109 deg of front arc
+            const st = Math.sin(1.32);
+            p.set(
+              F.c.x + Math.sin(a) * st * F.r.x * reach * 1.05,
+              F.c.y + Math.cos(1.32) * F.r.y * (1 + 0.05) - (e === 1 ? 0.012 : 0),
+              F.c.z - Math.cos(a) * st * F.r.z * reach
+            );
+            part.pos.push(p.x, p.y - originY, p.z);
+            part.uv.push(u / seg, e);
+          }
+        }
+        const row = seg + 1;
+        for (let u = 0; u < seg; u++) {
+          part.idx.push(b + u, b + row + u, b + u + 1, b + u + 1, b + row + u, b + row + u + 1);
+        }
+      }
+      break;
+
+    case 'hood':
+      // Deeper than a cap and carried further back, with a rim that stands
+      // forward of the face - a hood is read by the opening, not the crown.
+      dome({ base: 1.72, frontAdj: -0.30, thick: 0.055 });
+      skullBand(part, F, originY, {
+        theta: 1.42, lift: 0.10, thick: 0.03, drop: 0.42, front: 0.16, back: 0.10, seg: 30,
+      });
+      break;
+
+    case 'helm':
+      // Sits lower on the skull than anything else here, and the nasal is what
+      // separates a helmet from a bowl.
+      dome({ base: 1.60, frontAdj: -0.16, thick: 0.040 });
+      skullBand(part, F, originY, { theta: 1.55, lift: 0.055, thick: 0.022, drop: 0.20 });
+      {
+        const b = part.vertexCount;
+        const p = new THREE.Vector3();
+        for (let e = 0; e < 2; e++) {
+          const half = e === 0 ? -0.055 : 0.055;
+          for (let k = 0; k <= 3; k++) {
+            const th = 1.30 + k * 0.30;             // down the front of the face
+            p.set(
+              F.c.x + half * F.r.x,
+              F.c.y + Math.cos(th) * F.r.y * 1.06,
+              F.c.z - Math.sin(th) * F.r.z * 1.08
+            );
+            part.pos.push(p.x, p.y - originY, p.z);
+            part.uv.push(e, k / 3);
+          }
+        }
+        for (let k = 0; k < 3; k++) {
+          part.idx.push(b + k, b + 4 + k, b + k + 1, b + k + 1, b + 4 + k, b + 4 + k + 1);
+        }
+      }
+      break;
+
+    case 'turban':
+      // Three offset wraps. Cloth wound round a head is never symmetrical, so
+      // each band is nudged by the rng - a stack of concentric rings is a
+      // radiator, not a wrap.
+      dome({ base: 1.28, frontAdj: -0.44, thick: 0.045 });
+      for (let i = 0; i < 3; i++) {
+        skullBand(part, F, originY, {
+          theta: 1.22 - i * 0.24,
+          lift: 0.075 + i * 0.018,
+          thick: 0.016,
+          drop: 0.26,
+          front: (rng() - 0.5) * 0.10,
+          back: (rng() - 0.5) * 0.10,
+        });
+      }
+      break;
+
+    case 'circlet':
+    default:
+      skullBand(part, F, originY, { theta: 1.06, lift: 0.045, thick: 0.008, drop: 0.10, front: 0.10 });
+      break;
+  }
+
+  if (!part.idx.length) return null;
+  return partToGeometry(part);
+}
+
 export function buildHairGeometry(P, style, seed) {
   const rng = createRng(seed);
   const part = new Part(0, [], 1);
@@ -4305,6 +4502,13 @@ export class HumanoidFactory {
     const eyeColor = params.eyeColor ?? EYE_COLORS[(rng() * EYE_COLORS.length) | 0];
     let hairStyle = params.hairStyle ?? HAIR_STYLES[(rng() * HAIR_STYLES.length) | 0];
     if (theme === 'sports' && variant === 'skate') hairStyle = rng() < 0.5 ? 'buzz' : 'short';
+    /* Headgear defaults to none rather than to a random pick.
+     *
+     * Every other appearance field randomises when unset, because a crowd of
+     * identical faces is the failure mode there. Hats are different: a street
+     * where everyone happens to be wearing one reads as a uniform, and worse,
+     * NPCs from every existing save would suddenly acquire one. Opt-in. */
+    const headgear = params.headgear ?? 'none';
 
     const A = this.assets;
     const kind = CLOTH_KIND[theme];
@@ -4359,6 +4563,36 @@ export class HumanoidFactory {
       // the head's own shadow to land on.
       hairMesh.receiveShadow = true;
       headBone.add(hairMesh);
+    }
+
+    /* --- headgear ---------------------------------------------------
+     *
+     * Worn over the hair on the same bone, so it inherits the per-character
+     * skull jitter applied below and never drifts off a larger or smaller head.
+     *
+     * It borrows an existing garment slot material rather than introducing one:
+     * those are already correctly textured PBR surfaces for this theme, so a
+     * cap matches the outfit it is worn with for free, and a character in a hat
+     * costs no extra material and no extra shader program. Soft things take the
+     * cloth slot and hard things the leather/metal one, which is the only
+     * distinction that actually matters at a glance. */
+    let headgearMesh = null;
+    if (headgear && headgear !== 'none') {
+      const hgGeo = this._shared(`headgear|${headgear}|${P.key}`, () =>
+        buildHeadgearGeometry(P, headgear, (seed % 9973) + 31)
+      );
+      if (hgGeo) {
+        const soft = headgear === 'hood' || headgear === 'turban' || headgear === 'band';
+        const hgMat = materials[soft ? SLOT.SECONDARY : SLOT.LEATHER] ?? materials[SLOT.PRIMARY];
+        headgearMesh = new THREE.Mesh(hgGeo, hgMat);
+        // Named so it can be found on a built character - there is otherwise
+        // nothing to distinguish it from the hair shell hanging off the same
+        // bone, which cost me a wrong measurement while checking the fit.
+        headgearMesh.name = 'headgear';
+        headgearMesh.castShadow = true;
+        headgearMesh.receiveShadow = true;
+        headBone.add(headgearMesh);
+      }
     }
 
     // Per-character skull jitter. Head geometry is cached per body archetype,

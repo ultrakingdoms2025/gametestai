@@ -6,6 +6,8 @@ import {
   THEME_RIM,
   BASE_HEIGHT,
   buildHairGeometry,
+  HEADGEAR_STYLES,
+  HEADGEAR_LABELS,
 } from '../npc/Humanoid.js';
 import { NPCAnimator } from '../npc/NPCAnimator.js';
 import { AVATAR_FADE_LENGTH } from './CameraRig.js';
@@ -185,6 +187,12 @@ export const OUTFITS = {
 
 export const HAIR_STYLE_IDS = ['short', 'crop', 'buzz', 'ponytail', 'bun', 'long', 'bald'];
 
+/* Re-exported so the character menu has a single import for everything it
+ * needs to draw itself. It already takes hair, outfits and the height range
+ * from here; reaching past this module into Humanoid.js for the one field
+ * would leak the character tech into the UI layer. */
+export { HEADGEAR_STYLES, HEADGEAR_LABELS };
+
 /** Height range the capsule can carry without the eye line looking wrong. */
 export const HEIGHT_RANGE = { min: 1.52, max: 1.96 };
 
@@ -200,6 +208,7 @@ export const DEFAULT_CHARACTER = {
   faceId: 2,
   skinTone: 0xd9b18e,
   hairStyle: 'crop',
+  headgear: 'none',
   hairColor: 0x2e2119,
   eyeColor: 0x4a3a2a,
   outfit: 'flightsuit',
@@ -247,6 +256,7 @@ export function normaliseCharacter(cfg) {
     faceId: _clampInt(src.faceId, 0, 5, profile.faceId),
     skinTone: _hex(src.skinTone, DEFAULT_CHARACTER.skinTone),
     hairStyle: HAIR_STYLE_IDS.includes(src.hairStyle) ? src.hairStyle : profile.hairStyle,
+    headgear: HEADGEAR_STYLES.includes(src.headgear) ? src.headgear : DEFAULT_CHARACTER.headgear,
     hairColor: _hex(src.hairColor, DEFAULT_CHARACTER.hairColor),
     eyeColor: _hex(src.eyeColor, DEFAULT_CHARACTER.eyeColor),
     outfit: OUTFITS[src.outfit] ? src.outfit : DEFAULT_CHARACTER.outfit,
@@ -274,6 +284,7 @@ export function characterCreateParams(cfg) {
     frame: profile.frame,
     shoulderScale: profile.shoulderScale,
     hairStyle: c.hairStyle,
+    headgear: c.headgear,
     hairColor: c.hairColor,
     skinTone: c.skinTone,
     eyeColor: c.eyeColor,
@@ -499,8 +510,16 @@ export class PlayerAvatar {
     const next = normaliseCharacter(merged);
     this._char = next;
 
+    /* Headgear joins the rebuild list.
+     *
+     * Hair can be swapped in place because the avatar keeps a handle on that
+     * one mesh, but headgear is attached during `create` and there is no
+     * equivalent hook to retarget - and inventing one to save a rebuild the
+     * player triggers by hand, once, from a menu would be optimising the wrong
+     * thing. */
     const needsRebuild =
-      next.sex !== prev.sex || next.build !== prev.build || next.outfit !== prev.outfit;
+      next.sex !== prev.sex || next.build !== prev.build || next.outfit !== prev.outfit
+      || next.headgear !== prev.headgear;
 
     if (needsRebuild) {
       this._rebuildBody();

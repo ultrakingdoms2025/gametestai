@@ -2,6 +2,8 @@ import './character.css';
 import {
   DEFAULT_CHARACTER,
   HAIR_STYLE_IDS,
+  HEADGEAR_STYLES,
+  HEADGEAR_LABELS,
   HEIGHT_RANGE,
   OUTFITS,
   SEX_PROFILES,
@@ -257,6 +259,23 @@ export class CharacterMenu {
       })
     );
 
+    /* Headgear sits directly after hair because that is the order the player
+     * thinks in - it is worn over the top of it, and the two interact: a hood
+     * hides most of a long style, so seeing them adjacent is the point. */
+    body.appendChild(
+      this._section('Headgear', 'ch-headgear', (host, sec) => {
+        host.appendChild(
+          this._chips(
+            HEADGEAR_STYLES.map((id) => ({ v: id, label: HEADGEAR_LABELS[id] ?? id })),
+            'headgear'
+          )
+        );
+        this._syncers.push(() => {
+          sec.dataset.value = HEADGEAR_LABELS[this._cfg.headgear] ?? '';
+        });
+      })
+    );
+
     body.appendChild(
       this._section('Eyes', 'ch-eyes', (host) => {
         host.appendChild(this._swatches(EYE_COLORS, 'eyeColor', { custom: true }));
@@ -462,6 +481,10 @@ export class CharacterMenu {
       faceId: (Math.random() * 6) | 0,
       skinTone: pick(SKIN_TONES),
       hairStyle: pick(HAIR_STYLE_IDS),
+      // Bare-headed most of the time. Randomising uniformly across seven
+      // options would put a hat on six characters out of seven, which is a
+      // costume party rather than a crowd.
+      headgear: Math.random() < 0.45 ? pick(HEADGEAR_STYLES) : 'none',
       hairColor: pick(HAIR_COLORS),
       eyeColor: pick(EYE_COLORS),
       outfit: pick(Object.keys(OUTFITS)),

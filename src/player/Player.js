@@ -4,6 +4,7 @@ import { COLLISION_LAYER } from '../physics/Physics.js';
 import { Weapon } from './Weapon.js';
 import { Swim } from './Swim.js';
 import { Climb } from './Climb.js';
+import { FreeClimb } from './FreeClimb.js';
 import { Stamina } from '../systems/Stamina.js';
 import { WaterVolumes } from '../systems/WaterVolumes.js';
 
@@ -166,6 +167,13 @@ export class Player {
     /** @type {import('./Climb.js').Climb} */
     this.climb = new Climb({ player: this, physics, bus, input });
     /**
+     * Sustained wall climbing. Distinct from `climb`, which is a one-shot
+     * mantle over a ledge - this is the state you live in while scaling a
+     * tower, and it hands off to `climb` to get over the lip.
+     * @type {import('./FreeClimb.js').FreeClimb}
+     */
+    this.freeClimb = new FreeClimb({ player: this, physics, bus, input });
+    /**
      * Shared exertion pool. `main.js` constructs the real one and it attaches
      * itself here; if that wiring is absent the player builds its own on the
      * first step, so sprint gating and swim drain always work.
@@ -202,10 +210,12 @@ export class Player {
       this._selfOverride = false;
       this.swim.cancel();
       this.climb.cancel();
+      this.freeClimb.cancel();
     });
     this._offWorld = bus.on('world:changing', () => {
       this.swim.cancel();
       this.climb.cancel();
+      this.freeClimb.cancel();
       this._releaseMovement();
     });
 
@@ -399,6 +409,16 @@ export class Player {
     return this.climb.candidate;
   }
 
+  /** True while clinging to a wall. Distinct from `isClimbing`, the mantle. */
+  get isFreeClimbing() {
+    return this.freeClimb.active;
+  }
+
+  /** True when a wall is in reach to grab. Drives the parkour prompt. */
+  get wallCandidate() {
+    return this.freeClimb.candidate;
+  }
+
   /** Current stamina as a number. `player.stamina` is the pool object itself. */
   get staminaValue() {
     return this.stamina?.value ?? 0;
@@ -515,6 +535,21 @@ export class Player {
       return;
     }
 
+    /* ---- clinging to a wall ------------------------------------------ *
+     * Above water and below the mantle, because a free climb ends *in* a
+     * mantle: `FreeClimb` calls `climb.tryStart` when it crests the lip, and
+     * the branch above then owns the last metre. Like the mantle it writes the
+     * capsule itself, so nothing below runs. */
+    if (this.freeClimb.fixedUpdate(dt, elapsed)) {
+      this._claimMovement();
+      this._jumpHeld = !!s.jump;
+      this._grounded = false;
+      this._coyote = 0;
+      this._jumpBuffer = 0;
+      this._bobWeight = damp(this._bobWeight, 0, 12, dt);
+      return;
+    }
+
     /* ---- water ------------------------------------------------------- */
     if (this.swim.fixedUpdate(dt, elapsed)) {
       this._claimMovement();
@@ -600,6 +635,25 @@ export class Player {
     // probe is three short raycasts and there is no reason to pay for it while
     // standing still or backing away.
     if (!this._grounded || s.forward > 0) this.climb.poll(false);
+
+    /* ---- grab a wall -------------------------------------------------- *
+     * Offered *after* the mantle and before the jump, which is the whole
+     * priority order in one line: if there is a ledge you can get over, get
+     * over it; if there is only wall, hold on to it; otherwise jump.
+     *
+     * Space held rather than pressed, and pushing forward. Holding is what
+     * distinguishes "I meant to climb this" from "I jumped near a wall", and
+     * requiring forward means backing away from a facade never grabs it. A
+     * running jump into a wall grabs it, which is the interaction the citadel
+     * is built around. */
+    if (s.jump && s.forward > 0.2 && this.freeClimb.tryAttach()) {
+      this._jumpHeld = true;
+      this._jumpBuffer = 0;
+      this._coyote = 0;
+      this._claimMovement();
+      return;
+    }
+    if (!this._grounded && s.forward > 0) this.freeClimb.poll();
 
     /* ---- jump: coyote time + input buffering ------------------------ */
     this._coyote = this._grounded ? COYOTE_TIME : Math.max(0, this._coyote - dt);

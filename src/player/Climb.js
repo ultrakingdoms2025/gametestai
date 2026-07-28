@@ -144,12 +144,12 @@ export class Climb {
    * @param {{ inWater?: boolean }} [opts]
    * @returns {boolean} true when a hoist started
    */
-  tryStart(elapsed, { inWater = false } = {}) {
+  tryStart(elapsed, { inWater = false, fromWall = false } = {}) {
     if (this._active || this.player.isDead) return false;
 
     // Always re-probe on the press: the cached one can be up to four steps old
     // and the player may have turned since.
-    const cand = this._probe(inWater);
+    const cand = this._probe(inWater, fromWall);
     this._candidate = cand;
     if (!cand) return false;
 
@@ -160,6 +160,11 @@ export class Climb {
       // cost the full amount and refuse if it is not there, which is what
       // stops a wall being climbed indefinitely.
       if (inWater) stam.drain(Math.min(stam.value, P.climbStaminaCost * 0.35), 'climb-water');
+      // A free climb has been paying for itself continuously all the way up the
+      // face; charging the full standing-mantle cost again at the lip would
+      // routinely fail the topout and drop the player off a tower they had
+      // already climbed, which is the worst possible moment to run out.
+      else if (fromWall) stam.drain(Math.min(stam.value, P.climbStaminaCost * 0.25), 'climb-wall');
       else if (!stam.spend(P.climbStaminaCost, 'climb')) {
         this.bus?.emit('hud:notify', { text: 'Too exhausted to climb', tone: 'warn' });
         return false;
@@ -192,7 +197,7 @@ export class Climb {
    * @returns {{topY:number, rise:number, landX:number, landZ:number,
    *            wallX:number, wallZ:number}|null}
    */
-  _probe(inWater) {
+  _probe(inWater, fromWall = false) {
     const p = this.player;
     const pos = p.position;
     const phys = this.physics;
@@ -200,7 +205,12 @@ export class Climb {
     const fz = -Math.cos(p.yaw);
     _prDir.set(fx, 0, fz);
 
-    const minRise = inWater ? MIN_RISE_WATER : MIN_RISE_GROUND;
+    /* A free climb tops out with its hands already on the lip, so the rise left
+     * to cover is centimetres rather than the metre a standing mantle needs. The
+     * ground minimum exists to stop the game taking the controls for something a
+     * jump would clear - it does not apply to someone already hanging off the
+     * wall. See player/FreeClimb.js. */
+    const minRise = (inWater || fromWall) ? MIN_RISE_WATER : MIN_RISE_GROUND;
     const reach = P.radius + REACH;
 
     /* ---- 1. a wall in front ------------------------------------------ */

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { sweep, blob } from './Organic.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 
 /**
@@ -230,16 +231,41 @@ export class Horse {
      * flank in front of the hip, and the topline dips between the withers and
      * the croup. Built as one even slab - which is what this was - it reads as
      * a bench, and no amount of leg animation fixes a bench. */
+    /* One continuous surface, not a pile of boxes.
+     *
+     * The barrel is a single ellipse swept from the point of the shoulder back
+     * to the dock of the tail, its section changing along the way: deepest at
+     * the girth just behind the elbow, drawn in at the flank, swelling again
+     * over the haunch. The topline is carried by the y of each station, so the
+     * withers stand proud and the back dips to the croup - the line that says
+     * "horse" at any distance. The two blobs on top of it are the shoulder and
+     * hip, which genuinely are lumps rather than part of the sweep. */
+    const B = BARREL;
     const body = merge([
-      box(0.82, 0.92, BARREL * 0.52, 0, BODY_Y - 0.02, -BARREL * 0.12),  // girth, deepest
-      box(0.74, 0.8, BARREL * 0.4, 0, BODY_Y + 0.02, BARREL * 0.2),      // flank, tucked
-      box(0.88, 0.86, 0.46, 0, BODY_Y + 0.06, -BARREL * 0.4),            // shoulder
-      box(0.94, 0.9, 0.66, 0, BODY_Y + 0.08, BARREL * 0.4),              // haunch
-      box(0.66, 0.52, 0.44, 0, BODY_Y - 0.34, -BARREL * 0.3),            // brisket
-      // Withers: the ridge at the base of the neck a saddle sits behind.
-      box(0.5, 0.3, 0.5, 0, BODY_Y + 0.46, -BARREL * 0.32),
-      // Croup, falling away to the tail.
-      box(0.7, 0.42, 0.42, 0, BODY_Y + 0.34, BARREL * 0.52),
+      sweep([
+        { y: BODY_Y + 0.06, z: -B * 0.62, rx: 0.20, ry: 0.24 },   // point of shoulder
+        { y: BODY_Y + 0.02, z: -B * 0.50, rx: 0.34, ry: 0.40 },
+        { y: BODY_Y - 0.02, z: -B * 0.30, rx: 0.43, ry: 0.48 },   // girth, deepest
+        { y: BODY_Y - 0.01, z: -B * 0.08, rx: 0.44, ry: 0.47 },
+        { y: BODY_Y + 0.02, z: B * 0.14, rx: 0.40, ry: 0.42 },    // flank, tucked up
+        { y: BODY_Y + 0.06, z: B * 0.34, rx: 0.44, ry: 0.46 },
+        { y: BODY_Y + 0.10, z: B * 0.52, rx: 0.42, ry: 0.44 },    // over the hip
+        { y: BODY_Y + 0.16, z: B * 0.66, rx: 0.28, ry: 0.30 },    // croup falling away
+        { y: BODY_Y + 0.18, z: B * 0.76, rx: 0.14, ry: 0.16 },    // dock
+      ], 20),
+      /* Muscle bulges, sunk into the barrel rather than sitting on it.
+       *
+       * At their first size these reached 0.60 from the centreline against a
+       * barrel half-width of 0.43, so they stood clear of the body as two pairs
+       * of balls stuck to its sides. A shoulder is a swelling *of* the surface;
+       * anything that breaks the silhouette by more than a few centimetres is a
+       * tumour. Sized and placed to finish flush. */
+      blob(0.17, 0.20, 0.26, -0.28, BODY_Y + 0.06, -B * 0.34, 12),  // shoulder
+      blob(0.17, 0.20, 0.26, 0.28, BODY_Y + 0.06, -B * 0.34, 12),
+      blob(0.18, 0.22, 0.28, -0.26, BODY_Y + 0.10, B * 0.40, 12),   // hip
+      blob(0.18, 0.22, 0.28, 0.26, BODY_Y + 0.10, B * 0.40, 12),
+      // Withers: the ridge the saddle sits behind.
+      blob(0.13, 0.15, 0.26, 0, BODY_Y + 0.34, -B * 0.38, 10),
     ]);
     this._owned.push(body);
     const bodyMesh = new THREE.Mesh(body, coat);
@@ -267,14 +293,20 @@ export class Horse {
     /* Shorter and much deeper than the first attempt, which reached 1.3 m above
      * the withers on a 0.3 m section and came out a llama. A horse's neck is
      * about as long as its head and roughly twice as deep as it is wide. */
-    const neckGeo = merge([
-      taper(0.5, 0.78, 0.82, 0.34, 0.54, 0, 0.34, -0.16, -0.42),
-      taper(0.34, 0.3, 0.54, 0.3, 0.46, 0, 0.7, -0.46, -0.42),
-      // Crest along the top, where the mane sits.
-      box(0.24, 0.16, 0.7, 0, 0.52, -0.26, -0.42),
-      // Trapezius: blends the neck into the shoulder so the join is not a step.
-      taper(0.8, 0.36, 0.66, 0.52, 0.58, 0, 0.04, -0.02),
-    ]);
+    /* Swept up and forward from the chest to the poll.
+     *
+     * Stations carry both the curve and the section, so the neck leaves the
+     * body wide and shallow, narrows through the middle and arrives at the
+     * throatlatch as a deep, narrow blade - which is the shape that reads as a
+     * neck rather than as a pipe. The base station is deliberately fat so it
+     * buries itself inside the chest and needs no separate blending mass. */
+    const neckGeo = sweep([
+      { y: -0.16, z: 0.20, rx: 0.40, ry: 0.38 },   // buried in the chest
+      { y: 0.10, z: 0.02, rx: 0.31, ry: 0.36 },
+      { y: 0.38, z: -0.16, rx: 0.25, ry: 0.34 },
+      { y: 0.62, z: -0.34, rx: 0.21, ry: 0.30 },
+      { y: 0.80, z: -0.50, rx: 0.17, ry: 0.24 },   // throatlatch
+    ], 18, { capStart: false });
     this._owned.push(neckGeo);
     const neckMesh = new THREE.Mesh(neckGeo, coat);
     neckMesh.castShadow = true;
@@ -285,16 +317,23 @@ export class Horse {
     this.head = new THREE.Group();
     this.head.position.set(0, 0.85, -0.56);
     this.neck.add(this.head);
-    /* Skull, cheek and muzzle as three masses.
+    /* Swept from the poll down the face to the nose.
      *
-     * The give-away on a horse's head is that it narrows sharply from a broad
-     * jaw to a fine nose, with a distinct step at the cheek. Two even boxes
-     * gave it a snout of constant width, which is a dog. */
+     * A horse's head is a long wedge with one distinctive feature: it is wide
+     * and deep at the jaw and then falls away sharply to a fine muzzle, with
+     * the cheek as a separate lump on the side. Getting that step right is what
+     * stops it reading as a dog. */
     const headGeo = merge([
-      taper(0.32, 0.5, 0.36, 0.26, 0.3, 0, 0.02, -0.1, 0.2),     // skull
-      box(0.3, 0.3, 0.26, 0, -0.04, -0.24, 0.2),                 // cheek
-      taper(0.24, 0.42, 0.24, 0.2, 0.2, 0, -0.16, -0.46, 0.2),   // muzzle
-      box(0.22, 0.14, 0.16, 0, -0.3, -0.6, 0.2),                 // nose
+      sweep([
+        { y: 0.10, z: 0.06, rx: 0.14, ry: 0.15 },   // poll
+        { y: 0.04, z: -0.10, rx: 0.16, ry: 0.19 },  // forehead
+        { y: -0.06, z: -0.30, rx: 0.14, ry: 0.17 },
+        { y: -0.16, z: -0.48, rx: 0.11, ry: 0.13 },
+        { y: -0.25, z: -0.63, rx: 0.10, ry: 0.11 },  // muzzle
+        { y: -0.30, z: -0.72, rx: 0.09, ry: 0.09 },  // nose
+      ], 16),
+      blob(0.15, 0.14, 0.16, -0.06, -0.06, -0.24, 10),   // cheek
+      blob(0.15, 0.14, 0.16, 0.06, -0.06, -0.24, 10),
     ]);
     this._owned.push(headGeo);
     const headMesh = new THREE.Mesh(headGeo, coat);
@@ -321,15 +360,37 @@ export class Horse {
       this.ears.push(pivot);
     }
 
-    // Mane along the crest, on a pivot so it can lift and stream.
+    /* Mane, as a row of locks laid along the crest.
+     *
+     * It has to be built from the neck's own station list rather than placed by
+     * eye: when the neck became a swept surface the old two-box mane stayed
+     * where the boxes used to be, which put it over the horse's face. Sampling
+     * the same curve means it can never drift off the crest again, whatever the
+     * neck is reshaped into next.
+     *
+     * Separate locks rather than one slab, because the gaps between them are
+     * what read as hair. */
     this.mane = new THREE.Group();
-    this.mane.position.set(0, 0.36, -0.12);
+    this.mane.position.set(0, 0, 0);
     this.neck.add(this.mane);
-    // Same sign correction as the neck it lies along.
-    const maneGeo = merge([
-      box(0.09, 0.3, 0.8, 0, 0.14, -0.08, -0.42),
-      box(0.09, 0.22, 0.4, 0, 0.46, -0.42, -0.42),
-    ]);
+    const crest = [
+      { y: 0.02, z: 0.10, r: 0.34 },
+      { y: 0.26, z: -0.06, r: 0.30 },
+      { y: 0.48, z: -0.22, r: 0.27 },
+      { y: 0.66, z: -0.38, r: 0.23 },
+      { y: 0.80, z: -0.50, r: 0.19 },
+    ];
+    const locks = [];
+    for (let i = 0; i < crest.length; i++) {
+      const c = crest[i];
+      const len = 0.36 - i * 0.03;
+      locks.push(sweep([
+        { x: 0, y: c.y + c.r * 0.92, z: c.z, rx: 0.055, ry: 0.05 },
+        { x: 0, y: c.y + c.r * 0.5, z: c.z + len * 0.55, rx: 0.075, ry: 0.045 },
+        { x: 0, y: c.y + c.r * 0.05, z: c.z + len, rx: 0.05, ry: 0.03 },
+      ], 8));
+    }
+    const maneGeo = merge(locks);
     this._owned.push(maneGeo);
     this.mane.add(new THREE.Mesh(maneGeo, hair));
 
@@ -380,7 +441,13 @@ export class Horse {
     this.tail = new THREE.Group();
     this.tail.position.set(0, BODY_Y + 0.3, BARREL * 0.62);
     this.tilt.add(this.tail);
-    const tailGeo = merge([box(0.16, 0.72, 0.16, 0, -0.3, 0.1, -0.3)]);
+    // A hanging rope of hair, thickest a third of the way down.
+    const tailGeo = sweep([
+      { y: 0, z: 0, rx: 0.09, ry: 0.09 },
+      { y: -0.22, z: 0.08, rx: 0.12, ry: 0.11 },
+      { y: -0.48, z: 0.14, rx: 0.10, ry: 0.09 },
+      { y: -0.72, z: 0.17, rx: 0.06, ry: 0.055 },
+    ], 12, { capStart: false });
     this._owned.push(tailGeo);
     this.tail.add(new THREE.Mesh(tailGeo, hair));
 
@@ -409,10 +476,20 @@ export class Horse {
        * legs. The hind pair carries a stifle mass at the top, which is what
        * makes hindquarters read as the end that does the pushing. */
       const upperGeo = spec.front
-        ? taper(0.28, 0.64, 0.3, 0.17, 0.19, 0, -0.32, 0)
+        ? sweep([
+          { y: 0.02, z: 0, rx: 0.19, ry: 0.21 },
+          { y: -0.16, z: 0, rx: 0.16, ry: 0.18 },
+          { y: -0.40, z: 0, rx: 0.125, ry: 0.14 },
+          { y: -0.62, z: 0, rx: 0.10, ry: 0.11 },     // into the knee
+        ], 12, { capStart: false })
         : merge([
-          taper(0.32, 0.66, 0.38, 0.18, 0.2, 0, -0.33, 0),
-          box(0.3, 0.3, 0.34, 0, -0.1, 0.06),         // stifle
+          sweep([
+            { y: 0.04, z: 0.02, rx: 0.20, ry: 0.23 },   // gaskin, the pushing muscle
+            { y: -0.14, z: 0.03, rx: 0.18, ry: 0.21 },
+            { y: -0.38, z: 0.01, rx: 0.135, ry: 0.155 },
+            { y: -0.62, z: 0, rx: 0.10, ry: 0.11 },     // into the hock
+          ], 12, { capStart: false }),
+          blob(0.15, 0.17, 0.15, 0, -0.10, 0.08, 10),   // stifle
         ]);
       this._owned.push(upperGeo);
       const upperMesh = new THREE.Mesh(upperGeo, coat);
@@ -423,17 +500,25 @@ export class Horse {
       lower.position.set(0, -0.62, 0);
       upper.add(lower);
       const lowerGeo = merge([
-        box(0.16, 0.16, 0.18, 0, -0.02, 0),           // knee / hock
-        taper(0.13, 0.5, 0.15, 0.11, 0.12, 0, -0.32, 0),  // cannon
-        box(0.13, 0.12, 0.15, 0, -0.6, 0.01),         // fetlock
-        box(0.12, 0.1, 0.14, 0, -0.68, 0.02, 0.25),   // pastern, sloped
+        blob(0.085, 0.085, 0.095, 0, -0.02, 0, 10),   // knee / hock
+        sweep([
+          { y: -0.04, z: 0, rx: 0.082, ry: 0.090 },
+          { y: -0.28, z: 0, rx: 0.068, ry: 0.078 },   // cannon: bone and tendon only
+          { y: -0.52, z: 0, rx: 0.066, ry: 0.076 },
+          { y: -0.60, z: 0.005, rx: 0.076, ry: 0.082 },  // fetlock
+          { y: -0.70, z: 0.03, rx: 0.064, ry: 0.068 },   // pastern, sloped forward
+        ], 12, { capStart: false }),
       ]);
       this._owned.push(lowerGeo);
       const lowerMesh = new THREE.Mesh(lowerGeo, coat);
       lowerMesh.castShadow = true;
       lower.add(lowerMesh);
-      // Hoof: wider than the pastern and flared at the base, like a real one.
-      const hoofGeo = taper(0.17, 0.13, 0.19, 0.21, 0.23, 0, -0.79, 0.02, Math.PI);
+      // Hoof: flared outward toward the ground, like a real one.
+      const hoofGeo = sweep([
+        { y: -0.72, z: 0.03, rx: 0.068, ry: 0.072 },
+        { y: -0.80, z: 0.035, rx: 0.090, ry: 0.096 },
+        { y: -0.855, z: 0.04, rx: 0.100, ry: 0.107 },
+      ], 12, { capStart: false });
       this._owned.push(hoofGeo);
       lower.add(new THREE.Mesh(hoofGeo, dark));
 

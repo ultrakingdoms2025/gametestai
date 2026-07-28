@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { sweep, blob, blade } from './Organic.js';
 
 /**
  * EAGLE - the flight mount.
@@ -144,11 +145,22 @@ export class Eagle {
     const flight = this._mat(0x3a2a1c, { roughness: 0.85 });
     const tackMat = this._mat(0x6d4522, { roughness: 0.6 });
 
-    /* ---- torso ---- */
+    /* ---- torso ----
+     *
+     * One swept surface from the base of the neck to the tail root. A bird's
+     * body is the most obviously streamlined shape in nature and three stacked
+     * boxes made a brick of it; the section swells to a deep keel just behind
+     * the shoulder - where all the flight muscle is - and tapers away aft. */
     const torso = merge([
-      box(0.72, 0.66, 1.9, 0, 0, 0),
-      box(0.56, 0.5, 0.6, 0, -0.04, -1.05),     // breast
-      box(0.5, 0.42, 0.5, 0, 0.02, 0.98),       // rump
+      sweep([
+        { y: 0.06, z: -1.20, rx: 0.16, ry: 0.17 },   // base of the neck
+        { y: 0.00, z: -0.95, rx: 0.28, ry: 0.29 },
+        { y: -0.04, z: -0.55, rx: 0.36, ry: 0.35 },  // breast, deepest keel
+        { y: -0.02, z: -0.10, rx: 0.37, ry: 0.34 },
+        { y: 0.02, z: 0.45, rx: 0.32, ry: 0.29 },
+        { y: 0.04, z: 0.90, rx: 0.24, ry: 0.21 },    // rump
+        { y: 0.04, z: 1.18, rx: 0.13, ry: 0.12 },    // tail root
+      ], 20),
     ]);
     this._owned.push(torso);
     const torsoMesh = new THREE.Mesh(torso, body);
@@ -159,15 +171,31 @@ export class Eagle {
     this.head = new THREE.Group();
     this.head.position.set(0, 0.2, -1.28);
     this.tilt.add(this.head);
+    /* Swept skull, with the brow ridge that gives a raptor its glare. */
     const headGeo = merge([
-      box(0.34, 0.34, 0.42, 0, 0, -0.1),
-      box(0.2, 0.16, 0.2, 0, 0.04, -0.34),
+      sweep([
+        { y: -0.02, z: 0.16, rx: 0.15, ry: 0.15 },
+        { y: 0.00, z: 0.00, rx: 0.17, ry: 0.17 },   // crown
+        { y: -0.01, z: -0.18, rx: 0.14, ry: 0.14 },
+        { y: -0.03, z: -0.32, rx: 0.10, ry: 0.10 },
+      ], 16),
+      blob(0.13, 0.05, 0.09, 0, 0.07, -0.14, 10),   // brow
     ]);
     this._owned.push(headGeo);
     const hm = new THREE.Mesh(headGeo, headMat);
     hm.castShadow = true;
     this.head.add(hm);
-    this.head.add(new THREE.Mesh(box(0.13, 0.16, 0.3, 0, -0.02, -0.5, 0.16), beakMat));
+    /* Hooked beak: swept, then dropped at the tip. Nothing says raptor like
+     * the downward hook, and a straight box reads as a duck. */
+    const beakGeo = sweep([
+      { y: -0.01, z: -0.30, rx: 0.085, ry: 0.09 },
+      { y: -0.03, z: -0.40, rx: 0.070, ry: 0.075 },
+      { y: -0.07, z: -0.50, rx: 0.048, ry: 0.055 },
+      { y: -0.14, z: -0.55, rx: 0.026, ry: 0.036 },
+      { y: -0.19, z: -0.545, rx: 0.010, ry: 0.016 },
+    ], 12);
+    this._owned.push(beakGeo);
+    this.head.add(new THREE.Mesh(beakGeo, beakMat));
 
     /* ---- wings: three segments a side ---- *
      * Shoulder, elbow, hand. A two-bone wing can only flap; the third joint is
@@ -179,7 +207,13 @@ export class Eagle {
       shoulder.position.set(side * 0.3, 0.16, -0.15);
       this.tilt.add(shoulder);
 
-      const armGeo = box(1.5, 0.1, 0.72, side * 0.75, 0, 0.02);
+      // Wing bones as aerofoils: thick at the leading edge, thin at the trailing.
+      const armGeo = sweep([
+        { x: 0, y: 0, z: 0.02, rx: 0.11, ry: 0.10 },
+        { x: side * 0.5, y: 0.01, z: 0.03, rx: 0.36, ry: 0.075 },
+        { x: side * 1.05, y: 0.01, z: 0.04, rx: 0.36, ry: 0.06 },
+        { x: side * 1.48, y: 0, z: 0.04, rx: 0.30, ry: 0.05 },
+      ], 12, { capStart: false });
       this._owned.push(armGeo);
       const arm = new THREE.Mesh(armGeo, body);
       arm.castShadow = true;
@@ -188,7 +222,12 @@ export class Eagle {
       const elbow = new THREE.Group();
       elbow.position.set(side * 1.5, 0, 0);
       shoulder.add(elbow);
-      const foreGeo = box(1.55, 0.09, 0.62, side * 0.78, 0, 0.06);
+      const foreGeo = sweep([
+        { x: 0, y: 0, z: 0.05, rx: 0.28, ry: 0.055 },
+        { x: side * 0.6, y: 0, z: 0.07, rx: 0.30, ry: 0.048 },
+        { x: side * 1.2, y: 0, z: 0.08, rx: 0.26, ry: 0.040 },
+        { x: side * 1.53, y: 0, z: 0.08, rx: 0.18, ry: 0.032 },
+      ], 12, { capStart: false });
       this._owned.push(foreGeo);
       const fore = new THREE.Mesh(foreGeo, body);
       fore.castShadow = true;
@@ -203,7 +242,13 @@ export class Eagle {
       for (let i = 0; i < 6; i++) {
         const len = 1.35 - i * 0.1;
         const spread = i * 0.055;
-        prim.push(box(len, 0.05, 0.17, side * (len * 0.5 + 0.05), 0, 0.16 + i * 0.19, 0, side * spread, 0));
+        // A real feather: tapered, slightly curved, and with thickness so it
+        // catches light and casts a shadow instead of vanishing edge-on.
+        const f = blade(len, 0.19, 0.07, 0.035, 0.16 + i * 0.02, 5);
+        f.rotateZ(-Math.PI / 2 * side);
+        f.rotateY(side * spread);
+        f.translate(side * 0.05, 0, 0.16 + i * 0.19);
+        prim.push(f);
       }
       const primGeo = merge(prim);
       this._owned.push(primGeo);
@@ -218,10 +263,18 @@ export class Eagle {
     this.tail = new THREE.Group();
     this.tail.position.set(0, 0.02, 1.15);
     this.tilt.add(this.tail);
-    const tailGeo = merge([
-      box(0.72, 0.06, 1.1, 0, 0, 0.5),
-      box(0.5, 0.05, 0.4, 0, 0, 1.05),
-    ]);
+    // Tail as separate rectrices, so the fan reads as feathers when it spreads.
+    const rects = [];
+    for (let i = -3; i <= 3; i++) {
+      const t = Math.abs(i) / 3;
+      const len = 1.25 - t * 0.32;
+      const f = blade(len, 0.17, 0.10, 0.032, 0.05, 4);
+      f.rotateY(Math.PI);
+      f.rotateY(i * 0.115);
+      f.translate(0, 0, 0.06);
+      rects.push(f);
+    }
+    const tailGeo = merge(rects);
     this._owned.push(tailGeo);
     const tm = new THREE.Mesh(tailGeo, flight);
     tm.castShadow = true;
@@ -229,7 +282,13 @@ export class Eagle {
 
     /* ---- talons ---- */
     for (const side of [-1, 1]) {
-      const leg = new THREE.Mesh(box(0.12, 0.34, 0.12, side * 0.2, -0.42, 0.3), beakMat);
+      const legGeo = sweep([
+        { x: side * 0.2, y: -0.26, z: 0.30, rx: 0.075, ry: 0.075 },
+        { x: side * 0.2, y: -0.46, z: 0.31, rx: 0.055, ry: 0.055 },
+        { x: side * 0.2, y: -0.58, z: 0.33, rx: 0.042, ry: 0.042 },
+      ], 10, { capStart: false });
+      this._owned.push(legGeo);
+      const leg = new THREE.Mesh(legGeo, beakMat);
       this.tilt.add(leg);
     }
 

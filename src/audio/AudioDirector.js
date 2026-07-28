@@ -162,11 +162,26 @@ export class AudioDirector {
     on('npc:killed', (e) => this.sfx.impact(e?.npc?.position ?? null, 'flesh'));
 
     /* --- mounts ------------------------------------------------------ */
-    on('mount:summoned', (e) => this.sfx.mountSummon(e?.position ?? null, { up: true }));
-    on('mount:mounted', (e) => this._startMount(e?.id));
+    on('mount:summoned', (e) => {
+      this.sfx.mountSummon(e?.position ?? null, { up: true });
+      // A summoned animal answers. The board and the car do not.
+      if (e?.id === 'horse') this.sfx.whinny(e?.position ?? null);
+      else if (e?.id === 'eagle') this.sfx.eagleScreech(e?.position ?? null);
+    });
+    on('mount:mounted', (e) => this._startMount(e?.id, e?.mount ?? null));
     on('mount:dismounted', () => this._stopMount());
     on('mount:boost', (e) => {
       if (this._mount?.id === 'dragon') this.sfx.dragonRoar(e?.position ?? null);
+      else if (this._mount?.id === 'eagle' && e?.active) this.sfx.eagleScreech(e?.position ?? null);
+    });
+    /* Per-footfall and per-wingbeat, emitted by the mounts from the same phase
+     * that placed the limb. Rate limiting lives in `Sfx`; a gallop legitimately
+     * fires four of these a second and must not be thinned, or the gait stops
+     * being audible as a gait. */
+    on('mount:footfall', (e) => this.sfx.hoof(e?.position ?? null, { hard: e?.hard ?? 0.5 }));
+    on('mount:wingbeat', (e) => this.sfx.wingBeat(e?.position ?? null, { power: e?.power ?? 1 }));
+    on('mount:jump', (e) => {
+      if (e?.id === 'horse') this.sfx.whinny(this.player?.position ?? null);
     });
 
     /* --- UI ---------------------------------------------------------- */
@@ -192,12 +207,20 @@ export class AudioDirector {
   /* Mount voices                                                        */
   /* ------------------------------------------------------------------ */
 
-  _startMount(id) {
+  _startMount(id, mount = null) {
     this._stopMount();
     if (!id) return;
-    const kind = id === 'car' ? 'car' : id === 'dragon' ? 'dragon' : 'hoverboard';
+    /* Explicit, not a fallback chain ending in 'hoverboard'.
+     *
+     * The old form mapped anything it did not recognise onto the anti-grav hum,
+     * so the horse and the eagle both rode around humming like a hoverboard.
+     * A mount with no voice of its own should be silent, which is at least
+     * honest, rather than borrowing another animal's. */
+    const VOICE = { car: 'car', dragon: 'dragon', horse: 'horse', eagle: 'eagle', hoverboard: 'hoverboard' };
+    const kind = VOICE[id] ?? null;
+    if (!kind) return;
     const handle = this.sfx.startMount(kind);
-    if (handle) this._mount = { handle, id };
+    if (handle) this._mount = { handle, id, mount };
     if (id === 'dragon') this.sfx.dragonRoar(this.player?.position ?? null);
   }
 
@@ -233,7 +256,16 @@ export class AudioDirector {
     if (this._mount) {
       const p = this.player;
       const vel = p?.velocity;
-      const speed = vel ? Math.hypot(vel.x, vel.z) : 0;
+      /* Prefer the mount's own speed over the rider's ground velocity.
+       *
+       * They are the same number for a horse and very much not for a bird: an
+       * eagle's wind noise is airspeed, which includes the vertical, so a stoop
+       * straight down measured on the horizontal reads as silence at exactly
+       * the moment it should be loudest. */
+      const m = this._mount.mount;
+      const speed = typeof m?.speed === 'number'
+        ? Math.abs(m.speed)
+        : (vel ? Math.hypot(vel.x, vel.z) : 0);
       this._mount.handle.set({
         speed,
         throttle: Math.min(1, speed / 18),

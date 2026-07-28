@@ -566,8 +566,29 @@ export class Eagle {
     // Beat frequency rises with effort and falls with speed: a soaring bird at
     // 40 m/s barely moves its wings, a climbing one hammers them.
     const freq = 0.9 + this._beat * 2.1 - clamp(this.speed / MAX_SPEED, 0, 1) * 0.4;
+    const prevPhase = this._flapPhase;
     this._flapPhase = (this._flapPhase + dt * freq) % 1;
-    const flap = Math.sin(this._flapPhase * TAU) * this._beat;
+    /* Asymmetric stroke.
+     *
+     * A plain sine spends as long going up as coming down, which is a rowing
+     * motion, not a wingbeat. A real downstroke is the fast, powerful half and
+     * the recovery is slower and softer, so the phase is skewed before it is
+     * turned into an angle: quick push through the first third, lazy return
+     * over the rest. Costs one remap and it is most of what makes the bird look
+     * like it is pushing on the air rather than waving at it. */
+    const ph = this._flapPhase;
+    const skew = ph < 0.34 ? (ph / 0.34) * 0.5 : 0.5 + ((ph - 0.34) / 0.66) * 0.5;
+    const flap = Math.sin(skew * TAU) * this._beat;
+
+    /* The bottom of the downstroke is where the air gets hit, so that is where
+     * the sound belongs. Taken from the same phase that drives the wing, for
+     * the same reason the horse's hooves are: a timer drifts, and a wingbeat
+     * you hear at the top of the stroke reads as somebody else's bird. */
+    if (prevPhase < 0.34 && ph >= 0.34 && this._beat > 0.12) {
+      this.bus?.emit('mount:wingbeat', {
+        id: this.id, position: this.position, power: clamp(this._beat, 0, 1),
+      });
+    }
 
     // Fold with speed. This is the dive silhouette and it comes free from the
     // three-joint wing.

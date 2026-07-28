@@ -52,12 +52,24 @@ const BARREL = 1.34;
 const TRACK = 0.34;
 
 /** Gait bands, in metres per second. */
+/**
+ * Gait bands. `stride` is the ground covered by one *complete* cycle of all
+ * four legs, so speed / stride is the cycle rate that drives both the legs and
+ * the hoofbeats.
+ *
+ * These were originally 2.1 / 3.0 / 2.5 / 2.2, which has a gallop taking a
+ * shorter stride than a trot - backwards, and short enough that the animal ran
+ * at seven cycles a second. Real horses manage about two and a half. The legs
+ * blurred, and once the hooves were given a voice it came out as twenty-eight
+ * beats a second: not a gallop, a sewing machine. A horse lengthens its stride
+ * as it speeds up, which is most of where the extra speed comes from.
+ */
 const GAITS = [
   { name: 'halt', max: 0.2, stride: 0, lift: 0, bob: 0 },
-  { name: 'walk', max: 2.6, stride: 2.1, lift: 0.17, bob: 0.035 },
-  { name: 'trot', max: 6.4, stride: 3.0, lift: 0.28, bob: 0.075 },
-  { name: 'canter', max: 10.5, stride: 2.5, lift: 0.36, bob: 0.13 },
-  { name: 'gallop', max: Infinity, stride: 2.2, lift: 0.44, bob: 0.2 },
+  { name: 'walk', max: 2.6, stride: 2.6, lift: 0.17, bob: 0.035 },
+  { name: 'trot', max: 6.4, stride: 4.4, lift: 0.28, bob: 0.075 },
+  { name: 'canter', max: 10.5, stride: 5.6, lift: 0.36, bob: 0.13 },
+  { name: 'gallop', max: Infinity, stride: 6.8, lift: 0.44, bob: 0.2 },
 ];
 
 /**
@@ -209,8 +221,6 @@ export class Horse {
     const headGeo = merge([
       box(0.3, 0.34, 0.62, 0, 0, -0.2, 0.2),
       box(0.26, 0.2, 0.26, 0, -0.1, -0.48, 0.2),  // muzzle
-      box(0.07, 0.18, 0.07, -0.1, 0.2, 0.04),     // ears
-      box(0.07, 0.18, 0.07, 0.1, 0.2, 0.04),
     ]);
     this._owned.push(headGeo);
     const headMesh = new THREE.Mesh(headGeo, coat);
@@ -220,13 +230,33 @@ export class Horse {
     const bridle = new THREE.Mesh(box(0.32, 0.05, 0.05, 0, -0.02, -0.3), tack);
     this.head.add(bridle);
 
-    // Mane along the crest.
+    /* Ears on their own pivots rather than merged into the skull.
+     *
+     * Two extra nodes, and they carry more of the animal's state than any other
+     * part of it: pinned flat at the gallop, forward and flicking at rest. A
+     * horse whose ears never move is a statue of a horse, however well its legs
+     * are animated. */
+    this.ears = [];
+    for (const side of [-1, 1]) {
+      const pivot = new THREE.Group();
+      pivot.position.set(side * 0.1, 0.14, 0.04);
+      const geo = box(0.07, 0.18, 0.07, 0, 0.09, 0);
+      this._owned.push(geo);
+      pivot.add(new THREE.Mesh(geo, coat));
+      this.head.add(pivot);
+      this.ears.push(pivot);
+    }
+
+    // Mane along the crest, on a pivot so it can lift and stream.
+    this.mane = new THREE.Group();
+    this.mane.position.set(0, 0.36, -0.12);
+    this.neck.add(this.mane);
     const maneGeo = merge([
-      box(0.08, 0.3, 0.8, 0, 0.5, -0.2, 0.42),
-      box(0.08, 0.22, 0.4, 0, 0.86, -0.52, 0.42),
+      box(0.08, 0.3, 0.8, 0, 0.14, -0.08, 0.42),
+      box(0.08, 0.22, 0.4, 0, 0.5, -0.4, 0.42),
     ]);
     this._owned.push(maneGeo);
-    this.neck.add(new THREE.Mesh(maneGeo, hair));
+    this.mane.add(new THREE.Mesh(maneGeo, hair));
 
     /* ---- saddle + stirrups ---- */
     const saddleGeo = merge([
@@ -303,7 +333,7 @@ export class Horse {
       const hoof = new THREE.Mesh(box(0.22, 0.1, 0.28, 0, -0.66, 0.02), dark);
       lower.add(hoof);
 
-      this.legs.push({ upper, lower, front: spec.front });
+      this.legs.push({ upper, lower, front: spec.front, prevT: 0 });
     }
 
     this.root.visible = false;
@@ -433,6 +463,9 @@ export class Horse {
     // Lean into the turn, proportional to how fast we are going round it.
     const leanTarget = -steer * sp01 * 0.22;
     this._roll = damp(this._roll, leanTarget, 6, dt);
+    // Smoothed, and kept for the frame update: the head and shoulders carry the
+    // turn as much as the roll does, and they must not snap when the key does.
+    this._turnRate = damp(this._turnRate ?? 0, steer, 5, dt);
 
     /* ---- jump -------------------------------------------------------- */
     if (ridden && ctrl.up > 0.5 && this._grounded) {
@@ -548,6 +581,24 @@ export class Horse {
       // The knee folds only on the way through, and only forwards.
       leg.lower.rotation.x = -Math.max(0, swing) * (leg.front ? 0.8 : 1.05);
       leg.upper.position.y = (leg.front ? BODY_Y - 0.16 : BODY_Y - 0.1) + lift * 0.12;
+
+      /* The instant this hoof touches down.
+       *
+       * t = 0.4 is where the swing ends and the stance begins, which is by
+       * definition the moment the foot is on the ground. Taking the sound from
+       * the same phase table that placed the leg is the only way four hooves
+       * land audibly in the pattern they visibly land in - a timer would drift
+       * out of step with the gait within a couple of strides, and a trot that
+       * sounds like a canter is worse than no sound at all. */
+      const landed = leg.prevT < 0.4 && t >= 0.4;
+      leg.prevT = t;
+      if (landed && this._grounded && Math.abs(this.speed) > 0.4) {
+        this.bus?.emit('mount:footfall', {
+          id: this.id,
+          position: this.position,
+          hard: clamp(Math.abs(this.speed) / MAX_SPEED, 0.15, 1),
+        });
+      }
     }
 
     // Body bob, twice a stride, and the head nods against it - a horse's head
@@ -562,6 +613,46 @@ export class Horse {
     const sp01 = clamp(Math.abs(this.speed) / MAX_SPEED, 0, 1);
     this.tail.rotation.x = -0.15 - sp01 * 0.55;
     this.tail.rotation.z = Math.sin(this._time * 2.2) * (0.12 - sp01 * 0.08);
+
+    /* ---- the parts that separate a gallop from a fast walk -------------- *
+     *
+     * Leg timing alone reads as one animation played at different rates. What
+     * actually distinguishes the gaits to the eye is the whole animal changing
+     * shape: a galloping horse flattens out and reaches with its neck, a halted
+     * one stands up and looks around. All of it is driven off the same speed and
+     * stride phase, so nothing can fall out of sync with the legs. */
+
+    // Neck lowers and extends into the gallop, rises at the halt.
+    const reach = sp01 * sp01;
+    this.neck.rotation.x = -0.06 + this._headBob + reach * 0.42;
+    this.head.rotation.x = 0.1 - this._headBob * 0.6 - reach * 0.3;
+
+    // Body flexes along its length twice a stride, strongest at the gallop -
+    // this is the bunch-and-extend that makes the animal look like it is
+    // driving off its hind legs rather than being pushed along.
+    this.tilt.rotation.x = this._pitch + Math.sin(phase * TAU * 2) * gait.bob * 0.5 * (0.3 + reach);
+
+    // Lean into the turn. A horse banks a little and, more visibly, carries its
+    // head to the inside of the corner.
+    const lean = clamp(this._turnRate ?? 0, -1, 1);
+    this.tilt.rotation.z = this._roll - lean * 0.16 * sp01;
+    this.neck.rotation.y = damp(this.neck.rotation.y ?? 0, -lean * 0.3, 6, dt);
+
+    /* Ears, which cost two rotations and do more for "alive" than anything else
+     * here: swivelled back flat at the gallop, forward and flicking at rest. */
+    if (this.ears) {
+      const flick = Math.sin(this._time * 3.1) * Math.sin(this._time * 1.3);
+      for (let i = 0; i < this.ears.length; i++) {
+        const side = i === 0 ? -1 : 1;
+        this.ears[i].rotation.x = -reach * 0.9 + (1 - sp01) * flick * 0.18;
+        this.ears[i].rotation.z = side * (0.12 + reach * 0.35);
+      }
+    }
+
+    // Mane lifts and streams behind at speed.
+    if (this.mane) {
+      this.mane.rotation.x = -0.1 - sp01 * 0.7 + Math.sin(phase * TAU * 2) * 0.12 * sp01;
+    }
   }
 
   /* ------------------------------------------------------------------ */

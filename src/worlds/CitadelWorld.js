@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { World } from './World.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 
@@ -67,6 +68,9 @@ const _color = new THREE.Color();
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+/** Edge round applied to batched boxes, and the size below which it is skipped. */
+const BEVEL = 0.075;
+const BEVEL_MIN = 0.55;
 
 /** Playfield half-extent. Matches the other worlds so the minimap framing does. */
 const HALF = 200;
@@ -222,10 +226,25 @@ class Batch {
       // Foot of *this* piece, in world space - so a roof lip is shaded from its
       // own underside, not from the ground 20 m below it.
       let minY = Infinity;
-      for (let i = 0; i < n; i++) minY = Math.min(minY, posA.getY(i));
+      let maxY = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const y = posA.getY(i);
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      /* Never run the gradient over more than the piece is tall.
+       *
+       * The span is chosen for walls, and a wall is metres high, so the darkest
+       * part of the ramp lands at its foot and the rest is clean. Applied
+       * unchanged to something thin - a palm frond is 9 cm thick - the whole
+       * piece sits inside the first 4% of the ramp and comes out uniformly at
+       * the *bottom* of it. The palms rendered as black silhouettes for exactly
+       * this reason. Clamping the span to the piece's own height gives thin work
+       * a dark underside and a lit top, which is what was wanted from it. */
+      const s = Math.min(span, Math.max(maxY - minY, 0.02));
 
       for (let i = 0; i < n; i++) {
-        const t = clamp01((posA.getY(i) - minY) / span);
+        const t = clamp01((posA.getY(i) - minY) / s);
         // smoothstep, so the gradient has no visible band where it ends
         const rise = t * t * (3 - 2 * t);
         let f = 1 - ao * (1 - rise);
@@ -247,14 +266,41 @@ class Batch {
     list.push(g);
   }
 
-  /** Convenience for the overwhelmingly common case: an axis-aligned box. */
+  /**
+   * Convenience for the overwhelmingly common case: an axis-aligned box.
+   *
+   * Bevelled, not square. A hard 90-degree edge returns exactly one shade to
+   * the camera, so a town built from plain boxes has no edges in it at all -
+   * just flat panels meeting at invisible seams, which is what "blocky" really
+   * describes. A few centimetres of round on every edge gives each one a
+   * highlight on the sunward side and a dark line away from it, and every
+   * silhouette in the world stops being a cut-out.
+   *
+   * Only the pieces big enough for it to read.
+   *
+   * A bevelled box costs 108 triangles against a plain one's 12, and this world
+   * emits something like twelve thousand of them - the window trim alone is
+   * nine thousand. Bevelling all of it cost three million triangles and half the
+   * frame rate to round the edges of sills a few centimetres across, which
+   * nobody can see. Above the threshold it is walls, roofs, towers and cliff
+   * steps: the silhouettes the eye actually reads. Below it, trim stays square
+   * and free.
+   *
+   * The radius is clamped against the smallest dimension regardless, because a
+   * bevel wider than the piece it is rounding turns the piece inside out.
+   */
   box(key, w, h, d, x, y, z, rotY = 0, tint = null) {
     _e1.set(0, rotY, 0);
     _q1.setFromEuler(_e1);
     _v1.set(x, y, z);
     _v2.set(1, 1, 1);
     _m1.compose(_v1, _q1, _v2);
-    this.add(key, new THREE.BoxGeometry(w, h, d), _m1, tint);
+    const min = Math.min(w, h, d);
+    const r = Math.min(BEVEL, w * 0.22, h * 0.22, d * 0.22);
+    const geo = min >= BEVEL_MIN && r > 0.02
+      ? new RoundedBoxGeometry(w, h, d, 1, r)
+      : new THREE.BoxGeometry(w, h, d);
+    this.add(key, geo, _m1, tint);
   }
 
   /**
@@ -417,19 +463,27 @@ export class CitadelWorld extends World {
     m.name = `citadel.${key}`;
     m.vertexColors = true;
     // Sun-bleached limestone and mudbrick, per surface family.
+    /* These multiply the per-box vertex colour, so they have to stay near white.
+     *
+     * Both ends of this were authored as if they were the only one: `Batch.box`
+     * callers pass the actual colour they want the piece to be, and these were
+     * written as colours too. Two mid-tones multiplied give a third much darker
+     * than either - wood.beam at 0xb9946a against a 0x8a6a45 trunk resolved to
+     * 0x3e2712, which is why the palms and every beam in the world came out
+     * nearly black. Their job is a warm shift, not a colour. */
     const TINT = {
-      'stone.castle': 0xe8dcbe,
-      'plaster.wall': 0xf2e6c8,
-      'stone.cobble': 0xd8cba9,
-      'wood.beam': 0xb9946a,
-      'wood.plank': 0xc9a578,
-      'roof.tile': 0xd7cdb4,
+      'stone.castle': 0xf4ecd8,
+      'plaster.wall': 0xf6ecd6,
+      'stone.cobble': 0xe8ddc2,
+      'wood.beam': 0xf0e2cc,
+      'wood.plank': 0xf2e4cc,
+      'roof.tile': 0xeae2d0,
       'thatch.roof': 0xffe9a8,
       'fabric.banner': 0xffffff,
       'dirt.ground': 0xe0cda3,
       // Date palm, not meadow: the library's grass is a temperate green and a
       // desert frond is grey-olive. Same material, one tint apart.
-      'grass.field': 0x93a06a,
+      'grass.field': 0xdce8c0,
     };
     const t = TINT[key.split(':')[0]];
     if (t !== undefined) m.color = new THREE.Color(t);
@@ -735,26 +789,32 @@ export class CitadelWorld extends World {
      * with, so the desert's crests were solid to the eye and empty to the
      * player. Built as real boxes they get real colliders, and the flat mesh
      * underneath them is a floor that agrees with itself. */
-    for (let i = 0; i < 90; i++) {
+    /* Low and wide, in three shallow tiers.
+     *
+     * The first pass built these nearly 6 m tall in two steps, which in a desert
+     * you cross on horseback is not scenery, it is a wall - the test horse
+     * spawned against one and could not move at all. Each tier is now a step
+     * about half a metre high, which a rider goes over without noticing and
+     * which still breaks up a flat plain when the light rakes across it. */
+    for (let i = 0; i < 70; i++) {
       const a = rnd() * TAU;
-      const r = MESA_R + SHOULDER + 6 + rnd() * 96;
+      const r = MESA_R + SHOULDER + 10 + rnd() * 92;
       const px = Math.cos(a) * r;
       const pz = Math.sin(a) * r;
-      if (Math.abs(px) > HALF - 8 || Math.abs(pz) > HALF - 8) continue;
-      const dw = 14 + rnd() * 30;
-      const dd = 7 + rnd() * 13;
-      const dh = 1.1 + rnd() * 2.4;
+      if (Math.abs(px) > HALF - 10 || Math.abs(pz) > HALF - 10) continue;
+      const dw = 20 + rnd() * 34;
+      const dd = 10 + rnd() * 16;
+      const step = 0.42 + rnd() * 0.3;
       const da = rnd() * TAU;
-      // Two tiers, the upper one shorter: a single box is a kerb, two is a mound.
-      B.box('dirt.ground', dw, dh, dd, px, dh * 0.5, pz, da, 0xe6d3a8);
-      this.track(this.physics.addRotatedBox(
-        _v1.set(px, dh * 0.5, pz), _v2.set(dw * 0.5, dh * 0.5, dd * 0.5), da
-      ));
-      B.box('dirt.ground', dw * 0.6, dh * 0.7, dd * 0.58, px, dh + dh * 0.35, pz, da, 0xefdcb2);
-      this.track(this.physics.addRotatedBox(
-        _v1.set(px, dh + dh * 0.35, pz),
-        _v2.set(dw * 0.3, dh * 0.35, dd * 0.29), da
-      ));
+      for (let k = 0; k < 3; k++) {
+        const shrink = 1 - k * 0.28;
+        B.box('dirt.ground', dw * shrink, step, dd * shrink,
+          px, step * (k + 0.5), pz, da, k === 2 ? 0xf0dfb6 : 0xe8d5aa);
+        this.track(this.physics.addRotatedBox(
+          _v1.set(px, step * (k + 0.5), pz),
+          _v2.set(dw * shrink * 0.5, step * 0.5, dd * shrink * 0.5), da
+        ));
+      }
     }
 
     B.flush(this.group, (k) => this._mat(k), 'cliff', { cast: true, recv: true });
@@ -1034,6 +1094,31 @@ export class CitadelWorld extends World {
             _v1.set(ax, y0 + 3.4, az), _v2.set(w * 0.4, 0.06, 1.6), a
           ));
         }
+
+        /* A cornice under the roof lip, and a domed roof on a few blocks.
+         *
+         * Every silhouette in the town was a rectangle with a flat top, and a
+         * skyline of nothing but rectangles is most of what reads as blocky
+         * however well the faces are shaded. The cornice puts a horizontal
+         * shadow line under every roof, and the domes break the ridge line with
+         * the one shape in the world that has no edges at all. */
+        B.box('stone.castle', w + 1.15, 0.28, d + 1.15, px, y0 + h - 0.32, pz, a,
+          0xd6c6a0);
+
+        if (rnd() < 0.3) {
+          const dr = Math.min(w, d) * 0.42;
+          const dome = new THREE.SphereGeometry(dr, 14, 8, 0, TAU, 0, Math.PI * 0.52);
+          _e1.set(0, a, 0);
+          _q1.setFromEuler(_e1);
+          _v1.set(px, y0 + h + 0.55, pz);
+          _v2.set(1, 0.82, 1);
+          _m1.compose(_v1, _q1, _v2);
+          B.add('plaster.wall', dome, _m1, 0xe4d6b4);
+          this.track(this.physics.addBox(px, y0 + h + 0.55 + dr * 0.32, pz,
+            dr * 0.72, dr * 0.32, dr * 0.72));
+          // Finial, so the dome terminates rather than just stopping.
+          B.box('wood.beam', 0.16, 0.5, 0.16, px, y0 + h + 0.55 + dr * 0.82 + 0.25, pz, a, 0x8a6a3a);
+        }
       }
     }
 
@@ -1129,9 +1214,28 @@ export class CitadelWorld extends World {
           _v1.set(px, wardTop + by, pz), _v2.set((mw + 2.2) * 0.5, 0.2, (mw + 2.2) * 0.5), a
         ));
       }
-      B.box('roof.tile', mw + 1.6, 1.5, mw + 1.6, px, wardTop + mh + 0.75, pz, a, 0x8fa2b4);
+      // Gallery under the cap - the ring a muezzin would stand on, and the last
+      // rest before the top of the hardest climb in the world.
+      B.box('stone.castle', mw + 2.6, 0.5, mw + 2.6, px, wardTop + mh - 0.25, pz, a, 0xd8c8a2);
       this.track(this.physics.addRotatedBox(
-        _v1.set(px, wardTop + mh + 0.75, pz), _v2.set((mw + 1.6) * 0.5, 0.75, (mw + 1.6) * 0.5), a
+        _v1.set(px, wardTop + mh - 0.25, pz), _v2.set((mw + 2.6) * 0.5, 0.25, (mw + 2.6) * 0.5), a
+      ));
+      /* An onion dome instead of a flat slab.
+       *
+       * A minaret capped with a box is a chimney. This is the world's most
+       * distant readable silhouette - four of them stand above everything but
+       * the great tower - so it is worth the one sphere each. */
+      const capR = mw * 0.92;
+      const cap = new THREE.SphereGeometry(capR, 16, 10, 0, TAU, 0, Math.PI * 0.58);
+      _e1.set(0, a, 0);
+      _q1.setFromEuler(_e1);
+      _v1.set(px, wardTop + mh + 0.1, pz);
+      _v2.set(1, 1.5, 1);      // stretched tall: an onion, not a hemisphere
+      _m1.compose(_v1, _q1, _v2);
+      B.add('roof.tile', cap, _m1, 0xbcc8d4);
+      B.box('wood.beam', 0.22, 1.5, 0.22, px, wardTop + mh + capR * 1.5 + 0.6, pz, a, 0x8a6a3a);
+      this.track(this.physics.addRotatedBox(
+        _v1.set(px, wardTop + mh + 0.6, pz), _v2.set(capR * 0.7, 0.9, capR * 0.7), a
       ));
       this._towers.push({ x: px, y: wardTop + mh + 1.5, z: pz, r: mw * 0.5, minaret: true });
       this.viewpoints.push({ x: px, y: wardTop + mh + 1.5, z: pz, name: `Minaret ${i + 1}` });
@@ -1358,18 +1462,41 @@ export class CitadelWorld extends World {
       }
       this.track(this.physics.addBox(s.x, gy + (ty - gy) * 0.5, s.z, 0.32, (ty - gy) * 0.5, 0.32));
 
-      // Crown: fronds fanned out and drooping.
-      const fronds = 7 + ((rnd() * 3) | 0);
+      /* Crown: each frond built from three segments that bend further over as
+       * they go out.
+       *
+       * One straight slab per frond reads as a plank nailed to a pole - it is
+       * the arc that makes a palm a palm, and a frond is the most recognisable
+       * silhouette in the world once you put it against the sky. Three segments
+       * is the fewest that curves. */
+      const fronds = 8 + ((rnd() * 4) | 0);
+      const crownY = ty + 0.3;
       for (let f = 0; f < fronds; f++) {
-        const fa = (f / fronds) * TAU + rnd() * 0.3;
-        const droop = 0.28 + rnd() * 0.4;
-        const len = 2.3 + rnd() * 1.1;
-        _e1.set(0, fa, -droop);
-        _q1.setFromEuler(_e1);
-        _v1.set(tx + Math.cos(fa) * len * 0.42, ty + 0.32 - droop * len * 0.3, tz + Math.sin(fa) * len * 0.42);
-        _v2.set(1, 1, 1);
-        _m1.compose(_v1, _q1, _v2);
-        B.add('grass.field', new THREE.BoxGeometry(len, 0.09, 0.52), _m1, 0xb9c48a);
+        const fa = (f / fronds) * TAU + rnd() * 0.24;
+        const droop = 0.2 + rnd() * 0.3;
+        const len = 2.5 + rnd() * 1.2;
+        const cs = Math.cos(fa);
+        const sn = Math.sin(fa);
+        let rad = 0.25;
+        let hy = crownY;
+        for (let seg = 0; seg < 3; seg++) {
+          const segLen = len / 3;
+          // Angle below horizontal grows along the frond: gentle, then hanging.
+          const ang = droop * (seg + 0.5) * 0.85;
+          const midR = rad + Math.cos(ang) * segLen * 0.5;
+          const midY = hy - Math.sin(ang) * segLen * 0.5;
+          _e1.set(0, -fa, -ang);
+          _q1.setFromEuler(_e1);
+          _v1.set(tx + cs * midR, midY, tz + sn * midR);
+          _v2.set(1, 1, 1);
+          _m1.compose(_v1, _q1, _v2);
+          // Narrows toward the tip, like real pinnate leaves.
+          const wdt = 0.5 - seg * 0.11;
+          B.add('grass.field', new THREE.BoxGeometry(segLen * 1.06, 0.07, wdt), _m1,
+            seg === 2 ? 0xa8b878 : 0xbcc98e);
+          rad += Math.cos(ang) * segLen;
+          hy -= Math.sin(ang) * segLen;
+        }
       }
       // Dates, on about half of them.
       if (rnd() < 0.5) {

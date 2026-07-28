@@ -318,7 +318,7 @@ export class Sfx {
    * handle with `set()` and `stop()` rather than firing and forgetting, and
    * they sit outside the voice budget because there is at most one of them.
    *
-   * @param {'hoverboard'|'car'|'dragon'} kind
+   * @param {'hoverboard'|'car'|'dragon'|'horse'|'eagle'} kind
    * @returns {{set:(o:object)=>void, stop:()=>void}|null}
    */
   startMount(kind) {
@@ -381,6 +381,52 @@ export class Sfx {
         for (const { o, mult } of oscs) o.frequency.setTargetAtTime(f * mult, now, 0.06);
         lp.frequency.setTargetAtTime(900 + speed * 55 + throttle * 700, now, 0.08);
       };
+    } else if (kind === 'horse') {
+      /* A horse is almost entirely hooves, and hooves are events, not a drone -
+       * they are played per footfall by {@link hoof}, driven by the gait's own
+       * phase table so the sound lands exactly when the leg does.
+       *
+       * What is left for the held voice is the part that really is continuous:
+       * breath. A slow noise band pulsing at roughly the breathing rate, which
+       * rises with effort. On its own it is nearly inaudible, and that is
+       * correct - it is the bed the hoofbeats sit on, not the sound of a horse. */
+      const air = ctx.createBufferSource(); air.buffer = eng.noiseBuffer(2); air.loop = true;
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 480; bp.Q.value = 0.9;
+      const breath = ctx.createGain(); breath.gain.value = 0.05;
+      const lfo = ctx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.7;
+      const lfoAmt = ctx.createGain(); lfoAmt.gain.value = 0.04;
+      lfo.connect(lfoAmt); lfoAmt.connect(breath.gain);
+      air.connect(bp); bp.connect(breath); breath.connect(out);
+      air.start(t); lfo.start(t);
+      nodes.push(air, lfo);
+      setter = ({ speed = 0 }) => {
+        const now = ctx.currentTime;
+        // Breathing rate climbs with the gait: a walking horse is near silent,
+        // a galloping one is audibly working.
+        lfo.frequency.setTargetAtTime(0.7 + speed * 0.22, now, 0.4);
+        bp.frequency.setTargetAtTime(480 + speed * 40, now, 0.3);
+        breath.gain.setTargetAtTime(0.05 + speed * 0.05, now, 0.4);
+      };
+    } else if (kind === 'eagle') {
+      /* Wind over the wing, and nothing else held.
+       *
+       * Airspeed is the whole sound of a gliding bird: a broad noise bed whose
+       * brightness and level track speed, so a dive audibly loads up and a stall
+       * goes quiet. The wingbeats themselves are one-shots from {@link wingBeat},
+       * fired on the flap phase, because a looped flap is a helicopter. */
+      const air = ctx.createBufferSource(); air.buffer = eng.noiseBuffer(2); air.loop = true;
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 620; bp.Q.value = 0.55;
+      const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 200;
+      const g = ctx.createGain(); g.gain.value = 0.06;
+      air.connect(bp); bp.connect(hp); hp.connect(g); g.connect(out);
+      air.start(t);
+      nodes.push(air);
+      setter = ({ speed = 0 }) => {
+        const now = ctx.currentTime;
+        const s = Math.min(1, speed / 40);
+        bp.frequency.setTargetAtTime(500 + s * 1700, now, 0.18);
+        g.gain.setTargetAtTime(0.04 + s * 0.3, now, 0.2);
+      };
     } else {
       /* Dragon: slow wingbeat (an LFO on a low noise band) with a breath bed.
        * The roar is a separate one-shot - see `dragonRoar`. */
@@ -414,6 +460,82 @@ export class Sfx {
         }
       },
     };
+  }
+
+  /**
+   * One hoof striking the ground.
+   *
+   * Three layers, because a hoof is not a footstep. The knock is a short pitched
+   * body - a hoof is a hollow keratin box and it rings, which is the single cue
+   * that separates it from a boot. Over it, a hard transient click for the shoe
+   * on stone, and under it, a scuff of the ground giving way. The pitch is
+   * jittered per strike so four hooves in a row do not sound like a machine.
+   *
+   * @param {THREE.Vector3|null} at
+   * @param {{hard?:number, surface?:string}} [opts] `hard` 0..1 - how much
+   *   weight is behind the strike, i.e. the gait.
+   */
+  hoof(at, { hard = 0.5 } = {}) {
+    const v = this.engine.voice(at, 0.28, 0.55 + hard * 0.45);
+    if (!v) return;
+    const f = rnd(150, 215);
+    // The ring. Falls fast - a hoof is damped by the ground it just hit.
+    this._tone(v, { seconds: 0.1 + hard * 0.05, type: 'triangle', freq: f, toFreq: f * 0.62,
+      gain: 0.32 + hard * 0.3 });
+    // The shoe. Bright, and only really present at speed.
+    this._noise(v, { seconds: 0.028, type: 'highpass', freq: 3200 + hard * 1800, q: 0.8,
+      gain: 0.18 + hard * 0.4 });
+    // The ground. Dust and grit under the strike.
+    this._noise(v, { seconds: 0.13, type: 'bandpass', freq: rnd(700, 1100), q: 1.1,
+      sweepTo: 260, gain: 0.16 + hard * 0.22 });
+  }
+
+  /**
+   * One beat of a large wing.
+   *
+   * A downstroke is a mass of air being moved, so it is a noise band that
+   * *rises* into the stroke and cuts off, rather than a symmetrical whoosh. The
+   * low thump underneath is the wing loading up; without it the beat reads as
+   * cloth rather than as something with a two-metre span.
+   *
+   * @param {THREE.Vector3|null} at
+   * @param {{power?:number}} [opts]
+   */
+  wingBeat(at, { power = 1 } = {}) {
+    const v = this.engine.voice(at, 0.45, 0.5 + power * 0.5);
+    if (!v) return;
+    this._noise(v, { seconds: 0.3, type: 'bandpass', freq: 210, q: 0.7, sweepTo: 620,
+      gain: 0.4 * power });
+    this._noise(v, { seconds: 0.22, type: 'lowpass', freq: 900, sweepTo: 260, gain: 0.3 * power });
+    this._tone(v, { seconds: 0.16, type: 'sine', freq: 62, toFreq: 34, gain: 0.22 * power });
+  }
+
+  /** An eagle's cry: a hard, bright descending scream. */
+  eagleScreech(at) {
+    if (this._throttled('screech', 2.2)) return;
+    const v = this.engine.voice(at, 0.7, 1);
+    if (!v) return;
+    /* Raptor calls are strident because the energy sits in the upper harmonics
+     * rather than the fundamental, so the stack is deliberately top-heavy and
+     * every partial slides down together. */
+    for (const [mult, g] of [[1, 0.16], [2, 0.3], [3, 0.26], [4, 0.14]]) {
+      this._tone(v, { seconds: 0.62, type: 'sawtooth', freq: 900 * mult * 0.5,
+        toFreq: 560 * mult * 0.5, gain: g });
+    }
+    this._noise(v, { seconds: 0.5, type: 'bandpass', freq: 2800, q: 3.5, sweepTo: 1500, gain: 0.3 });
+  }
+
+  /** A horse's whinny, for summoning. */
+  whinny(at) {
+    if (this._throttled('whinny', 1.5)) return;
+    const v = this.engine.voice(at, 0.9, 1);
+    if (!v) return;
+    // A whinny is a pitch fall with a hard tremolo on it; the formants keep it
+    // in an animal's throat rather than a synth's.
+    for (const [f, q, g] of [[420, 5, 0.34], [1150, 7, 0.22], [2400, 9, 0.1]]) {
+      this._noise(v, { seconds: 0.8, type: 'bandpass', freq: f, q, sweepTo: f * 0.62, gain: g });
+    }
+    this._tone(v, { seconds: 0.85, type: 'sawtooth', freq: 360, toFreq: 180, gain: 0.26 });
   }
 
   /** A roar: formant-filtered noise growl over a falling pitch. */

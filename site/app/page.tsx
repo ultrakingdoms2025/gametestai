@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import HeroCanvas from '@/components/HeroCanvas';
-import WorldCanvas from '@/components/WorldCanvas';
+import HomeWorldShowcase from '@/components/HomeWorldShowcase';
 import { readPass } from '@/lib/entitlement';
 import { ENTRY_CENTS, CREDIT_PRICE_CENTS, MIN_CREDITS, formatCents, grossUp } from '@/lib/pricing';
 import { stripeConfigured } from '@/lib/stripe';
@@ -13,37 +13,57 @@ const WORLDS = [
   {
     scene: 'station',
     seed: 0x2101,
+    id: 'world-station',
     kicker: 'Orbital',
     name: 'Aether Station',
     copy: 'A working habitat hanging in front of a planet — plaza, market, hydroponics and hangar bays.',
+    pulse: 'Trade lanes and hangar lines under cold starlight.',
+    role: 'Hub world',
+    traversal: 'Hoverboard, car',
   },
   {
     scene: 'valley',
     seed: 0x2207,
+    id: 'world-valley',
     kicker: 'Open country',
     name: 'Medieval Valley',
     copy: 'A walled town, castle, forests and lakes. The water is swimmable and has real depth.',
+    pulse: 'Stone, timber and water routes built for climbing and duels.',
+    role: 'Exploration world',
+    traversal: 'Horse, eagle',
   },
   {
     scene: 'sports',
     seed: 0x2309,
+    id: 'world-sports',
     kicker: 'Floodlit',
     name: 'Meridian Athletic Grounds',
     copy: 'Pool, courts, skatepark, running track and a ski piste, under lights, with a seated crowd.',
+    pulse: 'Speed, trick lines, and challenge runs under stadium lamps.',
+    role: 'Skill world',
+    traversal: 'Hoverboard, on-foot',
   },
   {
     scene: 'citadel',
     seed: 0x2417,
+    id: 'world-citadel',
     kicker: 'Desert mesa',
     name: 'Sunspire Citadel',
     copy: 'A town built to be climbed: souk rooftops, rope bridges, minarets and a 46 m great tower.',
+    pulse: 'Vertical routes and rooftop combat through sunburnt geometry.',
+    role: 'Vertical world',
+    traversal: 'Climb, dragon',
   },
   {
     scene: 'circuit',
     seed: 0x2523,
+    id: 'world-circuit',
     kicker: 'Racing',
     name: 'Vellum Ridge Circuit',
     copy: 'A 1,599 m lap over rough terrain and through city streets, with a real F1 start procedure.',
+    pulse: 'Contact racing and late braking across mixed terrain sectors.',
+    role: 'Competition world',
+    traversal: 'Car',
   },
 ];
 
@@ -91,91 +111,118 @@ export default async function Home() {
 
   return (
     <>
-      <header className="hero">
-        <HeroCanvas />
-        <div className="hero-in wrap">
-          <div className="eyebrow">Browser-native · no install</div>
-          <h1 className="lockup">
-            AETHER<span>NEXUS</span>
-          </h1>
-          <div className="tagline">Five worlds · one gateway · nothing downloaded</div>
-          <p className="claim">
-            A first-person action-adventure that runs in a browser tab — and generates
-            every world, every character and every texture in code as you play.
-          </p>
-
-          <div className="actions">
+      {/* ── Fixed navigation ── */}
+      <nav className="site-nav" aria-label="Main navigation">
+        <div className="nav-inner">
+          <div className="nav-logo" aria-hidden="true">AETHER<span>NEXUS</span></div>
+          <div className="nav-links" aria-hidden="true">
+            <a href="#worlds-belt">Worlds</a>
+            <a href="#features-anchor">Features</a>
+            <a href="/store">Credits</a>
+          </div>
+          <div className="nav-cta">
             {paid ? (
-              <Link className="btn btn-primary" href="/play">
-                Enter game
-              </Link>
+              <Link className="btn btn-primary btn-sm" href="/play">Enter game</Link>
             ) : (
-              <Link className="btn btn-primary" href="/checkout?intent=entry">
-                Enter game — {formatCents(entryTotal)}
+              <Link className="btn btn-primary btn-sm" href="/checkout?intent=entry">
+                Get access
               </Link>
             )}
-            <Link className="btn btn-ghost" href="/store">
-              Buy credits
-            </Link>
+          </div>
+        </div>
+      </nav>
+
+      {/* ── Hero ── */}
+      <header className="hero">
+        <HeroCanvas />
+        <div className="hero-aura" aria-hidden="true" />
+        <div className="hero-in wrap">
+          <div className="hero-eyebrow">Browser-native &middot; no install</div>
+          <h1 className="lockup" aria-label="Aether Nexus">
+            <span className="lockup-l1">AETHER</span>
+            <span className="lockup-l2">NEXUS</span>
+          </h1>
+          <p className="hero-deck">
+            A first-person action-adventure that runs in a browser tab —
+            generating every world, character and texture in code as you play.
+          </p>
+          <div className="hero-actions">
+            {paid ? (
+              <Link className="btn btn-primary" href="/play">Enter game</Link>
+            ) : (
+              <Link className="btn btn-primary" href="/checkout?intent=entry">
+                Enter game &mdash; {formatCents(entryTotal)}
+              </Link>
+            )}
+            <Link className="btn btn-ghost" href="/store">Buy credits</Link>
             <span className="btn-note">
               {paid
                 ? 'Access unlocked on this browser'
-                : `One-off charge. ${formatCents(ENTRY_CENTS)} plus processing.`}
+                : `One-off · ${formatCents(ENTRY_CENTS)} plus processing`}
             </span>
           </div>
+        </div>
+
+        <div className="hero-ticker" aria-hidden="true">
+          <div className="htick-inner">
+            {['Five worlds','Five mounts','Four weapons','Zero downloads','100% generated','Runs in a tab','No install'].flatMap((s, i) => [
+              <span key={`a${i}`}>{s}</span>,
+              <span key={`as${i}`} className="htick-dot" />,
+            ])}
+            {['Five worlds','Five mounts','Four weapons','Zero downloads','100% generated','Runs in a tab','No install'].flatMap((s, i) => [
+              <span key={`b${i}`} aria-hidden="true">{s}</span>,
+              <span key={`bs${i}`} className="htick-dot" aria-hidden="true" />,
+            ])}
+          </div>
+        </div>
+
+        <div className="hero-scroll-cue" aria-hidden="true">
+          <span>Scroll</span>
+          <div className="scroll-track"><div className="scroll-dot" /></div>
         </div>
       </header>
 
       {!stripeConfigured() ? (
-        <div className="wrap" style={{ paddingTop: 26 }}>
+        <div className="wrap" style={{ paddingTop: 28 }}>
           <div className="banner" role="status">
             <b>Test mode</b>
             <span>
-              No Stripe keys are configured, so checkout is simulated: you will walk the
-              real screens and see the real totals, but no card is taken and nothing is
-              sent to Stripe. Adding <code>STRIPE_SECRET_KEY</code> switches the same flow
-              to live payments.
+              No Stripe keys configured — checkout is simulated. You&rsquo;ll walk the
+              real screens with real totals, but no card is charged. Add{' '}
+              <code>STRIPE_SECRET_KEY</code> to switch to live payments.
             </span>
           </div>
         </div>
       ) : null}
 
-      <section>
-        <div className="wrap">
-          <div className="head">
-            <div className="eyebrow">The worlds</div>
-            <h2>Step through a ring, the world changes completely</h2>
-            <p>
-              Every world is a portal away, and destinations keep building in the
-              background while the transition holds — so travel is seamless.
-            </p>
-          </div>
-          <div className="worlds">
-            {WORLDS.map((w) => (
-              <article className="world" key={w.scene}>
-                <WorldCanvas scene={w.scene} seed={w.seed} label={`${w.name}: ${w.copy}`} />
-                <div className="world-b">
-                  <div className="world-k">{w.kicker}</div>
-                  <h3>{w.name}</h3>
-                  <p>{w.copy}</p>
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
+      {/* ── World cinematic panels ── */}
+      <HomeWorldShowcase worlds={WORLDS} />
 
-      <section>
+      {/* ── Features ── */}
+      <section className="feat-section" id="features-anchor">
         <div className="wrap">
-          <div className="head">
+          <div className="feat-head">
             <div className="eyebrow">What is in it</div>
-            <h2>Everything here was made by code</h2>
-            <p>
-              Terrain, buildings, crowds, faces, fabric, fur, feathers and stone are all
-              generated at load time. The whole game is a few hundred kilobytes of logic
-              rather than gigabytes of art.
+            <h2 className="feat-h2">Everything generated in code</h2>
+            <p className="feat-sub">
+              Terrain, buildings, crowds, faces, fabric, fur, feathers and stone —
+              all generated at load time. The whole game is a few hundred kilobytes
+              of logic rather than gigabytes of art.
             </p>
           </div>
+
+          <div className="feat-stats-bar" aria-label="game at a glance">
+            {(['5','5','4','0 GB'] as string[]).map((v, i) => {
+              const labels = ['Worlds','Mounts','Weapons','Install'];
+              return (
+                <div className="fstat" key={labels[i]}>
+                  <span className="fstat-val">{v}</span>
+                  <span className="fstat-key">{labels[i]}</span>
+                </div>
+              );
+            })}
+          </div>
+
           <div className="features">
             {FEATURES.map((f) => (
               <div className={f.amber ? 'feat amber' : 'feat'} key={f.t}>
@@ -187,31 +234,26 @@ export default async function Home() {
         </div>
       </section>
 
-      <section>
+      {/* ── CTA band ── */}
+      <section className="cta-band">
         <div className="wrap">
-          <div className="head">
-            <div className="eyebrow">Get in</div>
-            <h2>One charge for the game, credits when you want them</h2>
-            <p>
-              Access is a single {formatCents(ENTRY_CENTS)} charge, once, and it is yours.
-              Credits are separate and optional — {formatCents(CREDIT_PRICE_CENTS)} each,
-              from {MIN_CREDITS} up to 10,000. Listed prices are before card processing,
-              which is added at checkout and shown as its own line.
-            </p>
-          </div>
-          <div className="actions">
+          <div className="cta-band-kicker">Get in</div>
+          <h2 className="cta-band-h2">One charge.<br />Five worlds.</h2>
+          <p className="cta-band-sub">
+            Access is a single {formatCents(ENTRY_CENTS)} charge, once, and it is yours
+            on this browser. Credits are separate and optional —{' '}
+            {formatCents(CREDIT_PRICE_CENTS)} each, from {MIN_CREDITS} to 10,000.
+            Prices shown before card processing, which appears as its own line at checkout.
+          </p>
+          <div className="cta-band-actions">
             {paid ? (
-              <Link className="btn btn-primary" href="/play">
-                Enter game
-              </Link>
+              <Link className="btn btn-primary" href="/play">Enter game</Link>
             ) : (
               <Link className="btn btn-primary" href="/checkout?intent=entry">
                 Unlock for {formatCents(entryTotal)}
               </Link>
             )}
-            <Link className="btn btn-amber" href="/store">
-              Buy credits
-            </Link>
+            <Link className="btn btn-amber" href="/store">Buy credits</Link>
           </div>
         </div>
       </section>
@@ -219,11 +261,13 @@ export default async function Home() {
       <footer>
         <div className="wrap">
           <span>
-            Aether Nexus · built in the browser, from code ·{' '}
+            Aether Nexus &middot; built in the browser, from code &middot;{' '}
             <Link href="/restore">Restore a purchase</Link>
           </span>
           <span>
-            {paid ? 'Access unlocked' : `Access ${formatCents(entryTotal)} · credits from ${formatCents(grossUp(MIN_CREDITS * CREDIT_PRICE_CENTS))}`}
+            {paid
+              ? 'Access unlocked'
+              : `Access ${formatCents(entryTotal)} · credits from ${formatCents(grossUp(MIN_CREDITS * CREDIT_PRICE_CENTS))}`}
           </span>
         </div>
       </footer>

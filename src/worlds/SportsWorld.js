@@ -2118,18 +2118,45 @@ export class SportsWorld extends World {
     return this._mat(key, mat);
   }
 
-  /** Flat painted / anodised metals. Cheap, shared, and reactive to the env map. */
+  /**
+   * Painted and anodised metals - railings, frames, goalposts, plant.
+   *
+   * These were flat colours, deliberately: painted steel has no pattern and no
+   * grain, so an albedo map would have been inventing detail that is not there.
+   * That reasoning is right about the albedo and wrong about the rest. A real
+   * painted rail carries orange peel, drag marks from the gun and the odd
+   * scratch, and every one of those lives in the *highlight* - so without them
+   * a rail returns one uniform specular blob and reads as plastic. It was 131
+   * meshes and 287k triangles of the stuff in this world.
+   *
+   * `paint.enamel` supplies exactly that and nothing else: its albedo is
+   * near-white, so the colour asked for here still decides the colour, and its
+   * roughness and metalness are written near 1 so the scalars below still
+   * decide the finish - just with a few percent of variation across the
+   * surface rather than none.
+   *
+   * Falls back to the old flat material if the library has not got the surface,
+   * because a world that fails to build is worse than one that looks flat.
+   */
   _metal(key, color, roughness, metalness = 1, extra = {}) {
-    return this._mat(
-      key,
-      new THREE.MeshStandardMaterial({
-        color,
-        roughness,
-        metalness,
-        envMapIntensity: 1.15,
-        ...extra,
-      })
-    );
+    let mat = null;
+    try {
+      const base = this.materials?.get?.('paint.enamel');
+      if (base) {
+        mat = base.clone();
+        mat.color = new THREE.Color(color);
+        mat.roughness = roughness;
+        mat.metalness = metalness;
+        mat.envMapIntensity = 1.15;
+        Object.assign(mat, extra);
+      }
+    } catch { mat = null; }
+    if (!mat) {
+      mat = new THREE.MeshStandardMaterial({
+        color, roughness, metalness, envMapIntensity: 1.15, ...extra,
+      });
+    }
+    return this._mat(key, mat);
   }
 
   _buildTextures() {

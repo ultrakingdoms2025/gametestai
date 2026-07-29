@@ -296,10 +296,18 @@ export class Horse {
        * of balls stuck to its sides. A shoulder is a swelling *of* the surface;
        * anything that breaks the silhouette by more than a few centimetres is a
        * tumour. Sized and placed to finish flush. */
-      blob(0.17, 0.20, 0.26, -0.28, BODY_Y + 0.06, -B * 0.34, 12),  // shoulder
-      blob(0.17, 0.20, 0.26, 0.28, BODY_Y + 0.06, -B * 0.34, 12),
-      blob(0.18, 0.22, 0.28, -0.26, BODY_Y + 0.10, B * 0.40, 12),   // hip
-      blob(0.18, 0.22, 0.28, 0.26, BODY_Y + 0.10, B * 0.40, 12),
+      /* Flush with the barrel, and longer than they are wide.
+       *
+       * Sized down once already and still wrong: at 0.28 out plus a 0.17 radius
+       * they finished 2 cm proud of a barrel half-width of 0.43, and because a
+       * sphere has a round silhouette of its own that read as four balls stuck
+       * to the sides rather than as muscle. They now stop exactly at the
+       * surface, and are stretched along the body - a shoulder and a haunch are
+       * broad flat masses running fore-and-aft, not lumps. */
+      blob(0.16, 0.19, 0.32, -0.27, BODY_Y + 0.05, -B * 0.34, 12),  // shoulder
+      blob(0.16, 0.19, 0.32, 0.27, BODY_Y + 0.05, -B * 0.34, 12),
+      blob(0.18, 0.21, 0.34, -0.26, BODY_Y + 0.09, B * 0.40, 12),   // hip
+      blob(0.18, 0.21, 0.34, 0.26, BODY_Y + 0.09, B * 0.40, 12),
       // Withers: the ridge the saddle sits behind.
       blob(0.13, 0.15, 0.26, 0, BODY_Y + 0.34, -B * 0.38, 10),
     ]);

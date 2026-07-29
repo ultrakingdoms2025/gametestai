@@ -988,6 +988,50 @@ function shadePaintWhite(u, v, o) {
   o.ao = 1;
 }
 
+/**
+ * Enamelled and anodised metalwork - railings, frames, goalposts, plant.
+ *
+ * ── What this is for ──────────────────────────────────────────────────────
+ *
+ * There is a large class of surface that is *correctly* almost featureless:
+ * painted steel has no pattern, no grain and no colour variation worth the
+ * name. It was therefore left as a flat colour, which is right about the
+ * albedo and wrong about everything else - a real painted rail is covered in
+ * orange peel, faint drag marks from the roller or gun, and the odd scratch,
+ * and all of that lives in the *highlight*. Without it a rail returns one
+ * uniform specular blob and reads as plastic no matter how good the lighting.
+ *
+ * So the albedo here is deliberately near-white and nearly flat. It is a
+ * multiplier for whatever colour the caller wants; all the detail is in the
+ * normal and roughness, which is where the detail on painted metal actually is.
+ *
+ * Roughness and metalness are written high so the caller's own scalars scale
+ * them down - `roughness: 0.4` on a material using this still lands at 0.4,
+ * but with a few percent of variation across the surface instead of none.
+ */
+function shadeEnamel(u, v, o) {
+  // Orange peel: the fine dimpling every sprayed finish has.
+  const peel = fbm01(u, v, 90, 90, 3, 8101);
+  // Drag marks, strongly directional, from the roller or the gun pass.
+  const drag = fbm01(u, v, 6, 180, 2, 8111, 0.55);
+  // Sparse scratches down to a brighter, smoother line.
+  const scr = smoothstep(0.86, 0.99, fbm01(u, v, 220, 14, 2, 8117, 0.5));
+  // Very broad shading, so a long rail is not one flat value end to end.
+  const broad = fbm01(u, v, 2.5, 2.5, 2, 8123);
+
+  const l = 0.94 + (broad - 0.5) * 0.05 + (peel - 0.5) * 0.02;
+  o.r = clamp01(l);
+  o.g = clamp01(l);
+  o.b = clamp01(l * 0.998);
+  o.h = clamp01(0.5 + (peel - 0.5) * 0.55 + (drag - 0.5) * 0.22 + scr * 0.3);
+  /* Near 1 so the caller's roughness scalar is what decides the finish; the
+   * variation is what stops the highlight being a single blob. A scratch is
+   * polished, so it goes smoother, not rougher. */
+  o.rough = clamp01(0.97 - (peel - 0.5) * 0.10 - (drag - 0.5) * 0.05 - scr * 0.35);
+  o.metal = clamp01(0.96 + scr * 0.04);
+  o.ao = 1;
+}
+
 /** Diagonal hazard marking chevrons, chipped back to the alloy underneath. */
 function shadeHazard(u, v, o) {
   // (u + v) shifts by an integer when either axis wraps, so the stripes tile.
@@ -1293,6 +1337,11 @@ const RECIPES = {
    * vanishes there. */
   'foliage.frond': (lib) => lib._standard(HERO, shadeFrond, {
     normalStrength: 2.0, tileMeters: 1.2, envMapIntensity: 0.7, side: THREE.DoubleSide,
+  }),
+  /* Painted and anodised metalwork. Tiled small: a railing is a few
+   * centimetres across, and orange peel authored for a wall is invisible. */
+  'paint.enamel': (lib) => lib._standard(SMALL, shadeEnamel, {
+    normalStrength: 1.5, tileMeters: 0.6, envMapIntensity: 1.15,
   }),
   'bark.palm': (lib) => lib._standard(SMALL, shadeBarkPalm, {
     normalStrength: 3.0, tileMeters: 1.6, envMapIntensity: 0.5,

@@ -154,10 +154,27 @@ export class SaveGame {
     };
     window.addEventListener('keydown', this._onKeyDown, true);
 
-    this._onBeforeUnload = () => {
+    this._onBeforeUnload = (e) => {
       // Never throws: save() is fully guarded, and an exception here would be
       // swallowed by the browser anyway - along with the save.
       this._autoSave('unload');
+      /* And ask before the window actually goes.
+       *
+       * Crouch is Ctrl and forward is W, so crouch-walking is Ctrl+W, which
+       * closes the window - a player doing something completely ordinary lost
+       * the whole session. `Input` claims that combination through the Keyboard
+       * Lock API, but the lock needs fullscreen and can be refused, so this is
+       * the backstop for when it is not held: the browser's own "leave site?"
+       * prompt, which does catch Ctrl+W.
+       *
+       * Only while a game is actually in progress. Prompting on the title
+       * screen would be an obstacle protecting nothing. */
+      if (this._started && !this._suppressPrompt) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+      }
+      return undefined;
     };
     window.addEventListener('beforeunload', this._onBeforeUnload);
 

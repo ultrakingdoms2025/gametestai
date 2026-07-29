@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { sweep, blob } from './Organic.js';
+import { sweep, blob } from '../gfx/Organic.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 
 /**

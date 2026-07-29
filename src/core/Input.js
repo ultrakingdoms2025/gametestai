@@ -7,6 +7,20 @@ import { CONFIG } from './Config.js';
  * frame, plus edge-triggered helpers (`pressed`) that consume a keypress so a
  * single tap cannot fire twice.
  */
+
+/**
+ * Keys the game reads *while Ctrl is held*, because Ctrl is crouch.
+ *
+ * Everything else pressed with Ctrl is left to the browser - Ctrl+R, Ctrl+T,
+ * Ctrl+Shift+I and the rest stay exactly as the player expects. Only the keys
+ * a crouching player genuinely needs are claimed, which is the movement set
+ * plus jump.
+ */
+const CTRL_GAME_KEYS = new Set([
+  'ControlLeft', 'ControlRight',
+  'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+]);
 export class Input {
   constructor(canvas, bus) {
     this.canvas = canvas;
@@ -75,10 +89,27 @@ export class Input {
       const p = this.canvas.requestPointerLock?.();
       if (p && typeof p.catch === 'function') p.catch(() => {});
     } catch { /* older browsers throw synchronously instead */ }
+
+    /* Fullscreen, so the keyboard lock can be granted - see `_lockKeyboard`.
+     *
+     * Requested after pointer lock and entirely best-effort: it needs the same
+     * user gesture, and if it is refused the game plays exactly as before, just
+     * without protection from Ctrl+W. Never awaited, because nothing downstream
+     * should wait on a permission dialog. */
+    const el = document.documentElement;
+    if (!document.fullscreenElement && el.requestFullscreen) {
+      Promise.resolve(el.requestFullscreen()).then(
+        () => this._lockKeyboard(),
+        () => {}
+      );
+    } else if (document.fullscreenElement) {
+      this._lockKeyboard();
+    }
   }
 
   exitLock() {
     if (this._locked) document.exitPointerLock?.();
+    this._unlockKeyboard();
   }
 
   _resetAxes() {
@@ -96,10 +127,57 @@ export class Input {
     s.lookY = 0;
   }
 
+  /**
+   * Take the reserved keyboard shortcuts while the game is being played.
+   *
+   * ── The bug this exists for ───────────────────────────────────────────────
+   *
+   * Crouch is Ctrl and forward is W, so crouch-walking *is* Ctrl+W - and
+   * Ctrl+W closes the window. A player holding those two keys, which is a
+   * completely ordinary thing to do, lost the entire session.
+   *
+   * A page cannot cancel Ctrl+W by preventing the event; Chrome does not
+   * deliver it cancellably, for obvious reasons. The Keyboard Lock API is the
+   * sanctioned way to ask for it, and it is granted only while the document is
+   * fullscreen - which is why entering the game now goes fullscreen as well as
+   * taking pointer lock. Escape still releases both, so there is no way to get
+   * stuck.
+   *
+   * Where the lock is unavailable - a browser without it, or a player who
+   * declines fullscreen - `SaveGame` still writes on unload and the confirm
+   * prompt below still fires, so the worst case is a recoverable interruption
+   * rather than a lost session.
+   */
+  async _lockKeyboard() {
+    try {
+      if (!navigator.keyboard?.lock) return false;
+      // Only the keys that are genuinely destructive in combination with a
+      // modifier the game uses. Asking for everything would also swallow the
+      // browser's own escape hatches, which is worse than the problem.
+      await navigator.keyboard.lock(['KeyW', 'KeyN', 'KeyT', 'Escape']);
+      this._keyboardLocked = true;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Give the shortcuts back. Safe to call when nothing was ever locked. */
+  _unlockKeyboard() {
+    try { navigator.keyboard?.unlock?.(); } catch { /* not supported */ }
+    this._keyboardLocked = false;
+  }
+
   _bind() {
     const onKey = (e, down) => {
-      // Never steal browser shortcuts.
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      /* Ctrl is a game key - it is crouch - and it used to be discarded here
+       * along with everything pressed alongside it. That had two consequences:
+       * Ctrl never actually worked as crouch, because the ControlLeft keydown
+       * itself arrives with ctrlKey set and was dropped; and Ctrl+W went
+       * straight to the browser. Ctrl now reaches the game, and the genuine
+       * browser combinations are listed explicitly instead. */
+      if (e.metaKey || e.altKey) return;
+      if (e.ctrlKey && !CTRL_GAME_KEYS.has(e.code)) return;
       if (this._textCaptured) {
         // Escape and Enter still need to reach the chat UI, which listens itself.
         return;

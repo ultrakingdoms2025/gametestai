@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { sweep, blob } from '../gfx/Organic.js';
 import { World } from './World.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 
@@ -453,15 +454,24 @@ export class CitadelWorld extends World {
    * the other three worlds are drawn with. Clones share texture storage, so the
    * only real cost is one extra shader program per key.
    */
-  _mat(key) {
+  /**
+   * @param {string} key
+   * @param {{vertexColors?:boolean}} [opts] pass `vertexColors: false` for
+   *   geometry that carries no colour attribute - notably the instanced trees.
+   *   A material with `vertexColors` on and nothing to read renders black,
+   *   which is the same trap the batched geometry hit early on.
+   */
+  _mat(key, opts = {}) {
+    const vc = opts.vertexColors !== false;
     this._matCache ??= new Map();
-    const hit = this._matCache.get(key);
+    const cacheKey = vc ? key : `${key}|novc`;
+    const hit = this._matCache.get(cacheKey);
     if (hit) return hit;
 
     const base = this.materials.get(key);
     const m = base.clone();
     m.name = `citadel.${key}`;
-    m.vertexColors = true;
+    m.vertexColors = vc;
     // Sun-bleached limestone and mudbrick, per surface family.
     /* These multiply the per-box vertex colour, so they have to stay near white.
      *
@@ -487,7 +497,7 @@ export class CitadelWorld extends World {
     };
     const t = TINT[key.split(':')[0]];
     if (t !== undefined) m.color = new THREE.Color(t);
-    this._matCache.set(key, m);
+    this._matCache.set(cacheKey, m);
     this._owned.push(m);
     return m;
   }
@@ -1364,6 +1374,7 @@ export class CitadelWorld extends World {
     B.flush(this.group, (k) => this._mat(k), 'dressing');
     B.dispose();
 
+    this._buildTrees();
     this._buildProps();
 
     /* Banners on the keep - the one animated thing in the world, so the town
@@ -1434,75 +1445,178 @@ export class CitadelWorld extends World {
    * scale a person occupies, which is the difference between a level and a
    * place. Batched into the same handful of draw calls as everything else.
    */
+  /**
+   * Date palms and cypresses, instanced.
+   *
+   * ── Why these were rebuilt ────────────────────────────────────────────────
+   *
+   * The first version was boxes: a stack of cuboid drums for the trunk and flat
+   * slabs for the fronds, merged into the props batch and flat-tinted. It read
+   * as a broken umbrella on a post, and it was the last thing in this world
+   * still made of literal boxes.
+   *
+   * ── The two things that make a palm a palm ────────────────────────────────
+   *
+   * 1. **The crown is a fountain, not a disc.** Fronds leave the head at every
+   *    angle from near-vertical to hanging below the horizontal, and each one
+   *    *arcs* rather than sloping. A ring of straight blades at one pitch is
+   *    the single most common way a procedural palm goes wrong.
+   * 2. **The trunk is a lattice, not a cylinder.** What is left after old
+   *    fronds are shed is a column of diamond-shaped stubs, which the bark
+   *    surface carries, over a trunk that leans and bows rather than standing
+   *    plumb.
+   *
+   * Instanced: two draw calls per species regardless of how many are planted,
+   * because a desert town wants a lot of them and they are all the same tree.
+   */
+  _buildTrees() {
+    const rnd = this.rnd;
+
+    /* ---- one palm, built once ---- */
+    const trunkSecs = [];
+    const H = 6.4;
+    for (let i = 0; i <= 9; i++) {
+      const t = i / 9;
+      // Bows away from vertical as it rises, the way a palm carries its head
+      // slightly off centre. Straight trunks look like scaffolding poles.
+      trunkSecs.push({
+        x: Math.sin(t * 1.5) * 0.34 * t,
+        y: t * H,
+        z: Math.cos(t * 2.1) * 0.16 * t,
+        // Slight swell at the base and just under the crown, as a real one has.
+        rx: 0.30 - t * 0.11 + Math.exp(-t * 9) * 0.10,
+        ry: 0.30 - t * 0.11 + Math.exp(-t * 9) * 0.10,
+      });
+    }
+    const palmTrunk = sweep(trunkSecs, 12, { capStart: false });
+    const crownX = trunkSecs[9].x;
+    const crownY = trunkSecs[9].y;
+    const crownZ = trunkSecs[9].z;
+
+    const fronds = [];
+    const NF = 16;
+    for (let f = 0; f < NF; f++) {
+      const fa = (f / NF) * TAU + rnd() * 0.16;
+      /* Pitch runs from nearly upright on the newest fronds to below the
+       * horizontal on the oldest, which is what gives the crown its fountain
+       * shape. Alternating rather than sequential so the two extremes are never
+       * adjacent - a crown sorted by age reads as a shuttlecock. */
+      const age = (f % 2 === 0 ? f / NF : 1 - f / NF);
+      const pitch = 0.95 - age * 1.75;          // +0.95 rad up .. -0.80 rad down
+      const len = 2.9 + rnd() * 0.9;
+      const segs = 6;
+      let px = crownX;
+      let py = crownY;
+      let pz = crownZ;
+      let ang = pitch;
+      for (let s = 0; s < segs; s++) {
+        const segLen = len / segs;
+        // Curvature accumulates along the frond, so it arcs over instead of
+        // running straight out - the arc is most of the silhouette.
+        ang -= (0.16 + age * 0.10);
+        const nx = px + Math.cos(fa) * Math.cos(ang) * segLen;
+        const ny = py + Math.sin(ang) * segLen;
+        const nz = pz + Math.sin(fa) * Math.cos(ang) * segLen;
+        const t0 = s / segs;
+        const t1 = (s + 1) / segs;
+        // Widest a third of the way out, tapering to a point.
+        const w0 = (0.30 + Math.sin(t0 * Math.PI) * 0.26) * (1 - t0 * 0.35);
+        const w1 = (0.30 + Math.sin(t1 * Math.PI) * 0.26) * (1 - t1 * 0.35);
+        fronds.push(sweep([
+          { x: px, y: py, z: pz, rx: w0, ry: 0.022 },
+          { x: nx, y: ny, z: nz, rx: w1, ry: 0.018 },
+        ], 4, { capStart: false, capEnd: false }));
+        px = nx; py = ny; pz = nz;
+      }
+    }
+    // Date clusters hanging under the crown.
+    for (let d = 0; d < 3; d++) {
+      const da = (d / 3) * TAU + 0.4;
+      fronds.push(blob(0.26, 0.34, 0.26,
+        crownX + Math.cos(da) * 0.42, crownY - 0.42, crownZ + Math.sin(da) * 0.42, 8));
+    }
+    const palmCrown = mergeGeometries(fronds.map(g => g.index ? g.toNonIndexed() : g), false);
+    for (const g of fronds) g.dispose();
+
+    /* ---- one cypress ---- */
+    const cypTrunk = sweep([
+      { y: 0, z: 0, rx: 0.16, ry: 0.16 },
+      { y: 1.6, z: 0, rx: 0.11, ry: 0.11 },
+      { y: 3.4, z: 0, rx: 0.07, ry: 0.07 },
+    ], 8, { capStart: false });
+    // A flame, not a cone: cypresses are widest a third up and taper to a point.
+    const cypSecs = [];
+    for (let i = 0; i <= 10; i++) {
+      const t = i / 10;
+      const r = Math.sin(Math.pow(t, 0.55) * Math.PI * 0.92) * 0.92;
+      cypSecs.push({ y: 0.6 + t * 6.6, z: 0, rx: Math.max(0.03, r), ry: Math.max(0.03, r) });
+    }
+    const cypCrown = sweep(cypSecs, 12);
+
+    /* ---- plant them ---- */
+    const specs = [
+      { trunk: palmTrunk, crown: palmCrown, bark: 'bark.palm', leaf: 'foliage.frond',
+        count: 46, rMin: 28, rMax: 124, pad: 4.2, scale: [0.82, 1.25] },
+      { trunk: cypTrunk, crown: cypCrown, bark: 'wood.beam', leaf: 'foliage.frond',
+        count: 22, rMin: 34, rMax: 118, pad: 3.4, scale: [0.75, 1.15] },
+    ];
+    const m4 = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const e = new THREE.Euler();
+    const pos = new THREE.Vector3();
+    const scl = new THREE.Vector3();
+
+    for (const sp of specs) {
+      const placed = [];
+      for (let i = 0; i < sp.count; i++) {
+        const s = this._openSpot(rnd, sp.rMin, sp.rMax, sp.pad);
+        if (!s) continue;
+        const k = sp.scale[0] + rnd() * (sp.scale[1] - sp.scale[0]);
+        placed.push({ x: s.x, y: this._groundAt(s.x, s.z), z: s.z, k, yaw: rnd() * TAU });
+      }
+      if (!placed.length) continue;
+
+      const barkMesh = new THREE.InstancedMesh(
+        sp.trunk, this._mat(sp.bark, { vertexColors: false }), placed.length);
+      const leafMesh = new THREE.InstancedMesh(
+        sp.crown, this._mat(sp.leaf, { vertexColors: false }), placed.length);
+      barkMesh.name = `citadel:tree.trunk`;
+      leafMesh.name = `citadel:tree.crown`;
+      barkMesh.castShadow = true;
+      barkMesh.receiveShadow = true;
+      leafMesh.castShadow = true;
+      // Crowns do not receive: self-shadowing a mass of thin fronds costs a
+      // shadow lookup per frond and returns acne, not shade.
+      leafMesh.receiveShadow = false;
+      for (let i = 0; i < placed.length; i++) {
+        const p = placed[i];
+        e.set(0, p.yaw, 0);
+        q.setFromEuler(e);
+        pos.set(p.x, p.y, p.z);
+        scl.setScalar(p.k);
+        m4.compose(pos, q, scl);
+        barkMesh.setMatrixAt(i, m4);
+        leafMesh.setMatrixAt(i, m4);
+        // A trunk collider, so a palm is something you can take cover behind
+        // rather than walk through.
+        this.track(this.physics.addBox(p.x, p.y + 1.6 * p.k, p.z, 0.26 * p.k, 1.6 * p.k, 0.26 * p.k));
+      }
+      barkMesh.instanceMatrix.needsUpdate = true;
+      leafMesh.instanceMatrix.needsUpdate = true;
+      this.group.add(barkMesh, leafMesh);
+      this._owned.push(sp.trunk, sp.crown);
+    }
+  }
+
   _buildProps() {
     const B = new Batch({ ao: 0.4, sky: 0.34, grime: 0.5, span: 2.2 });
     const rnd = this.rnd;
 
-    /* ---- date palms ---- */
-    for (let i = 0; i < 44; i++) {
-      const s = this._openSpot(rnd, 30, 122, 4.2);
-      if (!s) continue;
-      const gy = this._groundAt(s.x, s.z);
-      const segs = 5 + ((rnd() * 3) | 0);
-      const lean = (rnd() - 0.5) * 0.5;
-      const dir = rnd() * TAU;
-      let ty = gy;
-      let tx = s.x;
-      let tz = s.z;
-      for (let k = 0; k < segs; k++) {
-        const sw = 0.46 - k * 0.035;
-        const sh = 1.15;
-        // Each drum steps slightly along the lean, which is what gives a palm
-        // its curve without needing a curved primitive.
-        const off = (k / segs) * lean;
-        tx += Math.cos(dir) * off * 0.5;
-        tz += Math.sin(dir) * off * 0.5;
-        B.box('wood.beam', sw, sh, sw, tx, ty + sh * 0.5, tz, dir + k * 0.2, 0x8a6a45);
-        ty += sh * 0.94;
-      }
-      this.track(this.physics.addBox(s.x, gy + (ty - gy) * 0.5, s.z, 0.32, (ty - gy) * 0.5, 0.32));
-
-      /* Crown: each frond built from three segments that bend further over as
-       * they go out.
-       *
-       * One straight slab per frond reads as a plank nailed to a pole - it is
-       * the arc that makes a palm a palm, and a frond is the most recognisable
-       * silhouette in the world once you put it against the sky. Three segments
-       * is the fewest that curves. */
-      const fronds = 8 + ((rnd() * 4) | 0);
-      const crownY = ty + 0.3;
-      for (let f = 0; f < fronds; f++) {
-        const fa = (f / fronds) * TAU + rnd() * 0.24;
-        const droop = 0.2 + rnd() * 0.3;
-        const len = 2.5 + rnd() * 1.2;
-        const cs = Math.cos(fa);
-        const sn = Math.sin(fa);
-        let rad = 0.25;
-        let hy = crownY;
-        for (let seg = 0; seg < 3; seg++) {
-          const segLen = len / 3;
-          // Angle below horizontal grows along the frond: gentle, then hanging.
-          const ang = droop * (seg + 0.5) * 0.85;
-          const midR = rad + Math.cos(ang) * segLen * 0.5;
-          const midY = hy - Math.sin(ang) * segLen * 0.5;
-          _e1.set(0, -fa, -ang);
-          _q1.setFromEuler(_e1);
-          _v1.set(tx + cs * midR, midY, tz + sn * midR);
-          _v2.set(1, 1, 1);
-          _m1.compose(_v1, _q1, _v2);
-          // Narrows toward the tip, like real pinnate leaves.
-          const wdt = 0.5 - seg * 0.11;
-          B.add('grass.field', new THREE.BoxGeometry(segLen * 1.06, 0.07, wdt), _m1,
-            seg === 2 ? 0xa8b878 : 0xbcc98e);
-          rad += Math.cos(ang) * segLen;
-          hy -= Math.sin(ang) * segLen;
-        }
-      }
-      // Dates, on about half of them.
-      if (rnd() < 0.5) {
-        B.box('fabric.banner', 0.5, 0.55, 0.5, tx + 0.4, ty - 0.25, tz, rnd() * TAU, 0xa8642c);
-      }
-    }
+    /* Trees moved out to _buildTrees.
+     *
+     * They were boxes merged into this prop batch. They are instanced now,
+     * with real bark and frond surfaces, and neither the geometry nor the
+     * material has any business being built alongside the crates. */
 
     /* ---- market stalls ---- */
     for (let i = 0; i < 22; i++) {

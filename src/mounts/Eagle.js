@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { sweep, blob, blade } from './Organic.js';
+import { sweep, blob, blade } from '../gfx/Organic.js';
 
 /**
  * EAGLE - the flight mount.

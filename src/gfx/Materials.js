@@ -654,6 +654,78 @@ function shadeGrass(u, v, o) {
 
 /** Woven banner cloth: over-under weave, slub, dye fade, sun-bleached edges. */
 /**
+ * Palm frond.
+ *
+ * A frond is not a leaf, it is a rachis carrying a hundred stiff leaflets at a
+ * shallow angle, and the give-away is that the grain runs *across* it in hard
+ * parallel lines rather than in the soft veining of a broadleaf. So the noise
+ * is extremely anisotropic - almost a comb - with a bright midrib down the
+ * centre and the leaflets separating into visible slots toward the edges.
+ */
+function shadeFrond(u, v, o) {
+  // Leaflets: near-vertical stripes, very high frequency across the frond.
+  const leaflet = fbm01(u, v, 320, 7, 2, 7101, 0.45);
+  const fine = fbm01(u, v, 700, 14, 2, 7109, 0.4);
+  // Where leaflets separate and sky shows through as a dark slot.
+  const slot = smoothstep(0.58, 0.92, fbm01(u, v, 150, 4, 2, 7117, 0.5));
+  // The midrib: a hard bright line down the middle of the tile.
+  const rib = 1 - smoothstep(0.0, 0.05, Math.abs(u - 0.5));
+  // Age: fronds dry from the tip, so the far end of the tile browns off.
+  const dry = smoothstep(0.55, 1.0, v) * fbm01(u, v, 3, 6, 2, 7123);
+
+  const grain = leaflet * 0.62 + fine * 0.38;
+  let r = 0.20 + grain * 0.17;
+  let g = 0.30 + grain * 0.24;
+  let b = 0.12 + grain * 0.10;
+  // Dried leaflets go straw, which is most of what stops a palm reading as
+  // plastic - a real crown always carries some dead material.
+  r = mix(r, 0.46, dry * 0.75); g = mix(g, 0.38, dry * 0.75); b = mix(b, 0.20, dry * 0.75);
+  // Midrib is paler and waxier than the blade.
+  r = mix(r, 0.42, rib * 0.6); g = mix(g, 0.48, rib * 0.6); b = mix(b, 0.24, rib * 0.6);
+  const shade = 1 - slot * 0.55;
+
+  o.r = clamp01(r * shade); o.g = clamp01(g * shade); o.b = clamp01(b * shade);
+  o.h = clamp01(grain * 0.5 + rib * 0.5 - slot * 0.4);
+  // A leaf cuticle is waxy; the dried parts are not.
+  o.rough = clamp01(0.62 - rib * 0.18 + dry * 0.28);
+  o.metal = 0;
+  o.ao = clamp01(0.84 + grain * 0.16 - slot * 0.3);
+}
+
+/**
+ * Palm bark: the stub-covered column left behind as old fronds are shed.
+ *
+ * A date palm's trunk is not smooth - it is a lattice of diamond-shaped leaf
+ * bases in staggered rows, and that pattern is the single most recognisable
+ * thing about it after the crown. Worley cells on a stretched grid give the
+ * diamonds; the vertical fibre on top of them is what stops it reading as
+ * reptile skin.
+ */
+function shadeBarkPalm(u, v, o) {
+  // Diamond lattice of shed frond bases, wider than tall.
+  worley2D(u, v, 9, 14, 7201, 1);
+  const cell = WORLEY[0];
+  const seam = smoothstep(0.0, 0.16, cell);
+  // Long vertical fibres over the whole thing.
+  const fibre = fbm01(u, v, 12, 130, 3, 7211, 0.5);
+  const coarse = fbm01(u, v, 3, 5, 3, 7219);
+
+  const base = 0.26 + coarse * 0.16 + fibre * 0.13;
+  let r = base * 1.16;
+  let g = base * 0.96;
+  let b = base * 0.68;
+  // Seams between the bases are deep shadow, and they are what carry the form.
+  const dark = 1 - (1 - seam) * 0.62;
+  r *= dark; g *= dark; b *= dark;
+
+  o.r = clamp01(r); o.g = clamp01(g); o.b = clamp01(b);
+  o.h = clamp01(seam * 0.72 + fibre * 0.28);
+  o.rough = clamp01(0.90 - fibre * 0.12);
+  o.metal = 0;
+  o.ao = clamp01(0.66 + seam * 0.34);
+}
+
+/**
  * Short animal coat, for the horse.
  *
  * The whole job is anisotropy. Fur is millions of near-parallel hairs, so its
@@ -1215,6 +1287,15 @@ const RECIPES = {
   }),
   'grass.field': (lib) => lib._standard(HERO, shadeGrass, {
     normalStrength: 2.4, tileMeters: 4, envMapIntensity: 0.6,
+  }),
+  /* Foliage. Double-sided, because a frond seen from underneath is the normal
+   * case for anything the player walks beneath, and a single-sided leaf simply
+   * vanishes there. */
+  'foliage.frond': (lib) => lib._standard(HERO, shadeFrond, {
+    normalStrength: 2.0, tileMeters: 1.2, envMapIntensity: 0.7, side: THREE.DoubleSide,
+  }),
+  'bark.palm': (lib) => lib._standard(SMALL, shadeBarkPalm, {
+    normalStrength: 3.0, tileMeters: 1.6, envMapIntensity: 0.5,
   }),
   /* Creature surfaces. Tiled far finer than architecture - a horse is two
    * metres of animal, so a tile authored for three metres of wall would put one

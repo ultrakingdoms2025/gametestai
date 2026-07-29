@@ -206,7 +206,8 @@ export class RaceUI {
       'div', 'rc-foot',
       'You race in the Interceptor — it is summoned onto the grid for you. '
       + 'Checkpoints must be taken in order, so cutting the circuit or reversing '
-      + 'over the line will not count a lap. Podium pays 10 / 5 / 2 credits.'
+      + 'over the line will not count a lap. Podium pays 10 / 5 / 2 credits, and '
+      + 'drops pay 1 each whether or not you finish.'
     );
 
     card.append(head, facts, pickLabel, this.pickEl, this.startBtn, this.noteEl);

@@ -637,7 +637,7 @@ function createLoadingScreen(root) {
   el.innerHTML = `
     <div class="boot-inner">
       <div class="boot-logo">AETHER<span>NEXUS</span></div>
-      <div class="boot-tagline">Four worlds. One gateway.</div>
+      <div class="boot-tagline">Five worlds. One gateway.</div>
       <div class="boot-bar"><div class="boot-bar-fill"></div></div>
       <div class="boot-status">Initialising</div>
       <div class="boot-start" hidden>

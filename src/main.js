@@ -30,6 +30,7 @@ import { Inventory } from './systems/Inventory.js';
 import { Loot } from './systems/Loot.js';
 import { Marketplace } from './systems/Marketplace.js';
 import { HelpMenu } from './ui/HelpMenu.js';
+import { MountWheel } from './ui/MountWheel.js';
 import { CharacterMenu } from './ui/CharacterMenu.js';
 import { LightRig } from './gfx/LightRig.js';
 import { Caches } from './systems/Caches.js';
@@ -142,6 +143,7 @@ const inventory = new Inventory({ bus, economy, input, root: uiRoot });
 const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
 const market = new Marketplace({ bus, economy, inventory, player, npcManager, input, root: uiRoot });
 const helpMenu = new HelpMenu({ root: uiRoot, bus, input });
+const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts });
 // F2. Edits the avatar live and publishes `character:changed`, which SaveGame
 // snapshots and MountManager listens for so the rider on a mount is the same
 // person as the one on foot.
@@ -202,7 +204,7 @@ if (overrides.dev) {
     engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
     waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu, caches, contracts,
-    cheats, audio, audioMenu, relics,
+    cheats, audio, audioMenu, relics, mountWheel,
   };
   import('./dev/Harness.js').then(({ installHarness }) => installHarness(window.GAME));
 }

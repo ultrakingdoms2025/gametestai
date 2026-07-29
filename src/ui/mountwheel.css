@@ -1,0 +1,125 @@
+/*
+ * Mount radial.
+ *
+ * z-index 83 puts it above the character panel (82) and below the audio menu
+ * (84), which is the band the other in-world selectors occupy. It never takes
+ * pointer events except on the slots themselves, so opening it cannot swallow
+ * a click meant for the world behind it.
+ */
+
+.mw {
+  position: fixed;
+  inset: 0;
+  z-index: 83;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease;
+  /* Dimmed, not blacked: the wheel is used mid-flight and the player still
+     needs to see where they are. */
+  background: radial-gradient(closest-side, rgba(4, 8, 14, 0.55), rgba(4, 8, 14, 0.16));
+}
+
+.mw.show {
+  opacity: 1;
+  visibility: visible;
+}
+
+.mw-ring {
+  position: relative;
+  width: min(46vh, 420px);
+  height: min(46vh, 420px);
+  transform: scale(0.92);
+  transition: transform 120ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.mw.show .mw-ring {
+  transform: scale(1);
+}
+
+.mw-hub {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font: 600 12px/1 'Chakra Petch', system-ui, sans-serif;
+  letter-spacing: 0.32em;
+  color: #7ea6c0;
+  text-transform: uppercase;
+}
+
+.mw-hint {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 22px);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font: 500 12px/1 'Rajdhani', system-ui, sans-serif;
+  color: #b9d2e2;
+  opacity: 0.75;
+}
+
+.mw-slot {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 108px;
+  padding: 10px 6px 8px;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  border: 1px solid rgba(120, 170, 200, 0.28);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(10, 20, 30, 0.86), rgba(6, 12, 20, 0.9));
+  pointer-events: auto;
+  cursor: pointer;
+  transition: border-color 90ms ease, background 90ms ease, transform 90ms ease;
+}
+
+.mw-icon {
+  width: 46px;
+  height: 46px;
+  fill: none;
+  stroke: #9fc4dc;
+  stroke-width: 3.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mw-label {
+  font: 600 11px/1 'Chakra Petch', system-ui, sans-serif;
+  letter-spacing: 0.06em;
+  color: #cfe4f2;
+  text-transform: uppercase;
+}
+
+.mw-num {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font: 600 10px/1 'Rajdhani', system-ui, sans-serif;
+  color: #6d8ea6;
+}
+
+/* Selected — the one a release would commit. */
+.mw-slot.sel {
+  border-color: #35d6ff;
+  background: linear-gradient(180deg, rgba(20, 52, 70, 0.95), rgba(8, 24, 36, 0.95));
+  transform: translate(-50%, -50%) scale(1.09);
+  box-shadow: 0 0 0 1px rgba(53, 214, 255, 0.35), 0 6px 22px rgba(0, 0, 0, 0.5);
+}
+
+.mw-slot.sel .mw-icon { stroke: #eaf8ff; }
+.mw-slot.sel .mw-label { color: #fff; }
+
+/* Currently ridden — selecting it again puts it away. */
+.mw-slot.active { border-color: rgba(255, 176, 58, 0.6); }
+.mw-slot.active .mw-icon { stroke: #ffb03a; }
+
+/* Not unlocked yet. Shown deliberately; see the note in MountWheel.js. */
+.mw-slot.locked {
+  opacity: 0.34;
+  filter: grayscale(1);
+  cursor: default;
+}

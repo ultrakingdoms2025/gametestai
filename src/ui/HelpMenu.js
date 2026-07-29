@@ -75,11 +75,8 @@ const GROUPS = [
     title: 'Mounts',
     accent: 'mag',
     rows: [
-      ['H', 'Summon / dismiss hoverboard'],
-      ['G', 'Summon / dismiss dragon'],
-      ['J', 'Summon / dismiss car'],
-      ['X', 'Summon / dismiss horse'],
-      ['Z', 'Summon / dismiss eagle'],
+      ['M', 'Mount wheel — hold, aim, release'],
+      ['1-5', 'Pick from the wheel directly'],
       ['F', 'Dismount'],
       ['Shift', 'Gallop, or beat the eagle’s wings'],
       ['Space', 'Fly up — dragon and eagle'],

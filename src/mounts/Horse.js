@@ -522,14 +522,14 @@ export class Horse {
           { y: 0.02, z: 0, rx: 0.19, ry: 0.21 },
           { y: -0.16, z: 0, rx: 0.16, ry: 0.18 },
           { y: -0.40, z: 0, rx: 0.125, ry: 0.14 },
-          { y: -0.62, z: 0, rx: 0.10, ry: 0.11 },     // into the knee
+          { y: -0.62, z: 0, rx: 0.090, ry: 0.096 },     // into the knee
         ], 12, { capStart: false })
         : merge([
           sweep([
             { y: 0.04, z: 0.02, rx: 0.20, ry: 0.23 },   // gaskin, the pushing muscle
             { y: -0.14, z: 0.03, rx: 0.18, ry: 0.21 },
             { y: -0.38, z: 0.01, rx: 0.135, ry: 0.155 },
-            { y: -0.62, z: 0, rx: 0.10, ry: 0.11 },     // into the hock
+            { y: -0.62, z: 0, rx: 0.090, ry: 0.096 },     // into the hock
           ], 12, { capStart: false }),
           blob(0.15, 0.17, 0.15, 0, -0.10, 0.08, 10),   // stifle
         ]);
@@ -542,13 +542,21 @@ export class Horse {
       lower.position.set(0, -0.62, 0);
       upper.add(lower);
       const lowerGeo = merge([
-        blob(0.085, 0.085, 0.095, 0, -0.02, 0, 10),   // knee / hock
+        /* The joint is a station on the cannon, not a ball stuck on top of it.
+         *
+         * It used to be a separate blob sitting inside the forearm's capped
+         * end, which meant a 0.10 dome, then a 0.085 sphere, then a 0.082
+         * cannon emerging from underneath - three radii inside four
+         * centimetres, read as a knobbly ball on a stick. A carpus really is
+         * wider than the cannon below it, but it is continuous with the limb,
+         * and it is flatter front-to-back than it is across. */
         sweep([
-          { y: -0.04, z: 0, rx: 0.082, ry: 0.090 },
-          { y: -0.28, z: 0, rx: 0.068, ry: 0.078 },   // cannon: bone and tendon only
-          { y: -0.52, z: 0, rx: 0.066, ry: 0.076 },
-          { y: -0.60, z: 0.005, rx: 0.076, ry: 0.082 },  // fetlock
-          { y: -0.70, z: 0.03, rx: 0.064, ry: 0.068 },   // pastern, sloped forward
+          { y: 0.03, z: 0, rx: 0.088, ry: 0.094 },    // knee / hock
+          { y: -0.09, z: 0, rx: 0.078, ry: 0.086 },
+          { y: -0.30, z: 0, rx: 0.066, ry: 0.076 },   // cannon: bone and tendon only
+          { y: -0.52, z: 0, rx: 0.064, ry: 0.074 },
+          { y: -0.60, z: 0.005, rx: 0.074, ry: 0.080 },  // fetlock
+          { y: -0.70, z: 0.03, rx: 0.062, ry: 0.066 },   // pastern, sloped forward
         ], 12, { capStart: false }),
       ]);
       this._owned.push(lowerGeo);

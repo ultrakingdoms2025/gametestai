@@ -522,7 +522,11 @@ export class MountManager {
     else if (input.pressed('KeyG')) this.summon('dragon');
     else if (input.pressed('KeyJ')) this.summon('car');
     else if (input.pressed('KeyX')) this.summon('horse');
-    else if (input.pressed('KeyC')) this.summon('eagle');
+    /* Z, not C. C is hold-to-crouch, so binding the eagle to it meant every
+     * crouch summoned or dismissed a bird - and worse, made C unusable as the
+     * crouch key that composes with movement, which is the only one that does.
+     * Z sits next to X, which is the horse. */
+    else if (input.pressed('KeyZ')) this.summon('eagle');
     else if (input.pressed('KeyF') && this._active) this.dismount();
   }
 

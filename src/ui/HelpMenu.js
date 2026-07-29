@@ -28,8 +28,7 @@ const GROUPS = [
     rows: [
       ['W A S D', 'Walk'],
       ['Shift', 'Sprint — drains stamina'],
-      ['Ctrl', 'Crouch — tap to toggle'],
-      ['C', 'Crouch — hold'],
+      ['Ctrl / C', 'Crouch — hold'],
       ['Space', 'Jump'],
       ['Space', 'Swim up while in water'],
       ['Space', 'Climb a ledge you are facing'],
@@ -80,7 +79,7 @@ const GROUPS = [
       ['G', 'Summon / dismiss dragon'],
       ['J', 'Summon / dismiss car'],
       ['X', 'Summon / dismiss horse'],
-      ['C', 'Summon / dismiss eagle'],
+      ['Z', 'Summon / dismiss eagle'],
       ['F', 'Dismount'],
       ['Shift', 'Gallop, or beat the eagle’s wings'],
       ['Space', 'Fly up — dragon and eagle'],

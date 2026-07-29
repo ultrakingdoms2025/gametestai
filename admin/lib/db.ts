@@ -33,9 +33,17 @@ export async function initSchema() {
   await sql`
     CREATE TABLE IF NOT EXISTS players (
       id                  TEXT PRIMARY KEY,
+      full_name           TEXT,
+      handle              TEXT UNIQUE,
       email_hash          TEXT UNIQUE,              -- sha256(lower(email))
       email_enc           TEXT,                     -- AES-256-GCM
       stripe_customer_enc TEXT,                     -- AES-256-GCM
+      country             TEXT,
+      password_hash       TEXT,
+      auth_provider       TEXT NOT NULL DEFAULT 'password',
+      oauth_provider      TEXT,
+      oauth_key_enc       TEXT,
+      status              TEXT NOT NULL DEFAULT 'active',
       access_granted_at   TIMESTAMPTZ,
       access_revoked_at   TIMESTAMPTZ,
       credit_balance      INTEGER NOT NULL DEFAULT 0,
@@ -43,6 +51,24 @@ export async function initSchema() {
       created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `;
+
+  await sql`
+    ALTER TABLE players
+      ADD COLUMN IF NOT EXISTS full_name TEXT,
+      ADD COLUMN IF NOT EXISTS handle TEXT,
+      ADD COLUMN IF NOT EXISTS country TEXT,
+      ADD COLUMN IF NOT EXISTS password_hash TEXT,
+      ADD COLUMN IF NOT EXISTS auth_provider TEXT NOT NULL DEFAULT 'password',
+      ADD COLUMN IF NOT EXISTS oauth_provider TEXT,
+      ADD COLUMN IF NOT EXISTS oauth_key_enc TEXT,
+      ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'
+  `;
+
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS players_handle_unique_idx
+    ON players(handle)
+    WHERE handle IS NOT NULL
   `;
 
   await sql`
@@ -114,6 +140,32 @@ export async function touchAdminLogin(id: string) {
   await sql`UPDATE admin_users SET last_login = NOW() WHERE id = ${id}`;
 }
 
+export async function getAdminById(id: string) {
+  const { rows } = await sql`
+    SELECT id, username, password_hash, totp_secret, created_at, last_login
+    FROM admin_users
+    WHERE id = ${id}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function updateAdminPassword(id: string, passwordHash: string) {
+  await sql`
+    UPDATE admin_users
+    SET password_hash = ${passwordHash}
+    WHERE id = ${id}
+  `;
+}
+
+export async function updateAdminTotpSecret(id: string, totpSecretEnc: string) {
+  await sql`
+    UPDATE admin_users
+    SET totp_secret = ${totpSecretEnc}
+    WHERE id = ${id}
+  `;
+}
+
 // ── Players ────────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 50;
@@ -121,10 +173,11 @@ const PAGE_SIZE = 50;
 export async function listPlayers(page = 0, search?: string) {
   const offset = page * PAGE_SIZE;
   if (search) {
-    const h = sha256(search); // search by email hash
+    const h = sha256(search.trim().toLowerCase()); // search by email hash
     const { rows } = await sql`
-      SELECT id, email_hash, access_granted_at, access_revoked_at,
-             credit_balance, notes, created_at, updated_at
+      SELECT id, full_name, handle, email_hash, country, status,
+             access_granted_at, access_revoked_at, credit_balance,
+             notes, created_at, updated_at
       FROM   players
       WHERE  email_hash = ${h}
       ORDER  BY created_at DESC
@@ -133,8 +186,9 @@ export async function listPlayers(page = 0, search?: string) {
     return rows;
   }
   const { rows } = await sql`
-    SELECT id, email_hash, access_granted_at, access_revoked_at,
-           credit_balance, notes, created_at, updated_at
+    SELECT id, full_name, handle, email_hash, country, status,
+           access_granted_at, access_revoked_at, credit_balance,
+           notes, created_at, updated_at
     FROM   players
     ORDER  BY created_at DESC
     LIMIT  ${PAGE_SIZE} OFFSET ${offset}
@@ -148,6 +202,7 @@ export async function getPlayerById(id: string) {
     FROM   players p
     LEFT   JOIN purchases pu ON pu.player_id = p.id
     WHERE  p.id = ${id}
+    ORDER  BY pu.created_at DESC NULLS LAST
     LIMIT  1
   `;
   const row = rows[0];
@@ -156,61 +211,93 @@ export async function getPlayerById(id: string) {
     ...row,
     email:              decryptMaybe(row.email_enc),
     stripe_customer_id: decryptMaybe(row.stripe_customer_enc),
+    oauth_key:          decryptMaybe(row.oauth_key_enc),
   };
 }
 
 export async function findPlayerByEmail(email: string) {
-  const h = sha256(email);
+  const h = sha256(email.trim().toLowerCase());
   const { rows } = await sql`
     SELECT id FROM players WHERE email_hash = ${h} LIMIT 1
   `;
   return rows[0] ?? null;
 }
 
-export async function upsertPlayer(data: {
-  id?:              string;
-  email?:           string;
-  stripeCustomerId?: string;
-  accessGranted?:   boolean;
-  creditDelta?:     number;
-  notes?:           string;
+export async function createPlayer(data: {
+  fullName?: string;
+  handle?: string;
+  email?: string;
+  country?: string;
+  passwordHash?: string;
+  authProvider?: string;
+  oauthProvider?: string;
+  oauthKey?: string;
+  notes?: string;
+  status?: string;
 }) {
-  const id         = data.id ?? randomUUID();
-  const emailHash  = data.email ? sha256(data.email) : null;
-  const emailEnc   = encryptMaybe(data.email);
-  const stripeEnc  = encryptMaybe(data.stripeCustomerId);
-  const delta      = data.creditDelta ?? 0;
-
+  const id = randomUUID();
   const { rows } = await sql`
-    INSERT INTO players
-      (id, email_hash, email_enc, stripe_customer_enc, access_granted_at, credit_balance, notes)
+    INSERT INTO players (
+      id, full_name, handle, email_hash, email_enc, country,
+      password_hash, auth_provider, oauth_provider, oauth_key_enc,
+      status, notes
+    )
     VALUES (
       ${id},
-      ${emailHash},
-      ${emailEnc},
-      ${stripeEnc},
-      ${data.accessGranted ? 'NOW()' : null},
-      ${delta},
+      ${data.fullName ?? null},
+      ${data.handle ?? null},
+      ${data.email ? sha256(data.email.trim().toLowerCase()) : null},
+      ${encryptMaybe(data.email)},
+      ${data.country ?? null},
+      ${data.passwordHash ?? null},
+      ${data.authProvider ?? 'password'},
+      ${data.oauthProvider ?? null},
+      ${encryptMaybe(data.oauthKey)},
+      ${data.status ?? 'active'},
       ${data.notes ?? null}
     )
-    ON CONFLICT (id) DO UPDATE SET
-      email_hash          = COALESCE(EXCLUDED.email_hash,          players.email_hash),
-      email_enc           = COALESCE(EXCLUDED.email_enc,           players.email_enc),
-      stripe_customer_enc = COALESCE(EXCLUDED.stripe_customer_enc, players.stripe_customer_enc),
-      access_granted_at   = CASE
-        WHEN ${data.accessGranted === true}  AND players.access_granted_at IS NULL THEN NOW()
-        ELSE players.access_granted_at
-      END,
-      access_revoked_at   = CASE
-        WHEN ${data.accessGranted === false} THEN NOW()
-        ELSE players.access_revoked_at
-      END,
-      credit_balance      = players.credit_balance + ${delta},
-      notes               = COALESCE(${data.notes ?? null}, players.notes),
-      updated_at          = NOW()
     RETURNING id
   `;
   return rows[0].id as string;
+}
+
+export async function updatePlayer(id: string, data: {
+  fullName?: string | null;
+  handle?: string | null;
+  email?: string | null;
+  country?: string | null;
+  passwordHash?: string | null;
+  authProvider?: string | null;
+  oauthProvider?: string | null;
+  oauthKey?: string | null;
+  notes?: string | null;
+  status?: string | null;
+}) {
+  await sql`
+    UPDATE players
+    SET full_name      = COALESCE(${data.fullName ?? null}, full_name),
+        handle         = COALESCE(${data.handle ?? null}, handle),
+        email_hash     = CASE
+          WHEN ${data.email != null} THEN ${data.email ? sha256(data.email.trim().toLowerCase()) : null}
+          ELSE email_hash
+        END,
+        email_enc      = CASE
+          WHEN ${data.email != null} THEN ${encryptMaybe(data.email)}
+          ELSE email_enc
+        END,
+        country        = COALESCE(${data.country ?? null}, country),
+        password_hash  = COALESCE(${data.passwordHash ?? null}, password_hash),
+        auth_provider  = COALESCE(${data.authProvider ?? null}, auth_provider),
+        oauth_provider = COALESCE(${data.oauthProvider ?? null}, oauth_provider),
+        oauth_key_enc  = CASE
+          WHEN ${data.oauthKey != null} THEN ${encryptMaybe(data.oauthKey)}
+          ELSE oauth_key_enc
+        END,
+        status         = COALESCE(${data.status ?? null}, status),
+        notes          = COALESCE(${data.notes ?? null}, notes),
+        updated_at     = NOW()
+    WHERE id = ${id}
+  `;
 }
 
 export async function revokeAccess(playerId: string) {
@@ -218,6 +305,25 @@ export async function revokeAccess(playerId: string) {
     UPDATE players
     SET    access_revoked_at = NOW(), updated_at = NOW()
     WHERE  id = ${playerId}
+  `;
+}
+
+export async function lockPlayer(playerId: string) {
+  await sql`
+    UPDATE players
+    SET status = 'locked', access_revoked_at = NOW(), updated_at = NOW()
+    WHERE id = ${playerId}
+  `;
+}
+
+export async function unlockPlayer(playerId: string) {
+  await sql`
+    UPDATE players
+    SET status = 'active',
+        access_revoked_at = NULL,
+        access_granted_at = COALESCE(access_granted_at, NOW()),
+        updated_at = NOW()
+    WHERE id = ${playerId}
   `;
 }
 

@@ -194,6 +194,14 @@ export class AudioDirector {
      * as coming from behind, which is the opposite of the "you got it" the cue
      * exists to give. Two at once earn the brighter variant. */
     on('race:pickup', (e) => this.sfx.pickup(null, { rare: (e?.count ?? 1) > 1 }));
+    /* Start procedure. One tone per column and a higher, longer one at the off,
+     * which is the pattern the real thing uses - and the reason it works is
+     * that the pitch does not change as the columns build, so the ear cannot
+     * predict the release any better than the eye can. */
+    on('race:lights', (e) => {
+      if (e?.go) this.sfx.ui('open');
+      else if ((e?.lit ?? 0) > 0) this.sfx.ui('click');
+    });
     /* Car-to-car contact. Positioned, unlike the pickup cue: a shunt has a
      * direction and hearing which side it came from is information. Metal, and
      * scaled by severity so a rub and a shunt are not the same noise. */

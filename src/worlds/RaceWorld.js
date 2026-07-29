@@ -1653,6 +1653,75 @@ export class RaceWorld extends World {
     return v;
   }
 
+  /**
+   * The five columns of start lights, as one instanced mesh.
+   *
+   * Two lenses per column, ten instances, one draw call. Colour is per-instance
+   * so `setStartLights` is a buffer write rather than a material swap - a swap
+   * would key a fresh shader program on every change and stall the frame the
+   * lights come on, which is the worst possible frame to stall.
+   *
+   * `MeshBasicMaterial` deliberately: a lens that is lit should be lit
+   * regardless of where the sun is, and an unlit one should read as dark glass
+   * rather than as a surface waiting for a light to reach it.
+   */
+  _buildStartLights(g, yaw, fx, fz) {
+    const geo = new THREE.BoxGeometry(0.78, 0.78, 0.26);
+    const mat = new THREE.MeshBasicMaterial({ toneMapped: false });
+    const mesh = new THREE.InstancedMesh(geo, mat, 10);
+    mesh.name = 'race:startlights';
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.frustumCulled = false;
+    const m4 = new THREE.Matrix4();
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0));
+    const one = new THREE.Vector3(1, 1, 1);
+    const p = new THREE.Vector3();
+    for (let c = 0; c < 5; c++) {
+      const lx = (c / 4 - 0.5) * 9;
+      for (let r = 0; r < 2; r++) {
+        p.set(
+          g.x + Math.cos(yaw) * lx + fx * 1.05,
+          g.y + 10.9 - r * 0.85,
+          g.z - Math.sin(yaw) * lx + fz * 1.05
+        );
+        m4.compose(p, q, one);
+        mesh.setMatrixAt(c * 2 + r, m4);
+      }
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    this.group.add(mesh);
+    this._startLights = mesh;
+    this._lightColor = new THREE.Color();
+    this._owned?.push?.(geo, mat);
+    this.setStartLights(0);
+  }
+
+  /**
+   * Light the first `lit` columns of the start gantry.
+   *
+   * @param {number} lit 0..5. Zero is the resting state *and* the go signal —
+   *   in an F1 start those are the same picture, which is why the sequence has
+   *   to be watched rather than glanced at.
+   * @param {boolean} [go] true to hold the lenses dark-green for a moment after
+   *   the off, so a driver who blinked can still tell "not yet" from "gone".
+   */
+  setStartLights(lit, go = false) {
+    const mesh = this._startLights;
+    if (!mesh) return;
+    const n = Math.max(0, Math.min(5, lit | 0));
+    for (let c = 0; c < 5; c++) {
+      const on = c < n;
+      // Unlit lenses are a very dark red rather than black: an extinguished
+      // bulb still has a lens in front of it, and pure black reads as a hole
+      // in the gantry.
+      if (go) this._lightColor.setHex(0x1d6b2a);
+      else this._lightColor.setHex(on ? 0xff2410 : 0x2a0c08);
+      for (let r = 0; r < 2; r++) mesh.setColorAt(c * 2 + r, this._lightColor);
+    }
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }
+
   _flushFence(st) {
     const g = st.lat.build(false);
     if (!g) return;
@@ -1925,19 +1994,20 @@ export class RaceWorld extends World {
       this.track(this.physics.addRotatedBox(
         _v1.set(g.x, g.y + 11.05, g.z),
         _v2.set(wHalf + 1.2, 1.4, 1.2), yaw));
-      // Light panel: five columns of start lights, facing *back* down the
-      // straight, because that is where the grid is.
+      /* Light panel: five columns of start lights, facing *back* down the
+       * straight, because that is where the grid is.
+       *
+       * Not batched with the rest of the gantry. The whole point of an F1 start
+       * is that the columns come on one at a time and then all go out together,
+       * and geometry merged into a shared buffer cannot be addressed
+       * individually. Ten instances of one box is a single draw call and every
+       * lens is independently coloured, which is what the sequence needs.
+       *
+       * A backing plate goes in the batch, though - it never changes. */
       const fx = -g.dx;
       const fz = -g.dz;
-      for (let c = 0; c < 5; c++) {
-        const lx = (c / 4 - 0.5) * 9;
-        for (let r = 0; r < 2; r++) {
-          B.box('emissive.red', 0.7, 0.7, 0.25,
-            g.x + Math.cos(yaw) * lx + fx * 1.05,
-            g.y + 10.9 - r * 0.85,
-            g.z - Math.sin(yaw) * lx + fz * 1.05, yaw);
-        }
-      }
+      B.box('metal.trim', 11.2, 2.4, 0.22, g.x + fx * 0.88, g.y + 10.48, g.z + fz * 0.88, yaw, 0x14171a);
+      this._buildStartLights(g, yaw, fx, fz);
       // Banner across the front of the gantry.
       B.box('paint.enamel', wHalf * 2 - 4, 1.5, 0.2, g.x + fx * 1.0, g.y + 9.4, g.z + fz * 1.0,
         yaw, 0x1d3a66);

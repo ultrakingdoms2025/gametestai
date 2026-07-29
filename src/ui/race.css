@@ -164,33 +164,160 @@
   100% { opacity: 0; transform: translateY(-26px) scale(1); }
 }
 
-/* ======================================================== countdown ==== */
+/* ====================================================== armed prompt ====
+   Top-centre, in the same place the start lights will appear - the prompt and
+   the lights are never up together, so this reuses the one piece of screen the
+   procedure already owns and keeps the bottom clear of the mount card, which
+   the prompt sat directly on top of when it lived down there.
+
+   Pointer events only on the button, so it cannot swallow a click meant for the
+   world - and the button is only reachable when the cursor is free anyway,
+   which is why Enter does the same job for anyone actually driving. */
+
+.rc-ready {
+  position: fixed;
+  left: 50%;
+  top: 11vh;
+  transform: translate(-50%, 8px);
+  z-index: 13;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  /* A plate, like the lights panel. Sky is the background here and small text
+     on sky is unreadable - the kicker and the key hint both vanished against
+     it before this. */
+  padding: 11px 22px 12px;
+  border: 1px solid rgba(120, 170, 200, 0.22);
+  background: linear-gradient(180deg, rgba(8, 13, 20, 0.82), rgba(4, 8, 14, 0.88));
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 160ms ease, transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.rc-ready.on {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
+.rc-ready-k {
+  font: 600 9px/1 'Chakra Petch', system-ui, sans-serif;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: #7fb4cc;
+}
+
+.rc-ready-go {
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 9px 26px 8px;
+  font: 700 15px/1 'Chakra Petch', system-ui, sans-serif;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #06131b;
+  border: 0;
+  background: linear-gradient(180deg, #7ef0ff, #23c3e6);
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  box-shadow: 0 0 24px rgba(82, 233, 255, 0.4), 0 10px 26px rgba(0, 0, 0, 0.5);
+  animation: rc-ready-pulse 2.4s ease-in-out infinite;
+}
+
+.rc-ready-go:hover {
+  background: linear-gradient(180deg, #a6f6ff, #35d6ff);
+}
+
+@keyframes rc-ready-pulse {
+  0%, 100% { box-shadow: 0 0 22px rgba(82, 233, 255, 0.34), 0 10px 26px rgba(0, 0, 0, 0.5); }
+  50% { box-shadow: 0 0 34px rgba(82, 233, 255, 0.6), 0 10px 26px rgba(0, 0, 0, 0.5); }
+}
+
+.rc-ready-meta {
+  font: 600 11px/1 'Rajdhani', system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  color: #c4dced;
+}
+
+/* =================================================== start procedure ====
+   A repeat of the gantry, not a countdown. It sits in the upper third rather
+   than dead centre so it never covers the road the player is about to launch
+   down, and it holds for the whole sequence instead of pulsing per second -
+   there is nothing to pulse, the information is which columns are lit. */
 
 .rc-count {
   position: fixed;
   inset: 0;
   z-index: 14;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 12vh;
+  gap: 14px;
   pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.rc-count.on { opacity: 1; }
+
+.rc-lights {
+  display: flex;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid rgba(120, 170, 200, 0.22);
+  background: linear-gradient(180deg, rgba(8, 13, 20, 0.86), rgba(4, 8, 14, 0.9));
+  clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 calc(100% - 16px));
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+  transition: opacity 90ms ease;
+}
+
+/* Both lenses of a column light together, as they do on the real thing. */
+.rc-light {
+  display: grid;
+  gap: 7px;
+}
+
+.rc-light i {
+  display: block;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  /* Dark glass, not a hole: an unlit bulb still has a lens in front of it. */
+  background: radial-gradient(circle at 38% 32%, #3a1410, #170706 70%);
+  box-shadow: inset 0 0 6px rgba(0, 0, 0, 0.8);
+  transition: background 60ms linear, box-shadow 60ms linear;
+}
+
+.rc-light.lit i {
+  background: radial-gradient(circle at 38% 32%, #ffd0c2, #ff2b12 55%, #a5150a 100%);
+  box-shadow:
+    0 0 14px rgba(255, 60, 25, 0.9),
+    0 0 34px rgba(255, 60, 25, 0.5),
+    inset 0 0 6px rgba(255, 190, 170, 0.7);
+}
+
+/* Lights out. The panel itself drops away, because the absence is the signal. */
+.rc-count.go .rc-lights {
   opacity: 0;
 }
 
-.rc-count.on {
-  animation: rc-pop 900ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
 .rc-count-n {
-  font-size: 148px;
+  font-size: 92px;
   font-weight: 700;
-  letter-spacing: 0.06em;
-  color: #eaf6ff;
-  text-shadow: 0 0 60px rgba(82, 233, 255, 0.75), 0 6px 30px rgba(0, 0, 0, 0.7);
-}
-
-.rc-count.go .rc-count-n {
+  letter-spacing: 0.1em;
   color: #b6ff5a;
   text-shadow: 0 0 70px rgba(182, 255, 90, 0.8), 0 6px 30px rgba(0, 0, 0, 0.7);
+}
+
+.rc-count-n.pop {
+  animation: rc-pop 900ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 @keyframes rc-pop {
@@ -537,5 +664,7 @@
     grid-template-columns: 36px 1fr 78px 62px 44px;
   }
   .rc-c-best { display: none; }
-  .rc-count-n { font-size: 96px; }
+  .rc-count-n { font-size: 64px; }
+  .rc-light i { width: 22px; height: 22px; }
+  .rc-lights { gap: 9px; padding: 9px 12px; }
 }

@@ -61,7 +61,26 @@ export const RACE_STATE = {
   FINISHED: 'finished',
 };
 
-const COUNTDOWN_SECONDS = 3;
+/* ---- start procedure ------------------------------------------------------
+ *
+ * An F1 start, because that is what a gantry with five columns of lights on it
+ * is. The columns illuminate one per second; when all five are lit the start is
+ * armed, and the race begins the moment they all go *out* together - not when
+ * the last one comes on.
+ *
+ * The hold before they go out is randomised, which is the entire point of the
+ * procedure: a fixed delay is a rhythm you can count, and the whole reason a
+ * real start is tense is that you cannot. The window is tighter than the
+ * sport's 0.2-3 s, because at three seconds with no engine note to read a
+ * player assumes the game has hung.
+ */
+const START_LIGHTS = 5;
+/** Seconds between columns coming on. */
+const LIGHT_STEP_S = 1.0;
+/** Dead time before the first column, so the sequence has a beginning. */
+const LIGHT_LEAD_S = 1.0;
+const HOLD_MIN_S = 0.7;
+const HOLD_MAX_S = 1.9;
 /** Seconds the player is given to get home after the last rival finishes. */
 const FINISH_GRACE = 25;
 /**
@@ -131,7 +150,12 @@ export class RaceManager {
 
     this.clock = 0;
     this._countdown = 0;
+    this._countdownTotal = 0;
     this._lastBeep = -1;
+    /** Columns currently lit on the gantry, or -1 before a start is armed. */
+    this._lit = -1;
+    /** Seconds the gantry stays green after the off. */
+    this._goHold = 0;
     this._timeLimit = 600;
     this._playerPlace = 0;
     this._playerEntry = null;
@@ -292,8 +316,18 @@ export class RaceManager {
 
     this._buildEntries(playerSlot);
     this.clock = 0;
-    this._countdown = COUNTDOWN_SECONDS;
+    /* The hold is drawn once per start, here, so the same race replays the same
+     * way if it is ever resumed - and so the length is known before the
+     * sequence begins rather than being decided while it runs. */
+    const hold = HOLD_MIN_S + ((this._seed % 1000) / 1000) * (HOLD_MAX_S - HOLD_MIN_S);
+    /* `START_LIGHTS - 1` steps, not `START_LIGHTS`: the first column lights at
+     * the end of the lead-in, so the fifth lands four steps later, not five.
+     * Using five put an extra second of all-lit in front of the hold and made
+     * the real wait 2.8 s when the intent was at most 1.9. */
+    this._countdownTotal = LIGHT_LEAD_S + (START_LIGHTS - 1) * LIGHT_STEP_S + hold;
+    this._countdown = this._countdownTotal;
     this._lastBeep = -1;
+    this._lit = -1;
     this.results = null;
     // Generous: at 18 m/s average a lap of this circuit takes L/18 seconds, and
     // a player who is going to finish at all will do it inside twice that.
@@ -302,8 +336,29 @@ export class RaceManager {
     this.state = RACE_STATE.COUNTDOWN;
     this.field.setVisible(true);
 
-    this.bus?.emit('race:countdown', { count: COUNTDOWN_SECONDS, difficulty: this.difficulty });
+    this._setLights(0);
+    this.bus?.emit('race:countdown', { count: Math.ceil(this._countdown), difficulty: this.difficulty });
     return true;
+  }
+
+  /**
+   * Drive the gantry and anything watching it.
+   *
+   * The world is told directly rather than through the bus because a circuit
+   * without a gantry - the synthetic test one - simply does not have the
+   * method, and an optional call says that more plainly than a subscriber that
+   * has to check.
+   */
+  _setLights(lit, go = false) {
+    if (lit === this._lit && !go) return;
+    this._lit = lit;
+    this._source?.setStartLights?.(lit, go);
+    // `active` distinguishes the two meanings of zero: the sequence about to
+    // begin, and a start that was cleared. The HUD needs to show the panel for
+    // the first and hide it for the second.
+    this.bus?.emit('race:lights', {
+      lit, of: START_LIGHTS, go, active: this.state === RACE_STATE.COUNTDOWN,
+    });
   }
 
   /** Abandon a race in progress. No payout, no classification. */
@@ -314,6 +369,8 @@ export class RaceManager {
     this.order.length = 0;
     this.markers.length = 0;
     this.field.setVisible(false);
+    this._goHold = 0;
+    this._setLights(0);
     this.bus?.emit('race:aborted', { reason });
   }
 
@@ -363,6 +420,8 @@ export class RaceManager {
       order: this.order,
       drops: this.pickups.collected,
       dropsTotal: this.pickups.items.length,
+      lights: Math.max(0, this._lit),
+      lightsOf: START_LIGHTS,
     };
   }
 
@@ -385,19 +444,27 @@ export class RaceManager {
 
     if (!running) {
       this._countdown -= dt;
-      const beep = Math.ceil(this._countdown);
-      if (beep !== this._lastBeep && beep > 0) {
-        this._lastBeep = beep;
-        this.bus?.emit('race:countdown', { count: beep, difficulty: this.difficulty });
-      }
+      // Columns come on one per second after the lead-in, and stay on until the
+      // off. Derived from elapsed time rather than counted up on a tick, so a
+      // dropped frame cannot skip a light.
+      const elapsed = this._countdownTotal - this._countdown;
+      const lit = elapsed < LIGHT_LEAD_S
+        ? 0
+        : Math.min(START_LIGHTS, Math.floor((elapsed - LIGHT_LEAD_S) / LIGHT_STEP_S) + 1);
+      this._setLights(lit);
       this._holdPlayerOnGrid();
       if (this._countdown <= 0) {
         this.state = RACE_STATE.RACING;
         this.clock = 0;
-        // See `_seedSweep`: three seconds of being held on the grid is what
-        // makes every racer's position trustworthy at exactly this instant.
+        // See `_seedSweep`: being held on the grid for the whole start
+        // procedure is what makes every racer's position trustworthy at
+        // exactly this instant.
         this._syncPlayerEntry();
         this._seedSweep();
+        // Lights out. All five go dark together - that is the signal, not the
+        // fifth one coming on.
+        this._setLights(0, true);
+        this._goHold = 2.5;
         this.bus?.emit('race:countdown', { count: 0, difficulty: this.difficulty });
         this.bus?.emit('race:started', {
           difficulty: this.difficulty,
@@ -407,6 +474,12 @@ export class RaceManager {
       }
     } else {
       this.clock += dt;
+      // The green hold is a courtesy to anyone who blinked, not a state — put
+      // the gantry back to rest once the field is away.
+      if (this._goHold > 0) {
+        this._goHold -= dt;
+        if (this._goHold <= 0) this._source?.setStartLights?.(0, false);
+      }
     }
 
     this._syncPlayerEntry();

@@ -101,6 +101,20 @@ export class RaceUI {
         e.preventDefault();
         if (this.input?.textCaptured) return;
         this.togglePanel();
+      } else if (e.code === 'Enter') {
+        /* Start, from wherever you are.
+         *
+         * The panel's button is the only other way in, and a player who closed
+         * it to look at the circuit had to go back through a function key to
+         * begin - so the start was manual but not *reachable*. Guarded on the
+         * race being armed and idle, so Enter stays free everywhere else, and
+         * on text capture, so it still means "send" in chat.
+         */
+        if (this.input?.textCaptured) return;
+        if (this._boardOpen || !this.race?.ready || this.race.state !== 'idle') return;
+        e.preventDefault();
+        this.closePanel();
+        this.race.start(this.race.difficulty);
       } else if (e.code === 'Escape') {
         if (this._boardOpen) this._closeBoard();
         else if (this._panelOpen) this.closePanel();
@@ -117,7 +131,7 @@ export class RaceUI {
         this._syncPanel();
         if (!this.race?.racing) this.openPanel();
       }));
-      this._offs.push(bus.on('race:countdown', ({ count }) => this._showCount(count)));
+      this._offs.push(bus.on('race:lights', (e) => this._showLights(e)));
       this._offs.push(bus.on('race:started', () => {
         this.closePanel();
         this._closeBoard();
@@ -169,10 +183,44 @@ export class RaceUI {
     wrap.appendChild(hud);
     this.hudEl = hud;
 
-    /* ---- countdown --------------------------------------------------- */
+    /* ---- armed prompt -------------------------------------------------
+     * Shown whenever a circuit is loaded and no race is running. Without it
+     * the only evidence that this world does anything is a function key the
+     * player has to already know about. */
+    this.readyEl = el('div', 'rc-ready');
+    this.readyBtn = el('button', 'rc-ready-go', 'START RACE');
+    this.readyBtn.type = 'button';
+    this.readyBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (!this.race?.ready) return;
+      this.closePanel();
+      this.race.start(this.race.difficulty);
+    });
+    this.readyMeta = el('div', 'rc-ready-meta');
+    this.readyEl.append(
+      el('div', 'rc-ready-k', 'Vellum Ridge Circuit'),
+      this.readyBtn,
+      this.readyMeta
+    );
+    wrap.appendChild(this.readyEl);
+
+    /* ---- start lights -------------------------------------------------
+     * A repeat of the gantry rather than a number. The gantry is behind you on
+     * the grid and out of shot the moment the camera settles, so without this
+     * the player is being asked to react to a signal they cannot see - and a
+     * "3, 2, 1" tells them exactly when the off is, which is the one thing an
+     * F1 start deliberately does not. */
     this.countEl = el('div', 'rc-count');
-    this.countNum = el('div', 'rc-count-n', '3');
-    this.countEl.appendChild(this.countNum);
+    this.lightsEl = el('div', 'rc-lights');
+    this.lightEls = [];
+    for (let i = 0; i < 5; i++) {
+      const col = el('div', 'rc-light');
+      col.append(el('i', null), el('i', null));
+      this.lightsEl.appendChild(col);
+      this.lightEls.push(col);
+    }
+    this.countNum = el('div', 'rc-count-n', '');
+    this.countEl.append(this.lightsEl, this.countNum);
     wrap.appendChild(this.countEl);
 
     /* ---- setup panel ------------------------------------------------- */
@@ -403,17 +451,36 @@ export class RaceUI {
     this.bus?.emit('race:menu', { open: false });
   }
 
-  _showCount(n) {
-    if (n === this._lastCount) return;
-    this._lastCount = n;
-    this.countNum.textContent = n > 0 ? String(n) : 'GO';
-    this.countEl.classList.toggle('go', n === 0);
-    // Restart the pop by taking the class off and forcing a reflow, or three
-    // consecutive counts animate once and then sit still.
-    this.countEl.classList.remove('on');
-    void this.countEl.offsetWidth;
-    this.countEl.classList.add('on');
-    if (n === 0) setTimeout(() => this.countEl.classList.remove('on'), 700);
+  /**
+   * Mirror the gantry.
+   *
+   * @param {{lit:number, of:number, go:boolean}} e
+   */
+  _showLights(e) {
+    const lit = e?.lit ?? 0;
+    const go = !!e?.go;
+    // Visible for the whole procedure including the lead-in, so the panel
+    // arrives before the first column rather than with it.
+    this.countEl.classList.toggle('on', !!e?.active || go);
+    this.countEl.classList.toggle('go', go);
+    for (let i = 0; i < this.lightEls.length; i++) {
+      this.lightEls[i].classList.toggle('lit', !go && i < lit);
+    }
+    if (go) {
+      this.countNum.textContent = 'GO';
+      // Restart the pop by taking the class off and forcing a reflow, or a
+      // second race animates once and then sits still.
+      this.countNum.classList.remove('pop');
+      void this.countNum.offsetWidth;
+      this.countNum.classList.add('pop');
+      clearTimeout(this._goTimer);
+      this._goTimer = setTimeout(() => {
+        this.countEl.classList.remove('on', 'go');
+        this.countNum.textContent = '';
+      }, 1100);
+    } else {
+      this.countNum.textContent = '';
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -425,6 +492,14 @@ export class RaceUI {
     const s = r.snapshot();
     const live = s.state === 'racing' || s.state === 'countdown';
     this.hudEl.classList.toggle('on', live);
+
+    // The prompt is the resting state of this world: armed, nothing running,
+    // no panel in the way.
+    const armed = !!r.ready && s.state === 'idle' && !this._panelOpen && !this._boardOpen;
+    this.readyEl.classList.toggle('on', armed);
+    if (armed) {
+      this.readyMeta.textContent = `${String(s.difficulty).toUpperCase()} · ${s.laps} laps · Enter, or F7 for options`;
+    }
     if (!live) {
       this._lastCount = -1;
       return;

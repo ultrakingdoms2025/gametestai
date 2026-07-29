@@ -76,6 +76,10 @@ same phase table that places the leg, so a trot *sounds* like a trot.
 - **A full circuit** over rough terrain and through city streets.
 - **Up to 10 cars**, with AI competitors at **varying performance levels** so the
   field spreads and the race is a contest rather than a procession.
+- **A real F1 start.** You start the race when you're ready. Five columns of
+  lights come on across the gantry, one per second — and the race begins the
+  moment they all go *out*, after a hold you cannot time. Mirrored on the HUD,
+  because the gantry is behind you on the grid.
 - **Difficulty rebuilds the track, not just the opposition.** Easy is two clear
   laps. Standard adds chicanes at the fastest corners and scattered hazards over
   three. Expert is four laps through tight chicanes and heavy debris.

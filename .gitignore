@@ -10,3 +10,9 @@ dist/
 # Automated visual-review output
 review/
 *.log
+
+# the site is its own Vercel project; its build output and deps stay local
+site/node_modules
+site/.next
+site/.vercel
+site/public/game

@@ -1068,6 +1068,8 @@ export class HUD {
       ['Space', 'Jump / Swim'],
       ['Space', 'Hold at a wall to climb it'],
       ['Shift Space', 'Running leap'],
+      ['Ctrl', 'Crouch — tap to toggle'],
+      ['C', 'Crouch — hold'],
       ['Ctrl', 'Dive in air / roll on landing'],
       ['LMB', 'Fire / Charge'],
       ['RMB', 'Aim'],

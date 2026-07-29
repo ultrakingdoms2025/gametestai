@@ -44,6 +44,8 @@ export class Input {
 
     this._keys = new Set();
     this._pressedThisFrame = new Set();
+    /** Ctrl is a toggle, not a hold - see the note in `_syncAxes`. */
+    this._crouchLatched = false;
     this._locked = false;
     this._enabled = true;
     /** While the chat box has focus we swallow all gameplay input. */
@@ -73,6 +75,7 @@ export class Input {
     this._enabled = on;
     if (!on) {
       this._keys.clear();
+      this._crouchLatched = false;
       this._resetAxes();
     }
   }
@@ -154,7 +157,15 @@ export class Input {
       // Only the keys that are genuinely destructive in combination with a
       // modifier the game uses. Asking for everything would also swallow the
       // browser's own escape hatches, which is worse than the problem.
-      await navigator.keyboard.lock(['KeyW', 'KeyN', 'KeyT', 'Escape']);
+      /* The movement set, plus the tab/window keys that are destructive next to
+       * it. This only reclaims shortcuts owned by the *browser*; combinations
+       * the operating system takes first - Ctrl+Space on a Windows box with
+       * more than one input method - are not ours to claim, which is why crouch
+       * is a toggle rather than a held modifier. */
+      await navigator.keyboard.lock([
+        'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space',
+        'KeyN', 'KeyT', 'Escape',
+      ]);
       this._keyboardLocked = true;
       return true;
     } catch {
@@ -188,6 +199,11 @@ export class Input {
       if (down) {
         if (!this._keys.has(code)) this._pressedThisFrame.add(code);
         this._keys.add(code);
+        // Rising edge only, and not on auto-repeat: holding Ctrl down would
+        // otherwise flip the stance dozens of times a second.
+        if ((code === 'ControlLeft' || code === 'ControlRight') && !e.repeat) {
+          this._crouchLatched = !this._crouchLatched;
+        }
       } else {
         this._keys.delete(code);
       }
@@ -206,6 +222,9 @@ export class Input {
 
     window.addEventListener('blur', () => {
       this._keys.clear();
+      // A latch that survives focus loss leaves the player crouched with no key
+      // held and no obvious way to work out why.
+      this._crouchLatched = false;
       this._resetAxes();
     });
 
@@ -259,7 +278,20 @@ export class Input {
     s.right = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
     s.jump = k.has('Space');
     s.sprint = k.has('ShiftLeft') || k.has('ShiftRight');
-    s.crouch = k.has('ControlLeft') || k.has('KeyC');
+    /* Ctrl *toggles*; C is hold-to-crouch.
+     *
+     * Holding Ctrl to crouch cannot be made to work, and the reason is outside
+     * this program. Ctrl+<key> combinations are claimed before the page sees
+     * them - Ctrl+W by the browser, Ctrl+Space by the Windows input-method
+     * switcher - so a crouching player could not jump, and could not walk
+     * without closing the tab. The Keyboard Lock API reclaims the browser's
+     * shortcuts but has no authority over the operating system's, so no amount
+     * of it fixes Ctrl+Space.
+     *
+     * Toggling removes the requirement entirely: tap Ctrl, and every other key
+     * is then pressed on its own. C keeps hold-to-crouch for anyone who prefers
+     * it, and works because C is not a modifier and nothing else wants it. */
+    s.crouch = this._crouchLatched || k.has('KeyC');
     s.reload = k.has('KeyR');
     s.interact = k.has('KeyE');
   }

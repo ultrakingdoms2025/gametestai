@@ -28,7 +28,8 @@ const GROUPS = [
     rows: [
       ['W A S D', 'Walk'],
       ['Shift', 'Sprint — drains stamina'],
-      ['Ctrl / C', 'Crouch'],
+      ['Ctrl', 'Crouch — tap to toggle'],
+      ['C', 'Crouch — hold'],
       ['Space', 'Jump'],
       ['Space', 'Swim up while in water'],
       ['Space', 'Climb a ledge you are facing'],

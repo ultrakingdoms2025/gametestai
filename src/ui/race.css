@@ -123,6 +123,47 @@
   color: rgba(140, 215, 235, 0.85);
 }
 
+/* ---- drops -------------------------------------------------------------
+   Amber against the HUD's cyan, matching the emissive on the collectable
+   itself, so the thing on the road and the thing on the panel read as one
+   system. `position: relative` anchors the +N float to the row. */
+.rc-drop {
+  position: relative;
+  margin-top: 3px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(120, 170, 200, 0.16);
+}
+
+.rc-drop.off { display: none; }
+
+.rc-drop .rc-k { color: rgba(214, 163, 88, 0.9); }
+
+.rc-drop .rc-v {
+  font-size: 13px;
+  color: #ffca6e;
+}
+
+.rc-drop.hit {
+  background: rgba(255, 176, 58, 0.2);
+}
+
+.rc-drop-pop {
+  position: absolute;
+  right: 2px;
+  top: 0;
+  font: 700 14px/1 'Chakra Petch', system-ui, sans-serif;
+  color: #ffd88a;
+  text-shadow: 0 0 10px rgba(255, 160, 40, 0.85);
+  pointer-events: none;
+  animation: rc-drop-rise 900ms ease-out forwards;
+}
+
+@keyframes rc-drop-rise {
+  0% { opacity: 0; transform: translateY(4px) scale(0.9); }
+  18% { opacity: 1; transform: translateY(-2px) scale(1.08); }
+  100% { opacity: 0; transform: translateY(-26px) scale(1); }
+}
+
 /* ======================================================== countdown ==== */
 
 .rc-count {

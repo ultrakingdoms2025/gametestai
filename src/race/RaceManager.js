@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TrackPath, RacerField, DIFFICULTIES, makeTestCircuit } from './RacerAI.js';
+import { Pickups, PICKUP_VALUE } from './Pickups.js';
 
 /**
  * The race: state machine, lap validation, placement and prize money.
@@ -62,6 +63,14 @@ export const RACE_STATE = {
 const COUNTDOWN_SECONDS = 3;
 /** Seconds the player is given to get home after the last rival finishes. */
 const FINISH_GRACE = 25;
+/**
+ * Metres of centreline per collectable drop.
+ *
+ * A lap is then worth a handful without the road becoming a coin carpet, and
+ * the count scales with the circuit rather than being a fixed number that would
+ * feel sparse on a long one and cluttered on a short one.
+ */
+const DROP_SPACING_M = 40;
 
 const _v = new THREE.Vector3();
 
@@ -90,6 +99,10 @@ export class RaceManager {
     this.mounts = mounts ?? null;
     this.economy = economy ?? null;
     this.worldManager = worldManager ?? null;
+    /* Collectables along the circuit. Owned here rather than by the world so
+     * they reset per race rather than per world build, and so the synthetic
+     * test circuit gets them too. */
+    this.pickups = new Pickups({ scene, bus, materials });
 
     this.state = RACE_STATE.IDLE;
     /** Track data as read from the world, or from the synthetic test circuit. */
@@ -252,6 +265,15 @@ export class RaceManager {
 
     this._seed = (Date.now() & 0x7fffffff) || 1;
 
+    /* Seeded from the race, so two races on the same circuit are not laid out
+     * identically. */
+    let ps = this._seed;
+    const prnd = () => {
+      ps = (ps * 1664525 + 1013904223) >>> 0;
+      return ps / 4294967296;
+    };
+    this.pickups.scatter(this.path, this.plannedDrops, prnd);
+
     const grid = this.track.startGrid;
     const aiCount = Math.min(MAX_RACERS - 1, Math.max(0, grid.length - 1));
     this.field.build(this.path, aiCount, this._seed);
@@ -306,6 +328,17 @@ export class RaceManager {
    * updates 60 times a second would be 60 emits a second for a two-character
    * change, and the UI already has a frame tick of its own.
    */
+  /**
+   * How many drops this circuit will carry.
+   *
+   * Derived from the path rather than read off `pickups`, because the setup
+   * panel is shown *before* `start()` scatters them and a reward advertised as
+   * "—" is not an incentive to go looking.
+   */
+  get plannedDrops() {
+    return this.path ? Math.round(this.path.length / DROP_SPACING_M) : 0;
+  }
+
   snapshot() {
     const p = this._playerEntry;
     return {
@@ -324,6 +357,8 @@ export class RaceManager {
       finished: !!p?.finished,
       results: this.results,
       order: this.order,
+      drops: this.pickups.collected,
+      dropsTotal: this.pickups.items.length,
     };
   }
 
@@ -336,6 +371,9 @@ export class RaceManager {
    * this step is already the seat of the car rather than last step's.
    */
   fixedUpdate(dt) {
+    // Spin and bob regardless of state, so a scattered circuit is alive during
+    // the countdown and after the flag rather than only while racing.
+    this.pickups.update(dt);
     if (this.state === RACE_STATE.IDLE || this.state === RACE_STATE.FINISHED) return;
     if (!this.ready) return;
 
@@ -597,9 +635,15 @@ export class RaceManager {
     // A full scan, not a windowed one: the player can spin, reverse, be teleported
     // by Unstuck, or leave the road entirely, and a hint would then lock their
     // projection to wherever they last were.
+    const prevS = e.s;
     e.s = this.path.project(p.x, p.z, -1);
     e.lateral = this.path.lateralOf(p.x, p.z, e.s);
     e.speed = this.mounts?.active?.speed ?? 0;
+    // Only while actually racing: rolling over the circuit before the lights
+    // go out should not empty it.
+    if (this.state === RACE_STATE.RACING && typeof prevS === 'number') {
+      this.pickups.claim(e.id, prevS, e.s, e.lateral, true);
+    }
   }
 
   /**
@@ -753,17 +797,24 @@ export class RaceManager {
     // Only the player has a wallet. The prize column is still shown against the
     // podium so the reward for improving a place is legible before the next
     // race rather than after it.
-    if (mine && !mine.dnf && mine.credits > 0) {
+    /* Pickups pay even on a DNF. They were collected; taking them back for
+     * finishing fourth would make them a trap rather than a reward. The placing
+     * prize still requires a finish. */
+    const bonus = this.pickups.collected * PICKUP_VALUE;
+    if (mine) {
+      if (mine.dnf) mine.credits = 0;
+      mine.pickups = this.pickups.collected;
+      mine.credits += bonus;
       paid = mine.credits;
-      this.economy?.add?.(paid, 'race');
-    } else if (mine) {
-      mine.credits = 0;
+      if (paid > 0) this.economy?.add?.(paid, 'race');
     }
 
     this.bus?.emit('race:finished', {
       results,
       place: mine?.place ?? 0,
       credits: paid,
+      pickups: this.pickups.collected,
+      pickupCredits: bonus,
       dnf: !!playerDnf || !!mine?.dnf,
       difficulty: this.difficulty,
       time: mine?.time ?? 0,
@@ -811,6 +862,7 @@ export class RaceManager {
   }
 
   dispose() {
+    this.pickups?.dispose?.();
     this.bus?.off?.('world:changing', this._onWorldChanging);
     this.bus?.off?.('world:changed', this._onWorldChanged);
     this.field.dispose();

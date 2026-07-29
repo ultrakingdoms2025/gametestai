@@ -2,10 +2,14 @@ import './race.css';
 import { PLAYER_GRID_SLOT } from '../race/RaceManager.js';
 
 /** One line each, because "expert" on its own does not tell anyone what changes. */
+/* Difficulty changes the circuit, not just the field, so the blurb has to say
+ * what gets added to the road as well as who you are racing. A player who picks
+ * EXPERT and then hits a barrier that was not there last time should have been
+ * told. */
 const DIFFICULTY_BLURB = {
-  easy: 'A slower, scrappier field. Mistakes are frequent.',
-  standard: 'Evenly matched. The podium is there to be taken.',
-  expert: 'Faster than your car is, and they rarely slip.',
+  easy: '2 laps, clear road. A slower, scrappier field.',
+  standard: '3 laps, chicanes and scattered hazards. Evenly matched.',
+  expert: '4 laps, tight chicanes and heavy debris. They rarely slip.',
 };
 
 /**
@@ -70,6 +74,11 @@ export class RaceUI {
     this._panelOpen = false;
     this._boardOpen = false;
     this._flash = 0;
+    this._dropFlash = 0;
+    /* Collected since the last frame that drew them. Driving through two in one
+     * step emits one event with a count of two, and the readout has to say +2
+     * rather than +1 twice or the number stops matching the wallet. */
+    this._dropGain = 0;
     this._lastCount = -1;
 
     this.el = this._build();
@@ -114,6 +123,10 @@ export class RaceUI {
         this._closeBoard();
       }));
       this._offs.push(bus.on('race:lap', (e) => { if (e.isPlayer) this._flash = 1.2; }));
+      this._offs.push(bus.on('race:pickup', (e) => {
+        this._dropFlash = 0.5;
+        this._dropGain += e?.count ?? 1;
+      }));
       this._offs.push(bus.on('race:finished', (e) => this._showBoard(e)));
       this._offs.push(bus.on('race:aborted', () => { this._closeBoard(); }));
     }
@@ -146,7 +159,12 @@ export class RaceUI {
     this.lastRow.append(el('span', 'rc-k', 'LAST'), (this.lastVal = el('span', 'rc-v', '—')));
     this.bestRow = el('div', 'rc-stat rc-dim');
     this.bestRow.append(el('span', 'rc-k', 'BEST'), (this.bestVal = el('span', 'rc-v', '—')));
-    stack.append(this.lapRow, this.timeRow, this.lastRow, this.bestRow);
+    // Drops sit last and carry their own accent, because unlike the four rows
+    // above it they are the only line a player can change by *steering* rather
+    // than by going faster.
+    this.dropRow = el('div', 'rc-stat rc-drop');
+    this.dropRow.append(el('span', 'rc-k', 'DROPS'), (this.dropVal = el('span', 'rc-v', '0')));
+    stack.append(this.lapRow, this.timeRow, this.lastRow, this.bestRow, this.dropRow);
     hud.append(this.posBox, stack);
     wrap.appendChild(hud);
     this.hudEl = hud;
@@ -171,6 +189,7 @@ export class RaceUI {
     this.factLaps = this._fact(facts, 'Laps', '3');
     this.factField = this._fact(facts, 'Grid', '10 cars');
     this.factGrid = this._fact(facts, 'You start', '5th');
+    this.factDrops = this._fact(facts, 'Drops', '—');
 
     const pickLabel = el('div', 'rc-section', 'Difficulty');
     this.pickEl = el('div', 'rc-picks');
@@ -288,6 +307,8 @@ export class RaceUI {
     this.factLaps.textContent = String(r?.lapCount ?? 3);
     this.factField.textContent = `${Math.min(10, (r?.track?.startGrid?.length ?? 10))} cars`;
     this.factGrid.textContent = ordinal(PLAYER_GRID_SLOT + 1);
+    const nDrops = r?.plannedDrops ?? 0;
+    this.factDrops.textContent = nDrops ? `${nDrops} · 1 cr each` : '—';
     this.startBtn.disabled = !r?.ready;
     this.startBtn.textContent = r?.ready ? 'START RACE' : 'NO CIRCUIT LOADED';
   }
@@ -345,7 +366,10 @@ export class RaceUI {
         el('span', 'rc-c-time', r.dnf ? `LAP ${r.laps}/${laps}` : clockText(r.time)),
         el('span', 'rc-c-gap', r.place === 1 || r.dnf ? '—' : `+${r.gap.toFixed(2)}`),
         el('span', 'rc-c-best', clockText(r.bestLap)),
-        el('span', 'rc-c-cr', r.credits > 0 && !r.dnf ? `+${r.credits}` : '—')
+        // Not gated on `dnf`: a player who was still circulating at the flag
+        // keeps what they drove over, and a paid-but-blank column reads as a
+        // bug against a wallet that just went up.
+        el('span', 'rc-c-cr', r.credits > 0 ? `+${r.credits}` : '—')
       );
       this.rowsEl.appendChild(row);
     }
@@ -355,6 +379,12 @@ export class RaceUI {
       ? `${payload.difficulty.toUpperCase()} · ${laps} lap${laps === 1 ? '' : 's'}`
       : 'Chequered flag';
     this.boardTitle.textContent = mine?.dnf ? 'DID NOT FINISH' : `${ordinal(mine?.place ?? 0)} PLACE`;
+    // Split the payout so a player can see what the driving earned and what the
+    // detour earned - otherwise "+9 credits" for a second place looks wrong.
+    const drops = payload?.pickups ?? 0;
+    if (drops > 0) {
+      this.boardKicker.textContent += ` · ${drops} drop${drops === 1 ? '' : 's'} (+${payload.pickupCredits})`;
+    }
     this.boardBadge.textContent = payload?.credits > 0 ? `+${payload.credits} CREDITS` : '';
     this.boardBadge.classList.toggle('on', payload?.credits > 0);
 
@@ -407,11 +437,39 @@ export class RaceUI {
     this.lastVal.textContent = clockText(s.lastLap);
     this.bestVal.textContent = clockText(s.bestLap);
 
+    // A circuit with nothing scattered on it should not show an empty counter.
+    const hasDrops = (s.dropsTotal ?? 0) > 0;
+    this.dropRow.classList.toggle('off', !hasDrops);
+    if (hasDrops) this.dropVal.textContent = `${s.drops}/${s.dropsTotal}`;
+
     if (this._flash > 0) {
       this._flash -= dt;
       this.lapRow.classList.add('hit');
       if (this._flash <= 0) this.lapRow.classList.remove('hit');
     }
+
+    if (this._dropGain > 0) {
+      this._float(`+${this._dropGain}`);
+      this._dropGain = 0;
+    }
+    if (this._dropFlash > 0) {
+      this._dropFlash -= dt;
+      this.dropRow.classList.add('hit');
+      if (this._dropFlash <= 0) this.dropRow.classList.remove('hit');
+    }
+  }
+
+  /**
+   * A `+N` that rises off the drops row and removes itself.
+   *
+   * Built per collection rather than pooled: there are forty on a circuit and
+   * they cannot overlap in time by more than about a second, so a pool would be
+   * machinery guarding against a load that cannot happen.
+   */
+  _float(text) {
+    const n = el('div', 'rc-drop-pop', text);
+    this.dropRow.appendChild(n);
+    n.addEventListener('animationend', () => n.remove(), { once: true });
   }
 
   dispose() {

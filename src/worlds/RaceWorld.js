@@ -1549,8 +1549,82 @@ export class RaceWorld extends World {
     }
     B.dispose();
 
+    this._buildTrackObstacles();
+
     // Apply whatever the world was built as, so the default state is coherent.
     this.setDifficulty(this.variant);
+  }
+
+  /**
+   * Hazards standing *in* the road, as opposed to the chicanes that pinch its
+   * edges.
+   *
+   * The chicanes change the line you take; these change whether you can hold
+   * it. They sit at a lateral offset drawn across the width rather than at the
+   * kerb, so on the harder layouts the fast way through a corner is no longer a
+   * clean arc and has to be threaded.
+   *
+   * Two rules keep them fair rather than annoying:
+   *   - never within 60 m of the start line, so a standing start is not an
+   *     immediate collision,
+   *   - never more than one across the same part of the track, so there is
+   *     always a way past. They are hazards, not a wall.
+   *
+   * Like the chicanes they are built once and switched by `setDifficulty`.
+   */
+  _buildTrackObstacles() {
+    const co = this.course;
+    const N = co.count;
+    const rnd = this.rnd;
+    const B = new Batch({ ao: 0.42, sky: 0.3, grime: 0.55, span: 1.0 });
+    // Standard gets the first pass, expert gets both, easy gets a clear road.
+    const passes = [
+      { from: 'standard', step: 37, phase: 11 },
+      { from: 'expert', step: 29, phase: 24 },
+    ];
+
+    let made = 0;
+    for (const pass of passes) {
+      for (let i = pass.phase; i < N; i += pass.step) {
+        // Clear of the grid and the run to the first corner.
+        const along = (i / N) * this.trackLength;
+        if (along < 60 || along > this.trackLength - 25) continue;
+        const w = co.w[i];
+        const W = co.W[i];
+        // Somewhere across the road, but never hard against either barrier -
+        // an obstacle you cannot get round is a wall.
+        const lat = (rnd() * 1.3 - 0.65) * W;
+        this._roadPoint(i, lat, w, _v1);
+        const yaw = Math.atan2(co.rx[i], co.rz[i]) + rnd() * 0.6;
+        const group = new THREE.Group();
+        group.name = `hazard:${pass.from}:${i}`;
+        this.group.add(group);
+        const colliders = [];
+
+        if (rnd() < 0.5) {
+          // Oil drum: tall enough to see from a distance, narrow enough to miss.
+          B.box('metal.iron', 0.86, 1.15, 0.86, _v1.x, _v1.y + 0.58, _v1.z, yaw, 0xb8471f);
+          B.box('paint.enamel', 0.92, 0.16, 0.92, _v1.x, _v1.y + 0.86, _v1.z, yaw, 0xf0efe8);
+          colliders.push(this._orientedBox(
+            _v1.clone().setY(_v1.y + 0.58), _n1.set(0, 1, 0),
+            _a1.set(co.dx[i], 0, co.dz[i]), 0.44, 0.58, 0.44
+          ));
+        } else {
+          // A short barrier section, angled across the line.
+          B.box('paint.enamel', 3.1, 0.78, 0.42, _v1.x, _v1.y + 0.39, _v1.z, yaw, 0xe8452c);
+          B.box('paint.enamel', 3.1, 0.2, 0.46, _v1.x, _v1.y + 0.68, _v1.z, yaw, 0xf2f2ee);
+          colliders.push(this._orientedBox(
+            _v1.clone().setY(_v1.y + 0.39), _n1.set(0, 1, 0),
+            _a1.set(Math.cos(yaw), 0, -Math.sin(yaw)), 1.55, 0.39, 0.24
+          ));
+        }
+        B.flush(group, (key) => this._mat(key), `hazard${made}`);
+        this._variantFurniture.push({ mesh: group, colliders, from: pass.from });
+        made++;
+      }
+    }
+    B.dispose();
+    this._trackObstacles = made;
   }
 
   /**

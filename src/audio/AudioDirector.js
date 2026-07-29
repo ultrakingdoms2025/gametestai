@@ -189,6 +189,11 @@ export class AudioDirector {
     for (const t of ['inventory:close', 'market:close', 'character:close']) on(t, () => this.sfx.ui('close'));
     on('market:trade', () => this.sfx.pickup(null, { rare: false }));
     on('cheat:used', () => this.sfx.pickup(null, { rare: true }));
+    /* Track drops. Unpositioned, like the other reward cues: the car is moving
+     * at 30 m/s and a panned 3D blip from a point it has already passed reads
+     * as coming from behind, which is the opposite of the "you got it" the cue
+     * exists to give. Two at once earn the brighter variant. */
+    on('race:pickup', (e) => this.sfx.pickup(null, { rare: (e?.count ?? 1) > 1 }));
   }
 
   _unlock() {

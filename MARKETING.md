@@ -76,11 +76,16 @@ same phase table that places the leg, so a trot *sounds* like a trot.
 - **A full circuit** over rough terrain and through city streets.
 - **Up to 10 cars**, with AI competitors at **varying performance levels** so the
   field spreads and the race is a contest rather than a procession.
-- **Selectable difficulty** and start-when-ready.
+- **Difficulty rebuilds the track, not just the opposition.** Easy is two clear
+  laps. Standard adds chicanes at the fastest corners and scattered hazards over
+  three. Expert is four laps through tight chicanes and heavy debris.
+- **Collectable drops** scattered along the circuit, taken by driving over them
+  — worth a credit each, and placed to make the racing line a choice rather
+  than a given. They pay even if you don't finish.
 - **Live minimap** showing the whole circuit and every racer's position.
 - **Lap validation** through ordered checkpoints — no shortcutting.
 - **Leaderboard** at the flag. **10 credits** for a win, **5** for second,
-  **2** for third.
+  **2** for third, plus whatever you picked up on the way round.
 
 ---
 

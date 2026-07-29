@@ -32,6 +32,7 @@ import { Loot } from './systems/Loot.js';
 import { Marketplace } from './systems/Marketplace.js';
 import { HelpMenu } from './ui/HelpMenu.js';
 import { MountWheel } from './ui/MountWheel.js';
+import { KeybindMenu } from './ui/KeybindMenu.js';
 import { CharacterMenu } from './ui/CharacterMenu.js';
 import { LightRig } from './gfx/LightRig.js';
 import { Caches } from './systems/Caches.js';
@@ -148,6 +149,8 @@ const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
 const market = new Marketplace({ bus, economy, inventory, player, npcManager, input, root: uiRoot });
 const helpMenu = new HelpMenu({ root: uiRoot, bus, input });
 const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts });
+// F6. Rebinds anything Input resolves; the panel keys stay fixed on purpose.
+const keybindMenu = new KeybindMenu({ root: uiRoot, bus, input });
 // F2. Edits the avatar live and publishes `character:changed`, which SaveGame
 // snapshots and MountManager listens for so the rider on a mount is the same
 // person as the one on foot.
@@ -216,7 +219,7 @@ if (overrides.dev) {
     engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
     waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu, caches, contracts,
-    cheats, audio, audioMenu, relics, mountWheel, race, raceUI,
+    cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu,
   };
   import('./dev/Harness.js').then(({ installHarness }) => installHarness(window.GAME));
 }

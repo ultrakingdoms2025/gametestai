@@ -97,16 +97,17 @@ const QUAD = (HALF * 2) / SEG;
 /** Terrain collider cell, in quads. */
 const CELL_Q = 2;
 
-/**
- * How far the road's *solid* collision sits below the road that is drawn.
+/* The road's collision used to be built twice: a raycast layer at the true
+ * surface and a solid "character" layer 0.28 m below it, because `Car` could
+ * not climb any gradient without the road pushing it to a standstill. That was
+ * a workaround for a bug in `Car._resolveCollision`, which read only the
+ * horizontal part of the collision pushout and, because it normalised it,
+ * could not tell two millimetres of slope from a head-on barrier.
  *
- * Sized from `Car`: its hull capsules bottom out 0.21 m under the surface they
- * are standing on, so anything solid within that depth pushes back along the
- * surface normal and stops the car dead on any gradient. 0.28 clears it with
- * 7 cm to spare. See `_buildTrackCollision` for the whole argument - this is
- * the one number in the world that is deliberately not the visible ground.
- */
-const ROAD_SINK = 0.28;
+ * That is fixed at source now - the car ignores a pushout that is mostly
+ * vertical, which is the floor holding it up rather than something in its way -
+ * so the road is one solid layer at the height it is drawn, and a player on
+ * foot no longer stands 0.28 m inside the tarmac. */
 
 /**
  * Control points of the circuit, in the racing direction.
@@ -1189,32 +1190,21 @@ export class RaceWorld extends World {
    * exactly vertical normal with no horizontal part to keep. This is the first
    * world whose ground actually slopes.
    *
-   * ── The fix, and its one honest cost ─────────────────────────────────────
+   * ── How it was worked around, and how it is actually fixed ───────────────
    *
-   * The car does not need the road to be solid. Its ride height comes entirely
-   * from four downward raycasts and a spring; the capsules exist only to keep
-   * it out of walls. Characters *do* need it solid. So the road carries two
-   * layers:
+   * This world first shipped the road as two layers - a raycast layer at the
+   * true surface that `resolveCapsule` skipped, and a solid layer 0.28 m below
+   * it that the car's capsules could never touch. It worked, and it cost a
+   * player on foot standing 0.28 m inside the tarmac.
    *
-   *   - a **raycast layer** at the true surface, `solid: false`. `Physics.raycast`
-   *     ignores the flag and `resolveCapsule` skips it entirely, so the wheels
-   *     get the exact road and the hull capsules never see it at all.
-   *   - a **character layer** {@link ROAD_SINK} below it, `solid: true`. The
-   *     capsule's lowest point sits 0.21 m under the road, so a surface 0.28 m
-   *     under it is 0.07 m clear of the capsule at every point, edges included,
-   *     and the car receives no horizontal pushout from the road anywhere.
+   * The bug is fixed at source now. `Car._resolveCollision` reads the vertical
+   * part of the pushout and ignores any contact that is mostly vertical - that
+   * is the floor holding the car up, not something in its way - so the road is
+   * a single solid layer at exactly the height it is drawn, nobody sinks into
+   * it, and the collider count halves.
    *
-   * The cost is that a player *on foot* stands 0.28 m into the tarmac. That is
-   * a real defect and it is the reason this is written down rather than merely
-   * done: it is below the 0.75 m the collision audit flags, it applies only on
-   * the sealed surface and not to the terrain, paddock or pit lane where anyone
-   * walks, and it disappears the moment `_resolveCollision` gains a slope
-   * tolerance - one clamp on `delta.y` before the horizontal part is taken.
-   * That belongs in Car.js, which this world does not own.
-   *
-   * Both layers are the same geometry from the same function, so they cannot
-   * drift apart, and both are oriented slabs rather than level boxes for the
-   * usual reason: a level box under a road that climbs 21 m is a staircase.
+   * The slabs are oriented rather than level boxes for the usual reason: a
+   * level box under a road that climbs 21 m is a staircase.
    */
   _buildTrackCollision() {
     const co = this.course;
@@ -1259,17 +1249,12 @@ export class RaceWorld extends World {
         // two-and-a-half metre drop.
         const halfAcross = across.length() * 0.5 * 1.15;
         const halfAlong = along.length() * 0.5 * 1.15;
-        this._slab(centre, n, along, halfAcross, halfAlong, 1.8, { solid: false });
-        _v1.copy(centre).addScaledVector(n, -ROAD_SINK);
-        this._slab(_v1, n, along, halfAcross, halfAlong, 1.8);
-        count += 2;
+        this._slab(centre, n, along, halfAcross, halfAlong, 1.8);
+        count += 1;
       }
     }
     this._trackColliders = count;
-    console.info(
-      `[RaceWorld] road collision: ${count / 2} raycast slabs + ${count / 2} character slabs, ` +
-      `character layer ${ROAD_SINK} m under the tarmac (see _buildTrackCollision)`
-    );
+    console.info(`[RaceWorld] road collision: ${count} solid slabs at the true surface`);
   }
 
   /** Road surface point at sample `i`, lateral offset `lat`. */

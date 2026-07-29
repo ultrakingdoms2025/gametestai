@@ -1471,8 +1471,27 @@ export class Car {
       _rc2.copy(_rc1);
       this.physics.resolveCapsule(_rc1, HULL_R, HULL_H);
       const dx = _rc1.x - _rc2.x;
+      const dy = _rc1.y - _rc2.y;
       const dz = _rc1.z - _rc2.z;
       const lenSq = dx * dx + dz * dz;
+      /* Ground is not a wall.
+       *
+       * `resolveCapsule` pushes out along the surface normal, and only the
+       * horizontal part of that was ever read - `dy` was thrown away. On level
+       * ground that is harmless, because the normal is straight up and there is
+       * no horizontal part. On a *slope* there always is one, and since `nx/nz`
+       * below are normalised, its magnitude is discarded too: two millimetres
+       * of push from a 1% rise produced exactly the same "square hit" as
+       * driving into a barrier, and cost the same 45% of speed every single
+       * step. The car settled at 0.5 m/s on any gradient above about 0.05%.
+       *
+       * No world had ever shown this, because every ground collider in the game
+       * until now was a level-topped box. The race circuit climbs 11%, and the
+       * first thing anyone did was drive up it.
+       *
+       * A pushout that is mostly vertical is the floor holding the car up. Only
+       * a predominantly horizontal one is something in its way. */
+      if (Math.abs(dy) >= Math.sqrt(lenSq)) continue;
       if (lenSq > best) {
         best = lenSq;
         bx = dx;

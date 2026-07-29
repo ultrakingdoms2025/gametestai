@@ -104,6 +104,7 @@ const GROUPS = [
       ['F1', 'This panel'],
       ['F2', 'Customise your character'],
       ['F4', 'Audio options'],
+      ['F6', 'Rebind keys'],
       ['F5', 'Save — and back up to a file'],
       ['F9', 'Load — local save, or a backup file'],
       ['Esc', 'Close this panel'],

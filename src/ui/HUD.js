@@ -1084,6 +1084,7 @@ export class HUD {
       ['K', 'Unstuck'],
       ['F2', 'Customise character'],
       ['F4', 'Audio options'],
+      ['F6', 'Rebind keys'],
       ['F5 / F9', 'Save / Load'],
       ['[ ]', 'Map zoom'],
       ['E', 'Talk / Pick up / Portal'],

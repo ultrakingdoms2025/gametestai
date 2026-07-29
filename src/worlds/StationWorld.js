@@ -4886,7 +4886,12 @@ export class StationWorld extends World {
       this._mmCircle(0, cz, 11, 'rgba(255,180,70,0.22)', `#${new THREE.Color(s.accent).getHexString()}`);
     }
 
-    this._buildCitadelGateway(g);
+    this._buildAxisGateway(g, {
+      side: -1, target: 'citadel', label: 'Sunspire Citadel', accent: 0xffc46b,
+    });
+    this._buildAxisGateway(g, {
+      side: 1, target: 'race', label: 'Vellum Ridge Circuit', accent: 0xff5a3c,
+    });
   }
 
   /**
@@ -4905,10 +4910,22 @@ export class StationWorld extends World {
    *
    * @param {THREE.Group} g the gateways group
    */
-  _buildCitadelGateway(g) {
+  /**
+   * The two gateways that stand on the plaza's east-west axis.
+   *
+   * Written for the citadel and then generalised rather than copied when the
+   * race circuit needed one: ninety lines of arch, dais and lighting duplicated
+   * for a second destination is ninety lines that drift apart the first time
+   * either is touched. `side` mirrors it across the plaza; everything else is
+   * the destination's own identity.
+   *
+   * @param {THREE.Group} g
+   * @param {{side:number, target:string, label:string, accent:number}} spec
+   */
+  _buildAxisGateway(g, spec) {
     const M = this.mat;
     const B = new GeoBatch();
-    const cx = -PORTAL_R;
+    const cx = PORTAL_R * spec.side;
     const cz = 0;
 
     // Dais: two stepped discs, matching the language of the other two.
@@ -4941,12 +4958,16 @@ export class StationWorld extends World {
 
     this.portalSpecs.push({
       position: new THREE.Vector3(cx, 2.45, cz),
-      rotationY: Math.PI * 0.5,
-      target: 'citadel',
-      label: 'Sunspire Citadel',
-      accent: 0xffc46b,
+      // Face the plaza, whichever side it is on.
+      rotationY: Math.PI * 0.5 * spec.side,
+      target: spec.target,
+      label: spec.label,
+      accent: spec.accent,
     });
-    this._mmCircle(cx, cz, 11, 'rgba(255,180,70,0.22)', '#ffc46b');
+    this._mmCircle(
+      cx, cz, 11, 'rgba(255,180,70,0.22)',
+      `#${new THREE.Color(spec.accent).getHexString()}`
+    );
   }
 
   /* ---------------------------------------------------------------- */

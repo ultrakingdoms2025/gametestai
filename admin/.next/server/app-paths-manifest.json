@@ -1,0 +1,16 @@
+{
+  "/_global-error/page": "app/_global-error/page.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/audit/route": "app/api/audit/route.js",
+  "/api/auth/login/route": "app/api/auth/login/route.js",
+  "/api/auth/logout/route": "app/api/auth/logout/route.js",
+  "/api/players/route": "app/api/players/route.js",
+  "/dashboard/audit/page": "app/dashboard/audit/page.js",
+  "/dashboard/config/page": "app/dashboard/config/page.js",
+  "/dashboard/page": "app/dashboard/page.js",
+  "/dashboard/players/[id]/page": "app/dashboard/players/[id]/page.js",
+  "/dashboard/players/page": "app/dashboard/players/page.js",
+  "/dashboard/purchases/page": "app/dashboard/purchases/page.js",
+  "/login/page": "app/login/page.js",
+  "/page": "app/page.js"
+}

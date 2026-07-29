@@ -1,0 +1,17 @@
+{
+  "node": {
+    "00b873ad9371bf15c642cb9080ba9447308026afaf": {
+      "workers": {
+        "app/dashboard/audit/page": {
+          "moduleId": 31397,
+          "async": false,
+          "exportedName": "$$RSC_SERVER_ACTION_0",
+          "filename": "app/dashboard/layout.tsx"
+        }
+      },
+      "exportedName": "$$RSC_SERVER_ACTION_0",
+      "filename": "app/dashboard/layout.tsx"
+    }
+  },
+  "edge": {}
+}

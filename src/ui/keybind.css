@@ -1,0 +1,175 @@
+/*
+ * Key bindings panel.
+ *
+ * z-index 85, one above the audio menu (84) and the mount wheel (83). It is
+ * the only panel that must be able to sit over another: a player checking what
+ * a key does while a different panel is open should not have to close that one
+ * first.
+ */
+
+.kb {
+  position: fixed;
+  inset: 0;
+  z-index: 85;
+  display: grid;
+  place-items: center;
+  background: rgba(4, 8, 14, 0.72);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 130ms ease;
+  pointer-events: none;
+}
+
+.kb.show {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.kb-card {
+  width: min(820px, 92vw);
+  max-height: 86vh;
+  overflow: auto;
+  padding: 22px 24px 18px;
+  border: 1px solid rgba(120, 170, 200, 0.3);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(10, 18, 28, 0.98), rgba(6, 12, 20, 0.98));
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.kb-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid rgba(120, 170, 200, 0.22);
+}
+
+.kb-kicker {
+  font: 600 10px/1 'Chakra Petch', system-ui, sans-serif;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: #6d8ea6;
+}
+
+.kb-title {
+  margin-top: 6px;
+  font: 700 22px/1 'Chakra Petch', system-ui, sans-serif;
+  letter-spacing: 0.14em;
+  color: #eaf6ff;
+}
+
+.kb-close {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 11px/1 'Rajdhani', system-ui, sans-serif;
+  color: #8fb0c6;
+}
+
+.kb-close b,
+.kb-cap {
+  font: 600 11px/1 'Rajdhani', system-ui, sans-serif;
+  padding: 4px 7px;
+  border: 1px solid rgba(120, 170, 200, 0.4);
+  border-radius: 5px;
+  background: rgba(16, 30, 44, 0.9);
+  color: #cfe4f2;
+}
+
+.kb-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 8px 26px;
+}
+
+.kb-group-t {
+  margin: 10px 0 6px;
+  font: 600 10px/1 'Chakra Petch', system-ui, sans-serif;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: #5f8ba4;
+}
+
+.kb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(120, 170, 200, 0.09);
+}
+
+.kb-label {
+  font: 500 13px/1.2 'Rajdhani', system-ui, sans-serif;
+  color: #c4d9e8;
+}
+
+.kb-cap {
+  min-width: 86px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 90ms ease, background 90ms ease, color 90ms ease;
+}
+
+.kb-cap:hover {
+  border-color: #35d6ff;
+  color: #fff;
+}
+
+/* Rebound away from the shipped key — worth marking, so "why is this odd"
+   has a visible answer. */
+.kb-cap.changed {
+  border-color: rgba(255, 176, 58, 0.65);
+  color: #ffcf88;
+}
+
+/* Waiting for the next keypress. */
+.kb-cap.arming {
+  min-width: 190px;
+  border-color: #35d6ff;
+  background: rgba(20, 52, 70, 0.95);
+  color: #eaf8ff;
+  animation: kb-pulse 1s ease-in-out infinite;
+}
+
+@keyframes kb-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(53, 214, 255, 0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(53, 214, 255, 0); }
+}
+
+.kb-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(120, 170, 200, 0.22);
+}
+
+.kb-btn {
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(120, 170, 200, 0.4);
+  background: rgba(16, 30, 44, 0.9);
+  color: #cfe4f2;
+  font: 600 11px/1 'Chakra Petch', system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.kb-btn:hover { border-color: #35d6ff; color: #fff; }
+.kb-btn.ghost { background: transparent; }
+
+.kb-msg {
+  font: 500 12px/1 'Rajdhani', system-ui, sans-serif;
+  color: #8fd6b0;
+}
+
+.kb-note {
+  margin-top: 10px;
+  font: 400 11px/1.5 'Rajdhani', system-ui, sans-serif;
+  color: #6d8ea6;
+}

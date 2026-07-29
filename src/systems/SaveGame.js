@@ -128,19 +128,6 @@ export class SaveGame {
      */
     this._onKeyDown = (e) => {
       if (e.repeat) return;
-      /* Shift+F5 / Shift+F9 back the save up to a file and restore it again.
-       *
-       * A browser-stored save is one "clear site data" away from gone, and this
-       * game has no account to fall back on, so the player needs a copy they
-       * own. Kept on the same two keys as save and load because that is where
-       * anyone would look for it. */
-      if (e.shiftKey && (e.code === 'F5' || e.code === 'F9')) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.code === 'F5') this.exportToFile();
-        else this._pickImportFile();
-        return;
-      }
       if (e.code !== 'F5' && e.code !== 'F9') return;
       // Ctrl+F5 stays a hard reload - developers need an escape hatch.
       if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -149,8 +136,8 @@ export class SaveGame {
       // is a worse outcome than saving from inside the chat box.
       e.preventDefault();
       e.stopPropagation();
-      if (e.code === 'F5') this.save('hotkey');
-      else this.load();
+      if (e.code === 'F5') this.saveAndBackup('hotkey');
+      else this.loadAnywhere();
     };
     window.addEventListener('keydown', this._onKeyDown, true);
 
@@ -684,10 +671,10 @@ export class SaveGame {
    *
    * @returns {boolean} false if there was nothing to export
    */
-  exportToFile() {
+  exportToFile({ quiet = false } = {}) {
     const data = this._read({ quiet: true });
     if (!data) {
-      this.bus?.emit('hud:notify', { text: 'No save to export', tone: 'warn' });
+      if (!quiet) this.bus?.emit('hud:notify', { text: 'No save to export', tone: 'warn' });
       return false;
     }
     try {
@@ -701,12 +688,57 @@ export class SaveGame {
       // Revoked on a timer rather than immediately: some browsers have not
       // finished reading the blob when click() returns.
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
-      this.bus?.emit('hud:notify', { text: 'Save exported', tone: 'info' });
+      // The merged save already says "saved"; a second toast for the copy that
+      // is part of the same action is noise.
+      if (!quiet) this.bus?.emit('hud:notify', { text: 'Save exported', tone: 'info' });
       return true;
     } catch (err) {
       this._fail('export failed', err, { clear: false });
       return false;
     }
+  }
+
+  /**
+   * Save, and put a copy where the browser cannot lose it. One action.
+   *
+   * Saving and exporting were two separate keys, and that split asked the
+   * player to understand a distinction that is really an implementation
+   * detail: "where does my progress live". It lives in the browser, and the
+   * browser can be cleared, so a save that is only in the browser is half a
+   * save. Doing both under one key means the answer is always "both places"
+   * and there is nothing to remember.
+   *
+   * Only manual saves back up. The 30-second autosave stays storage-only for
+   * the obvious reason - a file downloaded every thirty seconds is not a
+   * backup, it is a fault.
+   *
+   * @param {string} [reason]
+   * @returns {boolean} whether the local write succeeded; the download is
+   *   best-effort and never blocks it
+   */
+  saveAndBackup(reason = 'manual') {
+    const ok = this.save(reason);
+    if (ok) this.exportToFile({ quiet: true });
+    return ok;
+  }
+
+  /**
+   * Load from wherever the save actually is. One action.
+   *
+   * Tries local storage first, because that is where it will be in almost
+   * every case and a file picker in front of an ordinary reload would be an
+   * obstacle. Only when there is nothing stored - a cleared browser, a new
+   * machine, a different browser - does it ask for the file, which is exactly
+   * the moment the player wants to be asked.
+   *
+   * @returns {boolean|object} whatever `load` returns, or false if it asked
+   *   for a file instead (the import completes asynchronously)
+   */
+  loadAnywhere() {
+    if (this._read({ quiet: true })) return this.load();
+    this.bus?.emit('hud:notify', { text: 'No local save — choose a backup file', tone: 'info' });
+    this._pickImportFile();
+    return false;
   }
 
   /** Open a file picker and import whatever comes back. */

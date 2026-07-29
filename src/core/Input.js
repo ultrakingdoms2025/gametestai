@@ -21,6 +21,44 @@ const CTRL_GAME_KEYS = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight',
   'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
+
+/**
+ * Rebindable actions, and the key each one ships on.
+ *
+ * ── How rebinding works without touching thirty call sites ────────────────
+ *
+ * Gameplay code asks for keys two ways: the axes below read `_keys` directly,
+ * and a dozen modules call `pressed('KeyF')` with a literal code. Rewriting
+ * every one of those to ask for an *action* would be a wide, risky change
+ * across files other people are editing.
+ *
+ * So the default code doubles as the action's identity. A binding is a
+ * redirection from the shipped code to whatever the player chose, `pressed`
+ * resolves through that redirection, and every existing call site keeps working
+ * untouched while becoming rebindable. `pressed('KeyF')` means "the key that
+ * dismount is on", which happens to be F until someone changes it.
+ *
+ * The label is what the rebinding panel shows; the group is how it sorts.
+ */
+export const BINDABLE = [
+  { action: 'forward', code: 'KeyW', label: 'Move forward', group: 'Movement' },
+  { action: 'back', code: 'KeyS', label: 'Move back', group: 'Movement' },
+  { action: 'left', code: 'KeyA', label: 'Strafe left', group: 'Movement' },
+  { action: 'right', code: 'KeyD', label: 'Strafe right', group: 'Movement' },
+  { action: 'jump', code: 'Space', label: 'Jump / climb / fly up', group: 'Movement' },
+  { action: 'sprint', code: 'ShiftLeft', label: 'Sprint', group: 'Movement' },
+  { action: 'crouch', code: 'KeyC', label: 'Crouch / dive / roll', group: 'Movement' },
+  { action: 'interact', code: 'KeyE', label: 'Interact / pick up / portal', group: 'Actions' },
+  { action: 'reload', code: 'KeyR', label: 'Reload', group: 'Actions' },
+  { action: 'dismount', code: 'KeyF', label: 'Dismount', group: 'Actions' },
+  { action: 'camera', code: 'KeyV', label: 'First / third person', group: 'Actions' },
+  { action: 'chat', code: 'KeyT', label: 'Open chat', group: 'Actions' },
+  { action: 'mapOut', code: 'BracketLeft', label: 'Minimap zoom out', group: 'Actions' },
+  { action: 'mapIn', code: 'BracketRight', label: 'Minimap zoom in', group: 'Actions' },
+];
+
+const BIND_STORAGE = 'aether-nexus:binds:v1';
+
 export class Input {
   constructor(canvas, bus) {
     this.canvas = canvas;
@@ -44,6 +82,11 @@ export class Input {
 
     this._keys = new Set();
     this._pressedThisFrame = new Set();
+    /** shipped code -> code the player actually uses. See {@link BINDABLE}. */
+    this._binds = new Map();
+    /** The inverse, rebuilt on every change so lookups stay O(1) per frame. */
+    this._bindsInverse = new Map();
+    this._loadBinds();
     this._locked = false;
     this._enabled = true;
     /** While the chat box has focus we swallow all gameplay input. */
@@ -263,10 +306,15 @@ export class Input {
   _syncAxes() {
     const k = this._keys;
     const s = this.state;
-    s.forward = (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0) - (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0);
-    s.right = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
-    s.jump = k.has('Space');
-    s.sprint = k.has('ShiftLeft') || k.has('ShiftRight');
+    // `b` maps a shipped code to whatever the player put there. The arrow keys
+    // and the right-hand modifiers stay as fixed alternates: they are not worth
+    // a row in the rebinding panel, and losing them would be a regression for
+    // anyone who uses them.
+    const b = (code) => k.has(this._bindsInverse.get(code) ?? code);
+    s.forward = (b('KeyW') || k.has('ArrowUp') ? 1 : 0) - (b('KeyS') || k.has('ArrowDown') ? 1 : 0);
+    s.right = (b('KeyD') || k.has('ArrowRight') ? 1 : 0) - (b('KeyA') || k.has('ArrowLeft') ? 1 : 0);
+    s.jump = b('Space');
+    s.sprint = b('ShiftLeft') || k.has('ShiftRight');
     /* Held, on either key - and C is the one that actually works.
      *
      * Ctrl cannot carry this on its own: Ctrl+<key> is claimed before the page
@@ -281,14 +329,102 @@ export class Input {
      * releases the moment it sees the flag. The fix belongs on the *binding*,
      * not on the semantics: crouch stays a hold, and it lives on a key that is
      * not a modifier, so it composes with everything. */
-    s.crouch = k.has('ControlLeft') || k.has('ControlRight') || k.has('KeyC');
-    s.reload = k.has('KeyR');
-    s.interact = k.has('KeyE');
+    s.crouch = k.has('ControlLeft') || k.has('ControlRight') || b('KeyC');
+    s.reload = b('KeyR');
+    s.interact = b('KeyE');
   }
 
-  /** Edge-trigger: true exactly once per physical keypress. */
+  /**
+   * Edge-trigger: true exactly once per physical keypress.
+   *
+   * `code` is the *shipped* key for an action, which is also that action's
+   * identity - see {@link BINDABLE}. Passing 'KeyF' asks "was dismount pressed",
+   * not "was the F key pressed", so every existing call site became rebindable
+   * without being touched.
+   */
   pressed(code) {
-    return this._pressedThisFrame.has(code);
+    return this._pressedThisFrame.has(this._bindsInverse.get(code) ?? code);
+  }
+
+  /* ================================================================== */
+  /* Rebinding                                                          */
+  /* ================================================================== */
+
+  /** Current mapping as `{ action, code, label, group, bound }` rows. */
+  get bindings() {
+    return BINDABLE.map((d) => ({ ...d, bound: this._binds.get(d.code) ?? d.code }));
+  }
+
+  /**
+   * Point an action at a different key.
+   *
+   * Any other action already holding that key is reset to its own default
+   * rather than being left duplicated: two actions on one key is a state the
+   * player cannot see and cannot debug, and silently stealing it without saying
+   * so is worse. The panel reports what moved.
+   *
+   * @param {string} defaultCode the action's shipped code, i.e. its identity
+   * @param {string} code the key to move it to
+   * @returns {{ok:boolean, displaced?:string}}
+   */
+  setBinding(defaultCode, code) {
+    if (!BINDABLE.some((d) => d.code === defaultCode)) return { ok: false };
+    // Keys the game cannot give up without breaking its own escape hatches.
+    if (['Escape', 'F1', 'F2', 'F3', 'F4', 'F5', 'F9', 'Tab'].includes(code)) {
+      return { ok: false };
+    }
+    let displaced;
+    for (const d of BINDABLE) {
+      if (d.code === defaultCode) continue;
+      if ((this._binds.get(d.code) ?? d.code) === code) {
+        this._binds.delete(d.code);
+        displaced = d.label;
+      }
+    }
+    if (code === defaultCode) this._binds.delete(defaultCode);
+    else this._binds.set(defaultCode, code);
+    this._rebuildBinds();
+    this._saveBinds();
+    return { ok: true, displaced };
+  }
+
+  /** Put every action back on the key it shipped with. */
+  resetBindings() {
+    this._binds.clear();
+    this._rebuildBinds();
+    this._saveBinds();
+  }
+
+  _rebuildBinds() {
+    this._bindsInverse.clear();
+    for (const [def, code] of this._binds) this._bindsInverse.set(def, code);
+    // A held key under the old mapping would stay stuck down after a rebind.
+    this._keys.clear();
+    this._resetAxes();
+    this.bus?.emit?.('input:binds-changed', { bindings: this.bindings });
+  }
+
+  _loadBinds() {
+    try {
+      const raw = globalThis.localStorage?.getItem(BIND_STORAGE);
+      if (!raw) return;
+      const obj = JSON.parse(raw);
+      // Validated against the table rather than trusted: a stale entry from an
+      // older build must not resurrect an action that no longer exists.
+      for (const d of BINDABLE) {
+        const v = obj?.[d.code];
+        if (typeof v === 'string' && v && v !== d.code) this._binds.set(d.code, v);
+      }
+      this._rebuildBinds();
+    } catch { /* corrupt or unavailable - ship defaults */ }
+  }
+
+  _saveBinds() {
+    try {
+      globalThis.localStorage?.setItem(
+        BIND_STORAGE, JSON.stringify(Object.fromEntries(this._binds))
+      );
+    } catch { /* storage disabled or full; the session still has the binding */ }
   }
 
   /** Consume mouse-look delta; returns and clears it. */

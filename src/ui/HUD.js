@@ -1085,7 +1085,6 @@ export class HUD {
       ['F2', 'Customise character'],
       ['F4', 'Audio options'],
       ['F5 / F9', 'Save / Load'],
-      ['Shift F5 / F9', 'Export / import save file'],
       ['[ ]', 'Map zoom'],
       ['E', 'Talk / Pick up / Portal'],
       ['T', 'Chat'],

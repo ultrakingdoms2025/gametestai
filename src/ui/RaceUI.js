@@ -80,7 +80,15 @@ export class RaceUI {
     // panel will not open" is exactly the dead end that costs a bug report.
     this._onKey = (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.code === 'F6') {
+      /* F7, not F6.
+       *
+       * This panel and the key-rebinding panel were written at the same time by
+       * different hands and both claimed F6, so pressing it toggled both at
+       * once. F6 stays with rebinding, which sits naturally in the run of
+       * global config panels on F1-F6; this one is world-specific and opens by
+       * itself on arrival, so its key is the secondary way in rather than the
+       * only one. */
+      if (e.code === 'F7') {
         e.preventDefault();
         if (this.input?.textCaptured) return;
         this.togglePanel();
@@ -156,7 +164,7 @@ export class RaceUI {
     const titles = el('div', null);
     titles.append(el('div', 'rc-kicker', 'Circuit'), el('div', 'rc-title', 'RACE'));
     const close = el('div', 'rc-close');
-    close.append(el('b', null, 'F6'), el('span', null, 'or'), el('b', null, 'Esc'), el('span', null, 'to close'));
+    close.append(el('b', null, 'F7'), el('span', null, 'or'), el('b', null, 'Esc'), el('span', null, 'to close'));
     head.append(titles, close);
 
     const facts = el('div', 'rc-facts');

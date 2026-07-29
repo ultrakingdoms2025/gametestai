@@ -1085,6 +1085,7 @@ export class HUD {
       ['F2', 'Customise character'],
       ['F4', 'Audio options'],
       ['F6', 'Rebind keys'],
+      ['F7', 'Race panel'],
       ['F5 / F9', 'Save / Load'],
       ['[ ]', 'Map zoom'],
       ['E', 'Talk / Pick up / Portal'],

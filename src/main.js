@@ -11,6 +11,7 @@ import { StationWorld } from './worlds/StationWorld.js';
 import { MedievalWorld } from './worlds/MedievalWorld.js';
 import { SportsWorld } from './worlds/SportsWorld.js';
 import { CitadelWorld } from './worlds/CitadelWorld.js';
+import { RaceWorld } from './worlds/RaceWorld.js';
 import { Player } from './player/Player.js';
 import { NPCManager } from './npc/NPCManager.js';
 import { PortalSystem } from './systems/Portals.js';
@@ -98,6 +99,7 @@ worldManager.register(StationWorld);
 worldManager.register(MedievalWorld);
 worldManager.register(SportsWorld);
 worldManager.register(CitadelWorld);
+worldManager.register(RaceWorld);
 
 const player = new Player({ ...ctx, camera: engine.camera });
 const npcManager = new NPCManager({ ...ctx, player });

@@ -42,7 +42,37 @@ export type Pass = {
   credits: number;
   /** Issued-at, epoch seconds. */
   iat: number;
+  /**
+   * Fingerprints of orders already granted, newest last.
+   *
+   * Without this the success URL is a credit generator: `/api/confirm` grants
+   * on every request, so refreshing the page after paying adds the credits
+   * again, and so does going back to it later from history. Recording what has
+   * been settled makes the grant idempotent, which is the property a payment
+   * return path has to have — it is a URL in someone's browser, and browsers
+   * re-request URLs for all sorts of reasons nobody controls.
+   *
+   * Capped, because this rides in a cookie and cookies have a size limit. A
+   * dozen is far more than the number of orders that can be in flight at once,
+   * and the entries that fall off the end are old settled orders that Stripe
+   * will not be replaying.
+   */
+  seen: string[];
 };
+
+/** How many settled orders to remember. */
+const SEEN_MAX = 12;
+
+/**
+ * Short fingerprint of an order id.
+ *
+ * Hashed rather than stored whole to keep the cookie small, and truncated to
+ * 48 bits — for a per-browser list of twelve, the chance of a collision is far
+ * below the chance of any other part of this going wrong.
+ */
+export function fingerprint(id: string): string {
+  return createHmac('sha256', 'order').update(id).digest('hex').slice(0, 12);
+}
 
 let warned = false;
 
@@ -92,6 +122,9 @@ export function decodePass(raw: string | undefined | null): Pass | null {
       paid: !!parsed.paid,
       credits: Math.max(0, Math.floor(Number(parsed.credits) || 0)),
       iat: Number(parsed.iat) || 0,
+      seen: Array.isArray(parsed.seen)
+        ? parsed.seen.filter((s: unknown) => typeof s === 'string').slice(-SEEN_MAX)
+        : [],
     };
   } catch {
     // A malformed body that nonetheless carried a valid signature is not
@@ -124,17 +157,45 @@ export async function writePass(pass: Pass): Promise<void> {
   });
 }
 
-/** Grant access and add credits, preserving anything already bought. */
-export async function grant(opts: { paid?: boolean; addCredits?: number }): Promise<Pass> {
+export type GrantResult = { pass: Pass; applied: boolean };
+
+/**
+ * Grant access and add credits, once per order.
+ *
+ * `orderId` makes this idempotent: settling the same order twice is a no-op
+ * rather than a second helping of credits. Callers that genuinely have no order
+ * — there are none right now — can omit it, and then it is the caller's problem.
+ */
+export async function grant(opts: {
+  paid?: boolean;
+  addCredits?: number;
+  orderId?: string;
+}): Promise<GrantResult> {
   const current = await readPass();
+  const seen = current?.seen ?? [];
+
+  if (opts.orderId) {
+    const fp = fingerprint(opts.orderId);
+    if (seen.includes(fp)) {
+      // Already settled. Return what they have without touching it.
+      return { pass: current ?? emptyPass(), applied: false };
+    }
+    seen.push(fp);
+  }
+
   const next: Pass = {
     v: VERSION,
     paid: opts.paid ?? current?.paid ?? false,
     credits: (current?.credits ?? 0) + Math.max(0, Math.floor(opts.addCredits ?? 0)),
     iat: Math.floor(Date.now() / 1000),
+    seen: seen.slice(-SEEN_MAX),
   };
   await writePass(next);
-  return next;
+  return { pass: next, applied: true };
+}
+
+function emptyPass(): Pass {
+  return { v: VERSION, paid: false, credits: 0, iat: Math.floor(Date.now() / 1000), seen: [] };
 }
 
 /**
@@ -150,4 +211,10 @@ export async function claimCredits(): Promise<number> {
   const taken = current.credits;
   await writePass({ ...current, credits: 0, iat: Math.floor(Date.now() / 1000) });
   return taken;
+}
+
+/** Has this order already been settled on this browser? */
+export async function alreadySettled(orderId: string): Promise<boolean> {
+  const current = await readPass();
+  return !!current?.seen?.includes(fingerprint(orderId));
 }

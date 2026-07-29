@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { readPass } from '@/lib/entitlement';
 import {
@@ -70,6 +71,15 @@ export async function POST(req: Request) {
     url.searchParams.set('simulated', '1');
     url.searchParams.set('intent', intent);
     url.searchParams.set('credits', String(credits));
+    /* An order id, minted here and carried on the URL — the stand-in for
+     * Stripe's session id.
+     *
+     * It matters that this is fixed at checkout rather than at confirm time:
+     * replaying a confirm URL must be a no-op, exactly as it is live, or the
+     * simulated flow is not a rehearsal of anything and the first time anyone
+     * exercises idempotency is in production. Pressing Pay again starts a new
+     * order and gets a new id, which is also what Stripe does. */
+    url.searchParams.set('order', `sim_${randomUUID()}`);
     return NextResponse.json({ url: url.toString(), simulated: true });
   }
 
@@ -90,6 +100,12 @@ export async function POST(req: Request) {
     const description = quote.lines.map((l) => l.label).join(' + ');
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
+      /* Always create a Customer, even though payment mode does not require
+       * one. It is what makes `/api/restore` possible: without a Customer there
+       * is nothing to look a purchase up *by* when someone closes the tab
+       * before the redirect, and with no database of our own, Stripe's customer
+       * record is the only durable trace the order leaves. */
+      customer_creation: 'always',
       line_items: [
         {
           quantity: 1,

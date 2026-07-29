@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { grant } from '@/lib/entitlement';
 import { clampCredits } from '@/lib/pricing';
@@ -44,7 +45,16 @@ export async function GET(req: Request) {
     }
     const intent = url.searchParams.get('intent') ?? 'entry';
     const credits = intent === 'entry' ? 0 : clampCredits(url.searchParams.get('credits'));
-    await grant({ paid: intent !== 'credits' ? true : undefined, addCredits: credits });
+    /* The order id minted at checkout. Falling back to a fresh one only covers
+     * a hand-typed URL with no `order` on it; a real simulated purchase always
+     * carries one, so replaying it settles nothing twice — the same property
+     * the live path has, exercised by the same test. */
+    const orderId = url.searchParams.get('order') || `sim_${randomUUID()}`;
+    await grant({
+      paid: intent !== 'credits' ? true : undefined,
+      addCredits: credits,
+      orderId,
+    });
     return NextResponse.redirect(new URL('/play?welcome=1', origin), 303);
   }
 
@@ -66,10 +76,15 @@ export async function GET(req: Request) {
     const meta = session.metadata ?? {};
     const intent = meta.intent ?? 'entry';
     const credits = intent === 'entry' ? 0 : clampCredits(meta.credits);
-    await grant({
+    /* Keyed on the session id, so this is safe to hit twice. It will be: the
+     * customer can refresh the success page, come back to it from history, or
+     * arrive here at the same moment the webhook is settling the same order. */
+    const { applied } = await grant({
       paid: meta.grantsAccess === 'true' ? true : undefined,
       addCredits: credits,
+      orderId: session.id,
     });
+    if (!applied) console.log(`[confirm] Order ${session.id} was already settled; no double credit.`);
     return NextResponse.redirect(new URL('/play?welcome=1', origin), 303);
   } catch (e) {
     console.error('[confirm] Could not verify the Stripe session:', e);

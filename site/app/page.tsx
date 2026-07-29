@@ -218,7 +218,10 @@ export default async function Home() {
 
       <footer>
         <div className="wrap">
-          <span>Aether Nexus · built in the browser, from code</span>
+          <span>
+            Aether Nexus · built in the browser, from code ·{' '}
+            <Link href="/restore">Restore a purchase</Link>
+          </span>
           <span>
             {paid ? 'Access unlocked' : `Access ${formatCents(entryTotal)} · credits from ${formatCents(grossUp(MIN_CREDITS * CREDIT_PRICE_CENTS))}`}
           </span>

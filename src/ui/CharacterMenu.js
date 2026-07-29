@@ -301,6 +301,34 @@ export class CharacterMenu {
             'outfit'
           )
         );
+
+    /* Trousers, chosen independently of the shirt.
+     *
+     * Right after Outfit, and labelled by what the garment actually is rather
+     * than by the outfit it came from - a player picking legs does not care
+     * that the tracksuit bottoms arrived with a tracksuit. */
+    body.appendChild(
+      this._section('Trousers', 'ch-legs', (host, sec) => {
+        host.appendChild(
+          this._chips(
+            /* Labelled by the outfit, not by `legLabel`.
+             *
+             * legLabel says where that outfit's second colour lands - it reads
+             * "Collar & yoke" on the one-piece suits, because those have no
+             * separate trousers to colour. As chip text it produced two
+             * identical "COLLAR & YOKE" entries and told the player nothing
+             * about what they were picking. Here the choice is whose legs to
+             * wear, so the answer is the garment's name. */
+            Object.entries(OUTFITS).map(([id, o]) => ({ v: id, label: o.label })),
+            'legs'
+          )
+        );
+        this._syncers.push(() => {
+          const o = OUTFITS[this._cfg.legs] ?? OUTFITS[this._cfg.outfit];
+          sec.dataset.value = o?.label ?? '';
+        });
+      })
+    );
         this._syncers.push(() => {
           sec.dataset.value = OUTFITS[this._cfg.outfit]?.label ?? '';
         });
@@ -487,7 +515,10 @@ export class CharacterMenu {
       headgear: Math.random() < 0.45 ? pick(HEADGEAR_STYLES) : 'none',
       hairColor: pick(HAIR_COLORS),
       eyeColor: pick(EYE_COLORS),
-      outfit: pick(Object.keys(OUTFITS)),
+      outfit: (() => { this._randTop = pick(Object.keys(OUTFITS)); return this._randTop; })(),
+      // Matching most of the time: a randomiser that pairs a robe with sports
+      // shorts three times in four is a gag generator, not a character.
+      legs: Math.random() < 0.7 ? this._randTop : pick(Object.keys(OUTFITS)),
       topColor: pick(GARMENT_COLORS),
       legColor: pick(GARMENT_COLORS),
       accentColor: pick(ACCENT_COLORS),

@@ -212,6 +212,7 @@ export const DEFAULT_CHARACTER = {
   hairColor: 0x2e2119,
   eyeColor: 0x4a3a2a,
   outfit: 'flightsuit',
+  legs: 'flightsuit',
   topColor: 0x2f2b26,
   legColor: 0xc9c2b4,
   accentColor: 0x2fe0ff,
@@ -260,6 +261,12 @@ export function normaliseCharacter(cfg) {
     hairColor: _hex(src.hairColor, DEFAULT_CHARACTER.hairColor),
     eyeColor: _hex(src.eyeColor, DEFAULT_CHARACTER.eyeColor),
     outfit: OUTFITS[src.outfit] ? src.outfit : DEFAULT_CHARACTER.outfit,
+    /* The legs, chosen independently of the shirt.
+     *
+     * Falls back to whatever `outfit` is rather than to a fixed default, so a
+     * save written before this existed - and a player who has never touched the
+     * control - gets the matching pair they had, not a random combination. */
+    legs: OUTFITS[src.legs] ? src.legs : (OUTFITS[src.outfit] ? src.outfit : DEFAULT_CHARACTER.outfit),
     topColor: _hex(src.topColor, DEFAULT_CHARACTER.topColor),
     legColor: _hex(src.legColor, DEFAULT_CHARACTER.legColor),
     accentColor: _hex(src.accentColor, DEFAULT_CHARACTER.accentColor),
@@ -270,11 +277,13 @@ export function normaliseCharacter(cfg) {
 export function characterCreateParams(cfg) {
   const c = normaliseCharacter(cfg);
   const outfit = OUTFITS[c.outfit];
+  const legs = OUTFITS[c.legs] ?? outfit;
   const profile = SEX_PROFILES[c.sex];
   return {
     seed: PLAYER_SEED,
     theme: outfit.theme,
     variant: outfit.variant,
+    legs: { theme: legs.theme, variant: legs.variant },
     // Slot 0 supplies the leather and metal accents; the three colours the
     // player actually controls are overwritten by `applyCharacterColors`.
     palette: 0,
@@ -519,7 +528,7 @@ export class PlayerAvatar {
      * thing. */
     const needsRebuild =
       next.sex !== prev.sex || next.build !== prev.build || next.outfit !== prev.outfit
-      || next.headgear !== prev.headgear;
+      || next.legs !== prev.legs || next.headgear !== prev.headgear;
 
     if (needsRebuild) {
       this._rebuildBody();

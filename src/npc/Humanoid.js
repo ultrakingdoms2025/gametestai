@@ -2876,10 +2876,36 @@ function withFold(exp, gap, cfg) {
   };
 }
 
+/**
+ * Which half of a costume the garment helpers are currently allowed to emit.
+ *
+ * ── Why a gate rather than a refactor ─────────────────────────────────────
+ *
+ * Shirt style and trouser style were welded together: picking "Tunic" set the
+ * top *and* the legs, because each of the three outfit builders is a single
+ * function that lofts the torso, arms, legs and feet in one pass. Splitting
+ * them by hand meant cutting four hundred lines of very carefully tuned
+ * geometry in half and hoping every seam still met at the waist.
+ *
+ * The observation that makes it cheap: those builders already say which region
+ * every piece belongs to, in the name of the helper they call. `gTorso` and
+ * `gArm` are the top; `gLeg` and `gFoot` are the bottom. So the builders do not
+ * need to change at all - each one is simply run twice, once with the gate set
+ * to `top` and once to `bottom`, and each pass keeps only its own half. A
+ * player wearing a tunic over tracksuit trousers gets the tunic's torso code
+ * and the tracksuit's leg code, both exactly as their authors tuned them.
+ *
+ * Kit - belts, pouches, the chest lamp - rides with the top, because it is worn
+ * at the waist and above and a bottom brings its own.
+ */
+let REGION = null;
+const inRegion = (r) => REGION === null || REGION === r;
+
 const rollAt = (cfg, atStart) =>
   cfg.roll === 'both' || cfg.roll === (atStart ? 'start' : 'end');
 
 function gTorso(parts, P, slot, cfg) {
+  if (!inRegion('top')) return null;
   const part = new Part(slot, cfg.bones ?? TORSO_BONES, cfg.uv ?? 1);
   const exp = asExpand(cfg.exp ?? 0.012);
   const gap = cfg.gap ?? GAP.torso;
@@ -2898,6 +2924,7 @@ function gTorso(parts, P, slot, cfg) {
 }
 
 function gLeg(parts, P, side, slot, cfg) {
+  if (!inRegion('bottom')) return null;
   const part = new Part(slot, legBones(side), cfg.uv ?? 1);
   const exp = asExpand(cfg.exp ?? 0.012);
   const gap = cfg.gap ?? GAP.leg;
@@ -2912,6 +2939,7 @@ function gLeg(parts, P, side, slot, cfg) {
 }
 
 function gArm(parts, P, side, slot, cfg) {
+  if (!inRegion('top')) return null;
   const part = new Part(slot, armBones(side), cfg.uv ?? 1.2);
   const exp = asExpand(cfg.exp ?? 0.011);
   const gap = cfg.gap ?? GAP.arm;
@@ -2950,6 +2978,7 @@ const pad = (peak, lead = 0.26, trail = 0.26) => (v, t) =>
  * contact decal to sit under.
  */
 function gFoot(parts, P, side, slot, cfg) {
+  if (!inRegion('bottom')) return null;
   const part = new Part(slot, footBones(side), cfg.uv ?? 1.4);
   const exp = asExpand(cfg.exp ?? 0.016);
   const gap = cfg.gap ?? GAP.foot;
@@ -3066,6 +3095,7 @@ const CLOAK_BONES = [B('pelvis', 1.4), B('spine01'), B('spine02'), B('spine03')]
  * to put three pieces of kit on every NPC in a crowd.
  */
 function gProp(parts, slot, bones, sections, opts = {}) {
+  if (!inRegion('top')) return null;
   const part = new Part(slot, bones, opts.uv ?? 1);
   loft(part, sections, opts.radial ?? 10, {
     upHint: opts.upHint ?? new THREE.Vector3(0, 0, -1),
@@ -4346,10 +4376,42 @@ function buildSportsOutfit(P, parts, variant) {
   }
 }
 
-function buildOutfit(P, theme, variant, parts) {
+function runOutfit(P, theme, variant, parts) {
   if (theme === 'medieval') buildMedievalOutfit(P, parts, variant);
   else if (theme === 'sports') buildSportsOutfit(P, parts, variant);
   else buildStationOutfit(P, parts, variant);
+}
+
+/**
+ * Dress the figure, optionally from two different outfits.
+ *
+ * With no `bottom` this is exactly what it always was - one builder, one pass,
+ * gate open. With one, each builder runs for its own half only; see the note on
+ * REGION for why that is a gate rather than a refactor.
+ *
+ * The gate is always cleared, including if a builder throws, because a REGION
+ * left set would silently halve every character built afterwards - a bug that
+ * would show up nowhere near the code that caused it.
+ *
+ * @param {object} P
+ * @param {string} theme top theme
+ * @param {string} variant top variant
+ * @param {Part[]} parts
+ * @param {{theme:string, variant:string}|null} [bottom]
+ */
+function buildOutfit(P, theme, variant, parts, bottom = null) {
+  if (!bottom || (bottom.theme === theme && bottom.variant === variant)) {
+    runOutfit(P, theme, variant, parts);
+    return;
+  }
+  try {
+    REGION = 'top';
+    runOutfit(P, theme, variant, parts);
+    REGION = 'bottom';
+    runOutfit(P, bottom.theme, bottom.variant, parts);
+  } finally {
+    REGION = null;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -4445,13 +4507,23 @@ export class HumanoidFactory {
     return spec;
   }
 
-  _bodyGeometry(P, theme, variant, FA) {
-    const key = `body|${theme}|${variant}|${P.key}|f${FA.id}`;
+  /**
+   * @param {object} P @param {string} theme @param {string} variant
+   * @param {object} FA face archetype
+   * @param {{theme:string, variant:string}|null} [bottom] when the legs come
+   *   from a different outfit to the torso
+   */
+  _bodyGeometry(P, theme, variant, FA, bottom = null) {
+    // The cache is keyed on both halves. Without the bottom in the key a
+    // tunic-over-tracksuit would be served whatever tunic combination happened
+    // to be built first, and every later pairing would silently be wrong.
+    const b = bottom ? `|${bottom.theme}.${bottom.variant}` : '';
+    const key = `body|${theme}|${variant}${b}|${P.key}|f${FA.id}`;
     let geo = this.assets.geoCache.get(key);
     if (!geo) {
       const parts = [];
       buildBody(P, parts, FA);
-      buildOutfit(P, theme, variant, parts);
+      buildOutfit(P, theme, variant, parts, bottom);
       const spec = this._spec(P);
       const boneIndex = new Map(spec.map((d, i) => [d.name, i]));
       geo = mergeParts(parts, boneIndex, spec);
@@ -4495,7 +4567,15 @@ export class HumanoidFactory {
     const P = this._proportions(build, frame, Math.round(shoulderScale * 20) / 20);
     const spec = this._spec(P);
     const FA = faceArchetype(params.faceId ?? (rng() * FACE_COUNT) | 0);
-    const geo = this._bodyGeometry(P, theme, variant, FA);
+    /* An independent lower body, when one is asked for.
+     *
+     * `legs` names an outfit whose trousers are worn with this outfit's shirt.
+     * Absent, or the same as the top, and nothing changes - which is every NPC
+     * in the game, so the crowd path is untouched. */
+    const legsSpec = params.legs && (params.legs.theme !== theme || params.legs.variant !== variant)
+      ? { theme: params.legs.theme, variant: params.legs.variant }
+      : null;
+    const geo = this._bodyGeometry(P, theme, variant, FA, legsSpec);
 
     const skinTone = params.skinTone ?? SKIN_TONES[(rng() * SKIN_TONES.length) | 0];
     const hairColor = params.hairColor ?? pickHairColor(skinTone, rng);

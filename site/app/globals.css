@@ -153,6 +153,22 @@ a { color: var(--cy); }
 .lockup-l1 { color: #f2fbff; text-shadow: 0 0 80px rgba(82, 233, 255, 0.45); }
 .lockup-l2 { color: var(--amber); text-shadow: 0 0 80px rgba(255, 180, 74, 0.45); }
 
+/* permanent title throb — always visible, regardless of load timing */
+@media (prefers-reduced-motion: no-preference) {
+  .lockup-l1 { animation: title-glow-cyan 4s ease-in-out infinite; }
+  .lockup-l2 { animation: title-glow-amber 4s ease-in-out infinite 0.7s; }
+}
+
+@keyframes title-glow-cyan {
+  0%, 100% { text-shadow: 0 0 40px rgba(82, 233, 255, 0.25), 0 0 8px rgba(82,233,255,0.1); }
+  50%       { text-shadow: 0 0 120px rgba(82, 233, 255, 0.9), 0 0 40px rgba(82,233,255,0.4), 0 2px 0 rgba(82,233,255,0.15); }
+}
+
+@keyframes title-glow-amber {
+  0%, 100% { text-shadow: 0 0 40px rgba(255, 180, 74, 0.25), 0 0 8px rgba(255,180,74,0.1); }
+  50%       { text-shadow: 0 0 120px rgba(255, 180, 74, 0.9), 0 0 40px rgba(255,180,74,0.4), 0 2px 0 rgba(255,180,74,0.15); }
+}
+
 .tagline {
   margin-top: 24px;
   font-family: var(--font-display), system-ui, sans-serif;
@@ -890,6 +906,31 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
   border-bottom: 1px solid var(--rule-soft);
 }
 
+/* animated gradient line under nav — immediately visible on load */
+@media (prefers-reduced-motion: no-preference) {
+  .site-nav::after {
+    content: '';
+    position: absolute;
+    bottom: -1px; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+      transparent 0%,
+      var(--cy) 25%,
+      var(--amber) 50%,
+      var(--cy) 75%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: nav-gradient 6s linear infinite;
+    opacity: 0.7;
+  }
+}
+
+@keyframes nav-gradient {
+  from { background-position: 100% 0; }
+  to   { background-position: -100% 0; }
+}
+
 .nav-inner {
   max-width: 1400px;
   margin-inline: auto;
@@ -952,7 +993,12 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
   display: flex;
   align-items: center;
   gap: 12px;
-  animation: reveal-up 700ms cubic-bezier(0.2, 0.7, 0, 1) 100ms both;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .hero-eyebrow {
+    animation: reveal-up 700ms cubic-bezier(0.2, 0.7, 0, 1) 100ms both;
+  }
 }
 
 .hero-eyebrow::after {
@@ -964,10 +1010,10 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
 
 @media (prefers-reduced-motion: no-preference) {
   .lockup-l1 {
-    animation: sweep-left 1.1s cubic-bezier(0.16, 1, 0.3, 1) 260ms both;
+    animation: title-glow-cyan 4s ease-in-out infinite, sweep-left 1.1s cubic-bezier(0.16, 1, 0.3, 1) 260ms both;
   }
   .lockup-l2 {
-    animation: sweep-right 1.1s cubic-bezier(0.16, 1, 0.3, 1) 440ms both;
+    animation: title-glow-amber 4s ease-in-out infinite 0.7s, sweep-right 1.1s cubic-bezier(0.16, 1, 0.3, 1) 440ms both;
   }
 }
 
@@ -986,7 +1032,12 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
   font-size: 1.08rem;
   color: var(--txt-2);
   line-height: 1.72;
-  animation: reveal-up 780ms cubic-bezier(0.2, 0.7, 0, 1) 640ms both;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .hero-deck {
+    animation: reveal-up 780ms cubic-bezier(0.2, 0.7, 0, 1) 640ms both;
+  }
 }
 
 .hero-actions {
@@ -995,7 +1046,12 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
   flex-wrap: wrap;
   gap: 14px;
   align-items: center;
-  animation: reveal-up 780ms cubic-bezier(0.2, 0.7, 0, 1) 820ms both;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .hero-actions {
+    animation: reveal-up 780ms cubic-bezier(0.2, 0.7, 0, 1) 820ms both;
+  }
 }
 
 /* ──────────────────────────────────────────────────── hero ticker ── */
@@ -1058,7 +1114,6 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
   align-items: center;
   gap: 8px;
   z-index: 3;
-  animation: reveal-up 700ms cubic-bezier(0.2, 0.7, 0, 1) 1200ms both;
 }
 
 .hero-scroll-cue > span {
@@ -1150,6 +1205,33 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
   width: 100%;
   height: 100%;
   display: block;
+}
+
+/* Shimmer scan across each world canvas — always visible, runs forever */
+@media (prefers-reduced-motion: no-preference) {
+  .wp-visual::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    background: linear-gradient(
+      100deg,
+      transparent 30%,
+      rgba(82, 233, 255, 0.07) 50%,
+      transparent 70%
+    );
+    animation: canvas-scan 7s linear infinite;
+    pointer-events: none;
+  }
+
+  .wp-flip .wp-visual::before {
+    animation-direction: reverse;
+  }
+}
+
+@keyframes canvas-scan {
+  from { transform: translateX(-120%); }
+  to   { transform: translateX(120%); }
 }
 
 /* Fade the canvas edge into the body panel */

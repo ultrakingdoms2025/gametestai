@@ -169,7 +169,7 @@ export class MountManager {
    */
   constructor({
     scene, engine, physics, bus, materials, input,
-    player, camera, cameraRig, avatar, npcManager, humanoidFactory,
+    player, camera, cameraRig, avatar, npcManager, humanoidFactory, worldManager,
   }) {
     this.scene = scene;
     this.engine = engine;
@@ -182,6 +182,8 @@ export class MountManager {
     this.cameraRig = cameraRig ?? null;
     this.avatar = avatar ?? null;
     this.npcManager = npcManager ?? null;
+    /** Read for `bounds` only - the edge of the playable area. */
+    this.worldManager = worldManager ?? null;
     this._externalFactory = humanoidFactory ?? null;
 
     /** @type {Map<string, Hoverboard|Dragon|Car>} */
@@ -357,6 +359,8 @@ export class MountManager {
       if (!m.alive) continue;
       const ridden = m === this._active;
       m.fixedUpdate(dt, elapsed, ridden ? this._gatherControls() : null);
+      // Every mount, every step, one rule - see `_holdInBounds`.
+      this._holdInBounds(m, ridden);
     }
 
     const m = this._active;
@@ -375,6 +379,70 @@ export class MountManager {
     if (boost !== this._lastBoost) {
       this._lastBoost = boost;
       this.bus.emit('mount:boost', { id: m.id, active: boost });
+    }
+  }
+
+  /**
+   * Keep a mount inside the playable area.
+   *
+   * ── Why this is here and not in the mounts ────────────────────────────────
+   *
+   * Nothing stopped a mount leaving the world. Ride or fly in a straight line
+   * and you simply kept going: past the terrain, past the colliders, out into
+   * empty space for as long as you cared to hold the key. The eagle had its own
+   * guard against this, written when it turned up during a flight test, but it
+   * was the eagle's alone - the dragon, the car, the horse and the board all
+   * had nothing.
+   *
+   * Five copies of one rule is four too many, and a sixth mount would have
+   * arrived without it, so it lives on the manager: every mount, every fixed
+   * step, whatever it is. Worlds already publish `bounds`, so there is nothing
+   * to author per world either.
+   *
+   * ── Why it pushes rather than walls ───────────────────────────────────────
+   *
+   * A hard clamp at 46 m/s is an invisible wall, and hitting one is worse than
+   * the bug. The position is clamped, but the *velocity* is only cancelled
+   * along the axis that left - so a mount running the boundary at an angle
+   * slides along it and keeps its speed, and one flown straight at it stops
+   * dead against something it can feel. The rider is told once per crossing
+   * rather than every step.
+   */
+  _holdInBounds(m, ridden) {
+    const b = this.worldManager?.active?.bounds;
+    const p = m?.position;
+    if (!b || !p) return;
+
+    // Inset, so a mount is turned before its nose is over the void rather than
+    // after its centre is.
+    const PAD = 6;
+    const minX = b.min.x + PAD;
+    const maxX = b.max.x - PAD;
+    const minZ = b.min.z + PAD;
+    const maxZ = b.max.z - PAD;
+    let hit = false;
+
+    if (p.x < minX) { p.x = minX; hit = true; if (m.velocity && m.velocity.x < 0) m.velocity.x = 0; }
+    else if (p.x > maxX) { p.x = maxX; hit = true; if (m.velocity && m.velocity.x > 0) m.velocity.x = 0; }
+    if (p.z < minZ) { p.z = minZ; hit = true; if (m.velocity && m.velocity.z < 0) m.velocity.z = 0; }
+    else if (p.z > maxZ) { p.z = maxZ; hit = true; if (m.velocity && m.velocity.z > 0) m.velocity.z = 0; }
+
+    // The ceiling is the only vertical limit worth enforcing here: the floor is
+    // whatever the ground is, and every mount already answers to that.
+    if (p.y > b.max.y) {
+      p.y = b.max.y;
+      hit = true;
+      if (m.velocity && m.velocity.y > 0) m.velocity.y = 0;
+    }
+
+    if (!hit) { if (m === this._active) this._edgeNotified = false; return; }
+    /* Speed is bled rather than zeroed. A flying mount that stops dead falls out
+     * of the sky, which turns "you reached the edge" into "you died at the
+     * edge"; this leaves it flying, just not outward. */
+    if (typeof m.speed === 'number' && m.speed > 0) m.speed *= 0.94;
+    if (ridden && !this._edgeNotified) {
+      this._edgeNotified = true;
+      this.bus?.emit('hud:notify', { text: 'Edge of the region', tone: 'warn' });
     }
   }
 

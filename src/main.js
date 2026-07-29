@@ -123,7 +123,7 @@ const projectiles = new ProjectileSystem({ ...ctx, player, npcManager, combat })
 const loadout = new Loadout({ ...ctx, camera: engine.camera, player, npcManager, projectiles, cameraRig });
 player.loadout = loadout;
 
-const mounts = new MountManager({ ...ctx, player, camera: engine.camera, cameraRig, avatar, npcManager });
+const mounts = new MountManager({ ...ctx, player, camera: engine.camera, cameraRig, avatar, npcManager, worldManager });
 const unstuck = new UnstuckSystem({ bus, player, physics, worldManager, input });
 
 /* ------------------------------------------------------------------ */

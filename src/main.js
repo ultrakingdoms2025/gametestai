@@ -39,6 +39,8 @@ import { AdminCheats } from './systems/AdminCheats.js';
 import { Relics } from './systems/Relics.js';
 import { AudioDirector } from './audio/AudioDirector.js';
 import { AudioMenu } from './ui/AudioMenu.js';
+import { RaceManager } from './race/RaceManager.js';
+import { RaceUI } from './ui/RaceUI.js';
 
 /**
  * AETHER NEXUS - bootstrap.
@@ -171,6 +173,14 @@ const cheats = new AdminCheats({ bus, input, loadout, player, economy });
 const audio = new AudioDirector({ bus, camera: engine.camera, player, worldManager, input });
 const audioMenu = new AudioMenu({ root: uiRoot, bus, input, audio });
 
+// Racing. The manager arms itself off `world:changed` by reading whatever the
+// active world publishes (trackPath / startGrid / checkpoints / lapCount), so a
+// world that carries a circuit needs no registration here and one that does not
+// costs a failed property read per world change. The race world itself is
+// registered with the other worlds above once it exists.
+const race = new RaceManager({ ...ctx, player, mounts, economy, worldManager });
+const raceUI = new RaceUI({ root: uiRoot, bus, input, race });
+
 const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts, input, inventory });
 /* Ask the browser not to evict this origin's storage under pressure. Fire and
  * forget - it resolves to false on browsers that do not offer it, and nothing
@@ -204,7 +214,7 @@ if (overrides.dev) {
     engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
     waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu, caches, contracts,
-    cheats, audio, audioMenu, relics, mountWheel,
+    cheats, audio, audioMenu, relics, mountWheel, race, raceUI,
   };
   import('./dev/Harness.js').then(({ installHarness }) => installHarness(window.GAME));
 }
@@ -477,6 +487,10 @@ async function warmWorld(id) {
 engine.onFixedUpdate((dt, elapsed) => {
   mounts.fixedUpdate(dt, elapsed);
   player.fixedUpdate(dt, elapsed);
+  // After the player, never before: lap validation sweeps the segment the
+  // player actually travelled this step, and reading their position before the
+  // mount has written the seat would test last step's line.
+  race.fixedUpdate(dt, elapsed);
   npcManager.fixedUpdate(dt, elapsed);
   combat.fixedUpdate(dt, elapsed);
   projectiles.fixedUpdate(dt, elapsed);
@@ -510,6 +524,7 @@ engine.onFrameUpdate((dt, elapsed) => {
   audio.update(dt);
   helpMenu.update?.(dt);
   characterMenu.update?.(dt);
+  raceUI.update(dt);
   hud.update(dt, elapsed);
   // Last, and deliberately so: every light in the game has now been moved and
   // dimmed for this frame, so the rig is ranking final positions. It also
@@ -529,6 +544,22 @@ bus.on('input:lockchange', ({ locked }) => {
   if (!locked && !hud.chatOpen) hud.showPauseOverlay(true);
   else hud.showPauseOverlay(false);
 });
+
+/* Minimap circuit overlay.
+ *
+ * Driven by events rather than polled per frame: the outline is fixed for the
+ * life of a circuit and the marker array is mutated in place by RaceManager, so
+ * the only thing that ever actually changes here is whether the field is being
+ * drawn at all. The circuit goes up as soon as a world publishes one - knowing
+ * the shape of the track before you have driven it is most of the value - and
+ * the dots only while a race is live. */
+bus.on('race:armed', () => hud.minimap?.setCircuit(race.circuit, null));
+bus.on('race:started', () => hud.minimap?.setCircuit(race.circuit, race.markers));
+bus.on('race:finished', () => hud.minimap?.setCircuit(race.circuit, null));
+bus.on('race:aborted', () => hud.minimap?.setCircuit(race.circuit, null));
+// `race:armed` never fires for a world without a circuit, so the clear has to
+// hang off the world change itself or a circuit would survive the portal out.
+bus.on('world:changing', () => hud.minimap?.setCircuit(null));
 
 bus.on('world:changed', ({ world }) => {
   // Before anything else: a world arrives carrying dozens of its own lights,

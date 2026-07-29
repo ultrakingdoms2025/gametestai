@@ -1,0 +1,792 @@
+import * as THREE from 'three';
+import { TrackPath, RacerField, DIFFICULTIES, makeTestCircuit } from './RacerAI.js';
+
+/**
+ * The race: state machine, lap validation, placement and prize money.
+ *
+ * ── What stops a racer farming laps ──────────────────────────────────────────
+ *
+ * A lap counter that fires on "crossed the start/finish line" is trivially
+ * cheated: stop on the line, reverse two metres, drive forward, repeat. It is
+ * not even malice - a spin on the pit straight does it by accident, and the
+ * player then finishes a race they never drove.
+ *
+ * So a lap is not a line crossing here. It is the *completion of an ordered
+ * sequence*: a racer holds a single `nextCp` cursor and only the checkpoint at
+ * that cursor can advance it. Every other checkpoint in the world is inert to
+ * that racer, which means:
+ *
+ *   - Reversing over the line does nothing, because after the line the cursor
+ *     is already pointing at checkpoint 1, not at 0.
+ *   - Cutting the infield does nothing, because the checkpoints in between were
+ *     never armed and the cursor never moved past them.
+ *   - The lap only ticks on the pass of checkpoint 0 that follows a pass of the
+ *     last checkpoint - which is the definition of a lap.
+ *
+ * The cursor is tested against the *segment* the racer travelled this step, not
+ * against its end point. At 34 m/s a fixed step covers 0.57 m, so a point test
+ * would be safe today - but it would silently become a tunnelling bug the first
+ * time somebody widened the step or added a faster mount, and a swept test is
+ * four lines.
+ *
+ * ── Placement ────────────────────────────────────────────────────────────────
+ *
+ * Finished racers rank by finish time. Everyone else ranks by how many
+ * checkpoints they have validated, then by how close they are to the next one -
+ * which is monotonic by construction (a racer cannot gain a checkpoint without
+ * driving to it) and needs no arc-length bookkeeping for the player, who is free
+ * to spin, reverse or leave the road entirely.
+ */
+
+/** Prize money, by finishing position. Only the player is paid. */
+export const RACE_PRIZES = [10, 5, 2];
+/** Including the player. The grid contract publishes exactly this many slots. */
+export const MAX_RACERS = 10;
+/**
+ * Which grid slot the player gets.
+ *
+ * Not pole, and not the back. From pole every difficulty below the player's
+ * pace is a procession with nothing in the mirrors; from the back the first lap
+ * is spent in traffic before the race begins. Mid-grid there is a field to
+ * catch and a field to hold off whatever band is chosen.
+ */
+export const PLAYER_GRID_SLOT = 4;
+
+export const RACE_STATE = {
+  IDLE: 'idle',
+  COUNTDOWN: 'countdown',
+  RACING: 'racing',
+  FINISHED: 'finished',
+};
+
+const COUNTDOWN_SECONDS = 3;
+/** Seconds the player is given to get home after the last rival finishes. */
+const FINISH_GRACE = 25;
+
+const _v = new THREE.Vector3();
+
+/** Squared distance from point `p` to the segment `a`->`b`, in XZ. */
+function segDistSq(ax, az, bx, bz, px, pz) {
+  const ex = bx - ax;
+  const ez = bz - az;
+  const e2 = ex * ex + ez * ez;
+  let t = e2 > 1e-9 ? ((px - ax) * ex + (pz - az) * ez) / e2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const dx = px - (ax + ex * t);
+  const dz = pz - (az + ez * t);
+  return dx * dx + dz * dz;
+}
+
+export class RaceManager {
+  /**
+   * @param {{scene:THREE.Scene, physics:any, bus:any, materials:any, player:any,
+   *          mounts:any, economy:any, worldManager:any}} ctx
+   */
+  constructor({ scene, physics, bus, materials, player, mounts, economy, worldManager }) {
+    this.scene = scene;
+    this.physics = physics;
+    this.bus = bus;
+    this.player = player;
+    this.mounts = mounts ?? null;
+    this.economy = economy ?? null;
+    this.worldManager = worldManager ?? null;
+
+    this.state = RACE_STATE.IDLE;
+    /** Track data as read from the world, or from the synthetic test circuit. */
+    this.track = null;
+    /** @type {TrackPath|null} */
+    this.path = null;
+    this.difficulty = 'standard';
+    this.difficulties = ['standard'];
+    this.lapCount = 3;
+
+    this.field = new RacerField({ scene, physics, materials });
+    /** @type {Array<object>} entrants, player included */
+    this.entries = [];
+    /** Ranked snapshot, rebuilt every fixed step while racing. */
+    this.order = [];
+    /** Minimap feed: one marker per racer. Rewritten in place, never reallocated. */
+    this.markers = [];
+    /** Circuit outline for the minimap, as flat [x,z] pairs. */
+    this.circuit = null;
+    /** @type {Array<object>|null} final classification once the flag is out */
+    this.results = null;
+
+    this.clock = 0;
+    this._countdown = 0;
+    this._lastBeep = -1;
+    this._timeLimit = 600;
+    this._playerPlace = 0;
+    this._playerEntry = null;
+    this._graceFrom = 0;
+    this._seed = 1;
+
+    // A race is bound to the world it was armed in. Leaving mid-race abandons
+    // it rather than leaving a state machine running over a track that is no
+    // longer in the scene.
+    this._onWorldChanging = () => this._teardown();
+    bus?.on?.('world:changing', this._onWorldChanging);
+    this._onWorldChanged = ({ world }) => this.arm(world);
+    bus?.on?.('world:changed', this._onWorldChanged);
+  }
+
+  /* ================================================================ */
+  /* Contract surface                                                  */
+  /* ================================================================ */
+
+  get racing() {
+    return this.state === RACE_STATE.RACING || this.state === RACE_STATE.COUNTDOWN;
+  }
+
+  /** True once a track is loaded and `start()` will do something. */
+  get ready() {
+    return !!(this.path && this.path.valid && this.track?.checkpoints?.length >= 3);
+  }
+
+  /**
+   * Read the world's race contract, if it publishes one.
+   *
+   * Written to tolerate every partial state the world can be in - not built
+   * yet, built but without a track, a track with too few checkpoints - because
+   * this module and the world that feeds it ship independently and a missing
+   * field must degrade to "no race here", never to a thrown exception on a
+   * world change.
+   *
+   * @param {any} world
+   * @returns {boolean} true when a usable circuit was found
+   */
+  arm(world = this.worldManager?.active) {
+    if (this.racing) return this.ready;
+    const t = this._readTrack(world);
+    if (!t) {
+      this.track = null;
+      this.path = null;
+      this.circuit = null;
+      this.entries.length = 0;
+      this.markers.length = 0;
+      this.field.setVisible(false);
+      return false;
+    }
+    this._install(t);
+    this.bus?.emit('race:armed', {
+      laps: this.lapCount,
+      difficulties: [...this.difficulties],
+      checkpoints: this.track.checkpoints.length,
+      synthetic: !!this.track.synthetic,
+    });
+    return true;
+  }
+
+  /**
+   * Load a circuit that no world published. The synthetic circle from
+   * RacerAI.js is the intended argument; it is how the whole lifecycle was
+   * verified before the race world existed, and it is still the only way to
+   * exercise a lap-validation failure on demand.
+   * @param {object} track same shape as the world contract
+   */
+  loadTrack(track) {
+    const t = this._readTrack(track);
+    if (!t) return false;
+    this._install(t);
+    this.bus?.emit('race:armed', {
+      laps: this.lapCount,
+      difficulties: [...this.difficulties],
+      checkpoints: this.track.checkpoints.length,
+      synthetic: true,
+    });
+    return true;
+  }
+
+  /** A circular circuit centred on the player, for testing without a race world. */
+  loadTestCircuit(opts = {}) {
+    const p = this.player?.position ?? { x: 0, y: 0, z: 0 };
+    const radius = opts.radius ?? 55;
+    return this.loadTrack(makeTestCircuit({
+      centre: { x: p.x, y: p.y, z: p.z - radius },
+      ...opts,
+      radius,
+    }));
+  }
+
+  /**
+   * Drop the flag. Puts the player in the car on their grid slot, spreads the
+   * field over the remaining slots and runs the countdown.
+   * @param {string} [difficulty]
+   */
+  start(difficulty = this.difficulty) {
+    if (!this.ready) {
+      this.bus?.emit('hud:notify', { text: 'No circuit loaded', tone: 'warn' });
+      return false;
+    }
+    if (this.racing) return false;
+
+    this.difficulty = DIFFICULTIES[difficulty] ? difficulty : (this.difficulties[0] ?? 'standard');
+    this._seed = (Date.now() & 0x7fffffff) || 1;
+
+    const grid = this.track.startGrid;
+    const aiCount = Math.min(MAX_RACERS - 1, Math.max(0, grid.length - 1));
+    this.field.build(this.path, aiCount, this._seed);
+
+    // Slots: the player takes PLAYER_GRID_SLOT, the AI fill round it in order.
+    const slots = [];
+    for (let i = 0; i < grid.length; i++) if (i !== PLAYER_GRID_SLOT) slots.push(grid[i]);
+    this.field.reset(this.difficulty, slots);
+
+    const playerSlot = grid[Math.min(PLAYER_GRID_SLOT, grid.length - 1)];
+    this._placePlayer(playerSlot);
+
+    this._buildEntries(playerSlot);
+    this.clock = 0;
+    this._countdown = COUNTDOWN_SECONDS;
+    this._lastBeep = -1;
+    this.results = null;
+    // Generous: at 18 m/s average a lap of this circuit takes L/18 seconds, and
+    // a player who is going to finish at all will do it inside twice that.
+    this._timeLimit = 45 + this.lapCount * (this.path.length / 18) * 2.4;
+    this._graceFrom = 0;
+    this.state = RACE_STATE.COUNTDOWN;
+    this.field.setVisible(true);
+
+    this.bus?.emit('race:countdown', { count: COUNTDOWN_SECONDS, difficulty: this.difficulty });
+    return true;
+  }
+
+  /** Abandon a race in progress. No payout, no classification. */
+  abort(reason = 'abandoned') {
+    if (this.state === RACE_STATE.IDLE) return;
+    this.state = RACE_STATE.IDLE;
+    this.results = null;
+    this.order.length = 0;
+    this.markers.length = 0;
+    this.field.setVisible(false);
+    this.bus?.emit('race:aborted', { reason });
+  }
+
+  /** Clear the finished screen and go back to the picker. */
+  reset() {
+    if (this.racing) return;
+    this.state = RACE_STATE.IDLE;
+    this.results = null;
+    this.field.setVisible(false);
+    this.markers.length = 0;
+  }
+
+  /**
+   * Everything the UI needs for one frame, in one object. Deliberately a
+   * snapshot rather than a stream of bus events: a position readout that
+   * updates 60 times a second would be 60 emits a second for a two-character
+   * change, and the UI already has a frame tick of its own.
+   */
+  snapshot() {
+    const p = this._playerEntry;
+    return {
+      state: this.state,
+      ready: this.ready,
+      difficulty: this.difficulty,
+      difficulties: this.difficulties,
+      laps: this.lapCount,
+      clock: this.clock,
+      countdown: Math.max(0, Math.ceil(this._countdown)),
+      place: this._playerPlace,
+      total: this.entries.length,
+      lap: p ? Math.min(p.lap, this.lapCount) : 0,
+      bestLap: p?.bestLap ?? 0,
+      lastLap: p?.lastLap ?? 0,
+      finished: !!p?.finished,
+      results: this.results,
+      order: this.order,
+    };
+  }
+
+  /* ================================================================ */
+  /* Simulation                                                        */
+  /* ================================================================ */
+
+  /**
+   * Runs AFTER `mounts.fixedUpdate` in main.js, so the player's position for
+   * this step is already the seat of the car rather than last step's.
+   */
+  fixedUpdate(dt) {
+    if (this.state === RACE_STATE.IDLE || this.state === RACE_STATE.FINISHED) return;
+    if (!this.ready) return;
+
+    const running = this.state === RACE_STATE.RACING;
+
+    if (!running) {
+      this._countdown -= dt;
+      const beep = Math.ceil(this._countdown);
+      if (beep !== this._lastBeep && beep > 0) {
+        this._lastBeep = beep;
+        this.bus?.emit('race:countdown', { count: beep, difficulty: this.difficulty });
+      }
+      this._holdPlayerOnGrid();
+      if (this._countdown <= 0) {
+        this.state = RACE_STATE.RACING;
+        this.clock = 0;
+        // See `_seedSweep`: three seconds of being held on the grid is what
+        // makes every racer's position trustworthy at exactly this instant.
+        this._syncPlayerEntry();
+        this._seedSweep();
+        this.bus?.emit('race:countdown', { count: 0, difficulty: this.difficulty });
+        this.bus?.emit('race:started', {
+          difficulty: this.difficulty,
+          laps: this.lapCount,
+          racers: this.entries.length,
+        });
+      }
+    } else {
+      this.clock += dt;
+    }
+
+    this._syncPlayerEntry();
+    // The AI need no sync: `RacerAI` owns its own `s`, `lateral` and `speed`,
+    // which is the whole point of driving them along the centreline.
+    this.field.fixedUpdate(dt, this.entries, running);
+
+    if (running) {
+      for (const e of this.entries) this._advance(e, dt);
+      this._rank();
+      this._checkEnd();
+    }
+    this._writeMarkers();
+  }
+
+  /* ================================================================ */
+  /* Internals                                                         */
+  /* ================================================================ */
+
+  /** Pull the contract off a world (or off a plain object) and validate it. */
+  _readTrack(source) {
+    if (!source) return null;
+    const path = source.trackPath;
+    const cps = source.checkpoints;
+    const grid = source.startGrid;
+    if (!Array.isArray(path) || path.length < 3) return null;
+    if (!Array.isArray(cps) || cps.length < 3) return null;
+
+    const checkpoints = [];
+    for (const c of cps) {
+      const x = Number(c?.x);
+      const z = Number(c?.z);
+      if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+      checkpoints.push({
+        x,
+        y: Number.isFinite(Number(c.y)) ? Number(c.y) : 0,
+        z,
+        radius: Math.max(3, Number(c.radius) || 10),
+      });
+    }
+    if (checkpoints.length < 3) return null;
+
+    // A missing or short grid is survivable: place everyone on the line rather
+    // than refusing to race. Nine cars stacked on one point separate within a
+    // second, and a broken grid must not be the thing that stops a race.
+    const startGrid = [];
+    if (Array.isArray(grid)) {
+      for (const g of grid) {
+        const x = Number(g?.x);
+        const z = Number(g?.z);
+        if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+        startGrid.push({
+          x,
+          y: Number.isFinite(Number(g.y)) ? Number(g.y) : 0,
+          z,
+          yaw: Number.isFinite(Number(g.yaw)) ? Number(g.yaw) : 0,
+        });
+      }
+    }
+
+    const difficulties = Array.isArray(source.difficulties) && source.difficulties.length
+      ? source.difficulties.filter((d) => DIFFICULTIES[d])
+      : [];
+
+    return {
+      trackPath: path,
+      checkpoints,
+      startGrid,
+      lapCount: Math.max(1, Math.round(Number(source.lapCount) || 3)),
+      difficulties: difficulties.length ? difficulties : ['standard'],
+      synthetic: !!source.synthetic,
+    };
+  }
+
+  _install(t) {
+    this.path = new TrackPath(t.trackPath);
+    if (!this.path.valid) {
+      this.path = null;
+      this.track = null;
+      return;
+    }
+    // Derive a grid from the centreline when the world did not publish one, so
+    // a partially finished world still races.
+    if (t.startGrid.length < MAX_RACERS) t.startGrid = this._deriveGrid(t);
+    this.track = t;
+    this.lapCount = t.lapCount;
+    this.difficulties = t.difficulties;
+    if (!this.difficulties.includes(this.difficulty)) this.difficulty = this.difficulties[0];
+
+    const pts = new Array(this.path.n);
+    for (let i = 0; i < this.path.n; i++) {
+      const p = this.path.points[i];
+      pts[i] = [p.x, p.z];
+    }
+    this.circuit = pts;
+  }
+
+  /** Two columns behind checkpoint 0, staggered, using the centreline's own frame. */
+  _deriveGrid(t) {
+    const cp0 = t.checkpoints[0];
+    const s0 = this.path.project(cp0.x, cp0.z, -1);
+    const grid = [];
+    const sm = { x: 0, y: 0, z: 0, width: 12, tx: 0, tz: -1 };
+    for (let i = 0; i < MAX_RACERS; i++) {
+      const back = 8 + Math.floor(i / 2) * 8;
+      this.path.sample(s0 - back, sm);
+      const col = (i % 2 === 0 ? -1 : 1) * Math.min(4, sm.width * 0.22);
+      grid.push({
+        // Right of travel is (-tz, tx) - see TrackPath.lateralOf.
+        x: sm.x - sm.tz * col,
+        y: sm.y,
+        z: sm.z + sm.tx * col,
+        // Forward is -Z at yaw 0, so a tangent (tx,tz) reads back as this.
+        yaw: Math.atan2(-sm.tx, -sm.tz),
+      });
+    }
+    return grid;
+  }
+
+  /**
+   * Put the player in the car on their grid slot.
+   *
+   * `summon` toggles - calling it while already on the car would dismiss it -
+   * so the mount is only summoned when something else is being ridden. The
+   * car's own `spawn` is then reused rather than writing its position by hand,
+   * because it also resets the ride height, the four wheel probes and the
+   * suspension state; setting only `position` leaves the car convinced the
+   * ground is where the old grid was and launches it on the first step.
+   */
+  _placePlayer(slot) {
+    const mounts = this.mounts;
+    if (mounts && mounts.active?.id !== 'car') mounts.summon('car');
+    const car = mounts?.active;
+    if (car && car.id === 'car') {
+      const y = this.physics?.groundHeight?.(slot.x, slot.z, slot.y + 3, 8);
+      _v.set(slot.x, y === null || y === undefined ? slot.y : y, slot.z);
+      car.spawn(_v, slot.yaw);
+    } else if (this.player?.teleport) {
+      this.player.teleport(_v.set(slot.x, slot.y, slot.z), slot.yaw);
+    }
+    // The car steers toward the look direction, so a stale yaw would have it
+    // driving off the grid the instant the lights go out. `yaw` is read-only on
+    // Player - orientation belongs to the mount while one is being ridden, and
+    // `setYaw` is the door it is handed through.
+    this.player?.setYaw?.(slot.yaw);
+    this._gridSlot = slot;
+  }
+
+  /** Hold everything still until the flag. */
+  _holdPlayerOnGrid() {
+    const car = this.mounts?.active;
+    const slot = this._gridSlot;
+    if (!car || !slot || car.id !== 'car') return;
+    car.position.x = slot.x;
+    car.position.z = slot.z;
+    car.speed = 0;
+    car.velocity.set(0, 0, 0);
+    car.heading = slot.yaw;
+  }
+
+  _buildEntries(playerSlot) {
+    this.entries.length = 0;
+    const mk = (o) => Object.assign(o, {
+      lap: 1,
+      nextCp: 1,
+      cpDone: 0,
+      finished: false,
+      finishTime: 0,
+      lastLap: 0,
+      bestLap: 0,
+      _lapStart: 0,
+      place: 0,
+      _px: o.position.x,
+      _pz: o.position.z,
+    });
+
+    this._playerEntry = mk({
+      id: 'player',
+      name: 'YOU',
+      isPlayer: true,
+      color: 0x52e9ff,
+      position: this.player?.position ?? new THREE.Vector3(),
+      s: this.path.project(playerSlot.x, playerSlot.z, -1),
+      lateral: 0,
+      speed: 0,
+    });
+    this.entries.push(this._playerEntry);
+    for (const r of this.field.racers) this.entries.push(mk(r));
+
+    this._playerPlace = PLAYER_GRID_SLOT + 1;
+    this.order = [...this.entries];
+    this._seedSweep(playerSlot);
+    this._writeMarkers();
+  }
+
+  /**
+   * Arm the swept checkpoint test with a position that is actually on the grid.
+   *
+   * This is subtle and it bit hard. `_placePlayer` moves the *car*, but the
+   * player's own position is not rewritten until `MountManager` applies the seat
+   * on the next fixed step - so seeding the sweep from `player.position` seeds it
+   * from wherever the player was standing when they pressed start. The first
+   * step of the race then sweeps a segment from there to the grid, straight
+   * across the infield, and hands out every checkpoint that chord happens to
+   * pass through. Caught in testing by starting a race while parked on
+   * checkpoint 1, which awarded checkpoint 1 before the lights went out.
+   *
+   * Seeding from the grid slot fixes the start. Re-seeding at the flag fixes
+   * everything else: the countdown holds the field on the grid for three
+   * seconds, so at GO every racer's real position is known good.
+   *
+   * @param {{x:number,z:number}} [playerSlot]
+   */
+  _seedSweep(playerSlot) {
+    for (const e of this.entries) {
+      const src = e.isPlayer && playerSlot ? playerSlot : e.position;
+      e._px = src.x;
+      e._pz = src.z;
+    }
+  }
+
+  /** The player is not a `RacerAI`, so its track coordinates are derived here. */
+  _syncPlayerEntry() {
+    const e = this._playerEntry;
+    if (!e) return;
+    const p = this.player?.position;
+    if (!p) return;
+    e.position = p;
+    // A full scan, not a windowed one: the player can spin, reverse, be teleported
+    // by Unstuck, or leave the road entirely, and a hint would then lock their
+    // projection to wherever they last were.
+    e.s = this.path.project(p.x, p.z, -1);
+    e.lateral = this.path.lateralOf(p.x, p.z, e.s);
+    e.speed = this.mounts?.active?.speed ?? 0;
+  }
+
+  /**
+   * Advance one racer's checkpoint cursor, if it swept through the armed
+   * checkpoint this step. See the header for why only one checkpoint is ever
+   * live per racer.
+   */
+  _advance(e, dt) {
+    void dt;
+    if (e.finished) return;
+    const cps = this.track.checkpoints;
+    const cp = cps[e.nextCp];
+    const px = e.position.x;
+    const pz = e.position.z;
+
+    // Swept test against the segment travelled, so a faster mount or a longer
+    // fixed step can never tunnel a checkpoint.
+    const d2 = segDistSq(e._px, e._pz, px, pz, cp.x, cp.z);
+    e._px = px;
+    e._pz = pz;
+    if (d2 > cp.radius * cp.radius) return;
+    // A generous vertical gate still rejects a bridge crossing over the line
+    // it is not part of, without demanding the world get checkpoint heights
+    // exactly right.
+    if (Math.abs((e.position.y ?? cp.y) - cp.y) > 14) return;
+
+    e.cpDone++;
+    e.nextCp = (e.nextCp + 1) % cps.length;
+
+    if (e.nextCp !== 1) return; // mid-lap checkpoint
+
+    /* --- checkpoint 0 passed in order: that is a completed lap --- */
+    const lapTime = this.clock - e._lapStart;
+    e._lapStart = this.clock;
+    e.lastLap = lapTime;
+    if (!e.bestLap || lapTime < e.bestLap) e.bestLap = lapTime;
+    e.lap++;
+    if (e.lap > this.lapCount) {
+      e.finished = true;
+      e.finishTime = this.clock;
+    }
+    // `lap` is the lap just *completed*, not the one now being driven. Reporting
+    // the latter is ambiguous at the flag - it has to be clamped to the race
+    // length, and the clamp makes the final crossing indistinguishable from the
+    // one before it, which is exactly the sort of off-by-one a lap counter must
+    // not have.
+    this.bus?.emit('race:lap', {
+      id: e.id,
+      name: e.name,
+      isPlayer: !!e.isPlayer,
+      lap: e.lap - 1,
+      laps: this.lapCount,
+      lapTime,
+      best: e.bestLap,
+      finished: e.finished,
+    });
+  }
+
+  /**
+   * Rank the field.
+   *
+   * Progress is `checkpoints validated` plus a fraction of the way to the next
+   * one. The fraction is derived from the straight-line distance rather than
+   * arc length on purpose: between two adjacent checkpoints the two agree
+   * closely enough to order a field, and the straight line is defined for a
+   * player who has left the track entirely, where an arc-length projection is
+   * not.
+   */
+  _rank() {
+    const cps = this.track.checkpoints;
+    for (const e of this.entries) {
+      if (e.finished) {
+        e._score = 1e9 - e.finishTime;
+        continue;
+      }
+      const cp = cps[e.nextCp];
+      const prev = cps[(e.nextCp - 1 + cps.length) % cps.length];
+      const gap = Math.hypot(cp.x - prev.x, cp.z - prev.z) || 1;
+      const d = Math.hypot(cp.x - e.position.x, cp.z - e.position.z);
+      e._score = e.cpDone + Math.max(0, Math.min(1, 1 - d / gap)) * 0.999;
+    }
+    this.order.sort((a, b) => b._score - a._score);
+    for (let i = 0; i < this.order.length; i++) this.order[i].place = i + 1;
+
+    const place = this._playerEntry?.place ?? 0;
+    if (place !== this._playerPlace) {
+      this._playerPlace = place;
+      this.bus?.emit('race:position', {
+        place,
+        total: this.entries.length,
+        lap: Math.min(this._playerEntry?.lap ?? 1, this.lapCount),
+        laps: this.lapCount,
+      });
+    }
+  }
+
+  _checkEnd() {
+    const p = this._playerEntry;
+    if (p?.finished) {
+      this._classify(false);
+      return;
+    }
+
+    /* Once every rival is home the player is on their own, and the outer time
+     * limit is far too long to sit through - a player wedged against a wall on
+     * lap one would watch a "racing" HUD for another minute and a half. Real
+     * racing closes the flag a fixed interval after the leader rather than
+     * waiting for the last car, so the same rule applies here. */
+    if (this._graceFrom === 0 && this.entries.every((e) => e.isPlayer || e.finished)) {
+      this._graceFrom = this.clock;
+    }
+    const graced = this._graceFrom > 0 && this.clock - this._graceFrom >= FINISH_GRACE;
+    if (graced || this.clock >= this._timeLimit) this._classify(true);
+  }
+
+  /**
+   * Final classification and the payout.
+   *
+   * The race ends when the *player* crosses the line, not when the last car
+   * does: everyone still running is classified on the progress they had at that
+   * moment, which is what a chequered flag does in real racing and avoids
+   * making the player watch a car three laps down finish.
+   */
+  _classify(playerDnf) {
+    this._rank();
+    this.state = RACE_STATE.FINISHED;
+
+    const winner = this.order[0];
+    const results = this.order.map((e, i) => {
+      const place = i + 1;
+      const prize = RACE_PRIZES[place - 1] ?? 0;
+      return {
+        place,
+        id: e.id,
+        name: e.name,
+        isPlayer: !!e.isPlayer,
+        color: e.color ?? 0x9fb4c4,
+        time: e.finished ? e.finishTime : 0,
+        // A gap only means something between two cars that both finished.
+        gap: e.finished && winner?.finished ? e.finishTime - winner.finishTime : 0,
+        laps: Math.min(e.lap, this.lapCount),
+        bestLap: e.bestLap,
+        dnf: !e.finished,
+        credits: prize,
+      };
+    });
+    this.results = results;
+
+    const mine = results.find((r) => r.isPlayer);
+    let paid = 0;
+    // Only the player has a wallet. The prize column is still shown against the
+    // podium so the reward for improving a place is legible before the next
+    // race rather than after it.
+    if (mine && !mine.dnf && mine.credits > 0) {
+      paid = mine.credits;
+      this.economy?.add?.(paid, 'race');
+    } else if (mine) {
+      mine.credits = 0;
+    }
+
+    this.bus?.emit('race:finished', {
+      results,
+      place: mine?.place ?? 0,
+      credits: paid,
+      dnf: !!playerDnf || !!mine?.dnf,
+      difficulty: this.difficulty,
+      time: mine?.time ?? 0,
+      laps: this.lapCount,
+    });
+    this.bus?.emit('hud:notify', {
+      text: mine?.dnf
+        ? 'Race over — did not finish'
+        : `Finished P${mine?.place ?? '?'}${paid ? ` — +${paid} credits` : ''}`,
+      tone: paid ? 'good' : 'info',
+    });
+  }
+
+  /** One marker per racer for the minimap, rewritten in place. */
+  _writeMarkers() {
+    const m = this.markers;
+    m.length = this.entries.length;
+    for (let i = 0; i < this.entries.length; i++) {
+      const e = this.entries[i];
+      const slot = m[i] ?? (m[i] = { x: 0, z: 0, isPlayer: false, color: 0xffffff, place: 0 });
+      slot.x = e.position.x;
+      slot.z = e.position.z;
+      slot.isPlayer = !!e.isPlayer;
+      slot.color = e.color ?? 0xffffff;
+      slot.place = e.place;
+    }
+  }
+
+  _teardown() {
+    // Tell the UI before dropping the state, or a leaderboard left open when the
+    // player steps into a portal survives into the next world with nothing
+    // behind it and no way to dismiss it except the key that opens the picker.
+    if (this.state !== RACE_STATE.IDLE) this.bus?.emit('race:aborted', { reason: 'world' });
+    this.state = RACE_STATE.IDLE;
+    this.track = null;
+    this.path = null;
+    this.circuit = null;
+    this.results = null;
+    this.entries.length = 0;
+    this.order.length = 0;
+    this.markers.length = 0;
+    this._playerEntry = null;
+    this._playerPlace = 0;
+    this.field.clear();
+  }
+
+  dispose() {
+    this.bus?.off?.('world:changing', this._onWorldChanging);
+    this.bus?.off?.('world:changed', this._onWorldChanged);
+    this.field.dispose();
+    this.entries.length = 0;
+    this.markers.length = 0;
+  }
+}
+
+export { makeTestCircuit, DIFFICULTIES };

@@ -65,6 +65,19 @@ export class Minimap {
     /** id of the friendly currently offering conversation, drawn with a speech glyph */
     this.chatNpcId = null;
 
+    /* ---- race overlay -------------------------------------------------
+     * Fed by RaceManager, and null whenever there is no circuit. It is drawn
+     * live rather than baked into the floorplan for two reasons: the circuit
+     * belongs to a *race*, not to a world, so it must come and go without
+     * invalidating the world's cached plan; and the racer dots move every
+     * frame, so they were never bakeable anyway. */
+    /** @type {Array<[number,number]>|null} circuit outline, world XZ */
+    this.circuit = null;
+    /** @type {Array<{x:number,z:number,isPlayer:boolean,color:number,place:number}>|null} */
+    this.racers = null;
+    /** Metres to the rim while a race is on; overrides the zoom. */
+    this.raceRange = null;
+
     this._r = this.size * 0.5 - 3;
     this._cx = this.size * 0.5;
     this._cy = this.size * 0.5;
@@ -82,7 +95,46 @@ export class Minimap {
 
   /** Metres visible from the centre to the rim. */
   get range() {
+    // A race is the one time the map has a job the player's zoom cannot do:
+    // show the *whole* circuit, so a gap to the car two corners ahead is
+    // readable. The manual zoom is restored the moment the circuit clears.
+    if (this.raceRange) return this.raceRange;
     return this.baseRange / this.zoomLevel * 0.5;
+  }
+
+  /**
+   * Show a circuit and its field, or clear both.
+   *
+   * The range is derived from the circuit's own extent rather than configured:
+   * the rim has to reach the far side of the track from wherever on it the
+   * player happens to be, which is the full diameter plus a margin.
+   *
+   * @param {Array<[number,number]>|null} points world-space XZ outline
+   * @param {Array<object>|null} [racers] live markers, read every frame
+   */
+  setCircuit(points, racers = null) {
+    if (!Array.isArray(points) || points.length < 3) {
+      this.circuit = null;
+      this.racers = null;
+      this.raceRange = null;
+      return;
+    }
+    this.circuit = points;
+    this.racers = racers ?? null;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const p of points) {
+      if (p[0] < minX) minX = p[0];
+      if (p[0] > maxX) maxX = p[0];
+      if (p[1] < minZ) minZ = p[1];
+      if (p[1] > maxZ) maxZ = p[1];
+    }
+    // 0.55 of the widest extent, not half: half would clip the far side whenever
+    // the player is at one end of the circuit, and much more than this leaves the
+    // track as a small doodle in the middle of a large empty dial.
+    this.raceRange = Math.max(40, Math.max(maxX - minX, maxZ - minZ) * 0.55);
   }
 
   /**
@@ -257,7 +309,11 @@ export class Minimap {
     // --- floorplan (rotated blit of the baked canvas) ---------------------
     if (this._plan) {
       ctx.save();
-      ctx.globalAlpha = 0.9;
+      // Knocked back while a circuit is up. The world floorplan is a wall of
+      // pale terrain rectangles and the road is a 3 px line over the top of it;
+      // at full strength the two compete and the track is the one that loses,
+      // which is exactly backwards during a race.
+      ctx.globalAlpha = this.circuit ? 0.42 : 0.9;
       ctx.setTransform(
         this.dpr * scale * cos,
         this.dpr * scale * sin,
@@ -288,6 +344,10 @@ export class Minimap {
     ctx.lineTo(cx + r, cy);
     ctx.strokeStyle = 'rgba(82,233,255,0.055)';
     ctx.stroke();
+
+    // --- race circuit ----------------------------------------------------
+    // Under every marker, over the floorplan: it is the road, not a contact.
+    if (this.circuit) this._drawCircuit(px, pz, sin, cos, scale);
 
     // --- portals ---------------------------------------------------------
     const portals = this.portals?.portals;
@@ -413,6 +473,10 @@ export class Minimap {
       }
     }
 
+    // --- race field ------------------------------------------------------
+    // Last of the contacts, so a rival is never hidden under a bystander.
+    if (this.racers) this._drawRacers(px, pz, sin, cos, scale, elapsed);
+
     // --- player arrow + view cone ----------------------------------------
     const fov = (CONFIG.render.fov * Math.PI) / 180;
     const coneR = r * 0.52;
@@ -496,6 +560,129 @@ export class Minimap {
     ctx.fillRect(cx - 24, size - 15, 48, 12);
     ctx.fillStyle = 'rgba(140,215,235,0.95)';
     ctx.fillText(`${Math.round(this.range)} M`, cx, size - 6);
+  }
+
+  /**
+   * The circuit outline.
+   *
+   * Stroked twice - a wide dark casing under a thin luminous centre - which is
+   * the same trick the rim chrome uses, and is what keeps a 3 px road legible
+   * over a floorplan that is itself full of pale rectangles. Points are
+   * projected raw rather than through {@link _project}, because that clamps
+   * off-range contacts onto the rim: doing that to a road would fold the far
+   * side of the track into a ring round the edge of the dial.
+   */
+  _drawCircuit(px, pz, sin, cos, scale) {
+    const pts = this.circuit;
+    const ctx = this.ctx;
+    const cx = this._cx;
+    const cy = this._cy;
+
+    ctx.save();
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      const dx = pts[i][0] - px;
+      const dz = pts[i][1] - pz;
+      const x = cx + (dx * cos - dz * sin) * scale;
+      const y = cy - (-dx * sin - dz * cos) * scale;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(2,7,12,0.92)';
+    ctx.lineWidth = 7.5;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(120,196,220,0.8)';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(226,246,255,0.9)';
+    ctx.lineWidth = 1.3;
+    ctx.stroke();
+
+    // Start/finish, across the road rather than along it: the tangent at
+    // sample 0 gives the road direction, so its perpendicular is the line.
+    const a = pts[0];
+    const b = pts[1 % pts.length];
+    const tx = b[0] - a[0];
+    const tz = b[1] - a[1];
+    const len = Math.hypot(tx, tz) || 1;
+    const nx = (-tz / len) * 9;
+    const nz = (tx / len) * 9;
+    const p0x = cx + ((a[0] - nx - px) * cos - (a[1] - nz - pz) * sin) * scale;
+    const p0y = cy - (-(a[0] - nx - px) * sin - (a[1] - nz - pz) * cos) * scale;
+    const p1x = cx + ((a[0] + nx - px) * cos - (a[1] + nz - pz) * sin) * scale;
+    const p1y = cy - (-(a[0] + nx - px) * sin - (a[1] + nz - pz) * cos) * scale;
+    ctx.beginPath();
+    ctx.moveTo(p0x, p0y);
+    ctx.lineTo(p1x, p1y);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2.6;
+    ctx.setLineDash([3, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  /**
+   * One dot per rival, in its livery colour.
+   *
+   * The player is *not* drawn here: they are the arrow at the centre, which
+   * already reads as "you" everywhere else in this game and additionally shows
+   * which way they are pointing. A ring is drawn round it instead, so the arrow
+   * is visibly a member of the same set as the dots rather than a different
+   * kind of thing that happens to be on the same map.
+   *
+   * Place numbers are drawn for the leader and for whoever is immediately ahead
+   * of and behind the player - the three that decide what the driver does next.
+   * Numbering all ten turns a 220 px dial into a wall of digits.
+   */
+  _drawRacers(px, pz, sin, cos, scale, elapsed) {
+    const ctx = this.ctx;
+    const list = this.racers;
+    let mine = 0;
+    for (let i = 0; i < list.length; i++) if (list[i].isPlayer) mine = list[i].place;
+
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      if (r.isPlayer) continue;
+      this._project(r.x, r.z, px, pz, sin, cos, scale);
+      const css = toCss(r.color, '#9fb4c4');
+      ctx.save();
+      ctx.translate(_pt.x, _pt.y);
+      ctx.fillStyle = css;
+      ctx.shadowColor = css;
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.arc(0, 0, 3.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = 'rgba(3,8,14,0.9)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      const near = mine > 0 && Math.abs(r.place - mine) === 1;
+      if (r.place === 1 || near) {
+        ctx.font = '700 8px "Chakra Petch", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = 'rgba(3,8,14,0.9)';
+        ctx.fillRect(-6, -13, 12, 9);
+        ctx.fillStyle = r.place === 1 ? '#ffd166' : css;
+        ctx.fillText(String(r.place), 0, -8.5);
+      }
+      ctx.restore();
+    }
+
+    const pulse = 0.5 + 0.5 * Math.sin(elapsed * 3.4);
+    ctx.save();
+    ctx.strokeStyle = `rgba(82,233,255,${0.35 + pulse * 0.4})`;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(this._cx, this._cy, 10, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
   /**

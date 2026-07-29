@@ -117,6 +117,36 @@ const WASH = [
   0xc6ae86, 0xe6d8bb, 0xd9c9a2, 0xcfbb92,
 ];
 
+/**
+ * Metres of world covered by one texture tile, per material family.
+ *
+ * These are the values each surface was *authored* for - the shared library
+ * publishes the same numbers as `userData.tileMeters` - and re-projecting the
+ * batched UVs against them is what finally makes the maps visible at the right
+ * size. Ashlar courses come out a hand's width tall on a wall and stay that
+ * size on a cliff step forty times bigger.
+ *
+ * The one deliberate departure is plaster, tiled tighter than the library's
+ * default: a souk house is rendered mud, and at 3 m the render reads as a
+ * poured concrete panel.
+ */
+const TILE_METRES = (key) => {
+  switch (key.split(':')[0]) {
+    case 'stone.castle': return 2.4;
+    case 'plaster.wall': return 1.8;
+    case 'stone.cobble': return 2.0;
+    case 'dirt.ground': return 5.0;
+    case 'roof.tile': return 1.6;
+    case 'thatch.roof': return 1.4;
+    case 'wood.beam': return 1.2;
+    case 'wood.plank': return 1.5;
+    // Banners and awnings carry a printed pattern rather than a material
+    // grain; re-projecting them would slide the pattern across the cloth.
+    case 'fabric.banner': return 0;
+    default: return 0;
+  }
+};
+
 /** Weathered sandstone, for the cliff the mesa stands on. */
 const CLIFF = [0xc0ad86, 0xb6a37c, 0xcab791, 0xac9a73, 0xc4b088, 0xbaa87f];
 
@@ -159,11 +189,17 @@ class Batch {
    *              dirt rather than simply less light
    *   - `span`   metres over which the AO fades out from the foot
    */
-  constructor(shade = null) {
+  /**
+   * @param {{ao?:number, sky?:number, grime?:number, span?:number}} [shade]
+   * @param {(key:string)=>number} [tiles] metres one texture tile covers, per
+   *   material key. Returning 0 leaves the geometry's own UVs alone.
+   */
+  constructor(shade = null, tiles = null) {
     /** @type {Map<string, THREE.BufferGeometry[]>} */
     this.buckets = new Map();
     this._owned = [];
     this.shade = shade;
+    this.tiles = tiles;
   }
 
   /**
@@ -181,6 +217,50 @@ class Batch {
       if (k !== 'position' && k !== 'normal' && k !== 'uv') g.deleteAttribute(k);
     }
     g.applyMatrix4(matrix);
+
+    /* Re-project the UVs into world space.
+     *
+     * ── Why every surface in this world was smooth ────────────────────────
+     *
+     * The materials here have always carried a full PBR set - albedo, normal,
+     * roughness, AO. They just could not be seen. A BoxGeometry's UVs run 0..1
+     * across each face whatever the face measures, and the material tiles at
+     * repeat 1, so a single tile of stone was stretched across an entire 20 m
+     * wall while the same tile was crammed onto a 20 cm sill. The detail was
+     * present at every scale except the one that would have made it visible,
+     * and the town read as clean flat plaster.
+     *
+     * A shared material cannot fix this with `repeat`, because these boxes are
+     * merged into one mesh and every one of them is a different size. The scale
+     * has to live in the geometry, so the UVs are recomputed from world
+     * position: planar projection onto whichever axis each face points along,
+     * divided by the metres one tile is authored for. Texel density then comes
+     * out identical on a cliff step and a window sill, which is the whole
+     * point.
+     */
+    const tile = this.tiles?.(key) ?? 0;
+    if (tile > 0) {
+      const posA = g.attributes.position;
+      const nrmA = g.attributes.normal;
+      const n = posA.count;
+      const uv = new Float32Array(n * 2);
+      const inv = 1 / tile;
+      for (let i = 0; i < n; i++) {
+        const x = posA.getX(i);
+        const y = posA.getY(i);
+        const z = posA.getZ(i);
+        const nx = nrmA ? Math.abs(nrmA.getX(i)) : 0;
+        const ny = nrmA ? Math.abs(nrmA.getY(i)) : 1;
+        const nz = nrmA ? Math.abs(nrmA.getZ(i)) : 0;
+        let u; let v;
+        if (ny >= nx && ny >= nz) { u = x; v = z; }        // floors and roofs
+        else if (nx >= nz) { u = z; v = y; }               // walls facing X
+        else { u = x; v = y; }                             // walls facing Z
+        uv[i * 2] = u * inv;
+        uv[i * 2 + 1] = v * inv;
+      }
+      g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    }
     /* Always written, white when no tint was asked for.
      *
      * Two reasons it cannot be conditional. `mergeGeometries` returns null the
@@ -764,7 +844,7 @@ export class CitadelWorld extends World {
      * climbable face - the whole point of putting the town on a mesa. */
     // Long span: a cliff step is metres tall, so the gradient has to run the
     // whole height or it reads as a painted stripe near the base.
-    const B = new Batch({ ao: 0.42, sky: 0.3, grime: 0.5, span: 9 });
+    const B = new Batch({ ao: 0.42, sky: 0.3, grime: 0.5, span: 9 }, TILE_METRES);
     const steps = 7;
     for (let s = 0; s < steps; s++) {
       // Read from the shared height function, so the visible rock and the
@@ -852,7 +932,7 @@ export class CitadelWorld extends World {
    * than a texture, because they are the handholds on the way up.
    */
   _buildCurtainWall() {
-    const B = new Batch({ ao: 0.4, sky: 0.34, grime: 0.55, span: 5 });
+    const B = new Batch({ ao: 0.4, sky: 0.34, grime: 0.55, span: 5 }, TILE_METRES);
     const R = 118;
     const WALL_H = 9;
     const WALL_T = 2.6;
@@ -954,7 +1034,7 @@ export class CitadelWorld extends World {
     // The strongest of the set. The souk is where the player spends most of
     // their time at eye level, and alley contact shadow is most of what sells
     // a town built entirely from boxes.
-    const B = new Batch({ ao: 0.46, sky: 0.34, grime: 0.65, span: 3.4 });
+    const B = new Batch({ ao: 0.46, sky: 0.34, grime: 0.65, span: 3.4 }, TILE_METRES);
     const rnd = this.rnd;
     const rings = 7;
 
@@ -1148,7 +1228,7 @@ export class CitadelWorld extends World {
    * face is not a climb, it is a stamina failure with a long fall attached.
    */
   _buildCitadel() {
-    const B = new Batch({ ao: 0.38, sky: 0.32, grime: 0.45, span: 7 });
+    const B = new Batch({ ao: 0.38, sky: 0.32, grime: 0.45, span: 7 }, TILE_METRES);
     const cy = MESA_Y;
 
     // Raised inner ward, so the citadel reads as above the town it commands.
@@ -1270,7 +1350,7 @@ export class CitadelWorld extends World {
   _buildRopeBridges() {
     // Planks and ropes are seen from above and below in equal measure, so the
     // sky term carries this one and the ground-contact AO is nearly off.
-    const B = new Batch({ ao: 0.12, sky: 0.4, grime: 0.2, span: 1.2 });
+    const B = new Batch({ ao: 0.12, sky: 0.4, grime: 0.2, span: 1.2 }, TILE_METRES);
     const minarets = this._towers.filter((t) => t.minaret);
     if (minarets.length < 2) return;
 
@@ -1330,7 +1410,7 @@ export class CitadelWorld extends World {
    * `Player` reads `world.haystacks` to know a fall is survivable.
    */
   _buildDressing() {
-    const B = new Batch({ ao: 0.44, sky: 0.3, grime: 0.6, span: 1.8 });
+    const B = new Batch({ ao: 0.44, sky: 0.3, grime: 0.6, span: 1.8 }, TILE_METRES);
     const rnd = this.rnd;
 
     // A haystack below each viewpoint, offset toward the open side.
@@ -1494,7 +1574,7 @@ export class CitadelWorld extends World {
     const crownZ = trunkSecs[9].z;
 
     const fronds = [];
-    const NF = 16;
+    const NF = 22;
     for (let f = 0; f < NF; f++) {
       const fa = (f / NF) * TAU + rnd() * 0.16;
       /* Pitch runs from nearly upright on the newest fronds to below the
@@ -1503,31 +1583,39 @@ export class CitadelWorld extends World {
        * adjacent - a crown sorted by age reads as a shuttlecock. */
       const age = (f % 2 === 0 ? f / NF : 1 - f / NF);
       const pitch = 0.95 - age * 1.75;          // +0.95 rad up .. -0.80 rad down
-      const len = 2.9 + rnd() * 0.9;
-      const segs = 6;
+      const len = 3.6 + rnd() * 1.1;
+      const segs = 8;
+      /* One continuous sweep along the whole frond, not a chain of separate
+       * ones.
+       *
+       * Built segment-by-segment as independent sweeps, each piece capped its
+       * own ends and carried its own frame, so a frond rendered as six detached
+       * paddle-shaped leaves hanging in a row - which is exactly how the first
+       * crown looked. Collecting the stations first and sweeping once gives a
+       * single surface with a continuous normal along its length, which is what
+       * a frond is. */
+      const stations = [];
       let px = crownX;
       let py = crownY;
       let pz = crownZ;
       let ang = pitch;
-      for (let s = 0; s < segs; s++) {
+      for (let s = 0; s <= segs; s++) {
+        const t = s / segs;
+        // Narrow and long: a date frond is a spine carrying leaflets, and the
+        // leaflet detail is in the surface rather than in the silhouette.
+        // Widest a third of the way out, tapering to a point.
+        const w = (0.10 + Math.sin(Math.pow(t, 0.8) * Math.PI) * 0.15) * (1 - t * 0.55);
+        stations.push({ x: px, y: py, z: pz, rx: Math.max(0.012, w), ry: 0.016 });
+        if (s === segs) break;
         const segLen = len / segs;
         // Curvature accumulates along the frond, so it arcs over instead of
         // running straight out - the arc is most of the silhouette.
-        ang -= (0.16 + age * 0.10);
-        const nx = px + Math.cos(fa) * Math.cos(ang) * segLen;
-        const ny = py + Math.sin(ang) * segLen;
-        const nz = pz + Math.sin(fa) * Math.cos(ang) * segLen;
-        const t0 = s / segs;
-        const t1 = (s + 1) / segs;
-        // Widest a third of the way out, tapering to a point.
-        const w0 = (0.30 + Math.sin(t0 * Math.PI) * 0.26) * (1 - t0 * 0.35);
-        const w1 = (0.30 + Math.sin(t1 * Math.PI) * 0.26) * (1 - t1 * 0.35);
-        fronds.push(sweep([
-          { x: px, y: py, z: pz, rx: w0, ry: 0.022 },
-          { x: nx, y: ny, z: nz, rx: w1, ry: 0.018 },
-        ], 4, { capStart: false, capEnd: false }));
-        px = nx; py = ny; pz = nz;
+        ang -= (0.13 + age * 0.085);
+        px += Math.cos(fa) * Math.cos(ang) * segLen;
+        py += Math.sin(ang) * segLen;
+        pz += Math.sin(fa) * Math.cos(ang) * segLen;
       }
+      fronds.push(sweep(stations, 4, { capStart: false }));
     }
     // Date clusters hanging under the crown.
     for (let d = 0; d < 3; d++) {
@@ -1609,7 +1697,7 @@ export class CitadelWorld extends World {
   }
 
   _buildProps() {
-    const B = new Batch({ ao: 0.4, sky: 0.34, grime: 0.5, span: 2.2 });
+    const B = new Batch({ ao: 0.4, sky: 0.34, grime: 0.5, span: 2.2 }, TILE_METRES);
     const rnd = this.rnd;
 
     /* Trees moved out to _buildTrees.

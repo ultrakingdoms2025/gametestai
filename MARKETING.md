@@ -82,6 +82,9 @@ same phase table that places the leg, so a trot *sounds* like a trot.
 - **Collectable drops** scattered along the circuit, taken by driving over them
   — worth a credit each, and placed to make the racing line a choice rather
   than a given. They pay even if you don't finish.
+- **Contact racing.** Rivals can be leaned on, shunted and shoved off line —
+  and they push back. Hard hits cost you health and cost them pace for the rest
+  of the race, while running side by side is a rub, not a crash.
 - **Live minimap** showing the whole circuit and every racer's position.
 - **Lap validation** through ordered checkpoints — no shortcutting.
 - **Leaderboard** at the flag. **10 credits** for a win, **5** for second,

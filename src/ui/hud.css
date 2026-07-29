@@ -2353,6 +2353,13 @@ body {
   animation: pause-blink 1.7s ease-in-out infinite;
 }
 
+/* Waiting out the browser's re-lock cooldown. Cyan and quicker, so "I heard
+   you, hold on" is visibly different from "I am waiting for you". */
+.pause-s.busy {
+  color: var(--cy);
+  animation-duration: 0.7s;
+}
+
 @keyframes pause-blink {
   0%,
   100% {

@@ -45,6 +45,15 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
  * project two aliasing bugs already. ---- */
 const _sm = { x: 0, y: 0, z: 0, width: 12, tx: 0, tz: -1 };
 const _sm2 = { x: 0, y: 0, z: 0, width: 12, tx: 0, tz: -1 };
+/* The driving loop gets its own pair, and nothing else may touch them.
+ *
+ * `_sm` is the default `sample` output *and* is used inside `curvature`, so a
+ * lookahead parked in it is destroyed by the next call that samples anything -
+ * which is what made every rival drive sideways: `wantHeading` ended up
+ * measuring the vector from the car to its own centreline point, which is
+ * perpendicular to the track by construction. */
+const _smAhead = { x: 0, y: 0, z: 0, width: 12, tx: 0, tz: -1 };
+const _smHere = { x: 0, y: 0, z: 0, width: 12, tx: 0, tz: -1 };
 
 const clamp = THREE.MathUtils.clamp;
 const damp = THREE.MathUtils.damp;
@@ -582,8 +591,16 @@ export class RacerAI {
     /** Signed offset from the centreline, metres. Positive is right of travel. */
     this.lateral = 0;
     this._lateralTarget = 0;
+    /** Last step's lateral, for the direction-of-travel slip term. */
+    this._prevLateral = 0;
     this._mistakeIn = 6;
     this._mistakeFor = 0;
+    /** Accumulated contact damage, 0..1. Trims pace for the rest of the race. */
+    this.damage = 0;
+    /** Seconds left of the sharp pace loss that follows a hard hit. */
+    this._stunFor = 0;
+    /** Seconds before this car can score another impact. See Contacts.js. */
+    this._hitCool = 0;
     this._roll = 0;
     this._pitch = 0;
     this._wheelSpin = 0;
@@ -663,8 +680,12 @@ export class RacerAI {
     this.s = this.path.project(slot.x, slot.z, -1);
     this.lateral = this.path.lateralOf(slot.x, slot.z, this.s);
     this._lateralTarget = this.lateral;
+    this._prevLateral = this.lateral;
     this._mistakeIn = 4 + this._r.mistake * 8;
     this._mistakeFor = 0;
+    this.damage = 0;
+    this._stunFor = 0;
+    this._hitCool = 0;
     this._roll = 0;
     this._pitch = 0;
     this._groundY = slot.y;
@@ -697,7 +718,7 @@ export class RacerAI {
     // Lookahead scales with speed: a fixed distance either understeers wide at
     // 30 m/s or weaves at 8.
     const lookahead = clamp(6 + this.speed * 0.55, 8, 26);
-    const ahead = this.path.sample(this.s + lookahead, _sm);
+    const ahead = this.path.sample(this.s + lookahead, _smAhead);
 
     /* ---- how fast may I take what is coming --------------------------- */
     // Probe further than the lookahead: braking has to start before the corner
@@ -746,6 +767,16 @@ export class RacerAI {
     // telescoping into one pile at the first hairpin.
     target *= 1 - blocked * 0.28;
 
+    /* ---- contact damage ------------------------------------------------ */
+    // A shunt has to cost the rival something the player can see, or hitting
+    // one is indistinguishable from driving past it. The stun is the moment of
+    // being knocked out of shape; the damage is what it carries to the flag.
+    if (this._stunFor > 0) {
+      this._stunFor -= dt;
+      target *= 0.55;
+    }
+    if (this.damage > 0) target *= 1 - this.damage * 0.22;
+
     /* ---- lateral placement ------------------------------------------- */
     const halfRoad = Math.max(1.6, ahead.width * 0.5 - 1.3);
     this._lateralTarget = damp(this._lateralTarget, this.lineBias * halfRoad + avoid, 2.0, dt);
@@ -761,10 +792,10 @@ export class RacerAI {
 
     /* ---- integrate along the track ------------------------------------ */
     this.s = this.path.wrap(this.s + this.speed * dt);
-    const here = this.path.sample(this.s, _sm);
+    const here = this.path.sample(this.s, _smHere);
     // Right of travel - see `lateralOf` for why it is this way round.
-    const nx = -_sm.tz;
-    const nz = _sm.tx;
+    const nx = -here.tz;
+    const nz = here.tx;
     this.position.x = here.x + nx * this.lateral;
     this.position.z = here.z + nz * this.lateral;
 
@@ -779,14 +810,41 @@ export class RacerAI {
     this.position.y = this._groundY;
 
     /* ---- presentation -------------------------------------------------- */
-    const wantHeading = Math.atan2(-(ahead.x + nx * this._lateralTarget - this.position.x),
-      -(ahead.z + nz * this._lateralTarget - this.position.z));
+    /* Point the body along the direction it is actually travelling.
+     *
+     * The lookahead is the right input for *deciding* where to go, and the
+     * wrong one for deciding which way the car faces: aiming the body at a
+     * point up to 26 m down the road makes it sit visibly inside its own path
+     * all the way through a corner - measured at a median of 8.5 degrees and a
+     * worst of 18, where a real car runs a slip angle of two or three.
+     *
+     * Direction of travel is the tangent here plus however fast the lateral
+     * offset is changing, which is the exact derivative of the position this
+     * car is integrating. A small share of the lookahead aim is blended back in
+     * so it still turns in *slightly* early, the way something with a driver in
+     * it does. */
+    const latRate = (this.lateral - this._prevLateral) / Math.max(dt, 1e-4);
+    this._prevLateral = this.lateral;
+    const slip = clamp(latRate / Math.max(Math.abs(this.speed), 5), -0.45, 0.45);
+    const aimX = ahead.x + -ahead.tz * this._lateralTarget - this.position.x;
+    const aimZ = ahead.z + ahead.tx * this._lateralTarget - this.position.z;
+    const aimLen = Math.hypot(aimX, aimZ) || 1;
+    const LEAD = 0.14;
+    const dirX = here.tx + nx * slip + (aimX / aimLen) * LEAD;
+    const dirZ = here.tz + nz * slip + (aimZ / aimLen) * LEAD;
+    const wantHeading = Math.atan2(-dirX, -dirZ);
     let diff = ((wantHeading - this.heading + Math.PI) % (Math.PI * 2)) - Math.PI;
     if (diff < -Math.PI) diff += Math.PI * 2;
-    this.heading += clamp(diff, -3.0 * dt, 3.0 * dt);
+    const turn = clamp(diff, -3.0 * dt, 3.0 * dt);
+    this.heading += turn;
 
-    const latAccel = this.speed * this.speed * k;
-    this._roll = damp(this._roll, clamp(-latAccel * 0.012, -0.10, 0.10) * Math.sign(diff || 1), 5, dt);
+    /* Roll from the turn actually being made, not from the corner's curvature
+     * with a sign borrowed from the heading error. Lateral acceleration is
+     * `v * yawRate`, so this leans out of the corner by as much as the car is
+     * really turning - and it stays still on a straight instead of twitching
+     * with the sign of a near-zero number. */
+    const yawRate = turn / Math.max(dt, 1e-4);
+    this._roll = damp(this._roll, clamp(-yawRate * this.speed * 0.0042, -0.11, 0.11), 5, dt);
     this._pitch = damp(this._pitch, clamp((target - this.speed) * -0.006, -0.05, 0.05), 5, dt);
     this._wheelSpin += (this.speed / WHEEL_R) * dt;
 

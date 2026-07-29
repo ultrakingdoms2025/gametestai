@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TrackPath, RacerField, DIFFICULTIES, makeTestCircuit } from './RacerAI.js';
 import { Pickups, PICKUP_VALUE } from './Pickups.js';
+import { Contacts } from './Contacts.js';
 
 /**
  * The race: state machine, lap validation, placement and prize money.
@@ -103,6 +104,9 @@ export class RaceManager {
      * they reset per race rather than per world build, and so the synthetic
      * test circuit gets them too. */
     this.pickups = new Pickups({ scene, bus, materials });
+    /* Car-to-car contact. The rivals have no colliders by design, so without
+     * this the player drives through them - see the note in Contacts.js. */
+    this.contacts = new Contacts({ bus, path: null });
 
     this.state = RACE_STATE.IDLE;
     /** Track data as read from the world, or from the synthetic test circuit. */
@@ -409,6 +413,18 @@ export class RaceManager {
     // The AI need no sync: `RacerAI` owns its own `s`, `lateral` and `speed`,
     // which is the whole point of driving them along the centreline.
     this.field.fixedUpdate(dt, this.entries, running);
+
+    /* Contact runs between the field moving and the race being scored, so a
+     * shunt is reflected in this step's lap progress rather than next one's.
+     * Only while racing: cars are stacked nose to tail on the grid and would
+     * shove each other down the road before the lights went out. */
+    if (running) {
+      const car = this.mounts?.active;
+      this.contacts.setPath(this.path);
+      this.contacts.resolve(car?.id === 'car' ? car : null, this.field.racers, dt, this.player);
+      // The player may have been moved by a contact; re-read before scoring.
+      if (this.contacts.hits) this._syncPlayerEntry();
+    }
 
     if (running) {
       for (const e of this.entries) this._advance(e, dt);

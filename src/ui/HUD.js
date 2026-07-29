@@ -25,6 +25,15 @@ const _dir = { x: 0, z: 0 };
 
 const DMG_SLOTS = 5;
 const DMG_LIFE = 1.5;
+
+/* Pointer-lock re-acquisition. Chrome's post-Escape cooldown is around 1.25 s
+ * and is not advertised, so the budget is sized to outlast it: four retries at
+ * 0.4 s covers 1.6 s of refusals before the overlay gives up and waits for the
+ * player again. */
+const LOCK_TRIES = 4;
+const LOCK_RETRY_S = 0.4;
+/** How long a request is given to confirm before it counts as refused. */
+const LOCK_CONFIRM_S = 0.25;
 const KF_LIFE = 6.5;
 const TOAST_LIFE = 3.6;
 const RELOAD_ARC_C = 2 * Math.PI * 18;
@@ -220,6 +229,12 @@ export class HUD {
     this._chatOpen = false;
     this._relock = 0;
     this._relockCheck = 0;
+    /** Seconds a lock request has left to confirm before it counts as refused. */
+    this._lockWait = 0;
+    /** Seconds until the next automatic retry. */
+    this._lockRetryIn = 0;
+    /** Retries left in the current attempt. */
+    this._lockTries = 0;
 
     /* -- transient lists ---------------------------------------------- */
     this._dmg = [];
@@ -728,10 +743,11 @@ export class HUD {
   _buildPause() {
     const p = el('div', 'pause');
     const inner = el('div', 'pause-in');
+    this.pauseSub = el('div', 'pause-s', 'click or press Space to resume');
     inner.append(
       el('div', 'pause-t', 'STANDBY'),
-      el('div', 'pause-s', 'click to resume'),
-      el('div', 'pause-hint', 'Esc releases the cursor · F3 diagnostics · T opens comms')
+      this.pauseSub,
+      el('div', 'pause-hint', 'F3 diagnostics · T opens comms · F1 controls')
     );
     p.appendChild(inner);
     p.addEventListener('mousedown', (e) => {
@@ -740,6 +756,22 @@ export class HUD {
     });
     this.root.appendChild(p);
     this.pause = p;
+
+    /* Keyboard resume.
+     *
+     * Capture phase and on `window`, because `Input` has stopped reporting -
+     * that is what being in standby means - so the normal `pressed()` route
+     * cannot see these. Escape is included deliberately: it is the key a player
+     * reaches for to dismiss a dialog, and here it is the one that put them in
+     * front of it. */
+    this._onPauseKey = (e) => {
+      if (!this.pause.classList.contains('show')) return;
+      if (this._chatOpen || this.input.textCaptured) return;
+      if (e.code !== 'Space' && e.code !== 'Escape' && e.code !== 'Enter') return;
+      e.preventDefault();
+      this._requestLock();
+    };
+    window.addEventListener('keydown', this._onPauseKey, true);
   }
 
   /* ====================================================================== */
@@ -752,6 +784,17 @@ export class HUD {
 
   _wire() {
     this._on('game:started', () => this._goLive());
+
+    // A refused lock. See `_requestLock` — this is the only notification the
+    // silent-refusal case gives, and without it the overlay eats clicks.
+    this._on('input:lockerror', () => this._lockRefused());
+    this._on('input:lockchange', ({ locked }) => {
+      if (locked) {
+        this._lockWait = 0;
+        this._lockRetryIn = 0;
+        this._setPauseBusy(false);
+      }
+    });
 
     this._on('player:damaged', ({ amount, health, maxHealth, sourcePosition }) => {
       if (maxHealth) this._setMaxHealth(maxHealth);
@@ -1313,12 +1356,31 @@ export class HUD {
   }
 
   /**
-   * Re-acquire pointer lock without risking an unhandled promise rejection —
-   * browsers reject the request if it follows an Escape-driven exit too closely,
-   * and an uncaught rejection would surface as a console error mid-game.
+   * Re-acquire pointer lock.
+   *
+   * ## Why this retries
+   *
+   * Chrome refuses a lock request for about a second after the user pressed
+   * Escape to release it, and the refusal is silent: the legacy call returns
+   * undefined, so there is no promise to reject. A player who hits Escape and
+   * immediately clicks to resume therefore gets nothing, and the standby
+   * overlay sits there absorbing clicks - which is why going through the chat
+   * box and back out "fixed" it, since that route happens to take long enough
+   * for the cooldown to expire.
+   *
+   * So a request that does not confirm is retried on a timer rather than left
+   * for the player to notice, and the click that started it does not have to
+   * be repeated. Escape and Space request one too, because a player looking at
+   * a dialog that says STANDBY will try the keyboard.
+   *
+   * @param {boolean} fresh true for a user-initiated attempt, which refills the
+   *   retry budget; false for the automatic follow-ups.
    */
-  _requestLock() {
+  _requestLock(fresh = true) {
     if (this.input.locked) return;
+    if (fresh) this._lockTries = LOCK_TRIES;
+    this._lockWait = LOCK_CONFIRM_S;
+    this._lockRetryIn = 0;
     const canvas = this.input.canvas;
     let p;
     try {
@@ -1326,14 +1388,60 @@ export class HUD {
     } catch {
       p = null;
     }
-    if (p && typeof p.catch === 'function') {
-      p.catch(() => {
-        if (!this._chatOpen) this.showPauseOverlay(true);
-      });
+    if (p && typeof p.catch === 'function') p.catch(() => this._lockRefused());
+  }
+
+  /** A request that was refused, by either signal. Schedule the next attempt. */
+  _lockRefused() {
+    this._lockWait = 0;
+    if (this._chatOpen || this.input.locked) return;
+    this.showPauseOverlay(true);
+    if (this._lockTries > 0) {
+      this._lockTries--;
+      this._lockRetryIn = LOCK_RETRY_S;
+      this._setPauseBusy(true);
+    } else {
+      this._setPauseBusy(false);
     }
   }
 
+  /**
+   * Drive the pending lock request.
+   *
+   * A confirmation that never arrives is the silent-refusal case, and it is
+   * indistinguishable from a refusal except by waiting - so it is treated as
+   * one once the confirmation window has passed.
+   */
+  _tickLock(dt) {
+    if (this.input.locked) {
+      if (this._lockWait || this._lockRetryIn) {
+        this._lockWait = 0;
+        this._lockRetryIn = 0;
+        this._setPauseBusy(false);
+      }
+      return;
+    }
+    if (this._lockWait > 0) {
+      this._lockWait -= dt;
+      if (this._lockWait <= 0) this._lockRefused();
+      return;
+    }
+    if (this._lockRetryIn > 0) {
+      this._lockRetryIn -= dt;
+      if (this._lockRetryIn <= 0) this._requestLock(false);
+    }
+  }
+
+  /** Swap the overlay's prompt while a retry is in flight. */
+  _setPauseBusy(busy) {
+    if (!this.pauseSub) return;
+    this.pauseSub.textContent = busy ? 'resuming…' : 'click or press Space to resume';
+    this.pauseSub.classList.toggle('busy', !!busy);
+  }
+
   _updateInput(dt) {
+    this._tickLock(dt);
+
     if (this._relock > 0) {
       this._relock -= dt;
       if (this._relock <= 0) {
@@ -2158,6 +2266,7 @@ export class HUD {
     this.help.dispose();
     for (const f of this._creditFloats) f.el.remove();
     this._creditFloats.length = 0;
+    if (this._onPauseKey) window.removeEventListener('keydown', this._onPauseKey, true);
     this.el.remove();
     this.wipe.remove();
     this.pause.remove();

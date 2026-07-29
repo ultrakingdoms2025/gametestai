@@ -194,6 +194,14 @@ export class AudioDirector {
      * as coming from behind, which is the opposite of the "you got it" the cue
      * exists to give. Two at once earn the brighter variant. */
     on('race:pickup', (e) => this.sfx.pickup(null, { rare: (e?.count ?? 1) > 1 }));
+    /* Car-to-car contact. Positioned, unlike the pickup cue: a shunt has a
+     * direction and hearing which side it came from is information. Metal, and
+     * scaled by severity so a rub and a shunt are not the same noise. */
+    on('race:contact', (e) => {
+      const at = e && Number.isFinite(e.x) ? { x: e.x, y: e.y, z: e.z } : null;
+      this.sfx.impact(at, 'metal');
+      if ((e?.severity ?? 0) > 0.45) this.sfx.explosion(at, { size: 0.35 });
+    });
   }
 
   _unlock() {

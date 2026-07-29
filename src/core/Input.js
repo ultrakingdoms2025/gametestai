@@ -301,6 +301,18 @@ export class Input {
         this._resetAxes();
       }
     });
+
+    /* A refused lock request.
+     *
+     * Chrome will not re-lock for roughly a second after the user pressed
+     * Escape to get out, and it refuses *silently*: the legacy form of
+     * `requestPointerLock()` returns undefined, so there is no promise to
+     * reject and the only notification is this event. Without it a click on
+     * the standby overlay during that window does nothing at all and the
+     * player is stuck looking at it. */
+    document.addEventListener('pointerlockerror', () => {
+      this.bus.emit('input:lockerror', {});
+    });
   }
 
   _syncAxes() {

@@ -110,6 +110,16 @@ const CELL_Q = 2;
  * foot no longer stands 0.28 m inside the tarmac. */
 
 /**
+ * How far a terrain collider may sit above the mesh before the cell is split.
+ *
+ * A tilted plane raised to clear its worst sample is the safe direction - you
+ * stand slightly proud rather than falling through - but at 2.59 m it stops
+ * being a rounding error and becomes hovering. See the collision pass in
+ * `_buildTerrain`.
+ */
+const TERRAIN_FIT = 0.35;
+
+/**
  * Control points of the circuit, in the racing direction.
  * `y` is the road surface height, `w` the drivable half-width, `v` the run-off
  * carried either side of it.
@@ -498,16 +508,27 @@ export class RaceWorld extends World {
     /** @type {Array<{x:number,y:number,z:number,radius:number}>} */
     this.checkpoints = [];
     this.lapCount = 3;
-    /* Difficulty is a property of the field, not of the circuit.
+    /* Difficulty changes the circuit, not just the opposition.
      *
-     * A world is generated once by WorldManager and never rebuilt, so a variant
-     * that changed the width of the tarmac could only ever be advertised, not
-     * delivered. What the three names actually select is the AI performance
-     * band in the race systems, which needs no geometry at all - so all three
-     * are real, and `build()` still accepts a variant so a future caller that
-     * *can* rebuild is not locked out. */
+     * A world is generated once and never rebuilt, so for a while the three
+     * names only selected an AI performance band - the track itself was
+     * identical and the difficulty of the *track* was, honestly, advertised
+     * rather than delivered.
+     *
+     * Rebuilding six seconds of geometry every time someone changes a dropdown
+     * is the wrong answer. Instead the circuit carries its harder furniture all
+     * the time and switches it in and out: `Collider.solid` is read live by
+     * `resolveCapsule`, so a chicane can be made real or unreal in a single
+     * pass over a list, with its mesh hidden to match. Easy also opens the
+     * corners the standard layout pinches, and the lap count moves with it.
+     *
+     * See {@link setDifficulty}. */
     this.difficulties = ['easy', 'standard', 'expert'];
     this.variant = 'standard';
+    /** Furniture that only exists on some difficulties. @type {Array<{mesh:THREE.Object3D, colliders:any[], from:string}>} */
+    this._variantFurniture = [];
+    /** Lap count per difficulty - a longer race is part of a harder one. */
+    this._variantLaps = { easy: 2, standard: 3, expert: 4 };
     /** Circuit length in metres. */
     this.trackLength = 0;
 
@@ -928,58 +949,83 @@ export class RaceWorld extends World {
     makeTerrain(grassIdx, 'grass.field', 'race:terrain.grass');
     makeTerrain(rockIdx, 'dirt.ground', 'race:terrain.rock');
 
-    /* ---- collision ------------------------------------------------ */
-    const cell = QUAD * CELL_Q;
-    const cells = SEG / CELL_Q;
+    /* ---- collision ------------------------------------------------ *
+     *
+     * One tilted plane fitted per cell, raised until it dominates every sample
+     * under it so nothing is ever left standing above its own collider.
+     *
+     * That last rule is what made subdivision necessary. A plane can only
+     * follow a surface that is locally flat, and on a curved hillside the worst
+     * sample in a cell can sit far above the best fit - so lifting the plane to
+     * clear it floated the whole slab, and a walker high on a slope hovered by
+     * as much as 2.59 m. Splitting a cell that fits badly into quarters cuts
+     * the curvature each plane has to span, and a quarter that still fits badly
+     * splits again. Flat ground, which is most of the map, stays one slab.
+     */
     let count = 0;
-    for (let cj = 0; cj < cells; cj++) {
-      for (let ci = 0; ci < cells; ci++) {
-        const i0 = ci * CELL_Q;
-        const j0 = cj * CELL_Q;
-        // Fully under the ribbon: the ribbon slabs own it.
-        let covered = true;
-        for (let b = 0; b <= CELL_Q && covered; b++) {
-          for (let a = 0; a <= CELL_Q; a++) {
-            const k = (j0 + b) * N + (i0 + a);
-            if (D[k] >= WS[k] - 2) { covered = false; break; }
-          }
+    const emit = (i0, j0, q, depth) => {
+      const cell = QUAD * q;
+      // Fully under the ribbon: the ribbon slabs own it.
+      let covered = true;
+      for (let b = 0; b <= q && covered; b++) {
+        for (let a = 0; a <= q; a++) {
+          const k = (j0 + b) * N + (i0 + a);
+          if (D[k] >= WS[k] - 2) { covered = false; break; }
         }
-        if (covered) continue;
-
-        const k00 = j0 * N + i0;
-        const k10 = j0 * N + (i0 + CELL_Q);
-        const k01 = (j0 + CELL_Q) * N + i0;
-        const k11 = (j0 + CELL_Q) * N + (i0 + CELL_Q);
-        const gx = ((H[k10] + H[k11]) - (H[k00] + H[k01])) / (2 * cell);
-        const gz = ((H[k01] + H[k11]) - (H[k00] + H[k10])) / (2 * cell);
-        let hc = (H[k00] + H[k10] + H[k01] + H[k11]) * 0.25;
-        const cx = -HALF + (i0 + CELL_Q * 0.5) * QUAD;
-        const cz = -HALF + (j0 + CELL_Q * 0.5) * QUAD;
-
-        // Raise the plane until it dominates every sample in the block.
-        let dev = 0;
-        for (let b = 0; b <= CELL_Q; b++) {
-          for (let a = 0; a <= CELL_Q; a++) {
-            const k = (j0 + b) * N + (i0 + a);
-            const px = -HALF + (i0 + a) * QUAD - cx;
-            const pz = -HALF + (j0 + b) * QUAD - cz;
-            const d = H[k] - (hc + gx * px + gz * pz);
-            if (d > dev) dev = d;
-          }
-        }
-        hc += dev + 0.01;
-
-        _n1.set(-gx, 1, -gz).normalize();
-        _a1.set(0, 0, 1);
-        _v3.set(cx, hc, cz);
-        // The slab is tilted, so its footprint has to be stretched by the
-        // secant of the tilt to still cover the cell - plus 12% of overlap so
-        // neighbours meet rather than leaving a seam.
-        const sec = Math.sqrt(1 + gx * gx + gz * gz);
-        const half = cell * 0.5 * sec * 1.12;
-        this._slab(_v3, _n1, _a1, half, half, 2.6);
-        count++;
       }
+      if (covered) return;
+
+      const k00 = j0 * N + i0;
+      const k10 = j0 * N + (i0 + q);
+      const k01 = (j0 + q) * N + i0;
+      const k11 = (j0 + q) * N + (i0 + q);
+      const gx = ((H[k10] + H[k11]) - (H[k00] + H[k01])) / (2 * cell);
+      const gz = ((H[k01] + H[k11]) - (H[k00] + H[k10])) / (2 * cell);
+      let hc = (H[k00] + H[k10] + H[k01] + H[k11]) * 0.25;
+      const cx = -HALF + (i0 + q * 0.5) * QUAD;
+      const cz = -HALF + (j0 + q * 0.5) * QUAD;
+
+      // Raise the plane until it dominates every sample in the block.
+      let dev = 0;
+      for (let b = 0; b <= q; b++) {
+        for (let a = 0; a <= q; a++) {
+          const k = (j0 + b) * N + (i0 + a);
+          const px = -HALF + (i0 + a) * QUAD - cx;
+          const pz = -HALF + (j0 + b) * QUAD - cz;
+          const d = H[k] - (hc + gx * px + gz * pz);
+          if (d > dev) dev = d;
+        }
+      }
+
+      /* Too much lift means the plane is not describing this ground. Split
+       * rather than float it. Two levels is enough - it takes the worst cell
+       * on the map from 2.59 m to well under the tolerance - and the recursion
+       * is bounded by `q` reaching 1 regardless. */
+      if (dev > TERRAIN_FIT && depth < 2 && q >= 2) {
+        const h = q >> 1;
+        emit(i0, j0, h, depth + 1);
+        emit(i0 + h, j0, h, depth + 1);
+        emit(i0, j0 + h, h, depth + 1);
+        emit(i0 + h, j0 + h, h, depth + 1);
+        return;
+      }
+      hc += dev + 0.01;
+
+      _n1.set(-gx, 1, -gz).normalize();
+      _a1.set(0, 0, 1);
+      _v3.set(cx, hc, cz);
+      // The slab is tilted, so its footprint has to be stretched by the
+      // secant of the tilt to still cover the cell - plus 12% of overlap so
+      // neighbours meet rather than leaving a seam.
+      const sec = Math.sqrt(1 + gx * gx + gz * gz);
+      const half = cell * 0.5 * sec * 1.12;
+      this._slab(_v3, _n1, _a1, half, half, 2.6);
+      count++;
+    };
+
+    const cells = SEG / CELL_Q;
+    for (let cj = 0; cj < cells; cj++) {
+      for (let ci = 0; ci < cells; ci++) emit(ci * CELL_Q, cj * CELL_Q, CELL_Q, 0);
     }
 
     /* A floor far below everything, so a fall through a seam that should not
@@ -1433,6 +1479,104 @@ export class RaceWorld extends World {
     }
     B.flush(this.group, (k) => this._mat(k), 'tyres');
     B.dispose();
+
+    this._buildVariantFurniture();
+  }
+
+  /**
+   * Chicanes that only exist on the harder difficulties.
+   *
+   * Placed at the fastest corners - the ones the AI and the player both take
+   * flat - because narrowing a slow hairpin changes nothing about how hard a
+   * lap is, while pinching a fast sweeper changes the line through it and the
+   * speed you dare carry in.
+   *
+   * Each block is a mesh plus its colliders, tagged with the lowest difficulty
+   * that keeps it. `setDifficulty` walks the list once and flips both. They are
+   * built once, at world build time, so switching costs a visibility write and
+   * a boolean per block rather than six seconds of geometry.
+   */
+  _buildVariantFurniture() {
+    const co = this.course;
+    const N = co.count;
+    const B = new Batch({ ao: 0.4, sky: 0.32, grime: 0.5, span: 1.2 });
+    const marks = [];
+
+    // Rank the corners by how fast they are: high curvature is slow, so the
+    // interesting ones are the shallow bends taken at speed.
+    for (let i = 0; i < N; i += 4) {
+      const k = Math.abs(co.curv[i]);
+      if (k < 1 / 260 || k > 1 / 95) continue;
+      marks.push({ i, k });
+    }
+    marks.sort((a, b2) => a.k - b2.k);
+    // Six pinch points: the four fastest get one on standard, all six on expert.
+    const chosen = marks.slice(0, 6);
+
+    for (let c = 0; c < chosen.length; c++) {
+      const { i } = chosen[c];
+      const from = c < 4 ? 'standard' : 'expert';
+      const w = co.w[i];
+      const W = co.W[i];
+      const k = co.curv[i];
+      // Inside of the corner, so it tightens the natural line rather than
+      // pushing the car towards the barrier on the outside.
+      const side = Math.sign(k) || 1;
+      const group = new THREE.Group();
+      group.name = `chicane:${from}:${i}`;
+      this.group.add(group);
+      const colliders = [];
+
+      for (let seg = 0; seg < 3; seg++) {
+        const at = (i + seg * 2) % N;
+        const lat = side * (W - 2.2 - seg * 0.9);
+        this._roadPoint(at, lat, w, _v1);
+        const yaw = Math.atan2(co.rx[at], co.rz[at]);
+        // A block of stacked kerb-blocks, not tyres: it must read at 30 m/s as
+        // "do not go there" rather than as a soft barrier you might brush.
+        for (let t = 0; t < 2; t++) {
+          B.box('paint.enamel', 1.5, 0.55, 1.5, _v1.x, _v1.y + 0.28 + t * 0.55, _v1.z,
+            yaw, t === 0 ? 0xe8452c : 0xf2f2ee);
+        }
+        colliders.push(this._orientedBox(
+          _v1.clone().setY(_v1.y + 0.55), _n1.set(0, 1, 0),
+          _a1.set(co.dx[at], 0, co.dz[at]), 0.78, 0.55, 0.78
+        ));
+      }
+      const meshes = B.flush(group, (key) => this._mat(key), `chicane${c}`);
+      void meshes;
+      this._variantFurniture.push({ mesh: group, colliders, from });
+    }
+    B.dispose();
+
+    // Apply whatever the world was built as, so the default state is coherent.
+    this.setDifficulty(this.variant);
+  }
+
+  /**
+   * Switch the circuit between its three layouts.
+   *
+   * Safe to call before or after the race systems exist, and safe to call with
+   * a name that is not a difficulty - it falls back to standard rather than
+   * leaving the track in a half-configured state.
+   *
+   * @param {string} name one of {@link difficulties}
+   * @returns {string} the difficulty actually applied
+   */
+  setDifficulty(name) {
+    const v = this.difficulties.includes(name) ? name : 'standard';
+    this.variant = v;
+    this.lapCount = this._variantLaps[v] ?? 3;
+
+    const rank = { easy: 0, standard: 1, expert: 2 };
+    for (const f of this._variantFurniture) {
+      const on = rank[v] >= rank[f.from];
+      f.mesh.visible = on;
+      // `Collider.solid` is read live by resolveCapsule, so this is the whole
+      // of making a chicane real or unreal.
+      for (const c of f.colliders) if (c) c.solid = on;
+    }
+    return v;
   }
 
   _flushFence(st) {
@@ -1700,6 +1844,13 @@ export class RaceWorld extends World {
       }
       B.box('metal.hull', wHalf * 2 + 1.5, 2.2, 1.9, g.x, g.y + 10.6, g.z, yaw, 0xd4d8dc);
       B.box('metal.trim', wHalf * 2 + 2.4, 0.5, 2.4, g.x, g.y + 11.9, g.z, yaw, 0xa8b0b6);
+      /* The crossbeam had no collider of its own - only its two legs did - so
+       * the beam and the trim capping it were both scenery you could stand
+       * inside. Sized to the *trim*, which is the wider of the two by 0.45 m a
+       * side, so nothing visible overhangs what is solid. */
+      this.track(this.physics.addRotatedBox(
+        _v1.set(g.x, g.y + 11.05, g.z),
+        _v2.set(wHalf + 1.2, 1.4, 1.2), yaw));
       // Light panel: five columns of start lights, facing *back* down the
       // straight, because that is where the grid is.
       const fx = -g.dx;

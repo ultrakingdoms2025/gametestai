@@ -160,6 +160,7 @@ export class RaceManager {
     const t = this._readTrack(world);
     if (!t) {
       this.track = null;
+      this._source = null;
       this.path = null;
       this.circuit = null;
       this.entries.length = 0;
@@ -167,6 +168,9 @@ export class RaceManager {
       this.field.setVisible(false);
       return false;
     }
+    // The live world, kept alongside the normalised reading of it - see the
+    // note in `loadTrack`. This is the path a real world arrives by.
+    this._source = world ?? null;
     this._install(t);
     this.bus?.emit('race:armed', {
       laps: this.lapCount,
@@ -187,6 +191,14 @@ export class RaceManager {
   loadTrack(track) {
     const t = this._readTrack(track);
     if (!t) return false;
+    /* Keep the object it came from, not just the reading of it.
+     *
+     * `_readTrack` returns a normalised *copy* - flat arrays, validated, safe
+     * to hold - which is the right thing to race against, but it is inert. The
+     * circuit can reconfigure itself for a difficulty, and only the live world
+     * can be asked to. Without this the difficulty was applied to the field and
+     * silently not to the track. */
+    this._source = track ?? null;
     this._install(t);
     this.bus?.emit('race:armed', {
       laps: this.lapCount,
@@ -221,6 +233,23 @@ export class RaceManager {
     if (this.racing) return false;
 
     this.difficulty = DIFFICULTIES[difficulty] ? difficulty : (this.difficulties[0] ?? 'standard');
+
+    /* Let the circuit reconfigure itself for this difficulty.
+     *
+     * The world carries its harder furniture at all times and switches it in
+     * and out, so this is a cheap call rather than a rebuild - but it has to
+     * happen before the grid is read, because the lap count comes back with it.
+     * Optional by design: the synthetic test circuit has no such method and
+     * must keep working.
+     */
+    const applied = this._source?.setDifficulty?.(this.difficulty);
+    if (applied) {
+      // The lap count comes back with the layout, so re-read it from the world
+      // rather than from the snapshot taken when the track was installed.
+      this.lapCount = this._source.lapCount ?? this.lapCount;
+      if (this.track) this.track.lapCount = this.lapCount;
+    }
+
     this._seed = (Date.now() & 0x7fffffff) || 1;
 
     const grid = this.track.startGrid;
@@ -415,6 +444,7 @@ export class RaceManager {
     if (!this.path.valid) {
       this.path = null;
       this.track = null;
+      this._source = null;
       return;
     }
     // Derive a grid from the centreline when the world did not publish one, so

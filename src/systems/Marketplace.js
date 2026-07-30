@@ -1,4 +1,4 @@
-import { ITEMS, PACKS, itemDef, packDef, sellValue, packPrice, setMarketWorld } from './ItemDefs.js';
+import { ITEMS, itemDef, sellValue, setMarketWorld } from './ItemDefs.js';
 
 /**
  * Vendor trading: buy ammo packs, sell salvage back at a loss.
@@ -42,6 +42,12 @@ export class Marketplace {
     this._vendor = null;
     this._scanT = 0;
     this._open = false;
+    this._catalog = [];
+    this._catalogLoading = false;
+    this._catalogError = null;
+    this._catalogSeq = 0;
+    this._filters = { search: '', category: '' };
+    this._worldId = null;
 
     this._input = input ?? null;
     this._uiRoot = root ?? null;
@@ -57,10 +63,11 @@ export class Marketplace {
      * pointed at the right one - a shop opened in the medieval world must not
      * quote station rates. */
     this._offMarket = this.bus?.on('world:changed', ({ id }) => {
+      this._worldId = id ?? null;
       setMarketWorld(id);
-      // A shop left open through a portal would be showing the old world's
-      // prices against the new world's stock.
-      if (this._open) this.ui?.refresh?.();
+      // A shop left open through a portal must show the new world's stock, not
+      // stale items from the destination that was just left behind.
+      void this.refreshCatalog();
     }) ?? null;
 
     if (this._wantUI && typeof document !== 'undefined') {
@@ -86,8 +93,24 @@ export class Marketplace {
   }
 
   /** Everything on sale. @returns {typeof PACKS} */
-  get packs() {
-    return PACKS;
+  get items() {
+    return this._catalog;
+  }
+
+  get loading() {
+    return this._catalogLoading;
+  }
+
+  get error() {
+    return this._catalogError;
+  }
+
+  get filters() {
+    return { ...this._filters };
+  }
+
+  get categories() {
+    return ['cosmetic', 'weapons', 'tools', 'health', 'spells'];
   }
 
   /**
@@ -120,44 +143,129 @@ export class Marketplace {
     return this.economy?.credits ?? 0;
   }
 
+  setFilters(filters = {}) {
+    const next = {
+      search: typeof filters.search === 'string' ? filters.search : this._filters.search,
+      category: typeof filters.category === 'string' ? filters.category : this._filters.category,
+    };
+    this._filters = next;
+    return this.refreshCatalog();
+  }
+
+  async refreshCatalog() {
+    const requestId = ++this._catalogSeq;
+    const world = this._worldId ?? null;
+    const params = new URLSearchParams();
+    if (world) params.set('world', world);
+    if (this._filters.search.trim()) params.set('search', this._filters.search.trim());
+    if (this._filters.category) params.set('category', this._filters.category);
+
+    this._catalogLoading = true;
+    this._catalogError = null;
+    this.ui?.refresh?.();
+
+    try {
+      const res = await fetch(`/api/marketplace/items?${params.toString()}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Failed to load marketplace catalog');
+      if (requestId !== this._catalogSeq) return;
+      this._catalog = Array.isArray(data?.items) ? data.items : [];
+      this._catalogError = null;
+      this.ui?.refresh?.();
+    } catch (err) {
+      if (requestId !== this._catalogSeq) return;
+      this._catalogError = err instanceof Error ? err.message : 'Failed to load marketplace catalog';
+      this.ui?.refresh?.();
+    } finally {
+      if (requestId === this._catalogSeq) {
+        this._catalogLoading = false;
+        this.ui?.refresh?.();
+      }
+    }
+  }
+
   /* ====================================================================== */
   /* Trading                                                                */
   /* ====================================================================== */
 
   /**
-   * Buy `count` copies of a pack.
+   * Resolve how a catalog item should be granted into the inventory.
    *
-   * @param {string} packId
-   * @param {number} [count=1]
+   * @param {any} item
+   * @returns {{itemId:string, qty:number}|null}
+   */
+  _purchaseGrant(item) {
+    const source = String(item?.source_key ?? '');
+    if (source.startsWith('pack_bullets')) return { itemId: 'bullet', qty: 60 };
+    if (source.startsWith('pack_arrows')) return { itemId: 'arrow', qty: 30 };
+    if (source.startsWith('pack_embers')) return { itemId: 'fireball_charge', qty: 10 };
+    if (source.startsWith('pack_medkit')) return { itemId: 'medkit', qty: 2 };
+
+    const config = item?.action_config ?? {};
+    if (config?.effect === 'grant_ammo' && typeof config.ammo_item === 'string') {
+      const qty = Math.max(1, Math.floor(Number(config.amount) || 1));
+      return { itemId: config.ammo_item, qty };
+    }
+    if (config?.effect === 'grant_item' && typeof config.item_id === 'string') {
+      const qty = Math.max(1, Math.floor(Number(config.amount) || 1));
+      return { itemId: config.item_id, qty };
+    }
+    return null;
+  }
+
+  preview(item) {
+    if (!item || !this.inventory || !this.economy) {
+      return { ok: false, reason: 'unavailable', stock: 0, grant: null, cost: 0 };
+    }
+    const grant = this._purchaseGrant(item);
+    const stock = item.quantity == null ? Infinity : Math.max(0, Math.floor(Number(item.quantity) || 0));
+    const cost = Math.max(1, Math.floor(Number(item.cost_buy) || 0));
+    if (!grant) return { ok: false, reason: 'unsupported', stock, grant: null, cost };
+    if (stock <= 0) return { ok: false, reason: 'stock', stock, grant, cost };
+    if (this.credits < cost) return { ok: false, reason: 'credits', stock, grant, cost };
+    const room = this.inventory.roomFor(grant.itemId);
+    if (room < grant.qty) return { ok: false, reason: 'space', stock, grant, cost };
+    return { ok: true, stock, grant, cost };
+  }
+
+  /**
+   * Buy one catalog item from the DB-backed market.
+   *
+   * @param {string} itemId
    * @returns {{ok:boolean, reason?:string, qty?:number, cost?:number}}
    */
-  buy(packId, count = 1) {
-    const pack = packDef(packId);
-    const n = Math.max(1, Math.floor(count) || 1);
-    if (!pack || !this.inventory || !this.economy) return { ok: false, reason: 'unavailable' };
+  buy(itemId) {
+    const item = this._catalog.find((entry) => entry.id === itemId);
+    if (!item || !this.inventory || !this.economy) return { ok: false, reason: 'unavailable' };
 
-    const qty = pack.qty * n;
-    const cost = packPrice(pack) * n;
-    if (this.credits < cost) return { ok: false, reason: 'credits' };
+    const preview = this.preview(item);
+    if (!preview.ok || !preview.grant) return { ok: false, reason: preview.reason ?? 'unavailable' };
 
-    // Space first: an inventory that can only take part of the pack would leave
-    // the player short of both goods and money.
-    if (this.inventory.roomFor(pack.itemId) < qty) {
-      this.bus?.emit('inventory:full', { itemId: pack.itemId, overflow: qty, where: 'both' });
-      return { ok: false, reason: 'space' };
-    }
+    const cost = preview.cost;
+    const grant = preview.grant;
+
     if (!this.economy.spend(cost, 'market')) return { ok: false, reason: 'credits' };
 
-    const got = this.inventory.acquire(pack.itemId, qty);
-    if (got.taken < qty) {
-      // Should be unreachable given the check above, but a refund is one line
-      // and a silently robbed player is a bug report.
-      const refund = Math.round((cost * (qty - got.taken)) / qty);
+    const got = this.inventory.acquire(grant.itemId, grant.qty);
+    if (got.taken < grant.qty) {
+      const refund = Math.round((cost * (grant.qty - got.taken)) / grant.qty);
       if (refund > 0) this.economy.add(refund, 'market-refund');
     }
 
-    this.bus?.emit('market:trade', { itemId: pack.itemId, qty: got.taken, credits: -cost, kind: 'buy' });
-    this.bus?.emit('hud:notify', { text: `Bought ${got.taken} ${pack.itemId === 'medkit' ? 'medkits' : itemDef(pack.itemId)?.name ?? pack.itemId}`, tone: 'info' });
+    if (item.quantity != null) item.quantity = Math.max(0, item.quantity - 1);
+
+    this.bus?.emit('market:trade', {
+      itemId: grant.itemId,
+      catalogId: item.id,
+      qty: got.taken,
+      credits: -cost,
+      kind: 'buy',
+    });
+    this.bus?.emit('hud:notify', {
+      text: `Bought ${item.name}`,
+      tone: 'info',
+    });
+    this.ui?.refresh?.();
     return { ok: true, qty: got.taken, cost };
   }
 
@@ -217,6 +325,7 @@ export class Marketplace {
     this._open = true;
     this.bus?.emit('market:open', {});
     this.ui?.open?.(v);
+    void this.refreshCatalog();
     return true;
   }
 

@@ -19,6 +19,8 @@ const TABS = [
   { id: 'sell', label: 'Sell' },
 ];
 
+const FALLBACK_CATEGORIES = ['', 'cosmetic', 'weapons', 'tools', 'health', 'spells'];
+
 export class MarketplaceUI {
   /**
    * @param {{ bus?:any, market:any, inventory?:any, economy?:any, input?:any,
@@ -99,6 +101,31 @@ export class MarketplaceUI {
       this.tabEls[t.id] = b;
     }
 
+    this.filters = el('div', 'mkt-filters');
+    this.searchEl = el('input', 'mkt-search');
+    this.searchEl.type = 'search';
+    this.searchEl.placeholder = 'Search catalog';
+    this.searchEl.addEventListener('input', () => this._setFilters());
+
+    this.categoryEl = el('select', 'mkt-select');
+    const allOption = document.createElement('option');
+    allOption.value = '';
+    allOption.textContent = 'All categories';
+    this.categoryEl.appendChild(allOption);
+    for (const category of FALLBACK_CATEGORIES.slice(1)) {
+      const option = document.createElement('option');
+      option.value = category;
+      option.textContent = category;
+      this.categoryEl.appendChild(option);
+    }
+    this.categoryEl.addEventListener('change', () => this._setFilters());
+
+    const filterLabel = el('label', 'mkt-filter');
+    filterLabel.append(el('span', null, 'Search'), this.searchEl);
+    const categoryLabel = el('label', 'mkt-filter');
+    categoryLabel.append(el('span', null, 'Category'), this.categoryEl);
+    this.filters.append(filterLabel, categoryLabel);
+
     this.body = el('div', 'mkt-body');
 
     const foot = el('div', 'mkt-foot');
@@ -109,7 +136,7 @@ export class MarketplaceUI {
     keys.innerHTML = '<span><b>B</b>close</span><span><b>Esc</b>close</span>';
     foot.append(this.note, this.msg, keys);
 
-    panel.append(head, tabs, this.body, foot);
+    panel.append(head, tabs, this.filters, this.body, foot);
     wrap.appendChild(panel);
     this.root.appendChild(wrap);
     this.el = wrap;
@@ -124,6 +151,14 @@ export class MarketplaceUI {
     this._tab = id;
     for (const key in this.tabEls) this.tabEls[key].classList.toggle('on', key === id);
     this._render();
+  }
+
+  _setFilters() {
+    if (!this.market?.setFilters) return;
+    void this.market.setFilters({
+      search: this.searchEl.value,
+      category: this.categoryEl.value,
+    });
   }
 
   /* ====================================================================== */
@@ -162,45 +197,63 @@ export class MarketplaceUI {
   }
 
   _renderBuy() {
-    const credits = this.economy?.credits ?? 0;
-    for (const pack of this.market.packs) {
-      const def = itemDef(pack.itemId);
-      const room = this.inventory?.roomFor(pack.itemId) ?? 0;
-      const price = packPrice(pack);
-      const poor = credits < price;
-      const cramped = room < pack.qty;
+    if (this.market.loading) {
+      this.body.appendChild(el('div', 'mkt-empty', 'Loading catalog...'));
+      return;
+    }
+    if (this.market.error) {
+      this.body.appendChild(el('div', 'mkt-empty', this.market.error));
+      return;
+    }
 
-      const row = el('div', `mkt-row${poor || cramped ? ' blocked' : ''}`);
-      row.innerHTML = itemIconSVG(pack.itemId, 38);
+    const rows = this.market.items ?? [];
+    if (!rows.length) {
+      this.body.appendChild(el('div', 'mkt-empty', 'No items match this search.'));
+      return;
+    }
+
+    for (const item of rows) {
+      const preview = this.market.preview?.(item) ?? { ok: false, reason: 'unavailable', grant: null, stock: 0, cost: item.cost_buy };
+      const blocked = !preview.ok;
+      const row = el('div', `mkt-row mkt-card${blocked ? ' blocked' : ''}`);
+
+      const art = el('div', 'mkt-art');
+      if (item.image) {
+        const img = document.createElement('img');
+        img.src = item.image;
+        img.alt = '';
+        img.decoding = 'async';
+        img.loading = 'lazy';
+        art.appendChild(img);
+      }
 
       const info = el('div', 'mkt-info');
-      info.appendChild(el('div', 'mkt-name', pack.name));
+      info.appendChild(el('div', 'mkt-name', item.name));
       const blurb = el('div', 'mkt-blurb');
-      blurb.innerHTML = cramped
-        ? `${pack.blurb} — <b style="color:var(--iv-red)">no room for ${pack.qty} ${def?.short ?? ''}</b>`
-        : `${pack.blurb} &nbsp;·&nbsp; you hold <b>${this.inventory?.totalCount(pack.itemId) ?? 0}</b>`;
+      const stock = item.quantity == null ? '∞' : String(item.quantity);
+      const world = item.world_name ? ` &nbsp;·&nbsp; ${item.world_name}` : '';
+      blurb.innerHTML = `${item.description} &nbsp;·&nbsp; stock <b>${stock}</b>${world}`;
       info.appendChild(blurb);
 
-      const priceEl = el('div', 'mkt-price', `${price} CR`);
-      // Show the regional discount or markup against the list price, so the
-      // player can see *why* it is worth buying arrows here and not there.
-      const mul = price / Math.max(1, pack.price);
-      if (mul <= 0.9 || mul >= 1.1) {
-        priceEl.classList.add(mul < 1 ? 'mkt-cheap' : 'mkt-dear');
-        priceEl.appendChild(el('small', null,
-          `${mul < 1 ? '' : '+'}${Math.round((mul - 1) * 100)}% here`));
-      } else {
-        priceEl.appendChild(el('small', null, poor ? 'not enough' : `${(price / pack.qty).toFixed(1)} / unit`));
-      }
+      const meta = el('div', 'mkt-meta');
+      meta.append(
+        el('span', 'mkt-tag', item.category),
+        el('span', 'mkt-tag', item.game_action)
+      );
+      info.appendChild(meta);
+
+      const priceEl = el('div', 'mkt-price', `${preview.cost} CR`);
+      priceEl.appendChild(el('small', null, preview.grant ? `${preview.grant.qty} item${preview.grant.qty === 1 ? '' : 's'} per buy` : 'not usable'));
 
       const acts = el('div', 'mkt-acts');
       const buy = el('button', 'inv-btn mkt-buy', 'Buy');
       buy.type = 'button';
-      buy.disabled = poor || cramped;
-      buy.addEventListener('click', () => this._buy(pack.id));
+      buy.disabled = blocked;
+      buy.title = preview.ok ? 'Buy this item' : preview.reason === 'space' ? 'Not enough room' : preview.reason === 'credits' ? 'Not enough credits' : 'Not available';
+      buy.addEventListener('click', () => this._buy(item.id));
       acts.appendChild(buy);
 
-      row.append(info, priceEl, acts);
+      row.append(art, info, priceEl, acts);
       this.body.appendChild(row);
     }
   }
@@ -249,10 +302,14 @@ export class MarketplaceUI {
   /* ====================================================================== */
 
   _buy(packId) {
-    const res = this.market.buy(packId, 1);
+    const res = this.market.buy(packId);
     if (!res.ok) {
       this._reject(
-        res.reason === 'credits' ? 'Not enough credits' : res.reason === 'space' ? 'No room — free a bag or store slot' : 'Trade unavailable'
+        res.reason === 'credits' ? 'Not enough credits' :
+        res.reason === 'space' ? 'No room — free a bag or store slot' :
+        res.reason === 'stock' ? 'Out of stock' :
+        res.reason === 'unsupported' ? 'This item cannot be bought yet' :
+        'Trade unavailable'
       );
     }
     this._render();
@@ -293,6 +350,9 @@ export class MarketplaceUI {
     this._open = true;
     this._hadLock = menuFocusIn(this.input);
     this.vendorName.textContent = (vendor?.name ?? 'Nexus Exchange').toUpperCase();
+    const filters = this.market?.filters ?? { search: '', category: '' };
+    this.searchEl.value = filters.search ?? '';
+    this.categoryEl.value = filters.category ?? '';
     this.el.classList.add('open');
     this._setTab(this._tab);
     window.addEventListener('keydown', this._onKey, true);

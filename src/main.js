@@ -30,6 +30,7 @@ import { Stamina } from './systems/Stamina.js';
 import { Inventory } from './systems/Inventory.js';
 import { Loot } from './systems/Loot.js';
 import { Marketplace } from './systems/Marketplace.js';
+import { ItemUseSystem } from './systems/ItemUse.js';
 import { HelpMenu } from './ui/HelpMenu.js';
 import { MountWheel } from './ui/MountWheel.js';
 import { KeybindMenu } from './ui/KeybindMenu.js';
@@ -177,6 +178,7 @@ const stamina = new Stamina({ bus, player });
 
 const inventory = new Inventory({ bus, economy, input, root: uiRoot });
 const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
+const itemUse = new ItemUseSystem({ bus, player, inventory });
 const market = new Marketplace({ bus, economy, inventory, player, npcManager, input, root: uiRoot });
 const helpMenu = new HelpMenu({ root: uiRoot, bus, input });
 const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts });
@@ -256,7 +258,7 @@ if (overrides.dev) {
   window.GAME = {
     engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
-    waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu, caches, contracts,
+    waterVolumes, stamina, inventory, loot, itemUse, market, helpMenu, characterMenu, caches, contracts,
   cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   };
   import('./dev/Harness.js').then(({ installHarness }) => installHarness(window.GAME));

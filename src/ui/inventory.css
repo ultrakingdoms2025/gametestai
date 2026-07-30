@@ -693,6 +693,39 @@ body.inv-menu-open .pause {
   padding: 12px 22px 0;
 }
 
+.mkt-filters {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(180px, 220px);
+  gap: 10px;
+  padding: 12px 22px 0;
+}
+
+.mkt-filter {
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--iv-dim);
+}
+
+.mkt-search,
+.mkt-select {
+  width: 100%;
+  border: 1px solid var(--iv-soft);
+  background: rgba(9, 15, 25, 0.65);
+  color: var(--iv-txt);
+  padding: 10px 12px;
+  font: inherit;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+}
+
+.mkt-search:focus,
+.mkt-select:focus {
+  outline: 1px solid var(--iv-rule);
+  border-color: var(--iv-rule);
+}
+
 .mkt-tab {
   font-family: var(--iv-disp);
   font-size: 11.5px;
@@ -748,6 +781,29 @@ body.inv-menu-open .pause {
   border: 1px solid rgba(120, 180, 210, 0.14);
   clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
   transition: border-color 0.15s, background 0.15s;
+}
+
+.mkt-card {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) auto auto;
+  align-items: center;
+}
+
+.mkt-art {
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(120, 180, 210, 0.14);
+  background: rgba(7, 12, 18, 0.72);
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+}
+
+.mkt-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .mkt-row:hover {
@@ -847,6 +903,26 @@ body.inv-menu-open .pause {
   gap: 6px;
 }
 
+.mkt-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.mkt-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid rgba(120, 180, 210, 0.16);
+  border-radius: 999px;
+  background: rgba(9, 15, 25, 0.5);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--iv-dim);
+}
+
 .mkt-buy {
   color: #04070d;
   background: linear-gradient(180deg, var(--iv-amber), #c07f22);
@@ -920,6 +996,20 @@ body.inv-menu-open .pause {
   }
   .inv-mid {
     display: none;
+  }
+
+  .mkt-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .mkt-card {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  .mkt-price,
+  .mkt-acts {
+    grid-column: 2;
+    justify-self: start;
   }
   .inv-col.bag {
     border-left: none;

@@ -82,6 +82,8 @@ export class InventoryUI {
     this._flashT = null;
     /** Items that just arrived, so the landing cell can flash. */
     this._recent = new Set();
+    this._detailRow = null;
+    this._detailZone = null;
 
     this._build();
 
@@ -154,6 +156,13 @@ export class InventoryUI {
     const foot = el('div', 'inv-foot');
     this.detail = el('div', 'inv-detail');
     this._setDetail(null);
+    this.useBtn = el('button', 'inv-btn inv-use', 'Use');
+    this.useBtn.type = 'button';
+    this.useBtn.addEventListener('click', () => {
+      if (!this._detailRow) return;
+      this.bus?.emit('inventory:use', { itemId: this._detailRow.id });
+    });
+    this.useBtn.hidden = true;
     this.msg = el('div', 'inv-flash-msg');
 
     const keys = el('div', 'inv-keys');
@@ -163,7 +172,7 @@ export class InventoryUI {
       '<span><b>Drag</b>between panels</span>' +
       '<span><b>I</b>close</span>';
 
-    foot.append(this.detail, this.msg, keys);
+    foot.append(this.detail, this.useBtn, this.msg, keys);
 
     panel.append(head, body, foot);
     wrap.appendChild(panel);
@@ -230,6 +239,11 @@ export class InventoryUI {
     this.bagSub.textContent = `${used} / ${capacity} slots used`;
     this.storeSub.textContent = `${inv.storeUsed} / ${inv.storeCapacity} slots used`;
     this.creditsVal.textContent = String(this.economy?.credits ?? 0);
+    if (this._detailRow) {
+      const source = this._detailZone === 'bag' ? inv.bag : inv.items;
+      const next = source.find((row) => row.id === this._detailRow.id) ?? null;
+      this._setDetail(next, this._detailZone);
+    }
     this._recent.clear();
   }
 
@@ -277,7 +291,12 @@ export class InventoryUI {
   }
 
   _setDetail(row, zone) {
+    this._detailRow = row ?? null;
+    this._detailZone = row ? zone : null;
     const def = row?.def;
+    const usable = !!def && zone === 'bag' && def.kind === 'consumable';
+    this.useBtn.hidden = !usable;
+    this.useBtn.disabled = !usable;
     this.detail.textContent = '';
     if (!def) {
       this.detail.innerHTML = `<div class="inv-detail-body"><div class="inv-detail-name">Select an item</div>
@@ -292,6 +311,7 @@ export class InventoryUI {
         <div class="inv-detail-sub">${def.desc} &nbsp;·&nbsp; stacks of <b>${stack}</b> &nbsp;·&nbsp;
           worth <b>${def.value} CR</b> each &nbsp;·&nbsp; ${row.qty} in ${zone === 'bag' ? 'bag' : 'store'}
           (<b>${row.slots}</b> slot${row.slots === 1 ? '' : 's'})</div>
+         ${usable ? '<div class="inv-detail-sub">Click <b>Use</b> to apply the item effect.</div>' : ''}
       </div>`;
   }
 

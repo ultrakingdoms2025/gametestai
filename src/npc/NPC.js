@@ -61,6 +61,7 @@ export class NPC {
     this.root = this.humanoid.root;
     this.root.position.copy(ctx.position);
     this.spawnPoint = ctx.position.clone();
+    this.sign = null;
     /** @type {THREE.Vector3[]} */
     this.patrol = (ctx.patrol ?? []).map((p) => p.clone());
     this.patrolIndex = 0;
@@ -137,6 +138,7 @@ export class NPC {
 
     this.root.rotation.y = this.yaw;
     this.scene.add(this.root);
+    if (Array.isArray(ctx.signLines) && ctx.signLines.length) this.setSignLines(ctx.signLines);
 
     // Settle onto the floor before the first frame is ever drawn.
     this._sampleGround(0, true);
@@ -569,7 +571,64 @@ export class NPC {
     this.humanoid.setDetailVisible(lod.detail);
   }
 
+  _attachSign(lines) {
+    this.signLines = Array.isArray(lines) ? lines.slice(0, 2) : null;
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 160;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = 'rgba(8, 12, 18, 0.72)';
+    ctx.fillRect(18, 18, 476, 124);
+    ctx.strokeStyle = 'rgba(112, 211, 255, 0.9)';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(18, 18, 476, 124);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.16)';
+    ctx.fillRect(30, 30, 452, 10);
+    ctx.fillStyle = '#eaf8ff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 48px sans-serif';
+    ctx.fillText(String(lines[0] ?? ''), 256, lines.length > 1 ? 62 : 80);
+    if (lines.length > 1) {
+      ctx.font = '500 24px sans-serif';
+      ctx.fillStyle = 'rgba(234, 248, 255, 0.82)';
+      ctx.fillText(String(lines[1] ?? ''), 256, 108);
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    const mat = new THREE.SpriteMaterial({
+      map: tex,
+      transparent: true,
+      depthWrite: false,
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.position.set(0, this.height + 0.95, 0);
+    sprite.scale.set(2.6, 0.82, 1);
+    sprite.renderOrder = 20;
+    this.root.add(sprite);
+    this.sign = sprite;
+  }
+
+  setSignLines(lines) {
+    if (this.sign) {
+      this.sign.material?.map?.dispose?.();
+      this.sign.material?.dispose?.();
+      this.sign.removeFromParent();
+      this.sign = null;
+    }
+    if (Array.isArray(lines) && lines.length) this._attachSign(lines);
+  }
+
   dispose() {
+    if (this.sign) {
+      this.sign.material?.map?.dispose?.();
+      this.sign.material?.dispose?.();
+      this.sign.removeFromParent();
+      this.sign = null;
+    }
     this.humanoid.dispose();
   }
 }

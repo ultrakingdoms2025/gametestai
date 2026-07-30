@@ -16,6 +16,58 @@ import { randomUUID } from 'node:crypto';
 import { encrypt, decrypt, encryptMaybe, decryptMaybe } from './encrypt';
 import { sha256, sign, auditHash } from './hmac';
 
+const DEFAULT_LORE_ROWS = [
+  {
+    scope: 'overall',
+    title: 'Aether Nexus Chronicle',
+    sign_label: 'Lorekeeper',
+    body:
+      'The Aether Nexus is a chain of linked worlds held together by portals, trade, memory, and habit. ' +
+      'Aether Station is the hub, the place where travellers are catalogued before they step through. ' +
+      'Each world carries its own culture, but the portals make them part of one larger story.',
+  },
+  {
+    scope: 'station',
+    title: 'Station Lore',
+    sign_label: 'Lorekeeper',
+    body:
+      'Aether Station is the orbital hub of the Nexus: a ring of concourses, plazas, gantries, and glass, ' +
+      'built to receive travellers from every other world. It is the archive, the checkpoint, and the place where the next journey begins.',
+  },
+  {
+    scope: 'medieval',
+    title: 'Medieval Lore',
+    sign_label: 'Lorekeeper',
+    body:
+      'Aldermoor Vale is an old-world valley of timber roofs, market squares, castle walls, and pilgrim roads. ' +
+      'Its people still measure life by harvests, tolls, and the stories told beside the gatehouse fire.',
+  },
+  {
+    scope: 'sports',
+    title: 'Sports Lore',
+    sign_label: 'Lorekeeper',
+    body:
+      'The Meridian Athletic Grounds are a bright training complex of courts, tracks, bowls, snow runs, and grandstands. ' +
+      'Competition is culture here; every surface is built for practice, spectacle, and the pride of a clean run.',
+  },
+  {
+    scope: 'citadel',
+    title: 'Citadel Lore',
+    sign_label: 'Lorekeeper',
+    body:
+      'Sunspire Citadel crowns a cliff above the desert, a vertical town of terraces, rope bridges, towers, and guarded gates. ' +
+      'Its people value height, discipline, and the hard-earned safety of the walls that keep the sky at bay.',
+  },
+  {
+    scope: 'race',
+    title: 'Race Lore',
+    sign_label: 'Lorekeeper',
+    body:
+      'Vellum Ridge Circuit is the Nexus at full speed: a mountain course that climbs, dives, and threads the city blocks before snapping back to the line. ' +
+      'It is where drivers prove nerve, machine, and memory all at once.',
+  },
+] as const;
+
 // ── Schema initialisation ──────────────────────────────────────────────────
 
 export async function initSchema() {
@@ -72,10 +124,59 @@ export async function initSchema() {
   `;
 
   await sql`
-    CREATE TABLE IF NOT EXISTS purchases (
-      id                    TEXT PRIMARY KEY,
-      player_id             TEXT REFERENCES players(id),
-      stripe_intent_enc     TEXT,                   -- AES-256-GCM
+    CREATE TABLE IF NOT EXISTS quests (
+      id             TEXT PRIMARY KEY,
+      quest_number   INTEGER UNIQUE NOT NULL,
+      world          TEXT NOT NULL,
+      quest_line     TEXT NOT NULL,
+      title          TEXT NOT NULL,
+      reward_credits INTEGER NOT NULL DEFAULT 0,
+      duration_minutes INTEGER,
+      pre_steps      TEXT,
+      post_steps     TEXT,
+      notes          TEXT,
+      is_active      BOOLEAN NOT NULL DEFAULT TRUE,
+      updated_by     TEXT,
+      created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+
+  await sql`
+    ALTER TABLE quests
+      ADD COLUMN IF NOT EXISTS duration_minutes INTEGER
+  `;
+
+  await sql`
+      CREATE TABLE IF NOT EXISTS player_quest_engagements (
+        id                 TEXT PRIMARY KEY,
+        player_id          TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+        quest_id           TEXT REFERENCES quests(id) ON DELETE SET NULL,
+        quest_number       INTEGER NOT NULL,
+        quest_title        TEXT NOT NULL,
+        world              TEXT NOT NULL,
+        duration_minutes   INTEGER,
+        status             TEXT NOT NULL DEFAULT 'in_progress',
+        percent_complete   INTEGER NOT NULL DEFAULT 0,
+        credits_rewarded   INTEGER NOT NULL DEFAULT 0,
+        failure_reason     TEXT,
+        accepted_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at       TIMESTAMPTZ,
+        failed_at          TIMESTAMPTZ,
+        updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+  `;
+
+  await sql`
+      CREATE INDEX IF NOT EXISTS player_quest_engagements_player_idx
+      ON player_quest_engagements(player_id, updated_at DESC)
+  `;
+
+  await sql`
+      CREATE TABLE IF NOT EXISTS purchases (
+        id                    TEXT PRIMARY KEY,
+        player_id             TEXT REFERENCES players(id),
+        stripe_intent_enc     TEXT,                   -- AES-256-GCM
       amount_cents          INTEGER NOT NULL,
       currency              TEXT    NOT NULL DEFAULT 'usd',
       type                  TEXT    NOT NULL,        -- 'access' | 'credits'
@@ -109,6 +210,26 @@ export async function initSchema() {
       updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
+
+  await sql`
+  CREATE TABLE IF NOT EXISTS lore_entries (
+    scope       TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    sign_label  TEXT NOT NULL DEFAULT 'Lorekeeper',
+    body        TEXT NOT NULL,
+    updated_by  TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )
+  `;
+
+  for (const entry of DEFAULT_LORE_ROWS) {
+  await sql`
+    INSERT INTO lore_entries (scope, title, sign_label, body)
+    VALUES (${entry.scope}, ${entry.title}, ${entry.sign_label}, ${entry.body})
+    ON CONFLICT (scope) DO NOTHING
+  `;
+  }
 }
 
 // ── Admin users ────────────────────────────────────────────────────────────
@@ -327,6 +448,118 @@ export async function unlockPlayer(playerId: string) {
   `;
 }
 
+// ── Quests ─────────────────────────────────────────────────────────────────
+
+export async function listQuests() {
+  const { rows } = await sql`
+    SELECT id, quest_number, world, quest_line, title, reward_credits, duration_minutes,
+           pre_steps, post_steps, notes, is_active, updated_by,
+           created_at, updated_at
+    FROM quests
+    ORDER BY quest_number ASC, created_at ASC
+  `;
+  return rows;
+}
+
+export async function getQuestById(id: string) {
+  const { rows } = await sql`
+    SELECT id, quest_number, world, quest_line, title, reward_credits, duration_minutes,
+           pre_steps, post_steps, notes, is_active, updated_by,
+           created_at, updated_at
+    FROM quests
+    WHERE id = ${id}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function createQuest(data: {
+  questNumber: number;
+  world: string;
+  questLine: string;
+  title: string;
+  rewardCredits?: number;
+  durationMinutes?: number | null;
+  preSteps?: string | null;
+  postSteps?: string | null;
+  notes?: string | null;
+  isActive?: boolean;
+  updatedBy?: string;
+}) {
+  const id = randomUUID();
+  await sql`
+    INSERT INTO quests (
+      id, quest_number, world, quest_line, title, reward_credits,
+      duration_minutes, pre_steps, post_steps, notes, is_active, updated_by
+    )
+    VALUES (
+      ${id},
+      ${data.questNumber},
+      ${data.world},
+      ${data.questLine},
+      ${data.title},
+      ${data.rewardCredits ?? 0},
+      ${data.durationMinutes ?? null},
+      ${data.preSteps ?? null},
+      ${data.postSteps ?? null},
+      ${data.notes ?? null},
+      ${data.isActive ?? true},
+      ${data.updatedBy ?? null}
+    )
+  `;
+  return id;
+}
+
+export async function updateQuest(id: string, data: {
+  questNumber: number;
+  world: string;
+  questLine: string;
+  title: string;
+  rewardCredits?: number;
+  durationMinutes?: number | null;
+  preSteps?: string | null;
+  postSteps?: string | null;
+  notes?: string | null;
+  isActive?: boolean;
+  updatedBy?: string;
+}) {
+  await sql`
+    UPDATE quests
+    SET quest_number   = ${data.questNumber},
+        world          = ${data.world},
+        quest_line     = ${data.questLine},
+        title          = ${data.title},
+        reward_credits = ${data.rewardCredits ?? 0},
+        duration_minutes = ${data.durationMinutes ?? null},
+        pre_steps      = ${data.preSteps ?? null},
+        post_steps     = ${data.postSteps ?? null},
+        notes          = ${data.notes ?? null},
+        is_active      = ${data.isActive ?? true},
+        updated_by     = ${data.updatedBy ?? null},
+        updated_at     = NOW()
+    WHERE id = ${id}
+  `;
+}
+
+export async function deleteQuest(id: string) {
+  await sql`DELETE FROM quests WHERE id = ${id}`;
+}
+
+export async function listPlayerQuestEngagements(playerId: string) {
+  const { rows } = await sql`
+    SELECT
+      e.id, e.player_id, e.quest_id, e.quest_number, e.quest_title, e.world,
+      e.duration_minutes, e.status, e.percent_complete, e.credits_rewarded,
+      e.failure_reason, e.accepted_at, e.completed_at, e.failed_at, e.updated_at,
+      q.reward_credits AS quest_reward_credits
+    FROM player_quest_engagements e
+    LEFT JOIN quests q ON q.id = e.quest_id
+    WHERE e.player_id = ${playerId}
+    ORDER BY e.updated_at DESC, e.accepted_at DESC
+  `;
+  return rows;
+}
+
 export async function adjustCredits(playerId: string, delta: number) {
   await sql`
     UPDATE players
@@ -489,4 +722,52 @@ export async function listConfigKeys() {
     SELECT key, description, updated_by, updated_at FROM config ORDER BY key
   `;
   return rows;
+}
+
+// ── Lore ────────────────────────────────────────────────────────────────────
+
+export async function listLoreEntries() {
+  const { rows } = await sql`
+    SELECT scope, title, sign_label, body, updated_by, created_at, updated_at
+    FROM lore_entries
+    ORDER BY CASE scope
+      WHEN 'overall' THEN 0
+      WHEN 'station' THEN 1
+      WHEN 'medieval' THEN 2
+      WHEN 'sports' THEN 3
+      WHEN 'citadel' THEN 4
+      WHEN 'race' THEN 5
+      ELSE 99
+    END, scope
+  `;
+  return rows;
+}
+
+export async function getLoreEntry(scope: string) {
+  const { rows } = await sql`
+    SELECT scope, title, sign_label, body, updated_by, created_at, updated_at
+    FROM lore_entries
+    WHERE scope = ${scope}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function upsertLoreEntry(data: {
+  scope: string;
+  title: string;
+  signLabel?: string;
+  body: string;
+  updatedBy?: string;
+}) {
+  await sql`
+    INSERT INTO lore_entries (scope, title, sign_label, body, updated_by)
+    VALUES (${data.scope}, ${data.title}, ${data.signLabel ?? 'Lorekeeper'}, ${data.body}, ${data.updatedBy ?? null})
+    ON CONFLICT (scope) DO UPDATE SET
+      title      = EXCLUDED.title,
+      sign_label = EXCLUDED.sign_label,
+      body       = EXCLUDED.body,
+      updated_by = EXCLUDED.updated_by,
+      updated_at = NOW()
+  `;
 }

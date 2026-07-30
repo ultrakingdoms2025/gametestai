@@ -7,6 +7,7 @@ import { HostileNPC } from './HostileNPC.js';
 import { resolveSpot, resolveSurfaceY, seatSurfaceAt, isDeepWater, nearestDrySpot } from './Grounding.js';
 import { ROLE, ROLE_ROTATION, castFor, roleDef } from './NPCRoles.js';
 import { WEAPON_TABLES } from './NPCWeapons.js';
+import { DEFAULT_LORE, buildLorePersona, loreEntryForScope } from '../content/Lore.js';
 
 /**
  * Owns every NPC in the active world: spawning, budget, level of detail,
@@ -201,6 +202,7 @@ export class NPCManager {
     this._respawnQueue = [];
     this.theme = 'station';
     this.worldId = null;
+    this._loreData = DEFAULT_LORE;
 
     /** Hard ceiling regardless of what a world asks for. */
     this.maxNPCs = 26;
@@ -365,10 +367,25 @@ export class NPCManager {
       }
     }
 
+    friendlyCount += this._spawnLorekeepers(world);
     this._populateHubs(anchors, this.maxFriendlies - friendlyCount);
     for (const npc of this._hostiles) npc.prebuildWeapons?.();
     this._seatCivilians();
     this.validateGrounding();
+  }
+
+  setLoreData(entries) {
+    this._loreData = entries ?? DEFAULT_LORE;
+    const lorekeepers = this._friendlies.filter((npc) => npc.isLorekeeper);
+    for (const npc of lorekeepers) {
+      const scope = npc.loreScope ?? this.worldId ?? 'overall';
+      const entry = this._loreData?.[scope] ?? loreEntryForScope(scope);
+      npc.persona = buildLorePersona(scope, this._loreData);
+      npc.setSignLines?.([
+        String(entry.sign_label ?? 'Lorekeeper').toUpperCase(),
+        String(entry.title ?? scope).toUpperCase(),
+      ]);
+    }
   }
 
   /**
@@ -561,6 +578,9 @@ export class NPCManager {
     // A world-authored posture is a costume note, not a life sentence: the idle
     // loop still runs, it just starts from the pose the world asked for.
     if (o.posture) npc.fixedPosture = true;
+    npc.isLorekeeper = o.role === ROLE.LOREKEEPER;
+    npc.loreScope = o.loreScope ?? null;
+    if (o.signLines) npc.setSignLines?.(o.signLines);
     // Before the first step it takes: a character created after the world's
     // water was announced would otherwise steer blind until the next swap.
     npc.setWater(this.water);
@@ -573,6 +593,41 @@ export class NPCManager {
     }
     this.bus?.emit('npc:spawned', { npc });
     return npc;
+  }
+
+  _spawnLorekeepers(world) {
+    const specs = world?.portalSpecs ?? [];
+    let made = 0;
+    for (let i = 0; i < specs.length && this._npcs.length < this.maxNPCs; i++) {
+      const spec = specs[i];
+      const rotY = spec.rotationY ?? 0;
+      const right = new THREE.Vector3(Math.cos(rotY), 0, -Math.sin(rotY));
+      const normal = new THREE.Vector3(Math.sin(rotY), 0, Math.cos(rotY));
+      const base = spec.position.clone()
+        .addScaledVector(normal, 2.6)
+        .addScaledVector(right, i % 2 === 0 ? 2.1 : -2.1);
+      const spot = this._snapToGround(base);
+      if (!spot) continue;
+      const entry = this._loreData?.[world.id] ?? loreEntryForScope(world.id);
+      const label = String(entry.sign_label ?? 'Lorekeeper').toUpperCase();
+      const persona = buildLorePersona(world.id, this._loreData);
+      const npc = this._createNPC({
+        hostile: false,
+        name: label,
+        persona,
+        position: spot,
+        yaw: rotY + Math.PI,
+        anchored: true,
+        role: ROLE.LOREKEEPER,
+        posture: 'crossed',
+        signLines: [label, String(world.displayName ?? world.id).toUpperCase()],
+        loreScope: world.id,
+      });
+      npc.isLorekeeper = true;
+      npc.portalTarget = spec.target;
+      made++;
+    }
+    return made;
   }
 
   /**
@@ -758,6 +813,10 @@ export class NPCManager {
       this._chatNPC = null;
       this.bus?.emit('chat:available', { npc: null });
     }
+  }
+
+  get chatNpc() {
+    return this._chatNPC;
   }
 
   /* ---------------------------------------------------------------- */

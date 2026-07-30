@@ -641,7 +641,7 @@ export class PortalSystem {
    * @param {{ scene: THREE.Scene, engine: any, physics: any, bus: any,
    *           materials: any, input?: any, player: any, worldManager: any }} ctx
    */
-  constructor({ scene, engine, physics, bus, materials, input, player, worldManager }) {
+  constructor({ scene, engine, physics, bus, materials, input, player, worldManager, npcManager }) {
     this.scene = scene;
     this.engine = engine;
     this.renderer = engine.renderer;
@@ -651,6 +651,7 @@ export class PortalSystem {
     this.input = input ?? null;
     this.player = player;
     this.worldManager = worldManager;
+    this.npcManager = npcManager ?? null;
 
     this._maxAniso = this.renderer.capabilities?.getMaxAnisotropy?.() ?? 4;
 
@@ -2416,6 +2417,7 @@ export class PortalSystem {
       this._near &&
       !this._transition &&
       this.input?.pressed?.('KeyE') &&
+      !this.npcManager?.chatNpc?.isLorekeeper &&
       !this.input.textCaptured
     ) {
       this.enter(this._near);

@@ -19,6 +19,7 @@ export const ROLE = {
   LOITERER: 'loiterer',
   SPECTATOR: 'spectator',
   WANDERER: 'wanderer',
+  LOREKEEPER: 'lorekeeper',
 };
 
 /**
@@ -85,6 +86,16 @@ export const ROLE_DEFS = {
     strollChance: 1,
     lookAround: 0.5,
     postures: ['none', 'pocket', 'crossed'],
+    seatable: false,
+  },
+  [ROLE.LOREKEEPER]: {
+    id: ROLE.LOREKEEPER,
+    label: 'Lorekeeper',
+    stationary: true,
+    strollRadius: 1.2,
+    strollChance: 0.1,
+    lookAround: 1,
+    postures: ['crossed', 'pocket', 'none'],
     seatable: false,
   },
 };

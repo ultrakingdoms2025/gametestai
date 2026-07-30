@@ -1,13 +1,70 @@
 import bcrypt from 'bcryptjs';
 import { redirect, notFound } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
-import { audit, createPlayer, getPlayerById, lockPlayer, unlockPlayer, updatePlayer, adjustCredits } from '@/lib/db';
+import {
+  audit,
+  createPlayer,
+  getPlayerById,
+  listPlayerQuestEngagements,
+  lockPlayer,
+  unlockPlayer,
+  updatePlayer,
+  adjustCredits,
+} from '@/lib/db';
 import { getSession } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
 function s(v: FormDataEntryValue | null) {
   return typeof v === 'string' ? v.trim() : '';
+}
+
+function formatDuration(minutes: number | null | undefined) {
+  if (minutes == null || !Number.isFinite(minutes) || minutes <= 0) return 'No limit';
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (!h) return `${m}m`;
+  if (!m) return `${h}h`;
+  return `${h}h ${m}m`;
+}
+
+function formatRemaining(acceptedAt: unknown, durationMinutes: number | null | undefined, status: unknown) {
+  if (typeof acceptedAt !== 'string' || !acceptedAt) return '—';
+  if (status === 'completed') return 'Completed';
+  if (status === 'failed') return 'Failed';
+  if (status === 'timed_out') return 'Timed out';
+  if (durationMinutes == null || durationMinutes <= 0) return 'No limit';
+  const started = new Date(acceptedAt).getTime();
+  if (!Number.isFinite(started)) return '—';
+  const deadline = started + (durationMinutes * 60 * 1000);
+  const diff = deadline - Date.now();
+  if (diff <= 0) return 'Timed out';
+  const totalMinutes = Math.ceil(diff / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+  if (!hours) return `${mins}m left`;
+  if (!mins) return `${hours}h left`;
+  return `${hours}h ${mins}m left`;
+}
+
+function displayEngagementStatus(acceptedAt: unknown, durationMinutes: number | null | undefined, status: unknown) {
+  const value = String(status ?? '').toLowerCase();
+  if (value === 'completed') return 'Completed';
+  if (value === 'failed') return 'Failed';
+  if (value === 'timed_out') return 'Timed out';
+  if (typeof acceptedAt === 'string' && durationMinutes != null && durationMinutes > 0) {
+    const started = new Date(acceptedAt).getTime();
+    if (Number.isFinite(started) && started + (durationMinutes * 60 * 1000) <= Date.now()) {
+      return 'Timed out';
+    }
+  }
+  return 'In progress';
+}
+
+function statusTagClass(status: string) {
+  if (status === 'Completed') return 'tag tag-green';
+  if (status === 'Failed' || status === 'Timed out') return 'tag tag-red';
+  return 'tag tag-amber';
 }
 
 export default async function PlayerPage({
@@ -21,6 +78,7 @@ export default async function PlayerPage({
   const creating = id === 'new';
   const { error, saved } = await searchParams;
   const player = creating ? null : ((await getPlayerById(id)) as Record<string, any> | null);
+  const engagements = creating ? [] : await listPlayerQuestEngagements(id);
 
   if (!creating && !player) notFound();
 
@@ -234,6 +292,50 @@ export default async function PlayerPage({
           </div>
         </section>
       </div>
+
+      {!creating ? (
+        <section className="card" style={{ marginTop: 24 }}>
+          <div className="section-title">Quest engagement history</div>
+          <div className="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Quest</th>
+                  <th>World</th>
+                  <th>Status</th>
+                  <th>%</th>
+                  <th>Time left</th>
+                  <th>Credits</th>
+                  <th>Accepted</th>
+                </tr>
+              </thead>
+              <tbody>
+                {engagements.map((engagement: Record<string, unknown>) => {
+                  const durationMinutes = engagement.duration_minutes as number | null | undefined;
+                  const statusText = displayEngagementStatus(engagement.accepted_at, durationMinutes, engagement.status);
+                  return (
+                    <tr key={String(engagement.id)}>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>#{String(engagement.quest_number)} {String(engagement.quest_title)}</div>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--txt-dim)' }}>{String(engagement.quest_id ?? '—')}</div>
+                      </td>
+                      <td>{String(engagement.world)}</td>
+                      <td><span className={statusTagClass(statusText)}>{statusText}</span></td>
+                      <td>{String(engagement.percent_complete ?? 0)}%</td>
+                      <td>{formatRemaining(engagement.accepted_at, durationMinutes, engagement.status)}</td>
+                      <td>{String(engagement.credits_rewarded ?? 0)}</td>
+                      <td className="mono">{engagement.accepted_at ? new Date(String(engagement.accepted_at)).toLocaleString() : '—'}</td>
+                    </tr>
+                  );
+                })}
+                {engagements.length === 0 ? (
+                  <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 28 }}>No quest engagements recorded for this player yet.</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }

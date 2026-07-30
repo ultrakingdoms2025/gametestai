@@ -1469,7 +1469,7 @@ export class HUD {
 
     if (this.input.pressed('KeyT')) {
       this._openChat(this._chatNpc);
-    } else if (this.input.pressed('KeyE') && this._chatNpc && !this._nearPortal) {
+    } else if (this.input.pressed('KeyE') && this._chatNpc && (!this._nearPortal || this._chatNpc.isLorekeeper)) {
       this._openChat(this._chatNpc);
     }
   }
@@ -2108,6 +2108,7 @@ export class HUD {
       portal = true;
     } else if (this._chatNpc && !this._chatOpen) {
       text = `Talk to <b>${escapeHtml(String(this._chatNpc.name ?? 'stranger'))}</b>`;
+      if (this._chatNpc.isLorekeeper) portal = false;
     }
 
     const show = !!text && !this._chatOpen && !this._dead;

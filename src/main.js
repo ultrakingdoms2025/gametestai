@@ -104,7 +104,35 @@ worldManager.register(RaceWorld);
 
 const player = new Player({ ...ctx, camera: engine.camera });
 const npcManager = new NPCManager({ ...ctx, player });
-const portals = new PortalSystem({ ...ctx, player, worldManager });
+let loreRefreshInFlight = null;
+let loreWarned = false;
+
+async function refreshLore() {
+  if (loreRefreshInFlight) return loreRefreshInFlight;
+  loreRefreshInFlight = (async () => {
+    try {
+      const res = await fetch('/api/lore', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`http ${res.status}`);
+      const data = await res.json();
+      if (data?.entries) npcManager.setLoreData(data.entries);
+    } catch (err) {
+      if (!loreWarned) {
+        loreWarned = true;
+        console.warn('[lore] remote lore unavailable; using bundled defaults:', err);
+      }
+    } finally {
+      loreRefreshInFlight = null;
+    }
+  })();
+  return loreRefreshInFlight;
+}
+
+void refreshLore();
+bus.on('world:changed', () => {
+  void refreshLore();
+});
+
+const portals = new PortalSystem({ ...ctx, player, worldManager, npcManager });
 const combat = new CombatSystem({ ...ctx, player, npcManager });
 
 /* ------------------------------------------------------------------ */

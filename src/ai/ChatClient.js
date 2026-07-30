@@ -434,11 +434,11 @@ const TEMPLATES = {
     "It holds together. That's about the highest praise anything here earns.",
   ],
   question: [
-    "About the {subject}? I've heard three answers and I trust none of them.",
-    "Straight answer: nobody really knows. Crooked answer: ask again after dark.",
-    "The {subject}, is it? Sit with that one a while. It doesn't unravel quickly.",
-    "I'd tell you, but half of what I know about the {subject} came from people who lied for sport.",
-    "Ask around {world} and you'll get a different story from every mouth. Mine's no better.",
+    "About the {subject}? Best answer I can give is this: nobody agrees, but I can tell you what people here say.",
+    "About the {subject}: the plain version is that nobody really knows for certain.",
+    "The {subject} is messy, but the shortest honest answer is that it changes depending on who you ask.",
+    "I'd rather be clear than clever: what I know about the {subject} is part fact, part rumor.",
+    "Ask around {world} and you'll get different stories. Mine is only one of them.",
   ],
   hostile: [
     "You shouldn't be here.",
@@ -447,10 +447,10 @@ const TEMPLATES = {
     'Wrong ground, wrong day.',
   ],
   default: [
-    "Huh. Not the strangest thing said to me today, and that's the worrying part.",
-    "The {subject}, right. Give me something more to work with and I'll give you something back.",
-    "I hear you. {creed}, and that keeps me busy enough.",
+    "I hear you. If you want the short version, say so and I'll keep it brief.",
+    "The {subject}? I can talk about that, but I need a clearer question.",
+    "Understood. {creed}, and that keeps me busy enough.",
     "Maybe. {world} has a way of making odd talk sound reasonable.",
-    "You'll have to run that past me again — the machines here are loud and so am I.",
+    "Say it again in plain words and I’ll give you a plain answer.",
   ],
 };

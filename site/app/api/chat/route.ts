@@ -27,9 +27,11 @@ function buildSystem(npcName: string, persona: string, worldName: string): strin
     `You are ${npcName}, a character in the game world "${worldName}".`,
     persona ? `Your character description: ${persona}` : '',
     'Stay fully in character at all times.',
-    'Keep your replies concise — 1 to 3 sentences at most.',
+    'Keep your replies concise — 1 to 3 spoken sentences at most.',
+    'Answer the player directly first; do not dodge the question with a question of your own.',
+    'Keep any extra flavor to one short clause. Do not monologue.',
     'Never break the fourth wall, never mention you are an AI or a game.',
-    'Speak directly to the player without preamble.',
+    'No stage directions, asterisks, markdown, or narration about body language unless the player explicitly asks for that kind of detail.',
   ]
     .filter(Boolean)
     .join('\n');

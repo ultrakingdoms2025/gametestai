@@ -237,6 +237,8 @@ export class HUD {
     this._lockRetryIn = 0;
     /** Retries left in the current attempt. */
     this._lockTries = 0;
+    /** Count of blocking overlays currently open (quest board, race panel, etc.). */
+    this._overlayCount = 0;
 
     /* -- transient lists ---------------------------------------------- */
     this._dmg = [];
@@ -988,13 +990,24 @@ export class HUD {
       // we are not actively waiting for chat to close (chat handles its own).
       if (!this._chatOpen) this._relock = Math.max(this._relock, 0.15);
     };
-    this._on('race:menu',        ({ open })  => { if (!open)  _schedRelock(); });
-    this._on('hud:block',        ({ block }) => { if (!block) _schedRelock(); });
-    this._on('audio:menu',       ({ open })  => { if (!open)  _schedRelock(); });
-    this._on('bug-report:close', ()          => _schedRelock());
-    this._on('character:close',  ()          => _schedRelock());
-    this._on('inventory:close',  ()          => _schedRelock());
-    this._on('keybinds:close',   ()          => _schedRelock());
+    const _overlayOpen  = () => { this._overlayCount = Math.max(0, this._overlayCount) + 1; };
+    const _overlayClose = () => {
+      this._overlayCount = Math.max(0, this._overlayCount - 1);
+      _schedRelock();
+      // If the pause overlay fired while a blocking UI was open, hide it now.
+      if (this._overlayCount === 0) this.showPauseOverlay(false);
+    };
+    this._on('race:menu',        ({ open })  => { open  ? _overlayOpen() : _overlayClose(); });
+    this._on('hud:block',        ({ block }) => { block ? _overlayOpen() : _overlayClose(); });
+    this._on('audio:menu',       ({ open })  => { open  ? _overlayOpen() : _overlayClose(); });
+    this._on('bug-report:open',  ()          => _overlayOpen());
+    this._on('bug-report:close', ()          => _overlayClose());
+    this._on('character:open',   ()          => _overlayOpen());
+    this._on('character:close',  ()          => _overlayClose());
+    this._on('inventory:open',   ()          => _overlayOpen());
+    this._on('inventory:close',  ()          => _overlayClose());
+    this._on('keybinds:open',    ()          => _overlayOpen());
+    this._on('keybinds:close',   ()          => _overlayClose());
   }
 
   /* ---------------------------------------------------------------- v2 -- */
@@ -1337,6 +1350,7 @@ export class HUD {
 
   showPauseOverlay(show) {
     if (show && this._chatOpen) return; // chat deliberately released the cursor
+    if (show && this._overlayCount > 0) return; // a blocking UI overlay is open
     this.pause.classList.toggle('show', !!show);
     if (show) this._relockCheck = 0;
   }

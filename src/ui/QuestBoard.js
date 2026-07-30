@@ -27,6 +27,8 @@ export class QuestBoard {
     this._activeTab       = 'available';
     this._selectedQuestId = null;
     this._selectedEngId   = null;
+    /** Frames to skip close-key checks after opening (prevents same-frame close). */
+    this._openGuard       = 0;
 
     this._el = this._build();
     root.appendChild(this._el);
@@ -46,6 +48,7 @@ export class QuestBoard {
     // Opening from gameplay should immediately free the cursor for UI clicks.
     this.input?.exitLock?.();
     this._open = true;
+    this._openGuard = 2; // skip close-key checks for 2 frames so the E press that opened us doesn't immediately close us
     this._refresh();
     this._el.classList.add('open');
     document.body.classList.add('quest-board-open');
@@ -62,6 +65,10 @@ export class QuestBoard {
   /** Called every frame. */
   update(_dt) {
     if (!this._open) return;
+    if (this._openGuard > 0) {
+      this._openGuard--;
+      return;
+    }
     if (this.input?.pressed('Escape') || this.input?.pressed('KeyE')) {
       this.close();
     }

@@ -45,6 +45,7 @@ import { AudioMenu } from './ui/AudioMenu.js';
 import { RaceManager } from './race/RaceManager.js';
 import { RaceUI } from './ui/RaceUI.js';
 import { QuestBoard } from './ui/QuestBoard.js';
+import { BugReport } from './ui/BugReport.js';
 
 /**
  * AETHER NEXUS - bootstrap.
@@ -205,6 +206,8 @@ const contracts = new Contracts({ bus, npcManager, player, economy, inventory, w
 const questSystem = new QuestSystem({ bus, player, economy, worldManager, npcManager });
 const questBoard  = new QuestBoard({ root: uiRoot, bus, input, questSystem });
 
+const bugReport = new BugReport({ root: uiRoot, bus, input, player, worldManager });
+
 // Typed cheat codes: "ammo" resupplies every weapon, "heal", "rich".
 const cheats = new AdminCheats({ bus, input, loadout, player, economy });
 
@@ -254,7 +257,7 @@ if (overrides.dev) {
     engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
     waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu, caches, contracts,
-  cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard,
+  cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   };
   import('./dev/Harness.js').then(({ installHarness }) => installHarness(window.GAME));
 }
@@ -587,6 +590,7 @@ engine.onFrameUpdate((dt, elapsed) => {
     questSystem.update(dt);
   }
   questBoard.update(dt);
+  bugReport.update(dt);
   // After the camera rig has placed the camera: the listener frame is read
   // straight off its world matrix, and a frame-old matrix pans every sound
   // to where the player was looking last frame.
@@ -631,6 +635,8 @@ bus.on('audio:menu', ({ open }) => setGameplayBlocked('audio', !!open));
 bus.on('race:menu', ({ open }) => setGameplayBlocked('race', !!open));
 bus.on('quests:board:open', () => setGameplayBlocked('quests', true));
 bus.on('quests:board:close', () => setGameplayBlocked('quests', false));
+bus.on('bug-report:open', () => setGameplayBlocked('bug-report', true));
+bus.on('bug-report:close', () => setGameplayBlocked('bug-report', false));
 
 bus.on('input:lockchange', ({ locked }) => {
   setGameplayBlocked('standby', !locked);

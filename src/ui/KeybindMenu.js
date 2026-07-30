@@ -123,7 +123,7 @@ export class KeybindMenu {
     foot.append(reset, this._msg);
 
     const note = el('div', 'kb-note',
-      'F1–F5, F9 and Esc stay fixed: those panels listen for themselves so they '
+      'F1–F5, F9, F12 and Esc stay fixed: those panels listen for themselves so they '
       + 'still open when everything else is disabled, which is exactly when you need them.');
 
     card.append(head, body, foot, note);

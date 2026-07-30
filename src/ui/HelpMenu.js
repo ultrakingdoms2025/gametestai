@@ -108,6 +108,7 @@ const GROUPS = [
       ['F7', 'Race panel — in the circuit'],
       ['F5', 'Save — and back up to a file'],
       ['F9', 'Load — local save, or a backup file'],
+      ['F12', 'Report a bug'],
       ['Esc', 'Close this panel'],
     ],
   },

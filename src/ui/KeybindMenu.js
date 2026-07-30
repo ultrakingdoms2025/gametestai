@@ -169,9 +169,12 @@ export class KeybindMenu {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.code === 'F6') {
       e.preventDefault();
+      e.stopPropagation();
       if (this.input?.textCaptured) return;
       this.toggle();
     } else if (e.code === 'Escape' && this._open) {
+      e.preventDefault();
+      e.stopPropagation();
       this.close();
     }
   }
@@ -200,7 +203,12 @@ export class KeybindMenu {
     this._sync();
     this._note('');
     this.el.classList.add('show');
+    this.input?.exitLock?.();
     this.bus?.emit?.('keybinds:open', {});
+    requestAnimationFrame(() => {
+      const first = this.el.querySelector('button');
+      first?.focus?.();
+    });
   }
 
   close() {
@@ -209,6 +217,7 @@ export class KeybindMenu {
     this._open = false;
     this.el.classList.remove('show');
     this.bus?.emit?.('keybinds:close', {});
+    setTimeout(() => this.input?.requestLock?.(), 0);
   }
 
   toggle() {

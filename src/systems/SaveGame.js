@@ -131,6 +131,8 @@ export class SaveGame {
       if (e.code !== 'F5' && e.code !== 'F9') return;
       // Ctrl+F5 stays a hard reload - developers need an escape hatch.
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // F9 is now the bug-report hotkey; Shift+F9 preserves the old load action.
+      if (e.code === 'F9' && !e.shiftKey) return;
       // No text-focus guard: function keys never type a character, so stealing
       // them is always safe, and losing a chat message to an accidental reload
       // is a worse outcome than saving from inside the chat box.

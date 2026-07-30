@@ -45,11 +45,12 @@ export class BugReport {
     this._build(root);
 
     this._onKey = (e) => {
-      if (e.key === 'F12') {
+      const code = e.code || e.key;
+      if (code === 'F9' || code === 'F12') {
         e.preventDefault();
         e.stopPropagation();
         this.toggle();
-      } else if (e.key === 'Escape' && this._open) {
+      } else if (code === 'Escape' && this._open) {
         e.stopPropagation();
         this.close();
       }
@@ -70,7 +71,7 @@ export class BugReport {
     const head = el('div', 'br-head');
     const title = el('div', 'br-title');
     title.append('⚑ Bug Report');
-    const titleKey = el('span', 'br-title-key', '(F12)');
+    const titleKey = el('span', 'br-title-key', '(F9 / F12)');
     title.append(' ', titleKey);
     const closeBtn = el('button', 'br-close-btn', 'Close');
     closeBtn.addEventListener('click', () => this.close());

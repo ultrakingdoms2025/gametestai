@@ -1633,6 +1633,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
 @media (max-width: 680px) {
   .site-nav { height: 56px; }
   .hero { padding-top: 56px; }
+  .account-dashboard { margin-top: 56px; }
   .nav-links { display: none; }
   .hero-ticker { display: none; }
   .hero-scroll-cue { display: none; }
@@ -1932,9 +1933,11 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
 
 /* ── Account dashboard ──────────────────────────────────────────────────── */
 .account-dashboard {
+  position: relative;
+  margin-top: 64px; /* clear fixed site-nav */
   background: linear-gradient(135deg, rgba(9,15,25,0.95) 0%, rgba(14,25,42,0.95) 100%);
   border-bottom: 1px solid var(--rule);
-  padding: 1.5rem 0;
+  padding: 1rem 0;
 }
 
 .acct-inner {

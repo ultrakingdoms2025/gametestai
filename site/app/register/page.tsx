@@ -11,6 +11,7 @@ function RegisterForm() {
   const callbackUrl = searchParams.get('callbackUrl') ?? '/';
 
   const [email, setEmail] = useState('');
+  const [handle, setHandle] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
@@ -28,7 +29,7 @@ function RegisterForm() {
         const res = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password }),
+          body: JSON.stringify({ email, handle, password }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -75,6 +76,20 @@ function RegisterForm() {
       <div className="auth-divider"><span>or</span></div>
 
       <form onSubmit={handleSubmit} className="auth-form">
+        <label className="auth-label" htmlFor="handle">Handle</label>
+        <input
+          id="handle"
+          type="text"
+          className="auth-input"
+          value={handle}
+          onChange={(e) => setHandle(e.target.value)}
+          required
+          minLength={3}
+          maxLength={32}
+          autoComplete="nickname"
+          placeholder="Your player handle"
+        />
+
         <label className="auth-label" htmlFor="email">Email</label>
         <input
           id="email"

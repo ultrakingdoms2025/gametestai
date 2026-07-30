@@ -1,7 +1,8 @@
 import NextAuth from 'next-auth';
 import Google from 'next-auth/providers/google';
 import Credentials from 'next-auth/providers/credentials';
-import { getUserByEmail, getUserByGoogleId, createUser, linkGoogleAccount, verifyPassword } from '@/lib/db';
+import { getUserByEmail, getUserByGoogleId, createUser, getUserById, linkGoogleAccount, verifyPassword } from '@/lib/db';
+import { getPlayerStatus, syncPlayerProfile } from '@/lib/playerDb';
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   secret: process.env.NEXTAUTH_SECRET ?? process.env.APP_SECRET ?? 'dev-secret-change-me',
@@ -51,6 +52,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         try {
           const googleId = typeof profile.sub === 'string' ? profile.sub : String(profile.sub ?? '');
           const email = profile.email.toLowerCase().trim();
+          const displayName = typeof profile.name === 'string' && profile.name.trim()
+            ? profile.name.trim()
+            : email.split('@')[0];
 
           // Check by email first, then by Google ID
           let existing = await getUserByEmail(email);
@@ -66,6 +70,15 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           } else {
             const created = await createUser({ email, googleId: googleId || undefined });
             user.id = created.id;
+          }
+          if (user.id) {
+            await syncPlayerProfile(user.id, email, {
+              handle: displayName,
+              fullName: displayName,
+              autoAdjustHandle: true,
+              overwrite: false,
+            });
+            user.name = displayName;
           }
         } catch (err) {
           // Log full error detail to Vercel function logs
@@ -83,7 +96,15 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     },
 
     async session({ session, token }) {
-      if (token.sub) session.user.id = token.sub;
+      if (token.sub) {
+        session.user.id = token.sub;
+        const user = await getUserById(token.sub);
+        if (user) session.user.email = user.email;
+        if (user?.email) {
+          const profile = await getPlayerStatus(token.sub);
+          session.user.name = profile?.handle ?? profile?.fullName ?? user.email.split('@')[0];
+        }
+      }
       return session;
     },
   },

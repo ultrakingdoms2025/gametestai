@@ -4,7 +4,7 @@
  * Uses raw pg (not @vercel/postgres) to support direct Neon connection strings.
  */
 import { Client } from 'pg';
-import { createHmac, createHash, randomUUID } from 'node:crypto';
+import { createCipheriv, createHmac, createHash, randomBytes, randomUUID } from 'node:crypto';
 
 function makeClient() {
   const connStr = process.env.POSTGRES_URL ?? '';
@@ -52,6 +52,23 @@ function hmacSign(data: string): string {
   return createHmac('sha256', s).update(data, 'utf8').digest('hex');
 }
 
+function encryptionKey(): Buffer {
+  const raw = process.env.ENCRYPTION_KEY;
+  if (!raw) throw new Error('ENCRYPTION_KEY env var is not set');
+  const buf = Buffer.from(raw, 'base64');
+  if (buf.length !== 32) throw new Error('ENCRYPTION_KEY must decode to 32 bytes');
+  return buf;
+}
+
+function encryptMaybe(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', encryptionKey(), iv);
+  const ct = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString('hex')}:${ct.toString('hex')}:${tag.toString('hex')}`;
+}
+
 function auditHash(seq: number, actor: string, action: string, resource: string, prevHash: string): string {
   return hmacSign([seq, actor, action, resource, prevHash].join('|'));
 }
@@ -64,11 +81,58 @@ export type PlayerStatus = {
   playerId: string;
   creditBalance: number;
   accessGrantedAt: Date | null;
+  accessRevokedAt: Date | null;
   hasAccess: boolean;
   daysRemaining: number;
+  handle: string | null;
+  fullName: string | null;
+  status: string | null;
 };
 
 const ACCESS_DAYS = 30;
+const HANDLE_MAX = 32;
+
+export function normalizeHandle(input: string): string {
+  return input
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[^A-Za-z0-9 _-]/g, '')
+    .slice(0, HANDLE_MAX)
+    .trim();
+}
+
+async function isHandleTaken(handle: string, excludePlayerId?: string): Promise<boolean> {
+  const { rows } = await pgQuery<{ id: string }>(
+    `SELECT id
+     FROM players
+     WHERE LOWER(handle) = LOWER($1)
+       AND ($2::text IS NULL OR id <> $2)
+     LIMIT 1`,
+    [handle, excludePlayerId ?? null]
+  );
+  return !!rows[0];
+}
+
+async function resolveHandle(handle: string, excludePlayerId?: string, autoAdjust = false): Promise<string> {
+  const normalized = normalizeHandle(handle);
+  if (normalized.length < 3) throw new Error('Handle must be at least 3 characters.');
+  if (!(await isHandleTaken(normalized, excludePlayerId))) return normalized;
+  if (!autoAdjust) throw new Error('That handle is already in use.');
+
+  const base = normalized.slice(0, HANDLE_MAX);
+  for (let suffix = 2; suffix < 1000; suffix++) {
+    const suffixText = `-${suffix}`;
+    const candidate = `${base.slice(0, HANDLE_MAX - suffixText.length)}${suffixText}`;
+    if (!(await isHandleTaken(candidate, excludePlayerId))) return candidate;
+  }
+  throw new Error('Could not generate a unique handle.');
+}
+
+export async function isHandleAvailable(handle: string, excludePlayerId?: string): Promise<boolean> {
+  const normalized = normalizeHandle(handle);
+  if (normalized.length < 3) return false;
+  return !(await isHandleTaken(normalized, excludePlayerId));
+}
 
 export async function findOrCreatePlayer(siteUserId: string, email: string): Promise<string> {
   await ensurePlayerColumns();
@@ -111,13 +175,18 @@ export async function getPlayerStatus(siteUserId: string): Promise<PlayerStatus 
     access_granted_at: string | null;
     access_revoked_at: string | null;
     status: string | null;
+    handle: string | null;
+    full_name: string | null;
   }>(
-    'SELECT id, credit_balance, access_granted_at, access_revoked_at, status FROM players WHERE site_user_id = $1 LIMIT 1',
+    `SELECT id, credit_balance, access_granted_at, access_revoked_at, status, handle, full_name
+     FROM players
+     WHERE site_user_id = $1
+     LIMIT 1`,
     [siteUserId]
   );
   if (!rows[0]) return null;
 
-  const { id, credit_balance, access_granted_at, access_revoked_at, status } = rows[0];
+  const { id, credit_balance, access_granted_at, access_revoked_at, status, handle, full_name } = rows[0];
   const now = Date.now();
   let hasAccess = false;
   let daysRemaining = 0;
@@ -133,9 +202,67 @@ export async function getPlayerStatus(siteUserId: string): Promise<PlayerStatus 
     playerId: id,
     creditBalance: credit_balance,
     accessGrantedAt: access_granted_at ? new Date(access_granted_at) : null,
+    accessRevokedAt: access_revoked_at ? new Date(access_revoked_at) : null,
     hasAccess,
     daysRemaining,
+    handle,
+    fullName: full_name,
+    status,
   };
+}
+
+export async function syncPlayerProfile(
+  siteUserId: string,
+  email: string,
+  opts: {
+    handle?: string | null;
+    fullName?: string | null;
+    autoAdjustHandle?: boolean;
+    overwrite?: boolean;
+  } = {}
+): Promise<string> {
+  const playerId = await findOrCreatePlayer(siteUserId, email);
+  const { rows } = await pgQuery<{ handle: string | null; full_name: string | null }>(
+    'SELECT handle, full_name FROM players WHERE id = $1 LIMIT 1',
+    [playerId]
+  );
+  const current = rows[0] ?? { handle: null, full_name: null };
+
+  const fullName = opts.fullName?.trim() ? opts.fullName.trim().slice(0, 80) : null;
+  const wantsHandle = typeof opts.handle === 'string';
+  const resolvedHandle = wantsHandle
+    ? await resolveHandle(opts.handle ?? '', playerId, opts.autoAdjustHandle === true)
+    : null;
+
+  await pgQuery(
+    `UPDATE players
+     SET email_hash = $1,
+         email_enc = $2,
+         handle = $3,
+         full_name = $4,
+         updated_at = NOW()
+     WHERE id = $5`,
+    [
+      sha256(email),
+      encryptMaybe(email),
+      wantsHandle
+        ? (opts.overwrite || !current.handle ? resolvedHandle : current.handle)
+        : current.handle,
+      fullName && (opts.overwrite || !current.full_name) ? fullName : current.full_name,
+      playerId,
+    ]
+  );
+
+  return playerId;
+}
+
+export async function setPlayerCreditBalance(siteUserId: string, credits: number): Promise<void> {
+  await pgQuery(
+    `UPDATE players
+     SET credit_balance = $1, updated_at = NOW()
+     WHERE site_user_id = $2`,
+    [Math.max(0, Math.floor(credits)), siteUserId]
+  );
 }
 
 // ---------------------------------------------------------------------------

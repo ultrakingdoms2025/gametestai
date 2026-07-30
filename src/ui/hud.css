@@ -3409,6 +3409,19 @@ body {
   line-height: 1.15;
 }
 
+.credits-handle {
+  font-family: var(--f-disp);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cy);
+  text-shadow: 0 0 12px rgba(82, 233, 255, 0.28);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .credits-val {
   font-family: var(--f-disp);
   font-weight: 700;

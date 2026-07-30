@@ -1,15 +1,14 @@
 'use client';
 import Link from 'next/link';
-import { useSession, signOut } from 'next-auth/react';
-import { useState } from 'react';
+import { useSession } from 'next-auth/react';
 import { usePathname } from 'next/navigation';
+import SignOutButton from '@/components/SignOutButton';
 
 /**
  * Persistent site header shown on all pages EXCEPT the home page (which has its own nav).
  */
 export default function SiteHeader() {
   const { data: session, status } = useSession();
-  const [menuOpen, setMenuOpen] = useState(false);
   const pathname = usePathname();
 
   // The home page has its own hero nav — don't double up
@@ -21,28 +20,12 @@ export default function SiteHeader() {
       <nav className="site-header-nav">
         <Link href="/store" className="site-header-link">Credits</Link>
         {status === 'authenticated' ? (
-          <div className="site-header-user">
-            <button
-              className="site-header-avatar"
-              onClick={() => setMenuOpen((v) => !v)}
-              aria-label="Account menu"
-            >
-              {session.user?.email?.[0]?.toUpperCase() ?? '?'}
-            </button>
-            {menuOpen && (
-              <div className="site-header-dropdown" onMouseLeave={() => setMenuOpen(false)}>
-                <div className="site-header-email">{session.user?.email}</div>
-                <Link href="/account" className="site-header-item" onClick={() => setMenuOpen(false)}>Account &amp; 2FA</Link>
-                <Link href="/play" className="site-header-item" onClick={() => setMenuOpen(false)}>Enter game</Link>
-                <button
-                  className="site-header-item site-header-item--danger"
-                  onClick={() => { setMenuOpen(false); signOut({ callbackUrl: '/' }); }}
-                >
-                  Sign out
-                </button>
-              </div>
-            )}
-          </div>
+          <>
+            <span className="site-header-email">{session.user?.name ?? session.user?.email}</span>
+            <Link href="/account" className="btn btn-ghost site-header-btn">Account</Link>
+            <Link href="/play" className="btn btn-primary site-header-btn">Enter game</Link>
+            <SignOutButton className="btn btn-ghost site-header-btn" />
+          </>
         ) : status === 'unauthenticated' ? (
           <>
             <Link href="/login" className="btn btn-ghost site-header-btn">Sign in</Link>

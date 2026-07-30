@@ -149,6 +149,13 @@ export async function setPassword(userId: string, password: string): Promise<voi
   );
 }
 
+export async function updateUserEmail(userId: string, email: string): Promise<void> {
+  await query(
+    'UPDATE site_users SET email = $1, updated_at = now() WHERE id = $2',
+    [email.toLowerCase().trim(), userId]
+  );
+}
+
 export async function setTotpSecret(userId: string, secret: string | null, enabled = false): Promise<void> {
   await query(
     'UPDATE site_users SET totp_secret = $1, totp_enabled = $2, updated_at = now() WHERE id = $3',

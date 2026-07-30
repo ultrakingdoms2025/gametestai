@@ -22,7 +22,7 @@ export default async function AccountDashboard() {
   const credits = status?.creditBalance ?? 0;
   const hasAccess = status?.hasAccess ?? false;
   const daysRemaining = status?.daysRemaining ?? 0;
-  const userName = session.user.name ?? session.user.email?.split('@')[0] ?? 'Player';
+  const userName = status?.handle ?? status?.fullName ?? session.user.name ?? session.user.email?.split('@')[0] ?? 'Player';
 
   return (
     <section className="account-dashboard">

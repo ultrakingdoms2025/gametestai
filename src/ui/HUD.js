@@ -264,6 +264,8 @@ export class HUD {
     this._creditsShown = 0;
     this._creditsText = -1;
     this._creditFloats = [];
+    this._playerHandle = 'Player';
+    this._playerHandleText = '';
 
     /* -- v2: mounts ---------------------------------------------------- */
     this._mountId = null;
@@ -577,6 +579,8 @@ export class HUD {
     ico.appendChild(svg('circle', { class: 'ci-core', cx: 12, cy: 12, r: 2.1 }));
 
     const body = el('div', 'credits-body');
+    this.creditsHandle = el('div', 'credits-handle', this._playerHandle);
+    body.appendChild(this.creditsHandle);
     body.appendChild(el('div', 'panel-label', 'Credits'));
     this.creditsVal = el('div', 'credits-val', '0');
     body.appendChild(this.creditsVal);
@@ -1010,6 +1014,15 @@ export class HUD {
     this._on('credits:changed', ({ credits, delta }) => {
       if (typeof credits === 'number') this._credits = credits;
       if (delta) this._creditFloat(delta);
+    });
+    this._on('player:identity', ({ handle }) => {
+      if (typeof handle === 'string' && handle.trim()) {
+        this._playerHandle = handle.trim();
+        if (this._playerHandle !== this._playerHandleText) {
+          this._playerHandleText = this._playerHandle;
+          this.creditsHandle.textContent = this._playerHandle;
+        }
+      }
     });
 
     /* --- mounts -------------------------------------------------------- */

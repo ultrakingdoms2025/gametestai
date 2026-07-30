@@ -2,6 +2,7 @@ import Link from 'next/link';
 import HeroCanvas from '@/components/HeroCanvas';
 import HomeWorldShowcase from '@/components/HomeWorldShowcase';
 import AccountDashboard from '@/components/AccountDashboard';
+import SignOutButton from '@/components/SignOutButton';
 import { getAccessStateForSession } from '@/lib/access';
 import { auth } from '@/lib/auth';
 import { ENTRY_CENTS, CREDIT_PRICE_CENTS, MIN_CREDITS, formatCents, grossUp } from '@/lib/pricing';
@@ -124,13 +125,17 @@ export default async function Home() {
           </div>
           <div className="nav-cta">
             {session ? (
-              hasAccess ? (
-                <Link className="btn btn-primary btn-sm" href="/play">Enter game</Link>
-              ) : (
-                <Link className="btn btn-primary btn-sm" href="/checkout?intent=entry">
-                  Get access
-                </Link>
-              )
+              <>
+                {hasAccess ? (
+                  <Link className="btn btn-primary btn-sm" href="/play">Enter game</Link>
+                ) : (
+                  <Link className="btn btn-primary btn-sm" href="/checkout?intent=entry">
+                    Get access
+                  </Link>
+                )}
+                <Link className="btn btn-ghost btn-sm" href="/account">Account</Link>
+                <SignOutButton className="btn btn-ghost btn-sm" />
+              </>
             ) : (
               <>
                 <Link className="btn btn-ghost btn-sm" href="/login">Sign in</Link>

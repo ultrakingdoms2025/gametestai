@@ -1,13 +1,19 @@
 'use client';
 
-import { signOut } from 'next-auth/react';
 import Link from 'next/link';
 import { useState, useTransition, useEffect } from 'react';
+import SignOutButton from '@/components/SignOutButton';
 
 export default function AccountPage() {
   const [totpEnabled, setTotpEnabled] = useState<boolean | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [totpCode, setTotpCode] = useState('');
+  const [email, setEmail] = useState('');
+  const [handle, setHandle] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [credits, setCredits] = useState(0);
+  const [hasAccess, setHasAccess] = useState(false);
+  const [daysRemaining, setDaysRemaining] = useState(0);
   const [setupMode, setSetupMode] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -16,8 +22,39 @@ export default function AccountPage() {
   useEffect(() => {
     fetch('/api/user/me').then((r) => r.json()).then((d) => {
       setTotpEnabled(d.totp_enabled ?? false);
+      setEmail(d.email ?? '');
+      setHandle(d.handle ?? '');
+      setFullName(d.full_name ?? '');
+      setCredits(d.credits ?? 0);
+      setHasAccess(d.has_access ?? false);
+      setDaysRemaining(d.days_remaining ?? 0);
     }).catch(() => {});
   }, []);
+
+  async function saveProfile(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+    startTransition(async () => {
+      const res = await fetch('/api/user/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, handle, full_name: fullName }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? 'Could not update your profile.');
+        return;
+      }
+      setEmail(data.email ?? '');
+      setHandle(data.handle ?? '');
+      setFullName(data.full_name ?? '');
+      setCredits(data.credits ?? 0);
+      setHasAccess(data.has_access ?? false);
+      setDaysRemaining(data.days_remaining ?? 0);
+      setSuccess('Profile updated.');
+    });
+  }
 
   async function startSetup() {
     setError(''); setSuccess('');
@@ -66,9 +103,53 @@ export default function AccountPage() {
         {success ? <div className="auth-success">{success}</div> : null}
 
         <section className="auth-section">
+          <h2 className="auth-section-title">Profile</h2>
+          <form onSubmit={saveProfile} className="auth-form">
+            <label className="auth-label" htmlFor="handle">Handle</label>
+            <input
+              id="handle"
+              className="auth-input"
+              value={handle}
+              onChange={(e) => setHandle(e.target.value)}
+              minLength={3}
+              maxLength={32}
+              autoComplete="nickname"
+              required
+            />
+            <label className="auth-label" htmlFor="full_name">Display name</label>
+            <input
+              id="full_name"
+              className="auth-input"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              maxLength={80}
+              autoComplete="name"
+              placeholder="Optional"
+            />
+            <label className="auth-label" htmlFor="email">Email</label>
+            <input
+              id="email"
+              type="email"
+              className="auth-input"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              required
+            />
+            <button type="submit" className="btn btn-primary" disabled={pending}>
+              {pending ? 'Saving…' : 'Save profile'}
+            </button>
+          </form>
+          <p className="auth-desc" style={{ marginTop: 16 }}>
+            Credits: <strong>{credits.toLocaleString()}</strong><br />
+            Access: <strong>{hasAccess ? `${daysRemaining} day${daysRemaining === 1 ? '' : 's'} remaining` : 'No active token'}</strong>
+          </p>
+        </section>
+
+        <section className="auth-section">
           <h2 className="auth-section-title">Password</h2>
           <Link href="/forgot-password" className="btn btn-ghost" style={{ display: 'inline-block', marginTop: 8 }}>
-            Change password
+            Reset password
           </Link>
         </section>
 
@@ -127,13 +208,7 @@ export default function AccountPage() {
         </section>
 
         <section className="auth-section">
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => signOut({ callbackUrl: '/' })}
-          >
-            Sign out
-          </button>
+          <SignOutButton />
         </section>
 
         <p className="auth-footer">

@@ -257,6 +257,28 @@ if (overrides.dev) {
 /* ------------------------------------------------------------------ */
 
 const loader = createLoadingScreen(uiRoot);
+const accountStatePromise = fetch('/api/game/session', { cache: 'no-store' })
+  .then(async (res) => {
+    if (!res.ok) return null;
+    return res.json();
+  })
+  .catch((err) => {
+    console.warn('[account] could not load game session:', err);
+    return null;
+  });
+
+async function hydrateAccountSession() {
+  const account = await accountStatePromise;
+  if (!account) return;
+
+  if (typeof account.credits === 'number') {
+    economy.set(account.credits, 'account-sync');
+  }
+
+  if (typeof account.handle === 'string' && account.handle.trim()) {
+    bus.emit('player:identity', { handle: account.handle.trim() });
+  }
+}
 
 async function boot() {
   try {
@@ -279,6 +301,7 @@ async function boot() {
 
     loader.setStatus('Calibrating optics', 0.95);
     await nextFrame();
+    await hydrateAccountSession();
 
     /* --- The title card goes up *before* the shader warm, not after ------
      *

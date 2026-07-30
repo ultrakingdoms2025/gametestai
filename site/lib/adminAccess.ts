@@ -4,7 +4,7 @@ import { getUserById } from './db';
 function parseEmails(value: string | undefined): Set<string> {
   return new Set(
     String(value ?? '')
-      .split(',')
+      .split(/[,\n;]+/g)
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean)
   );
@@ -17,6 +17,10 @@ const ADMIN_EMAILS = new Set([
 
 export function isMarketplaceAdminEmail(email: string | null | undefined): boolean {
   if (!email) return false;
+  // Bootstrap-safe default: when no allowlist is configured, any signed-in user
+  // can access marketplace admin. Once env values are present, strict allowlist
+  // checks apply.
+  if (ADMIN_EMAILS.size === 0) return true;
   return ADMIN_EMAILS.has(email.trim().toLowerCase());
 }
 

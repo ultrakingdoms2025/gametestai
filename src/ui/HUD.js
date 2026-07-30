@@ -976,6 +976,25 @@ export class HUD {
     // The chip is the affordance; dim it while the panel it advertises is open.
     this._on('help:open', () => this.el.classList.add('helping'));
     this._on('help:close', () => this.el.classList.remove('helping'));
+
+    /* --- overlay close → re-request pointer lock ----------------------- */
+    // Every UI that calls exitLock() on open must trigger this on close so the
+    // game is never left in an unlocked / stuck state. We schedule a short
+    // delay (same as after chat) to clear the browser's post-ESC cooldown
+    // before the lock request fires; the existing _relock machinery then
+    // retries and falls back to the click-to-resume overlay if needed.
+    const _schedRelock = () => {
+      // Don't override a longer delay already in flight; only schedule if
+      // we are not actively waiting for chat to close (chat handles its own).
+      if (!this._chatOpen) this._relock = Math.max(this._relock, 0.15);
+    };
+    this._on('race:menu',        ({ open })  => { if (!open)  _schedRelock(); });
+    this._on('hud:block',        ({ block }) => { if (!block) _schedRelock(); });
+    this._on('audio:menu',       ({ open })  => { if (!open)  _schedRelock(); });
+    this._on('bug-report:close', ()          => _schedRelock());
+    this._on('character:close',  ()          => _schedRelock());
+    this._on('inventory:close',  ()          => _schedRelock());
+    this._on('keybinds:close',   ()          => _schedRelock());
   }
 
   /* ---------------------------------------------------------------- v2 -- */

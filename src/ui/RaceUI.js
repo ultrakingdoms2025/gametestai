@@ -372,6 +372,8 @@ export class RaceUI {
 
   openPanel() {
     if (this._panelOpen || this._boardOpen) return;
+    // Don't interrupt the quest board or other overlays that share the cursor.
+    if (document.body.classList.contains('quest-board-open')) return;
     this._panelOpen = true;
     this._syncPanel();
     this.panelEl.classList.add('on');

@@ -1,6 +1,6 @@
 /* ============================================================================
    AETHER NEXUS — Quest Board
-   z-index: 85  (between AudioMenu 84 and RacePanel 86)
+   z-index: 88  (above RacePanel 86 so quest clicks are never swallowed)
    Same design language as inventory.css: dark glass, clipped corners,
    cyan / amber rules, Chakra Petch + Rajdhani type, motion on state change.
    ========================================================================== */
@@ -21,7 +21,7 @@
 
   position: absolute;
   inset: 0;
-  z-index: 85;
+  z-index: 88;
   display: grid;
   place-items: center;
   pointer-events: none;
@@ -365,3 +365,7 @@ body.quest-board-open .pause {
   font-family: var(--qb-disp);
   font-size: .7rem;
 }
+
+/* Prevent the race panel from intercepting clicks when the quest board is open */
+body.quest-board-open .rc-panel,
+body.quest-board-open .rc-board { pointer-events: none !important; }

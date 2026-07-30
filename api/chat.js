@@ -1,37 +1,25 @@
-/**
+﻿/**
  * Vercel serverless function — POST /api/chat
  *
  * Streams NPC dialogue from the Anthropic API as SSE frames so the in-game
  * ChatBox can render replies token by token.  The frame format mirrors the
  * one expected by src/ai/ChatClient.js:
  *
- *   data: {"type":"delta","text":"…"}\n\n
+ *   data: {"type":"delta","text":"..."}\n\n
  *   data: {"type":"done"}\n\n
  *
+ * Vercel automatically parses JSON request bodies into req.body, so no
+ * manual stream reading is needed here.
+ *
  * Environment variables (set in the Vercel dashboard):
- *   ANTHROPIC_API_KEY   — required for live AI replies
- *   CHAT_MODEL          — optional, defaults to claude-haiku-4-5 (fast + cheap)
+ *   ANTHROPIC_API_KEY   required for live AI replies
+ *   CHAT_MODEL          optional, defaults to claude-haiku-4-5
  */
 
 import Anthropic from '@anthropic-ai/sdk';
 
 const MODEL = process.env.CHAT_MODEL || 'claude-haiku-4-5';
 const MAX_TOKENS = 150;
-const MAX_BODY_BYTES = 16 * 1024;
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let size = 0;
-    const chunks = [];
-    req.on('data', (c) => {
-      size += c.length;
-      if (size > MAX_BODY_BYTES) { reject(new Error('too large')); req.destroy(); return; }
-      chunks.push(c);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
-  });
-}
 
 const WORLD_BLURB = {
   station:  'Aether Station — an orbital habitat of plated roads, gantries and glass, hanging above a planet.',
@@ -80,27 +68,39 @@ function sseData(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
+function jsonError(res, status, message) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: message }));
+}
+
 export default async function handler(req, res) {
-  // CORS — allow same-origin and Vercel preview URLs
+  // CORS
   const origin = req.headers.origin || '';
-  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || origin.endsWith('.vercel.app')) {
+  if (
+    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ||
+    origin.endsWith('.vercel.app') ||
+    origin.includes('aethernexus.games')
+  ) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
   }
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
 
-  if (req.method === 'OPTIONS') {
-    res.status(204).end();
-    return;
-  }
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+  if (req.method !== 'POST')   { return jsonError(res, 405, 'method not allowed'); }
 
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'method not allowed' });
-    return;
+  // Vercel auto-parses JSON bodies into req.body; handle both object and string forms.
+  let body = req.body;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); } catch { return jsonError(res, 400, 'bad-json'); }
   }
+  if (!body || typeof body !== 'object') return jsonError(res, 400, 'bad-request');
 
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  const playerMessage = clean(body.playerMessage, 600);
+  if (!playerMessage) return jsonError(res, 400, 'empty-message');
+
+  const apiKey = (process.env.ANTHROPIC_API_KEY || '').trim();
   if (!apiKey) {
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache' });
     sseData(res, { type: 'error', message: 'no-key' });
@@ -108,65 +108,36 @@ export default async function handler(req, res) {
     return;
   }
 
-  let body;
-  try {
-    // Vercel's raw Node.js runtime does not auto-parse req.body — read the stream.
-    const raw = await readBody(req);
-    body = JSON.parse(raw);
-  } catch {
-    res.status(400).json({ error: 'bad-request' });
-    return;
-  }
-
-  const playerMessage = clean(body?.playerMessage, 600);
-  if (!playerMessage) {
-    res.status(400).json({ error: 'empty-message' });
-    return;
-  }
-
-  const system   = buildSystem(clean(body?.npcName, 80), clean(body?.persona, 700), clean(body?.world, 40));
-  const messages = sanitizeHistory(body?.history);
+  const system   = buildSystem(clean(body.npcName, 80), clean(body.persona, 700), clean(body.world, 40));
+  const messages = sanitizeHistory(body.history);
   messages.push({ role: 'user', content: playerMessage });
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
+    'Connection':    'keep-alive',
     'X-Accel-Buffering': 'no',
   });
 
-  const client = new Anthropic({ apiKey });
-
   try {
-    const stream = client.messages.stream({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      system,
-      messages,
-    });
+    const client = new Anthropic({ apiKey });
+    const stream = client.messages.stream({ model: MODEL, max_tokens: MAX_TOKENS, system, messages });
 
     let sent = 0;
     for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-        const text = event.delta.text;
-        if (text) {
-          sent += text.length;
-          sseData(res, { type: 'delta', text });
-        }
+      if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
+        sent += event.delta.text.length;
+        sseData(res, { type: 'delta', text: event.delta.text });
       }
     }
 
-    if (sent === 0) sseData(res, { type: 'error', message: 'empty-reply' });
-    else sseData(res, { type: 'done' });
+    sseData(res, sent === 0 ? { type: 'error', message: 'empty-reply' } : { type: 'done' });
   } catch (err) {
-    const message = err?.status === 401 ? 'bad-key'
-      : err?.status === 429 ? 'upstream-rate-limit'
-      : 'upstream-error';
-    sseData(res, { type: 'error', message });
+    const msg = err?.status === 401 ? 'bad-key'
+              : err?.status === 429 ? 'rate-limited'
+              : 'upstream-error';
+    sseData(res, { type: 'error', message: msg });
   }
 
   res.end();
 }
-
-// Tell Vercel not to pre-parse the body — we read the stream ourselves.
-export const config = { api: { bodyParser: false } };

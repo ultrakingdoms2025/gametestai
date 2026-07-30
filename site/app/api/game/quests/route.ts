@@ -12,20 +12,21 @@ import {
 } from '@/lib/playerDb';
 
 export async function GET(request: NextRequest) {
+  const worldRaw = request.nextUrl.searchParams.get('world') ?? 'station';
+  const world = String(worldRaw).trim().toLowerCase() || 'station';
+  const quests = await listActiveQuestsForWorld(world);
+
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
+    return NextResponse.json({ quests, engagements: [], player_id: null });
   }
   const user = await getUserById(session.user.id);
   if (!user) {
-    return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+    return NextResponse.json({ quests, engagements: [], player_id: null });
   }
+
   const playerId = await findOrCreatePlayer(session.user.id, user.email);
-  const world = request.nextUrl.searchParams.get('world') ?? 'station';
-  const [quests, engagements] = await Promise.all([
-    listActiveQuestsForWorld(world),
-    getPlayerQuestEngagements(playerId),
-  ]);
+  const engagements = await getPlayerQuestEngagements(playerId);
   return NextResponse.json({ quests, engagements, player_id: playerId });
 }
 

@@ -403,6 +403,7 @@ async function ensureQuestSchema(): Promise<void> {
 
 export async function listActiveQuestsForWorld(world: string) {
   await ensureQuestSchema();
+  const normalizedWorld = String(world ?? '').trim().toLowerCase();
   const { rows } = await pgQuery<{
     id: string; quest_number: number; world: string; quest_line: string;
     title: string; reward_credits: number; duration_minutes: number | null;
@@ -410,9 +411,9 @@ export async function listActiveQuestsForWorld(world: string) {
   }>(
     `SELECT id, quest_number, world, quest_line, title, reward_credits,
             duration_minutes, pre_steps, steps, is_active
-     FROM quests WHERE is_active = TRUE AND world = $1
+     FROM quests WHERE is_active = TRUE AND LOWER(world) = $1
      ORDER BY quest_number ASC`,
-    [world]
+    [normalizedWorld]
   );
   return rows;
 }

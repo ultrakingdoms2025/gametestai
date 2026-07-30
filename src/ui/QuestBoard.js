@@ -43,6 +43,8 @@ export class QuestBoard {
   get isOpen() { return this._open; }
 
   open() {
+    // Opening from gameplay should immediately free the cursor for UI clicks.
+    this.input?.exitLock?.();
     this._open = true;
     this._refresh();
     this._el.classList.add('open');

@@ -118,6 +118,7 @@ export class QuestSystem {
       const res = await fetch('/api/game/quests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           action: 'accept',
           questId: quest.id,
@@ -189,8 +190,18 @@ export class QuestSystem {
 
   async _loadQuestsForWorld(worldId) {
     try {
-      const res = await fetch(`/api/game/quests?world=${worldId}`, { cache: 'no-store' });
-      if (!res.ok) return;
+      const res = await fetch(`/api/game/quests?world=${worldId}`, {
+        cache: 'no-store',
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        this.bus?.emit('hud:notify', { text: 'Could not load quests', tone: 'bad' });
+        return;
+      }
+      const contentType = res.headers.get('content-type') ?? '';
+      if (!contentType.includes('application/json')) {
+        throw new Error(`Unexpected response type: ${contentType || 'unknown'}`);
+      }
       const data = await res.json();
 
       if (data.player_id && !this._playerId) this._playerId = data.player_id;
@@ -224,6 +235,7 @@ export class QuestSystem {
       });
     } catch (err) {
       console.warn('[QuestSystem] load failed:', err);
+      this.bus?.emit('hud:notify', { text: 'Could not load quests', tone: 'bad' });
     }
   }
 
@@ -314,6 +326,7 @@ export class QuestSystem {
       await fetch('/api/game/quests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ action: 'complete', engagementId, creditsRewarded: credits }),
       });
     } catch (err) {
@@ -339,6 +352,7 @@ export class QuestSystem {
       await fetch('/api/game/quests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ action: 'fail', engagementId, reason }),
       });
     } catch (err) {
@@ -366,6 +380,7 @@ export class QuestSystem {
         await fetch('/api/game/quests', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({
             action: 'progress', engagementId: engId,
             stepStates: entry.stepStates, percentComplete: pct,

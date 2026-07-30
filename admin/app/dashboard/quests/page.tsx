@@ -1,4 +1,4 @@
-import { revalidatePath } from 'next/cache';
+﻿import { revalidatePath } from 'next/cache';
 import { redirect, notFound } from 'next/navigation';
 import { audit, createQuest, deleteQuest, getQuestById, listQuests, updateQuest } from '@/lib/db';
 import { getSession } from '@/lib/session';
@@ -40,6 +40,20 @@ function serializeSelections(values: string[]) {
   return unique.length ? JSON.stringify(unique) : null;
 }
 
+function parseSteps(value: unknown): Array<{ order: number; label: string; type: string; target?: string; count?: number; world?: string; time_limit_s?: number }> {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed;
+  } catch { /* empty */ }
+  return [];
+}
+
+const STEP_TYPES = [
+  'collect', 'visit', 'interact', 'kill', 'deliver',
+  'race', 'escort', 'defend', 'investigate', 'craft', 'stealth', 'talk', 'survive',
+] as const;
+
 const WORLD_OPTIONS = [
   { value: 'station', label: 'Station' },
   { value: 'sports', label: 'Sports' },
@@ -60,6 +74,7 @@ export default async function QuestsPage({
   const editing = editingId ? await getQuestById(editingId) : null;
   const selectedPreSteps = parseStoredSelections(editing?.pre_steps);
   const selectedPostSteps = parseStoredSelections(editing?.post_steps);
+  const editingSteps = parseSteps(editing?.steps);
 
   if (editingId && !editing) notFound();
 
@@ -80,6 +95,24 @@ export default async function QuestsPage({
     const notes = s(formData.get('notes'));
     const isActive = toBool(formData.get('is_active'));
 
+    // Parse quest activity steps from form
+    const stepLabels = formData.getAll('step_label').map(s);
+    const stepTypes  = formData.getAll('step_type').map(s);
+    const stepTargets = formData.getAll('step_target').map(s);
+    const stepCounts  = formData.getAll('step_count').map(s);
+    const stepWorlds  = formData.getAll('step_world').map(s);
+    const parsedSteps = stepLabels
+      .map((label, i) => ({
+        order: i + 1,
+        label,
+        type: stepTypes[i] || 'visit',
+        target: stepTargets[i] || undefined,
+        count: Number(stepCounts[i]) || 1,
+        world: stepWorlds[i] || undefined,
+      }))
+      .filter((step) => step.label);
+    const stepsJson = parsedSteps.length ? JSON.stringify(parsedSteps) : null;
+
     if (!questNumber || !world || !questLine || !title) {
       redirect(`/dashboard/quests?${id ? `quest=${encodeURIComponent(id)}&` : ''}error=Quest number, world, line and title are required`);
     }
@@ -92,17 +125,9 @@ export default async function QuestsPage({
 
     if (id) {
       await updateQuest(id, {
-        questNumber,
-        world,
-        questLine,
-        title,
-        rewardCredits,
-        durationMinutes,
-        preSteps: serializeSelections(preSteps),
-        postSteps: serializeSelections(postSteps),
-        notes,
-        isActive,
-        updatedBy: session.username,
+        questNumber, world, questLine, title, rewardCredits, durationMinutes,
+        preSteps: serializeSelections(preSteps), postSteps: serializeSelections(postSteps),
+        steps: stepsJson, notes, isActive, updatedBy: session.username,
       });
       await audit(session.username, 'quest.update', `quest:${id}`, `#${questNumber} ${title}`);
       revalidatePath('/dashboard');
@@ -111,17 +136,9 @@ export default async function QuestsPage({
     }
 
     const newId = await createQuest({
-      questNumber,
-      world,
-      questLine,
-      title,
-      rewardCredits,
-      durationMinutes,
-      preSteps: serializeSelections(preSteps),
-      postSteps: serializeSelections(postSteps),
-      notes,
-      isActive,
-      updatedBy: session.username,
+      questNumber, world, questLine, title, rewardCredits, durationMinutes,
+      preSteps: serializeSelections(preSteps), postSteps: serializeSelections(postSteps),
+      steps: stepsJson, notes, isActive, updatedBy: session.username,
     });
     await audit(session.username, 'quest.create', `quest:${newId}`, `#${questNumber} ${title}`);
     revalidatePath('/dashboard');
@@ -141,6 +158,9 @@ export default async function QuestsPage({
     revalidatePath('/dashboard/quests');
     redirect('/dashboard/quests?saved=1');
   }
+
+  const blankStep = { order: editingSteps.length + 1, label: '', type: 'visit', target: '', count: 1, world: '' };
+  const displaySteps = editingSteps.length > 0 ? editingSteps : [blankStep];
 
   return (
     <div className="page-body">
@@ -195,8 +215,57 @@ export default async function QuestsPage({
                 <label className="form-label" htmlFor="title">Title</label>
                 <input id="title" name="title" defaultValue={String(editing?.title ?? '')} />
               </div>
+
+              {/* â”€â”€ Activity Steps â”€â”€ */}
               <div className="form-row" style={{ gridColumn: '1 / -1' }}>
-                <label className="form-label" htmlFor="pre_steps">Pre-quest steps</label>
+                <label className="form-label">Activity steps</label>
+                <div style={{ fontSize: 11, color: 'var(--txt-dim)', marginBottom: 8 }}>
+                  Each step defines a concrete in-game action the player must complete.
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {displaySteps.map((step, idx) => (
+                    <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 120px 60px 100px', gap: 6, alignItems: 'end', background: 'var(--bg-alt, #1a1a2e)', padding: '10px 12px', borderRadius: 6 }}>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--txt-dim)', marginBottom: 3 }}>Step {idx + 1} â€” label</div>
+                        <input
+                          name="step_label"
+                          placeholder={`e.g. "Collect 5 relay crystals"`}
+                          defaultValue={step.label}
+                          style={{ width: '100%' }}
+                        />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--txt-dim)', marginBottom: 3 }}>Type</div>
+                        <select name="step_type" defaultValue={step.type}>
+                          {STEP_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--txt-dim)', marginBottom: 3 }}>Target ID</div>
+                        <input name="step_target" placeholder="relay_node" defaultValue={'target' in step ? String(step.target ?? '') : ''} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--txt-dim)', marginBottom: 3 }}>Count</div>
+                        <input name="step_count" type="number" min="1" defaultValue={String('count' in step ? (step.count ?? 1) : 1)} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--txt-dim)', marginBottom: 3 }}>World</div>
+                        <select name="step_world" defaultValue={'world' in step ? String(step.world ?? '') : ''}>
+                          <option value="">â€” same â€”</option>
+                          {WORLD_OPTIONS.map((w) => <option key={w.value} value={w.value}>{w.label}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--txt-dim)', marginTop: 6 }}>
+                  Add a blank step row by including a label. Empty label rows are ignored on save.
+                  To add more rows, save and re-open â€” or use the JSON steps field below.
+                </div>
+              </div>
+
+              <div className="form-row" style={{ gridColumn: '1 / -1' }}>
+                <label className="form-label" htmlFor="pre_steps">Pre-quest requirements</label>
                 <select id="pre_steps" name="pre_steps" multiple size={Math.max(4, Math.min(8, questLineOptions.length || 4))} defaultValue={selectedPreSteps}>
                   {questLineOptions.length === 0 ? <option value="" disabled>No quest lines available yet</option> : null}
                   {questLineOptions.map((line) => (
@@ -206,7 +275,7 @@ export default async function QuestsPage({
                 <div style={{ fontSize: 11, color: 'var(--txt-dim)', marginTop: 6 }}>Hold Ctrl/Cmd to select multiple quest lines.</div>
               </div>
               <div className="form-row" style={{ gridColumn: '1 / -1' }}>
-                <label className="form-label" htmlFor="post_steps">Post-quest steps</label>
+                <label className="form-label" htmlFor="post_steps">Unlocks quest lines</label>
                 <select id="post_steps" name="post_steps" multiple size={Math.max(4, Math.min(8, questLineOptions.length || 4))} defaultValue={selectedPostSteps}>
                   {questLineOptions.length === 0 ? <option value="" disabled>No quest lines available yet</option> : null}
                   {questLineOptions.map((line) => (
@@ -217,7 +286,7 @@ export default async function QuestsPage({
               </div>
               <div className="form-row" style={{ gridColumn: '1 / -1' }}>
                 <label className="form-label" htmlFor="notes">Notes</label>
-                <textarea id="notes" name="notes" rows={4} defaultValue={String(editing?.notes ?? '')} />
+                <textarea id="notes" name="notes" rows={3} defaultValue={String(editing?.notes ?? '')} />
               </div>
               <div className="form-row">
                 <label className="form-label" htmlFor="is_active">Active</label>
@@ -246,27 +315,35 @@ export default async function QuestsPage({
           <div className="tbl-wrap">
             <table>
               <thead><tr>
-                <th>#</th><th>World</th><th>Line</th><th>Title</th><th>Reward</th><th>Time limit</th><th>Status</th><th></th>
+                <th>#</th><th>World</th><th>Line</th><th>Title</th><th>Steps</th><th>Reward</th><th>Time limit</th><th>Status</th><th></th>
               </tr></thead>
               <tbody>
-                {rows.map((r: Record<string, unknown>) => (
-                  <tr key={String(r.id)}>
-                    <td className="mono">{String(r.quest_number)}</td>
-                    <td>{String(r.world)}</td>
-                    <td>{String(r.quest_line)}</td>
-                    <td>{String(r.title)}</td>
-                    <td>{String(r.reward_credits)}</td>
-                    <td>{r.duration_minutes != null ? `${String(r.duration_minutes)} min` : 'No limit'}</td>
-                    <td>{r.is_active ? <span className="tag tag-green">Active</span> : <span className="tag tag-amber">Disabled</span>}</td>
-                    <td>
-                      <a className="btn" style={{ fontSize: 11, padding: '4px 10px' }} href={`/dashboard/quests?quest=${encodeURIComponent(String(r.id))}`}>
-                        Edit
-                      </a>
-                    </td>
-                  </tr>
-                ))}
+                {rows.map((r: Record<string, unknown>) => {
+                  const stepCount = parseSteps(r.steps).length;
+                  return (
+                    <tr key={String(r.id)}>
+                      <td className="mono">{String(r.quest_number)}</td>
+                      <td>{String(r.world)}</td>
+                      <td>{String(r.quest_line)}</td>
+                      <td>{String(r.title)}</td>
+                      <td style={{ textAlign: 'center' }}>
+                        {stepCount > 0
+                          ? <span className="tag tag-green">{stepCount}</span>
+                          : <span className="tag tag-amber">0</span>}
+                      </td>
+                      <td>{String(r.reward_credits)}</td>
+                      <td>{r.duration_minutes != null ? `${String(r.duration_minutes)} min` : 'No limit'}</td>
+                      <td>{r.is_active ? <span className="tag tag-green">Active</span> : <span className="tag tag-amber">Disabled</span>}</td>
+                      <td>
+                        <a className="btn" style={{ fontSize: 11, padding: '4px 10px' }} href={`/dashboard/quests?quest=${encodeURIComponent(String(r.id))}`}>
+                          Edit
+                        </a>
+                      </td>
+                    </tr>
+                  );
+                })}
                 {rows.length === 0 ? (
-                  <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 32 }}>No quests yet</td></tr>
+                  <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 32 }}>No quests yet</td></tr>
                 ) : null}
               </tbody>
             </table>

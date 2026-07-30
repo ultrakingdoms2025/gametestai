@@ -380,7 +380,9 @@ export class NPCManager {
     for (const npc of lorekeepers) {
       const scope = npc.loreScope ?? this.worldId ?? 'overall';
       const entry = this._loreData?.[scope] ?? loreEntryForScope(scope);
-      npc.persona = buildLorePersona(scope, this._loreData);
+      npc.persona    = buildLorePersona(scope, this._loreData);
+      npc.loreTitle  = String(entry.title ?? 'World Lore');
+      npc.loreBody   = String(entry.body ?? '');
       npc.setSignLines?.([
         String(entry.sign_label ?? 'Lorekeeper').toUpperCase(),
         String(entry.title ?? scope).toUpperCase(),
@@ -624,6 +626,8 @@ export class NPCManager {
         loreScope: world.id,
       });
       npc.isLorekeeper = true;
+      npc.loreTitle = String(entry.title ?? 'World Lore');
+      npc.loreBody  = String(entry.body ?? '');
       npc.portalTarget = spec.target;
       made++;
     }

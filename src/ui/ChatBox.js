@@ -137,8 +137,21 @@ export class ChatBox {
     this.el.classList.add('open');
     this._refreshHeader();
 
-    if (npc && !this._greeted(npc)) {
+    const firstTime = npc && !this._greeted(npc);
+
+    if (firstTime) {
       this._systemLine(`Channel open — ${npc.name ?? 'unknown contact'}`);
+    }
+
+    // Lorekeepers: immediately display the world lore text on first open
+    // so the player sees the lore without having to ask for it.
+    if (firstTime && npc?.isLorekeeper && npc.loreBody) {
+      const speaker = (npc.name ?? 'LOREKEEPER').toUpperCase();
+      if (npc.loreTitle) {
+        this._row('sys', 'NEXUS', `— ${npc.loreTitle} —`);
+      }
+      this._row('npc', speaker, npc.loreBody);
+      this._systemLine('Ask me anything about this world or the Nexus.');
     }
 
     this.field.value = '';

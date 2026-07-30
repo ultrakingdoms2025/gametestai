@@ -57,25 +57,34 @@ export async function ensureMarketplaceSchema() {
   await query(`CREATE INDEX IF NOT EXISTS marketplace_items_world_idx ON marketplace_items(world_name, is_active, sort_order, name)`);
   await query(`CREATE INDEX IF NOT EXISTS marketplace_items_category_idx ON marketplace_items(category, is_active, sort_order, name)`);
   await query(`CREATE INDEX IF NOT EXISTS marketplace_items_search_idx ON marketplace_items USING GIN (to_tsvector('simple', name || ' ' || description))`).catch(() => {});
-  await seedMarketplaceItems();
+  await syncMarketplaceSeedItems();
+  await backfillMarketplaceImages();
   schemaEnsured = true;
 }
 
-async function seedMarketplaceItems() {
-  const { rows } = await query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM marketplace_items`);
-  if (Number(rows[0]?.count ?? 0) > 0) return;
-
+async function syncMarketplaceSeedItems() {
   const seed = buildMarketplaceSeedItems();
   for (const item of seed) {
     await query(
       `INSERT INTO marketplace_items
-         (source_key, name, description, category, image, game_action, action_config,
+        (source_key, name, description, category, image, game_action, action_config,
           quantity, cost_buy, cost_sell, world_name, sort_order)
        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
-       ON CONFLICT (source_key) DO NOTHING`,
+       ON CONFLICT (source_key) DO UPDATE
+       SET name = EXCLUDED.name,
+          description = EXCLUDED.description,
+          category = EXCLUDED.category,
+          image = EXCLUDED.image,
+          game_action = EXCLUDED.game_action,
+          action_config = EXCLUDED.action_config,
+          cost_buy = EXCLUDED.cost_buy,
+          cost_sell = EXCLUDED.cost_sell,
+          world_name = EXCLUDED.world_name,
+          sort_order = EXCLUDED.sort_order,
+          updated_at = NOW()`,
       [
-        item.source_key,
-        item.name,
+       item.source_key,
+       item.name,
         item.description,
         item.category,
         item.image,
@@ -86,6 +95,65 @@ async function seedMarketplaceItems() {
         item.cost_sell,
         item.world_name,
         item.sort_order,
+      ]
+    );
+  }
+}
+
+function buildFallbackImage(name: string, category: string, world: string): string {
+  const label = (name || 'ITEM')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .slice(0, 12) || 'ITEM';
+  const worldTag = (world || 'NEXUS')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '')
+    .slice(0, 3) || 'NX';
+  const colorByCategory: Record<string, string> = {
+    cosmetic: '#d46bff',
+    weapons: '#52e9ff',
+    tools: '#ffb44a',
+    health: '#b6ff5a',
+    spells: '#ff7d3c',
+  };
+  const fg = colorByCategory[category] ?? '#52e9ff';
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#0c1722"/>
+          <stop offset="1" stop-color="#1c3144"/>
+        </linearGradient>
+      </defs>
+      <rect width="128" height="128" rx="20" fill="url(#bg)"/>
+      <rect x="14" y="14" width="100" height="100" rx="18" fill="none" stroke="${fg}" stroke-width="4"/>
+      <text x="64" y="66" text-anchor="middle" font-size="20" font-family="Arial, sans-serif" font-weight="700" fill="${fg}">${label}</text>
+      <text x="64" y="90" text-anchor="middle" font-size="12" font-family="Arial, sans-serif" font-weight="700" fill="#cfe6f2">${worldTag}</text>
+    </svg>`;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+async function backfillMarketplaceImages() {
+  const { rows } = await query<Record<string, unknown>>(
+    `SELECT id, name, category, world_name
+     FROM marketplace_items
+     WHERE COALESCE(TRIM(image), '') = ''`
+  );
+
+  for (const row of rows) {
+    await query(
+      `UPDATE marketplace_items
+       SET image = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [
+        buildFallbackImage(
+          String(row.name ?? 'ITEM'),
+          String(row.category ?? 'tools'),
+          String(row.world_name ?? 'nexus')
+        ),
+        String(row.id),
       ]
     );
   }

@@ -126,6 +126,18 @@ export const MARKETPLACE_ACTIONS = [
     effect: 'pause_npcs',
   },
   {
+    id: 'npc_pause_30s',
+    label: 'NPC freeze ++',
+    description: 'Pauses nearby NPC movement for 30 seconds.',
+    effect: 'pause_npcs',
+  },
+  {
+    id: 'npc_pause_60s',
+    label: 'NPC freeze +++',
+    description: 'Pauses nearby NPC movement for 60 seconds.',
+    effect: 'pause_npcs',
+  },
+  {
     id: 'shield_5s',
     label: 'Shield 5s',
     description: 'Creates a short damage shield.',
@@ -142,6 +154,24 @@ export const MARKETPLACE_ACTIONS = [
     label: 'Portal ping',
     description: 'Highlights the nearest portal for 30 seconds.',
     effect: 'portal_ping',
+  },
+  {
+    id: 'cosmetic_headgear',
+    label: 'Unlock headgear',
+    description: 'Unlocks a headgear cosmetic for future character customization.',
+    effect: 'unlock_cosmetic',
+  },
+  {
+    id: 'cosmetic_shirt',
+    label: 'Unlock shirt',
+    description: 'Unlocks a shirt cosmetic for future character customization.',
+    effect: 'unlock_cosmetic',
+  },
+  {
+    id: 'cosmetic_pants',
+    label: 'Unlock pants',
+    description: 'Unlocks a pants cosmetic for future character customization.',
+    effect: 'unlock_cosmetic',
   },
 ] as const;
 
@@ -200,7 +230,8 @@ const BASE_ITEMS = [
     name: 'Rifle Round Pack',
     description: '60 rifle rounds in one bag slot.',
     category: 'weapons' as const,
-    image: makeIcon('RIFLE', '#52e9ff'),
+    image_label: 'RIFLE',
+    image_color: '#52e9ff',
     game_action: 'ammo_pack_rifle' as MarketplaceActionId,
     action_config: { effect: 'grant_ammo', ammo_item: 'bullet', amount: 60 },
     quantity: null,
@@ -214,7 +245,8 @@ const BASE_ITEMS = [
     name: 'Arrow Bundle',
     description: '30 broadhead arrows in one bag slot.',
     category: 'weapons' as const,
-    image: makeIcon('BOW', '#ffd25e'),
+    image_label: 'BOW',
+    image_color: '#ffd25e',
     game_action: 'ammo_pack_arrow' as MarketplaceActionId,
     action_config: { effect: 'grant_ammo', ammo_item: 'arrow', amount: 30 },
     quantity: null,
@@ -228,7 +260,8 @@ const BASE_ITEMS = [
     name: 'Ember Core Cell',
     description: '10 fireball charges in a sealed battery pack.',
     category: 'spells' as const,
-    image: makeIcon('EMBER', '#ff9b3c'),
+    image_label: 'EMBER',
+    image_color: '#ff9b3c',
     game_action: 'ammo_pack_ember' as MarketplaceActionId,
     action_config: { effect: 'grant_ammo', ammo_item: 'fireball_charge', amount: 10 },
     quantity: null,
@@ -242,7 +275,8 @@ const BASE_ITEMS = [
     name: 'Trauma Twin-Pack',
     description: 'Two field medkits in one bag slot.',
     category: 'health' as const,
-    image: makeIcon('MED', '#b6ff5a'),
+    image_label: 'MED',
+    image_color: '#b6ff5a',
     game_action: 'heal_50' as MarketplaceActionId,
     action_config: { effect: 'restore_health', amount: 50 },
     quantity: null,
@@ -251,23 +285,135 @@ const BASE_ITEMS = [
     pricing_kind: 'consumable' as const,
     sort_order: 40,
   },
+  {
+    source_key: 'spell_stasis_5s',
+    name: 'Stasis Rune',
+    description: 'Spell consumable that pauses nearby NPC movement for 5 seconds.',
+    category: 'spells' as const,
+    image_label: 'PAUSE 5',
+    image_color: '#ff7d3c',
+    game_action: 'npc_pause_5s' as MarketplaceActionId,
+    action_config: { effect: 'pause_npcs', seconds: 5, radius: 24 },
+    quantity: null,
+    cost_buy: 125,
+    cost_sell: 55,
+    pricing_kind: 'consumable' as const,
+    sort_order: 60,
+  },
+  {
+    source_key: 'spell_stasis_10s',
+    name: 'Chrono Snare',
+    description: 'Spell consumable that pauses nearby NPC movement for 10 seconds.',
+    category: 'spells' as const,
+    image_label: 'PAUSE 10',
+    image_color: '#ff7d3c',
+    game_action: 'npc_pause_10s' as MarketplaceActionId,
+    action_config: { effect: 'pause_npcs', seconds: 10, radius: 26 },
+    quantity: null,
+    cost_buy: 190,
+    cost_sell: 84,
+    pricing_kind: 'consumable' as const,
+    sort_order: 70,
+  },
+  {
+    source_key: 'spell_stasis_30s',
+    name: 'Time Lock Prism',
+    description: 'Spell consumable that pauses nearby NPC movement for 30 seconds.',
+    category: 'spells' as const,
+    image_label: 'PAUSE 30',
+    image_color: '#ff7d3c',
+    game_action: 'npc_pause_30s' as MarketplaceActionId,
+    action_config: { effect: 'pause_npcs', seconds: 30, radius: 28 },
+    quantity: null,
+    cost_buy: 360,
+    cost_sell: 160,
+    pricing_kind: 'consumable' as const,
+    sort_order: 80,
+  },
+  {
+    source_key: 'spell_stasis_60s',
+    name: 'Temporal Vault Sigil',
+    description: 'Spell consumable that pauses nearby NPC movement for 60 seconds.',
+    category: 'spells' as const,
+    image_label: 'PAUSE 60',
+    image_color: '#ff7d3c',
+    game_action: 'npc_pause_60s' as MarketplaceActionId,
+    action_config: { effect: 'pause_npcs', seconds: 60, radius: 30 },
+    quantity: null,
+    cost_buy: 620,
+    cost_sell: 275,
+    pricing_kind: 'consumable' as const,
+    sort_order: 90,
+  },
+  {
+    source_key: 'cosmetic_headgear_aurora',
+    name: 'Aurora Headgear',
+    description: 'Cosmetic unlock for a high-vis headgear set (reserved for F2 customizer).',
+    category: 'cosmetic' as const,
+    image_label: 'HEAD',
+    image_color: '#d46bff',
+    game_action: 'cosmetic_headgear' as MarketplaceActionId,
+    action_config: { effect: 'unlock_cosmetic', slot: 'headgear', cosmetic_id: 'aurora-headgear' },
+    quantity: null,
+    cost_buy: 240,
+    cost_sell: 96,
+    pricing_kind: 'fixed' as const,
+    sort_order: 200,
+  },
+  {
+    source_key: 'cosmetic_shirt_trail',
+    name: 'Trailrunner Shirt',
+    description: 'Cosmetic unlock for a shirt style (reserved for F2 customizer).',
+    category: 'cosmetic' as const,
+    image_label: 'SHIRT',
+    image_color: '#d46bff',
+    game_action: 'cosmetic_shirt' as MarketplaceActionId,
+    action_config: { effect: 'unlock_cosmetic', slot: 'shirt', cosmetic_id: 'trailrunner-shirt' },
+    quantity: null,
+    cost_buy: 300,
+    cost_sell: 120,
+    pricing_kind: 'fixed' as const,
+    sort_order: 210,
+  },
+  {
+    source_key: 'cosmetic_pants_glide',
+    name: 'Glidepath Pants',
+    description: 'Cosmetic unlock for a pants style (reserved for F2 customizer).',
+    category: 'cosmetic' as const,
+    image_label: 'PANTS',
+    image_color: '#d46bff',
+    game_action: 'cosmetic_pants' as MarketplaceActionId,
+    action_config: { effect: 'unlock_cosmetic', slot: 'pants', cosmetic_id: 'glidepath-pants' },
+    quantity: null,
+    cost_buy: 280,
+    cost_sell: 110,
+    pricing_kind: 'fixed' as const,
+    sort_order: 220,
+  },
 ] as const;
 
-type PricingKind = 'ammo' | 'consumable';
+type PricingKind = 'ammo' | 'consumable' | 'fixed';
 
 export function buildMarketplaceSeedItems(): MarketplaceSeedItem[] {
   const out: MarketplaceSeedItem[] = [];
   for (const world of MARKETPLACE_WORLDS) {
     const multipliers = WORLD_PRICE_MULTIPLIERS[world];
     for (const item of BASE_ITEMS) {
-      const buyMul = item.pricing_kind === 'ammo' ? multipliers.ammoBuy : multipliers.consumableBuy;
-      const sellMul = item.pricing_kind === 'ammo' ? multipliers.ammoSell : multipliers.consumableSell;
+      let buyMul = 1;
+      let sellMul = 1;
+      if (item.pricing_kind === 'ammo') {
+        buyMul = multipliers.ammoBuy;
+        sellMul = multipliers.ammoSell;
+      } else if (item.pricing_kind === 'consumable') {
+        buyMul = multipliers.consumableBuy;
+        sellMul = multipliers.consumableSell;
+      }
       out.push({
         source_key: `${item.source_key}:${world}`,
         name: item.name,
         description: item.description,
         category: item.category,
-        image: item.image,
+        image: makeIcon(item.image_label, item.image_color, world.toUpperCase().slice(0, 3)),
         game_action: item.game_action,
         action_config: item.action_config,
         quantity: item.quantity,
@@ -281,7 +427,7 @@ export function buildMarketplaceSeedItems(): MarketplaceSeedItem[] {
   return out;
 }
 
-function makeIcon(label: string, fg: string): string {
+function makeIcon(label: string, fg: string, worldTag: string): string {
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
       <defs>
@@ -292,7 +438,8 @@ function makeIcon(label: string, fg: string): string {
       </defs>
       <rect width="128" height="128" rx="20" fill="url(#bg)"/>
       <rect x="14" y="14" width="100" height="100" rx="18" fill="none" stroke="${fg}" stroke-width="4"/>
-      <text x="64" y="73" text-anchor="middle" font-size="24" font-family="Arial, sans-serif" font-weight="700" fill="${fg}">${label}</text>
+      <text x="64" y="66" text-anchor="middle" font-size="20" font-family="Arial, sans-serif" font-weight="700" fill="${fg}">${label}</text>
+      <text x="64" y="90" text-anchor="middle" font-size="12" font-family="Arial, sans-serif" font-weight="700" fill="#cfe6f2">${worldTag}</text>
     </svg>`;
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }

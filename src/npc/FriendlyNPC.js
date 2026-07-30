@@ -131,7 +131,8 @@ export class FriendlyNPC extends NPC {
 
   /** Loud noise nearby: drop everything and get away from it. */
   onGunfire(origin, intensity = 1) {
-    if (this.isDead) return;
+    // Lorekeepers are sacred — they never flee, no matter what.
+    if (this.isDead || this.isLorekeeper) return;
     const d = origin ? this.position.distanceTo(origin) : 0;
     if (d > 45) return;
     this.alarm = Math.min(1, this.alarm + intensity * (1 - d / 45));
@@ -143,6 +144,8 @@ export class FriendlyNPC extends NPC {
   }
 
   onDamaged() {
+    // Lorekeepers are sacred — they ignore damage and stay at their post.
+    if (this.isLorekeeper) return;
     this.alarm = 1;
     this.fleeOrigin = this.lastDamageSource?.position?.clone?.() ?? null;
     this.fleeTimer = 6 + this.rnd() * 4;
@@ -358,8 +361,8 @@ export class FriendlyNPC extends NPC {
       return;
     }
 
-    // 2. Take a few steps and come back. Seated characters obviously skip this.
-    if (!this.seated && roll < 0.3 + def.strollChance * 0.45) {
+    // 2. Take a few steps and come back. Seated characters and lorekeepers skip this.
+    if (!this.seated && !this.isLorekeeper && roll < 0.3 + def.strollChance * 0.45) {
       if (this._pickStrollTarget(def.strollRadius)) {
         this.lifeAction = 'stroll';
         this.strollHome = true;

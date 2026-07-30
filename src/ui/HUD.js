@@ -2101,14 +2101,16 @@ export class HUD {
     let text = '';
     let portal = false;
 
-    if (this._nearPortal) {
+    // Lorekeeper always wins: show the talk prompt even when the portal is nearby.
+    if (this._chatNpc?.isLorekeeper && !this._chatOpen) {
+      text = `Read lore — Talk to <b>${escapeHtml(String(this._chatNpc.name ?? 'Lorekeeper'))}</b>`;
+    } else if (this._nearPortal) {
       const po = this._nearPortal;
       const dest = po.label || this.worldManager?.getWorld?.(po.target)?.displayName || po.target || 'the Nexus';
       text = `Enter portal to <b>${escapeHtml(String(dest))}</b>`;
       portal = true;
     } else if (this._chatNpc && !this._chatOpen) {
       text = `Talk to <b>${escapeHtml(String(this._chatNpc.name ?? 'stranger'))}</b>`;
-      if (this._chatNpc.isLorekeeper) portal = false;
     }
 
     const show = !!text && !this._chatOpen && !this._dead;

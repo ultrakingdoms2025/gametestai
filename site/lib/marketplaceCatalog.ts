@@ -1,3 +1,5 @@
+import { buildMarketplaceAiImageUrl } from './marketplaceImages';
+
 export const MARKETPLACE_CATEGORIES = ['cosmetic', 'weapons', 'tools', 'health', 'spells'] as const;
 export type MarketplaceCategory = (typeof MARKETPLACE_CATEGORIES)[number];
 
@@ -503,7 +505,13 @@ export function buildMarketplaceSeedItems(): MarketplaceSeedItem[] {
         name: item.name,
         description: item.description,
         category: item.category,
-        image: makeIcon(item.image_label, item.image_color, world.toUpperCase().slice(0, 3)),
+        image: buildMarketplaceAiImageUrl({
+          name: item.name,
+          description: item.description,
+          category: item.category,
+          world,
+          sourceKey: `${item.source_key}:${world}`,
+        }),
         game_action: item.game_action,
         action_config: item.action_config,
         quantity: item.quantity,
@@ -515,21 +523,4 @@ export function buildMarketplaceSeedItems(): MarketplaceSeedItem[] {
     }
   }
   return out;
-}
-
-function makeIcon(label: string, fg: string, worldTag: string): string {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-      <defs>
-        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#0c1722"/>
-          <stop offset="1" stop-color="#1c3144"/>
-        </linearGradient>
-      </defs>
-      <rect width="128" height="128" rx="20" fill="url(#bg)"/>
-      <rect x="14" y="14" width="100" height="100" rx="18" fill="none" stroke="${fg}" stroke-width="4"/>
-      <text x="64" y="66" text-anchor="middle" font-size="20" font-family="Arial, sans-serif" font-weight="700" fill="${fg}">${label}</text>
-      <text x="64" y="90" text-anchor="middle" font-size="12" font-family="Arial, sans-serif" font-weight="700" fill="#cfe6f2">${worldTag}</text>
-    </svg>`;
-  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }

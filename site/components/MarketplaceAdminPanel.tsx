@@ -10,6 +10,7 @@ import {
   type MarketplaceItemRecord,
   type MarketplaceWorld,
 } from '@/lib/marketplaceCatalog';
+import { buildMarketplaceAiImageUrl } from '@/lib/marketplaceImages';
 
 type FormState = {
   name: string;
@@ -43,33 +44,13 @@ const EMPTY_FORM: FormState = {
   source_key: '',
 };
 
-function imageFallback(name: string, category: string) {
-  const label = (name || category || 'ITEM')
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, ' ')
-    .slice(0, 12) || 'ITEM';
-  const colors: Record<MarketplaceCategory, string> = {
-    cosmetic: '#d46bff',
-    weapons: '#52e9ff',
-    tools: '#ffb44a',
-    health: '#b6ff5a',
-    spells: '#ff7d3c',
-  };
-  const fg = colors[category as MarketplaceCategory] ?? '#52e9ff';
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-      <defs>
-        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#0c1722"/>
-          <stop offset="1" stop-color="#172a3b"/>
-        </linearGradient>
-      </defs>
-      <rect width="128" height="128" rx="20" fill="url(#bg)"/>
-      <rect x="14" y="14" width="100" height="100" rx="18" fill="none" stroke="${fg}" stroke-width="4"/>
-      <text x="64" y="72" text-anchor="middle" font-size="20" font-family="Arial, sans-serif" font-weight="700" fill="${fg}">${label}</text>
-    </svg>`;
-  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read image file.'));
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.readAsDataURL(file);
+  });
 }
 
 function parseJsonConfig(text: string): Record<string, unknown> {
@@ -111,6 +92,7 @@ export function MarketplaceAdminPanel() {
   const [activeOnly, setActiveOnly] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [imageBusy, setImageBusy] = useState(false);
 
   const selectedAction = useMemo(
     () => MARKETPLACE_ACTIONS.find((action) => action.id === form.game_action) ?? MARKETPLACE_ACTIONS[0],
@@ -160,6 +142,40 @@ export function MarketplaceAdminPanel() {
     setMessage('');
   }
 
+  async function uploadImageFile(file: File | null) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setMessage('Please choose an image file.');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setMessage('Image file is too large. Please keep it under 2 MB.');
+      return;
+    }
+    setImageBusy(true);
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      updateField('image', dataUrl);
+      setMessage(`Uploaded image: ${file.name}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not upload image.');
+    } finally {
+      setImageBusy(false);
+    }
+  }
+
+  function generateAiImage() {
+    const imageUrl = buildMarketplaceAiImageUrl({
+      name: form.name.trim() || 'Marketplace item',
+      description: form.description.trim(),
+      category: form.category,
+      world: form.world_name,
+      sourceKey: form.source_key.trim() || undefined,
+    });
+    updateField('image', imageUrl);
+    setMessage('AI image applied.');
+  }
+
   async function saveItem() {
     let actionConfig: Record<string, unknown>;
     try {
@@ -173,7 +189,13 @@ export function MarketplaceAdminPanel() {
       name: form.name.trim(),
       description: form.description.trim(),
       category: form.category,
-      image: form.image.trim() || imageFallback(form.name, form.category),
+      image: form.image.trim() || buildMarketplaceAiImageUrl({
+        name: form.name.trim() || 'Marketplace item',
+        description: form.description.trim(),
+        category: form.category,
+        world: form.world_name,
+        sourceKey: form.source_key.trim() || undefined,
+      }),
       game_action: form.game_action,
       action_config: actionConfig,
       quantity: form.quantity.trim() === '' ? null : Number(form.quantity),
@@ -367,8 +389,45 @@ export function MarketplaceAdminPanel() {
 
           <label style={labelStyle}>
             Image URL or data URI
-            <input style={inputStyle} value={form.image} onChange={(e) => updateField('image', e.target.value)} placeholder="Optional; falls back to a generated SVG" />
+            <input
+              style={inputStyle}
+              value={form.image}
+              onChange={(e) => updateField('image', e.target.value)}
+              placeholder="Optional; leave blank to auto-generate AI image"
+            />
           </label>
+          <div style={{ display: 'grid', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button className="btn btn-ghost btn-sm" type="button" onClick={generateAiImage} disabled={loading || imageBusy}>
+                Generate AI image
+              </button>
+              <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
+                {imageBusy ? 'Uploading…' : 'Upload image'}
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] ?? null;
+                    e.currentTarget.value = '';
+                    void uploadImageFile(file);
+                  }}
+                />
+              </label>
+            </div>
+            <div style={{ color: '#9ab3c8', fontSize: 12 }}>
+              Upload supports PNG/JPG/WebP/GIF/SVG (max 2 MB). If image is blank, an AI image URL is generated automatically.
+            </div>
+            {form.image ? (
+              <img
+                src={form.image}
+                alt={`${form.name || 'Marketplace item'} preview`}
+                width={96}
+                height={96}
+                style={{ width: 96, height: 96, borderRadius: 12, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.1)', background: '#0b1722' }}
+              />
+            ) : null}
+          </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
             <label style={labelStyle}>

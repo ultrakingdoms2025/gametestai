@@ -23,6 +23,7 @@ export default function SiteHeader() {
           <>
             <span className="site-header-email">{session.user?.name ?? session.user?.email}</span>
             <Link href="/account" className="btn btn-ghost site-header-btn">Account</Link>
+            <Link href="/admin/marketplace" className="btn btn-ghost site-header-btn">Admin</Link>
             <Link href="/play" className="btn btn-primary site-header-btn">Enter game</Link>
             <SignOutButton className="btn btn-ghost site-header-btn" />
           </>

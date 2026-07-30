@@ -81,6 +81,13 @@ const RENDER_IN = 125;
 const RENDER_OUT = 135;
 
 const THEME_BY_WORLD = { station: 'station', medieval: 'medieval', sports: 'sports' };
+const MERCHANT_SIGN_WORLD = {
+  station: 'AETHER NEXUS',
+  medieval: 'ALDERMOOR VALE',
+  sports: 'MERIDIAN ARENA',
+  citadel: 'SUNSPIRE CITADEL',
+  race: 'VELLUM CIRCUIT',
+};
 
 /** Fallback names so a world that forgets to name its friendlies still reads. */
 const FALLBACK_NAMES = {
@@ -585,6 +592,12 @@ export class NPCManager {
     npc.isQuestManager = o.isQuestManager ?? false;
     npc.loreScope = o.loreScope ?? null;
     if (o.signLines) npc.setSignLines?.(o.signLines);
+    if (npc.isVendor && !o.signLines) {
+      npc.setSignLines?.([
+        'MERCHANT',
+        MERCHANT_SIGN_WORLD[this.worldId] ?? String(this.worldId ?? 'NEXUS').toUpperCase(),
+      ]);
+    }
     // Before the first step it takes: a character created after the world's
     // water was announced would otherwise steer blind until the next swap.
     npc.setWater(this.water);

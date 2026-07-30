@@ -112,8 +112,7 @@ export class ChatBox {
     root.appendChild(box);
     this.el = box;
 
-    // The field owns its own key handling; Input is in text-capture mode and
-    // deliberately ignores everything while we are open.
+    // The field owns Enter/Escape while focused.
     this.field.addEventListener('keydown', (e) => {
       e.stopPropagation();
       if (e.key === 'Enter') {
@@ -124,6 +123,16 @@ export class ChatBox {
         this.close();
       }
     });
+    // Window-level Escape so closing works even when the text field isn't
+    // focused (e.g. the player clicked the chat log to scroll it).
+    this._onWindowKey = (e) => {
+      if (this._open && e.code === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.close();
+      }
+    };
+    window.addEventListener('keydown', this._onWindowKey, true);
     // Stop stray clicks inside the panel from re-requesting pointer lock.
     box.addEventListener('mousedown', (e) => e.stopPropagation());
   }
@@ -369,6 +378,7 @@ export class ChatBox {
 
   dispose() {
     this._abort?.abort();
+    window.removeEventListener('keydown', this._onWindowKey, true);
     this.el?.remove();
   }
 }

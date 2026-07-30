@@ -33,6 +33,17 @@ export class QuestBoard {
     this._el = this._build();
     root.appendChild(this._el);
 
+    // Window-level Escape listener so closing works regardless of focus or
+    // pointer-lock state (same pattern as HelpMenu, AudioMenu, etc.).
+    this._onWindowKey = (e) => {
+      if (this._open && this._openGuard === 0 && e.code === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.close();
+      }
+    };
+    window.addEventListener('keydown', this._onWindowKey, true);
+
     /** @type {Array<()=>void>} */
     this._offs = [];
     if (this.bus) {
@@ -70,12 +81,15 @@ export class QuestBoard {
       this._openGuard--;
       return;
     }
-    if (this.input?.pressed('Escape') || this.input?.pressed('KeyE')) {
+    // E toggles the board (gameplay key, checked via Input polling).
+    // Escape is handled by the window keydown listener above.
+    if (this.input?.pressed('KeyE')) {
       this.close();
     }
   }
 
   destroy() {
+    window.removeEventListener('keydown', this._onWindowKey, true);
     for (const off of this._offs) off?.();
     this._offs.length = 0;
     this._el.remove();

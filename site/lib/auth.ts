@@ -5,6 +5,7 @@ import { getUserByEmail, getUserByGoogleId, createUser, linkGoogleAccount, verif
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   secret: process.env.NEXTAUTH_SECRET ?? process.env.APP_SECRET ?? 'dev-secret-change-me',
+  debug: process.env.NODE_ENV === 'development',
 
   providers: [
     Google({
@@ -45,23 +46,31 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
   callbacks: {
     async signIn({ user, account, profile }) {
-      // Google sign-in: upsert user
+      // Google sign-in: upsert user in our DB
       if (account?.provider === 'google' && profile?.email) {
-        const existing = await getUserByEmail(profile.email);
-        if (existing) {
-          if (!existing.google_id) {
-            await linkGoogleAccount(existing.id, profile.sub as string);
-          }
-          user.id = existing.id;
-        } else {
+        try {
           const googleId = typeof profile.sub === 'string' ? profile.sub : String(profile.sub ?? '');
-          const existing2 = await getUserByGoogleId(googleId);
-          if (existing2) {
-            user.id = existing2.id;
+          const email = profile.email.toLowerCase().trim();
+
+          // Check by email first, then by Google ID
+          let existing = await getUserByEmail(email);
+          if (!existing && googleId) {
+            existing = await getUserByGoogleId(googleId);
+          }
+
+          if (existing) {
+            if (!existing.google_id && googleId) {
+              await linkGoogleAccount(existing.id, googleId);
+            }
+            user.id = existing.id;
           } else {
-            const created = await createUser({ email: profile.email, googleId });
+            const created = await createUser({ email, googleId: googleId || undefined });
             user.id = created.id;
           }
+        } catch (err) {
+          console.error('[auth] Google signIn DB error:', err);
+          // Return false to show an error rather than creating a broken session
+          return false;
         }
       }
       return true;

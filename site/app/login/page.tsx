@@ -11,9 +11,27 @@ function LoginForm() {
   const callbackUrl = searchParams.get('callbackUrl') ?? '/';
   const errorParam = searchParams.get('error');
 
+  // Map NextAuth error codes to human-readable messages
+  const errorMessage = (() => {
+    if (!errorParam) return '';
+    switch (errorParam) {
+      case 'OAuthAccountNotLinked':
+        return 'This email is already registered with a different sign-in method. Please sign in with email/password instead.';
+      case 'AccessDenied':
+        return 'Access denied. Please try again.';
+      case 'OAuthCallbackError':
+      case 'CallbackRouteError':
+        return 'Google sign-in failed. Please try again or use email/password.';
+      case 'CredentialsSignin':
+        return 'Invalid email or password.';
+      default:
+        return `Sign-in failed (${errorParam}). Please try again.`;
+    }
+  })();
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState(errorParam ? 'Sign-in failed. Check your credentials.' : '');
+  const [error, setError] = useState(errorMessage);
   const [pending, startTransition] = useTransition();
 
   async function handleSubmit(e: React.FormEvent) {

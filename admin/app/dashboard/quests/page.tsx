@@ -1,7 +1,9 @@
-﻿import { revalidatePath } from 'next/cache';
+import { revalidatePath } from 'next/cache';
 import { redirect, notFound } from 'next/navigation';
 import { audit, createQuest, deleteQuest, getQuestById, listQuests, updateQuest } from '@/lib/db';
 import { getSession } from '@/lib/session';
+import QuestStepEditor from './StepEditor';
+import type { Step } from './StepEditor';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,9 +28,7 @@ function parseStoredSelections(value: unknown) {
   try {
     const parsed = JSON.parse(value);
     if (Array.isArray(parsed)) return parsed.map((item) => String(item).trim()).filter(Boolean);
-  } catch {
-    // fall through to legacy text parsing
-  }
+  } catch { /* empty */ }
   return value
     .split(/\r?\n|,/)
     .map((item) => item.trim())
@@ -40,26 +40,30 @@ function serializeSelections(values: string[]) {
   return unique.length ? JSON.stringify(unique) : null;
 }
 
-function parseSteps(value: unknown): Array<{ order: number; label: string; type: string; target?: string; count?: number; world?: string; time_limit_s?: number }> {
+function parseSteps(value: unknown): Step[] {
   if (typeof value !== 'string' || !value.trim()) return [];
   try {
     const parsed = JSON.parse(value);
-    if (Array.isArray(parsed)) return parsed;
+    if (Array.isArray(parsed)) {
+      return parsed.map((s, i) => ({
+        order: Number(s.order) || i + 1,
+        label: String(s.label ?? ''),
+        type: String(s.type ?? 'visit'),
+        target: String(s.target ?? ''),
+        count: Number(s.count) || 1,
+        world: String(s.world ?? ''),
+      }));
+    }
   } catch { /* empty */ }
   return [];
 }
 
-const STEP_TYPES = [
-  'collect', 'visit', 'interact', 'kill', 'deliver',
-  'race', 'escort', 'defend', 'investigate', 'craft', 'stealth', 'talk', 'survive',
-] as const;
-
 const WORLD_OPTIONS = [
-  { value: 'station', label: 'Station' },
-  { value: 'sports', label: 'Sports' },
-  { value: 'race', label: 'Race' },
+  { value: 'station',  label: 'Station'  },
+  { value: 'sports',   label: 'Sports'   },
+  { value: 'race',     label: 'Race'     },
   { value: 'medieval', label: 'Medieval' },
-  { value: 'citadel', label: 'Citadel' },
+  { value: 'citadel',  label: 'Citadel'  },
 ] as const;
 
 export default async function QuestsPage({
@@ -69,7 +73,9 @@ export default async function QuestsPage({
 }) {
   const { quest, saved, error } = await searchParams;
   const rows = await listQuests();
-  const questLineOptions = Array.from(new Set(rows.map((r: Record<string, unknown>) => String(r.quest_line)))).filter(Boolean);
+  const questLineOptions = Array.from(
+    new Set(rows.map((r: Record<string, unknown>) => String(r.quest_line)))
+  ).filter(Boolean);
   const editingId = quest && quest !== 'new' ? quest : null;
   const editing = editingId ? await getQuestById(editingId) : null;
   const selectedPreSteps = parseStoredSelections(editing?.pre_steps);
@@ -95,32 +101,30 @@ export default async function QuestsPage({
     const notes = s(formData.get('notes'));
     const isActive = toBool(formData.get('is_active'));
 
-    // Parse quest activity steps from form
-    const stepLabels = formData.getAll('step_label').map(s);
-    const stepTypes  = formData.getAll('step_type').map(s);
-    const stepTargets = formData.getAll('step_target').map(s);
-    const stepCounts  = formData.getAll('step_count').map(s);
-    const stepWorlds  = formData.getAll('step_world').map(s);
-    const parsedSteps = stepLabels
-      .map((label, i) => ({
-        order: i + 1,
-        label,
-        type: stepTypes[i] || 'visit',
-        target: stepTargets[i] || undefined,
-        count: Number(stepCounts[i]) || 1,
-        world: stepWorlds[i] || undefined,
-      }))
-      .filter((step) => step.label);
-    const stepsJson = parsedSteps.length ? JSON.stringify(parsedSteps) : null;
+    // Steps come as a single JSON string from the client StepEditor component
+    let stepsJson: string | null = null;
+    const rawSteps = s(formData.get('steps_json'));
+    if (rawSteps) {
+      try {
+        const parsed = JSON.parse(rawSteps);
+        if (Array.isArray(parsed) && parsed.length > 0) stepsJson = rawSteps;
+      } catch { /* malformed — leave null */ }
+    }
 
     if (!questNumber || !world || !questLine || !title) {
-      redirect(`/dashboard/quests?${id ? `quest=${encodeURIComponent(id)}&` : ''}error=Quest number, world, line and title are required`);
+      redirect(
+        `/dashboard/quests?${id ? `quest=${encodeURIComponent(id)}&` : ''}error=Quest number, world, line and title are required`
+      );
     }
     if (!WORLD_OPTIONS.some((option) => option.value === world)) {
-      redirect(`/dashboard/quests?${id ? `quest=${encodeURIComponent(id)}&` : ''}error=World must be one of the 5 available worlds`);
+      redirect(
+        `/dashboard/quests?${id ? `quest=${encodeURIComponent(id)}&` : ''}error=World must be one of the 5 available worlds`
+      );
     }
     if (durationMinutes !== null && (!Number.isInteger(durationMinutes) || durationMinutes < 1)) {
-      redirect(`/dashboard/quests?${id ? `quest=${encodeURIComponent(id)}&` : ''}error=Completion window must be a whole number of minutes`);
+      redirect(
+        `/dashboard/quests?${id ? `quest=${encodeURIComponent(id)}&` : ''}error=Completion window must be a whole number of minutes`
+      );
     }
 
     if (id) {
@@ -159,9 +163,6 @@ export default async function QuestsPage({
     redirect('/dashboard/quests?saved=1');
   }
 
-  const blankStep = { order: editingSteps.length + 1, label: '', type: 'visit', target: '', count: 1, world: '' };
-  const displaySteps = editingSteps.length > 0 ? editingSteps : [blankStep];
-
   return (
     <div className="page-body">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 24 }}>
@@ -178,14 +179,19 @@ export default async function QuestsPage({
           <form action={saveQuest}>
             {editing ? <input type="hidden" name="id" value={String(editing.id)} /> : null}
             <div className="form-grid">
+
               <div className="form-row">
                 <label className="form-label" htmlFor="quest_number">Quest number</label>
-                <input id="quest_number" name="quest_number" type="number" min="1" step="1" defaultValue={String(editing?.quest_number ?? '')} />
+                <input id="quest_number" name="quest_number" type="number" min="1" step="1"
+                  defaultValue={String(editing?.quest_number ?? '')} />
               </div>
+
               <div className="form-row">
                 <label className="form-label" htmlFor="reward_credits">Reward credits</label>
-                <input id="reward_credits" name="reward_credits" type="number" min="0" step="1" defaultValue={String(editing?.reward_credits ?? 0)} />
+                <input id="reward_credits" name="reward_credits" type="number" min="0" step="1"
+                  defaultValue={String(editing?.reward_credits ?? 0)} />
               </div>
+
               <div className="form-row">
                 <label className="form-label" htmlFor="duration_minutes">Completion window (minutes)</label>
                 <input
@@ -198,99 +204,90 @@ export default async function QuestsPage({
                   placeholder="Optional"
                 />
               </div>
+
               <div className="form-row">
                 <label className="form-label" htmlFor="world">World assigned to</label>
                 <select id="world" name="world" defaultValue={editing?.world ?? ''}>
                   <option value="" disabled>Select a world</option>
-                  {WORLD_OPTIONS.map((worldOption) => (
-                    <option key={worldOption.value} value={worldOption.value}>{worldOption.label}</option>
+                  {WORLD_OPTIONS.map((w) => (
+                    <option key={w.value} value={w.value}>{w.label}</option>
                   ))}
                 </select>
               </div>
+
               <div className="form-row">
                 <label className="form-label" htmlFor="quest_line">Quest line</label>
-                <input id="quest_line" name="quest_line" defaultValue={String(editing?.quest_line ?? '')} placeholder="Main story" />
+                <input id="quest_line" name="quest_line"
+                  defaultValue={String(editing?.quest_line ?? '')} placeholder="Main story" />
               </div>
+
               <div className="form-row" style={{ gridColumn: '1 / -1' }}>
                 <label className="form-label" htmlFor="title">Title</label>
                 <input id="title" name="title" defaultValue={String(editing?.title ?? '')} />
               </div>
 
-              {/* â”€â”€ Activity Steps â”€â”€ */}
+              {/* Activity Steps -- client component handles add/remove */}
               <div className="form-row" style={{ gridColumn: '1 / -1' }}>
                 <label className="form-label">Activity steps</label>
                 <div style={{ fontSize: 11, color: 'var(--txt-dim)', marginBottom: 8 }}>
                   Each step defines a concrete in-game action the player must complete.
+                  Changes are saved when you click &ldquo;Save quest&rdquo;.
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {displaySteps.map((step, idx) => (
-                    <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 120px 60px 100px', gap: 6, alignItems: 'end', background: 'var(--bg-alt, #1a1a2e)', padding: '10px 12px', borderRadius: 6 }}>
-                      <div>
-                        <div style={{ fontSize: 10, color: 'var(--txt-dim)', marginBottom: 3 }}>Step {idx + 1} â€” label</div>
-                        <input
-                          name="step_label"
-                          placeholder={`e.g. "Collect 5 relay crystals"`}
-                          defaultValue={step.label}
-                          style={{ width: '100%' }}
-                        />
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 10, color: 'var(--txt-dim)', marginBottom: 3 }}>Type</div>
-                        <select name="step_type" defaultValue={step.type}>
-                          {STEP_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 10, color: 'var(--txt-dim)', marginBottom: 3 }}>Target ID</div>
-                        <input name="step_target" placeholder="relay_node" defaultValue={'target' in step ? String(step.target ?? '') : ''} />
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 10, color: 'var(--txt-dim)', marginBottom: 3 }}>Count</div>
-                        <input name="step_count" type="number" min="1" defaultValue={String('count' in step ? (step.count ?? 1) : 1)} />
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 10, color: 'var(--txt-dim)', marginBottom: 3 }}>World</div>
-                        <select name="step_world" defaultValue={'world' in step ? String(step.world ?? '') : ''}>
-                          <option value="">â€” same â€”</option>
-                          {WORLD_OPTIONS.map((w) => <option key={w.value} value={w.value}>{w.label}</option>)}
-                        </select>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--txt-dim)', marginTop: 6 }}>
-                  Add a blank step row by including a label. Empty label rows are ignored on save.
-                  To add more rows, save and re-open â€” or use the JSON steps field below.
-                </div>
+                <QuestStepEditor initial={editingSteps} />
               </div>
 
               <div className="form-row" style={{ gridColumn: '1 / -1' }}>
                 <label className="form-label" htmlFor="pre_steps">Pre-quest requirements</label>
-                <select id="pre_steps" name="pre_steps" multiple size={Math.max(4, Math.min(8, questLineOptions.length || 4))} defaultValue={selectedPreSteps}>
-                  {questLineOptions.length === 0 ? <option value="" disabled>No quest lines available yet</option> : null}
+                <select
+                  id="pre_steps"
+                  name="pre_steps"
+                  multiple
+                  size={Math.max(4, Math.min(8, questLineOptions.length || 4))}
+                  defaultValue={selectedPreSteps}
+                >
+                  {questLineOptions.length === 0
+                    ? <option value="" disabled>No quest lines available yet</option>
+                    : null}
                   {questLineOptions.map((line) => (
                     <option key={line} value={line}>{line}</option>
                   ))}
                 </select>
-                <div style={{ fontSize: 11, color: 'var(--txt-dim)', marginTop: 6 }}>Hold Ctrl/Cmd to select multiple quest lines.</div>
+                <div style={{ fontSize: 11, color: 'var(--txt-dim)', marginTop: 6 }}>
+                  Hold Ctrl/Cmd to select multiple quest lines.
+                </div>
               </div>
+
               <div className="form-row" style={{ gridColumn: '1 / -1' }}>
                 <label className="form-label" htmlFor="post_steps">Unlocks quest lines</label>
-                <select id="post_steps" name="post_steps" multiple size={Math.max(4, Math.min(8, questLineOptions.length || 4))} defaultValue={selectedPostSteps}>
-                  {questLineOptions.length === 0 ? <option value="" disabled>No quest lines available yet</option> : null}
+                <select
+                  id="post_steps"
+                  name="post_steps"
+                  multiple
+                  size={Math.max(4, Math.min(8, questLineOptions.length || 4))}
+                  defaultValue={selectedPostSteps}
+                >
+                  {questLineOptions.length === 0
+                    ? <option value="" disabled>No quest lines available yet</option>
+                    : null}
                   {questLineOptions.map((line) => (
                     <option key={line} value={line}>{line}</option>
                   ))}
                 </select>
-                <div style={{ fontSize: 11, color: 'var(--txt-dim)', marginTop: 6 }}>Hold Ctrl/Cmd to select multiple quest lines.</div>
+                <div style={{ fontSize: 11, color: 'var(--txt-dim)', marginTop: 6 }}>
+                  Hold Ctrl/Cmd to select multiple quest lines.
+                </div>
               </div>
+
               <div className="form-row" style={{ gridColumn: '1 / -1' }}>
                 <label className="form-label" htmlFor="notes">Notes</label>
-                <textarea id="notes" name="notes" rows={3} defaultValue={String(editing?.notes ?? '')} />
+                <textarea id="notes" name="notes" rows={3}
+                  defaultValue={String(editing?.notes ?? '')} />
               </div>
+
               <div className="form-row">
-                <label className="form-label" htmlFor="is_active">Active</label>
-                <select id="is_active" name="is_active" defaultValue={editing ? (editing.is_active ? '1' : '0') : '1'}>
+                <label className="form-label" htmlFor="is_active">Status</label>
+                <select id="is_active" name="is_active"
+                  defaultValue={editing ? (editing.is_active ? '1' : '0') : '1'}>
                   <option value="1">Active</option>
                   <option value="0">Disabled</option>
                 </select>
@@ -314,9 +311,19 @@ export default async function QuestsPage({
           <div className="section-title">Quest list</div>
           <div className="tbl-wrap">
             <table>
-              <thead><tr>
-                <th>#</th><th>World</th><th>Line</th><th>Title</th><th>Steps</th><th>Reward</th><th>Time limit</th><th>Status</th><th></th>
-              </tr></thead>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>World</th>
+                  <th>Line</th>
+                  <th>Title</th>
+                  <th>Steps</th>
+                  <th>Reward</th>
+                  <th>Time limit</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
+              </thead>
               <tbody>
                 {rows.map((r: Record<string, unknown>) => {
                   const stepCount = parseSteps(r.steps).length;
@@ -333,9 +340,17 @@ export default async function QuestsPage({
                       </td>
                       <td>{String(r.reward_credits)}</td>
                       <td>{r.duration_minutes != null ? `${String(r.duration_minutes)} min` : 'No limit'}</td>
-                      <td>{r.is_active ? <span className="tag tag-green">Active</span> : <span className="tag tag-amber">Disabled</span>}</td>
                       <td>
-                        <a className="btn" style={{ fontSize: 11, padding: '4px 10px' }} href={`/dashboard/quests?quest=${encodeURIComponent(String(r.id))}`}>
+                        {r.is_active
+                          ? <span className="tag tag-green">Active</span>
+                          : <span className="tag tag-amber">Disabled</span>}
+                      </td>
+                      <td>
+                        <a
+                          className="btn"
+                          style={{ fontSize: 11, padding: '4px 10px' }}
+                          href={`/dashboard/quests?quest=${encodeURIComponent(String(r.id))}`}
+                        >
                           Edit
                         </a>
                       </td>
@@ -343,7 +358,11 @@ export default async function QuestsPage({
                   );
                 })}
                 {rows.length === 0 ? (
-                  <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 32 }}>No quests yet</td></tr>
+                  <tr>
+                    <td colSpan={9} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 32 }}>
+                      No quests yet
+                    </td>
+                  </tr>
                 ) : null}
               </tbody>
             </table>

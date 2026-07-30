@@ -83,3 +83,4 @@ tr:hover td { background: rgba(82,233,255,0.03); }
 .audit-chain-ok   { color: var(--green); }
 .audit-chain-fail { color: var(--red); }
 .mono { font-family: var(--font); font-size: 11px; color: var(--txt-dim); }
+.step-col-label { font-size: 10px; color: var(--txt-dim); margin-bottom: 3px; }

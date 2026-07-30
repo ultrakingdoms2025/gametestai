@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import CreditPicker from '@/components/CreditPicker';
+import { getCurrentAccessState } from '@/lib/access';
 import { readPass } from '@/lib/entitlement';
 import { stripeConfigured } from '@/lib/stripe';
 
@@ -8,8 +9,8 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Buy credits — AETHER NEXUS' };
 
 export default async function Store() {
+  const { hasAccess } = await getCurrentAccessState();
   const pass = await readPass();
-  const paid = !!pass?.paid;
 
   return (
     <main>
@@ -50,7 +51,7 @@ export default async function Store() {
             </div>
           ) : null}
 
-          <CreditPicker needsEntry={!paid} />
+          <CreditPicker needsEntry={!hasAccess} />
         </div>
       </section>
     </main>

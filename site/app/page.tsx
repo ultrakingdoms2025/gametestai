@@ -2,10 +2,10 @@ import Link from 'next/link';
 import HeroCanvas from '@/components/HeroCanvas';
 import HomeWorldShowcase from '@/components/HomeWorldShowcase';
 import AccountDashboard from '@/components/AccountDashboard';
-import { readPass } from '@/lib/entitlement';
+import { getAccessStateForSession } from '@/lib/access';
+import { auth } from '@/lib/auth';
 import { ENTRY_CENTS, CREDIT_PRICE_CENTS, MIN_CREDITS, formatCents, grossUp } from '@/lib/pricing';
 import { stripeConfigured } from '@/lib/stripe';
-import { auth } from '@/lib/auth';
 
 /* Reads a cookie, so it cannot be prerendered — and should not be, since the
  * page's primary call to action changes depending on whether you have paid. */
@@ -107,10 +107,9 @@ const FEATURES = [
 ];
 
 export default async function Home() {
-  const pass = await readPass();
-  const paid = !!pass?.paid;
-  const entryTotal = grossUp(ENTRY_CENTS);
   const session = await auth();
+  const { hasAccess } = await getAccessStateForSession(session);
+  const entryTotal = grossUp(ENTRY_CENTS);
 
   return (
     <>
@@ -125,7 +124,7 @@ export default async function Home() {
           </div>
           <div className="nav-cta">
             {session ? (
-              paid ? (
+              hasAccess ? (
                 <Link className="btn btn-primary btn-sm" href="/play">Enter game</Link>
               ) : (
                 <Link className="btn btn-primary btn-sm" href="/checkout?intent=entry">
@@ -160,7 +159,7 @@ export default async function Home() {
             generating every world, character and texture in code as you play.
           </p>
           <div className="hero-actions">
-            {paid ? (
+            {hasAccess ? (
               <Link className="btn btn-primary" href="/play">Enter game</Link>
             ) : (
               <Link className="btn btn-primary" href="/checkout?intent=entry">
@@ -169,8 +168,8 @@ export default async function Home() {
             )}
             <Link className="btn btn-ghost" href="/store">Buy credits</Link>
             <span className="btn-note">
-              {paid
-                ? 'Access unlocked on this browser'
+              {hasAccess
+                ? '30-day access active on this account'
                 : `One-off · ${formatCents(ENTRY_CENTS)} plus processing`}
             </span>
           </div>
@@ -253,13 +252,13 @@ export default async function Home() {
           <div className="cta-band-kicker">Get in</div>
           <h2 className="cta-band-h2">One charge.<br />Five worlds.</h2>
           <p className="cta-band-sub">
-            Access is a single {formatCents(ENTRY_CENTS)} charge, once, and it is yours
-            on this browser. Credits are separate and optional —{' '}
+            Access is {formatCents(ENTRY_CENTS)} for a 30-day play window on your
+            account. Credits are separate and optional —{' '}
             {formatCents(CREDIT_PRICE_CENTS)} each, from {MIN_CREDITS} to 10,000.
             Prices shown before card processing, which appears as its own line at checkout.
           </p>
           <div className="cta-band-actions">
-            {paid ? (
+            {hasAccess ? (
               <Link className="btn btn-primary" href="/play">Enter game</Link>
             ) : (
               <Link className="btn btn-primary" href="/checkout?intent=entry">
@@ -278,8 +277,8 @@ export default async function Home() {
             <Link href="/restore">Restore a purchase</Link>
           </span>
           <span>
-            {paid
-              ? 'Access unlocked'
+            {hasAccess
+              ? 'Access active'
               : `Access ${formatCents(entryTotal)} · credits from ${formatCents(grossUp(MIN_CREDITS * CREDIT_PRICE_CENTS))}`}
           </span>
         </div>

@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import PayButton from '@/components/PayButton';
-import { readPass } from '@/lib/entitlement';
+import { getCurrentAccessState } from '@/lib/access';
 import {
   clampCredits,
   feeLabel,
@@ -34,12 +34,12 @@ export default async function Checkout(props: {
   const intentRaw = typeof sp.intent === 'string' ? sp.intent : 'entry';
   const creditsRaw = typeof sp.credits === 'string' ? sp.credits : '0';
 
-  const pass = await readPass();
-  const paid = !!pass?.paid;
+  const { hasAccess } = await getCurrentAccessState();
 
-  const intent = intentRaw === 'credits' && paid ? 'credits'
-    : intentRaw === 'credits' || intentRaw === 'entry+credits' ? 'entry+credits'
-      : 'entry';
+  const intent = intentRaw === 'credits' && hasAccess ? 'credits'
+    : intentRaw === 'credits' || intentRaw === 'entry+credits'
+      ? (hasAccess ? 'credits' : 'entry+credits')
+      : hasAccess ? 'credits' : 'entry';
 
   const credits = intent === 'entry' ? 0 : clampCredits(creditsRaw);
   const quote = intent === 'entry'
@@ -111,10 +111,10 @@ export default async function Checkout(props: {
 
             <p className="note">
               {intent === 'entry'
-                ? 'One-off charge for permanent access to the game on this browser.'
+                ? 'Charge for a 30-day access token on your account.'
                 : intent === 'credits'
                   ? 'Credits are added to your balance as soon as payment clears.'
-                  : 'Includes permanent game access and your credits, on one charge — so you pay the fixed processing fee once rather than twice.'}
+                  : 'Includes a 30-day access token and your credits on one charge, so you pay the fixed processing fee once rather than twice.'}
             </p>
           </div>
         </div>

@@ -33,7 +33,7 @@ export const CREDIT_PRICE_CENTS = 10;
 export const MIN_CREDITS = 10;
 /** Largest credit purchase. */
 export const MAX_CREDITS = 10000;
-/** One-off charge for access to the game. */
+/** Charge for a 30-day access token to the game. */
 export const ENTRY_CENTS = 100;
 
 /**
@@ -110,7 +110,7 @@ export function quoteCredits(credits: number): Quote {
   };
 }
 
-/** Quote the one-off entry charge. */
+/** Quote the 30-day entry charge. */
 export function quoteEntry(): Quote {
   const netCents = ENTRY_CENTS;
   const totalCents = grossUp(netCents);
@@ -118,7 +118,7 @@ export function quoteEntry(): Quote {
     netCents,
     feeCents: totalCents - netCents,
     totalCents,
-    lines: [{ label: 'Game access', detail: 'One-off, permanent', cents: netCents }],
+    lines: [{ label: 'Game access', detail: '30 days', cents: netCents }],
   };
 }
 
@@ -133,7 +133,7 @@ export function quoteEntryWithCredits(credits: number): Quote {
     feeCents: totalCents - netCents,
     totalCents,
     lines: [
-      { label: 'Game access', detail: 'One-off, permanent', cents: ENTRY_CENTS },
+      { label: 'Game access', detail: '30 days', cents: ENTRY_CENTS },
       {
         label: `${qty.toLocaleString('en-US')} credits`,
         detail: `${formatCents(CREDIT_PRICE_CENTS)} each`,

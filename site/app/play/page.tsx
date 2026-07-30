@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { readPass } from '@/lib/entitlement';
+import { getCurrentAccessState } from '@/lib/access';
 import { ENTRY_CENTS, formatCents, grossUp } from '@/lib/pricing';
 
 export const dynamic = 'force-dynamic';
@@ -19,22 +19,19 @@ export const metadata = { title: 'AETHER NEXUS' };
  * gate in front of a game that also lives on its own public URL is decoration,
  * because the URL is the way in and it is not gated.
  *
- * That is still a soft gate — `/game/index.html` is a public path on this
- * origin, so someone who guesses it gets in. Closing that properly means
- * serving the bundle through an authenticated route handler rather than from
- * `public/`, which is a real change and is written up in the README. For a
- * one-dollar unlock it is the honest trade; for anything more it is not.
+ * The public files themselves still live under `public/game`, but access is
+ * gated by a signed launch cookie issued at `/play/launch` and checked by the
+ * app proxy before `/game/*` is served.
  *
  * `allow="pointer-lock"` is not optional. The game takes pointer lock to look
  * around, and an iframe cannot without being permitted to.
  */
 export default async function Play() {
-  const pass = await readPass();
-  if (!pass?.paid) redirect('/checkout?intent=entry');
+  const { hasAccess } = await getCurrentAccessState();
+  if (!hasAccess) redirect('/checkout?intent=entry');
 
-  const external = process.env.NEXT_PUBLIC_GAME_URL;
   const bundled = existsSync(path.join(process.cwd(), 'public', 'game', 'index.html'));
-  const src = external || (bundled ? '/game/index.html' : null);
+  const src = bundled ? '/play/launch' : null;
 
   if (!src) {
     return (
@@ -45,13 +42,12 @@ export default async function Play() {
             THE GAME BUILD IS NOT HERE
           </h2>
           <p style={{ color: 'var(--txt-2)' }}>
-            Your access is fine — {formatCents(grossUp(ENTRY_CENTS))} paid, pass held on
-            this browser. The build just has not been bundled into this deployment yet.
+            Your access is active and the launch gate is working. The game build
+            just has not been bundled into this deployment yet.
           </p>
           <p style={{ color: 'var(--txt-dim)', fontSize: '0.86rem' }}>
             Run <code>npm run bundle-game</code> from <code>site/</code> to build the game
-            and copy it into <code>public/game</code>, or set{' '}
-            <code>NEXT_PUBLIC_GAME_URL</code> to where it is hosted.
+            and copy it into <code>public/game</code>.
           </p>
           <div className="actions" style={{ justifyContent: 'center', marginTop: 26 }}>
             <Link className="btn btn-ghost" href="/">Back</Link>

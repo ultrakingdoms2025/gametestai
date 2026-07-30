@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
-import { readPass } from '@/lib/entitlement';
+import { getCurrentAccessState } from '@/lib/access';
 import {
   clampCredits,
   feeLabel,
@@ -39,17 +39,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Malformed request.' }, { status: 400 });
   }
 
-  const pass = await readPass();
-  const alreadyPaid = !!pass?.paid;
+  const { hasAccess } = await getCurrentAccessState();
 
   const requested = String(body.intent ?? 'entry');
   // A customer who has already paid for access cannot be sold it again, whatever
   // the request says.
   const intent: 'entry' | 'credits' | 'entry+credits' =
-    requested === 'credits' && alreadyPaid ? 'credits'
+    requested === 'credits' && hasAccess ? 'credits'
       : requested === 'credits' || requested === 'entry+credits'
-        ? (alreadyPaid ? 'credits' : 'entry+credits')
-        : alreadyPaid ? 'credits' : 'entry';
+        ? (hasAccess ? 'credits' : 'entry+credits')
+        : hasAccess ? 'credits' : 'entry';
 
   const credits = intent === 'entry' ? 0 : clampCredits(body.credits);
 

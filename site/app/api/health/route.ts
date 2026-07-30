@@ -3,17 +3,31 @@ import { Client } from 'pg';
 
 export const dynamic = 'force-dynamic';
 
+function makeClient() {
+  const connStr = process.env.POSTGRES_URL ?? '';
+  const ssl = connStr.includes('sslmode=disable') ? false : { rejectUnauthorized: false };
+  return new Client({ connectionString: connStr, ssl });
+}
+
 export async function GET() {
   const checks: Record<string, string> = {};
 
+  const connStr = process.env.POSTGRES_URL ?? '';
   checks.NEXTAUTH_URL = process.env.NEXTAUTH_URL ? `set (${process.env.NEXTAUTH_URL})` : 'MISSING';
   checks.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET ? 'set' : (process.env.APP_SECRET ? 'fallback(APP_SECRET)' : 'MISSING');
   checks.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ? `set (...${process.env.GOOGLE_CLIENT_ID.slice(-6)})` : 'MISSING';
   checks.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ? 'set' : 'MISSING';
-  checks.POSTGRES_URL = process.env.POSTGRES_URL ? 'set' : 'MISSING';
+
+  // Show the hostname from the connection string to help diagnose wrong URLs
+  try {
+    const u = new URL(connStr);
+    checks.POSTGRES_URL = connStr ? `set (host=${u.hostname})` : 'MISSING';
+  } catch {
+    checks.POSTGRES_URL = connStr ? 'set (unparseable URL)' : 'MISSING';
+  }
 
   try {
-    const client = new Client({ connectionString: process.env.POSTGRES_URL });
+    const client = makeClient();
     await client.connect();
     const result = await client.query('SELECT 1 AS ok');
     await client.end();
@@ -23,7 +37,7 @@ export async function GET() {
   }
 
   try {
-    const client = new Client({ connectionString: process.env.POSTGRES_URL });
+    const client = makeClient();
     await client.connect();
     const result = await client.query('SELECT COUNT(*) AS n FROM site_users');
     await client.end();

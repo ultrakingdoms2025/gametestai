@@ -8,11 +8,18 @@ import { hash, compare } from 'bcryptjs';
 
 const BCRYPT_ROUNDS = 12;
 
+function makeClient() {
+  const connStr = process.env.POSTGRES_URL ?? '';
+  // Neon (and most managed Postgres) requires SSL; add it unless already in the URL
+  const ssl = connStr.includes('sslmode=disable') ? false : { rejectUnauthorized: false };
+  return new Client({ connectionString: connStr, ssl });
+}
+
 async function query<T extends Record<string, unknown>>(
   text: string,
   values?: unknown[]
 ): Promise<{ rows: T[] }> {
-  const client = new Client({ connectionString: process.env.POSTGRES_URL });
+  const client = makeClient();
   await client.connect();
   try {
     const result = await client.query(text, values);

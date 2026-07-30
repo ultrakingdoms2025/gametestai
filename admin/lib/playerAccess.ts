@@ -13,7 +13,11 @@ export type PlayerAccessSnapshot = {
 };
 
 function parseDate(value: unknown): Date | null {
-  if (typeof value !== 'string' || !value) return null;
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value : null;
+  }
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date : null;
 }

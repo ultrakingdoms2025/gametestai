@@ -1,31 +1,50 @@
 /**
- * Site database layer — user accounts, password resets.
- * Uses the same Neon Postgres connection as the admin via @vercel/postgres.
+ * Site database layer -- user accounts, password resets.
+ * Uses createClient() from @vercel/postgres which supports both
+ * direct and pooled Neon connection strings (unlike the sql template).
  */
-import { sql } from '@vercel/postgres';
+import { createClient } from '@vercel/postgres';
 import { hash, compare } from 'bcryptjs';
 
 const BCRYPT_ROUNDS = 12;
+
+// Run a parameterized query using a fresh client (serverless-safe).
+async function query<T extends Record<string, unknown>>(
+  text: string,
+  values?: unknown[]
+): Promise<{ rows: T[] }> {
+  const client = createClient();
+  await client.connect();
+  try {
+    const result = await client.query(text, values);
+    return { rows: result.rows as T[] };
+  } finally {
+    await client.end();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Schema bootstrap
 // ---------------------------------------------------------------------------
 
+let schemaEnsured = false;
+
 export async function ensureSchema() {
-  await sql`
+  if (schemaEnsured) return;
+  await query(`
     CREATE TABLE IF NOT EXISTS site_users (
-      id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      email       TEXT UNIQUE NOT NULL,
+      id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email         TEXT UNIQUE NOT NULL,
       email_verified TIMESTAMPTZ,
       password_hash TEXT,
-      google_id   TEXT UNIQUE,
-      totp_secret TEXT,
-      totp_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      google_id     TEXT UNIQUE,
+      totp_secret   TEXT,
+      totp_enabled  BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
     )
-  `;
-  await sql`
+  `);
+  await query(`
     CREATE TABLE IF NOT EXISTS site_password_resets (
       id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       user_id     UUID NOT NULL REFERENCES site_users(id) ON DELETE CASCADE,
@@ -34,11 +53,12 @@ export async function ensureSchema() {
       used_at     TIMESTAMPTZ,
       created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     )
-  `;
-  await sql`
+  `);
+  await query(`
     CREATE INDEX IF NOT EXISTS site_password_resets_user_idx
     ON site_password_resets(user_id)
-  `;
+  `);
+  schemaEnsured = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,26 +79,29 @@ export type SiteUser = {
 
 export async function getUserByEmail(email: string): Promise<SiteUser | null> {
   await ensureSchema();
-  const { rows } = await sql`
-    SELECT * FROM site_users WHERE email = ${email.toLowerCase().trim()} LIMIT 1
-  `;
-  return (rows[0] as SiteUser) ?? null;
+  const { rows } = await query<SiteUser>(
+    'SELECT * FROM site_users WHERE email = $1 LIMIT 1',
+    [email.toLowerCase().trim()]
+  );
+  return rows[0] ?? null;
 }
 
 export async function getUserById(id: string): Promise<SiteUser | null> {
   await ensureSchema();
-  const { rows } = await sql`
-    SELECT * FROM site_users WHERE id = ${id} LIMIT 1
-  `;
-  return (rows[0] as SiteUser) ?? null;
+  const { rows } = await query<SiteUser>(
+    'SELECT * FROM site_users WHERE id = $1 LIMIT 1',
+    [id]
+  );
+  return rows[0] ?? null;
 }
 
 export async function getUserByGoogleId(googleId: string): Promise<SiteUser | null> {
   await ensureSchema();
-  const { rows } = await sql`
-    SELECT * FROM site_users WHERE google_id = ${googleId} LIMIT 1
-  `;
-  return (rows[0] as SiteUser) ?? null;
+  const { rows } = await query<SiteUser>(
+    'SELECT * FROM site_users WHERE google_id = $1 LIMIT 1',
+    [googleId]
+  );
+  return rows[0] ?? null;
 }
 
 export async function createUser(opts: {
@@ -88,28 +111,23 @@ export async function createUser(opts: {
 }): Promise<SiteUser> {
   await ensureSchema();
   const passwordHash = opts.password ? await hash(opts.password, BCRYPT_ROUNDS) : null;
-  const emailVerified = opts.googleId ? new Date() : null; // Google accounts are pre-verified
-  const { rows } = await sql`
-    INSERT INTO site_users (email, password_hash, google_id, email_verified)
-    VALUES (
-      ${opts.email.toLowerCase().trim()},
-      ${passwordHash},
-      ${opts.googleId ?? null},
-      ${emailVerified?.toISOString() ?? null}
-    )
-    RETURNING *
-  `;
-  return rows[0] as SiteUser;
+  const emailVerified = opts.googleId ? new Date().toISOString() : null;
+  const { rows } = await query<SiteUser>(
+    `INSERT INTO site_users (email, password_hash, google_id, email_verified)
+     VALUES ($1, $2, $3, $4)
+     RETURNING *`,
+    [opts.email.toLowerCase().trim(), passwordHash, opts.googleId ?? null, emailVerified]
+  );
+  return rows[0];
 }
 
 export async function linkGoogleAccount(userId: string, googleId: string): Promise<void> {
-  await sql`
-    UPDATE site_users
-    SET google_id = ${googleId},
-        email_verified = COALESCE(email_verified, now()),
-        updated_at = now()
-    WHERE id = ${userId}
-  `;
+  await query(
+    `UPDATE site_users
+     SET google_id = $1, email_verified = COALESCE(email_verified, now()), updated_at = now()
+     WHERE id = $2`,
+    [googleId, userId]
+  );
 }
 
 export async function verifyPassword(user: SiteUser, password: string): Promise<boolean> {
@@ -119,19 +137,17 @@ export async function verifyPassword(user: SiteUser, password: string): Promise<
 
 export async function setPassword(userId: string, password: string): Promise<void> {
   const passwordHash = await hash(password, BCRYPT_ROUNDS);
-  await sql`
-    UPDATE site_users
-    SET password_hash = ${passwordHash}, updated_at = now()
-    WHERE id = ${userId}
-  `;
+  await query(
+    'UPDATE site_users SET password_hash = $1, updated_at = now() WHERE id = $2',
+    [passwordHash, userId]
+  );
 }
 
 export async function setTotpSecret(userId: string, secret: string | null, enabled = false): Promise<void> {
-  await sql`
-    UPDATE site_users
-    SET totp_secret = ${secret}, totp_enabled = ${enabled}, updated_at = now()
-    WHERE id = ${userId}
-  `;
+  await query(
+    'UPDATE site_users SET totp_secret = $1, totp_enabled = $2, updated_at = now() WHERE id = $3',
+    [secret, enabled, userId]
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -139,28 +155,28 @@ export async function setTotpSecret(userId: string, secret: string | null, enabl
 // ---------------------------------------------------------------------------
 
 export async function createPasswordReset(userId: string, tokenHash: string): Promise<void> {
-  await sql`
-    DELETE FROM site_password_resets WHERE user_id = ${userId} AND used_at IS NULL
-  `;
-  const expiresAt = new Date(Date.now() + 1000 * 60 * 60); // 1 hour
-  await sql`
-    INSERT INTO site_password_resets (user_id, token_hash, expires_at)
-    VALUES (${userId}, ${tokenHash}, ${expiresAt.toISOString()})
-  `;
+  await query(
+    'DELETE FROM site_password_resets WHERE user_id = $1 AND used_at IS NULL',
+    [userId]
+  );
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
+  await query(
+    'INSERT INTO site_password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
+    [userId, tokenHash, expiresAt]
+  );
 }
 
 export async function consumePasswordReset(tokenHash: string): Promise<string | null> {
-  const { rows } = await sql`
-    SELECT id, user_id, expires_at, used_at
-    FROM site_password_resets
-    WHERE token_hash = ${tokenHash}
-      AND used_at IS NULL
-      AND expires_at > now()
-    LIMIT 1
-  `;
+  const { rows } = await query<{ id: string; user_id: string }>(
+    `SELECT id, user_id FROM site_password_resets
+     WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+     LIMIT 1`,
+    [tokenHash]
+  );
   if (!rows[0]) return null;
-  await sql`
-    UPDATE site_password_resets SET used_at = now() WHERE id = ${rows[0].id}
-  `;
-  return rows[0].user_id as string;
+  await query(
+    'UPDATE site_password_resets SET used_at = now() WHERE id = $1',
+    [rows[0].id]
+  );
+  return rows[0].user_id;
 }

@@ -68,9 +68,10 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             user.id = created.id;
           }
         } catch (err) {
-          console.error('[auth] Google signIn DB error:', err);
-          // Return false to show an error rather than creating a broken session
-          return false;
+          // Log full error detail to Vercel function logs
+          console.error('[auth] Google signIn DB error:', err instanceof Error ? err.message : String(err));
+          // Redirect to login with a specific error code (not generic AccessDenied)
+          return '/login?error=ServiceUnavailable';
         }
       }
       return true;

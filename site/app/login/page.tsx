@@ -18,12 +18,16 @@ function LoginForm() {
       case 'OAuthAccountNotLinked':
         return 'This email is already registered with a different sign-in method. Please sign in with email/password instead.';
       case 'AccessDenied':
-        return 'Access denied. Please try again.';
+        return 'Sign-in was denied. This may be a configuration issue — please contact support or try email/password.';
+      case 'ServiceUnavailable':
+        return 'Our account service is temporarily unavailable. Please try again in a moment.';
       case 'OAuthCallbackError':
       case 'CallbackRouteError':
         return 'Google sign-in failed. Please try again or use email/password.';
       case 'CredentialsSignin':
         return 'Invalid email or password.';
+      case 'Configuration':
+        return 'Auth configuration error. Please contact support.';
       default:
         return `Sign-in failed (${errorParam}). Please try again.`;
     }

@@ -222,6 +222,9 @@ export class ChatClient {
     const intent = classify(q, hostile);
     const subject = keyNoun(text) || bits.role;
 
+    const factReply = this._gameFactReply(q);
+    if (factReply) return factReply.replace(/\{name\}/g, name).replace(/\{world\}/g, worldName);
+
     const bank = TEMPLATES[intent] ?? TEMPLATES.default;
     const key = `${npc?.id ?? name}:${intent}`;
     const idx = this._pick(key, bank.length);
@@ -236,6 +239,22 @@ export class ChatClient {
       .replace(/\{subject\}/g, subject)
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  _gameFactReply(q) {
+    if (/\b(how many|count|number of)\b/.test(q) && /\b(portal|gate|gateway|world|worlds)\b/.test(q)) {
+      return 'There are five worlds in the Nexus. Aether Station is the hub and has four outbound portals; each of the other four worlds has one return portal.';
+    }
+    if (/\b(portal|gate|gateway)\b/.test(q)) {
+      return 'The Nexus has five worlds: Aether Station, Medieval Valley, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge Circuit. Station is the hub; the other four worlds each have one return portal.';
+    }
+    if (/\b(how do i|how do you|controls|key|keys|button|buttons|move|play|do i)\b/.test(q)) {
+      return 'E talks to friendlies, opens the quest board at quest managers, picks up loot, and enters portals; T opens chat; F1 shows help; I opens inventory; B opens the marketplace; K unstucks.';
+    }
+    if (/\b(worlds?|places?|where is|where do|what is in)\b/.test(q)) {
+      return 'The Nexus has five worlds: Aether Station, Medieval Valley, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge Circuit.';
+    }
+    return '';
   }
 
   /** Pick an index that is not the one used last time for this key. */

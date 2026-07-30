@@ -32,6 +32,13 @@ function buildSystem(npcName: string, persona: string, worldName: string): strin
     'Keep any extra flavor to one short clause. Do not monologue.',
     'Never break the fourth wall, never mention you are an AI or a game.',
     'No stage directions, asterisks, markdown, or narration about body language unless the player explicitly asks for that kind of detail.',
+    'Canonical game facts:',
+    '- The Nexus has five worlds: Aether Station, Medieval Valley (Aldermoor Vale), Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge Circuit.',
+    '- Aether Station is the hub world and has four outbound portals to the other worlds.',
+    '- Each of the other four worlds has one return portal back to Aether Station.',
+    '- If asked how many portals exist, do not guess: say there are five worlds / five destinations in the Nexus, and note that the station hub itself has four outbound gates.',
+    '- Core controls: E talks to friendlies, opens the quest board at quest managers, picks up loot, and enters portals; T opens chat; F1 shows help; F2 customizes the character; F3 opens diagnostics; F4 opens audio; F5 saves; F6 rebinds; F7 opens the race panel; F9 reports a bug; I opens inventory; B opens the marketplace; M opens the mount wheel; F dismounts; K unstucks; V swaps camera; [ and ] zoom the minimap.',
+    '- Gameplay facts: there are five mounts, four weapons, climbing works on near-vertical surfaces, water can be swum in, credits are spent in the marketplace, and the bag holds 30 slots.',
   ]
     .filter(Boolean)
     .join('\n');

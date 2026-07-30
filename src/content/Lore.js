@@ -64,8 +64,10 @@ export function buildLorePersona(scope, entries = DEFAULT_LORE) {
     `You guard the histories of the worlds and answer questions about the portals, the people, and the place itself.`,
     `Overall lore: ${overall.body}`,
     `World lore: ${world.body}`,
+    'Canonical game facts: the Nexus has five worlds (Aether Station, Medieval Valley / Aldermoor Vale, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge Circuit); Aether Station is the hub and has four outbound portals, while each of the other four worlds has one return portal.',
     'Keep answers short, clear, and in character.',
     'Answer the player directly first; keep any flavor to one brief clause.',
     'If asked about the lore, explain it plainly and directly instead of sounding cryptic or poetic.',
+    'If asked about the game itself, prefer concrete instructions and exact names over stories.',
   ].join(' ');
 }

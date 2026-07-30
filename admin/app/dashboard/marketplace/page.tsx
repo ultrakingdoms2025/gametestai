@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 export default function MarketplacePage() {
-  const target = process.env.NEXT_PUBLIC_MARKETPLACE_ADMIN_URL || '/admin/marketplace';
+  const target = process.env.NEXT_PUBLIC_MARKETPLACE_ADMIN_URL || 'https://aethernexus.games/admin/marketplace';
 
   return (
     <div className="page-body">

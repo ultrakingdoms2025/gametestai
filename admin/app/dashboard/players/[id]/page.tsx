@@ -6,6 +6,7 @@ import {
   createPlayer,
   getPlayerById,
   listPlayerQuestEngagements,
+  listPlayerPurchases,
   lockPlayer,
   unlockPlayer,
   updatePlayer,
@@ -79,6 +80,7 @@ export default async function PlayerPage({
   const { error, saved } = await searchParams;
   const player = creating ? null : ((await getPlayerById(id)) as Record<string, any> | null);
   const engagements = creating ? [] : await listPlayerQuestEngagements(id);
+  const purchases = creating ? [] : await listPlayerPurchases(id);
 
   if (!creating && !player) notFound();
 
@@ -330,6 +332,49 @@ export default async function PlayerPage({
                 })}
                 {engagements.length === 0 ? (
                   <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 28 }}>No quest engagements recorded for this player yet.</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {!creating ? (
+        <section className="card" style={{ marginTop: 24 }}>
+          <div className="section-title">Purchase &amp; access history</div>
+          <div className="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Amount</th>
+                  <th>Credits</th>
+                  <th>Status</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {purchases.map((p: Record<string, unknown>) => {
+                  const type = String(p.type ?? '');
+                  const amountCents = Number(p.amount_cents ?? 0);
+                  const credits = Number(p.credits_amount ?? 0);
+                  const status = String(p.status ?? 'completed');
+                  return (
+                    <tr key={String(p.id)}>
+                      <td>
+                        <span className={type === 'access' ? 'badge badge-green' : 'badge badge-amber'}>
+                          {type === 'access' ? '🔑 Access' : `💰 Credits`}
+                        </span>
+                      </td>
+                      <td>{amountCents > 0 ? `$${(amountCents / 100).toFixed(2)}` : 'Simulated'}</td>
+                      <td>{credits > 0 ? credits.toLocaleString() : '—'}</td>
+                      <td><span className={status === 'completed' ? 'badge badge-green' : 'badge badge-red'}>{status}</span></td>
+                      <td className="mono">{p.created_at ? new Date(String(p.created_at)).toLocaleString() : '—'}</td>
+                    </tr>
+                  );
+                })}
+                {purchases.length === 0 ? (
+                  <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 28 }}>No purchases recorded for this player yet.</td></tr>
                 ) : null}
               </tbody>
             </table>

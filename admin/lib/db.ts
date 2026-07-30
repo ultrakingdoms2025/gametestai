@@ -756,6 +756,16 @@ export async function recordPurchase(data: {
   return id;
 }
 
+export async function listPlayerPurchases(playerId: string) {
+  const { rows } = await sql`
+    SELECT id, player_id, amount_cents, currency, type, credits_amount, status, created_at
+    FROM   purchases
+    WHERE  player_id = ${playerId}
+    ORDER  BY created_at DESC
+  `;
+  return rows;
+}
+
 export async function listPurchases(page = 0) {
   const offset = page * PAGE_SIZE;
   const { rows } = await sql`

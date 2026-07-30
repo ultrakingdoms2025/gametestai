@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 import { grant } from '@/lib/entitlement';
 import { clampCredits } from '@/lib/pricing';
 import { getStripe, siteOrigin, stripeConfigured } from '@/lib/stripe';
+import { auth } from '@/lib/auth';
+import { findOrCreatePlayer, recordSitePurchase } from '@/lib/playerDb';
 
 /**
  * Payment came back. Grant what was bought.
@@ -37,6 +39,37 @@ export async function GET(req: Request) {
   const simulated = url.searchParams.get('simulated') === '1';
   const sessionId = url.searchParams.get('session_id');
 
+  // Get logged-in user for audit trail
+  const session = await auth();
+  const userId = session?.user?.id;
+  const userEmail = session?.user?.email;
+
+  async function recordForUser(opts: {
+    intent: string;
+    credits: number;
+    amountCents: number;
+    orderId: string;
+  }) {
+    if (!userId || !userEmail) return;
+    try {
+      const playerId = await findOrCreatePlayer(userId, userEmail);
+      const type: 'access' | 'credits' | 'access+credits' =
+        opts.intent === 'credits' ? 'credits'
+        : opts.intent === 'entry+credits' ? 'access+credits'
+        : 'access';
+      await recordSitePurchase({
+        playerId,
+        type,
+        amountCents: opts.amountCents,
+        creditsAmount: opts.credits,
+        orderId: opts.orderId,
+        actorEmail: userEmail,
+      });
+    } catch (err) {
+      console.error('[confirm] Failed to record purchase in admin DB:', err);
+    }
+  }
+
   /* ---- simulated ------------------------------------------------------- */
   if (simulated) {
     if (stripeConfigured()) {
@@ -55,6 +88,7 @@ export async function GET(req: Request) {
       addCredits: credits,
       orderId,
     });
+    await recordForUser({ intent, credits, amountCents: 0, orderId });
     return NextResponse.redirect(new URL('/play?welcome=1', origin), 303);
   }
 
@@ -85,6 +119,7 @@ export async function GET(req: Request) {
       orderId: session.id,
     });
     if (!applied) console.log(`[confirm] Order ${session.id} was already settled; no double credit.`);
+    await recordForUser({ intent, credits, amountCents: session.amount_total ?? 0, orderId: session.id });
     return NextResponse.redirect(new URL('/play?welcome=1', origin), 303);
   } catch (e) {
     console.error('[confirm] Could not verify the Stripe session:', e);

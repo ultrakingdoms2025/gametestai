@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import HeroCanvas from '@/components/HeroCanvas';
 import HomeWorldShowcase from '@/components/HomeWorldShowcase';
+import AccountDashboard from '@/components/AccountDashboard';
 import { readPass } from '@/lib/entitlement';
 import { ENTRY_CENTS, CREDIT_PRICE_CENTS, MIN_CREDITS, formatCents, grossUp } from '@/lib/pricing';
 import { stripeConfigured } from '@/lib/stripe';
@@ -140,6 +141,9 @@ export default async function Home() {
           </div>
         </div>
       </nav>
+
+      {/* ── Account dashboard (logged-in users) ── */}
+      {session && <AccountDashboard />}
 
       {/* ── Hero ── */}
       <header className="hero">

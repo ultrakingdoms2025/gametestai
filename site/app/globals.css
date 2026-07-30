@@ -1929,3 +1929,68 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
   text-transform: uppercase;
   color: var(--txt-dim);
 }
+
+/* ── Account dashboard ──────────────────────────────────────────────────── */
+.account-dashboard {
+  background: linear-gradient(135deg, rgba(9,15,25,0.95) 0%, rgba(14,25,42,0.95) 100%);
+  border-bottom: 1px solid var(--rule);
+  padding: 1.5rem 0;
+}
+
+.acct-inner {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  flex-wrap: wrap;
+}
+
+.acct-welcome {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 140px;
+}
+.acct-label { font-size: .7rem; letter-spacing: .1em; color: var(--txt-dim); text-transform: uppercase; }
+.acct-name  { font-size: 1.1rem; font-weight: 700; color: var(--cy); }
+
+.acct-stats {
+  display: flex;
+  gap: 2rem;
+  flex: 1;
+}
+.acct-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.acct-stat-val {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--txt);
+  line-height: 1;
+}
+.acct-stat-key {
+  font-size: .7rem;
+  color: var(--txt-dim);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.acct-access-active   { color: var(--lime); }
+.acct-access-inactive { color: var(--txt-dim); }
+
+.acct-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+.acct-access-note {
+  font-size: .75rem;
+  color: var(--txt-dim);
+}
+
+@media (max-width: 640px) {
+  .acct-inner    { flex-direction: column; align-items: flex-start; }
+  .acct-actions  { margin-left: 0; }
+}

@@ -23,6 +23,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
           <Link href="/dashboard">Overview</Link>
           <Link href="/dashboard/players">Players</Link>
           <Link href="/dashboard/quests">Quests</Link>
+          <Link href="/dashboard/marketplace">Marketplace</Link>
           <Link href="/dashboard/purchases">Purchases</Link>
           <Link href="/dashboard/lore">Lore</Link>
           <Link href="/dashboard/audit">Audit Log</Link>

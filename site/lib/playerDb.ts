@@ -363,6 +363,151 @@ export async function siteAudit(
 }
 
 // ---------------------------------------------------------------------------
+// Quest system DB functions
+// ---------------------------------------------------------------------------
+
+let questSchemaDone = false;
+
+async function ensureQuestSchema(): Promise<void> {
+  if (questSchemaDone) return;
+  questSchemaDone = true;
+  // The quests table is seeded by admin; just ensure the steps column exists.
+  await pgQuery(`ALTER TABLE quests ADD COLUMN IF NOT EXISTS steps TEXT`).catch(() => {});
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS player_quest_engagements (
+      id                 TEXT PRIMARY KEY,
+      player_id          TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      quest_id           TEXT REFERENCES quests(id) ON DELETE SET NULL,
+      quest_number       INTEGER NOT NULL,
+      quest_title        TEXT NOT NULL,
+      world              TEXT NOT NULL,
+      duration_minutes   INTEGER,
+      status             TEXT NOT NULL DEFAULT 'in_progress',
+      percent_complete   INTEGER NOT NULL DEFAULT 0,
+      credits_rewarded   INTEGER NOT NULL DEFAULT 0,
+      failure_reason     TEXT,
+      step_states        TEXT,
+      accepted_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at       TIMESTAMPTZ,
+      failed_at          TIMESTAMPTZ,
+      updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await pgQuery(
+    `ALTER TABLE player_quest_engagements ADD COLUMN IF NOT EXISTS step_states TEXT`
+  ).catch(() => {});
+  await pgQuery(
+    `CREATE INDEX IF NOT EXISTS pqe_player_idx ON player_quest_engagements(player_id, updated_at DESC)`
+  ).catch(() => {});
+}
+
+export async function listActiveQuestsForWorld(world: string) {
+  await ensureQuestSchema();
+  const { rows } = await pgQuery<{
+    id: string; quest_number: number; world: string; quest_line: string;
+    title: string; reward_credits: number; duration_minutes: number | null;
+    pre_steps: string | null; steps: string | null; is_active: boolean;
+  }>(
+    `SELECT id, quest_number, world, quest_line, title, reward_credits,
+            duration_minutes, pre_steps, steps, is_active
+     FROM quests WHERE is_active = TRUE AND world = $1
+     ORDER BY quest_number ASC`,
+    [world]
+  );
+  return rows;
+}
+
+export async function getPlayerQuestEngagements(playerId: string) {
+  await ensureQuestSchema();
+  const { rows } = await pgQuery<{
+    id: string; quest_id: string | null; quest_number: number; quest_title: string;
+    world: string; duration_minutes: number | null; status: string;
+    percent_complete: number; credits_rewarded: number; failure_reason: string | null;
+    step_states: string | null; accepted_at: string; completed_at: string | null;
+    failed_at: string | null; updated_at: string;
+  }>(
+    `SELECT id, quest_id, quest_number, quest_title, world, duration_minutes,
+            status, percent_complete, credits_rewarded, failure_reason, step_states,
+            accepted_at, completed_at, failed_at, updated_at
+     FROM player_quest_engagements WHERE player_id = $1
+     ORDER BY updated_at DESC`,
+    [playerId]
+  );
+  return rows;
+}
+
+export async function acceptQuestEngagement(
+  playerId: string,
+  questId: string,
+  questNumber: number,
+  questTitle: string,
+  world: string,
+  durationMinutes: number | null
+): Promise<string> {
+  await ensureQuestSchema();
+  const { rows: existing } = await pgQuery<{ id: string }>(
+    `SELECT id FROM player_quest_engagements
+     WHERE player_id = $1 AND quest_id = $2 AND status = 'in_progress' LIMIT 1`,
+    [playerId, questId]
+  );
+  if (existing[0]) return existing[0].id;
+
+  const id = randomUUID();
+  await pgQuery(
+    `INSERT INTO player_quest_engagements
+       (id, player_id, quest_id, quest_number, quest_title, world, duration_minutes, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'in_progress')`,
+    [id, playerId, questId, questNumber, questTitle, world, durationMinutes]
+  );
+  return id;
+}
+
+export async function updateQuestStepStates(
+  engagementId: string,
+  stepStates: unknown,
+  percentComplete: number
+): Promise<void> {
+  await pgQuery(
+    `UPDATE player_quest_engagements
+     SET step_states = $1, percent_complete = $2, updated_at = NOW()
+     WHERE id = $3`,
+    [JSON.stringify(stepStates), Math.round(percentComplete), engagementId]
+  );
+}
+
+export async function completeQuestEngagement(
+  engagementId: string,
+  playerId: string,
+  creditsRewarded: number
+): Promise<void> {
+  await pgQuery(
+    `UPDATE player_quest_engagements
+     SET status = 'completed', credits_rewarded = $1, percent_complete = 100,
+         step_states = step_states, completed_at = NOW(), updated_at = NOW()
+     WHERE id = $2`,
+    [creditsRewarded, engagementId]
+  );
+  if (creditsRewarded > 0) {
+    await pgQuery(
+      `UPDATE players SET credit_balance = credit_balance + $1, updated_at = NOW() WHERE id = $2`,
+      [creditsRewarded, playerId]
+    );
+  }
+}
+
+export async function failQuestEngagement(
+  engagementId: string,
+  reason: string
+): Promise<void> {
+  await pgQuery(
+    `UPDATE player_quest_engagements
+     SET status = 'failed', failure_reason = $1, failed_at = NOW(), updated_at = NOW()
+     WHERE id = $2`,
+    [reason, engagementId]
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Player purchases list (for admin display)
 // ---------------------------------------------------------------------------
 

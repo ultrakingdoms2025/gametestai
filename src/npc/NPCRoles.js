@@ -20,6 +20,7 @@ export const ROLE = {
   SPECTATOR: 'spectator',
   WANDERER: 'wanderer',
   LOREKEEPER: 'lorekeeper',
+  QUEST_MANAGER: 'quest_manager',
 };
 
 /**
@@ -96,6 +97,16 @@ export const ROLE_DEFS = {
     strollChance: 0.1,
     lookAround: 1,
     postures: ['crossed', 'pocket', 'none'],
+    seatable: false,
+  },
+  [ROLE.QUEST_MANAGER]: {
+    id: ROLE.QUEST_MANAGER,
+    label: 'Quest Manager',
+    stationary: true,
+    strollRadius: 1.2,
+    strollChance: 0.1,
+    lookAround: 1,
+    postures: ['crossed', 'hips', 'none'],
     seatable: false,
   },
 };

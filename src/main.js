@@ -37,12 +37,14 @@ import { CharacterMenu } from './ui/CharacterMenu.js';
 import { LightRig } from './gfx/LightRig.js';
 import { Caches } from './systems/Caches.js';
 import { Contracts } from './systems/Contracts.js';
+import { QuestSystem } from './systems/QuestSystem.js';
 import { AdminCheats } from './systems/AdminCheats.js';
 import { Relics } from './systems/Relics.js';
 import { AudioDirector } from './audio/AudioDirector.js';
 import { AudioMenu } from './ui/AudioMenu.js';
 import { RaceManager } from './race/RaceManager.js';
 import { RaceUI } from './ui/RaceUI.js';
+import { QuestBoard } from './ui/QuestBoard.js';
 
 /**
  * AETHER NEXUS - bootstrap.
@@ -198,6 +200,11 @@ const relics = new Relics({ scene: engine.scene, bus, physics, player, economy, 
 // Standing jobs from the people who already have names and personalities.
 const contracts = new Contracts({ bus, npcManager, player, economy, inventory, worldManager });
 
+// Backend quest system: tracks kill/collect/race steps automatically and
+// syncs engagement state to the server. Opens via Quest Manager NPCs.
+const questSystem = new QuestSystem({ bus, player, economy, worldManager, npcManager });
+const questBoard  = new QuestBoard({ root: uiRoot, bus, input, questSystem });
+
 // Typed cheat codes: "ammo" resupplies every weapon, "heal", "rich".
 const cheats = new AdminCheats({ bus, input, loadout, player, economy });
 
@@ -220,7 +227,7 @@ const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts,
  * downstream depends on the answer. */
 save.requestDurableStorage();
 
-const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, portals, caches, contracts });
+const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, portals, caches, contracts, questBoard });
 
 // Late injection breaks what would otherwise be a circular import between the
 // world manager and the systems it has to drive on every world change.
@@ -247,7 +254,7 @@ if (overrides.dev) {
     engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
     waterVolumes, stamina, inventory, loot, market, helpMenu, characterMenu, caches, contracts,
-    cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu,
+  cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard,
   };
   import('./dev/Harness.js').then(({ installHarness }) => installHarness(window.GAME));
 }
@@ -574,6 +581,8 @@ engine.onFrameUpdate((dt, elapsed) => {
   caches.update(dt);
   contracts.update(dt);
   relics.update(dt);
+  questSystem.update(dt);
+  questBoard.update(dt);
   // After the camera rig has placed the camera: the listener frame is read
   // straight off its world matrix, and a frame-old matrix pans every sound
   // to where the player was looking last frame.

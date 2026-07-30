@@ -161,9 +161,10 @@ const approach = (cur, target, rate, dt) => cur + (target - cur) * (1 - Math.exp
 export class HUD {
   /**
    * @param {{ bus:any, engine:any, input:any, root:HTMLElement, player:any,
-   *           worldManager:any, npcManager:any, portals:any }} ctx
+   *           worldManager:any, npcManager:any, portals:any,
+   *           questBoard?:any }} ctx
    */
-  constructor({ bus, engine, input, root, player, worldManager, npcManager, portals, caches, contracts }) {
+  constructor({ bus, engine, input, root, player, worldManager, npcManager, portals, caches, contracts, questBoard }) {
     this.bus = bus;
     this.engine = engine;
     this.input = input;
@@ -174,6 +175,7 @@ export class HUD {
     this.portals = portals;
     this.caches = caches ?? null;
     this.contracts = contracts ?? null;
+    this.questBoard = questBoard ?? null;
     /** Reused by `_weapon()`; see the note there on why this is not a spread. */
     this._weaponView = {
       id: null, name: null, ammo: 0, reserve: 0, magazine: 0,
@@ -1482,8 +1484,12 @@ export class HUD {
 
     if (this.input.pressed('KeyT')) {
       this._openChat(this._chatNpc);
-    } else if (this.input.pressed('KeyE') && this._chatNpc && (!this._nearPortal || this._chatNpc.isLorekeeper)) {
-      this._openChat(this._chatNpc);
+    } else if (this.input.pressed('KeyE') && this._chatNpc && (!this._nearPortal || this._chatNpc.isLorekeeper || this._chatNpc.isQuestManager)) {
+      if (this._chatNpc.isQuestManager) {
+        this.bus?.emit('quests:board:open');
+      } else {
+        this._openChat(this._chatNpc);
+      }
     }
   }
 
@@ -2114,8 +2120,11 @@ export class HUD {
     let text = '';
     let portal = false;
 
-    // Lorekeeper always wins: show the talk prompt even when the portal is nearby.
-    if (this._chatNpc?.isLorekeeper && !this._chatOpen) {
+    // Quest Manager takes priority over everything else.
+    if (this._chatNpc?.isQuestManager && !this._chatOpen) {
+      text = `Quest Board — <b>${escapeHtml(String(this._chatNpc.name ?? 'Quest Manager'))}</b>`;
+    // Lorekeeper wins over portal prompt.
+    } else if (this._chatNpc?.isLorekeeper && !this._chatOpen) {
       text = `Read lore — Talk to <b>${escapeHtml(String(this._chatNpc.name ?? 'Lorekeeper'))}</b>`;
     } else if (this._nearPortal) {
       const po = this._nearPortal;

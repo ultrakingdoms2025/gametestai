@@ -368,6 +368,7 @@ export class NPCManager {
     }
 
     friendlyCount += this._spawnLorekeepers(world);
+    this._spawnQuestManagers(world);
     this._populateHubs(anchors, this.maxFriendlies - friendlyCount);
     for (const npc of this._hostiles) npc.prebuildWeapons?.();
     this._seatCivilians();
@@ -580,7 +581,8 @@ export class NPCManager {
     // A world-authored posture is a costume note, not a life sentence: the idle
     // loop still runs, it just starts from the pose the world asked for.
     if (o.posture) npc.fixedPosture = true;
-    npc.isLorekeeper = o.role === ROLE.LOREKEEPER;
+    npc.isLorekeeper   = o.role === ROLE.LOREKEEPER;
+    npc.isQuestManager = o.isQuestManager ?? false;
     npc.loreScope = o.loreScope ?? null;
     if (o.signLines) npc.setSignLines?.(o.signLines);
     // Before the first step it takes: a character created after the world's
@@ -635,7 +637,82 @@ export class NPCManager {
   }
 
   /**
-   * Fill the social hubs with standing groups.
+   * Spawn one Quest Manager NPC per world, anchored in a fixed position near
+   * the player spawn so they are always easy to find. Each world has a named
+   * character with appropriate persona.
+   *
+   * @param {import('../worlds/World.js').World} world
+   */
+  _spawnQuestManagers(world) {
+    if (!world) return;
+
+    /**
+     * World-specific Quest Manager cast.
+     * position: [x, y, z] in world-space (snapped to ground)
+     * yaw: facing direction (radians)
+     */
+    const CAST = {
+      station: {
+        name: 'Zara Vex',
+        persona: 'The Quest Manager for Aether Nexus Station: a sharp, efficient coordinator who has dispatched hundreds of agents through both portals. She speaks in mission briefings, rates everything by risk-versus-reward, and keeps a running tally of completed objectives on a holo-pad she never puts down.',
+        position: [-22, 0.2, 12],
+        yaw: -Math.PI / 2,
+        sign: ['QUEST MANAGER', 'AETHER NEXUS'],
+      },
+      medieval: {
+        name: 'Edmund Marsh',
+        persona: 'Quest Manager for Aldermoor Vale: a former knight who now coordinates missions from a market stall covered in parchment scrolls. He is methodical, formal, and expects every job to be done properly. He uses old-world titles and is quietly proud of his record.',
+        position: [10, 0.2, -9],
+        yaw: 2.5,
+        sign: ['QUEST MANAGER', 'ALDERMOOR VALE'],
+      },
+      sports: {
+        name: 'Petra Vance',
+        persona: 'Quest Manager for the Meridian Athletic Grounds: a former champion athlete turned talent coordinator. She is direct, competitive, and constantly evaluating performance. She quotes personal bests, issues challenges, and believes any task worth doing is worth optimising.',
+        position: [-8, 0.9, 128],
+        yaw: Math.PI,
+        sign: ['QUEST MANAGER', 'MERIDIAN ARENA'],
+      },
+      citadel: {
+        name: 'Aldric Storne',
+        persona: 'Quest Manager for Sunspire Citadel: a senior officer of the Citadel garrison who assigns official missions. He is grave, measured, and speaks with the authority of the walls behind him. Every mission he issues is considered; none are trivial.',
+        position: [8, 14.3, 88],
+        yaw: 0,
+        sign: ['QUEST MANAGER', 'SUNSPIRE CITADEL'],
+      },
+      race: {
+        name: 'Kai Torres',
+        persona: 'Quest Manager for the Vellum Ridge Circuit: a former race strategist who now runs the mission board in the paddock. Kai is fast-talking, data-driven, and has an opinion on every racing line on the circuit. They make every briefing feel like a pre-race countdown.',
+        position: [30, 0.2, 20],
+        yaw: -Math.PI / 4,
+        sign: ['QUEST MANAGER', 'VELLUM CIRCUIT'],
+      },
+    };
+
+    const spec = CAST[world.id];
+    if (!spec) return;
+    if (this._npcs.length >= this.maxNPCs) return;
+
+    const raw = new THREE.Vector3(spec.position[0], spec.position[1], spec.position[2]);
+    const pos = this._snapToGround(raw);
+    if (!pos) return;
+
+    const npc = this._createNPC({
+      hostile: false,
+      name: spec.name,
+      persona: spec.persona,
+      position: pos,
+      yaw: spec.yaw,
+      anchored: true,
+      role: ROLE.QUEST_MANAGER,
+      posture: 'crossed',
+      signLines: spec.sign,
+      isQuestManager: true,
+    });
+    npc.isQuestManager = true;
+  }
+
+  /**
    *
    * Hubs are derived from where the world already put its named civilians, so
    * the extra population lands in the plaza or the market square rather than in

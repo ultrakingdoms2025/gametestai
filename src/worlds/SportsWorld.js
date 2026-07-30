@@ -7969,7 +7969,7 @@ export class SportsWorld extends World {
     rackGeo.push(new THREE.CylinderGeometry(0.03, 0.03, 4.2, 6).rotateZ(Math.PI / 2).translate(0, 0.06, 0));
     const rack = mergeGeometries(rackGeo);
     const rackSpots = this._groundList([
-      [-14, 0.1, 145, 0, 0, 0, 1], [14, 0.1, 145, 0, 0, 0, 1],
+      [-16, 0.1, 145, 0, 0, 0, 1], [16, 0.1, 145, 0, 0, 0, 1],
       [-104, 0, 84, 0, 0.3, 0, 1], [56, 0, 100, 0, 1.2, 0, 1],
     ]);
     this._instanced(rack, this._materials.get('metal.galv'), rackSpots);

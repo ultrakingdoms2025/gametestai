@@ -29,6 +29,8 @@ export class QuestBoard {
     this._selectedEngId   = null;
     /** Frames to skip close-key checks after opening (prevents same-frame close). */
     this._openGuard       = 0;
+    /** Set by close(); prevents HUD re-emitting quests:board:open in the same frame. */
+    this._justClosed      = false;
 
     this._el = this._build();
     root.appendChild(this._el);
@@ -56,6 +58,11 @@ export class QuestBoard {
   get isOpen() { return this._open; }
 
   open() {
+    // Prevent a same-frame close→reopen cycle: if close() was called earlier
+    // this frame (e.g. questBoard.update() closed it, then HUD re-emits open),
+    // skip the reopen. _justClosed is cleared at the top of the next update().
+    if (this._justClosed) return;
+    if (this._open) return;
     // Opening from gameplay should immediately free the cursor for UI clicks.
     this.input?.exitLock?.();
     this._open = true;
@@ -67,7 +74,9 @@ export class QuestBoard {
   }
 
   close() {
+    if (!this._open) return;
     this._open = false;
+    this._justClosed = true;
     this._el.classList.remove('open');
     document.body.classList.remove('quest-board-open');
     this.bus?.emit('hud:block', { id: 'quest-board', block: false });
@@ -76,6 +85,8 @@ export class QuestBoard {
 
   /** Called every frame. */
   update(_dt) {
+    // Clear same-frame reopen guard at the start of each new frame.
+    this._justClosed = false;
     if (!this._open) return;
     if (this._openGuard > 0) {
       this._openGuard--;

@@ -727,6 +727,27 @@ export async function listConfigKeys() {
 // ── Lore ────────────────────────────────────────────────────────────────────
 
 export async function listLoreEntries() {
+  // Create and seed the table on first access so the lore page never 500s
+  // before the admin setup script has been run.
+  await sql`
+    CREATE TABLE IF NOT EXISTS lore_entries (
+      scope       TEXT PRIMARY KEY,
+      title       TEXT NOT NULL,
+      sign_label  TEXT NOT NULL DEFAULT 'Lorekeeper',
+      body        TEXT NOT NULL,
+      updated_by  TEXT,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  for (const entry of DEFAULT_LORE_ROWS) {
+    await sql`
+      INSERT INTO lore_entries (scope, title, sign_label, body)
+      VALUES (${entry.scope}, ${entry.title}, ${entry.sign_label}, ${entry.body})
+      ON CONFLICT (scope) DO NOTHING
+    `;
+  }
+
   const { rows } = await sql`
     SELECT scope, title, sign_label, body, updated_by, created_at, updated_at
     FROM lore_entries
@@ -760,6 +781,18 @@ export async function upsertLoreEntry(data: {
   body: string;
   updatedBy?: string;
 }) {
+  // Ensure the table exists before upserting.
+  await sql`
+    CREATE TABLE IF NOT EXISTS lore_entries (
+      scope       TEXT PRIMARY KEY,
+      title       TEXT NOT NULL,
+      sign_label  TEXT NOT NULL DEFAULT 'Lorekeeper',
+      body        TEXT NOT NULL,
+      updated_by  TEXT,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
   await sql`
     INSERT INTO lore_entries (scope, title, sign_label, body, updated_by)
     VALUES (${data.scope}, ${data.title}, ${data.signLabel ?? 'Lorekeeper'}, ${data.body}, ${data.updatedBy ?? null})

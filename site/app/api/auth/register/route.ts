@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserByEmail, createUser } from '@/lib/db';
+import { sendWelcomeEmail } from '@/lib/email';
 import { isHandleAvailable, normalizeHandle, syncPlayerProfile } from '@/lib/playerDb';
 
 export async function POST(req: NextRequest) {
@@ -29,6 +30,11 @@ export async function POST(req: NextRequest) {
       fullName: normalizedHandle,
       overwrite: true,
     });
+    try {
+      await sendWelcomeEmail(normalized, normalizedHandle);
+    } catch (err) {
+      console.error('[register] Failed to send welcome email:', err);
+    }
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('[register]', err);

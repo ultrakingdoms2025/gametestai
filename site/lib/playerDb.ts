@@ -276,7 +276,7 @@ export async function recordSitePurchase(opts: {
   creditsAmount: number;
   orderId: string;
   actorEmail: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const purchaseType = opts.type === 'access+credits' ? 'access' : opts.type;
 
   // Idempotent: skip if this orderId already recorded
@@ -284,7 +284,7 @@ export async function recordSitePurchase(opts: {
     'SELECT id FROM purchases WHERE stripe_intent_enc = $1 LIMIT 1',
     [opts.orderId]
   );
-  if (existing[0]) return;
+  if (existing[0]) return false;
 
   const purchaseId = randomUUID();
   await pgQuery(
@@ -328,6 +328,8 @@ export async function recordSitePurchase(opts: {
     `player:${opts.playerId}`,
     detail
   );
+
+  return true;
 }
 
 // ---------------------------------------------------------------------------

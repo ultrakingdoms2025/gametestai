@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { grant } from '@/lib/entitlement';
+import { sendPurchaseConfirmationEmail } from '@/lib/email';
 import { clampCredits } from '@/lib/pricing';
 import { getStripe, siteOrigin, stripeConfigured } from '@/lib/stripe';
 import { auth } from '@/lib/auth';
-import { findOrCreatePlayer, recordSitePurchase } from '@/lib/playerDb';
+import { findOrCreatePlayer, getPlayerStatus, recordSitePurchase } from '@/lib/playerDb';
 
 /**
  * Payment came back. Grant what was bought.
@@ -57,7 +58,7 @@ export async function GET(req: Request) {
         opts.intent === 'credits' ? 'credits'
         : opts.intent === 'entry+credits' ? 'access+credits'
         : 'access';
-      await recordSitePurchase({
+      const recorded = await recordSitePurchase({
         playerId,
         type,
         amountCents: opts.amountCents,
@@ -65,6 +66,21 @@ export async function GET(req: Request) {
         orderId: opts.orderId,
         actorEmail: userEmail,
       });
+      if (!recorded) return;
+      const player = await getPlayerStatus(userId);
+      const handle = player?.handle ?? player?.fullName ?? userEmail.split('@')[0];
+      try {
+        await sendPurchaseConfirmationEmail({
+          to: userEmail,
+          handle,
+          type,
+          amountCents: opts.amountCents,
+          creditsAmount: opts.credits,
+          orderId: opts.orderId,
+        });
+      } catch (err) {
+        console.error('[confirm] Failed to send purchase confirmation email:', err);
+      }
     } catch (err) {
       console.error('[confirm] Failed to record purchase in admin DB:', err);
     }

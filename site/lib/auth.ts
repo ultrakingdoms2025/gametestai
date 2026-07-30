@@ -2,6 +2,7 @@ import NextAuth from 'next-auth';
 import Google from 'next-auth/providers/google';
 import Credentials from 'next-auth/providers/credentials';
 import { getUserByEmail, getUserByGoogleId, createUser, getUserById, linkGoogleAccount, verifyPassword } from '@/lib/db';
+import { sendWelcomeEmail } from '@/lib/email';
 import { getPlayerStatus, syncPlayerProfile } from '@/lib/playerDb';
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
@@ -58,6 +59,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
           // Check by email first, then by Google ID
           let existing = await getUserByEmail(email);
+          let createdNow = false;
           if (!existing && googleId) {
             existing = await getUserByGoogleId(googleId);
           }
@@ -70,6 +72,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           } else {
             const created = await createUser({ email, googleId: googleId || undefined });
             user.id = created.id;
+            createdNow = true;
           }
           if (user.id) {
             await syncPlayerProfile(user.id, email, {
@@ -79,6 +82,13 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
               overwrite: false,
             });
             user.name = displayName;
+            if (createdNow) {
+              try {
+                await sendWelcomeEmail(email, displayName);
+              } catch (err) {
+                console.error('[auth] Failed to send OAuth welcome email:', err);
+              }
+            }
           }
         } catch (err) {
           // Log full error detail to Vercel function logs

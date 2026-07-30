@@ -450,7 +450,97 @@ export async function unlockPlayer(playerId: string) {
 
 // ── Quests ─────────────────────────────────────────────────────────────────
 
+const DEFAULT_QUESTS = [
+  // STATION
+  { n: 1,  world: 'station',  line: 'Signal Boost',        title: 'Reactivate the beacon array on Deck 4',                               credits: 75,   dur: 15,   pre: null,                                        notes: 'Simple — 15 min. Locate three relay nodes and power them on.' },
+  { n: 2,  world: 'station',  line: 'Cargo Manifest',       title: 'Verify and stamp 12 incoming freight containers',                      credits: 100,  dur: 30,   pre: null,                                        notes: 'Simple — 30 min. Scan barcodes and flag damaged goods.' },
+  { n: 3,  world: 'station',  line: 'Dock Worker',          title: 'Clear the blocked freight corridor and restore flow',                  credits: 250,  dur: 90,   pre: ['Signal Boost'],                            notes: 'Medium — 90 min. Requires Signal Boost (Q1) complete.' },
+  { n: 4,  world: 'station',  line: 'Trade Route Scouting', title: 'Chart three new trade corridors through the outer rings',             credits: 400,  dur: 180,  pre: null,                                        notes: 'Medium — 3 hr. Involves travel to all outer docking bays.' },
+  { n: 5,  world: 'station',  line: 'Lost Traveller',       title: 'Locate and escort the missing envoy from Bay 9',                      credits: 80,   dur: 20,   pre: null,                                        notes: 'Simple — 20 min. Easy escort task.' },
+  { n: 6,  world: 'station',  line: 'Contraband Sweep',     title: 'Search six cargo bays for smuggled aether crystals',                  credits: 350,  dur: 120,  pre: ['Dock Worker'],                             notes: 'Medium — 2 hr. Requires Dock Worker (Q3) complete.' },
+  { n: 7,  world: 'station',  line: 'Nexus Cartographer',   title: 'Produce a verified map of all five portal connections',               credits: 1000, dur: 720,  pre: ['Trade Route Scouting','Contraband Sweep'], notes: 'Complex — 12 hr. Requires Q4 and Q6. Extensive multi-zone survey.' },
+  { n: 8,  world: 'station',  line: 'Station Saboteur',     title: 'Identify and stop the faction planting power disruptors',             credits: 1500, dur: 1440, pre: ['Nexus Cartographer'],                     notes: 'Complex — 1 day. Requires Q7. Stealth and combat sections.' },
+  { n: 9,  world: 'station',  line: 'The Aether Compact',   title: 'Broker a trade agreement between three rival world factions',        credits: 2500, dur: 2880, pre: ['Station Saboteur'],                       notes: 'Epic — 2 days. Requires Q8. Multi-step diplomacy across worlds.' },
+  { n: 10, world: 'station',  line: 'Nexus Council Envoy',  title: 'Represent the Station at the founding of the Nexus Council',         credits: 5000, dur: 5760, pre: ['The Aether Compact'],                     notes: 'Epic — 4 days. Requires Q9. Capstone quest for the Station questline.' },
+  // MEDIEVAL
+  { n: 11, world: 'medieval', line: 'Herb Gatherer',        title: 'Collect nightshade, frostbloom, and ironroot from the vale',         credits: 60,   dur: 15,   pre: null,                                        notes: 'Simple — 15 min. Gathering task, no combat.' },
+  { n: 12, world: 'medieval', line: 'Mill Stone Delivery',  title: "Carry the miller's replacement grindstone to the north mill",        credits: 80,   dur: 25,   pre: null,                                        notes: 'Simple — 25 min. Delivery with a heavy-load movement penalty.' },
+  { n: 13, world: 'medieval', line: 'Bandit Camp Scout',    title: 'Locate the bandit camp east of Thornwall without being seen',        credits: 220,  dur: 90,   pre: null,                                        notes: 'Medium — 90 min. Stealth mission; detection causes failure.' },
+  { n: 14, world: 'medieval', line: "The Miller's Debt",    title: "Recover the miller's stolen grain and settle his debt to the guild", credits: 300,  dur: 120,  pre: ['Mill Stone Delivery'],                     notes: 'Medium — 2 hr. Requires Q12. Investigation and retrieval.' },
+  { n: 15, world: 'medieval', line: 'Village Healer',       title: 'Prepare and administer remedies to the sick in three homesteads',   credits: 100,  dur: 30,   pre: ['Herb Gatherer'],                           notes: 'Simple — 30 min. Requires Q11. Crafting and NPC interaction.' },
+  { n: 16, world: 'medieval', line: "Knight's Errand",      title: "Escort the knight's sealed letter to Lord Greymere at the citadel gate", credits: 450, dur: 180, pre: ['Bandit Camp Scout'],                   notes: 'Medium — 3 hr. Requires Q13. Long escort across bandit territory.' },
+  { n: 17, world: 'medieval', line: 'Siege of Thornwall',   title: 'Hold the outer wall through three waves of bandit assault',         credits: 900,  dur: 720,  pre: ["Knight's Errand"],                        notes: 'Complex — 12 hr. Requires Q16. Timed defence with reinforcement phases.' },
+  { n: 18, world: 'medieval', line: "The Witch's Bargain",  title: 'Negotiate with the forest witch to lift the plague on the vale',    credits: 1200, dur: 1440, pre: ["The Miller's Debt",'Village Healer'],      notes: 'Complex — 1 day. Requires Q14 and Q15. Moral choices affect outcome.' },
+  { n: 19, world: 'medieval', line: 'The Dark Tome',        title: 'Recover and destroy the cursed tome hidden in the Thornwood ruins', credits: 3000, dur: 4320, pre: ['Siege of Thornwall',"The Witch's Bargain"], notes: 'Epic — 3 days. Requires Q17 and Q18. Multi-dungeon crawl with boss.' },
+  { n: 20, world: 'medieval', line: 'Crown of Aldermoor',   title: "Unite the vale's factions and crown the new ruler of Aldermoor",   credits: 6000, dur: 7200, pre: ['The Dark Tome'],                          notes: 'Epic — 5 days. Requires Q19. Capstone; permanent world-state change.' },
+  // SPORTS
+  { n: 21, world: 'sports',   line: 'First Sprint',          title: 'Complete the 100 m dash within the qualifying time',                credits: 50,   dur: 10,   pre: null,                                        notes: 'Simple — 10 min. Pure speed check.' },
+  { n: 22, world: 'sports',   line: 'Warm-Up Circuit',       title: 'Finish three laps of the outer warm-up track without stopping',    credits: 75,   dur: 20,   pre: null,                                        notes: 'Simple — 20 min. Stamina check.' },
+  { n: 23, world: 'sports',   line: 'Team Tryout',           title: 'Pass the multi-discipline tryout for the Meridian Blaze team',     credits: 200,  dur: 60,   pre: ['First Sprint'],                            notes: 'Medium — 1 hr. Requires Q21. Sprint, obstacle, and accuracy sections.' },
+  { n: 24, world: 'sports',   line: 'Track Marshal',         title: 'Oversee and enforce the rules during the junior championship heats', credits: 250, dur: 90,   pre: null,                                        notes: 'Medium — 90 min. Observation and decision-making quest.' },
+  { n: 25, world: 'sports',   line: 'Equipment Cache',       title: 'Locate the stolen team kit hidden across the grandstand complex',   credits: 90,   dur: 25,   pre: null,                                        notes: 'Simple — 25 min. Treasure-hunt style.' },
+  { n: 26, world: 'sports',   line: 'League Qualifier',      title: 'Lead the Meridian Blaze through the regional league qualifier rounds', credits: 500, dur: 180, pre: ['Team Tryout','Track Marshal'],            notes: 'Medium — 3 hr. Requires Q23 and Q24. Three competitive event rounds.' },
+  { n: 27, world: 'sports',   line: 'Championship Contender',title: 'Win the full Meridian Athletic Championship tournament bracket',    credits: 1200, dur: 1440, pre: ['League Qualifier'],                       notes: 'Complex — 1 day. Requires Q26. Eight-match bracket, escalating difficulty.' },
+  { n: 28, world: 'sports',   line: 'Rival Team Sabotage',   title: "Expose and stop the rival team's equipment tampering scheme",      credits: 800,  dur: 720,  pre: ['Track Marshal'],                           notes: 'Complex — 12 hr. Requires Q24. Investigation and confrontation.' },
+  { n: 29, world: 'sports',   line: 'Grand Prix Champion',   title: 'Take the Meridian Grand Prix title across all disciplines',        credits: 2200, dur: 2880, pre: ['Championship Contender','Rival Team Sabotage'], notes: 'Epic — 2 days. Requires Q27 and Q28. Full multi-sport event series.' },
+  { n: 30, world: 'sports',   line: 'Nexus Sports Hall of Fame', title: 'Complete all Meridian disciplines with gold-tier records and be inducted', credits: 4000, dur: 4320, pre: ['Grand Prix Champion'],         notes: 'Epic — 3 days. Requires Q29. Capstone; personal-record challenges.' },
+  // CITADEL
+  { n: 31, world: 'citadel',  line: 'Wall Watch',            title: 'Complete an unbroken two-hour guard shift on the outer battlements', credits: 70,  dur: 15,   pre: null,                                        notes: 'Simple — 15 min in-game. Observation and alertness challenge.' },
+  { n: 32, world: 'citadel',  line: 'Armory Inventory',      title: 'Count, log, and report shortfalls in the citadel armoury',         credits: 90,   dur: 30,   pre: null,                                        notes: 'Simple — 30 min. Memory and attention-to-detail task.' },
+  { n: 33, world: 'citadel',  line: 'Patrol Route',          title: 'Run the full perimeter patrol without triggering any alarm',       credits: 200,  dur: 90,   pre: ['Wall Watch'],                              notes: 'Medium — 90 min. Requires Q31. Stealth and route memorisation.' },
+  { n: 34, world: 'citadel',  line: 'Desert Scouts',         title: 'Survey the desert approaches and mark enemy troop positions',      credits: 320,  dur: 120,  pre: null,                                        notes: 'Medium — 2 hr. Exposed scouting, risk of detection.' },
+  { n: 35, world: 'citadel',  line: 'Fallen Gate',           title: 'Repair the damaged main gate before the night guard change',       credits: 75,   dur: 20,   pre: null,                                        notes: 'Simple — 20 min. Timed repair puzzle.' },
+  { n: 36, world: 'citadel',  line: 'Citadel Defender',      title: "Repel the desert raiders' probe attack on the east terraces",     credits: 600,  dur: 240,  pre: ['Patrol Route','Desert Scouts'],            notes: 'Medium — 4 hr. Requires Q33 and Q34. Wave defence sequence.' },
+  { n: 37, world: 'citadel',  line: 'The Siege Plan',        title: 'Steal the enemy siege plans from their forward camp and return safely', credits: 1400, dur: 1440, pre: ['Citadel Defender'],                  notes: 'Complex — 1 day. Requires Q36. Deep infiltration behind enemy lines.' },
+  { n: 38, world: 'citadel',  line: 'Assassin in the Keep',  title: 'Find and neutralise the assassin hiding inside the citadel walls', credits: 1000, dur: 720,  pre: ['Fallen Gate'],                            notes: 'Complex — 12 hr. Requires Q35. Investigation, deduction, and combat.' },
+  { n: 39, world: 'citadel',  line: 'The Desert War',        title: 'Lead the combined defence and turn the full enemy offensive',      credits: 3500, dur: 4320, pre: ['The Siege Plan','Assassin in the Keep'],   notes: 'Epic — 3 days. Requires Q37 and Q38. Large-scale battle campaign.' },
+  { n: 40, world: 'citadel',  line: 'Warlord of Sunspire',   title: 'Claim the title of Warlord and establish the Sunspire Pact',      credits: 7000, dur: 7200, pre: ['The Desert War'],                         notes: 'Epic — 5 days. Requires Q39. Capstone; player earns citadel leadership title.' },
+  // RACE
+  { n: 41, world: 'race',     line: 'First Lap',             title: 'Complete one clean lap of the Vellum Ridge Circuit',               credits: 60,   dur: 10,   pre: null,                                        notes: 'Simple — 10 min. No time pressure; familiarisation lap.' },
+  { n: 42, world: 'race',     line: 'Pit Crew Basics',       title: 'Perform a full tyre-and-fuel stop in under the target time',       credits: 80,   dur: 20,   pre: null,                                        notes: 'Simple — 20 min. Timed button-sequence puzzle.' },
+  { n: 43, world: 'race',     line: 'Time Trial',            title: 'Post a qualifying time fast enough for the regional grid',         credits: 200,  dur: 60,   pre: ['First Lap'],                               notes: 'Medium — 1 hr. Requires Q41. Three timed attempts to beat the target.' },
+  { n: 44, world: 'race',     line: "Mechanic's Special",    title: "Diagnose and repair the car's hidden handling fault before the heat", credits: 280, dur: 90,  pre: ['Pit Crew Basics'],                        notes: 'Medium — 90 min. Requires Q42. Logic puzzle + test laps.' },
+  { n: 45, world: 'race',     line: 'Street Circuit Scout',  title: 'Walk and memorise the city block section of the circuit',          credits: 85,   dur: 25,   pre: null,                                        notes: 'Simple — 25 min. Exploration and waypoint marking.' },
+  { n: 46, world: 'race',     line: 'Regional Heat',         title: 'Win your regional heat against five AI rivals',                    credits: 450,  dur: 180,  pre: ['Time Trial',"Mechanic's Special"],         notes: 'Medium — 3 hr. Requires Q43 and Q44. Full race with rival AI scaling.' },
+  { n: 47, world: 'race',     line: 'Sabotaged Start',       title: 'Discover who tampered with your car and clear your name before the race', credits: 1100, dur: 1440, pre: ['Street Circuit Scout'],            notes: 'Complex — 1 day. Requires Q45. Investigation, alibi checks, confrontation.' },
+  { n: 48, world: 'race',     line: 'Championship Round',    title: 'Finish on the podium in the Vellum Ridge Championship round',      credits: 900,  dur: 720,  pre: ['Regional Heat'],                          notes: 'Complex — 12 hr. Requires Q46. Eight-rival race with full damage model.' },
+  { n: 49, world: 'race',     line: 'The Vellum 500',        title: 'Endure and win the 500-lap Vellum Ridge endurance race',           credits: 2500, dur: 2880, pre: ['Sabotaged Start','Championship Round'],    notes: 'Epic — 2 days. Requires Q47 and Q48. Endurance with pit strategy.' },
+  { n: 50, world: 'race',     line: 'Nexus Racing Legend',   title: 'Break the all-time circuit record and earn the Nexus Racing Legend title', credits: 5000, dur: 5760, pre: ['The Vellum 500'],               notes: 'Epic — 4 days. Requires Q49. Capstone; personal-record across all layouts.' },
+] as const;
+
+async function _ensureQuestsSeeded() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS quests (
+      id               TEXT PRIMARY KEY,
+      quest_number     INTEGER UNIQUE NOT NULL,
+      world            TEXT NOT NULL,
+      quest_line       TEXT NOT NULL,
+      title            TEXT NOT NULL,
+      reward_credits   INTEGER NOT NULL DEFAULT 0,
+      duration_minutes INTEGER,
+      pre_steps        TEXT,
+      post_steps       TEXT,
+      notes            TEXT,
+      is_active        BOOLEAN NOT NULL DEFAULT TRUE,
+      updated_by       TEXT,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  for (const q of DEFAULT_QUESTS) {
+    const preJson = q.pre ? JSON.stringify(q.pre) : null;
+    await sql`
+      INSERT INTO quests (id, quest_number, world, quest_line, title, reward_credits,
+                          duration_minutes, pre_steps, post_steps, notes, is_active, updated_by)
+      VALUES (${randomUUID()}, ${q.n}, ${q.world}, ${q.line}, ${q.title}, ${q.credits},
+              ${q.dur}, ${preJson}, ${null}, ${q.notes}, true, 'seed')
+      ON CONFLICT (quest_number) DO NOTHING
+    `;
+  }
+}
+
 export async function listQuests() {
+  await _ensureQuestsSeeded();
   const { rows } = await sql`
     SELECT id, quest_number, world, quest_line, title, reward_credits, duration_minutes,
            pre_steps, post_steps, notes, is_active, updated_by,

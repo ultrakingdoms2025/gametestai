@@ -752,13 +752,40 @@ export class HUD {
     const p = el('div', 'pause');
     const inner = el('div', 'pause-in');
     this.pauseSub = el('div', 'pause-s', 'click or press Space to resume');
+
+    // Reload and Quit buttons — visible in all standby situations
+    const actions = el('div', 'pause-actions');
+
+    const reloadBtn = el('button', 'pause-btn pause-btn-reload', 'Reload Game');
+    reloadBtn.type = 'button';
+    reloadBtn.title = 'Reload the game in this tab';
+    reloadBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.location.reload();
+    });
+
+    const quitBtn = el('button', 'pause-btn pause-btn-quit', 'Quit to Menu');
+    quitBtn.type = 'button';
+    quitBtn.title = 'Return to the landing page';
+    quitBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Navigate to the site root; the game runs at /play so go up one level.
+      const origin = window.location.origin;
+      window.location.href = origin + '/';
+    });
+
+    actions.append(reloadBtn, quitBtn);
+
     inner.append(
       el('div', 'pause-t', 'STANDBY'),
       this.pauseSub,
+      actions,
       el('div', 'pause-hint', 'F3 diagnostics · T opens comms · F1 controls')
     );
     p.appendChild(inner);
     p.addEventListener('mousedown', (e) => {
+      // Don't propagate to the overlay click-to-resume if a button was clicked.
+      if (e.target !== p && e.target !== inner) return;
       e.preventDefault();
       this._requestLock();
     });

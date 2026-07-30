@@ -60,6 +60,7 @@ export class QuestBoard {
     this._el.classList.remove('open');
     document.body.classList.remove('quest-board-open');
     this.bus?.emit('hud:block', { id: 'quest-board', block: false });
+    this.bus?.emit('quests:board:close');
   }
 
   /** Called every frame. */

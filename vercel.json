@@ -2,11 +2,13 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": null,
-  "redirects": [
+  "routes": [
     {
-      "source": "/:path*",
-      "destination": "https://aethernexus.games/",
-      "permanent": false
+      "src": "/(.*)",
+      "status": 302,
+      "headers": {
+        "Location": "https://aethernexus.games/"
+      }
     }
   ]
 }

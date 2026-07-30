@@ -68,11 +68,6 @@ function sseData(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-function jsonError(res, status, message) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: message }));
-}
-
 export default async function handler(req, res) {
   // CORS
   const origin = req.headers.origin || '';
@@ -87,22 +82,36 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
 
-  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
-  if (req.method !== 'POST')   { return jsonError(res, 405, 'method not allowed'); }
+  if (req.method === 'OPTIONS') { res.status(204).end(); return; }
+  if (req.method !== 'POST')   { res.status(405).json({ error: 'method not allowed' }); return; }
 
-  // Vercel auto-parses JSON bodies into req.body; handle both object and string forms.
+  // Vercel auto-parses JSON bodies; handle object and string forms.
   let body = req.body;
+  console.log('[chat] body type:', typeof body, '| raw:', JSON.stringify(body)?.slice(0, 120));
+
   if (typeof body === 'string') {
-    try { body = JSON.parse(body); } catch { return jsonError(res, 400, 'bad-json'); }
+    try { body = JSON.parse(body); } catch { res.status(400).json({ error: 'bad-json' }); return; }
   }
-  if (!body || typeof body !== 'object') return jsonError(res, 400, 'bad-request');
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    console.log('[chat] bad-request: body is', typeof body);
+    res.status(400).json({ error: 'bad-request' });
+    return;
+  }
 
   const playerMessage = clean(body.playerMessage, 600);
-  if (!playerMessage) return jsonError(res, 400, 'empty-message');
+  if (!playerMessage) {
+    console.log('[chat] empty-message: playerMessage=', body.playerMessage);
+    res.status(400).json({ error: 'empty-message' });
+    return;
+  }
 
   const apiKey = (process.env.ANTHROPIC_API_KEY || '').trim();
+  console.log('[chat] apiKey present:', !!apiKey, '| model:', MODEL);
+
   if (!apiKey) {
-    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache' });
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.flushHeaders();
     sseData(res, { type: 'error', message: 'no-key' });
     res.end();
     return;
@@ -112,12 +121,11 @@ export default async function handler(req, res) {
   const messages = sanitizeHistory(body.history);
   messages.push({ role: 'user', content: playerMessage });
 
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream; charset=utf-8',
-    'Cache-Control': 'no-cache, no-transform',
-    'Connection':    'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
 
   try {
     const client = new Anthropic({ apiKey });
@@ -131,8 +139,10 @@ export default async function handler(req, res) {
       }
     }
 
+    console.log('[chat] done, chars sent:', sent);
     sseData(res, sent === 0 ? { type: 'error', message: 'empty-reply' } : { type: 'done' });
   } catch (err) {
+    console.error('[chat] upstream error:', err?.status, err?.message);
     const msg = err?.status === 401 ? 'bad-key'
               : err?.status === 429 ? 'rate-limited'
               : 'upstream-error';

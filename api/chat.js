@@ -17,6 +17,21 @@ import Anthropic from '@anthropic-ai/sdk';
 
 const MODEL = process.env.CHAT_MODEL || 'claude-haiku-4-5';
 const MAX_TOKENS = 150;
+const MAX_BODY_BYTES = 16 * 1024;
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) { reject(new Error('too large')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
 
 const WORLD_BLURB = {
   station:  'Aether Station — an orbital habitat of plated roads, gantries and glass, hanging above a planet.',
@@ -95,7 +110,9 @@ export default async function handler(req, res) {
 
   let body;
   try {
-    body = typeof req.body === 'object' && req.body !== null ? req.body : JSON.parse(req.body);
+    // Vercel's raw Node.js runtime does not auto-parse req.body — read the stream.
+    const raw = await readBody(req);
+    body = JSON.parse(raw);
   } catch {
     res.status(400).json({ error: 'bad-request' });
     return;
@@ -150,3 +167,6 @@ export default async function handler(req, res) {
 
   res.end();
 }
+
+// Tell Vercel not to pre-parse the body — we read the stream ourselves.
+export const config = { api: { bodyParser: false } };

@@ -4,6 +4,7 @@ import HomeWorldShowcase from '@/components/HomeWorldShowcase';
 import { readPass } from '@/lib/entitlement';
 import { ENTRY_CENTS, CREDIT_PRICE_CENTS, MIN_CREDITS, formatCents, grossUp } from '@/lib/pricing';
 import { stripeConfigured } from '@/lib/stripe';
+import { auth } from '@/lib/auth';
 
 /* Reads a cookie, so it cannot be prerendered — and should not be, since the
  * page's primary call to action changes depending on whether you have paid. */
@@ -108,6 +109,7 @@ export default async function Home() {
   const pass = await readPass();
   const paid = !!pass?.paid;
   const entryTotal = grossUp(ENTRY_CENTS);
+  const session = await auth();
 
   return (
     <>
@@ -121,12 +123,19 @@ export default async function Home() {
             <a href="/store">Credits</a>
           </div>
           <div className="nav-cta">
-            {paid ? (
-              <Link className="btn btn-primary btn-sm" href="/play">Enter game</Link>
+            {session ? (
+              paid ? (
+                <Link className="btn btn-primary btn-sm" href="/play">Enter game</Link>
+              ) : (
+                <Link className="btn btn-primary btn-sm" href="/checkout?intent=entry">
+                  Get access
+                </Link>
+              )
             ) : (
-              <Link className="btn btn-primary btn-sm" href="/checkout?intent=entry">
-                Get access
-              </Link>
+              <>
+                <Link className="btn btn-ghost btn-sm" href="/login">Sign in</Link>
+                <Link className="btn btn-primary btn-sm" href="/register">Join</Link>
+              </>
             )}
           </div>
         </div>

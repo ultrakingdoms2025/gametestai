@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from 'next';
 import { Chakra_Petch, Rajdhani } from 'next/font/google';
 import './globals.css';
+import Providers from '@/components/Providers';
+import SiteHeader from '@/components/SiteHeader';
 
 /* The game's own two faces. `next/font` downloads and self-hosts them at build
  * time, so there is no request to a font CDN at runtime and no flash of a
@@ -41,7 +43,12 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${display.variable} ${body.variable}`} suppressHydrationWarning>
-      <body suppressHydrationWarning>{children}</body>
+      <body suppressHydrationWarning>
+        <Providers>
+          <SiteHeader />
+          {children}
+        </Providers>
+      </body>
     </html>
   );
 }

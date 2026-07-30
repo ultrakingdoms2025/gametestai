@@ -15,6 +15,7 @@ import { sql } from './sql';
 import { randomUUID } from 'node:crypto';
 import { encrypt, decrypt, encryptMaybe, decryptMaybe } from './encrypt';
 import { sha256, sign, auditHash } from './hmac';
+import { computePlayerAccessSnapshot, grantedAtForRemainingDays } from './playerAccess';
 
 const DEFAULT_LORE_ROWS = [
   {
@@ -718,6 +719,27 @@ export async function adjustCredits(playerId: string, delta: number) {
   `;
 }
 
+export async function setPlayerAccessDays(playerId: string, daysRemaining: number) {
+  const normalized = Math.max(0, Math.floor(daysRemaining));
+  if (normalized === 0) {
+    await sql`
+      UPDATE players
+      SET access_revoked_at = NOW(), updated_at = NOW()
+      WHERE id = ${playerId}
+    `;
+    return;
+  }
+
+  const grantedAt = grantedAtForRemainingDays(normalized);
+  await sql`
+    UPDATE players
+    SET access_granted_at = ${grantedAt.toISOString()},
+        access_revoked_at = NULL,
+        updated_at = NOW()
+    WHERE id = ${playerId}
+  `;
+}
+
 export async function countPlayers(): Promise<number> {
   const { rows } = await sql`SELECT COUNT(*) AS n FROM players`;
   return Number(rows[0]?.n ?? 0);
@@ -725,10 +747,13 @@ export async function countPlayers(): Promise<number> {
 
 export async function countActivePlayers(): Promise<number> {
   const { rows } = await sql`
-    SELECT COUNT(*) AS n FROM players
-    WHERE access_granted_at IS NOT NULL AND access_revoked_at IS NULL
+    SELECT status, access_granted_at, access_revoked_at
+    FROM players
   `;
-  return Number(rows[0]?.n ?? 0);
+  return rows.filter((row) => {
+    if (String(row.status ?? '').toLowerCase() === 'locked') return false;
+    return computePlayerAccessSnapshot(row).hasActiveAccess;
+  }).length;
 }
 
 // ── Purchases ──────────────────────────────────────────────────────────────

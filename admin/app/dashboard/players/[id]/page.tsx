@@ -3,6 +3,7 @@ import { redirect, notFound } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import {
   audit,
+  setPlayerAccessDays,
   createPlayer,
   getPlayerById,
   listPlayerQuestEngagements,
@@ -12,6 +13,7 @@ import {
   updatePlayer,
   adjustCredits,
 } from '@/lib/db';
+import { computePlayerAccessSnapshot } from '@/lib/playerAccess';
 import { getSession } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
@@ -176,9 +178,23 @@ export default async function PlayerPage({
     redirect(`/dashboard/players/${id}?saved=1`);
   }
 
+  async function adjustAccess(formData: FormData) {
+    'use server';
+    const session = await getSession();
+    if (!session.adminId) redirect('/login');
+    const daysRemaining = Number(s(formData.get('days_remaining')) || 0);
+    const reason = s(formData.get('reason')) || 'manual_access_adjustment';
+    await setPlayerAccessDays(id, daysRemaining);
+    await audit(session.username, 'player.adjust_access', `player:${id}`, `days_remaining=${daysRemaining} reason=${reason}`);
+    revalidatePath('/dashboard/players');
+    revalidatePath(`/dashboard/players/${id}`);
+    redirect(`/dashboard/players/${id}?saved=1`);
+  }
+
   const label = player ? (player.full_name || player.handle || player.id) : 'New player';
   const title = creating ? 'New player' : `Player ${String(label).slice(0, 18)}`;
-  const locked = String(player?.status ?? '').toLowerCase() === 'locked' || !!player?.access_revoked_at;
+  const locked = String(player?.status ?? '').toLowerCase() === 'locked';
+  const access = computePlayerAccessSnapshot(player ?? {});
 
   return (
     <div className="page-body">
@@ -255,6 +271,15 @@ export default async function PlayerPage({
             <div><span className="mini-label">Email hash</span><div className="mono">{String(player?.email_hash ?? '—')}</div></div>
             <div><span className="mini-label">Credits</span><div>{String(player?.credit_balance ?? 0)}</div></div>
             <div><span className="mini-label">Status</span><div>{locked ? <span className="tag tag-red">Locked</span> : <span className="tag tag-green">Active</span>}</div></div>
+            <div><span className="mini-label">Access token</span><div>
+              <span className={access.hasActiveAccess ? 'tag tag-green' : access.statusLabel === 'Revoked' ? 'tag tag-red' : 'tag tag-amber'}>
+                {access.statusLabel}
+              </span>
+            </div></div>
+            <div><span className="mini-label">Time remaining</span><div>{access.hasActiveAccess ? `${access.daysRemaining} day${access.daysRemaining === 1 ? '' : 's'}` : '—'}</div></div>
+            <div><span className="mini-label">Expires</span><div className="mono">{access.expiresAt ? access.expiresAt.toLocaleString() : '—'}</div></div>
+            <div><span className="mini-label">Granted</span><div className="mono">{access.grantedAt ? access.grantedAt.toLocaleString() : '—'}</div></div>
+            <div><span className="mini-label">Revoked</span><div className="mono">{access.revokedAt ? access.revokedAt.toLocaleString() : '—'}</div></div>
           </div>
 
           {!creating && (
@@ -277,6 +302,31 @@ export default async function PlayerPage({
                 <input id="reason" name="reason" placeholder="manual_adjustment" />
               </div>
               <button type="submit" className="btn">Apply credits</button>
+            </form>
+          )}
+
+          {!creating && (
+            <form action={adjustAccess} style={{ marginTop: 18 }}>
+              <div className="form-row">
+                <label className="form-label" htmlFor="days_remaining">Access days remaining</label>
+                <input
+                  id="days_remaining"
+                  name="days_remaining"
+                  type="number"
+                  min="0"
+                  step="1"
+                  defaultValue={access.hasActiveAccess ? String(access.daysRemaining) : '30'}
+                  required
+                />
+              </div>
+              <div className="form-row">
+                <label className="form-label" htmlFor="access_reason">Reason</label>
+                <input id="access_reason" name="reason" placeholder="manual_access_adjustment" />
+              </div>
+              <div style={{ color: 'var(--txt-dim)', fontSize: 12, marginBottom: 12 }}>
+                Set to 0 to revoke. Any positive value sets the exact number of days remaining for this player&apos;s access token.
+              </div>
+              <button type="submit" className="btn">Apply access token</button>
             </form>
           )}
 

@@ -1,4 +1,5 @@
 ﻿import { listPlayers } from '@/lib/db';
+import { computePlayerAccessSnapshot } from '@/lib/playerAccess';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,13 +27,12 @@ export default async function PlayersPage({
         <table>
           <thead><tr>
             <th>ID</th><th>Name</th><th>Handle</th><th>Email hash</th><th>Status</th>
-            <th>Credits</th><th>Country</th><th>Created</th><th>Actions</th>
+            <th>Access</th><th>Remaining</th><th>Credits</th><th>Country</th><th>Created</th><th>Actions</th>
           </tr></thead>
           <tbody>
             {rows.map((r: Record<string, unknown>) => {
-              const status = String(r.status ?? (r.access_revoked_at ? 'locked' : r.access_granted_at ? 'active' : 'pending'));
-              const active = status === 'active' || (!!r.access_granted_at && !r.access_revoked_at);
-              const revoked = status === 'locked' || !!r.access_revoked_at;
+              const accountLocked = String(r.status ?? '').toLowerCase() === 'locked';
+              const access = computePlayerAccessSnapshot(r);
               return (
                 <tr key={String(r.id)}>
                   <td className="mono" title={String(r.id)}>{String(r.id).slice(0,8)}…</td>
@@ -40,13 +40,15 @@ export default async function PlayersPage({
                   <td className="mono">{String(r.handle ?? '—')}</td>
                   <td className="mono">{String(r.email_hash ?? '—').slice(0,12)}…</td>
                   <td>
-                    {revoked
+                    {accountLocked
                       ? <span className="tag tag-red">Locked</span>
-                      : active
+                      : access.hasActiveAccess
                         ? <span className="tag tag-green">Active</span>
-                        : <span className="tag tag-amber">{status}</span>
+                        : <span className={access.statusLabel === 'Revoked' ? 'tag tag-red' : 'tag tag-amber'}>{access.statusLabel}</span>
                     }
                   </td>
+                  <td>{access.hasActiveAccess ? <span className="tag tag-green">Has token</span> : <span className="tag tag-amber">No token</span>}</td>
+                  <td>{access.hasActiveAccess ? `${access.daysRemaining} day${access.daysRemaining === 1 ? '' : 's'}` : '—'}</td>
                   <td>{String(r.credit_balance)}</td>
                   <td>{String(r.country ?? '—')}</td>
                   <td className="mono">{new Date(String(r.created_at)).toLocaleDateString()}</td>
@@ -59,7 +61,7 @@ export default async function PlayersPage({
               );
             })}
             {rows.length === 0 && (
-              <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 32 }}>No players found</td></tr>
+              <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 32 }}>No players found</td></tr>
             )}
           </tbody>
         </table>

@@ -109,18 +109,20 @@ export async function getPlayerStatus(siteUserId: string): Promise<PlayerStatus 
     id: string;
     credit_balance: number;
     access_granted_at: string | null;
+    access_revoked_at: string | null;
+    status: string | null;
   }>(
-    'SELECT id, credit_balance, access_granted_at FROM players WHERE site_user_id = $1 LIMIT 1',
+    'SELECT id, credit_balance, access_granted_at, access_revoked_at, status FROM players WHERE site_user_id = $1 LIMIT 1',
     [siteUserId]
   );
   if (!rows[0]) return null;
 
-  const { id, credit_balance, access_granted_at } = rows[0];
+  const { id, credit_balance, access_granted_at, access_revoked_at, status } = rows[0];
   const now = Date.now();
   let hasAccess = false;
   let daysRemaining = 0;
 
-  if (access_granted_at) {
+  if (access_granted_at && !access_revoked_at && String(status ?? '').toLowerCase() !== 'locked') {
     const grantedMs = new Date(access_granted_at).getTime();
     const expiryMs = grantedMs + ACCESS_DAYS * 24 * 60 * 60 * 1000;
     hasAccess = now < expiryMs;

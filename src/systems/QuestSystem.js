@@ -3,14 +3,15 @@
  *
  * Fetches active quests for the current world from /api/game/quests and tracks
  * player progress by subscribing to the existing event bus:
- *   - npc:killed   → kill-type steps
- *   - loot:collected → collect-type steps
- *   - race:finished → race-type steps (single completion)
- *   - race:lap      → race-type steps with count > 1 (cumulative)
+ *   - npc:killed      → kill-type steps
+ *   - loot:collected  → collect-type steps
+ *   - race:finished   → race-type steps (single completion)
+ *   - race:lap        → race-type steps with count > 1 (cumulative)
+ *   - world:changed   → visit-type steps for the destination world
+ *   - quest:activity  → talk/interact/other step types using target IDs
  *
- * Non-auto-tracked step types (visit, interact, deliver, talk, escort, defend,
- * stealth, craft, survive, investigate) are shown in QuestBoard and can be
- * manually marked done by the player via the board UI.
+ * Quest steps progress automatically from game events when their target ID and
+ * world match the current activity. Manual completion is no longer required.
  *
  * Progress is synced to the backend every 10 s and on step completion.
  * Credit awards are paid through `economy.add()` on quest completion.
@@ -46,17 +47,26 @@ export class QuestSystem {
     /** @type {Array<()=>void>} */
     this._offs = [];
     if (this.bus) {
-      this._offs.push(this.bus.on('world:changed', ({ id }) => {
-        this._worldId = id ?? null;
+      this._offs.push(this.bus.on('world:changed', ({ id, world }) => {
+        this._worldId = id ?? world?.id ?? null;
         this._pending = true;
+        this._advanceSteps('visit', (step, meta) => this._matchesStepTarget(step, meta), {
+          event: { type: 'visit', target: this._worldId, worldId: this._worldId },
+        });
       }));
       this._offs.push(this.bus.on('player:identity', ({ playerId }) => {
         if (playerId) this._playerId = playerId;
       }));
       this._offs.push(this.bus.on('npc:killed',      (e) => this._onKill(e)));
+      this._offs.push(this.bus.on('npc:damaged',     (e) => this._onNpcDamaged(e)));
       this._offs.push(this.bus.on('loot:collected',  (e) => this._onCollect(e)));
       this._offs.push(this.bus.on('race:finished',   (e) => this._onRaceFinished(e)));
       this._offs.push(this.bus.on('race:lap',        (e) => this._onRaceLap(e)));
+      this._offs.push(this.bus.on('player:damaged',  (e) => this._onPlayerDamaged(e)));
+      this._offs.push(this.bus.on('portal:entering',  (e) => this._onPortalEntering(e)));
+      this._offs.push(this.bus.on('market:trade',    (e) => this._onMarketTrade(e)));
+      this._offs.push(this.bus.on('character:changed', (e) => this._onCharacterChanged(e)));
+      this._offs.push(this.bus.on('quest:activity',  (e) => this._onActivity(e)));
     }
   }
 
@@ -149,6 +159,9 @@ export class QuestSystem {
         stepStates,
         timeLeftMs,
       });
+      this._advanceSteps('visit', (step, meta) => this._matchesStepTarget(step, meta), {
+        event: { type: 'visit', target: this._worldId, worldId: this._worldId },
+      });
       this.bus?.emit('quests:changed', { engagements: this.engagements });
       this.bus?.emit('hud:notify', { text: `Quest accepted — ${quest.title}`, tone: 'info' });
     } catch (err) {
@@ -228,6 +241,10 @@ export class QuestSystem {
         this.engagements.set(eng.id, { quest, engagement: eng, stepStates, timeLeftMs });
       }
 
+      this._advanceSteps('visit', (step, meta) => this._matchesStepTarget(step, meta), {
+        event: { type: 'visit', target: this._worldId, worldId: this._worldId },
+      });
+
       this.bus?.emit('quests:changed', {
         worldId,
         quests: this.worldQuests,
@@ -246,29 +263,64 @@ export class QuestSystem {
   _onKill(e) {
     const npc = e?.npc;
     if (!npc || npc.type !== 'hostile') return;
-    this._advanceSteps('kill', () => true);
+    this._advanceSteps('kill', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
+    this._advanceSteps('defend', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
   }
-
+  
+  _onNpcDamaged(e) {
+    const npc = e?.npc;
+    if (!npc || npc.type !== 'hostile') return;
+    this._advanceSteps('defend', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
+  }
+  
   _onCollect(e) {
-    this._advanceSteps('collect', () => true);
+    this._advanceSteps('collect', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
   }
-
+  
   _onRaceFinished(e) {
     // Single-completion race steps (count === 1)
-    this._advanceSteps('race', (step) => step.count === 1);
+    this._advanceSteps('race', (step, meta) => step.count === 1 && this._matchesStepTarget(step, meta), { event: e });
   }
-
+  
   _onRaceLap(e) {
     // Multi-lap steps
-    this._advanceSteps('race', (step) => step.count > 1);
+    this._advanceSteps('race', (step, meta) => step.count > 1 && this._matchesStepTarget(step, meta), { event: e });
   }
-
+  
+  _onPlayerDamaged(e) {
+    this._advanceSteps('survive', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
+  }
+  
+  _onPortalEntering(e) {
+    this._advanceSteps('visit', (step, meta) => this._matchesStepTarget(step, meta), {
+      event: { type: 'visit', target: e?.to ?? e?.target ?? null, worldId: e?.to ?? e?.target ?? null },
+    });
+    this._advanceSteps('interact', (step, meta) => this._matchesStepTarget(step, meta), {
+      event: { type: 'interact', target: e?.to ?? e?.target ?? null, id: e?.to ?? e?.target ?? null, worldId: e?.to ?? e?.target ?? null },
+    });
+  }
+  
+  _onActivity(e) {
+    const type = e?.type;
+    if (!type) return;
+    this._advanceSteps(type, (step, meta) => this._matchesStepTarget(step, meta), { event: e });
+  }
+ 
+  _onMarketTrade(e) {
+    this._advanceSteps('purchase', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
+  }
+ 
+  _onCharacterChanged(e) {
+    this._advanceSteps('customize', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
+  }
+  
   /**
    * Generic step advancer for auto-tracked types.
    * @param {string} type
-   * @param {(step:object)=>boolean} filter
+   * @param {(step:object, meta:any)=>boolean} filter
+   * @param {any} meta
    */
-  _advanceSteps(type, filter) {
+  _advanceSteps(type, filter, meta = {}) {
     const worldId = this._worldId;
     for (const [engId, entry] of this.engagements) {
       if (entry.engagement.status !== 'in_progress') continue;
@@ -277,7 +329,7 @@ export class QuestSystem {
       for (const step of steps) {
         if (step.type !== type) continue;
         if (step.world && step.world !== worldId) continue;
-        if (!filter(step)) continue;
+        if (!filter(step, meta)) continue;
         const state = entry.stepStates[step.order] ?? { done: false, have: 0 };
         if (state.done) continue;
         state.have = Math.min((state.have ?? 0) + 1, step.count);
@@ -294,6 +346,110 @@ export class QuestSystem {
         this.bus?.emit('quests:changed', { engagements: this.engagements });
       }
     }
+  }
+
+  _matchesStepTarget(step, meta = {}) {
+    const target = String(step?.target ?? '').trim();
+    if (!target) return true;
+
+    const candidates = this._eventTargetCandidates(step?.type, meta?.event);
+    const expected = this._normalizeTarget(target);
+    if (!expected) return true;
+
+    return candidates.some((candidate) => {
+      const normalized = this._normalizeTarget(candidate);
+      return normalized === expected || normalized.includes(expected) || expected.includes(normalized);
+    });
+  }
+
+  _eventTargetCandidates(type, event = {}) {
+    const candidates = [];
+    const push = (value) => {
+      if (value == null) return;
+      if (typeof value === 'string' && value.trim()) candidates.push(value.trim());
+      else if (typeof value === 'number' && Number.isFinite(value)) candidates.push(String(value));
+    };
+ 
+    switch (type) {
+      case 'kill':
+        push(event?.npc?.id);
+        push(event?.npc?.name);
+        push(event?.npc?.role);
+        push(event?.npc?.label);
+        push(event?.npc?.templateId);
+        break;
+      case 'collect':
+        push(event?.itemId);
+        push(event?.pickup?.itemId);
+        push(event?.pickup?.id);
+        push(event?.pickup?.templateId);
+        break;
+      case 'race':
+        push(event?.id);
+        push(event?.name);
+        push(event?.trackId);
+        push(event?.trackName);
+        push(event?.raceId);
+        const place = Number(event?.place ?? event?.result?.place ?? 0);
+        if (Number.isFinite(place) && place > 0) {
+          push(place);
+          const placeLabels = ['1st', '2nd', '3rd', '4th', '5th', '6th'];
+          push(placeLabels[place - 1] ?? null);
+          push(place === 1 ? 'first' : place === 2 ? 'second' : place === 3 ? 'third' : null);
+        }
+        break;
+      case 'purchase':
+        push(event?.itemId);
+        push(event?.packId);
+        push(event?.id);
+        push(event?.kind);
+        push(event?.pack?.id);
+        push(event?.pack?.itemId);
+        break;
+      case 'customize':
+        {
+          const config = event?.config ?? {};
+          push(config.sex);
+          push(config.outfit);
+          push(config.hairStyle);
+          push(config.headgear);
+          push(config.build);
+          push(config.skinTone);
+          push(config.hairColor);
+          push(config.eyeColor);
+          if (typeof config.build === 'number') {
+            const buildLabels = ['slim', 'average', 'heavy'];
+            push(buildLabels[config.build] ?? null);
+            push(`build_${config.build}`);
+          }
+          push(event?.field);
+          push(event?.value);
+        }
+        break;
+      default:
+        push(event?.target);
+        push(event?.id);
+        push(event?.name);
+        push(event?.itemId);
+        push(event?.npc?.id);
+        push(event?.npc?.name);
+        push(event?.npc?.role);
+        push(event?.portal?.id);
+        push(event?.portal?.targetName);
+        push(event?.worldId);
+        push(event?.world);
+        break;
+    }
+
+    return candidates;
+  }
+
+  _normalizeTarget(value) {
+    return String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
   }
 
   /* ------------------------------------------------------------------ */

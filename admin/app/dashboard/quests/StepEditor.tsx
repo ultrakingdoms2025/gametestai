@@ -13,9 +13,92 @@ export type Step = {
 
 const STEP_TYPES = [
   'collect', 'visit', 'interact', 'kill', 'deliver',
-  'race', 'escort', 'defend', 'investigate', 'craft', 'stealth', 'talk', 'survive',
+  'race', 'escort', 'defend', 'investigate', 'craft', 'stealth', 'talk', 'survive', 'purchase', 'customize',
 ] as const;
-
+ 
+const TARGET_GROUPS: Array<{ label: string; options: Array<{ value: string; label: string }> }> = [
+  {
+    label: 'Interaction targets',
+    options: [
+      { value: 'quest_manager', label: 'Quest Manager' },
+      { value: 'lorekeeper', label: 'Lorekeeper' },
+      { value: 'vendor', label: 'Vendor' },
+      { value: 'merchant', label: 'Merchant' },
+      { value: 'quartermaster', label: 'Quartermaster' },
+      { value: 'guard', label: 'Guard' },
+    ],
+  },
+  {
+    label: 'Worlds & portals',
+    options: [
+      { value: 'station', label: 'Station world' },
+      { value: 'sports', label: 'Sports world' },
+      { value: 'race', label: 'Race world' },
+      { value: 'medieval', label: 'Medieval world' },
+      { value: 'citadel', label: 'Citadel world' },
+      { value: 'portal_station', label: 'Portal — Station' },
+      { value: 'portal_sports', label: 'Portal — Sports' },
+      { value: 'portal_race', label: 'Portal — Race' },
+      { value: 'portal_medieval', label: 'Portal — Medieval' },
+      { value: 'portal_citadel', label: 'Portal — Citadel' },
+    ],
+  },
+  {
+    label: 'Loot & pickups',
+    options: [
+      { value: 'credits', label: 'Credits pickup' },
+      { value: 'bullet', label: 'Bullets pickup' },
+      { value: 'arrow', label: 'Arrows pickup' },
+      { value: 'fireball_charge', label: 'Fireball charge pickup' },
+      { value: 'alloy_scrap', label: 'Alloy scrap pickup' },
+      { value: 'medkit', label: 'Medkit pickup' },
+      { value: 'nexus_shard', label: 'Nexus shard pickup' },
+      { value: 'relic_coin', label: 'Relic coin pickup' },
+    ],
+  },
+  {
+    label: 'Purchases',
+    options: [
+      { value: 'bullet', label: 'Buy bullets' },
+      { value: 'arrow', label: 'Buy arrows' },
+      { value: 'fireball_charge', label: 'Buy fireball charges' },
+      { value: 'medkit', label: 'Buy medkits' },
+      { value: 'relic_coin', label: 'Buy relic coins' },
+    ],
+  },
+  {
+    label: 'Race results',
+    options: [
+      { value: '1st', label: 'Finish 1st' },
+      { value: '2nd', label: 'Finish 2nd' },
+      { value: '3rd', label: 'Finish 3rd' },
+    ],
+  },
+  {
+    label: 'Character customization',
+    options: [
+      { value: 'male', label: 'Male appearance' },
+      { value: 'female', label: 'Female appearance' },
+      { value: 'slim', label: 'Slim build' },
+      { value: 'average', label: 'Average build' },
+      { value: 'heavy', label: 'Heavy build' },
+      { value: 'short', label: 'Short hair' },
+      { value: 'crop', label: 'Crop hair' },
+      { value: 'buzz', label: 'Buzz hair' },
+      { value: 'ponytail', label: 'Ponytail hair' },
+      { value: 'bun', label: 'Bun hair' },
+      { value: 'long', label: 'Long hair' },
+      { value: 'bald', label: 'Bald head' },
+      { value: 'flightsuit', label: 'Flight suit outfit' },
+      { value: 'jumpsuit', label: 'Jumpsuit outfit' },
+      { value: 'tracksuit', label: 'Tracksuit outfit' },
+      { value: 'sportskit', label: 'Sports kit outfit' },
+      { value: 'tunic', label: 'Tunic outfit' },
+      { value: 'robe', label: 'Robe outfit' },
+    ],
+  },
+] as const;
+ 
 const WORLD_OPTIONS = [
   { value: 'station', label: 'Station' },
   { value: 'sports',  label: 'Sports'  },
@@ -45,7 +128,13 @@ export default function QuestStepEditor({ initial }: { initial: Step[] }) {
   function update<K extends keyof Step>(idx: number, key: K, val: Step[K]) {
     setSteps((prev) => prev.map((s, i) => i === idx ? { ...s, [key]: val } : s));
   }
-
+ 
+  function targetPreset(step: Step) {
+    const value = step.target?.trim() ?? '';
+    if (!value) return '';
+    return TARGET_GROUPS.flatMap((group) => group.options).find((opt) => opt.value === value)?.value ?? '__custom__';
+  }
+ 
   const nonEmpty = steps.filter((s) => s.label.trim());
 
   return (
@@ -84,11 +173,29 @@ export default function QuestStepEditor({ initial }: { initial: Step[] }) {
             </div>
             <div>
               <div className="step-col-label">Target ID</div>
-              <input
-                placeholder="relay_node"
-                value={step.target}
-                onChange={(e) => update(idx, 'target', e.target.value)}
-              />
+              <select
+                value={targetPreset(step)}
+                onChange={(e) => update(idx, 'target', e.target.value === '__custom__' ? step.target : e.target.value)}
+                style={{ width: '100%', marginBottom: 6 }}
+              >
+                <option value="">-- choose target --</option>
+                {TARGET_GROUPS.map((group) => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.options.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </optgroup>
+                ))}
+                <option value="__custom__">Custom…</option>
+              </select>
+              {targetPreset(step) === '__custom__' && (
+                <input
+                  placeholder="Custom target id"
+                  value={step.target}
+                  onChange={(e) => update(idx, 'target', e.target.value)}
+                  style={{ width: '100%' }}
+                />
+              )}
             </div>
             <div>
               <div className="step-col-label">Count</div>

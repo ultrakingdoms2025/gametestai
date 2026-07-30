@@ -380,8 +380,8 @@ export class Physics {
 
         // Surfaces up to ~50 degrees count as walkable ground.
         if (delta.y > 0.64) {
-          result.grounded = true;
-          if (delta.y > result.groundNormal.y || !result.grounded) {
+          if (!result.grounded || delta.y > result.groundNormal.y) {
+            result.grounded = true;
             result.groundNormal.copy(delta);
           }
         }

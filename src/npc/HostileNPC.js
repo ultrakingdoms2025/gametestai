@@ -244,7 +244,7 @@ export class HostileNPC extends NPC {
   onDied() {
     if (this.weapon) {
       // Drop the rifle out of the hand so the corpse is not clutching it.
-      this.weapon.visible = true;
+      this.weapon.visible = false;
     }
     this.animator.setAimTarget(null);
     this.manager?.propagateAlert(this, 20);

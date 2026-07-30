@@ -763,6 +763,7 @@ export class Player {
     const gotX = this._position.x - _prev.x;
     const gotZ = this._position.z - _prev.z;
     const got = Math.hypot(gotX, gotZ);
+    let grounded = res.grounded;
 
     // Blocked, and we have ground (or coyote) to push off: probe a step.
     if (wanted > 1e-4 && got < wanted * 0.86 && (this._grounded || this._coyote > 0)) {
@@ -800,7 +801,14 @@ export class Player {
             const rise = _step.y - this._position.y;
             this._position.copy(_step);
             res = landed;
-            res.grounded = true;
+            grounded = res.grounded;
+            if (!grounded) {
+              grounded = true;
+              res.grounded = true;
+              if (res.groundNormal.y < 0.64) {
+                res.groundNormal.set(0, 1, 0);
+              }
+            }
             // Absorb the instantaneous lift in the camera so stairs feel smooth.
             if (rise > 0) this._stepSmooth = Math.min(P.stepHeight * 1.3, this._stepSmooth + rise);
           }
@@ -809,7 +817,7 @@ export class Player {
     }
 
     this._wasGrounded = this._grounded;
-    this._grounded = res.grounded;
+    this._grounded = grounded;
     this._groundNormal.copy(res.groundNormal);
 
     if (this._grounded) {

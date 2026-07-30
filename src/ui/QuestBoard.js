@@ -3,7 +3,7 @@
  *
  * Opens when the player presses E near a Quest Manager NPC.
  * Shows three tabs: Available / In Progress / Completed.
- * Non-auto-tracked steps (visit, interact, etc.) have a "Mark Done" button.
+ * Quest steps now advance automatically from player activity and target IDs.
  */
 
 import './quest-board.css';
@@ -238,25 +238,21 @@ export class QuestBoard {
     const preSteps = quest.pre_steps ? JSON.parse(quest.pre_steps) : [];
 
     // Build steps HTML
-    const AUTO_TYPES = new Set(['kill', 'collect', 'race']);
     let stepsHtml = '';
     for (const step of steps) {
       const state   = stepStates[step.order] ?? { done: false, have: 0 };
-      const isAuto  = AUTO_TYPES.has(step.type);
       const doneCls = state.done ? 'done' : (isActive ? 'active-step' : '');
       const countHtml = step.count > 1
         ? `<span class="qb-step-count">${state.have ?? 0}/${step.count}</span>`
         : '';
-      const markBtn = (!state.done && isActive && !isAuto)
-        ? `<button class="qb-step-done-btn" data-order="${step.order}">Mark Done</button>`
-        : '';
+      const statusText = state.done ? 'Done' : 'Auto';
       stepsHtml += `
         <div class="qb-step ${doneCls}">
           <span class="qb-step-icon">${state.done ? '\u2713' : '\u25CB'}</span>
           <span class="qb-step-label">${esc(step.label)}</span>
           ${countHtml}
           <span class="qb-step-type">[${esc(step.type)}]</span>
-          ${markBtn}
+          <span class="qb-step-status">${esc(statusText)}</span>
         </div>`;
     }
 
@@ -296,16 +292,6 @@ export class QuestBoard {
       });
     }
 
-    // "Mark Done" handlers (manual step completion)
-    container.querySelectorAll('.qb-step-done-btn').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        btn.disabled    = true;
-        btn.textContent = '...';
-        const order = parseInt(btn.dataset.order, 10);
-        await this.questSystem?.markStepDone(this._selectedEngId, order);
-        this._refresh();
-      });
-    });
   }
 
   _parseSteps(json) {

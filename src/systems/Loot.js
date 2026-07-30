@@ -488,6 +488,7 @@ export class Loot {
       if (entry.itemId === 'credits') {
         this.economy?.add(entry.qty, 'loot');
         this.bus?.emit('loot:collected', { itemId: 'credits', qty: entry.qty, fromCache, pickup: p });
+        this.bus?.emit('quest:activity', { type: 'collect', target: entry.itemId, id: entry.itemId, itemId: entry.itemId, pickup: p });
         took++;
         continue;
       }
@@ -495,6 +496,7 @@ export class Loot {
       if (res.taken > 0) {
         took++;
         this.bus?.emit('loot:collected', { itemId: entry.itemId, qty: res.taken, fromCache, pickup: p });
+        this.bus?.emit('quest:activity', { type: 'collect', target: entry.itemId, id: entry.itemId, itemId: entry.itemId, pickup: p });
         this.bus?.emit('hud:notify', {
           text: `+${res.taken} ${itemDef(entry.itemId)?.name ?? entry.itemId}${res.toStore > 0 ? ' (store)' : ''}`,
           tone: 'info',

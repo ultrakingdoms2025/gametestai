@@ -2134,6 +2134,15 @@ export class PortalSystem {
       from: this._worldId,
       to: portal.target,
       duration,
+      target: portal.target,
+      id: portal.id ?? portal.target,
+      portal,
+    });
+    this.bus.emit('quest:activity', {
+      type: 'interact',
+      target: portal.id ?? portal.target,
+      id: portal.id ?? portal.target,
+      portal,
     });
     if (this._near) {
       this._near = null;

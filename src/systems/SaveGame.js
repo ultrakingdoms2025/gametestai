@@ -232,18 +232,57 @@ export class SaveGame {
 
     this._loading = true;
     try {
-      await this._restoreWorld(data.world);
-      this._restorePlayer(data.player);
-      this._restoreHealth(data.player);
+      const worldReady = await this._restoreWorld(data.world);
+      if (!worldReady) {
+        this._fail(`could not restore world "${data.world ?? 'unknown'}"`, null, { clear: false });
+        return false;
+      }
+
+      const playerReady = this._restorePlayer(data.player);
+      if (!playerReady) {
+        this._fail('could not place the player during load', null, { clear: false });
+        return false;
+      }
+
+      const healthReady = this._restoreHealth(data.player);
+      if (!healthReady) {
+        this._fail('could not restore health during load', null, { clear: false });
+        return false;
+      }
+
       // Before the mounts: the rider proxy is built from the player's character
       // config, so restoring a mount first would seat the wrong person on it.
-      this._restoreCharacter(data.character);
-      this._restoreEconomy(data);
+      const characterReady = this._restoreCharacter(data.character);
+      if (!characterReady) {
+        this._fail('could not restore character during load', null, { clear: false });
+        return false;
+      }
+
+      const economyReady = this._restoreEconomy(data);
+      if (!economyReady) {
+        this._fail('could not restore economy during load', null, { clear: false });
+        return false;
+      }
+
       // Before the loadout: weapons report their ammo from the bag, so the bag
       // has to hold the saved contents by the time they are asked.
-      this._restoreInventory(data.inventory);
-      this._restoreLoadout(data.weapons);
-      this._restoreMounts(data.mounts);
+      const inventoryReady = this._restoreInventory(data.inventory);
+      if (!inventoryReady) {
+        this._fail('could not restore inventory during load', null, { clear: false });
+        return false;
+      }
+
+      const loadoutReady = this._restoreLoadout(data.weapons);
+      if (!loadoutReady) {
+        this._fail('could not restore loadout during load', null, { clear: false });
+        return false;
+      }
+
+      const mountsReady = this._restoreMounts(data.mounts);
+      if (!mountsReady) {
+        this._fail('could not restore mounts during load', null, { clear: false });
+        return false;
+      }
     } catch (err) {
       // Should be unreachable - every step guards itself - but a load must not
       // be the thing that kills the session.
@@ -253,7 +292,8 @@ export class SaveGame {
       this._loading = false;
     }
 
-    this.bus?.emit('save:loaded', { at: data.at ?? Date.now(), world: data.world });
+    const activeWorld = this.worldManager?.active?.id ?? data.world ?? null;
+    this.bus?.emit('save:loaded', { at: data.at ?? Date.now(), world: activeWorld });
     this.bus?.emit('hud:notify', { text: 'Game loaded', tone: 'info' });
     return true;
   }
@@ -405,26 +445,36 @@ export class SaveGame {
   /* ================================================================ */
 
   async _restoreWorld(id) {
-    if (typeof id !== 'string' || !id) return;
+    if (typeof id !== 'string' || !id) return true;
     const wm = this.worldManager;
-    if (!wm) return;
-    if (wm.active?.id === id) return;
+    if (!wm) return true;
+    if (wm.active?.id === id) return true;
+
     try {
       if (!wm.ids?.includes?.(id)) {
-        console.warn(`[SaveGame] saved world "${id}" is not registered; staying put`);
-        return;
+        const fallbackId = wm.active?.id ?? wm.ids?.[0] ?? null;
+        if (!fallbackId) {
+          console.warn(`[SaveGame] saved world "${id}" is not registered and no fallback world is available`);
+          return false;
+        }
+        console.warn(`[SaveGame] saved world "${id}" is not registered; using "${fallbackId}"`);
+        await wm.build(fallbackId);
+        await wm.activate(fallbackId);
+        return true;
       }
       await wm.build(id);
       await wm.activate(id);
+      return true;
     } catch (err) {
-      this._fail(`could not activate world "${id}"`, err, { clear: false });
+      console.warn(`[SaveGame] could not activate world "${id}":`, err);
+      return false;
     }
   }
 
   _restorePlayer(snap) {
-    if (!snap) return;
+    if (!snap) return true;
     const p = this.player;
-    if (!p) return;
+    if (!p) return true;
     try {
       // `activate()` has just dropped the player at the world spawn; move them
       // to the stored spot afterwards, preserving the stored yaw.
@@ -434,50 +484,56 @@ export class SaveGame {
       } else if (p.position?.set) {
         p.position.copy(_target);
       }
+      return true;
     } catch (err) {
-      this._fail('could not place the player', err, { clear: false });
+      console.warn('[SaveGame] could not place the player:', err);
+      return false;
     }
   }
 
   _restoreHealth(snap) {
     const p = this.player;
-    if (!snap || !p) return;
+    if (!snap || !p) return true;
     const target = num(snap.health, NaN);
-    if (!Number.isFinite(target) || target <= 0) return;
+    if (!Number.isFinite(target) || target <= 0) return true;
     try {
       if (typeof p.setHealth === 'function') {
         p.setHealth(target);
-        return;
+        return true;
       }
       const current = num(p.health, target);
       if (target > current) p.heal?.(target - current);
       // Deliberately never damage downward: applying damage would fire
       // `player:damaged`, flash the HUD, and can be swallowed by respawn
       // invulnerability anyway. Loading at full health is the kinder failure.
+      return true;
     } catch (err) {
       console.warn('[SaveGame] health restore skipped:', err);
+      return false;
     }
   }
 
   _restoreEconomy(data) {
     const eco = this.economy;
-    if (!eco) return;
+    if (!eco) return true;
     try {
-      if (data.economy && eco.deserialize?.(data.economy)) return;
+      if (data.economy && eco.deserialize?.(data.economy)) return true;
       const credits = num(data.credits, NaN);
-      if (!Number.isFinite(credits)) return;
+      if (!Number.isFinite(credits)) return true;
       if (typeof eco.set === 'function') eco.set(credits, 'load');
       else eco.deserialize?.({ credits });
+      return true;
     } catch (err) {
       console.warn('[SaveGame] credit restore skipped:', err);
+      return false;
     }
   }
 
   _restoreLoadout(snap) {
     const loadout = this.loadout;
-    if (!loadout || !snap) return;
+    if (!loadout || !snap) return true;
     try {
-      if (snap.custom && loadout.deserialize?.(snap.custom)) return;
+      if (snap.custom && loadout.deserialize?.(snap.custom)) return true;
 
       // `select(id)` then `current` is the only instance handle the Loadout
       // contract guarantees, so ammo is restored by walking the selection.
@@ -493,8 +549,10 @@ export class SaveGame {
       }
       if (typeof snap.selected === 'string') loadout.select(snap.selected);
       else if (slots.length) loadout.select(slots[0].id);
+      return true;
     } catch (err) {
       console.warn('[SaveGame] loadout restore skipped:', err);
+      return false;
     }
   }
 
@@ -504,11 +562,13 @@ export class SaveGame {
    * absent or the save predates it, so an old save still loads cleanly.
    */
   _restoreInventory(snap) {
-    if (!snap || !this.inventory?.deserialize) return;
+    if (!snap || !this.inventory?.deserialize) return true;
     try {
       this.inventory.deserialize(snap);
+      return true;
     } catch (err) {
       console.warn('[save] inventory restore failed, leaving current contents:', err?.message ?? err);
+      return false;
     }
   }
 
@@ -524,13 +584,15 @@ export class SaveGame {
    * @param {any} snap
    */
   _restoreCharacter(snap) {
-    if (!snap || typeof snap !== 'object' || Array.isArray(snap)) return;
+    if (!snap || typeof snap !== 'object' || Array.isArray(snap)) return true;
     const avatar = this._avatar();
-    if (!avatar?.setCharacterConfig) return;
+    if (!avatar?.setCharacterConfig) return true;
     try {
       avatar.setCharacterConfig(snap);
+      return true;
     } catch (err) {
       console.warn('[save] character restore skipped:', err?.message ?? err);
+      return false;
     }
   }
 
@@ -576,16 +638,18 @@ export class SaveGame {
 
   _restoreMounts(snap) {
     const mounts = this.mounts;
-    if (!mounts || !snap) return;
+    if (!mounts || !snap) return true;
     try {
-      if (snap.custom && mounts.deserialize?.(snap.custom)) return;
+      if (snap.custom && mounts.deserialize?.(snap.custom)) return true;
       if (typeof snap.active === 'string' && snap.active) {
         mounts.summon?.(snap.active);
       } else if (mounts.mounted) {
         mounts.dismount?.();
       }
+      return true;
     } catch (err) {
       console.warn('[SaveGame] mount restore skipped:', err);
+      return false;
     }
   }
 

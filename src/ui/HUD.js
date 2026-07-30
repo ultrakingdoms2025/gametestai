@@ -1487,9 +1487,12 @@ export class HUD {
     if (this.input.pressed('KeyT')) {
       this._openChat(this._chatNpc);
     } else if (this.input.pressed('KeyE') && this._chatNpc && (!this._nearPortal || this._chatNpc.isLorekeeper || this._chatNpc.isQuestManager)) {
+      const activityTarget = this._chatNpc?.id ?? this._chatNpc?.name ?? this._chatNpc?.role ?? null;
       if (this._chatNpc.isQuestManager) {
+        this.bus?.emit('quest:activity', { type: 'interact', target: activityTarget });
         this.bus?.emit('quests:board:open');
       } else {
+        this.bus?.emit('quest:activity', { type: 'talk', target: activityTarget });
         this._openChat(this._chatNpc);
       }
     }

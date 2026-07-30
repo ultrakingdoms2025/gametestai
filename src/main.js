@@ -633,8 +633,14 @@ bus.on('keybinds:open', () => setGameplayBlocked('keybinds', true));
 bus.on('keybinds:close', () => setGameplayBlocked('keybinds', false));
 bus.on('audio:menu', ({ open }) => setGameplayBlocked('audio', !!open));
 bus.on('race:menu', ({ open }) => setGameplayBlocked('race', !!open));
-bus.on('quests:board:open', () => setGameplayBlocked('quests', true));
-bus.on('quests:board:close', () => setGameplayBlocked('quests', false));
+// Use hud:block (emitted by QuestBoard only when it actually opens/closes,
+// after guards) rather than quests:board:open (emitted by HUD as a request
+// that QuestBoard may silently reject via _justClosed). If we reacted to the
+// request event, the same-frame E-key close→HUD re-emit cycle would add
+// 'quests' back to gameplayUiBlocks permanently.
+bus.on('hud:block', ({ id, block }) => {
+  if (id === 'quest-board') setGameplayBlocked('quests', !!block);
+});
 bus.on('bug-report:open', () => setGameplayBlocked('bug-report', true));
 bus.on('bug-report:close', () => setGameplayBlocked('bug-report', false));
 

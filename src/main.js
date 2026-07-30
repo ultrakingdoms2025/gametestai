@@ -548,6 +548,7 @@ async function warmWorld(id) {
 // have written it before the player integrates its own movement and before
 // anything downstream reads where the player is.
 engine.onFixedUpdate((dt, elapsed) => {
+  if (gameplayBlocked()) return;
   mounts.fixedUpdate(dt, elapsed);
   player.fixedUpdate(dt, elapsed);
   // After the player, never before: lap validation sweeps the segment the
@@ -563,25 +564,28 @@ engine.onFixedUpdate((dt, elapsed) => {
 });
 
 engine.onFrameUpdate((dt, elapsed) => {
+  const uiPaused = gameplayBlocked();
   materials.update?.(dt, elapsed);
-  player.update(dt, elapsed);
-  // The rig reads the player's final position, and the avatar and mounts then
-  // pose against the camera the rig just placed.
-  cameraRig.update(dt, elapsed);
-  avatar.update(dt, elapsed);
-  mounts.update(dt, elapsed);
-  npcManager.update(dt, elapsed);
-  projectiles.update(dt, elapsed);
-  loadout.update(dt, elapsed);
-  portals.update(dt, elapsed);
-  combat.update(dt, elapsed);
-  worldManager.active?.update(dt, elapsed);
-  inventory.update(dt);
-  market.update(dt);
-  caches.update(dt);
-  contracts.update(dt);
-  relics.update(dt);
-  questSystem.update(dt);
+  if (!uiPaused) {
+    player.update(dt, elapsed);
+    // The rig reads the player's final position, and the avatar and mounts then
+    // pose against the camera the rig just placed.
+    cameraRig.update(dt, elapsed);
+    avatar.update(dt, elapsed);
+    mounts.update(dt, elapsed);
+    npcManager.update(dt, elapsed);
+    projectiles.update(dt, elapsed);
+    loadout.update(dt, elapsed);
+    portals.update(dt, elapsed);
+    combat.update(dt, elapsed);
+    worldManager.active?.update(dt, elapsed);
+    inventory.update(dt);
+    market.update(dt);
+    caches.update(dt);
+    contracts.update(dt);
+    relics.update(dt);
+    questSystem.update(dt);
+  }
   questBoard.update(dt);
   // After the camera rig has placed the camera: the listener frame is read
   // straight off its world matrix, and a frame-old matrix pans every sound
@@ -603,7 +607,33 @@ engine.onFrameUpdate((dt, elapsed) => {
 /* Global interactions                                                 */
 /* ------------------------------------------------------------------ */
 
+const gameplayUiBlocks = new Set();
+const gameplayBlocked = () => gameplayUiBlocks.size > 0;
+function setGameplayBlocked(id, blocked) {
+  if (!id) return;
+  if (blocked) gameplayUiBlocks.add(id);
+  else gameplayUiBlocks.delete(id);
+}
+
+bus.on('chat:open', () => setGameplayBlocked('chat', true));
+bus.on('chat:close', () => setGameplayBlocked('chat', false));
+bus.on('help:open', () => setGameplayBlocked('help', true));
+bus.on('help:close', () => setGameplayBlocked('help', false));
+bus.on('character:open', () => setGameplayBlocked('character', true));
+bus.on('character:close', () => setGameplayBlocked('character', false));
+bus.on('inventory:open', () => setGameplayBlocked('inventory', true));
+bus.on('inventory:close', () => setGameplayBlocked('inventory', false));
+bus.on('market:open', () => setGameplayBlocked('market', true));
+bus.on('market:close', () => setGameplayBlocked('market', false));
+bus.on('keybinds:open', () => setGameplayBlocked('keybinds', true));
+bus.on('keybinds:close', () => setGameplayBlocked('keybinds', false));
+bus.on('audio:menu', ({ open }) => setGameplayBlocked('audio', !!open));
+bus.on('race:menu', ({ open }) => setGameplayBlocked('race', !!open));
+bus.on('quests:board:open', () => setGameplayBlocked('quests', true));
+bus.on('quests:board:close', () => setGameplayBlocked('quests', false));
+
 bus.on('input:lockchange', ({ locked }) => {
+  setGameplayBlocked('standby', !locked);
   // Pausing on unlock keeps the world from simulating while a menu is open,
   // except when the chat box deliberately released the pointer.
   if (!locked && !hud.chatOpen) hud.showPauseOverlay(true);

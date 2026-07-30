@@ -7,8 +7,8 @@
  *
  * Two deliberate decisions:
  *
- * 1. It does **not** pause. CONTRACTS-V3 §3.6 asks for a reference, not a menu,
- *    and pausing on F1 would let a player freeze a firefight to read it.
+ * 1. It does not take pointer lock or text capture on its own: the panel is
+ *    readable at a glance and exits on the same keys that opened it.
  * 2. It owns its own `keydown` listener rather than polling `input.pressed()`.
  *    `Input` stops reporting while text capture is on and while a portal
  *    transition has disabled it, and "the help menu will not close" is exactly

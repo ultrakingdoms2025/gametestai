@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import { signIn } from 'next-auth/react';
 import Link from 'next/link';
@@ -124,11 +124,11 @@ function RegisterForm() {
           onChange={(e) => setConfirm(e.target.value)}
           required
           autoComplete="new-password"
-          placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+          placeholder="Repeat your password"
         />
 
         <button type="submit" className="btn btn-primary auth-submit" disabled={pending}>
-          {pending ? 'Creatingâ€¦' : 'Create account'}
+          {pending ? 'Creating...' : 'Create account'}
         </button>
       </form>
 
@@ -145,7 +145,7 @@ function RegisterForm() {
 export default function RegisterPage() {
   return (
     <main className="auth-shell">
-      <Suspense fallback={<div className="auth-card"><div className="auth-desc">Loadingâ€¦</div></div>}>
+      <Suspense fallback={<div className="auth-card"><div className="auth-desc">Loading...</div></div>}>
         <RegisterForm />
       </Suspense>
     </main>

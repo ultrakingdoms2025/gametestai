@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import Link from 'next/link';
 import { useState, useTransition, Suspense } from 'react';
@@ -61,7 +61,7 @@ function ResetPasswordForm() {
 
       {done ? (
         <div className="auth-success">
-          Password updated! Redirecting to sign inâ€¦
+          Password updated! Redirecting to sign in...
         </div>
       ) : (
         <>
@@ -88,10 +88,10 @@ function ResetPasswordForm() {
               onChange={(e) => setConfirm(e.target.value)}
               required
               autoComplete="new-password"
-              placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+              placeholder="Repeat your password"
             />
             <button type="submit" className="btn btn-primary auth-submit" disabled={pending}>
-              {pending ? 'Updatingâ€¦' : 'Set new password'}
+              {pending ? 'Updating...' : 'Set new password'}
             </button>
           </form>
         </>
@@ -107,7 +107,7 @@ function ResetPasswordForm() {
 export default function ResetPasswordPage() {
   return (
     <main className="auth-shell">
-      <Suspense fallback={<div className="auth-card"><div className="auth-desc">Loadingâ€¦</div></div>}>
+      <Suspense fallback={<div className="auth-card"><div className="auth-desc">Loading...</div></div>}>
         <ResetPasswordForm />
       </Suspense>
     </main>

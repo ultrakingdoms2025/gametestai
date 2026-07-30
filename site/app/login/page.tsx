@@ -102,7 +102,7 @@ function LoginForm() {
           onChange={(e) => setPassword(e.target.value)}
           required
           autoComplete="current-password"
-          placeholder="••••••••"
+          placeholder="Enter your password"
         />
 
         <div className="auth-row">
@@ -127,7 +127,7 @@ function LoginForm() {
 export default function LoginPage() {
   return (
     <main className="auth-shell">
-      <Suspense fallback={<div className="auth-card"><div className="auth-desc">Loading…</div></div>}>
+      <Suspense fallback={<div className="auth-card"><div className="auth-desc">Loading...</div></div>}>
         <LoginForm />
       </Suspense>
     </main>

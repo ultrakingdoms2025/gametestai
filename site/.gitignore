@@ -6,10 +6,6 @@
 /out
 next-env.d.ts
 
-# the game bundle is produced by `npm run bundle-game`, never committed —
-# a checked-in copy goes stale the moment the game changes
-/public/game
-
 # env
 .env
 .env*.local

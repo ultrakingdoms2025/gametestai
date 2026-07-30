@@ -15,4 +15,3 @@ review/
 site/node_modules
 site/.next
 site/.vercel
-site/public/game

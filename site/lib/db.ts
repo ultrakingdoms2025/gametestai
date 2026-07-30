@@ -1,19 +1,18 @@
 /**
  * Site database layer -- user accounts, password resets.
- * Uses createClient() from @vercel/postgres which supports both
- * direct and pooled Neon connection strings (unlike the sql template).
+ * Uses raw pg (node-postgres) so any Postgres URL format works,
+ * including Neon direct connection strings.
  */
-import { createClient } from '@vercel/postgres';
+import { Client } from 'pg';
 import { hash, compare } from 'bcryptjs';
 
 const BCRYPT_ROUNDS = 12;
 
-// Run a parameterized query using a fresh client (serverless-safe).
 async function query<T extends Record<string, unknown>>(
   text: string,
   values?: unknown[]
 ): Promise<{ rows: T[] }> {
-  const client = createClient();
+  const client = new Client({ connectionString: process.env.POSTGRES_URL });
   await client.connect();
   try {
     const result = await client.query(text, values);
@@ -159,7 +158,7 @@ export async function createPasswordReset(userId: string, tokenHash: string): Pr
     'DELETE FROM site_password_resets WHERE user_id = $1 AND used_at IS NULL',
     [userId]
   );
-  const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString();
   await query(
     'INSERT INTO site_password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
     [userId, tokenHash, expiresAt]

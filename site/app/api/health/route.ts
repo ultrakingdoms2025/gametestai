@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@vercel/postgres';
+import { Client } from 'pg';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +13,7 @@ export async function GET() {
   checks.POSTGRES_URL = process.env.POSTGRES_URL ? 'set' : 'MISSING';
 
   try {
-    const client = createClient();
+    const client = new Client({ connectionString: process.env.POSTGRES_URL });
     await client.connect();
     const result = await client.query('SELECT 1 AS ok');
     await client.end();
@@ -23,7 +23,7 @@ export async function GET() {
   }
 
   try {
-    const client = createClient();
+    const client = new Client({ connectionString: process.env.POSTGRES_URL });
     await client.connect();
     const result = await client.query('SELECT COUNT(*) AS n FROM site_users');
     await client.end();

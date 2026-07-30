@@ -12,6 +12,7 @@ import {
   unlockPlayer,
   updatePlayer,
   adjustCredits,
+  resetPlayerQuestEngagement,
 } from '@/lib/db';
 import { computePlayerAccessSnapshot } from '@/lib/playerAccess';
 import { getSession } from '@/lib/session';
@@ -191,6 +192,21 @@ export default async function PlayerPage({
     redirect(`/dashboard/players/${id}?saved=1`);
   }
 
+  async function resetQuest(formData: FormData) {
+    'use server';
+    const session = await getSession();
+    if (!session.adminId) redirect('/login');
+    const engagementId = s(formData.get('engagement_id'));
+    if (!engagementId) {
+      redirect(`/dashboard/players/${id}?error=${encodeURIComponent('Missing engagement id')}`);
+    }
+    await resetPlayerQuestEngagement(engagementId);
+    await audit(session.username, 'player.reset_quest', `player:${id}`, `engagement=${engagementId}`);
+    revalidatePath('/dashboard/players');
+    revalidatePath(`/dashboard/players/${id}`);
+    redirect(`/dashboard/players/${id}?saved=1`);
+  }
+
   const label = player ? (player.full_name || player.handle || player.id) : 'New player';
   const title = creating ? 'New player' : `Player ${String(label).slice(0, 18)}`;
   const locked = String(player?.status ?? '').toLowerCase() === 'locked';
@@ -359,12 +375,15 @@ export default async function PlayerPage({
                   <th>Time left</th>
                   <th>Credits</th>
                   <th>Accepted</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {engagements.map((engagement: Record<string, unknown>) => {
                   const durationMinutes = engagement.duration_minutes as number | null | undefined;
                   const statusText = displayEngagementStatus(engagement.accepted_at, durationMinutes, engagement.status);
+                  const statusValue = String(engagement.status ?? '').toLowerCase();
+                  const canReset = statusValue === 'completed' || statusValue === 'in_progress';
                   return (
                     <tr key={String(engagement.id)}>
                       <td>
@@ -377,11 +396,23 @@ export default async function PlayerPage({
                       <td>{formatRemaining(engagement.accepted_at, durationMinutes, engagement.status)}</td>
                       <td>{String(engagement.credits_rewarded ?? 0)}</td>
                       <td className="mono">{engagement.accepted_at ? new Date(String(engagement.accepted_at)).toLocaleString() : '—'}</td>
+                      <td>
+                        {canReset ? (
+                          <form action={resetQuest} style={{ display: 'inline' }}>
+                            <input type="hidden" name="engagement_id" value={String(engagement.id)} />
+                            <button type="submit" className="btn btn-danger" style={{ padding: '6px 10px', fontSize: 12 }}>
+                              Reset
+                            </button>
+                          </form>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
                 {engagements.length === 0 ? (
-                  <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 28 }}>No quest engagements recorded for this player yet.</td></tr>
+                  <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 28 }}>No quest engagements recorded for this player yet.</td></tr>
                 ) : null}
               </tbody>
             </table>

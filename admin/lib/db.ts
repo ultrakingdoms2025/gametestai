@@ -711,6 +711,14 @@ export async function listPlayerQuestEngagements(playerId: string) {
   return rows;
 }
 
+export async function resetPlayerQuestEngagement(engagementId: string) {
+  await sql`
+    DELETE FROM player_quest_engagements
+    WHERE id = ${engagementId}
+      AND status IN ('completed', 'in_progress')
+  `;
+}
+
 export async function adjustCredits(playerId: string, delta: number) {
   await sql`
     UPDATE players

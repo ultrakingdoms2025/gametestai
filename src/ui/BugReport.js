@@ -36,10 +36,16 @@ export class BugReport {
     this._submitting = false;
 
     this._handle = 'anonymous';
+    this._worldLabel = '—';
 
     // Pick up player identity when it is broadcast on boot
     this._offIdentity = bus?.on('player:identity', ({ handle }) => {
       if (handle) this._handle = handle;
+    });
+    this._offWorld = bus?.on('world:changed', ({ world, id }) => {
+      const next = world?.displayName || world?.name || world?.id || id || '—';
+      this._worldLabel = String(next);
+      if (this._worldVal) this._worldVal.textContent = this._worldLabel;
     });
 
     this._build(root);
@@ -134,9 +140,12 @@ export class BugReport {
     this.input?.exitLock?.();
 
     // Snapshot current context
-    const world = this.worldManager?.activeWorld?.name
-               ?? this.worldManager?.currentWorld
-               ?? '—';
+    const world = this._worldLabel
+               || this.worldManager?.active?.displayName
+               || this.worldManager?.activeWorld?.name
+               || this.worldManager?.activeWorld?.displayName
+               || this.worldManager?.currentWorld
+               || '—';
     const pos = this.player?.position;
     const posStr = pos
       ? `${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}`
@@ -182,6 +191,7 @@ export class BugReport {
   dispose() {
     window.removeEventListener('keydown', this._onKey, true);
     this._offIdentity?.();
+    this._offWorld?.();
     this.el.remove();
   }
 

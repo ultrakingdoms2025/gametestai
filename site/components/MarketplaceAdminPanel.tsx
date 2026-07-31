@@ -53,18 +53,58 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-const CATEGORY_ICONS: Record<MarketplaceCategory, string> = {
-  cosmetic: '👒', weapons: '⚔️', tools: '🔧', health: '💊', spells: '✨',
-};
 const CATEGORY_COLORS: Record<MarketplaceCategory, string> = {
   cosmetic: '#d46bff', weapons: '#52e9ff', tools: '#ffb44a', health: '#b6ff5a', spells: '#ff7d3c',
 };
 
-function itemFallbackSvg(name: string, category: MarketplaceCategory): string {
-  const fg = CATEGORY_COLORS[category] ?? '#52e9ff';
-  const icon = CATEGORY_ICONS[category] ?? '📦';
+const ACTION_ICONS: Record<string, [string, string]> = {
+  ammo_pack_rifle:    ['🔫', '#52e9ff'],
+  ammo_pack_arrow:    ['🏹', '#52e9ff'],
+  ammo_pack_ember:    ['🔥', '#ff9b3c'],
+  heal_25:            ['💊', '#b6ff5a'],
+  heal_50:            ['❤️‍🩹', '#b6ff5a'],
+  heal_full:          ['❤️', '#b6ff5a'],
+  stamina_slowdown_25:  ['⚡', '#ffe97d'],
+  stamina_slowdown_50:  ['⚡', '#ffe97d'],
+  stamina_slowdown_75:  ['⚡', '#ffe97d'],
+  stamina_slowdown_100: ['⚡', '#ffe97d'],
+  firepower_boost_25:  ['💥', '#ff9b3c'],
+  firepower_boost_50:  ['💥', '#ff9b3c'],
+  firepower_boost_75:  ['💥', '#ff9b3c'],
+  firepower_boost_100: ['💥', '#ff9b3c'],
+  speed_boost_25:   ['💨', '#4cc9ff'],
+  speed_boost_50:   ['💨', '#4cc9ff'],
+  speed_boost_75:   ['💨', '#4cc9ff'],
+  speed_boost_100:  ['💨', '#4cc9ff'],
+  npc_pause_5s:  ['❄️', '#c0e8ff'],
+  npc_pause_10s: ['❄️', '#c0e8ff'],
+  npc_pause_30s: ['❄️', '#c0e8ff'],
+  npc_pause_60s: ['❄️', '#c0e8ff'],
+  shield_5s:       ['🛡️', '#7fe7ff'],
+  loot_magnet_30s: ['🧲', '#7ce3a3'],
+  portal_ping_30s: ['🌀', '#b08bff'],
+  cosmetic_headgear: ['👒', '#d46bff'],
+  cosmetic_shirt:    ['👕', '#d46bff'],
+  cosmetic_pants:    ['👖', '#d46bff'],
+};
+
+const CATEGORY_FALLBACK_ART: Record<MarketplaceCategory, [string, string]> = {
+  cosmetic: ['🎭', '#d46bff'],
+  weapons:  ['🔫', '#52e9ff'],
+  tools:    ['🔧', '#ffb44a'],
+  health:   ['💊', '#b6ff5a'],
+  spells:   ['✨', '#ff7d3c'],
+};
+
+function resolveArt(name: string, category: MarketplaceCategory, gameAction?: string): [string, string] {
+  if (gameAction && ACTION_ICONS[gameAction]) return ACTION_ICONS[gameAction];
+  return CATEGORY_FALLBACK_ART[category] ?? ['📦', '#52e9ff'];
+}
+
+function itemFallbackSvg(name: string, category: MarketplaceCategory, gameAction?: string): string {
+  const [icon, fg] = resolveArt(name, category, gameAction);
   const label = (name || category || 'ITEM').toUpperCase().replace(/[^A-Z0-9 ]+/g, '').slice(0, 10);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72"><rect width="72" height="72" rx="10" fill="#070c12"/><rect x="4" y="4" width="64" height="64" rx="9" stroke="${fg}" stroke-width="2" opacity="0.6"/><text x="36" y="38" text-anchor="middle" font-size="26" font-family="sans-serif">${icon}</text><text x="36" y="58" text-anchor="middle" font-size="9" font-family="monospace" fill="${fg}" opacity="0.8">${label}</text></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72"><rect width="72" height="72" rx="10" fill="#070c12"/><rect x="4" y="4" width="64" height="64" rx="9" stroke="${fg}" stroke-width="2" opacity="0.6"/><text x="36" y="42" text-anchor="middle" font-size="28" font-family="sans-serif">${icon}</text><text x="36" y="60" text-anchor="middle" font-size="9" font-family="monospace" fill="${fg}" opacity="0.8">${label}</text></svg>`;
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
@@ -339,11 +379,11 @@ export function MarketplaceAdminPanel() {
             <article key={item.id} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, padding: 12, background: editingId === item.id ? 'rgba(82,233,255,0.08)' : 'rgba(0,0,0,0.14)' }}>
               <div style={{ display: 'grid', gridTemplateColumns: '64px 1fr auto', gap: 12, alignItems: 'start' }}>
                 <img
-                  src={item.image || itemFallbackSvg(item.name, item.category)}
+                  src={item.image || itemFallbackSvg(item.name, item.category, item.game_action)}
                   alt=""
                   width={64}
                   height={64}
-                  onError={(e) => { e.currentTarget.src = itemFallbackSvg(item.name, item.category); }}
+                  onError={(e) => { e.currentTarget.src = itemFallbackSvg(item.name, item.category, item.game_action); }}
                   style={{ width: 64, height: 64, borderRadius: 12, objectFit: 'cover', background: '#0b1722', border: '1px solid rgba(255,255,255,0.08)' }}
                 />
                 <div>
@@ -440,7 +480,7 @@ export function MarketplaceAdminPanel() {
                 alt={`${form.name || 'Marketplace item'} preview`}
                 width={96}
                 height={96}
-                onError={(e) => { e.currentTarget.src = itemFallbackSvg(form.name, form.category); }}
+                onError={(e) => { e.currentTarget.src = itemFallbackSvg(form.name, form.category, form.game_action); }}
                 style={{ width: 96, height: 96, borderRadius: 12, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.1)', background: '#0b1722' }}
               />
             ) : null}

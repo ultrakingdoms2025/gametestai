@@ -29,17 +29,60 @@ const CATEGORY_COLORS = {
   spells:   '#ff7d3c',
 };
 
-const CATEGORY_ICONS = {
-  cosmetic: '👒', weapons: '⚔️', tools: '🔧', health: '💊', spells: '✨',
+/**
+ * Map game_action → [emoji, hex colour].
+ * Falls back to category-level icon when action is not listed.
+ */
+const ACTION_ART = {
+  ammo_pack_rifle:    ['🔫', '#52e9ff'],
+  ammo_pack_arrow:    ['🏹', '#52e9ff'],
+  ammo_pack_ember:    ['🔥', '#ff9b3c'],
+  heal_25:            ['💊', '#b6ff5a'],
+  heal_50:            ['❤️‍🩹', '#b6ff5a'],
+  heal_full:          ['❤️', '#b6ff5a'],
+  stamina_slowdown_25:  ['⚡', '#ffe97d'],
+  stamina_slowdown_50:  ['⚡', '#ffe97d'],
+  stamina_slowdown_75:  ['⚡', '#ffe97d'],
+  stamina_slowdown_100: ['⚡', '#ffe97d'],
+  firepower_boost_25:  ['💥', '#ff9b3c'],
+  firepower_boost_50:  ['💥', '#ff9b3c'],
+  firepower_boost_75:  ['💥', '#ff9b3c'],
+  firepower_boost_100: ['💥', '#ff9b3c'],
+  speed_boost_25:   ['💨', '#4cc9ff'],
+  speed_boost_50:   ['💨', '#4cc9ff'],
+  speed_boost_75:   ['💨', '#4cc9ff'],
+  speed_boost_100:  ['💨', '#4cc9ff'],
+  npc_pause_5s:  ['❄️', '#c0e8ff'],
+  npc_pause_10s: ['❄️', '#c0e8ff'],
+  npc_pause_30s: ['❄️', '#c0e8ff'],
+  npc_pause_60s: ['❄️', '#c0e8ff'],
+  shield_5s:        ['🛡️', '#7fe7ff'],
+  loot_magnet_30s:  ['🧲', '#7ce3a3'],
+  portal_ping_30s:  ['🌀', '#b08bff'],
+  cosmetic_headgear: ['👒', '#d46bff'],
+  cosmetic_shirt:    ['👕', '#d46bff'],
+  cosmetic_pants:    ['👖', '#d46bff'],
 };
+
+const CATEGORY_FALLBACK_ICON = {
+  cosmetic: ['🎭', '#d46bff'],
+  weapons:  ['🔫', '#52e9ff'],
+  tools:    ['🔧', '#ffb44a'],
+  health:   ['💊', '#b6ff5a'],
+  spells:   ['✨', '#ff7d3c'],
+};
+
+function _actionArt(gameAction, category) {
+  if (gameAction && ACTION_ART[gameAction]) return ACTION_ART[gameAction];
+  return CATEGORY_FALLBACK_ICON[category] ?? ['📦', '#52e9ff'];
+}
 
 /**
  * Render the item art cell. Shows the remote image if available, shows a shimmer
  * while loading, and falls back to a styled SVG placeholder on error.
  */
-function _renderMktArt(artEl, imageUrl, category, name) {
-  const fg = CATEGORY_COLORS[category] ?? '#52e9ff';
-  const icon = CATEGORY_ICONS[category] ?? '📦';
+function _renderMktArt(artEl, imageUrl, category, name, gameAction) {
+  const [icon, fg] = _actionArt(gameAction, category);
   const label = (name || category || 'ITEM').toUpperCase().replace(/[^A-Z0-9 ]+/g, '').slice(0, 10);
 
   function showFallback() {
@@ -52,8 +95,8 @@ function _renderMktArt(artEl, imageUrl, category, name) {
     svg.innerHTML = `
       <rect width="72" height="72" rx="10" fill="#070c12"/>
       <rect x="4" y="4" width="64" height="64" rx="9" stroke="${fg}" stroke-width="2" opacity="0.6"/>
-      <text x="36" y="38" text-anchor="middle" font-size="26" font-family="sans-serif">${icon}</text>
-      <text x="36" y="58" text-anchor="middle" font-size="9" font-family="monospace" fill="${fg}" opacity="0.8">${label}</text>`;
+      <text x="36" y="42" text-anchor="middle" font-size="28" font-family="sans-serif">${icon}</text>
+      <text x="36" y="60" text-anchor="middle" font-size="9" font-family="monospace" fill="${fg}" opacity="0.8">${label}</text>`;
     artEl.appendChild(svg);
   }
 
@@ -273,7 +316,7 @@ export class MarketplaceUI {
       const row = el('div', `mkt-row mkt-card${blocked ? ' blocked' : ''}`);
 
       const art = el('div', 'mkt-art loading');
-      _renderMktArt(art, item.image, item.category, item.name);
+      _renderMktArt(art, item.image, item.category, item.name, item.game_action);
 
       const info = el('div', 'mkt-info');
       info.appendChild(el('div', 'mkt-name', item.name));

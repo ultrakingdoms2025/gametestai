@@ -231,6 +231,14 @@ const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts,
  * forget - it resolves to false on browsers that do not offer it, and nothing
  * downstream depends on the answer. */
 save.requestDurableStorage();
+let persistTimer = null;
+const schedulePersist = (reason) => {
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    save.save(reason);
+  }, 750);
+};
 
 const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, portals, caches, contracts, questBoard });
 
@@ -635,6 +643,8 @@ bus.on('inventory:use', ({ itemId }) => {
     hud?.notify?.('That item is no longer in your bag', 'warn');
   }
 });
+bus.on('credits:changed', ({ reason }) => schedulePersist(`credits:${reason ?? 'change'}`));
+bus.on('inventory:changed', () => schedulePersist('inventory-change'));
 bus.on('market:open', () => setGameplayBlocked('market', true));
 bus.on('market:close', () => setGameplayBlocked('market', false));
 bus.on('keybinds:open', () => setGameplayBlocked('keybinds', true));
@@ -691,6 +701,16 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     CONFIG.debug.showStats = !CONFIG.debug.showStats;
     hud.setDebugVisible(CONFIG.debug.showStats);
+    return;
+  }
+  if (e.code === 'KeyI' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (input.textCaptured) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (inventory.ui?.isOpen) inventory.close();
+    else inventory.open();
   }
 });
 

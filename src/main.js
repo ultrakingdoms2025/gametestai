@@ -706,6 +706,9 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyI' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    // If the panel is already open, the capture-phase _key handler will close it
+    // (and stopImmediatePropagation so we never reach here in that case).
+    // If textCaptured is true for any OTHER reason (chat, etc.) don't open inventory.
     if (input.textCaptured) return;
     e.preventDefault();
     e.stopPropagation();

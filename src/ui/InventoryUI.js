@@ -397,7 +397,11 @@ export class InventoryUI {
   _key(e) {
     if (e.code === 'Escape' || e.code === 'KeyI') {
       e.preventDefault();
-      e.stopPropagation();
+      // stopImmediatePropagation prevents bubble-phase handlers on window from
+      // reopening the panel — needed because keyboard events can target window
+      // itself (e.g. in fullscreen/pointer-lock), where stopPropagation alone
+      // does not block same-element bubble handlers.
+      e.stopImmediatePropagation();
       this.close();
     }
   }

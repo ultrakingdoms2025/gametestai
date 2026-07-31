@@ -176,9 +176,11 @@ export class InventoryUI {
       const id = this._detailRow.id;
       const qty = this.inventory.bagCount(id);
       if (qty <= 0) return;
-      // Remove from bag, then ask the game world to spawn it.
-      const dropped = this.inventory.moveToStore(id, qty);
-      // Immediately move to store; game can also pop a world pickup via bus.
+      // Remove from bag entirely (do not move to store — it would be a duplicate
+      // if the world pickup is collected again). consumeFromBag fires inventory:changed
+      // which calls _render() via the bus listener.
+      const dropped = this.inventory.consumeFromBag(id, qty) ? qty : 0;
+      if (dropped <= 0) return;
       this.bus?.emit('inventory:drop', { itemId: id, qty: dropped });
       this._setDetail(null);
     });
@@ -355,13 +357,19 @@ export class InventoryUI {
     const inv = this.inventory;
     const want = qty === Infinity ? (fromZone === 'bag' ? inv.bagCount(id) : inv.count(id)) : qty;
     if (want <= 0) return;
+    // Pre-populate _recent before calling the inventory method so that the
+    // _render() triggered synchronously by inventory:changed already has the
+    // destination key. Without this, a second _render() call would be needed and
+    // the two back-to-back DOM rebuilds in the same frame caused blank squares.
+    const destKey = `${fromZone === 'bag' ? 'store' : 'bag'}:${id}`;
+    this._recent.add(destKey);
     const moved = fromZone === 'bag' ? inv.moveToStore(id, want) : inv.moveToBag(id, want);
     if (moved <= 0) {
+      this._recent.delete(destKey);
       this._reject(fromZone === 'bag' ? 'Store is full' : 'Bag is full — 30 slots is the limit');
       return;
     }
-    this._recent.add(`${fromZone === 'bag' ? 'store' : 'bag'}:${id}`);
-    this._render();
+    // _render() was already called by the inventory:changed listener above.
   }
 
   _fullMessage(e) {

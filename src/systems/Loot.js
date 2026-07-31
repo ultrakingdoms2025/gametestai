@@ -328,6 +328,9 @@ export class Loot {
     }
     p.persistent = !!opts.persistent;
     p.tag = opts.tag ?? null;
+    // Seconds after spawn before auto-collect is allowed. Used for player-dropped
+    // items so they are not immediately re-picked up while the player stands on them.
+    p.collectDelay = opts.collectDelay ?? 0;
 
     p.contents = contents.map((c) => ({ itemId: c.itemId, qty: c.qty }));
     p.active = true;
@@ -449,6 +452,9 @@ export class Loot {
       }
 
       if (!player) continue;
+      // Honour a per-pickup grace period so player-dropped items are not
+      // immediately re-collected while the player stands on them.
+      if (p.age < (p.collectDelay ?? 0)) continue;
       _ck.copy(p.root.position);
       _ck.y = p.baseY;
       const d2 = _ck.distanceToSquared(player.position);

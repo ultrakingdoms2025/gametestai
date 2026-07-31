@@ -472,7 +472,13 @@ async function prewarm() {
 
   try {
     for (const root of parked) root.visible = false;
-    avatar?.setVisible?.(false);
+    // Do NOT call setVisible(false) here. The prewarm used setVisible(true) to
+    // ensure the avatar's materials compiled their shadow-pass programs. Now that
+    // warmup is done, the avatar stays visible so update() can run each frame and
+    // call _setShadowOnly(true/false) based on camera mode. Calling setVisible(false)
+    // sets _visible=false, which short-circuits update() entirely - meaning
+    // _setShadowOnly is never called when switching to 3rd person.
+    // First-person invisibility is handled by _setShadowOnly(true) in PlayerAvatar.
     mounts.unpark?.(parked);
   } catch (err) {
     console.warn('[prewarm] restore failed:', err);
@@ -639,8 +645,13 @@ bus.on('inventory:open', () => setGameplayBlocked('inventory', true));
 bus.on('inventory:close', () => setGameplayBlocked('inventory', false));
 bus.on('inventory:use', ({ itemId }) => {
   const res = itemUse.use(itemId);
-  if (!res?.ok && res?.reason === 'missing') {
+  if (res?.ok) return; // success path: ItemUse emits hud:notify itself
+  if (res?.reason === 'missing') {
     hud?.notify?.('That item is no longer in your bag', 'warn');
+  } else if (res?.reason === 'unavailable') {
+    hud?.notify?.('Cannot use that right now', 'warn');
+  } else if (res?.reason === 'unsupported') {
+    hud?.notify?.('That item has no use effect', 'warn');
   }
 });
 // Drop: item was already moved to store by InventoryUI; spawn a world pickup at
@@ -648,7 +659,9 @@ bus.on('inventory:use', ({ itemId }) => {
 bus.on('inventory:drop', ({ itemId, qty }) => {
   if (!qty || qty <= 0) return;
   const pos = player.position.clone();
-  loot.spawn(pos, [{ itemId, qty }]);
+  // collectDelay of 4s stops the player from immediately walking over
+  // the just-dropped pickup while still standing on the spawn point.
+  loot.spawn(pos, [{ itemId, qty }], { collectDelay: 4 });
   hud?.notify?.(`Dropped ${qty}× ${itemId.replace(/_/g, ' ')}`, 'info');
 });
 bus.on('credits:changed', ({ reason }) => schedulePersist(`credits:${reason ?? 'change'}`));

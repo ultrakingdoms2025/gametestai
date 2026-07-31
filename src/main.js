@@ -709,8 +709,7 @@ window.addEventListener('keydown', (e) => {
     if (input.textCaptured) return;
     e.preventDefault();
     e.stopPropagation();
-    if (inventory.ui?.isOpen) inventory.close();
-    else inventory.open();
+    inventory.toggle?.();
   }
 });
 

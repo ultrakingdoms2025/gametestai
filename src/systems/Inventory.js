@@ -388,6 +388,19 @@ export class Inventory {
     this.ui?.update?.(dt);
   }
 
+  open() {
+    this.ui?.open?.();
+  }
+
+  close() {
+    this.ui?.close?.();
+  }
+
+  toggle() {
+    if (this.ui?.isOpen) this.close();
+    else this.open();
+  }
+
   dispose() {
     this._stopSelfLoop();
     this.ui?.dispose?.();

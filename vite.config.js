@@ -15,5 +15,7 @@ export default defineConfig({
   build: {
     target: 'esnext',
     sourcemap: true,
+    base: '/game/',
   },
+  base: '/game/',
 });

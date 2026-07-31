@@ -67,6 +67,7 @@ export class Inventory {
     this._ticked = false;
     this._selfLoop = null;
     this._latch = false;
+    this._desiredOpen = false;
 
     if (starter) this._grantStarterKit();
 
@@ -389,15 +390,21 @@ export class Inventory {
   }
 
   open() {
-    this.ui?.open?.();
+    this._desiredOpen = true;
+    if (!this.ui) {
+      this._mountUI();
+      return;
+    }
+    this.ui.open?.();
   }
 
   close() {
+    this._desiredOpen = false;
     this.ui?.close?.();
   }
 
   toggle() {
-    if (this.ui?.isOpen) this.close();
+    if (this.ui?.isOpen || this._desiredOpen) this.close();
     else this.open();
   }
 
@@ -518,6 +525,7 @@ export class Inventory {
           root: this._uiRoot ?? document.getElementById('ui-root') ?? document.body,
         });
         this._installKeyFallback();
+        if (this._desiredOpen) this.ui.open();
       })
       .catch((err) => {
         this._uiPending = false;

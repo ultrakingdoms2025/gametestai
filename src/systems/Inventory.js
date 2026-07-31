@@ -504,6 +504,7 @@ export class Inventory {
           input: this._resolveInput(),
           root: this._uiRoot ?? document.getElementById('ui-root') ?? document.body,
         });
+        this._installKeyFallback();
       })
       .catch((err) => {
         this._uiPending = false;

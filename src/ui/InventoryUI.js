@@ -159,7 +159,6 @@ export class InventoryUI {
     /* -- footer ------------------------------------------------------- */
     const foot = el('div', 'inv-foot');
     this.detail = el('div', 'inv-detail');
-    this._setDetail(null);
     this.useBtn = el('button', 'inv-btn inv-use', 'Use');
     this.useBtn.type = 'button';
     this.useBtn.addEventListener('click', () => {
@@ -167,6 +166,7 @@ export class InventoryUI {
       this.bus?.emit('inventory:use', { itemId: this._detailRow.id });
     });
     this.useBtn.hidden = true;
+    this._setDetail(null); // must come after this.useBtn is created
     this.msg = el('div', 'inv-flash-msg');
 
     const keys = el('div', 'inv-keys');

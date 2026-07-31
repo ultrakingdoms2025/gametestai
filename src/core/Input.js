@@ -155,6 +155,11 @@ export class Input {
     this._unlockKeyboard();
   }
 
+  /** Re-arm navigator.keyboard after a menu close. No-op if not in fullscreen. */
+  relockKeyboard() {
+    if (document.fullscreenElement) this._lockKeyboard();
+  }
+
   _resetAxes() {
     const s = this.state;
     s.forward = 0;

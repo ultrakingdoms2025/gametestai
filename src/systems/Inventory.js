@@ -390,11 +390,13 @@ export class Inventory {
   }
 
   open() {
+    if (this.ui?.isOpen) return;
     this._desiredOpen = true;
     if (!this.ui) {
       this._mountUI();
       return;
     }
+    this._desiredOpen = false;
     this.ui.open?.();
   }
 
@@ -404,7 +406,7 @@ export class Inventory {
   }
 
   toggle() {
-    if (this.ui?.isOpen || this._desiredOpen) this.close();
+    if (this.ui?.isOpen) this.close();
     else this.open();
   }
 
@@ -524,8 +526,9 @@ export class Inventory {
           input: this._resolveInput(),
           root: this._uiRoot ?? document.getElementById('ui-root') ?? document.body,
         });
-        this._installKeyFallback();
-        if (this._desiredOpen) this.ui.open();
+        const shouldOpen = this._desiredOpen;
+        this._desiredOpen = false;
+        if (shouldOpen) this.ui.open();
       })
       .catch((err) => {
         this._uiPending = false;

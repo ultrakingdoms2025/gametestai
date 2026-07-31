@@ -56,6 +56,10 @@ export function menuFocusOut(input, relock, othersOpen = false) {
   if (!relock) return;
   setTimeout(() => {
     try {
+      // Re-acquire pointer lock. Also call relockKeyboard so navigator.keyboard
+      // is re-armed (exitLock released both; the previous path only reclaimed
+      // pointer lock and left browser shortcuts like F1 uncaptured).
+      input?.relockKeyboard?.();
       const p = input?.canvas?.requestPointerLock?.();
       if (p && typeof p.catch === 'function') p.catch(() => {});
     } catch {

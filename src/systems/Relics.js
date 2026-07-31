@@ -77,14 +77,15 @@ function hashString(str) {
 export class Relics {
   /**
    * @param {{scene:THREE.Scene, bus:any, physics:any, player:any,
-   *          economy:any, worldManager:any}} ctx
+   *          economy:any, inventory?:any, worldManager:any}} ctx
    */
-  constructor({ scene, bus, physics, player, economy, worldManager } = {}) {
+  constructor({ scene, bus, physics, player, economy, inventory, worldManager } = {}) {
     this.scene = scene;
     this.bus = bus ?? null;
     this.physics = physics ?? null;
     this.player = player ?? null;
     this.economy = economy ?? null;
+    this.inventory = inventory ?? null;
     this.worldManager = worldManager ?? null;
 
     /** @type {Array<{pos:THREE.Vector3, taken:boolean, phase:number}>} */
@@ -306,6 +307,8 @@ export class Relics {
     site.taken = true;
     this._found.set(this._worldId, (this._found.get(this._worldId) ?? 0) + 1);
     this.economy?.add?.(VALUE, 'relic');
+    // Also add a relic_coin to the store so it shows up in the inventory panel.
+    this.inventory?.add?.('relic_coin', 1);
     const left = this.remaining;
     this.bus?.emit('relic:found', { value: VALUE, remaining: left, total: this.total });
     this.bus?.emit('hud:notify', {

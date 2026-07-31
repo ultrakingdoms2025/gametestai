@@ -626,7 +626,24 @@ body.inv-menu-open .pause {
   background: rgba(9, 15, 25, 0.7);
 }
 
-/* A rejected action (no space, no credits) says so here, in red, briefly. */
+/* Action button row (Use + Drop) in the footer. */
+.inv-act-row {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+}
+
+/* Drop button gets a warm orange accent so it reads as destructive. */
+.inv-drop {
+  border-color: rgba(255, 140, 50, 0.5);
+}
+.inv-drop:hover:not(:disabled) {
+  color: #ffe8c0;
+  border-color: rgba(255, 140, 50, 0.9);
+  background: rgba(255, 140, 50, 0.18);
+}
+
+
 .inv-flash-msg {
   color: var(--iv-red);
   font-size: 12.5px;

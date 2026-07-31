@@ -159,6 +159,8 @@ export class InventoryUI {
     /* -- footer ------------------------------------------------------- */
     const foot = el('div', 'inv-foot');
     this.detail = el('div', 'inv-detail');
+
+    const actRow = el('div', 'inv-act-row');
     this.useBtn = el('button', 'inv-btn inv-use', 'Use');
     this.useBtn.type = 'button';
     this.useBtn.addEventListener('click', () => {
@@ -166,7 +168,24 @@ export class InventoryUI {
       this.bus?.emit('inventory:use', { itemId: this._detailRow.id });
     });
     this.useBtn.hidden = true;
-    this._setDetail(null); // must come after this.useBtn is created
+
+    this.dropBtn = el('button', 'inv-btn inv-drop', 'Drop');
+    this.dropBtn.type = 'button';
+    this.dropBtn.addEventListener('click', () => {
+      if (!this._detailRow || this._detailZone !== 'bag') return;
+      const id = this._detailRow.id;
+      const qty = this.inventory.bagCount(id);
+      if (qty <= 0) return;
+      // Remove from bag, then ask the game world to spawn it.
+      const dropped = this.inventory.moveToStore(id, qty);
+      // Immediately move to store; game can also pop a world pickup via bus.
+      this.bus?.emit('inventory:drop', { itemId: id, qty: dropped });
+      this._setDetail(null);
+    });
+    this.dropBtn.hidden = true;
+
+    actRow.append(this.useBtn, this.dropBtn);
+    this._setDetail(null); // must come after useBtn and dropBtn are created
     this.msg = el('div', 'inv-flash-msg');
 
     const keys = el('div', 'inv-keys');
@@ -174,9 +193,10 @@ export class InventoryUI {
       '<span><b>Click</b>move stack</span>' +
       '<span><b>⇧</b>move one</span>' +
       '<span><b>Drag</b>between panels</span>' +
+      '<span><b>Hover</b>select · Use/Drop below</span>' +
       '<span><b>I</b>close</span>';
 
-    foot.append(this.detail, this.useBtn, this.msg, keys);
+    foot.append(this.detail, actRow, this.msg, keys);
 
     panel.append(head, body, foot);
     wrap.appendChild(panel);
@@ -298,9 +318,13 @@ export class InventoryUI {
     this._detailRow = row ?? null;
     this._detailZone = row ? zone : null;
     const def = row?.def;
-    const usable = !!def && zone === 'bag' && def.kind === 'consumable';
+    const inBag = zone === 'bag';
+    const usable = !!def && inBag && def.kind === 'consumable';
+    const droppable = !!def && inBag;
     this.useBtn.hidden = !usable;
     this.useBtn.disabled = !usable;
+    this.dropBtn.hidden = !droppable;
+    this.dropBtn.disabled = !droppable;
     this.detail.textContent = '';
     if (!def) {
       this.detail.innerHTML = `<div class="inv-detail-body"><div class="inv-detail-name">Select an item</div>
@@ -308,6 +332,9 @@ export class InventoryUI {
       return;
     }
     const stack = stackSize(def.id);
+    const actions = [];
+    if (usable) actions.push('Click <b>Use</b> to apply the item effect.');
+    if (droppable) actions.push('Click <b>Drop</b> to leave it on the map.');
     this.detail.innerHTML =
       itemIconSVG(def.id, 30) +
       `<div class="inv-detail-body">
@@ -315,7 +342,7 @@ export class InventoryUI {
         <div class="inv-detail-sub">${def.desc} &nbsp;·&nbsp; stacks of <b>${stack}</b> &nbsp;·&nbsp;
           worth <b>${def.value} CR</b> each &nbsp;·&nbsp; ${row.qty} in ${zone === 'bag' ? 'bag' : 'store'}
           (<b>${row.slots}</b> slot${row.slots === 1 ? '' : 's'})</div>
-         ${usable ? '<div class="inv-detail-sub">Click <b>Use</b> to apply the item effect.</div>' : ''}
+         ${actions.length ? `<div class="inv-detail-sub">${actions.join(' ')}</div>` : ''}
       </div>`;
   }
 

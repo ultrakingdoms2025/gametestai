@@ -181,9 +181,11 @@ export class CameraRig {
     if (next === this._mode) return;
     this._mode = next;
     if (next === THIRD) {
-      // Grow the boom out of the head rather than teleporting behind the player,
-      // which reads as a cut and loses the player's sense of where they are.
-      this._length = BOOM.minLength;
+      // Start just above the avatar-fade threshold so the character body is
+      // visible the instant the view switches. Growing from minLength kept the
+      // body shadow-only for ~7 frames (AVATAR_FADE_LENGTH / BOOM_OUT_RATE at
+      // 60 fps), which looked like the character wasn't appearing at all.
+      this._length = AVATAR_FADE_LENGTH + 0.3;
     }
     this.bus?.emit('camera:mode', { mode: next });
   }

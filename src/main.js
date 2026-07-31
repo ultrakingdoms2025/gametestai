@@ -198,7 +198,7 @@ loadout.setInventory?.(inventory);
 const caches = new Caches({ bus, physics, player, loot, worldManager, waterVolumes });
 
 // Hidden collectibles that pay on pickup - the reason to look at the skyline.
-const relics = new Relics({ scene: engine.scene, bus, physics, player, economy, worldManager });
+const relics = new Relics({ scene: engine.scene, bus, physics, player, economy, inventory, worldManager });
 
 // Standing jobs from the people who already have names and personalities.
 const contracts = new Contracts({ bus, npcManager, player, economy, inventory, worldManager });
@@ -642,6 +642,14 @@ bus.on('inventory:use', ({ itemId }) => {
   if (!res?.ok && res?.reason === 'missing') {
     hud?.notify?.('That item is no longer in your bag', 'warn');
   }
+});
+// Drop: item was already moved to store by InventoryUI; spawn a world pickup at
+// the player's feet so they can leave it for others or pick it back up.
+bus.on('inventory:drop', ({ itemId, qty }) => {
+  if (!qty || qty <= 0) return;
+  const pos = player.position.clone();
+  loot.spawn(pos, [{ itemId, qty }]);
+  hud?.notify?.(`Dropped ${qty}× ${itemId.replace(/_/g, ' ')}`, 'info');
 });
 bus.on('credits:changed', ({ reason }) => schedulePersist(`credits:${reason ?? 'change'}`));
 bus.on('inventory:changed', () => schedulePersist('inventory-change'));

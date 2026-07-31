@@ -797,6 +797,24 @@ body.inv-menu-open .pause {
   border: 1px solid rgba(120, 180, 210, 0.14);
   background: rgba(7, 12, 18, 0.72);
   clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+  position: relative;
+  overflow: hidden;
+}
+
+@keyframes mkt-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+.mkt-art.loading {
+  background: linear-gradient(
+    90deg,
+    rgba(7, 12, 18, 0.72) 25%,
+    rgba(60, 120, 160, 0.22) 50%,
+    rgba(7, 12, 18, 0.72) 75%
+  );
+  background-size: 200% 100%;
+  animation: mkt-shimmer 1.4s linear infinite;
 }
 
 .mkt-art img {
@@ -804,6 +822,16 @@ body.inv-menu-open .pause {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.mkt-art svg {
+  width: 56px;
+  height: 56px;
+}
+
+/* Fallback SVG icon when image fails to load */
+.mkt-art.fallback {
+  background: rgba(7, 12, 18, 0.85);
 }
 
 .mkt-row:hover {

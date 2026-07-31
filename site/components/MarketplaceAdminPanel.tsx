@@ -53,6 +53,21 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+const CATEGORY_ICONS: Record<MarketplaceCategory, string> = {
+  cosmetic: '👒', weapons: '⚔️', tools: '🔧', health: '💊', spells: '✨',
+};
+const CATEGORY_COLORS: Record<MarketplaceCategory, string> = {
+  cosmetic: '#d46bff', weapons: '#52e9ff', tools: '#ffb44a', health: '#b6ff5a', spells: '#ff7d3c',
+};
+
+function itemFallbackSvg(name: string, category: MarketplaceCategory): string {
+  const fg = CATEGORY_COLORS[category] ?? '#52e9ff';
+  const icon = CATEGORY_ICONS[category] ?? '📦';
+  const label = (name || category || 'ITEM').toUpperCase().replace(/[^A-Z0-9 ]+/g, '').slice(0, 10);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72"><rect width="72" height="72" rx="10" fill="#070c12"/><rect x="4" y="4" width="64" height="64" rx="9" stroke="${fg}" stroke-width="2" opacity="0.6"/><text x="36" y="38" text-anchor="middle" font-size="26" font-family="sans-serif">${icon}</text><text x="36" y="58" text-anchor="middle" font-size="9" font-family="monospace" fill="${fg}" opacity="0.8">${label}</text></svg>`;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
 function parseJsonConfig(text: string): Record<string, unknown> {
   const trimmed = text.trim();
   if (!trimmed) return {};
@@ -324,10 +339,11 @@ export function MarketplaceAdminPanel() {
             <article key={item.id} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, padding: 12, background: editingId === item.id ? 'rgba(82,233,255,0.08)' : 'rgba(0,0,0,0.14)' }}>
               <div style={{ display: 'grid', gridTemplateColumns: '64px 1fr auto', gap: 12, alignItems: 'start' }}>
                 <img
-                  src={item.image}
+                  src={item.image || itemFallbackSvg(item.name, item.category)}
                   alt=""
                   width={64}
                   height={64}
+                  onError={(e) => { e.currentTarget.src = itemFallbackSvg(item.name, item.category); }}
                   style={{ width: 64, height: 64, borderRadius: 12, objectFit: 'cover', background: '#0b1722', border: '1px solid rgba(255,255,255,0.08)' }}
                 />
                 <div>
@@ -424,6 +440,7 @@ export function MarketplaceAdminPanel() {
                 alt={`${form.name || 'Marketplace item'} preview`}
                 width={96}
                 height={96}
+                onError={(e) => { e.currentTarget.src = itemFallbackSvg(form.name, form.category); }}
                 style={{ width: 96, height: 96, borderRadius: 12, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.1)', background: '#0b1722' }}
               />
             ) : null}

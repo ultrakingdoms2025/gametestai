@@ -21,6 +21,61 @@ const TABS = [
 
 const FALLBACK_CATEGORIES = ['', 'cosmetic', 'weapons', 'tools', 'health', 'spells'];
 
+const CATEGORY_COLORS = {
+  cosmetic: '#d46bff',
+  weapons:  '#52e9ff',
+  tools:    '#ffb44a',
+  health:   '#b6ff5a',
+  spells:   '#ff7d3c',
+};
+
+const CATEGORY_ICONS = {
+  cosmetic: '👒', weapons: '⚔️', tools: '🔧', health: '💊', spells: '✨',
+};
+
+/**
+ * Render the item art cell. Shows the remote image if available, shows a shimmer
+ * while loading, and falls back to a styled SVG placeholder on error.
+ */
+function _renderMktArt(artEl, imageUrl, category, name) {
+  const fg = CATEGORY_COLORS[category] ?? '#52e9ff';
+  const icon = CATEGORY_ICONS[category] ?? '📦';
+  const label = (name || category || 'ITEM').toUpperCase().replace(/[^A-Z0-9 ]+/g, '').slice(0, 10);
+
+  function showFallback() {
+    artEl.innerHTML = '';
+    artEl.classList.remove('loading');
+    artEl.classList.add('fallback');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 72 72');
+    svg.setAttribute('fill', 'none');
+    svg.innerHTML = `
+      <rect width="72" height="72" rx="10" fill="#070c12"/>
+      <rect x="4" y="4" width="64" height="64" rx="9" stroke="${fg}" stroke-width="2" opacity="0.6"/>
+      <text x="36" y="38" text-anchor="middle" font-size="26" font-family="sans-serif">${icon}</text>
+      <text x="36" y="58" text-anchor="middle" font-size="9" font-family="monospace" fill="${fg}" opacity="0.8">${label}</text>`;
+    artEl.appendChild(svg);
+  }
+
+  if (!imageUrl) {
+    showFallback();
+    return;
+  }
+
+  const img = document.createElement('img');
+  img.alt = '';
+  img.decoding = 'async';
+  img.loading = 'lazy';
+  img.addEventListener('load', () => {
+    artEl.classList.remove('loading', 'fallback');
+  });
+  img.addEventListener('error', () => {
+    showFallback();
+  });
+  img.src = imageUrl;
+  artEl.appendChild(img);
+}
+
 export class MarketplaceUI {
   /**
    * @param {{ bus?:any, market:any, inventory?:any, economy?:any, input?:any,
@@ -217,15 +272,8 @@ export class MarketplaceUI {
       const blocked = !preview.ok;
       const row = el('div', `mkt-row mkt-card${blocked ? ' blocked' : ''}`);
 
-      const art = el('div', 'mkt-art');
-      if (item.image) {
-        const img = document.createElement('img');
-        img.src = item.image;
-        img.alt = '';
-        img.decoding = 'async';
-        img.loading = 'lazy';
-        art.appendChild(img);
-      }
+      const art = el('div', 'mkt-art loading');
+      _renderMktArt(art, item.image, item.category, item.name);
 
       const info = el('div', 'mkt-info');
       info.appendChild(el('div', 'mkt-name', item.name));

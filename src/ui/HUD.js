@@ -64,6 +64,21 @@ const ITEM_LABELS = {
   fireball_charge: 'fireball charges',
   credits: 'credits',
   medkit: 'medkit',
+  speed_boost_25: 'speed boost',
+  speed_boost_50: 'speed boost',
+  speed_boost_75: 'speed boost',
+  speed_boost_100: 'speed boost',
+  loot_magnet_30s: 'loot magnet',
+  portal_ping_30s: 'portal ping',
+  npc_pause_5s: 'time stop',
+  npc_pause_10s: 'time stop',
+  npc_pause_30s: 'time stop',
+  npc_pause_60s: 'time stop',
+  shield_5s: 'shield',
+  firepower_boost_25: 'firepower',
+  firepower_boost_50: 'firepower',
+  firepower_boost_75: 'firepower',
+  firepower_boost_100: 'firepower',
 };
 
 /** Labels for the weapon ids hostiles report through `npc:attack`. */

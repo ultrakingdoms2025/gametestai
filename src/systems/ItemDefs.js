@@ -81,6 +81,156 @@ export const ITEMS = {
     kind: 'consumable',
     desc: 'Sealed trauma pack. Restores health when used.',
   },
+  speed_boost_25: {
+    id: 'speed_boost_25',
+    name: 'Fleetstep Spark',
+    short: 'SPD',
+    stack: 1,
+    icon: 'speed',
+    value: 32,
+    kind: 'consumable',
+    desc: 'Temporarily boosts movement speed by 25%.',
+  },
+  speed_boost_50: {
+    id: 'speed_boost_50',
+    name: 'Rushline Glyph',
+    short: 'SPD',
+    stack: 1,
+    icon: 'speed',
+    value: 48,
+    kind: 'consumable',
+    desc: 'Temporarily boosts movement speed by 50%.',
+  },
+  speed_boost_75: {
+    id: 'speed_boost_75',
+    name: 'Mach Surge Sigil',
+    short: 'SPD',
+    stack: 1,
+    icon: 'speed',
+    value: 68,
+    kind: 'consumable',
+    desc: 'Temporarily boosts movement speed by 75%.',
+  },
+  speed_boost_100: {
+    id: 'speed_boost_100',
+    name: 'Velocity Crown',
+    short: 'SPD',
+    stack: 1,
+    icon: 'speed',
+    value: 92,
+    kind: 'consumable',
+    desc: 'Temporarily doubles movement speed.',
+  },
+  loot_magnet_30s: {
+    id: 'loot_magnet_30s',
+    name: 'Vacuum Rune',
+    short: 'LOOT',
+    stack: 1,
+    icon: 'magnet',
+    value: 60,
+    kind: 'consumable',
+    desc: 'Pulls nearby loot toward you for 30 seconds.',
+  },
+  portal_ping_30s: {
+    id: 'portal_ping_30s',
+    name: 'Gatefinder Echo',
+    short: 'PING',
+    stack: 1,
+    icon: 'portal',
+    value: 56,
+    kind: 'consumable',
+    desc: 'Highlights the nearest portal for 30 seconds.',
+  },
+  npc_pause_5s: {
+    id: 'npc_pause_5s',
+    name: 'Stasis Rune',
+    short: 'STAS',
+    stack: 1,
+    icon: 'time',
+    value: 34,
+    kind: 'consumable',
+    desc: 'Pauses nearby NPC movement for 5 seconds.',
+  },
+  npc_pause_10s: {
+    id: 'npc_pause_10s',
+    name: 'Chrono Snare',
+    short: 'STAS',
+    stack: 1,
+    icon: 'time',
+    value: 48,
+    kind: 'consumable',
+    desc: 'Pauses nearby NPC movement for 10 seconds.',
+  },
+  npc_pause_30s: {
+    id: 'npc_pause_30s',
+    name: 'Time Lock Prism',
+    short: 'STAS',
+    stack: 1,
+    icon: 'time',
+    value: 78,
+    kind: 'consumable',
+    desc: 'Pauses nearby NPC movement for 30 seconds.',
+  },
+  npc_pause_60s: {
+    id: 'npc_pause_60s',
+    name: 'Temporal Vault Sigil',
+    short: 'STAS',
+    stack: 1,
+    icon: 'time',
+    value: 108,
+    kind: 'consumable',
+    desc: 'Pauses nearby NPC movement for 60 seconds.',
+  },
+  shield_5s: {
+    id: 'shield_5s',
+    name: 'Aegis Shard',
+    short: 'SHLD',
+    stack: 1,
+    icon: 'shield',
+    value: 72,
+    kind: 'consumable',
+    desc: 'Creates a short damage shield.',
+  },
+  firepower_boost_25: {
+    id: 'firepower_boost_25',
+    name: 'Firepower Sigil',
+    short: 'POWR',
+    stack: 1,
+    icon: 'power',
+    value: 44,
+    kind: 'consumable',
+    desc: 'Temporarily boosts weapon damage by 25%.',
+  },
+  firepower_boost_50: {
+    id: 'firepower_boost_50',
+    name: 'Firepower Talisman',
+    short: 'POWR',
+    stack: 1,
+    icon: 'power',
+    value: 60,
+    kind: 'consumable',
+    desc: 'Temporarily boosts weapon damage by 50%.',
+  },
+  firepower_boost_75: {
+    id: 'firepower_boost_75',
+    name: 'Firepower Seal',
+    short: 'POWR',
+    stack: 1,
+    icon: 'power',
+    value: 82,
+    kind: 'consumable',
+    desc: 'Temporarily boosts weapon damage by 75%.',
+  },
+  firepower_boost_100: {
+    id: 'firepower_boost_100',
+    name: 'Firepower Crown',
+    short: 'POWR',
+    stack: 1,
+    icon: 'power',
+    value: 112,
+    kind: 'consumable',
+    desc: 'Temporarily doubles weapon damage.',
+  },
   alloy_scrap: {
     id: 'alloy_scrap',
     name: 'Alloy Scrap',
@@ -405,6 +555,48 @@ const ICONS = {
     <path d="M12 9.5 v-2 a2 2 0 0 1 2 -2 h4 a2 2 0 0 1 2 2 v2" fill="none" stroke="${a}" stroke-width="1.1"/>
     <path d="M14.4 13.6 h3.2 v3.2 h3.2 v3.2 h-3.2 v3.2 h-3.2 v-3.2 h-3.2 v-3.2 h3.2 z" fill="${a}"/>
     <path d="M4.5 21 h23" stroke="${a}" stroke-width="0.6" opacity="0.35"/>`,
+  speed: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d9fbff"/><stop offset="1" stop-color="#2ea8ff"/>
+    </linearGradient></defs>
+    <path d="M6 19 C9 13, 14 10, 25 8 C21 12, 20 15, 20 17 C20 20, 21 23, 25 24 C16 26, 9 25, 6 19 Z" fill="url(#${g}a)" stroke="${a}" stroke-width="1"/>
+    <path d="M10 16 h7" stroke="#f4fdff" stroke-width="1.3" stroke-linecap="round"/>
+    <path d="M13 13 l4 3 l-4 3" fill="none" stroke="#f4fdff" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>`,
+  magnet: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f4fff3"/><stop offset="1" stop-color="#39c77c"/>
+    </linearGradient></defs>
+    <path d="M9 6 v11 a7 7 0 0 0 14 0 V6 h-4 v11 a3 3 0 0 1 -6 0 V6 z" fill="url(#${g}a)" stroke="${a}" stroke-width="1"/>
+    <path d="M9 6 h4 M19 6 h4" stroke="#f4fff3" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="16" cy="24" r="1.5" fill="#f4fff3"/>`,
+  portal: (g, a) => `
+    <defs><radialGradient id="${g}a" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ffe8ff"/><stop offset="0.5" stop-color="#ba7bff"/><stop offset="1" stop-color="#391b67"/>
+    </radialGradient></defs>
+    <circle cx="16" cy="16" r="9.5" fill="url(#${g}a)" stroke="${a}" stroke-width="1"/>
+    <circle cx="16" cy="16" r="5.6" fill="none" stroke="#f3e7ff" stroke-width="1.2" opacity="0.75"/>
+    <path d="M16 6 v20 M6 16 h20" stroke="#f3e7ff" stroke-width="0.8" opacity="0.45"/>`,
+  time: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f0fbff"/><stop offset="1" stop-color="#89d6ff"/>
+    </linearGradient></defs>
+    <circle cx="16" cy="16" r="10" fill="url(#${g}a)" stroke="${a}" stroke-width="1"/>
+    <path d="M16 9 v7 l4 2" fill="none" stroke="#0b1720" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M11 4 h10" stroke="#0b1720" stroke-width="1.2" stroke-linecap="round" opacity="0.9"/>
+    <path d="M11 28 h10" stroke="#0b1720" stroke-width="1.2" stroke-linecap="round" opacity="0.9"/>`,
+  shield: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ebfdff"/><stop offset="1" stop-color="#7dd8ff"/>
+    </linearGradient></defs>
+    <path d="M16 4 L25 7 v8 c0 6 -4.4 9.8 -9 13 -4.6 -3.2 -9 -7 -9 -13 V7 z" fill="url(#${g}a)" stroke="${a}" stroke-width="1"/>
+    <path d="M16 8 v16" stroke="#0b1720" stroke-width="1.1" opacity="0.55"/>
+    <path d="M11 13 h10" stroke="#0b1720" stroke-width="1.1" opacity="0.55"/>`,
+  power: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff3d8"/><stop offset="1" stop-color="#ff8f2e"/>
+    </linearGradient></defs>
+    <path d="M16 4 l3.5 6.5 L26 12 l-5 5 1.2 7 -6.2 -3.4 -6.2 3.4 1.2 -7 -5 -5 6.5 -1.5 z" fill="url(#${g}a)" stroke="${a}" stroke-width="0.9" stroke-linejoin="round"/>
+    <circle cx="16" cy="16" r="2.1" fill="#fff7ea"/>`,
   credits: (g, a) => `
     <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#ffe3b6"/><stop offset="1" stop-color="#b6741a"/>

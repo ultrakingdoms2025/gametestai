@@ -132,6 +132,8 @@ export class Loot {
     this._fullNotifyT = 0;
     this._eLatch = false;
     this._worldId = 'station';
+    this._magnetUntil = 0;
+    this._magnetRange = AUTO_RANGE;
 
     this._buildPool();
 
@@ -402,6 +404,7 @@ export class Loot {
    */
   fixedUpdate(dt, elapsed) {
     if (this._fullNotifyT > 0) this._fullNotifyT -= dt;
+    if (elapsed >= this._magnetUntil) this._magnetRange = AUTO_RANGE;
 
     const player = this.player;
     const pressedE = this._consumeInteract();
@@ -449,7 +452,8 @@ export class Loot {
       _ck.copy(p.root.position);
       _ck.y = p.baseY;
       const d2 = _ck.distanceToSquared(player.position);
-      if (d2 <= AUTO_RANGE * AUTO_RANGE || (pressedE && d2 <= PROMPT_RANGE * PROMPT_RANGE)) {
+      const autoRange = this._magnetRange;
+      if (d2 <= autoRange * autoRange || (pressedE && d2 <= PROMPT_RANGE * PROMPT_RANGE)) {
         this._collect(p);
       }
     }
@@ -472,6 +476,13 @@ export class Loot {
 
   /** Optional frame tick; the animation is time-absolute so this is a no-op. */
   update() {}
+
+  setMagnet(duration, range = 5.5) {
+    if (!(duration > 0)) return false;
+    this._magnetRange = Math.max(this._magnetRange, range);
+    this._magnetUntil = Math.max(this._magnetUntil, (this.engine?.elapsed ?? 0) + duration);
+    return true;
+  }
 
   /* ====================================================================== */
   /* Collection                                                             */

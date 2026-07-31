@@ -105,6 +105,8 @@ export class Player {
     this._dead = false;
     this._lastDamageAt = -999;
     this._invulnUntil = 0;
+    this._speedBoostUntil = 0;
+    this._speedBoostMul = 1;
     this._deathAt = 0;
     this._regenCarry = 0;
     this._elapsed = 0;
@@ -300,6 +302,10 @@ export class Player {
   /** True while respawn invulnerability is active. */
   get isInvulnerable() {
     return this._elapsed < this._invulnUntil;
+  }
+
+  get speedMultiplier() {
+    return this._elapsed < this._speedBoostUntil ? this._speedBoostMul : 1;
   }
 
   /** Eye position in world space. A fresh vector each call, per the contract. */
@@ -619,6 +625,7 @@ export class Player {
     if (this._sprinting) this.stamina?.drain(P.sprintStaminaDrain * dt, 'sprint');
 
     let wishSpeed = this._crouching ? P.crouchSpeed : this._sprinting ? P.sprintSpeed : P.walkSpeed;
+    wishSpeed *= this.speedMultiplier;
     if (aiming && !this._crouching) wishSpeed *= 0.62;
     if (wishLen < 1e-5) wishSpeed = 0;
 
@@ -1034,6 +1041,21 @@ export class Player {
     return applied;
   }
 
+  boostSpeed(multiplier, duration) {
+    if (!(multiplier > 1) || !(duration > 0)) return false;
+    this._speedBoostMul = Math.max(this.speedMultiplier, multiplier);
+    this._speedBoostUntil = Math.max(this._speedBoostUntil, this._elapsed + duration);
+    this.bus.emit('player:buffed', { kind: 'speed', multiplier: this._speedBoostMul, duration });
+    return true;
+  }
+
+  grantShield(duration) {
+    if (!(duration > 0)) return false;
+    this._invulnUntil = Math.max(this._invulnUntil, this._elapsed + duration);
+    this.bus.emit('player:buffed', { kind: 'shield', duration });
+    return true;
+  }
+
   _die(killerId) {
     this._dead = true;
     this._health = 0;
@@ -1054,6 +1076,8 @@ export class Player {
     this._regenCarry = 0;
     this._lastDamageAt = -999;
     this._invulnUntil = this._elapsed + SPAWN_INVULN;
+    this._speedBoostUntil = 0;
+    this._speedBoostMul = 1;
     this._velocity.set(0, 0, 0);
     this._dip = 0;
     this._dipVel = 0;

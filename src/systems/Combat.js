@@ -152,6 +152,9 @@ export class CombatSystem {
     this._npcShotIndex = 0;
     this._playerDead = false;
     this._respawnTimer = 0;
+    this._elapsed = 0;
+    this._playerDamageMul = 1;
+    this._playerDamageBoostUntil = 0;
 
     /* Re-entrancy guards: the Player/NPC modules may already emit the damage
      * events themselves. We watch for that and only emit as a fallback, so the
@@ -415,6 +418,7 @@ export class CombatSystem {
         return { applied: 0, health: npc.health ?? 0, killed: false };
       }
     }
+    if (byPlayer) amount *= this._playerDamageMul;
 
     const wasDead = npc.isDead === true;
     const before = Number.isFinite(npc.health) ? npc.health : 0;
@@ -703,9 +707,18 @@ export class CombatSystem {
 
   /** @param {number} dt frame seconds */
   update(dt) {
+    this._elapsed += dt;
+    if (this._elapsed >= this._playerDamageBoostUntil) this._playerDamageMul = 1;
     this.vfx.update(dt);
     this.decals.update(dt);
     this._updateFlashes(dt);
+  }
+
+  boostPlayerDamage(multiplier, duration) {
+    if (!(multiplier > 1) || !(duration > 0)) return false;
+    this._playerDamageMul = Math.max(this._playerDamageMul, multiplier);
+    this._playerDamageBoostUntil = Math.max(this._playerDamageBoostUntil, this._elapsed + duration);
+    return true;
   }
 
   /** Drop all transient combat state. Called on every world change. */
@@ -716,6 +729,8 @@ export class CombatSystem {
     this._invalidateNPCCaches();
     this._shotIndex = 0;
     this._npcShotIndex = 0;
+    this._playerDamageMul = 1;
+    this._playerDamageBoostUntil = 0;
   }
 
   dispose() {

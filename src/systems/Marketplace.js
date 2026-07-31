@@ -27,6 +27,24 @@ const SCAN_INTERVAL = 0.2;
 const VENDOR_WORDS =
   /vendor|trader|merchant|quartermaster|shopkeep|stall|market|supply|supplies|rations|clerk|smith|fletcher|cooper|apothec|armou?rer|barter|wares|pedlar|peddler|outfitter|kit\b/i;
 
+const MARKETPLACE_CONSUMABLE_ITEMS = {
+  spell_velocity_25: 'speed_boost_25',
+  spell_velocity_50: 'speed_boost_50',
+  spell_velocity_75: 'speed_boost_75',
+  spell_velocity_100: 'speed_boost_100',
+  spell_loot_grab_30: 'loot_magnet_30s',
+  spell_portal_ping_30: 'portal_ping_30s',
+  spell_stasis_5s: 'npc_pause_5s',
+  spell_stasis_10s: 'npc_pause_10s',
+  spell_stasis_30s: 'npc_pause_30s',
+  spell_stasis_60s: 'npc_pause_60s',
+  shield_5s: 'shield_5s',
+  firepower_boost_25: 'firepower_boost_25',
+  firepower_boost_50: 'firepower_boost_50',
+  firepower_boost_75: 'firepower_boost_75',
+  firepower_boost_100: 'firepower_boost_100',
+};
+
 export class Marketplace {
   /**
    * @param {{ bus?:any, economy?:any, inventory?:any, player?:any, npcManager?:any,
@@ -200,6 +218,7 @@ export class Marketplace {
     if (source.startsWith('pack_arrows')) return { itemId: 'arrow', qty: 30 };
     if (source.startsWith('pack_embers')) return { itemId: 'fireball_charge', qty: 10 };
     if (source.startsWith('pack_medkit')) return { itemId: 'medkit', qty: 2 };
+    if (MARKETPLACE_CONSUMABLE_ITEMS[source]) return { itemId: MARKETPLACE_CONSUMABLE_ITEMS[source], qty: 1 };
 
     const config = item?.action_config ?? {};
     if (config?.effect === 'grant_ammo' && typeof config.ammo_item === 'string') {

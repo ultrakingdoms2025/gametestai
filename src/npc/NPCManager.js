@@ -253,6 +253,7 @@ export class NPCManager {
      */
     this._groundCursor = 0;
     this._groundFixes = 0;
+    this._pauseUntil = 0;
 
     // Shared contact-shadow layer. One InstancedMesh for the whole crowd - a
     // per-character decal would have cost 26 extra draw calls, and this world
@@ -918,6 +919,7 @@ export class NPCManager {
   /* ---------------------------------------------------------------- */
 
   fixedUpdate(dt, elapsed) {
+    if (elapsed < this._pauseUntil) return;
     this._coverToken = 0;
     for (const npc of this._npcs) npc.fixedUpdate(dt, elapsed);
     this._separateBodies();
@@ -1014,9 +1016,17 @@ export class NPCManager {
   }
 
   update(dt, elapsed) {
+    if (elapsed < this._pauseUntil) return;
     this._updateLOD();
     for (const npc of this._npcs) npc.update(dt, elapsed);
     this._updateContactShadows();
+  }
+
+  pauseFor(seconds) {
+    if (!(seconds > 0)) return false;
+    const elapsed = this.engine?.elapsed ?? 0;
+    this._pauseUntil = Math.max(this._pauseUntil, elapsed + seconds);
+    return true;
   }
 
   /**

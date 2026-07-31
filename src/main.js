@@ -178,7 +178,7 @@ const stamina = new Stamina({ bus, player });
 
 const inventory = new Inventory({ bus, economy, input, root: uiRoot });
 const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
-const itemUse = new ItemUseSystem({ bus, player, inventory });
+const itemUse = new ItemUseSystem({ bus, player, inventory, loot, portals, npcManager, combat });
 const market = new Marketplace({ bus, economy, inventory, player, npcManager, input, root: uiRoot });
 const helpMenu = new HelpMenu({ root: uiRoot, bus, input });
 const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts });
@@ -629,6 +629,12 @@ bus.on('character:open', () => setGameplayBlocked('character', true));
 bus.on('character:close', () => setGameplayBlocked('character', false));
 bus.on('inventory:open', () => setGameplayBlocked('inventory', true));
 bus.on('inventory:close', () => setGameplayBlocked('inventory', false));
+bus.on('inventory:use', ({ itemId }) => {
+  const res = itemUse.use(itemId);
+  if (!res?.ok && res?.reason === 'missing') {
+    hud?.notify?.('That item is no longer in your bag', 'warn');
+  }
+});
 bus.on('market:open', () => setGameplayBlocked('market', true));
 bus.on('market:close', () => setGameplayBlocked('market', false));
 bus.on('keybinds:open', () => setGameplayBlocked('keybinds', true));

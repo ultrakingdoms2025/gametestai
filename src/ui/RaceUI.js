@@ -262,6 +262,7 @@ export class RaceUI {
     this.startBtn.type = 'button';
     this.startBtn.addEventListener('click', () => {
       if (!this.race?.ready) return;
+      this.closePanel();
       this.race.start(this.race.difficulty);
     });
 

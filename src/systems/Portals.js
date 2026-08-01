@@ -758,6 +758,12 @@ export class PortalSystem {
     const kit = this._kit(target);
     const frame = kit.template.clone(true);
     this._retintAccents(frame, accent);
+    // Gateways are emissive energy structures whose arch shadows are barely
+    // legible against their own glow, yet re-rendering every frame's shadow map
+    // pays for each frame mesh of every always-visible portal. In the station
+    // hub (four permanent gateways) that measured 102 shadow draw calls (~6% of
+    // the frame) for no visible ground shadow. Cast off, receive on.
+    frame.traverse((o) => { if (o.isMesh) o.castShadow = false; });
     root.add(frame);
 
     // --- event horizon ----------------------------------------------

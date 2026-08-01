@@ -1,11 +1,16 @@
 import './race.css';
-import { PLAYER_GRID_SLOT } from '../race/RaceManager.js';
+import { PLAYER_GRID_SLOT, RACE_TYPES } from '../race/RaceManager.js';
 
 /** One line each, because "expert" on its own does not tell anyone what changes. */
 /* Difficulty changes the circuit, not just the field, so the blurb has to say
  * what gets added to the road as well as who you are racing. A player who picks
  * EXPERT and then hits a barrier that was not there last time should have been
  * told. */
+const RACE_TYPE_BLURB = {
+  car: 'Classic ground race in the Interceptor.',
+  dragon: 'Aerial race on dragons through ordered floating rings.',
+};
+
 const DIFFICULTY_BLURB = {
   easy: '2 laps, clear road. A slower, scrappier field.',
   standard: '3 laps, chicanes and scattered hazards. Evenly matched.',
@@ -166,7 +171,7 @@ export class RaceUI {
 
     const stack = el('div', 'rc-stack');
     this.lapRow = el('div', 'rc-stat');
-    this.lapRow.append(el('span', 'rc-k', 'LAP'), (this.lapVal = el('span', 'rc-v', '1/3')));
+    this.lapRow.append(el('span', 'rc-k', 'LAP'), (this.lapVal = el('span', 'rc-v', '0/3')));
     this.timeRow = el('div', 'rc-stat');
     this.timeRow.append(el('span', 'rc-k', 'TIME'), (this.timeVal = el('span', 'rc-v', '0:00.00')));
     this.lastRow = el('div', 'rc-stat rc-dim');
@@ -178,7 +183,7 @@ export class RaceUI {
     // than by going faster.
     this.dropRow = el('div', 'rc-stat rc-drop');
     this.dropRow.append(el('span', 'rc-k', 'DROPS'), (this.dropVal = el('span', 'rc-v', '0')));
-    stack.append(this.lapRow, this.timeRow, this.lastRow, this.bestRow, this.dropRow);
+    stack.append(this.lapRow, this.timeRow, this.lastRow, this.bestRow, this.ringRow, this.dropRow);
     hud.append(this.posBox, stack);
     wrap.appendChild(hud);
     this.hudEl = hud;
@@ -258,7 +263,7 @@ export class RaceUI {
       + 'drops pay 1 each whether or not you finish.'
     );
 
-    card.append(head, facts, pickLabel, this.pickEl, this.startBtn, this.noteEl);
+    card.append(head, facts, typeLabel, this.typeEl, pickLabel, this.pickEl, this.startBtn, this.noteEl);
     panel.appendChild(card);
     // Clicks inside the card must not reach the canvas, which would request
     // pointer lock and close the panel from under the player.
@@ -330,6 +335,28 @@ export class RaceUI {
   /** Rebuild the difficulty row from whatever the circuit actually offers. */
   _syncPanel() {
     const r = this.race;
+    const typeList = r?.raceTypes?.length ? r.raceTypes : [RACE_TYPES.CAR, RACE_TYPES.DRAGON];
+    const typeKey = typeList.join(',');
+    if (typeKey !== this._typeKey) {
+      this._typeKey = typeKey;
+      this.typeEl.textContent = '';
+      this._typeButtons.clear();
+      for (const id of typeList) {
+        const b = el('button', 'rc-pick');
+        b.type = 'button';
+        b.append(
+          el('span', 'rc-pick-n', String(id).toUpperCase()),
+          el('span', 'rc-pick-d', RACE_TYPE_BLURB[id] ?? '')
+        );
+        b.addEventListener('click', () => {
+          this.race?.setRaceType?.(id);
+          this._syncPanel();
+        });
+        this.typeEl.appendChild(b);
+        this._typeButtons.set(id, b);
+      }
+    }
+
     const list = r?.difficulties?.length ? r.difficulties : ['standard'];
     const key = list.join(',');
     if (key !== this._pickKey) {
@@ -364,6 +391,8 @@ export class RaceUI {
 
   _syncPicks() {
     for (const [id, b] of this._pickButtons) b.classList.toggle('on', id === this.race?.difficulty);
+    for (const [id, b] of this._typeButtons) b.classList.toggle('on', id === this.race?.raceType);
+    if (this.factVehicle) this.factVehicle.textContent = String(this.race?.raceType ?? RACE_TYPES.CAR).toUpperCase();
   }
 
   /* ------------------------------------------------------------------ */
@@ -510,10 +539,18 @@ export class RaceUI {
     this.posNum.textContent = s.place > 0 ? ordinal(s.place) : '—';
     this.posOf.textContent = `/ ${s.total}`;
     this.posBox.classList.toggle('podium', s.place > 0 && s.place <= 3);
-    this.lapVal.textContent = `${Math.max(1, s.lap)}/${s.laps}`;
+    // Completed laps, not the lap in progress: crossing the line once should read
+    // as "1 of 3 done", so the counter starts at 0 and ticks up on each crossing
+    // rather than starting at 1 and looking a lap ahead of the driver.
+    this.lapVal.textContent = `${Math.min(Math.max(0, s.lap - 1), s.laps)}/${s.laps}`;
     this.timeVal.textContent = clockText(s.clock) === '—' ? '0:00.00' : clockText(s.clock);
     this.lastVal.textContent = clockText(s.lastLap);
     this.bestVal.textContent = clockText(s.bestLap);
+
+    const ringInfo = s.rings;
+    const hasRings = !!ringInfo && (ringInfo.total ?? 0) > 0;
+    this.ringRow.classList.toggle('off', !hasRings);
+    if (hasRings) this.ringVal.textContent = `${ringInfo.done}/${ringInfo.total}`;
 
     // A circuit with nothing scattered on it should not show an empty counter.
     const hasDrops = (s.dropsTotal ?? 0) > 0;

@@ -187,7 +187,7 @@ const keybindMenu = new KeybindMenu({ root: uiRoot, bus, input });
 // F2. Edits the avatar live and publishes `character:changed`, which SaveGame
 // snapshots and MountManager listens for so the rider on a mount is the same
 // person as the one on foot.
-const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, player });
+const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, player, mounts });
 
 // Ammunition now comes out of the bag rather than a private per-weapon counter.
 loadout.setInventory?.(inventory);
@@ -256,7 +256,12 @@ const pendingTrades = [];
 function buildRemotePayload() {
   const payload = {
     credits: Math.max(0, Math.floor(economy?.credits ?? 0)),
-    state: { v: 1, at: Date.now(), inventory: inventory?.serialize?.() ?? null },
+    state: {
+      v: 1,
+      at: Date.now(),
+      inventory: inventory?.serialize?.() ?? null,
+      mounts: mounts?.serialize?.() ?? null,
+    },
   };
   if (pendingTrades.length) payload.trades = pendingTrades.splice(0, pendingTrades.length);
   return payload;
@@ -367,6 +372,17 @@ async function hydrateAccountSession() {
       inventory.deserialize(remoteInv);
     } catch (err) {
       console.warn('[account] could not restore server inventory:', err?.message ?? err);
+    }
+  }
+
+  // Mount livery + purchased powers ride along with the account so a bought
+  // upgrade or a chosen colour survives a reload on any device.
+  const remoteMounts = account.game_state?.mounts;
+  if (remoteMounts && mounts?.deserialize) {
+    try {
+      mounts.deserialize(remoteMounts);
+    } catch (err) {
+      console.warn('[account] could not restore server mounts:', err?.message ?? err);
     }
   }
 
@@ -754,6 +770,18 @@ bus.on('market:trade', ({ itemId, qty, credits, kind }) => {
 });
 bus.on('market:open', () => setGameplayBlocked('market', true));
 bus.on('market:close', () => setGameplayBlocked('market', false));
+// A mount upgrade bought at a merchant grants the power to the mount and
+// persists it (locally + backend) so it survives a reload.
+bus.on('mount:power:buy', ({ mount, power, tier }) => {
+  mounts.grantPower?.(mount || 'car', power, tier);
+  schedulePersist('mount-power');
+  scheduleRemotePersist('mount-power');
+});
+// A livery change repaints the car and persists the choice.
+bus.on('mount:livery', () => {
+  schedulePersist('mount-livery');
+  scheduleRemotePersist('mount-livery');
+});
 bus.on('keybinds:open', () => setGameplayBlocked('keybinds', true));
 bus.on('keybinds:close', () => setGameplayBlocked('keybinds', false));
 bus.on('audio:menu', ({ open }) => setGameplayBlocked('audio', !!open));

@@ -8,9 +8,9 @@
       "command": "npx",
       "args": ["-y", "@dmitriy-golub/threejs-devtools-mcp"]
     },
-    "glsl-docs": {
-      "command": "npx",
-      "args": ["-y", "glsl-docs-mcp-server"]
+    "shaders": {
+      "type": "http",
+      "url": "https://shaders.com/mcp"
     }
   }
 }

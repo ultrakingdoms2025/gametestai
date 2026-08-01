@@ -645,8 +645,33 @@ export class Minimap {
     for (let i = 0; i < list.length; i++) if (list[i].isPlayer) mine = list[i].place;
 
     for (let i = 0; i < list.length; i++) {
+      const ring = list[i];
+      if (ring.type !== 'ring') continue;
+      this._project(ring.x, ring.z, px, pz, sin, cos, scale);
+      const pulse = ring.next ? 0.5 + 0.5 * Math.sin(elapsed * 5.0) : 0;
+      ctx.save();
+      ctx.translate(_pt.x, _pt.y);
+      ctx.strokeStyle = ring.next ? '#52e9ff' : 'rgba(255,209,102,0.92)';
+      ctx.fillStyle = ring.next ? 'rgba(82,233,255,0.14)' : 'rgba(255,209,102,0.10)';
+      ctx.shadowColor = ring.next ? 'rgba(82,233,255,0.95)' : 'rgba(255,209,102,0.75)';
+      ctx.shadowBlur = ring.next ? 8 + pulse * 7 : 5;
+      ctx.lineWidth = ring.next ? 2.2 : 1.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, ring.next ? 6.2 + pulse * 1.8 : 5.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.font = '700 7px "Chakra Petch", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = ring.next ? '#d8fbff' : '#ffe4a3';
+      ctx.fillText(String(ring.number ?? ring.index + 1), 0, 0.3);
+      ctx.restore();
+    }
+
+    for (let i = 0; i < list.length; i++) {
       const r = list[i];
-      if (r.isPlayer) continue;
+      if (r.type === 'ring' || r.isPlayer) continue;
       this._project(r.x, r.z, px, pz, sin, cos, scale);
       const css = toCss(r.color, '#9fb4c4');
       ctx.save();

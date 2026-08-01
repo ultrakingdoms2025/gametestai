@@ -19,7 +19,7 @@ const TABS = [
   { id: 'sell', label: 'Sell' },
 ];
 
-const FALLBACK_CATEGORIES = ['', 'cosmetic', 'weapons', 'tools', 'health', 'spells'];
+const FALLBACK_CATEGORIES = ['', 'cosmetic', 'weapons', 'tools', 'health', 'spells', 'mounts'];
 
 const CATEGORY_COLORS = {
   cosmetic: '#d46bff',
@@ -27,6 +27,7 @@ const CATEGORY_COLORS = {
   tools:    '#ffb44a',
   health:   '#b6ff5a',
   spells:   '#ff7d3c',
+  mounts:   '#ff8a5c',
 };
 
 /**
@@ -62,6 +63,15 @@ const ACTION_ART = {
   cosmetic_headgear: ['👒', '#d46bff'],
   cosmetic_shirt:    ['👕', '#d46bff'],
   cosmetic_pants:    ['👖', '#d46bff'],
+  mount_strength_1: ['💪', '#ff8a5c'],
+  mount_strength_2: ['💪', '#ff8a5c'],
+  mount_strength_3: ['💪', '#ff8a5c'],
+  mount_shield_1: ['🛡️', '#5cc8ff'],
+  mount_shield_2: ['🛡️', '#5cc8ff'],
+  mount_shield_3: ['🛡️', '#5cc8ff'],
+  mount_power_1: ['🏎️', '#b6ff5a'],
+  mount_power_2: ['🏎️', '#b6ff5a'],
+  mount_power_3: ['🏎️', '#b6ff5a'],
 };
 
 const CATEGORY_FALLBACK_ICON = {
@@ -70,6 +80,7 @@ const CATEGORY_FALLBACK_ICON = {
   tools:    ['🔧', '#ffb44a'],
   health:   ['💊', '#b6ff5a'],
   spells:   ['✨', '#ff7d3c'],
+  mounts:   ['🏎️', '#ff8a5c'],
 };
 
 function _actionArt(gameAction, category) {
@@ -334,7 +345,12 @@ export class MarketplaceUI {
       info.appendChild(meta);
 
       const priceEl = el('div', 'mkt-price', `${preview.cost} CR`);
-      priceEl.appendChild(el('small', null, preview.grant ? `${preview.grant.qty} item${preview.grant.qty === 1 ? '' : 's'} per buy` : 'not usable'));
+      const grantLabel = preview.grant?.kind === 'upgrade'
+        ? (preview.grant.label || 'Mount upgrade')
+        : preview.grant
+          ? `${preview.grant.qty} item${preview.grant.qty === 1 ? '' : 's'} per buy`
+          : 'not usable';
+      priceEl.appendChild(el('small', null, grantLabel));
 
       const acts = el('div', 'mkt-acts');
       const buy = el('button', 'inv-btn mkt-buy', 'Buy');

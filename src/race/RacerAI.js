@@ -64,6 +64,7 @@ const WHEEL_R = 0.34;
 const WHEEL_W = 0.24;
 const AXLE_Z = 1.30;
 const HALF_TRACK = 0.80;
+const AI_DRAGON_FLIGHT = 10;
 
 /** Nine liveries, spaced round the wheel so no two rivals read as the same car. */
 const LIVERIES = [
@@ -522,6 +523,16 @@ class RacerAssets {
     this.tail = new THREE.BoxGeometry(1.30, 0.07, 0.05);
     this.tail.translate(0, 0.80, 2.10);
 
+    this.dragonBody = new THREE.SphereGeometry(1, 18, 10);
+    this.dragonHead = new THREE.SphereGeometry(1, 14, 8);
+    this.dragonWing = new THREE.BufferGeometry();
+    this.dragonWing.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, -0.4, 3.2, 0, 0.8, 0.4, 0, 1.6], 3));
+    this.dragonWing.setIndex([0, 1, 2]);
+    this.dragonWing.computeVertexNormals();
+    this.dragonTail = new THREE.ConeGeometry(0.34, 2.6, 10);
+    this.dragonTail.rotateX(Math.PI / 2);
+    this.dragonTail.translate(0, 0, 1.8);
+
     this.tyreMat = materials?.has?.('mount.tyre')
       ? materials.get('mount.tyre')
       : new THREE.MeshStandardMaterial({ color: 0x141416, roughness: 0.95, metalness: 0 });
@@ -547,7 +558,7 @@ class RacerAssets {
   }
 
   dispose() {
-    for (const g of [this.body, this.canopy, this.tyre, this.hub, this.dress, this.tail]) g?.dispose?.();
+    for (const g of [this.body, this.canopy, this.tyre, this.hub, this.dress, this.tail, this.dragonBody, this.dragonHead, this.dragonWing, this.dragonTail]) g?.dispose?.();
     this.tailMat.dispose();
   }
 }
@@ -605,6 +616,7 @@ export class RacerAI {
     this._pitch = 0;
     this._wheelSpin = 0;
     this._groundY = 0;
+    this.mode = 'car';
 
     this._build(assets);
   }
@@ -654,6 +666,33 @@ export class RacerAI {
       this.wheels.push(spin);
     }
 
+    this.dragon = new THREE.Group();
+    this.dragon.visible = false;
+    this.dragon.position.y = 0.2;
+    const dragonMat = assets.paint(this.color);
+    const bellyMat = new THREE.MeshStandardMaterial({ color: 0x2b1840, roughness: 0.7, metalness: 0.05 });
+    const dBody = new THREE.Mesh(assets.dragonBody, dragonMat);
+    dBody.scale.set(0.72, 0.42, 1.7);
+    dBody.castShadow = true;
+    this.dragon.add(dBody);
+    const dHead = new THREE.Mesh(assets.dragonHead, dragonMat);
+    dHead.position.set(0, 0.18, -1.72);
+    dHead.scale.set(0.45, 0.36, 0.58);
+    dHead.castShadow = true;
+    this.dragon.add(dHead);
+    const dTail = new THREE.Mesh(assets.dragonTail, dragonMat);
+    dTail.castShadow = true;
+    this.dragon.add(dTail);
+    for (const side of [-1, 1]) {
+      const wing = new THREE.Mesh(assets.dragonWing, bellyMat);
+      wing.scale.x = side;
+      wing.position.y = 0.12;
+      wing.castShadow = true;
+      this.dragon.add(wing);
+    }
+    this.root.add(this.dragon);
+
+    this.carVisible = [this.tilt, ...this.wheels];
     this.root.visible = false;
     this.scene.add(this.root);
   }
@@ -663,7 +702,8 @@ export class RacerAI {
    * @param {{pace:number,spread:number,grip:number,mistakes:number}} band
    * @param {{x:number,y:number,z:number,yaw:number}} slot
    */
-  reset(band, slot) {
+  reset(band, slot, mode = 'car') {
+    this.mode = mode === 'dragon' ? 'dragon' : 'car';
     // Difficulty moves the whole field; the personality decides where in it.
     const vary = (r, spread) => 1 + (r - 0.5) * 2 * spread;
     this.topSpeed = REF_TOP * band.pace * vary(this._r.top, band.spread);
@@ -674,7 +714,7 @@ export class RacerAI {
     // in the same corner look like they are racing rather than queueing.
     this.lineBias = this._r.line * 0.30;
 
-    this.position.set(slot.x, slot.y, slot.z);
+    this.position.set(slot.x, slot.y + (this.mode === 'dragon' ? AI_DRAGON_FLIGHT : 0), slot.z);
     this.heading = slot.yaw ?? 0;
     this.speed = 0;
     this.s = this.path.project(slot.x, slot.z, -1);
@@ -689,6 +729,8 @@ export class RacerAI {
     this._roll = 0;
     this._pitch = 0;
     this._groundY = slot.y;
+    for (const part of this.carVisible) part.visible = this.mode !== 'dragon';
+    this.dragon.visible = this.mode === 'dragon';
     this.root.visible = true;
     this._writeTransform();
   }
@@ -799,15 +841,21 @@ export class RacerAI {
     this.position.x = here.x + nx * this.lateral;
     this.position.z = here.z + nz * this.lateral;
 
-    // Height comes from the world, not from the centreline: the track may be
-    // banked or crest, and a car floating 40 cm over a rise is the first thing
-    // anyone notices.
-    const g = this.physics?.groundHeight?.(this.position.x, this.position.z, here.y + 3.5, 9);
-    const wantY = g === null || g === undefined ? here.y : g;
-    // Damped rather than snapped, so a probe that misses for one step (a kerb,
-    // a seam between two colliders) does not drop the car through the road.
-    this._groundY = damp(this._groundY, wantY, 12, dt);
-    this.position.y = this._groundY;
+    if (this.mode === 'dragon') {
+      const bob = Math.sin(this.s * 0.035 + this.index * 1.7) * 1.15;
+      this._groundY = here.y;
+      this.position.y = here.y + AI_DRAGON_FLIGHT + bob;
+    } else {
+      // Height comes from the world, not from the centreline: the track may be
+      // banked or crest, and a car floating 40 cm over a rise is the first thing
+      // anyone notices.
+      const g = this.physics?.groundHeight?.(this.position.x, this.position.z, here.y + 3.5, 9);
+      const wantY = g === null || g === undefined ? here.y : g;
+      // Damped rather than snapped, so a probe that misses for one step (a kerb,
+      // a seam between two colliders) does not drop the car through the road.
+      this._groundY = damp(this._groundY, wantY, 12, dt);
+      this.position.y = this._groundY;
+    }
 
     /* ---- presentation -------------------------------------------------- */
     /* Point the body along the direction it is actually travelling.
@@ -846,6 +894,10 @@ export class RacerAI {
     const yawRate = turn / Math.max(dt, 1e-4);
     this._roll = damp(this._roll, clamp(-yawRate * this.speed * 0.0042, -0.11, 0.11), 5, dt);
     this._pitch = damp(this._pitch, clamp((target - this.speed) * -0.006, -0.05, 0.05), 5, dt);
+    if (this.mode === 'dragon') {
+      this._pitch = damp(this._pitch, clamp((target - this.speed) * -0.012, -0.18, 0.18), 4, dt);
+      this._roll = damp(this._roll, clamp(-yawRate * this.speed * 0.009, -0.42, 0.42), 4, dt);
+    }
     this._wheelSpin += (this.speed / WHEEL_R) * dt;
 
     this._writeTransform();
@@ -855,7 +907,14 @@ export class RacerAI {
     this.root.position.copy(this.position);
     this.root.rotation.y = this.heading;
     this.tilt.rotation.set(this._pitch, 0, this._roll);
-    for (let i = 0; i < 4; i++) this.wheels[i].rotation.x = this._wheelSpin;
+    if (this.mode !== 'dragon') for (let i = 0; i < 4; i++) this.wheels[i].rotation.x = this._wheelSpin;
+    else if (this.dragon) {
+      const flap = Math.sin(this._wheelSpin * 0.18 + this.index);
+      for (let i = 0; i < this.dragon.children.length; i++) {
+        const child = this.dragon.children[i];
+        if (child.geometry?.type === 'BufferGeometry') child.rotation.z = (child.scale.x < 0 ? -1 : 1) * (0.15 + flap * 0.18);
+      }
+    }
   }
 
   dispose() {
@@ -892,7 +951,8 @@ export class RacerField {
    * @param {number} count how many AI cars, capped at the livery count
    * @param {number} seed
    */
-  build(path, count, seed = 1) {
+  build(path, count, seed = 1, mode = 'car') {
+    this.mode = mode === 'dragon' ? 'dragon' : 'car';
     this.path = path;
     if (!this.assets) this.assets = new RacerAssets(this.materials);
     const want = Math.min(Math.max(0, count | 0), LIVERIES.length);
@@ -922,10 +982,11 @@ export class RacerField {
   }
 
   /** @param {string} difficulty @param {Array<object>} slots one grid slot per racer */
-  reset(difficulty, slots) {
+  reset(difficulty, slots, mode = this.mode ?? 'car') {
+    this.mode = mode === 'dragon' ? 'dragon' : 'car';
     const band = DIFFICULTIES[difficulty] ?? DIFFICULTIES.standard;
     for (let i = 0; i < this.racers.length; i++) {
-      this.racers[i].reset(band, slots[i] ?? { x: 0, y: 0, z: 0, yaw: 0 });
+      this.racers[i].reset(band, slots[i] ?? { x: 0, y: 0, z: 0, yaw: 0 }, this.mode);
     }
   }
 

@@ -55,6 +55,7 @@ function readFileAsDataUrl(file: File): Promise<string> {
 
 const CATEGORY_COLORS: Record<MarketplaceCategory, string> = {
   cosmetic: '#d46bff', weapons: '#52e9ff', tools: '#ffb44a', health: '#b6ff5a', spells: '#ff7d3c',
+  mounts: '#ff8a5c',
 };
 
 const ACTION_ICONS: Record<string, [string, string]> = {
@@ -86,6 +87,15 @@ const ACTION_ICONS: Record<string, [string, string]> = {
   cosmetic_headgear: ['👒', '#d46bff'],
   cosmetic_shirt:    ['👕', '#d46bff'],
   cosmetic_pants:    ['👖', '#d46bff'],
+  mount_strength_1: ['💪', '#ff8a5c'],
+  mount_strength_2: ['💪', '#ff8a5c'],
+  mount_strength_3: ['💪', '#ff8a5c'],
+  mount_shield_1:   ['🛡️', '#ff8a5c'],
+  mount_shield_2:   ['🛡️', '#ff8a5c'],
+  mount_shield_3:   ['🛡️', '#ff8a5c'],
+  mount_power_1:    ['🏎️', '#ff8a5c'],
+  mount_power_2:    ['🏎️', '#ff8a5c'],
+  mount_power_3:    ['🏎️', '#ff8a5c'],
 };
 
 const CATEGORY_FALLBACK_ART: Record<MarketplaceCategory, [string, string]> = {
@@ -94,6 +104,7 @@ const CATEGORY_FALLBACK_ART: Record<MarketplaceCategory, [string, string]> = {
   tools:    ['🔧', '#ffb44a'],
   health:   ['💊', '#b6ff5a'],
   spells:   ['✨', '#ff7d3c'],
+  mounts:   ['🏎️', '#ff8a5c'],
 };
 
 function resolveArt(name: string, category: MarketplaceCategory, gameAction?: string): [string, string] {

@@ -194,6 +194,19 @@ export class MountManager {
     this._lastBoost = false;
     this._landingFor = null;
     this._unlocked = new Set(['hoverboard', 'dragon', 'car', 'horse', 'eagle']);
+    /**
+     * Player car livery, 0xRRGGBB per channel. Applied to the car mount on
+     * create and re-applied whenever it is (re)built. Persisted via serialize.
+     * @type {{paint?:number, wheel?:number}}
+     */
+    this._livery = {};
+    /**
+     * Purchased mount upgrades, keyed by mount id then by power id
+     * (strength | shield | power) → tier level (1..N). Bought through the
+     * marketplace and turned into stat multipliers by `_applyPowers`.
+     * @type {Object<string, Object<string, number>>}
+     */
+    this._powers = {};
 
     /** Reused control block - the mount API takes it every fixed step. */
     this._ctrl = { throttle: 0, strafe: 0, yaw: 0, pitch: 0, up: 0, boost: false };
@@ -508,14 +521,80 @@ export class MountManager {
       materials: this.materials,
       camera: this.camera,
     };
-    if (id === 'hoverboard') return new Hoverboard(ctx);
-    if (id === 'dragon') return new Dragon(ctx);
-    if (id === 'car') return new Car(ctx);
+    let mount = null;
+    if (id === 'hoverboard') mount = new Hoverboard(ctx);
+    else if (id === 'dragon') mount = new Dragon(ctx);
+    else if (id === 'car') mount = new Car(ctx);
     // The eagle needs the player: beating its wings costs stamina, and stamina
     // lives on the player rather than on the mount.
-    if (id === 'horse') return new Horse(ctx);
-    if (id === 'eagle') return new Eagle({ ...ctx, player: this.player });
-    return null;
+    else if (id === 'horse') mount = new Horse(ctx);
+    else if (id === 'eagle') mount = new Eagle({ ...ctx, player: this.player });
+    if (mount) {
+      if (id === 'car') mount.applyCustomization?.(this._livery);
+      this._applyPowers(id, mount);
+    }
+    return mount;
+  }
+
+  /* ================================================================ */
+  /* Customisation & powers                                            */
+  /* ================================================================ */
+
+  /**
+   * Set the player's car livery and apply it live if the car exists.
+   * @param {{paint?:number|string, wheel?:number|string}} livery
+   */
+  setLivery(livery = {}) {
+    const norm = (c) => (typeof c === 'string' ? parseInt(c.replace('#', ''), 16) : c);
+    if (livery.paint != null) this._livery.paint = norm(livery.paint);
+    if (livery.wheel != null) this._livery.wheel = norm(livery.wheel);
+    this._mounts.get('car')?.applyCustomization?.(this._livery);
+    this.bus?.emit?.('mount:livery', { ...this._livery });
+  }
+
+  /** Current car livery (copy). */
+  getLivery() {
+    return { ...this._livery };
+  }
+
+  /**
+   * Grant a mount power tier. Powers stack per mount:
+   *   strength → durability/mass, shield → damage resistance, power → top speed/boost.
+   * @param {string} mountId
+   * @param {'strength'|'shield'|'power'} power
+   * @param {number} tier 1-based level (a higher tier replaces a lower one)
+   */
+  grantPower(mountId, power, tier = 1) {
+    if (!mountId || !power) return;
+    const bag = this._powers[mountId] || (this._powers[mountId] = {});
+    bag[power] = Math.max(bag[power] || 0, tier);
+    const mount = this._mounts.get(mountId);
+    if (mount) this._applyPowers(mountId, mount);
+    this.bus?.emit?.('mount:powers', { mountId, powers: { ...bag } });
+  }
+
+  /** Owned powers for a mount (copy), or all mounts if no id is given. */
+  getPowers(mountId) {
+    if (mountId) return { ...(this._powers[mountId] || {}) };
+    const out = {};
+    for (const k in this._powers) out[k] = { ...this._powers[k] };
+    return out;
+  }
+
+  /**
+   * Turn owned power tiers into stat multipliers on a mount instance. Mounts
+   * expose an optional `applyPowers({strength,shield,power})` hook; the ones
+   * that don't simply ignore the upgrade. Tiers are small integers, so each
+   * tier is a modest bump rather than a doubling.
+   */
+  _applyPowers(mountId, mount) {
+    const bag = this._powers[mountId];
+    if (!bag || !mount?.applyPowers) return;
+    mount.applyPowers({
+      strength: bag.strength || 0,
+      shield: bag.shield || 0,
+      power: bag.power || 0,
+    });
   }
 
   /**
@@ -1250,6 +1329,8 @@ export class MountManager {
     return {
       unlocked: [...this._unlocked],
       active: this._active?.id ?? null,
+      livery: { ...this._livery },
+      powers: this.getPowers(),
     };
   }
 
@@ -1262,6 +1343,21 @@ export class MountManager {
       // This is the same reason the car was force-added when it landed, and it
       // now generalises rather than needing a line per mount.
       for (const id of known) this._unlocked.add(id);
+    }
+    if (data.livery && typeof data.livery === 'object') {
+      if (data.livery.paint != null) this._livery.paint = data.livery.paint;
+      if (data.livery.wheel != null) this._livery.wheel = data.livery.wheel;
+      this._mounts.get('car')?.applyCustomization?.(this._livery);
+    }
+    if (data.powers && typeof data.powers === 'object') {
+      for (const mid in data.powers) {
+        const bag = data.powers[mid];
+        if (bag && typeof bag === 'object') {
+          this._powers[mid] = { ...bag };
+          const mount = this._mounts.get(mid);
+          if (mount) this._applyPowers(mid, mount);
+        }
+      }
     }
     // Deferred: the world a save restores has to be live before a mount can be
     // placed in it, so the caller finishes this with `restorePending()`.

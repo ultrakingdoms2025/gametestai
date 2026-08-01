@@ -234,11 +234,17 @@ export class MountWheel {
     if (this.input?.textCaptured) return;
     e.preventDefault();
     if (e.type === 'keydown') {
-      if (!this._open) this.open();
+      // Auto-repeat while the key is held is not a fresh press - ignoring it is
+      // what lets the hold-to-aim gesture coexist with the tap-to-toggle one.
+      if (e.repeat) return;
+      // A tap while open shuts the wheel: pressing M is a true toggle now, so a
+      // roster left up by an earlier tap closes on the next M rather than only
+      // on Esc or a click.
+      if (this._open) this.close();
+      else this.open();
     } else {
-      /* Release commits. A tap with no aim leaves the wheel up instead of
-       * closing it, so the key works as a toggle for anyone who wants to read
-       * the roster rather than flick through it. */
+      /* Release commits an aimed selection. A tap with no aim leaves the wheel
+       * up; the next M press (handled above) closes it, so M toggles. */
       if (this._sel >= 0) this._commit(this._sel);
       else if (this._moved) this.close();
     }

@@ -232,13 +232,43 @@ export class Marketplace {
     return null;
   }
 
+  /**
+   * A mount upgrade is not a bag item: it grants a purchased power to a mount
+   * instead of stock. Detected by its action effect so the catalog stays the
+   * single source of truth.
+   * @param {any} item
+   * @returns {{mount:string, power:string, tier:number}|null}
+   */
+  _mountPowerGrant(item) {
+    const config = item?.action_config ?? {};
+    if (config?.effect !== 'grant_mount_power') return null;
+    const mount = typeof config.mount === 'string' ? config.mount : 'car';
+    const power = typeof config.power === 'string' ? config.power : null;
+    if (!power) return null;
+    const tier = Math.max(1, Math.floor(Number(config.tier) || 1));
+    return { mount, power, tier };
+  }
+
   preview(item) {
-    if (!item || !this.inventory || !this.economy) {
+    if (!item || !this.economy) {
       return { ok: false, reason: 'unavailable', stock: 0, grant: null, cost: 0 };
     }
-    const grant = this._purchaseGrant(item);
     const stock = item.quantity == null ? Infinity : Math.max(0, Math.floor(Number(item.quantity) || 0));
     const cost = Math.max(1, Math.floor(Number(item.cost_buy) || 0));
+
+    // Mount upgrade: needs credits and stock, but no bag room.
+    const power = this._mountPowerGrant(item);
+    if (power) {
+      const grant = { qty: 1, kind: 'upgrade', label: 'Mount upgrade' };
+      if (stock <= 0) return { ok: false, reason: 'stock', stock, grant, power, cost };
+      if (this.credits < cost) return { ok: false, reason: 'credits', stock, grant, power, cost };
+      return { ok: true, stock, grant, power, cost };
+    }
+
+    if (!this.inventory) {
+      return { ok: false, reason: 'unavailable', stock, grant: null, cost };
+    }
+    const grant = this._purchaseGrant(item);
     if (!grant) return { ok: false, reason: 'unsupported', stock, grant: null, cost };
     if (stock <= 0) return { ok: false, reason: 'stock', stock, grant, cost };
     if (this.credits < cost) return { ok: false, reason: 'credits', stock, grant, cost };
@@ -255,12 +285,37 @@ export class Marketplace {
    */
   buy(itemId) {
     const item = this._catalog.find((entry) => entry.id === itemId);
-    if (!item || !this.inventory || !this.economy) return { ok: false, reason: 'unavailable' };
+    if (!item || !this.economy) return { ok: false, reason: 'unavailable' };
 
     const preview = this.preview(item);
-    if (!preview.ok || !preview.grant) return { ok: false, reason: preview.reason ?? 'unavailable' };
+    if (!preview.ok) return { ok: false, reason: preview.reason ?? 'unavailable' };
 
     const cost = preview.cost;
+
+    // Mount upgrade: spend, announce, let MountManager apply the stat. No bag.
+    if (preview.power) {
+      if (!this.economy.spend(cost, 'market')) return { ok: false, reason: 'credits' };
+      if (item.quantity != null) item.quantity = Math.max(0, item.quantity - 1);
+      this.bus?.emit('mount:power:buy', {
+        mount: preview.power.mount,
+        power: preview.power.power,
+        tier: preview.power.tier,
+        catalogId: item.id,
+        cost,
+      });
+      this.bus?.emit('market:trade', {
+        itemId: item.source_key || item.id,
+        catalogId: item.id,
+        qty: 1,
+        credits: -cost,
+        kind: 'buy',
+      });
+      this.bus?.emit('hud:notify', { text: `Bought ${item.name}`, tone: 'info' });
+      this.ui?.refresh?.();
+      return { ok: true, qty: 1, cost };
+    }
+
+    if (!preview.grant || !this.inventory) return { ok: false, reason: preview.reason ?? 'unavailable' };
     const grant = preview.grant;
 
     if (!this.economy.spend(cost, 'market')) return { ok: false, reason: 'credits' };

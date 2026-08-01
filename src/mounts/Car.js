@@ -784,6 +784,14 @@ export class Car {
     this._airborne = false;
     this._boost = 0;
     this._boostActive = false;
+    /**
+     * Purchased-power multipliers (see MountManager.grantPower). 1 == stock.
+     * `_powerMul` lifts top/boost speed, `_accelMul` sharpens throttle response,
+     * `_shieldTier` is read by the collision code to soften impacts.
+     */
+    this._powerMul = 1;
+    this._accelMul = 1;
+    this._shieldTier = 0;
     this._braking = false;
     this._reversing = false;
     this._bodyBob = 0;
@@ -829,12 +837,21 @@ export class Car {
 
   _buildModel() {
     const M = this.materials;
-    const paint = M.get('mount.carpaint');
+    // The body paint and the alloy are shared singletons - the AI grid uses the
+    // same library - so a per-car livery has to run on *clones*. Cloning a
+    // MeshStandard copies the map references (no new textures, cheap) and gives
+    // this one car its own `.color` to tint. `_paintMat`/`_wheelMat` are what the
+    // customisation writes into; everything else stays on the shared material.
+    this._paintMat = M.get('mount.carpaint').clone();
+    this._wheelMat = M.get('mount.alloy').clone();
+    const paint = this._paintMat;
     const trim = M.get('mount.cartrim');
     const alloy = M.get('mount.alloy');
     const tyre = M.get('mount.tyre');
     const cabin = M.get('mount.cabin');
     const glass = M.get('mount.carglass');
+    // A livery chosen before the model existed applies now.
+    if (this._livery) this.applyCustomization(this._livery);
 
     this.root = new THREE.Group();
     this.root.name = 'car';
@@ -970,11 +987,11 @@ export class Car {
       t.castShadow = true;
       t.receiveShadow = true;
       spin.add(t);
-      const r = new THREE.Mesh(this._geo.rim, alloy);
+      const r = new THREE.Mesh(this._geo.rim, this._wheelMat);
       r.castShadow = true;
       r.scale.x = sx; // outer face outboard on both sides
       spin.add(r);
-      const b = new THREE.Mesh(sx < 0 ? this._geo.brakeL : this._geo.brakeR, alloy);
+      const b = new THREE.Mesh(sx < 0 ? this._geo.brakeL : this._geo.brakeR, this._wheelMat);
       b.scale.x = sx;
       steer.add(b); // brakes do not spin with the wheel
 
@@ -1351,14 +1368,14 @@ export class Car {
     this._braking = braking;
     this._reversing = this.speed < -0.4;
     let targetSpeed = 0;
-    if (throttle > 0) targetSpeed = lerp(CRUISE_SPEED, BOOST_SPEED, this._boost);
+    if (throttle > 0) targetSpeed = lerp(CRUISE_SPEED, BOOST_SPEED, this._boost) * this._powerMul;
     else if (throttle < 0) targetSpeed = braking ? 0 : -REVERSE_SPEED;
 
     // Airborne wheels have nothing to push against: coast only.
     const grip = this._airborne ? 0.12 : 1;
-    const rate = throttle === 0
+    const rate = (throttle === 0
       ? 0.55
-      : braking ? 5.5 : (Math.abs(targetSpeed) > v ? (1.15 + this._boost * 0.55) : 3.0);
+      : braking ? 5.5 : (Math.abs(targetSpeed) > v ? (1.15 + this._boost * 0.55) : 3.0)) * this._accelMul;
     const prevSpeed = this.speed;
     this.speed = damp(this.speed, targetSpeed, rate * grip, dt);
     if (Math.abs(this.speed) < 0.03 && throttle === 0) this.speed = 0;
@@ -1864,12 +1881,46 @@ export class Car {
     return out.set(_dp1.x, (g === null ? this._groundY : g) + 0.05, _dp1.z);
   }
 
+  /**
+   * Apply a player livery. Tints the *cloned* body paint and alloy, so the
+   * shared material library and the AI grid keep their factory colours. Fields
+   * are independent 0xRRGGBB values (number or '#rrggbb'); a missing one is left
+   * untouched. Safe to call before or after the model is built.
+   * @param {{paint?:number|string, wheel?:number|string}} livery
+   */
+  applyCustomization(livery) {
+    if (!livery) return;
+    this._livery = { ...(this._livery || {}), ...livery };
+    if (this._paintMat && this._livery.paint != null) this._paintMat.color.set(this._livery.paint);
+    if (this._wheelMat && this._livery.wheel != null) this._wheelMat.color.set(this._livery.wheel);
+  }
+
+  /**
+   * Apply purchased mount powers. Tiers are small integers (0 == none); each
+   * tier is a modest, stacking bump so a fully-kitted car is quick but not
+   * broken. `power` lifts top speed, `strength` sharpens acceleration, `shield`
+   * is stored for the collision code to read.
+   * @param {{strength?:number, shield?:number, power?:number}} tiers
+   */
+  applyPowers({ strength = 0, shield = 0, power = 0 } = {}) {
+    this._powerMul = 1 + Math.max(0, power) * 0.12;   // +12% top speed / tier
+    this._accelMul = 1 + Math.max(0, strength) * 0.10; // +10% throttle bite / tier
+    this._shieldTier = Math.max(0, shield);
+  }
+
+  /** Purchased shield tier, for collision damping. */
+  get shieldTier() {
+    return this._shieldTier;
+  }
+
   dispose() {
     this.bus?.off?.('world:changed', this._onWorldChanged);
     this.root.removeFromParent();
     this._lightGroup.removeFromParent();
     this._spot.dispose?.();
     for (const key in this._geo) this._geo[key].dispose();
+    this._paintMat?.dispose();
+    this._wheelMat?.dispose();
     this._headMat.dispose();
     this._brakeMat.dispose();
     this._accentMat.dispose();

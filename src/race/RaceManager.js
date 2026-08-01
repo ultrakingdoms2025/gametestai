@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { TrackPath, RacerField, DIFFICULTIES, makeTestCircuit } from './RacerAI.js';
 import { Pickups, PICKUP_VALUE } from './Pickups.js';
 import { Contacts } from './Contacts.js';
+import { RaceRings, buildDragonRingCheckpoints, DRAGON_RACE } from './RaceRings.js';
 
 /**
  * The race: state machine, lap validation, placement and prize money.
@@ -53,6 +54,7 @@ export const MAX_RACERS = 10;
  * catch and a field to hold off whatever band is chosen.
  */
 export const PLAYER_GRID_SLOT = 4;
+export const RACE_TYPES = { CAR: 'car', DRAGON: 'dragon' };
 
 export const RACE_STATE = {
   IDLE: 'idle',
@@ -93,6 +95,8 @@ const FINISH_GRACE = 25;
 const DROP_SPACING_M = 40;
 
 const _v = new THREE.Vector3();
+const _seat = new THREE.Vector3();
+const _clampSample = { x: 0, y: 0, z: 0, width: 12, tx: 0, tz: -1 };
 
 /** Squared distance from point `p` to the segment `a`->`b`, in XZ. */
 function segDistSq(ax, az, bx, bz, px, pz) {
@@ -123,6 +127,7 @@ export class RaceManager {
      * they reset per race rather than per world build, and so the synthetic
      * test circuit gets them too. */
     this.pickups = new Pickups({ scene, bus, materials });
+    this.rings = new RaceRings({ scene });
     /* Car-to-car contact. The rivals have no colliders by design, so without
      * this the player drives through them - see the note in Contacts.js. */
     this.contacts = new Contacts({ bus, path: null });
@@ -134,6 +139,8 @@ export class RaceManager {
     this.path = null;
     this.difficulty = 'standard';
     this.difficulties = ['standard'];
+    this.raceType = RACE_TYPES.CAR;
+    this.raceTypes = [RACE_TYPES.CAR, RACE_TYPES.DRAGON];
     this.lapCount = 3;
 
     this.field = new RacerField({ scene, physics, materials });
@@ -147,6 +154,8 @@ export class RaceManager {
     this.circuit = null;
     /** @type {Array<object>|null} final classification once the flag is out */
     this.results = null;
+    this._baseCheckpoints = [];
+    this._ringCheckpoints = [];
 
     this.clock = 0;
     this._countdown = 0;
@@ -184,6 +193,16 @@ export class RaceManager {
     return !!(this.path && this.path.valid && this.track?.checkpoints?.length >= 3);
   }
 
+  get dragonRace() {
+    return this.raceType === RACE_TYPES.DRAGON;
+  }
+
+  setRaceType(type) {
+    this.raceType = type === RACE_TYPES.DRAGON ? RACE_TYPES.DRAGON : RACE_TYPES.CAR;
+    if (this.track && this.state === RACE_STATE.IDLE) this._prepareRaceCheckpoints();
+    return this.raceType;
+  }
+
   /**
    * Read the world's race contract, if it publishes one.
    *
@@ -207,6 +226,7 @@ export class RaceManager {
       this.entries.length = 0;
       this.markers.length = 0;
       this.field.setVisible(false);
+      this.rings.clear();
       return false;
     }
     // The live world, kept alongside the normalised reading of it - see the
@@ -218,6 +238,8 @@ export class RaceManager {
       difficulties: [...this.difficulties],
       checkpoints: this.track.checkpoints.length,
       synthetic: !!this.track.synthetic,
+      raceType: this.raceType,
+      raceTypes: [...this.raceTypes],
     });
     return true;
   }
@@ -246,6 +268,8 @@ export class RaceManager {
       difficulties: [...this.difficulties],
       checkpoints: this.track.checkpoints.length,
       synthetic: true,
+      raceType: this.raceType,
+      raceTypes: [...this.raceTypes],
     });
     return true;
   }
@@ -274,6 +298,7 @@ export class RaceManager {
     if (this.racing) return false;
 
     this.difficulty = DIFFICULTIES[difficulty] ? difficulty : (this.difficulties[0] ?? 'standard');
+    if (!this.raceTypes.includes(this.raceType)) this.raceType = RACE_TYPES.CAR;
 
     /* Let the circuit reconfigure itself for this difficulty.
      *
@@ -300,16 +325,17 @@ export class RaceManager {
       ps = (ps * 1664525 + 1013904223) >>> 0;
       return ps / 4294967296;
     };
-    this.pickups.scatter(this.path, this.plannedDrops, prnd);
+    this._prepareRaceCheckpoints();
+    this.pickups.scatter(this.path, this.dragonRace ? 0 : this.plannedDrops, prnd);
 
     const grid = this.track.startGrid;
     const aiCount = Math.min(MAX_RACERS - 1, Math.max(0, grid.length - 1));
-    this.field.build(this.path, aiCount, this._seed);
+    this.field.build(this.path, aiCount, this._seed, this.raceType);
 
     // Slots: the player takes PLAYER_GRID_SLOT, the AI fill round it in order.
     const slots = [];
     for (let i = 0; i < grid.length; i++) if (i !== PLAYER_GRID_SLOT) slots.push(grid[i]);
-    this.field.reset(this.difficulty, slots);
+    this.field.reset(this.difficulty, slots, this.raceType);
 
     const playerSlot = grid[Math.min(PLAYER_GRID_SLOT, grid.length - 1)];
     this._placePlayer(playerSlot);
@@ -369,6 +395,7 @@ export class RaceManager {
     this.order.length = 0;
     this.markers.length = 0;
     this.field.setVisible(false);
+    this.rings.clear();
     this._goHold = 0;
     this._setLights(0);
     this.bus?.emit('race:aborted', { reason });
@@ -381,6 +408,7 @@ export class RaceManager {
     this.results = null;
     this.field.setVisible(false);
     this.markers.length = 0;
+    this.rings.clear();
   }
 
   /**
@@ -407,6 +435,8 @@ export class RaceManager {
       ready: this.ready,
       difficulty: this.difficulty,
       difficulties: this.difficulties,
+      raceType: this.raceType,
+      raceTypes: [...this.raceTypes],
       laps: this.lapCount,
       clock: this.clock,
       countdown: Math.max(0, Math.ceil(this._countdown)),
@@ -422,6 +452,7 @@ export class RaceManager {
       dropsTotal: this.pickups.items.length,
       lights: Math.max(0, this._lit),
       lightsOf: START_LIGHTS,
+      rings: this.dragonRace ? this._ringProgress() : null,
     };
   }
 
@@ -437,6 +468,7 @@ export class RaceManager {
     // Spin and bob regardless of state, so a scattered circuit is alive during
     // the countdown and after the flag rather than only while racing.
     this.pickups.update(dt);
+    this.rings.update(this.clock);
     if (this.state === RACE_STATE.IDLE || this.state === RACE_STATE.FINISHED) return;
     if (!this.ready) return;
 
@@ -453,12 +485,14 @@ export class RaceManager {
         : Math.min(START_LIGHTS, Math.floor((elapsed - LIGHT_LEAD_S) / LIGHT_STEP_S) + 1);
       this._setLights(lit);
       this._holdPlayerOnGrid();
+      if (this.dragonRace) this._clampPlayerDragon();
       if (this._countdown <= 0) {
         this.state = RACE_STATE.RACING;
         this.clock = 0;
         // See `_seedSweep`: being held on the grid for the whole start
         // procedure is what makes every racer's position trustworthy at
         // exactly this instant.
+        if (this.dragonRace) this._clampPlayerDragon();
         this._syncPlayerEntry();
         this._seedSweep();
         // Lights out. All five go dark together - that is the signal, not the
@@ -468,6 +502,7 @@ export class RaceManager {
         this.bus?.emit('race:countdown', { count: 0, difficulty: this.difficulty });
         this.bus?.emit('race:started', {
           difficulty: this.difficulty,
+          raceType: this.raceType,
           laps: this.lapCount,
           racers: this.entries.length,
         });
@@ -482,6 +517,7 @@ export class RaceManager {
       }
     }
 
+    if (this.dragonRace) this._clampPlayerDragon();
     this._syncPlayerEntry();
     // The AI need no sync: `RacerAI` owns its own `s`, `lateral` and `speed`,
     // which is the whole point of driving them along the centreline.
@@ -494,7 +530,7 @@ export class RaceManager {
     if (running) {
       const car = this.mounts?.active;
       this.contacts.setPath(this.path);
-      this.contacts.resolve(car?.id === 'car' ? car : null, this.field.racers, dt, this.player);
+      this.contacts.resolve(!this.dragonRace && car?.id === 'car' ? car : null, this.field.racers, dt, this.player);
       // The player may have been moved by a contact; re-read before scoring.
       if (this.contacts.hits) this._syncPlayerEntry();
     }
@@ -588,6 +624,22 @@ export class RaceManager {
       pts[i] = [p.x, p.z];
     }
     this.circuit = pts;
+    this._baseCheckpoints = t.checkpoints.map((c) => ({ ...c }));
+    this._prepareRaceCheckpoints();
+  }
+
+  _prepareRaceCheckpoints() {
+    if (!this.track) return;
+    if (this.dragonRace) {
+      this._ringCheckpoints = buildDragonRingCheckpoints(this.path);
+      this.track.checkpoints = this._ringCheckpoints.length >= 3
+        ? this._ringCheckpoints
+        : this._baseCheckpoints.map((c) => ({ ...c }));
+      this.rings.setCheckpoints(this._ringCheckpoints);
+    } else {
+      this.track.checkpoints = this._baseCheckpoints.map((c) => ({ ...c }));
+      this.rings.clear();
+    }
   }
 
   /** Two columns behind checkpoint 0, staggered, using the centreline's own frame. */
@@ -624,14 +676,23 @@ export class RaceManager {
    */
   _placePlayer(slot) {
     const mounts = this.mounts;
-    if (mounts && mounts.active?.id !== 'car') mounts.summon('car');
-    const car = mounts?.active;
-    if (car && car.id === 'car') {
+    const mountId = this.dragonRace ? 'dragon' : 'car';
+    if (mounts && mounts.active?.id !== mountId) mounts.summon(mountId);
+    const mount = mounts?.active;
+    if (mount && mount.id === mountId) {
       const y = this.physics?.groundHeight?.(slot.x, slot.z, slot.y + 3, 8);
-      _v.set(slot.x, y === null || y === undefined ? slot.y : y, slot.z);
-      car.spawn(_v, slot.yaw);
+      const baseY = y === null || y === undefined ? slot.y : y;
+      _v.set(slot.x, this.dragonRace ? baseY + DRAGON_RACE.flightHeight : baseY, slot.z);
+      mount.spawn(_v, slot.yaw);
+      if (this.dragonRace) {
+        mount.position.copy(_v);
+        mount.state = 'flying';
+        mount._groundY = baseY;
+        mount._vy = 0;
+        mount.velocity?.set?.(0, 0, 0);
+      }
     } else if (this.player?.teleport) {
-      this.player.teleport(_v.set(slot.x, slot.y, slot.z), slot.yaw);
+      this.player.teleport(_v.set(slot.x, this.dragonRace ? slot.y + DRAGON_RACE.flightHeight : slot.y, slot.z), slot.yaw);
     }
     // The car steers toward the look direction, so a stale yaw would have it
     // driving off the grid the instant the lights go out. `yaw` is read-only on
@@ -643,21 +704,68 @@ export class RaceManager {
 
   /** Hold everything still until the flag. */
   _holdPlayerOnGrid() {
-    const car = this.mounts?.active;
+    const mount = this.mounts?.active;
     const slot = this._gridSlot;
-    if (!car || !slot || car.id !== 'car') return;
-    car.position.x = slot.x;
-    car.position.z = slot.z;
-    car.speed = 0;
-    car.velocity.set(0, 0, 0);
-    car.heading = slot.yaw;
+    if (!mount || !slot) return;
+    if (!this.dragonRace && mount.id !== 'car') return;
+    if (this.dragonRace && mount.id !== 'dragon') return;
+    const baseY = this.physics?.groundHeight?.(slot.x, slot.z, slot.y + 3, 8) ?? slot.y;
+    mount.position.x = slot.x;
+    mount.position.z = slot.z;
+    if (this.dragonRace) {
+      mount.position.y = baseY + DRAGON_RACE.flightHeight;
+      mount.state = 'flying';
+      mount._groundY = baseY;
+      mount._vy = 0;
+    }
+    mount.speed = 0;
+    mount.velocity?.set?.(0, 0, 0);
+    mount.heading = slot.yaw;
+    mount.getSeat?.(_seat);
+    if (this.player?.position) this.player.position.copy(_seat);
+    this.player?.setYaw?.(slot.yaw);
+  }
+
+  _clampPlayerDragon() {
+    if (!this.dragonRace || !this.path?.valid) return;
+    const dragon = this.mounts?.active;
+    if (!dragon || dragon.id !== 'dragon') return;
+    const pos = dragon.position;
+    const s = this.path.project(pos.x, pos.z, -1);
+    this.path.sample(s, _clampSample);
+    const half = Math.max(2.5, _clampSample.width * 0.5 - 1.8);
+    const lat = THREE.MathUtils.clamp(this.path.lateralOf(pos.x, pos.z, s), -half, half);
+    const nx = -_clampSample.tz;
+    const nz = _clampSample.tx;
+    const oldX = pos.x;
+    const oldY = pos.y;
+    const oldZ = pos.z;
+    pos.x = _clampSample.x + nx * lat;
+    pos.z = _clampSample.z + nz * lat;
+    const minY = _clampSample.y + DRAGON_RACE.minFlight;
+    const maxY = _clampSample.y + DRAGON_RACE.maxFlight;
+    pos.y = THREE.MathUtils.clamp(pos.y, minY, maxY);
+    if (pos.x !== oldX || pos.z !== oldZ) {
+      dragon.velocity.x = 0;
+      dragon.velocity.z = 0;
+      dragon.speed = Math.min(dragon.speed ?? 0, 10);
+    }
+    if (pos.y !== oldY) {
+      dragon.velocity.y = 0;
+      dragon._vy = 0;
+    }
+    dragon.state = 'flying';
+    dragon._groundY = _clampSample.y;
+    dragon.getSeat?.(_seat);
+    if (this.player?.position) this.player.position.copy(_seat);
+    if (this.player?.velocity && dragon.velocity) this.player.velocity.copy(dragon.velocity);
   }
 
   _buildEntries(playerSlot) {
     this.entries.length = 0;
     const mk = (o) => Object.assign(o, {
       lap: 1,
-      nextCp: 1,
+      nextCp: this.dragonRace ? 0 : 1,
       cpDone: 0,
       finished: false,
       finishTime: 0,
@@ -731,7 +839,7 @@ export class RaceManager {
     // Only while actually racing: rolling over the circuit before the lights
     // go out should not empty it.
     if (this.state === RACE_STATE.RACING && typeof prevS === 'number') {
-      this.pickups.claim(e.id, prevS, e.s, e.lateral, true);
+      if (!this.dragonRace) this.pickups.claim(e.id, prevS, e.s, e.lateral, true);
     }
   }
 
@@ -756,13 +864,20 @@ export class RaceManager {
     if (d2 > cp.radius * cp.radius) return;
     // A generous vertical gate still rejects a bridge crossing over the line
     // it is not part of, without demanding the world get checkpoint heights
-    // exactly right.
-    if (Math.abs((e.position.y ?? cp.y) - cp.y) > 14) return;
+    // exactly right. Dragon rings are tighter because the player must fly through them.
+    const yGap = Math.abs((e.position.y ?? cp.y) - cp.y);
+    if (this.dragonRace ? yGap > cp.radius * 0.9 : yGap > 14) return;
 
+    const passed = e.nextCp;
     e.cpDone++;
     e.nextCp = (e.nextCp + 1) % cps.length;
+    if (this.dragonRace && e.isPlayer) {
+      this.rings.pass(passed, e.nextCp);
+      this.bus?.emit('race:ring', { ring: passed + 1, total: cps.length, next: e.nextCp + 1 });
+    }
 
-    if (e.nextCp !== 1) return; // mid-lap checkpoint
+    const lapCursor = this.dragonRace ? 0 : 1;
+    if (e.nextCp !== lapCursor) return; // mid-lap checkpoint
 
     /* --- checkpoint 0 passed in order: that is a completed lap --- */
     const lapTime = this.clock - e._lapStart;
@@ -773,6 +888,7 @@ export class RaceManager {
     if (e.lap > this.lapCount) {
       e.finished = true;
       e.finishTime = this.clock;
+      if (this.dragonRace && e.isPlayer) this.rings.clear();
     }
     // `lap` is the lap just *completed*, not the one now being driven. Reporting
     // the latter is ambiguous at the flag - it has to be clamped to the race
@@ -917,18 +1033,40 @@ export class RaceManager {
     });
   }
 
-  /** One marker per racer for the minimap, rewritten in place. */
+  _ringProgress() {
+    const p = this._playerEntry;
+    const total = this.track?.checkpoints?.length ?? 0;
+    return { done: total ? (p?.cpDone ?? 0) % total : 0, total, next: p?.nextCp ?? 0 };
+  }
+
+  /** One marker per racer for the minimap, plus remaining rings for dragon races. */
   _writeMarkers() {
     const m = this.markers;
-    m.length = this.entries.length;
+    const ringMarkers = this.dragonRace ? this.rings.markers(this._playerEntry?.nextCp ?? 0) : [];
+    m.length = this.entries.length + ringMarkers.length;
     for (let i = 0; i < this.entries.length; i++) {
       const e = this.entries[i];
       const slot = m[i] ?? (m[i] = { x: 0, z: 0, isPlayer: false, color: 0xffffff, place: 0 });
+      slot.type = 'racer';
       slot.x = e.position.x;
       slot.z = e.position.z;
       slot.isPlayer = !!e.isPlayer;
       slot.color = e.color ?? 0xffffff;
       slot.place = e.place;
+      slot.next = false;
+    }
+    for (let i = 0; i < ringMarkers.length; i++) {
+      const src = ringMarkers[i];
+      const slot = m[this.entries.length + i] ?? (m[this.entries.length + i] = {});
+      slot.type = 'ring';
+      slot.x = src.x;
+      slot.z = src.z;
+      slot.isPlayer = false;
+      slot.color = src.next ? 0x52e9ff : 0xffd166;
+      slot.place = 0;
+      slot.index = src.index;
+      slot.number = src.number;
+      slot.next = !!src.next;
     }
   }
 
@@ -948,10 +1086,12 @@ export class RaceManager {
     this._playerEntry = null;
     this._playerPlace = 0;
     this.field.clear();
+    this.rings.clear();
   }
 
   dispose() {
     this.pickups?.dispose?.();
+    this.rings?.dispose?.();
     this.bus?.off?.('world:changing', this._onWorldChanging);
     this.bus?.off?.('world:changed', this._onWorldChanged);
     this.field.dispose();

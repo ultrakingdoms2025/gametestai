@@ -42,6 +42,7 @@ import { Contracts } from './systems/Contracts.js';
 import { QuestSystem } from './systems/QuestSystem.js';
 import { AdminCheats } from './systems/AdminCheats.js';
 import { Relics } from './systems/Relics.js';
+import { Interiors } from './systems/Interiors.js';
 import { AudioDirector } from './audio/AudioDirector.js';
 import { AudioMenu } from './ui/AudioMenu.js';
 import { RaceManager } from './race/RaceManager.js';
@@ -204,6 +205,11 @@ const caches = new Caches({ bus, physics, player, loot, worldManager, waterVolum
 // Hidden collectibles that pay on pickup - the reason to look at the skyline.
 const relics = new Relics({ scene: engine.scene, bus, physics, player, economy, inventory, worldManager });
 
+// Enterable building interiors: doors, stairs, elevators and multi-floor
+// collectibles. Constructed after Loot so its world:changed collectible spawn
+// runs after Loot.clear() wipes the previous world's pickups.
+const interiors = new Interiors({ bus, player, physics, loot, input, worldManager });
+
 // Standing jobs from the people who already have names and personalities.
 const contracts = new Contracts({ bus, npcManager, player, economy, inventory, worldManager });
 
@@ -341,6 +347,7 @@ if (overrides.dev) {
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
     waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, caches, contracts,
   cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
+  interiors,
   };
   import('./dev/Harness.js').then(({ installHarness }) => installHarness(window.GAME));
 }
@@ -730,6 +737,7 @@ engine.onFrameUpdate((dt, elapsed) => {
     caches.update(dt);
     contracts.update(dt);
     relics.update(dt);
+    interiors.update(dt);
     questSystem.update(dt);
   }
   questBoard.update(dt);

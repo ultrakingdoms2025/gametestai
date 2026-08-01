@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { World } from './World.js';
 import { Collider } from '../physics/Physics.js';
+import { InteriorKit } from './InteriorKit.js';
 
 /**
  * ALDERMOOR VALE - the medieval world.
@@ -162,6 +163,9 @@ const WALL_TOP = CASTLE.ground + WALL_H;
 const MARKET = { x: 34, z: 18, hx: 17, hz: 15, y: 4.6 };
 const VILLAGE = { x: 44, z: 26, hx: 58, hz: 42, y: 4.6 };
 const CIRCLE = { x: 2, z: -22, r: 8.6 };
+// Flat terrace under the enterable Guild Tower so its ground floor meets the
+// terrain instead of the surrounding hillside slope poking up through the slab.
+const TOWER_PAD = { x: 28, z: -34, hx: 6.0, hz: 6.0, y: 7.4 };
 const BRIDGE_X = 26;
 
 /** River centreline: a lazy meander running west to east across the south. */
@@ -1205,6 +1209,7 @@ export class MedievalWorld extends World {
     await step(0.7, 'Thatching the village', this._buildVillage);
     await step(0.78, 'Spanning the Aldern', this._buildRiverside);
     await step(0.84, 'Setting out the market', this._buildMarket);
+    await step(0.88, 'Raising the guild tower', this._buildInteriors);
     await step(0.9, 'Sowing the woods', this._buildNature);
     await step(0.96, 'Lighting the hearths', this._buildAtmosphere);
     await step(0.99, 'Opening the sky-gate', this._buildGateAndSpawns);
@@ -1263,6 +1268,11 @@ export class MedievalWorld extends World {
     h = lerp(h, CASTLE.ground, 1 - smoothstep(6, 44, cd));
     const moat = bump(cd, 3.6, 17.4);
     if (moat > 0) h = lerp(h, CASTLE.ground - 4.9, moat);
+
+    // ---- Guild Tower terrace (applied last so the stone-circle knoll and
+    // castle rise cannot layer height back onto the flattened building pad).
+    const td = rectDist(x - TOWER_PAD.x, z - TOWER_PAD.z, TOWER_PAD.hx, TOWER_PAD.hz);
+    h = lerp(h, TOWER_PAD.y, 1 - smoothstep(0, 8, td));
 
     return h;
   }
@@ -5469,6 +5479,44 @@ export class MedievalWorld extends World {
   /* ---------------------------------------------------------------- */
   /* The village                                                       */
   /* ---------------------------------------------------------------- */
+
+  /**
+   * Enterable building interiors. Prototype: one hero 3-storey guild tower on
+   * open ground south-east of spawn. Built via the reusable InteriorKit so the
+   * system extends to other worlds/buildings later. Populates `this.enterables`
+   * with the runtime descriptors the Interiors system consumes.
+   */
+  _buildInteriors() {
+    this.enterables = [];
+    const spots = [{ x: TOWER_PAD.x, z: TOWER_PAD.z }];
+    for (const s of spots) {
+      // The terrain under this footprint is flattened to a terrace in _height
+      // (TOWER_PAD). Sit the slab a hair proud of it so the stone floor cleanly
+      // covers the terrain (no coplanar z-fighting) and grass can't show through.
+      const baseY = this._height(s.x, s.z) + 0.06;
+      const kit = new InteriorKit(this, { name: `interior:tower@${s.x},${s.z}` });
+      kit.buildTower({ x: s.x, z: s.z, baseY });
+      kit.finish();
+      const d = kit.exportDescriptors();
+      d.origin = new THREE.Vector3(s.x, baseY, s.z);
+      d.label = 'Guild Tower';
+      this.enterables.push(d);
+      // Reserve the footprint BEFORE the woods are sown so no grass, shrub or
+      // tree grows up through the tower floor or walls.
+      this._footprints.push({ x: s.x, z: s.z, hx: 6.2, hz: 6.2, r: 0 });
+      // Minimap marker so the tower is findable.
+      this.minimapShapes.push({
+        kind: 'rect',
+        x: s.x,
+        z: s.z,
+        w: 11,
+        d: 11,
+        rotation: 0,
+        fill: 'rgba(138,107,58,0.55)',
+        stroke: 'rgba(232,200,120,0.9)',
+      });
+    }
+  }
 
   _buildVillage() {
     const B = new GeoBatch();

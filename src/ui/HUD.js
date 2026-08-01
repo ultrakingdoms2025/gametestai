@@ -922,6 +922,10 @@ export class HUD {
       this._nearPortal = p?.portal ?? null;
     });
 
+    this._on('interior:prompt', (p) => {
+      this._interiorPrompt = p?.text ?? null;
+    });
+
     this._on('portal:entering', ({ to, duration }) => this._runWipe(to, duration));
 
     this._on('world:changed', ({ id, world }) => {
@@ -932,6 +936,7 @@ export class HUD {
       this._nearPortal = null;
       this._chatNpc = null;
       this.minimap.chatNpcId = null;
+      this._interiorPrompt = null;
       this.notify(`${world?.displayName ?? id} — anchor locked`, 'lore');
     });
 
@@ -2206,6 +2211,8 @@ export class HUD {
     // Lorekeeper wins over portal prompt.
     } else if (this._chatNpc?.isLorekeeper && !this._chatOpen) {
       text = `Read lore — Talk to <b>${escapeHtml(String(this._chatNpc.name ?? 'Lorekeeper'))}</b>`;
+    } else if (this._interiorPrompt && !this._chatOpen) {
+      text = `${escapeHtml(String(this._interiorPrompt))}`;
     } else if (this._nearPortal) {
       const po = this._nearPortal;
       const dest = po.label || this.worldManager?.getWorld?.(po.target)?.displayName || po.target || 'the Nexus';

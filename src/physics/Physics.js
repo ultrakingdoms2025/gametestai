@@ -251,6 +251,27 @@ export class Physics {
     return this.add(new Collider('mesh', { positions, ...opts }));
   }
 
+  /**
+   * Move an existing box collider vertically in place.
+   *
+   * Safe for moving platforms / elevators: the broadphase grid is indexed on the
+   * XZ plane only (see `_insertToGrid`), so a Y-only translation never changes
+   * which cells the collider belongs to. We just refresh the world matrix's Y
+   * translation, the cached centre and the inverse used by the capsule solver.
+   * The player standing on the box is carried by the normal capsule pushout.
+   *
+   * @param {Collider} collider box collider previously registered
+   * @param {number} y new world-space Y of the box centre
+   */
+  setBoxColliderY(collider, y) {
+    if (!collider || collider.type !== 'box') return;
+    // Column-major TRS: translation lives in elements 12,13,14 regardless of the
+    // rotation baked into the upper 3x3, so this is correct for rotated boxes too.
+    collider.matrix.elements[13] = y;
+    collider.center.y = y;
+    collider.inverse.copy(collider.matrix).invert();
+  }
+
   /** Colliders whose bounding sphere may overlap a world-space sphere. */
   query(center, radius, out = this._queryCache) {
     out.length = 0;

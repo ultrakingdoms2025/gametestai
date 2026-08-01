@@ -30,6 +30,7 @@ import { Stamina } from './systems/Stamina.js';
 import { Inventory } from './systems/Inventory.js';
 import { Loot } from './systems/Loot.js';
 import { Marketplace } from './systems/Marketplace.js';
+import { Cosmetics } from './systems/Cosmetics.js';
 import { ItemUseSystem } from './systems/ItemUse.js';
 import { HelpMenu } from './ui/HelpMenu.js';
 import { MountWheel } from './ui/MountWheel.js';
@@ -179,7 +180,10 @@ const stamina = new Stamina({ bus, player });
 const inventory = new Inventory({ bus, economy, input, root: uiRoot });
 const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
 const itemUse = new ItemUseSystem({ bus, player, inventory, loot, portals, npcManager, combat });
-const market = new Marketplace({ bus, economy, inventory, player, npcManager, input, root: uiRoot });
+// Permanent purchasable skins. Bought at a merchant, worn from the F2 menu, and
+// round-tripped through both save paths so a limited-edition unlock sticks.
+const cosmetics = new Cosmetics({ bus });
+const market = new Marketplace({ bus, economy, inventory, cosmetics, player, npcManager, input, root: uiRoot });
 const helpMenu = new HelpMenu({ root: uiRoot, bus, input });
 const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts });
 // F6. Rebinds anything Input resolves; the panel keys stay fixed on purpose.
@@ -187,7 +191,7 @@ const keybindMenu = new KeybindMenu({ root: uiRoot, bus, input });
 // F2. Edits the avatar live and publishes `character:changed`, which SaveGame
 // snapshots and MountManager listens for so the rider on a mount is the same
 // person as the one on foot.
-const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, player, mounts });
+const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, player, mounts, cosmetics });
 
 // Ammunition now comes out of the bag rather than a private per-weapon counter.
 loadout.setInventory?.(inventory);
@@ -226,7 +230,7 @@ const audioMenu = new AudioMenu({ root: uiRoot, bus, input, audio });
 const race = new RaceManager({ ...ctx, player, mounts, economy, worldManager });
 const raceUI = new RaceUI({ root: uiRoot, bus, input, race });
 
-const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts, input, inventory });
+const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts, input, inventory, cosmetics });
 /* Ask the browser not to evict this origin's storage under pressure. Fire and
  * forget - it resolves to false on browsers that do not offer it, and nothing
  * downstream depends on the answer. */
@@ -261,6 +265,7 @@ function buildRemotePayload() {
       at: Date.now(),
       inventory: inventory?.serialize?.() ?? null,
       mounts: mounts?.serialize?.() ?? null,
+      cosmetics: cosmetics?.serialize?.() ?? null,
     },
   };
   if (pendingTrades.length) payload.trades = pendingTrades.splice(0, pendingTrades.length);
@@ -334,7 +339,7 @@ if (overrides.dev) {
   window.GAME = {
     engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
-    waterVolumes, stamina, inventory, loot, itemUse, market, helpMenu, characterMenu, caches, contracts,
+    waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, caches, contracts,
   cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   };
   import('./dev/Harness.js').then(({ installHarness }) => installHarness(window.GAME));
@@ -383,6 +388,17 @@ async function hydrateAccountSession() {
       mounts.deserialize(remoteMounts);
     } catch (err) {
       console.warn('[account] could not restore server mounts:', err?.message ?? err);
+    }
+  }
+
+  // Purchased cosmetic skins are account-bound the same way: a limited-edition
+  // unlock the player paid for must reappear on any device they sign in from.
+  const remoteCosmetics = account.game_state?.cosmetics;
+  if (remoteCosmetics && cosmetics?.deserialize) {
+    try {
+      cosmetics.deserialize(remoteCosmetics);
+    } catch (err) {
+      console.warn('[account] could not restore server cosmetics:', err?.message ?? err);
     }
   }
 
@@ -781,6 +797,14 @@ bus.on('mount:power:buy', ({ mount, power, tier }) => {
 bus.on('mount:livery', () => {
   schedulePersist('mount-livery');
   scheduleRemotePersist('mount-livery');
+});
+// A cosmetic bought at a merchant unlocks the skin in the wardrobe and persists
+// it (locally + backend) so the limited-edition purchase survives a reload.
+bus.on('cosmetic:buy', ({ cosmeticId }) => {
+  if (!cosmeticId) return;
+  cosmetics.unlock(cosmeticId);
+  schedulePersist('cosmetic');
+  scheduleRemotePersist('cosmetic');
 });
 bus.on('keybinds:open', () => setGameplayBlocked('keybinds', true));
 bus.on('keybinds:close', () => setGameplayBlocked('keybinds', false));

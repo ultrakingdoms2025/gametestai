@@ -50,10 +50,11 @@ export class Marketplace {
    * @param {{ bus?:any, economy?:any, inventory?:any, player?:any, npcManager?:any,
    *           input?:any, root?:HTMLElement, ui?:boolean }} ctx
    */
-  constructor({ bus, economy, inventory, player, npcManager, input, root, ui = true } = {}) {
+  constructor({ bus, economy, inventory, cosmetics, player, npcManager, input, root, ui = true } = {}) {
     this.bus = bus ?? null;
     this.economy = economy ?? null;
     this.inventory = inventory ?? null;
+    this.cosmetics = cosmetics ?? null;
     this.player = player ?? null;
     this.npcManager = npcManager ?? null;
 
@@ -249,6 +250,21 @@ export class Marketplace {
     return { mount, power, tier };
   }
 
+  /**
+   * A cosmetic unlock is not stock either: it grants a permanent skin id to the
+   * wardrobe. Detected by its action effect so the catalog stays authoritative.
+   * @param {any} item
+   * @returns {{cosmeticId:string, kind:string}|null}
+   */
+  _cosmeticGrant(item) {
+    const config = item?.action_config ?? {};
+    if (config?.effect !== 'unlock_cosmetic') return null;
+    const cosmeticId = typeof config.cosmetic_id === 'string' ? config.cosmetic_id : null;
+    if (!cosmeticId) return null;
+    const kind = config.kind === 'vehicle' ? 'vehicle' : 'character';
+    return { cosmeticId, kind };
+  }
+
   preview(item) {
     if (!item || !this.economy) {
       return { ok: false, reason: 'unavailable', stock: 0, grant: null, cost: 0 };
@@ -263,6 +279,18 @@ export class Marketplace {
       if (stock <= 0) return { ok: false, reason: 'stock', stock, grant, power, cost };
       if (this.credits < cost) return { ok: false, reason: 'credits', stock, grant, power, cost };
       return { ok: true, stock, grant, power, cost };
+    }
+
+    // Cosmetic unlock: a one-time skin. Owned skins can't be re-bought.
+    const cosmetic = this._cosmeticGrant(item);
+    if (cosmetic) {
+      const grant = { qty: 1, kind: 'unlock', label: 'Unlock skin' };
+      if (this.cosmetics?.has?.(cosmetic.cosmeticId)) {
+        return { ok: false, reason: 'owned', stock, grant, cosmetic, cost };
+      }
+      if (stock <= 0) return { ok: false, reason: 'stock', stock, grant, cosmetic, cost };
+      if (this.credits < cost) return { ok: false, reason: 'credits', stock, grant, cosmetic, cost };
+      return { ok: true, stock, grant, cosmetic, cost };
     }
 
     if (!this.inventory) {
@@ -311,6 +339,28 @@ export class Marketplace {
         kind: 'buy',
       });
       this.bus?.emit('hud:notify', { text: `Bought ${item.name}`, tone: 'info' });
+      this.ui?.refresh?.();
+      return { ok: true, qty: 1, cost };
+    }
+
+    // Cosmetic unlock: spend, announce, let the wardrobe record the skin. No bag.
+    if (preview.cosmetic) {
+      if (!this.economy.spend(cost, 'market')) return { ok: false, reason: 'credits' };
+      if (item.quantity != null) item.quantity = Math.max(0, item.quantity - 1);
+      this.bus?.emit('cosmetic:buy', {
+        cosmeticId: preview.cosmetic.cosmeticId,
+        kind: preview.cosmetic.kind,
+        catalogId: item.id,
+        cost,
+      });
+      this.bus?.emit('market:trade', {
+        itemId: item.source_key || item.id,
+        catalogId: item.id,
+        qty: 1,
+        credits: -cost,
+        kind: 'buy',
+      });
+      this.bus?.emit('hud:notify', { text: `Unlocked ${item.name}`, tone: 'info' });
       this.ui?.refresh?.();
       return { ok: true, qty: 1, cost };
     }

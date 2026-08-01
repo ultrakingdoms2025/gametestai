@@ -8,6 +8,7 @@ import {
   OUTFITS,
   SEX_PROFILES,
 } from '../player/PlayerAvatar.js';
+import { CHARACTER_SKINS, VEHICLE_SKINS } from '../systems/Cosmetics.js';
 
 /**
  * F2 — the character panel.
@@ -157,14 +158,15 @@ const quantise = (v) => v & 0xfcfcfc;
 
 export class CharacterMenu {
   /**
-   * @param {{ root:HTMLElement, bus?:any, input?:any, avatar:any, player?:any, mounts?:any }} ctx
+   * @param {{ root:HTMLElement, bus?:any, input?:any, avatar:any, player?:any, mounts?:any, cosmetics?:any }} ctx
    */
-  constructor({ root, bus, input, avatar, player, mounts }) {
+  constructor({ root, bus, input, avatar, player, mounts, cosmetics }) {
     this.bus = bus ?? null;
     this.input = input ?? null;
     this.avatar = avatar ?? null;
     this.player = player ?? avatar?.player ?? null;
     this.mounts = mounts ?? null;
+    this.cosmetics = cosmetics ?? null;
 
     this._open = false;
     this._hadLock = false;
@@ -204,6 +206,8 @@ export class CharacterMenu {
           this._sync();
         })
       );
+      // A skin bought at the merchant lights its card here without a reopen.
+      this._offs.push(bus.on('cosmetic:unlocked', () => this._sync()));
     }
 
     this._onKey = (e) => this._key(e);
@@ -377,6 +381,16 @@ export class CharacterMenu {
       })
     );
 
+    /* Signature skins - premium character colourways bought at a merchant. Owned
+     * ones apply their preset; locked ones show a hint to buy in the market. */
+    if (this.cosmetics) {
+      body.appendChild(
+        this._section('Signature skins', 'ch-skins', (host) => {
+          host.appendChild(this._skinCards(CHARACTER_SKINS, 'character'));
+        })
+      );
+    }
+
     /* Vehicle livery - paint and wheels for the car mount. Kept last because it
      * describes a different body than everything above it; the swatches write to
      * the mount manager rather than the avatar config. */
@@ -387,6 +401,10 @@ export class CharacterMenu {
           host.appendChild(this._liverySwatches(CAR_PAINT_COLORS, 'paint'));
           host.appendChild(el('div', 'ch-sub', 'Wheels'));
           host.appendChild(this._liverySwatches(CAR_WHEEL_COLORS, 'wheel'));
+          if (this.cosmetics) {
+            host.appendChild(el('div', 'ch-sub', 'Signature liveries'));
+            host.appendChild(this._skinCards(VEHICLE_SKINS, 'vehicle'));
+          }
         })
       );
     }
@@ -553,6 +571,65 @@ export class CharacterMenu {
       this._liveryPending = null;
       if (patch) this._setLivery(patch);
     });
+  }
+
+  /**
+   * A grid of premium skin cards. Owned skins apply their preset on click and
+   * light up when active; locked ones wear a padlock and point the player at the
+   * merchant. Ownership is read live from the wardrobe so a purchase relights the
+   * card through the `cosmetic:unlocked` sync without a rebuild.
+   * @param {Array<{id:string,name:string,blurb:string,preset?:object,livery?:object}>} skins
+   * @param {'character'|'vehicle'} kind
+   */
+  _skinCards(skins, kind) {
+    const grid = el('div', 'ch-skingrid');
+    for (const skin of skins) {
+      const card = el('button', 'ch-skincard');
+      card.type = 'button';
+
+      const dots = el('span', 'ch-skindots');
+      const colors = kind === 'vehicle'
+        ? [skin.livery?.paint, skin.livery?.wheel]
+        : [skin.preset?.topColor, skin.preset?.legColor, skin.preset?.accentColor];
+      for (const c of colors) {
+        if (typeof c !== 'number') continue;
+        const dot = el('i', 'ch-skindot');
+        dot.style.background = hexStr(c);
+        dots.appendChild(dot);
+      }
+
+      const text = el('span', 'ch-skintext');
+      text.append(el('b', null, skin.name), el('small', null, skin.blurb));
+
+      const lock = el('span', 'ch-skinlock');
+      card.append(dots, text, lock);
+      grid.appendChild(card);
+
+      card.addEventListener('click', () => {
+        if (!this.cosmetics?.has?.(skin.id)) {
+          this.bus?.emit('hud:notify', {
+            text: `Buy the ${skin.name} at a merchant to unlock it.`,
+            tone: 'warn',
+          });
+          return;
+        }
+        if (kind === 'vehicle') this._setLivery({ ...skin.livery });
+        else this._set({ ...skin.preset });
+      });
+
+      this._syncers.push(() => {
+        const owned = !!this.cosmetics?.has?.(skin.id);
+        const active = owned && (kind === 'vehicle'
+          ? this._livery.paint === skin.livery.paint && this._livery.wheel === skin.livery.wheel
+          : this._cfg.topColor === skin.preset.topColor
+            && this._cfg.legColor === skin.preset.legColor
+            && this._cfg.accentColor === skin.preset.accentColor);
+        card.classList.toggle('locked', !owned);
+        card.classList.toggle('on', active);
+        lock.textContent = owned ? (active ? 'Equipped' : 'Owned') : '🔒 Market';
+      });
+    }
+    return grid;
   }
 
   /* ================================================================== */

@@ -87,6 +87,8 @@ const ACTION_ICONS: Record<string, [string, string]> = {
   cosmetic_headgear: ['👒', '#d46bff'],
   cosmetic_shirt:    ['👕', '#d46bff'],
   cosmetic_pants:    ['👖', '#d46bff'],
+  cosmetic_char_skin:    ['🧥', '#d46bff'],
+  cosmetic_vehicle_skin: ['🎨', '#ff8a5c'],
   mount_strength_1: ['💪', '#ff8a5c'],
   mount_strength_2: ['💪', '#ff8a5c'],
   mount_strength_3: ['💪', '#ff8a5c'],

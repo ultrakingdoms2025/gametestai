@@ -84,7 +84,7 @@ export class SaveGame {
    *           player: any, worldManager: any, economy: any,
    *           loadout?: any, mounts?: any, input?: any }} ctx
    */
-  constructor({ bus, player, worldManager, economy, loadout, mounts, input, inventory, avatar }) {
+  constructor({ bus, player, worldManager, economy, loadout, mounts, input, inventory, avatar, cosmetics }) {
     this.bus = bus;
     this.player = player;
     this.worldManager = worldManager;
@@ -94,6 +94,8 @@ export class SaveGame {
     this.input = input ?? null;
     /** @type {any} Optional - the game is playable without an inventory wired. */
     this.inventory = inventory ?? null;
+    /** @type {any} Optional wardrobe of purchased skins. */
+    this.cosmetics = cosmetics ?? null;
     /**
      * The player's body, for the character configuration. Optional and resolved
      * lazily by `_avatar()`: `main.js` builds the avatar before this system, but
@@ -283,6 +285,8 @@ export class SaveGame {
         this._fail('could not restore mounts during load', null, { clear: false });
         return false;
       }
+
+      this._restoreCosmetics(data.cosmetics);
     } catch (err) {
       // Should be unreachable - every step guards itself - but a load must not
       // be the thing that kills the session.
@@ -386,6 +390,8 @@ export class SaveGame {
       economy: safe(() => this.economy?.serialize?.()) ?? null,
       weapons: this._snapshotWeapons(),
       mounts: this._snapshotMounts(),
+      // Purchased skins are ids, not geometry, so this is just the owned list.
+      cosmetics: safe(() => this.cosmetics?.serialize?.()) ?? null,
       // Ammunition lives in the bag now, so a save without the inventory would
       // restore a player who cannot fire anything they were carrying.
       inventory: safe(() => this.inventory?.serialize?.()) ?? null,
@@ -653,6 +659,19 @@ export class SaveGame {
     }
   }
 
+  /**
+   * Re-grant purchased skins. Non-fatal: a wardrobe failure must never block a
+   * load, so this returns nothing and only logs.
+   */
+  _restoreCosmetics(snap) {
+    if (!this.cosmetics || !snap) return;
+    try {
+      this.cosmetics.deserialize?.(snap);
+    } catch (err) {
+      console.warn('[SaveGame] cosmetic restore skipped:', err);
+    }
+  }
+
   /* ================================================================ */
   /* Storage + validation                                              */
   /* ================================================================ */
@@ -873,6 +892,11 @@ export class SaveGame {
     // Absent on every save written before the character menu shipped, and that
     // must stay a valid save - only a wrong *type* is a structural failure.
     if (data.character !== null && data.character !== undefined && typeof data.character !== 'object') {
+      return false;
+    }
+    // Cosmetics arrived after the character menu; absent on older saves, and only
+    // a wrong type (not absence) is a structural failure.
+    if (data.cosmetics !== null && data.cosmetics !== undefined && typeof data.cosmetics !== 'object') {
       return false;
     }
     return true;

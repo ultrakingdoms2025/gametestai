@@ -63,6 +63,8 @@ const ACTION_ART = {
   cosmetic_headgear: ['👒', '#d46bff'],
   cosmetic_shirt:    ['👕', '#d46bff'],
   cosmetic_pants:    ['👖', '#d46bff'],
+  cosmetic_char_skin:    ['🧥', '#d46bff'],
+  cosmetic_vehicle_skin: ['🎨', '#ff8a5c'],
   mount_strength_1: ['💪', '#ff8a5c'],
   mount_strength_2: ['💪', '#ff8a5c'],
   mount_strength_3: ['💪', '#ff8a5c'],
@@ -347,16 +349,23 @@ export class MarketplaceUI {
       const priceEl = el('div', 'mkt-price', `${preview.cost} CR`);
       const grantLabel = preview.grant?.kind === 'upgrade'
         ? (preview.grant.label || 'Mount upgrade')
-        : preview.grant
-          ? `${preview.grant.qty} item${preview.grant.qty === 1 ? '' : 's'} per buy`
-          : 'not usable';
+        : preview.grant?.kind === 'unlock'
+          ? (preview.reason === 'owned' ? 'Owned' : (preview.grant.label || 'Unlock skin'))
+          : preview.grant
+            ? `${preview.grant.qty} item${preview.grant.qty === 1 ? '' : 's'} per buy`
+            : 'not usable';
       priceEl.appendChild(el('small', null, grantLabel));
 
       const acts = el('div', 'mkt-acts');
-      const buy = el('button', 'inv-btn mkt-buy', 'Buy');
+      const owned = preview.reason === 'owned';
+      const buy = el('button', 'inv-btn mkt-buy', owned ? 'Owned' : 'Buy');
       buy.type = 'button';
       buy.disabled = blocked;
-      buy.title = preview.ok ? 'Buy this item' : preview.reason === 'space' ? 'Not enough room' : preview.reason === 'credits' ? 'Not enough credits' : 'Not available';
+      buy.title = preview.ok ? 'Buy this item'
+        : owned ? 'Already unlocked — equip it in the Character menu (F2)'
+        : preview.reason === 'space' ? 'Not enough room'
+        : preview.reason === 'credits' ? 'Not enough credits'
+        : 'Not available';
       buy.addEventListener('click', () => this._buy(item.id));
       acts.appendChild(buy);
 
@@ -415,6 +424,7 @@ export class MarketplaceUI {
         res.reason === 'credits' ? 'Not enough credits' :
         res.reason === 'space' ? 'No room — free a bag or store slot' :
         res.reason === 'stock' ? 'Out of stock' :
+        res.reason === 'owned' ? 'You already own this skin — equip it in the Character menu (F2)' :
         res.reason === 'unsupported' ? 'This item cannot be bought yet' :
         'Trade unavailable'
       );

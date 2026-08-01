@@ -189,9 +189,32 @@ function paintPixels(canvas, fn) {
 }
 
 /**
- * Sobel a grayscale canvas into a tangent-space normal map.
- * Sampling wraps, so the normal map tiles exactly like its albedo.
+ * Row-chunked async twin of {@link paintPixels}: yields through `breathe`
+ * every `rows` scanlines so a multi-megapixel canvas (the 2048x1024 sky) does
+ * not land as one multi-hundred-millisecond block during a background build.
  */
+async function paintPixelsAsync(canvas, fn, breathe, rows = 64) {
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(canvas.width, canvas.height);
+  const d = img.data;
+  const w = canvas.width;
+  const h = canvas.height;
+  const out = [0, 0, 0];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      fn(x / w, y / h, out, x, y);
+      const i = (y * w + x) * 4;
+      d[i] = out[0];
+      d[i + 1] = out[1];
+      d[i + 2] = out[2];
+      d[i + 3] = 255;
+    }
+    if ((y & (rows - 1)) === 0 && breathe) await breathe();
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
 function normalFromHeight(canvas, strength = 2.0) {
   const w = canvas.width;
   const h = canvas.height;
@@ -1045,10 +1068,12 @@ export class SportsWorld extends World {
    * bar moves early, and every stage yields a frame so the browser can paint.
    */
   async build(onProgress) {
+    this._lastBreath = performance.now();
     const stage = async (p, label, fn) => {
       onProgress?.(p, label);
       await yieldFrame();
-      fn.call(this);
+      this._lastBreath = performance.now();
+      await fn.call(this);
     };
 
     await stage(0.02, 'Mixing concrete', () => this._buildTextures());
@@ -1103,6 +1128,20 @@ export class SportsWorld extends World {
   _mat(key, material) {
     this._materials.set(key, material);
     return material;
+  }
+
+  /**
+   * Cooperative yield for the background build. Time-gated so it can be called
+   * every canvas/loop iteration cheaply: it only actually gives the frame back
+   * to the renderer when more than `budgetMs` has elapsed since the last yield,
+   * which keeps any single synchronous slice under ~one frame.
+   */
+  async _breathe(budgetMs = 6) {
+    const now = performance.now();
+    if (now - (this._lastBreath || 0) > budgetMs) {
+      await yieldFrame();
+      this._lastBreath = performance.now();
+    }
   }
 
   /**
@@ -2159,7 +2198,7 @@ export class SportsWorld extends World {
     return this._mat(key, mat);
   }
 
-  _buildTextures() {
+  async _buildTextures() {
     /* ---------------- skate concrete ---------------- */
     // 8 m tile: expansion joints land on a 2 m grid, which is what a real slab
     // pour looks like and gives the eye a scale reference inside the bowl.
@@ -2234,6 +2273,7 @@ export class SportsWorld extends World {
       ca.quadraticCurveTo(x + Math.cos(a) * l * 0.5 + 6, y + Math.sin(a) * l * 0.5 - 6, x + Math.cos(a) * l, y + Math.sin(a) * l);
       ca.stroke();
     }
+    await this._breathe();
     const cH = makeCanvas(512, 512);
     paintPixels(cH, (u, v, out) => {
       const g = fbm(u, v, 48, 4, 3) * 190 + fbm(u, v, 8, 2, 5) * 60;
@@ -2283,6 +2323,7 @@ export class SportsWorld extends World {
     // scribbles, on a two-accent script (warm orange / cool teal) plus outline.
     const OW = 2048;
     const OH = 1536;
+    await this._breathe();
     const ov = makeCanvas(OW, OH);
     const oc = ov.getContext('2d');
     oc.clearRect(0, 0, OW, OH);
@@ -2574,6 +2615,7 @@ export class SportsWorld extends World {
     });
 
     /* ---------------- grass ---------------- */
+    await this._breathe();
     const gA = makeCanvas(512, 512);
     paintPixels(gA, (u, v, out) => {
       // Two blade octaves: the fine one gives breakup inside the first few
@@ -2645,6 +2687,7 @@ export class SportsWorld extends World {
     // 6 m tile from reading as a checkerboard at grazing angles.
     this._materials.get('grass.field').normalMap.repeat.set(12 / 2.2, 12 / 2.2);
 
+    await this._breathe();
     const gOv = makeCanvas(1536, 1536);
     const goc = gOv.getContext('2d');
     goc.clearRect(0, 0, 1536, 1536);
@@ -2834,6 +2877,7 @@ export class SportsWorld extends World {
     });
 
     /* ---------------- snow ---------------- */
+    await this._breathe();
     const sA = makeCanvas(512, 512);
     // Corduroy at ~50 cm across a 4 m tile. The old 28 cycles/tile put the ribs
     // at 14 cm, which is below one screen pixel past 25 m - all the authored
@@ -2942,6 +2986,7 @@ export class SportsWorld extends World {
     // Lane-less variant for the long-jump runway: the runway shares the track's
     // product but not its markings, and stretching the 8-lane albedo across a
     // 35 m runway drew nine phantom lane lines straight across it.
+    await this._breathe();
     const tP = makeCanvas(512, 256);
     paintRubber(tP);
     const tA = makeCanvas(512, 256);
@@ -3008,7 +3053,7 @@ export class SportsWorld extends World {
     );
 
     /* ---------------- court surfaces ---------------- */
-    this._buildCourtTextures();
+    await this._buildCourtTextures();
 
     /* ---------------- pool ---------------- */
     const pA = makeCanvas(256, 256);
@@ -3054,6 +3099,7 @@ export class SportsWorld extends World {
      * saw-cut grid gives a ~1.3 m paver rather than a 33 cm one. The base value
      * also comes down from 196 - it was brighter than the sunlit snow.
      */
+    await this._breathe();
     const dA = makeCanvas(512, 512);
     paintPixels(dA, (u, v, out) => {
       const gx = (u * 4) % 1;
@@ -3304,6 +3350,7 @@ export class SportsWorld extends World {
     // which mip-averaged above the alpha test and turned the whole enclosure
     // into a frosted panel that walled off the courts.
     const KC = 512;
+    await this._breathe();
     const kc = makeCanvas(KC, KC);
     const kctx = kc.getContext('2d');
     kctx.fillStyle = '#000000';
@@ -3505,6 +3552,7 @@ export class SportsWorld extends World {
     // the world. Real canopies read as clumped leaf masses: dappled colour,
     // hard self-shadow pockets and a high-frequency normal. All three come from
     // an authored albedo/height pair applied over smooth-shaded blobs.
+    await this._breathe();
     const fA = makeCanvas(512, 512);
     paintPixels(fA, (u, v, out) => {
       // Three scales of clumping: sprays, leaf clusters, individual leaves.
@@ -3682,6 +3730,7 @@ export class SportsWorld extends World {
     // are what stop the foreground third of every wide shot reading as a green
     // sheet with one bollard on it.
     const BLW = 256;
+    await this._breathe();
     const bl = makeCanvas(BLW, BLW);
     const blCtx = bl.getContext('2d');
     blCtx.fillStyle = '#000000';
@@ -3737,6 +3786,7 @@ export class SportsWorld extends World {
     this._materials.get('grass.card').alphaToCoverage = true;
     this._wrapLight(this._materials.get('grass.card'));
 
+    await this._breathe();
     const barkA = makeCanvas(256, 512);
     paintPixels(barkA, (u, v, out) => {
       // Vertical fissures: a stretched noise ridged with an abs() fold.
@@ -3810,7 +3860,7 @@ export class SportsWorld extends World {
    * Court surfaces are drawn 1:1 into a canvas that maps onto the slab, so the
    * line work is dimensionally correct rather than "roughly tennis shaped".
    */
-  _buildCourtTextures() {
+  async _buildCourtTextures() {
     /*
      * Textured acrylic.
      *
@@ -3945,6 +3995,7 @@ export class SportsWorld extends World {
     };
 
     /* ---- tennis: 23.77 x 10.97 doubles, on an 18.3 x 36.6 slab ---- */
+    await this._breathe();
     const TW = 512;
     const TH = 1024;
     const tenA = makeCanvas(TW, TH);
@@ -4038,6 +4089,7 @@ export class SportsWorld extends World {
     }
 
     /* ---- pickleball: 13.41 x 6.10 on an 18.3 x 9.14 slab ---- */
+    await this._breathe();
     const PW = 1024;
     const PH = 512;
     const picA = makeCanvas(PW, PH);
@@ -4210,7 +4262,7 @@ export class SportsWorld extends World {
   /* Sky + image-based lighting                                        */
   /* ---------------------------------------------------------------- */
 
-  _buildSky() {
+  async _buildSky() {
     // 2048x1024 on a 1200 m sphere is ~0.17 deg per texel. At the old 1024x512
     // it was 0.35 deg, which is coarse enough that the zenith gradient banded
     // visibly across the top of every wide shot.
@@ -4230,7 +4282,7 @@ export class SportsWorld extends World {
      */
     const sdir = this.environment.sunDirection;
     const c = makeCanvas(W, H);
-    paintPixels(c, (u, v, out, px, py) => {
+    await paintPixelsAsync(c, (u, v, out, px, py) => {
       // v = 0 at the zenith. Deep zenith into a warm haze band at the horizon:
       // the old version topped out at 196/216/236, which is within a few
       // percent of sunlit snow and made the ski hill silhouette disappear.
@@ -4265,7 +4317,7 @@ export class SportsWorld extends World {
       out[0] = lerp(r + d, 255, glow);
       out[1] = lerp(g + d, 250, glow * 0.97);
       out[2] = lerp(b + d, 226, glow * 0.88);
-    });
+    }, () => this._breathe());
     const ctx = c.getContext('2d');
 
     // Where the sun landed in canvas space - still needed so cumulus can be

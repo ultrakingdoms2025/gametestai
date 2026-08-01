@@ -689,6 +689,11 @@ engine.onFixedUpdate((dt, elapsed) => {
   portals.fixedUpdate(dt, elapsed);
 });
 
+// Last player XZ, used to derive a per-frame planar speed for the active world
+// (motion-gated shadow refresh). Null until the first active frame.
+let _prevPlayerX = null;
+let _prevPlayerZ = null;
+
 engine.onFrameUpdate((dt, elapsed) => {
   const uiPaused = gameplayBlocked();
   materials.update?.(dt, elapsed);
@@ -704,7 +709,22 @@ engine.onFrameUpdate((dt, elapsed) => {
     loadout.update(dt, elapsed);
     portals.update(dt, elapsed);
     combat.update(dt, elapsed);
-    worldManager.active?.update(dt, elapsed);
+    // Planar speed handed to the active world so a world with a throttled
+    // shadow map (the station plaza) can refresh it every frame while the
+    // character is actually moving fast - otherwise a sprinting silhouette
+    // steps/trails across the deck. One distance per frame.
+    let _playerSpeed = 0;
+    if (dt > 0) {
+      const p = player.position;
+      if (_prevPlayerX !== null) {
+        const dx = p.x - _prevPlayerX;
+        const dz = p.z - _prevPlayerZ;
+        _playerSpeed = Math.sqrt(dx * dx + dz * dz) / dt;
+      }
+      _prevPlayerX = p.x;
+      _prevPlayerZ = p.z;
+    }
+    worldManager.active?.update(dt, elapsed, _playerSpeed);
     inventory.update(dt);
     market.update(dt);
     caches.update(dt);

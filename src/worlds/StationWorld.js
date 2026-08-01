@@ -7966,22 +7966,31 @@ export class StationWorld extends World {
    * Only world-owned animation lives here. Everything reuses module scratch,
    * so a frame in the station allocates nothing.
    */
-  update(dt, elapsed) {
+  update(dt, elapsed, motion = 0) {
     const A = this._anim;
 
-    // Amortised shadow refresh (see _buildLights). One caster now instead of
-    // two, so the steady-state cost is halved even at a faster refresh rate.
+    // Amortised shadow refresh (see _buildLights). The plaza key light is a
+    // fixed full-deck caster, so a character running or strafing through it
+    // leaves a stepped "trail" silhouette whenever the map refreshes only a few
+    // times a second. The stepping is only ever visible while something is
+    // actually moving fast, so refresh every frame while the player is moving
+    // and fall back to a cheap idle cadence (~16 Hz) when the deck is calm.
     if (this._keyLight) {
+      const sh = this._keyLight.shadow;
       // Warm-up: render every frame until the map is known good, so nothing is
       // ever photographed floating on an empty shadow map.
       if (this._shadowWarm < 1.0) {
         this._shadowWarm += dt;
-        this._keyLight.shadow.needsUpdate = true;
-      }
-      this._keyShadowT += dt;
-      if (this._keyShadowT >= 0.14) {
-        this._keyShadowT = 0;
-        this._keyLight.shadow.needsUpdate = true;
+        sh.needsUpdate = true;
+      } else {
+        this._keyShadowT += dt;
+        // ~2.4 m/s sits just above a walk, so a jog or sprint pins the map to
+        // per-frame while standing still keeps the cheap idle refresh.
+        const interval = motion > 2.4 ? 0 : 0.06;
+        if (this._keyShadowT >= interval) {
+          this._keyShadowT = 0;
+          sh.needsUpdate = true;
+        }
       }
     }
 

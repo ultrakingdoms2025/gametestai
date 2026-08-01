@@ -309,8 +309,25 @@ function pixelCanvas(w, h, fn) {
   return c;
 }
 
+/**
+ * Async variant of {@link pixelCanvas} that yields the frame back every 64 rows
+ * via `breathe`, so a million-pixel procedural paint no longer blocks the render
+ * thread for the better part of a second during a background world build.
+ */
+async function pixelCanvasAsync(w, h, fn, breathe) {
+  const c = newCanvas(w, h);
+  const g = c.getContext('2d', { willReadFrequently: true });
+  const img = g.createImageData(w, h);
+  const d = img.data;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) fn(x, y, d, (y * w + x) * 4);
+    if (breathe && (y & 63) === 0) await breathe();
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
 const _noiseCache = new Map();
-/** Cached monochrome noise tile used to grunge up hand-drawn canvases. */
 function noiseTile(size, seed, contrast = 1) {
   const key = `${size}:${seed}:${contrast}`;
   let c = _noiseCache.get(key);
@@ -1151,11 +1168,31 @@ export class MedievalWorld extends World {
   /* ---------------------------------------------------------------- */
 
   /** @param {(p:number,label:string)=>void} [onProgress] */
+  /**
+   * Cooperative yield used inside the heavy generators. It only actually gives
+   * the frame back when more than `budgetMs` of synchronous work has piled up
+   * since the last yield, so a hot loop can call it every iteration without
+   * paying a whole rAF per call. This is what keeps the background build from
+   * blocking the render thread for seconds at a time - the single ~8s
+   * `_buildNature` frame becomes a run of ~6ms slices with the station still
+   * rendering between them.
+   * @param {number} [budgetMs]
+   */
+  async _breathe(budgetMs = 6) {
+    const now = performance.now();
+    if (now - (this._lastBreath || 0) > budgetMs) {
+      await yieldFrame();
+      this._lastBreath = performance.now();
+    }
+  }
+
   async build(onProgress) {
+    this._lastBreath = performance.now();
     const step = async (p, label, fn) => {
       onProgress?.(p, label);
       await yieldFrame();
-      fn.call(this);
+      this._lastBreath = performance.now();
+      await fn.call(this);
     };
 
     await step(0.02, 'Mixing pigments', this._buildTextures);
@@ -1475,7 +1512,7 @@ export class MedievalWorld extends World {
     return map;
   }
 
-  _buildTextures() {
+  async _buildTextures() {
     this._aniso = this.engine.renderer.capabilities.getMaxAnisotropy();
 
     /* --- Coursed ashlar for the castle.
@@ -1581,6 +1618,7 @@ export class MedievalWorld extends World {
      * worn hollow in the middle. Reusing 'ashlar' here was the tell - the same
      * block pattern on the wall, the coping and the floor at three different
      * UV stretches reads as one material sprayed over everything. */
+    await this._breathe();
     this._surface('flagstone', 512, (a, h, S, rnd) => {
       a.fillStyle = '#2a251d';
       a.fillRect(0, 0, S, S);
@@ -1668,6 +1706,7 @@ export class MedievalWorld extends World {
      * of every building" as the single most damaging artifact in the build.
      * Wet-laid granite setts at dusk are a mid-value grey-brown; the contrast
      * against grass comes from hue and roughness, not from luminance. */
+    await this._breathe();
     this._surface('cobble', 512, (a, h, S, rnd) => {
       a.fillStyle = '#39332a';
       a.fillRect(0, 0, S, S);
@@ -1771,6 +1810,7 @@ export class MedievalWorld extends World {
     }, { normalStrength: 2.2, rough: 0.9, roughVar: 0.2 });
 
     /* --- Lime-washed wattle and daub. */
+    await this._breathe();
     this._surface('daub', 512, (a, h, S, rnd) => {
       /* Base value dropped from #ded2bb. A lime render that starts at 0.87
        * sRGB has one twelfth of a stop of headroom before a golden-hour key
@@ -1878,6 +1918,7 @@ export class MedievalWorld extends World {
     }, { normalStrength: 3.2, rough: 0.96, roughVar: 0.1 });
 
     /* --- Split slate roofing in overlapping courses. */
+    await this._breathe();
     this._surface('slate', 512, (a, h, S, rnd) => {
       a.fillStyle = '#2b2f35';
       a.fillRect(0, 0, S, S);
@@ -1966,6 +2007,7 @@ export class MedievalWorld extends World {
     }, { normalStrength: 1.6, rough: 0.34, roughVar: 0.24 });
 
     /* --- Heraldic banner cloth: woven ground with a charge and a border. */
+    await this._breathe();
     this._surface('banner', 256, (a, h, S, rnd) => {
       a.fillStyle = '#d8d2c6';
       a.fillRect(0, 0, S, S);
@@ -2039,6 +2081,7 @@ export class MedievalWorld extends World {
     }, { normalStrength: 1.2, rough: 0.9, roughVar: 0.12 });
 
     /* --- Fissured bark. */
+    await this._breathe();
     this._surface('bark', 256, (a, h, S, rnd) => {
       a.fillStyle = '#3d3022';
       a.fillRect(0, 0, S, S);
@@ -2142,6 +2185,7 @@ export class MedievalWorld extends World {
     }, { normalStrength: 2.6, rough: 0.88, roughVar: 0.2, ao: 0.8, alphaRef: LEAF_ALPHA_REF });
 
     /* --- Granite outcrop. */
+    await this._breathe();
     this._surface('rock', 512, (a, h, S, rnd) => {
       a.fillStyle = '#5d5a52';
       a.fillRect(0, 0, S, S);
@@ -2249,6 +2293,7 @@ export class MedievalWorld extends World {
      * can resolve, from a whole tile down to a texel, or the mip chain eats
      * it. Three passes now: broad soil/turf patches, mid-scale clump and
      * scuff structure, then the fine stroke layer. */
+    await this._breathe();
     this._surface('detail', 512, (a, h, S, rnd) => {
       a.fillStyle = '#7d7d7d';
       a.fillRect(0, 0, S, S);
@@ -3364,7 +3409,7 @@ export class MedievalWorld extends World {
   }
 
   /** Paint the 2048px macro albedo: grass, dry banks, mud, rock and verges. */
-  _paintMacro() {
+  async _paintMacro() {
     const S = 2048;
     /* Source resolution.
      *
@@ -3378,6 +3423,7 @@ export class MedievalWorld extends World {
     const G = 1024;
     const heights = new Float32Array(G * G);
     for (let j = 0; j < G; j++) {
+      if ((j & 63) === 0) await this._breathe();
       const z = (j / (G - 1)) * 400 - HALF;
       for (let i = 0; i < G; i++) {
         const x = (i / (G - 1)) * 400 - HALF;
@@ -3385,7 +3431,7 @@ export class MedievalWorld extends World {
       }
     }
     const cell = 400 / (G - 1);
-    const base = pixelCanvas(G, G, (i, j, d, o) => {
+    const base = await pixelCanvasAsync(G, G, (i, j, d, o) => {
       const x = (i / (G - 1)) * 400 - HALF;
       const z = (j / (G - 1)) * 400 - HALF;
       const h = heights[j * G + i];
@@ -3437,7 +3483,7 @@ export class MedievalWorld extends World {
       d[o + 1] = clamp01((g + speck) / 255) * 255;
       d[o + 2] = clamp01((b + speck) / 255) * 255;
       d[o + 3] = 255;
-    });
+    }, () => this._breathe());
 
     const c = newCanvas(S);
     const g2 = c.getContext('2d');
@@ -3572,7 +3618,7 @@ export class MedievalWorld extends World {
     return tex;
   }
 
-  _buildTerrain() {
+  async _buildTerrain() {
     this._buildRoadPaths();
 
     /* ---- Visual mesh: 2m grid across the full 400x400m playfield. */
@@ -3582,6 +3628,7 @@ export class MedievalWorld extends World {
     const pos = new Float32Array(vCount * 3);
     const uv = new Float32Array(vCount * 2);
     for (let j = 0; j <= SEG; j++) {
+      if ((j & 15) === 0) await this._breathe();
       const z = -HALF + j * step;
       for (let i = 0; i <= SEG; i++) {
         const x = -HALF + i * step;
@@ -3616,7 +3663,7 @@ export class MedievalWorld extends World {
     /* ---- Macro albedo x tiled detail. One macro map cannot carry close-up
      * detail at 400m, and one tiled map cannot carry the roads and river
      * silt, so the shader multiplies them. */
-    const macro = this._paintMacro();
+    const macro = await this._paintMacro();
     const det = this._tex.detail;
     /* Relief tile size.
      *
@@ -3718,6 +3765,7 @@ export class MedievalWorld extends World {
     const nC = 400 / CELL;
     const T = 1.9;
     for (let cz = 0; cz < nC; cz++) {
+      if ((cz & 7) === 0) await this._breathe();
       const z = -HALF + (cz + 0.5) * CELL;
       for (let cx = 0; cx < nC; cx++) {
         const x = -HALF + (cx + 0.5) * CELL;
@@ -3760,6 +3808,7 @@ export class MedievalWorld extends World {
     const near = new THREE.Color(0xffffff);
     const SKIRT_ROCK = new THREE.Color(0xa39781);
     for (let ri = 0; ri <= RR; ri++) {
+      if ((ri & 3) === 0) await this._breathe();
       const rt = ri / RR;
       // Out to ~1.9km, just inside the 2km far plane. At 900m the sheet simply
       // stopped, and from any elevated vantage that terminating ring projected
@@ -7452,7 +7501,7 @@ export class MedievalWorld extends World {
     B.build(this._mats, this.group, { ao: this._heightFn });
   }
 
-  _buildNature() {
+  async _buildNature() {
     this._buildLandmarks();
     const rnd = mulberry32(0x7ee5);
 
@@ -7479,6 +7528,7 @@ export class MedievalWorld extends World {
     const total = 520;
     let guard = 0;
     while (built.reduce((s, b) => s + b.list.length, 0) < total && guard++ < total * 30) {
+      if ((guard & 511) === 0) await this._breathe();
       const x = (rnd() - 0.5) * 392;
       const z = (rnd() - 0.5) * 392;
       const rd = Math.abs(z - riverZ(x));
@@ -7566,6 +7616,7 @@ export class MedievalWorld extends World {
           m.computeBoundingSphere();
           this.group.add(m);
         }
+        await this._breathe();
       }
       this._owned.push(b.geo.trunk);
       if (b.geo.leaf) this._owned.push(b.geo.leaf);
@@ -7647,6 +7698,7 @@ export class MedievalWorld extends World {
           m.computeBoundingSphere();
           this.group.add(m);
         }
+        await this._breathe();
       }
     }
 
@@ -7812,6 +7864,7 @@ export class MedievalWorld extends World {
         mesh.instanceColor.needsUpdate = true;
         mesh.computeBoundingSphere();
         this.group.add(mesh);
+        await this._breathe();
       }
     }
 
@@ -7868,6 +7921,7 @@ export class MedievalWorld extends World {
     if (bushes.instanceColor) bushes.instanceColor.needsUpdate = true;
     bushes.computeBoundingSphere();
     this.group.add(bushes);
+    await this._breathe();
 
     /* ---- Rocks and outcrops ------------------------------------------ */
     for (let variant = 0; variant < 2; variant++) {
@@ -7919,6 +7973,7 @@ export class MedievalWorld extends World {
       mesh.computeBoundingSphere();
       this.group.add(mesh);
     }
+    await this._breathe();
 
     /* ---- Reeds along the water line ---------------------------------- *
      * Same over-scale failure as the grass, and worse for being on the
@@ -7944,6 +7999,7 @@ export class MedievalWorld extends World {
     let rp2 = 0;
     let rg2 = 0;
     while (rp2 < REED_N && rg2++ < REED_N * 8) {
+      if ((rg2 & 1023) === 0) await this._breathe();
       // Was `* 420`, i.e. +/-210 on a +/-200 playfield: 219 reed clumps stood
       // ten metres past the rim on the distant skirt, where the river channel
       // and the water ribbon both stop. The bank has to end where the terrain

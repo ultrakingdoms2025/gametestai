@@ -239,10 +239,16 @@ export class RaceUI {
     head.append(titles, close);
 
     const facts = el('div', 'rc-facts');
+    this.factVehicle = this._fact(facts, 'Vehicle', 'CAR');
     this.factLaps = this._fact(facts, 'Laps', '3');
     this.factField = this._fact(facts, 'Grid', '10 cars');
     this.factGrid = this._fact(facts, 'You start', '5th');
     this.factDrops = this._fact(facts, 'Drops', '—');
+
+    const typeLabel = el('div', 'rc-section', 'Race type');
+    this.typeEl = el('div', 'rc-picks');
+    this._typeButtons = new Map();
+    this._typeKey = null;
 
     const pickLabel = el('div', 'rc-section', 'Difficulty');
     this.pickEl = el('div', 'rc-picks');

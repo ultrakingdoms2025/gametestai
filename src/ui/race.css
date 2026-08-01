@@ -558,6 +558,15 @@
   cursor: default;
 }
 
+/* Stop-race button: reuse the .rc-start shape but in a danger red so it never
+ * reads as the friendly "go" the picker's START does. */
+.rc-danger {
+  border-color: rgba(255, 96, 96, 0.6) !important;
+  background: linear-gradient(180deg, rgba(255, 96, 96, 0.26), rgba(255, 96, 96, 0.10)) !important;
+  color: #ffecec !important;
+  text-shadow: 0 0 14px rgba(255, 96, 96, 0.6) !important;
+}
+
 .rc-ghost {
   border: 1px solid rgba(82, 233, 255, 0.2);
   background: rgba(10, 24, 36, 0.7);

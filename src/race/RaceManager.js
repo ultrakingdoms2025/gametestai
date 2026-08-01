@@ -43,8 +43,8 @@ import { RaceRings, buildDragonRingCheckpoints, DRAGON_RACE } from './RaceRings.
 
 /** Prize money, by finishing position. Only the player is paid. */
 export const RACE_PRIZES = [10, 5, 2];
-/** Including the player. The grid contract publishes exactly this many slots. */
-export const MAX_RACERS = 10;
+/** The most racers any circuit can grid, player included. Hard packs 20. */
+export const MAX_RACERS = 20;
 /**
  * Which grid slot the player gets.
  *
@@ -55,6 +55,33 @@ export const MAX_RACERS = 10;
  */
 export const PLAYER_GRID_SLOT = 4;
 export const RACE_TYPES = { CAR: 'car', DRAGON: 'dragon' };
+
+/**
+ * Per-difficulty field shape, shared by the car and dragon races.
+ *
+ * The three bands are meant to feel genuinely different rather than being the
+ * same race with a faster opposition:
+ *
+ *   - easy   — a small field you start in the middle of and beat by driving
+ *              cleanly. The rivals top out below the player's boosted car.
+ *   - medium — a bigger field, a longer race, and rivals that are *quicker in
+ *              a straight line than the player's stock car*. You start near the
+ *              back. Winning means spending mount/spell powers from the shop:
+ *              a Power upgrade lifts your top speed, a Strength/Shield build
+ *              lets you lean on the field, offensive charms slow or damage them.
+ *   - hard   — the same idea turned up: the largest field, the longest race,
+ *              the fastest rivals, and the deepest grid slot. Effectively
+ *              unwinnable on the stock car, which is the point.
+ *
+ * `cars` counts the player. `playerSlot` is a 0-based grid index (0 = pole).
+ * The AI performance band itself (top speed, grip, mistakes) lives in
+ * DIFFICULTIES in RacerAI.js.
+ */
+export const DIFFICULTY_FIELD = {
+  easy: { cars: 10, playerSlot: 4 },   // 5th of 10
+  standard: { cars: 15, playerSlot: 9 },   // 10th of 15
+  expert: { cars: 20, playerSlot: 14 },  // 15th of 20
+};
 
 export const RACE_STATE = {
   IDLE: 'idle',
@@ -142,6 +169,9 @@ export class RaceManager {
     this.raceType = RACE_TYPES.CAR;
     this.raceTypes = [RACE_TYPES.CAR, RACE_TYPES.DRAGON];
     this.lapCount = 3;
+    /** 0-based grid slot the player took at the last start; drives placement
+     * and the "you start Nth" readout. Set from DIFFICULTY_FIELD in start(). */
+    this.playerGridSlot = PLAYER_GRID_SLOT;
 
     this.field = new RacerField({ scene, physics, materials });
     /** @type {Array<object>} entrants, player included */
@@ -195,6 +225,17 @@ export class RaceManager {
 
   get dragonRace() {
     return this.raceType === RACE_TYPES.DRAGON;
+  }
+
+  /**
+   * Field shape for a difficulty: how many cars start and where the player
+   * sits on the grid. Falls back to a full 10-car field from mid-grid for any
+   * band a circuit invents that isn't in the table.
+   * @param {string} difficulty
+   * @returns {{cars:number, playerSlot:number}}
+   */
+  _fieldFor(difficulty) {
+    return DIFFICULTY_FIELD[difficulty] ?? { cars: 10, playerSlot: PLAYER_GRID_SLOT };
   }
 
   setRaceType(type) {
@@ -329,15 +370,22 @@ export class RaceManager {
     this.pickups.scatter(this.path, this.dragonRace ? 0 : this.plannedDrops, prnd);
 
     const grid = this.track.startGrid;
-    const aiCount = Math.min(MAX_RACERS - 1, Math.max(0, grid.length - 1));
+    /* Difficulty decides how big the field is and how deep the player starts.
+     * Both are clamped to the grid the circuit actually published, so a track
+     * with fewer slots than a hard field asks for still races - it just fields
+     * fewer cars and seats the player at the back of what exists. */
+    const shape = this._fieldFor(this.difficulty);
+    const totalCars = Math.min(shape.cars, grid.length);
+    const aiCount = Math.max(0, totalCars - 1);
+    this.playerGridSlot = Math.min(shape.playerSlot, Math.max(0, totalCars - 1), grid.length - 1);
     this.field.build(this.path, aiCount, this._seed, this.raceType);
 
-    // Slots: the player takes PLAYER_GRID_SLOT, the AI fill round it in order.
+    // Slots: the player takes playerGridSlot, the AI fill the rest in order.
     const slots = [];
-    for (let i = 0; i < grid.length; i++) if (i !== PLAYER_GRID_SLOT) slots.push(grid[i]);
+    for (let i = 0; i < grid.length; i++) if (i !== this.playerGridSlot) slots.push(grid[i]);
     this.field.reset(this.difficulty, slots, this.raceType);
 
-    const playerSlot = grid[Math.min(PLAYER_GRID_SLOT, grid.length - 1)];
+    const playerSlot = grid[this.playerGridSlot];
     this._placePlayer(playerSlot);
 
     this._buildEntries(playerSlot);
@@ -790,7 +838,7 @@ export class RaceManager {
     this.entries.push(this._playerEntry);
     for (const r of this.field.racers) this.entries.push(mk(r));
 
-    this._playerPlace = PLAYER_GRID_SLOT + 1;
+    this._playerPlace = this.playerGridSlot + 1;
     this.order = [...this.entries];
     this._seedSweep(playerSlot);
     this._writeMarkers();

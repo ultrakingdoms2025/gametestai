@@ -1,5 +1,5 @@
 import './race.css';
-import { PLAYER_GRID_SLOT, RACE_TYPES } from '../race/RaceManager.js';
+import { PLAYER_GRID_SLOT, RACE_TYPES, DIFFICULTY_FIELD } from '../race/RaceManager.js';
 
 /** One line each, because "expert" on its own does not tell anyone what changes. */
 /* Difficulty changes the circuit, not just the field, so the blurb has to say
@@ -11,10 +11,18 @@ const RACE_TYPE_BLURB = {
   dragon: 'Aerial race on dragons through ordered floating rings.',
 };
 
+/* The internal difficulty keys are easy/standard/expert; the player sees
+ * EASY / MEDIUM / HARD. Kept as a display map rather than renaming the keys,
+ * which are baked into saves and the economy. */
+const DIFFICULTY_LABEL = { easy: 'EASY', standard: 'MEDIUM', expert: 'HARD' };
+function diffLabel(id) {
+  return DIFFICULTY_LABEL[id] ?? String(id ?? '').toUpperCase();
+}
+
 const DIFFICULTY_BLURB = {
-  easy: '2 laps, clear road. A slower, scrappier field.',
-  standard: '3 laps, chicanes and scattered hazards. Evenly matched.',
-  expert: '4 laps, tight chicanes and heavy debris. They rarely slip.',
+  easy: '3 laps · start 5th of 10. A slower field — win by driving cleanly.',
+  standard: '5 laps · start 10th of 15. Rivals are faster — spend mount powers.',
+  expert: '10 laps · start 15th of 20. Brutal pace — powers are mandatory.',
 };
 
 /**
@@ -42,7 +50,13 @@ const DIFFICULTY_BLURB = {
  * ten cars are already being simulated.
  */
 
-const ORDINALS = ['0th', '1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th', '9th', '10th'];
+const ORDINALS = ['0th', '1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th', '9th', '10th',
+  '11th', '12th', '13th', '14th', '15th', '16th', '17th', '18th', '19th', '20th'];
+
+/* Laps per difficulty, mirroring RaceWorld._variantLaps so the picker can show
+ * the race length for the *selected* band before it starts (the world only
+ * applies its lap count at start). Keep in step with RaceWorld. */
+const RACE_LAPS = { easy: 3, standard: 5, expert: 10 };
 
 function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -78,6 +92,7 @@ export class RaceUI {
     this.race = race ?? null;
     this._panelOpen = false;
     this._boardOpen = false;
+    this._stopOpen = false;
     this._flash = 0;
     this._dropFlash = 0;
     /* Collected since the last frame that drew them. Driving through two in one
@@ -105,7 +120,10 @@ export class RaceUI {
       if (e.code === 'F7') {
         e.preventDefault();
         if (this.input?.textCaptured) return;
-        this.togglePanel();
+        // Mid-race F7 is a stop prompt, not the setup picker — the grid is
+        // already locked in, so the only meaningful choice left is to bail.
+        if (this.race?.racing) this._toggleStop();
+        else this.togglePanel();
       } else if (e.code === 'Enter') {
         /* Start, from wherever you are.
          *
@@ -116,12 +134,13 @@ export class RaceUI {
          * on text capture, so it still means "send" in chat.
          */
         if (this.input?.textCaptured) return;
-        if (this._boardOpen || !this.race?.ready || this.race.state !== 'idle') return;
+        if (this._stopOpen || this._boardOpen || !this.race?.ready || this.race.state !== 'idle') return;
         e.preventDefault();
         this.closePanel();
         this.race.start(this.race.difficulty);
       } else if (e.code === 'Escape') {
-        if (this._boardOpen) this._closeBoard();
+        if (this._stopOpen) this._closeStop();
+        else if (this._boardOpen) this._closeBoard();
         else if (this._panelOpen) this.closePanel();
       }
     };
@@ -140,19 +159,20 @@ export class RaceUI {
       this._offs.push(bus.on('race:started', () => {
         this.closePanel();
         this._closeBoard();
+        this._closeStop();
       }));
       this._offs.push(bus.on('race:lap', (e) => { if (e.isPlayer) this._flash = 1.2; }));
       this._offs.push(bus.on('race:pickup', (e) => {
         this._dropFlash = 0.5;
         this._dropGain += e?.count ?? 1;
       }));
-      this._offs.push(bus.on('race:finished', (e) => this._showBoard(e)));
-      this._offs.push(bus.on('race:aborted', () => { this._closeBoard(); }));
+      this._offs.push(bus.on('race:finished', (e) => { this._closeStop(); this._showBoard(e); }));
+      this._offs.push(bus.on('race:aborted', () => { this._closeStop(); this._closeBoard(); }));
     }
   }
 
   get isOpen() {
-    return this._panelOpen || this._boardOpen;
+    return this._panelOpen || this._boardOpen || this._stopOpen;
   }
 
   /* ------------------------------------------------------------------ */
@@ -332,6 +352,38 @@ export class RaceUI {
     wrap.appendChild(board);
     this.boardEl = board;
 
+    /* ---- in-race stop confirm ---------------------------------------- *
+     * F7 during a race must not reopen the setup picker (you can't change the
+     * grid mid-race), so it raises this instead: a single decision, stop or
+     * carry on. Shares .rc-sheet so it hit-tests and hides like the others. */
+    const stop = el('div', 'rc-sheet rc-stop');
+    const scard = el('div', 'rc-card');
+    const shead = el('div', 'rc-head');
+    const stitles = el('div', null);
+    stitles.append(el('div', 'rc-kicker', 'In progress'), el('div', 'rc-title', 'STOP RACE?'));
+    shead.append(stitles);
+    const sbody = el('div', 'rc-foot', 'Leaving now abandons the race — no finishing position and no prize money. The circuit stays open, so you can line up again from the picker.');
+    const sactions = el('div', 'rc-actions');
+    this.stopBtn = el('button', 'rc-start rc-danger', 'STOP RACE');
+    this.stopBtn.type = 'button';
+    this.stopBtn.addEventListener('click', () => {
+      this._closeStop();
+      this.race?.abort?.('player');
+    });
+    const resumeBtn = el('button', 'rc-ghost', 'RESUME');
+    resumeBtn.type = 'button';
+    resumeBtn.addEventListener('click', () => this._closeStop());
+    sactions.append(this.stopBtn, resumeBtn);
+    scard.append(shead, sbody, sactions);
+    stop.appendChild(scard);
+    scard.addEventListener('mousedown', (e) => e.stopPropagation());
+    scard.addEventListener('click', (e) => e.stopPropagation());
+    // A click on the backdrop resumes rather than stops — stopping is a
+    // deliberate button press, never a stray click.
+    stop.addEventListener('click', () => this._closeStop());
+    wrap.appendChild(stop);
+    this.stopEl = stop;
+
     return wrap;
   }
 
@@ -378,7 +430,7 @@ export class RaceUI {
         const b = el('button', 'rc-pick');
         b.type = 'button';
         b.append(
-          el('span', 'rc-pick-n', String(id).toUpperCase()),
+          el('span', 'rc-pick-n', diffLabel(id)),
           el('span', 'rc-pick-d', DIFFICULTY_BLURB[id] ?? '')
         );
         b.addEventListener('click', () => {
@@ -391,9 +443,6 @@ export class RaceUI {
     }
     this._syncPicks();
 
-    this.factLaps.textContent = String(r?.lapCount ?? 3);
-    this.factField.textContent = `${Math.min(10, (r?.track?.startGrid?.length ?? 10))} cars`;
-    this.factGrid.textContent = ordinal(PLAYER_GRID_SLOT + 1);
     const nDrops = r?.plannedDrops ?? 0;
     this.factDrops.textContent = nDrops ? `${nDrops} · 1 cr each` : '—';
     this.startBtn.disabled = !r?.ready;
@@ -404,6 +453,16 @@ export class RaceUI {
     for (const [id, b] of this._pickButtons) b.classList.toggle('on', id === this.race?.difficulty);
     for (const [id, b] of this._typeButtons) b.classList.toggle('on', id === this.race?.raceType);
     if (this.factVehicle) this.factVehicle.textContent = String(this.race?.raceType ?? RACE_TYPES.CAR).toUpperCase();
+    // Facts follow the *selected* difficulty, not the last race that ran, so the
+    // player sees the length/field/grid they are about to get before starting.
+    const diff = this.race?.difficulty ?? 'standard';
+    const shape = DIFFICULTY_FIELD[diff] ?? { cars: 10, playerSlot: PLAYER_GRID_SLOT };
+    const gridLen = this.race?.track?.startGrid?.length ?? shape.cars;
+    const cars = Math.min(shape.cars, gridLen);
+    const slot = Math.min(shape.playerSlot, cars - 1, gridLen - 1);
+    if (this.factLaps) this.factLaps.textContent = String(RACE_LAPS[diff] ?? this.race?.lapCount ?? 3);
+    if (this.factField) this.factField.textContent = `${cars} ${this.race?.dragonRace ? 'dragons' : 'cars'}`;
+    if (this.factGrid) this.factGrid.textContent = ordinal(slot + 1);
   }
 
   /* ------------------------------------------------------------------ */
@@ -432,6 +491,29 @@ export class RaceUI {
     if (this._boardOpen) return;
     if (this._panelOpen) this.closePanel();
     else this.openPanel();
+  }
+
+  /* Mid-race stop confirm. Frees the cursor like the picker so the buttons are
+   * clickable, but leaves the race running behind it — resuming just closes. */
+  _openStop() {
+    if (this._stopOpen || !this.race?.racing) return;
+    this._stopOpen = true;
+    this.stopEl?.classList.add('on');
+    this.input?.exitLock?.();
+    this.bus?.emit('race:menu', { open: true });
+  }
+
+  _closeStop() {
+    if (!this._stopOpen) return;
+    this._stopOpen = false;
+    this.stopEl?.classList.remove('on');
+    this.input?.relockKeyboard?.();
+    this.bus?.emit('race:menu', { open: false });
+  }
+
+  _toggleStop() {
+    if (this._stopOpen) this._closeStop();
+    else this._openStop();
   }
 
   _showBoard(payload) {
@@ -467,7 +549,7 @@ export class RaceUI {
 
     const mine = results.find((x) => x.isPlayer);
     this.boardKicker.textContent = payload?.difficulty
-      ? `${payload.difficulty.toUpperCase()} · ${laps} lap${laps === 1 ? '' : 's'}`
+      ? `${diffLabel(payload.difficulty)} · ${laps} lap${laps === 1 ? '' : 's'}`
       : 'Chequered flag';
     this.boardTitle.textContent = mine?.dnf ? 'DID NOT FINISH' : `${ordinal(mine?.place ?? 0)} PLACE`;
     // Split the payout so a player can see what the driving earned and what the
@@ -540,7 +622,7 @@ export class RaceUI {
     const armed = !!r.ready && s.state === 'idle' && !this._panelOpen && !this._boardOpen;
     this.readyEl.classList.toggle('on', armed);
     if (armed) {
-      this.readyMeta.textContent = `${String(s.difficulty).toUpperCase()} · ${s.laps} laps · Enter, or F7 for options`;
+      this.readyMeta.textContent = `${diffLabel(s.difficulty)} · ${RACE_LAPS[s.difficulty] ?? s.laps} laps · Enter, or F7 for options`;
     }
     if (!live) {
       this._lastCount = -1;

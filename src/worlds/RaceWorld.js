@@ -528,7 +528,7 @@ export class RaceWorld extends World {
     /** Furniture that only exists on some difficulties. @type {Array<{mesh:THREE.Object3D, colliders:any[], from:string}>} */
     this._variantFurniture = [];
     /** Lap count per difficulty - a longer race is part of a harder one. */
-    this._variantLaps = { easy: 2, standard: 3, expert: 4 };
+    this._variantLaps = { easy: 3, standard: 5, expert: 10 };
     /** Circuit length in metres. */
     this.trackLength = 0;
 
@@ -2290,8 +2290,10 @@ export class RaceWorld extends World {
       });
     }
 
-    /* ---- start grid: five rows of two, staggered ---- */
-    for (let k = 0; k < 10; k++) {
+    /* ---- start grid: ten rows of two, staggered ----
+     * Twenty slots so the hard field (20 cars) has a real grid to line up on;
+     * easy and medium simply use the front of it. */
+    for (let k = 0; k < 20; k++) {
       const rowIdx = k >> 1;
       const col = k & 1;
       // Behind the line, and behind the gantry legs.

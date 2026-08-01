@@ -66,7 +66,9 @@ const AXLE_Z = 1.30;
 const HALF_TRACK = 0.80;
 const AI_DRAGON_FLIGHT = 10;
 
-/** Nine liveries, spaced round the wheel so no two rivals read as the same car. */
+/** Nineteen liveries, spaced round the wheel so no two rivals read as the same
+ * car. Expert fields 20 cars (19 rivals), so the list has to cover the largest
+ * grid; smaller fields just take the first N. */
 const LIVERIES = [
   { name: 'VANTA', color: 0xd8452f },
   { name: 'KESTREL', color: 0xf0a51e },
@@ -77,6 +79,16 @@ const LIVERIES = [
   { name: 'RAMPART', color: 0xc257d8 },
   { name: 'CINDER', color: 0xf05a95 },
   { name: 'TALON', color: 0xb9c4cf },
+  { name: 'EMBER', color: 0xe86a2c },
+  { name: 'SABLE', color: 0xc9a227 },
+  { name: 'VERDANT', color: 0x4fce5d },
+  { name: 'MARINER', color: 0x1fb6a8 },
+  { name: 'AZURE', color: 0x3d7ff0 },
+  { name: 'NOVA', color: 0x9d5cf0 },
+  { name: 'FLARE', color: 0xe0479a },
+  { name: 'QUARTZ', color: 0xd66f6f },
+  { name: 'ONYX', color: 0x7f8a97 },
+  { name: 'PULSAR', color: 0x4fd1e0 },
 ];
 
 /**
@@ -89,9 +101,14 @@ const LIVERIES = [
  * and there is always someone to catch.
  */
 export const DIFFICULTIES = {
-  easy: { label: 'ROOKIE', pace: 0.74, spread: 0.17, grip: 0.78, mistakes: 2.2 },
-  standard: { label: 'CONTENDER', pace: 0.88, spread: 0.12, grip: 0.92, mistakes: 1.0 },
-  expert: { label: 'APEX', pace: 1.0, spread: 0.075, grip: 1.06, mistakes: 0.4 },
+  // pace is a fraction of REF_TOP (33.5 m/s). The player's stock car boosts to
+  // 34, and buys top speed above that with Power upgrades.
+  //   easy  → 26.8 m/s: slower than the player; win by driving cleanly.
+  //   std   → 35.2 m/s: faster than the stock boosted car; you need powers.
+  //   expert→ 40.2 m/s: much faster; effectively unwinnable stock.
+  easy: { label: 'ROOKIE', pace: 0.80, spread: 0.16, grip: 0.82, mistakes: 2.0 },
+  standard: { label: 'CONTENDER', pace: 1.05, spread: 0.10, grip: 1.02, mistakes: 0.8 },
+  expert: { label: 'APEX', pace: 1.20, spread: 0.07, grip: 1.18, mistakes: 0.3 },
 };
 
 /** Reference top speed, m/s. The player's car boosts to 34. */

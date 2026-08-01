@@ -266,6 +266,82 @@ export async function setPlayerCreditBalance(siteUserId: string, credits: number
 }
 
 // ---------------------------------------------------------------------------
+// Game state persistence (credits + inventory snapshot from the live game)
+// ---------------------------------------------------------------------------
+
+let gameStateSchemaDone = false;
+
+async function ensureGameStateColumn(): Promise<void> {
+  if (gameStateSchemaDone) return;
+  await pgQuery(`ALTER TABLE players ADD COLUMN IF NOT EXISTS game_state TEXT`).catch(() => {});
+  gameStateSchemaDone = true;
+}
+
+export async function getGameState(siteUserId: string): Promise<unknown | null> {
+  await ensureGameStateColumn();
+  const { rows } = await pgQuery<{ game_state: string | null }>(
+    'SELECT game_state FROM players WHERE site_user_id = $1 LIMIT 1',
+    [siteUserId]
+  );
+  const raw = rows[0]?.game_state;
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveGameState(
+  siteUserId: string,
+  credits: number,
+  state: unknown
+): Promise<boolean> {
+  await ensureGameStateColumn();
+  const stateJson = state == null ? null : JSON.stringify(state).slice(0, 200_000);
+  const { rows } = await pgQuery<{ id: string }>(
+    `UPDATE players
+     SET credit_balance = $1, game_state = COALESCE($2, game_state), updated_at = NOW()
+     WHERE site_user_id = $3
+     RETURNING id`,
+    [Math.max(0, Math.floor(credits)), stateJson, siteUserId]
+  );
+  return !!rows[0];
+}
+
+/**
+ * Record an in-game merchant trade so it shows in the admin purchase history.
+ * amount_cents is 0 (no real money changed hands); credits_amount carries the
+ * credit delta (positive = credits spent buying, negative = credits earned selling).
+ */
+export async function recordGameTrade(opts: {
+  siteUserId: string;
+  kind: 'buy' | 'sell';
+  itemName: string;
+  credits: number;
+  qty: number;
+}): Promise<void> {
+  const { rows } = await pgQuery<{ id: string }>(
+    'SELECT id FROM players WHERE site_user_id = $1 LIMIT 1',
+    [opts.siteUserId]
+  );
+  const playerId = rows[0]?.id;
+  if (!playerId) return;
+
+  await pgQuery(
+    `INSERT INTO purchases (id, player_id, stripe_intent_enc, amount_cents, currency, type, credits_amount, status)
+     VALUES ($1, $2, $3, 0, 'credits', $4, $5, 'completed')`,
+    [
+      randomUUID(),
+      playerId,
+      `game:${opts.kind}:${opts.itemName.slice(0, 60)} x${Math.max(1, Math.floor(opts.qty))}`,
+      opts.kind === 'buy' ? 'market_buy' : 'market_sell',
+      Math.floor(opts.credits),
+    ]
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Purchase recording
 // ---------------------------------------------------------------------------
 

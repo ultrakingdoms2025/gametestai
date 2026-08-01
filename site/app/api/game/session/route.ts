@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { getUserById } from '@/lib/db';
-import { findOrCreatePlayer, getPlayerStatus } from '@/lib/playerDb';
+import { findOrCreatePlayer, getPlayerStatus, getGameState } from '@/lib/playerDb';
 
 export async function GET() {
   const session = await auth();
@@ -20,6 +20,8 @@ export async function GET() {
     return NextResponse.json({ error: 'Player profile not found.' }, { status: 404 });
   }
 
+  const gameState = await getGameState(session.user.id).catch(() => null);
+
   return NextResponse.json({
     player_id: profile.playerId,
     handle: profile.handle ?? session.user.name ?? user.email.split('@')[0],
@@ -27,5 +29,6 @@ export async function GET() {
     credits: profile.creditBalance,
     has_access: profile.hasAccess,
     days_remaining: profile.daysRemaining,
+    game_state: gameState,
   });
 }

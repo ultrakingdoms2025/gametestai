@@ -28,6 +28,30 @@ import './keybind.css';
 
 const CAPTURE_HINT = 'Press any key…  (Esc to cancel)';
 
+/**
+ * Keys with dedicated handlers that are shown for reference but cannot be
+ * rebound: each of these panels owns its own listener (see the note in the
+ * footer for why), so the menu documents them rather than hiding them.
+ */
+const FIXED_KEYS = [
+  { key: 'I', label: 'Inventory & bag' },
+  { key: 'B', label: 'Marketplace (near a vendor)' },
+  { key: 'M', label: 'Mount wheel — hold, aim, release' },
+  { key: 'K', label: 'Unstuck — teleport to safety' },
+  { key: '1–4', label: 'Weapon slots' },
+  { key: 'Wheel', label: 'Cycle weapons' },
+  { key: 'F1', label: 'Help & controls' },
+  { key: 'F2', label: 'Customise character' },
+  { key: 'F3', label: 'Diagnostics overlay' },
+  { key: 'F4', label: 'Audio options' },
+  { key: 'F5', label: 'Save' },
+  { key: 'F6', label: 'This panel' },
+  { key: 'F7', label: 'Race panel — in the circuit' },
+  { key: 'F9', label: 'Report a bug' },
+  { key: 'Shift+F9', label: 'Load a save' },
+  { key: 'Esc', label: 'Close panels / release mouse' },
+];
+
 /** Human-readable key names. `event.code` is unreadable on its own. */
 function keyName(code) {
   if (!code) return '—';
@@ -112,6 +136,22 @@ export class KeybindMenu {
       groups.get(d.group).appendChild(row);
     }
 
+    // Fixed keys: shown so F6 documents the whole keyboard, but not clickable
+    // because their owners listen for the literal key (see the footer note).
+    const fixedSec = el('section', 'kb-group');
+    fixedSec.appendChild(el('h3', 'kb-group-t', 'Fixed keys'));
+    for (const f of FIXED_KEYS) {
+      const row = el('div', 'kb-row');
+      row.append(el('div', 'kb-label', f.label));
+      const cap = el('button', 'kb-cap', f.key);
+      cap.disabled = true;
+      cap.style.opacity = '0.65';
+      cap.style.cursor = 'default';
+      row.appendChild(cap);
+      fixedSec.appendChild(row);
+    }
+    body.appendChild(fixedSec);
+
     const foot = el('div', 'kb-foot');
     const reset = el('button', 'kb-btn ghost', 'Reset all to defaults');
     reset.addEventListener('click', () => {
@@ -123,8 +163,9 @@ export class KeybindMenu {
     foot.append(reset, this._msg);
 
     const note = el('div', 'kb-note',
-      'F1–F5, F9, F12 and Esc stay fixed: those panels listen for themselves so they '
-      + 'still open when everything else is disabled, which is exactly when you need them.');
+      'Fixed keys (I, B, M, K, F1–F9 and Esc) cannot be rebound: those panels listen for '
+      + 'themselves so they still open when everything else is disabled, which is exactly '
+      + 'when you need them.');
 
     card.append(head, body, foot, note);
     wrap.appendChild(card);

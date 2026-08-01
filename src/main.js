@@ -237,8 +237,71 @@ const schedulePersist = (reason) => {
   persistTimer = setTimeout(() => {
     persistTimer = null;
     save.save(reason);
+    scheduleRemotePersist(reason);
   }, 750);
 };
+
+/* --- Backend persistence -------------------------------------------------
+ * When the player is signed in, credits and inventory are mirrored to the
+ * account database so progress survives across devices and the admin panel
+ * reflects in-game spending. localStorage stays the fast local path; this is
+ * the durable one. Merchant trades are batched and flushed with the state so
+ * the admin purchase history shows in-game buys/sells too. */
+let accountActive = false;
+let remoteTimer = null;
+let remoteInFlight = false;
+let remoteDirty = false;
+const pendingTrades = [];
+
+function buildRemotePayload() {
+  const payload = {
+    credits: Math.max(0, Math.floor(economy?.credits ?? 0)),
+    state: { v: 1, at: Date.now(), inventory: inventory?.serialize?.() ?? null },
+  };
+  if (pendingTrades.length) payload.trades = pendingTrades.splice(0, pendingTrades.length);
+  return payload;
+}
+
+async function pushRemoteState() {
+  if (!accountActive) return;
+  if (remoteInFlight) { remoteDirty = true; return; }
+  remoteInFlight = true;
+  const payload = buildRemotePayload();
+  try {
+    const res = await fetch('/api/game/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    // Put unrecorded trades back so the next flush retries them.
+    if (payload.trades?.length) pendingTrades.unshift(...payload.trades);
+    console.warn('[account] state sync failed:', err?.message ?? err);
+  } finally {
+    remoteInFlight = false;
+    if (remoteDirty) { remoteDirty = false; scheduleRemotePersist('retry'); }
+  }
+}
+
+function scheduleRemotePersist() {
+  if (!accountActive) return;
+  if (remoteTimer) clearTimeout(remoteTimer);
+  remoteTimer = setTimeout(() => {
+    remoteTimer = null;
+    pushRemoteState();
+  }, 1500);
+}
+
+// Tab close / navigation: flush synchronously via sendBeacon, which survives
+// page teardown where fetch does not.
+window.addEventListener('pagehide', () => {
+  if (!accountActive) return;
+  try {
+    const blob = new Blob([JSON.stringify(buildRemotePayload())], { type: 'application/json' });
+    navigator.sendBeacon?.('/api/game/state', blob);
+  } catch { /* best effort */ }
+});
 
 const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, portals, caches, contracts, questBoard });
 
@@ -290,9 +353,21 @@ const accountStatePromise = fetch('/api/game/session', { cache: 'no-store' })
 async function hydrateAccountSession() {
   const account = await accountStatePromise;
   if (!account) return;
+  accountActive = true;
 
   if (typeof account.credits === 'number') {
     economy.set(account.credits, 'account-sync');
+  }
+
+  // Server-saved inventory takes precedence over whatever the fresh boot
+  // seeded - it is the durable copy of what the player actually owns.
+  const remoteInv = account.game_state?.inventory;
+  if (remoteInv && inventory?.deserialize) {
+    try {
+      inventory.deserialize(remoteInv);
+    } catch (err) {
+      console.warn('[account] could not restore server inventory:', err?.message ?? err);
+    }
   }
 
   if (typeof account.handle === 'string' && account.handle.trim()) {
@@ -666,6 +741,17 @@ bus.on('inventory:drop', ({ itemId, qty }) => {
 });
 bus.on('credits:changed', ({ reason }) => schedulePersist(`credits:${reason ?? 'change'}`));
 bus.on('inventory:changed', () => schedulePersist('inventory-change'));
+// Merchant trades are queued and flushed with the next state sync so the
+// admin purchase history shows in-game buys and sells.
+bus.on('market:trade', ({ itemId, qty, credits, kind }) => {
+  pendingTrades.push({
+    kind: kind === 'sell' ? 'sell' : 'buy',
+    itemName: String(itemId ?? 'item').replace(/_/g, ' '),
+    credits: Math.abs(Math.floor(Number(credits) || 0)) * (kind === 'sell' ? -1 : 1),
+    qty: Math.max(1, Math.floor(Number(qty) || 1)),
+  });
+  scheduleRemotePersist('trade');
+});
 bus.on('market:open', () => setGameplayBlocked('market', true));
 bus.on('market:close', () => setGameplayBlocked('market', false));
 bus.on('keybinds:open', () => setGameplayBlocked('keybinds', true));

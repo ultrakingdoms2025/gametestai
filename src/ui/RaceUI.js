@@ -178,6 +178,10 @@ export class RaceUI {
     this.lastRow.append(el('span', 'rc-k', 'LAST'), (this.lastVal = el('span', 'rc-v', '—')));
     this.bestRow = el('div', 'rc-stat rc-dim');
     this.bestRow.append(el('span', 'rc-k', 'BEST'), (this.bestVal = el('span', 'rc-v', '—')));
+    // Rings only exist in the dragon race; hidden by default and switched on by
+    // the frame tick when the circuit reports a ring count.
+    this.ringRow = el('div', 'rc-stat rc-ring off');
+    this.ringRow.append(el('span', 'rc-k', 'RINGS'), (this.ringVal = el('span', 'rc-v', '0/0')));
     // Drops sit last and carry their own accent, because unlike the four rows
     // above it they are the only line a player can change by *steering* rather
     // than by going faster.

@@ -136,6 +136,15 @@
 
 .rc-drop.off { display: none; }
 
+.rc-ring.off { display: none; }
+
+.rc-ring .rc-k { color: rgba(120, 200, 255, 0.9); }
+
+.rc-ring .rc-v {
+  font-size: 13px;
+  color: #8fdcff;
+}
+
 .rc-drop .rc-k { color: rgba(214, 163, 88, 0.9); }
 
 .rc-drop .rc-v {
@@ -338,13 +347,16 @@
   background: radial-gradient(ellipse at 50% 40%, rgba(6, 16, 26, 0.72), rgba(2, 6, 12, 0.92));
   backdrop-filter: blur(3px);
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
-  transition: opacity 160ms ease;
+  transition: opacity 160ms ease, visibility 0s linear 160ms;
 }
 
 .rc-sheet.on {
   opacity: 1;
+  visibility: visible;
   pointer-events: auto;
+  transition: opacity 160ms ease, visibility 0s;
 }
 
 .rc-card {

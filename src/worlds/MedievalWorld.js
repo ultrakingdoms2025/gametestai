@@ -5520,6 +5520,7 @@ export class MedievalWorld extends World {
 
   _buildVillage() {
     const B = new GeoBatch();
+    this._interiorCandidates = [];
     // Hand-placed so the houses address the streets rather than scatter.
     PLOTS.forEach(([x, z, ry, w, d, st, roof, lit], i) => {
       this._house(B, {
@@ -5531,12 +5532,28 @@ export class MedievalWorld extends World {
         light: !!lit && i % 2 === 0,
         seed: 0x4000 + i * 7919,
       });
+      this._interiorCandidates.push({
+        x,
+        z,
+        y: this._height(x, z),
+        hx: Math.max(2.8, w * 0.5 - 0.35),
+        hz: Math.max(2.8, d * 0.5 - 0.35),
+        label: 'Village House',
+      });
     });
 
     // The tavern: bigger, jettied, with a painted sign and lanterns.
     const tav = this._house(B, {
       x: 46, z: 32, ry: -0.42, w: 13, d: 8.5, storeys: 2,
       roof: 'slate', jetty: true, lit: true, light: false, seed: 0x7a17e,
+    });
+    this._interiorCandidates.push({
+      x: 46,
+      z: 32,
+      y: tav.baseY,
+      hx: 6.0,
+      hz: 3.9,
+      label: 'Tavern',
     });
     const tc = Math.cos(-0.42);
     const ts = Math.sin(-0.42);
@@ -8947,4 +8964,3 @@ export class MedievalWorld extends World {
     super.dispose();
   }
 }
-

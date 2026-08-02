@@ -385,6 +385,61 @@ export class InteriorKit {
     return this;
   }
 
+  /**
+   * Compact single-storey interior for bulk rollout across dense districts.
+   * Keeps draw/collider cost far below the full 3-floor tower while preserving
+   * the enterable loop (door + furnished room + collectible).
+   *
+   * @param {{ x:number, z:number, baseY:number, intHalf?:number, wallH?:number }} spec
+   */
+  buildHouse(spec) {
+    const ox = spec.x;
+    const oz = spec.z;
+    const y0 = spec.baseY;
+
+    const INT = Math.max(2.6, spec.intHalf ?? 3.2);
+    const WT = 0.36;
+    const OUT = INT + WT;
+    const wallH = Math.max(2.6, spec.wallH ?? 2.9);
+    const wallMidY = y0 + wallH * 0.5;
+    const halfDoor = Math.min(1.0, Math.max(0.78, INT * 0.34));
+    const doorH = Math.min(2.35, wallH - 0.38);
+
+    const X = (lx) => ox + lx;
+    const Z = (lz) => oz + lz;
+
+    // Slightly deep slab so walls never float at blend seams.
+    this.solid('stone', ox, y0 - 0.5, oz, OUT, 0.5, OUT);
+
+    const northZ = Z(OUT - 0.22);
+    this.solid('stone', ox - (INT + halfDoor) / 2, wallMidY, northZ, (INT - halfDoor) / 2 + 0.24, wallH * 0.5, 0.22);
+    this.solid('stone', ox + (INT + halfDoor) / 2, wallMidY, northZ, (INT - halfDoor) / 2 + 0.24, wallH * 0.5, 0.22);
+    this.solid('stone', ox, y0 + doorH + (wallH - doorH) * 0.5, northZ, halfDoor, (wallH - doorH) * 0.5, 0.22);
+    this.solid('stone', ox, wallMidY, Z(-(OUT - 0.22)), OUT, wallH * 0.5, 0.22);
+    this.solid('stone', X(OUT - 0.22), wallMidY, oz, 0.22, wallH * 0.5, OUT);
+    this.solid('stone', X(-(OUT - 0.22)), wallMidY, oz, 0.22, wallH * 0.5, OUT);
+
+    this._buildDoor(ox, y0, northZ, halfDoor, doorH);
+
+    // Ceiling cap.
+    this.solid('beam', ox, y0 + wallH + 0.12, oz, OUT - 0.04, 0.12, OUT - 0.04);
+
+    // Minimal furnishing.
+    this._rug(ox, oz, y0, INT * 1.1, INT * 1.1, 'fabricBlue');
+    this._table(ox - INT * 0.2, oz + INT * 0.05, y0);
+    this._chair(ox - INT * 0.8, oz + INT * 0.05, y0, '+x');
+    this._bed(ox + INT * 0.45, oz - INT * 0.15, y0);
+    this._chest(ox + INT * 0.1, oz + INT * 0.75, y0);
+    this._windows(ox, oz, y0, INT, OUT, wallH);
+
+    this.collectibleSpots.push({
+      position: new THREE.Vector3(ox, y0 + 0.62, oz),
+      tier: 'common',
+    });
+
+    return this;
+  }
+
   /* --- Door assembly --------------------------------------------------- */
   _buildDoor(ox, y0, doorZ, halfDoor, doorH) {
     const leafW = halfDoor; // each leaf covers half the opening

@@ -490,6 +490,40 @@ class Batch {
   }
 }
 
+function prepDynamicGeo(geo, key, tint = 0xffffff) {
+  const tile = TILE_METRES(key) || 0;
+  if (tile > 0) {
+    const posA = geo.attributes.position;
+    const nrmA = geo.attributes.normal;
+    const uv = new Float32Array(posA.count * 2);
+    const inv = 1 / tile;
+    for (let i = 0; i < posA.count; i++) {
+      const x = posA.getX(i);
+      const y = posA.getY(i);
+      const z = posA.getZ(i);
+      const nx = nrmA ? Math.abs(nrmA.getX(i)) : 0;
+      const ny = nrmA ? Math.abs(nrmA.getY(i)) : 1;
+      const nz = nrmA ? Math.abs(nrmA.getZ(i)) : 0;
+      let u; let v;
+      if (ny >= nx && ny >= nz) { u = x; v = z; }
+      else if (nx >= nz) { u = z; v = y; }
+      else { u = x; v = y; }
+      uv[i * 2] = u * inv;
+      uv[i * 2 + 1] = v * inv;
+    }
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  }
+  _color.set(tint);
+  const col = new Float32Array(geo.attributes.position.count * 3);
+  for (let i = 0; i < geo.attributes.position.count; i++) {
+    col[i * 3] = _color.r;
+    col[i * 3 + 1] = _color.g;
+    col[i * 3 + 2] = _color.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return geo;
+}
+
 /* ================================================================== */
 
 export class RaceWorld extends World {
@@ -1898,18 +1932,112 @@ export class RaceWorld extends World {
 
     /* ---- pit lane and garages, infield side (negative lat) ---- */
     const wrap = (s) => ((s % co.length) + co.length) % co.length;
+    const enterableGarages = new Map([
+      [-4, 'North Tyre Garage'],
+      [0, 'Race Control Bay'],
+      [4, 'Prototype Paddock Garage'],
+    ]);
     for (let k = -7; k <= 8; k++) {
       const g = co.pointAt(wrap(k * 11), -(W + 14));
       const yaw = alongYaw(g.dx, g.dz);
       // Toward the circuit is +lat, which is the right-hand normal.
       const tx = -g.dz;
       const tz = g.dx;
-      B.box('concrete.wall', 10.4, 5.4, 9, g.x, g.y + 2.7, g.z, yaw, 0xe6e6e2);
-      this.track(this.physics.addRotatedBox(
-        _v1.set(g.x, g.y + 2.7, g.z), _v2.set(5.2, 2.7, 4.5), yaw));
-      // Roller door, facing the pit lane.
-      B.box('metal.panel', 7.4, 3.9, 0.3, g.x + tx * 4.6, g.y + 1.95, g.z + tz * 4.6, yaw,
-        pick(rnd, [0x3f6fa8, 0xb8452f, 0x2f8a5a, 0xd0a02a, 0x7a4a9a]));
+      const enterable = enterableGarages.has(k);
+      const doorPaint = pick(rnd, [0x3f6fa8, 0xb8452f, 0x2f8a5a, 0xd0a02a, 0x7a4a9a]);
+      if (!enterable) {
+        B.box('concrete.wall', 10.4, 5.4, 9, g.x, g.y + 2.7, g.z, yaw, 0xe6e6e2);
+        this.track(this.physics.addRotatedBox(
+          _v1.set(g.x, g.y + 2.7, g.z), _v2.set(5.2, 2.7, 4.5), yaw));
+        // Roller door, facing the pit lane.
+        B.box('metal.panel', 7.4, 3.9, 0.3, g.x + tx * 4.6, g.y + 1.95, g.z + tz * 4.6, yaw,
+          doorPaint);
+      } else {
+        const w = 10.4;
+        const h = 5.4;
+        const d = 9;
+        const hw = w * 0.5;
+        const hd = d * 0.5;
+        const wallT = 0.42;
+        const doorHW = 3.25;
+        const doorH = 3.55;
+        const M = new THREE.Matrix4().makeRotationY(yaw).setPosition(g.x, g.y, g.z);
+        const rcol = (lx, cy, lz, hx, hy, hz) => {
+          _v1.set(lx, cy, lz).applyMatrix4(M);
+          return this.track(this.physics.addRotatedBox(_v1, _v2.set(hx, hy, hz), yaw));
+        };
+        const segW = hw - doorHW;
+        B.box('concrete.wall', w, h, wallT, g.x - tx * (hd - wallT * 0.5), g.y + h * 0.5,
+          g.z - tz * (hd - wallT * 0.5), yaw, 0xe6e6e2);
+        rcol(0, h * 0.5, -hd + wallT * 0.5, hw, h * 0.5, wallT * 0.5 + 0.04);
+        for (const sgn of [-1, 1]) {
+          B.box('concrete.wall', wallT, h, d - wallT * 2,
+            g.x + Math.cos(yaw) * sgn * (hw - wallT * 0.5), g.y + h * 0.5,
+            g.z - Math.sin(yaw) * sgn * (hw - wallT * 0.5), yaw, 0xe6e6e2);
+          rcol(sgn * (hw - wallT * 0.5), h * 0.5, 0, wallT * 0.5 + 0.04, h * 0.5, hd);
+          B.box('concrete.wall', segW, h, wallT,
+            g.x + Math.cos(yaw) * sgn * (doorHW + segW * 0.5) + tx * (hd - wallT * 0.5),
+            g.y + h * 0.5,
+            g.z - Math.sin(yaw) * sgn * (doorHW + segW * 0.5) + tz * (hd - wallT * 0.5),
+            yaw, 0xe6e6e2);
+          rcol(sgn * (doorHW + segW * 0.5), h * 0.5, hd - wallT * 0.5,
+            segW * 0.5, h * 0.5, wallT * 0.5 + 0.04);
+        }
+        B.box('concrete.wall', doorHW * 2, h - doorH, wallT, g.x + tx * (hd - wallT * 0.5),
+          g.y + doorH + (h - doorH) * 0.5, g.z + tz * (hd - wallT * 0.5), yaw, 0xe6e6e2);
+        rcol(0, doorH + (h - doorH) * 0.5, hd - wallT * 0.5,
+          doorHW, (h - doorH) * 0.5, wallT * 0.5 + 0.04);
+        B.box('concrete.road', w - 0.25, 0.16, d - 0.25, g.x, g.y + 0.08, g.z, yaw, 0xd9d8d2);
+        rcol(0, 0.04, 0, hw - 0.12, 0.08, hd - 0.12);
+        B.box('metal.panel', w - 0.1, 0.16, d - 0.1, g.x, g.y + h - 0.08, g.z, yaw, 0xaeb5ba);
+        rcol(0, h - 0.08, 0, hw - 0.05, 0.1, hd - 0.05);
+        B.box('metal.trim', doorHW * 2 + 0.55, 0.35, 0.34, g.x + tx * (hd + 0.08),
+          g.y + doorH + 0.18, g.z + tz * (hd + 0.08), yaw, 0x8d969c);
+        B.box('metal.panel', 2.1, 0.82, 1.1, g.x + Math.cos(yaw) * -2.1 + tx * -0.7,
+          g.y + 0.58, g.z - Math.sin(yaw) * -2.1 + tz * -0.7, yaw + 0.1, doorPaint);
+        rcol(-2.1, 0.58, -0.7, 1.15, 0.65, 0.7);
+        B.box('rubber.track', 1.35, 0.42, 1.35, g.x + Math.cos(yaw) * 1.9 + tx * -0.95,
+          g.y + 0.24, g.z - Math.sin(yaw) * 1.9 + tz * -0.95, yaw, 0x1d1d1d);
+        rcol(1.9, 0.28, -0.95, 0.75, 0.35, 0.75);
+
+        const makeLeaf = (hingeX, dir, openSign) => {
+          const leafW = doorHW - 0.06;
+          const geo = prepDynamicGeo(new THREE.BoxGeometry(leafW, doorH - 0.14, 0.11), 'metal.panel', doorPaint);
+          geo.translate(dir * leafW * 0.5, 0, 0);
+          const leaf = new THREE.Mesh(geo, this._mat('metal.panel'));
+          leaf.castShadow = leaf.receiveShadow = true;
+          this._owned.push(geo);
+          const pivot = new THREE.Group();
+          _v1.set(hingeX, doorH * 0.5, hd - wallT * 0.5).applyMatrix4(M);
+          pivot.position.copy(_v1);
+          pivot.rotation.y = yaw;
+          pivot.add(leaf);
+          this.group.add(pivot);
+          return { pivot, closed: yaw, open: yaw + openSign * Math.PI * 0.58 };
+        };
+        _v1.set(0, doorH * 0.5, hd - wallT * 0.5).applyMatrix4(M);
+        const doorCol = this.track(this.physics.addRotatedBox(_v1, _v2.set(doorHW, doorH * 0.5, 0.13), yaw));
+        const dpos = new THREE.Vector3(0, 1.2, hd).applyMatrix4(M);
+        const lootPos = new THREE.Vector3(-2.1, 1.2, -0.7).applyMatrix4(M);
+        if (!Array.isArray(this.enterables)) this.enterables = [];
+        const n = this.enterables.length;
+        this.enterables.push({
+          label: enterableGarages.get(k),
+          origin: new THREE.Vector3(g.x, g.y, g.z),
+          doors: [{
+            id: `race_pit_${n}`,
+            leaves: [
+              makeLeaf(-doorHW + 0.03, +1, -1),
+              makeLeaf(doorHW - 0.03, -1, +1),
+            ],
+            collider: doorCol,
+            position: dpos,
+            open: false,
+            anim: 0,
+          }],
+          collectibleSpots: [{ position: lootPos, tier: 'common' }],
+        });
+      }
       B.box('metal.trim', 10.8, 0.5, 9.6, g.x, g.y + 5.6, g.z, yaw, 0xb6bcc0);
       // Upper hospitality deck with a glazed front.
       B.box('concrete.wall', 10.4, 3.2, 8, g.x, g.y + 7.5, g.z, yaw, 0xdedfdc);

@@ -1468,8 +1468,18 @@ function excludeEffectsFromAO(gtaoPass) {
       const m = object.material;
       if (!m) return;
       const mats = Array.isArray(m) ? m : [m];
+      // Alpha-tested cutout cards (foliage leaves, grass billboards) belong
+      // here too: the MeshNormalMaterial override ignores alphaMap/alphaTest,
+      // so every leaf card was stamped into the AO buffer as a full opaque
+      // quad - the "solid black rectangles in the tree canopy" bug in the
+      // sports world. Occlusion from a mostly-transparent card is not worth
+      // keeping; skip anything with an alpha-tested texture.
       const skip = object.userData?.noAO === true ||
-        mats.some((mat) => mat && (mat.transparent === true || mat.blending === THREE.AdditiveBlending));
+        mats.some((mat) => mat && (
+          mat.transparent === true ||
+          mat.blending === THREE.AdditiveBlending ||
+          (mat.alphaTest > 0 && (mat.alphaMap || mat.map))
+        ));
       if (skip) {
         object.visible = false;
         cache.push(object);

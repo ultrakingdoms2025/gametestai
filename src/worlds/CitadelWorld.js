@@ -420,6 +420,40 @@ class Batch {
   }
 }
 
+function prepDynamicGeo(geo, key, tint = 0xffffff) {
+  const tile = TILE_METRES(key) || 0;
+  if (tile > 0) {
+    const posA = geo.attributes.position;
+    const nrmA = geo.attributes.normal;
+    const uv = new Float32Array(posA.count * 2);
+    const inv = 1 / tile;
+    for (let i = 0; i < posA.count; i++) {
+      const x = posA.getX(i);
+      const y = posA.getY(i);
+      const z = posA.getZ(i);
+      const nx = nrmA ? Math.abs(nrmA.getX(i)) : 0;
+      const ny = nrmA ? Math.abs(nrmA.getY(i)) : 1;
+      const nz = nrmA ? Math.abs(nrmA.getZ(i)) : 0;
+      let u; let v;
+      if (ny >= nx && ny >= nz) { u = x; v = z; }
+      else if (nx >= nz) { u = z; v = y; }
+      else { u = x; v = y; }
+      uv[i * 2] = u * inv;
+      uv[i * 2 + 1] = v * inv;
+    }
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  }
+  _color.set(tint);
+  const col = new Float32Array(geo.attributes.position.count * 3);
+  for (let i = 0; i < geo.attributes.position.count; i++) {
+    col[i * 3] = _color.r;
+    col[i * 3 + 1] = _color.g;
+    col[i * 3 + 2] = _color.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return geo;
+}
+
 export class CitadelWorld extends World {
   static id = 'citadel';
   static displayName = 'Sunspire Citadel';
@@ -1037,6 +1071,16 @@ export class CitadelWorld extends World {
     const B = new Batch({ ao: 0.46, sky: 0.34, grime: 0.65, span: 3.4 }, TILE_METRES);
     const rnd = this.rnd;
     const rings = 7;
+    const enterableLabels = new Map([
+      ['1:2', 'Spice Merchants House'],
+      ['2:8', 'Scribes Courtyard House'],
+      ['3:17', 'Carpet Loom House'],
+      ['5:24', 'Dyers Roof House'],
+    ]);
+    // Houses whose +Z alley face is walled in by a neighbour: put the door on
+    // the -Z face instead. 1:2's +Z face opens 0.2m from the next block's
+    // wall - the door was physically unreachable there.
+    const flipDoorFace = new Set(['1:2']);
 
     for (let ring = 0; ring < rings; ring++) {
       const r = 34 + ring * 12.5;
@@ -1071,11 +1115,109 @@ export class CitadelWorld extends World {
          * lightness per building, is what makes a skyline read as a place where
          * people paint their own houses. */
         const tint = pick(rnd, WASH);
+        const enterable = enterableLabels.has(`${ring}:${i}`);
+        const wallT = 0.42;
+        const doorHW = 0.86;
+        const doorH = 2.45;
+        const roomCeil = Math.min(h - 0.45, 3.65);
 
-        B.box('plaster.wall', w, h, d, px, y0 + h * 0.5, pz, a, tint);
-        this.track(this.physics.addRotatedBox(
-          _v1.set(px, y0 + h * 0.5, pz), _v2.set(w * 0.5, h * 0.5, d * 0.5), a
-        ));
+        if (!enterable) {
+          B.box('plaster.wall', w, h, d, px, y0 + h * 0.5, pz, a, tint);
+          this.track(this.physics.addRotatedBox(
+            _v1.set(px, y0 + h * 0.5, pz), _v2.set(w * 0.5, h * 0.5, d * 0.5), a
+          ));
+        } else {
+          // Flipped houses build their whole local frame rotated 180 deg so
+          // the doorway lands on the clear alley face; the w x d footprint is
+          // symmetric under that rotation so nothing else moves.
+          const da = flipDoorFace.has(`${ring}:${i}`) ? a + Math.PI : a;
+          const hw = w * 0.5;
+          const hd = d * 0.5;
+          const M = new THREE.Matrix4().makeRotationY(da).setPosition(px, y0, pz);
+          const rcol = (lx, cy, lz, hx, hy, hz) => {
+            _v1.set(lx, cy, lz).applyMatrix4(M);
+            return this.track(this.physics.addRotatedBox(_v1, _v2.set(hx, hy, hz), da));
+          };
+          const segW = Math.max(0.7, hw - doorHW);
+          // Hollow ground-floor shell with a real doorway in the +Z alley face.
+          B.box('plaster.wall', w, h, wallT, px + Math.sin(da) * (-hd + wallT * 0.5),
+            y0 + h * 0.5, pz + Math.cos(da) * (-hd + wallT * 0.5), da, tint);
+          rcol(0, h * 0.5, -hd + wallT * 0.5, hw, h * 0.5, wallT * 0.5 + 0.04);
+          for (const sgn of [-1, 1]) {
+            const wx = px + Math.cos(da) * sgn * (hw - wallT * 0.5);
+            const wz = pz - Math.sin(da) * sgn * (hw - wallT * 0.5);
+            B.box('plaster.wall', wallT, h, d - wallT * 2, wx, y0 + h * 0.5, wz, da, tint);
+            rcol(sgn * (hw - wallT * 0.5), h * 0.5, 0, wallT * 0.5 + 0.04, h * 0.5, hd);
+            B.box('plaster.wall', segW, h, wallT,
+              px + Math.cos(da) * sgn * (doorHW + segW * 0.5) + Math.sin(da) * (hd - wallT * 0.5),
+              y0 + h * 0.5,
+              pz - Math.sin(da) * sgn * (doorHW + segW * 0.5) + Math.cos(da) * (hd - wallT * 0.5),
+              da, tint);
+            rcol(sgn * (doorHW + segW * 0.5), h * 0.5, hd - wallT * 0.5,
+              segW * 0.5, h * 0.5, wallT * 0.5 + 0.04);
+          }
+          B.box('plaster.wall', doorHW * 2, h - doorH, wallT,
+            px + Math.sin(da) * (hd - wallT * 0.5),
+            y0 + doorH + (h - doorH) * 0.5,
+            pz + Math.cos(da) * (hd - wallT * 0.5), da, tint);
+          rcol(0, doorH + (h - doorH) * 0.5, hd - wallT * 0.5,
+            doorHW, (h - doorH) * 0.5, wallT * 0.5 + 0.04);
+
+          // Interior floor/ceiling and simple market furnishings.
+          B.box('stone.cobble', w - 0.25, 0.16, d - 0.25, px, y0 + 0.08, pz, da, 0xd3c09a);
+          rcol(0, 0.04, 0, hw - 0.12, 0.08, hd - 0.12);
+          B.box('wood.plank', w - 0.2, 0.16, d - 0.2, px, y0 + roomCeil, pz, da, 0x8a6a44);
+          rcol(0, roomCeil, 0, hw - 0.05, 0.1, hd - 0.05);
+          B.box('wood.plank', 1.8, 0.16, 1.05,
+            px + Math.cos(da) * -1.2 + Math.sin(da) * -0.8, y0 + 0.82,
+            pz - Math.sin(da) * -1.2 + Math.cos(da) * -0.8, da + 0.08, 0x8c6840);
+          rcol(-1.2, 0.75, -0.8, 1.0, 0.45, 0.65);
+          for (const [lx, lz] of [[1.55, -0.7], [1.9, 0.65], [-1.7, 1.0]]) {
+            B.box('wood.beam', 0.65, 0.55, 0.65,
+              px + Math.cos(da) * lx + Math.sin(da) * lz, y0 + 0.28,
+              pz - Math.sin(da) * lx + Math.cos(da) * lz, da, 0x6d5334);
+            rcol(lx, 0.32, lz, 0.36, 0.32, 0.36);
+          }
+
+          const leafW = doorHW * 2 - 0.08;
+          const leafGeo = prepDynamicGeo(new THREE.BoxGeometry(leafW, doorH - 0.12, 0.1), 'wood.plank', 0x6b4a2e);
+          leafGeo.translate(leafW * 0.5, 0, 0);
+          const leaf = new THREE.Mesh(leafGeo, this._mat('wood.plank'));
+          leaf.castShadow = leaf.receiveShadow = true;
+          this._owned.push(leafGeo);
+          const pivot = new THREE.Group();
+          _v1.set(-doorHW + 0.02, doorH * 0.5, hd - wallT * 0.5).applyMatrix4(M);
+          pivot.position.copy(_v1);
+          pivot.rotation.y = da;
+          pivot.add(leaf);
+          for (const by of [-0.52, 0.52]) {
+            const bandGeo = prepDynamicGeo(new THREE.BoxGeometry(leafW * 0.88, 0.12, 0.06), 'wood.beam', 0x33251a);
+            bandGeo.translate(leafW * 0.5, by, 0.08);
+            const band = new THREE.Mesh(bandGeo, this._mat('wood.beam'));
+            pivot.add(band);
+            this._owned.push(bandGeo);
+          }
+          this.group.add(pivot);
+          _v1.set(0, doorH * 0.5, hd - wallT * 0.5).applyMatrix4(M);
+          const doorCol = this.track(this.physics.addRotatedBox(_v1, _v2.set(doorHW, doorH * 0.5, 0.13), da));
+          const dpos = new THREE.Vector3(0, 1.2, hd).applyMatrix4(M);
+          const lootPos = new THREE.Vector3(1.55, 0.72, -0.7).applyMatrix4(M);
+          if (!Array.isArray(this.enterables)) this.enterables = [];
+          const n = this.enterables.length;
+          this.enterables.push({
+            label: enterableLabels.get(`${ring}:${i}`),
+            origin: new THREE.Vector3(px, y0, pz),
+            doors: [{
+              id: `citadel_souk_${n}`,
+              leaves: [{ pivot, closed: da, open: da - Math.PI * 0.58 }],
+              collider: doorCol,
+              position: dpos,
+              open: false,
+              anim: 0,
+            }],
+            collectibleSpots: [{ position: lootPos, tier: 'common' }],
+          });
+        }
 
         // Roof lip - the ledge you actually mantle onto.
         B.box('stone.castle', w + 0.7, 0.55, d + 0.7, px, y0 + h + 0.27, pz, a, 0xbfae8a);
@@ -1156,11 +1298,14 @@ export class CitadelWorld extends World {
 
           // A doorway on the alley-facing side only, so the ground floor is not
           // ringed with four front doors.
-          if (fa === 0 && rnd() < 0.75) {
+          if (fa === 0) {
+            const hasDecorDoor = rnd() < 0.75;
+            if (!enterable && hasDecorDoor) {
             const dw = 1.25;
             const dh = 2.3;
             B.box('stone.castle', dw, dh, 0.12, px + nx * (half - 0.14), y0 + dh * 0.5, pz + nz * (half - 0.14), wa, 0x241c15);
             B.box('wood.beam', dw + 0.4, 0.26, 0.28, px + nx * (half + 0.05), y0 + dh + 0.13, pz + nz * (half + 0.05), wa, 0x6a4f31);
+            }
           }
         }
 

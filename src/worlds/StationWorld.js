@@ -1844,6 +1844,8 @@ export class StationWorld extends World {
     this.mat = {};
     /** Contact-shadow patches queued by every builder, flushed as one mesh. */
     this._contacts = [];
+    /** Rotated footprints for authored enterable rooms; used to keep dressing clear. */
+    this._enterableRoomFootprints = [];
     /** Animated handles resolved during build; update() only touches these. */
     this._anim = {
       holoRings: [],
@@ -1908,6 +1910,7 @@ export class StationWorld extends World {
     await step(0.81, 'Wiring the residential terrace', this._buildResidential);
     await step(0.85, 'Calibrating Traffic Control', this._buildControlTower);
     await step(0.89, 'Stacking the cargo yard', this._buildCargo);
+    await step(0.905, 'Cutting crew-room access hatches', this._buildEnterableRooms);
     await step(0.92, 'Raising the outer skyline', this._buildSkyline);
     await step(0.94, 'Rigging the canopy', this._buildCanopy);
     await step(0.95, 'Scattering set dressing', this._buildDressing);
@@ -6039,6 +6042,169 @@ export class StationWorld extends World {
   }
 
   /* ---------------------------------------------------------------- */
+  /* Authored enterable corridor rooms                                 */
+  /* ---------------------------------------------------------------- */
+
+  _insideStationEnterableFootprint(x, z, pad = 0) {
+    const rooms = this._enterableRoomFootprints;
+    if (!Array.isArray(rooms) || !rooms.length) return false;
+    for (const r of rooms) {
+      const dx = x - r.x;
+      const dz = z - r.z;
+      const c = Math.cos(r.yaw);
+      const s = Math.sin(r.yaw);
+      const lx = dx * c - dz * s;
+      const lz = dx * s + dz * c;
+      if (Math.abs(lx) <= r.hw + pad && Math.abs(lz) <= r.hd + pad) return true;
+    }
+    return false;
+  }
+
+  _buildEnterableRooms() {
+    if (!Array.isArray(this.enterables)) this.enterables = [];
+    this._enterableRoomFootprints.length = 0;
+
+    const M = this.mat;
+    const B = new GeoBatch();
+    const g = new THREE.Group();
+    g.name = 'station-enterables';
+    this.group.add(g);
+
+    const specs = [
+      { label: 'Retail Clinic', deg: 0, r: 66, side: -1, w: 6.2, d: 7.0, accent: 'emMagenta', fit: 'lab' },
+      { label: 'Flight Lab', deg: 60, r: 68, side: -1, w: 6.6, d: 7.2, accent: 'emSodium', fit: 'lab' },
+      { label: 'Hydroponics Prep', deg: 120, r: 62, side: -1, w: 6.0, d: 6.8, accent: 'emCyan', fit: 'console' },
+      { label: 'Crew Quarters A', deg: 180, r: 58, side: 1, w: 5.8, d: 6.6, accent: 'emMagenta', fit: 'bunk' },
+      { label: 'Traffic Spares', deg: 240, r: 70, side: -1, w: 6.4, d: 7.0, accent: 'emSodium', fit: 'storage' },
+      { label: 'Cargo Lockers', deg: 300, r: 70, side: -1, w: 6.8, d: 7.4, accent: 'emCyan', fit: 'storage' },
+    ];
+
+    const wallT = 0.36;
+    const H = 3.8;
+    const doorHW = 0.95;
+    const doorH = 2.55;
+    const doorT = 0.16;
+
+    const localPoint = (room, lx, ly, lz) => this._localPoint(room.x, room.z, room.yaw, lx, ly, lz);
+    const solidLocal = (room, lx, cy, lz, hx, hy, hz, opts) => {
+      const p = localPoint(room, lx, cy, lz);
+      return this.track(this.physics.addRotatedBox(p, _v2.set(hx, hy, hz), room.yaw, opts));
+    };
+    const put = (room, key, geo, lx, ly, lz, ry = 0, rx = 0, rz = 0) => {
+      B.localAt(key, geo, room.x, 0, room.z, room.yaw, lx, ly, lz, ry, rx, rz);
+    };
+
+    const buildDoor = (room, index) => {
+      const doorZ = -room.d / 2 - 0.03;
+      const hingeX = -doorHW + 0.02;
+      const leafW = doorHW * 2 - 0.04;
+      const leafH = doorH - 0.12;
+      const pivot = new THREE.Group();
+      pivot.position.copy(localPoint(room, hingeX, leafH / 2 + 0.08, doorZ));
+      pivot.rotation.y = room.yaw;
+
+      const leafGeo = boxGeo(leafW, leafH, doorT, 1.2);
+      leafGeo.translate(leafW / 2, 0, 0);
+      const leaf = new THREE.Mesh(leafGeo, M.panelDark);
+      leaf.castShadow = leaf.receiveShadow = true;
+      pivot.add(leaf);
+
+      const bandGeo = boxGeo(leafW * 0.88, 0.12, doorT + 0.05, 1);
+      bandGeo.translate(leafW / 2, 0, -0.01);
+      for (const y of [-0.62, 0.62]) {
+        const band = new THREE.Mesh(bandGeo.clone(), M[room.accent]);
+        band.position.y = y;
+        band.castShadow = false;
+        band.receiveShadow = false;
+        pivot.add(band);
+      }
+      g.add(pivot);
+
+      const cp = localPoint(room, 0, doorH / 2, -room.d / 2);
+      const collider = this.track(
+        this.physics.addRotatedBox(cp, new THREE.Vector3(doorHW, doorH / 2, 0.13), room.yaw, { solid: true })
+      );
+      return {
+        id: `station_room_${index}`,
+        leaves: [{ pivot, closed: room.yaw, open: room.yaw - Math.PI * 0.55 }],
+        collider,
+        position: localPoint(room, 0, 1.2, -room.d / 2 - 0.22),
+        open: false,
+        anim: 0,
+      };
+    };
+
+    specs.forEach((spec, index) => {
+      const room = {
+        ...spec,
+        ...roadPos(spec.deg, spec.r, spec.side * (ROAD_W / 2 + 1.15 + spec.d / 2), 0, new THREE.Vector3()),
+        yaw: faceRoadYaw(spec.deg, spec.side),
+      };
+      this._enterableRoomFootprints.push({ x: room.x, z: room.z, yaw: room.yaw, hw: room.w / 2 + 0.8, hd: room.d / 2 + 0.8 });
+
+      // Hollow sci-fi pod: rear wall, side walls, split front wall, and lintel.
+      put(room, 'panel', boxGeo(room.w, H, wallT, 2), 0, H / 2, room.d / 2 - wallT / 2);
+      for (const sx of [-1, 1]) {
+        put(room, 'panel', boxGeo(wallT, H, room.d, 2), sx * (room.w / 2 - wallT / 2), H / 2, 0);
+      }
+      const frontSeg = room.w / 2 - doorHW;
+      for (const sx of [-1, 1]) {
+        put(room, 'panelDark', boxGeo(frontSeg, H, wallT, 2), sx * (doorHW + frontSeg / 2), H / 2, -room.d / 2 + wallT / 2);
+      }
+      put(room, 'panelDark', boxGeo(doorHW * 2 + 0.5, H - doorH, wallT, 1.4), 0, doorH + (H - doorH) / 2, -room.d / 2 + wallT / 2);
+      put(room, 'grate', boxGeo(room.w - 0.25, 0.14, room.d - 0.25, 1.4), 0, 0.07, 0);
+      put(room, 'panelDark', boxGeo(room.w + 0.3, 0.22, room.d + 0.3, 2), 0, H - 0.11, 0);
+      put(room, spec.accent, boxGeo(room.w - 1.2, 0.08, 0.16, 1), 0, 2.82, -room.d / 2 - 0.1);
+      put(room, 'emWhite', boxGeo(room.w - 1.0, 0.10, 0.36, 1), 0, H - 0.45, 0.8);
+      put(room, 'room', atlasUV(new THREE.PlaneGeometry(room.w - 1.1, H - 1.2), index % 4, (index >> 2) % 4, 4, 4), 0, 1.95, room.d / 2 - wallT - 0.02, Math.PI);
+
+      // Colliders: separate walls with a real doorway gap, lintel, floor and ceiling.
+      solidLocal(room, 0, H / 2, room.d / 2 - wallT / 2, room.w / 2, H / 2, wallT / 2 + 0.04);
+      for (const sx of [-1, 1]) {
+        solidLocal(room, sx * (room.w / 2 - wallT / 2), H / 2, 0, wallT / 2 + 0.04, H / 2, room.d / 2);
+      }
+      for (const sx of [-1, 1]) {
+        solidLocal(room, sx * (doorHW + frontSeg / 2), H / 2, -room.d / 2 + wallT / 2, frontSeg / 2 + 0.04, H / 2, wallT / 2 + 0.04);
+      }
+      solidLocal(room, 0, doorH + (H - doorH) / 2, -room.d / 2 + wallT / 2, doorHW + 0.08, (H - doorH) / 2 + 0.03, wallT / 2 + 0.04);
+      solidLocal(room, 0, 0.06, 0, room.w / 2 - 0.05, 0.06, room.d / 2 - 0.05);
+      solidLocal(room, 0, H - 0.11, 0, room.w / 2, 0.12, room.d / 2);
+
+      // Light furnishings; all solid where they can block the capsule.
+      if (spec.fit === 'bunk') {
+        put(room, 'panelWarm', boxGeo(1.35, 0.45, 2.55, 1), room.w / 2 - 1.05, 0.38, 0.9);
+        put(room, 'shell', boxGeo(1.22, 0.18, 2.35, 1), room.w / 2 - 1.05, 0.73, 0.9);
+        put(room, 'crate', boxGeo(1.0, 1.0, 1.0, 1), -room.w / 2 + 1.0, 0.55, room.d / 2 - 1.0);
+        solidLocal(room, room.w / 2 - 1.05, 0.45, 0.9, 0.74, 0.45, 1.35);
+      } else if (spec.fit === 'storage') {
+        for (const [lx, lz, sy] of [[-1.8, 1.7, 1.0], [0.0, 1.8, 1.4], [1.7, 1.35, 0.8]]) {
+          put(room, 'crate', boxGeo(1.2, sy, 1.2, 1), lx, sy / 2, lz);
+          solidLocal(room, lx, sy / 2, lz, 0.62, sy / 2, 0.62);
+        }
+        put(room, 'hazard', boxGeo(room.w - 1.4, 0.08, 0.16, 1), 0, 0.18, -1.45);
+      } else {
+        put(room, 'panelWarm', boxGeo(2.2, 1.0, 0.8, 1), -room.w / 2 + 1.55, 0.62, 1.2);
+        put(room, 'emCyan', boxGeo(1.8, 0.08, 0.18, 1), -room.w / 2 + 1.55, 1.2, 0.75);
+        put(room, 'trim', boxGeo(1.2, 0.12, 1.2, 1), room.w / 2 - 1.25, 0.82, 0.6, 0.35);
+        solidLocal(room, -room.w / 2 + 1.55, 0.62, 1.2, 1.15, 0.62, 0.45);
+      }
+
+      const door = buildDoor(room, index);
+      const spot = localPoint(room, room.w * 0.22, 0.75, room.d * 0.18);
+      this.enterables.push({
+        label: spec.label,
+        origin: new THREE.Vector3(room.x, 0, room.z),
+        doors: [door],
+        collectibleSpots: [{ position: spot, tier: 'common' }],
+      });
+      this._contact(room.x, room.z, Math.max(room.w, room.d) + 2);
+      this._mmRect(room.x, room.z, room.w, room.d, room.yaw, 'rgba(70,110,140,0.55)', 'rgba(120,230,255,0.55)');
+    });
+
+    B.flush(g, M, 'station-enterables', { cast: true, recv: true, room: { cast: false, recv: false } });
+  }
+
+  /* ---------------------------------------------------------------- */
   /* Outer skyline - depth behind every district                       */
   /* ---------------------------------------------------------------- */
 
@@ -7136,6 +7302,7 @@ export class StationWorld extends World {
         const d = Math.atan2(Math.sin(th - deg * DEG), Math.cos(th - deg * DEG));
         if (Math.abs(d) * rr < ROAD_W / 2 + 3) onRoad = true;
       }
+      if (this._insideStationEnterableFootprint(x, z, 1.0)) continue;
       if (onRoad) continue;
       const kind = rng();
       const yaw = rng() * Math.PI * 2;
@@ -7171,6 +7338,7 @@ export class StationWorld extends World {
         const d = Math.atan2(Math.sin(th - deg * DEG), Math.cos(th - deg * DEG));
         if (Math.abs(d) * rr < ROAD_W / 2 + 7) clear = false;
       }
+      if (this._insideStationEnterableFootprint(x, z, 2.0)) clear = false;
       // Keep the two gateway approach corridors readable.
       if (Math.abs(x) < 24 && Math.abs(z) > 44 && Math.abs(z) < 100) clear = false;
       if (!clear) continue;
@@ -8197,4 +8365,3 @@ export class StationWorld extends World {
 function yieldFrame() {
   return new Promise((r) => requestAnimationFrame(() => r()));
 }
-

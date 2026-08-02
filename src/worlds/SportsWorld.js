@@ -1427,7 +1427,7 @@ export class SportsWorld extends World {
    * standard lighting, so they never break energy conservation badly enough to
    * matter and they cost four instructions.
    */
-  _wrapLight(material) {
+  _wrapLight(material, opts = {}) {
     const sun = this.environment.sunDirection;
     // Scaled by sunIntensity / PI, not by the sun *colour* alone.
     //
@@ -1440,6 +1440,8 @@ export class SportsWorld extends World {
     // with an under-scaled wrap term those cards rendered as hard black quads.
     const env = this.environment;
     const tint = env.sunColor.clone().multiplyScalar(env.sunIntensity / Math.PI);
+    const transFloor = opts.transFloor ?? 0.0;
+    const wrapFloor = opts.wrapFloor ?? 0.0;
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uSunDir = { value: sun };
       shader.uniforms.uSunTint = { value: tint };
@@ -1462,8 +1464,8 @@ export class SportsWorld extends World {
             // term the far half of every canopy shell renders near-black, since
             // the ambient and hemi fills are deliberately starved to 0.04/0.15
             // to keep the key readable.
-            float aeTrans = clamp( -aeNL, 0.0, 1.0 );
-            float aeWrap  = clamp( aeNL * 0.5 + 0.5, 0.0, 1.0 );
+            float aeTrans = max( clamp( -aeNL, 0.0, 1.0 ), ${transFloor.toFixed(2)} );
+            float aeWrap  = max( clamp( aeNL * 0.5 + 0.5, 0.0, 1.0 ), ${wrapFloor.toFixed(2)} );
             // A fully sun-facing-away card lands at ~0.9x diffuse, which is
             // roughly two thirds of what the same card gets when front-lit -
             // about right for a leaf. The aeBack lobe is the backlit glow on
@@ -1473,7 +1475,7 @@ export class SportsWorld extends World {
           }`
         );
     };
-    material.customProgramCacheKey = () => 'aether-sports-wrap';
+    material.customProgramCacheKey = () => `aether-sports-wrap-${transFloor.toFixed(2)}-${wrapFloor.toFixed(2)}`;
     return material;
   }
 
@@ -3721,7 +3723,10 @@ export class SportsWorld extends World {
       m.transparent = false;
       m.vertexColors = true;
       m.alphaToCoverage = true;
-      this._wrapLight(m);
+      // The broadleaf leaf cards see the harshest back-lighting at the sports
+      // plaza sun angle; floor their synthetic transmission just enough that
+      // the darkest cards stay deep green instead of falling to black.
+      this._wrapLight(m, { transFloor: 0.16, wrapFloor: 0.30 });
     }
 
     /* ---------------- grass blade cards ---------------- */
@@ -6666,6 +6671,97 @@ export class SportsWorld extends World {
   /* Buildings, stands and the entrance                                */
   /* ---------------------------------------------------------------- */
 
+  _enterableRect({
+    label,
+    idPrefix,
+    x,
+    y = 0,
+    z,
+    w,
+    h,
+    d,
+    ry = 0,
+    wallMat,
+    floorMat = wallMat,
+    doorMat = this._materials.get('wood.beam'),
+    wallT = 0.32,
+    doorHW = 0.72,
+    doorH = 2.25,
+    doorX = 0,
+    furnish = null,
+  }) {
+    const M = new THREE.Matrix4().makeRotationY(ry).setPosition(x, y, z);
+    const local = (lx, ly, lz) => new THREE.Vector3(lx, ly, lz).applyMatrix4(M);
+    const addBox = (lx, ly, lz, bw, bh, bd, mat, cast = true, receive = true) => {
+      const p = local(lx, ly, lz);
+      const m = this._box(bw, bh, bd, mat, p.x, p.y, p.z, ry);
+      this._add(m, cast, receive);
+      return m;
+    };
+    const addCol = (lx, ly, lz, hx, hy, hz) => {
+      const p = local(lx, ly, lz);
+      return this.track(this.physics.addRotatedBox(p, new THREE.Vector3(hx, hy, hz), ry, {}));
+    };
+
+    const hw = w / 2;
+    const hd = d / 2;
+    const leftW = doorX - doorHW + hw;
+    const rightW = hw - doorX - doorHW;
+    addBox(0, h / 2, -hd + wallT / 2, w, h, wallT, wallMat);
+    addCol(0, h / 2, -hd + wallT / 2, hw, h / 2, wallT / 2 + 0.03);
+    for (const sgn of [-1, 1]) {
+      addBox(sgn * (hw - wallT / 2), h / 2, 0, wallT, h, d - wallT * 2, wallMat);
+      addCol(sgn * (hw - wallT / 2), h / 2, 0, wallT / 2 + 0.03, h / 2, hd);
+    }
+    if (leftW > 0.1) {
+      const lx = -hw + leftW / 2;
+      addBox(lx, h / 2, hd - wallT / 2, leftW, h, wallT, wallMat);
+      addCol(lx, h / 2, hd - wallT / 2, leftW / 2 + 0.03, h / 2, wallT / 2 + 0.03);
+    }
+    if (rightW > 0.1) {
+      const rx = doorX + doorHW + rightW / 2;
+      addBox(rx, h / 2, hd - wallT / 2, rightW, h, wallT, wallMat);
+      addCol(rx, h / 2, hd - wallT / 2, rightW / 2 + 0.03, h / 2, wallT / 2 + 0.03);
+    }
+    addBox(doorX, doorH + (h - doorH) / 2, hd - wallT / 2, doorHW * 2, h - doorH, wallT, wallMat);
+    addCol(doorX, doorH + (h - doorH) / 2, hd - wallT / 2, doorHW + 0.03, (h - doorH) / 2, wallT / 2 + 0.03);
+    addBox(0, 0.04, 0, w - wallT * 2, 0.08, d - wallT * 2, floorMat, false, true);
+    addCol(0, 0.02, 0, hw - wallT, 0.05, hd - wallT);
+    addBox(0, h - 0.06, 0, w - wallT * 2, 0.12, d - wallT * 2, floorMat, true, true);
+
+    const leafW = doorHW * 2 - 0.06;
+    const leafGeo = whiteColor(new THREE.BoxGeometry(leafW, doorH - 0.12, 0.09).translate(leafW / 2, 0, 0));
+    const leaf = new THREE.Mesh(leafGeo, doorMat);
+    leaf.castShadow = leaf.receiveShadow = true;
+    const pivot = new THREE.Group();
+    pivot.position.copy(local(doorX - doorHW + 0.03, doorH / 2 + 0.03, hd - wallT / 2));
+    pivot.rotation.y = ry;
+    pivot.add(leaf);
+    this.group.add(pivot);
+    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), this._materials.get('metal.dark'));
+    knob.position.set(leafW - 0.18, 0, 0.08);
+    pivot.add(knob);
+
+    const doorCol = addCol(doorX, doorH / 2, hd - wallT / 2, doorHW, doorH / 2, 0.12);
+    if (typeof furnish === 'function') furnish({ addBox, addCol, local, w, h, d });
+
+    if (!Array.isArray(this.enterables)) this.enterables = [];
+    const entryIndex = this.enterables.length;
+    this.enterables.push({
+      label,
+      origin: new THREE.Vector3(x, y, z),
+      doors: [{
+        id: `${idPrefix}_${entryIndex}`,
+        leaves: [{ pivot, closed: ry, open: ry - Math.PI * 0.58 }],
+        collider: doorCol,
+        position: local(doorX, 1.2, hd + 0.05),
+        open: false,
+        anim: 0,
+      }],
+      collectibleSpots: [{ position: local(w * 0.22, 0.65, -d * 0.18), tier: 'common' }],
+    });
+  }
+
   _buildStructures() {
     const deck = this._materials.get('concrete.deck');
     const galv = this._materials.get('metal.galv');
@@ -6868,11 +6964,38 @@ export class SportsWorld extends World {
     /* ---- clubhouse ---- */
     const cx = -46;
     const cz = 138;
-    this._solid(this._box(28, 7.2, 16, deck, cx, 3.6, cz));
+    this._enterableRect({
+      label: `Clubhouse @ ${cx},${cz}`,
+      idPrefix: 'clubhouse',
+      x: cx,
+      z: cz,
+      w: 28,
+      h: 7.2,
+      d: 16,
+      wallMat: deck,
+      floorMat: deck,
+      doorMat: this._materials.get('wood.beam'),
+      wallT: 0.42,
+      doorHW: 1.25,
+      doorH: 2.7,
+      doorX: 4,
+      furnish: ({ addBox, addCol }) => {
+        const beam = this._materials.get('wood.beam');
+        const metal = this._materials.get('metal.dark');
+        addBox(-5.4, 0.55, -2.2, 5.2, 0.18, 1.4, beam);
+        addCol(-5.4, 0.55, -2.2, 2.7, 0.35, 0.85);
+        for (const sx of [-7.0, -3.8]) addBox(sx, 0.36, -2.2, 0.18, 0.72, 1.2, metal);
+        addBox(5.6, 0.52, -2.8, 4.0, 0.16, 1.3, beam);
+        addBox(5.6, 0.35, -3.2, 4.1, 0.7, 0.22, metal);
+        addCol(5.6, 0.42, -3.0, 2.15, 0.45, 0.75);
+        addBox(0.2, 1.05, -6.0, 9.0, 1.5, 0.28, this._materials.get('glass.window'), false, false);
+      },
+    });
     this._add(this._box(29.2, 0.6, 17.2, this._materials.get('metal.dark'), cx, 7.5, cz));
     // Curtain wall facing the plaza, merged into one pane set.
     const panes = [];
     for (let i = 0; i < 7; i++) {
+      if (i === 4) continue;
       panes.push(xform(new THREE.BoxGeometry(3.2, 4.4, 0.1), cx - 10.5 + i * 3.5, 3.9, cz + 8.06));
     }
     for (let i = 0; i < 4; i++) {
@@ -6905,14 +7028,34 @@ export class SportsWorld extends World {
       const mat = new THREE.MeshStandardMaterial({ color: tint, roughness: 0.4, metalness: 0.25, envMapIntensity: 1.2 });
       this._materials.set(`kiosk.${kx}.${kz}`, mat);
       const ky = parkHeight(kx, kz);
-      const body = this._box(3.4, 2.9, 2.6, mat, kx, ky + 1.45, kz, ry);
-      this._solid(body);
+      this._enterableRect({
+        label: `Vending kiosk @ ${kx},${kz}`,
+        idPrefix: 'sports_kiosk',
+        x: kx,
+        y: ky,
+        z: kz,
+        w: 3.4,
+        h: 2.9,
+        d: 2.6,
+        ry,
+        wallMat: mat,
+        floorMat: deck,
+        doorMat: this._materials.get('metal.dark'),
+        wallT: 0.16,
+        doorHW: 0.55,
+        doorH: 2.05,
+        furnish: ({ addBox, addCol }) => {
+          addBox(0, 0.88, -0.35, 2.0, 0.18, 0.72, this._materials.get('wood.beam'));
+          addCol(0, 0.62, -0.35, 1.08, 0.38, 0.45);
+          addBox(0, 1.65, -1.05, 2.2, 0.12, 0.18, this._materials.get('metal.white'));
+          addBox(-1.1, 1.25, -1.05, 0.12, 0.8, 0.16, this._materials.get('metal.white'));
+          addBox(1.1, 1.25, -1.05, 0.12, 0.8, 0.16, this._materials.get('metal.white'));
+        },
+      });
       this._props.grounding.push([kx, kz, 4.4]);
       kioskRoofs.push(xform(new THREE.BoxGeometry(4.2, 0.22, 3.4), kx, ky + 3.0, kz, 0, ry, 0));
       kioskAwns.push(xform(new THREE.BoxGeometry(4.0, 0.1, 1.5),
         kx + Math.sin(ry) * 1.9, ky + 2.55, kz + Math.cos(ry) * 1.9, 0, ry, 0));
-      kioskHatches.push(xform(new THREE.BoxGeometry(2.4, 1.2, 0.08),
-        kx + Math.sin(ry) * 1.32, ky + 1.85, kz + Math.cos(ry) * 1.32, 0, ry, 0));
     }
 
     for (const [geos, mat, shadow] of [
@@ -6920,6 +7063,7 @@ export class SportsWorld extends World {
       [kioskAwns, this._materials.get('metal.dark'), true],
       [kioskHatches, glass, false],
     ]) {
+      if (!geos.length) continue;
       const m = new THREE.Mesh(mergeGeometries(geos), mat);
       m.matrixAutoUpdate = false;
       this._add(m, shadow, shadow);

@@ -70,6 +70,7 @@ export class InteriorKit {
       plaster: std(0xd8cbb2, { roughness: 0.92 }),
       plank: std(0x7a5330, { roughness: 0.82 }),
       beam: std(0x3d2c1a, { roughness: 0.85 }),
+      slate: std(0x666a74, { roughness: 0.9 }),
       iron: std(0x40444b, { roughness: 0.5, metalness: 0.72 }),
       fabricRed: std(0x8f3030, { roughness: 0.85 }),
       fabricBlue: std(0x2f4c74, { roughness: 0.85 }),
@@ -464,16 +465,20 @@ export class InteriorKit {
     // Deep slab to keep the floor sealed on uneven terrain.
     this.solid('stone', ox, y0 - 0.62, oz, OUT_W, 0.62, OUT_D);
 
-    // Nave walls with a front doorway (+Z side).
+    // Nave walls with front/back doorways (+Z and -Z sides).
     const northZ = oz + OUT_D - 0.24;
+    const southZ = oz - (OUT_D - 0.24);
     this.solid('stone', ox - (INT_W + halfDoor) / 2, wallMidY, northZ, (INT_W - halfDoor) / 2 + 0.26, wallH * 0.5, 0.24);
     this.solid('stone', ox + (INT_W + halfDoor) / 2, wallMidY, northZ, (INT_W - halfDoor) / 2 + 0.26, wallH * 0.5, 0.24);
     this.solid('stone', ox, y0 + doorH + (wallH - doorH) * 0.5, northZ, halfDoor, (wallH - doorH) * 0.5, 0.24);
-    this.solid('stone', ox, wallMidY, oz - (OUT_D - 0.24), OUT_W, wallH * 0.5, 0.24);
+    this.solid('stone', ox - (INT_W + halfDoor) / 2, wallMidY, southZ, (INT_W - halfDoor) / 2 + 0.26, wallH * 0.5, 0.24);
+    this.solid('stone', ox + (INT_W + halfDoor) / 2, wallMidY, southZ, (INT_W - halfDoor) / 2 + 0.26, wallH * 0.5, 0.24);
+    this.solid('stone', ox, y0 + doorH + (wallH - doorH) * 0.5, southZ, halfDoor, (wallH - doorH) * 0.5, 0.24);
     this.solid('stone', ox + (OUT_W - 0.24), wallMidY, oz, 0.24, wallH * 0.5, OUT_D);
     this.solid('stone', ox - (OUT_W - 0.24), wallMidY, oz, 0.24, wallH * 0.5, OUT_D);
 
     this._buildDoor(ox, y0, northZ, halfDoor, doorH);
+    this._buildDoor(ox, y0, southZ, halfDoor, doorH);
 
     // Rear half mezzanine (second storey) + stair.
     const loftY = y0 + 3.25;

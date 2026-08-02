@@ -440,6 +440,102 @@ export class InteriorKit {
     return this;
   }
 
+  /**
+   * Large two-storey parish church interior/exterior shell for authored
+   * landmark buildings (guaranteed enterables, not rollout-generated).
+   *
+   * @param {{ x:number, z:number, baseY:number, halfW?:number, halfD?:number }} spec
+   */
+  buildChurch(spec) {
+    const ox = spec.x;
+    const oz = spec.z;
+    const y0 = spec.baseY;
+
+    const INT_W = Math.max(4.2, spec.halfW ?? 4.8);
+    const INT_D = Math.max(6.2, spec.halfD ?? 7.6);
+    const WT = 0.42;
+    const OUT_W = INT_W + WT;
+    const OUT_D = INT_D + WT;
+    const wallH = 6.4;
+    const wallMidY = y0 + wallH * 0.5;
+    const halfDoor = 1.1;
+    const doorH = 2.9;
+
+    // Deep slab to keep the floor sealed on uneven terrain.
+    this.solid('stone', ox, y0 - 0.62, oz, OUT_W, 0.62, OUT_D);
+
+    // Nave walls with a front doorway (+Z side).
+    const northZ = oz + OUT_D - 0.24;
+    this.solid('stone', ox - (INT_W + halfDoor) / 2, wallMidY, northZ, (INT_W - halfDoor) / 2 + 0.26, wallH * 0.5, 0.24);
+    this.solid('stone', ox + (INT_W + halfDoor) / 2, wallMidY, northZ, (INT_W - halfDoor) / 2 + 0.26, wallH * 0.5, 0.24);
+    this.solid('stone', ox, y0 + doorH + (wallH - doorH) * 0.5, northZ, halfDoor, (wallH - doorH) * 0.5, 0.24);
+    this.solid('stone', ox, wallMidY, oz - (OUT_D - 0.24), OUT_W, wallH * 0.5, 0.24);
+    this.solid('stone', ox + (OUT_W - 0.24), wallMidY, oz, 0.24, wallH * 0.5, OUT_D);
+    this.solid('stone', ox - (OUT_W - 0.24), wallMidY, oz, 0.24, wallH * 0.5, OUT_D);
+
+    this._buildDoor(ox, y0, northZ, halfDoor, doorH);
+
+    // Rear half mezzanine (second storey) + stair.
+    const loftY = y0 + 3.25;
+    this._deckWithHoles(ox, oz - INT_D * 0.34, loftY, INT_W - 0.1, {
+      holes: [{ x0: -0.9, x1: 0.9, z0: -INT_D * 0.46, z1: INT_D * 0.46 }],
+    });
+    this._stairFlight(ox - INT_W + 0.95, oz, y0, -INT_D + 1.15, 0.62, 13, 0.25, 0.48);
+
+    // Pitched roof + ridge.
+    const roofRise = INT_W * 0.95;
+    const slope = Math.atan2(roofRise, INT_W);
+    const slabLen = Math.hypot(INT_W, roofRise) + 0.35;
+    const ridgeY = y0 + wallH + roofRise;
+    // Pitched roof slabs as dynamic meshes keep this method compact while still
+    // using the same church material palette.
+    const roofA = this._dynMesh('slate', 0.68, slabLen, (OUT_D + 0.16) * 2);
+    roofA.position.set(ox - INT_W * 0.5, y0 + wallH + roofRise * 0.5, oz);
+    roofA.rotation.z = slope;
+    const roofB = this._dynMesh('slate', 0.68, slabLen, (OUT_D + 0.16) * 2);
+    roofB.position.set(ox + INT_W * 0.5, y0 + wallH + roofRise * 0.5, oz);
+    roofB.rotation.z = -slope;
+    this.group.add(roofA, roofB);
+    this.vbox('slate', ox, ridgeY + 0.08, oz, 0.3, 0.12, OUT_D + 0.2);
+
+    // Bell tower and spire on the rear gable.
+    const towerZ = oz - OUT_D + 1.15;
+    this.solid('stone', ox, y0 + wallH + 1.3, towerZ, 1.45, 1.3, 1.45);
+    this.vbox('stone', ox, y0 + wallH + 3.0, towerZ, 1.12, 0.45, 1.12);
+    this.vcyl('gilt', ox, y0 + wallH + 4.1, towerZ, 0.12, 0.98, 1.7, 10);
+
+    // Tall lancet windows.
+    const winY = [y0 + 2.2, y0 + 4.4];
+    for (const cy of winY) {
+      for (const sx of [-1, 1]) {
+        this.vbox('beam', ox + sx * (OUT_W - 0.22), cy, oz - 2.4, 0.05, 0.92, 0.42);
+        this.vbox('glass', ox + sx * (OUT_W - 0.18), cy, oz - 2.4, 0.02, 0.78, 0.32);
+        this.vbox('beam', ox + sx * (OUT_W - 0.22), cy, oz + 2.1, 0.05, 0.92, 0.42);
+        this.vbox('glass', ox + sx * (OUT_W - 0.18), cy, oz + 2.1, 0.02, 0.78, 0.32);
+      }
+    }
+
+    // Nave furnishing.
+    this._rug(ox, oz + 1.6, y0, INT_W * 1.25, INT_D * 0.82, 'fabricRed');
+    for (let r = 0; r < 5; r++) {
+      const z = oz + 4.8 - r * 1.8;
+      this.vbox('plank', ox - 1.8, y0 + 0.48, z, 1.2, 0.06, 0.24);
+      this.vbox('plank', ox + 1.8, y0 + 0.48, z, 1.2, 0.06, 0.24);
+      this.cbox(ox - 1.8, y0 + 0.48, z, 1.2, 0.08, 0.28);
+      this.cbox(ox + 1.8, y0 + 0.48, z, 1.2, 0.08, 0.28);
+    }
+    this._pedestal(ox, oz - INT_D + 1.4, y0);
+    this._sconce(ox - INT_W + 0.38, y0 + 2.1, oz + INT_D - 2.0);
+    this._sconce(ox + INT_W - 0.38, y0 + 2.1, oz + INT_D - 2.0);
+
+    this.collectibleSpots.push(
+      { position: new THREE.Vector3(ox, y0 + 0.7, oz + 0.2), tier: 'common' },
+      { position: new THREE.Vector3(ox, loftY + 0.7, oz - INT_D * 0.34), tier: 'rare' }
+    );
+
+    return this;
+  }
+
   /* --- Door assembly --------------------------------------------------- */
   _buildDoor(ox, y0, doorZ, halfDoor, doorH) {
     const leafW = halfDoor; // each leaf covers half the opening

@@ -165,6 +165,16 @@ const VILLAGE = { x: 44, z: 26, hx: 58, hz: 42, y: 4.6 };
 const CIRCLE = { x: 2, z: -22, r: 8.6 };
 const BRIDGE_X = 26;
 
+/**
+ * Flatten pads under the two axis-aligned parish churches so their slabs sit
+ * true on the hillside. Applied LAST in _height so nothing re-adds height.
+ * `y` is lazily sampled from the un-padded terrain at the pad centre.
+ */
+const CHURCH_PADS = [
+  { x: -146, z: -30, hx: 7.2, hz: 10.6, blend: 5, y: null, _lock: false },
+  { x: -60, z: -136, hx: 7.0, hz: 10.2, blend: 5, y: null, _lock: false },
+];
+
 /** River centreline: a lazy meander running west to east across the south. */
 function riverZ(x) {
   return 104 + 20 * Math.sin(x * 0.011) + 7 * Math.sin(x * 0.027 + 1.3);
@@ -220,12 +230,13 @@ const PLOTS = [
   [101, 9, 0.4, 10, 7.5, 1, 't', 0], [68, 56, 1.1, 9.5, 7, 1, 't', 1],
   [85, 76, 2.2, 9, 7, 1, 't', 0], [-47, 12, -0.9, 8.5, 6.5, 1, 's', 0],
   [8, -6, 1.9, 8, 6, 2, 't', 1],
-  // Expanded hamlets around the castle outer approaches (kept clear of the moat).
-  [-150, -24, 0.42, 9.5, 7.2, 2, 's', 1], [-154, -44, 0.55, 8.8, 6.8, 1, 't', 0],
+  // Expanded hamlets around the castle outer approaches (kept clear of the
+  // moat AND of the two parish-church footprints).
+  [-166, -22, 0.42, 9.5, 7.2, 2, 's', 1], [-154, -44, 0.55, 8.8, 6.8, 1, 't', 0],
   [-148, -66, 0.62, 9.2, 7.0, 2, 's', 1], [-138, -84, 0.74, 8.4, 6.5, 1, 't', 0],
-  [-124, -98, 0.86, 9.0, 7.0, 2, 's', 1], [-106, -112, 1.0, 9.6, 7.4, 2, 's', 1],
-  [-88, -124, 1.18, 9.0, 7.0, 1, 't', 0], [-66, -132, 1.32, 9.4, 7.2, 2, 's', 1],
-  [-40, -124, 1.44, 8.6, 6.7, 1, 't', 0], [-24, -108, 1.58, 9.1, 7.0, 2, 's', 1],
+  [-132, -104, 0.86, 9.0, 7.0, 2, 's', 1], [-108, -118, 1.0, 9.6, 7.4, 2, 's', 1],
+  [-88, -124, 1.18, 9.0, 7.0, 1, 't', 0], [-80, -142, 1.32, 9.4, 7.2, 2, 's', 1],
+  [-40, -124, 1.44, 8.6, 6.7, 1, 't', 0], [-16, -116, 1.58, 9.1, 7.0, 2, 's', 1],
 ];
 
 /** The tavern and the mill are hand-placed, but they still want a yard. */
@@ -1270,6 +1281,19 @@ export class MedievalWorld extends World {
     h = lerp(h, CASTLE.ground, 1 - smoothstep(6, 44, cd));
     const moat = bump(cd, 3.6, 17.4);
     if (moat > 0) h = lerp(h, CASTLE.ground - 4.9, moat);
+
+    // ---- Parish church pads (kept last so the churches sit on flat ground).
+    for (const pad of CHURCH_PADS) {
+      if (pad._lock) continue;
+      const pd = rectDist(x - pad.x, z - pad.z, pad.hx, pad.hz);
+      if (pd >= pad.blend) continue;
+      if (pad.y == null) {
+        pad._lock = true;
+        pad.y = this._height(pad.x, pad.z);
+        pad._lock = false;
+      }
+      h = lerp(pad.y, h, smoothstep(0, pad.blend, pd));
+    }
 
     return h;
   }
@@ -5480,6 +5504,8 @@ export class MedievalWorld extends World {
   _buildVillage() {
     const B = new GeoBatch();
     this.enterables = [];
+    // Auto interior rollout is disabled (it stacked shells on the solid
+    // houses); enterables are authored explicitly (parish churches below).
     this._interiorCandidates = [];
     // Hand-placed so the houses address the streets rather than scatter.
     PLOTS.forEach(([x, z, ry, w, d, st, roof, lit], i) => {
@@ -5492,28 +5518,12 @@ export class MedievalWorld extends World {
         light: !!lit && i % 2 === 0,
         seed: 0x4000 + i * 7919,
       });
-      this._interiorCandidates.push({
-        x,
-        z,
-        y: this._height(x, z),
-        hx: Math.max(2.8, w * 0.5 - 0.35),
-        hz: Math.max(2.8, d * 0.5 - 0.35),
-        label: 'Village House',
-      });
     });
 
     // The tavern: bigger, jettied, with a painted sign and lanterns.
     const tav = this._house(B, {
       x: 46, z: 32, ry: -0.42, w: 13, d: 8.5, storeys: 2,
       roof: 'slate', jetty: true, lit: true, light: false, seed: 0x7a17e,
-    });
-    this._interiorCandidates.push({
-      x: 46,
-      z: 32,
-      y: tav.baseY,
-      hx: 6.0,
-      hz: 3.9,
-      label: 'Tavern',
     });
     const tc = Math.cos(-0.42);
     const ts = Math.sin(-0.42);
@@ -5629,14 +5639,25 @@ export class MedievalWorld extends World {
     const halfW = spec.halfW ?? 5.0;
     const halfD = spec.halfD ?? 8.0;
     const baseY = this._height(x, z) + 0.06;
-    const kit = new InteriorKit(this, { name: `interior:church@${x},${z}` });
+    const kit = new InteriorKit(this, {
+      name: `interior:church@${x},${z}`,
+      // Swap the kit's flat palette for the village's baked textured
+      // materials on every large surface so the church matches the houses
+      // instead of reading as an untextured placeholder.
+      matOverrides: {
+        stone: this._mats.ashlar,
+        slate: this._mats.slate,
+        plank: this._mats.plank,
+        beam: this._mats.beam,
+        iron: this._mats.iron,
+      },
+    });
     kit.buildChurch({ x, z, baseY, halfW, halfD });
     kit.finish();
     const d = kit.exportDescriptors();
     d.origin = new THREE.Vector3(x, baseY, z);
     d.label = spec.label || 'Parish Church';
     this.enterables.push(d);
-    this._interiorCandidates.push({ x, z, y: baseY, hx: halfW, hz: halfD, label: d.label });
     this._footprints.push({ x, z, hx: halfW + 1.4, hz: halfD + 1.8, r: 0 });
     this.minimapShapes.push({
       kind: 'rect',
@@ -8790,11 +8811,13 @@ export class MedievalWorld extends World {
       [[62, 148], [40, 164], [16, 152], [44, 138]],
       [[-30, 140], [-56, 152], [-72, 126], [-44, 122]],
       [[-138, 42], [-160, 18], [-142, -8], [-118, 20]],
-      [[-152, -62], [-172, -34], [-146, -20], [-130, -52]],
+      // Kept west of the new NW hamlet and the West Parish Church.
+      [[-176, -70], [-190, -40], [-178, -10], [-164, -46]],
       [[126, 44], [148, 62], [124, 84], [104, 58]],
       [[-58, 84], [-80, 100], [-98, 74], [-72, 62]],
       [[168, 108], [146, 128], [162, 150], [182, 130]],
-      [[14, -104], [-12, -120], [-34, -96], [-6, -82]],
+      // Shifted south-east so it no longer cuts through the plot at (-16,-116).
+      [[24, -112], [2, -136], [-24, -150], [8, -124]],
     ];
     const names = [
       'Hollow Jack', 'Marret the Crow', 'Dunn Pike', 'Sable Ida', 'Wry Tam',

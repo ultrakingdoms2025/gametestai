@@ -85,6 +85,17 @@ export class Interiors {
   _ensureRollout(id, world) {
     if (!world || this._autoBuilt.has(id)) return;
 
+    // Auto-rollout is opt-in only. Building generic shells at harvested
+    // positions stacked geometry on top of existing solid buildings
+    // (untextured boxes, clashing roofs, blocked doors, floating shells).
+    // Worlds must author enterables explicitly (world.enterables) or set
+    // world._autoInteriors = true after providing safe, open-ground
+    // candidate positions.
+    if (world._autoInteriors !== true) {
+      this._autoBuilt.add(id);
+      return;
+    }
+
     if (!Array.isArray(world.enterables)) world.enterables = [];
     const seeded = world.enterables.length;
 

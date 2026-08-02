@@ -52,6 +52,49 @@ export class InteriorKit {
     this.collectibleSpots = [];
 
     this.mats = this._buildMaterials();
+    /* Optional per-key material overrides so a host world can swap the flat
+     * palette for its own baked/textured PBR materials (e.g. medieval ashlar
+     * stone). Overridden batches get box-projected world-scale UVs, a uv1
+     * copy for the aoMap channel and a white vertex-colour attribute, because
+     * the world materials expect all three (see MedievalWorld.normaliseGeo). */
+    this.matOverrides = opts.matOverrides || null;
+  }
+
+  /** Material for a palette key, honouring host-world overrides. */
+  _mat(key) {
+    return (this.matOverrides && this.matOverrides[key]) || this.mats[key];
+  }
+
+  /**
+   * Prepare a geometry for a host-world textured material: box-projected
+   * UVs at world scale (one texture tile per 2m, matching the village bake),
+   * a uv1 copy for the aoMap, and white vertex colours.
+   */
+  _prepGeoForWorldMat(geo, uvPerMetre = 0.5) {
+    const pos = geo.attributes.position;
+    const nrm = geo.attributes.normal;
+    const n = pos.count;
+    const uv = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      const nx = Math.abs(nrm.getX(i));
+      const ny = Math.abs(nrm.getY(i));
+      const nz = Math.abs(nrm.getZ(i));
+      let u, v;
+      if (nx >= ny && nx >= nz) {
+        u = pos.getZ(i); v = pos.getY(i);
+      } else if (ny >= nz) {
+        u = pos.getX(i); v = pos.getZ(i);
+      } else {
+        u = pos.getX(i); v = pos.getY(i);
+      }
+      uv[i * 2] = u * uvPerMetre;
+      uv[i * 2 + 1] = v * uvPerMetre;
+    }
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    geo.setAttribute('uv1', new THREE.BufferAttribute(uv.slice(), 2));
+    const col = new Float32Array(n * 3).fill(1);
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return geo;
   }
 
   /* ------------------------------------------------------------------ */
@@ -140,7 +183,10 @@ export class InteriorKit {
 
   /** Standalone animated mesh (door leaf / lift car); not merged. */
   _dynMesh(matKey, w, h, d) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), this.mats[matKey]);
+    const geo = new THREE.BoxGeometry(w, h, d);
+    const mat = this._mat(matKey);
+    if (mat !== this.mats[matKey]) this._prepGeoForWorldMat(geo);
+    const mesh = new THREE.Mesh(geo, mat);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     this._dynamic.push(mesh);
@@ -153,7 +199,9 @@ export class InteriorKit {
       if (!list.length) continue;
       const merged = list.length === 1 ? list[0] : mergeGeometries(list, false);
       if (!merged) continue;
-      const mesh = new THREE.Mesh(merged, this.mats[matKey]);
+      const mat = this._mat(matKey);
+      if (mat !== this.mats[matKey]) this._prepGeoForWorldMat(merged);
+      const mesh = new THREE.Mesh(merged, mat);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.matrixAutoUpdate = false;
@@ -466,14 +514,17 @@ export class InteriorKit {
     this.solid('stone', ox, y0 - 0.62, oz, OUT_W, 0.62, OUT_D);
 
     // Nave walls with front/back doorways (+Z and -Z sides).
+    // Jamb panels span exactly from the door edge (halfDoor) to the outer
+    // corner (OUT_W) so the leaves never intersect the wall.
+    const jambC = (halfDoor + OUT_W) / 2;
+    const jambH = (OUT_W - halfDoor) / 2;
     const northZ = oz + OUT_D - 0.24;
     const southZ = oz - (OUT_D - 0.24);
-    this.solid('stone', ox - (INT_W + halfDoor) / 2, wallMidY, northZ, (INT_W - halfDoor) / 2 + 0.26, wallH * 0.5, 0.24);
-    this.solid('stone', ox + (INT_W + halfDoor) / 2, wallMidY, northZ, (INT_W - halfDoor) / 2 + 0.26, wallH * 0.5, 0.24);
-    this.solid('stone', ox, y0 + doorH + (wallH - doorH) * 0.5, northZ, halfDoor, (wallH - doorH) * 0.5, 0.24);
-    this.solid('stone', ox - (INT_W + halfDoor) / 2, wallMidY, southZ, (INT_W - halfDoor) / 2 + 0.26, wallH * 0.5, 0.24);
-    this.solid('stone', ox + (INT_W + halfDoor) / 2, wallMidY, southZ, (INT_W - halfDoor) / 2 + 0.26, wallH * 0.5, 0.24);
-    this.solid('stone', ox, y0 + doorH + (wallH - doorH) * 0.5, southZ, halfDoor, (wallH - doorH) * 0.5, 0.24);
+    for (const wz of [northZ, southZ]) {
+      this.solid('stone', ox - jambC, wallMidY, wz, jambH, wallH * 0.5, 0.24);
+      this.solid('stone', ox + jambC, wallMidY, wz, jambH, wallH * 0.5, 0.24);
+      this.solid('stone', ox, y0 + doorH + (wallH - doorH) * 0.5, wz, halfDoor, (wallH - doorH) * 0.5, 0.24);
+    }
     this.solid('stone', ox + (OUT_W - 0.24), wallMidY, oz, 0.24, wallH * 0.5, OUT_D);
     this.solid('stone', ox - (OUT_W - 0.24), wallMidY, oz, 0.24, wallH * 0.5, OUT_D);
 
@@ -482,32 +533,61 @@ export class InteriorKit {
 
     // Rear half mezzanine (second storey) + stair.
     const loftY = y0 + 3.25;
-    this._deckWithHoles(ox, oz - INT_D * 0.34, loftY, INT_W - 0.1, {
-      holes: [{ x0: -0.9, x1: 0.9, z0: -INT_D * 0.46, z1: INT_D * 0.46 }],
+    const deckCZ = oz - INT_D * 0.34;
+    // Stair flight geometry (west wall, climbing north): mirrored below so the
+    // deck can carry a matching stairwell hole above the flight.
+    const stairSteps = 13;
+    const stairRise = 0.25;
+    const stairTread = 0.48;
+    const stairZ0 = -INT_D + 1.15; // local to oz
+    const stairRun = stairSteps * stairTread;
+    this._deckWithHoles(ox, deckCZ, loftY, INT_W - 0.1, {
+      holes: [
+        { x0: -0.9, x1: 0.9, z0: -INT_D * 0.46, z1: INT_D * 0.46 },
+        // Stairwell (deck-local z = world z - deckCZ).
+        {
+          x0: -INT_W + 0.2,
+          x1: -INT_W + 1.9,
+          z0: stairZ0 + INT_D * 0.34 - 0.3,
+          z1: stairZ0 + INT_D * 0.34 + stairRun + 0.9,
+        },
+      ],
     });
-    this._stairFlight(ox - INT_W + 0.95, oz, y0, -INT_D + 1.15, 0.62, 13, 0.25, 0.48);
+    this._stairFlight(ox - INT_W + 0.95, oz, y0, stairZ0, 0.62, stairSteps, stairRise, stairTread);
 
-    // Pitched roof + ridge.
-    const roofRise = INT_W * 0.95;
-    const slope = Math.atan2(roofRise, INT_W);
-    const slabLen = Math.hypot(INT_W, roofRise) + 0.35;
+    // Pitched roof: two planes from the eaves (x = +-OUT_W, y = y0+wallH) up
+    // to the ridge (x = 0). Each slab is a slabLen-long, 0.24-thick box laid
+    // along X and tilted about Z so its ends meet the eave and ridge.
+    const roofRise = OUT_W * 0.9;
+    const slope = Math.atan2(roofRise, OUT_W);
+    const slabLen = Math.hypot(OUT_W, roofRise) + 0.55;
     const ridgeY = y0 + wallH + roofRise;
-    // Pitched roof slabs as dynamic meshes keep this method compact while still
-    // using the same church material palette.
-    const roofA = this._dynMesh('slate', 0.68, slabLen, (OUT_D + 0.16) * 2);
-    roofA.position.set(ox - INT_W * 0.5, y0 + wallH + roofRise * 0.5, oz);
-    roofA.rotation.z = slope;
-    const roofB = this._dynMesh('slate', 0.68, slabLen, (OUT_D + 0.16) * 2);
-    roofB.position.set(ox + INT_W * 0.5, y0 + wallH + roofRise * 0.5, oz);
-    roofB.rotation.z = -slope;
+    const roofDepth = (OUT_D + 0.35) * 2;
+    const roofMidY = y0 + wallH + roofRise * 0.5;
+    const roofA = this._dynMesh('slate', slabLen, 0.24, roofDepth);
+    roofA.position.set(ox - OUT_W * 0.5, roofMidY, oz);
+    roofA.rotation.z = slope; // west slab: +X end (toward ridge) tilts up
+    const roofB = this._dynMesh('slate', slabLen, 0.24, roofDepth);
+    roofB.position.set(ox + OUT_W * 0.5, roofMidY, oz);
+    roofB.rotation.z = -slope; // east slab mirrors it
     this.group.add(roofA, roofB);
-    this.vbox('slate', ox, ridgeY + 0.08, oz, 0.3, 0.12, OUT_D + 0.2);
+    this.vbox('slate', ox, ridgeY + 0.1, oz, 0.42, 0.14, OUT_D + 0.35);
 
-    // Bell tower and spire on the rear gable.
+    // Gable infill so the roof ends are sealed (stepped stone triangles).
+    for (const gz of [northZ, southZ]) {
+      for (let s = 0; s < 4; s++) {
+        const t = (s + 0.5) / 4;
+        const gw = OUT_W * (1 - t);
+        const gh = roofRise / 8;
+        this.vbox('stone', ox, y0 + wallH + roofRise * t, gz, gw, gh, 0.24);
+      }
+    }
+
+    // Bell tower and spire straddling the ridge at the rear gable.
     const towerZ = oz - OUT_D + 1.15;
-    this.solid('stone', ox, y0 + wallH + 1.3, towerZ, 1.45, 1.3, 1.45);
-    this.vbox('stone', ox, y0 + wallH + 3.0, towerZ, 1.12, 0.45, 1.12);
-    this.vcyl('gilt', ox, y0 + wallH + 4.1, towerZ, 0.12, 0.98, 1.7, 10);
+    this.solid('stone', ox, ridgeY + 0.9, towerZ, 1.45, 1.35, 1.45);
+    this.vbox('stone', ox, ridgeY + 2.55, towerZ, 1.12, 0.45, 1.12);
+    this.vcyl('gilt', ox, ridgeY + 3.65, towerZ, 0.12, 0.98, 1.7, 10);
 
     // Tall lancet windows.
     const winY = [y0 + 2.2, y0 + 4.4];
@@ -555,10 +635,10 @@ export class InteriorKit {
       const leaf = this._dynMesh('beam', leafW, leafH, thick);
       leaf.position.set((dir * leafW) / 2, 0, 0);
       // Iron band accents.
-      const band = new THREE.Mesh(
-        new THREE.BoxGeometry(leafW * 0.9, 0.1, thick + 0.02),
-        this.mats.iron
-      );
+      const bandGeo = new THREE.BoxGeometry(leafW * 0.9, 0.1, thick + 0.02);
+      const bandMat = this._mat('iron');
+      if (bandMat !== this.mats.iron) this._prepGeoForWorldMat(bandGeo);
+      const band = new THREE.Mesh(bandGeo, bandMat);
       band.position.set((dir * leafW) / 2, leafH * 0.28, 0);
       const band2 = band.clone();
       band2.position.y = -leafH * 0.28;

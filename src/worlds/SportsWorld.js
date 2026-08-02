@@ -5846,31 +5846,53 @@ export class SportsWorld extends World {
       this._props?.grounding?.push([cx + (Math.cos(a) / k) * ex, cz + (Math.sin(a) / k) * ez, 3.4]);
     }
 
-    // Steep alpine roof with deep eaves and a ridge cap.
+    // Steep alpine roof with deep eaves and a ridge cap. Ridge runs along X at
+    // Hb+4.6; each half slopes DOWN AND OUT to an eave at Hb+0.8, overhanging
+    // the wall by 1.4 m. (The previous panels used the opposite rotation sign,
+    // which flared the eaves upward - an inside-out roof.)
+    const RISE = 3.8;
+    const RUN = D / 2 + 1.4;
+    const PITCH = Math.atan2(RISE, RUN);
+    const SLOPE_LEN = Math.hypot(RISE, RUN);
     const roofParts = [];
     for (const dir of [-1, 1]) {
-      const r = new THREE.BoxGeometry(W + 4.0, 0.42, D * 0.72);
-      xform(r, cx, Hb + 2.7, cz + dir * (D * 0.21), dir * -0.55);
+      const r = new THREE.BoxGeometry(W + 4.0, 0.42, SLOPE_LEN);
+      xform(r, cx, Hb + 0.8 + RISE / 2, cz + dir * (RUN / 2), dir * PITCH);
       roofParts.push(r);
     }
-    roofParts.push(xform(new THREE.BoxGeometry(W + 4.4, 0.34, 0.9), cx, Hb + 5.0, cz));
-    // Purlins under the eaves, which is what gives a chalet roof its weight.
+    roofParts.push(xform(new THREE.BoxGeometry(W + 4.4, 0.34, 0.9), cx, Hb + 4.7, cz));
+    // Rafter tails under the eaves, which is what gives a chalet roof its
+    // weight. They run at the roof pitch, tucked just under the panel, so they
+    // read as the structure carrying the overhang rather than floating trim.
     for (let i = 0; i <= 8; i++) {
       const px = cx - (W + 3.2) / 2 + (i / 8) * (W + 3.2);
       for (const dir of [-1, 1]) {
-        roofParts.push(xform(new THREE.BoxGeometry(0.18, 0.34, 1.2), px, Hb + 1.5, cz + dir * (D * 0.42 + 0.4)));
+        const rz = D / 2 + 0.55;
+        const ry = Hb + 0.8 + RISE * ((RUN - rz) / RUN) - 0.38;
+        roofParts.push(xform(new THREE.BoxGeometry(0.18, 0.34, 1.5), px, ry, cz + dir * rz, dir * PITCH));
       }
     }
     const roof = new THREE.Mesh(mergeGeometries(roofParts), beam);
     roof.matrixAutoUpdate = false;
     this._add(roof);
-    // Gable infill.
-    for (const dir of [-1, 1]) {
-      const gable = new THREE.Mesh(new THREE.CylinderGeometry(5.4, 5.4, 0.5, 3, 1), wood);
-      gable.rotation.x = Math.PI / 2;
-      gable.rotation.z = Math.PI;
-      gable.position.set(cx + dir * (W / 2 + 0.2), Hb + 2.6, cz);
-      this._add(gable);
+    // Gable infill: a pentagon flush with the roof underside (triangle to the
+    // ridge over a short fascia band), one at each end wall.
+    {
+      const shape = new THREE.Shape();
+      shape.moveTo(-RUN, 0);
+      shape.lineTo(-RUN, 0.8);
+      shape.lineTo(0, 0.8 + RISE);
+      shape.lineTo(RUN, 0.8);
+      shape.lineTo(RUN, 0);
+      shape.closePath();
+      for (const dir of [-1, 1]) {
+        const g = new THREE.ExtrudeGeometry(shape, { depth: 0.4, bevelEnabled: false });
+        // Extrude depth runs along local +Z; rotateY maps it outward along +-X.
+        g.rotateY(dir * Math.PI / 2);
+        const gable = new THREE.Mesh(g, wood);
+        gable.position.set(cx + dir * (W / 2 - 0.2), Hb, cz);
+        this._add(gable);
+      }
     }
 
     // Deck facing the piste, with a balustrade. Its own tiling so the boards
@@ -5912,7 +5934,7 @@ export class SportsWorld extends World {
       new THREE.MeshStandardMaterial({
         color: 0x30210f,
         emissive: 0xffb257,
-        emissiveIntensity: 1.5,
+        emissiveIntensity: 0.85,
         roughness: 0.9,
       })
     );
@@ -5923,7 +5945,7 @@ export class SportsWorld extends World {
     for (const ox of [-9.5, -5.7, -1.9, 1.9, 5.7, 9.5]) {
       for (const [wy, wh] of [[3.0, 2.3], [5.9, 1.7]]) {
         winGeos.push(xform(new THREE.BoxGeometry(3.0, wh, 0.12), cx + ox, wy, fz + 0.07));
-        litGeos.push(xform(new THREE.BoxGeometry(2.72, wh - 0.24, 0.04), cx + ox, wy, fz - 0.02));
+        litGeos.push(xform(new THREE.BoxGeometry(2.72, wh - 0.24, 0.04), cx + ox, wy, fz + 0.025));
       }
     }
     const win = new THREE.Mesh(mergeGeometries(winGeos), glass);
@@ -5939,11 +5961,10 @@ export class SportsWorld extends World {
     const chim = this._box(2.2, 13.0, 2.2, this._materials.get('concrete.deck'), cx - W / 2 + 3.0, 6.5, cz - 4.5);
     this._solid(chim);
 
-    // Legible signage on the gable. The piste establishing shot puts this
-    // corner of the lodge in frame, and a blank stained-timber panel there
-    // reads as an unfinished asset.
-    const lodgeSign = this._signBoard(10.5, 2.1, 'MERIDIAN ALPINE LODGE', 0x241610, 0xffd9a0, 'SKI HIRE  •  LESSONS  •  BAR');
-    lodgeSign.position.set(cx, Hb + 1.9, fz + 0.2);
+    // Legible signage on the front wall band between the window heads and the
+    // eave (a gable placement would poke through the corrected roof plane).
+    const lodgeSign = this._signBoard(10.5, 1.55, 'MERIDIAN ALPINE LODGE', 0x241610, 0xffd9a0, 'SKI HIRE  •  LESSONS  •  BAR');
+    lodgeSign.position.set(cx, Hb + 0.35, fz + 0.2);
     this._add(lodgeSign);
   }
 

@@ -1312,11 +1312,12 @@ export class CitadelWorld extends World {
         /* Parapet stubs on some roofs, so the skyline is not a flat plane.
          * Offset along the building's own +Z, for the reason set out above -
          * this one used to displace on z only, which slid the parapet clean off
-         * the roof of every building on a diagonal. */
+         * the roof of every building on a diagonal. Seated ON the roof plane:
+         * the earlier +0.55 lift left a visible air gap under every one. */
         if (rnd() < 0.45) {
           const ph = 0.9 + rnd() * 0.6;
           B.box('plaster.wall', w * 0.9, ph, 0.5,
-            px + Math.sin(a) * d * 0.45, y0 + h + 0.55 + ph * 0.5,
+            px + Math.sin(a) * d * 0.45, y0 + h + ph * 0.5 - 0.02,
             pz + Math.cos(a) * d * 0.45, a, tint);
         }
 
@@ -1328,6 +1329,16 @@ export class CitadelWorld extends World {
           this.track(this.physics.addRotatedBox(
             _v1.set(ax, y0 + 3.4, az), _v2.set(w * 0.4, 0.06, 1.6), a
           ));
+          // Posts under the outer corners - without them the fabric slab
+          // reads as a plank floating in the alley.
+          const pox = px + Math.sin(a) * (d * 0.5 + 3.0);
+          const poz = pz + Math.cos(a) * (d * 0.5 + 3.0);
+          for (const sgn of [-1, 1]) {
+            B.box('wood.beam', 0.16, 3.34, 0.16,
+              pox + Math.cos(a) * sgn * (w * 0.35),
+              y0 + 1.67,
+              poz - Math.sin(a) * sgn * (w * 0.35), a, 0x6a4f31);
+          }
         }
 
         /* A cornice under the roof lip, and a domed roof on a few blocks.
@@ -1345,14 +1356,17 @@ export class CitadelWorld extends World {
           const dome = new THREE.SphereGeometry(dr, 14, 8, 0, TAU, 0, Math.PI * 0.52);
           _e1.set(0, a, 0);
           _q1.setFromEuler(_e1);
-          _v1.set(px, y0 + h + 0.55, pz);
+          // Centre sits just above the roof plane so the dome's rim (slightly
+          // below its centre) tucks into the slab - the old +0.55 lift left
+          // every dome hovering over its own building.
+          _v1.set(px, y0 + h + 0.12, pz);
           _v2.set(1, 0.82, 1);
           _m1.compose(_v1, _q1, _v2);
           B.add('plaster.wall', dome, _m1, 0xe4d6b4);
-          this.track(this.physics.addBox(px, y0 + h + 0.55 + dr * 0.32, pz,
+          this.track(this.physics.addBox(px, y0 + h + 0.12 + dr * 0.32, pz,
             dr * 0.72, dr * 0.32, dr * 0.72));
           // Finial, so the dome terminates rather than just stopping.
-          B.box('wood.beam', 0.16, 0.5, 0.16, px, y0 + h + 0.55 + dr * 0.82 + 0.25, pz, a, 0x8a6a3a);
+          B.box('wood.beam', 0.16, 0.5, 0.16, px, y0 + h + 0.12 + dr * 0.82 + 0.25, pz, a, 0x8a6a3a);
         }
       }
     }
@@ -1591,8 +1605,16 @@ export class CitadelWorld extends World {
       B.box('wood.plank', w, 1.0, w, px, py + 0.5, pz, rnd() * TAU, 0x7d5f3c);
       this.track(this.physics.addBox(px, py + 0.5, pz, w * 0.5, 0.5, w * 0.5));
       if (rnd() < 0.5) {
-        B.box('fabric.banner', w + 1.4, 0.1, w + 1.4, px, py + 2.5, pz, rnd() * TAU,
+        const ca = rnd() * TAU;
+        B.box('fabric.banner', w + 1.4, 0.1, w + 1.4, px, py + 2.5, pz, ca,
           rnd() < 0.5 ? 0xb8452f : 0x2f6ba8);
+        // Corner posts, or the canopy is a carpet hovering over the crate.
+        const ph = (w + 1.4) * 0.5 - 0.18;
+        const ps = Math.sin(ca), pc = Math.cos(ca);
+        for (const [ux, uz] of [[-ph, -ph], [ph, -ph], [-ph, ph], [ph, ph]]) {
+          B.box('wood.beam', 0.14, 2.5, 0.14,
+            px + pc * ux + ps * uz, py + 1.25, pz - ps * ux + pc * uz, ca, 0x6a4f31);
+        }
       }
     }
 

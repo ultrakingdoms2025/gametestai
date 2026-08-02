@@ -186,6 +186,7 @@ export class Loot {
         opacity: 0.75,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
+        fog: false,
       });
       ring.name = `loot.ring.${kind}`;
       const halo = new THREE.SpriteMaterial({
@@ -196,6 +197,7 @@ export class Loot {
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         depthTest: true,
+        fog: false,
       });
       halo.name = `loot.halo.${kind}`;
       const beam = new THREE.MeshBasicMaterial({
@@ -206,6 +208,7 @@ export class Loot {
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.DoubleSide,
+        fog: false,
       });
       beam.name = `loot.beam.${kind}`;
       this._mats[kind] = { core, ring, halo, beam };

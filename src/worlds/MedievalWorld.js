@@ -6584,8 +6584,10 @@ export class MedievalWorld extends World {
           place(chx + i * 5.2, gy + naveH * 0.86, chz + s * (naveHD + 0.9)), 0xb6ae9b);
       }
     }
-    // Lancet windows with stained glass.
-    for (let i = -2; i <= 2; i++) {
+    // Lancet windows with stained glass. The +2.6 offset centres each pane in
+    // the bay east of its buttress, so the run must stop at i=1: an i=2 pane
+    // would land at x=chx+13 - past the nave's east end, floating over the apse.
+    for (let i = -2; i <= 1; i++) {
       for (const s of [-1, 1]) {
         const wz = chz + s * (naveHD + 0.75);
         B.add('glass', planeGeo(1.3, 3.6, 0.9), place(chx + i * 5.2 + 2.6, gy + 5.2, wz,

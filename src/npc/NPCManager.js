@@ -26,6 +26,7 @@ const _v3 = new THREE.Vector3();
 const _dryScratch = new THREE.Vector3();
 const _capA = new THREE.Vector3();
 const _capB = new THREE.Vector3();
+const _containQuery = [];
 // raySegment owns these exclusively - callers must not pass them in.
 const _seg = new THREE.Vector3();
 const _rsA = new THREE.Vector3();
@@ -841,7 +842,29 @@ export class NPCManager {
       const hit = this.physics.raycast(_capA, _capB, 0.62, COLLISION_LAYER.WORLD);
       if (hit) return null;
     }
+    // The cardinal raycasts miss entirely when the probe starts INSIDE a solid
+    // (AABB raycasts from within a box report no hit), so a spot buried in a
+    // keep wall passed every check and the capsule solver then ejected the
+    // character upward - all the way to the roof. Reject any spot whose chest
+    // point is contained by a solid box collider.
+    if (this._insideSolid(_capA)) return null;
     return spot;
+  }
+
+  /** True when `point` lies inside any solid box collider. */
+  _insideSolid(point) {
+    const near = this.physics.query(point, 0.5, _containQuery);
+    for (const c of near) {
+      if (!c.solid || c.type !== 'box') continue;
+      _capB.copy(point).applyMatrix4(c.inverse);
+      const h = c.halfExtents;
+      if (
+        Math.abs(_capB.x) <= h.x &&
+        Math.abs(_capB.y) <= h.y &&
+        Math.abs(_capB.z) <= h.z
+      ) return true;
+    }
+    return false;
   }
 
   _hostileVariant() {

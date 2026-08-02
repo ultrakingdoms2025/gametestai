@@ -15,3 +15,5 @@ review/
 site/node_modules
 site/.next
 site/.vercel
+
+.playwright-mcp/

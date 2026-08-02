@@ -508,10 +508,10 @@ async function boot() {
  * not enter the scene until `spawn()`, and their materials (and the dragon's
  * ~235 ms of geometry) would otherwise land on the first `G`/`H`/`J` press.
  *
- * `compileAsync` resolves through KHR_parallel_shader_compile where the driver
- * offers it, so this does not block the main thread the way a synchronous
- * compile would. A failure here is never fatal: the cost simply reverts to
- * being paid on first use.
+ * We deliberately use `compile()` here instead of `compileAsync()`. Some
+ * browser/driver stacks can throw uncaught errors from compileAsync's internal
+ * readiness polling (seen as `currentProgram.isReady` on undefined), which can
+ * abort boot even though warmup is optional.
  */
 async function prewarm() {
   const t0 = performance.now();
@@ -547,9 +547,9 @@ async function prewarm() {
   } catch { /* non-fatal */ }
 
   try {
-    await engine.renderer.compileAsync(engine.scene, engine.camera);
+    engine.renderer.compile(engine.scene, engine.camera);
   } catch (err) {
-    console.warn('[prewarm] compileAsync failed, falling back to lazy compile:', err);
+    console.warn('[prewarm] compile failed, falling back to lazy compile:', err);
   }
 
   // Two frames, not the twenty-odd the old configuration walk needed: one
@@ -645,7 +645,7 @@ function scheduleBackgroundBuilds(startWorld) {
  * unused; the portal then rebuilt the entire program set in one blocking frame,
  * measured at 83 s going from the station to the medieval world.
  *
- * `compileAsync(group, camera, scene)` is the three-argument form: it collects
+ * `compile(group, camera, scene)` is the three-argument form: it collects
  * materials from `group` but resolves lights and shadows against the live
  * `scene`, so the programs it builds are keyed exactly as the ones the world
  * will ask for on arrival - without the group ever entering the scene graph or
@@ -662,7 +662,7 @@ async function warmWorld(id) {
   lightRig.claim(world.group);
   const t0 = performance.now();
   try {
-    await engine.renderer.compileAsync(world.group, engine.camera, engine.scene);
+    engine.renderer.compile(world.group, engine.camera, engine.scene);
     console.info(
       `[warm] "${id}" precompiled in ${Math.round(performance.now() - t0)}ms ` +
       `(${engine.renderer.info.programs.length} programs total)`

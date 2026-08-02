@@ -772,6 +772,14 @@ export class Player {
     const got = Math.hypot(gotX, gotZ);
     let grounded = res.grounded;
 
+    // Standing still: the ground-stick bias (-2.2) plus the resolver's
+    // normal push otherwise creeps the capsule downslope a few cm/s. Pin
+    // the planar position when there is no horizontal motion to integrate.
+    if (wanted < 1e-4 && this._grounded && grounded && got < 0.06) {
+      this._position.x = _prev.x;
+      this._position.z = _prev.z;
+    }
+
     // Blocked, and we have ground (or coyote) to push off: probe a step.
     if (wanted > 1e-4 && got < wanted * 0.86 && (this._grounded || this._coyote > 0)) {
       // 1. Lift by the step height and make sure the raised capsule fits.

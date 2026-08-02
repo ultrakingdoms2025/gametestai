@@ -229,7 +229,9 @@ const PLOTS = [
   // supposed to be a supporting element for.
   [101, 9, 0.4, 10, 7.5, 1, 't', 0], [68, 56, 1.1, 9.5, 7, 1, 't', 1],
   [85, 76, 2.2, 9, 7, 1, 't', 0], [-47, 12, -0.9, 8.5, 6.5, 1, 's', 0],
-  [8, -6, 1.9, 8, 6, 2, 't', 1],
+  // Plot (8,-6) removed: it sat directly over the Quest Manager spawn at
+  // (10, -9), whose ground snap raycast landed on the thatch and left the
+  // NPC waist-deep in the roof.
   // Expanded hamlets around the castle outer approaches (kept clear of the
   // moat AND of the two parish-church footprints).
   [-166, -22, 0.42, 9.5, 7.2, 2, 's', 1], [-154, -44, 0.55, 8.8, 6.8, 1, 't', 0],
@@ -4659,10 +4661,13 @@ export class MedievalWorld extends World {
       B.add('iron', cylGeo(0.09, 0.09, 1.9, 6, 1.2), place(tx, WT + 10.6, tz), 0x2a2622);
       B.add('banner', planeGeo(1.5, 0.75, 0), place(tx + 0.75, WT + 11.0, tz), HERALD[0]);
 
-      // Collision: drum shell, platform floor, parapet ring.
-      this._ringWall(tx, G + WALL_H / 2, tz, 5.9, WALL_H / 2, 0.7, 10);
+      // Collision: drum shell, platform floor, parapet ring. The drum's
+      // visual cylinder tapers 5.8 (top) to 6.5 (base), so the shell ring
+      // sits at the mean visual radius with enough thickness to cover the
+      // full batter - a 5.9 ring let players sink 0.6m inside the base.
+      this._ringWall(tx, G + WALL_H / 2, tz, 6.15, WALL_H / 2, 0.9, 12);
       this._discSolid(tx, WT, tz, 5.5, 1.7);
-      this._ringWall(tx, WT + 1.2, tz, 5.9, 1.2, 0.5, 10);
+      this._ringWall(tx, WT + 1.2, tz, 5.5, 1.2, 0.5, 12);
     }
 
     /* ---- Gatehouse ------------------------------------------------- */
@@ -4765,9 +4770,26 @@ export class MedievalWorld extends World {
         place(gxOuter + 5.6, G + 6.2, gateZ + s * 2.4, 0));
     }
     this._box(dbCx, G - 0.3, gateZ, dbLen / 2, 0.3, 2.6);
-    // Stone abutment on the far bank.
-    B.add('rubble', boxGeo(3.0, 5.6, 6.6, 0.5), place(gxOuter + dbLen + 1.2, G - 2.6, gateZ), 0xb6ae9b);
-    this._box(gxOuter + dbLen + 1.2, G - 2.6, gateZ, 1.5, 2.8, 3.3);
+    // Stone abutment on the far bank. The old single block's top stood ~2.3m
+    // proud of the bank terrain with no ramp - an unpassable "strange shape"
+    // at the end of the bridge. Land the deck on a flush cap, then step the
+    // masonry down to the ground so the crossing is walkable both ways.
+    {
+      const abX = gxOuter + dbLen + 1.2;
+      B.add('rubble', boxGeo(3.0, 5.6, 6.6, 0.5), place(abX, G - 2.95, gateZ), 0xb6ae9b);
+      this._box(abX, G - 2.95, gateZ, 1.5, 2.8, 3.3);
+      const bankY = this._height(abX + 8.0, gateZ);
+      const drop = Math.max(0, G - 0.15 - bankY);
+      const steps = Math.max(2, Math.ceil(drop / 0.38));
+      const run = 1.15;
+      for (let i = 0; i < steps; i++) {
+        const sx = abX + 1.5 + run / 2 + i * run;
+        const topY = G - 0.15 - ((i + 1) * drop) / steps;
+        B.add('rubble', boxGeo(run + 0.08, 1.2, 5.4, 0.5),
+          place(sx, topY - 0.6, gateZ), 0xb0a894);
+        this._box(sx, topY - 0.6, gateZ, run / 2 + 0.04, 0.6, 2.7);
+      }
+    }
 
     /* ---- Stairs to the wall walk ----------------------------------- */
     this._stairs(B, 'ashlar', wallE - TH / 2 - 0.95, gateZ - 15.0, Math.PI / 2 + Math.PI,
@@ -4941,9 +4963,34 @@ export class MedievalWorld extends World {
       }
     }
 
-    // Battered plinth and a string course at first-floor level.
-    B.add('ashlar', boxGeo((HW + WALL) * 2 + 1.6, 1.8, (HD + WALL) * 2 + 1.6, 0.45),
-      place(KX, G + 0.8, KZ), stoneAlt);
+    // Battered plinth and a string course at first-floor level. The plinth
+    // used to be one collider-less slab that oversailed the walls by 0.8m and
+    // ran straight across the east doorway - a phantom "extra floor" you
+    // could walk through and that visually cut the door arch. Build it as
+    // four solid strips instead, split around the door span, each with a
+    // matching collider so the batter is real.
+    {
+      const P = 0.8; // oversail beyond the wall face
+      const py = G + 0.8;
+      const phh = 0.9;
+      const fx = HW + WALL; // wall face distance, x
+      const fz = HD + WALL; // wall face distance, z
+      const gapHalf = doorHalf + 0.7; // clear the arch + jamb ring
+      const strip = (cx, cz, hx, hz) => {
+        B.add('ashlar', boxGeo(hx * 2, 1.8, hz * 2, 0.45), place(cx, py, cz), stoneAlt);
+        this._box(cx, py, cz, hx, phh, hz);
+      };
+      // North / south strips run the full width including the corners.
+      strip(KX, KZ - fz - P / 2 + 0.05, fx + P, P / 2 + 0.05);
+      strip(KX, KZ + fz + P / 2 - 0.05, fx + P, P / 2 + 0.05);
+      // West strip between them.
+      strip(KX - fx - P / 2 + 0.05, KZ, P / 2 + 0.05, fz);
+      // East strip is split around the doorway.
+      const segHalf = (fz - gapHalf) / 2;
+      for (const s of [-1, 1]) {
+        strip(KX + fx + P / 2 - 0.05, KZ + s * (gapHalf + segHalf), P / 2 + 0.05, segHalf);
+      }
+    }
     B.add('ashlar', boxGeo((HW + WALL) * 2 + 0.5, 0.3, (HD + WALL) * 2 + 0.5, 0.6),
       place(KX, G + 9.6, KZ), stoneAlt);
 
@@ -5295,10 +5342,43 @@ export class MedievalWorld extends World {
      * were one value corner to corner, which is the single loudest "this is
      * painted, not built" tell a render-plaster wall can have. */
     const storeyRects = [];
-    grimeRamp(
-      put('daub', panelGeo(w, gh, d, 0.5, 7), 0, gh / 2 + 0.28, 0, 0, 0, 0, daubTint),
-      baseY + 0.28, 2.2, 0.42
-    );
+    const enter = !!o.enterable;
+    const wallT = 0.42;
+    const doorHW = 0.78; // doorway half-width
+    const doorH2 = 2.25; // doorway clear height
+    if (!enter) {
+      grimeRamp(
+        put('daub', panelGeo(w, gh, d, 0.5, 7), 0, gh / 2 + 0.28, 0, 0, 0, 0, daubTint),
+        baseY + 0.28, 2.2, 0.42
+      );
+    } else {
+      /* Hollow ground storey: four wall slabs with a real doorway cut into
+       * the +d face so the cottage can be entered. The upper storey (if any)
+       * stays a solid mass above the ceiling. */
+      const wy = gh / 2 + 0.28;
+      grimeRamp(
+        put('daub', panelGeo(w, gh, wallT, 0.5, 7), 0, wy, -hd + wallT / 2, 0, 0, 0, daubTint),
+        baseY + 0.28, 2.2, 0.42
+      );
+      for (const sgn of [-1, 1]) {
+        grimeRamp(
+          put('daub', panelGeo(wallT, gh, d - wallT * 2, 0.5, 7),
+            sgn * (hw - wallT / 2), wy, 0, 0, 0, 0, daubTint),
+          baseY + 0.28, 2.2, 0.42
+        );
+      }
+      const segW = hw - doorHW;
+      for (const sgn of [-1, 1]) {
+        grimeRamp(
+          put('daub', panelGeo(segW, gh, wallT, 0.5, 7),
+            sgn * (doorHW + segW / 2), wy, hd - wallT / 2, 0, 0, 0, daubTint),
+          baseY + 0.28, 2.2, 0.42
+        );
+      }
+      // Panel above the door head up to the wall plate.
+      put('daub', panelGeo(doorHW * 2, gh - doorH2, wallT, 0.5, 3),
+        0, 0.28 + doorH2 + (gh - doorH2) / 2, hd - wallT / 2, 0, 0, 0, daubTint);
+    }
     storeyRects.push({ y0: 0.28, h: gh, w, d });
     let top = 0.28 + gh;
     if (o.storeys > 1) {
@@ -5404,11 +5484,24 @@ export class MedievalWorld extends World {
     this._smokeOrigins.push(_v1.x, _v1.y, _v1.z);
 
     /* ---- Door and windows -------------------------------------------- */
-    const doorZ = hd + (o.storeys > 1 ? jut : 0) + 0.08;
-    put('beam', boxGeo(1.45, 2.5, 0.2, 1.0), 0, 1.53, doorZ, 0, 0, 0, bt());
-    put('plank', boxGeo(1.05, 2.15, 0.16, 0.9), 0, 1.35, doorZ + 0.1, 0, 0, 0, 0x6d4f30);
-    for (let i = 0; i < 2; i++) {
-      put('iron', boxGeo(1.05, 0.14, 0.2, 1.6), 0, 0.75 + i * 1.1, doorZ + 0.14, 0, 0, 0, 0x2c2722);
+    // The frame sits on the ground-storey wall plane. It used to be pushed
+    // out by `jut` on jettied houses, which left the whole door assembly
+    // floating 0.4m in front of the wall under the overhang.
+    const doorZ = hd + 0.08;
+    if (!enter) {
+      put('beam', boxGeo(1.45, 2.5, 0.2, 1.0), 0, 1.53, doorZ, 0, 0, 0, bt());
+      put('plank', boxGeo(1.05, 2.15, 0.16, 0.9), 0, 1.35, doorZ + 0.1, 0, 0, 0, 0x6d4f30);
+      for (let i = 0; i < 2; i++) {
+        put('iron', boxGeo(1.05, 0.14, 0.2, 1.6), 0, 0.75 + i * 1.1, doorZ + 0.14, 0, 0, 0, 0x2c2722);
+      }
+    } else {
+      // Open doorway: jamb posts and a lintel around the cut, not a slab.
+      for (const sgn of [-1, 1]) {
+        put('beam', boxGeo(0.2, doorH2 + 0.15, 0.5, 1.0),
+          sgn * (doorHW + 0.1), 0.28 + (doorH2 + 0.15) / 2, hd - 0.2, 0, 0, 0, bt());
+      }
+      put('beam', boxGeo(doorHW * 2 + 0.4, 0.24, 0.5, 1.0),
+        0, 0.28 + doorH2 + 0.12, hd - 0.2, 0, 0, 0, bt());
     }
     put('rubble', boxGeo(1.6, 0.22, 0.7, 0.9), 0, 0.11, doorZ + 0.4, 0, 0, 0, 0x8e8371);
     put('beam', boxGeo(1.9, 0.22, 0.9, 1.0), 0, 2.9, doorZ + 0.3, 0, 0, 0, bt());
@@ -5490,10 +5583,130 @@ export class MedievalWorld extends World {
       this._addGlow(_v1.x, _v1.y, _v1.z, 4.6, 0x4a2a12);
     }
 
-    // One rotated box holds the whole mass; roofs are above head height.
-    const collideY = baseY + (0.28 + gh + (o.storeys > 1 ? uh : 0)) / 2;
-    this._rbox(o.x, collideY, o.z, (w + jut * 2) / 2 + 0.1,
-      (0.28 + gh + (o.storeys > 1 ? uh : 0)) / 2 + plinth / 2, (d + jut * 2) / 2 + 0.1, o.ry);
+    if (!enter) {
+      // One rotated box holds the whole mass; roofs are above head height.
+      const collideY = baseY + (0.28 + gh + (o.storeys > 1 ? uh : 0)) / 2;
+      this._rbox(o.x, collideY, o.z, (w + jut * 2) / 2 + 0.1,
+        (0.28 + gh + (o.storeys > 1 ? uh : 0)) / 2 + plinth / 2, (d + jut * 2) / 2 + 0.1, o.ry);
+    } else {
+      /* ---- Enterable: per-wall colliders, interior, swinging door ---- */
+      const wallsTop = 0.28 + gh;
+      const rcol = (lx, cy, lz, hx, hy, hz) => {
+        _v1.set(lx, cy, lz).applyMatrix4(M);
+        return this._rbox(_v1.x, _v1.y, _v1.z, hx, hy, hz, o.ry);
+      };
+      const hyW = (wallsTop + plinth) / 2;
+      const cyW = (wallsTop - plinth) / 2;
+      rcol(0, cyW, -hd + wallT / 2, hw + 0.06, hyW, wallT / 2 + 0.05);
+      for (const sgn of [-1, 1]) {
+        rcol(sgn * (hw - wallT / 2), cyW, 0, wallT / 2 + 0.05, hyW, hd + 0.06);
+      }
+      const segW = hw - doorHW;
+      for (const sgn of [-1, 1]) {
+        rcol(sgn * (doorHW + segW / 2), cyW, hd - wallT / 2, segW / 2 + 0.04, hyW, wallT / 2 + 0.05);
+      }
+      rcol(0, 0.28 + doorH2 + (gh - doorH2) / 2, hd - wallT / 2,
+        doorHW + 0.05, (gh - doorH2) / 2 + 0.02, wallT / 2 + 0.05);
+      // Interior plank floor over the plinth core, and the ceiling.
+      put('plank', boxGeo(w - 0.2, 0.16, d - 0.2, 0.7), 0, 0.3, 0, 0, 0, 0, 0x97754c);
+      rcol(0, 0.05, 0, hw - 0.08, 0.33, hd - 0.08);
+      put('plank', boxGeo(w - 0.1, 0.14, d - 0.1, 0.7), 0, wallsTop - 0.07, 0, 0, 0, 0, 0x8a6b45);
+      rcol(0, wallsTop - 0.07, 0, hw, 0.1, hd);
+      // Ceiling joists so the soffit reads as carpentry, not a slab.
+      for (let i = -2; i <= 2; i++) {
+        put('beam', boxGeo(0.18, 0.2, d - 0.5, 1.0), (i * w) / 6, wallsTop - 0.22, 0, 0, 0, 0, bt());
+      }
+      if (o.storeys > 1) {
+        rcol(0, wallsTop + uh / 2, 0, (w + jut * 2) / 2 + 0.1, uh / 2, (d + jut * 2) / 2 + 0.1);
+      }
+      /* Furnishing: table + stools by the window wall, a bed along the
+       * other, a hearth on the chimney breast. All batched. */
+      const fs = 0.38; // floor surface (local)
+      const tX = -w * 0.22;
+      const tZ = -d * 0.12;
+      put('plank', boxGeo(1.6, 0.09, 0.95, 1.0), tX, fs + 0.74, tZ, 0, 0.12, 0, 0x9a7a50);
+      for (const sx of [-1, 1]) {
+        put('beam', boxGeo(0.14, 0.72, 0.85, 1.2), tX + sx * 0.62, fs + 0.36, tZ, 0, 0.12, 0, bt());
+      }
+      rcol(tX, fs + 0.4, tZ, 0.85, 0.42, 0.55);
+      for (const [sx2, sz2] of [[0.95, 0.25], [-0.4, 0.85]]) {
+        put('plank', cylGeo(0.24, 0.2, 0.5, 8, 1.0), tX + sx2, fs + 0.25, tZ + sz2, 0, 0, 0, 0x8f6f47);
+      }
+      const bX = w * 0.28;
+      const bZ = -d * 0.16;
+      put('beam', boxGeo(1.0, 0.42, 2.0, 1.0), bX, fs + 0.21, bZ, 0, 0, 0, bt());
+      put('canopy', boxGeo(0.92, 0.18, 1.9, 2.0), bX, fs + 0.5, bZ, 0, 0, 0, 0xcfc2a4);
+      put('canopy', boxGeo(0.86, 0.14, 0.5, 2.0), bX, fs + 0.62, bZ - 0.68, 0, 0, 0, 0xddd2b8);
+      rcol(bX, fs + 0.35, bZ, 0.52, 0.35, 1.02);
+      // Hearth proud of the chimney breast (the shaft protrudes ~0.5m into
+      // the room at z = -hd + 0.4; its inner face sits near -hd + 0.93).
+      rcol(chx, cyW, -hd + 0.45, 0.6, hyW, 0.55);
+      put('rubble', boxGeo(1.5, 1.3, 0.3, 0.7), chx, fs + 0.65, -hd + 1.02, 0, 0, 0, 0x8d8270);
+      put('ember', boxGeo(0.66, 0.3, 0.24, 2.0), chx, fs + 0.2, -hd + 1.06, 0, 0, 0, 0xffb060);
+      _v1.set(chx, fs + 0.3, -hd + 1.5).applyMatrix4(M);
+      this._addGlow(_v1.x, _v1.y, _v1.z, 3.4, 0x5a3416);
+      /* Swinging door leaf on a hinge pivot at the left jamb. */
+      const leafW = doorHW * 2 - 0.06;
+      const leafGeo = boxGeo(leafW, doorH2 - 0.12, 0.09, 0.9);
+      leafGeo.translate(leafW / 2, 0, 0);
+      normaliseGeo(leafGeo, 0x6d4f30);
+      const leaf = new THREE.Mesh(leafGeo, this._mats.plank);
+      leaf.castShadow = leaf.receiveShadow = true;
+      const bandGeo = boxGeo(leafW * 0.9, 0.12, 0.05, 1.6);
+      bandGeo.translate(leafW / 2, 0, 0.06);
+      normaliseGeo(bandGeo, 0x2c2722);
+      const pivot = new THREE.Group();
+      _v1.set(-doorHW + 0.02, 0.28 + (doorH2 - 0.12) / 2 + 0.04, hd - wallT / 2).applyMatrix4(M);
+      pivot.position.copy(_v1);
+      pivot.rotation.y = o.ry;
+      pivot.add(leaf);
+      for (const by of [-0.55, 0.55]) {
+        const band = new THREE.Mesh(bandGeo, this._mats.iron);
+        band.position.y = by;
+        pivot.add(band);
+      }
+      this.group.add(pivot);
+      _v1.set(0, 0.28 + doorH2 / 2, hd - wallT / 2).applyMatrix4(M);
+      const doorCol = this._rbox(_v1.x, _v1.y, _v1.z, doorHW, doorH2 / 2, 0.12, o.ry);
+      const dpos = new THREE.Vector3(0, 1.2, hd).applyMatrix4(M);
+      const cpos = new THREE.Vector3(w * 0.22, fs + 0.7, d * 0.22).applyMatrix4(M);
+      /* Entry steps: the interior floor sits at baseY + 0.38 while the lane
+       * outside can be over a metre lower on sloped plots — beyond the 0.45m
+       * step height. Rubble steps bridge the door threshold to grade. */
+      {
+        _v1.set(0, 0, hd + 0.9).applyMatrix4(M);
+        const outH = this._height(_v1.x, _v1.z);
+        const drop = baseY + 0.38 - outH;
+        if (drop > 0.3) {
+          const n = Math.min(6, Math.ceil(drop / 0.34));
+          const run = 0.6;
+          for (let i = 0; i < n; i++) {
+            const topW = baseY + 0.38 - (i + 1) * (drop / n);
+            const hgt = Math.max(0.3, topW - outH + 0.3);
+            const zc = hd + 0.25 + (i + 0.5) * run;
+            const cyL = topW - hgt / 2 - baseY;
+            put('rubble', boxGeo(2.0, hgt, run, 0.8), 0, cyL, zc, 0, 0, 0, 0x8e8371);
+            rcol(0, cyL, zc, 1.0, hgt / 2, run / 2);
+          }
+          _v1.set(0, 0, hd + 0.25 + (n * run) / 2).applyMatrix4(M);
+          this._footprints.push({ x: _v1.x, z: _v1.z, hx: 1.5, hz: (n * run) / 2 + 0.6, r: o.ry });
+        }
+      }
+      if (!Array.isArray(this.enterables)) this.enterables = [];
+      this.enterables.push({
+        label: `cottage@${o.x | 0},${o.z | 0}`,
+        origin: new THREE.Vector3(o.x, baseY, o.z),
+        doors: [{
+          id: `cottage_${this.enterables.length}`,
+          leaves: [{ pivot, closed: o.ry, open: o.ry + Math.PI * 0.58 }],
+          collider: doorCol,
+          position: dpos,
+          open: false,
+          anim: 0,
+        }],
+        collectibleSpots: [{ position: cpos, tier: 'common' }],
+      });
+    }
     this._footprints.push({ x: o.x, z: o.z, hx: w / 2 + 1.4, hz: d / 2 + 1.4, r: o.ry });
     return { baseY, top: baseY + top, roofTop: baseY + top + rh };
   }
@@ -5503,9 +5716,10 @@ export class MedievalWorld extends World {
 
   _buildVillage() {
     const B = new GeoBatch();
-    this.enterables = [];
+    if (!Array.isArray(this.enterables)) this.enterables = [];
     // Auto interior rollout is disabled (it stacked shells on the solid
-    // houses); enterables are authored explicitly (parish churches below).
+    // houses); enterables are authored explicitly (cottages, the tavern and
+    // the parish churches below).
     this._interiorCandidates = [];
     // Hand-placed so the houses address the streets rather than scatter.
     PLOTS.forEach(([x, z, ry, w, d, st, roof, lit], i) => {
@@ -5516,6 +5730,9 @@ export class MedievalWorld extends World {
         jetty: st > 1 && i % 3 !== 0,
         lit: !!lit,
         light: !!lit && i % 2 === 0,
+        // ~70% of the village can be walked into; the rest stay closed so
+        // the collider budget and interior dressing stay bounded.
+        enterable: i % 10 < 7,
         seed: 0x4000 + i * 7919,
       });
     });
@@ -5524,6 +5741,7 @@ export class MedievalWorld extends World {
     const tav = this._house(B, {
       x: 46, z: 32, ry: -0.42, w: 13, d: 8.5, storeys: 2,
       roof: 'slate', jetty: true, lit: true, light: false, seed: 0x7a17e,
+      enterable: true,
     });
     const tc = Math.cos(-0.42);
     const ts = Math.sin(-0.42);
@@ -6030,18 +6248,25 @@ export class MedievalWorld extends World {
         }
         this._box(gx, gy + 0.5, gz, 1.0, 0.5, 1.0);
       } else {
-        // A ladder leaning on a hurdle stack, plus a trough.
-        _obj.position.set(gx, gy + 1.5, gz);
-        _obj.rotation.set(0, gr, 0.28);
-        _obj.scale.set(1, 1, 1);
+        // A ladder laid flat on the ground beside a trough. It used to lean
+        // 0.28 rad against a stack that was never built, so it read as a
+        // ladder standing unsupported in mid-air.
+        const ux = Math.cos(gr);
+        const uz = -Math.sin(gr);
+        const px2 = Math.sin(gr);
+        const pz2 = Math.cos(gr);
         for (const s of [-0.22, 0.22]) {
-          _obj.position.set(gx + Math.cos(gr) * s, gy + 1.5, gz - Math.sin(gr) * s);
-          B.add('beam', boxGeo(0.09, 3.1, 0.09, 1.5), _obj, 0x8a6c4a);
+          _obj.position.set(gx + px2 * s, gy + 0.08, gz + pz2 * s);
+          _obj.rotation.set(0, gr, 0);
+          _obj.scale.set(1, 1, 1);
+          B.add('beam', boxGeo(3.1, 0.08, 0.09, 1.5), _obj, 0x8a6c4a);
         }
         for (let k = 0; k < 8; k++) {
-          _obj.position.set(gx - Math.sin(gr) * 0.02, gy + 0.3 + k * 0.38, gz - Math.cos(gr) * 0.02);
-          _obj.rotation.set(0, gr, 0.28);
-          B.add('beam', boxGeo(0.5, 0.06, 0.06, 1.6), _obj, 0x7a5f42);
+          const t = -1.33 + k * 0.38;
+          _obj.position.set(gx + ux * t, gy + 0.12, gz + uz * t);
+          _obj.rotation.set(0, gr, 0);
+          _obj.scale.set(1, 1, 1);
+          B.add('beam', boxGeo(0.06, 0.06, 0.5, 1.6), _obj, 0x7a5f42);
         }
         B.add('plank', boxGeo(1.7, 0.42, 0.6, 1.1),
           place(gx + 1.7, gy + 0.24, gz + 0.8, gr), 0x9a7a50);

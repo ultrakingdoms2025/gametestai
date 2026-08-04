@@ -37,6 +37,16 @@ const _cp1 = new THREE.Vector3();
 const _cp2 = new THREE.Vector3();
 const _cp3 = new THREE.Vector3();
 const _cp4 = new THREE.Vector3();
+// Private to the heightfield branches, for the same aliasing reason as _cp*.
+const _hf1 = new THREE.Vector3();
+const _hf2 = new THREE.Vector3();
+const _hf3 = new THREE.Vector3();
+const _hf4 = new THREE.Vector3();
+const _hfCorners = new Float64Array(12);
+// Private to the heightfield raycast, which runs while _rc1/_rc2 are live.
+const _hr1 = new THREE.Vector3();
+const _hr2 = new THREE.Vector3();
+const _hr3 = new THREE.Vector3();
 
 export const COLLISION_LAYER = {
   WORLD: 1 << 0,
@@ -105,9 +115,39 @@ function closestPointOnTriangle(a, b, c, p, out) {
   return out.copy(a).addScaledVector(ab, v).addScaledVector(ac, w);
 }
 
+// Scratch for rayTriangle and the heightfield hit-normal, which run while the
+// general pool and the raycast pool are both live.
+const _rt1 = new THREE.Vector3();
+const _rt2 = new THREE.Vector3();
+const _rt3 = new THREE.Vector3();
+const _rt4 = new THREE.Vector3();
+const _rt5 = new THREE.Vector3();
+
+/**
+ * Moller-Trumbore. Returns the ray parameter of the hit, or -1 for a miss.
+ * Back faces count: terrain is walked from underneath during recovery, and a
+ * one-sided test there reports open sky.
+ */
+function rayTriangle(a, b, c, origin, direction, maxT) {
+  const edge1 = _rt1.subVectors(b, a);
+  const edge2 = _rt2.subVectors(c, a);
+  const h = _rt3.crossVectors(direction, edge2);
+  const det = edge1.dot(h);
+  if (Math.abs(det) < 1e-12) return -1;
+  const invDet = 1 / det;
+  const s = _rt4.subVectors(origin, a);
+  const u = invDet * s.dot(h);
+  if (u < 0 || u > 1) return -1;
+  const q = _rt5.crossVectors(s, edge1);
+  const v = invDet * direction.dot(q);
+  if (v < 0 || u + v > 1) return -1;
+  const t = invDet * edge2.dot(q);
+  return t > 1e-5 && t < maxT ? t : -1;
+}
+
 /**
  * A static collider. Worlds build these; physics never mutates them.
- * `type` is one of 'box' | 'sphere' | 'mesh'.
+ * `type` is one of 'box' | 'sphere' | 'mesh' | 'heightfield'.
  */
 export class Collider {
   constructor(type, opts = {}) {
@@ -117,7 +157,70 @@ export class Collider {
     /** Blocks movement. Set false for pure triggers/raycast targets. */
     this.solid = opts.solid ?? true;
 
-    if (type === 'box') {
+    if (type === 'heightfield') {
+      /* A regular grid of surface heights, treated as a solid volume from the
+       * surface down to `baseY`.
+       *
+       * This exists because the alternative - one oriented box per terrain cell -
+       * grows with world *area*. A 400x400 m world at a 4 m cell is 10,000
+       * colliders and about 5 MB; the same world ten times wider is a million
+       * colliders and over half a gigabyte, which is simply not reachable. The
+       * heightfield stores one float per sample instead: the same 400 m world is
+       * 40 KB, and the ten-times-wider one is 4 MB.
+       *
+       * Sampling is planar-interpolated across the *same* triangulation the
+       * collision and mesh use (diagonal from corner 00 to corner 11), so the
+       * height reported by `sampleHeight` is exactly the height of the triangle
+       * a ray or capsule will hit. That identity is the whole reason terrain and
+       * collision cannot drift apart here. */
+      this.heights = opts.heights;
+      this.nx = opts.nx;
+      this.nz = opts.nz;
+      this.originX = opts.originX;
+      this.originZ = opts.originZ;
+      this.stepX = opts.stepX;
+      this.stepZ = opts.stepZ ?? opts.stepX;
+      /**
+       * Optional per-*cell* mask, `(nx-1) * (nz-1)` bytes, 1 meaning "no surface
+       * here". This is what lets a single field have a swimming pool or a skate
+       * bowl punched through it instead of sealing them shut.
+       *
+       * Per cell rather than per sample deliberately: marking *samples* as holes
+       * would force every cell touching the boundary to be discarded too (its
+       * corner heights would be meaningless), eroding a cell-wide gap around the
+       * opening that the player falls straight through.
+       * @type {Uint8Array|null}
+       */
+      this.holes = opts.holes ?? null;
+
+      let lo = Infinity;
+      let hi = -Infinity;
+      if (opts.minY == null || opts.maxY == null) {
+        const h = this.heights;
+        for (let i = 0; i < h.length; i++) {
+          const v = h[i];
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+      }
+      this.minY = opts.minY ?? lo;
+      this.maxY = opts.maxY ?? hi;
+      /* How far below the surface still counts as solid. Deep enough that a
+       * character who tunnels is recovered upward rather than falling through,
+       * shallow enough that it never becomes the answer to a ground query in a
+       * cave or under a deck. */
+      this.baseY = opts.baseY ?? this.minY - 50;
+
+      this.sizeX = (this.nx - 1) * this.stepX;
+      this.sizeZ = (this.nz - 1) * this.stepZ;
+      this.center = new THREE.Vector3(
+        this.originX + this.sizeX * 0.5,
+        (this.minY + this.maxY) * 0.5,
+        this.originZ + this.sizeZ * 0.5
+      );
+      this.boundingRadius =
+        Math.hypot(this.sizeX, this.maxY - this.minY, this.sizeZ) * 0.5;
+    } else if (type === 'box') {
       // Oriented box: half-extents + world matrix.
       this.halfExtents = opts.halfExtents.clone();
       this.matrix = opts.matrix.clone();
@@ -138,6 +241,76 @@ export class Collider {
       this.boundingRadius = this.bounds.getSize(_v1).length() * 0.5;
     }
   }
+
+  /* ---- heightfield sampling ---------------------------------------- */
+
+  /** True when (x,z) falls inside this heightfield's footprint. */
+  containsColumn(x, z) {
+    return (
+      x >= this.originX &&
+      z >= this.originZ &&
+      x <= this.originX + this.sizeX &&
+      z <= this.originZ + this.sizeZ
+    );
+  }
+
+  /**
+   * Surface height at (x,z), or `null` outside the footprint.
+   *
+   * Interpolates across the same two triangles the collision uses rather than
+   * doing a plain bilinear blend. Bilinear disagrees with the triangles by up to
+   * half the cell's diagonal sag, and every disagreement between the height a
+   * prop is placed at and the height the player collides with is a floating or
+   * half-buried prop.
+   */
+  sampleHeight(x, z) {
+    const nx = this.nx;
+    const fx = (x - this.originX) / this.stepX;
+    const fz = (z - this.originZ) / this.stepZ;
+    if (fx < 0 || fz < 0 || fx > nx - 1 || fz > this.nz - 1) return null;
+
+    let i = Math.floor(fx);
+    let j = Math.floor(fz);
+    if (i > nx - 2) i = nx - 2;
+    if (j > this.nz - 2) j = this.nz - 2;
+    if (this.holes !== null && this.holes[j * (nx - 1) + i]) return null;
+    const tx = fx - i;
+    const tz = fz - j;
+
+    const h = this.heights;
+    const r0 = j * nx + i;
+    const r1 = r0 + nx;
+    const h00 = h[r0];
+    const h10 = h[r0 + 1];
+    const h01 = h[r1];
+    const h11 = h[r1 + 1];
+
+    // Diagonal runs 00 -> 11, matching `_cellTriangle` below.
+    return tz > tx
+      ? h00 + (h01 - h00) * (tz - tx) + (h11 - h00) * tx
+      : h00 + (h10 - h00) * (tx - tz) + (h11 - h00) * tz;
+  }
+
+  /**
+   * Write the corners of cell (i,j) into a 12-float scratch array as two
+   * triangles' worth of shared vertices: [x0,y00,z0, x0,y01,z1, x1,y11,z1, x1,y10,z0].
+   * Triangles are (0,1,2) and (0,2,3).
+   */
+  cellCorners(i, j, out) {
+    const nx = this.nx;
+    const x0 = this.originX + i * this.stepX;
+    const z0 = this.originZ + j * this.stepZ;
+    const x1 = x0 + this.stepX;
+    const z1 = z0 + this.stepZ;
+    const r0 = j * nx + i;
+    const r1 = r0 + nx;
+    const h = this.heights;
+    out[0] = x0; out[1] = h[r0]; out[2] = z0;
+    out[3] = x0; out[4] = h[r1]; out[5] = z1;
+    out[6] = x1; out[7] = h[r1 + 1]; out[8] = z1;
+    out[9] = x1; out[10] = h[r0 + 1]; out[11] = z0;
+    return out;
+  }
 }
 
 export class Physics {
@@ -152,10 +325,26 @@ export class Physics {
     /** @type {Map<number, Collider[]>} */
     this._grid = new Map();
     this._queryCache = [];
+    /** Separate from `_queryCache` so a containment test cannot clobber a live capsule query. */
+    this._containCache = [];
+
+    /**
+     * Heightfields are held outside the broadphase grid.
+     *
+     * One heightfield spans an entire world, so inserting it into the grid the
+     * normal way would push it into every one of the ~1,100 cells a 400 m world
+     * covers - and into 110,000 cells once a world is ten times wider. It would
+     * also be returned by every query with no filtering benefit whatsoever.
+     * There is never more than a handful per world, so a linear XZ-overlap test
+     * against this list is strictly cheaper than grid membership.
+     * @type {Collider[]}
+     */
+    this.heightfields = [];
   }
 
   clear() {
     this.colliders.length = 0;
+    this.heightfields.length = 0;
     this._grid.clear();
     this.characters.clear();
   }
@@ -185,8 +374,23 @@ export class Physics {
   /** @param {Collider} collider */
   add(collider) {
     this.colliders.push(collider);
-    this._insertToGrid(collider);
+    if (collider.type === 'heightfield') this.heightfields.push(collider);
+    else this._insertToGrid(collider);
     return collider;
+  }
+
+  /**
+   * Register a terrain heightfield: one collider for an entire ground surface.
+   *
+   * `heights` is row-major, `heights[j * nx + i]` being the world Y at
+   * `(originX + i * stepX, originZ + j * stepZ)`.
+   *
+   * @param {{ heights: Float32Array, nx: number, nz: number,
+   *           originX: number, originZ: number, stepX: number, stepZ?: number,
+   *           minY?: number, maxY?: number, baseY?: number }} opts
+   */
+  addHeightfield(opts) {
+    return this.add(new Collider('heightfield', opts));
   }
 
   /** Convenience: register an oriented box from a mesh's geometry bounds. */
@@ -291,7 +495,63 @@ export class Physics {
         }
       }
     }
+    // Heightfields live outside the grid (see the note on `this.heightfields`),
+    // so they are matched by footprint instead.
+    for (let i = 0; i < this.heightfields.length; i++) {
+      const hf = this.heightfields[i];
+      if (
+        center.x + radius >= hf.originX &&
+        center.x - radius <= hf.originX + hf.sizeX &&
+        center.z + radius >= hf.originZ &&
+        center.z - radius <= hf.originZ + hf.sizeZ
+      ) {
+        out.push(hf);
+      }
+    }
     return out;
+  }
+
+  /**
+   * Surface height from the terrain heightfields alone, ignoring props and
+   * buildings. `null` when no heightfield covers (x,z).
+   *
+   * Far cheaper than `groundHeight` - no ray, no broadphase - so world
+   * generation uses it for the tens of thousands of prop placements that only
+   * ever want the terrain.
+   */
+  terrainHeight(x, z) {
+    let best = null;
+    for (let i = 0; i < this.heightfields.length; i++) {
+      const h = this.heightfields[i].sampleHeight(x, z);
+      if (h !== null && (best === null || h > best)) best = h;
+    }
+    return best;
+  }
+
+  /**
+   * True when `point` is inside solid static geometry - either a box or below a
+   * heightfield surface. NPC placement uses this to reject spots buried in a
+   * wall or in a hillside, which the cardinal raycasts cannot see because a ray
+   * starting inside a convex volume reports no hit.
+   */
+  containsPoint(point) {
+    const near = this.query(point, 0.5, this._containCache);
+    for (const c of near) {
+      if (!c.solid) continue;
+      if (c.type === 'heightfield') {
+        const h = c.sampleHeight(point.x, point.z);
+        if (h !== null && point.y < h && point.y > c.baseY) return true;
+      } else if (c.type === 'box') {
+        const local = _hf1.copy(point).applyMatrix4(c.inverse);
+        const e = c.halfExtents;
+        if (
+          Math.abs(local.x) <= e.x &&
+          Math.abs(local.y) <= e.y &&
+          Math.abs(local.z) <= e.z
+        ) return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -299,6 +559,69 @@ export class Physics {
    * collider is further than `maxDist` (cheap early-out for the capsule solver).
    */
   _closestPoint(collider, point, out, maxDist) {
+    if (collider.type === 'heightfield') {
+      // Nothing on the surface can be in range if the whole field is far below.
+      if (point.y - collider.maxY > maxDist) return null;
+
+      const surf = collider.sampleHeight(point.x, point.z);
+      if (surf === null) return null;
+
+      /* Under the surface. Returning the query point itself collapses the
+       * solver's delta to zero, which is exactly the signal its deep-embed
+       * branch uses to push straight up - the same recovery a box gives when
+       * its clamp is a no-op. Below `baseY` the field stops being solid so a
+       * genuine cave or under-deck volume is not sealed. */
+      if (point.y < surf) {
+        return point.y > collider.baseY ? out.copy(point) : null;
+      }
+
+      // Above the surface: closest point on the real triangles nearby, which is
+      // what makes slopes and cliff faces resolve correctly rather than
+      // everything behaving like a vertical drop.
+      const nx2 = collider.nx - 2;
+      const nz2 = collider.nz - 2;
+      let i0 = Math.floor((point.x - maxDist - collider.originX) / collider.stepX);
+      let i1 = Math.floor((point.x + maxDist - collider.originX) / collider.stepX);
+      let j0 = Math.floor((point.z - maxDist - collider.originZ) / collider.stepZ);
+      let j1 = Math.floor((point.z + maxDist - collider.originZ) / collider.stepZ);
+      if (i0 < 0) i0 = 0;
+      if (j0 < 0) j0 = 0;
+      if (i1 > nx2) i1 = nx2;
+      if (j1 > nz2) j1 = nz2;
+
+      let bestDistSq = maxDist * maxDist;
+      let found = false;
+      const holes = collider.holes;
+      const cellStride = collider.nx - 1;
+      const a = _hf1, b = _hf2, c = _hf3, cp = _hf4;
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          if (holes !== null && holes[j * cellStride + i]) continue;
+          const k = collider.cellCorners(i, j, _hfCorners);
+          a.set(k[0], k[1], k[2]);
+          b.set(k[3], k[4], k[5]);
+          c.set(k[6], k[7], k[8]);
+          closestPointOnTriangle(a, b, c, point, cp);
+          let dsq = cp.distanceToSquared(point);
+          if (dsq < bestDistSq) {
+            bestDistSq = dsq;
+            out.copy(cp);
+            found = true;
+          }
+          b.set(k[6], k[7], k[8]);
+          c.set(k[9], k[10], k[11]);
+          closestPointOnTriangle(a, b, c, point, cp);
+          dsq = cp.distanceToSquared(point);
+          if (dsq < bestDistSq) {
+            bestDistSq = dsq;
+            out.copy(cp);
+            found = true;
+          }
+        }
+      }
+      return found ? out : null;
+    }
+
     if (collider.type === 'box') {
       // Transform into box local space, clamp, transform back.
       const local = _v1.copy(point).applyMatrix4(collider.inverse);
@@ -422,11 +745,20 @@ export class Physics {
     let bestDist = maxDistance;
 
     // March the broadphase grid along the ray rather than querying one huge sphere.
-    const steps = Math.max(1, Math.ceil(maxDistance / this.cellSize));
-    const stepLen = maxDistance / steps;
     const probe = new THREE.Vector3();
     const seen = new Set();
     const candidates = [];
+
+    /* A ray with no horizontal component stays in one column of grid cells for
+     * its whole length, so marching it re-queries the identical cells once per
+     * step and throws all but the first away. `groundHeight` casts straight down
+     * over up to 900 m, which was 75 identical queries - each allocating its own
+     * dedup Set - for every spawn probe, prop placement and NPC ground check. */
+    const vertical =
+      Math.abs(direction.x) * maxDistance < this.cellSize * 0.5 &&
+      Math.abs(direction.z) * maxDistance < this.cellSize * 0.5;
+    const steps = vertical ? 0 : Math.max(1, Math.ceil(maxDistance / this.cellSize));
+    const stepLen = steps > 0 ? maxDistance / steps : 0;
 
     for (let i = 0; i <= steps; i++) {
       probe.copy(origin).addScaledVector(direction, i * stepLen);
@@ -449,7 +781,142 @@ export class Physics {
     return best;
   }
 
+  /**
+   * Ray vs terrain heightfield.
+   *
+   * Walks the ray across the height grid one cell at a time (2D DDA) instead of
+   * testing every triangle, so cost scales with how far the ray travels rather
+   * than with how big the world is. That distinction is the whole point: a
+   * brute-force pass over a ten-times-wider world is 100x the triangles for the
+   * same 20 m shot.
+   */
+  _raycastHeightfield(collider, origin, direction, maxDist) {
+    const nx = collider.nx;
+    const nz = collider.nz;
+    const stepX = collider.stepX;
+    const stepZ = collider.stepZ;
+    const originX = collider.originX;
+    const originZ = collider.originZ;
+
+    // Clip against the field's slab before walking anything.
+    let t0 = 0;
+    let t1 = maxDist;
+    // X
+    if (Math.abs(direction.x) < 1e-9) {
+      if (origin.x < originX || origin.x > originX + collider.sizeX) return null;
+    } else {
+      const inv = 1 / direction.x;
+      let ta = (originX - origin.x) * inv;
+      let tb = (originX + collider.sizeX - origin.x) * inv;
+      if (ta > tb) { const s = ta; ta = tb; tb = s; }
+      if (ta > t0) t0 = ta;
+      if (tb < t1) t1 = tb;
+      if (t0 > t1) return null;
+    }
+    // Z
+    if (Math.abs(direction.z) < 1e-9) {
+      if (origin.z < originZ || origin.z > originZ + collider.sizeZ) return null;
+    } else {
+      const inv = 1 / direction.z;
+      let ta = (originZ - origin.z) * inv;
+      let tb = (originZ + collider.sizeZ - origin.z) * inv;
+      if (ta > tb) { const s = ta; ta = tb; tb = s; }
+      if (ta > t0) t0 = ta;
+      if (tb < t1) t1 = tb;
+      if (t0 > t1) return null;
+    }
+    // Y band: below baseY or above maxY there is nothing to hit.
+    if (Math.abs(direction.y) < 1e-9) {
+      if (origin.y < collider.baseY || origin.y > collider.maxY) return null;
+    } else {
+      const inv = 1 / direction.y;
+      let ta = (collider.baseY - origin.y) * inv;
+      let tb = (collider.maxY - origin.y) * inv;
+      if (ta > tb) { const s = ta; ta = tb; tb = s; }
+      if (ta > t0) t0 = ta;
+      if (tb < t1) t1 = tb;
+      if (t0 > t1) return null;
+    }
+    if (t1 <= 0 || t0 >= maxDist) return null;
+    if (t0 < 0) t0 = 0;
+
+    // Enter the grid a hair past the boundary so the starting cell is the one
+    // the ray is actually inside.
+    const tEnter = Math.min(t0 + 1e-4, t1);
+    let i = Math.floor((origin.x + direction.x * tEnter - originX) / stepX);
+    let j = Math.floor((origin.z + direction.z * tEnter - originZ) / stepZ);
+    if (i < 0) i = 0; else if (i > nx - 2) i = nx - 2;
+    if (j < 0) j = 0; else if (j > nz - 2) j = nz - 2;
+
+    const stepI = direction.x > 1e-9 ? 1 : direction.x < -1e-9 ? -1 : 0;
+    const stepJ = direction.z > 1e-9 ? 1 : direction.z < -1e-9 ? -1 : 0;
+
+    let tMaxI = Infinity;
+    let tDeltaI = Infinity;
+    if (stepI !== 0) {
+      tMaxI = (originX + (i + (stepI > 0 ? 1 : 0)) * stepX - origin.x) / direction.x;
+      tDeltaI = Math.abs(stepX / direction.x);
+    }
+    let tMaxJ = Infinity;
+    let tDeltaJ = Infinity;
+    if (stepJ !== 0) {
+      tMaxJ = (originZ + (j + (stepJ > 0 ? 1 : 0)) * stepZ - origin.z) / direction.z;
+      tDeltaJ = Math.abs(stepZ / direction.z);
+    }
+
+    const a = _hr1, b = _hr2, c = _hr3;
+    const holes = collider.holes;
+    const cellStride = nx - 1;
+    for (;;) {
+      let t = -1;
+      if (holes === null || !holes[j * cellStride + i]) {
+        const k = collider.cellCorners(i, j, _hfCorners);
+        // Triangles (0,1,2) and (0,2,3) - the same 00->11 diagonal `sampleHeight`
+        // interpolates across.
+        a.set(k[0], k[1], k[2]);
+        b.set(k[3], k[4], k[5]);
+        c.set(k[6], k[7], k[8]);
+        t = rayTriangle(a, b, c, origin, direction, maxDist);
+        if (t < 0) {
+          b.set(k[6], k[7], k[8]);
+          c.set(k[9], k[10], k[11]);
+          t = rayTriangle(a, b, c, origin, direction, maxDist);
+        }
+      }
+      if (t >= 0) {
+        const normal = new THREE.Vector3()
+          .crossVectors(_rt1.subVectors(b, a), _rt2.subVectors(c, a))
+          .normalize();
+        if (normal.dot(direction) > 0) normal.negate();
+        return {
+          distance: t,
+          point: new THREE.Vector3().copy(origin).addScaledVector(direction, t),
+          normal,
+          collider,
+        };
+      }
+
+      // A ray with no horizontal component only ever touches one cell.
+      if (stepI === 0 && stepJ === 0) return null;
+
+      if (tMaxI < tMaxJ) {
+        if (tMaxI > t1) return null;
+        i += stepI;
+        if (i < 0 || i > nx - 2) return null;
+        tMaxI += tDeltaI;
+      } else {
+        if (tMaxJ > t1) return null;
+        j += stepJ;
+        if (j < 0 || j > nz - 2) return null;
+        tMaxJ += tDeltaJ;
+      }
+    }
+  }
+
   _raycastCollider(collider, origin, direction, maxDist) {
+    if (collider.type === 'heightfield') {
+      return this._raycastHeightfield(collider, origin, direction, maxDist);
+    }
     if (collider.type === 'box') {
       // Slab test in box local space. These MUST use raycast-private scratch
       // vectors: callers legitimately pass module scratch vectors as the ray,

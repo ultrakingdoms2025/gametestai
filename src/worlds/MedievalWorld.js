@@ -1,8 +1,17 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { World } from './World.js';
-import { Collider } from '../physics/Physics.js';
 import { InteriorKit } from './InteriorKit.js';
+import { genPool } from '../workers/GenPool.js';
+/* The ground, and the layout that shapes it, live in their own module so the
+ * generation worker can import them without pulling in `three` and this entire
+ * file. Imported back here rather than duplicated: one definition of the terrain
+ * is the only thing keeping the mesh, the collision and every prop agreeing. */
+import {
+  mulberry32, clamp01, lerp, smoothstep, smootherstep, bump, rectDist,
+  perlin2, fbm2, riverZ, medievalHeight,
+  HALF, CASTLE, MARKET, VILLAGE, CIRCLE, BRIDGE_X, CHURCH_PADS,
+} from './terrain/MedievalHeight.js';
 
 /**
  * ALDERMOOR VALE - the medieval world.
@@ -26,11 +35,6 @@ import { InteriorKit } from './InteriorKit.js';
 
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
-const _v3 = new THREE.Vector3();
-const _m1 = new THREE.Matrix4();
-const _q1 = new THREE.Quaternion();
-const _UP = new THREE.Vector3(0, 1, 0);
-const _ONE = new THREE.Vector3(1, 1, 1);
 const _col = new THREE.Color();
 const _obj = new THREE.Object3D();
 
@@ -38,114 +42,10 @@ const DEG = Math.PI / 180;
 const TAU = Math.PI * 2;
 
 /* ------------------------------------------------------------------ */
-/* Maths                                                               */
-/* ------------------------------------------------------------------ */
-
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
-const lerp = (a, b, t) => a + (b - a) * t;
-
-/** Hermite ramp: 0 below `e0`, 1 above `e1`. */
-function smoothstep(e0, e1, x) {
-  const t = clamp01((x - e0) / (e1 - e0));
-  return t * t * (3 - 2 * t);
-}
-function smootherstep(t) {
-  t = clamp01(t);
-  return t * t * t * (t * (t * 6 - 15) + 10);
-}
-/** 0 at `a` and `b`, 1 in the middle - used for carving moats and channels. */
-function bump(x, a, b) {
-  if (x <= a || x >= b) return 0;
-  const t = (x - a) / (b - a);
-  return smootherstep(Math.min(t, 1 - t) * 2);
-}
-
-/** Signed distance to an axis-aligned rectangle centred on the origin. */
-function rectDist(dx, dz, hx, hz) {
-  const ax = Math.abs(dx) - hx;
-  const az = Math.abs(dz) - hz;
-  const ox = Math.max(ax, 0);
-  const oz = Math.max(az, 0);
-  return Math.sqrt(ox * ox + oz * oz) + Math.min(Math.max(ax, az), 0);
-}
-
-/* Gradient noise. Deterministic across reloads so collision, macro texture and
- * prop placement all agree on where the ground is. */
-const _perm = new Uint8Array(512);
-const _gx = new Float32Array([1, -1, 1, -1, 1, -1, 0, 0]);
-const _gz = new Float32Array([1, 1, -1, -1, 0, 0, 1, -1]);
-(function seedPerm() {
-  const rnd = mulberry32(0x5eed10a7);
-  const p = new Uint8Array(256);
-  for (let i = 0; i < 256; i++) p[i] = i;
-  for (let i = 255; i > 0; i--) {
-    const j = (rnd() * (i + 1)) | 0;
-    const t = p[i];
-    p[i] = p[j];
-    p[j] = t;
-  }
-  for (let i = 0; i < 512; i++) _perm[i] = p[i & 255];
-})();
-
-function fade(t) {
-  return t * t * t * (t * (t * 6 - 15) + 10);
-}
-
-function perlin2(x, z) {
-  const fx = Math.floor(x);
-  const fz = Math.floor(z);
-  const X = fx & 255;
-  const Z = fz & 255;
-  const xf = x - fx;
-  const zf = z - fz;
-  const u = fade(xf);
-  const v = fade(zf);
-  const A = _perm[X] + Z;
-  const B = _perm[X + 1] + Z;
-  const h00 = _perm[A] & 7;
-  const h01 = _perm[A + 1] & 7;
-  const h10 = _perm[B] & 7;
-  const h11 = _perm[B + 1] & 7;
-  const n00 = _gx[h00] * xf + _gz[h00] * zf;
-  const n10 = _gx[h10] * (xf - 1) + _gz[h10] * zf;
-  const n01 = _gx[h01] * xf + _gz[h01] * (zf - 1);
-  const n11 = _gx[h11] * (xf - 1) + _gz[h11] * (zf - 1);
-  return lerp(lerp(n00, n10, u), lerp(n01, n11, u), v);
-}
-
-function fbm2(x, z, octaves, lacunarity = 2.03, gain = 0.5) {
-  let sum = 0;
-  let amp = 1;
-  let norm = 0;
-  let fx = x;
-  let fz = z;
-  for (let i = 0; i < octaves; i++) {
-    sum += perlin2(fx, fz) * amp;
-    norm += amp;
-    amp *= gain;
-    fx *= lacunarity;
-    fz *= lacunarity;
-  }
-  return sum / norm;
-}
-
-/* ------------------------------------------------------------------ */
 /* World layout - one place to change where anything lives.            */
 /* ------------------------------------------------------------------ */
 
-const HALF = 200;
 const WATER_Y = 0.85;
-const CASTLE = { x: -72, z: -58, hx: 40, hz: 33, ground: 9.6 };
 const MOAT_Y = CASTLE.ground - 2.3;
 /* Curtain height.
  *
@@ -160,25 +60,6 @@ const MOAT_Y = CASTLE.ground - 2.3;
  */
 const WALL_H = 10.6;
 const WALL_TOP = CASTLE.ground + WALL_H;
-const MARKET = { x: 34, z: 18, hx: 17, hz: 15, y: 4.6 };
-const VILLAGE = { x: 44, z: 26, hx: 58, hz: 42, y: 4.6 };
-const CIRCLE = { x: 2, z: -22, r: 8.6 };
-const BRIDGE_X = 26;
-
-/**
- * Flatten pads under the two axis-aligned parish churches so their slabs sit
- * true on the hillside. Applied LAST in _height so nothing re-adds height.
- * `y` is lazily sampled from the un-padded terrain at the pad centre.
- */
-const CHURCH_PADS = [
-  { x: -146, z: -30, hx: 7.2, hz: 10.6, blend: 5, y: null, _lock: false },
-  { x: -60, z: -136, hx: 7.0, hz: 10.2, blend: 5, y: null, _lock: false },
-];
-
-/** River centreline: a lazy meander running west to east across the south. */
-function riverZ(x) {
-  return 104 + 20 * Math.sin(x * 0.011) + 7 * Math.sin(x * 0.027 + 1.3);
-}
 
 const ROADS = [
   // The castle road is the spine of the whole vale: it is the one thing that
@@ -1241,63 +1122,7 @@ export class MedievalWorld extends World {
    * @returns {number} world Y in metres
    */
   _height(x, z) {
-    // Broad rolling hills, a medium band, then a low-amplitude fine layer. The
-    // fine layer stays under ~0.2m so the 4m collision grid still tracks it.
-    let h = 6.0 + fbm2(x * 0.0038, z * 0.0038, 5) * 11.0;
-    h += fbm2(x * 0.017, z * 0.017, 3) * 1.9;
-    h += perlin2(x * 0.075, z * 0.075) * 0.18;
-
-    // ---- River valley, then the incised channel.
-    const rz = riverZ(x);
-    const rd = Math.abs(z - rz);
-    h = lerp(2.3, h, smoothstep(16, 108, rd));
-    const chanHalf = 9.5;
-    if (rd < chanHalf + 8) {
-      const t = smootherstep(clamp01((chanHalf + 8 - rd) / 8));
-      const bed = -1.7 + 0.7 * Math.cos((Math.min(rd, chanHalf) / chanHalf) * Math.PI * 0.5);
-      h = lerp(h, bed, t);
-    }
-
-    // ---- Bridge causeway: lift the approaches out of the flood plain, but
-    // never inside the channel or the bridge would have nothing to span.
-    const bx = Math.abs(x - BRIDGE_X);
-    if (bx < 11 && rd > 10.5 && rd < 46) {
-      const w = smoothstep(11, 5, bx) * smoothstep(10.5, 15, rd) * smoothstep(46, 30, rd);
-      h = lerp(h, 4.15, w);
-    }
-
-    // ---- Village terrace.
-    const vd = rectDist(x - VILLAGE.x, z - VILLAGE.z, VILLAGE.hx, VILLAGE.hz);
-    h = lerp(h, VILLAGE.y, 0.88 * (1 - smoothstep(0, 30, vd)));
-
-    // ---- Market square, dead flat so the stalls sit true.
-    const md = rectDist(x - MARKET.x, z - MARKET.z, MARKET.hx, MARKET.hz);
-    h = lerp(h, MARKET.y, 1 - smoothstep(0, 9, md));
-
-    // ---- Stone-circle knoll.
-    const kd = Math.hypot(x - CIRCLE.x, z - CIRCLE.z);
-    h += 4.4 * Math.exp(-(kd * kd) / 900);
-
-    // ---- Castle rise, then the moat cut into its glacis.
-    const cd = rectDist(x - CASTLE.x, z - CASTLE.z, CASTLE.hx, CASTLE.hz);
-    h = lerp(h, CASTLE.ground, 1 - smoothstep(6, 44, cd));
-    const moat = bump(cd, 3.6, 17.4);
-    if (moat > 0) h = lerp(h, CASTLE.ground - 4.9, moat);
-
-    // ---- Parish church pads (kept last so the churches sit on flat ground).
-    for (const pad of CHURCH_PADS) {
-      if (pad._lock) continue;
-      const pd = rectDist(x - pad.x, z - pad.z, pad.hx, pad.hz);
-      if (pd >= pad.blend) continue;
-      if (pad.y == null) {
-        pad._lock = true;
-        pad.y = this._height(pad.x, pad.z);
-        pad._lock = false;
-      }
-      h = lerp(pad.y, h, smoothstep(0, pad.blend, pd));
-    }
-
-    return h;
+    return medievalHeight(x, z);
   }
 
   /**
@@ -1450,23 +1275,6 @@ export class MedievalWorld extends World {
   _rbox(cx, cy, cz, hx, hy, hz, rotY) {
     return this.track(
       this.physics.addRotatedBox(_v1.set(cx, cy, cz), _v2.set(hx, hy, hz), rotY, {})
-    );
-  }
-
-  /**
-   * Freely oriented box collider.
-   *
-   * `Physics.addRotatedBox` only does yaw, and `resolveCapsule` does not
-   * resolve triangle-soup colliders at all (its scratch vectors alias with the
-   * triangle test), so sloped surfaces are built from tilted boxes here. Boxes
-   * are also an order of magnitude cheaper to query than a triangle soup.
-   */
-  _obb(px, py, pz, hx, hy, hz, quat) {
-    _m1.compose(_v1.set(px, py, pz), quat, _ONE);
-    return this.track(
-      this.physics.add(
-        new Collider('box', { halfExtents: _v2.set(hx, hy, hz), matrix: _m1 })
-      )
     );
   }
 
@@ -3654,44 +3462,45 @@ export class MedievalWorld extends World {
   async _buildTerrain() {
     this._buildRoadPaths();
 
-    /* ---- Visual mesh: 2m grid across the full 400x400m playfield. */
+    /* ---- Visual mesh: 2m grid across the full 400x400m playfield.
+     *
+     * Sampled on a worker. This is the single most expensive stretch of ground
+     * arithmetic in the game - 40,401 evaluations of a height function that is
+     * five octaves of gradient noise plus a river, a causeway and five levelling
+     * pads, about 670 ms of solid main-thread work - and none of it needs the
+     * renderer, so none of it belongs on the render thread. The worker returns
+     * the finished buffers as transferables, so the main thread's entire share
+     * of the job is handing them to `BufferGeometry`.
+     *
+     * Normals come back from the worker too, computed from the height grid by
+     * central differences rather than by `computeVertexNormals`, which would put
+     * a second full pass over 80,000 triangles straight back where it was taken
+     * from.
+     *
+     * The heights are reused verbatim as the collision heightfield below, so the
+     * surface the player stands on is the very same set of numbers as the
+     * surface they are looking at. The mesh used to be sampled at 2 m and the
+     * collision at 4 m; every disagreement between them was either a player
+     * floating above the ground or clipped into it. */
     const SEG = 200;
     const step = 400 / SEG;
-    const vCount = (SEG + 1) * (SEG + 1);
-    const pos = new Float32Array(vCount * 3);
-    const uv = new Float32Array(vCount * 2);
-    for (let j = 0; j <= SEG; j++) {
-      if ((j & 15) === 0) await this._breathe();
-      const z = -HALF + j * step;
-      for (let i = 0; i <= SEG; i++) {
-        const x = -HALF + i * step;
-        const k = j * (SEG + 1) + i;
-        pos[k * 3] = x;
-        pos[k * 3 + 1] = this._height(x, z);
-        pos[k * 3 + 2] = z;
-        uv[k * 2] = (x + HALF) / 400;
-        uv[k * 2 + 1] = 1 - (z + HALF) / 400;
-      }
-    }
-    const idx = new Uint32Array(SEG * SEG * 6);
-    let t = 0;
-    for (let j = 0; j < SEG; j++) {
-      for (let i = 0; i < SEG; i++) {
-        const a = j * (SEG + 1) + i;
-        const b = a + SEG + 1;
-        idx[t++] = a;
-        idx[t++] = b;
-        idx[t++] = b + 1;
-        idx[t++] = a;
-        idx[t++] = b + 1;
-        idx[t++] = a + 1;
-      }
-    }
+    const terrain = await genPool.run('terrain', {
+      field: 'medieval',
+      originX: -HALF,
+      originZ: -HALF,
+      size: 400,
+      seg: SEG,
+      uv: 'unit',
+      normals: true,
+    });
+    const hfHeights = terrain.heights;
+    await this._breathe();
+
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-    geo.setIndex(new THREE.BufferAttribute(idx, 1));
-    geo.computeVertexNormals();
+    geo.setAttribute('position', new THREE.BufferAttribute(terrain.positions, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(terrain.uvs, 2));
+    geo.setAttribute('normal', new THREE.BufferAttribute(terrain.normals, 3));
+    geo.setIndex(new THREE.BufferAttribute(terrain.indices, 1));
 
     /* ---- Macro albedo x tiled detail. One macro map cannot carry close-up
      * detail at 400m, and one tiled map cannot carry the roads and river
@@ -3790,36 +3599,31 @@ export class MedievalWorld extends World {
     ground.castShadow = false;
     this.group.add(ground);
 
-    /* ---- Collision: one tilted slab per 4m cell, its top face fitted to the
-     * heightfield's local plane. The slabs overlap slightly so the capsule
-     * always finds support at a cell boundary, and the broadphase grid only
-     * ever hands back a handful of them. */
-    const CELL = 4;
-    const nC = 400 / CELL;
-    const T = 1.9;
-    for (let cz = 0; cz < nC; cz++) {
-      if ((cz & 7) === 0) await this._breathe();
-      const z = -HALF + (cz + 0.5) * CELL;
-      for (let cx = 0; cx < nC; cx++) {
-        const x = -HALF + (cx + 0.5) * CELL;
-        const e = CELL * 0.5;
-        const h00 = this._height(x - e, z - e);
-        const h10 = this._height(x + e, z - e);
-        const h01 = this._height(x - e, z + e);
-        const h11 = this._height(x + e, z + e);
-        const dhx = (h10 + h11 - h00 - h01) / (2 * CELL);
-        const dhz = (h01 + h11 - h00 - h10) / (2 * CELL);
-        _v3.set(-dhx, 1, -dhz).normalize();
-        _q1.setFromUnitVectors(_UP, _v3);
-        const avg = (h00 + h10 + h01 + h11) * 0.25;
-        // Widen the footprint on steep cells so the tilted slabs still overlap.
-        const half = e / Math.max(0.62, _v3.y) + 0.18;
-        this._obb(
-          x - _v3.x * T, avg - _v3.y * T, z - _v3.z * T,
-          half, T, half, _q1
-        );
-      }
-    }
+    /* ---- Collision: one heightfield collider for the whole playfield.
+     *
+     * This was 10,000 tilted slabs - one oriented box per 4 m cell, each
+     * carrying two 4x4 matrices, for about 5 MB and 40,000 extra `_height`
+     * calls. That cost grows with world *area*, so it was also the single thing
+     * standing between this world and being made meaningfully bigger: at four
+     * times the width it is 160,000 boxes and 76 MB, and at ten times it is a
+     * million boxes and half a gigabyte.
+     *
+     * The heightfield is 158 KB, is built from samples the mesh had already
+     * computed, and - because it shares the mesh's grid and its 00->11
+     * triangulation - describes exactly the surface that gets drawn rather than
+     * a staircase approximation of it. */
+    this.track(
+      this.physics.addHeightfield({
+        heights: hfHeights,
+        nx: SEG + 1,
+        nz: SEG + 1,
+        originX: -HALF,
+        originZ: -HALF,
+        stepX: step,
+        stepZ: step,
+      })
+    );
+    await this._breathe();
 
     /* ---- Distant continuation: a polar skirt out to 900m that becomes
      * foothills, so the playfield never ends in a visible cliff edge. */
@@ -4791,10 +4595,24 @@ export class MedievalWorld extends World {
       }
     }
 
-    /* ---- Stairs to the wall walk ----------------------------------- */
-    this._stairs(B, 'ashlar', wallE - TH / 2 - 0.95, gateZ - 15.0, Math.PI / 2 + Math.PI,
+    /* ---- Stairs to the wall walk -----------------------------------
+     *
+     * Both flights climb *away* from the nearest tower. They used to climb into
+     * one: the east flight ran toward the gatehouse and the west flight toward
+     * the north-west turret, and a tower's ring-wall colliders stand from the
+     * bailey floor to well above the wall walk. Measured on the built castle,
+     * the east flight rose from 9.60 m to 14.42 m and then met a solid face
+     * 14.7 m tall across the rest of its run, and the west flight reached
+     * 16.67 m before a turret cut it off 3.5 m short of the walk. Neither
+     * staircase could be climbed to the top, which is the only reason either
+     * exists.
+     *
+     * The east flight also starts 2 m further from the gate than it did, so its
+     * 11.9 m run finishes clear of the north-east corner rather than ending
+     * underneath it. */
+    this._stairs(B, 'ashlar', wallE - TH / 2 - 0.95, gateZ - 13.0, Math.PI / 2,
       G, WT, 1.9, stoneAlt);
-    this._stairs(B, 'ashlar', wallW + TH / 2 + 0.95, wallN + 14.0, Math.PI / 2,
+    this._stairs(B, 'ashlar', wallW + TH / 2 + 0.95, wallN + 14.0, Math.PI / 2 + Math.PI,
       G, WT, 1.9, stoneAlt);
 
     this._rampartDressing(B, place, stoneAlt, wallW, wallE, wallN, wallS, TH, WT, G);

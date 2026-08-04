@@ -445,8 +445,12 @@ async function boot() {
      * a progress bar stuck at 92%" into "the menu appears, and finishes
      * preparing while you read it".
      *
-     * `compileAsync` resolves through KHR_parallel_shader_compile, so the
-     * driver links on its own threads and the card stays live throughout.
+     * The warm itself blocks - `prewarm` uses the synchronous `compile()`, for
+     * the reason documented on that function - so the card is painted *before*
+     * it starts rather than staying animated during it. That is the whole point
+     * of the ordering: the player gets something to read and a working start
+     * prompt while the driver links, instead of a frozen progress bar.
+     *
      * Entering is gated on the warm finishing - `showStartPrompt` queues an
      * early click rather than dropping the player into a world that is still
      * compiling.

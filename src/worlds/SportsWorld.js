@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { World } from './World.js';
-import { Collider, COLLISION_LAYER } from '../physics/Physics.js';
+import { COLLISION_LAYER } from '../physics/Physics.js';
 
 /**
  * SPORTS COMPLEX - "Meridian Athletic Grounds".
@@ -1792,46 +1792,61 @@ export class SportsWorld extends World {
    * size - not the triangle count - is what keeps this cheap. ~5 m chunks mean
    * a capsule only ever considers a few hundred triangles per iteration.
    */
-  _addHeightCollision(fn, x0, z0, x1, z1, res, chunkSize) {
-    const per = Math.max(1, Math.round(chunkSize / res));
-    const nx = Math.ceil((x1 - x0) / res);
-    const nz = Math.ceil((z1 - z0) / res);
-    const cx = Math.ceil(nx / per);
-    const cz = Math.ceil(nz / per);
-    for (let a = 0; a < cx; a++) {
-      for (let b = 0; b < cz; b++) {
-        const i0 = a * per;
-        const i1 = Math.min(nx, i0 + per);
-        const j0 = b * per;
-        const j1 = Math.min(nz, j0 + per);
-        const w = i1 - i0;
-        const d = j1 - j0;
-        if (w <= 0 || d <= 0) continue;
-        const positions = new Float32Array(w * d * 18);
-        let p = 0;
-        for (let j = j0; j < j1; j++) {
-          const za = z0 + j * res;
-          const zb = Math.min(z1, za + res);
-          for (let i = i0; i < i1; i++) {
-            const xa = x0 + i * res;
-            const xb = Math.min(x1, xa + res);
-            const y00 = fn(xa, za);
-            const y10 = fn(xb, za);
-            const y01 = fn(xa, zb);
-            const y11 = fn(xb, zb);
-            positions[p++] = xa; positions[p++] = y00; positions[p++] = za;
-            positions[p++] = xa; positions[p++] = y01; positions[p++] = zb;
-            positions[p++] = xb; positions[p++] = y11; positions[p++] = zb;
-            positions[p++] = xa; positions[p++] = y00; positions[p++] = za;
-            positions[p++] = xb; positions[p++] = y11; positions[p++] = zb;
-            positions[p++] = xb; positions[p++] = y10; positions[p++] = za;
-          }
-        }
-        this.track(
-          this.physics.add(new Collider('mesh', { positions, layer: COLLISION_LAYER.WORLD }))
-        );
+  /**
+   * Register a region of ground as a single heightfield collider.
+   *
+   * This used to bake triangle soups - one `Collider('mesh')` per chunk, each
+   * holding every vertex of its own triangles in world space. The skate pad
+   * alone was 336 colliders and 23,500 triangles, and a soup has no internal
+   * acceleration structure at all: every capsule query walks all of its
+   * triangles behind a centroid reject. A heightfield stores one float per
+   * sample and indexes straight to the cell under the query.
+   *
+   * `holeRects` are world-space `{x0,z0,x1,z1}` boxes to leave open, for the
+   * places the ground genuinely has no floor - the swimming basin and the skate
+   * bowl. A cell is dropped when its *centre* falls inside one, so ground
+   * continues right up to the opening instead of retreating a cell from it.
+   */
+  _addHeightCollision(fn, x0, z0, x1, z1, res, holeRects = null) {
+    const nqx = Math.max(1, Math.ceil((x1 - x0) / res));
+    const nqz = Math.max(1, Math.ceil((z1 - z0) / res));
+    const stepX = (x1 - x0) / nqx;
+    const stepZ = (z1 - z0) / nqz;
+    const nx = nqx + 1;
+    const nz = nqz + 1;
+
+    const heights = new Float32Array(nx * nz);
+    for (let j = 0; j < nz; j++) {
+      const z = z0 + j * stepZ;
+      for (let i = 0; i < nx; i++) {
+        heights[j * nx + i] = fn(x0 + i * stepX, z);
       }
     }
+
+    let holes = null;
+    if (holeRects && holeRects.length) {
+      holes = new Uint8Array(nqx * nqz);
+      for (let j = 0; j < nqz; j++) {
+        const cz = z0 + (j + 0.5) * stepZ;
+        for (let i = 0; i < nqx; i++) {
+          const cx = x0 + (i + 0.5) * stepX;
+          for (let r = 0; r < holeRects.length; r++) {
+            const h = holeRects[r];
+            if (cx > h.x0 && cx < h.x1 && cz > h.z0 && cz < h.z1) {
+              holes[j * nqx + i] = 1;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    return this.track(
+      this.physics.addHeightfield({
+        heights, nx, nz, originX: x0, originZ: z0, stepX, stepZ, holes,
+        layer: COLLISION_LAYER.WORLD,
+      })
+    );
   }
 
   /* ---------------------------------------------------------------- */
@@ -4467,8 +4482,6 @@ export class SportsWorld extends World {
   /* ---------------------------------------------------------------- */
 
   _buildGround() {
-    const S = 400;
-
     // The site is a displaced heightfield, not a table. Built pads are levelled
     // and feathered by parkHeight(), so every facility sits in a cut-and-fill
     // terrace with a visible bank instead of floating on a green sheet.
@@ -4502,38 +4515,18 @@ export class SportsWorld extends World {
 
     this._buildBackdrop();
 
-    // Collision floor as 25 m tiles so the skate bowl and the pool basin can be
-    // punched straight through it - a single ground box would seal them shut.
-    // Tiles that the terrain actually moves get a triangle soup instead of a
-    // box, which is what lets the player walk the banks.
-    const holes = [PAD, POOL];
-    const T = 25;
-    for (let i = 0; i < S / T; i++) {
-      for (let j = 0; j < S / T; j++) {
-        const x0 = -S / 2 + i * T;
-        const z0 = -S / 2 + j * T;
-        const blocked = holes.some(
-          (h) => x0 < h.x1 && x0 + T > h.x0 && z0 < h.z1 && z0 + T > h.z0
-        );
-        if (blocked) continue;
-        let dev = 0;
-        for (let a = 0; a <= 4; a++) {
-          for (let b = 0; b <= 4; b++) {
-            const h = Math.abs(parkHeight(x0 + (a / 4) * T, z0 + (b / 4) * T));
-            if (h > dev) dev = h;
-          }
-        }
-        if (dev < 0.12) {
-          this.track(
-            this.physics.addBox(x0 + T / 2, -1, z0 + T / 2, T / 2, 1, T / 2, {
-              layer: COLLISION_LAYER.WORLD,
-            })
-          );
-        } else {
-          this._addHeightCollision(parkHeight, x0, z0, x0 + T, z0 + T, T / 5, T);
-        }
-      }
-    }
+    /* Collision floor: one heightfield on the same 2.6 m grid the grass mesh
+     * above was built on, with the skate bowl and the swimming basin left open.
+     *
+     * This replaces a patchwork of 25 m tiles - a flat box where the ground
+     * barely moved, a triangle soup at 5 m where it did - which sampled the
+     * terrain four times coarser than the mesh drew it, so the banks the player
+     * walked were never quite the banks they could see.
+     *
+     * Sampled from `parkHeight`, not from the `grassY` the mesh uses: the lawn
+     * is deliberately sunk 6 cm so paths and decals read above it, and the floor
+     * belongs at the true site height rather than 6 cm into it. */
+    this._addHeightCollision(parkHeight, -260, -260, 260, 260, 2.6, [PAD, POOL]);
 
     // Invisible site boundary - the ski mound meets the world edge at height,
     // so an open edge there would be a 30 m fall.
@@ -4949,7 +4942,7 @@ export class SportsWorld extends World {
     );
     surface.matrixAutoUpdate = false;
     this._add(surface, false, true);
-    this._addHeightCollision(padHeight, PAD.x0, PAD.z0, PAD.x1, PAD.z1, 0.8, 4.8);
+    this._addHeightCollision(padHeight, PAD.x0, PAD.z0, PAD.x1, PAD.z1, 0.8);
 
     const L = (u, v) => [PAD.x0 + u, PAD.z0 + v];
 
@@ -5507,7 +5500,7 @@ export class SportsWorld extends World {
     );
     slope.matrixAutoUpdate = false;
     this._add(slope, true, true);
-    this._addHeightCollision(skiHeight, SKI.x0, SKI.z0, SKI.x1, SKI.z1, 1.5, 9);
+    this._addHeightCollision(skiHeight, SKI.x0, SKI.z0, SKI.x1, SKI.z1, 1.5);
 
     /* ---- rock outcrops breaking the ridge silhouette ---- */
     const rockGeo = new THREE.IcosahedronGeometry(1, 1);

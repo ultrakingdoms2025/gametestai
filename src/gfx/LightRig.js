@@ -60,8 +60,17 @@ import * as THREE from 'three';
  * 7 of the 65 authored point lights actually reach the player.
  */
 export const RIG_BUDGET = {
-  /** Practicals, muzzle flashes, projectiles, portal spill, viewmodel fill. */
-  point: 16,
+  /**
+   * Practicals, muzzle flashes, projectiles, portal spill, viewmodel fill.
+   *
+   * 12, not 16. Re-measured on ANGLE/D3D11 with the program count held fixed at
+   * 30 and only this number varying: 16 lights cost 1567 ms, 12 cost 1224 ms,
+   * 8 cost 889 ms - so each slot removed is worth about 5% of the entire cold
+   * shader warm, which is the single most expensive thing in the boot. 12 still
+   * leaves a comfortable margin over the 7 sources that actually reach the
+   * player at the station spawn, which is the densest lighting in the game.
+   */
+  point: 12,
   /** Station monument accent, car headlights. */
   spot: 2,
   /** Slot 0 is the caller's sun; slot 1 is for a world that brings its own key. */

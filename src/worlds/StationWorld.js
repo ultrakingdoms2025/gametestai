@@ -1029,7 +1029,10 @@ function paintRoomGlow(a, S, rng) {
  * assign by role (see SIGN_ROLE below) instead of by index arithmetic.
  */
 const SIGN_COLS = 4;
-const SIGN_ROWS = 6;
+// 7 rows, not 6: the two axis gateways needed placards of their own, and a
+// sign's copy is reserved by role rather than by loop index, so there was no
+// spare cell to borrow. `signUV` derives everything from these two numbers.
+const SIGN_ROWS = 7;
 
 const SIGNS = [
   ['NOVA RAMEN', 'HOT BROTH 24/7', '#ff8a3c'],
@@ -1057,6 +1060,13 @@ const SIGNS = [
   ['TRANSIT CONTROL', 'REPORT ANOMALIES', '#c0d4ff'],
   ['HYDRO GALLERY', 'QUIET ZONE PLEASE', '#6cff9e'],
   ['MUSTER POINT 3', 'FOLLOW THE GREEN LINE', '#4dffa6'],
+  // The two axis gateways. They had no placard at all, so from the plaza they
+  // were the only doors on the station a player could not name before walking
+  // into them - the other two announce themselves from thirty metres.
+  ['GATEWAY 03', 'SUNSPIRE CITADEL', '#ffc46b'],
+  ['GATEWAY 04', 'VELLUM RIDGE', '#ff5a3c'],
+  ['RING 4 AIRLOCK', 'SUIT CHECK REQUIRED', '#8fb8ff'],
+  ['OBSERVATION', 'MIND THE GLASS', '#7fe9ff'],
 ];
 
 /**
@@ -1078,6 +1088,8 @@ const SIGN_ROLE = {
   control: 21,
   hydro: 22,
   muster: 23,
+  gatewayCitadel: 24,
+  gatewayRace: 25,
 };
 
 /** Atlas of holographic signage - one texture, one draw call. */
@@ -4736,17 +4748,26 @@ export class StationWorld extends World {
         B.at('rubber', coil, px * 0.5, 2.46, cz + sign * 8.4, 0);
       }
 
-      // Wide approach steps on the plaza-facing side, each with a trim nosing
-      // and an emissive edge so the flight reads as stairs at 30 m rather than
-      // as one black wedge.
+      /* Wide approach steps on the plaza-facing side, each with a trim nosing
+       * and an emissive edge so the flight reads as stairs at 30 m rather than
+       * as one black wedge.
+       *
+       * `i` counts *outward* from the dais, so the step nearest the gateway is
+       * the tallest. It used to count the other way, which built the flight
+       * upside down: the first thing a player walking in from the plaza met was
+       * the 2.4 m top step presented as a sheer face, with the shorter steps
+       * hidden behind it descending the wrong way. Measured on the deck, the
+       * approach profile ran 0 -> 2.40 -> 1.92 -> 1.44 -> 0.96 -> 0.48 before
+       * reaching the dais; it now rises 0.48 -> 2.40 in five even treads. */
       for (let i = 0; i < 5; i++) {
         const w = 14 - i * 0.9;
         const h = 0.48;
         const z = cz - sign * (11 + i * 1.3);
-        B.at('plaza', boxGeo(w, h * (i + 1), 1.4, 2), 0, (h * (i + 1)) / 2, z);
-        B.at('trim', boxGeo(w, 0.08, 1.5, 1), 0, h * (i + 1) + 0.02, z);
-        B.at(s.em, boxGeo(w - 1.2, 0.06, 0.1, 1), 0, h * (i + 1) - 0.06, z - sign * 0.72);
-        this._solid(0, (h * (i + 1)) / 2, z, w / 2, (h * (i + 1)) / 2, 0.75);
+        const rise = h * (5 - i);
+        B.at('plaza', boxGeo(w, rise, 1.4, 2), 0, rise / 2, z);
+        B.at('trim', boxGeo(w, 0.08, 1.5, 1), 0, rise + 0.02, z);
+        B.at(s.em, boxGeo(w - 1.2, 0.06, 0.1, 1), 0, rise - 0.06, z - sign * 0.72);
+        this._solid(0, rise / 2, z, w / 2, rise / 2, 0.75);
       }
       // Service ramp on the far side, so the dais is reachable without stairs.
       const rampYaw = sign > 0 ? Math.PI : 0;
@@ -4954,6 +4975,83 @@ export class StationWorld extends World {
       B.at('emAmber', boxGeo(0.3, 0.22, 0.3, 1), px, 5.4, pz, -a);
       this._solidRot(px, 3.4, pz, 0.55, 2.6, 0.55, -a);
       this._contact(px, pz, 3.0);
+    }
+
+    /* Destination placard, stairs and a service ramp - everything the two
+     * Z-axis gateways have and these two were missing.
+     *
+     * The dais top is 0.8 m above the deck. That is over a step and under a
+     * mantle, so without a flight of stairs it was simply a wall: the two
+     * newest worlds in the game were behind the only doors on the station with
+     * no way up to them and no sign saying what they were.
+     *
+     * `sgn` points from the plaza toward the dais, so the stairs land on the
+     * plaza-facing side and the ramp on the far side, mirroring the other two.
+     */
+    const sgn = spec.side;
+    const em = spec.target === 'citadel' ? 'emAmber' : 'emGreen';
+
+    // Two-sided board on the plaza axis - it is approached from both sides.
+    this._signBoard(
+      B,
+      spec.target === 'citadel' ? SIGN_ROLE.gatewayCitadel : SIGN_ROLE.gatewayRace,
+      9, 2.2,
+      cx - sgn * 1.35, 2.4 + 11.1, cz, Math.PI * 0.5 * sgn + Math.PI,
+      { twoSided: true, accent: em }
+    );
+
+    // Backdrop pylons, so the placard and the aperture read against something
+    // solid instead of floating against the far hull.
+    for (const sz of [-9.5, 9.5]) {
+      B.at('panel', boxGeo(2.6, 14, 2.6, 3), cx + sgn * 4.5, 2.4 + 7, cz + sz);
+      B.at(em, boxGeo(0.34, 12, 0.34, 1), cx + sgn * 3.2, 2.4 + 7, cz + sz + (sz < 0 ? 1.5 : -1.5));
+      this._solid(cx + sgn * 4.5, 7, cz + sz, 1.3, 7, 1.3);
+    }
+
+    /* Approach ramp from the plaza deck up to the gateway deck.
+     *
+     * A ramp rather than the stair flight the other two use, because these
+     * gateways sit on the raised deck at 2.87 m with nothing between them and
+     * the plaza at 0 - measured, the profile went 0, 0, 0 ... 0, then 2.87. That
+     * is a wall, and it was the only way in to two of the five worlds. Ten
+     * metres of run over 2.87 m of rise is about 16 degrees, which walks, drives
+     * and rides without anyone having to aim for a step.
+     *
+     * The collider comes from `_ramp` (an invisible tilted box, because physics
+     * only rotates colliders about Y); the visible wedge is drawn on top of it
+     * at the same pitch so the two describe the same slope. */
+    const DECK_Y = 2.87;
+    const RUN = 10;
+    // Distance from the gateway centre to the walkable edge of the raised deck,
+    // measured off the built world rather than assumed: the deck reads 2.87 m
+    // from 4 m out and chamfers to 2.73 m at 5 m.
+    const DECK_EDGE = 5;
+    const rampPitch = Math.atan2(DECK_Y, RUN);
+    /* `_ramp` builds its proxy long in local +Z and tilts that end *up*, so the
+     * yaw has to point local +Z at the deck. `sgn` already points from the plaza
+     * toward the gateway, which makes this just `sgn * 90 degrees` - getting the
+     * sign backwards builds a ramp that descends into the dais, which is what
+     * the first attempt did. */
+    const rampYaw = sgn * Math.PI / 2;
+    const rampMidX = cx - sgn * (DECK_EDGE + RUN * 0.5);
+    // `_ramp`'s box is 0.5 thick, so its centre sits half a thickness below the
+    // walking surface once pitched.
+    this._ramp(rampMidX, DECK_Y * 0.5 - 0.25 / Math.cos(rampPitch), cz, 8, RUN, DECK_Y, rampYaw);
+    // Visible wedge: long in local Z to match the collider, since `GeoBatch.at`
+    // composes YXZ and therefore tilts about the yawed X axis.
+    B.at('plaza', boxGeo(8, 0.3, RUN + 0.4, 2), rampMidX, DECK_Y * 0.5, cz, rampYaw, -rampPitch);
+    // Kerbs, so the edge of the slope reads before you walk off it.
+    for (const sz of [-4.2, 4.2]) {
+      B.at('trim', boxGeo(0.4, 0.34, RUN + 0.4, 1), rampMidX, DECK_Y * 0.5 + 0.24, cz + sz, rampYaw, -rampPitch);
+      B.at(em, boxGeo(0.12, 0.07, RUN, 1), rampMidX, DECK_Y * 0.5 + 0.42, cz + sz, rampYaw, -rampPitch);
+    }
+
+    // Guide lights marching up to the threshold.
+    for (let i = 0; i < 7; i++) {
+      const t = i / 6;
+      const sx = cx - sgn * (14 - t * 4);
+      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, 2.5, -6);
+      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, 2.5, 6);
     }
 
     this._contact(cx, cz, 30);

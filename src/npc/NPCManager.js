@@ -26,7 +26,6 @@ const _v3 = new THREE.Vector3();
 const _dryScratch = new THREE.Vector3();
 const _capA = new THREE.Vector3();
 const _capB = new THREE.Vector3();
-const _containQuery = [];
 // raySegment owns these exclusively - callers must not pass them in.
 const _seg = new THREE.Vector3();
 const _rsA = new THREE.Vector3();
@@ -851,20 +850,17 @@ export class NPCManager {
     return spot;
   }
 
-  /** True when `point` lies inside any solid box collider. */
+  /**
+   * True when `point` lies inside solid static geometry.
+   *
+   * Delegates to the physics world so terrain counts too. Terrain used to be a
+   * grid of boxes, which this caught for free; as a heightfield it is a single
+   * collider that only `Physics` knows how to test, and without that test a spot
+   * buried in a hillside passes every check and the capsule solver ejects the
+   * character out of the top of the hill.
+   */
   _insideSolid(point) {
-    const near = this.physics.query(point, 0.5, _containQuery);
-    for (const c of near) {
-      if (!c.solid || c.type !== 'box') continue;
-      _capB.copy(point).applyMatrix4(c.inverse);
-      const h = c.halfExtents;
-      if (
-        Math.abs(_capB.x) <= h.x &&
-        Math.abs(_capB.y) <= h.y &&
-        Math.abs(_capB.z) <= h.z
-      ) return true;
-    }
-    return false;
+    return this.physics.containsPoint(point);
   }
 
   _hostileVariant() {

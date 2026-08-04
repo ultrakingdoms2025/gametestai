@@ -4,6 +4,8 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { sweep, blob } from '../gfx/Organic.js';
 import { World } from './World.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
+import { genPool } from '../workers/GenPool.js';
+import { terrainH, MESA_Y, MESA_R, SHOULDER, HALF } from './terrain/CitadelHeight.js';
 
 /**
  * CITADEL - "Sunspire Citadel".
@@ -73,38 +75,16 @@ const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const BEVEL = 0.075;
 const BEVEL_MIN = 0.55;
 
-/** Playfield half-extent. Matches the other worlds so the minimap framing does. */
-const HALF = 200;
-/** Height of the plateau the town sits on, above the surrounding desert. */
-const MESA_Y = 14;
-/** Where the plateau edge falls away to the approach road. */
-const MESA_R = 132;
-/** Horizontal distance the shoulder takes to fall from the mesa to the desert. */
-const SHOULDER = 46;
-
-/**
- * Ground height, as a pure function of distance from the centre.
+/* `terrainH` and the mesa constants live in `terrain/CitadelHeight.js` (imported
+ * at the top of this file) so the generation worker can sample this ground
+ * without importing `three` and the rest of this world. It is still the single
+ * source of truth for the shape of the terrain - the visible heightfield, the
+ * collision that backs it and every prop placement all read that one function.
  *
- * The single source of truth for the shape of this world's terrain: the visible
- * heightfield, the collision that backs it, and every prop placement all read
- * it. That is the entire point of it existing.
- *
- * It was previously three separate approximations of the same slope - a
- * smoothstep in the mesh, a square slab plus a sparse ring of boxes in the
- * collision, and a third copy in `_groundAt`. They disagreed, and where the
+ * That mattered enough to be worth the indirection: this slope was previously
+ * three separate approximations of itself, they disagreed, and where the
  * collision sat lower than the mesh the player walked *underneath* the visible
- * world: 7% of sampled positions, by as much as 13 m. Radial and shared, so the
- * three can no longer drift apart.
- *
- * Deliberately free of x/z noise. Dunes are built as real geometry with real
- * colliders instead, because noise in here is noise the box colliders cannot
- * reproduce, and that is the same bug again in a smaller size.
- */
-function terrainH(r) {
-  if (r < MESA_R) return MESA_Y;
-  const t = Math.min(1, (r - MESA_R) / SHOULDER);
-  return MESA_Y * (1 - t * t * (3 - 2 * t));
-}
+ * world across 7% of sampled positions, by as much as 13 m. */
 
 /**
  * Limewash and mudbrick. Sampled from sun-bleached North African towns, where
@@ -523,7 +503,7 @@ export class CitadelWorld extends World {
     this._buildSky();
 
     await report(0.06, 'Raising the mesa');
-    this._buildTerrain();
+    await this._buildTerrain();
 
     await report(0.2, 'Laying the curtain wall');
     this._buildCurtainWall();
@@ -800,17 +780,41 @@ export class CitadelWorld extends World {
    * because a triangle-soup cliff would give the climb probe a different normal
    * on every triangle and make the grip chatter all the way up.
    */
-  _buildTerrain() {
+  async _buildTerrain() {
     const seg = 96;
-    const geo = new THREE.PlaneGeometry(HALF * 2, HALF * 2, seg, seg);
-    geo.rotateX(-Math.PI / 2);
-    const pos = geo.attributes.position;
     const rnd = this.rnd;
 
-    for (let i = 0; i < pos.count; i++) {
-      pos.setY(i, terrainH(Math.hypot(pos.getX(i), pos.getZ(i))));
-    }
-    geo.computeVertexNormals();
+    /* Sampled on a worker, as an explicit grid rather than a `PlaneGeometry`.
+     *
+     * `PlaneGeometry` splits each quad along the 01->10 diagonal; the collision
+     * heightfield below interpolates along 00->11. Those two describe subtly
+     * different surfaces, and this world exists in its current form precisely
+     * because three different approximations of one slope were allowed to
+     * disagree - the player ended up walking *underneath* the visible ground
+     * over 7% of the map. Generating the grid from the shared height field means
+     * the mesh and the collider are the same triangles, not two descriptions of
+     * the same idea.
+     *
+     * The UVs the job produces are `PlaneGeometry`'s, so the ground material
+     * tiles exactly as it did. */
+    const N = seg + 1;
+    const stepXZ = (HALF * 2) / seg;
+    const terrain = await genPool.run('terrain', {
+      field: 'citadel',
+      originX: -HALF,
+      originZ: -HALF,
+      size: HALF * 2,
+      seg,
+      uv: 'unit',
+      normals: true,
+    });
+    const heights = terrain.heights;
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(terrain.positions, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(terrain.uvs, 2));
+    geo.setAttribute('normal', new THREE.BufferAttribute(terrain.normals, 3));
+    geo.setIndex(new THREE.BufferAttribute(terrain.indices, 1));
     geo.computeBoundingSphere();
     this._owned.push(geo);
 
@@ -839,40 +843,30 @@ export class CitadelWorld extends World {
      * invisible floor out to r = 192 at full mesa height, while the mesh there
      * had already fallen to the desert - and the reverse gap, mesh above
      * collision, opened all the way round the shoulder. */
-    const PIE = 40;
-    for (let i = 0; i < PIE; i++) {
-      const a = (i / PIE) * TAU;
-      // Circumscribed half-width, so neighbouring slices overlap rather than
-      // leaving a wedge of nothing between them at the rim.
-      const halfW = MESA_R * Math.tan(Math.PI / PIE) * 1.35;
-      this.track(this.physics.addRotatedBox(
-        _v1.set(Math.cos(a) * MESA_R * 0.5, MESA_Y - 5, Math.sin(a) * MESA_R * 0.5),
-        _v2.set(MESA_R * 0.5 + 0.5, 5, halfW),
-        -a
-      ));
-    }
-
-    /* The shoulder, as concentric rings stepping down. Each ring is set to the
-     * height of its inner edge - the highest ground it spans - so the staircase
-     * is always at or above the slope it approximates. */
-    const RINGS = 16;
-    const SECT = 48;
-    for (let ring = 0; ring < RINGS; ring++) {
-      const rIn = MESA_R + (ring / RINGS) * SHOULDER;
-      const rOut = MESA_R + ((ring + 1) / RINGS) * SHOULDER;
-      const top = terrainH(rIn);
-      const mid = (rIn + rOut) * 0.5;
-      const depth = (rOut - rIn) * 0.5 + 0.6;          // overlap the next ring
-      const halfW = (Math.PI * mid) / SECT * 1.35;     // and the next sector
-      for (let s = 0; s < SECT; s++) {
-        const a = (s / SECT) * TAU;
-        this.track(this.physics.addRotatedBox(
-          _v1.set(Math.cos(a) * mid, top - 6, Math.sin(a) * mid),
-          _v2.set(depth, 6, halfW),
-          -a
-        ));
-      }
-    }
+    /* The mesa top and its shoulder, as the same heightfield the mesh draws.
+     *
+     * This replaces 40 pie-slice slabs plus 768 concentric ring boxes. The rings
+     * were a staircase: each was pinned to the height of its inner edge - the
+     * highest ground it spanned - which is the safe direction to round in, but
+     * across a 14 m fall in 16 rings it left risers of nearly 0.9 m all the way
+     * down the slope. Sharing the mesh's samples removes both the staircase and
+     * the 808 colliders, and makes "collision can never sit below the mesh" true
+     * by construction rather than by rounding upward.
+     *
+     * The cliff ring, the dunes and every structure keep their box colliders:
+     * boxes give the climb probe one consistent normal per face, which is what
+     * stops grip chattering on the way up. */
+    this.track(
+      this.physics.addHeightfield({
+        heights,
+        nx: N,
+        nz: N,
+        originX: -HALF,
+        originZ: -HALF,
+        stepX: stepXZ,
+        stepZ: stepXZ,
+      })
+    );
 
     /* The cliff ring: boxes stepped down the shoulder. Also the world's biggest
      * climbable face - the whole point of putting the town on a mesa. */

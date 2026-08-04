@@ -94,8 +94,6 @@ const HALF = 260;
 /** Terrain mesh quads across the playfield, and the metres each one covers. */
 const SEG = 200;
 const QUAD = (HALF * 2) / SEG;
-/** Terrain collider cell, in quads. */
-const CELL_Q = 2;
 
 /* The road's collision used to be built twice: a raycast layer at the true
  * surface and a solid "character" layer 0.28 m below it, because `Car` could
@@ -109,15 +107,6 @@ const CELL_Q = 2;
  * so the road is one solid layer at the height it is drawn, and a player on
  * foot no longer stands 0.28 m inside the tarmac. */
 
-/**
- * How far a terrain collider may sit above the mesh before the cell is split.
- *
- * A tilted plane raised to clear its worst sample is the safe direction - you
- * stand slightly proud rather than falling through - but at 2.59 m it stops
- * being a rounding error and becomes hovering. See the collision pass in
- * `_buildTerrain`.
- */
-const TERRAIN_FIT = 0.35;
 
 /**
  * Control points of the circuit, in the racing direction.
@@ -985,82 +974,35 @@ export class RaceWorld extends World {
 
     /* ---- collision ------------------------------------------------ *
      *
-     * One tilted plane fitted per cell, raised until it dominates every sample
-     * under it so nothing is ever left standing above its own collider.
+     * The height samples the mesh was just built from, handed to physics as a
+     * single heightfield collider.
      *
-     * That last rule is what made subdivision necessary. A plane can only
-     * follow a surface that is locally flat, and on a curved hillside the worst
-     * sample in a cell can sit far above the best fit - so lifting the plane to
-     * clear it floated the whole slab, and a walker high on a slope hovered by
-     * as much as 2.59 m. Splitting a cell that fits badly into quarters cuts
-     * the curvature each plane has to span, and a quarter that still fits badly
-     * splits again. Flat ground, which is most of the map, stays one slab.
+     * This replaces an adaptive quadtree of tilted slabs - one fitted plane per
+     * 5.2 m cell, subdivided wherever a plane could not follow the ground, and
+     * raised until it dominated every sample beneath it. That machinery existed
+     * entirely because a *plane* cannot describe curved ground: it cost roughly
+     * 10,000 box colliders, and the lift needed to stop the ground poking
+     * through its own collider is what left a walker hovering by up to 2.59 m on
+     * a slope. A heightfield has no such limitation - it is the same triangles
+     * the mesh draws, so there is nothing to fit, nothing to raise and nothing
+     * to hover over.
+     *
+     * Cells under the ribbon are no longer skipped. The road's own slabs still
+     * own that surface (the terrain is cut 10 cm below it, so a downward ray
+     * always finds the ribbon first), but the terrain now continues underneath
+     * rather than leaving a hole that depends on ribbon coverage being perfect.
      */
-    let count = 0;
-    const emit = (i0, j0, q, depth) => {
-      const cell = QUAD * q;
-      // Fully under the ribbon: the ribbon slabs own it.
-      let covered = true;
-      for (let b = 0; b <= q && covered; b++) {
-        for (let a = 0; a <= q; a++) {
-          const k = (j0 + b) * N + (i0 + a);
-          if (D[k] >= WS[k] - 2) { covered = false; break; }
-        }
-      }
-      if (covered) return;
-
-      const k00 = j0 * N + i0;
-      const k10 = j0 * N + (i0 + q);
-      const k01 = (j0 + q) * N + i0;
-      const k11 = (j0 + q) * N + (i0 + q);
-      const gx = ((H[k10] + H[k11]) - (H[k00] + H[k01])) / (2 * cell);
-      const gz = ((H[k01] + H[k11]) - (H[k00] + H[k10])) / (2 * cell);
-      let hc = (H[k00] + H[k10] + H[k01] + H[k11]) * 0.25;
-      const cx = -HALF + (i0 + q * 0.5) * QUAD;
-      const cz = -HALF + (j0 + q * 0.5) * QUAD;
-
-      // Raise the plane until it dominates every sample in the block.
-      let dev = 0;
-      for (let b = 0; b <= q; b++) {
-        for (let a = 0; a <= q; a++) {
-          const k = (j0 + b) * N + (i0 + a);
-          const px = -HALF + (i0 + a) * QUAD - cx;
-          const pz = -HALF + (j0 + b) * QUAD - cz;
-          const d = H[k] - (hc + gx * px + gz * pz);
-          if (d > dev) dev = d;
-        }
-      }
-
-      /* Too much lift means the plane is not describing this ground. Split
-       * rather than float it. Two levels is enough - it takes the worst cell
-       * on the map from 2.59 m to well under the tolerance - and the recursion
-       * is bounded by `q` reaching 1 regardless. */
-      if (dev > TERRAIN_FIT && depth < 2 && q >= 2) {
-        const h = q >> 1;
-        emit(i0, j0, h, depth + 1);
-        emit(i0 + h, j0, h, depth + 1);
-        emit(i0, j0 + h, h, depth + 1);
-        emit(i0 + h, j0 + h, h, depth + 1);
-        return;
-      }
-      hc += dev + 0.01;
-
-      _n1.set(-gx, 1, -gz).normalize();
-      _a1.set(0, 0, 1);
-      _v3.set(cx, hc, cz);
-      // The slab is tilted, so its footprint has to be stretched by the
-      // secant of the tilt to still cover the cell - plus 12% of overlap so
-      // neighbours meet rather than leaving a seam.
-      const sec = Math.sqrt(1 + gx * gx + gz * gz);
-      const half = cell * 0.5 * sec * 1.12;
-      this._slab(_v3, _n1, _a1, half, half, 2.6);
-      count++;
-    };
-
-    const cells = SEG / CELL_Q;
-    for (let cj = 0; cj < cells; cj++) {
-      for (let ci = 0; ci < cells; ci++) emit(ci * CELL_Q, cj * CELL_Q, CELL_Q, 0);
-    }
+    this.track(
+      this.physics.addHeightfield({
+        heights: H,
+        nx: N,
+        nz: N,
+        originX: -HALF,
+        originZ: -HALF,
+        stepX: QUAD,
+        stepZ: QUAD,
+      })
+    );
 
     /* A floor far below everything, so a fall through a seam that should not
      * exist lands on something rather than falling forever. It can never be the
@@ -1068,7 +1010,7 @@ export class RaceWorld extends World {
      * the nearest hit and the terrain is above it. */
     this.track(this.physics.addBox(0, -60, 0, HALF * 1.5, 8, HALF * 1.5));
 
-    this._terrainColliders = count;
+    this._terrainColliders = 1;
     this.bounds = new THREE.Box3(
       new THREE.Vector3(-HALF, -30, -HALF),
       new THREE.Vector3(HALF, 140, HALF)

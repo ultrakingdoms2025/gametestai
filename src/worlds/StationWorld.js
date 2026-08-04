@@ -1054,8 +1054,14 @@ const SIGNS = [
   // --- wayfinding, reserved by role: never share a cell with a shop fascia ---
   ['GATEWAY 01', 'ASHFALL REACH', '#ffb347'],
   ['GATEWAY 02', 'MERIDIAN COMPLEX', '#5cffb0'],
-  ['PLATFORM A', 'CLEARANCE REQUIRED', '#ffcc33'],
-  ['PLATFORM B', 'STAND CLEAR OF DOORS', '#8fb8ff'],
+  /* The two approach boards, on the gateway axis about 20 m in front of each
+   * arch. They used to read PLATFORM A and PLATFORM B - generic transit
+   * wayfinding hung directly over the doors to two other worlds, and the only
+   * sign a player reads on the walk in. The copy names the destination now;
+   * the lintel 20 m behind still carries the gateway number, so the two boards
+   * complement each other instead of competing. */
+  ['ASHFALL REACH', 'GATEWAY 01 AHEAD', '#ffb347'],
+  ['MERIDIAN COMPLEX', 'GATEWAY 02 AHEAD', '#5cffb0'],
   ['RING CONCOURSE', 'LEVEL 2 // PROMENADE', '#7fe9ff'],
   ['TRANSIT CONTROL', 'REPORT ANOMALIES', '#c0d4ff'],
   ['HYDRO GALLERY', 'QUIET ZONE PLEASE', '#6cff9e'],
@@ -6718,8 +6724,45 @@ export class StationWorld extends World {
        * is standing in vacuum.
        */
       if (Math.hypot(x, z) > DECK_R - 4) return;
+
+      /* Keep the crowd off the gateway plinths.
+       *
+       * `PortalSystem` builds the arch, the disc and the plinth at *activation*,
+       * after this world has finished generating, so the support probe below
+       * cannot see the top half-metre of dais and drops anyone standing there
+       * onto the landing underneath it. Rejecting the plinth footprint is both
+       * the fix and the better staging: a queue that stops at the foot of the
+       * steps reads as a queue, where civilians milling about on the threshold
+       * of an interdimensional gate does not. */
+      for (const [px, pz] of [[0, -PORTAL_R], [0, PORTAL_R], [-PORTAL_R, 0], [PORTAL_R, 0]]) {
+        if (Math.hypot(x - px, z - pz) < 5.5) return;
+      }
+
+      /* Stand on whatever is actually there, not on the level the caller
+       * assumed.
+       *
+       * `y` was taken literally, which is fine on open deck and wrong the
+       * moment anything is built on it. The queues that walk toward the
+       * gateways are authored at deck level and run straight into the approach
+       * steps, so every figure inside the flight stood buried to the knee in a
+       * tread. Probing from just above the requested height and dropping a few
+       * metres puts them on the step, the deck or the promenade as appropriate,
+       * and keeps working whatever gets built there next.
+       *
+       * The origin has to clear the *highest* thing a figure might be standing
+       * on - the gateway deck at 2.87 m, not just the 2.4 m top tread - because
+       * a ray that starts below the surface it is looking for skips straight
+       * past it onto whatever is underneath, which is how a queue ends up
+       * standing half a metre inside the dais it is queueing on.
+       *
+       * 4 m clears every deck-level structure and still stops well short of the
+       * promenade at LOOP_Y = 10, so a figure authored up there lands on the
+       * promenade rather than falling to the plaza. */
+      const support = this.physics.groundHeight(x, z, y + 4.0, 12.0);
+      const baseY = support === null ? y : support;
+
       const s = scale * (0.93 + rng() * 0.15);
-      entries.push([x, y, z, 0, yaw === null ? rng() * Math.PI * 2 : yaw, 0, s, s, s]);
+      entries.push([x, baseY, z, 0, yaw === null ? rng() * Math.PI * 2 : yaw, 0, s, s, s]);
       colors.push(new THREE.Color(palette[Math.floor(rng() * palette.length)]));
       skins.push(new THREE.Color(skinTones[Math.floor(rng() * skinTones.length)]));
       // Roughly a third carry a pack, a hood or a satchel.
@@ -6730,7 +6773,7 @@ export class StationWorld extends World {
        * because this only fired on every third instance, and a figure whose
        * feet meet the deck on a clean bright line is the fastest way to make a
        * whole frame read as composited rather than photographed. */
-      if (y < 0.5) this._contact(x, z, 1.8);
+      if (baseY < 0.5) this._contact(x, z, 1.8);
     };
 
     /* Grouped placement.

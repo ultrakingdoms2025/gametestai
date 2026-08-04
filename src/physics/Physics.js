@@ -47,6 +47,14 @@ const _hfCorners = new Float64Array(12);
 const _hr1 = new THREE.Vector3();
 const _hr2 = new THREE.Vector3();
 const _hr3 = new THREE.Vector3();
+/**
+ * Set by `_closestPoint` when the query point was *inside* the collider, in
+ * which case the surface point it returns lies outward from the query point
+ * rather than inward and the caller must reverse its push. Module-scoped rather
+ * than returned so the hot path stays allocation-free; every reader takes a copy
+ * immediately after the call that set it.
+ */
+let _cpInside = false;
 
 export const COLLISION_LAYER = {
   WORLD: 1 << 0,
@@ -559,6 +567,7 @@ export class Physics {
    * collider is further than `maxDist` (cheap early-out for the capsule solver).
    */
   _closestPoint(collider, point, out, maxDist) {
+    _cpInside = false;
     if (collider.type === 'heightfield') {
       // Nothing on the surface can be in range if the whole field is far below.
       if (point.y - collider.maxY > maxDist) return null;
@@ -566,13 +575,15 @@ export class Physics {
       const surf = collider.sampleHeight(point.x, point.z);
       if (surf === null) return null;
 
-      /* Under the surface. Returning the query point itself collapses the
-       * solver's delta to zero, which is exactly the signal its deep-embed
-       * branch uses to push straight up - the same recovery a box gives when
-       * its clamp is a no-op. Below `baseY` the field stops being solid so a
-       * genuine cave or under-deck volume is not sealed. */
+      /* Under the surface: the way out is straight up to it. Flagged as an
+       * interior hit so the solver reverses the delta and uses the real depth,
+       * rather than relying on a zero-length delta and a fixed one-radius shove.
+       * Below `baseY` the field stops being solid, so a genuine cave or
+       * under-deck volume is not sealed. */
       if (point.y < surf) {
-        return point.y > collider.baseY ? out.copy(point) : null;
+        if (point.y <= collider.baseY) return null;
+        _cpInside = true;
+        return out.set(point.x, surf, point.z);
       }
 
       // Above the surface: closest point on the real triangles nearby, which is
@@ -626,11 +637,37 @@ export class Physics {
       // Transform into box local space, clamp, transform back.
       const local = _v1.copy(point).applyMatrix4(collider.inverse);
       const h = collider.halfExtents;
-      local.set(
-        Math.max(-h.x, Math.min(h.x, local.x)),
-        Math.max(-h.y, Math.min(h.y, local.y)),
-        Math.max(-h.z, Math.min(h.z, local.z))
-      );
+      const ox = h.x - Math.abs(local.x);
+      const oy = h.y - Math.abs(local.y);
+      const oz = h.z - Math.abs(local.z);
+
+      if (ox > 0 && oy > 0 && oz > 0) {
+        /* The point is *inside* the box.
+         *
+         * Clamping is a no-op here, which used to make `_closestPoint` hand back
+         * the query point itself. The solver saw a zero-length delta, took its
+         * "deeply embedded" branch and pushed straight up by a full radius - per
+         * collider, per iteration. Measured on a 10 m wall slab, a capsule
+         * standing inside it was launched 9 m vertically to the wall top in one
+         * resolve. That is the mechanism behind ending up on top of, or inside,
+         * a roof after brushing a wall: the recovery direction had nothing to do
+         * with the geometry it was recovering from.
+         *
+         * Projecting to the nearest face instead gives the shortest way out,
+         * which for a wall is sideways and for a floor or roof slab is vertical.
+         * `_cpInside` tells the caller the delta needs to be reversed - the
+         * surface point is now *outside* the query point, not inside it. */
+        _cpInside = true;
+        if (ox <= oy && ox <= oz) local.x = local.x >= 0 ? h.x : -h.x;
+        else if (oy <= oz) local.y = local.y >= 0 ? h.y : -h.y;
+        else local.z = local.z >= 0 ? h.z : -h.z;
+      } else {
+        local.set(
+          Math.max(-h.x, Math.min(h.x, local.x)),
+          Math.max(-h.y, Math.min(h.y, local.y)),
+          Math.max(-h.z, Math.min(h.z, local.z))
+        );
+      }
       out.copy(local).applyMatrix4(collider.matrix);
       return out;
     }
@@ -681,16 +718,34 @@ export class Physics {
     const capsuleCenter = _v5.copy(segA).add(segB).multiplyScalar(0.5);
     const queryRadius = radius + height * 0.5 + 0.5;
 
-    const nearby = this.query(capsuleCenter, queryRadius);
+    let nearby = this.query(capsuleCenter, queryRadius);
     const closest = new THREE.Vector3();
     const onSeg = new THREE.Vector3();
     const push = new THREE.Vector3();
+    /* No single correction may exceed the capsule's own height. */
+    const maxPush = height;
+    /* Where the broadphase set was gathered from. If depenetration carries the
+     * capsule far from here the set is stale, and resolving against a stale set
+     * is how a character gets pushed into geometry nobody ever tested it
+     * against. Re-query rather than trust it. */
+    const queriedX = capsuleCenter.x;
+    const queriedZ = capsuleCenter.z;
+    const restaleSq = (queryRadius * 0.5) * (queryRadius * 0.5);
 
     // A few iterations converge on concave corners without visible jitter.
     for (let iter = 0; iter < 4; iter++) {
       let moved = false;
       segA.set(position.x, position.y + radius, position.z);
       segB.set(position.x, position.y + height - radius, position.z);
+
+      if (iter > 0) {
+        const dx = position.x - queriedX;
+        const dz = position.z - queriedZ;
+        if (dx * dx + dz * dz > restaleSq) {
+          capsuleCenter.copy(segA).add(segB).multiplyScalar(0.5);
+          nearby = this.query(capsuleCenter, queryRadius);
+        }
+      }
 
       for (const collider of nearby) {
         if (!collider.solid) continue;
@@ -704,20 +759,41 @@ export class Physics {
         closestPointOnSegment(segA, segB, cp, onSeg);
         cp = this._closestPoint(collider, onSeg, closest, queryRadius);
         if (!cp) continue;
+        // `_cpInside` belongs to the call just made; read it before anything
+        // else can overwrite it.
+        const inside = _cpInside;
         closestPointOnSegment(segA, segB, cp, onSeg);
 
         const delta = push.subVectors(onSeg, cp);
         const dist = delta.length();
-        if (dist >= radius) continue;
+        let depth;
 
-        if (dist < 1e-5) {
-          // Deeply embedded: push straight up as the least-bad recovery.
-          delta.set(0, 1, 0);
+        if (inside) {
+          /* The capsule axis is inside the collider. `cp` is the nearest point
+           * on its surface, so the way out is *toward* cp, and we have to clear
+           * the radius on top of the depth already sunk. */
+          if (dist < 1e-6) delta.set(0, 1, 0);
+          else delta.multiplyScalar(-1 / dist);
+          depth = radius + dist;
         } else {
-          delta.multiplyScalar(1 / dist);
+          if (dist >= radius) continue;
+          if (dist < 1e-5) {
+            // On the surface with no usable direction: up is the least-bad guess.
+            delta.set(0, 1, 0);
+          } else {
+            delta.multiplyScalar(1 / dist);
+          }
+          depth = radius - dist;
         }
 
-        const depth = radius - dist;
+        /* Cap a single push.
+         *
+         * Depenetration is a correction, not a movement: a resolve that shifts a
+         * character further than its own height has stopped fixing an overlap
+         * and started teleporting it somewhere else. Clamping keeps a bad frame
+         * to a visible nudge instead of a launch across the level, and the next
+         * frame resolves the remainder. */
+        if (depth > maxPush) depth = maxPush;
         position.addScaledVector(delta, depth);
         moved = true;
         result.hitCount++;

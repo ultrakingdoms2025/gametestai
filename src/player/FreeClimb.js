@@ -49,6 +49,24 @@ const damp = THREE.MathUtils.damp;
  */
 const PLAYER_RADIUS = P.radius;
 
+/* ---- pose tuning ---------------------------------------------------- */
+/**
+ * Metres of travel per full reach cycle.
+ *
+ * A climber's reach is roughly their arm span, and cycling faster than the body
+ * actually moves is what makes procedural climbing read as scrabbling. At
+ * {@link SPEED_UP} this is a shade over one reach per second.
+ */
+const STRIDE = 1.9;
+/** Seconds the catch, push-off and fumble poses stay up after the event. */
+const GRAB_POSE_TIME = 0.32;
+const KICK_POSE_TIME = 0.42;
+const SLIP_POSE_TIME = 0.75;
+
+/** Pose scratch. The late-pose pass runs every frame; none of it allocates. */
+const _poseE = new THREE.Euler();
+const _poseQ = new THREE.Quaternion();
+
 /** How far past the capsule the grip probe reaches. */
 const REACH = 0.62;
 /** A surface flatter than this is a ramp the walk code already handles. */
@@ -130,6 +148,24 @@ export class FreeClimb {
     this._hug = 0;
     /** Set when the probe loses the wall above: the cue to mantle. */
     this._atLip = false;
+
+    /* ---- pose state (see `applyPose`) -------------------------------- */
+    /** Blend of the whole climb pose against whatever the avatar did otherwise. */
+    this._poseWeight = 0;
+    /**
+     * Distance climbed along the face, in metres, used as the phase of the
+     * reach cycle. Driving the limbs from *distance* rather than from elapsed
+     * time is what keeps a hand planted while the body is still: hold still on
+     * a wall and the cycle holds still with you.
+     */
+    this._cycle = 0;
+    /** Smoothed climb / traverse rates, so the pose does not snap on keypress. */
+    this._rateUp = 0;
+    this._rateSide = 0;
+    /** Countdown timers for the three transient poses, in seconds. */
+    this._grabT = 0;
+    this._kickT = 0;
+    this._slipT = 0;
   }
 
   /** @returns {boolean} */
@@ -220,12 +256,23 @@ export class FreeClimb {
     // still travelling toward the wall it has already grabbed.
     this._pin();
     p.velocity.set(0, 0, 0);
+    // Catch pose: arms absorb the arrival before the cling settles.
+    this._grabT = GRAB_POSE_TIME;
+    this._kickT = 0;
+    this._slipT = 0;
+    this._cycle = 0;
+    this._rateUp = 0;
+    this._rateSide = 0;
     this.bus?.emit('player:climb', { state: 'grab', position: p.position.clone() });
     return true;
   }
 
-  /** Let go. `kick` pushes off backwards, as when leaping from a wall. */
-  release({ kick = false, lockout = REGRIP_LOCKOUT } = {}) {
+  /**
+   * Let go. `kick` pushes off backwards, as when leaping from a wall.
+   * `slip` marks the exit as an involuntary one - a failed grip rather than a
+   * decision - which the pose reads to flail instead of push.
+   */
+  release({ kick = false, slip = false, lockout = REGRIP_LOCKOUT } = {}) {
     if (!this._active) return;
     this._active = false;
     this._atLip = false;
@@ -235,9 +282,11 @@ export class FreeClimb {
       p.velocity.x = this.normal.x * KICK_BACK;
       p.velocity.z = this.normal.z * KICK_BACK;
       p.velocity.y = KICK_UP;
+      this._kickT = KICK_POSE_TIME;
       this.bus?.emit('player:climb', { state: 'kick', position: p.position.clone() });
     } else {
-      this.bus?.emit('player:climb', { state: 'release', position: p.position.clone() });
+      if (slip) this._slipT = SLIP_POSE_TIME;
+      this.bus?.emit('player:climb', { state: slip ? 'slip' : 'release', position: p.position.clone() });
     }
   }
 
@@ -294,7 +343,7 @@ export class FreeClimb {
     }
     if (stam && stam.exhausted) {
       this.bus?.emit('hud:notify', { text: 'Grip failed', tone: 'warn' });
-      this.release();
+      this.release({ slip: true });
       return false;
     }
 
@@ -312,6 +361,15 @@ export class FreeClimb {
     _mvDelta.set(0, 0, 0);
     _mvDelta.addScaledVector(_mvUp, vUp * dt);
     _mvDelta.addScaledVector(_mvRight, side * SPEED_SIDE * dt);
+
+    /* Advance the reach cycle by how far the body actually travelled, not by
+     * elapsed time: a climber who stops moving stops reaching, and the hand
+     * that was on the wall stays on the wall. Lateral movement counts for less
+     * than vertical because a traverse is a shuffle, not a haul. */
+    const vSide = side * SPEED_SIDE;
+    this._cycle += (Math.abs(vUp) + Math.abs(vSide) * 0.7) * dt;
+    this._rateUp = damp(this._rateUp, vUp / SPEED_UP, 9, dt);
+    this._rateSide = damp(this._rateSide, side, 9, dt);
 
     _mvTarget.copy(p.position).add(_mvDelta);
 
@@ -381,6 +439,136 @@ export class FreeClimb {
 
     p.velocity.set(0, 0, 0);
     return true;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Pose                                                                */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Pose the avatar for the wall.
+   *
+   * Runs in the late-pose pass (see `Player._installLatePose`), after
+   * `PlayerAvatar` has written its locomotion pose, because otherwise the
+   * avatar's own walk cycle would overwrite every bone this touches.
+   *
+   * Five things are drawn here, and they are all one continuous pose rather
+   * than five clips, so there is nothing to blend between and nothing to get
+   * caught halfway through:
+   *
+   *   - **cling**      the resting shape: both hands high on the face, hips in,
+   *                    knees folded under, weight on the legs.
+   *   - **climb**      an alternating reach driven by `_cycle`. Opposite limbs
+   *                    lead - right hand with left foot - because that is how a
+   *                    body stays balanced on a vertical face, and because two
+   *                    hands moving together reads as a puppet.
+   *   - **traverse**   the same cycle biased sideways, leading with the arm on
+   *                    the side of travel.
+   *   - **kick-off**   a short push: legs extend into the wall, arms sweep down
+   *                    and back as the body leaves it.
+   *   - **slip**       the involuntary exit: arms fly up and open, grabbing at
+   *                    nothing, legs trailing.
+   *
+   * The transients outlive `_active`, which is the point - a pose that vanished
+   * the instant the player let go would never be seen at all.
+   */
+  applyPose(dt, elapsed) {
+    const humanoid = this.player.avatar?.humanoid;
+    if (!humanoid) return;
+
+    this._grabT = Math.max(0, this._grabT - dt);
+    this._kickT = Math.max(0, this._kickT - dt);
+    this._slipT = Math.max(0, this._slipT - dt);
+
+    const transient = this._kickT > 0 || this._slipT > 0;
+    // Let go of the pose quickly on a kick, slowly on a slip: a push-off is
+    // over the moment you leave, a fumble hangs in the air.
+    const want = this._active || transient ? 1 : 0;
+    const rate = this._active ? 14 : this._slipT > 0 ? 5 : 9;
+    this._poseWeight = damp(this._poseWeight, want, rate, dt);
+    if (this._poseWeight < 0.002) return;
+
+    const w = this._poseWeight;
+    const B = humanoid.bones;
+    const set = (name, x, y, z, weight = w) => {
+      const bone = B.get(name);
+      if (!bone) return;
+      _poseE.set(x, y, z);
+      _poseQ.setFromEuler(_poseE);
+      bone.quaternion.slerp(_poseQ, weight);
+    };
+
+    const kick = this._kickT / KICK_POSE_TIME;
+    const slip = this._slipT / SLIP_POSE_TIME;
+    const grab = this._grabT / GRAB_POSE_TIME;
+    // How much of the frame is the ordinary on-wall pose.
+    const onWall = Math.max(0, 1 - Math.max(kick, slip));
+
+    /* ---- the reach cycle -------------------------------------------- */
+    // One full reach per STRIDE metres of travel. `beat` is +1 when the right
+    // side leads and -1 when the left does.
+    const beat = Math.sin((this._cycle / STRIDE) * Math.PI * 2);
+    const effort = Math.min(1, Math.abs(this._rateUp) + Math.abs(this._rateSide) * 0.8);
+    const lateral = this._rateSide;
+
+    // Arms: high on the face, alternating. A grab spikes both arms up together,
+    // which is what catching a wall actually looks like.
+    const armBase = 2.24 + grab * 0.30;
+    const armSwing = 0.46 * effort;
+    // Legs: folded under, alternating opposite the arms.
+    const thighBase = 0.62 - grab * 0.18;
+    const legSwing = 0.34 * effort;
+
+    for (const side of [1, -1]) {
+      const s = side > 0 ? 'R' : 'L';
+      const lead = side > 0 ? beat : -beat;
+      // Reaching arm goes higher and straighter; the planted one stays bent.
+      const armX = armBase + lead * armSwing;
+      const elbow = 0.62 - lead * 0.30 * effort;
+      // Lateral travel opens the leading arm out along the face.
+      const armZ = side * (0.30 + Math.max(0, lateral * side) * 0.34);
+
+      const kickArmX = -0.55 - kick * 0.35;
+      const slipArmX = 2.95;
+
+      set(`clavicle${s}`, 0, 0, -0.16 * side * onWall);
+      set(
+        `upperArm${s}`,
+        armX * onWall + kickArmX * kick + slipArmX * slip,
+        0,
+        armZ * onWall + side * (0.55 * slip + 0.22 * kick)
+      );
+      set(`foreArm${s}`, (elbow * onWall) + 0.15 * kick + 0.30 * slip, 0, side * 0.08);
+      set(`hand${s}`, -0.30 * onWall, 0, 0);
+
+      // Legs mirror the arms so opposite limbs lead.
+      const thighX = thighBase - lead * legSwing;
+      const kickThighX = -0.30 - kick * 0.25;   // drive back into the wall
+      const slipThighX = 0.28;
+      set(
+        `thigh${s}`,
+        thighX * onWall + kickThighX * kick + slipThighX * slip,
+        0,
+        side * 0.16 * onWall
+      );
+      const calfX = -(1.02 + lead * 0.34 * effort);
+      set(`calf${s}`, calfX * onWall - 0.18 * kick - 0.55 * slip, 0, 0);
+      set(`foot${s}`, 0.34 * onWall + 0.30 * kick, 0, 0);
+    }
+
+    /* ---- torso ------------------------------------------------------- */
+    // `_hug` is the smoothed approach to the wall, so the chest presses in as
+    // the climb settles rather than snapping flat on contact.
+    const hug = this._hug * onWall;
+    const lean = 0.30 * hug - 0.34 * kick + 0.16 * slip;
+    // A traverse turns the shoulders toward the direction of travel.
+    const twist = lateral * 0.22 * onWall;
+    set('spine01', lean * 0.36, twist * 0.5, 0);
+    set('spine02', lean * 0.34, twist * 0.7, 0);
+    set('spine03', lean * 0.30, twist, 0);
+    // Look up the wall while climbing, back over the shoulder when pushing off.
+    set('neck', (-0.34 * hug - 0.18 * Math.max(0, this._rateUp)) + 0.42 * kick, 0, 0);
+    set('head', -0.20 * hug + 0.30 * kick + 0.24 * slip, 0, 0);
   }
 
   dispose() {

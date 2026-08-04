@@ -4759,11 +4759,15 @@ export class StationWorld extends World {
        * hidden behind it descending the wrong way. Measured on the deck, the
        * approach profile ran 0 -> 2.40 -> 1.92 -> 1.44 -> 0.96 -> 0.48 before
        * reaching the dais; it now rises 0.48 -> 2.40 in five even treads. */
-      for (let i = 0; i < 5; i++) {
-        const w = 14 - i * 0.9;
-        const h = 0.48;
+      /* Six treads of 0.40 m, not five of 0.48 m. `CONFIG.player.stepHeight` is
+       * 0.45, so every tread in the original flight was three centimetres too
+       * tall to walk up - the flight was unclimbable on its own terms quite
+       * apart from being built upside down. Same 2.4 m total rise. */
+      const TREADS = 6;
+      for (let i = 0; i < TREADS; i++) {
+        const w = 14 - i * 0.75;
         const z = cz - sign * (11 + i * 1.3);
-        const rise = h * (5 - i);
+        const rise = 0.40 * (TREADS - i);
         B.at('plaza', boxGeo(w, rise, 1.4, 2), 0, rise / 2, z);
         B.at('trim', boxGeo(w, 0.08, 1.5, 1), 0, rise + 0.02, z);
         B.at(s.em, boxGeo(w - 1.2, 0.06, 0.1, 1), 0, rise - 0.06, z - sign * 0.72);

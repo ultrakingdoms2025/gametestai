@@ -32,6 +32,10 @@ const _prev = new THREE.Vector3();
 const _step = new THREE.Vector3();
 const _down = new THREE.Vector3(0, -1, 0);
 const _up = new THREE.Vector3(0, 1, 0);
+// Tunnelling guard: where the integrator wanted to be, and the ray it checks.
+const _intended = new THREE.Vector3();
+const _guardFrom = new THREE.Vector3();
+const _guardDir = new THREE.Vector3();
 
 const P = CONFIG.player;
 const damp = THREE.MathUtils.damp;
@@ -764,7 +768,9 @@ export class Player {
     const expectedY = this._position.y + this._velocity.y * dt;
 
     this._position.set(_prev.x + wantX, expectedY, _prev.z + wantZ);
+    _intended.copy(this._position);
     let res = this.physics.resolveCapsule(this._position, radius, h);
+    let steppedUp = false;
 
     const wanted = Math.hypot(wantX, wantZ);
     const gotX = this._position.x - _prev.x;
@@ -815,6 +821,7 @@ export class Player {
           if (Math.hypot(_step.x - _prev.x, _step.z - _prev.z) > got + 0.002) {
             const rise = _step.y - this._position.y;
             this._position.copy(_step);
+            steppedUp = true;
             res = landed;
             grounded = res.grounded;
             if (!grounded) {
@@ -827,6 +834,43 @@ export class Player {
             // Absorb the instantaneous lift in the camera so stairs feel smooth.
             if (rise > 0) this._stepSmooth = Math.min(P.stepHeight * 1.3, this._stepSmooth + rise);
           }
+        }
+      }
+    }
+
+    /* Tunnelling guard.
+     *
+     * Depenetration pushes out of a collider along its shortest axis, which is
+     * correct but has no memory of which side the capsule arrived from. Wedged
+     * into the junction of two walls - the exact case of grabbing a wall at a
+     * corner and jumping - the shortest way out of one of them can be straight
+     * through to the far side, and the player ends up outside the building.
+     *
+     * The solver cannot fix this on its own; only the caller knows where the
+     * capsule was a frame ago. So: if a resolve corrected the position by more
+     * than a stride, check the straight line back to last frame's position. If
+     * solid geometry stands in the way, the capsule did not travel there - it
+     * was squeezed there - and last frame's position is the honest answer.
+     *
+     * Gated on a large correction and skipped after a step-up, so ordinary
+     * walking, stairs and ramps never pay for it or trip it. */
+    if (!steppedUp && this._position.distanceToSquared(_intended) > (radius * 1.5) ** 2) {
+      _guardFrom.set(_prev.x, _prev.y + h * 0.5, _prev.z);
+      _guardDir.set(
+        this._position.x - _prev.x,
+        this._position.y - _prev.y,
+        this._position.z - _prev.z
+      );
+      const span = _guardDir.length();
+      if (span > 1e-4) {
+        _guardDir.multiplyScalar(1 / span);
+        const blocked = this.physics.raycast(_guardFrom, _guardDir, span, COLLISION_LAYER.WORLD);
+        if (blocked) {
+          this._position.copy(_prev);
+          this._velocity.x = 0;
+          this._velocity.z = 0;
+          res = this.physics.resolveCapsule(this._position, radius, h);
+          grounded = res.grounded;
         }
       }
     }
@@ -993,6 +1037,10 @@ export class Player {
     if (this._offLate || !this.engine?.onFrameUpdate) return;
     this._offLate = this.engine.onFrameUpdate((dt, elapsed) => {
       this.swim.applyPose(dt, elapsed);
+      // Free climb before the mantle: topping out hands off from one to the
+      // other, and the mantle is the pose that should win on the frames where
+      // both have weight.
+      this.freeClimb.applyPose(dt, elapsed);
       this.climb.applyPose(dt, elapsed);
     });
   }

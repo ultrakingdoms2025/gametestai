@@ -8,7 +8,8 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/bundle-game.mjs --if-available && next build",
+    "build:site-only": "next build",
     "start": "next start",
     "bundle-game": "node scripts/bundle-game.mjs",
     "test:pricing": "node scripts/test-pricing.mjs"

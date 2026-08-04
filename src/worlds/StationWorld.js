@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { World } from './World.js';
+// The station frames each gateway with its own iris and rings, so it needs the
+// portal system's aperture geometry rather than a copy of the numbers.
+import { PORTAL_DISC_OFFSET_Y } from '../systems/Portals.js';
 
 /**
  * AETHER NEXUS - "Aether Nexus Station", the entry world.
@@ -41,6 +44,16 @@ const ROAD_W = 18;
 const LOOP_R = 72;       // elevated walkway loop radius
 const LOOP_Y = 10;
 const PORTAL_R = 54;     // distance of the portal daises from the plaza centre
+/**
+ * Walking surface of a gateway dais - where the approach steps arrive, where
+ * the ceremonial arch stands, and where a portal's own plinth starts.
+ *
+ * Everything around a gateway is measured from here so the parts cannot drift
+ * apart. The aperture surround in particular is *not* at this height: the
+ * event horizon sits `PORTAL_DISC_OFFSET_Y` above the spec, and its framing has
+ * to follow it up there.
+ */
+const GATEWAY_DECK_Y = 2.4;
 const OCULUS_R = 34;     // glazed opening in the overhead plate, over the plaza
 const WINDOW_HALF = 55;  // window sector half-angle, centred on +X
 
@@ -4793,15 +4806,17 @@ export class StationWorld extends World {
         B.at(s.em, boxGeo(0.5, 0.14, 0.5, 1), 6, 2.5, z);
       }
 
-      // Ceremonial arch: two buttresses and a lintel framing the event horizon.
+      // Ceremonial arch: two buttresses and a lintel framing the event horizon,
+      // standing on the dais.
+      const archBase = GATEWAY_DECK_Y;
       for (const sx of [-4.6, 4.6]) {
-        B.at('panelDark', boxGeo(1.5, 8.6, 2.4, 3), sx, 2.4 + 4.3, cz);
-        B.at(s.em, boxGeo(0.3, 7.6, 0.3, 1), sx + (sx < 0 ? 0.9 : -0.9), 2.4 + 4.2, cz + 1.25);
-        B.at('trim', boxGeo(2.2, 0.6, 3.0, 2), sx, 2.4 + 8.9, cz);
+        B.at('panelDark', boxGeo(1.5, 8.6, 2.4, 3), sx, archBase + 4.3, cz);
+        B.at(s.em, boxGeo(0.3, 7.6, 0.3, 1), sx + (sx < 0 ? 0.9 : -0.9), archBase + 4.2, cz + 1.25);
+        B.at('trim', boxGeo(2.2, 0.6, 3.0, 2), sx, archBase + 8.9, cz);
       }
-      B.at('panelDark', boxGeo(11.2, 1.6, 2.4, 3), 0, 2.4 + 9.6, cz);
-      B.at(s.em, boxGeo(9.4, 0.28, 0.3, 1), 0, 2.4 + 8.9, cz + 1.3);
-      B.at(s.em, boxGeo(9.4, 0.28, 0.3, 1), 0, 2.4 + 8.9, cz - 1.3);
+      B.at('panelDark', boxGeo(11.2, 1.6, 2.4, 3), 0, archBase + 9.6, cz);
+      B.at(s.em, boxGeo(9.4, 0.28, 0.3, 1), 0, archBase + 8.9, cz + 1.3);
+      B.at(s.em, boxGeo(9.4, 0.28, 0.3, 1), 0, archBase + 8.9, cz - 1.3);
 
       /* --- Aperture surround -----------------------------------------
        * The event horizon itself is a very bright emitter owned by the portal
@@ -4812,7 +4827,16 @@ export class StationWorld extends World {
        * as one flat blob. Radii start at 3.1 m to clear the portal's own arch.
        */
       const nx = Math.sin(s.yaw), nz = Math.cos(s.yaw);
-      const apY = 2.45;
+      /* Concentric with the event horizon, taken from the portal system rather
+       * than guessed.
+       *
+       * This was hard-coded to 2.45 - the gateway's *floor* - while the disc's
+       * centre is a further `PORTAL_DISC_OFFSET_Y` (2.68 m) above the spec. The
+       * iris, its teeth, both rings and the backing plate therefore sat almost
+       * three metres below the aperture they exist to frame, clustered around
+       * the plinth: from the approach the surround read as the gateway and the
+       * disc appeared to be missing its lower half. */
+      const apY = GATEWAY_DECK_Y + PORTAL_DISC_OFFSET_Y;
       const back = (d) => [0 - nx * d, apY, cz - nz * d];
       const iris = new THREE.TorusGeometry(3.6, 0.5, 10, 44);
       B.at('panelDark', iris, 0, apY, cz, s.yaw);
@@ -4911,7 +4935,7 @@ export class StationWorld extends World {
       for (const sx of [-4.6, 4.6]) this._contact(sx, cz, 5.5);
 
       this.portalSpecs.push({
-        position: new THREE.Vector3(0, 2.45, cz),
+        position: new THREE.Vector3(0, GATEWAY_DECK_Y, cz),
         rotationY: s.yaw,
         target: s.target,
         label: s.label,
@@ -5068,7 +5092,7 @@ export class StationWorld extends World {
     B.flush(g, M, 'gateway-citadel', { cast: true, recv: true });
 
     this.portalSpecs.push({
-      position: new THREE.Vector3(cx, 2.45, cz),
+      position: new THREE.Vector3(cx, GATEWAY_DECK_Y, cz),
       // Face the plaza, whichever side it is on.
       rotationY: Math.PI * 0.5 * spec.side,
       target: spec.target,

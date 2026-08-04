@@ -38,6 +38,22 @@ const PLINTH_TOP = 0.42;
 const DISC_R = CONFIG.portal.radius;
 const DISC_Y = PLINTH_TOP + DISC_R * 0.94;
 const ARCH_R = DISC_R + 0.36;
+
+/**
+ * Height of the event horizon's centre above a portal's spec position, and its
+ * radius.
+ *
+ * Exported because worlds build their own framing around a gateway - the
+ * station wraps one in a machined iris and two concentric rings - and that
+ * framing has to be concentric with the aperture it is framing. The station had
+ * its surround hard-coded at 2.45 while the disc sat at spec + 2.68, so the two
+ * were nearly three metres apart: the rings hugged the floor while the portal
+ * itself floated above them, which is what made a gateway read as though only
+ * its top half existed. Importing the number is the only way the two stay
+ * together when either moves.
+ */
+export const PORTAL_DISC_OFFSET_Y = DISC_Y;
+export const PORTAL_DISC_RADIUS = DISC_R;
 /** Dais tiers, base first. `top` is the walkable height of each step. */
 const PLINTH_TIERS = [
   { r: 4.15, top: 0.14 },
@@ -400,15 +416,35 @@ void main() {
   float f = acc / wsum;
   f = pow(clamp(f, 0.0, 1.0), 1.35);
 
-  // Live destination preview, sampled as a window with parallax + chromatic edge.
+  /* Live destination preview, sampled as a window with parallax + chromatic
+   * edge.
+   *
+   * The parallax vector is divided by the facing term, so it grows without
+   * bound as the aperture is viewed off-axis - and it then slides the sample
+   * window clean off the render target. Every sample past the edge clamps to
+   * the same border texel, so instead of a destination the player got one flat
+   * pale band. That
+   * is what made a gateway read as "only half there" when stood in front of and
+   * looked slightly across, which is exactly how you approach one on foot.
+   *
+   * Two guards. The offset is bounded, so the window stays on the target while
+   * keeping the depth cue that makes this read as a hole rather than a decal.
+   * And whatever still escapes fades into the plasma rather than repeating a
+   * border texel, so the worst case is "the swirl hides the far side" - which
+   * the effect does deliberately anyway - instead of a grey hole. */
+  vec2 parBounded = par / (1.0 + length(par) * 0.55);
   vec2 base = p * uPreviewScale;
-  base += par * 0.085 * (1.0 - r * r);
+  base += parBounded * 0.085 * (1.0 - r * r);
   base += (f - 0.5) * 0.045 * (0.35 + r);
   vec2 ca = dir * (0.005 + pow(r, 3.0) * 0.030);
+  vec2 puv = 0.5 + base;
+  vec2 fade = smoothstep(vec2(0.0), vec2(0.05), puv) *
+              (1.0 - smoothstep(vec2(0.95), vec2(1.0), puv));
+  float inWindow = fade.x * fade.y;
   vec3 prev;
-  prev.r = texture2D(uPreview, clamp(0.5 + base + ca, 0.002, 0.998)).r;
-  prev.g = texture2D(uPreview, clamp(0.5 + base, 0.002, 0.998)).g;
-  prev.b = texture2D(uPreview, clamp(0.5 + base - ca, 0.002, 0.998)).b;
+  prev.r = texture2D(uPreview, clamp(puv + ca, 0.002, 0.998)).r;
+  prev.g = texture2D(uPreview, clamp(puv, 0.002, 0.998)).g;
+  prev.b = texture2D(uPreview, clamp(puv - ca, 0.002, 0.998)).b;
   // The target holds raw linear HDR: a golden-hour sun disc in it measures two
   // orders of magnitude above the grass under it. Lift the whole image, then
   // knee it, so the destination's midtones become legible without its sky
@@ -434,7 +470,7 @@ void main() {
   // The swirl veils the window in streaks: thicker plasma hides more of the far
   // side, so the destination breathes in and out rather than sitting there flat.
   float win = uHasPreview * uStability * (1.0 - smoothstep(0.58, 0.95, r));
-  float show = clamp(win * (0.96 - 0.20 * f), 0.0, 0.97);
+  float show = clamp(win * (0.96 - 0.20 * f) * inWindow, 0.0, 0.97);
   vec3 col = mix(plasma, prev * (0.74 + 0.36 * throat), show);
 
   // Readable machinery: twelve aperture blades riding just inside the rim and
@@ -779,7 +815,11 @@ export class PortalSystem {
         uHasPreview: { value: 0 },
         uStability: { value: 0.25 },
         uIntensity: { value: 1 },
-        uPreviewScale: { value: 0.52 },
+        /* 0.47, not 0.52. At 0.52 the window spans 0.5 +/- 0.52, so the aperture
+         * edges sampled outside the render target before any parallax was even
+         * added. Under half keeps the whole disc on the target with headroom for
+         * the offsets stacked on top of it. */
+        uPreviewScale: { value: 0.47 },
         uPreviewExposure: { value: 1 },
         // The preview target holds raw linear scene values with no exposure or
         // tone map applied, which lands a lit exterior around 0.1-0.5 - far too

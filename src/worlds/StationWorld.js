@@ -4,6 +4,28 @@ import { World } from './World.js';
 // The station frames each gateway with its own iris and rings, so it needs the
 // portal system's aperture geometry rather than a copy of the numbers.
 import { PORTAL_DISC_OFFSET_Y } from '../systems/Portals.js';
+/* The layout constants, deterministic noise, UV helpers and GeoBatch moved out
+ * to station/StationKit.js when the ring grew four outer zones. Each of those is
+ * a world in its own right, built from exactly the same parts as the hub, and
+ * two copies of `boxGeo` would have drifted inside a week. */
+import {
+  DEG,
+  DECK_R, HULL_R, WALL_H, CEIL_Y, PLAZA_R, ROAD_W, LOOP_R, LOOP_Y, PORTAL_R,
+  OCULUS_R, WINDOW_HALF, GATEWAY_DECK_Y, PYLON_OFF,
+  ZONES, ZONE_R, ZONE_CENTRE_R, LINK_LEN,
+  DOME_R, DOME_WALL_H, DOME_APEX, domeHeightAt, WORLD_R,
+  COLLIDE_CEILING, CHUNK_TRIS, PLANTING_TRIS, OCC_CELL, occKeyOf, occCellKey,
+  NON_SOLID_KEYS, PROXY_KEYS,
+  SPAWN_X, SPAWN_Z, SPAWN_YAW,
+  SIGN_COLS, SIGN_ROWS,
+  mulberry32, hashi, tnoise, tfbm,
+  boxUV, uvScale, cylUV, cylGeo, atlasUV, signUV, boxGeo,
+  instanced, GeoBatch, chunkTriangles,
+  roadPos, faceRoadYaw, zoneCentre, zoneLocal, zoneYaw,
+} from './station/StationKit.js';
+import { StationActors } from './station/StationActors.js';
+import { buildOuterRing, LINK_MOUTH_HALF_DEG } from './station/OuterRing.js';
+import { buildTower } from './station/Tower.js';
 
 /**
  * AETHER NEXUS - "Aether Nexus Station", the entry world.
@@ -32,136 +54,11 @@ const _euler = new THREE.Euler();
 const _quat = new THREE.Quaternion();
 const _scl = new THREE.Vector3(1, 1, 1);
 
-const DEG = Math.PI / 180;
-
-/* Layout constants - every builder reads these so the map stays coherent. */
-const DECK_R = 200;      // walkable deck radius
-const HULL_R = 202;      // structural hull radius
-const WALL_H = 48;       // window / hull wall height
-
-/* Ceiling for geometry-derived collision.
- *
- * Sampled over 17,665 deck positions, the highest surface a player can stand on
- * is 48.5 m, with 1,000 of those positions above 30 m - the walkway loop, the
- * control tower and the upper habitat and skyline roofs are all reachable. An
- * earlier 30 m guess produced 223 of the 303 walk-throughs in the first audit
- * of this pass, all of them somebody standing on a roof with the railing beside
- * them uncollided. This sits above the top of the hull wall (48) and below the
- * ceiling plate and the hung canopy rigging, which nothing reaches. */
-const COLLIDE_CEILING = 52;
-/* Triangles per derived collision chunk. Measured across 8,192 / 4,096 / 2,048
- * chunk splits of the same soup: finer chunks make the capsule solver cheaper
- * and the raycaster dearer (it gathers candidates a whole broadphase cell
- * wide, so it pays per chunk), and this is where the two curves cross. */
-const CHUNK_TRIS = 32;
-/* Triangles per planting proxy box. A lobe is roughly spherical, so a chunk's
- * box hugs it more tightly the smaller the chunk - but each box is a collider
- * in its own right, and planting is dense enough that the count is what decides
- * the cost. 64 puts ~1,600 boxes on the station and keeps a shrub's collided
- * surface within a few centimetres of the drawn one. */
-const PLANTING_TRIS = 64;
-/* Cell size of the deck-occupancy grid used to keep scattered props out of
- * things that are already standing. See `_markOccupancy`. */
-const OCC_CELL = 1.5;
-/* Material keys that never take part in collision: hoses and cable runs lying
- * across the deck, floor films, decals and sign faces. Every `em*` emissive -
- * light strips, glow rings, gateway apertures - is excluded by prefix in
- * `_collisionSoup`. None of these should stop a player.
- *
- * Planting is deliberately NOT on this list. It was, on the reasoning that a
- * leaf canopy is something you walk under - but measured against the surface
- * directly beneath each leaf, 84% of this station's foliage sits within 1.5 m
- * of it and only 3% is above 2.5 m. It is not canopy, it is hedge and shrub
- * masses in planters, at chest height, overhanging their tubs. You walk into
- * those. They get proxies rather than triangles - see `_solidifyPlanting`. */
-const NON_SOLID_KEYS = new Set([
-  'rubber',
-  'wet', 'decals', 'decal', 'polish',
-  'signs',
-]);
-/* Material keys whose geometry is collided as coarse boxes instead of
- * triangles. See `_solidifyPlanting`. */
-const PROXY_KEYS = new Set(['foliage', 'foliagePale', 'foliageCard']);
-const CEIL_Y = 62;       // overhead deck plate
-const PLAZA_R = 40;
-const ROAD_W = 18;
-const LOOP_R = 72;       // elevated walkway loop radius
-const LOOP_Y = 10;
-const PORTAL_R = 54;     // distance of the portal daises from the plaza centre
-/**
- * Walking surface of a gateway dais - where the approach steps arrive, where
- * the ceremonial arch stands, and where a portal's own plinth starts.
- *
- * Everything around a gateway is measured from here so the parts cannot drift
- * apart. The aperture surround in particular is *not* at this height: the
- * event horizon sits `PORTAL_DISC_OFFSET_Y` above the spec, and its framing has
- * to follow it up there.
- */
-const GATEWAY_DECK_Y = 2.4;
-/**
- * Offsets of the backdrop pylons from a gateway's centre, along and across its
- * axis.
- *
- * Chosen so a 2.6 m pylon lands wholly inside the 11 m dais: the far corner
- * sits at `hypot(a + 1.3, b + 1.3)`, which these keep at 10.9. The pylons used
- * to stand at 9.5 / 4.5, putting that corner at 12.3 - a metre and a quarter
- * past the rim, hanging over the deck below.
- */
-const PYLON_OFF = { a: 8.1, b: 3.8 };
-const OCULUS_R = 34;     // glazed opening in the overhead plate, over the plaza
-const WINDOW_HALF = 55;  // window sector half-angle, centred on +X
-
-/* The hero anchor. The near-field dressing pass is composed against this exact
- * position and heading, so it lives here rather than inside `_fillSpawns` -
- * which runs after every builder and would otherwise leave the dressing pass
- * composing against the origin. */
-const SPAWN_X = -34, SPAWN_Z = 2;
-const SPAWN_YAW = -Math.PI / 2;   // faces +X, down the plaza axis
 
 /* ------------------------------------------------------------------ */
 /* Deterministic noise + rng                                           */
 /* ------------------------------------------------------------------ */
 
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function hashi(x, y, seed) {
-  let h = (x * 374761393 + y * 668265263 + seed * 2147483647) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-
-/** Tileable value noise on an integer lattice of `period` cells. */
-function tnoise(x, y, period, seed) {
-  const xi = Math.floor(x), yi = Math.floor(y);
-  const xf = x - xi, yf = y - yi;
-  const u = xf * xf * (3 - 2 * xf);
-  const v = yf * yf * (3 - 2 * yf);
-  const m = (n) => ((n % period) + period) % period;
-  const a = hashi(m(xi), m(yi), seed);
-  const b = hashi(m(xi + 1), m(yi), seed);
-  const c = hashi(m(xi), m(yi + 1), seed);
-  const d = hashi(m(xi + 1), m(yi + 1), seed);
-  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
-}
-
-/** Tileable fbm; `period` is in lattice cells at the base octave. */
-function tfbm(x, y, period, seed, octaves = 4) {
-  let sum = 0, amp = 0.5, f = 1;
-  for (let i = 0; i < octaves; i++) {
-    sum += tnoise(x * f, y * f, period * f, seed + i * 17) * amp;
-    f *= 2;
-    amp *= 0.5;
-  }
-  return sum;
-}
 
 /* ------------------------------------------------------------------ */
 /* Canvas helpers                                                      */
@@ -1095,11 +992,6 @@ function paintRoomGlow(a, S, rng) {
  * the atlas enough cells that every sign role owns its own text, and then to
  * assign by role (see SIGN_ROLE below) instead of by index arithmetic.
  */
-const SIGN_COLS = 4;
-// 7 rows, not 6: the two axis gateways needed placards of their own, and a
-// sign's copy is reserved by role rather than by loop index, so there was no
-// spare cell to borrow. `signUV` derives everything from these two numbers.
-const SIGN_ROWS = 7;
 
 const SIGNS = [
   ['NOVA RAMEN', 'HOT BROTH 24/7', '#ff8a3c'],
@@ -1140,6 +1032,20 @@ const SIGNS = [
   ['GATEWAY 04', 'VELLUM RIDGE', '#ff5a3c'],
   ['RING 4 AIRLOCK', 'SUIT CHECK REQUIRED', '#8fb8ff'],
   ['OBSERVATION', 'MIND THE GLASS', '#7fe9ff'],
+  /* --- The outer ring ------------------------------------------------
+   * One board per zone, hung over the link mouth and again at the arrival
+   * plaza, plus the four placards the zones themselves need. These are the
+   * only wayfinding a player gets between leaving the plaza and arriving
+   * somewhere 500 m away, so the copy names the destination rather than the
+   * corridor - "THE LONG GALLEY", not "LINK 4". */
+  ['HAB RING C', 'CREW QUARTERS // DECKS 1-7', '#8fe6c8'],
+  ['DECK 9 ATHLETICS', 'CREW CONDITIONING', '#c9b0ff'],
+  ['RING 8 EXPANSION', 'HARD HAT AREA', '#ff9d6a'],
+  ['THE LONG GALLEY', 'MESS + PROVISIONS', '#ffc98a'],
+  ['GALLEY PROVISIONS', 'RATIONS / MEDICAL / KIT', '#ffc857'],
+  ['ORDER HERE', 'TAP TO PAY // COLLECT LEFT', '#ffd166'],
+  ['RACK YOUR WEIGHTS', 'SPOTTERS ON THE BENCH', '#c9b0ff'],
+  ['SCAFFOLD ACCESS', 'CLIP ON ABOVE 2 M', '#ffb020'],
 ];
 
 /**
@@ -1163,6 +1069,18 @@ const SIGN_ROLE = {
   muster: 23,
   gatewayCitadel: 24,
   gatewayRace: 25,
+  airlock: 26,
+  observation: 27,
+  // The outer ring. `ZONES[i].signCell` in station/StationKit.js points at
+  // these four; keep the two in step or a link will announce the wrong zone.
+  zoneHabitation: 28,
+  zoneGym: 29,
+  zoneConstruction: 30,
+  zoneCanteen: 31,
+  galleyStall: 32,
+  orderPoint: 33,
+  gymNotice: 34,
+  siteNotice: 35,
 };
 
 /** Atlas of holographic signage - one texture, one draw call. */
@@ -1652,88 +1570,6 @@ function makeRadialTexture(aniso, hard = 0.0) {
  * world space regardless of the box dimensions. Face order in BoxGeometry is
  * px, nx, py, ny, pz, nz - four vertices each.
  */
-const _BOX_SU = [0, 0, 0, 0, 0, 0];
-const _BOX_SV = [0, 0, 0, 0, 0, 0];
-function boxUV(geo, w, h, d, tile) {
-  const uv = geo.attributes.uv;
-  if (!uv || uv.count !== 24) return geo;
-  _BOX_SU[0] = _BOX_SU[1] = d; _BOX_SU[2] = _BOX_SU[3] = w; _BOX_SU[4] = _BOX_SU[5] = w;
-  _BOX_SV[0] = _BOX_SV[1] = h; _BOX_SV[2] = _BOX_SV[3] = d; _BOX_SV[4] = _BOX_SV[5] = h;
-  for (let f = 0; f < 6; f++) {
-    const su = _BOX_SU[f] / tile;
-    const sv = _BOX_SV[f] / tile;
-    for (let i = 0; i < 4; i++) {
-      const k = f * 4 + i;
-      uv.setXY(k, uv.getX(k) * su, uv.getY(k) * sv);
-    }
-  }
-  uv.needsUpdate = true;
-  return geo;
-}
-
-function uvScale(geo, su, sv) {
-  const uv = geo.attributes.uv;
-  if (!uv) return geo;
-  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * su, uv.getY(i) * sv);
-  uv.needsUpdate = true;
-  return geo;
-}
-
-/**
- * Constant-texel-density UVs for a CylinderGeometry.
- *
- * `uvScale(cyl, 20, 3)` is a trap: the side wants circumference/height, the
- * caps want diameter on *both* axes, and applying one pair to all of them
- * stretches the cap into 1 x 7 m rectangles - which is exactly what made the
- * gateway daises read as untextured blocks next to finely detailed pillars.
- *
- * CylinderGeometry emits the side first ((radial+1) * (height+1) vertices),
- * then the top cap, then the bottom cap, so the split is a simple index test.
- */
-function cylUV(geo, rTop, rBottom, height, radialSegs, tile, heightSegs = 1) {
-  const uv = geo.attributes.uv;
-  if (!uv) return geo;
-  const rAvg = (rTop + rBottom) * 0.5;
-  const sideCount = (radialSegs + 1) * (heightSegs + 1);
-  const su = (Math.PI * 2 * rAvg) / tile;
-  const sv = height / tile;
-  const sc = (2 * rAvg) / tile;
-  for (let i = 0; i < uv.count; i++) {
-    if (i < sideCount) uv.setXY(i, uv.getX(i) * su, uv.getY(i) * sv);
-    // Caps are scaled about their own centre so the plate grid stays concentric.
-    else uv.setXY(i, (uv.getX(i) - 0.5) * sc + 0.5, (uv.getY(i) - 0.5) * sc + 0.5);
-  }
-  uv.needsUpdate = true;
-  return geo;
-}
-
-/** CylinderGeometry with world-correct texel density in one call. */
-function cylGeo(rTop, rBottom, height, radialSegs, tile, openEnded = false) {
-  const g = new THREE.CylinderGeometry(rTop, rBottom, height, radialSegs, 1, openEnded);
-  return cylUV(g, rTop, rBottom, height, radialSegs, tile ?? 2);
-}
-
-/** Remap a quad onto one cell of the signage atlas. */
-function signUV(geo, cell) {
-  const c = ((cell % (SIGN_COLS * SIGN_ROWS)) + SIGN_COLS * SIGN_ROWS) % (SIGN_COLS * SIGN_ROWS);
-  return atlasUV(geo, c % SIGN_COLS, Math.floor(c / SIGN_COLS), SIGN_COLS, SIGN_ROWS);
-}
-
-/** Remap a quad's UVs onto one cell of a cols x rows atlas. */
-function atlasUV(geo, col, row, cols, rows) {
-  const uv = geo.attributes.uv;
-  const iu = 1 / cols, iv = 1 / rows;
-  for (let i = 0; i < uv.count; i++) {
-    uv.setXY(i, col * iu + uv.getX(i) * iu, 1 - (row + 1) * iv + uv.getY(i) * iv);
-  }
-  uv.needsUpdate = true;
-  return geo;
-}
-
-/** A textured box, UV-corrected, ready to be pushed into a batch. */
-function boxGeo(w, h, d, tile) {
-  return boxUV(new THREE.BoxGeometry(w, h, d), w, h, d, tile ?? 2);
-}
 
 /**
  * A canopy lobe with occlusion baked into its vertex colours.
@@ -1808,188 +1644,6 @@ function foliageLobe(radius, scale, uv, shade, inwardX = 0, inwardZ = 0, hue = 0
 }
 
 /** Build an InstancedMesh from [x,y,z,rx,ry,rz,sx,sy,sz] tuples. */
-function instanced(geo, mat, entries, opts = {}) {
-  // A zero-count InstancedMesh is legal but pointless and breaks setColorAt.
-  if (!entries.length) return new THREE.Object3D();
-  const im = new THREE.InstancedMesh(geo, mat, entries.length);
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i];
-    _dummy.position.set(e[0], e[1], e[2]);
-    _dummy.rotation.set(e[3] || 0, e[4] || 0, e[5] || 0);
-    _dummy.scale.set(e[6] ?? 1, e[7] ?? 1, e[8] ?? 1);
-    _dummy.updateMatrix();
-    im.setMatrixAt(i, _dummy.matrix);
-  }
-  im.instanceMatrix.needsUpdate = true;
-  im.castShadow = opts.cast ?? true;
-  im.receiveShadow = opts.recv ?? true;
-  // Instances span the whole map; per-object culling would only ever fail.
-  im.frustumCulled = opts.cull ?? false;
-  return im;
-}
-
-/**
- * Collects geometry per material during generation and merges each bucket into
- * a single mesh. A district of forty buildings collapses to ~6 draw calls.
- */
-class GeoBatch {
-  constructor() {
-    /** @type {Map<string, THREE.BufferGeometry[]>} */
-    this.buckets = new Map();
-  }
-
-  /** @param {string} key material key @param {THREE.BufferGeometry} geo owned by the batch */
-  add(key, geo, matrix) {
-    if (matrix) geo.applyMatrix4(matrix);
-    // mergeGeometries refuses to mix indexed and non-indexed sources, and the
-    // polyhedra (Octahedron/Icosahedron) arrive unindexed. Normalise here so
-    // callers never have to think about it.
-    if (!geo.getIndex()) {
-      const n = geo.getAttribute('position').count;
-      const idx = n > 65535 ? new Uint32Array(n) : new Uint16Array(n);
-      for (let i = 0; i < n; i++) idx[i] = i;
-      geo.setIndex(new THREE.BufferAttribute(idx, 1));
-    }
-    let list = this.buckets.get(key);
-    if (!list) this.buckets.set(key, (list = []));
-    list.push(geo);
-    return geo;
-  }
-
-  /**
-   * Place a part described in a building's local frame. Buildings are authored
-   * around their own origin and then dropped onto the map, so every builder
-   * below works in local millimetre-free coordinates.
-   */
-  localAt(key, geo, ox, oy, oz, yaw, lx, ly, lz, ry2 = 0, rx = 0, rz = 0) {
-    const c = Math.cos(yaw), s = Math.sin(yaw);
-    return this.at(key, geo, ox + lx * c + lz * s, oy + ly, oz - lx * s + lz * c, yaw + ry2, rx, rz);
-  }
-
-  /** Place a geometry with position + Y rotation, the common building case. */
-  at(key, geo, x, y, z, ry = 0, rx = 0, rz = 0) {
-    _euler.set(rx, ry, rz, 'YXZ');
-    _quat.setFromEuler(_euler);
-    _mat4.compose(_v1.set(x, y, z), _quat, _scl.set(1, 1, 1));
-    return this.add(key, geo, _mat4);
-  }
-
-  /** Merge every bucket, add the meshes to `parent`, and reset. */
-  flush(parent, materials, name, opts = {}) {
-    const out = [];
-    for (const [key, list] of this.buckets) {
-      if (!list.length) continue;
-      const merged = list.length === 1 ? list[0] : mergeGeometries(list, false);
-      if (!merged) {
-        console.warn(`[StationWorld] merge failed for bucket "${key}" in ${name}`);
-        continue;
-      }
-      if (list.length > 1) for (const g of list) g.dispose();
-      merged.computeBoundingSphere();
-      const mesh = new THREE.Mesh(merged, materials[key]);
-      mesh.name = `${name}:${key}`;
-      const o = opts[key] ?? opts;
-      mesh.castShadow = o.cast ?? true;
-      mesh.receiveShadow = o.recv ?? true;
-      parent.add(mesh);
-      out.push(mesh);
-    }
-    this.buckets.clear();
-    return out;
-  }
-}
-
-/**
- * Split a world-space triangle soup into small, spatially compact chunks.
- *
- * Each chunk becomes one `mesh` collider, and a mesh collider has no internal
- * tree - a query that reaches it pays for all of it. So the split is by
- * triangle *count*, recursively at the median of whichever axis the chunk's
- * centroids are most spread across, until every leaf holds `maxTris`. A fixed
- * spatial grid cannot do this: station geometry is uneven enough that the same
- * cell size gives 20,000 triangles over the plaza and 40 over the cargo yard,
- * and it is the 20,000 that decides the frame time.
- *
- * Median splitting on the longest axis also keeps chunks roughly cubic, which
- * matters twice over: their AABBs are what both the capsule solver and the
- * raycaster reject against, and the broadphase indexes them by XZ footprint.
- *
- * @param {Float32Array} soup 9 floats per triangle, world space
- * @param {number} maxTris leaf size
- * @returns {Float32Array[]} one buffer per chunk
- */
-function chunkTriangles(soup, maxTris) {
-  const count = soup.length / 9;
-  if (count === 0) return [];
-
-  const order = new Int32Array(count);
-  const centroids = new Float32Array(count * 3);
-  for (let i = 0; i < count; i++) {
-    order[i] = i;
-    const o = i * 9;
-    centroids[i * 3] = (soup[o] + soup[o + 3] + soup[o + 6]) / 3;
-    centroids[i * 3 + 1] = (soup[o + 1] + soup[o + 4] + soup[o + 7]) / 3;
-    centroids[i * 3 + 2] = (soup[o + 2] + soup[o + 5] + soup[o + 8]) / 3;
-  }
-
-  const leaves = [];
-  const stack = [[0, count]];
-  while (stack.length) {
-    const [lo, hi] = stack.pop();
-    const n = hi - lo;
-    if (n <= maxTris) {
-      leaves.push([lo, hi]);
-      continue;
-    }
-    let minX = Infinity, minY = Infinity, minZ = Infinity;
-    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-    for (let i = lo; i < hi; i++) {
-      const c = order[i] * 3;
-      const x = centroids[c], y = centroids[c + 1], z = centroids[c + 2];
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-      if (z < minZ) minZ = z;
-      if (z > maxZ) maxZ = z;
-    }
-    const ex = maxX - minX, ey = maxY - minY, ez = maxZ - minZ;
-    // Coincident centroids - a stack of identical decals, say. No split can
-    // separate them, and recursing would not terminate.
-    if (Math.max(ex, ey, ez) < 1e-4) {
-      leaves.push([lo, hi]);
-      continue;
-    }
-    const axis = ex >= ey && ex >= ez ? 0 : ey >= ez ? 1 : 2;
-    const slice = Array.from(order.subarray(lo, hi));
-    slice.sort((p, q) => centroids[p * 3 + axis] - centroids[q * 3 + axis]);
-    for (let i = 0; i < slice.length; i++) order[lo + i] = slice[i];
-    const mid = lo + (n >> 1);
-    stack.push([lo, mid], [mid, hi]);
-  }
-
-  return leaves.map(([lo, hi]) => {
-    const out = new Float32Array((hi - lo) * 9);
-    for (let i = lo; i < hi; i++) {
-      const src = order[i] * 9;
-      out.set(soup.subarray(src, src + 9), (i - lo) * 9);
-    }
-    return out;
-  });
-}
-
-/* Polar helpers - all districts are laid out on radiating avenues. */
-function roadPos(deg, r, off = 0, y = 0, out = new THREE.Vector3()) {
-  const t = deg * DEG;
-  const c = Math.cos(t), s = Math.sin(t);
-  return out.set(c * r - s * off, y, s * r + c * off);
-}
-
-/** Yaw for a building whose facade (-Z in local space) should face the avenue. */
-function faceRoadYaw(deg, side) {
-  const t = deg * DEG;
-  return side > 0 ? -t : Math.PI - t;
-}
 
 /* ================================================================== */
 /* StationWorld                                                        */
@@ -2010,6 +1664,14 @@ export class StationWorld extends World {
     this._contacts = [];
     /** Rotated footprints for authored enterable rooms; used to keep dressing clear. */
     this._enterableRoomFootprints = [];
+    /* Buildings the Interiors system can open, and the collectibles inside them.
+     *
+     * Created here rather than in `_buildEnterableRooms`, which is where it used
+     * to appear. That was fine while the crew pods were the only enterables on
+     * the ring; now the habitat stacks are enterable too and they are raised at
+     * step 0.77, well before the pods at 0.905, so the first `push` landed on
+     * `undefined` and took the whole world build down with it. */
+    this.enterables = [];
     /** Animated handles resolved during build; update() only touches these. */
     this._anim = {
       holoRings: [],
@@ -2038,6 +1700,23 @@ export class StationWorld extends World {
       moon: null,
     };
     this._rng = mulberry32(0x5eed1);
+
+    /* --- The outer ring ------------------------------------------------ */
+    /** Articulated instanced figures for the four zones. See station/StationActors.js. */
+    this._actors = null;
+    /** Moving walkway plates in the links; see `_moveOnSurfaces`. */
+    this._travelators = [];
+    /** Escalator banks, one entry per tower; treads scroll, riders are carried. */
+    this._escalators = [];
+    /** Rooftops published for the relic placer. See `Relics._onWorld`. */
+    this._roofs = [];
+    /**
+     * Footprints of buildings that collide themselves completely.
+     *
+     * `_collisionSoup` skips anything drawn inside one. See the note where
+     * `buildTower` publishes them.
+     */
+    this._selfCollided = [];
   }
 
   /* ---------------------------------------------------------------- */
@@ -2078,7 +1757,13 @@ export class StationWorld extends World {
     await step(0.92, 'Raising the outer skyline', this._buildSkyline);
     await step(0.94, 'Rigging the canopy', this._buildCanopy);
     await step(0.95, 'Scattering set dressing', this._buildDressing);
-    await step(0.96, 'Making the set dressing solid', this._solidifyProps);
+
+    /* The outer ring goes in before the two solidify passes, so its instanced
+     * props are swept by the same collider sweep the hub's are, and its
+     * structure is already standing when `_solidifyStructure` decides which
+     * triangles are enclosed and can be dropped. */
+    await step(0.955, 'Spanning the great dome', this._buildOuterRing);
+    await step(0.962, 'Making the set dressing solid', this._solidifyProps);
     // Strictly after `_solidifyProps`: that pass decides what is already solid
     // by probing with `groundHeight`, and it reads every box this one then uses
     // to discard triangles it does not need to collide twice.
@@ -3045,7 +2730,10 @@ export class StationWorld extends World {
         // modelled about their own middle.
         centre.set((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2)
           .applyMatrix4(m);
-        if (Math.hypot(centre.x, centre.z) > DECK_R) continue;
+        // Whole map, not just the hub deck: the zones scatter chairs, dumbbells,
+        // pallets and crates through the same instanced path, and a chair you
+        // can walk through is exactly the defect this sweep exists to catch.
+        if (Math.hypot(centre.x, centre.z) > WORLD_R) continue;
 
         const base = centre.y - hy;
         const floor = ph.groundHeight(centre.x, centre.z, base + 0.4, 2.0);
@@ -3219,6 +2907,7 @@ export class StationWorld extends World {
         const cx = (a.x + b.x + c.x) / 3;
         const cz = (a.z + b.z + c.z) / 3;
         if (cx * cx + cz * cz > DECK_R * DECK_R) continue;
+        if (this._insideSelfCollided(cx, cy, cz)) continue;
         tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
       }
     });
@@ -3327,7 +3016,7 @@ export class StationWorld extends World {
   }
 
   _occKey(x, z) {
-    return ((Math.floor(x / OCC_CELL) + 512) << 11) | (Math.floor(z / OCC_CELL) + 512);
+    return occKeyOf(x, z);
   }
 
   /**
@@ -3378,9 +3067,14 @@ export class StationWorld extends World {
           const x0 = Math.min(a.x, b.x, c.x), x1 = Math.max(a.x, b.x, c.x);
           const z0 = Math.min(a.z, b.z, c.z), z1 = Math.max(a.z, b.z, c.z);
           if (Math.hypot(Math.max(0, Math.abs(x0 + x1) / 2), Math.max(0, Math.abs(z0 + z1) / 2)) > DECK_R + 20) continue;
+          /* Packed by the same function `_occKey` reads with. This was two
+           * hand-inlined copies of the same bit-twiddle, biased by 512 and
+           * shifted by 11 - which silently aliases anything past 768 m onto a
+           * cell near the origin. The hub never got near that; the galley's far
+           * rim is at 698. See `occKeyOf`. */
           for (let gx = Math.floor(x0 / OCC_CELL); gx <= Math.floor(x1 / OCC_CELL); gx++) {
             for (let gz = Math.floor(z0 / OCC_CELL); gz <= Math.floor(z1 / OCC_CELL); gz++) {
-              occ.add(((gx + 512) << 11) | (gz + 512));
+              occ.add(occCellKey(gx, gz));
             }
           }
         }
@@ -3772,19 +3466,80 @@ export class StationWorld extends World {
     const winStart = (90 - WINDOW_HALF) * DEG;
     const winLen = WINDOW_HALF * 2 * DEG;
 
-    // --- Solid hull shell (the 250 degrees behind the player) ---------
-    const solid = new THREE.Mesh(
-      uvScale(
-        new THREE.CylinderGeometry(HULL_R, HULL_R, WALL_H, 96, 1, true, winStart + winLen, Math.PI * 2 - winLen),
-        (HULL_R * (Math.PI * 2 - winLen)) / 10,
-        WALL_H / 10
-      ),
-      M.hullIn
-    );
-    solid.position.y = WALL_H / 2;
-    solid.castShadow = false;
-    solid.receiveShadow = true;
-    g.add(solid);
+    /* --- Solid hull shell, with the link mouths cut out ---------------
+     *
+     * This used to be one 250-degree cylinder. It cannot be, now that four
+     * avenues keep going: a corridor that leaves the ring has to leave through
+     * something, and the hull is the only thing in the way.
+     *
+     * Cylinder theta runs from +Z toward +X and a compass bearing runs from +X
+     * toward +Z, so the two are mirror images about 90 degrees: theta = 90 - b.
+     * The window sector, centred on bearing 0, is therefore theta [35, 145],
+     * and the four links at bearings 120 / 180 / 240 / 300 sit at theta 330 /
+     * 270 / 210 / 150 - all inside the solid arc, which is what made those four
+     * avenues the ones to extend.
+     *
+     * The 300 mouth is the tight one: at theta 150 with a 3.5-degree half-angle
+     * it leaves 1.5 degrees of hull - about five metres - between its frame and
+     * the window's edge mullion. That is deliberate rather than lucky. The
+     * galley link is the only one that passes the great window, and arriving at
+     * the mess with the planet over your shoulder is worth the pier being thin.
+     */
+    const mouths = ZONES
+      .map((zone) => ((90 - zone.deg) * DEG + Math.PI * 4) % (Math.PI * 2))
+      .sort((a, b) => a - b);
+    const mouthHalf = LINK_MOUTH_HALF_DEG * DEG;
+    const arcStart = winStart + winLen;
+    const arcEnd = winStart + Math.PI * 2;
+    const cuts = [];
+    for (const m of mouths) {
+      // Lift each mouth into the same revolution as the arc it interrupts.
+      let t = m;
+      while (t < arcStart) t += Math.PI * 2;
+      if (t + mouthHalf < arcEnd) cuts.push(t);
+    }
+    cuts.sort((a, b) => a - b);
+
+    /** Emit `fn(from, length)` for every stretch of the solid arc that survives. */
+    const arcSegments = (fn) => {
+      let from = arcStart;
+      for (const t of cuts) {
+        if (t - mouthHalf > from + 0.001) fn(from, t - mouthHalf - from);
+        from = t + mouthHalf;
+      }
+      if (arcEnd > from + 0.001) fn(from, arcEnd - from);
+    };
+
+    arcSegments((from, len) => {
+      const seg = new THREE.Mesh(
+        uvScale(
+          new THREE.CylinderGeometry(HULL_R, HULL_R, WALL_H, Math.max(6, Math.round((len / (Math.PI * 2)) * 96)), 1, true, from, len),
+          (HULL_R * len) / 10,
+          WALL_H / 10
+        ),
+        M.hullIn
+      );
+      seg.position.y = WALL_H / 2;
+      seg.castShadow = false;
+      seg.receiveShadow = true;
+      g.add(seg);
+    });
+
+    // Reveal each mouth with a lit frame, so the opening reads as an aperture
+    // rather than as a hole where the wall failed to generate.
+    for (const t of cuts) {
+      for (const s of [-1, 1]) {
+        const th = t + s * mouthHalf;
+        const x = Math.sin(th) * (HULL_R - 0.8);
+        const z = Math.cos(th) * (HULL_R - 0.8);
+        B.at('panelDark', boxGeo(1.8, 11.5, 3.4, 3), x, 5.75, z, th);
+        B.at('emCyan', boxGeo(0.5, 10.5, 0.24, 1), x - Math.sin(th) * 1.6, 5.75, z - Math.cos(th) * 1.6, th);
+      }
+      const cx = Math.sin(t) * (HULL_R - 0.8);
+      const cz = Math.cos(t) * (HULL_R - 0.8);
+      B.at('panelDark', boxGeo(mouthHalf * 2 * HULL_R + 3.6, 2.2, 3.4, 3), cx, 12.6, cz, t);
+      B.at('hazard', boxGeo(mouthHalf * 2 * HULL_R, 0.5, 0.3, 1), cx - Math.sin(t) * 1.7, 11.3, cz - Math.cos(t) * 1.7, t);
+    }
 
     // --- Window wall --------------------------------------------------
     const glass = new THREE.Mesh(
@@ -3821,19 +3576,41 @@ export class StationWorld extends World {
     }
     mullionGeo.dispose();
 
-    // Horizontal transoms every 12 m, all the way round the ring.
-    for (const y of [0.9, 12, 24, 36, 47.2]) {
-      const t = new THREE.TorusGeometry(HULL_R - 0.6, y < 1 ? 1.1 : 0.62, 8, 96);
+    /* Horizontal transoms every 12 m.
+     *
+     * All but the lowest run the full ring: the link ceiling is at 9.5 m, so
+     * the bands at 12 and above pass over a mouth without touching it. The one
+     * at 0.9 is a 1.1 m tube sitting on the deck and would lie straight across
+     * every doorway, so it is emitted in arcs like the shell above it.
+     *
+     * A torus's own angle runs from +X counter-clockwise while cylinder theta
+     * runs from +Z toward +X, which puts them 90 degrees apart in opposite
+     * senses - `phi = theta - PI/2` after the -X quarter turn that lays the ring
+     * flat. Getting that relationship wrong does not fail loudly; it just puts
+     * the gaps somewhere other than the doors.
+     */
+    for (const y of [12, 24, 36, 47.2]) {
+      const t = new THREE.TorusGeometry(HULL_R - 0.6, 0.62, 8, 96);
       t.rotateX(-Math.PI / 2);
       uvScale(t, 40, 1);
       B.at('trim', t, 0, y, 0);
     }
+    arcSegments((from, len) => {
+      const t = new THREE.TorusGeometry(HULL_R - 0.6, 1.1, 8, Math.max(4, Math.round((len / (Math.PI * 2)) * 96)), len);
+      t.rotateZ(from - Math.PI / 2);
+      t.rotateX(-Math.PI / 2);
+      uvScale(t, 40, 1);
+      B.at('trim', t, 0, 0.9, 0);
+    });
 
     // Exterior structural ribs on the solid section - reads as depth from
     // inside because they poke past the wall silhouette at the seams.
     const ribGeo = boxGeo(2.2, WALL_H + 14, 5, 4);
     for (let i = 0; i < 26; i++) {
       const th = winStart + winLen + ((Math.PI * 2 - winLen) * (i + 0.5)) / 26;
+      // A rib is a 48 m column standing on the deck. One landing in a doorway
+      // is a pillar in the middle of a corridor, so the mouths win.
+      if (cuts.some((t) => Math.abs(th - t) < mouthHalf + 0.022)) continue;
       const x = Math.sin(th) * (HULL_R - 2.6);
       const z = Math.cos(th) * (HULL_R - 2.6);
       B.at('panelDark', ribGeo.clone(), x, (WALL_H + 14) / 2 - 1, z, th);
@@ -4211,14 +3988,40 @@ export class StationWorld extends World {
     // One instanced mesh for every pendant in the building.
     g.add(instanced(cylGeo(0.06, 0.06, 2.6, 6, 1.4), M.trim, rods, { cast: false, recv: false }));
 
-    // --- Collision ----------------------------------------------------
-    // A ring of tangent boxes keeps the player inside the pressure hull.
-    for (let i = 0; i < 40; i++) {
-      const th = (i / 40) * Math.PI * 2;
-      const x = Math.cos(th) * (HULL_R + 1.5);
-      const z = Math.sin(th) * (HULL_R + 1.5);
-      this._solidRot(x, WALL_H / 2, z, (Math.PI * 2 * HULL_R) / 40 * 0.62, WALL_H / 2 + 12, 2.0, -(th + Math.PI / 2));
-    }
+    /* --- Collision ----------------------------------------------------
+     *
+     * A ring of tangent boxes keeps the player inside the pressure hull - and
+     * it is the ONLY thing that does. The drawn hull sits at r = 202, and
+     * `_collisionSoup` discards any triangle whose centroid is past `DECK_R`,
+     * so nothing about the wall a player sees is collided. That is deliberate
+     * and cheap, but it means this ring is load-bearing in a way that is easy
+     * to miss: it was a closed circle of forty boxes, so cutting four doorways
+     * through the *drawn* hull left four doorways you could see through, walk
+     * up to, and not walk through. Nothing in the geometry says otherwise.
+     *
+     * So the ring is built from the same spans as the shell. Each surviving arc
+     * is subdivided into boxes of about thirty metres of chord with a healthy
+     * overlap, rather than the old fixed forty: an arc that happens to be
+     * slightly shorter than one box would otherwise vanish entirely.
+     */
+    let hullBoxes = 0;
+    arcSegments((from, len) => {
+      const n = Math.max(1, Math.round((HULL_R * len) / 30));
+      const step = len / n;
+      for (let i = 0; i < n; i++) {
+        // Cylinder theta -> bearing. `_solidRot`'s local +Z must end up radial,
+        // which for a bearing `a` is `PI/2 - a`; here that is simply `th`.
+        const th = from + step * (i + 0.5);
+        const bearing = Math.PI / 2 - th;
+        const x = Math.cos(bearing) * (HULL_R + 1.5);
+        const z = Math.sin(bearing) * (HULL_R + 1.5);
+        // 0.56 rather than a half: neighbouring boxes have to overlap or the
+        // seams between them are hairline gaps a capsule can squeeze through.
+        this._solidRot(x, WALL_H / 2, z, HULL_R * step * 0.56, WALL_H / 2 + 12, 2.0, th);
+        hullBoxes++;
+      }
+    });
+    console.info(`[station] hull collision: ${hullBoxes} panels, ${cuts.length} link mouths left open`);
 
     for (const mesh of B.flush(g, M, 'hull', {
       cast: false, recv: true, ceilHalo: { cast: false, recv: false },
@@ -6455,25 +6258,52 @@ export class StationWorld extends World {
     this.group.add(g);
     const rng = mulberry32(0x4ab17a7);
 
+    /* --- The habitat stacks are the buildings you can go inside --------
+     *
+     * These six were the clearest example of the thing that was wrong with the
+     * whole ring: seven and nine storeys of glazed facade, a lit entrance
+     * canopy with a painted door under it, and a single collider around the
+     * lot. From the avenue they read as blocks of flats; walk up to one and the
+     * door is a texture.
+     *
+     * They are the obvious candidates because they were already tall enough -
+     * the brief is buildings of seven floors or more, and `floors` here was
+     * already 5, 7 or 9 on a rotation. The floor of 7 is now the actual floor:
+     * a five-storey shell with a lift, two escalator banks and a core costs
+     * almost exactly what a seven-storey one does, and seven is what makes the
+     * climb worth doing.
+     *
+     * See station/Tower.js for the section. The external stair core below is
+     * kept even though the building now has two internal routes up, because it
+     * is what breaks the silhouette against the hull from the plaza.
+     */
     const deg = 120;
     const towers = [];
     for (const side of [-1, 1]) {
       for (let i = 0; i < 3; i++) {
         const r = 92 + i * 30;
-        const w = 22, d = 20;
+        const w = 24, d = 22;
         const off = side * (ROAD_W / 2 + 6 + d / 2);
         const p = roadPos(deg, r, off, 0, new THREE.Vector3());
         const yaw = faceRoadYaw(deg, side);
-        const floors = 5 + ((i + (side > 0 ? 1 : 0)) % 3) * 2;
-        const h = this._block(B, {
-          x: p.x, z: p.z, yaw, w, d, floors, rng,
-          body: i % 2 ? 'panel' : 'panelWarm',
-          faces: [
-            { lz: -d / 2 - 0.02, ry: Math.PI, span: w },
-            { lz: d / 2 + 0.02, ry: 0, span: w },
-          ],
-        });
-        towers.push({ p, yaw, h, w, d, side, i });
+        const floors = 7 + ((i + (side > 0 ? 1 : 0)) % 3);
+        const built = buildTower(
+          this, B, g,
+          {
+            x: p.x, z: p.z, yaw, w, d, floors,
+            label: `Habitat Stack ${side > 0 ? 'N' : 'S'}${i + 1}`,
+            accent: 'emCyan',
+            body: i % 2 ? 'panel' : 'panelWarm',
+            fit: 'hab',
+          },
+          rng
+        );
+        this.enterables.push(built.enterable);
+        this._selfCollided.push(built.footprint);
+        this._roofs.push({ x: p.x, y: built.roofY, z: p.z });
+        const h = built.height;
+        this._mmRect(p.x, p.z, w, d, yaw, 'rgba(96,116,140,0.55)', 'rgba(160,200,230,0.5)');
+        towers.push({ p, yaw, h, floors, w, d, side, i });
 
         // Cylindrical stair core bolted onto the flank.
         const core = new THREE.CylinderGeometry(3.2, 3.2, h + 2, 16);
@@ -6512,9 +6342,15 @@ export class StationWorld extends World {
     for (let i = 0; i < 3; i++) {
       const a = towers[i];
       const b = towers[i + 3];
-      const shorter = Math.min(a.h, b.h);
-      const floor = Math.max(1, Math.floor((shorter - 1.4 - 2.95 - 0.9) / 3.6));
-      const y = 0.9 + floor * 3.6;
+      /* Land on a floor plate of the shorter tower, leaving its own roof slab
+       * clear of the bridge's 2.95 m section. The towers are built by
+       * station/Tower.js now, so the storey height is that file's 3.9 and the
+       * plates start at zero rather than on a 0.9 plinth - the old arithmetic
+       * here was against `_block`'s 3.6 over a plinth and would land a metre
+       * out on every span. */
+      const shorterFloors = Math.min(a.floors, b.floors);
+      const floor = Math.max(1, shorterFloors - 2);
+      const y = floor * 3.9;
       const mid = a.p.clone().add(b.p).multiplyScalar(0.5);
       const len = a.p.distanceTo(b.p) - a.d;
       const dir = _v1.subVectors(b.p, a.p).normalize();
@@ -6643,7 +6479,19 @@ export class StationWorld extends World {
     const rng = mulberry32(0xc0117201);
 
     const deg = 240;
-    const p = roadPos(deg, 128, 0, 0, new THREE.Vector3());
+    /* Off the carriageway, not on it.
+     *
+     * Traffic Control stood dead on the avenue centre line at r=128, which was
+     * right while avenue 240 was a cul-de-sac that existed to lead the eye to
+     * it. It is now the route to the Ring 8 expansion site, and a 13 m drum in
+     * the middle of a through road is not a landmark, it is a blockage: marched
+     * down every lane of the corridor from the plaza to the hull, not one
+     * straight line got past r=196, and most stopped at 119 - the tower's near
+     * face. 26 m clears the 18 m carriageway and the tower's own radius with
+     * five metres to spare, and the building reads better for it. You pass it
+     * now instead of stopping at it.
+     */
+    const p = roadPos(deg, 128, 26, 0, new THREE.Vector3());
     const yaw = -deg * DEG;
     const H = 44;
 
@@ -6719,7 +6567,13 @@ export class StationWorld extends World {
     const dishEntries = [];
     for (let i = 0; i < 14; i++) {
       const r = 150 + rng() * 38;
-      const off = (rng() - 0.5) * 90;
+      /* Kept off the carriageway for the same reason as the tower. A dish mast
+       * is only a 1.2 m collider, so one on the road is not a wall - but
+       * fourteen scattered across +/-45 m reliably put two or three of them in
+       * the traffic lane, and a through route that makes you weave between
+       * radio masts reads as an accident rather than as a yard. */
+      let off = (rng() - 0.5) * 90;
+      if (Math.abs(off) < ROAD_W / 2 + 4) off = Math.sign(off || 1) * (ROAD_W / 2 + 4 + rng() * 30);
       const q = roadPos(deg, r, off, 0, new THREE.Vector3());
       const hgt = 3 + rng() * 5;
       A.at('trim', new THREE.CylinderGeometry(0.3, 0.45, hgt, 8), q.x, hgt / 2, q.z);
@@ -6841,6 +6695,26 @@ export class StationWorld extends World {
   /* ---------------------------------------------------------------- */
   /* Authored enterable corridor rooms                                 */
   /* ---------------------------------------------------------------- */
+
+  /**
+   * True inside a building that collides itself completely.
+   *
+   * Cheap and called once per extracted triangle, so it is a plain loop over a
+   * handful of rotated rectangles rather than anything indexed.
+   */
+  _insideSelfCollided(x, y, z) {
+    const list = this._selfCollided;
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      if (y > f.top) continue;
+      const dx = x - f.x, dz = z - f.z;
+      const c = Math.cos(f.yaw), s = Math.sin(f.yaw);
+      if (Math.abs(dx * c - dz * s) > f.hw) continue;
+      if (Math.abs(dx * s + dz * c) > f.hd) continue;
+      return true;
+    }
+    return false;
+  }
 
   _insideStationEnterableFootprint(x, z, pad = 0) {
     const rooms = this._enterableRoomFootprints;
@@ -8697,6 +8571,65 @@ export class StationWorld extends World {
   /* Spawns, portals, minimap frame and environment                    */
   /* ---------------------------------------------------------------- */
 
+  /* ---------------------------------------------------------------- */
+  /* The outer ring                                                    */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Build the great dome, the apron, the four links and the four zones.
+   *
+   * Everything structural lives in station/OuterRing.js; this is the seam where
+   * what the zones produced - enterables, named NPCs, collectables, rooftops -
+   * is folded back into the world's own published surfaces.
+   */
+  _buildOuterRing() {
+    const g = new THREE.Group();
+    g.name = 'actors';
+    this.group.add(g);
+
+    this._actors = new StationActors({ materials: this.mat, seed: 0xac70 });
+    const zones = buildOuterRing(this, this._actors);
+    this._actors.finish(g);
+
+    if (!Array.isArray(this.enterables)) this.enterables = [];
+    this._zoneNpcSpawns = [];
+    let relics = 0;
+
+    for (const ctx of zones) {
+      for (const e of ctx.enterables) this.enterables.push(e);
+      for (const s of ctx.npcSpawns) this._zoneNpcSpawns.push(s);
+      for (const r of ctx.roofs) this._roofs.push(r);
+
+      /* A zone's loose collectables ride in on a synthetic enterable.
+       *
+       * `Interiors` is already the system that owns authored collectibles: it
+       * tags them, remembers which have been taken across a save, and now
+       * streams them in and out by proximity. A zone's hidden relics want all
+       * three of those, and inventing a parallel spawner beside it would mean a
+       * second thing to keep in step with the save format. So each zone hands
+       * over one door-less, lift-less enterable that is nothing but a list of
+       * places worth looking.
+       */
+      if (ctx.relicSpots.length) {
+        this.enterables.push({
+          label: `${ctx.spec.id} caches`,
+          origin: ctx.centre.clone(),
+          doors: [],
+          lifts: [],
+          collectibleSpots: ctx.relicSpots,
+        });
+        relics += ctx.relicSpots.length;
+      }
+    }
+
+    const spots = this.enterables.reduce((n, e) => n + (e.collectibleSpots?.length ?? 0), 0);
+    console.info(
+      `[station] outer ring: ${zones.length} zones, ${this._actors.count} actors, ` +
+      `${this.enterables.length} enterables (${spots} collectible spots, ${relics} loose), ` +
+      `${this._roofs.length} published roofs, ${this._escalators.length} escalator banks`
+    );
+  }
+
   _fillSpawns() {
     // Spawn behind the monument looking down the +X avenue: the holo-table and
     // spire frame the shot, the great window and the planet close it, and both
@@ -8803,9 +8736,31 @@ export class StationWorld extends World {
       H(-140, -110, [[-140, -110], [-166, -78], [-118, -140]]),
     ];
 
+    /* The zones' own characters, appended rather than authored above.
+     *
+     * `NPCManager.spawnForWorld` walks this array in order and stops at its
+     * authored-friendly cap, so order is priority. The hub's cast comes first
+     * because a player who never leaves the plaza should still meet the people
+     * the plaza is about; the zone characters follow, and the manager's crowd
+     * filler tops up whatever budget is left around whichever hub the player is
+     * actually standing in. */
+    for (const s of this._zoneNpcSpawns ?? []) this.npcSpawns.push(s);
+
+    /* Bounds now describe the dome, not the hub.
+     *
+     * Six things read this and every one of them was wrong at the old +/-206:
+     * the minimap baked a floorplan that stopped at the hull, `Relics` and
+     * `Caches` threw their darts into a box that could not reach a zone,
+     * `MountManager` clamped a flying mount to the hub's rim and told the player
+     * they had reached the edge of the region 500 m early, and `Unstuck` took
+     * its void floor from `min.y`.
+     *
+     * The top is the dome apex plus clearance, because a dragon can get up
+     * there and `MountManager` clamps against `max.y`.
+     */
     this.bounds = new THREE.Box3(
-      new THREE.Vector3(-DECK_R - 6, -6, -DECK_R - 6),
-      new THREE.Vector3(DECK_R + 6, CEIL_Y + 8, DECK_R + 6)
+      new THREE.Vector3(-WORLD_R, -6, -WORLD_R),
+      new THREE.Vector3(WORLD_R, DOME_APEX + 20, WORLD_R)
     );
   }
 
@@ -8826,7 +8781,18 @@ export class StationWorld extends World {
      * atmosphere.
      */
     env.fogNear = 14;
-    env.fogFar = 290;
+    /* Reaches the far side of the dome, not the far side of the hub.
+     *
+     * 290 was "roughly the far hull" and it was the right number for a world
+     * that ended at 202 m. Under the dome the sightlines are seven times
+     * longer - the great window now looks across half a kilometre of apron, and
+     * standing in a zone's court you can see the hub's roofline - and at 290
+     * every one of those views resolved to flat fog colour about a fifth of the
+     * way out. The near end is unchanged, so the separation between the
+     * foreground and the midground that the ramp was tuned for is untouched;
+     * this only extends the tail so distance keeps reading as distance.
+     */
+    env.fogFar = 1450;
     /* Exposure and the fill stack.
      *
      * Round 3 shipped two frames that do not look like the same renderer: the
@@ -9196,6 +9162,149 @@ export class StationWorld extends World {
         cm.mesh.instanceMatrix.needsUpdate = true;
       }
     }
+
+    /* The outer ring's population. Unlike the plaza crowd above, these figures
+     * are articulated - a dozen instanced meshes posed from a joint chain - so
+     * they cannot be amortised round-robin the way the crowd is. A hammer arm
+     * travels seven centimetres a frame; hold it for five and release it and
+     * the result reads as a dropped frame, not as economy. `StationActors`
+     * culls by distance instead, which is why it wants the camera. */
+    if (this._actors) {
+      this._actors.setCamera(this.engine?.camera?.position ?? null);
+      this._actors.update(dt, elapsed);
+    }
+
+    this._runEscalators(dt, elapsed);
+    this._moveOnSurfaces(dt);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Moving surfaces                                                   */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Scroll every escalator's treads.
+   *
+   * The treads are instanced boxes that slide along their own slope and wrap,
+   * rather than a scrolling texture on the tread material. That is not a
+   * stylistic choice: `M.chrome` is shared with every handrail, fitting and
+   * machine face on the map, so animating its `map.offset` would set the entire
+   * station sliding.
+   */
+  _runEscalators(dt, elapsed) {
+    const banks = this._escalators;
+    if (!banks?.length) return;
+    const cam = this.engine?.camera?.position;
+
+    for (const bank of banks) {
+      // A staircase 300 m away is four pixels tall; moving its steps costs a
+      // matrix upload per tread and buys nothing.
+      if (cam) {
+        const m = bank.mesh.position;
+        const dx = cam.x - m.x, dz = cam.z - m.z;
+        if (dx * dx + dz * dz > 160 * 160) continue;
+      }
+      const travel = (elapsed * bank.speed) % 1e6;
+      for (const r of bank.runs) {
+        for (let i = 0; i < r.count; i++) {
+          // Wrap on the slope length so a tread leaving the head reappears at
+          // the comb plate, which is what a real escalator's return loop does.
+          const s = (((i / r.count) * r.len + travel) % r.len + r.len) % r.len;
+          const f = s / r.len;
+          _dummy.position.set(r.lane, r.y0 + r.rise * f + 0.06, r.z0 + r.dir * r.runH * f);
+          _dummy.rotation.set(r.pitch, 0, 0);
+          _dummy.scale.set(1, 1, 1);
+          _dummy.updateMatrix();
+          bank.mesh.setMatrixAt(r.first + i, _dummy.matrix);
+        }
+      }
+      bank.mesh.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  /**
+   * Carry the player along a travelator or up an escalator.
+   *
+   * ── Why this is a position nudge and not a velocity ───────────────────────
+   * `Player` owns its own velocity and rewrites it from input every frame, so
+   * anything added to it is gone before it is integrated. A displacement
+   * applied after the player has already resolved for the frame survives, and
+   * is corrected by the capsule solver on the next one - at 1.6 m/s that is
+   * 2.7 cm of overlap in the worst case, which is well inside what the solver
+   * pushes out without the player ever seeing it.
+   *
+   * ── Why the tests are so fussy ────────────────────────────────────────────
+   * Both surfaces are things you can also walk *beside*, *under* and *along the
+   * rail of*. A footprint test alone carries somebody standing on the handrail
+   * of a travelator, and a height test alone carries somebody on the floor
+   * below an escalator. Each needs the plate's own frame, its width, and a
+   * height band that starts just under the surface and stops at head height.
+   */
+  _moveOnSurfaces(dt) {
+    const p = this.ctx?.player?.position;
+    if (!p) return;
+
+    for (const b of this._travelators ?? []) {
+      const dx = p.x - b.x, dz = p.z - b.z;
+      const along = dx * b.dx + dz * b.dz;
+      const across = -dx * b.dz + dz * b.dx;
+      if (Math.abs(along) > b.halfLong || Math.abs(across) > b.halfWide) continue;
+      if (p.y < b.top - 0.35 || p.y > b.top + 2.4) continue;
+      // 1.6 m/s: a shade under a walking pace, so walking with the belt feels
+      // fast and walking against it feels like wading rather than a wall.
+      const v = 1.6 * dt;
+      p.x += b.dx * v;
+      p.z += b.dz * v;
+      return;
+    }
+
+    for (const bank of this._escalators ?? []) {
+      for (const r of bank.runs) {
+        const a = r.world.a, c = r.world.b;
+        const ax = c.x - a.x, az = c.z - a.z;
+        const len = Math.hypot(ax, az);
+        if (len < 0.01) continue;
+        const ux = ax / len, uz = az / len;
+        const dx = p.x - a.x, dz = p.z - a.z;
+        const t = dx * ux + dz * uz;
+        if (t < -0.4 || t > len + 0.4) continue;
+        if (Math.abs(-dx * uz + dz * ux) > r.world.halfW) continue;
+        const slope = (c.y - a.y) / len;
+        const surfaceY = a.y + slope * Math.min(Math.max(t, 0), len);
+        if (p.y < surfaceY - 0.35 || p.y > surfaceY + 2.6) continue;
+
+        /* Carry the rider the way a moving platform carries one: advance them
+         * along the flight and then PUT them on the tread, rather than nudging
+         * and hoping.
+         *
+         * Two earlier versions of this failed in the same place for the same
+         * underlying reason. Applying only a horizontal push wedged the capsule
+         * against the 30-degree face, because a player standing still on an
+         * escalator has no velocity of their own and the solver's only possible
+         * response to being pushed into a slope is to push back. Adding the
+         * vertical component as an increment did not fix it either: the lift is
+         * about 5 mm a frame, comfortably inside the distance the solver moves
+         * a capsule that is intersecting the ramp, so it was cancelled as fast
+         * as it was applied. A rider reached 2.84 m of the 4.80 they should,
+         * both times, and then sat there.
+         *
+         * Assigning the height removes the argument. It is also what the lift
+         * in `Interiors` already does with `setBoxColliderY`, so the two moving
+         * things in this world now work the same way.
+         *
+         * The snap only applies to somebody actually standing on the flight -
+         * within 0.9 m of the tread - so jumping off, or being thrown clear,
+         * still behaves normally.
+         */
+        const v = bank.speed * dt;
+        p.x += ux * v;
+        p.z += uz * v;
+        const t2 = Math.min(Math.max(t + v, 0), len);
+        const nextY = a.y + slope * t2;
+        if (p.y < nextY + 0.9) p.y = Math.max(p.y, nextY + 0.02);
+        return;
+      }
+    }
   }
 
   /* ---------------------------------------------------------------- */
@@ -9214,6 +9323,16 @@ export class StationWorld extends World {
 
   dispose() {
     super.dispose();
+    /* Before `super.dispose()`'s traverse would have been wrong and after it is
+     * fine: `StationActors` owns geometries the traverse never reaches, because
+     * they are shared between its left and right limb meshes and disposing a
+     * mesh twice is what leaves a dangling buffer. It does not own its
+     * materials - those are this world's, and are disposed below. */
+    this._actors?.dispose?.();
+    this._actors = null;
+    this._travelators.length = 0;
+    this._escalators.length = 0;
+    this._roofs.length = 0;
     this._keyLight = null;
     this._fillLight = null;
     this._shaftUniforms = null;

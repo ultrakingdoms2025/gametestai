@@ -34,8 +34,27 @@ import { COLLISION_LAYER } from '../physics/Physics.js';
  * calls for what is visually a single repeated object.
  */
 
-/** How many to hide per world. */
+/**
+ * How many to hide per world, on a 400 m world.
+ *
+ * Scaled by playable area from there, in `_onWorld`. Thirty relics over the
+ * medieval valley is one every 5,300 m², which is a find every couple of
+ * minutes; the same thirty over the station's five decks is one every 74,000 m²,
+ * which is a mechanic the player never notices exists.
+ */
 const PER_WORLD = 30;
+/** The extent `PER_WORLD` and `TRIES` are calibrated against. */
+const BASE_EXTENT = 400;
+/**
+ * Ceiling on the scaled count.
+ *
+ * This is also the capacity of the two InstancedMeshes below, and that is the
+ * reason it exists rather than letting the area scale run free: an instanced
+ * mesh is allocated once at construction and silently ignores any instance past
+ * its count, so a world that wanted more relics than this would place them,
+ * count them, and draw only the first hundred and ten.
+ */
+const MAX_PER_WORLD = 110;
 /** Credits each is worth. */
 const VALUE = 120;
 /** Pickup radius. Generous - you should not have to stand exactly on it. */
@@ -136,7 +155,7 @@ export class Relics {
       metalness: 0.85,
       roughness: 0.28,
     });
-    this.mesh = new THREE.InstancedMesh(geo, mat, PER_WORLD);
+    this.mesh = new THREE.InstancedMesh(geo, mat, MAX_PER_WORLD);
     this.mesh.name = 'relics';
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.castShadow = false;
@@ -159,7 +178,7 @@ export class Relics {
       toneMapped: false,
       fog: false,
     });
-    this.glow = new THREE.InstancedMesh(gGeo, gMat, PER_WORLD);
+    this.glow = new THREE.InstancedMesh(gGeo, gMat, MAX_PER_WORLD);
     this.glow.name = 'relics:glow';
     this.glow.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.glow.frustumCulled = false;
@@ -188,6 +207,20 @@ export class Relics {
     const minZ = (b?.min?.z ?? -180) + EDGE_INSET;
     const maxZ = (b?.max?.z ?? 180) - EDGE_INSET;
 
+    /* Budget by area, not by a constant.
+     *
+     * Both numbers below were tuned against a 400 m world and neither survives
+     * a bigger one. The count is the obvious half; the dart budget is the half
+     * that bites hardest, because `TRIES` is a *total*, not per relic, and the
+     * probability that a dart lands somewhere prominent falls with area. Ninety
+     * darts into the station's box would have placed a handful and then given
+     * up, and the log line would have said so to nobody.
+     */
+    const extent = Math.max(maxX - minX, maxZ - minZ, 1);
+    const areaScale = Math.min(MAX_PER_WORLD / PER_WORLD, (extent / BASE_EXTENT) ** 2);
+    const want = Math.round(PER_WORLD * Math.max(1, areaScale));
+    const tries = Math.round(TRIES * Math.max(1, areaScale));
+
     /* Authored surfaces first. A world that publishes its roofs and towers -
      * the citadel does - knows better than any random probe where a relic
      * belongs, and using them means the citadel's relics sit on the skyline
@@ -202,13 +235,13 @@ export class Relics {
     }
 
     for (const a of authored) {
-      if (this.sites.length >= PER_WORLD) break;
+      if (this.sites.length >= want) break;
       if (this._tooClose(a.x, a.z)) continue;
       this.sites.push({ pos: new THREE.Vector3(a.x, a.y + 0.55, a.z), taken: false, phase: rnd() * 6.283 });
     }
 
     // Then probe for anything else prominent enough to be worth a climb.
-    for (let t = 0; t < TRIES && this.sites.length < PER_WORLD; t++) {
+    for (let t = 0; t < tries && this.sites.length < want; t++) {
       const x = minX + rnd() * (maxX - minX);
       const z = minZ + rnd() * (maxZ - minZ);
       _rv.set(x, 400, z);

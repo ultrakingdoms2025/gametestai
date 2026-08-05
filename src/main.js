@@ -109,6 +109,12 @@ worldManager.register(CitadelWorld);
 worldManager.register(RaceWorld);
 
 const player = new Player({ ...ctx, camera: engine.camera });
+/* Worlds are constructed before the player exists, but they only ever read this
+ * during `update`, by which time it is here. The station needs it: its links
+ * carry travelators and its towers carry escalators, and a moving surface has to
+ * know whether anybody is standing on it. `ctx` is shared by reference, so this
+ * reaches every world already registered above. */
+ctx.player = player;
 const npcManager = new NPCManager({ ...ctx, player });
 let loreRefreshInFlight = null;
 let loreWarned = false;

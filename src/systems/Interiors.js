@@ -66,18 +66,72 @@ export class Interiors {
         l.car.updateMatrixWorld(true);
         this._lifts.push(l);
       }
+      /* Spots are registered, not spawned.
+       *
+       * They used to be spawned here, all of them, the instant the world
+       * changed. That was fine when the station had six crew rooms with one
+       * collectible each; it stopped being fine the moment it grew four outer
+       * zones and five enterable hab stacks, because `Loot`'s pool holds a few
+       * dozen pickups and persistent ones are never recycled. Fill it with
+       * authored collectibles and `_recycleOldest` starts returning null, at
+       * which point no enemy anywhere in the game drops anything ever again.
+       *
+       * So they stream: `update` puts one in the world when the player is close
+       * enough to see it and takes it away again when they leave. The set of
+       * spots is authored and unbounded; the set of live pickups is small and
+       * local. See `_streamSpots`.
+       */
       const spots = e.collectibleSpots || [];
       for (let i = 0; i < spots.length; i++) {
         const s = spots[i];
         const tag = `interior:${id}:${e.label || 'bldg'}#${i}`;
         if (this._collected.has(tag)) continue;
-        const contents = this._contentsFor(s.tier);
-        const pickup = this.loot?.spawn?.(s.position, contents, {
+        this._spots.push({ tag, position: s.position, tier: s.tier, pickup: null });
+      }
+    }
+    this._streamT = 0;
+  }
+
+  /**
+   * Bring authored collectibles in and out of the world around the player.
+   *
+   * `SPAWN_R` is comfortably past the distance a pickup's glow is legible, so
+   * one never appears in front of somebody who was already looking at the spot.
+   * The despawn radius is deliberately larger than the spawn radius: with a
+   * single threshold, a player standing exactly on it makes the pickup flicker
+   * in and out every tick.
+   */
+  _streamSpots(dt) {
+    if (!this._spots.length) return;
+    this._streamT -= dt;
+    if (this._streamT > 0) return;
+    this._streamT = 0.25;
+
+    const p = this.player?.position;
+    if (!p) return;
+    const SPAWN_R2 = 46 * 46;
+    const DESPAWN_R2 = 64 * 64;
+
+    for (const s of this._spots) {
+      if (this._collected.has(s.tag)) {
+        if (s.pickup) { this.loot?.despawn?.(s.pickup); s.pickup = null; }
+        continue;
+      }
+      const dx = p.x - s.position.x;
+      const dy = p.y - s.position.y;
+      const dz = p.z - s.position.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (!s.pickup && d2 < SPAWN_R2) {
+        s.pickup = this.loot?.spawn?.(s.position, this._contentsFor(s.tier), {
           persistent: true,
           snap: false,
-          tag,
-        });
-        if (pickup) this._spots.push({ tag, pickup });
+          tag: s.tag,
+        }) ?? null;
+      } else if (s.pickup && d2 > DESPAWN_R2) {
+        // If it was collected while in range the tag is already in `_collected`
+        // and the branch above handled it; this only ever retires a live one.
+        this.loot?.despawn?.(s.pickup);
+        s.pickup = null;
       }
     }
   }
@@ -297,6 +351,7 @@ export class Interiors {
 
   /* ------------------------------------------------------------------ */
   update(dt) {
+    this._streamSpots(dt);
     if (!this._doors.length && !this._lifts.length) {
       if (this._promptText) this._setPrompt(null);
       return;
@@ -322,13 +377,32 @@ export class Interiors {
 
     for (const l of this._lifts) {
       const f = l.footprint;
-      const ex = f.cx - f.half - 0.5;
+      /* Where the call point actually is.
+       *
+       * This used to be derived as `cx - half - 0.5`: the shaft's own -X face,
+       * on the assumption that a lift is always axis-aligned and always entered
+       * from that side. That holds for the medieval towers, which are built on
+       * the world axes, and fails for anything rotated - the station's habitat
+       * stacks stand on radiating avenues, so their shaft entrances face six
+       * different bearings and the derived point lands inside a wall on five of
+       * them. `InteriorKit` has always published `callPos`; nothing read it.
+       */
+      const ex = l.callPos ? l.callPos.x : f.cx - f.half - 0.5;
+      const ez = l.callPos ? l.callPos.z : f.cz;
       const dx = p.x - ex;
-      const dz = p.z - f.cz;
+      const dz = p.z - ez;
       const dist = Math.hypot(dx, dz);
-      const nearFloor = l.stops.some((sy) => Math.abs(p.y - sy) < 1.6);
-      if (dist < 2.4 && nearFloor && dist < bestD) {
-        bestD = dist;
+      // Standing on the car counts as being at the panel: on a seven-storey
+      // ride the player is inside it for ten seconds and has to be able to
+      // choose the next floor without stepping off.
+      const onCar =
+        Math.abs(p.x - f.cx) < f.half + 0.3 &&
+        Math.abs(p.z - f.cz) < f.half + 0.3 &&
+        Math.abs(p.y - l.pos) < 1.6;
+      const nearFloor = onCar || l.stops.some((sy) => Math.abs(p.y - sy) < 1.6);
+      const reach = onCar ? 0 : dist;
+      if (reach < 2.4 && nearFloor && reach < bestD) {
+        bestD = reach;
         best = { kind: 'lift', ref: l };
       }
     }
@@ -339,7 +413,16 @@ export class Interiors {
     } else if (best?.kind === 'lift') {
       const l = best.ref;
       const playerFloor = this._nearestStop(l, p.y);
-      prompt = l.stopIndex === playerFloor ? 'Ride lift up' : 'Call lift';
+      if (l.stopIndex !== l.target) {
+        // Moving. Naming the floor it is heading for is the difference between
+        // "something is happening" and a ten-second ride with no feedback.
+        prompt = `Lift → floor ${l.target + 1} of ${l.stops.length}`;
+      } else if (l.stopIndex !== playerFloor) {
+        prompt = 'Call lift';
+      } else {
+        const next = (l.stopIndex + 1) % l.stops.length;
+        prompt = next === 0 ? 'Ride lift to ground' : `Ride lift to floor ${next + 1}`;
+      }
     }
     this._setPrompt(prompt);
 

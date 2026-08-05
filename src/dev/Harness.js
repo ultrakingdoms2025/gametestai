@@ -16,8 +16,19 @@
  * against the real geometry - see the layout dump in tools/world-layout.json.
  */
 const VIEWS = {
-  // Plaza is a r40 circle at the origin; portals sit at z = -54 (medieval) and
-  // z = +54 (sports); playable radius ~200 m.
+  /* The hub plaza is a r40 circle at the origin; portals sit at z = -54
+   * (medieval) and z = +54 (sports); the hub deck is r200 inside a hull at 202.
+   *
+   * Beyond that the station is four more decks of the same size, each on the
+   * end of a 96 m link off avenue 120 / 180 / 240 / 300, all under one 720 m
+   * dome. Zone centres are at radius 498 on those bearings:
+   *
+   *     habitation  (-249,  431)      gym          (-498,   0)
+   *     construction(-249, -431)      canteen      ( 249, -431)
+   *
+   * Each zone has an open court inside r112 and a covered arcade out to its
+   * rim, so the two useful framings per zone are one from the arrival plaza
+   * looking in across the court, and one inside the arcade. */
   station: [
     { name: 'plaza-wide', pos: [0, 9, 96], look: [0, 5, 0], fov: 70 },
     { name: 'plaza-centre', pos: [0, 3, 34], look: [0, 5, -30], fov: 74 },
@@ -26,6 +37,26 @@ const VIEWS = {
     { name: 'street-level', pos: [-34, 1.7, 2], look: [0, 4, 0], fov: 75 },
     { name: 'district-east', pos: [104, 4, 40], look: [60, 8, -10], fov: 72 },
     { name: 'hull-outward', pos: [70, 10, 0], look: [190, 30, 0], fov: 80 },
+    // The apron, seen through the great window - the view the whole outer ring
+    // was arranged around.
+    { name: 'window-apron', pos: [150, 6, 0], look: [520, 40, 40], fov: 82 },
+    { name: 'apron-wide', pos: [300, 60, 60], look: [0, 30, 0], fov: 80 },
+    // Looking back at the hub from outside it, under the dome.
+    { name: 'dome-inside', pos: [-360, 40, 0], look: [0, 60, 0], fov: 84 },
+    // The habitat stacks on avenue 120, which are now enterable.
+    { name: 'hab-stacks', pos: [-70, 6, 96], look: [-110, 20, 150], fov: 74 },
+    { name: 'hab-lobby', pos: [-61, 2.0, 118], look: [-75, 3, 132], fov: 78 },
+    // One link, from the hull end looking out to the zone.
+    { name: 'link-galley', pos: [110, 3, -186], look: [160, 5, -272], fov: 76 },
+    // The four zones: arrival, then court.
+    { name: 'zone-habitation', pos: [-206, 8, 358], look: [-249, 14, 431], fov: 76 },
+    { name: 'zone-habitation-court', pos: [-249, 4, 505], look: [-249, 30, 431], fov: 80 },
+    { name: 'zone-gym', pos: [-414, 8, 0], look: [-498, 12, 0], fov: 76 },
+    { name: 'zone-gym-court', pos: [-425, 3, 40], look: [-498, 10, -10], fov: 80 },
+    { name: 'zone-construction', pos: [-206, 8, -358], look: [-249, 30, -431], fov: 76 },
+    { name: 'zone-construction-court', pos: [-190, 6, -470], look: [-260, 40, -430], fov: 80 },
+    { name: 'zone-canteen', pos: [206, 8, -358], look: [249, 12, -431], fov: 76 },
+    { name: 'zone-canteen-court', pos: [300, 4, -470], look: [240, 12, -420], fov: 80 },
   ],
   // Castle occupies x -130..-14, z -109..-7 (centre -72,-58); village clusters
   // around (34,18); portal back to the station at (2, 9.3, -22).

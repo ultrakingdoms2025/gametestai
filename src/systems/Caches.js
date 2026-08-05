@@ -169,11 +169,26 @@ export class Caches {
     const minZ = b?.min?.z ?? -180;
     const maxZ = b?.max?.z ?? 180;
 
+    /* High caches scale with the map; sunken ones do not.
+     *
+     * A high cache is a destination on the skyline, and how many a world wants
+     * is a function of how much skyline it has. Three over a 400 m valley is a
+     * find; three over the station's 1,488 m dome is three places a player will
+     * never happen across, thirty metres apart from each other by luck.
+     *
+     * Sunken caches stay fixed because they are not bounded by the map at all -
+     * `_findSunken` samples the water volumes, and a world either has water to
+     * dive in or it does not. The station has none, which is why its cache
+     * count has always been "up to three" rather than six.
+     */
+    const extent = Math.max(maxX - minX, maxZ - minZ, 1);
+    const highWanted = Math.min(12, Math.max(PER_WORLD.high, Math.round(PER_WORLD.high * (extent / 400) ** 1.5)));
+
     for (let i = 0; i < PER_WORLD.sunken; i++) {
       const p = this._findSunken(rnd, minX, maxX, minZ, maxZ);
       if (p) this.sites.push({ kind: 'sunken', pos: p, pickup: null, restock: 0 });
     }
-    for (let i = 0; i < PER_WORLD.high; i++) {
+    for (let i = 0; i < highWanted; i++) {
       const p = this._findHigh(rnd, minX, maxX, minZ, maxZ);
       if (p) this.sites.push({ kind: 'high', pos: p, pickup: null, restock: 0 });
     }

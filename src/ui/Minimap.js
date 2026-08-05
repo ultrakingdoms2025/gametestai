@@ -16,7 +16,29 @@ const _pt = { x: 0, y: 0, dist: 0, inside: false };
 /** Traders held back for a second pass so nothing draws over them. Reused. */
 const _traders = [];
 
-const MAX_CACHE_PX = 1024;
+/* Widest edge of a baked floorplan, in pixels.
+ *
+ * 1024 was sized for a 412 m world, which it baked at the full 2.4 px/m. The
+ * station is now 1,488 m across and at 1024 that collapses to 0.69 px/m - a
+ * 5 m market stall becomes three pixels and the whole plan turns to mush.
+ *
+ * 2048 holds ~1.4 px/m, which keeps every authored shape down to about a metre
+ * legible, for a 16 MB canvas. It is a compromise rather than a fix: the real
+ * answer to a map this size is a two-level bake, coarse for the whole dome and
+ * fine for whichever deck the player is on. What makes 2048 affordable in the
+ * meantime is that the per-frame blit no longer draws the whole sheet - see
+ * `_visibleSource`. */
+const MAX_CACHE_PX = 2048;
+/**
+ * Zoom range.
+ *
+ * `range = baseRange / zoomLevel * 0.5`, so the old [0.4, 4] clamp spanned a
+ * factor of ten. That covered a 200 m deck. It cannot cover a map where the
+ * player wants both a 30 m view of the shop they are standing in and a 780 m
+ * view of all five decks, which is a factor of twenty-six.
+ */
+const ZOOM_MIN = 0.4;
+const ZOOM_MAX = 14;
 const HEX_SIDES = 6;
 
 /** Accept `0xrrggbb`, a CSS string, or undefined. */
@@ -144,13 +166,37 @@ export class Minimap {
   zoom(delta) {
     if (!delta) return;
     const step = CONFIG.minimap.zoomStep;
-    this.zoomLevel = Math.min(4, Math.max(0.4, this.zoomLevel * (delta > 0 ? 1 / step : step)));
+    this.zoomLevel = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, this.zoomLevel * (delta > 0 ? 1 / step : step)));
   }
 
-  /** Swap the baked floorplan when the active world changes. */
+  /**
+   * Swap the baked floorplan when the active world changes.
+   *
+   * The zoom-out limit is derived from the world rather than configured. A
+   * fixed `CONFIG.minimap.range` was right when every world was about 400 m
+   * across; with the station at 1,488 m and the medieval valley at 400 the same
+   * number cannot serve both - it either will not show the station's outer
+   * zones at all or leaves the valley as a doodle in the middle of an empty
+   * dial.
+   *
+   * The *starting* view stays where it has always been, about 45 m to the rim,
+   * by picking the zoom level that produces it. So nothing changes for a player
+   * who never touches the zoom keys; the extra range is there when they do.
+   */
   setWorld(world) {
     this._world = world || null;
     this._plan = world ? this._bakePlan(world) : null;
+
+    const b = world?.bounds;
+    const extent = b && Number.isFinite(b.min?.x)
+      ? Math.max(b.max.x - b.min.x, b.max.z - b.min.z)
+      : 400;
+    // 0.55 of the widest extent at full zoom-out, matching `setCircuit`: half
+    // would clip the far side whenever the player is at one end of the map.
+    const fullOut = Math.max(CONFIG.minimap.range, extent * 0.55);
+    this.baseRange = fullOut * ZOOM_MIN * 2;
+    const want = CONFIG.minimap.range * 0.5;
+    this.zoomLevel = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, (this.baseRange * 0.5) / want));
   }
 
   /* ------------------------------------------------------------------ bake */
@@ -324,7 +370,42 @@ export class Minimap {
       );
       ctx.imageSmoothingEnabled = true;
       const pl = this._plan;
-      ctx.drawImage(pl.canvas, pl.minX - px, pl.minZ - pz, pl.w, pl.d);
+      /* Blit only the part of the plan the dial can actually show.
+       *
+       * This used to hand `drawImage` the whole sheet every frame and let the
+       * transform scale it down. At 989 px that was survivable; at 2048 it is
+       * four times the source pixels, sampled through a rotation, sixty times a
+       * second, to fill a 220 px hexagon - and all but a sliver of it is
+       * outside the clip.
+       *
+       * The window is the dial's radius times root two, because the plan is
+       * drawn rotated and a square source rect has to contain the dial at any
+       * heading. Clamped to the sheet, and skipped entirely when the player is
+       * outside it. */
+      const half = this.range * Math.SQRT2;
+      const ppmX = pl.canvas.width / pl.w;
+      const ppmY = pl.canvas.height / pl.d;
+      // Source window in sheet pixels, clamped to the sheet.
+      const sx0 = Math.max(0, (px - half - pl.minX) * ppmX);
+      const sy0 = Math.max(0, (pz - half - pl.minZ) * ppmY);
+      const sx1 = Math.min(pl.canvas.width, (px + half - pl.minX) * ppmX);
+      const sy1 = Math.min(pl.canvas.height, (pz + half - pl.minZ) * ppmY);
+      if (sx1 - sx0 > 0.5 && sy1 - sy0 > 0.5) {
+        /* Destination is in world metres relative to the player, because that
+         * is what the transform above consumes - so it is simply the source
+         * window converted back out of pixels and re-centred. Deriving it from
+         * the *clamped* source rather than from the requested window is what
+         * keeps the plan registered with the world when the player is near an
+         * edge of the sheet and part of the window falls off it. */
+        ctx.drawImage(
+          pl.canvas,
+          sx0, sy0, sx1 - sx0, sy1 - sy0,
+          pl.minX + sx0 / ppmX - px,
+          pl.minZ + sy0 / ppmY - pz,
+          (sx1 - sx0) / ppmX,
+          (sy1 - sy0) / ppmY
+        );
+      }
       ctx.restore();
       ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     }

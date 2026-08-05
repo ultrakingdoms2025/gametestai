@@ -27,6 +27,15 @@ const SCAN_INTERVAL = 0.2;
 const VENDOR_WORDS =
   /vendor|trader|merchant|quartermaster|shopkeep|stall|market|supply|supplies|rations|clerk|smith|fletcher|cooper|apothec|armou?rer|barter|wares|pedlar|peddler|outfitter|kit\b/i;
 
+/**
+ * Every catalogue category the marketplace ships.
+ *
+ * Mirrors `MARKETPLACE_CATEGORIES` in `site/lib/marketplaceCatalog.ts`; a vendor
+ * that authors no restriction sells all of them, which is what the shop has
+ * always done.
+ */
+const ALL_CATEGORIES = ['cosmetic', 'weapons', 'tools', 'health', 'spells', 'mounts'];
+
 const MARKETPLACE_CONSUMABLE_ITEMS = {
   spell_velocity_25: 'speed_boost_25',
   spell_velocity_50: 'speed_boost_50',
@@ -44,6 +53,36 @@ const MARKETPLACE_CONSUMABLE_ITEMS = {
   firepower_boost_75: 'firepower_boost_75',
   firepower_boost_100: 'firepower_boost_100',
 };
+
+/**
+ * Resolve a catalogue `source_key` to the inventory item a purchase grants.
+ *
+ * The key arriving from the API is *not* the bare seed key. `buildMarketplaceSeedItems`
+ * in `site/lib/marketplaceCatalog.ts` seeds one row per world and stamps the
+ * world onto the key - `spell_velocity_25` is stored as `spell_velocity_25:station` -
+ * and nothing between the DB row and this module strips it (`rowToItem` and the
+ * `/api/marketplace/items` route both pass `source_key` straight through). An
+ * exact-key lookup therefore misses every consumable; only the four `pack_*`
+ * rows survived, because those are matched with `startsWith`.
+ *
+ * So: probe the exact key first, so an item whose real key legitimately contains
+ * a colon still wins, and only then retry without the trailing `:<world>`. Do
+ * not "simplify" this back to a single exact lookup - every spell, shield and
+ * firepower boost silently becomes `reason: 'unsupported'` again if you do.
+ *
+ * @param {string} key
+ * @returns {string|null}
+ */
+function consumableItemFor(key) {
+  // Own-property only: a `source_key` of `constructor` must not resolve to a
+  // function off Object.prototype.
+  const has = (k) => Object.prototype.hasOwnProperty.call(MARKETPLACE_CONSUMABLE_ITEMS, k);
+  if (has(key)) return MARKETPLACE_CONSUMABLE_ITEMS[key];
+  const cut = key.lastIndexOf(':');
+  if (cut <= 0) return null;
+  const bare = key.slice(0, cut);
+  return has(bare) ? MARKETPLACE_CONSUMABLE_ITEMS[bare] : null;
+}
 
 export class Marketplace {
   /**
@@ -66,6 +105,8 @@ export class Marketplace {
     this._catalogError = null;
     this._catalogSeq = 0;
     this._filters = { search: '', category: '' };
+    /** Categories the open vendor is allowed to sell, or null for "everything". */
+    this._vendorCategories = null;
     this._worldId = null;
 
     this._input = input ?? null;
@@ -128,8 +169,24 @@ export class Marketplace {
     return { ...this._filters };
   }
 
+  /**
+   * The categories the player may filter by right now.
+   *
+   * A vendor that authored `vendorCategories` narrows this to its own stock, so
+   * the picker's "All categories" means all of *this* trader's categories. Any
+   * other vendor gets the full catalogue, exactly as before.
+   * @returns {string[]}
+   */
   get categories() {
-    return ['cosmetic', 'weapons', 'tools', 'health', 'spells'];
+    return this._vendorCategories ? this._vendorCategories.slice() : ALL_CATEGORIES.slice();
+  }
+
+  /**
+   * The open vendor's stock restriction, or null when it sells everything.
+   * @returns {string[]|null}
+   */
+  get vendorCategories() {
+    return this._vendorCategories ? this._vendorCategories.slice() : null;
   }
 
   /**
@@ -174,10 +231,19 @@ export class Marketplace {
   async refreshCatalog() {
     const requestId = ++this._catalogSeq;
     const world = this._worldId ?? null;
+    // Read once, so a vendor swap mid-flight cannot narrow the wrong response.
+    const allowed = this._vendorCategories;
+    // The API filters by one category at a time, so a vendor stocking several
+    // asks for the whole world and narrows the answer below. A category the
+    // vendor does not stock is treated as "all of theirs" rather than as an
+    // empty shop.
+    const category = allowed
+      ? (allowed.includes(this._filters.category) ? this._filters.category : '')
+      : this._filters.category;
     const params = new URLSearchParams();
     if (world) params.set('world', world);
     if (this._filters.search.trim()) params.set('search', this._filters.search.trim());
-    if (this._filters.category) params.set('category', this._filters.category);
+    if (category) params.set('category', category);
 
     this._catalogLoading = true;
     this._catalogError = null;
@@ -188,7 +254,13 @@ export class Marketplace {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Failed to load marketplace catalog');
       if (requestId !== this._catalogSeq) return;
-      this._catalog = Array.isArray(data?.items) ? data.items : [];
+      const items = Array.isArray(data?.items) ? data.items : [];
+      // The restriction lands on `_catalog` itself rather than on the drawing
+      // code, so `preview` and `buy` cannot reach a row this vendor does not
+      // stock even if something else hands them an id.
+      this._catalog = allowed
+        ? items.filter((entry) => allowed.includes(String(entry?.category ?? '')))
+        : items;
       this._catalogError = null;
       this.ui?.refresh?.();
     } catch (err) {
@@ -219,7 +291,8 @@ export class Marketplace {
     if (source.startsWith('pack_arrows')) return { itemId: 'arrow', qty: 30 };
     if (source.startsWith('pack_embers')) return { itemId: 'fireball_charge', qty: 10 };
     if (source.startsWith('pack_medkit')) return { itemId: 'medkit', qty: 2 };
-    if (MARKETPLACE_CONSUMABLE_ITEMS[source]) return { itemId: MARKETPLACE_CONSUMABLE_ITEMS[source], qty: 1 };
+    const consumable = consumableItemFor(source);
+    if (consumable) return { itemId: consumable, qty: 1 };
 
     const config = item?.action_config ?? {};
     if (config?.effect === 'grant_ammo' && typeof config.ammo_item === 'string') {
@@ -447,6 +520,13 @@ export class Marketplace {
     }
     this._vendor = v;
     this._open = true;
+    // Re-read the restriction on every open, so walking from a general trader
+    // to a provisions stall swaps the stock instead of inheriting it, and set
+    // it *before* the UI opens so the picker is built from the right list.
+    this._vendorCategories = this._readVendorCategories(v);
+    if (this._vendorCategories && !this._vendorCategories.includes(this._filters.category)) {
+      this._filters.category = '';
+    }
     this.bus?.emit('market:open', {});
     this.ui?.open?.(v);
     void this.refreshCatalog();
@@ -456,6 +536,10 @@ export class Marketplace {
   close() {
     if (!this._open) return;
     this._open = false;
+    // Back to the unrestricted view: the catalogue is also refetched on a world
+    // change while the shop is shut, and that must not stay narrowed to a
+    // vendor the player has walked away from.
+    this._vendorCategories = null;
     this.bus?.emit('market:close', {});
     this.ui?.close?.();
   }
@@ -530,6 +614,28 @@ export class Marketplace {
       }
     }
     return best;
+  }
+
+  /**
+   * Read a vendor's authored stock restriction.
+   *
+   * A world writes `vendorCategories: ['health', 'spells']` on its `npcSpawns`
+   * entry and `NPCManager` copies it onto the NPC. Unknown names are dropped so
+   * a typo narrows nothing rather than emptying the shop, and a list that ends
+   * up empty means the same as no list at all: a general trader.
+   *
+   * @param {any} vendor
+   * @returns {string[]|null}
+   */
+  _readVendorCategories(vendor) {
+    const raw = vendor?.vendorCategories ?? vendor?.spawnSpec?.vendorCategories;
+    if (!Array.isArray(raw)) return null;
+    const list = [];
+    for (const entry of raw) {
+      const key = String(entry ?? '').trim().toLowerCase();
+      if (ALL_CATEGORIES.includes(key) && !list.includes(key)) list.push(key);
+    }
+    return list.length ? list : null;
   }
 
   /** Explicit role wins; the word match is the pre-role fallback. */

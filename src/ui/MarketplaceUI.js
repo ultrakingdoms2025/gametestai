@@ -219,16 +219,7 @@ export class MarketplaceUI {
     this.searchEl.addEventListener('input', () => this._setFilters());
 
     this.categoryEl = el('select', 'mkt-select');
-    const allOption = document.createElement('option');
-    allOption.value = '';
-    allOption.textContent = 'All categories';
-    this.categoryEl.appendChild(allOption);
-    for (const category of FALLBACK_CATEGORIES.slice(1)) {
-      const option = document.createElement('option');
-      option.value = category;
-      option.textContent = category;
-      this.categoryEl.appendChild(option);
-    }
+    this._buildCategoryOptions();
     this.categoryEl.addEventListener('change', () => this._setFilters());
 
     const filterLabel = el('label', 'mkt-filter');
@@ -256,6 +247,29 @@ export class MarketplaceUI {
     wrap.addEventListener('mousedown', (e) => {
       if (e.target === wrap) this.close();
     });
+  }
+
+  /**
+   * Fill the category picker from whatever the vendor actually stocks.
+   *
+   * A trader may sell only part of the catalogue, so the list is asked for at
+   * open time rather than baked in - and "All categories" then honestly means
+   * all of *this* trader's categories. A vendor with no restriction reports the
+   * whole catalogue, which is the list this picker always had.
+   */
+  _buildCategoryOptions() {
+    const list = this.market?.categories ?? FALLBACK_CATEGORIES.slice(1);
+    this.categoryEl.textContent = '';
+    const allOption = document.createElement('option');
+    allOption.value = '';
+    allOption.textContent = 'All categories';
+    this.categoryEl.appendChild(allOption);
+    for (const category of list) {
+      const option = document.createElement('option');
+      option.value = category;
+      option.textContent = category;
+      this.categoryEl.appendChild(option);
+    }
   }
 
   _setTab(id) {
@@ -466,7 +480,12 @@ export class MarketplaceUI {
     if (this._open) return;
     this._open = true;
     this._hadLock = menuFocusIn(this.input);
-    this.vendorName.textContent = (vendor?.name ?? 'Nexus Exchange').toUpperCase();
+    // A world may name the shop rather than the shopkeeper - "Galley Provisions"
+    // over "Oyo Tannen". Without one it is the trader's own name, as before.
+    this.vendorName.textContent = String(vendor?.vendorTitle || vendor?.name || 'Nexus Exchange').toUpperCase();
+    // Rebuilt per vendor, and before the value is restored: the previous shop's
+    // categories must not linger in the picker of a restricted one.
+    this._buildCategoryOptions();
     const filters = this.market?.filters ?? { search: '', category: '' };
     this.searchEl.value = filters.search ?? '';
     this.categoryEl.value = filters.category ?? '';

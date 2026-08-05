@@ -211,13 +211,30 @@ export class NPCManager {
     this.worldId = null;
     this._loreData = DEFAULT_LORE;
 
-    /** Hard ceiling regardless of what a world asks for. */
-    this.maxNPCs = 26;
+    /* Hard ceiling regardless of what a world asks for.
+     *
+     * 26 was sized for a world you could cross in twenty seconds, where every
+     * NPC was somewhere the player would plausibly be within the minute. The
+     * station is now five decks half a kilometre apart, and 26 meant the twelve
+     * characters authored around the hub plaza filled the budget and the eight
+     * authored out in the zones - the galley's merchant among them - were
+     * silently dropped by the `break` in `spawnForWorld`. A shop nobody can
+     * reach is worse than no shop.
+     *
+     * What makes the raise affordable is the LOD that is already here: past
+     * 135 m an NPC is not drawn at all, and past 65 m it is posed at a tenth of
+     * the frame rate (see `_updateLOD`). Four decks' worth of characters are
+     * always in that band, so the marginal cost of the extra eighteen is the
+     * grounding watchdog - which round-robins one NPC per fixed step whatever
+     * the population - plus a wider `_separateBodies` sweep, which is O(n^2)
+     * over a number that is still under fifty.
+     */
+    this.maxNPCs = 44;
     this.maxHostiles = CONFIG.npc.hostileCount;
-    // Worlds only author a handful of named civilians. A plaza needs a crowd,
-    // so the manager tops the friendly population up itself (see _populateHubs)
-    // and this is the ceiling for the result.
-    this.maxFriendlies = Math.max(CONFIG.npc.friendlyCount, 14);
+    // Worlds only author a handful of named civilians per district. A plaza
+    // needs a crowd, so the manager tops the friendly population up itself
+    // (see _populateHubs) and this is the ceiling for the result.
+    this.maxFriendlies = Math.max(CONFIG.npc.friendlyCount, 30);
 
     /**
      * Swimmable water for the active world.
@@ -339,10 +356,21 @@ export class NPCManager {
     // later then only ever picks a weapon whose material is already compiled.
     const weaponDeal = this._dealWeapons(this.maxHostiles);
     const weaponPool = (WEAPON_TABLES[this.theme] ?? WEAPON_TABLES.station).map(([id]) => id);
-    // Reserve part of the civilian budget for standing groups. Worlds author
-    // their named characters spread out along walking routes, which is right
-    // for them but leaves nobody actually stood in the square talking.
-    const authoredCap = Math.max(4, Math.round(this.maxFriendlies * 0.6));
+    /* Reserve part of the civilian budget for standing groups. Worlds author
+     * their named characters spread out along walking routes, which is right
+     * for them but leaves nobody actually stood in the square talking.
+     *
+     * The reserve is now a fixed number of slots rather than a fraction. At
+     * 60% of the budget a world that authors twenty characters loses eight of
+     * them to filler that exists to make a square look busy - and it is always
+     * the *last* eight, which is to say whichever district was written most
+     * recently. Holding back six and giving the rest to the author gets the
+     * same populated plaza while letting a world with five districts have five
+     * districts' worth of people in it.
+     */
+    const CROWD_RESERVE = 6;
+    const authored = spawns.reduce((n, s) => n + (s.type === 'hostile' ? 0 : 1), 0);
+    const authoredCap = Math.max(4, Math.min(authored, this.maxFriendlies - CROWD_RESERVE));
 
     const anchors = [];
     for (const spec of spawns) {
@@ -364,6 +392,13 @@ export class NPCManager {
         yaw: spec.yaw ?? 0,
         posture: spec.posture,
         role: spec.role ?? (hostile ? undefined : ROLE.WANDERER),
+        // Authored dressing for the character. `signLines` was accepted by
+        // `_createNPC` but never read off the descriptor, so a world could not
+        // actually letter its own stall; `vendorCategories` / `vendorTitle` are
+        // the shop restriction the Marketplace reads when it opens.
+        signLines: spec.signLines,
+        vendorCategories: spec.vendorCategories,
+        vendorTitle: spec.vendorTitle,
         weaponId: hostile ? weaponDeal[hostileCount] : undefined,
         weaponPool: hostile ? weaponPool : undefined,
       });
@@ -553,7 +588,8 @@ export class NPCManager {
    *
    * @param {{hostile:boolean, name:string, persona?:string, position:THREE.Vector3,
    *          patrol?:THREE.Vector3[], yaw?:number, anchored?:boolean,
-   *          groupFocus?:THREE.Vector3, posture?:string}} o
+   *          groupFocus?:THREE.Vector3, posture?:string, signLines?:string[],
+   *          vendorCategories?:string[], vendorTitle?:string}} o
    */
   _createNPC(o) {
     const seed = (this._hashSeed(this.worldId ?? '') ^ (this._seedCounter++ * 2654435761)) >>> 0;
@@ -592,6 +628,14 @@ export class NPCManager {
     npc.isLorekeeper   = o.role === ROLE.LOREKEEPER;
     npc.isQuestManager = o.isQuestManager ?? false;
     npc.loreScope = o.loreScope ?? null;
+    // A world may sell only part of the catalogue from a given stall - a galley
+    // that stocks food and kit but no weapons. The Marketplace reads these off
+    // the NPC when the shop opens; leaving them unset is the general trader
+    // every existing vendor already is.
+    if (Array.isArray(o.vendorCategories) && o.vendorCategories.length) {
+      npc.vendorCategories = o.vendorCategories.map((c) => String(c));
+    }
+    if (o.vendorTitle) npc.vendorTitle = String(o.vendorTitle);
     if (o.signLines) npc.setSignLines?.(o.signLines);
     if (npc.isVendor && !o.signLines) {
       npc.setSignLines?.([

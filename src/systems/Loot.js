@@ -28,9 +28,28 @@ const _sp = new THREE.Vector3(); // _spawnAt
 const _ck = new THREE.Vector3(); // _collectCheck
 const _dl = new THREE.Vector3(); // _dropFor
 
-const POOL_SIZE = 20;
-/** Concurrent pickups. Beyond this the oldest is recycled, to hold draw calls. */
-const MAX_ACTIVE = 18;
+/* Pool size, and why it went up.
+ *
+ * 20 slots with 18 concurrent was sized for one 200 m deck where the only
+ * persistent pickups were three caches. The station is now five decks and
+ * carries well over a hundred authored interior collectibles between the hab
+ * stacks, the zones and the crew rooms.
+ *
+ * The number matters more than it looks, because persistent pickups are exempt
+ * from recycling: `_recycleOldest` only ever evicts a non-persistent one, so
+ * once the active list is full of caches and interior spots it returns null and
+ * *every corpse drop in the game silently stops spawning*. Interiors now streams
+ * its spots by proximity (see Interiors.update) so the concurrent count stays
+ * low whatever the map size, and this raise is the headroom on top of that: a
+ * player standing in a hab stack with eight floors of spots in range, fighting,
+ * with two caches nearby, must still have slots left for the drop.
+ *
+ * A pickup is a handful of instanced quads and a light-less root, so the cost of
+ * the extra twelve is trivial next to that failure mode.
+ */
+const POOL_SIZE = 34;
+/** Concurrent pickups. Beyond this the oldest non-persistent one is recycled. */
+const MAX_ACTIVE = 30;
 /** Seconds a pickup waits to be collected before it fades away. */
 const LIFETIME = 150;
 /** Walk-over radius, metres. Generous because the player is a fast mover. */
@@ -540,6 +559,23 @@ export class Loot {
       this._fullNotifyT = 3;
       this.bus?.emit('hud:notify', { text: 'Inventory full — pickup left on the ground', tone: 'warn' });
     }
+  }
+
+  /**
+   * Take a pickup off the map without collecting it.
+   *
+   * For streamed spawners - `Interiors` puts an authored collectible in the
+   * world when the player is near enough to see it and takes it away again
+   * when they leave, so a map with two hundred authored spots still only ever
+   * holds a handful of live pickups. Deliberately silent: no `loot:collected`,
+   * so nothing downstream thinks the player picked it up.
+   */
+  despawn(p) {
+    if (!p?.active) return false;
+    const i = this._active.indexOf(p);
+    if (i >= 0) this._active.splice(i, 1);
+    this._release(p);
+    return true;
   }
 
   _release(p) {

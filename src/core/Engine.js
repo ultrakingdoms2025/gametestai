@@ -58,8 +58,22 @@ export class Engine {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = CONFIG.render.exposure;
+    /* Shader error checking costs a synchronous stall per program.
+     *
+     * With it on, the first use of every program calls `getProgramInfoLog` and
+     * `getProgramParameter(LINK_STATUS)`, both of which block until the driver
+     * has finished linking. That is 200-odd blocking waits through ANGLE during
+     * warmup, on top of the links themselves. It earns its keep in development,
+     * where a broken shader should say so loudly; in a shipped build the
+     * shaders either compiled weeks ago or they did not.
+     */
+    this.renderer.debug.checkShaderErrors = DEV_CAPTURE || import.meta.env?.DEV === true;
+
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    /* `PCFSoftShadowMap` is deprecated and three silently substitutes
+     * `PCFShadowMap`, which is what has actually been drawing. Asking for it by
+     * name stops the console warning and makes the setting honest. */
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.info.autoReset = false;
 
     this.scene = new THREE.Scene();

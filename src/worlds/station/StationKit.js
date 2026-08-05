@@ -422,8 +422,28 @@ export function instanced(geo, mat, entries, opts = {}) {
   im.instanceMatrix.needsUpdate = true;
   im.castShadow = opts.cast ?? true;
   im.receiveShadow = opts.recv ?? true;
-  // Instances span the whole map; per-object culling would only ever fail.
-  im.frustumCulled = opts.cull ?? false;
+  /* Cull against the instances, not against the prototype.
+   *
+   * This used to be `frustumCulled = false`, and the reason given was that
+   * instances span the whole map so culling could only ever fail. That was true
+   * of a 400 m ring where every scatter covered the whole deck. It is very
+   * badly untrue of a 1,440 m map with four zones half a kilometre apart: every
+   * chair in the galley was submitted while the player stood in the gym.
+   *
+   * `InstancedMesh` carries its own `boundingSphere`, computed from the
+   * instance matrices, and `Frustum.intersectsObject` prefers it over the
+   * geometry's. So a zone-local scatter now gets a zone-sized sphere and is
+   * rejected from every other deck, while a genuinely map-wide scatter gets a
+   * map-sized sphere and behaves exactly as it did.
+   *
+   * Computed here, after the matrices are written. Meshes whose instances are
+   * animated afterwards - the plaza crowd, the escalator treads - move by
+   * centimetres within a sphere sized in tens of metres, so the sphere stays
+   * valid without being recomputed. Anything that moves an instance further
+   * than that must pass `cull: false`.
+   */
+  im.computeBoundingSphere();
+  im.frustumCulled = opts.cull ?? true;
   return im;
 }
 

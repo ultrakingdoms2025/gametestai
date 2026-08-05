@@ -105,6 +105,60 @@ function buildGreatDome(world) {
   const RIBS = 36;           // meridional ribs, every 10 degrees
   const RINGS = 16;          // latitude rings across the cap
 
+  /* --- The floor -----------------------------------------------------
+   *
+   * One annulus of deck plating from the hub's rim to the dome wall, under
+   * everything else.
+   *
+   * This was missing entirely, and the way it was missing is worth recording.
+   * Collision was complete from the first build - the apron lays a grid of
+   * slabs across the whole dome and a probe finds solid ground anywhere inside
+   * it - so every floor-coverage sweep passed. What nothing tested was whether
+   * anything was *drawn* there. The hub's deck disc stops at DECK_R+4 = 204,
+   * the apron's paving started at HULL_R+16 = 218, and the apron only spans the
+   * 152 degrees in front of the great window. Everywhere else, and in a 14 m
+   * ring right around the hull, a player walked on solid nothing and looked
+   * straight down into the starfield.
+   *
+   * Built by hand rather than with `RingGeometry` because a ring's UVs run 0..1
+   * around and across, which over a 517 m annulus stretches one texture tile
+   * into a wedge half a kilometre long. These UVs are planar in world space, so
+   * the plate reads at the same size here as it does on the plaza.
+   */
+  {
+    const R_IN = DECK_R + 3, R_OUT = DOME_R + 2;
+    const SEG = 160, RINGS = 10, TILE = 14;
+    const pos = [], uv = [], idx = [];
+    for (let i = 0; i <= RINGS; i++) {
+      // Squared spacing again: the interesting radii are near the hub, where
+      // the seam with the deck has to be tight.
+      const r = R_IN + (R_OUT - R_IN) * ((i / RINGS) ** 1.6);
+      for (let s = 0; s <= SEG; s++) {
+        const a = (s / SEG) * Math.PI * 2;
+        const x = Math.cos(a) * r, z = Math.sin(a) * r;
+        pos.push(x, 0, z);
+        uv.push(x / TILE, z / TILE);
+      }
+    }
+    const stride = SEG + 1;
+    for (let i = 0; i < RINGS; i++) {
+      for (let s = 0; s < SEG; s++) {
+        const p0 = i * stride + s, p1 = p0 + 1, p2 = p0 + stride, p3 = p2 + 1;
+        idx.push(p0, p2, p1, p1, p2, p3);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    const floor = new THREE.Mesh(geo, M.deck);
+    floor.position.y = -0.02;   // just under the zone decks and the apron paving
+    floor.receiveShadow = true;
+    floor.castShadow = false;
+    g.add(floor);
+  }
+
   /* --- Perimeter wall ---------------------------------------------- *
    * Glazed, because the whole point of putting the zones under one dome is
    * that you can see out of it. The lower 6 m is solid plate: it is the band
@@ -269,6 +323,43 @@ function buildGreatDome(world) {
       chord * 0.55, DOME_WALL_H / 2, 2.5, Math.PI / 2 - a
     );
   }
+
+  /* --- Roof collision -------------------------------------------------
+   *
+   * The roof is glass, and `_collisionSoup` drops transparent materials and
+   * everything past the hub deck anyway - so until now the dome had a floor,
+   * a wall, and nothing at all overhead. On foot that never mattered. On an
+   * eagle or a dragon it very much does: you could climb straight through the
+   * glazing and end up flying over the outside of a sealed station.
+   *
+   * Contained with concentric bands of plate rather than a fitted shell. The
+   * cap is shallow enough that a band's step is a couple of metres, which is
+   * nothing to something that has just gained a hundred, and a stepped ceiling
+   * tiles the disc with no radial gap - which is the only property containment
+   * actually needs. Segment counts scale with circumference so the inner bands
+   * do not pay for the outer ones' resolution.
+   */
+  const BANDS = 10;
+  let roofBoxes = 0;
+  for (let i = 0; i < BANDS; i++) {
+    const r0 = (i / BANDS) * DOME_R;
+    const r1 = ((i + 1) / BANDS) * DOME_R;
+    const rm = (r0 + r1) / 2;
+    const y = domeHeightAt(r1);          // the LOWER of the band's two edges
+    const segs = Math.max(8, Math.round((Math.PI * 2 * rm) / 60));
+    for (let s = 0; s < segs; s++) {
+      const a = ((s + 0.5) / segs) * Math.PI * 2;
+      world._solidRot(
+        Math.cos(a) * rm, y + 1.2, Math.sin(a) * rm,
+        // Tangential half-width with a healthy overlap at the band's outer edge,
+        // then the radial half-depth.
+        (Math.PI * r1) / segs, 1.2, (r1 - r0) / 2 + 0.5,
+        Math.PI / 2 - a
+      );
+      roofBoxes++;
+    }
+  }
+  console.info(`[station] dome: roof collided in ${BANDS} bands, ${roofBoxes} panels`);
 
   B.flush(g, M, 'dome', { cast: false, recv: true });
   world._mmCircle(0, 0, DOME_R, 'rgba(10,20,32,0.30)', 'rgba(120,180,220,0.35)');
@@ -735,6 +826,22 @@ function buildZone(world, spec, actors) {
   ceil.position.set(centre.x, ZONE_CEIL_Y, centre.z);
   ceil.castShadow = ceil.receiveShadow = false;
   g.add(ceil);
+
+  /* The arcade plate is solid.
+   *
+   * Same omission as the dome roof, one scale down: the plate is drawn, it is
+   * the thing that gives the arcade its height, and it was not collided - so a
+   * mount could rise through it and sit inside the roof structure. The court
+   * inside r=112 stays open, which is the whole point of the section. */
+  for (let i = 0; i < 32; i++) {
+    const a = ((i + 0.5) / 32) * Math.PI * 2;
+    const rm = (ZONE_COURT_R + ZONE_R + 3) / 2;
+    world._solidRot(
+      centre.x + Math.cos(a) * rm, ZONE_CEIL_Y + 0.4, centre.z + Math.sin(a) * rm,
+      (Math.PI * (ZONE_R + 3)) / 32, 0.4, (ZONE_R + 3 - ZONE_COURT_R) / 2 + 0.5,
+      Math.PI / 2 - a
+    );
+  }
 
   // Collar at the court edge - the ring that tells you where the roof stops.
   const collar = new THREE.TorusGeometry(ZONE_COURT_R + 1.4, 0.9, 8, 96);

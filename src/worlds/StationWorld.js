@@ -8755,12 +8755,15 @@ export class StationWorld extends World {
      * they had reached the edge of the region 500 m early, and `Unstuck` took
      * its void floor from `min.y`.
      *
-     * The top is the dome apex plus clearance, because a dragon can get up
-     * there and `MountManager` clamps against `max.y`.
+     * The top sits just UNDER the dome apex rather than above it. `MountManager`
+     * clamps a mount's Y against `max.y`, and a ceiling above the roof is not a
+     * ceiling: a dragon would climb to it straight through the glazing. The roof
+     * is collided in bands now (see `buildGreatDome`) so this is only the
+     * backstop, but the backstop has to be inside the building.
      */
     this.bounds = new THREE.Box3(
       new THREE.Vector3(-WORLD_R, -6, -WORLD_R),
-      new THREE.Vector3(WORLD_R, DOME_APEX + 20, WORLD_R)
+      new THREE.Vector3(WORLD_R, DOME_APEX - 6, WORLD_R)
     );
   }
 

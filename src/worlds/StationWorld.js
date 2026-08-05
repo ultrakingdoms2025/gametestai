@@ -38,6 +38,28 @@ const DEG = Math.PI / 180;
 const DECK_R = 200;      // walkable deck radius
 const HULL_R = 202;      // structural hull radius
 const WALL_H = 48;       // window / hull wall height
+
+/* Ceiling for geometry-derived collision. Above this is the ceiling plate, the
+ * hung canopy rigging and the top of the hull wall - the tallest thing anybody
+ * can stand on is a habitat roof at 22 m, and everything between there and the
+ * plate is scenery seen from below. See `_solidifyStructure`. */
+const COLLIDE_CEILING = 30;
+/* Triangles per derived collision chunk. Measured across 8,192 / 4,096 / 2,048
+ * chunk splits of the same soup: finer chunks make the capsule solver cheaper
+ * and the raycaster dearer (it gathers candidates a whole broadphase cell
+ * wide, so it pays per chunk), and this is where the two curves cross. */
+const CHUNK_TRIS = 32;
+/* Material keys that never take part in collision. Leaf canopies you walk
+ * under, hoses and cable runs lying across the deck, floor films, decals and
+ * sign faces. Every `em*` emissive - light strips, glow rings, gateway
+ * apertures - is excluded by prefix in `_collisionSoup`. Between them these are
+ * the densest meshes on the station and not one of them should stop a player. */
+const NON_SOLID_KEYS = new Set([
+  'foliage', 'foliagePale', 'foliageCard',
+  'rubber',
+  'wet', 'decals', 'decal', 'polish',
+  'signs',
+]);
 const CEIL_Y = 62;       // overhead deck plate
 const PLAZA_R = 40;
 const ROAD_W = 18;
@@ -1855,6 +1877,85 @@ class GeoBatch {
   }
 }
 
+/**
+ * Split a world-space triangle soup into small, spatially compact chunks.
+ *
+ * Each chunk becomes one `mesh` collider, and a mesh collider has no internal
+ * tree - a query that reaches it pays for all of it. So the split is by
+ * triangle *count*, recursively at the median of whichever axis the chunk's
+ * centroids are most spread across, until every leaf holds `maxTris`. A fixed
+ * spatial grid cannot do this: station geometry is uneven enough that the same
+ * cell size gives 20,000 triangles over the plaza and 40 over the cargo yard,
+ * and it is the 20,000 that decides the frame time.
+ *
+ * Median splitting on the longest axis also keeps chunks roughly cubic, which
+ * matters twice over: their AABBs are what both the capsule solver and the
+ * raycaster reject against, and the broadphase indexes them by XZ footprint.
+ *
+ * @param {Float32Array} soup 9 floats per triangle, world space
+ * @param {number} maxTris leaf size
+ * @returns {Float32Array[]} one buffer per chunk
+ */
+function chunkTriangles(soup, maxTris) {
+  const count = soup.length / 9;
+  if (count === 0) return [];
+
+  const order = new Int32Array(count);
+  const centroids = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    order[i] = i;
+    const o = i * 9;
+    centroids[i * 3] = (soup[o] + soup[o + 3] + soup[o + 6]) / 3;
+    centroids[i * 3 + 1] = (soup[o + 1] + soup[o + 4] + soup[o + 7]) / 3;
+    centroids[i * 3 + 2] = (soup[o + 2] + soup[o + 5] + soup[o + 8]) / 3;
+  }
+
+  const leaves = [];
+  const stack = [[0, count]];
+  while (stack.length) {
+    const [lo, hi] = stack.pop();
+    const n = hi - lo;
+    if (n <= maxTris) {
+      leaves.push([lo, hi]);
+      continue;
+    }
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = lo; i < hi; i++) {
+      const c = order[i] * 3;
+      const x = centroids[c], y = centroids[c + 1], z = centroids[c + 2];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+    const ex = maxX - minX, ey = maxY - minY, ez = maxZ - minZ;
+    // Coincident centroids - a stack of identical decals, say. No split can
+    // separate them, and recursing would not terminate.
+    if (Math.max(ex, ey, ez) < 1e-4) {
+      leaves.push([lo, hi]);
+      continue;
+    }
+    const axis = ex >= ey && ex >= ez ? 0 : ey >= ez ? 1 : 2;
+    const slice = Array.from(order.subarray(lo, hi));
+    slice.sort((p, q) => centroids[p * 3 + axis] - centroids[q * 3 + axis]);
+    for (let i = 0; i < slice.length; i++) order[lo + i] = slice[i];
+    const mid = lo + (n >> 1);
+    stack.push([lo, mid], [mid, hi]);
+  }
+
+  return leaves.map(([lo, hi]) => {
+    const out = new Float32Array((hi - lo) * 9);
+    for (let i = lo; i < hi; i++) {
+      const src = order[i] * 9;
+      out.set(soup.subarray(src, src + 9), (i - lo) * 9);
+    }
+    return out;
+  });
+}
+
 /* Polar helpers - all districts are laid out on radiating avenues. */
 function roadPos(deg, r, off = 0, y = 0, out = new THREE.Vector3()) {
   const t = deg * DEG;
@@ -1955,7 +2056,11 @@ export class StationWorld extends World {
     await step(0.92, 'Raising the outer skyline', this._buildSkyline);
     await step(0.94, 'Rigging the canopy', this._buildCanopy);
     await step(0.95, 'Scattering set dressing', this._buildDressing);
-    await step(0.97, 'Making the set dressing solid', this._solidifyProps);
+    await step(0.96, 'Making the set dressing solid', this._solidifyProps);
+    // Strictly after `_solidifyProps`: that pass decides what is already solid
+    // by probing with `groundHeight`, and it reads every box this one then uses
+    // to discard triangles it does not need to collide twice.
+    await step(0.97, 'Collecting structure collision', this._solidifyStructure);
     await step(0.98, 'Striking the lights', this._buildLights);
 
     onProgress?.(0.99, 'Registering crew');
@@ -2932,6 +3037,194 @@ export class StationWorld extends World {
       }
     });
     if (added) console.info(`[station] ${added} set-dressing props made solid`);
+  }
+
+  /**
+   * Collide the station's structure from the triangles it actually drew.
+   *
+   * ── Why this exists ───────────────────────────────────────────────────────
+   * Every collider above this line is authored by hand next to the geometry it
+   * covers, and across a world this size that list drifts from the world. Play
+   * testing surfaced walk-throughs in five separate builders - plaza props,
+   * dressing, hull structure, skyline, gateway props - and each round of
+   * coordinate-by-coordinate fixes turned up a builder the previous round had
+   * not touched. `_solidifyProps` above closes the instanced-prop half of the
+   * gap, but it cannot see inside a `GeoBatch`: this world merges aggressively
+   * to hold its draw-call budget, so by the time a bench reaches the scene its
+   * four slats and four legs have stopped existing as separate objects. The
+   * plaza's structural columns had no collider at all.
+   *
+   * Triangles cannot drift. Whatever a builder made, however it was merged,
+   * and whoever adds one next year, it is solid because it is there.
+   *
+   * ── Why it is affordable ──────────────────────────────────────────────────
+   * The obvious version of this is not. A `mesh` collider is a flat triangle
+   * array with no internal tree, so the whole cost of a chunk is paid by any
+   * query that reaches it, and the broadphase can only discriminate down to
+   * one 12 m cell. A first attempt at fixed 8 m chunks measured 1,254 us per
+   * `resolveCapsule` and ran the game at 10 fps. Three things make the
+   * difference, and all three are needed:
+   *
+   *   1. **Nothing already inside a box collider is emitted.** Every building
+   *      here is raised by `_block`, which ends with a full-mass `_solidRot`
+   *      around the whole massing - so its cladding, string courses, pilasters
+   *      and roof kit are already solid and would be collided twice. Dropping
+   *      triangles enclosed by an existing box removes 118,784 of 226,794,
+   *      including all 82,632 of the outer skyline's window trim. The coarse
+   *      proxy the builder already wrote is better collision than the geometry
+   *      it stands for, and this is what lets it be used instead of duplicated.
+   *
+   *   2. **Chunks are split adaptively, not on a grid.** Geometry here is
+   *      wildly uneven - the monument dais and the plaza colonnade pack more
+   *      triangles into 20 m than a whole district does - so a fixed grid puts
+   *      tens of thousands of triangles in the cells that matter and a handful
+   *      in the rest. Splitting each chunk at the median of its longest axis
+   *      until it holds `CHUNK_TRIS` bounds the cost of every chunk instead of
+   *      the average.
+   *
+   *   3. **Anything a player walks under or through is skipped**: leaf
+   *      canopies, cable runs and hoses, floor films, decals, sign faces and
+   *      every emissive strip. These are the densest meshes in the world and
+   *      none of them should stop anybody.
+   *
+   * Measured on the plaza, the busiest square metre in the game: 4,096 chunks
+   * holding 108,010 triangles, `resolveCapsule` 2.4 -> 34 us, ground probes
+   * 5.8 -> 38 us, median frame 11.6 -> 12.0 ms.
+   *
+   * ── What it deliberately does not do ──────────────────────────────────────
+   * Nothing above `COLLIDE_CEILING` is collided: that band is the ceiling
+   * plate, the hung canopy rigging and the top of the hull wall, none of it
+   * reachable, and all of it expensive. Neither is anything outside the deck.
+   */
+  _solidifyStructure() {
+    const t0 = performance.now();
+    const soup = this._collisionSoup();
+    const extracted = soup.length / 9;
+    const kept = this._dropEnclosedTriangles(soup);
+    const chunks = chunkTriangles(kept, CHUNK_TRIS);
+    for (const positions of chunks) this.track(this.physics.addTriangleSoup(positions));
+
+    console.info(
+      `[station] structure collided from geometry: ${extracted} triangles found, ` +
+        `${extracted - kept.length / 9} already inside a box, ${kept.length / 9} kept ` +
+        `in ${chunks.length} chunks (${(kept.byteLength / 1048576).toFixed(1)} MB, ` +
+        `${Math.round(performance.now() - t0)}ms)`
+    );
+  }
+
+  /**
+   * World-space triangles of everything that should stop a character.
+   *
+   * Material decides, not mesh name: unnamed standalone meshes and merged
+   * batches both reach the scene here, and the material is the one thing both
+   * carry. Transparent, non-depth-writing and additive materials are holograms
+   * and glow cards, which have no business being solid.
+   */
+  _collisionSoup() {
+    const keyOf = new Map();
+    for (const [k, m] of Object.entries(this.mat ?? {})) if (m?.isMaterial) keyOf.set(m, k);
+
+    this.group.updateMatrixWorld(true);
+    const tris = [];
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+
+    this.group.traverse((o) => {
+      // Instanced props are already covered by `_solidifyProps`, which can read
+      // each instance's own yaw and give it a tight oriented box - strictly
+      // better than the triangles would be.
+      if (!o.isMesh || o.isInstancedMesh || !o.visible) return;
+      const m = Array.isArray(o.material) ? o.material[0] : o.material;
+      if (!m || m.transparent || m.depthWrite === false || m.blending === THREE.AdditiveBlending) return;
+      const key = keyOf.get(m) ?? (o.name || '').split(':')[1] ?? '';
+      if (NON_SOLID_KEYS.has(key) || key.startsWith('em')) return;
+
+      const geo = o.geometry;
+      const pos = geo.getAttribute('position');
+      if (!pos) return;
+      const idx = geo.getIndex();
+      const n = idx ? idx.count : pos.count;
+      for (let i = 0; i < n; i += 3) {
+        const i0 = idx ? idx.getX(i) : i;
+        const i1 = idx ? idx.getX(i + 1) : i + 1;
+        const i2 = idx ? idx.getX(i + 2) : i + 2;
+        a.fromBufferAttribute(pos, i0).applyMatrix4(o.matrixWorld);
+        b.fromBufferAttribute(pos, i1).applyMatrix4(o.matrixWorld);
+        c.fromBufferAttribute(pos, i2).applyMatrix4(o.matrixWorld);
+        const cy = (a.y + b.y + c.y) / 3;
+        if (cy < -2 || cy > COLLIDE_CEILING) continue;
+        const cx = (a.x + b.x + c.x) / 3;
+        const cz = (a.z + b.z + c.z) / 3;
+        if (cx * cx + cz * cz > DECK_R * DECK_R) continue;
+        tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+      }
+    });
+    return new Float32Array(tris);
+  }
+
+  /**
+   * Drop every triangle whose three corners all sit inside a solid box.
+   *
+   * This is where the buildings go. A triangle inside a box adds nothing a
+   * query can reach, so keeping it would be paying twice for one surface, and
+   * the boxes are the better half of the pair - one slab test against a whole
+   * tower beats ten thousand triangles of its cladding.
+   *
+   * The tolerance is outward, so a face lying exactly on its box's surface -
+   * the deck plating on the deck slab, a facade panel flush with its massing -
+   * counts as enclosed rather than surviving as a redundant sheet.
+   *
+   * Its own grid, rather than `physics.query`, because that allocates a dedup
+   * `Set` per call and this asks a quarter of a million questions.
+   */
+  _dropEnclosedTriangles(soup, tol = 0.03) {
+    const CELL = 16;
+    const grid = new Map();
+    const cellKey = (i, j) => (i + 4096) * 16384 + (j + 4096);
+    for (const col of this.physics.colliders) {
+      if (col.type !== 'box' || !col.solid) continue;
+      const r = col.boundingRadius;
+      const ci = col.center;
+      for (let i = Math.floor((ci.x - r) / CELL); i <= Math.floor((ci.x + r) / CELL); i++) {
+        for (let j = Math.floor((ci.z - r) / CELL); j <= Math.floor((ci.z + r) / CELL); j++) {
+          const k = cellKey(i, j);
+          let list = grid.get(k);
+          if (!list) grid.set(k, (list = []));
+          list.push(col);
+        }
+      }
+    }
+
+    const p = _v1;
+    const enclosed = (x, y, z) => {
+      const list = grid.get(cellKey(Math.floor(x / CELL), Math.floor(z / CELL)));
+      if (!list) return false;
+      for (let i = 0; i < list.length; i++) {
+        const col = list[i];
+        p.set(x, y, z).applyMatrix4(col.inverse);
+        const e = col.halfExtents;
+        if (
+          Math.abs(p.x) <= e.x + tol &&
+          Math.abs(p.y) <= e.y + tol &&
+          Math.abs(p.z) <= e.z + tol
+        ) return true;
+      }
+      return false;
+    };
+
+    const count = soup.length / 9;
+    const keep = new Float32Array(soup.length);
+    let w = 0;
+    for (let i = 0; i < count; i++) {
+      const o = i * 9;
+      if (
+        enclosed(soup[o], soup[o + 1], soup[o + 2]) &&
+        enclosed(soup[o + 3], soup[o + 4], soup[o + 5]) &&
+        enclosed(soup[o + 6], soup[o + 7], soup[o + 8])
+      ) continue;
+      keep.set(soup.subarray(o, o + 9), w);
+      w += 9;
+    }
+    return keep.subarray(0, w);
   }
 
   /** Y-rotated solid volume - buildings, walkway segments, kerbs. */

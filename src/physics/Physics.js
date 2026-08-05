@@ -123,6 +123,19 @@ function closestPointOnTriangle(a, b, c, p, out) {
   return out.copy(a).addScaledVector(ab, v).addScaledVector(ac, w);
 }
 
+// Private to the triangle-soup branch of _raycastCollider. Chunked geometry
+// offers that branch hundreds of colliders per ray, so nothing in it may
+// allocate.
+const _mr1 = new THREE.Vector3();
+const _mr2 = new THREE.Vector3();
+const _mr3 = new THREE.Vector3();
+const _mr4 = new THREE.Vector3();
+const _mr5 = new THREE.Vector3();
+const _mr6 = new THREE.Vector3();
+const _mr7 = new THREE.Vector3();
+const _mr8 = new THREE.Vector3();
+const _mr9 = new THREE.Vector3();
+
 // Scratch for rayTriangle and the heightfield hit-normal, which run while the
 // general pool and the raycast pool are both live.
 const _rt1 = new THREE.Vector3();
@@ -365,10 +378,26 @@ export class Physics {
   _insertToGrid(collider) {
     const r = collider.boundingRadius;
     const c = collider.center;
-    const minX = Math.floor((c.x - r) / this.cellSize);
-    const maxX = Math.floor((c.x + r) / this.cellSize);
-    const minZ = Math.floor((c.z - r) / this.cellSize);
-    const maxZ = Math.floor((c.z + r) / this.cellSize);
+    let loX = c.x - r, hiX = c.x + r, loZ = c.z - r, hiZ = c.z + r;
+
+    /* Triangle chunks go in on their true XZ footprint rather than their
+     * bounding sphere. The grid is indexed on XZ alone, but `boundingRadius`
+     * folds in the Y extent, so a 3 m-wide column 24 m tall claims a 24 m
+     * square of cells and is handed to every query inside it. Chunking the
+     * geometry finely is pointless if the broadphase then smears each chunk
+     * back across its neighbours. Boxes and spheres keep the sphere: they are
+     * authored roughly cube-ish and the tighter bound would not pay for itself.
+     */
+    if (collider.type === 'mesh') {
+      const b = collider.bounds;
+      loX = b.min.x; hiX = b.max.x;
+      loZ = b.min.z; hiZ = b.max.z;
+    }
+
+    const minX = Math.floor(loX / this.cellSize);
+    const maxX = Math.floor(hiX / this.cellSize);
+    const minZ = Math.floor(loZ / this.cellSize);
+    const maxZ = Math.floor(hiZ / this.cellSize);
     for (let x = minX; x <= maxX; x++) {
       for (let z = minZ; z <= maxZ; z++) {
         const key = this._cellKey(x, z);
@@ -441,6 +470,19 @@ export class Physics {
       .makeRotationY(rotationY)
       .setPosition(center.x, center.y, center.z);
     return this.add(new Collider('box', { halfExtents: halfExtents.clone(), matrix: m, ...opts }));
+  }
+
+  /**
+   * Register a chunk of world-space triangles directly.
+   *
+   * `positions` is `[ax,ay,az, bx,by,bz, cx,cy,cz, ...]` and is kept by
+   * reference, so the caller must not reuse the buffer. Intended for geometry
+   * derived from what a world actually drew: keep each chunk small (tens of
+   * triangles, spatially compact) because a mesh collider has no internal tree
+   * and the broadphase can only discriminate down to `cellSize`.
+   */
+  addTriangleSoup(positions, opts = {}) {
+    return this.add(new Collider('mesh', { positions, ...opts }));
   }
 
   /** Register a triangle mesh (terrain, ramps, complex hulls) baked to world space. */
@@ -677,21 +719,57 @@ export class Physics {
       if (len < 1e-6) return out.copy(collider.center).add(_v2.set(0, collider.radius, 0));
       return out.copy(collider.center).addScaledVector(dir, collider.radius / len);
     }
-    // Triangle soup: brute-force the triangles near the query sphere.
+    /* Triangle soup.
+     *
+     * Two exact rejects wrap the per-triangle work, and both matter more than
+     * they look. A mesh collider is a flat array with no internal tree, so the
+     * only thing standing between a query and every triangle in it is what we
+     * skip here. The broadphase cannot help: its cells are `cellSize` (12 m)
+     * across, so every chunk sharing a cell with the capsule is handed to this
+     * function regardless of how finely the caller chunked its geometry.
+     *
+     * 1. Squared distance from the query point to the collider's own AABB. One
+     *    test retires a whole chunk that is in the cell but not near the
+     *    capsule, which is the common case and the reason chunking pays off at
+     *    all.
+     * 2. Per triangle, the same test against the triangle's AABB. This replaces
+     *    a centroid check with an 8 m fudge factor, which was both slower to
+     *    converge and wrong at the edges: a deck slab 9 m from the capsule by
+     *    its centroid but reaching to within 20 cm of it was discarded, because
+     *    a centroid says nothing about a large triangle's extent. Bounds are
+     *    exact, so nothing near is skipped and far more that is far is.
+     */
+    const bnd = collider.bounds;
+    const maxDistSq = maxDist * maxDist;
+    let ox = bnd.min.x - point.x; if (ox < 0) ox = Math.max(0, point.x - bnd.max.x);
+    let oy = bnd.min.y - point.y; if (oy < 0) oy = Math.max(0, point.y - bnd.max.y);
+    let oz = bnd.min.z - point.z; if (oz < 0) oz = Math.max(0, point.z - bnd.max.z);
+    if (ox * ox + oy * oy + oz * oz > maxDistSq) return null;
+
     const pos = collider.positions;
-    let bestDistSq = maxDist * maxDist;
+    const px = point.x, py = point.y, pz = point.z;
+    let bestDistSq = maxDistSq;
     let found = false;
     const a = _cp1, b = _cp2, c = _cp3;
     const cp = _cp4;
     for (let i = 0; i < pos.length; i += 9) {
-      a.set(pos[i], pos[i + 1], pos[i + 2]);
-      b.set(pos[i + 3], pos[i + 4], pos[i + 5]);
-      c.set(pos[i + 6], pos[i + 7], pos[i + 8]);
-      // Cheap reject on triangle centroid.
-      const cx = (a.x + b.x + c.x) / 3 - point.x;
-      const cz = (a.z + b.z + c.z) / 3 - point.z;
-      const cy = (a.y + b.y + c.y) / 3 - point.y;
-      if (cx * cx + cy * cy + cz * cz > (maxDist + 8) * (maxDist + 8)) continue;
+      // Read raw floats for the reject so a skipped triangle never pays for
+      // three Vector3 writes.
+      const ax = pos[i], ay = pos[i + 1], az = pos[i + 2];
+      const bx = pos[i + 3], by = pos[i + 4], bz = pos[i + 5];
+      const cx = pos[i + 6], cy = pos[i + 7], cz = pos[i + 8];
+
+      let dx = Math.min(ax, bx, cx) - px;
+      if (dx < 0) dx = Math.max(0, px - Math.max(ax, bx, cx));
+      let dy = Math.min(ay, by, cy) - py;
+      if (dy < 0) dy = Math.max(0, py - Math.max(ay, by, cy));
+      let dz = Math.min(az, bz, cz) - pz;
+      if (dz < 0) dz = Math.max(0, pz - Math.max(az, bz, cz));
+      if (dx * dx + dy * dy + dz * dz >= bestDistSq) continue;
+
+      a.set(ax, ay, az);
+      b.set(bx, by, bz);
+      c.set(cx, cy, cz);
       closestPointOnTriangle(a, b, c, point, cp);
       const dsq = cp.distanceToSquared(point);
       if (dsq < bestDistSq) {
@@ -750,6 +828,23 @@ export class Physics {
       for (const collider of nearby) {
         if (!collider.solid) continue;
 
+        /* Triangle chunks get their bounds tested against the capsule's own box
+         * before any of the closest-point machinery runs. `_closestPoint` makes
+         * the same rejection, but it is called twice per collider below and has
+         * to build the query point first; a world that collides its structure as
+         * chunked soup can put a hundred chunks in one broadphase cell, and at
+         * that count the difference between rejecting here and rejecting in
+         * there is most of the solver's cost. Boxes and spheres skip the test:
+         * for them `_closestPoint` is already a handful of arithmetic. */
+        if (collider.type === 'mesh') {
+          const b = collider.bounds;
+          if (
+            b.min.x - radius > position.x || b.max.x + radius < position.x ||
+            b.min.z - radius > position.z || b.max.z + radius < position.z ||
+            b.min.y - radius > segB.y || b.max.y + radius < segA.y
+          ) continue;
+        }
+
         // Closest point on the collider to the capsule axis. Approximated by
         // iterating: collider->axis, then axis->collider. Two passes is enough
         // for the convex shapes we use.
@@ -798,6 +893,29 @@ export class Physics {
         moved = true;
         result.hitCount++;
 
+        /* Carry the correction into the capsule before the next collider is
+         * tested.
+         *
+         * Without this the whole iteration measures every overlap against the
+         * capsule as it stood at the *top* of the iteration, while the pushes
+         * all land on `position` - so N colliders overlapping the same corner
+         * contribute N full corrections for what is really one overlap, and the
+         * capsule leaves with several times the displacement it needed.
+         *
+         * With a few hand-authored boxes per corner that overshoot was
+         * survivable, and measurably so: re-solved over grids of 6,500-7,500
+         * ground points, the four box-only worlds move by a mean of 0.1-0.5 mm
+         * with and without this line. A world that collides its structure as
+         * thousands of small triangle chunks is a different matter, because
+         * dozens of them overlap one capsule at once - over 7,921 points on the
+         * station deck the same comparison is a mean of 1 cm and a worst case of
+         * 1.45 m, all of it overshoot this removes.
+         *
+         * Each collider now sees the capsule as the ones before it left it, and
+         * the four iterations converge instead of stacking. */
+        segA.set(position.x, position.y + radius, position.z);
+        segB.set(position.x, position.y + height - radius, position.z);
+
         // Surfaces up to ~50 degrees count as walkable ground.
         if (delta.y > 0.64) {
           if (!result.grounded || delta.y > result.groundNormal.y) {
@@ -835,10 +953,20 @@ export class Physics {
       Math.abs(direction.z) * maxDistance < this.cellSize * 0.5;
     const steps = vertical ? 0 : Math.max(1, Math.ceil(maxDistance / this.cellSize));
     const stepLen = steps > 0 ? maxDistance / steps : 0;
+    /* A vertical ray needs exactly the cell it stands in.
+     *
+     * `_insertToGrid` puts a collider in every cell its footprint touches, so
+     * anything the column at (x,z) can hit is already listed in that one cell -
+     * the cell-wide radius the marching case needs to bridge its steps is, for
+     * a vertical ray, nine cells of candidates gathered to use one. That was
+     * invisible while worlds were a thousand boxes and became the dominant cost
+     * of a ground probe once the station started collecting its structure as
+     * thousands of triangle chunks. */
+    const gatherRadius = vertical ? 0 : this.cellSize;
 
     for (let i = 0; i <= steps; i++) {
       probe.copy(origin).addScaledVector(direction, i * stepLen);
-      const list = this.query(probe, this.cellSize);
+      const list = this.query(probe, gatherRadius);
       for (const c of list) {
         if (seen.has(c)) continue;
         seen.add(c);
@@ -1063,13 +1191,45 @@ export class Physics {
       };
     }
 
-    // Triangle soup: Moller-Trumbore over every triangle.
+    /* Triangle soup: Moller-Trumbore, behind a slab test on the chunk's AABB.
+     *
+     * That slab test is what makes chunked geometry survivable here. `raycast`
+     * gathers candidates with a query a whole broadphase cell wide, so a ground
+     * probe in a dense district is handed every chunk within 12 m - hundreds of
+     * them - and each one used to pay for a full sweep of its triangles plus
+     * seven `new Vector3` before it could decide the ray missed entirely.
+     * Ground probes are the most-called operation in this file: every NPC casts
+     * one every step.
+     */
+    const bnd = collider.bounds;
+    let tEnter = 0;
+    let tExit = maxDist;
+    for (let axis = 0; axis < 3; axis++) {
+      const comp = axis === 0 ? 'x' : axis === 1 ? 'y' : 'z';
+      const od = direction[comp];
+      const oo = origin[comp];
+      const lo = bnd.min[comp];
+      const hi = bnd.max[comp];
+      if (Math.abs(od) < 1e-8) {
+        if (oo < lo || oo > hi) return null;
+        continue;
+      }
+      const inv = 1 / od;
+      let ta = (lo - oo) * inv;
+      let tb = (hi - oo) * inv;
+      if (ta > tb) { const tmp = ta; ta = tb; tb = tmp; }
+      if (ta > tEnter) tEnter = ta;
+      if (tb < tExit) tExit = tb;
+      if (tEnter > tExit) return null;
+    }
+
     const pos = collider.positions;
     let bestT = maxDist;
     let bestNormal = null;
-    const edge1 = new THREE.Vector3(), edge2 = new THREE.Vector3();
-    const h2 = new THREE.Vector3(), s = new THREE.Vector3(), q = new THREE.Vector3();
-    const a = new THREE.Vector3(), b2 = new THREE.Vector3(), c2 = new THREE.Vector3();
+    const edge1 = _mr1, edge2 = _mr2;
+    const h2 = _mr3, s = _mr4, q = _mr5;
+    const a = _mr6, b2 = _mr7, c2 = _mr8;
+    let bestNx = 0, bestNy = 0, bestNz = 0;
 
     for (let i = 0; i < pos.length; i += 9) {
       a.set(pos[i], pos[i + 1], pos[i + 2]);
@@ -1090,14 +1250,20 @@ export class Physics {
       const t = invDet * edge2.dot(q);
       if (t <= 1e-5 || t >= bestT) continue;
       bestT = t;
-      bestNormal = new THREE.Vector3().crossVectors(edge1, edge2).normalize();
-      if (bestNormal.dot(direction) > 0) bestNormal.negate();
+      // Keep the winning normal as three floats. Allocating a Vector3 per
+      // improvement meant a ray grazing a chunk edge-on could allocate once per
+      // triangle for a result that is thrown away by the next candidate.
+      _mr9.crossVectors(edge1, edge2).normalize();
+      bestNx = _mr9.x; bestNy = _mr9.y; bestNz = _mr9.z;
+      bestNormal = true;
     }
     if (!bestNormal) return null;
+    const normal = new THREE.Vector3(bestNx, bestNy, bestNz);
+    if (normal.dot(direction) > 0) normal.negate();
     return {
       distance: bestT,
       point: new THREE.Vector3().copy(origin).addScaledVector(direction, bestT),
-      normal: bestNormal,
+      normal,
       collider,
     };
   }

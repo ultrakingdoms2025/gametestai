@@ -60,6 +60,9 @@ const CHUNK_TRIS = 32;
  * the cost. 64 puts ~1,600 boxes on the station and keeps a shrub's collided
  * surface within a few centimetres of the drawn one. */
 const PLANTING_TRIS = 64;
+/* Cell size of the deck-occupancy grid used to keep scattered props out of
+ * things that are already standing. See `_markOccupancy`. */
+const OCC_CELL = 1.5;
 /* Material keys that never take part in collision: hoses and cable runs lying
  * across the deck, floor films, decals and sign faces. Every `em*` emissive -
  * light strips, glow rings, gateway apertures - is excluded by prefix in
@@ -3288,6 +3291,105 @@ export class StationWorld extends World {
     return keep.subarray(0, w);
   }
 
+  /**
+   * Is this footprint clear of everything already built?
+   *
+   * Bulk scatter here rejects carriageways, enterable footprints and the two
+   * gateway sightlines - everything the author thought of - but never asked
+   * whether a district was already standing where the prop was about to land.
+   * Across the finished station that put 633 triangles of shipping container
+   * inside solid architecture, one stack 4.7 m into a building, which is what
+   * "the cargo boxes go into buildings" looks like from the deck.
+   *
+   * Sampling rather than an exact oriented-box overlap because the props are
+   * scattered in the hundreds and the answer only has to be right to about a
+   * prop's width. `y0` starts above the deck slab so the deck itself - which is
+   * a solid box from -6 to 0 - never reports as an obstruction.
+   *
+   * Only usable by builders that run *after* the districts they need to avoid:
+   * colliders are the record being consulted, and a district that has not been
+   * raised yet has none. See the build order in `build()`.
+   */
+  _footprintClear(x, z, halfX, halfZ, yTop, y0 = 0.4) {
+    const steps = Math.max(1, Math.ceil(Math.max(halfX, halfZ) / 0.75));
+    for (let i = -steps; i <= steps; i++) {
+      for (let j = -steps; j <= steps; j++) {
+        const px = x + (halfX * i) / steps;
+        const pz = z + (halfZ * j) / steps;
+        if (this._occupied?.has(this._occKey(px, pz))) return false;
+        for (let k = 0; k <= 2; k++) {
+          const py = y0 + ((yTop - y0) * k) / 2;
+          if (this.physics.containsPoint(_v2.set(px, py, pz))) return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  _occKey(x, z) {
+    return ((Math.floor(x / OCC_CELL) + 512) << 11) | (Math.floor(z / OCC_CELL) + 512);
+  }
+
+  /**
+   * Mark every square metre of deck that already has something standing on it.
+   *
+   * `_footprintClear` alone reads colliders, and a surprising amount of this
+   * station is drawn without one - overhead masses, canopies, the service
+   * shafts. A container was scattered directly under a 30 m shaft wall that had
+   * no collider to consult, so only the bottom metre of it showed, poking out
+   * from beneath a building. Triangles cannot be forgotten the way a collider
+   * call can, so the occupancy comes from what was drawn.
+   *
+   * The band starts above the deck plating, kerbs and floor decals, and stops
+   * at 6 m - higher than anything a deck-level prop can reach, low enough that
+   * a walkway soffit 20 m up does not reserve the ground beneath it.
+   */
+  _markOccupancy() {
+    this.group.updateMatrixWorld(true);
+    const occ = new Set();
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    const m = new THREE.Matrix4();
+    this.group.traverse((o) => {
+      if (!o.isMesh || !o.visible) return;
+      const mat = Array.isArray(o.material) ? o.material[0] : o.material;
+      if (!mat || mat.transparent || mat.depthWrite === false) return;
+      const geo = o.geometry;
+      const pos = geo.getAttribute('position');
+      if (!pos) return;
+      const idx = geo.getIndex();
+      const n = idx ? idx.count : pos.count;
+      const instances = o.isInstancedMesh ? o.count : 1;
+      for (let e = 0; e < instances; e++) {
+        if (o.isInstancedMesh) o.getMatrixAt(e, m).premultiply(o.matrixWorld);
+        else m.copy(o.matrixWorld);
+        for (let i = 0; i < n; i += 3) {
+          const i0 = idx ? idx.getX(i) : i;
+          const i1 = idx ? idx.getX(i + 1) : i + 1;
+          const i2 = idx ? idx.getX(i + 2) : i + 2;
+          a.fromBufferAttribute(pos, i0).applyMatrix4(m);
+          b.fromBufferAttribute(pos, i1).applyMatrix4(m);
+          c.fromBufferAttribute(pos, i2).applyMatrix4(m);
+          /* Span, not centroid, on both counts. A 30 m shaft wall is two
+           * triangles whose centroids sit at 17 m - a centroid test says the
+           * band is empty and the ground below it is free, which is exactly how
+           * a container ended up under one. And a wall triangle 20 m long
+           * occupies every cell it crosses, not the one its middle lands in. */
+          if (Math.min(a.y, b.y, c.y) > 6 || Math.max(a.y, b.y, c.y) < 0.5) continue;
+          const x0 = Math.min(a.x, b.x, c.x), x1 = Math.max(a.x, b.x, c.x);
+          const z0 = Math.min(a.z, b.z, c.z), z1 = Math.max(a.z, b.z, c.z);
+          if (Math.hypot(Math.max(0, Math.abs(x0 + x1) / 2), Math.max(0, Math.abs(z0 + z1) / 2)) > DECK_R + 20) continue;
+          for (let gx = Math.floor(x0 / OCC_CELL); gx <= Math.floor(x1 / OCC_CELL); gx++) {
+            for (let gz = Math.floor(z0 / OCC_CELL); gz <= Math.floor(z1 / OCC_CELL); gz++) {
+              occ.add(((gx + 512) << 11) | (gz + 512));
+            }
+          }
+        }
+      }
+    });
+    this._occupied = occ;
+    return occ.size;
+  }
+
   /** Y-rotated solid volume - buildings, walkway segments, kerbs. */
   _solidRot(x, y, z, hx, hy, hz, ry) {
     return this.track(
@@ -6045,10 +6147,18 @@ export class StationWorld extends World {
           B.at('panelDark', boxGeo(0.65, height - 0.9, 0.55, 2), r + k * 4.5, (height - 0.9) / 2, zW + side * 0.36, 0);
         }
 
-        // Recessed service door with a lit jamb and a threshold spill.
+        /* Recessed service door with a lit jamb and a threshold spill.
+         *
+         * The leaf is `trimDark`, not `crate`. `M.crate` is the shipping
+         * container skin - ribbed steel with "KESSLER CARGO / AX-357"
+         * stencilled across it - and a door leaf wearing it is a 2.2 x 2.9 m
+         * container standing flush with the wall, 14 cm of it inside the
+         * cladding. From the alley that reads exactly as a cargo box driven
+         * halfway into the building, which is what it was reported as. The
+         * recess is deliberate; the branding on it was not. */
         const dx = r + (i % 2 ? 3.0 : -3.0);
         B.at('panelDark', boxGeo(3.0, 3.4, 0.8, 2), dx, 1.7, zW - side * 0.25, 0);
-        B.at('crate', boxGeo(2.2, 2.9, 0.24, 1.6), dx, 1.45, zW + side * 0.18, 0);
+        B.at('trimDark', boxGeo(2.2, 2.9, 0.24, 1.6), dx, 1.45, zW + side * 0.18, 0);
         for (const jx of [-1.25, 1.25]) {
           B.at('emAmber', boxGeo(0.1, 2.9, 0.1, 1), dx + jx, 1.5, zW + side * 0.3, 0);
         }
@@ -8026,7 +8136,11 @@ export class StationWorld extends World {
     }
     g.add(shaftMesh);
 
-    /* --- Scattered props -------------------------------------------- */
+    /* --- Scattered props --------------------------------------------
+     * Everything above this line in every builder is already drawn, so this is
+     * the moment to record what the deck is carrying. Both loops below consult
+     * it through `_footprintClear`. */
+    this._markOccupancy();
     const crates = [];
     const pallets = [];
     const barrels = [];
@@ -8043,6 +8157,8 @@ export class StationWorld extends World {
       }
       if (this._insideStationEnterableFootprint(x, z, 1.0)) continue;
       if (onRoad) continue;
+      // Every district is standing by the time dressing runs, so ask.
+      if (!this._footprintClear(x, z, 1.2, 1.2, 1.6)) continue;
       const kind = rng();
       const yaw = rng() * Math.PI * 2;
       if (kind < 0.45) {
@@ -8083,6 +8199,13 @@ export class StationWorld extends World {
       if (!clear) continue;
       const yaw = rng() * Math.PI * 2;
       const s = 0.85 + rng() * 0.5;
+      /* A 6 m container is the biggest loose object on the deck and the one
+       * that reads worst half-buried, so it gets the real footprint tested at
+       * its own yaw rather than a circle: a stack turned 45 degrees has an
+       * axis-aligned bound half again its width, and rejecting on that would
+       * thin the deck out for clearance it does not need. */
+      const cs = Math.abs(Math.cos(yaw)), sn = Math.abs(Math.sin(yaw));
+      if (!this._footprintClear(x, z, 3.1 * s * cs + 1.3 * s * sn, 3.1 * s * sn + 1.3 * s * cs, 3.0 * s)) continue;
       stackPad.push([x, 0.15, z, 0, yaw, 0, s, 1, s]);
       stackLo.push([x, 1.45 * s, z, 0, yaw, 0, s, s, s]);
       if (rng() < 0.55) stackHi.push([x + Math.cos(yaw) * 0.4, 4.2 * s, z, 0, yaw + 0.12, 0, s * 0.9, s * 0.9, s * 0.9]);

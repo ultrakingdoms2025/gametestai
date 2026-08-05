@@ -511,8 +511,20 @@ void main() {
   // ring, this keeps a gradient all the way up to the asymptote.
   col = col / (1.0 + col / uCap);
 
+  /* Opaque across the face, feathered only at the rim.
+   *
+   * The mid-band used to sit at 0.82, which reads as a slightly glassy horizon
+   * on an empty backdrop and as a window onto the architecture behind it
+   * everywhere else. The two portals on the Z axis have a clear backdrop by
+   * design - the skyline builder refuses to place anything on a gateway
+   * sightline - but the pair on the X axis look straight at the promenade loop
+   * 32 m behind them, so the walkway deck cut a hard horizontal bar across the
+   * event horizon with its signage legible through the swirl, and the disc read
+   * as two different fields above and below it.
+   *
+   * Only the stability fade stays translucent: a portal that has not formed yet
+   * *should* be see-through, because it is not a surface yet. */
   float alpha = 1.0 - smoothstep(0.93, 1.0, r);
-  alpha *= mix(0.82, 1.0, 1.0 - smoothstep(0.30, 0.92, r));
   alpha = clamp(alpha + rim * 0.25 + lip, 0.0, 1.0);
   alpha *= mix(0.75, 1.0, uStability);
 
@@ -1278,11 +1290,23 @@ export class PortalSystem {
       kit.disposables.push(conduit.geometry);
     }
 
-    // Lintel plate spanning the springing line.
-    const lintel = new THREE.Mesh(chamferPlateGeometry(ARCH_R * 2 + 0.6, 0.34, 0.30), alloy);
-    lintel.position.set(0, DISC_Y + 0.02, 0);
-    g.add(lintel);
-    kit.disposables.push(lintel.geometry);
+    /* Impost band at the springing line - one block per pier, not one plate
+     * across the opening.
+     *
+     * It used to be a single chamfered plate `ARCH_R * 2 + 0.6` wide sitting at
+     * `DISC_Y`, which is architecturally where a springing course goes and
+     * visually straight through the middle of the event horizon: `DISC_Y` is
+     * the disc's *centre*, not its head. The result was an opaque bar bisecting
+     * every portal, with the disc reading as two unrelated fields above and
+     * below it. The band only ever belonged on the piers; the span between them
+     * is the opening. */
+    const impostW = ARCH_R + 0.3 - DISC_R;
+    for (const sx of [-1, 1]) {
+      const impost = new THREE.Mesh(chamferPlateGeometry(impostW, 0.34, 0.30), alloy);
+      impost.position.set(sx * (DISC_R + impostW * 0.5), DISC_Y + 0.02, 0);
+      g.add(impost);
+      kit.disposables.push(impost.geometry);
+    }
 
     // Status lights around the ring - accent tinted per portal at clone time.
     const lensGeo = new THREE.CylinderGeometry(0.075, 0.075, 0.09, 10);

@@ -4765,6 +4765,14 @@ export class StationWorld extends World {
         D.at('trim', boxGeo(0.12, 0.07, 0.86, 1), lx, 0.05, lz, -th);
       }
       D.at('emCyan', boxGeo(2.9, 0.05, 0.07, 1), bx, 0.5, bz, -th);
+      /* One box for the whole bench, deck to seat top.
+       *
+       * A bench is four 13 cm slats on four splayed tube legs, and not one of
+       * those pieces is a solid volume - which is why a sweep looking for
+       * prop-shaped geometry never found it, and why you could walk straight
+       * through every bench on the plaza. The obstacle is the assembly, so the
+       * collider is authored here with it rather than inferred from it. */
+      this._solidRot(bx, 0.36, bz, 1.65, 0.36, 0.47, -th);
       this._contact(bx, bz, 5.4);
     }
 

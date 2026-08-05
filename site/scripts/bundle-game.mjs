@@ -69,17 +69,54 @@ async function main() {
 
   /* The game's dependencies are its own. Vercel installs whatever the project's
    * root directory declares, which for the site is `site/package.json` - so on
-   * a deploy the game sits there as source with an empty `node_modules`, and
-   * `vite build` cannot resolve `three`. Install them if they are not there. */
-  if (!(await exists(path.join(game, 'node_modules', 'three')))) {
-    console.log('[bundle-game] game dependencies missing; installing …');
+   * a deploy the game sits there as source with an empty `node_modules` and
+   * nothing it needs to build.
+   *
+   * ── Both halves of this are load-bearing; the first version had neither ───
+   * It probed for `three` and installed with a bare `npm ci`, and in that shape
+   * it never once succeeded on Vercel - not on the deploy that introduced it,
+   * nor on any since. Every build logged "Cannot find package 'vite'", took the
+   * `--if-available` exit, and shipped whatever bundle happened to be
+   * committed. The mechanism meant to stop the deployed game going stale was
+   * itself the thing going stale, silently, for its whole life.
+   *
+   *   1. `three` is a *dependency* and `vite` is a *devDependency*. Vercel
+   *      builds run with NODE_ENV=production, under which npm omits dev
+   *      dependencies - so `three` was restored from the build cache, the probe
+   *      saw it, and the install was skipped while the build tool was still
+   *      missing. Probe for what is about to be *run*, not for a runtime
+   *      library that happens to sit beside it.
+   *   2. `--include=dev`, or the install that does happen fetches `three` and
+   *      omits `vite` all over again.
+   *
+   * Verified rather than reasoned about: under NODE_ENV=production a plain
+   * install drops a devDependency and adding `--include=dev` restores it. */
+  const NEEDED = ['vite', 'three'];
+  const missing = [];
+  for (const dep of NEEDED) {
+    if (!(await exists(path.join(game, 'node_modules', dep)))) missing.push(dep);
+  }
+  if (missing.length) {
+    console.log(`[bundle-game] game dependencies missing (${missing.join(', ')}); installing …`);
     try {
       const lock = await exists(path.join(game, 'package-lock.json'));
-      run('npm', [lock ? 'ci' : 'install', '--no-audit', '--no-fund'], game);
+      run('npm', [lock ? 'ci' : 'install', '--include=dev', '--no-audit', '--no-fund'], game);
     } catch {
       bail('could not install the game dependencies.');
       return;
     }
+  }
+
+  /* Fail loudly here rather than let `npx` paper over it. With no local vite,
+   * `npx` downloads one into a temp directory and runs it - but `vite.config.js`
+   * imports `vite` by bare specifier, which resolves against the *project's*
+   * node_modules and still is not there. The result is a confusing
+   * UNRESOLVED_IMPORT against the config file rather than "the tool is not
+   * installed", which is exactly how the original fault stayed unread in the
+   * build log for as long as it did. */
+  if (!(await exists(path.join(game, 'node_modules', 'vite')))) {
+    bail('vite is still not installed in the game project after installing.');
+    return;
   }
 
   console.log(`Building the game in ${game} …`);

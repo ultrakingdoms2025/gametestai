@@ -48,6 +48,14 @@ const _ikQ3 = new THREE.Quaternion();
 const _bdTarget = new THREE.Vector3();
 const _bdLocal = new THREE.Vector3();
 
+/* squaring a hand onto a bar */
+const _gripX = new THREE.Vector3();
+const _gripY = new THREE.Vector3();
+const _gripZ = new THREE.Vector3();
+const _gripM = new THREE.Matrix4();
+const _gripQ = new THREE.Quaternion();
+const _gripQ2 = new THREE.Quaternion();
+
 const damp = THREE.MathUtils.damp;
 const clamp = THREE.MathUtils.clamp;
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -1299,6 +1307,7 @@ export class MountManager {
     const effort = mount.boost01 ?? 0;
     const roll = mount.bankRoll ?? 0;
     const seatT = clamp01(mount.mountBlend ?? 1);
+    const steer = mount.steerAngle ?? 0;
 
     /* A cyclist's shape is set by how hard they are working: upright when
      * soft-pedalling, folded down over the bars in a sprint. One number does
@@ -1316,16 +1325,31 @@ export class MountManager {
     root.rotation.set(0, 0, 0);
 
     /* ---- torso: forward over the bars, weight into the corner ---- */
-    this._setBone('pelvis', -0.16 + lean * 0.2, 0, 0);
-    this._setBone('spine01', 0.16 + lean * 0.3, rl * 0.06, -rl * 0.12);
-    this._setBone('spine02', 0.15 + lean * 0.34, rl * 0.07, -rl * 0.14);
-    this._setBone('spine03', 0.1 + lean * 0.2, rl * 0.05, -rl * 0.09);
+    /* The shoulders turn with the bars.
+     *
+     * This is not a flourish, it is what keeps the hands on the grips. The
+     * grips hang off the steering node and swing up to 0.2 m as it turns,
+     * which is well past the slack in an arm that is already near full
+     * stretch - so with a fixed torso the outer hand simply left the bar and
+     * pointed at it. Rotating the spine with the steering carries the outer
+     * shoulder toward the grip it is reaching for, which is also exactly what
+     * a rider's shoulders do. Spread up the spine rather than applied at one
+     * joint, so the twist reads as a body turning rather than a head swivel.
+     */
+    const twist = steer * seatT;
+    this._setBone('pelvis', -0.16 + lean * 0.2, twist * 0.14, 0);
+    this._setBone('spine01', 0.16 + lean * 0.3, rl * 0.06 + twist * 0.28, -rl * 0.12);
+    this._setBone('spine02', 0.15 + lean * 0.34, rl * 0.07 + twist * 0.32, -rl * 0.14);
+    this._setBone('spine03', 0.1 + lean * 0.2, rl * 0.05 + twist * 0.24, -rl * 0.09);
     // The head stays level with the road however far the back folds over, which
-    // is what a rider does and what stops the pose reading as a cower.
-    this._setBone('neck', -0.24 - lean * 0.34, -rl * 0.07, rl * 0.1);
-    this._setBone('head', -0.14 - lean * 0.2, -rl * 0.15, rl * 0.12);
-    this._setBone('clavicleR', 0, 0, 0.09 + lean * 0.05);
-    this._setBone('clavicleL', 0, 0, -0.09 - lean * 0.05);
+    // is what a rider does and what stops the pose reading as a cower. Most of
+    // the spine's twist is taken back out at the neck so the rider keeps facing
+    // where the bike is going rather than where their chest points - but not
+    // all of it, because looking into the turn is what a rider actually does.
+    this._setBone('neck', -0.24 - lean * 0.34, -rl * 0.07 - twist * 0.34, rl * 0.1);
+    this._setBone('head', -0.14 - lean * 0.2, -rl * 0.15 - twist * 0.3, rl * 0.12);
+    this._setBone('clavicleR', 0, twist * 0.12, 0.09 + lean * 0.05);
+    this._setBone('clavicleL', 0, twist * 0.12, -0.09 - lean * 0.05);
 
     // The bike, its lean and its cranks have all moved this frame, and a
     // world-space solve needs current matrices.
@@ -1353,10 +1377,76 @@ export class MountManager {
       const s = side > 0 ? 'R' : 'L';
       if (!mount.getGripWorld?.(side, _ikTarget)) break;
       if (this._solveIK(`upperArm${s}`, `foreArm${s}`, `hand${s}`, _ikTarget, side * 0.85, -0.6, 0.7)) {
-        // Closed over the bar rather than continuing the forearm.
-        this._setBone(`hand${s}`, 0.32, 0, side * -0.26);
+        this._gripBar(`hand${s}`, side, mount);
       }
     }
+  }
+
+  /**
+   * Close a hand around a bar rather than merely park it at one.
+   *
+   * The IK puts the wrist on the grip and stops there - the hand's own
+   * rotation is a separate question, and the fixed wrist angle the other
+   * mounts use only ever looks right in the one pose it was chosen for. On a
+   * bicycle the bars turn, so there is no such pose: a hand at a fixed angle
+   * sits flat against a tube that has rotated out from under it.
+   *
+   * ── The hand's own axes ───────────────────────────────────────────────────
+   * The rig's bind rotations are identity (see `buildSkeletonSpec`), so the
+   * hand bone's local frame is just the character frame, and `buildHand` says
+   * what lies along it:
+   *
+   *     -Y   the direction the fingers point, down the arm
+   *      Z   the knuckle line, and so the axis a grip runs along
+   *     -X   the palm normal for a right hand, +X for a left
+   *
+   * Only the palm flips between hands, because `buildHand` mirrors the mesh in
+   * X alone - the fingers still point down the arm and the knuckles still run
+   * along Z on both sides. That is why the transform below carries no `side`
+   * term: the same rotation serves both hands and the mirrored mesh supplies
+   * the handedness by itself. Deriving the third axis from the palm instead,
+   * which is the obvious thing to do, silently flips it on one side and leaves
+   * that hand waving in the air beside the bar.
+   *
+   * Aiming the *fingers* rather than the palm is the other half of it. Naming
+   * the palm leaves the roll about the bar unpinned, and the first attempt
+   * came out as a hand square to the bar with its fingers splayed along it -
+   * a salute rather than a grip.
+   *
+   * @param {string} handName
+   * @param {number} side -1 left, +1 right
+   * @param {any} mount
+   */
+  _gripBar(handName, side, mount) {
+    const hand = this._rider?.bones.get(handName);
+    if (!hand?.parent || !mount.getGripAxis?.(side, _gripZ)) return;
+
+    // Fingers over the front of the bar and down: a hand rests on top of a
+    // flat bar and closes round its leading face. Read through the bike's own
+    // frame, so it stays true when the bike leans.
+    mount.root.getWorldQuaternion(_gripQ);
+    _gripY.set(0, -1, -0.7).normalize().applyQuaternion(_gripQ);
+
+    // Square the fingers against the bar - the bar's direction is exact, the
+    // fingers only choose the roll about it - then complete the basis.
+    _gripY.addScaledVector(_gripZ, -_gripY.dot(_gripZ));
+    if (_gripY.lengthSq() < 1e-8) return;
+    _gripY.normalize();
+    _gripX.crossVectors(_gripY, _gripZ);
+
+    // Columns are the world images of local X, Y and Z. Local -X and -Y are
+    // the axes named above, hence the two negations; taken together they keep
+    // the determinant at +1, so this stays a rotation rather than a reflection.
+    _gripX.negate();
+    _gripY.negate();
+    _gripM.makeBasis(_gripX, _gripY, _gripZ);
+    _gripQ2.setFromRotationMatrix(_gripM);
+
+    // The arm chain was re-solved this frame, so the forearm's world matrix is
+    // stale until asked for.
+    hand.parent.updateWorldMatrix(true, false);
+    hand.parent.getWorldQuaternion(_gripQ);
+    hand.quaternion.copy(_gripQ.invert().multiply(_gripQ2));
   }
 
   /**

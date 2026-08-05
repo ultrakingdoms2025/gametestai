@@ -58,6 +58,7 @@ const _gp2 = new THREE.Vector3();   // forward ray
 const _mv1 = new THREE.Vector3();   // fixedUpdate travel
 const _an1 = new THREE.Vector3();   // anchor read
 const _hd1 = new THREE.Vector3();   // steer frame construction
+const _gq1 = new THREE.Quaternion(); // grip axis read
 
 /* ------------------------------------------------------------------ */
 /* Dimensions - a 56 cm road frame on 700x32, in metres                */
@@ -103,11 +104,25 @@ const HEAD_BOT_Z = -0.382;
  * inside 0.50 m, which is a comfortable bend - and an upright park bike is
  * what belongs in a sports area anyway.
  */
-const BAR_Y = 1.085;
-const BAR_Z = -0.4;
-const BAR_HALF = 0.235;
-/** How far the bar ends sweep back toward the rider. */
-const BAR_SWEEP = 0.19;
+const BAR_Y = 1.13;
+const BAR_Z = -0.35;
+/** Half-width of the straight centre section, either side of the stem clamp. */
+const BAR_CLAMP = 0.075;
+/**
+ * Each half of the bar past the clamp: how long, and how far back it sweeps.
+ *
+ * The angle matters more than it looks. Expressed as a *distance* back the
+ * first version swept 0.26 m over a 0.012 m change in width, which is 85
+ * degrees - the grips came out as a pair of horns pointing at the rider's
+ * stomach, and a hand cannot wrap round a tube that runs straight into it.
+ * 52 degrees is a real North Road bar: it still carries the grips 0.24 m back
+ * toward the rider, which is what keeps them inside arm's reach, while leaving
+ * the grip axis mostly across the bike where a hand can close over it.
+ */
+const BAR_ARM = 0.3;
+const BAR_SWEEP = 0.9;
+/** Grip occupies the outer end of the swept arm, from this fraction to 1. */
+const GRIP_FROM = 0.62;
 
 /**
  * Head angle, derived from the head tube rather than typed.
@@ -163,8 +178,16 @@ const AIR_DRAG = 0.028;
  * and 6 m at a cruise, which is what a bicycle actually does.
  */
 const LEAN_MAX = 0.62;
-/** Bars against the frame. The mechanical limit, for when the lean allows more. */
-const STEER_MECH = 0.85;
+/**
+ * Bars against the frame. The mechanical limit, for when the lean allows more.
+ *
+ * Also, in practice, an arm-length limit. The grips swing on the far side of
+ * the steering joint, and past about here the outer one leaves the reach the
+ * rider's shoulder can follow it to even with the torso turning - which shows
+ * up as a hand floating off the bar. 0.6 rad still turns inside 1.6 m at
+ * walking pace, which is tighter than anything a park path asks for.
+ */
+const STEER_MECH = 0.6;
 const STEER_RATE = 5.2;
 
 const GRAVITY = -22;
@@ -225,9 +248,18 @@ function box(w, h, d, x, y, z, rx = 0, ry = 0, rz = 0) {
   return g;
 }
 
-/** A ring lying in the XY plane - the wheel's own plane. Rims and tyres. */
+/**
+ * A ring in the wheel's own plane: upright, facing along the axle. Rims, tyres.
+ *
+ * `TorusGeometry` is built in the XY plane with its hole on Z, which for this
+ * model is the direction of travel - so an unrotated torus is a paddle wheel,
+ * mounted across the bike and spinning about the axis it should be rolling
+ * along. The quarter turn about Y puts the disc in ZY with its axle on X,
+ * which is where the hub already was and where `rotation.x` spins it.
+ */
 function ring(radius, thickness, tubular = 28, radial = 8) {
-  return new THREE.TorusGeometry(radius, thickness, radial, tubular);
+  return new THREE.TorusGeometry(radius, thickness, radial, tubular)
+    .rotateY(Math.PI / 2);
 }
 
 function merge(list) {
@@ -440,30 +472,47 @@ export class Bicycle {
     forkGeo.push(box(0.09, 0.05, 0.05, 0, crownY + 0.012, HEAD_BOT_Z - 0.004));
     this._steerFrame.add(new THREE.Mesh(merge(forkGeo), paint));
 
-    /* ---- handlebars: stem, a flat bar and two grips ---- */
+    /* ---- handlebars: stem, a swept bar and two grips ----
+     *
+     * Each half is one straight arm from the clamp, out and back at
+     * `BAR_SWEEP`. Both the grip geometry and the axis the rider's hand is
+     * oriented to are taken from that same arm, so the hand can never be
+     * closed around a direction the bar does not actually run in. */
+    const rise = 0.016;
+    const armEnd = (sx, t) => [
+      sx * (BAR_CLAMP + BAR_ARM * Math.cos(BAR_SWEEP) * t),
+      BAR_Y + rise * t,
+      BAR_Z + BAR_ARM * Math.sin(BAR_SWEEP) * t,
+    ];
+
     const barGeo = [
       // Stem: up and forward out of the steerer to the bar clamp.
       tube(0.018, 0, HEAD_TOP_Y + 0.02, HEAD_TOP_Z + 0.004, 0, BAR_Y - 0.006, BAR_Z + 0.008),
-      tube(0.015, -0.09, BAR_Y, BAR_Z, 0.09, BAR_Y, BAR_Z, 8),
+      tube(0.015, -BAR_CLAMP, BAR_Y, BAR_Z, BAR_CLAMP, BAR_Y, BAR_Z, 8),
     ];
-    // The sweep: each half runs out and back toward the rider.
     for (const sx of [-1, 1]) {
-      barGeo.push(tube(0.015, sx * 0.09, BAR_Y, BAR_Z,
-        sx * BAR_HALF, BAR_Y + 0.012, BAR_Z + BAR_SWEEP * 0.55, 8));
-      barGeo.push(tube(0.014, sx * BAR_HALF, BAR_Y + 0.012, BAR_Z + BAR_SWEEP * 0.55,
-        sx * (BAR_HALF - 0.012), BAR_Y + 0.018, BAR_Z + BAR_SWEEP, 8));
+      barGeo.push(tube(0.015, sx * BAR_CLAMP, BAR_Y, BAR_Z, ...armEnd(sx, 1), 8));
     }
     this._steerFrame.add(new THREE.Mesh(merge(barGeo), alloy));
 
     const gripGeo = [];
     for (const sx of [-1, 1]) {
-      gripGeo.push(tube(0.02, sx * (BAR_HALF - 0.002), BAR_Y + 0.014, BAR_Z + BAR_SWEEP * 0.72,
-        sx * (BAR_HALF - 0.014), BAR_Y + 0.018, BAR_Z + BAR_SWEEP + 0.006, 8));
-      // Brake lever, hanging forward and down off the grip.
-      gripGeo.push(tube(0.007, sx * (BAR_HALF - 0.006), BAR_Y + 0.01, BAR_Z + BAR_SWEEP * 0.66,
-        sx * (BAR_HALF - 0.03), BAR_Y - 0.022, BAR_Z + BAR_SWEEP * 0.3, 6));
+      gripGeo.push(tube(0.019, ...armEnd(sx, GRIP_FROM), ...armEnd(sx, 1), 8));
+      // Brake lever, hanging forward and down off the inboard end of the grip.
+      const [lx, ly, lz] = armEnd(sx, GRIP_FROM);
+      gripGeo.push(tube(0.007, lx, ly - 0.006, lz, lx - sx * 0.04, ly - 0.05, lz - 0.055, 6));
     }
     this._steerFrame.add(new THREE.Mesh(merge(gripGeo), trim));
+
+    /**
+     * Outboard unit vector along a grip, in the steering frame.
+     *
+     * The rider's hand is squared to this, so it has to be the arm's real
+     * direction rather than anything typed separately - see `getGripAxis`.
+     */
+    this._gripAxis = new THREE.Vector3(
+      Math.cos(BAR_SWEEP), rise / BAR_ARM, Math.sin(BAR_SWEEP)
+    ).normalize();
 
     /* ---- front wheel, on its own spin node at the axle ---- */
     this._frontWheel = new THREE.Group();
@@ -475,7 +524,13 @@ export class Bicycle {
     this.gripAnchors = [];
     for (const sx of [-1, 1]) {
       const a = new THREE.Object3D();
-      a.position.set(sx * (BAR_HALF - 0.008), BAR_Y + 0.016, BAR_Z + BAR_SWEEP * 0.86);
+      // Middle of the grip, where a hand actually closes - not the bar end.
+      const t = (GRIP_FROM + 1) * 0.5;
+      a.position.set(
+        sx * (BAR_CLAMP + BAR_ARM * Math.cos(BAR_SWEEP) * t),
+        BAR_Y + 0.016 * t + 0.014,
+        BAR_Z + BAR_ARM * Math.sin(BAR_SWEEP) * t
+      );
       this._steerFrame.add(a);
       this.gripAnchors.push(a);
     }
@@ -505,7 +560,10 @@ export class Bicycle {
       // laced rather than as a wagon wheel.
       for (const lace of [-0.055, 0.055]) {
         const s = new THREE.BoxGeometry(0.0035, (WHEEL_R - TYRE_T - 0.02) * 2, 0.0035);
+        // Spun within the wheel's plane, then laid into it - same quarter turn
+        // the rim takes, and for the same reason.
         s.rotateZ(a + lace);
+        s.rotateY(Math.PI / 2);
         parts.push(s);
       }
     }
@@ -958,6 +1016,30 @@ export class Bicycle {
   }
 
   /**
+   * Which way the bar runs at that grip, in world space, pointing outboard.
+   *
+   * A hand on a handlebar is not just *at* the grip, it is closed *around* it,
+   * and which way round it closes is set entirely by the direction the tube
+   * runs. Reporting the axis lets the rider pose square the hand to the bar
+   * instead of carrying a fixed wrist angle that only ever looked right in one
+   * pose - and because it is taken from the same swept arm the grip geometry
+   * is built from, the two cannot disagree.
+   *
+   * @param {number} side -1 left, +1 right
+   * @param {THREE.Vector3} out
+   * @returns {boolean}
+   */
+  getGripAxis(side, out) {
+    if (!this._gripAxis || !this._steerFrame) return false;
+    this.root.updateWorldMatrix(true, true);
+    this._steerFrame.getWorldQuaternion(_gq1);
+    out.copy(this._gripAxis);
+    if (side < 0) out.x *= -1;
+    out.applyQuaternion(_gq1).normalize();
+    return true;
+  }
+
+  /**
    * Where the rider ends up when they step off: beside the bike on the near
    * side, which is the side they swung their leg over towards.
    */
@@ -986,6 +1068,17 @@ export class Bicycle {
   /** Crank angle, so the pose can shift the rider's weight with the stroke. */
   get crankPhase() {
     return this._crank;
+  }
+
+  /**
+   * Steering angle in radians, positive to the left.
+   *
+   * The rider pose needs this: the grips are on the far side of a joint that
+   * swings them up to a fifth of a metre, and a rider whose shoulders do not
+   * turn with the bars cannot keep hold of them.
+   */
+  get steerAngle() {
+    return this._steer;
   }
 
   /** 0 standing beside the bike, 1 seated. Drives the mount/dismount blend. */

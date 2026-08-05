@@ -354,7 +354,7 @@ export function textureFromRGBA(data, size, opts = {}) {
  */
 export function makeCanvasTexture(width, height, draw, opts = {}) {
   const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   draw(ctx, width, height);
   const tex = new THREE.CanvasTexture(canvas);
   return applyTextureDefaults(tex, { colorSpace: THREE.SRGBColorSpace, ...opts });
@@ -743,7 +743,7 @@ export function makeGradientTexture(o = {}) {
   const w = width ?? (direction === 'vertical' ? 8 : size);
   const h = direction === 'vertical' ? size : direction === 'horizontal' ? 8 : size;
   const canvas = createCanvas(direction === 'radial' ? size : w, direction === 'radial' ? size : h);
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
   let grad;
   if (direction === 'vertical') grad = ctx.createLinearGradient(0, 0, 0, canvas.height);

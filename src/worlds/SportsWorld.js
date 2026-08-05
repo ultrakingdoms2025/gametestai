@@ -168,7 +168,7 @@ function makeCanvas(w, h) {
  * Faster than thousands of tiny fillRect calls and gives us noise for free.
  */
 function paintPixels(canvas, fn) {
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   const img = ctx.createImageData(canvas.width, canvas.height);
   const d = img.data;
   const w = canvas.width;
@@ -194,7 +194,7 @@ function paintPixels(canvas, fn) {
  * not land as one multi-hundred-millisecond block during a background build.
  */
 async function paintPixelsAsync(canvas, fn, breathe, rows = 64) {
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   const img = ctx.createImageData(canvas.width, canvas.height);
   const d = img.data;
   const w = canvas.width;
@@ -218,7 +218,7 @@ async function paintPixelsAsync(canvas, fn, breathe, rows = 64) {
 function normalFromHeight(canvas, strength = 2.0) {
   const w = canvas.width;
   const h = canvas.height;
-  const src = canvas.getContext('2d').getImageData(0, 0, w, h).data;
+  const src = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data;
   const data = new Uint8Array(w * h * 4);
   const at = (x, y) => src[((((y % h) + h) % h) * w + (((x % w) + w) % w)) * 4] / 255;
   for (let y = 0; y < h; y++) {
@@ -269,7 +269,7 @@ function normalFromHeight(canvas, strength = 2.0) {
 function makeCoverageMips(canvas, threshold = 0.5) {
   const w0 = canvas.width;
   const h0 = canvas.height;
-  const src = canvas.getContext('2d').getImageData(0, 0, w0, h0).data;
+  const src = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w0, h0).data;
 
   /** Level 0 alpha in 0..1, plus its coverage ratio. */
   let level = new Float32Array(w0 * h0);

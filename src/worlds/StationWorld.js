@@ -4864,14 +4864,14 @@ export class StationWorld extends World {
       // rather than one DoubleSide quad that renders mirrored from behind.
       this._signBoard(
         B, s.target === 'medieval' ? SIGN_ROLE.gatewayMedieval : SIGN_ROLE.gatewaySports, 9, 2.2,
-        0, 2.4 + 11.1, cz - sign * 1.35, s.yaw + Math.PI,
+        0, GATEWAY_DECK_Y + 11.1, cz - sign * 1.35, s.yaw + Math.PI,
         { twoSided: true, accent: s.em }
       );
 
       // Backdrop pylons so the portal reads against something solid.
       for (const sx of [-9.5, 9.5]) {
-        B.at('panel', boxGeo(2.6, 14, 2.6, 3), sx, 2.4 + 7, cz + sign * 4.5);
-        B.at(s.em, boxGeo(0.34, 12, 0.34, 1), sx + (sx < 0 ? 1.5 : -1.5), 2.4 + 7, cz + sign * 3.2);
+        B.at('panel', boxGeo(2.6, 14, 2.6, 3), sx, GATEWAY_DECK_Y + 7, cz + sign * 4.5);
+        B.at(s.em, boxGeo(0.34, 12, 0.34, 1), sx + (sx < 0 ? 1.5 : -1.5), GATEWAY_DECK_Y + 7, cz + sign * 3.2);
         this._solid(sx, 7, cz + sign * 4.5, 1.3, 7, 1.3);
       }
 
@@ -4986,11 +4986,20 @@ export class StationWorld extends World {
     const cx = PORTAL_R * spec.side;
     const cz = 0;
 
-    // Dais: two stepped discs, matching the language of the other two.
-    B.at('panelDark', cylGeo(11, 11, 0.5, 28, 2.2), cx, 0.25, cz);
-    B.at('panelWarm', cylGeo(8.6, 8.6, 0.55, 28, 1.8), cx, 0.55, cz);
-    B.at('trim', cylGeo(8.9, 8.9, 0.12, 28, 1.2), cx, 0.86, cz);
-    this._solid(cx, 0.4, cz, 11, 0.4, 11);
+    /* Dais: stepped discs, matching the language of the other two - and, now,
+     * their *height*.
+     *
+     * This dais topped out at 0.86 m while the Z-axis pair stand at
+     * GATEWAY_DECK_Y, and the portal spec, the approach and the backdrop pylons
+     * are all measured from that. The mismatch is what left the pylons hanging
+     * one and a half metres over their own dais. One height for all four
+     * gateways, taken from the constant, so a gateway cannot half-agree with
+     * itself again. */
+    const D = GATEWAY_DECK_Y;
+    B.at('panelDark', cylGeo(11, 11, D * 0.62, 28, 2.2), cx, D * 0.31, cz);
+    B.at('panelWarm', cylGeo(8.6, 8.6, D, 28, 1.8), cx, D * 0.5, cz);
+    B.at('trim', cylGeo(8.9, 8.9, 0.12, 28, 1.2), cx, D + 0.06, cz);
+    this._solid(cx, D * 0.5, cz, 11, D * 0.5, 11);
 
     // Approach lip so the step up reads from across the plaza.
     for (let i = 0; i < 3; i++) {
@@ -5005,9 +5014,10 @@ export class StationWorld extends World {
       const a = (i / 4) * Math.PI * 2 + Math.PI * 0.25;
       const px = cx + Math.cos(a) * 6.4;
       const pz = cz + Math.sin(a) * 6.4;
-      B.at('panelWarm', boxGeo(1.1, 5.2, 1.1, 1.4), px, 2.6 + 0.8, pz, -a);
-      B.at('emAmber', boxGeo(0.3, 0.22, 0.3, 1), px, 5.4, pz, -a);
-      this._solidRot(px, 3.4, pz, 0.55, 2.6, 0.55, -a);
+      // Standing on the dais, not on where the dais used to end.
+      B.at('panelWarm', boxGeo(1.1, 5.2, 1.1, 1.4), px, D + 2.6, pz, -a);
+      B.at('emAmber', boxGeo(0.3, 0.22, 0.3, 1), px, D + 4.6, pz, -a);
+      this._solidRot(px, D + 2.6, pz, 0.55, 2.6, 0.55, -a);
       this._contact(px, pz, 3.0);
     }
 
@@ -5030,15 +5040,15 @@ export class StationWorld extends World {
       B,
       spec.target === 'citadel' ? SIGN_ROLE.gatewayCitadel : SIGN_ROLE.gatewayRace,
       9, 2.2,
-      cx - sgn * 1.35, 2.4 + 11.1, cz, Math.PI * 0.5 * sgn + Math.PI,
+      cx - sgn * 1.35, GATEWAY_DECK_Y + 11.1, cz, Math.PI * 0.5 * sgn + Math.PI,
       { twoSided: true, accent: em }
     );
 
     // Backdrop pylons, so the placard and the aperture read against something
     // solid instead of floating against the far hull.
     for (const sz of [-9.5, 9.5]) {
-      B.at('panel', boxGeo(2.6, 14, 2.6, 3), cx + sgn * 4.5, 2.4 + 7, cz + sz);
-      B.at(em, boxGeo(0.34, 12, 0.34, 1), cx + sgn * 3.2, 2.4 + 7, cz + sz + (sz < 0 ? 1.5 : -1.5));
+      B.at('panel', boxGeo(2.6, 14, 2.6, 3), cx + sgn * 4.5, GATEWAY_DECK_Y + 7, cz + sz);
+      B.at(em, boxGeo(0.34, 12, 0.34, 1), cx + sgn * 3.2, GATEWAY_DECK_Y + 7, cz + sz + (sz < 0 ? 1.5 : -1.5));
       this._solid(cx + sgn * 4.5, 7, cz + sz, 1.3, 7, 1.3);
     }
 
@@ -5054,12 +5064,13 @@ export class StationWorld extends World {
      * The collider comes from `_ramp` (an invisible tilted box, because physics
      * only rotates colliders about Y); the visible wedge is drawn on top of it
      * at the same pitch so the two describe the same slope. */
-    const DECK_Y = 2.87;
+    const DECK_Y = GATEWAY_DECK_Y;
     const RUN = 10;
-    // Distance from the gateway centre to the walkable edge of the raised deck,
-    // measured off the built world rather than assumed: the deck reads 2.87 m
-    // from 4 m out and chamfers to 2.73 m at 5 m.
-    const DECK_EDGE = 5;
+    /* The ramp starts at the *rim* of the dais and runs outward. It used to
+     * start 5 m from the centre, which is six metres inside an eleven-metre
+     * dais - most of the slope was buried in the thing it was supposed to
+     * climb, and only its last few metres ever saw daylight. */
+    const DECK_EDGE = 11;
     const rampPitch = Math.atan2(DECK_Y, RUN);
     /* `_ramp` builds its proxy long in local +Z and tilts that end *up*, so the
      * yaw has to point local +Z at the deck. `sgn` already points from the plaza
@@ -5080,12 +5091,13 @@ export class StationWorld extends World {
       B.at(em, boxGeo(0.12, 0.07, RUN, 1), rampMidX, DECK_Y * 0.5 + 0.42, cz + sz, rampYaw, -rampPitch);
     }
 
-    // Guide lights marching up to the threshold.
+    // Guide lights marching across the dais to the threshold. Kept inside the
+    // rim so they sit on the deck rather than hanging over the ramp's slope.
     for (let i = 0; i < 7; i++) {
       const t = i / 6;
-      const sx = cx - sgn * (14 - t * 4);
-      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, 2.5, -6);
-      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, 2.5, 6);
+      const sx = cx - sgn * (10.4 - t * 4);
+      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, D + 0.1, -6);
+      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, D + 0.1, 6);
     }
 
     this._contact(cx, cz, 30);

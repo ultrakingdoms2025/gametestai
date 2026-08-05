@@ -1312,7 +1312,7 @@ export class MedievalWorld extends World {
   _surface(name, S, paint, opts = {}) {
     const aC = newCanvas(S);
     const hC = newCanvas(S);
-    const a = aC.getContext('2d');
+    const a = aC.getContext('2d', { willReadFrequently: true });
     const h = hC.getContext('2d', { willReadFrequently: true });
     h.fillStyle = '#7a7a7a';
     h.fillRect(0, 0, S, S);
@@ -1342,7 +1342,7 @@ export class MedievalWorld extends World {
   /** Cut-out surface (grass blades, leaves) - albedo with alpha, no height. */
   _cutout(name, S, paint, alphaRef = 0) {
     const c = newCanvas(S);
-    paint(c.getContext('2d'), S, mulberry32(0x9a11 + name.length * 31));
+    paint(c.getContext('2d', { willReadFrequently: true }), S, mulberry32(0x9a11 + name.length * 31));
     const map = new THREE.CanvasTexture(c);
     map.colorSpace = THREE.SRGBColorSpace;
     map.wrapS = map.wrapT = THREE.ClampToEdgeWrapping;

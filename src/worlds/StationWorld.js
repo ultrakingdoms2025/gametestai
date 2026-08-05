@@ -54,6 +54,16 @@ const PORTAL_R = 54;     // distance of the portal daises from the plaza centre
  * to follow it up there.
  */
 const GATEWAY_DECK_Y = 2.4;
+/**
+ * Offsets of the backdrop pylons from a gateway's centre, along and across its
+ * axis.
+ *
+ * Chosen so a 2.6 m pylon lands wholly inside the 11 m dais: the far corner
+ * sits at `hypot(a + 1.3, b + 1.3)`, which these keep at 10.9. The pylons used
+ * to stand at 9.5 / 4.5, putting that corner at 12.3 - a metre and a quarter
+ * past the rim, hanging over the deck below.
+ */
+const PYLON_OFF = { a: 8.1, b: 3.8 };
 const OCULUS_R = 34;     // glazed opening in the overhead plate, over the plaza
 const WINDOW_HALF = 55;  // window sector half-angle, centred on +X
 
@@ -4868,11 +4878,17 @@ export class StationWorld extends World {
         { twoSided: true, accent: s.em }
       );
 
-      // Backdrop pylons so the portal reads against something solid.
-      for (const sx of [-9.5, 9.5]) {
-        B.at('panel', boxGeo(2.6, 14, 2.6, 3), sx, GATEWAY_DECK_Y + 7, cz + sign * 4.5);
-        B.at(s.em, boxGeo(0.34, 12, 0.34, 1), sx + (sx < 0 ? 1.5 : -1.5), GATEWAY_DECK_Y + 7, cz + sign * 3.2);
-        this._solid(sx, 7, cz + sign * 4.5, 1.3, 7, 1.3);
+      /* Backdrop pylons so the portal reads against something solid.
+       *
+       * Pulled in to `PYLON_OFF`. They stood at a radius of 10.5, and a 2.6 m
+       * box at that radius puts its outer corner at 12.3 - past the 11 m dais
+       * rim, so a corner of every pylon overhung the edge with nothing under
+       * it. From the deck that reads as a tower hanging in the air, which is
+       * exactly what it is. */
+      for (const sx of [-PYLON_OFF.a, PYLON_OFF.a]) {
+        B.at('panel', boxGeo(2.6, 14, 2.6, 3), sx, GATEWAY_DECK_Y + 7, cz + sign * PYLON_OFF.b);
+        B.at(s.em, boxGeo(0.34, 12, 0.34, 1), sx + (sx < 0 ? 1.5 : -1.5), GATEWAY_DECK_Y + 7, cz + sign * (PYLON_OFF.b - 1.3));
+        this._solid(sx, 7, cz + sign * PYLON_OFF.b, 1.3, 7, 1.3);
       }
 
       /* --- The light has to have a path ---------------------------------
@@ -5045,11 +5061,12 @@ export class StationWorld extends World {
     );
 
     // Backdrop pylons, so the placard and the aperture read against something
-    // solid instead of floating against the far hull.
-    for (const sz of [-9.5, 9.5]) {
-      B.at('panel', boxGeo(2.6, 14, 2.6, 3), cx + sgn * 4.5, GATEWAY_DECK_Y + 7, cz + sz);
-      B.at(em, boxGeo(0.34, 12, 0.34, 1), cx + sgn * 3.2, GATEWAY_DECK_Y + 7, cz + sz + (sz < 0 ? 1.5 : -1.5));
-      this._solid(cx + sgn * 4.5, 7, cz + sz, 1.3, 7, 1.3);
+    // solid instead of floating against the far hull. Same inset as the pair on
+    // the other axis - see the note there.
+    for (const sz of [-PYLON_OFF.a, PYLON_OFF.a]) {
+      B.at('panel', boxGeo(2.6, 14, 2.6, 3), cx + sgn * PYLON_OFF.b, GATEWAY_DECK_Y + 7, cz + sz);
+      B.at(em, boxGeo(0.34, 12, 0.34, 1), cx + sgn * (PYLON_OFF.b - 1.3), GATEWAY_DECK_Y + 7, cz + sz + (sz < 0 ? 1.5 : -1.5));
+      this._solid(cx + sgn * PYLON_OFF.b, 7, cz + sz, 1.3, 7, 1.3);
     }
 
     /* Approach ramp from the plaza deck up to the gateway deck.

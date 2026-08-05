@@ -6493,11 +6493,28 @@ export class StationWorld extends World {
       }
     }
 
-    // Skybridges linking the towers across the avenue.
+    /* Skybridges linking the towers across the avenue.
+     *
+     * The deck height comes from the shorter tower's floor plate. It used to be
+     * `12 + i * 3.6`, a stagger picked for the silhouette with no relation to
+     * either building it lands on - and these towers are 5, 7 or 9 floors
+     * depending on where they sit, so the pairs are rarely the same height. The
+     * worst case is the outer pair: a 34.7 m tower joined to a 20.3 m one by a
+     * bridge at 19.2, which puts its deck 1.1 m *below* the short tower's roof -
+     * connecting to no floor at all - while its canopy at 22.0 stands 1.7 m
+     * proud of that roof and through the parapet. Standing on the short tower
+     * you are looking at a bridge that arrives above the building it arrives at.
+     *
+     * Floors are `plinth + f * fh` (see `_block`), so this picks the highest
+     * floor plate of the shorter tower that still leaves the bridge's own
+     * 2.95 m of section under that tower's roof slab.
+     */
     for (let i = 0; i < 3; i++) {
       const a = towers[i];
       const b = towers[i + 3];
-      const y = 12 + i * 3.6;
+      const shorter = Math.min(a.h, b.h);
+      const floor = Math.max(1, Math.floor((shorter - 1.4 - 2.95 - 0.9) / 3.6));
+      const y = 0.9 + floor * 3.6;
       const mid = a.p.clone().add(b.p).multiplyScalar(0.5);
       const len = a.p.distanceTo(b.p) - a.d;
       const dir = _v1.subVectors(b.p, a.p).normalize();

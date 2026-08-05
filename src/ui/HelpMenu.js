@@ -76,13 +76,14 @@ const GROUPS = [
     accent: 'mag',
     rows: [
       ['M', 'Mount wheel — hold, aim, release'],
-      ['1-5', 'Pick from the wheel directly'],
+      ['1-6', 'Pick from the wheel directly'],
       ['F', 'Dismount'],
-      ['Shift', 'Gallop, or beat the eagle’s wings'],
-      ['Space', 'Fly up — dragon and eagle'],
+      ['Shift', 'Gallop, sprint the pedals, or beat the eagle’s wings'],
+      ['Space', 'Fly up — dragon and eagle; hop on the bicycle'],
       ['Ctrl', 'Fly down — dragon and eagle'],
       ['Mouse', 'Steer your mount'],
       ['W S', 'Eagle: pitch trim, trades height for speed'],
+      ['W', 'Bicycle: pedal. Let go and it freewheels'],
     ],
   },
   {

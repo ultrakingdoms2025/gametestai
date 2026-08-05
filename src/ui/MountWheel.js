@@ -42,6 +42,7 @@ const MOUNTS = [
   { id: 'dragon', label: 'Dragon', hint: 'Flies. Breathes fire.' },
   { id: 'eagle', label: 'Eagle', hint: 'Glides. Trades height for speed.' },
   { id: 'car', label: 'Ground Car', hint: 'Fast over open ground.' },
+  { id: 'bicycle', label: 'Bicycle', hint: 'Quiet. Turns tightly. You pedal.' },
   { id: 'horse', label: 'Horse', hint: 'Sure-footed. Jumps.' },
   { id: 'hoverboard', label: 'Hoverboard', hint: 'Nimble. Boosts.' },
 ];
@@ -57,6 +58,11 @@ const ICONS = {
   horse: ['M18 50V34c0-8 6-14 14-14h6l6-8v12c0 8-4 12-10 14v12',
     'M24 50V38', 'M40 50V40'],
   hoverboard: ['M12 36h40l-4 8H16z', 'M18 48h28', 'M22 26h20l-4 10H26z'],
+  // Two wheels, the diamond frame between them, and the bars. Drawn as the
+  // silhouette rather than as a side elevation with spokes: at 64 px a spoked
+  // wheel is a grey disc, and the frame triangle is what reads as "bicycle".
+  bicycle: ['M16 44a8 8 0 1016 0 8 8 0 10-16 0z', 'M32 44a8 8 0 1016 0 8 8 0 10-16 0z',
+    'M24 44l8-16h10l-6 16', 'M32 28h-8', 'M42 28l-4-8h-6', 'M38 20h6'],
 };
 
 function el(tag, cls, text) {
@@ -224,7 +230,7 @@ export class MountWheel {
       if (!this._open || e.type !== 'keydown') return;
       if (e.code === 'Escape') { e.preventDefault(); this.close(); return; }
       // Digits pick directly, for anyone who would rather not aim.
-      const n = { Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3, Digit5: 4 }[e.code];
+      const n = { Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3, Digit5: 4, Digit6: 5 }[e.code];
       if (n !== undefined && n < MOUNTS.length) {
         e.preventDefault();
         this._commit(n);

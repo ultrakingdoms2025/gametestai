@@ -4,6 +4,7 @@ import { Dragon } from './Dragon.js';
 import { Car } from './Car.js';
 import { Horse } from './Horse.js';
 import { Eagle } from './Eagle.js';
+import { Bicycle } from './Bicycle.js';
 import { characterCreateParams, applyCharacterColors } from '../player/PlayerAvatar.js';
 import { HumanoidFactory } from '../npc/Humanoid.js';
 
@@ -130,6 +131,40 @@ const POSE = {
     },
   },
   /**
+   * On the bicycle. Fallback silhouette ONLY - `_poseCyclist` solves the feet
+   * onto the pedals and the hands onto the bar grips and drives all of this
+   * live. It exists because a bike that reported no anchors would otherwise
+   * reach `_applyPose` with nothing to apply.
+   *
+   * Sat forward with a flat-ish back, knees high and hands ahead: a cyclist,
+   * not a horseman. Legs are drawn near the top of the pedal stroke, which is
+   * the pose the solve starts from on the first frame.
+   */
+  cycle: {
+    root: [0, 0, 0],
+    rootRot: [0, 0, 0],
+    bones: {
+      pelvis: [-0.18, 0, 0],
+      spine01: [0.18, 0, 0],
+      spine02: [0.17, 0, 0],
+      spine03: [0.11, 0, 0],
+      neck: [-0.26, 0, 0],
+      head: [-0.16, 0, 0],
+      thighR: [1.5, 0, -0.16],
+      calfR: [-1.5, 0, 0],
+      footR: [0.42, 0, 0],
+      thighL: [0.9, 0, 0.16],
+      calfL: [-1.0, 0, 0],
+      footL: [0.42, 0, 0],
+      clavicleR: [0, 0, 0.09],
+      upperArmR: [1.15, 0.16, 0.34],
+      foreArmR: [0.3, 0.18, 0],
+      clavicleL: [0, 0, -0.09],
+      upperArmL: [1.15, -0.16, -0.34],
+      foreArmL: [0.3, -0.18, 0],
+    },
+  },
+  /**
    * Behind the wheel. Legs forward into the footwell rather than astride,
    * elbows dropped, torso upright against a bucket seat back. This is only the
    * fallback silhouette - the limbs are solved onto the pedals and the wheel
@@ -193,7 +228,7 @@ export class MountManager {
     this._fovKick = 0;
     this._lastBoost = false;
     this._landingFor = null;
-    this._unlocked = new Set(['hoverboard', 'dragon', 'car', 'horse', 'eagle']);
+    this._unlocked = new Set(['hoverboard', 'dragon', 'car', 'horse', 'eagle', 'bicycle']);
     /**
      * Player car livery, 0xRRGGBB per channel. Applied to the car mount on
      * create and re-applied whenever it is (re)built. Persisted via serialize.
@@ -344,7 +379,12 @@ export class MountManager {
       }
       m.requestLanding?.();
       this._landingFor = m;
-      this.bus.emit('hud:notify', { text: 'Landing - [F] again to jump off', tone: 'warn' });
+      // Mounts that are not aircraft get to say something that is true of them:
+      // a bicycle is not landing, it is stopping.
+      this.bus.emit('hud:notify', {
+        text: m.dismountHint ?? 'Landing - [F] again to jump off',
+        tone: 'warn',
+      });
       return false;
     }
     this._dismount({ reason: 'dismount' });
@@ -529,6 +569,7 @@ export class MountManager {
     // lives on the player rather than on the mount.
     else if (id === 'horse') mount = new Horse(ctx);
     else if (id === 'eagle') mount = new Eagle({ ...ctx, player: this.player });
+    else if (id === 'bicycle') mount = new Bicycle(ctx);
     if (mount) {
       if (id === 'car') mount.applyCustomization?.(this._livery);
       this._applyPowers(id, mount);
@@ -617,7 +658,7 @@ export class MountManager {
    * @param {string[]} ids Mount ids to build.
    * @returns {THREE.Object3D[]} Roots that were parked, for the caller to unpark.
    */
-  prebuild(ids = ['hoverboard', 'dragon', 'car', 'horse', 'eagle']) {
+  prebuild(ids = ['hoverboard', 'dragon', 'car', 'horse', 'eagle', 'bicycle']) {
     const parked = [];
     for (const id of ids) {
       if (this._mounts.has(id)) continue;
@@ -929,6 +970,10 @@ export class MountManager {
       this._poseDriver(dt, mount);
       return;
     }
+    if (this._riderPose === 'cycle') {
+      this._poseCyclist(dt, mount);
+      return;
+    }
     if (this._riderPose === 'hover') {
       this._poseBoard(dt, mount);
       return;
@@ -1228,6 +1273,93 @@ export class MountManager {
   }
 
   /**
+   * Ride the bicycle.
+   *
+   * Same architecture as the other three: torso keyframed, limbs *solved*. What
+   * is different is that the targets are moving under their own power. The
+   * bike's pedal platforms orbit its bottom bracket at a cadence geared to the
+   * ground, so solving the feet onto them produces pedalling - at any speed,
+   * through any gear change, with no cycle to keep in sync and nothing to
+   * skate. The bar grips are children of the steering node, so the arms follow
+   * the bars round a corner for the same reason the car driver's do.
+   *
+   * The mount and dismount need no separate path either. The bike reports foot
+   * targets that travel between the ground and the pedals while `mountBlend` is
+   * short of 1, so the leg-over is the same IK doing the same job; all that is
+   * added here is standing the rider up off the saddle for the duration, which
+   * is the part the bike cannot express.
+   *
+   * @param {number} dt
+   * @param {import('./Bicycle.js').Bicycle} mount
+   */
+  _poseCyclist(dt, mount) {
+    const r = this._rider;
+    const root = r.root;
+    const speed01 = mount.speed01 ?? 0;
+    const effort = mount.boost01 ?? 0;
+    const roll = mount.bankRoll ?? 0;
+    const seatT = clamp01(mount.mountBlend ?? 1);
+
+    /* A cyclist's shape is set by how hard they are working: upright when
+     * soft-pedalling, folded down over the bars in a sprint. One number does
+     * most of the work, and it comes from the bike rather than from a guess. */
+    this._lean = damp(this._lean ?? 0, speed01 * 0.34 + effort * 0.3, 4.5, dt);
+    this._rollLean = damp(this._rollLean ?? 0, clamp(roll, -0.62, 0.62), 6, dt);
+    const lean = this._lean * seatT;
+    const rl = this._rollLean;
+
+    /* Off the saddle and to the near side while a leg is coming over, settling
+     * onto it as the rider arrives. Without this the figure is seated on thin
+     * air for the whole of the mount, with one leg stretched to the ground. */
+    const up = 1 - seatT;
+    root.position.set(-up * 0.3, -this._riderDrop + up * 0.2, up * 0.06);
+    root.rotation.set(0, 0, 0);
+
+    /* ---- torso: forward over the bars, weight into the corner ---- */
+    this._setBone('pelvis', -0.16 + lean * 0.2, 0, 0);
+    this._setBone('spine01', 0.16 + lean * 0.3, rl * 0.06, -rl * 0.12);
+    this._setBone('spine02', 0.15 + lean * 0.34, rl * 0.07, -rl * 0.14);
+    this._setBone('spine03', 0.1 + lean * 0.2, rl * 0.05, -rl * 0.09);
+    // The head stays level with the road however far the back folds over, which
+    // is what a rider does and what stops the pose reading as a cower.
+    this._setBone('neck', -0.24 - lean * 0.34, -rl * 0.07, rl * 0.1);
+    this._setBone('head', -0.14 - lean * 0.2, -rl * 0.15, rl * 0.12);
+    this._setBone('clavicleR', 0, 0, 0.09 + lean * 0.05);
+    this._setBone('clavicleL', 0, 0, -0.09 - lean * 0.05);
+
+    // The bike, its lean and its cranks have all moved this frame, and a
+    // world-space solve needs current matrices.
+    root.updateWorldMatrix(true, true);
+
+    /* ---- feet onto the pedals ---- */
+    for (const side of [1, -1]) {
+      const s = side > 0 ? 'R' : 'L';
+      if (!mount.getStirrupWorld?.(side, _ikTarget)) {
+        this._applyPose('ride', 1);
+        break;
+      }
+      // Knees forward and out: a cyclist's knee tracks over the pedal, and the
+      // pole is what stops the joint solving backwards through the saddle.
+      if (this._solveIK(`thigh${s}`, `calf${s}`, `foot${s}`, _ikTarget, side * 0.3, 0.7, -0.65)) {
+        // Ankle drops through the bottom of the stroke and lifts over the top -
+        // the small motion that separates pedalling from treading water.
+        const ankle = Math.cos((mount.crankPhase ?? 0) + (side > 0 ? Math.PI : 0)) * 0.16;
+        this._aimTip(`foot${s}`, `toe${s}`, side * 0.05, -0.42 + ankle, -0.9);
+      }
+    }
+
+    /* ---- hands onto the grips ---- */
+    for (const side of [1, -1]) {
+      const s = side > 0 ? 'R' : 'L';
+      if (!mount.getGripWorld?.(side, _ikTarget)) break;
+      if (this._solveIK(`upperArm${s}`, `foreArm${s}`, `hand${s}`, _ikTarget, side * 0.85, -0.6, 0.7)) {
+        // Closed over the bar rather than continuing the forearm.
+        this._setBone(`hand${s}`, 0.32, 0, side * -0.26);
+      }
+    }
+  }
+
+  /**
    * Analytic two-bone IK, written straight onto the bone quaternions.
    *
    * The skeleton has no per-bone orientation - every bone inherits the character
@@ -1337,7 +1469,7 @@ export class MountManager {
   deserialize(data) {
     if (!data) return;
     if (Array.isArray(data.unlocked) && data.unlocked.length) {
-      const known = new Set(['hoverboard', 'dragon', 'car', 'horse', 'eagle']);
+      const known = new Set(['hoverboard', 'dragon', 'car', 'horse', 'eagle', 'bicycle']);
       this._unlocked = new Set(data.unlocked.filter((id) => known.has(id)));
       // A save written before a mount existed must not lock it away for good.
       // This is the same reason the car was force-added when it landed, and it

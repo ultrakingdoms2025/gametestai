@@ -123,6 +123,62 @@ function closestPointOnTriangle(a, b, c, p, out) {
   return out.copy(a).addScaledVector(ab, v).addScaledVector(ac, w);
 }
 
+// Private to the segment-vs-soup query and its segment-segment helper.
+const _sg1 = new THREE.Vector3();
+const _sg2 = new THREE.Vector3();
+const _sg3 = new THREE.Vector3();
+const _sg4 = new THREE.Vector3();
+const _sg5 = new THREE.Vector3();
+const _sg6 = new THREE.Vector3();
+const _sg7 = new THREE.Vector3();
+const _sg8 = new THREE.Vector3();
+const _sg9 = new THREE.Vector3();
+
+/**
+ * Closest points between segments p1q1 and p2q2 (Ericson, Real-Time Collision
+ * Detection 5.1.9). Returns the squared distance; `out1` and `out2` receive the
+ * closest point on each segment.
+ */
+function closestPtSegmentSegment(p1, q1, p2, q2, out1, out2) {
+  const d1 = _sg1.subVectors(q1, p1);
+  const d2 = _sg2.subVectors(q2, p2);
+  const r = _sg3.subVectors(p1, p2);
+  const a = d1.dot(d1);
+  const e = d2.dot(d2);
+  const f = d2.dot(r);
+  const EPS = 1e-12;
+  let s, t;
+
+  if (a <= EPS && e <= EPS) {
+    s = 0;
+    t = 0;
+  } else if (a <= EPS) {
+    s = 0;
+    t = Math.min(1, Math.max(0, f / e));
+  } else {
+    const c = d1.dot(r);
+    if (e <= EPS) {
+      t = 0;
+      s = Math.min(1, Math.max(0, -c / a));
+    } else {
+      const b = d1.dot(d2);
+      const denom = a * e - b * b;
+      s = denom !== 0 ? Math.min(1, Math.max(0, (b * f - c * e) / denom)) : 0;
+      t = (b * s + f) / e;
+      if (t < 0) {
+        t = 0;
+        s = Math.min(1, Math.max(0, -c / a));
+      } else if (t > 1) {
+        t = 1;
+        s = Math.min(1, Math.max(0, (b - c) / a));
+      }
+    }
+  }
+  out1.copy(p1).addScaledVector(d1, s);
+  out2.copy(p2).addScaledVector(d2, t);
+  return out1.distanceToSquared(out2);
+}
+
 // Private to the triangle-soup branch of _raycastCollider. Chunked geometry
 // offers that branch hundreds of colliders per ray, so nothing in it may
 // allocate.
@@ -782,6 +838,114 @@ export class Physics {
   }
 
   /**
+   * Closest point on a triangle soup to a *segment*, exactly.
+   *
+   * ── Why this exists rather than reusing `_closestPoint` ───────────────────
+   * The capsule solver finds a collider's nearest point by iterating: nearest
+   * point to the axis midpoint, project that onto the axis, nearest point to
+   * *that*. Two passes converge for a box or a sphere, which is what the note
+   * in `resolveCapsule` means by "the convex shapes we use" - and a triangle
+   * soup is not one. Pass one picks whichever triangle is nearest the capsule's
+   * middle, and if the real contact is a pipe at ankle height the second pass
+   * measures from a point derived from the wrong triangle and reports a
+   * distance that is too large. Measured against the station's collided
+   * geometry: true distance from the axis 0.212 m, two-pass answer 0.371 m,
+   * capsule radius 0.35 - so the solver walked the player through a collider it
+   * was holding all along. That is not a tuning problem, it is the wrong query.
+   *
+   * The closest pair between a segment and a triangle lies at one of: a segment
+   * endpoint against the triangle, the segment interior against one of the
+   * three edges, or a crossing of the triangle's interior. All four are tested.
+   *
+   * Being a segment query rather than a point query also pays for itself:
+   * `maxDist` here is the capsule radius, not the radius plus half the capsule
+   * height that a midpoint query needs to stay conservative, so the bounds
+   * rejects run five times tighter and retire far more triangles.
+   *
+   * @param {Collider} collider a 'mesh' collider
+   * @param {THREE.Vector3} segA lower capsule sphere centre
+   * @param {THREE.Vector3} segB upper capsule sphere centre
+   * @param {number} maxDist ignore anything further than this from the segment
+   * @param {THREE.Vector3} out receives the point on the soup
+   * @returns {THREE.Vector3|null}
+   */
+  _closestPointOnSoup(collider, segA, segB, maxDist, out) {
+    // Capsule box against the chunk box. Both are axis-aligned, so this is the
+    // cheapest possible rejection and it retires most chunks outright.
+    const bnd = collider.bounds;
+    const loX = Math.min(segA.x, segB.x), hiX = Math.max(segA.x, segB.x);
+    const loY = Math.min(segA.y, segB.y), hiY = Math.max(segA.y, segB.y);
+    const loZ = Math.min(segA.z, segB.z), hiZ = Math.max(segA.z, segB.z);
+    if (
+      bnd.min.x - maxDist > hiX || bnd.max.x + maxDist < loX ||
+      bnd.min.y - maxDist > hiY || bnd.max.y + maxDist < loY ||
+      bnd.min.z - maxDist > hiZ || bnd.max.z + maxDist < loZ
+    ) return null;
+
+    const pos = collider.positions;
+    let bestSq = maxDist * maxDist;
+    let found = false;
+    const a = _sg4, b = _sg5, c = _sg6;
+    const p = _sg7, q = _sg8, n = _sg9;
+
+    for (let i = 0; i < pos.length; i += 9) {
+      const ax = pos[i], ay = pos[i + 1], az = pos[i + 2];
+      const bx = pos[i + 3], by = pos[i + 4], bz = pos[i + 5];
+      const cx = pos[i + 6], cy = pos[i + 7], cz = pos[i + 8];
+
+      // Triangle box against the capsule box, tightened by the best so far.
+      const reach = Math.sqrt(bestSq);
+      let dx = Math.min(ax, bx, cx) - hiX;
+      if (dx < 0) dx = Math.max(0, loX - Math.max(ax, bx, cx));
+      if (dx >= reach) continue;
+      let dy = Math.min(ay, by, cy) - hiY;
+      if (dy < 0) dy = Math.max(0, loY - Math.max(ay, by, cy));
+      if (dy >= reach) continue;
+      let dz = Math.min(az, bz, cz) - hiZ;
+      if (dz < 0) dz = Math.max(0, loZ - Math.max(az, bz, cz));
+      if (dx * dx + dy * dy + dz * dz >= bestSq) continue;
+
+      a.set(ax, ay, az);
+      b.set(bx, by, bz);
+      c.set(cx, cy, cz);
+
+      /* Does the axis pass clean through the triangle? Neither the endpoint
+       * tests nor the edge tests below report zero for that case - they all
+       * measure to the boundary - so a capsule skewered by a surface would
+       * otherwise read as comfortably clear of it. */
+      n.crossVectors(_sg1.subVectors(b, a), _sg2.subVectors(c, a));
+      const dA = n.dot(_sg3.subVectors(segA, a));
+      const dB = n.dot(_sg3.subVectors(segB, a));
+      if ((dA < 0) !== (dB < 0)) {
+        const t = dA / (dA - dB);
+        p.copy(segA).addScaledVector(_sg3.subVectors(segB, segA), t);
+        closestPointOnTriangle(a, b, c, p, q);
+        if (q.distanceToSquared(p) < 1e-8) {
+          out.copy(p);
+          return out;
+        }
+      }
+
+      // Endpoints against the triangle face.
+      closestPointOnTriangle(a, b, c, segA, q);
+      let dsq = q.distanceToSquared(segA);
+      if (dsq < bestSq) { bestSq = dsq; out.copy(q); found = true; }
+      closestPointOnTriangle(a, b, c, segB, q);
+      dsq = q.distanceToSquared(segB);
+      if (dsq < bestSq) { bestSq = dsq; out.copy(q); found = true; }
+
+      // Segment interior against each edge.
+      dsq = closestPtSegmentSegment(segA, segB, a, b, p, q);
+      if (dsq < bestSq) { bestSq = dsq; out.copy(q); found = true; }
+      dsq = closestPtSegmentSegment(segA, segB, b, c, p, q);
+      if (dsq < bestSq) { bestSq = dsq; out.copy(q); found = true; }
+      dsq = closestPtSegmentSegment(segA, segB, c, a, p, q);
+      if (dsq < bestSq) { bestSq = dsq; out.copy(q); found = true; }
+    }
+    return found ? out : null;
+  }
+
+  /**
    * Resolve a capsule against the static world.
    *
    * @param {THREE.Vector3} position - feet position; mutated in place.
@@ -828,35 +992,46 @@ export class Physics {
       for (const collider of nearby) {
         if (!collider.solid) continue;
 
-        /* Triangle chunks get their bounds tested against the capsule's own box
-         * before any of the closest-point machinery runs. `_closestPoint` makes
-         * the same rejection, but it is called twice per collider below and has
-         * to build the query point first; a world that collides its structure as
-         * chunked soup can put a hundred chunks in one broadphase cell, and at
-         * that count the difference between rejecting here and rejecting in
-         * there is most of the solver's cost. Boxes and spheres skip the test:
-         * for them `_closestPoint` is already a handful of arithmetic. */
-        if (collider.type === 'mesh') {
-          const b = collider.bounds;
-          if (
-            b.min.x - radius > position.x || b.max.x + radius < position.x ||
-            b.min.z - radius > position.z || b.max.z + radius < position.z ||
-            b.min.y - radius > segB.y || b.max.y + radius < segA.y
-          ) continue;
+        let cp;
+        let inside;
+        if (collider.type !== 'mesh') {
+          /* Bounding sphere against the capsule segment.
+           *
+           * The convex path below costs two closest-point passes, and for a box
+           * each of those is a pair of matrix transforms - real work to conclude
+           * "not touching", which is the answer for nearly every collider a
+           * broadphase cell hands over. This is exact and conservative: the
+           * bounding sphere encloses the collider, so anything it rejects could
+           * not have been in contact. It earns its keep the moment a world has
+           * thousands of small boxes in one district. */
+          closestPointOnSegment(segA, segB, collider.center, onSeg);
+          const reach = radius + collider.boundingRadius;
+          if (onSeg.distanceToSquared(collider.center) > reach * reach) continue;
         }
 
-        // Closest point on the collider to the capsule axis. Approximated by
-        // iterating: collider->axis, then axis->collider. Two passes is enough
-        // for the convex shapes we use.
-        const axisMid = push.copy(segA).add(segB).multiplyScalar(0.5);
-        let cp = this._closestPoint(collider, axisMid, closest, queryRadius);
-        if (!cp) continue;
-        closestPointOnSegment(segA, segB, cp, onSeg);
-        cp = this._closestPoint(collider, onSeg, closest, queryRadius);
-        if (!cp) continue;
-        // `_cpInside` belongs to the call just made; read it before anything
-        // else can overwrite it.
-        const inside = _cpInside;
+        if (collider.type === 'mesh') {
+          /* Triangle soups get an exact segment query. The two-pass iteration
+           * below is a convex-shape method and silently under-reports on a
+           * soup - see `_closestPointOnSoup`, which also explains why `radius`
+           * is the right cutoff here where the convex path needs `queryRadius`.
+           * A soup has no interior, so `inside` is never true for one. */
+          cp = this._closestPointOnSoup(collider, segA, segB, radius, closest);
+          if (!cp) continue;
+          inside = false;
+        } else {
+          // Closest point on the collider to the capsule axis. Approximated by
+          // iterating: collider->axis, then axis->collider. Two passes is enough
+          // for the convex shapes we use.
+          const axisMid = push.copy(segA).add(segB).multiplyScalar(0.5);
+          cp = this._closestPoint(collider, axisMid, closest, queryRadius);
+          if (!cp) continue;
+          closestPointOnSegment(segA, segB, cp, onSeg);
+          cp = this._closestPoint(collider, onSeg, closest, queryRadius);
+          if (!cp) continue;
+          // `_cpInside` belongs to the call just made; read it before anything
+          // else can overwrite it.
+          inside = _cpInside;
+        }
         closestPointOnSegment(segA, segB, cp, onSeg);
 
         const delta = push.subVectors(onSeg, cp);

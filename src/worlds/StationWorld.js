@@ -39,27 +39,46 @@ const DECK_R = 200;      // walkable deck radius
 const HULL_R = 202;      // structural hull radius
 const WALL_H = 48;       // window / hull wall height
 
-/* Ceiling for geometry-derived collision. Above this is the ceiling plate, the
- * hung canopy rigging and the top of the hull wall - the tallest thing anybody
- * can stand on is a habitat roof at 22 m, and everything between there and the
- * plate is scenery seen from below. See `_solidifyStructure`. */
-const COLLIDE_CEILING = 30;
+/* Ceiling for geometry-derived collision.
+ *
+ * Sampled over 17,665 deck positions, the highest surface a player can stand on
+ * is 48.5 m, with 1,000 of those positions above 30 m - the walkway loop, the
+ * control tower and the upper habitat and skyline roofs are all reachable. An
+ * earlier 30 m guess produced 223 of the 303 walk-throughs in the first audit
+ * of this pass, all of them somebody standing on a roof with the railing beside
+ * them uncollided. This sits above the top of the hull wall (48) and below the
+ * ceiling plate and the hung canopy rigging, which nothing reaches. */
+const COLLIDE_CEILING = 52;
 /* Triangles per derived collision chunk. Measured across 8,192 / 4,096 / 2,048
  * chunk splits of the same soup: finer chunks make the capsule solver cheaper
  * and the raycaster dearer (it gathers candidates a whole broadphase cell
  * wide, so it pays per chunk), and this is where the two curves cross. */
 const CHUNK_TRIS = 32;
-/* Material keys that never take part in collision. Leaf canopies you walk
- * under, hoses and cable runs lying across the deck, floor films, decals and
- * sign faces. Every `em*` emissive - light strips, glow rings, gateway
- * apertures - is excluded by prefix in `_collisionSoup`. Between them these are
- * the densest meshes on the station and not one of them should stop a player. */
+/* Triangles per planting proxy box. A lobe is roughly spherical, so a chunk's
+ * box hugs it more tightly the smaller the chunk - but each box is a collider
+ * in its own right, and planting is dense enough that the count is what decides
+ * the cost. 64 puts ~1,600 boxes on the station and keeps a shrub's collided
+ * surface within a few centimetres of the drawn one. */
+const PLANTING_TRIS = 64;
+/* Material keys that never take part in collision: hoses and cable runs lying
+ * across the deck, floor films, decals and sign faces. Every `em*` emissive -
+ * light strips, glow rings, gateway apertures - is excluded by prefix in
+ * `_collisionSoup`. None of these should stop a player.
+ *
+ * Planting is deliberately NOT on this list. It was, on the reasoning that a
+ * leaf canopy is something you walk under - but measured against the surface
+ * directly beneath each leaf, 84% of this station's foliage sits within 1.5 m
+ * of it and only 3% is above 2.5 m. It is not canopy, it is hedge and shrub
+ * masses in planters, at chest height, overhanging their tubs. You walk into
+ * those. They get proxies rather than triangles - see `_solidifyPlanting`. */
 const NON_SOLID_KEYS = new Set([
-  'foliage', 'foliagePale', 'foliageCard',
   'rubber',
   'wet', 'decals', 'decal', 'polish',
   'signs',
 ]);
+/* Material keys whose geometry is collided as coarse boxes instead of
+ * triangles. See `_solidifyPlanting`. */
+const PROXY_KEYS = new Set(['foliage', 'foliagePale', 'foliageCard']);
 const CEIL_Y = 62;       // overhead deck plate
 const PLAZA_R = 40;
 const ROAD_W = 18;
@@ -3103,13 +3122,55 @@ export class StationWorld extends World {
     const kept = this._dropEnclosedTriangles(soup);
     const chunks = chunkTriangles(kept, CHUNK_TRIS);
     for (const positions of chunks) this.track(this.physics.addTriangleSoup(positions));
+    const planters = this._solidifyPlanting();
 
     console.info(
       `[station] structure collided from geometry: ${extracted} triangles found, ` +
         `${extracted - kept.length / 9} already inside a box, ${kept.length / 9} kept ` +
-        `in ${chunks.length} chunks (${(kept.byteLength / 1048576).toFixed(1)} MB, ` +
-        `${Math.round(performance.now() - t0)}ms)`
+        `in ${chunks.length} chunks (${(kept.byteLength / 1048576).toFixed(1)} MB), ` +
+        `${planters} planting proxies, ${Math.round(performance.now() - t0)}ms`
     );
+  }
+
+  /**
+   * Collide planting as coarse boxes rather than as leaves.
+   *
+   * A shrub is a blob, and triangle-accurate collision for one is both wasteful
+   * and pointless: nobody can tell where a hedge's surface is to within a leaf.
+   * The station's planting is 52,290 triangles - half again as much as its
+   * entire collided structure - so putting it through the same path would cost
+   * more than everything else here put together and buy nothing.
+   *
+   * Instead the lobes are split by the same median chunker and each chunk
+   * becomes one box sized to its own bounds. Small chunks are what make this
+   * honest: a chunk of a lobe's surface is a patch, and a patch's box hugs it,
+   * where one box per lobe would be a crate around a sphere. The union is a
+   * shell rather than a solid, which is all a capsule can ever touch.
+   *
+   * Leaves buried inside their own planter are dropped first, so a tub that is
+   * already solid does not get a second collider inside it.
+   */
+  _solidifyPlanting() {
+    const soup = this._collisionSoup((k) => PROXY_KEYS.has(k));
+    if (!soup.length) return 0;
+    const kept = this._dropEnclosedTriangles(soup);
+    const chunks = chunkTriangles(kept, PLANTING_TRIS);
+    const box = new THREE.Box3();
+    let added = 0;
+    for (const positions of chunks) {
+      box.makeEmpty();
+      for (let i = 0; i < positions.length; i += 3) {
+        _v1.set(positions[i], positions[i + 1], positions[i + 2]);
+        box.expandByPoint(_v1);
+      }
+      const s = box.getSize(_v1);
+      const c = box.getCenter(_v2);
+      // A patch flat enough to be a single leaf card has nothing to stop.
+      if (Math.max(s.x, s.y, s.z) < 0.12) continue;
+      this._solid(c.x, c.y, c.z, Math.max(s.x / 2, 0.04), Math.max(s.y / 2, 0.04), Math.max(s.z / 2, 0.04));
+      added++;
+    }
+    return added;
   }
 
   /**
@@ -3120,7 +3181,7 @@ export class StationWorld extends World {
    * carry. Transparent, non-depth-writing and additive materials are holograms
    * and glow cards, which have no business being solid.
    */
-  _collisionSoup() {
+  _collisionSoup(wantKey = (k) => !NON_SOLID_KEYS.has(k) && !PROXY_KEYS.has(k) && !k.startsWith('em')) {
     const keyOf = new Map();
     for (const [k, m] of Object.entries(this.mat ?? {})) if (m?.isMaterial) keyOf.set(m, k);
 
@@ -3136,7 +3197,7 @@ export class StationWorld extends World {
       const m = Array.isArray(o.material) ? o.material[0] : o.material;
       if (!m || m.transparent || m.depthWrite === false || m.blending === THREE.AdditiveBlending) return;
       const key = keyOf.get(m) ?? (o.name || '').split(':')[1] ?? '';
-      if (NON_SOLID_KEYS.has(key) || key.startsWith('em')) return;
+      if (!wantKey(key)) return;
 
       const geo = o.geometry;
       const pos = geo.getAttribute('position');

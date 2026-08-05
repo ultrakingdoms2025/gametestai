@@ -1955,6 +1955,7 @@ export class StationWorld extends World {
     await step(0.92, 'Raising the outer skyline', this._buildSkyline);
     await step(0.94, 'Rigging the canopy', this._buildCanopy);
     await step(0.95, 'Scattering set dressing', this._buildDressing);
+    await step(0.97, 'Making the set dressing solid', this._solidifyProps);
     await step(0.98, 'Striking the lights', this._buildLights);
 
     onProgress?.(0.99, 'Registering crew');
@@ -2206,6 +2207,31 @@ export class StationWorld extends World {
     M.deck = withMacro(std(T.deck, { metalness: 0.08, roughness: 0.86, color: 0x94a0b0, env: 0.6 }), 0.028, 0.34, 0.85, 0.34, 8.0, 0.28);
     M.road = withMacro(std(T.road, { metalness: 0.06, roughness: 0.9, color: 0x9ca7b8, ns: 1.0, env: 0.6 }), 0.05, 0.30, 1.1, 0.32, 10.0, 0.28);
     M.plaza = withMacro(std(T.plaza, { metalness: 0.2, roughness: 0.78, color: 0x9daaba, env: 0.7 }), 0.05, 0.30, 0.9, 0.34, 8.6, 0.28);
+    /**
+     * Plaza laid *on top of* another opaque deck surface.
+     *
+     * The habitat terrace caps the end of avenue 120 and is therefore drawn at
+     * the same 0.10 as the carriageway under it - two opaque, depth-writing,
+     * unoffset surfaces sharing a plane, which is a z-fight. On the deck it
+     * reads as ground that flickers between road and grass as the camera
+     * moves, with the darker of the two showing through in patches like a
+     * shadow.
+     *
+     * Polygon offset rather than a few centimetres of lift, for two reasons.
+     * It leaves the geometry, the planter positions and the colliders exactly
+     * where they were - a lift would have to be tuned against the kerbs and
+     * the inset light strips that share this ground - and it is expressed in
+     * depth-buffer units, so it holds at 150 m down the avenue where a 30 mm
+     * gap would be only twice the depth resolution and starting to lose again.
+     *
+     * Everything else on this deck that sits at a shared height already does
+     * this: the gateway aprons, the commercial forecourts and the floor decals
+     * are all offset overlays. The terrace was the one surface that was not.
+     */
+    M.plazaOnDeck = M.plaza.clone();
+    M.plazaOnDeck.polygonOffset = true;
+    M.plazaOnDeck.polygonOffsetFactor = -2;
+    M.plazaOnDeck.polygonOffsetUnits = -4;
     M.hull = withMacro(std(T.hull, { metalness: 0.62, roughness: 0.46, color: 0xa9b6c6, env: 1.5 }), 0.05, 0.26, 0.28, 0.24);
     M.hullIn = withMacro(std(T.hull, { metalness: 0.6, roughness: 0.5, color: 0x99a6b6, side: THREE.BackSide, env: 1.35 }), 0.05, 0.26, 0.28, 0.24);
     /* Wall macro amplitude.
@@ -2823,6 +2849,89 @@ export class StationWorld extends World {
   /** Axis-aligned solid volume. */
   _solid(cx, cy, cz, hx, hy, hz) {
     return this.track(this.physics.addBox(cx, cy, cz, hx, hy, hz));
+  }
+
+  /**
+   * Give every free-standing prop a collider.
+   *
+   * ── Why this is a sweep and not a `_solid` call per builder ────────────────
+   * Colliders here are authored by hand, one call beside each piece of
+   * geometry, and that is fine for the things a builder thinks of as
+   * structure - buildings, kerbs, walkway segments. It is not fine for set
+   * dressing, because dressing is scattered in bulk through instanced meshes
+   * and the collider call is easy to simply not write. Audited across the
+   * finished station, 463 free-standing props were resting on a walkable floor
+   * with nothing behind them: barrels, crates, service bollards, the big
+   * cargo blocks and - the ones that get noticed - the roof blocks up on the
+   * commercial and habitat rooftops. All of them could be walked through.
+   *
+   * A sweep over what was actually built cannot drift from it the way a
+   * parallel list of hand-written calls does, and a prop added next year is
+   * covered without anybody remembering. The cost is small: the station
+   * carries ~692 colliders and this adds ~460 to a uniform-grid broadphase.
+   *
+   * ── What it deliberately skips ────────────────────────────────────────────
+   *   * anything thinner than 0.45 m on any axis - trim, decals, cable runs,
+   *     signage faces, which should not stop a player;
+   *   * anything over 12 m tall, which is architecture and already collided
+   *     by whoever raised it;
+   *   * anything not resting on a walkable surface, which is the test that
+   *     leaves the overhead canopy rigging at y=48 alone - it is scenery seen
+   *     from below, not something anybody can bump into;
+   *   * anything already solid, so a builder that did write its own call keeps
+   *     exactly the collider it chose.
+   *
+   * Instances are Y-rotated, so each box is registered with the instance's own
+   * yaw and its local extents rather than a world-axis-aligned bound. A 4.7 x
+   * 5.5 m block turned 45 degrees has a 7.2 m square AABB, and handing that to
+   * physics would quietly fatten every rotated crate into an invisible wall.
+   */
+  _solidifyProps() {
+    const ph = this.physics;
+    const m = new THREE.Matrix4();
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    const scl = new THREE.Vector3();
+    const centre = new THREE.Vector3();
+    let added = 0;
+
+    this.group.updateMatrixWorld(true);
+    this.group.traverse((o) => {
+      if (!o.isInstancedMesh || !o.visible || !o.geometry) return;
+      if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+      const bb = o.geometry.boundingBox;
+      const lx = bb.max.x - bb.min.x, ly = bb.max.y - bb.min.y, lz = bb.max.z - bb.min.z;
+
+      for (let i = 0; i < o.count; i++) {
+        o.getMatrixAt(i, m);
+        m.premultiply(o.matrixWorld);
+        m.decompose(pos, quat, scl);
+        const hx = (lx * Math.abs(scl.x)) / 2;
+        const hy = (ly * Math.abs(scl.y)) / 2;
+        const hz = (lz * Math.abs(scl.z)) / 2;
+        // 0.4 m on every axis. Slim service bollards measure 0.44 and are very
+        // much things you walk into; trim and cable runs are far under it.
+        if (hx < 0.2 || hy < 0.2 || hz < 0.2) continue;
+        if (hy > 6) continue;
+
+        // Local bbox centre through the instance transform - props are rarely
+        // modelled about their own middle.
+        centre.set((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2)
+          .applyMatrix4(m);
+        if (Math.hypot(centre.x, centre.z) > DECK_R) continue;
+
+        const base = centre.y - hy;
+        const floor = ph.groundHeight(centre.x, centre.z, base + 0.4, 2.0);
+        if (floor === null || Math.abs(floor - base) > 0.6) continue;   // not standing on anything
+        const top = ph.groundHeight(centre.x, centre.z, centre.y + hy + 0.4, hy * 2 + 1.2);
+        if (top !== null && top > base + Math.min(0.35, hy * 0.8)) continue;  // already solid
+
+        const e = new THREE.Euler().setFromQuaternion(quat, 'YXZ');
+        this._solidRot(centre.x, centre.y, centre.z, hx, hy, hz, e.y);
+        added++;
+      }
+    });
+    if (added) console.info(`[station] ${added} set-dressing props made solid`);
   }
 
   /** Y-rotated solid volume - buildings, walkway segments, kerbs. */
@@ -3846,43 +3955,79 @@ export class StationWorld extends World {
       }
     }
 
+    /* --- Scattered decals -------------------------------------------
+     *
+     * ── Why these are rejected against each other ─────────────────────
+     * Each of the three loops below used to take a bare random bearing and
+     * radius and commit it, with nothing stopping two - or six - landing on
+     * the same square metre. Sixty decals averaging five metres across go into
+     * a plaza annulus of about 4,600 m², so a third of it is covered and
+     * collisions are not unlucky, they are arithmetic. Where several bold
+     * cells stacked, the hazard hatching, dock circles and callouts piled into
+     * an unreadable yellow scribble - reported on the deck just off the plaza
+     * kerb, and visible from any height.
+     *
+     * `scatter` re-rolls a placement that lands too close to one already
+     * committed, which keeps the count while spreading them out. Grime is
+     * allowed to sit much closer than paint: overlapping dirt is what dirt
+     * does, whereas two overlapping chevrons are a mistake.
+     *
+     * ── And why the radius is a square root ───────────────────────────
+     * `r = lo + rand*(hi-lo)` is uniform in *radius*, which is not uniform in
+     * *area* - it packs the inner ring at the expense of the outer one and
+     * makes the clumping worse exactly where the plaza is busiest. Sampling
+     * r = sqrt(lo² + rand*(hi²-lo²)) spreads them evenly over the annulus.
+     */
+    const annulus = (lo, hi) => Math.sqrt(lo * lo + rng() * (hi * hi - lo * lo));
+    const scatter = (make, spacing, tries = 8) => {
+      for (let t = 0; t < tries; t++) {
+        const d = make();
+        let clear = true;
+        for (const o of decalCells) {
+          if (Math.hypot(o.x - d.x, o.z - d.z) < (o.size + d.size) * spacing) { clear = false; break; }
+        }
+        if (clear) { decalCells.push(d); return; }
+      }
+    };
+    const pick = (list) => list[Math.floor(rng() * list.length)];
+
     // Plaza decals: dock circles, walkway callouts, spill stains.
     for (let i = 0; i < 26; i++) {
-      const th = rng() * Math.PI * 2;
-      const rr = 8 + rng() * (PLAZA_R - 12);
-      decalCells.push({
-        cell: [2, 6, 7, 10, 11, 13, 15][Math.floor(rng() * 7)],
-        x: Math.cos(th) * rr,
-        z: Math.sin(th) * rr,
-        size: 3.4 + rng() * 3.6,
-        yaw: rng() * Math.PI * 2,
-      });
+      scatter(() => {
+        const th = rng() * Math.PI * 2;
+        const rr = annulus(8, PLAZA_R - 4);
+        return {
+          cell: pick([2, 6, 7, 10, 11, 13, 15]),
+          x: Math.cos(th) * rr, z: Math.sin(th) * rr,
+          size: 3.4 + rng() * 3.6, yaw: rng() * Math.PI * 2,
+        };
+      }, 0.5);
     }
     // Scattered grime and cable runs across the open deck.
     for (let i = 0; i < 110; i++) {
-      const th = rng() * Math.PI * 2;
-      const rr = PLAZA_R + rng() * (DECK_R - PLAZA_R - 16);
-      decalCells.push({
-        cell: [10, 11, 10, 7][Math.floor(rng() * 4)],
-        x: Math.cos(th) * rr,
-        z: Math.sin(th) * rr,
-        size: 4 + rng() * 7,
-        yaw: rng() * Math.PI * 2,
-      });
+      scatter(() => {
+        const th = rng() * Math.PI * 2;
+        const rr = annulus(PLAZA_R, DECK_R - 16);
+        return {
+          cell: pick([10, 11, 10, 7]),
+          x: Math.cos(th) * rr, z: Math.sin(th) * rr,
+          size: 4 + rng() * 7, yaw: rng() * Math.PI * 2,
+        };
+      }, 0.3);
     }
     // Grime inside the plaza itself. The bottom of every hero frame is plaza
     // inlay, and an inlay with no oil, no scuffing and no service hatches is
     // the clearest "untextured slab" tell in the set.
     for (let i = 0; i < 34; i++) {
-      const th = rng() * Math.PI * 2;
-      const rr = 12 + rng() * (PLAZA_R - 13);
-      decalCells.push({
-        cell: [10, 11, 7, 10, 11][Math.floor(rng() * 5)],
-        x: Math.cos(th) * rr,
-        z: Math.sin(th) * rr,
-        size: 2.6 + rng() * 4.4,
-        yaw: rng() * Math.PI * 2,
-      });
+      scatter(() => {
+        const th = rng() * Math.PI * 2;
+        const rr = annulus(12, PLAZA_R - 1);
+        return {
+          cell: pick([10, 11, 7, 10, 11]),
+          x: Math.cos(th) * rr, z: Math.sin(th) * rr,
+          size: 2.6 + rng() * 4.4, yaw: rng() * Math.PI * 2,
+        };
+      }, 0.3);
     }
 
     /* --- Radial wayfinding -------------------------------------------
@@ -5899,7 +6044,9 @@ export class StationWorld extends World {
 
     // A small green terrace between the blocks - the only plants on the ring.
     const parkP = roadPos(deg, 172, 0, 0, new THREE.Vector3());
-    const park = new THREE.Mesh(uvScale(new THREE.CircleGeometry(16, 40), 3, 3), M.plaza);
+    // `plazaOnDeck`, not `plaza`: this disc caps the end of the avenue and so
+    // shares its plane with the carriageway. See the material for why.
+    const park = new THREE.Mesh(uvScale(new THREE.CircleGeometry(16, 40), 3, 3), M.plazaOnDeck);
     park.rotation.x = -Math.PI / 2;
     park.position.set(parkP.x, 0.1, parkP.z);
     park.receiveShadow = true;
@@ -6812,7 +6959,39 @@ export class StationWorld extends World {
        * promenade at LOOP_Y = 10, so a figure authored up there lands on the
        * promenade rather than falling to the plaza. */
       const support = this.physics.groundHeight(x, z, y + 4.0, 12.0);
-      const baseY = support === null ? y : support;
+      let baseY = support === null ? y : support;
+
+      /* Reject a support the figure is standing *under* rather than *on*.
+       *
+       * The probe has to start 4 m up so it can see the gateway treads, and
+       * from up there it cannot tell a step from a roof - it returns the first
+       * solid thing below it either way. Over the plaza kiosks that is the
+       * stall at 2.40 m, so two figures out of the cluster authored at
+       * (-22, -6.5) were snapped onto the counter and left standing waist-deep
+       * through the canopy, with head and shoulders above the roofline.
+       *
+       * Height alone cannot separate the two cases, which is what makes this
+       * worth spelling out: the tallest legitimate tread is 2.4 m and the
+       * kiosk collider is 2.40 m. What separates them is *where*. Ground only
+       * rises like that on a gateway approach, so a lift of more than one step
+       * is honoured there and nowhere else; anywhere else the figure re-probes
+       * from just above its authored level and stands on the floor it was
+       * actually placed onto - the deck under the canopy, here.
+       *
+       * Deliberately not solved by moving the cluster. The jitter that put
+       * these two under a canopy will put the next ones under whatever is
+       * built next, and a crowd that quietly climbs onto scenery is the bug.
+       */
+      const STEP_UP = 0.35;
+      const APPROACH_R = 26;
+      if (baseY - y > STEP_UP) {
+        const onApproach = [[0, -PORTAL_R], [0, PORTAL_R], [-PORTAL_R, 0], [PORTAL_R, 0]]
+          .some(([px, pz]) => Math.hypot(x - px, z - pz) < APPROACH_R);
+        if (!onApproach) {
+          const floor = this.physics.groundHeight(x, z, y + STEP_UP, 12.0);
+          baseY = floor === null ? y : floor;
+        }
+      }
 
       const s = scale * (0.93 + rng() * 0.15);
       entries.push([x, baseY, z, 0, yaw === null ? rng() * Math.PI * 2 : yaw, 0, s, s, s]);

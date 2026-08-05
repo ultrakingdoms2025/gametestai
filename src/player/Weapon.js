@@ -3,6 +3,10 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CONFIG } from '../core/Config.js';
 import { anchorLight } from '../gfx/LightAnchor.js';
+// Cycle-safe: `ViewArm` imports this module's geometry helpers, which are
+// hoisted function declarations, and neither module touches the other at
+// evaluation time - only inside a constructor.
+import { ViewArm } from '../weapons/ViewArm.js';
 
 /**
  * The VK-7 "Ripper" first-person viewmodel.
@@ -541,6 +545,17 @@ const ADS_ROT = new THREE.Vector3(0, 0, 0);
 const LOW_POS = new THREE.Vector3(0.325, -0.315, -0.46);
 const LOW_ROT = new THREE.Vector3(-0.42, 0.44, -0.32);
 
+/**
+ * Shoulders in view space - the fixed ends of the two solved forearms.
+ *
+ * Below and behind the eye and outboard of it, which is where shoulders are
+ * relative to a head. Both forearms therefore leave the bottom corners of the
+ * frame whatever the weapon is doing, including a reload, where the left hand
+ * travels a long way from where its arm was modelled.
+ */
+const RIGHT_SHOULDER = new THREE.Vector3(0.28, -0.44, 0.12);
+const LEFT_SHOULDER = new THREE.Vector3(-0.3, -0.44, 0.12);
+
 const CASING_COUNT = 26;
 const SMOKE_COUNT = 10;
 
@@ -830,12 +845,14 @@ export class Weapon {
 
     // Hands. The right hand is welded to the pistol grip; the left rides the
     // foregrip but detaches during the reload to fetch the magazine.
+    const rightWrist = new THREE.Vector3();
     this._buildHand(glove, accent, 1, {
       x: 0.0,
       y: -0.086,
       z: 0.05,
       pitch: 0.34,
       gripHalf: 0.021,
+      wristOut: rightWrist,
     });
 
     this._staticMeshes = [];
@@ -862,6 +879,38 @@ export class Weapon {
     this._buildMagazine();
     this._buildBolt();
     this._buildLeftHand();
+
+    // Forearms, solved rather than baked. The right one hangs off the model
+    // (the firing hand never leaves the grip); the left hangs off `_leftHand`,
+    // which the reload drives away from the foregrip - so its elbow now stays
+    // put while the hand goes to the magazine, instead of the whole arm
+    // swinging with it.
+    this._rightWrist = new THREE.Object3D();
+    this._rightWrist.position.copy(rightWrist);
+    this._model.add(this._rightWrist);
+
+    this._rightArm = new ViewArm({
+      parent: this.root,
+      wrist: this._rightWrist,
+      anchor: RIGHT_SHOULDER,
+      sleeve: this.matGlove,
+      band: this.matAccent,
+      wristRadius: 0.016,
+      taper: 1.55,
+      minEyeDistance: 0.34,
+      name: 'viewmodel:arm-right',
+    });
+    this._leftArm = new ViewArm({
+      parent: this.root,
+      wrist: this._leftWrist,
+      anchor: LEFT_SHOULDER,
+      sleeve: this.matGlove,
+      band: this.matAccent,
+      wristRadius: 0.016,
+      taper: 1.55,
+      minEyeDistance: 0.34,
+      name: 'viewmodel:arm-left',
+    });
   }
 
   _buildReceiver(body, accent) {
@@ -1085,10 +1134,13 @@ export class Weapon {
     const thumb = new THREE.CylinderGeometry(0.0105, 0.0095, 0.05, 8).rotateZ(Math.PI / 2);
     place(glove, thumb, px(g * 0.2), 0.03, g + 0.015, 0, px(-0.35));
 
-    // Cuff and forearm. The elbow belongs *below* the eye line, so the arm runs
-    // down and back out of the bottom of the frame. Raking it up and back - the
-    // obvious reading of "toward the shoulder" - parks its end cap in the middle
-    // of the screen, which is exactly what an ADS pose must not do.
+    // Cuff only. The forearm itself is no longer baked here: it is solved every
+    // frame from a fixed shoulder anchor (see `ViewArm`), so the elbow stays
+    // where a shoulder is instead of rotating rigidly with the weapon. The
+    // baked version was posed for the hip stance and had to be, since it could
+    // not move independently; the left arm in particular then swung with the
+    // magazine during a reload, which is the one animation where the hand
+    // demonstrably leaves the gun.
     const ARM = 2.0; // radians about X: down (-Y) and back (+Z) from the wrist
     place(
       glove,
@@ -1099,14 +1151,6 @@ export class Weapon {
       ARM
     );
     place(plate, chamfer(0.048, 0.02, 0.052, 0.008, 2), px(g + 0.033), 0.05, 0.055, ARM);
-    place(
-      glove,
-      new THREE.CylinderGeometry(0.033, 0.039, 0.3, 14),
-      px(g + 0.026),
-      -0.028,
-      0.185,
-      ARM
-    );
 
     // Bake the whole hand into the grip's frame, then hand it to the caller.
     const m = new THREE.Matrix4().compose(
@@ -1114,6 +1158,16 @@ export class Weapon {
       _q1.setFromEuler(_eul.set(cfg.pitch, 0, 0, 'XYZ')),
       _v2.set(1, 1, 1)
     );
+
+    // Where the solved forearm starts. Just past the cuff, along the same
+    // down-and-back axis the cuff is rotated to, then carried through `m` so
+    // the caller gets it in model space - the geometry itself is merged away,
+    // so this is the only surviving record of where the wrist ended up.
+    if (cfg.wristOut) {
+      cfg.wristOut
+        .set(px(g + 0.024), 0.04 + Math.cos(ARM) * 0.03, 0.062 + Math.sin(ARM) * 0.03)
+        .applyMatrix4(m);
+    }
     for (const geo of glove) {
       geo.applyMatrix4(m);
       outGlove.push(geo);
@@ -1128,17 +1182,24 @@ export class Weapon {
   _buildLeftHand() {
     const glove = [];
     const plate = [];
+    const wrist = new THREE.Vector3();
     this._buildHand(glove, plate, -1, {
       x: 0,
       y: -0.078,
       z: -0.3,
       pitch: -0.2,
       gripHalf: 0.02,
+      wristOut: wrist,
     });
 
     this._leftHand = new THREE.Group();
     this._leftHand.name = 'viewmodel:hand-left';
     this._model.add(this._leftHand);
+
+    // Child of the pivot, so it travels with the hand through the reload.
+    this._leftWrist = new THREE.Object3D();
+    this._leftWrist.position.copy(wrist);
+    this._leftHand.add(this._leftWrist);
 
     for (const [bucket, mat, name] of [
       [glove, this.matGlove, 'glove'],
@@ -1596,6 +1657,21 @@ export class Weapon {
     this._reticleMat.opacity = 0.55 + aim * 0.45;
     const rs = 1 - aim * 0.25;
     this._reticle.scale.set(rs, rs, 1);
+
+    // Arms last: they read the matrices everything above just wrote, and they
+    // must see the final `root` scale.
+    //
+    // The shoulders draw together as the weapon comes up to the eye, because
+    // that is what shouldering a rifle does - the support elbow tucks under the
+    // receiver and the firing elbow comes in off the ribs. Holding them apart
+    // through ADS leaves the forearms splayed as if the gun were still at the
+    // hip.
+    this._rightArm.anchor.copy(RIGHT_SHOULDER);
+    this._leftArm.anchor.copy(LEFT_SHOULDER);
+    this._rightArm.anchor.x -= aim * 0.05;
+    this._leftArm.anchor.x += aim * 0.09;
+    this._rightArm.solve();
+    this._leftArm.solve();
   }
 
   /** Bolt and charging handle when not reloading: one cycle per shot. */

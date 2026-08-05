@@ -6,6 +6,7 @@ import {
 import { CONFIG } from '../core/Config.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { WEAPON_STATS } from '../systems/WeaponStats.js';
+import { ViewArm } from './ViewArm.js';
 
 /**
  * The "Aetherbrand" arming sword.
@@ -117,17 +118,33 @@ const TRAIL_INNER_LOCAL = new THREE.Vector3(
 );
 
 /* Poses, in the machine gun's convention: model units, -Z forward. A positive
- * rotation about X lifts the point; a positive rotation about Y swings it left. */
-const REST_POS = new THREE.Vector3(0.285, -0.335, -0.5);
-const REST_ROT = new THREE.Vector3(0.72, 0.26, 0.4);
+ * rotation about X lifts the point; a positive rotation about Y swings it left.
+ *
+ * Every one of these was raised and pulled inboard when the arm became a solved
+ * limb. The old values parked the hilt *below* the bottom of the frame - only
+ * the blade and the crossguard were ever on screen, so the sword read as
+ * floating with nothing holding it. The fist has to be in shot for the grip to
+ * be legible, and the fist is at the hilt. */
+const REST_POS = new THREE.Vector3(0.245, -0.2, -0.5);
+const REST_ROT = new THREE.Vector3(0.66, 0.3, 0.42);
 /** RMB brings the sword into a high guard, blade vertical ahead of the eye. */
-const GUARD_POS = new THREE.Vector3(0.145, -0.235, -0.44);
-const GUARD_ROT = new THREE.Vector3(1.02, 0.1, 0.24);
-const LOW_POS = new THREE.Vector3(0.35, -0.53, -0.46);
+const GUARD_POS = new THREE.Vector3(0.15, -0.15, -0.44);
+const GUARD_ROT = new THREE.Vector3(0.94, 0.12, 0.26);
+const LOW_POS = new THREE.Vector3(0.32, -0.42, -0.46);
 const LOW_ROT = new THREE.Vector3(0.2, 0.78, -0.36);
 /** Base pose the swing lerps onto: the sword comes up in front of the face. */
-const SWING_POS = new THREE.Vector3(0.055, -0.115, -0.45);
+const SWING_POS = new THREE.Vector3(0.1, -0.1, -0.45);
 const SWING_ROT = new THREE.Vector3(0.16, 0, 0.08);
+
+/**
+ * Right shoulder in view space - the fixed end of the solved forearm.
+ *
+ * Below and behind the eye and outboard of it, which is where a shoulder
+ * actually is relative to the head. The forearm therefore always leaves the
+ * bottom-right of the frame no matter where the swing throws the hilt, which is
+ * the whole point of solving it rather than baking it.
+ */
+const SHOULDER = new THREE.Vector3(0.27, -0.42, 0.14);
 
 /* Arc extremes, radians. `dir` (+1 / -1) mirrors them so consecutive swings
  * alternate hand, which is what stops a held attack reading as a loop. */
@@ -479,8 +496,14 @@ export class SwordWeapon {
       r: 0.34, g: 0.31, b: 0.27, roughness: 0.44, scratches: 18, repeat: 1,
     });
     const leather = makePolymerMaps(r, 256, 4409, { r: 0.19, g: 0.12, b: 0.09 });
+    // Glove leather gets its own chart rather than a lighter tint over the
+    // grip's. The tint is baked into the albedo, so a `color` multiply can only
+    // take it further down - the fist and the forearm cannot be lifted out of
+    // near-black without a lighter map to start from, and a hand nobody can see
+    // is a sword that looks like it is floating.
+    const glove = makePolymerMaps(r, 256, 5127, { r: 0.66, g: 0.57, b: 0.47 });
     const cord = makePolymerMaps(r, 128, 771, { r: 0.31, g: 0.24, b: 0.16 });
-    this._maps = { blade, fitting, leather, cord };
+    this._maps = { blade, fitting, leather, glove, cord };
 
     /** Polished blade steel. Near-mirror, so it lives or dies on `envMapIntensity`. */
     this.matBlade = patchViewmodelDepth(new THREE.MeshStandardMaterial({
@@ -548,10 +571,10 @@ export class SwordWeapon {
 
     this.matGlove = patchViewmodelDepth(new THREE.MeshStandardMaterial({
       name: 'sword.glove',
-      color: new THREE.Color(0x7d6a5a),
-      map: leather.map,
-      normalMap: leather.normalMap,
-      roughnessMap: leather.roughnessMap,
+      color: new THREE.Color(0xa89076),
+      map: glove.map,
+      normalMap: glove.normalMap,
+      roughnessMap: glove.roughnessMap,
       metalness: 0.03,
       roughness: 1,
       normalScale: new THREE.Vector2(0.35, 0.35),
@@ -561,7 +584,7 @@ export class SwordWeapon {
       this.matBlade, this.matFitting, this.matLeather,
       this.matCord, this.matInlay, this.matGlove,
     ]) this._disposables.push(m);
-    for (const set of [blade, fitting, leather, cord]) {
+    for (const set of [blade, fitting, leather, glove, cord]) {
       this._disposables.push(set.map, set.normalMap, set.roughnessMap);
     }
 
@@ -615,6 +638,27 @@ export class SwordWeapon {
     addMerged(cord, this.matCord, 'wire');
     addMerged(inlay, this.matInlay, 'inlay');
     addMerged(glove, this.matGlove, 'hand');
+
+    // Wrist: just under the pommel, which is where a real hand's is - the
+    // pommel rests against the wrist bone rather than the forearm running
+    // through it. Child of `_model`, so it inherits the sword's whole pose and
+    // the arm follows the hand for free.
+    this._wrist = new THREE.Object3D();
+    this._wrist.name = 'viewmodel:sword:wrist';
+    this._wrist.position.set(0.004, -0.03, 0.104);
+    this._model.add(this._wrist);
+
+    this._arm = new ViewArm({
+      parent: this.root,
+      wrist: this._wrist,
+      anchor: SHOULDER,
+      sleeve: this.matGlove,
+      band: this.matFitting,
+      wristRadius: 0.018,
+      taper: 1.55,
+      minEyeDistance: 0.34,
+      name: 'viewmodel:sword:arm',
+    });
   }
 
   /** The lofted blade, plus the etched inlay sitting in the fuller. */
@@ -729,34 +773,47 @@ export class SwordWeapon {
    * deformed realistic hand looks far worse than a stylised gauntlet.
    */
   _buildHand(glove, plate) {
-    const zc = 0.055; // hand centres on the upper third of the grip
+    const zc = 0.042; // hand centres on the grip, clear of the pommel
 
-    // Palm wrapping the grip, plus back-of-hand armour.
-    place(glove, chamfer(0.05, 0.058, 0.082, 0.018, 2), -0.004, 0.004, zc);
-    place(plate, chamfer(0.03, 0.016, 0.062, 0.006, 2), 0, 0.032, zc);
+    // ── Size ────────────────────────────────────────────────────────────────
+    // The fist is one mass with fingers laid over it, and it is deliberately
+    // far larger than the hand that was here before. The old one measured 50 mm
+    // across a 36 mm grip, so it cleared the grip's own silhouette by 7 mm a
+    // side and at viewmodel distance read as a leather collar on the hilt
+    // rather than as a hand - which is why the sword looked like it was
+    // floating. A hand closed around a grip this size is about twice the grip's
+    // diameter, and that ratio is what makes it legible.
+    place(glove, chamfer(0.082, 0.092, 0.108, 0.026, 3), 0.004, -0.006, zc);
 
-    // Four fingers curling round the front of the grip.
+    // Four fingers wrapping the underside: a proximal segment across the -Y
+    // face and a distal segment curling up the -X face, so the fist visibly
+    // *closes* instead of ending at the silhouette.
     for (let i = 0; i < 4; i++) {
-      const z = zc - 0.03 + i * 0.021;
-      const rad = 0.0102 - i * 0.0009;
-      const a = new THREE.CylinderGeometry(rad, rad * 0.95, 0.05, 8).rotateZ(Math.PI / 2);
-      place(glove, a, 0.004, -0.019, z);
-      const b = new THREE.CylinderGeometry(rad * 0.92, rad * 0.84, 0.03, 8).rotateZ(Math.PI / 2);
-      place(glove, b, -0.023, -0.012, z, 0, 0, 0.7);
-      place(plate, chamfer(0.013, 0.013, 0.014, 0.005), 0.026, -0.008, z);
+      const z = zc - 0.039 + i * 0.027;
+      const rad = 0.0152 - i * 0.0012;
+      const a = new THREE.CylinderGeometry(rad, rad * 0.96, 0.07, 8).rotateZ(Math.PI / 2);
+      place(glove, a, 0.008, -0.04, z);
+      const b = new THREE.CylinderGeometry(rad * 0.93, rad * 0.84, 0.044, 8).rotateZ(Math.PI / 2);
+      place(glove, b, -0.04, -0.027, z, 0, 0, 0.85);
+      // Knuckle, in the fitting steel: at this size a hard specular is what
+      // makes a knuckle read at all, and leather gives none.
+      place(plate, chamfer(0.017, 0.021, 0.023, 0.006), 0.043, -0.016, z);
     }
 
-    // Thumb laid along the grip toward the guard.
-    const thumb = new THREE.CylinderGeometry(0.0108, 0.0096, 0.052, 8).rotateX(Math.PI / 2);
-    place(glove, thumb, -0.012, 0.014, zc - 0.036, 0, 0.3, 0);
+    // Thumb laid along the grip toward the guard, closing onto the index.
+    const thumb = new THREE.CylinderGeometry(0.0152, 0.0134, 0.068, 8).rotateX(Math.PI / 2);
+    place(glove, thumb, 0.03, 0.026, zc - 0.052, 0, 0.34, 0);
+    place(glove, new THREE.SphereGeometry(0.015, 10, 8), 0.014, 0.014, zc - 0.082);
 
-    // Cuff and forearm. The elbow belongs *below* the eye line, so the arm runs
-    // down and back out of the bottom of the frame - raking it up toward the
-    // shoulder parks its end cap in the middle of the screen.
-    const ARM = 1.94;
-    place(glove, new THREE.CylinderGeometry(0.036, 0.033, 0.062, 14), 0, 0.006, zc + 0.062, ARM);
-    place(plate, chamfer(0.05, 0.022, 0.054, 0.008, 2), 0, 0.03, zc + 0.058, ARM);
-    place(glove, new THREE.CylinderGeometry(0.034, 0.04, 0.3, 14), 0, -0.04, zc + 0.2, ARM);
+    // Heel of the hand, carrying the mass out to the wrist. Without it the fist
+    // stops in mid-air and the forearm appears to start from nothing.
+    place(glove, chamfer(0.07, 0.078, 0.04, 0.018, 2), 0.002, -0.012, zc + 0.062);
+
+    // The forearm is *not* built here. It is solved every frame from a fixed
+    // shoulder anchor - see `ViewArm` and `_wrist` in `_buildModel`. A baked arm
+    // rotates rigidly with the sword, which threw the elbow across the screen on
+    // every swing; the sword is the one weapon whose pose moves far enough to
+    // make that unmissable.
   }
 
   /* ================================================================ */
@@ -1319,6 +1376,39 @@ export class SwordWeapon {
     // tan(cur)/tan(ref) reproduces the reference FOV while the camera keeps its own.
     const r = Math.tan(this.camera.fov * 0.5 * DEG) / Math.tan(this._referenceFov * 0.5 * DEG);
     this.root.scale.set(r, r, 1);
+
+    // Last, because it reads the matrices everything above just wrote - and it
+    // must see the final `root` scale, or the arm would be solved in one space
+    // and drawn in another.
+    this._solveArm(swing);
+  }
+
+  /**
+   * Aim the forearm at the shoulder, and lean the shoulder into a swing.
+   *
+   * The lean is what separates "the hand moved" from "the player swung". A cut
+   * made with the arm alone leaves the shoulder pinned while the wrist travels
+   * half a metre, and the forearm visibly stretches to cover the difference.
+   * Driving the anchor with `sin(pi*s)` puts the shoulder at its furthest
+   * through the middle of the cut and brings it back to rest by the end, so the
+   * arm retracts under its own animation rather than snapping back when the
+   * swing pose stops being applied.
+   *
+   * @param {number} swing swing blend weight, 0..1
+   */
+  _solveArm(swing) {
+    const arm = this._arm;
+    if (!arm) return;
+
+    arm.anchor.copy(SHOULDER);
+    if (swing > 0) {
+      const s = clamp((this._swingT - 0.2) / 0.36, 0, 1);
+      const drive = Math.sin(s * Math.PI) * swing;
+      arm.anchor.x -= this._swingDir * 0.05 * drive;
+      arm.anchor.y += 0.045 * drive;
+      arm.anchor.z -= 0.06 * drive;
+    }
+    arm.solve();
   }
 
   /**
@@ -1355,9 +1445,24 @@ export class SwordWeapon {
     // The hand travels with the blade: back and out on the wind-up, then across
     // and down through the cut. Without this the sword pivots on a fixed point
     // and reads as a windscreen wiper.
-    pos.x += dir * (0.13 - 0.3 * s) * w * SWORD_SCALE;
-    pos.y += (0.1 - 0.2 * s) * w * SWORD_SCALE;
-    pos.z += (0.13 - 0.3 * s) * w * SWORD_SCALE;
+    //
+    // The travel is half what it was. The old figures threw the hilt far enough
+    // that the fist appeared to detach and jump out into the frame ahead of the
+    // arm. A shoulder does not translate during a cut - what changes is the
+    // *direction* the forearm leaves the wrist in, and that now falls out of
+    // the solve for nothing.
+    pos.x += dir * (0.07 - 0.15 * s) * w * SWORD_SCALE;
+    pos.y += (0.055 - 0.12 * s) * w * SWORD_SCALE;
+    pos.z += (0.07 - 0.15 * s) * w * SWORD_SCALE;
+
+    // Recovery: once the cut is spent the hand is drawn back in toward the
+    // chest before the blend hands the pose back to guard, so the sword returns
+    // along a path instead of teleporting to rest. Weighted by `w` so it dies
+    // out exactly as the swing pose does and cannot pop on the last frame.
+    const rec = sstep(0.62, 0.95, t) * w;
+    pos.x -= dir * 0.05 * rec * SWORD_SCALE;
+    pos.y -= 0.045 * rec * SWORD_SCALE;
+    pos.z += 0.1 * rec * SWORD_SCALE;
 
     // Hit-stop reads as a jolt in the wrist, not just a pause.
     if (this._hitStop > 0) {
@@ -1745,6 +1850,7 @@ export class SwordWeapon {
   dispose() {
     for (const off of this._offs) off();
     this._offs.length = 0;
+    this._arm?.dispose();
     this.root.removeFromParent();
     this._lightRig?.removeFromParent();
     this._sparks?.removeFromParent();

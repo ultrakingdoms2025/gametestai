@@ -5,6 +5,7 @@ import {
 } from '../player/Weapon.js';
 import { CONFIG } from '../core/Config.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
+import { ViewArm } from './ViewArm.js';
 
 /**
  * The "Longspine" recurve bow.
@@ -87,14 +88,37 @@ const BOW_SCALE = 0.44;
 /* Poses. The riser sits left of centre so the shaft rides just under the
  * crosshair; drawing brings the whole bow up onto the eye line. */
 const HIP_POS = new THREE.Vector3(0.135, -0.2, -0.62);
-const HIP_ROT = new THREE.Vector3(0.06, 0.3, 0.14);
+const HIP_ROT = new THREE.Vector3(0.06, 0.14, 0.14);
 // Measured, not guessed: at this offset the nocked arrowhead projects to
 // roughly (-0.05, -0.06) in NDC, i.e. just under the crosshair, so the shaft
 // visibly points where the shot is going.
 const DRAW_POS = new THREE.Vector3(-0.033, -0.011, -0.6);
-const DRAW_ROT = new THREE.Vector3(0.0, 0.06, 0.02);
+const DRAW_ROT = new THREE.Vector3(0.0, 0.0, 0.02);
 const LOW_POS = new THREE.Vector3(0.1, -0.44, -0.58);
 const LOW_ROT = new THREE.Vector3(-0.5, 0.62, -0.42);
+
+/**
+ * Shoulders, in view space - the fixed ends of the two solved forearms.
+ *
+ * An archer's bow arm is the *front* arm, so its shoulder sits inboard and
+ * barely below the eye line; the string arm is the rear one and drops further
+ * away. Both are behind the eye (+Z), which is what carries the forearms out of
+ * the bottom corners rather than across the middle of the frame.
+ */
+const BOW_SHOULDER = new THREE.Vector3(-0.26, -0.46, 0.04);
+const STRING_SHOULDER = new THREE.Vector3(0.32, -0.44, 0.06);
+/**
+ * Where the string elbow ends up at full draw.
+ *
+ * Out to the side and level with the hand rather than behind it - the archer's
+ * flared elbow. This is not decoration: at full draw the string hand is at the
+ * cheek, barely 40 cm from the eye, so an elbow left back at the shoulder
+ * leaves no room for a forearm at all and the drawing hand hangs on the string
+ * attached to nothing. The elbow has to come round to the side, which is also
+ * exactly what a real draw does, because that is the only place a forearm can
+ * be when the hand is that close to the face.
+ */
+const STRING_ELBOW_DRAWN = new THREE.Vector3(0.5, -0.36, -0.38);
 
 /** Limb geometry: three segments per limb, each this long. */
 const SEG_LEN = 0.155;
@@ -276,11 +300,16 @@ export class BowWeapon {
     const wood = makeWoodMaps(r, 512, 404, { r: 0.52, g: 0.34, b: 0.17 });
     const horn = makeWoodMaps(r, 256, 909, { r: 0.19, g: 0.14, b: 0.11 });
     const leather = makePolymerMaps(r, 256, 55, { r: 0.26, g: 0.16, b: 0.11 });
+    // Glove leather gets its own chart rather than a lighter tint over the
+    // grip's. The tint is baked into the albedo, so a `color` multiply can only
+    // ever take it further down - the hands and arms cannot be lifted out of
+    // near-black without a lighter map to start from.
+    const glove = makePolymerMaps(r, 256, 4801, { r: 0.68, g: 0.58, b: 0.47 });
     const steel = makeMetalMaps(r, 256, 313, {
       r: 0.44, g: 0.45, b: 0.48, roughness: 0.38, scratches: 16, repeat: 1,
     });
     const cord = makeStringMaps(r);
-    this._maps = { wood, horn, leather, steel, cord };
+    this._maps = { wood, horn, leather, glove, steel, cord };
 
     this.matWood = patchViewmodelDepth(new THREE.MeshStandardMaterial({
       name: 'bow.wood',
@@ -317,6 +346,28 @@ export class BowWeapon {
       normalScale: new THREE.Vector2(0.5, 0.5),
     }));
 
+    /**
+     * Glove and forearm leather.
+     *
+     * A separate, much lighter material than `matLeather`, which is the grip
+     * wrap. The hands and arms used to share the grip's 0x6a4a34 and the fill
+     * rig puts very little on them - they are below the key light and side-on
+     * to the rim - so they rendered as near-black shapes. Two dark shapes at
+     * the bottom of the frame read as holes, not as arms, which is most of why
+     * the hands looked like they were floating rather than attached to a body.
+     * Skin and glove leather are also simply lighter than a sweat-darkened grip.
+     */
+    this.matGlove = patchViewmodelDepth(new THREE.MeshStandardMaterial({
+      name: 'bow.glove',
+      color: new THREE.Color(0xa89880),
+      map: glove.map,
+      normalMap: glove.normalMap,
+      roughnessMap: glove.roughnessMap,
+      metalness: 0.03,
+      roughness: 1,
+      normalScale: new THREE.Vector2(0.4, 0.4),
+    }));
+
     this.matSteel = patchViewmodelDepth(new THREE.MeshStandardMaterial({
       name: 'bow.steel',
       color: new THREE.Color(0x9aa2ae),
@@ -348,10 +399,10 @@ export class BowWeapon {
     }));
 
     for (const m of [
-      this.matWood, this.matHorn, this.matLeather,
+      this.matWood, this.matHorn, this.matLeather, this.matGlove,
       this.matSteel, this.matString, this.matFeather,
     ]) this._disposables.push(m);
-    for (const set of [wood, horn, leather, steel]) {
+    for (const set of [wood, horn, leather, glove, steel]) {
       this._disposables.push(set.map, set.normalMap, set.roughnessMap);
     }
     this._disposables.push(cord.map, cord.normalMap);
@@ -627,34 +678,36 @@ export class BowWeapon {
   _buildHands() {
     /* --- bow hand: wraps the riser throat from the outboard side --- */
     const bowGlove = [];
-    place(bowGlove, chamfer(0.03, 0.085, 0.058, 0.014, 2), -0.036, -0.052, 0.006);
+    place(bowGlove, chamfer(0.042, 0.095, 0.07, 0.018, 2), -0.038, -0.052, 0.006);
     for (let i = 0; i < 4; i++) {
-      const y = -0.018 - i * 0.023;
-      const rad = 0.0098 - i * 0.0008;
-      const f = new THREE.CylinderGeometry(rad, rad * 0.94, 0.05, 8);
+      const y = -0.018 - i * 0.025;
+      const rad = 0.0116 - i * 0.0009;
+      const f = new THREE.CylinderGeometry(rad, rad * 0.94, 0.062, 8);
       f.rotateZ(Math.PI / 2);
-      place(bowGlove, f, -0.014, y, -0.026);
-      const f2 = new THREE.CylinderGeometry(rad * 0.92, rad * 0.84, 0.034, 8);
+      place(bowGlove, f, -0.012, y, -0.03);
+      const f2 = new THREE.CylinderGeometry(rad * 0.92, rad * 0.84, 0.04, 8);
       f2.rotateZ(Math.PI / 2);
-      place(bowGlove, f2, 0.012, y - 0.003, -0.03, 0, 0.55, 0);
+      place(bowGlove, f2, 0.016, y - 0.003, -0.034, 0, 0.55, 0);
     }
     // Thumb across the back of the grip.
-    const thumb = new THREE.CylinderGeometry(0.0108, 0.0096, 0.05, 8);
+    const thumb = new THREE.CylinderGeometry(0.0124, 0.011, 0.056, 8);
     thumb.rotateZ(Math.PI / 2);
-    place(bowGlove, thumb, -0.016, -0.014, 0.036, 0, -0.4, 0);
-    // Wrist and forearm running down and back out of the frame.
-    const ARM = 2.0;
-    place(bowGlove, new THREE.CylinderGeometry(0.033, 0.03, 0.06, 14), -0.05, -0.058, 0.03, ARM, 0, 0.3);
-    place(bowGlove, new THREE.CylinderGeometry(0.032, 0.038, 0.3, 14), -0.062, -0.13, 0.16, ARM, 0, 0.3);
+    place(bowGlove, thumb, -0.018, -0.014, 0.04, 0, -0.4, 0);
 
     const bowGeo = mergeBucket(bowGlove);
     this._disposables.push(bowGeo);
-    const bowHand = new THREE.Mesh(bowGeo, this.matLeather);
+    const bowHand = new THREE.Mesh(bowGeo, this.matGlove);
     bowHand.name = 'viewmodel:bow:hand-bow';
     bowHand.castShadow = false;
     bowHand.frustumCulled = false;
     bowHand.renderOrder = 100;
     this._bow.add(bowHand);
+
+    // Heel of the bow hand, where the forearm takes over.
+    this._bowWrist = new THREE.Object3D();
+    this._bowWrist.name = 'viewmodel:bow:wrist-bow';
+    this._bowWrist.position.set(-0.05, -0.098, 0.024);
+    this._bow.add(this._bowWrist);
 
     /* --- string hand: three fingers hooked on the serving --- */
     this._stringHand = new THREE.Group();
@@ -663,29 +716,62 @@ export class BowWeapon {
 
     const drawGlove = [];
     // Back of hand, angled as if the knuckles face the archer's cheek.
-    place(drawGlove, chamfer(0.03, 0.07, 0.05, 0.013, 2), 0.03, -0.006, 0.03, 0.3, 0, 0);
+    place(drawGlove, chamfer(0.042, 0.08, 0.062, 0.016, 2), 0.034, -0.006, 0.032, 0.3, 0, 0);
     // Index above the nock, middle and ring below - a proper three-finger draw.
     for (let i = 0; i < 3; i++) {
-      const y = i === 0 ? 0.019 : -0.014 - (i - 1) * 0.021;
-      const rad = 0.0098 - i * 0.0006;
-      const f = new THREE.CylinderGeometry(rad, rad * 0.94, 0.046, 8);
+      const y = i === 0 ? 0.021 : -0.015 - (i - 1) * 0.023;
+      const rad = 0.0116 - i * 0.0007;
+      const f = new THREE.CylinderGeometry(rad, rad * 0.94, 0.056, 8);
       f.rotateZ(Math.PI / 2);
-      place(drawGlove, f, 0.018, y, 0.006);
-      const hook = new THREE.CylinderGeometry(rad * 0.9, rad * 0.8, 0.03, 8);
-      place(drawGlove, hook, -0.001, y + (i === 0 ? -0.008 : 0.008), 0.006);
+      place(drawGlove, f, 0.02, y, 0.006);
+      const hook = new THREE.CylinderGeometry(rad * 0.9, rad * 0.8, 0.034, 8);
+      place(drawGlove, hook, -0.001, y + (i === 0 ? -0.009 : 0.009), 0.006);
     }
-    place(drawGlove, chamfer(0.024, 0.02, 0.026, 0.007), 0.042, -0.03, 0.036, 0.3, 0, 0);
-    // Forearm leaving the frame to the lower right.
-    place(drawGlove, new THREE.CylinderGeometry(0.031, 0.029, 0.055, 14), 0.052, -0.012, 0.052, 1.9, 0, -0.35);
-    place(drawGlove, new THREE.CylinderGeometry(0.03, 0.036, 0.28, 14), 0.075, -0.07, 0.18, 1.9, 0, -0.35);
+    place(drawGlove, chamfer(0.028, 0.024, 0.03, 0.008), 0.048, -0.032, 0.04, 0.3, 0, 0);
 
     const drawGeo = mergeBucket(drawGlove);
     this._disposables.push(drawGeo);
-    const drawHand = new THREE.Mesh(drawGeo, this.matLeather);
+    const drawHand = new THREE.Mesh(drawGeo, this.matGlove);
     drawHand.castShadow = false;
     drawHand.frustumCulled = false;
     drawHand.renderOrder = 100;
     this._stringHand.add(drawHand);
+
+    this._stringWrist = new THREE.Object3D();
+    this._stringWrist.name = 'viewmodel:bow:wrist-string';
+    this._stringWrist.position.set(0.062, -0.03, 0.056);
+    this._stringHand.add(this._stringWrist);
+
+    /* --- the two forearms, solved back to the shoulders --- */
+    // Neither arm is baked any more. The old pair were cylinders rotated 2.0 rad
+    // about X inside the *bow's* frame, so the bow's own yaw swung them until
+    // they pointed at the camera and drew as two dark logs lying across the
+    // middle of the screen at full draw - hands that appeared to float rather
+    // than to come from a body. Anchoring them to fixed shoulders makes both
+    // arms leave the bottom corners of the frame in every pose, and the string
+    // arm's elbow now flares outward as the draw takes it back, for free.
+    this._bowArm = new ViewArm({
+      parent: this.root,
+      wrist: this._bowWrist,
+      anchor: BOW_SHOULDER,
+      sleeve: this.matGlove,
+      band: this.matSteel,
+      wristRadius: 0.014,
+      taper: 1.55,
+      minEyeDistance: 0.34,
+      name: 'viewmodel:bow:arm-bow',
+    });
+    this._stringArm = new ViewArm({
+      parent: this.root,
+      wrist: this._stringWrist,
+      anchor: STRING_SHOULDER,
+      sleeve: this.matGlove,
+      band: this.matSteel,
+      wristRadius: 0.014,
+      taper: 1.55,
+      minEyeDistance: 0.34,
+      name: 'viewmodel:bow:arm-string',
+    });
   }
 
   _buildLights() {
@@ -776,6 +862,31 @@ export class BowWeapon {
     this._updatePose(elapsed);
     this._updateLimbs();
     this._solveString();
+    this._solveArms();
+  }
+
+  /**
+   * Aim both forearms, and lean the string shoulder back with the draw.
+   *
+   * The lean is the difference between an arm that pulls and one that merely
+   * holds: a real draw is made with the back, so the rear shoulder travels
+   * several centimetres away from the target while the bow shoulder stays put.
+   * Without it the string hand slides back along a forearm whose elbow never
+   * moves, which reads as the hand sliding off the arm.
+   *
+   * The string arm follows the string hand's visibility - while an arrow is
+   * being nocked there is no hand on the string, so there is no forearm reaching
+   * for it either.
+   */
+  _solveArms() {
+    this._bowArm.solve();
+
+    const shown = this._stringHand.visible;
+    this._stringArm.setVisible(shown);
+    if (!shown) return;
+
+    this._stringArm.anchor.lerpVectors(STRING_SHOULDER, STRING_ELBOW_DRAWN, this._draw);
+    this._stringArm.solve();
   }
 
   _integrateSprings(dtRaw) {
@@ -875,7 +986,15 @@ export class BowWeapon {
     this._model.rotation.set(_po2.x, _po2.y, _po2.z, 'XYZ');
 
     // Yaw the bow itself out of profile, straightening as the shot is aimed.
-    this._bow.rotation.y = 0.46 - aim * 0.36;
+    //
+    // This used to be 0.46 falling to 0.10, which stacked with the hip pose's
+    // own yaw to put the bow - and therefore the nocked arrow, which is fixed to
+    // the bow's plane - 44 degrees off the view axis at rest. The arrow read as
+    // a stick lying diagonally across the screen pointing nowhere near the
+    // crosshair. 0.2 still shows the bow three-quarters on rather than as a bare
+    // vertical line, and by full draw the shaft is within a degree of the axis
+    // the arrow will actually fly down.
+    this._bow.rotation.y = 0.2 - aim * 0.185;
     this._bow.rotation.z = 0.1 - aim * 0.08;
 
     const r = Math.tan(this.camera.fov * 0.5 * DEG) / Math.tan(this._referenceFov * 0.5 * DEG);
@@ -1157,6 +1276,8 @@ export class BowWeapon {
   }
 
   dispose() {
+    this._bowArm?.dispose();
+    this._stringArm?.dispose();
     this.root.removeFromParent();
     this._lightRig?.removeFromParent();
     for (const d of this._disposables) d?.dispose?.();

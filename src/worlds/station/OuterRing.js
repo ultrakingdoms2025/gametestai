@@ -412,7 +412,14 @@ function buildApron(world) {
     uvScale(new THREE.RingGeometry(R0, R1, 96, 6, A0, A1 - A0), (R1 - R0) / 14, (R1 - R0) / 14),
     M.road
   );
-  pad.rotation.x = Math.PI / 2;
+  /* -PI/2, not +PI/2. A RingGeometry faces +Z; a quarter turn the wrong way
+   * about X points it at the ground. `M.road` is FrontSide, so the whole apron -
+   * its paving, its three service loops and its pad markings - was backface
+   * culled and invisible from above, leaving only the emissive kerb markers
+   * standing in a void. That reads exactly as a road that appears and
+   * disappears as you cross it. The hub deck two hundred metres away has always
+   * used -PI/2; these did not. */
+  pad.rotation.x = -Math.PI / 2;
   pad.position.y = 0.04;
   pad.receiveShadow = true;
   pad.castShadow = false;
@@ -442,7 +449,7 @@ function buildApron(world) {
     ring.rotateX(-Math.PI / 2);
     uvScale(ring, 40, 1);
     B.at(i % 2 ? 'emAmber' : 'emCyan', ring, c.x, 0.14, c.z);
-    B.at('hazard', uvScale(new THREE.RingGeometry(21, 26, 40, 1).rotateX(Math.PI / 2), 8, 8), c.x, 0.1, c.z);
+    B.at('hazard', uvScale(new THREE.RingGeometry(21, 26, 40, 1).rotateX(-Math.PI / 2), 8, 8), c.x, 0.1, c.z);
     for (let k = 0; k < 8; k++) {
       const a = (k / 8) * Math.PI * 2;
       B.at('trimDark', boxGeo(1.2, 1.6, 1.2, 2), c.x + Math.cos(a) * 27, 0.8, c.z + Math.sin(a) * 27);
@@ -500,7 +507,7 @@ function buildApron(world) {
       uvScale(new THREE.RingGeometry(rr - 7, rr + 7, 90, 1, A0 + 0.06, (A1 - A0) - 0.12), 40, 1),
       M.road
     );
-    road.rotation.x = Math.PI / 2;
+    road.rotation.x = -Math.PI / 2;
     road.position.y = 0.09;
     road.receiveShadow = true;
     road.castShadow = false;
@@ -814,18 +821,40 @@ function buildZone(world, spec, actors) {
     const a1 = ((i + 1) / SEG) * Math.PI * 2;
     const am = (a0 + a1) / 2;
     const p = zoneLocal(spec.deg, Math.sin(am) * (ZONE_R + 2), 0, Math.cos(am) * (ZONE_R + 2));
-    // Skip the arc the link comes through.
-    if (Math.abs(Math.atan2(Math.sin(am), Math.cos(am))) < MOUTH_HALF) continue;
     const chord = ((Math.PI * 2 * (ZONE_R + 2)) / SEG) * 0.54;
     const wYaw = yaw + am;
-    B.at('panel', boxGeo(chord * 2, 6, 1.2, 4), p.x, 3, p.z, wYaw);
-    B.at('trim', boxGeo(chord * 2, 0.3, 1.6, 2), p.x, 6.2, p.z, wYaw);
-    B.at('glassWindow', new THREE.PlaneGeometry(chord * 2, ZONE_WALL_H - 7.5), p.x - Math.sin(wYaw) * 0.2, 6.4 + (ZONE_WALL_H - 7.5) / 2, p.z - Math.cos(wYaw) * 0.2, wYaw + Math.PI);
-    B.at('panelDark', boxGeo(chord * 2, 1.4, 2.2, 3), p.x, ZONE_WALL_H - 0.7, p.z, wYaw);
-    if (i % 3 === 0) {
-      B.at('trim', boxGeo(0.9, ZONE_WALL_H, 1.8, 4), p.x, ZONE_WALL_H / 2, p.z, wYaw);
+
+    /* The link arrives through a DOORWAY, not a slot in the wall.
+     *
+     * This used to `continue` over the mouth segments, which took the wall away
+     * for its whole 30 m - so the corridor arrived through a hole three storeys
+     * tall and the arcade's roof beams ran across the top of it in mid-air. The
+     * mouth is only ever walked through at deck level, so only the deck level is
+     * missing: above the lintel the wall carries straight on over the opening,
+     * and the beams above it land on plate. Same fix as the hull's own mouths,
+     * for the same reason.
+     */
+    const inMouth = Math.abs(Math.atan2(Math.sin(am), Math.cos(am))) < MOUTH_HALF;
+    const LINTEL = 11.2;
+
+    if (!inMouth) {
+      B.at('panel', boxGeo(chord * 2, 6, 1.2, 4), p.x, 3, p.z, wYaw);
+      B.at('trim', boxGeo(chord * 2, 0.3, 1.6, 2), p.x, 6.2, p.z, wYaw);
+      B.at('glassWindow', new THREE.PlaneGeometry(chord * 2, ZONE_WALL_H - 7.5), p.x - Math.sin(wYaw) * 0.2, 6.4 + (ZONE_WALL_H - 7.5) / 2, p.z - Math.cos(wYaw) * 0.2, wYaw + Math.PI);
+      if (i % 3 === 0) {
+        B.at('trim', boxGeo(0.9, ZONE_WALL_H, 1.8, 4), p.x, ZONE_WALL_H / 2, p.z, wYaw);
+      }
+      world._solidRot(p.x, ZONE_WALL_H / 2, p.z, chord, ZONE_WALL_H / 2, 1.1, wYaw);
+    } else {
+      // Lintel beam, then the glazing above it, then the collider for both.
+      B.at('panelDark', boxGeo(chord * 2, 1.6, 2.0, 3), p.x, LINTEL + 0.8, p.z, wYaw);
+      B.at(spec.accent, boxGeo(chord * 2 - 0.6, 0.14, 0.24, 1), p.x - Math.sin(wYaw) * 1.1, LINTEL + 0.1, p.z - Math.cos(wYaw) * 1.1, wYaw);
+      const gh = ZONE_WALL_H - 1.4 - (LINTEL + 1.6);
+      B.at('glassWindow', new THREE.PlaneGeometry(chord * 2, gh), p.x - Math.sin(wYaw) * 0.2, LINTEL + 1.6 + gh / 2, p.z - Math.cos(wYaw) * 0.2, wYaw + Math.PI);
+      world._solidRot(p.x, (LINTEL + ZONE_WALL_H) / 2, p.z, chord, (ZONE_WALL_H - LINTEL) / 2, 1.1, wYaw);
     }
-    world._solidRot(p.x, ZONE_WALL_H / 2, p.z, chord, ZONE_WALL_H / 2, 1.1, wYaw);
+    // Capping runs the whole way round, mouth or not - it is the parapet.
+    B.at('panelDark', boxGeo(chord * 2, 1.4, 2.2, 3), p.x, ZONE_WALL_H - 0.7, p.z, wYaw);
   }
 
   /* --- Arcade ceiling --------------------------------------------------- */

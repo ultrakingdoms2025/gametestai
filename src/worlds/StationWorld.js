@@ -3510,20 +3510,43 @@ export class StationWorld extends World {
       if (arcEnd > from + 0.001) fn(from, arcEnd - from);
     };
 
-    arcSegments((from, len) => {
-      const seg = new THREE.Mesh(
-        uvScale(
-          new THREE.CylinderGeometry(HULL_R, HULL_R, WALL_H, Math.max(6, Math.round((len / (Math.PI * 2)) * 96)), 1, true, from, len),
-          (HULL_R * len) / 10,
-          WALL_H / 10
-        ),
-        M.hullIn
-      );
-      seg.position.y = WALL_H / 2;
-      seg.castShadow = false;
-      seg.receiveShadow = true;
-      g.add(seg);
-    });
+    /* The mouths are DOORWAYS, not slots.
+     *
+     * The first version cut each mouth through the full 48 m of wall, which is
+     * what you get if you think of the opening as "a gap in the arc" rather than
+     * as a hole in a building. From the deck it read as a 24 m wide, 48 m tall
+     * slit with the hull's own transom rings - which run right round the ring at
+     * 12, 24, 36 and 47 m - sailing straight across it at four heights. Long
+     * horizontal tubes passing over a doorway, uninterrupted, which is exactly
+     * what it looked like.
+     *
+     * The corridor behind is 9.5 m to its soffit and 10.1 m over its roof plate,
+     * and the mouth's own lit frame sits at 11.3 to 12.6. So the wall is built
+     * in two bands: below the lintel it is cut for the mouths, and above it runs
+     * unbroken all the way round. The transoms above then cross solid plate,
+     * where they belong.
+     */
+    const MOUTH_H = 11.2;
+    const band = (y0, y1, cut) => {
+      const emit = (from, len) => {
+        const seg = new THREE.Mesh(
+          uvScale(
+            new THREE.CylinderGeometry(HULL_R, HULL_R, y1 - y0, Math.max(6, Math.round((len / (Math.PI * 2)) * 96)), 1, true, from, len),
+            (HULL_R * len) / 10,
+            (y1 - y0) / 10
+          ),
+          M.hullIn
+        );
+        seg.position.y = (y0 + y1) / 2;
+        seg.castShadow = false;
+        seg.receiveShadow = true;
+        g.add(seg);
+      };
+      if (cut) arcSegments(emit);
+      else emit(arcStart, arcEnd - arcStart);
+    };
+    band(0, MOUTH_H, true);
+    band(MOUTH_H, WALL_H, false);
 
     // Reveal each mouth with a lit frame, so the opening reads as an aperture
     // rather than as a hole where the wall failed to generate.
@@ -8155,22 +8178,67 @@ export class StationWorld extends World {
       this._contact(bx, bz, 10);
     }
 
-    /* --- Hull-side services: pipe runs and cable trays --------------- */
-    for (let i = 0; i < 30; i++) {
-      const th = (i / 30) * Math.PI * 2;
-      const r = HULL_R - 3.2;
-      const x = Math.cos(th) * r, z = Math.sin(th) * r;
-      const chord = (Math.PI * 2 * r) / 30 + 0.5;
-      for (let k = 0; k < 3; k++) {
-        const pipe = new THREE.CylinderGeometry(0.22 + k * 0.08, 0.22 + k * 0.08, chord, 6);
-        pipe.rotateZ(Math.PI / 2);
-        uvScale(pipe, chord / 2, 2);
-        B.at(k === 1 ? 'copper' : 'trim', pipe, x, 3.2 + k * 0.85, z, -th - Math.PI / 2);
+    /* --- Hull-side services: pipe runs and cable trays ---------------
+     *
+     * Three pipes, a cable tray and a cabinet run, following the hull all the
+     * way round at chest and head height.
+     *
+     * They used to go *all* the way round, and that was the single most visible
+     * defect on the ring once the avenues gained doorways: standing at a link
+     * mouth you were looking down a corridor through four horizontal tubes that
+     * crossed the opening at 3.2, 4.1, 4.9 and 6.2 m and carried on out the
+     * other side. Nothing in a building runs a live service main across a
+     * doorway; it stops each side and goes over the head, or it goes round.
+     *
+     * So each 42 m chord is now clipped against the mouth angles and emitted as
+     * however many pieces survive. A chord that misses every mouth is emitted
+     * whole, exactly as before, so the other 26 of the 30 bays are untouched.
+     */
+    const R_SERV = HULL_R - 3.2;
+    const servMouths = ZONES.map((zn) => zn.deg * DEG);
+    // A little wider than the structural opening so the run stops clear of the
+    // mouth's own frame rather than dying against it.
+    const servHalf = (LINK_MOUTH_HALF_DEG + 1.6) * DEG;
+    const norm = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+
+    /** Sub-spans of [a0, a1] that lie outside every mouth. */
+    const clearSpans = (a0, a1) => {
+      let spans = [[a0, a1]];
+      for (const m of servMouths) {
+        const next = [];
+        for (const [s0, s1] of spans) {
+          // Work relative to the mouth so wrap-around is somebody else's problem.
+          const d0 = norm(s0 - m), d1 = d0 + (s1 - s0);
+          if (d1 <= -servHalf || d0 >= servHalf) { next.push([s0, s1]); continue; }
+          if (d0 < -servHalf) next.push([s0, m - servHalf]);
+          if (d1 > servHalf) next.push([m + servHalf, s0 + (d1 - d0)]);
+        }
+        spans = next;
       }
-      B.at('grate', boxGeo(chord, 0.25, 0.7, 1.5), x - Math.cos(th) * 0.9, 6.2, z - Math.sin(th) * 0.9, -th - Math.PI / 2);
-      if (i % 3 === 0) {
-        B.at('panelDark', boxGeo(1.6, 2.4, 1.2, 2), x - Math.cos(th) * 1.4, 1.2, z - Math.sin(th) * 1.4, -th);
-        B.at('emAmber', boxGeo(1.2, 0.12, 0.18, 1), x - Math.cos(th) * 2.1, 2.1, z - Math.sin(th) * 2.1, -th);
+      return spans;
+    };
+
+    for (let i = 0; i < 30; i++) {
+      const a0 = (i / 30) * Math.PI * 2, a1 = ((i + 1) / 30) * Math.PI * 2;
+      for (const [s0, s1] of clearSpans(a0, a1)) {
+        const th = (s0 + s1) / 2;
+        const chord = R_SERV * (s1 - s0) + 0.5;
+        if (chord < 1.5) continue;
+        const x = Math.cos(th) * R_SERV, z = Math.sin(th) * R_SERV;
+        for (let k = 0; k < 3; k++) {
+          const pipe = new THREE.CylinderGeometry(0.22 + k * 0.08, 0.22 + k * 0.08, chord, 6);
+          pipe.rotateZ(Math.PI / 2);
+          uvScale(pipe, chord / 2, 2);
+          B.at(k === 1 ? 'copper' : 'trim', pipe, x, 3.2 + k * 0.85, z, -th - Math.PI / 2);
+        }
+        B.at('grate', boxGeo(chord, 0.25, 0.7, 1.5), x - Math.cos(th) * 0.9, 6.2, z - Math.sin(th) * 0.9, -th - Math.PI / 2);
+      }
+      // Cabinets are point objects, not runs - one test against the mouths does.
+      const thc = (a0 + a1) / 2;
+      if (i % 3 === 0 && !servMouths.some((m) => Math.abs(norm(thc - m)) < servHalf + 0.02)) {
+        const x = Math.cos(thc) * R_SERV, z = Math.sin(thc) * R_SERV;
+        B.at('panelDark', boxGeo(1.6, 2.4, 1.2, 2), x - Math.cos(thc) * 1.4, 1.2, z - Math.sin(thc) * 1.4, -thc);
+        B.at('emAmber', boxGeo(1.2, 0.12, 0.18, 1), x - Math.cos(thc) * 2.1, 2.1, z - Math.sin(thc) * 2.1, -thc);
       }
     }
 

@@ -1763,6 +1763,10 @@ export class StationWorld extends World {
      * structure is already standing when `_solidifyStructure` decides which
      * triangles are enclosed and can be dropped. */
     await step(0.955, 'Spanning the great dome', this._buildOuterRing);
+    /* Strictly before `_solidifyProps`: a prop that is sitting in a platform
+     * has to be lifted out of it before that pass measures where its collider
+     * goes, or the collider is built at the wrong height too. */
+    await step(0.960, 'Standing the set dressing up', this._settleDressing);
     await step(0.962, 'Making the set dressing solid', this._solidifyProps);
     // Strictly after `_solidifyProps`: that pass decides what is already solid
     // by probing with `groundHeight`, and it reads every box this one then uses
@@ -3082,6 +3086,205 @@ export class StationWorld extends World {
     });
     this._occupied = occ;
     return occ.size;
+  }
+
+  /**
+   * Stand every scattered prop on whatever is actually under it.
+   *
+   * ── The defect ────────────────────────────────────────────────────────────
+   * `_buildDressing` scatters bins, crates, barrels, bollards, spools and
+   * trolleys across the deck at a fixed height, having tested only that the
+   * footprint is *clear*. Clear is not the same as flat. Wherever the deck is
+   * raised - the plaza's grate platforms, the skyline plinths, the monument
+   * steps, the cargo yard's pads - the prop was authored at deck level and the
+   * platform came up through it. Measured over the hub, 74 props were sunk into
+   * a collided surface, the worst of them 1.35 m into a 1.52 m bin: you saw the
+   * top third of a bin and no bin.
+   *
+   * ── Why a sweep, and why here ────────────────────────────────────────────
+   * Same reasoning as `_solidifyProps`, which is a few lines below: the scatter
+   * is emitted in bulk from a dozen loops, and a height lookup that has to be
+   * remembered at each of them is a height lookup that will be forgotten at the
+   * next one. A sweep over what was actually built cannot drift from it.
+   *
+   * It runs before `_solidifyProps` deliberately. At this point the props
+   * themselves carry no colliders, so a downward probe answers with the deck or
+   * the platform rather than with the prop's own body - and the collider that
+   * pass then builds is placed at the corrected height rather than the wrong
+   * one.
+   *
+   * ── What it will not touch ───────────────────────────────────────────────
+   * It only ever lifts, and only when the surface it finds is inside the prop's
+   * own height. So a crate resting on a shelf that was drawn without a collider
+   * is left alone (the probe finds the floor *below* it and does nothing), and
+   * anything deliberately in the air - the canopy rigging at 48 m, a crane's
+   * slung load - is left alone too, because the drop to the deck is far larger
+   * than the prop is tall.
+   */
+  /**
+   * Settle the hub's scatter groups.
+   *
+   * Restricted to the passes that emit loose props onto the deck and leave them
+   * to `_solidifyProps` to collide. The outer zones are excluded on purpose:
+   * they author a collider beside every prop they place, so lifting the drawn
+   * instance here would leave its collider behind at the old height - a worse
+   * defect than the one being fixed.
+   */
+  _settleDressing() {
+    const groups = ['dressing', 'monument', 'cargo', 'control', 'skyline', 'commercial', 'hangar']
+      .map((n) => this.group.getObjectByName(n))
+      .filter(Boolean);
+    return this._settleScatter(groups);
+  }
+
+  _settleScatter(groups) {
+    const t0 = performance.now();
+    this.group.updateMatrixWorld(true);
+
+    /* ── The support set, and why it is the DRAWN geometry ─────────────────
+     * The first version of this probed `physics.groundHeight`, which is fast
+     * and wrong here: at this point in the build only hand-authored boxes are
+     * colliders, and most of the raised surfaces a prop can sink into - the
+     * plaza's grate platforms, the skyline plinths, the monument's steps - are
+     * drawn geometry that `_solidifyStructure` will not collide until three
+     * steps later. It found 7 of the 74 sunk props and left the rest.
+     *
+     * So the probe is a raycast against the merged batches instead. Instanced
+     * meshes are excluded, which is the important half: a crate must not be
+     * held up by the crate beside it, and a crate legitimately stacked on
+     * another one sees only the floor far below and is correctly left alone.
+     */
+    /* Triangle cap, and the deck handled separately.
+     *
+     * `THREE.Mesh.raycast` has no acceleration structure: a ray whose bounding
+     * box test passes walks every triangle in the mesh. A merged district batch
+     * is 90,000 of them, and the deck and the dome are in every prop's way, so
+     * the honest version of this pass measured 10.9 s and put the world build
+     * from 2.4 s to 14.4.
+     *
+     * The big flat plates - the deck, the zone decks, the dome floor - are also
+     * the ones `physics.groundHeight` already answers for in microseconds,
+     * because they are authored box colliders. So they are dropped from the
+     * raycast and folded back in as a floor underneath the result. What is left
+     * to raycast is the small stuff a prop can actually be sunk into: platform
+     * plates, plinths, steps, kerbs, pads.
+     */
+    const MAX_TRIS = 20000;
+    const supports = [];
+    const boxes = [];
+    this.group.traverse((o) => {
+      if (!o.isMesh || o.isInstancedMesh || !o.visible || !o.geometry) return;
+      const g = o.geometry;
+      const idx = g.getIndex();
+      const tris = (idx ? idx.count : (g.getAttribute('position')?.count ?? 0)) / 3;
+      if (tris > MAX_TRIS) return;
+      if (!g.boundingBox) g.computeBoundingBox();
+      const b = new THREE.Box3().copy(g.boundingBox).applyMatrix4(o.matrixWorld);
+      supports.push(o);
+      boxes.push(b);
+    });
+
+    /* A grid over those boxes. Without it this is every prop against every
+     * merged batch on the map - and a merged batch has no internal tree, so a
+     * bounding-box hit walks all of its triangles. Measured in the browser at
+     * 15 s for 1,400 props; with the grid each prop tests a handful. */
+    const CELL = 24;
+    const grid = new Map();
+    const key = (i, j) => i * 100003 + j;
+    for (let n = 0; n < boxes.length; n++) {
+      const b = boxes[n];
+      const i0 = Math.floor(b.min.x / CELL), i1 = Math.floor(b.max.x / CELL);
+      const j0 = Math.floor(b.min.z / CELL), j1 = Math.floor(b.max.z / CELL);
+      // A batch spanning the whole map would be listed in every cell; those are
+      // the decks and the dome, and they are exactly what a prop needs to find,
+      // so they go in a short always-tested list instead.
+      if ((i1 - i0) * (j1 - j0) > 400) { (grid.__wide ??= []).push(n); continue; }
+      for (let i = i0; i <= i1; i++) {
+        for (let j = j0; j <= j1; j++) {
+          const k = key(i, j);
+          let list = grid.get(k);
+          if (!list) grid.set(k, (list = []));
+          list.push(n);
+        }
+      }
+    }
+    const wide = grid.__wide ?? [];
+
+    const rc = new THREE.Raycaster();
+    const down = new THREE.Vector3(0, -1, 0);
+    const origin = new THREE.Vector3();
+    const bb = new THREE.Box3();
+    const world = new THREE.Box3();
+    const m = new THREE.Matrix4();
+    const near = [];
+    let moved = 0, worst = 0, checked = 0;
+
+    for (const group of groups) {
+      group.traverse((o) => {
+        if (!o.isInstancedMesh || !o.geometry) return;
+        if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+        bb.copy(o.geometry.boundingBox);
+        let dirty = false;
+        for (let i = 0; i < o.count; i++) {
+          o.getMatrixAt(i, m);
+          world.copy(bb).applyMatrix4(m).applyMatrix4(o.matrixWorld);
+          const h = world.max.y - world.min.y;
+          // Trim, decals and cable runs are meant to lie flush; leave them.
+          if (h < 0.4) continue;
+          checked++;
+          const cx = (world.min.x + world.max.x) / 2;
+          const cz = (world.min.z + world.max.z) / 2;
+
+          // The authored floor, which covers the decks and everything else with
+          // a collider, for free.
+          let surf = this.physics.groundHeight(cx, cz, world.max.y + 0.6, h + 6);
+          if (surf === null) surf = -Infinity;
+
+          /* Only bother raycasting where something could plausibly be sunk
+           * into: a candidate whose box contains this XZ and whose top is
+           * ABOVE the prop's base. On open deck - which is most of the map -
+           * nothing qualifies and the raycast is skipped entirely. This is the
+           * difference between 4.9 s and a fifth of that, and it cannot change
+           * the answer: a candidate that fails this test cannot produce a
+           * positive `sink`. */
+          near.length = 0;
+          const cell = grid.get(key(Math.floor(cx / CELL), Math.floor(cz / CELL)));
+          const consider = (n) => {
+            const b = boxes[n];
+            if (b.max.y <= world.min.y + 0.12) return;
+            if (cx < b.min.x || cx > b.max.x || cz < b.min.z || cz > b.max.z) return;
+            near.push(supports[n]);
+          };
+          if (cell) for (const n of cell) consider(n);
+          for (const n of wide) consider(n);
+          if (near.length) {
+            origin.set(cx, world.max.y - 0.02, cz);
+            rc.set(origin, down);
+            rc.far = h + 2.5;
+            const hit = rc.intersectObjects(near, false)[0];
+            if (hit && hit.point.y > surf) surf = hit.point.y;
+          }
+          if (surf === -Infinity) continue;
+          const sink = surf - world.min.y;
+          // Only ever lift, and only out of something it is genuinely inside.
+          if (sink <= 0.12 || sink >= h * 0.95) continue;
+          m.elements[13] += sink;        // translation Y, in the mesh's own frame
+          o.setMatrixAt(i, m);
+          dirty = true;
+          moved++;
+          if (sink > worst) worst = sink;
+        }
+        if (dirty) {
+          o.instanceMatrix.needsUpdate = true;
+          o.computeBoundingSphere();
+        }
+      });
+    }
+    console.info(
+      `[station] set dressing settled: ${moved} of ${checked} props lifted out of the surface ` +
+      `they were sunk into (worst ${worst.toFixed(2)} m, ${Math.round(performance.now() - t0)}ms)`
+    );
+    return moved;
   }
 
   /** Y-rotated solid volume - buildings, walkway segments, kerbs. */

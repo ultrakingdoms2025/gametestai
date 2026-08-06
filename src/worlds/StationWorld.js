@@ -5602,7 +5602,7 @@ export class StationWorld extends World {
       side: -1, target: 'citadel', label: 'Sunspire Citadel', accent: 0xffc46b,
     });
     this._buildAxisGateway(g, {
-      side: 1, target: 'race', label: 'Vellum Ridge Circuit', accent: 0xff5a3c,
+      side: 1, target: 'race', label: 'Vellum Ridge', accent: 0xff5a3c,
     });
   }
 

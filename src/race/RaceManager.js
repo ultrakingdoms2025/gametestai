@@ -3,6 +3,7 @@ import { TrackPath, RacerField, DIFFICULTIES, makeTestCircuit } from './RacerAI.
 import { Pickups, PICKUP_VALUE } from './Pickups.js';
 import { Contacts } from './Contacts.js';
 import { RaceRings, buildDragonRingCheckpoints, DRAGON_RACE } from './RaceRings.js';
+import { RaceLoops } from './RaceLoops.js';
 
 /**
  * The race: state machine, lap validation, placement and prize money.
@@ -158,6 +159,17 @@ export class RaceManager {
     /* Car-to-car contact. The rivals have no colliders by design, so without
      * this the player drives through them - see the note in Contacts.js. */
     this.contacts = new Contacts({ bus, path: null });
+    /* The 360 loop. Fed from the world rather than from the armed track,
+     * because a loop is part of the road: driving up to one with no race
+     * running has to take you round it too. See RaceLoops.js. */
+    this.loops = new RaceLoops({ bus, physics, player, mounts });
+    /* A stand-in entry for the player when no race is on, so the loop can be
+     * driven outside one. Deliberately not pushed into `entries` - that array
+     * is the classification, and something in it that is not racing would be
+     * ranked, scored and shown on the leaderboard. */
+    this._freeEntry = {
+      id: 'player', isPlayer: true, position: null, speed: 0, _px: 0, _pz: 0,
+    };
 
     this.state = RACE_STATE.IDLE;
     /** Track data as read from the world, or from the synthetic test circuit. */
@@ -236,6 +248,41 @@ export class RaceManager {
    */
   _fieldFor(difficulty) {
     return DIFFICULTY_FIELD[difficulty] ?? { cars: 10, playerSlot: PLAYER_GRID_SLOT };
+  }
+
+  /**
+   * Change circuit.
+   *
+   * The world holds all three standing and only repoints its published
+   * contract, so this is a re-read rather than a rebuild - but it *is* a
+   * re-read: `arm` reinstalls the path, the checkpoints and the grid, and
+   * re-emits `race:armed` so the UI and the minimap pick up the new shape.
+   *
+   * Refused mid-race. Changing the road out from under a running classification
+   * would leave every racer's checkpoint cursor pointing at a checkpoint that
+   * is now half a kilometre away.
+   *
+   * @param {string} id
+   * @returns {boolean} true if the circuit changed
+   */
+  selectTrack(id) {
+    if (this.racing) return false;
+    const world = this._source;
+    if (!world?.selectTrack || !id) return false;
+    if (world.activeTrackId === id) return false;
+    if (!world.selectTrack(id)) return false;
+    this.reset();
+    return this.arm(world);
+  }
+
+  /** Circuits the armed world offers, or an empty list. */
+  get tracks() {
+    return this._source?.tracks ?? [];
+  }
+
+  /** Id of the circuit currently armed. */
+  get trackId() {
+    return this._source?.activeTrackId ?? null;
   }
 
   setRaceType(type) {
@@ -337,6 +384,8 @@ export class RaceManager {
       return false;
     }
     if (this.racing) return false;
+    // A free lap that was still going round the loop when START was pressed.
+    this._unrail();
 
     this.difficulty = DIFFICULTIES[difficulty] ? difficulty : (this.difficulties[0] ?? 'standard');
     if (!this.raceTypes.includes(this.raceType)) this.raceType = RACE_TYPES.CAR;
@@ -446,6 +495,7 @@ export class RaceManager {
     this.rings.clear();
     this._goHold = 0;
     this._setLights(0);
+    this._unrail();
     this.bus?.emit('race:aborted', { reason });
   }
 
@@ -457,6 +507,30 @@ export class RaceManager {
     this.field.setVisible(false);
     this.markers.length = 0;
     this.rings.clear();
+    this._unrail();
+  }
+
+  /**
+   * Take everything off the loop, right now.
+   *
+   * Abandoning a race, changing world or starting a fresh one all have to come
+   * through here: `railed` is what tells a car to stop simulating, and a car
+   * left with it set sits at whatever height the rail last wrote for ever.
+   * `RaceLoops.clear` un-rails everything it was carrying; the sweep over the
+   * field afterwards is belt and braces for a racer that was rebuilt or
+   * replaced while it happened to be on the loop.
+   */
+  _unrail() {
+    if (!this.loops) return;
+    this.loops.clear();
+    const car = this._playerCar();
+    if (car?.railed) {
+      car.railed = false;
+      car._pitch = 0;
+      car._pitchTarget = 0;
+      car._vy = 0;
+    }
+    for (const r of this.field?.racers ?? []) r.railed = false;
   }
 
   /**
@@ -517,7 +591,10 @@ export class RaceManager {
     // the countdown and after the flag rather than only while racing.
     this.pickups.update(dt);
     this.rings.update(this.clock);
-    if (this.state === RACE_STATE.IDLE || this.state === RACE_STATE.FINISHED) return;
+    if (this.state === RACE_STATE.IDLE || this.state === RACE_STATE.FINISHED) {
+      this._freeDrive(dt);
+      return;
+    }
     if (!this.ready) return;
 
     const running = this.state === RACE_STATE.RACING;
@@ -571,6 +648,17 @@ export class RaceManager {
     // which is the whole point of driving them along the centreline.
     this.field.fixedUpdate(dt, this.entries, running);
 
+    /* The loop, between the field moving and the race being scored.
+     *
+     * After, because a car on the rail must not have its position overwritten
+     * by its own driving this step; before, because the apex checkpoint can
+     * only fire against a position that is actually at the apex. Running during
+     * the countdown as well as the race costs nothing - nobody is near the
+     * entry gate on the grid - and means a car that was already on the rail
+     * when the flag fell is carried off it rather than frozen. */
+    this.loops.fixedUpdate(dt, this.entries, this._playerCar(), this.path);
+    if (this.loops.isRailed('player')) this._syncPlayerEntry();
+
     /* Contact runs between the field moving and the race being scored, so a
      * shunt is reflected in this step's lap progress rather than next one's.
      * Only while racing: cars are stacked nose to tail on the grid and would
@@ -614,6 +702,16 @@ export class RaceManager {
         y: Number.isFinite(Number(c.y)) ? Number(c.y) : 0,
         z,
         radius: Math.max(3, Number(c.radius) || 10),
+        /* Vertical gate, when the circuit states one.
+         *
+         * The default of 14 m is generous on purpose - it only has to reject a
+         * bridge crossing over a line it is not part of, and demanding accurate
+         * checkpoint heights from a world is how you get a lap that will not
+         * validate on a crest. The loop's apex checkpoint is the one place that
+         * needs a tight gate, because rejecting the car on the road 30 m below
+         * it is the entire mechanism that makes the loop mandatory. */
+        yGate: Number.isFinite(Number(c.yGate)) ? Number(c.yGate) : 0,
+        loop: !!c.loop,
       });
     }
     if (checkpoints.length < 3) return null;
@@ -647,6 +745,9 @@ export class RaceManager {
       lapCount: Math.max(1, Math.round(Number(source.lapCount) || 3)),
       difficulties: difficulties.length ? difficulties : ['standard'],
       synthetic: !!source.synthetic,
+      loops: Array.isArray(source.loops) ? source.loops : [],
+      trackId: source.activeTrackId ?? null,
+      trackName: source.tracks?.find?.((t) => t.id === source.activeTrackId)?.name ?? null,
     };
   }
 
@@ -674,6 +775,7 @@ export class RaceManager {
     this.circuit = pts;
     this._baseCheckpoints = t.checkpoints.map((c) => ({ ...c }));
     this._prepareRaceCheckpoints();
+    this.loops.setLoops(t.loops);
   }
 
   _prepareRaceCheckpoints() {
@@ -870,6 +972,40 @@ export class RaceManager {
     }
   }
 
+  /** The car, when the player is actually in one. */
+  _playerCar() {
+    const m = this.mounts?.active;
+    return m && m.id === 'car' ? m : null;
+  }
+
+  /**
+   * The loop, with no race running.
+   *
+   * A loop is a piece of road. Gating it on a race being armed would mean
+   * driving up to one on a free lap and passing straight through a ramp that
+   * has no collision on it, which reads as a broken world rather than as a set
+   * piece you are not currently allowed to use.
+   */
+  _freeDrive(dt) {
+    if (!this.loops.loops.length) return;
+    const car = this._playerCar();
+    const pos = this.player?.position;
+    if (!pos) { this.loops.clear(); return; }
+    if (!car) {
+      // On foot or on another mount: nothing to rail, and anything on the way
+      // round has just been dismounted out from under it. `clear` is what hands
+      // that car back its own physics - see RaceLoops.clear.
+      if (this.loops.active) this.loops.clear();
+      return;
+    }
+    const e = this._freeEntry;
+    if (e.position !== pos) { e.position = pos; e._px = pos.x; e._pz = pos.z; }
+    e.speed = car.speed ?? 0;
+    this.loops.fixedUpdate(dt, [e], car, this.path);
+    e._px = pos.x;
+    e._pz = pos.z;
+  }
+
   /** The player is not a `RacerAI`, so its track coordinates are derived here. */
   _syncPlayerEntry() {
     const e = this._playerEntry;
@@ -914,7 +1050,8 @@ export class RaceManager {
     // it is not part of, without demanding the world get checkpoint heights
     // exactly right. Dragon rings are tighter because the player must fly through them.
     const yGap = Math.abs((e.position.y ?? cp.y) - cp.y);
-    if (this.dragonRace ? yGap > cp.radius * 0.9 : yGap > 14) return;
+    const gate = cp.yGate > 0 ? cp.yGate : (this.dragonRace ? cp.radius * 0.9 : 14);
+    if (yGap > gate) return;
 
     const passed = e.nextCp;
     e.cpDone++;
@@ -1133,6 +1270,8 @@ export class RaceManager {
     this.markers.length = 0;
     this._playerEntry = null;
     this._playerPlace = 0;
+    this._unrail();
+    this.loops.setLoops(null);
     this.field.clear();
     this.rings.clear();
   }
@@ -1143,6 +1282,7 @@ export class RaceManager {
     this.bus?.off?.('world:changing', this._onWorldChanging);
     this.bus?.off?.('world:changed', this._onWorldChanged);
     this.field.dispose();
+    this.loops?.clear?.();
     this.entries.length = 0;
     this.markers.length = 0;
   }

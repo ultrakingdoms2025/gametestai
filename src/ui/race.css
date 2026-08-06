@@ -251,6 +251,38 @@
   color: #c4dced;
 }
 
+/* ========================================================== callout ====
+   Below the crosshair, above the HUD furniture and never in the way of the
+   road: the caption is for something that has just happened, so it must not
+   cover the thing that is happening next. */
+
+.rc-callout {
+  position: fixed;
+  left: 50%;
+  bottom: 21vh;
+  transform: translate(-50%, 10px);
+  z-index: 14;
+  pointer-events: none;
+  padding: 7px 20px 6px;
+  border: 1px solid rgba(157, 125, 255, 0.5);
+  border-radius: 999px;
+  background: rgba(10, 16, 30, 0.72);
+  font: 700 15px/1 'Chakra Petch', system-ui, sans-serif;
+  letter-spacing: 0.24em;
+  color: #d9ccff;
+  text-shadow: 0 0 18px rgba(157, 125, 255, 0.7);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 200ms ease, transform 200ms ease, visibility 0s linear 200ms;
+}
+
+.rc-callout.on {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+  transition: opacity 140ms ease, transform 220ms cubic-bezier(0.2, 1.4, 0.4, 1), visibility 0s;
+}
+
 /* =================================================== start procedure ====
    A repeat of the gantry, not a countdown. It sits in the upper third rather
    than dead centre so it never covers the road the player is about to launch
@@ -361,6 +393,12 @@
 
 .rc-card {
   width: min(520px, 92vw);
+  /* The card grew a circuit picker and can no longer be assumed to fit. It
+     scrolls rather than being made denser: START RACE below the fold on a short
+     window is the same dead end as a menu that will not close. */
+  max-height: 88vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 22px 24px 18px;
   border: 1px solid rgba(82, 233, 255, 0.28);
   border-radius: 14px;
@@ -402,12 +440,39 @@
   text-shadow: 0 0 18px rgba(82, 233, 255, 0.35);
 }
 
+/* The hint doubles as the close control - see the note in RaceUI._build. It has
+   to look pressable, or a player who cannot use the keys will not try it. */
 .rc-close {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 5px 8px 5px 10px;
+  font-family: inherit;
   font-size: 11px;
   color: rgba(140, 215, 235, 0.7);
+  border: 1px solid rgba(82, 233, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(82, 233, 255, 0.04);
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.rc-close:hover {
+  color: #eaf8ff;
+  border-color: rgba(82, 233, 255, 0.5);
+  background: rgba(82, 233, 255, 0.14);
+}
+
+.rc-close-x {
+  font-style: normal;
+  font-size: 13px;
+  line-height: 1;
+  padding-left: 2px;
+  color: #9fdcef;
+}
+
+.rc-close:hover .rc-close-x {
+  color: #ffffff;
 }
 
 .rc-close b {
@@ -524,6 +589,68 @@
 .rc-pick-d {
   font-size: 11px;
   color: rgba(127, 157, 176, 0.9);
+}
+
+/* ---- circuit picker ---------------------------------------------------- *
+   The one row where each option carries its own colour: the gantry banner at
+   each circuit is painted the same accent, so the button and the place agree.
+   Selection is shown with that colour rather than the panel's cyan, which is
+   what stops three cyan cards reading as one control with three labels. */
+
+.rc-tracks.off,
+.rc-section.off {
+  display: none;
+}
+
+.rc-track {
+  gap: 3px;
+  border-left: 3px solid var(--rc-accent, #52e9ff);
+}
+
+.rc-track:hover {
+  border-color: rgba(82, 233, 255, 0.45);
+  border-left-color: var(--rc-accent, #52e9ff);
+}
+
+.rc-track.on {
+  border-color: var(--rc-accent, #52e9ff);
+  background: color-mix(in srgb, var(--rc-accent, #52e9ff) 14%, rgba(10, 24, 36, 0.7));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--rc-accent, #52e9ff) 30%, transparent) inset;
+}
+
+.rc-track.on .rc-pick-n {
+  color: var(--rc-accent, #52e9ff);
+}
+
+.rc-track .rc-pick-n {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Circuit stats, between the name and the description: measured at build time,
+   never authored. See RaceWorld._fillCircuit. */
+.rc-pick-k {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(120, 200, 225, 0.75);
+}
+
+.rc-tag {
+  padding: 2px 7px 1px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--rc-accent, #52e9ff) 55%, transparent);
+  background: color-mix(in srgb, var(--rc-accent, #52e9ff) 18%, transparent);
+  color: var(--rc-accent, #52e9ff);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.14em;
 }
 
 /* ---- buttons ----------------------------------------------------------- */

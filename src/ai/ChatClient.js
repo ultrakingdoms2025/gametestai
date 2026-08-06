@@ -246,13 +246,13 @@ export class ChatClient {
       return 'There are five worlds in the Nexus. Aether Station is the hub and has four outbound portals; each of the other four worlds has one return portal.';
     }
     if (/\b(portal|gate|gateway)\b/.test(q)) {
-      return 'The Nexus has five worlds: Aether Station, Medieval Valley, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge Circuit. Station is the hub; the other four worlds each have one return portal.';
+      return 'The Nexus has five worlds: Aether Station, Medieval Valley, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge (three race circuits: Vellum Ridge Circuit, Cinder Gorge, and Aurora Rise, which has a 360 loop). Station is the hub; the other four worlds each have one return portal.';
     }
     if (/\b(how do i|how do you|controls|key|keys|button|buttons|move|play|do i)\b/.test(q)) {
       return 'E talks to friendlies, opens the quest board at quest managers, picks up loot, and enters portals; T opens chat; F1 shows help; I opens inventory; B opens the marketplace; K unstucks.';
     }
     if (/\b(worlds?|places?|where is|where do|what is in)\b/.test(q)) {
-      return 'The Nexus has five worlds: Aether Station, Medieval Valley, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge Circuit.';
+      return 'The Nexus has five worlds: Aether Station, Medieval Valley, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge (three race circuits: Vellum Ridge Circuit, Cinder Gorge, and Aurora Rise, which has a 360 loop).';
     }
     return '';
   }

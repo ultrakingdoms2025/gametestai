@@ -47,7 +47,10 @@ export const DEFAULT_LORE = {
     title: 'Race Lore',
     sign_label: 'Lorekeeper',
     body:
-      'Vellum Ridge Circuit is the Nexus at full speed: a mountain course that climbs, dives, and threads the city blocks before snapping back to the line. ' +
+      'Vellum Ridge is the Nexus at full speed: three circuits cut into one stretch of coast and hill country. ' +
+      'Vellum Ridge Circuit itself climbs, dives and threads the city blocks before snapping back to the line; ' +
+      'Cinder Gorge is a quarry course of chicanes and a hairpin with no room to be wrong in; ' +
+      'Aurora Rise runs up to a summit and back down to a vertical loop that every lap has to go over the top of. ' +
       'It is where drivers prove nerve, machine, and memory all at once.',
   },
 };
@@ -64,7 +67,7 @@ export function buildLorePersona(scope, entries = DEFAULT_LORE) {
     `You guard the histories of the worlds and answer questions about the portals, the people, and the place itself.`,
     `Overall lore: ${overall.body}`,
     `World lore: ${world.body}`,
-    'Canonical game facts: the Nexus has five worlds (Aether Station, Medieval Valley / Aldermoor Vale, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge Circuit); Aether Station is the hub and has four outbound portals, while each of the other four worlds has one return portal.',
+    'Canonical game facts: the Nexus has five worlds (Aether Station, Medieval Valley / Aldermoor Vale, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge, which carries three circuits - Vellum Ridge Circuit, Cinder Gorge and Aurora Rise); Aether Station is the hub and has four outbound portals, while each of the other four worlds has one return portal.',
     'Keep answers short, clear, and in character.',
     'Answer the player directly first; keep any flavor to one brief clause.',
     'If asked about the lore, explain it plainly and directly instead of sounding cryptic or poetic.',

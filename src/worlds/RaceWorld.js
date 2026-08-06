@@ -8,16 +8,25 @@ import {
   RaceCourse, Lattice, slabMatrix, mulberry32,
   clamp, clamp01, lerp, smoothstep, TAU,
 } from './RaceTrack.js';
+import {
+  HALF, SEG, QUAD, CITY, CIRCUITS, CourseSet, baseTerrain, worldControls, circuitById,
+} from './RaceCircuits.js';
 
 /**
- * RACE - "Vellum Ridge Circuit".
+ * RACE - three circuits on one 1.3 km map.
  *
- * A 2 km closed circuit that climbs out of a coastal plain, runs a ridge line
- * through open hill country, drops back down and threads a city block on its
- * way to the start/finish straight. Generous in the Mario-Kart sense - 20 to
- * 26 m of tarmac, wide run-off, barriers everywhere, nothing that punishes a
- * clumsy line - but built and lit like the rest of this game rather than as a
- * cartoon.
+ * "Vellum Ridge" is the 2 km original: it climbs out of a coastal plain, runs a
+ * ridge line through open hill country, drops back down and threads a city
+ * block on its way to the start/finish straight. "Cinder Gorge" is a tight
+ * quarry circuit in the south-west with two chicanes and a hairpin; "Aurora
+ * Rise" is a highland circuit in the north-east with a vertical loop on it.
+ * All three are generous in the Mario-Kart sense - 16 to 23 m of tarmac, wide
+ * run-off, barriers everywhere - but built and lit like the rest of this game
+ * rather than as a cartoon.
+ *
+ * The circuits themselves are data: see RaceCircuits.js, which also holds the
+ * rules an author has to obey to add another. Everything in this file builds
+ * whatever it is handed.
  *
  * ── The one thing that decides whether this world works ────────────────────
  *
@@ -61,7 +70,7 @@ import {
  * behind a single bounding sphere is a broadphase that never rejects anything,
  * and a chunked one only moves the seams it was meant to remove.
  *
- * ── Layout, in racing order ───────────────────────────────────────────────
+ * ── Vellum Ridge, in racing order ─────────────────────────────────────────
  *
  *   start/finish straight (south, 200 m, pit wall and grandstand)
  *   T1  long left sweeper onto the east straight, climbing
@@ -72,6 +81,15 @@ import {
  *   Foundry Corner - hard 33 m left into the city
  *   Foundry Road / Grand Avenue - two city blocks, buildings either side
  *   the final sweeper back onto the straight
+ *
+ * ── One world, three contracts ────────────────────────────────────────────
+ *
+ * `trackPath` / `checkpoints` / `startGrid` are the contract RaceManager reads,
+ * and it reads exactly one circuit's worth. Each circuit therefore builds its
+ * own set into a record of its own and {@link RaceWorld#selectTrack} points the
+ * published fields at whichever is selected. Nothing is rebuilt when the player
+ * changes track: all three roads are standing in the world at once, because
+ * they are 500 m apart and you can drive between them.
  */
 
 /* ------------------------------------------------------------------ */
@@ -89,12 +107,6 @@ const _q1 = new THREE.Quaternion();
 const _e1 = new THREE.Euler();
 const _color = new THREE.Color();
 
-/** Playfield half-extent. */
-const HALF = 260;
-/** Terrain mesh quads across the playfield, and the metres each one covers. */
-const SEG = 200;
-const QUAD = (HALF * 2) / SEG;
-
 /* The road's collision used to be built twice: a raycast layer at the true
  * surface and a solid "character" layer 0.28 m below it, because `Car` could
  * not climb any gradient without the road pushing it to a standstill. That was
@@ -108,128 +120,6 @@ const QUAD = (HALF * 2) / SEG;
  * foot no longer stands 0.28 m inside the tarmac. */
 
 
-/**
- * Control points of the circuit, in the racing direction.
- * `y` is the road surface height, `w` the drivable half-width, `v` the run-off
- * carried either side of it.
- *
- * Corner radius is set by how close consecutive points are, not by any explicit
- * radius: Catmull-Rom through widely spaced points is a sweeper and through
- * tight ones is a hairpin. The numbers that matter are measured at build time
- * and logged - the car's lateral grip budget caps its yaw rate at `13.5 / v`,
- * so a 25 m corner has to be taken at 18 m/s and a 45 m one at 25, against
- * 22 m/s of cruise and 34 of boost. That spread is the lap.
- *
- * `v` is what turns the west of the circuit into a street section. Everywhere
- * else it is 11 m of kerb, tarmac apron, gravel and grass; from Foundry Corner
- * to the exit of Wharf Street it collapses to 3.5, which puts the barrier three
- * metres off the racing line and lets the buildings stand where they would
- * really stand. Nothing else about those corners changes - the difficulty comes
- * entirely from having nowhere to put a mistake.
- */
-const CONTROLS = [
-  { x: 30, z: 203, y: 0.0, w: 11.5 },    //  0  start/finish line
-  { x: 90, z: 199, y: 0.5, w: 11.5 },
-  { x: 140, z: 189, y: 1.3, w: 11.0 },
-  { x: 180, z: 174, y: 2.6, w: 10.0 },   //  3  T1, long left onto the east straight
-  { x: 214, z: 142, y: 4.2, w: 9.5 },
-  { x: 224, z: 100, y: 5.8, w: 9.5 },
-  { x: 216, z: 54, y: 7.2, w: 10.0 },    //  6  east straight, climbing
-  { x: 213, z: 2, y: 9.0, w: 10.0 },
-  { x: 229, z: -48, y: 11.6, w: 9.5 },   //  8  right kink
-  { x: 212, z: -98, y: 14.4, w: 9.0 },
-  { x: 176, z: -142, y: 17.2, w: 9.0 },
-  { x: 130, z: -170, y: 19.6, w: 9.0 },  // 11  first crest
-  { x: 86, z: -160, y: 20.6, w: 8.5 },
-  { x: 56, z: -124, y: 18.2, w: 8.5 },   // 13  esse left
-  { x: 20, z: -142, y: 19.6, w: 8.5 },   // 14  esse right
-  { x: -16, z: -188, y: 21.8, w: 9.0 },  // 15  ridge top
-  { x: -72, z: -204, y: 21.6, w: 8.5 },  // 16  Ridge Loop entry
-  { x: -122, z: -192, y: 20.4, w: 8.0 },
-  { x: -148, z: -162, y: 18.8, w: 8.0 }, // 18  Ridge Loop apex
-  { x: -144, z: -128, y: 16.6, w: 8.5 },
-  { x: -114, z: -100, y: 12.8, w: 9.5 }, // 20  the Descent
-  { x: -86, z: -68, y: 8.4, w: 10.0 },
-  { x: -80, z: -36, y: 4.6, w: 10.0, v: 8 },
-  { x: -82, z: -12, y: 2.2, w: 9.0, v: 4.5 },   // 23  Foundry Corner entry
-  { x: -96, z: 6, y: 0.9, w: 8.0, v: 3.5 },     // 24  apex
-  { x: -120, z: 14, y: 0.2, w: 9.0, v: 3.5 },
-  { x: -162, z: 12, y: 0.0, w: 10.0, v: 3.5 },  // 26  Foundry Road
-  { x: -200, z: 14, y: 0.0, w: 9.0, v: 3.5 },
-  { x: -216, z: 32, y: 0.0, w: 8.0, v: 3.5 },   // 28  Dock Turn apex
-  { x: -218, z: 58, y: 0.0, w: 9.0, v: 3.5 },
-  { x: -216, z: 100, y: 0.0, w: 9.5, v: 3.5 },  // 30  Grand Avenue
-  { x: -208, z: 128, y: 0.0, w: 8.5, v: 3.5 },
-  { x: -186, z: 140, y: 0.0, w: 8.0, v: 3.5 },  // 32  Cargo Turn
-  { x: -152, z: 142, y: 0.0, w: 9.0, v: 3.5 },  // 33  Wharf Street
-  { x: -118, z: 150, y: 0.0, w: 9.0, v: 4.5 },
-  { x: -92, z: 168, y: 0.0, w: 9.5, v: 7 },     // 35  out of the city
-  { x: -74, z: 194, y: 0.0, w: 10.5 },
-  { x: -40, z: 203, y: 0.0, w: 11.5 },          // 37  onto the main straight
-  { x: -6, z: 204, y: 0.0, w: 11.5 },
-];
-
-/**
- * Hills, as explicit masses rather than noise.
- *
- * Noise in a height function is noise the collision has to reproduce, and the
- * only way to reproduce it is to sample it at the same resolution - which is
- * why this world's terrain is a small number of named, hand-placed landforms
- * plus a couple of long wavelengths. Every one of them is smooth over tens of
- * metres, so a 5 m collider slab fitted to it is accurate to a few centimetres.
- * @type {Array<[number, number, number, number]>} x, z, radius, height
- */
-const HILLS = [
-  [186, -80, 132, 28],
-  [244, -172, 112, 24],
-  [112, -226, 136, 34],
-  [-40, -246, 132, 30],
-  [-182, -152, 130, 20],
-  [52, -70, 104, 16],
-  [146, 74, 112, 12],
-  [4, 44, 142, 7],
-  [250, 34, 92, 14],
-  [244, 126, 96, 17],
-];
-
-/** Flat plates: the city block and the paddock plain. cx, cz, hx, hz, fade */
-const PLATES = [
-  [-155, 70, 104, 128, 66],
-  [40, 220, 236, 50, 58],
-];
-
-/**
- * Natural ground, before the circuit is cut into it.
- * A pure function of position, deliberately free of anything sharper than the
- * collider resolution can follow.
- */
-function baseTerrain(x, z) {
-  let h = 0;
-  for (let i = 0; i < HILLS.length; i++) {
-    const hx = HILLS[i][0];
-    const hz = HILLS[i][1];
-    const r = HILLS[i][2];
-    const d = Math.hypot(x - hx, z - hz);
-    if (d < r) {
-      const t = 1 - d / r;
-      h += HILLS[i][3] * t * t * (3 - 2 * t);
-    }
-  }
-  h += Math.sin(x * 0.0165 + 1.2) * Math.cos(z * 0.0138 - 0.4) * 2.7;
-  h += Math.sin((x + z) * 0.0292 + 2.1) * 1.15;
-  h += Math.sin(x * 0.0505 - 0.7) * 0.5 + Math.cos(z * 0.0447 + 1.7) * 0.45;
-
-  for (let i = 0; i < PLATES.length; i++) {
-    const [cx, cz, hxE, hzE, fade] = PLATES[i];
-    const wx = 1 - smoothstep(hxE, hxE + fade, Math.abs(x - cx));
-    const wz = 1 - smoothstep(hzE, hzE + fade, Math.abs(z - cz));
-    h = lerp(h, 0, wx * wz);
-  }
-  return h;
-}
-
-/** The city block, in world coordinates. Buildings only spawn inside it. */
-const CITY = { x0: -244, x1: -64, z0: -46, z1: 178 };
 
 /**
  * Metres of world covered by one texture tile, per material family.
@@ -517,13 +407,24 @@ function prepDynamicGeo(geo, key, tint = 0xffffff) {
 
 export class RaceWorld extends World {
   static id = 'race';
-  static displayName = 'Vellum Ridge Circuit';
+  /* The *place*, not a circuit.
+   *
+   * This used to be "Vellum Ridge Circuit", which was the same thing when there
+   * was one circuit on it. With three, the HUD anchor read "VELLUM RIDGE
+   * CIRCUIT" while the player stood on the grid at Aurora Rise with the prompt
+   * under it saying so - two names for where you are, on screen at once. The
+   * world is the estate; the circuits on it have their own names, and the race
+   * UI is what shows them. */
+  static displayName = 'Vellum Ridge';
 
   constructor(ctx) {
     super(ctx);
     this.rnd = mulberry32(0x9a17ce);
 
-    /* ---- the published contract; see the class header ---- */
+    /* ---- the published contract; see the class header ---- *
+     * These point at the *selected* circuit's arrays. `selectTrack` repoints
+     * them; nothing copies, so a race is always driving the same objects the
+     * geometry was built from. */
     /** @type {Array<{x:number,y:number,z:number,width:number}>} */
     this.trackPath = [];
     /** @type {Array<{x:number,y:number,z:number,yaw:number}>} */
@@ -531,6 +432,23 @@ export class RaceWorld extends World {
     /** @type {Array<{x:number,y:number,z:number,radius:number}>} */
     this.checkpoints = [];
     this.lapCount = 3;
+
+    /* ---- the circuits ---- */
+    /** Built records, one per entry in CIRCUITS. @type {Array<object>} */
+    this.circuits = [];
+    /** What the picker shows. @type {Array<{id:string,name:string,kicker:string,blurb:string,length:number,corners:number,hasLoop:boolean,accent:number}>} */
+    this.tracks = [];
+    /** @type {string} */
+    this.activeTrackId = CIRCUITS[0].id;
+    /** Every circuit's course, presented as one height function. */
+    this.courseSet = null;
+    /* Every loop in the world, not just the selected circuit's.
+     *
+     * Published flat, and read by the race systems whatever is armed, because a
+     * loop is part of the *road*: driving up to one with no race running has to
+     * take you round it, or the ramp is scenery a car passes through. */
+    /** @type {Array<object>} */
+    this.loops = [];
     /* Difficulty changes the circuit, not just the opposition.
      *
      * A world is generated once and never rebuilt, so for a while the three
@@ -550,13 +468,14 @@ export class RaceWorld extends World {
     this.variant = 'standard';
     /** Furniture that only exists on some difficulties. @type {Array<{mesh:THREE.Object3D, colliders:any[], from:string}>} */
     this._variantFurniture = [];
-    /** Lap count per difficulty - a longer race is part of a harder one. */
-    this._variantLaps = { easy: 3, standard: 5, expert: 10 };
-    /** Circuit length in metres. */
+    /** Lap count per difficulty, for the selected circuit. Set by `selectTrack`. */
+    this._variantLaps = { ...CIRCUITS[0].laps };
+    /** Selected circuit length in metres. */
     this.trackLength = 0;
 
     this._owned = [];
     this._time = 0;
+    /** The selected circuit's course. Prefer `courseSet` for anything global. */
     this.course = null;
     this._configureEnvironment();
   }
@@ -605,20 +524,41 @@ export class RaceWorld extends World {
     const report = onProgress ?? (() => {});
     if (this.difficulties.includes(variant)) this.variant = variant;
 
-    await report(0.02, 'Surveying the circuit');
-    this.course = new RaceCourse(CONTROLS, {
-      spacing: 2,
-      verge: 11,
-      baseHeight: baseTerrain,
-      maxBankDeg: 5,
-      cornerWiden: 0.2,
-    });
-    this.trackLength = this.course.length;
-    console.info(
-      `[RaceWorld] circuit ${this.course.length.toFixed(0)} m, ` +
-      `${this.course.count} samples, tightest radius ${this.course.minRadius.toFixed(1)} m, ` +
-      `steepest grade ${(this.course.maxGrade * 100).toFixed(1)}%`
-    );
+    /* ---- survey every circuit before anything is built -----------------
+     *
+     * The terrain is cut from all three at once, so all three splines have to
+     * exist before the first vertex is written. Surveying is cheap - a few
+     * thousand samples and a spatial hash each - next to the 110 000 probes
+     * that follow. */
+    await report(0.02, 'Surveying the circuits');
+    for (const def of CIRCUITS) {
+      const course = new RaceCourse(worldControls(def), {
+        spacing: 2,
+        verge: 11,
+        baseHeight: baseTerrain,
+        maxBankDeg: 5,
+        cornerWiden: 0.2,
+      });
+      this.circuits.push({
+        def,
+        course,
+        id: def.id,
+        name: def.name,
+        trackPath: [],
+        checkpoints: [],
+        startGrid: [],
+        laps: { ...def.laps },
+        loop: null,
+        startLights: null,
+        origin: def.origin ?? { x: 0, z: 0 },
+      });
+      console.info(
+        `[RaceWorld] ${def.name}: ${course.length.toFixed(0)} m, ` +
+        `${course.count} samples, tightest radius ${course.minRadius.toFixed(1)} m, ` +
+        `steepest grade ${(course.maxGrade * 100).toFixed(1)}%`
+      );
+    }
+    this.courseSet = new CourseSet(this.circuits.map((c) => c.course), baseTerrain);
 
     await report(0.06, 'Hanging the sky');
     this._buildSky();
@@ -626,28 +566,73 @@ export class RaceWorld extends World {
     await report(0.12, 'Cutting the terrain');
     this._buildTerrain();
 
-    await report(0.42, 'Laying the tarmac');
-    this._buildTrackSurface();
+    /* Each circuit end to end, rather than each *stage* across all three: the
+     * loading line then names a place the player recognises, and a failure in
+     * one circuit's furniture leaves the other two whole. */
+    const span = 0.44 / this.circuits.length;
+    for (let i = 0; i < this.circuits.length; i++) {
+      const cir = this.circuits[i];
+      const at = 0.40 + i * span;
+      await report(at, `Laying ${cir.name}`);
+      this._buildTrackSurface(cir);
+      this._buildBarriers(cir);
+      await report(at + span * 0.5, `Dressing ${cir.name}`);
+      this._buildPaddock(cir);
+      if (cir.def.loop) this._buildLoop(cir);
+      this._fillCircuit(cir);
+    }
 
-    await report(0.58, 'Bolting the barriers');
-    this._buildBarriers();
-
-    await report(0.70, 'Raising the city');
+    await report(0.86, 'Raising the city');
     this._buildCity();
 
-    await report(0.80, 'Building the paddock');
-    this._buildPaddock();
-
-    await report(0.90, 'Planting the hills');
+    await report(0.92, 'Planting the hills');
     this._buildScenery();
 
-    await report(0.96, 'Painting the grid');
-    this._fillSpawns();
+    await report(0.97, 'Painting the grid');
+    this._finishWorld();
 
     this.group.matrixAutoUpdate = false;
     this.group.updateMatrixWorld(true);
     this.group.visible = this.active;
-    await report(1, 'Circuit ready');
+    await report(1, 'Circuits ready');
+  }
+
+  /* ================================================================== */
+  /* Track selection                                                     */
+  /* ================================================================== */
+
+  /**
+   * Point the published contract at one of the circuits.
+   *
+   * Nothing is built or torn down here - every circuit is already standing -
+   * so this is three array assignments and a lap count, which is what makes it
+   * safe to call from a menu button. The caller is responsible for re-arming
+   * the race afterwards; RaceManager does that in its own `selectTrack`.
+   *
+   * @param {string} id
+   * @returns {boolean} true if the selection changed
+   */
+  selectTrack(id) {
+    const cir = this.circuits.find((c) => c.id === id) ?? this.circuits[0];
+    if (!cir) return false;
+    const changed = this.activeTrackId !== cir.id;
+    this.activeTrackId = cir.id;
+    this.course = cir.course;
+    this.trackPath = cir.trackPath;
+    this.checkpoints = cir.checkpoints;
+    this.startGrid = cir.startGrid;
+    this.trackLength = cir.course.length;
+    this._variantLaps = cir.laps;
+    this.lapCount = cir.laps[this.variant] ?? cir.laps.standard ?? 3;
+    // `displayName` is deliberately left alone: it is the *world*'s name and
+    // the HUD anchor label, and it is also a getter off the class, so writing
+    // it here would throw. The circuit's own name is the race UI's business.
+    return changed;
+  }
+
+  /** The selected circuit's record. */
+  get activeCircuit() {
+    return this.circuits.find((c) => c.id === this.activeTrackId) ?? this.circuits[0] ?? null;
   }
 
   /**
@@ -871,7 +856,7 @@ export class RaceWorld extends World {
    */
   _buildTerrain() {
     const N = SEG + 1;
-    const course = this.course;
+    const course = this.courseSet;
     const H = new Float32Array(N * N);
     const D = new Float32Array(N * N);
     const WS = new Float32Array(N * N);
@@ -1033,8 +1018,8 @@ export class RaceWorld extends World {
    * seams in it at all, and the collision slabs underneath are planes fitted to
    * that same surface rather than an independent approximation of it.
    */
-  _buildTrackSurface() {
-    const co = this.course;
+  _buildTrackSurface(cir) {
+    const co = cir.course;
     const N = co.count;
 
     /* Cross-section, as lateral offsets and heights above the road plane.
@@ -1165,14 +1150,14 @@ export class RaceWorld extends World {
       const g = st.lat.build(true, st.flip);
       if (!g) continue;
       const mesh = new THREE.Mesh(g, this._mat(st.key));
-      mesh.name = `race:track.${st.key}`;
+      mesh.name = `race:${cir.id}.track.${st.key}`;
       mesh.receiveShadow = true;
       mesh.castShadow = false;
       this.group.add(mesh);
       this._owned.push(g);
     }
 
-    this._buildTrackCollision();
+    this._buildTrackCollision(cir);
   }
 
   /**
@@ -1228,8 +1213,8 @@ export class RaceWorld extends World {
    * The slabs are oriented rather than level boxes for the usual reason: a
    * level box under a road that climbs 21 m is a staircase.
    */
-  _buildTrackCollision() {
-    const co = this.course;
+  _buildTrackCollision(cir) {
+    const co = cir.course;
     const N = co.count;
     const STEP = 2;            // samples per slab, ~4 m
     const LANES = 4;           // lateral splits, so a slab does not chord a corner
@@ -1245,10 +1230,10 @@ export class RaceWorld extends World {
         const u0 = -1 + (2 * l) / LANES;
         const u1 = -1 + (2 * (l + 1)) / LANES;
         const p = [
-          this._roadPoint(i, u0 * WA, wA, new THREE.Vector3()),
-          this._roadPoint(i, u1 * WA, wA, new THREE.Vector3()),
-          this._roadPoint(j, u0 * WB, wB, new THREE.Vector3()),
-          this._roadPoint(j, u1 * WB, wB, new THREE.Vector3()),
+          this._roadPoint(co, i, u0 * WA, wA, new THREE.Vector3()),
+          this._roadPoint(co, i, u1 * WA, wA, new THREE.Vector3()),
+          this._roadPoint(co, j, u0 * WB, wB, new THREE.Vector3()),
+          this._roadPoint(co, j, u1 * WB, wB, new THREE.Vector3()),
         ];
         const centre = new THREE.Vector3()
           .add(p[0]).add(p[1]).add(p[2]).add(p[3]).multiplyScalar(0.25);
@@ -1275,13 +1260,12 @@ export class RaceWorld extends World {
         count += 1;
       }
     }
-    this._trackColliders = count;
-    console.info(`[RaceWorld] road collision: ${count} solid slabs at the true surface`);
+    this._trackColliders = (this._trackColliders ?? 0) + count;
+    console.info(`[RaceWorld] ${cir.name} road collision: ${count} solid slabs at the true surface`);
   }
 
-  /** Road surface point at sample `i`, lateral offset `lat`. */
-  _roadPoint(i, lat, w, out) {
-    const co = this.course;
+  /** Road surface point at sample `i` of `co`, lateral offset `lat`. */
+  _roadPoint(co, i, lat, w, out) {
     return out.set(
       co.x[i] + co.rx[i] * lat,
       co.y[i] + co.bank[i] * clamp(lat, -w, w),
@@ -1305,8 +1289,8 @@ export class RaceWorld extends World {
    * is set 11 m back from the tarmac, so it is a backstop rather than a
    * corridor - going off is a mistake, not a crash.
    */
-  _buildBarriers() {
-    const co = this.course;
+  _buildBarriers(cir) {
+    const co = cir.course;
     const N = co.count;
     const rnd = this.rnd;
     const wallStrips = [];
@@ -1320,14 +1304,15 @@ export class RaceWorld extends World {
 
     const tileW = TILE_METRES('concrete.wall');
     const tileF = TILE_METRES('fence.chain');
-    // Where there are spectators: the main straight, the city, and the two
-    // grandstand corners. Fencing everywhere would be alpha-tested fill across
-    // the whole frame for scenery nobody is standing behind.
-    const fenced = (i) => {
-      const x = co.x[i];
-      const z = co.z[i];
-      return z > 150 || (x < -120 && z > -10) || (x > 150 && z > 60);
-    };
+    /* Where there are spectators. Fencing everywhere would be alpha-tested fill
+     * across the whole frame for scenery nobody is standing behind, so each
+     * circuit states its own sections - in *its own* local coordinates, which is
+     * the only frame an author can reason about once a circuit has been offset
+     * half a kilometre from the origin. */
+    const ox = cir.origin.x;
+    const oz = cir.origin.z;
+    const rule = cir.def.fenced;
+    const fenced = (i) => (rule ? rule(co.x[i] - ox, co.z[i] - oz) : false);
 
     for (let i = 0; i < N; i++) {
       const w = co.w[i];
@@ -1399,7 +1384,7 @@ export class RaceWorld extends World {
       const g = st.lat.build(true, st.flip);
       if (!g) continue;
       const mesh = new THREE.Mesh(g, this._mat('concrete.wall'));
-      mesh.name = 'race:barrier.wall';
+      mesh.name = `race:${cir.id}.barrier.wall`;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.group.add(mesh);
@@ -1415,8 +1400,8 @@ export class RaceWorld extends World {
       const W = co.W[i];
       for (const s of [-1, 1]) {
         const lat = s * (W - 0.64);
-        this._roadPoint(i, lat, w, _v1);
-        this._roadPoint(j, lat, w, _v2);
+        this._roadPoint(co, i, lat, w, _v1);
+        this._roadPoint(co, j, lat, w, _v2);
         _v3.copy(_v1).add(_v2).multiplyScalar(0.5);
         _a1.copy(_v2).sub(_v1);
         const halfLen = _a1.length() * 0.5 + 0.15;
@@ -1430,7 +1415,7 @@ export class RaceWorld extends World {
         count++;
       }
     }
-    this._barrierColliders = count;
+    this._barrierColliders = (this._barrierColliders ?? 0) + count;
 
     /* ---- tyre stacks on the outside of the fast corners ----------- */
     const B = new Batch({ ao: 0.4, sky: 0.32, grime: 0.5, span: 1.2 });
@@ -1441,7 +1426,7 @@ export class RaceWorld extends World {
       const W = co.W[i];
       // Outside of the corner is opposite the direction of turn.
       const lat = -Math.sign(k) * (W - 1.25);
-      this._roadPoint(i, lat, w, _v1);
+      this._roadPoint(co, i, lat, w, _v1);
       const yaw = Math.atan2(co.rx[i], co.rz[i]);
       for (let t = 0; t < 3; t++) {
         B.box('metal.iron', 1.1, 0.42, 1.1, _v1.x, _v1.y + 0.21 + t * 0.42, _v1.z,
@@ -1453,10 +1438,10 @@ export class RaceWorld extends World {
       this._orientedBox(_v1.clone().setY(_v1.y + 0.63), _n1.set(0, 1, 0),
         _a1.set(co.dx[i], 0, co.dz[i]), 0.62, 0.63, 0.62);
     }
-    B.flush(this.group, (k) => this._mat(k), 'tyres');
+    B.flush(this.group, (k) => this._mat(k), `tyres.${cir.id}`);
     B.dispose();
 
-    this._buildVariantFurniture();
+    this._buildVariantFurniture(cir);
   }
 
   /**
@@ -1472,8 +1457,8 @@ export class RaceWorld extends World {
    * built once, at world build time, so switching costs a visibility write and
    * a boolean per block rather than six seconds of geometry.
    */
-  _buildVariantFurniture() {
-    const co = this.course;
+  _buildVariantFurniture(cir) {
+    const co = cir.course;
     const N = co.count;
     const B = new Batch({ ao: 0.4, sky: 0.32, grime: 0.5, span: 1.2 });
     const marks = [];
@@ -1499,14 +1484,14 @@ export class RaceWorld extends World {
       // pushing the car towards the barrier on the outside.
       const side = Math.sign(k) || 1;
       const group = new THREE.Group();
-      group.name = `chicane:${from}:${i}`;
+      group.name = `chicane:${cir.id}:${from}:${i}`;
       this.group.add(group);
       const colliders = [];
 
       for (let seg = 0; seg < 3; seg++) {
         const at = (i + seg * 2) % N;
         const lat = side * (W - 2.2 - seg * 0.9);
-        this._roadPoint(at, lat, w, _v1);
+        this._roadPoint(co, at, lat, w, _v1);
         const yaw = Math.atan2(co.rx[at], co.rz[at]);
         // A block of stacked kerb-blocks, not tyres: it must read at 30 m/s as
         // "do not go there" rather than as a soft barrier you might brush.
@@ -1519,15 +1504,17 @@ export class RaceWorld extends World {
           _a1.set(co.dx[at], 0, co.dz[at]), 0.78, 0.55, 0.78
         ));
       }
-      const meshes = B.flush(group, (key) => this._mat(key), `chicane${c}`);
+      const meshes = B.flush(group, (key) => this._mat(key), `chicane.${cir.id}.${c}`);
       void meshes;
       this._variantFurniture.push({ mesh: group, colliders, from });
     }
     B.dispose();
 
-    this._buildTrackObstacles();
+    this._buildTrackObstacles(cir);
 
     // Apply whatever the world was built as, so the default state is coherent.
+    // Cheap and idempotent, so running it once per circuit is fine and means a
+    // circuit is never left in a half-configured state mid-build.
     this.setDifficulty(this.variant);
   }
 
@@ -1548,8 +1535,8 @@ export class RaceWorld extends World {
    *
    * Like the chicanes they are built once and switched by `setDifficulty`.
    */
-  _buildTrackObstacles() {
-    const co = this.course;
+  _buildTrackObstacles(cir) {
+    const co = cir.course;
     const N = co.count;
     const rnd = this.rnd;
     const B = new Batch({ ao: 0.42, sky: 0.3, grime: 0.55, span: 1.0 });
@@ -1563,17 +1550,17 @@ export class RaceWorld extends World {
     for (const pass of passes) {
       for (let i = pass.phase; i < N; i += pass.step) {
         // Clear of the grid and the run to the first corner.
-        const along = (i / N) * this.trackLength;
-        if (along < 60 || along > this.trackLength - 25) continue;
+        const along = (i / N) * co.length;
+        if (along < 60 || along > co.length - 25) continue;
         const w = co.w[i];
         const W = co.W[i];
         // Somewhere across the road, but never hard against either barrier -
         // an obstacle you cannot get round is a wall.
         const lat = (rnd() * 1.3 - 0.65) * W;
-        this._roadPoint(i, lat, w, _v1);
+        this._roadPoint(co, i, lat, w, _v1);
         const yaw = Math.atan2(co.rx[i], co.rz[i]) + rnd() * 0.6;
         const group = new THREE.Group();
-        group.name = `hazard:${pass.from}:${i}`;
+        group.name = `hazard:${cir.id}:${pass.from}:${i}`;
         this.group.add(group);
         const colliders = [];
 
@@ -1594,13 +1581,13 @@ export class RaceWorld extends World {
             _a1.set(Math.cos(yaw), 0, -Math.sin(yaw)), 1.55, 0.39, 0.24
           ));
         }
-        B.flush(group, (key) => this._mat(key), `hazard${made}`);
+        B.flush(group, (key) => this._mat(key), `hazard.${cir.id}.${made}`);
         this._variantFurniture.push({ mesh: group, colliders, from: pass.from });
         made++;
       }
     }
     B.dispose();
-    this._trackObstacles = made;
+    this._trackObstacles = (this._trackObstacles ?? 0) + made;
   }
 
   /**
@@ -1616,7 +1603,9 @@ export class RaceWorld extends World {
   setDifficulty(name) {
     const v = this.difficulties.includes(name) ? name : 'standard';
     this.variant = v;
-    this.lapCount = this._variantLaps[v] ?? 3;
+    // Per circuit: the gorge and the highland run a lap shorter than Vellum on
+    // easy and a lap longer on the rest, because they are 500 m shorter.
+    this.lapCount = this._variantLaps?.[v] ?? 3;
 
     const rank = { easy: 0, standard: 1, expert: 2 };
     for (const f of this._variantFurniture) {
@@ -1641,11 +1630,11 @@ export class RaceWorld extends World {
    * regardless of where the sun is, and an unlit one should read as dark glass
    * rather than as a surface waiting for a light to reach it.
    */
-  _buildStartLights(g, yaw, fx, fz) {
+  _buildStartLights(cir, g, yaw, fx, fz) {
     const geo = new THREE.BoxGeometry(0.78, 0.78, 0.26);
     const mat = new THREE.MeshBasicMaterial({ toneMapped: false });
     const mesh = new THREE.InstancedMesh(geo, mat, 10);
-    mesh.name = 'race:startlights';
+    mesh.name = `race:${cir.id}.startlights`;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
     mesh.frustumCulled = false;
@@ -1667,10 +1656,10 @@ export class RaceWorld extends World {
     }
     mesh.instanceMatrix.needsUpdate = true;
     this.group.add(mesh);
-    this._startLights = mesh;
-    this._lightColor = new THREE.Color();
+    cir.startLights = mesh;
+    this._lightColor ??= new THREE.Color();
     this._owned?.push?.(geo, mat);
-    this.setStartLights(0);
+    this._writeStartLights(mesh, 0, false);
   }
 
   /**
@@ -1683,8 +1672,16 @@ export class RaceWorld extends World {
    *   the off, so a driver who blinked can still tell "not yet" from "gone".
    */
   setStartLights(lit, go = false) {
-    const mesh = this._startLights;
+    // Only the selected circuit's gantry: the other two are 500 m away with
+    // nobody on their grid, and lighting them would be three sequences running
+    // for one race.
+    this._writeStartLights(this.activeCircuit?.startLights, lit, go);
+  }
+
+  /** @param {THREE.InstancedMesh|null|undefined} mesh */
+  _writeStartLights(mesh, lit, go) {
     if (!mesh) return;
+    this._lightColor ??= new THREE.Color();
     const n = Math.max(0, Math.min(5, lit | 0));
     for (let c = 0; c < 5; c++) {
       const on = c < n;
@@ -1710,6 +1707,249 @@ export class RaceWorld extends World {
   }
 
   /* ------------------------------------------------------------------ */
+  /* The loop                                                            */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * A vertical loop standing on the road.
+   *
+   * ── Why this is not part of the height function ──────────────────────────
+   *
+   * Everything else in this world is a surface over (x, z): one height per
+   * position, which is what lets the terrain, the collision and the road all be
+   * generated from the same probe and never disagree. A loop is the one shape
+   * that cannot be: over the point below the apex there are two surfaces, the
+   * tarmac and the loop 30 m above it, and a height function has to pick one.
+   *
+   * So the loop is not ground. It is a *rail*: a parametric curve with an
+   * orientation attached, carrying whatever enters it around and putting it
+   * down again facing the way it came in. The road underneath is untouched -
+   * still one height, still solid, still the thing the terrain blends to - and
+   * the loop has no collision at all, because nothing is ever left free to
+   * collide with it. RaceLoops.js owns the traversal for both the player and
+   * the AI; this method owns the shape and hands over the numbers.
+   *
+   * ── The shape ────────────────────────────────────────────────────────────
+   *
+   * A true circular loop returns to its own entry point, which reads on screen
+   * as the car teleporting backwards. This one advances `advance` metres along
+   * the road while it goes round, so entry and exit are 34 m apart and the
+   * whole thing leans forward like every loop ever built out of scaffolding:
+   *
+   *     P(u) = lerp(entry, exit, u) + up * R * (1 - cos θ) + F * R * sin θ
+   *
+   * with θ = 2πu. The car's *orientation* comes from θ directly rather than
+   * from the tangent of that curve - the tangent at the apex is horizontal,
+   * which would drive the car over the top the right way up, and the entire
+   * point of a loop is that it does not.
+   *
+   * @param {object} cir
+   */
+  _buildLoop(cir) {
+    const def = cir.def.loop;
+    const co = cir.course;
+    const ax = (def.anchor?.x ?? 0) + cir.origin.x;
+    const az = (def.anchor?.z ?? 0) + cir.origin.z;
+    const near = co.nearest(ax, az);
+    if (!near) {
+      console.warn(`[RaceWorld] ${cir.name}: loop anchor is nowhere near the circuit; skipped`);
+      return;
+    }
+
+    const R = def.radius;
+    const advance = def.advance;
+    const hw = def.width * 0.5;
+    const sIn = near.s;
+    const sOut = sIn + advance;
+    const a = co.pointAt(((sIn % co.length) + co.length) % co.length, 0);
+    const b = co.pointAt(((sOut % co.length) + co.length) % co.length, 0);
+    const entry = new THREE.Vector3(a.x, a.y, a.z);
+    const exit = new THREE.Vector3(b.x, b.y, b.z);
+    // Forward is the chord entry->exit, flattened: the loop is planar even if
+    // the road under it drifts, which is what stops it corkscrewing.
+    const F = new THREE.Vector3(exit.x - entry.x, 0, exit.z - entry.z);
+    if (F.lengthSq() < 1e-6) F.set(a.dx, 0, a.dz);
+    F.normalize();
+    const UP = new THREE.Vector3(0, 1, 0);
+    const RIGHT = new THREE.Vector3().crossVectors(F, UP).normalize();
+
+    /** Rail point and surface normal at u in 0..1. */
+    const at = (u, outPos, outNrm) => {
+      const th = u * TAU;
+      const sin = Math.sin(th);
+      const cos = Math.cos(th);
+      outPos.copy(entry).lerp(exit, u);
+      outPos.x += F.x * (R * sin);
+      outPos.z += F.z * (R * sin);
+      outPos.y += R * (1 - cos);
+      // Toward the centre of the circle, which is the side the car is on.
+      if (outNrm) outNrm.set(F.x * -sin, cos, F.z * -sin).normalize();
+      return outPos;
+    };
+
+    const apex = at(0.5, new THREE.Vector3(), null);
+
+    /* ---- the ribbon ------------------------------------------------- *
+     *
+     * Two strips, not one, and the reason is material rather than geometry: a
+     * vertex colour *multiplies* the material's texture, so painting the rails
+     * white on an asphalt shader gives pale asphalt, not paint. The first
+     * version was a single closed tube in `asphalt.court` and every rail and
+     * stripe on it came out black.
+     *
+     * So the driving surface is tarmac and the shell around it is enamel, and
+     * the two profiles are the two halves of one closed cross-section traversed
+     * the same way round - surface left-to-right, shell back right-to-left over
+     * the top - which is what keeps their windings consistent with each other.
+     */
+    const SURFACE = [];
+    for (let c = 0; c <= 6; c++) SURFACE.push([lerp(-hw, hw, c / 6), 0]);
+    const SHELL = [
+      [hw, 0], [hw, 0.5], [hw + 0.55, 0.5], [hw + 0.55, -1.15],
+      [-hw - 0.55, -1.15], [-hw - 0.55, 0.5], [-hw, 0.5], [-hw, 0],
+    ];
+    const ROWS = 132;
+    const pos = new THREE.Vector3();
+    const nrm = new THREE.Vector3();
+
+    /* Arc length first, in its own pass: the strip's v coordinate has to be the
+     * distance travelled *so far*, and computing it in the same loop that
+     * writes the rows means every row is textured against the total length as
+     * it stood when that row was written - which stretches the texture along
+     * the loop by a factor of two from bottom to top. */
+    let length3d = 0;
+    const arc = new Float64Array(ROWS + 1);
+    const prev = new THREE.Vector3();
+    for (let r = 0; r <= ROWS; r++) {
+      at(r / ROWS, pos, null);
+      if (r > 0) length3d += pos.distanceTo(prev);
+      prev.copy(pos);
+      arc[r] = length3d;
+    }
+
+    const strip = (profile, key, colourOf) => {
+      const cols = profile.length;
+      const lat = new Lattice(cols);
+      const row = [];
+      for (let c = 0; c < cols; c++) row.push({ x: 0, y: 0, z: 0, u: 0, r: 1, g: 1, b: 1 });
+      const tile = TILE_METRES(key) || 4;
+      for (let r = 0; r <= ROWS; r++) {
+        const u = r / ROWS;
+        at(u, pos, nrm);
+        for (let c = 0; c < cols; c++) {
+          const [l, off] = profile[c];
+          const v = row[c];
+          v.x = pos.x + RIGHT.x * l + nrm.x * off;
+          v.y = pos.y + RIGHT.y * l + nrm.y * off;
+          v.z = pos.z + RIGHT.z * l + nrm.z * off;
+          v.u = l / tile;
+          _color.set(colourOf(c, r));
+          v.r = _color.r; v.g = _color.g; v.b = _color.b;
+        }
+        lat.addRow(row, arc[r] / tile);
+      }
+      // Open, not closed: the last row sits on the first one at the entry, and
+      // stitching them would put a fold across the ramp.
+      const g = lat.build(false, true);
+      if (!g) return;
+      const mesh = new THREE.Mesh(g, this._mat(key));
+      mesh.name = `race:${cir.id}.loop.${key}`;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.group.add(mesh);
+      this._owned.push(g);
+    };
+
+    // Tarmac, darkening toward the edges the way a used surface does.
+    strip(SURFACE, 'asphalt.court', (c) => (c === 0 || c === 6 ? 0xc8ccce : 0xeceef0));
+    // Enamel: hazard stripes every ~4 m of travel, so the loop reads as
+    // something that was built rather than as a grey pipe.
+    strip(SHELL, 'paint.enamel', (c, r) => {
+      const stripe = Math.floor(r / 4) % 2 === 0;
+      // The undersides stay plain; only the rails either side are striped.
+      const rail = c <= 2 || c >= 5;
+      return rail && stripe ? 0xe8452c : 0xf2f2ee;
+    });
+
+    /* ---- what holds it up ------------------------------------------- *
+     * Two A-frames either side, braced back to the ground. Without them the
+     * loop reads as floating, which is the one thing that makes a set piece
+     * look like a placeholder. */
+    const B = new Batch({ ao: 0.34, sky: 0.3, grime: 0.45, span: 4 });
+    const yaw = Math.atan2(-RIGHT.x, -RIGHT.z);
+    for (const sgn of [-1, 1]) {
+      for (const u of [0.25, 0.5, 0.75]) {
+        at(u, pos, nrm);
+        const px = pos.x + RIGHT.x * sgn * (hw + 1.5);
+        const pz = pos.z + RIGHT.z * sgn * (hw + 1.5);
+        const gy = this.courseSet.surfaceHeight(px, pz);
+        const h = Math.max(1, pos.y - gy);
+        B.box('metal.rail', 0.85, h, 0.85, px, gy + h * 0.5, pz, yaw, 0xb9c0c6);
+        this.track(this.physics.addBox(px, gy + h * 0.5, pz, 0.45, h * 0.5, 0.45));
+      }
+      // A diagonal from the foot of the apex leg back to the ground behind.
+      at(0.5, pos, nrm);
+      const bx = pos.x + RIGHT.x * sgn * (hw + 1.5) - F.x * 16;
+      const bz = pos.z + RIGHT.z * sgn * (hw + 1.5) - F.z * 16;
+      const by = this.courseSet.surfaceHeight(bx, bz);
+      const mid = new THREE.Vector3((bx + pos.x + RIGHT.x * sgn * (hw + 1.5)) * 0.5,
+        (by + pos.y) * 0.5, (bz + pos.z + RIGHT.z * sgn * (hw + 1.5)) * 0.5);
+      const span = Math.hypot(pos.x + RIGHT.x * sgn * (hw + 1.5) - bx,
+        pos.y - by, pos.z + RIGHT.z * sgn * (hw + 1.5) - bz);
+      _a1.set(pos.x + RIGHT.x * sgn * (hw + 1.5) - bx, pos.y - by,
+        pos.z + RIGHT.z * sgn * (hw + 1.5) - bz).normalize();
+      _n1.set(0, 1, 0).addScaledVector(_a1, -_a1.y).normalize();
+      if (_n1.lengthSq() < 1e-6) _n1.set(0, 1, 0);
+      this._orientedBox(mid, _n1, _a1, 0.4, 0.4, span * 0.5);
+      B.boxOriented('metal.trim', 0.8, 0.8, span,
+        slabMatrix(mid, _n1, _a1, 0, new THREE.Matrix4()), 0xa8b0b6);
+    }
+    // A sign on the approach, because a 30 m wall of scaffolding at 30 m/s
+    // deserves a metre of warning.
+    {
+      const sgnPoint = co.pointAt(((sIn - 60) % co.length + co.length) % co.length, -(co.W[0] + 2));
+      const syaw = acrossYaw(sgnPoint.dx, sgnPoint.dz);
+      B.box('metal.rail', 0.3, 4.2, 0.3, sgnPoint.x, sgnPoint.y + 2.1, sgnPoint.z, syaw, 0x8f979d);
+      B.box('paint.enamel', 4.6, 1.6, 0.18, sgnPoint.x, sgnPoint.y + 4.4, sgnPoint.z, syaw,
+        cir.def.accent ?? 0x9d7dff);
+      B.box('hazard.stripe', 4.2, 0.35, 0.22, sgnPoint.x, sgnPoint.y + 3.5, sgnPoint.z, syaw, 0xffdd44);
+    }
+    B.flush(this.group, (k) => this._mat(k), `loop.${cir.id}`);
+    B.dispose();
+
+    /* ---- the numbers the race systems need --------------------------- *
+     * Plain data, deliberately: RaceLoops evaluates the rail itself rather than
+     * calling back into the world, so a race is never one dead reference away
+     * from dropping a car through the floor at 30 m/s. */
+    cir.loop = {
+      trackId: cir.id,
+      sIn,
+      sOut,
+      sMid: sIn + advance * 0.5,
+      radius: R,
+      advance,
+      width: def.width,
+      length3d,
+      entry: { x: entry.x, y: entry.y, z: entry.z },
+      exit: { x: exit.x, y: exit.y, z: exit.z },
+      forward: { x: F.x, z: F.z },
+      apex: { x: apex.x, y: apex.y, z: apex.z },
+      /* Below this, going round is not a loop, it is a fall. The car cruises at
+       * 22 m/s and boosts to 34, and an AI on easy runs about 20, so nothing
+       * that reaches the entry under power is ever refused - the floor exists so
+       * a car that crawled in from a spin is carried round at a speed that looks
+       * like a loop instead of pouring off the top. */
+      minSpeed: 19,
+    };
+    if (!Array.isArray(this.loops)) this.loops = [];
+    this.loops.push(cir.loop);
+    console.info(
+      `[RaceWorld] ${cir.name}: loop at ${sIn.toFixed(0)} m, ` +
+      `R ${R} m, apex ${apex.y.toFixed(1)} m, rail ${length3d.toFixed(0)} m`
+    );
+  }
+
+  /* ------------------------------------------------------------------ */
   /* City                                                                */
   /* ------------------------------------------------------------------ */
 
@@ -1726,7 +1966,13 @@ export class RaceWorld extends World {
     const B = new Batch({ ao: 0.34, sky: 0.36, grime: 0.5, span: 4.5 });
     const G = new Batch({ ao: 0.2, sky: 0.3, grime: 0.3, span: 3 });
     const rnd = this.rnd;
-    const co = this.course;
+    /* Vellum Ridge's circuit for the street furniture that follows its
+     * corridor, but the *whole* height function for clearance: a building is
+     * dropped if it would stand on any road, not merely on this one. The other
+     * two circuits are half a kilometre away, so nothing is ever rejected for
+     * their sake - it is stated this way so it stays true if a circuit moves. */
+    const co = this.circuits[0].course;
+    const clear = this.courseSet;
     const BLOCK = 26;
     const STREET = 10;
     const pitch = BLOCK + STREET;
@@ -1756,7 +2002,7 @@ export class RaceWorld extends World {
           const d = plot - 3 - rnd() * 2.5;
           const px = bx + ((k % sub) - (sub - 1) * 0.5) * plot;
           const pz = bz + (((k / sub) | 0) - (sub - 1) * 0.5) * plot;
-          const p = co.probe(px, pz);
+          const p = clear.probe(px, pz);
           /* Clear of the circuit, its run-off and its barrier - and only just.
            * Two metres past the barrier is what makes a street section feel
            * like one; pushed back to a safe-looking distance the buildings stop
@@ -1865,10 +2111,216 @@ export class RaceWorld extends World {
    * coordinates, so it stays attached to the start line if the spline ever
    * moves - the mistake CitadelWorld made by hand-authoring NPC positions into
    * a generated town and then finding them inside walls twice.
+   *
+   * Only Vellum Ridge gets the full kit. Sixteen garages, three of them
+   * enterable, and fifteen bays of roofed grandstand with twelve hundred
+   * spectators in them is most of a minute of build time and a good slice of
+   * the world's collider budget; paying it three times over for two circuits
+   * the player reaches by driving there would be spending the cold-boot cost of
+   * the whole game on car parks. The other two get {@link _buildLitePaddock}:
+   * a timing box, an open stand and a pit wall, which is what a club circuit
+   * has anyway.
+   *
+   * The gantry, the start lights and the painted line are built for all three -
+   * they are what a start *is*.
    */
-  _buildPaddock() {
+  _buildPaddock(cir) {
     const B = new Batch({ ao: 0.36, sky: 0.34, grime: 0.45, span: 3.5 });
-    const co = this.course;
+    const co = cir.course;
+
+    if (cir.def.paddock) this._buildFullPaddock(cir, B);
+    else this._buildLitePaddock(cir, B);
+
+    /* ---- start/finish gantry ---- */
+    {
+      const g = co.pointAt(0, 0);
+      const yaw = acrossYaw(g.dx, g.dz);
+      const wHalf = co.W[0] - 1.5;
+      for (const sgn of [-1, 1]) {
+        const px = g.x + co.rx[0] * sgn * wHalf;
+        const pz = g.z + co.rz[0] * sgn * wHalf;
+        B.box('metal.hull', 1.5, 9.6, 1.5, px, g.y + 4.8, pz, yaw, 0xc4c8cc);
+        this.track(this.physics.addRotatedBox(
+          _v1.set(px, g.y + 4.8, pz), _v2.set(0.75, 4.8, 0.75), yaw));
+      }
+      B.box('metal.hull', wHalf * 2 + 1.5, 2.2, 1.9, g.x, g.y + 10.6, g.z, yaw, 0xd4d8dc);
+      B.box('metal.trim', wHalf * 2 + 2.4, 0.5, 2.4, g.x, g.y + 11.9, g.z, yaw, 0xa8b0b6);
+      /* The crossbeam had no collider of its own - only its two legs did - so
+       * the beam and the trim capping it were both scenery you could stand
+       * inside. Sized to the *trim*, which is the wider of the two by 0.45 m a
+       * side, so nothing visible overhangs what is solid. */
+      this.track(this.physics.addRotatedBox(
+        _v1.set(g.x, g.y + 11.05, g.z),
+        _v2.set(wHalf + 1.2, 1.4, 1.2), yaw));
+      /* Light panel: five columns of start lights, facing *back* down the
+       * straight, because that is where the grid is.
+       *
+       * Not batched with the rest of the gantry. The whole point of an F1 start
+       * is that the columns come on one at a time and then all go out together,
+       * and geometry merged into a shared buffer cannot be addressed
+       * individually. Ten instances of one box is a single draw call and every
+       * lens is independently coloured, which is what the sequence needs.
+       *
+       * A backing plate goes in the batch, though - it never changes. */
+      const fx = -g.dx;
+      const fz = -g.dz;
+      B.box('metal.trim', 11.2, 2.4, 0.22, g.x + fx * 0.88, g.y + 10.48, g.z + fz * 0.88, yaw, 0x14171a);
+      this._buildStartLights(cir, g, yaw, fx, fz);
+      // Banner across the front of the gantry, in the circuit's own colour -
+      // from the grid it is the one piece of the world that says which of the
+      // three you are about to drive.
+      B.box('paint.enamel', wHalf * 2 - 4, 1.5, 0.2, g.x + fx * 1.0, g.y + 9.4, g.z + fz * 1.0,
+        yaw, cir.def.accent ?? 0x1d3a66);
+    }
+
+    /* ---- start/finish line and grid boxes ---- */
+    {
+      // The line: a checker band across the tarmac, painted on rather than
+      // extruded so it lies exactly on the surface it belongs to.
+      const nCol = 26;
+      for (let c = 0; c < nCol; c++) {
+        const lat = lerp(-co.w[0], co.w[0], (c + 0.5) / nCol);
+        const g = co.pointAt(0, lat);
+        const yaw = acrossYaw(g.dx, g.dz);
+        for (let r = 0; r < 2; r++) {
+          const s = (r - 0.5) * 0.85;
+          B.box('paint.white', (co.w[0] * 2) / nCol, 0.05, 0.85,
+            g.x - g.dx * s, g.y + 0.03, g.z - g.dz * s, yaw,
+            (c + r) % 2 ? 0x16191c : 0xf6f6f4);
+        }
+      }
+    }
+
+    B.flush(this.group, (k) => this._mat(k), `paddock.${cir.id}`);
+    B.dispose();
+  }
+
+  /**
+   * The club-circuit kit: a pit wall, four open bays, a timing box and one
+   * uncovered stand.
+   *
+   * Deliberately not a smaller copy of the full paddock. A half-scale version
+   * of sixteen garages reads as a paddock somebody could not afford to finish;
+   * an open awning over four bays and a scaffold stand reads as a circuit that
+   * was never meant to hold a hundred thousand people. Same reason the crowd is
+   * a third the size and spread thin - a packed grandstand at a quarry is a lie
+   * the eye catches immediately.
+   *
+   * @param {object} cir
+   * @param {Batch} B
+   */
+  _buildLitePaddock(cir, B) {
+    const co = cir.course;
+    const rnd = this.rnd;
+    const W = co.W[0];
+    const wrap = (s) => ((s % co.length) + co.length) % co.length;
+    const accent = cir.def.accent ?? 0xd0453a;
+
+    /* ---- pit wall ---- */
+    for (let k = -4; k <= 5; k++) {
+      const g = co.pointAt(wrap(k * 11), -(W + 2.4));
+      const yaw = alongYaw(g.dx, g.dz);
+      B.box('concrete.wall', 11, 1.1, 0.5, g.x, g.y + 0.55, g.z, yaw, 0xf0f0ee);
+      this.track(this.physics.addRotatedBox(
+        _v1.set(g.x, g.y + 0.55, g.z), _v2.set(5.5, 0.55, 0.3), yaw));
+    }
+
+    /* ---- four open bays under one awning, infield side ---- */
+    for (let k = -2; k <= 1; k++) {
+      const g = co.pointAt(wrap(k * 12 + 6), -(W + 12));
+      const yaw = alongYaw(g.dx, g.dz);
+      // Toward the circuit is +lat, which is the right-hand normal.
+      const tx = -g.dz;
+      const tz = g.dx;
+      // Back wall, two posts, a roof: an open-fronted bay you can see into.
+      B.box('concrete.wall', 11, 3.6, 0.4, g.x - tx * 3.4, g.y + 1.8, g.z - tz * 3.4, yaw, 0xdedcd6);
+      this.track(this.physics.addRotatedBox(
+        _v1.set(g.x - tx * 3.4, g.y + 1.8, g.z - tz * 3.4), _v2.set(5.5, 1.8, 0.25), yaw));
+      for (const sgn of [-1, 1]) {
+        B.box('metal.rail', 0.32, 3.9, 0.32,
+          g.x + Math.cos(yaw) * sgn * 5.2 + tx * 3.2, g.y + 1.95,
+          g.z - Math.sin(yaw) * sgn * 5.2 + tz * 3.2, yaw, 0x99a1a6);
+        this.track(this.physics.addRotatedBox(
+          _v1.set(g.x + Math.cos(yaw) * sgn * 5.2 + tx * 3.2, g.y + 1.95,
+            g.z - Math.sin(yaw) * sgn * 5.2 + tz * 3.2),
+          _v2.set(0.16, 1.95, 0.16), yaw));
+      }
+      B.box('metal.panel', 11.6, 0.3, 7.6, g.x, g.y + 4.05, g.z, yaw, 0xb2b8bc);
+      this.track(this.physics.addRotatedBox(
+        _v1.set(g.x, g.y + 4.05, g.z), _v2.set(5.8, 0.15, 3.8), yaw));
+      B.box('paint.enamel', 11.6, 0.42, 0.3, g.x + tx * 3.7, g.y + 4.35, g.z + tz * 3.7, yaw, accent);
+      B.box('concrete.road', 11, 0.14, 7, g.x, g.y + 0.07, g.z, yaw, 0xd6d5cf);
+      // A tyre stack and a trolley, so a bay is never an empty box.
+      for (let t = 0; t < 3; t++) {
+        B.box('metal.iron', 1.0, 0.4, 1.0,
+          g.x + Math.cos(yaw) * -3.6 - tx * 1.8, g.y + 0.2 + t * 0.4,
+          g.z - Math.sin(yaw) * -3.6 - tz * 1.8, yaw + rnd() * 0.4, 0x2b2e31);
+      }
+      B.box('metal.panel', 1.9, 0.75, 1.0, g.x + Math.cos(yaw) * 3.4 - tx * 1.4,
+        g.y + 0.5, g.z - Math.sin(yaw) * 3.4 - tz * 1.4, yaw + 0.15, 0x8d969c);
+    }
+
+    /* ---- timing box, on the pit wall by the line ---- */
+    {
+      const g = co.pointAt(wrap(14), -(W + 6.5));
+      const yaw = alongYaw(g.dx, g.dz);
+      const tx = -g.dz;
+      const tz = g.dx;
+      B.box('concrete.wall', 7.4, 3.2, 4.4, g.x, g.y + 1.6, g.z, yaw, 0xe4e2dc);
+      this.track(this.physics.addRotatedBox(
+        _v1.set(g.x, g.y + 1.6, g.z), _v2.set(3.7, 1.6, 2.2), yaw));
+      B.box('glass.window', 6.6, 1.35, 0.28, g.x + tx * 2.3, g.y + 2.35, g.z + tz * 2.3, yaw, 0x9fc4d8);
+      B.box('metal.panel', 8.0, 0.3, 5.0, g.x, g.y + 3.35, g.z, yaw, 0xa8b0b6);
+      this.track(this.physics.addRotatedBox(
+        _v1.set(g.x, g.y + 3.35, g.z), _v2.set(4.0, 0.15, 2.5), yaw));
+      B.box('paint.enamel', 6.2, 0.5, 0.22, g.x + tx * 2.45, g.y + 3.15, g.z + tz * 2.45, yaw, accent);
+    }
+
+    /* ---- one open stand, outside the straight ---- */
+    const crowd = [];
+    for (let k = -2; k <= 3; k++) {
+      const base = co.pointAt(wrap(k * 13 + 8), W + 3);
+      const yaw = alongYaw(base.dx, base.dz);
+      // Terraces step away from the circuit, which is +lat on this side.
+      const ox = -base.dz;
+      const oz = base.dx;
+      for (let r = 0; r < 6; r++) {
+        const off = 3.4 + r * 1.5;
+        const y = base.y + 1.0 + r * 1.0;
+        const px = base.x + ox * off;
+        const pz = base.z + oz * off;
+        B.box('concrete.skatepark', 12.6, 1.0, 1.6, px, y - 0.5, pz, yaw, 0xd2d2ce);
+        B.box('paint.enamel', 12.2, 0.4, 0.5, px, y + 0.2, pz, yaw, r % 2 ? accent : 0xc8ccd0);
+        for (let c = 0; c < 7; c++) {
+          // Thinner than Vellum's: a club meeting, not a grand prix.
+          if (rnd() < 0.62) continue;
+          const lx = (c / 6 - 0.5) * 11;
+          crowd.push({
+            x: px + Math.cos(yaw) * lx,
+            y: y + 0.4,
+            z: pz - Math.sin(yaw) * lx,
+            yaw: yaw + (rnd() - 0.5) * 0.5,
+            c: rnd(),
+          });
+        }
+      }
+      // Scaffold under the deck, and a rail along the front.
+      this.track(this.physics.addRotatedBox(
+        _v1.set(base.x + ox * 7.6, base.y + 3.2, base.z + oz * 7.6),
+        _v2.set(6.4, 3.2, 5.2), yaw));
+      B.box('metal.rail', 12.4, 0.16, 0.16, base.x + ox * 2.6, base.y + 1.1, base.z + oz * 2.6,
+        yaw, 0x99a1a6);
+    }
+    this._spawnCrowd(crowd);
+  }
+
+  /**
+   * Vellum Ridge's pit lane, garages and grandstand. See {@link _buildPaddock}.
+   * @param {object} cir
+   * @param {Batch} B
+   */
+  _buildFullPaddock(cir, B) {
+    const co = cir.course;
     const rnd = this.rnd;
     const W = co.W[0];
 
@@ -2042,67 +2494,6 @@ export class RaceWorld extends World {
         _v2.set(6.5, 0.2, 7), yaw));
     }
     this._spawnCrowd(crowd);
-
-    /* ---- start/finish gantry ---- */
-    {
-      const g = co.pointAt(0, 0);
-      const yaw = acrossYaw(g.dx, g.dz);
-      const wHalf = co.W[0] - 1.5;
-      for (const sgn of [-1, 1]) {
-        const px = g.x + co.rx[0] * sgn * wHalf;
-        const pz = g.z + co.rz[0] * sgn * wHalf;
-        B.box('metal.hull', 1.5, 9.6, 1.5, px, g.y + 4.8, pz, yaw, 0xc4c8cc);
-        this.track(this.physics.addRotatedBox(
-          _v1.set(px, g.y + 4.8, pz), _v2.set(0.75, 4.8, 0.75), yaw));
-      }
-      B.box('metal.hull', wHalf * 2 + 1.5, 2.2, 1.9, g.x, g.y + 10.6, g.z, yaw, 0xd4d8dc);
-      B.box('metal.trim', wHalf * 2 + 2.4, 0.5, 2.4, g.x, g.y + 11.9, g.z, yaw, 0xa8b0b6);
-      /* The crossbeam had no collider of its own - only its two legs did - so
-       * the beam and the trim capping it were both scenery you could stand
-       * inside. Sized to the *trim*, which is the wider of the two by 0.45 m a
-       * side, so nothing visible overhangs what is solid. */
-      this.track(this.physics.addRotatedBox(
-        _v1.set(g.x, g.y + 11.05, g.z),
-        _v2.set(wHalf + 1.2, 1.4, 1.2), yaw));
-      /* Light panel: five columns of start lights, facing *back* down the
-       * straight, because that is where the grid is.
-       *
-       * Not batched with the rest of the gantry. The whole point of an F1 start
-       * is that the columns come on one at a time and then all go out together,
-       * and geometry merged into a shared buffer cannot be addressed
-       * individually. Ten instances of one box is a single draw call and every
-       * lens is independently coloured, which is what the sequence needs.
-       *
-       * A backing plate goes in the batch, though - it never changes. */
-      const fx = -g.dx;
-      const fz = -g.dz;
-      B.box('metal.trim', 11.2, 2.4, 0.22, g.x + fx * 0.88, g.y + 10.48, g.z + fz * 0.88, yaw, 0x14171a);
-      this._buildStartLights(g, yaw, fx, fz);
-      // Banner across the front of the gantry.
-      B.box('paint.enamel', wHalf * 2 - 4, 1.5, 0.2, g.x + fx * 1.0, g.y + 9.4, g.z + fz * 1.0,
-        yaw, 0x1d3a66);
-    }
-
-    /* ---- start/finish line and grid boxes ---- */
-    {
-      // The line: a checker band across the tarmac, painted on rather than
-      // extruded so it lies exactly on the surface it belongs to.
-      const nCol = 26;
-      for (let c = 0; c < nCol; c++) {
-        const lat = lerp(-co.w[0], co.w[0], (c + 0.5) / nCol);
-        const g = co.pointAt(0, lat);
-        const yaw = acrossYaw(g.dx, g.dz);
-        for (let r = 0; r < 2; r++) {
-          const s = (r - 0.5) * 0.85;
-          B.box('paint.white', (co.w[0] * 2) / nCol, 0.05, 0.85,
-            g.x - g.dx * s, g.y + 0.03, g.z - g.dz * s, yaw,
-            (c + r) % 2 ? 0x16191c : 0xf6f6f4);
-        }
-      }
-    }
-
-    B.flush(this.group, (k) => this._mat(k), 'paddock');
-    B.dispose();
   }
 
   /**
@@ -2165,7 +2556,7 @@ export class RaceWorld extends World {
    */
   _buildScenery() {
     const rnd = this.rnd;
-    const co = this.course;
+    const co = this.courseSet;
 
     /* ---- one conifer, instanced ---- */
     const trunkSecs = [];
@@ -2201,8 +2592,16 @@ export class RaceWorld extends World {
     const canopy = mergeGeometries(tiers.map((g) => (g.index ? g.toNonIndexed() : g)), false);
     for (const g of tiers) g.dispose();
 
+    /* Scaled to area, not copied across.
+     *
+     * 700 trees over the old 520 m map was one every 390 m^2; the same density
+     * over 1 320 m is 4 500, which is four and a half thousand instances of a
+     * fourteen-tier conifer for middle distance. 2 400 thins it to one every
+     * 730 m^2 - still a wooded country from a car, and half the instance
+     * buffer. Rejected candidates (road corridor, city, cliff, apron) come off
+     * that number, so the standing count is lower again. */
     const trees = [];
-    for (let i = 0; i < 700; i++) {
+    for (let i = 0; i < 2400; i++) {
       const x = -HALF + rnd() * HALF * 2;
       const z = -HALF + rnd() * HALF * 2;
       if (x > CITY.x0 - 12 && x < CITY.x1 + 12 && z > CITY.z0 - 12 && z < CITY.z1 + 12) continue;
@@ -2253,7 +2652,7 @@ export class RaceWorld extends World {
       rockGeos.push(g);
     }
     const rocks = [[], [], []];
-    for (let i = 0; i < 260; i++) {
+    for (let i = 0; i < 900; i++) {
       const x = -HALF + rnd() * HALF * 2;
       const z = -HALF + rnd() * HALF * 2;
       const p = co.probe(x, z);
@@ -2271,7 +2670,25 @@ export class RaceWorld extends World {
       }
     }
 
-    /* ---- marshal posts and sponsor boards ---- */
+    /* ---- marshal posts and sponsor boards, per circuit ---- */
+    for (const cir of this.circuits) this._buildTrackside(cir);
+  }
+
+  /**
+   * What stands beside one circuit: marshal posts, sponsor boards, and whatever
+   * the circuit's theme puts against its barrier.
+   *
+   * The theme is one pass rather than three separate builders because the
+   * placement rule is identical in each case - walk the samples, offset past
+   * the sealed surface, drop a thing - and only the thing changes. A gorge gets
+   * cliff blocks, a highland gets pylons and wind masts, the coast gets nothing
+   * extra because it already has a city.
+   *
+   * @param {object} cir
+   */
+  _buildTrackside(cir) {
+    const co = cir.course;
+    const rnd = this.rnd;
     const B = new Batch({ ao: 0.34, sky: 0.32, grime: 0.4, span: 2.4 });
     const N = co.count;
     const postEvery = Math.max(1, Math.round(150 / co.step));
@@ -2279,7 +2696,7 @@ export class RaceWorld extends World {
       const w = co.w[i];
       const W = co.W[i];
       const lat = (i / postEvery) % 2 === 0 ? -(W + 3.5) : W + 3.5;
-      this._roadPoint(i, lat, w, _v1);
+      this._roadPoint(co, i, lat, w, _v1);
       const yaw = Math.atan2(co.rx[i], co.rz[i]);
       B.box('metal.panel', 3.2, 2.6, 2.6, _v1.x, _v1.y + 1.3, _v1.z, yaw, 0xe8e4d8);
       B.box('metal.trim', 3.6, 0.3, 3.0, _v1.x, _v1.y + 2.75, _v1.z, yaw, 0xb0b6ba);
@@ -2295,59 +2712,177 @@ export class RaceWorld extends World {
       const k = co.curv[i];
       const lat = -Math.sign(k || 1) * (W - 0.2);
       if (Math.abs(k) < 1 / 200 && (i % 20)) continue;
-      this._roadPoint(i, lat, w, _v1);
+      this._roadPoint(co, i, lat, w, _v1);
       const yaw = Math.atan2(co.rx[i], co.rz[i]);
       B.box('paint.enamel', 10.2, 1.0, 0.14, _v1.x, _v1.y + 1.55, _v1.z, yaw,
         BOARDS[(i / 5 | 0) % BOARDS.length]);
     }
-    B.flush(this.group, (k) => this._mat(k), 'trackside');
+
+    if (cir.def.dressing === 'gorge') {
+      /* Cut rock, stacked against the outside of the barrier where the run-off
+       * is narrow. Blocks rather than a wall: the quarry was cut in benches and
+       * a bench reads at speed, where a smooth face reads as a tunnel. */
+      const step = Math.max(1, Math.round(9 / co.step));
+      for (let i = 0; i < N; i += step) {
+        if (co.vg[i] > 7.5) continue;                 // only the gorge sections
+        const w = co.w[i];
+        const W = co.W[i];
+        const k = co.curv[i];
+        // Outside of the corner, where a car that lost it would arrive.
+        const side = -Math.sign(k || 1);
+        const yaw = Math.atan2(co.rx[i], co.rz[i]);
+        for (let b = 0; b < 3; b++) {
+          const lat = side * (W + 1.4 + b * 1.9);
+          this._roadPoint(co, i, lat, w, _v1);
+          const h = 3.4 + b * 2.6 + rnd() * 1.8;
+          B.box('dirt.ground', 4.2, h, 3.0 + rnd() * 1.4,
+            _v1.x, _v1.y + h * 0.5 - 0.6, _v1.z, yaw + rnd() * 0.25,
+            b === 0 ? 0xa89684 : 0x9c8b78);
+        }
+        const lat = side * (W + 1.4);
+        this._roadPoint(co, i, lat, w, _v1);
+        this.track(this.physics.addRotatedBox(
+          _v2.set(_v1.x, _v1.y + 2.4, _v1.z), _v3.set(2.1, 3.0, 1.6), yaw));
+      }
+    } else if (cir.def.dressing === 'highland') {
+      /* Pylons and wind masts on the ridge line: this circuit's middle distance
+       * is sky, and sky needs something standing in it to have any scale. */
+      const step = Math.max(1, Math.round(78 / co.step));
+      for (let i = 0; i < N; i += step) {
+        const w = co.w[i];
+        const W = co.W[i];
+        const side = (i / step) % 2 === 0 ? 1 : -1;
+        const lat = side * (W + 26 + rnd() * 14);
+        this._roadPoint(co, i, lat, w, _v1);
+        const gy = this.courseSet.surfaceHeight(_v1.x, _v1.z);
+        const yaw = Math.atan2(co.rx[i], co.rz[i]) + rnd();
+        if ((i / step) % 3 === 0) {
+          // Wind mast: a tower and three blades, as flat boxes. It is 200 m away.
+          const h = 26 + rnd() * 10;
+          B.box('metal.rail', 1.5, h, 1.5, _v1.x, gy + h * 0.5, _v1.z, yaw, 0xdfe3e6);
+          B.box('metal.panel', 2.6, 2.2, 2.6, _v1.x, gy + h + 0.8, _v1.z, yaw, 0xc8ced2);
+          for (let bl = 0; bl < 3; bl++) {
+            const a = yaw + (bl / 3) * TAU;
+            B.box('paint.white', 1.3, 14, 0.5,
+              _v1.x + Math.cos(a) * 7, gy + h + 0.8 + Math.sin(a) * 7, _v1.z, a, 0xf2f4f6);
+          }
+          this.track(this.physics.addBox(_v1.x, gy + h * 0.5, _v1.z, 0.9, h * 0.5, 0.9));
+        } else {
+          // Lattice pylon: two legs, a waist and two crossarms.
+          const h = 20 + rnd() * 7;
+          for (const sgn of [-1, 1]) {
+            B.box('metal.trim', 0.7, h, 0.7,
+              _v1.x + Math.cos(yaw) * sgn * 2.6, gy + h * 0.5,
+              _v1.z - Math.sin(yaw) * sgn * 2.6, yaw, 0x8f989e);
+          }
+          B.box('metal.trim', 6.4, 0.6, 0.6, _v1.x, gy + h * 0.62, _v1.z, yaw, 0x8f989e);
+          B.box('metal.trim', 13.5, 0.55, 0.55, _v1.x, gy + h - 1.5, _v1.z, yaw, 0x99a1a6);
+          B.box('metal.trim', 10.5, 0.55, 0.55, _v1.x, gy + h - 5.5, _v1.z, yaw, 0x99a1a6);
+          this.track(this.physics.addBox(_v1.x, gy + h * 0.5, _v1.z, 3.2, h * 0.5, 1.0));
+        }
+      }
+    }
+
+    B.flush(this.group, (k) => this._mat(k), `trackside.${cir.id}`);
     B.dispose();
   }
 
-  /** One InstancedMesh from a prototype geometry and a placement list. */
+  /**
+   * InstancedMeshes from a prototype geometry and a placement list, split into
+   * a grid of tiles.
+   *
+   * ── Why this is not one mesh ─────────────────────────────────────────────
+   *
+   * An InstancedMesh is culled as a *unit*: one bounding sphere around every
+   * instance in it. Spread 2 400 conifers over a 1 320 m map in a single mesh
+   * and that sphere covers the world, so the whole forest - about 2.9 million
+   * triangles - is submitted on every frame from every camera angle, including
+   * the ones pointing at an empty quarry. There is no per-instance culling in
+   * Three and adding one costs more CPU than it saves.
+   *
+   * Tiling by position gives the culler something to work with: at 300 m a
+   * camera with 760 m of fog sees four or five tiles out of twenty-five, and
+   * the rest are rejected by a sphere test each. The cost is a draw call per
+   * occupied tile, which is the trade this world can afford - it was already
+   * running about 1 200 and the terrain is only two of them.
+   *
+   * @returns {THREE.InstancedMesh[]} one per occupied tile
+   */
   _instance(geo, key, list, name, tint = 0xffffff, cast = true, recv = true) {
-    if (!list.length) return null;
+    if (!list.length) return [];
     const mat = this._mat(key, { vertexColors: false }).clone();
     mat.color = new THREE.Color(tint);
     this._owned.push(mat);
-    const mesh = new THREE.InstancedMesh(geo, mat, list.length);
-    mesh.name = name;
-    mesh.castShadow = cast;
-    mesh.receiveShadow = recv;
-    for (let i = 0; i < list.length; i++) {
-      const p = list[i];
-      _e1.set(0, p.yaw, 0);
-      _q1.setFromEuler(_e1);
-      _v1.set(p.x, p.y, p.z);
-      _v2.setScalar(p.k);
-      _m1.compose(_v1, _q1, _v2);
-      mesh.setMatrixAt(i, _m1);
+
+    const TILE = 300;
+    const cols = Math.max(1, Math.ceil((HALF * 2) / TILE));
+    /** @type {Map<number, Array<object>>} */
+    const tiles = new Map();
+    for (const p of list) {
+      const cx = clamp(Math.floor((p.x + HALF) / TILE), 0, cols - 1);
+      const cz = clamp(Math.floor((p.z + HALF) / TILE), 0, cols - 1);
+      const k = cz * cols + cx;
+      let bucket = tiles.get(k);
+      if (!bucket) tiles.set(k, (bucket = []));
+      bucket.push(p);
     }
-    mesh.instanceMatrix.needsUpdate = true;
-    this.group.add(mesh);
+
+    const out = [];
+    for (const [k, bucket] of tiles) {
+      const mesh = new THREE.InstancedMesh(geo, mat, bucket.length);
+      mesh.name = `${name}.${k}`;
+      mesh.castShadow = cast;
+      mesh.receiveShadow = recv;
+      for (let i = 0; i < bucket.length; i++) {
+        const p = bucket[i];
+        _e1.set(0, p.yaw, 0);
+        _q1.setFromEuler(_e1);
+        _v1.set(p.x, p.y, p.z);
+        _v2.setScalar(p.k);
+        _m1.compose(_v1, _q1, _v2);
+        mesh.setMatrixAt(i, _m1);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      // Three computes an InstancedMesh's bounding sphere from the instance
+      // matrices, but only when it is asked; without this the mesh keeps the
+      // prototype geometry's sphere at the origin and every tile but the middle
+      // one is culled away.
+      mesh.computeBoundingSphere();
+      this.group.add(mesh);
+      out.push(mesh);
+    }
     this._owned.push(geo);
-    return mesh;
+    return out;
   }
 
   /* ------------------------------------------------------------------ */
   /* The published contract                                              */
   /* ------------------------------------------------------------------ */
 
-  _fillSpawns() {
-    const co = this.course;
+  /**
+   * One circuit's share of the contract: centreline, checkpoints, grid.
+   *
+   * Written into the circuit's own record rather than onto the world, because
+   * three circuits cannot share one `trackPath`. {@link selectTrack} is what
+   * puts one of them on the published fields.
+   *
+   * @param {object} cir
+   */
+  _fillCircuit(cir) {
+    const co = cir.course;
     const N = co.count;
 
     /* ---- centreline, decimated to ~6 m ---- */
     const stride = Math.max(1, Math.round(6 / co.step));
     for (let i = 0; i < N; i += stride) {
-      this.trackPath.push({ x: co.x[i], y: co.y[i], z: co.z[i], width: co.w[i] });
+      cir.trackPath.push({ x: co.x[i], y: co.y[i], z: co.z[i], width: co.w[i] });
     }
 
     /* ---- checkpoints, evenly spaced by arc length ---- */
     const CP = 18;
     for (let k = 0; k < CP; k++) {
       const i = co.indexAt((k / CP) * co.length);
-      this.checkpoints.push({
+      cir.checkpoints.push({
         x: co.x[i], y: co.y[i], z: co.z[i],
         /* A little wider than the tarmac, and no wider.
          *
@@ -2360,6 +2895,33 @@ export class RaceWorld extends World {
       });
     }
 
+    /* ---- the loop's checkpoint ----------------------------------------
+     *
+     * The loop is mandatory, and this is what makes it so rather than a sign
+     * saying it is. The apex checkpoint sits 2R above the road with a tight
+     * vertical gate, so the only way to validate it is to have been over the
+     * top: a car on the tarmac underneath is 30 m below the gate and the swept
+     * test rejects it however many times it drives through.
+     *
+     * Inserted in arc-length order so the cursor still walks the lap in
+     * sequence - see RaceManager's header on why a lap is an ordered sequence
+     * and not a line crossing. */
+    if (cir.loop) {
+      const apex = cir.loop.apex;
+      const at = cir.loop.sMid;
+      let insert = cir.checkpoints.length;
+      for (let k = 0; k < cir.checkpoints.length; k++) {
+        const s = co.nearest(cir.checkpoints[k].x, cir.checkpoints[k].z)?.s ?? 0;
+        if (s > at) { insert = k; break; }
+      }
+      cir.checkpoints.splice(insert, 0, {
+        x: apex.x, y: apex.y, z: apex.z,
+        radius: Math.max(9, cir.loop.width * 0.9),
+        yGate: cir.loop.radius * 0.7,
+        loop: true,
+      });
+    }
+
     /* ---- start grid: ten rows of two, staggered ----
      * Twenty slots so the hard field (20 cars) has a real grid to line up on;
      * easy and medium simply use the front of it. */
@@ -2369,8 +2931,8 @@ export class RaceWorld extends World {
       // Behind the line, and behind the gantry legs.
       const s = co.length - (16 + rowIdx * 9 + col * 4.5);
       const lat = col === 0 ? -4.8 : 4.8;
-      const g = co.pointAt(s % co.length, lat);
-      this.startGrid.push({
+      const g = co.pointAt(((s % co.length) + co.length) % co.length, lat);
+      cir.startGrid.push({
         x: g.x, y: g.y, z: g.z,
         // Characters and mounts look down -Z at yaw 0.
         yaw: Math.atan2(-g.dx, -g.dz),
@@ -2378,7 +2940,7 @@ export class RaceWorld extends World {
     }
     // Painted boxes under each slot.
     const B = new Batch({ ao: 0.2, sky: 0.2, grime: 0.2, span: 1 });
-    for (const slot of this.startGrid) {
+    for (const slot of cir.startGrid) {
       for (const [ox, oz, w, d] of [[0, -2.6, 3.6, 0.22], [0, 2.6, 3.6, 0.22],
         [-1.8, 0, 0.22, 5.4], [1.8, 0, 0.22, 5.4]]) {
         const cs = Math.cos(slot.yaw);
@@ -2388,11 +2950,92 @@ export class RaceWorld extends World {
           slot.yaw, 0xf4f4f2);
       }
     }
-    B.flush(this.group, (k) => this._mat(k), 'grid');
+    B.flush(this.group, (k) => this._mat(k), `grid.${cir.id}`);
     B.dispose();
 
-    /* ---- player spawn, portal, NPCs ---- */
+    /* ---- what the picker shows ----
+     *
+     * Length, climb and corner count are *measured*, never authored. A number
+     * typed into a blurb is right on the day the layout is written and wrong
+     * the first time a control point moves half a metre, and a picker that
+     * quietly lies about how long a circuit is is worse than one that says
+     * nothing. The theme word is the only text a human writes. */
+    const corners = this._cornersOf(co);
+    this.tracks.push({
+      id: cir.id,
+      name: cir.name,
+      kicker: `${cir.def.kicker} · ${(co.length / 1000).toFixed(1)} km · ${corners} corners`,
+      blurb: cir.def.blurb,
+      corners,
+      length: co.length,
+      laps: { ...cir.laps },
+      minRadius: co.minRadius,
+      climb: this._climbOf(co),
+      hasLoop: !!cir.loop,
+      accent: cir.def.accent ?? 0x52e9ff,
+    });
+
+    console.info(
+      `[RaceWorld] ${cir.name}: ${cir.trackPath.length} path samples, ` +
+      `${cir.checkpoints.length} checkpoints, ${cir.startGrid.length} grid slots` +
+      (cir.loop ? ', 1 loop' : '')
+    );
+  }
+
+  /**
+   * How many corners a circuit has.
+   *
+   * A corner is a run of samples whose curvature stays above a threshold and
+   * keeps its sign - so a long constant-radius sweeper counts once, and an esse
+   * counts twice because the sign flips between them, which is how a driver
+   * counts them too. The threshold is a 220 m radius, which at this car's grip
+   * budget is the point where a corner stops being a kink you can ignore.
+   */
+  _cornersOf(co) {
+    const MIN_K = 1 / 220;
+    let n = 0;
+    let sign = 0;
+    let run = 0;
+    // Enough samples that a single noisy one cannot open or close a corner.
+    const NEED = Math.max(2, Math.round(8 / co.step));
+    for (let i = 0; i < co.count; i++) {
+      const k = co.curv[i];
+      const s = Math.abs(k) > MIN_K ? Math.sign(k) : 0;
+      if (s !== 0 && s === sign) {
+        run++;
+        if (run === NEED) n++;
+      } else {
+        sign = s;
+        run = s === 0 ? 0 : 1;
+      }
+    }
+    return n;
+  }
+
+  /** Metres between the lowest and highest point of a circuit. */
+  _climbOf(co) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < co.count; i++) {
+      if (co.y[i] < lo) lo = co.y[i];
+      if (co.y[i] > hi) hi = co.y[i];
+    }
+    return hi - lo;
+  }
+
+  /**
+   * Everything that belongs to the world rather than to one circuit: where the
+   * player arrives, the portal home, who is standing about, and the baked
+   * minimap.
+   */
+  _finishWorld() {
+    // The player arrives at Vellum Ridge, which is where the portal is and the
+    // only circuit with a paddock to arrive into. The other two are reached by
+    // driving, or by starting a race on them - `start` puts you on their grid.
+    const home = this.circuits[0];
+    const co = home.course;
     const W = co.W[0];
+
     const paddock = co.pointAt(co.length - 40, -(W + 30));
     this.playerSpawn.set(paddock.x, paddock.y + 0.3, paddock.z);
     // Facing the circuit: the paddock is on the driver's left, so looking back
@@ -2408,8 +3051,9 @@ export class RaceWorld extends World {
       accent: 0x4de3ff,
     });
 
-    const F = (name, persona, s, lat) => {
-      const g = co.pointAt(((s % co.length) + co.length) % co.length, lat);
+    const F = (c, name, persona, s, lat) => {
+      const cc = c.course;
+      const g = cc.pointAt(((s % cc.length) + cc.length) % cc.length, lat);
       return {
         position: new THREE.Vector3(g.x, g.y + 0.2, g.z),
         type: 'friendly',
@@ -2418,11 +3062,25 @@ export class RaceWorld extends World {
       };
     };
     this.npcSpawns.push(
-      F('Marek Vaisey', 'Chief scrutineer at Vellum Ridge; has timed every lap run here for thirty years.', co.length - 60, -(W + 20)),
-      F('Ines Okonjo', 'Runs the tyre bay in garage four; reads a set of worn fronts like a paragraph.', co.length - 20, -(W + 22)),
-      F('Devrim Aslan', 'Track marshal, ridge sector; knows exactly where the circuit bites.', co.length * 0.42, -(W + 6)),
-      F('Halla Brandt', 'Timekeeper in the gantry; speaks in tenths and does not exaggerate.', 30, W + 8)
+      F(home, 'Marek Vaisey', 'Chief scrutineer at Vellum Ridge; has timed every lap run here for thirty years.', co.length - 60, -(W + 20)),
+      F(home, 'Ines Okonjo', 'Runs the tyre bay in garage four; reads a set of worn fronts like a paragraph.', co.length - 20, -(W + 22)),
+      F(home, 'Devrim Aslan', 'Track marshal, ridge sector; knows exactly where the circuit bites.', co.length * 0.42, -(W + 6)),
+      F(home, 'Halla Brandt', 'Timekeeper in the gantry; speaks in tenths and does not exaggerate.', 30, W + 8)
     );
+    /* One voice at each of the other two, so arriving at a circuit by driving
+     * there is not arriving somewhere abandoned. */
+    const gorge = this.circuits.find((c) => c.id === 'cinder');
+    const rise = this.circuits.find((c) => c.id === 'aurora');
+    if (gorge) {
+      this.npcSpawns.push(F(gorge, 'Petra Halvorsen',
+        'Runs Cinder Gorge out of a timing box the size of a shed; blasted half the quarry herself and knows which bench moves.',
+        gorge.course.length - 30, -(gorge.course.W[0] + 9)));
+    }
+    if (rise) {
+      this.npcSpawns.push(F(rise, 'Tobias Renn',
+        'Loop marshal at Aurora Rise; has watched four thousand cars go over the top and can tell from the engine note who will not make it.',
+        rise.loop ? rise.loop.sIn - 25 : 40, -(rise.course.W[0] + 9)));
+    }
 
     /* ---- minimap ----
      *
@@ -2430,7 +3088,8 @@ export class RaceWorld extends World {
      * into a baked floorplan, and the race systems draw `trackPath` live on top
      * of it - so baking the same loop underneath would double-stroke it, at two
      * slightly different widths, for the whole race. What is baked is only what
-     * nothing else draws: the ground, the city block and the start line. */
+     * nothing else draws: the ground, the city block, and a dot at each start
+     * line so the two circuits you are not racing are still findable. */
     this.minimapShapes.push(
       { kind: 'rect', x: 0, z: 0, w: HALF * 2, d: HALF * 2, fill: 0x2d3a26 },
       {
@@ -2442,13 +3101,19 @@ export class RaceWorld extends World {
     for (const b of this._buildings ?? []) {
       this.minimapShapes.push({ kind: 'rect', x: b.x, z: b.z, w: b.w, d: b.d, fill: 0x5b6167 });
     }
-    this.minimapShapes.push(
-      { kind: 'circle', x: co.x[0], z: co.z[0], r: 7, fill: 0xf0f0ee }
-    );
+    for (const cir of this.circuits) {
+      this.minimapShapes.push(
+        { kind: 'circle', x: cir.course.x[0], z: cir.course.z[0], r: 9, fill: 0xf0f0ee }
+      );
+    }
+
+    /* Publish one. Until this runs, `trackPath` is the empty array the
+     * constructor made and `RaceManager.arm` correctly reads "no circuit
+     * here" - which is the state the world must never be left in. */
+    this.selectTrack(this.activeTrackId);
 
     console.info(
-      `[RaceWorld] ${this.trackPath.length} path samples, ${this.checkpoints.length} checkpoints, ` +
-      `${this.startGrid.length} grid slots, colliders: ${this._terrainColliders} terrain / ` +
+      `[RaceWorld] ${this.circuits.length} circuits, colliders: ${this._terrainColliders} terrain / ` +
       `${this._trackColliders} track / ${this._barrierColliders} barrier`
     );
   }
@@ -2467,21 +3132,29 @@ export class RaceWorld extends World {
    *                    width:number, surface:number, arcLength:number }}
    */
   trackNearest(x, z) {
-    const nr = this.course?.nearest(x, z);
+    /* The *nearest* circuit, not the selected one.
+     *
+     * Every caller of this is asking a question about the ground under a
+     * position - how far off the road is it, which way does the road run here -
+     * and answering with a circuit 600 m away would be worse than answering
+     * nothing. A racer is on its own circuit by construction, so the two agree
+     * during a race and only differ when somebody is driving between them. */
+    const co = this.courseSet?.courseAt(x, z) ?? this.course;
+    const nr = co?.nearest(x, z);
     if (!nr) return null;
     return {
       index: nr.i,
       distance: nr.d,
       lateral: nr.lat,
       width: nr.w,
-      surface: this.course.crossFall(nr),
+      surface: co.crossFall(nr),
       arcLength: nr.s,
     };
   }
 
   /** Ground height from the same function every collider was built from. */
   surfaceAt(x, z) {
-    return this.course ? this.course.surfaceHeight(x, z) : 0;
+    return this.courseSet ? this.courseSet.surfaceHeight(x, z) : 0;
   }
 
   /* ------------------------------------------------------------------ */
@@ -2495,10 +3168,22 @@ export class RaceWorld extends World {
   dispose() {
     for (const g of this._owned) g.dispose?.();
     this._owned.length = 0;
-    this.trackPath.length = 0;
-    this.startGrid.length = 0;
-    this.checkpoints.length = 0;
+    for (const cir of this.circuits) {
+      cir.trackPath.length = 0;
+      cir.startGrid.length = 0;
+      cir.checkpoints.length = 0;
+      cir.course = null;
+      cir.startLights = null;
+    }
+    this.circuits.length = 0;
+    this.tracks.length = 0;
+    // These alias a circuit's arrays, which have just been emptied; drop the
+    // references too so a stale contract cannot be read off a disposed world.
+    this.trackPath = [];
+    this.startGrid = [];
+    this.checkpoints = [];
     this._matCache?.clear();
+    this.courseSet = null;
     this.course = null;
     super.dispose();
   }

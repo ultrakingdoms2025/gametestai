@@ -767,6 +767,18 @@ export class RacerAI {
   fixedUpdate(dt, field, running) {
     if (!this.path.valid) return;
 
+    /* On the loop, nothing here applies.
+     *
+     * A racer on a rail has its position, heading and pitch written by
+     * RaceLoops after this runs. Integrating anyway would spend the step
+     * driving toward a centreline 30 m below, and next step's `s` would be
+     * derived from that instead of from where the rail actually is - so the car
+     * would arrive at the exit having also travelled the road underneath. */
+    if (this.railed) {
+      this._writeTransform();
+      return;
+    }
+
     if (!running) {
       this.speed = damp(this.speed, 0, 8, dt);
       this._writeTransform();

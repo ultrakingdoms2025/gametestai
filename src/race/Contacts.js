@@ -153,9 +153,17 @@ export class Contacts {
       if (r._hitCool > 0) r._hitCool -= dt;
     }
 
-    if (car) {
+    /* Anything on the loop is out of this entirely.
+     *
+     * These tests are in XZ - two cars are in contact if their footprints
+     * overlap - which is exactly right on a road and exactly wrong under a
+     * loop, where a car at the apex is 30 m above one on the tarmac and
+     * directly over it. Without this the field shunts cars it cannot see and
+     * the player gets pushed off line by a rival that is upside down above
+     * their head. `railed` is set by RaceLoops for the duration. */
+    if (car && !car.railed) {
       for (const r of racers) {
-        if (!r.root?.visible) continue;
+        if (!r.root?.visible || r.railed) continue;
         this._pair(car, r, dt, player);
       }
     }
@@ -169,6 +177,7 @@ export class Contacts {
         const a = racers[i];
         const b = racers[j];
         if (!a.root?.visible || !b.root?.visible) continue;
+        if (a.railed || b.railed) continue;
         this._pairAI(a, b);
       }
     }

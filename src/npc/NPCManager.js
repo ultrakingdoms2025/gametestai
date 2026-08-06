@@ -740,7 +740,7 @@ export class NPCManager {
       },
       race: {
         name: 'Kai Torres',
-        persona: 'Quest Manager for the Vellum Ridge Circuit: a former race strategist who now runs the mission board in the paddock. Kai is fast-talking, data-driven, and has an opinion on every racing line on the circuit. They make every briefing feel like a pre-race countdown.',
+        persona: 'Quest Manager for Vellum Ridge: a former race strategist who now runs the mission board in the paddock. Kai is fast-talking, data-driven, and has an opinion on every racing line on all three circuits - the ridge, the gorge, and the loop at Aurora Rise. They make every briefing feel like a pre-race countdown.',
         position: [30, 0.2, 20],
         yaw: -Math.PI / 4,
         sign: ['QUEST MANAGER', 'VELLUM CIRCUIT'],

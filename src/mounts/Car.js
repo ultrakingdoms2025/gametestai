@@ -1324,6 +1324,19 @@ export class Car {
    */
   fixedUpdate(dt, elapsed, ctrl) {
     if (!this._alive) return;
+    /* On a rail, nothing here runs.
+     *
+     * Set by RaceLoops while the car is going round the 360 at Aurora Rise.
+     * Everything below assumes the car is standing on a height function - four
+     * downward probes, gravity, a suspension spring pulling it toward the
+     * average - and none of that is true 30 m up on the inside of a loop. The
+     * rail writes `position`, `heading` and `_pitch` after this would have run;
+     * returning early is what stops the two fighting over the same fields
+     * fifteen times a second. See RaceLoops.js for why the loop is a rail.
+     *
+     * The visual step still runs: the wheels keep turning and the body keeps
+     * whatever attitude the rail gave it. */
+    if (this.railed) return;
     const ridden = !!ctrl;
     const throttle = ridden ? ctrl.throttle : 0;
     const strafe = ridden ? ctrl.strafe : 0;

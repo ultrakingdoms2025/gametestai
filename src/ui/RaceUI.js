@@ -19,10 +19,14 @@ function diffLabel(id) {
   return DIFFICULTY_LABEL[id] ?? String(id ?? '').toUpperCase();
 }
 
+/* Everything except the lap count, which is per circuit and gets prepended by
+ * `_diffBlurb`. Cinder Gorge and Aurora Rise are 300 m shorter than Vellum and
+ * run a lap more to compensate, so a fixed "5 laps" here would be wrong on two
+ * circuits out of three. */
 const DIFFICULTY_BLURB = {
-  easy: '3 laps · start 5th of 10. A slower field — win by driving cleanly.',
-  standard: '5 laps · start 10th of 15. Rivals are faster — spend mount powers.',
-  expert: '10 laps · start 15th of 20. Brutal pace — powers are mandatory.',
+  easy: 'start 5th of 10. A slower field — win by driving cleanly.',
+  standard: 'start 10th of 15. Rivals are faster — spend mount powers.',
+  expert: 'start 15th of 20. Brutal pace — powers are mandatory.',
 };
 
 /**
@@ -53,9 +57,11 @@ const DIFFICULTY_BLURB = {
 const ORDINALS = ['0th', '1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th', '9th', '10th',
   '11th', '12th', '13th', '14th', '15th', '16th', '17th', '18th', '19th', '20th'];
 
-/* Laps per difficulty, mirroring RaceWorld._variantLaps so the picker can show
- * the race length for the *selected* band before it starts (the world only
- * applies its lap count at start). Keep in step with RaceWorld. */
+/* Fallback only, for a world that publishes no lap table of its own - the
+ * synthetic test circuit, mostly. Real circuits state their own; see
+ * `_lapsFor`, which reads them off the selected track. Mirroring RaceWorld's
+ * numbers here is what this used to do, and it was wrong the moment a second
+ * circuit with a different lap count existed. */
 const RACE_LAPS = { easy: 3, standard: 5, expert: 10 };
 
 function el(tag, cls, text) {
@@ -148,12 +154,43 @@ export class RaceUI {
 
     this._offs = [];
     if (bus) {
+      /* Has the player actually entered the world yet?
+       *
+       * Booting straight into a race world - a save that was made here, or
+       * ?world=race - arms the circuit while the title card is still up, which
+       * used to raise this panel *behind* it. The click that dismisses the card
+       * then takes pointer lock, and the player is left looking at a modal menu
+       * with no cursor to press its buttons and no Escape either, because a
+       * pointer-locked Chrome swallows Escape to release the lock rather than
+       * delivering it to the page. The only way out was to start the race.
+       *
+       * So the auto-open waits for `game:started`. Opening after the click
+       * means `openPanel`'s `exitLock()` has something to release, the cursor
+       * comes back, and every way out of the panel works. */
+      this._started = false;
+      this._openWhenStarted = false;
+      this._offs.push(bus.on('game:started', () => {
+        this._started = true;
+        if (this._openWhenStarted) {
+          this._openWhenStarted = false;
+          if (!this.race?.racing) this.openPanel();
+        }
+      }));
+      /* A lock taken while a sheet is up would hide the cursor the sheet needs.
+       * Nothing here asks for one, but the boot click, the standby overlay and
+       * HUD's relock timer all can, so the invariant is enforced rather than
+       * assumed: while any race sheet is open, the pointer stays free. */
+      this._offs.push(bus.on('input:lockchange', ({ locked }) => {
+        if (locked && this.isOpen) this.input?.exitLock?.();
+      }));
       // Arriving on a circuit opens the picker unprompted. A player who has
       // just driven through a portal onto a start/finish straight should not
       // have to discover a function key to find out what the place is for.
       this._offs.push(bus.on('race:armed', () => {
         this._syncPanel();
-        if (!this.race?.racing) this.openPanel();
+        if (this.race?.racing) return;
+        if (this._started) this.openPanel();
+        else this._openWhenStarted = true;
       }));
       this._offs.push(bus.on('race:lights', (e) => this._showLights(e)));
       this._offs.push(bus.on('race:started', () => {
@@ -166,6 +203,16 @@ export class RaceUI {
         this._dropFlash = 0.5;
         this._dropGain += e?.count ?? 1;
       }));
+      /* The loop, called out as it happens.
+       *
+       * Going over the top is the one thing on any of these circuits that the
+       * player does not do by steering, and a set piece that passes without the
+       * game acknowledging it reads as scenery you happened to drive through.
+       * Two words on exit, and only on exit - announcing the entry would put a
+       * caption up at the exact moment there is something worth looking at. */
+      this._offs.push(bus.on('race:loop', (e) => {
+        if (e?.state === 'exit') this._callout('360° CLEARED');
+      }));
       this._offs.push(bus.on('race:finished', (e) => { this._closeStop(); this._showBoard(e); }));
       this._offs.push(bus.on('race:aborted', () => { this._closeStop(); this._closeBoard(); }));
     }
@@ -173,6 +220,25 @@ export class RaceUI {
 
   get isOpen() {
     return this._panelOpen || this._boardOpen || this._stopOpen;
+  }
+
+  /** The circuit currently armed, as the picker sees it. */
+  get track() {
+    const id = this.race?.trackId;
+    const list = this.race?.tracks ?? [];
+    return list.find((t) => t.id === id) ?? list[0] ?? null;
+  }
+
+  /** Laps this circuit runs at this difficulty. */
+  _lapsFor(diff) {
+    return this.track?.laps?.[diff] ?? RACE_LAPS[diff] ?? this.race?.lapCount ?? 3;
+  }
+
+  /** "5 laps · start 10th of 15. ..." */
+  _diffBlurb(id) {
+    const n = this._lapsFor(id);
+    const rest = DIFFICULTY_BLURB[id] ?? '';
+    return rest ? `${n} lap${n === 1 ? '' : 's'} · ${rest}` : `${n} laps`;
   }
 
   /* ------------------------------------------------------------------ */
@@ -226,11 +292,10 @@ export class RaceUI {
       this.race.start(this.race.difficulty);
     });
     this.readyMeta = el('div', 'rc-ready-meta');
-    this.readyEl.append(
-      el('div', 'rc-ready-k', 'Vellum Ridge Circuit'),
-      this.readyBtn,
-      this.readyMeta
-    );
+    // Named at runtime: there are three circuits and this prompt appears at
+    // whichever one is armed.
+    this.readyName = el('div', 'rc-ready-k', 'Circuit');
+    this.readyEl.append(this.readyName, this.readyBtn, this.readyMeta);
     wrap.appendChild(this.readyEl);
 
     /* ---- start lights -------------------------------------------------
@@ -252,14 +317,35 @@ export class RaceUI {
     this.countEl.append(this.lightsEl, this.countNum);
     wrap.appendChild(this.countEl);
 
+    /* ---- callout ------------------------------------------------------
+     * One line, low in the frame, for something the player just did rather
+     * than something they have to read. Pointer events off: it appears while
+     * they are driving. */
+    this.calloutEl = el('div', 'rc-callout', '');
+    wrap.appendChild(this.calloutEl);
+
     /* ---- setup panel ------------------------------------------------- */
     const panel = el('div', 'rc-sheet rc-panel');
     const card = el('div', 'rc-card');
     const head = el('div', 'rc-head');
     const titles = el('div', null);
-    titles.append(el('div', 'rc-kicker', 'Circuit'), el('div', 'rc-title', 'RACE'));
-    const close = el('div', 'rc-close');
-    close.append(el('b', null, 'F7'), el('span', null, 'or'), el('b', null, 'Esc'), el('span', null, 'to close'));
+    this.panelKicker = el('div', 'rc-kicker', 'Circuit');
+    titles.append(this.panelKicker, el('div', 'rc-title', 'RACE'));
+    /* A button, not a hint.
+     *
+     * This was a line of text reading "F7 or Esc to close", which is fine right
+     * up until one of those keys does not arrive - and while the pointer is
+     * locked, Escape never does, because the browser eats it to release the
+     * lock. A panel whose only exits are keys is a panel that can strand a
+     * player, so the mouse gets one too. */
+    const close = el('button', 'rc-close');
+    close.type = 'button';
+    close.title = 'Close (F7 or Esc)';
+    close.append(el('b', null, 'F7'), el('span', null, 'or'), el('b', null, 'Esc'), el('span', null, 'to close'), el('i', 'rc-close-x', '✕'));
+    close.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      this.closePanel();
+    });
     head.append(titles, close);
 
     const facts = el('div', 'rc-facts');
@@ -269,6 +355,18 @@ export class RaceUI {
     this.factGrid = this._fact(facts, 'You start', '5th');
     this.factDrops = this._fact(facts, 'Drops', '—');
 
+    /* ---- circuit ------------------------------------------------------
+     *
+     * First, above race type and difficulty, because it is the choice the other
+     * two are made *about*: five laps of the gorge and five laps of the ridge
+     * are not the same race, and picking the length of a lap before picking
+     * which lap it is reads backwards. */
+    const trackLabel = el('div', 'rc-section', 'Circuit');
+    this.trackLabelEl = trackLabel;
+    this.trackEl = el('div', 'rc-picks rc-tracks');
+    this._trackButtons = new Map();
+    this._trackKey = null;
+
     const typeLabel = el('div', 'rc-section', 'Race type');
     this.typeEl = el('div', 'rc-picks');
     this._typeButtons = new Map();
@@ -277,6 +375,7 @@ export class RaceUI {
     const pickLabel = el('div', 'rc-section', 'Difficulty');
     this.pickEl = el('div', 'rc-picks');
     this._pickButtons = new Map();
+    this._pickDescs = new Map();
 
     this.startBtn = el('button', 'rc-start', 'START RACE');
     this.startBtn.type = 'button';
@@ -294,7 +393,8 @@ export class RaceUI {
       + 'drops pay 1 each whether or not you finish.'
     );
 
-    card.append(head, facts, typeLabel, this.typeEl, pickLabel, this.pickEl, this.startBtn, this.noteEl);
+    card.append(head, facts, trackLabel, this.trackEl, typeLabel, this.typeEl,
+      pickLabel, this.pickEl, this.startBtn, this.noteEl);
     panel.appendChild(card);
     // Clicks inside the card must not reach the canvas, which would request
     // pointer lock and close the panel from under the player.
@@ -398,6 +498,44 @@ export class RaceUI {
   /** Rebuild the difficulty row from whatever the circuit actually offers. */
   _syncPanel() {
     const r = this.race;
+
+    /* ---- circuits ----
+     *
+     * Rebuilt only when the *set* changes, which in practice is once per world.
+     * A world that publishes one circuit gets no row at all rather than a
+     * picker with a single option in it, which is a control that does nothing. */
+    const trackList = r?.tracks ?? [];
+    const trackKey = trackList.map((t) => t.id).join(',');
+    if (trackKey !== this._trackKey) {
+      this._trackKey = trackKey;
+      this.trackEl.textContent = '';
+      this._trackButtons.clear();
+      for (const t of trackList) {
+        const b = el('button', 'rc-pick rc-track');
+        b.type = 'button';
+        b.style.setProperty('--rc-accent', hexCss(t.accent ?? 0x52e9ff));
+        const head = el('span', 'rc-pick-n');
+        head.append(el('span', null, t.name));
+        // The loop is the one thing about a circuit that changes what you have
+        // to *do* on it rather than how fast you can do it, so it gets a badge
+        // instead of a clause at the end of a paragraph nobody reads.
+        if (t.hasLoop) head.append(el('i', 'rc-tag', '360° LOOP'));
+        b.append(
+          head,
+          el('span', 'rc-pick-k', t.kicker ?? ''),
+          el('span', 'rc-pick-d', t.blurb ?? '')
+        );
+        b.addEventListener('click', () => {
+          if (this.race?.selectTrack?.(t.id)) this._syncPanel();
+        });
+        this.trackEl.appendChild(b);
+        this._trackButtons.set(t.id, b);
+      }
+      const one = trackList.length < 2;
+      this.trackEl.classList.toggle('off', one);
+      this.trackLabelEl.classList.toggle('off', one);
+    }
+
     const typeList = r?.raceTypes?.length ? r.raceTypes : [RACE_TYPES.CAR, RACE_TYPES.DRAGON];
     const typeKey = typeList.join(',');
     if (typeKey !== this._typeKey) {
@@ -426,19 +564,19 @@ export class RaceUI {
       this._pickKey = key;
       this.pickEl.textContent = '';
       this._pickButtons.clear();
+      this._pickDescs.clear();
       for (const id of list) {
         const b = el('button', 'rc-pick');
         b.type = 'button';
-        b.append(
-          el('span', 'rc-pick-n', diffLabel(id)),
-          el('span', 'rc-pick-d', DIFFICULTY_BLURB[id] ?? '')
-        );
+        const desc = el('span', 'rc-pick-d', this._diffBlurb(id));
+        b.append(el('span', 'rc-pick-n', diffLabel(id)), desc);
         b.addEventListener('click', () => {
           if (this.race) this.race.difficulty = id;
           this._syncPicks();
         });
         this.pickEl.appendChild(b);
         this._pickButtons.set(id, b);
+        this._pickDescs.set(id, desc);
       }
     }
     this._syncPicks();
@@ -450,8 +588,17 @@ export class RaceUI {
   }
 
   _syncPicks() {
+    const trackId = this.race?.trackId;
+    for (const [id, b] of this._trackButtons) b.classList.toggle('on', id === trackId);
     for (const [id, b] of this._pickButtons) b.classList.toggle('on', id === this.race?.difficulty);
     for (const [id, b] of this._typeButtons) b.classList.toggle('on', id === this.race?.raceType);
+    // Lap counts differ per circuit, so the difficulty blurbs are rewritten
+    // rather than built once - the alternative is a picker that says five laps
+    // on a circuit that runs six.
+    for (const [id, d] of this._pickDescs) d.textContent = this._diffBlurb(id);
+    // The card's kicker names the circuit: the panel is about one of three now,
+    // and "Circuit / RACE" no longer says which.
+    if (this.panelKicker) this.panelKicker.textContent = this.track?.name ?? 'Circuit';
     if (this.factVehicle) this.factVehicle.textContent = String(this.race?.raceType ?? RACE_TYPES.CAR).toUpperCase();
     // Facts follow the *selected* difficulty, not the last race that ran, so the
     // player sees the length/field/grid they are about to get before starting.
@@ -460,7 +607,7 @@ export class RaceUI {
     const gridLen = this.race?.track?.startGrid?.length ?? shape.cars;
     const cars = Math.min(shape.cars, gridLen);
     const slot = Math.min(shape.playerSlot, cars - 1, gridLen - 1);
-    if (this.factLaps) this.factLaps.textContent = String(RACE_LAPS[diff] ?? this.race?.lapCount ?? 3);
+    if (this.factLaps) this.factLaps.textContent = String(this._lapsFor(diff));
     if (this.factField) this.factField.textContent = `${cars} ${this.race?.dragonRace ? 'dragons' : 'cars'}`;
     if (this.factGrid) this.factGrid.textContent = ordinal(slot + 1);
   }
@@ -613,6 +760,14 @@ export class RaceUI {
   update(dt) {
     const r = this.race;
     if (!r) return;
+    /* Failsafe, mirroring HUD's: the harness and a hot reload can remove the
+     * title card without ever raising `game:started`, and a picker that waits
+     * for a signal nobody sent is the same dead end from the other side. */
+    if (this._openWhenStarted && !document.querySelector('.boot-screen')) {
+      this._openWhenStarted = false;
+      this._started = true;
+      if (!r.racing) this.openPanel();
+    }
     const s = r.snapshot();
     const live = s.state === 'racing' || s.state === 'countdown';
     this.hudEl.classList.toggle('on', live);
@@ -622,7 +777,10 @@ export class RaceUI {
     const armed = !!r.ready && s.state === 'idle' && !this._panelOpen && !this._boardOpen;
     this.readyEl.classList.toggle('on', armed);
     if (armed) {
-      this.readyMeta.textContent = `${diffLabel(s.difficulty)} · ${RACE_LAPS[s.difficulty] ?? s.laps} laps · Enter, or F7 for options`;
+      const t = this.track;
+      this.readyName.textContent = t?.name ?? 'Circuit';
+      this.readyMeta.textContent =
+        `${diffLabel(s.difficulty)} · ${this._lapsFor(s.difficulty)} laps · Enter, or F7 for options`;
     }
     if (!live) {
       this._lastCount = -1;
@@ -665,6 +823,23 @@ export class RaceUI {
       this.dropRow.classList.add('hit');
       if (this._dropFlash <= 0) this.dropRow.classList.remove('hit');
     }
+  }
+
+  /**
+   * A line of text, shown for a moment.
+   *
+   * Restarts its own animation by dropping the class and forcing a reflow -
+   * without that, a second loop on the same lap sets the text and animates
+   * nothing, because the animation has already run on that element.
+   */
+  _callout(text) {
+    if (!this.calloutEl) return;
+    this.calloutEl.textContent = text;
+    this.calloutEl.classList.remove('on');
+    void this.calloutEl.offsetWidth;
+    this.calloutEl.classList.add('on');
+    clearTimeout(this._calloutTimer);
+    this._calloutTimer = setTimeout(() => this.calloutEl.classList.remove('on'), 1700);
   }
 
   /**

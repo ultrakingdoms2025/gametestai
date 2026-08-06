@@ -144,7 +144,17 @@ function buildGreatDome(world) {
     for (let i = 0; i < RINGS; i++) {
       for (let s = 0; s < SEG; s++) {
         const p0 = i * stride + s, p1 = p0 + 1, p2 = p0 + stride, p3 = p2 + 1;
-        idx.push(p0, p2, p1, p1, p2, p3);
+        /* Wound to face UP.
+         *
+         * These rings run outward, where the roof's run inward, so the same
+         * index order that gives the roof a downward normal gives the floor a
+         * downward normal too - and `M.deck` is single-sided. The first version
+         * of this floor was therefore invisible from above and visible only
+         * from underneath, which looks exactly like the hole it was written to
+         * fix. Caught by raycasting the render tree rather than physics: 61% of
+         * the dome floor returned no drawn surface.
+         */
+        idx.push(p0, p1, p3, p0, p3, p2);
       }
     }
     const geo = new THREE.BufferGeometry();

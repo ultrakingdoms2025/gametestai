@@ -541,7 +541,25 @@ export class StationActors {
     const mk = (geo, mat, name) => {
       const m = new THREE.InstancedMesh(geo, mat, n);
       m.name = `StationActors:${name}`;
-      m.castShadow = true;
+      /* No shadow casting, and the reason is measured rather than assumed.
+       *
+       * These eleven meshes hold every actor on the map - about 1,900 figures
+       * once the zones were filled - and `frustumCulled` is false, so all of
+       * them are submitted to every pass including the shadow map. That is
+       * about 7.5 M triangles rendered a second time into a 3072 sq depth
+       * buffer, and it was the single largest cost in the frame: switching it
+       * off took street level from 34 to 52 fps and the galley court from 31 to
+       * 37, with no other change.
+       *
+       * It costs nothing visually. The world's only shadow-casting light is the
+       * plaza key, whose shadow camera is 160 m across and centred on the hub
+       * (see `_buildLights`). Every actor is in an outer zone, half a kilometre
+       * outside that box, so not one of them was ever casting a shadow anybody
+       * could see - they were only being drawn into a depth buffer that would
+       * discard them. `receiveShadow` stays on, which is the half that is
+       * actually free.
+       */
+      m.castShadow = false;
       m.receiveShadow = true;
       // Instances span whole zones; a per-object frustum test could only ever
       // reject the one mesh that holds everybody, so it is never worth running.

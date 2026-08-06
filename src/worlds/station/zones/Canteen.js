@@ -15,23 +15,33 @@ import { boxGeo, cylGeo, instanced } from '../StationKit.js';
  *
  * ── The plan ──────────────────────────────────────────────────────────────
  * The section is fixed by `OuterRing.buildZone`: an open court under the dome
- * inside r=112, a covered arcade with a 30 m ceiling from there to the rim. So
- * the built content goes in the arcade and the landmark goes in the court.
+ * inside r=112, a covered arcade with a 30 m ceiling from there to the rim.
+ * Both are dining floor. The named things sit in the sectors that are not:
  *
  *      bearing        radius        what
  *      ---------      ----------    ----------------------------------------
  *       -16..16       all           arrival plaza and the walk in - kept clear
- *        18..150      118..194      east dining, the mezzanine, the window bar
- *       151..211      152..194      THE SERVERY and its back of house
- *       212..232      140..168      Galley Provisions and the dish return
- *       232..344      118..194      west dining and the quiet window gallery
- *         0..360        0..106      the garden court and the grow tower
+ *       141..217      116..194      THE SERVERY, its queues and back of house
+ *       211..233      132..170      Galley Provisions
+ *        66..116      150..184      the mezzanine, over the dining below it
+ *        18..342       37..47       THE ISLAND - eight counters facing outward
+ *         0..360        0..31       the garden court and the grow tower
+ *      everywhere    else           tables
  *
- * The servery is deliberately on the far side of the deck from the link mouth.
- * A player arriving at the plaza is looking down 350 m of dining floor at a
- * 126 m lit counter with steam coming off it, which is the single frame this
- * zone exists to produce; putting the counter beside the entrance would have
- * given them a queue to look at instead.
+ * That last line is the whole zone. Eighteen ranks of group tables - ten round
+ * the arcade, eight round the court - fill every square metre the grid below
+ * does not reserve for a corridor, a spoke or one of the named sectors above.
+ * A canteen is not a room with tables in it, it is a room made OF tables, and
+ * a 113,000 m2 deck dressed with six hundred props reads as an empty hangar
+ * no matter how good the six hundred are.
+ *
+ * The hero servery is deliberately on the far side of the deck from the link
+ * mouth. A player arriving at the plaza is looking down 350 m of dining floor
+ * at a 126 m lit counter with steam coming off it, which is the single frame
+ * this zone exists to produce; putting the counter beside the entrance would
+ * have given them a queue to look at instead. The island in the court is the
+ * other half of that answer - it is what the walk down the processional passes
+ * through, and it carries the seven things the one counter does not serve.
  *
  * ── Two conventions that are easy to get backwards ────────────────────────
  * Everything here is placed on a BEARING in degrees, measured from the link
@@ -123,14 +133,77 @@ const SEAT = 0.45;        // dining chair and refectory bench
 const BOOTH_SEAT = 0.46;  // mezzanine booth
 const STOOL_SEAT = 0.70;  // window bar
 
-/**
- * Dining bearings, both flanks.
+/* ------------------------------------------------------------------ *
+ * The hall grid                                                       *
+ * ------------------------------------------------------------------ *
  *
- * The east flank is cut into three by the mezzanine stairs at 68 and 114; the
- * west is one unbroken sweep. The gap at 0 +/- 16 is the arrival funnel and
- * stays empty in every pass.
+ * A mess hall is not a scatter of tables, it is a GRID of them with aisles
+ * between, and the aisles are what has to be authored first. So the whole deck
+ * is cut into concentric bands: alternating rings of clear deck a player can
+ * always walk on, and rings of dining that are then filled solid.
+ *
+ *      116.5 - 121.5   promenade ring        the walk round the court edge
+ *      121.5 - 148.0   dining band 1         five ranks, 5.4 m apart
+ *      148.0 - 153.0   mid ring corridor
+ *      153.0 - 179.0   dining band 2         five more, under the mezzanine
+ *      179.0 - 184.0   outer ring corridor
+ *      184.0 - 193.0   window band           the bars and the quiet gallery
+ *
+ * and in the court, inside the dome:
+ *
+ *      31 - 36         clear, round the planting ring
+ *      37 - 47         THE ISLAND - eight counters facing outward
+ *      47 - 53         its queue apron
+ *      53 - 80         court dining, five rings
+ *      80 - 85         court ring corridor
+ *      85 - 101        court dining, three more rings
+ *      101 - 116       the saplings and the clear rim
+ *
+ * Both sets are cut by eleven radial spokes on the 30 degree bearings, each
+ * 6.8 m wide - the twelfth is the arrival funnel, which is 32 degrees of clear
+ * deck all on its own. So no player is ever more than fifteen degrees of arc
+ * from a route straight out to the rim. The rings and the spokes together are
+ * the circulation; everything else in this file fills what is left.
+ *
+ * The corridors are deliberately NOT paved. The warm plate stops at the edge
+ * of every band and the bare deck runs through, which is what tells a player
+ * which of two identically furnished-looking strips is the one to walk down.
  */
-const DINING_SPANS = [[18, 58], [76, 106], [122, 150], [232, 344]];
+const PROM_R = 119.0;
+const BAND1_ROWS = [124.8, 130.2, 135.6, 141.0, 146.4];
+const MID_R = 150.5;
+const BAND2_ROWS = [156.0, 161.4, 166.8, 172.2, 177.6];
+const OUT_R = 181.5;
+
+const ISLAND_R = 42;
+const COURT_ROWS_IN = [55.5, 60.9, 66.3, 71.7, 77.1];
+const COURT_MID_R = 82.5;
+const COURT_ROWS_OUT = [87.5, 92.9, 98.3];
+
+/** Bearings of the radial spokes, and the half-width each one is kept clear. */
+const SPOKES = [30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
+const SPOKE_HALF = 3.4;
+
+/**
+ * Where furniture may not go, as (bearing0, bearing1, radius0, radius1).
+ *
+ * Authored as polar rectangles rather than as gaps in each row's bearing list
+ * because the same hole has to be respected by nine different fillers - the
+ * ranks, the round tables, the dividers, the bins, the totems - and nine
+ * copies of "except between 141 and 217" is nine chances to get one wrong.
+ */
+const KEEPOUT = [
+  // The arrival funnel: the plaza, the 8 m in front of it, and the whole walk
+  // across the court to the tower. Nothing stands in the frame you arrive on.
+  [344, 16, 0, 200],
+  // The servery, its order points, its queues and the entire back of house.
+  [141, 217, 116, 200],
+  // Galley Provisions, and the room a customer needs to stand and be served.
+  [211, 233, 132, 170],
+  // Where the two mezzanine stairs land on the dining floor.
+  [60, 76, 128, 154],
+  [106, 122, 128, 154],
+];
 
 /* ------------------------------------------------------------------ */
 /* The frame                                                           */
@@ -196,6 +269,57 @@ function arcRun(deg0, deg1, radius, pitch, fn) {
   return n;
 }
 
+/** Bearing folded into [0, 360). */
+const norm = (deg) => ((deg % 360) + 360) % 360;
+/** Signed shortest angle from `b` to `a`, in degrees. */
+function dAng(a, b) {
+  let d = norm(a - b);
+  if (d > 180) d -= 360;
+  return d;
+}
+/** True if `deg` lies in the arc from `b0` round to `b1`, wrapping if it must. */
+function inArc(deg, b0, b1) {
+  const d = norm(deg), a = norm(b0), b = norm(b1);
+  return a <= b ? d >= a && d <= b : d >= a || d <= b;
+}
+
+/**
+ * True if a polar point is inside a keep-out or standing in a spoke.
+ *
+ * Every filler in the hall asks this before it places anything, which is the
+ * whole reason the circulation survives contact with nine independent passes
+ * of furniture. `pad` widens the spoke for wide props - a 12 m refectory table
+ * whose CENTRE is 4 m off a spoke still lies across it.
+ */
+function blocked(deg, rad, pad = 0) {
+  for (const [b0, b1, r0, r1] of KEEPOUT) {
+    if (rad >= r0 && rad <= r1 && inArc(deg, b0, b1)) return true;
+  }
+  for (const s of SPOKES) {
+    if (Math.abs(dAng(deg, s)) * DEG * rad < SPOKE_HALF + pad) return true;
+  }
+  return false;
+}
+
+/**
+ * Walk a whole ring at `pitch` metres, skipping the keep-outs and the spokes.
+ *
+ * `pad` is half the tangential size of whatever is being placed, so a rank is
+ * rejected when any part of it would cross a spoke rather than when its middle
+ * would. Returns how many were actually placed, which is what the callers use
+ * to keep their own counts honest.
+ */
+function ringFill(ctx, rad, pitch, pad, fn) {
+  let placed = 0;
+  arcRun(0, 360, rad, pitch, (d, i) => {
+    if (blocked(d, rad, pad)) return;
+    const c = at(d, rad);
+    if (!ctx.onDeck(c[0], c[1], 7)) return;
+    fn(d, i, placed++);
+  });
+  return placed;
+}
+
 /* ------------------------------------------------------------------ */
 /* The furniture kit                                                   */
 /* ------------------------------------------------------------------ */
@@ -217,9 +341,29 @@ function newKit() {
     stool: [],
     roundTop: [], tablePost: [], squareTop: [],
     benchTop: [], benchLeg: [],
-    boothSeat: [], boothBack: [],
+    boothSeat: [], boothBack: [], boothTop: [],
     tray: [], mug: [], crate: [], leaf: [], puff: [], marker: [],
     pendantShade: [], pendantBulb: [],
+
+    /* The group-table kit.
+     *
+     * Everything the brief asks for in quantity - the refectory ranks, the
+     * round eights, the high tables, and the whole service layer of caddies,
+     * bins, rails and totems - lives here rather than in `ctx.box`, because
+     * there are between forty and seven hundred of each and a merged copy of
+     * every one of them is the fastest way to spend a zone's entire triangle
+     * budget on furniture nobody is looking at. */
+    refTop: [], refLeg: [], refRail: [],
+    bigTop: [], midTop: [], bigPost: [],
+    highTop: [], highPost: [],
+    caddy: [], cutlery: [], napkin: [],
+    binDrum: [], binLid: [], fountain: [],
+    totem: [], totemLit: [],
+    qPost: [], qBelt: [],
+    trolley: [], trolleyShelf: [], highChair: [],
+    screen: [], coatRail: [],
+    tubLong: [], tubCap: [],
+    urn: [], cupStack: [],
 
     /* Golden-angle phase walk.
      *
@@ -278,6 +422,243 @@ function bench(ctx, K, lx, lz, floor, yaw) {
     inst(ctx, K.benchLeg, g[0], floor + 0.185, g[1], yaw);
   }
   ctx.solid(lx, floor + 0.33, lz, 2.2, 0.12, 0.21, yaw);
+}
+
+/** The length the refectory top and the bench top are modelled at. */
+const REF_LEN = 10, BENCH_LEN = 4.4;
+
+/**
+ * A bench of any length, from the one 4.4 m prototype.
+ *
+ * Scaled rather than repeated: a rank of twelve wants one continuous bench per
+ * side, and three abutting 4.4 m copies is three colliders, three instances and
+ * two visible seams to buy exactly the same object.
+ */
+function longBench(ctx, K, lx, lz, floor, yaw, len) {
+  inst(ctx, K.benchTop, lx, floor + 0.41, lz, yaw, len / BENCH_LEN, 1, 1);
+  for (const s of [-1, 1]) {
+    const g = off(lx, lz, yaw, s * (len / 2 - 0.75), 0);
+    inst(ctx, K.benchLeg, g[0], floor + 0.185, g[1], yaw);
+  }
+  // Top face at floor + 0.45, which is SEAT, which is what the sitters are given.
+  ctx.solid(lx, floor + 0.33, lz, len / 2, 0.12, 0.21, yaw);
+}
+
+/**
+ * ONE RANK OF THE LONG GALLEY.
+ *
+ * A refectory table `len` metres along the arc with a continuous bench down
+ * each side, the covers laid on it, and however many of them are being eaten
+ * from. This is the module the hall is mostly made of: everything else in the
+ * zone is either a variation on it, something that serves it, or the route
+ * between two of them.
+ *
+ * Seats are spaced at 1.55 m, which is the pitch that puts twelve people on a
+ * ten metre table and lets each of them have an elbow. `occ` is the chance the
+ * rank is in use at all - a hall where every table has two people at it looks
+ * like a seating plan, where a hall with a third of its tables busy and the
+ * rest cleared looks like the back half of a lunch service.
+ */
+function refectoryRank(ctx, K, deg, rad, len, occ) {
+  const yaw = A(deg);
+  const c = at(deg, rad);
+  const half = len / 2;
+
+  inst(ctx, K.refTop, c[0], 0.735, c[1], yaw, len / REF_LEN, 1, 1);
+  for (const s of [-1, 1]) {
+    const t = at(deg, rad, s * (half - 1.15));
+    inst(ctx, K.refLeg, t[0], 0.36, t[1], yaw);
+  }
+  ctx.solid(c[0], 0.62, c[1], half, 0.14, 0.62, yaw);
+  /* One patch, sized to the rank's DEPTH rather than its length.
+   *
+   * `_contact` only makes squares, and the obvious call - one square as long
+   * as the table - puts a 12 m blob under a 3.4 m wide object. Seven hundred
+   * of those is ninety thousand square metres of multiply-blended decal on a
+   * hundred-and-thirteen thousand square metre deck, which stops being contact
+   * occlusion and becomes a tint over the entire floor. A patch the width of
+   * the rank grounds the middle of it, which is the part the eye checks. */
+  ctx.contact(c[0], c[1], 5.0);
+
+  // A condiment caddy and a cutlery stand every four metres down the middle.
+  const nCad = Math.max(2, Math.round(len / 4));
+  for (let i = 0; i < nCad; i++) {
+    const t = -half + 1.2 + (i * (len - 2.4)) / (nCad - 1);
+    inst(ctx, K.caddy, ...at3(deg, rad + 0.12, 0.88, t), yaw, 1, 1, 1);
+    if (i % 2 === 1) inst(ctx, K.cutlery, ...at3(deg, rad - 0.2, 0.90, t + 0.5), yaw);
+    else inst(ctx, K.napkin, ...at3(deg, rad - 0.24, 0.86, t + 0.45), yaw);
+  }
+
+  const nSeat = Math.max(3, Math.round(len / 1.55));
+  let taken = 0;
+  for (const side of [-1, 1]) {
+    const look = side > 0 ? faceIn(deg) : faceOut(deg);
+    const br = rad + side * 1.06;
+    longBench(ctx, K, ...at(deg, br), 0, look, len);
+    if (ctx.rng() > occ) continue;
+    // A run of neighbours rather than a scatter: people who eat together sit
+    // together, and a table with one figure at each end reads as two strangers.
+    const run = 1 + Math.floor(ctx.rng() * 3);
+    const from = Math.floor(ctx.rng() * Math.max(1, nSeat - run));
+    for (let i = from; i < Math.min(nSeat, from + run); i++) {
+      const t = -half + 0.9 + (i * (len - 1.8)) / (nSeat - 1);
+      const p = at(deg, br, t);
+      seat(ctx, K, p[0], p[1], 0, look, SEAT);
+      const l = at(deg, rad + side * 0.42, t);
+      inst(ctx, K.tray, l[0], 0.80, l[1], look);
+      if (ctx.rng() > 0.4) inst(ctx, K.mug, l[0] + 0.16, 0.84, l[1] + 0.1, ctx.rng() * TAU);
+      taken++;
+    }
+  }
+  return taken;
+}
+
+/**
+ * A round group table for six or eight, with its chairs round it.
+ *
+ * The collider is the top plus a skirt out to the chair line: eight separate
+ * chair colliders would be eight more boxes in the broadphase for each of two
+ * hundred tables, and the thing a player actually wants is not to be able to
+ * walk through the middle of an occupied table.
+ */
+function roundGroup(ctx, K, lx, lz, yaw, n) {
+  const big = n >= 8;
+  const rTop = big ? 0.95 : 0.75;
+  const rChair = rTop + 0.62;
+  inst(ctx, K.bigPost, lx, 0.35, lz, yaw, big ? 1 : 0.85, 1, big ? 1 : 0.85);
+  inst(ctx, big ? K.bigTop : K.midTop, lx, 0.745, lz, yaw);
+  // The skirt is the top plus the width of the chair legs tucked under it -
+  // wide enough that a player cannot stand inside an occupied table, narrow
+  // enough that they can still walk between one table and the next.
+  /* The skirt stops just short of the chair line. An eight-top's diagonal
+   * chairs sit at (1.11, 1.11) in the table's own frame, so a half-extent of
+   * 1.0 is the largest square that does not swallow four of the eight seats -
+   * a collider a sitter is standing inside is a sitter buried in a table. */
+  ctx.solid(lx, 0.60, lz, rTop + 0.05, 0.16, rTop + 0.05, yaw);
+  ctx.contact(lx, lz, rChair * 2 + 0.8);
+
+  const places = [];
+  for (let i = 0; i < n; i++) {
+    const a = yaw + (i / n) * TAU;
+    const p = [lx + Math.sin(a) * rChair, lz + Math.cos(a) * rChair];
+    chair(ctx, K, p[0], p[1], 0, faceTo(p[0], p[1], lx, lz));
+    places.push(p);
+  }
+  return places;
+}
+
+/** A bar-height table with stools, for eating standing up in ten minutes. */
+function highTable(ctx, K, lx, lz, yaw, n = 3) {
+  inst(ctx, K.highPost, lx, 0.51, lz, yaw);
+  inst(ctx, K.highTop, lx, 1.06, lz, yaw);
+  ctx.solid(lx, 0.75, lz, 0.55, 0.35, 0.55, yaw);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const a = yaw + (i / n) * TAU + 0.4;
+    const p = [lx + Math.sin(a) * 1.15, lz + Math.cos(a) * 1.15];
+    inst(ctx, K.stool, p[0], 0.35, p[1], faceTo(p[0], p[1], lx, lz));
+    out.push([p, faceTo(p[0], p[1], lx, lz)]);
+  }
+  return out;
+}
+
+/**
+ * A block of four booths, back to back in pairs, running along the arc.
+ *
+ * Booths are what a canteen puts where it wants people to stay an hour, so
+ * they go at the back of a band against a divider rather than out in the
+ * middle of a rank field.
+ */
+function boothBlock(ctx, K, deg, rad, occ) {
+  const yaw = A(deg);
+  let taken = 0;
+  for (const side of [-1, 1]) {
+    const r = rad + side * 1.55;
+    const look = side > 0 ? faceIn(deg) : faceOut(deg);
+    for (const t of [-2.6, 2.6]) {
+      const c = at(deg, r, t);
+      inst(ctx, K.boothTop, c[0], 0.75, c[1], yaw);
+      inst(ctx, K.tablePost, c[0], 0.36, c[1], yaw);
+      const b = at(deg, r + side * 1.05, t);
+      inst(ctx, K.boothSeat, b[0], 0.23, b[1], yaw);
+      inst(ctx, K.boothBack, ...at3(deg, r + side * 1.58, 0.81, t), yaw);
+      ctx.solid(c[0], 0.6, c[1], 1.05, 0.2, 0.6, yaw);
+      ctx.solid(b[0], 0.23, b[1], 1.0, 0.23, 0.30, yaw);
+      if (ctx.rng() > occ) continue;
+      for (let k = 0; k < 1 + Math.floor(ctx.rng() * 2); k++) {
+        const p = at(deg, r + side * 1.05, t + (k ? 0.55 : -0.55));
+        seat(ctx, K, p[0], p[1], 0, look, BOOTH_SEAT);
+        taken++;
+      }
+      inst(ctx, K.tray, ...at3(deg, r, 0.80, t), yaw);
+    }
+    // The screen between this pair of booths and the next block along.
+    const w = at(deg, r, 5.4);
+    inst(ctx, K.screen, w[0], 0.78, w[1], yaw + Math.PI / 2);
+    ctx.solid(w[0], 0.78, w[1], 0.08, 0.78, 1.3, yaw);
+  }
+  return taken;
+}
+
+/**
+ * A planted divider: a long tub with greenery in it, used to edge a band.
+ *
+ * These are what stop eight ranks of refectory tables reading as one field.
+ * They stand just inside each band's edge, in runs with gaps in them, so the
+ * band has a visible boundary that a player can still walk through.
+ */
+function plantedDivider(ctx, K, deg, rad, scale = 1) {
+  const yaw = A(deg);
+  const c = at(deg, rad);
+  inst(ctx, K.tubLong, c[0], 0.45, c[1], yaw, scale, 1, 1);
+  inst(ctx, K.tubCap, c[0], 0.96, c[1], yaw, scale, 1, 1);
+  ctx.solid(c[0], 0.48, c[1], 3.0 * scale, 0.48, 0.58, yaw);
+  ctx.contact(c[0], c[1], 4.0 * scale);
+  for (const s of [-2.0 * scale, 0, 2.0 * scale]) {
+    const p = at(deg, rad, s);
+    shrub(ctx, K, p[0], p[1], 0.95, 0.9);
+  }
+}
+
+/** A waste and recycling bank: two drums on a plinth, with a tray shelf over. */
+function binBank(ctx, K, deg, rad) {
+  const yaw = A(deg);
+  const c = at(deg, rad);
+  // The plinth is 16 cm so the 95 cm drums stand ON it rather than sunk into it.
+  ctx.box('trimDark', 2.9, 0.16, 1.3, c[0], 0.08, c[1], yaw);
+  for (const [s, key] of [[-0.8, 'emGreen'], [0.8, 'emAmber']]) {
+    const p = at(deg, rad, s);
+    inst(ctx, K.binDrum, p[0], 0.635, p[1], yaw);
+    inst(ctx, K.binLid, p[0], 1.14, p[1], yaw);
+    ctx.box(key, 0.5, 0.06, 0.36, ...at3(deg, rad - 0.5, 1.06, s), yaw);
+  }
+  ctx.solid(c[0], 0.60, c[1], 1.45, 0.60, 0.62, yaw);
+  ctx.contact(c[0], c[1], 4.2);
+  for (let i = 0; i < 2; i++) inst(ctx, K.tray, ...at3(deg, rad, 1.21 + i * 0.05, -1.0 + i * 0.06), yaw);
+}
+
+/**
+ * A menu totem: a lit board on a post, read from the aisle it stands in.
+ *
+ * The board is 2.3 m tall and its origin is its middle, so it goes at 1.18 and
+ * not at eye height - a totem authored at 1.55 stands 40 cm off the deck, which
+ * is invisible in a wide shot and unmissable from three metres.
+ */
+function menuTotem(ctx, K, deg, rad, yaw = A(deg)) {
+  const c = at(deg, rad);
+  inst(ctx, K.totem, c[0], 1.18, c[1], yaw);
+  inst(ctx, K.totemLit, c[0], 1.40, c[1], yaw);
+  ctx.solid(c[0], 1.18, c[1], 0.4, 1.18, 0.14, yaw);
+  ctx.contact(c[0], c[1], 2.4);
+}
+
+/** A run of retractable-belt barriers, for a queue route. */
+function queueRun(ctx, K, deg0, deg1, rad) {
+  arcRun(deg0, deg1, rad, 2.1, (d) => {
+    const c = at(d, rad);
+    inst(ctx, K.qPost, c[0], 0.48, c[1], A(d));
+    inst(ctx, K.qBelt, ...at3(d, rad, 0.86, 1.05), A(d));
+  });
 }
 
 /** Something to have been eating. Trays and mugs, scattered but seeded. */
@@ -352,6 +733,42 @@ function flushKit(ctx, K) {
   add(boxGeo(0.12, 0.37, 0.36, 1), M.trimDark, K.benchLeg);
   add(boxGeo(2.0, 0.46, 0.58, 1.5), M.panelWarm, K.boothSeat);
   add(boxGeo(2.0, 0.70, 0.14, 1.5), M.panelTeal, K.boothBack);
+  add(boxGeo(1.5, 0.08, 1.0, 1.5), M.panelWarm, K.boothTop);
+
+  /* The group-table kit.
+   *
+   * `refTop` is modelled at REF_LEN and scaled on X per rank, so an 8 m table
+   * and a 13 m one are the same twelve triangles; same for `benchTop` and
+   * `tubLong`. Everything under about a metre has casting off - a caddy's
+   * shadow is smaller than one shadow-map texel at this deck's cascade, so it
+   * costs a draw in the depth pass and produces nothing. */
+  add(boxGeo(REF_LEN, 0.09, 1.24, 1.5), M.panelWarm, K.refTop);
+  add(boxGeo(0.20, 0.66, 1.0, 1), M.trimDark, K.refLeg);
+  add(cylGeo(0.95, 0.95, 0.08, 10, 1), M.panelWarm, K.bigTop);
+  add(cylGeo(0.75, 0.75, 0.08, 8, 1), M.panelWarm, K.midTop);
+  add(cylGeo(0.11, 0.34, 0.70, 6, 1), M.trimDark, K.bigPost);
+  add(cylGeo(0.52, 0.52, 0.07, 8, 1), M.trim, K.highTop);
+  add(cylGeo(0.10, 0.32, 1.02, 6, 1), M.trimDark, K.highPost);
+  add(boxGeo(0.34, 0.20, 0.22, 1), M.trim, K.caddy, { cast: false });
+  add(boxGeo(0.16, 0.22, 0.16, 1), M.chrome, K.cutlery, { cast: false });
+  add(boxGeo(0.22, 0.14, 0.16, 1), M.panelDark, K.napkin, { cast: false });
+  add(cylGeo(0.40, 0.34, 0.95, 8, 1), M.trimDark, K.binDrum);
+  add(cylGeo(0.44, 0.44, 0.10, 8, 1), M.trim, K.binLid);
+  add(boxGeo(0.52, 1.05, 0.40, 1), M.chrome, K.fountain);
+  add(boxGeo(0.76, 2.30, 0.22, 1.4), M.panelDark, K.totem);
+  add(boxGeo(0.58, 1.45, 0.06, 1), M.emDim, K.totemLit, { cast: false });
+  add(cylGeo(0.06, 0.09, 0.95, 6, 1), M.trim, K.qPost, { cast: false });
+  add(boxGeo(1.90, 0.06, 0.03, 1), M.emAmber, K.qBelt, { cast: false, recv: false });
+  add(boxGeo(0.90, 0.86, 0.66, 1), M.trim, K.trolley);
+  add(boxGeo(0.94, 0.05, 0.70, 1), M.grate, K.trolleyShelf, { cast: false });
+  add(boxGeo(0.36, 0.92, 0.36, 1), M.panelTeal, K.highChair);
+  add(boxGeo(2.60, 1.55, 0.10, 1.5), M.panelTeal, K.screen);
+  add(boxGeo(2.40, 0.07, 0.07, 1), M.chrome, K.coatRail, { cast: false });
+  add(boxGeo(6.00, 0.90, 1.10, 1.5), M.panelTeal, K.tubLong);
+  add(boxGeo(6.20, 0.12, 1.32, 1), M.trim, K.tubCap);
+  add(cylGeo(0.30, 0.30, 0.70, 8, 1.5), M.chrome, K.urn);
+  add(cylGeo(0.09, 0.09, 0.30, 6, 1), M.trim, K.cupStack, { cast: false });
+
   add(boxGeo(0.40, 0.03, 0.30, 1), M.panelDark, K.tray);
   add(boxGeo(0.09, 0.11, 0.09, 1), M.trim, K.mug);
   add(boxGeo(0.85, 0.75, 0.85, 1), M.crate, K.crate);
@@ -386,23 +803,84 @@ function flushKit(ctx, K) {
  * it tells you which room you are in before you have read a sign.
  */
 function paveTheGalley(ctx) {
+  /* The dining bands, laid outward.
+   *
+   * Warm plate under everything that is dining and NOTHING under anything that
+   * is a route: the promenade, the two ring corridors and the eleven spokes
+   * are left as the station's own bare deck, so the boundary between "eat
+   * here" and "walk here" is a change of material a player reads without
+   * having to be told. It also means the only floor treatment in the hall is
+   * on the parts of it that are furnished, which is what stops 113,000 m2 of
+   * inlay reading as wall-to-wall carpet.
+   *
+   * Each band is stacked a centimetre off its neighbours rather than all being
+   * at 0.09, because a band's quads overlap their own neighbours' by 40 cm to
+   * hide the seam and two coplanar overlaps in one ring is a stripe of
+   * z-fighting 500 m long.
+   *
+   *      key      radius   depth   height   what it is
+   *      -----    ------   -----   ------   ---------------------------------
+   *      plaza    134.75    26.5    0.10    dining band 1
+   *      plaza    166.00    26.0    0.11    dining band 2
+   *      plaza    188.50     9.0    0.10    the window band
+   */
+  const BANDS = [
+    ['plaza', 134.75, 26.5, 0.10, 16, 11],
+    ['plaza', 166.0, 26.0, 0.11, 18, 11],
+    ['plaza', 188.5, 9.0, 0.10, 15, 9],
+  ];
+  for (const [key, rad, depth, y, pitch, tile] of BANDS) {
+    arcRun(0, 360, rad, pitch, (d) => {
+      const p = at(d, rad);
+      if (!ctx.onDeck(p[0], p[1], 5)) return;
+      ctx.floorQuad(key, pitch + 0.4, depth, p[0], p[1], A(d), y, tile);
+    });
+  }
+
+  /* The court: the island's apron and the two fields of court dining. The
+   * middle 31 m is the tower's and gets none of this - the planting ring is
+   * its floor - and the ring corridor between the fields is bare deck for the
+   * same reason the arcade's two are. */
+  const COURT = [
+    ['plaza', 44.6, 15.8, 0.10, 12, 9],
+    ['plaza', 66.5, 27.0, 0.11, 14, 11],
+    ['plaza', 93.0, 16.0, 0.10, 15, 10],
+  ];
+  for (const [key, rad, depth, y, pitch, tile] of COURT) {
+    arcRun(0, 360, rad, pitch, (d) => {
+      const p = at(d, rad);
+      ctx.floorQuad(key, pitch + 0.4, depth, p[0], p[1], A(d), y, tile);
+    });
+  }
+
+  /* The processional in from the plaza: a marked route 22 m wide running the
+   * whole way to the tower, which is the one part of this floor a player is
+   * guaranteed to walk down and the only reason the entry funnel is empty. */
+  for (let i = 0; i < 11; i++) {
+    const lz = 30 + i * 15.5;
+    ctx.floorQuad('road', 22, 15.9, 0, lz, 0, 0.13, 9);
+    if (i % 2 === 0) ctx.box('hazard', 21, 0.05, 0.5, 0, 0.15, lz - 7.5, 0, 3);
+  }
+
+  /* Marked bays: the hall's own wayfinding, one painted rectangle per dining
+   * sector so a player can be told to meet somebody at a place with a name. */
+  for (const [d, r] of [[45, 134.75], [100, 134.75], [265, 134.75], [320, 134.75],
+    [45, 166.0], [100, 166.0], [265, 166.0], [320, 166.0],
+    [60, 66.5], [120, 66.5], [240, 66.5], [300, 66.5]]) {
+    const p = at(d, r);
+    ctx.floorQuad('hazard', 12, 8, p[0], p[1], A(d), 0.145, 4);
+  }
+
   // Warm apron in front of the servery - the strip that is always busy.
   arcRun(SERVERY_A0 - 4, SERVERY_A1 + 4, 146, 11, (d) => {
     const p = at(d, 146);
-    ctx.floorQuad('plaza', 11.4, 26, p[0], p[1], A(d), 0.1, 9);
+    ctx.floorQuad('plaza', 11.4, 26, p[0], p[1], A(d), 0.15, 9);
   });
   // Cooler, harder floor through the back of house, where the trolleys run.
   arcRun(BOH_A0, BOH_A1, 180, 12, (d) => {
     const p = at(d, 180);
-    ctx.floorQuad('road', 12.4, 26, p[0], p[1], A(d), 0.11, 8);
+    ctx.floorQuad('road', 12.4, 26, p[0], p[1], A(d), 0.16, 8);
   });
-  // A warm bay under each run of tables.
-  for (const [a0, a1] of DINING_SPANS) {
-    arcRun(a0, a1, 132, 16, (d) => {
-      const p = at(d, 132);
-      ctx.floorQuad('plaza', 16.4, 30, p[0], p[1], A(d), 0.1, 10);
-    });
-  }
 
   ctx.mmPath(
     [0, 1, 2, 3, 4, 5, 6].map((i) => at(SERVERY_A0 + ((SERVERY_A1 - SERVERY_A0) * i) / 6, SERVERY_R)),
@@ -886,113 +1364,541 @@ function buildProvisions(ctx, K) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Tables, chairs and the people on them, across both flanks of the arcade.
+ * THE HALL: ten ranks of tables round the arcade, filled sector by sector.
  *
- * Three rings of different furniture rather than one grid of the same table:
- * two-tops at the court edge where people sit alone, four-tops through the
- * middle, and long refectory rows at the back where a whole watch eats
- * together. That ordering is not decorative - it means every sightline across
- * the hall crosses three different table sizes, which is what stops 200 m of
- * seating reading as wallpaper.
+ * The old dining floor was three thin rings of furniture on two flanks, and it
+ * had the problem every sparse dressing pass has - 113,000 m2 of deck with 600
+ * props on it photographs as an empty room somebody has left a few tables in.
+ * This is the opposite approach: the grid at the top of the file reserves the
+ * circulation FIRST, and then every square metre that is not a corridor, a
+ * spoke, a queue route or the arrival funnel gets furniture until it is full.
  *
- * Occupancy is deliberately partial and deliberately lumpy. A hall with every
- * seat filled looks staged; a hall at about a third looks like the back end of
- * a lunch service, which is also the only state in which the empty tables read
- * as empty rather than as missing.
+ * The ranks are the load-bearing idea. A refectory table is 9 to 12 m of
+ * furniture in one object, seating twelve to sixteen; five of them deep in each
+ * band and forty round the arc, and the hall reads as a mess hall from the
+ * moment a player steps out of the link - because that is what a mess hall is,
+ * a room in which the tables go all the way to the walls.
+ *
+ * Rows alternate module so no sightline crosses ten of the same thing: a rank,
+ * a ring of round eights, a rank, a block of booths and a rank; then across the
+ * mid corridor two more ranks, another ring of eights, and two ranks out under
+ * the mezzanine.
  */
-function buildDiningFloor(ctx, K) {
-  /* --- Two-tops, hard against the court edge ------------------------- */
-  for (const [a0, a1] of DINING_SPANS) {
-    arcRun(a0, a1, 124, 19, (d) => {
-      const c = at(d, 124);
-      const yaw = A(d) + (ctx.rng() - 0.5) * 0.3;
-      twoTop(ctx, K, c[0], c[1], yaw);
-      const places = [];
-      for (const s of [-1, 1]) {
-        const p = off(c[0], c[1], yaw, 0, s * 0.85);
-        // Chairs face the table, so their yaw is the bearing back to it.
-        chair(ctx, K, p[0], p[1], 0, faceTo(p[0], p[1], c[0], c[1]));
-        places.push(p);
-      }
-      const r = ctx.rng();
-      const take = r > 0.80 ? 2 : r > 0.54 ? 1 : 0;
-      for (let i = 0; i < take; i++) {
-        const p = places[i];
-        seat(ctx, K, p[0], p[1], 0, faceTo(p[0], p[1], c[0], c[1]), SEAT);
-      }
-      if (take) laid(ctx, K, c[0], c[1], 0, yaw, take);
+function buildDiningFields(ctx, K) {
+  /* Radius, tangential pitch, module, table length, and the chance that any
+   * one side of any one table has somebody at it.
+   *
+   * That last number is small on purpose and it is the single most load-bearing
+   * value in the file. The hall now seats about five thousand; a tenth of them
+   * is five hundred figures, which is already more people than the rest of the
+   * station put together and is what a shift change in a room this size looks
+   * like. Filling the seats would be sixty times the actor cost for a frame
+   * that reads as worse - a hall at capacity is a stadium, and the empty
+   * tables are what tell you this one is between services.
+   *
+   * The near rows are busier than the far ones because people sit where they
+   * came in, which is also why the two rows nearest the promenade get the
+   * highest numbers and the back of band 2 gets the lowest. */
+  const ROWS = [
+    [BAND1_ROWS[0], 12.0, 'rank', 9, 0.13],
+    [BAND1_ROWS[1], 10.5, 'round', 0, 0.13],
+    [BAND1_ROWS[2], 14.0, 'rank', 11, 0.11],
+    [BAND1_ROWS[3], 14.5, 'booth', 0, 0.13],
+    [BAND1_ROWS[4], 12.0, 'rank', 9, 0.09],
+    [BAND2_ROWS[0], 14.0, 'rank', 11, 0.09],
+    [BAND2_ROWS[1], 13.0, 'rank', 10, 0.08],
+    [BAND2_ROWS[2], 10.5, 'round', 0, 0.09],
+    [BAND2_ROWS[3], 15.0, 'rank', 12, 0.07],
+    [BAND2_ROWS[4], 13.0, 'rank', 10, 0.06],
+  ];
+  for (const [rad, pitch, kind, len, occ] of ROWS) placeRow(ctx, K, rad, pitch, kind, len, occ);
+
+  /* --- Planted dividers along the band edges --------------------------- *
+   * On the inner edge of each band, in runs with a gap every fourth unit so
+   * the band is bounded without being walled. This is what stops ten ranks of
+   * the same table reading as one undifferentiated field seen end-on. */
+  for (const rad of [122.3, 153.8]) {
+    ringFill(ctx, rad, 15.5, 3.2, (d, i, n) => {
+      if (n % 4 === 3) return;
+      plantedDivider(ctx, K, d, rad);
     });
   }
 
-  /* --- Four-tops ------------------------------------------------------ */
-  for (const [a0, a1] of DINING_SPANS) {
-    arcRun(a0, a1, 140, 32, (d) => {
-      const c = at(d, 140);
-      const yaw = A(d) + (ctx.rng() - 0.5) * 0.25;
-      fourTop(ctx, K, c[0], c[1], yaw);
-      const places = [];
-      for (const [ox, oz] of [[0, 1.0], [0, -1.0], [1.0, 0], [-1.0, 0]]) {
-        const p = off(c[0], c[1], yaw, ox, oz);
-        chair(ctx, K, p[0], p[1], 0, faceTo(p[0], p[1], c[0], c[1]));
-        places.push(p);
-      }
-      // Fill a table or leave it alone. Half-filling every single one is what
-      // makes a hall look like a seating plan rather than like lunch.
-      const r = ctx.rng();
-      const take = r > 0.84 ? 4 : r > 0.70 ? 3 : r > 0.52 ? 2 : 0;
-      for (let i = 0; i < take; i++) {
-        const p = places[i];
-        seat(ctx, K, p[0], p[1], 0, faceTo(p[0], p[1], c[0], c[1]), SEAT);
-      }
-      if (take) laid(ctx, K, c[0], c[1], 0, yaw, take);
+  /* --- Lighting over the deepest rows ----------------------------------- *
+   * The arcade plate is 30 m up, so a pendant hung from it would need a 28 m
+   * flex. Row 137 carries its own truss at 6.2; the rest get pendants on
+   * short drops, which is also the only thing giving the back of the hall a
+   * height a player can judge. Nothing hangs where the mezzanine is overhead. */
+  ringFill(ctx, BAND1_ROWS[2], 14.0, 5.5, (d) => {
+    const yaw = A(d);
+    const c = at(d, BAND1_ROWS[2]);
+    ctx.box('beam', 10.4, 0.35, 0.35, c[0], 6.2, c[1], yaw);
+    ctx.box('emWhite', 9.0, 0.10, 0.30, c[0], 5.95, c[1], yaw);
+    for (const s of [-4.9, 4.9]) {
+      const p = at(d, BAND1_ROWS[2], s);
+      ctx.box('trim', 0.2, 6.2, 0.2, p[0], 3.1, p[1], yaw);
+      ctx.solid(p[0], 3.1, p[1], 0.12, 3.1, 0.12, yaw);
+    }
+  });
+  for (const rad of [BAND1_ROWS[0], BAND2_ROWS[0], BAND2_ROWS[3]]) {
+    ringFill(ctx, rad, 7.5, 0, (d) => {
+      if (underMezz(d, rad)) return;
+      const c = at(d, rad);
+      ctx.box('trim', 0.05, 1.2, 0.05, c[0], 5.4, c[1], A(d));
+      inst(ctx, K.pendantShade, c[0], 4.7, c[1], A(d));
+      inst(ctx, K.pendantBulb, c[0], 4.56, c[1], A(d));
     });
   }
+}
 
-  /* --- Refectory rows -------------------------------------------------- *
-   * Only where the mezzanine is not: one short row on the east flank before
-   * the deck starts, the long one on the west. */
-  for (const [a0, a1] of [[20, 56], [236, 300]]) {
-    arcRun(a0, a1, 158, 20, (d) => {
+/** True where the mezzanine deck is overhead, and a 6 m truss would not fit. */
+function underMezz(deg, rad) {
+  return rad > MEZZ_R0 - 3 && rad < MEZZ_R1 + 3 && inArc(deg, MEZZ_A0 - 3, MEZZ_A1 + 3);
+}
+
+/**
+ * One ring of one module, laid at `pitch` metres round whatever arc is free.
+ *
+ * `pad` is half the tangential size of the module, handed to `blocked` so a
+ * 12 m table is rejected when its END would cross a spoke rather than when its
+ * middle would - the difference between a clear 6.8 m route and one with a
+ * table lying across both ends of it.
+ */
+function placeRow(ctx, K, rad, pitch, kind, len, occ) {
+  const pad = kind === 'rank' ? len / 2 : kind === 'booth' ? 5.8 : 4.6;
+  return ringFill(ctx, rad, pitch, pad, (d) => {
+    if (kind === 'rank') {
+      refectoryRank(ctx, K, d, rad, len, occ);
+      // A high chair at one rank in six, which is the cheapest available way
+      // of saying that the people down the corridor have children.
+      if (ctx.rng() > 0.84) {
+        const p = at(d, rad + 1.6, len / 2 - 1.2);
+        inst(ctx, K.highChair, p[0], 0.46, p[1], faceIn(d));
+        ctx.solid(p[0], 0.46, p[1], 0.2, 0.46, 0.2, A(d));
+      }
+    } else if (kind === 'booth') {
+      boothBlock(ctx, K, d, rad, occ);
+    } else {
+      // Two eights to a slot, so the ring reads as clusters and not as beads.
+      for (const s of [-2.7, 2.7]) {
+        const c = at(d, rad, s);
+        seatedRound(ctx, K, c[0], c[1], A(d) + (ctx.rng() - 0.5) * 0.8, 8, occ);
+      }
+    }
+  });
+}
+
+/**
+ * A round group table with people at some of its places.
+ *
+ * Filled in a contiguous arc of chairs rather than at random seats: six people
+ * spread evenly round an eight-top is a committee, and three of them next to
+ * each other with the far side clear is lunch.
+ */
+function seatedRound(ctx, K, lx, lz, yaw, n, occ) {
+  const places = roundGroup(ctx, K, lx, lz, yaw, n);
+  if (ctx.rng() > occ) return 0;
+  const take = 2 + Math.floor(ctx.rng() * (n - 2));
+  const from = Math.floor(ctx.rng() * n);
+  for (let k = 0; k < take; k++) {
+    const p = places[(from + k) % n];
+    const look = faceTo(p[0], p[1], lx, lz);
+    seat(ctx, K, p[0], p[1], 0, look, SEAT);
+    const t = [lx + (p[0] - lx) * 0.55, lz + (p[1] - lz) * 0.55];
+    inst(ctx, K.tray, t[0], 0.80, t[1], look);
+    if (ctx.rng() > 0.45) inst(ctx, K.mug, t[0] + 0.15, 0.84, t[1] + 0.1, ctx.rng() * TAU);
+  }
+  return take;
+}
+
+/* ------------------------------------------------------------------ */
+/* The island                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * THE ISLAND: eight counters in a ring under the dome, facing outward.
+ *
+ * The hero servery on the far rim is a wall of food seen end-on from 300 m and
+ * it is the frame this zone exists to produce - but it is ONE counter, and a
+ * hall that feeds a station has more than one thing to eat at. So the court
+ * carries the rest of the menu, arranged as a ring rather than a line: a
+ * counter you walk AROUND has eight fronts and eight queues and can be reached
+ * from whichever side of the hall you happen to be eating on, which is the
+ * whole argument for putting the second servery in the middle of the room.
+ *
+ * The gaps between the bays sit on the cardinal spokes, so the ring is a thing
+ * you walk through on the way to the tower rather than a wall across the court.
+ */
+function buildIsland(ctx, K) {
+  /* Eight fronts, each with what it actually serves standing on it, and eight
+   * gaps between them. Four of the gaps are on the quarter bearings the court
+   * is crossed on - 0 is the arrival funnel, 90, 180 and 270 are spokes - so
+   * the ring never stands between a player and the way they were going. The
+   * two longest fronts are the ones with no queue: salad is help-yourself and
+   * dessert is where the trays of the day end up. */
+  const BAYS = [
+    [18, 52, 'hot'],
+    [56, 86, 'grill'],
+    [94, 124, 'noodle'],
+    [128, 176, 'salad'],
+    [184, 214, 'bakery'],
+    [218, 266, 'dessert'],
+    [274, 304, 'coffee'],
+    [308, 342, 'self'],
+  ];
+
+  for (const [b0, b1, kind] of BAYS) {
+    arcRun(b0, b1, ISLAND_R, 6.0, (d, i) => {
       const yaw = A(d);
-      const c = at(d, 158);
-      ctx.box('panelWarm', 9.0, 0.09, 1.15, c[0], 0.735, c[1], yaw);
-      for (const s of [-3.6, 3.6]) {
-        const t = at(d, 158, s);
-        ctx.box('trimDark', 0.16, 0.70, 0.95, t[0], 0.35, t[1], yaw);
-      }
-      ctx.solid(c[0], 0.6, c[1], 4.5, 0.28, 0.6, yaw);
-      ctx.contact(c[0], c[1], 12);
+      const c = at(d, ISLAND_R);
 
-      for (const side of [-1, 1]) {
-        const yawSeat = side > 0 ? faceIn(d) : faceOut(d);
-        for (const t of [-2.25, 2.25]) {
-          const p = at(d, 158 + side * 1.02, t);
-          bench(ctx, K, p[0], p[1], 0, yawSeat);
+      // The counter, its top, its kickplate and the tray rail on the front.
+      ctx.box('panelWarm', 5.5, 1.02, 1.5, c[0], 0.51, c[1], yaw);
+      ctx.box('trim', 5.5, 0.10, 1.85, c[0], 1.07, c[1], yaw);
+      ctx.box('trimDark', 5.5, 0.22, 1.1, c[0], 0.11, c[1], yaw);
+      ctx.box('trim', 5.5, 0.07, 0.30, ...at3(d, ISLAND_R + 1.05, 0.94), yaw);
+      ctx.solid(c[0], 0.60, c[1], 2.75, 0.60, 1.0, yaw);
+
+      // The back line, which is what the staff work at and what the canopy
+      // posts land on. It faces the middle of the ring, so it is inboard.
+      const g = at(d, ISLAND_R - 2.3);
+      ctx.box('panelDark', 5.5, 3.0, 0.7, g[0], 1.5, g[1], yaw);
+      ctx.box('trim', 5.5, 0.12, 1.0, g[0], 1.72, g[1], yaw);
+      ctx.solid(g[0], 1.5, g[1], 2.75, 1.5, 0.4, yaw);
+
+      if (kind === 'hot' || kind === 'grill') {
+        ctx.box('grate', 4.6, 0.10, 1.0, ...at3(d, ISLAND_R + 0.1, 1.14), yaw);
+        ctx.box('emSodium', 4.2, 0.06, 0.76, ...at3(d, ISLAND_R + 0.1, 1.19), yaw);
+        for (const s of [-1.3, 1.3]) {
+          inst(ctx, K.puff, ...at3(d, ISLAND_R + 0.1, 2.3, s), faceOut(d), 0.8, 0.8, 0.8);
         }
-        for (let i = 0; i < 3; i++) {
-          if (ctx.rng() > 0.4) continue;
-          const p = at(d, 158 + side * 1.02, -3.0 + i * 3.0);
-          seat(ctx, K, p[0], p[1], 0, yawSeat, SEAT);
-          const l = at(d, 158 + side * 0.4, -3.0 + i * 3.0);
-          laid(ctx, K, l[0], l[1], 0, yaw, 1);
+        ctx.box('trimDark', 5.5, 1.1, 2.4, ...at3(d, ISLAND_R - 0.4, 3.6), yaw);
+      } else if (kind === 'noodle') {
+        for (const s of [-1.6, 1.6]) {
+          inst(ctx, K.urn, ...at3(d, ISLAND_R + 0.2, 1.45, s), yaw);
+          ctx.box('emAmber', 0.16, 0.05, 0.06, ...at3(d, ISLAND_R - 0.3, 1.3, s), yaw);
         }
+        inst(ctx, K.puff, ...at3(d, ISLAND_R + 0.5, 2.6), faceOut(d), 0.7, 0.7, 0.7);
+        ctx.box('trimDark', 5.5, 1.1, 2.4, ...at3(d, ISLAND_R - 0.4, 3.6), yaw);
+      } else if (kind === 'salad') {
+        ctx.box('trimDark', 4.8, 0.24, 1.05, ...at3(d, ISLAND_R + 0.05, 1.22), yaw);
+        ctx.box('emWhite', 4.4, 0.05, 0.8, ...at3(d, ISLAND_R + 0.05, 1.35), yaw);
+        ctx.put('glassWindow', new THREE.PlaneGeometry(5.0, 0.85), ...at3(d, ISLAND_R + 0.8, 1.82), yaw);
+        for (let s = -2; s <= 2; s++) inst(ctx, K.tray, ...at3(d, ISLAND_R + 0.05, 1.36, s), yaw);
+      } else if (kind === 'bakery' || kind === 'dessert') {
+        ctx.put('glassWindow', new THREE.PlaneGeometry(5.0, 0.9), ...at3(d, ISLAND_R + 0.78, 1.6), yaw);
+        for (const sy of [1.25, 1.75]) {
+          ctx.box('trim', 4.8, 0.06, 0.85, ...at3(d, ISLAND_R + 0.1, sy), yaw);
+          for (let s = -2; s <= 2; s++) inst(ctx, K.tray, ...at3(d, ISLAND_R + 0.1, sy + 0.05, s), yaw);
+        }
+        ctx.box('emAmber', 4.6, 0.08, 0.14, ...at3(d, ISLAND_R + 0.55, 2.2), yaw);
+      } else {
+        // Coffee and the self-service run: urns, taps and a rank of cups.
+        for (const s of [-1.7, 0, 1.7]) {
+          inst(ctx, K.urn, ...at3(d, ISLAND_R - 0.2, 1.45, s), yaw, 0.8, 0.85, 0.8);
+          for (let k = 0; k < 3; k++) {
+            inst(ctx, K.cupStack, ...at3(d, ISLAND_R + 0.7, 1.27 + k * 0.02, s + 0.35), yaw);
+          }
+        }
+        ctx.box('emCyan', 4.8, 0.08, 0.14, ...at3(d, ISLAND_R - 1.9, 2.5), yaw);
+        if (kind === 'self') inst(ctx, K.puff, ...at3(d, ISLAND_R, 2.5), faceOut(d), 0.5, 0.5, 0.5);
       }
 
-      /* A lighting truss over each row.
-       *
-       * The arcade plate is 30 m up, so a pendant hung from it would need a
-       * 28 m flex. The rows carry their own truss at 6.2 instead, which is
-       * also the only thing giving the back of the dining floor a ceiling
-       * whose height a player can judge. */
-      ctx.box('beam', 9.4, 0.35, 0.35, c[0], 6.2, c[1], yaw);
-      ctx.box('emWhite', 8.2, 0.1, 0.3, c[0], 5.95, c[1], yaw);
-      for (const s of [-4.4, 4.4]) {
-        const p = at(d, 158, s);
-        ctx.box('trim', 0.2, 6.2, 0.2, p[0], 3.1, p[1], yaw);
-        ctx.solid(p[0], 3.1, p[1], 0.12, 3.1, 0.12, yaw);
+      // Somebody behind every second bay, except on the self-service run.
+      if (kind !== 'self' && i % 2 === 0) {
+        const p = at(d, ISLAND_R - 1.5, (ctx.rng() - 0.5) * 1.6);
+        ctx.actor(p[0], 0, p[1], {
+          localYaw: faceOut(d),
+          activity: ctx.rng() > 0.6 ? 'carry' : 'stand',
+          phase: K.phase(),
+          speed: 0.8 + ctx.rng() * 0.4,
+          variant: 'hiviz',
+        });
+        K.people++;
+      }
+    });
+
+    // The fascia over each front, and a totem out in the apron naming it.
+    const mid = (b0 + b1) / 2;
+    ctx.sign(31, 5.4, 1.35, ...at3(mid, ISLAND_R + 1.2, 4.6), A(mid), {
+      accent: ctx.accent, thickness: 0.22,
+    });
+    menuTotem(ctx, K, mid + 6, 48.5);
+    if (kind !== 'self') queueRun(ctx, K, mid - 5, mid + 5, 46.6);
+  }
+
+  /* --- The canopy ------------------------------------------------------- *
+   * A ring of plate 7 m up on posts off the back line. It is here so the
+   * island has a silhouette from the arrival plaza 190 m away: a 1 m counter
+   * on flat deck at that range is a smudge, and the thing has to read as a
+   * building or nobody walks toward it. */
+  arcRun(0, 360, ISLAND_R - 1.2, 9.0, (d) => {
+    const c = at(d, ISLAND_R - 1.2);
+    ctx.box('panelDark', 9.4, 0.35, 6.6, c[0], 7.0, c[1], A(d));
+    ctx.box(ctx.accent, 9.0, 0.14, 0.2, ...at3(d, ISLAND_R + 1.9, 6.7), A(d));
+  });
+  for (const d of [24, 68, 112, 156, 200, 244, 288, 332]) {
+    const p = at(d, ISLAND_R - 2.6);
+    ctx.box('trim', 0.42, 7.0, 0.42, p[0], 3.5, p[1], A(d));
+    ctx.solid(p[0], 3.5, p[1], 0.25, 3.5, 0.25, A(d));
+  }
+  /* Extraction, off the canopy rather than out of the middle.
+   *
+   * The obvious place for the stack is the centre of the ring, and the centre
+   * of the ring is 42 m of nothing with the grow tower's 4.8 m shaft standing
+   * in it. So the hot lines vent through four risers off the canopy edge
+   * instead, which is also what puts the ring's only vertical elements where
+   * they are seen against the dome rather than lost against the tower. */
+  for (const d of [34, 106, 214, 286]) {
+    const p = at(d, ISLAND_R - 1.0);
+    ctx.box('trimDark', 1.6, 5.4, 1.6, p[0], 9.9, p[1], A(d));
+    ctx.box('grate', 2.0, 0.9, 2.0, p[0], 12.9, p[1], A(d));
+  }
+
+  /* --- Standing tables round the outside of the apron -------------------- */
+  ringFill(ctx, 51.5, 9.5, 1.6, (d) => {
+    const c = at(d, 51.5);
+    const stools = highTable(ctx, K, c[0], c[1], A(d), 3);
+    if (ctx.rng() > 0.90) {
+      const [p, look] = stools[Math.floor(ctx.rng() * stools.length)];
+      ctx.actor(p[0], 0, p[1], {
+        localYaw: look,
+        activity: ctx.rng() > 0.5 ? 'eat' : 'sit',
+        amount: STOOL_SEAT,
+        phase: K.phase(),
+        speed: 0.85 + ctx.rng() * 0.3,
+      });
+      K.people++;
+    }
+  });
+
+  /* --- Bins, fountains and tray trolleys round the apron edge ------------ */
+  ringFill(ctx, 54.5, 26, 1.6, (d, i) => {
+    if (i % 3 === 0) {
+      binBank(ctx, K, d, 54.5);
+    } else if (i % 3 === 1) {
+      const c = at(d, 54.5);
+      inst(ctx, K.fountain, c[0], 0.52, c[1], A(d));
+      ctx.box('trim', 0.7, 0.12, 0.5, c[0], 1.1, c[1], A(d));
+      ctx.solid(c[0], 0.52, c[1], 0.32, 0.52, 0.26, A(d));
+    } else {
+      const c = at(d, 54.5);
+      inst(ctx, K.trolley, c[0], 0.43, c[1], A(d));
+      inst(ctx, K.trolleyShelf, c[0], 0.90, c[1], A(d));
+      for (let k = 0; k < 5; k++) inst(ctx, K.tray, c[0], 0.94 + k * 0.045, c[1], A(d));
+      ctx.solid(c[0], 0.43, c[1], 0.47, 0.43, 0.35, A(d));
+    }
+  });
+
+  for (const d of [30, 120, 210, 300]) {
+    const l = new THREE.PointLight(0xffc08a, 1400, 48, 2);
+    l.position.copy(ctx.P(...at3(d, ISLAND_R, 6.2)));
+    l.castShadow = false;
+    ctx.group.add(l);
+  }
+  ctx.mmCircle(0, 0, ISLAND_R, 'rgba(150,110,70,0.25)', 'rgba(255,200,140,0.55)');
+  // Kicked under the self-service run, where only somebody stooping finds it.
+  ctx.relic(...at3(300, ISLAND_R - 2.9, 0.5), 'rare');
+}
+
+/* ------------------------------------------------------------------ */
+/* The court dining                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Seven rings of tables filling the court between the island and the rim.
+ *
+ * The court used to be one tall object with a thin scatter of cafe tables at
+ * 70 m, on the argument that the middle of the room should feel like there is
+ * room in it. That is the right instinct for a plaza and the wrong one for a
+ * canteen: the middle of a mess hall is where the mess hall is. The tower and
+ * the processional keep the arrival sightline; everything either side of them
+ * is somebody's lunch.
+ */
+function buildCourtHall(ctx, K) {
+  const ROWS = [
+    [COURT_ROWS_IN[0], 9.0, 'round6', 0, 0.15],
+    [COURT_ROWS_IN[1], 12.0, 'rank', 9, 0.12],
+    [COURT_ROWS_IN[2], 10.5, 'round', 0, 0.12],
+    [COURT_ROWS_IN[3], 14.0, 'rank', 11, 0.10],
+    [COURT_ROWS_IN[4], 13.0, 'rank', 10, 0.09],
+    [COURT_ROWS_OUT[0], 15.0, 'rank', 12, 0.07],
+    [COURT_ROWS_OUT[1], 10.5, 'round', 0, 0.08],
+    [COURT_ROWS_OUT[2], 14.0, 'rank', 11, 0.06],
+  ];
+  for (const [rad, pitch, kind, len, occ] of ROWS) {
+    if (kind === 'round6') {
+      ringFill(ctx, rad, pitch, 2.6, (d) => {
+        const c = at(d, rad);
+        seatedRound(ctx, K, c[0], c[1], A(d) + (ctx.rng() - 0.5) * 0.8, 6, occ);
+      });
+    } else {
+      placeRow(ctx, K, rad, pitch, kind, len, occ);
+    }
+  }
+
+  /* --- Dividers either side of the court corridor ------------------------ */
+  for (const rad of [79.6, 85.4]) {
+    ringFill(ctx, rad, 17, 3.2, (d, i, n) => {
+      if (n % 3 === 2) return;
+      plantedDivider(ctx, K, d, rad, 0.9);
+    });
+  }
+
+  /* --- Service along the court corridor ---------------------------------- */
+  ringFill(ctx, COURT_MID_R, 34, 1.6, (d, i) => {
+    if (i % 2 === 0) binBank(ctx, K, d, COURT_MID_R);
+    else menuTotem(ctx, K, d, COURT_MID_R);
+  });
+
+  /* --- Coat rails and screens on the outer rim of the court -------------- */
+  ringFill(ctx, 105.5, 22, 1.4, (d, i) => {
+    const c = at(d, 105.5);
+    if (i % 2 === 0) {
+      inst(ctx, K.coatRail, c[0], 1.62, c[1], A(d));
+      for (const s of [-1.1, 1.1]) {
+        const p = at(d, 105.5, s);
+        ctx.box('trim', 0.09, 1.7, 0.09, p[0], 0.85, p[1], A(d));
+      }
+      ctx.solid(c[0], 0.85, c[1], 1.25, 0.85, 0.1, A(d));
+    } else {
+      inst(ctx, K.screen, c[0], 0.78, c[1], A(d));
+      ctx.solid(c[0], 0.78, c[1], 1.3, 0.78, 0.08, A(d));
+    }
+  });
+
+  // Under the back of the outer ring, where a bench hides it from the aisle.
+  ctx.relic(...at3(258, COURT_ROWS_OUT[2] + 1.06, 0.3), 'common');
+}
+
+/* ------------------------------------------------------------------ */
+/* Service furniture                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Everything a dining hall needs that is not a table: the beverage stations,
+ * the bussing points, the dish-return runs, the trolleys and the signage.
+ *
+ * All of it goes on the EDGES of the circulation rather than inside the bands,
+ * because that is where somebody carrying a tray actually stops - and because
+ * a bin in the middle of a rank field is a bin nobody can reach without
+ * climbing over somebody's lunch.
+ */
+function buildServiceRun(ctx, K) {
+  /* Where the service furniture is allowed to stand.
+   *
+   * Not in the corridors. A ring corridor with a bin bank on its centreline is
+   * not a 5 m corridor with a bin in it, it is two 1.8 m corridors, and the
+   * whole point of reserving the circulation before laying a single table was
+   * to not then fill it in with the last pass. So the three runs go:
+   *
+   *   COURT_EDGE   114.9   on the court side of the promenade, in the 15 m of
+   *                        clear deck between the saplings and the arcade
+   *   MID_EDGE     148.4   flush against band 1's back, projecting 0.7 m into
+   *                        a 5.5 m gap and leaving 4.2 m of it walkable
+   *   WINDOW_EDGE  186.0   inside the window band, not in the corridor at all
+   *
+   * and every module in them is under 1.4 m deep, which is what makes the
+   * middle one fit. The hatch on a dish return and the fountain beside a
+   * trolley are set out TANGENTIALLY for the same reason - both were radial,
+   * and both turned a 1.1 m module into a 2.8 m one.
+   */
+  const COURT_EDGE = 114.9, MID_EDGE = 148.4, WINDOW_EDGE = 186.0;
+
+  /* --- Self-service beverage stations, off the court edge ---------------- *
+   * The one thing in the hall that everybody uses and nobody queues for, so
+   * it goes where the walk round the court passes it rather than behind a
+   * counter somebody has to join a line to reach. */
+  ringFill(ctx, 111.8, 42, 3.2, (d) => {
+    const yaw = A(d);
+    const c = at(d, 111.8);
+    ctx.box('panelWarm', 4.4, 0.98, 1.3, c[0], 0.49, c[1], yaw);
+    ctx.box('trim', 4.4, 0.10, 1.6, c[0], 1.04, c[1], yaw);
+    ctx.box('panelTeal', 4.4, 1.9, 0.45, ...at3(d, 110.6, 1.95), yaw);
+    ctx.box(ctx.accent, 3.8, 0.10, 0.12, ...at3(d, 110.8, 2.75), yaw);
+    ctx.solid(c[0], 0.55, c[1], 2.2, 0.55, 0.8, yaw);
+    ctx.solid(...at3(d, 110.6, 1.95), 2.2, 0.95, 0.25, yaw);
+    ctx.contact(c[0], c[1], 8);
+    for (const s of [-1.4, 0, 1.4]) {
+      inst(ctx, K.urn, ...at3(d, 111.4, 1.33, s), yaw, 0.75, 0.8, 0.75);
+      for (let k = 0; k < 4; k++) {
+        inst(ctx, K.cupStack, ...at3(d, 112.2, 1.24 + k * 0.02, s + 0.5), yaw);
+      }
+    }
+    inst(ctx, K.caddy, ...at3(d, 112.3, 1.18, -1.9), yaw);
+    menuTotem(ctx, K, d + 3.4, 111.8);
+  });
+
+  /* --- Bussing points, bins and dish returns ----------------------------- */
+  for (const [rad, step] of [[COURT_EDGE, 26], [MID_EDGE, 30], [WINDOW_EDGE, 34]]) {
+    ringFill(ctx, rad, step, 1.8, (d, i) => {
+      // The window band already has the quiet gallery's own rail through it.
+      if (rad === WINDOW_EDGE && inArc(d, 244, 336)) return;
+      const yaw = A(d);
+      const c = at(d, rad);
+      if (i % 3 === 2) {
+        // A dish-return conveyor stub: a belt into a hatch, which is where a
+        // tray actually goes when a player has finished with it. The hatch is
+        // beside the belt, not behind it - a 2.8 m deep module does not fit in
+        // any corridor edge in this hall.
+        ctx.box('trimDark', 3.2, 0.78, 1.1, c[0], 0.39, c[1], yaw);
+        ctx.box('rubber', 3.2, 0.12, 0.9, c[0], 0.84, c[1], yaw);
+        ctx.box('trim', 3.2, 0.16, 0.16, ...at3(d, rad - 0.5, 1.02), yaw);
+        ctx.box('panelDark', 1.4, 1.5, 1.1, ...at3(d, rad, 0.75, 2.3), yaw);
+        ctx.solid(c[0], 0.45, c[1], 1.6, 0.45, 0.58, yaw);
+        ctx.solid(...at3(d, rad, 0.75, 2.3), 0.7, 0.75, 0.55, yaw);
+        ctx.contact(c[0], c[1], 7);
+        for (const s of [-1.0, 0.6]) inst(ctx, K.tray, ...at3(d, rad, 0.92, s), yaw + s * 0.2);
+      } else if (i % 3 === 1) {
+        binBank(ctx, K, d, rad);
+      } else {
+        inst(ctx, K.trolley, c[0], 0.43, c[1], yaw);
+        inst(ctx, K.trolleyShelf, c[0], 0.90, c[1], yaw);
+        for (let k = 0; k < 6; k++) inst(ctx, K.tray, c[0], 0.94 + k * 0.045, c[1], yaw);
+        inst(ctx, K.fountain, ...at3(d, rad, 0.52, 1.5), yaw);
+        ctx.solid(c[0], 0.45, c[1], 0.5, 0.45, 0.4, yaw);
+        ctx.solid(...at3(d, rad, 0.52, 1.5), 0.32, 0.52, 0.26, yaw);
+        ctx.contact(c[0], c[1], 5);
       }
     });
   }
+
+  /* --- Every spoke mouth announced off the promenade --------------------- *
+   * A spoke is only a route if it is legible as one from inside a rank field,
+   * so each gets a marker post either side of its mouth and a totem beyond.
+   * The posts stand at SPOKE_HALF + 0.6, which is OUTSIDE the reserved width -
+   * a gate that narrows the gap it marks is worse than no gate. */
+  for (const s of SPOKES) {
+    for (const side of [-1, 1]) {
+      const p = at(s, 123.2, side * (SPOKE_HALF + 0.7));
+      if (blocked(s, 123.2)) continue;
+      inst(ctx, K.qPost, p[0], 0.48, p[1], A(s));
+      ctx.box('panelDark', 0.7, 2.2, 0.2, p[0], 1.1, p[1], A(s));
+      ctx.solid(p[0], 1.1, p[1], 0.35, 1.1, 0.1, A(s));
+    }
+    if (!blocked(s + 2.8, 123.2)) menuTotem(ctx, K, s + 2.8, 123.2);
+  }
+
+  /* --- Coat rails and screens along the window band ---------------------- */
+  ringFill(ctx, 184.9, 26, 1.4, (d, i) => {
+    if (inArc(d, 244, 336)) return;
+    const c = at(d, 184.9);
+    if (i % 2 === 0) {
+      inst(ctx, K.screen, c[0], 0.78, c[1], A(d));
+      ctx.solid(c[0], 0.78, c[1], 1.3, 0.78, 0.08, A(d));
+    } else {
+      inst(ctx, K.coatRail, c[0], 1.62, c[1], A(d));
+      for (const sx of [-1.1, 1.1]) {
+        const p = at(d, 184.9, sx);
+        ctx.box('trim', 0.09, 1.7, 0.09, p[0], 0.85, p[1], A(d));
+      }
+      ctx.solid(c[0], 0.85, c[1], 1.25, 0.85, 0.1, A(d));
+    }
+  });
+
+  // Left on a tray trolley by the mid corridor, and behind a divider out west.
+  ctx.relic(...at3(66, MID_EDGE, 1.15), 'common');
+  ctx.relic(...at3(310, 153.8, 1.15), 'rare');
 }
 
 /* ------------------------------------------------------------------ */
@@ -1071,7 +1977,7 @@ function buildMezzanine(ctx, K) {
   /* --- Two stairs up, one at each end ---------------------------------- *
    * `ctx.ramp`'s high end is its local +Z, and A(deg) points local +Z radially
    * outward - so these climb from the dining floor up to the deck's inner
-   * edge. Their landings are why `DINING_SPANS` has a hole either side. */
+   * edge. Their landings are why `KEEPOUT` has a hole either side. */
   for (const d of MEZZ_STAIRS) {
     const RUN = 11.5, RISE = MEZZ_Y;
     const pitch = Math.atan2(RISE, RUN);
@@ -1151,9 +2057,10 @@ function buildMezzanine(ctx, K) {
  * standing up, the gallery is where somebody sits for an hour.
  */
 function buildWindowSeating(ctx, K) {
-  /* --- East: a continuous bar counter facing out ---------------------- */
+  /* --- East: a bar counter facing out, cut where the spokes reach the glass */
   for (const [a0, a1] of [[24, 54], [126, 148]]) {
     arcRun(a0, a1, 190, 7, (d) => {
+      if (blocked(d, 190, 3.2)) return;
       const yaw = A(d);
       const c = at(d, 190);
       ctx.box('panelWarm', 6.2, 0.12, 0.62, c[0], 1.03, c[1], yaw);
@@ -1166,6 +2073,7 @@ function buildWindowSeating(ctx, K) {
       inst(ctx, K.pendantBulb, ...at3(d, 191.4, 2.61), yaw);
     });
     arcRun(a0, a1, 188.6, 4.4, (d) => {
+      if (blocked(d, 188.6, 0.4)) return;
       const c = at(d, 188.6);
       inst(ctx, K.stool, c[0], 0.35, c[1], faceOut(d));
       // Roughly one stool in four is taken. A full bar with its back to the
@@ -1186,6 +2094,7 @@ function buildWindowSeating(ctx, K) {
 
   /* --- West: the quiet gallery ----------------------------------------- */
   arcRun(250, 330, 188, 17, (d) => {
+    if (blocked(d, 188, 1.3)) return;
     const yaw = A(d);
     const c = at(d, 188);
     twoTop(ctx, K, c[0], c[1], yaw);
@@ -1200,21 +2109,46 @@ function buildWindowSeating(ctx, K) {
       laid(ctx, K, c[0], c[1], 0, yaw, 1);
     }
   });
+  /* --- West: four-tops between the gallery and the rail ------------------ */
+  arcRun(236, 344, 190.6, 9, (d) => {
+    if (blocked(d, 190.6, 1.4)) return;
+    if (inArc(d, 248, 332)) return;   // the quiet gallery has its own tables
+    const c = at(d, 190.6);
+    const yaw = A(d) + (ctx.rng() - 0.5) * 0.2;
+    fourTop(ctx, K, c[0], c[1], yaw);
+    const places = [];
+    for (const [ox, oz] of [[0, 1.0], [0, -1.0], [1.0, 0], [-1.0, 0]]) {
+      const p = off(c[0], c[1], yaw, ox, oz);
+      chair(ctx, K, p[0], p[1], 0, faceTo(p[0], p[1], c[0], c[1]));
+      places.push(p);
+    }
+    const r = ctx.rng();
+    const take = r > 0.88 ? 3 : r > 0.74 ? 2 : 0;
+    for (let i = 0; i < take; i++) {
+      const p = places[i];
+      seat(ctx, K, p[0], p[1], 0, faceTo(p[0], p[1], c[0], c[1]), SEAT);
+    }
+    if (take) laid(ctx, K, c[0], c[1], 0, yaw, take);
+  });
+
   // A planted rail between the gallery and the dining floor, so the quiet end
-  // reads as a separate room without a wall thrown across the arcade.
-  arcRun(248, 332, 182, 8, (d) => {
+  // reads as a separate room without a wall thrown across the arcade. It sits
+  // on the window band's inner edge, not in the outer ring corridor - that
+  // corridor is one of the two clear rings the whole hall circulates on.
+  arcRun(248, 332, 184.4, 8, (d) => {
+    if (blocked(d, 184.4, 3.2)) return;
     const yaw = A(d);
-    const c = at(d, 182);
+    const c = at(d, 184.4);
     ctx.box('panelTeal', 6.2, 0.95, 1.1, c[0], 0.48, c[1], yaw);
     ctx.box('trim', 6.2, 0.1, 1.3, c[0], 0.98, c[1], yaw);
     ctx.solid(c[0], 0.5, c[1], 3.1, 0.5, 0.6, yaw);
     for (const s of [-1.7, 1.7]) {
-      const p = at(d, 182, s);
+      const p = at(d, 184.4, s);
       shrub(ctx, K, p[0], p[1], 1.0, 0.85);
     }
   });
   {
-    const p = at(290, 181);
+    const p = at(290, 183.4);
     ctx.sign(22, 4.4, 1.1, p[0], 3.4, p[1], A(290) + Math.PI, { accent: 'emGreen', thickness: 0.16 });
     ctx.box('panelDark', 0.3, 3.4, 0.3, p[0], 1.7, p[1], A(290));
     ctx.solid(p[0], 1.7, p[1], 0.18, 1.7, 0.18, A(290));
@@ -1342,27 +2276,22 @@ function buildGardenCourt(ctx, K) {
     ctx.group.add(l);
   }
 
-  /* --- Cafe tables out on the court ---------------------------------------- *
-   * Kept off the entry axis so the arrival sightline to the tower stays clear,
-   * and thinned right out: this is the one part of the zone that is meant to
-   * feel like there is room in it. */
-  arcRun(20, 340, 70, 38, (d) => {
-    const c = at(d, 70 + (ctx.rng() - 0.5) * 14);
-    if (!ctx.onDeck(c[0], c[1], 10)) return;
-    const yaw = ctx.rng() * TAU;
+  /* --- Two-tops in the gap between the planting ring and the island --------- *
+   * The one part of the court the rings of group tables do not reach. Two-tops
+   * because this is where somebody eats alone with their back to the garden,
+   * which is a different thing from the twelve-seat ranks either side of it. */
+  ringFill(ctx, 33.5, 9.5, 1.4, (d) => {
+    const c = at(d, 33.5);
+    const yaw = A(d);
     twoTop(ctx, K, c[0], c[1], yaw);
     for (const s of [-1, 1]) {
       const p = off(c[0], c[1], yaw, 0, s * 0.85);
       const look = faceTo(p[0], p[1], c[0], c[1]);
       chair(ctx, K, p[0], p[1], 0, look);
-      if (ctx.rng() > 0.66) {
+      if (ctx.rng() > 0.78) {
         seat(ctx, K, p[0], p[1], 0, look, SEAT);
         laid(ctx, K, c[0], c[1], 0, yaw, 1);
       }
-    }
-    if (ctx.rng() > 0.6) {
-      const p = off(c[0], c[1], yaw, 1.9, 0);
-      shrub(ctx, K, p[0], p[1], 0, 1.0);
     }
   });
 
@@ -1390,28 +2319,27 @@ function buildGardenCourt(ctx, K) {
  * that gets looked at from three metres.
  */
 function dressTheEdges(ctx, K) {
-  /* Bin banks and bussing points round the mouth of the arcade. */
-  arcRun(18, 342, COURT_R + 4, 44, (d) => {
+  /* Threshold markers where the court meets the arcade.
+   *
+   * The bin banks that used to stand here have gone: the promenade behind them
+   * is one of the two clear rings the whole hall circulates on, and a 1 m deep
+   * bin every 44 m down its inner edge was quietly costing it a fifth of its
+   * width. The bussing points moved to `buildServiceRun`, which keeps all of
+   * them on the court side of the ring. What is left is what the threshold
+   * actually wanted - a low lit kerb telling you the room changes here. */
+  arcRun(18, 342, COURT_R + 2.4, 22, (d) => {
     const yaw = A(d);
-    const c = at(d, COURT_R + 4);
-    ctx.box('trimDark', 2.6, 1.15, 1.0, c[0], 0.57, c[1], yaw);
-    ctx.box('trim', 2.8, 0.1, 1.2, c[0], 1.17, c[1], yaw);
-    ctx.solid(c[0], 0.6, c[1], 1.3, 0.6, 0.5, yaw);
-    ctx.contact(c[0], c[1], 5.5);
-    // Recycling green and waste amber, which is the only signage a bin needs.
-    for (const [s, key] of [[-0.75, 'emGreen'], [0.75, 'emAmber']]) {
-      ctx.box(key, 0.7, 0.08, 0.5, ...at3(d, COURT_R + 3.6, 1.24, s), yaw);
-    }
-    for (let i = 0; i < 2; i++) {
-      inst(ctx, K.tray, ...at3(d, COURT_R + 4, 1.24 + i * 0.045, -0.9 + i * 0.05), yaw);
-    }
+    const c = at(d, COURT_R + 2.4);
+    ctx.box('trimDark', 18, 0.26, 0.5, c[0], 0.13, c[1], yaw);
+    ctx.box(ctx.accent, 16, 0.06, 0.16, ...at3(d, COURT_R + 2.2, 0.28), yaw);
   });
 
   /* Bollards down the entry funnel, so the walk in from the plaza is a route
-   * rather than an open field. They stop well short of lz=154: the arrival
-   * plaza is built by the zone shell and nothing here may stand in it. */
+   * rather than an open field. They stop at lz=140: the arrival plaza and the
+   * eight metres in front of it are built by the zone shell and nothing in
+   * this file may stand in either. */
   for (const s of [-1, 1]) {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 4; i++) {
       const lz = 120 + i * 6.5;
       const lx = s * (11 + i * 0.55);
       ctx.box('trimDark', 0.34, 0.95, 0.34, lx, 0.47, lz);
@@ -1632,7 +2560,10 @@ export function buildCanteen(ctx) {
   buildBackOfHouse(ctx, kit);
   buildOrderPoints(ctx, kit);
   buildProvisions(ctx, kit);
-  buildDiningFloor(ctx, kit);
+  buildDiningFields(ctx, kit);
+  buildIsland(ctx, kit);
+  buildCourtHall(ctx, kit);
+  buildServiceRun(ctx, kit);
   buildMezzanine(ctx, kit);
   buildWindowSeating(ctx, kit);
   buildGardenCourt(ctx, kit);

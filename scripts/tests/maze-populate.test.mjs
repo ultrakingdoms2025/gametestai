@@ -7,7 +7,7 @@ import {
   openDirCount, isDeadEnd, findDeadEnds, pickDeadEndTokens, pickWandererSites, walkPatrol,
 } from '../../src/worlds/maze/MazePopulate.js';
 import {
-  districtColliders, forecourtColliders, cellToWorld,
+  forecourtColliders, cellToWorld,
   FORECOURT_HALF_WIDTH, FORECOURT_NORTH_Z, FORECOURT_PORTAL_Z,
 } from '../../src/worlds/maze/MazeColliders.js';
 import { Physics } from '../../src/physics/Physics.js';
@@ -201,15 +201,15 @@ function buildMazeWorld() {
 }
 
 /** Recompute the collider count the way MazeWorld.build() does, directly
- * from the built world's own cells/seed, so this is a real comparison and
- * not a restatement of the number MazeWorld happened to produce. */
+ * from the built world's own state, so this is a real comparison and not a
+ * restatement of the number MazeWorld happened to produce.
+ *
+ * Phase 2a streams districts rather than building all 400 up front (see
+ * MazeChunks), so "the maze geometry itself" is now the forecourt (authored,
+ * always resident) plus whichever districts are currently resident in
+ * `world.chunks` - not the full grid. */
 function expectedColliderCount(world) {
-  let n = 0;
-  for (let dz = 0; dz < MAZE.DISTRICTS; dz++) {
-    for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
-      n += districtColliders(world.cells, dx, dz, 0).length;
-    }
-  }
+  let n = world.chunks.colliderCount();
   const e = cellCoords(world.entranceCell);
   const ew = cellToWorld(e.x, e.z, e.level);
   n += forecourtColliders(ew.x, e.level).length;

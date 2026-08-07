@@ -431,7 +431,19 @@ export class Physics {
     return ((cx + 2048) << 13) | (cz + 2048);
   }
 
-  _insertToGrid(collider) {
+  /**
+   * Derive a collider's broadphase cell range.
+   *
+   * Shared by `_insertToGrid` and `remove` so there is exactly one place that
+   * knows how a collider maps to cells. If insertion and removal ever
+   * computed this independently and drifted, `remove` would silently miss
+   * buckets that `_insertToGrid` had written to - the collider would come out
+   * of `colliders` but stay a ghost in the grid, still answering queries.
+   *
+   * @param {Collider} collider
+   * @returns {{ minX: number, maxX: number, minZ: number, maxZ: number }}
+   */
+  _gridRange(collider) {
     const r = collider.boundingRadius;
     const c = collider.center;
     let loX = c.x - r, hiX = c.x + r, loZ = c.z - r, hiZ = c.z + r;
@@ -450,10 +462,16 @@ export class Physics {
       loZ = b.min.z; hiZ = b.max.z;
     }
 
-    const minX = Math.floor(loX / this.cellSize);
-    const maxX = Math.floor(hiX / this.cellSize);
-    const minZ = Math.floor(loZ / this.cellSize);
-    const maxZ = Math.floor(hiZ / this.cellSize);
+    return {
+      minX: Math.floor(loX / this.cellSize),
+      maxX: Math.floor(hiX / this.cellSize),
+      minZ: Math.floor(loZ / this.cellSize),
+      maxZ: Math.floor(hiZ / this.cellSize),
+    };
+  }
+
+  _insertToGrid(collider) {
+    const { minX, maxX, minZ, maxZ } = this._gridRange(collider);
     for (let x = minX; x <= maxX; x++) {
       for (let z = minZ; z <= maxZ; z++) {
         const key = this._cellKey(x, z);
@@ -470,6 +488,49 @@ export class Physics {
     if (collider.type === 'heightfield') this.heightfields.push(collider);
     else this._insertToGrid(collider);
     return collider;
+  }
+
+  /**
+   * Unregister a collider.
+   *
+   * The counterpart to `add`, and the thing that makes streaming possible: a
+   * world that builds and tears down chunks as the player walks needs to drop
+   * geometry without wiping everyone else's. Until this existed the only tool
+   * was `clear()`, which takes the whole world with it.
+   *
+   * The broadphase cell range comes from `_gridRange`, the same helper
+   * `_insertToGrid` uses, so this touches only the buckets the collider
+   * actually occupies rather than scanning the grid. Emptied buckets are
+   * deleted outright - a streaming world adds and removes continuously, and
+   * leaving empty arrays behind grows the map without bound.
+   *
+   * @param {Collider} collider
+   * @returns {boolean} true if it was registered and has now been removed
+   */
+  remove(collider) {
+    if (!collider) return false;
+    const at = this.colliders.indexOf(collider);
+    if (at < 0) return false;
+    this.colliders.splice(at, 1);
+
+    if (collider.type === 'heightfield') {
+      const h = this.heightfields.indexOf(collider);
+      if (h >= 0) this.heightfields.splice(h, 1);
+      return true;
+    }
+
+    const { minX, maxX, minZ, maxZ } = this._gridRange(collider);
+    for (let x = minX; x <= maxX; x++) {
+      for (let z = minZ; z <= maxZ; z++) {
+        const key = this._cellKey(x, z);
+        const list = this._grid.get(key);
+        if (!list) continue;
+        const i = list.indexOf(collider);
+        if (i >= 0) list.splice(i, 1);
+        if (list.length === 0) this._grid.delete(key);
+      }
+    }
+    return true;
   }
 
   /**

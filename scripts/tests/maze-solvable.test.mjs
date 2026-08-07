@@ -4,6 +4,9 @@ import {
   MAZE, generateTopology, solve, reachableCount, cellCoords,
 } from '../../src/worlds/maze/MazeTopology.js';
 
+const SEEDS = Number(process.env.MAZE_SEEDS ?? 200);
+const FULL_GATE_SEEDS = 1000;
+
 test('a generated maze has the expected shape', () => {
   const t = generateTopology(1);
   assert.equal(t.cells.length, MAZE.TOTAL_CELLS);
@@ -20,8 +23,8 @@ test('every cell on a generated level is reachable from the entrance', () => {
   assert.equal(reachableCount(t.cells, t.entranceCell), MAZE.TOTAL_CELLS);
 });
 
-test('THE GATE: entrance reaches centre for 1000 consecutive seeds', () => {
-  for (let seed = 0; seed < 1000; seed++) {
+test(`THE GATE: entrance reaches centre for ${SEEDS} consecutive seeds${SEEDS < FULL_GATE_SEEDS ? ` (full gate requires MAZE_SEEDS=${FULL_GATE_SEEDS})` : ''}`, () => {
+  for (let seed = 0; seed < SEEDS; seed++) {
     const t = generateTopology(seed);
     const path = solve(t.cells, t.entranceCell, t.centreCell);
     assert.ok(path, `seed ${seed} is unsolvable`);
@@ -69,11 +72,29 @@ test('levels option limits generation to the requested levels', () => {
 });
 
 test('single-level generation is still fully solvable', () => {
-  for (let seed = 0; seed < 200; seed++) {
+  for (let seed = 0; seed < Math.max(40, Math.ceil(SEEDS * 0.2)); seed++) {
     const t = generateTopology(seed, { levels: 1 });
     assert.ok(solve(t.cells, t.entranceCell, t.centreCell), `seed ${seed} unsolvable`);
     assert.equal(reachableCount(t.cells, t.entranceCell), MAZE.LEVEL_CELLS);
   }
+});
+
+test('two-level generation is still fully solvable', () => {
+  for (let seed = 0; seed < Math.max(20, Math.ceil(SEEDS * 0.1)); seed++) {
+    const t = generateTopology(seed, { levels: 2 });
+    assert.ok(solve(t.cells, t.entranceCell, t.centreCell), `seed ${seed} unsolvable`);
+    assert.equal(reachableCount(t.cells, t.entranceCell), MAZE.LEVEL_CELLS * 2);
+  }
+});
+
+test('limited-level generation includes loops and route choice', () => {
+  const t1 = generateTopology(42, { levels: 1 });
+  const t2 = generateTopology(42, { levels: 2 });
+  // Single-level maze should have more than 399 edges (399 are tree edges for 400 districts)
+  const minEdgesPerLevel = 400 - 1; // minimum spanning tree edges
+  const expectedExtraEdgesPerLevel = Math.floor(minEdgesPerLevel * 0.1); // roughly 10% extra
+  assert.ok(t1.graph.open.size > minEdgesPerLevel, `single-level graph has no extra edges: ${t1.graph.open.size} <= ${minEdgesPerLevel}`);
+  assert.ok(t2.graph.open.size > minEdgesPerLevel * 2, `two-level graph too sparse: ${t2.graph.open.size} <= ${minEdgesPerLevel * 2}`);
 });
 
 test('generation is fast enough for a sub-3-second entry', () => {

@@ -392,24 +392,53 @@ export function generateTopology(seed, opts = {}) {
         stack.pop();
         continue;
       }
-      const candidates = [];
-      // Only consider horizontal neighbors on the same level
-      const neighbors = districtNeighbours(cur).filter((n) => {
+      // Consider all unvisited neighbors within carved levels
+      const candidates = districtNeighbours(cur).filter((n) => {
         const nc = districtCoords(n.i);
-        return nc.level < levels && !nc.vertical && !visited[n.i];
+        return nc.level < levels && !visited[n.i];
       });
-      if (neighbors.length === 0) {
+      if (candidates.length === 0) {
         stack.pop();
         continue;
       }
-      const pick = neighbors[Math.floor(rng() * neighbors.length)];
+      // Prefer horizontal edges within each level, but allow vertical to connect levels
+      const horizontal = candidates.filter((c) => !c.vertical);
+      const vertical = candidates.filter((c) => c.vertical);
+      let pick;
+      if (horizontal.length && (vertical.length === 0 || rng() > VERTICAL_BIAS)) {
+        pick = horizontal[Math.floor(rng() * horizontal.length)];
+      } else {
+        pick = vertical[Math.floor(rng() * vertical.length)];
+      }
       filteredOpen.add(edgeKey(cur, pick.i));
       visited[pick.i] = 1;
       stack.push(pick.i);
     }
+
+    /* Loops within the carved levels. Walk every candidate edge once and open
+     * a fraction of the ones the tree did not already use, maintaining the 10%
+     * extra-edge density and deterministic ordering. */
+    let extraEdges = 0;
+    for (let i = 0; i < levels * DISTRICTS_PER_LEVEL; i++) {
+      const iCoords = districtCoords(i);
+      if (iCoords.level >= levels) continue;
+      for (const n of districtNeighbours(i)) {
+        if (n.i >= i) continue; // undirected edges, consider each once
+        const nCoords = districtCoords(n.i);
+        if (nCoords.level >= levels) continue;
+        const key = edgeKey(i, n.i);
+        if (filteredOpen.has(key)) continue;
+        if (rng() < EXTRA_EDGE_FRACTION) {
+          filteredOpen.add(key);
+          extraEdges++;
+        }
+      }
+    }
+
     graph = {
       ...graph,
       open: filteredOpen,
+      extraEdges,
     };
   }
 
@@ -425,23 +454,8 @@ export function generateTopology(seed, opts = {}) {
 
   /* When generation is limited to fewer levels than the graph knows about, the
    * centre may have been placed on a level that was never carved. Fold it down
-   * rather than leaving an unreachable prize. Vertical doors to uncarved levels
-   * are removed to preserve connectivity on carved levels. */
+   * rather than leaving an unreachable prize. */
   const centreLevel = graph.centre.level < levels ? graph.centre.level : 0;
-
-  /* Remove vertical doors leading to uncarved levels, which would create
-   * dead-end passages and fragment connectivity. */
-  if (levels < MAZE.LEVELS) {
-    for (let level = 0; level < levels; level++) {
-      for (let z = 0; z < MAZE.CELLS; z++) {
-        for (let x = 0; x < MAZE.CELLS; x++) {
-          const i = cellIndex(x, z, level);
-          if (level + 1 >= levels) cells[i] &= ~DIR.UP;
-          if (level === 0) cells[i] &= ~DIR.DOWN;
-        }
-      }
-    }
-  }
 
   const cellOf = (d, lvl) =>
     cellIndex(

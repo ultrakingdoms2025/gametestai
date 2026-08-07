@@ -4,11 +4,27 @@ import * as THREE from 'three';
 import { Physics } from '../../src/physics/Physics.js';
 import {
   MAZE, DIR, generateTopology, cellCoords, cellIndex, isOpen,
-  carveEntranceCorridor, reachableCount,
+  carveEntranceCorridor, reachableCount, districtAtWorld, neighbourhoodKeys, DISTRICT_SPAN,
 } from '../../src/worlds/maze/MazeTopology.js';
 import {
   districtColliders, cellToWorld, forecourtColliders, FORECOURT_PORTAL_Z,
 } from '../../src/worlds/maze/MazeColliders.js';
+import { MazeWorld } from '../../src/worlds/MazeWorld.js';
+
+/** Build a MazeWorld headlessly. The ctx needs a player: update() steers residency from it. */
+async function buildMazeWorld() {
+  const physics = new Physics(null);
+  const world = new MazeWorld({
+    scene: new THREE.Scene(),
+    engine: null,
+    physics,
+    bus: null,
+    materials: null,
+    player: { position: new THREE.Vector3() },
+  });
+  await world.build(() => {});
+  return { world, physics };
+}
 
 /*
  * Regression coverage for the entrance/forecourt fix: the entrance cell
@@ -117,4 +133,51 @@ test('a player arriving through the return portal does not land inside a collide
   const head = new THREE.Vector3(arrival.x, ground + 1.6, arrival.z);
   assert.equal(physics.containsPoint(feet), false, 'arrival point (feet) is inside a collider');
   assert.equal(physics.containsPoint(head), false, 'arrival point (head) is inside a collider');
+});
+
+test('a freshly built maze streams rather than building everything', async () => {
+  const { world, physics } = await buildMazeWorld();   // existing helper in this file
+  assert.ok(world.chunks, 'MazeWorld exposes no chunk manager');
+  const resident = world.chunks.residentKeys().length;
+  assert.ok(resident > 0 && resident <= 25, `resident districts out of range: ${resident}`);
+  // Phase 1 registered ~161,000 colliders. Streaming must be a fraction of that.
+  assert.ok(physics.colliders.length < 40000,
+    `still building the whole level: ${physics.colliders.length} colliders`);
+});
+
+test('the forecourt is visible, not just solid', async () => {
+  /* The forecourt needs meshes as well as colliders. Streaming the districts
+   * makes it tempting to drop the instancing along with the district loop,
+   * which leaves the player arriving in a void enclosed by invisible walls. */
+  const { world } = await buildMazeWorld();
+  const names = [];
+  world.group.traverse((o) => { if (o.isInstancedMesh) names.push(o.name); });
+  assert.ok(names.some((n) => /forecourt/.test(n)), `no forecourt meshes: ${names.join(', ')}`);
+});
+
+test('the forecourt survives streaming', async () => {
+  const { world, physics } = await buildMazeWorld();
+  // Walk far away, then check the arrival point still has floor - the forecourt
+  // is authored geometry outside the district grid and must never be evicted.
+  world.update(0.016);
+  const spec = world.portalSpecs[0];
+  const arrivalZ = spec.position.z + 2.6;
+  world.chunks.updateResidency(10 * DISTRICT_SPAN, 10 * DISTRICT_SPAN, 0, 2);
+  assert.notEqual(
+    physics.groundHeight(spec.position.x, arrivalZ, 5, 12), null,
+    'the forecourt was evicted',
+  );
+});
+
+test('walking the maze keeps residency bounded', async () => {
+  const { world, physics } = await buildMazeWorld();
+  const p = world.ctx.player.position;
+  let peak = 0;
+  for (let i = 0; i < 15; i++) {
+    p.set((2 + i) * DISTRICT_SPAN * 0.7, 0.05, (2 + i) * DISTRICT_SPAN * 0.5);
+    world.update(0.016);
+    peak = Math.max(peak, world.chunks.residentKeys().length);
+  }
+  assert.ok(peak <= 25, `residency peaked at ${peak}`);
+  assert.ok(physics.colliders.length < 40000, `collider count grew to ${physics.colliders.length}`);
 });

@@ -5,9 +5,10 @@ import {
   MAZE, DIR, generateTopology, cellCoords, carveEntranceCorridor, hash32, mulberry32,
 } from './maze/MazeTopology.js';
 import {
-  districtColliders, cellToWorld, forecourtColliders, FORECOURT_PORTAL_Z,
+  cellToWorld, forecourtColliders, FORECOURT_PORTAL_Z,
 } from './maze/MazeColliders.js';
 import { pickDeadEndTokens, pickWandererSites, walkPatrol } from './maze/MazePopulate.js';
+import { MazeChunks } from './maze/MazeChunks.js';
 
 /**
  * Yaw that faces down each passage direction, matching `Player.fixedUpdate`'s
@@ -124,6 +125,8 @@ const TOKEN_PICKUP_R2 = TOKEN_PICKUP_R * TOKEN_PICKUP_R;
 const MAZE_TOKEN_VALUE = 6;
 /** How many extra cells a wanderer's patrol reaches beyond its starting cell. */
 const PATROL_STEPS = 4;
+/** Districts either side of the player. 2 gives the 5x5 block the spec calls for. */
+const RESIDENCY_RADIUS = 2;
 
 // Scratch objects for the per-frame token instance-matrix update, reused
 // every call rather than allocated - see the note on MazeWorld.update.
@@ -255,32 +258,16 @@ export class MazeWorld extends World {
     const mats = this._ensureMaterials();
     const ew = cellToWorld(e.x, e.z, e.level);
 
-    /* One InstancedMesh for hedges and one for floors across the whole level.
-     * Phase 2 replaces this with per-district chunks; for now a single pair of
-     * draw calls is both simplest and fastest. */
+    /* Districts stream (see this.chunks below). The forecourt does not: it is
+     * hand-authored, sits outside the cell grid in negative z, and is the floor
+     * the player arrives on. It needs meshes as well as colliders. */
     const descs = [];
-    for (let dz = 0; dz < MAZE.DISTRICTS; dz++) {
-      for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
-        for (const d of districtColliders(this.cells, dx, dz, 0)) descs.push(d);
-      }
-      if (dz % 4 === 0) {
-        await onProgress?.(0.25 + 0.55 * (dz / MAZE.DISTRICTS), 'Laying the paths');
-      }
-    }
-
-    /* The walled forecourt outside the grid where the corridor above opens.
-     * The return portal stands in it rather than in the corridor itself -
-     * see MazeColliders.forecourtColliders for why the generic plinth cannot
-     * fit inside a 6m maze cell. */
     for (const d of forecourtColliders(ew.x, e.level)) descs.push(d);
 
     const hedges = descs.filter((d) => d.kind === 'hedge');
     const floors = descs.filter((d) => d.kind === 'floor');
-
-    this._addInstanced(hedges, mats.hedge, 'maze:hedges');
-    this._addInstanced(floors, mats.floor, 'maze:floors');
-
-    await onProgress?.(0.85, 'Registering collision');
+    this._addInstanced(hedges, mats.hedge, 'maze:forecourt-hedges');
+    this._addInstanced(floors, mats.floor, 'maze:forecourt-floor');
 
     for (const d of descs) {
       this.track(this.physics.addBox(d.cx, d.cy, d.cz, d.hx, d.hy, d.hz));
@@ -298,6 +285,20 @@ export class MazeWorld extends World {
     const openHere = this.cells[this.entranceCell];
     const intoMaze = [DIR.S, DIR.E, DIR.W].find((d) => (openHere & d) !== 0);
     this.playerSpawnYaw = DIR_YAW[intoMaze ?? DIR.N];
+
+    /* Districts stream; everything else in this world does not. The forecourt,
+     * the centre stack, the tokens and the NPC spawns are authored per build and
+     * stay for the whole visit - the forecourt especially, since it is the floor
+     * the player arrives on and lives outside the district grid entirely. */
+    this.chunks = new MazeChunks({
+      world: this,          // NOT this.physics — see the note in MazeChunks
+      cells: this.cells,
+      group: this.group,
+      materials: mats,
+    });
+
+    const spawn = this.playerSpawn;
+    this.chunks.updateResidency(spawn.x, spawn.z, 0, RESIDENCY_RADIUS);
 
     /* The return arch stands in the middle of the forecourt rather than one
      * cell north of the entrance - that position sat inside the hedge the
@@ -430,6 +431,11 @@ export class MazeWorld extends World {
    * `this.cells` would.
    */
   update(dt) {
+    const player = this.ctx.player?.position;
+    if (player && this.chunks) {
+      this.chunks.updateResidency(player.x, player.z, 0, RESIDENCY_RADIUS);
+    }
+
     if (!this._tokenMesh || this._tokens.length === 0) return;
     this._tokenTime += dt;
     const t = this._tokenTime;
@@ -521,6 +527,9 @@ export class MazeWorld extends World {
 
   /** Re-generation needs a clean group and collider list each time. */
   dispose() {
+    this.chunks?.disposeAll();
+    this.chunks = null;
+
     this.group.traverse((obj) => {
       if (obj.geometry) obj.geometry.dispose();
       /* InstancedMesh owns an `instanceMatrix` GPU buffer that geometry

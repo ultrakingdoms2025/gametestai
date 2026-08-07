@@ -9,7 +9,9 @@
     "vite": "vite",
     "chat": "node server/chat-server.js",
     "build": "vite build",
-    "preview": "vite preview --port 4173"
+    "preview": "vite preview --port 4173",
+    "test": "node --test scripts/tests/*.test.mjs",
+    "test:watch": "node --test --watch scripts/tests/*.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.115.0",

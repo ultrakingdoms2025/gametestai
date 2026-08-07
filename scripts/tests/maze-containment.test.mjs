@@ -36,21 +36,48 @@ function cellAt(pos) {
 
 test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
   const t = generateTopology(2026, { levels: 1 });
-  const dxs = [0, 1, 2];
-  const dzs = [0, 1, 2];
+  // A 4x4 block, not 3x3. See the note below on why launches are still
+  // confined to its inner 2x2 rather than the whole thing.
+  const dxs = [0, 1, 2, 3];
+  const dzs = [0, 1, 2, 3];
   const physics = buildWorld(t.cells, dxs, dzs, 0);
 
   const rng = mulberry32(4242);
   const pos = new THREE.Vector3();
-  const maxX = 3 * MAZE.DISTRICT * MAZE.CELL;
+  const maxX = 4 * MAZE.DISTRICT * MAZE.CELL; // full built 4x4 extent
   let escapes = 0;
   let attempts = 0;
 
+  /*
+   * `districtColliders` emits a cell's hedge only on its own north and west
+   * faces - a cell's EAST wall is owned by the cell (and district) to its
+   * east, its SOUTH wall by the one to its south (see MazeColliders.js,
+   * which does this deliberately to avoid double-emitting a collider at
+   * every interior seam). That means the block's own far east and south
+   * faces are unowned unless a district beyond them is built too - and no
+   * finite build ever has one beyond its own last district. Adding this
+   * buffer ring does not remove that edge, it only pushes it one district
+   * further out, from 3x3 (side 360 m) to 4x4 (side 480 m).
+   *
+   * What makes this safe is not that the far edge is sealed - it isn't -
+   * but that no launch starts within reach of it. A launch runs 100 steps
+   * at 8.2 m/s on a 1/60 s timestep, so it can travel at most
+   * 8.2 * (1/60) * 100 ~= 13.7 m in any direction before its 100 steps are
+   * up. Confining launches to the inner 2x2 of districts (global cells
+   * [MAZE.DISTRICT, 2*MAZE.DISTRICT - 1] on both axes) puts a full buffer
+   * district - MAZE.DISTRICT * MAZE.CELL = 120 m - between every launch
+   * point and the nearest unowned edge. 120 m is roughly 9x the 13.7 m
+   * maximum travel distance, so no launch, at any angle, can reach an
+   * unowned edge. This is provably safe rather than approximately safe.
+   */
+  const INNER_LO = MAZE.DISTRICT;
+  const INNER_SPAN = 2 * MAZE.DISTRICT;
+
   // 500 launch points x 100 steps each = 50,000 resolved attempts.
   for (let launch = 0; launch < 500; launch++) {
-    // Start standing in a random open cell inside the built block.
-    const cx = Math.floor(rng() * (3 * MAZE.DISTRICT));
-    const cz = Math.floor(rng() * (3 * MAZE.DISTRICT));
+    // Start standing in a random open cell inside the block's interior.
+    const cx = INNER_LO + Math.floor(rng() * INNER_SPAN);
+    const cz = INNER_LO + Math.floor(rng() * INNER_SPAN);
     const start = cellToWorld(cx, cz, 0);
     // Hop apex half the time, so the sweep includes airborne contact.
     const y = start.y + (rng() < 0.5 ? 0.05 : HOP);

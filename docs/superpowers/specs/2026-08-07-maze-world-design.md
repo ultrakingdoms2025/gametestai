@@ -78,6 +78,25 @@ Below 0.45 m the capsule auto-steps it and it is harmless; above 5.0 m it is out
 of reach even from a hop off another surface. Anything in the band is a ladder
 over a hedge.
 
+**Amended in Phase 2b, with the owner's approval.** Four levels need staircases,
+and a staircase is made entirely of surfaces in that band — so the rule as
+written forbids the vertical maze this spec asks for. Rather than loosen it, it
+is narrowed and given a proof obligation:
+
+> A standable surface may sit in the 0.45–5.0 m band **only inside a sealed
+> shaft** — a cell walled on all four sides from its floor to at least hedge
+> height, above the doorway used to enter it.
+
+Enclosure is **proven, not declared**. Every shaft, on every seed tested, must
+pass two checks: a geometric one confirming all four sides are walled to hedge
+height, and a simulated one that drives a capsule around inside the shaft from
+32 angles, hopping as it goes, and fails if it ever reaches hedge-top height
+outside the shaft footprint. A shaft with one wall missing must fail.
+
+The guarantee is unchanged in substance: the player still cannot reach the top
+of a hedge. What changed is that the rule now says so directly instead of
+approximating it with a blanket ban.
+
 Props in that band must be one of:
 - non-collidable (foliage, decals, hanging ivy),
 - sloped steeply enough that the capsule slides off,

@@ -4,6 +4,7 @@ import { Pickups, PICKUP_VALUE } from './Pickups.js';
 import { Contacts } from './Contacts.js';
 import { RaceRings, buildDragonRingCheckpoints, DRAGON_RACE } from './RaceRings.js';
 import { RaceLoops } from './RaceLoops.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * The race: state machine, lap validation, placement and prize money.
@@ -218,7 +219,11 @@ export class RaceManager {
     // longer in the scene.
     this._onWorldChanging = () => this._teardown();
     bus?.on?.('world:changing', this._onWorldChanging);
-    this._onWorldChanged = ({ world }) => this.arm(world);
+    this._onWorldChanged = ({ world }) => {
+      // No circuits, and no mounts to drive them.
+      if (!allows(world, 'races')) return;
+      this.arm(world);
+    };
     bus?.on?.('world:changed', this._onWorldChanged);
   }
 
@@ -1274,6 +1279,10 @@ export class RaceManager {
     this.loops.setLoops(null);
     this.field.clear();
     this.rings.clear();
+    // Otherwise a forbidden world's `tracks` getter and `selectTrack` keep
+    // reading the world that was just left, and can re-arm its circuits from
+    // inside the maze.
+    this._source = null;
   }
 
   dispose() {

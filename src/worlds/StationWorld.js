@@ -54,6 +54,28 @@ const _euler = new THREE.Euler();
 const _quat = new THREE.Quaternion();
 const _scl = new THREE.Vector3(1, 1, 1);
 
+/**
+ * Offset along Z of the maze gateway's dais from the plaza centre. Named so
+ * it has one source: `_buildPortalDaises` passes it to `_buildAxisGateway` as
+ * `offsetZ`, and `GATEWAY_CENTRES` below reads the same constant rather than
+ * a second copy of the literal.
+ */
+const MAZE_GATEWAY_OFFSET_Z = 128;
+
+/**
+ * World-space (x, z) centre of every gateway's dais, kept as one list so
+ * `_buildCrowd`'s plinth-clearance checks cannot drift out of step with the
+ * gateways again. They already had once: the maze gateway shipped off-axis
+ * (the other four all sit at (0, +-PORTAL_R) or (+-PORTAL_R, 0)) and the two
+ * hardcoded four-entry position arrays in `_buildCrowd` had no way to know
+ * they needed a fifth.
+ */
+const GATEWAY_CENTRES = [
+  [0, -PORTAL_R], [0, PORTAL_R],               // medieval, sports (Z axis)
+  [-PORTAL_R, 0], [PORTAL_R, 0],                // citadel, race (X axis)
+  [-PORTAL_R, MAZE_GATEWAY_OFFSET_Z],           // maze (X axis, Z-offset)
+];
+
 
 /* ------------------------------------------------------------------ */
 /* Deterministic noise + rng                                           */
@@ -1046,6 +1068,13 @@ const SIGNS = [
   ['ORDER HERE', 'TAP TO PAY // COLLECT LEFT', '#ffd166'],
   ['RACK YOUR WEIGHTS', 'SPOTTERS ON THE BENCH', '#c9b0ff'],
   ['SCAFFOLD ACCESS', 'CLIP ON ABOVE 2 M', '#ffb020'],
+  // --- Gateway 05: the maze. Appended, never inserted - SIGN_ROLE indexes
+  //     this array positionally and inserting would re-label every sign after
+  //     the insertion point.
+  ['GATEWAY 05', 'THE VERDANT COIL', '#8fd67a'],
+  ['THE VERDANT COIL', 'GATEWAY 05 AHEAD', '#8fd67a'],
+  ['NO WAY BACK BUT THROUGH', 'HEDGE MAZE // NO EQUIPMENT', '#8fd67a'],
+  ['LOST PROPERTY', 'ENQUIRE AT GATEWAY 05', '#8fe6c8'],
 ];
 
 /**
@@ -1081,6 +1110,10 @@ const SIGN_ROLE = {
   orderPoint: 33,
   gymNotice: 34,
   siteNotice: 35,
+  gatewayMaze: 36,
+  approachMaze: 37,
+  mazeWarning: 38,
+  lostProperty: 39,
 };
 
 /** Atlas of holographic signage - one texture, one draw call. */
@@ -5600,9 +5633,17 @@ export class StationWorld extends World {
 
     this._buildAxisGateway(g, {
       side: -1, target: 'citadel', label: 'Sunspire Citadel', accent: 0xffc46b,
+      signRole: SIGN_ROLE.gatewayCitadel,
     });
     this._buildAxisGateway(g, {
       side: 1, target: 'race', label: 'Vellum Ridge', accent: 0xff5a3c,
+      signRole: SIGN_ROLE.gatewayRace,
+    });
+    /* The fifth arch. The other four occupy the two axes at +-PORTAL_R, so this
+     * one is offset along Z to keep an 11 m dais clear of the citadel's. */
+    this._buildAxisGateway(g, {
+      side: -1, target: 'maze', label: 'The Verdant Coil', accent: 0x8fd67a,
+      signRole: SIGN_ROLE.gatewayMaze, offsetZ: MAZE_GATEWAY_OFFSET_Z,
     });
   }
 
@@ -5638,7 +5679,7 @@ export class StationWorld extends World {
     const M = this.mat;
     const B = new GeoBatch();
     const cx = PORTAL_R * spec.side;
-    const cz = 0;
+    const cz = spec.offsetZ ?? 0;
 
     /* Dais: stepped discs, matching the language of the other two - and, now,
      * their *height*.
@@ -5692,7 +5733,7 @@ export class StationWorld extends World {
     // Two-sided board on the plaza axis - it is approached from both sides.
     this._signBoard(
       B,
-      spec.target === 'citadel' ? SIGN_ROLE.gatewayCitadel : SIGN_ROLE.gatewayRace,
+      spec.signRole ?? SIGN_ROLE.gatewayRace,
       9, 2.2,
       cx - sgn * 1.35, GATEWAY_DECK_Y + 11.1, cz, Math.PI * 0.5 * sgn + Math.PI,
       { twoSided: true, accent: em }
@@ -5751,12 +5792,12 @@ export class StationWorld extends World {
     for (let i = 0; i < 7; i++) {
       const t = i / 6;
       const sx = cx - sgn * (10.4 - t * 4);
-      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, D + 0.1, -6);
-      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, D + 0.1, 6);
+      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, D + 0.1, cz - 6);
+      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, D + 0.1, cz + 6);
     }
 
     this._contact(cx, cz, 30);
-    B.flush(g, M, 'gateway-citadel', { cast: true, recv: true });
+    B.flush(g, M, `gateway-${spec.target}`, { cast: true, recv: true });
 
     this.portalSpecs.push({
       position: new THREE.Vector3(cx, GATEWAY_DECK_Y, cz),
@@ -7523,7 +7564,7 @@ export class StationWorld extends World {
        * the fix and the better staging: a queue that stops at the foot of the
        * steps reads as a queue, where civilians milling about on the threshold
        * of an interdimensional gate does not. */
-      for (const [px, pz] of [[0, -PORTAL_R], [0, PORTAL_R], [-PORTAL_R, 0], [PORTAL_R, 0]]) {
+      for (const [px, pz] of GATEWAY_CENTRES) {
         if (Math.hypot(x - px, z - pz) < 5.5) return;
       }
 
@@ -7574,7 +7615,7 @@ export class StationWorld extends World {
       const STEP_UP = 0.35;
       const APPROACH_R = 26;
       if (baseY - y > STEP_UP) {
-        const onApproach = [[0, -PORTAL_R], [0, PORTAL_R], [-PORTAL_R, 0], [PORTAL_R, 0]]
+        const onApproach = GATEWAY_CENTRES
           .some(([px, pz]) => Math.hypot(x - px, z - pz) < APPROACH_R);
         if (!onApproach) {
           const floor = this.physics.groundHeight(x, z, y + STEP_UP, 12.0);

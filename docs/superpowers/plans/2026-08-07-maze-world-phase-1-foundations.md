@@ -838,7 +838,7 @@ Append to `src/worlds/maze/MazeTopology.js`:
 export function doorwayOffset(seed, aIndex, bIndex, span) {
   const lo = Math.min(aIndex, bIndex);
   const hi = Math.max(aIndex, bIndex);
-  return hash32(seed, lo, hi, 0xd00r) % span;
+  return hash32(seed, lo, hi, 0xd00d) % span;
 }
 
 /**

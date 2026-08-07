@@ -1,4 +1,5 @@
 import { ITEMS, itemDef, sellValue, setMarketWorld } from './ItemDefs.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * Vendor trading: buy ammo packs, sell salvage back at a loss.
@@ -122,9 +123,20 @@ export class Marketplace {
      * player is standing in, so this is the one place that has to keep them
      * pointed at the right one - a shop opened in the medieval world must not
      * quote station rates. */
-    this._offMarket = this.bus?.on('world:changed', ({ id }) => {
+    this._offMarket = this.bus?.on('world:changed', ({ id, world }) => {
       this._worldId = id ?? null;
       setMarketWorld(id);
+      // Nothing to buy inside the maze. Repoint pricing first - other systems
+      // read it independently of whether this shop can open - then clear any
+      // stock left over from the previous world and decline to repopulate it.
+      if (!allows(world, 'merchants')) {
+        // Bump the sequence before clearing so a fetch still in flight from the
+        // previous world fails `refreshCatalog`'s requestId guard instead of
+        // writing that world's stock back into `_catalog` after this portal.
+        ++this._catalogSeq;
+        this._catalog = [];
+        return;
+      }
       // A shop left open through a portal must show the new world's stock, not
       // stale items from the destination that was just left behind.
       void this.refreshCatalog();

@@ -8,6 +8,7 @@ import { FreeClimb } from './FreeClimb.js';
 import { Parkour } from './Parkour.js';
 import { Stamina } from '../systems/Stamina.js';
 import { WaterVolumes } from '../systems/WaterVolumes.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * First-person player controller.
@@ -249,6 +250,10 @@ export class Player {
       this._lastFiredAt = this._elapsed;
       this.cameraRig?.correctShotEvent(evt);
     });
+
+    /** Active world, tracked for capability rules. @see ../worlds/WorldRules.js */
+    this._world = null;
+    this._offRules = this.bus?.on('world:changed', ({ world }) => { this._world = world; }) ?? null;
 
     this.camera.rotation.order = 'YXZ';
     this._applyCamera(0);
@@ -555,14 +560,18 @@ export class Player {
     // Dive steering and the roll timer run before any movement branch claims
     // the step: a dive is an *airborne* modifier, so it has to apply whether
     // the player is falling normally or has just kicked off a wall.
-    this.parkour.fixedUpdate(dt);
+    // Sustained wall climbing and diving, off in worlds that forbid it.
+    if (allows(this._world, 'parkour')) this.parkour.fixedUpdate(dt);
 
     /* ---- clinging to a wall ------------------------------------------ *
      * Above water and below the mantle, because a free climb ends *in* a
      * mantle: `FreeClimb` calls `climb.tryStart` when it crests the lip, and
      * the branch above then owns the last metre. Like the mantle it writes the
-     * capsule itself, so nothing below runs. */
-    if (this.freeClimb.fixedUpdate(dt, elapsed)) {
+     * capsule itself, so nothing below runs.
+     * Gated on 'climb', off in worlds that forbid it - `&&`-shorted so the
+     * whole block is skipped rather than just the call, since it claims the
+     * movement step and returns early below. */
+    if (allows(this._world, 'climb') && this.freeClimb.fixedUpdate(dt, elapsed)) {
       this._claimMovement();
       this._jumpHeld = !!s.jump;
       this._grounded = false;
@@ -647,7 +656,8 @@ export class Player {
      * apex and under 2.4 m, with proven standing room. Everything else -
      * kerbs, stair treads, skate-park transitions - fails the probe and the
      * press falls straight through to the jump below. */
-    if (jumpEdge && this.climb.tryStart(elapsed, { inWater: false })) {
+    // One-shot ledge mantling, off in worlds that forbid it.
+    if (jumpEdge && allows(this._world, 'climb') && this.climb.tryStart(elapsed, { inWater: false })) {
       this._jumpHeld = true;
       this._jumpBuffer = 0;
       this._coyote = 0;
@@ -668,8 +678,8 @@ export class Player {
      * distinguishes "I meant to climb this" from "I jumped near a wall", and
      * requiring forward means backing away from a facade never grabs it. A
      * running jump into a wall grabs it, which is the interaction the citadel
-     * is built around. */
-    if (s.jump && s.forward > 0.2 && this.freeClimb.tryAttach()) {
+     * is built around. Gated on 'climb', off in worlds that forbid it. */
+    if (s.jump && s.forward > 0.2 && allows(this._world, 'climb') && this.freeClimb.tryAttach()) {
       this._jumpHeld = true;
       this._jumpBuffer = 0;
       this._coyote = 0;
@@ -1251,6 +1261,13 @@ export class Player {
     if (this.loadout) return;
 
     const w = this._weapon;
+    // Belt-and-braces: `main.js` always attaches a Loadout, whose own
+    // `update()` already gates this, but a bare Player driven without one
+    // must not carry or fire a weapon in a world that forbids it either.
+    if (!allows(this._world, 'weapons')) {
+      w.setVisible(false);
+      return;
+    }
     const s = this.input.state;
     const usable = !this._dead && !this.input.textCaptured;
 
@@ -1345,6 +1362,8 @@ export class Player {
   }
 
   dispose() {
+    this._offRules?.();
+    this._offRules = null;
     this._offFired?.();
     this._offFired = null;
     this._offWater?.();

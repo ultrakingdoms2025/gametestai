@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { COLLISION_LAYER } from '../physics/Physics.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * World caches: the reason to dive, and the reason to fly.
@@ -160,6 +161,8 @@ export class Caches {
   _onWorld(id, world) {
     this._worldId = id ?? null;
     this.sites.length = 0;
+    // No caches to dive for in a hedge maze.
+    if (!allows(world, 'caches')) return;
     if (!world || !this.physics || !this.loot) return;
 
     const rnd = mulberry(hashString(`cache:${id}`));

@@ -12,6 +12,7 @@ import { MedievalWorld } from './worlds/MedievalWorld.js';
 import { SportsWorld } from './worlds/SportsWorld.js';
 import { CitadelWorld } from './worlds/CitadelWorld.js';
 import { RaceWorld } from './worlds/RaceWorld.js';
+import { MazeWorld } from './worlds/MazeWorld.js';
 import { Player } from './player/Player.js';
 import { NPCManager } from './npc/NPCManager.js';
 import { PortalSystem } from './systems/Portals.js';
@@ -107,6 +108,7 @@ worldManager.register(MedievalWorld);
 worldManager.register(SportsWorld);
 worldManager.register(CitadelWorld);
 worldManager.register(RaceWorld);
+worldManager.register(MazeWorld);
 
 const player = new Player({ ...ctx, camera: engine.camera });
 /* Worlds are constructed before the player exists, but they only ever read this
@@ -615,7 +617,9 @@ async function prewarm() {
 }
 
 function scheduleBackgroundBuilds(startWorld) {
-  const rest = worldManager.ids.filter((id) => id !== startWorld);
+  const rest = worldManager.ids.filter(
+    (id) => id !== startWorld && !worldManager.isVolatile(id),
+  );
   // The `timeout` is not optional in practice. A 126 fps render loop leaves so
   // little idle time that a plain `requestIdleCallback` was never firing at
   // all: measured, the other two worlds were still unbuilt 45 s after boot, so
@@ -801,6 +805,11 @@ bus.on('inventory:use', ({ itemId }) => {
 });
 // Drop: item was already moved to store by InventoryUI; spawn a world pickup at
 // the player's feet so they can leave it for others or pick it back up.
+// Deliberately ungated by rules.loot: that rule governs world-generated drops
+// (Loot._dropFor), whereas dropping from your own bag is inventory management,
+// not loot generation. Loot.clear() on world:changed already stops a dropped
+// item persisting between worlds, so there is nothing here for rules.loot to
+// guard against. Do not "fix" this to check allows(world, 'loot').
 bus.on('inventory:drop', ({ itemId, qty }) => {
   if (!qty || qty <= 0) return;
   const pos = player.position.clone();
@@ -808,6 +817,14 @@ bus.on('inventory:drop', ({ itemId, qty }) => {
   // the just-dropped pickup while still standing on the spawn point.
   loot.spawn(pos, [{ itemId, qty }], { collectDelay: 4 });
   hud?.notify?.(`Dropped ${qty}× ${itemId.replace(/_/g, ' ')}`, 'info');
+});
+// The maze's dead-end tokens: MazeWorld only ever announces a find (it never
+// touches Economy or HUD directly - this file is the single integration
+// point, see the header comment above), so this is where the credits are
+// actually awarded and the notification actually shown.
+bus.on('maze:token-found', ({ amount }) => {
+  economy.add(amount, 'maze-token');
+  hud?.notify?.(`+${amount} CR`, 'loot');
 });
 bus.on('credits:changed', ({ reason }) => schedulePersist(`credits:${reason ?? 'change'}`));
 bus.on('inventory:changed', () => schedulePersist('inventory-change'));

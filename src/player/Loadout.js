@@ -3,6 +3,7 @@ import { FireballWeapon } from '../weapons/Fireball.js';
 import { BowWeapon } from '../weapons/Bow.js';
 import { SwordWeapon } from '../weapons/Sword.js';
 import { WEAPON_STATS, AMMO_ITEMS } from '../systems/WeaponStats.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * Holds the player's four weapons and decides which one is live.
@@ -160,6 +161,9 @@ export class Loadout {
     this._lastNoAmmo = -999;
     this._time = 0;
 
+    /** Active world, tracked for capability rules. @see ../worlds/WorldRules.js */
+    this._world = null;
+
     this._offs = [];
     this._bind();
     if (inventory) this.setInventory(inventory);
@@ -198,6 +202,8 @@ export class Loadout {
       if (this._bagCount(item) > 0) return;
       this._emitNoAmmo(id, item);
     });
+
+    on('world:changed', ({ world }) => { this._world = world; });
   }
 
   /* ================================================================ */
@@ -520,6 +526,18 @@ export class Loadout {
    * @returns {boolean} true if the selection changed
    */
   select(indexOrId, opts = {}) {
+    // A world with no weapons has no viewmodel and no selection. Hide every
+    // instance right here, not just whatever was already current, before
+    // refusing - a caller can show an instance directly and then immediately
+    // call select() expecting a clean result (the shader prewarm in main.js
+    // does exactly this: `select(inst.id); inst.setVisible(true);` for every
+    // weapon in turn, then `select(selected)` to restore). Waiting for the
+    // next update() tick to clean that up would leave the wrong instances
+    // visible in the meantime.
+    if (!allows(this._world, 'weapons')) {
+      for (const w of this._weapons) w.setVisible?.(false);
+      return false;
+    }
     let i = indexOrId;
     if (typeof indexOrId === 'string') {
       i = this._weapons.findIndex((w) => w.id === indexOrId);
@@ -645,6 +663,22 @@ export class Loadout {
     }
 
     const active = this.current;
+
+    // A world with no weapons draws no viewmodel and cannot fire. Authoritative
+    // over every instance, not just the current one: something can show
+    // another instance directly (the shader prewarm does, to compile every
+    // viewmodel's materials before the player ever selects it) and all of
+    // them must stay hidden regardless of how they got shown. The selection
+    // above is a no-op already (`select` gates itself), so the index a
+    // permitted world left behind survives untouched and reappears exactly
+    // as it was - and only it - the moment weapons are allowed again.
+    if (!allows(this._world, 'weapons')) {
+      for (const w of this._weapons) {
+        w.setVisible?.(false);
+        w.update?.(dt, elapsed);
+      }
+      return;
+    }
 
     /* ---- drive the viewmodel ---- */
     // The viewmodel is composed against the eye, so it has no meaning once the

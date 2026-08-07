@@ -8,6 +8,7 @@ import { resolveSpot, resolveSurfaceY, seatSurfaceAt, isDeepWater, nearestDrySpo
 import { ROLE, ROLE_ROTATION, castFor, roleDef } from './NPCRoles.js';
 import { WEAPON_TABLES } from './NPCWeapons.js';
 import { DEFAULT_LORE, buildLorePersona, loreEntryForScope } from '../content/Lore.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * Owns every NPC in the active world: spawning, budget, level of detail,
@@ -80,7 +81,9 @@ const IK_OUT = 24;
 const RENDER_IN = 125;
 const RENDER_OUT = 135;
 
-const THEME_BY_WORLD = { station: 'station', medieval: 'medieval', sports: 'sports' };
+const THEME_BY_WORLD = {
+  station: 'station', medieval: 'medieval', sports: 'sports', maze: 'maze',
+};
 const MERCHANT_SIGN_WORLD = {
   station: 'AETHER NEXUS',
   medieval: 'ALDERMOOR VALE',
@@ -94,6 +97,11 @@ const FALLBACK_NAMES = {
   station: ['Vex Orrin', 'Dr. Hala Mensu', 'Rig-Chief Danno', 'Sable Ito', 'Quartermaster Rhee', 'Pilot Ashe'],
   medieval: ['Alwin the Cooper', 'Mistress Bryda', 'Father Osric', 'Tam the Fletcher', 'Goodwife Elgiva', 'Sergeant Cuthred'],
   sports: ['Coach Marra', 'Deuce Kowalski', 'Nia Sandoval', 'Ollie Trent', 'Ref Bastian', 'Skye Larsen'],
+  /* Unreachable while MazeWorld sets crowd: false and names all nine of its
+   * own spawns (see WANDERER_CAST in MazeWorld.js) - kept correct anyway, in
+   * case that ever stops being true, rather than left as a station name a
+   * hedge maze would never produce. */
+  maze: ['A Lost Wanderer', 'Someone Turned Around', 'A Voice Past the Hedge', 'Someone Still Walking'],
 };
 
 /**
@@ -117,6 +125,15 @@ const CROWD_NAMES = {
     'Kenji Ito', 'Bex Ferrara', 'Dev Chaudhary', 'Lena Wojcik', 'Toby Nkemelu',
     'Nadia Reyes', 'Grant Okafor',
   ],
+  /* Unreachable while MazeWorld sets crowd: false - _populateHubs is never
+   * called for it (see spawnForWorld). Kept correct anyway, per the same
+   * reasoning as the maze entry in FALLBACK_NAMES above: a wrong fallback
+   * that happens to be dead code today is still wrong, and worth fixing
+   * once rather than rediscovering later. */
+  maze: [
+    'Thistle Vance', 'Old Mossop', 'Corda Vale', 'Half-Found Mabel',
+    'Yew Barrow', 'Sil the Turned-Around',
+  ],
 };
 
 /** One-line briefs so a filler civilian still has something to say. */
@@ -138,6 +155,12 @@ const CROWD_PERSONAS = {
     'A club coach between sessions, upbeat and relentlessly encouraging.',
     'A weekend skier waiting for the lift queue to clear, hyped about the fresh piste.',
     'A spectator killing time before the next match, keen to talk scores.',
+  ],
+  maze: [
+    'Lost long enough to have stopped panicking about it, and unsure whether that is a good sign.',
+    'Convinced the hedges rearrange themselves overnight and eager to argue the point.',
+    'Rationing the last of their food and trying not to mention it to anyone they meet.',
+    'Still following a thread of string that ran out three days ago, out of habit more than hope.',
   ],
 };
 
@@ -345,6 +368,16 @@ export class NPCManager {
     if (!world) return;
     this.worldId = world.id;
     this.theme = THEME_BY_WORLD[world.id] ?? 'station';
+    /* A world may forbid hostiles outright - the maze has NPCs purely to talk
+     * to. Zeroing the budget is enough: every hostile path downstream is driven
+     * by this count. */
+    const hostilesAllowed = allows(world, 'hostiles');
+    const maxHostiles = hostilesAllowed ? this.maxHostiles : 0;
+    /* A world may forbid crowd filling outright - the maze is meant to feel
+     * empty, and a manager-added crowd on top of its eight authored wanderers
+     * would defeat that. Zeroing the reserve and the hub budget below is
+     * enough: `npcSpawns` becomes the whole cast. */
+    const crowdAllowed = allows(world, 'crowd');
     const spawns = world.npcSpawns ?? [];
 
     let friendlyCount = 0;
@@ -354,7 +387,7 @@ export class NPCManager {
     // Deal the hostile weapons out up front so every id in the theme's table is
     // represented and every model is built during world activation. A re-roll
     // later then only ever picks a weapon whose material is already compiled.
-    const weaponDeal = this._dealWeapons(this.maxHostiles);
+    const weaponDeal = this._dealWeapons(maxHostiles);
     const weaponPool = (WEAPON_TABLES[this.theme] ?? WEAPON_TABLES.station).map(([id]) => id);
     /* Reserve part of the civilian budget for standing groups. Worlds author
      * their named characters spread out along walking routes, which is right
@@ -368,15 +401,19 @@ export class NPCManager {
      * same populated plaza while letting a world with five districts have five
      * districts' worth of people in it.
      */
-    const CROWD_RESERVE = 6;
+    const CROWD_RESERVE = crowdAllowed ? 6 : 0;
     const authored = spawns.reduce((n, s) => n + (s.type === 'hostile' ? 0 : 1), 0);
-    const authoredCap = Math.max(4, Math.min(authored, this.maxFriendlies - CROWD_RESERVE));
+    const authoredCap = crowdAllowed
+      ? Math.max(4, Math.min(authored, this.maxFriendlies - CROWD_RESERVE))
+      // No reserve to hold back and nothing to top up with - every authored
+      // friendly gets a slot.
+      : authored;
 
     const anchors = [];
     for (const spec of spawns) {
       if (this._npcs.length >= this.maxNPCs) break;
       const hostile = spec.type === 'hostile';
-      if (hostile && hostileCount >= this.maxHostiles) continue;
+      if (hostile && hostileCount >= maxHostiles) continue;
       if (!hostile && friendlyCount >= authoredCap) continue;
 
       const pos = this._snapToGround(spec.position);
@@ -412,7 +449,7 @@ export class NPCManager {
 
     friendlyCount += this._spawnLorekeepers(world);
     this._spawnQuestManagers(world);
-    this._populateHubs(anchors, this.maxFriendlies - friendlyCount);
+    this._populateHubs(anchors, crowdAllowed ? this.maxFriendlies - friendlyCount : 0);
     for (const npc of this._hostiles) npc.prebuildWeapons?.();
     this._seatCivilians();
     this.validateGrounding();
@@ -658,6 +695,11 @@ export class NPCManager {
   }
 
   _spawnLorekeepers(world) {
+    // One lorekeeper per portal is a manager-added convenience, not something
+    // `npcSpawns` asked for - a world with crowd: false (the maze, which
+    // already hand-authors its own keeper - see KEEPER_PERSONA in
+    // MazeWorld.js) must not get a second, generic one standing next to it.
+    if (!allows(world, 'crowd')) return 0;
     const specs = world?.portalSpecs ?? [];
     let made = 0;
     for (let i = 0; i < specs.length && this._npcs.length < this.maxNPCs; i++) {

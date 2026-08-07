@@ -67,6 +67,14 @@ const CONTRACT = [
   { file: 'src/worlds/StationWorld.js', exports: ['StationWorld'], methods: ['build'] },
   { file: 'src/worlds/MedievalWorld.js', exports: ['MedievalWorld'], methods: ['build'] },
   { file: 'src/worlds/SportsWorld.js', exports: ['SportsWorld'], methods: ['build'] },
+  { file: 'src/worlds/WorldRules.js', exports: ['DEFAULT_RULES', 'makeRules', 'allows'] },
+  {
+    file: 'src/worlds/maze/MazeTopology.js',
+    exports: ['MAZE', 'DIR', 'generateTopology', 'solve', 'reachableCount',
+              'buildDistrictGraph', 'carveDistrict', 'cellIndex', 'cellCoords'],
+  },
+  { file: 'src/worlds/maze/MazeColliders.js', exports: ['districtColliders', 'cellToWorld'] },
+  { file: 'src/worlds/MazeWorld.js', exports: ['MazeWorld'], methods: ['build', 'dispose'] },
 ];
 
 /** Feature set v2 — see CONTRACTS-V2.md. Absent until those agents land. */

@@ -1,4 +1,5 @@
 import './mountwheel.css';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * The mount selector radial.
@@ -333,6 +334,10 @@ export class MountWheel {
 
   open() {
     if (this._open) return;
+    // No mount ever appears in a world that forbids them - `MountManager.summon`
+    // already refuses - but leaving this ungated let the wheel itself pop up
+    // anyway, which reads as broken rather than as "no mounts here".
+    if (!allows(this.mounts?.worldManager?.active, 'mounts')) return;
     this._open = true;
     this._vx = 0;
     this._vy = 0;

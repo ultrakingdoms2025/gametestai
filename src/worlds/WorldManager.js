@@ -141,6 +141,11 @@ export class WorldManager {
     return !!(world && world._built);
   }
 
+  /** True when this world re-generates on every activation. */
+  isVolatile(id) {
+    return this._classes.get(id)?.volatile === true;
+  }
+
   /** True while a build for `id` is running. */
   isBuilding(id) {
     return this._building.has(id);
@@ -160,6 +165,23 @@ export class WorldManager {
    */
   async build(id, onProgress) {
     const world = this.getWorld(id);
+    /* A volatile world re-generates on every request rather than serving its
+     * cached build. The maze uses this: a layout that survived the last visit
+     * would be a layout the player could learn.
+     *
+     * Guarded against the world currently being *active*: `_activate` calls
+     * `build(id)` on its own target before touching anything else, and if
+     * that target were already the live world this would clear its group and
+     * rebuild into a scratch physics world while the *live* physics world -
+     * which `_activate` only rebuilds afterwards, from `world.colliders` -
+     * kept serving the collision data that was just discarded. Invisible
+     * walls, not missing ones. Not reachable through any current call site
+     * (nothing re-activates the world that is already active), but cheap
+     * insurance against a future one that does. */
+    const volatile = this._classes.get(id)?.volatile === true;
+    if (world._built && volatile && this._active !== world) {
+      world.dispose();
+    }
     if (world._built) {
       onProgress?.(1, `${world.displayName} ready`);
       return world;

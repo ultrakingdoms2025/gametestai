@@ -84,14 +84,35 @@ written forbids the vertical maze this spec asks for. Rather than loosen it, it
 is narrowed and given a proof obligation:
 
 > A standable surface may sit in the 0.45–5.0 m band **only inside a sealed
-> shaft** — a cell walled on all four sides from its floor to at least hedge
-> height, above the doorway used to enter it.
+> shaft** — a cell walled on all four sides, above the doorway used to enter it,
+> to at least **the highest standable surface inside it plus 0.93 m plus a
+> margin**.
 
-Enclosure is **proven, not declared**. Every shaft, on every seed tested, must
-pass two checks: a geometric one confirming all four sides are walled to hedge
-height, and a simulated one that drives a capsule around inside the shaft from
-32 angles, hopping as it goes, and fails if it ever reaches hedge-top height
-outside the shaft footprint. A shaft with one wall missing must fail.
+**The wall height is derived, never a constant.** The first draft of this
+amendment said "to at least hedge height", and that was wrong in a way that
+destroyed the guarantee it was written to preserve: `LEVEL_HEIGHT` is 9.0 m, so
+a staircase climbing a real level inside 5.0 m walls satisfied the rule while
+letting the player walk up the stairs and straight over the wall tops onto the
+maze roof. Measured escape height on that geometry: **10.0 m**. A shaft's walls
+must clear its own stairs, so the bar is a function of what is inside the shaft
+and cannot be written down as a number.
+
+Enclosure is **proven, not declared**, and the proof has three parts:
+
+1. **Geometric** — all four sides walled, from the shaft floor to the derived
+   height. Coverage may be assembled from several colliders per side as long as
+   they are contiguous; a gap between two pieces fails.
+2. **Simulated** — a capsule driven around inside the shaft, hopping only when
+   grounded (there is no double jump), seeded not just on the shaft floor but
+   **on top of every standable surface inside it**, since the escape a
+   staircase enables is from the top step, not from the bottom.
+3. **Bound to the exemption** — every descriptor that claims `enclosed` must be
+   shown to sit inside a shaft that passed 1 and 2, on real generated seeds.
+   Without this the flag is self-certifying: anything can exempt itself from the
+   band rule simply by asserting it is enclosed.
+
+A shaft with one wall missing, one wall too short, one wall too narrow, or a
+gap between two wall pieces must fail.
 
 The guarantee is unchanged in substance: the player still cannot reach the top
 of a hedge. What changed is that the rule now says so directly instead of

@@ -818,6 +818,14 @@ bus.on('inventory:drop', ({ itemId, qty }) => {
   loot.spawn(pos, [{ itemId, qty }], { collectDelay: 4 });
   hud?.notify?.(`Dropped ${qty}× ${itemId.replace(/_/g, ' ')}`, 'info');
 });
+// The maze's dead-end tokens: MazeWorld only ever announces a find (it never
+// touches Economy or HUD directly - this file is the single integration
+// point, see the header comment above), so this is where the credits are
+// actually awarded and the notification actually shown.
+bus.on('maze:token-found', ({ amount }) => {
+  economy.add(amount, 'maze-token');
+  hud?.notify?.(`+${amount} CR`, 'loot');
+});
 bus.on('credits:changed', ({ reason }) => schedulePersist(`credits:${reason ?? 'change'}`));
 bus.on('inventory:changed', () => schedulePersist('inventory-change'));
 // Merchant trades are queued and flushed with the next state sync so the

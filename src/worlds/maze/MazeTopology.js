@@ -515,8 +515,14 @@ export function carveEntranceCorridor(cells, entrance) {
   cells[cellIndex(ex, 0, level)] |= DIR.N;
 }
 
-/** Neighbour cell index across `dir`, or -1 if it leaves the grid. */
-function neighbourOf(index, dir) {
+/**
+ * Neighbour cell index across `dir`, or -1 if it leaves the grid.
+ * Exported for `MazePopulate.js`, which walks NPC patrol routes one open
+ * passage at a time and needs the exact same stepping rule `solve` and
+ * `reachableCount` use below - a second implementation would be a second
+ * place for the level-wrap and boundary rules to drift out of sync.
+ */
+export function neighbourOf(index, dir) {
   const { x, z, level } = cellCoords(index);
   if (dir === DIR.UP) return level + 1 < MAZE.LEVELS ? cellIndex(x, z, level + 1) : -1;
   if (dir === DIR.DOWN) return level > 0 ? cellIndex(x, z, level - 1) : -1;

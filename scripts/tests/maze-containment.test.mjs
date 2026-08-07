@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { Physics } from '../../src/physics/Physics.js';
 import {
-  MAZE, generateTopology, cellIndex, mulberry32,
+  MAZE, DIR, generateTopology, cellIndex, isOpen, mulberry32,
 } from '../../src/worlds/maze/MazeTopology.js';
 import { districtColliders, cellToWorld } from '../../src/worlds/maze/MazeColliders.js';
 
@@ -33,6 +33,12 @@ function cellAt(pos) {
     z: Math.round(pos.z / MAZE.CELL),
   };
 }
+
+/**
+ * Which maze cell a world position falls in, keyed to match `cellIndex`'s
+ * (cx, cz) argument order rather than `cellAt`'s (x, z).
+ */
+const cellOf = (p) => ({ cx: Math.round(p.x / MAZE.CELL), cz: Math.round(p.z / MAZE.CELL) });
 
 test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
   const t = generateTopology(2026, { levels: 1 });
@@ -87,11 +93,62 @@ test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
     const vx = Math.cos(angle) * SPRINT;
     const vz = Math.sin(angle) * SPRINT;
 
+    // The cell the capsule currently occupies, tracked step to step so a
+    // transition can be checked against the topology it actually crossed.
+    let cell = { cx, cz };
+
     for (let step = 0; step < 100; step++) {
       pos.x += vx * STEP;
       pos.z += vz * STEP;
       physics.resolveCapsule(pos, RADIUS, HEIGHT);
       attempts++;
+
+      /*
+       * Escape 0 (primary): an illegal cell transition. The other three
+       * conditions below all ask "did the capsule leave the world" - none of
+       * them ask the actual requirement, "did the capsule pass through a
+       * wall". A capsule can phase straight through a closed passage and
+       * still land on the (continuous, unaffected) floor, well inside the
+       * (generously buffered) envelope, and at ordinary height - and none of
+       * the other three checks would ever see it.
+       *
+       * This check is sound, not a heuristic. A closed passage has a 1.2 m
+       * hedge centred on the cell boundary, occupying 2.4-3.6 m from the
+       * cell centre. A capsule of radius 0.35 resolved against that wall
+       * cannot get its centre past 2.4 - 0.35 = 2.05 m from the cell centre
+       * - which still rounds to the original cell, since the cell pitch is
+       * 6 m and the rounding boundary sits at 3 m. So a recorded cell change
+       * across a closed passage can only mean the capsule actually crossed
+       * the wall, never a rounding artefact near the boundary.
+       *
+       * A single step covers at most SPRINT * STEP = 8.2/60 ~= 0.137 m,
+       * against a 6 m cell pitch, so consecutive cells must be identical or
+       * orthogonally adjacent - Manhattan distance at most 1. Anything more
+       * (a 2+ cell jump, or both axes changing in the same step) is a
+       * teleport, not a slide through a doorway, and is equally
+       * disqualifying.
+       */
+      const next = cellOf(pos);
+      const dcx = next.cx - cell.cx;
+      const dcz = next.cz - cell.cz;
+      if (dcx !== 0 || dcz !== 0) {
+        const manhattan = Math.abs(dcx) + Math.abs(dcz);
+        let phased = manhattan > 1;
+        if (!phased) {
+          const idx = cellIndex(cell.cx, cell.cz, 0);
+          let need;
+          if (dcx === 1) need = DIR.E;
+          else if (dcx === -1) need = DIR.W;
+          else if (dcz === 1) need = DIR.S;
+          else need = DIR.N;
+          phased = !isOpen(t.cells, idx, need);
+        }
+        if (phased) {
+          escapes++;
+          break;
+        }
+        cell = next;
+      }
 
       // Escape 1: pushed outside the built block entirely.
       if (pos.x < -MAZE.CELL || pos.z < -MAZE.CELL || pos.x > maxX || pos.z > maxX) {

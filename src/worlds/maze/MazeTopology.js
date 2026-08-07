@@ -37,6 +37,19 @@ export const MAZE = Object.freeze({
    * number regardless of what the live player config happens to be.
    */
   HOP: 0.93,
+  /**
+   * Auto-step height, metres, mirroring `src/core/Config.js`'s
+   * `player.stepHeight` (0.45) - duplicated for the same reason `HOP` is:
+   * this module may only import nothing at all. Used to derive how high a
+   * shaft's walls must reach above a standable inside it: `Player.js`'s
+   * step-up assist (gated on `_grounded || _coyote`) can mount an additional
+   * `stepHeight` on top of a hop's own apex, so the real maximum reach above
+   * a surface is `HOP + STEP_HEIGHT`, not `HOP` alone.
+   * `scripts/tests/maze-enclosure.test.mjs` asserts this stays in step with
+   * the live config, so a change to `stepHeight` breaks the build instead of
+   * silently weakening the guarantee.
+   */
+  STEP_HEIGHT: 0.45,
 });
 
 /** Passage bits. N is -z, S is +z, E is +x, W is -x. */

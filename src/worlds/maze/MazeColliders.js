@@ -193,12 +193,20 @@ export function districtColliders(cells, dx, dz, level) {
 
 /**
  * Extra clearance added above `highest standable + HOP` when deriving a
- * shaft's required wall height. The hop figure alone is the theoretical apex;
- * this exists so a wall that clears it by inches, rather than comfortably,
- * still counts as sound after floating-point slop in the geometry that will
- * eventually generate these shafts.
+ * shaft's required wall height.
+ *
+ * This is not floating-point slop - it is `Player.js`'s own step-up assist.
+ * Landing near a hop's apex, the step-up gated on `_grounded || _coyote`
+ * (`Player.js:800`) can mount an additional `stepHeight` on top of the hop
+ * itself, so the real maximum reach above a standable surface is
+ * `HOP + STEP_HEIGHT`, not `HOP` alone - a wall that only clears the bare hop
+ * is unsafe regardless of how comfortably it clears it. `MAZE.STEP_HEIGHT`
+ * mirrors `Config.js`'s `player.stepHeight` for the same reason `MAZE.HOP`
+ * mirrors `jumpVelocity`/`gravity`: this module may only import
+ * `MazeTopology.js`. The `+ 0.05` on top of that is the only part that is
+ * genuine floating-point slop.
  */
-const ENCLOSURE_MARGIN = 0.5;
+const ENCLOSURE_MARGIN = MAZE.STEP_HEIGHT + 0.05;
 
 /**
  * How high a shaft's walls must reach to contain what is inside it.

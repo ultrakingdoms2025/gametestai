@@ -1,9 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
 import { Physics } from '../../src/physics/Physics.js';
 import { MAZE, generateTopology } from '../../src/worlds/maze/MazeTopology.js';
 import { isEnclosureSound, districtColliders, cellToWorld } from '../../src/worlds/maze/MazeColliders.js';
+import { CONFIG } from '../../src/core/Config.js';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 const RADIUS = 0.35, HEIGHT = 1.75, SPRINT = 8.2, STEP = 1 / 60;
 // Kept in step with the maze's own derivation (`MAZE.HOP`) rather than
@@ -207,16 +213,56 @@ test('the same staircase is sound once the walls actually clear it', () => {
 /* passed parts 1 and 2, on real generated geometry - not just fixtures */
 /* ------------------------------------------------------------------ */
 
-/** Every `enclosed` descriptor in `descs`, grouped by the cell it sits in. */
-function groupEnclosedByShaft(descs) {
+/**
+ * Every shaft cell whose footprint a box's footprint overlaps - not just the
+ * cell containing the box's centre.
+ *
+ * `requiredWallTop` and `launchPoints` both decide relevance by footprint
+ * overlap (see their own filters above), so grouping had to match that or
+ * the two would disagree about which shaft a wide descriptor belongs to. A
+ * descriptor's centre landing in cell A does not mean its footprint stays
+ * inside A: a stair with `hx` wider than half a cell can reach into a
+ * neighbouring cell while still rounding to A's centre, and centre-only
+ * grouping would check A and never notice the neighbour it actually reaches
+ * into is unsealed. A small integer overscan on the candidate range keeps
+ * this exact regardless of how wide a descriptor is.
+ */
+function overlappingShaftCells(cx, hx, cz, hz) {
+  const half = MAZE.CELL / 2;
+  const EPS = 1e-6;
+  const gxLo = Math.floor((cx - hx) / MAZE.CELL) - 1;
+  const gxHi = Math.ceil((cx + hx) / MAZE.CELL) + 1;
+  const gzLo = Math.floor((cz - hz) / MAZE.CELL) - 1;
+  const gzHi = Math.ceil((cz + hz) / MAZE.CELL) + 1;
+  const cells = [];
+  for (let gx = gxLo; gx <= gxHi; gx++) {
+    const cellCx = gx * MAZE.CELL;
+    if (cellCx - half > cx + hx + EPS || cellCx + half < cx - hx - EPS) continue;
+    for (let gz = gzLo; gz <= gzHi; gz++) {
+      const cellCz = gz * MAZE.CELL;
+      if (cellCz - half > cz + hz + EPS || cellCz + half < cz - hz - EPS) continue;
+      cells.push({ gx, gz });
+    }
+  }
+  return cells;
+}
+
+/**
+ * Every `enclosed` descriptor in `descs`, grouped by every shaft cell its
+ * footprint overlaps (see `overlappingShaftCells`). `level` supplies the
+ * shaft floor height, since a descriptor's position alone does not say which
+ * level it belongs to.
+ */
+function groupEnclosedByShaft(descs, level = 0) {
+  const floorY = level * MAZE.LEVEL_HEIGHT;
   const groups = new Map();
   for (const d of descs) {
     if (!d.enclosed) continue;
-    const gx = Math.round(d.cx / MAZE.CELL);
-    const gz = Math.round(d.cz / MAZE.CELL);
-    const key = `${gx},${gz}`;
-    if (!groups.has(key)) {
-      groups.set(key, { key, shaft: { cx: gx * MAZE.CELL, cz: gz * MAZE.CELL, floorY: 0 } });
+    for (const { gx, gz } of overlappingShaftCells(d.cx, d.hx, d.cz, d.hz)) {
+      const key = `${gx},${gz}`;
+      if (!groups.has(key)) {
+        groups.set(key, { key, shaft: { cx: gx * MAZE.CELL, cz: gz * MAZE.CELL, floorY } });
+      }
     }
   }
   return [...groups.values()];
@@ -224,28 +270,52 @@ function groupEnclosedByShaft(descs) {
 
 test('every enclosed descriptor emitted by real generation sits in a proven shaft', () => {
   // Nothing in generation emits `enclosed` yet - real staircases are a later
-  // task, not this one - so this runs zero real assertions today. It exists
-  // now, before the first staircase, so that the day generation starts
-  // emitting `enclosed` descriptors this test starts checking every one of
-  // them automatically, rather than the exemption being self-certifying
-  // (see the companion test below, which proves this check is not vacuous).
+  // task, not this one - so this is EXPECTED to run zero real assertions
+  // today, and only today: the moment generation starts emitting `enclosed`
+  // descriptors, the `shaftsChecked === 0` assertion at the bottom starts
+  // failing on purpose, as a tripwire telling whoever added them to delete
+  // that line rather than let the check quietly start mattering unnoticed
+  // (see the companion test below, which proves the check itself is not
+  // vacuous once it does have something to check).
+  //
+  // The scan window matters: a narrow one (a couple of seeds, a couple of
+  // districts, one level) is a tripwire that a staircase landing outside it
+  // would simply never trip. Real staircases can land in any district on
+  // any of the four levels, so the window has to be the same size - the
+  // whole grid, every level - or it is not actually a tripwire. Measured
+  // cost of doing that (`districtColliders` over all 1,600 districts): ~40 ms
+  // per seed, `generateTopology(levels: MAZE.LEVELS)`: ~170 ms per seed - a
+  // couple of seeds is cheap enough to run on every `npm test`.
+  const seeds = [11, 47];
+  const t0 = Date.now();
   let shaftsChecked = 0;
-  for (const seed of [11, 47, 103]) {
-    const t = generateTopology(seed, { levels: 1 });
-    for (let dz = 4; dz < 6; dz++) {
-      for (let dx = 4; dx < 6; dx++) {
-        const descs = districtColliders(t.cells, dx, dz, 0);
-        for (const g of groupEnclosedByShaft(descs)) {
-          shaftsChecked++;
-          assert.equal(isEnclosureSound(descs, g.shaft), true,
-            `seed ${seed} district (${dx},${dz}) shaft ${g.key} is not a proven enclosure`);
+  for (const seed of seeds) {
+    const t = generateTopology(seed, { levels: MAZE.LEVELS });
+    for (let level = 0; level < MAZE.LEVELS; level++) {
+      for (let dz = 0; dz < MAZE.DISTRICTS; dz++) {
+        for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
+          const descs = districtColliders(t.cells, dx, dz, level);
+          for (const g of groupEnclosedByShaft(descs, level)) {
+            shaftsChecked++;
+            assert.equal(isEnclosureSound(descs, g.shaft), true,
+              `seed ${seed} level ${level} district (${dx},${dz}) shaft ${g.key} is not a proven enclosure`);
+          }
         }
       }
     }
   }
+  const elapsedMs = Date.now() - t0;
+  const districtsScanned = seeds.length * MAZE.LEVELS * MAZE.DISTRICTS * MAZE.DISTRICTS;
+  // eslint-disable-next-line no-console
+  console.log(
+    `[enumeration] ${seeds.length} seed(s) x ${MAZE.LEVELS} levels x ` +
+    `${MAZE.DISTRICTS * MAZE.DISTRICTS} districts/level = ${districtsScanned} districts scanned, ` +
+    `${shaftsChecked} shafts checked, ${elapsedMs} ms`,
+  );
   assert.equal(shaftsChecked, 0,
     'generation now emits `enclosed` descriptors - the loop above is no longer vacuous, ' +
-    'so this line should be deleted rather than kept passing');
+    'so this line should be deleted rather than kept passing (this is expected to be 0 only ' +
+    'until real staircases exist)');
 });
 
 test('the bound-to-exemption check is not vacuous: an enclosed descriptor placed in an unsealed real cell fails it', () => {
@@ -267,11 +337,87 @@ test('the bound-to-exemption check is not vacuous: an enclosed descriptor placed
   const rigged = [...descs, {
     cx: centre.x, cy: 1, cz: centre.z, hx: 0.8, hy: 1, hz: 0.8, kind: 'stair', enclosed: true,
   }];
-  const groups = groupEnclosedByShaft(rigged);
+  const groups = groupEnclosedByShaft(rigged, 0);
   assert.ok(groups.length > 0, 'expected the injected descriptor to be grouped into a shaft');
   for (const g of groups) {
     assert.equal(isEnclosureSound(rigged, g.shaft), false,
       `expected the rigged shaft at ${g.key} to be reported unsound - ` +
       'if this passes, the bound-to-exemption check is vacuous');
+  }
+});
+
+test("a descriptor spanning two cells is checked against both - the reviewer's exploit", () => {
+  // Cell A (0,0) is fully sealed. Cell B (CELL,0) is not: it has only the
+  // wall it shares with A (real maze geometry emits an internal wall once,
+  // not duplicated per cell, so A's east wall doubles as B's west wall) and
+  // nothing on its other three sides - genuinely open, part of the
+  // navigable maze.
+  //
+  // A stair centred inside A - so a centre-only grouping rounds it into A
+  // alone - but wide enough (hx: 3.0, matching the reviewer's own exploit)
+  // that its footprint reaches 1.5 m into B's footprint must be checked
+  // against B too, and B must fail, denying the exemption overall.
+  const shaftA = { cx: 0, cz: 0, floorY: 0 };
+  const shaftB = { cx: MAZE.CELL, cz: 0, floorY: 0 };
+  const stair = { cx: 1.5, cy: 1.0, cz: 0, hx: 3.0, hy: 1.0, hz: 0.8, kind: 'stair', enclosed: true };
+  const descs = [floorSlab(12), ...fullWalls(6.0), stair];
+
+  // Sanity on the fixture itself, independent of grouping: A really is
+  // sealed, B really is not.
+  assert.equal(isEnclosureSound(descs, shaftA), true, 'fixture bug: A should be sealed');
+  assert.equal(isEnclosureSound(descs, shaftB), false, 'fixture bug: B should not be sealed');
+
+  const groups = groupEnclosedByShaft(descs, 0);
+  const keys = groups.map((g) => g.key).sort();
+  assert.deepEqual(keys, ['0,0', '1,0'],
+    "the stair's footprint overlaps both cells, so grouping must enumerate both, not just the one its centre rounds to");
+  for (const g of groups) {
+    assert.equal(isEnclosureSound(descs, g.shaft), g.key === '0,0',
+      `shaft ${g.key}: a wide descriptor must be checked against every cell it reaches into, ` +
+      'and the exemption must be denied if any of them is unsound');
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Guards on the machinery itself                                      */
+/* ------------------------------------------------------------------ */
+
+test('MAZE.STEP_HEIGHT stays in step with the live player config', () => {
+  // MAZE.STEP_HEIGHT is a duplicate of CONFIG.player.stepHeight, forced by
+  // MazeTopology.js being allowed to import nothing at all (see its own
+  // comment on HOP and STEP_HEIGHT). A duplicate that can silently drift is
+  // worse than no duplicate: if stepHeight is ever raised in Config.js
+  // without this constant being updated to match, ENCLOSURE_MARGIN in
+  // MazeColliders.js stops covering the player's real step-up reach and the
+  // whole proof becomes unsafe with no test failing to say so. This is that
+  // test.
+  assert.equal(MAZE.STEP_HEIGHT, CONFIG.player.stepHeight,
+    `MAZE.STEP_HEIGHT (${MAZE.STEP_HEIGHT}) has drifted from CONFIG.player.stepHeight ` +
+    `(${CONFIG.player.stepHeight}) - update MAZE.STEP_HEIGHT in MazeTopology.js to match`);
+});
+
+test('MazeTopology.js and MazeColliders.js import nothing outside each other', async () => {
+  // Textual, not behavioural - the same reason scripts/contract-check.mjs and
+  // scripts/tests/rules-applied.test.mjs check source text rather than
+  // runtime behaviour: purity is exactly what lets the containment, seam and
+  // enclosure gates run headless in the first place, and nothing else
+  // enforces it. A `three` (or any other) import landing in either file
+  // would not fail any other test, since both files happen to work fine
+  // under Node either way - it would just quietly cost this whole tier its
+  // reason for existing.
+  const importRe = /^\s*import\s+(?:[\s\S]*?\s+from\s+)?['"]([^'"]+)['"]\s*;?\s*$/gm;
+
+  const topoSrc = await readFile(path.join(root, 'src/worlds/maze/MazeTopology.js'), 'utf8');
+  const topoImports = [...topoSrc.matchAll(importRe)].map((m) => m[1]);
+  assert.deepEqual(topoImports, [],
+    `MazeTopology.js must import nothing at all - found: ${topoImports.join(', ') || '(none)'}`);
+
+  const collidersSrc = await readFile(path.join(root, 'src/worlds/maze/MazeColliders.js'), 'utf8');
+  const collidersImports = [...collidersSrc.matchAll(importRe)].map((m) => m[1]);
+  assert.ok(collidersImports.length > 0,
+    'MazeColliders.js imports nothing - expected at least ./MazeTopology.js');
+  for (const spec of collidersImports) {
+    assert.ok(spec === './MazeTopology.js',
+      `MazeColliders.js imports "${spec}" - it may only import from ./MazeTopology.js`);
   }
 });

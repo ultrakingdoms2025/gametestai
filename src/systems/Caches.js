@@ -161,7 +161,7 @@ export class Caches {
   _onWorld(id, world) {
     this._worldId = id ?? null;
     this.sites.length = 0;
-    // No caches to dive for in a hedge maze. (rules.caches)
+    // No caches to dive for in a hedge maze.
     if (!allows(world, 'caches')) return;
     if (!world || !this.physics || !this.loot) return;
 

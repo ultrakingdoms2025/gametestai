@@ -51,7 +51,7 @@ export class QuestSystem {
     if (this.bus) {
       this._offs.push(this.bus.on('world:changed', ({ id, world }) => {
         this._worldId = id ?? world?.id ?? null;
-        // The maze is its own objective. (rules.quests)
+        // The maze is its own objective.
         if (!allows(world, 'quests')) { this.worldQuests = []; return; }
         this._pending = true;
         this._advanceSteps('visit', (step, meta) => this._matchesStepTarget(step, meta), {

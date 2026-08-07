@@ -127,7 +127,7 @@ export class Contracts {
 
   _generate() {
     this.list.length = 0;
-    // The maze's NPCs are for talking to, not for hiring. (rules.contracts)
+    // The maze's NPCs are for talking to, not for hiring.
     if (!allows(this.worldManager?.active, 'contracts')) return;
     const id = this._worldId;
     const friendlies = (this.npcManager?.friendlies ?? this.npcManager?._friendlies ?? [])

@@ -125,9 +125,14 @@ export class Marketplace {
      * quote station rates. */
     this._offMarket = this.bus?.on('world:changed', ({ id, world }) => {
       this._worldId = id ?? null;
-      // Nothing to buy inside the maze. (rules.merchants)
-      if (!allows(world, 'merchants')) return;
       setMarketWorld(id);
+      // Nothing to buy inside the maze. Repoint pricing first - other systems
+      // read it independently of whether this shop can open - then clear any
+      // stock left over from the previous world and decline to repopulate it.
+      if (!allows(world, 'merchants')) {
+        this._catalog = [];
+        return;
+      }
       // A shop left open through a portal must show the new world's stock, not
       // stale items from the destination that was just left behind.
       void this.refreshCatalog();

@@ -253,7 +253,7 @@ export class Player {
 
     /** Active world, tracked for capability rules. @see ../worlds/WorldRules.js */
     this._world = null;
-    this.bus?.on('world:changed', ({ world }) => { this._world = world; });
+    this._offRules = this.bus?.on('world:changed', ({ world }) => { this._world = world; }) ?? null;
 
     this.camera.rotation.order = 'YXZ';
     this._applyCamera(0);
@@ -560,7 +560,7 @@ export class Player {
     // Dive steering and the roll timer run before any movement branch claims
     // the step: a dive is an *airborne* modifier, so it has to apply whether
     // the player is falling normally or has just kicked off a wall.
-    // Sustained wall climbing and diving, off in worlds that forbid it. (rules.parkour)
+    // Sustained wall climbing and diving, off in worlds that forbid it.
     if (allows(this._world, 'parkour')) this.parkour.fixedUpdate(dt);
 
     /* ---- clinging to a wall ------------------------------------------ *
@@ -653,7 +653,7 @@ export class Player {
      * apex and under 2.4 m, with proven standing room. Everything else -
      * kerbs, stair treads, skate-park transitions - fails the probe and the
      * press falls straight through to the jump below. */
-    // One-shot ledge mantling, off in worlds that forbid it. (rules.climb)
+    // One-shot ledge mantling, off in worlds that forbid it.
     if (jumpEdge && allows(this._world, 'climb') && this.climb.tryStart(elapsed, { inWater: false })) {
       this._jumpHeld = true;
       this._jumpBuffer = 0;
@@ -1352,6 +1352,8 @@ export class Player {
   }
 
   dispose() {
+    this._offRules?.();
+    this._offRules = null;
     this._offFired?.();
     this._offFired = null;
     this._offWater?.();

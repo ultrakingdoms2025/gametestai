@@ -526,7 +526,7 @@ export class Loadout {
    * @returns {boolean} true if the selection changed
    */
   select(indexOrId, opts = {}) {
-    // A world with no weapons has no viewmodel and no selection. (rules.weapons)
+    // A world with no weapons has no viewmodel and no selection.
     if (!allows(this._world, 'weapons')) return false;
     let i = indexOrId;
     if (typeof indexOrId === 'string') {

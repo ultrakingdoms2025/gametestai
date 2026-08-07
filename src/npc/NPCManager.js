@@ -348,7 +348,7 @@ export class NPCManager {
     this.theme = THEME_BY_WORLD[world.id] ?? 'station';
     /* A world may forbid hostiles outright - the maze has NPCs purely to talk
      * to. Zeroing the budget is enough: every hostile path downstream is driven
-     * by this count. (rules.hostiles) */
+     * by this count. */
     const hostilesAllowed = allows(world, 'hostiles');
     const maxHostiles = hostilesAllowed ? this.maxHostiles : 0;
     const spawns = world.npcSpawns ?? [];

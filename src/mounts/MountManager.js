@@ -343,7 +343,7 @@ export class MountManager {
    * @returns {boolean} true if a mount is being ridden afterwards
    */
   summon(id) {
-    // Some worlds are walked, not ridden. (rules.mounts)
+    // Some worlds are walked, not ridden.
     if (!allows(this.worldManager?.active, 'mounts')) return false;
     if (!this._unlocked.has(id)) return false;
     const existing = this._mounts.get(id);

@@ -199,7 +199,7 @@ export class Relics {
     this.sites.length = 0;
     this.mesh.count = 0;
     this.glow.count = 0;
-    // No relics: the only collectible is the stack at the centre. (rules.relics)
+    // No relics: the only collectible is the stack at the centre.
     if (!allows(world, 'relics')) return;
     if (!world || !this.physics) return;
 

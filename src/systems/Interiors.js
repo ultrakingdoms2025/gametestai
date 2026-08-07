@@ -36,16 +36,16 @@ export class Interiors {
 
   /* ------------------------------------------------------------------ */
   _onWorld(id, world) {
-    this._ensureRollout(id, world);
-
     this._worldId = id;
     this._doors = [];
     this._lifts = [];
     this._spots = [];
     this._setPrompt(null);
 
-    // Towers and tunnels are world geometry, not enterable interiors. (rules.interiors)
+    // Towers and tunnels are world geometry, not enterable interiors.
     if (!allows(world, 'interiors')) return;
+
+    this._ensureRollout(id, world);
 
     const enterables = world?.enterables;
     if (!Array.isArray(enterables) || !enterables.length) return;

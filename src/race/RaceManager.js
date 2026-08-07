@@ -220,7 +220,7 @@ export class RaceManager {
     this._onWorldChanging = () => this._teardown();
     bus?.on?.('world:changing', this._onWorldChanging);
     this._onWorldChanged = ({ world }) => {
-      // No circuits, and no mounts to drive them. (rules.races)
+      // No circuits, and no mounts to drive them.
       if (!allows(world, 'races')) return;
       this.arm(world);
     };
@@ -1279,6 +1279,10 @@ export class RaceManager {
     this.loops.setLoops(null);
     this.field.clear();
     this.rings.clear();
+    // Otherwise a forbidden world's `tracks` getter and `selectTrack` keep
+    // reading the world that was just left, and can re-arm its circuits from
+    // inside the maze.
+    this._source = null;
   }
 
   dispose() {

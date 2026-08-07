@@ -152,6 +152,8 @@ export class Loot {
     this._fullNotifyT = 0;
     this._eLatch = false;
     this._worldId = 'station';
+    /** Active world, tracked for capability rules. @see ../worlds/WorldRules.js */
+    this._world = null;
     this._magnetUntil = 0;
     this._magnetRange = AUTO_RANGE;
 
@@ -164,9 +166,8 @@ export class Loot {
       this._offs.push(
         bus.on('world:changed', (e) => {
           this._worldId = e?.id ?? this._worldId;
+          this._world = e?.world ?? null;
           this.clear();
-          // The maze wants no pickups. Clear first, then decline to populate. (rules.loot)
-          if (!allows(e?.world, 'loot')) return;
         })
       );
     }
@@ -299,6 +300,8 @@ export class Loot {
 
   /** Roll the table for this world and spawn the pickup at the body. */
   _dropFor(npc) {
+    // The maze wants no pickups.
+    if (!allows(this._world, 'loot')) return;
     const table = DROP_TABLES[this._worldId] ?? DROP_TABLES.station;
     const contents = [];
 

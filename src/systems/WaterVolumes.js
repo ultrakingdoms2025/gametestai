@@ -142,7 +142,7 @@ export class WaterVolumes {
       return;
     }
 
-    // No water here; skip the full-geometry scan entirely. (rules.swim)
+    // No water here; skip the full-geometry scan entirely.
     if (!allows(world, 'swim')) {
       this._announce();
       return;

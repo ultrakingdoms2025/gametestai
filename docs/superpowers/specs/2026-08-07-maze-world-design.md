@@ -49,7 +49,7 @@ chase and no fail state.
 - **Art:** overgrown stone garden.
 - **Jump:** retained as a hop that clears nothing.
 - **Entry budget:** under 3 seconds.
-- **Reward:** 100 credits (provisional, expected to be tuned).
+- **Reward:** 100 credits. Final.
 - **Abandon:** required from anywhere in the maze.
 
 ---
@@ -246,7 +246,8 @@ next entry rolls a fresh maze.
 
 **The centre.** A stack of credits worth **100 credits**, awarded through the
 existing `Economy`. On collection a return portal opens at the centre, so the
-walk out is not forced. The value is provisional and expected to be tuned.
+walk out is not forced. **100 is final** — it is not a placeholder, and the
+reward is deliberately not scaled by maze size or completion time.
 
 ---
 

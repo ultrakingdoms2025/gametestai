@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { districtCoords } from './MazeTopology.js';
+import { districtCoords, districtAtWorld, neighbourhoodKeys } from './MazeTopology.js';
 import { districtColliders } from './MazeColliders.js';
 
 /**
@@ -112,6 +112,32 @@ export class MazeChunks {
 
   disposeAll() {
     for (const key of [...this._resident.keys()]) this.drop(key);
+  }
+
+  /**
+   * Bring the resident set in line with where the player is standing.
+   *
+   * Drops before it loads, so peak memory is the neighbourhood rather than the
+   * neighbourhood plus the column being replaced.
+   *
+   * @param {number} x world metres
+   * @param {number} z world metres
+   * @param {number} level
+   * @param {number} [radius] districts either side; 2 gives the 5x5 block
+   * @returns {boolean} true when the set changed
+   */
+  updateResidency(x, z, level, radius = 2) {
+    const want = neighbourhoodKeys(districtAtWorld(x, z, level), radius);
+    const wanted = new Set(want);
+
+    let changed = false;
+    for (const key of [...this._resident.keys()]) {
+      if (!wanted.has(key)) { this.drop(key); changed = true; }
+    }
+    for (const key of want) {
+      if (!this._resident.has(key)) { this.ensure(key); changed = true; }
+    }
+    return changed;
   }
 
   /** One InstancedMesh from a list of box descriptors. */

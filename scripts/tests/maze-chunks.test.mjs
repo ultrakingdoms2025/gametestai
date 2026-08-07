@@ -120,3 +120,74 @@ test('disposeAll clears everything', () => {
   assert.equal(group.children.length, 0);
   assert.deepEqual(chunks.residentKeys(), []);
 });
+
+import { districtAtWorld, neighbourhoodKeys, DISTRICT_SPAN } from '../../src/worlds/maze/MazeTopology.js';
+
+test('updateResidency loads exactly the neighbourhood', () => {
+  const { chunks } = harness();
+  const x = 10.5 * DISTRICT_SPAN;
+  const z = 10.5 * DISTRICT_SPAN;
+  chunks.updateResidency(x, z, 0, 2);
+  const want = neighbourhoodKeys(districtAtWorld(x, z, 0), 2);
+  assert.deepEqual(chunks.residentKeys(), want);
+  assert.equal(want.length, 25);
+});
+
+test('updateResidency is idempotent and reports no change', () => {
+  const { chunks, physics } = harness();
+  const x = 10.5 * DISTRICT_SPAN, z = 10.5 * DISTRICT_SPAN;
+  assert.equal(chunks.updateResidency(x, z, 0, 2), true, 'first call must load');
+  const n = physics.colliders.length;
+  assert.equal(chunks.updateResidency(x, z, 0, 2), false, 'second call must be a no-op');
+  assert.equal(physics.colliders.length, n);
+});
+
+test('walking one district over evicts the trailing column and loads the leading one', () => {
+  const { chunks } = harness();
+  const z = 10.5 * DISTRICT_SPAN;
+  chunks.updateResidency(10.5 * DISTRICT_SPAN, z, 0, 2);
+  const before = new Set(chunks.residentKeys());
+  chunks.updateResidency(11.5 * DISTRICT_SPAN, z, 0, 2);
+  const after = new Set(chunks.residentKeys());
+  assert.equal(after.size, 25);
+  const added = [...after].filter((k) => !before.has(k));
+  const removed = [...before].filter((k) => !after.has(k));
+  assert.equal(added.length, 5, `expected one new column, got ${added.length}`);
+  assert.equal(removed.length, 5, `expected one dropped column, got ${removed.length}`);
+});
+
+test('residency never exceeds the neighbourhood, however far the player walks', () => {
+  const { chunks, physics } = harness();
+  let peak = 0;
+  for (let i = 0; i < 20; i++) {
+    chunks.updateResidency((2 + i) * DISTRICT_SPAN, (2 + i * 0.5) * DISTRICT_SPAN, 0, 2);
+    peak = Math.max(peak, chunks.residentKeys().length);
+    assert.ok(chunks.residentKeys().length <= 25, 'resident set grew past the neighbourhood');
+  }
+  assert.ok(peak > 0);
+  // Physics must hold exactly what the resident chunks hold, nothing stranded.
+  assert.equal(physics.colliders.length, chunks.colliderCount());
+});
+
+test('a long walk leaves no orphaned colliders or buckets', () => {
+  const { chunks, physics, colliders, group } = harness();
+  for (let i = 0; i < 30; i++) chunks.updateResidency(i * 0.6 * DISTRICT_SPAN, i * 0.4 * DISTRICT_SPAN, 0, 2);
+  assert.equal(physics.colliders.length, chunks.colliderCount());
+  assert.equal(colliders.length, physics.colliders.length);
+  const meshCount = chunks.residentKeys().length * 2; // hedges + floor per district
+  assert.ok(group.children.length <= meshCount, `mesh leak: ${group.children.length}`);
+  chunks.disposeAll();
+  assert.equal(physics.colliders.length, 0);
+  assert.equal(physics._grid.size, 0);
+  assert.equal(group.children.length, 0);
+});
+
+test('the ground stays continuous while walking across district seams', () => {
+  const { chunks, physics } = harness();
+  // Walk east along the middle of the grid, sampling under the player.
+  for (let x = 3 * DISTRICT_SPAN; x < 8 * DISTRICT_SPAN; x += 5) {
+    const z = 5.5 * DISTRICT_SPAN;
+    chunks.updateResidency(x, z, 0, 2);
+    assert.notEqual(physics.groundHeight(x, z, 5, 12), null, `hole under the player at x=${x}`);
+  }
+});

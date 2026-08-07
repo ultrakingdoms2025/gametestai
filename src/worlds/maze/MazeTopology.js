@@ -111,3 +111,134 @@ export function inBounds(x, z) {
 export function isOpen(cells, index, dir) {
   return (cells[index] & dir) !== 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* District graph                                                      */
+/*                                                                     */
+/* The maze is 640,000 cells, which is far too many to reason about as */
+/* one connected structure every time it is generated. Instead the     */
+/* 1,600 districts are connected first, by a spanning tree, and that   */
+/* tree is what *guarantees* an entrance-to-centre route exists. The   */
+/* cells inside each district are carved afterwards and independently. */
+/* ------------------------------------------------------------------ */
+
+const DISTRICTS_PER_LEVEL = MAZE.DISTRICTS * MAZE.DISTRICTS;
+const TOTAL_DISTRICTS = DISTRICTS_PER_LEVEL * MAZE.LEVELS;
+
+/** Fraction of non-tree candidate edges opened, to create loops. */
+const EXTRA_EDGE_FRACTION = 0.10;
+
+/**
+ * How often a vertical neighbour is even considered during the walk.
+ *
+ * Vertical connections must be rare or the four levels read as one soup, but
+ * they cannot be forbidden or the upper levels would be unreachable. Biasing
+ * the *order* rather than pruning the edge keeps the graph connected by
+ * construction: the walk still takes a vertical edge whenever a level has no
+ * unvisited horizontal neighbours left, which is exactly when it must.
+ */
+const VERTICAL_BIAS = 0.12;
+
+export function districtIndex(dx, dz, level) {
+  return level * DISTRICTS_PER_LEVEL + dz * MAZE.DISTRICTS + dx;
+}
+
+export function districtCoords(index) {
+  const level = Math.floor(index / DISTRICTS_PER_LEVEL);
+  const rem = index - level * DISTRICTS_PER_LEVEL;
+  const dz = Math.floor(rem / MAZE.DISTRICTS);
+  return { dx: rem - dz * MAZE.DISTRICTS, dz, level };
+}
+
+/** Canonical undirected edge key. */
+export function edgeKey(a, b) {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+export function isEdgeOpen(graph, aIndex, bIndex) {
+  return graph.open.has(edgeKey(aIndex, bIndex));
+}
+
+/** Six-neighbourhood of a district, in-bounds only. */
+function districtNeighbours(index) {
+  const { dx, dz, level } = districtCoords(index);
+  const out = [];
+  if (dz > 0) out.push({ i: districtIndex(dx, dz - 1, level), vertical: false });
+  if (dx < MAZE.DISTRICTS - 1) out.push({ i: districtIndex(dx + 1, dz, level), vertical: false });
+  if (dz < MAZE.DISTRICTS - 1) out.push({ i: districtIndex(dx, dz + 1, level), vertical: false });
+  if (dx > 0) out.push({ i: districtIndex(dx - 1, dz, level), vertical: false });
+  if (level > 0) out.push({ i: districtIndex(dx, dz, level - 1), vertical: true });
+  if (level < MAZE.LEVELS - 1) out.push({ i: districtIndex(dx, dz, level + 1), vertical: true });
+  return out;
+}
+
+/**
+ * Build the district connectivity graph for a seed.
+ *
+ * @param {number} seed
+ * @returns {{ open: Set<string>, entrance: {dx:number,dz:number,level:number},
+ *             centre: {dx:number,dz:number,level:number},
+ *             treeEdges: number, extraEdges: number }}
+ */
+export function buildDistrictGraph(seed) {
+  const rng = mulberry32(hash32(seed, 0x6a11));
+  const open = new Set();
+  const visited = new Uint8Array(TOTAL_DISTRICTS);
+
+  /* Iterative DFS. Recursion would blow the stack at 1,600 deep on some
+   * engines, and this has to run on every entry. */
+  const stack = [0];
+  visited[0] = 1;
+  let treeEdges = 0;
+
+  while (stack.length) {
+    const cur = stack[stack.length - 1];
+    const candidates = districtNeighbours(cur).filter((n) => !visited[n.i]);
+    if (candidates.length === 0) {
+      stack.pop();
+      continue;
+    }
+    // Horizontal first unless the bias roll says otherwise; vertical edges stay
+    // rare without ever being unavailable.
+    const horizontal = candidates.filter((c) => !c.vertical);
+    const vertical = candidates.filter((c) => c.vertical);
+    let pick;
+    if (horizontal.length && (vertical.length === 0 || rng() > VERTICAL_BIAS)) {
+      pick = horizontal[Math.floor(rng() * horizontal.length)];
+    } else {
+      pick = vertical[Math.floor(rng() * vertical.length)];
+    }
+    open.add(edgeKey(cur, pick.i));
+    treeEdges++;
+    visited[pick.i] = 1;
+    stack.push(pick.i);
+  }
+
+  /* Loops. Walk every candidate edge once and open a fraction of the ones the
+   * tree did not already use. Deterministic order, so the seed fully
+   * determines the result. */
+  let extraEdges = 0;
+  for (let i = 0; i < TOTAL_DISTRICTS; i++) {
+    for (const n of districtNeighbours(i)) {
+      if (n.i < i) continue; // consider each undirected edge once
+      const key = edgeKey(i, n.i);
+      if (open.has(key)) continue;
+      if (rng() < EXTRA_EDGE_FRACTION) {
+        open.add(key);
+        extraEdges++;
+      }
+    }
+  }
+
+  return {
+    open,
+    treeEdges,
+    extraEdges,
+    /* Fixed, so the forecourt is always in the same place and the return arch
+     * can be authored rather than discovered. */
+    entrance: { dx: 10, dz: 0, level: 0 },
+    /* Horizontally central, but on a level the seed chooses - so not even
+     * which floor the prize is on can be learned between runs. */
+    centre: { dx: 10, dz: 10, level: hash32(seed, 0xc0ffee) % MAZE.LEVELS },
+  };
+}

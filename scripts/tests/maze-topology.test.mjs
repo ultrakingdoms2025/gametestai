@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   MAZE, DIR, OPPOSITE, STEP,
   hash32, mulberry32, cellIndex, cellCoords, isOpen,
+  districtIndex, districtCoords, edgeKey, buildDistrictGraph, isEdgeOpen,
 } from '../../src/worlds/maze/MazeTopology.js';
 
 test('constants match the spec', () => {
@@ -93,4 +94,84 @@ test('isOpen reads passage bits', () => {
   assert.equal(isOpen(cells, 1, DIR.W), true);
   assert.equal(isOpen(cells, 1, DIR.E), false);
   assert.equal(isOpen(cells, 0, DIR.N), false);
+});
+
+const TOTAL_DISTRICTS = MAZE.DISTRICTS * MAZE.DISTRICTS * MAZE.LEVELS; // 1600
+
+test('districtIndex round-trips and is unique', () => {
+  const seen = new Set();
+  for (let level = 0; level < MAZE.LEVELS; level++) {
+    for (let dz = 0; dz < MAZE.DISTRICTS; dz++) {
+      for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
+        const i = districtIndex(dx, dz, level);
+        seen.add(i);
+        assert.deepEqual(districtCoords(i), { dx, dz, level });
+      }
+    }
+  }
+  assert.equal(seen.size, TOTAL_DISTRICTS);
+});
+
+test('edgeKey is canonical regardless of argument order', () => {
+  assert.equal(edgeKey(5, 9), edgeKey(9, 5));
+  assert.notEqual(edgeKey(5, 9), edgeKey(5, 10));
+});
+
+test('the district graph connects every district', () => {
+  const graph = buildDistrictGraph(4242);
+  // Flood fill the open edges from district 0 and demand we reach all 1600.
+  const seen = new Uint8Array(TOTAL_DISTRICTS);
+  const stack = [0];
+  seen[0] = 1;
+  let reached = 1;
+  while (stack.length) {
+    const cur = stack.pop();
+    const { dx, dz, level } = districtCoords(cur);
+    const neighbours = [
+      [dx, dz - 1, level], [dx + 1, dz, level],
+      [dx, dz + 1, level], [dx - 1, dz, level],
+      [dx, dz, level - 1], [dx, dz, level + 1],
+    ];
+    for (const [nx, nz, nl] of neighbours) {
+      if (nx < 0 || nz < 0 || nl < 0) continue;
+      if (nx >= MAZE.DISTRICTS || nz >= MAZE.DISTRICTS || nl >= MAZE.LEVELS) continue;
+      const n = districtIndex(nx, nz, nl);
+      if (seen[n]) continue;
+      if (!isEdgeOpen(graph, cur, n)) continue;
+      seen[n] = 1;
+      reached++;
+      stack.push(n);
+    }
+  }
+  assert.equal(reached, TOTAL_DISTRICTS, 'district graph is disconnected');
+});
+
+test('the graph is mostly a tree, with roughly 10% extra edges', () => {
+  const graph = buildDistrictGraph(7);
+  assert.equal(graph.treeEdges, TOTAL_DISTRICTS - 1, 'spanning tree must have n-1 edges');
+  // ~10% of the *remaining* candidate edges. Loose bounds - this is a
+  // character check, not an exact count.
+  assert.ok(graph.extraEdges > 100, `too few loops: ${graph.extraEdges}`);
+  assert.ok(graph.extraEdges < 700, `too many loops: ${graph.extraEdges}`);
+});
+
+test('entrance is fixed and centre is on a seed-chosen level', () => {
+  const levels = new Set();
+  for (let s = 0; s < 200; s++) {
+    const g = buildDistrictGraph(s);
+    assert.deepEqual(g.entrance, { dx: 10, dz: 0, level: 0 });
+    assert.equal(g.centre.dx, 10);
+    assert.equal(g.centre.dz, 10);
+    levels.add(g.centre.level);
+  }
+  // The player must not be able to learn which level the prize is on.
+  assert.ok(levels.size >= 3, `centre level barely varies: ${[...levels]}`);
+});
+
+test('the same seed always builds the same graph', () => {
+  const a = buildDistrictGraph(31337);
+  const b = buildDistrictGraph(31337);
+  assert.deepEqual([...a.open].sort(), [...b.open].sort());
+  const c = buildDistrictGraph(31338);
+  assert.notDeepEqual([...a.open].sort(), [...c.open].sort());
 });

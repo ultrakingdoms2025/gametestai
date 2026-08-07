@@ -80,23 +80,37 @@ export class MazeChunks {
     const meshes = [];
     for (const [kind, material] of [['hedge', this.materials.hedge], ['floor', this.materials.floor]]) {
       const of = descs.filter((d) => d.kind === kind);
-      if (of.length === 0) continue;
-      meshes.push(this._instance(of, material, `maze:${kind}:${key}`));
+      const mesh = buildBoxInstances(of, material, `maze:${kind}:${key}`, this.group);
+      if (mesh) meshes.push(mesh);
     }
 
     this._resident.set(key, { meshes, colliders });
   }
 
-  /** Release a district. Safe to call for one that is not resident. */
+  /**
+   * Release a district. Safe to call for one that is not resident.
+   *
+   * At full 25-district residency `worldColliders` is ~10,000 long. Splicing
+   * it once per collider - the original approach - is an `indexOf` plus a
+   * shift over that whole array, 401 times, per district: 802 linear scans
+   * once `Physics.remove`'s own bookkeeping is counted too. Building one Set
+   * of this district's colliders and rewriting `worldColliders` in a single
+   * pass turns that into one O(n) filter regardless of how many colliders the
+   * district holds.
+   */
   drop(key) {
     const entry = this._resident.get(key);
     if (!entry) return;
 
-    for (const c of entry.colliders) {
-      this.physics.remove(c);
-      const at = this.worldColliders.indexOf(c);
-      if (at >= 0) this.worldColliders.splice(at, 1);
+    const evicted = new Set(entry.colliders);
+    for (const c of entry.colliders) this.physics.remove(c);
+
+    const wc = this.worldColliders;
+    let w = 0;
+    for (let r = 0; r < wc.length; r++) {
+      if (!evicted.has(wc[r])) wc[w++] = wc[r];
     }
+    wc.length = w;
 
     for (const m of entry.meshes) {
       this.group.remove(m);
@@ -110,8 +124,43 @@ export class MazeChunks {
     this._resident.delete(key);
   }
 
+  /**
+   * Release every resident district at once - the bulk-teardown path used by
+   * `MazeWorld.dispose()`.
+   *
+   * Calling `drop()` in a loop here would still filter the whole (shrinking)
+   * `worldColliders` array once per district - 25 passes for a full
+   * neighbourhood. Since every resident district is leaving together, this
+   * collects every collider from every district into one Set first and then
+   * filters `worldColliders` exactly once, which is also the case
+   * `MazeWorld.dispose()` cares about: it clears `world.colliders` outright a
+   * few lines after calling this, so the per-district bookkeeping `drop()`
+   * needs for correctness in isolation is pure waste here.
+   */
   disposeAll() {
-    for (const key of [...this._resident.keys()]) this.drop(key);
+    if (this._resident.size === 0) return;
+
+    const evicted = new Set();
+    for (const entry of this._resident.values()) {
+      for (const c of entry.colliders) {
+        this.physics.remove(c);
+        evicted.add(c);
+      }
+      for (const m of entry.meshes) {
+        this.group.remove(m);
+        m.geometry.dispose();
+        m.dispose();
+      }
+    }
+
+    const wc = this.worldColliders;
+    let w = 0;
+    for (let r = 0; r < wc.length; r++) {
+      if (!evicted.has(wc[r])) wc[w++] = wc[r];
+    }
+    wc.length = w;
+
+    this._resident.clear();
   }
 
   /**
@@ -139,27 +188,50 @@ export class MazeChunks {
     }
     return changed;
   }
+}
 
-  /** One InstancedMesh from a list of box descriptors. */
-  _instance(descs, material, name) {
-    const geo = new THREE.BoxGeometry(1, 1, 1);
-    const mesh = new THREE.InstancedMesh(geo, material, descs.length);
-    mesh.name = name;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const pos = new THREE.Vector3();
-    const scale = new THREE.Vector3();
-    for (let i = 0; i < descs.length; i++) {
-      const d = descs[i];
-      pos.set(d.cx, d.cy, d.cz);
-      scale.set(d.hx * 2, d.hy * 2, d.hz * 2);
-      m.compose(pos, q, scale);
-      mesh.setMatrixAt(i, m);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    this.group.add(mesh);
-    return mesh;
+/**
+ * Build one InstancedMesh of unit boxes from a list of `{cx,cy,cz,hx,hy,hz}`
+ * descriptors, add it to `group`, and return it - or return `null` for an
+ * empty descriptor list rather than allocate a zero-instance mesh.
+ *
+ * Shared by `MazeChunks` (district streaming) and `MazeWorld` (the forecourt,
+ * which is authored geometry rather than a chunk but built by exactly this
+ * same recipe: same `BoxGeometry(1,1,1)`, same scratch Matrix4/Quaternion/
+ * Vector3, same compose loop, same `instanceMatrix.needsUpdate`). It lives
+ * here rather than in `MazeWorld.js` because `MazeWorld` already imports from
+ * this module - putting it there instead would mean `MazeChunks` importing
+ * back from `MazeWorld`, a cycle neither file needs.
+ *
+ * The empty-list guard matters for the forecourt specifically: it can
+ * legitimately produce zero hedges or zero floor tiles depending on layout,
+ * and the caller does not pre-filter the way `MazeChunks.ensure` does.
+ *
+ * @param {Array<{cx:number,cy:number,cz:number,hx:number,hy:number,hz:number}>} descs
+ * @param {THREE.Material} material
+ * @param {string} name
+ * @param {THREE.Group} group
+ * @returns {THREE.InstancedMesh|null}
+ */
+export function buildBoxInstances(descs, material, name, group) {
+  if (descs.length === 0) return null;
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const mesh = new THREE.InstancedMesh(geo, material, descs.length);
+  mesh.name = name;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const pos = new THREE.Vector3();
+  const scale = new THREE.Vector3();
+  for (let i = 0; i < descs.length; i++) {
+    const d = descs[i];
+    pos.set(d.cx, d.cy, d.cz);
+    scale.set(d.hx * 2, d.hy * 2, d.hz * 2);
+    m.compose(pos, q, scale);
+    mesh.setMatrixAt(i, m);
   }
+  mesh.instanceMatrix.needsUpdate = true;
+  group.add(mesh);
+  return mesh;
 }

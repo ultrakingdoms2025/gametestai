@@ -74,7 +74,7 @@ const CONTRACT = [
               'buildDistrictGraph', 'carveDistrict', 'cellIndex', 'cellCoords'],
   },
   { file: 'src/worlds/maze/MazeColliders.js', exports: ['districtColliders', 'cellToWorld'] },
-  { file: 'src/worlds/maze/MazeChunks.js', exports: ['MazeChunks'] },
+  { file: 'src/worlds/maze/MazeChunks.js', exports: ['MazeChunks', 'buildBoxInstances'] },
   { file: 'src/worlds/MazeWorld.js', exports: ['MazeWorld'], methods: ['build', 'dispose'] },
 ];
 

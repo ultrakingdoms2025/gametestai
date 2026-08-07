@@ -1140,7 +1140,7 @@ In the same file's `VIEWS` map, add a `maze` entry so visual review has framings
 Run `npm run dev`, open `http://localhost:5173/game/?dev=1&autostart=1&world=maze`, and in the console:
 
 ```js
-GAME.harness.mazeStats()
+HARNESS.mazeStats()
 ```
 
 Expected: `residentDistricts` at most 25, `colliders` well under 40,000 (Phase 1 was ~161,000).
@@ -1165,7 +1165,7 @@ visual review looks at the maze instead of at a hedge."
 
 - [ ] `npm test` passes; `MAZE_SEEDS=1000 npm test` passes.
 - [ ] `node scripts/contract-check.mjs` exits 0; `npm run build` succeeds.
-- [ ] `GAME.harness.mazeStats()` reports **at most 25 resident districts** and **under 40,000 colliders** (Phase 1: ~161,000).
+- [ ] `HARNESS.mazeStats()` reports **at most 25 resident districts** and **under 40,000 colliders** (Phase 1: ~161,000).
 - [ ] Walking for 60 s leaves collider count flat, not climbing.
 - [ ] Portal entry from the station stays **under 3 s**.
 - [ ] `renderer.info.programs.length` does not grow across ten consecutive maze entries — materials are still shared.

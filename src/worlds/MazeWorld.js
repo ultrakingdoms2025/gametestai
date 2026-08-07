@@ -8,7 +8,7 @@ import {
   cellToWorld, forecourtColliders, FORECOURT_PORTAL_Z,
 } from './maze/MazeColliders.js';
 import { pickDeadEndTokens, pickWandererSites, walkPatrol } from './maze/MazePopulate.js';
-import { MazeChunks } from './maze/MazeChunks.js';
+import { MazeChunks, buildBoxInstances } from './maze/MazeChunks.js';
 
 /**
  * Yaw that faces down each passage direction, matching `Player.fixedUpdate`'s
@@ -191,6 +191,8 @@ export class MazeWorld extends World {
     /** @type {THREE.InstancedMesh|null} */
     this._tokenMesh = null;
     this._tokenTime = 0;
+    /** @type {MazeChunks|null} the district streaming manager, created in build() */
+    this.chunks = null;
 
     const span = MAZE.CELLS * MAZE.CELL;
     this.bounds = new THREE.Box3(
@@ -266,8 +268,8 @@ export class MazeWorld extends World {
 
     const hedges = descs.filter((d) => d.kind === 'hedge');
     const floors = descs.filter((d) => d.kind === 'floor');
-    this._addInstanced(hedges, mats.hedge, 'maze:forecourt-hedges');
-    this._addInstanced(floors, mats.floor, 'maze:forecourt-floor');
+    buildBoxInstances(hedges, mats.hedge, 'maze:forecourt:hedge', this.group);
+    buildBoxInstances(floors, mats.floor, 'maze:forecourt:floor', this.group);
 
     for (const d of descs) {
       this.track(this.physics.addBox(d.cx, d.cy, d.cz, d.hx, d.hy, d.hz));
@@ -475,29 +477,6 @@ export class MazeWorld extends World {
       dirty = true;
     }
     if (dirty) this._tokenMesh.instanceMatrix.needsUpdate = true;
-  }
-
-  /** Build one InstancedMesh from a list of box descriptors. */
-  _addInstanced(descs, material, name) {
-    if (descs.length === 0) return;
-    const geo = new THREE.BoxGeometry(1, 1, 1);
-    const mesh = new THREE.InstancedMesh(geo, material, descs.length);
-    mesh.name = name;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const pos = new THREE.Vector3();
-    const scale = new THREE.Vector3();
-    for (let i = 0; i < descs.length; i++) {
-      const d = descs[i];
-      pos.set(d.cx, d.cy, d.cz);
-      scale.set(d.hx * 2, d.hy * 2, d.hz * 2);
-      m.compose(pos, q, scale);
-      mesh.setMatrixAt(i, m);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    this.group.add(mesh);
   }
 
   /** The prize: a stack of credits at the centre, worth 100. */

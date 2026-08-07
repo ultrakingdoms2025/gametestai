@@ -242,3 +242,117 @@ export function buildDistrictGraph(seed) {
     centre: { dx: 10, dz: 10, level: hash32(seed, 0xc0ffee) % MAZE.LEVELS },
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* District interiors                                                  */
+/*                                                                     */
+/* Each district is carved from its own seed and knows nothing about   */
+/* its neighbours. The only shared information is where the doorway on */
+/* a border sits, and both sides derive that from the *edge* rather    */
+/* than from either district - so they agree without ever meeting.     */
+/* That independence is what makes chunk streaming possible.           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Where along a shared border the doorway sits.
+ * Canonical in a/b, so both districts compute the same answer.
+ * @returns {number} 0..span-1
+ */
+export function doorwayOffset(seed, aIndex, bIndex, span) {
+  const lo = Math.min(aIndex, bIndex);
+  const hi = Math.max(aIndex, bIndex);
+  return hash32(seed, lo, hi, 0xd00d) % span;
+}
+
+/**
+ * Carve one district's 20x20 cells, plus its open border doorways.
+ *
+ * Writes only cells belonging to this district: the far side of each doorway is
+ * opened by the neighbouring district's own call, which derives the same offset.
+ *
+ * @param {number} seed
+ * @param {ReturnType<typeof buildDistrictGraph>} graph
+ * @param {number} dx
+ * @param {number} dz
+ * @param {number} level
+ * @param {Uint8Array} cells mutated in place
+ */
+export function carveDistrict(seed, graph, dx, dz, level, cells) {
+  const D = MAZE.DISTRICT;
+  const x0 = dx * D;
+  const z0 = dz * D;
+  const rng = mulberry32(hash32(seed, dx, dz, level, 0x5eed));
+
+  /* Recursive backtracker over the district's own cells, iteratively. Produces
+   * a perfect maze inside the district: every cell reachable, no loops. Loops
+   * in the finished maze come from the district graph's extra edges, not from
+   * here. */
+  const visited = new Uint8Array(D * D);
+  const local = (lx, lz) => lz * D + lx;
+  const stack = [[0, 0]];
+  visited[0] = 1;
+
+  while (stack.length) {
+    const [lx, lz] = stack[stack.length - 1];
+    const options = [];
+    for (const dir of HORIZONTAL) {
+      const [sx, sz] = STEP[dir];
+      const nx = lx + sx;
+      const nz = lz + sz;
+      if (nx < 0 || nz < 0 || nx >= D || nz >= D) continue;
+      if (visited[local(nx, nz)]) continue;
+      options.push({ dir, nx, nz });
+    }
+    if (options.length === 0) {
+      stack.pop();
+      continue;
+    }
+    const pick = options[Math.floor(rng() * options.length)];
+    const here = cellIndex(x0 + lx, z0 + lz, level);
+    const there = cellIndex(x0 + pick.nx, z0 + pick.nz, level);
+    cells[here] |= pick.dir;
+    cells[there] |= OPPOSITE[pick.dir];
+    visited[local(pick.nx, pick.nz)] = 1;
+    stack.push([pick.nx, pick.nz]);
+  }
+
+  /* Border doorways. Only the near side is opened here. */
+  const self = districtIndex(dx, dz, level);
+
+  const borders = [
+    { dir: DIR.N, ddx: 0, ddz: -1 },
+    { dir: DIR.E, ddx: 1, ddz: 0 },
+    { dir: DIR.S, ddx: 0, ddz: 1 },
+    { dir: DIR.W, ddx: -1, ddz: 0 },
+  ];
+
+  for (const b of borders) {
+    const ndx = dx + b.ddx;
+    const ndz = dz + b.ddz;
+    if (ndx < 0 || ndz < 0 || ndx >= MAZE.DISTRICTS || ndz >= MAZE.DISTRICTS) continue;
+    const other = districtIndex(ndx, ndz, level);
+    if (!isEdgeOpen(graph, self, other)) continue;
+
+    const off = doorwayOffset(seed, self, other, D);
+    let cx;
+    let cz;
+    if (b.dir === DIR.N) { cx = x0 + off; cz = z0; }
+    else if (b.dir === DIR.S) { cx = x0 + off; cz = z0 + D - 1; }
+    else if (b.dir === DIR.W) { cx = x0; cz = z0 + off; }
+    else { cx = x0 + D - 1; cz = z0 + off; }
+    cells[cellIndex(cx, cz, level)] |= b.dir;
+  }
+
+  /* Vertical doorways. The offset indexes the district's whole 20x20 block, so
+   * a stair or lift can land anywhere inside it rather than only on a border. */
+  for (const [dir, dl] of [[DIR.UP, 1], [DIR.DOWN, -1]]) {
+    const nl = level + dl;
+    if (nl < 0 || nl >= MAZE.LEVELS) continue;
+    const other = districtIndex(dx, dz, nl);
+    if (!isEdgeOpen(graph, self, other)) continue;
+    const off = doorwayOffset(seed, self, other, D * D);
+    const lx = off % D;
+    const lz = Math.floor(off / D);
+    cells[cellIndex(x0 + lx, z0 + lz, level)] |= dir;
+  }
+}

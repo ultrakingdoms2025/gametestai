@@ -11,11 +11,13 @@ test('DISTRICT_SPAN is a district edge in metres', () => {
 });
 
 test('districtAtWorld maps a position to its district', () => {
-  // Cell 0,0 is at the origin, so district 0 spans roughly -3 .. 117 m.
+  // Derived from the geometry rule: cell = round(x / CELL), district = floor(cell / DISTRICT).
+  // The district boundary crosses where Math.round(x / CELL) changes district value.
   assert.equal(districtAtWorld(0, 0, 0), districtIndex(0, 0, 0));
-  assert.equal(districtAtWorld(119, 0, 0), districtIndex(0, 0, 0));
-  assert.equal(districtAtWorld(121, 0, 0), districtIndex(1, 0, 0));
-  assert.equal(districtAtWorld(1260, 60, 0), districtIndex(10, 0, 0));
+  assert.equal(districtAtWorld(116, 0, 0), districtIndex(0, 0, 0));
+  assert.equal(districtAtWorld(117, 0, 0), districtIndex(1, 0, 0));
+  assert.equal(districtAtWorld(236, 0, 0), districtIndex(1, 0, 0));
+  assert.equal(districtAtWorld(237, 0, 0), districtIndex(2, 0, 0));
 });
 
 test('districtAtWorld clamps rather than going out of bounds', () => {
@@ -56,4 +58,19 @@ test('neighbourhoodKeys is sorted and duplicate-free', () => {
 test('neighbourhoodKeys stays on its own level', () => {
   const keys = neighbourhoodKeys(districtIndex(10, 10, 2), 2);
   for (const k of keys) assert.equal(districtCoords(k).level, 2);
+});
+
+test('districtAtWorld agrees with the geometry about who owns a point', () => {
+  // The grid's own rule: cell = round(x / CELL), clamped to [0, CELLS), district = floor(cell / DISTRICT).
+  // Anything else drifts at district boundaries, where residency decisions happen.
+  const geo = (v) => {
+    const cell = Math.min(MAZE.CELLS - 1, Math.max(0, Math.round(v / MAZE.CELL)));
+    return Math.min(MAZE.DISTRICTS - 1, Math.max(0, Math.floor(cell / MAZE.DISTRICT)));
+  };
+  for (let x = 0; x < MAZE.CELLS * MAZE.CELL; x += 1) {
+    assert.equal(districtCoords(districtAtWorld(x, 60, 0)).dx, geo(x), `x=${x}`);
+  }
+  for (let z = 0; z < MAZE.CELLS * MAZE.CELL; z += 1) {
+    assert.equal(districtCoords(districtAtWorld(1260, z, 0)).dz, geo(z), `z=${z}`);
+  }
 });

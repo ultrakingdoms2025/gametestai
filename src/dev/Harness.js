@@ -82,6 +82,13 @@ const VIEWS = {
     { name: 'pool', pos: [46, 7, 142], look: [46, 0, 111], fov: 72 },
     { name: 'entrance-portal', pos: [0, 3.5, 170], look: [0, 2.5, 150], fov: 64 },
   ],
+  // Entrance forecourt centred at (1260, -10); maze grid runs from origin to 2394 m
+  // on both axes; hedges 5 m tall.
+  maze: [
+    { name: 'forecourt', pos: [1260, 4, -16], look: [1260, 2, 20], fov: 75 },
+    { name: 'corridor', pos: [1260, 1.7, 40], look: [1260, 1.7, 120], fov: 75 },
+    { name: 'above-entrance', pos: [1260, 60, -40], look: [1260, 0, 200], fov: 70 },
+  ],
 };
 
 class Harness {
@@ -228,6 +235,19 @@ class Harness {
       world: this.game.worldManager.active?.id ?? null,
       npcs: this.game.npcManager?.npcs?.length ?? 0,
       portals: this.game.portals?.portals?.length ?? 0,
+    };
+  }
+
+  /** Streaming diagnostics for the maze. Dev-only. */
+  mazeStats() {
+    const w = this.game.worldManager.active;
+    if (w?.id !== 'maze') return { world: w?.id ?? null, note: 'not in the maze' };
+    return {
+      seed: w.seed,
+      residentDistricts: w.chunks?.residentKeys().length ?? 0,
+      colliders: this.game.physics.colliders.length,
+      programs: this.game.engine.renderer.info.programs.length,
+      drawCalls: this.game.engine.renderer.info.render.calls,
     };
   }
 }

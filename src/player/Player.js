@@ -567,8 +567,11 @@ export class Player {
      * Above water and below the mantle, because a free climb ends *in* a
      * mantle: `FreeClimb` calls `climb.tryStart` when it crests the lip, and
      * the branch above then owns the last metre. Like the mantle it writes the
-     * capsule itself, so nothing below runs. */
-    if (this.freeClimb.fixedUpdate(dt, elapsed)) {
+     * capsule itself, so nothing below runs.
+     * Gated on 'climb', off in worlds that forbid it - `&&`-shorted so the
+     * whole block is skipped rather than just the call, since it claims the
+     * movement step and returns early below. */
+    if (allows(this._world, 'climb') && this.freeClimb.fixedUpdate(dt, elapsed)) {
       this._claimMovement();
       this._jumpHeld = !!s.jump;
       this._grounded = false;
@@ -675,8 +678,8 @@ export class Player {
      * distinguishes "I meant to climb this" from "I jumped near a wall", and
      * requiring forward means backing away from a facade never grabs it. A
      * running jump into a wall grabs it, which is the interaction the citadel
-     * is built around. */
-    if (s.jump && s.forward > 0.2 && this.freeClimb.tryAttach()) {
+     * is built around. Gated on 'climb', off in worlds that forbid it. */
+    if (s.jump && s.forward > 0.2 && allows(this._world, 'climb') && this.freeClimb.tryAttach()) {
       this._jumpHeld = true;
       this._jumpBuffer = 0;
       this._coyote = 0;

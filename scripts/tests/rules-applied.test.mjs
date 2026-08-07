@@ -64,6 +64,47 @@ test('Player also gates parkour', async () => {
   );
 });
 
+test('Player gates sustained free-climbing (FreeClimb), not just the one-shot mantle', async () => {
+  // The general GATES loop above only proves *some* allows(..., 'climb') call
+  // exists in Player.js, and `climb.tryStart` (the ledge mantle) already
+  // supplied one before FreeClimb was ever gated - so that loop would keep
+  // passing even if the sustained-climb leak came back. This pins down the
+  // two real FreeClimb entry points specifically: the continuing climb
+  // (`fixedUpdate`, which claims the movement step) and the one that starts
+  // it (`tryAttach`, reached by holding jump into a wall).
+  const src = await readFile(path.join(root, 'src/player/Player.js'), 'utf8');
+  const code = stripComments(src);
+  assert.match(
+    code,
+    /allows\(\s*this\._world\s*,\s*['"]climb['"]\s*\)\s*&&\s*this\.freeClimb\.fixedUpdate\(/,
+    'Player.js calls freeClimb.fixedUpdate without gating it on climb - a maze hedge can be scaled',
+  );
+  assert.match(
+    code,
+    /allows\(\s*this\._world\s*,\s*['"]climb['"]\s*\)\s*&&\s*this\.freeClimb\.tryAttach\(\)/,
+    'Player.js calls freeClimb.tryAttach without gating it on climb - a maze hedge can still be grabbed',
+  );
+});
+
+test('MountWheel declines to open when the active world forbids mounts', async () => {
+  // MountManager.summon already refuses to produce a mount in a forbidding
+  // world, but that alone leaves the wheel UI popping up over nothing, which
+  // reads as broken rather than as "no mounts here". This proves open()
+  // itself refuses before it ever flips `_open` or shows the dial.
+  const src = await readFile(path.join(root, 'src/ui/MountWheel.js'), 'utf8');
+  const code = stripComments(src);
+  assert.match(
+    code,
+    /import\s*\{[^}]*\ballows\b[^}]*\}\s*from\s*['"][^'"]*WorldRules\.js['"]/,
+    'MountWheel.js never imports allows from WorldRules.js',
+  );
+  assert.match(
+    code,
+    /if\s*\(\s*this\._open\s*\)\s*return;\s*if\s*\(\s*!allows\([^)]*['"]mounts['"]\s*\)\s*\)\s*return;\s*this\._open\s*=\s*true;/,
+    'MountWheel.open() has no early-return gate on the mounts rule before setting _open = true',
+  );
+});
+
 test('Loadout.js hides the viewmodel when weapons are forbidden', async () => {
   // A gate that only stops switching (`select`) is not enough on its own - the
   // weapon selected before the gate went up would stay drawn forever. This

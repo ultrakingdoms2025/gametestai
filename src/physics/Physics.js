@@ -395,6 +395,16 @@ export class Physics {
     this.bus = bus;
     /** @type {Collider[]} */
     this.colliders = [];
+    /**
+     * collider -> its index in `colliders`.
+     *
+     * Removal used to `indexOf` a ten-thousand-entry array, four hundred times
+     * per streamed district. This makes it a map lookup and a swap. The array
+     * itself stays, because `WorldManager` iterates it on every activation and
+     * the broadphase relies on it.
+     * @type {Map<Collider, number>}
+     */
+    this._index = new Map();
     /** Dynamic character proxies, used for character-vs-character pushout and raycasts. */
     this.characters = new Set();
 
@@ -421,6 +431,7 @@ export class Physics {
 
   clear() {
     this.colliders.length = 0;
+    this._index.clear();
     this.heightfields.length = 0;
     this._grid.clear();
     this.characters.clear();
@@ -485,6 +496,7 @@ export class Physics {
   /** @param {Collider} collider */
   add(collider) {
     this.colliders.push(collider);
+    this._index.set(collider, this.colliders.length - 1);
     if (collider.type === 'heightfield') this.heightfields.push(collider);
     else this._insertToGrid(collider);
     return collider;
@@ -509,9 +521,18 @@ export class Physics {
    */
   remove(collider) {
     if (!collider) return false;
-    const at = this.colliders.indexOf(collider);
-    if (at < 0) return false;
-    this.colliders.splice(at, 1);
+    const at = this._index.get(collider);
+    if (at === undefined) return false;
+    /* Swap-remove: move the last collider into the hole rather than shifting
+     * everything after it. Nothing depends on `colliders` order - the
+     * broadphase grid is a separate structure and WorldManager only iterates
+     * to re-register - so paying O(n) to preserve it would buy nothing. */
+    const last = this.colliders.pop();
+    this._index.delete(collider);
+    if (last !== collider) {
+      this.colliders[at] = last;
+      this._index.set(last, at);
+    }
 
     if (collider.type === 'heightfield') {
       const h = this.heightfields.indexOf(collider);

@@ -123,7 +123,6 @@ export function isOpen(cells, index, dir) {
 /* ------------------------------------------------------------------ */
 
 const DISTRICTS_PER_LEVEL = MAZE.DISTRICTS * MAZE.DISTRICTS;
-const TOTAL_DISTRICTS = DISTRICTS_PER_LEVEL * MAZE.LEVELS;
 
 /** Fraction of non-tree candidate edges opened, to create loops. */
 const EXTRA_EDGE_FRACTION = 0.10;
@@ -159,8 +158,13 @@ export function isEdgeOpen(graph, aIndex, bIndex) {
   return graph.open.has(edgeKey(aIndex, bIndex));
 }
 
-/** Six-neighbourhood of a district, in-bounds only. */
-function districtNeighbours(index) {
+/**
+ * Six-neighbourhood of a district, in-bounds only.
+ * @param {number} index
+ * @param {number} [levels] how many levels exist; a neighbour on or above this
+ *   is out of bounds. Defaults to all four.
+ */
+function districtNeighbours(index, levels = MAZE.LEVELS) {
   const { dx, dz, level } = districtCoords(index);
   const out = [];
   if (dz > 0) out.push({ i: districtIndex(dx, dz - 1, level), vertical: false });
@@ -168,22 +172,32 @@ function districtNeighbours(index) {
   if (dz < MAZE.DISTRICTS - 1) out.push({ i: districtIndex(dx, dz + 1, level), vertical: false });
   if (dx > 0) out.push({ i: districtIndex(dx - 1, dz, level), vertical: false });
   if (level > 0) out.push({ i: districtIndex(dx, dz, level - 1), vertical: true });
-  if (level < MAZE.LEVELS - 1) out.push({ i: districtIndex(dx, dz, level + 1), vertical: true });
+  if (level < levels - 1) out.push({ i: districtIndex(dx, dz, level + 1), vertical: true });
   return out;
 }
 
 /**
  * Build the district connectivity graph for a seed.
  *
+ * `levelLimit` restricts the walk to the lowest N levels. This exists because
+ * a tree spanning all four levels can route between two level-0 districts *via*
+ * level 1 - and if only level 0 is ever carved, that route does not exist and
+ * the maze is unsolvable. Phase 1 shipped 25 seeds in 40 with no path to the
+ * centre before this was understood. One walk, parameterised, rather than two
+ * that have to be kept in step.
+ *
  * @param {number} seed
+ * @param {number} [levelLimit] lowest N levels to span; defaults to all
  * @returns {{ open: Set<string>, entrance: {dx:number,dz:number,level:number},
  *             centre: {dx:number,dz:number,level:number},
  *             treeEdges: number, extraEdges: number }}
  */
-export function buildDistrictGraph(seed) {
+export function buildDistrictGraph(seed, levelLimit = MAZE.LEVELS) {
+  const levels = Math.max(1, Math.min(MAZE.LEVELS, levelLimit));
+  const total = levels * DISTRICTS_PER_LEVEL;
   const rng = mulberry32(hash32(seed, 0x6a11));
   const open = new Set();
-  const visited = new Uint8Array(TOTAL_DISTRICTS);
+  const visited = new Uint8Array(total);
 
   /* Iterative DFS. Recursion would blow the stack at 1,600 deep on some
    * engines, and this has to run on every entry. */
@@ -193,7 +207,7 @@ export function buildDistrictGraph(seed) {
 
   while (stack.length) {
     const cur = stack[stack.length - 1];
-    const candidates = districtNeighbours(cur).filter((n) => !visited[n.i]);
+    const candidates = districtNeighbours(cur, levels).filter((n) => !visited[n.i]);
     if (candidates.length === 0) {
       stack.pop();
       continue;
@@ -218,8 +232,8 @@ export function buildDistrictGraph(seed) {
    * tree did not already use. Deterministic order, so the seed fully
    * determines the result. */
   let extraEdges = 0;
-  for (let i = 0; i < TOTAL_DISTRICTS; i++) {
-    for (const n of districtNeighbours(i)) {
+  for (let i = 0; i < total; i++) {
+    for (const n of districtNeighbours(i, levels)) {
       if (n.i < i) continue; // consider each undirected edge once
       const key = edgeKey(i, n.i);
       if (open.has(key)) continue;
@@ -238,8 +252,10 @@ export function buildDistrictGraph(seed) {
      * can be authored rather than discovered. */
     entrance: { dx: 10, dz: 0, level: 0 },
     /* Horizontally central, but on a level the seed chooses - so not even
-     * which floor the prize is on can be learned between runs. */
-    centre: { dx: 10, dz: 10, level: hash32(seed, 0xc0ffee) % MAZE.LEVELS },
+     * which floor the prize is on can be learned between runs. Folded into
+     * range here so a centre outside the limit is structurally impossible
+     * rather than something callers have to correct afterwards. */
+    centre: { dx: 10, dz: 10, level: hash32(seed, 0xc0ffee) % levels },
   };
 }
 
@@ -373,86 +389,7 @@ export function carveDistrict(seed, graph, dx, dz, level, cells) {
  */
 export function generateTopology(seed, opts = {}) {
   const levels = Math.max(1, Math.min(MAZE.LEVELS, opts.levels ?? MAZE.LEVELS));
-  let graph = buildDistrictGraph(seed);
-
-  /* When generation is limited to fewer levels than the graph knows about, the
-   * centre may have been placed on a level that was never carved. Fold it down
-   * rather than leaving an unreachable prize. Computed here, before the graph
-   * is rebuilt below, because both the folded graph.centre and the returned
-   * centreCell need it. */
-  const centreLevel = graph.centre.level < levels ? graph.centre.level : 0;
-
-  /* When limited to fewer levels, rebuild the spanning tree for only those levels.
-   * The full multi-level graph may rely on vertical edges that don't exist when
-   * we only carve some levels, leaving disconnected districts. */
-  if (levels < MAZE.LEVELS) {
-    const rng = mulberry32(hash32(seed, 0x6a11));
-    const filteredOpen = new Set();
-    const visited = new Uint8Array(levels * DISTRICTS_PER_LEVEL);
-    const stack = [0]; // Start from district 0 (level 0, dx=0, dz=0)
-    visited[0] = 1;
-
-    while (stack.length) {
-      const cur = stack[stack.length - 1];
-      const curCoords = districtCoords(cur);
-      if (curCoords.level >= levels) {
-        stack.pop();
-        continue;
-      }
-      // Consider all unvisited neighbors within carved levels
-      const candidates = districtNeighbours(cur).filter((n) => {
-        const nc = districtCoords(n.i);
-        return nc.level < levels && !visited[n.i];
-      });
-      if (candidates.length === 0) {
-        stack.pop();
-        continue;
-      }
-      // Prefer horizontal edges within each level, but allow vertical to connect levels
-      const horizontal = candidates.filter((c) => !c.vertical);
-      const vertical = candidates.filter((c) => c.vertical);
-      let pick;
-      if (horizontal.length && (vertical.length === 0 || rng() > VERTICAL_BIAS)) {
-        pick = horizontal[Math.floor(rng() * horizontal.length)];
-      } else {
-        pick = vertical[Math.floor(rng() * vertical.length)];
-      }
-      filteredOpen.add(edgeKey(cur, pick.i));
-      visited[pick.i] = 1;
-      stack.push(pick.i);
-    }
-
-    /* Loops within the carved levels. Walk every candidate edge once and open
-     * a fraction of the ones the tree did not already use, maintaining the 10%
-     * extra-edge density and deterministic ordering. */
-    let extraEdges = 0;
-    for (let i = 0; i < levels * DISTRICTS_PER_LEVEL; i++) {
-      const iCoords = districtCoords(i);
-      if (iCoords.level >= levels) continue;
-      for (const n of districtNeighbours(i)) {
-        if (n.i >= i) continue; // undirected edges, consider each once
-        const nCoords = districtCoords(n.i);
-        if (nCoords.level >= levels) continue;
-        const key = edgeKey(i, n.i);
-        if (filteredOpen.has(key)) continue;
-        if (rng() < EXTRA_EDGE_FRACTION) {
-          filteredOpen.add(key);
-          extraEdges++;
-        }
-      }
-    }
-
-    graph = {
-      ...graph,
-      open: filteredOpen,
-      extraEdges,
-      // The spread above starts from the 4-level graph, whose treeEdges and
-      // centre.level both describe the unfiltered tree - stale numbers on a
-      // public object that nothing in src/ reads yet, but Phase 2 will.
-      treeEdges: filteredOpen.size - extraEdges,
-      centre: { ...graph.centre, level: centreLevel },
-    };
-  }
+  const graph = buildDistrictGraph(seed, levels);
 
   const cells = new Uint8Array(MAZE.TOTAL_CELLS);
 
@@ -476,7 +413,7 @@ export function generateTopology(seed, opts = {}) {
     cells,
     graph,
     entranceCell: cellOf(graph.entrance, graph.entrance.level),
-    centreCell: cellOf(graph.centre, centreLevel),
+    centreCell: cellOf(graph.centre, graph.centre.level),
   };
 }
 

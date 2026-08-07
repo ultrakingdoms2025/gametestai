@@ -5,6 +5,7 @@ import {
   hash32, mulberry32, cellIndex, cellCoords, isOpen,
   districtIndex, districtCoords, edgeKey, buildDistrictGraph, isEdgeOpen,
 } from '../../src/worlds/maze/MazeTopology.js';
+import { generateTopology, reachableCount, solve } from '../../src/worlds/maze/MazeTopology.js';
 
 test('constants match the spec', () => {
   assert.equal(MAZE.CELL, 6.0);
@@ -174,4 +175,80 @@ test('the same seed always builds the same graph', () => {
   assert.deepEqual([...a.open].sort(), [...b.open].sort());
   const c = buildDistrictGraph(31338);
   assert.notDeepEqual([...a.open].sort(), [...c.open].sort());
+});
+
+test('buildDistrictGraph accepts a level limit and spans only those levels', () => {
+  const g1 = buildDistrictGraph(4242, 1);
+  const perLevel = MAZE.DISTRICTS * MAZE.DISTRICTS; // 400
+  assert.equal(g1.treeEdges, perLevel - 1, 'a 1-level tree has 399 edges');
+
+  // No open edge may touch a level at or above the limit.
+  for (const key of g1.open) {
+    for (const part of key.split('|')) {
+      assert.ok(districtCoords(Number(part)).level < 1, `edge ${key} leaves level 0`);
+    }
+  }
+});
+
+test('the level-limited graph is still fully connected', () => {
+  for (const limit of [1, 2, 4]) {
+    const g = buildDistrictGraph(77, limit);
+    const n = limit * MAZE.DISTRICTS * MAZE.DISTRICTS;
+    const seen = new Uint8Array(n);
+    const stack = [0];
+    seen[0] = 1;
+    let reached = 1;
+    while (stack.length) {
+      const cur = stack.pop();
+      const { dx, dz, level } = districtCoords(cur);
+      const nb = [
+        [dx, dz - 1, level], [dx + 1, dz, level], [dx, dz + 1, level], [dx - 1, dz, level],
+        [dx, dz, level - 1], [dx, dz, level + 1],
+      ];
+      for (const [nx, nz, nl] of nb) {
+        if (nx < 0 || nz < 0 || nl < 0) continue;
+        if (nx >= MAZE.DISTRICTS || nz >= MAZE.DISTRICTS || nl >= limit) continue;
+        const i = districtIndex(nx, nz, nl);
+        if (seen[i] || !isEdgeOpen(g, cur, i)) continue;
+        seen[i] = 1; reached++; stack.push(i);
+      }
+    }
+    assert.equal(reached, n, `limit ${limit} is disconnected`);
+  }
+});
+
+test('the level-limited graph still gets its loop edges', () => {
+  const g = buildDistrictGraph(42, 1);
+  // 400 districts => 399 tree edges; loops must be a real fraction on top.
+  assert.ok(g.extraEdges >= 18, `too few loops: ${g.extraEdges}`);
+  assert.equal(g.open.size, g.treeEdges + g.extraEdges, 'edge accounting must balance');
+});
+
+test('reported counts are never stale', () => {
+  for (const limit of [1, 2, 4]) {
+    const g = buildDistrictGraph(9, limit);
+    assert.equal(g.open.size, g.treeEdges + g.extraEdges, `limit ${limit} accounting`);
+    assert.ok(g.centre.level < limit, `centre on level ${g.centre.level} outside limit ${limit}`);
+  }
+});
+
+test('the default call is unchanged', () => {
+  const a = buildDistrictGraph(31337);
+  const b = buildDistrictGraph(31337, MAZE.LEVELS);
+  assert.deepEqual([...a.open].sort(), [...b.open].sort());
+  assert.equal(a.treeEdges, MAZE.DISTRICTS * MAZE.DISTRICTS * MAZE.LEVELS - 1);
+});
+
+test('generateTopology stays solvable and fully reachable at every level count', () => {
+  for (const levels of [1, 2, 4]) {
+    for (let seed = 0; seed < 25; seed++) {
+      const t = generateTopology(seed, { levels });
+      assert.ok(solve(t.cells, t.entranceCell, t.centreCell), `seed ${seed} levels ${levels} unsolvable`);
+      assert.equal(
+        reachableCount(t.cells, t.entranceCell),
+        levels * MAZE.LEVEL_CELLS,
+        `seed ${seed} levels ${levels} has unreachable cells`,
+      );
+    }
+  }
 });

@@ -3,6 +3,7 @@ import { FireballWeapon } from '../weapons/Fireball.js';
 import { BowWeapon } from '../weapons/Bow.js';
 import { SwordWeapon } from '../weapons/Sword.js';
 import { WEAPON_STATS, AMMO_ITEMS } from '../systems/WeaponStats.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * Holds the player's four weapons and decides which one is live.
@@ -160,6 +161,9 @@ export class Loadout {
     this._lastNoAmmo = -999;
     this._time = 0;
 
+    /** Active world, tracked for capability rules. @see ../worlds/WorldRules.js */
+    this._world = null;
+
     this._offs = [];
     this._bind();
     if (inventory) this.setInventory(inventory);
@@ -198,6 +202,8 @@ export class Loadout {
       if (this._bagCount(item) > 0) return;
       this._emitNoAmmo(id, item);
     });
+
+    on('world:changed', ({ world }) => { this._world = world; });
   }
 
   /* ================================================================ */
@@ -520,6 +526,8 @@ export class Loadout {
    * @returns {boolean} true if the selection changed
    */
   select(indexOrId, opts = {}) {
+    // A world with no weapons has no viewmodel and no selection. (rules.weapons)
+    if (!allows(this._world, 'weapons')) return false;
     let i = indexOrId;
     if (typeof indexOrId === 'string') {
       i = this._weapons.findIndex((w) => w.id === indexOrId);

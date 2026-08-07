@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { InteriorKit } from '../worlds/InteriorKit.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * Interiors - runtime interaction, animation and collectible manager for the
@@ -42,6 +43,9 @@ export class Interiors {
     this._lifts = [];
     this._spots = [];
     this._setPrompt(null);
+
+    // Towers and tunnels are world geometry, not enterable interiors. (rules.interiors)
+    if (!allows(world, 'interiors')) return;
 
     const enterables = world?.enterables;
     if (!Array.isArray(enterables) || !enterables.length) return;

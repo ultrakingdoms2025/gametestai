@@ -17,6 +17,8 @@
  * Credit awards are paid through `economy.add()` on quest completion.
  */
 
+import { allows } from '../worlds/WorldRules.js';
+
 export class QuestSystem {
   /**
    * @param {{ bus:any, player:any, economy:any, worldManager:any, npcManager:any }} ctx
@@ -49,6 +51,8 @@ export class QuestSystem {
     if (this.bus) {
       this._offs.push(this.bus.on('world:changed', ({ id, world }) => {
         this._worldId = id ?? world?.id ?? null;
+        // The maze is its own objective. (rules.quests)
+        if (!allows(world, 'quests')) { this.worldQuests = []; return; }
         this._pending = true;
         this._advanceSteps('visit', (step, meta) => this._matchesStepTarget(step, meta), {
           event: { type: 'visit', target: this._worldId, worldId: this._worldId },

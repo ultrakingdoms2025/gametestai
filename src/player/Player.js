@@ -8,6 +8,7 @@ import { FreeClimb } from './FreeClimb.js';
 import { Parkour } from './Parkour.js';
 import { Stamina } from '../systems/Stamina.js';
 import { WaterVolumes } from '../systems/WaterVolumes.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * First-person player controller.
@@ -249,6 +250,10 @@ export class Player {
       this._lastFiredAt = this._elapsed;
       this.cameraRig?.correctShotEvent(evt);
     });
+
+    /** Active world, tracked for capability rules. @see ../worlds/WorldRules.js */
+    this._world = null;
+    this.bus?.on('world:changed', ({ world }) => { this._world = world; });
 
     this.camera.rotation.order = 'YXZ';
     this._applyCamera(0);
@@ -555,7 +560,8 @@ export class Player {
     // Dive steering and the roll timer run before any movement branch claims
     // the step: a dive is an *airborne* modifier, so it has to apply whether
     // the player is falling normally or has just kicked off a wall.
-    this.parkour.fixedUpdate(dt);
+    // Sustained wall climbing and diving, off in worlds that forbid it. (rules.parkour)
+    if (allows(this._world, 'parkour')) this.parkour.fixedUpdate(dt);
 
     /* ---- clinging to a wall ------------------------------------------ *
      * Above water and below the mantle, because a free climb ends *in* a
@@ -647,7 +653,8 @@ export class Player {
      * apex and under 2.4 m, with proven standing room. Everything else -
      * kerbs, stair treads, skate-park transitions - fails the probe and the
      * press falls straight through to the jump below. */
-    if (jumpEdge && this.climb.tryStart(elapsed, { inWater: false })) {
+    // One-shot ledge mantling, off in worlds that forbid it. (rules.climb)
+    if (jumpEdge && allows(this._world, 'climb') && this.climb.tryStart(elapsed, { inWater: false })) {
       this._jumpHeld = true;
       this._jumpBuffer = 0;
       this._coyote = 0;

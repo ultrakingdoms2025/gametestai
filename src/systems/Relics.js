@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { COLLISION_LAYER } from '../physics/Physics.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * Hidden relics - the collectible that pays.
@@ -198,6 +199,8 @@ export class Relics {
     this.sites.length = 0;
     this.mesh.count = 0;
     this.glow.count = 0;
+    // No relics: the only collectible is the stack at the centre. (rules.relics)
+    if (!allows(world, 'relics')) return;
     if (!world || !this.physics) return;
 
     const rnd = mulberry32(hashString(`relic:${id}`));

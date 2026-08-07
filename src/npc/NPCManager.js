@@ -8,6 +8,7 @@ import { resolveSpot, resolveSurfaceY, seatSurfaceAt, isDeepWater, nearestDrySpo
 import { ROLE, ROLE_ROTATION, castFor, roleDef } from './NPCRoles.js';
 import { WEAPON_TABLES } from './NPCWeapons.js';
 import { DEFAULT_LORE, buildLorePersona, loreEntryForScope } from '../content/Lore.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * Owns every NPC in the active world: spawning, budget, level of detail,
@@ -345,6 +346,11 @@ export class NPCManager {
     if (!world) return;
     this.worldId = world.id;
     this.theme = THEME_BY_WORLD[world.id] ?? 'station';
+    /* A world may forbid hostiles outright - the maze has NPCs purely to talk
+     * to. Zeroing the budget is enough: every hostile path downstream is driven
+     * by this count. (rules.hostiles) */
+    const hostilesAllowed = allows(world, 'hostiles');
+    const maxHostiles = hostilesAllowed ? this.maxHostiles : 0;
     const spawns = world.npcSpawns ?? [];
 
     let friendlyCount = 0;
@@ -354,7 +360,7 @@ export class NPCManager {
     // Deal the hostile weapons out up front so every id in the theme's table is
     // represented and every model is built during world activation. A re-roll
     // later then only ever picks a weapon whose material is already compiled.
-    const weaponDeal = this._dealWeapons(this.maxHostiles);
+    const weaponDeal = this._dealWeapons(maxHostiles);
     const weaponPool = (WEAPON_TABLES[this.theme] ?? WEAPON_TABLES.station).map(([id]) => id);
     /* Reserve part of the civilian budget for standing groups. Worlds author
      * their named characters spread out along walking routes, which is right
@@ -376,7 +382,7 @@ export class NPCManager {
     for (const spec of spawns) {
       if (this._npcs.length >= this.maxNPCs) break;
       const hostile = spec.type === 'hostile';
-      if (hostile && hostileCount >= this.maxHostiles) continue;
+      if (hostile && hostileCount >= maxHostiles) continue;
       if (!hostile && friendlyCount >= authoredCap) continue;
 
       const pos = this._snapToGround(spec.position);

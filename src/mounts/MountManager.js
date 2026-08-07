@@ -7,6 +7,7 @@ import { Eagle } from './Eagle.js';
 import { Bicycle } from './Bicycle.js';
 import { characterCreateParams, applyCharacterColors } from '../player/PlayerAvatar.js';
 import { HumanoidFactory } from '../npc/Humanoid.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * Mount ownership and the mounted movement authority.
@@ -342,6 +343,8 @@ export class MountManager {
    * @returns {boolean} true if a mount is being ridden afterwards
    */
   summon(id) {
+    // Some worlds are walked, not ridden. (rules.mounts)
+    if (!allows(this.worldManager?.active, 'mounts')) return false;
     if (!this._unlocked.has(id)) return false;
     const existing = this._mounts.get(id);
 

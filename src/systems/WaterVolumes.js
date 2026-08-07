@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * Swimmable water, discovered from the geometry a world already built.
@@ -137,6 +138,12 @@ export class WaterVolumes {
 
     if (!world?.group) {
       console.info('[WaterVolumes] no world group - no swimmable water');
+      this._announce();
+      return;
+    }
+
+    // No water here; skip the full-geometry scan entirely. (rules.swim)
+    if (!allows(world, 'swim')) {
       this._announce();
       return;
     }

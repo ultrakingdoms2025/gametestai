@@ -69,3 +69,21 @@ export function makeRules(overrides = {}) {
   }
   return Object.freeze({ ...DEFAULT_RULES, ...overrides });
 }
+
+/**
+ * Read a capability flag off a world, defaulting to permitted.
+ *
+ * Systems receive the world in different ways - some from the `world:changed`
+ * payload, some by asking the world manager - and some run before any world is
+ * active. Missing information must mean "permitted", or a system that
+ * initialises early would silently disable itself everywhere.
+ *
+ * @param {{rules?: Record<string, boolean>}|null|undefined} world
+ * @param {keyof typeof DEFAULT_RULES} flag
+ * @returns {boolean}
+ */
+export function allows(world, flag) {
+  const rules = world?.rules;
+  if (!rules || !(flag in rules)) return true;
+  return rules[flag] !== false;
+}

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ITEMS, itemDef, KIND_ACCENT } from './ItemDefs.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * NPC loot drops and the world pickups they spawn.
@@ -164,6 +165,8 @@ export class Loot {
         bus.on('world:changed', (e) => {
           this._worldId = e?.id ?? this._worldId;
           this.clear();
+          // The maze wants no pickups. Clear first, then decline to populate. (rules.loot)
+          if (!allows(e?.world, 'loot')) return;
         })
       );
     }

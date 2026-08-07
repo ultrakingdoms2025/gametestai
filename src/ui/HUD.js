@@ -4,6 +4,7 @@ import { ChatBox } from './ChatBox.js';
 import { ChatClient } from '../ai/ChatClient.js';
 import { WeaponWheel, makeIcon } from './WeaponWheel.js';
 import { HelpMenu } from './HelpMenu.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * The whole player-facing interface: crosshair, health, ammo, weapon selector,
@@ -212,6 +213,9 @@ export class HUD {
     this._vigWritten = -1;
     this._flashWritten = -1;
     this._dead = false;
+    /** True while the active world forbids weapons - the strip and ammo panel
+     * stay off regardless of the death/respawn toggle below. */
+    this._weaponsHidden = false;
 
     /* -- stamina state (v3) -------------------------------------------- */
     this._stamMax = CONFIG.player?.maxStamina ?? 100;
@@ -873,7 +877,8 @@ export class HUD {
     this._on('player:respawned', () => {
       this._dead = false;
       this.el.classList.remove('dead');
-      this.wheel.setHidden(false);
+      // Respect the active world's weapons rule rather than always showing.
+      this.wheel.setHidden(this._weaponsHidden);
       this._health = this._maxHealth;
       this._shown = 1;
       this._ghost = 1;
@@ -938,6 +943,12 @@ export class HUD {
       this.minimap.chatNpcId = null;
       this._interiorPrompt = null;
       this.notify(`${world?.displayName ?? id} — anchor locked`, 'lore');
+      // A world with no weapons shows no weapon bar and no ammo panel. Only
+      // the wheel also answers to `_dead`, so the two are merged rather than
+      // one clobbering the other on a respawn inside such a world.
+      this._weaponsHidden = !allows(world, 'weapons');
+      this.wheel.setHidden(this._dead || this._weaponsHidden);
+      this.ammoPanel.hidden = this._weaponsHidden;
     });
 
     this._on('world:ready', ({ id }) => {

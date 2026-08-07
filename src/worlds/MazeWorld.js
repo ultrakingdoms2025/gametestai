@@ -2,11 +2,22 @@ import * as THREE from 'three';
 import { World } from './World.js';
 import { makeRules } from './WorldRules.js';
 import {
-  MAZE, generateTopology, cellCoords, carveEntranceCorridor,
+  MAZE, DIR, generateTopology, cellCoords, carveEntranceCorridor,
 } from './maze/MazeTopology.js';
 import {
   districtColliders, cellToWorld, forecourtColliders, FORECOURT_PORTAL_Z,
 } from './maze/MazeColliders.js';
+
+/**
+ * Yaw that faces down each passage direction, matching `Player.fixedUpdate`'s
+ * convention (`fwdX = -sin(yaw), fwdZ = -cos(yaw)`; yaw 0 is -Z, yaw PI is +Z).
+ */
+const DIR_YAW = Object.freeze({
+  [DIR.N]: 0,
+  [DIR.S]: Math.PI,
+  [DIR.E]: -Math.PI / 2,
+  [DIR.W]: Math.PI / 2,
+});
 
 /**
  * The Verdant Coil - a hedge maze that re-rolls its layout on every entry.
@@ -142,10 +153,18 @@ export class MazeWorld extends World {
       this.track(this.physics.addBox(d.cx, d.cy, d.cz, d.hx, d.hy, d.hz));
     }
 
-    /* Spawn the player standing in the entrance cell, facing into the maze
-     * (south, +z). */
+    /* Spawn the player standing in the entrance cell, facing down whichever
+     * passage is actually open. `carveEntranceCorridor` only guarantees DIR.N
+     * (back out to the forecourt) - the maze proper, at DIR.S/E/W, is
+     * whatever the backtracker happened to open, which is not necessarily
+     * south. A hardcoded yaw can and did put a hedge 2.4 m in front of a cold
+     * spawn with the one open passage behind the player instead. This is the
+     * cold-spawn yaw only; portal arrival is computed separately below from
+     * `portalSpecs`/`rotationY` and does not read this field. */
     this.playerSpawn.set(ew.x, ew.y + 0.05, ew.z);
-    this.playerSpawnYaw = Math.PI;
+    const openHere = this.cells[this.entranceCell];
+    const intoMaze = [DIR.S, DIR.E, DIR.W].find((d) => (openHere & d) !== 0);
+    this.playerSpawnYaw = DIR_YAW[intoMaze ?? DIR.N];
 
     /* The return arch stands in the middle of the forecourt rather than one
      * cell north of the entrance - that position sat inside the hedge the

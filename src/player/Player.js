@@ -1258,6 +1258,13 @@ export class Player {
     if (this.loadout) return;
 
     const w = this._weapon;
+    // Belt-and-braces: `main.js` always attaches a Loadout, whose own
+    // `update()` already gates this, but a bare Player driven without one
+    // must not carry or fire a weapon in a world that forbids it either.
+    if (!allows(this._world, 'weapons')) {
+      w.setVisible(false);
+      return;
+    }
     const s = this.input.state;
     const usable = !this._dead && !this.input.textCaptured;
 

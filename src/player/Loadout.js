@@ -654,6 +654,16 @@ export class Loadout {
 
     const active = this.current;
 
+    // A world with no weapons draws no viewmodel and cannot fire. The
+    // selection above is a no-op already (`select` gates itself), so the
+    // index a permitted world left behind survives untouched and reappears
+    // exactly as it was the moment weapons are allowed again.
+    if (!allows(this._world, 'weapons')) {
+      active.setVisible?.(false);
+      for (const other of this._weapons) other.update?.(dt, elapsed);
+      return;
+    }
+
     /* ---- drive the viewmodel ---- */
     // The viewmodel is composed against the eye, so it has no meaning once the
     // camera pulls back onto the boom - the avatar carries a real weapon there.

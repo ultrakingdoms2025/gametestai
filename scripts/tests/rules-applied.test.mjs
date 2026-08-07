@@ -30,6 +30,7 @@ const GATES = [
   ['src/mounts/MountManager.js', 'mounts'],
   ['src/player/Loadout.js', 'weapons'],
   ['src/player/Player.js', 'climb'],
+  ['src/ui/HUD.js', 'weapons'],
 ];
 
 function stripComments(src) {
@@ -60,6 +61,19 @@ test('Player also gates parkour', async () => {
     code,
     /allows\(\s*[^,()]*(\([^)]*\))?[^,]*,\s*['"]parkour['"]\s*\)/,
     'Player has no allows(..., \'parkour\') gate outside comments',
+  );
+});
+
+test('Loadout.js hides the viewmodel when weapons are forbidden', async () => {
+  // A gate that only stops switching (`select`) is not enough on its own - the
+  // weapon selected before the gate went up would stay drawn forever. This
+  // proves a second, distinct path exists that actually hides it.
+  const src = await readFile(path.join(root, 'src/player/Loadout.js'), 'utf8');
+  const code = stripComments(src);
+  assert.match(
+    code,
+    /if\s*\(\s*!allows\(\s*this\._world\s*,\s*['"]weapons['"]\s*\)\s*\)\s*\{[^}]*setVisible\?\.\(false\)/,
+    'Loadout.js has no world-change path that hides the viewmodel when weapons are forbidden',
   );
 });
 

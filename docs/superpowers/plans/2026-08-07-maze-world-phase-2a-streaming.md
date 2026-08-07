@@ -918,6 +918,16 @@ test('a freshly built maze streams rather than building everything', async () =>
     `still building the whole level: ${physics.colliders.length} colliders`);
 });
 
+test('the forecourt is visible, not just solid', async () => {
+  /* The forecourt needs meshes as well as colliders. Streaming the districts
+   * makes it tempting to drop the instancing along with the district loop,
+   * which leaves the player arriving in a void enclosed by invisible walls. */
+  const { world } = await buildMazeWorld();
+  const names = [];
+  world.group.traverse((o) => { if (o.isInstancedMesh) names.push(o.name); });
+  assert.ok(names.some((n) => /forecourt/.test(n)), `no forecourt meshes: ${names.join(', ')}`);
+});
+
 test('the forecourt survives streaming', async () => {
   const { world, physics } = await buildMazeWorld();
   // Walk far away, then check the arrival point still has floor - the forecourt
@@ -983,7 +993,28 @@ In `src/worlds/MazeWorld.js`, add the import:
 import { MazeChunks } from './maze/MazeChunks.js';
 ```
 
-In `build()`, delete the loop that walks all 400 districts collecting `districtColliders` into `descs`, and the two `_addInstanced` calls that consume it. Keep the forecourt descriptors — they are authored, not streamed — and register them directly as now. Then, after the spawn is set:
+In `build()`, delete **only** the loop that walks all 400 districts collecting `districtColliders` into `descs`.
+
+**Keep `_addInstanced` and both of its calls.** They now receive the forecourt descriptors alone. This is the trap in this task: the forecourt is authored geometry, not a chunk, and it needs *both* colliders and meshes. Deleting the `_addInstanced` calls along with the district loop would leave the forecourt solid but invisible — the player arrives in an empty void enclosed by walls they cannot see. So `descs` becomes just:
+
+```js
+    /* Districts stream (see this.chunks below). The forecourt does not: it is
+     * hand-authored, sits outside the cell grid in negative z, and is the floor
+     * the player arrives on. It needs meshes as well as colliders. */
+    const descs = [];
+    for (const d of forecourtColliders(ew.x, e.level)) descs.push(d);
+
+    const hedges = descs.filter((d) => d.kind === 'hedge');
+    const floors = descs.filter((d) => d.kind === 'floor');
+    this._addInstanced(hedges, mats.hedge, 'maze:forecourt-hedges');
+    this._addInstanced(floors, mats.floor, 'maze:forecourt-floor');
+
+    for (const d of descs) {
+      this.track(this.physics.addBox(d.cx, d.cy, d.cz, d.hx, d.hy, d.hz));
+    }
+```
+
+Then, after the spawn is set:
 
 ```js
     /* Districts stream; everything else in this world does not. The forecourt,

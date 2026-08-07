@@ -23,16 +23,37 @@ import { MAZE, DIR, cellIndex, isOpen } from './MazeTopology.js';
 const SHAFT_STEPS = 24;
 
 /**
- * Height of the gap left in an open (entry) side's wall, so the shaft is
- * still enclosure-sound when checked from `floorY + SHAFT_ENTRY_CLEARANCE`
- * upward rather than from the true floor - see `shaftColliders`'s own
- * comment for why the entry side cannot be sealed all the way to the floor.
- * Exported so a caller proving a real shaft sound (rather than one of this
- * file's own fixtures, which have no doorway at all) applies the same shift
- * `isEnclosureSound` itself has no notion of - it is a plain floor-to-need
- * coverage check with no exception for "except near the entrance".
+ * How far above a shaft's floor its OPEN (entry) side's wall must begin.
+ *
+ * Fix round 1: the first version of this rule sealed the entry side from
+ * the shaft floor upward (offset by the auto-step height, 0.45 m), which is
+ * stricter than the physics needs and made the maze unplayable - it left a
+ * 0.45 m doorway against a 1.75 m player, so every one of the first 617
+ * generated shafts was sound AND unenterable. See
+ * `docs/superpowers/specs/2026-08-07-maze-world-design.md`, "Sealing starts
+ * partway up, not at the floor".
+ *
+ * Leaving a shaft low down is harmless - there is nothing outside to stand
+ * on, so a player who walks out at low height simply drops back into the
+ * corridor. It becomes an exploit only once they are high enough that a hop
+ * plus a step-up lands them on a `HEDGE_HEIGHT`-tall hedge top, i.e. at
+ * `HEDGE_HEIGHT - HOP - STEP_HEIGHT` = 5.0 - 0.93 - 0.45 = 3.62 m.
+ * `ENTRY_SEAL_MARGIN` shaves a little more off that so sealing starts
+ * strictly below the break-even point, not exactly on it - the same
+ * "margin below a derived bar, not a bare derived bar" shape as
+ * `ENCLOSURE_MARGIN` below.
+ *
+ * This single constant is used both to place the physical doorway
+ * (`shaftColliders`) and as the lower bound `isEnclosureSound` checks
+ * coverage from. The two must never drift apart - a physical wall starting
+ * even slightly higher than the height the gate accepts is exactly the
+ * shape of bug this fix round exists to close (there, the gap ran the other
+ * way: the wall started too LOW for the player, but the lesson is the same -
+ * geometry and gate must share one number, not two that happen to agree
+ * today).
  */
-export const SHAFT_ENTRY_CLEARANCE = MAZE.STEP_HEIGHT;
+const ENTRY_SEAL_MARGIN = 0.05;
+export const ENTRY_SEAL_FROM = MAZE.HEDGE_HEIGHT - MAZE.HOP - MAZE.STEP_HEIGHT - ENTRY_SEAL_MARGIN;
 
 export const FORECOURT_HALF_WIDTH = 9;
 /** North (far, closed) wall's z. South edge is the grid boundary at z=0. */
@@ -136,24 +157,18 @@ export function cellToWorld(x, z, level) {
  * `overlappingShaftCells`/`isEnclosureSound` group a descriptor into every
  * cell its footprint touches, boundary-inclusive, and a tread flush to the
  * cell pitch would wrongly pull in four cells it only meets at a corner.
- * `SHAFT_ENTRY_CLEARANCE` is exported alongside this function so a caller
- * checking a real generated shaft can apply that same floor-shift rather
- * than duplicating the constant.
  *
  * The shaft's own walls are emitted at full height (floor to
  * `LEVEL_HEIGHT + HEDGE_HEIGHT`) on the cell's CLOSED sides. The OPEN side -
- * the horizontal passage you actually walk in through - cannot be sealed
- * all the way to the floor without also sealing off the only way in, so its
- * wall instead starts `SHAFT_ENTRY_CLEARANCE` (= `MAZE.STEP_HEIGHT`) above
- * the floor. `isEnclosureSound` is a strict floor-to-required-height
- * coverage check with no notion of "except near the entrance", so callers
- * that need to prove THIS shaft sound must check it from
- * `floorY + SHAFT_ENTRY_CLEARANCE` upward, not from the true floor - see
- * `scripts/tests/maze-enclosure.test.mjs`'s "THE ENCLOSURE GATE" test. That
- * is a conservative, not a relaxed, substitution: 0.45 m is below the 0.93 m
- * hop, so proving "sealed from 0.45 m up" proves the thing that actually
- * matters - "you cannot leave sideways once you are above hop height" -
- * with margin to spare.
+ * the horizontal passage you actually walk in through - is walled only from
+ * `ENTRY_SEAL_FROM` above the floor, leaving a doorway roughly 3.5 m tall
+ * below that - comfortably clear of the 1.75 m player. Fix round 1 sealed
+ * this side from the floor instead (offset by the auto-step height alone),
+ * which left only a 0.45 m doorway and made every shaft unenterable; see
+ * `ENTRY_SEAL_FROM`'s own comment for the derivation and the spec amendment
+ * that replaced it. `isEnclosureSound` now applies that same lower bound
+ * itself, so a caller proving a real shaft sound passes the shaft's true
+ * floor - it no longer has to know about or duplicate this offset.
  */
 export function shaftColliders(cells, x, z, level) {
   const idx = cellIndex(x, z, level);
@@ -179,8 +194,8 @@ export function shaftColliders(cells, x, z, level) {
   }
 
   /* Walls. Full height, floor to top, on closed sides; on the open side (the
-   * way in) the wall stops SHAFT_ENTRY_CLEARANCE above the floor instead -
-   * see this function's own comment for why. */
+   * way in) the wall stops ENTRY_SEAL_FROM above the floor instead - see
+   * this function's own comment for why. */
   const H = MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT;
   const half = MAZE.CELL / 2;
   const sides = [
@@ -189,7 +204,7 @@ export function shaftColliders(cells, x, z, level) {
   ];
   for (const s of sides) {
     const open = isOpen(cells, idx, s.dir);
-    const baseY = open ? w.y + SHAFT_ENTRY_CLEARANCE : w.y;
+    const baseY = open ? w.y + ENTRY_SEAL_FROM : w.y;
     const topY = w.y + H;
     out.push({
       cx: w.x + s.dx * half,
@@ -370,9 +385,18 @@ function requiredWallTop(descs, shaft) {
  * The rule is therefore narrowed rather than dropped: a step may sit in the
  * band only inside a sealed shaft. This function is what makes that exemption
  * honest - it checks that the shaft's cell is walled on all four sides, from
- * its floor to `requiredWallTop` (a function of what is actually inside the
- * shaft, never a constant - see that function's comment), so a player using
- * the steps arrives on the next level rather than on top of the maze.
+ * `ENTRY_SEAL_FROM` above its floor up to `requiredWallTop` (a function of
+ * what is actually inside the shaft, never a constant - see that function's
+ * comment), so a player using the steps arrives on the next level rather
+ * than on top of the maze.
+ *
+ * Coverage is required from `ENTRY_SEAL_FROM` upward, not from the true
+ * floor. Fix round 1 required coverage from the floor, which is stricter
+ * than the physics needs - a player who walks out of a shaft below that
+ * height has nothing to stand on and just drops into the corridor, so it is
+ * not an exploit - and it made every real shaft unenterable while still
+ * reporting SOUND, because a sealed box genuinely is sound; it just cannot
+ * be walked into. See `ENTRY_SEAL_FROM`'s own comment for the derivation.
  *
  * Coverage on a side may be assembled from several colliders, as long as they
  * are vertically contiguous - two wall pieces stacked with no gap between
@@ -386,6 +410,7 @@ function requiredWallTop(descs, shaft) {
 export function isEnclosureSound(descs, shaft) {
   const half = MAZE.CELL / 2;
   const need = requiredWallTop(descs, shaft);
+  const lowerBound = shaft.floorY + ENTRY_SEAL_FROM;
   const EPS = 1e-6;
   const sides = [
     { axis: 'x', at: shaft.cx - half },
@@ -435,12 +460,12 @@ export function isEnclosureSound(descs, shaft) {
         // A gap opened before this piece. Check whether the run that just
         // closed already satisfied the requirement; if not, start a fresh run
         // rather than letting an earlier, insufficient run keep being tested.
-        if (runBottom <= shaft.floorY + EPS && runTop >= need - EPS) { covered = true; break; }
+        if (runBottom <= lowerBound + EPS && runTop >= need - EPS) { covered = true; break; }
         runBottom = bottom;
         runTop = top;
       }
     }
-    if (!covered && runBottom !== null && runBottom <= shaft.floorY + EPS && runTop >= need - EPS) {
+    if (!covered && runBottom !== null && runBottom <= lowerBound + EPS && runTop >= need - EPS) {
       covered = true;
     }
     if (!covered) return false;

@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { Physics } from '../../src/physics/Physics.js';
 import { MAZE, generateTopology, cellIndex, isOpen, DIR, cellCoords } from '../../src/worlds/maze/MazeTopology.js';
 import {
-  isEnclosureSound, districtColliders, cellToWorld, shaftColliders, SHAFT_ENTRY_CLEARANCE,
+  isEnclosureSound, districtColliders, cellToWorld, shaftColliders, ENTRY_SEAL_FROM,
 } from '../../src/worlds/maze/MazeColliders.js';
 import { CONFIG } from '../../src/core/Config.js';
 
@@ -178,11 +178,20 @@ test('a wall assembled from two contiguous pieces is sound', () => {
 });
 
 test('a wall assembled from two pieces with a gap between them is NOT sound', () => {
+  // Fix round 1: coverage is only required from ENTRY_SEAL_FROM (~3.57m)
+  // upward, not from the floor - a gap that sits entirely BELOW that height
+  // is now legitimately harmless (that is the whole point of the fix), so a
+  // gap positioned at the old fixture's 3.0-3.5m band no longer proves
+  // anything. The gap here is widened and repositioned to straddle
+  // ENTRY_SEAL_FROM (3.0-4.0m: the split still sits at mid=3.0m, but a 1.0m
+  // gap pushes the second piece's bottom to 4.0m, above the ~3.57m bound),
+  // so this still exercises a gap that matters - one a player could stand in
+  // above the height where leaving becomes an exploit.
   const others = fullWalls(6.0).filter((w) => w.cx !== -MAZE.CELL / 2);
-  const descs = [floorSlab(), ...splitWestWall(6.0, 0.5), ...others, ...makeLadder(8, 4.0, -1, 1.1)]; // 0.5 m gap
+  const descs = [floorSlab(), ...splitWestWall(6.0, 1.0), ...others, ...makeLadder(8, 4.0, -1, 1.1)]; // 1.0 m gap, 3.0-4.0m
   assert.equal(isEnclosureSound(descs, SHAFT), false,
-    'a gap between two wall pieces was reported as full coverage');
-  // The capsule itself is 1.75 m tall, taller than the 0.5 m gap, so it can
+    'a gap between two wall pieces, straddling the entry-seal threshold, was reported as full coverage');
+  // The capsule itself is 1.75 m tall, taller than the 1.0 m gap, so it can
   // never occupy the gap without also touching one of the two pieces - this
   // rule is intentionally more conservative than what this specific capsule
   // can exploit (see spec: this case is "conservative rather than
@@ -256,12 +265,12 @@ function overlappingShaftCells(cx, hx, cz, hz) {
  * level it belongs to.
  */
 function groupEnclosedByShaft(descs, level = 0) {
-  // + SHAFT_ENTRY_CLEARANCE for the same reason THE ENCLOSURE GATE test
-  // applies it: a real shaft's entry side is open at floor level by design,
-  // so the floor-to-need coverage check `isEnclosureSound` performs must be
-  // asked from just above that gap, not from the true floor. See
-  // shaftColliders's comment in MazeColliders.js.
-  const floorY = level * MAZE.LEVEL_HEIGHT + SHAFT_ENTRY_CLEARANCE;
+  // The shaft's TRUE floor - fix round 1 moved the "don't seal the entry
+  // side all the way down" allowance into `isEnclosureSound` itself (the
+  // `ENTRY_SEAL_FROM` lower bound), so callers pass the real floor and no
+  // longer need to shift it themselves. See ENTRY_SEAL_FROM's own comment
+  // in MazeColliders.js.
+  const floorY = level * MAZE.LEVEL_HEIGHT;
   const groups = new Map();
   for (const d of descs) {
     if (!d.enclosed) continue;
@@ -479,13 +488,13 @@ test('every shaft reaches the next level', () => {
 
 test('THE ENCLOSURE GATE: every shaft is sealed above hop height', () => {
   // A shaft's entry side is genuinely open at floor level - that is the only
-  // way in - so `isEnclosureSound`'s plain floor-to-need coverage check is
-  // applied from `floorY + SHAFT_ENTRY_CLEARANCE` upward, not from the true
-  // floor. That is a conservative substitution, not a relaxed one:
-  // SHAFT_ENTRY_CLEARANCE (0.45m) sits below HOP (0.93m), so proving "sealed
-  // from 0.45m up" proves the thing that actually matters - you cannot leave
-  // sideways once you are above hop height - with margin to spare. See
-  // shaftColliders's own comment in MazeColliders.js.
+  // way in - so `isEnclosureSound` itself (fix round 1) applies its
+  // floor-to-need coverage check from `ENTRY_SEAL_FROM` above the floor, not
+  // from the true floor. Callers pass the shaft's real floor and let the
+  // function apply that lower bound, so both the geometry
+  // (`shaftColliders`) and this gate share exactly one derived number rather
+  // than two that have to be kept in step by hand. See ENTRY_SEAL_FROM's own
+  // comment in MazeColliders.js for the derivation.
   for (const seed of [1, 42, 2026]) {
     const t = generateTopology(seed, { levels: 2 });
     for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++) {
@@ -493,10 +502,99 @@ test('THE ENCLOSURE GATE: every shaft is sealed above hop height', () => {
       for (const c of shaftCells(t.cells, dx, dz, 0)) {
         const w = cellToWorld(c.x, c.z, 0);
         assert.equal(
-          isEnclosureSound(descs, { cx: w.x, cz: w.z, floorY: w.y + SHAFT_ENTRY_CLEARANCE }), true,
+          isEnclosureSound(descs, { cx: w.x, cz: w.z, floorY: w.y }), true,
           `seed ${seed} shaft at ${c.x},${c.z} is not sealed`,
         );
       }
     }
   }
+});
+
+/* ------------------------------------------------------------------ */
+/* Fix round 1: sealing from the floor made every shaft unenterable.   */
+/* "Is it sealed" was asserted six ways above; "can anyone get in" was */
+/* asserted nowhere. This is that check.                               */
+/* ------------------------------------------------------------------ */
+
+test('the entry doorway on a real shaft is tall enough for the player to walk through', () => {
+  // Derived from CONFIG.player.height, not a retyped literal, so a taller
+  // player breaks THIS build rather than silently breaking the game (the
+  // failure mode fix round 1 shipped: nothing asserted walkability at all).
+  const CLEARANCE = 0.25;
+  const REQUIRED = CONFIG.player.height + CLEARANCE;
+  const sidesByDir = [
+    { dir: DIR.N, dx: 0, dz: -1 }, { dir: DIR.E, dx: 1, dz: 0 },
+    { dir: DIR.S, dx: 0, dz: 1 }, { dir: DIR.W, dx: -1, dz: 0 },
+  ];
+  const half = MAZE.CELL / 2;
+  let checked = 0;
+  let minGap = Infinity;
+  for (const seed of [1, 42, 2026]) {
+    const t = generateTopology(seed, { levels: 2 });
+    for (let dz = 0; dz < 4; dz++) for (let dx = 0; dx < 4; dx++) {
+      for (const c of shaftCells(t.cells, dx, dz, 0)) {
+        const idx = cellIndex(c.x, c.z, 0);
+        const w = cellToWorld(c.x, c.z, 0);
+        const walls = shaftColliders(t.cells, c.x, c.z, 0).filter((d) => d.kind === 'hedge');
+        for (const s of sidesByDir) {
+          if (!isOpen(t.cells, idx, s.dir)) continue;
+          const wall = walls.find((d) => Math.abs(d.cx - (w.x + s.dx * half)) < 1e-6
+                                        && Math.abs(d.cz - (w.z + s.dz * half)) < 1e-6);
+          assert.ok(wall, `shaft at ${c.x},${c.z} has no wall descriptor for its open side`);
+          const gap = (wall.cy - wall.hy) - w.y;
+          minGap = Math.min(minGap, gap);
+          assert.ok(gap >= REQUIRED,
+            `shaft at ${c.x},${c.z} doorway is ${gap.toFixed(2)}m, short of the ` +
+            `${REQUIRED.toFixed(2)}m a ${CONFIG.player.height}m player plus clearance needs`);
+          checked++;
+        }
+      }
+    }
+  }
+  assert.ok(checked > 0, 'no open shaft sides found to check');
+  // eslint-disable-next-line no-console
+  console.log(`[doorway] ${checked} open sides checked across 3 seeds, minimum measured gap ${minGap.toFixed(3)}m`);
+});
+
+test('a shaft whose entry-side wall starts above the exploit threshold is NOT sound', () => {
+  // ENTRY_SEAL_FROM (~3.57m) is looser than sealing from the floor, but it
+  // must not be so loose that a real escape gap - one a player could
+  // actually stand in and walk out of - passes. A wall starting even a
+  // little above the threshold leaves exactly that gap.
+  const c = MAZE.CELL, H = 6.0;
+  const tooHighBase = 4.0;
+  assert.ok(tooHighBase > ENTRY_SEAL_FROM,
+    'fixture bug: the wall must start above ENTRY_SEAL_FROM to test the boundary');
+  const withoutEast = fullWalls(H).filter((w) => w.cx !== c / 2);
+  const tooHigh = {
+    cx: c / 2, cy: (tooHighBase + H) / 2, cz: 0, hx: 0.6, hy: (H - tooHighBase) / 2, hz: c / 2, kind: 'hedge',
+  };
+  const descs = [floorSlab(), ...withoutEast, tooHigh];
+  assert.equal(isEnclosureSound(descs, SHAFT), false,
+    `a wall starting at ${tooHighBase}m (above the ${ENTRY_SEAL_FROM.toFixed(2)}m exploit threshold) was reported sound`);
+});
+
+test('ENTRY_SEAL_MARGIN is load-bearing: a wall starting at the raw break-even height (no margin) is still NOT sound', () => {
+  // HEDGE_HEIGHT - HOP - STEP_HEIGHT = 3.62m is the exact height above which
+  // leaving becomes an exploit. ENTRY_SEAL_FROM sits a margin below that
+  // (3.57m) on purpose, so a wall starting exactly at the raw, margin-free
+  // bar must still fail - if it didn't, the margin would be decorative.
+  const RAW_BAR = MAZE.HEDGE_HEIGHT - MAZE.HOP - MAZE.STEP_HEIGHT;
+  const c = MAZE.CELL, H = 6.0;
+  const withoutEast = fullWalls(H).filter((w) => w.cx !== c / 2);
+  const atRawBar = {
+    cx: c / 2, cy: (RAW_BAR + H) / 2, cz: 0, hx: 0.6, hy: (H - RAW_BAR) / 2, hz: c / 2, kind: 'hedge',
+  };
+  const descs = [floorSlab(), ...withoutEast, atRawBar];
+  assert.equal(isEnclosureSound(descs, SHAFT), false,
+    'a wall starting exactly at the raw 3.62m break-even (no margin) was reported sound');
+
+  // A wall starting exactly at ENTRY_SEAL_FROM itself - what shaftColliders
+  // actually emits - is sound.
+  const atBound = {
+    cx: c / 2, cy: (ENTRY_SEAL_FROM + H) / 2, cz: 0, hx: 0.6, hy: (H - ENTRY_SEAL_FROM) / 2, hz: c / 2, kind: 'hedge',
+  };
+  const soundDescs = [floorSlab(), ...withoutEast, atBound];
+  assert.equal(isEnclosureSound(soundDescs, SHAFT), true,
+    'a wall starting exactly at ENTRY_SEAL_FROM was reported unsound');
 });

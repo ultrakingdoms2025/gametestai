@@ -54,6 +54,28 @@ const _euler = new THREE.Euler();
 const _quat = new THREE.Quaternion();
 const _scl = new THREE.Vector3(1, 1, 1);
 
+/**
+ * Offset along Z of the maze gateway's dais from the plaza centre. Named so
+ * it has one source: `_buildPortalDaises` passes it to `_buildAxisGateway` as
+ * `offsetZ`, and `GATEWAY_CENTRES` below reads the same constant rather than
+ * a second copy of the literal.
+ */
+const MAZE_GATEWAY_OFFSET_Z = 128;
+
+/**
+ * World-space (x, z) centre of every gateway's dais, kept as one list so
+ * `_buildCrowd`'s plinth-clearance checks cannot drift out of step with the
+ * gateways again. They already had once: the maze gateway shipped off-axis
+ * (the other four all sit at (0, +-PORTAL_R) or (+-PORTAL_R, 0)) and the two
+ * hardcoded four-entry position arrays in `_buildCrowd` had no way to know
+ * they needed a fifth.
+ */
+const GATEWAY_CENTRES = [
+  [0, -PORTAL_R], [0, PORTAL_R],               // medieval, sports (Z axis)
+  [-PORTAL_R, 0], [PORTAL_R, 0],                // citadel, race (X axis)
+  [-PORTAL_R, MAZE_GATEWAY_OFFSET_Z],           // maze (X axis, Z-offset)
+];
+
 
 /* ------------------------------------------------------------------ */
 /* Deterministic noise + rng                                           */
@@ -5621,7 +5643,7 @@ export class StationWorld extends World {
      * one is offset along Z to keep an 11 m dais clear of the citadel's. */
     this._buildAxisGateway(g, {
       side: -1, target: 'maze', label: 'The Verdant Coil', accent: 0x8fd67a,
-      signRole: SIGN_ROLE.gatewayMaze, offsetZ: 128,
+      signRole: SIGN_ROLE.gatewayMaze, offsetZ: MAZE_GATEWAY_OFFSET_Z,
     });
   }
 
@@ -7542,7 +7564,7 @@ export class StationWorld extends World {
        * the fix and the better staging: a queue that stops at the foot of the
        * steps reads as a queue, where civilians milling about on the threshold
        * of an interdimensional gate does not. */
-      for (const [px, pz] of [[0, -PORTAL_R], [0, PORTAL_R], [-PORTAL_R, 0], [PORTAL_R, 0]]) {
+      for (const [px, pz] of GATEWAY_CENTRES) {
         if (Math.hypot(x - px, z - pz) < 5.5) return;
       }
 
@@ -7593,7 +7615,7 @@ export class StationWorld extends World {
       const STEP_UP = 0.35;
       const APPROACH_R = 26;
       if (baseY - y > STEP_UP) {
-        const onApproach = [[0, -PORTAL_R], [0, PORTAL_R], [-PORTAL_R, 0], [PORTAL_R, 0]]
+        const onApproach = GATEWAY_CENTRES
           .some(([px, pz]) => Math.hypot(x - px, z - pz) < APPROACH_R);
         if (!onApproach) {
           const floor = this.physics.groundHeight(x, z, y + STEP_UP, 12.0);

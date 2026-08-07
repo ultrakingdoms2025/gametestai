@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import { World } from './World.js';
 import { makeRules } from './WorldRules.js';
 import {
-  MAZE, generateTopology, cellCoords,
+  MAZE, generateTopology, cellCoords, carveEntranceCorridor,
 } from './maze/MazeTopology.js';
-import { districtColliders, cellToWorld } from './maze/MazeColliders.js';
+import {
+  districtColliders, cellToWorld, forecourtColliders, FORECOURT_PORTAL_Z,
+} from './maze/MazeColliders.js';
 
 /**
  * The Verdant Coil - a hedge maze that re-rolls its layout on every entry.
@@ -94,9 +96,20 @@ export class MazeWorld extends World {
     this.entranceCell = topo.entranceCell;
     this.centreCell = topo.centreCell;
 
+    /* `buildDistrictGraph` fixes the entrance at the *centre* of district
+     * (10,0) - ten cells inside the grid's own edge, not on it - so nothing
+     * connects it to the outside on its own. Carve a straight corridor from
+     * the grid's north boundary out to the entrance and breach that boundary
+     * wall. This can only open passage bits, never close any, so it cannot
+     * disconnect anything that was already reachable - see
+     * MazeTopology.carveEntranceCorridor. */
+    const e = cellCoords(this.entranceCell);
+    carveEntranceCorridor(this.cells, e);
+
     await onProgress?.(0.25, 'Laying the paths');
 
     const mats = this._ensureMaterials();
+    const ew = cellToWorld(e.x, e.z, e.level);
 
     /* One InstancedMesh for hedges and one for floors across the whole level.
      * Phase 2 replaces this with per-district chunks; for now a single pair of
@@ -110,6 +123,12 @@ export class MazeWorld extends World {
         await onProgress?.(0.25 + 0.55 * (dz / MAZE.DISTRICTS), 'Laying the paths');
       }
     }
+
+    /* The walled forecourt outside the grid where the corridor above opens.
+     * The return portal stands in it rather than in the corridor itself -
+     * see MazeColliders.forecourtColliders for why the generic plinth cannot
+     * fit inside a 6m maze cell. */
+    for (const d of forecourtColliders(ew.x, e.level)) descs.push(d);
 
     const hedges = descs.filter((d) => d.kind === 'hedge');
     const floors = descs.filter((d) => d.kind === 'floor');
@@ -125,15 +144,19 @@ export class MazeWorld extends World {
 
     /* Spawn the player standing in the entrance cell, facing into the maze
      * (south, +z). */
-    const e = cellCoords(this.entranceCell);
-    const ew = cellToWorld(e.x, e.z, e.level);
     this.playerSpawn.set(ew.x, ew.y + 0.05, ew.z);
     this.playerSpawnYaw = Math.PI;
 
-    /* The return arch sits behind the player at the entrance. Walking back
-     * through it leaves the maze. */
+    /* The return arch stands in the middle of the forecourt rather than one
+     * cell north of the entrance - that position sat inside the hedge the
+     * entrance cell's own (closed, before carveEntranceCorridor) north face
+     * put there, and the plinth is far too wide to fit in a maze corridor
+     * regardless. `rotationY: 0` keeps `WorldManager.arrivalFor`'s arithmetic
+     * (arrival = position + 2.6m along (sin(rotY), cos(rotY)), yaw = rotY +
+     * PI) landing the player just south of the portal, facing +z into the
+     * corridor - confirmed against `Player.forward`, where yaw=PI is +Z. */
     this.portalSpecs = [{
-      position: new THREE.Vector3(ew.x, ew.y, ew.z - MAZE.CELL),
+      position: new THREE.Vector3(ew.x, ew.y, FORECOURT_PORTAL_Z),
       rotationY: 0,
       target: 'station',
       label: 'Aether Station',
@@ -197,6 +220,12 @@ export class MazeWorld extends World {
   dispose() {
     this.group.traverse((obj) => {
       if (obj.geometry) obj.geometry.dispose();
+      /* InstancedMesh owns an `instanceMatrix` GPU buffer that geometry
+       * disposal does not touch - it is released only through the mesh's own
+       * dispose event. At ~175,600 hedge instances that is 175,600 * 16 * 4 =
+       * ~11.2 MB stranded on every re-roll if this is skipped, and repeated
+       * re-rolling is this world's entire premise. */
+      if (obj.isInstancedMesh) obj.dispose();
     });
     this.group.clear();
     this.colliders.length = 0;

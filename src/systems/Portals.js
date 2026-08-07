@@ -2179,11 +2179,22 @@ export class PortalSystem {
         text: `Gateway to ${portal.targetName} is still stabilising…`,
         tone: 'warn',
       });
-      // Kick the build so the wait is as short as it can be, then transition
-      // anyway: activate() awaits the same in-flight promise.
-      wm.build(portal.target).catch((err) =>
-        console.error('[Portals] destination build failed:', err)
-      );
+      /* Kick the build so the wait is as short as it can be, then transition
+       * anyway: activate() awaits the same in-flight promise.
+       *
+       * Skipped for volatile worlds. `_updateTransition` below calls
+       * `wm.activate()` once the transition is half done, and `activate()`
+       * calls `build()` itself - so a volatile world (which regenerates on
+       * every `build()` call; see WorldManager.build) would otherwise pay for
+       * two full generation passes on its first entry instead of one: this
+       * kicked build usually finishes before activate's own call runs, so
+       * that call's `build()` disposes the fresh layout and generates a
+       * second one rather than reusing it. */
+      if (!wm.isVolatile?.(portal.target)) {
+        wm.build(portal.target).catch((err) =>
+          console.error('[Portals] destination build failed:', err)
+        );
+      }
     }
 
     const duration = CONFIG.portal.transitionDuration;

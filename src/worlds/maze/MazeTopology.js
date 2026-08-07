@@ -473,6 +473,41 @@ export function generateTopology(seed, opts = {}) {
   };
 }
 
+/**
+ * Punch a one-cell-wide corridor from a level's north boundary (z=0) straight
+ * to the entrance cell, and breach that boundary so the corridor actually
+ * opens onto open air instead of terminating at the outer wall.
+ *
+ * `buildDistrictGraph` fixes the entrance at the *centre* of district (10,0)
+ * - ten cells inside the district, not on its edge - because that is what
+ * makes the forecourt authorable at a fixed world position. Nothing carves a
+ * path from the grid's edge to that cell on its own, so without this call the
+ * entrance cell is sealed on every side but the ones the perfect-maze
+ * backtracker happened to open, which is not necessarily any of them.
+ *
+ * Only ever opens passage bits, never closes any - so this cannot disconnect
+ * anything that was already reachable. THE GATE (entrance-to-centre
+ * solvability) is asserted *after* this runs in `MazeWorld.build()`, which is
+ * what proves that claim rather than assuming it.
+ *
+ * @param {Uint8Array} cells mutated in place
+ * @param {{x:number, z:number, level:number}} entrance cell coords - the
+ *   entrance column stays fixed at `x` for every row from the boundary down.
+ */
+export function carveEntranceCorridor(cells, entrance) {
+  const { x: ex, z: ez, level } = entrance;
+  for (let z = 1; z <= ez; z++) {
+    const here = cellIndex(ex, z, level);
+    const prev = cellIndex(ex, z - 1, level);
+    cells[here] |= DIR.N;
+    cells[prev] |= DIR.S;
+  }
+  // Breach the outer boundary wall itself - without this the corridor is
+  // fully open internally but still capped by the hedge `districtColliders`
+  // draws across every cell's unowned north face at the grid's edge.
+  cells[cellIndex(ex, 0, level)] |= DIR.N;
+}
+
 /** Neighbour cell index across `dir`, or -1 if it leaves the grid. */
 function neighbourOf(index, dir) {
   const { x, z, level } = cellCoords(index);

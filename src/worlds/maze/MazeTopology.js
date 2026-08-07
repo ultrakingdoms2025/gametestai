@@ -530,3 +530,47 @@ export function reachableCount(cells, from) {
   }
   return count;
 }
+
+/* ------------------------------------------------------------------ */
+/* Residency                                                           */
+/*                                                                     */
+/* Which districts should be built for a player standing somewhere.    */
+/* Pure integer maths, deliberately: the chunk manager that consumes    */
+/* this needs THREE, and keeping the decision here means the residency  */
+/* set can be tested without a renderer.                                */
+/* ------------------------------------------------------------------ */
+
+/** One district edge, in metres. */
+export const DISTRICT_SPAN = MAZE.DISTRICT * MAZE.CELL;
+
+/**
+ * District containing a world position, clamped to the grid.
+ *
+ * Clamping matters: the entrance forecourt sits in negative z, outside the
+ * cell grid entirely, and a player standing there must still hold the maze's
+ * first districts resident rather than an empty set.
+ */
+export function districtAtWorld(x, z, level) {
+  const dx = Math.min(MAZE.DISTRICTS - 1, Math.max(0, Math.floor(x / DISTRICT_SPAN)));
+  const dz = Math.min(MAZE.DISTRICTS - 1, Math.max(0, Math.floor(z / DISTRICT_SPAN)));
+  const lv = Math.min(MAZE.LEVELS - 1, Math.max(0, level | 0));
+  return districtIndex(dx, dz, lv);
+}
+
+/**
+ * District indices within `radius` districts of `centreKey`, same level only.
+ * Sorted ascending so two calls with the same argument compare equal.
+ */
+export function neighbourhoodKeys(centreKey, radius) {
+  const { dx, dz, level } = districtCoords(centreKey);
+  const out = [];
+  for (let z = dz - radius; z <= dz + radius; z++) {
+    if (z < 0 || z >= MAZE.DISTRICTS) continue;
+    for (let x = dx - radius; x <= dx + radius; x++) {
+      if (x < 0 || x >= MAZE.DISTRICTS) continue;
+      out.push(districtIndex(x, z, level));
+    }
+  }
+  out.sort((a, b) => a - b);
+  return out;
+}

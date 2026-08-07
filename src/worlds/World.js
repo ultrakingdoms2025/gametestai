@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { DEFAULT_RULES } from './WorldRules.js';
 
 /**
  * Base class every world implements.
@@ -69,6 +70,13 @@ export class World {
      * @type {Array<{ kind:'rect'|'circle'|'path', ...any }>}
      */
     this.minimapShapes = [];
+
+    /**
+     * Per-world capability gates. Everything is permitted by default, so an
+     * existing world behaves exactly as it did before rules existed.
+     * @see ./WorldRules.js
+     */
+    this.rules = DEFAULT_RULES;
 
     /** Per-world environment settings applied on activation. */
     this.environment = {

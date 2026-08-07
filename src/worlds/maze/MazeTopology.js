@@ -29,6 +29,14 @@ export const MAZE = Object.freeze({
   TOTAL_CELLS: 640000,
   /** Vertical spacing between levels, metres. Clears a 5 m hedge plus headroom. */
   LEVEL_HEIGHT: 9.0,
+  /**
+   * Hop apex, metres. `jumpVelocity² / (2 * -gravity)` from `src/core/Config.js`
+   * (6.4² / (2 × 22) ≈ 0.93). Duplicated here as a constant, rather than
+   * imported, because this module may only import nothing at all - see the
+   * file header - and the maze's own dimensioning depends on this exact
+   * number regardless of what the live player config happens to be.
+   */
+  HOP: 0.93,
 });
 
 /** Passage bits. N is -z, S is +z, E is +x, W is -x. */

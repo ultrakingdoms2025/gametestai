@@ -10,7 +10,7 @@
  *
  * @typedef {{ cx:number, cy:number, cz:number,
  *             hx:number, hy:number, hz:number,
- *             kind:'hedge'|'floor'|'stair'|string,
+ *             kind:'hedge'|'floor'|'stair',
  *             enclosed?:boolean }} ColliderDesc
  */
 
@@ -192,6 +192,51 @@ export function districtColliders(cells, dx, dz, level) {
 }
 
 /**
+ * Extra clearance added above `highest standable + HOP` when deriving a
+ * shaft's required wall height. The hop figure alone is the theoretical apex;
+ * this exists so a wall that clears it by inches, rather than comfortably,
+ * still counts as sound after floating-point slop in the geometry that will
+ * eventually generate these shafts.
+ */
+const ENCLOSURE_MARGIN = 0.5;
+
+/**
+ * How high a shaft's walls must reach to contain what is inside it.
+ *
+ * The first draft of this rule used a constant - hedge height - and that was
+ * wrong in a way that destroyed the guarantee it existed to protect:
+ * `LEVEL_HEIGHT` is 9.0 m, so a staircase climbing a real level inside 5.0 m
+ * walls satisfied a fixed bar while leaving the top of the stairs 4 m above
+ * the walls meant to contain them. A shaft's walls must clear its own
+ * contents, so the bar is derived from the highest `enclosed` standable
+ * surface actually inside the shaft's footprint - the highest point a player
+ * can reach by walking to the top of it - plus one hop plus a margin. A shaft
+ * with nothing enclosed in it (there is nothing to climb) falls back to hedge
+ * height, matching the original band rule.
+ *
+ * @param {ColliderDesc[]} descs
+ * @param {{cx:number, cz:number, floorY:number}} shaft
+ * @returns {number} absolute world Y the walls must reach
+ */
+function requiredWallTop(descs, shaft) {
+  const half = MAZE.CELL / 2;
+  const EPS = 1e-6;
+  let highest = -Infinity;
+  for (const d of descs) {
+    if (!d.enclosed) continue;
+    // Only surfaces that actually sit inside this shaft's footprint count -
+    // an enclosed descriptor belonging to a neighbouring shaft must not raise
+    // this one's bar.
+    if (d.cx - d.hx > shaft.cx + half - EPS || d.cx + d.hx < shaft.cx - half + EPS) continue;
+    if (d.cz - d.hz > shaft.cz + half - EPS || d.cz + d.hz < shaft.cz - half + EPS) continue;
+    const top = d.cy + d.hy;
+    if (top > highest) highest = top;
+  }
+  if (highest === -Infinity) return shaft.floorY + MAZE.HEDGE_HEIGHT;
+  return highest + MAZE.HOP + ENCLOSURE_MARGIN;
+}
+
+/**
  * Is a shaft genuinely sealed?
  *
  * Phase 1's rule was absolute: nothing standable between 0.45 m and 5.0 m,
@@ -200,9 +245,15 @@ export function districtColliders(cells, dx, dz, level) {
  *
  * The rule is therefore narrowed rather than dropped: a step may sit in the
  * band only inside a sealed shaft. This function is what makes that exemption
- * honest - it checks that the shaft's cell is walled on all four sides from its
- * floor to at least hedge height, so a player using the steps arrives on the
- * next level rather than on top of the maze.
+ * honest - it checks that the shaft's cell is walled on all four sides, from
+ * its floor to `requiredWallTop` (a function of what is actually inside the
+ * shaft, never a constant - see that function's comment), so a player using
+ * the steps arrives on the next level rather than on top of the maze.
+ *
+ * Coverage on a side may be assembled from several colliders, as long as they
+ * are vertically contiguous - two wall pieces stacked with no gap between
+ * them wall a side exactly as well as one collider spanning the same range.
+ * A gap between two pieces does not.
  *
  * @param {ColliderDesc[]} descs every collider near the shaft
  * @param {{cx:number, cz:number, floorY:number}} shaft cell centre and floor
@@ -210,7 +261,7 @@ export function districtColliders(cells, dx, dz, level) {
  */
 export function isEnclosureSound(descs, shaft) {
   const half = MAZE.CELL / 2;
-  const need = shaft.floorY + MAZE.HEDGE_HEIGHT;
+  const need = requiredWallTop(descs, shaft);
   const EPS = 1e-6;
   const sides = [
     { axis: 'x', at: shaft.cx - half },
@@ -220,12 +271,12 @@ export function isEnclosureSound(descs, shaft) {
   ];
 
   for (const side of sides) {
-    let covered = false;
+    // Every wall piece that reaches this side's plane and spans the shaft's
+    // full width along it, regardless of its own vertical extent - coverage
+    // is decided by merging these intervals, not by any single piece alone.
+    const intervals = [];
     for (const d of descs) {
       if (d.enclosed) continue;                      // steps do not wall a shaft
-      const top = d.cy + d.hy;
-      const bottom = d.cy - d.hy;
-      if (top < need - EPS || bottom > shaft.floorY + EPS) continue;
 
       // A wall covers this side only if its slab actually reaches the side's
       // plane *and* spans the shaft's full width along that plane - not merely
@@ -242,8 +293,31 @@ export function isEnclosureSound(descs, shaft) {
         if (d.cz - d.hz > side.at + EPS || d.cz + d.hz < side.at - EPS) continue;
         if (d.cx - d.hx > shaft.cx - half + EPS || d.cx + d.hx < shaft.cx + half - EPS) continue;
       }
+      intervals.push([d.cy - d.hy, d.cy + d.hy]);
+    }
+
+    intervals.sort((a, b) => a[0] - b[0]);
+    let covered = false;
+    let runBottom = null;
+    let runTop = null;
+    for (const [bottom, top] of intervals) {
+      if (runBottom === null) {
+        runBottom = bottom;
+        runTop = top;
+      } else if (bottom <= runTop + EPS) {
+        // Overlaps or touches the run so far - extend it.
+        if (top > runTop) runTop = top;
+      } else {
+        // A gap opened before this piece. Check whether the run that just
+        // closed already satisfied the requirement; if not, start a fresh run
+        // rather than letting an earlier, insufficient run keep being tested.
+        if (runBottom <= shaft.floorY + EPS && runTop >= need - EPS) { covered = true; break; }
+        runBottom = bottom;
+        runTop = top;
+      }
+    }
+    if (!covered && runBottom !== null && runBottom <= shaft.floorY + EPS && runTop >= need - EPS) {
       covered = true;
-      break;
     }
     if (!covered) return false;
   }

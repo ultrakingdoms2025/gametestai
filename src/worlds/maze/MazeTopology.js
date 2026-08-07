@@ -356,3 +356,178 @@ export function carveDistrict(seed, graph, dx, dz, level, cells) {
     cells[cellIndex(x0 + lx, z0 + lz, level)] |= dir;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Whole-maze generation and search                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Generate a complete maze topology.
+ *
+ * @param {number} seed
+ * @param {{ levels?: number }} [opts] `levels` limits generation to the lowest
+ *   N levels. Phase 1 passes 1; the default builds all four.
+ * @returns {{ seed:number, cells:Uint8Array,
+ *             graph:ReturnType<typeof buildDistrictGraph>,
+ *             entranceCell:number, centreCell:number }}
+ */
+export function generateTopology(seed, opts = {}) {
+  const levels = Math.max(1, Math.min(MAZE.LEVELS, opts.levels ?? MAZE.LEVELS));
+  let graph = buildDistrictGraph(seed);
+
+  /* When limited to fewer levels, rebuild the spanning tree for only those levels.
+   * The full multi-level graph may rely on vertical edges that don't exist when
+   * we only carve some levels, leaving disconnected districts. */
+  if (levels < MAZE.LEVELS) {
+    const rng = mulberry32(hash32(seed, 0x6a11));
+    const filteredOpen = new Set();
+    const visited = new Uint8Array(levels * DISTRICTS_PER_LEVEL);
+    const stack = [0]; // Start from district 0 (level 0, dx=0, dz=0)
+    visited[0] = 1;
+
+    while (stack.length) {
+      const cur = stack[stack.length - 1];
+      const curCoords = districtCoords(cur);
+      if (curCoords.level >= levels) {
+        stack.pop();
+        continue;
+      }
+      const candidates = [];
+      // Only consider horizontal neighbors on the same level
+      const neighbors = districtNeighbours(cur).filter((n) => {
+        const nc = districtCoords(n.i);
+        return nc.level < levels && !nc.vertical && !visited[n.i];
+      });
+      if (neighbors.length === 0) {
+        stack.pop();
+        continue;
+      }
+      const pick = neighbors[Math.floor(rng() * neighbors.length)];
+      filteredOpen.add(edgeKey(cur, pick.i));
+      visited[pick.i] = 1;
+      stack.push(pick.i);
+    }
+    graph = {
+      ...graph,
+      open: filteredOpen,
+    };
+  }
+
+  const cells = new Uint8Array(MAZE.TOTAL_CELLS);
+
+  for (let level = 0; level < levels; level++) {
+    for (let dz = 0; dz < MAZE.DISTRICTS; dz++) {
+      for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
+        carveDistrict(seed, graph, dx, dz, level, cells);
+      }
+    }
+  }
+
+  /* When generation is limited to fewer levels than the graph knows about, the
+   * centre may have been placed on a level that was never carved. Fold it down
+   * rather than leaving an unreachable prize. Vertical doors to uncarved levels
+   * are removed to preserve connectivity on carved levels. */
+  const centreLevel = graph.centre.level < levels ? graph.centre.level : 0;
+
+  /* Remove vertical doors leading to uncarved levels, which would create
+   * dead-end passages and fragment connectivity. */
+  if (levels < MAZE.LEVELS) {
+    for (let level = 0; level < levels; level++) {
+      for (let z = 0; z < MAZE.CELLS; z++) {
+        for (let x = 0; x < MAZE.CELLS; x++) {
+          const i = cellIndex(x, z, level);
+          if (level + 1 >= levels) cells[i] &= ~DIR.UP;
+          if (level === 0) cells[i] &= ~DIR.DOWN;
+        }
+      }
+    }
+  }
+
+  const cellOf = (d, lvl) =>
+    cellIndex(
+      d.dx * MAZE.DISTRICT + Math.floor(MAZE.DISTRICT / 2),
+      d.dz * MAZE.DISTRICT + Math.floor(MAZE.DISTRICT / 2),
+      lvl,
+    );
+
+  return {
+    seed,
+    cells,
+    graph,
+    entranceCell: cellOf(graph.entrance, graph.entrance.level),
+    centreCell: cellOf(graph.centre, centreLevel),
+  };
+}
+
+/** Neighbour cell index across `dir`, or -1 if it leaves the grid. */
+function neighbourOf(index, dir) {
+  const { x, z, level } = cellCoords(index);
+  if (dir === DIR.UP) return level + 1 < MAZE.LEVELS ? cellIndex(x, z, level + 1) : -1;
+  if (dir === DIR.DOWN) return level > 0 ? cellIndex(x, z, level - 1) : -1;
+  const [sx, sz] = STEP[dir];
+  const nx = x + sx;
+  const nz = z + sz;
+  return inBounds(nx, nz) ? cellIndex(nx, nz, level) : -1;
+}
+
+const ALL_DIRS = [DIR.N, DIR.E, DIR.S, DIR.W, DIR.UP, DIR.DOWN];
+
+/**
+ * Breadth-first shortest route between two cells.
+ * @returns {number[]|null} cell indices from `from` to `to`, or null
+ */
+export function solve(cells, from, to) {
+  if (from === to) return [from];
+  const prev = new Int32Array(MAZE.TOTAL_CELLS).fill(-1);
+  const seen = new Uint8Array(MAZE.TOTAL_CELLS);
+  /* A plain array used as a queue with a head cursor. Array.shift() on a
+   * 640,000-entry queue is O(n) per call and turns this into minutes. */
+  const queue = new Int32Array(MAZE.TOTAL_CELLS);
+  let head = 0;
+  let tail = 0;
+  queue[tail++] = from;
+  seen[from] = 1;
+
+  while (head < tail) {
+    const cur = queue[head++];
+    for (const dir of ALL_DIRS) {
+      if ((cells[cur] & dir) === 0) continue;
+      const n = neighbourOf(cur, dir);
+      if (n < 0 || seen[n]) continue;
+      seen[n] = 1;
+      prev[n] = cur;
+      if (n === to) {
+        const path = [to];
+        let step = cur;
+        while (step !== from) { path.push(step); step = prev[step]; }
+        path.push(from);
+        return path.reverse();
+      }
+      queue[tail++] = n;
+    }
+  }
+  return null;
+}
+
+/** How many cells are reachable from `from`. Used to prove there are no pockets. */
+export function reachableCount(cells, from) {
+  const seen = new Uint8Array(MAZE.TOTAL_CELLS);
+  const queue = new Int32Array(MAZE.TOTAL_CELLS);
+  let head = 0;
+  let tail = 0;
+  queue[tail++] = from;
+  seen[from] = 1;
+  let count = 1;
+  while (head < tail) {
+    const cur = queue[head++];
+    for (const dir of ALL_DIRS) {
+      if ((cells[cur] & dir) === 0) continue;
+      const n = neighbourOf(cur, dir);
+      if (n < 0 || seen[n]) continue;
+      seen[n] = 1;
+      count++;
+      queue[tail++] = n;
+    }
+  }
+  return count;
+}

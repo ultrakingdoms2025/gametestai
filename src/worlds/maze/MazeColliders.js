@@ -110,9 +110,15 @@ export function cellToWorld(x, z, level) {
  * Every collider for one district.
  *
  * A hedge is emitted on a cell's north and west sides only, plus on the south
- * and east sides of the district's last row and column. Emitting all four sides
- * per cell would double every interior wall - two coincident colliders in the
- * same place, each answering every query.
+ * and east sides of a cell that sits on the GLOBAL grid's far edge (`z`/`x` ===
+ * `MAZE.CELLS - 1`), where no neighbouring cell exists to own that face.
+ * Emitting all four sides per cell would double every interior wall - two
+ * coincident colliders in the same place, each answering every query. The
+ * south/east fallback used to key on the *district's* last row and column
+ * instead, which was wrong: every internal district seam is also a district's
+ * last row or column from one side, so that version emitted a duplicate hedge
+ * at every seam. Keying on the grid's edge instead of the district's edge is
+ * what keeps this to one hedge per interior wall.
  *
  * @param {Uint8Array} cells
  * @param {number} dx

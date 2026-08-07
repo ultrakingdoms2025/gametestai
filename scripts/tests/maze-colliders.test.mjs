@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAZE, generateTopology, cellIndex } from '../../src/worlds/maze/MazeTopology.js';
-import { districtColliders, cellToWorld } from '../../src/worlds/maze/MazeColliders.js';
+import {
+  MAZE, generateTopology, cellIndex, cellCoords,
+} from '../../src/worlds/maze/MazeTopology.js';
+import { districtColliders, forecourtColliders, cellToWorld } from '../../src/worlds/maze/MazeColliders.js';
 
 test('cellToWorld places cell 0,0 at the origin corner and steps by the pitch', () => {
   const a = cellToWorld(0, 0, 0);
@@ -30,15 +32,26 @@ test('THE ANTI-LADDER GATE: no collider top sits in the hop band', () => {
   // Testing a 4x4 district block adds belt-and-braces but doesn't improve coverage;
   // a single district would suffice. Keeping the loop for defense-in-depth.
   const t = generateTopology(99, { levels: 1 });
+  const allDescs = [];
   for (let dz = 0; dz < 4; dz++) {
     for (let dx = 0; dx < 4; dx++) {
-      for (const d of districtColliders(t.cells, dx, dz, 0)) {
-        const top = d.cy + d.hy;
-        const relative = top - cellToWorld(0, 0, 0).y;
-        const inBand = relative > 0.45 && relative < 5.0;
-        assert.ok(!inBand, `collider top at ${relative.toFixed(2)}m is a ladder over a hedge`);
-      }
+      allDescs.push(...districtColliders(t.cells, dx, dz, 0));
     }
+  }
+  // The forecourt is the one piece of maze geometry authored by hand rather
+  // than derived from topology, which makes it the most likely place for a
+  // stray standable surface to appear - so it belongs in this gate too, not
+  // just the district colliders. Called the same way MazeWorld.build() does:
+  // world-x of the entrance column, plus its level.
+  const e = cellCoords(t.entranceCell);
+  const ew = cellToWorld(e.x, e.z, e.level);
+  allDescs.push(...forecourtColliders(ew.x, e.level));
+
+  for (const d of allDescs) {
+    const top = d.cy + d.hy;
+    const relative = top - cellToWorld(0, 0, 0).y;
+    const inBand = relative > 0.45 && relative < 5.0;
+    assert.ok(!inBand, `collider top at ${relative.toFixed(2)}m is a ladder over a hedge`);
   }
 });
 

@@ -264,8 +264,9 @@ export const SPAWN_YAW = -Math.PI / 2;   // faces +X, down the plaza axis
  * The 768 x 384 cell is deliberately NOT reduced to pay for them. That size is
  * itself a fix - see the note beside the canvas allocation in StationWorld's
  * `_buildTextures` - and shrinking the cell to keep the sheet the same number
- * of pixels would undo the one thing this texture exists to do. Two more rows
- * costs about 9 MB. A sign nobody can read costs more. */
+ * of pixels would undo the one thing this texture exists to do. One more row
+ * (the tenth, for the maze gateway arch) costs about 4.5 MB. A sign nobody can
+ * read costs more. */
 export const SIGN_COLS = 4;
 export const SIGN_ROWS = 10;
 

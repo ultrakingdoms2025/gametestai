@@ -375,6 +375,13 @@ export function generateTopology(seed, opts = {}) {
   const levels = Math.max(1, Math.min(MAZE.LEVELS, opts.levels ?? MAZE.LEVELS));
   let graph = buildDistrictGraph(seed);
 
+  /* When generation is limited to fewer levels than the graph knows about, the
+   * centre may have been placed on a level that was never carved. Fold it down
+   * rather than leaving an unreachable prize. Computed here, before the graph
+   * is rebuilt below, because both the folded graph.centre and the returned
+   * centreCell need it. */
+  const centreLevel = graph.centre.level < levels ? graph.centre.level : 0;
+
   /* When limited to fewer levels, rebuild the spanning tree for only those levels.
    * The full multi-level graph may rely on vertical edges that don't exist when
    * we only carve some levels, leaving disconnected districts. */
@@ -439,6 +446,11 @@ export function generateTopology(seed, opts = {}) {
       ...graph,
       open: filteredOpen,
       extraEdges,
+      // The spread above starts from the 4-level graph, whose treeEdges and
+      // centre.level both describe the unfiltered tree - stale numbers on a
+      // public object that nothing in src/ reads yet, but Phase 2 will.
+      treeEdges: filteredOpen.size - extraEdges,
+      centre: { ...graph.centre, level: centreLevel },
     };
   }
 
@@ -451,11 +463,6 @@ export function generateTopology(seed, opts = {}) {
       }
     }
   }
-
-  /* When generation is limited to fewer levels than the graph knows about, the
-   * centre may have been placed on a level that was never carved. Fold it down
-   * rather than leaving an unreachable prize. */
-  const centreLevel = graph.centre.level < levels ? graph.centre.level : 0;
 
   const cellOf = (d, lvl) =>
     cellIndex(

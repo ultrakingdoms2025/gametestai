@@ -805,6 +805,11 @@ bus.on('inventory:use', ({ itemId }) => {
 });
 // Drop: item was already moved to store by InventoryUI; spawn a world pickup at
 // the player's feet so they can leave it for others or pick it back up.
+// Deliberately ungated by rules.loot: that rule governs world-generated drops
+// (Loot._dropFor), whereas dropping from your own bag is inventory management,
+// not loot generation. Loot.clear() on world:changed already stops a dropped
+// item persisting between worlds, so there is nothing here for rules.loot to
+// guard against. Do not "fix" this to check allows(world, 'loot').
 bus.on('inventory:drop', ({ itemId, qty }) => {
   if (!qty || qty <= 0) return;
   const pos = player.position.clone();

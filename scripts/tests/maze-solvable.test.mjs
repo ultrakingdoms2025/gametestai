@@ -92,9 +92,24 @@ test('limited-level generation includes loops and route choice', () => {
   const t2 = generateTopology(42, { levels: 2 });
   // Single-level maze should have more than 399 edges (399 are tree edges for 400 districts)
   const minEdgesPerLevel = 400 - 1; // minimum spanning tree edges
-  const expectedExtraEdgesPerLevel = Math.floor(minEdgesPerLevel * 0.1); // roughly 10% extra
-  assert.ok(t1.graph.open.size > minEdgesPerLevel, `single-level graph has no extra edges: ${t1.graph.open.size} <= ${minEdgesPerLevel}`);
+  // Loop zero was a real bug here once already, so ">399" alone (one stray edge
+  // would pass it) is not enough to catch a regression back to near-zero loops.
+  // Measured extra-edge counts across four seeds at {levels: 1} are 26, 32, 33
+  // and 37 - roughly 9% of the 361 non-tree candidates. 419 (+20 edges) sits
+  // comfortably below that observed range but far above "one loop", so a
+  // regression to near-zero fails this without the test being flaky.
+  const minEdgesWithLoops = 419;
+  assert.ok(t1.graph.open.size > minEdgesWithLoops, `single-level graph has too few extra edges: ${t1.graph.open.size} <= ${minEdgesWithLoops}`);
   assert.ok(t2.graph.open.size > minEdgesPerLevel * 2, `two-level graph too sparse: ${t2.graph.open.size} <= ${minEdgesPerLevel * 2}`);
+});
+
+test('limited-level generation reports correct treeEdges and centre.level', () => {
+  // The levels<MAZE.LEVELS rebuild path recomputes extraEdges but must also fold
+  // treeEdges and graph.centre.level down to the rebuilt graph - both are public
+  // fields on the returned object and easy to leave at the 4-level values.
+  const t = generateTopology(1, { levels: 1 });
+  assert.equal(t.graph.treeEdges, 399, `treeEdges should be 399 for a 400-district single-level tree, got ${t.graph.treeEdges}`);
+  assert.equal(t.graph.centre.level, 0, `centre.level should be folded to 0 at levels:1, got ${t.graph.centre.level}`);
 });
 
 test('generation is fast enough for a sub-3-second entry', () => {

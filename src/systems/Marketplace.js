@@ -130,6 +130,10 @@ export class Marketplace {
       // read it independently of whether this shop can open - then clear any
       // stock left over from the previous world and decline to repopulate it.
       if (!allows(world, 'merchants')) {
+        // Bump the sequence before clearing so a fetch still in flight from the
+        // previous world fails `refreshCatalog`'s requestId guard instead of
+        // writing that world's stock back into `_catalog` after this portal.
+        ++this._catalogSeq;
         this._catalog = [];
         return;
       }

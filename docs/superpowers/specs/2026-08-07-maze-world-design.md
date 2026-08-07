@@ -341,7 +341,8 @@ src/worlds/maze/MazeCanopy.js        distant LOD
 src/worlds/WorldRules.js             rule defaults + merge
 src/ui/MazeMap.js                    the M-key map
 src/ui/maze-map.css                  its styles
-src/dev/MazeProbes.js                automated probes
+src/dev/MazeProbes.js                in-browser probes (entry time, shaders, frame time)
+scripts/tests/*.test.mjs             headless correctness probes (node --test)
 ```
 
 Edited:
@@ -357,28 +358,60 @@ src/worlds/StationWorld.js           fifth gateway
 + the thirteen one-line rule gates enumerated in §5
 ```
 
-`MazeTopology.js` is pure functions over a seed — no THREE, no DOM. That is what
-lets the solvability probe run a thousand seeds in a second.
+Two structural requirements that exist to keep §12's headless tier possible, and
+which must not be traded away for convenience:
+
+- **`MazeTopology.js` is pure functions over a seed** — no THREE, no DOM. That is
+  what lets the solvability probe run a thousand seeds in a second.
+- **`MazeChunks.js` emits collider descriptors separately from meshes.** The
+  chunk builder produces a plain array of `{ center, halfExtents, rotationY }`
+  which the browser turns into physics colliders alongside meshes, and which
+  Node consumes on its own to assemble a collision world with no renderer. If
+  colliders are only ever derived from built meshes, the containment, seam and
+  prop-ladder gates all become browser-bound and slow.
 
 ---
 
 ## 12. Verification
 
-Eight probes in `src/dev/MazeProbes.js`, driven by the existing
-`src/dev/Harness.js` (which already provides `goto`, named views and
-screenshots). Parallel agents own one probe area each; the loop is
-run → score → fix → re-run until every gate is green.
+### Two tiers, and why
+
+This project has no test framework, deliberately: as `scripts/contract-check.mjs`
+records, most of the codebase touches `document`, canvas or WebGL at module
+scope and cannot be imported under Node.
+
+**`src/physics/Physics.js` is the exception.** It imports only `three`, uses no
+DOM API, and both `resolveCapsule` and `groundHeight` run correctly under plain
+Node — verified. Since the spec already requires `MazeTopology.js` to be pure,
+**every correctness gate can run headless**, with no browser and no flake. Only
+the performance and rendering gates need a real WebGL context.
+
+**Tier 1 — headless, `node --test scripts/tests/`.** No new dependency; uses
+Node's built-in test runner.
 
 | Probe | What it does | Gate |
 |---|---|---|
 | Solvability | BFS entrance→centre over 1,000 seeds | 100%, no exceptions |
-| Containment | Sprint-and-hop every wall, seam and lift apex trying to escape | 0 escapes in 50,000 attempts |
-| Prop ladder | Static scan for collider tops in the 0.45–5.0 m band within 2 m of a wall | 0 |
-| Seam integrity | Walk every district border | never ungrounded > 0.4 s |
-| Reachability | Flood fill for orphaned regions | 0 orphaned props or NPCs |
+| Reachability | Flood fill for orphaned regions | 0 orphaned cells, props or NPCs |
+| Containment | Drive a capsule through `Physics.resolveCapsule` at sprint speed into every wall, corner, seam and hop apex | 0 escapes in 50,000 attempts |
+| Prop ladder | Static scan of emitted collider AABBs for tops in the 0.45–5.0 m band within 2 m of a wall | 0 |
+| Seam integrity | `groundHeight` sampled across every district border | never null over walkable cells |
+| Gate safety | Re-solve after every one-way gate closure | entrance→centre and abandon routes always survive |
+
+This requires chunk building to **emit collider descriptors separately from
+meshes**, so the collision world can be assembled in Node without THREE meshes
+or a renderer. That separation is a design requirement, not an implementation
+detail.
+
+**Tier 2 — in-browser, via Chrome DevTools MCP against `?dev=1` and the existing
+`src/dev/Harness.js`.**
+
+| Probe | What it does | Gate |
+|---|---|---|
 | Entry time | Portal → playable | < 3 s at p95 |
-| Shader reuse | Program count across 10 consecutive entries | no growth |
+| Shader reuse | `renderer.info.programs.length` across 10 consecutive entries | no growth |
 | Frame time | p95 while walking a 2 km route | within the project's existing budget |
+| Visual review | Harness named views, screenshotted | art-direction review |
 
 **Gates are named, not scored.** "0 escapes" and "100% solvable" are pass/fail
 and actionable; a blended quality percentage is not. If a probe cannot reach its

@@ -93,10 +93,12 @@ export function districtColliders(cells, dx, dz, level) {
       if (!isOpen(cells, idx, DIR.N)) pushHedge(w.x, w.z - HALF_CELL, 'z');
       // West face (-x). Owned by this cell.
       if (!isOpen(cells, idx, DIR.W)) pushHedge(w.x - HALF_CELL, w.z, 'x');
-      // South and east only on the district's far edges, where no further cell
-      // exists to own them.
-      if (lz === D - 1 && !isOpen(cells, idx, DIR.S)) pushHedge(w.x, w.z + HALF_CELL, 'z');
-      if (lx === D - 1 && !isOpen(cells, idx, DIR.E)) pushHedge(w.x + HALF_CELL, w.z, 'x');
+      // South and east only on the global grid's far edges, where no adjacent cell
+      // exists to own them. Using global grid coordinates (z, x not lz, lx) prevents
+      // duplicate emission at district seams, where both adjacent districts would
+      // otherwise emit hedges at the same position.
+      if (z === MAZE.CELLS - 1 && !isOpen(cells, idx, DIR.S)) pushHedge(w.x, w.z + HALF_CELL, 'z');
+      if (x === MAZE.CELLS - 1 && !isOpen(cells, idx, DIR.E)) pushHedge(w.x + HALF_CELL, w.z, 'x');
     }
   }
 

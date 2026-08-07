@@ -25,6 +25,10 @@ test('a district emits a floor and some hedges', () => {
 });
 
 test('THE ANTI-LADDER GATE: no collider top sits in the hop band', () => {
+  // Hedge height, thickness, and floor thickness are constants independent of topology
+  // and district position, so every hedge in every district has an identical top.
+  // Testing a 4x4 district block adds belt-and-braces but doesn't improve coverage;
+  // a single district would suffice. Keeping the loop for defense-in-depth.
   const t = generateTopology(99, { levels: 1 });
   for (let dz = 0; dz < 4; dz++) {
     for (let dx = 0; dx < 4; dx++) {
@@ -61,28 +65,93 @@ test('the floor covers the district with a half-cell overlap on every side', () 
   assert.ok(Math.abs(floor.hz * 2 - span) < 1e-9, `floor z span ${floor.hz * 2}, expected ${span}`);
 });
 
-test('an open passage has no hedge across it', () => {
-  const t = generateTopology(8, { levels: 1 });
-  const descs = districtColliders(t.cells, 0, 0, 0);
-  // Find a cell with an open east passage and assert nothing solid sits in the
-  // gap between it and its neighbour.
-  let checked = 0;
-  for (let z = 0; z < MAZE.DISTRICT; z++) {
-    for (let x = 0; x < MAZE.DISTRICT - 1; x++) {
-      const idx = cellIndex(x, z, 0);
-      if ((t.cells[idx] & 4 /* DIR.S */) === 0 && (t.cells[idx] & 2 /* DIR.E */) === 0) continue;
-      if ((t.cells[idx] & 2) === 0) continue;
-      const here = cellToWorld(x, z, 0);
-      const gapX = here.x + MAZE.CELL / 2;
-      const blocking = descs.filter(
-        (d) => d.kind === 'hedge'
-          && Math.abs(d.cx - gapX) < d.hx
-          && Math.abs(d.cz - here.z) < d.hz,
-      );
-      assert.equal(blocking.length, 0, `open passage at ${x},${z} is blocked`);
-      checked++;
-      if (checked > 50) return;
+test('a multi-district block has zero exact positional duplicates among hedges', () => {
+  // Ensures that the S/E fallback emission does not create duplicates at district seams.
+  // A 3x3 district block has 2+2=4 internal seams per direction, plenty to catch the bug.
+  const t = generateTopology(1234, { levels: 1 });
+  const allDescs = [];
+  for (let dz = 0; dz < 3; dz++) {
+    for (let dx = 0; dx < 3; dx++) {
+      allDescs.push(...districtColliders(t.cells, dx, dz, 0));
     }
   }
-  assert.ok(checked > 0, 'found no open east passages to check');
+
+  const hedges = allDescs.filter((d) => d.kind === 'hedge');
+  const seen = new Map();
+  let duplicates = 0;
+  for (const h of hedges) {
+    const key = `${h.cx},${h.cy},${h.cz},${h.hx},${h.hy},${h.hz}`;
+    if (seen.has(key)) {
+      duplicates++;
+    } else {
+      seen.set(key, true);
+    }
+  }
+  assert.equal(duplicates, 0, `${duplicates} exact positional duplicates found among hedges`);
+});
+
+test('an open passage has no hedge across it', () => {
+  // Tests both East and South passages across adjacent districts.
+  // Spans at least two adjacent districts to catch seam bugs.
+  const t = generateTopology(8, { levels: 1 });
+
+  // Build a 2x2 district block to span seams.
+  const allDescs = [];
+  for (let dz = 0; dz < 2; dz++) {
+    for (let dx = 0; dx < 2; dx++) {
+      allDescs.push(...districtColliders(t.cells, dx, dz, 0));
+    }
+  }
+
+  let checkedEast = 0;
+  let checkedSouth = 0;
+
+  // Check East passages across all cells in the 2x2 block
+  for (let ddz = 0; ddz < 2; ddz++) {
+    for (let ddx = 0; ddx < 2; ddx++) {
+      for (let z = 0; z < MAZE.DISTRICT; z++) {
+        for (let x = 0; x < MAZE.DISTRICT - 1; x++) {
+          const gx = ddx * MAZE.DISTRICT + x;
+          const gz = ddz * MAZE.DISTRICT + z;
+          const idx = cellIndex(gx, gz, 0);
+          if ((t.cells[idx] & 2) === 0) continue; // East passage is closed
+          const here = cellToWorld(gx, gz, 0);
+          const gapX = here.x + MAZE.CELL / 2;
+          const blocking = allDescs.filter(
+            (d) => d.kind === 'hedge'
+              && Math.abs(d.cx - gapX) < d.hx
+              && Math.abs(d.cz - here.z) < d.hz,
+          );
+          assert.equal(blocking.length, 0, `open East passage at (${gx},${gz}) is blocked`);
+          checkedEast++;
+        }
+      }
+    }
+  }
+
+  // Check South passages across all cells in the 2x2 block
+  for (let ddz = 0; ddz < 2; ddz++) {
+    for (let ddx = 0; ddx < 2; ddx++) {
+      for (let z = 0; z < MAZE.DISTRICT - 1; z++) {
+        for (let x = 0; x < MAZE.DISTRICT; x++) {
+          const gx = ddx * MAZE.DISTRICT + x;
+          const gz = ddz * MAZE.DISTRICT + z;
+          const idx = cellIndex(gx, gz, 0);
+          if ((t.cells[idx] & 4) === 0) continue; // South passage is closed
+          const here = cellToWorld(gx, gz, 0);
+          const gapZ = here.z + MAZE.CELL / 2;
+          const blocking = allDescs.filter(
+            (d) => d.kind === 'hedge'
+              && Math.abs(d.cx - here.x) < d.hx
+              && Math.abs(d.cz - gapZ) < d.hz,
+          );
+          assert.equal(blocking.length, 0, `open South passage at (${gx},${gz}) is blocked`);
+          checkedSouth++;
+        }
+      }
+    }
+  }
+
+  assert.ok(checkedEast > 0, 'found no open East passages to check');
+  assert.ok(checkedSouth > 0, 'found no open South passages to check');
 });

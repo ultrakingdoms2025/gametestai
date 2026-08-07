@@ -84,9 +84,21 @@ written forbids the vertical maze this spec asks for. Rather than loosen it, it
 is narrowed and given a proof obligation:
 
 > A standable surface may sit in the 0.45–5.0 m band **only inside a sealed
-> shaft** — a cell walled on all four sides, above the doorway used to enter it,
-> to at least **the highest standable surface inside it plus 0.93 m plus a
-> margin**.
+> shaft** — a cell walled on all four sides, from **the height at which leaving
+> it would become an exploit**, up to at least **the highest standable surface
+> inside it plus 0.93 m plus a margin**.
+
+**Sealing starts partway up, not at the floor.** The first attempt required
+walls from the shaft floor, which is stricter than the physics needs and makes
+the world unplayable: it left a 0.45 m doorway against a 1.75 m player, so every
+staircase was sealed *and unenterable*, and all 617 of them passed the gate.
+
+Leaving a shaft low down is harmless — there is nothing outside to stand on, so
+you simply drop back into the corridor. It only becomes an exploit once you are
+high enough that a hop and a step-up put you on top of a 5 m hedge. That height
+is `HEDGE_HEIGHT − hop − stepHeight` = 5.0 − 0.93 − 0.45 = **3.62 m**, so walls
+are required from below that (with margin) upward, and the doorway beneath it is
+free. Like the upper bar, this is derived and must not be written as a constant.
 
 **The wall height is derived, never a constant.** The first draft of this
 amendment said "to at least hedge height", and that was wrong in a way that

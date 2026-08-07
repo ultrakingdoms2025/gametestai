@@ -27,6 +27,7 @@ const GATES = [
   ['src/systems/WaterVolumes.js', 'swim'],
   ['src/race/RaceManager.js', 'races'],
   ['src/npc/NPCManager.js', 'hostiles'],
+  ['src/npc/NPCManager.js', 'crowd'],
   ['src/mounts/MountManager.js', 'mounts'],
   ['src/player/Loadout.js', 'weapons'],
   ['src/player/Player.js', 'climb'],
@@ -124,11 +125,27 @@ test('MazeWorld declares itself volatile and forbids the right things', async ()
   assert.ok(src.includes("static id = 'maze'"), 'MazeWorld needs its id');
   for (const flag of ['weapons', 'mounts', 'climb', 'parkour', 'merchants', 'quests',
                       'contracts', 'caches', 'relics', 'loot', 'races', 'interiors',
-                      'hostiles', 'swim']) {
+                      'hostiles', 'swim', 'crowd']) {
     assert.ok(new RegExp(`${flag}:\\s*false`).test(src), `MazeWorld does not forbid ${flag}`);
   }
   // Jump must NOT be forbidden - the geometry makes it useless, not the input.
   assert.ok(!/jump:\s*false/.test(src), 'MazeWorld must not disable jumping');
+});
+
+test('NPCManager gives the maze its own theme rather than falling back to station', async () => {
+  // THEME_BY_WORLD ?? 'station' meant any world missing from this table
+  // silently inherited the station's names, personas and merchant signage.
+  // With crowd: false that fallback should never be reached for the maze,
+  // but the entry existing and being wrong is exactly the kind of thing that
+  // resurfaces the moment crowd filling is touched again - so it is asserted
+  // directly rather than relied on being merely unreachable.
+  const src = await readFile(path.join(root, 'src/npc/NPCManager.js'), 'utf8');
+  const code = stripComments(src);
+  assert.match(
+    code,
+    /THEME_BY_WORLD\s*=\s*\{[^}]*\bmaze\s*:\s*['"]maze['"]/,
+    'THEME_BY_WORLD has no maze entry - the maze would fall back to the station theme',
+  );
 });
 
 test('WorldManager honours volatile worlds', async () => {

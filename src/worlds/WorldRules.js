@@ -43,6 +43,13 @@ export const DEFAULT_RULES = Object.freeze({
   interiors: true,
   /** Hostile NPC spawns. */
   hostiles: true,
+  /**
+   * Crowd filling: topping the friendly population up past what the world
+   * authors, plus any other NPC the manager adds on its own initiative
+   * (lorekeepers derived from portals, hub filler, and the like). Off means
+   * the world's own `npcSpawns` is the whole cast, nothing added.
+   */
+  crowd: true,
   /** Water volume scanning and swimming. */
   swim: true,
   /**

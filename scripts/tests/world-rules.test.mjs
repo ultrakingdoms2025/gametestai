@@ -5,7 +5,7 @@ import { DEFAULT_RULES, makeRules } from '../../src/worlds/WorldRules.js';
 const GATED = [
   'weapons', 'mounts', 'climb', 'parkour', 'merchants', 'quests',
   'contracts', 'caches', 'relics', 'loot', 'races', 'interiors',
-  'hostiles', 'swim', 'jump',
+  'hostiles', 'swim', 'crowd', 'jump',
 ];
 
 test('every gated capability has a default and defaults to permitted', () => {
@@ -45,7 +45,7 @@ test('the maze rule set forbids exactly what the spec says', () => {
     weapons: false, mounts: false, climb: false, parkour: false,
     merchants: false, quests: false, contracts: false, caches: false,
     relics: false, loot: false, races: false, interiors: false,
-    hostiles: false, swim: false,
+    hostiles: false, swim: false, crowd: false,
   });
   // Jump is retained on purpose: disabling climbing does not disable jumping.
   assert.equal(maze.jump, true);

@@ -164,6 +164,10 @@ export class MazeWorld extends World {
       merchants: false, quests: false, contracts: false, caches: false,
       relics: false, loot: false, races: false, interiors: false,
       hostiles: false, swim: false,
+      // The keeper and the eight wanderers are the whole cast - see
+      // WANDERER_CAST above. The maze's atmosphere is being alone; a
+      // manager-added crowd would drown that out.
+      crowd: false,
       // jump stays permitted: the geometry makes the hop useless, not the input.
     });
 

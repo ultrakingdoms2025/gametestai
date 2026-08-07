@@ -256,6 +256,38 @@ export const ROLE_CAST = {
       },
     ],
   },
+  /* Unreachable while MazeWorld sets crowd: false (see WorldRules.js and
+   * NPCManager._populateHubs, which this table only feeds through castFor).
+   * Written anyway so a lapsed crowd flag would surface lost travellers
+   * rather than a station quartermaster standing in a hedge. */
+  maze: {
+    [ROLE.GUARD]: [
+      {
+        name: 'Hollis Rane',
+        persona:
+          'A self-appointed watcher of a junction he has decided is his to mind, on the theory that someone should keep count of who passes through. Wary of the hedges more than of any person.',
+      },
+    ],
+    [ROLE.SPECTATOR]: [
+      {
+        name: 'Merle Ashcombe',
+        persona:
+          'Sits at the same dead end most days, watching the light move through the hedge wall and timing it against a count of her own steps. Not looking for a way out, exactly.',
+      },
+    ],
+    [ROLE.LOITERER]: [
+      {
+        name: 'Denna Voss',
+        persona:
+          'Long past the fear stage and into a bored, practical routine - marks junctions, rations food, talks to whoever passes mostly to keep the habit of talking at all.',
+      },
+      {
+        name: 'Old Kellen',
+        persona:
+          'Claims to have been in the maze longer than anyone else still walking, and enjoys being doubted about it. Trades directions for company, freely admits both may be wrong.',
+      },
+    ],
+  },
 };
 
 /**

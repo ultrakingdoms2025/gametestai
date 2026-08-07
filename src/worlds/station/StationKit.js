@@ -267,7 +267,7 @@ export const SPAWN_YAW = -Math.PI / 2;   // faces +X, down the plaza axis
  * of pixels would undo the one thing this texture exists to do. Two more rows
  * costs about 9 MB. A sign nobody can read costs more. */
 export const SIGN_COLS = 4;
-export const SIGN_ROWS = 9;
+export const SIGN_ROWS = 10;
 
 /* ------------------------------------------------------------------ */
 /* Deterministic noise + rng                                           */

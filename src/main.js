@@ -12,6 +12,7 @@ import { MedievalWorld } from './worlds/MedievalWorld.js';
 import { SportsWorld } from './worlds/SportsWorld.js';
 import { CitadelWorld } from './worlds/CitadelWorld.js';
 import { RaceWorld } from './worlds/RaceWorld.js';
+import { MazeWorld } from './worlds/MazeWorld.js';
 import { Player } from './player/Player.js';
 import { NPCManager } from './npc/NPCManager.js';
 import { PortalSystem } from './systems/Portals.js';
@@ -107,6 +108,7 @@ worldManager.register(MedievalWorld);
 worldManager.register(SportsWorld);
 worldManager.register(CitadelWorld);
 worldManager.register(RaceWorld);
+worldManager.register(MazeWorld);
 
 const player = new Player({ ...ctx, camera: engine.camera });
 /* Worlds are constructed before the player exists, but they only ever read this
@@ -615,7 +617,9 @@ async function prewarm() {
 }
 
 function scheduleBackgroundBuilds(startWorld) {
-  const rest = worldManager.ids.filter((id) => id !== startWorld);
+  const rest = worldManager.ids.filter(
+    (id) => id !== startWorld && !worldManager.isVolatile(id),
+  );
   // The `timeout` is not optional in practice. A 126 fps render loop leaves so
   // little idle time that a plain `requestIdleCallback` was never firing at
   // all: measured, the other two worlds were still unbuilt 45 s after boot, so

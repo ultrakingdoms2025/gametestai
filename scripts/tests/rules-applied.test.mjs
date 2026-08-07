@@ -62,3 +62,59 @@ test('Player also gates parkour', async () => {
     'Player has no allows(..., \'parkour\') gate outside comments',
   );
 });
+
+test('MazeWorld declares itself volatile and forbids the right things', async () => {
+  const src = await readFile(path.join(root, 'src/worlds/MazeWorld.js'), 'utf8');
+  assert.ok(src.includes('static volatile = true'), 'MazeWorld must be volatile');
+  assert.ok(src.includes("static id = 'maze'"), 'MazeWorld needs its id');
+  for (const flag of ['weapons', 'mounts', 'climb', 'parkour', 'merchants', 'quests',
+                      'contracts', 'caches', 'relics', 'loot', 'races', 'interiors',
+                      'hostiles', 'swim']) {
+    assert.ok(new RegExp(`${flag}:\\s*false`).test(src), `MazeWorld does not forbid ${flag}`);
+  }
+  // Jump must NOT be forbidden - the geometry makes it useless, not the input.
+  assert.ok(!/jump:\s*false/.test(src), 'MazeWorld must not disable jumping');
+});
+
+test('WorldManager honours volatile worlds', async () => {
+  const src = await readFile(path.join(root, 'src/worlds/WorldManager.js'), 'utf8');
+  assert.ok(src.includes('volatile'), 'WorldManager never mentions volatile');
+});
+
+test('the station offers a portal to the maze', async () => {
+  const src = await readFile(path.join(root, 'src/worlds/StationWorld.js'), 'utf8');
+  assert.ok(src.includes("target: 'maze'"), 'no station gateway to the maze');
+});
+
+test('main.js registers the maze world', async () => {
+  const src = await readFile(path.join(root, 'src/main.js'), 'utf8');
+  assert.ok(src.includes('MazeWorld'), 'MazeWorld is not registered');
+});
+
+test('the signage atlas has exactly one cell per sign', async () => {
+  /* paintSignAtlas loops i < SIGN_COLS * SIGN_ROWS and destructures SIGNS[i]
+   * unconditionally. One entry short throws "Cannot destructure" at boot; one
+   * entry long is silently dropped and the sign it belonged to never appears.
+   * Both are easy to cause when adding a gateway and neither is easy to spot,
+   * so the invariant is asserted rather than remembered. */
+  const kit = await readFile(path.join(root, 'src/worlds/station/StationKit.js'), 'utf8');
+  const cols = Number(kit.match(/SIGN_COLS\s*=\s*(\d+)/)[1]);
+  const rows = Number(kit.match(/SIGN_ROWS\s*=\s*(\d+)/)[1]);
+
+  const station = await readFile(path.join(root, 'src/worlds/StationWorld.js'), 'utf8');
+  const body = station.match(/const SIGNS = \[([\s\S]*?)\n\];/)[1];
+  const entries = (body.match(/^\s*\['/gm) ?? []).length;
+
+  assert.equal(entries, cols * rows,
+    `SIGNS has ${entries} entries but the atlas has ${cols * rows} cells`);
+});
+
+test('every SIGN_ROLE points at a real sign', async () => {
+  const station = await readFile(path.join(root, 'src/worlds/StationWorld.js'), 'utf8');
+  const body = station.match(/const SIGNS = \[([\s\S]*?)\n\];/)[1];
+  const entries = (body.match(/^\s*\['/gm) ?? []).length;
+  const roles = station.match(/const SIGN_ROLE = \{([\s\S]*?)\n\};/)[1];
+  for (const m of roles.matchAll(/(\w+):\s*(\d+)/g)) {
+    assert.ok(Number(m[2]) < entries, `SIGN_ROLE.${m[1]} = ${m[2]} is past the end of SIGNS`);
+  }
+});

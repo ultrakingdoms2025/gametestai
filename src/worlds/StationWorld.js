@@ -1046,6 +1046,13 @@ const SIGNS = [
   ['ORDER HERE', 'TAP TO PAY // COLLECT LEFT', '#ffd166'],
   ['RACK YOUR WEIGHTS', 'SPOTTERS ON THE BENCH', '#c9b0ff'],
   ['SCAFFOLD ACCESS', 'CLIP ON ABOVE 2 M', '#ffb020'],
+  // --- Gateway 05: the maze. Appended, never inserted - SIGN_ROLE indexes
+  //     this array positionally and inserting would re-label every sign after
+  //     the insertion point.
+  ['GATEWAY 05', 'THE VERDANT COIL', '#8fd67a'],
+  ['THE VERDANT COIL', 'GATEWAY 05 AHEAD', '#8fd67a'],
+  ['NO WAY BACK BUT THROUGH', 'HEDGE MAZE // NO EQUIPMENT', '#8fd67a'],
+  ['LOST PROPERTY', 'ENQUIRE AT GATEWAY 05', '#8fe6c8'],
 ];
 
 /**
@@ -1081,6 +1088,10 @@ const SIGN_ROLE = {
   orderPoint: 33,
   gymNotice: 34,
   siteNotice: 35,
+  gatewayMaze: 36,
+  approachMaze: 37,
+  mazeWarning: 38,
+  lostProperty: 39,
 };
 
 /** Atlas of holographic signage - one texture, one draw call. */
@@ -5600,9 +5611,17 @@ export class StationWorld extends World {
 
     this._buildAxisGateway(g, {
       side: -1, target: 'citadel', label: 'Sunspire Citadel', accent: 0xffc46b,
+      signRole: SIGN_ROLE.gatewayCitadel,
     });
     this._buildAxisGateway(g, {
       side: 1, target: 'race', label: 'Vellum Ridge', accent: 0xff5a3c,
+      signRole: SIGN_ROLE.gatewayRace,
+    });
+    /* The fifth arch. The other four occupy the two axes at +-PORTAL_R, so this
+     * one is offset along Z to keep an 11 m dais clear of the citadel's. */
+    this._buildAxisGateway(g, {
+      side: -1, target: 'maze', label: 'The Verdant Coil', accent: 0x8fd67a,
+      signRole: SIGN_ROLE.gatewayMaze, offsetZ: 128,
     });
   }
 
@@ -5638,7 +5657,7 @@ export class StationWorld extends World {
     const M = this.mat;
     const B = new GeoBatch();
     const cx = PORTAL_R * spec.side;
-    const cz = 0;
+    const cz = spec.offsetZ ?? 0;
 
     /* Dais: stepped discs, matching the language of the other two - and, now,
      * their *height*.
@@ -5692,7 +5711,7 @@ export class StationWorld extends World {
     // Two-sided board on the plaza axis - it is approached from both sides.
     this._signBoard(
       B,
-      spec.target === 'citadel' ? SIGN_ROLE.gatewayCitadel : SIGN_ROLE.gatewayRace,
+      spec.signRole ?? SIGN_ROLE.gatewayRace,
       9, 2.2,
       cx - sgn * 1.35, GATEWAY_DECK_Y + 11.1, cz, Math.PI * 0.5 * sgn + Math.PI,
       { twoSided: true, accent: em }
@@ -5751,12 +5770,12 @@ export class StationWorld extends World {
     for (let i = 0; i < 7; i++) {
       const t = i / 6;
       const sx = cx - sgn * (10.4 - t * 4);
-      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, D + 0.1, -6);
-      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, D + 0.1, 6);
+      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, D + 0.1, cz - 6);
+      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, D + 0.1, cz + 6);
     }
 
     this._contact(cx, cz, 30);
-    B.flush(g, M, 'gateway-citadel', { cast: true, recv: true });
+    B.flush(g, M, `gateway-${spec.target}`, { cast: true, recv: true });
 
     this.portalSpecs.push({
       position: new THREE.Vector3(cx, GATEWAY_DECK_Y, cz),

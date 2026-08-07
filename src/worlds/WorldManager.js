@@ -141,6 +141,11 @@ export class WorldManager {
     return !!(world && world._built);
   }
 
+  /** True when this world re-generates on every activation. */
+  isVolatile(id) {
+    return this._classes.get(id)?.volatile === true;
+  }
+
   /** True while a build for `id` is running. */
   isBuilding(id) {
     return this._building.has(id);
@@ -160,6 +165,13 @@ export class WorldManager {
    */
   async build(id, onProgress) {
     const world = this.getWorld(id);
+    /* A volatile world re-generates on every request rather than serving its
+     * cached build. The maze uses this: a layout that survived the last visit
+     * would be a layout the player could learn. */
+    const volatile = this._classes.get(id)?.volatile === true;
+    if (world._built && volatile) {
+      world.dispose();
+    }
     if (world._built) {
       onProgress?.(1, `${world.displayName} ready`);
       return world;

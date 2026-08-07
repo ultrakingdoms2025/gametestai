@@ -26,18 +26,7 @@ function buildWorld(cells, dxs, dzs, level) {
   return p;
 }
 
-/** Which cell a world position falls in. */
-function cellAt(pos) {
-  return {
-    x: Math.round(pos.x / MAZE.CELL),
-    z: Math.round(pos.z / MAZE.CELL),
-  };
-}
-
-/**
- * Which maze cell a world position falls in, keyed to match `cellIndex`'s
- * (cx, cz) argument order rather than `cellAt`'s (x, z).
- */
+/** Which maze cell a world position falls in, keyed to match `cellIndex`'s (cx, cz) order. */
 const cellOf = (p) => ({ cx: Math.round(p.x / MAZE.CELL), cz: Math.round(p.z / MAZE.CELL) });
 
 test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
@@ -182,6 +171,7 @@ test('a capsule cannot squeeze through a hedge corner', () => {
   const physics = buildWorld(t.cells, [0, 1], [0, 1], 0);
   const rng = mulberry32(11);
   const pos = new THREE.Vector3();
+  let phaseThroughs = 0;
 
   for (let i = 0; i < 2000; i++) {
     // Aim diagonally at a cell corner - the classic gap in grid collision.
@@ -195,14 +185,48 @@ test('a capsule cannot squeeze through a hedge corner', () => {
       w.z + MAZE.CELL / 2,
     );
     const dir = corner.clone().sub(pos).setY(0).normalize();
+
+    // Tracked the same way, and for the same reason, as THE CONTAINMENT
+    // GATE above: `groundHeight(...) != null` alone is satisfied by the
+    // continuous floor slab whether or not any hedge exists at all, so a
+    // diagonal squeeze straight through the corner would previously have
+    // gone undetected. This is exactly the failure mode the docstring
+    // above claims to guard against, so it needs a check that can see it.
+    let cell = { cx, cz };
     for (let s = 0; s < 40; s++) {
       pos.addScaledVector(dir, SPRINT * STEP);
       physics.resolveCapsule(pos, RADIUS, HEIGHT);
+
+      const next = cellOf(pos);
+      const dcx = next.cx - cell.cx;
+      const dcz = next.cz - cell.cz;
+      if (dcx !== 0 || dcz !== 0) {
+        const manhattan = Math.abs(dcx) + Math.abs(dcz);
+        let phased = manhattan > 1;
+        if (!phased) {
+          const idx = cellIndex(cell.cx, cell.cz, 0);
+          let need;
+          if (dcx === 1) need = DIR.E;
+          else if (dcx === -1) need = DIR.W;
+          else if (dcz === 1) need = DIR.S;
+          else need = DIR.N;
+          phased = !isOpen(t.cells, idx, need);
+        }
+        if (phased) {
+          phaseThroughs++;
+          break;
+        }
+        cell = next;
+      }
     }
-    // Wherever it ends up, it must still be standing on the floor.
+    // Wherever it ends up, it must still be standing on the floor. Kept as
+    // a secondary condition: it covers falling through the floor, which the
+    // transition check above does not.
     const ground = physics.groundHeight(pos.x, pos.z, pos.y + 1.2, 12);
     assert.notEqual(ground, null, `no floor beneath ${pos.x},${pos.z}`);
   }
+
+  assert.equal(phaseThroughs, 0, `${phaseThroughs} diagonal phase-throughs out of 2000 corner approaches`);
 });
 
 test('THE SEAM GATE: every district border has floor beneath it', () => {

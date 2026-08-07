@@ -10,7 +10,8 @@
  *
  * @typedef {{ cx:number, cy:number, cz:number,
  *             hx:number, hy:number, hz:number,
- *             kind:'hedge'|'floor' }} ColliderDesc
+ *             kind:'hedge'|'floor'|'stair'|string,
+ *             enclosed?:boolean }} ColliderDesc
  */
 
 import { MAZE, DIR, cellIndex, isOpen } from './MazeTopology.js';
@@ -188,4 +189,63 @@ export function districtColliders(cells, dx, dz, level) {
   }
 
   return out;
+}
+
+/**
+ * Is a shaft genuinely sealed?
+ *
+ * Phase 1's rule was absolute: nothing standable between 0.45 m and 5.0 m,
+ * because anything there is a step onto a 5 m hedge. A staircase is made
+ * entirely of such steps, so four levels cannot exist under that rule.
+ *
+ * The rule is therefore narrowed rather than dropped: a step may sit in the
+ * band only inside a sealed shaft. This function is what makes that exemption
+ * honest - it checks that the shaft's cell is walled on all four sides from its
+ * floor to at least hedge height, so a player using the steps arrives on the
+ * next level rather than on top of the maze.
+ *
+ * @param {ColliderDesc[]} descs every collider near the shaft
+ * @param {{cx:number, cz:number, floorY:number}} shaft cell centre and floor
+ * @returns {boolean}
+ */
+export function isEnclosureSound(descs, shaft) {
+  const half = MAZE.CELL / 2;
+  const need = shaft.floorY + MAZE.HEDGE_HEIGHT;
+  const EPS = 1e-6;
+  const sides = [
+    { axis: 'x', at: shaft.cx - half },
+    { axis: 'x', at: shaft.cx + half },
+    { axis: 'z', at: shaft.cz - half },
+    { axis: 'z', at: shaft.cz + half },
+  ];
+
+  for (const side of sides) {
+    let covered = false;
+    for (const d of descs) {
+      if (d.enclosed) continue;                      // steps do not wall a shaft
+      const top = d.cy + d.hy;
+      const bottom = d.cy - d.hy;
+      if (top < need - EPS || bottom > shaft.floorY + EPS) continue;
+
+      // A wall covers this side only if its slab actually reaches the side's
+      // plane *and* spans the shaft's full width along that plane - not merely
+      // if its centre happens to sit within some distance of it. A north/south
+      // wall's half-extent along x can equal a whole cell (it runs the cell's
+      // full width), which makes a naive distance-to-centre test mistake it
+      // for an east/west wall reaching that far; checking the wall's own
+      // thin axis (here, z) against the shaft's full span is what tells the
+      // two apart.
+      if (side.axis === 'x') {
+        if (d.cx - d.hx > side.at + EPS || d.cx + d.hx < side.at - EPS) continue;
+        if (d.cz - d.hz > shaft.cz - half + EPS || d.cz + d.hz < shaft.cz + half - EPS) continue;
+      } else {
+        if (d.cz - d.hz > side.at + EPS || d.cz + d.hz < side.at - EPS) continue;
+        if (d.cx - d.hx > shaft.cx - half + EPS || d.cx + d.hx < shaft.cx + half - EPS) continue;
+      }
+      covered = true;
+      break;
+    }
+    if (!covered) return false;
+  }
+  return true;
 }

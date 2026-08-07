@@ -48,6 +48,11 @@ test('THE ANTI-LADDER GATE: no collider top sits in the hop band', () => {
   allDescs.push(...forecourtColliders(ew.x, e.level));
 
   for (const d of allDescs) {
+    // A step inside a sealed shaft is allowed in the band: it cannot reach a
+    // hedge top, and scripts/tests/maze-enclosure.test.mjs proves that
+    // separately by driving a capsule around inside each shaft. Everything
+    // else in the band is a ladder.
+    if (d.enclosed) continue;
     const top = d.cy + d.hy;
     const relative = top - cellToWorld(0, 0, 0).y;
     const inBand = relative > 0.45 && relative < 5.0;

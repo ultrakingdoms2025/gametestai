@@ -5,8 +5,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
 import { Physics } from '../../src/physics/Physics.js';
-import { MAZE, generateTopology } from '../../src/worlds/maze/MazeTopology.js';
-import { isEnclosureSound, districtColliders, cellToWorld } from '../../src/worlds/maze/MazeColliders.js';
+import { MAZE, generateTopology, cellIndex, isOpen, DIR, cellCoords } from '../../src/worlds/maze/MazeTopology.js';
+import {
+  isEnclosureSound, districtColliders, cellToWorld, shaftColliders, SHAFT_ENTRY_CLEARANCE,
+} from '../../src/worlds/maze/MazeColliders.js';
 import { CONFIG } from '../../src/core/Config.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -254,7 +256,12 @@ function overlappingShaftCells(cx, hx, cz, hz) {
  * level it belongs to.
  */
 function groupEnclosedByShaft(descs, level = 0) {
-  const floorY = level * MAZE.LEVEL_HEIGHT;
+  // + SHAFT_ENTRY_CLEARANCE for the same reason THE ENCLOSURE GATE test
+  // applies it: a real shaft's entry side is open at floor level by design,
+  // so the floor-to-need coverage check `isEnclosureSound` performs must be
+  // asked from just above that gap, not from the true floor. See
+  // shaftColliders's comment in MazeColliders.js.
+  const floorY = level * MAZE.LEVEL_HEIGHT + SHAFT_ENTRY_CLEARANCE;
   const groups = new Map();
   for (const d of descs) {
     if (!d.enclosed) continue;
@@ -269,14 +276,15 @@ function groupEnclosedByShaft(descs, level = 0) {
 }
 
 test('every enclosed descriptor emitted by real generation sits in a proven shaft', () => {
-  // Nothing in generation emits `enclosed` yet - real staircases are a later
-  // task, not this one - so this is EXPECTED to run zero real assertions
-  // today, and only today: the moment generation starts emitting `enclosed`
-  // descriptors, the `shaftsChecked === 0` assertion at the bottom starts
-  // failing on purpose, as a tripwire telling whoever added them to delete
-  // that line rather than let the check quietly start mattering unnoticed
-  // (see the companion test below, which proves the check itself is not
-  // vacuous once it does have something to check).
+  // Real staircases now exist (Task 3: `shaftColliders`, wired into
+  // `districtColliders` for every cell carrying DIR.UP). This tripwire used
+  // to assert `shaftsChecked === 0`, on purpose, until that happened - the
+  // comment on that assertion said to delete it rather than keep it passing
+  // once generation started emitting `enclosed`. This is that deletion: the
+  // loop below now does real work, and the assertion at the bottom is
+  // flipped to prove it is doing that work rather than silently checking
+  // nothing (see the companion test below, which proves the check itself is
+  // not vacuous even when it has nothing real to check).
   //
   // The scan window matters: a narrow one (a couple of seeds, a couple of
   // districts, one level) is a tripwire that a staircase landing outside it
@@ -312,10 +320,10 @@ test('every enclosed descriptor emitted by real generation sits in a proven shaf
     `${MAZE.DISTRICTS * MAZE.DISTRICTS} districts/level = ${districtsScanned} districts scanned, ` +
     `${shaftsChecked} shafts checked, ${elapsedMs} ms`,
   );
-  assert.equal(shaftsChecked, 0,
-    'generation now emits `enclosed` descriptors - the loop above is no longer vacuous, ' +
-    'so this line should be deleted rather than kept passing (this is expected to be 0 only ' +
-    'until real staircases exist)');
+  assert.ok(shaftsChecked > 0,
+    'expected real generated shafts to be found and checked across the whole grid - ' +
+    'if this is 0 again, something stopped shaftColliders from being wired into ' +
+    'districtColliders, and every assertion above just became vacuous');
 });
 
 test('the bound-to-exemption check is not vacuous: an enclosed descriptor placed in an unsealed real cell fails it', () => {
@@ -419,5 +427,76 @@ test('MazeTopology.js and MazeColliders.js import nothing outside each other', a
   for (const spec of collidersImports) {
     assert.ok(spec === './MazeTopology.js',
       `MazeColliders.js imports "${spec}" - it may only import from ./MazeTopology.js`);
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Stair shafts (Task 3)                                               */
+/* ------------------------------------------------------------------ */
+
+/** Every cell in a district that carries an UP link. */
+function shaftCells(cells, dx, dz, level) {
+  const out = [];
+  for (let lz = 0; lz < MAZE.DISTRICT; lz++) {
+    for (let lx = 0; lx < MAZE.DISTRICT; lx++) {
+      const x = dx * MAZE.DISTRICT + lx, z = dz * MAZE.DISTRICT + lz;
+      if (isOpen(cells, cellIndex(x, z, level), DIR.UP)) out.push({ x, z });
+    }
+  }
+  return out;
+}
+
+test('every shaft is climbable: no step exceeds the auto-step height', () => {
+  const t = generateTopology(2026, { levels: 2 });
+  let checked = 0;
+  for (let dz = 0; dz < 4; dz++) for (let dx = 0; dx < 4; dx++) {
+    for (const c of shaftCells(t.cells, dx, dz, 0)) {
+      const steps = shaftColliders(t.cells, c.x, c.z, 0).filter((d) => d.kind === 'stair');
+      assert.ok(steps.length > 0, `shaft at ${c.x},${c.z} has no steps`);
+      const tops = steps.map((s) => s.cy + s.hy).sort((a, b) => a - b);
+      for (let i = 1; i < tops.length; i++) {
+        assert.ok(tops[i] - tops[i - 1] <= 0.45 + 1e-6,
+          `step rise ${(tops[i] - tops[i - 1]).toFixed(3)}m exceeds the 0.45m auto-step`);
+      }
+      checked++;
+    }
+  }
+  assert.ok(checked > 0, 'no shafts found to check');
+});
+
+test('every shaft reaches the next level', () => {
+  const t = generateTopology(7, { levels: 2 });
+  for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++) {
+    for (const c of shaftCells(t.cells, dx, dz, 0)) {
+      const steps = shaftColliders(t.cells, c.x, c.z, 0).filter((d) => d.kind === 'stair');
+      const highest = Math.max(...steps.map((s) => s.cy + s.hy));
+      const base = cellToWorld(c.x, c.z, 0).y;
+      assert.ok(highest >= base + MAZE.LEVEL_HEIGHT - 0.45,
+        `shaft tops out at ${(highest - base).toFixed(2)}m, short of LEVEL_HEIGHT`);
+    }
+  }
+});
+
+test('THE ENCLOSURE GATE: every shaft is sealed above hop height', () => {
+  // A shaft's entry side is genuinely open at floor level - that is the only
+  // way in - so `isEnclosureSound`'s plain floor-to-need coverage check is
+  // applied from `floorY + SHAFT_ENTRY_CLEARANCE` upward, not from the true
+  // floor. That is a conservative substitution, not a relaxed one:
+  // SHAFT_ENTRY_CLEARANCE (0.45m) sits below HOP (0.93m), so proving "sealed
+  // from 0.45m up" proves the thing that actually matters - you cannot leave
+  // sideways once you are above hop height - with margin to spare. See
+  // shaftColliders's own comment in MazeColliders.js.
+  for (const seed of [1, 42, 2026]) {
+    const t = generateTopology(seed, { levels: 2 });
+    for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++) {
+      const descs = districtColliders(t.cells, dx, dz, 0);
+      for (const c of shaftCells(t.cells, dx, dz, 0)) {
+        const w = cellToWorld(c.x, c.z, 0);
+        assert.equal(
+          isEnclosureSound(descs, { cx: w.x, cz: w.z, floorY: w.y + SHAFT_ENTRY_CLEARANCE }), true,
+          `seed ${seed} shaft at ${c.x},${c.z} is not sealed`,
+        );
+      }
+    }
   }
 });

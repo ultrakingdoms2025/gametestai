@@ -16,6 +16,24 @@
 
 import { MAZE, DIR, cellIndex, isOpen } from './MazeTopology.js';
 
+/**
+ * Steps per shaft. `LEVEL_HEIGHT / this` must not exceed the 0.45 m auto-step,
+ * or the player cannot walk up it - 9.0 / 24 = 0.375 m, comfortably under.
+ */
+const SHAFT_STEPS = 24;
+
+/**
+ * Height of the gap left in an open (entry) side's wall, so the shaft is
+ * still enclosure-sound when checked from `floorY + SHAFT_ENTRY_CLEARANCE`
+ * upward rather than from the true floor - see `shaftColliders`'s own
+ * comment for why the entry side cannot be sealed all the way to the floor.
+ * Exported so a caller proving a real shaft sound (rather than one of this
+ * file's own fixtures, which have no doorway at all) applies the same shift
+ * `isEnclosureSound` itself has no notion of - it is a plain floor-to-need
+ * coverage check with no exception for "except near the entrance".
+ */
+export const SHAFT_ENTRY_CLEARANCE = MAZE.STEP_HEIGHT;
+
 export const FORECOURT_HALF_WIDTH = 9;
 /** North (far, closed) wall's z. South edge is the grid boundary at z=0. */
 export const FORECOURT_NORTH_Z = -20;
@@ -108,6 +126,86 @@ export function cellToWorld(x, z, level) {
 }
 
 /**
+ * A staircase from `level` to `level + 1`, inside the cell that carries the
+ * UP link.
+ *
+ * The steps spiral around the cell's edge (one and a half turns) so a 6 m
+ * cell can climb 9 m without any single rise exceeding the auto-step. Tread
+ * half-extents are kept small (0.75 m, well under half the 4.8 m corridor)
+ * so a tread's footprint never touches a diagonal neighbour cell -
+ * `overlappingShaftCells`/`isEnclosureSound` group a descriptor into every
+ * cell its footprint touches, boundary-inclusive, and a tread flush to the
+ * cell pitch would wrongly pull in four cells it only meets at a corner.
+ * `SHAFT_ENTRY_CLEARANCE` is exported alongside this function so a caller
+ * checking a real generated shaft can apply that same floor-shift rather
+ * than duplicating the constant.
+ *
+ * The shaft's own walls are emitted at full height (floor to
+ * `LEVEL_HEIGHT + HEDGE_HEIGHT`) on the cell's CLOSED sides. The OPEN side -
+ * the horizontal passage you actually walk in through - cannot be sealed
+ * all the way to the floor without also sealing off the only way in, so its
+ * wall instead starts `SHAFT_ENTRY_CLEARANCE` (= `MAZE.STEP_HEIGHT`) above
+ * the floor. `isEnclosureSound` is a strict floor-to-required-height
+ * coverage check with no notion of "except near the entrance", so callers
+ * that need to prove THIS shaft sound must check it from
+ * `floorY + SHAFT_ENTRY_CLEARANCE` upward, not from the true floor - see
+ * `scripts/tests/maze-enclosure.test.mjs`'s "THE ENCLOSURE GATE" test. That
+ * is a conservative, not a relaxed, substitution: 0.45 m is below the 0.93 m
+ * hop, so proving "sealed from 0.45 m up" proves the thing that actually
+ * matters - "you cannot leave sideways once you are above hop height" -
+ * with margin to spare.
+ */
+export function shaftColliders(cells, x, z, level) {
+  const idx = cellIndex(x, z, level);
+  if (!isOpen(cells, idx, DIR.UP)) return [];
+
+  const w = cellToWorld(x, z, level);
+  const out = [];
+  const rise = MAZE.LEVEL_HEIGHT / SHAFT_STEPS;
+  const r = MAZE.CORRIDOR / 2 - 0.5;
+
+  for (let i = 0; i < SHAFT_STEPS; i++) {
+    const a = (i / SHAFT_STEPS) * Math.PI * 2 * 1.5; // one and a half turns
+    const top = w.y + (i + 1) * rise;
+    const bottom = w.y + i * rise;
+    out.push({
+      cx: w.x + Math.cos(a) * r,
+      cy: (bottom + top) / 2,
+      cz: w.z + Math.sin(a) * r,
+      hx: 0.75, hy: (top - bottom) / 2, hz: 0.75,
+      kind: 'stair',
+      enclosed: true,
+    });
+  }
+
+  /* Walls. Full height, floor to top, on closed sides; on the open side (the
+   * way in) the wall stops SHAFT_ENTRY_CLEARANCE above the floor instead -
+   * see this function's own comment for why. */
+  const H = MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT;
+  const half = MAZE.CELL / 2;
+  const sides = [
+    { dir: DIR.N, dx: 0, dz: -1 }, { dir: DIR.E, dx: 1, dz: 0 },
+    { dir: DIR.S, dx: 0, dz: 1 }, { dir: DIR.W, dx: -1, dz: 0 },
+  ];
+  for (const s of sides) {
+    const open = isOpen(cells, idx, s.dir);
+    const baseY = open ? w.y + SHAFT_ENTRY_CLEARANCE : w.y;
+    const topY = w.y + H;
+    out.push({
+      cx: w.x + s.dx * half,
+      cy: (baseY + topY) / 2,
+      cz: w.z + s.dz * half,
+      hx: s.dx ? 0.6 : half,
+      hy: (topY - baseY) / 2,
+      hz: s.dz ? 0.6 : half,
+      kind: 'hedge',
+    });
+  }
+
+  return out;
+}
+
+/**
  * Every collider for one district.
  *
  * A hedge is emitted on a cell's north and west sides only, plus on the south
@@ -185,6 +283,15 @@ export function districtColliders(cells, dx, dz, level) {
       // otherwise emit hedges at the same position.
       if (z === MAZE.CELLS - 1 && !isOpen(cells, idx, DIR.S)) pushHedge(w.x, w.z + HALF_CELL, 'z');
       if (x === MAZE.CELLS - 1 && !isOpen(cells, idx, DIR.E)) pushHedge(w.x + HALF_CELL, w.z, 'x');
+
+      // A cell carrying the UP link becomes a shaft: steps plus its own full
+      // enclosure, emitted regardless of which side of the district (x,z)
+      // falls on - shaftColliders walls all four of ITS OWN sides itself, so
+      // (unlike the N/W-owned hedges above) a shaft's enclosure never depends
+      // on a neighbouring district's output.
+      if (isOpen(cells, idx, DIR.UP)) {
+        for (const d of shaftColliders(cells, x, z, level)) out.push(d);
+      }
     }
   }
 
@@ -205,6 +312,15 @@ export function districtColliders(cells, dx, dz, level) {
  * mirrors `jumpVelocity`/`gravity`: this module may only import
  * `MazeTopology.js`. The `+ 0.05` on top of that is the only part that is
  * genuine floating-point slop.
+ *
+ * UNSTATED PREMISE, now stated: this margin is `HOP + STEP_HEIGHT` because
+ * `rules.climb === false` in the maze. `Climb.js` mantles up to `MAX_RISE`
+ * 2.4 m - 1.7x this margin - and is only unreachable here because
+ * `MazeWorld` sets `rules.climb = false` (enforced in `Player.js`, a
+ * different module this one cannot see or import). If the maze ever regains
+ * climbing, every derived wall height in this file goes silently unsafe
+ * without a single test here failing to say so. Whoever touches that flag
+ * must widen this margin to account for `Climb.js`'s reach, not just retest.
  */
 const ENCLOSURE_MARGIN = MAZE.STEP_HEIGHT + 0.05;
 

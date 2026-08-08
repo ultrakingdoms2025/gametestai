@@ -1361,13 +1361,24 @@ function pitProfile(descs, w1, bar = 0.5, n = 23) {
  * actually is - a small amount of slack (for sampling-grid alignment) over
  * the one-well-and-nothing-more baseline - and it tracks `STAIR_WELL_HALF`
  * automatically if the well's size ever changes, rather than needing hand
- * retuning to stay meaningful. It is still nowhere near what a full-cell
- * hole samples at (~40%+ - see the negative test right below), so it stays
- * exactly as decisive a detector as the number it replaces.
+ * retuning to stay meaningful.
+ *
+ * `ORIGINAL_PIT_GATE_BAR` (the old bare `0.25`) is a CEILING on the result,
+ * not just a reference point: the assertion below is `fraction < bar`, so a
+ * HIGHER bar is a LOOSER gate, and restating a threshold must never loosen
+ * it - `WELL_FRACTION * PIT_GATE_MULTIPLIER` alone computes to ~25.04%,
+ * slightly above the original 25%, which would have done exactly that.
+ * `Math.min` keeps the derived number as the working value whenever it is
+ * the tighter of the two (protecting the gate if `STAIR_WELL_HALF` ever
+ * shrinks) while guaranteeing the restated bar can never exceed what this
+ * gate already proved decisive at. It is still nowhere near what a
+ * full-cell hole samples at (~40%+ - see the negative test right below), so
+ * it stays exactly as decisive a detector as the number it replaces.
  */
 const WELL_FRACTION = (2 * STAIR_WELL_HALF) ** 2 / MAZE.CELL ** 2;
 const PIT_GATE_MULTIPLIER = 1.15;
-const PIT_GATE_BAR = WELL_FRACTION * PIT_GATE_MULTIPLIER;
+const ORIGINAL_PIT_GATE_BAR = 0.25;
+const PIT_GATE_BAR = Math.min(ORIGINAL_PIT_GATE_BAR, WELL_FRACTION * PIT_GATE_MULTIPLIER);
 
 test('THE PIT GATE: the hole a shaft opens in level N+1 is a stairwell opening, not most of the cell', () => {
   // The measurement round 3 lost. Its predecessor asserted "all four sides of

@@ -9,6 +9,7 @@ import {
 } from './maze/MazeColliders.js';
 import { pickDeadEndTokens, pickWandererSites, walkPatrol } from './maze/MazePopulate.js';
 import { MazeChunks, buildBoxInstances } from './maze/MazeChunks.js';
+import { MazeCanopy } from './maze/MazeCanopy.js';
 
 /**
  * Yaw that faces down each passage direction, matching `Player.fixedUpdate`'s
@@ -193,6 +194,8 @@ export class MazeWorld extends World {
     this._tokenTime = 0;
     /** @type {MazeChunks|null} the district streaming manager, created in build() */
     this.chunks = null;
+    /** @type {MazeCanopy|null} distant hedge-tops beyond the streamed set, created in build() */
+    this.canopy = null;
 
     const span = MAZE.CELLS * MAZE.CELL;
     this.bounds = new THREE.Box3(
@@ -229,6 +232,12 @@ export class MazeWorld extends World {
         color: 0x8fe0c9, roughness: 0.3, metalness: 0.25,
         emissive: 0x2fae86, emissiveIntensity: 1.15,
       }),
+      /* Distant hedge-tops beyond the streamed districts - see MazeCanopy. One
+       * more cached, built-once entry for the same reason as the others: a flat
+       * quad allocated per district or per build would re-trigger the shader
+       * compilation that already dominates cold boot. Flat and a shade darker
+       * than the hedge material so it reads as distance, not as more maze. */
+      canopy: new THREE.MeshStandardMaterial({ color: 0x24391f, roughness: 1, metalness: 0 }),
     };
     return this._materials;
   }
@@ -301,6 +310,12 @@ export class MazeWorld extends World {
 
     const spawn = this.playerSpawn;
     this.chunks.updateResidency(spawn.x, spawn.y, spawn.z, RESIDENCY_RADIUS);
+
+    /* Distant hedge-tops beyond the streamed set - see MazeCanopy's own
+     * docstring for why this exists at all. Scenery only: constructed with the
+     * cached `canopy` material, never given to physics. */
+    this.canopy = new MazeCanopy({ group: this.group, material: mats.canopy });
+    this.canopy.update(spawn.x, spawn.z, e.level);
 
     /* The return arch stands in the middle of the forecourt rather than one
      * cell north of the entrance - that position sat inside the hedge the
@@ -437,6 +452,10 @@ export class MazeWorld extends World {
     if (player && this.chunks) {
       this.chunks.updateResidency(player.x, player.y, player.z, RESIDENCY_RADIUS);
     }
+    if (player && this.canopy) {
+      const level = Math.min(MAZE.LEVELS - 1, Math.max(0, Math.round(player.y / MAZE.LEVEL_HEIGHT)));
+      this.canopy.update(player.x, player.z, level);
+    }
 
     if (!this._tokenMesh || this._tokens.length === 0) return;
     this._tokenTime += dt;
@@ -508,6 +527,8 @@ export class MazeWorld extends World {
   dispose() {
     this.chunks?.disposeAll();
     this.chunks = null;
+    this.canopy?.disposeAll();
+    this.canopy = null;
 
     this.group.traverse((obj) => {
       if (obj.geometry) obj.geometry.dispose();

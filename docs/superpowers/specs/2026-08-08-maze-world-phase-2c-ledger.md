@@ -213,3 +213,55 @@ Task 6: TWO OF MY TESTS WERE VACUOUS, and only mutation testing found them.
   physics; `disposeAll` leaves zero.
 
   230 tests, contract-check 45/45, build clean.
+
+Task 7: complete (no `src/` change — the task ships a decision).
+
+  **THE TUNNEL CAN BE BUILT, and the shape is not the one the plan assumed.**
+
+  The plan expected a 2-flight U across a 2x2 cell block. Measured, a 2-flight
+  fold is the wrong shape twice over:
+    - 12 treads x 0.75 m = 9.0 m of run, so the body is 10.20 m long inside a
+      12 m two-cell region, leaving **0.90 m** of end gap against a 0.70 m
+      capsule - 0.10 m of clearance each side. That is the identical razor
+      margin 2b flagged on the stair's narrowest tread strip and explicitly
+      warned had no headroom.
+    - **Four flights over two lanes leaves 3.15 m.** Six treads per flight,
+      4.5 m of run, body 5.70 m in the same region. Flight 2 sits above flight
+      0 but TWO flights up, so the headroom between them is 2 x flightRise =
+      4.5 m, not the 2.25 m a first reading suggests. That mis-derivation is
+      what made a 4-flight fold look impossible on the first pass.
+
+  So: **4 flights, 2 lanes, 2x1 cells** - not 2x2. Constraints 1, 2, 3 hold by
+  construction; constraint 4 measures 12/12 side pairs reachable.
+
+  WHAT ACTUALLY PRESERVES CONNECTIVITY, and it is not what the plan said.
+  The plan assumed a narrow flight was needed so a walkable strip survived
+  beside the body. Measured, both mechanisms carry load but the end gaps carry
+  most of it: every half-width from 0.5 to 1.0 connects, and only W = 1.2 -
+  which closes the side strip to exactly 0.00 m - severs. The width is
+  therefore free to be chosen for how the tunnel reads and climbs, and the
+  real constraint is that the fold be short enough to leave end gaps at all.
+
+Task 7: FIVE FIXTURE/TEST BUGS, ALL MINE, AND THE GEOMETRY WAS INNOCENT EVERY
+  TIME. Recorded because the pattern is now unmistakable.
+  1. The body was offset from the west edge by a CHOSEN end gap and the east
+     end fell where it may - 0.30 m, with the east door INSIDE the far landing.
+     Every route from it began embedded in a collider. Gaps are derived from
+     the body's true length and split evenly now.
+  2. The router detoured only in x. West-to-east has both doors at z=0, so its
+     "detour" walked straight into the body and reported the region severed
+     when it was not. Both detour families are tried now.
+  3. The first negative closed the end gaps - which a z-strip route does not
+     use, so it severed nothing and reported 0/2.
+  4. The second negative filled the region wall to wall - which severed only
+     2/12, because the doors then start INSIDE the slab and depenetration
+     shuffles the capsule out to somewhere that counts as arrival.
+  5. Three assertions asserted what I expected rather than what was measured:
+     that every width connects (W=1.2 does not), and that a 0.90 m gap is
+     under a 0.90 m bar.
+  The working negative is W = 1.2: it closes the strip exactly while leaving
+  the geometry legitimate, and severs 11 of 12 pairs.
+
+Task 7: CONSEQUENCE FOR TASK 8. The tunnel claims a 2x1 cell region, so
+  `connectorHoleBounds` must return a RECTANGLE 2 cells long, and the
+  enclosure grouping must cover both cells. Not the 2x2 the plan sized it for.

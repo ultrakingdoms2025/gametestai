@@ -293,3 +293,55 @@ Task 8: complete. `connectorHoleBounds` dispatches on kind and returns the
   Critical - the 9 m pit over every shaft).
 
   239 tests, MAZE_SEEDS=1000 green in 152s, contract-check 45/45, build clean.
+
+Task 9: tunnel BUILT and switched on. Four flights of six treads over two
+  lanes, folded across a 2x1 cell region, surfacing above the cell it started
+  under. Orientation is hashed but CONSTRAINED to directions whose second cell
+  stays inside the district; `tunnelExitBounds` derives the hole from the
+  treads that actually reach the slab rather than writing it down.
+
+Task 9: THE ENCLOSURE PROOF HAD TO BE GENERALISED, and this is the most
+  delicate change in the phase. `isEnclosureSound` merges wall pieces
+  VERTICALLY but requires a single piece to span a side's full width. A 2-cell
+  region's cross-fold face is two 6 m pieces - and it must be two, because the
+  two cells can have different topology and so can need different doorway
+  heights - so both were rejected and a sealed tunnel read as unsealed.
+  Resolution: `sideCovered` extracted from `isEnclosureSound` UNCHANGED, and a
+  new `isRegionEnclosureSound` that checks a region CELL BY CELL at each cell's
+  own four faces, skipping one thing only - a face shared with another cell OF
+  THE SAME CONNECTOR, which is where the fold runs. A two-cell region still has
+  six faces and every one must be covered. The bar is the REGION's
+  `requiredWallTop`, so a tread high in one cell raises the requirement for
+  both.
+  MUTATION-VERIFIED, because a widened exemption is exactly where this project
+  gets hurt: dropping one region wall reddens two gates, and shortening one
+  wall by 1.5 m reddens the same two.
+
+Task 9: five stair-shaped gates had to become connector-shaped, and each was
+  widened in the narrowest way that works rather than loosened:
+  - "every shaft is climbable" filtered kind:'stair' and reported a tunnel as
+    having no steps. Now filters `enclosed` - the property is "nothing you must
+    climb exceeds the auto-step", not "there are stair-kinded boxes".
+  - the doorway gate demanded a wall on every open face of the cell, including
+    the one into the tunnel's own second cell. Now skips a face ONLY when the
+    neighbour is part of the same connector - strictly narrower than "skip
+    faces with no wall".
+  - THE ENCLOSURE GATE and the bound-to-exemption test now prove a connector
+    against its region. A group with NO owning connector is still held to the
+    strict single-cell test, so the case that gate exists to catch is untouched.
+  - THE MULTI-SHAFT GATE asked for a stair well above a tunnel and looked in
+    the wrong place. Now asks `connectorHoleBounds`.
+
+Task 9: I BROKE MazeShafts.js WITH STRING SURGERY mid-refactor and restored it
+  from the last commit rather than trying to patch the wreckage - the tunnel
+  snippet was re-applied from scratch. Committing after every task is what made
+  that a two-minute recovery instead of a rewrite.
+
+  239 tests, MAZE_SEEDS=1000 green in 151s, contract-check 45/45, build clean.
+
+Task 9: NOT YET DONE - the six properties are NOT all proven on real tunnel
+  geometry. Constraints 1-4 were proven in Task 7 on a fixture and the
+  enclosure/perforation/doorway/climb gates now cover real tunnels, but the
+  walk-away flood fill, the pit and canopy properties, and property 3's
+  dedicated negative are still outstanding for the tunnel specifically. Recorded
+  as outstanding rather than claimed.

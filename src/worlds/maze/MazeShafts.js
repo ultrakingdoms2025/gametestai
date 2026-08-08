@@ -18,7 +18,7 @@
  */
 
 import {
-  MAZE, DIR, cellIndex, isOpen, cellToWorld, connectorAt,
+  MAZE, DIR, cellIndex, isOpen, cellToWorld, connectorAt, hash32,
 } from './MazeTopology.js';
 
 /**
@@ -316,7 +316,7 @@ export function shaftColliders(cells, x, z, level) {
      * Tasks 5 and 9 each change exactly one line, and so a reader can see at
      * a glance which connectors are real yet. */
     case 'lift':   return liftColliders(cells, x, z, level);
-    case 'tunnel': return stairColliders(cells, x, z, level);   // Task 9
+    case 'tunnel': return tunnelColliders(cells, x, z, level);
     default:       return stairColliders(cells, x, z, level);
   }
 }
@@ -477,16 +477,34 @@ export function isEnclosureSound(descs, shaft) {
   const halfX = shaft.hx ?? MAZE.CELL / 2;
   const halfZ = shaft.hz ?? MAZE.CELL / 2;
   const need = requiredWallTop(descs, shaft);
-  const lowerBound = shaft.floorY + ENTRY_SEAL_FROM;
-  const EPS = 1e-6;
   const sides = [
     { axis: 'x', at: shaft.cx - halfX },
     { axis: 'x', at: shaft.cx + halfX },
     { axis: 'z', at: shaft.cz - halfZ },
     { axis: 'z', at: shaft.cz + halfZ },
   ];
+  for (const side of sides) if (!sideCovered(descs, shaft, side, need)) return false;
+  return true;
+}
 
-  for (const side of sides) {
+/**
+ * Is one side of a shaft covered, from `ENTRY_SEAL_FROM` above its floor up to
+ * `need`?
+ *
+ * Extracted from `isEnclosureSound` in Phase 2c, unchanged in behaviour, so
+ * that a REGION can be checked face by face (see `isRegionEnclosureSound`)
+ * without either function owning a second copy of these rules: a piece must
+ * reach the side's plane AND span the shaft's full width along it, and
+ * coverage may be assembled from several pieces as long as they are vertically
+ * contiguous. A gap between two pieces does not cover.
+ */
+function sideCovered(descs, shaft, side, need) {
+  const halfX = shaft.hx ?? MAZE.CELL / 2;
+  const halfZ = shaft.hz ?? MAZE.CELL / 2;
+  const lowerBound = shaft.floorY + ENTRY_SEAL_FROM;
+  const EPS = 1e-6;
+
+  {
     // Every wall piece that reaches this side's plane and spans the shaft's
     // full width along it, regardless of its own vertical extent - coverage
     // is decided by merging these intervals, not by any single piece alone.
@@ -535,7 +553,52 @@ export function isEnclosureSound(descs, shaft) {
     if (!covered && runBottom !== null && runBottom <= lowerBound + EPS && runTop >= need - EPS) {
       covered = true;
     }
-    if (!covered) return false;
+    return covered;
+  }
+}
+
+/**
+ * Is every face of a connector's REGION sealed?
+ *
+ * `isEnclosureSound` asks about one rectangle and requires each side to be
+ * covered by pieces that span that whole side. That is right for a stair or a
+ * lift, which occupy one cell, and wrong for a tunnel: its region is two
+ * cells, and its cross-fold faces are emitted as one piece PER CELL - they
+ * have to be, because the two cells can have different topology and so can
+ * need different doorway heights. A full-width test rejects both halves and
+ * calls a sealed tunnel unsealed, which is exactly what it did.
+ *
+ * So a region is checked CELL BY CELL, at each cell's own four faces, with one
+ * exemption and one only: a face shared with another cell OF THE SAME
+ * CONNECTOR is skipped, because that is where the fold runs and a wall there
+ * would be a wall through the middle of the tunnel.
+ *
+ * That exemption is deliberately the narrowest thing that works. It is NOT
+ * "skip faces with no wall" - a genuinely missing wall on any other face still
+ * fails, and a two-cell region still has six faces every one of which must be
+ * covered. The bar each face is held to is the REGION's `requiredWallTop`, so
+ * a tread high up in one cell raises the requirement for both.
+ */
+export function isRegionEnclosureSound(descs, cells, x, z, level) {
+  const region = connectorRegion(cells, x, z, level);
+  const shaft = regionShaft(cells, x, z, level);
+  const need = requiredWallTop(descs, shaft);
+  const half = MAZE.CELL / 2;
+  const steps = [{ dx: -1, dz: 0 }, { dx: 1, dz: 0 }, { dx: 0, dz: -1 }, { dx: 0, dz: 1 }];
+
+  for (let cz = region.z0; cz <= region.z1; cz++) {
+    for (let cx = region.x0; cx <= region.x1; cx++) {
+      const w = cellToWorld(cx, cz, level);
+      const cell = { cx: w.x, cz: w.z, floorY: w.y };
+      for (const s of steps) {
+        const nx = cx + s.dx, nz = cz + s.dz;
+        if (nx >= region.x0 && nx <= region.x1 && nz >= region.z0 && nz <= region.z1) continue;
+        const side = s.dx
+          ? { axis: 'x', at: w.x + s.dx * half }
+          : { axis: 'z', at: w.z + s.dz * half };
+        if (!sideCovered(descs, cell, side, need)) return false;
+      }
+    }
   }
   return true;
 }
@@ -773,10 +836,7 @@ export function landingColliders(cells, x, z, level) {
 export function connectorHoleBounds(cells, x, z, level) {
   switch (connectorAt(cells, x, z, level)) {
     case 'lift':   return liftWellBounds(x, z, level);
-    /* Task 9 replaces this. Written as its own case rather than folded into
-     * the default so that flipping it is one line and a reader can see which
-     * connectors are real. */
-    case 'tunnel': return stairWellBounds(x, z, level);
+    case 'tunnel': return tunnelExitBounds(cells, x, z, level);
     default:       return stairWellBounds(x, z, level);
   }
 }
@@ -793,10 +853,7 @@ export function connectorHoleBounds(cells, x, z, level) {
  * per-cell check would demand a wall there and fail a legitimate tunnel.
  */
 export function connectorRegion(cells, x, z, level) {
-  if (connectorAt(cells, x, z, level) === 'tunnel') {
-    // Task 9 sets the orientation; until then a tunnel is built as a stair.
-    return { x0: x, x1: x, z0: z, z1: z };
-  }
+  if (connectorAt(cells, x, z, level) === 'tunnel') return tunnelRegion(x, z, level);
   return { x0: x, x1: x, z0: z, z1: z };
 }
 
@@ -815,5 +872,231 @@ export function regionShaft(cells, x, z, level) {
     floorY: a.y,
     hx: (b.x - a.x) / 2 + half,
     hz: (b.z - a.z) / 2 + half,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* The tunnel                                                          */
+/*                                                                     */
+/* Phase 2c Task 7 proved this footprint before any of it was built,   */
+/* and it is NOT the shape the plan assumed. The measurements are in   */
+/* scripts/tests/maze-tunnel-footprint.test.mjs and the ledger.        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Flights, and why four rather than the two the plan sized for.
+ *
+ * A 2-flight U needs 12 treads per flight = 9.0 m of run, so its body is
+ * 10.20 m long inside a 12 m two-cell region and leaves **0.90 m** of end gap
+ * against a 0.70 m capsule - 0.10 m of clearance each side. That is the
+ * identical razor margin 2b flagged on the stair's narrowest tread strip and
+ * warned had no headroom if extents ever changed.
+ *
+ * Four flights of six treads run 4.5 m each, so the body is 5.70 m and the
+ * gaps are **3.15 m**. Those gaps are what keeps the region walkable: Task 7
+ * measured 12/12 side pairs reachable, and measured that connectivity survives
+ * every flight half-width from 0.5 up to 1.0, failing only at 1.2 where the
+ * side strip closes to exactly zero.
+ *
+ * The reason four flights looks impossible at first is worth writing down:
+ * flight 2 sits directly above flight 0, but TWO flights up, so the headroom
+ * between them is `2 * flightRise` = 4.5 m and not the 2.25 m a first reading
+ * gives.
+ */
+const TUNNEL_FLIGHTS = 4;
+const TUNNEL_TREADS_PER_FLIGHT = SHAFT_STEPS / TUNNEL_FLIGHTS;
+const TUNNEL_TREAD = 0.75;
+const TUNNEL_RUN = TUNNEL_TREADS_PER_FLIGHT * TUNNEL_TREAD;
+const TUNNEL_FLIGHT_RISE = TUNNEL_TREADS_PER_FLIGHT * (MAZE.LEVEL_HEIGHT / SHAFT_STEPS);
+
+/**
+ * One flight's half-width.
+ *
+ * Free to choose, and that is a measured result rather than an assumption: the
+ * plan expected a narrow flight to be needed so a walkable strip survived
+ * beside the body, but Task 7 found the END GAPS carry connectivity and every
+ * width from 0.5 to 1.0 works. 0.6 leaves a 1.20 m strip beside the body and a
+ * 3.15 m gap at each end - comfortable on both counts rather than tight on
+ * either.
+ */
+const TUNNEL_HALF_WIDTH = 0.6;
+const TUNNEL_BODY_LEN = TUNNEL_RUN + 2 * TUNNEL_HALF_WIDTH;
+
+/** The four directions a tunnel's second cell can lie in. */
+const TUNNEL_DIRS = Object.freeze([
+  { dx: 1, dz: 0 }, { dx: 0, dz: 1 }, { dx: -1, dz: 0 }, { dx: 0, dz: -1 },
+]);
+
+/**
+ * Which way this tunnel folds.
+ *
+ * Hashed like everything else, but CONSTRAINED to the directions whose second
+ * cell stays inside the same district. District independence is what lets two
+ * neighbours agree on their openings without either having been generated, and
+ * it is what makes both streaming and the headless gates possible - a tunnel
+ * reaching across a district seam would break it. A cell in a district corner
+ * simply has fewer directions available, never a tunnel that reaches out.
+ */
+export function tunnelOrientation(x, z, level) {
+  const D = MAZE.DISTRICT;
+  const lx = ((x % D) + D) % D, lz = ((z % D) + D) % D;
+  const valid = TUNNEL_DIRS.filter((d) => {
+    const nx = lx + d.dx, nz = lz + d.dz;
+    return nx >= 0 && nx < D && nz >= 0 && nz < D;
+  });
+  /* A 20x20 district always leaves at least two directions, so this cannot be
+   * empty - but if the district were ever 1x1 the caller must fall back to a
+   * staircase rather than emit a tunnel that leaves its district. */
+  if (valid.length === 0) return null;
+  return valid[hash32(x, z, level, 0x7d1) % valid.length];
+}
+
+/**
+ * A tunnel's two cells, as an inclusive rectangle in cell coordinates.
+ */
+export function tunnelRegion(x, z, level) {
+  const d = tunnelOrientation(x, z, level);
+  if (!d) return { x0: x, x1: x, z0: z, z1: z };
+  return {
+    x0: Math.min(x, x + d.dx), x1: Math.max(x, x + d.dx),
+    z0: Math.min(z, z + d.dz), z1: Math.max(z, z + d.dz),
+  };
+}
+
+/**
+ * A four-flight switchback tunnel from `level` to `level + 1`, folded across
+ * two cells and surfacing above the cell it started under.
+ *
+ * That last part is the whole reason for the fold. 24 rises at 0.375 m is
+ * 18 m of run, which would surface three cells away, and a displaced vertical
+ * link would drag `neighbourCell`, `carveDistrict`, `solve`, reachability and
+ * the map along with it. Folding keeps the topology link C->C and pays for it
+ * in footprint instead.
+ */
+export function tunnelColliders(cells, x, z, level) {
+  const d = tunnelOrientation(x, z, level);
+  if (!d) return stairColliders(cells, x, z, level);
+
+  const w = cellToWorld(x, z, level);
+  const out = [];
+  const rise = MAZE.LEVEL_HEIGHT / SHAFT_STEPS;
+  const W = TUNNEL_HALF_WIDTH;
+
+  /* Local axes: `a` runs along the fold, `b` across it. Working in these and
+   * mapping to world x/z at the end is what keeps one implementation for all
+   * four orientations instead of four nearly-identical ones. */
+  const along = (v) => ({ x: w.x + d.dx * v, z: w.z + d.dz * v });
+  const across = (v) => ({ x: w.x + d.dz * v, z: w.z + d.dx * v });
+  const at = (a, b) => ({
+    x: w.x + d.dx * a + d.dz * b,
+    z: w.z + d.dz * a + d.dx * b,
+  });
+  /* Half-extents follow the same mapping: a box `ha` long and `hb` wide is
+   * (ha, hb) or (hb, ha) in world terms depending on the axis. */
+  const ext = (ha, hb) => ({
+    hx: d.dx ? ha : hb,
+    hz: d.dx ? hb : ha,
+  });
+
+  const regionHalf = MAZE.CELL;                       // two cells, measured from C's centre
+  const gap = (2 * MAZE.CELL - TUNNEL_BODY_LEN) / 2;
+  const bodyA0 = -MAZE.CELL / 2 + gap;                // start of the body, along the fold
+
+  for (let f = 0; f < TUNNEL_FLIGHTS; f++) {
+    const lane = (f % 2) === 0 ? -W : W;
+    const forward = (f % 2) === 0;
+    for (let i = 0; i < TUNNEL_TREADS_PER_FLIGHT; i++) {
+      const bottom = w.y + f * TUNNEL_FLIGHT_RISE + i * rise;
+      const top = bottom + rise;
+      const a = bodyA0 + W + (forward ? (i + 0.5) * TUNNEL_TREAD
+        : TUNNEL_RUN - (i + 0.5) * TUNNEL_TREAD);
+      const c = at(a, lane);
+      const e = ext(TUNNEL_TREAD / 2, W);
+      out.push({
+        cx: c.x, cy: (bottom + top) / 2, cz: c.z,
+        hx: e.hx, hy: (top - bottom) / 2, hz: e.hz,
+        kind: 'tunnel', enclosed: true,
+      });
+    }
+    if (f < TUNNEL_FLIGHTS - 1) {
+      const turnTop = w.y + (f + 1) * TUNNEL_FLIGHT_RISE;
+      const a = bodyA0 + (forward ? TUNNEL_BODY_LEN - W : W);
+      const c = at(a, 0);
+      const e = ext(W, W * 2);
+      out.push({
+        cx: c.x, cy: (w.y + turnTop) / 2, cz: c.z,
+        hx: e.hx, hy: (turnTop - w.y) / 2, hz: e.hz,
+        kind: 'tunnel', enclosed: true,
+      });
+    }
+  }
+
+  /* The region's OUTER walls. Six faces, not eight: the face between the two
+   * cells is deliberately open, because that is where the fold runs. A
+   * per-cell enclosure check would demand a wall there and fail a legitimate
+   * tunnel, which is exactly why `isEnclosureSound` gained `hx`/`hz` in
+   * Task 8 and is asked about the REGION rather than about each cell. */
+  const H = MAZE.LEVEL_HEIGHT;
+  const half = MAZE.CELL / 2;
+  const idx = cellIndex(x, z, level);
+  const other = cellIndex(x + d.dx, z + d.dz, level);
+  const faces = [
+    // Along the fold: C's far face and C+1's far face.
+    { a: -half, b: 0, ha: 0.6, hb: half, cell: idx, dir: dirFor(-d.dx, -d.dz) },
+    { a: 2 * MAZE.CELL - half, b: 0, ha: 0.6, hb: half, cell: other, dir: dirFor(d.dx, d.dz) },
+    // Across the fold: both cells, both sides.
+    { a: 0, b: -half, ha: half, hb: 0.6, cell: idx, dir: dirFor(-d.dz, -d.dx) },
+    { a: 0, b: half, ha: half, hb: 0.6, cell: idx, dir: dirFor(d.dz, d.dx) },
+    { a: MAZE.CELL, b: -half, ha: half, hb: 0.6, cell: other, dir: dirFor(-d.dz, -d.dx) },
+    { a: MAZE.CELL, b: half, ha: half, hb: 0.6, cell: other, dir: dirFor(d.dz, d.dx) },
+  ];
+  for (const fc of faces) {
+    const open = fc.dir !== 0 && isOpen(cells, fc.cell, fc.dir);
+    const baseY = open ? w.y + ENTRY_SEAL_FROM : w.y;
+    const c = at(fc.a, fc.b);
+    const e = ext(fc.ha, fc.hb);
+    out.push({
+      cx: c.x, cy: (baseY + w.y + H) / 2, cz: c.z,
+      hx: e.hx, hy: (w.y + H - baseY) / 2, hz: e.hz,
+      kind: 'shaftWall',
+    });
+  }
+
+  return out;
+}
+
+/** The DIR bit for a unit step, or 0 if it is not one of the four. */
+function dirFor(dx, dz) {
+  if (dx === 1) return DIR.E;
+  if (dx === -1) return DIR.W;
+  if (dz === 1) return DIR.S;
+  if (dz === -1) return DIR.N;
+  return 0;
+}
+
+/**
+ * Where a tunnel breaks through level N+1's floor.
+ *
+ * DERIVED from the treads themselves rather than written down: the hole is the
+ * bounding box of every tread that reaches into the floor slab, widened by a
+ * capsule radius so a climber's shoulders clear it too. Deriving it is the
+ * rule `stairWellBounds` set - the hole and the geometry inside it must come
+ * from one place or they drift, and this project's history is made of that
+ * drift.
+ */
+export function tunnelExitBounds(cells, x, z, level) {
+  const slabBottom = (level + 1) * MAZE.LEVEL_HEIGHT - 1.0;
+  const descs = tunnelColliders(cells, x, z, level).filter((d) => d.kind === 'tunnel');
+  const through = descs.filter((d) => d.cy + d.hy > slabBottom + 1e-6);
+  const src = through.length ? through : descs;
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const d of src) {
+    x0 = Math.min(x0, d.cx - d.hx); x1 = Math.max(x1, d.cx + d.hx);
+    z0 = Math.min(z0, d.cz - d.hz); z1 = Math.max(z1, d.cz + d.hz);
+  }
+  const pad = 0.4;
+  return {
+    cx: (x0 + x1) / 2, cz: (z0 + z1) / 2,
+    x0: x0 - pad, x1: x1 + pad, z0: z0 - pad, z1: z1 + pad,
   };
 }

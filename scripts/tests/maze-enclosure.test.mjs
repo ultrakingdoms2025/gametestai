@@ -11,6 +11,7 @@ import {
   isEnclosureSound, requiredWallTop, shaftColliders, stairColliders, ENTRY_SEAL_FROM,
   STAIR_WELL_HALF, STAIR_WELL_OFFSET, stairWellBounds, SHAFT_STEPS,
   TREAD_HALF, STAIR_RADIUS, STAIR_TREADS_PER_TURN, descriptorTop, connectorHoleBounds,
+  connectorRegion, regionShaft, isRegionEnclosureSound,
 } from '../../src/worlds/maze/MazeShafts.js';
 import { CONFIG } from '../../src/core/Config.js';
 
@@ -267,20 +268,44 @@ function overlappingShaftCells(cx, hx, cz, hz) {
  * shaft floor height, since a descriptor's position alone does not say which
  * level it belongs to.
  */
-function groupEnclosedByShaft(descs, level = 0) {
-  // The shaft's TRUE floor - fix round 1 moved the "don't seal the entry
-  // side all the way down" allowance into `isEnclosureSound` itself (the
-  // `ENTRY_SEAL_FROM` lower bound), so callers pass the real floor and no
-  // longer need to shift it themselves. See ENTRY_SEAL_FROM's own comment
-  // in MazeColliders.js.
+function groupEnclosedByShaft(descs, level = 0, cells = null) {
+  /* Grouped by the CONNECTOR each enclosed descriptor belongs to, not by the
+   * cell its footprint touches.
+   *
+   * Cell grouping was right while every connector was one cell wide. A tunnel
+   * folds across two, so its treads legitimately overlap a cell that is not
+   * where its link lives, and a per-cell check demanded a sealed box around
+   * each half - failing a tunnel that is in fact sealed around its region.
+   *
+   * The exemption this widens is still bound to a PROVEN shaft: every group
+   * below is a real connector found in `cells`, and the caller proves it with
+   * `isRegionEnclosureSound`. It is not "trust anything that says enclosed".
+   */
   const floorY = level * MAZE.LEVEL_HEIGHT;
   const groups = new Map();
   for (const d of descs) {
     if (!d.enclosed) continue;
     for (const { gx, gz } of overlappingShaftCells(d.cx, d.hx, d.cz, d.hz)) {
-      const key = `${gx},${gz}`;
+      /* Find the connector that owns this cell: either the cell itself
+       * carries the link, or it is the second cell of a tunnel whose link is
+       * next door. Anything else is an enclosed descriptor with no connector
+       * behind it, which is exactly what this test exists to catch. */
+      let owner = null;
+      if (cells) {
+        for (const [ox, oz] of [[gx, gz], [gx - 1, gz], [gx + 1, gz], [gx, gz - 1], [gx, gz + 1]]) {
+          if (ox < 0 || oz < 0 || ox >= MAZE.CELLS || oz >= MAZE.CELLS) continue;
+          if (!isOpen(cells, cellIndex(ox, oz, level), DIR.UP)) continue;
+          const r = connectorRegion(cells, ox, oz, level);
+          if (gx >= r.x0 && gx <= r.x1 && gz >= r.z0 && gz <= r.z1) { owner = { x: ox, z: oz }; break; }
+        }
+      }
+      const key = owner ? `c${owner.x},${owner.z}` : `${gx},${gz}`;
       if (!groups.has(key)) {
-        groups.set(key, { key, shaft: { cx: gx * MAZE.CELL, cz: gz * MAZE.CELL, floorY } });
+        groups.set(key, {
+          key,
+          owner,
+          shaft: { cx: gx * MAZE.CELL, cz: gz * MAZE.CELL, floorY },
+        });
       }
     }
   }
@@ -315,9 +340,19 @@ test('every enclosed descriptor emitted by real generation sits in a proven shaf
       for (let dz = 0; dz < MAZE.DISTRICTS; dz++) {
         for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
           const descs = districtColliders(t.cells, dx, dz, level);
-          for (const g of groupEnclosedByShaft(descs, level)) {
+          for (const g of groupEnclosedByShaft(descs, level, t.cells)) {
             shaftsChecked++;
-            assert.equal(isEnclosureSound(descs, g.shaft), true,
+            /* A group with an OWNER is a real connector, and is proven against
+             * its whole region - which for a tunnel is two cells with an open
+             * face between them. A group with NO owner is an enclosed
+             * descriptor that belongs to no connector at all, and is still
+             * held to the strict single-cell test: that is the case this gate
+             * exists to catch, and widening the tunnel's exemption must not
+             * widen that one. */
+            const sound = g.owner
+              ? isRegionEnclosureSound(descs, t.cells, g.owner.x, g.owner.z, level)
+              : isEnclosureSound(descs, g.shaft);
+            assert.equal(sound, true,
               `seed ${seed} level ${level} district (${dx},${dz}) shaft ${g.key} is not a proven enclosure`);
           }
         }
@@ -470,8 +505,14 @@ test('every shaft is climbable: no step exceeds the auto-step height', () => {
   let checked = 0;
   for (let dz = 0; dz < 4; dz++) for (let dx = 0; dx < 4; dx++) {
     for (const c of shaftCells(t.cells, dx, dz, 0)) {
-      const steps = shaftColliders(t.cells, c.x, c.z, 0).filter((d) => d.kind === 'stair');
-      assert.ok(steps.length > 0, `shaft at ${c.x},${c.z} has no steps`);
+      /* `enclosed`, not kind:'stair'. Three connector kinds now put standable
+       * surfaces inside a shaft - treads, tunnel treads, a lift car - and the
+       * property being tested is "nothing you have to climb exceeds the
+       * auto-step", not "there are stair-kinded boxes". Filtering on the kind
+       * reported a tunnel as having no steps at all. */
+      const steps = shaftColliders(t.cells, c.x, c.z, 0).filter((d) => d.enclosed);
+      assert.ok(steps.length > 0,
+        `${connectorAt(t.cells, c.x, c.z, 0)} at ${c.x},${c.z} has nothing climbable in it`);
       const tops = steps.map((s) => s.cy + s.hy).sort((a, b) => a - b);
       for (let i = 1; i < tops.length; i++) {
         assert.ok(tops[i] - tops[i - 1] <= 0.45 + 1e-6,
@@ -533,10 +574,14 @@ test('THE ENCLOSURE GATE: every shaft is sealed above hop height, of every conne
       if (!cells.length) continue;
       const descs = districtColliders(t.cells, dx, dz, 0);
       for (const c of cells) {
-        const w = cellToWorld(c.x, c.z, 0);
+        /* The connector's REGION, not its cell. A tunnel folds across two, and
+         * the face between them is deliberately open - a per-cell check would
+         * demand a wall there and fail a legitimate tunnel. `regionShaft`
+         * returns a single cell for a stair or a lift, so this is unchanged
+         * for them. */
         tally[connectorAt(t.cells, c.x, c.z, 0)]++;
         assert.equal(
-          isEnclosureSound(descs, { cx: w.x, cz: w.z, floorY: w.y }), true,
+          isRegionEnclosureSound(descs, t.cells, c.x, c.z, 0), true,
           `seed ${seed} ${connectorAt(t.cells, c.x, c.z, 0)} shaft at ${c.x},${c.z} is not sealed`,
         );
       }
@@ -574,6 +619,12 @@ test('the entry doorway on a real shaft is tall enough for the player to walk th
     const t = generateTopology(seed, { levels: 2 });
     for (let dz = 0; dz < 4; dz++) for (let dx = 0; dx < 4; dx++) {
       for (const c of shaftCells(t.cells, dx, dz, 0)) {
+        /* A tunnel's walls stand on its REGION's outer boundary, and the face
+         * between its two cells is deliberately open - that is where the fold
+         * runs. Asking cell C for a wall on that face found none and called
+         * the shaft unenterable, which is the gate being stair-shaped rather
+         * than the tunnel being wrong. Ask the region. */
+        const region = connectorRegion(t.cells, c.x, c.z, 0);
         const idx = cellIndex(c.x, c.z, 0);
         const w = cellToWorld(c.x, c.z, 0);
         // Shaft's own walls, not the maze's ordinary hedges - see
@@ -583,9 +634,18 @@ test('the entry doorway on a real shaft is tall enough for the player to walk th
         const walls = shaftColliders(t.cells, c.x, c.z, 0).filter((d) => d.kind === 'shaftWall');
         for (const s of sidesByDir) {
           if (!isOpen(t.cells, idx, s.dir)) continue;
+          /* Skip the face INTO the connector's own region. A tunnel's two
+           * cells share an open face by design - it is where the fold runs -
+           * so there is no wall there and none should be demanded. This skips
+           * a face only when the neighbour is part of the SAME connector,
+           * which is a strictly narrower exemption than "skip faces with no
+           * wall": a genuinely missing wall on any other side still fails. */
+          const nx = c.x + s.dx, nz = c.z + s.dz;
+          const inRegion = nx >= region.x0 && nx <= region.x1 && nz >= region.z0 && nz <= region.z1;
+          if (inRegion) continue;
           const wall = walls.find((d) => Math.abs(d.cx - (w.x + s.dx * half)) < 1e-6
                                         && Math.abs(d.cz - (w.z + s.dz * half)) < 1e-6);
-          assert.ok(wall, `shaft at ${c.x},${c.z} has no wall descriptor for its open side`);
+          assert.ok(wall, `${connectorAt(t.cells, c.x, c.z, 0)} at ${c.x},${c.z} has no wall descriptor for its open ${s.dir} side`);
           const gap = (wall.cy - wall.hy) - w.y;
           minGap = Math.min(minGap, gap);
           assert.ok(gap >= REQUIRED,
@@ -799,7 +859,11 @@ test('THE MULTI-SHAFT GATE: every UP cell in a district has a hole punched above
           if (ups.length > 1) districtsWithMultiple++;
           const above = districtColliders(t.cells, dx, dz, level + 1);
           for (const c of ups) {
-            const well = stairWellBounds(c.x, c.z, level);
+            /* The CONNECTOR's hole, not the stair well. A tunnel surfaces
+             * through a rectangle derived from its own treads, so asking for
+             * a stair well looked in the wrong place and reported a perfectly
+             * good tunnel as unperforated. */
+            const well = connectorHoleBounds(t.cells, c.x, c.z, level);
             assert.ok(wellHasHole(above, well),
               `seed ${seed} level ${level} district (${dx},${dz}): UP cell (${c.x},${c.z}) has no hole `
               + 'punched above it - only the first UP cell in a district gets one today, and this one '

@@ -4,7 +4,7 @@ import {
   MAZE, generateTopology, cellIndex, cellCoords, isOpen, DIR, connectorAt,
 } from '../../src/worlds/maze/MazeTopology.js';
 import { districtColliders, forecourtColliders, cellToWorld } from '../../src/worlds/maze/MazeColliders.js';
-import { shaftColliders, stairColliders, descriptorTop } from '../../src/worlds/maze/MazeShafts.js';
+import { shaftColliders, stairColliders, descriptorTop, connectorRegion } from '../../src/worlds/maze/MazeShafts.js';
 
 test('cellToWorld places cell 0,0 at the origin corner and steps by the pitch', () => {
   const a = cellToWorld(0, 0, 0);
@@ -234,24 +234,26 @@ test('the split changes nothing: shaftColliders dispatches stairs identically to
   assert.equal(checked, 12, 'expected 12 stair shafts to compare');
 });
 
-test('a TUNNEL link still falls back to stair geometry until Task 9 lands', () => {
+test('a TUNNEL link emits its own geometry, folded across two cells', () => {
   const { cells } = generateTopology(2026);
   let seen = 0;
-  for (let level = 0; level < MAZE.LEVELS - 1; level++) {
-    for (let z = 0; z < MAZE.CELLS; z++) {
-      for (let x = 0; x < MAZE.CELLS; x++) {
+  for (let level = 0; level < MAZE.LEVELS - 1 && seen === 0; level++) {
+    for (let z = 0; z < MAZE.CELLS && seen === 0; z++) {
+      for (let x = 0; x < MAZE.CELLS && seen === 0; x++) {
         if (!isOpen(cells, cellIndex(x, z, level), DIR.UP)) continue;
         if (connectorAt(cells, x, z, level) !== 'tunnel') continue;
-        assert.deepEqual(
-          shaftColliders(cells, x, z, level),
-          stairColliders(cells, x, z, level),
-          'the tunnel fallback must be the stair, exactly',
-        );
+        const descs = shaftColliders(cells, x, z, level);
+        assert.notDeepEqual(descs, stairColliders(cells, x, z, level));
+        assert.equal(descs.filter((d) => d.kind === 'stair').length, 0, 'a tunnel emitted stair treads');
+        assert.ok(descs.filter((d) => d.kind === 'tunnel').length > 20, 'too few tunnel treads');
+        const region = connectorRegion(cells, x, z, level);
+        const width = (region.x1 - region.x0) + (region.z1 - region.z0);
+        assert.equal(width, 1, 'a tunnel must claim exactly two adjacent cells');
         seen++;
       }
     }
   }
-  assert.ok(seen > 0, 'expected at least one tunnel link');
+  assert.equal(seen, 1, 'expected at least one tunnel link');
 });
 
 test('a LIFT link no longer falls back: it emits its own geometry', () => {

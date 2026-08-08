@@ -291,6 +291,18 @@ export class MazeWorld extends World {
         color: 0x8a8f99, roughness: 0.45, metalness: 0.65,
         emissive: 0x2b3138, emissiveIntensity: 0.55,
       }),
+      /* Tunnel treads. A vaulted descent rather than an open spiral, so a
+       * shade warmer and darker than the stair's pale stone - the two must not
+       * read as the same structure seen twice, since the whole point of three
+       * connectors is that a player learns to tell them apart. Emissive for
+       * the same reason everything down here is: a tunnel folds under level
+       * N+1's floor and is the darkest space in the maze, and `LightRig.js`
+       * bans a lamp per connector because Three bakes the light COUNT into
+       * every shader's program cache key. Built once and cached. */
+      tunnel: new THREE.MeshStandardMaterial({
+        color: 0xb9a488, roughness: 0.85, metalness: 0,
+        emissive: 0x4a3c2a, emissiveIntensity: 0.5,
+      }),
       /* The landing door. Read as a counterweight slab: the same stone family
        * as the shaft so it belongs to the structure, but darker and plainly
        * a moving part, so that a closed door reads as "the lift is elsewhere"

@@ -16,7 +16,7 @@ import { districtColliders } from './MazeColliders.js';
  * nothing ever draws it - a stair tread with no mesh, solid and invisible.
  * See that test for the enforcement.
  */
-export const CHUNK_MESH_KINDS = Object.freeze(['hedge', 'floor', 'stair']);
+export const CHUNK_MESH_KINDS = Object.freeze(['hedge', 'floor', 'stair', 'shaftWall']);
 
 /**
  * District-level streaming for the maze.
@@ -43,7 +43,7 @@ export class MazeChunks {
    * @param {{ world: { physics: any, colliders: any[] }, cells: Uint8Array,
    *           group: THREE.Group,
    *           materials: { hedge: THREE.Material, floor: THREE.Material,
-   *                        stair: THREE.Material } }} ctx
+   *                        stair: THREE.Material, shaftWall: THREE.Material } }} ctx
    */
   constructor({ world, cells, group, materials }) {
     /* The WORLD, not its physics. WorldManager swaps `world.physics` to a

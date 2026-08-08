@@ -3,6 +3,7 @@ import { World } from './World.js';
 import { makeRules } from './WorldRules.js';
 import {
   MAZE, DIR, generateTopology, cellCoords, carveEntranceCorridor, hash32, mulberry32,
+  cellIndex, isOpen,
 } from './maze/MazeTopology.js';
 import {
   cellToWorld, forecourtColliders, FORECOURT_PORTAL_Z,
@@ -197,6 +198,20 @@ export class MazeWorld extends World {
     /** @type {MazeCanopy|null} distant hedge-tops beyond the streamed set, created in build() */
     this.canopy = null;
 
+    /* Every shaft's world position, grouped by level - computed once per
+     * build (see `_computeShaftsByLevel`), not per frame. `Minimap` is
+     * world-agnostic: it just plots whatever `world.shaftMarkers` hands it
+     * (see the `caches`/`portals` markers it already draws the same way), so
+     * the level-filtering happens here, in `update()`, where the maze already
+     * knows which level the player is standing on. This is the discoverability
+     * fix: the nearest shaft measured up to 1,212m of actual walking with
+     * nothing on the minimap to point at it. */
+    /** @type {Array<Array<{x:number, z:number}>>|null} */
+    this._shaftsByLevel = null;
+    /** @type {Array<{x:number, z:number}>} the current level's shafts - what Minimap reads */
+    this.shaftMarkers = [];
+    this._markersLevel = -1;
+
     const span = MAZE.CELLS * MAZE.CELL;
     this.bounds = new THREE.Box3(
       new THREE.Vector3(-MAZE.CELL, -10, -MAZE.CELL),
@@ -217,16 +232,51 @@ export class MazeWorld extends World {
   /** Reusable material set, built on first use and kept for the session. */
   _ensureMaterials() {
     if (this._materials) return this._materials;
+
+    /* Stair treads and landings. Pale stonework, deliberately far from both
+     * the dark hedge green and the stone-brown floor - a stair is meant to
+     * read as a landmark the instant it comes into view down a corridor,
+     * not blend into the hedge that walls it in. Built once and reused
+     * across every re-roll for the same reason the other cached materials
+     * are - see the class docstring above.
+     *
+     * A shaft is a sealed stone box (see shaftColliders) - hedge-height
+     * walls on three or four sides keep almost all ambient and sun light out,
+     * and the fixed light-slot rig (LightRig.js) means no per-shaft point
+     * light can be added to compensate: Three bakes the light COUNT into
+     * every shader's program cache key, and a per-shaft light is exactly the
+     * "changing light count" main.js measured at 250s of shader
+     * recompilation. A modest emissive term sidesteps that entirely - it
+     * changes no light count and no cache key, it just makes the material
+     * itself give off a faint glow, enough to read a tread's edges from a
+     * metre inside an unlit shaft without turning the staircase into a neon
+     * sign.
+     *
+     * Reused verbatim (not just colour-matched) for the shaft's own walls
+     * below - see `shaftWall`. */
+    const stair = new THREE.MeshStandardMaterial({
+      color: 0xd8cdb0, roughness: 0.8, metalness: 0,
+      emissive: 0x4a4330, emissiveIntensity: 0.45,
+    });
+
     this._materials = {
       hedge: new THREE.MeshStandardMaterial({ color: 0x2f4a2a, roughness: 0.95, metalness: 0 }),
       floor: new THREE.MeshStandardMaterial({ color: 0x6b6357, roughness: 1.0, metalness: 0 }),
-      /* Stair treads and landings. Pale stonework, deliberately far from both
-       * the dark hedge green and the stone-brown floor - a stair is meant to
-       * read as a landmark the instant it comes into view down a corridor,
-       * not blend into the hedge that walls it in. Built once and reused
-       * across every re-roll for the same reason the other cached materials
-       * are - see the class docstring above. */
-      stair: new THREE.MeshStandardMaterial({ color: 0xd8cdb0, roughness: 0.8, metalness: 0 }),
+      stair,
+      /* The shaft's own walls (see shaftColliders) - the exact same cached
+       * material as `stair` (not merely colour-matched), so a shaft reads as
+       * one continuous piece of pale stonework rather than a tower of one
+       * colour wrapped around a staircase of another.
+       *
+       * This is the fix for a shaft being invisible from outside: its walls
+       * rise to LEVEL_HEIGHT (9m), 4m above the 5m hedge line, so a shaft is
+       * already geometrically a tower - but `shaftColliders` used to emit
+       * those walls with kind:'hedge', so they were drawn in the same dark
+       * green as every ordinary hedge and vanished into the canopy.
+       * `shaftWall` is its own `CHUNK_MESH_KINDS` entry (see MazeChunks.js)
+       * specifically so it gets its own InstancedMesh in this pale material
+       * instead - ordinary hedges are untouched. */
+      shaftWall: stair,
       credits: new THREE.MeshStandardMaterial({
         color: 0xffd479, roughness: 0.35, metalness: 0.8,
         emissive: 0x6a4a10, emissiveIntensity: 0.6,
@@ -249,6 +299,37 @@ export class MazeWorld extends World {
     return this._materials;
   }
 
+  /**
+   * Every shaft's world (x, z), grouped by the level its climb starts on.
+   *
+   * A one-off scan of the full 400x400x4 cell grid (640,000 cells, the same
+   * order of work `generateTopology` and `districtColliders`'s district-by-
+   * district scan already do), run once per build rather than per frame or
+   * per district. There is no cheaper way to answer "where are the shafts on
+   * this level" that doesn't depend on which districts happen to be streamed
+   * in - and the minimap has to answer it regardless of streaming, since the
+   * whole point is telling the player about a shaft they have not walked
+   * anywhere near yet.
+   *
+   * @returns {Array<Array<{x:number, z:number}>>} one array per level
+   */
+  _computeShaftsByLevel() {
+    const perLevel = [];
+    for (let level = 0; level < MAZE.LEVELS; level++) {
+      const list = [];
+      for (let z = 0; z < MAZE.CELLS; z++) {
+        for (let x = 0; x < MAZE.CELLS; x++) {
+          if (isOpen(this.cells, cellIndex(x, z, level), DIR.UP)) {
+            const w = cellToWorld(x, z, level);
+            list.push({ x: w.x, z: w.z });
+          }
+        }
+      }
+      perLevel.push(list);
+    }
+    return perLevel;
+  }
+
   async build(onProgress) {
     /* A fresh seed per build. `build()` runs on every activation because this
      * world is volatile, so this is what makes the maze unlearnable. */
@@ -260,6 +341,13 @@ export class MazeWorld extends World {
     this.cells = topo.cells;
     this.entranceCell = topo.entranceCell;
     this.centreCell = topo.centreCell;
+
+    /* Minimap shaft markers - see `shaftMarkers`'s own doc comment. Depends
+     * only on `this.cells`, computed once here rather than re-derived every
+     * frame or every time the player's level changes. */
+    this._shaftsByLevel = this._computeShaftsByLevel();
+    this._markersLevel = -1;
+    this.shaftMarkers = [];
 
     /* `buildDistrictGraph` fixes the entrance at the *centre* of district
      * (10,0) - ten cells inside the grid's own edge, not on it - so nothing
@@ -463,6 +551,17 @@ export class MazeWorld extends World {
       const level = Math.min(MAZE.LEVELS - 1, Math.max(0, Math.round(player.y / MAZE.LEVEL_HEIGHT)));
       this.canopy.update(player.x, player.z, level);
     }
+    if (player && this._shaftsByLevel) {
+      // Only re-point `shaftMarkers` when the player's level actually
+      // changes - Minimap reads this reference every frame, so swapping it
+      // only on a level change (rather than reassigning the same array every
+      // frame) is free the other 99.9% of the time.
+      const level = Math.min(MAZE.LEVELS - 1, Math.max(0, Math.round(player.y / MAZE.LEVEL_HEIGHT)));
+      if (level !== this._markersLevel) {
+        this._markersLevel = level;
+        this.shaftMarkers = this._shaftsByLevel[level];
+      }
+    }
 
     if (!this._tokenMesh || this._tokens.length === 0) return;
     this._tokenTime += dt;
@@ -560,5 +659,12 @@ export class MazeWorld extends World {
      * reassigns outright instead of clearing in dispose(). */
     this._tokens = [];
     this._tokenMesh = null;
+
+    /* Same reasoning as `_tokenMesh` above: drop the previous roll's shaft
+     * markers so a straggling Minimap frame between dispose() and the next
+     * build() cannot draw shafts from a layout that no longer exists. */
+    this._shaftsByLevel = null;
+    this.shaftMarkers = [];
+    this._markersLevel = -1;
   }
 }

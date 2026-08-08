@@ -27,32 +27,67 @@ test('a district emits a floor and some hedges', () => {
 });
 
 test('THE ANTI-LADDER GATE: no collider top sits in the hop band', () => {
-  // Hedge height, thickness, and floor thickness are constants independent of topology
-  // and district position, so every hedge in every district has an identical top.
-  // Testing a 4x4 district block adds belt-and-braces but doesn't improve coverage;
-  // a single district would suffice. Keeping the loop for defense-in-depth.
-  const t = generateTopology(99, { levels: 1 });
-  const allDescs = [];
-  for (let dz = 0; dz < 4; dz++) {
-    for (let dx = 0; dx < 4; dx++) {
-      allDescs.push(...districtColliders(t.cells, dx, dz, 0));
+  // Fix round 2 (Task 3), Finding 3: this used to generate with `levels: 1`,
+  // which by construction can never contain a vertical link at all -
+  // buildDistrictGraph only ever opens an UP/DOWN edge between two levels
+  // that both exist, so with one level this gate exercised the
+  // `d.enclosed` exemption path zero times and could not regress-detect
+  // anything the stair-shaft work added. `levels: MAZE.LEVELS` produces
+  // real shafts and lets the exemption path actually run.
+  //
+  // Hedge height, thickness, and floor thickness are constants independent
+  // of topology and district position, so every hedge in every district at
+  // a given level has an identical top relative to that level's own floor -
+  // testing a 4x4 district block per level adds belt-and-braces but doesn't
+  // improve coverage; a single district would suffice for hedges. Keeping
+  // the loop for defense-in-depth, and because it is what turns up shafts.
+  const t = generateTopology(99, { levels: MAZE.LEVELS });
+  let checked = 0;
+  let exempted = 0;
+  for (let level = 0; level < MAZE.LEVELS; level++) {
+    // Relative to THIS level's own floor, not always level 0's - the
+    // original version subtracted a hardcoded `cellToWorld(0, 0, 0).y`
+    // (always 0), which happened to be harmless at `levels: 1` (nothing
+    // else existed) but would have silently blinded the gate to any
+    // in-band violation on levels 1-3 once they were included.
+    const levelFloorY = cellToWorld(0, 0, level).y;
+    const allDescs = [];
+    for (let dz = 0; dz < 4; dz++) {
+      for (let dx = 0; dx < 4; dx++) {
+        allDescs.push(...districtColliders(t.cells, dx, dz, level));
+      }
+    }
+    // The forecourt is the one piece of maze geometry authored by hand
+    // rather than derived from topology, which makes it the most likely
+    // place for a stray standable surface to appear - so it belongs in this
+    // gate too, not just the district colliders. It only ever exists at the
+    // entrance's own level (fixed at level 0 - see buildDistrictGraph).
+    // Called the same way MazeWorld.build() does: world-x of the entrance
+    // column, plus its level.
+    if (level === 0) {
+      const e = cellCoords(t.entranceCell);
+      const ew = cellToWorld(e.x, e.z, e.level);
+      allDescs.push(...forecourtColliders(ew.x, e.level));
+    }
+
+    for (const d of allDescs) {
+      // A step inside a sealed shaft is allowed in the band: it cannot reach a
+      // hedge top, and scripts/tests/maze-enclosure.test.mjs proves that
+      // separately by driving a capsule around inside each shaft. Everything
+      // else in the band is a ladder.
+      if (d.enclosed) { exempted++; continue; }
+      const top = d.cy + d.hy;
+      const relative = top - levelFloorY;
+      const inBand = relative > 0.45 && relative < 5.0;
+      assert.ok(!inBand, `level ${level} collider top at ${relative.toFixed(2)}m is a ladder over a hedge`);
+      checked++;
     }
   }
-  // The forecourt is the one piece of maze geometry authored by hand rather
-  // than derived from topology, which makes it the most likely place for a
-  // stray standable surface to appear - so it belongs in this gate too, not
-  // just the district colliders. Called the same way MazeWorld.build() does:
-  // world-x of the entrance column, plus its level.
-  const e = cellCoords(t.entranceCell);
-  const ew = cellToWorld(e.x, e.z, e.level);
-  allDescs.push(...forecourtColliders(ew.x, e.level));
-
-  for (const d of allDescs) {
-    const top = d.cy + d.hy;
-    const relative = top - cellToWorld(0, 0, 0).y;
-    const inBand = relative > 0.45 && relative < 5.0;
-    assert.ok(!inBand, `collider top at ${relative.toFixed(2)}m is a ladder over a hedge`);
-  }
+  assert.ok(exempted > 0,
+    'no enclosed (stair) tops were exempted at all - levels: MAZE.LEVELS should have produced real ' +
+    'shafts for this gate to actually exercise the exemption path against');
+  // eslint-disable-next-line no-console
+  console.log(`[anti-ladder] ${checked} non-enclosed tops checked, ${exempted} enclosed stair tops exempted`);
 });
 
 test('hedge colliders are the specified thickness and height', () => {

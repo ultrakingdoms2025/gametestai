@@ -78,6 +78,58 @@ Below 0.45 m the capsule auto-steps it and it is harmless; above 5.0 m it is out
 of reach even from a hop off another surface. Anything in the band is a ladder
 over a hedge.
 
+**Amended in Phase 2b, with the owner's approval.** Four levels need staircases,
+and a staircase is made entirely of surfaces in that band — so the rule as
+written forbids the vertical maze this spec asks for. Rather than loosen it, it
+is narrowed and given a proof obligation:
+
+> A standable surface may sit in the 0.45–5.0 m band **only inside a sealed
+> shaft** — a cell walled on all four sides, from **the height at which leaving
+> it would become an exploit**, up to at least **the highest standable surface
+> inside it plus 0.93 m plus a margin**.
+
+**Sealing starts partway up, not at the floor.** The first attempt required
+walls from the shaft floor, which is stricter than the physics needs and makes
+the world unplayable: it left a 0.45 m doorway against a 1.75 m player, so every
+staircase was sealed *and unenterable*, and all 617 of them passed the gate.
+
+Leaving a shaft low down is harmless — there is nothing outside to stand on, so
+you simply drop back into the corridor. It only becomes an exploit once you are
+high enough that a hop and a step-up put you on top of a 5 m hedge. That height
+is `HEDGE_HEIGHT − hop − stepHeight` = 5.0 − 0.93 − 0.45 = **3.62 m**, so walls
+are required from below that (with margin) upward, and the doorway beneath it is
+free. Like the upper bar, this is derived and must not be written as a constant.
+
+**The wall height is derived, never a constant.** The first draft of this
+amendment said "to at least hedge height", and that was wrong in a way that
+destroyed the guarantee it was written to preserve: `LEVEL_HEIGHT` is 9.0 m, so
+a staircase climbing a real level inside 5.0 m walls satisfied the rule while
+letting the player walk up the stairs and straight over the wall tops onto the
+maze roof. Measured escape height on that geometry: **10.0 m**. A shaft's walls
+must clear its own stairs, so the bar is a function of what is inside the shaft
+and cannot be written down as a number.
+
+Enclosure is **proven, not declared**, and the proof has three parts:
+
+1. **Geometric** — all four sides walled, from the shaft floor to the derived
+   height. Coverage may be assembled from several colliders per side as long as
+   they are contiguous; a gap between two pieces fails.
+2. **Simulated** — a capsule driven around inside the shaft, hopping only when
+   grounded (there is no double jump), seeded not just on the shaft floor but
+   **on top of every standable surface inside it**, since the escape a
+   staircase enables is from the top step, not from the bottom.
+3. **Bound to the exemption** — every descriptor that claims `enclosed` must be
+   shown to sit inside a shaft that passed 1 and 2, on real generated seeds.
+   Without this the flag is self-certifying: anything can exempt itself from the
+   band rule simply by asserting it is enclosed.
+
+A shaft with one wall missing, one wall too short, one wall too narrow, or a
+gap between two wall pieces must fail.
+
+The guarantee is unchanged in substance: the player still cannot reach the top
+of a hedge. What changed is that the rule now says so directly instead of
+approximating it with a blanket ban.
+
 Props in that band must be one of:
 - non-collidable (foliage, decals, hanging ivy),
 - sloped steeply enough that the capsule slides off,

@@ -29,6 +29,27 @@ export const MAZE = Object.freeze({
   TOTAL_CELLS: 640000,
   /** Vertical spacing between levels, metres. Clears a 5 m hedge plus headroom. */
   LEVEL_HEIGHT: 9.0,
+  /**
+   * Hop apex, metres. `jumpVelocity² / (2 * -gravity)` from `src/core/Config.js`
+   * (6.4² / (2 × 22) ≈ 0.93). Duplicated here as a constant, rather than
+   * imported, because this module may only import nothing at all - see the
+   * file header - and the maze's own dimensioning depends on this exact
+   * number regardless of what the live player config happens to be.
+   */
+  HOP: 0.93,
+  /**
+   * Auto-step height, metres, mirroring `src/core/Config.js`'s
+   * `player.stepHeight` (0.45) - duplicated for the same reason `HOP` is:
+   * this module may only import nothing at all. Used to derive how high a
+   * shaft's walls must reach above a standable inside it: `Player.js`'s
+   * step-up assist (gated on `_grounded || _coyote`) can mount an additional
+   * `stepHeight` on top of a hop's own apex, so the real maximum reach above
+   * a surface is `HOP + STEP_HEIGHT`, not `HOP` alone.
+   * `scripts/tests/maze-enclosure.test.mjs` asserts this stays in step with
+   * the live config, so a change to `stepHeight` breaks the build instead of
+   * silently weakening the guarantee.
+   */
+  STEP_HEIGHT: 0.45,
 });
 
 /** Passage bits. N is -z, S is +z, E is +x, W is -x. */
@@ -292,8 +313,15 @@ export function doorwayOffset(seed, aIndex, bIndex, span) {
  * @param {number} dz
  * @param {number} level
  * @param {Uint8Array} cells mutated in place
+ * @param {number} [levels] how many levels are active; a vertical doorway to
+ *   or from a level at or beyond this is out of bounds. Defaults to all four.
+ *   In practice `isEdgeOpen` already excludes edges beyond whatever limit
+ *   `buildDistrictGraph` was built with, so this bound is currently
+ *   unreachable - but it is the same active-limit concept `districtNeighbours`
+ *   uses, kept as one source of truth rather than a second number that could
+ *   drift from it.
  */
-export function carveDistrict(seed, graph, dx, dz, level, cells) {
+export function carveDistrict(seed, graph, dx, dz, level, cells, levels = MAZE.LEVELS) {
   const D = MAZE.DISTRICT;
   const x0 = dx * D;
   const z0 = dz * D;
@@ -363,7 +391,7 @@ export function carveDistrict(seed, graph, dx, dz, level, cells) {
    * a stair or lift can land anywhere inside it rather than only on a border. */
   for (const [dir, dl] of [[DIR.UP, 1], [DIR.DOWN, -1]]) {
     const nl = level + dl;
-    if (nl < 0 || nl >= MAZE.LEVELS) continue;
+    if (nl < 0 || nl >= levels) continue;
     const other = districtIndex(dx, dz, nl);
     if (!isEdgeOpen(graph, self, other)) continue;
     const off = doorwayOffset(seed, self, other, D * D);
@@ -396,7 +424,7 @@ export function generateTopology(seed, opts = {}) {
   for (let level = 0; level < levels; level++) {
     for (let dz = 0; dz < MAZE.DISTRICTS; dz++) {
       for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
-        carveDistrict(seed, graph, dx, dz, level, cells);
+        carveDistrict(seed, graph, dx, dz, level, cells, levels);
       }
     }
   }

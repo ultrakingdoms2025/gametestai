@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { districtCoords, districtAtWorld, neighbourhoodKeys } from './MazeTopology.js';
+import { MAZE, districtCoords, districtAtWorld, neighbourhoodKeys } from './MazeTopology.js';
 import { districtColliders } from './MazeColliders.js';
 
 /**
@@ -164,26 +164,32 @@ export class MazeChunks {
   }
 
   /**
-   * Bring the resident set in line with where the player is standing.
+   * Bring residency in line with where the player is, including which level.
    *
-   * Drops before it loads, so peak memory is the neighbourhood rather than the
-   * neighbourhood plus the column being replaced.
+   * The player's own level gets the full neighbourhood; the levels either side
+   * get a smaller ring, because a player halfway up a shaft needs both ends
+   * built and nothing else. Drops before it loads, as before.
    *
    * @param {number} x world metres
+   * @param {number} y world metres — the level is derived from this
    * @param {number} z world metres
-   * @param {number} level
-   * @param {number} [radius] districts either side; 2 gives the 5x5 block
+   * @param {number} [radius] districts either side on the player's own level
    * @returns {boolean} true when the set changed
    */
-  updateResidency(x, z, level, radius = 2) {
-    const want = neighbourhoodKeys(districtAtWorld(x, z, level), radius);
-    const wanted = new Set(want);
+  updateResidency(x, y, z, radius = 2) {
+    const level = Math.min(MAZE.LEVELS - 1, Math.max(0, Math.round(y / MAZE.LEVEL_HEIGHT)));
+    const want = new Set(neighbourhoodKeys(districtAtWorld(x, z, level), radius));
+    for (const dl of [-1, 1]) {
+      const near = level + dl;
+      if (near < 0 || near >= MAZE.LEVELS) continue;
+      for (const k of neighbourhoodKeys(districtAtWorld(x, z, near), 1)) want.add(k);
+    }
 
     let changed = false;
     for (const key of [...this._resident.keys()]) {
-      if (!wanted.has(key)) { this.drop(key); changed = true; }
+      if (!want.has(key)) { this.drop(key); changed = true; }
     }
-    for (const key of want) {
+    for (const key of [...want].sort((a, b) => a - b)) {
       if (!this._resident.has(key)) { this.ensure(key); changed = true; }
     }
     return changed;

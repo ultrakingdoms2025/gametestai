@@ -58,6 +58,8 @@ export class MazeChunks {
     this.materials = materials;
     /** @type {Map<number, { meshes: THREE.InstancedMesh[], colliders: any[] }>} */
     this._resident = new Map();
+    /** Live lifts, keyed by CONNECTOR CELL - see the lift section below. */
+    this._lifts = new Map();
   }
 
   /** Live physics world. Never cache this - see the constructor. */
@@ -92,6 +94,11 @@ export class MazeChunks {
       const c = this.physics.addBox(d.cx, d.cy, d.cz, d.hx, d.hy, d.hz);
       colliders.push(c);
       this.worldColliders.push(c);
+      /* Paired by construction: this is the collider built from THIS
+       * descriptor, in the same iteration. Searching the collider array for a
+       * matching position afterwards would pick the wrong box the day two
+       * coincide. */
+      this._registerMover(d, c, key);
     }
 
     const meshes = [];
@@ -118,6 +125,8 @@ export class MazeChunks {
   drop(key) {
     const entry = this._resident.get(key);
     if (!entry) return;
+
+    this._unregisterMovers(key);
 
     const evicted = new Set(entry.colliders);
     for (const c of entry.colliders) this.physics.remove(c);
@@ -156,6 +165,8 @@ export class MazeChunks {
    */
   disposeAll() {
     if (this._resident.size === 0) return;
+
+    this._lifts.clear();
 
     const evicted = new Set();
     for (const entry of this._resident.values()) {
@@ -210,6 +221,225 @@ export class MazeChunks {
       if (!this._resident.has(key)) { this.ensure(key); changed = true; }
     }
     return changed;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Lifts                                                               */
+  /*                                                                     */
+  /* A lift's car and its landing door are emitted by DIFFERENT districts */
+  /* - the car by the one at level N, the door by the one at level N+1 - */
+  /* and either can be evicted while the other stays resident. So the    */
+  /* registry is keyed on the CONNECTOR CELL both descriptors carry,     */
+  /* never on the district that happened to emit them, and each half     */
+  /* remembers which district key owns it so eviction can take back      */
+  /* exactly its own.                                                    */
+  /* ------------------------------------------------------------------ */
+
+  /** How fast the car and the door travel, metres per second. */
+  static CAR_SPEED = 1.6;
+  static DOOR_SPEED = 2.0;
+
+  /** Number of lifts with at least one half resident. */
+  liftCount() {
+    return this._lifts.size;
+  }
+
+  /** Every live lift record, for tests and `mazeStats`. */
+  liveLifts() {
+    return [...this._lifts.values()];
+  }
+
+  /**
+   * Register a descriptor's collider into the lift registry, if it is one of
+   * the two moving parts. Called from `ensure` with the collider built from
+   * that exact descriptor, paired BY INDEX rather than by searching for a
+   * matching position - the descriptors and colliders are built in one loop,
+   * so the index is exact, and a positional search would silently pick the
+   * wrong box if two ever coincided.
+   */
+  _registerMover(desc, collider, key) {
+    if (desc.kind !== 'lift' && desc.kind !== 'liftDoor') return;
+    let rec = this._lifts.get(desc.cell);
+    if (!rec) {
+      rec = {
+        cell: desc.cell,
+        car: null, carKey: -1, carY: 0, carDownY: 0, carUpY: 0,
+        door: null, doorKey: -1, doorY: 0, doorOpenY: 0, doorClosedY: 0,
+        /* The car's rest state is DOWN, and the door's is CLOSED, matching
+         * what `districtColliders` emits. A lift found mid-travel on a
+         * re-roll would be a lift whose geometry and state disagreed. */
+        wantUp: false,
+      };
+      this._lifts.set(desc.cell, rec);
+    }
+    if (desc.kind === 'lift') {
+      rec.car = collider;
+      rec.carKey = key;
+      rec.carDownY = desc.cy;
+      rec.carUpY = desc.swept.y1 - desc.hy;
+      rec.carY = desc.cy;
+    } else {
+      rec.door = collider;
+      rec.doorKey = key;
+      rec.doorClosedY = desc.cy;
+      rec.doorOpenY = desc.openTop - desc.hy;
+      rec.doorY = desc.cy;
+    }
+  }
+
+  /** Drop whichever halves district `key` owned; forget the lift if both are gone. */
+  _unregisterMovers(key) {
+    for (const [cell, rec] of this._lifts) {
+      if (rec.carKey === key) { rec.car = null; rec.carKey = -1; }
+      if (rec.doorKey === key) { rec.door = null; rec.doorKey = -1; }
+      if (!rec.car && !rec.door) this._lifts.delete(cell);
+    }
+  }
+
+  /**
+   * Advance every resident lift by one frame.
+   *
+   * Two interlocks, and they are the whole safety argument:
+   *
+   * 1. THE DOOR NEVER MOVES WHILE ITS FOOTPRINT IS OCCUPIED. This is what
+   *    makes a landing door safe rather than a ladder. A door's top sweeps
+   *    the entire 0.45-5.0 m band on level N+1's floor, OUTSIDE the sealed
+   *    shaft, so if it could carry a passenger it would deliver them onto a
+   *    hedge - measured at exactly 14.000 m, the hedge top, with the
+   *    interlock removed. Halting on boarding caps any ride at the height the
+   *    player could have reached unaided.
+   *
+   * 2. THE CAR NEVER MOVES UNLESS THE DOOR IS SHUT. This is what makes the
+   *    opening safe rather than a pit. The door is open only while the car is
+   *    docked at the landing filling that opening; the instant the car is
+   *    asked to leave, the door must close first. Without it the walk-off
+   *    drop is a whole level - measured at 8.700 m on real geometry.
+   *
+   * Together they also give the crush guard for free: a capsule standing in
+   * the doorway stops the door, which stops the car.
+   *
+   * @param {number} dt seconds
+   * @param {{x:number,y:number,z:number}|null} player
+   * @returns {number} how many lifts moved this frame
+   */
+  stepLifts(dt, player) {
+    if (this._lifts.size === 0) return 0;
+    const EPS = 1e-4;
+    let moved = 0;
+
+    for (const rec of this._lifts.values()) {
+      if (rec.car) this._callLift(rec, player);
+
+      // 1. The door, gated on occupancy.
+      if (rec.door) {
+        /* Open only while the car is docked at the landing AND means to stay
+         * there. Keying this on the car's POSITION alone was a real bug: a
+         * docked car asked to leave kept its door held open, so the door
+         * never shut, so the car could never depart - and had the car been
+         * allowed to depart anyway that open door would have been the
+         * nine-metre pit. The door tracks the car's INTENT, not its address. */
+        const carDocked = rec.car ? rec.carY >= rec.carUpY - EPS : false;
+        const targetY = (carDocked && rec.wantUp) ? rec.doorOpenY : rec.doorClosedY;
+        if (Math.abs(rec.doorY - targetY) > EPS && !this._doorOccupied(rec, player)) {
+          const stepY = MazeChunks.DOOR_SPEED * dt;
+          rec.doorY += Math.sign(targetY - rec.doorY) * Math.min(stepY, Math.abs(targetY - rec.doorY));
+          this.physics.setBoxColliderY(rec.door, rec.doorY);
+          moved++;
+        }
+      }
+
+      // 2. The car, gated on the door being shut.
+      if (rec.car) {
+        const targetY = rec.wantUp ? rec.carUpY : rec.carDownY;
+        /* THE PIT INTERLOCK, and it is unconditional. An earlier version let
+         * the car move once it had already left the landing, on the reasoning
+         * that only DEPARTING needed the door shut. That is a hole, and it was
+         * measured: the car slipped a fraction below the landing, the
+         * exception then applied, and it rode all 8.700 m down with the door
+         * standing open. Leaving the landing AT ALL is the thing being
+         * prevented, so there is no exception.
+         *
+         * A lift whose door district is not resident may move freely: there is
+         * no floor up there to fall through either, because the same district
+         * emits both. */
+        const doorShut = !rec.door || rec.doorY >= rec.doorClosedY - EPS;
+        const mayMove = doorShut;
+        if (Math.abs(rec.carY - targetY) > EPS && mayMove) {
+          const stepY = MazeChunks.CAR_SPEED * dt;
+          rec.carY += Math.sign(targetY - rec.carY) * Math.min(stepY, Math.abs(targetY - rec.carY));
+          this.physics.setBoxColliderY(rec.car, rec.carY);
+          moved++;
+        }
+      }
+    }
+    return moved;
+  }
+
+  /**
+   * Is a capsule standing in, or on, the door's own column?
+   *
+   * Deliberately generous: it counts a player merely overlapping the door's
+   * footprint at landing height, not only one provably standing on its top.
+   * A door that refuses to move when it is unsure is inconvenient; a door
+   * that moves when it should not is the exploit.
+   */
+  _doorOccupied(rec, player) {
+    if (!player || !rec.door) return false;
+    const d = rec.door;
+    const R = 0.35, H = 1.75;
+    const overlapsXZ = player.x + R > d.center.x - d.halfExtents.x
+      && player.x - R < d.center.x + d.halfExtents.x
+      && player.z + R > d.center.z - d.halfExtents.z
+      && player.z - R < d.center.z + d.halfExtents.z;
+    if (!overlapsXZ) return false;
+    const top = rec.doorY + d.halfExtents.y;
+    const floor = rec.doorClosedY - d.halfExtents.y;
+    return player.y + H > floor && player.y < top + 0.05;
+  }
+
+  /**
+   * Decide which way this lift should be heading.
+   *
+   * No prompt and no UI, per the spec's silent posture: standing on the car
+   * sends it to the other end, and standing on a landing plate calls it to
+   * you. The plates are footprint tests, not colliders - a plate sits flush
+   * on the floor below the auto-step, so it is never itself a surface in the
+   * band and needs no exemption.
+   */
+  _callLift(rec, player) {
+    if (!player) return;
+    const c = rec.car;
+    /* The player's CENTRE, not their capsule inflated by its radius.
+     * Inflating it made someone merely standing in the open doorway - which
+     * sits 0.1 m outside the well - count as riding, so the car's target
+     * flipped the moment they stepped up to it. Being ON the lift means your
+     * feet are on it. `_doorOccupied` keeps the generous inflated test,
+     * because there the conservative answer is the safe one and here it is
+     * not. */
+    const onCarXZ = player.x > c.center.x - c.halfExtents.x
+      && player.x < c.center.x + c.halfExtents.x
+      && player.z > c.center.z - c.halfExtents.z
+      && player.z < c.center.z + c.halfExtents.z;
+    const carTop = rec.carY + c.halfExtents.y;
+    if (onCarXZ && Math.abs(player.y - carTop) < 0.35) {
+      /* Riding: send it to whichever end it is NOT at - but only decide that
+       * while it is actually parked at one. Re-deciding every frame made the
+       * car reverse the instant it crossed the midpoint, so a rider rose 4.5 m
+       * and came straight back down. The target is latched for the whole
+       * journey and only reconsidered on arrival. */
+      const atBottom = rec.carY <= rec.carDownY + 1e-4;
+      const atTop = rec.carY >= rec.carUpY - 1e-4;
+      if (atBottom) rec.wantUp = true;
+      else if (atTop) rec.wantUp = false;
+      return;
+    }
+    // Calling: the plate is the well's footprint at either landing height.
+    if (onCarXZ) return;
+    const nearBottom = Math.abs(player.y - (rec.carDownY - c.halfExtents.y)) < 1.2;
+    const nearTop = Math.abs(player.y - (rec.carUpY + c.halfExtents.y)) < 1.2;
+    const within = Math.hypot(player.x - c.center.x, player.z - c.center.z) < 3.0;
+    if (within && nearBottom) rec.wantUp = false;
+    else if (within && nearTop) rec.wantUp = true;
   }
 }
 

@@ -143,3 +143,73 @@ Task 4: CONSEQUENCE FOR THE PLAN — Tasks 5 and 6 grow. The lift is not just a
   predicate. `liftColliders` emits the car; the door is level N+1 geometry and
   belongs with the rails in `districtColliders`, exactly as the stair's guard
   walls do. The plan's `liftCarDescriptor` needs a sibling for the door.
+
+Task 5: complete (commit 21c436c). `liftColliders` emits one swept car in the
+  same well and the same enclosure a stair gets - `shaftWalls` is now shared
+  between them. The landing door and rails moved to `landingColliders`, since
+  they stand on level N+1's floor and are its geometry, not the shaft's.
+
+Task 5: THE GATES DID NOT COVER LIFTS, AND PASSED ANYWAY. The plan claimed
+  flipping the dispatcher would put every existing real-shaft gate onto lifts
+  for free. Measured: THE ENCLOSURE GATE's 3x3 district window held NINE
+  STAIRCASES AND ZERO LIFTS. Green on the day lifts landed, having never looked
+  at one - 2b's `shaftsChecked === 0` all over again. Window widened to every
+  district on the level, kind tally now asserted: 196 stair / 91 tunnel / 51
+  lift, all sealed.
+  Task 4's proof was a FIXTURE, and 2b's ledger records that trusting a fixture
+  is what let 617 unenterable shafts through. The landing property now runs on
+  real generated geometry: 4 lifts x 4 seeds, worst walk-off 0.000m over ~1,570
+  walk-offs each against the stair's own 0.770m bar. Doorless negative: 8.700m.
+
+Task 5: MY OWN TEST MEASURED THE WRONG THING AND PASSED. It took the tallest
+  gap under any shaft wall and called it a doorway - 5.000m. That is not a
+  doorway; it is the space under a CLOSED north/west wall, where the cell's own
+  hedge already stands contiguously. Corrected to the sides topology actually
+  opens: 3.570m, asserted to BE `ENTRY_SEAL_FROM` so the two cannot drift.
+
+Task 6: complete. Lift motion, two interlocks, one shared occupancy predicate.
+  Structural fact that shaped it: a lift's car is emitted by the district at
+  level N and its DOOR by the district at level N+1, so the halves live in
+  different resident districts and evict independently. The registry is keyed
+  on the CONNECTOR CELL both descriptors carry, and each half remembers its own
+  district key.
+
+Task 6: FOUR BUGS, ALL MINE, ALL FOUND BY THE TESTS RATHER THAN BY READING:
+  1. The door's target was computed from where the car IS, not from whether it
+     means to stay. A docked car asked to leave held its own door open, so the
+     door never shut, so the car could never depart - and had it departed
+     anyway, that open door was the pit.
+  2. The ride target was re-decided every frame, so the car REVERSED at the
+     midpoint: a rider rose 4.523m and came back down. Latched now, and only
+     reconsidered on arrival.
+  3. THE PIT INTERLOCK HAD A HOLE. `mayMove` allowed motion once the car had
+     already left the landing, on the reasoning that only DEPARTING needs a
+     shut door. Measured: the car slipped a fraction below the landing, the
+     exception then applied, and it rode all 8.700m down with the door open.
+     No exception now - leaving the landing at all is the thing prevented.
+  4. The riding test inflated the player's footprint by the capsule radius, so
+     someone merely standing in the doorway (0.1m outside the well) counted as
+     RIDING. That flipped the car's target the instant they stepped up, and it
+     MASKED THE DOOR INTERLOCK ENTIRELY - test 3 passed with the guard deleted.
+     Riding now tests the player's centre; `_doorOccupied` keeps the generous
+     inflated test, because there the conservative answer is the safe one.
+
+Task 6: TWO OF MY TESTS WERE VACUOUS, and only mutation testing found them.
+  - The door-interlock test passed with the guard removed (bug 4 above).
+  - The pit-interlock test passed with `mayMove = true`, because with one
+    player the trigger is hard to reach honestly: a player in the top doorway
+    is also a player CALLING the car up, so it never wants to leave.
+  Fixed by stubbing `_callLift` in those two tests and asserting the gate
+  directly - `_callLift` decides where a lift goes, the interlocks decide
+  whether it may move, and they are now tested separately. A third test covers
+  the call logic itself, including that the doorway is not the car.
+  All three guards MUTATION-VERIFIED: removing the pit interlock reddens test
+  5; removing the door interlock reddens 3 and 5; re-inflating the riding
+  footprint reddens 7.
+
+  Verified working: a rider is carried to 9.000m, exactly the landing. Churn of
+  80 mixed ensure/drop ops over 18 district keys leaves no registered half
+  belonging to an evicted district and no registered collider missing from
+  physics; `disposeAll` leaves zero.
+
+  230 tests, contract-check 45/45, build clean.

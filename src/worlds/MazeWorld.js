@@ -569,6 +569,10 @@ export class MazeWorld extends World {
     if (player && this.chunks) {
       this.chunks.updateResidency(player.x, player.y, player.z, RESIDENCY_RADIUS);
     }
+    /* Lifts, before this method's token early-return further down - a lift
+     * that only moved in districts that happen to have dead-end tokens would
+     * be a lift that mostly does not move. */
+    if (this.chunks) this.chunks.stepLifts(dt, player ?? null);
     if (player && this.canopy) {
       const level = Math.min(MAZE.LEVELS - 1, Math.max(0, Math.round(player.y / MAZE.LEVEL_HEIGHT)));
       this.canopy.update(player.x, player.z, level);

@@ -559,6 +559,15 @@ const LIFT_CAR_HALF_THICK = 0.15;
  */
 const LIFT_REST_CLEARANCE = MAZE.STEP_HEIGHT * (2 / 3);
 
+/**
+ * How far the landing door's top stands above level N+1's floor when OPEN.
+ *
+ * Derived from the auto-step, and under it, so an open door is something the
+ * player walks straight over without even a step up - a door you have to hop
+ * is a door that reads as still shut.
+ */
+export const LIFT_DOOR_OPEN_RISE = MAZE.STEP_HEIGHT * 0.5;
+
 /** A lift uses the same well a stair does, so the hole above it is the same hole. */
 export const liftWellBounds = stairWellBounds;
 
@@ -636,6 +645,13 @@ export function liftColliders(cells, x, z, level) {
     kind: 'lift',
     enclosed: true,
     swept: { y0: downTop - 2 * LIFT_CAR_HALF_THICK, y1: upTop },
+    /* Which link this belongs to. A lift's car and its landing door are
+     * emitted by DIFFERENT districts - the car by the one at level N, the door
+     * by the one at level N+1 - and either can be evicted while the other
+     * stays resident. `MazeChunks` keys its lift registry on this so the two
+     * halves find each other, rather than on the district that happened to
+     * emit them. */
+    cell: cellIndex(x, z, level),
   });
   return out;
 }
@@ -703,6 +719,11 @@ export function landingColliders(cells, x, z, level) {
     push(well.x0 - T, well.x1 + T, well.z1, well.z1 + T);        // south (outer), railed
     push(well.x0 - T, well.x0, well.z0, well.z1, 'liftDoor', {   // west (inner), the door
       swept: { y0: baseY, y1: guardTop },
+      /* Same link as the car one level below - see the car's own `cell`. */
+      cell: cellIndex(x, z, level),
+      /* Where this door's top sits when it is open, so `MazeChunks` does not
+       * have to re-derive it and cannot disagree with the geometry. */
+      openTop: baseY + LIFT_DOOR_OPEN_RISE,
     });
     return out;
   }

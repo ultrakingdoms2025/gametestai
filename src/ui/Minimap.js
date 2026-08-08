@@ -426,6 +426,31 @@ export class Minimap {
     ctx.strokeStyle = 'rgba(82,233,255,0.055)';
     ctx.stroke();
 
+    // --- maze shaft markers -----------------------------------------------
+    // World-supplied and already level-filtered by the world itself (see
+    // MazeWorld.update, which swaps `shaftMarkers` to the player's current
+    // level) - Minimap stays world-agnostic and just plots whatever it is
+    // handed, the same contract `minimapShapes`, `caches` and `portals`
+    // already use. Deliberately understated: a small pale tick with no glow
+    // and no off-range rim chevron (unlike a trader or a cache), so it reads
+    // as "a way up exists over there" without turning into a route to the
+    // centre. Drawn only for worlds that supply it - every other world's
+    // `shaftMarkers` is simply undefined.
+    const shafts = this._world?.shaftMarkers;
+    if (shafts && shafts.length) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(216,205,176,0.8)';
+      for (let i = 0; i < shafts.length; i++) {
+        const s = shafts[i];
+        this._project(s.x, s.z, px, pz, sin, cos, scale);
+        if (!_pt.inside) continue;
+        ctx.beginPath();
+        ctx.arc(_pt.x, _pt.y, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
     // --- race circuit ----------------------------------------------------
     // Under every marker, over the floorplan: it is the road, not a contact.
     if (this.circuit) this._drawCircuit(px, pz, sin, cos, scale);

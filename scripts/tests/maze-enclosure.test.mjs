@@ -536,7 +536,11 @@ test('the entry doorway on a real shaft is tall enough for the player to walk th
       for (const c of shaftCells(t.cells, dx, dz, 0)) {
         const idx = cellIndex(c.x, c.z, 0);
         const w = cellToWorld(c.x, c.z, 0);
-        const walls = shaftColliders(t.cells, c.x, c.z, 0).filter((d) => d.kind === 'hedge');
+        // Shaft's own walls, not the maze's ordinary hedges - see
+        // MazeColliders.shaftColliders, which tags them 'shaftWall' rather
+        // than 'hedge' so they render in a distinct pale material instead of
+        // vanishing into the hedge-green canopy.
+        const walls = shaftColliders(t.cells, c.x, c.z, 0).filter((d) => d.kind === 'shaftWall');
         for (const s of sidesByDir) {
           if (!isOpen(t.cells, idx, s.dir)) continue;
           const wall = walls.find((d) => Math.abs(d.cx - (w.x + s.dx * half)) < 1e-6
@@ -1241,7 +1245,9 @@ test('the entry gate is not vacuous: sealing the doorway from the floor up block
   const open = [DIR.N, DIR.E, DIR.S, DIR.W].filter((d) => isOpen(t.cells, idx, d));
   const half = MAZE.CELL / 2;
   const sealed = districtColliders(t.cells, dx, dz, 0).map((d) => {
-    const onSide = d.kind === 'hedge' && Math.abs(d.cy - d.hy - (w.y + ENTRY_SEAL_FROM)) < 1e-6
+    // The shaft's own open-side wall is tagged 'shaftWall', not 'hedge' -
+    // see MazeColliders.shaftColliders.
+    const onSide = d.kind === 'shaftWall' && Math.abs(d.cy - d.hy - (w.y + ENTRY_SEAL_FROM)) < 1e-6
       && Math.abs(d.cx - w.x) <= half + 1e-6 && Math.abs(d.cz - w.z) <= half + 1e-6;
     if (!onSide) return d;
     const top = d.cy + d.hy;
@@ -1617,7 +1623,11 @@ test('the canopy gate is not vacuous: walls only as tall as a hedge let the clim
   const w = cellToWorld(cell.x, cell.z, 0);
   const half = MAZE.CELL / 2;
   const capped = districtColliders(t.cells, dx, dz, 0).map((d) => {
-    if (d.kind !== 'hedge') return d;
+    // Ordinary hedges AND the shaft's own walls ('shaftWall' - see
+    // MazeColliders.shaftColliders) both need capping here: the bug this
+    // simulates is every wall round the shaft topping out at hedge height,
+    // not just the ones tagged 'hedge'.
+    if (d.kind !== 'hedge' && d.kind !== 'shaftWall') return d;
     if (Math.abs(d.cx - w.x) > half + 1e-6 || Math.abs(d.cz - w.z) > half + 1e-6) return d;
     const top = d.cy + d.hy, bottom = d.cy - d.hy;
     if (top <= w.y + MAZE.HEDGE_HEIGHT + 1e-6) return d;
@@ -1679,7 +1689,9 @@ test('the cap check is not vacuous: a shaft whose walls run a hedge higher is ca
   const { t, cell } = firstShaft(2026);
   const w = cellToWorld(cell.x, cell.z, 0);
   const raised = shaftColliders(t.cells, cell.x, cell.z, 0).map((d) => {
-    if (d.kind !== 'hedge') return d;
+    // The shaft's own walls are tagged 'shaftWall', not 'hedge' - see
+    // MazeColliders.shaftColliders.
+    if (d.kind !== 'shaftWall') return d;
     const bottom = d.cy - d.hy;
     const top = w.y + MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT;
     return { ...d, cy: (bottom + top) / 2, hy: (top - bottom) / 2 };

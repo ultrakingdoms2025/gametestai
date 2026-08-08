@@ -10,7 +10,7 @@
  *
  * @typedef {{ cx:number, cy:number, cz:number,
  *             hx:number, hy:number, hz:number,
- *             kind:'hedge'|'floor'|'stair',
+ *             kind:'hedge'|'floor'|'stair'|'shaftWall',
  *             enclosed?:boolean }} ColliderDesc
  */
 
@@ -390,7 +390,13 @@ export function shaftColliders(cells, x, z, level) {
       hx: s.dx ? 0.6 : half,
       hy: (topY - baseY) / 2,
       hz: s.dz ? 0.6 : half,
-      kind: 'hedge',
+      /* Not 'hedge'. These walls stand up to LEVEL_HEIGHT (9m), 4m above the
+       * 5m hedge line - the one piece of maze geometry that is meant to be
+       * visible ABOVE the canopy as a landmark. Tagging them 'hedge' would
+       * draw them in the same dark green as everything else that is meant to
+       * vanish into it. See MazeWorld._ensureMaterials's `shaftWall` entry
+       * and MazeChunks.CHUNK_MESH_KINDS. */
+      kind: 'shaftWall',
     });
   }
 

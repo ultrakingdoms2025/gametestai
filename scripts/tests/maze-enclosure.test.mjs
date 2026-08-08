@@ -10,7 +10,7 @@ import { districtColliders, cellToWorld } from '../../src/worlds/maze/MazeCollid
 import {
   isEnclosureSound, requiredWallTop, shaftColliders, stairColliders, ENTRY_SEAL_FROM,
   STAIR_WELL_HALF, STAIR_WELL_OFFSET, stairWellBounds, SHAFT_STEPS,
-  TREAD_HALF, STAIR_RADIUS, STAIR_TREADS_PER_TURN,
+  TREAD_HALF, STAIR_RADIUS, STAIR_TREADS_PER_TURN, descriptorTop,
 } from '../../src/worlds/maze/MazeShafts.js';
 import { CONFIG } from '../../src/core/Config.js';
 
@@ -1742,4 +1742,59 @@ test('the cap check is not vacuous: a shaft whose walls run a hedge higher is ca
   assert.ok(over.length > 0,
     'raising a shaft\'s walls past LEVEL_HEIGHT produced nothing the cap check would reject - '
     + 'if this passes, that check cannot detect fix round 3\'s bug');
+});
+
+/* ------------------------------------------------------------------ */
+/* Phase 2c Task 3: descriptors that MOVE                              */
+/* ------------------------------------------------------------------ */
+
+/** A platform resting low in a shaft, that sweeps up to `y1`. */
+function sweptPlatform(y1, restTop = 0.30) {
+  const half = 0.15;
+  return {
+    cx: 0, cy: restTop - half, cz: 0, hx: 1.35, hy: half, hz: 1.35,
+    kind: 'lift', enclosed: true, swept: { y0: restTop - 2 * half, y1 },
+  };
+}
+
+test("requiredWallTop uses a swept descriptor's TOP OF TRAVEL, not where it happens to rest", () => {
+  const descs = [floorSlab(), ...fullWalls(MAZE.LEVEL_HEIGHT), sweptPlatform(MAZE.LEVEL_HEIGHT)];
+  // Resting with its top at 0.30m. Read statically, the bar would be
+  // 0.30 + HOP + MARGIN = 1.68m, and five-metre walls would look ample.
+  // Read as a sweep it is LEVEL_HEIGHT, capped at LEVEL_HEIGHT.
+  assert.equal(requiredWallTop(descs, SHAFT), MAZE.LEVEL_HEIGHT);
+});
+
+test('THE SWEPT ENCLOSURE GATE: a lift shaft walled to its landing is sound', () => {
+  const descs = [floorSlab(), ...fullWalls(MAZE.LEVEL_HEIGHT), sweptPlatform(MAZE.LEVEL_HEIGHT)];
+  assert.equal(isEnclosureSound(descs, SHAFT), true);
+});
+
+test('the swept gate is not vacuous: one metre short of the landing is NOT sound', () => {
+  const descs = [floorSlab(), ...fullWalls(MAZE.LEVEL_HEIGHT - 1), sweptPlatform(MAZE.LEVEL_HEIGHT)];
+  assert.equal(isEnclosureSound(descs, SHAFT), false);
+});
+
+test('a swept platform read STATICALLY passes walls far too short - the bug `swept` exists to stop', () => {
+  // Same platform, same hedge-height walls, but with the sweep declaration
+  // removed. This is exactly what a lift looks like to a gate that reads only
+  // cy/hy, and its PASSING is what makes `swept` load-bearing rather than
+  // decorative. If this ever fails, the static read has been fixed some other
+  // way and this test should be deleted, not weakened.
+  const naive = { ...sweptPlatform(MAZE.LEVEL_HEIGHT) };
+  delete naive.swept;
+  const descs = [floorSlab(), ...fullWalls(MAZE.HEDGE_HEIGHT), naive];
+  assert.equal(isEnclosureSound(descs, SHAFT), true,
+    'a statically-read moving platform passes hedge-height walls - hence `swept`');
+});
+
+test('descriptorTop is the one definition of a top, and it reads the travel', () => {
+  const moving = { cx: 0, cy: 0.15, cz: 0, hx: 1, hy: 0.15, hz: 1, kind: 'lift', enclosed: true, swept: { y0: 0, y1: 4.0 } };
+  const still = { cx: 0, cy: 2.0, cz: 0, hx: 1, hy: 0.5, hz: 1, kind: 'hedge' };
+  assert.equal(descriptorTop(moving), 4.0, 'a swept descriptor tops out at the end of its travel');
+  assert.equal(descriptorTop(still), 2.5, 'a still descriptor is unchanged');
+  // A malformed descriptor whose rest position is above its declared travel
+  // must be judged conservatively, not trusted.
+  const malformed = { ...moving, cy: 6.0, hy: 0.5 };
+  assert.equal(descriptorTop(malformed), 6.5, 'the higher of rest and travel wins');
 });

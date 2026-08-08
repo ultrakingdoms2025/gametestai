@@ -349,6 +349,35 @@ export function shaftColliders(cells, x, z, level) {
 }
 
 /**
+ * The highest point a descriptor's top ever reaches.
+ *
+ * For almost everything this is just `cy + hy`. For a SWEPT descriptor - one
+ * that moves, which today means a lift car - `cy`/`hy` describe where it
+ * physically rests, and that is true at one instant and false at every other.
+ * A gate reading the rest position would judge a lift car parked at 0.30 m to
+ * be harmless while it spends most of its life sweeping the whole 0.45-5.0 m
+ * band, which is the exact band the maze's entire safety argument is about.
+ *
+ * Every gate that asks "how high does this go" must ask it here, and there
+ * are two: `requiredWallTop` below, and the anti-ladder band scan in
+ * `scripts/tests/maze-colliders.test.mjs`. One definition, imported by both,
+ * for the same reason `ENTRY_SEAL_FROM` is one constant shared by the
+ * geometry and its gate - two derivations that happen to agree today are a
+ * bug waiting for someone to edit one of them.
+ *
+ * The `Math.max` is not belt-and-braces: it keeps the answer conservative for
+ * a malformed descriptor whose rest position sits above its declared travel,
+ * which is an input the gate should survive rather than trust.
+ *
+ * @param {ColliderDesc} d
+ * @returns {number} world-space Y of the highest reachable top
+ */
+export function descriptorTop(d) {
+  const resting = d.cy + d.hy;
+  return d.swept ? Math.max(d.swept.y1, resting) : resting;
+}
+
+/**
  * Extra clearance added above `highest standable + HOP` when deriving a
  * shaft's required wall height.
  *
@@ -422,7 +451,9 @@ export function requiredWallTop(descs, shaft) {
     // this one's bar.
     if (d.cx - d.hx > shaft.cx + half - EPS || d.cx + d.hx < shaft.cx - half + EPS) continue;
     if (d.cz - d.hz > shaft.cz + half - EPS || d.cz + d.hz < shaft.cz - half + EPS) continue;
-    const top = d.cy + d.hy;
+    /* Not `d.cy + d.hy`. A swept descriptor rests low and travels high, and
+     * the bar must come from where it GOES - see `descriptorTop`. */
+    const top = descriptorTop(d);
     if (top > highest) highest = top;
   }
   const bar = highest === -Infinity ? shaft.floorY + MAZE.HEDGE_HEIGHT : highest + MAZE.HOP + ENCLOSURE_MARGIN;

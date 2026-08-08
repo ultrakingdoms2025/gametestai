@@ -4,7 +4,7 @@ import {
   MAZE, generateTopology, cellIndex, cellCoords, isOpen, DIR, connectorAt,
 } from '../../src/worlds/maze/MazeTopology.js';
 import { districtColliders, forecourtColliders, cellToWorld } from '../../src/worlds/maze/MazeColliders.js';
-import { shaftColliders, stairColliders } from '../../src/worlds/maze/MazeShafts.js';
+import { shaftColliders, stairColliders, descriptorTop } from '../../src/worlds/maze/MazeShafts.js';
 
 test('cellToWorld places cell 0,0 at the origin corner and steps by the pitch', () => {
   const a = cellToWorld(0, 0, 0);
@@ -77,7 +77,12 @@ test('THE ANTI-LADDER GATE: no collider top sits in the hop band', () => {
       // separately by driving a capsule around inside each shaft. Everything
       // else in the band is a ladder.
       if (d.enclosed) { exempted++; continue; }
-      const top = d.cy + d.hy;
+      /* `descriptorTop`, not `d.cy + d.hy`: a SWEPT descriptor (a lift car)
+       * rests low and travels through the whole band, so its rest position is
+       * a lie about how high it gets. Imported from MazeShafts.js rather than
+       * recomputed, so this scan and `requiredWallTop` can never disagree
+       * about what a top is. */
+      const top = descriptorTop(d);
       const relative = top - levelFloorY;
       const inBand = relative > 0.45 && relative < 5.0;
       assert.ok(!inBand, `level ${level} collider top at ${relative.toFixed(2)}m is a ladder over a hedge`);

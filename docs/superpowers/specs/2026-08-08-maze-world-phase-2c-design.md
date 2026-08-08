@@ -40,15 +40,30 @@ most — see §4.
 
 ## 2. Connector selection
 
-A new pure function joins `MazeTopology.js`:
+**The kind is stored in the topology array**, in the two spare bits of the cell
+byte that carries the link. `DIR` occupies bits 0–5; bits 6 and 7 are free, and
+`isOpen`'s `cells[idx] & dir` can never see them.
 
 ```js
-connectorKind(seed, cellA, cellB) -> 'stair' | 'tunnel' | 'lift'
+CONNECTOR = { STAIR: 0x00, TUNNEL: 0x40, LIFT: 0x80 }   // bits 6-7
+connectorKind(seed, x, z, level) -> 'stair'|'tunnel'|'lift'   // the chooser, called by carveDistrict
+connectorAt(cells, x, z, level)  -> 'stair'|'tunnel'|'lift'   // the reader everything else uses
 ```
 
-It hashes the link exactly the way `doorwayOffset` already hashes a district
-edge, so it is deterministic, re-rolls with the seed, and is decided without
-generating a single collider.
+The chooser hashes the link exactly the way `doorwayOffset` already hashes a
+district edge, so it is deterministic, re-rolls with the seed, and is decided
+without generating a single collider.
+
+**Storing it rather than recomputing it is what keeps the seed out of geometry.**
+`districtColliders(cells, dx, dz, level)` has no seed and must not gain one —
+`MazeChunks` would have to thread it, and so would every gate that builds
+descriptors. The parent spec already names the topology array as the single
+source of truth for "lift, stair and tunnel placement"; this is that sentence
+implemented.
+
+The bits live on the **lower** cell of a pair — the one carrying `DIR.UP`. Its
+partner one level up carries `DIR.DOWN` and keeps its connector bits zero, so a
+link always resolves from its lower end.
 
 **Weights start at 60% stair / 25% tunnel / 15% lift**, as a named constant, not
 a literal. The mix is a guess until the maze is walked and is expected to change
@@ -132,6 +147,31 @@ The doorway rule carries over unchanged. `ENTRY_SEAL_FROM` is
 shaft is harmless because there is nothing outside to stand on. A platform
 passing below 3.57 m sits at an open doorway, and a player stepping out drops
 into the corridor. That is correct behaviour, not a leak.
+
+### The lift landing is a footprint problem, exactly like the tunnel's
+
+Found while planning, and it changes the phase's shape: **a lift shaft with the
+car at the bottom is a nine-metre hole in level N+1's floor.**
+
+The staircase's opening is safe because there are treads under every point of
+it — `THE WALK-ON-IT GATE` measures a worst-case walk-off drop of 0.758 m
+against a 0.77 m bar. Under a lift's opening, car down, there is nothing for a
+whole level. Every gate that protects the staircase will fail on a lift built
+without an answer to this, and they will be right to.
+
+There is no fall damage in this project, so the failure is not lethal. It is a
+player walking down a level-3 corridor and vanishing into a hole they had no way
+to see — a playability failure of exactly the kind the pitch-black shaft was, and
+it must not be discovered in a browser.
+
+**So the lift gets the same treatment as the tunnel: its landing arrangement is
+proven before any geometry is written for it**, against seven properties — Phase
+2b's six, plus "no collider top sits in the band at any point in any moving
+part's travel". Candidate arrangements include a permanent landing lip with the
+car filling the remainder, a driven landing door, a sealed upper chamber, and a
+car with a full-height skirt. Each has a known hazard the proof must answer; a
+landing door in particular is only safe if its own top does not linger in the
+band while it travels, and "it moves quickly" is not a proof.
 
 ### Two guards, both needing red-verified negatives
 
@@ -237,6 +277,7 @@ red-verified negative:
 |---|---|---|
 | Connector mix | Enumerate kinds over 1,000 seeds | All three kinds appear; weights hold within tolerance |
 | Swept lift enclosure | Enclosure proof against the lift's swept descriptor | Sound at the highest rest position; a shaft one metre short **fails** |
+| Lift landing seven-property | The chosen landing arrangement, before geometry | All seven hold **simultaneously**; car-down walk-off drop under the stair's own 0.77 m bar |
 | Lift step-off | Capsule leaves the platform at sampled heights | Always lands on ground; never resolves inside a wall |
 | Lift crush | Platform moves with a capsule above it | Never moves through an occupied capsule |
 | Tunnel six-property | The stair's six properties, on tunnel geometry | All six hold **simultaneously** |
@@ -300,8 +341,10 @@ No other refactoring.
 
 ## 7. Risks
 
-**The tunnel footprint is the phase.** Everything else here is an extension of a
-proven mechanism. The tunnel is a genuinely new geometric problem with four
+**Two footprints are the phase, not one.** The lift's landing turned out to be a
+footprint problem of the same class as the tunnel's (§3), and both are now proven
+before geometry is written. Everything else here is an extension of a proven
+mechanism. The tunnel is a genuinely new geometric problem with four
 simultaneous constraints on two levels, and the staircase's history says such
 problems are not found by patching — they are found by proving the footprint
 first and discovering that some requirement set is unsatisfiable before any

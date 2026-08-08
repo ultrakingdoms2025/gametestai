@@ -345,3 +345,34 @@ Task 9: NOT YET DONE - the six properties are NOT all proven on real tunnel
   walk-away flood fill, the pit and canopy properties, and property 3's
   dedicated negative are still outstanding for the tunnel specifically. Recorded
   as outstanding rather than claimed.
+
+Task 9: TUNNEL DISABLED, and this is the phase's honest stopping point.
+
+  The geometry is built and its FOOTPRINT is proven, but two properties FAIL on
+  real generated output, so `shaftColliders` returns a staircase for tunnel
+  links and a TRIPWIRE asserts that it still does.
+
+  1. THE TUNNEL CANOPY GATE — grounded rests at **4.88-4.92 m OUTSIDE the
+     tunnel's region**, just under the 5.0 m hedge line. The arithmetic matches
+     a sprint-and-hop off a tread at ~3.5 m, out through the doorway (open
+     below `ENTRY_SEAL_FROM` = 3.57 m) and onto a hedge top:
+     3.5 + HOP + STEP_HEIGHT = 4.88, exactly the measurement.
+     THIS IS THE EXPLOIT THE ANTI-LADDER RULE EXISTS TO PREVENT. The stair is
+     immune because its treads sit in a well inset from the cell boundary,
+     while a tunnel's run reaches much closer to its own doorways — a
+     difference between the two shapes that neither Task 7's footprint proof
+     nor any existing gate was asking about.
+     The fix is GEOMETRIC — inset the run, or seal the doorway on faces the run
+     approaches — never a wider band or a softer gate.
+  2. THE TUNNEL WALK-AWAY GATE — a crossing ended 2.15 m short at level N,
+     against a blocked-region control of 3.98-7.56 m. Not clearly severed, not
+     clearly crossable; needs a better router or a real flood fill before it
+     means anything either way.
+
+  Everything else from Task 9 SHIPS and is proven: the region enclosure
+  machinery (`sideCovered` + `isRegionEnclosureSound`, mutation-verified), the
+  five gates generalised from stair-shaped to connector-shaped, and Task 8's
+  region perforation. Re-enabling the tunnel is one line in `shaftColliders`,
+  and the tripwire fires the moment it happens.
+
+  240 tests, MAZE_SEEDS=1000 green, contract-check 45/45, build clean.

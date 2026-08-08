@@ -2134,3 +2134,99 @@ test('the perforation gate catches a hole of the wrong shape, in both directions
   // eslint-disable-next-line no-console
   console.log(`[perforation] wrong-shape red-checks: wider -> ${w.blocked.length} blocked, narrower -> ${n.missing.length} missing`);
 });
+
+/* ------------------------------------------------------------------ */
+/* Phase 2c Task 9: the tunnel's own properties, on REAL geometry       */
+/*                                                                     */
+/* Task 7 proved the footprint on a hand-built fixture. That is not    */
+/* enough on its own and this project knows exactly why: 2b's ledger   */
+/* records the simulated proof running "only synthetic fixtures", the  */
+/* same gap that let 617 unenterable shafts pass six sealing checks.   */
+/* ------------------------------------------------------------------ */
+
+/** Both levels' descriptors for the district holding a connector. */
+function tunnelWorldFor(t, dx, dz) {
+  return [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)];
+}
+
+/**
+ * Can a capsule cross a connector's region at `y`, from one side to the other?
+ *
+ * Tries both detour families - round the END of the body, and past its SIDE -
+ * because which one works depends on which pair of sides is being joined. Task
+ * 7 measured that trying only one reported a perfectly connected region as
+ * severed.
+ */
+function regionCrossable(descs, region, level, y) {
+  const p = worldOf(descs);
+  const a = cellToWorld(region.x0, region.z0, level);
+  const b = cellToWorld(region.x1, region.z1, level);
+  const half = MAZE.CELL / 2;
+  const x0 = a.x - half, x1 = b.x + half, z0 = a.z - half, z1 = b.z + half;
+  const pairs = [
+    [{ x: x0 - 1.2, z: (z0 + z1) / 2 }, { x: x1 + 1.2, z: (z0 + z1) / 2 }],
+    [{ x: (x0 + x1) / 2, z: z0 - 1.2 }, { x: (x0 + x1) / 2, z: z1 + 1.2 }],
+  ];
+  const out = [];
+  for (const [from, to] of pairs) {
+    const routes = [];
+    for (const viaZ of [z0 - 0.9, z1 + 0.9, (z0 + z1) / 2]) {
+      routes.push([{ x: from.x, z: viaZ }, { x: to.x, z: viaZ }, to]);
+    }
+    for (const viaX of [x0 - 0.9, x1 + 0.9, (x0 + x1) / 2]) {
+      routes.push([{ x: viaX, z: from.z }, { x: viaX, z: to.z }, to]);
+    }
+    let best = Infinity;
+    for (const route of routes) {
+      const q = new THREE.Vector3(from.x, y + 0.05, from.z);
+      p.resolveCapsule(q, RADIUS, HEIGHT);
+      if (Math.abs(q.y - y) > 0.4) continue;         // no standable start here
+      const f = makeWalker(p);
+      for (const wp of route) for (let s = 0; s < 500; s++) f(q, wp.x, wp.z);
+      best = Math.min(best, Math.hypot(q.x - to.x, q.z - to.z));
+    }
+    out.push(best);
+  }
+  return out;
+}
+
+test('TRIPWIRE: the tunnel is still disabled, and must not be re-enabled without its gates', () => {
+  /* `tunnelColliders` is built and its FOOTPRINT is proven (Task 7), but two
+   * properties fail on real generated geometry, so `shaftColliders` returns a
+   * staircase for tunnel links and this asserts that it still does.
+   *
+   * WHAT FAILED, so whoever re-enables it knows what they are fixing:
+   *
+   * 1. THE TUNNEL CANOPY GATE. Grounded rests at 4.88-4.92 m OUTSIDE the
+   *    tunnel's region - just under the 5.0 m hedge line. Consistent with a
+   *    sprint-and-hop off a tread at ~3.5 m, out through the doorway (open
+   *    below ENTRY_SEAL_FROM = 3.57 m) and onto a hedge top: 3.5 + HOP +
+   *    STEP_HEIGHT = 4.88, which matches the measurement exactly. The stair is
+   *    immune because its treads sit in a well inset from the cell boundary,
+   *    while a tunnel's run reaches much closer to its own doorways. The fix
+   *    is geometric - inset the run, or seal the doorway on faces the run
+   *    approaches - NOT a wider band or a softer gate.
+   * 2. THE TUNNEL WALK-AWAY GATE. A crossing ended 2.15 m short at level N,
+   *    against a blocked-region control of 3.98-7.56 m. Not clearly severed,
+   *    not clearly crossable.
+   *
+   * Both gates and their negatives were written and are in git history at
+   * d3d4d15's child - restore them with the geometry rather than rewriting
+   * them from scratch, and do NOT re-enable the connector until both are
+   * green on real seeds. */
+  const { cells } = generateTopology(2026);
+  let checked = 0;
+  for (let level = 0; level < MAZE.LEVELS - 1 && checked < 3; level++) {
+    for (let z = 0; z < MAZE.CELLS && checked < 3; z++) {
+      for (let x = 0; x < MAZE.CELLS && checked < 3; x++) {
+        if (!isOpen(cells, cellIndex(x, z, level), DIR.UP)) continue;
+        if (connectorAt(cells, x, z, level) !== 'tunnel') continue;
+        assert.deepEqual(shaftColliders(cells, x, z, level), stairColliders(cells, x, z, level),
+          'a tunnel link is emitting tunnel geometry again - restore THE TUNNEL CANOPY GATE and THE '
+          + 'TUNNEL WALK-AWAY GATE before shipping it, and make them green on real seeds');
+        checked++;
+      }
+    }
+  }
+  assert.equal(checked, 3, 'expected tunnel links to check the tripwire against');
+});

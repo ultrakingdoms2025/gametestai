@@ -316,7 +316,23 @@ export function shaftColliders(cells, x, z, level) {
      * Tasks 5 and 9 each change exactly one line, and so a reader can see at
      * a glance which connectors are real yet. */
     case 'lift':   return liftColliders(cells, x, z, level);
-    case 'tunnel': return tunnelColliders(cells, x, z, level);
+    /* DISABLED. `tunnelColliders` is built and its footprint is proven
+     * (Task 7), but two of its properties FAIL on real geometry and are not
+     * being shipped red:
+     *   - THE TUNNEL CANOPY GATE found grounded rests at 4.88-4.92 m OUTSIDE
+     *     the tunnel's region - just under the 5.0 m hedge line, consistent
+     *     with a sprint-and-hop off a ~3.5 m tread, out through the doorway
+     *     (which is open below ENTRY_SEAL_FROM = 3.57 m) and onto a hedge top.
+     *     That is the exact exploit the anti-ladder rule exists to prevent.
+     *     The stair does not have it because its treads sit in a well inset
+     *     from the cell boundary; a tunnel's run reaches much closer to its
+     *     own doorways.
+     *   - THE TUNNEL WALK-AWAY GATE measured a crossing 2.15 m short at
+     *     level N, against a blocked-region control of 3.98-7.56 m. So it is
+     *     not obviously severed, but it is not obviously crossable either.
+     * Re-enabling is one line, and the tripwire in maze-enclosure.test.mjs
+     * fires the moment it happens so the two gates have to come back with it. */
+    case 'tunnel': return stairColliders(cells, x, z, level);
     default:       return stairColliders(cells, x, z, level);
   }
 }
@@ -836,7 +852,8 @@ export function landingColliders(cells, x, z, level) {
 export function connectorHoleBounds(cells, x, z, level) {
   switch (connectorAt(cells, x, z, level)) {
     case 'lift':   return liftWellBounds(x, z, level);
-    case 'tunnel': return tunnelExitBounds(cells, x, z, level);
+    case 'tunnel': return stairWellBounds(x, z, level);   // see the dispatcher
+
     default:       return stairWellBounds(x, z, level);
   }
 }
@@ -853,7 +870,9 @@ export function connectorHoleBounds(cells, x, z, level) {
  * per-cell check would demand a wall there and fail a legitimate tunnel.
  */
 export function connectorRegion(cells, x, z, level) {
-  if (connectorAt(cells, x, z, level) === 'tunnel') return tunnelRegion(x, z, level);
+  /* A tunnel is built as a stair for now - see `shaftColliders` - so its
+   * region is one cell like everything else. Restore this with the geometry. */
+  if (false && connectorAt(cells, x, z, level) === 'tunnel') return tunnelRegion(x, z, level);
   return { x0: x, x1: x, z0: z, z1: z };
 }
 

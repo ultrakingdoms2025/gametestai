@@ -9,6 +9,8 @@
  * Everything here is dev-only and is tree-shaken out of a normal boot.
  */
 
+import { MAZE, DIR, cellIndex, districtCoords, isOpen } from '../worlds/maze/MazeTopology.js';
+
 /**
  * Camera framings, derived from each world's actual published layout
  * (portalSpecs, minimapShapes and bounds) rather than guessed. Framings that
@@ -83,11 +85,14 @@ const VIEWS = {
     { name: 'entrance-portal', pos: [0, 3.5, 170], look: [0, 2.5, 150], fov: 64 },
   ],
   // Entrance forecourt centred at (1260, -10); maze grid runs from origin to 2394 m
-  // on both axes; hedges 5 m tall.
+  // on both axes; hedges 5 m tall. Levels are 9 m apart: level 0 at y=0, level 3 at y=27.
+  // Shaft views are computed dynamically per view() call since maze layout changes per entry.
   maze: [
     { name: 'forecourt', pos: [1260, 4, -16], look: [1260, 2, 20], fov: 75 },
     { name: 'corridor', pos: [1260, 1.7, 40], look: [1260, 1.7, 120], fov: 75 },
     { name: 'above-entrance', pos: [1260, 60, -40], look: [1260, 0, 200], fov: 70 },
+    { name: 'shaft-up', computed: true },
+    { name: 'tower-top', pos: [1200, 30, 1200], look: [1200, 8, 1200], fov: 80 },
   ],
 };
 
@@ -136,14 +141,74 @@ class Harness {
 
     this.freezeCamera(true);
     const cam = this.game.engine.camera;
-    cam.position.set(v.pos[0], v.pos[1], v.pos[2]);
-    cam.lookAt(v.look[0], v.look[1], v.look[2]);
-    cam.fov = v.fov;
+
+    // Handle dynamically computed views (e.g., shaft-up).
+    let pos, look, fov;
+    if (v.computed) {
+      const computed = this._computeView(v.name, worldId);
+      if (!computed) throw new Error(`harness: could not compute view "${name}"`);
+      pos = computed.pos;
+      look = computed.look;
+      fov = computed.fov;
+    } else {
+      pos = v.pos;
+      look = v.look;
+      fov = v.fov;
+    }
+
+    cam.position.set(pos[0], pos[1], pos[2]);
+    cam.lookAt(look[0], look[1], look[2]);
+    cam.fov = fov;
     cam.updateProjectionMatrix();
 
     // Let temporal effects (AO, grain, adaptive resolution) settle before capture.
     for (let i = 0; i < settle; i++) await frame();
     return { world: worldId, view: v.name };
+  }
+
+  /**
+   * Find a staircase cell and compute the shaft-up camera framing.
+   * Returns { pos, look, fov } or null if no shaft is found.
+   */
+  _findShaftFraming() {
+    const w = this.game.worldManager.active;
+    if (w?.id !== 'maze') return null;
+
+    const { cells } = w;
+    if (!cells) return null;
+
+    // Scan for a cell with UP passage open, starting from level 0.
+    for (let level = 0; level < MAZE.LEVELS - 1; level++) {
+      for (let z = 0; z < MAZE.CELLS; z++) {
+        for (let x = 0; x < MAZE.CELLS; x++) {
+          const idx = cellIndex(x, z, level);
+          if (isOpen(cells, idx, DIR.UP)) {
+            // Found a shaft. Position camera inside it looking up.
+            // World-space cell coordinate: x,z in metres (cells are 6m), y at level height.
+            const cellX = x * MAZE.CELL + MAZE.CELL / 2;
+            const cellZ = z * MAZE.CELL + MAZE.CELL / 2;
+            const levelY = level * MAZE.LEVEL_HEIGHT;
+
+            // Camera low inside the shaft, looking up past the next level.
+            const pos = [cellX, levelY + 0.8, cellZ];
+            const look = [cellX, levelY + MAZE.LEVEL_HEIGHT * 2, cellZ];
+            const fov = 75;
+            return { pos, look, fov };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Compute view parameters for dynamically generated views.
+   */
+  _computeView(name, worldId) {
+    if (worldId === 'maze' && name === 'shaft-up') {
+      return this._findShaftFraming();
+    }
+    return null;
   }
 
   /** Free-fly the camera to an arbitrary transform. */
@@ -242,9 +307,31 @@ class Harness {
   mazeStats() {
     const w = this.game.worldManager.active;
     if (w?.id !== 'maze') return { world: w?.id ?? null, note: 'not in the maze' };
+
+    // Collect distinct levels from both chunks and canopy resident sets.
+    const levels = new Set();
+    for (const key of w.chunks?.residentKeys() ?? []) {
+      const { level } = districtCoords(key);
+      levels.add(level);
+    }
+    for (const key of w.canopy?.residentKeys() ?? []) {
+      const { level } = districtCoords(key);
+      levels.add(level);
+    }
+
+    // Player's current level based on y-position.
+    const playerPos = this.game.player?.position;
+    let playerLevel = null;
+    if (playerPos) {
+      playerLevel = Math.min(MAZE.LEVELS - 1, Math.max(0, Math.round(playerPos.y / MAZE.LEVEL_HEIGHT)));
+    }
+
     return {
       seed: w.seed,
       residentDistricts: w.chunks?.residentKeys().length ?? 0,
+      levels: levels.size,
+      canopyDistricts: w.canopy?.residentKeys().length ?? 0,
+      playerLevel,
       colliders: this.game.physics.colliders.length,
       programs: this.game.engine.renderer.info.programs.length,
       drawCalls: this.game.engine.renderer.info.render.calls,

@@ -3,6 +3,22 @@ import { MAZE, districtCoords, districtAtWorld, neighbourhoodKeys } from './Maze
 import { districtColliders } from './MazeColliders.js';
 
 /**
+ * Every descriptor `kind` this class knows how to turn into a mesh, and
+ * (via `this.materials[kind]`) the cached material it is drawn with.
+ *
+ * This is the single source of truth for "what MazeChunks renders" - `ensure`
+ * iterates it directly rather than a hand-copied literal, and the render-
+ * coverage test (`scripts/tests/maze-render-coverage.test.mjs`) imports it
+ * rather than re-typing the list, so the two can never quietly drift apart.
+ * `districtColliders` emitting a `kind` not listed here is exactly the bug
+ * this constant exists to make impossible to miss: the collider is built
+ * (colliders are read straight off descriptors, never off this list) but
+ * nothing ever draws it - a stair tread with no mesh, solid and invisible.
+ * See that test for the enforcement.
+ */
+export const CHUNK_MESH_KINDS = Object.freeze(['hedge', 'floor', 'stair']);
+
+/**
  * District-level streaming for the maze.
  *
  * A district is 120 m square and about 800 hedge segments. Building all 400 of
@@ -26,7 +42,8 @@ export class MazeChunks {
   /**
    * @param {{ world: { physics: any, colliders: any[] }, cells: Uint8Array,
    *           group: THREE.Group,
-   *           materials: { hedge: THREE.Material, floor: THREE.Material } }} ctx
+   *           materials: { hedge: THREE.Material, floor: THREE.Material,
+   *                        stair: THREE.Material } }} ctx
    */
   constructor({ world, cells, group, materials }) {
     /* The WORLD, not its physics. WorldManager swaps `world.physics` to a
@@ -78,9 +95,9 @@ export class MazeChunks {
     }
 
     const meshes = [];
-    for (const [kind, material] of [['hedge', this.materials.hedge], ['floor', this.materials.floor]]) {
+    for (const kind of CHUNK_MESH_KINDS) {
       const of = descs.filter((d) => d.kind === kind);
-      const mesh = buildBoxInstances(of, material, `maze:${kind}:${key}`, this.group);
+      const mesh = buildBoxInstances(of, this.materials[kind], `maze:${kind}:${key}`, this.group);
       if (mesh) meshes.push(mesh);
     }
 

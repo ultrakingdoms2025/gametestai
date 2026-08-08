@@ -220,6 +220,13 @@ export class MazeWorld extends World {
     this._materials = {
       hedge: new THREE.MeshStandardMaterial({ color: 0x2f4a2a, roughness: 0.95, metalness: 0 }),
       floor: new THREE.MeshStandardMaterial({ color: 0x6b6357, roughness: 1.0, metalness: 0 }),
+      /* Stair treads and landings. Pale stonework, deliberately far from both
+       * the dark hedge green and the stone-brown floor - a stair is meant to
+       * read as a landmark the instant it comes into view down a corridor,
+       * not blend into the hedge that walls it in. Built once and reused
+       * across every re-roll for the same reason the other cached materials
+       * are - see the class docstring above. */
+      stair: new THREE.MeshStandardMaterial({ color: 0xd8cdb0, roughness: 0.8, metalness: 0 }),
       credits: new THREE.MeshStandardMaterial({
         color: 0xffd479, roughness: 0.35, metalness: 0.8,
         emissive: 0x6a4a10, emissiveIntensity: 0.6,

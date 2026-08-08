@@ -16,7 +16,7 @@
 
 import { MAZE, DIR, cellIndex, isOpen, cellToWorld } from './MazeTopology.js';
 import {
-  stairWellBounds, shaftColliders, GUARD_HALF_THICK, TREAD_HALF,
+  stairWellBounds, shaftColliders, landingColliders,
 } from './MazeShafts.js';
 
 /* Moved to MazeTopology.js in Phase 2c so that MazeShafts.js can use it
@@ -210,60 +210,18 @@ export function districtColliders(cells, dx, dz, level) {
     pushFloorRect(well.x0, well.x1, floorZ0, well.z0); // north (middle column)
     pushFloorRect(well.x0, well.x1, well.z1, floorZ1); // south (middle column)
 
-    /* Guard walls. A hole in a floor you can simply walk into is a pit; a
-     * hole with a rail round it and one way in is a stairwell. Three of the
-     * well's four sides are railed for their full length, and the fourth
-     * corner - the well's inner quarter, where the LANDING is - is left open
-     * on both its faces. Walking in there is not a fall: the landing's top
-     * is flush with this floor.
+    /* Guard rails, and for a lift its landing door. A hole in a floor you can
+     * simply walk into is a pit; a hole with a rail round it and one way in is
+     * a stairwell. The layout differs per connector, so it lives in
+     * `landingColliders` beside the geometry it guards rather than here -
+     * a lift's door in particular has to agree with the car it admits you to.
      *
-     * These stand at HEDGE_HEIGHT, so their tops sit exactly ON the top of
-     * the anti-ladder gate's band rather than inside it, and a hop plus a
-     * step-up (1.38 m) cannot mount them.
-     *
-     * They are emitted unconditionally, including on the two outer faces
-     * where level `level`'s own hedge may already stand. That is Trap 2's
-     * rule: a shaft's safety must never depend on a NEIGHBOURING cell's
-     * collider output, and south/east hedges are owned by the neighbour -
-     * which can be in a different district. Two possibly-redundant
-     * colliders per shaft is the price of that independence.
-     *
-     * Nothing here crosses the cell's centre lines, so the L-shaped strip
-     * along the cell's north and west stays clear and every passage level
-     * `level`'s own topology opens still has a route through the cell. */
-    const guardTop = baseY + MAZE.HEDGE_HEIGHT;
-    const pushGuard = (gx0, gx1, gz0, gz1) => {
-      out.push({
-        cx: (gx0 + gx1) / 2,
-        cy: (baseY + guardTop) / 2,
-        cz: (gz0 + gz1) / 2,
-        hx: (gx1 - gx0) / 2,
-        hy: (guardTop - baseY) / 2,
-        hz: (gz1 - gz0) / 2,
-        kind: 'hedge',
-      });
-    };
-    const T = GUARD_HALF_THICK * 2;
-    /* Every rail sits just OUTSIDE the surface it guards, never overhanging
-     * it: the well's own bounds are exactly the space a climbing capsule
-     * needs (`STAIR_WELL_HALF`), so a rail that leaned in would be a rail the
-     * climber's head walks into on the last turn. */
-    // The well's two inner faces, guarded everywhere except along the landing.
-    pushGuard(well.x0 - T, well.x0, well.cz, well.z1 + T);
-    pushGuard(well.cx, well.x1 + T, well.z0 - T, well.z0);
-    // The well's two outer faces, guarded for their whole length.
-    pushGuard(well.x1, well.x1 + T, well.z0 - T, well.z1 + T);
-    pushGuard(well.x0 - T, well.x1 + T, well.z1, well.z1 + T);
-    /* The head of the stair. A spiral is continuous everywhere but here: go
-     * one more step round from the landing and the highest thing under you is
-     * the turn BELOW, a `LEVEL_HEIGHT / STAIR_TREADS_PER_TURN * ...` drop of
-     * several metres rather than one riser. Everywhere else on the spiral,
-     * the neighbouring sector is the next or previous tread and the drop is
-     * exactly one 0.375 m rise. So the landing is railed on both its inner
-     * faces EXCEPT the stretch the last tread lies across, which is the way
-     * down. */
-    pushGuard(well.cx, well.cx + T, well.z0, well.cz);
-    pushGuard(well.cx - TREAD_HALF, well.cx + T, well.cz, well.cz + T);
+     * Emitted unconditionally, including on faces where level `level`'s own
+     * hedge may already stand. That is Trap 2's rule: a shaft's safety must
+     * never depend on a NEIGHBOURING cell's collider output, and south/east
+     * hedges are owned by the neighbour, which can be in a different
+     * district. Two possibly-redundant colliders per shaft is the price. */
+    for (const d of landingColliders(cells, hole.x, hole.z, level - 1)) out.push(d);
   }
 
   const HH = MAZE.HEDGE_HEIGHT / 2;

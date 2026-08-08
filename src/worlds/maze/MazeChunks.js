@@ -16,7 +16,7 @@ import { districtColliders } from './MazeColliders.js';
  * nothing ever draws it - a stair tread with no mesh, solid and invisible.
  * See that test for the enforcement.
  */
-export const CHUNK_MESH_KINDS = Object.freeze(['hedge', 'floor', 'stair', 'shaftWall']);
+export const CHUNK_MESH_KINDS = Object.freeze(['hedge', 'floor', 'stair', 'shaftWall', 'lift', 'liftDoor']);
 
 /**
  * District-level streaming for the maze.

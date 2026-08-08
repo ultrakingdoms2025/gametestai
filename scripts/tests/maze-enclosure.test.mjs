@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
 import { Physics } from '../../src/physics/Physics.js';
-import { MAZE, generateTopology, cellIndex, isOpen, DIR, cellCoords } from '../../src/worlds/maze/MazeTopology.js';
+import { MAZE, generateTopology, cellIndex, isOpen, DIR, cellCoords, connectorAt } from '../../src/worlds/maze/MazeTopology.js';
 import { districtColliders, cellToWorld } from '../../src/worlds/maze/MazeColliders.js';
 import {
   isEnclosureSound, requiredWallTop, shaftColliders, stairColliders, ENTRY_SEAL_FROM,
@@ -483,40 +483,71 @@ test('every shaft is climbable: no step exceeds the auto-step height', () => {
   assert.ok(checked > 0, 'no shafts found to check');
 });
 
-test('every shaft reaches the next level', () => {
+test('every shaft reaches the next level, whatever kind of connector it is', () => {
+  /* Kind-aware since Phase 2c. A staircase reaches the next level with its
+   * TREADS; a lift reaches it with the top of its car's TRAVEL, which is what
+   * `descriptorTop` returns and what `requiredWallTop` derives the wall bar
+   * from. Filtering on kind:'stair' alone made this report a lift as topping
+   * out at -Infinity - correctly, since a lift has no treads at all. The
+   * property being tested is "you get to the next level", not "there are
+   * steps", and it has to be stated that way now there is more than one way
+   * up. */
   const t = generateTopology(7, { levels: 2 });
+  const seen = new Set();
   for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++) {
     for (const c of shaftCells(t.cells, dx, dz, 0)) {
-      const steps = shaftColliders(t.cells, c.x, c.z, 0).filter((d) => d.kind === 'stair');
-      const highest = Math.max(...steps.map((s) => s.cy + s.hy));
+      const kind = connectorAt(t.cells, c.x, c.z, 0);
+      seen.add(kind);
+      const climbable = shaftColliders(t.cells, c.x, c.z, 0)
+        .filter((d) => d.enclosed);
+      assert.ok(climbable.length > 0, `${kind} shaft emitted nothing climbable`);
+      const highest = Math.max(...climbable.map(descriptorTop));
       const base = cellToWorld(c.x, c.z, 0).y;
       assert.ok(highest >= base + MAZE.LEVEL_HEIGHT - 0.45,
-        `shaft tops out at ${(highest - base).toFixed(2)}m, short of LEVEL_HEIGHT`);
+        `${kind} shaft tops out at ${(highest - base).toFixed(2)}m, short of LEVEL_HEIGHT`);
     }
   }
+  assert.ok(seen.size > 1, `expected more than one connector kind in the window, saw ${[...seen]}`);
 });
 
-test('THE ENCLOSURE GATE: every shaft is sealed above hop height', () => {
+test('THE ENCLOSURE GATE: every shaft is sealed above hop height, of every connector kind', () => {
   // A shaft's entry side is genuinely open at floor level - that is the only
   // way in - so `isEnclosureSound` itself (fix round 1) applies its
   // floor-to-need coverage check from `ENTRY_SEAL_FROM` above the floor, not
   // from the true floor. Callers pass the shaft's real floor and let the
-  // function apply that lower bound, so both the geometry
-  // (`shaftColliders`) and this gate share exactly one derived number rather
-  // than two that have to be kept in step by hand. See ENTRY_SEAL_FROM's own
-  // comment in MazeColliders.js for the derivation.
+  // function apply that lower bound, so both the geometry and this gate share
+  // exactly one derived number rather than two kept in step by hand.
+  //
+  // PHASE 2C: THE WINDOW IS THE POINT. This gate used to scan a 3x3 district
+  // block, and when lifts were switched on that block was MEASURED to contain
+  // nine staircases and ZERO lifts - so the gate went green on the day lifts
+  // landed while never once checking one. That is the same shape as 2b's
+  // "shaftsChecked === 0" tripwire and as the 617 unenterable shafts that
+  // passed six separate sealing assertions. The window is now every district
+  // on the level, and the kind tally below is asserted rather than assumed.
+  const tally = { stair: 0, tunnel: 0, lift: 0 };
   for (const seed of [1, 42, 2026]) {
     const t = generateTopology(seed, { levels: 2 });
-    for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++) {
+    for (let dz = 0; dz < MAZE.DISTRICTS; dz++) for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
+      const cells = shaftCells(t.cells, dx, dz, 0);
+      if (!cells.length) continue;
       const descs = districtColliders(t.cells, dx, dz, 0);
-      for (const c of shaftCells(t.cells, dx, dz, 0)) {
+      for (const c of cells) {
         const w = cellToWorld(c.x, c.z, 0);
+        tally[connectorAt(t.cells, c.x, c.z, 0)]++;
         assert.equal(
           isEnclosureSound(descs, { cx: w.x, cz: w.z, floorY: w.y }), true,
-          `seed ${seed} shaft at ${c.x},${c.z} is not sealed`,
+          `seed ${seed} ${connectorAt(t.cells, c.x, c.z, 0)} shaft at ${c.x},${c.z} is not sealed`,
         );
       }
     }
+  }
+  // eslint-disable-next-line no-console
+  console.log(`[enclosure] sealed shafts by kind: ${JSON.stringify(tally)}`);
+  for (const kind of ['stair', 'tunnel', 'lift']) {
+    assert.ok(tally[kind] > 0,
+      `this gate checked ZERO ${kind} shafts - it is green because it never looked at one, ` +
+      'which is exactly the failure this comment describes');
   }
 });
 
@@ -1797,4 +1828,153 @@ test('descriptorTop is the one definition of a top, and it reads the travel', ()
   // must be judged conservatively, not trusted.
   const malformed = { ...moving, cy: 6.0, hy: 0.5 };
   assert.equal(descriptorTop(malformed), 6.5, 'the higher of rest and travel wins');
+});
+
+/* ------------------------------------------------------------------ */
+/* Phase 2c Task 5: the lift, on REAL generated geometry               */
+/*                                                                     */
+/* Task 4 proved the landing arrangement on a hand-built fixture. That  */
+/* is not enough on its own, and this project knows why: 2b's ledger    */
+/* records that the spec's simulated proof "never runs on real          */
+/* shaftColliders output - only synthetic fixtures", which is the same  */
+/* class of gap that let 617 unenterable shafts pass six separate       */
+/* sealing assertions. These gates run on what generation actually      */
+/* emits.                                                              */
+/* ------------------------------------------------------------------ */
+
+/** The first shaft of a given connector kind, searched across seeds. */
+function firstShaftOfKind(kind, seeds = [1, 7, 42, 2026, 77771], levels = 2) {
+  for (const seed of seeds) {
+    const t = generateTopology(seed, { levels });
+    for (let dz = 0; dz < MAZE.DISTRICTS; dz++) {
+      for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
+        for (const c of shaftCells(t.cells, dx, dz, 0)) {
+          if (connectorAt(t.cells, c.x, c.z, 0) === kind) return { t, seed, dx, dz, cell: c };
+        }
+      }
+    }
+  }
+  throw new Error(`no ${kind} shaft found in seeds ${seeds}`);
+}
+
+/** Level N's and level N+1's descriptors for the district holding a connector. */
+function bothLevels(t, dx, dz) {
+  return [
+    ...districtColliders(t.cells, dx, dz, 0),
+    ...districtColliders(t.cells, dx, dz, 1),
+  ];
+}
+
+test('THE LIFT LANDING GATE: on real geometry, a closed door makes the car-down opening safe to walk past', () => {
+  /* The property Task 4 rejected candidate 1 on, restated against what
+   * generation emits rather than against a fixture. `districtColliders` emits
+   * the car DOWN and the door CLOSED, which is the dangerous combination: an
+   * open nine-metre shaft with only the door between a pedestrian and it.
+   *
+   * The bar is the staircase's own, computed by `maxLegitimateDescent` - a
+   * lift is held to exactly what the stair is held to, not to something
+   * softer invented for it. */
+  const bar = maxLegitimateDescent();
+  let checked = 0;
+  for (const kindSeed of [[1], [7], [42], [2026]]) {
+    let found;
+    try { found = firstShaftOfKind('lift', kindSeed); } catch { continue; }
+    const { t, dx, dz, cell } = found;
+    const descs = bothLevels(t, dx, dz);
+    const w1 = cellToWorld(cell.x, cell.z, 1);
+    const { worst, tested } = walkOffProfile(descs, w1);
+    // eslint-disable-next-line no-console
+    console.log(`[lift landing] seed ${found.seed} cell ${cell.x},${cell.z}: worst ${worst.toFixed(3)}m over ${tested} walk-offs (bar ${bar.toFixed(3)}m)`);
+    assert.ok(tested > 50, `only ${tested} walk-offs ran - the sweep found no standable ground`);
+    assert.ok(worst <= bar,
+      `a pedestrian fell ${worst.toFixed(3)}m into a real lift shaft at ${cell.x},${cell.z} - the landing door is not holding`);
+    checked++;
+  }
+  assert.ok(checked >= 2, `expected several real lifts to test, checked ${checked}`);
+});
+
+test('the lift landing gate is not vacuous: delete the door and the same walk-offs fall a whole level', () => {
+  const bar = maxLegitimateDescent();
+  const { t, dx, dz, cell } = firstShaftOfKind('lift');
+  const descs = bothLevels(t, dx, dz).filter((d) => d.kind !== 'liftDoor');
+  const w1 = cellToWorld(cell.x, cell.z, 1);
+  const { worst } = walkOffProfile(descs, w1);
+  // eslint-disable-next-line no-console
+  console.log(`[lift landing] doorless: worst ${worst.toFixed(3)}m (bar ${bar.toFixed(3)}m)`);
+  assert.ok(worst > bar,
+    'removing the landing door should reopen the pit Task 4 measured at 9.000m - if it does not, this ' +
+    'gate is passing for some reason other than the door and cannot be trusted');
+});
+
+test('a real lift shaft emits exactly one swept car, enclosed, and capped at the landing', () => {
+  let lifts = 0;
+  for (const seed of [1, 7, 42, 2026]) {
+    const t = generateTopology(seed, { levels: 2 });
+    for (let dz = 0; dz < MAZE.DISTRICTS; dz++) for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
+      for (const c of shaftCells(t.cells, dx, dz, 0)) {
+        if (connectorAt(t.cells, c.x, c.z, 0) !== 'lift') continue;
+        const descs = shaftColliders(t.cells, c.x, c.z, 0);
+        const cars = descs.filter((d) => d.kind === 'lift');
+        assert.equal(cars.length, 1, `lift at ${c.x},${c.z} emitted ${cars.length} cars`);
+        const car = cars[0];
+        assert.ok(car.swept, 'the car must declare its travel');
+        assert.equal(car.enclosed, true, 'the car is a standable inside the band');
+        const floorY = cellToWorld(c.x, c.z, 0).y;
+        assert.ok(Math.abs(car.swept.y1 - (floorY + MAZE.LEVEL_HEIGHT)) < 1e-6,
+          `car travel tops out at ${car.swept.y1}, not flush with the landing`);
+        assert.ok(car.swept.y0 >= floorY - 1e-6, 'car travel starts below the shaft floor');
+        // THE CAP, for the shaft's own output.
+        for (const d of descs) {
+          assert.ok(descriptorTop(d) <= floorY + MAZE.LEVEL_HEIGHT + 1e-6,
+            `${d.kind} tops out at ${descriptorTop(d)}, above the cap`);
+        }
+        lifts++;
+      }
+    }
+  }
+  // eslint-disable-next-line no-console
+  console.log(`[lift] ${lifts} real lift shafts checked`);
+  assert.ok(lifts > 20, `expected plenty of lifts, found ${lifts}`);
+});
+
+test('a real lift is enterable at level N: the doorway is taller than the player', () => {
+  /* The test 2b was missing, and whose absence let every one of the first 617
+   * shafts ship sealed AND unenterable. A lift has no treads to prove a climb
+   * with, so "can anyone get in" has to be asked directly.
+   *
+   * Only the sides the TOPOLOGY marks open count. The first draft of this test
+   * took the tallest gap under any shaft wall and reported 5.000 m - which is
+   * not a doorway at all but the space under a closed north/west wall, where
+   * `shaftWalls` deliberately starts at HEDGE_HEIGHT because the cell's own
+   * ordinary hedge already fills it contiguously. That would have passed
+   * while proving nothing, on a shaft with every side sealed. */
+  const { t, cell } = firstShaftOfKind('lift');
+  const descs = shaftColliders(t.cells, cell.x, cell.z, 0);
+  const floorY = cellToWorld(cell.x, cell.z, 0).y;
+  const half = MAZE.CELL / 2;
+  const w = cellToWorld(cell.x, cell.z, 0);
+  const idx = cellIndex(cell.x, cell.z, 0);
+
+  const openSides = [
+    { dir: DIR.N, cx: w.x, cz: w.z - half },
+    { dir: DIR.E, cx: w.x + half, cz: w.z },
+    { dir: DIR.S, cx: w.x, cz: w.z + half },
+    { dir: DIR.W, cx: w.x - half, cz: w.z },
+  ].filter((sd) => isOpen(t.cells, idx, sd.dir));
+  assert.ok(openSides.length > 0, 'a shaft with no open side at all cannot be entered by anyone');
+
+  for (const sd of openSides) {
+    const wall = descs.find((d) => d.kind === 'shaftWall'
+      && Math.abs(d.cx - sd.cx) < 1e-6 && Math.abs(d.cz - sd.cz) < 1e-6);
+    assert.ok(wall, `no wall emitted on the open side at ${sd.cx},${sd.cz}`);
+    const doorway = (wall.cy - wall.hy) - floorY;
+    // eslint-disable-next-line no-console
+    console.log(`[lift] open-side doorway ${doorway.toFixed(3)}m against a ${HEIGHT}m player`);
+    assert.ok(doorway >= HEIGHT,
+      `the doorway into a real lift shaft is ${doorway.toFixed(3)}m and the player is ${HEIGHT}m - ` +
+      'this shaft is sealed and unenterable, which is exactly the bug 2b shipped 617 times');
+    assert.ok(Math.abs(doorway - ENTRY_SEAL_FROM) < 1e-6,
+      `the doorway is ${doorway.toFixed(3)}m, not the derived ENTRY_SEAL_FROM ${ENTRY_SEAL_FROM.toFixed(3)}m - ` +
+      'geometry and gate must share one number');
+  }
 });

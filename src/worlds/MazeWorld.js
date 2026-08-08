@@ -277,6 +277,28 @@ export class MazeWorld extends World {
        * specifically so it gets its own InstancedMesh in this pale material
        * instead - ordinary hedges are untouched. */
       shaftWall: stair,
+      /* The lift car. Its own material rather than the stair's, because it is
+       * the one surface in a shaft that MOVES and the player needs to read it
+       * as a thing rather than as more stonework - a darker metal against the
+       * pale stone of the shaft it rides in. Emissive for the same reason the
+       * treads are: a shaft is sealed and unlit, and `LightRig.js` pools every
+       * light into a fixed slot because Three bakes the light COUNT into each
+       * shader's program cache key, so a lamp per lift is the 250 s of
+       * recompilation main.js already measured. Built once and cached here
+       * like every other entry - a material allocated per chunk or per lift
+       * would re-trigger that compilation on every re-roll. */
+      lift: new THREE.MeshStandardMaterial({
+        color: 0x8a8f99, roughness: 0.45, metalness: 0.65,
+        emissive: 0x2b3138, emissiveIntensity: 0.55,
+      }),
+      /* The landing door. Read as a counterweight slab: the same stone family
+       * as the shaft so it belongs to the structure, but darker and plainly
+       * a moving part, so that a closed door reads as "the lift is elsewhere"
+       * rather than as a dead end. */
+      liftDoor: new THREE.MeshStandardMaterial({
+        color: 0x9a917c, roughness: 0.7, metalness: 0.15,
+        emissive: 0x3a3428, emissiveIntensity: 0.35,
+      }),
       credits: new THREE.MeshStandardMaterial({
         color: 0xffd479, roughness: 0.35, metalness: 0.8,
         emissive: 0x6a4a10, emissiveIntensity: 0.6,

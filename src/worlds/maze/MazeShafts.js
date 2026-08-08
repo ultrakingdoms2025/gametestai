@@ -286,37 +286,10 @@ export function stairColliders(cells, x, z, level) {
     enclosed: true,
   });
 
-  /* Walls. See this function's own comment for the per-side reasoning and
-   * for why H stops at LEVEL_HEIGHT rather than LEVEL_HEIGHT + HEDGE_HEIGHT. */
-  const H = MAZE.LEVEL_HEIGHT;
-  const half = MAZE.CELL / 2;
-  const sides = [
-    { dir: DIR.N, dx: 0, dz: -1, selfOwned: true }, { dir: DIR.E, dx: 1, dz: 0, selfOwned: false },
-    { dir: DIR.S, dx: 0, dz: 1, selfOwned: false }, { dir: DIR.W, dx: -1, dz: 0, selfOwned: true },
-  ];
-  for (const s of sides) {
-    const open = isOpen(cells, idx, s.dir);
-    let baseY;
-    if (open) baseY = w.y + ENTRY_SEAL_FROM;
-    else if (s.selfOwned) baseY = w.y + MAZE.HEDGE_HEIGHT;
-    else baseY = w.y;
-    const topY = w.y + H;
-    out.push({
-      cx: w.x + s.dx * half,
-      cy: (baseY + topY) / 2,
-      cz: w.z + s.dz * half,
-      hx: s.dx ? 0.6 : half,
-      hy: (topY - baseY) / 2,
-      hz: s.dz ? 0.6 : half,
-      /* Not 'hedge'. These walls stand up to LEVEL_HEIGHT (9m), 4m above the
-       * 5m hedge line - the one piece of maze geometry that is meant to be
-       * visible ABOVE the canopy as a landmark. Tagging them 'hedge' would
-       * draw them in the same dark green as everything else that is meant to
-       * vanish into it. See MazeWorld._ensureMaterials's `shaftWall` entry
-       * and MazeChunks.CHUNK_MESH_KINDS. */
-      kind: 'shaftWall',
-    });
-  }
+  /* Walls. Shared with the lift via `shaftWalls` - see that function, and
+   * this one's own comment above for the per-side reasoning and for why the
+   * walls stop at LEVEL_HEIGHT rather than LEVEL_HEIGHT + HEDGE_HEIGHT. */
+  for (const d of shaftWalls(cells, x, z, level)) out.push(d);
 
   return out;
 }
@@ -342,7 +315,7 @@ export function shaftColliders(cells, x, z, level) {
      * written as separate cases rather than folded into the default so that
      * Tasks 5 and 9 each change exactly one line, and so a reader can see at
      * a glance which connectors are real yet. */
-    case 'lift':   return stairColliders(cells, x, z, level);   // Task 5
+    case 'lift':   return liftColliders(cells, x, z, level);
     case 'tunnel': return stairColliders(cells, x, z, level);   // Task 9
     default:       return stairColliders(cells, x, z, level);
   }
@@ -556,4 +529,200 @@ export function isEnclosureSound(descs, shaft) {
     if (!covered) return false;
   }
   return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* The lift                                                            */
+/*                                                                     */
+/* Phase 2c Task 4 proved this arrangement BEFORE any of it was built.  */
+/* The measurements, and the two candidates it rejected, are in         */
+/* docs/superpowers/specs/2026-08-08-maze-world-phase-2c-ledger.md; the */
+/* proof itself is scripts/tests/maze-lift-footprint.test.mjs.          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The car's footprint, inset slightly inside the well so it never catches on
+ * the shaft walls as it travels.
+ */
+const LIFT_CAR_INSET = 0.05;
+export const LIFT_CAR_HALF = STAIR_WELL_HALF - LIFT_CAR_INSET;
+const LIFT_CAR_HALF_THICK = 0.15;
+
+/**
+ * How high the car's top sits above the shaft floor when it is down.
+ *
+ * DERIVED from the auto-step rather than written as 0.30, so the car is
+ * always something the player WALKS onto rather than hops onto - and because
+ * both of this project's shaft constants have been wrong when written as
+ * literals: `requiredWallTop`'s bar and `ENTRY_SEAL_FROM` each shipped as a
+ * number unrelated to the thing it was supposed to bound.
+ */
+const LIFT_REST_CLEARANCE = MAZE.STEP_HEIGHT * (2 / 3);
+
+/** A lift uses the same well a stair does, so the hole above it is the same hole. */
+export const liftWellBounds = stairWellBounds;
+
+/**
+ * The four sides of a shaft cell, walled from the floor - or from
+ * `ENTRY_SEAL_FROM` on a side the topology leaves open - up to `LEVEL_HEIGHT`.
+ *
+ * Extracted from `stairColliders` in Phase 2c so the lift gets exactly the
+ * same enclosure rather than a second implementation of it. Every word of
+ * `stairColliders`'s comment about per-side ownership, about the doorway, and
+ * about why these walls stop at `LEVEL_HEIGHT` rather than a hedge higher
+ * applies here unchanged - that comment is this function's specification.
+ */
+export function shaftWalls(cells, x, z, level) {
+  const idx = cellIndex(x, z, level);
+  const w = cellToWorld(x, z, level);
+  const H = MAZE.LEVEL_HEIGHT;
+  const half = MAZE.CELL / 2;
+  const out = [];
+  const sides = [
+    { dir: DIR.N, dx: 0, dz: -1, selfOwned: true }, { dir: DIR.E, dx: 1, dz: 0, selfOwned: false },
+    { dir: DIR.S, dx: 0, dz: 1, selfOwned: false }, { dir: DIR.W, dx: -1, dz: 0, selfOwned: true },
+  ];
+  for (const s of sides) {
+    const open = isOpen(cells, idx, s.dir);
+    let baseY;
+    if (open) baseY = w.y + ENTRY_SEAL_FROM;
+    else if (s.selfOwned) baseY = w.y + MAZE.HEDGE_HEIGHT;
+    else baseY = w.y;
+    const topY = w.y + H;
+    out.push({
+      cx: w.x + s.dx * half,
+      cy: (baseY + topY) / 2,
+      cz: w.z + s.dz * half,
+      hx: s.dx ? 0.6 : half,
+      hy: (topY - baseY) / 2,
+      hz: s.dz ? 0.6 : half,
+      kind: 'shaftWall',
+    });
+  }
+  return out;
+}
+
+/**
+ * A counterweight lift from `level` to `level + 1`.
+ *
+ * The car is ONE swept descriptor filling the well, inside the same enclosure
+ * a staircase gets. What is deliberately NOT here is the landing door: that
+ * stands on level N+1's floor and is emitted by `landingColliders` alongside
+ * the guard rails, because it is level N+1's geometry and not this shaft's -
+ * exactly the division the stair's own guard walls already follow.
+ *
+ * The car's `swept` range is the whole point. `cy`/`hy` place the physical box
+ * where it RESTS, which `MazeChunks` turns into a collider and then drives
+ * with `Physics.setBoxColliderY`; `swept` tells the static gates where it
+ * GOES. Its top of travel is `LEVEL_HEIGHT`, flush with level N+1's floor,
+ * which is exactly where the staircase's landing sits - so `requiredWallTop`
+ * derives the same 9 m bar for a lift shaft as for a stair shaft, and the
+ * walls `shaftWalls` emits already satisfy it. That is the enclosure rule
+ * behaving as designed on a new shape, not a coincidence, but if a lift ever
+ * gains a rest position ABOVE the landing the bar moves with it.
+ */
+export function liftColliders(cells, x, z, level) {
+  const w = cellToWorld(x, z, level);
+  const well = liftWellBounds(x, z, level);
+  const out = shaftWalls(cells, x, z, level);
+
+  const downTop = w.y + LIFT_REST_CLEARANCE;
+  const upTop = w.y + MAZE.LEVEL_HEIGHT;
+  out.push({
+    cx: well.cx,
+    cy: downTop - LIFT_CAR_HALF_THICK,
+    cz: well.cz,
+    hx: LIFT_CAR_HALF, hy: LIFT_CAR_HALF_THICK, hz: LIFT_CAR_HALF,
+    kind: 'lift',
+    enclosed: true,
+    swept: { y0: downTop - 2 * LIFT_CAR_HALF_THICK, y1: upTop },
+  });
+  return out;
+}
+
+/** The one moving car among a set of descriptors, or null. */
+export function liftCarDescriptor(descs) {
+  return descs.find((d) => d.kind === 'lift') ?? null;
+}
+
+/** The one landing door among a set of descriptors, or null. */
+export function liftDoorDescriptor(descs) {
+  return descs.find((d) => d.kind === 'liftDoor') ?? null;
+}
+
+/**
+ * Guard rails - and for a lift, the landing door - standing on level N+1's
+ * floor around the hole a connector opens in it.
+ *
+ * This is level N+1's own geometry rather than the shaft's, which is why it
+ * lives in its own function and why `THE CAP` check is stated against what the
+ * SHAFT emits. `x`, `z` and `level` are the CONNECTOR's, one level below the
+ * floor being railed.
+ *
+ * Both layouts leave their way in on the well's INNER faces - the ones facing
+ * the L-shaped strip along the cell's north and west that `STAIR_WELL_OFFSET`
+ * exists to preserve. The outer faces have only 0.7 m to the cell boundary,
+ * no wider than the player's own capsule, so a doorway there would be one
+ * nobody could reach.
+ */
+export function landingColliders(cells, x, z, level) {
+  const well = stairWellBounds(x, z, level);
+  const baseY = (level + 1) * MAZE.LEVEL_HEIGHT;
+  const guardTop = baseY + MAZE.HEDGE_HEIGHT;
+  const T = GUARD_HALF_THICK * 2;
+  const out = [];
+  const push = (gx0, gx1, gz0, gz1, kind = 'hedge', extra = {}) => {
+    out.push({
+      cx: (gx0 + gx1) / 2, cy: (baseY + guardTop) / 2, cz: (gz0 + gz1) / 2,
+      hx: (gx1 - gx0) / 2, hy: (guardTop - baseY) / 2, hz: (gz1 - gz0) / 2,
+      kind, ...extra,
+    });
+  };
+
+  if (connectorAt(cells, x, z, level) === 'lift') {
+    /* Three rails and a door, the door on the well's WEST inner face so it
+     * opens onto the wide strip.
+     *
+     * It is emitted CLOSED, which is both the safe default and the true one:
+     * the car's own rest state is down, and a lift whose car is down must have
+     * its landing shut or the opening is a nine-metre pit - measured at
+     * exactly 9.000 m in Task 4, before this door existed.
+     *
+     * `swept` declares the door's travel for the same reason the car's does,
+     * and note what it means for the anti-ladder scan: `descriptorTop` returns
+     * the top of that travel, `baseY + HEDGE_HEIGHT`, which sits exactly ON
+     * the band's ceiling rather than inside it - the same position the guard
+     * rails occupy and safe for the same reason. The door's TRANSIT through
+     * the band is not made safe by that scan. It is made safe by the invariant
+     * that the door never moves while its footprint is occupied, which is
+     * behavioural and proven in `maze-lift-footprint.test.mjs`. An unguarded
+     * door was measured carrying a rider to 14.000 m - the hedge top - so that
+     * invariant is load-bearing, not a nicety. */
+    push(well.x0 - T, well.x1 + T, well.z0 - T, well.z0);        // north (inner), railed
+    push(well.x1, well.x1 + T, well.z0 - T, well.z1 + T);        // east (outer), railed
+    push(well.x0 - T, well.x1 + T, well.z1, well.z1 + T);        // south (outer), railed
+    push(well.x0 - T, well.x0, well.z0, well.z1, 'liftDoor', {   // west (inner), the door
+      swept: { y0: baseY, y1: guardTop },
+    });
+    return out;
+  }
+
+  /* The staircase's rails, unchanged from Phase 2b. Every rail sits just
+   * OUTSIDE the surface it guards, never overhanging it: the well's own bounds
+   * are exactly the space a climbing capsule needs, so a rail that leaned in
+   * would be a rail the climber's head walks into on the last turn. */
+  // The well's two inner faces, guarded everywhere except along the landing.
+  push(well.x0 - T, well.x0, well.cz, well.z1 + T);
+  push(well.cx, well.x1 + T, well.z0 - T, well.z0);
+  // The well's two outer faces, guarded for their whole length.
+  push(well.x1, well.x1 + T, well.z0 - T, well.z1 + T);
+  push(well.x0 - T, well.x1 + T, well.z1, well.z1 + T);
+  /* The head of the stair. A spiral is continuous everywhere but here: go one
+   * more step round from the landing and the highest thing under you is the
+   * turn BELOW, a drop of several metres rather than one riser. So the landing
+   * is railed on both its inner faces EXCEPT the stretch the last tread lies
+   * across, which is the way down. */
+  push(well.cx, well.cx + T, well.z0, well.cz);
+  push(well.cx - TREAD_HALF, well.cx + T, well.cz, well.cz + T);
+  return out;
 }

@@ -234,22 +234,40 @@ test('the split changes nothing: shaftColliders dispatches stairs identically to
   assert.equal(checked, 12, 'expected 12 stair shafts to compare');
 });
 
-test('a lift or tunnel link falls back to stair geometry until its own task lands', () => {
+test('a TUNNEL link still falls back to stair geometry until Task 9 lands', () => {
   const { cells } = generateTopology(2026);
   let seen = 0;
   for (let level = 0; level < MAZE.LEVELS - 1; level++) {
     for (let z = 0; z < MAZE.CELLS; z++) {
       for (let x = 0; x < MAZE.CELLS; x++) {
         if (!isOpen(cells, cellIndex(x, z, level), DIR.UP)) continue;
-        if (connectorAt(cells, x, z, level) === 'stair') continue;
+        if (connectorAt(cells, x, z, level) !== 'tunnel') continue;
         assert.deepEqual(
           shaftColliders(cells, x, z, level),
           stairColliders(cells, x, z, level),
-          'the fallback must be the stair, exactly',
+          'the tunnel fallback must be the stair, exactly',
         );
         seen++;
       }
     }
   }
-  assert.ok(seen > 0, 'expected at least one non-stair link in the scanned window');
+  assert.ok(seen > 0, 'expected at least one tunnel link');
+});
+
+test('a LIFT link no longer falls back: it emits its own geometry', () => {
+  const { cells } = generateTopology(2026);
+  let seen = 0;
+  for (let level = 0; level < MAZE.LEVELS - 1 && seen === 0; level++) {
+    for (let z = 0; z < MAZE.CELLS && seen === 0; z++) {
+      for (let x = 0; x < MAZE.CELLS && seen === 0; x++) {
+        if (!isOpen(cells, cellIndex(x, z, level), DIR.UP)) continue;
+        if (connectorAt(cells, x, z, level) !== 'lift') continue;
+        const descs = shaftColliders(cells, x, z, level);
+        assert.notDeepEqual(descs, stairColliders(cells, x, z, level));
+        assert.equal(descs.filter((d) => d.kind === 'stair').length, 0, 'a lift emitted treads');
+        seen++;
+      }
+    }
+  }
+  assert.equal(seen, 1, 'expected at least one lift link');
 });

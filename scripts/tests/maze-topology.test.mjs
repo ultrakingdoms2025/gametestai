@@ -6,6 +6,9 @@ import {
   districtIndex, districtCoords, edgeKey, buildDistrictGraph, isEdgeOpen,
 } from '../../src/worlds/maze/MazeTopology.js';
 import { generateTopology, reachableCount, solve } from '../../src/worlds/maze/MazeTopology.js';
+import {
+  CONNECTOR, CONNECTOR_MASK, CONNECTOR_WEIGHTS, connectorKind, connectorAt,
+} from '../../src/worlds/maze/MazeTopology.js';
 
 test('constants match the spec', () => {
   assert.equal(MAZE.CELL, 6.0);
@@ -249,6 +252,89 @@ test('generateTopology stays solvable and fully reachable at every level count',
         levels * MAZE.LEVEL_CELLS,
         `seed ${seed} levels ${levels} has unreachable cells`,
       );
+    }
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Phase 2c: connector kinds                                           */
+/* ------------------------------------------------------------------ */
+
+test('connector bits do not collide with the direction bits', () => {
+  for (const dir of [DIR.N, DIR.E, DIR.S, DIR.W, DIR.UP, DIR.DOWN]) {
+    assert.equal(dir & CONNECTOR_MASK, 0, `direction bit ${dir} overlaps the connector mask`);
+  }
+  for (const v of Object.values(CONNECTOR)) {
+    assert.equal(v & ~CONNECTOR_MASK, 0, `connector value ${v} leaks outside its mask`);
+  }
+});
+
+test('connectorKind is deterministic and returns only the three kinds', () => {
+  const kinds = new Set();
+  for (let i = 0; i < 500; i++) {
+    const x = i % 40, z = Math.floor(i / 40), level = i % 3;
+    const k = connectorKind(99, x, z, level);
+    assert.ok(['stair', 'tunnel', 'lift'].includes(k), `unexpected kind ${k}`);
+    kinds.add(k);
+    assert.equal(connectorKind(99, x, z, level), k, 'not deterministic');
+  }
+  assert.equal(kinds.size, 3, 'all three kinds must occur');
+});
+
+test('THE CONNECTOR MIX GATE: real generated links follow the weights', () => {
+  const counts = { stair: 0, tunnel: 0, lift: 0 };
+  for (const seed of [1, 2026, 77771]) {
+    const { cells } = generateTopology(seed);
+    for (let level = 0; level < MAZE.LEVELS - 1; level++) {
+      for (let z = 0; z < MAZE.CELLS; z++) {
+        for (let x = 0; x < MAZE.CELLS; x++) {
+          if (isOpen(cells, cellIndex(x, z, level), DIR.UP)) counts[connectorAt(cells, x, z, level)]++;
+        }
+      }
+    }
+  }
+  const total = counts.stair + counts.tunnel + counts.lift;
+  assert.ok(total > 500, `expected plenty of vertical links, got ${total}`);
+  const weightTotal = CONNECTOR_WEIGHTS.stair + CONNECTOR_WEIGHTS.tunnel + CONNECTOR_WEIGHTS.lift;
+  for (const kind of ['stair', 'tunnel', 'lift']) {
+    const want = CONNECTOR_WEIGHTS[kind] / weightTotal;
+    const got = counts[kind] / total;
+    // +/- 5 percentage points. Wide enough not to flake on ~900 samples,
+    // tight enough that a broken chooser (all one kind, or uniform thirds)
+    // cannot pass: uniform would put stair at 0.333 against a 0.55 floor.
+    // Observed red when connectorKind was stubbed to always return stair:
+    // "stair: expected ~0.600, got 1.000 over 932 links".
+    assert.ok(Math.abs(got - want) < 0.05,
+      `${kind}: expected ~${want.toFixed(3)}, got ${got.toFixed(3)} over ${total} links`);
+  }
+});
+
+test('a cell with no UP link reports stair and carries no connector bits', () => {
+  const { cells } = generateTopology(4242);
+  let checked = 0;
+  for (let z = 0; z < 40 && checked < 50; z++) {
+    for (let x = 0; x < 40 && checked < 50; x++) {
+      const idx = cellIndex(x, z, 0);
+      if (isOpen(cells, idx, DIR.UP)) continue;
+      assert.equal(cells[idx] & CONNECTOR_MASK, 0, `cell ${x},${z} has connector bits with no UP link`);
+      checked++;
+    }
+  }
+  assert.equal(checked, 50, 'expected 50 non-UP cells to sample');
+});
+
+test("carveDistrict's level bound is insurance, not dead code: isEdgeOpen already excludes out-of-range edges", () => {
+  // 2b's ledger recorded this parameter as unreachable dead code. Keep the
+  // insurance, but stop ASSUMING it is dead: if this ever fails, the bound is
+  // doing real work and must not be removed, which is the whole reason to
+  // assert it rather than delete it on the strength of a code read.
+  for (const seed of [7, 4242]) {
+    const graph = buildDistrictGraph(seed, 2);
+    for (const key of graph.open) {
+      for (const part of key.split('|')) {
+        assert.ok(districtCoords(Number(part)).level < 2,
+          `edge ${key} reaches a level the graph was not built for`);
+      }
     }
   }
 });

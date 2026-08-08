@@ -73,6 +73,95 @@ export const STEP = Object.freeze({
 export const HORIZONTAL = Object.freeze([DIR.N, DIR.E, DIR.S, DIR.W]);
 
 /**
+ * Which of the three vertical connectors a `DIR.UP` link becomes, stored in
+ * the two spare bits of the cell byte that carries the link.
+ *
+ * `DIR` occupies bits 0-5. Bits 6 and 7 are free, and `isOpen`'s
+ * `cells[idx] & dir` can never see them, so a connector kind rides along in
+ * the topology array at zero cost. That placement is deliberate and is what
+ * the parent spec means by "the topology array is the single source of truth
+ * for lift, stair and tunnel placement": `districtColliders` has no seed and
+ * must never gain one, the `M` map and NPC routing read topology and never
+ * geometry, and every headless gate builds from `cells` alone. A chooser
+ * called at geometry time would have to be handed the seed by all of them.
+ *
+ * The bits live on the LOWER cell only - the one carrying `DIR.UP`. Its
+ * partner one level up carries `DIR.DOWN` and keeps its connector bits zero,
+ * so a link is always resolved from its lower end. `connectorAt` is the only
+ * supported reader.
+ *
+ * Every existing whole-byte read of `cells` was audited when these bits were
+ * added: all four either mask with a direction bit first, or ask "is anything
+ * carved here", which cannot false-positive because connector bits are only
+ * ever written alongside `DIR.UP`.
+ */
+export const CONNECTOR_MASK = 0xc0;
+export const CONNECTOR = Object.freeze({ STAIR: 0x00, TUNNEL: 0x40, LIFT: 0x80 });
+
+/** Kind order, fixed, and the order `connectorKind` walks when weighting. */
+const CONNECTOR_ORDER = Object.freeze(['stair', 'tunnel', 'lift']);
+const CONNECTOR_VALUE = Object.freeze({
+  stair: CONNECTOR.STAIR, tunnel: CONNECTOR.TUNNEL, lift: CONNECTOR.LIFT,
+});
+
+/**
+ * Relative frequency of each connector.
+ *
+ * A guess until the maze is walked, and expected to change - the same honesty
+ * the parent spec applies to puzzle density. Named rather than inlined so a
+ * change is one edit and `THE CONNECTOR MIX GATE` re-derives its expectations
+ * from here rather than from a second copy of the numbers.
+ */
+export const CONNECTOR_WEIGHTS = Object.freeze({ stair: 60, tunnel: 25, lift: 15 });
+
+/**
+ * Choose a connector for the link rising out of (x, z, level).
+ *
+ * Hashed the same way `doorwayOffset` hashes a district edge, so it re-rolls
+ * with the seed and is decided without generating a single collider. The
+ * trailing constant is a domain separator: without it this would return the
+ * same value as any other single-purpose hash over the same four numbers.
+ *
+ * Called only by `carveDistrict`. Everything downstream reads `connectorAt`.
+ *
+ * @param {number} seed
+ * @param {number} x global cell x of the LOWER cell
+ * @param {number} z global cell z of the LOWER cell
+ * @param {number} level of the LOWER cell
+ * @returns {'stair'|'tunnel'|'lift'}
+ */
+export function connectorKind(seed, x, z, level) {
+  let total = 0;
+  for (const k of CONNECTOR_ORDER) total += CONNECTOR_WEIGHTS[k];
+  let r = hash32(seed, x, z, level, 0x1f7) % total;
+  for (const k of CONNECTOR_ORDER) {
+    r -= CONNECTOR_WEIGHTS[k];
+    if (r < 0) return k;
+  }
+  /* Unreachable while the weights are positive, and a deliberate fail-safe
+   * rather than a throw: the stair is the one connector proven in Phase 2b,
+   * so a weighting bug degrades the maze to all-staircases instead of
+   * crashing generation. */
+  return 'stair';
+}
+
+/**
+ * The connector kind for the link rising out of (x, z, level).
+ *
+ * Returns `'stair'` for a cell with no UP link at all, which is what makes
+ * this safe to call unconditionally: a cell with no link has no connector,
+ * and the stair is the neutral answer.
+ *
+ * @param {Uint8Array} cells
+ * @returns {'stair'|'tunnel'|'lift'}
+ */
+export function connectorAt(cells, x, z, level) {
+  const bits = cells[cellIndex(x, z, level)] & CONNECTOR_MASK;
+  for (const k of CONNECTOR_ORDER) if (CONNECTOR_VALUE[k] === bits) return k;
+  return 'stair';
+}
+
+/**
  * FNV-1a over the bytes of each argument, finished with an avalanche mix.
  * Order-sensitive on purpose: hash32(a,b) must differ from hash32(b,a) so that
  * a district's seed cannot collide with its neighbour's.
@@ -397,7 +486,16 @@ export function carveDistrict(seed, graph, dx, dz, level, cells, levels = MAZE.L
     const off = doorwayOffset(seed, self, other, D * D);
     const lx = off % D;
     const lz = Math.floor(off / D);
-    cells[cellIndex(x0 + lx, z0 + lz, level)] |= dir;
+    const target = cellIndex(x0 + lx, z0 + lz, level);
+    cells[target] |= dir;
+    /* The kind rides on the LOWER cell of the pair (see CONNECTOR). This loop
+     * runs once for DIR.UP and once for DIR.DOWN on the same physical link -
+     * from the two cells' own levels - so writing the kind on both would put
+     * it on the upper cell too and give `connectorAt` two answers for one
+     * link. Only the UP end owns it. */
+    if (dir === DIR.UP) {
+      cells[target] |= CONNECTOR_VALUE[connectorKind(seed, x0 + lx, z0 + lz, level)];
+    }
   }
 }
 

@@ -698,51 +698,167 @@ test('a shaft with level N+1\'s UNPERFORATED floor is stuck around 6m - confirms
     `(reached ${(reached - w.y).toFixed(2)}m) - if it doesn't, climbTreads can't be trusted to catch Finding 1`);
 });
 
-test('walking level 1 across a shaft cannot fall through the hole in its floor', () => {
-  // The other half of Finding 1's ask: the hole that lets a climbing player
-  // through must not let a level-1 pedestrian fall through it walking
-  // normally. It doesn't, but not because there is floor under the hole -
-  // the shaft's own walls (emitted once, at level 0, but physically
-  // spanning up through this level's height) are sealed on every side by
-  // ENTRY_SEAL_FROM (~3.57m), well below LEVEL_HEIGHT (9m), so nobody
-  // walking the level-1 corridor grid can even reach the hole's footprint
-  // sideways - the only way into that column is climbing up through it.
-  // This drives a capsule from open corridor space toward the shaft centre
-  // from all four cardinal directions, at level 1's floor height, with a
-  // small per-step downward nudge standing in for gravity (Physics applies
-  // none of its own) - if the wall ever failed to block entry, an
-  // unsupported capsule over the hole would fall freely and `minY` would
-  // drop far below the floor.
+/* ------------------------------------------------------------------ */
+/* Fix round 3, Finding 1 (Critical) - the mirror-image bug: walls that   */
+/* used to run all the way to LEVEL_HEIGHT + HEDGE_HEIGHT (14m) sealed a   */
+/* climbing player into a 6x6m box at level N+1, blocking every side       */
+/* regardless of what level N+1's OWN topology said - severing up to 397  */
+/* of 399 cells in a real district flood fill. shaftColliders now caps    */
+/* its walls at LEVEL_HEIGHT: above that height the cell simply becomes a */
+/* level N+1 cell, governed entirely by level N+1's own topology.         */
+/*                                                                        */
+/* This retires round 2's "cannot fall through" test above (it asserted   */
+/* that ALL FOUR sides stay blocked at level 1's height, which was true   */
+/* only because walls used to run to 14m and is no longer the correct     */
+/* property to check - two of those four sides are now supposed to open,  */
+/* matching level 1's own topology; that is the entire point of this fix).*/
+/* ------------------------------------------------------------------ */
+
+/** DIR -> [dx, dz] step, keyed the same way MazeTopology.STEP is. */
+const STEP_BY_DIR = {
+  [DIR.N]: [0, -1], [DIR.E]: [1, 0], [DIR.S]: [0, 1], [DIR.W]: [-1, 0],
+};
+
+test('THE ESCAPE GATE: climbing a real shaft lets the player leave its footprint at level N+1 through an open side, and a closed side still blocks', () => {
+  // The counterpart to THE CEILING GATE: that one asks "does the climb
+  // reach the top", this one asks "once there, can you walk away". Neither
+  // question is the other - round 2's ceiling gate and fall-through test
+  // both passed throughout round 3's bug, because they only ever asked
+  // whether the climb reaches 9m and whether you can fall down, never
+  // whether you can walk sideways out of the box at the top.
   let checked = 0;
-  for (const seed of [1, 2026]) {
+  for (const seed of [1, 42, 2026]) {
     const t = generateTopology(seed, { levels: 2 });
-    for (let dz = 0; dz < 4 && checked < 3; dz++) {
-      for (let dx = 0; dx < 4 && checked < 3; dx++) {
+    for (let dz = 0; dz < 6 && checked < 3; dz++) {
+      for (let dx = 0; dx < 6 && checked < 3; dx++) {
         const cells = shaftCells(t.cells, dx, dz, 0);
         if (!cells.length) continue;
         const c = cells[0];
         const w1 = cellToWorld(c.x, c.z, 1);
+        const idx1 = cellIndex(c.x, c.z, 1);
+        // Level N+1's OWN topology at this same cell - independent of, and
+        // not necessarily matching, level 0's shaft doorway direction.
+        const openDirs = [DIR.N, DIR.E, DIR.S, DIR.W].filter((d) => isOpen(t.cells, idx1, d));
+        const closedDirs = [DIR.N, DIR.E, DIR.S, DIR.W].filter((d) => !isOpen(t.cells, idx1, d));
+        assert.ok(openDirs.length > 0,
+          `level 1 cell ${c.x},${c.z} has no open passage at all - impossible in a carved maze`);
+
         const descs = [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)];
         const p = new Physics(null);
         for (const d of descs) p.addBox(d.cx, d.cy, d.cz, d.hx, d.hy, d.hz);
-        for (const [ddx, ddz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const pos = new THREE.Vector3(w1.x + ddx * 5, w1.y + 0.1, w1.z + ddz * 5);
-          let minY = pos.y;
-          for (let s = 0; s < 600; s++) {
-            pos.x -= ddx * 0.02; pos.z -= ddz * 0.02;
-            pos.y -= 0.05; // stands in for gravity - Physics applies none of its own
+
+        const walk = (dir, steps) => {
+          const [sx, sz] = STEP_BY_DIR[dir];
+          const pos = new THREE.Vector3(w1.x, w1.y + 0.1, w1.z);
+          for (let s = 0; s < steps; s++) {
+            pos.x += sx * 0.02; pos.z += sz * 0.02;
             p.resolveCapsule(pos, RADIUS, HEIGHT);
-            minY = Math.min(minY, pos.y);
           }
-          assert.ok(minY >= w1.y - 0.5,
-            `seed ${seed} shaft ${c.x},${c.z}, approach (${ddx},${ddz}): capsule dropped to ` +
-            `${minY.toFixed(2)}m walking toward the shaft at level 1 (floor is ${w1.y}m) - it fell through`);
+          return { dist: Math.hypot(pos.x - w1.x, pos.z - w1.z), y: pos.y };
+        };
+
+        // Open side: walk several metres away, staying on the floor.
+        const open = walk(openDirs[0], 400);
+        assert.ok(open.dist >= 4,
+          `seed ${seed} shaft ${c.x},${c.z}: only reached ${open.dist.toFixed(2)}m from the shaft ` +
+          `centre through level 1's own open side (dir ${openDirs[0]}) - expected several metres`);
+        assert.ok(Math.abs(open.y - w1.y) < 0.5,
+          `seed ${seed} shaft ${c.x},${c.z}: walking out through the open side left the capsule at ` +
+          `${open.y.toFixed(2)}m, not on level 1's floor (${w1.y}m) - it fell or climbed unexpectedly`);
+
+        // Closed side (if any at this cell - both level 1 directions may
+        // happen to be open in the maze's own carving): must still block,
+        // the same way it always did. Matches the coordinator's own
+        // measurement almost exactly: blocked at ~2.05m against the 3.0m
+        // cell half-width.
+        if (closedDirs.length > 0) {
+          const closed = walk(closedDirs[0], 400);
+          assert.ok(closed.dist < MAZE.CELL / 2,
+            `seed ${seed} shaft ${c.x},${c.z}: closed side (dir ${closedDirs[0]}) let the capsule ` +
+            `${closed.dist.toFixed(2)}m from centre - past the ${MAZE.CELL / 2}m cell half-width, ` +
+            'so it was not actually blocked');
         }
         checked++;
       }
     }
   }
   assert.ok(checked > 0, 'no shafts found to check');
+});
+
+test('with the walls capped, a level-1 district reached through a shaft landing is walkable end to end', () => {
+  // The coordinator's own reproduction: "a per-district flood fill cut off
+  // up to 397 of 399 cells." A pure topology flood fill can never detect
+  // this class of bug - MazeTopology.js's carving is not what broke, the
+  // COLLIDER geometry blocking a topologically-open passage is - so this
+  // builds the district's adjacency graph from level 1's own topology bits
+  // (always correct, exhaustively tested elsewhere) for every edge EXCEPT
+  // the shaft landing cell's own four, which are verified physically
+  // (matching THE ESCAPE GATE's own method above) since those are the only
+  // edges this fix round's change could possibly have broken.
+  for (const seed of [1, 42, 2026]) {
+    const t = generateTopology(seed, { levels: 2 });
+    let found = null;
+    for (let dz = 0; dz < MAZE.DISTRICTS && !found; dz++) {
+      for (let dx = 0; dx < MAZE.DISTRICTS && !found; dx++) {
+        const cells = shaftCells(t.cells, dx, dz, 0);
+        if (cells.length) found = { dx, dz, cell: cells[0] };
+      }
+    }
+    assert.ok(found, `seed ${seed}: no shaft found in any district`);
+    const { dx, dz, cell } = found;
+
+    const descs = [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)];
+    const p = new Physics(null);
+    for (const d of descs) p.addBox(d.cx, d.cy, d.cz, d.hx, d.hy, d.hz);
+
+    const physicallyWalkable = (fromX, fromZ, dir) => {
+      const w = cellToWorld(fromX, fromZ, 1);
+      const [sx, sz] = STEP_BY_DIR[dir];
+      const pos = new THREE.Vector3(w.x, w.y + 0.1, w.z);
+      for (let s = 0; s < 200; s++) {
+        pos.x += sx * 0.03; pos.z += sz * 0.03;
+        p.resolveCapsule(pos, RADIUS, HEIGHT);
+      }
+      return Math.hypot(pos.x - w.x, pos.z - w.z) >= MAZE.CELL - 0.5;
+    };
+
+    const D = MAZE.DISTRICT;
+    const x0 = dx * D, z0 = dz * D;
+    const key = (x, z) => `${x},${z}`;
+    const adj = new Map();
+    const addEdge = (a, b) => {
+      if (!adj.has(a)) adj.set(a, new Set());
+      if (!adj.has(b)) adj.set(b, new Set());
+      adj.get(a).add(b); adj.get(b).add(a);
+    };
+    for (let lz = 0; lz < D; lz++) {
+      for (let lx = 0; lx < D; lx++) {
+        const x = x0 + lx, z = z0 + lz;
+        const idx = cellIndex(x, z, 1);
+        for (const dir of [DIR.N, DIR.E, DIR.S, DIR.W]) {
+          if (!isOpen(t.cells, idx, dir)) continue;
+          const [sx, sz] = STEP_BY_DIR[dir];
+          const nx = x + sx, nz = z + sz;
+          if (nx < x0 || nx >= x0 + D || nz < z0 || nz >= z0 + D) continue; // stay in-district
+          const isShaftEdge = (x === cell.x && z === cell.z) || (nx === cell.x && nz === cell.z);
+          if (isShaftEdge && !physicallyWalkable(x, z, dir)) continue; // geometry blocks it - do not add
+          addEdge(key(x, z), key(nx, nz));
+        }
+      }
+    }
+
+    const start = key(cell.x, cell.z);
+    const seen = new Set([start]);
+    const queue = [start];
+    while (queue.length) {
+      const cur = queue.shift();
+      for (const n of adj.get(cur) ?? []) if (!seen.has(n)) { seen.add(n); queue.push(n); }
+    }
+    const total = D * D;
+    assert.ok(seen.size >= total * 0.9,
+      `seed ${seed}: flood fill from the shaft landing at (${cell.x},${cell.z}) only reached ` +
+      `${seen.size}/${total} cells in district (${dx},${dz}) - the shaft is severing the district`);
+  }
 });
 
 /* ------------------------------------------------------------------ */
@@ -758,6 +874,18 @@ test('the simulated proof (escapeHeight) runs on real generated shafts, not just
   // shaft), so this samples a small, fixed number of real shafts rather
   // than all 617 - enough to prove the simulated half of the proof runs on
   // the real thing, not to re-run the geometric enumeration a second way.
+  //
+  // Bound is `LEVEL_HEIGHT + HEDGE_HEIGHT`, not `HEDGE_HEIGHT` (fix round 3):
+  // escaping the shaft's own 6x6m footprint at or above LEVEL_HEIGHT is now
+  // correct and intended - that is what walking out at the top through
+  // level N+1's own open side IS (see THE ESCAPE GATE). Only this shaft's
+  // colliders are loaded here (no level N+1), so nothing stops the capsule
+  // rising indefinitely in principle; what actually bounds it is that
+  // `escapeHeight` only hops while grounded, and once clear of every tread
+  // with nothing else nearby it stops being grounded. The real hazard this
+  // sweep still has to rule out is reaching level N+1's OWN hedge top
+  // (`LEVEL_HEIGHT + HEDGE_HEIGHT`, 14m) - that would mean landing on
+  // something no player should be able to stand on.
   const SAMPLE_PER_SEED = 2;
   let sampled = 0;
   const t0 = Date.now();
@@ -772,8 +900,9 @@ test('the simulated proof (escapeHeight) runs on real generated shafts, not just
           const w = cellToWorld(c.x, c.z, 0);
           const shaft = { cx: w.x, cz: w.z, floorY: w.y };
           const escape = escapeHeight(descs, shaft);
-          assert.ok(escape < MAZE.HEDGE_HEIGHT,
-            `seed ${seed} shaft ${c.x},${c.z}: capsule escaped to ${escape.toFixed(2)}m, at/above hedge height`);
+          assert.ok(escape < MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT,
+            `seed ${seed} shaft ${c.x},${c.z}: capsule escaped to ${escape.toFixed(2)}m, ` +
+            `at/above level N+1's own hedge top (${MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT}m)`);
           sampledThisSeed++;
           sampled++;
         }

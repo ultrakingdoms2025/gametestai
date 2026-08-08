@@ -155,8 +155,15 @@ export function cellToWorld(x, z, level) {
  * half-extents (0.9 m, widened from 0.75 m in fix round 2 - Finding 5 found
  * the narrowest strip a climbing capsule could rely on between consecutive
  * treads was only 0.616 m against its own 0.70 m diameter, no headroom if
- * tread size or capsule radius ever moved) are kept well under half the
- * 4.8 m corridor and under the 2.4 m ceiling `overlappingShaftCells` needs -
+ * tread size or capsule radius ever moved) are kept under the 1.1 m ceiling
+ * `overlappingShaftCells` needs at the spiral radius actually used here
+ * (`r` below, 1.90 m) - `MAZE.CELL / 2 - r` = 3.0 - 1.9 = 1.1 m, the most a
+ * tread can reach outward from its own centre before its footprint crosses
+ * this cell's own boundary into a neighbour. (Fix round 3, Finding 2: this
+ * comment used to say "2.4 m", the generic half-corridor figure Task 3's
+ * own Trap 1 quotes for a tread centred on the CELL - it does not apply
+ * here, where every tread sits offset by `r` from the cell centre. The real
+ * ceiling is 1.1 m, and 0.9 m leaves 0.2 m of margin, not 1.5 m.)
  * `overlappingShaftCells`/`isEnclosureSound` group a descriptor into every
  * cell its footprint touches, boundary-inclusive, and a tread flush to the
  * cell pitch would wrongly pull in four cells it only meets at a corner.
@@ -186,6 +193,19 @@ export function cellToWorld(x, z, level) {
  * reintroduce exactly the district-seam dependency Task 3's Trap 2 was
  * written to avoid, for a purely cosmetic collider-count saving, so it is
  * not worth it: E/S stay fully self-sufficient.
+ *
+ * The walls stop at `LEVEL_HEIGHT`, not `LEVEL_HEIGHT + HEDGE_HEIGHT` (fix
+ * round 3, Finding 1 - the mirror image of round 2's ceiling bug). Above a
+ * shaft's own `LEVEL_HEIGHT` the cell simply BECOMES a level N+1 cell, and
+ * level N+1's own topology governs it from there - its hedges, its
+ * passages, its doorways. A wall standing on all four sides up to
+ * `+ HEDGE_HEIGHT` (14 m absolute) had no way to know that level N+1 might
+ * mark one of those sides OPEN, so it walled off a corridor level N+1's own
+ * carving had deliberately opened - severing up to 397 of 399 cells in a
+ * district in the reviewer's flood-fill, and trapping a player who had just
+ * climbed 9 m inside a sealed 6x6 m box with no way out sideways at all.
+ * `requiredWallTop` is capped to match - see its own comment for why a
+ * player's hop reach above `LEVEL_HEIGHT` is not this shaft's problem.
  */
 export function shaftColliders(cells, x, z, level) {
   const idx = cellIndex(x, z, level);
@@ -211,8 +231,9 @@ export function shaftColliders(cells, x, z, level) {
     });
   }
 
-  /* Walls. See this function's own comment for the per-side reasoning. */
-  const H = MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT;
+  /* Walls. See this function's own comment for the per-side reasoning and
+   * for why H stops at LEVEL_HEIGHT rather than LEVEL_HEIGHT + HEDGE_HEIGHT. */
+  const H = MAZE.LEVEL_HEIGHT;
   const half = MAZE.CELL / 2;
   const sides = [
     { dir: DIR.N, dx: 0, dz: -1, selfOwned: true }, { dir: DIR.E, dx: 1, dz: 0, selfOwned: false },
@@ -428,6 +449,24 @@ const ENCLOSURE_MARGIN = MAZE.STEP_HEIGHT + 0.05;
  * with nothing enclosed in it (there is nothing to climb) falls back to hedge
  * height, matching the original band rule.
  *
+ * Fix round 3, Finding 1: that raw bar is capped at `shaft.floorY +
+ * LEVEL_HEIGHT` and must not be allowed to exceed it. A player standing on
+ * the topmost tread (at `LEVEL_HEIGHT`) and hopping reaches roughly
+ * `LEVEL_HEIGHT + HOP + ENCLOSURE_MARGIN` ~= 10.38 m uncapped - but
+ * everything at or above `LEVEL_HEIGHT` is no longer this shaft's hazard to
+ * contain. That height is level N+1's own floor; from there upward, level
+ * N+1's own hedges are what matter, and THEIR tops sit at
+ * `floorY + LEVEL_HEIGHT + HEDGE_HEIGHT` (14 m), comfortably above the
+ * 10.38 m a hop from the top tread reaches - there is nothing to land on.
+ * Capping here, rather than excluding the topmost tread(s) from the `highest`
+ * scan above, is what actually brings the bar down to something the walls
+ * (themselves capped at `LEVEL_HEIGHT` - see `shaftColliders`) can satisfy:
+ * excluding only the exact-`LEVEL_HEIGHT` tread would still leave the 23rd
+ * tread's own hop reach (~10.1 m) above the cap. The cap does not weaken the
+ * bar that stopped the original 9 m-stairs-in-5 m-walls bug: that fixture's
+ * walls are only 5 m tall, still far short of the capped 9 m requirement, so
+ * it still fails.
+ *
  * @param {ColliderDesc[]} descs
  * @param {{cx:number, cz:number, floorY:number}} shaft
  * @returns {number} absolute world Y the walls must reach
@@ -435,6 +474,7 @@ const ENCLOSURE_MARGIN = MAZE.STEP_HEIGHT + 0.05;
 function requiredWallTop(descs, shaft) {
   const half = MAZE.CELL / 2;
   const EPS = 1e-6;
+  const cap = shaft.floorY + MAZE.LEVEL_HEIGHT;
   let highest = -Infinity;
   for (const d of descs) {
     if (!d.enclosed) continue;
@@ -446,8 +486,8 @@ function requiredWallTop(descs, shaft) {
     const top = d.cy + d.hy;
     if (top > highest) highest = top;
   }
-  if (highest === -Infinity) return shaft.floorY + MAZE.HEDGE_HEIGHT;
-  return highest + MAZE.HOP + ENCLOSURE_MARGIN;
+  const bar = highest === -Infinity ? shaft.floorY + MAZE.HEDGE_HEIGHT : highest + MAZE.HOP + ENCLOSURE_MARGIN;
+  return Math.min(bar, cap);
 }
 
 /**

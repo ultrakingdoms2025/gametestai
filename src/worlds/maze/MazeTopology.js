@@ -313,8 +313,15 @@ export function doorwayOffset(seed, aIndex, bIndex, span) {
  * @param {number} dz
  * @param {number} level
  * @param {Uint8Array} cells mutated in place
+ * @param {number} [levels] how many levels are active; a vertical doorway to
+ *   or from a level at or beyond this is out of bounds. Defaults to all four.
+ *   In practice `isEdgeOpen` already excludes edges beyond whatever limit
+ *   `buildDistrictGraph` was built with, so this bound is currently
+ *   unreachable - but it is the same active-limit concept `districtNeighbours`
+ *   uses, kept as one source of truth rather than a second number that could
+ *   drift from it.
  */
-export function carveDistrict(seed, graph, dx, dz, level, cells) {
+export function carveDistrict(seed, graph, dx, dz, level, cells, levels = MAZE.LEVELS) {
   const D = MAZE.DISTRICT;
   const x0 = dx * D;
   const z0 = dz * D;
@@ -384,7 +391,7 @@ export function carveDistrict(seed, graph, dx, dz, level, cells) {
    * a stair or lift can land anywhere inside it rather than only on a border. */
   for (const [dir, dl] of [[DIR.UP, 1], [DIR.DOWN, -1]]) {
     const nl = level + dl;
-    if (nl < 0 || nl >= MAZE.LEVELS) continue;
+    if (nl < 0 || nl >= levels) continue;
     const other = districtIndex(dx, dz, nl);
     if (!isEdgeOpen(graph, self, other)) continue;
     const off = doorwayOffset(seed, self, other, D * D);
@@ -417,7 +424,7 @@ export function generateTopology(seed, opts = {}) {
   for (let level = 0; level < levels; level++) {
     for (let dz = 0; dz < MAZE.DISTRICTS; dz++) {
       for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
-        carveDistrict(seed, graph, dx, dz, level, cells);
+        carveDistrict(seed, graph, dx, dz, level, cells, levels);
       }
     }
   }

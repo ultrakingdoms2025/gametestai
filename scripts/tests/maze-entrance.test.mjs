@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { Physics } from '../../src/physics/Physics.js';
 import {
   MAZE, DIR, generateTopology, cellCoords, cellIndex, isOpen,
-  carveEntranceCorridor, reachableCount, districtAtWorld, neighbourhoodKeys, DISTRICT_SPAN,
+  carveEntranceCorridor, reachableCount, districtAtWorld, districtCoords, neighbourhoodKeys, DISTRICT_SPAN,
 } from '../../src/worlds/maze/MazeTopology.js';
 import {
   districtColliders, cellToWorld, forecourtColliders, FORECOURT_PORTAL_Z,
@@ -162,7 +162,7 @@ test('the forecourt survives streaming', async () => {
   world.update(0.016);
   const spec = world.portalSpecs[0];
   const arrivalZ = spec.position.z + 2.6;
-  world.chunks.updateResidency(10 * DISTRICT_SPAN, 10 * DISTRICT_SPAN, 0, 2);
+  world.chunks.updateResidency(10 * DISTRICT_SPAN, 0, 10 * DISTRICT_SPAN, 2);
   assert.notEqual(
     physics.groundHeight(spec.position.x, arrivalZ, 5, 12), null,
     'the forecourt was evicted',
@@ -178,6 +178,46 @@ test('walking the maze keeps residency bounded', async () => {
     world.update(0.016);
     peak = Math.max(peak, world.chunks.residentKeys().length);
   }
-  assert.ok(peak <= 25, `residency peaked at ${peak}`);
+  // 25 on the player's own level (radius 2) + 9 on the level-1 ring (radius 1).
+  assert.ok(peak <= 34, `residency peaked at ${peak}`);
   assert.ok(physics.colliders.length < 40000, `collider count grew to ${physics.colliders.length}`);
+});
+
+test('the maze is four levels and every one is reachable', async () => {
+  const { world } = await buildMazeWorld();
+  const t = { cells: world.cells };
+  // Every level must be carved, i.e. some cell on it has an open passage.
+  for (let lv = 0; lv < MAZE.LEVELS; lv++) {
+    let any = false;
+    for (let i = lv * MAZE.LEVEL_CELLS; i < (lv + 1) * MAZE.LEVEL_CELLS; i += 97) {
+      if (t.cells[i] !== 0) { any = true; break; }
+    }
+    assert.ok(any, `level ${lv} was never carved`);
+  }
+  assert.equal(reachableCount(world.cells, world.entranceCell), MAZE.TOTAL_CELLS);
+});
+
+test('residency spans the level above and below', async () => {
+  const { world } = await buildMazeWorld();
+  const p = world.ctx.player.position;
+  // Stand on level 1.
+  p.set(1260, MAZE.LEVEL_HEIGHT, 600);
+  world.update(0.016);
+  const levels = new Set(world.chunks.residentKeys().map((k) => districtCoords(k).level));
+  assert.ok(levels.has(1), 'the player\'s own level is not resident');
+  assert.ok(levels.has(0) || levels.has(2), 'no adjacent level is resident');
+});
+
+test('residency stays bounded across levels', async () => {
+  const { world, physics } = await buildMazeWorld();
+  const p = world.ctx.player.position;
+  let peak = 0;
+  for (let i = 0; i < 12; i++) {
+    p.set(300 + i * 140, (i % MAZE.LEVELS) * MAZE.LEVEL_HEIGHT, 300 + i * 110);
+    world.update(0.016);
+    peak = Math.max(peak, world.chunks.residentKeys().length);
+  }
+  // 25 on the player's level + a smaller ring on each neighbour.
+  assert.ok(peak <= 45, `residency peaked at ${peak}`);
+  assert.ok(physics.colliders.length < 60000, `colliders grew to ${physics.colliders.length}`);
 });

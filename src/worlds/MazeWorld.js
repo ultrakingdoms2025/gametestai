@@ -240,7 +240,7 @@ export class MazeWorld extends World {
 
     await onProgress?.(0.05, 'Growing the hedges');
 
-    const topo = generateTopology(this.seed, { levels: 1 });
+    const topo = generateTopology(this.seed, { levels: MAZE.LEVELS });
     this.cells = topo.cells;
     this.entranceCell = topo.entranceCell;
     this.centreCell = topo.centreCell;
@@ -300,7 +300,7 @@ export class MazeWorld extends World {
     });
 
     const spawn = this.playerSpawn;
-    this.chunks.updateResidency(spawn.x, spawn.z, 0, RESIDENCY_RADIUS);
+    this.chunks.updateResidency(spawn.x, spawn.y, spawn.z, RESIDENCY_RADIUS);
 
     /* The return arch stands in the middle of the forecourt rather than one
      * cell north of the entrance - that position sat inside the hedge the
@@ -435,7 +435,7 @@ export class MazeWorld extends World {
   update(dt) {
     const player = this.ctx.player?.position;
     if (player && this.chunks) {
-      this.chunks.updateResidency(player.x, player.z, 0, RESIDENCY_RADIUS);
+      this.chunks.updateResidency(player.x, player.y, player.z, RESIDENCY_RADIUS);
     }
 
     if (!this._tokenMesh || this._tokens.length === 0) return;

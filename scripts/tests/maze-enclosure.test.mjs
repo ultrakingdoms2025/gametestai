@@ -700,6 +700,80 @@ test('a shaft with level N+1\'s UNPERFORATED floor is stuck around 6m - confirms
 });
 
 /* ------------------------------------------------------------------ */
+/* Pre-merge review, Phase 2b - Important Finding 1. `districtColliders`  */
+/* (MazeColliders.js, just above "One floor slab per district") scans for */
+/* the FIRST cell carrying DIR.UP in the district below and stops there   */
+/* when punching the hole in level N+1's floor. That is correct today:    */
+/* `districtNeighbours` (MazeTopology.js) offers each district at most one */
+/* vertical neighbour per level, and `carveDistrict` opens at most one UP  */
+/* doorway per open edge, so a second UP cell in one district is           */
+/* structurally impossible right now - every gate above this one proves    */
+/* that by testing only the first (or only) shaft `firstShaft` finds.      */
+/*                                                                          */
+/* Nothing asserted the "at most one" premise itself, though, and the day  */
+/* a second vertical link per district exists - a lift, which is the next  */
+/* one planned - the second shaft's top treads go silently back into the   */
+/* floor slab above it: exactly Finding 1 (Critical) from an earlier round */
+/* of this same phase, reintroduced through a door none of the existing    */
+/* tests are standing in front of. This is that guard: it does not trust   */
+/* the "at most one" premise, it checks EVERY UP cell found by generation,  */
+/* not just the first `districtColliders` happens to punch a hole for.     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * True when no `floor` collider in `descs` covers `well`'s own centre point -
+ * i.e. a hole genuinely exists there, rather than a shaft's stair climbing
+ * into a solid slab above it. Cheaper than a physics sweep (no capsule, no
+ * simulation) because the floor tiling in `districtColliders` is exact: every
+ * point of the district's footprint is covered by exactly one `floor`
+ * collider except the hole itself, so "is the well's centre covered" is the
+ * whole question.
+ */
+function wellHasHole(descs, well) {
+  const EPS = 1e-6;
+  return !descs.some((d) => d.kind === 'floor'
+    && well.cx > d.cx - d.hx + EPS && well.cx < d.cx + d.hx - EPS
+    && well.cz > d.cz - d.hz + EPS && well.cz < d.cz + d.hz - EPS);
+}
+
+test('THE MULTI-SHAFT GATE: every UP cell in a district has a hole punched above it - not just the first', () => {
+  // Deliberately does not use `firstShaft`/`shaftCells(..., 0)` the way every
+  // other gate above does: this one exists precisely because "only the first"
+  // is the bug it is guarding against. It enumerates every UP cell in every
+  // district, at every level generation can actually place one (0..LEVELS-2 -
+  // there is no "above" the top level), across several seeds, and checks each
+  // one individually.
+  let checked = 0;
+  let districtsWithMultiple = 0;
+  for (const seed of [1, 42, 2026]) {
+    const t = generateTopology(seed, { levels: MAZE.LEVELS });
+    for (let level = 0; level < MAZE.LEVELS - 1; level++) {
+      for (let dz = 0; dz < MAZE.DISTRICTS; dz++) {
+        for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
+          const ups = shaftCells(t.cells, dx, dz, level);
+          if (ups.length === 0) continue;
+          if (ups.length > 1) districtsWithMultiple++;
+          const above = districtColliders(t.cells, dx, dz, level + 1);
+          for (const c of ups) {
+            const well = stairWellBounds(c.x, c.z, level);
+            assert.ok(wellHasHole(above, well),
+              `seed ${seed} level ${level} district (${dx},${dz}): UP cell (${c.x},${c.z}) has no hole `
+              + 'punched above it - only the first UP cell in a district gets one today, and this one '
+              + 'was not it');
+            checked++;
+          }
+        }
+      }
+    }
+  }
+  assert.ok(checked > 0, 'no UP cells found across any seed/level/district to check');
+  // eslint-disable-next-line no-console
+  console.log(`[multi-shaft] ${checked} UP cells checked across 3 seeds x ${MAZE.LEVELS - 1} levels; `
+    + `${districtsWithMultiple} district(s) had more than one (expected 0 while districtNeighbours `
+    + 'offers at most one vertical neighbour per district)');
+});
+
+/* ------------------------------------------------------------------ */
 /* Fix round 3, Finding 1 (Critical) - the mirror-image bug: walls that   */
 /* used to run all the way to LEVEL_HEIGHT + HEDGE_HEIGHT (14m) sealed a   */
 /* climbing player into a 6x6m box at level N+1, blocking every side       */
@@ -1273,6 +1347,28 @@ function pitProfile(descs, w1, bar = 0.5, n = 23) {
   return { over, total, worst, deep };
 }
 
+/**
+ * THE PIT GATE's bar, restated as a multiple of the well's own footprint
+ * fraction instead of a bare `0.25`.
+ *
+ * The stair well is `(2 * STAIR_WELL_HALF)^2` = 7.84 m^2 of the cell's
+ * `MAZE.CELL^2` = 36 m^2 - `WELL_FRACTION` below, ~21.7% - and that is the
+ * floor this measurement can never read below: a hole exactly the size of
+ * the well, with every sample point over it counted as "dropped" and none
+ * outside it, samples at 1.0x `WELL_FRACTION` by construction. A bare `0.25`
+ * reads as an arbitrary round number sitting suspiciously close to that
+ * floor; stated as `WELL_FRACTION * PIT_GATE_MULTIPLIER` it says what it
+ * actually is - a small amount of slack (for sampling-grid alignment) over
+ * the one-well-and-nothing-more baseline - and it tracks `STAIR_WELL_HALF`
+ * automatically if the well's size ever changes, rather than needing hand
+ * retuning to stay meaningful. It is still nowhere near what a full-cell
+ * hole samples at (~40%+ - see the negative test right below), so it stays
+ * exactly as decisive a detector as the number it replaces.
+ */
+const WELL_FRACTION = (2 * STAIR_WELL_HALF) ** 2 / MAZE.CELL ** 2;
+const PIT_GATE_MULTIPLIER = 1.15;
+const PIT_GATE_BAR = WELL_FRACTION * PIT_GATE_MULTIPLIER;
+
 test('THE PIT GATE: the hole a shaft opens in level N+1 is a stairwell opening, not most of the cell', () => {
   // The measurement round 3 lost. Its predecessor asserted "all four sides of
   // the shaft cell stay blocked at level 1's height", which stopped being
@@ -1287,10 +1383,10 @@ test('THE PIT GATE: the hole a shaft opens in level N+1 is a stairwell opening, 
     const w1 = cellToWorld(cell.x, cell.z, 1);
     const prof = pitProfile(descs, w1);
     const fraction = prof.over / prof.total;
-    assert.ok(fraction < 0.25,
+    assert.ok(fraction < PIT_GATE_BAR,
       `seed ${seed} shaft ${cell.x},${cell.z}: ${prof.over}/${prof.total} sample points across the `
-      + `cell drop more than 0.5m (${(fraction * 100).toFixed(0)}%) - that is a missing floor, `
-      + 'not a hole in one');
+      + `cell drop more than 0.5m (${(fraction * 100).toFixed(0)}%, bar ${(PIT_GATE_BAR * 100).toFixed(1)}%) `
+      + '- that is a missing floor, not a hole in one');
     // eslint-disable-next-line no-console
     console.log(`[pit] seed ${seed} shaft (${cell.x},${cell.z}): ${prof.over}/${prof.total} `
       + `points drop >0.5m (${(fraction * 100).toFixed(0)}%), ${prof.deep} with no tread beneath, `
@@ -1528,13 +1624,26 @@ test('the canopy gate is not vacuous: walls only as tall as a hedge let the clim
     + `highest ${Math.max(...inBand).toFixed(2)}m`);
 });
 
-/* ---------- PROPERTY 6: nothing above the level it serves ---------- */
+/* ---------- PROPERTY 6: a shaft's OWN geometry stops at the level it serves --- */
 
-test('a shaft emits nothing above its own floor + LEVEL_HEIGHT', () => {
+test('shaftColliders itself never emits anything above its own floor + LEVEL_HEIGHT (guard walls are level N+1\'s own geometry, not this)', () => {
   // Fix round 3's rule, kept as an assertion rather than a comment: above
   // that height the cell simply IS a level N+1 cell, and level N+1's own
   // topology governs it. A shaft reaching higher walled off corridors level
   // N+1 had deliberately carved, severing up to 397 of 399 cells.
+  //
+  // Scoped deliberately to `shaftColliders`'s own output, not everything a
+  // shaft causes to exist. The guard rails round the hole in level N+1's
+  // floor (the three railed sides plus the landing lip) sit at
+  // `floorY(level+1) + HEDGE_HEIGHT` = `floorY(level) + LEVEL_HEIGHT +
+  // HEDGE_HEIGHT` - genuinely above this bound - but they are emitted by
+  // `districtColliders`'s hole-punching branch as level N+1's own hedge-height
+  // fence, not by this function. A title or check that swept them in here too
+  // could be "fixed" in the future by relocating an emitter rather than by
+  // changing behaviour, which is exactly the failure mode a regression test
+  // must not have. What this actually guarantees: the stairs, the landing and
+  // the shaft's own enclosing walls - everything `shaftColliders` itself
+  // draws - stay within the level they climb.
   let checked = 0;
   for (const seed of [1, 42, 2026]) {
     const { t, cell } = firstShaft(seed);

@@ -10,6 +10,7 @@
  */
 
 import { MAZE, DIR, cellIndex, districtCoords, isOpen } from '../worlds/maze/MazeTopology.js';
+import { cellToWorld } from '../worlds/maze/MazeColliders.js';
 
 /**
  * Camera framings, derived from each world's actual published layout
@@ -86,13 +87,21 @@ const VIEWS = {
   ],
   // Entrance forecourt centred at (1260, -10); maze grid runs from origin to 2394 m
   // on both axes; hedges 5 m tall. Levels are 9 m apart: level 0 at y=0, level 3 at y=27.
-  // Shaft views are computed dynamically per view() call since maze layout changes per entry.
+  //
+  // The player spawns at a fixed entrance (district dx:10, dz:0, x=1260) and
+  // residency only ever covers the districts within RESIDENCY_RADIUS (2, so
+  // roughly +-240m) of wherever the player actually is - see MazeWorld.js. A
+  // framing computed from anywhere else, or that moves only the camera and
+  // not the player, shows geometry that was never streamed: an empty void
+  // for shaft-up, bare sky for tower-top. Both views below are computed
+  // dynamically per view() call, scanning ONLY the districts the maze world
+  // has actually streamed in - see Harness._findResidentShaft.
   maze: [
     { name: 'forecourt', pos: [1260, 4, -16], look: [1260, 2, 20], fov: 75 },
     { name: 'corridor', pos: [1260, 1.7, 40], look: [1260, 1.7, 120], fov: 75 },
     { name: 'above-entrance', pos: [1260, 60, -40], look: [1260, 0, 200], fov: 70 },
     { name: 'shaft-up', computed: true },
-    { name: 'tower-top', pos: [1200, 30, 1200], look: [1200, 8, 1200], fov: 80 },
+    { name: 'tower-top', computed: true },
   ],
 };
 
@@ -142,10 +151,12 @@ class Harness {
     this.freezeCamera(true);
     const cam = this.game.engine.camera;
 
-    // Handle dynamically computed views (e.g., shaft-up).
+    // Handle dynamically computed views (e.g., shaft-up, tower-top). Awaited:
+    // tower-top's computation teleports the player and waits for residency
+    // and the canopy to follow before it can report where to look.
     let pos, look, fov;
     if (v.computed) {
-      const computed = this._computeView(v.name, worldId);
+      const computed = await this._computeView(v.name, worldId);
       if (!computed) throw new Error(`harness: could not compute view "${name}"`);
       pos = computed.pos;
       look = computed.look;
@@ -167,34 +178,39 @@ class Harness {
   }
 
   /**
-   * Find a staircase cell and compute the shaft-up camera framing.
-   * Returns { pos, look, fov } or null if no shaft is found.
+   * Find a cell carrying DIR.UP inside a district the maze world has
+   * actually streamed in - never the whole 400x400 grid.
+   *
+   * The previous version of this scan started from (0,0) and returned
+   * whichever UP cell it met first, with no regard for whether anything was
+   * ever built there. The player spawns at a fixed entrance (district
+   * dx:10, dz:0, world x=1260) and `MazeWorld` only ever keeps districts
+   * within `RESIDENCY_RADIUS` (2 districts, ~240m) of the player resident -
+   * see MazeWorld.js. A shaft found by scanning from the origin is
+   * overwhelmingly likely to sit in a district nobody streamed, so the
+   * "shaft-up" view used to frame empty void: not an error, just wrong,
+   * which is worse for a review instrument that is supposed to catch wrong
+   * things. Scanning only `w.chunks.residentKeys()` instead guarantees
+   * whatever this finds is actually built.
+   *
+   * @param {number|null} [level] restrict the search to one level, or search
+   *   every resident district regardless of level.
+   * @returns {{x:number, z:number, level:number}|null}
    */
-  _findShaftFraming() {
+  _findResidentShaft(level = null) {
     const w = this.game.worldManager.active;
-    if (w?.id !== 'maze') return null;
+    if (w?.id !== 'maze' || !w.cells || !w.chunks) return null;
 
-    const { cells } = w;
-    if (!cells) return null;
-
-    // Scan for a cell with UP passage open, starting from level 0.
-    for (let level = 0; level < MAZE.LEVELS - 1; level++) {
-      for (let z = 0; z < MAZE.CELLS; z++) {
-        for (let x = 0; x < MAZE.CELLS; x++) {
-          const idx = cellIndex(x, z, level);
-          if (isOpen(cells, idx, DIR.UP)) {
-            // Found a shaft. Position camera inside it looking up.
-            // World-space cell coordinate: x,z in metres (cells are 6m), y at level height.
-            const cellX = x * MAZE.CELL + MAZE.CELL / 2;
-            const cellZ = z * MAZE.CELL + MAZE.CELL / 2;
-            const levelY = level * MAZE.LEVEL_HEIGHT;
-
-            // Camera low inside the shaft, looking up past the next level.
-            const pos = [cellX, levelY + 0.8, cellZ];
-            const look = [cellX, levelY + MAZE.LEVEL_HEIGHT * 2, cellZ];
-            const fov = 75;
-            return { pos, look, fov };
-          }
+    const D = MAZE.DISTRICT;
+    for (const key of w.chunks.residentKeys()) {
+      const d = districtCoords(key);
+      if (level !== null && d.level !== level) continue;
+      const x0 = d.dx * D, z0 = d.dz * D;
+      for (let lz = 0; lz < D; lz++) {
+        for (let lx = 0; lx < D; lx++) {
+          const x = x0 + lx, z = z0 + lz;
+          const idx = cellIndex(x, z, d.level);
+          if (isOpen(w.cells, idx, DIR.UP)) return { x, z, level: d.level };
         }
       }
     }
@@ -202,12 +218,84 @@ class Harness {
   }
 
   /**
+   * Find a resident staircase cell and compute the shaft-up camera framing.
+   * Returns { pos, look, fov } or null if no resident shaft is found.
+   */
+  _findShaftFraming() {
+    const shaft = this._findResidentShaft();
+    if (!shaft) return null;
+
+    // cellToWorld already returns the cell's own CENTRE (see its docstring) -
+    // not a corner to be offset by another half-cell, which is what this used
+    // to do by hand (`x * MAZE.CELL + MAZE.CELL / 2`) and which put every
+    // computed view a half-cell off the shaft it meant to frame.
+    const w = cellToWorld(shaft.x, shaft.z, shaft.level);
+
+    // Camera low inside the shaft, looking up past the next level.
+    const pos = [w.x, w.y + 0.8, w.z];
+    const look = [w.x, w.y + MAZE.LEVEL_HEIGHT * 2, w.z];
+    return { pos, look, fov: 75 };
+  }
+
+  /**
+   * Find a resident shaft, teleport the player onto its landing at level
+   * N+1, and frame the canopy from above it.
+   *
+   * `tower-top` used to move only the camera, to a fixed point nowhere near
+   * where the player (and therefore residency and the canopy - both driven
+   * off `player.position` in `MazeWorld.update`) actually were. The camera
+   * looked out over whatever level the player last stood on, which streams
+   * nothing at that height and reads as bare sky. Teleporting the player is
+   * what makes residency and the canopy follow to the level this view is
+   * meant to show - the same fix shape as `_findShaftFraming`, applied to
+   * the half of the state a camera move alone cannot reach.
+   *
+   * @returns {Promise<{pos:number[], look:number[], fov:number}|null>}
+   */
+  async _computeTowerTop() {
+    // Search from wherever the player currently is (a cold load's resident
+    // set, centred on the fixed entrance) rather than the destination level -
+    // nothing is resident up there yet to search.
+    const shaft = this._findResidentShaft(0);
+    if (!shaft) return null;
+
+    const w = cellToWorld(shaft.x, shaft.z, shaft.level);
+    const landingY = w.y + MAZE.LEVEL_HEIGHT;
+
+    // NOT the cell's own centre. `MazeColliders.stairWellBounds` offsets the
+    // stair well into the cell's +x/+z quadrant (`STAIR_WELL_OFFSET`), and
+    // that quadrant reaches back across the cell centre - so a teleport
+    // straight to (w.x, w.z) lands the player inside the hole itself, on top
+    // of a guard rail rather than on solid floor (measured in-browser: a
+    // teleport to the raw centre came to rest at HEDGE_HEIGHT above the floor
+    // it should have landed on). The far corner - diagonally opposite the
+    // well, the same "free corner" `scripts/tests/maze-enclosure.test.mjs`
+    // routes a walking capsule through - is guaranteed floor.
+    const cx = w.x - 1.6;
+    const cz = w.z - 1.6;
+
+    // Hand control back to the player controller just long enough to move
+    // it - mirrors Harness.teleport() - then re-freeze once residency and
+    // the canopy have had frames to update at the new position.
+    this.freezeCamera(false);
+    this.game.player.teleport(new this.game.THREE.Vector3(cx, landingY + 0.1, cz), 0);
+    for (let i = 0; i < 8; i++) await frame();
+    this.freezeCamera(true);
+
+    // High above the landing, looking down and out across the canopy this
+    // level's hedge-tops become once nothing streamed is under the camera.
+    const pos = [cx, landingY + 30, cz];
+    const look = [cx, landingY, cz];
+    return { pos, look, fov: 80 };
+  }
+
+  /**
    * Compute view parameters for dynamically generated views.
    */
-  _computeView(name, worldId) {
-    if (worldId === 'maze' && name === 'shaft-up') {
-      return this._findShaftFraming();
-    }
+  async _computeView(name, worldId) {
+    if (worldId !== 'maze') return null;
+    if (name === 'shaft-up') return this._findShaftFraming();
+    if (name === 'tower-top') return this._computeTowerTop();
     return null;
   }
 

@@ -55,6 +55,25 @@ export class MazeCanopy {
     /** @type {Array<number|null>} slot -> district key, the reverse of `_resident` */
     this._slotDistrict = new Array(MAX_CANOPY).fill(null);
 
+    this._mesh = null;
+    this._ensureMesh();
+  }
+
+  /**
+   * Build `_mesh` if it does not currently exist.
+   *
+   * Split out of the constructor so `_add` can call it too: `disposeAll` nulls
+   * `_mesh` rather than leaving a disposed-but-still-referenced instance
+   * behind, and without this guard a stray `update()` call after `disposeAll`
+   * would dereference that null and either throw somewhere unhelpful or (if
+   * some future edit made `_add` more defensive on its own) silently render
+   * nothing forever - a broken contract with no error to point at it. Lazily
+   * rebuilding instead makes a canopy usable again exactly when something
+   * asks it to be, which is what every other pooled resource in this class
+   * already does slot-by-slot.
+   */
+  _ensureMesh() {
+    if (this._mesh) return;
     this._mesh = new THREE.InstancedMesh(this._geo, this.material, MAX_CANOPY);
     this._mesh.name = 'maze:canopy';
     this._mesh.castShadow = false;
@@ -80,6 +99,7 @@ export class MazeCanopy {
 
   /** Claim the next packed slot for `key` and write its world matrix into it. */
   _add(key) {
+    this._ensureMesh();
     const slot = this._mesh.count;
     if (slot >= MAX_CANOPY) {
       // Cannot happen while MAX_CANOPY tracks CANOPY_RADIUS - see the constant's
@@ -132,5 +152,11 @@ export class MazeCanopy {
     this.group.remove(this._mesh);
     this._mesh.dispose();
     this._geo.dispose();
+    /* Nulled, not left dangling: `_add` (via `_ensureMesh`) rebuilds it on
+     * demand, so a canopy that outlives its own disposal - unreachable today,
+     * since `MazeWorld.dispose()` drops the whole instance and `build()`
+     * constructs a fresh one, but not guaranteed to stay that way - keeps
+     * working instead of silently going inert. */
+    this._mesh = null;
   }
 }

@@ -598,3 +598,217 @@ test('ENTRY_SEAL_MARGIN is load-bearing: a wall starting at the raw break-even h
   assert.equal(isEnclosureSound(soundDescs, SHAFT), true,
     'a wall starting exactly at ENTRY_SEAL_FROM was reported unsound');
 });
+
+/* ------------------------------------------------------------------ */
+/* Fix round 2: the stairs climb into a solid ceiling once level N+1's    */
+/* floor is resident. Finding 1 (Critical). districtColliders(...,level)  */
+/* now perforates that floor over a shaft landing; these tests prove it   */
+/* actually works, in both directions, on real multi-level generation.    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Walk a capsule up a real shaft's own treads, tread by tread, checking at
+ * each one whether standing on it would put the capsule's body inside any
+ * NON-tread collider (the floor slab above being the one that mattered:
+ * level N+1's floor used to have no hole in it, so its underside acted as a
+ * ceiling around 6m up). Reports the highest tread the capsule can actually
+ * occupy before the first one that is blocked - a real step-up would refuse
+ * to advance past that point exactly as a solid ceiling refuses it here.
+ *
+ * This does not reimplement Player.js's real step-up algorithm (grounded/
+ * coyote gating, sweep-and-probe) - it is a simpler, direct proxy: "is the
+ * space this tread's landing spot occupies actually clear of solid
+ * geometry other than the tread itself." That is exactly the question
+ * Finding 1 turns on, and it is cheap enough to run per shaft without a
+ * physics-step simulation.
+ */
+function climbTreads(descs, shaft) {
+  const treads = descs
+    .filter((d) => d.kind === 'stair'
+      && Math.abs(d.cx - shaft.cx) < MAZE.CELL && Math.abs(d.cz - shaft.cz) < MAZE.CELL)
+    .sort((a, b) => a.cy - b.cy);
+  const solids = descs.filter((d) => d.kind !== 'stair');
+  const EPS = 1e-6;
+  let maxY = shaft.floorY;
+  for (const t of treads) {
+    const standY = t.cy + t.hy; // feet height if standing on this tread's top
+    const blocked = solids.some((d) => {
+      const overlapX = Math.abs(d.cx - t.cx) < d.hx + RADIUS;
+      const overlapZ = Math.abs(d.cz - t.cz) < d.hz + RADIUS;
+      const dTop = d.cy + d.hy, dBottom = d.cy - d.hy;
+      const overlapY = dBottom < standY + HEIGHT - EPS && dTop > standY + EPS;
+      return overlapX && overlapZ && overlapY;
+    });
+    if (blocked) break;
+    maxY = standY;
+  }
+  return maxY;
+}
+
+test('THE CEILING GATE: climbing a real shaft with level N+1 resident reaches LEVEL_HEIGHT', () => {
+  // Finding 1: level N+1's own district floor slab used to cover a shaft
+  // landing with no hole in it, so the top few treads were embedded inside
+  // it - invisible with only level 0 loaded (nothing above to hit), and a
+  // hard stop around 6m the moment level N+1 streams in. This is checked
+  // with BOTH levels' colliders present together, which is what exposed the
+  // bug in the first place.
+  let checked = 0;
+  for (const seed of [1, 42, 2026]) {
+    const t = generateTopology(seed, { levels: 2 });
+    for (let dz = 0; dz < 4 && checked < 6; dz++) {
+      for (let dx = 0; dx < 4 && checked < 6; dx++) {
+        const cells = shaftCells(t.cells, dx, dz, 0);
+        if (!cells.length) continue;
+        const c = cells[0];
+        const w = cellToWorld(c.x, c.z, 0);
+        const descs = [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)];
+        const reached = climbTreads(descs, { cx: w.x, cz: w.z, floorY: w.y });
+        assert.ok(reached >= w.y + MAZE.LEVEL_HEIGHT - 1e-6,
+          `seed ${seed} shaft ${c.x},${c.z}: climb stopped at ${(reached - w.y).toFixed(2)}m ` +
+          `with level 1 resident, short of LEVEL_HEIGHT (${MAZE.LEVEL_HEIGHT}m)`);
+        checked++;
+      }
+    }
+  }
+  assert.ok(checked > 0, 'no shafts found to check');
+});
+
+test('a shaft with level N+1\'s UNPERFORATED floor is stuck around 6m - confirms the ceiling gate would have caught Finding 1', () => {
+  // Rebuilds the exact bug: level 1's floor as ONE slab with no hole,
+  // exactly what districtColliders emitted before this fix round. Proves
+  // climbTreads (and by extension the gate above) actually detects the
+  // failure it claims to guard, rather than passing vacuously.
+  const t = generateTopology(2026, { levels: 2 });
+  const dx = 0, dz = 0;
+  const cells = shaftCells(t.cells, dx, dz, 0);
+  assert.ok(cells.length > 0, 'fixture needs a shaft in district (0,0)');
+  const c = cells[0];
+  const w = cellToWorld(c.x, c.z, 0);
+  const descs0 = districtColliders(t.cells, dx, dz, 0);
+  const D = MAZE.DISTRICT;
+  const half = (D * MAZE.CELL + MAZE.CELL) / 2;
+  const originX = dx * D * MAZE.CELL, originZ = dz * D * MAZE.CELL;
+  const centerX = originX + (D - 1) * MAZE.CELL / 2, centerZ = originZ + (D - 1) * MAZE.CELL / 2;
+  const unperforatedFloor = {
+    cx: centerX, cy: MAZE.LEVEL_HEIGHT - 0.5, cz: centerZ, hx: half, hy: 0.5, hz: half, kind: 'floor',
+  };
+  const reached = climbTreads([...descs0, unperforatedFloor], { cx: w.x, cz: w.z, floorY: w.y });
+  assert.ok(reached < w.y + MAZE.LEVEL_HEIGHT - 1,
+    `expected the unperforated-floor fixture to stop the climb well short of LEVEL_HEIGHT ` +
+    `(reached ${(reached - w.y).toFixed(2)}m) - if it doesn't, climbTreads can't be trusted to catch Finding 1`);
+});
+
+test('walking level 1 across a shaft cannot fall through the hole in its floor', () => {
+  // The other half of Finding 1's ask: the hole that lets a climbing player
+  // through must not let a level-1 pedestrian fall through it walking
+  // normally. It doesn't, but not because there is floor under the hole -
+  // the shaft's own walls (emitted once, at level 0, but physically
+  // spanning up through this level's height) are sealed on every side by
+  // ENTRY_SEAL_FROM (~3.57m), well below LEVEL_HEIGHT (9m), so nobody
+  // walking the level-1 corridor grid can even reach the hole's footprint
+  // sideways - the only way into that column is climbing up through it.
+  // This drives a capsule from open corridor space toward the shaft centre
+  // from all four cardinal directions, at level 1's floor height, with a
+  // small per-step downward nudge standing in for gravity (Physics applies
+  // none of its own) - if the wall ever failed to block entry, an
+  // unsupported capsule over the hole would fall freely and `minY` would
+  // drop far below the floor.
+  let checked = 0;
+  for (const seed of [1, 2026]) {
+    const t = generateTopology(seed, { levels: 2 });
+    for (let dz = 0; dz < 4 && checked < 3; dz++) {
+      for (let dx = 0; dx < 4 && checked < 3; dx++) {
+        const cells = shaftCells(t.cells, dx, dz, 0);
+        if (!cells.length) continue;
+        const c = cells[0];
+        const w1 = cellToWorld(c.x, c.z, 1);
+        const descs = [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)];
+        const p = new Physics(null);
+        for (const d of descs) p.addBox(d.cx, d.cy, d.cz, d.hx, d.hy, d.hz);
+        for (const [ddx, ddz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const pos = new THREE.Vector3(w1.x + ddx * 5, w1.y + 0.1, w1.z + ddz * 5);
+          let minY = pos.y;
+          for (let s = 0; s < 600; s++) {
+            pos.x -= ddx * 0.02; pos.z -= ddz * 0.02;
+            pos.y -= 0.05; // stands in for gravity - Physics applies none of its own
+            p.resolveCapsule(pos, RADIUS, HEIGHT);
+            minY = Math.min(minY, pos.y);
+          }
+          assert.ok(minY >= w1.y - 0.5,
+            `seed ${seed} shaft ${c.x},${c.z}, approach (${ddx},${ddz}): capsule dropped to ` +
+            `${minY.toFixed(2)}m walking toward the shaft at level 1 (floor is ${w1.y}m) - it fell through`);
+        }
+        checked++;
+      }
+    }
+  }
+  assert.ok(checked > 0, 'no shafts found to check');
+});
+
+/* ------------------------------------------------------------------ */
+/* Fix round 2, Finding 2 (Important): the simulated proof (escapeHeight, */
+/* seeded from every standable) had only ever run on synthetic fixtures - */
+/* never on real shaftColliders output. This is the gap that let 617     */
+/* unenterable shafts pass six ways of "is it sealed" undetected; running */
+/* it on the real thing is the point.                                    */
+/* ------------------------------------------------------------------ */
+
+test('the simulated proof (escapeHeight) runs on real generated shafts, not just fixtures', () => {
+  // escapeHeight is expensive (32 angles x ~25 launch points x 200 steps per
+  // shaft), so this samples a small, fixed number of real shafts rather
+  // than all 617 - enough to prove the simulated half of the proof runs on
+  // the real thing, not to re-run the geometric enumeration a second way.
+  const SAMPLE_PER_SEED = 2;
+  let sampled = 0;
+  const t0 = Date.now();
+  for (const seed of [11, 47]) {
+    const t = generateTopology(seed, { levels: 2 });
+    let sampledThisSeed = 0;
+    for (let dz = 0; dz < 6 && sampledThisSeed < SAMPLE_PER_SEED; dz++) {
+      for (let dx = 0; dx < 6 && sampledThisSeed < SAMPLE_PER_SEED; dx++) {
+        const descs = districtColliders(t.cells, dx, dz, 0);
+        for (const c of shaftCells(t.cells, dx, dz, 0)) {
+          if (sampledThisSeed >= SAMPLE_PER_SEED) break;
+          const w = cellToWorld(c.x, c.z, 0);
+          const shaft = { cx: w.x, cz: w.z, floorY: w.y };
+          const escape = escapeHeight(descs, shaft);
+          assert.ok(escape < MAZE.HEDGE_HEIGHT,
+            `seed ${seed} shaft ${c.x},${c.z}: capsule escaped to ${escape.toFixed(2)}m, at/above hedge height`);
+          sampledThisSeed++;
+          sampled++;
+        }
+      }
+    }
+  }
+  const elapsedMs = Date.now() - t0;
+  assert.ok(sampled > 0, 'no real shafts sampled');
+  // eslint-disable-next-line no-console
+  console.log(`[simulated proof on real shafts] ${sampled} shafts sampled across 2 seeds, ${elapsedMs} ms`);
+});
+
+/* ------------------------------------------------------------------ */
+/* Fix round 2, Finding 5 (Minor): the narrowest strip of one tread not   */
+/* already covered by its neighbour, along either axis, had no headroom   */
+/* over the capsule's own diameter. Treads were widened (0.75m -> 0.9m    */
+/* half-extent); this is the regression test that fails loudly if a       */
+/* future tweak to tread size, spiral radius, or capsule radius erodes    */
+/* that margin again.                                                     */
+/* ------------------------------------------------------------------ */
+
+test('consecutive treads overlap by at least the capsule diameter, on both axes', () => {
+  const descs = shaftColliders(new Uint8Array(1).fill(DIR.UP), 0, 0, 0);
+  const treads = descs.filter((d) => d.kind === 'stair').sort((a, b) => a.cy - b.cy);
+  assert.ok(treads.length > 1, 'expected multiple treads to compare');
+  const capsuleDiameter = RADIUS * 2;
+  let minOverlap = Infinity;
+  for (let i = 1; i < treads.length; i++) {
+    const a = treads[i - 1], b = treads[i];
+    const ox = Math.min(a.cx + a.hx, b.cx + b.hx) - Math.max(a.cx - a.hx, b.cx - b.hx);
+    const oz = Math.min(a.cz + a.hz, b.cz + b.hz) - Math.max(a.cz - a.hz, b.cz - b.hz);
+    minOverlap = Math.min(minOverlap, ox, oz);
+  }
+  assert.ok(minOverlap >= capsuleDiameter,
+    `narrowest consecutive-tread overlap is ${minOverlap.toFixed(3)}m, ` +
+    `below the ${capsuleDiameter.toFixed(2)}m capsule diameter - a climbing capsule ` +
+    'could lose support at the transition between treads');
+});

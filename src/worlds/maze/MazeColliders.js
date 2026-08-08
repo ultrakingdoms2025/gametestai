@@ -152,23 +152,40 @@ export function cellToWorld(x, z, level) {
  *
  * The steps spiral around the cell's edge (one and a half turns) so a 6 m
  * cell can climb 9 m without any single rise exceeding the auto-step. Tread
- * half-extents are kept small (0.75 m, well under half the 4.8 m corridor)
- * so a tread's footprint never touches a diagonal neighbour cell -
+ * half-extents (0.9 m, widened from 0.75 m in fix round 2 - Finding 5 found
+ * the narrowest strip a climbing capsule could rely on between consecutive
+ * treads was only 0.616 m against its own 0.70 m diameter, no headroom if
+ * tread size or capsule radius ever moved) are kept well under half the
+ * 4.8 m corridor and under the 2.4 m ceiling `overlappingShaftCells` needs -
  * `overlappingShaftCells`/`isEnclosureSound` group a descriptor into every
  * cell its footprint touches, boundary-inclusive, and a tread flush to the
  * cell pitch would wrongly pull in four cells it only meets at a corner.
  *
- * The shaft's own walls are emitted at full height (floor to
- * `LEVEL_HEIGHT + HEDGE_HEIGHT`) on the cell's CLOSED sides. The OPEN side -
- * the horizontal passage you actually walk in through - is walled only from
+ * The shaft's own walls are emitted on the cell's CLOSED sides, and on the
+ * OPEN side (the horizontal passage you actually walk in through) only from
  * `ENTRY_SEAL_FROM` above the floor, leaving a doorway roughly 3.5 m tall
  * below that - comfortably clear of the 1.75 m player. Fix round 1 sealed
- * this side from the floor instead (offset by the auto-step height alone),
- * which left only a 0.45 m doorway and made every shaft unenterable; see
- * `ENTRY_SEAL_FROM`'s own comment for the derivation and the spec amendment
- * that replaced it. `isEnclosureSound` now applies that same lower bound
- * itself, so a caller proving a real shaft sound passes the shaft's true
- * floor - it no longer has to know about or duplicate this offset.
+ * the open side from the floor instead (offset by the auto-step height
+ * alone), which left only a 0.45 m doorway and made every shaft unenterable;
+ * see `ENTRY_SEAL_FROM`'s own comment for the derivation and the spec
+ * amendment that replaced it. `isEnclosureSound` applies that same lower
+ * bound itself, so a caller proving a real shaft sound passes the shaft's
+ * true floor - it no longer has to know about or duplicate this offset.
+ *
+ * On the NORTH and WEST closed sides specifically (fix round 2, Finding 4),
+ * the wall starts at `HEDGE_HEIGHT` rather than the floor, stacking
+ * CONTIGUOUSLY on top of the ordinary 5 m hedge `districtColliders` already
+ * draws there (that hedge is owned by - always emitted by - this same
+ * cell, so it is always present alongside this wall; `isEnclosureSound`
+ * already treats vertically contiguous pieces as one span, so this loses no
+ * coverage) instead of duplicating it floor-to-top. EAST and SOUTH keep
+ * full floor-to-top walls: those sides' 5 m hedge, when it exists, is owned
+ * and emitted by the NEIGHBOURING cell, which can be a different district
+ * on a seam - `districtColliders`'s own doc comment explains why S/E
+ * ownership works that way. Relying on that neighbour's output here would
+ * reintroduce exactly the district-seam dependency Task 3's Trap 2 was
+ * written to avoid, for a purely cosmetic collider-count saving, so it is
+ * not worth it: E/S stay fully self-sufficient.
  */
 export function shaftColliders(cells, x, z, level) {
   const idx = cellIndex(x, z, level);
@@ -178,6 +195,7 @@ export function shaftColliders(cells, x, z, level) {
   const out = [];
   const rise = MAZE.LEVEL_HEIGHT / SHAFT_STEPS;
   const r = MAZE.CORRIDOR / 2 - 0.5;
+  const treadHalf = 0.9;
 
   for (let i = 0; i < SHAFT_STEPS; i++) {
     const a = (i / SHAFT_STEPS) * Math.PI * 2 * 1.5; // one and a half turns
@@ -187,24 +205,25 @@ export function shaftColliders(cells, x, z, level) {
       cx: w.x + Math.cos(a) * r,
       cy: (bottom + top) / 2,
       cz: w.z + Math.sin(a) * r,
-      hx: 0.75, hy: (top - bottom) / 2, hz: 0.75,
+      hx: treadHalf, hy: (top - bottom) / 2, hz: treadHalf,
       kind: 'stair',
       enclosed: true,
     });
   }
 
-  /* Walls. Full height, floor to top, on closed sides; on the open side (the
-   * way in) the wall stops ENTRY_SEAL_FROM above the floor instead - see
-   * this function's own comment for why. */
+  /* Walls. See this function's own comment for the per-side reasoning. */
   const H = MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT;
   const half = MAZE.CELL / 2;
   const sides = [
-    { dir: DIR.N, dx: 0, dz: -1 }, { dir: DIR.E, dx: 1, dz: 0 },
-    { dir: DIR.S, dx: 0, dz: 1 }, { dir: DIR.W, dx: -1, dz: 0 },
+    { dir: DIR.N, dx: 0, dz: -1, selfOwned: true }, { dir: DIR.E, dx: 1, dz: 0, selfOwned: false },
+    { dir: DIR.S, dx: 0, dz: 1, selfOwned: false }, { dir: DIR.W, dx: -1, dz: 0, selfOwned: true },
   ];
   for (const s of sides) {
     const open = isOpen(cells, idx, s.dir);
-    const baseY = open ? w.y + ENTRY_SEAL_FROM : w.y;
+    let baseY;
+    if (open) baseY = w.y + ENTRY_SEAL_FROM;
+    else if (s.selfOwned) baseY = w.y + MAZE.HEDGE_HEIGHT;
+    else baseY = w.y;
     const topY = w.y + H;
     out.push({
       cx: w.x + s.dx * half,
@@ -248,21 +267,77 @@ export function districtColliders(cells, dx, dz, level) {
   /** @type {ColliderDesc[]} */
   const out = [];
 
+  /* Fix round 2, Finding 1: a shaft's stairs climb into this district's OWN
+   * floor slab unless it has a hole where the shaft lands. The district
+   * graph allows at most one UP edge per (dx,dz,level) node (see
+   * buildDistrictGraph - each node has at most one "up" neighbour), and
+   * carveDistrict places at most one vertical doorway per open edge, so at
+   * most one cell in this whole district can carry DIR.UP at level-1
+   * landing here. Scanning for it costs one pass over the district's own
+   * cells at the level below - cheap, and simpler than threading district
+   * coordinates into a per-cell "is this a shaft landing" query. */
+  let hole = null;
+  if (level > 0) {
+    for (let lz = 0; lz < D && !hole; lz++) {
+      for (let lx = 0; lx < D; lx++) {
+        const hx = x0 + lx, hz = z0 + lz;
+        if (isOpen(cells, cellIndex(hx, hz, level - 1), DIR.UP)) { hole = { x: hx, z: hz }; break; }
+      }
+    }
+  }
+
   /* One floor slab per district, extended half a cell past every border so it
    * overlaps its neighbours. A chunk boundary must never be a hole to fall
-   * through, and an overlap is the cheapest possible guarantee of that. */
+   * through, and an overlap is the cheapest possible guarantee of that -
+   * EXCEPT the one deliberate hole above a shaft landing, which must let a
+   * climbing capsule through while still supporting a pedestrian walking
+   * level `level` everywhere else. The shaft's own walls (emitted at
+   * level-1, but physically spanning up through this level's height - see
+   * `shaftColliders`) are what stop that pedestrian from ever reaching the
+   * hole sideways: at this level's height they are sealed on every side
+   * (`ENTRY_SEAL_FROM` sits at ~3.57m, well below `LEVEL_HEIGHT` 9m), so the
+   * hole is only ever reachable by climbing up through it, never by walking
+   * into it. */
   const half = (D * MAZE.CELL + MAZE.CELL) / 2;
   const originX = x0 * MAZE.CELL;
   const originZ = z0 * MAZE.CELL;
-  out.push({
-    cx: originX + (D - 1) * MAZE.CELL / 2,
-    cy: baseY - 0.5,
-    cz: originZ + (D - 1) * MAZE.CELL / 2,
-    hx: half,
-    hy: 0.5,
-    hz: half,
-    kind: 'floor',
-  });
+  const centerX = originX + (D - 1) * MAZE.CELL / 2;
+  const centerZ = originZ + (D - 1) * MAZE.CELL / 2;
+  const floorX0 = centerX - half, floorX1 = centerX + half;
+  const floorZ0 = centerZ - half, floorZ1 = centerZ + half;
+
+  const pushFloorRect = (fx0, fx1, fz0, fz1) => {
+    out.push({
+      cx: (fx0 + fx1) / 2,
+      cy: baseY - 0.5,
+      cz: (fz0 + fz1) / 2,
+      hx: (fx1 - fx0) / 2,
+      hy: 0.5,
+      hz: (fz1 - fz0) / 2,
+      kind: 'floor',
+    });
+  };
+
+  if (!hole) {
+    pushFloorRect(floorX0, floorX1, floorZ0, floorZ1);
+  } else {
+    // Tile the district floor as four rectangles around the hole - west and
+    // east strips run the full Z span; north and south strips fill the
+    // remaining middle column only. Together with the hole itself (left
+    // empty) this covers the district's full floor footprint exactly once:
+    // no overlap, no gap, anywhere except the hole. The hole is sized to
+    // exactly the shaft cell's own footprint (MAZE.CELL, matching the
+    // boundary shaftColliders' walls already stand on), never larger - a
+    // bigger hole would open a real gap beyond where those walls protect it.
+    const hw = cellToWorld(hole.x, hole.z, level);
+    const hHalf = MAZE.CELL / 2;
+    const hx0 = hw.x - hHalf, hx1 = hw.x + hHalf;
+    const hz0 = hw.z - hHalf, hz1 = hw.z + hHalf;
+    pushFloorRect(floorX0, hx0, floorZ0, floorZ1); // west
+    pushFloorRect(hx1, floorX1, floorZ0, floorZ1); // east
+    pushFloorRect(hx0, hx1, floorZ0, hz0); // north (middle column)
+    pushFloorRect(hx0, hx1, hz1, floorZ1); // south (middle column)
+  }
 
   const HH = MAZE.HEDGE_HEIGHT / 2;
   const HT = MAZE.HEDGE_THICK / 2;

@@ -129,8 +129,16 @@ function escapeHeight(descs, shaft) {
         if (s % 20 === 0 && grounded) pos.y += HOP;   // try to hop out on the way
         const res = p.resolveCapsule(pos, RADIUS, HEIGHT);
         grounded = res.grounded;
-        const outside = Math.abs(pos.x - shaft.cx) > MAZE.CELL / 2
-                     || Math.abs(pos.z - shaft.cz) > MAZE.CELL / 2;
+        /* `hx`/`hz` when the caller passes a connector REGION rather than a
+         * single cell - a tunnel spans two. Defaulting to a half-cell here
+         * while the caller passes a region centred on the BOUNDARY between
+         * two cells makes most of the connector's own treads read as
+         * "outside", and their tops then look exactly like canopy escapes.
+         * That produced a false exploit report of 1004 escapes at 2.5 m and
+         * 4.9 m - which are simply flight-1 and flight-2 tread heights - and
+         * a working tunnel was disabled on the strength of it. */
+        const outside = Math.abs(pos.x - shaft.cx) > (shaft.hx ?? MAZE.CELL / 2)
+                     || Math.abs(pos.z - shaft.cz) > (shaft.hz ?? MAZE.CELL / 2);
         if (outside) highestOutside = Math.max(highestOutside, pos.y - shaft.floorY);
       }
     }
@@ -1717,8 +1725,16 @@ function groundedEscapeHeights(descs, shaft) {
         const res = p.resolveCapsule(pos, RADIUS, HEIGHT);
         grounded = res.grounded;
         if (grounded && vy < 0) vy = 0;
-        const outside = Math.abs(pos.x - shaft.cx) > MAZE.CELL / 2
-                     || Math.abs(pos.z - shaft.cz) > MAZE.CELL / 2;
+        /* `hx`/`hz` when the caller passes a connector REGION rather than a
+         * single cell - a tunnel spans two. Defaulting to a half-cell here
+         * while the caller passes a region centred on the BOUNDARY between
+         * two cells makes most of the connector's own treads read as
+         * "outside", and their tops then look exactly like canopy escapes.
+         * That produced a false exploit report of 1004 escapes at 2.5 m and
+         * 4.9 m - which are simply flight-1 and flight-2 tread heights - and
+         * a working tunnel was disabled on the strength of it. */
+        const outside = Math.abs(pos.x - shaft.cx) > (shaft.hx ?? MAZE.CELL / 2)
+                     || Math.abs(pos.z - shaft.cz) > (shaft.hz ?? MAZE.CELL / 2);
         if (outside && grounded) heights.push(pos.y - shaft.floorY);
       }
     }
@@ -2157,76 +2173,195 @@ function tunnelWorldFor(t, dx, dz) {
  * 7 measured that trying only one reported a perfectly connected region as
  * severed.
  */
-function regionCrossable(descs, region, level, y) {
+/**
+ * Every pair of passages the TOPOLOGY opens out of a connector's region, and
+ * whether a capsule can actually get from one to the other.
+ *
+ * The property is "every passage level N's own topology opens still has a
+ * route", not "the region is crossable in every direction". Demanding the
+ * latter asks a tunnel to leave a way through faces the MAZE ITSELF walls off,
+ * and duly reported a perfectly good tunnel as severing its corridor - both
+ * candidate crossings ending an identical 2.15 m short, which is what a solid
+ * wall looks like. Task 7's first draft made the same mistake in mirror image
+ * by routing through the well itself.
+ */
+function openFacesOf(cells, region, level) {
+  const faces = [];
+  const half = MAZE.CELL / 2;
+  for (let cz = region.z0; cz <= region.z1; cz++) {
+    for (let cx = region.x0; cx <= region.x1; cx++) {
+      const w = cellToWorld(cx, cz, level);
+      for (const s of [{ d: DIR.N, dx: 0, dz: -1 }, { d: DIR.E, dx: 1, dz: 0 },
+        { d: DIR.S, dx: 0, dz: 1 }, { d: DIR.W, dx: -1, dz: 0 }]) {
+        const nx = cx + s.dx, nz = cz + s.dz;
+        if (nx >= region.x0 && nx <= region.x1 && nz >= region.z0 && nz <= region.z1) continue;
+        if (!isOpen(cells, cellIndex(cx, cz, level), s.d)) continue;
+        faces.push({ x: w.x + s.dx * (half + 1.2), z: w.z + s.dz * (half + 1.2) });
+      }
+    }
+  }
+  return faces;
+}
+
+/**
+ * FLOOD FILL, not hand-routed waypoints.
+ *
+ * Three separate versions of this measurement were wrong before this one, all
+ * for the same reason: a hand-picked detour only finds the way round if the
+ * author guessed the right way round. It detoured in x when the answer was z;
+ * it detoured outside the region into cells that turned out to be solid; and
+ * it demanded crossings between faces the topology never opened. Every one of
+ * those reported a perfectly good tunnel as severing the maze.
+ *
+ * A flood fill has no route to guess. It marks every standable sample point in
+ * and around the region and asks whether they form one component - which is
+ * what "you can still walk away" actually means, and what 2b used to prove the
+ * staircase (400/400 cells).
+ */
+function walkableComponent(descs, region, level, y) {
   const p = worldOf(descs);
   const a = cellToWorld(region.x0, region.z0, level);
   const b = cellToWorld(region.x1, region.z1, level);
   const half = MAZE.CELL / 2;
-  const x0 = a.x - half, x1 = b.x + half, z0 = a.z - half, z1 = b.z + half;
-  const pairs = [
-    [{ x: x0 - 1.2, z: (z0 + z1) / 2 }, { x: x1 + 1.2, z: (z0 + z1) / 2 }],
-    [{ x: (x0 + x1) / 2, z: z0 - 1.2 }, { x: (x0 + x1) / 2, z: z1 + 1.2 }],
-  ];
-  const out = [];
-  for (const [from, to] of pairs) {
-    const routes = [];
-    for (const viaZ of [z0 - 0.9, z1 + 0.9, (z0 + z1) / 2]) {
-      routes.push([{ x: from.x, z: viaZ }, { x: to.x, z: viaZ }, to]);
+  const PITCH = 0.3;
+  const x0 = a.x - half - MAZE.CELL, x1 = b.x + half + MAZE.CELL;
+  const z0 = a.z - half - MAZE.CELL, z1 = b.z + half + MAZE.CELL;
+  const nx = Math.round((x1 - x0) / PITCH), nz = Math.round((z1 - z0) / PITCH);
+
+  const walkable = new Uint8Array(nx * nz);
+  const pos = new THREE.Vector3();
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < nz; j++) {
+      const px = x0 + i * PITCH, pz = z0 + j * PITCH;
+      pos.set(px, y + 0.05, pz);
+      p.resolveCapsule(pos, RADIUS, HEIGHT);
+      // Standable here, and not shoved aside by something solid.
+      if (Math.abs(pos.y - y) > 0.3) continue;
+      if (Math.hypot(pos.x - px, pos.z - pz) > 0.05) continue;
+      walkable[i * nz + j] = 1;
     }
-    for (const viaX of [x0 - 0.9, x1 + 0.9, (x0 + x1) / 2]) {
-      routes.push([{ x: viaX, z: from.z }, { x: viaX, z: to.z }, to]);
-    }
-    let best = Infinity;
-    for (const route of routes) {
-      const q = new THREE.Vector3(from.x, y + 0.05, from.z);
-      p.resolveCapsule(q, RADIUS, HEIGHT);
-      if (Math.abs(q.y - y) > 0.4) continue;         // no standable start here
-      const f = makeWalker(p);
-      for (const wp of route) for (let s = 0; s < 500; s++) f(q, wp.x, wp.z);
-      best = Math.min(best, Math.hypot(q.x - to.x, q.z - to.z));
-    }
-    out.push(best);
   }
-  return out;
+  return { walkable, nx, nz, x0, z0, PITCH };
 }
 
-test('TRIPWIRE: the tunnel is still disabled, and must not be re-enabled without its gates', () => {
-  /* `tunnelColliders` is built and its FOOTPRINT is proven (Task 7), but two
-   * properties fail on real generated geometry, so `shaftColliders` returns a
-   * staircase for tunnel links and this asserts that it still does.
-   *
-   * WHAT FAILED, so whoever re-enables it knows what they are fixing:
-   *
-   * 1. THE TUNNEL CANOPY GATE. Grounded rests at 4.88-4.92 m OUTSIDE the
-   *    tunnel's region - just under the 5.0 m hedge line. Consistent with a
-   *    sprint-and-hop off a tread at ~3.5 m, out through the doorway (open
-   *    below ENTRY_SEAL_FROM = 3.57 m) and onto a hedge top: 3.5 + HOP +
-   *    STEP_HEIGHT = 4.88, which matches the measurement exactly. The stair is
-   *    immune because its treads sit in a well inset from the cell boundary,
-   *    while a tunnel's run reaches much closer to its own doorways. The fix
-   *    is geometric - inset the run, or seal the doorway on faces the run
-   *    approaches - NOT a wider band or a softer gate.
-   * 2. THE TUNNEL WALK-AWAY GATE. A crossing ended 2.15 m short at level N,
-   *    against a blocked-region control of 3.98-7.56 m. Not clearly severed,
-   *    not clearly crossable.
-   *
-   * Both gates and their negatives were written and are in git history at
-   * d3d4d15's child - restore them with the geometry rather than rewriting
-   * them from scratch, and do NOT re-enable the connector until both are
-   * green on real seeds. */
-  const { cells } = generateTopology(2026);
-  let checked = 0;
-  for (let level = 0; level < MAZE.LEVELS - 1 && checked < 3; level++) {
-    for (let z = 0; z < MAZE.CELLS && checked < 3; z++) {
-      for (let x = 0; x < MAZE.CELLS && checked < 3; x++) {
-        if (!isOpen(cells, cellIndex(x, z, level), DIR.UP)) continue;
-        if (connectorAt(cells, x, z, level) !== 'tunnel') continue;
-        assert.deepEqual(shaftColliders(cells, x, z, level), stairColliders(cells, x, z, level),
-          'a tunnel link is emitting tunnel geometry again - restore THE TUNNEL CANOPY GATE and THE '
-          + 'TUNNEL WALK-AWAY GATE before shipping it, and make them green on real seeds');
-        checked++;
-      }
+function regionCrossable(descs, cells, region, level, y) {
+  const g = walkableComponent(descs, region, level, y);
+  const faces = openFacesOf(cells, region, level);
+  const idxOf = (px, pz) => {
+    const i = Math.round((px - g.x0) / g.PITCH), j = Math.round((pz - g.z0) / g.PITCH);
+    if (i < 0 || j < 0 || i >= g.nx || j >= g.nz) return -1;
+    return i * g.nz + j;
+  };
+
+  // Seed from the first open face and flood.
+  const seeds = faces.map((f) => idxOf(f.x, f.z)).filter((k) => k >= 0 && g.walkable[k]);
+  if (seeds.length === 0) return { gaps: [], faces: faces.length, seeded: 0 };
+  const seen = new Uint8Array(g.walkable.length);
+  const stack = [seeds[0]];
+  seen[seeds[0]] = 1;
+  while (stack.length) {
+    const k = stack.pop();
+    const i = Math.floor(k / g.nz), j = k - i * g.nz;
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const ni = i + di, nj = j + dj;
+      if (ni < 0 || nj < 0 || ni >= g.nx || nj >= g.nz) continue;
+      const nk = ni * g.nz + nj;
+      if (seen[nk] || !g.walkable[nk]) continue;
+      seen[nk] = 1;
+      stack.push(nk);
     }
   }
-  assert.equal(checked, 3, 'expected tunnel links to check the tripwire against');
+  // Every open face must land in that one component.
+  const unreached = seeds.filter((k) => !seen[k]).length;
+  return { gaps: unreached ? [unreached] : [], faces: faces.length, seeded: seeds.length };
+}
+
+test('THE TUNNEL WALK-AWAY GATE: a real tunnel does not sever its own region, on either level', () => {
+  /* The property that killed 2b's round 3, asked of the tunnel on real
+   * generated output rather than on Task 7's fixture. Both levels: the region
+   * is claimed at level N by the fold and at level N+1 by the hole it
+   * surfaces through, and a connector that severs either one has cut the maze
+   * in half. */
+  let checked = 0;
+  for (const seed of [1, 7, 42, 2026]) {
+    let found;
+    try { found = firstShaftOfKind('tunnel', [seed]); } catch { continue; }
+    const { t, dx, dz, cell } = found;
+    const descs = tunnelWorldFor(t, dx, dz);
+    const region = connectorRegion(t.cells, cell.x, cell.z, 0);
+    for (const level of [0, 1]) {
+      const { gaps, faces, seeded } = regionCrossable(descs, t.cells, region, level, level * MAZE.LEVEL_HEIGHT);
+      // eslint-disable-next-line no-console
+      console.log(`[tunnel walk-away] seed ${seed} cell ${cell.x},${cell.z} level ${level}: `
+        + `${faces} open faces, ${seeded} standable, ${gaps.length ? gaps[0] : 0} unreachable`);
+      assert.ok(seeded > 0, 'no open face of the region is even standable');
+      for (const g of gaps) {
+        assert.ok(g === 0,
+          `${g} of the region's open faces are cut off from the others at level ${level} - `
+          + 'the tunnel severed the corridor, which is exactly the round-3 Critical from Phase 2b');
+      }
+    }
+    checked++;
+  }
+  assert.ok(checked >= 2, `expected several real tunnels to cross, checked ${checked}`);
+});
+
+test('the tunnel walk-away gate is not vacuous: wall the region off and the crossing fails', () => {
+  const { t, dx, dz, cell } = firstShaftOfKind('tunnel');
+  const region = connectorRegion(t.cells, cell.x, cell.z, 0);
+  const a = cellToWorld(region.x0, region.z0, 0);
+  const b = cellToWorld(region.x1, region.z1, 0);
+  const half = MAZE.CELL / 2;
+  const slab = {
+    cx: (a.x + b.x) / 2, cy: MAZE.LEVEL_HEIGHT / 2, cz: (a.z + b.z) / 2,
+    hx: (b.x - a.x) / 2 + half, hy: MAZE.LEVEL_HEIGHT / 2, hz: (b.z - a.z) / 2 + half,
+    kind: 'hedge',
+  };
+  const { gaps, seeded } = regionCrossable([...tunnelWorldFor(t, dx, dz), slab], t.cells, region, 0, 0);
+  // eslint-disable-next-line no-console
+  console.log(`[tunnel walk-away] blocked region: ${seeded} standable, ${gaps.length ? gaps[0] : 0} unreachable`);
+  assert.ok(gaps.length > 0 && gaps[0] > 0,
+    'filling the region solid should stop a crossing - if it does not, the gate above cannot detect '
+    + 'severance and passes for the wrong reason');
+});
+
+test('THE TUNNEL PIT GATE: the hole a real tunnel opens is an opening, not a missing floor', () => {
+  const bar = maxLegitimateDescent();
+  let checked = 0;
+  for (const seed of [1, 7, 42]) {
+    let found;
+    try { found = firstShaftOfKind('tunnel', [seed]); } catch { continue; }
+    const { t, dx, dz, cell } = found;
+    const descs = tunnelWorldFor(t, dx, dz);
+    const w1 = cellToWorld(cell.x, cell.z, 1);
+    const { worst, tested } = walkOffProfile(descs, w1);
+    // eslint-disable-next-line no-console
+    console.log(`[tunnel pit] seed ${seed} cell ${cell.x},${cell.z}: worst ${worst.toFixed(3)}m over ${tested} walk-offs (bar ${bar.toFixed(3)}m)`);
+    assert.ok(tested > 50, `only ${tested} walk-offs ran - the sweep found no standable ground`);
+    assert.ok(worst <= bar,
+      `a pedestrian fell ${worst.toFixed(3)}m into a real tunnel's exit hole - that is a pit, and the `
+      + `stair is held to ${bar.toFixed(3)}m`);
+    checked++;
+  }
+  assert.ok(checked >= 2, `expected several real tunnels, checked ${checked}`);
+});
+
+test('THE TUNNEL CANOPY GATE: nothing inside a real tunnel lets a player rest on a hedge top', () => {
+  let checked = 0;
+  for (const seed of [1, 7, 42]) {
+    let found;
+    try { found = firstShaftOfKind('tunnel', [seed]); } catch { continue; }
+    const { t, dx, dz, cell } = found;
+    const descs = tunnelWorldFor(t, dx, dz);
+    const shaft = regionShaft(t.cells, cell.x, cell.z, 0);
+    const heights = groundedEscapeHeights(descs, shaft);
+    const bad = heights.filter(inCanopyBand);
+    // eslint-disable-next-line no-console
+    console.log(`[tunnel canopy] seed ${seed}: ${heights.length} grounded rests outside the region, ${bad.length} in the canopy band`);
+    assert.equal(bad.length, 0,
+      `${bad.length} launches came to rest between the auto-step and the next level OUTSIDE the tunnel's `
+      + `region - heights ${[...new Set(bad.map((h) => h.toFixed(2)))].join(', ')}`);
+    checked++;
+  }
+  assert.ok(checked >= 2, `expected several real tunnels, checked ${checked}`);
 });

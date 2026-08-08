@@ -316,23 +316,7 @@ export function shaftColliders(cells, x, z, level) {
      * Tasks 5 and 9 each change exactly one line, and so a reader can see at
      * a glance which connectors are real yet. */
     case 'lift':   return liftColliders(cells, x, z, level);
-    /* DISABLED. `tunnelColliders` is built and its footprint is proven
-     * (Task 7), but two of its properties FAIL on real geometry and are not
-     * being shipped red:
-     *   - THE TUNNEL CANOPY GATE found grounded rests at 4.88-4.92 m OUTSIDE
-     *     the tunnel's region - just under the 5.0 m hedge line, consistent
-     *     with a sprint-and-hop off a ~3.5 m tread, out through the doorway
-     *     (which is open below ENTRY_SEAL_FROM = 3.57 m) and onto a hedge top.
-     *     That is the exact exploit the anti-ladder rule exists to prevent.
-     *     The stair does not have it because its treads sit in a well inset
-     *     from the cell boundary; a tunnel's run reaches much closer to its
-     *     own doorways.
-     *   - THE TUNNEL WALK-AWAY GATE measured a crossing 2.15 m short at
-     *     level N, against a blocked-region control of 3.98-7.56 m. So it is
-     *     not obviously severed, but it is not obviously crossable either.
-     * Re-enabling is one line, and the tripwire in maze-enclosure.test.mjs
-     * fires the moment it happens so the two gates have to come back with it. */
-    case 'tunnel': return stairColliders(cells, x, z, level);
+    case 'tunnel': return tunnelColliders(cells, x, z, level);
     default:       return stairColliders(cells, x, z, level);
   }
 }
@@ -783,6 +767,31 @@ export function landingColliders(cells, x, z, level) {
     });
   };
 
+  if (connectorAt(cells, x, z, level) === 'tunnel' && tunnelOrientation(cells, x, z, level)) {
+    /* A tunnel's rails go round the hole IT actually opens, which is
+     * `tunnelExitBounds` and nowhere near the stair well. Railing the stair
+     * well instead put a fence across level N+1's corridor where no hole was
+     * AND left the real opening unguarded - measured as a crossing 3.95 m
+     * short on seed 7, level 1.
+     *
+     * Three sides railed; the fourth is left open where the final tread
+     * arrives, because that tread's top is flush with this floor and walking
+     * off it is a step across a seam rather than a fall. Which side that is
+     * is DERIVED from the geometry rather than assumed - the fold's
+     * orientation decides it. */
+    const ex = tunnelExitBounds(cells, x, z, level);
+    const treads = tunnelColliders(cells, x, z, level).filter((d) => d.kind === 'tunnel');
+    const last = treads.reduce((a2, d) => (d.cy + d.hy > a2.cy + a2.hy ? d : a2));
+    const dLeft = Math.abs(last.cx - ex.x0), dRight = Math.abs(ex.x1 - last.cx);
+    const dNear = Math.abs(last.cz - ex.z0), dFar = Math.abs(ex.z1 - last.cz);
+    const nearest = Math.min(dLeft, dRight, dNear, dFar);
+    if (nearest !== dLeft) push(ex.x0 - T, ex.x0, ex.z0 - T, ex.z1 + T);
+    if (nearest !== dRight) push(ex.x1, ex.x1 + T, ex.z0 - T, ex.z1 + T);
+    if (nearest !== dNear) push(ex.x0 - T, ex.x1 + T, ex.z0 - T, ex.z0);
+    if (nearest !== dFar) push(ex.x0 - T, ex.x1 + T, ex.z1, ex.z1 + T);
+    return out;
+  }
+
   if (connectorAt(cells, x, z, level) === 'lift') {
     /* Three rails and a door, the door on the well's WEST inner face so it
      * opens onto the wide strip.
@@ -852,8 +861,9 @@ export function landingColliders(cells, x, z, level) {
 export function connectorHoleBounds(cells, x, z, level) {
   switch (connectorAt(cells, x, z, level)) {
     case 'lift':   return liftWellBounds(x, z, level);
-    case 'tunnel': return stairWellBounds(x, z, level);   // see the dispatcher
-
+    case 'tunnel': return tunnelOrientation(cells, x, z, level)
+      ? tunnelExitBounds(cells, x, z, level)
+      : stairWellBounds(x, z, level);
     default:       return stairWellBounds(x, z, level);
   }
 }
@@ -870,9 +880,7 @@ export function connectorHoleBounds(cells, x, z, level) {
  * per-cell check would demand a wall there and fail a legitimate tunnel.
  */
 export function connectorRegion(cells, x, z, level) {
-  /* A tunnel is built as a stair for now - see `shaftColliders` - so its
-   * region is one cell like everything else. Restore this with the geometry. */
-  if (false && connectorAt(cells, x, z, level) === 'tunnel') return tunnelRegion(x, z, level);
+  if (connectorAt(cells, x, z, level) === 'tunnel') return tunnelRegion(cells, x, z, level);
   return { x0: x, x1: x, z0: z, z1: z };
 }
 
@@ -956,16 +964,40 @@ const TUNNEL_DIRS = Object.freeze([
  * reaching across a district seam would break it. A cell in a district corner
  * simply has fewer directions available, never a tunnel that reaches out.
  */
-export function tunnelOrientation(x, z, level) {
+export function tunnelOrientation(cells, x, z, level) {
   const D = MAZE.DISTRICT;
   const lx = ((x % D) + D) % D, lz = ((z % D) + D) % D;
+
+  /* A tunnel's body is a BAR running the length of both its cells, so it
+   * blocks any passage that crosses it - and unlike the staircase, which hides
+   * in one quadrant and leaves an L-shaped strip joining all four sides, there
+   * is no arrangement of a bar that leaves a crossroads walkable.
+   *
+   * Measured, by flood fill, on real geometry: a tunnel folded through a cell
+   * whose topology opens all four sides cut 2 of those 4 faces off from the
+   * others. That is the round-3 Critical from Phase 2b - "do not sever the
+   * corridors" - and it is not a bug in the fold but a property of its shape.
+   *
+   * So placement is constrained rather than the geometry patched: a direction
+   * is only valid if NEITHER cell of the region has a passage PERPENDICULAR to
+   * the fold, on EITHER level - the region is claimed on both. A cell with no
+   * such direction gets a staircase instead, which is the connector this
+   * project has proven six ways.
+   */
+  const perp = (d) => (d.dx ? [DIR.N, DIR.S] : [DIR.E, DIR.W]);
   const valid = TUNNEL_DIRS.filter((d) => {
     const nx = lx + d.dx, nz = lz + d.dz;
-    return nx >= 0 && nx < D && nz >= 0 && nz < D;
+    if (nx < 0 || nx >= D || nz < 0 || nz >= D) return false;      // stay in the district
+    for (const [cx, cz] of [[x, z], [x + d.dx, z + d.dz]]) {
+      for (const lv of [level, level + 1]) {
+        if (lv >= MAZE.LEVELS) continue;
+        for (const bit of perp(d)) {
+          if (isOpen(cells, cellIndex(cx, cz, lv), bit)) return false;
+        }
+      }
+    }
+    return true;
   });
-  /* A 20x20 district always leaves at least two directions, so this cannot be
-   * empty - but if the district were ever 1x1 the caller must fall back to a
-   * staircase rather than emit a tunnel that leaves its district. */
   if (valid.length === 0) return null;
   return valid[hash32(x, z, level, 0x7d1) % valid.length];
 }
@@ -973,8 +1005,8 @@ export function tunnelOrientation(x, z, level) {
 /**
  * A tunnel's two cells, as an inclusive rectangle in cell coordinates.
  */
-export function tunnelRegion(x, z, level) {
-  const d = tunnelOrientation(x, z, level);
+export function tunnelRegion(cells, x, z, level) {
+  const d = tunnelOrientation(cells, x, z, level);
   if (!d) return { x0: x, x1: x, z0: z, z1: z };
   return {
     x0: Math.min(x, x + d.dx), x1: Math.max(x, x + d.dx),
@@ -993,7 +1025,7 @@ export function tunnelRegion(x, z, level) {
  * in footprint instead.
  */
 export function tunnelColliders(cells, x, z, level) {
-  const d = tunnelOrientation(x, z, level);
+  const d = tunnelOrientation(cells, x, z, level);
   if (!d) return stairColliders(cells, x, z, level);
 
   const w = cellToWorld(x, z, level);

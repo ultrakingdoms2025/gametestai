@@ -376,3 +376,53 @@ Task 9: TUNNEL DISABLED, and this is the phase's honest stopping point.
   and the tripwire fires the moment it happens.
 
   240 tests, MAZE_SEEDS=1000 green, contract-check 45/45, build clean.
+
+Task 9: CORRECTION — THE CANOPY EXPLOIT DID NOT EXIST. I reported one, and
+  disabled a working connector on the strength of it. It was my own bug.
+
+  The region-extent edit to `groundedEscapeHeights` NEVER LANDED: my replace
+  string had six spaces of indent where the file has eight, so it failed
+  silently. The `outside` test therefore still used a HALF-CELL box centred on
+  the BOUNDARY BETWEEN the tunnel's two cells, so most of the tunnel's own
+  treads counted as "outside" and their tops were logged as canopy escapes.
+  The reported heights - 2.51-2.63 m and 4.88-4.92 m - are simply flight-1 and
+  flight-2 TREAD HEIGHTS. The 4.88 = 3.5 + HOP + STEP_HEIGHT arithmetic I built
+  the whole diagnosis on was a coincidence.
+  A direct sweep from every tread, with the region box correct, finds ZERO
+  escapes. With the fix in place the gate reports 0 in band across three seeds
+  (11,906 / 12,271 / 16,014 grounded rests outside the region).
+  Both `outside` sites are now region-aware, and the assertion count of the
+  replace is checked so a failed patch cannot pass silently again.
+
+Task 9: THE REAL FAILURE, found only once the measurement was trustworthy.
+  Three successive versions of the walk-away check were wrong - detouring in x
+  when the answer was z, detouring outside the region into solid cells, and
+  demanding crossings between faces the topology never opened. Replaced with a
+  FLOOD FILL, which has no route to guess and is what 2b used on the staircase.
+  It immediately found a genuine severance: seed 42, level 0, **2 of 4 open
+  faces cut off from the others**. That is the round-3 Critical for real.
+
+  Root cause, and it is a property of the SHAPE not a bug in it: a tunnel's
+  body is a BAR running the length of two cells. The staircase hides a well in
+  one quadrant and leaves an L-shaped strip joining all four sides; there is no
+  arrangement of a bar that leaves a crossroads walkable.
+
+  Fixed by CONSTRAINING PLACEMENT rather than patching geometry: a fold
+  direction is valid only if neither cell of the region has a passage
+  perpendicular to the fold, on either level. Where none is valid the link
+  builds a staircase. All four seeds now flood-fill clean on both levels, and
+  the blocked-region negative still bites.
+
+Task 9: THE HONEST CONSEQUENCE — **only 3 of 92 tunnel links survive the
+  constraint** (3.3%). Most cells have perpendicular passages, so most
+  placements are invalid. A connector that occurs three times in a 640,000-cell
+  maze is not a feature, and THE CONNECTOR MIX GATE's 25% is now a statement
+  about TOPOLOGY, not about what gets built.
+  The tunnel as designed is fundamentally at odds with this maze: anything that
+  spans two cells is a bar, and bars sever crossroads. A tunnel that fits in
+  ONE cell would not be a bar - but a compact single-cell climb is the spiral
+  staircase, which already exists. RECOMMENDATION: either give the tunnel its
+  own phase with a genuinely different geometry, or cut it and keep two
+  connectors. Shipping as-is is safe and green but delivers three tunnels.
+
+  243 tests, MAZE_SEEDS=1000 green in 152s, contract-check 45/45, build clean.

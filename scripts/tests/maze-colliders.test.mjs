@@ -234,25 +234,34 @@ test('the split changes nothing: shaftColliders dispatches stairs identically to
   assert.equal(checked, 12, 'expected 12 stair shafts to compare');
 });
 
-test('a TUNNEL link falls back to stair geometry while the tunnel is disabled', () => {
-  /* `tunnelColliders` exists and its footprint is proven, but two of its
-   * properties fail on real geometry - see the TRIPWIRE test in
-   * maze-enclosure.test.mjs for the measurements and what has to be fixed.
-   * Until then a tunnel link is built as a staircase, which is the one
-   * connector this project has proven six ways. */
+test('a TUNNEL link emits its own geometry when its placement allows one', () => {
+  /* Not every tunnel link becomes a tunnel. Its body is a BAR across two
+   * cells, and a bar severs any passage crossing it - measured by flood fill
+   * as 2 of 4 open faces cut off on a crossroads cell. So placement is
+   * constrained: a fold direction is valid only if neither cell has a passage
+   * perpendicular to it, on either level. Where none is valid the link builds
+   * a staircase, which is the connector proven six ways. */
   const { cells } = generateTopology(2026);
-  let seen = 0;
+  let tunnels = 0, fellBack = 0;
   for (let level = 0; level < MAZE.LEVELS - 1; level++) {
     for (let z = 0; z < MAZE.CELLS; z++) {
       for (let x = 0; x < MAZE.CELLS; x++) {
         if (!isOpen(cells, cellIndex(x, z, level), DIR.UP)) continue;
         if (connectorAt(cells, x, z, level) !== 'tunnel') continue;
-        assert.deepEqual(shaftColliders(cells, x, z, level), stairColliders(cells, x, z, level));
-        seen++;
+        const descs = shaftColliders(cells, x, z, level);
+        if (descs.filter((d) => d.kind === 'tunnel').length === 0) { fellBack++; continue; }
+        assert.equal(descs.filter((d) => d.kind === 'stair').length, 0, 'a tunnel emitted stair treads');
+        assert.ok(descs.filter((d) => d.kind === 'tunnel').length > 20, 'too few tunnel treads');
+        const region = connectorRegion(cells, x, z, level);
+        assert.equal((region.x1 - region.x0) + (region.z1 - region.z0), 1,
+          'a built tunnel must claim exactly two adjacent cells');
+        tunnels++;
       }
     }
   }
-  assert.ok(seen > 0, 'expected at least one tunnel link');
+  // eslint-disable-next-line no-console
+  console.log(`[tunnel placement] ${tunnels} built, ${fellBack} fell back to a staircase`);
+  assert.ok(tunnels > 0, 'no tunnel link found a valid placement at all - the constraint is too strict to ship');
 });
 
 test('a LIFT link no longer falls back: it emits its own geometry', () => {

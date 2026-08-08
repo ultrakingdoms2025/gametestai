@@ -6,10 +6,12 @@ import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
 import { Physics } from '../../src/physics/Physics.js';
 import { MAZE, generateTopology, cellIndex, isOpen, DIR, cellCoords } from '../../src/worlds/maze/MazeTopology.js';
+import { districtColliders, cellToWorld } from '../../src/worlds/maze/MazeColliders.js';
 import {
-  isEnclosureSound, districtColliders, cellToWorld, shaftColliders, ENTRY_SEAL_FROM,
-  STAIR_WELL_HALF, STAIR_WELL_OFFSET, stairWellBounds,
-} from '../../src/worlds/maze/MazeColliders.js';
+  isEnclosureSound, requiredWallTop, shaftColliders, stairColliders, ENTRY_SEAL_FROM,
+  STAIR_WELL_HALF, STAIR_WELL_OFFSET, stairWellBounds, SHAFT_STEPS,
+  TREAD_HALF, STAIR_RADIUS, STAIR_TREADS_PER_TURN,
+} from '../../src/worlds/maze/MazeShafts.js';
 import { CONFIG } from '../../src/core/Config.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -414,7 +416,7 @@ test('MAZE.STEP_HEIGHT stays in step with the live player config', () => {
     `(${CONFIG.player.stepHeight}) - update MAZE.STEP_HEIGHT in MazeTopology.js to match`);
 });
 
-test('MazeTopology.js and MazeColliders.js import nothing outside each other', async () => {
+test('MazeTopology.js, MazeColliders.js and MazeShafts.js import nothing outside each other', async () => {
   // Textual, not behavioural - the same reason scripts/contract-check.mjs and
   // scripts/tests/rules-applied.test.mjs check source text rather than
   // runtime behaviour: purity is exactly what lets the containment, seam and
@@ -430,13 +432,20 @@ test('MazeTopology.js and MazeColliders.js import nothing outside each other', a
   assert.deepEqual(topoImports, [],
     `MazeTopology.js must import nothing at all - found: ${topoImports.join(', ') || '(none)'}`);
 
-  const collidersSrc = await readFile(path.join(root, 'src/worlds/maze/MazeColliders.js'), 'utf8');
-  const collidersImports = [...collidersSrc.matchAll(importRe)].map((m) => m[1]);
-  assert.ok(collidersImports.length > 0,
-    'MazeColliders.js imports nothing - expected at least ./MazeTopology.js');
-  for (const spec of collidersImports) {
-    assert.ok(spec === './MazeTopology.js',
-      `MazeColliders.js imports "${spec}" - it may only import from ./MazeTopology.js`);
+  /* The other two may import each other and nothing else. Widened in Phase 2c
+   * when the connector geometry moved to MazeShafts.js: the set grew, the
+   * rule did not. MazeShafts.js is where the enclosure proof now lives, so it
+   * is if anything the most important of the three to keep importable by
+   * Node. */
+  const allowed = new Set(['./MazeTopology.js', './MazeColliders.js', './MazeShafts.js']);
+  for (const file of ['MazeColliders.js', 'MazeShafts.js']) {
+    const src = await readFile(path.join(root, 'src/worlds/maze', file), 'utf8');
+    const imports = [...src.matchAll(importRe)].map((m) => m[1]);
+    assert.ok(imports.length > 0, `${file} imports nothing - expected at least ./MazeTopology.js`);
+    for (const spec of imports) {
+      assert.ok(allowed.has(spec),
+        `${file} imports "${spec}" - these three modules may only import each other`);
+    }
   }
 });
 
@@ -1135,6 +1144,39 @@ test('consecutive treads meet: their footprints overlap on both axes', () => {
     const oz = Math.min(a.cz + a.hz, b.cz + b.hz) - Math.max(a.cz - a.hz, b.cz - b.hz);
     minOverlap = Math.min(minOverlap, ox, oz);
   }
+  /* Bar restored in Phase 2c. 2b's ledger flagged that this had been cut from
+   * the capsule diameter (0.70 m) to `> 0`, and called it "a bar removed" -
+   * correctly, because a test that fires only when treads come fully APART
+   * warns of nothing.
+   *
+   * The capsule diameter turned out to be the wrong bar, and unattainable by
+   * construction: `STAIR_RADIUS`'s own REACHABILITY note derives the tightest
+   * consecutive overlap as `2*TREAD_HALF - 2*STAIR_RADIUS*sin(pi/N)` = 0.311 m,
+   * and the geometry measures 0.364 m. No spiral that satisfies the headroom
+   * and footprint constraints could ever have reached 0.70 m, so restoring
+   * that number would have been a red test rather than a real guarantee.
+   *
+   * TWO bars, because one of them alone is weaker than it looks.
+   *
+   * 1. CONSISTENCY, derived from the spiral's own constants. This catches a
+   *    retuned radius, phase or tread count that breaks the relationship
+   *    `STAIR_RADIUS` documents. It does NOT catch the overlap simply getting
+   *    small: shrink TREAD_HALF and both sides move together, which was
+   *    verified - TREAD_HALF 0.46 gives overlap 0.284 against a derived 0.231
+   *    and stays green. A self-scaling bar is a consistency check, not a floor.
+   * 2. AN ABSOLUTE FLOOR. 0.30 m, against a measured 0.364 m. This is what
+   *    actually fires when the spiral is retuned tighter, and TREAD_HALF 0.46
+   *    was confirmed to trip it. It must never be LOWERED to make new geometry
+   *    pass - THE CLIMB GATE is the physical proof, and this is the cheap
+   *    early warning that something moved before anyone reads that gate. */
+  const derived = 2 * TREAD_HALF - 2 * STAIR_RADIUS * Math.sin(Math.PI / STAIR_TREADS_PER_TURN);
+  assert.ok(minOverlap >= derived - 1e-9,
+    `consecutive treads overlap by only ${minOverlap.toFixed(3)}m against the ${derived.toFixed(3)}m ` +
+    "the spiral's own derivation requires - the climb is thinner than STAIR_RADIUS claims");
+  const FLOOR = 0.30;
+  assert.ok(minOverlap >= FLOOR,
+    `consecutive treads overlap by ${minOverlap.toFixed(3)}m, under the ${FLOOR}m floor - ` +
+    're-verify THE CLIMB GATE before considering this acceptable');
   assert.ok(minOverlap > 0,
     `consecutive treads are ${(-minOverlap).toFixed(3)}m APART on one axis - the climb has a ` +
     'gap in it, and a capsule stepping across would have nothing under it');

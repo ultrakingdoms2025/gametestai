@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MAZE, generateTopology, cellIndex, cellCoords,
+  MAZE, generateTopology, cellIndex, cellCoords, isOpen, DIR, connectorAt,
 } from '../../src/worlds/maze/MazeTopology.js';
 import { districtColliders, forecourtColliders, cellToWorld } from '../../src/worlds/maze/MazeColliders.js';
+import { shaftColliders, stairColliders } from '../../src/worlds/maze/MazeShafts.js';
 
 test('cellToWorld places cell 0,0 at the origin corner and steps by the pitch', () => {
   const a = cellToWorld(0, 0, 0);
@@ -202,4 +203,48 @@ test('an open passage has no hedge across it', () => {
 
   assert.ok(checkedEast > 0, 'found no open East passages to check');
   assert.ok(checkedSouth > 0, 'found no open South passages to check');
+});
+
+/* ------------------------------------------------------------------ */
+/* Phase 2c Task 2: the split, and the kind dispatch                   */
+/* ------------------------------------------------------------------ */
+
+test('the split changes nothing: shaftColliders dispatches stairs identically to stairColliders', () => {
+  const { cells } = generateTopology(2026);
+  let checked = 0;
+  for (let level = 0; level < MAZE.LEVELS - 1 && checked < 12; level++) {
+    for (let z = 0; z < MAZE.CELLS && checked < 12; z++) {
+      for (let x = 0; x < MAZE.CELLS && checked < 12; x++) {
+        if (!isOpen(cells, cellIndex(x, z, level), DIR.UP)) continue;
+        if (connectorAt(cells, x, z, level) !== 'stair') continue;
+        assert.deepEqual(
+          shaftColliders(cells, x, z, level),
+          stairColliders(cells, x, z, level),
+          `dispatch diverged from the stair builder at ${x},${z},${level}`,
+        );
+        checked++;
+      }
+    }
+  }
+  assert.equal(checked, 12, 'expected 12 stair shafts to compare');
+});
+
+test('a lift or tunnel link falls back to stair geometry until its own task lands', () => {
+  const { cells } = generateTopology(2026);
+  let seen = 0;
+  for (let level = 0; level < MAZE.LEVELS - 1; level++) {
+    for (let z = 0; z < MAZE.CELLS; z++) {
+      for (let x = 0; x < MAZE.CELLS; x++) {
+        if (!isOpen(cells, cellIndex(x, z, level), DIR.UP)) continue;
+        if (connectorAt(cells, x, z, level) === 'stair') continue;
+        assert.deepEqual(
+          shaftColliders(cells, x, z, level),
+          stairColliders(cells, x, z, level),
+          'the fallback must be the stair, exactly',
+        );
+        seen++;
+      }
+    }
+  }
+  assert.ok(seen > 0, 'expected at least one non-stair link in the scanned window');
 });

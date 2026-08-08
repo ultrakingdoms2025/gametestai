@@ -73,7 +73,11 @@ const CONTRACT = [
     exports: ['MAZE', 'DIR', 'generateTopology', 'solve', 'reachableCount',
               'buildDistrictGraph', 'carveDistrict', 'cellIndex', 'cellCoords'],
   },
-  { file: 'src/worlds/maze/MazeColliders.js', exports: ['districtColliders', 'cellToWorld', 'isEnclosureSound', 'shaftColliders', 'stairWellBounds'] },
+  { file: 'src/worlds/maze/MazeColliders.js', exports: ['districtColliders', 'forecourtColliders', 'cellToWorld'] },
+  /* Split out of MazeColliders.js in Phase 2c. The connector geometry and the
+   * enclosure proof live here now; `cellToWorld` stayed reachable from
+   * MazeColliders.js as a re-export, which is why it is still listed above. */
+  { file: 'src/worlds/maze/MazeShafts.js', exports: ['shaftColliders', 'stairColliders', 'stairWellBounds', 'isEnclosureSound', 'requiredWallTop'] },
   { file: 'src/worlds/maze/MazeChunks.js', exports: ['MazeChunks', 'buildBoxInstances'] },
   { file: 'src/worlds/maze/MazeCanopy.js', exports: ['MazeCanopy'] },
   { file: 'src/worlds/MazeWorld.js', exports: ['MazeWorld'], methods: ['build', 'dispose'] },

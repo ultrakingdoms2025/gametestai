@@ -222,6 +222,26 @@ export function isOpen(cells, index, dir) {
   return (cells[index] & dir) !== 0;
 }
 
+/**
+ * Centre of a cell's floor, in world metres.
+ * Cell 0,0 sits at the origin; the grid extends into +x/+z.
+ *
+ * Lived in `MazeColliders.js` until Phase 2c. It moved here, unchanged, when
+ * the connector geometry was split into `MazeShafts.js`: that module needs
+ * this function and `MazeColliders.js` needs the well bounds back from it, so
+ * leaving it where it was would have made the two import each other. It is
+ * pure coordinate math over `MAZE` with no collider knowledge, so this is
+ * where it belonged anyway. `MazeColliders.js` re-exports it, and every
+ * existing import site still works.
+ */
+export function cellToWorld(x, z, level) {
+  return {
+    x: x * MAZE.CELL,
+    y: level * MAZE.LEVEL_HEIGHT,
+    z: z * MAZE.CELL,
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* District graph                                                      */
 /*                                                                     */

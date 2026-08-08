@@ -10,7 +10,7 @@ import { districtColliders, cellToWorld } from '../../src/worlds/maze/MazeCollid
 import {
   isEnclosureSound, requiredWallTop, shaftColliders, stairColliders, ENTRY_SEAL_FROM,
   STAIR_WELL_HALF, STAIR_WELL_OFFSET, stairWellBounds, SHAFT_STEPS,
-  TREAD_HALF, STAIR_RADIUS, STAIR_TREADS_PER_TURN, descriptorTop,
+  TREAD_HALF, STAIR_RADIUS, STAIR_TREADS_PER_TURN, descriptorTop, connectorHoleBounds,
 } from '../../src/worlds/maze/MazeShafts.js';
 import { CONFIG } from '../../src/core/Config.js';
 
@@ -1977,4 +1977,96 @@ test('a real lift is enterable at level N: the doorway is taller than the player
       `the doorway is ${doorway.toFixed(3)}m, not the derived ENTRY_SEAL_FROM ${ENTRY_SEAL_FROM.toFixed(3)}m - ` +
       'geometry and gate must share one number');
   }
+});
+
+/* ------------------------------------------------------------------ */
+/* Phase 2c Task 8: the hole is the connector's shape, not one shape    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Every point inside `bounds` must be free of level `level`'s floor slab, and
+ * every point outside it must be covered by one.
+ *
+ * Sampled on a 0.2 m lattice - fine enough to catch a half-metre shortfall on
+ * any axis, which is the failure this generalisation could introduce.
+ */
+function perforationMatches(descs, bounds, level) {
+  const floorTop = level * MAZE.LEVEL_HEIGHT;
+  const slabs = descs.filter((d) => d.kind === 'floor'
+    && Math.abs((d.cy + d.hy) - floorTop) < 1e-6);
+  const covered = (px, pz) => slabs.some((d) => px >= d.cx - d.hx - 1e-6 && px <= d.cx + d.hx + 1e-6
+    && pz >= d.cz - d.hz - 1e-6 && pz <= d.cz + d.hz + 1e-6);
+
+  const blocked = [], missing = [];
+  for (let px = bounds.x0 - 1.0; px <= bounds.x1 + 1.0; px += 0.2) {
+    for (let pz = bounds.z0 - 1.0; pz <= bounds.z1 + 1.0; pz += 0.2) {
+      const isIn = px > bounds.x0 + 1e-6 && px < bounds.x1 - 1e-6
+                && pz > bounds.z0 + 1e-6 && pz < bounds.z1 - 1e-6;
+      if (isIn && covered(px, pz)) blocked.push([px, pz]);
+      if (!isIn && !covered(px, pz)) missing.push([px, pz]);
+    }
+  }
+  return { blocked, missing };
+}
+
+test('THE PERFORATION GATE: the hole above a connector matches its whole footprint, whatever shape that is', () => {
+  /* Generalised in Phase 2c from "the stair well" to "whatever
+   * `connectorHoleBounds` says", because a tunnel needs a rectangle two cells
+   * long. The gate is stated against that function rather than against a
+   * hard-coded well so it keeps meaning the right thing when Task 9 lands.
+   *
+   * Both directions matter and both have a red-check below: a hole too SMALL
+   * embeds the geometry in the ceiling (2b's round-2 Critical, which stuck a
+   * climber at 6 m), and a hole too LARGE is a pit (2b's round-3 Critical,
+   * which opened a 9 m drop over every shaft). */
+  const tally = { stair: 0, tunnel: 0, lift: 0 };
+  for (const seed of [1, 2026]) {
+    const t = generateTopology(seed, { levels: 2 });
+    for (let dz = 0; dz < MAZE.DISTRICTS; dz++) for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
+      const cells = shaftCells(t.cells, dx, dz, 0);
+      if (!cells.length) continue;
+      const descs = districtColliders(t.cells, dx, dz, 1);
+      for (const c of cells) {
+        const bounds = connectorHoleBounds(t.cells, c.x, c.z, 0);
+        const kind = connectorAt(t.cells, c.x, c.z, 0);
+        const { blocked, missing } = perforationMatches(descs, bounds, 1);
+        assert.equal(blocked.length, 0,
+          `${kind} at ${c.x},${c.z}: ${blocked.length} points of its own footprint are still floored - `
+          + 'its geometry would be embedded in the ceiling');
+        assert.equal(missing.length, 0,
+          `${kind} at ${c.x},${c.z}: ${missing.length} points outside the footprint have no floor - that is a pit`);
+        tally[kind]++;
+      }
+    }
+  }
+  // eslint-disable-next-line no-console
+  console.log(`[perforation] holes checked by kind: ${JSON.stringify(tally)}`);
+  for (const kind of ['stair', 'tunnel', 'lift']) {
+    assert.ok(tally[kind] > 0, `checked ZERO ${kind} holes - this gate is green because it never looked at one`);
+  }
+});
+
+test('the perforation gate catches a hole of the wrong shape, in both directions', () => {
+  const t = generateTopology(1, { levels: 2 });
+  const { dx, dz, cell } = firstShaftOfKind('stair', [1]);
+  const descs = districtColliders(t.cells, dx, dz, 1);
+  const b = connectorHoleBounds(t.cells, cell.x, cell.z, 0);
+
+  // Expect a hole 0.5 m WIDER than the real one: the extra strip is floored,
+  // so it shows up as `blocked` - the "geometry embedded in the ceiling" case.
+  const wide = { ...b, x1: b.x1 + 0.5, z1: b.z1 + 0.5 };
+  const w = perforationMatches(descs, wide, 1);
+  assert.ok(w.blocked.length > 0,
+    'expecting a wider hole than exists should report floored points inside it - if it does not, the gate '
+    + 'cannot detect a hole that is too small for its connector');
+
+  // Expect a hole 0.5 m NARROWER: the real hole extends beyond it, so those
+  // points read as `missing` - the "pit" case.
+  const narrow = { ...b, x1: b.x1 - 0.5, z1: b.z1 - 0.5 };
+  const n = perforationMatches(descs, narrow, 1);
+  assert.ok(n.missing.length > 0,
+    'expecting a narrower hole than exists should report unfloored points outside it - if it does not, the '
+    + 'gate cannot detect a hole that is too large, which is the pit');
+  // eslint-disable-next-line no-console
+  console.log(`[perforation] wrong-shape red-checks: wider -> ${w.blocked.length} blocked, narrower -> ${n.missing.length} missing`);
 });

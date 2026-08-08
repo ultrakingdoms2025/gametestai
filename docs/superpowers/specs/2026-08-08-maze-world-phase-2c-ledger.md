@@ -265,3 +265,31 @@ Task 7: FIVE FIXTURE/TEST BUGS, ALL MINE, AND THE GEOMETRY WAS INNOCENT EVERY
 Task 7: CONSEQUENCE FOR TASK 8. The tunnel claims a 2x1 cell region, so
   `connectorHoleBounds` must return a RECTANGLE 2 cells long, and the
   enclosure grouping must cover both cells. Not the 2x2 the plan sized it for.
+
+Task 8: complete. `connectorHoleBounds` dispatches on kind and returns the
+  same `{cx,cz,x0,x1,z0,z1}` shape `stairWellBounds` does, so the four-rectangle
+  floor tiling - which already handled any axis-aligned rectangle - needed no
+  change at all. Only its input widened. `districtColliders` calls that and
+  nothing else, so the hole and the geometry inside it cannot disagree.
+
+  `requiredWallTop` and `isEnclosureSound` now take optional `hx`/`hz` on their
+  shaft argument, defaulting to a half-cell so every existing caller is
+  untouched. That is what lets a tunnel be proven against its REGION's outer
+  boundary: the face between two cells of one tunnel is deliberately open, and
+  a per-cell check would demand a wall there and fail a legitimate tunnel.
+  `connectorRegion` and `regionShaft` express that; both still return a
+  single cell until Task 9 sets a tunnel's orientation.
+
+  THE PERFORATION GATE replaces the stair-specific multi-shaft check and is
+  stated against `connectorHoleBounds` rather than a hard-coded well, so it
+  keeps meaning the right thing when Task 9 lands. 236 holes checked across 2
+  seeds - 142 stair, 62 tunnel, 32 lift - with the kind tally asserted, after
+  Task 5's lesson about a gate that was green because it never looked at one.
+
+  Both failure directions red-verified, because they are different bugs:
+  expecting a 0.5 m WIDER hole reports 87 wrongly-floored points (2b's round-2
+  Critical - geometry embedded in the ceiling, which stuck a climber at 6 m),
+  and expecting a 0.5 m NARROWER one reports 48 unfloored points (2b's round-3
+  Critical - the 9 m pit over every shaft).
+
+  239 tests, MAZE_SEEDS=1000 green in 152s, contract-check 45/45, build clean.

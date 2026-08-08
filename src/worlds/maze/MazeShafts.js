@@ -413,7 +413,12 @@ const ENCLOSURE_MARGIN = MAZE.STEP_HEIGHT + 0.05;
  * @returns {number} absolute world Y the walls must reach
  */
 export function requiredWallTop(descs, shaft) {
-  const half = MAZE.CELL / 2;
+  /* `hx`/`hz` widen the footprint from ONE CELL to a connector's whole region.
+   * A tunnel folds across two cells (Task 7), so "the shaft" stopped being a
+   * synonym for "the cell". They default to a half-cell, so every existing
+   * caller is unchanged. */
+  const halfX = shaft.hx ?? MAZE.CELL / 2;
+  const halfZ = shaft.hz ?? MAZE.CELL / 2;
   const EPS = 1e-6;
   const cap = shaft.floorY + MAZE.LEVEL_HEIGHT;
   let highest = -Infinity;
@@ -422,8 +427,8 @@ export function requiredWallTop(descs, shaft) {
     // Only surfaces that actually sit inside this shaft's footprint count -
     // an enclosed descriptor belonging to a neighbouring shaft must not raise
     // this one's bar.
-    if (d.cx - d.hx > shaft.cx + half - EPS || d.cx + d.hx < shaft.cx - half + EPS) continue;
-    if (d.cz - d.hz > shaft.cz + half - EPS || d.cz + d.hz < shaft.cz - half + EPS) continue;
+    if (d.cx - d.hx > shaft.cx + halfX - EPS || d.cx + d.hx < shaft.cx - halfX + EPS) continue;
+    if (d.cz - d.hz > shaft.cz + halfZ - EPS || d.cz + d.hz < shaft.cz - halfZ + EPS) continue;
     /* Not `d.cy + d.hy`. A swept descriptor rests low and travels high, and
      * the bar must come from where it GOES - see `descriptorTop`. */
     const top = descriptorTop(d);
@@ -466,15 +471,19 @@ export function requiredWallTop(descs, shaft) {
  * @returns {boolean}
  */
 export function isEnclosureSound(descs, shaft) {
-  const half = MAZE.CELL / 2;
+  /* The region's OUTER boundary, not each cell's four sides - see
+   * `connectorRegion`. Defaults to one cell, so existing callers are
+   * unchanged. */
+  const halfX = shaft.hx ?? MAZE.CELL / 2;
+  const halfZ = shaft.hz ?? MAZE.CELL / 2;
   const need = requiredWallTop(descs, shaft);
   const lowerBound = shaft.floorY + ENTRY_SEAL_FROM;
   const EPS = 1e-6;
   const sides = [
-    { axis: 'x', at: shaft.cx - half },
-    { axis: 'x', at: shaft.cx + half },
-    { axis: 'z', at: shaft.cz - half },
-    { axis: 'z', at: shaft.cz + half },
+    { axis: 'x', at: shaft.cx - halfX },
+    { axis: 'x', at: shaft.cx + halfX },
+    { axis: 'z', at: shaft.cz - halfZ },
+    { axis: 'z', at: shaft.cz + halfZ },
   ];
 
   for (const side of sides) {
@@ -495,10 +504,10 @@ export function isEnclosureSound(descs, shaft) {
       // two apart.
       if (side.axis === 'x') {
         if (d.cx - d.hx > side.at + EPS || d.cx + d.hx < side.at - EPS) continue;
-        if (d.cz - d.hz > shaft.cz - half + EPS || d.cz + d.hz < shaft.cz + half - EPS) continue;
+        if (d.cz - d.hz > shaft.cz - halfZ + EPS || d.cz + d.hz < shaft.cz + halfZ - EPS) continue;
       } else {
         if (d.cz - d.hz > side.at + EPS || d.cz + d.hz < side.at - EPS) continue;
-        if (d.cx - d.hx > shaft.cx - half + EPS || d.cx + d.hx < shaft.cx + half - EPS) continue;
+        if (d.cx - d.hx > shaft.cx - halfX + EPS || d.cx + d.hx < shaft.cx + halfX - EPS) continue;
       }
       intervals.push([d.cy - d.hy, d.cy + d.hy]);
     }
@@ -746,4 +755,65 @@ export function landingColliders(cells, x, z, level) {
   push(well.cx, well.cx + T, well.z0, well.cz);
   push(well.cx - TREAD_HALF, well.cx + T, well.cz, well.cz + T);
   return out;
+}
+
+/**
+ * The rectangle a connector needs punched out of level N+1's floor.
+ *
+ * One function, dispatching on kind, because the hole and the geometry that
+ * climbs through it must come from a single derivation - `stairWellBounds`'s
+ * own comment sets that rule out and this is it extended to three shapes
+ * rather than abandoned for them. `districtColliders` calls this and nothing
+ * else; it never re-derives a connector's extent itself.
+ *
+ * Returns the same `{cx, cz, x0, x1, z0, z1}` shape `stairWellBounds` does, so
+ * the floor tiling that already handles any axis-aligned rectangle needs no
+ * change at all - only its input widens.
+ */
+export function connectorHoleBounds(cells, x, z, level) {
+  switch (connectorAt(cells, x, z, level)) {
+    case 'lift':   return liftWellBounds(x, z, level);
+    /* Task 9 replaces this. Written as its own case rather than folded into
+     * the default so that flipping it is one line and a reader can see which
+     * connectors are real. */
+    case 'tunnel': return stairWellBounds(x, z, level);
+    default:       return stairWellBounds(x, z, level);
+  }
+}
+
+/**
+ * Every cell a connector's geometry occupies, as a rectangle in cell
+ * coordinates.
+ *
+ * A stair and a lift each live inside ONE cell. A tunnel folds across TWO
+ * (Task 7: four flights over two lanes, 5.70 m of body in a 12 m two-cell
+ * region), so "the shaft" stops being a synonym for "the cell" and the
+ * enclosure proof has to reason about the region's OUTER boundary instead -
+ * the face between two cells of the same tunnel is deliberately open, and a
+ * per-cell check would demand a wall there and fail a legitimate tunnel.
+ */
+export function connectorRegion(cells, x, z, level) {
+  if (connectorAt(cells, x, z, level) === 'tunnel') {
+    // Task 9 sets the orientation; until then a tunnel is built as a stair.
+    return { x0: x, x1: x, z0: z, z1: z };
+  }
+  return { x0: x, x1: x, z0: z, z1: z };
+}
+
+/**
+ * The world-space bounds of a connector's region, as a shaft argument for
+ * `isEnclosureSound` and `requiredWallTop`.
+ */
+export function regionShaft(cells, x, z, level) {
+  const r = connectorRegion(cells, x, z, level);
+  const a = cellToWorld(r.x0, r.z0, level);
+  const b = cellToWorld(r.x1, r.z1, level);
+  const half = MAZE.CELL / 2;
+  return {
+    cx: (a.x + b.x) / 2,
+    cz: (a.z + b.z) / 2,
+    floorY: a.y,
+    hx: (b.x - a.x) / 2 + half,
+    hz: (b.z - a.z) / 2 + half,
+  };
 }

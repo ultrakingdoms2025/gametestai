@@ -16,7 +16,7 @@
 
 import { MAZE, DIR, cellIndex, isOpen, cellToWorld } from './MazeTopology.js';
 import {
-  stairWellBounds, shaftColliders, landingColliders,
+  shaftColliders, landingColliders, connectorHoleBounds,
 } from './MazeShafts.js';
 
 /* Moved to MazeTopology.js in Phase 2c so that MazeShafts.js can use it
@@ -202,9 +202,17 @@ export function districtColliders(cells, dx, dz, level) {
      * level. The stair only ever needs the well (2.8 m of the cell's 6 m,
      * one quadrant of it), which is 7.8 of the cell's 36 square metres; the
      * floor stays put everywhere else, which is what a stairwell is. The
-     * bounds come from `stairWellBounds` rather than being re-derived here,
-     * so the hole and the staircase inside it can never disagree. */
-    const well = stairWellBounds(hole.x, hole.z, level);
+     * bounds come from `connectorHoleBounds` rather than being re-derived
+     * here, so the hole and the geometry inside it can never disagree - and
+     * since Phase 2c that is a per-CONNECTOR question, because a tunnel needs
+     * a rectangle two cells long where a stair needs one square well.
+     *
+     * NOTE THE `level - 1`: the hole is punched in level `level`'s floor for a
+     * connector that lives one level BELOW, which is how the `hole` scan above
+     * found it. Getting this off by one would put a correctly-shaped hole in
+     * the wrong place with every gate still green, because the geometry and
+     * the hole would both be self-consistent and both wrong. */
+    const well = connectorHoleBounds(cells, hole.x, hole.z, level - 1);
     pushFloorRect(floorX0, well.x0, floorZ0, floorZ1); // west
     pushFloorRect(well.x1, floorX1, floorZ0, floorZ1); // east
     pushFloorRect(well.x0, well.x1, floorZ0, well.z0); // north (middle column)

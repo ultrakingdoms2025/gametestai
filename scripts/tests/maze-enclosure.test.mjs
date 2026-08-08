@@ -8,6 +8,7 @@ import { Physics } from '../../src/physics/Physics.js';
 import { MAZE, generateTopology, cellIndex, isOpen, DIR, cellCoords } from '../../src/worlds/maze/MazeTopology.js';
 import {
   isEnclosureSound, districtColliders, cellToWorld, shaftColliders, ENTRY_SEAL_FROM,
+  STAIR_WELL_HALF, STAIR_WELL_OFFSET, stairWellBounds,
 } from '../../src/worlds/maze/MazeColliders.js';
 import { CONFIG } from '../../src/core/Config.js';
 
@@ -719,6 +720,116 @@ const STEP_BY_DIR = {
   [DIR.N]: [0, -1], [DIR.E]: [1, 0], [DIR.S]: [0, 1], [DIR.W]: [-1, 0],
 };
 
+/* ------------------------------------------------------------------ */
+/* A player, near enough                                               */
+/*                                                                     */
+/* Fix round 4. Every earlier round proved its own segment of the      */
+/* journey with a bespoke probe - a tread-by-tread occupancy check     */
+/* here, a straight-line capsule sweep with a manual downward nudge    */
+/* there - and each probe was blind to the segment the NEXT round      */
+/* broke. These properties are all about one thing (can a player walk  */
+/* this?), so they all use one walker.                                 */
+/* ------------------------------------------------------------------ */
+
+const DT = 1 / 60;
+const GRAVITY = 22;          // CONFIG.player.gravity
+const WALK_SPEED = 4.0;
+const STEP_H = MAZE.STEP_HEIGHT;
+/** Launch speed that apexes at exactly `MAZE.HOP` under `GRAVITY`. */
+const HOP_VELOCITY = Math.sqrt(2 * GRAVITY * HOP);
+
+/**
+ * One frame of `Player.js`'s move-resolve-step-up loop, reduced to what these
+ * properties turn on: try the horizontal move, and if it barely moved while
+ * grounded, retry it lifted by `stepHeight` and keep the lift only if it
+ * actually freed the move. Gravity accumulates while airborne, so a capsule
+ * that walks off an edge really falls rather than gliding.
+ *
+ * A bare `resolveCapsule` sweep - what rounds 2 and 3 used - cannot climb a
+ * stair at all: pushed against a riser it is depenetrated horizontally, and
+ * dropping it back down after a lift re-runs that same depenetration. The
+ * step-up retry is the whole difference between "the stairs are unclimbable"
+ * and "the player walks up them", so it has to be here.
+ */
+function makeWalker(p) {
+  let vy = 0;
+  return function frame(pos, tx, tz) {
+    const dxv = tx - pos.x, dzv = tz - pos.z;
+    const dist = Math.hypot(dxv, dzv);
+    const step = Math.min(WALK_SPEED * DT, dist);
+    const mx = dist > 1e-9 ? (dxv / dist) * step : 0;
+    const mz = dist > 1e-9 ? (dzv / dist) * step : 0;
+    const bx = pos.x, by = pos.y, bz = pos.z;
+    pos.x += mx; pos.z += mz; pos.y += vy * DT;
+    let res = p.resolveCapsule(pos, RADIUS, HEIGHT);
+    const moved = Math.hypot(pos.x - bx, pos.z - bz);
+    if (moved < step * 0.7 && (res.grounded || vy <= 0)) {
+      const sx = pos.x, sy = pos.y, sz = pos.z, sg = res.grounded;
+      pos.set(bx + mx, by + STEP_H, bz + mz);
+      const r2 = p.resolveCapsule(pos, RADIUS, HEIGHT);
+      /* Accept the step only if it freed the move AND the resolve did not
+       * carry the capsule higher than the step itself. Without that second
+       * condition a capsule pressed up into a ceiling is depenetrated
+       * upwards a little each frame and eventually ratchets clean through it
+       * - which would make a solid floor above the stairs look climbable and
+       * silently defeat the ceiling half of this proof. */
+      if (Math.hypot(pos.x - bx, pos.z - bz) > moved + 1e-4
+        && pos.y <= by + STEP_H + 1e-3) res = r2;
+      else { pos.set(sx, sy, sz); res = { grounded: sg }; }
+    }
+    if (res.grounded) vy = 0; else vy -= GRAVITY * DT;
+    return { dist: Math.hypot(tx - pos.x, tz - pos.z), grounded: res.grounded };
+  };
+}
+
+/** Build a Physics world from descriptors. */
+function worldOf(descs) {
+  const p = new Physics(null);
+  for (const d of descs) p.addBox(d.cx, d.cy, d.cz, d.hx, d.hy, d.hz);
+  return p;
+}
+
+/**
+ * Walk a capsule through a list of waypoints; returns whether it reached the
+ * last one, and the lowest y it ever held.
+ */
+function walkRoute(p, pos, waypoints, framesPerLeg = 600, tol = 0.3) {
+  const frame = makeWalker(p);
+  let minY = pos.y;
+  for (const wp of waypoints) {
+    let ok = false;
+    for (let s = 0; s < framesPerLeg; s++) {
+      const r = frame(pos, wp.x, wp.z);
+      minY = Math.min(minY, pos.y);
+      if (r.dist < tol) { ok = true; break; }
+    }
+    if (!ok) return { reached: false, minY };
+  }
+  return { reached: true, minY };
+}
+
+/**
+ * The corner of a shaft cell the stair well does NOT occupy.
+ *
+ * The well sits in one quadrant (see `STAIR_WELL_OFFSET`), which is exactly
+ * what leaves an L-shaped strip along the cell's other two sides clear on
+ * both levels. Every route through a shaft cell - walking in at level N,
+ * walking away at level N+1, or crossing it without using the stair at all -
+ * goes through this corner. Routing through it is not a workaround for the
+ * geometry; it IS the geometry.
+ */
+function freeCorner(w) {
+  return { x: w.x - 1.6, z: w.z - 1.6 };
+}
+
+/** Where a climber steps off the stair: the middle of the landing. */
+function landingCentre(w) {
+  return {
+    x: w.x + STAIR_WELL_OFFSET - STAIR_WELL_HALF / 2,
+    z: w.z + STAIR_WELL_OFFSET - STAIR_WELL_HALF / 2,
+  };
+}
+
 test('THE ESCAPE GATE: climbing a real shaft lets the player leave its footprint at level N+1 through an open side, and a closed side still blocks', () => {
   // The counterpart to THE CEILING GATE: that one asks "does the climb
   // reach the top", this one asks "once there, can you walk away". Neither
@@ -744,35 +855,38 @@ test('THE ESCAPE GATE: climbing a real shaft lets the player leave its footprint
           `level 1 cell ${c.x},${c.z} has no open passage at all - impossible in a carved maze`);
 
         const descs = [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)];
-        const p = new Physics(null);
-        for (const d of descs) p.addBox(d.cx, d.cy, d.cz, d.hx, d.hy, d.hz);
+        const p = worldOf(descs);
 
-        const walk = (dir, steps) => {
+        /* Starts where a climber actually arrives - on the landing - and
+         * leaves via the corner of the cell the well does not occupy. Fix
+         * round 4: the previous version started at the cell CENTRE and walked
+         * in a straight line, which only ever worked because the whole cell
+         * was floor. It is now a stairwell in one quadrant with floor round
+         * it, so the route out goes round the well, exactly as it would in a
+         * building. */
+        const walk = (dir) => {
           const [sx, sz] = STEP_BY_DIR[dir];
-          const pos = new THREE.Vector3(w1.x, w1.y + 0.1, w1.z);
-          for (let s = 0; s < steps; s++) {
-            pos.x += sx * 0.02; pos.z += sz * 0.02;
-            p.resolveCapsule(pos, RADIUS, HEIGHT);
-          }
-          return { dist: Math.hypot(pos.x - w1.x, pos.z - w1.z), y: pos.y };
+          const corner = freeCorner(w1);
+          const pos = new THREE.Vector3(landingCentre(w1).x, w1.y + 0.1, landingCentre(w1).z);
+          p.resolveCapsule(pos, RADIUS, HEIGHT);
+          const r = walkRoute(p, pos, [corner, { x: corner.x + sx * 8, z: corner.z + sz * 8 }]);
+          return { dist: Math.hypot(pos.x - w1.x, pos.z - w1.z), y: pos.y, minY: r.minY };
         };
 
         // Open side: walk several metres away, staying on the floor.
-        const open = walk(openDirs[0], 400);
+        const open = walk(openDirs[0]);
         assert.ok(open.dist >= 4,
           `seed ${seed} shaft ${c.x},${c.z}: only reached ${open.dist.toFixed(2)}m from the shaft ` +
           `centre through level 1's own open side (dir ${openDirs[0]}) - expected several metres`);
-        assert.ok(Math.abs(open.y - w1.y) < 0.5,
+        assert.ok(Math.abs(open.y - w1.y) < 0.5 && open.minY > w1.y - 0.5,
           `seed ${seed} shaft ${c.x},${c.z}: walking out through the open side left the capsule at ` +
-          `${open.y.toFixed(2)}m, not on level 1's floor (${w1.y}m) - it fell or climbed unexpectedly`);
+          `${open.y.toFixed(2)}m (lowest ${open.minY.toFixed(2)}m), not on level 1's floor ` +
+          `(${w1.y}m) - it fell or climbed unexpectedly`);
 
         // Closed side (if any at this cell - both level 1 directions may
-        // happen to be open in the maze's own carving): must still block,
-        // the same way it always did. Matches the coordinator's own
-        // measurement almost exactly: blocked at ~2.05m against the 3.0m
-        // cell half-width.
+        // happen to be open in the maze's own carving): must still block.
         if (closedDirs.length > 0) {
-          const closed = walk(closedDirs[0], 400);
+          const closed = walk(closedDirs[0]);
           assert.ok(closed.dist < MAZE.CELL / 2,
             `seed ${seed} shaft ${c.x},${c.z}: closed side (dir ${closedDirs[0]}) let the capsule ` +
             `${closed.dist.toFixed(2)}m from centre - past the ${MAZE.CELL / 2}m cell half-width, ` +
@@ -808,18 +922,21 @@ test('with the walls capped, a level-1 district reached through a shaft landing 
     const { dx, dz, cell } = found;
 
     const descs = [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)];
-    const p = new Physics(null);
-    for (const d of descs) p.addBox(d.cx, d.cy, d.cz, d.hx, d.hy, d.hz);
+    const p = worldOf(descs);
 
+    /* Both endpoints are routed through the corner of their own cell that a
+     * well cannot occupy, and a shaft cell's own free corner is the one the
+     * landing opens onto - so this walks the route a player really walks,
+     * round the stairwell rather than through it. */
     const physicallyWalkable = (fromX, fromZ, dir) => {
       const w = cellToWorld(fromX, fromZ, 1);
       const [sx, sz] = STEP_BY_DIR[dir];
-      const pos = new THREE.Vector3(w.x, w.y + 0.1, w.z);
-      for (let s = 0; s < 200; s++) {
-        pos.x += sx * 0.03; pos.z += sz * 0.03;
-        p.resolveCapsule(pos, RADIUS, HEIGHT);
-      }
-      return Math.hypot(pos.x - w.x, pos.z - w.z) >= MAZE.CELL - 0.5;
+      const from = freeCorner(w);
+      const to = freeCorner(cellToWorld(fromX + sx, fromZ + sz, 1));
+      const pos = new THREE.Vector3(from.x, w.y + 0.1, from.z);
+      p.resolveCapsule(pos, RADIUS, HEIGHT);
+      const r = walkRoute(p, pos, [{ x: from.x + sx * MAZE.CELL, z: from.z + sz * MAZE.CELL }, to], 400);
+      return r.reached && r.minY > w.y - 0.5;
     };
 
     const D = MAZE.DISTRICT;
@@ -855,6 +972,9 @@ test('with the walls capped, a level-1 district reached through a shaft landing 
       for (const n of adj.get(cur) ?? []) if (!seen.has(n)) { seen.add(n); queue.push(n); }
     }
     const total = D * D;
+    // eslint-disable-next-line no-console
+    console.log(`[flood fill] seed ${seed} district (${dx},${dz}) from the landing at `
+      + `(${cell.x},${cell.z}): ${seen.size}/${total} cells reached`);
     assert.ok(seen.size >= total * 0.9,
       `seed ${seed}: flood fill from the shaft landing at (${cell.x},${cell.z}) only reached ` +
       `${seen.size}/${total} cells in district (${dx},${dz}) - the shaft is severing the district`);
@@ -916,19 +1036,20 @@ test('the simulated proof (escapeHeight) runs on real generated shafts, not just
 });
 
 /* ------------------------------------------------------------------ */
-/* Fix round 2, Finding 5 (Minor): the narrowest strip of one tread not   */
-/* already covered by its neighbour, along either axis, had no headroom   */
-/* over the capsule's own diameter. Treads were widened (0.75m -> 0.9m    */
-/* half-extent); this is the regression test that fails loudly if a       */
-/* future tweak to tread size, spiral radius, or capsule radius erodes    */
-/* that margin again.                                                     */
+/* Fix round 2, Finding 5 (Minor): consecutive treads must be laterally  */
+/* reachable. That was tested as "their footprints overlap by at least a */
+/* capsule diameter", a proxy chosen when no capsule could be driven up  */
+/* a real stair at all. Fix round 4 can drive one, so the property is    */
+/* tested as itself - the overlap number it needs is whatever a walking  */
+/* capsule needs, not a figure guessed in advance. The geometric floor   */
+/* under it (footprints must actually meet) is kept as the cheap,        */
+/* every-shaft version of the same statement.                            */
 /* ------------------------------------------------------------------ */
 
-test('consecutive treads overlap by at least the capsule diameter, on both axes', () => {
+test('consecutive treads meet: their footprints overlap on both axes', () => {
   const descs = shaftColliders(new Uint8Array(1).fill(DIR.UP), 0, 0, 0);
   const treads = descs.filter((d) => d.kind === 'stair').sort((a, b) => a.cy - b.cy);
   assert.ok(treads.length > 1, 'expected multiple treads to compare');
-  const capsuleDiameter = RADIUS * 2;
   let minOverlap = Infinity;
   for (let i = 1; i < treads.length; i++) {
     const a = treads[i - 1], b = treads[i];
@@ -936,8 +1057,515 @@ test('consecutive treads overlap by at least the capsule diameter, on both axes'
     const oz = Math.min(a.cz + a.hz, b.cz + b.hz) - Math.max(a.cz - a.hz, b.cz - b.hz);
     minOverlap = Math.min(minOverlap, ox, oz);
   }
-  assert.ok(minOverlap >= capsuleDiameter,
-    `narrowest consecutive-tread overlap is ${minOverlap.toFixed(3)}m, ` +
-    `below the ${capsuleDiameter.toFixed(2)}m capsule diameter - a climbing capsule ` +
-    'could lose support at the transition between treads');
+  assert.ok(minOverlap > 0,
+    `consecutive treads are ${(-minOverlap).toFixed(3)}m APART on one axis - the climb has a ` +
+    'gap in it, and a capsule stepping across would have nothing under it');
+  // eslint-disable-next-line no-console
+  console.log(`[treads] narrowest consecutive overlap ${minOverlap.toFixed(3)}m`);
+});
+
+/* ================================================================== */
+/* Fix round 4: the six properties, each with the measurement that     */
+/* demonstrates it and a negative that proves it can fail.             */
+/*                                                                     */
+/* Rounds 1-3 each proved one more segment of the journey and stopped  */
+/* where the previous bug had been. Every one of those proofs stayed   */
+/* green through the bug that came next, because none of them was      */
+/* stated as a property of the whole journey. These are.               */
+/* ================================================================== */
+
+/** The first shaft real generation puts anywhere, plus its district. */
+function firstShaft(seed, levels = 2) {
+  const t = generateTopology(seed, { levels });
+  for (let dz = 0; dz < MAZE.DISTRICTS; dz++) {
+    for (let dx = 0; dx < MAZE.DISTRICTS; dx++) {
+      const cells = shaftCells(t.cells, dx, dz, 0);
+      if (cells.length) return { t, dx, dz, cell: cells[0] };
+    }
+  }
+  throw new Error(`seed ${seed}: no shaft anywhere`);
+}
+
+/**
+ * The geometry as it shipped after fix round 3, rebuilt from the current
+ * output: level N+1's floor perforated over the WHOLE shaft cell, and no
+ * guard walls or landing round the result. This is the pit - 427 of 529
+ * sample points across the cell dropping the full 9.00 m - and it is the
+ * negative every fall-through property below is measured against.
+ */
+function withFullCellHole(descs, dx, dz, level, cell) {
+  const w = cellToWorld(cell.x, cell.z, level);
+  const D = MAZE.DISTRICT;
+  const half = (D * MAZE.CELL + MAZE.CELL) / 2;
+  const centerX = dx * D * MAZE.CELL + (D - 1) * MAZE.CELL / 2;
+  const centerZ = dz * D * MAZE.CELL + (D - 1) * MAZE.CELL / 2;
+  const cellHalf = MAZE.CELL / 2;
+  const out = descs.filter((d) => {
+    // Drop this level's floor tiles, the guard walls round its well, and the
+    // landing - none of which existed before this fix round.
+    if (d.kind === 'floor' && Math.abs(d.cy - (w.y - 0.5)) < 1e-6) return false;
+    if (d.kind === 'hedge' && Math.abs(d.cy - d.hy - w.y) < 1e-6
+      && Math.abs(d.cx - w.x) < cellHalf && Math.abs(d.cz - w.z) < cellHalf) return false;
+    if (d.kind === 'stair' && Math.abs(d.cy + d.hy - w.y) < 1e-6) return false;
+    return true;
+  });
+  const rect = (x0, x1, z0, z1) => out.push({
+    cx: (x0 + x1) / 2, cy: w.y - 0.5, cz: (z0 + z1) / 2,
+    hx: (x1 - x0) / 2, hy: 0.5, hz: (z1 - z0) / 2, kind: 'floor',
+  });
+  const hx0 = w.x - cellHalf, hx1 = w.x + cellHalf;
+  const hz0 = w.z - cellHalf, hz1 = w.z + cellHalf;
+  rect(centerX - half, hx0, centerZ - half, centerZ + half);
+  rect(hx1, centerX + half, centerZ - half, centerZ + half);
+  rect(hx0, hx1, centerZ - half, hz0);
+  rect(hx0, hx1, hz1, centerZ + half);
+  return out;
+}
+
+/* ---------- PROPERTY 1: a player can walk in ---------- */
+
+/**
+ * Walk a capsule from the middle of a neighbouring level-N corridor cell,
+ * through the shaft cell's own doorway, to the free corner of the shaft cell.
+ */
+function entersFrom(descs, w, dir) {
+  const p = worldOf(descs);
+  const [sx, sz] = STEP_BY_DIR[dir];
+  const pos = new THREE.Vector3(w.x + sx * MAZE.CELL, w.y + 0.1, w.z + sz * MAZE.CELL);
+  p.resolveCapsule(pos, RADIUS, HEIGHT);
+  return walkRoute(p, pos, [freeCorner(w)], 600).reached;
+}
+
+test('THE ENTRY GATE: a player walks in from every level-N corridor a shaft opens onto', () => {
+  let checked = 0;
+  for (const seed of [1, 42, 2026]) {
+    const { t, dx, dz, cell } = firstShaft(seed);
+    const descs = districtColliders(t.cells, dx, dz, 0);
+    const w = cellToWorld(cell.x, cell.z, 0);
+    const idx = cellIndex(cell.x, cell.z, 0);
+    const open = [DIR.N, DIR.E, DIR.S, DIR.W].filter((d) => isOpen(t.cells, idx, d));
+    assert.ok(open.length > 0, `shaft cell ${cell.x},${cell.z} has no open passage at all`);
+    for (const dir of open) {
+      assert.ok(entersFrom(descs, w, dir),
+        `seed ${seed} shaft ${cell.x},${cell.z}: a capsule could not walk in from the corridor `
+        + `on side ${dir}, which this cell's own topology marks OPEN`);
+      checked++;
+    }
+  }
+  assert.ok(checked > 0, 'no open shaft sides found to walk in through');
+  // eslint-disable-next-line no-console
+  console.log(`[entry] ${checked} open shaft sides walked in through`);
+});
+
+test('the entry gate is not vacuous: sealing the doorway from the floor up blocks the walk in', () => {
+  // Fix round 1's bug, rebuilt: the open side's wall starting at the shaft
+  // floor instead of ENTRY_SEAL_FROM. 617 shafts passed every "is it sealed"
+  // check while none of them could be entered.
+  const { t, dx, dz, cell } = firstShaft(2026);
+  const w = cellToWorld(cell.x, cell.z, 0);
+  const idx = cellIndex(cell.x, cell.z, 0);
+  const open = [DIR.N, DIR.E, DIR.S, DIR.W].filter((d) => isOpen(t.cells, idx, d));
+  const half = MAZE.CELL / 2;
+  const sealed = districtColliders(t.cells, dx, dz, 0).map((d) => {
+    const onSide = d.kind === 'hedge' && Math.abs(d.cy - d.hy - (w.y + ENTRY_SEAL_FROM)) < 1e-6
+      && Math.abs(d.cx - w.x) <= half + 1e-6 && Math.abs(d.cz - w.z) <= half + 1e-6;
+    if (!onSide) return d;
+    const top = d.cy + d.hy;
+    return { ...d, cy: (w.y + top) / 2, hy: (top - w.y) / 2 };
+  });
+  assert.ok(open.length > 0, 'fixture needs an open side');
+  for (const dir of open) {
+    assert.equal(entersFrom(sealed, w, dir), false,
+      `a shaft sealed from its own floor let a capsule walk in through side ${dir} - `
+      + 'if this passes, THE ENTRY GATE cannot detect the bug it exists for');
+  }
+});
+
+/* ---------- PROPERTY 2: a player can climb it ---------- */
+
+/**
+ * Walk a capsule in from the free corner and up every tread in turn.
+ * Returns the height it ends at.
+ */
+function climbShaft(descs, w) {
+  const p = worldOf(descs);
+  const treads = descs
+    .filter((d) => d.kind === 'stair'
+      && Math.abs(d.cx - w.x) < MAZE.CELL && Math.abs(d.cz - w.z) < MAZE.CELL)
+    .sort((a, b) => a.cy - b.cy);
+  const pos = new THREE.Vector3(freeCorner(w).x, w.y + 0.2, freeCorner(w).z);
+  p.resolveCapsule(pos, RADIUS, HEIGHT);
+  const frame = makeWalker(p);
+  for (const tr of treads) {
+    let ok = false;
+    for (let s = 0; s < 240; s++) {
+      if (frame(pos, tr.cx, tr.cz).dist < 0.25) { ok = true; break; }
+    }
+    if (!ok) break;
+  }
+  return pos.y;
+}
+
+test('THE CLIMB GATE: a player walks off a level-N corridor and up a real shaft to LEVEL_HEIGHT', () => {
+  // Not a tread-occupancy proxy (that is THE CEILING GATE above, kept as the
+  // cheap version): this drives the same collide-and-step-up loop Player.js
+  // runs, starting in the corridor, with BOTH levels resident.
+  let checked = 0;
+  for (const seed of [1, 42, 2026]) {
+    const { t, dx, dz, cell } = firstShaft(seed);
+    const descs = [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)];
+    const w = cellToWorld(cell.x, cell.z, 0);
+    const reached = climbShaft(descs, w);
+    assert.ok(reached >= w.y + MAZE.LEVEL_HEIGHT - 1e-6,
+      `seed ${seed} shaft ${cell.x},${cell.z}: the climb stopped at `
+      + `${(reached - w.y).toFixed(2)}m, short of LEVEL_HEIGHT (${MAZE.LEVEL_HEIGHT}m)`);
+    checked++;
+  }
+  assert.ok(checked > 0, 'no shafts climbed');
+  // eslint-disable-next-line no-console
+  console.log(`[climb] ${checked} real shafts walked from corridor to LEVEL_HEIGHT`);
+});
+
+test('the climb gate is not vacuous: an unperforated level-N+1 floor stops the same walk short', () => {
+  // Fix round 2's bug, rebuilt: level 1's floor as one slab with no hole.
+  const { t, dx, dz, cell } = firstShaft(2026);
+  const w = cellToWorld(cell.x, cell.z, 0);
+  const D = MAZE.DISTRICT;
+  const half = (D * MAZE.CELL + MAZE.CELL) / 2;
+  const descs = [...districtColliders(t.cells, dx, dz, 0), {
+    cx: dx * D * MAZE.CELL + (D - 1) * MAZE.CELL / 2,
+    cy: w.y + MAZE.LEVEL_HEIGHT - 0.5,
+    cz: dz * D * MAZE.CELL + (D - 1) * MAZE.CELL / 2,
+    hx: half, hy: 0.5, hz: half, kind: 'floor',
+  }];
+  const reached = climbShaft(descs, w);
+  assert.ok(reached < w.y + MAZE.LEVEL_HEIGHT - 1,
+    `the unperforated-floor fixture let the climb reach ${(reached - w.y).toFixed(2)}m - `
+    + 'if it does not stop short, THE CLIMB GATE cannot detect a solid ceiling');
+});
+
+/* ---------- PROPERTY 4: a player cannot fall in from above ---------- */
+
+/**
+ * Ground height across the whole shaft cell at level N+1, on a square grid.
+ * Returns how many samples sit more than `bar` below that floor.
+ */
+function pitProfile(descs, w1, bar = 0.5, n = 23) {
+  const p = worldOf(descs);
+  const half = MAZE.CELL / 2;
+  let over = 0, worst = 0, total = 0, deep = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const x = w1.x - half + (2 * half * i) / (n - 1);
+      const z = w1.z - half + (2 * half * j) / (n - 1);
+      const g = p.groundHeight(x, z, w1.y + 3, 40);
+      const drop = Number.isFinite(g) ? w1.y - g : MAZE.LEVEL_HEIGHT;
+      total++;
+      if (drop > bar) over++;
+      // A drop with no tread under it at all: the only places these survive
+      // are slivers between tread corners and the well's own edge, all far
+      // narrower than the 0.70 m capsule (THE WALK-ON-IT GATE is what proves
+      // that; this just measures them).
+      if (drop > MAZE.LEVEL_HEIGHT - MAZE.HEDGE_HEIGHT) deep++;
+      if (drop > worst) worst = drop;
+    }
+  }
+  return { over, total, worst, deep };
+}
+
+test('THE PIT GATE: the hole a shaft opens in level N+1 is a stairwell opening, not most of the cell', () => {
+  // The measurement round 3 lost. Its predecessor asserted "all four sides of
+  // the shaft cell stay blocked at level 1's height", which stopped being
+  // true - correctly - the moment the walls were capped, and was retired
+  // rather than replaced. That is how the pit shipped. This states the
+  // property instead of one geometry's way of satisfying it: sample the
+  // ground under the whole cell and require the opening to be a small part
+  // of it.
+  for (const seed of [1, 42, 2026]) {
+    const { t, dx, dz, cell } = firstShaft(seed);
+    const descs = [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)];
+    const w1 = cellToWorld(cell.x, cell.z, 1);
+    const prof = pitProfile(descs, w1);
+    const fraction = prof.over / prof.total;
+    assert.ok(fraction < 0.25,
+      `seed ${seed} shaft ${cell.x},${cell.z}: ${prof.over}/${prof.total} sample points across the `
+      + `cell drop more than 0.5m (${(fraction * 100).toFixed(0)}%) - that is a missing floor, `
+      + 'not a hole in one');
+    // eslint-disable-next-line no-console
+    console.log(`[pit] seed ${seed} shaft (${cell.x},${cell.z}): ${prof.over}/${prof.total} `
+      + `points drop >0.5m (${(fraction * 100).toFixed(0)}%), ${prof.deep} with no tread beneath, `
+      + `worst ${prof.worst.toFixed(2)}m`);
+  }
+});
+
+test('the pit gate is not vacuous: perforating the whole shaft cell fails it', () => {
+  const { t, dx, dz, cell } = firstShaft(2026);
+  const descs = withFullCellHole(
+    [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)],
+    dx, dz, 1, cell,
+  );
+  const w1 = cellToWorld(cell.x, cell.z, 1);
+  const prof = pitProfile(descs, w1);
+  assert.ok(prof.over / prof.total > 0.4 && prof.worst > MAZE.LEVEL_HEIGHT - 0.5,
+    `the full-cell-hole fixture only reported ${prof.over}/${prof.total} points dropping `
+    + `(worst ${prof.worst.toFixed(2)}m) - if it does not fail THE PIT GATE, that gate cannot `
+    + 'detect the pit that shipped');
+  // eslint-disable-next-line no-console
+  console.log(`[pit negative] full-cell hole: ${prof.over}/${prof.total} points drop >0.5m, `
+    + `worst ${prof.worst.toFixed(2)}m`);
+});
+
+/**
+ * From every point a capsule can actually stand on at level N+1 inside the
+ * shaft cell, walk it 0.6 m in eight directions and let it settle. Returns
+ * the deepest it ever ends below that floor.
+ */
+/**
+ * How far each walk-off goes. It has to clear the 0.6 m ledge the shaft's own
+ * side walls present at level N+1's floor height (their tops stop exactly
+ * there) - a shorter walk never leaves that ledge, and would report a pit as
+ * safe.
+ */
+const WALK_OFF_DIST = 1.2;
+
+/**
+ * The most a `WALK_OFF_DIST` walk may legitimately descend: one riser per
+ * tread it could cross, where the treads' own centre-to-centre pitch says how
+ * many that is. Derived from the emitted geometry rather than typed in, so a
+ * change to the spiral moves this bar with it instead of silently loosening
+ * or tightening it.
+ */
+function maxLegitimateDescent() {
+  const treads = shaftColliders(new Uint8Array(1).fill(DIR.UP), 0, 0, 0)
+    .filter((d) => d.kind === 'stair').sort((a, b) => a.cy - b.cy);
+  let pitch = Infinity, rise = 0;
+  for (let i = 1; i < treads.length; i++) {
+    pitch = Math.min(pitch, Math.hypot(treads[i].cx - treads[i - 1].cx, treads[i].cz - treads[i - 1].cz));
+    rise = Math.max(rise, (treads[i].cy + treads[i].hy) - (treads[i - 1].cy + treads[i - 1].hy));
+  }
+  return Math.ceil(WALK_OFF_DIST / pitch) * rise + 0.02;
+}
+
+function walkOffProfile(descs, w1) {
+  const bar = maxLegitimateDescent();
+  const p = worldOf(descs);
+  /* Samples reach a metre past the cell, so the ring of level-N+1 floor
+   * around the shaft cell is included. That ring is where a pedestrian
+   * crossing the district actually walks in from, and with the whole cell
+   * perforated it is the only standable ground left - which is what makes
+   * this measurable in both directions. */
+  const half = MAZE.CELL / 2 + 1.0;
+  const n = 21;
+  let worst = 0, tested = 0, bad = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const sx = w1.x - half + (2 * half * i) / (n - 1);
+      const sz = w1.z - half + (2 * half * j) / (n - 1);
+      const g = p.groundHeight(sx, sz, w1.y + 2, 4);
+      if (!Number.isFinite(g) || Math.abs(g - w1.y) > 0.05) continue; // not this floor
+      for (let a = 0; a < 8; a++) {
+        const ang = (a / 8) * Math.PI * 2;
+        const pos = new THREE.Vector3(sx, w1.y + 0.05, sz);
+        p.resolveCapsule(pos, RADIUS, HEIGHT);
+        // Only start where a capsule genuinely fits, standing still.
+        if (Math.abs(pos.y - w1.y) > 0.2) continue;
+        if (Math.abs(pos.x - sx) > 0.03 || Math.abs(pos.z - sz) > 0.03) continue;
+        const frame = makeWalker(p);
+        const tx = sx + Math.cos(ang) * WALK_OFF_DIST, tz = sz + Math.sin(ang) * WALK_OFF_DIST;
+        for (let s = 0; s < 40; s++) frame(pos, tx, tz);
+        for (let s = 0; s < 120; s++) frame(pos, pos.x, pos.z); // settle under gravity
+        tested++;
+        const drop = w1.y - pos.y;
+        if (drop > worst) worst = drop;
+        if (drop > bar) bad++;
+      }
+    }
+  }
+  return { worst, tested, bad };
+}
+
+test('THE WALK-ON-IT GATE: walking level N+1 across a shaft cell descends stairs, never falls', () => {
+  // The property behind "a player cannot fall into it from above", stated so
+  // that a staircase satisfies it and a pit cannot: from anywhere on level
+  // N+1's floor in this cell, a short walk in any direction leaves you either
+  // still on the floor, or a riser or two down the stair - never in free
+  // fall. The bar is derived from the stair's own pitch and rise (see
+  // `maxLegitimateDescent`), so it is exactly "what walking down these
+  // stairs for 1.2 m accounts for" and not a round number.
+  let tested = 0, worst = 0;
+  for (const seed of [1, 42, 2026]) {
+    const { t, dx, dz, cell } = firstShaft(seed);
+    const descs = [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)];
+    const w1 = cellToWorld(cell.x, cell.z, 1);
+    const prof = walkOffProfile(descs, w1);
+    assert.ok(prof.tested > 100, `seed ${seed}: only ${prof.tested} walk-offs sampled`);
+    assert.equal(prof.bad, 0,
+      `seed ${seed} shaft ${cell.x},${cell.z}: ${prof.bad} of ${prof.tested} short walks off a `
+      + `level-1 standing spot dropped more than the ${MAZE.STEP_HEIGHT}m auto-step `
+      + `(worst ${prof.worst.toFixed(2)}m) - that is a fall, not a step`);
+    tested += prof.tested;
+    worst = Math.max(worst, prof.worst);
+  }
+  // eslint-disable-next-line no-console
+  console.log(`[walk-on-it] ${tested} short walks off level-1 standing spots, `
+    + `worst drop ${worst.toFixed(2)}m`);
+});
+
+test('the walk-on-it gate is not vacuous: the full-cell hole drops a walking capsule a whole level', () => {
+  const { t, dx, dz, cell } = firstShaft(2026);
+  const descs = withFullCellHole(
+    [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)],
+    dx, dz, 1, cell,
+  );
+  const w1 = cellToWorld(cell.x, cell.z, 1);
+  const prof = walkOffProfile(descs, w1);
+  assert.ok(prof.bad > 0 && prof.worst > MAZE.LEVEL_HEIGHT - 0.5,
+    `the full-cell-hole fixture only dropped ${prof.bad}/${prof.tested} capsules, worst `
+    + `${prof.worst.toFixed(2)}m - if it does not fail THE WALK-ON-IT GATE, that gate is blind`);
+  // eslint-disable-next-line no-console
+  console.log(`[walk-on-it negative] full-cell hole: ${prof.bad}/${prof.tested} walks fell, `
+    + `worst ${prof.worst.toFixed(2)}m`);
+});
+
+/* ---------- PROPERTY 5: a player cannot escape onto the canopy ---------- */
+
+/**
+ * `escapeHeight`'s question, sharpened: not how high the capsule ever gets
+ * outside the shaft's footprint (mid-hop it is briefly high and falling), but
+ * how high it ever comes to REST out there. Landing on a hedge top is the
+ * exploit; sailing over one and falling into the corridor is not.
+ */
+/**
+ * Heights (above the shaft's own floor) at which coming to rest outside the
+ * shaft is an exploit. Below `STEP_HEIGHT` there is nothing out there to
+ * stand on - the capsule is mid-fall into the corridor. At `LEVEL_HEIGHT` it
+ * has arrived on level N+1, which is the entire point of the stair; the
+ * 0.25 m of slack under that bar is capsule-resolve tolerance on that floor,
+ * and it is nowhere near `HEDGE_HEIGHT` (5.0 m), the height this band exists
+ * to forbid.
+ */
+function inCanopyBand(h) {
+  return h > MAZE.STEP_HEIGHT && h < MAZE.LEVEL_HEIGHT - 0.25;
+}
+
+function groundedEscapeHeights(descs, shaft) {
+  const p = worldOf(descs);
+  const pos = new THREE.Vector3();
+  const heights = [];
+  for (const launch of launchPoints(descs, shaft)) {
+    for (let a = 0; a < 32; a++) {
+      const ang = (a / 32) * Math.PI * 2;
+      pos.set(launch.x, launch.y + 0.05, launch.z);
+      const vx = Math.cos(ang) * SPRINT, vz = Math.sin(ang) * SPRINT;
+      let grounded = true;
+      let vy = 0;
+      for (let s = 0; s < 200; s++) {
+        pos.x += vx * STEP; pos.z += vz * STEP;
+        if (s % 20 === 0 && grounded) vy = HOP_VELOCITY;
+        vy -= GRAVITY * STEP;
+        pos.y += vy * STEP;
+        const res = p.resolveCapsule(pos, RADIUS, HEIGHT);
+        grounded = res.grounded;
+        if (grounded && vy < 0) vy = 0;
+        const outside = Math.abs(pos.x - shaft.cx) > MAZE.CELL / 2
+                     || Math.abs(pos.z - shaft.cz) > MAZE.CELL / 2;
+        if (outside && grounded) heights.push(pos.y - shaft.floorY);
+      }
+    }
+  }
+  return heights;
+}
+
+test("THE CANOPY GATE: nothing inside a real shaft lets a player come to rest on level N's hedge tops", () => {
+  // The maze's central guarantee. A capsule that leaves the shaft below
+  // ENTRY_SEAL_FROM has nothing out there to stand on and falls into the
+  // corridor; one that leaves at or above LEVEL_HEIGHT has arrived on level
+  // N+1, which is the point of the stair. Coming to rest anywhere between -
+  // on a HEDGE_HEIGHT hedge top - is the exploit.
+  let checked = 0;
+  for (const seed of [1, 42, 2026]) {
+    const { t, dx, dz, cell } = firstShaft(seed);
+    // Both levels resident - the configuration the player is ever actually
+    // in. Level N+1's own hedges are what stand on top of this shaft's walls.
+    const descs = [...districtColliders(t.cells, dx, dz, 0), ...districtColliders(t.cells, dx, dz, 1)];
+    const w = cellToWorld(cell.x, cell.z, 0);
+    const inBand = groundedEscapeHeights(descs, { cx: w.x, cz: w.z, floorY: w.y })
+      .filter(inCanopyBand);
+    assert.equal(inBand.length, 0,
+      `seed ${seed} shaft ${cell.x},${cell.z}: a capsule came to rest outside the shaft at `
+      + `${Math.max(...inBand, 0).toFixed(2)}m - on top of the maze`);
+    checked++;
+  }
+  assert.ok(checked > 0, 'no shafts swept');
+  // eslint-disable-next-line no-console
+  console.log(`[canopy] ${checked} real shafts swept, 0 grounded escapes in `
+    + `(${MAZE.STEP_HEIGHT}m, ${MAZE.LEVEL_HEIGHT}m)`);
+});
+
+test('the canopy gate is not vacuous: walls only as tall as a hedge let the climber onto the canopy', () => {
+  // The bug the whole enclosure rule exists for: a staircase climbing a full
+  // level inside HEDGE_HEIGHT walls. `isEnclosureSound` rejects it on paper
+  // (test 6); this proves the simulated half catches it too.
+  const { t, dx, dz, cell } = firstShaft(2026);
+  const w = cellToWorld(cell.x, cell.z, 0);
+  const half = MAZE.CELL / 2;
+  const capped = districtColliders(t.cells, dx, dz, 0).map((d) => {
+    if (d.kind !== 'hedge') return d;
+    if (Math.abs(d.cx - w.x) > half + 1e-6 || Math.abs(d.cz - w.z) > half + 1e-6) return d;
+    const top = d.cy + d.hy, bottom = d.cy - d.hy;
+    if (top <= w.y + MAZE.HEDGE_HEIGHT + 1e-6) return d;
+    const newTop = w.y + MAZE.HEDGE_HEIGHT;
+    if (newTop <= bottom) return null;
+    return { ...d, cy: (bottom + newTop) / 2, hy: (newTop - bottom) / 2 };
+  }).filter(Boolean);
+  const inBand = groundedEscapeHeights(capped, { cx: w.x, cz: w.z, floorY: w.y })
+    .filter(inCanopyBand);
+  assert.ok(inBand.length > 0,
+    'a shaft walled only to HEDGE_HEIGHT did not let a capsule rest on the canopy - '
+    + 'if this passes, THE CANOPY GATE cannot detect the exploit it exists for');
+  // eslint-disable-next-line no-console
+  console.log(`[canopy negative] hedge-height walls: ${inBand.length} grounded escapes, `
+    + `highest ${Math.max(...inBand).toFixed(2)}m`);
+});
+
+/* ---------- PROPERTY 6: nothing above the level it serves ---------- */
+
+test('a shaft emits nothing above its own floor + LEVEL_HEIGHT', () => {
+  // Fix round 3's rule, kept as an assertion rather than a comment: above
+  // that height the cell simply IS a level N+1 cell, and level N+1's own
+  // topology governs it. A shaft reaching higher walled off corridors level
+  // N+1 had deliberately carved, severing up to 397 of 399 cells.
+  let checked = 0;
+  for (const seed of [1, 42, 2026]) {
+    const { t, cell } = firstShaft(seed);
+    for (const level of [0, 1]) {
+      const w = cellToWorld(cell.x, cell.z, level);
+      for (const d of shaftColliders(t.cells, cell.x, cell.z, level)) {
+        assert.ok(d.cy + d.hy <= w.y + MAZE.LEVEL_HEIGHT + 1e-6,
+          `a shaft at level ${level} emitted a ${d.kind} topping out at `
+          + `${(d.cy + d.hy - w.y).toFixed(2)}m above its own floor, past LEVEL_HEIGHT`);
+        checked++;
+      }
+    }
+  }
+  assert.ok(checked > 0, 'no shaft descriptors checked');
+  // eslint-disable-next-line no-console
+  console.log(`[cap] ${checked} shaft descriptors, none above LEVEL_HEIGHT`);
+});
+
+test('the cap check is not vacuous: a shaft whose walls run a hedge higher is caught', () => {
+  // Fix round 3's bug, rebuilt: walls to LEVEL_HEIGHT + HEDGE_HEIGHT, which
+  // is what sealed a climber into a 6x6 m box at level N+1.
+  const { t, cell } = firstShaft(2026);
+  const w = cellToWorld(cell.x, cell.z, 0);
+  const raised = shaftColliders(t.cells, cell.x, cell.z, 0).map((d) => {
+    if (d.kind !== 'hedge') return d;
+    const bottom = d.cy - d.hy;
+    const top = w.y + MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT;
+    return { ...d, cy: (bottom + top) / 2, hy: (top - bottom) / 2 };
+  });
+  const over = raised.filter((d) => d.cy + d.hy > w.y + MAZE.LEVEL_HEIGHT + 1e-6);
+  assert.ok(over.length > 0,
+    'raising a shaft\'s walls past LEVEL_HEIGHT produced nothing the cap check would reject - '
+    + 'if this passes, that check cannot detect fix round 3\'s bug');
 });

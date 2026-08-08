@@ -73,7 +73,7 @@ const CONTRACT = [
     exports: ['MAZE', 'DIR', 'generateTopology', 'solve', 'reachableCount',
               'buildDistrictGraph', 'carveDistrict', 'cellIndex', 'cellCoords'],
   },
-  { file: 'src/worlds/maze/MazeColliders.js', exports: ['districtColliders', 'cellToWorld', 'isEnclosureSound', 'shaftColliders'] },
+  { file: 'src/worlds/maze/MazeColliders.js', exports: ['districtColliders', 'cellToWorld', 'isEnclosureSound', 'shaftColliders', 'stairWellBounds'] },
   { file: 'src/worlds/maze/MazeChunks.js', exports: ['MazeChunks', 'buildBoxInstances'] },
   { file: 'src/worlds/MazeWorld.js', exports: ['MazeWorld'], methods: ['build', 'dispose'] },
 ];

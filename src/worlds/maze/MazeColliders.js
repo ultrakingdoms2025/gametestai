@@ -19,8 +19,117 @@ import { MAZE, DIR, cellIndex, isOpen } from './MazeTopology.js';
 /**
  * Steps per shaft. `LEVEL_HEIGHT / this` must not exceed the 0.45 m auto-step,
  * or the player cannot walk up it - 9.0 / 24 = 0.375 m, comfortably under.
+ *
+ * The last of the 24 rises is the LANDING, not a tread: it is the slab a
+ * climber steps out onto, flush with level N+1's floor. So the spiral itself
+ * has `SHAFT_STEPS - 1` = 23 treads.
  */
 const SHAFT_STEPS = 24;
+
+/* ------------------------------------------------------------------ */
+/* The stair well                                                      */
+/*                                                                     */
+/* Everything about a shaft's geometry is derived from ONE box - the   */
+/* well - so the stair, the hole punched through level N+1's floor and */
+/* the guard walls around that hole cannot drift apart. Fix round 4:   */
+/* rounds 1-3 each derived their own footprint independently, which is */
+/* how the hole ended up the size of the whole cell while the stair    */
+/* needed only part of it, leaving an open 9 m pit over every shaft.   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Spiral radius, and how far a tread reaches from its own centre.
+ *
+ * These two are not free. Three constraints fix them, and they pull against
+ * each other - the previous spiral (r 1.90 m, tread half 0.9 m, 1.5 turns)
+ * satisfied the first two and failed the third badly:
+ *
+ * 1. HEADROOM. The player's own capsule is 1.75 m, so standing on tread `i`
+ *    they must clear treads `i+2 .. i+4` (`i+1` is the next step, and a
+ *    0.375 m rise is what the auto-step is for). At `STAIR_TREADS_PER_TURN`
+ *    = 8 the nearest of those sits a quarter-turn away, and the nearest
+ *    point of its axis-aligned box to the standing spot is
+ *    `(STAIR_RADIUS - TREAD_HALF) * sqrt(2)` = 0.57 m, clear of the 0.35 m
+ *    capsule radius by 0.22 m.
+ * 2. REACHABILITY. Consecutive tread footprints must overlap, or the climb
+ *    has a hole in it. The largest single-axis offset between consecutive
+ *    treads is `2 * STAIR_RADIUS * sin(pi/8)` = 0.69 m against a 1.0 m tread,
+ *    so they overlap by 0.31 m on the tightest axis and fully on the other.
+ * 3. FOOTPRINT. Everything - stair, landing, the capsule climbing it - must
+ *    fit inside a box small enough that the hole it needs through level
+ *    N+1's floor is a stairwell opening rather than a missing floor, AND
+ *    that leaves level N+1's corridor cross walkable around it. That is what
+ *    `STAIR_WELL_HALF` and `STAIR_WELL_OFFSET` below encode.
+ */
+const STAIR_RADIUS = 0.9;
+const TREAD_HALF = 0.5;
+
+/** Treads per full turn of the spiral. 8 = 45 degrees per step. */
+const STAIR_TREADS_PER_TURN = 8;
+
+/**
+ * Half-width of the stair well - the square column the whole staircase lives
+ * inside, and exactly the hole punched through level N+1's floor.
+ *
+ * A tread's own footprint reaches `STAIR_RADIUS + TREAD_HALF` from the
+ * spiral's axis, and that is the whole of it: nothing a shaft emits reaches
+ * further. A climbing capsule reaches `STAIR_RADIUS + RADIUS` (1.25 m), which
+ * is 0.15 m inside this, so no part of a climbing player ever meets level
+ * N+1's floor slab either.
+ */
+export const STAIR_WELL_HALF = STAIR_RADIUS + TREAD_HALF;
+
+/**
+ * How far the well's centre is offset from the shaft cell's centre, on both
+ * axes.
+ *
+ * The well is pushed into one quadrant of the cell (+x/+z) so that its outer
+ * faces stop just short of the corridor's own edge (`CORRIDOR / 2`, where the
+ * hedges begin) and its inner faces stop just short of the cell's centre
+ * lines. That is what keeps a shaft from severing the corridor it sits in, on
+ * BOTH levels: an L-shaped strip 1.9 m wide runs along the north and west of
+ * the cell, clear of the well on every side, so north-south, east-west and
+ * every turn between them still have a route through the cell that never
+ * crosses the well. A well centred on the cell would block all four.
+ *
+ * `WELL_EDGE_MARGIN` keeps the treads from touching the shaft's own side
+ * walls (which stand `CORRIDOR / 2` from the cell centre, being
+ * `HEDGE_THICK / 2` thick about the cell boundary); a tread embedded in a
+ * wall is a tread the player cannot stand on.
+ */
+const WELL_EDGE_MARGIN = 0.1;
+export const STAIR_WELL_OFFSET = MAZE.CORRIDOR / 2 - STAIR_WELL_HALF - WELL_EDGE_MARGIN;
+
+/**
+ * Thickness and height of the guard walls standing round the hole in level
+ * N+1's floor. Full hedge height, so they read as part of the maze and cannot
+ * be hopped onto (their tops are at exactly `HEDGE_HEIGHT`, which is the top
+ * of the anti-ladder gate's band, not inside it).
+ */
+const GUARD_HALF_THICK = 0.1;
+
+/**
+ * The stair well's world-space bounds for a shaft in cell (x, z) at `level`.
+ *
+ * Single source of truth, deliberately: `shaftColliders` places the stair and
+ * its landing inside this box, and `districtColliders` punches exactly this
+ * box out of level N+1's floor and rails the result. Two independent
+ * derivations of "where the stair is" is precisely the bug class this task's
+ * history is made of.
+ */
+export function stairWellBounds(x, z, level) {
+  const w = cellToWorld(x, z, level);
+  const cx = w.x + STAIR_WELL_OFFSET;
+  const cz = w.z + STAIR_WELL_OFFSET;
+  return {
+    cx,
+    cz,
+    x0: cx - STAIR_WELL_HALF,
+    x1: cx + STAIR_WELL_HALF,
+    z0: cz - STAIR_WELL_HALF,
+    z1: cz + STAIR_WELL_HALF,
+  };
+}
 
 /**
  * How far above a shaft's floor its OPEN (entry) side's wall must begin.
@@ -150,20 +259,27 @@ export function cellToWorld(x, z, level) {
  * A staircase from `level` to `level + 1`, inside the cell that carries the
  * UP link.
  *
- * The steps spiral around the cell's edge (one and a half turns) so a 6 m
- * cell can climb 9 m without any single rise exceeding the auto-step. Tread
- * half-extents (0.9 m, widened from 0.75 m in fix round 2 - Finding 5 found
- * the narrowest strip a climbing capsule could rely on between consecutive
- * treads was only 0.616 m against its own 0.70 m diameter, no headroom if
- * tread size or capsule radius ever moved) are kept under the 1.1 m ceiling
- * `overlappingShaftCells` needs at the spiral radius actually used here
- * (`r` below, 1.90 m) - `MAZE.CELL / 2 - r` = 3.0 - 1.9 = 1.1 m, the most a
- * tread can reach outward from its own centre before its footprint crosses
- * this cell's own boundary into a neighbour. (Fix round 3, Finding 2: this
- * comment used to say "2.4 m", the generic half-corridor figure Task 3's
- * own Trap 1 quotes for a tread centred on the CELL - it does not apply
- * here, where every tread sits offset by `r` from the cell centre. The real
- * ceiling is 1.1 m, and 0.9 m leaves 0.2 m of margin, not 1.5 m.)
+ * The steps spiral inside the STAIR WELL - a 2.8 m box tucked into one
+ * quadrant of the cell (see `STAIR_WELL_HALF` / `STAIR_WELL_OFFSET`) - three
+ * turns of eight, so a 6 m cell can climb 9 m without any single rise
+ * exceeding the auto-step. The 24th and last rise is not a tread but a
+ * LANDING: a slab filling the well's inner quarter, its top flush with level
+ * N+1's floor and its inner edges flush with the edge of the hole in that
+ * floor, so a climber walks off it onto level N+1 with no step at all.
+ *
+ * Fix round 4 moved the spiral off the cell's edge (r 1.90 m, 1.5 turns,
+ * 0.9 m treads) and into the well. That earlier spiral was the root of the
+ * pit: the last eight treads - the ones whose climbing capsule has to pass
+ * through level N+1's 1 m floor slab - swept 157 degrees of a 1.9 m circle,
+ * so the hole they needed was very nearly the whole cell, and a hole that
+ * size is a missing floor rather than a stairwell. Tightening the spiral
+ * until the WHOLE staircase fits in one 2.8 m box is what lets the hole be
+ * 2.8 m too. See `STAIR_RADIUS` for the three constraints that fix the
+ * spiral's dimensions and why they cannot be traded against each other.
+ *
+ * Tread half-extents stay well under the ceiling `overlappingShaftCells`
+ * needs: a tread reaches at most `STAIR_WELL_OFFSET + STAIR_WELL_HALF` =
+ * 2.3 m from the cell centre, inside the 3.0 m half-cell by 0.7 m.
  * `overlappingShaftCells`/`isEnclosureSound` group a descriptor into every
  * cell its footprint touches, boundary-inclusive, and a tread flush to the
  * cell pitch would wrongly pull in four cells it only meets at a corner.
@@ -214,22 +330,43 @@ export function shaftColliders(cells, x, z, level) {
   const w = cellToWorld(x, z, level);
   const out = [];
   const rise = MAZE.LEVEL_HEIGHT / SHAFT_STEPS;
-  const r = MAZE.CORRIDOR / 2 - 0.5;
-  const treadHalf = 0.9;
+  const well = stairWellBounds(x, z, level);
 
-  for (let i = 0; i < SHAFT_STEPS; i++) {
-    const a = (i / SHAFT_STEPS) * Math.PI * 2 * 1.5; // one and a half turns
-    const top = w.y + (i + 1) * rise;
+  /* Treads 0 .. SHAFT_STEPS-2. The phase is chosen so the LAST tread sits at
+   * 180 degrees and the landing it steps onto occupies the well's inner
+   * quarter - the corner nearest the cell centre, which is the corner whose
+   * two faces are the mouth of the stairwell at level N+1. */
+  for (let i = 0; i < SHAFT_STEPS - 1; i++) {
+    const a = Math.PI * 1.5 + (i / STAIR_TREADS_PER_TURN) * Math.PI * 2;
     const bottom = w.y + i * rise;
+    const top = w.y + (i + 1) * rise;
     out.push({
-      cx: w.x + Math.cos(a) * r,
+      cx: well.cx + Math.cos(a) * STAIR_RADIUS,
       cy: (bottom + top) / 2,
-      cz: w.z + Math.sin(a) * r,
-      hx: treadHalf, hy: (top - bottom) / 2, hz: treadHalf,
+      cz: well.cz + Math.sin(a) * STAIR_RADIUS,
+      hx: TREAD_HALF, hy: (top - bottom) / 2, hz: TREAD_HALF,
       kind: 'stair',
       enclosed: true,
     });
   }
+
+  /* The landing. Fills the well's inner quarter, top flush with level N+1's
+   * floor (`w.y + LEVEL_HEIGHT`), inner edges flush with the hole punched in
+   * it - so stepping off the stair onto the next level is a walk across a
+   * seam, not a step up or a hop. Its underside is one rise below, so the
+   * last tread reaches it with the same 0.375 m the other 23 use. */
+  const landBottom = w.y + (SHAFT_STEPS - 1) * rise;
+  const landTop = w.y + MAZE.LEVEL_HEIGHT;
+  out.push({
+    cx: (well.x0 + well.cx) / 2,
+    cy: (landBottom + landTop) / 2,
+    cz: (well.z0 + well.cz) / 2,
+    hx: (well.cx - well.x0) / 2,
+    hy: (landTop - landBottom) / 2,
+    hz: (well.cz - well.z0) / 2,
+    kind: 'stair',
+    enclosed: true,
+  });
 
   /* Walls. See this function's own comment for the per-side reasoning and
    * for why H stops at LEVEL_HEIGHT rather than LEVEL_HEIGHT + HEDGE_HEIGHT. */
@@ -312,13 +449,15 @@ export function districtColliders(cells, dx, dz, level) {
    * through, and an overlap is the cheapest possible guarantee of that -
    * EXCEPT the one deliberate hole above a shaft landing, which must let a
    * climbing capsule through while still supporting a pedestrian walking
-   * level `level` everywhere else. The shaft's own walls (emitted at
-   * level-1, but physically spanning up through this level's height - see
-   * `shaftColliders`) are what stop that pedestrian from ever reaching the
-   * hole sideways: at this level's height they are sealed on every side
-   * (`ENTRY_SEAL_FROM` sits at ~3.57m, well below `LEVEL_HEIGHT` 9m), so the
-   * hole is only ever reachable by climbing up through it, never by walking
-   * into it. */
+   * level `level` everywhere else.
+   *
+   * Nothing walls that pedestrian off from the hole any more - the shaft's
+   * own walls stop at `LEVEL_HEIGHT`, and they have to (fix round 3: running
+   * them higher sealed the climber into a 6x6 m box and severed level
+   * `level`'s own corridors). What keeps the pedestrian safe instead is that
+   * the hole is only the stair well, with the floor still all round it and
+   * guard walls on the three sides where walking in would be a fall. The
+   * fourth side is the landing, whose top is flush with this floor. */
   const half = (D * MAZE.CELL + MAZE.CELL) / 2;
   const originX = x0 * MAZE.CELL;
   const originZ = z0 * MAZE.CELL;
@@ -342,22 +481,81 @@ export function districtColliders(cells, dx, dz, level) {
   if (!hole) {
     pushFloorRect(floorX0, floorX1, floorZ0, floorZ1);
   } else {
-    // Tile the district floor as four rectangles around the hole - west and
-    // east strips run the full Z span; north and south strips fill the
-    // remaining middle column only. Together with the hole itself (left
-    // empty) this covers the district's full floor footprint exactly once:
-    // no overlap, no gap, anywhere except the hole. The hole is sized to
-    // exactly the shaft cell's own footprint (MAZE.CELL, matching the
-    // boundary shaftColliders' walls already stand on), never larger - a
-    // bigger hole would open a real gap beyond where those walls protect it.
-    const hw = cellToWorld(hole.x, hole.z, level);
-    const hHalf = MAZE.CELL / 2;
-    const hx0 = hw.x - hHalf, hx1 = hw.x + hHalf;
-    const hz0 = hw.z - hHalf, hz1 = hw.z + hHalf;
-    pushFloorRect(floorX0, hx0, floorZ0, floorZ1); // west
-    pushFloorRect(hx1, floorX1, floorZ0, floorZ1); // east
-    pushFloorRect(hx0, hx1, floorZ0, hz0); // north (middle column)
-    pushFloorRect(hx0, hx1, hz1, floorZ1); // south (middle column)
+    /* Tile the district floor as four rectangles around the hole - west and
+     * east strips run the full Z span; north and south strips fill the
+     * remaining middle column only. Together with the hole itself (left
+     * empty) this covers the district's full floor footprint exactly once:
+     * no overlap, no gap, anywhere except the hole.
+     *
+     * Fix round 4: the hole is the STAIR WELL, not the shaft cell. Round 2
+     * punched out the whole 6x6 m cell, which is what put an open 9 m pit
+     * over every shaft the moment round 3 stopped walling that cell off from
+     * above - 427 of 529 sample points across the cell dropped the full
+     * level. The stair only ever needs the well (2.8 m of the cell's 6 m,
+     * one quadrant of it), which is 7.8 of the cell's 36 square metres; the
+     * floor stays put everywhere else, which is what a stairwell is. The
+     * bounds come from `stairWellBounds` rather than being re-derived here,
+     * so the hole and the staircase inside it can never disagree. */
+    const well = stairWellBounds(hole.x, hole.z, level);
+    pushFloorRect(floorX0, well.x0, floorZ0, floorZ1); // west
+    pushFloorRect(well.x1, floorX1, floorZ0, floorZ1); // east
+    pushFloorRect(well.x0, well.x1, floorZ0, well.z0); // north (middle column)
+    pushFloorRect(well.x0, well.x1, well.z1, floorZ1); // south (middle column)
+
+    /* Guard walls. A hole in a floor you can simply walk into is a pit; a
+     * hole with a rail round it and one way in is a stairwell. Three of the
+     * well's four sides are railed for their full length, and the fourth
+     * corner - the well's inner quarter, where the LANDING is - is left open
+     * on both its faces. Walking in there is not a fall: the landing's top
+     * is flush with this floor.
+     *
+     * These stand at HEDGE_HEIGHT, so their tops sit exactly ON the top of
+     * the anti-ladder gate's band rather than inside it, and a hop plus a
+     * step-up (1.38 m) cannot mount them.
+     *
+     * They are emitted unconditionally, including on the two outer faces
+     * where level `level`'s own hedge may already stand. That is Trap 2's
+     * rule: a shaft's safety must never depend on a NEIGHBOURING cell's
+     * collider output, and south/east hedges are owned by the neighbour -
+     * which can be in a different district. Two possibly-redundant
+     * colliders per shaft is the price of that independence.
+     *
+     * Nothing here crosses the cell's centre lines, so the L-shaped strip
+     * along the cell's north and west stays clear and every passage level
+     * `level`'s own topology opens still has a route through the cell. */
+    const guardTop = baseY + MAZE.HEDGE_HEIGHT;
+    const pushGuard = (gx0, gx1, gz0, gz1) => {
+      out.push({
+        cx: (gx0 + gx1) / 2,
+        cy: (baseY + guardTop) / 2,
+        cz: (gz0 + gz1) / 2,
+        hx: (gx1 - gx0) / 2,
+        hy: (guardTop - baseY) / 2,
+        hz: (gz1 - gz0) / 2,
+        kind: 'hedge',
+      });
+    };
+    const T = GUARD_HALF_THICK * 2;
+    /* Every rail sits just OUTSIDE the surface it guards, never overhanging
+     * it: the well's own bounds are exactly the space a climbing capsule
+     * needs (`STAIR_WELL_HALF`), so a rail that leaned in would be a rail the
+     * climber's head walks into on the last turn. */
+    // The well's two inner faces, guarded everywhere except along the landing.
+    pushGuard(well.x0 - T, well.x0, well.cz, well.z1 + T);
+    pushGuard(well.cx, well.x1 + T, well.z0 - T, well.z0);
+    // The well's two outer faces, guarded for their whole length.
+    pushGuard(well.x1, well.x1 + T, well.z0 - T, well.z1 + T);
+    pushGuard(well.x0 - T, well.x1 + T, well.z1, well.z1 + T);
+    /* The head of the stair. A spiral is continuous everywhere but here: go
+     * one more step round from the landing and the highest thing under you is
+     * the turn BELOW, a `LEVEL_HEIGHT / STAIR_TREADS_PER_TURN * ...` drop of
+     * several metres rather than one riser. Everywhere else on the spiral,
+     * the neighbouring sector is the next or previous tread and the drop is
+     * exactly one 0.375 m rise. So the landing is railed on both its inner
+     * faces EXCEPT the stretch the last tread lies across, which is the way
+     * down. */
+    pushGuard(well.cx, well.cx + T, well.z0, well.cz);
+    pushGuard(well.cx - TREAD_HALF, well.cx + T, well.cz, well.cz + T);
   }
 
   const HH = MAZE.HEDGE_HEIGHT / 2;

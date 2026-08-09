@@ -12,7 +12,7 @@ import {
 } from '../../src/worlds/maze/MazeColliders.js';
 import { Physics } from '../../src/physics/Physics.js';
 import { EventBus } from '../../src/core/EventBus.js';
-import { MazeWorld } from '../../src/worlds/MazeWorld.js';
+import { MazeWorld, MAZE_CENTRE_VALUE } from '../../src/worlds/MazeWorld.js';
 
 /*
  * Coverage for "npcs-and-collectibles": the keeper, the eight lost wanderers
@@ -317,4 +317,72 @@ test('THE NO-STANDABLE-TOKEN GATE: no token or NPC position is inside a collider
       `${spec.name}'s spawn point is embedded in a collider`,
     );
   }
+});
+
+/* -------------------------------------------------------------------- */
+/* Phase 3: the centre pays, and opens a way home                        */
+/* -------------------------------------------------------------------- */
+
+test('the centre is worth exactly 100, and nothing scales it', () => {
+  // The spec says 100 twice and calls it final rather than a placeholder.
+  assert.equal(MAZE_CENTRE_VALUE, 100);
+});
+
+test('the return portal is not there until the centre is collected', async () => {
+  const world = await buildMazeWorld();
+  assert.equal(world.portalSpecs.length, 1,
+    'a second portal exists before the centre is taken - that is a way to skip the maze');
+  world._collectCentre();
+  assert.equal(world.portalSpecs.length, 2, 'collecting the centre opened no way home');
+
+  const home = world.portalSpecs[1];
+  assert.equal(home.target, 'station');
+  const c = cellCoords(world.centreCell);
+  const w = cellToWorld(c.x, c.z, c.level);
+  assert.ok(Math.hypot(home.position.x - w.x, home.position.z - w.z) < MAZE.CELL,
+    `the return portal opened at ${home.position.x},${home.position.z}, not at the centre ${w.x},${w.z}`);
+});
+
+test('collecting twice pays once', async () => {
+  /* The pickup radius is tested every frame, so paying per collect-call would
+   * be 100 credits every sixtieth of a second for as long as the player stood
+   * on the stack. */
+  const world = await buildMazeWorld();
+  let paid = 0;
+  let opened = 0;
+  world.bus = {
+    emit: (e, p) => {
+      if (e === 'maze:centre-found') paid += p.amount;
+      if (e === 'maze:centre-opened') opened += 1;
+    },
+  };
+  world._collectCentre();
+  world._collectCentre();
+  world._collectCentre();
+  assert.equal(paid, MAZE_CENTRE_VALUE, `paid ${paid} - the centre is payable more than once`);
+  assert.equal(opened, 1, `announced ${opened} openings`);
+  assert.equal(world.portalSpecs.length, 2, 'repeated collection opened more portals');
+});
+
+test('the centre stack is hidden once taken, so it does not read as still collectable', async () => {
+  const world = await buildMazeWorld();
+  world._collectCentre();
+  assert.equal(world._centreStack?.visible, false, 'the credits are still on show after being taken');
+});
+
+test('the return portal opens at the centre on any seed, including a centre above level 0', async () => {
+  /* `centreCell` is on a seed-chosen level (see buildDistrictGraph), so the
+   * portal has to follow it up rather than assuming the ground floor. */
+  let checkedRaised = 0;
+  for (let i = 0; i < 6; i++) {
+    const world = await buildMazeWorld();
+    world._collectCentre();
+    const c = cellCoords(world.centreCell);
+    const w = cellToWorld(c.x, c.z, c.level);
+    const home = world.portalSpecs[1];
+    assert.ok(Math.abs(home.position.y - w.y) < 1e-6,
+      `centre on level ${c.level} but the portal opened at y=${home.position.y}, expected ${w.y}`);
+    if (c.level > 0) checkedRaised++;
+  }
+  assert.ok(checkedRaised > 0, 'no seed put the centre above level 0 - widen the sample');
 });

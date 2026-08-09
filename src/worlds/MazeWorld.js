@@ -126,6 +126,15 @@ const TOKEN_PICKUP_R2 = TOKEN_PICKUP_R * TOKEN_PICKUP_R;
  * and is the one reward this world should not let anything else overshadow.
  */
 const MAZE_TOKEN_VALUE = 6;
+/**
+ * The centre's reward.
+ *
+ * 100, FINAL. The spec says so twice and calls it final rather than a
+ * placeholder: it is deliberately not scaled by maze size, by level count or
+ * by how long the run took. A player who reaches the centre of a 2.4 km maze
+ * that re-rolls every entry gets the same 100 as anyone else who did.
+ */
+export const MAZE_CENTRE_VALUE = 100;
 /** How many extra cells a wanderer's patrol reaches beyond its starting cell. */
 const PATROL_STEPS = 4;
 /** Districts either side of the player. 2 gives the 5x5 block the spec calls for. */
@@ -601,6 +610,15 @@ export class MazeWorld extends World {
      * be a lift that mostly does not move. */
     if (this.chunks) this.chunks.stepLifts(dt, player ?? null);
 
+    /* The centre. Same radius test as a dead-end token, and the same
+     * announce-never-award rule. */
+    if (player && !this._centreTaken && this.centrePosition) {
+      const dx = player.x - this.centrePosition.x;
+      const dy = (player.y + 1.0) - this.centrePosition.y;
+      const dz = player.z - this.centrePosition.z;
+      if (dx * dx + dy * dy + dz * dz < TOKEN_PICKUP_R2) this._collectCentre();
+    }
+
     /* Hold-L to leave, from anywhere and at any depth. Announced on the bus
      * and never acted on here: `main.js` owns the world switch, the same rule
      * that keeps `maze:token-found` from touching Economy directly. */
@@ -691,6 +709,41 @@ export class MazeWorld extends World {
      * hop band, and the centre cell has hedges on at least three sides - a
      * solid stack there would be a step onto the hedge tops. */
     this.centrePosition = new THREE.Vector3(w.x, w.y, w.z);
+    this._centreStack = stack;
+    this._centreTaken = false;
+  }
+
+  /**
+   * Take the centre: pay once, and open a way home from it.
+   *
+   * Guarded on `_centreTaken` because the pickup radius is tested every frame,
+   * and paying per frame would be 100 credits every sixtieth of a second.
+   *
+   * The portal OPENS rather than existing from the start. The walk out must
+   * not be forced (spec section 6), but a portal standing at the centre from
+   * the beginning would be a way to skip the maze entirely for anyone who
+   * happened to arrive there - which, in a maze that re-rolls, is exactly what
+   * a lucky route is.
+   *
+   * Announces and never awards: `main.js` owns Economy and the HUD, the same
+   * rule the dead-end tokens follow.
+   */
+  _collectCentre() {
+    if (this._centreTaken) return;
+    this._centreTaken = true;
+    if (this._centreStack) this._centreStack.visible = false;
+
+    const c = cellCoords(this.centreCell);
+    const w = cellToWorld(c.x, c.z, c.level);
+    this.portalSpecs.push({
+      position: new THREE.Vector3(w.x, w.y, w.z),
+      rotationY: 0,
+      target: 'station',
+      label: 'Aether Station',
+      accent: 0xffd479,
+    });
+    this.bus?.emit('maze:centre-opened', { position: this.centrePosition.clone() });
+    this.bus?.emit('maze:centre-found', { amount: MAZE_CENTRE_VALUE });
   }
 
   /** Re-generation needs a clean group and collider list each time. */

@@ -841,6 +841,18 @@ bus.on('maze:abandon', () => {
 bus.on('maze:abandon-progress', ({ progress }) => {
   hud?.setHoldProgress?.('abandon', progress);
 });
+/* The centre of the maze: 100 credits, once. MazeWorld announces, this file
+ * awards - see the note on the token handler below. */
+bus.on('maze:centre-found', ({ amount }) => {
+  economy.add(amount, 'maze-centre');
+  hud?.notify?.(`+${amount} CR — the centre of the Coil`, 'loot');
+});
+bus.on('maze:centre-opened', () => {
+  /* The return portal only exists once the centre is taken, so the portal
+   * system has to be told to rebuild for this world rather than trusting the
+   * specs it read at activation. */
+  portals?.buildForWorld?.(worldManager.active);
+});
 bus.on('maze:token-found', ({ amount }) => {
   economy.add(amount, 'maze-token');
   hud?.notify?.(`+${amount} CR`, 'loot');

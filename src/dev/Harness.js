@@ -9,8 +9,9 @@
  * Everything here is dev-only and is tree-shaken out of a normal boot.
  */
 
-import { MAZE, DIR, cellIndex, districtCoords, isOpen } from '../worlds/maze/MazeTopology.js';
+import { MAZE, DIR, cellIndex, districtCoords, isOpen, connectorAt } from '../worlds/maze/MazeTopology.js';
 import { cellToWorld } from '../worlds/maze/MazeColliders.js';
+import { shaftColliders } from '../worlds/maze/MazeShafts.js';
 
 /**
  * Camera framings, derived from each world's actual published layout
@@ -101,6 +102,7 @@ const VIEWS = {
     { name: 'corridor', pos: [1260, 1.7, 40], look: [1260, 1.7, 120], fov: 75 },
     { name: 'above-entrance', pos: [1260, 60, -40], look: [1260, 0, 200], fov: 70 },
     { name: 'shaft-up', computed: true },
+    { name: 'lift-car', computed: true },
     { name: 'tower-top', computed: true },
   ],
 };
@@ -197,7 +199,7 @@ class Harness {
    *   every resident district regardless of level.
    * @returns {{x:number, z:number, level:number}|null}
    */
-  _findResidentShaft(level = null) {
+  _findResidentShaft(level = null, kind = null) {
     const w = this.game.worldManager.active;
     if (w?.id !== 'maze' || !w.cells || !w.chunks) return null;
 
@@ -210,11 +212,60 @@ class Harness {
         for (let lx = 0; lx < D; lx++) {
           const x = x0 + lx, z = z0 + lz;
           const idx = cellIndex(x, z, d.level);
-          if (isOpen(w.cells, idx, DIR.UP)) return { x, z, level: d.level };
+          if (!isOpen(w.cells, idx, DIR.UP)) continue;
+          /* Phase 2c: optionally hold out for a particular connector. Which
+           * shape a link becomes is the topology array's decision, and a
+           * tunnel whose fold would sever a crossing falls back to a
+           * staircase - so a caller after a REAL tunnel has to check what was
+           * emitted, not just what was chosen. */
+          if (kind) {
+            const descs = shaftColliders(w.cells, x, z, d.level);
+            const emitted = descs.some((k) => k.kind === 'tunnel') ? 'tunnel'
+              : descs.some((k) => k.kind === 'lift') ? 'lift' : 'stair';
+            if (emitted !== kind) continue;
+          }
+          return { x, z, level: d.level };
         }
       }
     }
     return null;
+  }
+
+  /**
+   * Frame a real, resident LIFT - the car in its shaft, seen from the level-N
+   * doorway it is entered through.
+   *
+   * Held to the same rule the shaft view had to learn: scan only resident
+   * districts and check what was actually EMITTED, so this cannot frame a
+   * lift that was never built or a district nobody streamed.
+   *
+   * @returns {{pos:number[], look:number[], fov:number}|null}
+   */
+  _findLiftFraming() {
+    const lift = this._findResidentShaft(null, 'lift');
+    if (!lift) return null;
+    const world = this.game.worldManager.active;
+    const w = cellToWorld(lift.x, lift.z, lift.level);
+    const idx = cellIndex(lift.x, lift.z, lift.level);
+
+    /* Stand in the corridor the shaft actually OPENS onto, derived from the
+     * topology. Placing the camera at a fixed diagonal offset put it inside a
+     * hedge - the same mistake 2b's ledger records the shaft view making, and
+     * a review instrument that frames the wrong thing is worse than none.
+     * A shaft always has at least one open side; that is how anyone gets in. */
+    const sides = [
+      { dir: DIR.N, dx: 0, dz: -1 }, { dir: DIR.E, dx: 1, dz: 0 },
+      { dir: DIR.S, dx: 0, dz: 1 }, { dir: DIR.W, dx: -1, dz: 0 },
+    ].filter((sd) => isOpen(world.cells, idx, sd.dir));
+    if (sides.length === 0) return null;
+    const s = sides[0];
+
+    /* Just under a cell out, so the camera stands in the open corridor rather
+     * than in the doorway itself, at eye height, looking at the car and the
+     * landing above it. The well sits in the +x/+z quadrant of the cell. */
+    const pos = [w.x + s.dx * MAZE.CELL * 0.9, w.y + 1.6, w.z + s.dz * MAZE.CELL * 0.9];
+    const look = [w.x + 0.9, w.y + MAZE.LEVEL_HEIGHT * 0.35, w.z + 0.9];
+    return { pos, look, fov: 75 };
   }
 
   /**
@@ -295,6 +346,7 @@ class Harness {
   async _computeView(name, worldId) {
     if (worldId !== 'maze') return null;
     if (name === 'shaft-up') return this._findShaftFraming();
+    if (name === 'lift-car') return this._findLiftFraming();
     if (name === 'tower-top') return this._computeTowerTop();
     return null;
   }
@@ -414,12 +466,45 @@ class Harness {
       playerLevel = Math.min(MAZE.LEVELS - 1, Math.max(0, Math.round(playerPos.y / MAZE.LEVEL_HEIGHT)));
     }
 
+    /* Phase 2c: what the three connectors are actually doing.
+     *
+     * `connectors` counts what the TOPOLOGY chose, `built` counts what
+     * geometry was emitted - and they differ on purpose. A tunnel whose fold
+     * would sever a crossing falls back to a staircase, so most tunnel links
+     * build as stairs. Reporting only the topology figure would say 25%
+     * tunnels and be misleading about what is in the world. */
+    const connectors = { stair: 0, tunnel: 0, lift: 0 };
+    const built = { stair: 0, tunnel: 0, lift: 0 };
+    if (w.cells) {
+      for (const key of w.chunks?.residentKeys() ?? []) {
+        const { dx, dz, level } = districtCoords(key);
+        if (level + 1 >= MAZE.LEVELS) continue;
+        for (let lz = 0; lz < MAZE.DISTRICT; lz++) {
+          for (let lx = 0; lx < MAZE.DISTRICT; lx++) {
+            const cx = dx * MAZE.DISTRICT + lx, cz = dz * MAZE.DISTRICT + lz;
+            if (!isOpen(w.cells, cellIndex(cx, cz, level), DIR.UP)) continue;
+            const kind = connectorAt(w.cells, cx, cz, level);
+            connectors[kind]++;
+            const descs = shaftColliders(w.cells, cx, cz, level);
+            if (descs.some((d) => d.kind === 'tunnel')) built.tunnel++;
+            else if (descs.some((d) => d.kind === 'lift')) built.lift++;
+            else built.stair++;
+          }
+        }
+      }
+    }
+
     return {
       seed: w.seed,
       residentDistricts: w.chunks?.residentKeys().length ?? 0,
       levels: levels.size,
       canopyDistricts: w.canopy?.residentKeys().length ?? 0,
       playerLevel,
+      /* Vertical connectors in the RESIDENT set - `connectors` is what the
+       * topology chose, `built` is what was emitted. See the note above. */
+      connectors,
+      built,
+      liftsResident: w.chunks?.liftCount() ?? 0,
       colliders: this.game.physics.colliders.length,
       programs: this.game.engine.renderer.info.programs.length,
       drawCalls: this.game.engine.renderer.info.render.calls,

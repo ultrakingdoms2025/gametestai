@@ -154,8 +154,26 @@ export class UnstuckSystem {
 
     const pos = player.position;
     if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) {
-      // NaN position is unrecoverable by any nudge - go straight to spawn.
-      this._teleportToSpawn('invalid-position');
+      /* NaN position is unrecoverable by any nudge - go straight to spawn.
+       *
+       * This called `this._teleportToSpawn(...)`, which has never existed on
+       * this class: the method is `_spawnFallback()`, and it returns a target
+       * rather than moving anyone, so the move needs `_commit` too. The result
+       * was that the one path meant to rescue a player from a NaN position
+       * threw instead, every fixed step, forever - a crash loop in the
+       * recovery code, reachable by any NaN position. Found while streaming a
+       * 2.4 km maze, where falling into an unbuilt district is exactly how a
+       * position goes NaN. */
+      const target = this._spawnFallback();
+      this._commit(target.position, Number.isFinite(this.player.yaw) ? this.player.yaw : 0);
+      this._resetDetectors(this.player.position);
+      this._stuck = false;
+      this.bus?.emit('player:unstuck', {
+        to: target.position.clone(),
+        reason: 'invalid-position',
+        method: target.method,
+        label: target.label,
+      });
       return;
     }
 

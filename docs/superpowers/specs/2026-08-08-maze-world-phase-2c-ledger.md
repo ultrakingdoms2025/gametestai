@@ -426,3 +426,42 @@ Task 9: THE HONEST CONSEQUENCE — **only 3 of 92 tunnel links survive the
   connectors. Shipping as-is is safe and green but delivers three tunnels.
 
   243 tests, MAZE_SEEDS=1000 green in 152s, contract-check 45/45, build clean.
+
+Task 10: complete. BROWSER VERIFICATION, Chrome DevTools MCP against `?dev=1`.
+
+  `mazeStats()` now reports `connectors` (what the TOPOLOGY chose) alongside
+  `built` (what geometry was emitted) and `liftsResident`. The two differ on
+  purpose and reporting only the first would be misleading: a tunnel whose fold
+  would sever a crossing falls back to a staircase, so most tunnel links build
+  as stairs. A `lift-car` view joins `shaft-up`, scanning only RESIDENT
+  districts and checking what was EMITTED, so it cannot frame a lift that was
+  never built.
+
+  MEASURED IN A REAL SESSION:
+  - Entry 536 ms cold, then 219-342 ms steady across ten re-entries. Budget 3 s.
+  - **Shader programs 383, FLAT across all ten entries. Growth: 0.** This is the
+    highest-risk detail in the whole feature - the spec says so - and the three
+    new materials (lift, liftDoor, tunnel) are all cached and reused across
+    re-rolls as required.
+  - Colliders ~8,500 steady across re-entries: no leak.
+  - 3 lifts resident, all registered; one had a car but NO door, its level N+1
+    district not being resident - exactly the independent-eviction case the
+    cell-keyed registry was built for.
+  - Zero console errors across ten re-rolls.
+  - Lift car visually confirmed: the metal slab reads clearly against the pale
+    shaft stone and the hedge green.
+
+Task 10: MY FIRST `lift-car` VIEW FRAMED A HEDGE. It put the camera at a fixed
+  diagonal offset, which is solid more often than not - the same mistake 2b's
+  ledger records the shaft view making. Now derived from a side the topology
+  actually OPENS.
+
+Task 10: PRE-EXISTING CRASH LOOP FOUND AND FIXED (out of 2c's scope, in
+  `src/systems/Unstuck.js`, from commit dd76c3e). `fixedUpdate` called
+  `this._teleportToSpawn('invalid-position')`; no such method has ever existed
+  on that class - it is `_spawnFallback()`, which RETURNS a target rather than
+  moving anyone. So the one path meant to rescue a player from a NaN position
+  threw instead, every fixed step, forever. Reachable by any NaN position, and
+  a 2.4 km streaming world is exactly where one happens: teleporting into an
+  unbuilt district triggered it. Fixed to call `_spawnFallback` + `_commit` and
+  emit the same `player:unstuck` event the manual path does.

@@ -380,6 +380,18 @@ export class MazeWorld extends World {
        * quad allocated per district or per build would re-trigger the shader
        * compilation that already dominates cold boot. Flat and a shade darker
        * than the hedge material so it reads as distance, not as more maze. */
+      /* Weathered stone at each hedge's base - "five-metre hedges over
+       * weathered stone footings", section 10. Mesh only; see MazeFoliage.js
+       * for why it registers no colliders. */
+      footing: new THREE.MeshStandardMaterial({
+        color: 0x7d7566, roughness: 1.0, metalness: 0,
+      }),
+      /* Unkempt growth along the hedge tops. A shade lighter and yellower than
+       * the hedge itself so it reads as new growth against clipped body,
+       * rather than as noise on the same surface. */
+      foliage: new THREE.MeshStandardMaterial({
+        color: 0x86ab55, roughness: 1.0, metalness: 0,
+      }),
       canopy: new THREE.MeshStandardMaterial({ color: 0x24391f, roughness: 1, metalness: 0 }),
     };
     return this._materials;

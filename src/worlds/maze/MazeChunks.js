@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { MAZE, districtCoords, districtAtWorld, neighbourhoodKeys } from './MazeTopology.js';
 import { districtColliders } from './MazeColliders.js';
+import { foliageTransforms, footingTransforms } from './MazeFoliage.js';
 
 /**
  * Every descriptor `kind` this class knows how to turn into a mesh, and
@@ -144,6 +145,25 @@ export class MazeChunks {
       const of = descs.filter((d) => d.kind === kind);
       const mesh = buildBoxInstances(of, this.materials[kind], `maze:${kind}:${key}`, this.group);
       if (mesh) meshes.push(mesh);
+    }
+
+    /* Dressing: a stone band at each hedge's base, and unkempt growth along
+     * its top edge. Both are MESH ONLY and never touch `colliders` - foliage
+     * sits in the 0.45-5.0m band, where section 2 permits a prop only if it is
+     * non-collidable, and the footing matches the hedge footprint exactly so
+     * the hedge's own collider already covers it. See MazeFoliage.js. */
+    const footings = footingTransforms(descs);
+    if (footings.length && this.materials.footing) {
+      const fm = buildBoxInstances(
+        footings.map((f) => ({ cx: f.x, cy: f.y, cz: f.z, hx: f.hx, hy: f.hy, hz: f.hz })),
+        this.materials.footing, `maze:footing:${key}`, this.group,
+      );
+      if (fm) meshes.push(fm);
+    }
+    const sprigs = foliageTransforms(descs, key);
+    if (sprigs.length && this.materials.foliage) {
+      const sm = buildSprigInstances(sprigs, this.materials.foliage, `maze:foliage:${key}`, this.group);
+      if (sm) meshes.push(sm);
     }
 
     /* The district's lantern. See LANTERN_COLOUR above for why this is free. */
@@ -524,6 +544,47 @@ export class MazeChunks {
  * @param {THREE.Group} group
  * @returns {THREE.InstancedMesh|null}
  */
+/**
+ * One InstancedMesh of small leaning boxes, for foliage.
+ *
+ * Separate from `buildBoxInstances` because a sprig needs a Y ROTATION and a
+ * uniform scale, and a hedge needs neither - threading rotation through the
+ * hot path that builds ten thousand walls per district to serve the dressing
+ * would be the wrong trade.
+ *
+ * Foliage casts no shadow: at five sprigs per hedge segment across 25 resident
+ * districts that is tens of thousands of shadow casters for detail nobody
+ * reads, and shadow cost is the one budget the canopy work already showed this
+ * world is sensitive to.
+ *
+ * @param {Array<{x:number,y:number,z:number,ry:number,s:number}>} sprigs
+ * @returns {THREE.InstancedMesh|null}
+ */
+export function buildSprigInstances(sprigs, material, name, group) {
+  if (sprigs.length === 0) return null;
+  const geo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+  const mesh = new THREE.InstancedMesh(geo, material, sprigs.length);
+  mesh.name = name;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const up = new THREE.Vector3(0, 1, 0);
+  const pos = new THREE.Vector3();
+  const scale = new THREE.Vector3();
+  for (let i = 0; i < sprigs.length; i++) {
+    const s = sprigs[i];
+    pos.set(s.x, s.y, s.z);
+    q.setFromAxisAngle(up, s.ry);
+    scale.set(s.s, s.s * 1.4, s.s);
+    m.compose(pos, q, scale);
+    mesh.setMatrixAt(i, m);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  group.add(mesh);
+  return mesh;
+}
+
 export function buildBoxInstances(descs, material, name, group) {
   if (descs.length === 0) return null;
   const geo = new THREE.BoxGeometry(1, 1, 1);

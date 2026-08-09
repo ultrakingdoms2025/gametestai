@@ -16,6 +16,29 @@ import { districtColliders } from './MazeColliders.js';
  * nothing ever draws it - a stair tread with no mesh, solid and invisible.
  * See that test for the enforcement.
  */
+/**
+ * One authored point light per resident district.
+ *
+ * `LightRig` owns a FIXED set of slot lights and treats every other light in
+ * the scene as a source: it walks the scene each frame, hides what it finds and
+ * copies the best-scoring few into those slots. The light counts baked into
+ * every shader cache key are therefore constant however many a world authors -
+ * the station authors 65 - so this costs no programs.
+ *
+ * Three commits in Phases 2b and 2c claimed the opposite and gave the shafts
+ * emissive materials on the grounds that a lamp was impossible. The emissive
+ * treads were a reasonable answer; the reason was a misreading of LightRig.
+ *
+ * Created HIDDEN, and that part matters. The rig would hide it anyway, but not
+ * until its next walk, and a light that is visible for one frame is a light
+ * that can trigger a compile. Starting hidden costs nothing - the rig takes it
+ * as a source either way.
+ */
+const LANTERN_COLOUR = 0xffd9a0;
+const LANTERN_INTENSITY = 26;
+/** Bounded to its own district, so the rig's distance scoring is meaningful. */
+const LANTERN_RANGE = MAZE.DISTRICT * MAZE.CELL * 0.75;
+
 export const CHUNK_MESH_KINDS = Object.freeze(['hedge', 'floor', 'stair', 'shaftWall', 'lift', 'liftDoor', 'tunnel']);
 
 /**
@@ -108,7 +131,16 @@ export class MazeChunks {
       if (mesh) meshes.push(mesh);
     }
 
-    this._resident.set(key, { meshes, colliders });
+    /* The district's lantern. See LANTERN_COLOUR above for why this is free. */
+    const w0 = districtCoords(key);
+    const cx = (w0.dx * MAZE.DISTRICT + MAZE.DISTRICT / 2) * MAZE.CELL;
+    const cz = (w0.dz * MAZE.DISTRICT + MAZE.DISTRICT / 2) * MAZE.CELL;
+    const lantern = new THREE.PointLight(LANTERN_COLOUR, LANTERN_INTENSITY, LANTERN_RANGE);
+    lantern.visible = false;
+    lantern.position.set(cx, w0.level * MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT * 0.8, cz);
+    this.group.add(lantern);
+
+    this._resident.set(key, { meshes, colliders, lantern });
   }
 
   /**
@@ -146,6 +178,13 @@ export class MazeChunks {
        * 64 bytes per instance. */
       m.dispose();
     }
+    /* The lantern goes with its district, or a walk across the maze would
+     * leave one behind every 120 m and the rig would score an ever-growing
+     * source list. */
+    if (entry.lantern) {
+      this.group.remove(entry.lantern);
+      entry.lantern.dispose?.();
+    }
 
     this._resident.delete(key);
   }
@@ -178,6 +217,10 @@ export class MazeChunks {
         this.group.remove(m);
         m.geometry.dispose();
         m.dispose();
+      }
+      if (entry.lantern) {
+        this.group.remove(entry.lantern);
+        entry.lantern.dispose?.();
       }
     }
 

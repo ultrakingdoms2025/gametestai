@@ -305,11 +305,39 @@ reward is deliberately not scaled by maze size or completion time.
 
 ## 7. The map and the minimap
 
-**The map — `src/ui/MazeMap.js`, bound to `M`.** Renders the **current level
-only by default**, drawn from the topology array. 400×400 cells at ~~2 px/cell
+**The map — `src/ui/MazeMap.js`, bound to `M`.** Renders ~~the current level
+only by default~~ **all four levels at once by default — AMENDED by the owner,
+2026-08-09**, drawn from the topology array. 400×400 cells at ~~2 px/cell
 is an 800×800 canvas~~ **4 px/cell is a 1600×1600 canvas** — 2 px/cell was
 measured unreadable, a cell landing under 1.5 px in the panel and the walls
-merging into noise — drawn once per level and cached.
+merging into noise — drawn once per level and cached. All four bakes are now
+kept rather than one, because the overview needs them together and because
+paging used to re-rasterise 160,000 segments per press.
+
+**All four levels, side by side — `src/ui/MazeMapLayout.js`.** `M` opens a 2×2
+grid of floorplans, fitted, one pane per level in the order the tabs and the
+`1`–`4` keys already name them. The maze is one connected volume and the
+question a player is actually asking — *where does this floor let me up?* — is
+one no single floorplan can answer.
+
+2×2 rather than a 1×4 strip because the panel is square (`min(92vw, 92vh)`): a
+strip fits each level into a quarter of the panel's edge, a grid into a half,
+which is twice the linear scale for the same screen. Side by side and never
+superimposed, for the reason the route drawing has always given — flattened,
+the floor above reads as a way through this one.
+
+Paging survives: `1`–`4`, the tabs, the brackets and PageUp/PageDown still drop
+to a single floor at junction scale (`OPEN_CELLS_ACROSS`), and `0`, the
+backquote or the ALL tab comes back. The overview is the index; the single
+floor is the page. Coming out of the overview re-centres on the player, because
+a sheet-sized pan means nothing on one floorplan. FIND ME now restores the
+junction-scale zoom too, since "show me where I am" pressed from a fitted
+overview used to land on a fitted floorplan — 400 cells across a panel, which
+is a shape and not a place.
+
+The arrangement lives in a pure module so it can be asserted under
+`node --test` — no two panes overlap, none escapes the sheet, every level gets
+one — which a decision taken inside `_draw` could not be.
 
 **Navigation (owner, 2026-08-09).** The **wheel scrolls** and **Ctrl+wheel
 zooms**, rather than the wheel zooming: the map opens showing 90 of 400 cells,
@@ -357,6 +385,25 @@ the map is already open, resets every time the map is opened, and draws only the
 segments on the level being shown: a route that vanishes at a staircase and
 resumes on the level above is what the player needs to see, where a flattened
 one would suggest a way through a floor.
+
+**Over all four levels — AMENDED by the owner, 2026-08-09.** Ctrl+M in the
+overview draws the route on every pane it crosses, and joins them: where the
+route changes floor, a dashed link runs from that cell in one pane to the same
+cell in the other, ringed at both ends. This is the same "never flattened"
+rule, extended — the route still stops dead at each floor's edge, and the only
+thing that crosses between floors is a link drawn at a cell where the topology
+genuinely has one. `THE VERTICAL-LINK GATE` in
+`scripts/tests/maze-map-levels.test.mjs` asserts exactly that, against
+`isOpen(..., DIR.UP)`.
+
+Ctrl+M goes through `mapActionOwner` and `Input.codeFor('map')` like the plain
+press does, and for the same reason as commit 6e863e3: it is the same key, so a
+second rule about who owns it would be a second way for the map and the mount
+wheel to disagree.
+
+The route itself still comes from `MazeWorld.solutionPath`, which is
+`MazeTopology.solve` — the one answer to "is this maze solvable". The map does
+not search; a gate asserts it contains no second search.
 
 **The minimap** behaves exactly as in other worlds, with two changes:
 

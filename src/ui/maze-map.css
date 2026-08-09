@@ -95,8 +95,9 @@
   display: inline-block;
 }
 
-/* Level tabs. The four floors stack in the same footprint, so paging between
-   them at a fixed pan is how you find where a corridor continues upward. */
+/* Level tabs. ALL is the view the map opens on - four floorplans side by side -
+   and 1-4 page down to one floor at junction scale, holding pan so you can find
+   where a corridor continues upward. */
 .mz-map-levels {
   display: inline-flex;
   gap: 4px;
@@ -130,6 +131,9 @@
   content: '•';
   margin-left: 3px;
 }
+
+/* ALL carries a word rather than a digit, so it gets the room for one. */
+.mz-map-tab[data-lvl='all'] { padding: 3px 8px; }
 
 .mz-map-recentre {
   min-width: 0;

@@ -2,18 +2,41 @@ import './maze-map.css';
 import { MAZE } from '../worlds/maze/MazeTopology.js';
 import { levelSegments } from '../worlds/maze/MazePlan.js';
 import { mapActionOwner } from '../worlds/WorldRules.js';
+import { OVERVIEW, sheetFor, verticalLinks } from './MazeMapLayout.js';
 
 /**
- * The `M` map — the level you are standing in, and nothing else.
+ * The `M` map — all four levels of the maze, and where you are in them.
  *
  * ## What it draws, and from what
  *
- * One level, rasterised from `world.cells` via `levelSegments`, never from
+ * Levels, rasterised from `world.cells` via `levelSegments`, never from
  * geometry. That is the spec's rule (section 3: the topology array is the
  * single source of truth for the map) and it is also the only thing that could
  * work — geometry exists only for the handful of districts currently streamed
  * in, so a map drawn from it would be a map of wherever you happen to be
  * standing.
+ *
+ * ## Why it opens on all four
+ *
+ * It used to open on the level under your feet, with `1`–`4` to page. By the
+ * owner's ruling (2026-08-09) `M` now opens the whole building: four
+ * floorplans side by side, laid out by `MazeMapLayout`. The maze is one
+ * connected volume and the thing a player is actually asking is "where does
+ * this floor let me up" — a question a single floorplan cannot answer, and one
+ * that four of them answer at a glance.
+ *
+ * Paging survives it. `1`–`4` (and the tabs, and the brackets) still drop to a
+ * single floor at junction scale, which is the scale you read a corridor at;
+ * `0` or the ALL tab comes back. The overview is the index, the single floor
+ * is the page.
+ *
+ * ## Why side by side and never superimposed
+ *
+ * The four levels share one XZ footprint, so they could be overlaid and tinted
+ * by depth. They are not, for the reason the route drawing has always given:
+ * flattened, a corridor on the floor above reads as a way through this one.
+ * Where the route does change floor, that is drawn as an explicit link between
+ * two panes — see `_drawLevelChanges`.
  *
  * ## It shows where you are, by the owner's decision
  *
@@ -36,6 +59,11 @@ import { mapActionOwner } from '../worlds/WorldRules.js';
  * says once. The bake is keyed on seed AND level for the same reason
  * `minimapPlanKey` is: the maze re-rolls, and a cache that ignores the seed
  * draws the previous run's walls.
+ *
+ * All four bakes are now kept rather than one, because the overview needs
+ * them all at once and because paging between floors used to re-rasterise on
+ * every press. They are dropped the moment the seed changes, which is the only
+ * thing that can invalidate them.
  */
 
 /**
@@ -49,6 +77,11 @@ import { mapActionOwner } from '../worlds/WorldRules.js';
  */
 const MAP_PX_PER_CELL = 4;
 const MAP_BG = '#0d130e';
+/* The frame and caption around each floorplan in the overview. Without them
+ * four abutting grids of identical hedge texture read as one 800-cell maze. */
+const PANE_EDGE = 'rgba(143, 214, 122, 0.30)';
+const PANE_EDGE_HERE = 'rgba(255, 255, 255, 0.55)';
+const PANE_LABEL = '#cfe6c4';
 /* Muted deliberately. The walls were a bright #8fd67a, and against 160,000 of
  * them a marker dot simply disappeared - the map has to carry both, and the
  * walls are the thing there is most of. */
@@ -99,13 +132,17 @@ export class MazeMap {
     /* The Ctrl+M cheat. Off on open, every time - it is a way out of being
      * stuck, not a mode to leave switched on. */
     this._showPath = false;
-    /* Which level the player has paged to, or null for "the one they are on".
-     * Cleared on every open - see `_level`. */
-    this._levelOverride = null;
+    /* Which view the player has paged to: a level number, `OVERVIEW`, or null
+     * for "the level they are standing on". Reset to OVERVIEW on every open -
+     * see `_view`. */
+    this._levelOverride = OVERVIEW;
 
     this._open = false;
-    this._baked = null;
-    this._bakedKey = null;
+    /* One baked floorplan per level, keyed by level, all thrown away together
+     * when the seed changes. See the header: the overview needs four at once,
+     * and a cache of one re-rasterised 160,000 segments on every page. */
+    this._bakes = new Map();
+    this._bakeSeed = null;
     this._zoom = MAZE.CELLS / OPEN_CELLS_ACROSS;
     this._panX = 0;
     this._panY = 0;
@@ -121,10 +158,11 @@ export class MazeMap {
           <span class="mz-map-level" data-level></span>
           <span class="mz-map-levels" data-levels></span>
           <button type="button" class="mz-map-tab mz-map-recentre" data-recentre>FIND ME</button>
-          <span class="mz-map-hint">WHEEL SCROLLS · CTRL+WHEEL ZOOMS · 1-4 FLOOR · ESC</span>
+          <span class="mz-map-hint">WHEEL SCROLLS · CTRL+WHEEL ZOOMS · 0 ALL · 1-4 FLOOR · CTRL+M ROUTE · ESC</span>
         </div>
         <canvas class="mz-map-canvas"></canvas>
         <div class="mz-map-foot">
+          <span class="mz-key"><i style="background:#ff7ad4"></i>route (ctrl+m)</span>
           <span class="mz-key"><i style="background:#ffffff"></i>you</span>
           <span class="mz-key"><i style="background:#d8cdb0"></i>stairs</span>
           <span class="mz-key"><i style="background:#8ad0ff"></i>lift</span>
@@ -139,6 +177,16 @@ export class MazeMap {
     this.canvas = this.el.querySelector('.mz-map-canvas');
     this.levelEl = this.el.querySelector('[data-level]');
     this.levelsEl = this.el.querySelector('[data-levels]');
+    /* ALL first, then one tab per level. ALL leads because it is what the map
+     * opens on: a player who has paged down to one floor needs the way back to
+     * be the obvious control, not a `0` they were never told about. */
+    const all = document.createElement('button');
+    all.type = 'button';
+    all.className = 'mz-map-tab';
+    all.textContent = 'ALL';
+    all.dataset.lvl = OVERVIEW;
+    all.addEventListener('click', () => this.showAllLevels());
+    this.levelsEl.appendChild(all);
     /* One tab per level, so paging between the four floors is visible rather
      * than a key you have to already know about. */
     for (let i = 0; i < MAZE.LEVELS; i++) {
@@ -190,17 +238,21 @@ export class MazeMap {
     if (!w || this._open) return;
     this._open = true;
     this.el.hidden = false;
-    /* Open at junction scale, not fitted. See OPEN_CELLS_ACROSS. */
-    this._zoom = MAZE.CELLS / OPEN_CELLS_ACROSS;
+    /* All four floors, whole. The overview opens FITTED rather than at
+     * junction scale: it is a plan of the building, and the question it
+     * answers - which floor connects to which, and where - is answered by the
+     * shape. OPEN_CELLS_ACROSS still governs the single-floor view, which is
+     * the one you read a corridor against. */
+    this._levelOverride = OVERVIEW;
+    this._zoom = MIN_ZOOM;
     this._panX = 0;
     this._panY = 0;
-    this._levelOverride = null;
-    /* ...and centred on the player. Opening centred on the LEVEL put the
-     * player off-screen almost always - the entrance is at one edge and the
-     * view spans a quarter of the grid - so the first thing a map that exists
-     * to show you where you are did was fail to. */
-    const w0 = this._mazeWorld();
-    if (w0) this._render(w0, this._level(w0));      // the bake is what centring measures against
+    /* The Ctrl+M cheat is off on open, every time. The constructor has always
+     * claimed this and never did it, so a route switched on in one visit came
+     * back up in the next one, uninvited. */
+    this._showPath = false;
+    /* ...then centred on the player, which does nothing at all while the whole
+     * sheet fits the panel and is exactly right the moment they zoom in. */
     this._centreOnPlayer();
     this._draw();
     /* Live while open: the player moves, tokens get taken, and the centre's
@@ -232,17 +284,21 @@ export class MazeMap {
    */
   _centreOnPlayer() {
     const pos = this.player?.position;
-    const baked = this._baked;
-    if (!pos || !baked) return;
+    const w = this._mazeWorld();
+    if (!pos || !w) return;
     const rect = this.canvas.getBoundingClientRect();
     if (rect.width < 2) return;
-    const fit = Math.min(rect.width / baked.width, rect.height / baked.height);
+    const sheet = this._sheet(w);
+    const fit = Math.min(rect.width / sheet.width, rect.height / sheet.height);
     const scale = fit * this._zoom;
-    const dw = baked.width * scale, dh = baked.height * scale;
+    const dw = sheet.width * scale, dh = sheet.height * scale;
     /* Where the player would land with no pan, and how far that is from the
-     * middle of the view. */
-    const ox = (rect.width - dw) / 2;
-    const oy = (rect.height - dh) / 2;
+     * middle of the view. In the overview that means their own floor's pane -
+     * centring on the sheet's origin would centre on level 1 whatever floor
+     * they are standing on. */
+    const pane = this._paneFor(sheet, this._standingLevel());
+    const ox = (rect.width - dw) / 2 + pane.x * scale;
+    const oy = (rect.height - dh) / 2 + pane.y * scale;
     const px = ox + (pos.x / MAZE.CELL + 0.5) * MAP_PX_PER_CELL * scale;
     const py = oy + (pos.z / MAZE.CELL + 0.5) * MAP_PX_PER_CELL * scale;
     this._panX = rect.width / 2 - px;
@@ -251,20 +307,30 @@ export class MazeMap {
      * edge, so "centred on them" is off the map by half a panel; the marker
      * ends up off-centre instead, which is correct - there is nothing on that
      * side to look at. */
-    this._clampPan(rect, baked);
+    this._clampPan(rect, sheet);
   }
 
   /**
-   * Which level to draw.
+   * Which view to draw: `OVERVIEW`, or one level.
    *
-   * The player's own level by default - read from the world's level tracking
-   * rather than recomputed here, so the map, the minimap's plan key and the
-   * shaft markers can never disagree about which level the player is on - and
-   * whichever level they have paged to once they have. The override is cleared
-   * on every open, so the map always starts on the floor you are standing on.
+   * The override is reset to `OVERVIEW` on every open, so `M` always shows the
+   * whole building and paging down to a floor is something you chose to do in
+   * this visit rather than something the last visit left switched on.
+   */
+  _view(w) {
+    return this._levelOverride ?? this._playerLevel(w);
+  }
+
+  /**
+   * Which single level the level keys act on.
+   *
+   * In the overview there is no "current" floor, so the brackets and PageUp
+   * step from the one the player is standing on - which is where someone
+   * paging out of the overview means to start.
    */
   _level(w) {
-    return this._levelOverride ?? this._playerLevel(w);
+    const view = this._view(w);
+    return view === OVERVIEW ? this._playerLevel(w) : view;
   }
 
   /** Which level the player is actually standing on, override or not. */
@@ -272,10 +338,35 @@ export class MazeMap {
     return w?.playerLevel ?? 0;
   }
 
+  /**
+   * The sheet of floorplans the current view is made of, in baked pixels.
+   *
+   * Cheap enough to build per frame (four small objects) and deliberately not
+   * cached: pan, zoom and clamping all measure against it, and a stale sheet
+   * would put the clamp and the drawing in different coordinate systems.
+   */
+  _sheet(w) {
+    return sheetFor(this._view(w), MAZE.CELLS * MAP_PX_PER_CELL);
+  }
+
+  /** The pane a level is drawn in, or the only pane there is. */
+  _paneFor(sheet, level) {
+    return sheet.panes.find((p) => p.level === level) ?? sheet.panes[0];
+  }
+
+  /** Where the player is, as a level index, whatever the map is showing. */
+  _standingLevel() {
+    const y = this.player?.position?.y ?? 0;
+    return Math.max(0, Math.min(MAZE.LEVELS - 1, Math.round(y / MAZE.LEVEL_HEIGHT)));
+  }
+
   /** Rasterise one level once, at MAP_PX_PER_CELL, and keep it. */
   _render(w, level) {
-    const key = `${w.seed}:${level}`;
-    if (this._bakedKey === key && this._baked) return this._baked;
+    /* Seed change means a different maze, and every bake taken from the old
+     * one is now a map of somewhere that no longer exists. */
+    if (this._bakeSeed !== w.seed) { this._bakes.clear(); this._bakeSeed = w.seed; }
+    const held = this._bakes.get(level);
+    if (held) return held;
 
     const px = MAP_PX_PER_CELL;
     const cv = document.createElement('canvas');
@@ -294,9 +385,8 @@ export class MazeMap {
     }
     c.stroke();
 
-    this._baked = cv;
-    this._bakedKey = key;
-    return this._baked;
+    this._bakes.set(level, cv);
+    return cv;
   }
 
   _draw() {
@@ -308,21 +398,10 @@ export class MazeMap {
      * had nothing to do with it, swallowing clicks and with no world left whose
      * map key would close it. It is not a map of anywhere any more, so it goes. */
     if (!w) { this.close(); return; }
-    const level = this._level(w);
-    const baked = this._render(w, level);
+    const view = this._view(w);
     const here = this._playerLevel(w);
-    if (this.levelEl) {
-      this.levelEl.textContent = level === here
-        ? `LEVEL ${level + 1} OF ${MAZE.LEVELS}`
-        : `LEVEL ${level + 1} OF ${MAZE.LEVELS} — YOU ARE ON ${here + 1}`;
-    }
-    if (this.levelsEl) {
-      for (const b of this.levelsEl.children) {
-        const n = Number(b.dataset.lvl);
-        b.classList.toggle('is-on', n === level);
-        b.classList.toggle('is-here', n === here);
-      }
-    }
+    const sheet = this._sheet(w);
+    this._syncHeader(view, here);
 
     const rect = this.canvas.getBoundingClientRect();
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -334,20 +413,36 @@ export class MazeMap {
     ctx.fillStyle = MAP_BG;
     ctx.fillRect(0, 0, rect.width, rect.height);
 
-    /* Fit the whole level, then apply the player's zoom on top, so zoom 1 is
-     * always "the level, whole" regardless of the window's size. */
-    const fit = Math.min(rect.width / baked.width, rect.height / baked.height);
+    /* Fit the whole SHEET, then apply the player's zoom on top, so zoom 1 is
+     * always "everything this view contains, whole" regardless of the window's
+     * size - one level when paged to one, four when not. */
+    const fit = Math.min(rect.width / sheet.width, rect.height / sheet.height);
     const scale = fit * this._zoom;
-    const dw = baked.width * scale, dh = baked.height * scale;
-    const ox = (rect.width - dw) / 2 + this._panX;
-    const oy = (rect.height - dh) / 2 + this._panY;
+    const ox = (rect.width - sheet.width * scale) / 2 + this._panX;
+    const oy = (rect.height - sheet.height * scale) / 2 + this._panY;
     ctx.imageSmoothingEnabled = this._zoom < 1.5;
-    ctx.drawImage(baked, ox, oy, dw, dh);
 
-    /* Markers go on TOP of the baked image, never into it: the bake is cached
-     * per seed and level, so a token that has been picked up or a portal that
-     * has just opened would be frozen into it. */
-    this._drawMarkers(ctx, w, level, ox, oy, scale);
+    /* Asked for once for the whole frame rather than once per pane: the world
+     * caches the route against the player's cell, but four calls would still
+     * be four chances for the panes to be drawing different routes if that
+     * cache is ever keyed on something else. */
+    const route = this._showPath ? (w.solutionPath?.(this.player?.position) ?? null) : null;
+
+    for (const pane of sheet.panes) {
+      const baked = this._render(w, pane.level);
+      const px = ox + pane.x * scale;
+      const py = oy + pane.y * scale;
+      const side = pane.side * scale;
+      ctx.drawImage(baked, px, py, side, side);
+      if (sheet.panes.length > 1) this._drawPaneChrome(ctx, pane, px, py, side, pane.level === here);
+      /* Markers go on TOP of the baked image, never into it: the bake is
+       * cached per seed and level, so a token that has been picked up or a
+       * portal that has just opened would be frozen into it. */
+      this._drawMarkers(ctx, w, pane.level, px, py, scale, route);
+    }
+
+    /* Last, and across panes: where the route leaves one floor for another. */
+    if (route && sheet.panes.length > 1) this._drawLevelChanges(ctx, sheet, route, ox, oy, scale);
   }
 
   /**
@@ -382,13 +477,111 @@ export class MazeMap {
     ctx.stroke();
   }
 
-  _drawMarkers(ctx, world, level, ox, oy, scale) {
+  /**
+   * The header readout and the tab states.
+   *
+   * Split out of `_draw` when the view stopped being a single number: `ALL`
+   * and a level are different sentences, and deciding which one inside the
+   * drawing loop is how a header ends up saying "LEVEL NaN".
+   */
+  _syncHeader(view, here) {
+    if (this.levelEl) {
+      this.levelEl.textContent = view === OVERVIEW
+        ? `ALL ${MAZE.LEVELS} LEVELS — YOU ARE ON ${here + 1}`
+        : (view === here
+          ? `LEVEL ${view + 1} OF ${MAZE.LEVELS}`
+          : `LEVEL ${view + 1} OF ${MAZE.LEVELS} — YOU ARE ON ${here + 1}`);
+    }
+    if (!this.levelsEl) return;
+    for (const b of this.levelsEl.children) {
+      const tab = b.dataset.lvl === OVERVIEW ? OVERVIEW : Number(b.dataset.lvl);
+      b.classList.toggle('is-on', tab === view);
+      /* The player's own floor stays marked in the overview too - four
+       * identical grids and no clue which one you are standing in is the
+       * failure this view could most easily have. */
+      b.classList.toggle('is-here', tab === here);
+    }
+  }
+
+  /**
+   * A floorplan's frame and caption, in the overview only.
+   *
+   * Four abutting grids of identical hedge texture read as one 800-cell maze,
+   * and a player would try to walk from one into another. The frame says these
+   * are four separate drawings; the caption says which is which without
+   * having to count squares.
+   */
+  _drawPaneChrome(ctx, pane, px, py, side, isHere) {
+    ctx.lineWidth = isHere ? 2 : 1;
+    ctx.strokeStyle = isHere ? PANE_EDGE_HERE : PANE_EDGE;
+    ctx.strokeRect(px + 0.5, py + 0.5, side - 1, side - 1);
+
+    /* Fixed pixel size, not scaled with the map: a caption that shrank with
+     * the zoom would be unreadable in exactly the fitted view it exists for. */
+    ctx.font = '600 12px Rajdhani, Segoe UI, sans-serif';
+    ctx.textBaseline = 'top';
+    const label = `LEVEL ${pane.level + 1}${isHere ? ' — YOU' : ''}`;
+    const w = ctx.measureText(label).width + 10;
+    ctx.fillStyle = 'rgba(4, 10, 5, 0.78)';
+    ctx.fillRect(px + 4, py + 4, w, 17);
+    ctx.fillStyle = isHere ? '#ffffff' : PANE_LABEL;
+    ctx.fillText(label, px + 9, py + 7);
+  }
+
+  /**
+   * Where the route leaves one floor for another.
+   *
+   * The one thing no single floorplan can show, and the reason the overview
+   * exists: a route that stops dead at a staircase tells you there is a way
+   * up, but not where it comes out. A line between the two panes says both, at
+   * the same point in both footprints.
+   *
+   * Dashed, and drawn last, so it is legible as a link between drawings rather
+   * than mistaken for a corridor in either of them.
+   */
+  _drawLevelChanges(ctx, sheet, route, ox, oy, scale) {
+    const links = verticalLinks(route);
+    if (!links.length) return;
+
+    ctx.save();
+    ctx.strokeStyle = MARK.path;
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([7, 5]);
+    ctx.globalAlpha = 0.7;
+    for (const link of links) {
+      const from = this._paneFor(sheet, link.from);
+      const to = this._paneFor(sheet, link.to);
+      const a = this._project(link.x, link.z, ox + from.x * scale, oy + from.y * scale, scale);
+      const b = this._project(link.x, link.z, ox + to.x * scale, oy + to.y * scale, scale);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      /* A ring at each end, so the exact cell the route changes floor at is
+       * findable once the dashes are lost in the hedges. */
+      ctx.save();
+      ctx.setLineDash([]);
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.95;
+      for (const p of [a, b]) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  _drawMarkers(ctx, world, level, ox, oy, scale, route) {
     const m = world.mapMarkers?.(level);
     if (!m) return;
 
-    /* Sized against the VIEW rather than the world, so a marker stays legible
-     * zoomed out and does not swamp the corridor zoomed in. */
-    const r = Math.max(3.4, Math.min(10, 4.0 * this._zoom ** 0.35));
+    /* Sized against the DRAWN CELL rather than the zoom number, because the
+     * overview draws a level at half the scale the same zoom gives a single
+     * floor - and a marker sized from the zoom alone came out four cells wide
+     * there, turning a hundred staircases into a wall of dots. */
+    const r = Math.max(2.2, Math.min(10, MAP_PX_PER_CELL * scale * 0.87));
 
     for (const s of m.stair) this._dot(ctx, this._project(s.x, s.z, ox, oy, scale), r, MARK.stair);
     for (const s of m.lift) this._dot(ctx, this._project(s.x, s.z, ox, oy, scale), r, MARK.lift);
@@ -409,20 +602,19 @@ export class MazeMap {
 
     /* Under the player marker but over everything else, so it never hides the
      * thing you are trying to locate. */
-    if (this._showPath) this._drawSolution(ctx, world, level, ox, oy, scale, r);
+    if (route) this._drawSolution(ctx, route, level, ox, oy, scale, r);
     this._drawPlayer(ctx, level, ox, oy, scale, r);
   }
 
   /**
-   * The Ctrl+M solution path, from where the player is standing to the centre.
+   * The Ctrl+M solution route, from where the player is standing to the centre.
    *
-   * Only the segments on the level being drawn. A route that vanishes at a
-   * staircase and picks up again on the level above is what the player needs
-   * to see - drawing the whole thing flattened would suggest a way through a
-   * floor.
+   * Only the segments on the level this pane draws. Flattening the route onto
+   * one floorplan would suggest a way through a floor, which is why it has
+   * never been drawn that way - and why the overview draws four floorplans
+   * side by side and links them, rather than one with everything on it.
    */
-  _drawSolution(ctx, world, level, ox, oy, scale, r) {
-    const path = world.solutionPath?.(this.player?.position);
+  _drawSolution(ctx, path, level, ox, oy, scale, r) {
     if (!path || path.length < 2) return;
 
     ctx.strokeStyle = MARK.path;
@@ -446,10 +638,11 @@ export class MazeMap {
   _drawPlayer(ctx, level, ox, oy, scale, r) {
     const pos = this.player?.position;
     if (!pos) return;
-    /* Only on the level being drawn. Standing on level 2 while reading level 0
-     * must not plant a marker in a corridor the player is nowhere near. */
-    const on = Math.max(0, Math.min(MAZE.LEVELS - 1, Math.round(pos.y / MAZE.LEVEL_HEIGHT)));
-    if (on !== level) return;
+    /* Only on the pane drawing the level being stood on. In the overview that
+     * means one arrow among four floorplans, which is the point; paged to a
+     * single floor it means standing on level 2 while reading level 0 plants
+     * no marker in a corridor the player is nowhere near. */
+    if (this._standingLevel() !== level) return;
 
     const p = this._project(pos.x, pos.z, ox, oy, scale);
     /* `Player.yaw` uses the same convention MazeWorld's DIR_YAW does - forward
@@ -473,7 +666,7 @@ export class MazeMap {
   }
 
   /**
-   * Keep the drawn level covering the whole viewport.
+   * Keep the drawn sheet covering the whole viewport.
    *
    * The old rule allowed panning by up to half the image, which let the view
    * slide clean off the grid - and `_centreOnPlayer` did exactly that on every
@@ -486,24 +679,44 @@ export class MazeMap {
    * neither edge can come inside the viewport. Below that there is nothing to
    * pan and the image is simply centred.
    */
-  _clampPan(rect, baked) {
-    const fit = Math.min(rect.width / baked.width, rect.height / baked.height);
-    const dw = baked.width * fit * this._zoom, dh = baked.height * fit * this._zoom;
+  _clampPan(rect, sheet) {
+    const fit = Math.min(rect.width / sheet.width, rect.height / sheet.height);
+    const dw = sheet.width * fit * this._zoom, dh = sheet.height * fit * this._zoom;
     const limX = Math.max(0, (dw - rect.width) / 2);
     const limY = Math.max(0, (dh - rect.height) / 2);
     this._panX = Math.max(-limX, Math.min(limX, this._panX));
     this._panY = Math.max(-limY, Math.min(limY, this._panY));
   }
 
+  /**
+   * Clamp against whatever is on screen right now.
+   *
+   * The pan bound depends on the SHEET, and the sheet changes when the view
+   * does - so the pointer and wheel handlers ask for it rather than holding a
+   * reference to the last thing that was baked, which is what they did while
+   * there was only ever one.
+   */
+  _clampNow() {
+    const w = this._mazeWorld();
+    if (!w) return;
+    this._clampPan(this.canvas.getBoundingClientRect(), this._sheet(w));
+  }
+
   _onKey(e) {
-    /* Ctrl+M: the hidden solution path.
+    /* Ctrl+M: the solution route, across every floor the map is showing.
      *
      * Checked BEFORE the modifier guard below, which exists so that browser
      * and OS chords are not swallowed - this one is deliberately a chord, and
      * only while the map is already open, so it cannot be found by mashing
-     * keys in a corridor. */
+     * keys in a corridor.
+     *
+     * It goes through `mapActionOwner` and `codeFor('map')` like the plain
+     * press does, and for the same reason (commit 6e863e3): it is the same
+     * key, so a second rule about who owns it would be a second way for the
+     * map and the mount wheel to disagree. */
     const bound = this.input?.codeFor?.('map') ?? 'KeyM';
-    if (e.ctrlKey && !e.metaKey && !e.altKey && e.code === bound && this._open) {
+    if (e.ctrlKey && !e.metaKey && !e.altKey && e.code === bound && this._open
+        && mapActionOwner(this.worldManager?.active) === 'map') {
       e.preventDefault();
       this._showPath = !this._showPath;
       this._draw();
@@ -523,6 +736,12 @@ export class MazeMap {
       if (digit) {
         const n = Number(digit[1]) - 1;
         if (n < MAZE.LEVELS) { e.preventDefault(); this.setLevel(n); return; }
+      }
+      /* Back out to all four. `0` because it sits next to the floor keys and
+       * is the one digit that names no floor; the backquote for anyone who
+       * reaches for a "step back out" key instead. */
+      if (/^(?:Digit0|Numpad0|Backquote)$/.test(e.code)) {
+        e.preventDefault(); this.showAllLevels(); return;
       }
       const w = this._mazeWorld();
       const cur = w ? this._level(w) : 0;
@@ -566,31 +785,60 @@ export class MazeMap {
       if (e.shiftKey) this._panX -= dy || dx;
       else { this._panX -= dx; this._panY -= dy; }
     }
-    if (this._baked) this._clampPan(this.canvas.getBoundingClientRect(), this._baked);
+    this._clampNow();
     this._draw();
   }
 
   /**
-   * Show a different level of the maze.
+   * Snap the view back to the player: their own floor, at junction scale.
    *
-   * Pan is deliberately KEPT across the switch. The four levels stack in the
-   * same XZ footprint, so holding position is what makes flicking between them
-   * useful - you are comparing the same patch of ground, looking for where the
-   * corridor above continues.
+   * The zoom is part of it now. FIND ME pressed from the fitted overview used
+   * to drop you onto one floorplan still fitted, which is 400 cells across a
+   * panel - a shape, not somewhere you can see yourself standing. The whole
+   * request is "show me where I am", so it arrives at the scale that answers.
    */
-  /** Snap the view back to the player, on the player's own level. */
   recentre() {
     this._levelOverride = null;
-    const w = this._mazeWorld();
-    if (w) this._render(w, this._level(w));
+    this._zoom = MAZE.CELLS / OPEN_CELLS_ACROSS;
     this._centreOnPlayer();
     this._draw();
   }
 
+  /** Back out to all four floorplans, fitted, as the map opens. */
+  showAllLevels() {
+    if (this._levelOverride === OVERVIEW) return;
+    this._levelOverride = OVERVIEW;
+    /* Fitted, because a zoom carried in from a single floor would put the
+     * overview somewhere in the middle of one pane with the other three off
+     * screen - which is the view the player just asked to leave. */
+    this._zoom = MIN_ZOOM;
+    this._panX = 0;
+    this._panY = 0;
+    this._draw();
+  }
+
+  /**
+   * Show a single level of the maze.
+   *
+   * Pan is deliberately KEPT when paging from one floor to the next. The four
+   * levels stack in the same XZ footprint, so holding position is what makes
+   * flicking between them useful - you are comparing the same patch of ground,
+   * looking for where the corridor above continues.
+   */
   setLevel(level) {
     const n = Math.max(0, Math.min(MAZE.LEVELS - 1, Math.round(level)));
     if (n === this._levelOverride) return;
+    /* Coming out of the overview, the pan and the zoom are in sheet terms and
+     * mean nothing on a single floorplan - so drop to the scale a corridor is
+     * read at, centred on the player, rather than an arbitrary corner. Paging
+     * BETWEEN floors still holds both, which is what makes comparing them
+     * useful. */
+    const fromOverview = this._levelOverride === OVERVIEW;
     this._levelOverride = n;
+    if (fromOverview) {
+      this._zoom = MAZE.CELLS / OPEN_CELLS_ACROSS;
+      this._centreOnPlayer();
+    }
     this._draw();
   }
 
@@ -605,7 +853,7 @@ export class MazeMap {
     this._panX += e.clientX - this._drag.x;
     this._panY += e.clientY - this._drag.y;
     this._drag = { x: e.clientX, y: e.clientY };
-    if (this._baked) this._clampPan(this.canvas.getBoundingClientRect(), this._baked);
+    this._clampNow();
     this._draw();
   }
 
@@ -618,7 +866,7 @@ export class MazeMap {
     window.removeEventListener('pointermove', this._onMove);
     window.removeEventListener('pointerup', this._onUp);
     this.el.remove();
-    this._baked = null;
-    this._bakedKey = null;
+    this._bakes.clear();
+    this._bakeSeed = null;
   }
 }

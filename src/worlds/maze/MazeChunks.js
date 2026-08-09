@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { MAZE, DIR, districtCoords, districtAtWorld, neighbourhoodKeys } from './MazeTopology.js';
 import { districtColliders } from './MazeColliders.js';
 import { foliageTransforms, footingTransforms, candlePlacements } from './MazeFoliage.js';
+import { PLATE_HALF_HEIGHT, PLATE_HALF_WIDTH } from './MazeShafts.js';
 
 /**
  * Every descriptor `kind` this class knows how to turn into a mesh, and
@@ -45,7 +46,27 @@ const LANTERN_INTENSITY = 38;
 /** Bounded to its own district, so the rig's distance scoring is meaningful. */
 const LANTERN_RANGE = MAZE.DISTRICT * MAZE.CELL * 0.75;
 
-export const CHUNK_MESH_KINDS = Object.freeze(['hedge', 'floor', 'stair', 'shaftWall', 'lift', 'liftDoor', 'tunnel']);
+export const CHUNK_MESH_KINDS = Object.freeze([
+  'hedge', 'floor', 'stair', 'shaftWall', 'lift', 'liftDoor', 'tunnel', 'gate', 'slideWall',
+]);
+
+/**
+ * The kinds that MOVE, and therefore need their instance matrix rewritten when
+ * their collider does.
+ *
+ * `gate` and `slideWall` were absent from the mesh list entirely until this was
+ * written - a gate was a solid, invisible wall across a corridor. The lift car
+ * and its door were worse, because they looked fine standing still: measured on
+ * real geometry, a car's collider rode the full 8.700 m to the landing while
+ * its mesh sat at 0.150, so the player rode an invisible platform and watched
+ * the visible car never leave the bottom. Colliders come from descriptors and
+ * meshes come from descriptors, but nothing had ever kept the two in step once
+ * the descriptor's own `cy` stopped being the truth.
+ */
+const MOVING_KINDS = Object.freeze(['lift', 'liftDoor', 'gate', 'slideWall']);
+
+/** Scratch for the instance-matrix rewrite. One per module, never re-entrant. */
+const _moverMat = new THREE.Matrix4();
 
 /**
  * District-level streaming for the maze.
@@ -158,7 +179,18 @@ export class MazeChunks {
     for (const kind of CHUNK_MESH_KINDS) {
       const of = descs.filter((d) => d.kind === kind);
       const mesh = buildBoxInstances(of, this.materials[kind], `maze:${kind}:${key}`, this.group);
-      if (mesh) meshes.push(mesh);
+      if (!mesh) continue;
+      meshes.push(mesh);
+      /* Hand each moving part the mesh and the instance index it lives at, so
+       * the step functions can carry the geometry along with the collider. The
+       * index is the descriptor's position within THIS kind's filtered list,
+       * which is exactly the order `buildBoxInstances` wrote them in - the same
+       * paired-by-construction argument the collider loop above makes, and for
+       * the same reason: searching for the instance nearest a position would
+       * pick the wrong one the day two coincide. */
+      if (!MOVING_KINDS.includes(kind)) continue;
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      for (let i = 0; i < of.length; i++) this._attachMoverMesh(of[i], mesh, i);
     }
 
     /* Dressing: a stone band at each hedge's base, and unkempt growth along
@@ -184,6 +216,22 @@ export class MazeChunks {
      * meshes are what you see; the rig only ever renders the nearest twelve
      * point lights in the scene, so more lights than that per district buys
      * nothing on screen and still costs a per-frame scan. */
+    /* The pressure plates. MESH ONLY - the trigger is a position test, so a
+     * plate needs no collider, and at 8 cm tall nothing needs to stand on one.
+     * Derived from the wall descriptors rather than emitted alongside them so
+     * a wall and its plate can never disagree about where the plate is. */
+    const plates = descs.filter((d) => d.kind === 'slideWall' && d.plate);
+    if (plates.length && this.materials.plate) {
+      const pm = buildBoxInstances(
+        plates.map((d) => ({
+          cx: d.plate.x, cy: d.plate.y, cz: d.plate.z,
+          hx: PLATE_HALF_WIDTH, hy: PLATE_HALF_HEIGHT, hz: PLATE_HALF_WIDTH,
+        })),
+        this.materials.plate, `maze:plate:${key}`, this.group,
+      );
+      if (pm) { pm.castShadow = false; meshes.push(pm); }
+    }
+
     const candles = candlePlacements(descs, key);
     if (candles.length && this.materials.candle) {
       const cm = buildBoxInstances(
@@ -365,6 +413,25 @@ export class MazeChunks {
   static CAR_SPEED = 1.6;
   /** How fast a one-way gate rises, metres per second. */
   static GATE_SPEED = 2.4;
+
+  /**
+   * How close the player must be to a pressure plate to press it.
+   *
+   * Generous on purpose, and in XZ only above a Y band: a plate is 8 cm tall
+   * and flush with the corridor floor, so an exact footprint test would depend
+   * on the capsule's own radius and would read as a plate that sometimes does
+   * not work. A plate that triggers a little early costs nothing - it opens a
+   * wall that was going to open.
+   */
+  static PLATE_REACH = 1.1;
+
+  /** Is the player standing on this plate? */
+  static _onPlate(plate, player) {
+    const dx = player.x - plate.x, dz = player.z - plate.z;
+    if (dx * dx + dz * dz > MazeChunks.PLATE_REACH * MazeChunks.PLATE_REACH) return false;
+    /* Same level, not two floors up in a shaft that happens to share the XZ. */
+    return player.y > plate.y - 1.5 && player.y < plate.y + 3.0;
+  }
   static DOOR_SPEED = 2.0;
 
   /** Number of lifts with at least one half resident. */
@@ -386,10 +453,15 @@ export class MazeChunks {
    * wrong box if two ever coincided.
    */
   _registerMover(desc, collider, key) {
-    if (desc.kind === 'gate') {
-      /* A one-way gate. Registered here for the same reason a lift car is:
-       * the collider built from THIS descriptor, paired by construction rather
-       * than found by searching for a matching position. */
+    if (desc.kind === 'gate' || desc.kind === 'slideWall') {
+      /* A one-way gate, or a sliding hedge wall. Both live in this registry
+       * because they are ONE moving surface with two triggers, and the thing
+       * that makes either safe - never moving while its own footprint is
+       * occupied - must have exactly one implementation. Registered here for
+       * the same reason a lift car is: the collider built from THIS
+       * descriptor, paired by construction rather than found by searching for
+       * a matching position. */
+      const slide = desc.kind === 'slideWall';
       this._gates.set(desc.cell, {
         cell: desc.cell,
         collider,
@@ -398,11 +470,18 @@ export class MazeChunks {
         y: desc.cy,
         openY: desc.openY,
         closedY: desc.closedY,
+        mesh: null,
+        index: -1,
+        /* A gate rests OPEN and shuts behind you; a wall rests SHUT until its
+         * plate is found. One flag, so `stepGates` moves both toward whatever
+         * `shut` currently says and only the trigger differs. */
+        slide,
+        plate: slide ? desc.plate : null,
         /* Which side of its plane the player was on last frame. `null` until
          * they are seen at all, so a gate never shuts because the player
-         * SPAWNED beyond it. */
+         * SPAWNED beyond it. Unused by a wall, which has no crossing test. */
         lastSide: null,
-        shut: false,
+        shut: slide,
       });
       return;
     }
@@ -412,7 +491,9 @@ export class MazeChunks {
       rec = {
         cell: desc.cell,
         car: null, carKey: -1, carY: 0, carDownY: 0, carUpY: 0,
+        carMesh: null, carIndex: -1,
         door: null, doorKey: -1, doorY: 0, doorOpenY: 0, doorClosedY: 0,
+        doorMesh: null, doorIndex: -1,
         /* The car's rest state is DOWN, and the door's is CLOSED, matching
          * what `districtColliders` emits. A lift found mid-travel on a
          * re-roll would be a lift whose geometry and state disagreed. */
@@ -433,6 +514,44 @@ export class MazeChunks {
       rec.doorOpenY = desc.openTop - desc.hy;
       rec.doorY = desc.cy;
     }
+  }
+
+  /**
+   * Give an already-registered mover the mesh instance that draws it.
+   *
+   * Called after the mesh build, because the instance index only exists once
+   * the InstancedMesh has been written. Silently ignores any descriptor with no
+   * mover record - a `slideWall` in a district whose puzzle map was not handed
+   * down has colliders and a mesh but nothing to drive it, and that is a
+   * headless caller rather than a fault.
+   */
+  _attachMoverMesh(desc, mesh, index) {
+    if (desc.kind === 'gate' || desc.kind === 'slideWall') {
+      const g = this._gates.get(desc.cell);
+      if (g) { g.mesh = mesh; g.index = index; }
+      return;
+    }
+    const rec = this._lifts.get(desc.cell);
+    if (!rec) return;
+    if (desc.kind === 'lift') { rec.carMesh = mesh; rec.carIndex = index; }
+    else { rec.doorMesh = mesh; rec.doorIndex = index; }
+  }
+
+  /**
+   * Move a mover's DRAWN box to where its collider now is.
+   *
+   * Rewrites the translation row of the existing instance matrix rather than
+   * recomposing it, because these boxes never rotate and their scale was
+   * baked from half-extents that do not change - so the only thing that can
+   * legitimately differ is Y, and touching only Y cannot silently resize a
+   * lift car the day `buildBoxInstances` changes how it composes.
+   */
+  _syncMoverMesh(mesh, index, y) {
+    if (!mesh || index < 0) return;
+    mesh.getMatrixAt(index, _moverMat);
+    _moverMat.elements[13] = y;
+    mesh.setMatrixAt(index, _moverMat);
+    mesh.instanceMatrix.needsUpdate = true;
   }
 
   /** Drop whichever halves district `key` owned; forget the lift if both are gone. */
@@ -500,7 +619,17 @@ export class MazeChunks {
    * when the invariant was removed from the door. So it never moves while its
    * own footprint is occupied.
    *
-   * @returns {number} how many gates moved this frame
+   * ## The sliding hedge wall shares every line of this
+   *
+   * A wall is the same surface with the trigger inverted: it RESTS shut,
+   * blocking a doorway, and sinks when the player stands on its pressure plate
+   * - which latches, because a plate that only holds the wall open while you
+   * stand on it is a door nobody travelling alone can walk through. Its top
+   * travels the same band in the same open corridor, so it needs the same
+   * interlock, and the way to guarantee two things share an invariant is to
+   * make them share the loop that enforces it.
+   *
+   * @returns {number} how many gates and walls moved this frame
    */
   stepGates(dt, player) {
     if (this._gates.size === 0) return 0;
@@ -511,7 +640,11 @@ export class MazeChunks {
       const c = g.collider;
       if (!c) continue;
 
-      if (player) {
+      if (player && g.slide) {
+        /* The plate. Latches OPEN and is never re-armed: see the note above on
+         * why a hold-to-open plate is a door for two people. */
+        if (g.shut && g.plate && MazeChunks._onPlate(g.plate, player)) g.shut = false;
+      } else if (player) {
         /* Signed side of the gate's plane, along its own forward axis. */
         const along = g.dir === DIR.E || g.dir === DIR.W
           ? player.x - c.center.x
@@ -531,6 +664,7 @@ export class MazeChunks {
       const step = MazeChunks.GATE_SPEED * dt;
       g.y += Math.sign(targetY - g.y) * Math.min(step, Math.abs(targetY - g.y));
       this.physics.setBoxColliderY(c, g.y);
+      this._syncMoverMesh(g.mesh, g.index, g.y);
       moved++;
     }
     return moved;
@@ -580,6 +714,7 @@ export class MazeChunks {
           const stepY = MazeChunks.DOOR_SPEED * dt;
           rec.doorY += Math.sign(targetY - rec.doorY) * Math.min(stepY, Math.abs(targetY - rec.doorY));
           this.physics.setBoxColliderY(rec.door, rec.doorY);
+          this._syncMoverMesh(rec.doorMesh, rec.doorIndex, rec.doorY);
           moved++;
         }
       }
@@ -604,6 +739,7 @@ export class MazeChunks {
           const stepY = MazeChunks.CAR_SPEED * dt;
           rec.carY += Math.sign(targetY - rec.carY) * Math.min(stepY, Math.abs(targetY - rec.carY));
           this.physics.setBoxColliderY(rec.car, rec.carY);
+          this._syncMoverMesh(rec.carMesh, rec.carIndex, rec.carY);
           moved++;
         }
       }

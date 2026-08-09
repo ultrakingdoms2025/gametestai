@@ -1237,3 +1237,122 @@ export function gateColliders(cells, x, z, level, dir) {
     closedY: closedTop - hy,
   }];
 }
+
+/* -------------------------------------------------------------------- */
+/* The sliding hedge wall                                               */
+/* -------------------------------------------------------------------- */
+
+/**
+ * How far back along the approach the plate may sit, in cells.
+ *
+ * The spec asks for a plate that opens "a wall elsewhere IN SIGHT", so the
+ * plate is walked back along a STRAIGHT open run from the doorway - line of
+ * sight in a hedge maze is a straight corridor and nothing else. Four cells is
+ * 24 m, which is far enough to be somewhere else and near enough that a wall
+ * sliding open at the end of it is legible as the thing you just caused.
+ */
+const PLATE_MAX_BACK = 4;
+
+/**
+ * ...and how short a run is too short to bother.
+ *
+ * Measured over 2,323 candidate walls across twelve seeds, the straight run
+ * back from a doorway is zero cells 46% of the time - a hedge maze turns
+ * constantly, so most doorways are corners. A plate in the doorway cell sits
+ * three metres from the wall it opens, which is not a puzzle: you walk up to
+ * the wall, you are already standing on the trigger, and it opens. That reads
+ * as an automatic door.
+ *
+ * So a wall whose plate would land there is NOT BUILT AT ALL, and the doorway
+ * is left plainly open. `MazePuzzles` places these only off the
+ * entrance-to-centre path, so dropping one costs an optional shortcut and
+ * nothing else - and a quality bar on placement is a better answer than a
+ * degenerate wall at half of them. It leaves roughly a hundred per maze, every
+ * one of them nine metres or more from its plate and in sight of it.
+ */
+const PLATE_MIN_BACK = 1;
+
+/** A plate is a flush stone pad. Well under the 0.45 m band floor. */
+export const PLATE_HALF_HEIGHT = 0.04;
+export const PLATE_HALF_WIDTH = 0.55;
+
+/**
+ * A sliding hedge wall, and the plate that opens it.
+ *
+ * THE GATE, INVERTED. It occupies the same footprint a gate does and moves
+ * between the same two heights; the difference is entirely in the trigger and
+ * the resting state. A gate stands open and shuts behind you. This stands
+ * SHUT, blocking the doorway, and sinks out of the way when its plate is
+ * stepped on - and stays sunk, because a plate that only holds the wall open
+ * while you stand on it is a door nobody travelling alone can walk through.
+ *
+ * `MazePuzzles` places these only OFF the entrance-to-centre path, so a plate
+ * that is never found costs a shortcut and never the maze.
+ *
+ * ## It carries the SAME interlock as the lift door
+ *
+ * Its top travels the whole 0.45-5.0 m band, in open corridor, with no sealed
+ * shaft to earn the anti-ladder exemption. Closing under a standing player
+ * would carry them onto a hedge - Phase 2c measured exactly that at 14.000 m
+ * when the invariant was removed from the lift door. `MazeChunks.stepGates`
+ * runs both, and its occupancy test is what keeps this honest.
+ *
+ * ## The plate is not a collider
+ *
+ * It is carried on this descriptor as a position rather than emitted as one of
+ * its own. `districtColliders` output IS the collider set, so a second
+ * descriptor would be a second collider per wall for something 8 cm tall that
+ * nothing needs to stand on - the trigger is a position test, exactly as the
+ * gate's forward-crossing test is.
+ *
+ * @param {Uint8Array} cells
+ * @param {number} x @param {number} z @param {number} level
+ * @param {number} dir the direction that crosses the doorway
+ * @returns {ColliderDesc[]} one `slideWall`, or none if `dir` is not lateral
+ */
+export function slidingWallColliders(cells, x, z, level, dir) {
+  const w = cellToWorld(x, z, level);
+  const half = MAZE.CELL / 2;
+  const dx = dir === DIR.E ? 1 : dir === DIR.W ? -1 : 0;
+  const dz = dir === DIR.S ? 1 : dir === DIR.N ? -1 : 0;
+  if (dx === 0 && dz === 0) return [];
+
+  const openTop = w.y + GATE_OPEN_RISE;
+  const closedTop = w.y + MAZE.HEDGE_HEIGHT;
+  const hy = (closedTop - w.y) / 2;
+
+  /* Walk BACK from the doorway - against `dir`, deeper into the district the
+   * player approaches from - for as long as the corridor runs dead straight.
+   * `back` is the direction of travel while walking away from the wall, so it
+   * is the one each cell must be open along for the run to continue. */
+  const back = dir === DIR.E ? DIR.W : dir === DIR.W ? DIR.E
+    : dir === DIR.S ? DIR.N : DIR.S;
+  let px = x, pz = z, run = 0;
+  for (let i = 0; i < PLATE_MAX_BACK; i++) {
+    if (!isOpen(cells, cellIndex(px, pz, level), back)) break;
+    px -= dx;
+    pz -= dz;
+    run++;
+  }
+  if (run < PLATE_MIN_BACK) return [];
+  const p = cellToWorld(px, pz, level);
+
+  return [{
+    cx: w.x + dx * half,
+    cy: closedTop - hy,                    // RESTS shut, unlike a gate
+    cz: w.z + dz * half,
+    hx: dx ? 0.3 : MAZE.CORRIDOR / 2,
+    hy,
+    hz: dz ? 0.3 : MAZE.CORRIDOR / 2,
+    kind: 'slideWall',
+    dir,
+    swept: { y0: w.y, y1: closedTop },
+    cell: cellIndex(x, z, level),
+    openY: openTop - hy,
+    closedY: closedTop - hy,
+    /* Where the plate is, in world metres. Its own cell too, so a test can
+     * assert the run really is straight and open rather than trusting the
+     * walk above. */
+    plate: { x: p.x, y: p.y + PLATE_HALF_HEIGHT, z: p.z, cell: cellIndex(px, pz, level) },
+  }];
+}

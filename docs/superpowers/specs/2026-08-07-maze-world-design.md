@@ -389,6 +389,33 @@ Moving platforms reuse a proven path rather than inventing one:
 `Physics.setBoxColliderY` already exists, and the station's travelators and
 escalators already carry the player.
 
+**The sliding hedge wall, as built.** It rests **shut**, blocking a district
+doorway, and sinks out of the way when the player stands on its plate — which
+**latches**, because a plate that only holds the wall open while you stand on it
+is a door nobody travelling alone can walk through. Walls go only **off** the
+solution path: a gate is a committal you pass and carry on from, whereas a wall
+on the only route to the centre could be failed permanently, which is a trap.
+
+It shares `stepGates` with the one-way gate rather than growing a parallel copy.
+Its top travels the same 0.45–5.0 m band in the same open corridor, so it needs
+the same halt-while-occupied interlock, and the way to guarantee two things
+share an invariant is to make them share the loop that enforces it.
+
+**The plate is placed down a straight open run back from the wall** — line of
+sight in a hedge maze is a straight corridor and nothing else. Measured over
+2,323 candidates across twelve seeds, that run is **zero cells 46% of the time**,
+because a maze turns constantly and most doorways are corners; a plate in the
+doorway cell sits 3 m from its wall and reads as an automatic door. Those are
+**not built at all** — the doorway is simply left open. That leaves ~104 walls
+per maze, every one 9–27 m from its plate and in sight of it.
+
+**Moving parts are drawn where they are, not where they were built.** Gates and
+sliding walls were absent from `CHUNK_MESH_KINDS` entirely, so a gate was a
+solid invisible wall across a corridor. Lifts were worse, because they looked
+correct standing still: measured on real geometry, a car's collider rode the
+full **8.700 m** to its landing while its mesh sat at **0.150**. The step
+functions now carry the instance matrix along with the collider.
+
 **One-way gates must never strand a player.** The district graph is validated
 after gate placement to confirm the entrance→centre route and an abandon route
 survive every gate closure. Combined with hold-`L` abandon, there is no

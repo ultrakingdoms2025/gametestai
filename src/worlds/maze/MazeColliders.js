@@ -17,7 +17,9 @@
 import { MAZE, DIR, cellIndex, isOpen, cellToWorld } from './MazeTopology.js';
 import {
   shaftColliders, landingColliders, connectorHoleBounds, gateColliders,
+  slidingWallColliders,
 } from './MazeShafts.js';
+import { PUZZLE } from './MazePuzzles.js';
 
 /* Moved to MazeTopology.js in Phase 2c so that MazeShafts.js can use it
  * without importing this module, which would make the two import each
@@ -283,7 +285,8 @@ export function districtColliders(cells, dx, dz, level, puzzles = null) {
        * headless gate) simply gets none. */
       const pz = puzzles?.get(idx);
       if (pz) {
-        for (const d of gateColliders(cells, x, z, level, pz.dir)) out.push(d);
+        const make = pz.kind === PUZZLE.SLIDE ? slidingWallColliders : gateColliders;
+        for (const d of make(cells, x, z, level, pz.dir)) out.push(d);
       }
     }
   }

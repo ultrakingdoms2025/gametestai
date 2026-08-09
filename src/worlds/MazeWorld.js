@@ -512,6 +512,25 @@ export class MazeWorld extends World {
         color: 0xffe9c0, roughness: 0.6, metalness: 0,
         emissive: 0xffb457, emissiveIntensity: 2.2,
       }),
+      /* A one-way gate. Hedge that has been cut and trained over a frame -
+       * darker and greyer than a grown hedge, so that a corridor which is
+       * about to close behind you does not look like every other corridor. */
+      gate: new THREE.MeshStandardMaterial({
+        color: 0x3f5a34, roughness: 1.0, metalness: 0,
+      }),
+      /* A sliding hedge wall. Reads as the same worked hedge as a gate, warmed
+       * slightly so the two are distinguishable at a glance without either
+       * looking like plain hedge. */
+      slideWall: new THREE.MeshStandardMaterial({
+        color: 0x4a5b2f, roughness: 1.0, metalness: 0,
+      }),
+      /* The pressure plate. Worked stone, faintly lit, because a flush pad on
+       * a dim corridor floor is invisible otherwise and an invisible trigger
+       * is indistinguishable from no trigger. */
+      plate: new THREE.MeshStandardMaterial({
+        color: 0x9a8f74, roughness: 0.75, metalness: 0,
+        emissive: 0x6f5a2a, emissiveIntensity: 0.7,
+      }),
       canopy: new THREE.MeshStandardMaterial({ color: 0x24391f, roughness: 1, metalness: 0 }),
     };
     return this._materials;

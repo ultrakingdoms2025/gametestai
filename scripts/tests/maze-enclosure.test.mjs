@@ -459,7 +459,7 @@ test('MAZE.STEP_HEIGHT stays in step with the live player config', () => {
     `(${CONFIG.player.stepHeight}) - update MAZE.STEP_HEIGHT in MazeTopology.js to match`);
 });
 
-test('MazeTopology.js, MazeColliders.js and MazeShafts.js import nothing outside each other', async () => {
+test('the pure maze modules import nothing outside each other', async () => {
   // Textual, not behavioural - the same reason scripts/contract-check.mjs and
   // scripts/tests/rules-applied.test.mjs check source text rather than
   // runtime behaviour: purity is exactly what lets the containment, seam and
@@ -475,19 +475,28 @@ test('MazeTopology.js, MazeColliders.js and MazeShafts.js import nothing outside
   assert.deepEqual(topoImports, [],
     `MazeTopology.js must import nothing at all - found: ${topoImports.join(', ') || '(none)'}`);
 
-  /* The other two may import each other and nothing else. Widened in Phase 2c
-   * when the connector geometry moved to MazeShafts.js: the set grew, the
-   * rule did not. MazeShafts.js is where the enclosure proof now lives, so it
-   * is if anything the most important of the three to keep importable by
-   * Node. */
-  const allowed = new Set(['./MazeTopology.js', './MazeColliders.js', './MazeShafts.js']);
-  for (const file of ['MazeColliders.js', 'MazeShafts.js']) {
+  /* The rest of the family may import each other and nothing else. The set has
+   * been widened twice - in Phase 2c when the connector geometry moved to
+   * MazeShafts.js, and again when the puzzles, the plan and the foliage got
+   * their own modules - and both times the RULE stayed the same while the list
+   * fell behind it. The list is one constant now, checked against every member
+   * rather than against the three that happened to exist when it was written,
+   * so the day a fourth pure module imports `three` this fails instead of
+   * ignoring the file.
+   *
+   * MazePuzzles.js earns its place here rather than being waved through
+   * because MazeColliders.js now imports it: a `three` import landing there
+   * would reach the enclosure proof through the back door. */
+  const FAMILY = ['MazeTopology.js', 'MazeColliders.js', 'MazeShafts.js',
+    'MazePuzzles.js', 'MazePlan.js', 'MazeFoliage.js'];
+  const allowed = new Set(FAMILY.map((f) => `./${f}`));
+  for (const file of FAMILY.filter((f) => f !== 'MazeTopology.js')) {
     const src = await readFile(path.join(root, 'src/worlds/maze', file), 'utf8');
     const imports = [...src.matchAll(importRe)].map((m) => m[1]);
     assert.ok(imports.length > 0, `${file} imports nothing - expected at least ./MazeTopology.js`);
     for (const spec of imports) {
       assert.ok(allowed.has(spec),
-        `${file} imports "${spec}" - these three modules may only import each other`);
+        `${file} imports "${spec}" - the pure maze modules may only import each other`);
     }
   }
 });

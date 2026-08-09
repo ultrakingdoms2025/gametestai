@@ -193,8 +193,14 @@ test('a long walk leaves no orphaned colliders or buckets', () => {
   for (let i = 0; i < 30; i++) chunks.updateResidency(i * 0.6 * DISTRICT_SPAN, 0, i * 0.4 * DISTRICT_SPAN, 2);
   assert.equal(physics.colliders.length, chunks.colliderCount());
   assert.equal(colliders.length, physics.colliders.length);
-  const meshCount = chunks.residentKeys().length * 2; // hedges + floor per district
-  assert.ok(group.children.length <= meshCount, `mesh leak: ${group.children.length}`);
+  /* EXACT, not a bound. The old bound was `residentKeys * 2` - "hedges and a
+   * floor per district" - which was already loose once stairs, shaft walls,
+   * lifts and tunnels gained their own mesh kinds, and broke outright when
+   * districts gained a lantern. `objectCount()` is what this class believes it
+   * owns; the scene is what it actually put there, and a leak is exactly the
+   * two disagreeing. */
+  assert.equal(group.children.length, chunks.objectCount(),
+    `scene holds ${group.children.length} objects, MazeChunks accounts for ${chunks.objectCount()}`);
   chunks.disposeAll();
   assert.equal(physics.colliders.length, 0);
   assert.equal(physics._grid.size, 0);

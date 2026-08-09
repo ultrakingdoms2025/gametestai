@@ -100,6 +100,21 @@ export class MazeChunks {
     return [...this._resident.keys()].sort((a, b) => a - b);
   }
 
+  /**
+   * Exactly how many scene objects this class owns right now.
+   *
+   * Meshes plus one lantern per resident district. Exposed so the leak test
+   * can assert an EQUALITY rather than an upper bound: the bound it used
+   * ("hedges and a floor per district") was already loose once stairs, shafts,
+   * lifts and tunnels gained their own mesh kinds, and it broke outright when
+   * districts gained a light. An exact count cannot rot the same way.
+   */
+  objectCount() {
+    let n = 0;
+    for (const e of this._resident.values()) n += e.meshes.length + (e.lantern ? 1 : 0);
+    return n;
+  }
+
   colliderCount() {
     let n = 0;
     for (const c of this._resident.values()) n += c.colliders.length;

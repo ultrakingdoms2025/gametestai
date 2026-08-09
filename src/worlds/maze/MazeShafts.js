@@ -1167,3 +1167,69 @@ export function tunnelExitBounds(cells, x, z, level) {
     x0: x0 - pad, x1: x1 + pad, z0: z0 - pad, z1: z1 + pad,
   };
 }
+
+
+/* ------------------------------------------------------------------ */
+/* The one-way gate                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How far the gate's top stands above the floor when it is OPEN.
+ *
+ * Under the auto-step, so an open gate is walked straight over. Derived from
+ * `STEP_HEIGHT` rather than written down, for the same reason
+ * `LIFT_REST_CLEARANCE` is: both of this project's shaft constants were wrong
+ * when they were literals.
+ */
+const GATE_OPEN_RISE = MAZE.STEP_HEIGHT * 0.5;
+
+/**
+ * A one-way gate across the passage leaving (x, z, level) in `dir`.
+ *
+ * Stands OPEN - recessed, walked over - until the player passes it in the
+ * forward direction, then closes behind them and stays closed for the visit.
+ * A committal, not a trap: `MazePuzzles` places gates only along the
+ * entrance-to-centre path and pointing forward, so passing one always moves
+ * the player closer to the centre and no closure can put the centre behind a
+ * door. Hold-L guarantees a way out regardless.
+ *
+ * The closed top sits at exactly `HEDGE_HEIGHT` - ON the anti-ladder band's
+ * ceiling rather than inside it, the same position the guard rails and the
+ * lift door occupy, and safe for the same reason. Its TRANSIT through the band
+ * is not made safe by that; it is made safe by the same halt-while-occupied
+ * invariant that governs the lift door, which Phase 2c measured at 14.000 m
+ * when it was removed.
+ *
+ * @param {number} dir a DIR bit - which passage this gate closes
+ * @returns {ColliderDesc[]}
+ */
+export function gateColliders(cells, x, z, level, dir) {
+  const w = cellToWorld(x, z, level);
+  const half = MAZE.CELL / 2;
+  const dx = dir === DIR.E ? 1 : dir === DIR.W ? -1 : 0;
+  const dz = dir === DIR.S ? 1 : dir === DIR.N ? -1 : 0;
+  if (dx === 0 && dz === 0) return [];
+
+  const openTop = w.y + GATE_OPEN_RISE;
+  const closedTop = w.y + MAZE.HEDGE_HEIGHT;
+  const hy = (closedTop - w.y) / 2;
+
+  return [{
+    /* Sits ON the cell boundary the passage crosses, thin across it and the
+     * corridor's full width along it - the same footprint the hedge that
+     * would otherwise be there occupies. */
+    cx: w.x + dx * half,
+    cy: openTop - hy,
+    cz: w.z + dz * half,
+    hx: dx ? 0.3 : MAZE.CORRIDOR / 2,
+    hy,
+    hz: dz ? 0.3 : MAZE.CORRIDOR / 2,
+    kind: 'gate',
+    /* Where it GOES, for the static gates - see `descriptorTop`. `cy`/`hy`
+     * above place it where it RESTS, which is open. */
+    swept: { y0: w.y, y1: closedTop },
+    cell: cellIndex(x, z, level),
+    openY: openTop - hy,
+    closedY: closedTop - hy,
+  }];
+}

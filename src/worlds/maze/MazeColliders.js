@@ -16,7 +16,7 @@
 
 import { MAZE, DIR, cellIndex, isOpen, cellToWorld } from './MazeTopology.js';
 import {
-  shaftColliders, landingColliders, connectorHoleBounds,
+  shaftColliders, landingColliders, connectorHoleBounds, gateColliders,
 } from './MazeShafts.js';
 
 /* Moved to MazeTopology.js in Phase 2c so that MazeShafts.js can use it
@@ -125,7 +125,7 @@ export function forecourtColliders(entranceX, level = 0) {
  * @param {number} level
  * @returns {ColliderDesc[]}
  */
-export function districtColliders(cells, dx, dz, level) {
+export function districtColliders(cells, dx, dz, level, puzzles = null) {
   const D = MAZE.DISTRICT;
   const x0 = dx * D;
   const z0 = dz * D;
@@ -274,6 +274,16 @@ export function districtColliders(cells, dx, dz, level) {
       // on a neighbouring district's output.
       if (isOpen(cells, idx, DIR.UP)) {
         for (const d of shaftColliders(cells, x, z, level)) out.push(d);
+      }
+
+      /* A puzzle, if one was placed at this cell. The map is handed down from
+       * the world rather than derived here: placement is a SEED and GRAPH
+       * decision, and this function has neither - the same constraint that put
+       * connector kinds in the topology array. A caller with no puzzles (every
+       * headless gate) simply gets none. */
+      const pz = puzzles?.get(idx);
+      if (pz) {
+        for (const d of gateColliders(cells, x, z, level, pz.dir)) out.push(d);
       }
     }
   }

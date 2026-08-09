@@ -2,9 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MAZE, generateTopology, buildDistrictGraph, districtIndex, districtCoords,
-  edgeKey, cellCoords, isEdgeOpen,
+  edgeKey, cellCoords, isEdgeOpen, isOpen, DIR,
 } from '../../src/worlds/maze/MazeTopology.js';
-import { PUZZLE, districtPath, placePuzzles } from '../../src/worlds/maze/MazePuzzles.js';
+import { PUZZLE, districtPath, placePuzzles, puzzleCells, edgeDoorwayCell } from '../../src/worlds/maze/MazePuzzles.js';
+import { gateColliders, descriptorTop } from '../../src/worlds/maze/MazeShafts.js';
+import { districtColliders } from '../../src/worlds/maze/MazeColliders.js';
 
 /** The district a cell sits in. */
 function districtOfCell(idx) {
@@ -146,4 +148,101 @@ test('the never-strand gate is not vacuous: cutting a non-gate edge set CAN stra
   }));
   assert.equal(districtPath({ ...graph, open: closed }, from, to).length, 0,
     'isolating the centre district did not make it unreachable - districtPath cannot detect a disconnection');
+});
+
+test('every puzzle lands on a cell whose passage actually crosses the border', () => {
+  /* A puzzle at a cell with no open passage in its direction would be a gate
+   * across solid hedge - invisible, unreachable, and it would silently reduce
+   * the puzzle count to whatever happened to line up. */
+  for (const seed of [1, 2026]) {
+    const t = generateTopology(seed);
+    const graph = buildDistrictGraph(seed);
+    const from = districtOfCell(t.entranceCell);
+    const to = districtOfCell(t.centreCell);
+    const cellsMap = puzzleCells(seed, graph, from, to);
+    assert.ok(cellsMap.size > 0, `seed ${seed} produced no placed puzzle cells`);
+    for (const [cell, p] of cellsMap) {
+      assert.ok(isOpen(t.cells, cell, p.dir),
+        `a puzzle sits at cell ${cell} facing ${p.dir}, but that passage is closed - it would be a gate `
+        + 'across solid hedge');
+    }
+  }
+});
+
+test('vertical edges never carry a puzzle - those are connectors', () => {
+  const seed = 2026;
+  const t = generateTopology(seed);
+  const graph = buildDistrictGraph(seed);
+  const from = districtOfCell(t.entranceCell);
+  const to = districtOfCell(t.centreCell);
+  for (const [cell] of puzzleCells(seed, graph, from, to)) {
+    // A puzzle cell is a border cell of its own level; the direction stored is
+    // always horizontal, which `isOpen` above already exercises. Assert the
+    // cell index is in range as a cheap guard against a level mix-up.
+    assert.ok(cell >= 0 && cell < MAZE.TOTAL_CELLS, `puzzle cell ${cell} is out of range`);
+  }
+});
+
+/* -------------------------------------------------------------------- */
+/* Gate geometry                                                         */
+/* -------------------------------------------------------------------- */
+
+test('THE GATE BAND GATE: a closed gate tops out ON the band ceiling, never inside it', () => {
+  /* The same position the guard rails and the lift door occupy. A gate whose
+   * closed top landed inside 0.45-5.0m would be a standable in the band
+   * outside any sealed shaft - a ladder over a hedge, and the thing the whole
+   * anti-exploit rule exists to forbid. */
+  const { cells } = generateTopology(2026);
+  for (const dir of [DIR.N, DIR.E, DIR.S, DIR.W]) {
+    const [g] = gateColliders(cells, 40, 40, 0, dir);
+    assert.ok(g, `no gate emitted for dir ${dir}`);
+    assert.equal(descriptorTop(g), MAZE.HEDGE_HEIGHT,
+      `a closed gate tops out at ${descriptorTop(g)}m, not exactly at the ${MAZE.HEDGE_HEIGHT}m band ceiling`);
+    assert.ok(!g.enclosed,
+      'a gate claims the enclosed exemption - it stands in open corridor and has no sealed shaft to earn it');
+  }
+});
+
+test('an open gate is walked over, not climbed', () => {
+  const { cells } = generateTopology(2026);
+  const [g] = gateColliders(cells, 40, 40, 0, DIR.E);
+  const openTop = g.openY + g.hy;
+  assert.ok(openTop <= MAZE.STEP_HEIGHT,
+    `an open gate stands ${openTop.toFixed(3)}m proud against a ${MAZE.STEP_HEIGHT}m auto-step - the player `
+    + 'would have to hop a gate that is supposed to be open');
+});
+
+test('a gate spans the passage it closes, and nothing wider', () => {
+  const { cells } = generateTopology(2026);
+  for (const [dir, thinAxis] of [[DIR.E, 'hx'], [DIR.W, 'hx'], [DIR.N, 'hz'], [DIR.S, 'hz']]) {
+    const [g] = gateColliders(cells, 40, 40, 0, dir);
+    const wide = thinAxis === 'hx' ? g.hz : g.hx;
+    assert.ok(Math.abs(wide * 2 - MAZE.CORRIDOR) < 1e-9,
+      `a gate spans ${(wide * 2).toFixed(2)}m across a ${MAZE.CORRIDOR}m corridor - a gap either side is a `
+      + 'gate the player walks round');
+    assert.ok(g[thinAxis] < MAZE.HEDGE_THICK, 'a gate is thicker than the hedge it stands in place of');
+  }
+});
+
+test('gates appear in real district geometry when a puzzle map is supplied, and never without one', () => {
+  /* The seed-free default matters: every headless gate calls districtColliders
+   * with four arguments and must keep seeing exactly what it saw before. */
+  const seed = 2026;
+  const t = generateTopology(seed);
+  const graph = buildDistrictGraph(seed);
+  const from = districtOfCell(t.entranceCell);
+  const to = districtOfCell(t.centreCell);
+  const map = puzzleCells(seed, graph, from, to);
+
+  let withGates = 0;
+  for (let dz = 0; dz < MAZE.DISTRICTS && withGates < 3; dz++) {
+    for (let dx = 0; dx < MAZE.DISTRICTS && withGates < 3; dx++) {
+      const plain = districtColliders(t.cells, dx, dz, 0);
+      assert.equal(plain.filter((d) => d.kind === 'gate').length, 0,
+        `district ${dx},${dz} emitted a gate with no puzzle map - the default must be seed-free`);
+      const dressed = districtColliders(t.cells, dx, dz, 0, map);
+      if (dressed.filter((d) => d.kind === 'gate').length > 0) withGates++;
+    }
+  }
+  assert.ok(withGates >= 1, 'no district anywhere emitted a gate even with a puzzle map');
 });

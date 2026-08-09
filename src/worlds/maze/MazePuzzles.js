@@ -29,7 +29,8 @@
  * how Phase 2b's `enclosed` flag became self-certifying.
  */
 import {
-  MAZE, hash32, districtIndex, districtCoords, edgeKey, isEdgeOpen,
+  MAZE, DIR, hash32, districtIndex, districtCoords, edgeKey, isEdgeOpen,
+  doorwayOffset, cellIndex,
 } from './MazeTopology.js';
 
 export const PUZZLE = Object.freeze({ NONE: 0, GATE: 1, SLIDE: 2 });
@@ -141,5 +142,56 @@ export function placePuzzles(seed, graph, fromDistrict, toDistrict) {
     out.set(key, { kind: PUZZLE.SLIDE, forward: [a, b] });
   }
 
+  return out;
+}
+
+/**
+ * The exact cell a district edge's doorway was carved at.
+ *
+ * `carveDistrict` places one doorway per open border edge, at
+ * `doorwayOffset(seed, self, other, DISTRICT)` along that border. Recomputing
+ * it here rather than scanning `cells` for an open border passage is
+ * deliberate: the two districts either side of a border both carve, so a scan
+ * would have to disambiguate, and the offset is the actual authority.
+ *
+ * Only meaningful for a HORIZONTAL edge - a vertical one is a connector, and
+ * connectors are not where puzzles go.
+ *
+ * @returns {{cell:number, dir:number}|null} the cell on `a`'s side, and the
+ *   direction that crosses into `b`.
+ */
+export function edgeDoorwayCell(seed, a, b) {
+  const A = districtCoords(a), B = districtCoords(b);
+  if (A.level !== B.level) return null;
+  const D = MAZE.DISTRICT;
+  const x0 = A.dx * D, z0 = A.dz * D;
+  const off = doorwayOffset(seed, a, b, D);
+
+  const ddx = B.dx - A.dx, ddz = B.dz - A.dz;
+  if (ddx === 1) return { cell: cellIndex(x0 + D - 1, z0 + off, A.level), dir: DIR.E };
+  if (ddx === -1) return { cell: cellIndex(x0, z0 + off, A.level), dir: DIR.W };
+  if (ddz === 1) return { cell: cellIndex(x0 + off, z0 + D - 1, A.level), dir: DIR.S };
+  if (ddz === -1) return { cell: cellIndex(x0 + off, z0, A.level), dir: DIR.N };
+  return null;
+}
+
+/**
+ * Puzzles keyed by the CELL they physically occupy.
+ *
+ * This is what geometry consumes. `districtColliders` has no seed and must not
+ * gain one - the same constraint that put connector kinds in the topology
+ * array - so the seed-dependent decision is made once here, at build time, and
+ * handed down as a plain cell lookup.
+ *
+ * @returns {Map<number, {kind:number, dir:number}>}
+ */
+export function puzzleCells(seed, graph, fromDistrict, toDistrict) {
+  const out = new Map();
+  for (const [key, p] of placePuzzles(seed, graph, fromDistrict, toDistrict)) {
+    const [a, b] = p.kind === PUZZLE.GATE ? p.forward : key.split('|').map(Number);
+    const at = edgeDoorwayCell(seed, a, b);
+    if (!at) continue;                        // vertical edge: a connector, not a puzzle
+    out.set(at.cell, { kind: p.kind, dir: at.dir });
+  }
   return out;
 }

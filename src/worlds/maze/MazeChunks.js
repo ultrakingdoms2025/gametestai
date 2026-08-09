@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { MAZE, DIR, districtCoords, districtAtWorld, neighbourhoodKeys } from './MazeTopology.js';
 import { districtColliders } from './MazeColliders.js';
-import { foliageTransforms, footingTransforms, candlePlacements } from './MazeFoliage.js';
+import {
+  foliageTransforms, footingTransforms, candlePlacements, shaftIvyTransforms,
+  wellLightColumns, WELL_LIGHT_RADIUS,
+} from './MazeFoliage.js';
 import { PLATE_HALF_HEIGHT, PLATE_HALF_WIDTH } from './MazeShafts.js';
 
 /**
@@ -212,6 +215,15 @@ export class MazeChunks {
       if (sm) meshes.push(sm);
     }
 
+    /* Ivy up the tower shafts - section 10's "ivy-clad tower shafts". Only
+     * districts holding a shaft grow any, so this is one extra draw call in
+     * the handful of districts that have one and none at all in the rest. */
+    const ivy = shaftIvyTransforms(descs, key);
+    if (ivy.length && this.materials.ivy) {
+      const im = buildSprigInstances(ivy, this.materials.ivy, `maze:ivy:${key}`, this.group);
+      if (im) meshes.push(im);
+    }
+
     /* Hedge candles. Many meshes, few lights - see `candlePlacements`. The
      * meshes are what you see; the rig only ever renders the nearest twelve
      * point lights in the scene, so more lights than that per district buys
@@ -230,6 +242,64 @@ export class MazeChunks {
         this.materials.plate, `maze:plate:${key}`, this.group,
       );
       if (pm) { pm.castShadow = false; meshes.push(pm); }
+    }
+
+    /* Daylight down the towers. Two meshes at most per district and only in the
+     * districts that hold a shaft, both additive and both depth-write off, so
+     * they cost no sorting and cannot occlude anything. See
+     * `wellLightColumns` for why a shaft is the only place light can come from
+     * on a roofed level. */
+    const wells = wellLightColumns(this.cells, dx, dz, level);
+    if (wells.length && this.materials.wellLight) {
+      const geo = new THREE.CylinderGeometry(WELL_LIGHT_RADIUS * 0.55, WELL_LIGHT_RADIUS, 1, 12, 1, true);
+      const col = new THREE.InstancedMesh(geo, this.materials.wellLight, wells.length);
+      col.name = `maze:wellLight:${key}`;
+      col.castShadow = false;
+      col.receiveShadow = false;
+      /* Drawn last. An additive column with depth-write off still has to be
+       * rendered after the geometry behind it or it blends against whatever
+       * was in the buffer at the time. */
+      col.renderOrder = 2;
+      const m = new THREE.Matrix4();
+      const q = new THREE.Quaternion();
+      const pos = new THREE.Vector3();
+      const scl = new THREE.Vector3();
+      for (let i = 0; i < wells.length; i++) {
+        const c = wells[i];
+        pos.set(c.x, c.y + c.height / 2, c.z);
+        scl.set(1, c.height, 1);
+        m.compose(pos, q, scl);
+        col.setMatrixAt(i, m);
+      }
+      col.instanceMatrix.needsUpdate = true;
+      this.group.add(col);
+      meshes.push(col);
+
+      /* And the ~1.2 m2 of daylight on the well floor the spec asks for - the
+       * bright patch where the column lands, which is the whole reason the
+       * column reads as light rather than as fog. */
+      if (this.materials.wellPool) {
+        const disc = new THREE.CircleGeometry(WELL_LIGHT_RADIUS * 0.62, 16);
+        const pool = new THREE.InstancedMesh(disc, this.materials.wellPool, wells.length);
+        pool.name = `maze:wellPool:${key}`;
+        pool.castShadow = false;
+        pool.receiveShadow = false;
+        pool.renderOrder = 1;
+        const pm = new THREE.Matrix4();
+        const pq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+        const pp = new THREE.Vector3();
+        const ps = new THREE.Vector3(1, 1, 1);
+        for (let i = 0; i < wells.length; i++) {
+          /* Just proud of the floor: coplanar with it would z-fight, and this
+           * world's floors are flat slabs so a centimetre is plenty. */
+          pp.set(wells[i].x, wells[i].y + 0.012, wells[i].z);
+          pm.compose(pp, pq, ps);
+          pool.setMatrixAt(i, pm);
+        }
+        pool.instanceMatrix.needsUpdate = true;
+        this.group.add(pool);
+        meshes.push(pool);
+      }
     }
 
     const candles = candlePlacements(descs, key);
@@ -864,13 +934,33 @@ export function buildSprigInstances(sprigs, material, name, group) {
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
   const up = new THREE.Vector3(0, 1, 0);
+  const axisX = new THREE.Vector3(1, 0, 0);
+  const axisZ = new THREE.Vector3(0, 0, 1);
   const pos = new THREE.Vector3();
   const scale = new THREE.Vector3();
   for (let i = 0; i < sprigs.length; i++) {
     const s = sprigs[i];
     pos.set(s.x, s.y, s.z);
-    q.setFromAxisAngle(up, s.ry);
-    scale.set(s.s, s.s * 1.4, s.s);
+    /* Which axis `ry` turns about.
+     *
+     * `compose` builds T*R*S, so the per-axis scale below is applied in the
+     * instance's OWN frame and only then rotated. For hedge growth that is
+     * fine: the sprig is roughly square in plan and Y is the only interesting
+     * axis. For a leaf lying flat on a wall it is not - flattening on world X
+     * and then yawing about Y swings that thin axis toward Z, and at a quarter
+     * turn the leaf stands edge-out from the wall it is supposed to be lying
+     * on. That is what made the first ivy read as confetti.
+     *
+     * So a sprig may name the axis to turn about, and ivy names the wall's own
+     * normal: rolling about the normal leaves the thin axis exactly where it
+     * was and varies the leaf only within the plane of the stone. */
+    q.setFromAxisAngle(s.axis === 'x' ? axisX : s.axis === 'z' ? axisZ : up, s.ry);
+    /* Per-axis scale when a sprig asks for one. Hedge-top growth is a chunky
+     * little bush and wants the uniform default; ivy is a leaf lying flat on
+     * stone and has to be squashed on the wall's normal, or it reads as dice
+     * glued to a tower. */
+    if (s.sx !== undefined) scale.set(s.sx, s.sy, s.sz);
+    else scale.set(s.s, s.s * 1.4, s.s);
     m.compose(pos, q, scale);
     mesh.setMatrixAt(i, m);
   }

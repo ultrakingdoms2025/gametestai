@@ -291,5 +291,108 @@ export function districtColliders(cells, dx, dz, level, puzzles = null) {
     }
   }
 
+  return dropHedgesInsideShafts(out, neighbouringShaftWalls(cells, dx, dz, level));
+}
+
+/**
+ * How far outside a district a shaft wall can stand and still coincide with a
+ * hedge this district emits.
+ *
+ * ONE cell for the shaft itself: a shaft in the last column of the district to
+ * the west walls its own east side, and that wall stands on the shared cell
+ * boundary - which is exactly where this district's first column draws its
+ * west-face hedges. ONE MORE for a TUNNEL, whose region folds across two cells
+ * (see `connectorRegion`), so its outermost wall can stand two cells away from
+ * the cell that actually carries the UP link. Nothing reaches further: every
+ * other connector lives inside a single cell.
+ */
+const SHAFT_WALL_REACH = 2;
+
+/**
+ * The shaft walls of cells just OUTSIDE this district.
+ *
+ * A district's hedges and its shafts are not the same district's business.
+ * A hedge is emitted on a cell's north and west faces (see
+ * `districtColliders`), so the hedge that duplicates a shaft's EAST or SOUTH
+ * wall belongs to the neighbouring cell - and when the shaft sits at
+ * `lx === DISTRICT - 1` or `lz === DISTRICT - 1` that neighbour is in the NEXT
+ * district. A drop pass over one district's own finished list therefore never
+ * saw those pairs: measured on seed 7, the shaft at cell (99,15) had district
+ * (4,0) emit its wall at x=597, z=90 spanning y 0-9 m while district (5,0)
+ * emitted a hedge with the identical footprint spanning y 0-5 m, and both the
+ * stripe and the duplicate collider survived.
+ *
+ * So the walls come to the pass rather than the pass being moved into the cell
+ * loop. They are DERIVED with `shaftColliders`, the same call the cell loop
+ * makes, because "where a shaft's walls are" must have exactly one definition
+ * in this repo - a second one that agrees today is the bug class this whole
+ * file's history is made of. They are used only as drop candidates and never
+ * emitted: the district that owns the shaft still emits it exactly once.
+ *
+ * The whole ring is scanned, not just the west and north sides that can
+ * actually match. Which side of a cell owns which face is precisely the
+ * reasoning `dropHedgesInsideShafts` exists to avoid re-encoding - containment
+ * is the property, and it is checked directly - and a wall that cannot contain
+ * anything simply never matches.
+ *
+ * SAFETY, since this drops a collider on the strength of a box in a district
+ * that may not be resident: `MazeChunks.updateResidency` keeps a
+ * `radius`-district neighbourhood around the PLAYER'S OWN district (default 2,
+ * never less than 1). A hedge on this district's west border can only be
+ * touched by a player standing in this district or in the one to the west, and
+ * in either case both are inside that neighbourhood. The wall is always loaded
+ * before anyone can walk into the space the hedge used to fill.
+ */
+function neighbouringShaftWalls(cells, dx, dz, level) {
+  const D = MAZE.DISTRICT;
+  const R = SHAFT_WALL_REACH;
+  const x0 = dx * D, z0 = dz * D;
+  const out = [];
+  for (let z = z0 - R; z < z0 + D + R; z++) {
+    if (z < 0 || z >= MAZE.CELLS) continue;
+    for (let x = x0 - R; x < x0 + D + R; x++) {
+      if (x < 0 || x >= MAZE.CELLS) continue;
+      // This district's own shafts are already in the list being filtered.
+      if (x >= x0 && x < x0 + D && z >= z0 && z < z0 + D) continue;
+      for (const d of shaftColliders(cells, x, z, level)) {
+        if (d.kind === 'shaftWall') out.push(d);
+      }
+    }
+  }
   return out;
+}
+
+/**
+ * Remove hedges that a shaft wall already covers.
+ *
+ * A shaft walls all four of its own sides, and those walls stand exactly where
+ * the hedges around that cell stand - same centre, same footprint, the hedge
+ * simply being the lower five metres of a nine-metre wall. Both were emitted:
+ * measured at 9 such pairs in a six-district sample, the worst of them 36 m3
+ * of one box sitting entirely inside another.
+ *
+ * Two coplanar surfaces z-fight, and looking up a tower the stripes are the
+ * most obvious artifact in the world - they survive shadows being switched
+ * off, which is what ruled out shadow acne. Dropping the hedge also drops a
+ * duplicate collider that was answering every query alongside the wall.
+ *
+ * Done as a pass over the finished list rather than as a condition inside the
+ * cell loop because the four faces of a shaft are owned by four DIFFERENT
+ * cells - a shaft's south face is the north face of the cell below it - so the
+ * loop that emits a hedge does not generally know it is standing on a shaft.
+ * Containment is the actual property, and it is checked directly.
+ *
+ * `extraWalls` extends that same reasoning across the district boundary: the
+ * owning cell can be in the next district entirely, so the walls it must be
+ * checked against are not all in `descs`. See `neighbouringShaftWalls`.
+ */
+function dropHedgesInsideShafts(descs, extraWalls = []) {
+  const walls = descs.filter((d) => d.kind === 'shaftWall').concat(extraWalls);
+  if (walls.length === 0) return descs;
+  const inside = (h, w) => (
+    h.cx - h.hx >= w.cx - w.hx - 1e-6 && h.cx + h.hx <= w.cx + w.hx + 1e-6
+    && h.cy - h.hy >= w.cy - w.hy - 1e-6 && h.cy + h.hy <= w.cy + w.hy + 1e-6
+    && h.cz - h.hz >= w.cz - w.hz - 1e-6 && h.cz + h.hz <= w.cz + w.hz + 1e-6
+  );
+  return descs.filter((d) => d.kind !== 'hedge' || !walls.some((w) => inside(d, w)));
 }

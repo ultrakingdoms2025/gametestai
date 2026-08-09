@@ -15,17 +15,18 @@ import { mapActionOwner } from '../worlds/WorldRules.js';
  * in, so a map drawn from it would be a map of wherever you happen to be
  * standing.
  *
- * ## There is no you-are-here marker, and that is the feature
+ * ## It shows where you are, by the owner's decision
  *
- * The player gets the shape of the level and has to locate themselves by
- * matching the junction pattern around them against the drawing. That is the
- * central navigational challenge, and it is the reason a map does not
- * trivialise a 2.4 km maze that re-rolls every entry.
+ * The original spec was emphatic that it must NOT. The player was to get the
+ * shape of the level and locate themselves by matching the junction pattern
+ * around them, and that was called the central navigational challenge and the
+ * reason a map does not trivialise a 2.4 km maze. This file used to carry a
+ * test that grepped it for a player position and failed if one appeared.
  *
- * It is also, obviously, the first thing anyone would add to be helpful — so
- * `scripts/tests/maze-map-binding.test.mjs` greps this file for the
- * ingredients (a player position, a marker) and fails if they appear. A
- * comment asking nicely would not have survived.
+ * The owner reversed that decision, so the marker is here and the spec has
+ * been amended to match rather than left contradicting the code. Recorded
+ * because the original reasoning was sound and someone may want it back: the
+ * argument against was difficulty, not correctness.
  *
  * ## Why it bakes
  *
@@ -48,12 +49,26 @@ import { mapActionOwner } from '../worlds/WorldRules.js';
  */
 const MAP_PX_PER_CELL = 4;
 const MAP_BG = '#0d130e';
-const MAP_WALL = '#8fd67a';
+/* Muted deliberately. The walls were a bright #8fd67a, and against 160,000 of
+ * them a marker dot simply disappeared - the map has to carry both, and the
+ * walls are the thing there is most of. */
+const MAP_WALL = '#4b7a3f';
 /**
  * Zoom 1 fits the whole level in the panel. That view is a SHAPE, not a map -
  * 400 cells across any real screen is sub-pixel per cell - so it is the floor
  * rather than the default.
  */
+/** Marker palette. Distinct hues, because the whole point is telling them apart. */
+const MARK = Object.freeze({
+  player: '#ffffff',
+  stair: '#d8cdb0',
+  lift: '#8ad0ff',
+  tunnel: '#e0b070',
+  token: '#8fe0c9',
+  portal: '#8fd67a',
+  centre: '#ffd479',
+});
+
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 16;
 
@@ -71,10 +86,15 @@ export class MazeMap {
   /**
    * @param {{root:HTMLElement, bus:any, input:any, worldManager:any}} ctx
    */
-  constructor({ root, bus, input, worldManager }) {
+  constructor({ root, bus, input, worldManager, player }) {
     this.bus = bus ?? null;
     this.input = input ?? null;
     this.worldManager = worldManager ?? null;
+    /* For the you-are-here marker. Read live rather than cached: the marker
+     * has to track, which is also why the map redraws on a frame loop while it
+     * is open instead of only on pan and zoom. */
+    this.player = player ?? null;
+    this._raf = 0;
 
     this._open = false;
     this._baked = null;
@@ -95,7 +115,15 @@ export class MazeMap {
           <span class="mz-map-hint">DRAG · WHEEL · ESC</span>
         </div>
         <canvas class="mz-map-canvas"></canvas>
-        <div class="mz-map-foot">This map shows the level you are standing on. It does not show where you are.</div>
+        <div class="mz-map-foot">
+          <span class="mz-key"><i style="background:#ffffff"></i>you</span>
+          <span class="mz-key"><i style="background:#d8cdb0"></i>stairs</span>
+          <span class="mz-key"><i style="background:#8ad0ff"></i>lift</span>
+          <span class="mz-key"><i style="background:#e0b070"></i>tunnel</span>
+          <span class="mz-key"><i style="background:#8fe0c9"></i>token</span>
+          <span class="mz-key"><i style="background:#ffd479"></i>centre</span>
+          <span class="mz-key"><i style="background:#8fd67a"></i>portal</span>
+        </div>
       </div>`;
     (root ?? document.body).appendChild(this.el);
 
@@ -139,7 +167,22 @@ export class MazeMap {
     this._zoom = MAZE.CELLS / OPEN_CELLS_ACROSS;
     this._panX = 0;
     this._panY = 0;
+    /* ...and centred on the player. Opening centred on the LEVEL put the
+     * player off-screen almost always - the entrance is at one edge and the
+     * view spans a quarter of the grid - so the first thing a map that exists
+     * to show you where you are did was fail to. */
+    const w0 = this._mazeWorld();
+    if (w0) this._render(w0, this._level(w0));      // the bake is what centring measures against
+    this._centreOnPlayer();
     this._draw();
+    /* Live while open: the player moves, tokens get taken, and the centre's
+     * return portal appears. A map drawn once would be wrong within seconds. */
+    const tick = () => {
+      if (!this._open) return;
+      this._draw();
+      this._raf = requestAnimationFrame(tick);
+    };
+    this._raf = requestAnimationFrame(tick);
     this.bus?.emit('ui:modal', { id: 'maze-map', open: true });
   }
 
@@ -147,7 +190,35 @@ export class MazeMap {
     if (!this._open) return;
     this._open = false;
     this.el.hidden = true;
+    if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
     this.bus?.emit('ui:modal', { id: 'maze-map', open: false });
+  }
+
+  /**
+   * Pan so the player sits in the middle of the view.
+   *
+   * Done in the same terms `_project` uses, rather than by inverting it: the
+   * two have to agree about the half-cell offset between a cell's centre and
+   * the baked image's corner, and deriving one from the other is how they stop
+   * agreeing.
+   */
+  _centreOnPlayer() {
+    const pos = this.player?.position;
+    const baked = this._baked;
+    if (!pos || !baked) return;
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width < 2) return;
+    const fit = Math.min(rect.width / baked.width, rect.height / baked.height);
+    const scale = fit * this._zoom;
+    const dw = baked.width * scale, dh = baked.height * scale;
+    /* Where the player would land with no pan, and how far that is from the
+     * middle of the view. */
+    const ox = (rect.width - dw) / 2;
+    const oy = (rect.height - dh) / 2;
+    const px = ox + (pos.x / MAZE.CELL + 0.5) * MAP_PX_PER_CELL * scale;
+    const py = oy + (pos.z / MAZE.CELL + 0.5) * MAP_PX_PER_CELL * scale;
+    this._panX = rect.width / 2 - px;
+    this._panY = rect.height / 2 - py;
   }
 
   /**
@@ -214,6 +285,101 @@ export class MazeMap {
     const oy = (rect.height - dh) / 2 + this._panY;
     ctx.imageSmoothingEnabled = this._zoom < 1.5;
     ctx.drawImage(baked, ox, oy, dw, dh);
+
+    /* Markers go on TOP of the baked image, never into it: the bake is cached
+     * per seed and level, so a token that has been picked up or a portal that
+     * has just opened would be frozen into it. */
+    this._drawMarkers(ctx, w, level, ox, oy, scale);
+  }
+
+  /**
+   * World metres to canvas pixels, for the current pan and zoom.
+   *
+   * The half-cell offset is because cell 0,0's CENTRE is the world origin,
+   * while the baked image starts at that cell's top-left corner. Without it
+   * every marker sits half a corridor off its wall, which is exactly wrong
+   * enough to look like a rounding bug rather than an offset one.
+   */
+  _project(wx, wz, ox, oy, scale) {
+    return {
+      x: ox + (wx / MAZE.CELL + 0.5) * MAP_PX_PER_CELL * scale,
+      y: oy + (wz / MAZE.CELL + 0.5) * MAP_PX_PER_CELL * scale,
+    };
+  }
+
+  /**
+   * A marker dot with a dark ring.
+   *
+   * The ring is not decoration: a flat dot on a dense wall pattern reads as
+   * one more wall, and the first pass was measured unreadable for exactly
+   * that reason. The ring gives every marker its own edge whatever it lands on.
+   */
+  _dot(ctx, p, r, colour) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = colour;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1, r * 0.42);
+    ctx.strokeStyle = 'rgba(3, 8, 4, 0.9)';
+    ctx.stroke();
+  }
+
+  _drawMarkers(ctx, world, level, ox, oy, scale) {
+    const m = world.mapMarkers?.(level);
+    if (!m) return;
+
+    /* Sized against the VIEW rather than the world, so a marker stays legible
+     * zoomed out and does not swamp the corridor zoomed in. */
+    const r = Math.max(3.4, Math.min(10, 4.0 * this._zoom ** 0.35));
+
+    for (const s of m.stair) this._dot(ctx, this._project(s.x, s.z, ox, oy, scale), r, MARK.stair);
+    for (const s of m.lift) this._dot(ctx, this._project(s.x, s.z, ox, oy, scale), r, MARK.lift);
+    for (const s of m.tunnel) this._dot(ctx, this._project(s.x, s.z, ox, oy, scale), r, MARK.tunnel);
+    for (const s of m.token) this._dot(ctx, this._project(s.x, s.z, ox, oy, scale), r * 0.7, MARK.token);
+    for (const s of m.centre) this._dot(ctx, this._project(s.x, s.z, ox, oy, scale), r * 1.5, MARK.centre);
+
+    /* Portals as a ring, so a way out does not read as one more collectable in
+     * a field of dots. */
+    for (const s of m.portal) {
+      const p = this._project(s.x, s.z, ox, oy, scale);
+      ctx.strokeStyle = MARK.portal;
+      ctx.lineWidth = Math.max(1.5, r * 0.5);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r * 1.6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    this._drawPlayer(ctx, level, ox, oy, scale, r);
+  }
+
+  /** You are here - a triangle, because a dot would not say which way you face. */
+  _drawPlayer(ctx, level, ox, oy, scale, r) {
+    const pos = this.player?.position;
+    if (!pos) return;
+    /* Only on the level being drawn. Standing on level 2 while reading level 0
+     * must not plant a marker in a corridor the player is nowhere near. */
+    const on = Math.max(0, Math.min(MAZE.LEVELS - 1, Math.round(pos.y / MAZE.LEVEL_HEIGHT)));
+    if (on !== level) return;
+
+    const p = this._project(pos.x, pos.z, ox, oy, scale);
+    /* `Player.yaw` uses the same convention MazeWorld's DIR_YAW does - forward
+     * is (-sin yaw, -cos yaw) - and -z is up-screen on this canvas, so the
+     * world's forward vector maps straight onto it. */
+    const yaw = Number.isFinite(this.player?.yaw) ? this.player.yaw : 0;
+    const fx = -Math.sin(yaw);
+    const fz = -Math.cos(yaw);
+    const size = Math.max(9, r * 3.0);
+
+    ctx.fillStyle = MARK.player;
+    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(p.x + fx * size, p.y + fz * size);
+    ctx.lineTo(p.x - fz * size * 0.6 - fx * size * 0.5, p.y + fx * size * 0.6 - fz * size * 0.5);
+    ctx.lineTo(p.x + fz * size * 0.6 - fx * size * 0.5, p.y - fx * size * 0.6 - fz * size * 0.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
   }
 
   _clampPan(rect, baked) {

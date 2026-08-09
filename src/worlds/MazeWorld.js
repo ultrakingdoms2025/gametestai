@@ -3,12 +3,13 @@ import { World } from './World.js';
 import { makeRules } from './WorldRules.js';
 import {
   MAZE, DIR, generateTopology, cellCoords, carveEntranceCorridor, hash32, mulberry32,
-  cellIndex, isOpen,
+  cellIndex, isOpen, connectorAt, parentField,
 } from './maze/MazeTopology.js';
 import {
   cellToWorld, forecourtColliders, FORECOURT_PORTAL_Z,
 } from './maze/MazeColliders.js';
-import { pickDeadEndTokens, pickWandererSites, walkPatrol } from './maze/MazePopulate.js';
+import { tunnelOrientation } from './maze/MazeShafts.js';
+import { pickDeadEndTokens, pickWandererSites, routeToward } from './maze/MazePopulate.js';
 import { MazeChunks, buildBoxInstances } from './maze/MazeChunks.js';
 import { MazeCanopy } from './maze/MazeCanopy.js';
 import { makeNoiseTexture } from '../gfx/Textures.js';
@@ -136,8 +137,17 @@ const MAZE_TOKEN_VALUE = 6;
  * that re-rolls every entry gets the same 100 as anyone else who did.
  */
 export const MAZE_CENTRE_VALUE = 100;
-/** How many extra cells a wanderer's patrol reaches beyond its starting cell. */
-const PATROL_STEPS = 4;
+/**
+ * How many cells a wanderer's route runs toward the centre.
+ *
+ * Was 4 - a 24 m random shuffle, which read as someone pacing rather than
+ * someone searching. These are people described as having been lost in here
+ * for years and still looking, so they now walk the shortest path toward the
+ * centre and back: 28 cells is about 170 m, long enough that you meet one
+ * going somewhere rather than milling about, and short enough that they stay
+ * spread through the maze instead of piling up at the prize.
+ */
+const PATROL_STEPS = 28;
 /** Districts either side of the player. 2 gives the 5x5 block the spec calls for. */
 const RESIDENCY_RADIUS = 2;
 
@@ -224,6 +234,7 @@ export class MazeWorld extends World {
     this._shaftsByLevel = null;
     /** @type {Array<{x:number, z:number}>} the current level's shafts - what Minimap reads */
     this.shaftMarkers = [];
+    this._connectorsByLevel = null;
     this._markersLevel = -1;
 
     const span = MAZE.CELLS * MAZE.CELL;
@@ -444,6 +455,9 @@ export class MazeWorld extends World {
      * only on `this.cells`, computed once here rather than re-derived every
      * frame or every time the player's level changes. */
     this._shaftsByLevel = this._computeShaftsByLevel();
+    /* Dropped so a re-roll rebuilds it - the maze is volatile and last run's
+     * connector positions are last run's maze. */
+    this._connectorsByLevel = null;
     this._markersLevel = -1;
     this.shaftMarkers = [];
 
@@ -571,8 +585,12 @@ export class MazeWorld extends World {
     const exclude = new Set([this.entranceCell, this.centreCell]);
 
     const wandererCells = pickWandererSites(this.cells, level, this.seed, WANDERER_CAST.length, exclude);
+    /* ONE breadth-first sweep, rooted at the centre, shared by all eight - see
+     * `parentField`. Eight calls to `solve` would be eight sweeps over 640,000
+     * cells for information a single sweep already contains. */
+    const toCentre = wandererCells.length ? parentField(this.cells, this.centreCell) : null;
     for (let i = 0; i < wandererCells.length; i++) {
-      const routeCells = walkPatrol(this.cells, level, wandererCells[i], PATROL_STEPS, hash32(this.seed, 0xbeef, i));
+      const routeCells = routeToward(toCentre, wandererCells[i], PATROL_STEPS);
       const patrol = routeCells.map((idx) => {
         const c = cellCoords(idx);
         const w = cellToWorld(c.x, c.z, level);
@@ -647,6 +665,75 @@ export class MazeWorld extends World {
    * cache keyed on `id` alone serves the previous run's walls; the level
    * because the map draws one level at a time and all four share this id.
    */
+  /**
+   * Everything the `M` map plots on one level, in WORLD metres.
+   *
+   * Computed here rather than in the map because this is where the topology,
+   * the portals, the tokens and the centre all already live - and because a
+   * map that scanned 160,000 cells itself would have to be handed the same
+   * things anyway. Positions only; the map decides how to draw them.
+   *
+   * Static things (connectors) are cached per level. Live things (tokens that
+   * are still there, portals that have opened) are read fresh each call, since
+   * both change during a visit.
+   *
+   * @param {number} level
+   */
+  mapMarkers(level) {
+    if (!this.cells) return { stair: [], lift: [], tunnel: [], token: [], portal: [], centre: [] };
+
+    if (!this._connectorsByLevel) {
+      /* One pass over every cell, once per re-roll. `_computeShaftsByLevel`
+       * already walks the same grid for the minimap's shaft dots, but it does
+       * not record WHICH connector, and the map needs to tell a lift from a
+       * staircase. */
+      const per = [];
+      for (let lv = 0; lv < MAZE.LEVELS; lv++) {
+        const acc = { stair: [], lift: [], tunnel: [] };
+        for (let z = 0; z < MAZE.CELLS; z++) {
+          for (let x = 0; x < MAZE.CELLS; x++) {
+            if (!isOpen(this.cells, cellIndex(x, z, lv), DIR.UP)) continue;
+            const w = cellToWorld(x, z, lv);
+            /* The kind that gets BUILT, not the kind the topology chose. Most
+             * tunnel links fall back to a staircase when no fold orientation
+             * keeps the maze walkable (see `tunnelOrientation`), so trusting
+             * `connectorAt` alone would mark 32 tunnels on a level that builds
+             * about five - and a map that calls a staircase a tunnel is worse
+             * than one that says nothing. */
+            let kind = connectorAt(this.cells, x, z, lv);
+            if (kind === 'tunnel' && !tunnelOrientation(this.cells, x, z, lv)) kind = 'stair';
+            acc[kind].push({ x: w.x, z: w.z });
+          }
+        }
+        per.push(acc);
+      }
+      this._connectorsByLevel = per;
+    }
+
+    const lv = Math.max(0, Math.min(MAZE.LEVELS - 1, level));
+    const conn = this._connectorsByLevel[lv];
+    const onLevel = (y) => Math.round(y / MAZE.LEVEL_HEIGHT) === lv;
+
+    const token = [];
+    for (const t of this._tokens) {
+      if (t.taken || !onLevel(t.position.y)) continue;
+      token.push({ x: t.position.x, z: t.position.z });
+    }
+
+    const portal = [];
+    for (const ps of this.portalSpecs ?? []) {
+      if (!onLevel(ps.position.y)) continue;
+      portal.push({ x: ps.position.x, z: ps.position.z });
+    }
+
+    const centre = [];
+    if (!this._centreTaken && this.centrePosition && onLevel(this.centrePosition.y)) {
+      centre.push({ x: this.centrePosition.x, z: this.centrePosition.z });
+    }
+
+    return { ...conn, token, portal, centre };
+  }
+
   get minimapPlanKey() {
     return `maze:${this.seed}:${this._markersLevel ?? 0}`;
   }

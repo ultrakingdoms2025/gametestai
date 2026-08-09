@@ -655,6 +655,38 @@ export function solve(cells, from, to) {
 }
 
 /** How many cells are reachable from `from`. Used to prove there are no pockets. */
+/**
+ * Breadth-first parent field rooted at `root`.
+ *
+ * `prev[cell]` is the neighbour one step CLOSER to the root, so following it
+ * from anywhere walks a shortest path to the root. One pass serves any number
+ * of walkers - which is the point: eight lost wanderers each calling `solve`
+ * would be eight BFS sweeps over 640,000 cells and eight sets of typed-array
+ * allocations, for information a single sweep already contains.
+ *
+ * @returns {Int32Array} -1 where unreachable, and at the root itself.
+ */
+export function parentField(cells, root) {
+  const prev = new Int32Array(MAZE.TOTAL_CELLS).fill(-1);
+  const seen = new Uint8Array(MAZE.TOTAL_CELLS);
+  const queue = new Int32Array(MAZE.TOTAL_CELLS);
+  let head = 0, tail = 0;
+  queue[tail++] = root;
+  seen[root] = 1;
+  while (head < tail) {
+    const cur = queue[head++];
+    for (const dir of ALL_DIRS) {
+      if ((cells[cur] & dir) === 0) continue;
+      const n = neighbourOf(cur, dir);
+      if (n < 0 || seen[n]) continue;
+      seen[n] = 1;
+      prev[n] = cur;
+      queue[tail++] = n;
+    }
+  }
+  return prev;
+}
+
 export function reachableCount(cells, from) {
   const seen = new Uint8Array(MAZE.TOTAL_CELLS);
   const queue = new Int32Array(MAZE.TOTAL_CELLS);

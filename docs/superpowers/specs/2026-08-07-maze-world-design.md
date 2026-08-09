@@ -309,10 +309,26 @@ reward is deliberately not scaled by maze size or completion time.
 only**, drawn from the topology array. 400×400 cells at 2 px/cell is an 800×800
 canvas, drawn once per level and cached. Pan and zoom with the mouse.
 
-**No you-are-here marker.** The player gets the shape of the level and must
-locate themselves by matching the junction pattern around them against the
-drawing. This is the central navigational challenge and the reason the map does
-not trivialise a maze this size.
+**~~No you-are-here marker.~~ REVERSED by the owner, 2026-08-09.** The original
+rule was that the player gets the shape of the level and must locate themselves
+by matching the junction pattern around them against the drawing — called here
+the central navigational challenge and the reason the map does not trivialise a
+maze this size. A test enforced it by grepping `MazeMap.js` for a player
+position.
+
+The owner reversed it. The map now shows **where you are and which way you
+face**, plus markers for staircases, lifts, tunnels, dead-end tokens, the centre
+stack and portals, and it opens centred on the player.
+
+Recorded rather than quietly rewritten, because the original argument was about
+difficulty and not about correctness — if the maze ever reads as too easy, this
+is the first thing to reach for. The enforcing test was replaced rather than
+deleted: `THE MARKER GATE` now asserts the marker set is complete, since a
+legend naming seven things over a map drawing four is the new failure mode.
+
+**Markers name what is BUILT, not what the topology chose.** Most tunnel links
+fall back to a staircase where no fold orientation keeps the maze walkable, and
+a map that calls a staircase a tunnel costs a player the walk back.
 
 `M` is added to the `BINDINGS` table in `src/core/Input.js` (~line 44) as a
 `map` action, which inherits the existing rebinding UI for free.

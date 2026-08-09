@@ -200,7 +200,7 @@ const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts, worldManag
  * `input.pressed`, like the other panels, and shares the `map` action with the
  * mount wheel above - `mapActionOwner` decides which of them M means in the
  * active world, so the two can never both open. */
-const mazeMap = new MazeMap({ root: uiRoot, bus, input, worldManager });
+const mazeMap = new MazeMap({ root: uiRoot, bus, input, worldManager, player });
 // F6. Rebinds anything Input resolves; the panel keys stay fixed on purpose.
 const keybindMenu = new KeybindMenu({ root: uiRoot, bus, input });
 // F2. Edits the avatar live and publishes `character:changed`, which SaveGame
@@ -361,7 +361,7 @@ if (overrides.dev) {
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
     waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, caches, contracts,
   cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
-  interiors,
+  interiors, mazeMap,
   };
   import('./dev/Harness.js').then(({ installHarness }) => installHarness(window.GAME));
 }

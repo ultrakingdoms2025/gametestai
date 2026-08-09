@@ -231,3 +231,45 @@ export function walkPatrol(cells, level, startIdx, steps, seed) {
 
   return route;
 }
+
+
+/**
+ * A route from `startIdx` toward whatever `parents` is rooted at.
+ *
+ * The lost wanderers are described as having been in here a long time and
+ * still looking for the centre, and a four-cell random shuffle does not read
+ * as that - it reads as someone pacing. Following the parent field means they
+ * are genuinely walking the shortest path toward the centre, which is what
+ * "trying to solve the maze" looks like from the outside.
+ *
+ * They never arrive: the route is cut at `steps`, and `FriendlyNPC` cycles its
+ * waypoints, so each one walks its stretch toward the centre and back again.
+ * For someone who has been lost for years that is more honest than arriving,
+ * and it keeps them spread through the maze instead of piling up at the prize.
+ *
+ * @param {Int32Array} parents from `parentField`
+ * @param {number} startIdx
+ * @param {number} steps how many cells to follow
+ * @returns {number[]} cell indices, starting with `startIdx`
+ */
+export function routeToward(parents, startIdx, steps) {
+  const route = [startIdx];
+  let cur = startIdx;
+  for (let i = 0; i < steps; i++) {
+    const next = parents[cur];
+    if (next < 0) break;                 // the root itself, or unreachable
+    /* Stop at a level change. `parentField` walks ALL directions, including
+     * the vertical links, and a shortest path to the centre will happily take
+     * one - but a patrol waypoint a level up teleports the NPC through a
+     * floor, which the spawn-connectivity gate rightly refuses.
+     *
+     * Cutting the route here rather than routing around it is also the truer
+     * behaviour: these are people who have been lost for years, and a
+     * staircase they never found is exactly why. They walk toward the centre
+     * until the way on goes up, and then turn back. */
+    if (Math.abs(next - cur) !== 1 && Math.abs(next - cur) !== MAZE.CELLS) break;
+    route.push(next);
+    cur = next;
+  }
+  return route;
+}

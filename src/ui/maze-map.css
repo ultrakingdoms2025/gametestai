@@ -67,3 +67,28 @@
   font-size: 12px;
   letter-spacing: 0.04em;
 }
+
+/* The legend. One row of swatches: the map is dense enough now that a colour
+   with no name attached is just noise. */
+.mz-map-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+
+.mz-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.mz-key i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}

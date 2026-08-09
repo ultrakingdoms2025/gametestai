@@ -12,6 +12,8 @@ import {
 } from '../../src/worlds/maze/MazeColliders.js';
 import { Physics } from '../../src/physics/Physics.js';
 import { EventBus } from '../../src/core/EventBus.js';
+import { parentField, solve } from '../../src/worlds/maze/MazeTopology.js';
+import { routeToward } from '../../src/worlds/maze/MazePopulate.js';
 import { MazeWorld, MAZE_CENTRE_VALUE } from '../../src/worlds/MazeWorld.js';
 
 /*
@@ -385,4 +387,69 @@ test('the return portal opens at the centre on any seed, including a centre abov
     if (c.level > 0) checkedRaised++;
   }
   assert.ok(checkedRaised > 0, 'no seed put the centre above level 0 - widen the sample');
+});
+
+/* -------------------------------------------------------------------- */
+/* Wanderers actually walk toward the centre                             */
+/* -------------------------------------------------------------------- */
+
+test('a wanderer route walks a real path, cell to adjacent cell', () => {
+  /* A route with a jump in it would teleport an NPC through a hedge, which is
+   * the one thing a navigating character must never appear to do. */
+  const t = generateTopology(2026);
+  const parents = parentField(t.cells, t.centreCell);
+  const start = t.entranceCell;
+  const route = routeToward(parents, start, 30);
+  assert.ok(route.length > 5, `route is only ${route.length} cells`);
+  for (let i = 1; i < route.length; i++) {
+    const dir = stepDirBetween(route[i - 1], route[i]);
+    assert.ok(dir !== null, `route jumps from ${route[i - 1]} to ${route[i]} - not adjacent`);
+    assert.ok(isOpen(t.cells, route[i - 1], dir),
+      `route steps through a closed passage at ${route[i - 1]} - straight through a hedge`);
+  }
+});
+
+test('a wanderer route gets CLOSER to the centre every step', () => {
+  /* The whole point: they are trying to solve it. A route that wandered would
+   * be the four-cell shuffle this replaced. */
+  const t = generateTopology(2026);
+  const parents = parentField(t.cells, t.centreCell);
+  const route = routeToward(parents, t.entranceCell, 40);
+  const solved = solve(t.cells, t.entranceCell, t.centreCell);
+  const distFromCentre = new Map(solved.map((c, i) => [c, solved.length - i]));
+  let checked = 0;
+  for (let i = 1; i < route.length; i++) {
+    if (!distFromCentre.has(route[i]) || !distFromCentre.has(route[i - 1])) continue;
+    assert.ok(distFromCentre.get(route[i]) < distFromCentre.get(route[i - 1]),
+      'a wanderer route stepped away from the centre');
+    checked++;
+  }
+  assert.ok(checked > 3, `only ${checked} steps were on the solution path to compare`);
+});
+
+test('a route that starts at the centre simply stops', () => {
+  // parentField's root has no parent; the walk must end rather than loop.
+  const t = generateTopology(7);
+  const parents = parentField(t.cells, t.centreCell);
+  assert.deepEqual(routeToward(parents, t.centreCell, 10), [t.centreCell]);
+});
+
+test('a wanderer route never changes level', () => {
+  /* parentField walks ALL directions, so a shortest path to the centre will
+   * take a staircase - but a patrol waypoint a level up teleports the NPC
+   * through a floor. The route stops at the first vertical step instead,
+   * which is also the truer behaviour for someone who has been lost for years
+   * precisely because they never found the way up. */
+  for (const seed of [1, 2026, 77771]) {
+    const t = generateTopology(seed);
+    const parents = parentField(t.cells, t.centreCell);
+    for (const start of [t.entranceCell, t.entranceCell + 37, t.entranceCell + 512]) {
+      const route = routeToward(parents, start, 40);
+      const lv0 = cellCoords(route[0]).level;
+      for (const c of route) {
+        assert.equal(cellCoords(c).level, lv0,
+          `seed ${seed}: a route from ${start} changed level - the NPC would walk through a floor`);
+      }
+    }
+  }
 });

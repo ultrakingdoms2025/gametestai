@@ -27,8 +27,9 @@
 
 .mz-map-head {
   display: flex;
-  align-items: baseline;
-  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
   padding: 10px 14px;
   border-bottom: 1px solid rgba(143, 214, 122, 0.22);
   color: #8fd67a;
@@ -43,7 +44,8 @@
   margin-left: auto;
   white-space: nowrap;
   color: rgba(207, 230, 196, 0.5);
-  font-size: 11px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
 }
 
 .mz-map-canvas {
@@ -92,3 +94,52 @@
   border-radius: 50%;
   display: inline-block;
 }
+
+/* Level tabs. The four floors stack in the same footprint, so paging between
+   them at a fixed pan is how you find where a corridor continues upward. */
+.mz-map-levels {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 12px;
+}
+
+.mz-map-tab {
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  min-width: 26px;
+  padding: 3px 0;
+  cursor: pointer;
+  color: #9fc9a4;
+  background: rgba(20, 40, 24, 0.55);
+  border: 1px solid rgba(143, 214, 122, 0.28);
+  border-radius: 3px;
+}
+
+.mz-map-tab:hover { border-color: rgba(143, 214, 122, 0.6); color: #d7f0d2; }
+
+/* The level being drawn. */
+.mz-map-tab.is-on {
+  background: rgba(143, 214, 122, 0.9);
+  border-color: #8fd67a;
+  color: #0d130e;
+}
+
+/* The level the player is standing on, marked even when paged away from it. */
+.mz-map-tab.is-here::after {
+  content: '•';
+  margin-left: 3px;
+}
+
+.mz-map-recentre {
+  min-width: 0;
+  padding: 3px 9px;
+  letter-spacing: 0.1em;
+}
+
+/* Nothing in the header may wrap or be squeezed: the row carries a title, a
+   level readout, four tabs, a button and a hint, and the first thing a flex
+   row does when it runs out of width is break a two-word button across two
+   lines and then clip the hint off the panel edge. */
+.mz-map-head > * { flex: 0 0 auto; }
+.mz-map-tab { white-space: nowrap; }

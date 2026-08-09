@@ -3,7 +3,7 @@ import { World } from './World.js';
 import { makeRules } from './WorldRules.js';
 import {
   MAZE, DIR, generateTopology, cellCoords, carveEntranceCorridor, hash32, mulberry32,
-  cellIndex, isOpen, connectorAt, parentField, buildDistrictGraph, districtIndex,
+  cellIndex, isOpen, connectorAt, parentField, buildDistrictGraph, districtIndex, solve,
 } from './maze/MazeTopology.js';
 import {
   cellToWorld, forecourtColliders, FORECOURT_PORTAL_Z,
@@ -119,7 +119,101 @@ export const WANDERER_CAST = Object.freeze([
       + 'of peace with the hedges that unsettles people more than any of the others do - he '
       + 'does not want to be found, only accompanied for a while.',
   },
+  {
+    name: 'Thea Vance',
+    persona: 'A surveyor who came in to measure the maze for a map nobody commissioned and has '
+      + 'filled eleven notebooks with corridor lengths that never add up the same way twice. She '
+      + 'is convinced the error is hers rather than the hedges, and will ask you to pace out a '
+      + 'stretch with her to check. Brisk, precise, and quietly terrified of being wrong.',
+  },
+  {
+    name: 'Old Harrow',
+    persona: 'The first person to go in after the hedges outgrew their tenders, by his own '
+      + 'account, though he cannot say what year that was. He talks about the maze in the past '
+      + 'tense even while standing in it, gives directions with total confidence and no accuracy, '
+      + 'and is unfailingly kind to anyone newer than him - which is everyone.',
+  },
+  {
+    name: 'Sable',
+    persona: 'A thief who came for the credit stack at the centre and has since decided the real '
+      + 'prize is being the only person who knows a way out. She trades directions rather than '
+      + 'giving them, drives a hard bargain over nothing in particular, and is far more lost than '
+      + 'she lets on. She will not admit to having seen the centre.',
+  },
+  {
+    name: 'Fen Marlow',
+    persona: 'A botanist who walked in to take a cutting and stayed for the moss. He can date a '
+      + 'stretch of hedge by what is growing on its north face and will happily do so at length '
+      + 'while you are trying to ask for directions. Genuinely content here, which the others find '
+      + 'either reassuring or unbearable.',
+  },
+  {
+    name: 'Juno Pike',
+    persona: 'A runner who treats the maze as a course rather than a trap - she is timing herself '
+      + 'between junctions she has named, and is annoyed rather than frightened that the route '
+      + 'keeps changing. Fast, impatient, out of breath, and the only person in here who seems to '
+      + 'be enjoying the exercise.',
+  },
+  {
+    name: 'Callum Reed',
+    persona: 'He came in after someone else and will not say who, only that he is close. He asks '
+      + 'everyone the same two questions - how long they have been in, and whether the hedges have '
+      + 'moved - and writes the answers on his sleeve. Exhausted, courteous, and unwilling to rest '
+      + 'for longer than it takes to have the conversation.',
+  },
+  {
+    name: 'Mother Wren',
+    persona: 'No relation to Marta, and tired of being asked. She has set herself up as the '
+      + 'unofficial keeper of the lost, remembering everyone she has met and where, and '
+      + 'reciting the list to newcomers in case a name means something. She has never tried to '
+      + 'reach the centre and does not intend to.',
+  },
+  {
+    name: 'Idris Vale',
+    persona: 'A cartographers apprentice who lost his master somewhere past the fourth level '
+      + 'and has been retracing what he can remember of their route ever since. He is meticulous, '
+      + 'young, and increasingly aware that the map they were making described a maze that no '
+      + 'longer exists. He would rather talk about anything else.',
+  },
+  {
+    name: 'Bexley',
+    persona: 'Claims to have been born in here, which nobody believes and nobody can disprove. '
+      + 'Knows the hedges the way other people know a street - which ones flower, which ones hide '
+      + 'a gap - but has no concept of the maze having an outside, so their directions are '
+      + 'wonderfully detailed and completely useless for leaving.',
+  },
+  {
+    name: 'Tomasz Ferro',
+    persona: 'An engineer who has spent his time in here trying to work out how the lifts are '
+      + 'counterweighted, on the grounds that whoever built them must have had a way out. He will '
+      + 'explain his current theory whether or not you asked, and abandons each one cheerfully the '
+      + 'moment it fails. The maze is a machine to him, and machines can be understood.',
+  },
+  {
+    name: 'Silla',
+    persona: 'She stopped walking a long time ago and now waits at junctions on the theory that '
+      + 'anyone moving will eventually pass her. It has worked often enough to keep her at it. '
+      + 'Watchful, dry, and full of small accurate observations about everyone who has come by - '
+      + 'she is the closest thing the maze has to a witness.',
+  },
+  {
+    name: 'Dorran Ash',
+    persona: 'A soldier who treats being lost as a siege: rations counted, routes logged, morale '
+      + 'maintained by routine. He is the most organised person in the maze and the least willing '
+      + 'to admit the organisation has not helped. Offers practical advice, all of it sound, none '
+      + 'of it sufficient.',
+  },
 ]);
+
+/**
+ * Dead-end tokens across the whole maze, divided evenly between the levels.
+ *
+ * Was 40. Each level is 160,000 cells, so forty of them across four levels was
+ * roughly one per sixteen thousand cells - findable only by accident. The
+ * placement is still dead-ends only, so raising this does not put them in
+ * corridors; it puts them in more of the dead ends that already exist.
+ */
+export const TOTAL_TOKENS = 200;
 
 /** Pickup radius for a dead-end token - generous, so you don't have to stand exactly on it. */
 const TOKEN_PICKUP_R = 1.6;
@@ -236,6 +330,8 @@ export class MazeWorld extends World {
     /** @type {Array<{x:number, z:number}>} the current level's shafts - what Minimap reads */
     this.shaftMarkers = [];
     this._connectorsByLevel = null;
+    this._solution = null;
+    this._solutionFrom = -1;
     this._markersLevel = -1;
 
     const span = MAZE.CELLS * MAZE.CELL;
@@ -249,7 +345,12 @@ export class MazeWorld extends World {
     this.environment.fogNear = 20;
     this.environment.fogFar = 160;
     this.environment.ambientColor = new THREE.Color(0x6f7f68);
-    this.environment.ambientIntensity = 0.7;
+    /* Raised from 0.7. Levels 0-2 are ROOFED by the floor above - inherent to
+     * stacking four levels nine metres apart - so almost no sun reaches them
+     * and the maze read as very dark. The candles do the local work; this
+     * lifts the floor so a corridor between two of them is gloomy rather than
+     * black. */
+    this.environment.ambientIntensity = 1.25;
     this.environment.sunColor = new THREE.Color(0xfff2d8);
     this.environment.sunIntensity = 2.2;
     this.environment.sunDirection = new THREE.Vector3(-0.3, 0.9, -0.25).normalize();
@@ -403,6 +504,13 @@ export class MazeWorld extends World {
        * rather than as noise on the same surface. */
       foliage: new THREE.MeshStandardMaterial({
         color: 0x86ab55, roughness: 1.0, metalness: 0,
+      }),
+      /* The candle itself - wax, lit from within. Strongly emissive so it
+       * reads as a source at a distance even where the rig has spent its
+       * twelve point slots elsewhere. */
+      candle: new THREE.MeshStandardMaterial({
+        color: 0xffe9c0, roughness: 0.6, metalness: 0,
+        emissive: 0xffb457, emissiveIntensity: 2.2,
       }),
       canopy: new THREE.MeshStandardMaterial({ color: 0x24391f, roughness: 1, metalness: 0 }),
     };
@@ -607,8 +715,12 @@ export class MazeWorld extends World {
      * The cast is still capped at eight (section 9), so it is divided rather
      * than multiplied: two lost wanderers and ten tokens per level.
      */
+    /* The owner asked for a lot more of both. The cast grew from eight to
+     * twenty so every wanderer is still a distinct person rather than the same
+     * eight repeated with different names - a maze full of duplicated
+     * personas reads worse than a maze with fewer people in it. */
     const perLevel = Math.max(1, Math.floor(WANDERER_CAST.length / MAZE.LEVELS));
-    const tokensPerLevel = Math.max(1, Math.floor(40 / MAZE.LEVELS));
+    const tokensPerLevel = Math.max(1, Math.floor(TOTAL_TOKENS / MAZE.LEVELS));
 
     /* ONE breadth-first sweep, rooted at the centre, shared by every wanderer
      * on every level - see `parentField`. The field spans all four levels, so
@@ -710,6 +822,40 @@ export class MazeWorld extends World {
    * because the map draws one level at a time and all four share this id.
    */
   /**
+   * The solution path from the player to the centre, in WORLD metres.
+   *
+   * The Ctrl+M cheat. Computed on demand and cached against the player's own
+   * cell, because it is only correct from where they are standing and they are
+   * usually moving - a path cached against the seed alone would draw a route
+   * from wherever they first pressed it.
+   *
+   * Returned as one flat list including the level changes, and the map draws
+   * only the segments on the level it is showing. That is deliberate rather
+   * than filtering here: a route that vanishes at a staircase and reappears on
+   * the level above is exactly what the player needs to see.
+   *
+   * @param {{x:number,y:number,z:number}} from
+   * @returns {Array<{x:number,z:number,level:number}>}
+   */
+  solutionPath(from) {
+    if (!this.cells || !from) return [];
+    const lv = Math.max(0, Math.min(MAZE.LEVELS - 1, Math.round(from.y / MAZE.LEVEL_HEIGHT)));
+    const x = Math.max(0, Math.min(MAZE.CELLS - 1, Math.round(from.x / MAZE.CELL)));
+    const z = Math.max(0, Math.min(MAZE.CELLS - 1, Math.round(from.z / MAZE.CELL)));
+    const start = cellIndex(x, z, lv);
+    if (this._solutionFrom === start && this._solution) return this._solution;
+
+    const cells = solve(this.cells, start, this.centreCell) ?? [];
+    this._solutionFrom = start;
+    this._solution = cells.map((idx) => {
+      const c = cellCoords(idx);
+      const w = cellToWorld(c.x, c.z, c.level);
+      return { x: w.x, z: w.z, level: c.level };
+    });
+    return this._solution;
+  }
+
+  /**
    * Everything the `M` map plots on one level, in WORLD metres.
    *
    * Computed here rather than in the map because this is where the topology,
@@ -778,8 +924,25 @@ export class MazeWorld extends World {
     return { ...conn, token, portal, centre };
   }
 
+  /**
+   * Which level the player is standing on. 0-based, and always a real level.
+   *
+   * `_markersLevel` starts at -1 as a "not computed yet" sentinel, so the first
+   * `update` always re-points `shaftMarkers` rather than comparing against a
+   * level the player might genuinely be on. That sentinel is INTERNAL: it
+   * leaked once, through a map opened in the same frame the world was entered,
+   * which drew its header as "LEVEL 0 OF 4". Everything outside this class asks
+   * here instead, and gets the player's own position until the first update
+   * has run.
+   */
+  get playerLevel() {
+    if (this._markersLevel >= 0) return this._markersLevel;
+    const y = this.ctx?.player?.position?.y ?? 0;
+    return Math.min(MAZE.LEVELS - 1, Math.max(0, Math.round(y / MAZE.LEVEL_HEIGHT)));
+  }
+
   get minimapPlanKey() {
-    return `maze:${this.seed}:${this._markersLevel ?? 0}`;
+    return `maze:${this.seed}:${this.playerLevel}`;
   }
 
   update(dt) {

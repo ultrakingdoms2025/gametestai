@@ -160,3 +160,71 @@ test('the map labels a connector by what is BUILT, not by what the topology chos
   assert.equal(marked, real,
     `the map marks ${marked} tunnels on level 0 but only ${real} are built - the rest are staircases`);
 });
+
+test('the Ctrl+M solution path is a real adjacent-cell route to the centre', async () => {
+  /* The cheat has to be a route the player could actually walk. A path with a
+   * jump in it would send them at a hedge and read as the map lying. */
+  const { generateTopology, cellIndex, isOpen, cellCoords } =
+    await import('../../src/worlds/maze/MazeTopology.js');
+  const { MazeWorld: MW } = await import('../../src/worlds/MazeWorld.js');
+
+  const t = generateTopology(2026);
+  const world = Object.create(MW.prototype);
+  world.cells = t.cells;
+  world.centreCell = t.centreCell;
+  world._solution = null;
+  world._solutionFrom = -1;
+
+  const e = cellCoords(t.entranceCell);
+  const from = { x: e.x * MAZE.CELL, y: e.level * MAZE.LEVEL_HEIGHT, z: e.z * MAZE.CELL };
+  const path = world.solutionPath(from);
+  assert.ok(path.length > 10, `solution path is only ${path.length} steps`);
+
+  const c = cellCoords(t.centreCell);
+  const last = path[path.length - 1];
+  assert.equal(last.level, c.level, 'the path does not end on the centre level');
+  assert.ok(Math.abs(last.x - c.x * MAZE.CELL) < 1e-6 && Math.abs(last.z - c.z * MAZE.CELL) < 1e-6,
+    'the path does not end at the centre');
+
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1], b = path[i];
+    const dx = Math.abs(a.x - b.x) / MAZE.CELL;
+    const dz = Math.abs(a.z - b.z) / MAZE.CELL;
+    const dl = Math.abs(a.level - b.level);
+    assert.ok(dx + dz + dl === 1,
+      `path step ${i} moves dx=${dx} dz=${dz} dlevel=${dl} - not a single cell`);
+  }
+});
+
+test('the solution path re-solves when the player moves, not once per seed', async () => {
+  /* Cached against the player's own cell. Cached against the seed alone it
+   * would keep drawing a route from wherever they first pressed Ctrl+M. */
+  const { generateTopology, cellCoords } = await import('../../src/worlds/maze/MazeTopology.js');
+  const { MazeWorld: MW } = await import('../../src/worlds/MazeWorld.js');
+  const t = generateTopology(7);
+  const world = Object.create(MW.prototype);
+  world.cells = t.cells;
+  world.centreCell = t.centreCell;
+  world._solution = null;
+  world._solutionFrom = -1;
+
+  const e = cellCoords(t.entranceCell);
+  const a = world.solutionPath({ x: e.x * MAZE.CELL, y: 0, z: e.z * MAZE.CELL });
+  const b = world.solutionPath({ x: (e.x + 6) * MAZE.CELL, y: 0, z: e.z * MAZE.CELL });
+  assert.notEqual(a.length, b.length, 'the path did not change when the player moved six cells');
+});
+
+test('the map closes itself when the world stops being a maze', async () => {
+  /* Observed: the map was open, the player left for the station, and the panel
+   * stayed up drawing the maze it had baked - over a world it did not belong
+   * to, eating clicks, and with no maze left for the map key to toggle. `_draw`
+   * returned early on a missing world instead of standing down. */
+  const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  const from = src.indexOf('  _draw() {');
+  assert.ok(from > 0, 'no _draw to check');
+  const body = src.slice(from, src.indexOf('\n  }\n', from));
+  assert.ok(/if \(!w\) \{[^}]*this\.close\(\)/.test(body),
+    '_draw does not close the map when there is no maze world to draw');
+  assert.ok(body.indexOf('this._open') < body.indexOf('_mazeWorld()'),
+    'the open check must come first, or every frame in every other world looks for a maze');
+});

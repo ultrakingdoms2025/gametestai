@@ -25,10 +25,10 @@
 import { MAZE, hash32 } from './MazeTopology.js';
 
 /** Sprigs per hedge segment. Cheap - one instanced draw per district. */
-const SPRIGS_PER_HEDGE = 5;
+const SPRIGS_PER_HEDGE = 9;
 
 /** How far a sprig may lean past the hedge's own footprint, metres. */
-const SPRIG_OVERHANG = 0.35;
+const SPRIG_OVERHANG = 0.22;
 
 /**
  * Instance transforms for one district's foliage.
@@ -58,11 +58,11 @@ export function foliageTransforms(descs, seedish = 0) {
       const h = hash32(seedish, i, s, 0x5b7);
       const t = ((h & 0xffff) / 0x10000) * 2 - 1;              // -1..1 along
       const lean = (((h >>> 16) & 0xff) / 0xff - 0.5) * 2 * SPRIG_OVERHANG;
-      const scale = 0.5 + ((h >>> 24) & 0xff) / 0xff * 0.75;
+      const scale = 0.34 + ((h >>> 24) & 0xff) / 0xff * 0.5;
       const ry = ((h >>> 8) & 0xff) / 0xff * Math.PI;
       out.push({
         x: d.cx + (alongX ? t * half * 0.92 : lean),
-        y: top - 0.1,
+        y: top - 0.16,
         z: d.cz + (alongX ? lean : t * half * 0.92),
         ry,
         s: scale,
@@ -106,3 +106,80 @@ export function footingTransforms(descs) {
  * step onto - the visual and the collision agree about what is walkable.
  */
 export const FOOTING_HEIGHT = MAZE.STEP_HEIGHT * 0.8;
+
+
+/* ------------------------------------------------------------------ */
+/* Hedge candles                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How many candles a district gets.
+ *
+ * Levels 0 to 2 are roofed by the floor above - that is inherent to stacking
+ * four levels 9 m apart - so almost no sun reaches them and the maze read as
+ * very dark. Candles are the fix the owner asked for, and they are two things
+ * at once:
+ *
+ *  - a MESH each, emissive, instanced, costing one draw call per district.
+ *    These are what you actually see, and there are many.
+ *  - a LIGHT on some of them. `LightRig` renders only the nearest twelve point
+ *    lights in the whole scene (RIG_BUDGET), so more than a handful per
+ *    district buys nothing on screen and still costs the rig a per-frame scan.
+ *    So the lights are sparse and the candles are dense.
+ */
+export const CANDLES_PER_DISTRICT = 70;
+
+/** How many of those also carry a real point light. */
+export const LIT_CANDLES_PER_DISTRICT = 24;
+
+/** Candle height above the floor - chest height, on the hedge face. */
+const CANDLE_Y = 1.35;
+
+/**
+ * Candle placements for one district, in world metres.
+ *
+ * Set against the hedge faces rather than floating mid-corridor, and derived
+ * from the district's own hedge descriptors so they can never end up inside a
+ * wall or out in a cell that has none.
+ *
+ * `lit` marks the ones that get a real light. It is the FIRST few rather than a
+ * second hash, so a caller can slice instead of filter and the two lists can
+ * never disagree about which candle a light belongs to.
+ *
+ * @returns {Array<{x:number,y:number,z:number,lit:boolean}>}
+ */
+export function candlePlacements(descs, seedish = 0) {
+  const walls = [];
+  for (const d of descs) {
+    if (d.kind !== 'hedge') continue;
+    if (d.hy * 2 < MAZE.HEDGE_HEIGHT - 0.01) continue;
+    walls.push(d);
+  }
+  if (walls.length === 0) return [];
+
+  const out = [];
+  const want = Math.min(CANDLES_PER_DISTRICT, walls.length);
+  for (let i = 0; i < want; i++) {
+    /* Spread across the district's walls rather than clustering: stepping by a
+     * hashed stride over the wall list gives an even scatter without sorting
+     * or rejection sampling. */
+    const h = hash32(seedish, i, 0x0c4);
+    /* Stride by a prime through the wall list so the scatter stays even as
+     * the count rises - at 26 they were sparse enough that a player could
+     * stand in a corridor with only two lights within thirty metres, which is
+     * ambient light with extra steps. */
+    const w = walls[(i * 31 + (h % 7)) % walls.length];
+    const base = w.cy - w.hy;
+    /* Offset onto the FACE of the hedge, on the side the corridor is. A hedge
+     * is thin on one axis; the candle sits just proud of that face. */
+    const thinX = w.hx < w.hz;
+    const push = (h & 1) ? 1 : -1;
+    out.push({
+      x: w.cx + (thinX ? push * (w.hx + 0.12) : ((h >>> 8 & 0xff) / 255 - 0.5) * w.hx * 1.6),
+      y: base + CANDLE_Y,
+      z: w.cz + (thinX ? ((h >>> 8 & 0xff) / 255 - 0.5) * w.hz * 1.6 : push * (w.hz + 0.12)),
+      lit: i < LIT_CANDLES_PER_DISTRICT,
+    });
+  }
+  return out;
+}

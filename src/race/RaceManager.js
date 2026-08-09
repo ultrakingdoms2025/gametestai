@@ -4,7 +4,6 @@ import { Pickups, PICKUP_VALUE } from './Pickups.js';
 import { Contacts } from './Contacts.js';
 import { RaceRings, buildDragonRingCheckpoints, DRAGON_RACE } from './RaceRings.js';
 import { RaceLoops } from './RaceLoops.js';
-import { allows } from '../worlds/WorldRules.js';
 
 /**
  * The race: state machine, lap validation, placement and prize money.
@@ -220,8 +219,19 @@ export class RaceManager {
     this._onWorldChanging = () => this._teardown();
     bus?.on?.('world:changing', this._onWorldChanging);
     this._onWorldChanged = ({ world }) => {
-      // No circuits, and no mounts to drive them.
-      if (!allows(world, 'races')) return;
+      /* ALWAYS re-arm, including into a world that forbids races.
+       *
+       * This used to return early when `allows(world, 'races')` was false, on
+       * the reasoning that there is nothing to do in a world with no circuits.
+       * But `arm` is what CLEARS a loaded track, so returning early left the
+       * previous world's circuit armed: walk from the circuit into the maze,
+       * which forbids races, and `ready` stayed true - so the race panel still
+       * answered F7 in a hedge maze, and the manager still believed it had a
+       * track four kilometres away.
+       *
+       * `arm` degrades to "no race here" on its own when a world has no track
+       * (see its own contract), so the rules check bought nothing that arm
+       * does not already do correctly. */
       this.arm(world);
     };
     bus?.on?.('world:changed', this._onWorldChanged);

@@ -124,6 +124,18 @@ export class RaceUI {
        * itself on arrival, so its key is the secondary way in rather than the
        * only one. */
       if (e.code === 'F7') {
+        /* Only where there is actually a circuit.
+         *
+         * This panel is world-specific - the comment above says so - but the
+         * handler was global, so F7 opened a race panel in the hedge maze, the
+         * citadel and the station alike. `ready` is the honest test: it is
+         * true once a track is loaded with a valid path and three checkpoints,
+         * which is precisely "there is a circuit here to talk about".
+         *
+         * Note this only works because `RaceManager` now re-arms on EVERY
+         * world change rather than skipping worlds that forbid races - before
+         * that, a stale track from the circuit kept `ready` true everywhere. */
+        if (!this.race?.ready && !this.race?.racing) return;
         e.preventDefault();
         if (this.input?.textCaptured) return;
         // Mid-race F7 is a stop prompt, not the setup picker — the grid is

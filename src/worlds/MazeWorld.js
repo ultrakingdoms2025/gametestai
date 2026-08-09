@@ -42,7 +42,7 @@ const KEEPER_PERSONA = 'Keeper of the Verdant Coil, posted at the forecourt arch
  * adding or removing a character here is the only thing that needs to change
  * to change the count.
  */
-const WANDERER_CAST = Object.freeze([
+export const WANDERER_CAST = Object.freeze([
   {
     name: 'Corvin Ashe',
     persona: 'A retired cartographer who wandered in to map "just the entrance districts" '
@@ -578,36 +578,63 @@ export class MazeWorld extends World {
       persona: KEEPER_PERSONA,
     });
 
-    const level = e.level;
     /* Neither the entrance nor the centre cell should ever be handed back as
      * a wanderer site or a token - the entrance sits right by the keeper and
      * the centre already holds the credit stack. */
     const exclude = new Set([this.entranceCell, this.centreCell]);
 
-    const wandererCells = pickWandererSites(this.cells, level, this.seed, WANDERER_CAST.length, exclude);
-    /* ONE breadth-first sweep, rooted at the centre, shared by all eight - see
-     * `parentField`. Eight calls to `solve` would be eight sweeps over 640,000
-     * cells for information a single sweep already contains. */
-    const toCentre = wandererCells.length ? parentField(this.cells, this.centreCell) : null;
-    for (let i = 0; i < wandererCells.length; i++) {
-      const routeCells = routeToward(toCentre, wandererCells[i], PATROL_STEPS);
-      const patrol = routeCells.map((idx) => {
-        const c = cellCoords(idx);
-        const w = cellToWorld(c.x, c.z, level);
-        return new THREE.Vector3(w.x, w.y + 0.05, w.z);
-      });
-      const cast = WANDERER_CAST[i % WANDERER_CAST.length];
-      this.npcSpawns.push({
-        position: patrol[0].clone(),
-        type: 'friendly',
-        name: cast.name,
-        persona: cast.persona,
-        patrol,
-      });
+    /* EVERY level, not just the entrance's.
+     *
+     * This used to read `const level = e.level` and populate that one level,
+     * which meant all eight wanderers and all forty tokens sat on level 0 and
+     * the three levels above them were empty - in a world whose whole point is
+     * that there are four of them and stairs between. A player who climbs is
+     * owed something up there.
+     *
+     * The cast is still capped at eight (section 9), so it is divided rather
+     * than multiplied: two lost wanderers and ten tokens per level.
+     */
+    const perLevel = Math.max(1, Math.floor(WANDERER_CAST.length / MAZE.LEVELS));
+    const tokensPerLevel = Math.max(1, Math.floor(40 / MAZE.LEVELS));
+
+    /* ONE breadth-first sweep, rooted at the centre, shared by every wanderer
+     * on every level - see `parentField`. The field spans all four levels, so
+     * a wanderer anywhere walks toward the real centre; `routeToward` is what
+     * stops their route at a level change. */
+    const toCentre = parentField(this.cells, this.centreCell);
+
+    let castIndex = 0;
+    const tokenEntries = [];
+    for (let level = 0; level < MAZE.LEVELS; level++) {
+      const wandererCells = pickWandererSites(
+        this.cells, level, hash32(this.seed, 0x1a7, level), perLevel, exclude,
+      );
+      for (const startCell of wandererCells) {
+        const routeCells = routeToward(toCentre, startCell, PATROL_STEPS);
+        const patrol = routeCells.map((idx) => {
+          const c = cellCoords(idx);
+          const w = cellToWorld(c.x, c.z, c.level);
+          return new THREE.Vector3(w.x, w.y + 0.05, w.z);
+        });
+        const cast = WANDERER_CAST[castIndex % WANDERER_CAST.length];
+        castIndex++;
+        this.npcSpawns.push({
+          position: patrol[0].clone(),
+          type: 'friendly',
+          name: cast.name,
+          persona: cast.persona,
+          patrol,
+        });
+      }
+
+      for (const cell of pickDeadEndTokens(
+        this.cells, level, hash32(this.seed, 0x70c, level), tokensPerLevel, exclude,
+      )) {
+        tokenEntries.push({ cell, level });
+      }
     }
 
-    const tokenCells = pickDeadEndTokens(this.cells, level, this.seed, 40, exclude);
-    this._buildTokens(tokenCells, level, mats.token);
+    this._buildTokens(tokenEntries, mats.token);
   }
 
   /**
@@ -619,13 +646,17 @@ export class MazeWorld extends World {
    * all, which is the only way to be sure of that rather than merely careful
    * about it.
    */
-  _buildTokens(cellIndices, level, material) {
+  _buildTokens(entries, material) {
     this._tokens = [];
     this._tokenMesh = null;
-    if (cellIndices.length === 0) return;
+    if (entries.length === 0) return;
 
+    /* ONE mesh for every level's tokens. It used to take a single level and
+     * reset `_tokens` on entry, so calling it per level would have kept only
+     * the last - and an instanced mesh holds a world position per instance
+     * anyway, so the level is already carried in the matrix. */
     const geo = new THREE.OctahedronGeometry(0.3, 0);
-    const mesh = new THREE.InstancedMesh(geo, material, cellIndices.length);
+    const mesh = new THREE.InstancedMesh(geo, material, entries.length);
     mesh.name = 'maze:tokens';
     mesh.castShadow = true;
     mesh.receiveShadow = false;
@@ -639,9 +670,9 @@ export class MazeWorld extends World {
     const q = new THREE.Quaternion();
     const s = new THREE.Vector3(1, 1, 1);
 
-    for (let i = 0; i < cellIndices.length; i++) {
-      const c = cellCoords(cellIndices[i]);
-      const w = cellToWorld(c.x, c.z, level);
+    for (let i = 0; i < entries.length; i++) {
+      const c = cellCoords(entries[i].cell);
+      const w = cellToWorld(c.x, c.z, entries[i].level);
       const position = new THREE.Vector3(w.x, w.y + 0.6, w.z);
       this._tokens.push({ position, taken: false, phase: rng() * Math.PI * 2 });
       m.compose(position, q, s);

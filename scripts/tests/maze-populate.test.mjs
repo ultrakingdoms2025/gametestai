@@ -14,7 +14,7 @@ import { Physics } from '../../src/physics/Physics.js';
 import { EventBus } from '../../src/core/EventBus.js';
 import { parentField, solve } from '../../src/worlds/maze/MazeTopology.js';
 import { routeToward } from '../../src/worlds/maze/MazePopulate.js';
-import { MazeWorld, MAZE_CENTRE_VALUE } from '../../src/worlds/MazeWorld.js';
+import { MazeWorld, MAZE_CENTRE_VALUE, WANDERER_CAST } from '../../src/worlds/MazeWorld.js';
 
 /*
  * Coverage for "npcs-and-collectibles": the keeper, the eight lost wanderers
@@ -33,6 +33,21 @@ import { MazeWorld, MAZE_CENTRE_VALUE } from '../../src/worlds/MazeWorld.js';
  */
 
 const SEEDS = 40;
+
+/**
+ * A world position back to the cell it stands in - INCLUDING its level.
+ *
+ * These conversions used to hardcode level 0, which was true while everything
+ * was placed on the entrance's level and became a silent lie the moment
+ * wanderers and tokens were spread across all four: a level-2 token would be
+ * checked against level 0's walls and read as standing in a corridor. The
+ * tests were stale, not the placement, and this is what makes them level-aware
+ * rather than looser.
+ */
+function cellAt(pos) {
+  const level = Math.round(pos.y / MAZE.LEVEL_HEIGHT);
+  return cellIndex(Math.round(pos.x / MAZE.CELL), Math.round(pos.z / MAZE.CELL), level);
+}
 
 /** Which passage bit, if any, connects two Manhattan-adjacent cells. */
 function stepDirBetween(fromIdx, toIdx) {
@@ -262,8 +277,8 @@ test('every NPC spawn and every patrol point sits in an open cell, connected by 
         for (let k = 1; k < spec.patrol.length; k++) {
           const fromC = spec.patrol[k - 1];
           const toC = spec.patrol[k];
-          const fromIdx = cellIndex(Math.round(fromC.x / MAZE.CELL), Math.round(fromC.z / MAZE.CELL), 0);
-          const toIdx = cellIndex(Math.round(toC.x / MAZE.CELL), Math.round(toC.z / MAZE.CELL), 0);
+          const fromIdx = cellAt(fromC);
+          const toIdx = cellAt(toC);
           const dir = stepDirBetween(fromIdx, toIdx);
           assert.ok(dir !== null, `${spec.name}'s patrol step ${k} is not between adjacent cells`);
           assert.ok(isOpen(world.cells, fromIdx, dir), `${spec.name}'s patrol step ${k} crosses a closed passage`);
@@ -283,8 +298,9 @@ test('every token is a genuine dead end and no two share a cell (full build)', a
     for (const tok of world._tokens) {
       const cx = Math.round(tok.position.x / MAZE.CELL);
       const cz = Math.round(tok.position.z / MAZE.CELL);
-      const idx = cellIndex(cx, cz, 0);
-      assert.equal(openDirCount(world.cells, idx), 1, `token at (${cx},${cz}) is not a dead end`);
+      const idx = cellAt(tok.position);
+      const lv = Math.round(tok.position.y / MAZE.LEVEL_HEIGHT);
+      assert.equal(openDirCount(world.cells, idx), 1, `token at (${cx},${cz}) on level ${lv} is not a dead end`);
       assert.ok(!cellsSeen.has(idx), `two tokens share cell ${idx}`);
       cellsSeen.add(idx);
     }
@@ -450,6 +466,64 @@ test('a wanderer route never changes level', () => {
         assert.equal(cellCoords(c).level, lv0,
           `seed ${seed}: a route from ${start} changed level - the NPC would walk through a floor`);
       }
+    }
+  }
+});
+
+/* -------------------------------------------------------------------- */
+/* Every level is populated, not just the entrance's                     */
+/* -------------------------------------------------------------------- */
+
+test('THE EVERY-LEVEL GATE: wanderers and tokens exist on all four levels', async () => {
+  /* This used to populate `e.level` only, so all eight wanderers and all
+   * forty tokens sat on level 0 and the three levels above them were empty -
+   * in a world whose whole point is that there are four of them and stairs
+   * between. A player who climbs is owed something up there. */
+  const world = await buildMazeWorld();
+
+  const npcLevels = new Map();
+  for (const s of world.npcSpawns) {
+    const lv = Math.round(s.position.y / MAZE.LEVEL_HEIGHT);
+    npcLevels.set(lv, (npcLevels.get(lv) ?? 0) + 1);
+  }
+  const tokenLevels = new Map();
+  for (const t of world._tokens) {
+    const lv = Math.round(t.position.y / MAZE.LEVEL_HEIGHT);
+    tokenLevels.set(lv, (tokenLevels.get(lv) ?? 0) + 1);
+  }
+
+  for (let lv = 0; lv < MAZE.LEVELS; lv++) {
+    assert.ok((npcLevels.get(lv) ?? 0) > 0, `level ${lv} has no wanderers - ${JSON.stringify([...npcLevels])}`);
+    assert.ok((tokenLevels.get(lv) ?? 0) > 0, `level ${lv} has no tokens - ${JSON.stringify([...tokenLevels])}`);
+  }
+});
+
+test('the cast is still capped at eight, divided across levels rather than multiplied', () => {
+  /* Section 9 caps the lost wanderers at eight. Populating four levels must
+   * not quietly become thirty-two of them. */
+  assert.ok(WANDERER_CAST.length <= 8, `the cast has grown to ${WANDERER_CAST.length}`);
+});
+
+test('every token sits on the level it was placed for, at that level floor', async () => {
+  /* A token whose mesh instance carried the wrong level would float in the
+   * air a storey up, or be buried in a floor slab. */
+  const world = await buildMazeWorld();
+  for (const t of world._tokens) {
+    const lv = Math.round(t.position.y / MAZE.LEVEL_HEIGHT);
+    const expected = lv * MAZE.LEVEL_HEIGHT + 0.6;
+    assert.ok(Math.abs(t.position.y - expected) < 1e-6,
+      `a token sits at y=${t.position.y} on level ${lv}, expected ${expected}`);
+  }
+});
+
+test('every wanderer spawns on an open cell of its own level', async () => {
+  const world = await buildMazeWorld();
+  for (const s of world.npcSpawns) {
+    if (!s.patrol) continue;                       // the keeper, in the forecourt
+    const lv = Math.round(s.position.y / MAZE.LEVEL_HEIGHT);
+    for (const p of s.patrol) {
+      assert.equal(Math.round(p.y / MAZE.LEVEL_HEIGHT), lv,
+        'a patrol waypoint is on a different level from its spawn - the NPC would walk through a floor');
     }
   }
 });

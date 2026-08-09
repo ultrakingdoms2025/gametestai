@@ -94,3 +94,26 @@ export function allows(world, flag) {
   if (!rules || !(flag in rules)) return true;
   return rules[flag] !== false;
 }
+
+/**
+ * Who owns the `map` key in this world.
+ *
+ * `M` is contextual by the owner's ruling: the maze's map where mounts are
+ * forbidden, the mount wheel everywhere else. The risk in a contextual key is
+ * two consumers disagreeing about whose it is - both opening, or neither - so
+ * there is ONE predicate and both `MountWheel` and `MazeMap` import it. It
+ * cannot disagree with itself.
+ *
+ * That is also what keeps the key REBINDABLE despite being contextual: a
+ * single `map` action in `BINDABLE` carries the code, both consumers read the
+ * same bound code, and rebinding moves both together.
+ *
+ * Defaults to `mounts` for anything without rules, because that is what every
+ * world did before the maze existed.
+ *
+ * @param {{rules?:{mounts?:boolean}}|null|undefined} world
+ * @returns {'map'|'mounts'}
+ */
+export function mapActionOwner(world) {
+  return world?.rules?.mounts === false ? 'map' : 'mounts';
+}

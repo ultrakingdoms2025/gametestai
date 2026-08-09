@@ -1,5 +1,6 @@
 import './mountwheel.css';
 import { allows } from '../worlds/WorldRules.js';
+import { mapActionOwner } from '../worlds/WorldRules.js';
 
 /**
  * The mount selector radial.
@@ -107,10 +108,12 @@ export class MountWheel {
   /**
    * @param {{root:HTMLElement, bus:any, input:any, mounts:any}} ctx
    */
-  constructor({ root, bus, input, mounts }) {
+  constructor({ root, bus, input, mounts, worldManager }) {
     this.bus = bus ?? null;
     this.input = input ?? null;
     this.mounts = mounts ?? null;
+    /* Needed only to ask `mapActionOwner` whose key M is in the active world. */
+    this.worldManager = worldManager ?? null;
 
     this._open = false;
     this._sel = -1;
@@ -227,6 +230,11 @@ export class MountWheel {
 
   _key(e) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    /* Not this world's key. `mapActionOwner` is shared with the maze map so
+     * the two can never both claim M, or both ignore it. Before this the wheel
+     * opened in the maze, where its only possible answer was that mounts are
+     * restricted here. */
+    if (mapActionOwner(this.worldManager?.active) !== 'mounts') return;
     if (e.code !== 'KeyM') {
       if (!this._open || e.type !== 'keydown') return;
       if (e.code === 'Escape') { e.preventDefault(); this.close(); return; }

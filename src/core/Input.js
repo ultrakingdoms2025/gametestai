@@ -53,6 +53,13 @@ export const BINDABLE = [
   { action: 'dismount', code: 'KeyF', label: 'Dismount', group: 'Actions' },
   { action: 'camera', code: 'KeyV', label: 'First / third person', group: 'Actions' },
   { action: 'chat', code: 'KeyT', label: 'Open chat', group: 'Actions' },
+  /* One action, two meanings, decided per world by `mapActionOwner` - the
+   * maze's map where mounts are forbidden, the mount wheel everywhere else.
+   * It is a single BINDABLE row on purpose: a contextual key that could not be
+   * rebound would be the worst of both, and this way rebinding moves both
+   * consumers together. The label names both because the panel should not
+   * pretend otherwise. */
+  { action: 'map', code: 'KeyM', label: 'Map / mount wheel', group: 'Actions' },
   { action: 'mapOut', code: 'BracketLeft', label: 'Minimap zoom out', group: 'Actions' },
   { action: 'mapIn', code: 'BracketRight', label: 'Minimap zoom in', group: 'Actions' },
 ];

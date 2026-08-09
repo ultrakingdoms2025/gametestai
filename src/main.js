@@ -194,7 +194,7 @@ const itemUse = new ItemUseSystem({ bus, player, inventory, loot, portals, npcMa
 const cosmetics = new Cosmetics({ bus });
 const market = new Marketplace({ bus, economy, inventory, cosmetics, player, npcManager, input, root: uiRoot });
 const helpMenu = new HelpMenu({ root: uiRoot, bus, input });
-const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts });
+const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts, worldManager });
 // F6. Rebinds anything Input resolves; the panel keys stay fixed on purpose.
 const keybindMenu = new KeybindMenu({ root: uiRoot, bus, input });
 // F2. Edits the avatar live and publishes `character:changed`, which SaveGame

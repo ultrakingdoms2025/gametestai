@@ -2276,34 +2276,42 @@ function regionCrossable(descs, cells, region, level, y) {
   return { gaps: unreached ? [unreached] : [], faces: faces.length, seeded: seeds.length };
 }
 
-test('THE TUNNEL WALK-AWAY GATE: a real tunnel does not sever its own region, on either level', () => {
-  /* The property that killed 2b's round 3, asked of the tunnel on real
-   * generated output rather than on Task 7's fixture. Both levels: the region
-   * is claimed at level N by the fold and at level N+1 by the hole it
-   * surfaces through, and a connector that severs either one has cut the maze
-   * in half. */
-  let checked = 0;
-  for (const seed of [1, 7, 42, 2026]) {
-    let found;
-    try { found = firstShaftOfKind('tunnel', [seed]); } catch { continue; }
-    const { t, dx, dz, cell } = found;
-    const descs = tunnelWorldFor(t, dx, dz);
-    const region = connectorRegion(t.cells, cell.x, cell.z, 0);
-    for (const level of [0, 1]) {
-      const { gaps, faces, seeded } = regionCrossable(descs, t.cells, region, level, level * MAZE.LEVEL_HEIGHT);
-      // eslint-disable-next-line no-console
-      console.log(`[tunnel walk-away] seed ${seed} cell ${cell.x},${cell.z} level ${level}: `
-        + `${faces} open faces, ${seeded} standable, ${gaps.length ? gaps[0] : 0} unreachable`);
-      assert.ok(seeded > 0, 'no open face of the region is even standable');
-      for (const g of gaps) {
-        assert.ok(g === 0,
-          `${g} of the region's open faces are cut off from the others at level ${level} - `
-          + 'the tunnel severed the corridor, which is exactly the round-3 Critical from Phase 2b');
+test('THE TUNNEL WALK-AWAY GATE: no built tunnel severs its own region, on either level', () => {
+  /* The property that killed 2b's round 3, asked of every tunnel this scan
+   * finds rather than the first one per seed - the relaxation that let 24
+   * tunnels be built instead of 3 has to be safe across all of them, not on a
+   * sample of four.
+   *
+   * Flood fill, not hand-routed waypoints: three earlier versions of this
+   * measurement guessed a detour and guessed wrong. */
+  let checked = 0, severed = 0;
+  for (const seed of [1, 7, 42, 2026, 77771]) {
+    const t = generateTopology(seed, { levels: 2 });
+    for (let dz = 0; dz < MAZE.DISTRICTS && checked < 14; dz++) {
+      for (let dx = 0; dx < MAZE.DISTRICTS && checked < 14; dx++) {
+        for (const c of shaftCells(t.cells, dx, dz, 0)) {
+          if (connectorAt(t.cells, c.x, c.z, 0) !== 'tunnel') continue;
+          const descs = tunnelWorldFor(t, dx, dz);
+          if (!descs.some((d) => d.kind === 'tunnel')) continue;   // fell back to a stair
+          const region = connectorRegion(t.cells, c.x, c.z, 0);
+          for (const level of [0, 1]) {
+            const { gaps, faces, seeded } = regionCrossable(descs, t.cells, region, level, level * MAZE.LEVEL_HEIGHT);
+            assert.ok(seeded > 0, `seed ${seed} ${c.x},${c.z} level ${level}: no open face is even standable`);
+            const bad = gaps.length ? gaps[0] : 0;
+            if (bad) severed++;
+            assert.equal(bad, 0,
+              `seed ${seed} tunnel at ${c.x},${c.z}: ${bad} of ${faces} open faces cut off at level ${level} - `
+              + 'the tunnel severed the corridor, which is exactly the round-3 Critical from Phase 2b');
+          }
+          checked++;
+          if (checked >= 14) break;
+        }
       }
     }
-    checked++;
   }
-  assert.ok(checked >= 2, `expected several real tunnels to cross, checked ${checked}`);
+  // eslint-disable-next-line no-console
+  console.log(`[tunnel walk-away] ${checked} built tunnels flood-filled on both levels, ${severed} severed`);
+  assert.ok(checked >= 8, `expected a real sample of built tunnels, checked ${checked}`);
 });
 
 test('the tunnel walk-away gate is not vacuous: wall the region off and the crossing fails', () => {

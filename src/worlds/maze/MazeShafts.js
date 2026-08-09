@@ -988,12 +988,28 @@ export function tunnelOrientation(cells, x, z, level) {
   const valid = TUNNEL_DIRS.filter((d) => {
     const nx = lx + d.dx, nz = lz + d.dz;
     if (nx < 0 || nx >= D || nz < 0 || nz >= D) return false;      // stay in the district
+    /* The constraint applies at level N, where the BODY is - it is the bar
+     * that severs. At level N+1 the tunnel claims only its exit hole, which is
+     * a fraction of one cell rather than a bar across two, and the rails round
+     * it leave the corridor's own strips clear. Testing level N+1 as if the
+     * whole region were claimed there rejected almost everything: it took the
+     * survival rate down to 3 links in 92. The flood fill is what decides
+     * whether that relaxation is safe, and it is run on both levels. */
     for (const [cx, cz] of [[x, z], [x + d.dx, z + d.dz]]) {
-      for (const lv of [level, level + 1]) {
-        if (lv >= MAZE.LEVELS) continue;
-        for (const bit of perp(d)) {
-          if (isOpen(cells, cellIndex(cx, cz, lv), bit)) return false;
-        }
+      for (const bit of perp(d)) {
+        if (isOpen(cells, cellIndex(cx, cz, level), bit)) return false;
+      }
+    }
+    /* And at level N+1, for the EXIT CELL only. The body is a bar across two
+     * cells at level N, but above it the tunnel claims just its exit hole, in
+     * cell C - so C is the only cell whose crossing passages that hole and its
+     * rails can sever. Dropping this check entirely (on the reasoning that a
+     * hole is smaller than a bar) was MEASURED unsafe: a tunnel at 5,388 on
+     * seed 1 cut 2 of 4 open faces off at level 1. Applying it to both cells
+     * instead is over-strict and costs most of the connector. */
+    if (level + 1 < MAZE.LEVELS) {
+      for (const bit of perp(d)) {
+        if (isOpen(cells, cellIndex(x, z, level + 1), bit)) return false;
       }
     }
     return true;

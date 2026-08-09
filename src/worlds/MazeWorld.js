@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { World } from './World.js';
 import { makeRules } from './WorldRules.js';
 import {
-  MAZE, DIR, generateTopology, cellCoords, carveEntranceCorridor, hash32, mulberry32,
+  MAZE, DIR, generateTopology, cellCoords, carveEntranceCorridor,
   cellIndex, isOpen, connectorAt, parentField, buildDistrictGraph, districtIndex, solve,
 } from './maze/MazeTopology.js';
 import {
@@ -10,7 +10,8 @@ import {
 } from './maze/MazeColliders.js';
 import { tunnelOrientation } from './maze/MazeShafts.js';
 import { puzzleCells } from './maze/MazePuzzles.js';
-import { pickDeadEndTokens, pickWandererSites, routeToward } from './maze/MazePopulate.js';
+import { TOKENS_PER_DISTRICT, MAX_LIVE_WANDERERS } from './maze/MazePopulate.js';
+import { MazePopulation } from './maze/MazePopulation.js';
 import { MazeChunks, buildBoxInstances } from './maze/MazeChunks.js';
 import { MazeCanopy } from './maze/MazeCanopy.js';
 import { makeNoiseTexture } from '../gfx/Textures.js';
@@ -38,10 +39,14 @@ const KEEPER_PERSONA = 'Keeper of the Verdant Coil, posted at the forecourt arch
   + 'humbled ones walk back out.';
 
 /**
- * The eight lost wanderers. Capped at eight per the design doc (section 9) -
- * `WANDERER_CAST.length` is what `_populate` asks `pickWandererSites` for, so
- * adding or removing a character here is the only thing that needs to change
- * to change the count.
+ * The written cast of lost wanderers.
+ *
+ * The list is no longer the population COUNT - it is the identity pool. Since
+ * population streams, how many wanderers exist at once is a property of the
+ * resident district set, and which of these people a given district holds is
+ * `districtCastIndex(key, seed)`: fixed for the run, so walking away from
+ * someone and back does not turn them into somebody else. Adding a character
+ * here widens the cast without changing the density.
  */
 export const WANDERER_CAST = Object.freeze([
   {
@@ -206,14 +211,21 @@ export const WANDERER_CAST = Object.freeze([
 ]);
 
 /**
- * Dead-end tokens across the whole maze, divided evenly between the levels.
+ * How many tokens and wanderers can be alive at once.
  *
- * Was 40. Each level is 160,000 cells, so forty of them across four levels was
- * roughly one per sixteen thousand cells - findable only by accident. The
- * placement is still dead-ends only, so raising this does not put them in
- * corridors; it puts them in more of the dead ends that already exist.
+ * Both are properties of the RESIDENT SET rather than of the maze: population
+ * streams with the districts that carry it (see `MazePopulation`), so these are
+ * derived from the residency radius rather than written down. The widest
+ * residency is a full 5x5 block on the player's own level plus a 3x3 ring on
+ * each of the levels either side - 43 districts - and every one of those is
+ * worth up to `TOKENS_PER_DISTRICT` tokens and at most one wanderer.
+ *
+ * Exported because that bound is the whole point of the design and the leak
+ * gate asserts against it: however far the player walks, this is the ceiling.
  */
-export const TOTAL_TOKENS = 200;
+export const MAX_RESIDENT_DISTRICTS = 5 * 5 + 3 * 3 + 3 * 3;
+export const MAX_LIVE_TOKENS = MAX_RESIDENT_DISTRICTS * TOKENS_PER_DISTRICT;
+export { TOKENS_PER_DISTRICT, MAX_LIVE_WANDERERS };
 
 /** Pickup radius for a dead-end token - generous, so you don't have to stand exactly on it. */
 const TOKEN_PICKUP_R = 1.6;
@@ -251,7 +263,6 @@ const RESIDENCY_RADIUS = 2;
 const _tokPos = new THREE.Vector3();
 const _tokQuat = new THREE.Quaternion();
 const _tokScale = new THREE.Vector3(1, 1, 1);
-const _tokZeroScale = new THREE.Vector3(0, 0, 0);
 const _tokMat = new THREE.Matrix4();
 const _tokUp = new THREE.Vector3(0, 1, 0);
 
@@ -276,6 +287,19 @@ export class MazeWorld extends World {
    * Read by WorldManager. The maze that cannot be learned is the entire point.
    */
   static volatile = true;
+
+  /**
+   * How many pollen motes ride with the player.
+   *
+   * One draw call regardless, so the number is chosen for how it looks rather
+   * than for cost: 900 in a 26 m box is thin enough to read as motes in the
+   * air and not as fog, which is the failure mode at anything denser in
+   * corridors this narrow.
+   */
+  static POLLEN_COUNT = 900;
+  static POLLEN_BOX = 26;
+  /** Above hedge height, so motes read against the sky on the top level. */
+  static POLLEN_HEIGHT = 7.5;
 
   constructor(ctx) {
     super(ctx);
@@ -304,13 +328,20 @@ export class MazeWorld extends World {
      * dominates cold boot in this project - see the prewarm notes in main.js. */
     this._materials = null;
 
-    /** @type {Array<{position: THREE.Vector3, taken: boolean, phase: number}>} */
+    /**
+     * The tokens that exist RIGHT NOW - one entry per uncollected token in a
+     * resident district. Owned by `this.population`; this is the same array
+     * object, held here because the pickup loop reads it every frame and
+     * because the map and the gates have always asked the world for it.
+     * @type {Array<{position: THREE.Vector3, taken: boolean, phase: number,
+     *               slot: number, cell: number}>}
+     */
     this._tokens = [];
-    /** @type {THREE.InstancedMesh|null} */
-    this._tokenMesh = null;
     this._tokenTime = 0;
     /** @type {MazeChunks|null} the district streaming manager, created in build() */
     this.chunks = null;
+    /** @type {import('./maze/MazePopulation.js').MazePopulation|null} */
+    this.population = null;
     /** @type {MazeCanopy|null} distant hedge-tops beyond the streamed set, created in build() */
     this.canopy = null;
     /* Hold-L to leave from anywhere. Pure timing - see MazeAbandon.js. */
@@ -512,6 +543,28 @@ export class MazeWorld extends World {
         color: 0xffe9c0, roughness: 0.6, metalness: 0,
         emissive: 0xffb457, emissiveIntensity: 2.2,
       }),
+      /* The shaft of daylight down a tower, and the patch it lands in.
+       * Additive with depth-write off: a column of light is not a surface, so
+       * it must not occlude, must not sort, and must not take a shadow. */
+      wellLight: new THREE.MeshBasicMaterial({
+        color: 0xdfeecf, transparent: true, opacity: 0.045,
+        /* FRONT faces only. `DoubleSide` draws the near and far walls of the
+         * cylinder over each other and doubles the brightness, which from
+         * inside the shaft - where a climber spends the whole ascent - washed
+         * the stairs out to near white. */
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.FrontSide,
+      }),
+      wellPool: new THREE.MeshBasicMaterial({
+        color: 0xe8f2d8, transparent: true, opacity: 0.16,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }),
+      /* Ivy on the tower shafts. Darker and bluer than hedge foliage, because
+       * it is growing on cold stone in a stairwell rather than in the open,
+       * and because a shaft that reads as "more hedge" loses the one change of
+       * material this world has. */
+      ivy: new THREE.MeshStandardMaterial({
+        color: 0x4c7a48, roughness: 1.0, metalness: 0,
+      }),
       /* A one-way gate. Hedge that has been cut and trained over a frame -
        * darker and greyer than a grown hedge, so that a corridor which is
        * about to close behind you does not look like every other corridor. */
@@ -688,12 +741,23 @@ export class MazeWorld extends World {
      * from `this.cells`, never from a fixed coordinate, because the layout
      * above this line is different on literally every call to build(). */
     this._populate(ew, e, mats);
+    /* Pollen last. It is the one thing here not derived from `this.cells` and
+     * has nothing to be placed against, so it goes into an otherwise
+     * finished group. */
+    this._buildPollen();
 
     await onProgress?.(1, 'The Verdant Coil is ready');
   }
 
   /**
-   * Place the keeper, the eight lost wanderers, and the dead-end tokens.
+   * Place the keeper, and stand up the streaming population manager.
+   *
+   * The keeper is the ONLY entry in `npcSpawns` now. That array is read once,
+   * by `NPCManager.spawnForWorld`, at world activation - which is the right
+   * shape for a character who stands at the threshold for the whole visit and
+   * the wrong shape for people scattered across four kilometre-square levels of
+   * maze that has not been built yet. The wanderers stream (see
+   * `MazePopulation`); the keeper does not.
    *
    * @param {{x:number, y:number, z:number}} ew world-space entrance column
    * @param {{x:number, z:number, level:number}} e entrance cell coords
@@ -723,108 +787,67 @@ export class MazeWorld extends World {
      * the centre already holds the credit stack. */
     const exclude = new Set([this.entranceCell, this.centreCell]);
 
-    /* EVERY level, not just the entrance's.
-     *
-     * This used to read `const level = e.level` and populate that one level,
-     * which meant all eight wanderers and all forty tokens sat on level 0 and
-     * the three levels above them were empty - in a world whose whole point is
-     * that there are four of them and stairs between. A player who climbs is
-     * owed something up there.
-     *
-     * The cast is still capped at eight (section 9), so it is divided rather
-     * than multiplied: two lost wanderers and ten tokens per level.
-     */
-    /* The owner asked for a lot more of both. The cast grew from eight to
-     * twenty so every wanderer is still a distinct person rather than the same
-     * eight repeated with different names - a maze full of duplicated
-     * personas reads worse than a maze with fewer people in it. */
-    const perLevel = Math.max(1, Math.floor(WANDERER_CAST.length / MAZE.LEVELS));
-    const tokensPerLevel = Math.max(1, Math.floor(TOTAL_TOKENS / MAZE.LEVELS));
-
     /* ONE breadth-first sweep, rooted at the centre, shared by every wanderer
-     * on every level - see `parentField`. The field spans all four levels, so
-     * a wanderer anywhere walks toward the real centre; `routeToward` is what
-     * stops their route at a level change. */
+     * this run ever spawns - see `parentField`. It spans all four levels, so a
+     * wanderer anywhere walks toward the real centre; `routeToward` is what
+     * stops their route at a level change. Computed here, once per build,
+     * rather than per district: a streamed district must be cheap to bring in,
+     * and a 640,000-cell BFS is not.
+     *
+     * `MazePopulation` keeps a reference to it and to `this.cells`, both of
+     * which are replaced wholesale on the next re-roll - which is safe because
+     * the population manager is replaced with them. */
     const toCentre = parentField(this.cells, this.centreCell);
 
-    let castIndex = 0;
-    const tokenEntries = [];
-    for (let level = 0; level < MAZE.LEVELS; level++) {
-      const wandererCells = pickWandererSites(
-        this.cells, level, hash32(this.seed, 0x1a7, level), perLevel, exclude,
-      );
-      for (const startCell of wandererCells) {
-        const routeCells = routeToward(toCentre, startCell, PATROL_STEPS);
-        const patrol = routeCells.map((idx) => {
-          const c = cellCoords(idx);
-          const w = cellToWorld(c.x, c.z, c.level);
-          return new THREE.Vector3(w.x, w.y + 0.05, w.z);
-        });
-        const cast = WANDERER_CAST[castIndex % WANDERER_CAST.length];
-        castIndex++;
-        this.npcSpawns.push({
-          position: patrol[0].clone(),
-          type: 'friendly',
-          name: cast.name,
-          persona: cast.persona,
-          patrol,
-        });
-      }
+    /* Population follows residency, exactly as geometry does.
+     *
+     * The wanderers and the tokens used to be placed globally at build time:
+     * `WANDERER_CAST.length` people and 200 tokens spread over 5.7 km2 of maze,
+     * of which only a ~240 m neighbourhood is ever built. Measured live at the
+     * entrance that came to TWO tokens within 120 m, FOUR within 240 m, and a
+     * nearest wanderer 543 m away in a district that did not exist yet. The
+     * fix is not more of them - it is putting them where the player is, which
+     * is precisely what the district streamer already answers.
+     *
+     * `this.puzzles` is passed as blocked ground for the same reason the
+     * entrance and centre are excluded: a gate or a sliding hedge wall travels
+     * through its doorway cell, so nothing may stand or float in one. */
+    this.population = new MazePopulation({
+      cells: this.cells,
+      seed: this.seed,
+      group: this.group,
+      material: mats.token,
+      parents: toCentre,
+      cast: WANDERER_CAST,
+      exclude,
+      blocked: this.puzzles,
+      patrolSteps: PATROL_STEPS,
+      capacity: MAX_LIVE_TOKENS,
+      /* Resolved per call, NEVER captured, and NEVER before this world is the
+       * active one.
+       *
+       * `ctx.npcManager` is set in `main.js` before any world is constructed, so
+       * it is present throughout `build()` - which is precisely the problem this
+       * gate exists for. `build()` runs against a throwaway physics world, and
+       * `WorldManager._activate` then calls `npcManager.clear()` and
+       * `spawnForWorld()`, both of which dispose every character that existed
+       * before them. A wanderer spawned during the build is therefore grounded
+       * against a floor that is about to be discarded and is then destroyed a
+       * few lines later - leaving `MazePopulation` holding a dead reference for
+       * a district it believes is populated, which it will never refill. That
+       * measured live as ZERO wanderers in the maze.
+       *
+       * `this.active` is set by `World.onActivate`, which runs after both of
+       * those wipes, so gating on it makes the header's claim true rather than
+       * merely intended: districts made resident during the build carry a spec
+       * and no character, and the first `sync` after activation fills them in.
+       * `MazePopulation.sync` re-checks ownership as well, so this is the
+       * cheaper of two independent defences rather than the only one. */
+      npcManager: () => (this.active ? this.ctx?.npcManager ?? null : null),
+    });
+    this.population.sync(this.chunks.residentKeys());
+    this._tokens = this.population.tokens;
 
-      for (const cell of pickDeadEndTokens(
-        this.cells, level, hash32(this.seed, 0x70c, level), tokensPerLevel, exclude,
-      )) {
-        tokenEntries.push({ cell, level });
-      }
-    }
-
-    this._buildTokens(tokenEntries, mats.token);
-  }
-
-  /**
-   * The ~40 dead-end tokens. Deliberately NOT collidable, with no exception -
-   * see the same note on `_buildCentreStack`. A dead end puts a hedge corner
-   * within 2m on at least two sides by definition, which is exactly the
-   * geometry §2 of the design doc calls a ladder if anything standable sits
-   * in the 0.45-5.0m band there. These never reach `this.physics.addBox` at
-   * all, which is the only way to be sure of that rather than merely careful
-   * about it.
-   */
-  _buildTokens(entries, material) {
-    this._tokens = [];
-    this._tokenMesh = null;
-    if (entries.length === 0) return;
-
-    /* ONE mesh for every level's tokens. It used to take a single level and
-     * reset `_tokens` on entry, so calling it per level would have kept only
-     * the last - and an instanced mesh holds a world position per instance
-     * anyway, so the level is already carried in the matrix. */
-    const geo = new THREE.OctahedronGeometry(0.3, 0);
-    const mesh = new THREE.InstancedMesh(geo, material, entries.length);
-    mesh.name = 'maze:tokens';
-    mesh.castShadow = true;
-    mesh.receiveShadow = false;
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-
-    /* Seeded off the maze's own seed so token placement is visually varied
-     * (bob/spin phase) but exactly reproducible for a given re-roll, same as
-     * everything else in this world. */
-    const rng = mulberry32(hash32(this.seed, 0x704e));
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const s = new THREE.Vector3(1, 1, 1);
-
-    for (let i = 0; i < entries.length; i++) {
-      const c = cellCoords(entries[i].cell);
-      const w = cellToWorld(c.x, c.z, entries[i].level);
-      const position = new THREE.Vector3(w.x, w.y + 0.6, w.z);
-      this._tokens.push({ position, taken: false, phase: rng() * Math.PI * 2 });
-      m.compose(position, q, s);
-      mesh.setMatrixAt(i, m);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    this.group.add(mesh);
-    this._tokenMesh = mesh;
   }
 
   /**
@@ -964,10 +987,121 @@ export class MazeWorld extends World {
     return `maze:${this.seed}:${this.playerLevel}`;
   }
 
+  /**
+   * Drifting pollen - section 10's other half, after the god-rays.
+   *
+   * ## Why it follows the player instead of being placed in the world
+   *
+   * The maze is 2.4 km square across four levels. Motes scattered through that
+   * at any visible density would be millions of points, almost all of them
+   * behind a hedge. So there is ONE box of them, `POLLEN_COUNT` strong, which
+   * rides with the player and wraps: a mote that drifts out of the box
+   * reappears on the opposite face. The player is always in the middle of a
+   * cloud that is always the same size, and it costs one draw call anywhere in
+   * the world.
+   *
+   * That wrap is also why the box is a cube rather than a frustum - a mote
+   * leaving the left face has to have somewhere to come back in, and biasing
+   * the volume toward the view direction would make the return edge visible.
+   */
+  _buildPollen() {
+    const n = MazeWorld.POLLEN_COUNT;
+    const pos = new Float32Array(n * 3);
+    const drift = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * MazeWorld.POLLEN_BOX;
+      pos[i * 3 + 1] = Math.random() * MazeWorld.POLLEN_HEIGHT;
+      pos[i * 3 + 2] = (Math.random() - 0.5) * MazeWorld.POLLEN_BOX;
+      /* Mostly a slow fall with a lateral wander. Pollen does not hang still
+       * and it does not fall like rain. */
+      drift[i * 3] = (Math.random() - 0.5) * 0.22;
+      drift[i * 3 + 1] = -0.05 - Math.random() * 0.12;
+      drift[i * 3 + 2] = (Math.random() - 0.5) * 0.22;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    /* Dim, small and warm.
+     *
+     * Additive blending against corridors this dark is unforgiving: at half
+     * opacity and 7.5 cm the motes came out as hard white specks evenly spread
+     * over the frame, which reads as falling snow - or worse, as sensor noise
+     * on the lens - rather than as something drifting in the air of a garden.
+     * Pollen is barely-there and warm, so the fix is to take brightness and
+     * size off it and push the colour further from white; the motion is what
+     * sells it, and the motion is unchanged. */
+    const mat = new THREE.PointsMaterial({
+      color: 0xe6d191, size: 0.055, sizeAttenuation: true,
+      transparent: true, opacity: 0.3, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const pts = new THREE.Points(geo, mat);
+    pts.name = 'maze:pollen';
+    pts.frustumCulled = false;      // it is always around the camera
+    pts.renderOrder = 3;
+    this.group.add(pts);
+    this._pollen = { pts, pos, drift, centre: new THREE.Vector3() };
+  }
+
+  /**
+   * Advance the motes and wrap them around the player.
+   *
+   * The positions are stored RELATIVE to the cloud's own object, and the
+   * object is moved to the player each frame - which on its own would glue
+   * every mote to the player and make the whole cloud slide along with them
+   * like a swarm. So each mote first has the player's movement since last
+   * frame subtracted out, which cancels the object move exactly and leaves the
+   * mote standing still in the world. Only then does it drift, and only then
+   * does it wrap back into the box if it has fallen off an edge.
+   */
+  _stepPollen(dt, player) {
+    const p = this._pollen;
+    if (!p || !player) return;
+    const box = MazeWorld.POLLEN_BOX;
+    const half = box / 2;
+    const { pos, drift } = p;
+    /* The floor of the level the player is on, so motes hang around the ground
+     * they are standing on rather than around level 0 four floors down. */
+    const base = Math.min(MAZE.LEVELS - 1, Math.max(0, Math.round(player.y / MAZE.LEVEL_HEIGHT)))
+      * MAZE.LEVEL_HEIGHT;
+
+    /* How far the anchor is about to move. On the first frame, and on any
+     * teleport, this is huge - and the wrap below is a modulo rather than a
+     * single shift precisely so that case lands correctly instead of leaving
+     * the cloud a kilometre away for a few hundred frames. */
+    const mx = player.x - p.centre.x;
+    const my = base - p.centre.y;
+    const mz = player.z - p.centre.z;
+
+    for (let i = 0; i < pos.length; i += 3) {
+      let x = pos[i] - mx + drift[i] * dt;
+      let y = pos[i + 1] - my + drift[i + 1] * dt;
+      let z = pos[i + 2] - mz + drift[i + 2] * dt;
+      x = ((x + half) % box + box) % box - half;
+      z = ((z + half) % box + box) % box - half;
+      y = ((y % MazeWorld.POLLEN_HEIGHT) + MazeWorld.POLLEN_HEIGHT) % MazeWorld.POLLEN_HEIGHT;
+      pos[i] = x; pos[i + 1] = y; pos[i + 2] = z;
+    }
+    p.pts.geometry.attributes.position.needsUpdate = true;
+    p.pts.position.set(player.x, base, player.z);
+    p.centre.set(player.x, base, player.z);
+  }
+
   update(dt) {
     const player = this.ctx.player?.position;
     if (player && this.chunks) {
       this.chunks.updateResidency(player.x, player.y, player.z, RESIDENCY_RADIUS);
+    }
+    /* Population follows the districts, and follows them from THEIR OWN
+     * residency map rather than from a second neighbourhood calculation of its
+     * own. That is the whole safety argument: a token can never be alive in a
+     * district whose floor has been released, because there is only one answer
+     * to which districts are live and both readers use it.
+     *
+     * Unconditional on `player` - `chunks` cannot be resident without having
+     * been told where the player is at least once, and a sync with the current
+     * key set is a no-op after the first frame. */
+    if (this.chunks && this.population) {
+      this.population.sync(this.chunks.residentKeys());
     }
     /* Lifts, before this method's token early-return further down - a lift
      * that only moved in districts that happen to have dead-end tokens would
@@ -1009,14 +1143,22 @@ export class MazeWorld extends World {
       }
     }
 
-    if (!this._tokenMesh || this._tokens.length === 0) return;
+    this._stepPollen(dt, player);
+
+    const mesh = this.population?.mesh;
+    const live = this._tokens;
+    if (!mesh || live.length === 0) return;
     this._tokenTime += dt;
     const t = this._tokenTime;
     const p = this.ctx.player?.position;
 
     let dirty = false;
-    for (let i = 0; i < this._tokens.length; i++) {
-      const tok = this._tokens[i];
+    /* Indexed by the record's own SLOT, not by its position in this array. The
+     * array is compacted whenever a district is released, so `i` stops naming
+     * the same instance the moment anything streams out - which would animate
+     * one token and pick up another. */
+    for (let i = 0; i < live.length; i++) {
+      const tok = live[i];
       if (tok.taken) continue;
 
       if (p) {
@@ -1024,13 +1166,10 @@ export class MazeWorld extends World {
         const dy = (p.y + 1.0) - tok.position.y;
         const dz = p.z - tok.position.z;
         if (dx * dx + dy * dy + dz * dz < TOKEN_PICKUP_R2) {
-          tok.taken = true;
-          // Hide by zero-scaling: an InstancedMesh has no per-instance
-          // visibility flag, only a matrix, and shrinking the instance to
-          // nothing is cheaper than rebuilding the whole buffer one entry
-          // shorter every time a token is found.
-          _tokMat.compose(tok.position, _tokQuat, _tokZeroScale);
-          this._tokenMesh.setMatrixAt(i, _tokMat);
+          /* Recorded against the CELL, not the instance: the district can be
+           * released and walked back into, and a token that came back would be
+           * a token that pays twice. See MazePopulation.collect. */
+          this.population.collect(tok);
           dirty = true;
           /* MazeWorld never touches Economy or HUD directly - main.js is the
            * single integration point (see its header comment) and owns the
@@ -1044,10 +1183,10 @@ export class MazeWorld extends World {
       _tokPos.set(tok.position.x, tok.position.y + bob, tok.position.z);
       _tokQuat.setFromAxisAngle(_tokUp, t * 1.1 + tok.phase);
       _tokMat.compose(_tokPos, _tokQuat, _tokScale);
-      this._tokenMesh.setMatrixAt(i, _tokMat);
+      mesh.setMatrixAt(tok.slot, _tokMat);
       dirty = true;
     }
-    if (dirty) this._tokenMesh.instanceMatrix.needsUpdate = true;
+    if (dirty) mesh.instanceMatrix.needsUpdate = true;
   }
 
   /** The prize: a stack of credits at the centre, worth 100. */
@@ -1112,6 +1251,13 @@ export class MazeWorld extends World {
 
   /** Re-generation needs a clean group and collider list each time. */
   dispose() {
+    /* Population before geometry, and before the group traversal below: it has
+     * live CHARACTERS out on loan to `NPCManager`, which owns them and has to be
+     * told to take them back. Nothing else in this teardown can do that - the
+     * group traversal only frees what is parented here, and a wanderer's body
+     * is parented to the scene. */
+    this.population?.disposeAll();
+    this.population = null;
     this.chunks?.disposeAll();
     this.chunks = null;
     this.canopy?.disposeAll();
@@ -1131,15 +1277,18 @@ export class MazeWorld extends World {
     this._built = false;
     /* Materials survive on purpose - see _ensureMaterials. */
 
-    /* The token InstancedMesh and its geometry are freed by the traversal
-     * above (it lives in `this.group` like everything else); this just drops
-     * the bookkeeping so a stale `_tokenMesh` from the previous roll can
-     * never be written to by a straggling update() call between dispose()
-     * and the next build(). `npcSpawns` is reset at the top of `_populate`
-     * rather than here, matching `portalSpecs`, which build() also
-     * reassigns outright instead of clearing in dispose(). */
+    /* The token InstancedMesh was released by `population.disposeAll()` above,
+     * which also removed it from the group so the traversal cannot double-free
+     * it. This drops the last reference to the previous roll's token array, so
+     * a straggling update() between dispose() and the next build() iterates
+     * nothing rather than writing into a disposed buffer. `npcSpawns` is reset
+     * at the top of `_populate` rather than here, matching `portalSpecs`, which
+     * build() also reassigns outright instead of clearing in dispose(). */
     this._tokens = [];
-    this._tokenMesh = null;
+    /* Same reasoning: the Points and its geometry are freed by the traversal
+     * above, and this drops the bookkeeping so a straggling update() between
+     * dispose() and the next build() cannot write into a disposed buffer. */
+    this._pollen = null;
 
     /* Same reasoning as `_tokenMesh` above: drop the previous roll's shaft
      * markers so a straggling Minimap frame between dispose() and the next

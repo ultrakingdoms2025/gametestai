@@ -14,7 +14,9 @@ import { Physics } from '../../src/physics/Physics.js';
 import { EventBus } from '../../src/core/EventBus.js';
 import { parentField, solve } from '../../src/worlds/maze/MazeTopology.js';
 import { routeToward } from '../../src/worlds/maze/MazePopulate.js';
-import { MazeWorld, MAZE_CENTRE_VALUE, WANDERER_CAST, TOTAL_TOKENS } from '../../src/worlds/MazeWorld.js';
+import { pickDistrictTokens, pickDistrictWanderer } from '../../src/worlds/maze/MazePopulate.js';
+import { districtIndex } from '../../src/worlds/maze/MazeTopology.js';
+import { MazeWorld, MAZE_CENTRE_VALUE, WANDERER_CAST, MAX_LIVE_TOKENS } from '../../src/worlds/MazeWorld.js';
 
 /*
  * Coverage for "npcs-and-collectibles": the keeper, the eight lost wanderers
@@ -233,24 +235,34 @@ function expectedColliderCount(world) {
   return n;
 }
 
-test('MazeWorld is constructible and buildable headlessly, with one keeper and the full cast', async () => {
-  /* Was "eight wanderers", from section 9's cap. The owner raised it - the
-   * maze is 640,000 cells and eight people in it was nobody - so the count is
-   * now derived from the cast rather than written down, and the cast is
-   * asserted to be all-distinct below so raising it cannot quietly become the
-   * same few characters repeated. */
-  const world = await buildMazeWorld();
-  const expected = 1 + WANDERER_CAST.length;
-  assert.equal(world.npcSpawns.length, expected,
-    `expected 1 keeper + ${WANDERER_CAST.length} wanderers, got ${world.npcSpawns.length}`);
-  const keeper = world.npcSpawns.find((s) => s.role === 'lorekeeper');
-  assert.ok(keeper, 'no keeper (role: lorekeeper) among npcSpawns');
-  const wanderers = world.npcSpawns.filter((s) => s !== keeper);
-  assert.equal(wanderers.length, WANDERER_CAST.length);
-  for (const w of wanderers) {
-    assert.ok(Array.isArray(w.patrol) && w.patrol.length >= 1, `${w.name} has no patrol route`);
-    assert.equal(w.type, 'friendly');
+test('MazeWorld is constructible and buildable headlessly: keeper authored, wanderers streamed', async () => {
+  /* Was "1 keeper + the whole cast in npcSpawns". The cast no longer sets the
+   * population COUNT - population follows residency now (see
+   * maze-population.test.mjs), so `npcSpawns` holds exactly the one character
+   * who stands still for the whole visit and the wanderers come from whichever
+   * districts are live. The guarantees are unchanged and now checked on the
+   * streamed specs: every one of them is a friendly, has a patrol route, and is
+   * somebody from the written cast rather than a nameless filler. */
+  let seenWanderers = 0;
+  for (let i = 0; i < 3; i++) {
+    const world = await buildMazeWorld();
+    assert.equal(world.npcSpawns.length, 1,
+      `npcSpawns should hold only the keeper, got ${world.npcSpawns.length}`);
+    const keeper = world.npcSpawns.find((s) => s.role === 'lorekeeper');
+    assert.ok(keeper, 'no keeper (role: lorekeeper) among npcSpawns');
+
+    const wanderers = world.population.wandererSpecs();
+    seenWanderers += wanderers.length;
+    for (const w of wanderers) {
+      assert.ok(Array.isArray(w.patrol) && w.patrol.length >= 1, `${w.name} has no patrol route`);
+      assert.equal(w.type, 'friendly');
+      assert.ok(WANDERER_CAST.some((c) => c.name === w.name),
+        `${w.name} is not one of the written cast`);
+      assert.ok(w.persona && w.persona.length > 200, `${w.name} arrived without a persona`);
+    }
   }
+  assert.ok(seenWanderers > 0,
+    'three entrance neighbourhoods produced no wanderers at all - the roll is broken');
 });
 
 test('the keeper stands in the forecourt, clear of the portal plinth', async () => {
@@ -271,13 +283,20 @@ test('the keeper stands in the forecourt, clear of the portal plinth', async () 
 test('every NPC spawn and every patrol point sits in an open cell, connected by OPEN passages', async () => {
   for (let i = 0; i < 5; i++) {
     const world = await buildMazeWorld();
-    for (const spec of world.npcSpawns) {
+    /* Both tiers: the authored keeper and every wanderer the resident districts
+     * streamed in. The streamed ones are the interesting half now - they are
+     * the ones derived from topology. */
+    for (const spec of [...world.npcSpawns, ...world.population.wandererSpecs()]) {
       if (spec.role === 'lorekeeper') continue; // the keeper stands in hand-authored forecourt geometry, not the topology
       const route = [spec.position, ...(spec.patrol ?? [])];
       for (const p of route) {
         const cx = Math.round(p.x / MAZE.CELL);
         const cz = Math.round(p.z / MAZE.CELL);
-        const idx = cellIndex(cx, cz, 0);
+        /* `cellAt`, not level 0. Residency reaches the level above as well as
+         * the player's own, so a streamed wanderer can legitimately be up
+         * there - and checking them against level 0's walls would be the
+         * stale-level lie this file's own helper was written to stop. */
+        const idx = cellAt(p);
         assert.ok(openDirCount(world.cells, idx) > 0, `${spec.name} has a route point in a sealed cell (${cx},${cz})`);
       }
       if (spec.patrol && spec.patrol.length > 1) {
@@ -299,8 +318,8 @@ test('every token is a genuine dead end and no two share a cell (full build)', a
   for (let i = 0; i < 5; i++) {
     const world = await buildMazeWorld();
     assert.ok(world._tokens.length > 0, 'no tokens were built');
-    assert.ok(world._tokens.length <= TOTAL_TOKENS,
-      `expected at most ${TOTAL_TOKENS} tokens, got ${world._tokens.length}`);
+    assert.ok(world._tokens.length <= MAX_LIVE_TOKENS,
+      `expected at most ${MAX_LIVE_TOKENS} live tokens, got ${world._tokens.length}`);
 
     const cellsSeen = new Set();
     for (const tok of world._tokens) {
@@ -335,13 +354,20 @@ test('THE NO-STANDABLE-TOKEN GATE: no token or NPC position is inside a collider
       `token at ${tok.position.x},${tok.position.y},${tok.position.z} is embedded in a collider`,
     );
   }
-  for (const spec of world.npcSpawns) {
-    const feet = spec.position.clone();
-    feet.y += 0.05;
-    assert.equal(
-      world.physics.containsPoint(feet), false,
-      `${spec.name}'s spawn point is embedded in a collider`,
-    );
+  /* Now covers the STREAMED wanderers too, and that is what makes this gate
+   * bite: every one of them stands in a district that is actually built, so
+   * `containsPoint` has real colliders to test against. The old global cast was
+   * mostly scattered through districts that were never streamed in, where the
+   * physics world was empty and the check passed for free. */
+  for (const spec of [...world.npcSpawns, ...world.population.wandererSpecs()]) {
+    for (const p of [spec.position, ...(spec.patrol ?? [])]) {
+      const feet = p.clone();
+      feet.y += 0.05;
+      assert.equal(
+        world.physics.containsPoint(feet), false,
+        `${spec.name} has a route point embedded in a collider`,
+      );
+    }
   }
 });
 
@@ -482,27 +508,30 @@ test('a wanderer route never changes level', () => {
 /* Every level is populated, not just the entrance's                     */
 /* -------------------------------------------------------------------- */
 
-test('THE EVERY-LEVEL GATE: wanderers and tokens exist on all four levels', async () => {
-  /* This used to populate `e.level` only, so all eight wanderers and all
-   * forty tokens sat on level 0 and the three levels above them were empty -
-   * in a world whose whole point is that there are four of them and stairs
-   * between. A player who climbs is owed something up there. */
+test('THE EVERY-LEVEL GATE: every level populates the districts a player walks into', async () => {
+  /* This gate used to say "all four levels are populated at build time", which
+   * was the right assertion while population was placed globally. It is now the
+   * wrong QUESTION: nothing above the entrance neighbourhood exists at build
+   * time at all, by design, because only ~21 of 1,600 districts are ever
+   * streamed in and a token in the other 1,579 is a token nobody can reach.
+   *
+   * So it asks the same thing where the answer now lives - in what a district
+   * yields when it streams in - and it asks it of EVERY level rather than of
+   * whichever levels one build happened to touch. That is strictly stronger: a
+   * bug that populated only level 0 would previously have needed the entrance
+   * to be on level 0 to be caught, and this catches it either way. */
   const world = await buildMazeWorld();
 
-  const npcLevels = new Map();
-  for (const s of world.npcSpawns) {
-    const lv = Math.round(s.position.y / MAZE.LEVEL_HEIGHT);
-    npcLevels.set(lv, (npcLevels.get(lv) ?? 0) + 1);
-  }
-  const tokenLevels = new Map();
-  for (const t of world._tokens) {
-    const lv = Math.round(t.position.y / MAZE.LEVEL_HEIGHT);
-    tokenLevels.set(lv, (tokenLevels.get(lv) ?? 0) + 1);
-  }
-
   for (let lv = 0; lv < MAZE.LEVELS; lv++) {
-    assert.ok((npcLevels.get(lv) ?? 0) > 0, `level ${lv} has no wanderers - ${JSON.stringify([...npcLevels])}`);
-    assert.ok((tokenLevels.get(lv) ?? 0) > 0, `level ${lv} has no tokens - ${JSON.stringify([...tokenLevels])}`);
+    let tokens = 0;
+    let wanderers = 0;
+    for (let d = 0; d < 100; d++) {
+      const key = districtIndex(d % MAZE.DISTRICTS, (d * 7) % MAZE.DISTRICTS, lv);
+      tokens += pickDistrictTokens(world.cells, key, world.seed).length;
+      if (pickDistrictWanderer(world.cells, key, world.seed) >= 0) wanderers++;
+    }
+    assert.ok(tokens > 0, `level ${lv} yields no tokens in any of 100 sampled districts`);
+    assert.ok(wanderers > 0, `level ${lv} yields no wanderers in any of 100 sampled districts`);
   }
 });
 
@@ -539,7 +568,7 @@ test('every token sits on the level it was placed for, at that level floor', asy
 
 test('every wanderer spawns on an open cell of its own level', async () => {
   const world = await buildMazeWorld();
-  for (const s of world.npcSpawns) {
+  for (const s of [...world.npcSpawns, ...world.population.wandererSpecs()]) {
     if (!s.patrol) continue;                       // the keeper, in the forecourt
     const lv = Math.round(s.position.y / MAZE.LEVEL_HEIGHT);
     for (const p of s.patrol) {

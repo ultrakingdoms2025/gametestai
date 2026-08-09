@@ -83,7 +83,13 @@ const CONTRACT = [
    * from one definition; `MazeMap.js` is the M-key overlay that draws them. */
   { file: 'src/worlds/maze/MazePlan.js', exports: ['planCacheKey', 'levelSegments'] },
   { file: 'src/ui/MazeMap.js', exports: ['MazeMap'] },
+  /* The all-levels arrangement, pure so it can be asserted without a canvas. */
+  { file: 'src/ui/MazeMapLayout.js', exports: ['OVERVIEW', 'overviewSheet', 'singleSheet', 'sheetFor', 'verticalLinks'] },
   { file: 'src/worlds/maze/MazeCanopy.js', exports: ['MazeCanopy'] },
+  /* Population streaming. Mirrors MazeChunks' ensure/drop/sync lifecycle and is
+   * handed its resident key set, so the two can never disagree about which
+   * districts are live - registered here for the same reason MazeChunks is. */
+  { file: 'src/worlds/maze/MazePopulation.js', exports: ['MazePopulation'] },
   { file: 'src/worlds/MazeWorld.js', exports: ['MazeWorld'], methods: ['build', 'dispose'] },
 ];
 

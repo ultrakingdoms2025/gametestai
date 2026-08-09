@@ -455,6 +455,114 @@ export class NPCManager {
     this.validateGrounding();
   }
 
+  /**
+   * Spawn ONE character from a world spec, after `spawnForWorld` has run.
+   *
+   * `spawnForWorld` is a world-activation event: it clears everything and
+   * rebuilds the whole cast from a fixed list. That is the right shape for a
+   * world whose population is authored once, and the wrong shape for one whose
+   * population STREAMS - the maze spawns a district's wanderer when that
+   * district's hedges are built and releases them when they are released (see
+   * `MazePopulation`), because 2.4 km of maze with a flat cast in it is a maze
+   * where the nearest wanderer measured 543 m away.
+   *
+   * Friendlies only, deliberately. A streamed-in hostile would arrive with no
+   * respawn bookkeeping and no weapon deal, and nothing in the game wants one:
+   * the only world that streams population forbids hostiles outright.
+   *
+   * Returns null rather than throwing when the budget is full, so the caller's
+   * residency bookkeeping can carry a spec with no character behind it and try
+   * again later.
+   *
+   * @param {{position: THREE.Vector3, type?: string, name?: string, persona?: string,
+   *          patrol?: THREE.Vector3[], yaw?: number, posture?: string, role?: string}} spec
+   * @returns {import('./NPC.js').NPC|null}
+   */
+  spawnOne(spec) {
+    if (!spec?.position) return null;
+    if (spec.type === 'hostile') return null;
+    if (this._npcs.length >= this.maxNPCs) return null;
+
+    const pos = this._snapToGround(spec.position);
+    if (!pos) return null;
+
+    const npc = this._createNPC({
+      hostile: false,
+      name: spec.name ?? 'A Lost Wanderer',
+      persona: spec.persona,
+      position: pos,
+      patrol: (spec.patrol ?? []).map((p) => this._snapToGround(p)),
+      yaw: spec.yaw ?? 0,
+      posture: spec.posture,
+      role: spec.role ?? ROLE.WANDERER,
+    });
+    npc.spawnSpec = spec;
+    /* The same audit `spawnForWorld` runs over the whole cast at the end. A
+     * character streamed in one at a time gets it one at a time. */
+    npc.auditGrounding(true);
+    return npc;
+  }
+
+  /**
+   * True while this manager still holds `npc`.
+   *
+   * Streaming callers keep their own reference to a character they asked for
+   * (see `MazePopulation`), and `clear()` / `spawnForWorld()` dispose the whole
+   * cast on every world activation without telling them - so a held reference
+   * is only ever as good as this answer. Without it the caller cannot tell
+   * "already populated" from "populated, then wiped", which is a distinction it
+   * has to make on every frame and got wrong silently.
+   *
+   * @param {import('./NPC.js').NPC|null} npc
+   * @returns {boolean}
+   */
+  owns(npc) {
+    return !!npc && this._npcs.indexOf(npc) >= 0;
+  }
+
+  /**
+   * Remove one character spawned by `spawnOne`, releasing everything `clear()`
+   * would have released for it.
+   *
+   * Every list that can hold a reference is swept, not just `_npcs`: a corpse
+   * left in `_hostiles` respawns, a vendor left in `_vendors` opens a shop for
+   * a character that is not there, and - the one that actually bites - a
+   * despawned `_chatNPC` leaves the chat prompt on screen pointing at nothing.
+   * `socialPartner` is cleared for the same reason: it is a hard reference held
+   * by a character that is staying.
+   *
+   * @param {import('./NPC.js').NPC} npc
+   * @returns {boolean} true when this manager owned it
+   */
+  despawn(npc) {
+    if (!npc) return false;
+    const i = this._npcs.indexOf(npc);
+    /* Not ours - already released by `clear()` on a world change, most likely.
+     * Returning quietly rather than disposing again: `dispose()` on an NPC
+     * whose meshes are already gone is not safe to repeat. */
+    if (i < 0) return false;
+    this._npcs.splice(i, 1);
+
+    for (const list of [this._friendlies, this._hostiles, this._vendors, this._respawnQueue]) {
+      const k = list.indexOf(npc);
+      if (k >= 0) list.splice(k, 1);
+    }
+    for (const other of this._friendlies) {
+      if (other.socialPartner === npc) other.socialPartner = null;
+    }
+    if (this._chatNPC === npc) {
+      this._chatNPC = null;
+      this.bus?.emit('chat:available', { npc: null });
+    }
+
+    this.bus?.emit('npc:despawned', { npc });
+    npc.root.removeFromParent();
+    npc.dispose();
+    // The watchdog cursor indexes `_npcs`; the array just got shorter.
+    if (this._groundCursor >= this._npcs.length) this._groundCursor = 0;
+    return true;
+  }
+
   setLoreData(entries) {
     this._loreData = entries ?? DEFAULT_LORE;
     const lorekeepers = this._friendlies.filter((npc) => npc.isLorekeeper);

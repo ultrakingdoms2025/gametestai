@@ -119,6 +119,12 @@ const player = new Player({ ...ctx, camera: engine.camera });
  * reaches every world already registered above. */
 ctx.player = player;
 const npcManager = new NPCManager({ ...ctx, player });
+/* Same shared-by-reference trick as `ctx.player` above, and for a world that
+ * needs it in exactly the same way: the maze streams its wanderers with the
+ * districts that carry them (see MazePopulation), so it has to be able to ask
+ * for one long after `spawnForWorld` has been and gone. Read during `update`
+ * only, by which time this is here. */
+ctx.npcManager = npcManager;
 let loreRefreshInFlight = null;
 let loreWarned = false;
 

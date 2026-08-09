@@ -1,4 +1,5 @@
 import { CONFIG } from '../core/Config.js';
+import { planCacheKey } from '../worlds/maze/MazePlan.js';
 
 /**
  * Tactical minimap.
@@ -202,7 +203,10 @@ export class Minimap {
   /* ------------------------------------------------------------------ bake */
 
   _bakePlan(world) {
-    const id = world.id ?? world.constructor?.id ?? 'unknown';
+    /* What makes this world's plan unique, which for a RE-ROLLING world is not
+     * its id - see `planCacheKey`. Keying on `id` alone drew the maze's second
+     * visit with its first visit's walls. */
+    const id = planCacheKey(world);
     const cached = this._cache.get(id);
     if (cached) return cached;
 

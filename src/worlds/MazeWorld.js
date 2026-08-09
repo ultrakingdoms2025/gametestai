@@ -576,6 +576,17 @@ export class MazeWorld extends World {
    * size, so this never scales with the grid the way anything keyed off
    * `this.cells` would.
    */
+  /**
+   * What makes this world's baked floorplan unique - see `planCacheKey`.
+   *
+   * Seed AND level. The seed because the maze re-rolls on every entry, and a
+   * cache keyed on `id` alone serves the previous run's walls; the level
+   * because the map draws one level at a time and all four share this id.
+   */
+  get minimapPlanKey() {
+    return `maze:${this.seed}:${this._markersLevel ?? 0}`;
+  }
+
   update(dt) {
     const player = this.ctx.player?.position;
     if (player && this.chunks) {

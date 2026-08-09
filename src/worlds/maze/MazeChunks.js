@@ -35,7 +35,7 @@ import { districtColliders } from './MazeColliders.js';
  * as a source either way.
  */
 const LANTERN_COLOUR = 0xffd9a0;
-const LANTERN_INTENSITY = 26;
+const LANTERN_INTENSITY = 38;
 /** Bounded to its own district, so the rig's distance scoring is meaningful. */
 const LANTERN_RANGE = MAZE.DISTRICT * MAZE.CELL * 0.75;
 

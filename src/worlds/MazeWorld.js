@@ -11,6 +11,7 @@ import {
 import { pickDeadEndTokens, pickWandererSites, walkPatrol } from './maze/MazePopulate.js';
 import { MazeChunks, buildBoxInstances } from './maze/MazeChunks.js';
 import { MazeCanopy } from './maze/MazeCanopy.js';
+import { makeNoiseTexture } from '../gfx/Textures.js';
 import { AbandonHold } from './maze/MazeAbandon.js';
 
 /**
@@ -246,26 +247,54 @@ export class MazeWorld extends World {
   _ensureMaterials() {
     if (this._materials) return this._materials;
 
+    /* Maps, generated ONCE with the material set - which is once per session,
+     * since the set is cached and reused across every re-roll and every
+     * streamed chunk. A texture built per chunk would be worse than a material
+     * per chunk, and `scripts/tests/maze-lighting.test.mjs` has a tripwire
+     * asserting MazeChunks never builds either.
+     *
+     * Colour maps only, no normal maps: `makeNormalFromHeight` takes a
+     * Float32Array HEIGHT FIELD, not a texture, and there is no exported
+     * helper that hands one back from `makeNoiseTexture`. Passing the texture
+     * would have compiled and produced garbage. Worth revisiting with a real
+     * height field; not worth guessing at.
+     */
+    const hedgeMap = makeNoiseTexture({
+      size: 256, frequency: 22, octaves: 5, gain: 0.55, contrast: 1.15, seed: 0x4a1,
+      /* The ramp's low end sets the average, and the first pass came out
+       * darker than the flat colour it replaced - a textured hedge that
+       * reads as black is not an improvement on a flat one. */
+      colorA: 0x2c4526, colorB: 0x74a54e,
+    });
+    hedgeMap.wrapS = THREE.RepeatWrapping;
+    hedgeMap.wrapT = THREE.RepeatWrapping;
+    hedgeMap.repeat.set(2.5, 1.6);
+
+    /* The floor: packed earth, much coarser than the hedge so the two never
+     * read as the same surface down a corridor. */
+    const floorMap = makeNoiseTexture({
+      size: 256, frequency: 9, octaves: 4, gain: 0.5, contrast: 0.9, seed: 0x77c,
+      colorA: 0x5d5446, colorB: 0x9a8e78,
+    });
+    floorMap.wrapS = THREE.RepeatWrapping;
+    floorMap.wrapT = THREE.RepeatWrapping;
+    floorMap.repeat.set(8, 8);
+
     /* Stair treads and landings. Pale stonework, deliberately far from both
      * the dark hedge green and the stone-brown floor - a stair is meant to
-     * read as a landmark the instant it comes into view down a corridor,
-     * not blend into the hedge that walls it in. Built once and reused
-     * across every re-roll for the same reason the other cached materials
-     * are - see the class docstring above.
+     * read as a landmark the instant it comes into view down a corridor, not
+     * blend into the hedge that walls it in. Built once and reused across
+     * every re-roll for the same reason every other cached material is.
      *
-     * A shaft is a sealed stone box (see shaftColliders) - hedge-height
-     * walls on three or four sides keep almost all ambient and sun light out,
-     * and the fixed light-slot rig (LightRig.js) means no per-shaft point
-     * light can be added to compensate: Three bakes the light COUNT into
-     * every shader's program cache key, and a per-shaft light is exactly the
-     * "changing light count" main.js measured at 250s of shader
-     * recompilation. A modest emissive term sidesteps that entirely - it
-     * changes no light count and no cache key, it just makes the material
-     * itself give off a faint glow, enough to read a tread's edges from a
-     * metre inside an unlit shaft without turning the staircase into a neon
-     * sign.
+     * The emissive term dates from Phase 2b, when a sealed shaft was pitch
+     * black and the reasoning was that a per-shaft lamp was impossible. THAT
+     * REASONING WAS WRONG - see `MazeChunks`'s lantern note and LightRig's own
+     * header: authored lights are claimed into fixed slots and cost no
+     * programs. The emissive is kept because a stair that glows faintly reads
+     * as a landmark down a dark corridor, which is a reason that survives the
+     * correction; it is no longer load-bearing for visibility.
      *
-     * Reused verbatim (not just colour-matched) for the shaft's own walls
+     * Reused verbatim (not merely colour-matched) for the shaft's own walls
      * below - see `shaftWall`. */
     const stair = new THREE.MeshStandardMaterial({
       color: 0xd8cdb0, roughness: 0.8, metalness: 0,
@@ -273,8 +302,18 @@ export class MazeWorld extends World {
     });
 
     this._materials = {
-      hedge: new THREE.MeshStandardMaterial({ color: 0x2f4a2a, roughness: 0.95, metalness: 0 }),
-      floor: new THREE.MeshStandardMaterial({ color: 0x6b6357, roughness: 1.0, metalness: 0 }),
+      /* Textured since Phase 5. Flat colour read as a box at any distance,
+       * which is what a hedge maze must not do: the player navigates by
+       * telling one corridor from another. */
+      /* Textured since Phase 5. Flat colour read as a box at any distance,
+       * which is the one thing a hedge maze must not do: the player navigates
+       * by telling one corridor from another. */
+      hedge: new THREE.MeshStandardMaterial({
+        color: 0xffffff, roughness: 0.95, metalness: 0, map: hedgeMap,
+      }),
+      floor: new THREE.MeshStandardMaterial({
+        color: 0xffffff, roughness: 1.0, metalness: 0, map: floorMap,
+      }),
       stair,
       /* The shaft's own walls (see shaftColliders) - the exact same cached
        * material as `stair` (not merely colour-matched), so a shaft reads as

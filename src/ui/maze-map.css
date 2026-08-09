@@ -36,11 +36,12 @@
   font-size: 13px;
 }
 
-.mz-map-title { font-weight: 700; }
-.mz-map-level { color: #cfe6c4; }
+.mz-map-title { font-weight: 700; white-space: nowrap; }
+.mz-map-level { color: #cfe6c4; white-space: nowrap; }
 
 .mz-map-hint {
   margin-left: auto;
+  white-space: nowrap;
   color: rgba(207, 230, 196, 0.5);
   font-size: 11px;
 }

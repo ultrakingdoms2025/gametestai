@@ -37,12 +37,35 @@ import { mapActionOwner } from '../worlds/WorldRules.js';
  * draws the previous run's walls.
  */
 
-/** Pixels per cell in the baked image. 400 cells × 2 = an 800 px square. */
-const MAP_PX_PER_CELL = 2;
+/**
+ * Pixels per cell in the baked image. 400 cells × 4 = a 1600 px square.
+ *
+ * The spec suggested 2 px/cell, and 2 was measured unreadable: an 800 px image
+ * shown in a ~600 px panel puts a cell under 1.5 px, and the walls merge into
+ * green noise rather than junctions anyone could match against a corridor.
+ * 1600² costs about 10 MB once, which is nothing next to being able to read
+ * the thing.
+ */
+const MAP_PX_PER_CELL = 4;
 const MAP_BG = '#0d130e';
 const MAP_WALL = '#8fd67a';
-const MIN_ZOOM = 0.35;
-const MAX_ZOOM = 6;
+/**
+ * Zoom 1 fits the whole level in the panel. That view is a SHAPE, not a map -
+ * 400 cells across any real screen is sub-pixel per cell - so it is the floor
+ * rather than the default.
+ */
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 16;
+
+/**
+ * How many cells to show across the panel when the map opens.
+ *
+ * A player reads this by matching the junction pattern around them against the
+ * drawing, so the opening view has to be at junction scale. `DEFAULT_ZOOM` is
+ * derived from it rather than written down: at zoom z the panel shows
+ * `MAZE.CELLS / z` cells across.
+ */
+const OPEN_CELLS_ACROSS = 90;
 
 export class MazeMap {
   /**
@@ -56,7 +79,7 @@ export class MazeMap {
     this._open = false;
     this._baked = null;
     this._bakedKey = null;
-    this._zoom = 1;
+    this._zoom = MAZE.CELLS / OPEN_CELLS_ACROSS;
     this._panX = 0;
     this._panY = 0;
     this._drag = null;
@@ -69,7 +92,7 @@ export class MazeMap {
         <div class="mz-map-head">
           <span class="mz-map-title">THE VERDANT COIL</span>
           <span class="mz-map-level" data-level></span>
-          <span class="mz-map-hint">DRAG TO PAN · WHEEL TO ZOOM · M OR ESC TO CLOSE</span>
+          <span class="mz-map-hint">DRAG · WHEEL · ESC</span>
         </div>
         <canvas class="mz-map-canvas"></canvas>
         <div class="mz-map-foot">This map shows the level you are standing on. It does not show where you are.</div>
@@ -112,7 +135,8 @@ export class MazeMap {
     if (!w || this._open) return;
     this._open = true;
     this.el.hidden = false;
-    this._zoom = 1;
+    /* Open at junction scale, not fitted. See OPEN_CELLS_ACROSS. */
+    this._zoom = MAZE.CELLS / OPEN_CELLS_ACROSS;
     this._panX = 0;
     this._panY = 0;
     this._draw();
@@ -150,7 +174,7 @@ export class MazeMap {
     c.fillStyle = MAP_BG;
     c.fillRect(0, 0, cv.width, cv.height);
     c.strokeStyle = MAP_WALL;
-    c.lineWidth = Math.max(1, px * 0.5);
+    c.lineWidth = Math.max(1, px * 0.4);
     c.lineCap = 'square';
     c.beginPath();
     for (const s of levelSegments(w.cells, level)) {
@@ -188,7 +212,7 @@ export class MazeMap {
     const dw = baked.width * scale, dh = baked.height * scale;
     const ox = (rect.width - dw) / 2 + this._panX;
     const oy = (rect.height - dh) / 2 + this._panY;
-    ctx.imageSmoothingEnabled = this._zoom < 2;
+    ctx.imageSmoothingEnabled = this._zoom < 1.5;
     ctx.drawImage(baked, ox, oy, dw, dh);
   }
 

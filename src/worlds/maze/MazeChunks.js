@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MAZE, districtCoords, districtAtWorld, neighbourhoodKeys } from './MazeTopology.js';
+import { MAZE, DIR, districtCoords, districtAtWorld, neighbourhoodKeys } from './MazeTopology.js';
 import { districtColliders } from './MazeColliders.js';
 import { foliageTransforms, footingTransforms } from './MazeFoliage.js';
 
@@ -69,7 +69,7 @@ export class MazeChunks {
    *           materials: { hedge: THREE.Material, floor: THREE.Material,
    *                        stair: THREE.Material, shaftWall: THREE.Material } }} ctx
    */
-  constructor({ world, cells, group, materials }) {
+  constructor({ world, cells, group, materials, puzzles = null }) {
     /* The WORLD, not its physics. WorldManager swaps `world.physics` to a
      * throwaway scratch instance for the duration of build() and restores the
      * real one afterwards - and this class is constructed inside build(). A
@@ -80,10 +80,17 @@ export class MazeChunks {
     this.cells = cells;
     this.group = group;
     this.materials = materials;
+    /* Which cells carry a puzzle, handed down from the world. `districtColliders`
+     * has no seed and must not gain one - placement is a seed-and-graph
+     * decision - so it is made once at build time and passed as a plain cell
+     * lookup. Null for the headless gates, which then see no puzzles at all. */
+    this.puzzles = puzzles;
     /** @type {Map<number, { meshes: THREE.InstancedMesh[], colliders: any[] }>} */
     this._resident = new Map();
     /** Live lifts, keyed by CONNECTOR CELL - see the lift section below. */
     this._lifts = new Map();
+    /** Live one-way gates, keyed by the cell they stand at. */
+    this._gates = new Map();
   }
 
   /** Live physics world. Never cache this - see the constructor. */
@@ -126,7 +133,7 @@ export class MazeChunks {
   ensure(key) {
     if (this._resident.has(key)) return;
     const { dx, dz, level } = districtCoords(key);
-    const descs = districtColliders(this.cells, dx, dz, level);
+    const descs = districtColliders(this.cells, dx, dz, level, this.puzzles);
 
     const colliders = [];
     for (const d of descs) {
@@ -241,6 +248,7 @@ export class MazeChunks {
     if (this._resident.size === 0) return;
 
     this._lifts.clear();
+    this._gates.clear();
 
     const evicted = new Set();
     for (const entry of this._resident.values()) {
@@ -315,6 +323,8 @@ export class MazeChunks {
 
   /** How fast the car and the door travel, metres per second. */
   static CAR_SPEED = 1.6;
+  /** How fast a one-way gate rises, metres per second. */
+  static GATE_SPEED = 2.4;
   static DOOR_SPEED = 2.0;
 
   /** Number of lifts with at least one half resident. */
@@ -336,6 +346,26 @@ export class MazeChunks {
    * wrong box if two ever coincided.
    */
   _registerMover(desc, collider, key) {
+    if (desc.kind === 'gate') {
+      /* A one-way gate. Registered here for the same reason a lift car is:
+       * the collider built from THIS descriptor, paired by construction rather
+       * than found by searching for a matching position. */
+      this._gates.set(desc.cell, {
+        cell: desc.cell,
+        collider,
+        key,
+        dir: desc.dir,
+        y: desc.cy,
+        openY: desc.openY,
+        closedY: desc.closedY,
+        /* Which side of its plane the player was on last frame. `null` until
+         * they are seen at all, so a gate never shuts because the player
+         * SPAWNED beyond it. */
+        lastSide: null,
+        shut: false,
+      });
+      return;
+    }
     if (desc.kind !== 'lift' && desc.kind !== 'liftDoor') return;
     let rec = this._lifts.get(desc.cell);
     if (!rec) {
@@ -367,6 +397,9 @@ export class MazeChunks {
 
   /** Drop whichever halves district `key` owned; forget the lift if both are gone. */
   _unregisterMovers(key) {
+    for (const [cell, g] of this._gates) {
+      if (g.key === key) this._gates.delete(cell);
+    }
     for (const [cell, rec] of this._lifts) {
       if (rec.carKey === key) { rec.car = null; rec.carKey = -1; }
       if (rec.doorKey === key) { rec.door = null; rec.doorKey = -1; }
@@ -400,7 +433,92 @@ export class MazeChunks {
    * @param {{x:number,y:number,z:number}|null} player
    * @returns {number} how many lifts moved this frame
    */
+  /** Number of gates with a live collider, for `mazeStats`. */
+  gateCount() {
+    return this._gates.size;
+  }
+
+  /** Every live gate record, for tests and the harness. */
+  liveGates() {
+    return [...this._gates.values()];
+  }
+
+  /**
+   * Advance every resident one-way gate.
+   *
+   * A gate stands OPEN - recessed under the auto-step, walked straight over -
+   * until the player crosses it in its forward direction. Then it closes
+   * behind them and stays closed for the visit. A committal, not a trap:
+   * `MazePuzzles` only places a gate along the entrance-to-centre path and
+   * pointing forward, so passing one always leaves the player closer to the
+   * centre, and hold-L guarantees a way out regardless.
+   *
+   * THE SAME INTERLOCK THE LIFT DOOR HAS, and for the same reason: a gate's
+   * top sweeps the whole 0.45-5.0 m band on its way up, in open corridor with
+   * no sealed shaft to earn the exemption. If it could rise under a player it
+   * would carry them onto a hedge - Phase 2c measured exactly that at 14.000 m
+   * when the invariant was removed from the door. So it never moves while its
+   * own footprint is occupied.
+   *
+   * @returns {number} how many gates moved this frame
+   */
+  stepGates(dt, player) {
+    if (this._gates.size === 0) return 0;
+    const EPS = 1e-4;
+    let moved = 0;
+
+    for (const g of this._gates.values()) {
+      const c = g.collider;
+      if (!c) continue;
+
+      if (player) {
+        /* Signed side of the gate's plane, along its own forward axis. */
+        const along = g.dir === DIR.E || g.dir === DIR.W
+          ? player.x - c.center.x
+          : player.z - c.center.z;
+        const forwardSign = (g.dir === DIR.E || g.dir === DIR.S) ? 1 : -1;
+        const side = Math.sign(along * forwardSign);
+        if (side !== 0) {
+          if (g.lastSide !== null && g.lastSide < 0 && side > 0) g.shut = true;
+          g.lastSide = side;
+        }
+      }
+
+      const targetY = g.shut ? g.closedY : g.openY;
+      if (Math.abs(g.y - targetY) <= EPS) continue;
+      if (this._gateOccupied(g, player)) continue;
+
+      const step = MazeChunks.GATE_SPEED * dt;
+      g.y += Math.sign(targetY - g.y) * Math.min(step, Math.abs(targetY - g.y));
+      this.physics.setBoxColliderY(c, g.y);
+      moved++;
+    }
+    return moved;
+  }
+
+  /**
+   * Is a capsule standing in the gate's own column?
+   *
+   * Deliberately generous, exactly as `_doorOccupied` is: a gate that refuses
+   * to move when it is unsure is a gate that stays open a moment longer, and a
+   * gate that moves when it should not is the exploit.
+   */
+  _gateOccupied(g, player) {
+    if (!player) return false;
+    const c = g.collider;
+    const R = 0.35, H = 1.75;
+    const overlapsXZ = player.x + R > c.center.x - c.halfExtents.x
+      && player.x - R < c.center.x + c.halfExtents.x
+      && player.z + R > c.center.z - c.halfExtents.z
+      && player.z - R < c.center.z + c.halfExtents.z;
+    if (!overlapsXZ) return false;
+    const top = g.y + c.halfExtents.y;
+    const floor = g.closedY - c.halfExtents.y;
+    return player.y + H > floor && player.y < top + 0.05;
+  }
+
   stepLifts(dt, player) {
+    this.stepGates(dt, player);
     if (this._lifts.size === 0) return 0;
     const EPS = 1e-4;
     let moved = 0;

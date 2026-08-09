@@ -1225,6 +1225,10 @@ export function gateColliders(cells, x, z, level, dir) {
     hy,
     hz: dz ? 0.3 : MAZE.CORRIDOR / 2,
     kind: 'gate',
+    /* Which way through it counts as FORWARD. `MazePuzzles` only ever places
+     * a gate pointing along the entrance-to-centre path, so closing behind a
+     * player who passed this way always leaves them closer to the centre. */
+    dir,
     /* Where it GOES, for the static gates - see `descriptorTop`. `cy`/`hy`
      * above place it where it RESTS, which is open. */
     swept: { y0: w.y, y1: closedTop },

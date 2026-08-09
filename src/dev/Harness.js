@@ -505,6 +505,7 @@ class Harness {
       connectors,
       built,
       liftsResident: w.chunks?.liftCount() ?? 0,
+      gatesResident: w.chunks?.gateCount() ?? 0,
       colliders: this.game.physics.colliders.length,
       programs: this.game.engine.renderer.info.programs.length,
       drawCalls: this.game.engine.renderer.info.render.calls,

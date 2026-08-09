@@ -3,12 +3,13 @@ import { World } from './World.js';
 import { makeRules } from './WorldRules.js';
 import {
   MAZE, DIR, generateTopology, cellCoords, carveEntranceCorridor, hash32, mulberry32,
-  cellIndex, isOpen, connectorAt, parentField,
+  cellIndex, isOpen, connectorAt, parentField, buildDistrictGraph, districtIndex,
 } from './maze/MazeTopology.js';
 import {
   cellToWorld, forecourtColliders, FORECOURT_PORTAL_Z,
 } from './maze/MazeColliders.js';
 import { tunnelOrientation } from './maze/MazeShafts.js';
+import { puzzleCells } from './maze/MazePuzzles.js';
 import { pickDeadEndTokens, pickWandererSites, routeToward } from './maze/MazePopulate.js';
 import { MazeChunks, buildBoxInstances } from './maze/MazeChunks.js';
 import { MazeCanopy } from './maze/MazeCanopy.js';
@@ -508,11 +509,23 @@ export class MazeWorld extends World {
      * the centre stack, the tokens and the NPC spawns are authored per build and
      * stay for the whole visit - the forecourt especially, since it is the floor
      * the player arrives on and lives outside the district grid entirely. */
+    /* Where the puzzles are, decided once from the seed and the district graph
+     * (see `MazePuzzles`) and handed to the chunk builder as a cell lookup. */
+    const graph = buildDistrictGraph(this.seed);
+    const districtOf = (idx) => {
+      const c = cellCoords(idx);
+      return districtIndex(Math.floor(c.x / MAZE.DISTRICT), Math.floor(c.z / MAZE.DISTRICT), c.level);
+    };
+    this.puzzles = puzzleCells(
+      this.seed, graph, districtOf(this.entranceCell), districtOf(this.centreCell),
+    );
+
     this.chunks = new MazeChunks({
       world: this,          // NOT this.physics — see the note in MazeChunks
       cells: this.cells,
       group: this.group,
       materials: mats,
+      puzzles: this.puzzles,
     });
 
     const spawn = this.playerSpawn;

@@ -36,7 +36,6 @@ const CAPTURE_HINT = 'Press any key…  (Esc to cancel)';
 const FIXED_KEYS = [
   { key: 'I', label: 'Inventory & bag' },
   { key: 'B', label: 'Marketplace (near a vendor)' },
-  { key: 'M', label: 'Mount wheel — hold, aim, release' },
   { key: 'K', label: 'Unstuck — teleport to safety' },
   { key: '1–4', label: 'Weapon slots' },
   { key: 'Wheel', label: 'Cycle weapons' },

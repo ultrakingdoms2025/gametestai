@@ -79,6 +79,10 @@ const CONTRACT = [
    * MazeColliders.js as a re-export, which is why it is still listed above. */
   { file: 'src/worlds/maze/MazeShafts.js', exports: ['shaftColliders', 'stairColliders', 'stairWellBounds', 'isEnclosureSound', 'requiredWallTop'] },
   { file: 'src/worlds/maze/MazeChunks.js', exports: ['MazeChunks', 'buildBoxInstances'] },
+  /* Phase 3. `MazePlan.js` is pure so both map surfaces derive their walls
+   * from one definition; `MazeMap.js` is the M-key overlay that draws them. */
+  { file: 'src/worlds/maze/MazePlan.js', exports: ['planCacheKey', 'levelSegments'] },
+  { file: 'src/ui/MazeMap.js', exports: ['MazeMap'] },
   { file: 'src/worlds/maze/MazeCanopy.js', exports: ['MazeCanopy'] },
   { file: 'src/worlds/MazeWorld.js', exports: ['MazeWorld'], methods: ['build', 'dispose'] },
 ];

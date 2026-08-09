@@ -35,6 +35,7 @@ import { Cosmetics } from './systems/Cosmetics.js';
 import { ItemUseSystem } from './systems/ItemUse.js';
 import { HelpMenu } from './ui/HelpMenu.js';
 import { MountWheel } from './ui/MountWheel.js';
+import { MazeMap } from './ui/MazeMap.js';
 import { KeybindMenu } from './ui/KeybindMenu.js';
 import { CharacterMenu } from './ui/CharacterMenu.js';
 import { LightRig } from './gfx/LightRig.js';
@@ -195,6 +196,11 @@ const cosmetics = new Cosmetics({ bus });
 const market = new Marketplace({ bus, economy, inventory, cosmetics, player, npcManager, input, root: uiRoot });
 const helpMenu = new HelpMenu({ root: uiRoot, bus, input });
 const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts, worldManager });
+/* The maze's M map. It owns its own keydown listener rather than going through
+ * `input.pressed`, like the other panels, and shares the `map` action with the
+ * mount wheel above - `mapActionOwner` decides which of them M means in the
+ * active world, so the two can never both open. */
+const mazeMap = new MazeMap({ root: uiRoot, bus, input, worldManager });
 // F6. Rebinds anything Input resolves; the panel keys stay fixed on purpose.
 const keybindMenu = new KeybindMenu({ root: uiRoot, bus, input });
 // F2. Edits the avatar live and publishes `character:changed`, which SaveGame

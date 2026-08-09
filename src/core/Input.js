@@ -380,6 +380,26 @@ export class Input {
   }
 
   /**
+   * The key code currently bound to an action, for the panels that own their
+   * own `keydown` listener rather than going through `pressed`.
+   *
+   * Those panels (the maze map, the mount wheel) cannot use `pressed` because
+   * they must keep working while `Input` has stopped reporting - the same
+   * reason the F-key panels are excluded from rebinding. Without this they
+   * would hard-code their key and quietly ignore a rebind, which for the
+   * contextual `map` action would mean rebinding moved one consumer and not
+   * the other. See `mapActionOwner`.
+   *
+   * @param {string} action an `action` from BINDABLE
+   * @returns {string|null} the bound code, or null if there is no such action
+   */
+  codeFor(action) {
+    const d = BINDABLE.find((b) => b.action === action);
+    if (!d) return null;
+    return this._binds.get(d.code) ?? d.code;
+  }
+
+  /**
    * Point an action at a different key.
    *
    * Any other action already holding that key is reset to its own default

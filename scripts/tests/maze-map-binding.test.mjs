@@ -39,3 +39,46 @@ test('MountWheel asks the shared predicate rather than deciding for itself', asy
     'MountWheel does not consult mapActionOwner - two consumers deciding independently is how a '
     + 'contextual key ends up owned by both or neither');
 });
+
+test('THE NO-MARKER GATE: MazeMap never reads a player position', async () => {
+  /* The map deliberately does not say where you are - spec section 7, and the
+   * reason it does not trivialise a 2.4 km maze that re-rolls every entry.
+   * It is also the first thing anyone would add to be helpful, so this asserts
+   * the INGREDIENTS are absent rather than trusting a comment to hold. */
+  const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  for (const forbidden of [/player\s*\.\s*position/, /playerSpawn/, /youAreHere/i, /\bmarker\b/i]) {
+    assert.ok(!forbidden.test(code),
+      `MazeMap.js code mentions ${forbidden} - the map must not show where the player is`);
+  }
+});
+
+test('MazeMap draws from the topology array, never from geometry', async () => {
+  const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  assert.ok(src.includes('levelSegments'), 'MazeMap does not use levelSegments');
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  for (const forbidden of [/districtColliders/, /shaftColliders/, /\.chunks\b/]) {
+    assert.ok(!forbidden.test(code),
+      `MazeMap.js reads ${forbidden} - geometry exists only for streamed districts, so a map drawn `
+      + 'from it would be a map of wherever the player happens to be standing');
+  }
+});
+
+test('rebinding the map action moves BOTH consumers, not just one', async () => {
+  /* The claim the contextual key rests on. Both consumers own their own
+   * keydown listener (they must keep working when Input has stopped
+   * reporting), so both have to ask `codeFor` rather than hard-code KeyM. */
+  for (const f of ['src/ui/MazeMap.js', 'src/ui/MountWheel.js']) {
+    const src = await readFile(path.join(root, f), 'utf8');
+    assert.ok(/codeFor\?\.\('map'\)|codeFor\('map'\)/.test(src),
+      `${f} does not resolve the map action through Input.codeFor - a rebind would move the other `
+      + 'consumer and leave this one on M');
+  }
+});
+
+test('M is no longer listed as an unbindable fixed key', async () => {
+  // It became a BINDABLE action, so the panel would otherwise show it twice
+  // and claim it cannot be changed.
+  const src = await readFile(path.join(root, 'src/ui/KeybindMenu.js'), 'utf8');
+  assert.ok(!/key:\s*'M'/.test(src), 'KeybindMenu still lists M among FIXED_KEYS');
+});

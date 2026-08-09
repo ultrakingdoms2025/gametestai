@@ -235,7 +235,10 @@ export class MountWheel {
      * opened in the maze, where its only possible answer was that mounts are
      * restricted here. */
     if (mapActionOwner(this.worldManager?.active) !== 'mounts') return;
-    if (e.code !== 'KeyM') {
+    /* The BOUND code, not the shipped one - a rebind has to move this and the
+     * maze map together or the "one action, two consumers" claim is false. */
+    const mapCode = this.input?.codeFor?.('map') ?? 'KeyM';
+    if (e.code !== mapCode) {
       if (!this._open || e.type !== 'keydown') return;
       if (e.code === 'Escape') { e.preventDefault(); this.close(); return; }
       // Digits pick directly, for anyone who would rather not aim.

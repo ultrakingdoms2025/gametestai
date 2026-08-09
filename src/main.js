@@ -828,6 +828,19 @@ bus.on('inventory:drop', ({ itemId, qty }) => {
 // touches Economy or HUD directly - this file is the single integration
 // point, see the header comment above), so this is where the credits are
 // actually awarded and the notification actually shown.
+/* Hold-L in the maze. MazeWorld only announces the fact - the world switch
+ * lives here because this file is the single integration point, the same
+ * reason the token award below does. The spec's hard constraint is that a
+ * player four kilometres deep is never stranded, so this must work from any
+ * level and any depth. */
+bus.on('maze:abandon', () => {
+  if (worldManager.active?.id !== 'maze') return;
+  hud?.notify?.('Leaving the maze', 'info');
+  worldManager.activate('station');
+});
+bus.on('maze:abandon-progress', ({ progress }) => {
+  hud?.setHoldProgress?.('abandon', progress);
+});
 bus.on('maze:token-found', ({ amount }) => {
   economy.add(amount, 'maze-token');
   hud?.notify?.(`+${amount} CR`, 'loot');

@@ -60,6 +60,10 @@ export const BINDABLE = [
    * consumers together. The label names both because the panel should not
    * pretend otherwise. */
   { action: 'map', code: 'KeyM', label: 'Map / mount wheel', group: 'Actions' },
+  /* A HOLD, not a press: the spec requires a player four kilometres deep to be
+   * able to leave from anywhere, and requires that the control cannot be
+   * fumbled mid-run. See `AbandonHold`. */
+  { action: 'abandon', code: 'KeyL', label: 'Hold to leave the maze', group: 'Actions' },
   { action: 'mapOut', code: 'BracketLeft', label: 'Minimap zoom out', group: 'Actions' },
   { action: 'mapIn', code: 'BracketRight', label: 'Minimap zoom in', group: 'Actions' },
 ];
@@ -393,6 +397,20 @@ export class Input {
    * @param {string} action an `action` from BINDABLE
    * @returns {string|null} the bound code, or null if there is no such action
    */
+  /**
+   * Is a key currently HELD, resolved through the rebinding table?
+   *
+   * `pressed` answers "was it struck this frame", which is the right question
+   * for an action and the wrong one for a hold-to-confirm. Takes the SHIPPED
+   * code and resolves it, exactly like `pressed`, so call sites stay written
+   * in terms of the default key.
+   *
+   * @param {string} code a shipped code from BINDABLE
+   */
+  held(code) {
+    return this._keys.has(this._bindsInverse.get(code) ?? code);
+  }
+
   codeFor(action) {
     const d = BINDABLE.find((b) => b.action === action);
     if (!d) return null;

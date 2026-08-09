@@ -11,6 +11,7 @@ import {
 import { pickDeadEndTokens, pickWandererSites, walkPatrol } from './maze/MazePopulate.js';
 import { MazeChunks, buildBoxInstances } from './maze/MazeChunks.js';
 import { MazeCanopy } from './maze/MazeCanopy.js';
+import { AbandonHold } from './maze/MazeAbandon.js';
 
 /**
  * Yaw that faces down each passage direction, matching `Player.fixedUpdate`'s
@@ -197,6 +198,9 @@ export class MazeWorld extends World {
     this.chunks = null;
     /** @type {MazeCanopy|null} distant hedge-tops beyond the streamed set, created in build() */
     this.canopy = null;
+    /* Hold-L to leave from anywhere. Pure timing - see MazeAbandon.js. */
+    this._abandon = new AbandonHold();
+    this._abandonShown = 0;
 
     /* Every shaft's world position, grouped by level - computed once per
      * build (see `_computeShaftsByLevel`), not per frame. `Minimap` is
@@ -596,6 +600,17 @@ export class MazeWorld extends World {
      * that only moved in districts that happen to have dead-end tokens would
      * be a lift that mostly does not move. */
     if (this.chunks) this.chunks.stepLifts(dt, player ?? null);
+
+    /* Hold-L to leave, from anywhere and at any depth. Announced on the bus
+     * and never acted on here: `main.js` owns the world switch, the same rule
+     * that keeps `maze:token-found` from touching Economy directly. */
+    const holding = this.ctx?.input?.held?.('KeyL') === true;
+    const { progress, fired } = this._abandon.update(dt, holding);
+    if (progress !== this._abandonShown) {
+      this._abandonShown = progress;
+      this.bus?.emit('maze:abandon-progress', { progress });
+    }
+    if (fired) this.bus?.emit('maze:abandon', {});
     if (player && this.canopy) {
       const level = Math.min(MAZE.LEVELS - 1, Math.max(0, Math.round(player.y / MAZE.LEVEL_HEIGHT)));
       this.canopy.update(player.x, player.z, level);

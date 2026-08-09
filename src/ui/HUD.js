@@ -337,6 +337,42 @@ export class HUD {
   /* Construction                                                           */
   /* ====================================================================== */
 
+  /**
+   * The hold-to-confirm readout.
+   *
+   * One bar, reused by whichever action is being held. It exists because a
+   * two-second hold with no feedback is indistinguishable from a key that does
+   * nothing - the player lets go at 1.5 s and concludes the control is broken.
+   */
+  _buildHold(hud) {
+    const wrap = el('div', 'hud-hold');
+    this.holdLabel = el('div', 'hud-hold-label');
+    this.holdBar = el('div', 'hud-hold-bar');
+    this.holdFill = el('div', 'hud-hold-fill');
+    this.holdBar.appendChild(this.holdFill);
+    wrap.append(this.holdLabel, this.holdBar);
+    wrap.style.display = 'none';
+    this.holdEl = wrap;
+    hud.appendChild(wrap);
+  }
+
+  /**
+   * Show progress for a hold-to-confirm action, or hide it at zero.
+   *
+   * @param {string} action the action being held, e.g. 'abandon'
+   * @param {number} progress 0..1
+   */
+  setHoldProgress(action, progress) {
+    if (!this.holdEl) return;
+    const p = Math.max(0, Math.min(1, Number(progress) || 0));
+    if (p <= 0) { this.holdEl.style.display = 'none'; return; }
+    this.holdEl.style.display = '';
+    if (this.holdLabel) {
+      this.holdLabel.textContent = action === 'abandon' ? 'LEAVING THE MAZE…' : 'HOLD…';
+    }
+    if (this.holdFill) this.holdFill.style.width = `${(p * 100).toFixed(1)}%`;
+  }
+
   _build() {
     const hud = el('div', 'hud');
     this.el = hud;
@@ -359,6 +395,7 @@ export class HUD {
     this._buildDebug(hud);
     this._buildHelpChip(hud);
     this._buildDeadCard(hud);
+    this._buildHold(hud);
 
     this.root.appendChild(hud);
 

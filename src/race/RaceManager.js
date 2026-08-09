@@ -4,6 +4,7 @@ import { Pickups, PICKUP_VALUE } from './Pickups.js';
 import { Contacts } from './Contacts.js';
 import { RaceRings, buildDragonRingCheckpoints, DRAGON_RACE } from './RaceRings.js';
 import { RaceLoops } from './RaceLoops.js';
+import { allows } from '../worlds/WorldRules.js';
 
 /**
  * The race: state machine, lap validation, placement and prize money.
@@ -219,20 +220,21 @@ export class RaceManager {
     this._onWorldChanging = () => this._teardown();
     bus?.on?.('world:changing', this._onWorldChanging);
     this._onWorldChanged = ({ world }) => {
-      /* ALWAYS re-arm, including into a world that forbids races.
+      /* Re-arm on EVERY world change - and in a world that forbids races,
+       * re-arm on NOTHING, which is what clears the last one.
        *
-       * This used to return early when `allows(world, 'races')` was false, on
-       * the reasoning that there is nothing to do in a world with no circuits.
-       * But `arm` is what CLEARS a loaded track, so returning early left the
-       * previous world's circuit armed: walk from the circuit into the maze,
-       * which forbids races, and `ready` stayed true - so the race panel still
-       * answered F7 in a hedge maze, and the manager still believed it had a
-       * track four kilometres away.
+       * This used to RETURN early when `allows(world, 'races')` was false, on
+       * the reasoning that there is nothing to do where there are no circuits.
+       * But `arm` is what clears a loaded track, so returning left the previous
+       * world's circuit armed: walk from the circuit into the maze and `ready`
+       * stayed true, the manager still believing it had a track four
+       * kilometres away, and the race panel still answered F7 in a hedge maze.
        *
-       * `arm` degrades to "no race here" on its own when a world has no track
-       * (see its own contract), so the rules check bought nothing that arm
-       * does not already do correctly. */
-      this.arm(world);
+       * Arming with no world is the fix rather than dropping the rules check:
+       * section 5 of the maze spec requires this file to honour `rules.races`,
+       * and `arm(null)` finds no track and clears everything (see its own
+       * contract), so the rule is honoured AND the stale state goes. */
+      this.arm(allows(world, 'races') ? world : null);
     };
     bus?.on?.('world:changed', this._onWorldChanged);
   }

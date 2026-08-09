@@ -35,9 +35,17 @@ test('the race manager re-arms on EVERY world change, including worlds that forb
   assert.ok(at > 0, 'no _onWorldChanged in RaceManager');
   const body = src.slice(at, at + 1200);
   const code = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
-  assert.ok(/this\.arm\(world\)/.test(code), 'the world-change handler no longer arms');
-  assert.ok(!/allows\s*\(\s*world/.test(code),
-    'the handler skips worlds that forbid races again - that is what left a stale circuit armed');
+  /* The property is NOT "there is no rules check" - my first draft asserted
+   * that and was wrong, because section 5 of the maze spec requires this file
+   * to honour `rules.races` and a separate gate enforces it. The property is
+   * that the handler ALWAYS reaches `arm`: a world that forbids races arms on
+   * nothing, which is what clears the last circuit. An early return is the
+   * bug. */
+  assert.ok(/this\.arm\(/.test(code), 'the world-change handler no longer arms at all');
+  assert.ok(!/return\s*;/.test(code),
+    'the handler returns early again - that is exactly what left a stale circuit armed after leaving it');
+  assert.ok(/allows\s*\(\s*world/.test(code),
+    'the handler no longer consults rules.races - spec section 5 requires this file to honour it');
 });
 
 test('every place that documents F7 says it is circuit-only', async () => {

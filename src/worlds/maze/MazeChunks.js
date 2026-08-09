@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { MAZE, DIR, districtCoords, districtAtWorld, neighbourhoodKeys } from './MazeTopology.js';
 import { districtColliders } from './MazeColliders.js';
-import { foliageTransforms, footingTransforms } from './MazeFoliage.js';
+import { foliageTransforms, footingTransforms, candlePlacements } from './MazeFoliage.js';
 
 /**
  * Every descriptor `kind` this class knows how to turn into a mesh, and
@@ -35,6 +35,11 @@ import { foliageTransforms, footingTransforms } from './MazeFoliage.js';
  * that can trigger a compile. Starting hidden costs nothing - the rig takes it
  * as a source either way.
  */
+/** A candle flame: small, warm, short-range - a pool of light, not a floodlight. */
+const CANDLE_COLOUR = 0xffbe6e;
+const CANDLE_INTENSITY = 13;
+const CANDLE_RANGE = 19;
+
 const LANTERN_COLOUR = 0xffd9a0;
 const LANTERN_INTENSITY = 38;
 /** Bounded to its own district, so the rig's distance scoring is meaningful. */
@@ -119,7 +124,9 @@ export class MazeChunks {
    */
   objectCount() {
     let n = 0;
-    for (const e of this._resident.values()) n += e.meshes.length + (e.lantern ? 1 : 0);
+    for (const e of this._resident.values()) {
+      n += e.meshes.length + (e.lantern ? 1 : 0) + (e.flames?.length ?? 0);
+    }
     return n;
   }
 
@@ -173,6 +180,31 @@ export class MazeChunks {
       if (sm) meshes.push(sm);
     }
 
+    /* Hedge candles. Many meshes, few lights - see `candlePlacements`. The
+     * meshes are what you see; the rig only ever renders the nearest twelve
+     * point lights in the scene, so more lights than that per district buys
+     * nothing on screen and still costs a per-frame scan. */
+    const candles = candlePlacements(descs, key);
+    if (candles.length && this.materials.candle) {
+      const cm = buildBoxInstances(
+        candles.map((cd) => ({ cx: cd.x, cy: cd.y, cz: cd.z, hx: 0.09, hy: 0.26, hz: 0.09 })),
+        this.materials.candle, `maze:candle:${key}`, this.group,
+      );
+      if (cm) { cm.castShadow = false; meshes.push(cm); }
+    }
+    const flames = [];
+    for (const cd of candles) {
+      if (!cd.lit) continue;
+      /* Hidden on creation, exactly like the district lantern - the rig would
+       * hide it anyway but not until its next walk, and one visible frame is
+       * one frame that can compile. */
+      const f = new THREE.PointLight(CANDLE_COLOUR, CANDLE_INTENSITY, CANDLE_RANGE);
+      f.visible = false;
+      f.position.set(cd.x, cd.y + 0.18, cd.z);
+      this.group.add(f);
+      flames.push(f);
+    }
+
     /* The district's lantern. See LANTERN_COLOUR above for why this is free. */
     const w0 = districtCoords(key);
     const cx = (w0.dx * MAZE.DISTRICT + MAZE.DISTRICT / 2) * MAZE.CELL;
@@ -182,7 +214,7 @@ export class MazeChunks {
     lantern.position.set(cx, w0.level * MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT * 0.8, cz);
     this.group.add(lantern);
 
-    this._resident.set(key, { meshes, colliders, lantern });
+    this._resident.set(key, { meshes, colliders, lantern, flames });
   }
 
   /**
@@ -227,6 +259,10 @@ export class MazeChunks {
       this.group.remove(entry.lantern);
       entry.lantern.dispose?.();
     }
+    for (const f of entry.flames ?? []) {
+      this.group.remove(f);
+      f.dispose?.();
+    }
 
     this._resident.delete(key);
   }
@@ -264,6 +300,10 @@ export class MazeChunks {
       if (entry.lantern) {
         this.group.remove(entry.lantern);
         entry.lantern.dispose?.();
+      }
+      for (const f of entry.flames ?? []) {
+        this.group.remove(f);
+        f.dispose?.();
       }
     }
 

@@ -14,7 +14,7 @@ import { Physics } from '../../src/physics/Physics.js';
 import { EventBus } from '../../src/core/EventBus.js';
 import { parentField, solve } from '../../src/worlds/maze/MazeTopology.js';
 import { routeToward } from '../../src/worlds/maze/MazePopulate.js';
-import { MazeWorld, MAZE_CENTRE_VALUE, WANDERER_CAST } from '../../src/worlds/MazeWorld.js';
+import { MazeWorld, MAZE_CENTRE_VALUE, WANDERER_CAST, TOTAL_TOKENS } from '../../src/worlds/MazeWorld.js';
 
 /*
  * Coverage for "npcs-and-collectibles": the keeper, the eight lost wanderers
@@ -233,13 +233,20 @@ function expectedColliderCount(world) {
   return n;
 }
 
-test('MazeWorld is constructible and buildable headlessly, with one keeper and eight wanderers', async () => {
+test('MazeWorld is constructible and buildable headlessly, with one keeper and the full cast', async () => {
+  /* Was "eight wanderers", from section 9's cap. The owner raised it - the
+   * maze is 640,000 cells and eight people in it was nobody - so the count is
+   * now derived from the cast rather than written down, and the cast is
+   * asserted to be all-distinct below so raising it cannot quietly become the
+   * same few characters repeated. */
   const world = await buildMazeWorld();
-  assert.equal(world.npcSpawns.length, 9, `expected 1 keeper + 8 wanderers, got ${world.npcSpawns.length}`);
+  const expected = 1 + WANDERER_CAST.length;
+  assert.equal(world.npcSpawns.length, expected,
+    `expected 1 keeper + ${WANDERER_CAST.length} wanderers, got ${world.npcSpawns.length}`);
   const keeper = world.npcSpawns.find((s) => s.role === 'lorekeeper');
   assert.ok(keeper, 'no keeper (role: lorekeeper) among npcSpawns');
   const wanderers = world.npcSpawns.filter((s) => s !== keeper);
-  assert.equal(wanderers.length, 8);
+  assert.equal(wanderers.length, WANDERER_CAST.length);
   for (const w of wanderers) {
     assert.ok(Array.isArray(w.patrol) && w.patrol.length >= 1, `${w.name} has no patrol route`);
     assert.equal(w.type, 'friendly');
@@ -292,7 +299,8 @@ test('every token is a genuine dead end and no two share a cell (full build)', a
   for (let i = 0; i < 5; i++) {
     const world = await buildMazeWorld();
     assert.ok(world._tokens.length > 0, 'no tokens were built');
-    assert.ok(world._tokens.length <= 40, `expected at most 40 tokens, got ${world._tokens.length}`);
+    assert.ok(world._tokens.length <= TOTAL_TOKENS,
+      `expected at most ${TOTAL_TOKENS} tokens, got ${world._tokens.length}`);
 
     const cellsSeen = new Set();
     for (const tok of world._tokens) {
@@ -498,10 +506,23 @@ test('THE EVERY-LEVEL GATE: wanderers and tokens exist on all four levels', asyn
   }
 });
 
-test('the cast is still capped at eight, divided across levels rather than multiplied', () => {
-  /* Section 9 caps the lost wanderers at eight. Populating four levels must
-   * not quietly become thirty-two of them. */
-  assert.ok(WANDERER_CAST.length <= 8, `the cast has grown to ${WANDERER_CAST.length}`);
+test('every wanderer is a distinct person, so more of them is not the same few repeated', () => {
+  /* Section 9 capped the cast at eight and the owner raised it, so the guard
+   * changes rather than disappears: the point of the cap was that these are
+   * WRITTEN characters, and the way raising it goes wrong is duplicates. A
+   * maze full of four Ossian Drells reads worse than a maze with fewer people
+   * in it. */
+  const names = WANDERER_CAST.map((c) => c.name);
+  assert.equal(new Set(names).size, names.length, `duplicate names in the cast: ${names.join(', ')}`);
+  for (const c of WANDERER_CAST) {
+    assert.ok(c.persona && c.persona.length > 200,
+      `${c.name} has no real persona - a nameplate is not a character`);
+  }
+});
+
+test('the cast divides evenly enough that every level gets several', () => {
+  assert.ok(WANDERER_CAST.length >= MAZE.LEVELS * 3,
+    `${WANDERER_CAST.length} wanderers over ${MAZE.LEVELS} levels is too few to meet one`);
 });
 
 test('every token sits on the level it was placed for, at that level floor', async () => {
@@ -526,4 +547,21 @@ test('every wanderer spawns on an open cell of its own level', async () => {
         'a patrol waypoint is on a different level from its spawn - the NPC would walk through a floor');
     }
   }
+});
+
+test('the level a freshly built world reports is a real level, not the sentinel', async () => {
+  /* `_markersLevel` is -1 until the first `update` runs, so that the first
+   * update always re-points `shaftMarkers`. That is fine internally and was
+   * not fine anywhere else: the M map reads the player's level to title itself
+   * and to decide whether to draw the you-are-here marker, and a map opened in
+   * the same frame the world was entered drew "LEVEL 0 OF 4" - one below the
+   * first floor. Anything outside MazeWorld goes through `playerLevel`, which
+   * falls back to the player's own height until the sentinel is replaced. */
+  const world = await buildMazeWorld();
+  assert.equal(world._markersLevel, -1, 'the sentinel is gone - this test now proves nothing');
+  const lvl = world.playerLevel;
+  assert.ok(Number.isInteger(lvl) && lvl >= 0 && lvl < MAZE.LEVELS,
+    `playerLevel leaked ${lvl} before the first update`);
+  assert.ok(world.minimapPlanKey.endsWith(`:${lvl}`),
+    `minimapPlanKey disagrees with playerLevel: ${world.minimapPlanKey}`);
 });

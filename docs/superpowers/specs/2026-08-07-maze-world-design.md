@@ -306,8 +306,26 @@ reward is deliberately not scaled by maze size or completion time.
 ## 7. The map and the minimap
 
 **The map — `src/ui/MazeMap.js`, bound to `M`.** Renders the **current level
-only**, drawn from the topology array. 400×400 cells at 2 px/cell is an 800×800
-canvas, drawn once per level and cached. Pan and zoom with the mouse.
+only by default**, drawn from the topology array. 400×400 cells at ~~2 px/cell
+is an 800×800 canvas~~ **4 px/cell is a 1600×1600 canvas** — 2 px/cell was
+measured unreadable, a cell landing under 1.5 px in the panel and the walls
+merging into noise — drawn once per level and cached.
+
+**Navigation (owner, 2026-08-09).** The **wheel scrolls** and **Ctrl+wheel
+zooms**, rather than the wheel zooming: the map opens showing 90 of 400 cells,
+so scrolling is constant and zooming is once. Dragging still pans. **`1`–`4`,
+the bracket keys and PageUp/PageDown page between the four levels**, with tabs
+in the header; pan is held across a switch, because the levels stack in one
+footprint and holding position is what makes comparing them useful. **FIND ME
+(or `Home`) snaps back** to the player, on the player's own level.
+
+**Pan is bounded so the grid always covers the panel.** The old bound allowed
+panning by half the image, and since the entrance sits ON the edge of the grid,
+opening centred on the player left the outside-the-maze void filling half the
+panel — it read as a half-drawn map.
+
+**The map closes itself when the world stops being a maze**, rather than
+freezing on the last level it baked over a world it has nothing to do with.
 
 **~~No you-are-here marker.~~ REVERSED by the owner, 2026-08-09.** The original
 rule was that the player gets the shape of the level and must locate themselves
@@ -333,8 +351,17 @@ a map that calls a staircase a tunnel costs a player the walk back.
 `M` is added to the `BINDINGS` table in `src/core/Input.js` (~line 44) as a
 `map` action, which inherits the existing rebinding UI for free.
 
+**Ctrl+M draws the solution path** from where the player is standing to the
+centre — a deliberate cheat, added at the owner's request. It works only while
+the map is already open, resets every time the map is opened, and draws only the
+segments on the level being shown: a route that vanishes at a staircase and
+resumes on the level above is what the player needs to see, where a flattened
+one would suggest a way through a floor.
+
 **The minimap** behaves exactly as in other worlds, with two changes:
 
+- **collectables, connectors and portals are marked** (owner, 2026-08-09) — see
+  §7's marker note;
 - the floorplan comes from a maze-supplied baked bitmap rather than thousands of
   `minimapShapes` entries, which the current model cannot carry;
 - `Minimap._bakePlan` caches by `world.id` (~line 205) and must be re-keyed on
@@ -374,8 +401,14 @@ reachable stranded state.
 **One keeper** in the entrance forecourt. Explains the maze, the map and the
 abandon control. Chat-only.
 
-**Eight lost wanderers**, capped. Spawned only within loaded districts and
-routed along the topology graph. They have been in here a long time. Chat-only.
+**~~Eight lost wanderers, capped.~~ RAISED by the owner, 2026-08-09** to twenty,
+five per level. Eight people in 640,000 cells was nobody: a player could cross a
+level without meeting one. They walk the shortest path toward the centre rather
+than a short random loop, so they read as still searching. Chat-only.
+
+The cap's real point is kept as a test rather than as a number: every wanderer
+must be a DISTINCT written character with a real persona, because the way
+"more of them" goes wrong is four copies of the same person.
 
 Both use the existing `NPCManager` and AI chat path. `hostiles: false` means
 nothing hunts them or the player.

@@ -9,7 +9,7 @@ game, deployed from the `site/` directory of this repository.
 
 | Route | |
 |---|---|
-| `/` | Front cover — hero, the five worlds, features, and the two calls to action |
+| `/` | Front cover — hero, the six worlds, features, and the two calls to action |
 | `/store` | Credit picker with a live receipt |
 | `/checkout` | Order confirmation and the pay button |
 | `/play` | The game, gated on a paid pass |

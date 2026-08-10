@@ -23,7 +23,7 @@ export default function HomeWorldShowcase({ worlds }: { worlds: WorldItem[] }) {
         <h2 className="belt-h2">Step through a ring.<br />Everything changes.</h2>
         <p className="belt-sub">
           Every world is a portal away, destinations keep building in the background —
-          so travel is seamless. Five completely distinct environments, each with its
+          so travel is seamless. Six completely distinct environments, each with its
           own rules, traversal and feel.
         </p>
       </div>
@@ -33,7 +33,7 @@ export default function HomeWorldShowcase({ worlds }: { worlds: WorldItem[] }) {
             <WorldCanvas scene={w.scene} seed={w.seed} label={`${w.name}: ${w.copy}`} />
           </div>
           <div className="wp-body">
-            <div className="wp-seq">0{i + 1}&thinsp;/&thinsp;05</div>
+            <div className="wp-seq">0{i + 1}&thinsp;/&thinsp;06</div>
             <div className="wp-kicker">{w.kicker}</div>
             <h3 className="wp-name">{w.name}</h3>
             <div className="wp-rule" />

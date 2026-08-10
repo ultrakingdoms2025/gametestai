@@ -2,7 +2,7 @@ import './maze-map.css';
 import { MAZE } from '../worlds/maze/MazeTopology.js';
 import { levelSegments } from '../worlds/maze/MazePlan.js';
 import { mapActionOwner } from '../worlds/WorldRules.js';
-import { OVERVIEW, sheetFor, verticalLinks } from './MazeMapLayout.js';
+import { OVERVIEW, sheetFor, paneAt, verticalLinks } from './MazeMapLayout.js';
 
 /**
  * The `M` map — all four levels of the maze, and where you are in them.
@@ -28,7 +28,9 @@ import { OVERVIEW, sheetFor, verticalLinks } from './MazeMapLayout.js';
  * Paging survives it. `1`–`4` (and the tabs, and the brackets) still drop to a
  * single floor at junction scale, which is the scale you read a corridor at;
  * `0` or the ALL tab comes back. The overview is the index, the single floor
- * is the page.
+ * is the page — and since it is an index, clicking a floorplan opens it, which
+ * is what anyone who has ever used one expects and is a shorter reach than a
+ * number key nobody has been told about.
  *
  * ## Why side by side and never superimposed
  *
@@ -107,6 +109,25 @@ const MIN_ZOOM = 1;
 const MAX_ZOOM = 16;
 
 /**
+ * How far the pointer may travel, and how long it may be held, and still count
+ * as a click on a floorplan rather than a pan that happened to end where it
+ * started.
+ *
+ * The canvas has to serve both gestures on the same button, so something has
+ * to separate them. Distance alone was the first attempt and is not enough: a
+ * long, careful drag around the sheet that returns to within a few pixels of
+ * its origin would page the map to a floor the player never asked for. The
+ * time bound closes that, and costs nothing, because nobody clicks a thing for
+ * half a second.
+ *
+ * 5 px rather than the 3 a mouse would want: the map is also usable by touch
+ * and by pen, where a finger rolls a couple of pixels on every tap and a 3 px
+ * bound simply makes taps stop working.
+ */
+const CLICK_SLOP_PX = 5;
+const CLICK_HOLD_MS = 500;
+
+/**
  * How many cells to show across the panel when the map opens.
  *
  * A player reads this by matching the junction pattern around them against the
@@ -158,7 +179,7 @@ export class MazeMap {
           <span class="mz-map-level" data-level></span>
           <span class="mz-map-levels" data-levels></span>
           <button type="button" class="mz-map-tab mz-map-recentre" data-recentre>FIND ME</button>
-          <span class="mz-map-hint">WHEEL SCROLLS · CTRL+WHEEL ZOOMS · 0 ALL · 1-4 FLOOR · CTRL+M ROUTE · ESC</span>
+          <span class="mz-map-hint">WHEEL ZOOMS · DRAG PANS · CLICK A FLOOR TO ENLARGE · 0 ALL · 1-4 FLOOR · CTRL+M ROUTE · ESC</span>
         </div>
         <canvas class="mz-map-canvas"></canvas>
         <div class="mz-map-foot">
@@ -354,6 +375,56 @@ export class MazeMap {
     return sheet.panes.find((p) => p.level === level) ?? sheet.panes[0];
   }
 
+  /**
+   * The one projection: where the sheet lands on the canvas, right now.
+   *
+   * `_draw` used to work these four terms out inline, which was fine while
+   * nothing else needed them. Clicking a pane and zooming about the pointer
+   * both have to INVERT them, and a second copy of the fit-then-pan arithmetic
+   * is a second convention waiting to drift half a gutter away from the first —
+   * the same failure `_centreOnPlayer` warns about with the half-cell offset.
+   * So it is computed once, and the two things that have to run it BACKWARDS —
+   * the click hit-test and the pointer-anchored zoom — invert this and nothing
+   * else. (`_centreOnPlayer` still works forwards, on purpose, for the reason
+   * its own comment gives.)
+   */
+  _frame() {
+    const w = this._mazeWorld();
+    if (!w) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const sheet = this._sheet(w);
+    /* Fit the whole SHEET, then apply the player's zoom on top, so zoom 1 is
+     * always "everything this view contains, whole" regardless of the window's
+     * size - one level when paged to one, four when not. */
+    const fit = Math.min(rect.width / sheet.width, rect.height / sheet.height);
+    const scale = fit * this._zoom;
+    return {
+      w,
+      rect,
+      sheet,
+      scale,
+      ox: (rect.width - sheet.width * scale) / 2 + this._panX,
+      oy: (rect.height - sheet.height * scale) / 2 + this._panY,
+    };
+  }
+
+  /**
+   * Which floorplan is under a client-space point, or `null`.
+   *
+   * Straight inversion of `_frame`, then `paneAt` decides — the arrangement of
+   * the panes is the layout module's business and stays testable there, while
+   * the part that needs a live canvas stays here and is two divisions.
+   */
+  _paneAtClient(clientX, clientY) {
+    const f = this._frame();
+    if (!f || !(f.scale > 0)) return null;
+    return paneAt(
+      f.sheet,
+      (clientX - f.rect.left - f.ox) / f.scale,
+      (clientY - f.rect.top - f.oy) / f.scale,
+    );
+  }
+
   /** Where the player is, as a level index, whatever the map is showing. */
   _standingLevel() {
     const y = this.player?.position?.y ?? 0;
@@ -400,10 +471,11 @@ export class MazeMap {
     if (!w) { this.close(); return; }
     const view = this._view(w);
     const here = this._playerLevel(w);
-    const sheet = this._sheet(w);
     this._syncHeader(view, here);
 
-    const rect = this.canvas.getBoundingClientRect();
+    /* The same four terms the click hit-test and the pointer-anchored zoom
+     * invert - see `_frame`. */
+    const { rect, sheet, scale, ox, oy } = this._frame();
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     this.canvas.width = Math.max(2, Math.round(rect.width * dpr));
     this.canvas.height = Math.max(2, Math.round(rect.height * dpr));
@@ -412,14 +484,6 @@ export class MazeMap {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = MAP_BG;
     ctx.fillRect(0, 0, rect.width, rect.height);
-
-    /* Fit the whole SHEET, then apply the player's zoom on top, so zoom 1 is
-     * always "everything this view contains, whole" regardless of the window's
-     * size - one level when paged to one, four when not. */
-    const fit = Math.min(rect.width / sheet.width, rect.height / sheet.height);
-    const scale = fit * this._zoom;
-    const ox = (rect.width - sheet.width * scale) / 2 + this._panX;
-    const oy = (rect.height - sheet.height * scale) / 2 + this._panY;
     ctx.imageSmoothingEnabled = this._zoom < 1.5;
 
     /* Asked for once for the whole frame rather than once per pane: the world
@@ -765,28 +829,63 @@ export class MazeMap {
   }
 
   /**
-   * The wheel SCROLLS the map. Ctrl (or Cmd) with it zooms.
+   * The wheel ZOOMS the map. Ctrl, Cmd or Shift with it scrolls.
    *
-   * Round the other way at first, which is the usual choice for a map widget,
-   * but this one opens zoomed in on a grid four times wider than the panel, so
-   * scrolling is the thing you do constantly and zooming is the thing you do
-   * once. Shift swaps the axis, as it does in every scroll pane, and a
-   * trackpad's own horizontal delta is honoured directly.
+   * This was round the other way, and the reasoning was that the map opens
+   * zoomed in on a grid four times wider than the panel, so scrolling is what
+   * you do constantly and zooming is what you do once. That reasoning had a
+   * hole in it: drag-to-pan arrived afterwards and is the better way to move a
+   * map anyway, so the wheel was spending itself on the gesture the mouse
+   * already had. The owner asked for zoom (2026-08-09), and with panning
+   * covered by the drag nothing becomes unreachable — Ctrl and Cmd keep the
+   * old scroll for anyone with no free hand for a drag, and Shift keeps
+   * swapping to the horizontal axis as it does in every scroll pane.
+   *
+   * Zooming about the POINTER rather than the centre is not a refinement, it
+   * is what makes a wheel usable as the primary zoom: centre-anchored zoom
+   * walks whatever you were looking at off the edge of the panel, which was
+   * tolerable on a chord you press once and is not on the plain wheel.
    */
   _onWheel(e) {
     if (!this._open) return;
     e.preventDefault();
-    if (e.ctrlKey || e.metaKey) {
-      const factor = Math.exp(-e.deltaY * 0.0015);
-      this._zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, this._zoom * factor));
-    } else {
+    if (e.ctrlKey || e.metaKey || e.shiftKey) {
       const step = e.deltaMode === 1 ? 24 : 1;    // 1 = lines, 0 = pixels
       const dx = e.deltaX * step, dy = e.deltaY * step;
       if (e.shiftKey) this._panX -= dy || dx;
       else { this._panX -= dx; this._panY -= dy; }
+    } else {
+      this._zoomAbout(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
     }
     this._clampNow();
     this._draw();
+  }
+
+  /**
+   * Change the zoom while holding one canvas point still.
+   *
+   * Solved rather than nudged: the sheet-space point under the cursor is read
+   * out through `_frame`'s projection, and the pan is then whatever value puts
+   * that same point back under the same pixel at the new scale. An incremental
+   * "pan by a fraction of the delta" approximation drifts, and it drifts most
+   * on a trackpad, which is where a pinch arrives as a hundred small wheel
+   * events in a row.
+   *
+   * `_clampPan` may of course pull the result back inside the grid afterwards,
+   * so the anchor is not honoured at the very edges of the sheet. That is the
+   * correct trade: there is nothing outside the maze to hold still.
+   */
+  _zoomAbout(clientX, clientY, factor) {
+    const f = this._frame();
+    if (!f || !(f.scale > 0)) return;
+    const zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, this._zoom * factor));
+    const after = (f.scale / this._zoom) * zoom;
+    const cx = clientX - f.rect.left, cy = clientY - f.rect.top;
+    const sx = (cx - f.ox) / f.scale;
+    const sy = (cy - f.oy) / f.scale;
+    this._zoom = zoom;
+    this._panX = cx - sx * after - (f.rect.width - f.sheet.width * after) / 2;
+    this._panY = cy - sy * after - (f.rect.height - f.sheet.height * after) / 2;
   }
 
   /**
@@ -842,9 +941,16 @@ export class MazeMap {
     this._draw();
   }
 
+  /**
+   * Where the press started, as well as where the pointer was last frame.
+   *
+   * `x`/`y` are consumed and rewritten by every move, because the pan is
+   * incremental. The press origin has to be kept separately or there is
+   * nothing left to measure a click against by the time the button comes up.
+   */
   _onDown(e) {
     if (!this._open) return;
-    this._drag = { x: e.clientX, y: e.clientY };
+    this._drag = { x: e.clientX, y: e.clientY, fromX: e.clientX, fromY: e.clientY, at: e.timeStamp };
     this.canvas.setPointerCapture?.(e.pointerId);
   }
 
@@ -852,13 +958,38 @@ export class MazeMap {
     if (!this._open || !this._drag) return;
     this._panX += e.clientX - this._drag.x;
     this._panY += e.clientY - this._drag.y;
-    this._drag = { x: e.clientX, y: e.clientY };
+    this._drag.x = e.clientX;
+    this._drag.y = e.clientY;
     this._clampNow();
     this._draw();
   }
 
-  _onUp() {
+  /**
+   * A press that did not become a pan is a click on a floorplan.
+   *
+   * Only in the overview. On a single floor the click would mean "enlarge the
+   * thing already filling the panel", so it does nothing at all — and, more to
+   * the point, that view is the one you drag around most, and a stray page on
+   * every twitchless drag would be maddening.
+   *
+   * `e.timeStamp` rather than `performance.now()` so the two ends of the
+   * gesture are measured on the same clock the events were stamped with; a
+   * queued-up pointerup would otherwise be timed against when we got round to
+   * it rather than when it happened.
+   */
+  _onUp(e) {
+    const press = this._drag;
     this._drag = null;
+    if (!press || !this._open) return;
+    const moved = Math.hypot(e.clientX - press.fromX, e.clientY - press.fromY);
+    if (moved > CLICK_SLOP_PX || e.timeStamp - press.at > CLICK_HOLD_MS) return;
+    const w = this._mazeWorld();
+    if (!w || this._view(w) !== OVERVIEW) return;
+    /* Null in the gutter, and null outside the sheet - see `paneAt`. Both mean
+     * the player did not name a floor, and guessing one for them is worse than
+     * letting them click again. */
+    const pane = this._paneAtClient(e.clientX, e.clientY);
+    if (pane) this.setLevel(pane.level);
   }
 
   dispose() {

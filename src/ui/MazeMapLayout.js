@@ -108,6 +108,37 @@ export function sheetFor(view, side, gap = PANE_GAP) {
 }
 
 /**
+ * Which floorplan a point in sheet space falls in, or `null`.
+ *
+ * The inverse of the arrangement above, and it lives here for the same reason
+ * the arrangement does: clicking a pane to enlarge it is a claim about where
+ * the panes ARE, and a claim made inside `_draw` is a claim no test can check.
+ * The map inverts its own pan and zoom to reach sheet space — that part is
+ * unavoidably about a canvas — and then asks this.
+ *
+ * The gutter answers `null` rather than snapping to the nearest pane. A player
+ * who lands between two floorplans meant one of them, but the map has no way
+ * to know which, and paging to the wrong floor is worse than doing nothing —
+ * they can simply click again. Same for outside the sheet entirely.
+ *
+ * Half-open bounds, so a point on the shared edge of two panes can only ever
+ * belong to one of them. With a gutter between every pair that cannot arise
+ * today, but a zero-gap sheet would otherwise make the answer depend on the
+ * order the panes happen to be listed in.
+ *
+ * @param {{panes:MapPane[]}} sheet
+ * @returns {MapPane|null}
+ */
+export function paneAt(sheet, x, y) {
+  if (!sheet?.panes || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+  for (const pane of sheet.panes) {
+    if (x >= pane.x && x < pane.x + pane.side
+        && y >= pane.y && y < pane.y + pane.side) return pane;
+  }
+  return null;
+}
+
+/**
  * Where a route leaves one floor for another.
  *
  * The route arrives as one flat list with the level changes inside it, which

@@ -84,7 +84,7 @@ const CONTRACT = [
   { file: 'src/worlds/maze/MazePlan.js', exports: ['planCacheKey', 'levelSegments'] },
   { file: 'src/ui/MazeMap.js', exports: ['MazeMap'] },
   /* The all-levels arrangement, pure so it can be asserted without a canvas. */
-  { file: 'src/ui/MazeMapLayout.js', exports: ['OVERVIEW', 'overviewSheet', 'singleSheet', 'sheetFor', 'verticalLinks'] },
+  { file: 'src/ui/MazeMapLayout.js', exports: ['OVERVIEW', 'overviewSheet', 'singleSheet', 'sheetFor', 'paneAt', 'verticalLinks'] },
   { file: 'src/worlds/maze/MazeCanopy.js', exports: ['MazeCanopy'] },
   /* Population streaming. Mirrors MazeChunks' ensure/drop/sync lifecycle and is
    * handed its resident key set, so the two can never disagree about which

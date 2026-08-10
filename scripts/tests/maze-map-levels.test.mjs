@@ -7,7 +7,9 @@ import {
   MAZE, generateTopology, cellIndex, cellCoords, isOpen, DIR,
 } from '../../src/worlds/maze/MazeTopology.js';
 import { MazeWorld } from '../../src/worlds/MazeWorld.js';
-import { OVERVIEW, overviewSheet, singleSheet, verticalLinks } from '../../src/ui/MazeMapLayout.js';
+import {
+  OVERVIEW, overviewSheet, singleSheet, paneAt, verticalLinks,
+} from '../../src/ui/MazeMapLayout.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -104,6 +106,67 @@ test('the single-level sheet is still one pane at the origin', () => {
   );
   assert.equal(sheet.width, 100);
   assert.equal(sheet.height, 100);
+});
+
+/* ------------------------------------------------------------------ */
+/* Clicking a floorplan to enlarge it                                  */
+/* ------------------------------------------------------------------ */
+
+test('THE ENLARGE GATE: every floorplan can be picked out by a click inside it', () => {
+  /* The map inverts its own pan and zoom to reach sheet space; from there the
+   * question "which floor did they click" is this and nothing else. If it
+   * picked the wrong pane the player would ask for level 3 and be paged to
+   * level 1, which is indistinguishable from the click being ignored. */
+  const sheet = overviewSheet(100, 10);
+  for (const pane of sheet.panes) {
+    const hit = paneAt(sheet, pane.x + pane.side / 2, pane.y + pane.side / 2);
+    assert.ok(hit, `the middle of level ${pane.level}'s floorplan hits nothing`);
+    assert.equal(hit.level, pane.level,
+      `clicking level ${pane.level} would enlarge level ${hit.level}`);
+  }
+});
+
+test('a click in the gutter names no floor, so nothing happens', () => {
+  /* Deliberate, and the alternative was snapping to the nearest pane. The
+   * player between two floorplans meant one of them and the map cannot know
+   * which, so paging to a guess is worse than letting them click again. */
+  const sheet = overviewSheet(100, 10);
+  assert.equal(paneAt(sheet, 105, 50), null, 'the column gutter is treated as part of a floorplan');
+  assert.equal(paneAt(sheet, 50, 105), null, 'the row gutter is treated as part of a floorplan');
+  assert.equal(paneAt(sheet, 105, 105), null, 'where the two gutters cross belongs to a floorplan');
+});
+
+test('a click off the sheet names no floor either', () => {
+  const sheet = overviewSheet(100, 10);
+  // Reachable in practice: the sheet is fitted to a square panel, so at zoom 1
+  // there is bare background wherever the panel is not square.
+  for (const [x, y] of [[-1, 50], [50, -1], [sheet.width, 50], [50, sheet.height], [-40, -40]]) {
+    assert.equal(paneAt(sheet, x, y), null, `${x},${y} is outside the sheet and hit a floorplan`);
+  }
+  assert.equal(paneAt(sheet, NaN, 50), null, 'a degenerate scale produced a hit rather than a miss');
+  assert.equal(paneAt(null, 50, 50), null);
+});
+
+test('pane edges belong to exactly one floorplan', () => {
+  /* Half-open bounds. With a gutter between every pair this cannot bite today,
+   * but a zero-gap sheet would otherwise make the answer depend on the order
+   * the panes happen to be listed in. */
+  const sheet = overviewSheet(100, 10);
+  assert.equal(paneAt(sheet, 0, 0).level, 0, 'the sheet origin is outside level 1');
+  assert.equal(paneAt(sheet, 99.999, 99.999).level, 0, 'the far corner of level 1 is not in it');
+  assert.equal(paneAt(sheet, 100, 50), null, 'a pane owns the pixel past its own edge');
+  assert.equal(paneAt(sheet, 110, 50).level, 1, 'the near edge of level 2 belongs to nobody');
+  const flush = overviewSheet(100, 0);
+  const seam = paneAt(flush, 100, 50);
+  assert.equal(seam.level, 1, 'with no gutter, the seam is claimed by the pane that ends there');
+});
+
+test('the single-floor view still answers, so the hit-test needs no special case', () => {
+  // It is not asked in that view - it is already the enlarged one - but a
+  // function that threw there would be a trap for whoever changes that.
+  const sheet = singleSheet(2, 100);
+  assert.equal(paneAt(sheet, 50, 50).level, 2);
+  assert.equal(paneAt(sheet, 150, 50), null);
 });
 
 /* ------------------------------------------------------------------ */
@@ -242,6 +305,55 @@ test('the map still installs exactly one keydown listener', async () => {
   const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
   const n = (src.match(/addEventListener\('keydown'/g) ?? []).length;
   assert.equal(n, 1, `MazeMap installs ${n} keydown listeners`);
+});
+
+test('a pan is not a click: the release measures how far the pointer travelled', async () => {
+  /* Both gestures share one button on one canvas, so the only thing keeping
+   * drag-to-pan from paging the map on every release is this measurement. */
+  const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  const up = src.slice(src.indexOf('\n  _onUp(e) {'), src.indexOf('\n  dispose() {'));
+  assert.ok(up.length > 0, '_onUp no longer takes the event it needs to place the click');
+  assert.ok(/fromX|fromY/.test(up), '_onUp does not compare against where the press started');
+  assert.ok(/CLICK_SLOP_PX/.test(up), 'the pan-versus-click threshold was dropped');
+  assert.ok(/OVERVIEW/.test(up), 'a click on the single-floor view now pages somewhere');
+  assert.ok(/_paneAtClient/.test(up), '_onUp decides which floor was clicked by some other means');
+});
+
+test('the hit-test inverts the drawing, rather than keeping its own idea of the panes', async () => {
+  /* Two copies of the fit-then-pan arithmetic drift, and the symptom is a
+   * click landing on the neighbouring floorplan near a gutter. */
+  const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  assert.ok(/paneAt/.test(src) && src.includes("from './MazeMapLayout.js'"),
+    'the pane hit-test moved out of the shared layout, where it cannot be asserted');
+  const draw = src.slice(src.indexOf('\n  _draw() {'), src.indexOf('\n  _project('));
+  assert.ok(/this\._frame\(\)/.test(draw),
+    '_draw computes its own projection again - the click and the zoom now invert a different one');
+});
+
+test('THE WHEEL GATE: the plain wheel zooms, about the pointer, and the chord scrolls', async () => {
+  /* The owner asked for zoom (2026-08-09). Panning is not lost with it -
+   * drag-to-pan covers it, and Ctrl, Cmd or Shift still scroll. */
+  const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  const wheel = src.slice(src.indexOf('\n  _onWheel(e) {'), src.indexOf('\n  _zoomAbout('));
+  assert.ok(wheel.length > 0, '_onWheel or _zoomAbout went missing');
+  const branch = wheel.indexOf('if (e.ctrlKey || e.metaKey || e.shiftKey) {');
+  assert.ok(branch > 0, 'the modifier no longer selects scrolling - the wheel default may have flipped back');
+  const modified = wheel.slice(branch, wheel.indexOf('} else {', branch));
+  assert.ok(/_panX|_panY/.test(modified) && !/_zoomAbout/.test(modified),
+    'the modified wheel zooms rather than scrolls');
+  const plain = wheel.slice(wheel.indexOf('} else {', branch));
+  assert.ok(/_zoomAbout\(e\.clientX, e\.clientY/.test(plain),
+    'the plain wheel does not zoom about the pointer - centre-anchored zoom walks the view off the panel');
+});
+
+test('the header hint tells the truth about the wheel and the click', async () => {
+  /* A hint that still said WHEEL SCROLLS would be worse than no hint: the
+   * player would conclude the map was broken rather than that it had changed. */
+  const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  const hint = src.slice(src.indexOf('mz-map-hint'), src.indexOf('</span>', src.indexOf('mz-map-hint')));
+  assert.ok(!/WHEEL SCROLLS/.test(hint), 'the hint still promises the old wheel behaviour');
+  assert.ok(/WHEEL ZOOMS/.test(hint), 'the hint does not say the wheel zooms');
+  assert.ok(/CLICK A FLOOR/i.test(hint), 'nothing tells the player a floorplan can be clicked');
 });
 
 test('the legend names the route, now that it is drawn across four maps', async () => {

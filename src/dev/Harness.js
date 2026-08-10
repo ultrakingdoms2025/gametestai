@@ -12,6 +12,7 @@
 import { MAZE, DIR, cellIndex, districtCoords, isOpen, connectorAt } from '../worlds/maze/MazeTopology.js';
 import { cellToWorld } from '../worlds/maze/MazeColliders.js';
 import { shaftColliders, connectorHoleBounds } from '../worlds/maze/MazeShafts.js';
+import { setMazeSurfaceMode, mazeSurfaceMode } from '../worlds/maze/MazeMaterials.js';
 
 /**
  * Camera framings, derived from each world's actual published layout
@@ -455,6 +456,17 @@ class Harness {
       npcs: this.game.npcManager?.npcs?.length ?? 0,
       portals: this.game.portals?.portals?.length ?? 0,
     };
+  }
+
+  /**
+   * The Task 9 A/B: flip the maze's principal surfaces between the authored
+   * KTX2 sets and the procedural bakes, live, without a reload. No argument
+   * reports the current mode. Slot presence is identical in both modes, so
+   * this can never cost a shader compile - see setMazeSurfaceMode.
+   * @param {'authored'|'procedural'} [mode]
+   */
+  mazeSurfaces(mode) {
+    return mode ? setMazeSurfaceMode(mode) : mazeSurfaceMode();
   }
 
   /** Streaming diagnostics for the maze. Dev-only. */

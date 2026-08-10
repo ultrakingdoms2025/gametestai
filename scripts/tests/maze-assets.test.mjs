@@ -9,7 +9,10 @@ import { MAZE, generateTopology, cellIndex, isOpen, DIR, connectorAt } from '../
 import {
   prefabFor, releasePrefabs, isPrefab, DRESSING_KINDS,
 } from '../../src/worlds/maze/MazeMeshes.js';
-import { MAZE_ASSET_PREFABS } from '../../src/worlds/maze/MazeAssets.js';
+import { MAZE_ASSET_PREFABS, MAZE_TEXTURE_SLOTS } from '../../src/worlds/maze/MazeAssets.js';
+import {
+  MAZE_AUTHORED_TEXTURE_SIZES, MAZE_AUTHORED_TILE_METRES, mazeSurfaceMode, setMazeSurfaceMode,
+} from '../../src/worlds/maze/MazeMaterials.js';
 import { CHUNK_MESH_KINDS } from '../../src/worlds/maze/MazeChunks.js';
 import { BATCH_FAMILIES, GEOMETRY_BUDGET } from '../../src/worlds/maze/MazeBatches.js';
 import { newelPlacements, NEWEL_HALF } from '../../src/worlds/maze/MazeFoliage.js';
@@ -66,7 +69,70 @@ test('asset URLs go through the Vite base, or the built game 404s', async () => 
    * a developer runs and fails only for the player. */
   const src = await readFile(path.join(root, 'src/worlds/maze/MazeAssets.js'), 'utf8');
   assert.ok(!/['"`]\/assets\//.test(src), 'a hard-coded absolute asset path');
+  /* Task 9 extends the same discipline to the vendored Basis transcoder:
+   * /vendor/basis/ is served from public/ exactly like /assets/, and a
+   * leading-slash path 404s under the /game/ base in exactly the same way. */
+  assert.ok(!/['"`]\/vendor\//.test(src), 'a hard-coded absolute vendor path');
   assert.ok(/import\.meta\.env\.BASE_URL/.test(src), 'BASE_URL is not used to build asset URLs');
+});
+
+/* ------------------------------------------------------------------ */
+/* Task 9: the bulk CC0 texture sets                                   */
+/* ------------------------------------------------------------------ */
+
+const textureEntries = manifest.assets.filter((e) => e.kind === 'texture');
+
+test('texture entries declare a surface, a slot, and a real committed file of the declared size', () => {
+  assert.ok(textureEntries.length > 0, 'Task 9 landed no texture entries');
+  for (const e of textureEntries) {
+    assert.ok(MAZE_AUTHORED_TEXTURE_SIZES[e.surface],
+      `${e.id}: surface '${e.surface}' has no entry in MAZE_AUTHORED_TEXTURE_SIZES`);
+    assert.ok(MAZE_TEXTURE_SLOTS.includes(e.slot),
+      `${e.id}: slot '${e.slot}' is not one of ${MAZE_TEXTURE_SLOTS}`);
+    const file = path.join(root, 'public/assets/maze', e.file);
+    const buf = readFileSync(file); // throws if the file is not committed
+    assert.equal(buf.length, e.bytes,
+      `${e.id}: ${e.file} is ${buf.length} bytes on disk against a declared ${e.bytes} - re-export drifted from the manifest`);
+    /* The KTX2 header is little-endian u32s after a 12-byte identifier:
+     * vkFormat@12, typeSize@16, pixelWidth@20. Reading it here is what makes
+     * the size table above a declaration with teeth rather than a comment. */
+    const magic = [0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb];
+    for (let i = 0; i < magic.length; i++) {
+      assert.equal(buf[i], magic[i], `${e.id}: ${e.file} is not a KTX2 file`);
+    }
+    const width = buf.readUInt32LE(20);
+    const height = buf.readUInt32LE(24);
+    assert.equal(width, MAZE_AUTHORED_TEXTURE_SIZES[e.surface],
+      `${e.id}: ${width}px against the declared ${MAZE_AUTHORED_TEXTURE_SIZES[e.surface]}px for '${e.surface}'`);
+    assert.equal(width, height, `${e.id}: not square`);
+  }
+});
+
+test('every surface that has any authored texture has the complete set', () => {
+  /* MazeAssets.authoredSurfaces refuses an incomplete set at runtime (an
+   * authored albedo under a procedural normal map disagrees about where the
+   * relief is); this is the commit-time version of the same rule, so an
+   * incomplete set is a test failure rather than a silent fallback. */
+  const bySurface = {};
+  for (const e of textureEntries) (bySurface[e.surface] ??= new Set()).add(e.slot);
+  for (const [surface, slots] of Object.entries(bySurface)) {
+    for (const slot of MAZE_TEXTURE_SLOTS) {
+      assert.ok(slots.has(slot), `surface '${surface}' has no ${slot} entry - the set is incomplete`);
+    }
+  }
+});
+
+test('every authored surface declares its physical tile, and headless stays procedural', () => {
+  for (const surface of Object.keys(MAZE_AUTHORED_TEXTURE_SIZES)) {
+    const m = MAZE_AUTHORED_TILE_METRES[surface];
+    assert.ok(typeof m === 'number' && m > 0,
+      `'${surface}' has no physical tile size - its repeat would be undefined against world-scale UVs`);
+  }
+  /* Headless, nothing loads KTX2, so the mode must be procedural and the
+   * switch must be a safe no-op - the same never-a-hole rule as geometry. */
+  assert.equal(mazeSurfaceMode(), 'procedural');
+  assert.equal(setMazeSurfaceMode('authored'), 'procedural',
+    'setMazeSurfaceMode claimed authored surfaces exist in a session that loaded none');
 });
 
 test('a missing asset degrades to its procedural prefab', () => {

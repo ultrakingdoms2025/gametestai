@@ -46,13 +46,30 @@
  * `node_modules/three/examples/jsm/loaders/` ships GLTFLoader.js,
  * KTX2Loader.js and DRACOLoader.js; `examples/jsm/libs/` ships the Basis
  * transcoder (`basis/basis_transcoder.{js,wasm}`), the Draco decoders
- * (`draco/`) and `meshopt_decoder.module.js`. Only GLTFLoader is wired here:
- * the one asset in the manifest is uncompressed geometry with no textures,
- * so shipping a transcoder or decoder into `public/vendor/` would be paying
- * for capability nothing exercises. The day a KTX2-textured or
- * meshopt-compressed asset lands, the loaders above are already in the
- * dependency tree and this function is the one place they get attached.
+ * (`draco/`) and `meshopt_decoder.module.js`. Task 8 wired GLTFLoader;
+ * Task 9 wires KTX2Loader for the bulk-surfacing texture sets, with the
+ * Basis transcoder vendored to `public/vendor/basis/` (its own commit)
+ * because the Emscripten module must be fetchable at runtime - it cannot
+ * ride the Vite bundle - and its URL is built from BASE_URL like every
+ * other asset path here, for the same /game/ reason.
+ *
+ * ## Textures need the renderer, geometry does not
+ *
+ * KTX2Loader transcodes each file to whatever compressed format the GPU
+ * actually supports (BC7/BC1 on desktop, ASTC/ETC2 on mobile), and it
+ * discovers that support from a live WebGLRenderer via `detectSupport`.
+ * `loadMazeAssets(renderer)` therefore takes the renderer as an argument -
+ * `MazeWorld.build` passes `this.engine.renderer`, the one renderer the
+ * engine owns - and when it is absent (headless callers, older call sites)
+ * texture entries are skipped with one warning while geometry loads exactly
+ * as before. Skipped or failed textures are simply missing from the
+ * resolved map, and `MazeMaterials.applyAuthoredSurfaces` keeps the
+ * procedural bake for any surface whose authored set is incomplete - the
+ * same never-a-hole rule the geometry pipeline has carried since Task 8.
  */
+
+import * as THREE from 'three';
+import { getMaxAnisotropy } from '../../gfx/Textures.js';
 
 /**
  * Which asset id backs which prefab kind - the registry's side of the
@@ -64,8 +81,20 @@ export const MAZE_ASSET_PREFABS = Object.freeze({
   newel: 'newel-finial',
 });
 
+/**
+ * Which manifest `slot` lands in which material slot(s), and how each slot is
+ * colour-managed. Albedo is sRGB-encoded in the KTX2 file itself (the
+ * container records KHR_DF_TRANSFER_SRGB and KTX2Loader tags the texture);
+ * normal and ORM are linear data. The ORM follows the glTF packing -
+ * R=AO, G=roughness, B=metalness - the same convention `bakeSurface` emits,
+ * so authored and procedural sets are interchangeable slot-for-slot.
+ */
+export const MAZE_TEXTURE_SLOTS = Object.freeze(['map', 'normalMap', 'ormMap']);
+
 /** Session cache: id -> BufferGeometry (or Texture, when one ever lands). */
 let _assets = null;
+/** Texture manifest entries that resolved, for authoredSurfaces(). */
+let _textureEntries = [];
 /** In-flight load, so concurrent builds share one fetch. */
 let _loading = null;
 /** Failure keys already logged - each distinct failure warns once per session. */
@@ -82,12 +111,18 @@ function warnOnce(key, message) {
  * absent - the resolved map simply lacks the entry, and the prefab registry
  * falls back. Never rejects.
  *
- * @returns {Promise<{[id:string]: import('three').BufferGeometry}>}
+ * @param {import('three').WebGLRenderer} [renderer] required for KTX2
+ *   texture entries (KTX2Loader.detectSupport); without it textures are
+ *   skipped with one warning and geometry loads as before. The FIRST call
+ *   of a session decides - the session cache means a later renderer cannot
+ *   revive skipped textures, which is fine because the one real caller
+ *   (MazeWorld.build) always has the engine's renderer in hand.
+ * @returns {Promise<{[id:string]: import('three').BufferGeometry|import('three').Texture}>}
  */
-export function loadMazeAssets() {
+export function loadMazeAssets(renderer) {
   if (_assets) return Promise.resolve(_assets);
   if (_loading) return _loading;
-  _loading = loadAll().then((map) => {
+  _loading = loadAll(renderer).then((map) => {
     _assets = map;
     _loading = null;
     return map;
@@ -95,7 +130,33 @@ export function loadMazeAssets() {
   return _loading;
 }
 
-async function loadAll() {
+/**
+ * The authored surface sets among the loaded assets, keyed by principal
+ * surface kind, ONLY where the set is complete: a surface missing any of its
+ * three maps keeps its procedural bake wholesale, because mixing an authored
+ * albedo with a procedural normal map would disagree about where the relief
+ * is - worse than either set alone.
+ *
+ * @param {{[id:string]: any}} assets the map `loadMazeAssets` resolved
+ * @returns {{[surface:string]: {map: import('three').Texture,
+ *   normalMap: import('three').Texture, ormMap: import('three').Texture}}}
+ */
+export function authoredSurfaces(assets) {
+  const bySurface = {};
+  for (const entry of _textureEntries) {
+    const tex = assets?.[entry.id];
+    if (!tex) continue;
+    (bySurface[entry.surface] ??= {})[entry.slot] = tex;
+  }
+  const out = {};
+  for (const [surface, set] of Object.entries(bySurface)) {
+    if (MAZE_TEXTURE_SLOTS.every((slot) => set[slot])) out[surface] = set;
+    else warnOnce(`incomplete:${surface}`, `surface '${surface}' has an incomplete authored set`);
+  }
+  return out;
+}
+
+async function loadAll(renderer) {
   /* BASE_URL, not '/': the built game mounts under /game/ and a hard-coded
    * absolute path is the bug the whole URL shape exists to prevent. Guarded
    * so the module stays importable under plain Node (no import.meta.env). */
@@ -115,14 +176,50 @@ async function loadAll() {
   if (!entries.length) return {};
 
   const out = {};
-  /* One GLTFLoader for the batch, imported lazily so the loader's ~40 KB of
-   * parser only ever downloads on the first maze build of a session - and
-   * never at all for a player who never enters the maze. */
+  /* One loader of each kind for the batch, imported lazily so the parsers
+   * only ever download on the first maze build of a session - and never at
+   * all for a player who never enters the maze. */
   let loader = null;
+  let ktx2 = null;
+  _textureEntries = entries.filter((e) => e.kind === 'texture');
   for (const entry of entries) {
+    if (entry.kind === 'texture') {
+      if (!renderer) {
+        warnOnce('ktx2:no-renderer',
+          'texture entries need a renderer for KTX2 transcoding and none was passed');
+        continue;
+      }
+      try {
+        if (ktx2 === null) {
+          const { KTX2Loader } = await import('three/examples/jsm/loaders/KTX2Loader.js');
+          /* The transcoder is VENDORED (public/vendor/basis/, its own
+           * commit) and its path built from the Vite base like every asset
+           * URL in this file - the /game/ mount makes a leading-slash path
+           * the bug the suite greps for, in /vendor/ exactly as in the
+           * asset dir. */
+          ktx2 = new KTX2Loader()
+            .setTranscoderPath(`${base}vendor/basis/`)
+            .detectSupport(renderer);
+        }
+        const tex = await ktx2.loadAsync(dir + entry.file);
+        /* World-scale UVs leave 0..1 immediately, so wrap is load-bearing;
+         * the maze's KTX2 files are all POT, which WebGL2 compressed
+         * textures require for repeat. Colour space is recorded IN the
+         * container (albedo sRGB, normal/ORM linear) and KTX2Loader tags
+         * the texture from it; per-surface `repeat` is a material decision
+         * and is applied in MazeMaterials.applyAuthoredSurfaces. */
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.wrapT = THREE.RepeatWrapping;
+        tex.anisotropy = getMaxAnisotropy();
+        tex.name = `maze.authored.${entry.surface}.${entry.slot}`;
+        tex.needsUpdate = true;
+        out[entry.id] = tex;
+      } catch (e) {
+        warnOnce(`asset:${entry.id}`, `could not load asset '${entry.id}' (${entry.file}: ${e.message})`);
+      }
+      continue;
+    }
     if (entry.kind !== 'geometry') {
-      /* Textures arrive in Task 9 with their KTX2 story; loading half a
-       * pipeline for them now would just be untested code. */
       warnOnce(`kind:${entry.id}`, `asset '${entry.id}' has unhandled kind '${entry.kind}'`);
       continue;
     }
@@ -142,6 +239,11 @@ async function loadAll() {
       warnOnce(`asset:${entry.id}`, `could not load asset '${entry.id}' (${entry.file}: ${e.message})`);
     }
   }
+  /* The KTX2 worker pool exists to parallelise transcodes WITHIN a load
+   * burst; keeping it warm for a session that will never load another
+   * texture is paying worker memory for nothing. The transcoded textures
+   * outlive the loader. */
+  ktx2?.dispose();
   return out;
 }
 
@@ -177,5 +279,6 @@ function firstGeometry(gltf) {
 export function resetMazeAssets() {
   _assets = null;
   _loading = null;
+  _textureEntries = [];
   _warned.clear();
 }

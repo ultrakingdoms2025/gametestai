@@ -3,6 +3,7 @@ import {
   bakeSurface, bakeSurfaceAsync, fbm01, fbm2D, ridgedFbm2D, worley2D, WORLEY,
   domainWarp2D, WARP, smoothstep, mix, clamp01,
 } from '../../gfx/Textures.js';
+import { authoredSurfaces } from './MazeAssets.js';
 
 /**
  * The maze's cached material set, and the gate that replaced the frozen 385.
@@ -215,17 +216,59 @@ export const MAZE_TEXTURE_SIZES = Object.freeze({
 });
 
 /**
- * The byte cost of the declared texture set: three RGBA8 maps per surface
- * (albedo + normal + packed ORM - `bakeSurface`'s whole output), each with a
- * full mip chain (the 4/3 factor). Computed from the size table rather than
- * from live textures so the suite can hold the budget headlessly, and so a
- * bake that outgrew its declaration fails the size assertion rather than
- * silently inflating this figure.
+ * Task 9's authored KTX2 sets, in texels per side - the companion size table
+ * to the procedural one above, and the same single-place-of-declaration
+ * rule: `scripts/tests/maze-assets.test.mjs` reads each committed file's
+ * KTX2 header and holds it to this table, so a silent re-export at the
+ * wrong size fails a test instead of inflating GPU memory. 2048 for the two
+ * nose-to surfaces, 1024 for the stone read at a stride - double the
+ * procedural table across the board, which block compression pays for:
+ * a 2048 BC7 map costs exactly what a 1024 RGBA8 map costs.
+ */
+export const MAZE_AUTHORED_TEXTURE_SIZES = Object.freeze({
+  hedge: 2048, floor: 2048, stair: 1024, footing: 1024, tunnel: 1024,
+});
+
+/**
+ * Physical metres one tile of each authored set spans - the world-scale-UV
+ * contract (`worldScaleBoxUVs`, Task 5: UVs are metres, so texture repeat is
+ * tiles-per-metre = 1/these). Taken from each asset's own published scale
+ * where it declares one (dirt_floor 2.07 m, castle_wall_slates 2.5 m,
+ * park_dirt 3 m, Travertine003 1.2 m); Moss002 is procedural at source and
+ * declares none, so the hedge's 2 m is judged against its clump size - close
+ * to the 2.5 m the procedural hedge tile spans, so the two A/B states read
+ * at the same feature scale.
+ */
+export const MAZE_AUTHORED_TILE_METRES = Object.freeze({
+  hedge: 2, floor: 2.07, stair: 1.2, footing: 2.5, tunnel: 3,
+});
+
+/**
+ * The byte cost of the declared texture set, procedural AND authored:
+ *
+ *  - procedural: three RGBA8 maps per surface (albedo + normal + packed
+ *    ORM - `bakeSurface`'s whole output), 4 bytes/texel;
+ *  - authored: the same three slots from the KTX2 sets, accounted at
+ *    1 byte/texel - the worst case the installed KTX2Loader can choose,
+ *    read from its FORMAT_OPTIONS table rather than assumed: on desktop
+ *    ETC1S and UASTC both land in BC7 (8 bpp); the cheaper BC1/ETC1
+ *    (4 bpp) targets only win on hardware that lacks BPTC.
+ *
+ * Both carry a full mip chain (the 4/3 factor; the KTX2 files ship 11-12
+ * levels). Both sets are declared because both EXIST in a session - the
+ * procedural bake is the fallback and the A/B control - but only one set is
+ * GPU-resident per surface at a time: `setMazeSurfaceMode` disposes the GPU
+ * copy of whichever set it swaps out, so live texture memory is roughly
+ * half this declared ceiling. Computed from the size tables rather than
+ * from live textures so the suite can hold the budget headlessly.
  */
 export function declaredTextureBytes() {
   let bytes = 0;
   for (const size of Object.values(MAZE_TEXTURE_SIZES)) {
     bytes += 3 * size * size * 4 * (4 / 3);
+  }
+  for (const size of Object.values(MAZE_AUTHORED_TEXTURE_SIZES)) {
+    bytes += 3 * size * size * 1 * (4 / 3);
   }
   return bytes;
 }
@@ -669,4 +712,96 @@ export function buildMazeMaterials() {
     canopy: new THREE.MeshStandardMaterial({ color: 0x24391f, roughness: 1, metalness: 0 }),
   };
   return _materials;
+}
+
+/* ------------------------------------------------------------------ */
+/* Task 9: authored KTX2 surfaces, procedural fallback, and the A/B    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Force-procedural override: `?proc=1` on the URL keeps every surface on its
+ * procedural bake even when the authored KTX2 sets loaded - the reviewer's
+ * half of the A/B, one query flip apart from the authored build. Guarded so
+ * the module stays importable under plain Node (no `location`).
+ */
+const FORCE_PROCEDURAL = typeof location !== 'undefined' && /[?&]proc=1/.test(location.search);
+
+/** kind -> authored {map, normalMap, ormMap}, recorded by applyAuthoredSurfaces. */
+const _authoredSets = new Map();
+/** Which set the surfaced materials currently wear. */
+let _surfaceMode = 'procedural';
+
+/**
+ * Dress the cached material set in the authored KTX2 surfaces that actually
+ * loaded, per material: a surface whose authored set is complete swaps its
+ * three map slots to the authored textures; any other surface keeps the
+ * procedural bake it already wears. Never throws, never leaves a slot empty
+ * - which is exactly why swapping is safe against MAZE_PROGRAM_BUDGET: the
+ * program cache key sees only slot PRESENCE, and presence never changes, so
+ * an authored world and a procedural one compile the same five families.
+ *
+ * Called by `MazeWorld.build` with the map `loadMazeAssets` resolved, after
+ * the material set exists. Idempotent; re-rolls re-call it with the session-
+ * cached asset map and it re-records the same sets.
+ *
+ * @param {{[id:string]: any}} assets
+ * @returns {number} how many surfaces have an authored set available
+ */
+export function applyAuthoredSurfaces(assets) {
+  if (!_materials) return 0;
+  const sets = authoredSurfaces(assets);
+  for (const [kind, set] of Object.entries(sets)) {
+    if (!SURFACE_RECIPES[kind] || !_materials[kind]) continue;
+    /* Repeat is tiles-per-metre against the world-scale UVs, from the
+     * authored set's own physical size - see MAZE_AUTHORED_TILE_METRES. */
+    const r = 1 / MAZE_AUTHORED_TILE_METRES[kind];
+    for (const slot of ['map', 'normalMap', 'ormMap']) set[slot].repeat.set(r, r);
+    _authoredSets.set(kind, set);
+  }
+  setMazeSurfaceMode(FORCE_PROCEDURAL ? 'procedural' : 'authored');
+  return _authoredSets.size;
+}
+
+/**
+ * The A/B switch: dress every surface that HAS an authored set in either
+ * that set ('authored') or its procedural bake ('procedural'). The other
+ * mode's textures are GPU-disposed on the way out - both bakes stay in CPU
+ * memory for the session, and three re-uploads a disposed texture the next
+ * time a material samples it, so flipping back and forth costs one upload
+ * per texture per flip and never a shader compile (slot presence, and so
+ * the program family, is identical in both modes).
+ *
+ * Reachable from the browser console via the dev harness
+ * (`HARNESS.mazeSurfaces('procedural')`) so a reviewer can A/B a live view
+ * without reloading; `?proc=1` pins the choice at build time instead.
+ *
+ * @param {'authored'|'procedural'} mode
+ * @returns {'authored'|'procedural'} the mode actually in effect
+ */
+export function setMazeSurfaceMode(mode) {
+  if (!_materials || _authoredSets.size === 0) return _surfaceMode;
+  for (const [kind, set] of _authoredSets) {
+    const m = _materials[kind];
+    const surf = _surfaces.get(kind);
+    const next = mode === 'authored' ? set
+      : { map: surf.map, normalMap: surf.normalMap, ormMap: surf.ormMap };
+    const prev = [m.map, m.normalMap, m.roughnessMap];
+    m.map = next.map;
+    m.normalMap = next.normalMap;
+    /* One ORM, two slots - the same one-upload-two-channels sharing the
+     * procedural wiring established; aoMap stays deliberately empty in both
+     * modes (no prefab carries a uv1, and vertex AO owns occlusion). */
+    m.roughnessMap = next.ormMap;
+    m.metalnessMap = next.ormMap;
+    for (const t of prev) {
+      if (t && t !== next.map && t !== next.normalMap && t !== next.ormMap) t.dispose();
+    }
+  }
+  _surfaceMode = mode;
+  return _surfaceMode;
+}
+
+/** Which set the surfaced materials currently wear - for the harness and tests. */
+export function mazeSurfaceMode() {
+  return _surfaceMode;
 }

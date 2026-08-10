@@ -1,75 +1,18 @@
 import Link from 'next/link';
 import HeroCanvas from '@/components/HeroCanvas';
-import HomeWorldShowcase from '@/components/HomeWorldShowcase';
+import GatewayDescent from '@/components/GatewayDescent';
 import AccountDashboard from '@/components/AccountDashboard';
 import SignOutButton from '@/components/SignOutButton';
 import { getAccessStateForSession } from '@/lib/access';
 import { auth } from '@/lib/auth';
 import { ENTRY_CENTS, CREDIT_PRICE_CENTS, MIN_CREDITS, formatCents, grossUp } from '@/lib/pricing';
 import { stripeConfigured } from '@/lib/stripe';
-import { heroTicker, statBar } from '@/lib/worlds';
+import { WORLDS, heroTicker, statBar } from '@/lib/worlds';
+import { getLore } from '@/lib/lore';
 
 /* Reads a cookie, so it cannot be prerendered — and should not be, since the
  * page's primary call to action changes depending on whether you have paid. */
 export const dynamic = 'force-dynamic';
-
-const WORLDS = [
-  {
-    scene: 'station',
-    seed: 0x2101,
-    id: 'world-station',
-    kicker: 'Orbital',
-    name: 'Aether Station',
-    copy: 'A working habitat hanging in front of a planet — plaza, market, hydroponics and hangar bays.',
-    pulse: 'Trade lanes and hangar lines under cold starlight.',
-    role: 'Hub world',
-    traversal: 'Hoverboard, car',
-  },
-  {
-    scene: 'valley',
-    seed: 0x2207,
-    id: 'world-valley',
-    kicker: 'Open country',
-    name: 'Medieval Valley',
-    copy: 'A walled town, castle, forests and lakes. The water is swimmable and has real depth.',
-    pulse: 'Stone, timber and water routes built for climbing and duels.',
-    role: 'Exploration world',
-    traversal: 'Horse, eagle',
-  },
-  {
-    scene: 'sports',
-    seed: 0x2309,
-    id: 'world-sports',
-    kicker: 'Floodlit',
-    name: 'Meridian Athletic Grounds',
-    copy: 'Pool, courts, skatepark, running track and a ski piste, under lights, with a seated crowd.',
-    pulse: 'Speed, trick lines, and challenge runs under stadium lamps.',
-    role: 'Skill world',
-    traversal: 'Hoverboard, on-foot',
-  },
-  {
-    scene: 'citadel',
-    seed: 0x2417,
-    id: 'world-citadel',
-    kicker: 'Desert mesa',
-    name: 'Sunspire Citadel',
-    copy: 'A town built to be climbed: souk rooftops, rope bridges, minarets and a 46 m great tower.',
-    pulse: 'Vertical routes and rooftop combat through sunburnt geometry.',
-    role: 'Vertical world',
-    traversal: 'Climb, dragon',
-  },
-  {
-    scene: 'circuit',
-    seed: 0x2523,
-    id: 'world-circuit',
-    kicker: 'Racing',
-    name: 'Vellum Ridge Circuit',
-    copy: 'A 1,599 m lap over rough terrain and through city streets, with a real F1 start procedure.',
-    pulse: 'Contact racing and late braking across mixed terrain sectors.',
-    role: 'Competition world',
-    traversal: 'Car',
-  },
-];
 
 const FEATURES = [
   {
@@ -112,6 +55,7 @@ export default async function Home() {
   const session = await auth();
   const { hasAccess } = await getAccessStateForSession(session);
   const entryTotal = grossUp(ENTRY_CENTS);
+  const lore = await getLore();
 
   return (
     <>
@@ -214,7 +158,7 @@ export default async function Home() {
       ) : null}
 
       {/* ── World cinematic panels ── */}
-      <HomeWorldShowcase worlds={WORLDS} />
+      <GatewayDescent worlds={WORLDS} lore={lore} />
 
       {/* ── Features ── */}
       <section className="feat-section" id="features-anchor">

@@ -10,6 +10,7 @@ import { createMedievalScene } from '@/components/diorama/scenes/medieval';
 import { createSportsScene } from '@/components/diorama/scenes/sports';
 import { createCitadelScene } from '@/components/diorama/scenes/citadel';
 import { createRaceScene } from '@/components/diorama/scenes/race';
+import { createVerdantCoilScene } from '@/components/diorama/scenes/verdantCoil';
 import WorldPanel from '@/components/WorldPanel';
 import WorldCanvas from '@/components/WorldCanvas';
 import { useGatewayScroll } from '@/hooks/useGatewayScroll';
@@ -30,6 +31,7 @@ const SCENE_FACTORIES: Partial<Record<WorldId, () => DioramaScene>> = {
   sports: createSportsScene,
   citadel: createCitadelScene,
   race: createRaceScene,
+  maze: createVerdantCoilScene,
 };
 
 /**

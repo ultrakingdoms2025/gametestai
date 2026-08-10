@@ -48,21 +48,32 @@ export class Sfx {
     return false;
   }
 
-  /** Shorthand: a noise source through a filter, enveloped. */
-  _noise(v, { seconds, type = 'bandpass', freq = 1000, q = 1, sweepTo = null, gain = 1 }) {
+  /** Shorthand: a noise source through a filter, enveloped.
+   * `rate` slows the noise itself - at 0.4 white noise turns granular, which
+   * is what wood creak and dragging stone are made of. `delay` offsets the
+   * whole burst, for recipes made of several transients in sequence. */
+  _noise(v, { seconds, type = 'bandpass', freq = 1000, q = 1, sweepTo = null, gain = 1, delay = 0, rate = 1 }) {
     const ctx = this.engine.ctx;
     const src = ctx.createBufferSource();
     src.buffer = this.engine.noiseBuffer(Math.max(0.25, seconds));
+    if (rate !== 1) src.playbackRate.value = rate;
     const filt = ctx.createBiquadFilter();
     filt.type = type;
     filt.Q.value = q;
-    const t = ctx.currentTime;
+    const t = ctx.currentTime + delay;
     filt.frequency.setValueAtTime(freq, t);
     if (sweepTo !== null) {
       filt.frequency.exponentialRampToValueAtTime(Math.max(20, sweepTo), t + seconds);
     }
     const env = ctx.createGain();
-    decay(env.gain, gain, seconds, ctx);
+    if (delay > 0) {
+      // decay() anchors to `now`; a delayed burst must hold silent until t.
+      env.gain.setValueAtTime(0.0001, ctx.currentTime);
+      env.gain.setValueAtTime(gain, t);
+      env.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
+    } else {
+      decay(env.gain, gain, seconds, ctx);
+    }
     src.connect(filt);
     filt.connect(env);
     env.connect(v.input);
@@ -90,25 +101,40 @@ export class Sfx {
     return { osc, env };
   }
 
+  /** A tanh waveshaper of drive `k` - the cheapest thing that reads as a
+   * throat (or a flame) rather than as an oscillator. */
+  _shaper(k) {
+    const sh = this.engine.ctx.createWaveShaper();
+    const n = 512;
+    const curve = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1;
+      curve[i] = Math.tanh(k * x) / Math.tanh(k);
+    }
+    sh.curve = curve;
+    return sh;
+  }
+
   /* ================================================================== */
   /* Weapons                                                             */
   /* ================================================================== */
 
   /**
-   * Rifle shot: a wideband crack, a short resonant body, and a low thump.
+   * Shotgun blast: a wide crack, twin low slams, and a long rolling tail.
    *
-   * The crack carries the transient and is what makes it read as a *shot*
-   * rather than as a click; the body is the receiver ringing; the thump is the
-   * part you feel. Randomising the body frequency a few percent per shot is
-   * what stops full-auto fire collapsing into a buzz.
+   * The crack carries the transient; the two staggered low bodies are the
+   * chest punch - one slam reads as a rifle, two a hair apart read as a bore
+   * full of shot leaving together. The bandpass tail is the report rolling
+   * off the walls, and it is most of what makes the shot feel *large*.
    */
   gunshot(at, { volume = 1 } = {}) {
-    const v = this.engine.voice(at, 0.55 * volume, 0.7);
+    const v = this.engine.voice(at, 0.6 * volume, 0.75);
     if (!v) return;
-    this._noise(v, { seconds: 0.09, type: 'highpass', freq: 1800, q: 0.7, gain: 0.9 });
-    this._noise(v, { seconds: 0.16, type: 'bandpass', freq: rnd(520, 700), q: 1.4, sweepTo: 180, gain: 0.5 });
-    this._tone(v, { seconds: 0.12, type: 'triangle', freq: rnd(95, 120), toFreq: 45, gain: 0.55 });
-    this.engine.release(0.25);
+    this._noise(v, { seconds: 0.05, type: 'highpass', freq: 600, q: 0.7, gain: 0.8 });
+    this._tone(v, { seconds: 0.15, type: 'triangle', freq: rnd(100, 122), toFreq: 40, gain: 0.7 });
+    this._tone(v, { seconds: 0.16, type: 'sine', freq: rnd(88, 100), toFreq: 42, gain: 0.6, delay: 0.02 });
+    this._noise(v, { seconds: 0.6, type: 'bandpass', freq: 420, q: 0.7, sweepTo: 180, gain: 0.4 });
+    this.engine.release(0.8);
   }
 
   /** Dry click: the trigger falling on an empty chamber. */
@@ -132,16 +158,19 @@ export class Sfx {
   }
 
   /**
-   * Sword swing: filtered noise whose centre sweeps down through the arc.
+   * Broadsword swing: a wide band sweeping *up* through the arc, with a low
+   * push of air underneath.
    *
-   * The sweep *is* the swing - a static band reads as a hiss, and it is the
-   * downward glide that the ear hears as something heavy moving past.
+   * The rising sweep is the blade accelerating - down reads as something
+   * passing you, up reads as something *you* are swinging. The low tone is
+   * the mass; without it the arc is a wand, not a broadsword.
    */
   swordSwing(at) {
-    const v = this.engine.voice(at, 0.5, 0.5);
+    const v = this.engine.voice(at, 0.55, 0.5);
     if (!v) return;
-    this._noise(v, { seconds: 0.34, type: 'bandpass', freq: rnd(1500, 2100), q: 1.6, sweepTo: 320, gain: 0.55 });
-    this.engine.release(0.45);
+    this._noise(v, { seconds: 0.2, type: 'bandpass', freq: rnd(280, 340), q: 1.6, sweepTo: 1900, gain: 0.55 });
+    this._tone(v, { seconds: 0.14, type: 'sine', freq: 150, toFreq: 90, gain: 0.3 });
+    this.engine.release(0.35);
   }
 
   /** Steel on steel: inharmonic partials, which is what makes metal metallic. */
@@ -158,24 +187,31 @@ export class Sfx {
     this.engine.release(0.6);
   }
 
-  /** Bowstring: a short pluck plus the fletching passing the riser. */
+  /**
+   * Longbow release: a deep string twang that *rings*, an octave under it,
+   * and the arrow's hiss climbing away.
+   *
+   * The long triangle at ~140 Hz is a heavy string still vibrating after the
+   * arrow has gone - the sound archers actually hear. The rising highpass is
+   * the fletching leaving; it goes up because the arrow is departing.
+   */
   bowRelease(at) {
-    const v = this.engine.voice(at, 0.5, 0.6);
+    const v = this.engine.voice(at, 0.55, 0.6);
     if (!v) return;
-    this._tone(v, { seconds: 0.14, type: 'triangle', freq: rnd(150, 190), toFreq: 70, gain: 0.5 });
-    this._noise(v, { seconds: 0.2, type: 'bandpass', freq: 2400, q: 2, sweepTo: 700, gain: 0.35 });
-    this.engine.release(0.3);
+    this._tone(v, { seconds: 0.45, type: 'triangle', freq: rnd(135, 148), toFreq: 132, gain: 0.5 });
+    this._tone(v, { seconds: 0.3, type: 'sine', freq: 70, gain: 0.3 });
+    this._noise(v, { seconds: 0.14, type: 'highpass', freq: 1400, sweepTo: 4200, gain: 0.35 });
+    this.engine.release(0.55);
   }
 
-  /** The draw: rising creak of limbs under load. */
+  /** The draw: wood limbs creaking under load. The slowed noise is what
+   * turns a filtered hiss into grain - fibre slipping against fibre. */
   bowDraw(at) {
     if (this._throttled('bowDraw', 0.4)) return;
-    const v = this.engine.voice(at, 0.55, 0.3);
+    const v = this.engine.voice(at, 0.5, 0.3);
     if (!v) return;
-    // Q of 6 is a narrow band, and a narrow band passes very little energy -
-    // measured at barely twice the noise floor before the gain came up.
-    this._noise(v, { seconds: 0.5, type: 'bandpass', freq: 320, q: 6, sweepTo: 620, gain: 0.85 });
-    this.engine.release(0.6);
+    this._noise(v, { seconds: 0.35, type: 'bandpass', freq: 620, q: 5, sweepTo: 700, gain: 0.8, rate: 0.35 });
+    this.engine.release(0.5);
   }
 
   /** Ember charge: a rising, slightly unstable tone with noise crackle. */
@@ -188,13 +224,44 @@ export class Sfx {
     this.engine.release(0.85);
   }
 
-  /** Release: a body of low noise with a bright leading edge. */
+  /**
+   * Hellfire cast: driven flame noise howling down, an almost-vocal throat
+   * tone inside it, sub pressure underneath, and embers in the tail.
+   *
+   * The waveshaper is what separates this from a whoosh - clipped noise has
+   * the crackle-density of real combustion, and the falling sawtooth through
+   * the same register puts a *voice* in the flame.
+   */
   fireballCast(at) {
-    const v = this.engine.voice(at, 0.6, 0.8);
+    const v = this.engine.voice(at, 0.65, 0.85);
     if (!v) return;
-    this._noise(v, { seconds: 0.45, type: 'lowpass', freq: 2200, q: 0.8, sweepTo: 320, gain: 0.6 });
-    this._tone(v, { seconds: 0.3, type: 'sawtooth', freq: 220, toFreq: 60, gain: 0.35 });
-    this.engine.release(0.6);
+    const ctx = this.engine.ctx;
+    const t = ctx.currentTime;
+    const dur = 1.0;
+    // The flame: slowed noise, hard-driven, swept from bright to smothered.
+    const src = ctx.createBufferSource();
+    src.buffer = this.engine.noiseBuffer(1.2);
+    src.playbackRate.value = 0.7;
+    const sh = this._shaper(9);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(2400, t);
+    lp.frequency.exponentialRampToValueAtTime(300, t + dur);
+    const env = ctx.createGain();
+    decay(env.gain, 0.55, dur, ctx);
+    src.connect(sh); sh.connect(lp); lp.connect(env); env.connect(v.input);
+    src.start(t);
+    src.stop(t + dur + 0.05);
+    // The throat: a falling voice inside the fire.
+    this._tone(v, { seconds: dur * 0.7, type: 'sawtooth', freq: 300, toFreq: 120, gain: 0.22 });
+    // The pressure.
+    this._tone(v, { seconds: dur, type: 'sine', freq: 75, toFreq: 45, gain: 0.4 });
+    // Embers spitting off in the tail.
+    for (let i = 0; i < 10; i++) {
+      this._noise(v, { seconds: 0.02, type: 'bandpass', freq: 2800 * rnd(0.7, 1.4), q: 3,
+        gain: rnd(0.06, 0.14), delay: 0.1 + Math.random() * 0.75 });
+    }
+    this.engine.release(dur + 0.2);
   }
 
   /** Detonation: sub drop, broadband body, and a debris tail. */
@@ -256,9 +323,17 @@ export class Sfx {
     this.engine.release(0.4);
   }
 
-  /** Footstep, coloured by surface. Quiet by design - they repeat forever. */
+  /**
+   * Footstep: heel, body, toe - in that order, because that is the order a
+   * foot lands in. Quiet by design; they repeat forever.
+   *
+   * The heel is a hard scuff sweeping down, the body is the weight arriving
+   * (lower and heavier at a sprint), and the toe is a lighter scuff a
+   * fraction later. That two-transient gait is what a single burst can never
+   * fake, and it is most of the realism. Surface still colours the band.
+   */
   footstep(at, surface = 'concrete', { running = false } = {}) {
-    const v = this.engine.voice(at, running ? 0.5 : 0.34, 0.4);
+    const v = this.engine.voice(at, running ? 0.55 : 0.36, 0.35);
     if (!v) return;
     const F = {
       metal: 1500, stone: 900, concrete: 800, wood: 620,
@@ -268,11 +343,68 @@ export class Sfx {
     // impact palette does, or walking on dirt is silent while walking on deck
     // plate is not.
     const lift = F < 700 ? 2.2 : 1.0;
+    const heel = F * rnd(0.9, 1.12);
     this._noise(v, {
-      seconds: running ? 0.11 : 0.14,
-      type: 'bandpass', freq: F * rnd(0.88, 1.14), q: 1.1, sweepTo: F * 0.4, gain: 0.7 * lift,
+      seconds: 0.05, type: 'bandpass', freq: heel * 1.4, q: 0.8,
+      sweepTo: heel * 0.6, gain: (running ? 0.8 : 0.62) * lift,
+    });
+    this._tone(v, {
+      seconds: running ? 0.09 : 0.07, type: 'sine',
+      freq: running ? 95 : 110, toFreq: running ? 58 : 66, gain: running ? 0.6 : 0.45,
+    });
+    this._noise(v, {
+      seconds: 0.04, type: 'bandpass', freq: heel * 1.1, q: 0.9,
+      sweepTo: heel * 0.5, gain: (running ? 0.42 : 0.3) * lift, delay: running ? 0.05 : 0.07,
     });
     this.engine.release(0.25);
+  }
+
+  /**
+   * Swim stroke: a swash pulling down through the water, with bubbles
+   * breaking upward past the ear - each one a tiny rising sine, because a
+   * bubble really is a resonator whose pitch climbs as it shrinks.
+   */
+  swimStroke(at) {
+    if (this._throttled('swim', 0.45)) return;
+    const v = this.engine.voice(at, 0.4, 0.6);
+    if (!v) return;
+    this._noise(v, { seconds: 0.5, type: 'bandpass', freq: 700, q: 0.6, sweepTo: 350, gain: 0.5 });
+    for (let i = 0; i < 6; i++) {
+      const f = rnd(350, 700);
+      this._tone(v, { seconds: 0.06, type: 'sine', freq: f, toFreq: f * 2.2,
+        gain: 0.16, delay: 0.05 + Math.random() * 0.4 });
+    }
+    this.engine.release(0.75);
+  }
+
+  /**
+   * Climb: rock scraping under a hand or boot, then the settle knock.
+   * The slowed noise is the grit; full-rate noise is a hiss, half-rate noise
+   * is *texture*, and texture is what stone dragging against stone has.
+   */
+  climbScrape(at) {
+    if (this._throttled('climb', 0.28)) return;
+    const v = this.engine.voice(at, 0.42, 0.4);
+    if (!v) return;
+    this._noise(v, { seconds: 0.3, type: 'bandpass', freq: 1300, q: 3, sweepTo: 700, gain: 0.5, rate: 0.5 });
+    this._tone(v, { seconds: 0.06, type: 'sine', freq: 130, toFreq: 95, gain: 0.28, delay: 0.22 });
+    this.engine.release(0.45);
+  }
+
+  /**
+   * Crouch: cloth folding, and nothing else. Eight staggered lowpassed
+   * grains rather than one burst - fabric moves as a series of tiny
+   * releases, and a single envelope reads as a puff of air instead.
+   */
+  crouchRustle(at) {
+    if (this._throttled('crouch', 0.3)) return;
+    const v = this.engine.voice(at, 0.3, 0.15);
+    if (!v) return;
+    for (let i = 0; i < 8; i++) {
+      this._noise(v, { seconds: 0.03, type: 'lowpass', freq: 1600 * rnd(0.7, 1.4), q: 1,
+        gain: rnd(0.12, 0.24), delay: Math.random() * 0.22 });
+    }
+    this.engine.release(0.35);
   }
 
   /** Pickup: a short bright two-note lift. Reward, not alert. */
@@ -318,7 +450,7 @@ export class Sfx {
    * handle with `set()` and `stop()` rather than firing and forgetting, and
    * they sit outside the voice budget because there is at most one of them.
    *
-   * @param {'hoverboard'|'car'|'dragon'|'horse'|'eagle'} kind
+   * @param {'hoverboard'|'car'|'bicycle'|'dragon'|'horse'|'eagle'} kind
    * @returns {{set:(o:object)=>void, stop:()=>void}|null}
    */
   startMount(kind) {
@@ -337,49 +469,88 @@ export class Sfx {
     let setter;
 
     if (kind === 'hoverboard') {
-      /* Anti-grav hum: two detuned saws through a lowpass, plus an airy noise
-       * bed. The detune is what gives it the slow beating that reads as a
-       * field rather than as a note. */
-      const a = ctx.createOscillator(); a.type = 'sawtooth'; a.frequency.value = 92;
-      const b = ctx.createOscillator(); b.type = 'sawtooth'; b.frequency.value = 92 * 1.007;
-      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 700; lp.Q.value = 4;
-      const air = ctx.createBufferSource(); air.buffer = eng.noiseBuffer(2); air.loop = true;
-      const ap = ctx.createBiquadFilter(); ap.type = 'bandpass'; ap.frequency.value = 2400; ap.Q.value = 0.8;
-      const ag = ctx.createGain(); ag.gain.value = 0.09;
-      a.connect(lp); b.connect(lp); lp.connect(out);
-      air.connect(ap); ap.connect(ag); ag.connect(out);
-      a.start(t); b.start(t); air.start(t);
-      nodes.push(a, b, air);
+      /* Magnetic pulse: a square fundamental with its sine octave through a
+       * resonant lowpass, the whole field throbbing at ~9 Hz. The throb is
+       * the character - a steady hum is a refrigerator, a pulsed one is a
+       * containment field working. Rate and pitch both climb with speed. */
+      const a = ctx.createOscillator(); a.type = 'square'; a.frequency.value = 70;
+      const b = ctx.createOscillator(); b.type = 'sine'; b.frequency.value = 140;
+      const bg = ctx.createGain(); bg.gain.value = 0.75;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 600; lp.Q.value = 5;
+      const throb = ctx.createGain(); throb.gain.value = 1;
+      const lfo = ctx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 9;
+      const lfoAmt = ctx.createGain(); lfoAmt.gain.value = 0.45;
+      lfo.connect(lfoAmt); lfoAmt.connect(throb.gain);
+      a.connect(lp); b.connect(bg); bg.connect(lp); lp.connect(throb); throb.connect(out);
+      a.start(t); b.start(t); lfo.start(t);
+      nodes.push(a, b, lfo);
       setter = ({ speed = 0, boost = 0 }) => {
-        const f = 92 + speed * 5.5 + boost * 40;
-        a.frequency.setTargetAtTime(f, ctx.currentTime, 0.08);
-        b.frequency.setTargetAtTime(f * 1.007, ctx.currentTime, 0.08);
-        lp.frequency.setTargetAtTime(700 + speed * 90 + boost * 900, ctx.currentTime, 0.1);
-        ag.gain.setTargetAtTime(0.09 + speed * 0.012, ctx.currentTime, 0.15);
+        const now = ctx.currentTime;
+        const f = 70 + speed * 4 + boost * 28;
+        a.frequency.setTargetAtTime(f, now, 0.08);
+        b.frequency.setTargetAtTime(f * 2, now, 0.08);
+        lp.frequency.setTargetAtTime(600 + speed * 70 + boost * 700, now, 0.1);
+        lfo.frequency.setTargetAtTime(9 + speed * 0.35, now, 0.15);
       };
     } else if (kind === 'car') {
-      /* Engine: a stack of harmonics on a fundamental that tracks rpm, with a
-       * touch of noise for induction. Sawtooth alone is a synth; the harmonic
-       * stack with unequal gains is what gives it a body. */
+      /* Rally growl: a harmonic stack with a *detuned* half-order saw in it.
+       * The 1.5× sawtooth is the whole character - integer harmonics are a
+       * clean engine, and the off-order partial snarling against them is a
+       * competition motor with the refinement tuned out. */
       const oscs = [];
       const mix = ctx.createGain(); mix.gain.value = 0.5;
-      for (const [mult, g] of [[1, 0.5], [2, 0.28], [3, 0.16], [4.5, 0.08]]) {
+      for (const [mult, g, wave] of [[1, 0.5, 'sawtooth'], [1.5, 0.2, 'sawtooth'], [2, 0.3, 'square'], [3, 0.15, 'square']]) {
         const o = ctx.createOscillator();
-        o.type = mult === 1 ? 'sawtooth' : 'square';
-        o.frequency.value = 55 * mult;
+        o.type = wave;
+        o.frequency.value = 52 * mult;
         const og = ctx.createGain(); og.gain.value = g;
         o.connect(og); og.connect(mix);
         o.start(t);
         oscs.push({ o, mult });
         nodes.push(o);
       }
-      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1200;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1100;
       mix.connect(lp); lp.connect(out);
       setter = ({ speed = 0, throttle = 0 }) => {
-        const f = 46 + speed * 3.4 + throttle * 14;
+        const f = 52 + speed * 3.4 + throttle * 14;
         const now = ctx.currentTime;
         for (const { o, mult } of oscs) o.frequency.setTargetAtTime(f * mult, now, 0.06);
         lp.frequency.setTargetAtTime(900 + speed * 55 + throttle * 700, now, 0.08);
+      };
+    } else if (kind === 'bicycle') {
+      /* Chain and clicks: a soft chain-whir noise bed, and freewheel pawl
+       * clicks whose cadence tracks speed. The clicks are scheduled from a
+       * timer rather than looped - a looped click train phase-locks into a
+       * buzz, and a real hub never does. */
+      const whir = ctx.createBufferSource(); whir.buffer = eng.noiseBuffer(2); whir.loop = true;
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 950; bp.Q.value = 1.2;
+      const wg = ctx.createGain(); wg.gain.value = 0.0001;
+      whir.connect(bp); bp.connect(wg); wg.connect(out);
+      whir.start(t);
+      nodes.push(whir);
+      let rate = 0;
+      let nextClick = 0;
+      const tick = setInterval(() => {
+        const now = ctx.currentTime;
+        if (rate < 3 || now < nextClick) return;
+        nextClick = now + 1 / rate;
+        const o = ctx.createOscillator();
+        o.type = 'square';
+        o.frequency.value = 3200 * rnd(0.95, 1.05);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.0001, now);
+        g.gain.exponentialRampToValueAtTime(0.1 * rnd(0.7, 1), now + 0.002);
+        g.gain.exponentialRampToValueAtTime(0.0001, now + 0.014);
+        o.connect(g); g.connect(out);
+        o.start(now); o.stop(now + 0.02);
+      }, 24);
+      // A pseudo-node so the shared stop() tears the timer down with the rest.
+      nodes.push({ stop() { clearInterval(tick); } });
+      setter = ({ speed = 0 }) => {
+        rate = speed * 1.6;
+        const now = ctx.currentTime;
+        wg.gain.setTargetAtTime(Math.min(0.09, 0.01 + speed * 0.006), now, 0.2);
+        bp.frequency.setTargetAtTime(950 + speed * 30, now, 0.25);
       };
     } else if (kind === 'horse') {
       /* A horse is almost entirely hooves, and hooves are events, not a drone -
@@ -476,18 +647,19 @@ export class Sfx {
    *   weight is behind the strike, i.e. the gait.
    */
   hoof(at, { hard = 0.5 } = {}) {
-    const v = this.engine.voice(at, 0.28, 0.55 + hard * 0.45);
+    const v = this.engine.voice(at, 0.3, 0.5 + hard * 0.45);
     if (!v) return;
-    const f = rnd(150, 215);
-    // The ring. Falls fast - a hoof is damped by the ground it just hit.
-    this._tone(v, { seconds: 0.1 + hard * 0.05, type: 'triangle', freq: f, toFreq: f * 0.62,
-      gain: 0.32 + hard * 0.3 });
-    // The shoe. Bright, and only really present at speed.
-    this._noise(v, { seconds: 0.028, type: 'highpass', freq: 3200 + hard * 1800, q: 0.8,
-      gain: 0.18 + hard * 0.4 });
-    // The ground. Dust and grit under the strike.
-    this._noise(v, { seconds: 0.13, type: 'bandpass', freq: rnd(700, 1100), q: 1.1,
-      sweepTo: 260, gain: 0.16 + hard * 0.22 });
+    /* Cobblestone: the knock sits high (~660 Hz) and falls a full octave,
+     * which is the hollow keratin-box ring bouncing off stone. Bright shoe
+     * click over it, and a modest body underneath - the stone carries the
+     * high end, so the body stays small or every step turns into a drum. */
+    const f = 660 * rnd(0.92, 1.1);
+    this._tone(v, { seconds: 0.055, type: 'sine', freq: f, toFreq: f * 0.5,
+      gain: 0.3 + hard * 0.3 });
+    this._noise(v, { seconds: 0.02, type: 'bandpass', freq: 1900, q: 2,
+      gain: 0.14 + hard * 0.25 });
+    this._tone(v, { seconds: 0.09, type: 'sine', freq: 130, toFreq: 75,
+      gain: 0.18 + hard * 0.2 });
   }
 
   /**
@@ -504,25 +676,45 @@ export class Sfx {
   wingBeat(at, { power = 1 } = {}) {
     const v = this.engine.voice(at, 0.45, 0.5 + power * 0.5);
     if (!v) return;
-    this._noise(v, { seconds: 0.3, type: 'bandpass', freq: 210, q: 0.7, sweepTo: 620,
+    /* Broad-wing character: the band climbs much further into the stroke
+     * (~1200 Hz) before cutting, which is a bigger sail moving more air. */
+    this._noise(v, { seconds: 0.4, type: 'bandpass', freq: 300, q: 0.8, sweepTo: 1200,
       gain: 0.4 * power });
-    this._noise(v, { seconds: 0.22, type: 'lowpass', freq: 900, sweepTo: 260, gain: 0.3 * power });
+    this._noise(v, { seconds: 0.24, type: 'lowpass', freq: 900, sweepTo: 260, gain: 0.28 * power });
     this._tone(v, { seconds: 0.16, type: 'sine', freq: 62, toFreq: 34, gain: 0.22 * power });
   }
 
-  /** An eagle's cry: a hard, bright descending scream. */
+  /**
+   * An eagle's cry: one long, driven note falling away into the canyon.
+   *
+   * Slightly overdriven sawtooth through a single high band - the drive adds
+   * the torn upper harmonics a real raptor call has, and the full reverb send
+   * is the other half of the sound: the cry is *of somewhere high*.
+   */
   eagleScreech(at) {
     if (this._throttled('screech', 2.2)) return;
     const v = this.engine.voice(at, 0.7, 1);
     if (!v) return;
-    /* Raptor calls are strident because the energy sits in the upper harmonics
-     * rather than the fundamental, so the stack is deliberately top-heavy and
-     * every partial slides down together. */
-    for (const [mult, g] of [[1, 0.16], [2, 0.3], [3, 0.26], [4, 0.14]]) {
-      this._tone(v, { seconds: 0.62, type: 'sawtooth', freq: 900 * mult * 0.5,
-        toFreq: 560 * mult * 0.5, gain: g });
-    }
-    this._noise(v, { seconds: 0.5, type: 'bandpass', freq: 2800, q: 3.5, sweepTo: 1500, gain: 0.3 });
+    const ctx = this.engine.ctx;
+    const t = ctx.currentTime;
+    const dur = 1.1;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(1900, t);
+    osc.frequency.exponentialRampToValueAtTime(1140, t + dur);
+    const sh = this._shaper(3.5);
+    const band = ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = 2100;
+    band.Q.value = 1.6;
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.exponentialRampToValueAtTime(0.4, t + 0.015);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(sh); sh.connect(band); band.connect(env); env.connect(v.input);
+    osc.start(t);
+    osc.stop(t + dur + 0.05);
+    this.engine.release(dur + 0.3);
   }
 
   /** A horse's whinny, for summoning. */
@@ -538,18 +730,58 @@ export class Sfx {
     this._tone(v, { seconds: 0.85, type: 'sawtooth', freq: 360, toFreq: 180, gain: 0.26 });
   }
 
-  /** A roar: formant-filtered noise growl over a falling pitch. */
+  /**
+   * The rumbling growl: a warning, not a scream.
+   *
+   * A driven sawtooth at 58 Hz falling barely a third, amplitude-shaken at
+   * 9 Hz (the growl itself - a real growl is pulsed air, not a steady tone),
+   * pushed through a throat of three formant bands. Long, low, and it never
+   * opens up: the menace is in what it withholds.
+   */
   dragonRoar(at) {
     if (this._throttled('roar', 1.2)) return;
-    const v = this.engine.voice(at, 0.8, 1);
+    const v = this.engine.voice(at, 0.85, 1);
     if (!v) return;
-    // Three formants is the cheapest thing that reads as a throat rather than
-    // as a filter sweep.
-    for (const [f, q, g] of [[220, 6, 0.45], [640, 8, 0.3], [1500, 10, 0.16]]) {
-      this._noise(v, { seconds: 1.1, type: 'bandpass', freq: f, q, sweepTo: f * 0.55, gain: g });
+    const ctx = this.engine.ctx;
+    const t = ctx.currentTime;
+    const dur = 1.9;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(58, t);
+    osc.frequency.exponentialRampToValueAtTime(46, t + dur * 0.85);
+    const sh = this._shaper(5);
+    const am = ctx.createGain();
+    am.gain.value = 1;
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = 9;
+    const lfoAmt = ctx.createGain();
+    lfoAmt.gain.value = 0.35;
+    lfo.connect(lfoAmt);
+    lfoAmt.connect(am.gain);
+    const mix = ctx.createGain();
+    osc.connect(sh);
+    sh.connect(am);
+    for (const [f, q, g] of [[240, 1.1, 0.5], [620, 1.4, 0.38], [1150, 2, 0.2]]) {
+      const b = ctx.createBiquadFilter();
+      b.type = 'bandpass';
+      b.frequency.value = f;
+      b.Q.value = q;
+      const bg = ctx.createGain();
+      bg.gain.value = g;
+      am.connect(b); b.connect(bg); bg.connect(mix);
     }
-    this._tone(v, { seconds: 1.0, type: 'sawtooth', freq: 88, toFreq: 42, gain: 0.3 });
-    this.engine.release(1.3);
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.exponentialRampToValueAtTime(0.55, t + 0.08);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    mix.connect(env);
+    env.connect(v.input);
+    osc.start(t); osc.stop(t + dur + 0.05);
+    lfo.start(t); lfo.stop(t + dur + 0.05);
+    // The breath around the growl.
+    this._noise(v, { seconds: dur * 0.9, type: 'bandpass', freq: 900, q: 0.7,
+      sweepTo: 400, gain: 0.32, rate: 0.8 });
+    this.engine.release(dur + 0.2);
   }
 
   /** Mount summon / dismiss: a short materialising sweep. */

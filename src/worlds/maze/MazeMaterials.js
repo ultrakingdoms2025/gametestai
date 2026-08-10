@@ -538,6 +538,18 @@ export function buildMazeMaterials() {
      * specifically so it gets its own InstancedMesh in this pale material
      * instead - ordinary hedges are untouched. */
     shaftWall: stair,
+    /* The shaft newel (Task 8) - the authored hero prop at each stair's well
+     * centre - REMAPPED to the exact stair material object, the same
+     * aliasing shaftWall uses and for a sharper reason: the .glb carries its
+     * own placeholder material, and a loaded glTF material would be its own
+     * program family (its own shader compile against MAZE_PROGRAM_BUDGET).
+     * MazeAssets discards it at load; this alias is what the geometry draws
+     * with instead, so an authored asset costs ZERO new programs and the
+     * newel reads as one more piece of the shaft's pale stonework - which,
+     * standing at the centre of the spiral, is what a newel is. The stone
+     * batch relies on this identity (a BatchedMesh has ONE material) and the
+     * family test pins it. */
+    newel: stair,
     /* The lift car. Its own material rather than the stair's, because it is
      * the one surface in a shaft that MOVES and the player needs to read it
      * as a thing rather than as more stonework - a darker metal against the

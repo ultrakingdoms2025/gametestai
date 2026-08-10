@@ -3,7 +3,7 @@ import { MAZE, DIR, districtCoords, districtAtWorld, neighbourhoodKeys } from '.
 import { districtColliders } from './MazeColliders.js';
 import {
   foliageTransforms, footingTransforms, candlePlacements, shaftIvyTransforms,
-  wellLightColumns, WELL_LIGHT_RADIUS,
+  wellLightColumns, WELL_LIGHT_RADIUS, newelPlacements, NEWEL_HALF,
 } from './MazeFoliage.js';
 import { PLATE_HALF_HEIGHT, PLATE_HALF_WIDTH } from './MazeShafts.js';
 /* The geometry seam. This class turns descriptors into instance matrices and
@@ -114,7 +114,7 @@ export class MazeChunks {
    *           materials: { hedge: THREE.Material, floor: THREE.Material,
    *                        stair: THREE.Material, shaftWall: THREE.Material } }} ctx
    */
-  constructor({ world, cells, group, materials, puzzles = null }) {
+  constructor({ world, cells, group, materials, puzzles = null, assets = null }) {
     /* The WORLD, not its physics. WorldManager swaps `world.physics` to a
      * throwaway scratch instance for the duration of build() and restores the
      * real one afterwards - and this class is constructed inside build(). A
@@ -130,6 +130,12 @@ export class MazeChunks {
      * decision - so it is made once at build time and passed as a plain cell
      * lookup. Null for the headless gates, which then see no puzzles at all. */
     this.puzzles = puzzles;
+    /* The authored-asset map `MazeAssets.loadMazeAssets()` resolved, or null
+     * when the world built without one (every headless test does). Threaded
+     * onto the newel descriptors in `ensure` so `prefabFor` can prefer the
+     * .glb; a null here simply means every newel is the procedural fallback,
+     * which is the pipeline's whole degradation contract. */
+    this.assets = assets;
     /* The shared per-family batches every static box draws through. Owned
      * here because their lifecycle IS the residency lifecycle: `ensure` adds
      * a district's instances, `drop` deletes exactly them, and `disposeAll`
@@ -353,6 +359,21 @@ export class MazeChunks {
         this.group.add(pool);
         meshes.push(pool);
       }
+    }
+
+    /* The shaft newel - Task 8's hero prop, one per stair shaft, standing at
+     * the exact centre of the spiral. Dressing (mesh only, never a collider;
+     * see DRESSING_KINDS in MazeMeshes.js), batched with the stone family so
+     * it costs zero extra draw calls, and carrying the assets map so the
+     * prefab registry can serve the authored .glb when it loaded and the
+     * procedural finial when it did not. */
+    const newels = newelPlacements(this.cells, dx, dz, level);
+    if (newels.length && this.materials.newel) {
+      batched.push(...newels.map((n) => ({
+        kind: 'newel', cx: n.x, cy: n.y, cz: n.z,
+        hx: NEWEL_HALF.hx, hy: NEWEL_HALF.hy, hz: NEWEL_HALF.hz,
+        assets: this.assets,
+      })));
     }
 
     const candles = candlePlacements(descs, key);

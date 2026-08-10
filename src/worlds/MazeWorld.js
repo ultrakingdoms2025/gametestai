@@ -15,6 +15,10 @@ import { MazePopulation } from './maze/MazePopulation.js';
 import { MazeChunks, buildBoxInstances } from './maze/MazeChunks.js';
 import { groupByExtentClass } from './maze/MazeMeshes.js';
 import { buildMazeMaterials, buildMazeMaterialsAsync } from './maze/MazeMaterials.js';
+/* Authored assets (Task 8). Loaded on world BUILD, never at module scope - a
+ * world nobody enters must cost nothing - and cached for the session inside
+ * the module, like the materials. See MazeAssets.js. */
+import { loadMazeAssets } from './maze/MazeAssets.js';
 import { MazeCanopy } from './maze/MazeCanopy.js';
 import { AbandonHold } from './maze/MazeAbandon.js';
 
@@ -503,7 +507,16 @@ export class MazeWorld extends World {
 
     await onProgress?.(0.25, 'Laying the paths');
 
-    const mats = await this._ensureMaterialsAsync();
+    /* Materials and authored assets together: the asset fetch is network
+     * I/O, the material bake is CPU, and neither needs the other - so the
+     * fetch hides entirely inside the bake on a cold session. Both resolve
+     * from session caches on every later entry. `loadMazeAssets` NEVER
+     * rejects; a missing or unparseable file just leaves its id out of the
+     * map, and every consumer of the map falls back to the procedural
+     * prefab (see MazeAssets.js). */
+    const [mats, assets] = await Promise.all([
+      this._ensureMaterialsAsync(), loadMazeAssets(),
+    ]);
     const ew = cellToWorld(e.x, e.z, e.level);
 
     /* Districts stream (see this.chunks below). The forecourt does not: it is
@@ -563,6 +576,7 @@ export class MazeWorld extends World {
       group: this.group,
       materials: mats,
       puzzles: this.puzzles,
+      assets,
     });
 
     const spawn = this.playerSpawn;

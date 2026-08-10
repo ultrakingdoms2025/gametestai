@@ -9,7 +9,7 @@ import {
 } from '../../src/worlds/maze/MazeTopology.js';
 import { districtColliders } from '../../src/worlds/maze/MazeColliders.js';
 import { puzzleCells } from '../../src/worlds/maze/MazePuzzles.js';
-import { footingTransforms, candlePlacements } from '../../src/worlds/maze/MazeFoliage.js';
+import { footingTransforms, candlePlacements, newelPlacements } from '../../src/worlds/maze/MazeFoliage.js';
 import { releasePrefabs } from '../../src/worlds/maze/MazeMeshes.js';
 import { buildMazeMaterials } from '../../src/worlds/maze/MazeMaterials.js';
 import {
@@ -139,6 +139,11 @@ test('the baked per-district maxima cover a real topology', () => {
           + candlePlacements(descs, districtIndex(dx, dz, level)).length;
         counts.plate = (counts.plate ?? 0)
           + descs.filter((d) => d.kind === 'slideWall' && d.plate).length;
+        /* Task 8: the shaft newel is stone-family dressing, one per stair
+         * shaft, synthesised in ensure() like the candles - so it counts
+         * against stone's baked maximum here or the bake quietly rots. */
+        counts.stone = (counts.stone ?? 0)
+          + newelPlacements(t.cells, dx, dz, level).length;
         for (const [fam, n] of Object.entries(counts)) {
           measured[fam] = Math.max(measured[fam] ?? 0, n);
         }

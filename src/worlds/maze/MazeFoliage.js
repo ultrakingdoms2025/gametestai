@@ -22,13 +22,15 @@
  * amount of detail on the faces, which is why the sprigs go on the top edge
  * and the upper corners rather than being scattered evenly.
  */
-import { MAZE, DIR, hash32, cellIndex, isOpen, cellToWorld } from './MazeTopology.js';
-/* The one thing this module needs from the collider side: where a connector
- * breaks through the floor above, so the daylight column can stand in the hole
- * rather than beside it. `MazeShafts.js` imports only `MazeTopology.js`, so
- * this adds no cycle - and taking the bounds from it rather than re-deriving
- * them is what keeps the light and the hole from drifting apart. */
-import { connectorHoleBounds } from './MazeShafts.js';
+import { MAZE, DIR, hash32, cellIndex, isOpen, cellToWorld, connectorAt } from './MazeTopology.js';
+/* What this module needs from the collider side: where a connector breaks
+ * through the floor above, so the daylight column can stand in the hole
+ * rather than beside it - and where a stair's well is centred, so the newel
+ * can stand at the middle of the spiral rather than near it. `MazeShafts.js`
+ * imports only `MazeTopology.js`, so this adds no cycle - and taking the
+ * bounds from it rather than re-deriving them is what keeps the dressing and
+ * the structure from drifting apart. */
+import { connectorHoleBounds, stairWellBounds } from './MazeShafts.js';
 
 /** Sprigs per hedge segment. Cheap - one instanced draw per district. */
 const SPRIGS_PER_HEDGE = 9;
@@ -409,6 +411,49 @@ export function wellLightColumns(cells, dx, dz, level) {
        * column is cut off by that floor rather than ending in mid-air where
        * the player can see its top. */
       out.push({ x: hole.cx, y: w.y, z: hole.cz, height: MAZE.LEVEL_HEIGHT * 1.05 });
+    }
+  }
+  return out;
+}
+
+/**
+ * The newel's half-extents - the dressing box `prefabFor` builds the finial
+ * into. 0.6 m wide against a spiral whose treads' inner edges pass 0.4 m
+ * from the well centre (`STAIR_RADIUS - TREAD_HALF`), so the post reads as
+ * the spine of the stair without the visual ever crossing a tread's edge.
+ */
+export const NEWEL_HALF = Object.freeze({ hx: 0.3, hy: 0.5, hz: 0.3 });
+
+/**
+ * Where the shaft newels go: one per STAIR connector, standing on the shaft
+ * floor at the exact centre of the spiral's well - Task 8's hero prop, the
+ * first authored asset through the pipeline (`MazeAssets.js`), and the
+ * proof-of-fallback when the .glb is absent.
+ *
+ * Same shape as `wellLightColumns` (a district cell scan against the same
+ * cells array the colliders are cut from), narrowed to stairs: a lift's car
+ * sweeps the entire well so a post at its centre would pass through the
+ * floor of a moving platform, and a tunnel has no well at all. MESH ONLY,
+ * like every placement in this file - a 1 m post at the centre of the spiral
+ * is decoration, and the anti-ladder gate is exactly why dressing never
+ * reaches the collider path.
+ *
+ * @param {Uint8Array} cells
+ * @param {number} dx @param {number} dz @param {number} level
+ * @returns {Array<{x:number, y:number, z:number}>} `y` is the box CENTRE
+ *   (floor + NEWEL_HALF.hy), ready for a translation-only instance matrix.
+ */
+export function newelPlacements(cells, dx, dz, level) {
+  const out = [];
+  const D = MAZE.DISTRICT;
+  for (let lz = 0; lz < D; lz++) {
+    for (let lx = 0; lx < D; lx++) {
+      const x = dx * D + lx, z = dz * D + lz;
+      if (!isOpen(cells, cellIndex(x, z, level), DIR.UP)) continue;
+      if (connectorAt(cells, x, z, level) !== 'stair') continue;
+      const w = cellToWorld(x, z, level);
+      const well = stairWellBounds(x, z, level);
+      out.push({ x: well.cx, y: w.y + NEWEL_HALF.hy, z: well.cz });
     }
   }
   return out;

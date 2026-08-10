@@ -91,7 +91,19 @@ const CONTRACT = [
   /* Phase 6 Task 7 adds the LOD bands: pure numbers, one definition, shared
    * by the residency update and the triangle-budget test. */
   { file: 'src/worlds/maze/MazeProfiles.js', exports: ['EXTENT_SNAP', 'EXTENT_QUANTUM', 'quantiseExtent', 'extentClass', 'PREFAB_BUDGET', 'treadProfile', 'treadOutline', 'LANDING_RATIO', 'CHAMFER', 'chamferFor', 'contactShade', 'CONTACT_AO', 'LOD0_RANGE', 'LOD1_RANGE', 'lodFor'] },
-  { file: 'src/worlds/maze/MazeMeshes.js', exports: ['prefabFor', 'groupByExtentClass', 'isPrefab', 'prefabCount', 'releasePrefabs', 'extentClass', 'PREFAB_BUDGET'] },
+  /* Task 8 adds `DRESSING_KINDS` - the explicit dressing-exemption ledger the
+   * fit contract's tests read - and the assets seam below. */
+  { file: 'src/worlds/maze/MazeMeshes.js', exports: ['prefabFor', 'groupByExtentClass', 'isPrefab', 'prefabCount', 'releasePrefabs', 'extentClass', 'PREFAB_BUDGET', 'DRESSING_KINDS'] },
+  /* Phase 6 Task 8. The authored-asset pipeline: manifest -> GLTFLoader ->
+   * prefab registry, every failure path degrading to the procedural prefab.
+   * `MAZE_ASSET_PREFABS` is the kind -> asset-id contract MazeMeshes builds
+   * against; `loadMazeAssets` is what MazeWorld.build awaits. The manifest
+   * and licence ledger are registered as files so a stray delete surfaces
+   * here instead of as a silent all-fallback world. */
+  { file: 'src/worlds/maze/MazeAssets.js', exports: ['loadMazeAssets', 'MAZE_ASSET_PREFABS', 'resetMazeAssets'] },
+  { file: 'public/assets/maze/manifest.json', exports: [] },
+  { file: 'public/assets/maze/newel-finial.glb', exports: [] },
+  { file: 'docs/assets/LICENCES.md', exports: [] },
   /* Phase 6 Task 6. One BatchedMesh per material family, capacity derived
    * from the residency radius; the streamed set's draw calls stop scaling
    * with district count. Registered like MazeChunks: a renamed export here

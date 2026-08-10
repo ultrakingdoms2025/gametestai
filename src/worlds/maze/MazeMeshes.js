@@ -3,6 +3,10 @@ import {
   extentClass, quantiseExtent, PREFAB_BUDGET, treadOutline,
   chamferFor, contactShade, CONTACT_AO,
 } from './MazeProfiles.js';
+/* Which asset id backs which kind - constants only; nothing here triggers a
+ * fetch, so importing this module stays free for headless tests. The actual
+ * loading is MazeAssets.loadMazeAssets(), awaited by MazeWorld.build. */
+import { MAZE_ASSET_PREFABS } from './MazeAssets.js';
 
 /* Re-exported so a caller needs one import for "how the maze turns a descriptor
  * into geometry". The numbers live in MazeProfiles.js because they are pure and
@@ -78,7 +82,23 @@ export { extentClass, quantiseExtent, PREFAB_BUDGET };
  * gate a second copy of a code path the LOD axis keeps alive anyway.
  */
 
-/** `${kind}:${extentClass}:${lod}` -> geometry. */
+/**
+ * The kinds that are DRESSING: drawn, batched and cached like everything
+ * else, but never emitted by `districtColliders` - `MazeChunks.ensure`
+ * synthesises them alongside the collider descriptors, mesh only. That is
+ * the whole basis of their exemption from the fit contract, stated here as
+ * `dressing: true` rather than implied by absence from a test's kind list:
+ * a visual with NO collider descriptor cannot disagree with physics about a
+ * surface, because physics never heard of it. `newel` (Task 8) is the first
+ * kind to actually spend the exemption - an authored glTF refitted into its
+ * dressing box by `buildAssetPrefab` - though in practice the refit keeps it
+ * inside the box anyway, so the exemption stays headroom rather than debt.
+ */
+export const DRESSING_KINDS = Object.freeze({
+  footing: true, plate: true, candle: true, newel: true,
+});
+
+/** `${kind}:${extentClass}:${lod}[:asset]` -> geometry. */
 const _prefabs = new Map();
 /** The same geometries by identity, so `isPrefab` is a lookup and not a scan. */
 const _owned = new Set();
@@ -86,16 +106,29 @@ const _owned = new Set();
 /**
  * The shared geometry for one descriptor, built at world scale.
  *
- * @param {{kind:string, hx:number, hy:number, hz:number, lod?:number}} desc
+ * `assets` is the map `MazeAssets.loadMazeAssets()` resolved - when it holds
+ * a geometry for this kind's asset id, that geometry (refitted, see
+ * `buildAssetPrefab`) becomes the prefab; otherwise the procedural builder
+ * runs exactly as before. Asset-backed entries take a distinct cache key so
+ * a build that raced ahead of the load (or a headless test with no assets at
+ * all) can never pin the fallback into a slot the authored version owns.
+ *
+ * @param {{kind:string, hx:number, hy:number, hz:number, lod?:number,
+ *          assets?: {[id:string]: THREE.BufferGeometry}|null}} desc
  * @returns {THREE.BufferGeometry} cached - callers must never dispose it
  */
-export function prefabFor({ kind, hx, hy, hz, lod = 0 }) {
+export function prefabFor({ kind, hx, hy, hz, lod = 0, assets = null }) {
   const gLod = geometryLod(kind, lod);
-  const key = `${kind}:${extentClass(hx, hy, hz)}:${gLod}`;
+  const assetId = MAZE_ASSET_PREFABS[kind];
+  const src = (assetId && assets) ? assets[assetId] : undefined;
+  const key = `${kind}:${extentClass(hx, hy, hz)}:${gLod}${src ? ':asset' : ''}`;
   const hit = _prefabs.get(key);
   if (hit) return hit;
 
-  const g = buildPrefab(kind, quantiseExtent(hx), quantiseExtent(hy), quantiseExtent(hz), gLod);
+  const qx = quantiseExtent(hx);
+  const qy = quantiseExtent(hy);
+  const qz = quantiseExtent(hz);
+  const g = src ? buildAssetPrefab(src, qx, qy, qz, kind) : buildPrefab(kind, qx, qy, qz, gLod);
   g.name = `prefab:${key}`;
   _prefabs.set(key, g);
   _owned.add(g);
@@ -141,7 +174,7 @@ const BEVELLED_KINDS = new Set(['hedge', 'floor', 'shaftWall', 'gate', 'slideWal
  *    material. Baking the box LODs also keeps the base darkening through the
  *    Task 7 LOD swap, so distance changes silhouette, never brightness.
  */
-const AO_KINDS = new Set([...BEVELLED_KINDS, 'stair']);
+const AO_KINDS = new Set([...BEVELLED_KINDS, 'stair', 'newel']);
 
 /**
  * Collapse a requested LOD to the coarsest one whose geometry is identical,
@@ -179,6 +212,7 @@ function geometryLod(kind, lod) {
 function buildPrefab(kind, hx, hy, hz, lod) {
   let g;
   if (kind === 'stair' && lod === 0) g = buildStairPrefab(hx, hy, hz);
+  else if (kind === 'newel') g = buildNewelPrefab(hx, hy, hz);
   else if (BEVELLED_KINDS.has(kind) && lod === 0) g = buildChamferPrefab(hx, hy, hz);
   else {
     g = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2);
@@ -370,6 +404,83 @@ function bakeContactAO(g, hy) {
     colour[i * 3 + 2] = s;
   }
   g.setAttribute('color', new THREE.BufferAttribute(colour, 3));
+}
+
+/**
+ * Adopt an authored geometry (from `MazeAssets`) as the prefab for one
+ * extent class: CLONE it, refit the clone into the dressing box, and give it
+ * the same baked-AO colour attribute every procedural prefab in its family
+ * carries.
+ *
+ * A clone, not the source object, because the registry DISPOSES its cache at
+ * world teardown (`releasePrefabs` - this world re-rolls per entry) while
+ * `MazeAssets` keeps the parsed source for the whole session; adopting the
+ * source would free its buffers out from under the next build. The clone is
+ * one small geometry per (kind, extent class) per session-entry, which is
+ * exactly the cost every procedural builder here already pays.
+ *
+ * The refit is UNIFORM scale - largest that fits all three extents - then
+ * centred in x/z and stood on the box floor. Uniform, because squashing an
+ * authored silhouette per-axis would defeat the reason the asset exists;
+ * dressing kinds are exempt from the fit contract, so an authored prop that
+ * chose to overhang could, but the refit keeps everything inside the box and
+ * leaves the exemption as headroom. NOTE the loaded glTF's own material was
+ * already discarded in MazeAssets.firstGeometry: the prefab is drawn by its
+ * batch family's cached maze material (the newel rides `stone`'s stair
+ * material), so an authored asset costs ZERO new shader programs.
+ */
+function buildAssetPrefab(src, hx, hy, hz, kind) {
+  const g = src.clone();
+  g.computeBoundingBox();
+  const b = g.boundingBox;
+  const size = new THREE.Vector3();
+  b.getSize(size);
+  const s = Math.min(
+    (2 * hx) / Math.max(size.x, 1e-6),
+    (2 * hy) / Math.max(size.y, 1e-6),
+    (2 * hz) / Math.max(size.z, 1e-6),
+  );
+  g.scale(s, s, s);
+  /* `scale` runs through applyMatrix4, which refreshes the geometry's
+   * boundingBox in place - so `b` now holds the SCALED box and the offsets
+   * read straight off it. */
+  g.translate(
+    -(b.min.x + b.max.x) / 2,
+    -hy - b.min.y,
+    -(b.min.z + b.max.z) / 2,
+  );
+  /* Baked whether or not the kind is in AO_KINDS: an authored file may join
+   * a family whose material reads vertexColors, and a geometry without the
+   * attribute renders black under such a material - silently. */
+  if (AO_KINDS.has(kind) || !g.attributes.color) bakeContactAO(g, hy);
+  return g;
+}
+
+/**
+ * The procedural newel fallback - a turned post (plinth, coved shaft, collar
+ * bead, acorn finial) lathed at world scale, the same silhouette
+ * `scripts/make-newel-glb.mjs` authors into the shipped .glb. The two exist
+ * on purpose: the pipeline's guarantee is that a missing file degrades to a
+ * prop of the same kind, and the cheapest honest way to keep that guarantee
+ * is for the fallback to be the same shape at a lower segment count.
+ *
+ * One LOD tier only (see `geometryLod`): the whole prop is 0.6 m wide and
+ * lives inside a shaft, so a far tier would optimise triangles nobody can
+ * resolve through a stone wall.
+ */
+function buildNewelPrefab(hx, hy, hz) {
+  /* (radius, y) in fractions of the box; radius fraction of min(hx, hz) so a
+   * non-square request still lathes a round post that fits. */
+  const profile = [
+    [0.00, -1.00], [0.87, -1.00], [0.93, -0.92], [0.93, -0.68], [0.67, -0.60],
+    [0.53, -0.44], [0.43, -0.10], [0.40, 0.20], [0.57, 0.32], [0.57, 0.40],
+    [0.40, 0.48], [0.63, 0.68], [0.47, 0.88], [0.17, 0.98], [0.00, 1.00],
+  ];
+  const r = Math.min(hx, hz);
+  const g = new THREE.LatheGeometry(
+    profile.map(([pr, py]) => new THREE.Vector2(Math.max(pr * r, 0), py * hy)), 12,
+  );
+  return g;
 }
 
 /**

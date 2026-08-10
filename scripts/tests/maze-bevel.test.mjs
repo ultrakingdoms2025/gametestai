@@ -116,7 +116,11 @@ test('every geometry drawn with a vertexColors material carries a colour attribu
    * batches) and `stair`, which never grows a bevel of its own but shares the
    * shaftWall material object and so inherits its program family. */
   const mats = buildMazeMaterials();
-  for (const kind of ['hedge', 'floor', 'shaftWall', 'stair', 'gate', 'slideWall', 'footing']) {
+  /* `newel` joined in Task 8: it aliases the stair material (see
+   * MazeMaterials.js), and both its prefab variants - the authored .glb via
+   * buildAssetPrefab and the procedural finial - bake the colour attribute,
+   * which maze-assets.test.mjs asserts for each. */
+  for (const kind of ['hedge', 'floor', 'shaftWall', 'stair', 'gate', 'slideWall', 'footing', 'newel']) {
     assert.equal(mats[kind].vertexColors, true, `'${kind}' material does not read vertex colours`);
     for (const lod of [0, 1, 2]) {
       const g = prefabFor({ kind, hx: 0.6, hy: 2.5, hz: 3, lod });
@@ -128,7 +132,7 @@ test('every geometry drawn with a vertexColors material carries a colour attribu
    * need one. Sweep the whole set so a future flag flip cannot dodge this. */
   for (const [kind, mat] of Object.entries(mats)) {
     if (!mat.vertexColors) continue;
-    assert.ok(['hedge', 'floor', 'shaftWall', 'stair', 'gate', 'slideWall', 'footing'].includes(kind),
+    assert.ok(['hedge', 'floor', 'shaftWall', 'stair', 'gate', 'slideWall', 'footing', 'newel'].includes(kind),
       `'${kind}' gained vertexColors but this suite does not know its geometry carries colour`);
   }
 });

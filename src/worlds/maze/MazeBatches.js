@@ -138,8 +138,13 @@ export function worstCaseResidency(radius) {
  * descriptor sweep (~0.8 s) the player would pay on every entry; the test
  * suite re-derives one seed's maxima per run so the bake cannot quietly rot.
  */
+/* `stone` was measured at 28 (stair + shaftWall); Task 8 adds one `newel`
+ * dressing instance per stair shaft, and no district across the 8,000
+ * measured held more than one shaft - so the honest worst case is 29, held
+ * at 30 for the same reason the table has headroom at all. The batch test
+ * re-derives one seed's maxima INCLUDING newels per run. */
 export const BATCH_PER_DISTRICT_MAX = Object.freeze({
-  hedge: 446, floor: 4, stone: 28, tunnel: 27, footing: 446, plate: 2, candle: 70,
+  hedge: 446, floor: 4, stone: 30, tunnel: 27, footing: 446, plate: 2, candle: 70,
 });
 
 /**
@@ -185,7 +190,13 @@ export function batchCapacity(family) {
 export const BATCH_FAMILIES = Object.freeze({
   hedge: { kinds: Object.freeze(['hedge']), castShadow: true, cull: true },
   floor: { kinds: Object.freeze(['floor']), castShadow: true },
-  stone: { kinds: Object.freeze(['stair', 'shaftWall']), castShadow: true },
+  /* `newel` (Task 8) is the authored hero prop at each stair's well centre.
+   * It joins `stone` rather than getting a family of its own because a
+   * family is a MATERIAL: the newel is pale worked stonework drawn with the
+   * exact stair material object (MazeMaterials aliases `newel` to `stair`,
+   * like `shaftWall`), so batching it here costs zero extra draw calls and
+   * zero programs - the loaded glTF's own material is discarded on load. */
+  stone: { kinds: Object.freeze(['stair', 'shaftWall', 'newel']), castShadow: true },
   tunnel: { kinds: Object.freeze(['tunnel']), castShadow: true },
   footing: { kinds: Object.freeze(['footing']), castShadow: true, cull: true },
   plate: { kinds: Object.freeze(['plate']), castShadow: false },
@@ -239,10 +250,19 @@ for (const [name, fam] of Object.entries(BATCH_FAMILIES)) {
  * Exported for the reservation test, not for callers - `batchFor` is the one
  * consumer that sizes anything from it.
  */
+/* RE-SIZED FOR TASK 8: `stone` gains the newel - the one authored prefab in
+ * the world, and much the fattest member of any family: the shipped .glb is
+ * 255 verts / 1344 indices (manifest-declared and test-held), the procedural
+ * fallback 195 / 1008. Per-prefab reservations rise to 512 / 1536 so either
+ * variant fits with margin; prefab count rises 24 -> 26 for the newel's slot
+ * (one class, one tier - the registry hands the same object back at every
+ * LOD, so it cannot double the way the two-tier kinds do). Pool cost of the
+ * raise: 26 x 512 = 13,312 reserved verts (~0.6 MB with attributes) against
+ * the old 4,608 - still under half of one resident set's hedges. */
 export const GEOMETRY_BUDGET = Object.freeze({
   hedge: { prefabs: 32, verts: 96, indices: 132 },
   floor: { prefabs: 288, verts: 96, indices: 132 },
-  stone: { prefabs: 24, verts: 192, indices: 384 },
+  stone: { prefabs: 26, verts: 512, indices: 1536 },
   tunnel: { prefabs: 16, verts: 24, indices: 36 },
   footing: { prefabs: 32, verts: 96, indices: 132 },
   plate: { prefabs: 8, verts: 24, indices: 36 },

@@ -292,6 +292,103 @@ export const painters: Record<string, Painter> = {
     for (let i = 0; i < 10; i++) ctx.fillRect(w * (0.56 + rnd() * 0.05), h * (0.22 + rnd() * 0.34), 2, 3);
   },
 
+  maze(ctx, w, h, rnd) {
+    // The Verdant Coil, seen from above: dark forest floor, hedge walls in the
+    // world's #8fd67a green family, and one warm lantern somewhere in the lanes.
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#07130c');
+    g.addColorStop(0.55, '#0b2013');
+    g.addColorStop(1, '#050e08');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+
+    // Drifting spores catching the light — this world's stand-in for stars.
+    for (let i = 0; i < 70; i++) {
+      ctx.globalAlpha = 0.1 + rnd() * 0.32;
+      ctx.fillStyle = i % 7 === 0 ? '#c9f0b4' : '#8fd67a';
+      ctx.fillRect(rnd() * w, rnd() * h, 1, 1);
+    }
+    ctx.globalAlpha = 1;
+
+    // The maze court, inset so the ring reads as a shape against the ground.
+    const mx = w * 0.11;
+    const my = h * 0.15;
+    const mw = w - mx * 2;
+    const mh = h - my * 2;
+    const cols = 11;
+    const rows = 7;
+    const cw = mw / cols;
+    const ch = mh / rows;
+    const lw = Math.max(3, Math.min(cw, ch) * 0.34);
+
+    /* A hedge is two strokes: a dark body and a thinner lit crown, so the walls
+       read as volumes from above rather than as drawn lines. */
+    const hedge = (x1: number, y1: number, x2: number, y2: number) => {
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#274f28';
+      ctx.lineWidth = lw;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.strokeStyle = '#6fb75c';
+      ctx.lineWidth = Math.max(1, lw * 0.42);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    };
+
+    // Outer ring, with an entrance gap cut low on the near side.
+    hedge(mx, my, mx + mw, my);
+    hedge(mx, my, mx, my + mh);
+    hedge(mx + mw, my, mx + mw, my + mh);
+    hedge(mx, my + mh, mx + mw, my + mh);
+    ctx.fillStyle = '#081409';
+    ctx.fillRect(mx + mw * 0.44, my + mh - lw, mw * 0.12, lw * 2);
+
+    /* Interior walls: one seeded coin per cell decides open lane, top-edge wall
+       or left-edge wall — the binary-tree maze, which always yields connected
+       corridors and costs one rnd() per cell, so seed → layout is stable. */
+    for (let cx = 0; cx < cols; cx++) {
+      for (let cy = 0; cy < rows; cy++) {
+        const r = rnd();
+        if (r < 0.34) continue; // open lane
+        const x = mx + cx * cw;
+        const y = my + cy * ch;
+        if (r < 0.68) {
+          if (cy > 0) hedge(x, y, x + cw, y); // wall along the cell's top edge
+        } else if (cx > 0) {
+          hedge(x, y, x, y + ch); // wall along the cell's left edge
+        }
+      }
+    }
+
+    // Soft green mist pooling over the lanes.
+    const mist = ctx.createRadialGradient(
+      w * 0.5, h * 0.56, Math.min(w, h) * 0.08,
+      w * 0.5, h * 0.56, Math.max(w, h) * 0.72
+    );
+    mist.addColorStop(0, 'rgba(143,214,122,0.17)');
+    mist.addColorStop(0.6, 'rgba(143,214,122,0.06)');
+    mist.addColorStop(1, 'rgba(143,214,122,0)');
+    ctx.fillStyle = mist;
+    ctx.fillRect(0, 0, w, h);
+
+    // The Keeper's lantern: one warm point in a lane, over the mist.
+    const lx = mx + (1.5 + Math.floor(rnd() * (cols - 3))) * cw;
+    const ly = my + (1.5 + Math.floor(rnd() * (rows - 3))) * ch;
+    const lr = Math.min(cw, ch) * 2.3;
+    const lg = ctx.createRadialGradient(lx, ly, 1, lx, ly, lr);
+    lg.addColorStop(0, 'rgba(255,207,110,0.8)');
+    lg.addColorStop(0.32, 'rgba(255,176,58,0.22)');
+    lg.addColorStop(1, 'rgba(255,176,58,0)');
+    ctx.fillStyle = lg;
+    ctx.fillRect(lx - lr, ly - lr, lr * 2, lr * 2);
+    ctx.fillStyle = '#ffcf6e';
+    ctx.fillRect(lx - 1.5, ly - 1.5, 3, 3);
+  },
+
   circuit(ctx, w, h) {
     const g = ctx.createLinearGradient(0, 0, 0, h);
     g.addColorStop(0, '#8fb8d4');

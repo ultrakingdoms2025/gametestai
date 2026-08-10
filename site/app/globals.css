@@ -2124,3 +2124,51 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
     width: calc(100% - 48px);
   }
 }
+
+/* ── Gateway Descent composition (GatewayDescent.tsx) ────────────────────
+   Enhanced path: one fixed, full-viewport WebGL canvas behind the whole
+   panel stack. Fallback path: each panel slab carries its own absolutely
+   positioned static painter plate. Panels always sit above either layer. */
+
+.gw-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.gateway {
+  position: relative;
+  z-index: 1;
+}
+
+/* One world's slab: relative + isolate so the z-index:-1 static plate stays
+   behind this slab's panel but inside the slab's own stacking context. */
+.gw-slab {
+  position: relative;
+  isolation: isolate;
+}
+
+.gw-static {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.gw-static canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Active panel (enhanced path only): let the world's accent breathe into the
+   name's glow — subtle, additive to the base text-shadow. */
+.gw-lit .gw-name {
+  text-shadow:
+    0 2px 30px rgba(0, 0, 0, 0.6),
+    0 0 28px color-mix(in srgb, var(--gw-accent, var(--cy)) 34%, transparent);
+}

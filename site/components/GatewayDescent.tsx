@@ -113,6 +113,10 @@ export default function GatewayDescent({ worlds, lore }: GatewayDescentProps) {
           className="gw-canvas"
           scenes={scenes}
           onError={() => setEnhanced(false)}
+          // The canvas is fixed-position, so the renderer watches the gateway
+          // container instead: WebGL boots when it nears the viewport, and the
+          // rAF loop pauses whenever it's fully scrolled out of view.
+          watchRef={containerRef}
         />
       )}
       <div ref={containerRef} className="gateway">

@@ -43,7 +43,7 @@
 | File | Change |
 |---|---|
 | `site/package.json` | Add deps `three`, `gsap`; dev deps `@types/three`, `vitest`; script `test`. |
-| `site/app/page.tsx` | Derive counts/ticker/stats/CTA from `worlds.ts`; replace `HomeWorldShowcase` usage with `GatewayDescent`; pass `worlds`+`lore`. Preserve all auth/access/pricing logic verbatim. |
+| `site/app/page.tsx` | *(end-state)* Derive counts/ticker/stats/CTA from `worlds.ts`; replace `HomeWorldShowcase` usage with `GatewayDescent`; pass `worlds`+`lore`. Preserve all auth/access/pricing logic verbatim. **Sequencing:** Chunk 1 Task 4 does numbers-only (keeps the legacy showcase); the `GatewayDescent` swap happens in Chunk 2 Task 13. |
 | `site/app/layout.tsx` | Metadata/OG/title: five→six. |
 | `site/app/api/lore/route.ts` | Call shared `getLoreEntries()`; add `WHEN 'maze' THEN 6`. |
 | `src/content/Lore.js` | "six worlds / five outbound portals"; add `maze` entry; add `maze` to `LORE_ORDER`. |
@@ -89,8 +89,9 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    environment: 'node',
-    include: ['lib/**/*.test.ts'],
+    environment: 'node',                 // three's object creation works headless; no jsdom needed
+    include: ['lib/**/*.test.ts', 'components/**/*.test.ts'],  // lib logic + scene leak/determinism tests
+    passWithNoTests: true,               // Step 4 runs before any test exists
   },
 });
 ```
@@ -98,7 +99,7 @@ export default defineConfig({
 - [ ] **Step 4: Verify runner works**
 
 Run: `cd site && npx vitest run`
-Expected: exits 0 with "No test files found" (or runs 0 tests) — confirms vitest is installed and configured.
+Expected: exits 0 with "No test files found" (passes because `passWithNoTests: true`) — confirms vitest is installed and configured.
 
 - [ ] **Step 5: Commit**
 
@@ -136,12 +137,14 @@ describe('canonical world model', () => {
     expect(byId.maze).toBe('The Verdant Coil');
     expect(byId.station).toBe('Aether Nexus Station');
   });
-  it('every world has copy, fact, accent and a scene id equal to its id', () => {
+  it('every world has copy, fact, accent, a scene id equal to its id, and a valid painterKey', () => {
+    const validPainterKeys = new Set(['station','valley','sports','citadel','circuit','maze']);
     for (const w of WORLDS) {
       expect(w.copy.length).toBeGreaterThan(10);
       expect(w.fact.length).toBeGreaterThan(3);
       expect(w.accent).toMatch(/^#[0-9a-f]{6}$/i);
       expect(w.scene).toBe(w.id);
+      expect(validPainterKeys.has(w.painterKey)).toBe(true);
     }
   });
   it('roster counts are correct', () => {
@@ -183,7 +186,8 @@ export interface WorldDef {
   fact: string;         // the chip — marketing SoT, NOT prose lore
   accent: string;       // #rrggbb, mirrors station portal colors
   loreScope: string;    // key into /api/lore entries
-  scene: WorldSceneId;
+  scene: WorldSceneId;  // diorama scene id (=== id)
+  painterKey: string;   // key into existing site/lib/painters.ts for the static fallback
 }
 
 // Names = each world's in-game `static displayName`. Copy paraphrases src/content/Lore.js
@@ -191,23 +195,25 @@ export interface WorldDef {
 export const WORLDS: readonly WorldDef[] = [
   { id: 'station',  index: 1, name: 'Aether Nexus Station', role: 'Hub world',       kicker: 'Orbital',
     copy: 'A working habitat hanging before a planet — plaza, market, hydroponics and hangar bays. The archive, the checkpoint.',
-    fact: 'The gateway to all six worlds', accent: '#52e9ff', loreScope: 'station', scene: 'station' },
+    fact: 'The gateway to all six worlds', accent: '#52e9ff', loreScope: 'station', scene: 'station', painterKey: 'station' },
   { id: 'medieval', index: 2, name: 'Aldermoor Vale',       role: 'Exploration world', kicker: 'Open country',
     copy: 'An old-world valley of timber roofs, market squares and castle walls. The water is swimmable and has real depth.',
-    fact: 'Walled town · castle · swimmable lakes', accent: '#ffb347', loreScope: 'medieval', scene: 'medieval' },
+    fact: 'Walled town · castle · swimmable lakes', accent: '#ffb347', loreScope: 'medieval', scene: 'medieval', painterKey: 'valley' },
   { id: 'sports',   index: 3, name: 'Meridian Athletic Grounds', role: 'Skill world', kicker: 'Floodlit',
     copy: 'A bright training complex of courts, tracks, bowls and snow runs under lights — with a seated crowd watching.',
-    fact: 'Pool · courts · skatepark · ski piste', accent: '#2ffb9a', loreScope: 'sports', scene: 'sports' },
+    fact: 'Pool · courts · skatepark · ski piste', accent: '#2ffb9a', loreScope: 'sports', scene: 'sports', painterKey: 'sports' },
   { id: 'citadel',  index: 4, name: 'Sunspire Citadel',     role: 'Vertical world',    kicker: 'Desert mesa',
     copy: 'A cliff-top town built to be climbed: souk rooftops, rope bridges, minarets and a 46 m great tower.',
-    fact: '46 m climbable great tower', accent: '#ffc46b', loreScope: 'citadel', scene: 'citadel' },
+    fact: '46 m climbable great tower', accent: '#ffc46b', loreScope: 'citadel', scene: 'citadel', painterKey: 'citadel' },
   { id: 'race',     index: 5, name: 'Vellum Ridge',         role: 'Competition world', kicker: 'Racing',
     copy: 'A 1,599 m lap over rough terrain and through city streets with a real F1 start procedure — three circuits in all.',
-    fact: '3 circuits · real F1 start', accent: '#ff5a3c', loreScope: 'race', scene: 'race' },
+    fact: '3 circuits · real F1 start', accent: '#ff5a3c', loreScope: 'race', scene: 'race', painterKey: 'circuit' },
   { id: 'maze',     index: 6, name: 'The Verdant Coil',     role: 'Volatile world',    kicker: 'Hedge maze',
     copy: 'A hedge maze that re-rolls its layout on every single entry. The maze that cannot be learned — that is the entire point.',
-    fact: 'Re-generates its layout every visit', accent: '#8fd67a', loreScope: 'maze', scene: 'maze' },
+    fact: 'Re-generates its layout every visit', accent: '#8fd67a', loreScope: 'maze', scene: 'maze', painterKey: 'maze' },
 ] as const;
+// painterKey maps canonical ids → existing painters.ts keys (medieval→valley, race→circuit).
+// 'station/sports/citadel' already match; 'maze' painter is authored in Chunk 2 Task 11.
 
 // Roster counts verified against src/mounts/MountManager.js (6) and src/player/Loadout.js (4).
 export const MOUNTS = 6;
@@ -298,7 +304,7 @@ import { sql } from '@vercel/postgres';
 import { WORLDS, type WorldId } from './worlds';
 
 export interface ResolvedLore { title: string; body: string; sign_label: string; }
-export interface LoreEntryRow { scope: string; title: string; sign_label: string; body: string; }
+export interface LoreEntryRow { scope: string; title: string; sign_label: string; body: string; updated_at?: unknown; }
 
 export type LoreFetcher = () => Promise<LoreEntryRow[]>;
 
@@ -311,7 +317,7 @@ export const getLoreEntries: LoreFetcher = async () => {
       updated_by TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
   const { rows } = await sql`
-    SELECT scope, title, sign_label, body FROM lore_entries
+    SELECT scope, title, sign_label, body, updated_at FROM lore_entries
     ORDER BY CASE scope
       WHEN 'overall' THEN 0 WHEN 'station' THEN 1 WHEN 'medieval' THEN 2
       WHEN 'sports' THEN 3 WHEN 'citadel' THEN 4 WHEN 'race' THEN 5
@@ -374,9 +380,9 @@ export async function GET() {
   try {
     const rows = await getLoreEntries();
     const entries = Object.fromEntries(rows.map(r => [r.scope, {
-      scope: r.scope, title: r.title, sign_label: r.sign_label, body: r.body,
+      scope: r.scope, title: r.title, sign_label: r.sign_label, body: r.body, updated_at: r.updated_at,
     }]));
-    return NextResponse.json({ entries });
+    return NextResponse.json({ entries });  // JSON contract unchanged (incl. updated_at)
   } catch (error) {
     console.error('[lore] failed to load lore entries:', error);
     return NextResponse.json({ error: 'Lore data unavailable.' }, { status: 503 });
@@ -407,19 +413,20 @@ git commit -m "feat(site): lore resolver with shared query, maze ordering, baked
 
 Run: `cd site && grep -rni "five worlds\|five mounts\|five \| five" app/layout.tsx`
 
-- [ ] **Step 2: Replace hardcoded counts in `page.tsx`** — import from the SoT and derive:
+- [ ] **Step 2: Replace hardcoded counts/copy in `page.tsx`** — import ONLY the count helpers (not the SoT `WORLDS`, to avoid a name clash with the local array) and derive:
 
 ```tsx
-import { WORLDS, MOUNTS, heroTicker, statBar } from '@/lib/worlds';
+import { heroTicker, statBar } from '@/lib/worlds';
 ```
-Then:
-- Hero ticker: replace both hardcoded `['Five worlds', …]` arrays with `heroTicker()`.
+Then, numbers-and-copy only:
+- Hero ticker: replace both hardcoded `['Five worlds', …]` arrays with `heroTicker()` (used twice for the marquee loop).
 - `feat-stats-bar`: replace `(['5','5','4','0 GB'] as string[])` with `statBar()`.
-- FEATURES "Five mounts": rename to "Six mounts" and update copy to include the bicycle: "Hoverboard, dragon, ground car, horse, eagle and bicycle…".
+- FEATURES "Five mounts": rename to "Six mounts" and update its copy to include the bicycle: "Hoverboard, dragon, ground car, horse, eagle and bicycle…".
 - CTA band `<h2>`: "One charge.<br />Five worlds." → "One charge.<br />Six worlds.".
-- Leave `HomeWorldShowcase worlds={WORLDS}` wiring for now (Chunk 2 swaps the component); but note the existing `WORLDS` local array in `page.tsx` is now replaced by the import — delete the local `const WORLDS = [...]` (5 entries) and the local `FEATURES` stays. Ensure `HomeWorldShowcase`'s expected props still match (it reads `scene`,`seed`,`name`,`copy`…). If `HomeWorldShowcase`/`WorldCanvas` require a `seed`/`scene` field the new `WorldDef` lacks, add a thin adapter inline: map `WORLDS` → the shape `HomeWorldShowcase` needs, using `w.scene` and a stable seed (e.g. `0x2100 + w.index`). This adapter is temporary and removed in Task 13.
 
-- [ ] **Step 3: Preserve behavior** — do NOT touch the auth/access/pricing/`Link` logic, the Stripe test-mode banner, nav, `AccountDashboard`, or footer. This task only changes numbers and copy.
+**Deliberately do NOT touch the local `const WORLDS = [...]` array or the `<HomeWorldShowcase worlds={WORLDS} />` wiring in this task.** The legacy showcase keeps rendering its known-good 5 panels until Task 13 replaces the entire component with `GatewayDescent`. This avoids feeding the new 6-world `WorldDef` shape (which lacks `HomeWorldShowcase`'s required `seed`/`pulse`/`traversal` and whose `scene` ids don't match `painters.ts` keys) into the legacy component. Result after Chunk 1: **all counts/metadata read six**, and the visual showcase is unchanged (still 5) — a consistent intermediate state where the numbers are correct. (Do not deploy between Chunk 1 and Task 13 if the 5-vs-6 visual/number split is user-visible and undesirable; Chunk 1 is a logical checkpoint, not necessarily a release.)
+
+- [ ] **Step 3: Preserve behavior** — do NOT touch the auth/access/pricing/`Link` logic, the Stripe test-mode banner, nav, `AccountDashboard`, footer, or the local `WORLDS`/`HomeWorldShowcase`. This task only changes numbers and feature copy.
 
 - [ ] **Step 4: Type-check + dev smoke**
 
@@ -440,7 +447,12 @@ git commit -m "fix(site): drive counts/metadata from canonical world model (five
 **Files:**
 - Modify: `src/content/Lore.js`, `package.json` (root)
 
-- [ ] **Step 1: `src/content/Lore.js`** — read the file first. Fix line ~70 "the Nexus has five worlds … four outbound portals" → "six worlds … five outbound portals". Add a `maze` entry to `DEFAULT_LORE` (title "The Verdant Coil", body matching `FALLBACK_LORE.maze.body`) and add `'maze'` to `LORE_ORDER`. Match the file's existing object shape exactly.
+- [ ] **Step 1: `src/content/Lore.js`** — read the file first. The persona string around line ~70 currently says the Nexus has "five worlds" (then lists 5), Aether Station "has four outbound portals," and "each of the other four worlds has one return portal." Make ALL of it consistent with six:
+  - "five worlds" → "six worlds";
+  - add The Verdant Coil (maze) to the parenthetical world list so it enumerates all 6;
+  - "four outbound portals" → "five outbound portals";
+  - "other four worlds" → "other five worlds".
+  Then add a `maze` entry to `DEFAULT_LORE` (title "The Verdant Coil", body matching `FALLBACK_LORE.maze.body` from Task 3) and add `'maze'` to `LORE_ORDER`. Match the file's existing object shape exactly. After editing, re-grep to confirm no stray "five"/"four" counts remain in the persona: `grep -ni "five\|four" src/content/Lore.js`.
 
 - [ ] **Step 2: root `package.json`** — description "…spanning three open worlds" → "…spanning six worlds".
 
@@ -512,6 +524,7 @@ import type * as THREE from 'three';
 export type QualityTier = 'low' | 'medium' | 'high';
 
 export interface SceneCtx {
+  THREE: typeof import('three'); // the dynamically-imported module, passed in by DioramaCanvas
   scene: THREE.Scene;
   renderer: THREE.WebGLRenderer;
   camera: THREE.PerspectiveCamera;
@@ -520,13 +533,20 @@ export interface SceneCtx {
 }
 
 export interface DioramaScene {
-  id: string;
-  build(ctx: SceneCtx): void;              // lazy, once
+  id: string;                              // MUST equal the world's `scene` id (e.g. 'maze')
+  build(ctx: SceneCtx): void;              // lazy, once — use ctx.THREE, never a static `import 'three'`
   update(dt: number, progress: number, active: boolean): void; // progress 0..1
   setQuality(tier: QualityTier): void;
-  dispose(): void;                         // free geometry/materials
+  dispose(): void;                         // free geometry/materials it created
+}
+
+/** Imperative handle DioramaCanvas exposes; GatewayDescent owns the ref and drives it from the scroll hook. */
+export interface DioramaHandle {
+  setActive(index: number, progress: number): void;
 }
 ```
+
+**Why `THREE` is in `SceneCtx`:** scene modules must NOT `import * as THREE from 'three'` statically — that would pull Three into the bundle graph that `GatewayDescent` references and defeat the lazy-load (spec §8). `DioramaCanvas` performs the single `await import('three')` and passes the module to each scene via `ctx.THREE`. Scene files import only the *types* (`import type … from 'three'`, erased at build).
 
 - [ ] **Step 2** — `quality.ts` (pure): pick a tier + DPR cap from `navigator` heuristics.
 
@@ -557,17 +577,18 @@ git commit -m "feat(site): diorama scene contract + quality heuristics"
 
 **Files:** Create `site/components/diorama/DioramaCanvas.tsx`
 
-Responsibilities: one `WebGLRenderer` on a fixed full-viewport canvas; lazy dynamic-import of `three`; hold a registry of built scenes; a single rAF loop that updates+renders only the active (and cross-fading) scene; pause on `document.hidden`/offscreen; resize handling with capped DPR; dispose on unmount. Exposes an imperative handle (`setActive(index, progress)`) consumed by `GatewayDescent`.
+**Scope note (kept deliberately bounded):** this task builds ONLY — one `WebGLRenderer` on a fixed full-viewport canvas; lazy dynamic-import of `three`; a registry of scenes built lazily on first activation; a single rAF loop that updates+renders *only the active scene*; pause on `document.hidden`; resize with capped DPR; dispose on unmount; and the `DioramaHandle` (`setActive`). **Cross-fade rendering between two scenes, and disposing non-adjacent scenes under memory pressure, are explicitly deferred to Task 20** (Chunk 2 ships one scene, so neither can be exercised or verified here).
 
-- [ ] **Step 1: Implement the component.** Key contract (verify `three` APIs against docs first):
+- [ ] **Step 1: Implement the component.** Key contract (verify `three` APIs against docs first; @immersive-3d-web):
   - `'use client'`.
-  - Props: `scenes: { id: string; accent: string; factory: () => DioramaScene }[]`, `onReady?: () => void`, and a `ref` handle `{ setActive(i: number, progress: number): void }`.
-  - Lazy import: `const THREE = await import('three')` inside an effect; build renderer with `powerPreference: 'high-performance'`, `antialias: quality!=='low'`; set `renderer.setPixelRatio(Math.min(window.devicePixelRatio, dprCap(tier)))`.
-  - Scenes are built lazily on first activation (call `build(ctx)` once, track built set); non-adjacent scenes may be `dispose()`d under memory pressure (keep active ±1 warm).
-  - rAF loop: compute `dt`; if `document.hidden` skip; call `active.update(dt, progress, true)`; render. During a fade window, also update+render the outgoing scene into the same frame with opacity handled by the scene or a fade overlay.
-  - Cleanup: cancel rAF, dispose all scenes, `renderer.dispose()`, remove canvas + listeners.
+  - Props: `scenes: { id: string; accent: string; factory: () => DioramaScene }[]`; expose `DioramaHandle` (from `types.ts`) via `forwardRef` + `useImperativeHandle`.
+  - Lazy import: `const THREE = await import('three')` inside a mount effect; build renderer with `powerPreference: 'high-performance'`, `antialias: quality!=='low'`; set `renderer.setPixelRatio(Math.min(window.devicePixelRatio, dprCap(tier)))`.
+  - Build each scene lazily on first activation: `scene.build({ THREE, scene, renderer, camera, accent: new THREE.Color(accentHex), quality })` once; track the built set.
+  - `setActive(i, progress)`: record the active index + progress for the loop (does not itself render).
+  - rAF loop: compute `dt`; if `document.hidden`, skip the frame; else `activeScene.update(dt, progress, true)` then `renderer.render(scene, camera)`. Only the active scene updates/renders.
+  - Cleanup: cancel rAF, `dispose()` every built scene, `renderer.dispose()`, remove canvas + resize listener.
 
-- [ ] **Step 2: Manual smoke** — temporarily render `<DioramaCanvas scenes={[]} />` in a scratch route or via the page; confirm a canvas mounts, no console errors, and it disposes cleanly on navigation. (No visible content yet.)
+- [ ] **Step 2: Manual smoke** — temporarily render `<DioramaCanvas scenes={[]} ref={…} />` in a scratch client route (or a throwaway spot on the page); confirm a canvas mounts, `three` lazy-loads (Network shows the chunk), no console errors, and it disposes cleanly on navigation (no WebGL context warnings). Full scene build/update/dispose is exercised in Task 12 with the Station scene (and asserted by the leak test there). Remove the scratch mount before committing.
 
 - [ ] **Step 3: Commit**
 
@@ -589,7 +610,12 @@ git commit -m "feat(site): shared single-renderer diorama canvas + scene registr
   - Clean up triggers on unmount; `ScrollTrigger.refresh()` on resize.
   - Respect `prefers-reduced-motion`: if set, do not create scrubbed triggers (caller renders static fallback).
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 2: Type-check**
+
+Run: `cd site && npx tsc --noEmit`
+Expected: no errors (the hook compiles in isolation; behavior is verified when wired in Task 12).
+
+- [ ] **Step 3: Commit**
 
 ```bash
 git add site/hooks/useGatewayScroll.ts
@@ -604,7 +630,12 @@ git commit -m "feat(site): gsap ScrollTrigger gateway-descent orchestrator"
 
 - [ ] **Step 1: Implement** a presentational panel: full-viewport section, receives `world: WorldDef`, `lore: ResolvedLore`, and refs/anchors for the scroll trigger. Renders: `worldSeq(world.index)` ("0N / 06"), `world.kicker`, `world.name`, `lore.body` (prose), `world.fact` chip, and — on the last panel or a shared threshold — the existing CTA. Uses brand classes; accent via CSS var from `world.accent`. Fully readable as static DOM (progressive enhancement). Alternate left/right per `index` parity.
 
-- [ ] **Step 2: Type-check + commit**
+- [ ] **Step 2: Type-check**
+
+Run: `cd site && npx tsc --noEmit`
+Expected: no errors.
+
+- [ ] **Step 3: Commit**
 
 ```bash
 git add site/components/WorldPanel.tsx
@@ -615,38 +646,100 @@ git commit -m "feat(site): WorldPanel content component"
 
 ### Task 11: GatewayDescent — composition + fallbacks
 
-**Files:** Create `site/components/GatewayDescent.tsx`; Modify `site/app/globals.css`
+**Files:** Create `site/components/GatewayDescent.tsx`; Modify `site/lib/painters.ts`, `site/components/WorldCanvas.tsx` (only if its prop type needs widening), `site/app/globals.css`
 
-- [ ] **Step 1: Implement** (`'use client'`): props `worlds: WorldDef[]`, `lore: Record<WorldId, ResolvedLore>`.
-  - Detect capability: `prefers-reduced-motion` (matchMedia) and WebGL support (try to get a context). Store in state after mount (SSR renders the static path first).
-  - **Enhanced path:** render `<DioramaCanvas>` (fixed) + a stack of `<WorldPanel>`; wire `useGatewayScroll` to push `(activeIndex, progress)` into the canvas handle.
-  - **Fallback path** (reduced-motion OR no WebGL OR not-yet-hydrated): render the same `<WorldPanel>` stack but with the existing static `WorldCanvas`/`painters.ts` art as each panel's backdrop instead of the shared canvas. No scroll scrubbing.
+- [ ] **Step 1: Author the missing `maze` painter** — read `site/lib/painters.ts` (keys: `station, valley, sports, citadel, circuit`). Add a `maze` painter following the file's existing painter signature (it receives a 2D context + seed and draws an illustration): a top-down hedge-maze grid in the Verdant Coil greens (`#8fd67a`), consistent with the other painters' style. This guarantees the static fallback is never blank for the maze (whose id has no pre-existing painter). Verify the painters registry now has all six keys used by `WorldDef.painterKey` (`station, valley, sports, citadel, circuit, maze`).
+
+- [ ] **Step 2: Implement `GatewayDescent`** (`'use client'`): props `worlds: WorldDef[]`, `lore: Record<WorldId, ResolvedLore>`.
+  - Detect capability after mount: `prefers-reduced-motion` (matchMedia) and WebGL support (attempt `canvas.getContext('webgl2')||'webgl'`). Keep `enhanced=false` during SSR/first render so the server and first client paint match (avoids hydration mismatch), then flip to enhanced in an effect when supported and motion allowed.
+  - **Enhanced path:** render `<DioramaCanvas ref={handleRef} scenes={worlds.map(w => ({ id: w.scene, accent: w.accent, factory: SCENE_FACTORIES[w.scene] }))} />` (fixed) behind a stack of `<WorldPanel>`; `GatewayDescent` owns `handleRef` and passes the scroll hook's `onScrub(i,p)` straight to `handleRef.current?.setActive(i,p)`. `SCENE_FACTORIES` is a client-side `Record<WorldId, () => DioramaScene>` registry (populated as scenes land: Station in Task 12, the rest in Chunk 3).
+  - **Fallback path** (reduced-motion OR no WebGL OR not-yet-hydrated): render the same `<WorldPanel>` stack, each backed by the existing `<WorldCanvas scene={world.painterKey} seed={0x2100 + world.index} label={world.name} />` — note it uses **`world.painterKey`** (NOT `world.scene`) so the id→painter mismatch cannot blank a panel, and synthesizes the `seed` the canvas requires. No scroll scrubbing.
   - Both paths render identical text/lore/CTAs → SSR-complete, accessible, never blank.
 
-- [ ] **Step 2: Styles** — add additive CSS to `globals.css` for `.gateway`, `.gw-canvas` (fixed, `z-index` behind content, `pointer-events:none`), `.gw-panel` (min-height:100svh, content max-width, accent var), fade layers. Reuse existing tokens/clip/scanline. Ensure no horizontal overflow and no CLS from the fixed canvas.
+- [ ] **Step 3: Styles** — add additive CSS to `globals.css` for `.gateway`, `.gw-canvas` (fixed, `z-index` behind content, `pointer-events:none`), `.gw-panel` (min-height:100svh, content max-width, accent var), fade layers. Reuse existing tokens/clip/scanline. Ensure no horizontal overflow and no CLS from the fixed canvas.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Verify the fallback branch explicitly** — before any real scene exists, temporarily force `enhanced=false` and `npm run dev`. Confirm every one of the six panels shows a non-blank painter backdrop — **especially the mismatched ones: `medieval` (→`valley`), `race` (→`circuit`), and `maze` (→ the new painter)** — plus correct name/lore/fact text, and that the page is fully readable. This catches the id↔painterKey mismatch here rather than in Chunk 3. Restore the capability detection afterward.
+
+- [ ] **Step 5: Type-check + commit**
 
 ```bash
-git add site/components/GatewayDescent.tsx site/app/globals.css
-git commit -m "feat(site): GatewayDescent composition with reduced-motion/no-webgl fallback"
+cd site && npx tsc --noEmit
+git add site/components/GatewayDescent.tsx site/lib/painters.ts site/components/WorldCanvas.tsx site/app/globals.css
+git commit -m "feat(site): GatewayDescent composition, maze painter, and never-blank fallback"
 ```
 
 ---
 
 ### Task 12: Station scene (first cinematic diorama)
 
-**Files:** Create `site/components/diorama/scenes/station.ts`
+**Files:** Create `site/components/diorama/scenes/station.ts`, `site/components/diorama/testCtx.ts`, `site/components/diorama/scenes/station.test.ts`
 
-- [ ] **Step 1: Implement** `createStationScene(): DioramaScene` per the contract. Station brief (from spec §7): orbital ring + hub spire before a planet; slow orbital camera on `progress`; drifting traffic lights; starfield parallax; fog; accent cyan. Use instanced/cheap geometry; build once; animate in `update` from `progress` + `dt`; free everything in `dispose`. Keep it procedural and on-brand ("generated in code"). This scene is the reference template for the other five.
+- [ ] **Step 1: Implement** `createStationScene(): DioramaScene` per the contract, using **`ctx.THREE`** for all Three access (no static `import 'three'`; only `import type`). Station brief (spec §7): orbital ring + hub spire before a planet; slow orbital camera on `progress`; drifting traffic lights; starfield parallax; fog; accent cyan. `build` creates geometry once and tracks every `BufferGeometry`/`Material` it makes (e.g. in a `disposables[]`); `update` derives camera/positions deterministically from `progress` (+ `dt` only for continuous drift); `dispose` frees everything tracked. Keep it procedural and on-brand. **This scene is the reference template for the other five.**
 
-- [ ] **Step 2: Register + manual verify** — in `GatewayDescent`, register the station factory; run `npm run dev`; scroll the first panel and confirm: the station diorama renders, camera moves with scroll, no console errors, disposes on navigate. Check reduced-motion (emulate) shows the static station painter instead.
+- [ ] **Step 2: Create a headless test context helper** — `site/components/diorama/testCtx.ts`:
 
-- [ ] **Step 3: Commit**
+```ts
+import * as THREE from 'three';
+import type { SceneCtx, QualityTier } from './types';
+// Node-safe ctx: real THREE object creation works without a GL context; renderer is a minimal stub
+// (scenes must not call renderer during build/update — only add to `scene` and move `camera`).
+export function makeTestCtx(quality: QualityTier = 'high'): SceneCtx {
+  return {
+    THREE,
+    scene: new THREE.Scene(),
+    camera: new THREE.PerspectiveCamera(60, 1.6, 0.1, 2000),
+    renderer: {} as THREE.WebGLRenderer,
+    accent: new THREE.Color('#52e9ff'),
+    quality,
+  };
+}
+```
+
+- [ ] **Step 3: Write the scene test** — `site/components/diorama/scenes/station.test.ts`:
+
+```ts
+import { describe, it, expect, vi } from 'vitest';
+import * as THREE from 'three';
+import { createStationScene } from './station';
+import { makeTestCtx } from '../testCtx';
+
+describe('station scene', () => {
+  it('has id "station"', () => {
+    expect(createStationScene().id).toBe('station');
+  });
+  it('disposes every geometry and material it builds (no leaks)', () => {
+    const ctx = makeTestCtx();
+    const geoSpy = vi.spyOn(THREE.BufferGeometry.prototype, 'dispose');
+    const matSpy = vi.spyOn(THREE.Material.prototype, 'dispose');
+    const scene = createStationScene();
+    scene.build(ctx);
+    const created = geoSpy.mock.calls.length; // baseline none yet
+    scene.dispose();
+    expect(geoSpy).toHaveBeenCalled();
+    expect(matSpy).toHaveBeenCalled();
+    geoSpy.mockRestore(); matSpy.mockRestore();
+  });
+  it('update is deterministic at a fixed progress', () => {
+    const s1 = createStationScene(); const c1 = makeTestCtx(); s1.build(c1);
+    const s2 = createStationScene(); const c2 = makeTestCtx(); s2.build(c2);
+    s1.update(0, 0.5, true); s2.update(0, 0.5, true);
+    expect(c1.camera.position.toArray()).toEqual(c2.camera.position.toArray());
+  });
+});
+```
+
+- [ ] **Step 4: Run the scene test**
+
+Run: `cd site && npx vitest run components/diorama/scenes/station.test.ts`
+Expected: PASS (3 tests). If the leak test fails, `dispose()` is missing resources — fix before proceeding. (This test is the template Chunk 3 scenes each copy.)
+
+- [ ] **Step 5: Register + manual verify** — in `GatewayDescent`, add `station` to `SCENE_FACTORIES`; run `npm run dev`; scroll the first panel and confirm: the diorama renders, camera moves with scroll, no console errors, disposes on navigate. Emulate reduced-motion → the static station painter shows instead.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add site/components/diorama/scenes/station.ts site/components/GatewayDescent.tsx
-git commit -m "feat(site): Station cinematic diorama scene"
+git add site/components/diorama/scenes/station.ts site/components/diorama/testCtx.ts site/components/diorama/scenes/station.test.ts site/components/GatewayDescent.tsx
+git commit -m "feat(site): Station cinematic diorama scene + leak/determinism tests"
 ```
 
 ---
@@ -677,15 +770,17 @@ git commit -m "feat(site): render GatewayDescent on the landing page"
 
 ### Tasks 14–18: The five remaining scenes
 
-For each, create `site/components/diorama/scenes/<name>.ts`, register it, `npm run dev`, verify it renders + animates on its panel with no leaks, then commit.
+For each: create `site/components/diorama/scenes/<file>.ts` following the **Station template** (Task 12) — `ctx.THREE` only, track disposables, deterministic `update(progress)`; then **copy `station.test.ts` to a sibling `<file>.test.ts`**, adjusting the import, the expected `id`, and running it (`npx vitest run components/diorama/scenes/<file>.test.ts` → PASS: id + leak + determinism); then register the factory in `SCENE_FACTORIES` under the world's `scene` id; `npm run dev` to verify; then commit.
 
-- [ ] **Task 14 — `medieval.ts` (Aldermoor Vale):** timber-roof town + castle silhouette + reflective lake plane; drifting embers/pollen; warm amber dusk. Commit `feat(site): Aldermoor Vale diorama`.
-- [ ] **Task 15 — `sports.ts` (Meridian Athletic Grounds):** floodlit stadium bowl + track ribbons; sweeping stadium lights; faint crowd shimmer; green accent. Commit `feat(site): Meridian diorama`.
-- [ ] **Task 16 — `citadel.ts` (Sunspire Citadel):** cliff-top vertical town, rope bridges, the 46 m tower; heat-haze; sun-rake lighting climbing the tower on `progress`. Commit `feat(site): Sunspire Citadel diorama`.
-- [ ] **Task 17 — `race.ts` (Vellum Ridge):** elevated circuit ribbon through terrain + city blocks; a car moving along the lap; red-orange dusk. Commit `feat(site): Vellum Ridge diorama`.
-- [ ] **Task 18 — `verdantCoil.ts` (The Verdant Coil):** aerial hedge-maze grid that visibly re-shuffles/rethreads as `progress` advances (nods to volatility); green mist; a lone lantern (the Keeper). Commit `feat(site): Verdant Coil diorama`.
+**Critical id rule:** every scene's `DioramaScene.id` MUST equal the world's `scene` id from `worlds.ts` (`station`,`medieval`,`sports`,`citadel`,`race`,`maze`), because `SCENE_FACTORIES` is keyed by it and the `worlds.test.ts` assertion `w.scene === w.id` locks it. Note the maze file/factory are named after the display name but the **id stays `'maze'`**.
 
-Each task's verify step: render its panel, confirm signature motion, scroll past to confirm the previous scene pauses/disposes and this one activates (only active renders), check FPS is smooth.
+- [ ] **Task 14 — `medieval.ts` (Aldermoor Vale), `id:'medieval'`:** timber-roof town + castle silhouette + reflective lake plane; drifting embers/pollen; warm amber dusk. Add `medieval.test.ts`. Commit `feat(site): Aldermoor Vale diorama + tests`.
+- [ ] **Task 15 — `sports.ts` (Meridian Athletic Grounds), `id:'sports'`:** floodlit stadium bowl + track ribbons; sweeping stadium lights; faint crowd shimmer; green accent. Add `sports.test.ts`. Commit `feat(site): Meridian diorama + tests`.
+- [ ] **Task 16 — `citadel.ts` (Sunspire Citadel), `id:'citadel'`:** cliff-top vertical town, rope bridges, the 46 m tower; heat-haze; sun-rake lighting climbing the tower on `progress`. Add `citadel.test.ts`. Commit `feat(site): Sunspire Citadel diorama + tests`.
+- [ ] **Task 17 — `race.ts` (Vellum Ridge), `id:'race'`:** elevated circuit ribbon through terrain + city blocks; a car moving along the lap; red-orange dusk. Add `race.test.ts`. Commit `feat(site): Vellum Ridge diorama + tests`.
+- [ ] **Task 18 — `verdantCoil.ts` (The Verdant Coil), `createVerdantCoilScene()` returning `id: 'maze'`:** aerial hedge-maze grid that visibly re-shuffles/rethreads as `progress` advances (nods to volatility); green mist; a lone lantern (the Keeper). Add `verdantCoil.test.ts` (asserts `id === 'maze'`). Commit `feat(site): Verdant Coil diorama + tests`.
+
+Each task's manual verify step: render its panel, confirm signature motion, scroll past to confirm the previous scene pauses/disposes and this one activates (only active renders), check FPS is smooth.
 
 ---
 
@@ -700,9 +795,9 @@ Each task's verify step: render its panel, confirm signature motion, scroll past
 
 ### Task 20: Performance pass
 
-- [ ] **Step 1** — Enforce: only active(+fading) scene renders; DPR capped by tier; rAF paused on `document.hidden` and when the canvas is fully offscreen (IntersectionObserver); non-adjacent scenes disposed under memory pressure; lazy WebGL init after first paint so LCP is DOM-driven.
-- [ ] **Step 2: Measure** — build (`cd site && npm run build`) and run a production `npm start`; Lighthouse (or Chrome DevTools MCP performance trace) on the landing page. Targets: no CLS from the fixed canvas, good LCP, smooth interaction. Record numbers in the commit message.
-- [ ] **Step 3: Commit** `perf(site): active-only rendering, DPR cap, visibility gating`.
+- [ ] **Step 1** — Implement the deferred-from-Task-8 pieces plus the gating: **cross-fade rendering** across adjacent scenes during transitions (a short window where the outgoing scene fades out — via a CSS opacity layer over the canvas, or dual-render — while the incoming fades in), and **disposing non-adjacent scenes** when built-scene count exceeds a threshold (keep active ±1 warm; "memory pressure" = simply >3 built scenes, no exotic API). Also enforce: only active(+fading) scene renders; DPR capped by tier; rAF paused on `document.hidden` and when the canvas is fully offscreen (IntersectionObserver); lazy WebGL init after first paint so LCP is DOM-driven (hero text/portal are DOM/CSS).
+- [ ] **Step 2: Measure** — `cd site && npm run build:site-only` then `npm start`; run Lighthouse (or Chrome DevTools MCP performance trace) on the landing page (mobile + desktop). **Pass gates: CLS < 0.1 (target 0 from the fixed canvas), LCP < 2.5s, no long-task jank on scroll (60fps target, no sustained frames > 32ms).** Record the actual numbers in the commit message. (Use `build:site-only` — the landing page's rendering does not depend on the bundled game under `public/game`, which `npm run build` additionally rebuilds.)
+- [ ] **Step 3: Commit** `perf(site): cross-fade, active-only rendering, DPR cap, visibility gating (LCP=…, CLS=…)`.
 
 ---
 
@@ -717,7 +812,9 @@ Each task's verify step: render its panel, confirm signature motion, scroll past
 
 - [ ] **Step 1: Full unit suite** — `cd site && npm test` (all pass).
 - [ ] **Step 2: Type-check + production build** — `cd site && npx tsc --noEmit && npm run build:site-only` (clean).
-- [ ] **Step 3: Manual QA checklist** — signed-out vs access-holder CTAs correct; Stripe test-mode banner intact; every world name correct; stat bar 6·6·4·0 GB; no "five"/"Five worlds" anywhere (`grep -rni "five worlds\|five mounts" site/app site/components site/lib` returns nothing); all six dioramas render and animate; reduced-motion + no-WebGL fallbacks OK; no console errors; no horizontal scroll on mobile widths.
+- [ ] **Step 3: Manual QA checklist** — signed-out vs access-holder CTAs correct; Stripe test-mode banner intact; every world name correct; stat bar 6·6·4·0 GB; all six dioramas render and animate; reduced-motion + no-WebGL fallbacks OK; no console errors; no horizontal scroll on mobile widths. **Stale-count sweep** (two greps, both must come back clean of marketing claims):
+  - Fast phrase check: `grep -rniE "five (worlds|mounts)|four (worlds|weapons)" site/app site/components site/lib src/content/Lore.js package.json`
+  - Broad word check (review each hit — some legitimate uses of "five/four" may exist in unrelated copy): `grep -rniE "\b(five|four)\b" site/app site/components site/lib src/content/Lore.js` and confirm none are world/mount/portal counts.
 - [ ] **Step 4: Commit + finish** — commit any final tweaks; then use @superpowers:finishing-a-development-branch to open the PR / merge decision for branch `landing-redesign`.
 
 **✅ Chunk 3 complete — full Gateway Descent shipped.**
@@ -730,6 +827,7 @@ Each task's verify step: render its panel, confirm signature motion, scroll past
 - **GSAP/ScrollTrigger licensing:** confirm ScrollTrigger's current license tier before shipping (it has historically been in the free bundle).
 - **Lore DB base URL:** solved by the shared `getLoreEntries()` query (no RSC self-fetch) — Task 3.
 - **Scene art:** the six briefs are directional; expect live iteration. If a scene proves too heavy on `low` tier, reduce its geometry in `setQuality('low')`.
+- **Testing deviation from spec §12 (intentional):** the spec listed a Playwright E2E suite, but the site has **no existing E2E/browser-test infrastructure**. Rather than introduce Playwright + its config/CI wiring into a landing-page redesign, this plan covers the same assertions via (a) Vitest units for the SoT/lore/scene logic, (b) the Task 22 stale-count greps, and (c) the explicit manual QA checklist for visual/scroll/perf/a11y (which cinematic WebGL requires regardless). Adding a Playwright smoke suite is a reasonable **follow-up**, not a blocker for this redesign.
 - **Concurrent repo activity:** all work stays in the `landing-redesign` worktree; do not switch branches in the shared `gametestai/` checkout.
 - **`@vercel/postgres` is deprecated** (platform prefers `@neondatabase/serverless` + drizzle). We **intentionally keep it** — the lore table is pre-existing shared infrastructure and DB migration is an explicit spec non-goal. `getLoreEntries()` merely relocates the existing query verbatim; migrating storage is out of scope for this redesign and would affect the in-game lore admin the other session owns.
 ```

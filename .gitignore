@@ -17,3 +17,6 @@ site/.next
 site/.vercel
 
 .playwright-mcp/
+
+# Superpowers brainstorming scratch
+.superpowers/

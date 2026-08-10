@@ -7,6 +7,7 @@ import { getAccessStateForSession } from '@/lib/access';
 import { auth } from '@/lib/auth';
 import { ENTRY_CENTS, CREDIT_PRICE_CENTS, MIN_CREDITS, formatCents, grossUp } from '@/lib/pricing';
 import { stripeConfigured } from '@/lib/stripe';
+import { heroTicker, statBar } from '@/lib/worlds';
 
 /* Reads a cookie, so it cannot be prerendered — and should not be, since the
  * page's primary call to action changes depending on whether you have paid. */
@@ -76,8 +77,8 @@ const FEATURES = [
     c: 'Grip any near-vertical surface and go up it. Stamina is a budget for movement, not a countdown — hang still and you recover.',
   },
   {
-    t: 'Five mounts',
-    c: 'Hoverboard, dragon, ground car, horse and eagle. None is a reskin: the horse has a real gait model, the eagle is a glider trading height for speed.',
+    t: 'Six mounts',
+    c: 'Hoverboard, dragon, ground car, horse, eagle and bicycle. None is a reskin: the horse has a real gait model, the eagle is a glider trading height for speed.',
     amber: true,
   },
   {
@@ -182,11 +183,11 @@ export default async function Home() {
 
         <div className="hero-ticker" aria-hidden="true">
           <div className="htick-inner">
-            {['Five worlds','Five mounts','Four weapons','Zero downloads','100% generated','Runs in a tab','No install'].flatMap((s, i) => [
+            {heroTicker().flatMap((s, i) => [
               <span key={`a${i}`}>{s}</span>,
               <span key={`as${i}`} className="htick-dot" />,
             ])}
-            {['Five worlds','Five mounts','Four weapons','Zero downloads','100% generated','Runs in a tab','No install'].flatMap((s, i) => [
+            {heroTicker().flatMap((s, i) => [
               <span key={`b${i}`} aria-hidden="true">{s}</span>,
               <span key={`bs${i}`} className="htick-dot" aria-hidden="true" />,
             ])}
@@ -229,7 +230,7 @@ export default async function Home() {
           </div>
 
           <div className="feat-stats-bar" aria-label="game at a glance">
-            {(['5','5','4','0 GB'] as string[]).map((v, i) => {
+            {statBar().map((v, i) => {
               const labels = ['Worlds','Mounts','Weapons','Install'];
               return (
                 <div className="fstat" key={labels[i]}>
@@ -255,7 +256,7 @@ export default async function Home() {
       <section className="cta-band">
         <div className="wrap">
           <div className="cta-band-kicker">Get in</div>
-          <h2 className="cta-band-h2">One charge.<br />Five worlds.</h2>
+          <h2 className="cta-band-h2">One charge.<br />Six worlds.</h2>
           <p className="cta-band-sub">
             Access is {formatCents(ENTRY_CENTS)} for a 30-day play window on your
             account. Credits are separate and optional —{' '}

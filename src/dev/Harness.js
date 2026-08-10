@@ -11,7 +11,7 @@
 
 import { MAZE, DIR, cellIndex, districtCoords, isOpen, connectorAt } from '../worlds/maze/MazeTopology.js';
 import { cellToWorld } from '../worlds/maze/MazeColliders.js';
-import { shaftColliders } from '../worlds/maze/MazeShafts.js';
+import { shaftColliders, connectorHoleBounds } from '../worlds/maze/MazeShafts.js';
 
 /**
  * Camera framings, derived from each world's actual published layout
@@ -282,9 +282,23 @@ class Harness {
     // computed view a half-cell off the shaft it meant to frame.
     const w = cellToWorld(shaft.x, shaft.z, shaft.level);
 
+    // The OPENING's centre, not the cell's. `stairWellBounds` offsets the well
+    // into the cell's +x/+z quadrant, so a camera on the cell centre looking
+    // straight up frames the solid slab beside the hole - the very assumption
+    // that had the daylight columns lighting stone until connectorHoleBounds
+    // replaced it there, surviving here in the dev camera. Asked per KIND,
+    // because a lift's well and a tunnel's exit sit elsewhere in the cell
+    // again, and this helper serves all three.
+    const world = this.game?.worldManager?.active;
+    const hole = world?.cells
+      ? connectorHoleBounds(world.cells, shaft.x, shaft.z, shaft.level)
+      : null;
+    const cx = hole?.cx ?? w.x;
+    const cz = hole?.cz ?? w.z;
+
     // Camera low inside the shaft, looking up past the next level.
-    const pos = [w.x, w.y + 0.8, w.z];
-    const look = [w.x, w.y + MAZE.LEVEL_HEIGHT * 2, w.z];
+    const pos = [cx, w.y + 0.8, cz];
+    const look = [cx, w.y + MAZE.LEVEL_HEIGHT * 2, cz];
     return { pos, look, fov: 75 };
   }
 

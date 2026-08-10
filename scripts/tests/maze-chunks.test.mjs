@@ -198,7 +198,14 @@ test('a long walk leaves no orphaned colliders or buckets', () => {
    * lifts and tunnels gained their own mesh kinds, and broke outright when
    * districts gained a lantern. `objectCount()` is what this class believes it
    * owns; the scene is what it actually put there, and a leak is exactly the
-   * two disagreeing. */
+   * two disagreeing.
+   *
+   * Since Task 6 the static kinds live in shared per-family BatchedMeshes,
+   * so what this counts CHANGED without the equality weakening: objectCount
+   * is now (per-district movers + dressing + lanterns + flames) PLUS the
+   * batches currently in the scene, and a batch leaves the scene with its
+   * last instance - so an empty world still means an empty group, and a
+   * stranded batch or a stranded lantern still breaks this line. */
   assert.equal(group.children.length, chunks.objectCount(),
     `scene holds ${group.children.length} objects, MazeChunks accounts for ${chunks.objectCount()}`);
   chunks.disposeAll();

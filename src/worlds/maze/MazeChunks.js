@@ -6,6 +6,18 @@ import {
   wellLightColumns, WELL_LIGHT_RADIUS,
 } from './MazeFoliage.js';
 import { PLATE_HALF_HEIGHT, PLATE_HALF_WIDTH } from './MazeShafts.js';
+/* The geometry seam. This class turns descriptors into instance matrices and
+ * nothing else now - the extents live in the prefab, so what arrives here is a
+ * cached geometry already built at world scale and a matrix carrying only
+ * where to put it. See MazeMeshes.js for why that separation is what lets the
+ * art change without any headless proof being re-run. */
+import { prefabFor, groupByExtentClass, isPrefab, releasePrefabs } from './MazeMeshes.js';
+/* The draw-call seam. Static boxes no longer get an InstancedMesh per
+ * (district, kind, extent class) - they are instances in one shared
+ * BatchedMesh per material family, and streaming a district is addInstance /
+ * deleteInstance against those. See MazeBatches.js for the measurements and
+ * for why the moving kinds are exempt. */
+import { MazeBatches } from './MazeBatches.js';
 
 /**
  * Every descriptor `kind` this class knows how to turn into a mesh, and
@@ -114,6 +126,11 @@ export class MazeChunks {
      * decision - so it is made once at build time and passed as a plain cell
      * lookup. Null for the headless gates, which then see no puzzles at all. */
     this.puzzles = puzzles;
+    /* The shared per-family batches every static box draws through. Owned
+     * here because their lifecycle IS the residency lifecycle: `ensure` adds
+     * a district's instances, `drop` deletes exactly them, and `disposeAll`
+     * takes the batches down with the world. */
+    this.batches = new MazeBatches({ materials, group });
     /** @type {Map<number, { meshes: THREE.InstancedMesh[], colliders: any[] }>} */
     this._resident = new Map();
     /** Live lifts, keyed by CONNECTOR CELL - see the lift section below. */
@@ -140,14 +157,20 @@ export class MazeChunks {
   /**
    * Exactly how many scene objects this class owns right now.
    *
-   * Meshes plus one lantern per resident district. Exposed so the leak test
-   * can assert an EQUALITY rather than an upper bound: the bound it used
-   * ("hedges and a floor per district") was already loose once stairs, shafts,
-   * lifts and tunnels gained their own mesh kinds, and it broke outright when
-   * districts gained a light. An exact count cannot rot the same way.
+   * Per-district objects (the movers' InstancedMeshes, the dressing, one
+   * lantern and any candle flames) PLUS the shared per-family batches
+   * currently in the scene - a batch is owned here too, via `this.batches`,
+   * it is just not owned by any one district. Exposed so the leak test can
+   * assert an EQUALITY rather than an upper bound: the bound it used ("hedges
+   * and a floor per district") was already loose once stairs, shafts, lifts
+   * and tunnels gained their own mesh kinds, and it broke outright when
+   * districts gained a light. An exact count cannot rot the same way - and
+   * when the static kinds moved into the batches, the count moved WITH them
+   * rather than being weakened, which is what keeps "the scene holds exactly
+   * what this class accounts for" a meaningful sentence.
    */
   objectCount() {
-    let n = 0;
+    let n = this.batches.meshCount();
     for (const e of this._resident.values()) {
       n += e.meshes.length + (e.lantern ? 1 : 0) + (e.flames?.length ?? 0);
     }
@@ -179,21 +202,45 @@ export class MazeChunks {
     }
 
     const meshes = [];
+    /* Every static box this district wants drawn, collected for one
+     * `batches.add` at the end of this method. The batch draws all of them in
+     * one multi-draw call per material family, which is the entire point of
+     * Task 6: an InstancedMesh per (district, kind, extent class) measured 909
+     * draw calls at full residency, ~21 of them per district, and the batches
+     * collapse that to one per family however many districts are live. */
+    const batched = [];
     for (const kind of CHUNK_MESH_KINDS) {
       const of = descs.filter((d) => d.kind === kind);
-      const mesh = buildBoxInstances(of, this.materials[kind], `maze:${kind}:${key}`, this.group);
-      if (!mesh) continue;
-      meshes.push(mesh);
-      /* Hand each moving part the mesh and the instance index it lives at, so
-       * the step functions can carry the geometry along with the collider. The
-       * index is the descriptor's position within THIS kind's filtered list,
-       * which is exactly the order `buildBoxInstances` wrote them in - the same
-       * paired-by-construction argument the collider loop above makes, and for
-       * the same reason: searching for the instance nearest a position would
-       * pick the wrong one the day two coincide. */
-      if (!MOVING_KINDS.includes(kind)) continue;
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      for (let i = 0; i < of.length; i++) this._attachMoverMesh(of[i], mesh, i);
+      /* Only the MOVING kinds still get a per-district InstancedMesh. A mover
+       * pairs its descriptor to an instance index whose matrix `stepLifts` and
+       * `stepGates` rewrite every frame, and both safety interlocks are proved
+       * against exactly that pairing - four small meshes per shaft district is
+       * the wrong place to spend batching risk. Everything else goes to the
+       * shared batches, which need no extent-class grouping at all: a batch
+       * holds many geometries, so the split that InstancedMesh forced
+       * (`groupByExtentClass`) simply does not arise on this path. */
+      if (!MOVING_KINDS.includes(kind)) {
+        batched.push(...of);
+        continue;
+      }
+      for (const run of groupByExtentClass(of)) {
+        const mesh = buildBoxInstances(
+          run.descs, this.materials[kind], `maze:${kind}:${run.cls}:${key}`, this.group,
+        );
+        if (!mesh) continue;
+        meshes.push(mesh);
+        /* Hand each moving part the mesh and the instance index it lives at, so
+         * the step functions can carry the geometry along with the collider. The
+         * index is the descriptor's position within THIS run, which is exactly
+         * the order `buildBoxInstances` wrote them in - the same
+         * paired-by-construction argument the collider loop above makes, and for
+         * the same reason: searching for the instance nearest a position would
+         * pick the wrong one the day two coincide. Grouping happens here in the
+         * open, rather than inside `buildBoxInstances`, precisely so this
+         * pairing keeps holding against the exact list that was written. */
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        for (let i = 0; i < run.descs.length; i++) this._attachMoverMesh(run.descs[i], mesh, i);
+      }
     }
 
     /* Dressing: a stone band at each hedge's base, and unkempt growth along
@@ -203,11 +250,15 @@ export class MazeChunks {
      * the hedge's own collider already covers it. See MazeFoliage.js. */
     const footings = footingTransforms(descs);
     if (footings.length && this.materials.footing) {
-      const fm = buildBoxInstances(
-        footings.map((f) => ({ cx: f.x, cy: f.y, cz: f.z, hx: f.hx, hy: f.hy, hz: f.hz })),
-        this.materials.footing, `maze:footing:${key}`, this.group,
-      );
-      if (fm) meshes.push(fm);
+      /* Dressing carries a `kind` too. It is exempt from the fit contract -
+       * nothing here reaches a collider descriptor - but it is NOT exempt from
+       * the registry, because a footing is a box like any other and paying for
+       * it out of the shared cache is free. The kind is what stops a footing
+       * and a hedge of coincidentally equal extents sharing one geometry, which
+       * would matter the moment either grows a profile of its own. */
+      batched.push(...footings.map((f) => ({
+        kind: 'footing', cx: f.x, cy: f.y, cz: f.z, hx: f.hx, hy: f.hy, hz: f.hz,
+      })));
     }
     const sprigs = foliageTransforms(descs, key);
     if (sprigs.length && this.materials.foliage) {
@@ -234,14 +285,12 @@ export class MazeChunks {
      * a wall and its plate can never disagree about where the plate is. */
     const plates = descs.filter((d) => d.kind === 'slideWall' && d.plate);
     if (plates.length && this.materials.plate) {
-      const pm = buildBoxInstances(
-        plates.map((d) => ({
-          cx: d.plate.x, cy: d.plate.y, cz: d.plate.z,
-          hx: PLATE_HALF_WIDTH, hy: PLATE_HALF_HEIGHT, hz: PLATE_HALF_WIDTH,
-        })),
-        this.materials.plate, `maze:plate:${key}`, this.group,
-      );
-      if (pm) { pm.castShadow = false; meshes.push(pm); }
+      /* Batched like everything static; the plate family's batch carries the
+       * castShadow=false these meshes used to set individually. */
+      batched.push(...plates.map((d) => ({
+        kind: 'plate', cx: d.plate.x, cy: d.plate.y, cz: d.plate.z,
+        hx: PLATE_HALF_WIDTH, hy: PLATE_HALF_HEIGHT, hz: PLATE_HALF_WIDTH,
+      })));
     }
 
     /* Daylight down the towers. Two meshes at most per district and only in the
@@ -304,11 +353,10 @@ export class MazeChunks {
 
     const candles = candlePlacements(descs, key);
     if (candles.length && this.materials.candle) {
-      const cm = buildBoxInstances(
-        candles.map((cd) => ({ cx: cd.x, cy: cd.y, cz: cd.z, hx: 0.09, hy: 0.26, hz: 0.09 })),
-        this.materials.candle, `maze:candle:${key}`, this.group,
-      );
-      if (cm) { cm.castShadow = false; meshes.push(cm); }
+      /* Batched; castShadow=false lives on the candle family's batch now. */
+      batched.push(...candles.map((cd) => ({
+        kind: 'candle', cx: cd.x, cy: cd.y, cz: cd.z, hx: 0.09, hy: 0.26, hz: 0.09,
+      })));
     }
     const flames = [];
     for (const cd of candles) {
@@ -332,6 +380,11 @@ export class MazeChunks {
     lantern.position.set(cx, w0.level * MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT * 0.8, cz);
     this.group.add(lantern);
 
+    /* Every static box at once, at the end, so the batch ledger for this key
+     * is written exactly once whatever mix of kinds the district turned out
+     * to hold. `drop` releases precisely this set. */
+    this.batches.add(key, batched);
+
     this._resident.set(key, { meshes, colliders, lantern, flames });
   }
 
@@ -351,6 +404,9 @@ export class MazeChunks {
     if (!entry) return;
 
     this._unregisterMovers(key);
+    /* The district's share of the shared batches - deleteInstance only, never
+     * a geometry, so eviction can never fragment the batch. */
+    this.batches.drop(key);
 
     const evicted = new Set(entry.colliders);
     for (const c of entry.colliders) this.physics.remove(c);
@@ -364,7 +420,14 @@ export class MazeChunks {
 
     for (const m of entry.meshes) {
       this.group.remove(m);
-      m.geometry.dispose();
+      /* NOT the prefabs. A registry geometry is shared by every district that
+       * happens to hold a box of that size, so freeing it here would pull the
+       * buffer out from under the neighbours still drawing with it - and it
+       * would come straight back on their next frame, so the symptom would be
+       * churn rather than a missing wall. The dressing geometry a district
+       * builds for itself (foliage, ivy, the daylight column and its pool) is
+       * genuinely this district's and does still go. See MazeMeshes.isPrefab. */
+      if (!isPrefab(m.geometry)) m.geometry.dispose();
       /* InstancedMesh's instanceMatrix buffer is only released through the
        * mesh's own dispose event - geometry.dispose() alone strands it, at
        * 64 bytes per instance. */
@@ -399,7 +462,26 @@ export class MazeChunks {
    * needs for correctness in isolation is pure waste here.
    */
   disposeAll() {
-    if (this._resident.size === 0) return;
+    /* The prefabs go here and only here. This is world teardown - the one
+     * moment at which no district is drawing with any of them - and it is not
+     * optional tidying: this world re-rolls its seed on every entry, and a new
+     * seed cuts its floors into differently-sized spans, so a cache that never
+     * emptied would gain a few dozen geometries per visit for as long as the
+     * session lasted.
+     *
+     * Last, after the district loop, so the `isPrefab` guard in that loop still
+     * recognises them as the registry's; and outside the early return, because
+     * the forecourt draws through the registry too and exists whether or not a
+     * district happens to be resident. */
+    /* The batches go down with the world in every case - like the prefab
+     * release just below, and before it, so the batches never outlive the
+     * registry geometries they were copied from (they hold no reference back,
+     * but a teardown order that cannot be wrong needs no argument). */
+    if (this._resident.size === 0) {
+      this.batches.disposeAll();
+      releasePrefabs();
+      return;
+    }
 
     this._lifts.clear();
     this._gates.clear();
@@ -412,7 +494,9 @@ export class MazeChunks {
       }
       for (const m of entry.meshes) {
         this.group.remove(m);
-        m.geometry.dispose();
+        /* Same guard as `drop()`: the registry's geometries are freed once, by
+         * `releasePrefabs` at the end of this method, not once per mesh. */
+        if (!isPrefab(m.geometry)) m.geometry.dispose();
         m.dispose();
       }
       if (entry.lantern) {
@@ -433,6 +517,8 @@ export class MazeChunks {
     wc.length = w;
 
     this._resident.clear();
+    this.batches.disposeAll();
+    releasePrefabs();
   }
 
   /**
@@ -611,10 +697,12 @@ export class MazeChunks {
    * Move a mover's DRAWN box to where its collider now is.
    *
    * Rewrites the translation row of the existing instance matrix rather than
-   * recomposing it, because these boxes never rotate and their scale was
-   * baked from half-extents that do not change - so the only thing that can
+   * recomposing it, because these boxes never rotate and their size is not in
+   * the matrix at all any more - it is in the prefab. The only thing that can
    * legitimately differ is Y, and touching only Y cannot silently resize a
-   * lift car the day `buildBoxInstances` changes how it composes.
+   * lift car the day `buildBoxInstances` changes how it composes. Element 13
+   * is the translation Y under a pure translation exactly as it was under a
+   * translate-and-scale, so this survived the prefab seam untouched.
    */
   _syncMoverMesh(mesh, index, y) {
     if (!mesh || index < 0) return;
@@ -886,29 +974,6 @@ export class MazeChunks {
 }
 
 /**
- * Build one InstancedMesh of unit boxes from a list of `{cx,cy,cz,hx,hy,hz}`
- * descriptors, add it to `group`, and return it - or return `null` for an
- * empty descriptor list rather than allocate a zero-instance mesh.
- *
- * Shared by `MazeChunks` (district streaming) and `MazeWorld` (the forecourt,
- * which is authored geometry rather than a chunk but built by exactly this
- * same recipe: same `BoxGeometry(1,1,1)`, same scratch Matrix4/Quaternion/
- * Vector3, same compose loop, same `instanceMatrix.needsUpdate`). It lives
- * here rather than in `MazeWorld.js` because `MazeWorld` already imports from
- * this module - putting it there instead would mean `MazeChunks` importing
- * back from `MazeWorld`, a cycle neither file needs.
- *
- * The empty-list guard matters for the forecourt specifically: it can
- * legitimately produce zero hedges or zero floor tiles depending on layout,
- * and the caller does not pre-filter the way `MazeChunks.ensure` does.
- *
- * @param {Array<{cx:number,cy:number,cz:number,hx:number,hy:number,hz:number}>} descs
- * @param {THREE.Material} material
- * @param {string} name
- * @param {THREE.Group} group
- * @returns {THREE.InstancedMesh|null}
- */
-/**
  * One InstancedMesh of small leaning boxes, for foliage.
  *
  * Separate from `buildBoxInstances` because a sprig needs a Y ROTATION and a
@@ -969,22 +1034,62 @@ export function buildSprigInstances(sprigs, material, name, group) {
   return mesh;
 }
 
-export function buildBoxInstances(descs, material, name, group) {
+/**
+ * Build one InstancedMesh from a run of `{kind,cx,cy,cz,hx,hy,hz}` descriptors
+ * that all share an extent class, add it to `group`, and return it - or return
+ * `null` for an empty list rather than allocate a zero-instance mesh.
+ *
+ * Shared by `MazeChunks` (district streaming) and `MazeWorld` (the forecourt,
+ * which is authored geometry rather than a chunk but built by exactly this
+ * same recipe). It lives here rather than in `MazeWorld.js` because
+ * `MazeWorld` already imports from this module - putting it there instead
+ * would mean `MazeChunks` importing back from `MazeWorld`, a cycle neither
+ * file needs.
+ *
+ * ## The run has to be homogeneous, and the caller is who guarantees it
+ *
+ * An InstancedMesh has one geometry. Once the extents live in the geometry
+ * rather than in each instance's scale, a run of mixed sizes cannot be drawn
+ * by one mesh at all - so callers split with `groupByExtentClass` first and
+ * this function takes the first descriptor's geometry for the whole run. That
+ * is the caller's job rather than this function's because the moving kinds
+ * pair a descriptor to its instance index, and an index only means anything
+ * against the exact list that was written; splitting in here would hand the
+ * caller back an index into a list it never saw.
+ *
+ * The empty-list guard matters for the forecourt specifically: it can
+ * legitimately produce zero hedges or zero floor tiles depending on layout,
+ * and the caller does not pre-filter the way `MazeChunks.ensure` does.
+ *
+ * @param {Array<{kind:string,cx:number,cy:number,cz:number,hx:number,hy:number,hz:number}>} descs
+ * @param {THREE.Material} material
+ * @param {string} name
+ * @param {THREE.Group} group
+ * @param {(desc:object) => THREE.BufferGeometry} [geometryFor] the registry, by
+ *   default. Injectable so a test can watch what geometry a run asked for
+ *   without standing up the cache.
+ * @returns {THREE.InstancedMesh|null}
+ */
+export function buildBoxInstances(descs, material, name, group, geometryFor = prefabFor) {
   if (descs.length === 0) return null;
-  const geo = new THREE.BoxGeometry(1, 1, 1);
+  /* One geometry for the whole run, taken from the first descriptor. Callers
+   * pass a run that `groupByExtentClass` produced, so every descriptor here
+   * shares an extent class and the first one speaks for all of them. */
+  const geo = geometryFor(descs[0]);
   const mesh = new THREE.InstancedMesh(geo, material, descs.length);
   mesh.name = name;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   const m = new THREE.Matrix4();
-  const q = new THREE.Quaternion();
-  const pos = new THREE.Vector3();
-  const scale = new THREE.Vector3();
   for (let i = 0; i < descs.length; i++) {
     const d = descs[i];
-    pos.set(d.cx, d.cy, d.cz);
-    scale.set(d.hx * 2, d.hy * 2, d.hz * 2);
-    m.compose(pos, q, scale);
+    /* TRANSLATION ONLY. The half-extents used to be composed in here as a
+     * scale on a unit cube; they are in the geometry now, and they have to
+     * stay there. A scale would multiply whatever a prefab is authored with -
+     * a 4 cm chamfer becomes 19 cm along a hedge's long axis and 2 cm across
+     * its thin one - and it would make the fit contract a per-instance
+     * question rather than a property of the geometry. */
+    m.makeTranslation(d.cx, d.cy, d.cz);
     mesh.setMatrixAt(i, m);
   }
   mesh.instanceMatrix.needsUpdate = true;

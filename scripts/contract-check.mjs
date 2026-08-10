@@ -78,7 +78,25 @@ const CONTRACT = [
    * enclosure proof live here now; `cellToWorld` stayed reachable from
    * MazeColliders.js as a re-export, which is why it is still listed above. */
   { file: 'src/worlds/maze/MazeShafts.js', exports: ['shaftColliders', 'stairColliders', 'stairWellBounds', 'isEnclosureSound', 'requiredWallTop'] },
-  { file: 'src/worlds/maze/MazeChunks.js', exports: ['MazeChunks', 'buildBoxInstances'] },
+  { file: 'src/worlds/maze/MazeChunks.js', exports: ['MazeChunks', 'buildBoxInstances', 'CHUNK_MESH_KINDS'] },
+  /* Phase 6. The geometry seam: visuals stop being literally the collider box.
+   * `MazeProfiles.js` is pure arithmetic - the extent quantiser and the cache
+   * bound - and `MazeMeshes.js` is the only place a maze BufferGeometry is
+   * built, which is what lets `MazeChunks` carry translation and nothing else.
+   * Both registered here for the same reason MazeChunks is: a renamed export
+   * would otherwise surface as a blank world one browser boot later. */
+  { file: 'src/worlds/maze/MazeProfiles.js', exports: ['EXTENT_SNAP', 'EXTENT_QUANTUM', 'quantiseExtent', 'extentClass', 'PREFAB_BUDGET', 'treadProfile', 'treadOutline', 'LANDING_RATIO'] },
+  { file: 'src/worlds/maze/MazeMeshes.js', exports: ['prefabFor', 'groupByExtentClass', 'isPrefab', 'prefabCount', 'releasePrefabs', 'extentClass', 'PREFAB_BUDGET'] },
+  /* Phase 6 Task 6. One BatchedMesh per material family, capacity derived
+   * from the residency radius; the streamed set's draw calls stop scaling
+   * with district count. Registered like MazeChunks: a renamed export here
+   * strands the streaming path. */
+  { file: 'src/worlds/maze/MazeBatches.js', exports: ['MazeBatches', 'BATCH_FAMILIES', 'BATCH_PER_DISTRICT_MAX', 'RESIDENCY_RADIUS', 'worstCaseResidency', 'worstCaseInstances', 'batchCapacity'] },
+  /* Phase 6 Task 3. The cached material set, lifted verbatim out of
+   * MazeWorld._ensureMaterials so the program-family gate can see it headlessly,
+   * plus the fingerprint and the enumerated families that replaced Phase 5's
+   * frozen browser-only program count. */
+  { file: 'src/worlds/maze/MazeMaterials.js', exports: ['buildMazeMaterials', 'materialFingerprint', 'MAZE_PROGRAM_FAMILIES', 'MAZE_PROGRAM_BUDGET'] },
   /* Phase 3. `MazePlan.js` is pure so both map surfaces derive their walls
    * from one definition; `MazeMap.js` is the M-key overlay that draws them. */
   { file: 'src/worlds/maze/MazePlan.js', exports: ['planCacheKey', 'levelSegments'] },

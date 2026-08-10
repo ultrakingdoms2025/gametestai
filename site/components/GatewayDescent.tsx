@@ -6,6 +6,7 @@ import type { ResolvedLore } from '@/lib/lore';
 import type { DioramaHandle, DioramaScene } from '@/components/diorama/types';
 import DioramaCanvas, { type DioramaSceneEntry } from '@/components/diorama/DioramaCanvas';
 import { createStationScene } from '@/components/diorama/scenes/station';
+import { createMedievalScene } from '@/components/diorama/scenes/medieval';
 import WorldPanel from '@/components/WorldPanel';
 import WorldCanvas from '@/components/WorldCanvas';
 import { useGatewayScroll } from '@/hooks/useGatewayScroll';
@@ -22,6 +23,7 @@ export interface GatewayDescentProps {
  */
 const SCENE_FACTORIES: Partial<Record<WorldId, () => DioramaScene>> = {
   station: createStationScene,
+  medieval: createMedievalScene,
 };
 
 /**

@@ -244,6 +244,88 @@ export const MAZE_AUTHORED_TILE_METRES = Object.freeze({
 });
 
 /**
+ * Per-authored-set calibration: where a CC0 material's own idea of its finish
+ * has to be overruled to be lit by THIS maze.
+ *
+ * ## The rule, and which direction it runs
+ *
+ * The maze's lighting was tuned against the procedural bake - ambient 1.25 at
+ * 0x6f7f68, sun 2.2, and a linear-HDR chain whose `UnrealBloomPass` high-pass
+ * (see PostFX.js, BLOOM_KNEE) is a soft ramp rather than a step. An authored
+ * set is brought TO that calibration, not the other way round: five surfaces
+ * must not be able to re-light the world between them.
+ *
+ * ## What was actually wrong, measured rather than judged
+ *
+ * Task 9 shipped and the stair/shaft-wall surface blew its shaft interior to
+ * white. The obvious story - "travertine is a pale stone, so its albedo
+ * over-returns light" - is FALSE, and the measurement says so. Mean linear
+ * albedo, sampled off the live GPU textures at the shaft-up camera (seed
+ * 2026, Rec.709 luma):
+ *
+ *   stair authored (Travertine003) ... 0.2851   <- DARKER than the bake
+ *   stair procedural (SURFACE_RECIPES) 0.4960
+ *
+ * The albedo was never the problem, and no `material.color` tint could have
+ * fixed it: a dielectric's specular F0 is 0.04 whatever its base colour, so
+ * the term that was blowing out does not read `color` at all.
+ *
+ * The ORM's ROUGHNESS channel was the problem, and it is an upstream data
+ * defect rather than a drift. ambientCG's Travertine003 ships a roughness map
+ * that declares a polished slab - measured on the source
+ * `Travertine003_2K-JPG_Roughness.jpg` itself, and reproduced texel-for-texel
+ * by the offline pack, so the pipeline is faithful and the asset is what it
+ * is:
+ *
+ *   channel        p05     median    p95     spread
+ *   stair authored G  0.0196  0.0314  0.0431  a flat mirror + JPEG noise
+ *   stair procedural G  0.7059  0.7569  0.8471
+ *   footing authored G  0.3137  0.5333  0.7098  real, varied, kept as-is
+ *   tunnel  authored G  0.7098  0.7686  0.8275  real, varied, kept as-is
+ *
+ * At roughness 0.031 the GGX lobe collapses to a pinpoint of enormous
+ * radiance; those texels clear the bloom high-pass, and the bloom - not the
+ * stone - is what floods the frame. That is why the whiteout covered even the
+ * unlit shaft interior, which no surface brightness could have reached.
+ *
+ * The set's other two channels are equally uninformative: AO is flat 0.9961
+ * (and `aoMap` is unwired anyway - no prefab carries a uv1) and metalness is
+ * flat 0. So the whole 1024 ORM carries one constant, which is exactly what a
+ * `flatOrm` entry replaces it with.
+ *
+ * ## Why a constant, and not a scalar
+ *
+ * Three multiplies: `roughnessFactor = roughness; roughnessFactor *=
+ * texelRoughness.g`. A scalar can only push roughness DOWN, and this map
+ * needs it pushed UP by a factor of ~22 - which was tried in-browser and does
+ * read, but multiplies the source's JPEG noise by the same 22 and mottles the
+ * stone with blotches that are compression artefacts wearing the costume of
+ * weathering. A 1x1 constant costs four bytes, carries no noise to amplify,
+ * and - the reason it is legal at all - leaves SLOT PRESENCE untouched, which
+ * is the only thing the program cache key reads. MAZE_PROGRAM_BUDGET is
+ * unmoved (measured 391 in the shaft with and without this table).
+ *
+ * 0.68 rather than the bake's 0.757: travertine is allowed to stay a little
+ * glossier than the procedural marble - that is its character, and 0.55 was
+ * tried and washes the shaft's near wall into a broad sheen. `null` is a
+ * DECLARATION, not an omission: hedge, floor, footing and tunnel were all
+ * measured (albedo luma 0.1177 / 0.3001 / 0.2349 / 0.1410 against procedural
+ * 0.1405 / 0.1725 / 0.1413 / 0.2745) and all four carry well-formed ORMs, so
+ * they wear their authored sets untouched.
+ *
+ * @type {Readonly<{[surface:string]: null|Readonly<{flatOrm: Readonly<{ao:number, roughness:number, metalness:number}>}>}>}
+ */
+export const MAZE_AUTHORED_CALIBRATION = Object.freeze({
+  hedge: null,
+  floor: null,
+  stair: Object.freeze({
+    flatOrm: Object.freeze({ ao: 1, roughness: 0.68, metalness: 0 }),
+  }),
+  footing: null,
+  tunnel: null,
+});
+
+/**
  * The byte cost of the declared texture set, procedural AND authored:
  *
  *  - procedural: three RGBA8 maps per surface (albedo + normal + packed
@@ -728,6 +810,39 @@ const FORCE_PROCEDURAL = typeof location !== 'undefined' && /[?&]proc=1/.test(lo
 
 /** kind -> authored {map, normalMap, ormMap}, recorded by applyAuthoredSurfaces. */
 const _authoredSets = new Map();
+
+/** kind -> the 1x1 substitute ORM its calibration declares, built once. */
+const _flatOrms = new Map();
+
+/**
+ * The 1x1 ORM a `flatOrm` calibration entry stands for: one texel of
+ * (R=AO, G=roughness, B=metalness), the same glTF packing the real ORMs use,
+ * so nothing downstream has to know it is a substitute.
+ *
+ * Linear, unfiltered and mip-free by DataTexture's own defaults, which are
+ * the right ones for a constant. It is bound into `roughnessMap` AND
+ * `metalnessMap` exactly as a real ORM is, so slot presence - the only thing
+ * the program cache key reads - is identical either way.
+ *
+ * @param {string} kind
+ * @param {{ao:number, roughness:number, metalness:number}} orm
+ * @returns {THREE.DataTexture}
+ */
+function flatOrmTexture(kind, orm) {
+  let tex = _flatOrms.get(kind);
+  if (!tex) {
+    const b = (v) => Math.max(0, Math.min(255, Math.round(v * 255)));
+    tex = new THREE.DataTexture(
+      new Uint8Array([b(orm.ao), b(orm.roughness), b(orm.metalness), 255]),
+      1, 1, THREE.RGBAFormat,
+    );
+    tex.colorSpace = THREE.NoColorSpace;
+    tex.name = `maze.calibrated.${kind}.orm`;
+    tex.needsUpdate = true;
+    _flatOrms.set(kind, tex);
+  }
+  return tex;
+}
 /** Which set the surfaced materials currently wear. */
 let _surfaceMode = 'procedural';
 
@@ -756,6 +871,15 @@ export function applyAuthoredSurfaces(assets) {
      * authored set's own physical size - see MAZE_AUTHORED_TILE_METRES. */
     const r = 1 / MAZE_AUTHORED_TILE_METRES[kind];
     for (const slot of ['map', 'normalMap', 'ormMap']) set[slot].repeat.set(r, r);
+    /* Calibration, applied where the authored set's own finish cannot be lit
+     * by this maze - see MAZE_AUTHORED_CALIBRATION for the measurements. The
+     * substitution happens AFTER the repeat pass because a constant has no
+     * tiling to set, and the authored ORM this replaces is simply never bound
+     * (downloaded and decoded, never uploaded). `authoredSurfaces` returns a
+     * fresh object per call, so mutating the set here cannot leak across
+     * re-rolls. */
+    const flat = MAZE_AUTHORED_CALIBRATION[kind]?.flatOrm;
+    if (flat) set.ormMap = flatOrmTexture(kind, flat);
     _authoredSets.set(kind, set);
   }
   setMazeSurfaceMode(FORCE_PROCEDURAL ? 'procedural' : 'authored');

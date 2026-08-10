@@ -11,7 +11,8 @@ import {
 } from '../../src/worlds/maze/MazeMeshes.js';
 import { MAZE_ASSET_PREFABS, MAZE_TEXTURE_SLOTS } from '../../src/worlds/maze/MazeAssets.js';
 import {
-  MAZE_AUTHORED_TEXTURE_SIZES, MAZE_AUTHORED_TILE_METRES, mazeSurfaceMode, setMazeSurfaceMode,
+  MAZE_AUTHORED_TEXTURE_SIZES, MAZE_AUTHORED_TILE_METRES, MAZE_AUTHORED_CALIBRATION,
+  mazeSurfaceMode, setMazeSurfaceMode,
 } from '../../src/worlds/maze/MazeMaterials.js';
 import { CHUNK_MESH_KINDS } from '../../src/worlds/maze/MazeChunks.js';
 import { BATCH_FAMILIES, GEOMETRY_BUDGET } from '../../src/worlds/maze/MazeBatches.js';
@@ -120,6 +121,50 @@ test('every surface that has any authored texture has the complete set', () => {
       assert.ok(slots.has(slot), `surface '${surface}' has no ${slot} entry - the set is incomplete`);
     }
   }
+});
+
+test('every authored surface declares a calibration, and the declared numbers are usable', () => {
+  /* The table is a DECLARATION per surface, `null` included: the point of the
+   * exercise is that nobody adds a sixth authored set without saying, in the
+   * same commit, whether this maze's lighting can take its finish as shipped.
+   * A missing key is the failure this catches - it reads as "not calibrated"
+   * exactly like `null` does, and only one of those is a decision. */
+  const declared = Object.keys(MAZE_AUTHORED_CALIBRATION).sort();
+  const surfaces = Object.keys(MAZE_AUTHORED_TEXTURE_SIZES).sort();
+  assert.deepEqual(declared, surfaces,
+    'MAZE_AUTHORED_CALIBRATION and the authored size table disagree about which surfaces exist');
+  /* And the size table is itself held to the manifest's surface ids by the
+   * size test above, so this transitively pins the table to the manifest. */
+  for (const e of textureEntries) {
+    assert.ok(e.surface in MAZE_AUTHORED_CALIBRATION,
+      `${e.id}: surface '${e.surface}' has no entry in MAZE_AUTHORED_CALIBRATION`);
+  }
+
+  for (const [surface, cal] of Object.entries(MAZE_AUTHORED_CALIBRATION)) {
+    if (cal === null) continue;
+    const orm = cal.flatOrm;
+    assert.ok(orm, `'${surface}' declares a calibration with nothing in it`);
+    for (const ch of ['ao', 'roughness', 'metalness']) {
+      assert.ok(typeof orm[ch] === 'number' && orm[ch] >= 0 && orm[ch] <= 1,
+        `'${surface}'.flatOrm.${ch} is ${orm[ch]}, outside the 0..1 an ORM channel can carry`);
+    }
+    /* A substitute ORM exists to stop a mirror finish blowing the frame out
+     * through the bloom high-pass. Below ~0.3 it would be reintroducing the
+     * defect it was added to fix, so the floor is asserted, not trusted. */
+    assert.ok(orm.roughness >= 0.3,
+      `'${surface}'.flatOrm.roughness is ${orm.roughness} - a near-mirror, which is the defect`);
+    assert.equal(orm.metalness, 0,
+      `'${surface}'.flatOrm.metalness is ${orm.metalness}; every maze surface is a dielectric`);
+  }
+
+  /* The one entry this task exists for. ambientCG Travertine003's own
+   * roughness map measures a median of 0.0314 (p05 0.0196, p95 0.0431) - a
+   * polished slab - against the procedural stair bake's 0.7569, and at that
+   * roughness the GGX lobe clears the bloom high-pass and floods the shaft.
+   * If someone drops this entry, the whiteout comes back, so it is pinned by
+   * name rather than left to the generic loop above. */
+  assert.ok(MAZE_AUTHORED_CALIBRATION.stair?.flatOrm,
+    "'stair' (Travertine003) has no flatOrm - its authored ORM declares a mirror and blows the shaft white");
 });
 
 test('every authored surface declares its physical tile, and headless stays procedural', () => {

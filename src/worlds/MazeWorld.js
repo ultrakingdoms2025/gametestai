@@ -641,6 +641,25 @@ export class MazeWorld extends World {
     this._connectorsByLevel = null;
     this._markersLevel = -1;
     this.shaftMarkers = [];
+    /* The Ctrl+M route, dropped for the same reason and missed until now.
+     *
+     * `solutionPath` caches against the player's CELL, which is the right key
+     * while one maze is standing: they are usually moving, so a route cached
+     * against the seed alone would draw the way out from wherever they first
+     * pressed it. What that key cannot survive is a re-roll - and it never
+     * could, because `buildDistrictGraph` fixes the entrance at the centre of
+     * district (10,0), so the cell a player stands in when they press Ctrl+M on
+     * arrival is IDENTICAL on every run. The cache hit was guaranteed and the
+     * answer was the PREVIOUS maze's route, drawn over the current one's
+     * hedges: a line through solid stone, confidently.
+     *
+     * Measured before this line existed: four builds, four distinct seeds, one
+     * solution - the same 3,714 steps every time. Reset here rather than in
+     * `dispose()` because a re-roll IS a build and the sibling caches above
+     * already reset here; splitting that rule across two methods is how the
+     * next one gets forgotten as well. */
+    this._solution = null;
+    this._solutionFrom = -1;
 
     /* `buildDistrictGraph` fixes the entrance at the *centre* of district
      * (10,0) - ten cells inside the grid's own edge, not on it - so nothing

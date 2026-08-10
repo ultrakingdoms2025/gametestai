@@ -87,6 +87,11 @@ const CONTRACT = [
    * would otherwise surface as a blank world one browser boot later. */
   { file: 'src/worlds/maze/MazeProfiles.js', exports: ['EXTENT_SNAP', 'EXTENT_QUANTUM', 'quantiseExtent', 'extentClass', 'PREFAB_BUDGET', 'treadProfile', 'treadOutline', 'LANDING_RATIO'] },
   { file: 'src/worlds/maze/MazeMeshes.js', exports: ['prefabFor', 'groupByExtentClass', 'isPrefab', 'prefabCount', 'releasePrefabs', 'extentClass', 'PREFAB_BUDGET'] },
+  /* Phase 6 Task 6. One BatchedMesh per material family, capacity derived
+   * from the residency radius; the streamed set's draw calls stop scaling
+   * with district count. Registered like MazeChunks: a renamed export here
+   * strands the streaming path. */
+  { file: 'src/worlds/maze/MazeBatches.js', exports: ['MazeBatches', 'BATCH_FAMILIES', 'BATCH_PER_DISTRICT_MAX', 'RESIDENCY_RADIUS', 'worstCaseResidency', 'worstCaseInstances', 'batchCapacity'] },
   /* Phase 6 Task 3. The cached material set, lifted verbatim out of
    * MazeWorld._ensureMaterials so the program-family gate can see it headlessly,
    * plus the fingerprint and the enumerated families that replaced Phase 5's

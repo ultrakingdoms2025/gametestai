@@ -12,6 +12,12 @@ import { PLATE_HALF_HEIGHT, PLATE_HALF_WIDTH } from './MazeShafts.js';
  * where to put it. See MazeMeshes.js for why that separation is what lets the
  * art change without any headless proof being re-run. */
 import { prefabFor, groupByExtentClass, isPrefab, releasePrefabs } from './MazeMeshes.js';
+/* The draw-call seam. Static boxes no longer get an InstancedMesh per
+ * (district, kind, extent class) - they are instances in one shared
+ * BatchedMesh per material family, and streaming a district is addInstance /
+ * deleteInstance against those. See MazeBatches.js for the measurements and
+ * for why the moving kinds are exempt. */
+import { MazeBatches } from './MazeBatches.js';
 
 /**
  * Every descriptor `kind` this class knows how to turn into a mesh, and
@@ -120,6 +126,11 @@ export class MazeChunks {
      * decision - so it is made once at build time and passed as a plain cell
      * lookup. Null for the headless gates, which then see no puzzles at all. */
     this.puzzles = puzzles;
+    /* The shared per-family batches every static box draws through. Owned
+     * here because their lifecycle IS the residency lifecycle: `ensure` adds
+     * a district's instances, `drop` deletes exactly them, and `disposeAll`
+     * takes the batches down with the world. */
+    this.batches = new MazeBatches({ materials, group });
     /** @type {Map<number, { meshes: THREE.InstancedMesh[], colliders: any[] }>} */
     this._resident = new Map();
     /** Live lifts, keyed by CONNECTOR CELL - see the lift section below. */
@@ -146,14 +157,20 @@ export class MazeChunks {
   /**
    * Exactly how many scene objects this class owns right now.
    *
-   * Meshes plus one lantern per resident district. Exposed so the leak test
-   * can assert an EQUALITY rather than an upper bound: the bound it used
-   * ("hedges and a floor per district") was already loose once stairs, shafts,
-   * lifts and tunnels gained their own mesh kinds, and it broke outright when
-   * districts gained a light. An exact count cannot rot the same way.
+   * Per-district objects (the movers' InstancedMeshes, the dressing, one
+   * lantern and any candle flames) PLUS the shared per-family batches
+   * currently in the scene - a batch is owned here too, via `this.batches`,
+   * it is just not owned by any one district. Exposed so the leak test can
+   * assert an EQUALITY rather than an upper bound: the bound it used ("hedges
+   * and a floor per district") was already loose once stairs, shafts, lifts
+   * and tunnels gained their own mesh kinds, and it broke outright when
+   * districts gained a light. An exact count cannot rot the same way - and
+   * when the static kinds moved into the batches, the count moved WITH them
+   * rather than being weakened, which is what keeps "the scene holds exactly
+   * what this class accounts for" a meaningful sentence.
    */
   objectCount() {
-    let n = 0;
+    let n = this.batches.meshCount();
     for (const e of this._resident.values()) {
       n += e.meshes.length + (e.lantern ? 1 : 0) + (e.flames?.length ?? 0);
     }
@@ -185,14 +202,27 @@ export class MazeChunks {
     }
 
     const meshes = [];
+    /* Every static box this district wants drawn, collected for one
+     * `batches.add` at the end of this method. The batch draws all of them in
+     * one multi-draw call per material family, which is the entire point of
+     * Task 6: an InstancedMesh per (district, kind, extent class) measured 909
+     * draw calls at full residency, ~21 of them per district, and the batches
+     * collapse that to one per family however many districts are live. */
+    const batched = [];
     for (const kind of CHUNK_MESH_KINDS) {
       const of = descs.filter((d) => d.kind === kind);
-      /* One mesh per (kind, extent class) rather than per kind. An
-       * InstancedMesh has a single geometry, and now that a geometry carries
-       * its own size, a district's two hedge orientations - and the several
-       * floor spans a district holding a shaft is cut into - can no longer
-       * share one. Most districts are unaffected; the ones that are not are
-       * the ones that were already the busiest. See `groupByExtentClass`. */
+      /* Only the MOVING kinds still get a per-district InstancedMesh. A mover
+       * pairs its descriptor to an instance index whose matrix `stepLifts` and
+       * `stepGates` rewrite every frame, and both safety interlocks are proved
+       * against exactly that pairing - four small meshes per shaft district is
+       * the wrong place to spend batching risk. Everything else goes to the
+       * shared batches, which need no extent-class grouping at all: a batch
+       * holds many geometries, so the split that InstancedMesh forced
+       * (`groupByExtentClass`) simply does not arise on this path. */
+      if (!MOVING_KINDS.includes(kind)) {
+        batched.push(...of);
+        continue;
+      }
       for (const run of groupByExtentClass(of)) {
         const mesh = buildBoxInstances(
           run.descs, this.materials[kind], `maze:${kind}:${run.cls}:${key}`, this.group,
@@ -208,7 +238,6 @@ export class MazeChunks {
          * pick the wrong one the day two coincide. Grouping happens here in the
          * open, rather than inside `buildBoxInstances`, precisely so this
          * pairing keeps holding against the exact list that was written. */
-        if (!MOVING_KINDS.includes(kind)) continue;
         mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         for (let i = 0; i < run.descs.length; i++) this._attachMoverMesh(run.descs[i], mesh, i);
       }
@@ -227,15 +256,9 @@ export class MazeChunks {
        * it out of the shared cache is free. The kind is what stops a footing
        * and a hedge of coincidentally equal extents sharing one geometry, which
        * would matter the moment either grows a profile of its own. */
-      const boxes = footings.map((f) => ({
+      batched.push(...footings.map((f) => ({
         kind: 'footing', cx: f.x, cy: f.y, cz: f.z, hx: f.hx, hy: f.hy, hz: f.hz,
-      }));
-      for (const run of groupByExtentClass(boxes)) {
-        const fm = buildBoxInstances(
-          run.descs, this.materials.footing, `maze:footing:${run.cls}:${key}`, this.group,
-        );
-        if (fm) meshes.push(fm);
-      }
+      })));
     }
     const sprigs = foliageTransforms(descs, key);
     if (sprigs.length && this.materials.foliage) {
@@ -262,19 +285,12 @@ export class MazeChunks {
      * a wall and its plate can never disagree about where the plate is. */
     const plates = descs.filter((d) => d.kind === 'slideWall' && d.plate);
     if (plates.length && this.materials.plate) {
-      /* Every plate is the same size, so this is one run - grouped anyway,
-       * because a hand-written "these are all identical" is exactly the
-       * assumption that stops being true without anyone noticing. */
-      const boxes = plates.map((d) => ({
+      /* Batched like everything static; the plate family's batch carries the
+       * castShadow=false these meshes used to set individually. */
+      batched.push(...plates.map((d) => ({
         kind: 'plate', cx: d.plate.x, cy: d.plate.y, cz: d.plate.z,
         hx: PLATE_HALF_WIDTH, hy: PLATE_HALF_HEIGHT, hz: PLATE_HALF_WIDTH,
-      }));
-      for (const run of groupByExtentClass(boxes)) {
-        const pm = buildBoxInstances(
-          run.descs, this.materials.plate, `maze:plate:${run.cls}:${key}`, this.group,
-        );
-        if (pm) { pm.castShadow = false; meshes.push(pm); }
-      }
+      })));
     }
 
     /* Daylight down the towers. Two meshes at most per district and only in the
@@ -337,15 +353,10 @@ export class MazeChunks {
 
     const candles = candlePlacements(descs, key);
     if (candles.length && this.materials.candle) {
-      const boxes = candles.map((cd) => ({
+      /* Batched; castShadow=false lives on the candle family's batch now. */
+      batched.push(...candles.map((cd) => ({
         kind: 'candle', cx: cd.x, cy: cd.y, cz: cd.z, hx: 0.09, hy: 0.26, hz: 0.09,
-      }));
-      for (const run of groupByExtentClass(boxes)) {
-        const cm = buildBoxInstances(
-          run.descs, this.materials.candle, `maze:candle:${run.cls}:${key}`, this.group,
-        );
-        if (cm) { cm.castShadow = false; meshes.push(cm); }
-      }
+      })));
     }
     const flames = [];
     for (const cd of candles) {
@@ -369,6 +380,11 @@ export class MazeChunks {
     lantern.position.set(cx, w0.level * MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT * 0.8, cz);
     this.group.add(lantern);
 
+    /* Every static box at once, at the end, so the batch ledger for this key
+     * is written exactly once whatever mix of kinds the district turned out
+     * to hold. `drop` releases precisely this set. */
+    this.batches.add(key, batched);
+
     this._resident.set(key, { meshes, colliders, lantern, flames });
   }
 
@@ -388,6 +404,9 @@ export class MazeChunks {
     if (!entry) return;
 
     this._unregisterMovers(key);
+    /* The district's share of the shared batches - deleteInstance only, never
+     * a geometry, so eviction can never fragment the batch. */
+    this.batches.drop(key);
 
     const evicted = new Set(entry.colliders);
     for (const c of entry.colliders) this.physics.remove(c);
@@ -454,7 +473,15 @@ export class MazeChunks {
      * recognises them as the registry's; and outside the early return, because
      * the forecourt draws through the registry too and exists whether or not a
      * district happens to be resident. */
-    if (this._resident.size === 0) { releasePrefabs(); return; }
+    /* The batches go down with the world in every case - like the prefab
+     * release just below, and before it, so the batches never outlive the
+     * registry geometries they were copied from (they hold no reference back,
+     * but a teardown order that cannot be wrong needs no argument). */
+    if (this._resident.size === 0) {
+      this.batches.disposeAll();
+      releasePrefabs();
+      return;
+    }
 
     this._lifts.clear();
     this._gates.clear();
@@ -490,6 +517,7 @@ export class MazeChunks {
     wc.length = w;
 
     this._resident.clear();
+    this.batches.disposeAll();
     releasePrefabs();
   }
 

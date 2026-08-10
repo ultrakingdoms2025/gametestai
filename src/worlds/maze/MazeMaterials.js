@@ -150,8 +150,19 @@ export const MAZE_PROGRAM_FAMILIES = Object.freeze([
  * + 4 families x 1 program = 389. The plan's headline was <= 420; the
  * measurement wins, and it says 420 was pessimistic by a factor of eight on
  * the marginal cost - the ledger should record 389, not 420.
+ *
+ * RE-MEASURED 2026-08-10 (Task 6, same amendment rule). BatchedMesh is a
+ * program cache-key axis this derivation had not met: three keys every
+ * program on BATCHING (`WebGLRenderer` recompiles a material the first time
+ * it draws a BatchedMesh), so the batched families compile batched variants
+ * of their colour programs AND of the shared shadow depth/distance programs.
+ * Ten station/maze round trips, seed 2026, identical protocol on both
+ * builds: pre-batch flat at 385 from entry 5, post-batch flat at 390 from
+ * entry 5 - the batching axis costs exactly +5 programs, once, and the
+ * entry-to-entry delta stays 0, which is the invariant that actually guards
+ * against leaks. Budget = 389 + 5 = 394.
  */
-export const MAZE_PROGRAM_BUDGET = 389;
+export const MAZE_PROGRAM_BUDGET = 394;
 
 /** The one set, built on first use and kept for the session - see buildMazeMaterials. */
 let _materials = null;

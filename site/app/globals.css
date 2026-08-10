@@ -824,11 +824,9 @@ input[type='range'] { width: 100%; accent-color: #35d6ff; margin: 18px 0 6px; }
 @keyframes ignite-lockup {
   from {
     transform: translateY(12px);
-    letter-spacing: 0.24em;
   }
   to {
     transform: translateY(0);
-    letter-spacing: 0.16em;
   }
 }
 

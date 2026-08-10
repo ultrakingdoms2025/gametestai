@@ -779,6 +779,64 @@ input[type='range'] { width: 100%; accent-color: #35d6ff; margin: 18px 0 6px; }
   }
 }
 
+/* ────────────────────────────────────────────────── hero ignition ── */
+/* On load, the portal aura flares in from a collapsed, over-bright ring and
+ * settles into its normal idle pulse; the lockup rises slightly as its
+ * letter-spacing tightens to rest; the ticker is the last thing to appear,
+ * like a readout waiting for the gate to finish powering up. CSS-only, SSR
+ * safe, and skipped entirely under reduced motion since nothing outside
+ * this media query ever sets these elements to a hidden starting state. */
+
+@media (prefers-reduced-motion: no-preference) {
+  .hero-ignite .hero-aura {
+    animation:
+      ignite-ring 1.2s cubic-bezier(0.16, 1, 0.3, 1) both,
+      pulse-aura 6.5s ease-in-out infinite 1.2s;
+  }
+
+  .hero-ignite .lockup {
+    animation: ignite-lockup 900ms cubic-bezier(0.16, 1, 0.3, 1) 120ms both;
+  }
+
+  .hero-ignite .hero-ticker {
+    animation: ignite-fade 700ms ease-out 1000ms both;
+  }
+}
+
+@keyframes ignite-ring {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.7);
+    filter: blur(38px) brightness(2.2);
+  }
+  55% {
+    opacity: 1;
+    transform: translateX(-50%) scale(1.05);
+    filter: blur(38px) brightness(1.5);
+  }
+  100% {
+    opacity: 0.6;
+    transform: translateX(-50%) scale(1);
+    filter: blur(38px) brightness(1);
+  }
+}
+
+@keyframes ignite-lockup {
+  from {
+    transform: translateY(12px);
+    letter-spacing: 0.24em;
+  }
+  to {
+    transform: translateY(0);
+    letter-spacing: 0.16em;
+  }
+}
+
+@keyframes ignite-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
 /* ======================================================== responsive ==== */
 
 @media (max-width: 1100px) {
@@ -1585,19 +1643,96 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
   align-items: center;
 }
 
-@supports (animation-timeline: view()) {
-  @media (prefers-reduced-motion: no-preference) {
-    .cta-band-kicker,
-    .cta-band-h2,
-    .cta-band-sub,
-    .cta-band-actions {
-      animation: reveal-up 800ms cubic-bezier(0.2, 0.7, 0, 1) both;
-      animation-timeline: view(block);
-      animation-range: entry 8% entry 62%;
-    }
-    .cta-band-h2  { animation-delay: 80ms; }
-    .cta-band-sub { animation-delay: 140ms; }
-    .cta-band-actions { animation-delay: 200ms; }
+/* Portal-ring motif behind the heading — same cyan ring / amber core reading
+ * as the hero's canvas-drawn portal, rebuilt in CSS since this band has no
+ * canvas. Purely decorative, so it sits behind `.wrap` (given its own
+ * stacking context below) and never intercepts clicks. */
+
+.cta-band-ring {
+  position: absolute;
+  top: 46%;
+  left: 50%;
+  z-index: 0;
+  width: min(50vw, 560px);
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1.5px solid rgba(120, 240, 255, 0.32);
+  pointer-events: none;
+}
+
+.cta-band-ring::before {
+  content: '';
+  position: absolute;
+  inset: -32%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(82, 233, 255, 0.16), transparent 62%);
+}
+
+.cta-band-ring::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: rgba(255, 180, 74, 0.85);
+  box-shadow: 0 0 26px 6px rgba(255, 180, 74, 0.45);
+}
+
+.cta-band .wrap {
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cta-band-ring {
+    animation: pulse-ring 6.5s ease-in-out infinite;
+  }
+}
+
+@keyframes pulse-ring {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(1.045);
+  }
+}
+
+/* Threshold reveal — ThresholdReveal (site/components/ThresholdReveal.tsx)
+ * adds `.thr-ready` on mount and `.thr-on` (one-shot) once the band enters
+ * the viewport. Content only ever gets hidden once `.thr-ready` is present,
+ * so a page that never hydrates still shows the CTA at rest — this is
+ * enhancement, not a requirement for the buttons to be usable. Reduced
+ * motion skips all of it, since these rules live only under no-preference. */
+
+@media (prefers-reduced-motion: no-preference) {
+  .thr-ready .cta-band-kicker,
+  .thr-ready .cta-band-h2,
+  .thr-ready .cta-band-sub,
+  .thr-ready .cta-band-actions {
+    opacity: 0;
+    transform: translateY(18px);
+    transition: opacity 700ms cubic-bezier(0.2, 0.7, 0, 1),
+      transform 700ms cubic-bezier(0.2, 0.7, 0, 1);
+  }
+
+  .thr-ready .cta-band-h2      { transition-delay: 80ms; }
+  .thr-ready .cta-band-sub     { transition-delay: 140ms; }
+  .thr-ready .cta-band-actions { transition-delay: 200ms; }
+
+  .thr-on .cta-band-kicker,
+  .thr-on .cta-band-h2,
+  .thr-on .cta-band-sub,
+  .thr-on .cta-band-actions {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

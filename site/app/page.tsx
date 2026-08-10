@@ -3,6 +3,7 @@ import HeroCanvas from '@/components/HeroCanvas';
 import GatewayDescent from '@/components/GatewayDescent';
 import AccountDashboard from '@/components/AccountDashboard';
 import SignOutButton from '@/components/SignOutButton';
+import ThresholdReveal from '@/components/ThresholdReveal';
 import { getAccessStateForSession } from '@/lib/access';
 import { auth } from '@/lib/auth';
 import { ENTRY_CENTS, CREDIT_PRICE_CENTS, MIN_CREDITS, formatCents, grossUp } from '@/lib/pricing';
@@ -97,7 +98,7 @@ export default async function Home() {
       {session && <AccountDashboard />}
 
       {/* ── Hero ── */}
-      <header className="hero">
+      <header className="hero hero-ignite">
         <HeroCanvas />
         <div className="hero-aura" aria-hidden="true" />
         <div className="hero-in wrap">
@@ -199,28 +200,31 @@ export default async function Home() {
       </section>
 
       {/* ── CTA band ── */}
-      <section className="cta-band">
-        <div className="wrap">
-          <div className="cta-band-kicker">Get in</div>
-          <h2 className="cta-band-h2">One charge.<br />Six worlds.</h2>
-          <p className="cta-band-sub">
-            Access is {formatCents(ENTRY_CENTS)} for a 30-day play window on your
-            account. Credits are separate and optional —{' '}
-            {formatCents(CREDIT_PRICE_CENTS)} each, from {MIN_CREDITS} to 10,000.
-            Prices shown before card processing, which appears as its own line at checkout.
-          </p>
-          <div className="cta-band-actions">
-            {hasAccess ? (
-              <Link className="btn btn-primary" href="/play">Enter game</Link>
-            ) : (
-              <Link className="btn btn-primary" href="/checkout?intent=entry">
-                Unlock for {formatCents(entryTotal)}
-              </Link>
-            )}
-            <Link className="btn btn-amber" href="/store">Buy credits</Link>
+      <ThresholdReveal>
+        <section className="cta-band">
+          <div className="cta-band-ring" aria-hidden="true" />
+          <div className="wrap">
+            <div className="cta-band-kicker">Get in</div>
+            <h2 className="cta-band-h2">One charge.<br />Six worlds.</h2>
+            <p className="cta-band-sub">
+              Access is {formatCents(ENTRY_CENTS)} for a 30-day play window on your
+              account. Credits are separate and optional —{' '}
+              {formatCents(CREDIT_PRICE_CENTS)} each, from {MIN_CREDITS} to 10,000.
+              Prices shown before card processing, which appears as its own line at checkout.
+            </p>
+            <div className="cta-band-actions">
+              {hasAccess ? (
+                <Link className="btn btn-primary" href="/play">Enter game</Link>
+              ) : (
+                <Link className="btn btn-primary" href="/checkout?intent=entry">
+                  Unlock for {formatCents(entryTotal)}
+                </Link>
+              )}
+              <Link className="btn btn-amber" href="/store">Buy credits</Link>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </ThresholdReveal>
 
       <footer>
         <div className="wrap">

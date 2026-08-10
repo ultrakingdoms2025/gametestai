@@ -5,6 +5,7 @@ import type { WorldDef, WorldId } from '@/lib/worlds';
 import type { ResolvedLore } from '@/lib/lore';
 import type { DioramaHandle, DioramaScene } from '@/components/diorama/types';
 import DioramaCanvas, { type DioramaSceneEntry } from '@/components/diorama/DioramaCanvas';
+import { createStationScene } from '@/components/diorama/scenes/station';
 import WorldPanel from '@/components/WorldPanel';
 import WorldCanvas from '@/components/WorldCanvas';
 import { useGatewayScroll } from '@/hooks/useGatewayScroll';
@@ -15,11 +16,13 @@ export interface GatewayDescentProps {
 }
 
 /**
- * Diorama scene registry. Empty today — world scene factories are registered here
- * one per task as they are authored (station first). A world with no entry simply
+ * Diorama scene registry — world scene factories are registered here one per
+ * task as they are authored (station first). A world with no entry simply
  * has no 3D backdrop yet; the panel text still reads over the page ground.
  */
-const SCENE_FACTORIES: Partial<Record<WorldId, () => DioramaScene>> = {};
+const SCENE_FACTORIES: Partial<Record<WorldId, () => DioramaScene>> = {
+  station: createStationScene,
+};
 
 /**
  * Stand-in for a world whose diorama isn't built yet.

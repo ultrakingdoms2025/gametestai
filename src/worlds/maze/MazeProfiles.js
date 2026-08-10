@@ -93,6 +93,127 @@ export function extentClass(hx, hy, hz) {
   return `${extentUnits(hx)}x${extentUnits(hy)}x${extentUnits(hz)}`;
 }
 
+/* ------------------------------------------------------------------ */
+/* The stair tread                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * When a `stair` slab stops being a tread and becomes a landing, as a ratio
+ * of its plan half-extent to its half-rise.
+ *
+ * The two shapes need opposite treatment and the descriptor does not say
+ * which it is, so proportion decides. Real stair carpentry keeps a step's
+ * going at no more than about twice its rise (UK regs: 220-300 mm going
+ * against a 150-220 mm rise); this world's treads sit at 2.67 (a 1.0 m going
+ * over a 0.375 m rise) and its landings at 3.73. Anything past ~3 no longer
+ * reads as a step underfoot, and more to the point the landing's edges are
+ * FLUSH with level N+1's floor - a riser setback there is a slit between two
+ * surfaces that are supposed to meet seamlessly, and a nosing is a step edge
+ * on what the climber must read as continuous floor. 3.2 splits the measured
+ * populations with margin on both sides. Keying on absolute size (a tread is
+ * exactly TREAD_HALF) was the alternative and lost: it would couple this file
+ * to `MazeShafts.js` constants and silently misclassify the first connector
+ * that ships a differently-sized step.
+ */
+export const LANDING_RATIO = 3.2;
+
+/**
+ * The carpentry of one stair tread, as pure numbers in metres.
+ *
+ * A real tread is a walking slab whose nosing overhangs the RISER below it -
+ * the riser is what gets set back, never the slab past its box. Everything
+ * here is an ABSOLUTE dimension, only clamped for degenerate extents, because
+ * the whole point of Task 1's registry is that detail is authored in metres
+ * and stays the size it was authored at on every instance.
+ *
+ * @param {{hx:number, hy:number, hz:number}} extents descriptor half-extents
+ * @returns {{tread:{thickness:number}, riser:{setback:number},
+ *            nosing:{radius:number}, bevel:number}}
+ */
+export function treadProfile({ hx, hy, hz }) {
+  const plan = Math.min(hx, hz);
+  if (plan > hy * LANDING_RATIO) {
+    /* A landing: flat slab, a small stone-joint chamfer on its top edges and
+     * nothing else. See LANDING_RATIO for why nosing and setback are exactly
+     * zero here rather than merely small. */
+    return {
+      tread: { thickness: hy * 2 },
+      riser: { setback: 0 },
+      nosing: { radius: 0 },
+      bevel: Math.min(0.015, plan * 0.1, hy * 0.4),
+    };
+  }
+  /* The slab reads as a plank sitting on masonry, so it is thin against the
+   * 0.375 m rise; the setback is deep enough to throw a visible shadow line
+   * under the nosing at corridor light levels, and the nosing radius stays
+   * inside the setback so the roll-over never leaves the box (the test named
+   * in the plan holds that ordering). */
+  const thickness = Math.min(0.09, hy * 0.8);
+  const setback = Math.min(0.07, plan * 0.25);
+  const radius = Math.min(0.03, setback, thickness * 0.45);
+  const bevel = Math.min(0.02, setback * 0.5, hy * 0.2);
+  return { tread: { thickness }, riser: { setback }, nosing: { radius }, bevel };
+}
+
+/**
+ * The tread's cross-section as a 2D outline: bands of [inset, y] points, top
+ * to bottom, where `inset` is how far the surface stands in from the box side
+ * and `y` is height about the box centre.
+ *
+ * Bands are the unit of SMOOTHING, which is why the outline is not one flat
+ * polyline: points inside a band share vertices when swept (the bulnose arc
+ * shades as a curve), while a band boundary is a duplicated crease (the
+ * soffit meets the riser at a hard edge, as cut timber does). The sweep in
+ * `MazeMeshes.js` consumes exactly this structure.
+ *
+ * The same treatment faces all four sides. That is not a shortcut: a stair
+ * descriptor is square in plan and carries no orientation - the spiral turns
+ * 45 degrees per step - so the leading edge is genuinely unknowable here, and
+ * a tread treated on every edge reads correctly from every step of the climb.
+ *
+ * @param {{hx:number, hy:number, hz:number}} extents descriptor half-extents
+ * @param {number} [arcSegments] straight pieces approximating the bulnose
+ * @returns {Array<Array<[number, number]>>}
+ */
+export function treadOutline(extents, arcSegments = 6) {
+  const { hy } = extents;
+  const { tread, riser, nosing, bevel } = treadProfile(extents);
+  const r = nosing.radius;
+  const s = riser.setback;
+  const t = tread.thickness;
+  const b = bevel;
+
+  if (s <= 0) {
+    /* Landing. A chamfer of zero would leave a degenerate band, so it falls
+     * all the way back to a plain box side. */
+    if (b <= 0) return [[[0, hy], [0, -hy]]];
+    return [
+      [[b, hy], [0, hy - b]],
+      [[0, hy - b], [0, -hy]],
+    ];
+  }
+
+  /* The tread. One smooth band rolls the bulnose over from the top face into
+   * the slab's edge (the arc ends tangent-vertical, so continuing straight
+   * down to the slab's underside needs no crease); then four creased bands:
+   * the soffit under the overhang, a chamfer easing it into the riser, the
+   * riser face itself, and a base chamfer so the plinth does not end in a
+   * knife edge against the tread below. */
+  const bulnose = [];
+  for (let i = 0; i <= arcSegments; i++) {
+    const a = (i / arcSegments) * (Math.PI / 2);
+    bulnose.push([r - r * Math.sin(a), hy - r + r * Math.cos(a)]);
+  }
+  bulnose.push([0, hy - t]);
+  return [
+    bulnose,
+    [[0, hy - t], [s - b, hy - t]],
+    [[s - b, hy - t], [s, hy - t - b]],
+    [[s, hy - t - b], [s, -hy + b]],
+    [[s, -hy + b], [s + b, -hy]],
+  ];
+}
+
 /**
  * The most distinct geometries the prefab registry may ever hold.
  *

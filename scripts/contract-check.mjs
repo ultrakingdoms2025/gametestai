@@ -85,7 +85,7 @@ const CONTRACT = [
    * built, which is what lets `MazeChunks` carry translation and nothing else.
    * Both registered here for the same reason MazeChunks is: a renamed export
    * would otherwise surface as a blank world one browser boot later. */
-  { file: 'src/worlds/maze/MazeProfiles.js', exports: ['EXTENT_SNAP', 'EXTENT_QUANTUM', 'quantiseExtent', 'extentClass', 'PREFAB_BUDGET'] },
+  { file: 'src/worlds/maze/MazeProfiles.js', exports: ['EXTENT_SNAP', 'EXTENT_QUANTUM', 'quantiseExtent', 'extentClass', 'PREFAB_BUDGET', 'treadProfile', 'treadOutline', 'LANDING_RATIO'] },
   { file: 'src/worlds/maze/MazeMeshes.js', exports: ['prefabFor', 'groupByExtentClass', 'isPrefab', 'prefabCount', 'releasePrefabs', 'extentClass', 'PREFAB_BUDGET'] },
   /* Phase 3. `MazePlan.js` is pure so both map surfaces derive their walls
    * from one definition; `MazeMap.js` is the M-key overlay that draws them. */

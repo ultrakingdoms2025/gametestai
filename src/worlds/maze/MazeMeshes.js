@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { extentClass, quantiseExtent, PREFAB_BUDGET } from './MazeProfiles.js';
+import { extentClass, quantiseExtent, PREFAB_BUDGET, treadOutline } from './MazeProfiles.js';
 
 /* Re-exported so a caller needs one import for "how the maze turns a descriptor
  * into geometry". The numbers live in MazeProfiles.js because they are pure and
@@ -59,18 +59,20 @@ export { extentClass, quantiseExtent, PREFAB_BUDGET };
  * every entry, and a new seed brings a new set of floor-slab spans, so a cache
  * that never emptied would grow by a few dozen geometries per visit forever.
  *
- * ## Task 1 deliberately emits the same boxes as before
+ * ## Where the shapes come from, and where the boxes went
  *
- * Every kind at every LOD is still a plain box here. The structural change -
- * geometry owning the extents - lands and is measured on its own, so when the
- * staircase is reshaped next the difference has exactly one place it can have
- * come from.
+ * Task 1 landed this registry emitting the same boxes as before, so that when
+ * a prefab first changed shape the difference had exactly one place it could
+ * have come from. Task 2 was that change: the `stair` kind now builds real
+ * tread carpentry at LOD0 (see `buildStairPrefab`). Every other kind, and
+ * every stair beyond LOD0, is still the plain box.
  *
- * This is also where a future reader will look for the `?art=v2` flag the phase
- * plan puts around every task. There is none: Task 1's output is the same boxes
- * in the same places, so a flag would gate nothing and only add a second code
- * path to keep alive. It becomes necessary the moment a prefab actually changes
- * shape, which is Task 2.
+ * This is also where a future reader will look for the `?art=v2` flag the
+ * phase plan puts around every task. There is none, still: the box path did
+ * not go away, it became the higher LODs of the same registry - `prefabFor`
+ * at lod 2 IS `art=box` - so the A/B the flag existed to provide is already
+ * one argument away, without threading a URL param through `Config.js` to
+ * gate a second copy of a code path the LOD axis keeps alive anyway.
  */
 
 /** `${kind}:${extentClass}:${lod}` -> geometry. */
@@ -101,12 +103,99 @@ export function prefabFor({ kind, hx, hy, hz, lod = 0 }) {
  * the box is the class's own size and can only be a subset of any descriptor
  * that asked for it.
  *
- * `kind` and `lod` are unused today and named anyway: every one of them is a
- * branch a later task adds, and a signature that already carries them is one
- * that does not have to be threaded back through the registry when it does.
+ * The `stair` branch is Task 2 - the owner's own named complaint. LOD1 stays
+ * the plain box alongside LOD2, judged rather than defaulted: a staircase
+ * lives inside a walled shaft, so it is either being climbed (LOD0 range) or
+ * occluded, and a mid LOD would be a geometry nobody can ever stand far
+ * enough away to see. The remaining kinds gain their profiles in Task 4.
  */
 function buildPrefab(kind, hx, hy, hz, lod) {
+  if (kind === 'stair' && lod === 0) return buildStairPrefab(hx, hy, hz);
   return new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2);
+}
+
+/**
+ * A stair tread (or landing - `treadOutline` decides which from proportion)
+ * as real carpentry: the walking slab at the top of the box, a riser set back
+ * beneath it, a bulnose rolled over the slab's edge and a chamfer easing the
+ * soffit into the riser. The nosing overhangs the RISER, which is what got
+ * set back - nothing here leaves the descriptor box, so the fit contract
+ * holds for this prefab the same way it holds for a plain box.
+ *
+ * The outline is swept around the box's plan rectangle with mitred corners:
+ * each outline point becomes a rectangular ring inset by that point's `d`,
+ * and each of the ring's four sides is stitched independently. Sides and
+ * bands own their vertices - duplicated at plan corners and at band
+ * boundaries - so `computeVertexNormals` smooths exactly where the outline
+ * says to: along the bulnose arc, and nowhere across a crease. An
+ * ExtrudeGeometry along a rounded-rect path was the alternative and lost: it
+ * cannot vary the inset per profile point, which is the entire shape.
+ *
+ * UVs are world-scale metres (u along each side's run, v down the profile's
+ * arc length; caps map plan position), so the maps Task 5 hangs on this
+ * material will tile at the same density they do on every box.
+ */
+function buildStairPrefab(hx, hy, hz) {
+  const bands = treadOutline({ hx, hy, hz });
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  /* The four sides of the ring at inset d, each as [start, end] chosen so the
+   * quad winding below faces outward. Rotational order: +x, +z, -x, -z. */
+  const sides = [
+    (d, y) => [[hx - d, y, -(hz - d)], [hx - d, y, hz - d]],
+    (d, y) => [[hx - d, y, hz - d], [-(hx - d), y, hz - d]],
+    (d, y) => [[-(hx - d), y, hz - d], [-(hx - d), y, -(hz - d)]],
+    (d, y) => [[-(hx - d), y, -(hz - d)], [hx - d, y, -(hz - d)]],
+  ];
+
+  for (const band of bands) {
+    for (const side of sides) {
+      const base = positions.length / 3;
+      let v = 0;
+      for (let i = 0; i < band.length; i++) {
+        const [d, y] = band[i];
+        if (i > 0) {
+          const [pd, py] = band[i - 1];
+          v += Math.hypot(d - pd, y - py);
+        }
+        const [a, b] = side(d, y);
+        positions.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+        const run = Math.hypot(b[0] - a[0], b[2] - a[2]);
+        uvs.push(0, v, run, v);
+      }
+      for (let i = 0; i < band.length - 1; i++) {
+        const a0 = base + i * 2;
+        indices.push(a0, a0 + 1, a0 + 3, a0, a0 + 3, a0 + 2);
+      }
+    }
+  }
+
+  /* Caps. The top starts where the first band does (inset by the nosing
+   * radius, which is why the bulnose meets it tangentially) and the bottom
+   * ends where the last band does. */
+  const cap = (d, y, facingUp) => {
+    const X = hx - d;
+    const Z = hz - d;
+    const base = positions.length / 3;
+    positions.push(X, y, Z, -X, y, Z, -X, y, -Z, X, y, -Z);
+    uvs.push(X, Z, -X, Z, -X, -Z, X, -Z);
+    if (facingUp) indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
+    else indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  };
+  const first = bands[0][0];
+  const lastBand = bands[bands.length - 1];
+  const last = lastBand[lastBand.length - 1];
+  cap(first[0], first[1], true);
+  cap(last[0], last[1], false);
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
 }
 
 /**

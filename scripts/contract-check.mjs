@@ -78,7 +78,15 @@ const CONTRACT = [
    * enclosure proof live here now; `cellToWorld` stayed reachable from
    * MazeColliders.js as a re-export, which is why it is still listed above. */
   { file: 'src/worlds/maze/MazeShafts.js', exports: ['shaftColliders', 'stairColliders', 'stairWellBounds', 'isEnclosureSound', 'requiredWallTop'] },
-  { file: 'src/worlds/maze/MazeChunks.js', exports: ['MazeChunks', 'buildBoxInstances'] },
+  { file: 'src/worlds/maze/MazeChunks.js', exports: ['MazeChunks', 'buildBoxInstances', 'CHUNK_MESH_KINDS'] },
+  /* Phase 6. The geometry seam: visuals stop being literally the collider box.
+   * `MazeProfiles.js` is pure arithmetic - the extent quantiser and the cache
+   * bound - and `MazeMeshes.js` is the only place a maze BufferGeometry is
+   * built, which is what lets `MazeChunks` carry translation and nothing else.
+   * Both registered here for the same reason MazeChunks is: a renamed export
+   * would otherwise surface as a blank world one browser boot later. */
+  { file: 'src/worlds/maze/MazeProfiles.js', exports: ['EXTENT_SNAP', 'EXTENT_QUANTUM', 'quantiseExtent', 'extentClass', 'PREFAB_BUDGET'] },
+  { file: 'src/worlds/maze/MazeMeshes.js', exports: ['prefabFor', 'groupByExtentClass', 'isPrefab', 'prefabCount', 'releasePrefabs', 'extentClass', 'PREFAB_BUDGET'] },
   /* Phase 3. `MazePlan.js` is pure so both map surfaces derive their walls
    * from one definition; `MazeMap.js` is the M-key overlay that draws them. */
   { file: 'src/worlds/maze/MazePlan.js', exports: ['planCacheKey', 'levelSegments'] },

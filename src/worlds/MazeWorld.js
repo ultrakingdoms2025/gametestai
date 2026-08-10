@@ -13,6 +13,7 @@ import { puzzleCells } from './maze/MazePuzzles.js';
 import { TOKENS_PER_DISTRICT, MAX_LIVE_WANDERERS } from './maze/MazePopulate.js';
 import { MazePopulation } from './maze/MazePopulation.js';
 import { MazeChunks, buildBoxInstances } from './maze/MazeChunks.js';
+import { groupByExtentClass } from './maze/MazeMeshes.js';
 import { MazeCanopy } from './maze/MazeCanopy.js';
 import { makeNoiseTexture } from '../gfx/Textures.js';
 import { AbandonHold } from './maze/MazeAbandon.js';
@@ -682,10 +683,18 @@ export class MazeWorld extends World {
     const descs = [];
     for (const d of forecourtColliders(ew.x, e.level)) descs.push(d);
 
+    /* Grouped by extent class before drawing, because the forecourt's hedges
+     * run in both directions and a prefab now carries its own size - see
+     * `groupByExtentClass`. The alternative, scaling one geometry per
+     * instance, is precisely what the prefab seam exists to stop doing. */
     const hedges = descs.filter((d) => d.kind === 'hedge');
     const floors = descs.filter((d) => d.kind === 'floor');
-    buildBoxInstances(hedges, mats.hedge, 'maze:forecourt:hedge', this.group);
-    buildBoxInstances(floors, mats.floor, 'maze:forecourt:floor', this.group);
+    for (const run of groupByExtentClass(hedges)) {
+      buildBoxInstances(run.descs, mats.hedge, `maze:forecourt:hedge:${run.cls}`, this.group);
+    }
+    for (const run of groupByExtentClass(floors)) {
+      buildBoxInstances(run.descs, mats.floor, `maze:forecourt:floor:${run.cls}`, this.group);
+    }
 
     for (const d of descs) {
       this.track(this.physics.addBox(d.cx, d.cy, d.cz, d.hx, d.hy, d.hz));

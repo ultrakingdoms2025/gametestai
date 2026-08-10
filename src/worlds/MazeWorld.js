@@ -14,7 +14,7 @@ import { TOKENS_PER_DISTRICT, MAX_LIVE_WANDERERS } from './maze/MazePopulate.js'
 import { MazePopulation } from './maze/MazePopulation.js';
 import { MazeChunks, buildBoxInstances } from './maze/MazeChunks.js';
 import { groupByExtentClass } from './maze/MazeMeshes.js';
-import { buildMazeMaterials } from './maze/MazeMaterials.js';
+import { buildMazeMaterials, buildMazeMaterialsAsync } from './maze/MazeMaterials.js';
 import { MazeCanopy } from './maze/MazeCanopy.js';
 import { AbandonHold } from './maze/MazeAbandon.js';
 
@@ -406,6 +406,20 @@ export class MazeWorld extends World {
   }
 
   /**
+   * The build path's variant of the same contract: identical cached set,
+   * but the first call of a session bakes the Task 5 PBR surfaces one per
+   * frame (`buildMazeMaterialsAsync`'s yield loop) instead of stalling one
+   * frame for all five - the bake measures well past the 250 ms boot budget
+   * in one gulp, and cold boot is this project's sensitive path. Sync
+   * callers keep `_ensureMaterials`; only `build()`, which is already
+   * async for its progress callback, needs this one.
+   */
+  async _ensureMaterialsAsync() {
+    if (!this._materials) this._materials = await buildMazeMaterialsAsync();
+    return this._materials;
+  }
+
+  /**
    * Every shaft's world (x, z), grouped by the level its climb starts on.
    *
    * A one-off scan of the full 400x400x4 cell grid (640,000 cells, the same
@@ -489,7 +503,7 @@ export class MazeWorld extends World {
 
     await onProgress?.(0.25, 'Laying the paths');
 
-    const mats = this._ensureMaterials();
+    const mats = await this._ensureMaterialsAsync();
     const ew = cellToWorld(e.x, e.z, e.level);
 
     /* Districts stream (see this.chunks below). The forecourt does not: it is

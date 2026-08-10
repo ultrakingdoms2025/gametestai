@@ -96,7 +96,10 @@ const CONTRACT = [
    * MazeWorld._ensureMaterials so the program-family gate can see it headlessly,
    * plus the fingerprint and the enumerated families that replaced Phase 5's
    * frozen browser-only program count. */
-  { file: 'src/worlds/maze/MazeMaterials.js', exports: ['buildMazeMaterials', 'materialFingerprint', 'MAZE_PROGRAM_FAMILIES', 'MAZE_PROGRAM_BUDGET'] },
+  /* Phase 6 Task 5 adds the surfacing seam: the async yield-path builder, the
+   * declared size table and its byte sum (the headless texture budget), and
+   * the bake timer the boot-cost gate reads in the browser. */
+  { file: 'src/worlds/maze/MazeMaterials.js', exports: ['buildMazeMaterials', 'buildMazeMaterialsAsync', 'materialFingerprint', 'MAZE_PROGRAM_FAMILIES', 'MAZE_PROGRAM_BUDGET', 'MAZE_TEXTURE_SIZES', 'declaredTextureBytes', 'surfaceBakeMillis'] },
   /* Phase 3. `MazePlan.js` is pure so both map surfaces derive their walls
    * from one definition; `MazeMap.js` is the M-key overlay that draws them. */
   { file: 'src/worlds/maze/MazePlan.js', exports: ['planCacheKey', 'levelSegments'] },

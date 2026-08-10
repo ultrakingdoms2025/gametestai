@@ -161,9 +161,45 @@ function buildPrefab(kind, hx, hy, hz, lod) {
   let g;
   if (kind === 'stair' && lod === 0) g = buildStairPrefab(hx, hy, hz);
   else if (BEVELLED_KINDS.has(kind) && lod === 0) g = buildChamferPrefab(hx, hy, hz);
-  else g = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2);
+  else {
+    g = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2);
+    worldScaleBoxUVs(g);
+  }
   if (AO_KINDS.has(kind)) bakeContactAO(g, hy);
   return g;
+}
+
+/**
+ * Rewrite a BoxGeometry's per-face 0..1 UVs as world-scale metres - Task 5's
+ * settled convention, applied to every prefab builder at once.
+ *
+ * The alternative was keeping BoxGeometry's own parameterisation, where every
+ * face spans the unit square whatever it measures. That was survivable while
+ * the maps were tuned per kind against known face sizes (Phase 5 did exactly
+ * that, and Task 4 deliberately left it alone to avoid moving hedge density
+ * inside a geometry commit) - but it breaks the moment one material serves
+ * many extents: the same earth grain would span 1.4 m on one floor slab and
+ * 24 m on its neighbour, and a normal map makes that stretch legible as
+ * smeared relief. Metres everywhere gives constant texel density on every
+ * face of every box, matches the stair sweep (world-scale since Task 2, for
+ * this task) and lets a texture declare its own physical tile via `repeat`.
+ *
+ * Projection axes match `buildChamferPrefab`'s patches - x-faces map (z, y),
+ * y-faces (x, z), z-faces (x, y) - so a chamfered box and its plain LOD wear
+ * the map identically and an LOD swap cannot slide the texture.
+ */
+function worldScaleBoxUVs(g) {
+  const pos = g.attributes.position;
+  const nor = g.attributes.normal;
+  const uv = g.attributes.uv;
+  for (let i = 0; i < pos.count; i++) {
+    const ax = Math.abs(nor.getX(i));
+    const ay = Math.abs(nor.getY(i));
+    const az = Math.abs(nor.getZ(i));
+    if (ax >= ay && ax >= az) uv.setXY(i, pos.getZ(i), pos.getY(i));
+    else if (ay >= az) uv.setXY(i, pos.getX(i), pos.getZ(i));
+    else uv.setXY(i, pos.getX(i), pos.getY(i));
+  }
 }
 
 /**
@@ -185,12 +221,11 @@ function buildPrefab(kind, hx, hy, hz, lod) {
  * (kind, extent class) for the life of the cache, so the sort costs nothing
  * that matters.
  *
- * UVs keep the BoxGeometry convention (0..1 across the FULL box face, so a
- * facet occupies the sub-rectangle it exposes) rather than the stair's
- * world-scale metres. Hedge and floor already wear Phase 5 maps whose repeat
- * counts were tuned against box UVs; re-basing them to metres here would
- * quintuple the hedge's texture density as a side effect of a geometry task.
- * Task 5 owns the surfacing and can move both conventions together.
+ * UVs are world-scale metres, projected along each facet's dominant normal
+ * axis - Task 4 shipped this builder on BoxGeometry's 0..1-per-face
+ * convention to avoid moving Phase 5's map density inside a geometry commit,
+ * and Task 5 (which owns the surfacing) moved every builder to metres
+ * together. See `worldScaleBoxUVs` for the argument.
  */
 function buildChamferPrefab(hx, hy, hz) {
   const b = chamferFor({ hx, hy, hz });
@@ -236,10 +271,7 @@ function buildChamferPrefab(hx, hy, hz) {
     for (const p of ordered) {
       positions.push(p[0], p[1], p[2]);
       normals.push(nx, ny, nz);
-      uvs.push(
-        (p[uvAxes[0]] / half[uvAxes[0]] + 1) / 2,
-        (p[uvAxes[1]] / half[uvAxes[1]] + 1) / 2,
-      );
+      uvs.push(p[uvAxes[0]], p[uvAxes[1]]);
     }
     for (let i = 1; i < ordered.length - 1; i++) {
       indices.push(base, base + i, base + i + 1);

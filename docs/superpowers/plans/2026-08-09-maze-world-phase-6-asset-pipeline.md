@@ -376,6 +376,8 @@ test('MazeWorld no longer builds materials itself', async () => {
 - [ ] **Step 6: Set the budget.** `MAZE_PROGRAM_BUDGET = 385 + (families gaining maps) × (measured delta)`, rounded up. Record it in the ledger alongside the measurement it came from. The plan's headline figure is ≤ 420; if the measurement says otherwise, **the measurement wins and the plan is amended**, not the other way round.
 
 > **AMENDED 2026-08-09, per the rule above.** The measurement was taken (commit `b3b52fb`): baseline 381 programs at full 43-district residency; +`normalMap` on `footing` only → 382. **Marginal cost is +1 program per map-gaining family, not colour+depth+distance.** The prediction in this section's preamble was wrong because three's shadow depth/distance materials key on `displacementMap`/`alphaMap`/`alphaTest` only — `map`/`normalMap`/`roughnessMap`/`metalnessMap` never enter the shadow program key, so Tasks 4–5's families share the existing shadow programs. **`MAZE_PROGRAM_BUDGET = 389`** (385 + 4 × 1), not ≤ 420; the ≤ 420 headline elsewhere in this plan is superseded. Derivation and both readings are recorded on the constant in `MazeMaterials.js`.
+>
+> **Re-amended at Task 6 (commit `008ce38`): 389 → 394.** Three keys every program on `BATCHING`, so the batched materials compile batched colour + shadow variants — measured at exactly +5, once, flat across ten entries thereafter. Same rule, same enforcement point.
 
 - [ ] **Step 7: Run the suite, ten entries in the browser, confirm flatness. Commit.**
 

@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { extentClass, quantiseExtent, PREFAB_BUDGET, treadOutline } from './MazeProfiles.js';
+import {
+  extentClass, quantiseExtent, PREFAB_BUDGET, treadOutline,
+  chamferFor, contactShade, CONTACT_AO,
+} from './MazeProfiles.js';
 
 /* Re-exported so a caller needs one import for "how the maze turns a descriptor
  * into geometry". The numbers live in MazeProfiles.js because they are pure and
@@ -99,19 +102,255 @@ export function prefabFor({ kind, hx, hy, hz, lod = 0 }) {
 }
 
 /**
+ * The kinds whose LOD0 prefab is the chamfered box of `buildChamferPrefab`.
+ *
+ * Task 4's plan names six: hedge, floor, shaftWall, gate, slideWall, footing.
+ * **`hedge` and `footing` are DEFERRED to Task 7, by measurement.** With no
+ * LOD swap yet, every resident instance renders LOD0, and at the worst case
+ * (seed 2026, 43 districts from (1200, 18.05, 1200)) hedge and footing are
+ * 19,200 instances EACH; bevelling all six measured 8.56 M triangles against
+ * the 5 M budget, over a 4.13 M box baseline - the +32 tris/instance of those
+ * two kinds, multiplied ~3.6x by the shadow passes, is +4.4 M on their own,
+ * and no subset that keeps either fits. The four kinds kept are ~1.4 k
+ * instances at the same worst case (+0.17 M, measured 4.30 M total). Task 7's
+ * distance swap is the designed answer - LOD0 within 25 m is ~800 hedges, and
+ * this set is where they rejoin the moment it lands.
+ *
+ * The AO bake (AO_KINDS below) is NOT deferred with them: a colour attribute
+ * costs no triangles, so hedge and footing keep their contact darkening on
+ * the plain box - which is the larger half of the visual read anyway.
+ *
+ * `stair` is absent because its LOD0 is Task 2's tread carpentry, and the
+ * movers `lift`/`liftDoor` are absent because a lift car's edges are read in
+ * motion, at shaft-lantern light levels, through a door - the one place a
+ * bevel buys nothing.
+ */
+const BEVELLED_KINDS = new Set(['floor', 'shaftWall', 'gate', 'slideWall']);
+
+/**
+ * The kinds whose prefabs carry a baked vertex-colour AO attribute, AT EVERY
+ * LOD - the plan's full six plus `stair`, wider than the bevel list on
+ * purpose:
+ *
+ *  - `hedge` and `footing` sit here even though their bevel is deferred (see
+ *    BEVELLED_KINDS): the bake is free of triangles, so the contact
+ *    darkening ships now on the plain box.
+ *  - `stair` shares the shaftWall MATERIAL OBJECT (asserted by
+ *    maze-materials.test.mjs), so the moment that material reads vertex
+ *    colours, every stair geometry must supply them - a mesh with no colour
+ *    attribute under a vertexColors material renders BLACK in three, which is
+ *    the silent failure this set exists to make impossible.
+ *  - every LOD, not just LOD0, for the same reason: LOD1/2 draw with the same
+ *    material. Baking the box LODs also keeps the base darkening through a
+ *    Task 7 LOD swap, so distance changes silhouette, never brightness.
+ */
+const AO_KINDS = new Set([...BEVELLED_KINDS, 'hedge', 'footing', 'stair']);
+
+/**
  * Build one prefab at world scale. Half-extents arrive already quantised, so
  * the box is the class's own size and can only be a subset of any descriptor
  * that asked for it.
  *
- * The `stair` branch is Task 2 - the owner's own named complaint. LOD1 stays
- * the plain box alongside LOD2, judged rather than defaulted: a staircase
- * lives inside a walled shaft, so it is either being climbed (LOD0 range) or
- * occluded, and a mid LOD would be a geometry nobody can ever stand far
- * enough away to see. The remaining kinds gain their profiles in Task 4.
+ * The `stair` branch is Task 2 - the owner's own named complaint - and the
+ * chamfer branch is Task 4. LOD1 stays the plain box alongside LOD2 for every
+ * kind, judged rather than defaulted: a 4 cm chamfer is not resolvable at
+ * 30 m, and the phase's whole triangle argument depends on the far LODs
+ * costing what a box costs.
  */
 function buildPrefab(kind, hx, hy, hz, lod) {
-  if (kind === 'stair' && lod === 0) return buildStairPrefab(hx, hy, hz);
-  return new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2);
+  let g;
+  if (kind === 'stair' && lod === 0) g = buildStairPrefab(hx, hy, hz);
+  else if (BEVELLED_KINDS.has(kind) && lod === 0) g = buildChamferPrefab(hx, hy, hz);
+  else {
+    g = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2);
+    worldScaleBoxUVs(g);
+  }
+  if (AO_KINDS.has(kind)) bakeContactAO(g, hy);
+  return g;
+}
+
+/**
+ * Rewrite a BoxGeometry's per-face 0..1 UVs as world-scale metres - Task 5's
+ * settled convention, applied to every prefab builder at once.
+ *
+ * The alternative was keeping BoxGeometry's own parameterisation, where every
+ * face spans the unit square whatever it measures. That was survivable while
+ * the maps were tuned per kind against known face sizes (Phase 5 did exactly
+ * that, and Task 4 deliberately left it alone to avoid moving hedge density
+ * inside a geometry commit) - but it breaks the moment one material serves
+ * many extents: the same earth grain would span 1.4 m on one floor slab and
+ * 24 m on its neighbour, and a normal map makes that stretch legible as
+ * smeared relief. Metres everywhere gives constant texel density on every
+ * face of every box, matches the stair sweep (world-scale since Task 2, for
+ * this task) and lets a texture declare its own physical tile via `repeat`.
+ *
+ * Projection axes match `buildChamferPrefab`'s patches - x-faces map (z, y),
+ * y-faces (x, z), z-faces (x, y) - so a chamfered box and its plain LOD wear
+ * the map identically and an LOD swap cannot slide the texture.
+ */
+function worldScaleBoxUVs(g) {
+  const pos = g.attributes.position;
+  const nor = g.attributes.normal;
+  const uv = g.attributes.uv;
+  for (let i = 0; i < pos.count; i++) {
+    const ax = Math.abs(nor.getX(i));
+    const ay = Math.abs(nor.getY(i));
+    const az = Math.abs(nor.getZ(i));
+    if (ax >= ay && ax >= az) uv.setXY(i, pos.getZ(i), pos.getY(i));
+    else if (ay >= az) uv.setXY(i, pos.getX(i), pos.getZ(i));
+    else uv.setXY(i, pos.getX(i), pos.getY(i));
+  }
+}
+
+/**
+ * A box with every edge and corner chamfered by `chamferFor` - the 26-facet
+ * solid: six inset faces, twelve edge facets, eight corner triangles. 44
+ * triangles and 96 creased vertices against the box's 12 and 24.
+ *
+ * Authored as explicit facet patches rather than by sweeping an outline the
+ * way the stair is, because a sweep with mitred plan corners cannot chamfer
+ * the four VERTICAL edges - and on a hedge those are the edges the player
+ * actually walks past; the top arrises live 5 m up. Each patch owns its
+ * vertices, so the facets shade flat with creases exactly at the arrises,
+ * which is what makes the edge catch light as a distinct highlight instead
+ * of smearing into a rounded normal.
+ *
+ * Facet corners are sorted by angle about the outward normal rather than
+ * hand-wound: 26 winding tables were the alternative, and every one of them
+ * is a place for a silently inward-facing facet to hide. Runs once per
+ * (kind, extent class) for the life of the cache, so the sort costs nothing
+ * that matters.
+ *
+ * UVs are world-scale metres, projected along each facet's dominant normal
+ * axis - Task 4 shipped this builder on BoxGeometry's 0..1-per-face
+ * convention to avoid moving Phase 5's map density inside a geometry commit,
+ * and Task 5 (which owns the surfacing) moved every builder to metres
+ * together. See `worldScaleBoxUVs` for the argument.
+ */
+function buildChamferPrefab(hx, hy, hz) {
+  const b = chamferFor({ hx, hy, hz });
+  /* Where the flat faces end and the cuts begin, per axis. */
+  const inset = [hx - b, hy - b, hz - b];
+  const half = [hx, hy, hz];
+
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  /* The corner vertex lying ON the face whose axis is `axis`, for the corner
+   * with signs s = [sx, sy, sz]: full half-extent along the face's axis,
+   * inset along the other two. The three such points of one corner are the
+   * corner triangle; shared pairs make the edge facets; quads of one axis
+   * make the faces. */
+  const cornerVert = (s, axis) => s.map(
+    (sign, a) => sign * (a === axis ? half[a] : inset[a]),
+  );
+
+  /* One flat facet: sort its corners CCW about the outward normal (see the
+   * builder note), fan-triangulate, and project UVs onto the box face behind
+   * the facet's dominant normal axis. */
+  const patch = (verts, n) => {
+    const len = Math.hypot(n[0], n[1], n[2]);
+    const nx = n[0] / len; const ny = n[1] / len; const nz = n[2] / len;
+    /* A tangent basis: cross the normal with whichever axis it leans on least. */
+    const ref = Math.abs(nx) <= Math.abs(ny) && Math.abs(nx) <= Math.abs(nz)
+      ? [1, 0, 0] : (Math.abs(ny) <= Math.abs(nz) ? [0, 1, 0] : [0, 0, 1]);
+    const u = [ny * ref[2] - nz * ref[1], nz * ref[0] - nx * ref[2], nx * ref[1] - ny * ref[0]];
+    const v = [ny * u[2] - nz * u[1], nz * u[0] - nx * u[2], nx * u[1] - ny * u[0]];
+    const c = [0, 1, 2].map((a) => verts.reduce((s2, p) => s2 + p[a], 0) / verts.length);
+    const angle = (p) => Math.atan2(
+      (p[0] - c[0]) * v[0] + (p[1] - c[1]) * v[1] + (p[2] - c[2]) * v[2],
+      (p[0] - c[0]) * u[0] + (p[1] - c[1]) * u[1] + (p[2] - c[2]) * u[2],
+    );
+    const ordered = [...verts].sort((p, q) => angle(p) - angle(q));
+
+    const uvAxes = Math.abs(nx) >= Math.abs(ny) && Math.abs(nx) >= Math.abs(nz)
+      ? [2, 1] : (Math.abs(ny) >= Math.abs(nz) ? [0, 2] : [0, 1]);
+    const base = positions.length / 3;
+    for (const p of ordered) {
+      positions.push(p[0], p[1], p[2]);
+      normals.push(nx, ny, nz);
+      uvs.push(p[uvAxes[0]], p[uvAxes[1]]);
+    }
+    for (let i = 1; i < ordered.length - 1; i++) {
+      indices.push(base, base + i, base + i + 1);
+    }
+  };
+
+  const corners = [];
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) for (const sz of [-1, 1]) corners.push([sx, sy, sz]);
+  }
+
+  /* Six faces: the four corners agreeing with (axis, sign), on that face. */
+  for (let axis = 0; axis < 3; axis++) {
+    for (const sign of [-1, 1]) {
+      const quad = corners.filter((s) => s[axis] === sign).map((s) => cornerVert(s, axis));
+      const n = [0, 0, 0];
+      n[axis] = sign;
+      patch(quad, n);
+    }
+  }
+  /* Twelve edge facets: a pair of face axes with fixed signs, the two corners
+   * sharing them, and one vertex from each of the pair's faces. */
+  for (let a1 = 0; a1 < 3; a1++) {
+    for (let a2 = a1 + 1; a2 < 3; a2++) {
+      for (const s1 of [-1, 1]) {
+        for (const s2 of [-1, 1]) {
+          const pair = corners.filter((s) => s[a1] === s1 && s[a2] === s2);
+          const quad = pair.flatMap((s) => [cornerVert(s, a1), cornerVert(s, a2)]);
+          const n = [0, 0, 0];
+          n[a1] = s1;
+          n[a2] = s2;
+          patch(quad, n);
+        }
+      }
+    }
+  }
+  /* Eight corner triangles. */
+  for (const s of corners) {
+    patch([cornerVert(s, 0), cornerVert(s, 1), cornerVert(s, 2)], s);
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  return g;
+}
+
+/**
+ * Bake contact AO into a prefab as a greyscale `color` attribute: the base
+ * shaded by `contactShade`, the chamfer facets a few percent darker still.
+ *
+ * Vertex colours rather than a lightmap, and the reasons are the task's own:
+ * a lightmap needs a second UV set and a texture per district, which across
+ * 2.4 km x 4 levels is a budget nobody can pay and a bake nobody can re-run
+ * on a re-rolled seed. One colour attribute re-rolls for free and is
+ * IDENTICAL for every instance of an extent class - exactly the property
+ * that lets it live here, in the shared cached geometry, instead of anywhere
+ * per-instance.
+ *
+ * The crease term keys on the normal being off-axis, which on these prefabs
+ * is true of precisely the chamfer facets, the corner triangles and the
+ * stair's bulnose arc - no flat face ever qualifies, so a plain box LOD
+ * comes through with pure `contactShade` and matches its LOD0 at distance.
+ */
+function bakeContactAO(g, hy) {
+  const pos = g.attributes.position;
+  const nor = g.attributes.normal;
+  const colour = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    let s = contactShade(pos.getY(i), hy);
+    const flat = Math.max(Math.abs(nor.getX(i)), Math.abs(nor.getY(i)), Math.abs(nor.getZ(i)));
+    if (flat < 0.999) s *= CONTACT_AO.crease;
+    colour[i * 3] = s;
+    colour[i * 3 + 1] = s;
+    colour[i * 3 + 2] = s;
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(colour, 3));
 }
 
 /**

@@ -462,15 +462,58 @@ const toByte = (x) => (x <= 0 ? 0 : x >= 1 ? 255 : (x * 255 + 0.5) | 0);
  *            height:Float32Array, size:number, textures:THREE.Texture[]}}
  */
 export function bakeSurface(size, shade, opts = {}) {
-  const { normalStrength = 1, alpha = false, emissive = false, repeat = 1, name = 'surface' } = opts;
-  const px = size * size;
-  const albedo = new Uint8Array(px * 4);
-  const orm = new Uint8Array(px * 4);
-  const height = new Float32Array(px);
-  const emis = emissive ? new Uint8Array(px * 4) : null;
-  const inv = 1 / size;
+  const state = allocBake(size, opts);
+  shadeBakeRows(state, shade, 0, size);
+  return finishBake(state, opts);
+}
 
-  for (let y = 0; y < size; y++) {
+/**
+ * `bakeSurface`, sliced across frames: identical buffers, identical texels,
+ * but the shading loop runs a band of rows at a time with a `yieldFrame`
+ * between bands, so the compositor (and a loading bar) breathes mid-bake.
+ *
+ * This exists because "yield between whole bakes" was measured and lost: a
+ * single 1024 surface costs 500-730 ms of texel shading on the reference
+ * machine, so per-surface yields still freeze one frame for over half a
+ * second - the exact serial stall the boot budget forbids, merely relocated.
+ * Rows are the natural slice unit since every texel is independent; 64 rows
+ * of a 1024 bake is ~45 ms, comfortably inside a frame budget while keeping
+ * the yield overhead to ~16 awaits per bake.
+ *
+ * @param {number} size edge length (power of two)
+ * @param {(u:number, v:number, out:typeof TEXEL, x:number, y:number)=>void} shade
+ * @param {{normalStrength?:number, alpha?:boolean, emissive?:boolean,
+ *          repeat?:number, name?:string, rowsPerSlice?:number}} [opts]
+ * @returns {Promise<ReturnType<typeof bakeSurface>>}
+ */
+export async function bakeSurfaceAsync(size, shade, opts = {}) {
+  const state = allocBake(size, opts);
+  const band = Math.max(1, Math.floor(opts.rowsPerSlice ?? 64));
+  for (let y = 0; y < size; y += band) {
+    shadeBakeRows(state, shade, y, Math.min(size, y + band));
+    await yieldFrame();
+  }
+  return finishBake(state, opts);
+}
+
+/** Shared buffers for one bake, so the sync and sliced paths cannot drift. */
+function allocBake(size, opts) {
+  const px = size * size;
+  return {
+    size,
+    alpha: opts.alpha ?? false,
+    albedo: new Uint8Array(px * 4),
+    orm: new Uint8Array(px * 4),
+    height: new Float32Array(px),
+    emis: (opts.emissive ?? false) ? new Uint8Array(px * 4) : null,
+  };
+}
+
+/** The texel loop over rows [y0, y1) - the whole cost of a bake lives here. */
+function shadeBakeRows(state, shade, y0, y1) {
+  const { size, alpha, albedo, orm, height, emis } = state;
+  const inv = 1 / size;
+  for (let y = y0; y < y1; y++) {
     const v = (y + 0.5) * inv;
     for (let x = 0; x < size; x++) {
       const u = (x + 0.5) * inv;
@@ -501,7 +544,12 @@ export function bakeSurface(size, shade, opts = {}) {
       }
     }
   }
+}
 
+/** Wrap the shaded buffers as textures - identical for both bake paths. */
+function finishBake(state, opts) {
+  const { normalStrength = 1, repeat = 1, name = 'surface' } = opts;
+  const { size, albedo, orm, height, emis } = state;
   const map = textureFromRGBA(albedo, size, { colorSpace: THREE.SRGBColorSpace, repeat, name: `${name}.albedo` });
   const ormMap = textureFromRGBA(orm, size, { colorSpace: THREE.NoColorSpace, repeat, name: `${name}.orm` });
   const normalMap = makeNormalFromHeight(height, size, { strength: normalStrength, repeat, name: `${name}.normal` });

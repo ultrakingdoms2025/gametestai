@@ -1,0 +1,14 @@
+{
+  "comment": "Every authored asset the maze may load. MazeAssets.js loads ONLY what is declared here; scripts/tests/maze-assets.test.mjs holds every entry to the licence allow-list (CC0-1.0, CC-BY-4.0 with attribution, proprietary-owned, generated) and to the batch geometry reservations. A file missing at runtime degrades to the procedural prefab - see MazeAssets.js.",
+  "assets": [
+    {
+      "id": "newel-finial",
+      "file": "newel-finial.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-newel-glb.mjs - procedurally authored in this repository, 2026-08-10",
+      "tris": 448,
+      "bytes": 12092
+    }
+  ]
+}

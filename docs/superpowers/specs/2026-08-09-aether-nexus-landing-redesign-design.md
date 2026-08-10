@@ -65,7 +65,10 @@ export interface WorldDef {
   scene: WorldSceneId;    // which diorama scene module renders it
 }
 export type WorldId = 'station'|'medieval'|'sports'|'citadel'|'race'|'maze';
+export type WorldSceneId = WorldId;   // one diorama scene per world, 1:1 by id
 ```
+
+**Field ownership (no duplication):** `fact` lives **only** on `WorldDef` — it is marketing copy and the single source of truth for the chip. `WorldDef` carries no prose lore; prose (`title`/`body`/`sign_label`) comes from `lib/lore.ts` at render (§5.4). **Canonical `name` source of truth** = each world's in-game `static displayName` (`StationWorld.js` "Aether Nexus Station", `MedievalWorld.js` "Aldermoor Vale", `SportsWorld.js` "Meridian Athletic Grounds", `CitadelWorld.js` "Sunspire Citadel", `RaceWorld.js` "Vellum Ridge", `MazeWorld.js` "The Verdant Coil") — deliberately chosen over the drifted station-portal labels ("Ashfall Reach", "Meridian Athletic Complex").
 
 | index | id | Canonical name | role | accent | fact |
 |---|---|---|---|---|---|
@@ -118,6 +121,16 @@ export interface DioramaScene {
   setQuality(tier: QualityTier): void;
   dispose(): void;                 // free geometry/materials/textures
 }
+
+// Supporting types (defined in components/diorama/types.ts):
+export interface SceneCtx {
+  scene: THREE.Scene;              // shared scene graph (scenes add/remove their own group)
+  renderer: THREE.WebGLRenderer;   // shared renderer (read-only for size/dpr)
+  camera: THREE.PerspectiveCamera; // shared camera the orchestrator drives
+  accent: THREE.Color;             // world accent, from WorldDef.accent
+  quality: QualityTier;            // initial tier
+}
+export type QualityTier = 'low' | 'medium' | 'high';  // chosen from device heuristics
 ```
 
 Modules live in `site/components/diorama/scenes/{station,aldermoorVale,meridian,sunspire,vellumRidge,verdantCoil}.ts`. Adding a 7th world = one new module + one row in `worlds.ts`. Each is independently testable (build/dispose leak checks; update determinism).
@@ -149,10 +162,11 @@ lib/worlds.ts (SoT) ─┬─► app/page.tsx (RSC): counts, ticker, stats, meta
 
 `site/lib/lore.ts`:
 
-- `getLore()` server-side `fetch('/api/lore')` (or direct import of the query) → `{ entries }`.
-- **Scope mapping:** API scopes are `station, medieval, sports, citadel, race` (+ `overall`); world ids match except there is **no `maze` row**. Map `world.loreScope` → entry.
-- **Baked fallback** `FALLBACK_LORE: Record<WorldId, {title,body,fact}>` holds correct lore for **all 6** worlds (maze included), sourced from `Lore.js` / `MazeWorld.js`. Final lore = `apiEntry ?? fallback`. Guarantees a correct, complete page even on 503 / empty DB / local dev without Postgres.
-- Also extend `route.ts` CASE with `WHEN 'maze' THEN 6` so a future maze row sorts correctly.
+- **Resolved shape.** `getLore()` returns `Record<WorldId, ResolvedLore>` where `ResolvedLore = { title: string; body: string; sign_label: string }` — prose only. The **fact chip is NOT here**; it stays on `WorldDef.fact` (§3). `WorldPanel` composes `WorldDef` (name, fact, accent) + `ResolvedLore` (title/body/sign_label).
+- **Data access — direct query, not self-fetch.** RSC-side `fetch('/api/lore')` needs an absolute base URL server-side and is brittle. Instead, **extract the SQL query** from `site/app/api/lore/route.ts` into a shared `getLoreEntries()` in `lib/lore.ts`; the route handler and `getLore()` both call it. No HTTP self-call. (This is a small, mechanical refactor of the existing handler — the route's public JSON contract is unchanged.)
+- **Scope mapping.** DB scopes are `station, medieval, sports, citadel, race` (+ `overall`); world ids match except there is **no `maze` row**. Map `world.loreScope` → entry.
+- **Baked fallback.** `FALLBACK_LORE: Record<WorldId, ResolvedLore>` holds correct prose for **all 6** worlds (maze included), sourced from `Lore.js` / `MazeWorld.js`. Final per-world value = `dbEntry ?? FALLBACK_LORE[id]`. On a DB throw/503, the whole map falls back. Guarantees a correct, complete page even with an empty DB or local dev without Postgres.
+- Also extend the extracted query's CASE with `WHEN 'maze' THEN 6` so a future maze row sorts correctly.
 
 ### 5.5 Component breakdown
 

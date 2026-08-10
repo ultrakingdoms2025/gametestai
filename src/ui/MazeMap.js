@@ -928,15 +928,26 @@ export class MazeMap {
     const n = Math.max(0, Math.min(MAZE.LEVELS - 1, Math.round(level)));
     if (n === this._levelOverride) return;
     /* Coming out of the overview, the pan and the zoom are in sheet terms and
-     * mean nothing on a single floorplan - so drop to the scale a corridor is
-     * read at, centred on the player, rather than an arbitrary corner. Paging
-     * BETWEEN floors still holds both, which is what makes comparing them
-     * useful. */
+     * mean nothing on a single floorplan - so both reset. To the floor FITTED
+     * WHOLE, which is a reversal worth recording: this used to drop to
+     * junction scale centred on the player, on the argument that a fitted
+     * 400-cell floor is a shape rather than a map. The owner's report showed
+     * why that loses. Paging out of the overview is "enlarge THAT pane", and
+     * a junction-scale window around the player's own position is a different
+     * request answered uninvited - with the Ctrl+M route up it showed a
+     * fragment of route (or, on a floor the player is not standing on, an
+     * empty corridor somewhere else entirely), which read as the route
+     * CHANGING between views. The route never changed; the window did.
+     * Junction scale is still one FIND ME press away, and the wheel zooms.
+     *
+     * Paging BETWEEN floors still holds pan and zoom, which is what makes
+     * comparing the same patch of ground across levels useful. */
     const fromOverview = this._levelOverride === OVERVIEW;
     this._levelOverride = n;
     if (fromOverview) {
-      this._zoom = MAZE.CELLS / OPEN_CELLS_ACROSS;
-      this._centreOnPlayer();
+      this._zoom = MIN_ZOOM;
+      this._panX = 0;
+      this._panY = 0;
     }
     this._draw();
   }

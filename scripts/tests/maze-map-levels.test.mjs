@@ -263,6 +263,25 @@ test('the map opens on all four levels, and can still be paged down to one', asy
   assert.ok(/setLevel\(/.test(src), 'paging to a single floor was removed along the way');
 });
 
+test('paging out of the overview enlarges THAT pane - it does not teleport the window', async () => {
+  /* The owner's report, and the second time this exact shape has bitten: with
+   * the Ctrl+M route up, pressing 1-4 dropped to a junction-scale window
+   * centred on the player's own position, so the visible fragment of route
+   * (or, on a floor they were not standing on, an empty corridor somewhere
+   * else) looked nothing like the pane they had just been reading - which
+   * read as the route CHANGING between views. It never changed; the window
+   * did. Paging out of the overview must land on the floor FITTED WHOLE, the
+   * literal enlargement of the pane that was clicked. Junction scale stays
+   * one FIND ME press away, which is what `recentre` is for. */
+  const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  const setLevel = src.slice(src.indexOf('\n  setLevel('), src.indexOf('\n  _onDown('));
+  const branch = setLevel.slice(setLevel.indexOf('fromOverview) {'));
+  assert.ok(/_zoom = MIN_ZOOM/.test(branch),
+    'leaving the overview no longer fits the floor whole - the window teleports again');
+  assert.ok(!/_centreOnPlayer|OPEN_CELLS_ACROSS/.test(branch),
+    'leaving the overview recentres on the player - that is FIND ME\'s job, answered uninvited');
+});
+
 test('the drawing walks the sheet, so adding a level adds a floorplan', async () => {
   const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
   const draw = src.slice(src.indexOf('\n  _draw() {'), src.indexOf('\n  _project('));

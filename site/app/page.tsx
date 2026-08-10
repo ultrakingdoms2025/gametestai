@@ -53,9 +53,11 @@ const FEATURES = [
 
 export default async function Home() {
   const session = await auth();
-  const { hasAccess } = await getAccessStateForSession(session);
+  const [{ hasAccess }, lore] = await Promise.all([
+    getAccessStateForSession(session),
+    getLore(),
+  ]);
   const entryTotal = grossUp(ENTRY_CENTS);
-  const lore = await getLore();
 
   return (
     <>

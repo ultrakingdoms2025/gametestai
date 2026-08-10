@@ -103,23 +103,30 @@ export function materialFingerprint(mat) {
 
 /**
  * Every material feature-set the maze compiles, measured by running
- * `materialFingerprint` over the built set - not asserted from hope. Three
+ * `materialFingerprint` over the built set - not asserted from hope. Four
  * families for nineteen kinds, which is the whole reason the world can
  * afford nineteen kinds:
  *
- *  - the plain lit family: fifteen kinds differing only in uniforms (colour,
+ *  - the plain lit family: kinds differing only in uniforms (colour,
  *    roughness, emissive), which the program cache key never sees;
- *  - the textured family: hedge and floor, the two Phase 5 surfaced;
+ *  - the vertex-coloured lit family - Task 4's DELIBERATE addition: the
+ *    stone/mover kinds whose prefabs bake contact AO into a colour attribute
+ *    (stair/shaftWall, gate, slideWall, footing);
+ *  - the textured family, now also vertex-coloured: hedge and floor gained
+ *    Task 4's bake on top of Phase 5's colour maps, so the old
+ *    'MeshStandardMaterial|map' family MOVED rather than grew - the two
+ *    fingerprints swap 1:1 and their old programs are released;
  *  - the additive family: the well light and its pool, transparent + additive,
  *    which `opaque` in the cache key splits from everything else.
  *
- * Tasks 4 and 5 will grow this list on purpose (vertex colours, then
- * normal/ORM maps); the test that fails when they do is the mechanism that
- * makes the growth a decision instead of an accident.
+ * Task 5 will grow this list again on purpose (normal/ORM maps); the test
+ * that fails when it does is the mechanism that makes the growth a decision
+ * instead of an accident.
  */
 export const MAZE_PROGRAM_FAMILIES = Object.freeze([
   'MeshStandardMaterial',
-  'MeshStandardMaterial|map',
+  'MeshStandardMaterial|vertexColors',
+  'MeshStandardMaterial|map|vertexColors',
   'MeshBasicMaterial|transparent|blending:additive',
 ]);
 
@@ -161,6 +168,16 @@ export const MAZE_PROGRAM_FAMILIES = Object.freeze([
  * entry 5 - the batching axis costs exactly +5 programs, once, and the
  * entry-to-entry delta stays 0, which is the invariant that actually guards
  * against leaks. Budget = 389 + 5 = 394.
+ *
+ * SPENT AT TASK 4 (2026-08-10, same protocol, budget UNCHANGED): turning on
+ * vertexColors for the AO-baked kinds measured flat 393 across sixteen
+ * station/maze round trips against the box build's flat 390 - +3, inside the
+ * two-families-at-+1-each the 389 derivation had banked for this task (the
+ * odd +1 is the mover/instanced variant of the new vertex-coloured plain
+ * family, which the derivation counted under Task 5's re-split). Entry-3-to-
+ * entry-10 delta 0 on both builds. Headroom left for Task 5: 394 - 393 = 1
+ * program, plus whatever the map families release when their fingerprints
+ * move.
  */
 export const MAZE_PROGRAM_BUDGET = 394;
 
@@ -226,9 +243,18 @@ export function buildMazeMaterials() {
    *
    * Reused verbatim (not merely colour-matched) for the shaft's own walls
    * below - see `shaftWall`. */
+  /* `vertexColors` on the six kinds whose prefabs bake contact AO (Task 4:
+   * hedge, floor, shaftWall, gate, slideWall, footing) - plus, by aliasing,
+   * this stair material, which shaftWall IS. The flag is scoped to materials
+   * whose every geometry provably carries a colour attribute: all six kinds
+   * (and stair, at every LOD) draw registry prefabs, whether through the
+   * static batches, the movers' InstancedMesh path or the forecourt - and
+   * `maze-bevel.test.mjs` asserts attribute coverage kind by kind, because a
+   * mesh with no colour attribute under a vertexColors material renders
+   * BLACK in three and does it silently. */
   const stair = new THREE.MeshStandardMaterial({
     color: 0xd8cdb0, roughness: 0.8, metalness: 0,
-    emissive: 0x4a4330, emissiveIntensity: 0.45,
+    emissive: 0x4a4330, emissiveIntensity: 0.45, vertexColors: true,
   });
 
   _materials = {
@@ -239,10 +265,10 @@ export function buildMazeMaterials() {
      * which is the one thing a hedge maze must not do: the player navigates
      * by telling one corridor from another. */
     hedge: new THREE.MeshStandardMaterial({
-      color: 0xffffff, roughness: 0.95, metalness: 0, map: hedgeMap,
+      color: 0xffffff, roughness: 0.95, metalness: 0, map: hedgeMap, vertexColors: true,
     }),
     floor: new THREE.MeshStandardMaterial({
-      color: 0xffffff, roughness: 1.0, metalness: 0, map: floorMap,
+      color: 0xffffff, roughness: 1.0, metalness: 0, map: floorMap, vertexColors: true,
     }),
     stair,
     /* The shaft's own walls (see shaftColliders) - the exact same cached
@@ -314,7 +340,7 @@ export function buildMazeMaterials() {
      * weathered stone footings", section 10. Mesh only; see MazeFoliage.js
      * for why it registers no colliders. */
     footing: new THREE.MeshStandardMaterial({
-      color: 0x7d7566, roughness: 1.0, metalness: 0,
+      color: 0x7d7566, roughness: 1.0, metalness: 0, vertexColors: true,
     }),
     /* Unkempt growth along the hedge tops. A shade lighter and yellower than
      * the hedge itself so it reads as new growth against clipped body,
@@ -355,13 +381,13 @@ export function buildMazeMaterials() {
      * darker and greyer than a grown hedge, so that a corridor which is
      * about to close behind you does not look like every other corridor. */
     gate: new THREE.MeshStandardMaterial({
-      color: 0x3f5a34, roughness: 1.0, metalness: 0,
+      color: 0x3f5a34, roughness: 1.0, metalness: 0, vertexColors: true,
     }),
     /* A sliding hedge wall. Reads as the same worked hedge as a gate, warmed
      * slightly so the two are distinguishable at a glance without either
      * looking like plain hedge. */
     slideWall: new THREE.MeshStandardMaterial({
-      color: 0x4a5b2f, roughness: 1.0, metalness: 0,
+      color: 0x4a5b2f, roughness: 1.0, metalness: 0, vertexColors: true,
     }),
     /* The pressure plate. Worked stone, faintly lit, because a flush pad on
      * a dim corridor floor is invisible otherwise and an invisible trigger

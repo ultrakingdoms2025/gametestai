@@ -214,6 +214,72 @@ export function treadOutline(extents, arcSegments = 6) {
   ];
 }
 
+/* ------------------------------------------------------------------ */
+/* The chamfer, and the contact AO bake                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The chamfer width on a bevelled box prefab, in metres.
+ *
+ * 4 cm, authored absolutely - the number the whole registry design exists to
+ * keep absolute. Two things a box must do to stop reading as a box, and the
+ * first is that real edges catch light: a corridor's worth of hedge corners
+ * each throwing a thin highlight is most of what "high-poly" actually looks
+ * like at walking distance. 4 cm is wide enough for that highlight to survive
+ * a 1080p rasteriser at 3-4 m and narrow enough that abutting segments'
+ * grooves read as clipped joints rather than as gaps; it is also, not by
+ * coincidence, the width the phase plan authored its own arithmetic around.
+ */
+export const CHAMFER = 0.04;
+
+/**
+ * The chamfer a given box can actually afford. A 4 cm cut into a 15 cm
+ * footing is fine; the same cut into anything thinner than 9 cm would leave
+ * the flat face smaller than the two chamfers eating it, so the cut scales
+ * away rather than the prefab inverting. 0.45 (not 0.5) keeps a strip of
+ * genuine flat face on the thinnest axis, so every box still has the plane
+ * its neighbours abut against.
+ */
+export function chamferFor({ hx, hy, hz }) {
+  return Math.min(CHAMFER, 0.45 * Math.min(hx, hy, hz));
+}
+
+/**
+ * The contact-AO bake, as pure numbers.
+ *
+ *  - `dark`: the shade at the very base, where the prefab meets the ground.
+ *    0.55 is dark enough that the hedge-floor junction reads as a real
+ *    contact shadow under this world's low light, and light enough that the
+ *    footing's own stonework stays legible inside it. (The Task 4 gate
+ *    asserts bottom < 0.8 x top; 0.55 passes with room, so the test cannot
+ *    be satisfied by float noise.)
+ *  - `height`: how far up the darkening reaches before fading to none. 0.55 m
+ *    keeps it a BASE phenomenon - a band at eye level would read as damp, not
+ *    as occlusion.
+ *  - `crease`: the subtler multiplier on the chamfer facets themselves. Real
+ *    AO darkens concavities, and a chamfer is convex - but a few percent in
+ *    the cut reads as the dirt that gathers along an arris, and it keeps an
+ *    edge legible from angles where the lighting alone goes flat. Anything
+ *    stronger starts to look like an outline shader.
+ */
+export const CONTACT_AO = Object.freeze({ dark: 0.55, height: 0.55, crease: 0.93 });
+
+/**
+ * The AO shade for a vertex at height `y` in a prefab of half-height `hy`:
+ * `dark` at the base, easing to 1 at the top of the contact band. Pure and
+ * per-vertex so the bake in `MazeMeshes.js` is nothing but a loop over this.
+ *
+ * The band is clamped to the prefab's own half-height so a short box (a
+ * footing, a floor slab) grades base-to-top rather than being uniformly dark
+ * - the gradient, not the darkness, is what the eye reads as contact.
+ */
+export function contactShade(y, hy) {
+  const band = Math.min(CONTACT_AO.height, hy);
+  const t = Math.min(1, Math.max(0, (y + hy) / band));
+  const eased = t * t * (3 - 2 * t);
+  return CONTACT_AO.dark + (1 - CONTACT_AO.dark) * eased;
+}
+
 /**
  * The most distinct geometries the prefab registry may ever hold.
  *

@@ -185,21 +185,36 @@ for (const [name, fam] of Object.entries(BATCH_FAMILIES)) {
  * the Task 2 stair prefab 136 / 276. Reservations are those numbers with
  * roughly 1.5x headroom.
  *
+ * RE-SIZED FOR TASK 4: a bevelled kind's LOD0 prefab is the 26-facet
+ * chamfered box - 96 vertices / 132 indices, measured from the geometry and
+ * asserted per family against a real world in `maze-bevel.test.mjs`, because
+ * a reservation still sized for the 24-vertex box would make `addGeometry`
+ * throw at boot on the first district streamed. `stone` keeps 192/384: the
+ * Task 2 stair sweep (136/276) is still its fattest member. `hedge` and
+ * `footing` draw the plain box TODAY (their bevel is deferred to Task 7's
+ * LOD swap - see BEVELLED_KINDS in MazeMeshes.js for the measurement) but
+ * their reservations are sized for the bevelled prefab anyway: the deferral
+ * is a triangle-budget decision, not a buffer one, and a reservation that
+ * shrank now would be the boot-time throw waiting for Task 7. Total reserved
+ * vertex memory rises from ~9,000 to ~24,000 vertices across the seven
+ * families - still under one district's hedges, so padding stays free.
+ *
  * The registry's global PREFAB_BUDGET (192) bounds what the world ACTUALLY
  * caches; these reservations may sum past it because each is padded
  * independently - they bound what a family could ever ask its buffer to
  * hold, and `addGeometry` throws loudly if a seed somehow outgrows one,
  * which is the failure mode we want: an error naming the buffer, not a
- * corrupted wall. Total reserved vertex memory is ~9,000 vertices across all
- * seven families - about a third of one district's hedges - so padding is
- * effectively free.
+ * corrupted wall.
+ *
+ * Exported for the reservation test, not for callers - `batchFor` is the one
+ * consumer that sizes anything from it.
  */
-const GEOMETRY_BUDGET = Object.freeze({
-  hedge: { prefabs: 24, verts: 24, indices: 36 },
-  floor: { prefabs: 160, verts: 24, indices: 36 },
+export const GEOMETRY_BUDGET = Object.freeze({
+  hedge: { prefabs: 24, verts: 96, indices: 132 },
+  floor: { prefabs: 160, verts: 96, indices: 132 },
   stone: { prefabs: 16, verts: 192, indices: 384 },
   tunnel: { prefabs: 16, verts: 24, indices: 36 },
-  footing: { prefabs: 24, verts: 24, indices: 36 },
+  footing: { prefabs: 24, verts: 96, indices: 132 },
   plate: { prefabs: 8, verts: 24, indices: 36 },
   candle: { prefabs: 8, verts: 24, indices: 36 },
 });

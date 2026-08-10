@@ -597,12 +597,18 @@ export class Player {
     this._releaseMovement();
 
     /* ---- stance ---------------------------------------------------- */
+    const wasCrouching = this._crouching;
     const wantsCrouch = s.crouch;
     // Never stand up into a ceiling.
     if (!wantsCrouch && this._crouching && !this._hasHeadroom(STAND_HEIGHT)) {
       this._crouching = true;
     } else {
       this._crouching = wantsCrouch;
+    }
+    // Audio cares about the transition, not the state: cloth moves when the
+    // stance changes, in either direction.
+    if (this._crouching !== wasCrouching) {
+      this.bus?.emit('player:crouch', { crouching: this._crouching });
     }
     const targetHeight = this._crouching ? CROUCH_HEIGHT : STAND_HEIGHT;
     this._capsuleHeight = damp(this._capsuleHeight, targetHeight, 16, dt);

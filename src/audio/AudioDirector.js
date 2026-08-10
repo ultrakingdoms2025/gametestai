@@ -74,6 +74,7 @@ export class AudioDirector {
 
     /** @type {{handle:any, id:string}|null} */
     this._mount = null;
+    this._swimTimer = null;
     this._pendingWorld = null;
 
     /** Scratch for the listener frame - this runs every frame. */
@@ -148,9 +149,27 @@ export class AudioDirector {
       this.sfx.footstep(e?.position ?? null, surfaceOf(e?.material), { running: true });
     });
     on('player:damaged', () => this.sfx.playerHurt());
-    on('player:swim', (e) => { if (e?.entered) this.sfx.splash(e?.position ?? null, { big: true }); });
+    /* Swimming is a state, not an event: splash on the way in, then strokes
+     * on a timer for as long as the state holds. (Swim.js emits `swimming`;
+     * `entered` is kept for any older emitter still using it.) */
+    on('player:swim', (e) => {
+      if (e?.swimming || e?.entered) {
+        if (!this._swimTimer) this.sfx.splash(e?.position ?? null, { big: true });
+        this._startSwim();
+      } else {
+        this._stopSwim();
+      }
+    });
+    on('player:climb', (e) => {
+      // FreeClimb reports per-move states; ledge Climb reports the mantle.
+      if (e?.state === 'grab' || e?.state === 'kick' || e?.climbing === true) {
+        this.sfx.climbScrape(e?.position ?? null);
+      }
+    });
+    on('player:crouch', () => this.sfx.crouchRustle(null));
     on('player:died', () => {
       this._stopMount();
+      this._stopSwim();
       this.sfx.explosion(null, { size: 0.6 });
     });
 
@@ -237,7 +256,7 @@ export class AudioDirector {
      * so the horse and the eagle both rode around humming like a hoverboard.
      * A mount with no voice of its own should be silent, which is at least
      * honest, rather than borrowing another animal's. */
-    const VOICE = { car: 'car', dragon: 'dragon', horse: 'horse', eagle: 'eagle', hoverboard: 'hoverboard' };
+    const VOICE = { car: 'car', dragon: 'dragon', horse: 'horse', eagle: 'eagle', hoverboard: 'hoverboard', bicycle: 'bicycle' };
     const kind = VOICE[id] ?? null;
     if (!kind) return;
     const handle = this.sfx.startMount(kind);
@@ -249,6 +268,24 @@ export class AudioDirector {
     if (!this._mount) return;
     try { this._mount.handle.stop(); } catch { /* already stopped */ }
     this._mount = null;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Swim strokes                                                        */
+  /* ------------------------------------------------------------------ */
+
+  /** Strokes repeat while swimming; ~780 ms is a relaxed crawl cadence. */
+  _startSwim() {
+    if (this._swimTimer) return;
+    this._swimTimer = setInterval(() => {
+      this.sfx.swimStroke(this.player?.position ?? null);
+    }, 780);
+  }
+
+  _stopSwim() {
+    if (!this._swimTimer) return;
+    clearInterval(this._swimTimer);
+    this._swimTimer = null;
   }
 
   /* ------------------------------------------------------------------ */
@@ -336,6 +373,7 @@ export class AudioDirector {
     for (const off of this._offs) off?.();
     this._offs.length = 0;
     this._stopMount();
+    this._stopSwim();
     this.music.dispose();
     this.engine.dispose();
   }

@@ -1,5 +1,6 @@
 import type * as THREE from 'three';
 import type { DioramaScene, SceneCtx, QualityTier } from '../types';
+import { mulberry32, smoothstep, lerp, TAU } from '@/lib/sceneMath';
 
 /**
  * Aether Nexus Station — the hub-world diorama and the reference template for
@@ -22,21 +23,6 @@ import type { DioramaScene, SceneCtx, QualityTier } from '../types';
 
 const STAR_COUNT = 800;
 const TRAFFIC_COUNT = 12;
-const TAU = Math.PI * 2;
-
-/** Tiny seeded PRNG — deterministic starfield/traffic layout across builds. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-const smoothstep = (t: number) => t * t * (3 - 2 * t);
-const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
 interface TrafficLane {
   radius: number;
@@ -275,7 +261,9 @@ export function createStationScene(): DioramaScene {
     }
     trafficPositions = new Float32Array(TRAFFIC_COUNT * 3);
     const trafficGeo = track(new THREE.BufferGeometry());
-    trafficGeo.setAttribute('position', new THREE.BufferAttribute(trafficPositions, 3));
+    const trafficPosAttr = new THREE.BufferAttribute(trafficPositions, 3);
+    trafficPosAttr.setUsage(THREE.DynamicDrawUsage); // rewritten every frame in placeTraffic()
+    trafficGeo.setAttribute('position', trafficPosAttr);
     const trafficMat = track(
       new THREE.PointsMaterial({
         color: accent.getHex(),

@@ -2003,3 +2003,124 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
   .acct-inner    { flex-direction: column; align-items: flex-start; }
   .acct-actions  { margin-left: 0; }
 }
+
+/* ── Gateway Descent panels ──────────────────────────────────────────────
+   One .gw-panel per world, stacked full-viewport over the fixed WebGL
+   canvas/static painter GatewayDescent composes behind them. Content only —
+   no backdrop lives in here. Left/right alignment alternates by world parity
+   (.gw-alt) so the descent has a rhythm as it scrolls. */
+
+.gw-panel {
+  min-height: 100vh;
+  min-height: 100svh;
+  display: grid;
+  align-items: center;
+  position: relative;
+  z-index: 2;
+}
+
+.gw-panel-in {
+  width: min(560px, 88vw);
+  margin-left: max(18px, calc((100vw - 1180px) / 2 + 18px));
+  padding: 32px 0;
+}
+
+.gw-alt {
+  margin-left: auto;
+  margin-right: max(18px, calc((100vw - 1180px) / 2 + 18px));
+}
+
+.gw-seq {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.gw-seq-num {
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.24em;
+  color: var(--gw-accent, var(--cy));
+  opacity: 0.85;
+}
+
+.gw-kicker {
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--amber);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.gw-kicker::after {
+  content: '';
+  flex: 1;
+  max-width: 60px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--rule), transparent);
+}
+
+.gw-name {
+  font-size: clamp(1.9rem, 4.2vw, 3.4rem);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.06;
+  margin: 0 0 8px;
+  color: #f2fbff;
+  text-shadow: 0 2px 30px rgba(0, 0, 0, 0.6);
+}
+
+.gw-role {
+  margin: 0 0 20px;
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-size: 0.72rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--gw-accent, var(--cy));
+}
+
+.gw-lore {
+  margin: 0 0 18px;
+  max-width: 52ch;
+  font-size: 1rem;
+  line-height: 1.75;
+  color: var(--txt-2);
+}
+
+.gw-sign {
+  display: block;
+  margin-bottom: 22px;
+  font-style: italic;
+  font-size: 0.86rem;
+  color: var(--txt-dim);
+}
+
+.gw-fact {
+  display: inline-block;
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--txt);
+  border: 1px solid var(--gw-accent, var(--rule));
+  background: rgba(10, 18, 28, 0.72);
+  clip-path: var(--clip-sm);
+  padding: 8px 14px;
+}
+
+@media (max-width: 860px) {
+  .gw-panel-in,
+  .gw-alt {
+    margin-left: 24px;
+    margin-right: 24px;
+    width: calc(100% - 48px);
+  }
+}

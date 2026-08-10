@@ -35,6 +35,6 @@ test('the maze allocates no material or texture per chunk', async () => {
   const src = await readFile(path.join(root, 'src/worlds/maze/MazeChunks.js'), 'utf8');
   for (const forbidden of [/makeNoiseTexture/, /new THREE\.\w*Texture\(/, /new THREE\.Mesh\w+Material\(/]) {
     assert.ok(!forbidden.test(src),
-      `MazeChunks builds ${forbidden} per chunk - materials and textures are cached in MazeWorld._ensureMaterials`);
+      `MazeChunks builds ${forbidden} per chunk - materials and textures are cached in MazeMaterials.buildMazeMaterials`);
   }
 });

@@ -14,7 +14,9 @@ import { Physics } from '../../src/physics/Physics.js';
 import { EventBus } from '../../src/core/EventBus.js';
 import { parentField, solve } from '../../src/worlds/maze/MazeTopology.js';
 import { routeToward } from '../../src/worlds/maze/MazePopulate.js';
-import { pickDistrictTokens, pickDistrictWanderer } from '../../src/worlds/maze/MazePopulate.js';
+import {
+  pickDistrictTokens, pickDistrictWanderer, districtTokenCells, TOKENS_PER_DISTRICT,
+} from '../../src/worlds/maze/MazePopulate.js';
 import { districtIndex } from '../../src/worlds/maze/MazeTopology.js';
 import { MazeWorld, MAZE_CENTRE_VALUE, WANDERER_CAST, MAX_LIVE_TOKENS } from '../../src/worlds/MazeWorld.js';
 
@@ -533,6 +535,58 @@ test('THE EVERY-LEVEL GATE: every level populates the districts a player walks i
     assert.ok(tokens > 0, `level ${lv} yields no tokens in any of 100 sampled districts`);
     assert.ok(wanderers > 0, `level ${lv} yields no wanderers in any of 100 sampled districts`);
   }
+});
+
+/**
+ * The spread half of the density change, asserted exactly rather than loosely.
+ *
+ * Raising `TOKENS_PER_DISTRICT` on its own would have tripled a CLUSTER: the
+ * old picker shuffled every dead end in the district and took the first few,
+ * which is uniform over candidates and not over ground, and dead ends bunch
+ * wherever the carve left stubs. So the picker now draws at most one token per
+ * region of a 3x3 grid over the district.
+ *
+ * That yields an exact invariant, which is worth far more than a statistical
+ * one: the number of regions the tokens occupy is `min(count, regions that
+ * contain any dead end at all)`. Below the first term the spread is doing all
+ * it can and the top-up fills the rest; above it, every token is in a region of
+ * its own. A regression to shuffle-and-slice breaks this on the first district
+ * whose dead ends are unevenly spread, which is most of them.
+ */
+test('district tokens take one region each, so nine is a spread and not a bigger cluster', () => {
+  const REGIONS = 3;                          // regionGrid(9) is 3x3
+  const span = MAZE.DISTRICT / REGIONS;
+  let checked = 0;
+
+  for (let s = 0; s < 10; s++) {
+    const seed = 1000 + s * 7919;
+    const t = generateTopology(seed, { levels: MAZE.LEVELS });
+    for (let d = 0; d < 12; d++) {
+      const dx = (d * 5) % MAZE.DISTRICTS;
+      const dz = (d * 11) % MAZE.DISTRICTS;
+      const key = districtIndex(dx, dz, d % MAZE.LEVELS);
+
+      const regionOf = (idx) => {
+        const c = cellCoords(idx);
+        const lx = Math.min(REGIONS - 1, Math.floor((c.x - dx * MAZE.DISTRICT) / span));
+        const lz = Math.min(REGIONS - 1, Math.floor((c.z - dz * MAZE.DISTRICT) / span));
+        return lz * REGIONS + lx;
+      };
+
+      const candidates = districtTokenCells(t.cells, key);
+      if (candidates.length <= TOKENS_PER_DISTRICT) continue;  // takes them all; nothing to spread
+      const populated = new Set(candidates.map(regionOf)).size;
+      const picked = pickDistrictTokens(t.cells, key, seed);
+      const occupied = new Set(picked.map(regionOf)).size;
+
+      assert.equal(occupied, Math.min(TOKENS_PER_DISTRICT, populated),
+        `seed ${seed} district ${key}: ${picked.length} tokens sit in ${occupied} of `
+        + `${populated} populated regions - they are clustering, not spreading`);
+      checked++;
+    }
+  }
+
+  assert.ok(checked > 40, `only ${checked} districts had enough dead ends to test the spread`);
 });
 
 test('every wanderer is a distinct person, so more of them is not the same few repeated', () => {

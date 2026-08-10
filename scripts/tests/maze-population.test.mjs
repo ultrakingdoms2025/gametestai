@@ -442,12 +442,54 @@ test('THE DENSITY GATE: tokens and wanderers near the player, not scattered over
     worstWanderer = Math.min(worstWanderer, nearest);
   }
 
-  assert.ok(worstNear >= 8,
-    `only ${worstNear} tokens within 120 m of the entrance - it was 2 before, this is not enough better`);
-  assert.ok(worstFar >= 25,
+  assert.ok(worstNear >= 30,
+    `only ${worstNear} tokens within 120 m of the entrance - it was 2 before per-district streaming and ~17 at three per district, so this is a regression`);
+  assert.ok(worstFar >= 90,
     `only ${worstFar} tokens within 240 m of the entrance - it was 4 before`);
-  assert.ok(worstWanderer < 300,
-    `the nearest wanderer is ${worstWanderer.toFixed(0)} m away - it was 543 m before`);
+  assert.ok(worstWanderer < 120,
+    `the nearest wanderer is ${worstWanderer.toFixed(0)} m away - it was 543 m before, and 62 m at WANDERER_CHANCE 0.3`);
+});
+
+/**
+ * The owner's criterion, in the owner's own terms.
+ *
+ * The gate above measures a 120 m neighbourhood, which is a DISTRICT - not a
+ * distance anyone can see. What was actually asked for is "there should always
+ * be 1 or 2 within a viewable distance from where I am", and sight in a hedge
+ * maze is a corridor length, so the radius here is 60 m and the floor is one.
+ *
+ * Sampled along a walk rather than at the spawn point alone, because the
+ * complaint was that the only collectable ever encountered was the one by the
+ * portal: a gate anchored at the entrance would measure precisely the spot that
+ * was already fine. Positions rather than a simulated walk is not a shortcut -
+ * residency is a pure function of position, so re-syncing at a point is exactly
+ * what arriving there does.
+ */
+test('THE VIEWABLE-DISTANCE GATE: something to find within a corridor length, wherever you stand', async () => {
+  const VIEW = 60;
+  const world = await buildMazeWorld();
+  const pop = world.population;
+  const p = world.playerSpawn;
+
+  const samples = [];
+  for (let step = 0; step < 8; step++) {
+    const x = p.x;
+    const z = p.z + step * 100;
+    pop.sync(residencyAt(x, z, 0));
+    let near = 0;
+    for (const t of pop.tokens) {
+      const dx = t.position.x - x;
+      const dy = t.position.y - p.y;
+      const dz = t.position.z - z;
+      if (dx * dx + dy * dy + dz * dz <= VIEW * VIEW) near++;
+    }
+    samples.push({ z: Math.round(z), near });
+  }
+
+  const bare = samples.filter((s) => s.near < 1);
+  assert.equal(bare.length, 0,
+    `${bare.length} of ${samples.length} sample points had nothing within ${VIEW} m: `
+    + samples.map((s) => `z=${s.z}:${s.near}`).join(' '));
 });
 
 test('THE PATROL-GROUND GATE: no waypoint is ever in a stairwell or a puzzle doorway', async () => {

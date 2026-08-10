@@ -252,7 +252,27 @@ export class NPCManager {
      * the population - plus a wider `_separateBodies` sweep, which is O(n^2)
      * over a number that is still under fifty.
      */
-    this.maxNPCs = 44;
+    /**
+     * Raised again, 44 -> 72, for the maze's streamed population.
+     *
+     * The maze asks for one wanderer per resident district (see
+     * `WANDERER_CHANCE`), and the widest residency is 43 districts, so it wants
+     * up to ~39 characters on its own. Against a 44 ceiling that left five for
+     * everything else and, worse, made the ceiling BIND: `MazePopulation.sync`
+     * fills districts in sorted key order, which is level-major, so a budget
+     * that runs out is a budget spent on the floor below the player while the
+     * corridor they are standing in stays empty. The number had to clear the
+     * distribution, not sit inside it.
+     *
+     * Affordable for the same reason the last raise was, only more so: the LOD
+     * described above means anything past 135 m is not drawn and anything past
+     * 65 m is posed at a tenth of the frame rate, and in a hedge maze almost
+     * the whole population is beyond both at any moment. The costs that do
+     * scale are the O(n^2) `_separateBodies` sweep - 2,556 pairs at 72 against
+     * 946 at 44, both trivial - and the grounding watchdog, which round-robins
+     * one NPC per fixed step whatever the population is.
+     */
+    this.maxNPCs = 72;
     this.maxHostiles = CONFIG.npc.hostileCount;
     // Worlds only author a handful of named civilians per district. A plaza
     // needs a crowd, so the manager tops the friendly population up itself

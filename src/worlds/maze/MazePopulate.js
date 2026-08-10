@@ -261,36 +261,77 @@ export function walkPatrol(cells, level, startIdx, steps, seed) {
  *
  * Raising the global count would have fixed the density and multiplied the
  * simulated entity count by the same factor. Placing per DISTRICT instead ties
- * population to exactly the thing geometry is already tied to: three tokens in
- * every district that is streamed in, none at all in the 1,580 that are not.
- * Density near the player rises by more than an order of magnitude and the live
- * entity count stays bounded by the residency radius, not by the maze size.
+ * population to exactly the thing geometry is already tied to: a fixed number
+ * of tokens in every district that is streamed in, none at all in the 1,580
+ * that are not. Density near the player rises by more than an order of
+ * magnitude and the live entity count stays bounded by the residency radius,
+ * not by the maze size.
+ *
+ * ## Why nine, and why the count and the spread are one change
+ *
+ * Three per district was already an order of magnitude better than the global
+ * count it replaced, and it was still not enough to meet anybody: the owner
+ * reported that the only collectable ever encountered was the one by the
+ * portal. Raising the count alone would not have fixed that, because the old
+ * picker shuffled every dead end in the district and took the first three -
+ * nothing stopped all three landing in one corner, and a district whose tokens
+ * are all in its north-west quarter is empty from anywhere else in it.
+ *
+ * Nine is the count that makes the placement rule below possible: a 3x3 region
+ * grid over the district's 20x20 cells with one token drawn per region, so
+ * there is one roughly every 40 m in BOTH axes instead of three somewhere.
+ * Tripling the count and spreading it are the same edit; doing only the first
+ * would have tripled the clustering along with everything else.
  */
-export const TOKENS_PER_DISTRICT = 3;
+export const TOKENS_PER_DISTRICT = 9;
 
 /**
  * Probability that a given district holds one of the lost wanderers.
  *
  * At most ONE per district, so they never bunch: a district is 120 m square and
  * two people in it would read as a pair rather than as two separate encounters.
- * 0.3 over the ~21 districts resident at the entrance is ~6 wanderers within
- * the streamed region, against ONE before this work - and over the 43 districts
- * resident deep in the maze (a full 5x5 block plus the rings on the levels
- * either side) it is ~13, which is what `MAX_LIVE_WANDERERS` below is sized
- * against.
+ *
+ * ## Why 0.9 and not 0.3
+ *
+ * 0.3 put ~6 wanderers in the streamed region against ONE before that work, and
+ * the owner still reported never meeting anybody. The arithmetic says why: 0.3
+ * over the 25 districts resident on the player's OWN level is ~7 people spread
+ * through 25 squares of 120 m, so the nearest is typically over a hundred metres
+ * away through hedges - present in the region, absent from the corridor.
+ *
+ * The target is the owner's, stated directly: one or two within viewing
+ * distance. Sight in a hedge maze is a corridor length, call it 40-60 m, so the
+ * density that satisfies it is roughly one person per district on the level
+ * being walked. 0.9 is that, and it is also exactly the tripling asked for.
+ * Over the 43 districts resident deep in the maze it is ~39 people, which is
+ * what `MAX_LIVE_WANDERERS` and the manager's own budget are sized against
+ * below - and it is the reason both had to move rather than just this number.
  */
-export const WANDERER_CHANCE = 0.3;
+export const WANDERER_CHANCE = 0.9;
 
 /**
  * Hard ceiling on simultaneously-live wanderers, whatever residency asks for.
  *
- * `NPCManager.maxNPCs` is 44 for the whole game and a skinned character is the
- * most expensive thing in the scene, so the streamed population must not be
- * able to eat the budget on an unlucky seed. 0.3 x 43 districts is ~13 with a
- * standard deviation around 3, so 24 is roughly three sigma clear - it is a
- * safety valve, not a routine limit.
+ * A skinned character is the most expensive thing in the scene, so the streamed
+ * population must not be able to eat the manager's budget on an unlucky seed.
+ *
+ * ## Why this must never bind in normal play
+ *
+ * It is a safety valve, not a routine limit, and the difference matters more
+ * than it looks. `MazePopulation.sync` walks `MazeChunks.residentKeys()`, which
+ * is sorted numerically, and a district key is `level * 400 + dz * 20 + dx` -
+ * so the order is LEVEL-MAJOR. If this cap ever binds, the districts that got
+ * in first are the ones on the lowest resident level, which is typically the
+ * floor BELOW the player, and the player's own level is starved of exactly the
+ * people the count exists to provide. A cap that trims the far side of the
+ * neighbourhood would be fine; this one trims by district index, which is
+ * uncorrelated with distance.
+ *
+ * So it is sized clear of the distribution rather than near it: 0.9 x 43 is ~39
+ * with a standard deviation near 2, and 48 is four sigma above that. It should
+ * only ever fire if something upstream is wrong.
  */
-export const MAX_LIVE_WANDERERS = 24;
+export const MAX_LIVE_WANDERERS = 48;
 
 /**
  * True when a cell carries a vertical connector - a staircase, a lift well or
@@ -355,6 +396,24 @@ export function districtTokenCells(cells, key, exclude = null) {
  * fewer usable dead ends than that, which a district full of long corridors
  * legitimately can.
  *
+ * ## Spread, not just count
+ *
+ * This used to shuffle every dead end in the district and take the first
+ * `count`, which is uniform over CANDIDATES and therefore not uniform over
+ * GROUND: dead ends cluster wherever the carve happened to leave stubs, so a
+ * district could put all its tokens in one quarter and read as empty from the
+ * other three. With three tokens that was a nuisance; at nine it would have
+ * been the whole problem, since tripling a clustered draw just makes a bigger
+ * cluster.
+ *
+ * So the district's 20x20 cells are divided into a `cols x rows` region grid
+ * sized to `count` - 3x3 for the default nine - and at most one token is drawn
+ * from each region, in a seed-shuffled region order. That puts one roughly
+ * every 40 m in both axes, which is the spacing the owner's "one or two within
+ * viewable distance" actually asks for. Same structure as `pickDeadEndTokens`
+ * uses across a whole level, one scale down; regions with no dead end in them
+ * simply yield nothing and the shortfall is topped up from the leftovers.
+ *
  * @param {Uint8Array} cells
  * @param {number} key district index
  * @param {number} seed the run's seed
@@ -365,8 +424,52 @@ export function districtTokenCells(cells, key, exclude = null) {
 export function pickDistrictTokens(cells, key, seed, count = TOKENS_PER_DISTRICT, exclude = null) {
   const candidates = districtTokenCells(cells, key, exclude);
   if (candidates.length <= count) return candidates;
+
+  const { dx, dz } = districtCoords(key);
+  const x0 = dx * MAZE.DISTRICT;
+  const z0 = dz * MAZE.DISTRICT;
+  const { cols, rows } = regionGrid(count);
+  const regionW = MAZE.DISTRICT / cols;
+  const regionH = MAZE.DISTRICT / rows;
+
+  /* Insertion order here follows `districtTokenCells`' scan order, which is
+   * fixed for a given district - so the shuffled region order below is a
+   * function of the seed and the key, and of nothing else. */
+  const byRegion = new Map();
+  for (const idx of candidates) {
+    const c = cellCoords(idx);
+    const rx = Math.min(cols - 1, Math.floor((c.x - x0) / regionW));
+    const rz = Math.min(rows - 1, Math.floor((c.z - z0) / regionH));
+    const rkey = rz * cols + rx;
+    let bucket = byRegion.get(rkey);
+    if (!bucket) { bucket = []; byRegion.set(rkey, bucket); }
+    bucket.push(idx);
+  }
+
   const rng = mulberry32(hash32(seed, 0x70c3, key));
-  return shuffle(candidates, rng).slice(0, count);
+  const picked = [];
+  const taken = new Set();
+  for (const rkey of shuffle([...byRegion.keys()], rng)) {
+    if (picked.length >= count) break;
+    const bucket = byRegion.get(rkey);
+    const choice = bucket[Math.floor(rng() * bucket.length)];
+    picked.push(choice);
+    taken.add(choice);
+  }
+
+  /* Fewer populated regions than tokens asked for - a district whose dead ends
+   * genuinely do not reach into three of the nine squares. Top up from what is
+   * left rather than return short: the count is the owner's request and the
+   * spread is the means, so the means yields when the two cannot both hold. */
+  if (picked.length < count) {
+    for (const idx of shuffle([...candidates], rng)) {
+      if (picked.length >= count) break;
+      if (taken.has(idx)) continue;
+      picked.push(idx);
+      taken.add(idx);
+    }
+  }
+  return picked;
 }
 
 /**

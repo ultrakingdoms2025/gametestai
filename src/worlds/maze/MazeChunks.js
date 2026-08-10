@@ -12,6 +12,10 @@ import { PLATE_HALF_HEIGHT, PLATE_HALF_WIDTH } from './MazeShafts.js';
  * where to put it. See MazeMeshes.js for why that separation is what lets the
  * art change without any headless proof being re-run. */
 import { prefabFor, groupByExtentClass, isPrefab, releasePrefabs } from './MazeMeshes.js';
+/* The LOD bands, pure. One definition, shared with the headless triangle-
+ * budget test, so the bands the browser renders are the bands the suite
+ * priced. See MazeProfiles.js for the derivation. */
+import { lodFor } from './MazeProfiles.js';
 /* The draw-call seam. Static boxes no longer get an InstancedMesh per
  * (district, kind, extent class) - they are instances in one shared
  * BatchedMesh per material family, and streaming a district is addInstance /
@@ -550,6 +554,19 @@ export class MazeChunks {
     for (const key of [...want].sort((a, b) => a - b)) {
       if (!this._resident.has(key)) { this.ensure(key); changed = true; }
     }
+
+    /* The LOD pass: per DISTRICT, on the residency update, never per
+     * instance or per frame-of-geometry. A district is 120 m square against
+     * bands of 25 m and 80 m, so per-instance evaluation could only matter
+     * inside the district the player occupies - where everything is LOD0
+     * anyway. This loop is ~43 distance computations against `setLod`'s
+     * early-out, so a stationary player costs 43 comparisons and zero
+     * writes; the browser no-thrash check (triangles identical across two
+     * samples 5 s apart, standing still) is this early-out observed from
+     * the outside. */
+    for (const key of this._resident.keys()) {
+      this.batches.setLod(key, lodFor(districtLodDistance(x, y, z, key)));
+    }
     return changed;
   }
 
@@ -971,6 +988,48 @@ export class MazeChunks {
     if (within && nearBottom) rec.wantUp = false;
     else if (within && nearTop) rec.wantUp = true;
   }
+}
+
+/**
+ * How far the player stands from district `key`, for the LOD bands: the
+ * distance to the NEAREST POINT of the district's box (its 120 m XZ square,
+ * its level's hedge band in Y) - deliberately coarse, per the plan, and
+ * deliberately nearest-point rather than centre-point.
+ *
+ * Centre distance was the obvious alternative and it inverts the bands: a
+ * district is 120 m square, so its own centre sits up to ~85 m from a player
+ * standing in its corner - past LOD1_RANGE - and the district the player is
+ * INSIDE would demote itself to the far box. Nearest-point can only err the
+ * safe way: it promotes a district the moment any part of it could be within
+ * the band, so no surface within LOD0_RANGE of the eye ever renders far
+ * geometry. The price is generosity - a player at a district corner holds
+ * four districts at LOD0, and the ring districts on adjacent levels sit
+ * ~4-9 m away in Y and stay LOD0 through the floor - which is triangles
+ * spent, not detail lost, and the budget test prices exactly this rule.
+ * (Those vertical neighbours also cannot be excluded by distance alone: a
+ * player at the bottom of a shaft well looks straight up at the level above
+ * from 9 m, and box treads at 9 m are the stack of slabs the owner
+ * originally complained about.)
+ *
+ * Exported for the triangle-budget test, which must price the bands with the
+ * same ruler the residency update swaps them with.
+ *
+ * @param {number} px player, world metres
+ * @param {number} py
+ * @param {number} pz
+ * @param {number} key district key
+ * @returns {number} metres
+ */
+export function districtLodDistance(px, py, pz, key) {
+  const { dx, dz, level } = districtCoords(key);
+  const span = MAZE.DISTRICT * MAZE.CELL;
+  const x0 = dx * span;
+  const z0 = dz * span;
+  const y0 = level * MAZE.LEVEL_HEIGHT;
+  const cx = Math.min(Math.max(px, x0), x0 + span);
+  const cy = Math.min(Math.max(py, y0), y0 + MAZE.HEDGE_HEIGHT);
+  const cz = Math.min(Math.max(pz, z0), z0 + span);
+  return Math.hypot(px - cx, py - cy, pz - cz);
 }
 
 /**

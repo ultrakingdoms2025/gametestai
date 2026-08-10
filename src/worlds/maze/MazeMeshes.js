@@ -90,11 +90,12 @@ const _owned = new Set();
  * @returns {THREE.BufferGeometry} cached - callers must never dispose it
  */
 export function prefabFor({ kind, hx, hy, hz, lod = 0 }) {
-  const key = `${kind}:${extentClass(hx, hy, hz)}:${lod}`;
+  const gLod = geometryLod(kind, lod);
+  const key = `${kind}:${extentClass(hx, hy, hz)}:${gLod}`;
   const hit = _prefabs.get(key);
   if (hit) return hit;
 
-  const g = buildPrefab(kind, quantiseExtent(hx), quantiseExtent(hy), quantiseExtent(hz), lod);
+  const g = buildPrefab(kind, quantiseExtent(hx), quantiseExtent(hy), quantiseExtent(hz), gLod);
   g.name = `prefab:${key}`;
   _prefabs.set(key, g);
   _owned.add(g);
@@ -102,30 +103,26 @@ export function prefabFor({ kind, hx, hy, hz, lod = 0 }) {
 }
 
 /**
- * The kinds whose LOD0 prefab is the chamfered box of `buildChamferPrefab`.
+ * The kinds whose LOD0 prefab is the chamfered box of `buildChamferPrefab` -
+ * Task 4's full six: hedge, floor, shaftWall, gate, slideWall, footing.
  *
- * Task 4's plan names six: hedge, floor, shaftWall, gate, slideWall, footing.
- * **`hedge` and `footing` are DEFERRED to Task 7, by measurement.** With no
- * LOD swap yet, every resident instance renders LOD0, and at the worst case
- * (seed 2026, 43 districts from (1200, 18.05, 1200)) hedge and footing are
- * 19,200 instances EACH; bevelling all six measured 8.56 M triangles against
- * the 5 M budget, over a 4.13 M box baseline - the +32 tris/instance of those
- * two kinds, multiplied ~3.6x by the shadow passes, is +4.4 M on their own,
- * and no subset that keeps either fits. The four kinds kept are ~1.4 k
- * instances at the same worst case (+0.17 M, measured 4.30 M total). Task 7's
- * distance swap is the designed answer - LOD0 within 25 m is ~800 hedges, and
- * this set is where they rejoin the moment it lands.
- *
- * The AO bake (AO_KINDS below) is NOT deferred with them: a colour attribute
- * costs no triangles, so hedge and footing keep their contact darkening on
- * the plain box - which is the larger half of the visual read anyway.
+ * `hedge` and `footing` spent Task 4-6 deferred out of this set, by
+ * measurement: with no LOD swap, every resident instance rendered LOD0, and
+ * at the worst case (seed 2026, 43 districts from (1200, 18.05, 1200)) those
+ * two kinds are ~17,000 instances EACH - bevelling them measured 8.56 M
+ * triangles against the 5 M budget, +32 tris/instance multiplied ~3.6x by
+ * the shadow passes. Task 7's per-district distance swap is what made them
+ * affordable: only the districts within `LOD0_RANGE` draw this prefab now
+ * (~8-12 of 43 at the measured worst cases), and everything further draws
+ * the 12-triangle box exactly as it did during the deferral. The headless
+ * ledger of that trade lives in `scripts/tests/maze-lod.test.mjs`.
  *
  * `stair` is absent because its LOD0 is Task 2's tread carpentry, and the
  * movers `lift`/`liftDoor` are absent because a lift car's edges are read in
  * motion, at shaft-lantern light levels, through a door - the one place a
  * bevel buys nothing.
  */
-const BEVELLED_KINDS = new Set(['floor', 'shaftWall', 'gate', 'slideWall']);
+const BEVELLED_KINDS = new Set(['hedge', 'floor', 'shaftWall', 'gate', 'slideWall', 'footing']);
 
 /**
  * The kinds whose prefabs carry a baked vertex-colour AO attribute, AT EVERY
@@ -141,10 +138,32 @@ const BEVELLED_KINDS = new Set(['floor', 'shaftWall', 'gate', 'slideWall']);
  *    attribute under a vertexColors material renders BLACK in three, which is
  *    the silent failure this set exists to make impossible.
  *  - every LOD, not just LOD0, for the same reason: LOD1/2 draw with the same
- *    material. Baking the box LODs also keeps the base darkening through a
+ *    material. Baking the box LODs also keeps the base darkening through the
  *    Task 7 LOD swap, so distance changes silhouette, never brightness.
  */
-const AO_KINDS = new Set([...BEVELLED_KINDS, 'hedge', 'footing', 'stair']);
+const AO_KINDS = new Set([...BEVELLED_KINDS, 'stair']);
+
+/**
+ * Collapse a requested LOD to the coarsest one whose geometry is identical,
+ * so equivalent LODs share ONE cached object rather than two equal copies.
+ *
+ * Identity, not just equality, is the point: `MazeBatches` keys its
+ * `addGeometry` ledger on the geometry OBJECT, so `prefabFor(lod 1)` and
+ * `prefabFor(lod 2)` returning two separate-but-identical boxes would
+ * register both into every family's shared buffer and double the geometry
+ * reservations for nothing drawn. Collapsing here also means a kind with no
+ * authored near tier (tunnel, plate, candle) hands back the SAME object at
+ * every LOD, which is what lets the batch's LOD swap skip such instances by
+ * comparing ids instead of by consulting a second list of exempt kinds.
+ *
+ * Today that leaves exactly two tiers: the authored LOD0, and the plain box
+ * that serves both far bands - `lodFor`'s three bands are a contract with
+ * room for a mid tier this function does not yet distinguish.
+ */
+function geometryLod(kind, lod) {
+  if (lod === 0) return 0;
+  return (kind === 'stair' || BEVELLED_KINDS.has(kind)) ? 1 : 0;
+}
 
 /**
  * Build one prefab at world scale. Half-extents arrive already quantised, so

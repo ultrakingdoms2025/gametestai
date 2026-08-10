@@ -280,6 +280,55 @@ export function contactShade(y, hy) {
   return CONTACT_AO.dark + (1 - CONTACT_AO.dark) * eased;
 }
 
+/* ------------------------------------------------------------------ */
+/* The LOD bands                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How far a district may be before its prefabs drop to the mid band, in
+ * metres. Within this range every chamfer, nosing and bulnose renders.
+ *
+ * 25 m is the number the phase plan's own budget table was authored around,
+ * and it is not arbitrary: the detail the near prefabs spend their triangles
+ * on is a 4 cm chamfer, and 4 cm at 25 m subtends about five arc-minutes -
+ * roughly two pixels at 1080p - which is the last distance at which the edge
+ * highlight is resolvable as a highlight rather than as noise. Pushing the
+ * band out re-buys the 8.56 M-triangle world that Task 4 measured and
+ * deferred (see BEVELLED_KINDS in MazeMeshes.js); pulling it in makes the
+ * chamfer pop visible in the one place the player is close enough to watch
+ * it happen.
+ */
+export const LOD0_RANGE = 25;
+
+/**
+ * Where the mid band ends and the far band begins, in metres. Kept even
+ * though the mid and far GEOMETRY currently coincide (both are the plain
+ * box - see `lodFor`), because the band structure is the plan's contract
+ * and the first mid-tier that ever differs from the box slots in here
+ * without moving a single call site.
+ */
+export const LOD1_RANGE = 80;
+
+/**
+ * Which LOD a surface at `distance` metres renders. Pure, and the ONE
+ * definition - `MazeChunks.updateResidency` and the headless triangle-budget
+ * test both call this, so the bands the browser renders are the bands the
+ * suite priced.
+ *
+ * Evaluated per DISTRICT, never per instance: a district is 120 m square
+ * against bands of 25 m and 80 m, so per-instance evaluation could only
+ * matter inside the district the player is standing in - and there
+ * everything is LOD0 anyway. One comparison per resident district per
+ * residency update, instead of ~35,000 per frame.
+ *
+ * @param {number} distance metres from the player to the district
+ * @returns {0|1|2}
+ */
+export function lodFor(distance) {
+  if (distance <= LOD0_RANGE) return 0;
+  return distance <= LOD1_RANGE ? 1 : 2;
+}
+
 /**
  * The most distinct geometries the prefab registry may ever hold.
  *

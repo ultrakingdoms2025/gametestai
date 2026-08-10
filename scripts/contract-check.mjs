@@ -78,20 +78,27 @@ const CONTRACT = [
    * enclosure proof live here now; `cellToWorld` stayed reachable from
    * MazeColliders.js as a re-export, which is why it is still listed above. */
   { file: 'src/worlds/maze/MazeShafts.js', exports: ['shaftColliders', 'stairColliders', 'stairWellBounds', 'isEnclosureSound', 'requiredWallTop'] },
-  { file: 'src/worlds/maze/MazeChunks.js', exports: ['MazeChunks', 'buildBoxInstances', 'CHUNK_MESH_KINDS'] },
+  /* `districtLodDistance` joined in Phase 6 Task 7: the residency update and
+   * the headless triangle-budget test must measure the LOD bands with one
+   * ruler, so the ruler is exported rather than duplicated. */
+  { file: 'src/worlds/maze/MazeChunks.js', exports: ['MazeChunks', 'buildBoxInstances', 'CHUNK_MESH_KINDS', 'districtLodDistance'] },
   /* Phase 6. The geometry seam: visuals stop being literally the collider box.
    * `MazeProfiles.js` is pure arithmetic - the extent quantiser and the cache
    * bound - and `MazeMeshes.js` is the only place a maze BufferGeometry is
    * built, which is what lets `MazeChunks` carry translation and nothing else.
    * Both registered here for the same reason MazeChunks is: a renamed export
    * would otherwise surface as a blank world one browser boot later. */
-  { file: 'src/worlds/maze/MazeProfiles.js', exports: ['EXTENT_SNAP', 'EXTENT_QUANTUM', 'quantiseExtent', 'extentClass', 'PREFAB_BUDGET', 'treadProfile', 'treadOutline', 'LANDING_RATIO', 'CHAMFER', 'chamferFor', 'contactShade', 'CONTACT_AO'] },
+  /* Phase 6 Task 7 adds the LOD bands: pure numbers, one definition, shared
+   * by the residency update and the triangle-budget test. */
+  { file: 'src/worlds/maze/MazeProfiles.js', exports: ['EXTENT_SNAP', 'EXTENT_QUANTUM', 'quantiseExtent', 'extentClass', 'PREFAB_BUDGET', 'treadProfile', 'treadOutline', 'LANDING_RATIO', 'CHAMFER', 'chamferFor', 'contactShade', 'CONTACT_AO', 'LOD0_RANGE', 'LOD1_RANGE', 'lodFor'] },
   { file: 'src/worlds/maze/MazeMeshes.js', exports: ['prefabFor', 'groupByExtentClass', 'isPrefab', 'prefabCount', 'releasePrefabs', 'extentClass', 'PREFAB_BUDGET'] },
   /* Phase 6 Task 6. One BatchedMesh per material family, capacity derived
    * from the residency radius; the streamed set's draw calls stop scaling
    * with district count. Registered like MazeChunks: a renamed export here
    * strands the streaming path. */
-  { file: 'src/worlds/maze/MazeBatches.js', exports: ['MazeBatches', 'BATCH_FAMILIES', 'BATCH_PER_DISTRICT_MAX', 'RESIDENCY_RADIUS', 'worstCaseResidency', 'worstCaseInstances', 'batchCapacity', 'GEOMETRY_BUDGET'] },
+  /* Task 7: `setLod` is the per-instance geometry-id swap the residency
+   * update drives, and `submittedTriangles` the ledger the budget test sums. */
+  { file: 'src/worlds/maze/MazeBatches.js', exports: ['MazeBatches', 'BATCH_FAMILIES', 'BATCH_PER_DISTRICT_MAX', 'RESIDENCY_RADIUS', 'worstCaseResidency', 'worstCaseInstances', 'batchCapacity', 'GEOMETRY_BUDGET'], methods: ['setLod', 'submittedTriangles'] },
   /* Phase 6 Task 3. The cached material set, lifted verbatim out of
    * MazeWorld._ensureMaterials so the program-family gate can see it headlessly,
    * plus the fingerprint and the enumerated families that replaced Phase 5's

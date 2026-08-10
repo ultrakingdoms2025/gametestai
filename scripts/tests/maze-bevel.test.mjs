@@ -71,12 +71,11 @@ test('a bevelled prefab still fits its box, and its bevel is world-scaled', () =
    * a wall segment's half-extents comes out 19 cm on one axis and 2 cm on the
    * other, which reads as a mistake rather than as a bevel.
    *
-   * The plan wrote this test against `hedge`; it runs against `slideWall` -
-   * the same hedge-proportioned wall - because the hedge's own bevel is
-   * deferred to Task 7 by the triangle measurement recorded on
-   * BEVELLED_KINDS in MazeMeshes.js. Swap the kind back when it rejoins. */
-  const wide = prefabFor({ kind: 'slideWall', hx: 2.4, hy: 2.5, hz: 0.6, lod: 0 });
-  const tall = prefabFor({ kind: 'slideWall', hx: 0.6, hy: 2.5, hz: 2.4, lod: 0 });
+   * Runs against `hedge`, as the plan wrote it. Between Tasks 4 and 7 it ran
+   * against `slideWall` because the hedge's bevel was deferred to the LOD
+   * swap by measurement; Task 7 landed the swap and the hedge rejoined. */
+  const wide = prefabFor({ kind: 'hedge', hx: 2.4, hy: 2.5, hz: 0.6, lod: 0 });
+  const tall = prefabFor({ kind: 'hedge', hx: 0.6, hy: 2.5, hz: 2.4, lod: 0 });
   assert.ok(Math.abs(measuredBevel(wide) - measuredBevel(tall)) < 5e-3,
     'the bevel width depends on the descriptor extents - it is being scaled, not authored');
   assert.ok(Math.abs(measuredBevel(wide) - CHAMFER) < 5e-3,
@@ -94,8 +93,11 @@ test('a prefab carries baked contact AO on its lower edges', () => {
 test('the bevel spends triangles at LOD0 only; LOD1 and LOD2 stay the box', () => {
   /* The whole triangle argument of the phase depends on this: a 4 cm chamfer
    * is not resolvable at 30 m, so Task 7's LOD swap must have a 12-triangle
-   * box to swap TO. A bevelled LOD1 would silently spend the saving. */
-  for (const kind of ['floor', 'shaftWall', 'gate', 'slideWall']) {
+   * box to swap TO. A bevelled LOD1 would silently spend the saving - and
+   * with hedge and footing back in the set (Task 7 delivered the swap their
+   * Task 4 deferral was waiting on), the saving is now ~35,000 instances
+   * deep at the tower worst case. */
+  for (const kind of ['hedge', 'footing', 'floor', 'shaftWall', 'gate', 'slideWall']) {
     const near = prefabFor({ kind, hx: 0.6, hy: 2.5, hz: 3, lod: 0 });
     assert.ok(triCount(near) > 12 && triCount(near) <= 90,
       `${kind} LOD0 is ${triCount(near)} triangles - expected a bevelled box, not a box or a sculpture`);
@@ -103,24 +105,6 @@ test('the bevel spends triangles at LOD0 only; LOD1 and LOD2 stay the box', () =
       const far = prefabFor({ kind, hx: 0.6, hy: 2.5, hz: 3, lod });
       assert.equal(triCount(far), 12, `${kind} LOD${lod} is not the plain box`);
     }
-  }
-});
-
-test('hedge and footing stay the box at LOD0 until Task 7 - the deferral is deliberate', () => {
-  /* MEASURED, not chosen: with no LOD swap yet, every resident instance
-   * renders LOD0, and hedge+footing are 19,200 instances each at the worst
-   * case. Bevelling them measured 8.56 M triangles against the 5 M budget
-   * (box baseline 4.13 M, seed 2026, 43 districts) - no subset keeping either
-   * kind fits. The full derivation lives on BEVELLED_KINDS in MazeMeshes.js.
-   * When Task 7's distance swap lands, move both kinds back into
-   * BEVELLED_KINDS and DELETE this test - it failing on that day is the
-   * reminder, not a regression. */
-  for (const kind of ['hedge', 'footing']) {
-    const g = prefabFor({ kind, hx: 0.6, hy: 2.5, hz: 3, lod: 0 });
-    assert.equal(triCount(g), 12,
-      `${kind} LOD0 is ${triCount(g)} triangles - if this is the Task 7 re-bevel, delete this test; `
-      + 'if not, the triangle measurement on BEVELLED_KINDS needs re-taking');
-    assert.ok(g.attributes.color, `${kind} lost its contact AO along with the bevel - only the bevel was deferred`);
   }
 });
 
@@ -170,11 +154,16 @@ test('the bevelled prefabs fit the batch geometry reservations for a real world'
   /* Task 6 sized the batch buffers for 24-vertex boxes; a bevelled box is 96.
    * `addGeometry` throws at boot if a reservation is short, so this is the
    * headless version of that throw: walk one seed's whole descriptor stream,
-   * build the actual prefab for every class a family can hold, and check the
-   * fattest one against the family's per-prefab reservation and the class
-   * count against its prefab count. One seed suffices - the vocabulary of
-   * sizes saturates (see maze-prefabs.test.mjs) - and the instance-capacity
-   * side is already covered by maze-batches.test.mjs. */
+   * build the actual prefabs for every class a family can hold, and check
+   * the fattest one against the family's per-prefab reservation and the
+   * GEOMETRY count against its prefab count. Since Task 7 the count is not
+   * the class count: `MazeBatches.add` registers BOTH LOD tiers per class
+   * (near prefab and far box), so this walk registers what the batch would -
+   * distinct geometry OBJECTS across lod 0 and lod 2, which the registry's
+   * lod collapse keeps at two per class at most and one where the tiers
+   * coincide. One seed suffices - the vocabulary of sizes saturates (see
+   * maze-prefabs.test.mjs) - and the instance-capacity side is already
+   * covered by maze-batches.test.mjs. */
   const kindFamily = {};
   for (const [name, fam] of Object.entries(BATCH_FAMILIES)) {
     for (const k of fam.kinds) kindFamily[k] = name;
@@ -199,19 +188,25 @@ test('the bevelled prefabs fit the batch geometry reservations for a real world'
   }
   for (const [family, set] of classes) {
     const budget = GEOMETRY_BUDGET[family];
-    /* Distinct classes per family, then the fattest prefab among them. */
+    /* Distinct geometry OBJECTS per family across both tiers - identity, not
+     * class name, because identity is what MazeBatches keys addGeometry on. */
     const seen = new Set();
+    const geometries = new Set();
     let worstVerts = 0; let worstIndices = 0;
     for (const entry of set) {
       const [kind, cls, hx, hy, hz] = entry.split(':');
       if (seen.has(`${kind}:${cls}`)) continue;
       seen.add(`${kind}:${cls}`);
-      const g = prefabFor({ kind, hx: Number(hx), hy: Number(hy), hz: Number(hz), lod: 0 });
-      worstVerts = Math.max(worstVerts, g.attributes.position.count);
-      worstIndices = Math.max(worstIndices, g.index.count);
+      for (const lod of [0, 2]) {
+        const g = prefabFor({ kind, hx: Number(hx), hy: Number(hy), hz: Number(hz), lod });
+        geometries.add(g);
+        worstVerts = Math.max(worstVerts, g.attributes.position.count);
+        worstIndices = Math.max(worstIndices, g.index.count);
+      }
     }
-    assert.ok(seen.size <= budget.prefabs,
-      `family '${family}' can register ${seen.size} prefabs, reservation ${budget.prefabs}`);
+    assert.ok(geometries.size <= budget.prefabs,
+      `family '${family}' can register ${geometries.size} geometries across both LOD tiers, `
+      + `reservation ${budget.prefabs}`);
     assert.ok(worstVerts <= budget.verts,
       `family '${family}' holds a ${worstVerts}-vertex prefab, reservation ${budget.verts} - addGeometry will throw at boot`);
     assert.ok(worstIndices <= budget.indices,

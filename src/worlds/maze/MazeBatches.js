@@ -29,7 +29,13 @@ import { prefabFor } from './MazeMeshes.js';
  *    id through `_availableInstanceIds`. No buffer traffic, no compaction.
  *  - `setGeometryIdAt(instanceId, geometryId)` EXISTS - one integer write to
  *    repoint an instance at another resident geometry. Task 7's per-instance
- *    LOD swap can be built exactly as the plan hopes.
+ *    LOD swap is built exactly as the plan hoped - BUT the write does NOT set
+ *    `_visibilityChanged`, and with culling and sorting off (see below)
+ *    `onBeforeRender` early-outs on that flag, so a bare id write would
+ *    never reach the multi-draw list and the swap would silently not render.
+ *    `setLod` therefore raises the flag itself, once per touched batch; the
+ *    test suite pins the behaviour so a three upgrade that renames the field
+ *    fails loudly instead of freezing every LOD where it stood.
  *  - Per-instance visibility (`setVisibleAt`) and per-geometry bounds with
  *    per-instance frustum culling (`perObjectFrustumCulled`) exist; the
  *    culling walks EVERY instance on the CPU every render pass (shadow pass
@@ -38,12 +44,24 @@ import { prefabFor } from './MazeMeshes.js';
  * That last point decides two flags below. With ~50k resident box instances
  * across the families, a per-instance sphere-vs-frustum walk twice a frame is
  * milliseconds of CPU to cull geometry a modern GPU rasterises in microseconds
- * - the boxes are 12 triangles each. So `perObjectFrustumCulled` and
- * `sortObjects` are both switched OFF, which makes `onBeforeRender` early-out
- * entirely between residency changes: the multi-draw list is rebuilt only when
- * an instance is added or deleted, and a settled frame costs the CPU nothing.
- * Task 7's LOD0 prefabs (60+ triangles) may want per-instance culling back for
- * their family; that is a measurement for Task 7, not a default for this one.
+ * - the boxes are 12 triangles each. So `sortObjects` is OFF everywhere, and
+ * `perObjectFrustumCulled` is off by DEFAULT - which makes `onBeforeRender`
+ * early-out entirely between residency changes: the multi-draw list is
+ * rebuilt only when an instance is added, deleted or LOD-swapped, and a
+ * settled frame costs the CPU nothing.
+ *
+ * Task 6 left a note here that Task 7's fatter LOD0 prefabs might want
+ * per-instance culling back, as a measurement. MEASURED 2026-08-10 (seed
+ * 2026, full bevels, LOD bands live, tower worst case at (1200,18.05,1200)):
+ * culling OFF renders 5.34 M triangles at 36 fps - over the 5 M budget, and
+ * ground level's 4.31 M was over its 3.5 M too, so the plan's own let-out
+ * ("only touch it if the budget test cannot be met otherwise") applied.
+ * Culling ON for `hedge` and `footing` only: tower 3.11 M at 41-48 fps,
+ * ground worst 3.10 M - both budgets met, and fps went UP because the frame
+ * is GPU-bound. Culling ON for all seven families: 3.07 M but 43 fps at
+ * best - the CPU walk over the five small families costs more than the
+ * ~74 k triangles it saves. Hence `cull: true` on exactly the two families
+ * that are ~35 k of the ~38 k resident instances, and default-off elsewhere.
  *
  * ## The rule that makes fragmentation impossible
  *
@@ -157,13 +175,19 @@ export function batchCapacity(family) {
  * `castShadow` is per family because it is per mesh: plates and candles never
  * cast (they never did as InstancedMeshes - a candle's shadow of itself is
  * noise, and there are thousands), everything structural does.
+ *
+ * `cull` opts a family into per-instance frustum culling - a measured
+ * decision, not a default, and deliberately only on the two families that
+ * carry ~35 k of the ~38 k resident instances. See the module note for the
+ * numbers; culling the five small families measured SLOWER than leaving
+ * them unculled, because the per-pass CPU walk outweighs their triangles.
  */
 export const BATCH_FAMILIES = Object.freeze({
-  hedge: { kinds: Object.freeze(['hedge']), castShadow: true },
+  hedge: { kinds: Object.freeze(['hedge']), castShadow: true, cull: true },
   floor: { kinds: Object.freeze(['floor']), castShadow: true },
   stone: { kinds: Object.freeze(['stair', 'shaftWall']), castShadow: true },
   tunnel: { kinds: Object.freeze(['tunnel']), castShadow: true },
-  footing: { kinds: Object.freeze(['footing']), castShadow: true },
+  footing: { kinds: Object.freeze(['footing']), castShadow: true, cull: true },
   plate: { kinds: Object.freeze(['plate']), castShadow: false },
   candle: { kinds: Object.freeze(['candle']), castShadow: false },
 });
@@ -190,14 +214,20 @@ for (const [name, fam] of Object.entries(BATCH_FAMILIES)) {
  * asserted per family against a real world in `maze-bevel.test.mjs`, because
  * a reservation still sized for the 24-vertex box would make `addGeometry`
  * throw at boot on the first district streamed. `stone` keeps 192/384: the
- * Task 2 stair sweep (136/276) is still its fattest member. `hedge` and
- * `footing` draw the plain box TODAY (their bevel is deferred to Task 7's
- * LOD swap - see BEVELLED_KINDS in MazeMeshes.js for the measurement) but
- * their reservations are sized for the bevelled prefab anyway: the deferral
- * is a triangle-budget decision, not a buffer one, and a reservation that
- * shrank now would be the boot-time throw waiting for Task 7. Total reserved
- * vertex memory rises from ~9,000 to ~24,000 vertices across the seven
- * families - still under one district's hedges, so padding stays free.
+ * Task 2 stair sweep (136/276) is still its fattest member.
+ *
+ * RE-SIZED AGAIN FOR TASK 7: the LOD swap registers TWO geometries per
+ * (kind, extent class) for every kind with an authored near tier - the LOD0
+ * prefab and the plain far box - so the prefab COUNTS double for hedge,
+ * floor, stone and footing (the registry collapses LOD1 and LOD2 to one
+ * object, or they would triple - see `geometryLod` in MazeMeshes.js).
+ * `floor` is the family that actually bites: 105 measured extent classes
+ * (shaft-cut spans) x 2 tiers is 210 against the old 160 reservation, a
+ * boot-time `addGeometry` throw waiting for a long walk. Counts below are
+ * the measured class count x tiers with ~1.3-1.5x headroom; the two-tier
+ * arithmetic is asserted against a real world in `maze-bevel.test.mjs`.
+ * Total reserved vertex memory is ~45,000 vertices (~2 MB with attributes)
+ * across the seven families - still well under one resident set's hedges.
  *
  * The registry's global PREFAB_BUDGET (192) bounds what the world ACTUALLY
  * caches; these reservations may sum past it because each is padded
@@ -210,11 +240,11 @@ for (const [name, fam] of Object.entries(BATCH_FAMILIES)) {
  * consumer that sizes anything from it.
  */
 export const GEOMETRY_BUDGET = Object.freeze({
-  hedge: { prefabs: 24, verts: 96, indices: 132 },
-  floor: { prefabs: 160, verts: 96, indices: 132 },
-  stone: { prefabs: 16, verts: 192, indices: 384 },
+  hedge: { prefabs: 32, verts: 96, indices: 132 },
+  floor: { prefabs: 288, verts: 96, indices: 132 },
+  stone: { prefabs: 24, verts: 192, indices: 384 },
   tunnel: { prefabs: 16, verts: 24, indices: 36 },
-  footing: { prefabs: 24, verts: 96, indices: 132 },
+  footing: { prefabs: 32, verts: 96, indices: 132 },
   plate: { prefabs: 8, verts: 24, indices: 36 },
   candle: { prefabs: 8, verts: 24, indices: 36 },
 });
@@ -231,8 +261,16 @@ export class MazeBatches {
     this.group = group;
     /** @type {Map<string, {batch: THREE.BatchedMesh, geomIds: Map<THREE.BufferGeometry, number>, inScene: boolean}>} */
     this._families = new Map();
-    /** @type {Map<number, Array<[object, number]>>} district key -> [family record, instance id] */
+    /**
+     * @type {Map<number, Array<[object, number, number, number]>>} district
+     * key -> [family record, instance id, near geometry id, far geometry id].
+     * Both tier ids are resolved at add time so a band change is nothing but
+     * integer writes - no cache lookups on a path `updateResidency` runs for
+     * every resident district.
+     */
     this._resident = new Map();
+    /** @type {Map<number, number>} district key -> the LOD its instances draw. */
+    this._lods = new Map();
   }
 
   /**
@@ -261,18 +299,21 @@ export class MazeBatches {
     batch.name = `maze:batch:${family}`;
     batch.castShadow = fam.castShadow;
     batch.receiveShadow = true;
-    /* All three culling/sorting switches OFF - see the module note. Sorting
-     * buys nothing for opaque z-buffered boxes and costs an O(n log n) pass
-     * over every instance per frame; per-instance frustum culling costs a
-     * matrix read and a sphere transform per instance per pass to save the
-     * GPU twelve triangles each; and whole-object culling tests a bounding
-     * sphere three computes ONCE from the mostly-zero preallocated buffer and
-     * never refreshes as districts stream, so it would eventually cull a
-     * batch that is squarely on screen. With the first two off,
-     * `onBeforeRender` early-outs between residency changes and a settled
-     * frame costs the CPU nothing at all. */
+    /* Sorting and whole-object culling OFF for every family - see the module
+     * note. Sorting buys nothing for opaque z-buffered boxes and costs an
+     * O(n log n) pass over every instance per frame; and whole-object
+     * culling tests a bounding sphere three computes ONCE from the
+     * mostly-zero preallocated buffer and never refreshes as districts
+     * stream, so it would eventually cull a batch that is squarely on
+     * screen. Per-instance frustum culling is PER FAMILY and measured - on
+     * for the two instance-heavy families, where it is the difference
+     * between busting the triangle budgets and meeting them, and off for
+     * the small ones, where the per-pass CPU walk measured slower than
+     * just drawing them (numbers in the module note). A culled family
+     * rebuilds its multi-draw list every pass by construction; an unculled
+     * one still early-outs between residency changes. */
     batch.sortObjects = false;
-    batch.perObjectFrustumCulled = false;
+    batch.perObjectFrustumCulled = fam.cull === true;
     batch.frustumCulled = false;
 
     rec = { batch, geomIds: new Map(), inScene: false };
@@ -299,25 +340,108 @@ export class MazeBatches {
       const rec = this._families.get(family);
       /* The prefab is the registry's cached geometry, so object identity is a
        * stable key for "already copied into this batch". Registered on first
-       * sight, never deleted - the append-only rule the module note argues. */
-      const geo = prefabFor(d);
-      let gid = rec.geomIds.get(geo);
-      if (gid === undefined) {
-        gid = batch.addGeometry(geo);
-        rec.geomIds.set(geo, gid);
-      }
-      const id = batch.addInstance(gid);
+       * sight, never deleted - the append-only rule the module note argues.
+       * BOTH tiers register here, eagerly: a district streams in far more
+       * often than near (new keys appear at the residency rim), and resolving
+       * the other tier lazily on the first band change would put addGeometry
+       * - a buffer copy - inside `setLod`, which is meant to be integer
+       * writes and nothing else. For a kind with no authored near tier the
+       * registry hands back the SAME object for both (see `geometryLod` in
+       * MazeMeshes.js), so nothing is registered twice. */
+      const gidNear = this._geometryId(rec, prefabFor({ ...d, lod: 0 }));
+      const gidFar = this._geometryId(rec, prefabFor({ ...d, lod: 2 }));
+      const id = batch.addInstance(gidNear);
       /* TRANSLATION ONLY - the same contract buildBoxInstances carries, held
        * by the same source-level test. The extents are in the prefab. */
       _m.makeTranslation(d.cx, d.cy, d.cz);
       batch.setMatrixAt(id, _m);
-      owned.push([rec, id]);
+      owned.push([rec, id, gidNear, gidFar]);
       if (!rec.inScene) {
         this.group.add(batch);
         rec.inScene = true;
       }
     }
     this._resident.set(key, owned);
+    /* A fresh district's instances were written at the near tier; the caller
+     * follows `add` with `setLod` in the same residency update, so a far
+     * district never renders a near frame. */
+    this._lods.set(key, 0);
+  }
+
+  /** The batch geometry id for a registry prefab, registering on first sight. */
+  _geometryId(rec, geo) {
+    let gid = rec.geomIds.get(geo);
+    if (gid === undefined) {
+      gid = rec.batch.addGeometry(geo);
+      rec.geomIds.set(geo, gid);
+    }
+    return gid;
+  }
+
+  /**
+   * Point district `key`'s instances at the geometry tier for LOD `lod`.
+   *
+   * This is the whole LOD mechanism: one integer write per instance, via
+   * `setGeometryIdAt`, so a band change costs no draw calls, no allocator
+   * churn and no instance count movement - the test suite asserts the count
+   * is untouched, because remove-and-re-add is the churn path that fragments
+   * an allocator, and it is exactly what this method exists to avoid.
+   *
+   * `THREE.LOD` was the obvious alternative and the wrong one: it swaps
+   * whole Object3Ds, which would mean one scene object per hedge segment -
+   * the thing batching exists to avoid.
+   *
+   * Idempotent and cheap when nothing changed: `updateResidency` calls this
+   * for every resident district on every update, and the early-out is what
+   * keeps a stationary player's frame free of the ~35,000 writes a naive
+   * re-apply would cost (it is also what the no-thrash browser check leans
+   * on: a settled camera means settled geometry ids, verbatim).
+   */
+  setLod(key, lod) {
+    const owned = this._resident.get(key);
+    if (!owned || this._lods.get(key) === lod) return;
+    this._lods.set(key, lod);
+    const far = lod > 0;
+    for (const [rec, id, gidNear, gidFar] of owned) {
+      /* Kinds with one tier have gidNear === gidFar; skipping them keeps the
+       * touched set honest so an all-candle district raises no rebuild. */
+      if (gidNear === gidFar) continue;
+      const rb = rec.batch;
+      rb.setGeometryIdAt(id, far ? gidFar : gidNear);
+      /* three 0.185.1's setGeometryIdAt does not raise _visibilityChanged,
+       * and with culling and sorting off onBeforeRender early-outs on that
+       * flag - without this line the swap would never reach the multi-draw
+       * list and every instance would render its stream-in tier forever.
+       * A private field, knowingly: the alternative was toggling
+       * setVisibleAt(false)/(true) per instance purely for its side effect,
+       * which is the same write dressed as two. Pinned by the test suite so
+       * a three upgrade fails loudly here rather than silently freezing LODs. */
+      rb._visibilityChanged = true;
+    }
+  }
+
+  /** The LOD district `key` currently draws, or undefined when not resident. */
+  lodOf(key) {
+    return this._lods.get(key);
+  }
+
+  /**
+   * Triangles the batches would submit to ONE camera pass right now - the
+   * headless side of `renderer.info.render.triangles`, priced from the same
+   * ledger `setLod` writes. The triangle-budget test sums this at full
+   * residency instead of standing up a renderer, which is the same trick
+   * every collision gate in the repo leans on.
+   */
+  submittedTriangles() {
+    let n = 0;
+    const range = {};
+    for (const owned of this._resident.values()) {
+      for (const [rec, id] of owned) {
+        rec.batch.getGeometryRangeAt(rec.batch.getGeometryIdAt(id), range);
+        n += range.count / 3;
+      }
+    }
+    return n;
   }
 
   /**
@@ -328,6 +452,7 @@ export class MazeBatches {
   drop(key) {
     const owned = this._resident.get(key);
     if (!owned) return;
+    this._lods.delete(key);
     for (const [rec, id] of owned) rec.batch.deleteInstance(id);
     for (const rec of this._families.values()) {
       if (rec.inScene && rec.batch.instanceCount === 0) {
@@ -369,5 +494,6 @@ export class MazeBatches {
     }
     this._families.clear();
     this._resident.clear();
+    this._lods.clear();
   }
 }

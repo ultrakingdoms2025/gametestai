@@ -66,7 +66,7 @@ export default async function Home() {
       <nav className="site-nav" aria-label="Main navigation">
         <div className="nav-inner">
           <div className="nav-logo" aria-hidden="true">AETHER<span>NEXUS</span></div>
-          <div className="nav-links" aria-hidden="true">
+          <div className="nav-links">
             <a href="#worlds-belt">Worlds</a>
             <a href="#features-anchor">Features</a>
             <a href="/store">Credits</a>
@@ -164,11 +164,11 @@ export default async function Home() {
       <GatewayDescent worlds={WORLDS} lore={lore} />
 
       {/* ── Features ── */}
-      <section className="feat-section" id="features-anchor">
+      <section className="feat-section" id="features-anchor" aria-labelledby="feat-h2">
         <div className="wrap">
           <div className="feat-head">
             <div className="eyebrow">What is in it</div>
-            <h2 className="feat-h2">Everything generated in code</h2>
+            <h2 className="feat-h2" id="feat-h2">Everything generated in code</h2>
             <p className="feat-sub">
               Terrain, buildings, crowds, faces, fabric, fur, feathers and stone —
               all generated at load time. The whole game is a few hundred kilobytes
@@ -201,11 +201,11 @@ export default async function Home() {
 
       {/* ── CTA band ── */}
       <ThresholdReveal>
-        <section className="cta-band">
+        <section className="cta-band" aria-labelledby="cta-band-h2">
           <div className="cta-band-ring" aria-hidden="true" />
           <div className="wrap">
             <div className="cta-band-kicker">Get in</div>
-            <h2 className="cta-band-h2">One charge.<br />Six worlds.</h2>
+            <h2 className="cta-band-h2" id="cta-band-h2">One charge.<br />Six worlds.</h2>
             <p className="cta-band-sub">
               Access is {formatCents(ENTRY_CENTS)} for a 30-day play window on your
               account. Credits are separate and optional —{' '}

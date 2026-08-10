@@ -417,6 +417,21 @@ a { color: var(--cy); }
   outline-offset: 3px;
 }
 
+/* Visually hidden but present to assistive tech — standard clip-based
+   sr-only utility. Takes no space in flow, so it's always safe to drop
+   next to layout-sensitive siblings (e.g. the gateway panel stack). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ============================================================ sections ==== */
 
 section { padding: 84px 0; border-bottom: 1px solid var(--rule-soft); }

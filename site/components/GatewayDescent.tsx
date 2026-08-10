@@ -119,6 +119,9 @@ export default function GatewayDescent({ worlds, lore }: GatewayDescentProps) {
           watchRef={containerRef}
         />
       )}
+      <p className="sr-only">
+        Six worlds, presented as an animated descent. All world descriptions are readable below.
+      </p>
       <div ref={containerRef} className="gateway">
         {worlds.map((w, i) => (
           // Wrapper stays in both paths so the panel remains a descendant of the

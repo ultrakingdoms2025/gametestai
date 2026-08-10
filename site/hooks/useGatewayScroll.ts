@@ -92,7 +92,7 @@ export function useGatewayScroll(opts: GatewayScrollOptions): { activeIndex: num
     return () => {
       for (const trigger of triggers) trigger.kill();
     };
-  }, [count, disabled]);
+  }, [count, disabled, containerRef]);
 
   return { activeIndex };
 }

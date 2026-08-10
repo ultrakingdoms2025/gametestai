@@ -1,4 +1,4 @@
-export const LORE_ORDER = ['overall', 'station', 'medieval', 'sports', 'citadel', 'race'];
+export const LORE_ORDER = ['overall', 'station', 'medieval', 'sports', 'citadel', 'race', 'maze'];
 
 export const DEFAULT_LORE = {
   overall: {
@@ -53,6 +53,14 @@ export const DEFAULT_LORE = {
       'Aurora Rise runs up to a summit and back down to a vertical loop that every lap has to go over the top of. ' +
       'It is where drivers prove nerve, machine, and memory all at once.',
   },
+  maze: {
+    scope: 'maze',
+    title: 'The Verdant Coil',
+    sign_label: 'Keeper of the Verdant Coil',
+    body:
+      'A hedge maze that re-rolls its layout on every entry. Its districts and levels never repeat. ' +
+      'The maze that cannot be learned is the entire point.',
+  },
 };
 
 export function loreEntryForScope(scope) {
@@ -67,7 +75,7 @@ export function buildLorePersona(scope, entries = DEFAULT_LORE) {
     `You guard the histories of the worlds and answer questions about the portals, the people, and the place itself.`,
     `Overall lore: ${overall.body}`,
     `World lore: ${world.body}`,
-    'Canonical game facts: the Nexus has five worlds (Aether Station, Medieval Valley / Aldermoor Vale, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge, which carries three circuits - Vellum Ridge Circuit, Cinder Gorge and Aurora Rise); Aether Station is the hub and has four outbound portals, while each of the other four worlds has one return portal.',
+    'Canonical game facts: the Nexus has six worlds (Aether Station, Medieval Valley / Aldermoor Vale, Meridian Athletic Grounds, Sunspire Citadel, Vellum Ridge, which carries three circuits - Vellum Ridge Circuit, Cinder Gorge and Aurora Rise, and The Verdant Coil); Aether Station is the hub and has five outbound portals, while each of the other five worlds has one return portal.',
     'Keep answers short, clear, and in character.',
     'Answer the player directly first; keep any flavor to one brief clause.',
     'If asked about the lore, explain it plainly and directly instead of sounding cryptic or poetic.',

@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "AETHER NEXUS - a first-person metaverse shooter spanning three open worlds",
+  "description": "AETHER NEXUS - a first-person metaverse shooter spanning six worlds",
   "scripts": {
     "dev": "concurrently -k -n VITE,CHAT -c cyan,magenta \"vite\" \"node server/chat-server.js\"",
     "vite": "vite",

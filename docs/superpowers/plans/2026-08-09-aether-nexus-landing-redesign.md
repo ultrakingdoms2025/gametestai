@@ -748,7 +748,7 @@ git commit -m "feat(site): Station cinematic diorama scene + leak/determinism te
 
 **Files:** Modify `site/app/page.tsx`
 
-- [ ] **Step 1: Resolve lore server-side** — in the `Home` RSC, `const lore = await getLore();` and pass `worlds={WORLDS}` + `lore` into `<GatewayDescent>`, replacing the `<HomeWorldShowcase>` usage and removing the temporary adapter from Task 4. Keep everything else (hero, features, CTA band, footer) intact. Confirm `page.tsx` remains `force-dynamic`.
+- [ ] **Step 1: Resolve lore server-side and swap the showcase** — add imports `import { WORLDS } from '@/lib/worlds';` and `import { getLore } from '@/lib/lore';` (the local `const WORLDS = [...]` array is deleted in this step, so the import no longer clashes with it). In the `Home` RSC: `const lore = await getLore();`, then replace the `<HomeWorldShowcase worlds={WORLDS} />` usage with `<GatewayDescent worlds={WORLDS} lore={lore} />`, and delete the now-unused legacy local `WORLDS` array. Keep everything else (hero, features, CTA band, footer, and all auth/access/pricing logic) intact. Confirm `page.tsx` remains `force-dynamic`.
 
 - [ ] **Step 2: Manual verify** — `npm run dev`: the page now descends through the Station panel (others may be placeholder until Chunk 3), counts still correct, CTAs/pricing unchanged for signed-out vs access states. Verify no hydration warnings.
 
@@ -814,7 +814,7 @@ Each task's manual verify step: render its panel, confirm signature motion, scro
 - [ ] **Step 2: Type-check + production build** — `cd site && npx tsc --noEmit && npm run build:site-only` (clean).
 - [ ] **Step 3: Manual QA checklist** — signed-out vs access-holder CTAs correct; Stripe test-mode banner intact; every world name correct; stat bar 6·6·4·0 GB; all six dioramas render and animate; reduced-motion + no-WebGL fallbacks OK; no console errors; no horizontal scroll on mobile widths. **Stale-count sweep** (two greps, both must come back clean of marketing claims):
   - Fast phrase check: `grep -rniE "five (worlds|mounts)|four (worlds|weapons)" site/app site/components site/lib src/content/Lore.js package.json`
-  - Broad word check (review each hit — some legitimate uses of "five/four" may exist in unrelated copy): `grep -rniE "\b(five|four)\b" site/app site/components site/lib src/content/Lore.js` and confirm none are world/mount/portal counts.
+  - Broad word check (review each hit — some legitimate uses of "five/four" may exist in unrelated copy): `grep -rniE "\b(five|four|three)\b" site/app site/components site/lib src/content/Lore.js package.json` and confirm none are world/mount/portal counts (root `package.json` previously said "three worlds").
 - [ ] **Step 4: Commit + finish** — commit any final tweaks; then use @superpowers:finishing-a-development-branch to open the PR / merge decision for branch `landing-redesign`.
 
 **✅ Chunk 3 complete — full Gateway Descent shipped.**

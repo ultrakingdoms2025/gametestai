@@ -14,7 +14,7 @@ import { TOKENS_PER_DISTRICT, MAX_LIVE_WANDERERS } from './maze/MazePopulate.js'
 import { MazePopulation } from './maze/MazePopulation.js';
 import { MazeChunks, buildBoxInstances } from './maze/MazeChunks.js';
 import { groupByExtentClass } from './maze/MazeMeshes.js';
-import { buildMazeMaterials, buildMazeMaterialsAsync } from './maze/MazeMaterials.js';
+import { buildMazeMaterials, buildMazeMaterialsAsync, applyAuthoredSurfaces } from './maze/MazeMaterials.js';
 /* Authored assets (Task 8). Loaded on world BUILD, never at module scope - a
  * world nobody enters must cost nothing - and cached for the session inside
  * the module, like the materials. See MazeAssets.js. */
@@ -515,8 +515,16 @@ export class MazeWorld extends World {
      * map, and every consumer of the map falls back to the procedural
      * prefab (see MazeAssets.js). */
     const [mats, assets] = await Promise.all([
-      this._ensureMaterialsAsync(), loadMazeAssets(),
+      /* Optional-chained: headless tests build worlds with no engine, and
+       * loadMazeAssets treats an absent renderer as "skip textures". */
+      this._ensureMaterialsAsync(), loadMazeAssets(this.engine?.renderer),
     ]);
+    /* Task 9: dress the principal surfaces in whichever authored KTX2 sets
+     * actually loaded - per material, everything else keeps its procedural
+     * bake, and `?proc=1` pins the whole world procedural for the A/B. The
+     * renderer argument above is what lets KTX2Loader pick the compressed
+     * format this GPU can sample. */
+    applyAuthoredSurfaces(assets);
     const ew = cellToWorld(e.x, e.z, e.level);
 
     /* Districts stream (see this.chunks below). The forecourt does not: it is

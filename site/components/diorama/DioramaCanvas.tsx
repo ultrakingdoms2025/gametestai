@@ -1,6 +1,6 @@
 'use client';
 
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 import type * as ThreeNS from 'three';
 import type { DioramaHandle, DioramaScene, QualityTier } from './types';
 import { dprCap, pickQuality } from './quality';
@@ -29,7 +29,9 @@ interface Engine {
   renderer: ThreeNS.WebGLRenderer;
   camera: ThreeNS.PerspectiveCamera;
   quality: QualityTier;
-  built: Map<number, BuiltScene>;
+  // Keyed by entry.id (not array index): the `scenes` prop is expected to be a stable
+  // registry — same order and length across renders — but id is the durable identity.
+  built: Map<string, BuiltScene>;
 }
 
 /**
@@ -55,14 +57,24 @@ const DioramaCanvas = forwardRef<DioramaHandle, DioramaCanvasProps>(
     const onErrorRef = useRef(onError);
     onErrorRef.current = onError;
 
-    const ensureBuilt = (index: number) => {
+    // Only touches refs (never props/state directly), so an empty dep array is correct —
+    // satisfies react-hooks/exhaustive-deps for the [] hooks below that call it.
+    const ensureBuilt = useCallback((index: number) => {
       const engine = engineRef.current;
-      if (!engine || engine.built.has(index)) return;
+      if (!engine) return;
       const entry = scenesRef.current[index];
       if (!entry) return;
+      if (engine.built.has(entry.id)) return;
       const { THREE, renderer, camera, quality } = engine;
       const scene = new THREE.Scene();
       const module = entry.factory();
+      if (process.env.NODE_ENV !== 'production' && module.id !== entry.id) {
+        // Dev-only invariant: factory output must self-identify with the registry id it
+        // was built from. Log and continue — production should degrade, not crash.
+        console.error(
+          `DioramaCanvas: scene entry "${entry.id}" factory produced a module with id "${module.id}"; they must match.`,
+        );
+      }
       module.build({
         THREE,
         scene,
@@ -71,8 +83,8 @@ const DioramaCanvas = forwardRef<DioramaHandle, DioramaCanvasProps>(
         accent: new THREE.Color(entry.accent),
         quality,
       });
-      engine.built.set(index, { module, scene });
-    };
+      engine.built.set(entry.id, { module, scene });
+    }, []);
 
     useImperativeHandle(
       ref,
@@ -105,7 +117,9 @@ const DioramaCanvas = forwardRef<DioramaHandle, DioramaCanvasProps>(
         if (document.hidden || !engine) return;
         const active = activeRef.current;
         if (!active) return;
-        const built = engine.built.get(active.index);
+        const entry = scenesRef.current[active.index];
+        if (!entry) return;
+        const built = engine.built.get(entry.id);
         if (!built) return;
         built.module.update(dt, active.progress, true);
         engine.renderer.render(built.scene, engine.camera);
@@ -142,6 +156,8 @@ const DioramaCanvas = forwardRef<DioramaHandle, DioramaCanvasProps>(
         const THREE = await import('three');
         if (disposed) return;
 
+        // Quality is picked once and fixed for the session; dynamic re-tiering via a
+        // future setQuality call is deferred to the later perf task.
         const quality = pickQuality();
         let renderer: ThreeNS.WebGLRenderer;
         try {

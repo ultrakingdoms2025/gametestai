@@ -91,8 +91,15 @@ export class NPC {
     /** Latched "I am moving fast enough to steer my facing" - see `_steer`. */
     this._facingMove = false;
 
-    /** Set by NPCManager every frame; drives animation cost. */
-    this.lod = { distance: 0, ik: true, detail: true, rate: 1, visible: true };
+    /**
+     * Set by NPCManager every frame; drives animation cost.
+     *
+     * `shadow` starts true because that is how the meshes are built (see
+     * HumanoidFactory), and the manager only writes `castShadow` when this flag
+     * changes - so a false start here would leave a near character casting with
+     * the flag claiming it does not.
+     */
+    this.lod = { distance: 0, ik: true, detail: true, rate: 1, visible: true, shadow: true };
     this._animAccum = 0;
 
     // Ground following. `resolveCapsule` alone cannot keep a capsule on top of a

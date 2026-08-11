@@ -80,6 +80,60 @@ const IK_IN = 21;
 const IK_OUT = 24;
 const RENDER_IN = 125;
 const RENDER_OUT = 135;
+/**
+ * Distance past which a character stops casting a sun shadow.
+ *
+ * Characters are the dominant frame cost in the crowded worlds - 66% of draw
+ * calls at the citadel market, 46% at the medieval square - and roughly two
+ * thirds of what a character costs is its shadow pass, spent largely on people
+ * the camera cannot see: the sun's shadow camera spans +/-60 m around the
+ * player (`CONFIG.render.shadowDistance`), so it catches far more of the crowd
+ * than the view frustum does.
+ *
+ * The threshold is the one the pixels chose, not the one the counter wanted.
+ * Measured across six vantages in the two crowd worlds, with the scene held
+ * still and the shadow camera confirmed to be tracking the player, comparing
+ * each cutoff against every character casting:
+ *
+ *     cutoff   citadel draws   medieval draws   pixels changed (worst vantage)
+ *     none         1260             1137          -
+ *     50 m         1120             1045          0.00%   (max delta 2/255)
+ *     45 m         1022             1001          0.01%   (max delta 81)
+ *     40 m         1008              969          0.02%   (max delta 90)
+ *     35 m          938              969          0.13%   (max delta 103)
+ *     30 m          910              907          0.20%   (max delta 116)
+ *
+ * 45 m is the knee: it banks 19% of the citadel frame and 12% of the medieval
+ * one while the frame is, to the pixel, the frame you would have rendered
+ * anyway. Below 40 m real shadows start to go - at 35 m and closer the loss is
+ * a character's shadow falling on a market crate or a stall top, which is
+ * exactly the cue that says a figure is standing *in* the scene rather than on
+ * it. 30 m was tried first (it is worth another 112 draws at the citadel) and
+ * rejected on those pixels.
+ *
+ * As shipped, with the band's outer edge in play, the same two vantages measure
+ * 1248 -> 1108 draws at the citadel (25 casters of 39) and 1129 -> 1025 at the
+ * medieval square (17 of 41); standing in the crowd at eye height, 40 m from
+ * the citadel portal with 36 characters on screen, 1250 -> 1096. Every one of
+ * those pairs is pixel-identical to the frame with every character casting,
+ * inside the renderer's own dither noise.
+ *
+ * The band exists for the reason recorded above: a single boundary turns a
+ * stride's worth of pelvis travel into a per-frame toggle, and a shadow
+ * blinking on and off is far more visible than a pair of eye meshes doing it.
+ * The contact decal in `_updateContactShadows` still grounds everyone out to
+ * 70 m, so between this band and that range a character keeps a ground cue.
+ *
+ * 4 m of hysteresis, the same width as the detail band. Wider was tried and is
+ * not free: characters are built casting, so a crowd that spawns at range has
+ * never crossed the inner edge and holds its shadows all the way out to
+ * SHADOW_OUT - a 52 m outer edge gave back half the saving at the citadel
+ * (1152 draws against 1022 at a flat 45 m cutoff). A stride moves a pelvis well
+ * under a metre, so 4 m is already several times what the jitter needs, and 50 m
+ * measured pixel-identical to everyone casting in both worlds anyway.
+ */
+const SHADOW_IN = 45;
+const SHADOW_OUT = 49;
 
 const THEME_BY_WORLD = {
   station: 'station', medieval: 'medieval', sports: 'sports', maze: 'maze',
@@ -1344,6 +1398,19 @@ export class NPCManager {
       // together and jostling.
       lod.detail = lod.visible && (lod.detail ? d < DETAIL_OUT : d < DETAIL_IN);
       lod.ik = lod.ik ? d < IK_OUT : d < IK_IN;
+      // Distance only, never `lod.visible`: an off-screen character can still
+      // throw a shadow into shot, so the frustum test is the wrong question to
+      // ask about a caster.
+      const shadow = lod.shadow ? d < SHADOW_OUT : d < SHADOW_IN;
+      if (lod.shadow !== shadow) {
+        // Written only on the change. Every character owns two shadow-casting
+        // meshes, so re-asserting the flag each frame would be a hundred-odd
+        // pointless writes per frame across a full crowd.
+        lod.shadow = shadow;
+        const h = npc.humanoid;
+        h.mesh.castShadow = shadow;
+        if (h.hairMesh) h.hairMesh.castShadow = shadow;
+      }
       lod.rate = !lod.visible ? 0.12 : d < 16 ? 1 : d < 34 ? 0.5 : d < 65 ? 0.25 : 0.1;
       const render = npc.root.visible ? d < RENDER_OUT : d < RENDER_IN;
       if (npc.root.visible !== render && !npc.animator.sunk) npc.root.visible = render;

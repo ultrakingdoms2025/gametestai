@@ -835,6 +835,37 @@ class Harness {
     return mode ? setMazeSurfaceMode(mode) : mazeSurfaceMode();
   }
 
+  /**
+   * Audit the station's placement and collision, and hand back the report.
+   *
+   * Imported lazily rather than at the top of this file, and deliberately: the
+   * audit walks the whole scene graph and the whole collider set, so it is a
+   * few hundred lines and a fair amount of typed-array work that a review
+   * session capturing screenshots has no use for. Nothing pays for it until
+   * somebody asks.
+   *
+   * Pure-read - see the note at the top of src/dev/StationAudit.js. It may be
+   * run repeatedly against the same page and will report the same numbers, with
+   * the single exception of the escalator treads, which move and are measured
+   * as a fitted line rather than sampled for exactly that reason.
+   *
+   * @param {{ maxFindings?: number, checks?: string[], thresholds?: object }} [opts]
+   * @returns {Promise<object>} a JSON-serialisable report, or `{ error }` when
+   *   the active world is not the station.
+   */
+  async auditStation(opts = {}) {
+    const world = this.game.worldManager.active;
+    if (world?.id !== 'station') {
+      return {
+        error: `harness.auditStation() needs the station; active world is "${world?.id ?? 'none'}". Call goto('station') first.`,
+        meta: { world: world?.id ?? null },
+        checks: [],
+      };
+    }
+    const { auditStation } = await import('./StationAudit.js');
+    return auditStation(this.game, opts);
+  }
+
   /** Streaming diagnostics for the maze. Dev-only. */
   mazeStats() {
     const w = this.game.worldManager.active;

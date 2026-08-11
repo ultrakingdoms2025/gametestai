@@ -1,0 +1,164 @@
+{
+  "comment": "Every authored asset the maze may load. MazeAssets.js loads ONLY what is declared here; scripts/tests/maze-assets.test.mjs holds every entry to the licence allow-list (CC0-1.0, CC-BY-4.0 with attribution, proprietary-owned, generated) and to the batch geometry reservations. A file missing at runtime degrades to the procedural prefab or surface - see MazeAssets.js. Texture entries carry `surface` (which principal material they dress) and `slot` (map | normalMap | ormMap); albedo is sRGB-encoded in the file itself, normal/ORM are linear, and the KTX2 container records which so the loader does not guess. `bytes` is the on-disk KTX2 size, asserted by the test suite so a silently re-exported file cannot drift from its declaration.",
+  "assets": [
+    {
+      "id": "newel-finial",
+      "file": "newel-finial.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-newel-glb.mjs - procedurally authored in this repository, 2026-08-10",
+      "tris": 448,
+      "bytes": 12092
+    },
+    {
+      "id": "surf-hedge-albedo",
+      "file": "tex/hedge-albedo.ktx2",
+      "kind": "texture",
+      "surface": "hedge",
+      "slot": "map",
+      "licence": "CC0-1.0",
+      "source": "https://ambientcg.com/get?file=Moss002_2K-JPG.zip",
+      "bytes": 901348
+    },
+    {
+      "id": "surf-hedge-normal",
+      "file": "tex/hedge-normal.ktx2",
+      "kind": "texture",
+      "surface": "hedge",
+      "slot": "normalMap",
+      "licence": "CC0-1.0",
+      "source": "https://ambientcg.com/get?file=Moss002_2K-JPG.zip",
+      "bytes": 5249125
+    },
+    {
+      "id": "surf-hedge-orm",
+      "file": "tex/hedge-orm.ktx2",
+      "kind": "texture",
+      "surface": "hedge",
+      "slot": "ormMap",
+      "licence": "CC0-1.0",
+      "source": "https://ambientcg.com/get?file=Moss002_2K-JPG.zip",
+      "bytes": 782876
+    },
+    {
+      "id": "surf-floor-albedo",
+      "file": "tex/floor-albedo.ktx2",
+      "kind": "texture",
+      "surface": "floor",
+      "slot": "map",
+      "licence": "CC0-1.0",
+      "source": "https://polyhaven.com/a/dirt_floor",
+      "bytes": 833048
+    },
+    {
+      "id": "surf-floor-normal",
+      "file": "tex/floor-normal.ktx2",
+      "kind": "texture",
+      "surface": "floor",
+      "slot": "normalMap",
+      "licence": "CC0-1.0",
+      "source": "https://polyhaven.com/a/dirt_floor",
+      "bytes": 4821308
+    },
+    {
+      "id": "surf-floor-orm",
+      "file": "tex/floor-orm.ktx2",
+      "kind": "texture",
+      "surface": "floor",
+      "slot": "ormMap",
+      "licence": "CC0-1.0",
+      "source": "https://polyhaven.com/a/dirt_floor",
+      "bytes": 657001
+    },
+    {
+      "id": "surf-stair-albedo",
+      "file": "tex/stair-albedo.ktx2",
+      "kind": "texture",
+      "surface": "stair",
+      "slot": "map",
+      "licence": "CC0-1.0",
+      "source": "https://ambientcg.com/get?file=Travertine003_2K-JPG.zip",
+      "bytes": 210405
+    },
+    {
+      "id": "surf-stair-normal",
+      "file": "tex/stair-normal.ktx2",
+      "kind": "texture",
+      "surface": "stair",
+      "slot": "normalMap",
+      "licence": "CC0-1.0",
+      "source": "https://ambientcg.com/get?file=Travertine003_2K-JPG.zip",
+      "bytes": 458185
+    },
+    {
+      "id": "surf-stair-orm",
+      "file": "tex/stair-orm.ktx2",
+      "kind": "texture",
+      "surface": "stair",
+      "slot": "ormMap",
+      "licence": "CC0-1.0",
+      "source": "https://ambientcg.com/get?file=Travertine003_2K-JPG.zip",
+      "bytes": 85108
+    },
+    {
+      "id": "surf-footing-albedo",
+      "file": "tex/footing-albedo.ktx2",
+      "kind": "texture",
+      "surface": "footing",
+      "slot": "map",
+      "licence": "CC0-1.0",
+      "source": "https://polyhaven.com/a/castle_wall_slates",
+      "bytes": 251269
+    },
+    {
+      "id": "surf-footing-normal",
+      "file": "tex/footing-normal.ktx2",
+      "kind": "texture",
+      "surface": "footing",
+      "slot": "normalMap",
+      "licence": "CC0-1.0",
+      "source": "https://polyhaven.com/a/castle_wall_slates",
+      "bytes": 1314015
+    },
+    {
+      "id": "surf-footing-orm",
+      "file": "tex/footing-orm.ktx2",
+      "kind": "texture",
+      "surface": "footing",
+      "slot": "ormMap",
+      "licence": "CC0-1.0",
+      "source": "https://polyhaven.com/a/castle_wall_slates",
+      "bytes": 234184
+    },
+    {
+      "id": "surf-tunnel-albedo",
+      "file": "tex/tunnel-albedo.ktx2",
+      "kind": "texture",
+      "surface": "tunnel",
+      "slot": "map",
+      "licence": "CC0-1.0",
+      "source": "https://polyhaven.com/a/park_dirt",
+      "bytes": 248903
+    },
+    {
+      "id": "surf-tunnel-normal",
+      "file": "tex/tunnel-normal.ktx2",
+      "kind": "texture",
+      "surface": "tunnel",
+      "slot": "normalMap",
+      "licence": "CC0-1.0",
+      "source": "https://polyhaven.com/a/park_dirt",
+      "bytes": 1296392
+    },
+    {
+      "id": "surf-tunnel-orm",
+      "file": "tex/tunnel-orm.ktx2",
+      "kind": "texture",
+      "surface": "tunnel",
+      "slot": "ormMap",
+      "licence": "CC0-1.0",
+      "source": "https://polyhaven.com/a/park_dirt",
+      "bytes": 211503
+    }
+  ]
+}

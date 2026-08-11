@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "threejs-devtools-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "threejs-devtools-mcp"
+      ]
+    }
+  }
+}

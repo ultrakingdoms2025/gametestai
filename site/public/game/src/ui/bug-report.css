@@ -1,0 +1,252 @@
+/* ============================================================================
+   AETHER NEXUS — Bug Report Panel
+   z-index: 95  (above all other panels so it can always be submitted)
+   Design language: dark glass, amber accent, same tokens as quest-board.css
+   ========================================================================== */
+
+.br-root {
+  --br-cy:    var(--cy,      #52e9ff);
+  --br-amber: var(--amber,   #ffb44a);
+  --br-red:   var(--red,     #ff3d55);
+  --br-lime:  var(--lime,    #b6ff5a);
+  --br-txt:   var(--txt,     #cfe6f2);
+  --br-dim:   var(--txt-dim, #7f9db0);
+  --br-rule:  var(--rule,    rgba(82,233,255,.28));
+  --br-soft:  var(--rule-soft,rgba(120,180,210,.16));
+  --br-glass: var(--glass,   rgba(9,15,25,.52));
+  --br-hi:    var(--glass-hi,rgba(22,38,58,.42));
+  --br-disp:  var(--f-disp,'Chakra Petch','Rajdhani',sans-serif);
+  --br-ui:    var(--f-ui,  'Rajdhani','Chakra Petch',sans-serif);
+
+  position: absolute;
+  inset: 0;
+  z-index: 95;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .2s ease, visibility .2s;
+  font-family: var(--br-ui);
+  color: var(--br-txt);
+}
+
+.br-root.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* Scrim */
+.br-root::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 40%, rgba(6,14,24,.55), rgba(2,4,9,.92));
+  backdrop-filter: blur(8px) saturate(.75);
+  -webkit-backdrop-filter: blur(8px) saturate(.75);
+}
+
+/* ── Panel shell ─────────────────────────────────────────────────────── */
+.br-panel {
+  position: relative;
+  width: min(600px, 92vw);
+  background: var(--br-glass);
+  border: 1px solid var(--br-rule);
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 0 48px rgba(82,233,255,.08), 0 12px 36px rgba(0,0,0,.55);
+}
+
+/* Clip-corner accent */
+.br-panel::before {
+  content: '';
+  position: absolute;
+  top: 0; right: 0;
+  width: 0; height: 0;
+  border-top: 32px solid var(--br-amber);
+  border-left: 32px solid transparent;
+  opacity: .55;
+  z-index: 1;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────── */
+.br-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--br-rule);
+  background: var(--br-hi);
+}
+
+.br-title {
+  font-family: var(--br-disp);
+  font-size: 1.2rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--br-amber);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.br-title-key {
+  font-size: .72rem;
+  font-family: var(--br-ui);
+  color: var(--br-dim);
+  font-weight: 400;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.br-close-btn {
+  background: none;
+  border: 1px solid var(--br-rule);
+  color: var(--br-dim);
+  font-size: .95rem;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: var(--br-ui);
+  transition: color .15s, border-color .15s;
+  letter-spacing: .04em;
+}
+
+.br-close-btn:hover {
+  color: var(--br-txt);
+  border-color: var(--br-cy);
+}
+
+/* ── Context strip ───────────────────────────────────────────────────── */
+.br-context {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  border-bottom: 1px solid var(--br-soft);
+  background: rgba(8,13,22,.4);
+}
+
+.br-ctx-field {
+  padding: 10px 16px;
+  border-right: 1px solid var(--br-soft);
+}
+
+.br-ctx-field:last-child {
+  border-right: none;
+}
+
+.br-ctx-label {
+  font-size: .65rem;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--br-amber);
+  margin-bottom: 3px;
+}
+
+.br-ctx-value {
+  font-size: .85rem;
+  color: var(--br-txt);
+  font-family: var(--br-disp);
+  letter-spacing: .04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Body ────────────────────────────────────────────────────────────── */
+.br-body {
+  padding: 18px 20px;
+}
+
+.br-label {
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--br-dim);
+  margin-bottom: 8px;
+}
+
+.br-textarea {
+  width: 100%;
+  min-height: 140px;
+  background: rgba(8,14,24,.7);
+  border: 1px solid var(--br-rule);
+  border-radius: 4px;
+  color: var(--br-txt);
+  font-family: var(--br-ui);
+  font-size: .95rem;
+  line-height: 1.55;
+  padding: 12px 14px;
+  resize: vertical;
+  box-sizing: border-box;
+  outline: none;
+  transition: border-color .15s;
+}
+
+.br-textarea:focus {
+  border-color: var(--br-cy);
+}
+
+.br-textarea::placeholder {
+  color: var(--br-dim);
+  opacity: .7;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────── */
+.br-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--br-soft);
+  gap: 12px;
+}
+
+.br-status {
+  font-size: .82rem;
+  color: var(--br-dim);
+  flex: 1;
+  min-height: 1.2em;
+}
+
+.br-status.ok   { color: var(--br-lime); }
+.br-status.err  { color: var(--br-red); }
+
+.br-btn {
+  font-family: var(--br-disp);
+  font-size: .88rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  border-radius: 4px;
+  padding: 8px 24px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background .15s, border-color .15s, color .15s, opacity .15s;
+}
+
+.br-btn-submit {
+  background: var(--br-amber);
+  color: #0a0f1a;
+  border-color: var(--br-amber);
+}
+
+.br-btn-submit:hover:not(:disabled) {
+  background: #ffc86a;
+  border-color: #ffc86a;
+}
+
+.br-btn-submit:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.br-btn-cancel {
+  background: transparent;
+  color: var(--br-dim);
+  border-color: var(--br-rule);
+}
+
+.br-btn-cancel:hover {
+  color: var(--br-txt);
+  border-color: var(--br-cy);
+}

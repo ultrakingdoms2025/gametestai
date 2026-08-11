@@ -1,0 +1,371 @@
+/* ============================================================================
+   AETHER NEXUS — Quest Board
+   z-index: 88  (above RacePanel 86 so quest clicks are never swallowed)
+   Same design language as inventory.css: dark glass, clipped corners,
+   cyan / amber rules, Chakra Petch + Rajdhani type, motion on state change.
+   ========================================================================== */
+
+.qb-root {
+  --qb-cy:     var(--cy,      #52e9ff);
+  --qb-amber:  var(--amber,   #ffb44a);
+  --qb-red:    var(--red,     #ff3d55);
+  --qb-lime:   var(--lime,    #b6ff5a);
+  --qb-txt:    var(--txt,     #cfe6f2);
+  --qb-dim:    var(--txt-dim, #7f9db0);
+  --qb-rule:   var(--rule,    rgba(82,233,255,.28));
+  --qb-soft:   var(--rule-soft,rgba(120,180,210,.16));
+  --qb-glass:  var(--glass,   rgba(9,15,25,.52));
+  --qb-hi:     var(--glass-hi,rgba(22,38,58,.42));
+  --qb-disp:   var(--f-disp,'Chakra Petch','Rajdhani',sans-serif);
+  --qb-ui:     var(--f-ui,  'Rajdhani','Chakra Petch',sans-serif);
+
+  position: absolute;
+  inset: 0;
+  z-index: 88;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .22s ease, visibility .22s;
+  font-family: var(--qb-ui);
+  color: var(--qb-txt);
+  font-variant-numeric: tabular-nums;
+}
+
+.qb-root.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* Scrim */
+.qb-root::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 45%, rgba(6,14,24,.5), rgba(2,4,9,.88));
+  backdrop-filter: blur(6px) saturate(.8);
+  -webkit-backdrop-filter: blur(6px) saturate(.8);
+}
+
+body.quest-board-open .pause {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* ── Panel shell ─────────────────────────────────────────────────────── */
+.qb-panel {
+  position: relative;
+  width: min(1100px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(155deg, var(--qb-hi), var(--qb-glass)),
+    linear-gradient(180deg, rgba(4,8,14,.9), rgba(4,8,14,.94));
+  border: 1px solid var(--qb-soft);
+  box-shadow:
+    0 0 0 1px rgba(0,0,0,.5),
+    0 30px 90px rgba(0,0,0,.66),
+    inset 0 1px 0 rgba(255,255,255,.05);
+  clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 26px 100%, 0 calc(100% - 26px));
+  transform: translateY(14px) scale(.985);
+  opacity: 0;
+  transition: transform .28s cubic-bezier(.22,1,.36,1), opacity .22s ease;
+}
+
+.qb-root.open .qb-panel {
+  transform: none;
+  opacity: 1;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────── */
+.qb-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px 12px;
+  border-bottom: 1px solid var(--qb-rule);
+  flex-shrink: 0;
+}
+
+.qb-title {
+  font-family: var(--qb-disp);
+  font-size: 1.1rem;
+  letter-spacing: .14em;
+  color: var(--qb-cy);
+  text-shadow: 0 0 12px rgba(82,233,255,.5);
+  flex-shrink: 0;
+}
+
+.qb-tabs {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.qb-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--qb-dim);
+  font-family: var(--qb-disp);
+  font-size: .72rem;
+  letter-spacing: .1em;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
+}
+.qb-tab:hover {
+  color: var(--qb-txt);
+  border-color: var(--qb-soft);
+}
+.qb-tab.active {
+  color: var(--qb-cy);
+  border-color: var(--qb-rule);
+  background: rgba(82,233,255,.06);
+}
+
+.qb-close {
+  background: transparent;
+  border: 1px solid var(--qb-soft);
+  color: var(--qb-dim);
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  font-size: .9rem;
+  display: grid;
+  place-items: center;
+  transition: color .15s, border-color .15s;
+  flex-shrink: 0;
+}
+.qb-close:hover {
+  color: var(--qb-red);
+  border-color: var(--qb-red);
+}
+
+/* ── Body layout ─────────────────────────────────────────────────────── */
+.qb-body {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Quest list panel ────────────────────────────────────────────────── */
+.qb-list {
+  border-right: 1px solid var(--qb-rule);
+  overflow-y: auto;
+  padding: 8px 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--qb-rule) transparent;
+}
+
+.qb-empty {
+  color: var(--qb-dim);
+  font-size: .85rem;
+  text-align: center;
+  padding: 32px 16px;
+  letter-spacing: .04em;
+}
+
+.qb-item {
+  padding: 12px 16px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  transition: background .13s, border-color .13s;
+}
+.qb-item:hover {
+  background: var(--qb-hi);
+}
+.qb-item.selected {
+  background: rgba(82,233,255,.07);
+  border-left-color: var(--qb-cy);
+}
+
+.qb-item-title {
+  font-size: .88rem;
+  color: var(--qb-txt);
+  line-height: 1.35;
+  margin-bottom: 4px;
+}
+
+.qb-item-meta {
+  display: flex;
+  gap: 10px;
+  font-size: .76rem;
+  color: var(--qb-dim);
+  align-items: center;
+}
+
+.qb-reward { color: var(--qb-amber); }
+.qb-dur    { color: var(--qb-dim); }
+.qb-pct    { color: var(--qb-cy); margin-left: auto; }
+
+.qb-prog-bar {
+  height: 2px;
+  background: var(--qb-soft);
+  margin-top: 6px;
+  overflow: hidden;
+}
+.qb-prog-fill {
+  height: 100%;
+  background: var(--qb-cy);
+  transition: width .4s ease;
+}
+
+/* ── Detail panel ────────────────────────────────────────────────────── */
+.qb-detail {
+  overflow-y: auto;
+  padding: 20px 24px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--qb-rule) transparent;
+}
+
+.qb-detail-inner { display: flex; flex-direction: column; gap: 12px; }
+
+.qb-detail-title {
+  font-family: var(--qb-disp);
+  font-size: 1.05rem;
+  color: var(--qb-cy);
+  letter-spacing: .06em;
+  line-height: 1.3;
+}
+
+.qb-detail-line {
+  font-size: .8rem;
+  color: var(--qb-dim);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.qb-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: .84rem;
+  padding: 10px 14px;
+  background: var(--qb-hi);
+  border: 1px solid var(--qb-soft);
+}
+
+.qb-detail-meta b { color: var(--qb-amber); }
+
+.qb-time-left { color: var(--qb-red); font-weight: 600; }
+
+.qb-completed-badge {
+  background: rgba(182,255,90,.12);
+  border: 1px solid var(--qb-lime);
+  color: var(--qb-lime);
+  font-size: .72rem;
+  letter-spacing: .1em;
+  padding: 2px 10px;
+}
+
+.qb-prereqs {
+  font-size: .78rem;
+  color: var(--qb-dim);
+  padding: 6px 12px;
+  border: 1px solid var(--qb-soft);
+  background: rgba(255,180,74,.04);
+}
+
+/* ── Steps list ──────────────────────────────────────────────────────── */
+.qb-steps-header {
+  font-family: var(--qb-disp);
+  font-size: .72rem;
+  letter-spacing: .14em;
+  color: var(--qb-dim);
+  border-bottom: 1px solid var(--qb-soft);
+  padding-bottom: 6px;
+  margin-top: 4px;
+}
+
+.qb-steps { display: flex; flex-direction: column; gap: 6px; }
+
+.qb-step {
+  display: grid;
+  grid-template-columns: 20px 1fr auto auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--qb-soft);
+  background: rgba(9,15,25,.4);
+  font-size: .84rem;
+  transition: border-color .13s;
+}
+
+.qb-step.done {
+  border-color: rgba(182,255,90,.2);
+  background: rgba(182,255,90,.04);
+}
+
+.qb-step.done .qb-step-label { color: var(--qb-dim); text-decoration: line-through; }
+.qb-step.done .qb-step-icon  { color: var(--qb-lime); }
+
+.qb-step.active-step { border-color: rgba(82,233,255,.25); }
+
+.qb-step-icon  { font-size: .9rem; text-align: center; color: var(--qb-dim); }
+.qb-step-label { color: var(--qb-txt); line-height: 1.35; }
+.qb-step-count { color: var(--qb-amber); font-size: .78rem; white-space: nowrap; }
+.qb-step-type  { color: var(--qb-dim); font-size: .72rem; letter-spacing: .06em; opacity: .7; }
+
+.qb-step-done-btn {
+  background: rgba(82,233,255,.08);
+  border: 1px solid var(--qb-rule);
+  color: var(--qb-cy);
+  font-family: var(--qb-disp);
+  font-size: .68rem;
+  letter-spacing: .08em;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: background .13s;
+}
+.qb-step-done-btn:hover { background: rgba(82,233,255,.18); }
+.qb-step-done-btn:disabled { opacity: .4; cursor: default; }
+
+/* ── Accept button ───────────────────────────────────────────────────── */
+.qb-accept-btn {
+  align-self: flex-start;
+  margin-top: 8px;
+  background: rgba(82,233,255,.1);
+  border: 1px solid var(--qb-cy);
+  color: var(--qb-cy);
+  font-family: var(--qb-disp);
+  font-size: .82rem;
+  letter-spacing: .12em;
+  padding: 9px 28px;
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  transition: background .15s;
+}
+.qb-accept-btn:hover { background: rgba(82,233,255,.22); }
+.qb-accept-btn:disabled { opacity: .4; cursor: default; }
+
+/* ── Footer ──────────────────────────────────────────────────────────── */
+.qb-footer {
+  text-align: center;
+  font-size: .72rem;
+  color: var(--qb-dim);
+  letter-spacing: .08em;
+  padding: 8px;
+  border-top: 1px solid var(--qb-soft);
+  flex-shrink: 0;
+}
+
+.qb-footer kbd {
+  display: inline-block;
+  background: rgba(255,255,255,.06);
+  border: 1px solid var(--qb-soft);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-family: var(--qb-disp);
+  font-size: .7rem;
+}
+
+/* Prevent the race panel from intercepting clicks when the quest board is open */
+body.quest-board-open .rc-panel,
+body.quest-board-open .rc-board { pointer-events: none !important; }

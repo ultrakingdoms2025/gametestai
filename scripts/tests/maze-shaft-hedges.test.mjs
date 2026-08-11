@@ -422,3 +422,80 @@ test('every shaft is still a proven enclosure once its duplicate hedges are gone
   }
   assert.ok(shafts > 0, 'no shaft was checked for seal after the drop');
 });
+
+test('SEED 809, CELL (40,1): a shaft beside a shaft still proves its own enclosure', () => {
+  /* The one arrangement in a 1000-seed sweep where the drop and the stacking
+   * rule contradicted each other, pinned here because the sweep that found it
+   * costs six minutes and nobody runs it: the gates above are written against
+   * `MAZE_SEEDS`, default 3, so this geometry was invisible for the whole life
+   * of the code that produced it.
+   *
+   * TWO ADJACENT SHAFTS. (40,1) and (39,1) both carry an UP link and the face
+   * between them is closed. (40,1)'s WEST side is one it owns, so `shaftWalls`
+   * used to start its panel at HEDGE_HEIGHT and let the ordinary 5 m hedge
+   * carry the bottom - sound only while that hedge is standing. But (39,1)
+   * walls its own EAST side floor-to-top on the very same plane, so
+   * `dropHedgesInsideShafts` took (40,1)'s west hedge as a duplicate, which it
+   * genuinely was. The solid space survived; the OWNERSHIP of it did not.
+   * (39,1) is in district (1,0) and (40,1) is in district (2,0), so shaft
+   * (40,1) was left proving the lower five metres of its own west wall out of
+   * a descriptor its own district never emits - exactly the district-seam
+   * dependency `stairColliders`'s comment refuses for east and south. That is
+   * why the failure showed up twice over: once as a hedge dropped under a wall
+   * that only touches it, and once as a shaft that was no longer sealed.
+   *
+   * So the assertions below are about SELF-SUFFICIENCY, not about the hedge.
+   * The hedge is still dropped - it is still a duplicate and the stripe is
+   * still worth removing - and what changed is that (40,1) now stands its own
+   * full floor-to-top west wall, the same thing east and south have always
+   * done. A future change that restores the stack, or that stops the drop to
+   * make this pass, will fail here. */
+  const SEED = 809, X = 40, Z = 1, LEVEL = 0;
+  const D = MAZE.DISTRICT;
+  const dx = Math.floor(X / D), dz = Math.floor(Z / D);
+  const t = generateTopology(SEED);
+  const idx = cellIndex(X, Z, LEVEL);
+  const w = cellToWorld(X, Z, LEVEL);
+
+  /* The fixture's premise. If seeding or carving ever moves, this test must
+   * say so rather than quietly pass on some other cell's geometry. */
+  assert.ok(isOpen(t.cells, idx, DIR.UP), `seed ${SEED} cell (${X},${Z}) is no longer a shaft`);
+  assert.ok(!isOpen(t.cells, idx, DIR.W), `seed ${SEED} cell (${X},${Z})'s west face is no longer closed`);
+  assert.ok(isOpen(t.cells, cellIndex(X - 1, Z, LEVEL), DIR.UP),
+    `seed ${SEED} cell (${X - 1},${Z}) is no longer a shaft - the two-shafts-abreast case has moved`);
+  assert.notEqual(Math.floor((X - 1) / D), dx,
+    'the two shafts no longer straddle a district seam, which is the whole point of this fixture');
+
+  const descs = districtColliders(t.cells, dx, dz, LEVEL);
+  const planeX = w.x - HALF_CELL;
+  const on = (list) => list.filter(
+    (d) => Math.abs(d.cx - planeX) < 1e-6 && Math.abs(d.cz - w.z) < 1e-6);
+
+  const walls = on(descs.filter((d) => d.kind === 'shaftWall'));
+  assert.equal(walls.length, 1, `seed ${SEED}: expected exactly one shaft wall on (40,1)'s west plane`);
+  assert.ok(Math.abs((walls[0].cy - walls[0].hy) - w.y) < 1e-6,
+    `seed ${SEED}: (${X},${Z})'s west wall starts at ${(walls[0].cy - walls[0].hy).toFixed(2)} m and not at `
+    + 'the floor - it is stacking on a hedge that the drop deletes, so its lower five metres are a '
+    + "neighbouring district's problem");
+  assert.ok(Math.abs((walls[0].cy + walls[0].hy) - (w.y + MAZE.LEVEL_HEIGHT)) < 1e-6,
+    `seed ${SEED}: (${X},${Z})'s west wall no longer reaches LEVEL_HEIGHT`);
+
+  assert.equal(on(descs.filter((d) => d.kind === 'hedge')).length, 0,
+    `seed ${SEED}: the duplicate hedge under (${X},${Z})'s west wall came back - the drop has been `
+    + 'loosened to make the enclosure pass instead of the wall being made self-sufficient');
+
+  /* The property itself: every height the vanished hedge used to fill is solid
+   * in THIS DISTRICT'S OWN list. Asking the world would pass on the broken
+   * build too, because (39,1)'s wall was there all along. */
+  for (const f of [0.02, 0.5, 0.98]) {
+    const py = w.y + f * MAZE.HEDGE_HEIGHT;
+    assert.ok(descs.some((d) => Math.abs(d.cx - planeX) <= d.hx + 1e-6
+      && Math.abs(d.cy - py) <= d.hy + 1e-6
+      && Math.abs(d.cz - w.z) <= d.hz + 1e-6),
+    `seed ${SEED}: (${planeX}, ${py.toFixed(2)}, ${w.z}) is open air in district (${dx},${dz})'s own `
+      + 'colliders - the shaft is relying on the district next door to hold its west side shut');
+  }
+
+  assert.equal(isRegionEnclosureSound(descs, t.cells, X, Z, LEVEL), true,
+    `seed ${SEED}: the shaft at ${X},${Z} is not a proven enclosure from its own district's descriptors`);
+});

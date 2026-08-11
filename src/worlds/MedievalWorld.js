@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { World } from './World.js';
 import { InteriorKit } from './InteriorKit.js';
+import { DistanceLod, SURFACE } from './lod/DistanceLod.js';
 import { genPool } from '../workers/GenPool.js';
 /* The ground, and the layout that shapes it, live in their own module so the
  * generation worker can import them without pulling in `three` and this entire
@@ -160,6 +161,73 @@ const SKY_HEX = {
 const LEAF_ALPHA_REF = 0.42;
 const GRASS_ALPHA_REF = 0.34;
 const REED_ALPHA_REF = 0.30;
+
+/* ------------------------------------------------------------------ */
+/* Foliage LOD distances                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Distance past which a grass zone stops drawing, metres, measured to the
+ * NEAREST point of the zone's bounding sphere.
+ *
+ * This is not a taste number - it is read straight off `windPatch`, which
+ * already scales every blade's height by `1 - smoothstep(58, 86, d)` in the
+ * vertex shader. At 86m the whole tuft is exactly zero height: the triangles
+ * are still assembled, still transformed, still rasterised, and cover no
+ * pixels at all. Nearest-point rather than centre distance is what makes that
+ * provable - a 50m zone's bounding sphere has a ~35m radius, so "nearest point
+ * beyond 86m" means every blade in the zone is beyond 86m, and hiding the
+ * zone cannot change a single pixel.
+ *
+ * Measured on the seven named views: this drops 72-87% of the grass triangles
+ * that survive frustum culling (528k of 736k at castle-approach, 1.24M of
+ * 1.49M at hills-vista) for a screenshot that is byte-comparable.
+ *
+ * Dead end worth recording: the obvious move is to hide grass much earlier -
+ * 40m or so, on the grounds that a 25cm blade is sub-pixel long before that.
+ * It is not available. The 58-86m fade was itself tuned against a bald
+ * mid-ground on the castle-approach framing (see the comment on the
+ * `windPatch(grass, ...)` call), and anything below 86 undoes that tuning
+ * rather than exploiting it. If the grass is to go earlier, the fade moves
+ * first and this constant follows it.
+ */
+const GRASS_HIDE_DISTANCE = 86;
+
+/**
+ * Distance past which a tree canopy swaps to its cheap crown geometry,
+ * metres, measured to the nearest point of the bucket (or, for the backdrop
+ * rings, to the near edge of the ring).
+ *
+ * 90m rather than something braver because the swap is a tessellation change
+ * on crown lumps, and the thing that gives it away is a lump's silhouette
+ * turning from a circle into a hexagon. A 5m oak crown at 90m is ~38px tall
+ * and each of its ~30 lumps is under 10px, which is below the size at which
+ * the facet count is recoverable. Verified by A/B screenshot at hills-vista
+ * and ramparts-vista.
+ *
+ * What this distance does NOT buy: the playfield trees are bucketed by map
+ * quadrant, so a bucket's bounding sphere has a 90-143m radius and its
+ * nearest point is underfoot from almost anywhere inside the map. Those
+ * buckets therefore stay hi-detail nearly always, and that is correct rather
+ * than disappointing - a bucket contains trees at 10m and trees at 190m, and
+ * a single per-bucket decision has to serve the nearest one. Re-bucketing the
+ * trees finely enough for distance LOD to bite is a much larger change than
+ * this, and it would cost draw calls; it is not attempted here.
+ */
+const CANOPY_LO_DISTANCE = 90;
+
+/**
+ * Radius multipliers for the cheap crown lumps.
+ *
+ * A lower-tessellation polyhedron inscribed in the same sphere encloses less
+ * volume and casts a smaller silhouette, so a naive swap thins the treeline -
+ * which is exactly the "horizon quietly recedes" artefact that makes LOD
+ * visible. Both numbers are the linear ratio that restores the silhouette:
+ * an 80-face icosphere against a 20-face one, and a 20-face icosphere against
+ * an 8-face octahedron.
+ */
+const LO_BLOB_INFLATE_BROADLEAF = 1.10;
+const LO_BLOB_INFLATE_CONIFER = 1.16;
 
 /* Palettes reused for vertex tinting. */
 /* Round 5: these were seven values inside a 6% band between 0xde and 0xf4 -
@@ -892,6 +960,11 @@ export class MedievalWorld extends World {
     this._roadSegs = [];
     /** Flat [x,y,z,...] chimney positions feeding the smoke particle system. */
     this._smokeOrigins = [];
+    /**
+     * Distance LOD for the foliage. Registered during `_buildNature` and
+     * ticked from `update`, which only runs while this world is active.
+     */
+    this._lod = new DistanceLod();
     this._rnd = mulberry32(0xa1de3b00);
 
     /* ---------------------------------------------------------------- *
@@ -7339,8 +7412,17 @@ export class MedievalWorld extends World {
    * Grow one tree archetype: a recursively branching trunk plus clustered
    * foliage masses. Returned as two merged geometries so each archetype costs
    * exactly two instanced draw calls no matter how many trees there are.
+   *
+   * `lod` selects the crown tessellation. Calling this twice with the same
+   * archetype produces two crowns whose lumps sit in identical places at
+   * identical radii - the RNG draw order does not depend on `lod`, only the
+   * polyhedron each lump is built from does - which is the property that lets
+   * `DistanceLod` swap between them without the crown appearing to move.
+   *
+   * @param {object} o archetype descriptor
+   * @param {'hi'|'lo'} [lod]
    */
-  _treeArchetype(o) {
+  _treeArchetype(o, lod = 'hi') {
     const rnd = mulberry32(o.seed);
     const wood = [];
     const leaves = [];
@@ -7370,8 +7452,33 @@ export class MedievalWorld extends World {
     // Conifers stay at detail 0: a pine already carries five times the blob
     // count and its silhouette is carried by the whorls, not by the lumps.
     const DETAIL = o.kind === 'conifer' ? 0 : 1;
+    /* The cheap crown.
+     *
+     * The lump count, the lump positions and the lump radii are all held
+     * fixed and only the polyhedron changes, because the crown's silhouette
+     * and its internal light/dark structure are entirely carried by where the
+     * lumps are - drop lumps instead and the crown visibly thins, which is
+     * the one artefact a canopy LOD cannot get away with.
+     *
+     * Broadleaf goes 80 faces -> 20 (the same step conifers already took for
+     * their own reasons above). Conifers were already at 20 and are the bulk
+     * of the far-field triangle load - the three backdrop treelines alone are
+     * 808k triangles that are in frustum from every vantage in the world - so
+     * for them the step is 20 faces -> an 8-face octahedron. A dead end
+     * before that: halving the whorl count instead got a similar saving and
+     * shortened the ragged cone silhouette that the whorls exist to make, so
+     * the firs read as narrower at exactly the distance where their outline
+     * is all you can see.
+     */
+    const LO = lod === 'lo';
+    const LO_CONE = LO && o.kind === 'conifer';
+    const LO_R = LO
+      ? (o.kind === 'conifer' ? LO_BLOB_INFLATE_CONIFER : LO_BLOB_INFLATE_BROADLEAF)
+      : 1;
     const blob = (x, y, z, r, flat) => {
-      const g = new THREE.IcosahedronGeometry(r, DETAIL);
+      const g = LO_CONE
+        ? new THREE.OctahedronGeometry(r * LO_R, 0)
+        : new THREE.IcosahedronGeometry(r * LO_R, LO ? 0 : DETAIL);
       const p = g.attributes.position;
       for (let i = 0; i < p.count; i++) {
         const n = 1 + perlin2(p.getX(i) * 1.7 + o.seed + x, p.getZ(i) * 1.7 + z) * 0.42;
@@ -7647,7 +7754,17 @@ export class MedievalWorld extends World {
         depth: 2, branches: 4, spread: 0.86, droop: 1.5, rise: 0.36, shrink: 0.72,
         radShrink: 0.5, leafR: 1.35, scale: [0.9, 1.25] },
     ];
-    const built = archetypes.map((a) => ({ a, geo: this._treeArchetype(a), list: [] }));
+    /* Each archetype is grown twice: once at crown detail, once cheap. The
+     * second pass throws its trunk away - trunks are 176-468 triangles and
+     * 11% of the tree load, so a second trunk tessellation would be code and
+     * memory spent on nothing. It is the crowns that are 1.51M triangles. */
+    const built = archetypes.map((a) => {
+      const geo = this._treeArchetype(a);
+      const cheap = this._treeArchetype(a, 'lo');
+      cheap.trunk.dispose();
+      geo.leafLo = cheap.leaf;
+      return { a, geo, list: [] };
+    });
 
     /* ---- Placement ------------------------------------------------- */
     const total = 520;
@@ -7741,10 +7858,21 @@ export class MedievalWorld extends World {
           m.computeBoundingSphere();
           this.group.add(m);
         }
+        /* Nearest-point, so a bucket only demotes once every tree in it is
+         * past the threshold. Honest, and in practice almost never true for
+         * these - see CANOPY_LO_DISTANCE. Registered anyway because the cost
+         * is one sphere transform a frame and the alternative is a per-bucket
+         * exception list that stops being true the day the buckets change. */
+        if (leafMesh && b.geo.leafLo) {
+          this._lod.add(leafMesh, {
+            lo: b.geo.leafLo, swapBeyond: CANOPY_LO_DISTANCE, measure: SURFACE,
+          });
+        }
         await this._breathe();
       }
       this._owned.push(b.geo.trunk);
       if (b.geo.leaf) this._owned.push(b.geo.leaf);
+      if (b.geo.leafLo) this._owned.push(b.geo.leafLo);
     }
 
     /* ---- Layered ridge stands -------------------------------------- *
@@ -7823,6 +7951,23 @@ export class MedievalWorld extends World {
           m.computeBoundingSphere();
           this.group.add(m);
         }
+        /* These three meshes are 808k of the world's 1.51M canopy triangles
+         * and they are in frustum from every named vantage, because a ring
+         * centred on the map has a bounding sphere that covers the map. That
+         * is also why they cannot use a sphere measure: nearest-point reports
+         * zero from anywhere inside, centre distance reports ~0 as well, and
+         * neither band would ever fire. The distance that actually matters
+         * for a ring is the distance to the ring itself, so that is what is
+         * measured - horizontal only, since the camera's height above the
+         * valley is at most a few tens of metres against a 200m+ radius and
+         * ignoring it errs toward keeping the detail. */
+        const mid = (r0 + r1) * 0.5;
+        const halfW = (r1 - r0) * 0.5;
+        this._lod.add(lm, {
+          lo: pine.geo.leafLo,
+          swapBeyond: CANOPY_LO_DISTANCE,
+          measure: (cam) => Math.max(0, Math.abs(Math.hypot(cam.x, cam.z) - mid) - halfW),
+        });
         await this._breathe();
       }
     }
@@ -7989,6 +8134,11 @@ export class MedievalWorld extends World {
         mesh.instanceColor.needsUpdate = true;
         mesh.computeBoundingSphere();
         this.group.add(mesh);
+        /* The 8x8 split above exists so a zone can leave the frustum on its
+         * own; this is the other half of the same idea, and the reason the
+         * split has to survive. A zone whose nearest blade is past the height
+         * fade is drawing degenerate geometry - see GRASS_HIDE_DISTANCE. */
+        this._lod.add(mesh, { hideBeyond: GRASS_HIDE_DISTANCE, measure: SURFACE });
         await this._breathe();
       }
     }
@@ -8974,6 +9124,11 @@ export class MedievalWorld extends World {
   update(dt, elapsed) {
     this._timeU.value = elapsed;
 
+    /* Foliage distance LOD. The world manager only calls `update` on the
+     * active world, so this is already a no-op everywhere else; it is also a
+     * no-op before `_buildNature` has registered anything. */
+    this._lod.update(this.engine.camera);
+
     // Foliage translucency shades in view space, so the sun has to follow the
     // camera basis. One transform, no allocation.
     this._sunViewU.value
@@ -9011,6 +9166,9 @@ export class MedievalWorld extends World {
   }
 
   dispose() {
+    /* Before the geometries go: put every swapped mesh back on its hi
+     * geometry, so nothing is left holding a reference to a disposed one. */
+    this._lod.clear();
     for (const o of this._owned) {
       if (o && typeof o.dispose === 'function') o.dispose();
     }

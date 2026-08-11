@@ -11,9 +11,41 @@
   background: rgba(4, 8, 5, 0.82);
   backdrop-filter: blur(2px);
   font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+  /* The second half of the owner's "the mouse is not interacting with the map".
+     `#ui-root` is `pointer-events: none` (hud.css) so the HUD never eats the
+     crosshair, and only `button`, `input`, `textarea` and `.interactive` opt
+     back in. This panel inherited the `none` - which is why its TABS and FIND ME
+     are buttons and would have worked, while the CANVAS, the thing the wheel
+     zoom and the click-a-floorplan live on, was invisible to the mouse and every
+     event fell straight through to `#viewport` beneath. Falling through is not
+     merely useless either: `Input` locks the pointer on a mousedown over the
+     game canvas, so a click meant for a floorplan re-took the lock and put the
+     player back where this fix started.
+
+     Set on the whole overlay rather than only the canvas so the backdrop
+     absorbs the clicks too - a miss beside the panel must not reach the game.
+     Safe unconditionally: while closed the panel is `display: none` below. */
+  pointer-events: auto;
 }
 
 .mz-map[hidden] { display: none; }
+
+/* The map releases the pointer on open, and `main.js` answers any unlock by
+   raising the HUD's STANDBY overlay. That overlay is also z-index 60 and is
+   appended AFTER this panel (HUD is constructed later in `main.js`), so at
+   equal z-index it wins the stack - and it takes pointer events. Left alone it
+   would cover the map with "click to resume" and swallow every click the map
+   just went to the trouble of making reachable.
+
+   Hidden from the outside rather than by editing hud.css, which belongs to
+   another agent - the same rule, and the same reason, as `.inv-menu-open`,
+   `.ch-menu-open` and `.quest-board-open` already carry. Not `display: none`:
+   the overlay keeps its own `.show` state so that if the re-lock on close is
+   refused, dropping this class reveals the click-to-resume the player needs. */
+body.mz-map-open .pause {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
 
 .mz-map-panel {
   display: flex;

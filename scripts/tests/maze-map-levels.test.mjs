@@ -380,3 +380,139 @@ test('the legend names the route, now that it is drawn across four maps', async 
   const foot = src.slice(src.indexOf('mz-map-foot'), src.indexOf('</div>`'));
   assert.ok(/route/i.test(foot), 'the legend does not name the solution route');
 });
+
+/* ------------------------------------------------------------------ */
+/* The pointer                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The map's slice of MazeMap.js, cut at the method boundaries.
+ *
+ * Source gates rather than DOM tests, in the habit of the file above: the
+ * behaviour being pinned is "which call is made, in which method", and standing
+ * up a canvas, a pointer lock and a browser in Node to assert that costs more
+ * than it proves. The BROWSER is where the fix was verified working; these are
+ * here so it cannot be quietly undone.
+ */
+async function mazeMapMethod(name, until) {
+  const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  const from = src.indexOf(`\n  ${name}`);
+  assert.ok(from > 0, `${name} went missing from MazeMap`);
+  const to = src.indexOf(`\n  ${until}`, from);
+  assert.ok(to > from, `${until} went missing from MazeMap`);
+  return src.slice(from, to);
+}
+
+test('THE POINTER GATE: open() releases the pointer lock', async () => {
+  /* The owner's bug, in their words: "the mouse is locked on the game play
+   * window and not the map so as i try things it is just moving the game".
+   *
+   * While the game holds pointer lock there is no cursor and no hit-testing -
+   * every mouse event goes to the locked element as movement - so the wheel
+   * zoom, the click-a-floorplan and FIND ME are not hard to hit, they are
+   * unreachable. Binding the listeners correctly, which this file always did,
+   * is not enough on its own. */
+  const open = await mazeMapMethod('open() {', 'close() {');
+  assert.match(open, /this\.input\?\.exitLock\?\.\(\)/,
+    'open() no longer releases the pointer lock - the map is unusable by mouse again');
+  assert.match(open, /this\._hadLock = !!this\.input\?\.locked/,
+    'open() does not record whether the pointer was locked, so close() cannot know what to restore');
+  /* Order matters: the record has to be taken BEFORE the lock is dropped, or it
+   * reads back the state this method just created and is always false. */
+  assert.ok(open.indexOf('this._hadLock =') < open.indexOf('this.input?.exitLock'),
+    'the lock is dropped before it is recorded, so _hadLock is always false and close() never restores');
+});
+
+test('THE POINTER GATE: close() restores the lock, and only if there was one', async () => {
+  /* Conditional on purpose. A player who opened the map from an already
+   * unlocked state - the STANDBY overlay, or another panel up - must not be
+   * dropped into mouse-look on close; taking the pointer from under a menu
+   * they can still see is this same bug pointed the other way.
+   *
+   * The delay and the keyboard re-arm are not decoration either, and both are
+   * copied from the panels that got here first (`InventoryUI.menuFocusOut`,
+   * `CharacterMenu.close`): browsers refuse a lock request that follows an
+   * Escape-driven exit too closely, and `exitLock` gives back the KEYBOARD lock
+   * as well, so re-taking only the pointer leaves Ctrl+W live mid-run. */
+  const close = await mazeMapMethod('close() {', '_centreOnPlayer() {');
+  const guard = close.indexOf('if (hadLock)');
+  assert.ok(guard > 0, 'close() restores the lock unconditionally - it force-locks a player who never had one');
+  const restore = close.slice(guard);
+  assert.match(restore, /requestPointerLock/, 'close() never re-acquires the pointer lock');
+  assert.match(restore, /relockKeyboard/,
+    'close() takes the pointer back but not the keyboard - Ctrl+W closes the window again');
+  assert.match(restore, /setTimeout\([\s\S]*?,\s*140\)/,
+    'the re-lock lost its delay - a request this close to an Escape-driven exit is refused');
+  assert.match(restore, /catch/, 'the re-lock is unguarded; a rejection must never throw out of a close');
+});
+
+test('every way out of the map goes through close()', async () => {
+  /* There are three, and a fix written into only the map key would leave the
+   * player cursor-bound after Escape or after walking out of the maze. The
+   * cheap way to keep that true is to let `_open = false` exist in exactly one
+   * place, which is what this asserts. */
+  const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  /* Past the constructor, which has to initialise the flag and is not a close. */
+  const methods = src.slice(src.indexOf('\n  get isOpen()'));
+  const clears = methods.match(/this\._open = false/g) ?? [];
+  assert.equal(clears.length, 1,
+    `_open is cleared in ${clears.length} places - a close path that skips close() skips the pointer restore too`);
+  const body = await mazeMapMethod('close() {', '_centreOnPlayer() {');
+  assert.match(body, /this\._open = false/, 'the one place _open is cleared is not close()');
+  for (const exit of ['toggle() {', '_onKey(e) {', '_draw() {']) {
+    const from = src.indexOf(`\n  ${exit}`);
+    assert.ok(from > 0, `${exit} went missing`);
+    assert.match(src.slice(from, src.indexOf('\n  }', from)), /this\.close\(\)/,
+      `${exit} closes the map without going through close()`);
+  }
+});
+
+test('the map does not capture text, or the map key would stop closing it', async () => {
+  /* The sibling panels open through `InventoryUI.menuFocusIn`, which exits the
+   * lock AND calls `setTextCapture(true)`. This panel deliberately does not use
+   * it: `_onKey` reads `input.textCaptured` as its "a text field owns the
+   * keyboard" guard and returns before the map key is tested, so capturing text
+   * here would lock the player inside the panel they just opened. */
+  const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  /* Code only. The reasoning above is written down in `open`, and a gate that
+   * failed because the source EXPLAINS what it refuses to do would teach the
+   * next person to delete the explanation. */
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  assert.ok(!/setTextCapture/.test(code),
+    'MazeMap captures text input - _onKey then returns early and the map key can no longer close the map');
+  assert.ok(!/menuFocusIn/.test(code),
+    'MazeMap opens through menuFocusIn, which captures text and breaks the map key');
+});
+
+test('THE POINTER GATE: the panel takes mouse events at all', async () => {
+  /* The second half of the owner's report, and the half that no amount of
+   * pointer-lock work would have fixed on its own. `#ui-root` is
+   * `pointer-events: none` in hud.css so the HUD never eats the crosshair, and
+   * only `button`, `input`, `textarea` and `.interactive` opt back in. This
+   * panel inherited the `none`, so its tabs and FIND ME worked (they are
+   * buttons) while the CANVAS - which carries the wheel zoom and the
+   * click-a-floorplan - was invisible to the mouse: `elementsFromPoint` at the
+   * middle of the open map returned `#viewport`, the GAME canvas, underneath.
+   *
+   * Which is worse than dead: `Input` locks the pointer on a mousedown over the
+   * game canvas, so a click aimed at a floorplan re-took the lock and put the
+   * player straight back into the bug. */
+  const css = await readFile(path.join(root, 'src/ui/maze-map.css'), 'utf8');
+  const rule = css.slice(css.indexOf('.mz-map {'), css.indexOf('}', css.indexOf('.mz-map {')));
+  assert.match(rule, /pointer-events:\s*auto/,
+    'the map overlay does not opt back into pointer events - #ui-root is pointer-events:none, so the '
+    + 'canvas is transparent to the mouse and clicks fall through to the game canvas beneath');
+});
+
+test('the STANDBY overlay is kept off the map it would otherwise cover', async () => {
+  /* Releasing the lock makes `main.js` raise the HUD pause overlay. It is also
+   * z-index 60 and is appended after this panel, so it wins the stack and takes
+   * the clicks - the fix would cover the map with "click to resume" and change
+   * nothing the player could feel. Same rule, same reason, as the inventory,
+   * character and quest panels already carry against hud.css. */
+  const js = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  const css = await readFile(path.join(root, 'src/ui/maze-map.css'), 'utf8');
+  assert.match(js, /classList\.add\('mz-map-open'\)/, 'nothing marks the body while the map is open');
+  assert.match(js, /classList\.remove\('mz-map-open'\)/, 'the body class outlives the map and hides STANDBY for good');
+  assert.match(css, /body\.mz-map-open \.pause/, 'no rule keeps the STANDBY overlay off the open map');
+});

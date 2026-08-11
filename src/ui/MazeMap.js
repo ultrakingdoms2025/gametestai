@@ -159,6 +159,11 @@ export class MazeMap {
     this._levelOverride = OVERVIEW;
 
     this._open = false;
+    /* Whether the pointer was locked at the moment the map opened, so `close`
+     * knows whether restoring the lock is putting something back or taking
+     * something the player never had. See `open` for why the lock is dropped
+     * at all, and `close` for why the restore is conditional. */
+    this._hadLock = false;
     /* One baked floorplan per level, keyed by level, all thrown away together
      * when the seed changes. See the header: the overview needs four at once,
      * and a cache of one re-rasterised 160,000 segments on every page. */
@@ -259,6 +264,41 @@ export class MazeMap {
     if (!w || this._open) return;
     this._open = true;
     this.el.hidden = false;
+
+    /* Give the pointer back, or none of this panel can be used.
+     *
+     * ── The bug this exists for (owner's report) ──────────────────────────
+     *
+     * "when i have map open i can not scroll wheel to zoom or use mouse to
+     * select a map or find me, the mouse is locked on the game play window and
+     * not the map so as i try things it is just moving the game".
+     *
+     * Exactly right, and it is not a listener problem: the handlers below are
+     * bound to the canvas and to the buttons and always were. While the game
+     * holds POINTER LOCK there is no cursor and no hit-testing at all - every
+     * mouse event is delivered to the locked element as `movementX/Y`, so the
+     * wheel, the floorplan click and FIND ME are not merely hard to hit, they
+     * are unreachable. The map was the only panel in `src/ui` that released
+     * the lock on open, which is why it was the only one that felt broken.
+     *
+     * `exitLock` rather than `document.exitPointerLock` directly: it also
+     * hands back the keyboard lock, which is the pair `relockKeyboard` puts
+     * back on close - see `Input`.
+     *
+     * Deliberately NOT `menuFocusIn` (InventoryUI), which the sibling panels
+     * use. That helper also calls `setTextCapture(true)`, and this panel reads
+     * `input.textCaptured` in `_onKey` as its "a text field owns the keyboard"
+     * guard - so capturing text here would make the map key stop CLOSING the
+     * map, locking the player inside the panel they just opened. */
+    this._hadLock = !!this.input?.locked;
+    /* Before the lock goes, not after: unlocking makes `main.js` raise the
+     * STANDBY overlay, and this class is what keeps it off the map (see
+     * `maze-map.css`, and the identical rules the inventory, character and
+     * quest panels carry). A frame's gap here is a frame of STANDBY drawn on
+     * top of the map. */
+    document.body.classList.add('mz-map-open');
+    this.input?.exitLock?.();
+
     /* All four floors, whole. The overview opens FITTED rather than at
      * junction scale: it is a plan of the building, and the question it
      * answers - which floor connects to which, and where - is answered by the
@@ -287,11 +327,51 @@ export class MazeMap {
     this.bus?.emit('ui:modal', { id: 'maze-map', open: true });
   }
 
+  /**
+   * Every way out of the map comes through here.
+   *
+   * There are four - the map key via `toggle`, Escape in `_onKey`, and `_draw`
+   * when the player has left the maze with the panel still up - and a restore
+   * written into any one of them would leave the player cursor-bound on the
+   * others. So the restore lives here and nowhere else; `_open` is only ever
+   * cleared on this line.
+   */
   close() {
     if (!this._open) return;
     this._open = false;
     this.el.hidden = true;
     if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
+    document.body.classList.remove('mz-map-open');
+    /* Wheel ticks spent zooming the map are the map's, not the loadout's.
+     * `Input` accumulates every wheel event on `window` regardless of who
+     * handled it, and `Loadout` drains that accumulator to switch weapons - so
+     * without this a zoom from 1x to 16x is banked and cashed in as a burst of
+     * weapon switches the moment the map closes and gameplay resumes. */
+    this.input?.consumeWheel?.();
+
+    const hadLock = this._hadLock;
+    this._hadLock = false;
+    /* Only if there was a lock to put back. A player who opened the map from
+     * an unlocked state - the STANDBY overlay, or another panel already up -
+     * did not ask to be dropped into mouse-look on close, and grabbing the
+     * pointer out from under a menu they can still see is the same bug this
+     * commit is fixing, pointed the other way. */
+    if (hadLock) {
+      /* Delayed, and through `relockKeyboard` first, for the reasons
+       * `InventoryUI.menuFocusOut` and `CharacterMenu.close` both record:
+       * browsers refuse a lock request that follows an Escape-driven exit too
+       * closely, and `exitLock` released the KEYBOARD lock as well as the
+       * pointer - re-taking only the pointer leaves Ctrl+W live again. */
+      setTimeout(() => {
+        try {
+          this.input?.relockKeyboard?.();
+          const p = this.input?.canvas?.requestPointerLock?.();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        } catch {
+          /* the STANDBY overlay is the fallback; never throw out of a close */
+        }
+      }, 140);
+    }
     this.bus?.emit('ui:modal', { id: 'maze-map', open: false });
   }
 
@@ -1007,6 +1087,10 @@ export class MazeMap {
     window.removeEventListener('keydown', this._onKey, true);
     window.removeEventListener('pointermove', this._onMove);
     window.removeEventListener('pointerup', this._onUp);
+    /* Torn down with the map still open. Deliberately not `close()` - there is
+     * nothing left to hand a pointer lock back to - but the class must go, or a
+     * body class outliving its panel hides the STANDBY overlay for good. */
+    document.body.classList.remove('mz-map-open');
     this.el.remove();
     this._bakes.clear();
     this._bakeSeed = null;

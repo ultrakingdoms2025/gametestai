@@ -569,6 +569,14 @@ export class CharacterAssets {
     this._mat = new Map();
     /** @type {Map<string, THREE.BufferGeometry>} */
     this.geoCache = new Map();
+    /**
+     * Live holders per `geoCache` key, for the entries that are acquired and
+     * released (see `acquireGeometry`). Keys absent from this map are session
+     * geometry - the contact disc, the weapon shapes - which is a small closed
+     * set and is freed only by `dispose()`.
+     * @type {Map<string, number>}
+     */
+    this._geoRefs = new Map();
   }
 
   _t(key, make) {
@@ -1187,6 +1195,74 @@ export class CharacterAssets {
     return m;
   }
 
+  /**
+   * Take out a hold on a cached geometry, building it on first ask.
+   *
+   * Why a hold rather than a plain memo: `geoCache` is keyed on the appearance
+   * combination, so two characters who happen to roll the same body, outfit,
+   * proportions and face legitimately *draw the same buffer*. That is the whole
+   * point of the cache and it is why a character must never dispose its own
+   * geometry - the naive fix frees a buffer other live characters are still
+   * rendering, and they vanish or garble.
+   *
+   * The old contract said the geometry was "freed by CharacterAssets" and it
+   * was: at teardown, and only then. Within a session every world activation
+   * deals a fresh cast, mints new keys and never gives any back, so the cache
+   * grew without bound across world swaps (807 -> 1177 geometries over ten
+   * entries; 279 bodies and 111 hair shells alive and unreachable).
+   *
+   * Reference counting is the strategy because this code can support it
+   * exactly: there is one acquire site (`HumanoidFactory.create`, plus the
+   * player's hair swap) and one release site (`Humanoid.dispose`), and a
+   * character's held keys are recorded on the character itself. A bounded LRU
+   * would still need this liveness information to know what it may evict, and
+   * purging at world teardown would only be correct because of the same
+   * information; neither buys anything over counting the holders directly.
+   *
+   * Failure is asymmetric and lands on the safe side: a character that is
+   * dropped without `dispose()` leaks its entry (as today) rather than freeing
+   * something live.
+   *
+   * @param {string} key
+   * @param {() => THREE.BufferGeometry|null} make
+   * @returns {THREE.BufferGeometry|null} null when the style has no geometry
+   *   (bald); nothing is cached and nothing is held in that case.
+   */
+  acquireGeometry(key, make) {
+    let g = this.geoCache.get(key);
+    if (!g) {
+      g = make();
+      if (!g) return null;
+      this.geoCache.set(key, g);
+    }
+    this._geoRefs.set(key, (this._geoRefs.get(key) ?? 0) + 1);
+    return g;
+  }
+
+  /**
+   * Give back one hold. The entry is disposed and evicted only when the last
+   * holder lets go, so a geometry still attached to a live mesh is never freed.
+   *
+   * Releasing a key that was never acquired is a no-op: the untracked session
+   * geometry (contact disc, weapons) must not be freed by a character's death.
+   *
+   * @param {string} key
+   * @returns {boolean} true when this call disposed the entry
+   */
+  releaseGeometry(key) {
+    const n = this._geoRefs.get(key);
+    if (n === undefined) return false;
+    if (n > 1) {
+      this._geoRefs.set(key, n - 1);
+      return false;
+    }
+    this._geoRefs.delete(key);
+    const g = this.geoCache.get(key);
+    this.geoCache.delete(key);
+    g?.dispose();
+    return true;
+  }
+
   dispose() {
     for (const t of this._tex.values()) t.dispose();
     for (const m of this._mat.values()) m.dispose();
@@ -1194,6 +1270,7 @@ export class CharacterAssets {
     this._tex.clear();
     this._mat.clear();
     this.geoCache.clear();
+    this._geoRefs.clear();
   }
 }
 
@@ -4468,9 +4545,41 @@ export class Humanoid {
     }
   }
 
+  /**
+   * Exchange one held geometry key for another, keeping the release list exact.
+   *
+   * Only the player uses this, to swap the hair shell without rebuilding the
+   * body. The contract is that `newKey` has *already* been acquired by the
+   * caller; this balances that acquire by giving back `oldKey`. Acquiring
+   * before releasing is what makes re-selecting the style you are already
+   * wearing safe - the count goes 1 -> 2 -> 1 and never touches zero.
+   *
+   * @param {string|null} oldKey @param {string|null} newKey
+   */
+  replaceHeldGeometry(oldKey, newKey) {
+    if (newKey && newKey !== oldKey) this.geoKeys?.push(newKey);
+    if (!oldKey) return;
+    if (oldKey !== newKey) {
+      const i = this.geoKeys?.indexOf(oldKey) ?? -1;
+      if (i >= 0) this.geoKeys.splice(i, 1);
+    }
+    this.assets?.releaseGeometry(oldKey);
+  }
+
   dispose() {
+    // Idempotent: a double dispose would hand back holds this character does
+    // not have, and free a body another live character is still drawing.
+    if (this._disposed) return;
+    this._disposed = true;
     this.skeleton.dispose();
-    // Geometry and materials are shared through CharacterAssets and freed there.
+    // Materials are shared through CharacterAssets and freed there - they are
+    // keyed on colour, a small closed set. Geometry is keyed on the appearance
+    // combination, which is not closed, so it is held and given back instead
+    // (see CharacterAssets.acquireGeometry).
+    if (this.assets && this.geoKeys) {
+      for (const key of this.geoKeys) this.assets.releaseGeometry(key);
+      this.geoKeys.length = 0;
+    }
     this.root.removeFromParent();
   }
 }
@@ -4512,34 +4621,38 @@ export class HumanoidFactory {
    * @param {object} FA face archetype
    * @param {{theme:string, variant:string}|null} [bottom] when the legs come
    *   from a different outfit to the torso
+   * @param {string[]} held keys this character will hand back on dispose
    */
-  _bodyGeometry(P, theme, variant, FA, bottom = null) {
+  _bodyGeometry(P, theme, variant, FA, bottom, held) {
     // The cache is keyed on both halves. Without the bottom in the key a
     // tunic-over-tracksuit would be served whatever tunic combination happened
     // to be built first, and every later pairing would silently be wrong.
     const b = bottom ? `|${bottom.theme}.${bottom.variant}` : '';
     const key = `body|${theme}|${variant}${b}|${P.key}|f${FA.id}`;
-    let geo = this.assets.geoCache.get(key);
-    if (!geo) {
+    return this._shared(key, () => {
       const parts = [];
       buildBody(P, parts, FA);
       buildOutfit(P, theme, variant, parts, bottom);
       const spec = this._spec(P);
       const boneIndex = new Map(spec.map((d, i) => [d.name, i]));
-      geo = mergeParts(parts, boneIndex, spec);
-      this.assets.geoCache.set(key, geo);
-    }
-    return geo;
+      return mergeParts(parts, boneIndex, spec);
+    }, held);
   }
 
-  _shared(key, make) {
-    let g = this.assets.geoCache.get(key);
-    if (!g) {
-      g = make();
-      // A style can legitimately have no geometry (bald). Caching the null would
-      // put a non-disposable entry in a map that dispose() walks blindly.
-      if (g) this.assets.geoCache.set(key, g);
-    }
+  /**
+   * Acquire a cached geometry and record the hold on the character being built.
+   *
+   * `held` is the character's key list; every key that goes in here comes back
+   * out in `Humanoid.dispose`, which is what keeps the cache from growing
+   * across world swaps. A style with no geometry (bald) yields null, is not
+   * cached, and is not held.
+   *
+   * @param {string} key @param {() => THREE.BufferGeometry|null} make
+   * @param {string[]} held
+   */
+  _shared(key, make, held) {
+    const g = this.assets.acquireGeometry(key, make);
+    if (g) held.push(key);
     return g;
   }
 
@@ -4575,7 +4688,10 @@ export class HumanoidFactory {
     const legsSpec = params.legs && (params.legs.theme !== theme || params.legs.variant !== variant)
       ? { theme: params.legs.theme, variant: params.legs.variant }
       : null;
-    const geo = this._bodyGeometry(P, theme, variant, FA, legsSpec);
+    /** Every cached geometry this character takes a hold on, in acquire order.
+     *  Handed straight to the Humanoid, which gives them all back on dispose. */
+    const held = [];
+    const geo = this._bodyGeometry(P, theme, variant, FA, legsSpec, held);
 
     const skinTone = params.skinTone ?? SKIN_TONES[(rng() * SKIN_TONES.length) | 0];
     const hairColor = params.hairColor ?? pickHairColor(skinTone, rng);
@@ -4633,9 +4749,10 @@ export class HumanoidFactory {
 
     // --- hair and brows ---------------------------------------------
     let hairMesh = null;
-    const hairGeo = this._shared(`hair|${hairStyle}|${P.key}`, () =>
+    const hairKey = `hair|${hairStyle}|${P.key}`;
+    const hairGeo = this._shared(hairKey, () =>
       buildHairGeometry(P, hairStyle, (seed % 9973) + 7)
-    );
+    , held);
     if (hairGeo) {
       hairMesh = new THREE.Mesh(hairGeo, A.hair(hairColor, rim));
       hairMesh.castShadow = true;
@@ -4660,7 +4777,7 @@ export class HumanoidFactory {
     if (headgear && headgear !== 'none') {
       const hgGeo = this._shared(`headgear|${headgear}|${P.key}`, () =>
         buildHeadgearGeometry(P, headgear, (seed % 9973) + 31)
-      );
+      , held);
       if (hgGeo) {
         const soft = headgear === 'hood' || headgear === 'turban' || headgear === 'band';
         const hgMat = materials[soft ? SLOT.SECONDARY : SLOT.LEATHER] ?? materials[SLOT.PRIMARY];
@@ -4690,7 +4807,7 @@ export class HumanoidFactory {
     // Eyeball radius up from 13.9 to 14.4 mm. The orbital recess in buildHead is
     // 2 mm shallower this pass, so the sclera equator now clears the socket
     // instead of sitting at the bottom of a crater with only its cornea lit.
-    const scleraGeo = this._shared('eye.sclera', () => new THREE.SphereGeometry(0.0144, 16, 12));
+    const scleraGeo = this._shared('eye.sclera', () => new THREE.SphereGeometry(0.0144, 16, 12), held);
     // A human iris is ~12 mm across on a ~24 mm eyeball: half the visible
     // aperture. Anything smaller reads as a doll's painted-on eye. Widened to
     // 0.70 rad of arc as well, because what a player registers at 2.5 m is the
@@ -4712,7 +4829,7 @@ export class HumanoidFactory {
       }
       uv.needsUpdate = true;
       return g;
-    });
+    }, held);
     // The eyelids draw with the skin material, which reads vertex colours for
     // the face cavity map, so they need a colour attribute or they would render
     // black. That attribute is also the cheapest lash line available: darken
@@ -4790,10 +4907,10 @@ export class HumanoidFactory {
     // through the lid where the two surfaces overlap at the top of the limbus.
     const lidUpGeo = this._shared('eye.lidUp', () =>
       lidTint(new THREE.SphereGeometry(0.0159, 14, 8, 0, Math.PI * 2, 0, 1.08), 1)
-    );
+    , held);
     const lidLowGeo = this._shared('eye.lidLow', () =>
       lidTint(new THREE.SphereGeometry(0.0159, 14, 6, 0, Math.PI * 2, Math.PI - 1.20, 1.20), -1)
-    );
+    , held);
     const skinMat = materials[SLOT.SKIN];
     const eyes = [];
     // Eye seating is expressed in skull-frame units, not absolute metres, so
@@ -4875,6 +4992,10 @@ export class HumanoidFactory {
       face: FA,
       seed,
       _detail: true,
+      // The cache these geometries came from, and the keys to give back to it.
+      assets: this.assets,
+      geoKeys: held,
+      hairKey: hairGeo ? hairKey : null,
     });
   }
 

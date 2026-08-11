@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "threejs-devtools-mcp": {
+      "command": "npx",
+      "args": ["-y", "threejs-devtools-mcp"]
+    },
+    "threejs-devtools": {
+      "command": "npx",
+      "args": ["-y", "@dmitriy-golub/threejs-devtools-mcp"]
+    },
+    "shaders": {
+      "type": "http",
+      "url": "https://shaders.com/mcp"
+    }
+  }
+}

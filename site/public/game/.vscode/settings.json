@@ -1,0 +1,15 @@
+{
+  "chat.mcp.serverSampling": {
+    "gametestai/.vscode/mcp.json: glsl-docs": {
+      "allowedModels": [
+        "copilot/auto",
+        "copilotcli/auto",
+        "agent-host-copilotcli:auto",
+        "agent-host-copilotcli:claude-fable-5",
+        "copilot/claude-haiku-4.5",
+        "copilot/claude-opus-4.7",
+        "copilot/claude-opus-4.8"
+      ]
+    }
+  }
+}

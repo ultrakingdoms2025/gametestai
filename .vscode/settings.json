@@ -11,5 +11,10 @@
         "copilot/claude-opus-4.8"
       ]
     }
-  }
+  },
+  "claudeCode.allowDangerouslySkipPermissions": true,
+  "claudeCode.disableLoginPrompt": true,
+  "claudeCode.hideOnboarding": true,
+  "claudeCode.initialPermissionMode": "bypassPermissions",
+  "claudeCode.preferredLocation": "sidebar"
 }

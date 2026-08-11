@@ -1,0 +1,650 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  MAZE, DIR, generateTopology, cellIndex, cellCoords, isOpen, carveEntranceCorridor,
+} from '../../src/worlds/maze/MazeTopology.js';
+import {
+  openDirCount, isDeadEnd, findDeadEnds, pickDeadEndTokens, pickWandererSites, walkPatrol,
+} from '../../src/worlds/maze/MazePopulate.js';
+import {
+  forecourtColliders, cellToWorld,
+  FORECOURT_HALF_WIDTH, FORECOURT_NORTH_Z, FORECOURT_PORTAL_Z,
+} from '../../src/worlds/maze/MazeColliders.js';
+import { Physics } from '../../src/physics/Physics.js';
+import { EventBus } from '../../src/core/EventBus.js';
+import { parentField, solve } from '../../src/worlds/maze/MazeTopology.js';
+import { routeToward } from '../../src/worlds/maze/MazePopulate.js';
+import {
+  pickDistrictTokens, pickDistrictWanderer, districtTokenCells, TOKENS_PER_DISTRICT,
+} from '../../src/worlds/maze/MazePopulate.js';
+import { districtIndex } from '../../src/worlds/maze/MazeTopology.js';
+import { MazeWorld, MAZE_CENTRE_VALUE, WANDERER_CAST, MAX_LIVE_TOKENS } from '../../src/worlds/MazeWorld.js';
+
+/*
+ * Coverage for "npcs-and-collectibles": the keeper, the eight lost wanderers
+ * and the ~40 dead-end tokens the maze had none of before this work.
+ *
+ * Two tiers, matching the rest of this directory:
+ *
+ *  - Pure-topology tests run `MazePopulate.js` directly across many seeds.
+ *    This is where the real risk lives (a re-rolled maze putting a token
+ *    somewhere it should not be), so it is what gets the seed sweep.
+ *  - A handful of full `MazeWorld.build()` integration tests confirm the
+ *    world actually wires those pure functions up correctly end to end -
+ *    fewer of them because a full build registers ~160k colliders, but a
+ *    build only takes a few hundred ms (see the timing note below), so
+ *    running several is still cheap.
+ */
+
+const SEEDS = 40;
+
+/**
+ * A world position back to the cell it stands in - INCLUDING its level.
+ *
+ * These conversions used to hardcode level 0, which was true while everything
+ * was placed on the entrance's level and became a silent lie the moment
+ * wanderers and tokens were spread across all four: a level-2 token would be
+ * checked against level 0's walls and read as standing in a corridor. The
+ * tests were stale, not the placement, and this is what makes them level-aware
+ * rather than looser.
+ */
+function cellAt(pos) {
+  const level = Math.round(pos.y / MAZE.LEVEL_HEIGHT);
+  return cellIndex(Math.round(pos.x / MAZE.CELL), Math.round(pos.z / MAZE.CELL), level);
+}
+
+/** Which passage bit, if any, connects two Manhattan-adjacent cells. */
+function stepDirBetween(fromIdx, toIdx) {
+  const a = cellCoords(fromIdx);
+  const b = cellCoords(toIdx);
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  if (Math.abs(dx) + Math.abs(dz) !== 1) return null;
+  if (dx === 1) return DIR.E;
+  if (dx === -1) return DIR.W;
+  if (dz === 1) return DIR.S;
+  return DIR.N;
+}
+
+/* -------------------------------------------------------------------- */
+/* Pure topology: dead-end tokens                                        */
+/* -------------------------------------------------------------------- */
+
+test('every token sits in a cell that is genuinely a dead end, across many seeds', () => {
+  for (let seed = 0; seed < SEEDS; seed++) {
+    const t = generateTopology(seed, { levels: 1 });
+    const e = cellCoords(t.entranceCell);
+    carveEntranceCorridor(t.cells, e);
+    const exclude = new Set([t.entranceCell, t.centreCell]);
+
+    const tokens = pickDeadEndTokens(t.cells, 0, seed, 40, exclude);
+    assert.ok(tokens.length > 0, `seed ${seed}: no tokens picked at all`);
+
+    for (const idx of tokens) {
+      assert.equal(
+        openDirCount(t.cells, idx), 1,
+        `seed ${seed}: token at cell ${idx} has ${openDirCount(t.cells, idx)} open passages, not 1`,
+      );
+      assert.ok(isDeadEnd(t.cells, idx), `seed ${seed}: token at cell ${idx} is not a dead end`);
+    }
+  }
+});
+
+test('no two tokens ever share a cell, across many seeds', () => {
+  for (let seed = 0; seed < SEEDS; seed++) {
+    const t = generateTopology(seed, { levels: 1 });
+    const e = cellCoords(t.entranceCell);
+    carveEntranceCorridor(t.cells, e);
+    const exclude = new Set([t.entranceCell, t.centreCell]);
+
+    const tokens = pickDeadEndTokens(t.cells, 0, seed, 40, exclude);
+    const unique = new Set(tokens);
+    assert.equal(unique.size, tokens.length, `seed ${seed}: ${tokens.length - unique.size} duplicate token cell(s)`);
+  }
+});
+
+test('tokens are spread across the grid, not clustered near the entrance', () => {
+  for (let seed = 0; seed < 10; seed++) {
+    const t = generateTopology(seed, { levels: 1 });
+    const e = cellCoords(t.entranceCell);
+    carveEntranceCorridor(t.cells, e);
+    const exclude = new Set([t.entranceCell, t.centreCell]);
+
+    const tokens = pickDeadEndTokens(t.cells, 0, seed, 40, exclude);
+    const districts = new Set();
+    for (const idx of tokens) {
+      const c = cellCoords(idx);
+      districts.add(`${Math.floor(c.x / MAZE.DISTRICT)},${Math.floor(c.z / MAZE.DISTRICT)}`);
+    }
+    // 40 tokens bunched into a handful of districts would defeat the point -
+    // dead ends worth finding across the whole level, not a pile by the door.
+    assert.ok(
+      districts.size >= Math.min(15, tokens.length),
+      `seed ${seed}: ${tokens.length} tokens landed in only ${districts.size} distinct districts`,
+    );
+  }
+});
+
+test('findDeadEnds agrees with a brute-force scan', () => {
+  const t = generateTopology(9, { levels: 1 });
+  const found = findDeadEnds(t.cells, 0);
+  let bruteForce = 0;
+  for (let i = 0; i < MAZE.LEVEL_CELLS; i++) {
+    if (openDirCount(t.cells, i) === 1) bruteForce++;
+  }
+  assert.equal(found.length, bruteForce);
+});
+
+/* -------------------------------------------------------------------- */
+/* Pure topology: wanderer sites and patrol routes                       */
+/* -------------------------------------------------------------------- */
+
+test('every wanderer site sits in an open (reachable) cell, across many seeds', () => {
+  for (let seed = 0; seed < SEEDS; seed++) {
+    const t = generateTopology(seed, { levels: 1 });
+    const e = cellCoords(t.entranceCell);
+    carveEntranceCorridor(t.cells, e);
+    const exclude = new Set([t.entranceCell, t.centreCell]);
+
+    const sites = pickWandererSites(t.cells, 0, seed, 8, exclude);
+    assert.equal(sites.length, 8, `seed ${seed}: expected exactly 8 wanderer sites, got ${sites.length}`);
+    for (const idx of sites) {
+      assert.ok(openDirCount(t.cells, idx) > 0, `seed ${seed}: wanderer site ${idx} has no open passage at all`);
+      assert.ok(!exclude.has(idx), `seed ${seed}: wanderer site landed on an excluded cell`);
+    }
+  }
+});
+
+test('wanderer sites are spread widely, not clustered in one corner', () => {
+  for (let seed = 0; seed < 10; seed++) {
+    const t = generateTopology(seed, { levels: 1 });
+    const e = cellCoords(t.entranceCell);
+    carveEntranceCorridor(t.cells, e);
+    const exclude = new Set([t.entranceCell, t.centreCell]);
+    const sites = pickWandererSites(t.cells, 0, seed, 8, exclude).map((idx) => cellToWorld(cellCoords(idx).x, cellCoords(idx).z, 0));
+
+    let minPairwise = Infinity;
+    for (let i = 0; i < sites.length; i++) {
+      for (let j = i + 1; j < sites.length; j++) {
+        const d = Math.hypot(sites[i].x - sites[j].x, sites[i].z - sites[j].z);
+        minPairwise = Math.min(minPairwise, d);
+      }
+    }
+    // A 2.4km level split into a 3x3 region grid puts region centres roughly
+    // 800m apart; even the two closest wanderers (diagonal neighbours in the
+    // shuffled region order can still be adjacent regions) should clear 100m.
+    assert.ok(minPairwise > 100, `seed ${seed}: closest pair of wanderers is only ${minPairwise.toFixed(1)}m apart`);
+  }
+});
+
+test('walkPatrol only ever steps through an OPEN passage, across many seeds and start points', () => {
+  for (let seed = 0; seed < SEEDS; seed++) {
+    const t = generateTopology(seed, { levels: 1 });
+    const e = cellCoords(t.entranceCell);
+    carveEntranceCorridor(t.cells, e);
+    const exclude = new Set([t.entranceCell, t.centreCell]);
+    const sites = pickWandererSites(t.cells, 0, seed, 8, exclude);
+
+    for (let i = 0; i < sites.length; i++) {
+      const route = walkPatrol(t.cells, 0, sites[i], 4, seed * 1000 + i);
+      assert.ok(route.length >= 1, `seed ${seed}: patrol route ${i} is empty`);
+      assert.equal(route[0], sites[i], `seed ${seed}: patrol route ${i} does not start at its site`);
+
+      for (let k = 1; k < route.length; k++) {
+        const from = route[k - 1];
+        const to = route[k];
+        const dir = stepDirBetween(from, to);
+        assert.ok(dir !== null, `seed ${seed}: patrol ${i} step ${k} is not between Manhattan-adjacent cells`);
+        assert.ok(
+          isOpen(t.cells, from, dir),
+          `seed ${seed}: patrol ${i} step ${k} crosses a closed passage (cell ${from} -> ${to})`,
+        );
+      }
+    }
+  }
+});
+
+/* -------------------------------------------------------------------- */
+/* Full MazeWorld.build() integration                                    */
+/* -------------------------------------------------------------------- */
+
+/** A fresh, headless MazeWorld - no DOM, no renderer, matching the pattern
+ * `Physics` and `EventBus` already prove out for this test tier. */
+function buildMazeWorld() {
+  const world = new MazeWorld({
+    scene: { add() {} },
+    engine: null,
+    physics: new Physics(null),
+    bus: new EventBus(),
+    materials: null,
+  });
+  return world.build().then(() => world);
+}
+
+/** Recompute the collider count the way MazeWorld.build() does, directly
+ * from the built world's own state, so this is a real comparison and not a
+ * restatement of the number MazeWorld happened to produce.
+ *
+ * Phase 2a streams districts rather than building all 400 up front (see
+ * MazeChunks), so "the maze geometry itself" is now the forecourt (authored,
+ * always resident) plus whichever districts are currently resident in
+ * `world.chunks` - not the full grid. */
+function expectedColliderCount(world) {
+  let n = world.chunks.colliderCount();
+  const e = cellCoords(world.entranceCell);
+  const ew = cellToWorld(e.x, e.z, e.level);
+  n += forecourtColliders(ew.x, e.level).length;
+  return n;
+}
+
+test('MazeWorld is constructible and buildable headlessly: keeper authored, wanderers streamed', async () => {
+  /* Was "1 keeper + the whole cast in npcSpawns". The cast no longer sets the
+   * population COUNT - population follows residency now (see
+   * maze-population.test.mjs), so `npcSpawns` holds exactly the one character
+   * who stands still for the whole visit and the wanderers come from whichever
+   * districts are live. The guarantees are unchanged and now checked on the
+   * streamed specs: every one of them is a friendly, has a patrol route, and is
+   * somebody from the written cast rather than a nameless filler. */
+  let seenWanderers = 0;
+  for (let i = 0; i < 3; i++) {
+    const world = await buildMazeWorld();
+    assert.equal(world.npcSpawns.length, 1,
+      `npcSpawns should hold only the keeper, got ${world.npcSpawns.length}`);
+    const keeper = world.npcSpawns.find((s) => s.role === 'lorekeeper');
+    assert.ok(keeper, 'no keeper (role: lorekeeper) among npcSpawns');
+
+    const wanderers = world.population.wandererSpecs();
+    seenWanderers += wanderers.length;
+    for (const w of wanderers) {
+      assert.ok(Array.isArray(w.patrol) && w.patrol.length >= 1, `${w.name} has no patrol route`);
+      assert.equal(w.type, 'friendly');
+      assert.ok(WANDERER_CAST.some((c) => c.name === w.name),
+        `${w.name} is not one of the written cast`);
+      assert.ok(w.persona && w.persona.length > 200, `${w.name} arrived without a persona`);
+    }
+  }
+  assert.ok(seenWanderers > 0,
+    'three entrance neighbourhoods produced no wanderers at all - the roll is broken');
+});
+
+test('the keeper stands in the forecourt, clear of the portal plinth', async () => {
+  const world = await buildMazeWorld();
+  const keeper = world.npcSpawns.find((s) => s.role === 'lorekeeper');
+  assert.ok(keeper);
+
+  const e = cellCoords(world.entranceCell);
+  const ew = cellToWorld(e.x, e.z, e.level);
+  // Inside the forecourt walls.
+  assert.ok(Math.abs(keeper.position.x - ew.x) < FORECOURT_HALF_WIDTH, 'keeper is outside the forecourt side walls');
+  assert.ok(keeper.position.z > FORECOURT_NORTH_Z && keeper.position.z < 0, 'keeper is outside the forecourt depth');
+  // Clear of the plinth - its widest reach (body + approach steps) is ~4.6m.
+  const distToPortal = Math.hypot(keeper.position.x - ew.x, keeper.position.z - FORECOURT_PORTAL_Z);
+  assert.ok(distToPortal > 4.6, `keeper is only ${distToPortal.toFixed(2)}m from the portal plinth`);
+});
+
+test('every NPC spawn and every patrol point sits in an open cell, connected by OPEN passages', async () => {
+  for (let i = 0; i < 5; i++) {
+    const world = await buildMazeWorld();
+    /* Both tiers: the authored keeper and every wanderer the resident districts
+     * streamed in. The streamed ones are the interesting half now - they are
+     * the ones derived from topology. */
+    for (const spec of [...world.npcSpawns, ...world.population.wandererSpecs()]) {
+      if (spec.role === 'lorekeeper') continue; // the keeper stands in hand-authored forecourt geometry, not the topology
+      const route = [spec.position, ...(spec.patrol ?? [])];
+      for (const p of route) {
+        const cx = Math.round(p.x / MAZE.CELL);
+        const cz = Math.round(p.z / MAZE.CELL);
+        /* `cellAt`, not level 0. Residency reaches the level above as well as
+         * the player's own, so a streamed wanderer can legitimately be up
+         * there - and checking them against level 0's walls would be the
+         * stale-level lie this file's own helper was written to stop. */
+        const idx = cellAt(p);
+        assert.ok(openDirCount(world.cells, idx) > 0, `${spec.name} has a route point in a sealed cell (${cx},${cz})`);
+      }
+      if (spec.patrol && spec.patrol.length > 1) {
+        for (let k = 1; k < spec.patrol.length; k++) {
+          const fromC = spec.patrol[k - 1];
+          const toC = spec.patrol[k];
+          const fromIdx = cellAt(fromC);
+          const toIdx = cellAt(toC);
+          const dir = stepDirBetween(fromIdx, toIdx);
+          assert.ok(dir !== null, `${spec.name}'s patrol step ${k} is not between adjacent cells`);
+          assert.ok(isOpen(world.cells, fromIdx, dir), `${spec.name}'s patrol step ${k} crosses a closed passage`);
+        }
+      }
+    }
+  }
+});
+
+test('every token is a genuine dead end and no two share a cell (full build)', async () => {
+  for (let i = 0; i < 5; i++) {
+    const world = await buildMazeWorld();
+    assert.ok(world._tokens.length > 0, 'no tokens were built');
+    assert.ok(world._tokens.length <= MAX_LIVE_TOKENS,
+      `expected at most ${MAX_LIVE_TOKENS} live tokens, got ${world._tokens.length}`);
+
+    const cellsSeen = new Set();
+    for (const tok of world._tokens) {
+      const cx = Math.round(tok.position.x / MAZE.CELL);
+      const cz = Math.round(tok.position.z / MAZE.CELL);
+      const idx = cellAt(tok.position);
+      const lv = Math.round(tok.position.y / MAZE.LEVEL_HEIGHT);
+      assert.equal(openDirCount(world.cells, idx), 1, `token at (${cx},${cz}) on level ${lv} is not a dead end`);
+      assert.ok(!cellsSeen.has(idx), `two tokens share cell ${idx}`);
+      cellsSeen.add(idx);
+    }
+  }
+});
+
+test('THE NO-NEW-COLLIDER GATE: neither tokens nor NPCs add a single collider', async () => {
+  for (let i = 0; i < 3; i++) {
+    const world = await buildMazeWorld();
+    const expected = expectedColliderCount(world);
+    assert.equal(
+      world.colliders.length, expected,
+      `collider count is ${world.colliders.length}, but hedges+floors+forecourt alone account for ${expected} - `
+        + 'something besides the maze geometry itself registered a collider',
+    );
+  }
+});
+
+test('THE NO-STANDABLE-TOKEN GATE: no token or NPC position is inside a collider', async () => {
+  const world = await buildMazeWorld();
+  for (const tok of world._tokens) {
+    assert.equal(
+      world.physics.containsPoint(tok.position), false,
+      `token at ${tok.position.x},${tok.position.y},${tok.position.z} is embedded in a collider`,
+    );
+  }
+  /* Now covers the STREAMED wanderers too, and that is what makes this gate
+   * bite: every one of them stands in a district that is actually built, so
+   * `containsPoint` has real colliders to test against. The old global cast was
+   * mostly scattered through districts that were never streamed in, where the
+   * physics world was empty and the check passed for free. */
+  for (const spec of [...world.npcSpawns, ...world.population.wandererSpecs()]) {
+    for (const p of [spec.position, ...(spec.patrol ?? [])]) {
+      const feet = p.clone();
+      feet.y += 0.05;
+      assert.equal(
+        world.physics.containsPoint(feet), false,
+        `${spec.name} has a route point embedded in a collider`,
+      );
+    }
+  }
+});
+
+/* -------------------------------------------------------------------- */
+/* Phase 3: the centre pays, and opens a way home                        */
+/* -------------------------------------------------------------------- */
+
+test('the centre is worth exactly 100, and nothing scales it', () => {
+  // The spec says 100 twice and calls it final rather than a placeholder.
+  assert.equal(MAZE_CENTRE_VALUE, 100);
+});
+
+test('the return portal is not there until the centre is collected', async () => {
+  const world = await buildMazeWorld();
+  assert.equal(world.portalSpecs.length, 1,
+    'a second portal exists before the centre is taken - that is a way to skip the maze');
+  world._collectCentre();
+  assert.equal(world.portalSpecs.length, 2, 'collecting the centre opened no way home');
+
+  const home = world.portalSpecs[1];
+  assert.equal(home.target, 'station');
+  const c = cellCoords(world.centreCell);
+  const w = cellToWorld(c.x, c.z, c.level);
+  assert.ok(Math.hypot(home.position.x - w.x, home.position.z - w.z) < MAZE.CELL,
+    `the return portal opened at ${home.position.x},${home.position.z}, not at the centre ${w.x},${w.z}`);
+});
+
+test('collecting twice pays once', async () => {
+  /* The pickup radius is tested every frame, so paying per collect-call would
+   * be 100 credits every sixtieth of a second for as long as the player stood
+   * on the stack. */
+  const world = await buildMazeWorld();
+  let paid = 0;
+  let opened = 0;
+  world.bus = {
+    emit: (e, p) => {
+      if (e === 'maze:centre-found') paid += p.amount;
+      if (e === 'maze:centre-opened') opened += 1;
+    },
+  };
+  world._collectCentre();
+  world._collectCentre();
+  world._collectCentre();
+  assert.equal(paid, MAZE_CENTRE_VALUE, `paid ${paid} - the centre is payable more than once`);
+  assert.equal(opened, 1, `announced ${opened} openings`);
+  assert.equal(world.portalSpecs.length, 2, 'repeated collection opened more portals');
+});
+
+test('the centre stack is hidden once taken, so it does not read as still collectable', async () => {
+  const world = await buildMazeWorld();
+  world._collectCentre();
+  assert.equal(world._centreStack?.visible, false, 'the credits are still on show after being taken');
+});
+
+test('the return portal opens at the centre on any seed, including a centre above level 0', async () => {
+  /* `centreCell` is on a seed-chosen level (see buildDistrictGraph), so the
+   * portal has to follow it up rather than assuming the ground floor. */
+  let checkedRaised = 0;
+  for (let i = 0; i < 6; i++) {
+    const world = await buildMazeWorld();
+    world._collectCentre();
+    const c = cellCoords(world.centreCell);
+    const w = cellToWorld(c.x, c.z, c.level);
+    const home = world.portalSpecs[1];
+    assert.ok(Math.abs(home.position.y - w.y) < 1e-6,
+      `centre on level ${c.level} but the portal opened at y=${home.position.y}, expected ${w.y}`);
+    if (c.level > 0) checkedRaised++;
+  }
+  assert.ok(checkedRaised > 0, 'no seed put the centre above level 0 - widen the sample');
+});
+
+/* -------------------------------------------------------------------- */
+/* Wanderers actually walk toward the centre                             */
+/* -------------------------------------------------------------------- */
+
+test('a wanderer route walks a real path, cell to adjacent cell', () => {
+  /* A route with a jump in it would teleport an NPC through a hedge, which is
+   * the one thing a navigating character must never appear to do. */
+  const t = generateTopology(2026);
+  const parents = parentField(t.cells, t.centreCell);
+  const start = t.entranceCell;
+  const route = routeToward(parents, start, 30);
+  assert.ok(route.length > 5, `route is only ${route.length} cells`);
+  for (let i = 1; i < route.length; i++) {
+    const dir = stepDirBetween(route[i - 1], route[i]);
+    assert.ok(dir !== null, `route jumps from ${route[i - 1]} to ${route[i]} - not adjacent`);
+    assert.ok(isOpen(t.cells, route[i - 1], dir),
+      `route steps through a closed passage at ${route[i - 1]} - straight through a hedge`);
+  }
+});
+
+test('a wanderer route gets CLOSER to the centre every step', () => {
+  /* The whole point: they are trying to solve it. A route that wandered would
+   * be the four-cell shuffle this replaced. */
+  const t = generateTopology(2026);
+  const parents = parentField(t.cells, t.centreCell);
+  const route = routeToward(parents, t.entranceCell, 40);
+  const solved = solve(t.cells, t.entranceCell, t.centreCell);
+  const distFromCentre = new Map(solved.map((c, i) => [c, solved.length - i]));
+  let checked = 0;
+  for (let i = 1; i < route.length; i++) {
+    if (!distFromCentre.has(route[i]) || !distFromCentre.has(route[i - 1])) continue;
+    assert.ok(distFromCentre.get(route[i]) < distFromCentre.get(route[i - 1]),
+      'a wanderer route stepped away from the centre');
+    checked++;
+  }
+  assert.ok(checked > 3, `only ${checked} steps were on the solution path to compare`);
+});
+
+test('a route that starts at the centre simply stops', () => {
+  // parentField's root has no parent; the walk must end rather than loop.
+  const t = generateTopology(7);
+  const parents = parentField(t.cells, t.centreCell);
+  assert.deepEqual(routeToward(parents, t.centreCell, 10), [t.centreCell]);
+});
+
+test('a wanderer route never changes level', () => {
+  /* parentField walks ALL directions, so a shortest path to the centre will
+   * take a staircase - but a patrol waypoint a level up teleports the NPC
+   * through a floor. The route stops at the first vertical step instead,
+   * which is also the truer behaviour for someone who has been lost for years
+   * precisely because they never found the way up. */
+  for (const seed of [1, 2026, 77771]) {
+    const t = generateTopology(seed);
+    const parents = parentField(t.cells, t.centreCell);
+    for (const start of [t.entranceCell, t.entranceCell + 37, t.entranceCell + 512]) {
+      const route = routeToward(parents, start, 40);
+      const lv0 = cellCoords(route[0]).level;
+      for (const c of route) {
+        assert.equal(cellCoords(c).level, lv0,
+          `seed ${seed}: a route from ${start} changed level - the NPC would walk through a floor`);
+      }
+    }
+  }
+});
+
+/* -------------------------------------------------------------------- */
+/* Every level is populated, not just the entrance's                     */
+/* -------------------------------------------------------------------- */
+
+test('THE EVERY-LEVEL GATE: every level populates the districts a player walks into', async () => {
+  /* This gate used to say "all four levels are populated at build time", which
+   * was the right assertion while population was placed globally. It is now the
+   * wrong QUESTION: nothing above the entrance neighbourhood exists at build
+   * time at all, by design, because only ~21 of 1,600 districts are ever
+   * streamed in and a token in the other 1,579 is a token nobody can reach.
+   *
+   * So it asks the same thing where the answer now lives - in what a district
+   * yields when it streams in - and it asks it of EVERY level rather than of
+   * whichever levels one build happened to touch. That is strictly stronger: a
+   * bug that populated only level 0 would previously have needed the entrance
+   * to be on level 0 to be caught, and this catches it either way. */
+  const world = await buildMazeWorld();
+
+  for (let lv = 0; lv < MAZE.LEVELS; lv++) {
+    let tokens = 0;
+    let wanderers = 0;
+    for (let d = 0; d < 100; d++) {
+      const key = districtIndex(d % MAZE.DISTRICTS, (d * 7) % MAZE.DISTRICTS, lv);
+      tokens += pickDistrictTokens(world.cells, key, world.seed).length;
+      if (pickDistrictWanderer(world.cells, key, world.seed) >= 0) wanderers++;
+    }
+    assert.ok(tokens > 0, `level ${lv} yields no tokens in any of 100 sampled districts`);
+    assert.ok(wanderers > 0, `level ${lv} yields no wanderers in any of 100 sampled districts`);
+  }
+});
+
+/**
+ * The spread half of the density change, asserted exactly rather than loosely.
+ *
+ * Raising `TOKENS_PER_DISTRICT` on its own would have tripled a CLUSTER: the
+ * old picker shuffled every dead end in the district and took the first few,
+ * which is uniform over candidates and not over ground, and dead ends bunch
+ * wherever the carve left stubs. So the picker now draws at most one token per
+ * region of a 3x3 grid over the district.
+ *
+ * That yields an exact invariant, which is worth far more than a statistical
+ * one: the number of regions the tokens occupy is `min(count, regions that
+ * contain any dead end at all)`. Below the first term the spread is doing all
+ * it can and the top-up fills the rest; above it, every token is in a region of
+ * its own. A regression to shuffle-and-slice breaks this on the first district
+ * whose dead ends are unevenly spread, which is most of them.
+ */
+test('district tokens take one region each, so nine is a spread and not a bigger cluster', () => {
+  const REGIONS = 3;                          // regionGrid(9) is 3x3
+  const span = MAZE.DISTRICT / REGIONS;
+  let checked = 0;
+
+  for (let s = 0; s < 10; s++) {
+    const seed = 1000 + s * 7919;
+    const t = generateTopology(seed, { levels: MAZE.LEVELS });
+    for (let d = 0; d < 12; d++) {
+      const dx = (d * 5) % MAZE.DISTRICTS;
+      const dz = (d * 11) % MAZE.DISTRICTS;
+      const key = districtIndex(dx, dz, d % MAZE.LEVELS);
+
+      const regionOf = (idx) => {
+        const c = cellCoords(idx);
+        const lx = Math.min(REGIONS - 1, Math.floor((c.x - dx * MAZE.DISTRICT) / span));
+        const lz = Math.min(REGIONS - 1, Math.floor((c.z - dz * MAZE.DISTRICT) / span));
+        return lz * REGIONS + lx;
+      };
+
+      const candidates = districtTokenCells(t.cells, key);
+      if (candidates.length <= TOKENS_PER_DISTRICT) continue;  // takes them all; nothing to spread
+      const populated = new Set(candidates.map(regionOf)).size;
+      const picked = pickDistrictTokens(t.cells, key, seed);
+      const occupied = new Set(picked.map(regionOf)).size;
+
+      assert.equal(occupied, Math.min(TOKENS_PER_DISTRICT, populated),
+        `seed ${seed} district ${key}: ${picked.length} tokens sit in ${occupied} of `
+        + `${populated} populated regions - they are clustering, not spreading`);
+      checked++;
+    }
+  }
+
+  assert.ok(checked > 40, `only ${checked} districts had enough dead ends to test the spread`);
+});
+
+test('every wanderer is a distinct person, so more of them is not the same few repeated', () => {
+  /* Section 9 capped the cast at eight and the owner raised it, so the guard
+   * changes rather than disappears: the point of the cap was that these are
+   * WRITTEN characters, and the way raising it goes wrong is duplicates. A
+   * maze full of four Ossian Drells reads worse than a maze with fewer people
+   * in it. */
+  const names = WANDERER_CAST.map((c) => c.name);
+  assert.equal(new Set(names).size, names.length, `duplicate names in the cast: ${names.join(', ')}`);
+  for (const c of WANDERER_CAST) {
+    assert.ok(c.persona && c.persona.length > 200,
+      `${c.name} has no real persona - a nameplate is not a character`);
+  }
+});
+
+test('the cast divides evenly enough that every level gets several', () => {
+  assert.ok(WANDERER_CAST.length >= MAZE.LEVELS * 3,
+    `${WANDERER_CAST.length} wanderers over ${MAZE.LEVELS} levels is too few to meet one`);
+});
+
+test('every token sits on the level it was placed for, at that level floor', async () => {
+  /* A token whose mesh instance carried the wrong level would float in the
+   * air a storey up, or be buried in a floor slab. */
+  const world = await buildMazeWorld();
+  for (const t of world._tokens) {
+    const lv = Math.round(t.position.y / MAZE.LEVEL_HEIGHT);
+    const expected = lv * MAZE.LEVEL_HEIGHT + 0.6;
+    assert.ok(Math.abs(t.position.y - expected) < 1e-6,
+      `a token sits at y=${t.position.y} on level ${lv}, expected ${expected}`);
+  }
+});
+
+test('every wanderer spawns on an open cell of its own level', async () => {
+  const world = await buildMazeWorld();
+  for (const s of [...world.npcSpawns, ...world.population.wandererSpecs()]) {
+    if (!s.patrol) continue;                       // the keeper, in the forecourt
+    const lv = Math.round(s.position.y / MAZE.LEVEL_HEIGHT);
+    for (const p of s.patrol) {
+      assert.equal(Math.round(p.y / MAZE.LEVEL_HEIGHT), lv,
+        'a patrol waypoint is on a different level from its spawn - the NPC would walk through a floor');
+    }
+  }
+});
+
+test('the level a freshly built world reports is a real level, not the sentinel', async () => {
+  /* `_markersLevel` is -1 until the first `update` runs, so that the first
+   * update always re-points `shaftMarkers`. That is fine internally and was
+   * not fine anywhere else: the M map reads the player's level to title itself
+   * and to decide whether to draw the you-are-here marker, and a map opened in
+   * the same frame the world was entered drew "LEVEL 0 OF 4" - one below the
+   * first floor. Anything outside MazeWorld goes through `playerLevel`, which
+   * falls back to the player's own height until the sentinel is replaced. */
+  const world = await buildMazeWorld();
+  assert.equal(world._markersLevel, -1, 'the sentinel is gone - this test now proves nothing');
+  const lvl = world.playerLevel;
+  assert.ok(Number.isInteger(lvl) && lvl >= 0 && lvl < MAZE.LEVELS,
+    `playerLevel leaked ${lvl} before the first update`);
+  assert.ok(world.minimapPlanKey.endsWith(`:${lvl}`),
+    `minimapPlanKey disagrees with playerLevel: ${world.minimapPlanKey}`);
+});

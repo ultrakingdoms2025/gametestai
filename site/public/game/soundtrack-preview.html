@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aether Nexus — Theatrical World Scores</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #131826; --ink: #e8ecf4; --dim: #8b93a7;
+    --line: #232a3d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(1200px 600px at 50% -10%, #16203a 0%, var(--bg) 60%);
+    color: var(--ink); font-family: "Segoe UI", system-ui, sans-serif;
+    min-height: 100vh; padding: 32px 20px 60px;
+  }
+  header { text-align: center; margin-bottom: 8px; }
+  header h1 { font-size: 26px; letter-spacing: .18em; font-weight: 600; }
+  header .sub { color: var(--dim); margin-top: 6px; font-size: 14px; letter-spacing: .06em; }
+  .meterwrap { max-width: 980px; margin: 18px auto 26px; display: flex; align-items: center; gap: 14px; }
+  #meter { flex: 1; height: 10px; background: #0f1420; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  #meterfill { height: 100%; width: 0%; background: linear-gradient(90deg, #2dd4bf, #f59e0b, #ef4444); transition: width .08s linear; }
+  .vol { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
+  .grid { max-width: 980px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 20px 20px 18px; position: relative; overflow: hidden;
+    transition: border-color .25s, box-shadow .25s;
+  }
+  .card::before {
+    content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
+    background: var(--accent, #888);
+  }
+  .card.playing { border-color: var(--accent); box-shadow: 0 0 24px -8px var(--accent); }
+  .card .world { font-size: 11px; letter-spacing: .22em; color: var(--accent); text-transform: uppercase; }
+  .card h2 { font-size: 20px; margin: 6px 0 2px; font-weight: 600; }
+  .card .tag { color: var(--dim); font-size: 13px; font-style: italic; margin-bottom: 10px; }
+  .card .desc { color: #aeb6c8; font-size: 12.5px; line-height: 1.5; min-height: 56px; }
+  .card .row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+  .card button {
+    background: var(--accent); color: #0b0e14; border: 0; border-radius: 8px;
+    padding: 9px 22px; font-size: 14px; font-weight: 700; cursor: pointer;
+    letter-spacing: .04em;
+  }
+  .card button:hover { filter: brightness(1.15); }
+  .card .state { font-size: 12px; color: var(--dim); }
+  .card.playing .state { color: var(--accent); }
+  footer { text-align: center; color: var(--dim); font-size: 12px; margin-top: 34px; line-height: 1.7; }
+  kbd { background: #1c2336; border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AETHER NEXUS</h1>
+  <div class="sub">Theatrical World Scores — six worlds, six themes, zero audio files</div>
+</header>
+
+<div class="meterwrap">
+  <div id="meter"><div id="meterfill"></div></div>
+  <div class="vol"><span>VOL</span><input id="vol" type="range" min="0" max="100" value="70"></div>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<footer>
+  Every note is synthesized live by the Web Audio API — the same rule as the rest of the game: no assets, nothing to license.<br>
+  Press <kbd>1</kbd>–<kbd>6</kbd> to switch worlds, <kbd>0</kbd> or <kbd>Esc</kbd> to stop. Each score runs a 16-bar cycle: a restrained opening half, then the full theatrical arrangement.
+</footer>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   AETHER NEXUS — theatrical generative scores (reference implementation)
+   One score per world. Generated, not looped: rules + a composed leitmotif,
+   played by a lookahead scheduler so nothing ever seams.
+   ════════════════════════════════════════════════════════════════════════ */
+
+const CHORD = { m: [0,3,7], M: [0,4,7], m7: [0,3,7,10], M7: [0,4,7,11], s: [0,5,7] };
+const hz = (m) => 440 * Math.pow(2, (m - 69) / 12);
+const LOOKAHEAD = 0.6, TICK_MS = 110;
+
+/* ── engine ─────────────────────────────────────────────────────────── */
+let ctx = null, master, limiter, reverb, reverbSend, analyser, noiseBuf;
+
+function ensureCtx() {
+  if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return ctx; }
+  ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+
+  master = ctx.createGain();
+  master.gain.value = 0.7;
+
+  limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -10; limiter.knee.value = 8;
+  limiter.ratio.value = 12; limiter.attack.value = 0.003; limiter.release.value = 0.2;
+
+  analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+
+  master.connect(limiter); limiter.connect(analyser); analyser.connect(ctx.destination);
+
+  // Synthesized plate-ish impulse: exponential decay, darker tail.
+  const len = Math.floor(ctx.sampleRate * 2.4);
+  const imp = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let c = 0; c < 2; c++) {
+    const d = imp.getChannelData(c);
+    for (let i = 0; i < len; i++) {
+      const t = i / len;
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 2.6) * (1 - 0.4 * t);
+    }
+  }
+  reverb = ctx.createConvolver(); reverb.buffer = imp;
+  const rvbGain = ctx.createGain(); rvbGain.gain.value = 0.8;
+  reverbSend = ctx.createGain(); reverbSend.gain.value = 1;
+  reverbSend.connect(reverb); reverb.connect(rvbGain); rvbGain.connect(master);
+
+  // Shared noise buffer for all percussion.
+  const nlen = ctx.sampleRate * 2;
+  noiseBuf = ctx.createBuffer(1, nlen, ctx.sampleRate);
+  const nd = noiseBuf.getChannelData(0);
+  for (let i = 0; i < nlen; i++) nd[i] = Math.random() * 2 - 1;
+
+  return ctx;
+}
+
+/* ── voices ─────────────────────────────────────────────────────────── */
+
+function envGain(t, dur, gain, attack, out) {
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(Math.max(gain, 0.0002), t + Math.max(attack, 0.004));
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  g.connect(out);
+  return g;
+}
+
+function sendRvb(node, t, dur, amt) {
+  if (amt <= 0) return;
+  const s = ctx.createGain(); s.gain.value = amt;
+  node.connect(s); s.connect(reverbSend);
+}
+
+/** Generic melodic voice: osc → lowpass → env. Optional vibrato LFO on detune. */
+function tone(t, freq, dur, gain, out, o = {}) {
+  const type = o.type || 'sine', cutoff = o.cutoff || 1500;
+  const osc = ctx.createOscillator();
+  osc.type = type; osc.frequency.value = freq;
+  osc.detune.value = (Math.random() - 0.5) * 7;
+  const f = ctx.createBiquadFilter();
+  f.type = 'lowpass'; f.frequency.value = cutoff; f.Q.value = 0.7;
+  const env = envGain(t, dur, gain, o.attack ?? Math.min(0.5, dur * 0.3), out);
+  osc.connect(f); f.connect(env);
+  if (o.vibHz) {
+    const lfo = ctx.createOscillator(), lg = ctx.createGain();
+    lfo.frequency.value = o.vibHz; lg.gain.value = o.vibCents || 8;
+    lfo.connect(lg); lg.connect(osc.detune);
+    lfo.start(t + (o.vibDelay ?? 0.25)); lfo.stop(t + dur + 0.1);
+  }
+  sendRvb(env, t, dur, o.rvb ?? 0.3);
+  osc.start(t); osc.stop(t + dur + 0.1);
+}
+
+/** String ensemble: two detuned saws per pitch, slow attack. */
+function strings(t, freqs, dur, gain, out, cutoff = 800) {
+  for (const fr of freqs) {
+    for (const det of [-7, 7]) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth'; osc.frequency.value = fr; osc.detune.value = det + (Math.random() - 0.5) * 4;
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = cutoff; f.Q.value = 0.5;
+      const env = envGain(t, dur, gain / (freqs.length * 2), Math.min(0.9, dur * 0.35), out);
+      osc.connect(f); f.connect(env);
+      sendRvb(env, t, dur, 0.4);
+      osc.start(t); osc.stop(t + dur + 0.1);
+    }
+  }
+}
+
+/** Choir-ish: saw through two formant bandpasses. Dark, vowel-like. */
+function choir(t, freqs, dur, gain, out) {
+  for (const fr of freqs) {
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth'; osc.frequency.value = fr; osc.detune.value = (Math.random() - 0.5) * 10;
+    const b1 = ctx.createBiquadFilter(); b1.type = 'bandpass'; b1.frequency.value = 620; b1.Q.value = 1.2;
+    const b2 = ctx.createBiquadFilter(); b2.type = 'bandpass'; b2.frequency.value = 1050; b2.Q.value = 2;
+    const env = envGain(t, dur, gain / freqs.length, Math.min(1.1, dur * 0.4), out);
+    osc.connect(b1); b1.connect(env);
+    osc.connect(b2); b2.connect(env);
+    sendRvb(env, t, dur, 0.55);
+    osc.start(t); osc.stop(t + dur + 0.1);
+  }
+}
+
+/** Brass stab: saw with a fast-opening filter envelope. */
+function brass(t, freqs, dur, gain, out) {
+  for (const fr of freqs) {
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth'; osc.frequency.value = fr; osc.detune.value = (Math.random() - 0.5) * 8;
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.Q.value = 1.4;
+    f.frequency.setValueAtTime(420, t);
+    f.frequency.exponentialRampToValueAtTime(2300, t + 0.06);
+    f.frequency.exponentialRampToValueAtTime(700, t + dur);
+    const env = envGain(t, dur, gain / freqs.length, 0.02, out);
+    osc.connect(f); f.connect(env);
+    sendRvb(env, t, dur, 0.25);
+    osc.start(t); osc.stop(t + dur + 0.1);
+  }
+}
+
+/** Plucked string / lute / pizzicato: triangle, instant decay. */
+function pluck(t, freq, gain, out, cutoff = 2200, dur = 0.5) {
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle'; osc.frequency.value = freq;
+  const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = cutoff;
+  const env = envGain(t, dur, gain, 0.005, out);
+  osc.connect(f); f.connect(env);
+  sendRvb(env, t, dur, 0.3);
+  osc.start(t); osc.stop(t + dur + 0.1);
+}
+
+/** Music box / celesta bell: sine + inharmonic partial, long ring. */
+function bell(t, freq, gain, out, dur = 2.6) {
+  for (const pair of [[1, gain], [4.16, gain * 0.28]]) {
+    const osc = ctx.createOscillator();
+    osc.type = 'sine'; osc.frequency.value = freq * pair[0];
+    const env = envGain(t, dur, pair[1], 0.004, out);
+    osc.connect(env);
+    sendRvb(env, t, dur, 0.7);
+    osc.start(t); osc.stop(t + dur + 0.1);
+  }
+}
+
+/* ── percussion ─────────────────────────────────────────────────────── */
+
+function noiseVoice(t, dur, gain, out, filterType, freq, Q = 1, attack = 0.002) {
+  const src = ctx.createBufferSource();
+  src.buffer = noiseBuf; src.loop = true;
+  src.playbackRate.value = 0.9 + Math.random() * 0.2;
+  const f = ctx.createBiquadFilter(); f.type = filterType; f.frequency.value = freq; f.Q.value = Q;
+  const env = envGain(t, dur, gain, attack, out);
+  src.connect(f); f.connect(env);
+  src.start(t); src.stop(t + dur + 0.05);
+  return env;
+}
+
+function kick(t, gain, out) {
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(115, t);
+  osc.frequency.exponentialRampToValueAtTime(42, t + 0.11);
+  const env = envGain(t, 0.34, gain, 0.002, out);
+  osc.connect(env);
+  osc.start(t); osc.stop(t + 0.4);
+  noiseVoice(t, 0.02, gain * 0.4, out, 'highpass', 1200);
+}
+
+function taiko(t, gain, out, pitch = 88) {
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(pitch, t);
+  osc.frequency.exponentialRampToValueAtTime(pitch * 0.55, t + 0.25);
+  const env = envGain(t, 0.85, gain, 0.003, out);
+  osc.connect(env);
+  sendRvb(env, t, 0.85, 0.35);
+  osc.start(t); osc.stop(t + 0.95);
+  noiseVoice(t, 0.06, gain * 0.35, out, 'bandpass', 420, 0.8);
+}
+
+function frameDrum(t, gain, out) { taiko(t, gain, out, 135); }
+
+function snare(t, gain, out) {
+  noiseVoice(t, 0.18, gain, out, 'bandpass', 1800, 0.7);
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle'; osc.frequency.value = 190;
+  const env = envGain(t, 0.1, gain * 0.5, 0.002, out);
+  osc.connect(env); osc.start(t); osc.stop(t + 0.15);
+}
+
+function hat(t, gain, out, open = false) {
+  noiseVoice(t, open ? 0.22 : 0.045, gain, out, 'highpass', 6800, 1);
+}
+
+function clap(t, gain, out) {
+  noiseVoice(t, 0.16, gain, out, 'bandpass', 1450, 1.4, 0.008);
+}
+
+function crash(t, gain, out) {
+  noiseVoice(t, 1.3, gain, out, 'highpass', 5200, 0.6, 0.004);
+}
+
+function brush(t, gain, out) {
+  noiseVoice(t, 0.35, gain, out, 'bandpass', 3000, 0.8, 0.05);
+}
+
+/** Cinematic riser: filtered noise swelling across `dur`, cut at the peak. */
+function swell(t, dur, gain, out) {
+  const src = ctx.createBufferSource();
+  src.buffer = noiseBuf; src.loop = true;
+  const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 1.1;
+  f.frequency.setValueAtTime(500, t);
+  f.frequency.exponentialRampToValueAtTime(3200, t + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(gain, t + dur);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.09);
+  src.connect(f); f.connect(g); g.connect(out);
+  sendRvb(g, t, dur + 0.2, 0.5);
+  src.start(t); src.stop(t + dur + 0.2);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   THE SIX SCORES
+   root: bass-register MIDI note. progression: [semitoneOffset, quality]
+   per bar (8 bars, cycled). Patterns are one char per 16th step:
+   0 rest · 1 hit · 2 accent. A = restrained half, B = full arrangement.
+   Lead phrases: [bar, beat, semitone, durationBeats] over the 8-bar theme.
+   ════════════════════════════════════════════════════════════════════ */
+
+const SCORES = {
+  /* STATION — "Cold Orbit". Slow sci-fi epic: sub pulses, wide saws,
+     a high vibrato theme drifting over D minor like beacon light. */
+  station: {
+    name: 'Cold Orbit', world: 'station', accent: '#5eead4',
+    tag: 'slow sci-fi epic in D minor',
+    desc: 'Sub-bass booms like distant hull impacts, wide detuned strings, a glittering 16th arp, and a soaring beacon theme. Blade-Runner nights in orbit.',
+    bpm: 72, beatsPerBar: 4, root: 38, seed: 11,
+    progression: [[0,'m'],[0,'m7'],[8,'M'],[3,'M7'],[10,'M'],[0,'m'],[8,'M7'],[10,'M']],
+    pad: { voice: 'strings', gain: 0.30, cutoff: 780, octave: 1 },
+    bass: { style: 'pulse', gain: 0.24, type: 'sine' },
+    drums: {
+      boom: { A: '1000000000000000', B: '1000000000100000', gain: 0.30, voice: 'taiko', pitch: 62 },
+      tick: { A: '0000000000000000', B: '0010001000100010', gain: 0.05, voice: 'hat' },
+    },
+    swellEveryBars: 8, swellGain: 0.07,
+    arp: { div: 4, densityA: 0.16, densityB: 0.45, type: 'triangle', octave: 2, gain: 0.065, cutoff: 2600 },
+    lead: {
+      voice: 'tone', type: 'sine', octave: 2, gain: 0.12, cutoff: 2200,
+      vibHz: 4.6, vibCents: 14, rvb: 0.6, inA: false,
+      phrase: [
+        [0,0,0,2],[0,2,3,1],[0,3,7,1],  [1,0,5,2],[1,2,3,1],[1,3,2,1],
+        [2,0,2,2],[2,2,3,1],[2,3,2,1],  [3,0,0,4],
+        [4,0,7,2],[4,2,10,1],[4,3,12,1],[5,0,10,2],[5,2,7,2],
+        [6,0,5,2],[6,2,3,1],[6,3,5,1],  [7,0,7,3.5],
+      ],
+    },
+    bells: { density: 0.07, octave: 3, gain: 0.05 },
+  },
+
+  /* MEDIEVAL — "Banner and Hearth". A-dorian folk theatre: drone fifths,
+     frame drum, lute plucks, and a flute tune with the dorian lift. */
+  medieval: {
+    name: 'Banner and Hearth', world: 'medieval', accent: '#fbbf24',
+    tag: 'heroic folk theatre in A dorian',
+    desc: 'A bagpipe-style drone on open fifths, frame drum and tambourine, plucked lute, and a wooden flute carrying a dorian tune — the village green before the tourney.',
+    bpm: 96, beatsPerBar: 4, root: 33, seed: 23,
+    progression: [[0,'m'],[10,'M'],[0,'m'],[5,'M'],[3,'M'],[10,'M'],[0,'m'],[7,'m']],
+    pad: { voice: 'drone5', gain: 0.20, cutoff: 520, octave: 0 },
+    bass: { style: 'rootBeat', gain: 0.20, type: 'sine' },
+    drums: {
+      frame: { A: '1000000010100000', B: '1000100010100100', gain: 0.24, voice: 'frame' },
+      tamb:  { A: '0000100000001000', B: '0010001000100010', gain: 0.055, voice: 'hat' },
+    },
+    arp: { div: 2, densityA: 0.3, densityB: 0.52, type: 'pluck', octave: 1, gain: 0.10, cutoff: 2600 },
+    lead: {
+      voice: 'tone', type: 'sine', octave: 2, gain: 0.13, cutoff: 2400,
+      vibHz: 5.4, vibCents: 10, rvb: 0.4, inA: false,
+      phrase: [
+        [0,0,0,1],[0,1,2,1],[0,2,3,2],   [1,0,2,1],[1,1,0,1],[1,2,-2,2],
+        [2,0,0,1],[2,1,3,1],[2,2,5,1],[2,3,7,1], [3,0,7,2],[3,2,5,2],
+        [4,0,9,1],[4,1,7,1],[4,2,5,2],   [5,0,3,1],[5,1,5,1],[5,2,2,2],
+        [6,0,0,1],[6,1,-2,1],[6,2,0,2],  [7,0,0,3.5],
+      ],
+    },
+    bells: { density: 0.05, octave: 2, gain: 0.04 },
+  },
+
+  /* CITADEL — "The High Gate". E-phrygian monument: taiko, low choir,
+     a duduk-like lament, and risers that crest on the big downbeats. */
+  citadel: {
+    name: 'The High Gate', world: 'citadel', accent: '#f87171',
+    tag: 'vast phrygian monument in E',
+    desc: 'War-drum taikos under a low formant choir, a duduk lament bending around the phrygian flat second, and a riser cresting every fourth bar. Stone, wind, and altitude.',
+    bpm: 62, beatsPerBar: 4, root: 40, seed: 37,
+    progression: [[0,'m'],[1,'M'],[0,'m'],[1,'M'],[0,'m'],[8,'M'],[1,'M'],[0,'m']],
+    pad: { voice: 'choir', gain: 0.34, octave: 1 },
+    bass: { style: 'drone', gain: 0.26, type: 'sine' },
+    drums: {
+      taiko: { A: '1000000000000000', B: '2000000010010000', gain: 0.34, voice: 'taiko', pitch: 82 },
+    },
+    swellEveryBars: 4, swellGain: 0.06,
+    arp: { div: 4, densityA: 0.09, densityB: 0.2, type: 'sine', octave: 2, gain: 0.05, cutoff: 1800 },
+    lead: {
+      voice: 'tone', type: 'triangle', octave: 1, gain: 0.15, cutoff: 1150,
+      vibHz: 4.2, vibCents: 18, vibDelay: 0.45, rvb: 0.65, inA: true,
+      phrase: [
+        [0,0,0,3],[0,3,1,1],   [1,0,0,4],
+        [2,0,3,2],[2,2,1,2],   [3,0,0,4],
+        [4,0,7,3],[4,3,8,1],   [5,0,7,4],
+        [6,0,3,2],[6,2,1,2],   [7,0,0,4],
+      ],
+    },
+    bells: { density: 0.05, octave: 3, gain: 0.045 },
+  },
+
+  /* SPORTS — "Gold Hour". C-major stadium anthem: four-on-the-floor,
+     claps, bright plucks, brass hits, and a chorus that keeps rising. */
+  sports: {
+    name: 'Gold Hour', world: 'sports', accent: '#a3e635',
+    tag: 'stadium anthem in C major',
+    desc: 'Four-on-the-floor kick with claps and driving hats, sparkling plucks, brass section hits on the changes, and an anthem lead that climbs into every chorus.',
+    bpm: 122, beatsPerBar: 4, root: 36, seed: 51,
+    progression: [[0,'M'],[7,'M'],[9,'m'],[5,'M'],[9,'m'],[5,'M'],[0,'M'],[7,'M']],
+    pad: { voice: 'strings', gain: 0.18, cutoff: 1100, octave: 1 },
+    bass: { style: 'eighths', gain: 0.17, type: 'sawtooth', cutoff: 520 },
+    drums: {
+      kick: { A: '1000100010001000', B: '1000100010001000', gain: 0.30, voice: 'kick' },
+      clap: { A: '0000100000001000', B: '0000100000001000', gain: 0.13, voice: 'clap' },
+      hat:  { A: '1010101010101010', B: '2111211121112111', gain: 0.05, voice: 'hat' },
+    },
+    stabs: { pattern: '1000001000000000', gain: 0.16, octave: 1, inA: false },
+    arp: { div: 4, densityA: 0.5, densityB: 0.72, type: 'pluck', octave: 2, gain: 0.08, cutoff: 3200 },
+    lead: {
+      voice: 'tone', type: 'triangle', octave: 2, gain: 0.12, cutoff: 3000,
+      vibHz: 5.8, vibCents: 7, rvb: 0.35, inA: false,
+      phrase: [
+        [0,0,4,1],[0,1,7,1],[0,2,9,2],    [1,0,7,1],[1,1,4,1],[1,2,2,2],
+        [2,0,0,1],[2,1,2,1],[2,2,4,2],    [3,0,2,2],[3,2,4,2],
+        [4,0,4,1],[4,1,7,1],[4,2,9,1],[4,3,11,1], [5,0,12,2],[5,2,11,1],[5,3,9,1],
+        [6,0,7,2],[6,2,4,1],[6,3,2,1],    [7,0,0,3.5],
+      ],
+    },
+    bells: { density: 0.09, octave: 3, gain: 0.05 },
+  },
+
+  /* RACE — "Redline". E-minor synth assault: 16th-note bass ostinato,
+     full kit, power-chord stabs, and a lead that runs the straights. */
+  race: {
+    name: 'Redline', world: 'race', accent: '#fb7185',
+    tag: 'high-octane synth rock in E minor',
+    desc: 'A relentless 16th-note saw bass, full drum kit with crash hits every four bars, power-chord stabs, and an aggressive lead sprinting through E minor. Petrol and neon.',
+    bpm: 140, beatsPerBar: 4, root: 40, seed: 67,
+    progression: [[0,'m'],[0,'m'],[8,'M'],[10,'M'],[0,'m'],[8,'M'],[5,'M'],[10,'M']],
+    pad: { voice: 'strings', gain: 0.13, cutoff: 900, octave: 1 },
+    bass: { style: 'ostinato', gain: 0.19, type: 'sawtooth', cutoff: 640 },
+    drums: {
+      kick:  { A: '1000100010001000', B: '1000100110001010', gain: 0.30, voice: 'kick' },
+      snare: { A: '0000100000001000', B: '0000100000001000', gain: 0.17, voice: 'snare' },
+      hat:   { A: '1010101010101010', B: '2111211121112111', gain: 0.045, voice: 'hat' },
+      crash: { A: '', B: '', gain: 0.10, voice: 'crash', everyBars: 4 },
+    },
+    stabs: { pattern: '1000000010000000', gain: 0.13, octave: 1, power: true, inA: false },
+    lead: {
+      voice: 'tone', type: 'sawtooth', octave: 1, gain: 0.12, cutoff: 2700,
+      vibHz: 6.2, vibCents: 9, rvb: 0.3, inA: false,
+      phrase: [
+        [0,0,0,0.5],[0,0.5,3,0.5],[0,1,5,0.5],[0,1.5,7,0.5],[0,2,10,2],
+        [1,0,7,1.5],[1,1.5,5,0.5],[1,2,3,2],
+        [2,0,5,0.5],[2,0.5,7,0.5],[2,1,10,0.5],[2,1.5,12,0.5],[2,2,7,2],
+        [3,0,3,1],[3,1,5,1],[3,2,7,2],
+        [4,0,0,0.5],[4,0.5,3,0.5],[4,1,5,0.5],[4,1.5,7,0.5],[4,2,10,2],
+        [5,0,12,1.5],[5,1.5,10,0.5],[5,2,7,2],
+        [6,0,8,1],[6,1,7,1],[6,2,5,1],[6,3,3,1],
+        [7,0,12,3.5],
+      ],
+    },
+  },
+
+  /* MAZE — "The Verdant Coil". G-major mystery waltz: music-box theme,
+     pizzicato on 2 and 3, a borrowed minor iv, one lydian wink. */
+  maze: {
+    name: 'The Verdant Coil', world: 'maze', accent: '#4ade80',
+    tag: 'mystery waltz in G, 3/4',
+    desc: 'A music-box theme over a gentle waltz — pizzicato strings on beats two and three, soft brushes, and a borrowed C-minor chord that makes the hedges lean in a little.',
+    bpm: 92, beatsPerBar: 3, root: 43, seed: 83,
+    progression: [[0,'M'],[9,'m'],[5,'m'],[0,'M'],[0,'M'],[9,'m'],[2,'M7'],[7,'M']],
+    pad: { voice: 'strings', gain: 0.15, cutoff: 720, octave: 1 },
+    bass: { style: 'waltz', gain: 0.17, type: 'sine' },
+    drums: {
+      brush: { A: '100000000000', B: '100000000000', gain: 0.05, voice: 'brush' },
+    },
+    compWaltz: { gain: 0.08, octave: 1, cutoff: 2400 },
+    arp: { div: 2, densityA: 0.08, densityB: 0.16, type: 'bell', octave: 2, gain: 0.045 },
+    lead: {
+      voice: 'bell', octave: 2, gain: 0.13, inA: true,
+      phrase: [
+        [0,0,4,1],[0,1,2,1],[0,2,0,1],   [1,0,7,2],[1,2,4,1],
+        [2,0,5,1],[2,1,4,1],[2,2,2,1],   [3,0,4,3],
+        [4,0,4,1],[4,1,5,1],[4,2,6,1],   [5,0,7,2],[5,2,9,1],
+        [6,0,7,1],[6,1,4,1],[6,2,2,1],   [7,0,0,3],
+      ],
+    },
+    bells: { density: 0.06, octave: 3, gain: 0.04 },
+  },
+};
+
+/* ── the player ─────────────────────────────────────────────────────── */
+
+class ScorePlayer {
+  constructor(score) {
+    this.s = score;
+    this.out = null; this.timer = null; this.next = 0; this.step = 0;
+  }
+
+  get stepDur() { return 60 / this.s.bpm / 4; }
+  get stepsPerBar() { return this.s.beatsPerBar * 4; }
+  get barDur() { return this.stepDur * this.stepsPerBar; }
+
+  rand(n) {
+    const x = Math.sin(n * 12.9898 + this.s.seed * 78.233) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
+  start() {
+    ensureCtx();
+    this.out = ctx.createGain();
+    this.out.gain.setValueAtTime(0.0001, ctx.currentTime);
+    this.out.gain.exponentialRampToValueAtTime(1, ctx.currentTime + 1.8);
+    this.out.connect(master);
+    this.next = ctx.currentTime + 0.12;
+    this.step = 0;
+    this.timer = setInterval(() => this.schedule(), TICK_MS);
+  }
+
+  stop() {
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    const out = this.out; this.out = null;
+    if (!out) return;
+    const now = ctx.currentTime;
+    out.gain.cancelScheduledValues(now);
+    out.gain.setValueAtTime(Math.max(out.gain.value, 0.0001), now);
+    out.gain.exponentialRampToValueAtTime(0.0001, now + 1.2);
+    setTimeout(() => { try { out.disconnect(); } catch (e) {} }, 1800);
+  }
+
+  schedule() {
+    if (!this.out) return;
+    let guard = 0;
+    while (this.next < ctx.currentTime + LOOKAHEAD && guard++ < 48) {
+      this.emit(this.next, this.step);
+      this.next += this.stepDur;
+      this.step++;
+    }
+  }
+
+  emit(t, step) {
+    const s = this.s, spb = this.stepsPerBar;
+    const bar = Math.floor(step / spb), sib = step % spb;
+    const cycleBar = bar % 16, inB = cycleBar >= 8;
+    const sec = inB ? 'B' : 'A';
+    const chord = s.progression[cycleBar % s.progression.length];
+    const rootM = s.root + chord[0];
+    const tones = CHORD[chord[1]] || CHORD.M;
+    const out = this.out;
+    const beat = sib / 4;
+
+    /* pad — struck once per bar */
+    if (sib === 0 && s.pad) {
+      const p = s.pad, base = rootM + 12 * (p.octave ?? 1);
+      const freqs = tones.slice(0, 3).map((o) => hz(base + o));
+      const dur = this.barDur * 1.15;
+      const g = p.gain * (inB ? 1 : 0.72);
+      if (p.voice === 'choir') choir(t, freqs, dur, g, out);
+      else if (p.voice === 'drone5') {
+        strings(t, [hz(rootM), hz(rootM + 7)], dur, g, out, p.cutoff);
+      } else strings(t, freqs, dur, g, out, p.cutoff || 900);
+    }
+
+    /* bass */
+    if (s.bass) this.emitBass(t, sib, rootM, s.bass, inB, out);
+
+    /* drums */
+    if (s.drums) {
+      for (const key of Object.keys(s.drums)) {
+        const d = s.drums[key];
+        let hit = '0';
+        if (d.everyBars) {
+          if (cycleBar % d.everyBars === 0 && sib === 0) hit = '1';
+        } else {
+          const pat = d[sec] || d.A;
+          hit = (pat && pat[sib]) || '0';
+        }
+        if (hit === '0') continue;
+        const g = d.gain * (hit === '2' ? 1.45 : 1);
+        this.hitDrum(d.voice, t, g, out, d.pitch);
+      }
+    }
+
+    /* riser into the next phrase */
+    if (s.swellEveryBars && sib === 0 && cycleBar % s.swellEveryBars === s.swellEveryBars - 1) {
+      swell(t, this.barDur, s.swellGain ?? 0.06, out);
+    }
+
+    /* stabs (brass / power chords) */
+    if (s.stabs && (inB || s.stabs.inA)) {
+      const ch = s.stabs.pattern[sib];
+      if (ch === '1' || ch === '2') {
+        const base = rootM + 12 * (s.stabs.octave ?? 1);
+        const freqs = s.stabs.power
+          ? [hz(base), hz(base + 7), hz(base + 12)]
+          : tones.slice(0, 3).map((o) => hz(base + o));
+        brass(t, freqs, 0.32, s.stabs.gain, out);
+      }
+    }
+
+    /* arp */
+    if (s.arp && sib % s.arp.div === 0 && this.rand(step * 7 + 1) < (inB ? s.arp.densityB : s.arp.densityA)) {
+      const a = s.arp;
+      const off = tones[Math.floor(this.rand(step * 13 + 3) * tones.length)];
+      const note = rootM + off + 12 * a.octave;
+      if (a.type === 'bell') bell(t, hz(note), a.gain, out, 1.8);
+      else if (a.type === 'pluck') pluck(t, hz(note), a.gain, out, a.cutoff);
+      else tone(t, hz(note), this.stepDur * a.div * 1.15, a.gain, out, { type: a.type, cutoff: a.cutoff, attack: 0.01 });
+    }
+
+    /* waltz comp — pizzicato chord on beats 2 & 3 */
+    if (s.compWaltz && (sib === 4 || sib === 8)) {
+      const base = rootM + 12 * s.compWaltz.octave;
+      for (const o of tones.slice(0, 3)) {
+        pluck(t + this.rand(step + o) * 0.012, hz(base + o), s.compWaltz.gain / 2, out, s.compWaltz.cutoff, 0.4);
+      }
+    }
+
+    /* lead theme — composed phrase over the 8-bar cycle */
+    if (s.lead && (inB || s.lead.inA)) {
+      const themeBar = cycleBar % 8;
+      const L = s.lead;
+      for (const n of L.phrase) {
+        if (n[0] !== themeBar || Math.abs(n[1] - beat) > 0.01) continue;
+        const note = s.root + n[2] + 12 * (L.octave ?? 2);
+        const dur = n[3] * this.stepDur * 4;
+        const g = L.gain * (inB ? 1 : 0.55);
+        if (L.voice === 'bell') bell(t, hz(note), g, out, Math.max(1.6, dur));
+        else tone(t, hz(note), dur, g, out, {
+          type: L.type, cutoff: L.cutoff, attack: 0.04,
+          vibHz: L.vibHz, vibCents: L.vibCents, vibDelay: L.vibDelay, rvb: L.rvb,
+        });
+      }
+    }
+
+    /* stray high bells */
+    if (s.bells && this.rand(step * 29 + 5) < s.bells.density) {
+      const off = tones[Math.floor(this.rand(step * 31) * tones.length)];
+      bell(t, hz(rootM + off + 12 * s.bells.octave), s.bells.gain, out, 3);
+    }
+  }
+
+  emitBass(t, sib, rootM, b, inB, out) {
+    const low = rootM - 12;
+    const dur4 = this.stepDur * 4;
+    switch (b.style) {
+      case 'pulse':
+        if (sib === 0) tone(t, hz(low), dur4 * 2.4, b.gain, out, { type: b.type, cutoff: 260, attack: 0.02 });
+        else if (sib === 10) tone(t, hz(low + 7), dur4, b.gain * 0.55, out, { type: b.type, cutoff: 260, attack: 0.02 });
+        break;
+      case 'drone':
+        if (sib === 0) tone(t, hz(low), this.barDur * 1.1, b.gain, out, { type: b.type, cutoff: 220, attack: 0.3 });
+        break;
+      case 'rootBeat':
+        if (sib % 8 === 0) tone(t, hz(low), dur4 * 1.6, b.gain, out, { type: b.type, cutoff: 260, attack: 0.02 });
+        break;
+      case 'eighths':
+        if (sib % 2 === 0) {
+          const n = sib >= 14 ? low + 7 : low;
+          tone(t, hz(n), this.stepDur * 1.8, b.gain, out, { type: b.type, cutoff: b.cutoff || 500, attack: 0.008 });
+        }
+        break;
+      case 'ostinato': {
+        const oct = sib === 12 || sib === 14 ? 12 : 0;
+        const g = b.gain * (sib % 4 === 0 ? 1 : 0.66) * (inB ? 1 : 0.8);
+        tone(t, hz(low + oct), this.stepDur * 0.92, g, out, { type: b.type, cutoff: b.cutoff || 640, attack: 0.004 });
+        break;
+      }
+      case 'waltz':
+        if (sib === 0) tone(t, hz(low), dur4 * 0.9, b.gain, out, { type: b.type, cutoff: 300, attack: 0.015 });
+        break;
+    }
+  }
+
+  hitDrum(voice, t, g, out, pitch) {
+    switch (voice) {
+      case 'kick': kick(t, g, out); break;
+      case 'snare': snare(t, g, out); break;
+      case 'hat': hat(t, g, out); break;
+      case 'clap': clap(t, g, out); break;
+      case 'crash': crash(t, g, out); break;
+      case 'taiko': taiko(t, g, out, pitch || 88); break;
+      case 'frame': frameDrum(t, g, out); break;
+      case 'brush': brush(t, g, out); break;
+    }
+  }
+}
+
+/* ── UI (built with safe DOM methods, no innerHTML) ─────────────────── */
+
+let current = null, currentId = null;
+const order = ['station', 'medieval', 'citadel', 'sports', 'race', 'maze'];
+const grid = document.getElementById('grid');
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+for (const id of order) {
+  const s = SCORES[id];
+  const card = el('div', 'card');
+  card.id = 'card-' + id;
+  card.style.setProperty('--accent', s.accent);
+
+  card.appendChild(el('div', 'world', s.world + ' · ' + s.bpm + ' bpm'));
+  card.appendChild(el('h2', null, s.name));
+  card.appendChild(el('div', 'tag', s.tag));
+  card.appendChild(el('div', 'desc', s.desc));
+
+  const row = el('div', 'row');
+  const btn = el('button', null, '▶ Play');
+  btn.id = 'play-' + id;
+  btn.addEventListener('click', () => toggle(id));
+  row.appendChild(btn);
+  const state = el('span', 'state', 'stopped');
+  state.id = 'state-' + id;
+  row.appendChild(state);
+  card.appendChild(row);
+
+  grid.appendChild(card);
+}
+
+function toggle(id) {
+  if (currentId === id) { stopAll(); return; }
+  stopAll();
+  ensureCtx();
+  current = new ScorePlayer(SCORES[id]);
+  current.start();
+  currentId = id;
+  document.getElementById('card-' + id).classList.add('playing');
+  document.getElementById('play-' + id).textContent = '■ Stop';
+  document.getElementById('state-' + id).textContent = 'playing — bars 1-8 restrained, 9-16 full';
+}
+
+function stopAll() {
+  if (current) { current.stop(); current = null; }
+  if (currentId) {
+    const card = document.getElementById('card-' + currentId);
+    if (card) card.classList.remove('playing');
+    const b = document.getElementById('play-' + currentId);
+    if (b) b.textContent = '▶ Play';
+    const st = document.getElementById('state-' + currentId);
+    if (st) st.textContent = 'stopped';
+    currentId = null;
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  const i = parseInt(e.key, 10);
+  if (i >= 1 && i <= 6) toggle(order[i - 1]);
+  if (e.key === '0' || e.key === 'Escape') stopAll();
+});
+
+document.getElementById('vol').addEventListener('input', (e) => {
+  if (master) master.gain.value = e.target.value / 100;
+});
+
+/* level meter + test hooks */
+let lastRms = 0;
+function meterLoop() {
+  requestAnimationFrame(meterLoop);
+  if (!analyser) return;
+  const buf = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(buf);
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+  lastRms = Math.sqrt(sum / buf.length);
+  document.getElementById('meterfill').style.width = Math.min(100, lastRms * 320) + '%';
+}
+meterLoop();
+window.__rms = () => lastRms;
+window.__playing = () => currentId;
+window.__toggle = toggle;
+</script>
+</body>
+</html>

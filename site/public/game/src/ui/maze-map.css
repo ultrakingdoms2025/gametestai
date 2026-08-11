@@ -1,0 +1,181 @@
+/* The M map. Full-screen overlay, one level drawn from the topology array.
+   Deliberately austere: this is a thing you read, not a HUD. */
+
+.mz-map {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 8, 5, 0.82);
+  backdrop-filter: blur(2px);
+  font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+  /* The second half of the owner's "the mouse is not interacting with the map".
+     `#ui-root` is `pointer-events: none` (hud.css) so the HUD never eats the
+     crosshair, and only `button`, `input`, `textarea` and `.interactive` opt
+     back in. This panel inherited the `none` - which is why its TABS and FIND ME
+     are buttons and would have worked, while the CANVAS, the thing the wheel
+     zoom and the click-a-floorplan live on, was invisible to the mouse and every
+     event fell straight through to `#viewport` beneath. Falling through is not
+     merely useless either: `Input` locks the pointer on a mousedown over the
+     game canvas, so a click meant for a floorplan re-took the lock and put the
+     player back where this fix started.
+
+     Set on the whole overlay rather than only the canvas so the backdrop
+     absorbs the clicks too - a miss beside the panel must not reach the game.
+     Safe unconditionally: while closed the panel is `display: none` below. */
+  pointer-events: auto;
+}
+
+.mz-map[hidden] { display: none; }
+
+/* The map releases the pointer on open, and `main.js` answers any unlock by
+   raising the HUD's STANDBY overlay. That overlay is also z-index 60 and is
+   appended AFTER this panel (HUD is constructed later in `main.js`), so at
+   equal z-index it wins the stack - and it takes pointer events. Left alone it
+   would cover the map with "click to resume" and swallow every click the map
+   just went to the trouble of making reachable.
+
+   Hidden from the outside rather than by editing hud.css, which belongs to
+   another agent - the same rule, and the same reason, as `.inv-menu-open`,
+   `.ch-menu-open` and `.quest-board-open` already carry. Not `display: none`:
+   the overlay keeps its own `.show` state so that if the re-lock on close is
+   refused, dropping this class reveals the click-to-resume the player needs. */
+body.mz-map-open .pause {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+.mz-map-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(92vw, 92vh);
+  height: min(92vw, 92vh);
+  border: 1px solid rgba(143, 214, 122, 0.35);
+  background: #0d130e;
+  box-shadow: 0 0 60px rgba(0, 0, 0, 0.6);
+}
+
+.mz-map-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(143, 214, 122, 0.22);
+  color: #8fd67a;
+  letter-spacing: 0.14em;
+  font-size: 13px;
+}
+
+.mz-map-title { font-weight: 700; white-space: nowrap; }
+.mz-map-level { color: #cfe6c4; white-space: nowrap; }
+
+.mz-map-hint {
+  margin-left: auto;
+  white-space: nowrap;
+  color: rgba(207, 230, 196, 0.5);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+.mz-map-canvas {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+
+.mz-map-canvas:active { cursor: grabbing; }
+
+/* The one line of copy that has to be there: a player who expects a
+   you-are-here marker and does not find one should learn it is deliberate
+   rather than conclude the map is broken. */
+.mz-map-foot {
+  padding: 9px 14px;
+  border-top: 1px solid rgba(143, 214, 122, 0.22);
+  color: rgba(207, 230, 196, 0.62);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+/* The legend. One row of swatches: the map is dense enough now that a colour
+   with no name attached is just noise. */
+.mz-map-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+
+.mz-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.mz-key i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* Level tabs. ALL is the view the map opens on - four floorplans side by side -
+   and 1-4 page down to one floor at junction scale, holding pan so you can find
+   where a corridor continues upward. */
+.mz-map-levels {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 12px;
+}
+
+.mz-map-tab {
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  min-width: 26px;
+  padding: 3px 0;
+  cursor: pointer;
+  color: #9fc9a4;
+  background: rgba(20, 40, 24, 0.55);
+  border: 1px solid rgba(143, 214, 122, 0.28);
+  border-radius: 3px;
+}
+
+.mz-map-tab:hover { border-color: rgba(143, 214, 122, 0.6); color: #d7f0d2; }
+
+/* The level being drawn. */
+.mz-map-tab.is-on {
+  background: rgba(143, 214, 122, 0.9);
+  border-color: #8fd67a;
+  color: #0d130e;
+}
+
+/* The level the player is standing on, marked even when paged away from it. */
+.mz-map-tab.is-here::after {
+  content: '•';
+  margin-left: 3px;
+}
+
+/* ALL carries a word rather than a digit, so it gets the room for one. */
+.mz-map-tab[data-lvl='all'] { padding: 3px 8px; }
+
+.mz-map-recentre {
+  min-width: 0;
+  padding: 3px 9px;
+  letter-spacing: 0.1em;
+}
+
+/* Nothing in the header may wrap or be squeezed: the row carries a title, a
+   level readout, four tabs, a button and a hint, and the first thing a flex
+   row does when it runs out of width is break a two-word button across two
+   lines and then clip the hint off the panel edge. */
+.mz-map-head > * { flex: 0 0 auto; }
+.mz-map-tab { white-space: nowrap; }

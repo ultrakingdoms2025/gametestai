@@ -59,11 +59,19 @@ import { boxGeo, cylGeo, instanced } from '../StationKit.js';
  * Both are used constantly, so they have separate names: `A()` for geometry,
  * `faceIn()` / `faceOut()` / `faceTo()` for people.
  *
- * ── Collision is entirely manual out here ─────────────────────────────────
- * `StationWorld._collisionSoup` and `_solidifyProps` both reject anything more
- * than `DECK_R` from the world origin, and this deck is 498 m out. Not one
- * triangle and not one instance in this file is collided automatically. If a
- * player can walk into it, it has a `ctx.solid` beside it in the same block.
+ * ── Collision is no longer entirely manual out here ───────────────────────
+ * This used to read "not one triangle and not one instance in this file is
+ * collided automatically", because both sweeps stopped at `DECK_R` and this
+ * deck is 498 m out. Neither does any more: `_solidifyProps` has swept the
+ * whole map since the ring was built, and `_collisionSoup` reaches the zones
+ * through `collideCeilingAt`. What this file draws is solid because it drew it.
+ *
+ * The `ctx.solid` calls stay, and are still the rule for anything a player
+ * stands on or shelters under - a derived collider is a shell around what was
+ * drawn, and it cannot know that the inside of a servery is meant to be
+ * hollow. But they are a floor under the automatic passes now rather than the
+ * only collision in the zone, and a prop that has one keeps exactly the
+ * collider its author chose. See `StationWorld._alreadySolid`.
  */
 
 const DEG = Math.PI / 180;

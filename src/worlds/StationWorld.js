@@ -2729,12 +2729,30 @@ export class StationWorld extends World {
    *     leaves the overhead canopy rigging at y=48 alone - it is scenery seen
    *     from below, not something anybody can bump into;
    *   * anything already solid, so a builder that did write its own call keeps
-   *     exactly the collider it chose.
+   *     exactly the collider it chose. See `_alreadySolid` for what that
+   *     question turned out to mean once the outer ring was in it.
    *
    * Instances are Y-rotated, so each box is registered with the instance's own
    * yaw and its local extents rather than a world-axis-aligned bound. A 4.7 x
    * 5.5 m block turned 45 degrees has a 7.2 m square AABB, and handing that to
    * physics would quietly fatten every rotated crate into an invisible wall.
+   *
+   * ── Why "not resting on anything" is asked more than once ─────────────────
+   * The sweep reads the collision world it is writing, so what it sees depends
+   * on the order `traverse` happens to hand it the scene. A crate resting on
+   * another crate is solid ground if the lower one has already been through
+   * this loop and thin air if it has not - and the two crates are usually the
+   * same `InstancedMesh`, so the order is whatever the builder's scatter loop
+   * emitted. Measured on the finished station, 1,052 instances were turned away
+   * for want of a floor: 431 in Hab Ring C, 278 of the works' stacked steel,
+   * 76 in the galley, and the rest over the hub - props whose support was
+   * another prop, plus the canopy rigging, which has none and wants none.
+   *
+   * Rather than order the world, the ones that found no floor are asked again
+   * once every prop that DID find one is standing. Each round can only make a
+   * prop's support appear, never take it away, so this settles - and it is run
+   * to a fixed point rather than a fixed number of rounds because a stack is as
+   * tall as its author made it.
    */
   _solidifyProps() {
     const ph = this.physics;
@@ -2744,6 +2762,8 @@ export class StationWorld extends World {
     const scl = new THREE.Vector3();
     const centre = new THREE.Vector3();
     let added = 0;
+    /* Instances that failed only the floor test, kept for the rounds below. */
+    const noFloor = [];
 
     this.group.updateMatrixWorld(true);
     this.group.traverse((o) => {
@@ -2773,19 +2793,84 @@ export class StationWorld extends World {
         // can walk through is exactly the defect this sweep exists to catch.
         if (Math.hypot(centre.x, centre.z) > WORLD_R) continue;
 
+        const e = new THREE.Euler().setFromQuaternion(quat, 'YXZ');
         const base = centre.y - hy;
         const floor = ph.groundHeight(centre.x, centre.z, base + 0.4, 2.0);
-        if (floor === null || Math.abs(floor - base) > 0.6) continue;   // not standing on anything
-        const top = ph.groundHeight(centre.x, centre.z, centre.y + hy + 0.4, hy * 2 + 1.2);
-        if (top !== null && top > base + Math.min(0.35, hy * 0.8)) continue;  // already solid
+        if (floor === null || Math.abs(floor - base) > 0.6) {           // not standing on anything
+          noFloor.push(centre.x, centre.y, centre.z, hx, hy, hz, e.y);  // ...yet. See the note above.
+          continue;
+        }
+        if (this._alreadySolid(centre.x, centre.z, base, centre.y + hy)) continue;
 
-        const e = new THREE.Euler().setFromQuaternion(quat, 'YXZ');
         this._solidRot(centre.x, centre.y, centre.z, hx, hy, hz, e.y);
         added++;
       }
     });
-    if (added) console.info(`[station] ${added} set-dressing props made solid`);
+
+    /* Props that were resting on other props. Each round stands up everything
+     * whose support now exists; the loop stops the round nothing moves. */
+    let stacked = 0;
+    for (let moved = 1, round = 0; moved > 0 && noFloor.length; round++) {
+      moved = 0;
+      for (let i = 0; i < noFloor.length; i += 7) {
+        const cx = noFloor[i], cy = noFloor[i + 1], cz = noFloor[i + 2];
+        const hy = noFloor[i + 4];
+        if (!Number.isFinite(cx)) continue;                             // already placed
+        const base = cy - hy;
+        const floor = ph.groundHeight(cx, cz, base + 0.4, 2.0);
+        if (floor === null || Math.abs(floor - base) > 0.6) continue;
+        noFloor[i] = NaN;
+        if (this._alreadySolid(cx, cz, base, cy + hy)) continue;
+        this._solidRot(cx, cy, cz, noFloor[i + 3], hy, noFloor[i + 5], noFloor[i + 6]);
+        moved++;
+        stacked++;
+      }
+      added += moved;
+    }
+
+    if (added) {
+      console.info(
+        `[station] ${added} set-dressing props made solid` +
+        (stacked ? ` (${stacked} of them stacked on another prop)` : '')
+      );
+    }
   }
+
+  /**
+   * Is this prop's own column already solid enough to leave alone?
+   *
+   * `_solidifyProps` must not put a second collider around something a builder
+   * has already boxed, and this is the question it asks: is there a solid
+   * surface standing up inside the prop, rather than a floor under it?
+   *
+   * ── Why the bar is half the prop, and not 0.35 m ──────────────────────────
+   * It used to be `base + min(0.35, hy * 0.8)`, which is the same test with the
+   * bar pinned at 35 cm for anything taller than 0.9 m. That was invisible
+   * while this swept the hub, where the tallest thing it looks at is a 1.5 m
+   * bin and 35 cm of solid under one really does mean somebody boxed it. It
+   * stopped being true in the outer ring: Hab Ring C's crew units are 1.94 m
+   * blocks standing on an authored 0.7 m plinth, and 0.7 clears a 0.35 m bar,
+   * so all 25 of them were read as "already solid" and left with a collider
+   * covering their bottom third. The audit found them as walk-throughs and it
+   * was right - you could step through the top 1.24 m of a crew unit.
+   *
+   * So the bar scales with the prop instead of being capped: a prop counts as
+   * already collided when what is solid in its column reaches its own
+   * mid-height. A builder's box around a prop always does; a plinth under a
+   * prop three times its height does not. The 0.35 m floor stays underneath as
+   * the lower bound, so a low kerb beside a small prop still does not count.
+   *
+   * The probe deliberately starts ABOVE the prop rather than at its top: a
+   * builder's box is usually a little larger than the geometry it stands for,
+   * and a test that could not see over the prop's own head would miss it.
+   */
+  _alreadySolid(cx, cz, baseY, topY) {
+    const h = topY - baseY;
+    const solid = this.physics.groundHeight(cx, cz, topY + 0.4, h + 1.2);
+    if (solid === null) return false;
+    return solid > baseY + Math.min(0.35, h * 0.4) && solid >= baseY + h / 2;
+  }
+
 
   /**
    * Collide the station's structure from the triangles it actually drew.
@@ -3188,10 +3273,54 @@ export class StationWorld extends World {
    * Settle the hub's scatter groups.
    *
    * Restricted to the passes that emit loose props onto the deck and leave them
-   * to `_solidifyProps` to collide. The outer zones are excluded on purpose:
-   * they author a collider beside every prop they place, so lifting the drawn
-   * instance here would leave its collider behind at the old height - a worse
-   * defect than the one being fixed.
+   * to `_solidifyProps` to collide.
+   *
+   * ── Why the outer ring is still not in this list ──────────────────────────
+   * It used to be excluded with this reason:
+   *
+   *     "The outer zones are excluded on purpose: they author a collider
+   *      beside every prop they place, so lifting the drawn instance here
+   *      would leave its collider behind at the old height - a worse defect
+   *      than the one being fixed."
+   *
+   * That premise is not true of the ring as built - `solid()` is called 110
+   * times in the gym, 74 in the works, 69 in the galley and 13 in Hab Ring C,
+   * against roughly eight thousand drawn objects, and 1,484 ring props get
+   * their collider from `_solidifyProps` rather than from their builder. So the
+   * exclusion was reached for the wrong reason, and the right one is worth
+   * writing down, because the audit reports 10,534 ring props as SUNK and the
+   * obvious response to that number is to run this pass out there.
+   *
+   * ── The defect above cannot happen in the ring ────────────────────────────
+   * Read what this pass is FOR: a scatter loop that places props at a fixed
+   * height having tested only that the footprint is clear, over ground that is
+   * not flat. Both halves are hub-specific. The ring's four decks are flat
+   * discs - the raised surfaces out there are scaffold lifts and plinths that
+   * props are placed ON by explicit local coordinates, not scattered across -
+   * and the measurement agrees: of 24,907 audited props, exactly zero in the
+   * ring have their underside below their deck. Nothing out there has been
+   * come up through by anything.
+   *
+   * What the audit's SUNK verdict finds in the ring is two other things, and
+   * neither is a placement error. The first is multi-part furniture, which the
+   * audit already names as a false-positive class for FLOAT ("the upper halves
+   * of multi-part furniture") and which is symmetric: a galley bench is an
+   * instanced seat over instanced legs, so C1's probe - which starts half a
+   * metre above a prop's underside and takes the first surface it meets - finds
+   * the seat above the leg and reports the leg as sunk into it by the height of
+   * the bench. 3,325 of the 10,534 have their "support" at or above their own
+   * top, which is a thing standing under another thing, not a thing buried in
+   * one. The second is authored bedding: whole families sink by an identical
+   * constant - all 56 treadmill rails by 0.495 m, all 64 net posts by 0.130,
+   * all 370 Hab Ring C panels by 0.130 - and a constant is a modelling
+   * decision. A scatter meeting uneven ground produces a spread, which is
+   * exactly what the hub's own 74 findings looked like.
+   *
+   * Ported here faithfully and measured, this pass lifts 1,818 of the ring's
+   * 16,135 props and its worst correction is 24 metres, because a scaffold
+   * column bedded into its own authored base reads as sunk into it. That is the
+   * "worse defect" the original note was reaching for, and it is why the ring
+   * is left alone.
    */
   _settleDressing() {
     const groups = ['dressing', 'monument', 'cargo', 'control', 'skyline', 'commercial', 'hangar']

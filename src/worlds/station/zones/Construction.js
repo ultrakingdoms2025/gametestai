@@ -44,13 +44,20 @@ import { boxGeo, cylGeo, uvScale, instanced } from '../StationKit.js';
  * not to spec, and it is deliberate.
  *
  * ── Collision, which this zone lives or dies on ───────────────────────────
- * `StationWorld._collisionSoup` only extracts triangles within `DECK_R` of the
- * WORLD origin, and this deck is 498 m out - so not one thing built here is
- * collided automatically, and `_solidifyProps` rejects the instances for the
- * same reason. Every board a worker stands on, every tread, every barrier and
- * every cabin therefore declares itself with `ctx.solid`, and the boarded lifts
- * hand their rectangles back to the actor pass, so a figure at 31 m is standing
- * on a surface that provably exists rather than on an author's arithmetic.
+ * Every board a worker stands on, every tread, every barrier and every cabin
+ * declares itself with `ctx.solid`, and the boarded lifts hand their rectangles
+ * back to the actor pass, so a figure at 31 m is standing on a surface that
+ * provably exists rather than on an author's arithmetic.
+ *
+ * That was once the only collision out here, and the reason given was that
+ * "`_collisionSoup` only extracts triangles within `DECK_R` of the WORLD
+ * origin, and this deck is 498 m out - and `_solidifyProps` rejects the
+ * instances for the same reason". Both halves have since been fixed rather
+ * than worked around: the soup reaches the zones through `collideCeilingAt`
+ * and the prop sweep covers the whole map. The rule above still stands, and
+ * for the same reason it always did - a derived collider is a shell around
+ * drawn geometry, and scaffold is drawn as an open frame, so nothing here may
+ * rely on the automatic passes to hold a worker up.
  */
 
 /* Site geography. The hoarding sits 4 m inside the court edge so its gate posts

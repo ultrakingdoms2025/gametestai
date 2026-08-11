@@ -14,13 +14,14 @@ import {
   OCULUS_R, WINDOW_HALF, GATEWAY_DECK_Y, PYLON_OFF,
   ZONES, ZONE_R, ZONE_CENTRE_R, LINK_LEN,
   DOME_R, DOME_WALL_H, DOME_APEX, domeHeightAt, WORLD_R,
-  COLLIDE_CEILING, CHUNK_TRIS, PLANTING_TRIS, OCC_CELL, occKeyOf, occCellKey,
+  CHUNK_TRIS, PLANTING_TRIS, PLANTING_SPAN, collideCeilingAt,
+  OCC_CELL, occKeyOf, occCellKey,
   NON_SOLID_KEYS, PROXY_KEYS,
   SPAWN_X, SPAWN_Z, SPAWN_YAW,
   SIGN_COLS, SIGN_ROWS,
   mulberry32, hashi, tnoise, tfbm,
   boxUV, uvScale, cylUV, cylGeo, atlasUV, signUV, boxGeo,
-  instanced, GeoBatch, chunkTriangles,
+  instanced, GeoBatch, chunkTriangles, chunkTrianglesBySpan,
   roadPos, faceRoadYaw, zoneCentre, zoneLocal, zoneYaw,
 } from './station/StationKit.js';
 import { StationActors } from './station/StationActors.js';
@@ -2838,10 +2839,20 @@ export class StationWorld extends World {
    * holding 108,010 triangles, `resolveCapsule` 2.4 -> 34 us, ground probes
    * 5.8 -> 38 us, median frame 11.6 -> 12.0 ms.
    *
-   * ── What it deliberately does not do ──────────────────────────────────────
-   * Nothing above `COLLIDE_CEILING` is collided: that band is the ceiling
-   * plate, the hung canopy rigging and the top of the hull wall, none of it
-   * reachable, and all of it expensive. Neither is anything outside the deck.
+   * ── Where it applies ──────────────────────────────────────────────────────
+   * Everywhere a player can stand, which since the outer ring was built means
+   * five decks and four corridors rather than one deck: `collideCeilingAt` is
+   * the region test, and its note has the history. Each region carries its own
+   * ceiling, and above that ceiling nothing is collided - over the hub and the
+   * zones that band is the ceiling plate, the hung canopy rigging and the top
+   * of the hull wall, none of it reachable and all of it expensive; over a link
+   * it is everything above a sealed 9.5 m tube.
+   *
+   * The outer ring is cheap to add because the same two ideas that made the hub
+   * affordable hold out there and hold harder. Measured on the built world, the
+   * ring offers 137,188 triangles and the enclosure drop removes 75,806 of them
+   * - 55%, against the hub's 43% - because a zone is mostly buildings, and a
+   * building is already a box.
    */
   _solidifyStructure() {
     const t0 = performance.now();
@@ -2875,6 +2886,21 @@ export class StationWorld extends World {
    * where one box per lobe would be a crate around a sphere. The union is a
    * shell rather than a solid, which is all a capsule can ever touch.
    *
+   * ── Why the chunker is asked twice ────────────────────────────────────────
+   * Because "small" has to mean small in METRES, and `chunkTriangles` only
+   * knows about triangles. That was the same thing while every shrub on the map
+   * stood in one 400 m ring, and it stopped being the same thing the moment the
+   * outer ring started contributing planting: sixty shrubs scattered across a
+   * zone are one chunk exactly as much as sixty triangles of one hedge are, and
+   * the box around them is then a slab the size of a district. One measured
+   * 250 by 301 m, lying across the habitation link at chest height, and it
+   * sealed a fifth of the walkable map behind a bush.
+   *
+   * So the size budget is stated rather than implied: `chunkTrianglesBySpan`
+   * sends anything still wider than `PLANTING_SPAN` back through the chunker
+   * until it is a patch or a single triangle. It costs about four hundred boxes
+   * across the whole map. See `PLANTING_SPAN`.
+   *
    * Leaves buried inside their own planter are dropped first, so a tub that is
    * already solid does not get a second collider inside it.
    */
@@ -2882,7 +2908,7 @@ export class StationWorld extends World {
     const soup = this._collisionSoup((k) => PROXY_KEYS.has(k));
     if (!soup.length) return 0;
     const kept = this._dropEnclosedTriangles(soup);
-    const chunks = chunkTriangles(kept, PLANTING_TRIS);
+    const chunks = chunkTrianglesBySpan(kept, PLANTING_TRIS, PLANTING_SPAN);
     const box = new THREE.Box3();
     let added = 0;
     for (const positions of chunks) {
@@ -2940,10 +2966,14 @@ export class StationWorld extends World {
         b.fromBufferAttribute(pos, i1).applyMatrix4(o.matrixWorld);
         c.fromBufferAttribute(pos, i2).applyMatrix4(o.matrixWorld);
         const cy = (a.y + b.y + c.y) / 3;
-        if (cy < -2 || cy > COLLIDE_CEILING) continue;
+        if (cy < -2) continue;
         const cx = (a.x + b.x + c.x) / 3;
         const cz = (a.z + b.z + c.z) / 3;
-        if (cx * cx + cz * cz > DECK_R * DECK_R) continue;
+        /* One question answers both "does collision apply here" and "how high
+         * does it apply": the hub deck to 62, each zone deck to 62, each link
+         * corridor to 12, and `-Infinity` everywhere else - the dome, the apron
+         * and the space between the arms. See `collideCeilingAt`. */
+        if (cy > collideCeilingAt(cx, cz)) continue;
         if (this._insideSelfCollided(cx, cy, cz)) continue;
         tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
       }
@@ -4250,9 +4280,10 @@ export class StationWorld extends World {
     /* --- Collision ----------------------------------------------------
      *
      * A ring of tangent boxes keeps the player inside the pressure hull - and
-     * it is the ONLY thing that does. The drawn hull sits at r = 202, and
-     * `_collisionSoup` discards any triangle whose centroid is past `DECK_R`,
-     * so nothing about the wall a player sees is collided. That is deliberate
+     * it is the ONLY thing that does. The drawn hull sits at r = 202 and the
+     * hub's collision region stops at `DECK_R` = 200 (see `collideCeilingAt`,
+     * which kept that edge exactly where it was when it grew four more), so
+     * nothing about the wall a player sees is collided. That is deliberate
      * and cheap, but it means this ring is load-bearing in a way that is easy
      * to miss: it was a closed circle of forty boxes, so cutting four doorways
      * through the *drawn* hull left four doorways you could see through, walk

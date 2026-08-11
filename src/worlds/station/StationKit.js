@@ -210,6 +210,30 @@ export const CHUNK_TRIS = 32;
 /** Triangles per planting proxy box. See `_solidifyPlanting`. */
 export const PLANTING_TRIS = 64;
 
+/**
+ * Largest a planting proxy box may be in any direction.
+ *
+ * `PLANTING_TRIS` alone was a size budget in disguise, and it stopped being one
+ * the moment planting existed anywhere but the hub. The chunker splits on
+ * triangle COUNT, so sixty scattered shrubs strung across a zone are one chunk
+ * exactly as much as sixty triangles of one hedge are - and each chunk becomes a
+ * single box sized to its own bounds. Measured on the finished map the moment
+ * the outer ring started contributing: twelve boxes over 20 m and a worst case
+ * of 300 m, one of which was a solid slab 250 by 301 m lying across the
+ * habitation link at chest height. It sealed the corridor, and with it a fifth
+ * of the walkable map. Nothing about that box was visible; it was a shrub.
+ *
+ * So the size budget is now stated rather than implied. 4 m is a little larger
+ * than a real foliage lobe, which is all a proxy is ever meant to hug, and
+ * narrower than the narrowest circulation route on the map - the hab arcade's
+ * 5.4 m spokes - so a proxy can no longer span anything a player walks down.
+ * Measured over the whole map's planting: 1,024 boxes unbounded against 1,439
+ * at 4 m, and the falsely-solid volume falls from a slab the size of a district
+ * to 3,803 m3 total. Below 4 the volume curve is flat (3,615 m3 at 3 m for
+ * another 219 boxes), so this is the knee.
+ */
+export const PLANTING_SPAN = 4;
+
 /** Cell size of the deck-occupancy grid used to keep scattered props clear. */
 export const OCC_CELL = 1.5;
 
@@ -598,6 +622,63 @@ export function chunkTriangles(soup, maxTris) {
   });
 }
 
+/** Longest side of a chunk's axis-aligned bounds, in metres. */
+export function chunkSpan(positions) {
+  if (!positions.length) return 0;
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity;
+  let x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (let i = 0; i < positions.length; i += 3) {
+    const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+    if (z < z0) z0 = z;
+    if (z > z1) z1 = z;
+  }
+  return Math.max(x1 - x0, y1 - y0, z1 - z0);
+}
+
+/**
+ * `chunkTriangles`, but bounded in metres as well as in triangles.
+ *
+ * The median chunker splits on triangle COUNT, which is a stand-in for size
+ * only while the geometry is evenly dense. It is not, once the map is five
+ * decks wide: sixty shrubs scattered over a zone are one chunk exactly as much
+ * as sixty triangles of one hedge are. That matters wherever a chunk becomes a
+ * BOX - see `_solidifyPlanting`, where it produced a solid slab 250 by 301 m
+ * lying across a corridor - and not at all where a chunk stays triangles.
+ *
+ * Anything still wider than `maxSpan` goes back through the chunker with half
+ * its budget, and the loop stops the moment a split stops splitting.
+ *
+ * That last condition is not a belt-and-braces guard, it is the termination
+ * proof. Halving the budget usually makes progress because the median split
+ * always makes both halves strictly smaller - but `chunkTriangles` refuses to
+ * divide triangles whose CENTROIDS coincide, since no plane can separate them,
+ * and hands the range back whole however small the budget. Asking it again is
+ * then an infinite loop, which is what a first version of this did: `node
+ * --test` on forty stacked cards simply never returned. A single triangle, or
+ * a stack that cannot be told apart, is where this has to stop.
+ */
+export function chunkTrianglesBySpan(soup, maxTris, maxSpan) {
+  const out = [];
+  const pending = chunkTriangles(soup, maxTris);
+  while (pending.length) {
+    const positions = pending.pop();
+    const n = positions.length / 9;
+    if (n > 1 && chunkSpan(positions) > maxSpan) {
+      const parts = chunkTriangles(positions, n >> 1);
+      if (parts.length > 1) {
+        for (const part of parts) pending.push(part);
+        continue;
+      }
+    }
+    out.push(positions);
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ */
 /* Polar helpers - the whole map is laid out on radiating avenues      */
 /* ------------------------------------------------------------------ */
@@ -647,4 +728,120 @@ export function zoneLocal(deg, lx, ly, lz, out = new THREE.Vector3()) {
  */
 export function zoneYaw(deg, localYaw = 0) {
   return -Math.PI / 2 - deg * DEG + localYaw;
+}
+
+/* ------------------------------------------------------------------ */
+/* Where derived collision applies                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Ceiling for geometry-derived collision inside a link corridor.
+ *
+ * A link is a sealed 9.5 m tube: the top of its roof plate is at 9.85 m and the
+ * service bays' roofs at 9.95. Nothing higher is inside the corridor at all -
+ * what is up there is apron dressing and the dome, metres away to the side of
+ * a band that has to be wide enough to hold the glazed bays, and none of it is
+ * anywhere a player can stand. 12 clears the tube with two metres to spare.
+ */
+export const LINK_COLLIDE_CEILING = 12;
+
+/**
+ * Half-width of a link's collision band.
+ *
+ * The corridor's own walls stand at 9.7 m from the axis and its two glazed
+ * service bays reach 16.7; 18 takes both with a margin, and the ceiling above
+ * is what keeps the extra width from collecting anything that is not corridor.
+ */
+const LINK_BAND_HALF = 18;
+
+/**
+ * Four metres past the rim. The perimeter wall is drawn at `ZONE_R + 2` and is
+ * 1.1 m thick, and the deck disc runs to `ZONE_R + 3`, so this is the smallest
+ * radius that has a zone wholly inside its own region.
+ */
+const ZONE_COLLIDE_R = ZONE_R + 4;
+
+/* Hub and zone decks: cx, cz, r^2, ceiling. Then the four links: ux, uz, tMin,
+ * tMax, halfWidth^2, ceiling. Flat `Float64Array`s rather than objects because
+ * `collideCeilingAt` runs once per triangle - see its note. */
+const COLLIDE_DISCS = new Float64Array((1 + ZONES.length) * 4);
+const COLLIDE_BANDS = new Float64Array(ZONES.length * 6);
+{
+  const c = new THREE.Vector3();
+  COLLIDE_DISCS[2] = DECK_R * DECK_R;
+  COLLIDE_DISCS[3] = COLLIDE_CEILING;
+  ZONES.forEach((z, i) => {
+    zoneCentre(z.deg, c);
+    const d = (i + 1) * 4;
+    COLLIDE_DISCS[d] = c.x;
+    COLLIDE_DISCS[d + 1] = c.z;
+    COLLIDE_DISCS[d + 2] = ZONE_COLLIDE_R * ZONE_COLLIDE_R;
+    COLLIDE_DISCS[d + 3] = COLLIDE_CEILING;
+
+    const t = z.deg * DEG, b = i * 6;
+    COLLIDE_BANDS[b] = Math.cos(t);
+    COLLIDE_BANDS[b + 1] = Math.sin(t);
+    /* Starts inside the hull line and stops at the zone rim, matching the
+     * corridor `buildLink` actually draws (R0 = HULL_R - 6, R1 = the rim). The
+     * overlap at both ends is what keeps the three regions one connected
+     * surface rather than three with seams between them. */
+    COLLIDE_BANDS[b + 2] = HULL_R - 8;
+    COLLIDE_BANDS[b + 3] = ZONE_CENTRE_R - ZONE_R + 2;
+    COLLIDE_BANDS[b + 4] = LINK_BAND_HALF * LINK_BAND_HALF;
+    COLLIDE_BANDS[b + 5] = LINK_COLLIDE_CEILING;
+  });
+}
+
+/**
+ * How high geometry-derived collision reaches above `(x, z)`, or `-Infinity`
+ * where there is none.
+ *
+ * ── The defect this replaces ──────────────────────────────────────────────
+ * `_collisionSoup` used to end its per-triangle filter with
+ *
+ *     if (cx * cx + cz * cz > DECK_R * DECK_R) continue;
+ *
+ * which was right while the hub was the whole world and silently wrong from the
+ * day the outer ring was built. The four zones sit at `ZONE_CENTRE_R` = 498 with
+ * a 200 m radius of their own, so every triangle in four fifths of the finished
+ * map was thrown away before it could become a collider, and the outer ring
+ * stood on nothing but the colliders its builders had remembered to write by
+ * hand - 110 calls in the gym, 74 in the works, 69 in the galley, 13 in Hab
+ * Ring C, against roughly eight thousand drawn objects.
+ *
+ * ── Why discs and a band, and not a polygon ───────────────────────────────
+ * This is asked once per triangle, a quarter of a million times per build, so
+ * it has to stay arithmetic. It can, because the map is exactly five discs
+ * joined by four straight corridors: five squared-distance tests and four
+ * projections onto a known unit vector describe it with no approximation, and
+ * the first hit returns.
+ *
+ * The hub is tested first and its disc is untouched - same `DECK_R`, same
+ * `COLLIDE_CEILING` - so nothing about the hub's collision moves. Everything
+ * here is additive.
+ *
+ * ── Why the zones keep the hub's 62 m ceiling ─────────────────────────────
+ * Because that is what it was raised for. `COLLIDE_CEILING` above is the
+ * highest STANDABLE surface on the finished map plus a metre, and three of the
+ * four surfaces its note names are out here: the hab stacks at 46, the
+ * expansion site's scaffold decks at 52, the tower crane's walkway at 58. An
+ * arcade-height ceiling was measured against the built world before being
+ * rejected: a zone holds 4,786 candidate triangles between 32 and 62 m, every
+ * one of them in the open court where those structures stand, and exactly none
+ * under the 30 m arcade plate. Cutting the zones at the arcade would have saved
+ * nothing and taken the crane.
+ */
+export function collideCeilingAt(x, z) {
+  for (let i = 0; i < COLLIDE_DISCS.length; i += 4) {
+    const dx = x - COLLIDE_DISCS[i], dz = z - COLLIDE_DISCS[i + 1];
+    if (dx * dx + dz * dz <= COLLIDE_DISCS[i + 2]) return COLLIDE_DISCS[i + 3];
+  }
+  for (let i = 0; i < COLLIDE_BANDS.length; i += 6) {
+    const ux = COLLIDE_BANDS[i], uz = COLLIDE_BANDS[i + 1];
+    const t = x * ux + z * uz;
+    if (t < COLLIDE_BANDS[i + 2] || t > COLLIDE_BANDS[i + 3]) continue;
+    const lat = z * ux - x * uz;
+    if (lat * lat <= COLLIDE_BANDS[i + 4]) return COLLIDE_BANDS[i + 5];
+  }
+  return -Infinity;
 }

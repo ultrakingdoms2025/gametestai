@@ -656,8 +656,14 @@ export class PlayerAvatar {
   /**
    * Swap the hair shell. Geometry is cached in the factory's own cache under
    * the same key `HumanoidFactory.create` uses, so a style the player has
-   * already worn is free to return to, and everything is freed by
-   * `CharacterAssets.dispose`.
+   * already worn is free to return to.
+   *
+   * This is the one place outside `HumanoidFactory.create` that takes a hold on
+   * a cached geometry, so it has to move the hold too: acquire the new shell,
+   * then hand back the old one through the humanoid's key list. Doing it in
+   * that order means re-selecting the style you are already wearing cannot free
+   * the shell on your head, and a style dropped here is disposed as soon as no
+   * other character is wearing it rather than living until teardown.
    *
    * @param {string} style
    * @param {number} colorHex
@@ -666,12 +672,11 @@ export class PlayerAvatar {
     const h = this.humanoid;
     const A = this.factory.assets;
     const key = `hair|${style}|${h.P.key}`;
-    let geo = A.geoCache.get(key);
-    if (!geo) {
-      geo = buildHairGeometry(h.P, style, (h.seed % 9973) + 7);
-      // A style can legitimately have no geometry (bald); never cache the null.
-      if (geo) A.geoCache.set(key, geo);
-    }
+    // A style can legitimately have no geometry (bald); nothing is cached or
+    // held in that case.
+    const geo = A.acquireGeometry(key, () => buildHairGeometry(h.P, style, (h.seed % 9973) + 7));
+    h.replaceHeldGeometry(h.hairKey ?? null, geo ? key : null);
+    h.hairKey = geo ? key : null;
     if (!geo) {
       if (h.hairMesh) {
         h.hairMesh.removeFromParent();

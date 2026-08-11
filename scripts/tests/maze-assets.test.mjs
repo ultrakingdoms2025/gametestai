@@ -9,7 +9,11 @@ import { MAZE, generateTopology, cellIndex, isOpen, DIR, connectorAt } from '../
 import {
   prefabFor, releasePrefabs, isPrefab, DRESSING_KINDS,
 } from '../../src/worlds/maze/MazeMeshes.js';
-import { MAZE_ASSET_PREFABS } from '../../src/worlds/maze/MazeAssets.js';
+import { MAZE_ASSET_PREFABS, MAZE_TEXTURE_SLOTS } from '../../src/worlds/maze/MazeAssets.js';
+import {
+  MAZE_AUTHORED_TEXTURE_SIZES, MAZE_AUTHORED_TILE_METRES, MAZE_AUTHORED_CALIBRATION,
+  mazeSurfaceMode, setMazeSurfaceMode,
+} from '../../src/worlds/maze/MazeMaterials.js';
 import { CHUNK_MESH_KINDS } from '../../src/worlds/maze/MazeChunks.js';
 import { BATCH_FAMILIES, GEOMETRY_BUDGET } from '../../src/worlds/maze/MazeBatches.js';
 import { newelPlacements, NEWEL_HALF } from '../../src/worlds/maze/MazeFoliage.js';
@@ -66,7 +70,114 @@ test('asset URLs go through the Vite base, or the built game 404s', async () => 
    * a developer runs and fails only for the player. */
   const src = await readFile(path.join(root, 'src/worlds/maze/MazeAssets.js'), 'utf8');
   assert.ok(!/['"`]\/assets\//.test(src), 'a hard-coded absolute asset path');
+  /* Task 9 extends the same discipline to the vendored Basis transcoder:
+   * /vendor/basis/ is served from public/ exactly like /assets/, and a
+   * leading-slash path 404s under the /game/ base in exactly the same way. */
+  assert.ok(!/['"`]\/vendor\//.test(src), 'a hard-coded absolute vendor path');
   assert.ok(/import\.meta\.env\.BASE_URL/.test(src), 'BASE_URL is not used to build asset URLs');
+});
+
+/* ------------------------------------------------------------------ */
+/* Task 9: the bulk CC0 texture sets                                   */
+/* ------------------------------------------------------------------ */
+
+const textureEntries = manifest.assets.filter((e) => e.kind === 'texture');
+
+test('texture entries declare a surface, a slot, and a real committed file of the declared size', () => {
+  assert.ok(textureEntries.length > 0, 'Task 9 landed no texture entries');
+  for (const e of textureEntries) {
+    assert.ok(MAZE_AUTHORED_TEXTURE_SIZES[e.surface],
+      `${e.id}: surface '${e.surface}' has no entry in MAZE_AUTHORED_TEXTURE_SIZES`);
+    assert.ok(MAZE_TEXTURE_SLOTS.includes(e.slot),
+      `${e.id}: slot '${e.slot}' is not one of ${MAZE_TEXTURE_SLOTS}`);
+    const file = path.join(root, 'public/assets/maze', e.file);
+    const buf = readFileSync(file); // throws if the file is not committed
+    assert.equal(buf.length, e.bytes,
+      `${e.id}: ${e.file} is ${buf.length} bytes on disk against a declared ${e.bytes} - re-export drifted from the manifest`);
+    /* The KTX2 header is little-endian u32s after a 12-byte identifier:
+     * vkFormat@12, typeSize@16, pixelWidth@20. Reading it here is what makes
+     * the size table above a declaration with teeth rather than a comment. */
+    const magic = [0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb];
+    for (let i = 0; i < magic.length; i++) {
+      assert.equal(buf[i], magic[i], `${e.id}: ${e.file} is not a KTX2 file`);
+    }
+    const width = buf.readUInt32LE(20);
+    const height = buf.readUInt32LE(24);
+    assert.equal(width, MAZE_AUTHORED_TEXTURE_SIZES[e.surface],
+      `${e.id}: ${width}px against the declared ${MAZE_AUTHORED_TEXTURE_SIZES[e.surface]}px for '${e.surface}'`);
+    assert.equal(width, height, `${e.id}: not square`);
+  }
+});
+
+test('every surface that has any authored texture has the complete set', () => {
+  /* MazeAssets.authoredSurfaces refuses an incomplete set at runtime (an
+   * authored albedo under a procedural normal map disagrees about where the
+   * relief is); this is the commit-time version of the same rule, so an
+   * incomplete set is a test failure rather than a silent fallback. */
+  const bySurface = {};
+  for (const e of textureEntries) (bySurface[e.surface] ??= new Set()).add(e.slot);
+  for (const [surface, slots] of Object.entries(bySurface)) {
+    for (const slot of MAZE_TEXTURE_SLOTS) {
+      assert.ok(slots.has(slot), `surface '${surface}' has no ${slot} entry - the set is incomplete`);
+    }
+  }
+});
+
+test('every authored surface declares a calibration, and the declared numbers are usable', () => {
+  /* The table is a DECLARATION per surface, `null` included: the point of the
+   * exercise is that nobody adds a sixth authored set without saying, in the
+   * same commit, whether this maze's lighting can take its finish as shipped.
+   * A missing key is the failure this catches - it reads as "not calibrated"
+   * exactly like `null` does, and only one of those is a decision. */
+  const declared = Object.keys(MAZE_AUTHORED_CALIBRATION).sort();
+  const surfaces = Object.keys(MAZE_AUTHORED_TEXTURE_SIZES).sort();
+  assert.deepEqual(declared, surfaces,
+    'MAZE_AUTHORED_CALIBRATION and the authored size table disagree about which surfaces exist');
+  /* And the size table is itself held to the manifest's surface ids by the
+   * size test above, so this transitively pins the table to the manifest. */
+  for (const e of textureEntries) {
+    assert.ok(e.surface in MAZE_AUTHORED_CALIBRATION,
+      `${e.id}: surface '${e.surface}' has no entry in MAZE_AUTHORED_CALIBRATION`);
+  }
+
+  for (const [surface, cal] of Object.entries(MAZE_AUTHORED_CALIBRATION)) {
+    if (cal === null) continue;
+    const orm = cal.flatOrm;
+    assert.ok(orm, `'${surface}' declares a calibration with nothing in it`);
+    for (const ch of ['ao', 'roughness', 'metalness']) {
+      assert.ok(typeof orm[ch] === 'number' && orm[ch] >= 0 && orm[ch] <= 1,
+        `'${surface}'.flatOrm.${ch} is ${orm[ch]}, outside the 0..1 an ORM channel can carry`);
+    }
+    /* A substitute ORM exists to stop a mirror finish blowing the frame out
+     * through the bloom high-pass. Below ~0.3 it would be reintroducing the
+     * defect it was added to fix, so the floor is asserted, not trusted. */
+    assert.ok(orm.roughness >= 0.3,
+      `'${surface}'.flatOrm.roughness is ${orm.roughness} - a near-mirror, which is the defect`);
+    assert.equal(orm.metalness, 0,
+      `'${surface}'.flatOrm.metalness is ${orm.metalness}; every maze surface is a dielectric`);
+  }
+
+  /* The one entry this task exists for. ambientCG Travertine003's own
+   * roughness map measures a median of 0.0314 (p05 0.0196, p95 0.0431) - a
+   * polished slab - against the procedural stair bake's 0.7569, and at that
+   * roughness the GGX lobe clears the bloom high-pass and floods the shaft.
+   * If someone drops this entry, the whiteout comes back, so it is pinned by
+   * name rather than left to the generic loop above. */
+  assert.ok(MAZE_AUTHORED_CALIBRATION.stair?.flatOrm,
+    "'stair' (Travertine003) has no flatOrm - its authored ORM declares a mirror and blows the shaft white");
+});
+
+test('every authored surface declares its physical tile, and headless stays procedural', () => {
+  for (const surface of Object.keys(MAZE_AUTHORED_TEXTURE_SIZES)) {
+    const m = MAZE_AUTHORED_TILE_METRES[surface];
+    assert.ok(typeof m === 'number' && m > 0,
+      `'${surface}' has no physical tile size - its repeat would be undefined against world-scale UVs`);
+  }
+  /* Headless, nothing loads KTX2, so the mode must be procedural and the
+   * switch must be a safe no-op - the same never-a-hole rule as geometry. */
+  assert.equal(mazeSurfaceMode(), 'procedural');
+  assert.equal(setMazeSurfaceMode('authored'), 'procedural',
+    'setMazeSurfaceMode claimed authored surfaces exist in a session that loaded none');
 });
 
 test('a missing asset degrades to its procedural prefab', () => {

@@ -100,7 +100,14 @@ const CONTRACT = [
    * against; `loadMazeAssets` is what MazeWorld.build awaits. The manifest
    * and licence ledger are registered as files so a stray delete surfaces
    * here instead of as a silent all-fallback world. */
-  { file: 'src/worlds/maze/MazeAssets.js', exports: ['loadMazeAssets', 'MAZE_ASSET_PREFABS', 'resetMazeAssets'] },
+  /* Task 9 adds the texture side of the same pipeline: `authoredSurfaces`
+   * groups loaded KTX2 maps into complete per-surface sets, and the vendored
+   * Basis transcoder is registered as files because KTX2Loader fetches it at
+   * runtime - a stray delete would silently fall the whole world back to
+   * procedural surfaces. */
+  { file: 'src/worlds/maze/MazeAssets.js', exports: ['loadMazeAssets', 'MAZE_ASSET_PREFABS', 'resetMazeAssets', 'authoredSurfaces', 'MAZE_TEXTURE_SLOTS'] },
+  { file: 'public/vendor/basis/basis_transcoder.js', exports: [] },
+  { file: 'public/vendor/basis/basis_transcoder.wasm', exports: [] },
   { file: 'public/assets/maze/manifest.json', exports: [] },
   { file: 'public/assets/maze/newel-finial.glb', exports: [] },
   { file: 'docs/assets/LICENCES.md', exports: [] },
@@ -118,7 +125,10 @@ const CONTRACT = [
   /* Phase 6 Task 5 adds the surfacing seam: the async yield-path builder, the
    * declared size table and its byte sum (the headless texture budget), and
    * the bake timer the boot-cost gate reads in the browser. */
-  { file: 'src/worlds/maze/MazeMaterials.js', exports: ['buildMazeMaterials', 'buildMazeMaterialsAsync', 'materialFingerprint', 'MAZE_PROGRAM_FAMILIES', 'MAZE_PROGRAM_BUDGET', 'MAZE_TEXTURE_SIZES', 'declaredTextureBytes', 'surfaceBakeMillis'] },
+  /* Task 9 adds the authored-surface seam: the KTX2 size and physical-tile
+   * tables (the authored half of the texture budget), the per-material
+   * swap `MazeWorld.build` calls, and the A/B switch the harness exposes. */
+  { file: 'src/worlds/maze/MazeMaterials.js', exports: ['buildMazeMaterials', 'buildMazeMaterialsAsync', 'materialFingerprint', 'MAZE_PROGRAM_FAMILIES', 'MAZE_PROGRAM_BUDGET', 'MAZE_TEXTURE_SIZES', 'declaredTextureBytes', 'surfaceBakeMillis', 'applyAuthoredSurfaces', 'setMazeSurfaceMode', 'mazeSurfaceMode', 'MAZE_AUTHORED_TEXTURE_SIZES', 'MAZE_AUTHORED_TILE_METRES'] },
   /* Phase 3. `MazePlan.js` is pure so both map surfaces derive their walls
    * from one definition; `MazeMap.js` is the M-key overlay that draws them. */
   { file: 'src/worlds/maze/MazePlan.js', exports: ['planCacheKey', 'levelSegments'] },

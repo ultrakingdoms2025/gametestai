@@ -18,7 +18,7 @@
  */
 
 import {
-  MAZE, DIR, cellIndex, isOpen, cellToWorld, connectorAt, hash32,
+  MAZE, DIR, OPPOSITE, cellIndex, isOpen, cellToWorld, connectorAt, hash32,
 } from './MazeTopology.js';
 
 /**
@@ -217,16 +217,25 @@ export const ENTRY_SEAL_FROM = MAZE.HEDGE_HEIGHT - MAZE.HOP - MAZE.STEP_HEIGHT -
  * the wall starts at `HEDGE_HEIGHT` rather than the floor, stacking
  * CONTIGUOUSLY on top of the ordinary 5 m hedge `districtColliders` already
  * draws there (that hedge is owned by - always emitted by - this same
- * cell, so it is always present alongside this wall; `isEnclosureSound`
- * already treats vertically contiguous pieces as one span, so this loses no
- * coverage) instead of duplicating it floor-to-top. EAST and SOUTH keep
- * full floor-to-top walls: those sides' 5 m hedge, when it exists, is owned
- * and emitted by the NEIGHBOURING cell, which can be a different district
- * on a seam - `districtColliders`'s own doc comment explains why S/E
- * ownership works that way. Relying on that neighbour's output here would
- * reintroduce exactly the district-seam dependency Task 3's Trap 2 was
- * written to avoid, for a purely cosmetic collider-count saving, so it is
- * not worth it: E/S stay fully self-sufficient.
+ * cell; `isEnclosureSound` already treats vertically contiguous pieces as
+ * one span, so this loses no coverage) instead of duplicating it
+ * floor-to-top. EAST and SOUTH keep full floor-to-top walls: those sides'
+ * 5 m hedge, when it exists, is owned and emitted by the NEIGHBOURING cell,
+ * which can be a different district on a seam - `districtColliders`'s own
+ * doc comment explains why S/E ownership works that way. Relying on that
+ * neighbour's output here would reintroduce exactly the district-seam
+ * dependency Task 3's Trap 2 was written to avoid, for a purely cosmetic
+ * collider-count saving, so it is not worth it: E/S stay fully
+ * self-sufficient.
+ *
+ * Being EMITTED by this cell turned out not to be the same as being THERE,
+ * which is what `hedgeSurvivesOn` now decides (fix round 5). The hedge is
+ * emitted unconditionally but `dropHedgesInsideShafts` can delete it
+ * afterwards as a duplicate, and when it does the stacked panel is left
+ * standing on nothing - the shaft's own enclosure resting on a box in the
+ * district next door, which is the very dependency the paragraph above
+ * refuses. So N/W stack only where the hedge genuinely survives, and fall
+ * back to E/S's full floor-to-top wall where it does not.
  *
  * The walls stop at `LEVEL_HEIGHT`, not `LEVEL_HEIGHT + HEDGE_HEIGHT` (fix
  * round 3, Finding 1 - the mirror image of round 2's ceiling bug). Above a
@@ -644,6 +653,64 @@ export const LIFT_DOOR_OPEN_RISE = MAZE.STEP_HEIGHT * 0.5;
 export const liftWellBounds = stairWellBounds;
 
 /**
+ * Is (x, z) inside SOME connector's region on this level?
+ *
+ * Not the same question as "does this cell carry the UP link". A tunnel folds
+ * across TWO cells (see `tunnelRegion`), and its outer walls stand on the far
+ * cell's faces just as solidly as on the link cell's, so a caller asking "is
+ * there a connector wall on the other side of this face" has to count the fold
+ * cell too. Topology only - `connectorRegion` reads the cell array and nothing
+ * else - so this can be asked from inside `shaftWalls` without the question
+ * travelling back round through `shaftColliders` and into `shaftWalls` again.
+ */
+function inConnectorRegion(cells, x, z, level) {
+  if (isOpen(cells, cellIndex(x, z, level), DIR.UP)) return true;
+  /* Only a tunnel reaches past its own cell, and only by one, so the link cell
+   * of any region covering (x, z) is one of the four neighbours. */
+  for (const [ax, az] of [[x, z - 1], [x + 1, z], [x, z + 1], [x - 1, z]]) {
+    if (ax < 0 || az < 0 || ax >= MAZE.CELLS || az >= MAZE.CELLS) continue;
+    if (!isOpen(cells, cellIndex(ax, az, level), DIR.UP)) continue;
+    const r = connectorRegion(cells, ax, az, level);
+    if (x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1) return true;
+  }
+  return false;
+}
+
+/**
+ * Will this cell's own 5 m hedge on side `s` still be standing once the
+ * district is finished?
+ *
+ * The stacking rule below rests on it. `districtColliders` emits that hedge
+ * unconditionally, but it also runs `dropHedgesInsideShafts` afterwards, which
+ * deletes a hedge that some shaft wall swallows whole - and a connector in the
+ * cell across this face walls this very plane from the FLOOR (its own east or
+ * south side, or any face of a tunnel region, is never the stacked kind). Such
+ * a wall contains the 0-5 m hedge exactly, so the hedge goes, and a panel that
+ * started at `HEDGE_HEIGHT` on the strength of it would be left standing on
+ * nothing.
+ *
+ * Measured: seed 809 cell (40,1) is a staircase whose west neighbour (39,1) is
+ * a staircase too. (39,1) stood its full-height east wall on the shared plane,
+ * the drop took (40,1)'s west hedge as a duplicate, and (40,1)'s west side was
+ * left open from 0 to 5 m in ITS OWN district's descriptor list - the covering
+ * box being in district (1,0) next door. That is exactly the district-seam
+ * dependency `stairColliders`'s comment refuses to accept for east and south,
+ * so north and west decline it here too and fall back to the same full
+ * floor-to-top wall. The solid space is unchanged either way; what changes is
+ * that the shaft once again proves its own enclosure out of its own district.
+ *
+ * An OPEN face on the neighbour's side is not a threat: whatever the connector
+ * over there stands on a doorway starts at `ENTRY_SEAL_FROM`, well above the
+ * hedge's top, so it cannot contain it and the hedge survives.
+ */
+function hedgeSurvivesOn(cells, x, z, level, s) {
+  const nx = x + s.dx, nz = z + s.dz;
+  if (nx < 0 || nz < 0 || nx >= MAZE.CELLS || nz >= MAZE.CELLS) return true;
+  if (isOpen(cells, cellIndex(nx, nz, level), OPPOSITE[s.dir])) return true;
+  return !inConnectorRegion(cells, nx, nz, level);
+}
+
+/**
  * The four sides of a shaft cell, walled from the floor - or from
  * `ENTRY_SEAL_FROM` on a side the topology leaves open - up to `LEVEL_HEIGHT`.
  *
@@ -667,7 +734,7 @@ export function shaftWalls(cells, x, z, level) {
     const open = isOpen(cells, idx, s.dir);
     let baseY;
     if (open) baseY = w.y + ENTRY_SEAL_FROM;
-    else if (s.selfOwned) baseY = w.y + MAZE.HEDGE_HEIGHT;
+    else if (s.selfOwned && hedgeSurvivesOn(cells, x, z, level, s)) baseY = w.y + MAZE.HEDGE_HEIGHT;
     else baseY = w.y;
     const topY = w.y + H;
     out.push({

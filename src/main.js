@@ -368,6 +368,18 @@ if (overrides.dev) {
     waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, caches, contracts,
   cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   interiors, mazeMap,
+    /* The only door out of this file the harness is allowed through. Kept
+     * behind `__dev` rather than spread across GAME so it is obvious at a call
+     * site that a measurement is reaching into the integration layer. */
+    __dev: {
+      /** @see setDevGameplayDriven - runs gameplay without a pointer lock. */
+      setGameplayDriven: (on) => setDevGameplayDriven(on),
+      isGameplayDriven: () => devGameplayDriven,
+      /** Everything currently holding the gameplay update block open. */
+      gameplayBlocks: () => [...gameplayUiBlocks],
+      /** The one live shadow-casting light, for the frame-cost model in stats(). */
+      sun,
+    },
   };
   import('./dev/Harness.js').then(({ installHarness }) => installHarness(window.GAME));
 }
@@ -796,6 +808,35 @@ function setGameplayBlocked(id, blocked) {
   else gameplayUiBlocks.delete(id);
 }
 
+/* ?dev=1 only: let the harness run gameplay without a pointer lock.
+ *
+ * An automated browser cannot hold a pointer lock - the request is refused
+ * without a user gesture, and any lock it does get is dropped the moment the
+ * window is backgrounded. Either way Chrome fires `pointerlockchange`, the
+ * handler below adds 'standby' to `gameplayUiBlocks`, and the whole
+ * `if (!uiPaused)` block in the frame updater stops running for the life of
+ * the page. The game still RENDERS, so nothing looks wrong.
+ *
+ * What silently stops: `npcManager.update` (so `_updateLOD` never fires and
+ * every NPC stays at `distance: 0, detail: true, rate: 1` at any range) and
+ * `worldManager.active.update` (so every world's per-frame LOD bands freeze).
+ * Three separate performance measurement runs reported that LOD-disabled worst
+ * case as if it were what a player sees. Do not remove this without reading
+ * `Harness.setGameplayDriven` first.
+ *
+ * `devGameplayDriven` starts false and is only ever written by src/dev/Harness.js,
+ * which is only imported under ?dev=1 - with it off this file behaves exactly as
+ * it did before, for every real player. */
+let devGameplayDriven = false;
+function setDevGameplayDriven(on) {
+  devGameplayDriven = !!on;
+  // Re-derive 'standby' from the truth rather than assuming: turning the driver
+  // off while genuinely unlocked must put the block back.
+  setGameplayBlocked('standby', !devGameplayDriven && !input.locked);
+  if (devGameplayDriven) hud.showPauseOverlay(false);
+  return devGameplayDriven;
+}
+
 bus.on('chat:open', () => setGameplayBlocked('chat', true));
 bus.on('chat:close', () => setGameplayBlocked('chat', false));
 bus.on('help:open', () => setGameplayBlocked('help', true));
@@ -914,10 +955,11 @@ bus.on('bug-report:open', () => setGameplayBlocked('bug-report', true));
 bus.on('bug-report:close', () => setGameplayBlocked('bug-report', false));
 
 bus.on('input:lockchange', ({ locked }) => {
-  setGameplayBlocked('standby', !locked);
+  // `devGameplayDriven` is false for every real player; see its declaration.
+  setGameplayBlocked('standby', !locked && !devGameplayDriven);
   // Pausing on unlock keeps the world from simulating while a menu is open,
   // except when the chat box deliberately released the pointer.
-  if (!locked && !hud.chatOpen) hud.showPauseOverlay(true);
+  if (!locked && !hud.chatOpen && !devGameplayDriven) hud.showPauseOverlay(true);
   else hud.showPauseOverlay(false);
 });
 

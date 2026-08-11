@@ -401,6 +401,15 @@ export class PlayerAvatar {
     this._collectMaterials();
     this._shadowOnly = false;
     this._visible = true;
+    /* ?dev=1 only. The harness detaches the camera (`player._harnessFrozen`) and
+     * the rule below then SHOWS the body, so a review shot of the character is
+     * not of an invisible one. But a measurement framing moves the player to the
+     * camera as well - that is the only way the sun's shadow camera, which is
+     * aimed at the player, covers what is on screen - and at that point the body
+     * is standing in the lens. Setting this restores the ordinary first-person
+     * silencing for the duration. Written only by src/dev/Harness.js; false for
+     * every real player, so the rule below is unchanged for them. */
+    this.harnessShadowOnly = false;
 
     /* --- animation state ------------------------------------------ */
     this._bodyYaw = player?.yaw ?? 0;
@@ -837,7 +846,9 @@ export class PlayerAvatar {
     // shown for a screenshot regardless of mode - otherwise every third-person
     // review shot would be of an invisible player. The character panel needs the
     // same exemption for the same reason: it is a preview of the body.
-    this._setShadowOnly((!third || crushed) && !p._harnessFrozen && !this._preview);
+    this._setShadowOnly(
+      this.harnessShadowOnly || ((!third || crushed) && !p._harnessFrozen && !this._preview)
+    );
 
     if (this.followPlayer) {
       this._root.position.copy(p.position);

@@ -63,6 +63,44 @@ const WALL_T = 0.4;
  */
 const PLINTH = 0.9;
 
+/** Thickness of a drawn escalator tread. */
+export const TREAD_T = 0.12;
+/**
+ * Height of a tread's centre above the deck datum it is built on.
+ *
+ * Baked into `StationWorld._runEscalators`, which re-derives every tread's
+ * position from the run's datum as `y0 + rise * f + 0.06` on every animated
+ * frame. Changing it here alone would put the treads back where they were the
+ * moment the first flight came into range.
+ */
+export const TREAD_MOUNT = 0.06;
+
+/**
+ * How far a flight's deck datum sits below the line its riders walk on.
+ *
+ * A flight's line runs from `floorY(f)` to `floorY(f + 1)` exactly, and the
+ * part of the assembly that has to lie ON that line is the TOP FACE of a
+ * tread - that is what "the escalator meets the floor" means, at the comb
+ * plate and at the landing alike. A tread is `TREAD_T` thick and pitched with
+ * the flight, so vertically its centre is `TREAD_T/2/cos(pitch)` below its own
+ * top face, and it is mounted `TREAD_MOUNT` above the deck. Add the two and
+ * you have the distance the deck has to drop for the tread tops to land on the
+ * line.
+ *
+ * Seating the treads by their CENTRES instead - putting the centre on the line
+ * plus `TREAD_MOUNT` - is what the first version did, and at the standard
+ * 30-degree pitch that is 0.129 m of lift on every tread top in the building:
+ * a lip to step over at the foot of all 76 flights and a drop off the head of
+ * all 76.
+ *
+ * @param {number} pitch  flight pitch in radians, either sign
+ * @param {number} [treadThickness]
+ * @returns {number}
+ */
+export function escalatorDeckDrop(pitch, treadThickness = TREAD_T) {
+  return TREAD_MOUNT + (treadThickness / 2) / Math.cos(Math.abs(pitch));
+}
+
 /**
  * @typedef {object} TowerSpec
  * @property {number} x        world X of the tower centre
@@ -295,13 +333,34 @@ export function buildTower(world, B, g, spec, rng) {
     // capsule happily walks down it into the floor below.
     const pitch = -dir * Math.atan2(FLOOR_H, run);
 
+    /* Where the deck sits relative to the flight's walking line.
+     *
+     * `y0`..`y1` is the line a RIDER travels along, and its ends are exactly
+     * `floorY(f)` and `floorY(f + 1)` by construction - that is what makes a
+     * flight meet its landings. The one part of the assembly that has to touch
+     * that line is the TOP FACE of a tread, so the treads are seated by their
+     * tops rather than by their centres.
+     *
+     * `escalatorDeckDrop` is the distance between the two and carries the
+     * reasoning; it is exported and tested headlessly because it is the whole
+     * of the fix and nothing else in this file can be reached under Node.
+     *
+     * Everything else hangs off the deck rather than off the line, so the
+     * truss, the grate, the balustrades and the handrails all move with it and
+     * the flight is unchanged in itself - it just stops floating over its own
+     * floors.
+     */
+    const deckDrop = escalatorDeckDrop(pitch);
+    const dy0 = y0 - deckDrop;      // tread datum at the foot; + TREAD_MOUNT is a tread centre
+    const dcy = cy - deckDrop;      // the same datum at the flight's middle
+
     // Truss, balustrades and handrails.
-    put('panelDark', boxGeo(LANE_HALF * 2 + 0.5, 0.7, len, 3), lane, cy - 0.55, cz, 0, pitch);
-    put('grate', boxGeo(LANE_HALF * 2, 0.14, len, 2), lane, cy - 0.05, cz, 0, pitch);
+    put('panelDark', boxGeo(LANE_HALF * 2 + 0.5, 0.7, len, 3), lane, dcy - 0.55, cz, 0, pitch);
+    put('grate', boxGeo(LANE_HALF * 2, 0.14, len, 2), lane, dcy - 0.05, cz, 0, pitch);
     for (const s of [-1, 1]) {
-      put('glassWindow', new THREE.PlaneGeometry(len, 1.05), lane + s * (LANE_HALF + 0.06), cy + 0.55, cz, s > 0 ? -Math.PI / 2 : Math.PI / 2, 0, pitch);
-      put('trimDark', boxGeo(0.22, 0.22, len, 1), lane + s * (LANE_HALF + 0.06), cy + 1.12, cz, 0, pitch);
-      put(accent, boxGeo(0.1, 0.08, len, 1), lane + s * (LANE_HALF + 0.06), cy + 1.24, cz, 0, pitch);
+      put('glassWindow', new THREE.PlaneGeometry(len, 1.05), lane + s * (LANE_HALF + 0.06), dcy + 0.55, cz, s > 0 ? -Math.PI / 2 : Math.PI / 2, 0, pitch);
+      put('trimDark', boxGeo(0.22, 0.22, len, 1), lane + s * (LANE_HALF + 0.06), dcy + 1.12, cz, 0, pitch);
+      put(accent, boxGeo(0.1, 0.08, len, 1), lane + s * (LANE_HALF + 0.06), dcy + 1.24, cz, 0, pitch);
     }
 
     /* Treads. Instanced boxes that slide along the slope and wrap, rather than
@@ -312,13 +371,19 @@ export function buildTower(world, B, g, spec, rng) {
     for (let i = 0; i < STEPS; i++) {
       const t = i / STEPS;
       const px = lane;
-      const py = y0 + FLOOR_H * t + 0.06;
+      const py = dy0 + FLOOR_H * t + TREAD_MOUNT;
       const pz = z0 + dir * run * t;
       treadEntries.push([px, py, pz, pitch, 0, 0, 1, 1, 1]);
     }
     escalators.push({
       first: treadEntries.length - STEPS, count: STEPS,
-      lane, dir, z0, y0, runH: run, rise: FLOOR_H, len, pitch, step,
+      // `y0` here is the TREAD DATUM, not the walking line: `_runEscalators`
+      // re-derives every tread centre as `y0 + rise * f + 0.06` each frame, so
+      // the datum it is handed has to be the one the treads were built on or
+      // the first animated frame would put the deck back where it was. The
+      // walking line itself is `world.a`..`world.b` below, which is what the
+      // rider assist and the placement audit read.
+      lane, dir, z0, y0: dy0, runH: run, rise: FLOOR_H, len, pitch, step,
       // World-space data the player assist needs.
       world: {
         a: P(lane, y0, z0),
@@ -331,15 +396,23 @@ export function buildTower(world, B, g, spec, rng) {
      *
      * `_ramp` centres a 0.5 m thick box on the point it is given, so the
      * surface a capsule rests on is a quarter of a metre above it - measured
-     * vertically, that is 0.25/cos(pitch), because the slab is tilted. Passing
-     * the tread line straight through would float the player 29 cm over the
-     * steps; this puts the collision surface just under the tread tops so feet
-     * meet the geometry they appear to be standing on.
+     * vertically, that is 0.25/cos(pitch), because the slab is tilted. That
+     * thickness correction is not negotiable and is not what was wrong.
+     *
+     * What the surface aims AT has changed. It used to be `cy + 0.10`, whose
+     * note read "this puts the collision surface just under the tread tops so
+     * feet meet the geometry they appear to be standing on" - true of the
+     * treads, but the treads were themselves 0.129 m above the floors, so the
+     * collision surface inherited 0.100 m of that and the player stepped off
+     * every landing onto a shelf. With the treads seated on the walking line
+     * (see `deckDrop`) there is nothing left to compensate for: the line IS the
+     * tread tops and IS `floorY` at both ends, so aiming at it satisfies the
+     * old note exactly and meets the slabs as well.
      *
      * It also measures its run along the local +Z of the yaw it is handed, so a
      * flight heading -Z is the same ramp turned round.
      */
-    const surfaceY = cy + 0.10;
+    const surfaceY = cy;
     const rp = P(lane, surfaceY - 0.25 / Math.cos(Math.abs(pitch)), cz);
     world._ramp(rp.x, rp.y, rp.z, LANE_HALF * 2, run, FLOOR_H, dir > 0 ? yaw : yaw + Math.PI);
 
@@ -350,13 +423,27 @@ export function buildTower(world, B, g, spec, rng) {
       put('grate', boxGeo(LANE_HALF * 2, SLAB_T, lcd, 2), lane, y1 - SLAB_T / 2, lcz);
       solid(lane, y1 - SLAB_T / 2, lcz, LANE_HALF, SLAB_T / 2, lcd / 2);
     }
-    // Comb plates top and bottom.
+    /* Comb plates top and bottom.
+     *
+     * These were 0.12 m thick and stood on the landing, which read as flush
+     * only because the treads used to stand 0.129 m proud of it too. With the
+     * treads seated on the floor, that thickness became exactly the lip this
+     * work exists to remove - a hazard-striped kerb across the mouth of every
+     * flight, standing over the steps it is supposed to comb into.
+     *
+     * It lies ON the slab rather than being let into it: the underside stays at
+     * `py`, so the plate is still standing on the thing under it, and its top
+     * face is 30 mm proud instead of coplanar with a slab face it would z-fight
+     * with. 30 mm is the nosing a real comb plate has and is far below anything
+     * the player can feel - the plate carries no collider either way.
+     */
+    const COMB_T = 0.03;
     for (const [pz, py] of [[z0, y0], [z1, y1]]) {
-      put('hazard', boxGeo(LANE_HALF * 2, 0.12, 0.9, 1), lane, py + 0.06, pz);
+      put('hazard', boxGeo(LANE_HALF * 2, COMB_T, 0.9, 1), lane, py + COMB_T / 2, pz);
     }
   }
   if (treadEntries.length) {
-    const treads = instanced(boxGeo(LANE_HALF * 2 - 0.12, 0.12, 0.42, 1), M.chrome, treadEntries, { cast: false, recv: true });
+    const treads = instanced(boxGeo(LANE_HALF * 2 - 0.12, TREAD_T, 0.42, 1), M.chrome, treadEntries, { cast: false, recv: true });
     if (treads.isInstancedMesh) {
       // Local -> world for the whole bank in one transform, so the per-frame
       // update can work entirely in the tower's own frame.

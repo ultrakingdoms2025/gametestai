@@ -8,6 +8,7 @@ import { Bicycle } from './Bicycle.js';
 import { characterCreateParams, applyCharacterColors } from '../player/PlayerAvatar.js';
 import { HumanoidFactory } from '../npc/Humanoid.js';
 import { allows } from '../worlds/WorldRules.js';
+import { flightCeilingAt } from './FlightCeiling.js';
 
 /**
  * Mount ownership and the mounted movement authority.
@@ -460,8 +461,10 @@ export class MountManager {
    *
    * Five copies of one rule is four too many, and a sixth mount would have
    * arrived without it, so it lives on the manager: every mount, every fixed
-   * step, whatever it is. Worlds already publish `bounds`, so there is nothing
-   * to author per world either.
+   * step, whatever it is. Worlds already publish `bounds`, so the walls need
+   * nothing authored per world - and the one world whose ROOF is not a plane
+   * answers for its own shape through `FlightCeiling`, which is a lookup here
+   * rather than a fifth copy in a fifth mount.
    *
    * ── Why it pushes rather than walls ───────────────────────────────────────
    *
@@ -484,29 +487,57 @@ export class MountManager {
     const maxX = b.max.x - PAD;
     const minZ = b.min.z + PAD;
     const maxZ = b.max.z - PAD;
-    let hit = false;
+    let hitWall = false;
 
-    if (p.x < minX) { p.x = minX; hit = true; if (m.velocity && m.velocity.x < 0) m.velocity.x = 0; }
-    else if (p.x > maxX) { p.x = maxX; hit = true; if (m.velocity && m.velocity.x > 0) m.velocity.x = 0; }
-    if (p.z < minZ) { p.z = minZ; hit = true; if (m.velocity && m.velocity.z < 0) m.velocity.z = 0; }
-    else if (p.z > maxZ) { p.z = maxZ; hit = true; if (m.velocity && m.velocity.z > 0) m.velocity.z = 0; }
+    if (p.x < minX) { p.x = minX; hitWall = true; if (m.velocity && m.velocity.x < 0) m.velocity.x = 0; }
+    else if (p.x > maxX) { p.x = maxX; hitWall = true; if (m.velocity && m.velocity.x > 0) m.velocity.x = 0; }
+    if (p.z < minZ) { p.z = minZ; hitWall = true; if (m.velocity && m.velocity.z < 0) m.velocity.z = 0; }
+    else if (p.z > maxZ) { p.z = maxZ; hitWall = true; if (m.velocity && m.velocity.z > 0) m.velocity.z = 0; }
 
-    // The ceiling is the only vertical limit worth enforcing here: the floor is
-    // whatever the ground is, and every mount already answers to that.
-    if (p.y > b.max.y) {
-      p.y = b.max.y;
-      hit = true;
+    /* The ceiling is the only vertical limit worth enforcing here: the floor is
+     * whatever the ground is, and every mount already answers to that.
+     *
+     * `bounds.max.y` is a flat plane, which is the right answer for a world
+     * with an open sky and the wrong one for a world with a roof: the station
+     * is a dome, 170 m over the middle and 70 m at the rim, and a flat 164 m
+     * ceiling let a flying mount out through the glass over most of the floor
+     * area. `flightCeilingAt` returns the roof height over this exact point in
+     * the worlds that have one and `null` in the five that do not, so the
+     * lower of the two is the ceiling and nothing changes anywhere else.
+     *
+     * Same soft response as the walls: the position is held and only the
+     * upward velocity is cancelled, so a mount flown into the glass levels off
+     * and keeps going rather than stopping dead and dropping out of the sky.
+     */
+    const roofY = flightCeilingAt(this.worldManager?.active, p.x, p.z);
+    const maxY = roofY === null ? b.max.y : Math.min(b.max.y, roofY);
+    let hitRoof = false;
+    if (p.y > maxY) {
+      p.y = maxY;
+      hitRoof = true;
       if (m.velocity && m.velocity.y > 0) m.velocity.y = 0;
     }
 
-    if (!hit) { if (m === this._active) this._edgeNotified = false; return; }
-    /* Speed is bled rather than zeroed. A flying mount that stops dead falls out
-     * of the sky, which turns "you reached the edge" into "you died at the
-     * edge"; this leaves it flying, just not outward. */
-    if (typeof m.speed === 'number' && m.speed > 0) m.speed *= 0.94;
+    if (!hitWall && !hitRoof) { if (m === this._active) this._edgeNotified = false; return; }
+    /* Speed is bled at a WALL and left alone at the roof.
+     *
+     * At a wall it is bled rather than zeroed. A flying mount that stops dead
+     * falls out of the sky, which turns "you reached the edge" into "you died
+     * at the edge"; this leaves it flying, just not outward.
+     *
+     * At the roof the speed is ALONG the surface rather than into it, and the
+     * same 0.94 would be a very different rule. Under the rim of the station's
+     * dome the glass comes down to 70 m, so a mount cruising there is in
+     * contact for as long as it stays there - 0.94 a fixed step is a dead stop
+     * inside two seconds, which is the invisible wall this is supposed not to
+     * be. Cancelling the climb and leaving the flight alone is what a ceiling
+     * does: you level off under the glass and carry on.
+     */
+    if (hitWall && typeof m.speed === 'number' && m.speed > 0) m.speed *= 0.94;
     if (ridden && !this._edgeNotified) {
       this._edgeNotified = true;
-      this.bus?.emit('hud:notify', { text: 'Edge of the region', tone: 'warn' });
+      const text = hitWall ? 'Edge of the region' : 'Ceiling of the region';
+      this.bus?.emit('hud:notify', { text, tone: 'warn' });
     }
   }
 

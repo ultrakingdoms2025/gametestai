@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { sweep, blob } from '../gfx/Organic.js';
 import { World } from './World.js';
+import { DistanceLod, SURFACE } from './lod/DistanceLod.js';
 import { Collider } from '../physics/Physics.js';
 import {
   RaceCourse, Lattice, slabMatrix, mulberry32,
@@ -196,6 +197,90 @@ function pick(rnd, list) {
 /** Edge round applied to batched boxes, and the size below which it is skipped. */
 const BEVEL = 0.07;
 const BEVEL_MIN = 0.6;
+
+/* ------------------------------------------------------------------ */
+/* Distance LOD                                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Distance past which a scenery tile swaps to its cheap geometry, metres,
+ * measured to the NEAREST POINT of the tile's bounding sphere.
+ *
+ * The measure is what makes one number defensible for 2 400 trees at once.
+ * `_instance` splits scenery into 300 m tiles (see its docstring - that split
+ * is what gives the frustum culler something to reject, and none of it is
+ * touched here), so a tile's sphere has a ~195 m radius and "surface distance
+ * past 170" means *every* tree in that tile is at least 170 m away and the
+ * median one is past 350. The quoted distance is therefore a floor, not an
+ * average.
+ *
+ * 170 m rather than something braver because that floor is what has to survive
+ * inspection. A 9.5 m conifer at 170 m is ~85 px tall in a 720 p frame and its
+ * widest skirt is ~26 px across; the swap turns that skirt from a 9-sided
+ * sweep into a 5-sided one, so a facet goes from ~9 px to ~16 px of silhouette
+ * arc. Measured by A/B screenshot at 120/170/240 m - see the ladder in the
+ * commit message - 120 m is where the pentagonal skirt starts to read on the
+ * nearest tree in a demoted tile and 170 m is comfortably clear of it.
+ *
+ * Unlike Medieval's quadrant buckets, these tiles are small relative to their
+ * map: 300 m tiles on a 1 320 m playfield with 760 m of fog means a vantage
+ * sees tiles at every distance from underfoot to a kilometre, and 75-96% of
+ * the crown triangles in frustum sit past this line at five of the six
+ * framings. The exception is cinder-gorge, where the four visible tiles are
+ * all within 89 m and nothing demotes at all - correctly, since the gorge is
+ * a close-quarters framing with the trees right beside the road.
+ */
+const CONIFER_LO_DISTANCE = 170;
+
+/**
+ * Same, for rock outcrops.
+ *
+ * Further out than the trees, which is the opposite of what the face counts
+ * suggest and is the result of measuring instead of assuming. A rock goes from
+ * a 180-face icosphere to an 80-face one - a 21 degree face against a 32
+ * degree one, both apparently inside the bandwidth of a displacement whose
+ * shortest feature is ~60 degrees. Cast 4 096 rays at the pair, though, and
+ * the two surfaces differ by up to 22% of the local radius (mean absolute 4%,
+ * mean signed -0.6% to -3%): the deviation is two-sided, so there is no scale
+ * factor that fixes it the way {@link CONIFER_LO_INFLATE} fixes the crown, and
+ * the only lever left is distance.
+ *
+ * 200 m puts the widest rock in the world (an 11.7 m boulder) at 32 px and its
+ * worst-case outline wobble at 2 px, with the median rock nearer 12 px. The
+ * band is doing less work than the trees' - rocks are 5-8% of the world's
+ * triangles against the trees' 55% - so buying the margin costs little.
+ */
+const ROCK_LO_DISTANCE = 200;
+
+/**
+ * Radius multiplier for the cheap conifer skirt.
+ *
+ * A lower-tessellation ring inscribed in the same circle casts a narrower
+ * silhouette, so a naive swap shrinks every crown in the far field at exactly
+ * the distance where the outline is all there is to see - the "treeline
+ * quietly recedes" artefact that makes an LOD visible. This is the correction.
+ *
+ * It is 1.1%, not the 6.7% the obvious arithmetic gives, and the difference is
+ * worth spelling out because getting it wrong is an artefact in the other
+ * direction. The silhouette half width of a ring of N vertices seen from yaw
+ * `t` is `r * max_k |sin(2*pi*k/N - t)|`, and |sin| has period pi - so when N
+ * is ODD the N vertices fold onto 2N directions spaced pi/N apart, not N
+ * spaced 2pi/N. Both 9 and 5 are odd. The worst yaw therefore misses a vertex
+ * by 10 degrees at N = 9 (0.985 r) and by 18 degrees at N = 5 (0.951 r), and
+ * the ratio of the yaw-averaged widths is 0.989, not the 0.905/0.970 an even-N
+ * reading of the same formula predicts.
+ *
+ * Measured rather than trusted: over 72 yaws the cheap crown at this
+ * multiplier is 3.0% narrower to 2.6% wider than the expensive one, mean
+ * +0.0%. At 1.07 it was 2.7% to 8.6% wider at every yaw - a treeline that
+ * visibly THICKENS as it demotes, which is the same tell as one that thins.
+ *
+ * Not applied to the trunk. Its correction would be a fifth of a pixel on a
+ * ~2 px silhouette at {@link CONIFER_LO_DISTANCE}, and the trunk spends all
+ * but its bottom 1.8 m inside the skirts, where widening it can only push it
+ * through them.
+ */
+const CONIFER_LO_INFLATE = 1.011;
 
 /**
  * Geometry accumulator: collects transformed geometries per material key and
@@ -475,6 +560,12 @@ export class RaceWorld extends World {
 
     this._owned = [];
     this._time = 0;
+    /**
+     * Distance LOD for the scenery tiles. Registrations are added by
+     * `_instance`; nothing else in this world moves far enough from the camera
+     * for a band to be worth the sphere transform.
+     */
+    this._lod = new DistanceLod();
     /** The selected circuit's course. Prefer `courseSet` for anything global. */
     this.course = null;
     this._configureEnvironment();
@@ -2554,14 +2645,49 @@ export class RaceWorld extends World {
    * at any speed that lets it be examined - it exists so the middle distance
    * has something in it, which is the difference between a track and a place.
    */
-  _buildScenery() {
-    const rnd = this.rnd;
-    const co = this.courseSet;
+  /**
+   * The one conifer every tree in this world is an instance of, at a chosen
+   * tessellation.
+   *
+   * Everything that decides the tree's *shape* - trunk height and lean, four
+   * skirts at 2.1 m spacing, the taper `r(1-u)(1-0.2u)` - is identical in both
+   * lods, and only the resolution the shape is sampled at changes. That is the
+   * property that lets `DistanceLod` swap between them mid-frame: the two
+   * geometries occupy the same volume about the same axis, so the swap has no
+   * position to give it away, only a facet count.
+   *
+   * The two knobs, and what each is worth per tree (432 triangles of crown,
+   * 104 of trunk at 'hi'):
+   *
+   *   radial   9 -> 5 on the skirts, 8 -> 4 on the trunk. This is the one that
+   *            can be seen, and {@link CONIFER_LO_INFLATE} exists to pay for
+   *            the silhouette it costs.
+   *   stations 6 -> 3 along each skirt, 6 -> 3 along the trunk. This one is
+   *            close to free: the taper is nearly linear (a 3-station chord
+   *            deviates from the 6-station curve by under 1.3% of the skirt
+   *            radius, ~5 cm on the widest one), so the profile is preserved
+   *            and the saving is real.
+   *
+   * Together: 432 -> 120 triangles of crown and 104 -> 28 of trunk, a 72%
+   * cut on each, for a tree whose nearest instance is 170 m away.
+   *
+   * A dead end worth recording: dropping a skirt (4 tiers -> 3) saves about as
+   * much again and is not available. The tiers are what makes the silhouette
+   * read as a conifer rather than a party hat - the comment below has said so
+   * since the tree was built - and a treeline that loses a quarter of its
+   * ragged edge at 170 m is the exact artefact this is trying not to have.
+   *
+   * @param {'hi'|'lo'} [lod]
+   * @returns {{trunk: THREE.BufferGeometry, canopy: THREE.BufferGeometry}}
+   */
+  _conifer(lod = 'hi') {
+    const LO = lod === 'lo';
+    const STATIONS = LO ? 3 : 6;
+    const R = LO ? CONIFER_LO_INFLATE : 1;
 
-    /* ---- one conifer, instanced ---- */
     const trunkSecs = [];
-    for (let i = 0; i <= 6; i++) {
-      const t = i / 6;
+    for (let i = 0; i <= STATIONS; i++) {
+      const t = i / STATIONS;
       trunkSecs.push({
         x: Math.sin(t * 1.1) * 0.14 * t,
         y: t * 9.5,
@@ -2570,7 +2696,7 @@ export class RaceWorld extends World {
         ry: 0.34 - t * 0.24 + Math.exp(-t * 8) * 0.1,
       });
     }
-    const trunk = sweep(trunkSecs, 8, { capStart: false });
+    const trunk = sweep(trunkSecs, LO ? 4 : 8, { capStart: false });
     // Four overlapping skirts, each widest at its own base. A single cone is a
     // party hat; the tiers are what make the silhouette read as a conifer.
     const tiers = [];
@@ -2578,19 +2704,30 @@ export class RaceWorld extends World {
       const y0 = 1.8 + t * 2.1;
       const r = 3.1 - t * 0.62;
       const secs = [];
-      for (let i = 0; i <= 5; i++) {
-        const u = i / 5;
+      const n = LO ? 2 : 5;
+      for (let i = 0; i <= n; i++) {
+        const u = i / n;
         secs.push({
           y: y0 + u * 3.4,
           z: 0,
-          rx: Math.max(0.05, r * (1 - u) * (1 - u * 0.2)),
-          ry: Math.max(0.05, r * (1 - u) * (1 - u * 0.2)),
+          rx: Math.max(0.05, r * (1 - u) * (1 - u * 0.2) * R),
+          ry: Math.max(0.05, r * (1 - u) * (1 - u * 0.2) * R),
         });
       }
-      tiers.push(sweep(secs, 9));
+      tiers.push(sweep(secs, LO ? 5 : 9));
     }
     const canopy = mergeGeometries(tiers.map((g) => (g.index ? g.toNonIndexed() : g)), false);
     for (const g of tiers) g.dispose();
+    return { trunk, canopy };
+  }
+
+  _buildScenery() {
+    const rnd = this.rnd;
+    const co = this.courseSet;
+
+    /* ---- one conifer, instanced, at two tessellations ---- */
+    const { trunk, canopy } = this._conifer('hi');
+    const { trunk: trunkLo, canopy: canopyLo } = this._conifer('lo');
 
     /* Scaled to area, not copied across.
      *
@@ -2614,10 +2751,12 @@ export class RaceWorld extends World {
       if (Math.abs(z - 185) < 40 && x > -80) continue;
       trees.push({ x, y: p.h, z, k: 0.7 + rnd() * 0.75, yaw: rnd() * TAU });
     }
-    this._instance(trunk, 'bark.palm', trees, 'race:tree.trunk', 0x9a7a52);
+    this._instance(trunk, 'bark.palm', trees, 'race:tree.trunk', 0x9a7a52, true, true,
+      { lo: trunkLo, swapBeyond: CONIFER_LO_DISTANCE });
     // Crowns cast but do not receive: self-shadowing a mass of thin needles
     // costs a shadow lookup per tier and returns acne rather than shade.
-    this._instance(canopy, 'foliage.frond', trees, 'race:tree.crown', 0x4e7a3c, true, false);
+    this._instance(canopy, 'foliage.frond', trees, 'race:tree.crown', 0x4e7a3c, true, false,
+      { lo: canopyLo, swapBeyond: CONIFER_LO_DISTANCE });
     for (const t of trees) {
       if (rnd() < 0.35) {
         this.track(this.physics.addBox(t.x, t.y + 3 * t.k, t.z, 0.3 * t.k, 3 * t.k, 0.3 * t.k));
@@ -2626,8 +2765,15 @@ export class RaceWorld extends World {
 
     /* ---- rock outcrops ---- */
     const rockGeos = [];
-    for (let v = 0; v < 3; v++) {
-      const g = new THREE.IcosahedronGeometry(1, 2);
+    const rockLoGeos = [];
+    /* Detail 2 is 180 faces (an icosahedron's edges cut in three) and detail 1
+     * is 80 (cut in two): a 21 degree face against a 32 degree one, for 56% of
+     * the triangles. What it is NOT is a free swap - see {@link
+     * ROCK_LO_DISTANCE} for the ray cast that says so - and that is why the
+     * rock band sits further out than the tree band rather than nearer.
+     */
+    const rockAt = (v, detail) => {
+      const g = new THREE.IcosahedronGeometry(1, detail);
       const p = g.attributes.position;
       /* Displaced by a smooth function of the vertex *direction*, not by a
        * fresh random number per vertex.
@@ -2636,7 +2782,12 @@ export class RaceWorld extends World {
        * copy of each corner. Jittering them independently pulls those copies
        * apart and the rock comes out as a heap of disconnected shards - which
        * is exactly what the first pass rendered. A function of direction gives
-       * every copy of a corner the same answer, so the surface stays closed. */
+       * every copy of a corner the same answer, so the surface stays closed.
+       *
+       * It is also what makes the two tessellations agree: the displacement
+       * depends on nothing but the direction, so a detail-1 vertex and the
+       * detail-2 vertex in the same place get the same radius and the cheap
+       * rock sits inside the expensive one's skin rather than beside it. */
       const a = 2.3 + v * 1.7;
       const b = 3.1 + v * 0.9;
       const c = 4.3 - v * 0.8;
@@ -2649,7 +2800,11 @@ export class RaceWorld extends World {
         p.setXYZ(i, _v1.x * r * 1.3, _v1.y * r * 0.66, _v1.z * r * 1.15);
       }
       g.computeVertexNormals();
-      rockGeos.push(g);
+      return g;
+    };
+    for (let v = 0; v < 3; v++) {
+      rockGeos.push(rockAt(v, 2));
+      rockLoGeos.push(rockAt(v, 1));
     }
     const rocks = [[], [], []];
     for (let i = 0; i < 900; i++) {
@@ -2662,7 +2817,8 @@ export class RaceWorld extends World {
       rocks[(rnd() * 3) | 0].push({ x, y: p.h - k * 0.3, z, k, yaw: rnd() * TAU });
     }
     for (let v = 0; v < 3; v++) {
-      this._instance(rockGeos[v], 'concrete.wall', rocks[v], `race:rock${v}`, 0x9a958a);
+      this._instance(rockGeos[v], 'concrete.wall', rocks[v], `race:rock${v}`, 0x9a958a, true, true,
+        { lo: rockLoGeos[v], swapBeyond: ROCK_LO_DISTANCE });
       for (const r of rocks[v]) {
         if (r.k > 2.2) {
           this.track(this.physics.addBox(r.x, r.y + r.k * 0.3, r.z, r.k * 1.1, r.k * 0.5, r.k));
@@ -2806,9 +2962,22 @@ export class RaceWorld extends World {
    * occupied tile, which is the trade this world can afford - it was already
    * running about 1 200 and the terrain is only two of them.
    *
+   * ── Why the tiles are also the LOD unit ──────────────────────────────────
+   *
+   * The same split pays twice. A tile is the smallest thing the culler can
+   * reject, and it is also the smallest thing a distance band can demote - so
+   * `lo`/`swapBeyond` ride on the structure that already exists rather than
+   * needing a second one. The band is measured to the nearest point of the
+   * tile's sphere, which is the only measure a "nothing closer than D changed"
+   * claim can be made from; see {@link CONIFER_LO_DISTANCE}.
+   *
+   * @param {{lo?:THREE.BufferGeometry, swapBeyond?:number}} [lod] cheap
+   *   geometry for the far field. Must be interchangeable with `geo` - same
+   *   origin, same axis, same overall silhouette - because the swap happens
+   *   under a moving camera with nothing to cover it.
    * @returns {THREE.InstancedMesh[]} one per occupied tile
    */
-  _instance(geo, key, list, name, tint = 0xffffff, cast = true, recv = true) {
+  _instance(geo, key, list, name, tint = 0xffffff, cast = true, recv = true, lod = null) {
     if (!list.length) return [];
     const mat = this._mat(key, { vertexColors: false }).clone();
     mat.color = new THREE.Color(tint);
@@ -2849,9 +3018,19 @@ export class RaceWorld extends World {
       // one is culled away.
       mesh.computeBoundingSphere();
       this.group.add(mesh);
+      /* Registered per tile, not per prototype: each tile is at its own
+       * distance and makes its own decision, and `DistanceLod` only ever
+       * writes `mesh.geometry`, so the two prototypes stay shared across
+       * however many tiles are wearing them. */
+      if (lod?.lo) {
+        this._lod.add(mesh, {
+          lo: lod.lo, swapBeyond: lod.swapBeyond ?? Infinity, measure: SURFACE,
+        });
+      }
       out.push(mesh);
     }
     this._owned.push(geo);
+    if (lod?.lo) this._owned.push(lod.lo);
     return out;
   }
 
@@ -3163,9 +3342,16 @@ export class RaceWorld extends World {
 
   update(dt) {
     this._time += dt;
+    /* Only runs while this world is active - `WorldManager` does not update a
+     * backgrounded world - so a built-but-parked Race costs nothing. */
+    this._lod.update(this.engine.camera);
   }
 
   dispose() {
+    /* Before the geometries go: `clear` puts every registration back on its hi
+     * geometry, so nothing is left holding a reference to a lo buffer that is
+     * about to be disposed. */
+    this._lod.clear();
     for (const g of this._owned) g.dispose?.();
     this._owned.length = 0;
     for (const cir of this.circuits) {

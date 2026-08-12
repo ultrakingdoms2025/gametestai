@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { boxGeo, cylGeo, uvScale, instanced } from '../StationKit.js';
+import { boxGeo, cylGeo, uvScale, instanced, seamLift } from '../StationKit.js';
 import { buildTower } from '../Tower.js';
 
 /**
@@ -495,10 +495,36 @@ function makeProps(ctx) {
  * primitive the terrace aprons use - so the whole floor reads as one surface.
  */
 function paving(ctx) {
-  const band = (r0, r1, segs, key) => {
+  /* Where the paving sits, and why it is a ladder rather than a height.
+   *
+   * A band oversizes every quad in it - by 3% tangentially and by a sagitta
+   * radially, both so the band shows no bare deck at a joint - so each quad
+   * overlaps its two neighbours, and the court's rings ([0,12], [12,24],
+   * [24,36], [36,45]) overlap the ring on either side of them as well. Laid at
+   * one height that is a lattice of surfaces the depth buffer cannot order:
+   * the floor sweep found 13 coincident hits in this zone on a 12 m grid, and
+   * `M.plazaOnDeck`'s polygon offset does not help because both quads are
+   * `M.plazaOnDeck` and take the same bias.
+   *
+   * So a quad's height comes from `seamLift` (which of its two neighbours in
+   * the ring it must beat) and its band's parity (the ring inside and outside
+   * it). Four levels, and they are written out rather than computed because
+   * the window they have to fit in is fixed at both ends: the contact patches
+   * under the terraces are at 0.055 and the spokes that cross every band are at
+   * 0.075, and 4.7 mm apart is the most this can give each joint without
+   * pushing either of those out of the way. Segment counts are forced even so
+   * `seamLift` never needs its third level for a wrap joint - a ring of 15 is
+   * a ring of 16 as far as anything anybody looks at is concerned.
+   */
+  const LEVELS = [0.0580, 0.0627, 0.0673, 0.0720];
+  const bandY = (bandIdx, i, n) =>
+    LEVELS[((bandIdx % 2) * 2 + Math.round(seamLift(i, n, 1))) % LEVELS.length];
+
+  const band = (r0, r1, segs0, key, bandIdx) => {
+    const segs = segs0 + (segs0 % 2);
     // A band that reaches the middle has no annulus to divide - segmenting it
     // stacks `segs` coplanar quads on the centre and they z-fight each other.
-    if (r0 < 0.1) { ctx.floorQuad(key, r1 * 2, r1 * 2, 0, 0, 0, 0.07, 5); return; }
+    if (r0 < 0.1) { ctx.floorQuad(key, r1 * 2, r1 * 2, 0, 0, 0, bandY(bandIdx, 0, 1), 5); return; }
     const rm = (r0 + r1) / 2;
     const half = Math.PI / segs;
     // Oversize each quad by the sagitta so the band has no gaps on its outer arc.
@@ -507,15 +533,15 @@ function paving(ctx) {
     for (let i = 0; i < segs; i++) {
       const a = ((i + 0.5) / segs) * Math.PI * 2;
       const [lx, lz] = pol(a, rm);
-      ctx.floorQuad(key, w, d, lx, lz, a, 0.07, 5);
+      ctx.floorQuad(key, w, d, lx, lz, a, bandY(bandIdx, i, segs), 5);
     }
   };
 
-  for (const [r0, r1] of ARCADE_WALKS) band(r0, r1, 56, 'plazaOnDeck');
-  for (const [r0, r1] of COURT_WALKS) {
-    if (r1 <= 12) { band(r0, r1, 10, 'plazaOnDeck'); continue; }
-    band(r0, r1, Math.max(12, Math.round(r1 / 3)), 'plazaOnDeck');
-  }
+  ARCADE_WALKS.forEach(([r0, r1], bi) => band(r0, r1, 56, 'plazaOnDeck', bi));
+  COURT_WALKS.forEach(([r0, r1], bi) => {
+    if (r1 <= 12) { band(r0, r1, 10, 'plazaOnDeck', bi); return; }
+    band(r0, r1, Math.max(12, Math.round(r1 / 3)), 'plazaOnDeck', bi);
+  });
 
   /* Radial spokes. Eight through the arcade, five through the court on the
    * bearings that fall BETWEEN the hab stacks - a spoke every 45 degrees in the

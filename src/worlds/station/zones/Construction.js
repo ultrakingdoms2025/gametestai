@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { boxGeo, cylGeo, uvScale, instanced } from '../StationKit.js';
+import { boxGeo, cylGeo, uvScale, instanced, seamLift, CoplanarLevels } from '../StationKit.js';
 
 /**
  * RING 8 EXPANSION - the half-built zone on avenue 240.
@@ -68,6 +68,51 @@ const LOOP_R = 88;
 const ROAD_W = 14;
 /** Boarded-lift spacing. See the header - 2.6, not 2.0, and for a reason. */
 const LIFT = 2.6;
+
+/**
+ * The ground is not one plane, and this is the ladder it is laid on.
+ *
+ * ── What was wrong ────────────────────────────────────────────────────────
+ * A site's ground is a NETWORK, not a floor: a haul loop, a distribution ring,
+ * twenty-two radial legs, three gate spurs and about seventy-five aprons of
+ * compacted stone, and by construction every one of them crosses several
+ * others. All of it was drawn at two heights - 0.1 for anything called a road,
+ * 0.085 for the hard-standing - so every junction, and every joint between two
+ * chords of the same ring, was two surfaces on one plane. That is 19.4% of this
+ * zone's floor area reading as stacked when the render geometry is raycast, the
+ * worst of the five regions, and 41 of the 407 exactly-coincident hits in the
+ * world.
+ *
+ * ── The ladder ────────────────────────────────────────────────────────────
+ * Each family gets its own height, ordered the way the site was built: the
+ * approach was there first, then the loop, then the gates were tied in, then
+ * the distribution ring, and the legs were cut last and lie over everything.
+ * That is also the order they should overlap in, so the ladder is not an
+ * arbitrary tie-break - it is the sequence.
+ *
+ * Markings ride `MARK` above whatever they are painted on rather than at a
+ * fixed 0.13, so a stripe still sits on its own road and not through it.
+ *
+ * `M.grime` and `M.contact` are excluded from all of this on purpose: both are
+ * multiply-blended with `depthWrite` off and a polygon offset, so they are
+ * overlays that cannot z-fight whatever they lie on, and the sweep's
+ * `grime || road` hits are an artifact of raycasting rather than a defect.
+ */
+const ROAD_Y = {
+  approach: 0.100,
+  loop: 0.104,          // + SEAM on alternate chords
+  gate: 0.112,
+  ring: 0.118,          // + SEAM on alternate chords
+  leg: 0.126,
+  /** Between two chords of the same ring. */
+  SEAM: 0.004,
+  /** Painted markings, over the road they belong to. */
+  MARK: 0.030,
+  /** Compacted stone, under all of it: five greedily-coloured levels. */
+  hard: 0.076,
+  hardStep: 0.003,
+  hardLevels: 5,
+};
 
 /**
  * The three towers, at three stages of the same build.
@@ -308,26 +353,29 @@ export function buildConstruction(ctx) {
    * arrival plaza through the main gate, and one loop at r = 88 that every
    * tower, stack and machine is arranged around.
    */
-  ctx.floorQuad('road', ROAD_W + 4, 48, 0, 130, 0, 0.1, 12);
+  ctx.floorQuad('road', ROAD_W + 4, 48, 0, 130, 0, ROAD_Y.approach, 12);
   const ROAD_SEG = 40;
   for (let i = 0; i < ROAD_SEG; i++) {
     const a = (i / ROAD_SEG) * Math.PI * 2;
-    // Chord plus a little overlap, so the ring never shows a seam of bare deck.
-    ctx.floorQuad('road', (Math.PI * 2 * LOOP_R) / ROAD_SEG + 0.9, ROAD_W, bx(a, LOOP_R), bz(a, LOOP_R), a, 0.1, 12);
+    /* Chord plus a little overlap, so the ring never shows a seam of bare deck -
+     * and `seamLift`, so that overlap is a strip with a winner rather than a
+     * strip the depth buffer flickers across. */
+    const y = ROAD_Y.loop + seamLift(i, ROAD_SEG, ROAD_Y.SEAM);
+    ctx.floorQuad('road', (Math.PI * 2 * LOOP_R) / ROAD_SEG + 0.9, ROAD_W, bx(a, LOOP_R), bz(a, LOOP_R), a, y, 12);
     if (i % 2 === 0) {
       for (const side of [-1, 1]) {
         const r = LOOP_R + side * (ROAD_W / 2 - 0.5);
-        sc('stripe', bx(a, r), 0.13, bz(a, r), a);
+        sc('stripe', bx(a, r), y + ROAD_Y.MARK, bz(a, r), a);
       }
     }
   }
   // Spurs from the three secondary gates down to the loop.
   for (const a of [Math.PI / 2, Math.PI, -Math.PI / 2]) {
     const rMid = (HOARD_R + LOOP_R) / 2;
-    ctx.floorQuad('road', 12, HOARD_R - LOOP_R + 6, bx(a, rMid), bz(a, rMid), a, 0.1, 12);
+    ctx.floorQuad('road', 12, HOARD_R - LOOP_R + 6, bx(a, rMid), bz(a, rMid), a, ROAD_Y.gate, 12);
   }
   // Centre line up the approach, in the district's own sodium.
-  for (let i = 0; i < 12; i++) ctx.box('emSodium', 0.32, 0.05, 2.4, 0, 0.14, 108 + i * 3.8);
+  for (let i = 0; i < 12; i++) ctx.box('emSodium', 0.32, 0.05, 2.4, 0, ROAD_Y.approach + 0.04, 108 + i * 3.8);
   ctx.mmPath([[0, 152], [0, 88]], 'rgba(255,170,90,0.45)', ROAD_W, false);
   ctx.mmPath(
     Array.from({ length: 33 }, (_, i) => {
@@ -494,6 +542,29 @@ export function buildConstruction(ctx) {
     const top = from + lifts * LIFT;
     const out = [];
 
+    /* Standards this wrap has already stood up.
+     *
+     * The note on `half` below is about BOARDS, and it is right about them: the
+     * nz faces own the corners and the nx faces stop short, so no lift is
+     * boarded twice. The standards do not follow that rule. An nx face's inner
+     * row sits 7 cm outside the tower's flank and its end post lands at the
+     * corner the nz face's row already crosses, and whether the two collide
+     * depends on where the nz face's 2.5 m post grid happens to fall - so it is
+     * neither always nor never. Measured on the built zone it was eleven times:
+     * eleven pairs of 32 m tubes 10.6 cm apart at the same yaw, which the
+     * overlap triage reported as this zone's only DUPLICATE finding. A post
+     * within a quarter of a metre of one already standing is that post, so the
+     * second one is dropped rather than drawn beside it. */
+    const standards = [];
+    const standard = (px, pz, y, sy) => {
+      for (const [qx, qz] of standards) {
+        if (Math.abs(px - qx) < 0.25 && Math.abs(pz - qz) < 0.25) return false;
+      }
+      standards.push([px, pz]);
+      sc('standard', px, y, pz, yaw, 1, sy, 1);
+      return true;
+    };
+
     sides.forEach((si, sideIdx) => {
       const f = FACE[si];
       const faceOff = f.nx ? hw : hd;
@@ -512,7 +583,7 @@ export function buildConstruction(ctx) {
         const t = -half + (half * 2 * i) / posts;
         for (const row of [-DECK_W / 2 - 0.08, DECK_W / 2 + 0.08]) {
           const [px, pz] = at(cxm, czm, yaw, f.nx ? row * f.nx : t, f.nx ? t : row * f.nz);
-          sc('standard', px, from + (top - from) / 2 + 0.4, pz, yaw, 1, (top - from + 0.8) / 26, 1);
+          standard(px, pz, from + (top - from) / 2 + 0.4, (top - from + 0.8) / 26);
         }
       }
 
@@ -1293,7 +1364,13 @@ export function buildConstruction(ctx) {
     if (!spot) continue;
     const [lx, lz, a] = spot;
     const yaw = a + rnd(-0.3, 0.3);
-    for (let s = 0; s < 3; s++) sc('rebar', lx, 0.32 + s * 0.55, lz + (s % 2) * 0.2, yaw);
+    /* Three tiers per bundle, and `yardSpot` only guarantees 7 m of clearance -
+     * so two bundles at different bearings can cross, and when they did, all
+     * three of their tiers crossed at the same three heights. A bundle's whole
+     * stack is nudged by up to 6 cm so a crossing pair never shares one, which
+     * is also what a bar bank looks like when it was not laid by a machine. */
+    const tier = rnd(0, 0.06);
+    for (let s = 0; s < 3; s++) sc('rebar', lx, 0.32 + tier + s * 0.55, lz + (s % 2) * 0.2, yaw);
     ctx.solid(lx, 0.7, lz, 3.3, 0.7, 0.5, yaw);
     claim(lx, lz, 4.5);
   }
@@ -1479,26 +1556,39 @@ export function buildConstruction(ctx) {
   /* -- ground -------------------------------------------------------- */
 
   /** Compacted stone. Most of a site is this, and it is what makes a scatter of
-   *  props read as one place rather than as objects on a floor. */
-  const hard = (lx, lz, w, d, yaw = 0, key = 'road') =>
-    ctx.floorQuad(key, w, d, lx, lz, yaw, 0.085, 16);
+   *  props read as one place rather than as objects on a floor.
+   *
+   *  Seventy-five of these are thrown round towers, plots and bays as aprons,
+   *  and which ones overlap is not something any one loop knows - a tower's
+   *  apron is its footprint plus fifteen metres on every side and swallows
+   *  whatever is next to it. `CoplanarLevels` hands each patch the lowest of
+   *  five heights that none of the patches it actually overlaps is using, which
+   *  is the difference between "no two overlapping aprons share a plane" and
+   *  "no two aprons emitted close together do". */
+  const hardLevels = new CoplanarLevels(ROAD_Y.hardLevels);
+  const hard = (lx, lz, w, d, yaw = 0, key = 'road') => {
+    // Circumscribed box, so a rotated apron is never tested as if it were square-on.
+    const c = Math.abs(Math.cos(yaw)), s = Math.abs(Math.sin(yaw));
+    const l = hardLevels.claim(lx, lz, (w * c + d * s) / 2, (w * s + d * c) / 2);
+    return ctx.floorQuad(key, w, d, lx, lz, yaw, ROAD_Y.hard + l * ROAD_Y.hardStep, 16);
+  };
 
   /**
    * A leg of haul road. Nine metres, because two tippers have to pass - and
    * because the road network doubles as this zone's circulation, so it has to
    * read as walkable from any point on it as well as drivable.
    */
-  const haul = (x0, z0, x1, z1, w = 9, dash = true) => {
+  const haul = (x0, z0, x1, z1, w = 9, dash = true, y = ROAD_Y.leg) => {
     const dx = x1 - x0, dz = z1 - z0;
     const len = Math.hypot(dx, dz);
     if (len < 2) return;
     const yaw = Math.atan2(dx, dz);
-    ctx.floorQuad('road', w, len, (x0 + x1) / 2, (z0 + z1) / 2, yaw, 0.1, 12);
+    ctx.floorQuad('road', w, len, (x0 + x1) / 2, (z0 + z1) / 2, yaw, y, 12);
     if (!dash) return;
     const n = Math.max(1, Math.round(len / 11));
     for (let i = 0; i < n; i++) {
       const t = (i + 0.5) / n;
-      sc('stripe', x0 + dx * t, 0.13, z0 + dz * t, yaw, 0.5, 1, 1.4);
+      sc('stripe', x0 + dx * t, y + ROAD_Y.MARK, z0 + dz * t, yaw, 0.5, 1, 1.4);
     }
   };
 
@@ -1644,11 +1734,19 @@ export function buildConstruction(ctx) {
     }
 
     /* Metal decking on the top plate, still in loose sheets. That is what says
-     * "this floor went on today" rather than "this floor has always been here". */
+     * "this floor went on today" rather than "this floor has always been here".
+     *
+     * Five sheets 6.2 m long, spaced `(w - 7) / 4` apart - which on a 20 m
+     * plate is 3.25 m, so every sheet overlaps its neighbour by half its own
+     * length. At one height that was 6.9 m2 of pan sharing a plane with the pan
+     * next to it, which the oriented-footprint triage caught as the zone's only
+     * real ZFIGHT_COPLANAR pair. Alternate sheets go up by a pan's thickness,
+     * so an overlapping pair LIES ON the one under it - which is what a stack
+     * of loose decking actually does. */
     if (o.decking) {
       const y = platesTo * storeyH;
       for (let i = 0; i < 5; i++) {
-        sc('deckPan', ...at3(cx, cz, yaw, -w / 2 + 3.5 + i * ((w - 7) / 4), rnd(-d / 2 + 2, d / 2 - 2), y + 0.14),
+        sc('deckPan', ...at3(cx, cz, yaw, -w / 2 + 3.5 + i * ((w - 7) / 4), rnd(-d / 2 + 2, d / 2 - 2), y + 0.14 + (i % 2) * 0.1),
           yaw + rnd(-0.06, 0.06));
       }
     }
@@ -2058,14 +2156,26 @@ export function buildConstruction(ctx) {
   });
 
   /* Radial legs on the bay boundaries, the distribution ring at 139, and the
-   * spurs that tie the three secondary gates and the approach into both. */
+   * spurs that tie the three secondary gates and the approach into both.
+   *
+   * `BAY_N` is 22, so bearing PI is leg 11 as well as a gate spur - and the leg
+   * is 7 m wide inside a 9 m spur running from 106 to 182, so all 34 m of it is
+   * road drawn twice on one plane. That one is not a height problem, it is a
+   * redundant surface: the spur IS the road there, and the leg under it is
+   * deleted rather than given a level of its own. */
+  const GATE_A = [Math.PI / 2, Math.PI, -Math.PI / 2];
+  const onGateBearing = (a) => GATE_A.some((g) => {
+    const d = Math.abs(((a - g + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+    return d < 1e-6;
+  });
   for (let i = 0; i < BAY_N; i++) {
     const a = i * BAY_A;
+    if (onGateBearing(a)) continue;
     const rOut = i % 2 === 0 ? 184 : 146;
     const [x0, z0] = [bx(a, 112), bz(a, 112)];
     const [x1, z1] = [bx(a, rOut), bz(a, rOut)];
     if (!clearOfApproach(x0, z0) || !clearOfApproach(x1, z1)) continue;
-    haul(x0, z0, x1, z1, 7, false);
+    haul(x0, z0, x1, z1, 7, false, ROAD_Y.leg);
   }
   const RING_SEG = 44;
   const RING_CHORD = (Math.PI * 2 * 139) / RING_SEG + 1.0;
@@ -2076,12 +2186,13 @@ export function buildConstruction(ctx) {
      * middle is eight metres clear of the concourse still has an end inside it,
      * and the concourse is the one rectangle in the zone that has to stay bare. */
     if (!bayClear(lx, lz, RING_CHORD, 9, a)) continue;
-    ctx.floorQuad('road', RING_CHORD, 9, lx, lz, a, 0.1, 12);
-    if (i % 3 === 0) sc('stripe', lx, 0.13, lz, a + Math.PI / 2);
+    const y = ROAD_Y.ring + seamLift(i, RING_SEG, ROAD_Y.SEAM);
+    ctx.floorQuad('road', RING_CHORD, 9, lx, lz, a, y, 12);
+    if (i % 3 === 0) sc('stripe', lx, y + ROAD_Y.MARK, lz, a + Math.PI / 2);
   }
   ctx.mmCircle(0, 0, 139, null, 'rgba(255,170,90,0.28)');
-  for (const g of [Math.PI / 2, Math.PI, -Math.PI / 2]) {
-    haul(bx(g, 106), bz(g, 106), bx(g, 182), bz(g, 182), 9, false);
+  for (const g of GATE_A) {
+    haul(bx(g, 106), bz(g, 106), bx(g, 182), bz(g, 182), 9, false, ROAD_Y.leg);
   }
   haul(0, 86, 0, 108, ROAD_W + 4, false);
   haul(-27.6, 136.2, -12, 122, 8, false);

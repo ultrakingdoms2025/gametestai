@@ -536,6 +536,103 @@ export function boxGeo(w, h, d, tile) {
   return boxUV(new THREE.BoxGeometry(w, h, d), w, h, d, tile ?? 2);
 }
 
+/* ------------------------------------------------------------------ */
+/* Coplanar floor surfaces                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Two answers to "two floor quads share a plane", and when each one applies.
+ *
+ * ── The problem, measured ─────────────────────────────────────────────────
+ * Almost every paved surface in this world is laid as a band of tangential
+ * quads that deliberately overlap their neighbours, because a chord quad on a
+ * curve leaves a wedge of bare deck at each joint otherwise: `Habitation`'s
+ * `band()` oversizes by 3% and a sagitta, `Canteen`'s dining rings by 40 cm,
+ * `Construction`'s haul loop by 90 cm. Each of those overlaps is a strip the
+ * depth buffer cannot order, and a raycast sweep of the render geometry found
+ * 70 of them on a 12 m grid - a stripe of shimmer at every joint of every ring.
+ *
+ * ── Why not polygon offset here ───────────────────────────────────────────
+ * `StationWorld` already reaches for `polygonOffset` when two DIFFERENT
+ * materials share a plane (`M.plazaOnDeck`, `M.decal`, `M.route`), and the note
+ * on `M.plazaOnDeck` is right that it beats a lift: it is expressed in
+ * depth-buffer units, so it still holds at 150 m where a 30 mm gap is only
+ * twice the depth resolution. But it cannot separate a material from ITSELF -
+ * both quads take the same bias - and every case here is one surface overlapping
+ * another copy of itself. `M.plazaOnDeck` z-fighting `M.plazaOnDeck` is in the
+ * measurement, offset and all.
+ *
+ * So the fix has to be in the geometry, and there are exactly two shapes of it.
+ */
+
+/**
+ * Lift for one segment of a ring of overlapping quads.
+ *
+ * A ring's segments only ever overlap their immediate neighbours, so two
+ * levels are enough - except at the wrap joint, where an odd segment count puts
+ * two even indices side by side. That case gets a third level rather than a
+ * seam that is still coplanar exactly once per ring, which is precisely the
+ * kind of "fixed everywhere but one place" that is worse than not fixing it.
+ *
+ * @param {number} i      segment index, 0-based
+ * @param {number} n      segments in the ring
+ * @param {number} step   metres between adjacent levels
+ * @param {boolean} closed  does segment n-1 touch segment 0?
+ * @returns {number} metres to add to the band's base height
+ */
+export function seamLift(i, n, step = 0.004, closed = true) {
+  if (n <= 1) return 0;
+  if (closed && n % 2 === 1 && i === n - 1) return 2 * step;
+  return (i % 2) * step;
+}
+
+/**
+ * Levels for a scatter of overlapping floor patches, by greedy colouring.
+ *
+ * A ring is a chain and two colours do it. A yard is not: `Construction`'s
+ * compacted-stone aprons are ~75 rectangles of wildly different size, thrown
+ * round towers, plots and bays, and which of them overlap is not something the
+ * emitting loops know. Cycling a counter would leave whichever pairs happened
+ * to land the same distance apart in emission order still coplanar.
+ *
+ * So each patch is given the lowest level that no patch it OVERLAPS is already
+ * using. Overlap is tested on the circumscribed axis-aligned box, which is
+ * conservative - it can spend a level on a pair that does not really touch,
+ * never the other way round - and with a handful of levels that costs nothing.
+ * If every level is taken (more than `levels` mutually overlapping patches) it
+ * returns to level 0 rather than growing the ladder into the surfaces above.
+ */
+export class CoplanarLevels {
+  /** @param {number} levels  how many distinct heights are available */
+  constructor(levels = 5) {
+    this.levels = Math.max(1, levels | 0);
+    /** @type {Array<{x0:number,z0:number,x1:number,z1:number,l:number}>} */
+    this.placed = [];
+  }
+
+  /**
+   * @param {number} cx  patch centre X
+   * @param {number} cz  patch centre Z
+   * @param {number} hx  half-extent X of the circumscribed box
+   * @param {number} hz  half-extent Z
+   * @returns {number} level index, 0 .. levels-1
+   */
+  claim(cx, cz, hx, hz) {
+    const x0 = cx - hx, x1 = cx + hx, z0 = cz - hz, z1 = cz + hz;
+    const taken = new Set();
+    for (const p of this.placed) {
+      if (p.x1 <= x0 || p.x0 >= x1 || p.z1 <= z0 || p.z0 >= z1) continue;
+      taken.add(p.l);
+      if (taken.size >= this.levels) break;
+    }
+    let l = 0;
+    while (l < this.levels && taken.has(l)) l++;
+    if (l >= this.levels) l = 0;
+    this.placed.push({ x0, z0, x1, z1, l });
+    return l;
+  }
+}
+
 /** Build an InstancedMesh from [x,y,z,rx,ry,rz,sx,sy,sz] tuples. */
 export function instanced(geo, mat, entries, opts = {}) {
   // A zero-count InstancedMesh is legal but pointless and breaks setColorAt.

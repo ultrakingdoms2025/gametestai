@@ -9,6 +9,7 @@ import { ROLE, ROLE_ROTATION, castFor, roleDef } from './NPCRoles.js';
 import { WEAPON_TABLES } from './NPCWeapons.js';
 import { DEFAULT_LORE, buildLorePersona, loreEntryForScope } from '../content/Lore.js';
 import { allows } from '../worlds/WorldRules.js';
+import { pastBand } from '../worlds/lod/DistanceLod.js';
 
 /**
  * Owns every NPC in the active world: spawning, budget, level of detail,
@@ -134,6 +135,60 @@ const RENDER_OUT = 135;
  */
 const SHADOW_IN = 45;
 const SHADOW_OUT = 49;
+
+/**
+ * Distance bands on the SIMULATION rate - the fixed step, not the pose.
+ *
+ * ── Why this band and not another ──────────────────────────────────────────
+ * Ablating `NPCManager.fixedUpdate` on the station measures -2.0 ms at the
+ * plaza, -2.0 ms on the walkway loop and -3.6 ms in the construction court,
+ * against a 16-21 ms frame, for ZERO draw calls: the crowd is cheap to draw and
+ * expensive to think. Ablating the frame-side `update()` over the same run
+ * measures -0.2 to -1.2 ms, because the pose is already banded by `lod.rate`.
+ * So the cost that was left is `_think` / `_steer` / `_integrate` / the ground
+ * probe, all of which run 60 times a second for every character in the world
+ * however far away it is.
+ *
+ * ── A divisor, not a switch ────────────────────────────────────────────────
+ * A frozen crowd at 100 m is worse than a slightly stuttery one, so nobody is
+ * ever switched off. A demoted character is simulated on one step in N and
+ * handed the N steps' worth of `dt` it banked (`NPC._simAccum`), so it covers
+ * exactly the same ground per wall-clock second; what it loses is temporal
+ * resolution inside the step, which at these ranges is the difference between a
+ * 60 Hz and a 15 Hz turn on a body a few pixels tall.
+ *
+ * ── Why these distances ────────────────────────────────────────────────────
+ * They are the pose bands (`lod.rate`, 16/34/65 m) and the draw band
+ * (RENDER_IN/OUT) restated one step out, so the simulation is never coarser
+ * than the animation that samples it:
+ *
+ *     < 36 m    every step        the pose is at 1/1 or 1/2 - full detail range
+ *     < 68 m    every 2nd step    the pose is at 1/4 here
+ *   < 135 m     every 4th step    the pose is at 1/10 here
+ *   >= 135 m    every 8th step    RENDER_OUT: the body is not drawn at all
+ *
+ * Each edge is a band, never a line, for the reason recorded above DETAIL_IN:
+ * a single boundary turns a stride's worth of pelvis travel into a per-frame
+ * flip, and cadence popping at a band edge is exactly the failure mode. The
+ * `out` edge is the threshold and the band is subtracted to make the `in` edge,
+ * which is what `pastBand` in worlds/lod/DistanceLod.js already expresses - so
+ * the hysteresis rule lives in one place for scenery and characters alike.
+ */
+const SIM_BAND = 4;
+const SIM_HALF_OUT = 36;
+const SIM_QUARTER_OUT = 68;
+const SIM_EIGHTH_OUT = RENDER_OUT;
+/**
+ * Ceiling on one catch-up step, in seconds.
+ *
+ * A character promoted from the 1-in-8 band arrives owing up to seven steps,
+ * and handing all of it to `_integrate` in one go would read as a lurch. Two
+ * fifths of a second is over three times the largest debt the bands can build
+ * (8/60 s), so it never binds in normal play; it is there for the case the
+ * bands cannot cause - a stalled tab, a world build - where the alternative is
+ * a character teleporting the length of the plaza.
+ */
+const SIM_MAX_STEP = 0.4;
 
 const THEME_BY_WORLD = {
   station: 'station', medieval: 'medieval', sports: 'sports', maze: 'maze',
@@ -368,6 +423,13 @@ export class NPCManager {
     this._groundCursor = 0;
     this._groundFixes = 0;
     this._pauseUntil = 0;
+    /**
+     * Fixed-step counter, and the phase every banded simulation is measured
+     * against. Never reset on a world change: the bands only care about the
+     * counter modulo 8, and resetting it would put every character in the new
+     * world back on the same step for the first cycle.
+     */
+    this._simStep = 0;
 
     // Shared contact-shadow layer. One InstancedMesh for the whole crowd - a
     // per-character decal would have cost 26 extra draw calls, and this world
@@ -1205,10 +1267,33 @@ export class NPCManager {
   /* Frame loops                                                       */
   /* ---------------------------------------------------------------- */
 
+  /**
+   * One simulation step for the crowd, at the cadence each character's distance
+   * band has earned. See the SIM_* constants for why the bands are where they
+   * are and why nobody is ever switched off entirely.
+   *
+   * Allocation-free: the only per-character state is two numbers that already
+   * live on the character (`_simAccum`, `_simPhase`).
+   */
   fixedUpdate(dt, elapsed) {
     if (elapsed < this._pauseUntil) return;
     this._coverToken = 0;
-    for (const npc of this._npcs) npc.fixedUpdate(dt, elapsed);
+    const step = ++this._simStep;
+    for (const npc of this._npcs) {
+      const every = npc.lod.sim;
+      if (every > 1) {
+        npc._simAccum += dt;
+        /* `_simPhase` spreads the demoted crowd across the cycle. Without it
+         * every 1-in-8 character lands on the same step and the saving becomes
+         * a sawtooth - seven cheap steps and one worse than no banding at all. */
+        if (((step + npc._simPhase) % every) !== 0) continue;
+      }
+      // `_simAccum` already carries this step's `dt` on the demoted path, and
+      // carries only a promotion's leftover debt (usually zero) on the full one.
+      const owed = every > 1 ? npc._simAccum : npc._simAccum + dt;
+      npc._simAccum = 0;
+      npc.fixedUpdate(Math.min(owed, SIM_MAX_STEP), elapsed);
+    }
     this._separateBodies();
     this._updateRespawns(dt);
     this._updateChatProximity();
@@ -1412,6 +1497,20 @@ export class NPCManager {
         if (h.hairMesh) h.hairMesh.castShadow = shadow;
       }
       lod.rate = !lod.visible ? 0.12 : d < 16 ? 1 : d < 34 ? 0.5 : d < 65 ? 0.25 : 0.1;
+      /* Simulation cadence. Distance only, never `lod.visible`: a character
+       * behind the player still has to walk to where it is going, and freezing
+       * everyone off screen is how a crowd ends up teleporting the moment you
+       * turn round.
+       *
+       * The previous state of each edge is read back off `lod.sim` rather than
+       * stored separately - the divisor is monotone in distance, so "was this
+       * character already past the half edge" is exactly `lod.sim >= 2`. Three
+       * independent hysteretic edges, evaluated near to far. */
+      let sim = 1;
+      if (pastBand(lod.sim >= 2, d, SIM_HALF_OUT, SIM_BAND)) sim = 2;
+      if (pastBand(lod.sim >= 4, d, SIM_QUARTER_OUT, SIM_BAND)) sim = 4;
+      if (pastBand(lod.sim >= 8, d, SIM_EIGHTH_OUT, SIM_BAND)) sim = 8;
+      lod.sim = sim;
       const render = npc.root.visible ? d < RENDER_OUT : d < RENDER_IN;
       if (npc.root.visible !== render && !npc.animator.sunk) npc.root.visible = render;
     }

@@ -99,8 +99,29 @@ export class NPC {
      * changes - so a false start here would leave a near character casting with
      * the flag claiming it does not.
      */
-    this.lod = { distance: 0, ik: true, detail: true, rate: 1, visible: true, shadow: true };
+    this.lod = { distance: 0, ik: true, detail: true, rate: 1, visible: true, shadow: true, sim: 1 };
     this._animAccum = 0;
+    /**
+     * Fixed-step time owed to this character because its simulation is banded.
+     *
+     * `lod.sim` is a divisor, not an off switch: a character in the 1-in-4 band
+     * is still simulated, just on every fourth step and with those four steps'
+     * worth of `dt` handed to it in one go - so it walks the same distance in
+     * the same wall-clock second as one at full rate. The debt lives on the
+     * character rather than in the manager so a promotion across a band edge
+     * always pays out exactly what that character banked, and a recycled body
+     * can never inherit somebody else's.
+     */
+    this._simAccum = 0;
+    /**
+     * Which step of an 8-step cycle this character's banded simulation lands on.
+     *
+     * Without it every demoted character ticks on the same step and the saving
+     * turns into a sawtooth: seven cheap steps and one that costs more than the
+     * unbanded frame did. Derived from the seed so it is stable across a
+     * respawn and deterministic for a given world.
+     */
+    this._simPhase = (this.seed >>> 0) & 7;
 
     // Ground following. `resolveCapsule` alone cannot keep a capsule on top of a
     // triangle-soup collider: the closest point on a large mesh is often *above*

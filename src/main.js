@@ -753,7 +753,59 @@ async function rehearse() {
     console.warn('[rehearse] viewmodel show failed:', err);
   }
 
-  restore.push(forceDrawable([...mountRoots, ...viewRoots, loot?.group, avatar?.root]));
+  /**
+   * The active world, and every gateway, drawn un-culled.
+   *
+   * ── The stall this closes ──────────────────────────────────────────────────
+   * Everything above rehearses the things the PLAYER carries. The world itself
+   * was left to the three rehearsal frames' own view - one camera, one bearing,
+   * from the spawn point - and `projectObject` drops anything outside that
+   * frustum before it can link a program or upload a buffer. So the boot warm
+   * finished at 494 programs and the world quietly held twelve more in reserve,
+   * to be paid for whenever the player first looked at the geometry that needed
+   * them. Frame-exact attribution of the residual stall: a 1,275 ms frame that
+   * created +8 programs and +219 geometries, and a 354 ms frame that created +1
+   * and +14. Walking the station's own review framings on a settled boot
+   * reproduces exactly that twelve: +5 crossing the plaza from the deck edge,
+   * +5 facing the sports gateway, +2 out over the apron. 494 -> 506.
+   *
+   * `forceDrawable` is the machinery that already exists for this - it clears
+   * `visible` and `frustumCulled` and hands back an exact restore - so the fix
+   * is to hand it the world group rather than to invent a camera sweep that
+   * would have to guess which bearings matter. Un-culled means bearing stops
+   * being a variable at all: one frame draws every mesh in the world, into the
+   * shadow map and the AO prepass as well as the beauty pass, and the geometry
+   * uploads land here instead of under the player's mouse - measured, this line
+   * moved the rehearsal from `+257 geometries` to `+829`.
+   *
+   * Affordable because the station is merged: 1,414 objects and 1,093 meshes
+   * for 3.4 M triangles, so an un-culled frame is about twice a normal one, and
+   * there are three of them behind a loading screen that is already up.
+   *
+   * The gateway roots and the crowd are listed separately because they are
+   * parented to the SCENE, not to the world group (see
+   * `PortalSystem._buildPortal` and `NPCManager`), and both linked programs the
+   * world group alone did not reach: two of the three framings that linked
+   * something were looking straight at a gateway, and the last one standing
+   * after the world group was added was a character's `Sprite` name sign -
+   * `sprite,highp,srgb-linear,...`, a program shared by every signed NPC in
+   * every world and paid for by whoever first walked past one.
+   *
+   * With all three lists in, the boot settles at 508 programs and the same tour
+   * of all twenty-one framings links nothing at all: worst frame 49 ms, no
+   * frame over 100 ms, no program created.
+   */
+  const worldRoots = [];
+  try {
+    const active = worldManager.active;
+    if (active?.group) worldRoots.push(active.group);
+    for (const p of portals.portals ?? []) if (p.root) worldRoots.push(p.root);
+    for (const npc of npcManager.npcs ?? []) if (npc.root) worldRoots.push(npc.root);
+  } catch (err) {
+    console.warn('[rehearse] world roots unavailable:', err);
+  }
+
+  restore.push(forceDrawable([...mountRoots, ...viewRoots, ...worldRoots, loot?.group, avatar?.root]));
 
   for (let i = 0; i < 3; i++) {
     try {

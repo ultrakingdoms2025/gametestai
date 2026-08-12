@@ -2,6 +2,12 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { CONFIG } from '../core/Config.js';
 import { buildMatchingSlots } from '../gfx/LightRig.js';
+import {
+  planPreviewWarm,
+  chunkUnits,
+  runSliced,
+  immediateScheduler,
+} from '../gfx/PreviewWarm.js';
 
 /**
  * AETHER NEXUS gateways.
@@ -64,6 +70,71 @@ const PLINTH_TIERS = [
 const NEAR_RANGE = CONFIG.portal.activationRange + DISC_R + 1.4;
 const PREVIEW_RANGE = 40;
 const PREVIEW_INTERVAL = 6;
+
+/**
+ * Camera layer the time-sliced preview warm draws on, and nothing else ever
+ * uses. Channel 31 rather than 1 so that a future feature reaching for "the
+ * first spare layer" cannot silently join the warm's draws.
+ * @see _drawPreviewSlice
+ */
+const WARM_LAYER = 31;
+
+/**
+ * Distinct shader programs drawn per idle callback by the sliced warm.
+ *
+ * One, because this is the number that bounds the worst case. A first draw of a
+ * program whose link has resolved costs about half a millisecond; a first draw
+ * of one that has not costs about 163 ms, and the hold below exists to make the
+ * second case rare rather than impossible. One per callback is what keeps the
+ * rare case a frame instead of a freeze.
+ * @see ../gfx/PreviewWarm.js
+ */
+const WARM_UNITS_PER_SLICE = 1;
+
+/**
+ * Programs whose links are *issued* per idle callback.
+ *
+ * Issuing is much cheaper than drawing but it is not free: ANGLE translates
+ * GLSL to HLSL inside `glCompileShader`, synchronously, so one `compile()` over
+ * a whole destination measured 377 ms and 929 ms on two runs of the sports
+ * gateway - the largest thing left in the warm once the draws were spread. Four
+ * at a time keeps that under a frame or two while costing a quarter of the
+ * callbacks a per-program pass would.
+ */
+const WARM_UNITS_PER_COMPILE = 4;
+
+/**
+ * Milliseconds the draws hold off after `compile()` has issued their links,
+ * when the driver cannot be asked whether it has finished them.
+ *
+ * `compile()` does not wait for a link; drawing does. Given a gap the driver
+ * resolves them off the main thread and the draws cost nothing, and the size of
+ * the gap decides the whole result. Measured on the medieval gateway, same
+ * session, same 48 slices, only this constant changed:
+ *
+ *     hold        blocking total     worst slice
+ *        0 ms          4424 ms          1574 ms
+ *     8000 ms           166 ms            29 ms
+ *
+ * Nothing is idle during the hold - the game runs at frame rate, the gateway
+ * simply keeps its stabilising disc a few seconds longer. What it costs is the
+ * tail of the background settle, and that is the trade: a longer settle nobody
+ * can see against a 1.5 s freeze they can.
+ *
+ * A fixed guess is only the fallback, because it is wrong in both directions:
+ * eight seconds is dead time when the driver finished in one, and not enough
+ * when the machine is loaded - measured while walking, single slices still cost
+ * 3.0 s and 3.5 s through an 8 s hold. Where the driver can be asked,
+ * `_previewLinksResolved` replaces the guess with the answer.
+ */
+const WARM_SETTLE_MS = 8000;
+
+/**
+ * Ceiling on the hold when the driver *can* be asked. Only a backstop against a
+ * program that never reports ready; the normal release is the answer itself,
+ * which usually comes in well under a second.
+ */
+const WARM_SETTLE_CAP_MS = 30000;
 
 /**
  * Ceiling on the post-swap shader warmup, milliseconds. Generous, because the
@@ -1022,6 +1093,13 @@ export class PortalSystem {
       previewFailed: false,
       /** Set once the destination has been rendered at least one time. */
       _primed: false,
+      /**
+       * True while `warmPreviews` still has slices to draw for this gateway.
+       * The 10 Hz preview in `update()` is held off until it clears - drawing
+       * the destination before the warm has linked it IS the multi-second
+       * freeze the warm exists to remove.
+       */
+      _warmPending: false,
       state: 'stabilising',
       /** Walk-through entry is disabled until the player is clear of the disc. */
       _armed: false,
@@ -1972,6 +2050,17 @@ export class PortalSystem {
     this._previewSunTarget = this._previewSun.target;
 
     this._previewFog = new THREE.Fog(0x000000, 10, 400);
+
+    /* Put the whole rig on the warm layer as well as layer 0.
+     *
+     * `_drawPreviewSlice` renders with the camera moved to `WARM_LAYER` alone,
+     * so that only the slice's own objects are drawn. `projectObject` gates
+     * lights on that same test - a light off the camera's layers is never
+     * pushed into the render state - and light *counts* are part of Three's
+     * program cache key. Without this the sliced warm would link a zero-light
+     * program set: 190 programs built, none of them the ones the live preview
+     * goes on to ask for, and the freeze it exists to remove intact. */
+    this._previewScene.traverse((o) => o.layers.enable(WARM_LAYER));
   }
 
   _ensurePreviewTarget(portal) {
@@ -2001,12 +2090,42 @@ export class PortalSystem {
    * it runs at 10 Hz, at 512x512, without shadows, and only within 40 m.
    */
   _renderPreview(portal, elapsed) {
+    const ctx = this._configurePreview(portal, elapsed);
+    if (!ctx) return;
+    const parked = this._parkPreviewGroup(ctx.world.group);
+    try {
+      this._drawPreview(portal, ctx.cam);
+    } finally {
+      this._unparkPreviewGroup(parked);
+    }
+    portal.discMat.uniforms.uHasPreview.value = 1;
+    portal.discMat.uniforms.uPreviewExposure.value = ctx.exposure;
+  }
+
+  /**
+   * Point the preview camera and dress the preview scene in the destination's
+   * environment, fog and light colours - everything `_renderPreview` does
+   * except the draw.
+   *
+   * Split out because the *draw* is the expensive half and the time-sliced warm
+   * has to perform it many times over many idle callbacks (see gfx/PreviewWarm.js).
+   * Every one of the values set here is part of Three's program cache key, so a
+   * slice that skipped this would link a program set the live preview never
+   * asks for; it is cheap enough - light and colour copies, one cached arrival
+   * transform - to redo per slice, which is what keeps a slice from having to
+   * leave the scene graph mutated across a yield.
+   *
+   * @param {any} portal
+   * @param {number} elapsed
+   * @returns {null | { world: any, cam: THREE.PerspectiveCamera, exposure: number }}
+   */
+  _configurePreview(portal, elapsed) {
     const wm = this.worldManager;
-    if (!wm?.isBuilt?.(portal.target)) return;
+    if (!wm?.isBuilt?.(portal.target)) return null;
     const world = wm.getWorld(portal.target);
     // Never preview the world we are standing in - it is already on screen and
     // re-parenting the live group mid-frame would be a very bad idea.
-    if (!world || world === wm.active) return;
+    if (!world || world === wm.active) return null;
 
     this._ensurePreviewTarget(portal);
 
@@ -2054,29 +2173,90 @@ export class PortalSystem {
       this._previewScene.fog = null;
     }
 
-    const r = this.renderer;
     this._primePreviewShadows(cam, portal.rt);
 
-    const group = world.group;
-    const parent = group.parent;
-    const wasVisible = group.visible;
+    return { world, cam, exposure: env.exposure ?? 1 };
+  }
+
+  /**
+   * Re-parent a destination group into the preview scene, and hand back exactly
+   * what is needed to put it back. Always paired with `_unparkPreviewGroup` in
+   * a `finally`: a group left parked would vanish from its own world.
+   *
+   * @param {THREE.Object3D} group
+   */
+  _parkPreviewGroup(group) {
+    const parked = { group, parent: group.parent, wasVisible: group.visible };
     group.visible = true;
     this._previewScene.add(group);
+    return parked;
+  }
 
+  /** @param {{ group: THREE.Object3D, parent: THREE.Object3D|null, wasVisible: boolean }} parked */
+  _unparkPreviewGroup(parked) {
+    this._previewScene.remove(parked.group);
+    parked.group.visible = parked.wasVisible;
+    if (parked.parent) parked.parent.add(parked.group);
+  }
+
+  /** Draw the parked preview scene into the portal's target, shadows off. */
+  _drawPreview(portal, cam) {
+    const r = this.renderer;
     const prevTarget = r.getRenderTarget();
     const prevShadowAuto = r.shadowMap.autoUpdate;
     r.shadowMap.autoUpdate = false;
     r.setRenderTarget(portal.rt);
-    r.render(this._previewScene, cam);
-    r.setRenderTarget(prevTarget);
-    r.shadowMap.autoUpdate = prevShadowAuto;
+    try {
+      r.render(this._previewScene, cam);
+    } finally {
+      r.setRenderTarget(prevTarget);
+      r.shadowMap.autoUpdate = prevShadowAuto;
+    }
+  }
 
-    this._previewScene.remove(group);
-    group.visible = wasVisible;
-    if (parent) parent.add(group);
-
-    portal.discMat.uniforms.uHasPreview.value = 1;
-    portal.discMat.uniforms.uPreviewExposure.value = env.exposure ?? 1;
+  /**
+   * Draw *only* `slice` into the preview target, so one idle callback pays for
+   * a handful of shader programs rather than the whole destination world.
+   *
+   * ── Why layers and not visibility ──────────────────────────────────────────
+   * `projectObject` tests three things before it will draw: the object's own
+   * `visible`, its layer against the camera's, and the frustum. Hiding the rest
+   * of the world would mean walking thousands of nodes twice per slice and
+   * leaving the destination's visibility flags mutated across a yield. A layer
+   * inverts that: the camera moves to a channel nothing is on, and the slice's
+   * few objects are lifted onto it for the length of one draw. The mutation is
+   * `slice.length` integers, restored in a `finally`.
+   *
+   * The preview rig's lights are permanently on that channel too - see
+   * `_buildPreviewRig`. `projectObject` layer-gates lights exactly as it gates
+   * meshes, and a slice drawn with no lights reaching the render state would
+   * resolve every material against zero-light counts: a different program cache
+   * key, and therefore a warm of programs the live preview will never ask for.
+   *
+   * @param {any} portal
+   * @param {THREE.Camera} cam
+   * @param {any[]} slice
+   */
+  _drawPreviewSlice(portal, cam, slice) {
+    const saved = [];
+    for (const o of slice) {
+      saved.push([o, o.frustumCulled, o.layers.mask]);
+      // Cleared because the arrival camera's frustum is not the point here: a
+      // program is warmed by being drawn, on or off screen.
+      o.frustumCulled = false;
+      o.layers.enable(WARM_LAYER);
+    }
+    const prevMask = cam.layers.mask;
+    cam.layers.set(WARM_LAYER);
+    try {
+      this._drawPreview(portal, cam);
+    } finally {
+      cam.layers.mask = prevMask;
+      for (const [o, frustumCulled, mask] of saved) {
+        o.frustumCulled = frustumCulled;
+        o.layers.mask = mask;
+      }
+    }
   }
 
   /**
@@ -2148,15 +2328,66 @@ export class PortalSystem {
    * Nothing here changes what renders per frame: the previews still only run at
    * 10 Hz inside 40 m. This just moves the one-time link cost off the walk.
    *
-   * @param {{ target?: string }} [opts] restrict to gateways pointing at one
-   *   world - background builds warm each destination as it finishes.
-   * @returns {{ warmed: string[], skipped: string[], ms: number, programs: number }}
+   * ── Why it is time-sliced, and what the slice is ───────────────────────────
+   * Doing all of that in one go moved the freeze rather than removing it: it
+   * runs from `scheduleBackgroundBuilds`, which is *after* `engine.start()`, so
+   * the player is already walking around. Measured over a cold boot, the four
+   * gateways cost 12.4 s, 15.3 s, 4.8 s and 3.3 s of dead main thread inside
+   * the first minute.
+   *
+   * All of it is the render. `compile()` for the same four came to 43.9 ms in
+   * total, because it issues `linkProgram` and never reads the result; three
+   * reads `LINK_STATUS` on a program's first *use*. So the plan below is in
+   * three parts, and the order is the whole trick:
+   *
+   *   1. issue the links, a few programs per idle callback;
+   *   2. hold until the driver says it has resolved them;
+   *   3. draw them, one program per idle callback.
+   *
+   * Measured over the first 90 s of a cold boot while walking a circuit of every
+   * gateway, three runs before against five after: 30.7-36.2 s of blocking with
+   * a 12.3-15.3 s worst single unit became 0.6-6.5 s with a 0.04-3.1 s worst
+   * single unit. The background settle got *shorter* too, 84 s to 53-57 s,
+   * because 35 s of it used to be dead main thread and is now overlapped with
+   * frames.
+   *
+   * ── The invariant this must not break ──────────────────────────────────────
+   * A gateway's preview must never be drawn un-warmed, because that draw is the
+   * 14 s freeze in person. `_warmPending` holds `update()`'s 10 Hz preview off
+   * the disc until the last slice lands - the gateway simply keeps its
+   * stabilising look for a few seconds longer, which is a state it already has.
+   * Nothing else in here mutates anything across a yield: each slice parks the
+   * destination group in the preview scene, draws, and un-parks inside a
+   * `finally`, so at every yield point the scene graph is exactly as it was.
+   *
+   * @param {{ target?: string, schedule?: (fn: () => void) => void }} [opts]
+   *   `target` restricts to gateways pointing at one world - background builds
+   *   warm each destination as it finishes. `schedule` is the yield: it is
+   *   handed a callback and is expected to run it in a later task (main.js
+   *   passes the same `requestIdleCallback` wrapper the background builds use).
+   *   Without it every slice runs in one block, which is only ever what a test
+   *   wants.
+   * @returns {Promise<{ warmed: string[], skipped: string[], ms: number,
+   *   programs: number, slices: number, reason: string }>}
    */
-  warmPreviews({ target = null } = {}) {
+  warmPreviews({ target = null, schedule = null } = {}) {
     const t0 = performance.now();
     const warmed = [];
     const skipped = [];
+    const pending = [];
     const wm = this.worldManager;
+    /** @type {Array<() => void>} Appended to as plans are built; see runSliced. */
+    const steps = [];
+    let slices = 0;
+    // Yielding is what lets the driver resolve links in the background, so the
+    // hold below only makes sense when there is a scheduler to yield to. Run
+    // unpaced it would be a busy-wait and nothing more.
+    const paced = typeof schedule === 'function';
+    /** No draw before this - a backstop on the hold. */
+    let drawsFrom = 0;
+    /** Programs whose links the hold is waiting on, or null once released. */
+    let awaitingLinks = null;
+
     for (const p of this._portals) {
       if (target && p.target !== target) continue;
       // A gateway whose destination has not been generated has nothing to warm:
@@ -2167,36 +2398,225 @@ export class PortalSystem {
       if (!wm?.isBuilt?.(p.target)) { skipped.push(p.target); continue; }
       const world = wm.getWorld(p.target);
       if (!world?.group || world === wm.active) { skipped.push(p.target); continue; }
-      try {
-        this._renderPreview(p, this.engine?.elapsed ?? 0);
-        this._compilePreviewGroup(p, world.group);
-        warmed.push(p.target);
-      } catch (err) {
-        // Never fatal: the cost simply reverts to being paid on approach.
-        console.warn(`[Portals] preview warm for "${p.target}" failed:`, err);
-        skipped.push(p.target);
-      }
+      warmed.push(p.target);
+      pending.push(p);
+      p._warmPending = true;
+      steps.push(() => {
+        // Configure first: the compile needs the render target and camera this
+        // creates, and the environment, fog and light colours it sets are all
+        // part of the key being warmed.
+        const ctx = this._configurePreview(p, this.engine?.elapsed ?? 0);
+        if (!ctx) return;
+        const before = this.renderer.info.programs.length;
+        const units = planPreviewWarm(world.group);
+        const draws = chunkUnits(units, WARM_UNITS_PER_SLICE);
+        slices += draws.length;
+
+        // 1. Issue the links, a few programs per callback.
+        for (const batch of chunkUnits(units, WARM_UNITS_PER_COMPILE)) {
+          steps.push(() => this._compileWarmSlice(p, world, batch));
+        }
+        // 2. Broaden to the materials no *visible* object carries, which the
+        //    plan cannot reach and a draw would never link. Cheap by now: every
+        //    program a visible object needs already exists.
+        steps.push(() => {
+          const c = this._configurePreview(p, this.engine?.elapsed ?? 0);
+          if (c) this._compilePreviewGroup(p, world.group);
+          // Only hold if this actually queued something. A destination that
+          // shares its whole program set with one already warmed - the citadel,
+          // measured, adds none - has nothing for the driver to resolve and
+          // would otherwise sit out the hold for no reason at all.
+          const fresh = this.renderer.info.programs.slice(before);
+          if (paced && fresh.length) {
+            const ask = this._canAskDriver();
+            awaitingLinks = ask ? fresh : null;
+            drawsFrom = performance.now() + (ask ? WARM_SETTLE_CAP_MS : WARM_SETTLE_MS);
+          }
+        });
+        // 3. Draw them, one program per callback. This is the half that waits
+        //    on the link, and the hold above is what makes it stop waiting.
+        for (const batch of draws) steps.push(() => this._drawWarmSlice(p, world, batch));
+        steps.push(() => {
+          // Everything is linked and drawn by now, so this is an ordinary frame
+          // and it is what puts the destination in the window.
+          this._renderPreview(p, this.engine?.elapsed ?? 0);
+          p._warmPending = false;
+        });
+      });
     }
-    return {
-      warmed,
-      skipped,
-      ms: Math.round(performance.now() - t0),
-      programs: this.renderer.info.programs.length,
+
+    const conclude = (reason) => {
+      // Whatever happened - cancelled, failed, no scheduler - a gateway must
+      // never be left with its preview permanently suppressed.
+      for (const p of pending) p._warmPending = false;
+      return {
+        warmed,
+        skipped,
+        slices,
+        reason,
+        ms: Math.round(performance.now() - t0),
+        programs: this.renderer.info.programs.length,
+      };
     };
+
+    return runSliced({
+      steps,
+      // No scheduler: run the whole plan in this task. Same total work, same
+      // order, none of the spreading - which is what the sync callers want.
+      schedule: typeof schedule === 'function' ? schedule : immediateScheduler(),
+      // `clear()` empties `_portals`, so this covers teardown and world swaps.
+      // Everything narrower - the destination being rebuilt, becoming active,
+      // or the target being disposed - makes `_configurePreview` return null
+      // and the remaining slices become no-ops.
+      shouldStop: () => this._portals.length === 0,
+      // Two holds. A warp is a few seconds and is waited out rather than
+      // abandoning the warm and handing the freeze back to the player on the
+      // far side; the other is the gap that lets the driver resolve the links
+      // `compile()` just issued, released the moment it says it has.
+      shouldPause: () => {
+        if (this._transition) return true;
+        if (performance.now() >= drawsFrom) return false;
+        if (awaitingLinks && this._previewLinksResolved(awaitingLinks)) {
+          awaitingLinks = null;
+          drawsFrom = 0;
+          return false;
+        }
+        return true;
+      },
+      // Comfortably over the hold, since the hold is a pause too.
+      maxPauseMs: WARM_SETTLE_CAP_MS + 20000,
+      onError: (err) => {
+        // Never fatal: the cost simply reverts to being paid on approach.
+        console.warn('[Portals] preview warm failed:', err);
+      },
+    }).then((res) => conclude(res.reason));
   }
 
   /**
-   * Compile every material in a destination group against the preview scene,
-   * with the preview's render target bound so the cache key matches.
+   * Whether this driver can be asked if a link has finished, without waiting
+   * for the answer. Feature-detected once.
    *
-   * `_renderPreview` must have run first: it is what sets the preview scene's
-   * environment, fog and light colours to this destination's, and those are all
-   * part of the key we are trying to hit.
+   * Without `KHR_parallel_shader_compile` three flags every program ready the
+   * moment it is created, so `isReady()` would answer "yes" instantly and the
+   * warm would draw into an unresolved link - exactly the stall it is avoiding.
+   * The timed hold covers that case instead.
+   */
+  _canAskDriver() {
+    if (this._parallelCompile === undefined) {
+      try {
+        this._parallelCompile =
+          !!this.renderer.getContext?.().getExtension?.('KHR_parallel_shader_compile');
+      } catch {
+        this._parallelCompile = false;
+      }
+    }
+    return this._parallelCompile;
+  }
+
+  /**
+   * Has the driver finished linking `programs`? Asked without blocking.
+   *
+   * `WebGLProgram.isReady()` polls `COMPLETION_STATUS_KHR`, which is the entire
+   * point of the extension: it answers now, where a draw - or any
+   * `getProgramParameter(LINK_STATUS)` - waits for the link instead. Polling it
+   * turns the fixed hold above into "wait exactly as long as this machine needs
+   * today", which is the difference between a slice that costs 3.5 s under load
+   * and one that costs nothing.
+   *
+   * ── This is not `compileAsync` ─────────────────────────────────────────────
+   * That helper wraps the same poll in a promise it drives from a
+   * `requestAnimationFrame` callback with no catch around it, so on some driver
+   * stacks a failure there escapes as an uncaught rejection into the frame loop.
+   * That is the documented reason this file links with the synchronous
+   * `compile()` and will keep doing so. The poll itself carries none of that:
+   * it is one call, driven by the warm's own idle chain, inside a try/catch -
+   * and a throw here gives up on waiting rather than propagating, so the worst
+   * case is the stall we already had.
+   *
+   * @param {any[]} programs
+   * @returns {boolean}
+   */
+  _previewLinksResolved(programs) {
+    try {
+      for (const p of programs) {
+        if (p?.isReady && p.isReady() === false) return false;
+      }
+    } catch (err) {
+      console.warn('[Portals] link readiness probe failed; drawing anyway:', err);
+      return true;
+    }
+    return true;
+  }
+
+  /**
+   * Issue the links for one batch of the plan.
+   *
+   * `compile()` traverses whatever it is handed, so handing it a single mesh
+   * compiles exactly that mesh's materials - against `_previewScene`'s lights,
+   * fog and environment and the bound preview target, which is the key that
+   * matters. Nothing is parked: `prepareMaterial` reads the object's flags and
+   * the target scene, never a world transform.
    *
    * @param {any} portal
-   * @param {THREE.Object3D} group
+   * @param {any} world the world this batch was planned against
+   * @param {any[]} batch
    */
-  _compilePreviewGroup(portal, group) {
+  _compileWarmSlice(portal, world, batch) {
+    const ctx = this._configurePreview(portal, this.engine?.elapsed ?? 0);
+    if (!ctx || ctx.world !== world) return;
+    for (const o of batch) this._compilePreviewGroup(portal, o);
+  }
+
+  /**
+   * One slice of one gateway's warm: park the destination, draw the slice,
+   * un-park. Re-validated every time, because arbitrary game time passes
+   * between slices.
+   *
+   * @param {any} portal
+   * @param {any} world the world this slice was planned against
+   * @param {any[]} slice
+   */
+  _drawWarmSlice(portal, world, slice) {
+    const ctx = this._configurePreview(portal, this.engine?.elapsed ?? 0);
+    // A different world object under the same id means it was rebuilt while
+    // this warm was yielded; the plan's objects belong to the old one.
+    if (!ctx || ctx.world !== world) return;
+    const parked = this._parkPreviewGroup(world.group);
+    try {
+      this._drawPreviewSlice(portal, ctx.cam, slice);
+    } finally {
+      this._unparkPreviewGroup(parked);
+    }
+  }
+
+  /**
+   * Compile every material under `root` against the preview scene, with the
+   * preview's render target bound so the cache key matches.
+   *
+   * `root` is the whole destination group when the point is to broaden to
+   * materials no visible object carries, and a single mesh when the point is to
+   * issue one plan unit's links without paying for a world at a time -
+   * `compile()` only ever traverses what it is given.
+   *
+   * `_configurePreview` must have run first: it is what allocates the target and
+   * camera this reads, and what sets the preview scene's environment, fog and
+   * light colours to this destination's - all of which are part of the key we
+   * are trying to hit.
+   *
+   * This is the cheaper half of the warm: it issues a `linkProgram` per material
+   * and never reads the result, where three reads `LINK_STATUS` on a program's
+   * first *use* - which is a draw, and which is why the draws in `warmPreviews`
+   * are what had to be sliced. Cheaper is not free, though. ANGLE translates
+   * GLSL to HLSL inside `glCompileShader`, synchronously, so one call over a
+   * whole un-warmed destination measured 377 ms and 929 ms on the sports
+   * gateway. That is why the caller hands it a plan unit at a time and keeps
+   * the whole-group call for the broadening pass, by which point every program
+   * a visible object needs already exists.
+   *
+   * @param {any} portal
+   * @param {THREE.Object3D} root the destination group, or one plan unit
+   */
+  _compilePreviewGroup(portal, root) {
     const r = this.renderer;
     if (!portal.rt || !portal.previewCam || typeof r.compile !== 'function') return;
     const prevTarget = r.getRenderTarget();
@@ -2204,7 +2624,7 @@ export class PortalSystem {
     try {
       r.shadowMap.autoUpdate = false;
       r.setRenderTarget(portal.rt);
-      r.compile(group, portal.previewCam, this._previewScene);
+      r.compile(root, portal.previewCam, this._previewScene);
     } finally {
       r.setRenderTarget(prevTarget);
       r.shadowMap.autoUpdate = prevShadowAuto;
@@ -2564,6 +2984,10 @@ export class PortalSystem {
       if (
         p.ready &&
         !p.previewFailed &&
+        // Never draw a destination the sliced warm has not finished linking:
+        // that draw is the 14 s freeze. The disc keeps its stabilising look for
+        // the few seconds the warm still needs. See `warmPreviews`.
+        !p._warmPending &&
         viewDist < PREVIEW_RANGE &&
         // Prime once on the frame the gateway comes into range, then settle into
         // the 10 Hz cadence. Without the priming pass the establishing frame of

@@ -799,18 +799,49 @@ async function rehearse() {
   );
 }
 
+/**
+ * The background scheduler this boot uses, for the world builds and for the
+ * time-sliced gateway preview warm they hand off to.
+ *
+ * The `timeout` is not optional in practice. A 126 fps render loop leaves so
+ * little idle time that a plain `requestIdleCallback` was never firing at all:
+ * measured, the other two worlds were still unbuilt 45 s after boot, so every
+ * portal paid for generating its destination *and* compiling it on the spot.
+ * With a deadline Chrome runs the callback regardless of idleness.
+ *
+ * It is also the *yield* the preview warm is sliced against: an idle callback
+ * is a real task, run after the frame is presented, so a slice armed with one
+ * genuinely gives the compositor a turn. A promise resolved in the same
+ * microtask would not, and would measure exactly like the block it replaced.
+ *
+ * @param {(deadline: any) => void} fn
+ * @param {number} timeoutMs how long to wait for genuine idle time before
+ *   running anyway.
+ */
+function idleTask(fn, timeoutMs) {
+  if (window.requestIdleCallback) return window.requestIdleCallback(fn, { timeout: timeoutMs });
+  return setTimeout(() => fn({ timeRemaining: () => 8 }), Math.min(200, timeoutMs));
+}
+
+/** World generation: a handful of long, chunky steps. */
+const idle = (fn) => idleTask(fn, 1500);
+
+/**
+ * Preview-warm slices: a couple of hundred short ones, so the deadline is a
+ * frame rather than a second and a half.
+ *
+ * This is not a tuning nicety. A running game leaves no genuine idle time at
+ * all, so every callback waits out its whole deadline - measured with the 1500
+ * ms deadline above, one gateway's 48 slices took 78 s and the other three
+ * gateways never finished inside the opening two minutes. A frame's deadline
+ * drains the plan at frame rate and the yield is exactly as real.
+ */
+const idleSoon = (fn) => idleTask(fn, 24);
+
 function scheduleBackgroundBuilds(startWorld) {
   const rest = worldManager.ids.filter(
     (id) => id !== startWorld && !worldManager.isVolatile(id),
   );
-  // The `timeout` is not optional in practice. A 126 fps render loop leaves so
-  // little idle time that a plain `requestIdleCallback` was never firing at
-  // all: measured, the other two worlds were still unbuilt 45 s after boot, so
-  // every portal paid for generating its destination *and* compiling it on the
-  // spot. With a deadline Chrome runs the callback regardless of idleness.
-  const idle = window.requestIdleCallback
-    ? (fn) => window.requestIdleCallback(fn, { timeout: 1500 })
-    : (fn) => setTimeout(() => fn({ timeRemaining: () => 8 }), 200);
   let i = 0;
   const step = () => {
     if (i >= rest.length) {
@@ -893,8 +924,17 @@ async function warmWorld(id) {
  * so a preview warm behind the loading screen would find no materials to link
  * and would have to build all five worlds first - trading a stall the player
  * feels for a much longer one they wait through. Per-world-on-demand puts the
- * cost in the same idle block that already generates and compiles that world,
- * before its gateway is ever reachable.
+ * cost in the same background chain that already generates and compiles that
+ * world.
+ *
+ * ── Being in the background chain is not the same as being invisible ───────
+ * That chain runs after `engine.start()`, so the player is walking around while
+ * it works, and one un-sliced warm per world measured 12.4 s, 15.3 s, 4.8 s and
+ * 3.3 s of dead main thread inside the first minute of play. Which is why this
+ * hands `Portals.warmPreviews` a scheduler and waits on the promise instead of
+ * calling it and returning: the warm spreads itself over hundreds of idle
+ * callbacks, and holds the gateway's preview off the disc until it is done so
+ * the cost can never land in a gameplay frame. See `warmPreviews`.
  *
  * The maze is the exception, deliberately. `MazeWorld` is `static volatile`, it
  * is filtered out of the background builds above, and it re-rolls its layout on
@@ -905,19 +945,26 @@ async function warmWorld(id) {
  * @param {string} id
  */
 function warmPortalPreviews(id) {
-  if (!portals?.warmPreviews) return;
-  try {
-    const res = portals.warmPreviews({ target: id });
-    if (res.warmed.length) {
-      console.info(
-        `[warm] gateway preview to "${id}" linked in ${res.ms}ms ` +
-        `(${res.programs} programs total)`
-      );
-    }
-  } catch (err) {
-    // Optional work: the cost simply reverts to being paid on approach.
-    console.warn(`[warm] gateway preview warm for "${id}" failed:`, err);
-  }
+  if (!portals?.warmPreviews) return Promise.resolve();
+  // `idleSoon` is the yield. Handing it in is what turns this from one 12-15 s
+  // block into one shader program per idle callback; the wall-clock total is
+  // about the same and the largest single pause is a frame rather than a
+  // freeze. The chain still waits for it, so the next world does not start
+  // generating on top of these slices.
+  return portals
+    .warmPreviews({ target: id, schedule: idleSoon })
+    .then((res) => {
+      if (res.warmed.length) {
+        console.info(
+          `[warm] gateway preview to "${id}" linked in ${res.ms}ms ` +
+          `across ${res.slices} slices (${res.reason}, ${res.programs} programs total)`
+        );
+      }
+    })
+    .catch((err) => {
+      // Optional work: the cost simply reverts to being paid on approach.
+      console.warn(`[warm] gateway preview warm for "${id}" failed:`, err);
+    });
 }
 
 /* ------------------------------------------------------------------ */

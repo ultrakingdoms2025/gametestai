@@ -52,6 +52,7 @@ import { RaceManager } from './race/RaceManager.js';
 import { RaceUI } from './ui/RaceUI.js';
 import { QuestBoard } from './ui/QuestBoard.js';
 import { BugReport } from './ui/BugReport.js';
+import { forceDrawable } from './gfx/RehearsalDraw.js';
 
 /**
  * AETHER NEXUS - bootstrap.
@@ -625,6 +626,15 @@ async function prewarm() {
     if (selected) loadout.select(selected);
   }
 
+  // Everything above compiles the *material graph*. What is left needs the
+  // objects actually drawn in the state the player will meet them in - see the
+  // header on `rehearse`.
+  try {
+    await rehearse();
+  } catch (err) {
+    console.warn('[rehearse] failed, first-use costs stay with the player:', err);
+  }
+
   try {
     for (const root of parked) root.visible = false;
     // Do NOT call setVisible(false) here. The prewarm used setVisible(true) to
@@ -645,18 +655,198 @@ async function prewarm() {
   );
 }
 
+/**
+ * Play the first few minutes of the game, invisibly, behind the loading screen.
+ *
+ * ── What this fixes ────────────────────────────────────────────────────────
+ * The player's report was "loading mounts or doing much of anything first time
+ * is slow, after a while of use the speed is better". Measured on a cold GPU
+ * program cache, with everything above this already done, that was:
+ *
+ *     summon the dragon        4 programs   4.1 s
+ *     fire each weapon         3 programs   3.2 s
+ *     summon the hoverboard    2 programs   2.6 s
+ *     summon the car           2 programs   1.7 s
+ *     first rare loot drop     5 programs   1.7 s
+ *     switch through weapons   3 programs   1.0 s
+ *     summon the bicycle       1 program    1.0 s
+ *                                          ~15 s
+ *
+ * Every other first-use action measured - opening any panel, entering a
+ * building, meeting a hostile, killing one, mounting the horse or the eagle,
+ * flying - linked nothing at all. That list is what this function reproduces,
+ * and nothing more: it is a ranking, not a guess.
+ *
+ * ── Why `compile()` was not enough, in one sentence per reason ─────────────
+ *   1. `compile` collects materials from `object.material`. A loot accent that
+ *      is never attached to a pickup, a mount that is built but never
+ *      `spawn()`ed, a weapon part that is only added when drawn - none of them
+ *      are on anything, so none of them are seen.
+ *   2. `compile` issues `linkProgram` but reads no result. Three checks the
+ *      link status on a program's first *use*, which is where the stall
+ *      actually lands, so the program must also be drawn.
+ *   3. A transparent `DoubleSide` material is *two* programs, not one - three
+ *      draws it once per face winding. That is why `loot.beam.trinket`,
+ *      `sword.trail` and `dragon.membrane` each linked twice from one material,
+ *      and why chasing "unreferenced materials" never explained it.
+ *
+ * ── What it must not do ────────────────────────────────────────────────────
+ * Leave anything behind. Mounts are spawned but never *mounted*, so the player
+ * is never seated, moved, or swung into third person; loot is posed from the
+ * pool and never enters `_active`, so nothing is dropped and nothing is
+ * awarded; the HUD is silenced so the six mounts it would announce do not greet
+ * the player as toasts for things that never happened. Everything is restored
+ * in reverse, and the program/collider/child counts are logged either side so a
+ * leak shows up as a number rather than as a bug report.
+ */
+async function rehearse() {
+  const r = engine.renderer;
+  const t0 = performance.now();
+  const p0 = r.info.programs.length;
+  /** State that must come out exactly as it went in. */
+  const state = () => ({
+    children: engine.scene.children.length,
+    colliders: physics.colliders?.length ?? 0,
+    pickups: loot?.pickups?.length ?? 0,
+    weapon: loadout.current?.id ?? null,
+    mounted: mounts.active?.id ?? null,
+    credits: economy?.credits ?? 0,
+    px: player.position.x, py: player.position.y, pz: player.position.z,
+  });
+  const before = state();
+  // Uploads, deliberately *not* part of the leak test. `info.memory` counts GPU
+  // resources, and drawing a mesh for the first time uploads its buffers and
+  // textures - which is a second first-use cost this rehearsal is paying on the
+  // player's behalf, not something it failed to clean up.
+  const g0 = r.info.memory.geometries;
+  const x0 = r.info.memory.textures;
+
+  hud?.setQuiet?.(true);
+  /** @type {Array<() => void>} */
+  const restore = [];
+  /** @type {THREE.Object3D[]} */
+  let mountRoots = [];
+  /** Where each root was parented, so the teardown can put it back. */
+  let mountParents = [];
+
+  try {
+    mountRoots = mounts.warmSpawn?.(player.position, player.yaw ?? 0) ?? [];
+    mountParents = mountRoots.map((root) => root.parent);
+  } catch (err) {
+    console.warn('[rehearse] mount spawn failed:', err);
+  }
+
+  try {
+    const undo = loot?.warmAccents?.(player.position);
+    if (undo) restore.push(undo);
+  } catch (err) {
+    console.warn('[rehearse] loot accents failed:', err);
+  }
+
+  const viewRoots = [];
+  try {
+    for (const inst of loadout.instances ?? []) {
+      inst.setVisible?.(true);
+      if (inst.root) viewRoots.push(inst.root);
+    }
+  } catch (err) {
+    console.warn('[rehearse] viewmodel show failed:', err);
+  }
+
+  restore.push(forceDrawable([...mountRoots, ...viewRoots, loot?.group, avatar?.root]));
+
+  for (let i = 0; i < 3; i++) {
+    try {
+      // Before every rehearsal frame, not just the first: `warmSpawn` and
+      // `forceDrawable` between them can expose a light that was hidden (a
+      // car's headlamps), and one such light reaching `projectObject` would
+      // rebuild every program in the scene against a light count that never
+      // occurs again.
+      lightRig.update(1 / 60);
+      if (engine.postfx) engine.postfx.render(1 / 60);
+      else r.render(engine.scene, engine.camera);
+    } catch { /* a rehearsal frame must never abort the boot */ }
+    await nextFrame();
+  }
+
+  try {
+    for (let i = restore.length - 1; i >= 0; i--) restore[i]();
+    for (const inst of loadout.instances ?? []) inst.setVisible?.(false);
+    if (before.weapon != null) loadout.current?.setVisible?.(true);
+    // Kill every mount this rehearsal spawned - an alive-but-torn-down mount is
+    // the exact hazard `unpark` documents, because `summon` only calls `spawn`
+    // on a mount that is not already alive and would otherwise seat the player
+    // on an invisible one at stale coordinates.
+    mounts.unpark?.([]);
+    // `kill()` unparents the root, so put it back where `prebuild` left it:
+    // hidden, in the scene, waiting for prewarm's own `unpark` to remove it a
+    // moment later. Without this the rehearsal would appear to eat six scene
+    // children, and the leak test below would be crying wolf every boot.
+    mountRoots.forEach((root, i) => {
+      root.visible = false;
+      if (!root.parent && mountParents[i]) mountParents[i].add(root);
+    });
+  } catch (err) {
+    console.warn('[rehearse] restore failed:', err);
+  } finally {
+    hud?.setQuiet?.(false);
+  }
+
+  const after = state();
+  const leaked = Object.keys(before).filter((k) => before[k] !== after[k]);
+  console.info(
+    `[rehearse] ${r.info.programs.length - p0} programs in ` +
+    `${Math.round(performance.now() - t0)}ms, ` +
+    `+${r.info.memory.geometries - g0} geometries +${r.info.memory.textures - x0} textures uploaded` +
+    (leaked.length
+      ? ` - LEAKED ${leaked.map((k) => `${k}: ${before[k]}->${after[k]}`).join(', ')}`
+      : ' - state clean')
+  );
+}
+
+/**
+ * The background scheduler this boot uses, for the world builds and for the
+ * time-sliced gateway preview warm they hand off to.
+ *
+ * The `timeout` is not optional in practice. A 126 fps render loop leaves so
+ * little idle time that a plain `requestIdleCallback` was never firing at all:
+ * measured, the other two worlds were still unbuilt 45 s after boot, so every
+ * portal paid for generating its destination *and* compiling it on the spot.
+ * With a deadline Chrome runs the callback regardless of idleness.
+ *
+ * It is also the *yield* the preview warm is sliced against: an idle callback
+ * is a real task, run after the frame is presented, so a slice armed with one
+ * genuinely gives the compositor a turn. A promise resolved in the same
+ * microtask would not, and would measure exactly like the block it replaced.
+ *
+ * @param {(deadline: any) => void} fn
+ * @param {number} timeoutMs how long to wait for genuine idle time before
+ *   running anyway.
+ */
+function idleTask(fn, timeoutMs) {
+  if (window.requestIdleCallback) return window.requestIdleCallback(fn, { timeout: timeoutMs });
+  return setTimeout(() => fn({ timeRemaining: () => 8 }), Math.min(200, timeoutMs));
+}
+
+/** World generation: a handful of long, chunky steps. */
+const idle = (fn) => idleTask(fn, 1500);
+
+/**
+ * Preview-warm slices: a couple of hundred short ones, so the deadline is a
+ * frame rather than a second and a half.
+ *
+ * This is not a tuning nicety. A running game leaves no genuine idle time at
+ * all, so every callback waits out its whole deadline - measured with the 1500
+ * ms deadline above, one gateway's 48 slices took 78 s and the other three
+ * gateways never finished inside the opening two minutes. A frame's deadline
+ * drains the plan at frame rate and the yield is exactly as real.
+ */
+const idleSoon = (fn) => idleTask(fn, 24);
+
 function scheduleBackgroundBuilds(startWorld) {
   const rest = worldManager.ids.filter(
     (id) => id !== startWorld && !worldManager.isVolatile(id),
   );
-  // The `timeout` is not optional in practice. A 126 fps render loop leaves so
-  // little idle time that a plain `requestIdleCallback` was never firing at
-  // all: measured, the other two worlds were still unbuilt 45 s after boot, so
-  // every portal paid for generating its destination *and* compiling it on the
-  // spot. With a deadline Chrome runs the callback regardless of idleness.
-  const idle = window.requestIdleCallback
-    ? (fn) => window.requestIdleCallback(fn, { timeout: 1500 })
-    : (fn) => setTimeout(() => fn({ timeRemaining: () => 8 }), 200);
   let i = 0;
   const step = () => {
     if (i >= rest.length) {
@@ -667,6 +857,7 @@ function scheduleBackgroundBuilds(startWorld) {
     worldManager
       .build(id)
       .then(() => warmWorld(id))
+      .then(() => warmPortalPreviews(id))
       .then(() => {
         bus.emit('world:ready', { id });
         idle(step);
@@ -714,6 +905,71 @@ async function warmWorld(id) {
     // Never fatal: the cost simply reverts to being paid on arrival.
     console.warn(`[warm] precompile of "${id}" failed:`, err);
   }
+}
+
+/**
+ * Pay the *gateway preview's* first-use shader cost as soon as its destination
+ * exists, rather than on the frame the player walks within 40 m of the disc.
+ *
+ * `warmWorld` above is not enough on its own, and the reason is worth writing
+ * down because it looks like it should be. It compiles the destination's
+ * materials against `engine.scene` - the station's environment map, the
+ * station's fog, the canvas render state. A gateway disc does not draw the
+ * destination that way: it renders it into a 512² half-float target with the
+ * *destination's* own environment and fog, in `Portals._previewScene`. Three
+ * folds all of those into its program cache key, so the pre-compile builds one
+ * set of programs and the preview then asks for a different set. Measured over
+ * a 14-minute walk of the station: 87 further programs linked *during*
+ * navigation, in seven freezes totalling ~41 s, 73% of the link time under
+ * `Portals._renderPreview`.
+ *
+ * ── Why here and not in `prewarm()` ────────────────────────────────────────
+ * Because there is nothing to warm at that point. Boot builds only the entry
+ * world; every gateway destination is generated by `scheduleBackgroundBuilds`,
+ * so a preview warm behind the loading screen would find no materials to link
+ * and would have to build all five worlds first - trading a stall the player
+ * feels for a much longer one they wait through. Per-world-on-demand puts the
+ * cost in the same background chain that already generates and compiles that
+ * world.
+ *
+ * ── Being in the background chain is not the same as being invisible ───────
+ * That chain runs after `engine.start()`, so the player is walking around while
+ * it works, and one un-sliced warm per world measured 12.4 s, 15.3 s, 4.8 s and
+ * 3.3 s of dead main thread inside the first minute of play. Which is why this
+ * hands `Portals.warmPreviews` a scheduler and waits on the promise instead of
+ * calling it and returning: the warm spreads itself over hundreds of idle
+ * callbacks, and holds the gateway's preview off the disc until it is done so
+ * the cost can never land in a gameplay frame. See `warmPreviews`.
+ *
+ * The maze is the exception, deliberately. `MazeWorld` is `static volatile`, it
+ * is filtered out of the background builds above, and it re-rolls its layout on
+ * every entry - so it is never built while you are standing in the station, its
+ * gateway shows a stabilising disc rather than a preview, and there is nothing
+ * for this to warm. It costs nothing during navigation for the same reason.
+ *
+ * @param {string} id
+ */
+function warmPortalPreviews(id) {
+  if (!portals?.warmPreviews) return Promise.resolve();
+  // `idleSoon` is the yield. Handing it in is what turns this from one 12-15 s
+  // block into one shader program per idle callback; the wall-clock total is
+  // about the same and the largest single pause is a frame rather than a
+  // freeze. The chain still waits for it, so the next world does not start
+  // generating on top of these slices.
+  return portals
+    .warmPreviews({ target: id, schedule: idleSoon })
+    .then((res) => {
+      if (res.warmed.length) {
+        console.info(
+          `[warm] gateway preview to "${id}" linked in ${res.ms}ms ` +
+          `across ${res.slices} slices (${res.reason}, ${res.programs} programs total)`
+        );
+      }
+    })
+    .catch((err) => {
+      // Optional work: the cost simply reverts to being paid on approach.
+      console.warn(`[warm] gateway preview warm for "${id}" failed:`, err);
+    });
 }
 
 /* ------------------------------------------------------------------ */

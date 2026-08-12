@@ -8,9 +8,13 @@ import { allows } from '../worlds/WorldRules.js';
  * The pickups are a fixed pool built once at construction and parked hidden in
  * the scene. Nothing here allocates after that: no geometry, no material and no
  * vector is created while the game is running, and a drop is a matter of moving
- * an existing group and turning it on. That also means every pickup material is
- * present for `renderer.compileAsync` during boot warmup, so the first kill of
- * a session cannot trigger a shader compile hitch.
+ * an existing group and turning it on.
+ *
+ * That was long claimed to make every pickup material present for the boot
+ * warmup, and it does not - see `warmAccents`. Building a material is not the
+ * same as putting it on a mesh, and only the `ammo` set is ever worn by default,
+ * so the first rare drop of a session linked five programs and froze the game
+ * for 1.65 s. `warmAccents` is what actually makes the claim true.
  *
  * Deliberately **no lights**. A point light per pickup would look lovely and
  * would also change the scene light count at runtime, which invalidates Three's
@@ -418,6 +422,68 @@ export class Loot {
     p.ring.material = m.ring;
     p.halo.material = m.halo;
     p.beam.material = m.beam;
+  }
+
+  /**
+   * Show one idle pickup of every accent, for the boot-time shader warm.
+   *
+   * ── Why this exists, and why "build the materials" was not enough ────────
+   * The pool builds one material set per accent up front, but every pickup in
+   * the pool is *made* wearing the `ammo` set - `_applyAccent` only swaps the
+   * others in when a drop of that kind actually spawns. `renderer.compile()`
+   * collects materials by walking `object.material`, so it has never once seen
+   * `loot.beam.trinket`; the first rare drop the player ever walks past linked
+   * it on the spot. Measured cold: 5 programs, 1.65 s, in one frame.
+   *
+   * Five, not four, for four meshes. `loot.beam.*` is transparent *and*
+   * `DoubleSide`, and three renders that combination in two passes - once with
+   * `side = BackSide`, once with `FrontSide` - which are two different program
+   * cache keys off one material. Nothing about the material graph reveals that;
+   * only drawing it does. `renderer.compile()` reproduces the same two-pass
+   * split (`prepareMaterial`), so a compile with the accents *attached* is
+   * enough to issue both links - but the driver defers the link check to first
+   * use, so they must also be drawn. Hence: attach, show, and let the caller
+   * render frames.
+   *
+   * Nothing here touches `_active`, emits `loot:dropped`, or gives the player
+   * anything. These are pool entries posed for the camera and then put back.
+   *
+   * @param {THREE.Vector3} position Centre to lay them out around.
+   * @returns {() => void} Restore. Always call it.
+   */
+  warmAccents(position) {
+    const kinds = Object.keys(this._mats);
+    /** @type {Array<{p:object, accent:string, visible:boolean, scale:number, x:number, y:number, z:number}>} */
+    const touched = [];
+    kinds.forEach((kind, i) => {
+      // Never borrow a pickup that is actually in the world: a cache or a
+      // player-dropped item must not blink into a different colour and back.
+      const p = this._pool[i];
+      if (!p || p.active) return;
+      touched.push({
+        p,
+        accent: p.accent,
+        visible: p.root.visible,
+        scale: p.root.scale.x,
+        x: p.root.position.x, y: p.root.position.y, z: p.root.position.z,
+      });
+      p.accent = kind;
+      this._applyAccent(p);
+      // Spread them so none is hidden inside another, and stand them next to
+      // the player so the shadow and post chains reach them too.
+      p.root.position.set(position.x + 1.1 * (i - kinds.length / 2), position.y, position.z + 2.5);
+      p.root.scale.setScalar(1);
+      p.root.visible = true;
+    });
+    return () => {
+      for (const t of touched) {
+        t.p.accent = t.accent;
+        this._applyAccent(t.p);
+        t.p.root.visible = t.visible;
+        t.p.root.scale.setScalar(t.scale);
+        t.p.root.position.set(t.x, t.y, t.z);
+      }
+    };
   }
 
   /* ====================================================================== */

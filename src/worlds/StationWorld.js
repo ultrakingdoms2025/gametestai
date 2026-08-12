@@ -1079,6 +1079,24 @@ const SIGNS = [
    *     through, which is the difference between a placeholder and a bug. */
   ['GATEWAY 06', 'SURVEY SITE // UNCOMMISSIONED', '#9fb8c8'],
   ['SURVEY SITE 06', 'GATEWAY 06 AHEAD // NOT COMMISSIONED', '#9fb8c8'],
+  /* Four, not two.
+   *
+   * A row is four cells and `paintSignAtlas` destructures `SIGNS[i]`
+   * unconditionally for every cell in the sheet, so a row holding two entries
+   * throws "Cannot destructure property" before the station finishes building.
+   * I had called the other two "spare"; the painter has no such concept, and
+   * `rules-applied.test.mjs` caught the boot crash on the first run - which is
+   * exactly the failure its docstring says it exists to catch.
+   *
+   * Filled with real role-reserved copy rather than blanks, which is the
+   * pattern the maze set: it authored GATEWAY 05, an approach board, a warning
+   * and a lost-property notice for one gateway, and places exactly one of the
+   * four. `approachMaze`, `mazeWarning` and `lostProperty` have been reserved
+   * and unplaced ever since. These two are the same - authored, reserved, and
+   * ready the moment the survey site earns the signage a commissioned world
+   * would carry. */
+  ['NO WORKS AUTHORISED', 'SITE UNDER SURVEY // 06', '#9fb8c8'],
+  ['GATEWAY 06 ENQUIRIES', 'SITE OFFICE // NOT YET BUILT', '#8fb8ff'],
 ];
 
 /**
@@ -1120,6 +1138,8 @@ const SIGN_ROLE = {
   lostProperty: 39,
   gatewaySurvey: 40,
   approachSurvey: 41,
+  surveyWarning: 42,
+  surveyEnquiries: 43,
 };
 
 /** Atlas of holographic signage - one texture, one draw call. */

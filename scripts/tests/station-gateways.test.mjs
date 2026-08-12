@@ -165,7 +165,12 @@ test('avenueClearance is negative on a road and positive beside one', () => {
 
 test('the kerb clearance is measured to the kerb, not the carriageway', () => {
   assert.ok(ROAD_EDGE_HALF > AVENUE_HALF, 'kerbs are part of the obstruction');
-  assert.equal(ROAD_EDGE_HALF, 9.9);
+  /* 9.9 to within float. `ROAD_W / 2 + 0.45 + 0.45` evaluates to
+   * 9.899999999999999, and asserting strict equality against the decimal
+   * literal fails on the last bit - which says nothing about the geometry and
+   * everything about having written the number twice. It is a distance, so it
+   * gets a tolerance. */
+  assert.ok(Math.abs(ROAD_EDGE_HALF - 9.9) < 1e-9, `ROAD_EDGE_HALF = ${ROAD_EDGE_HALF}`);
 });
 
 test('no part of any gateway stands on an avenue', () => {

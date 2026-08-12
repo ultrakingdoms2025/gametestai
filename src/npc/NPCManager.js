@@ -936,7 +936,7 @@ export class NPCManager {
     const CAST = {
       station: {
         name: 'Zara Vex',
-        persona: 'The Quest Manager for Aether Nexus Station: a sharp, efficient coordinator who has dispatched hundreds of agents through both portals. She speaks in mission briefings, rates everything by risk-versus-reward, and keeps a running tally of completed objectives on a holo-pad she never puts down.',
+        persona: 'The Quest Manager for Aether Nexus Station: a sharp, efficient coordinator who has dispatched hundreds of agents through every gateway on the ring. She speaks in mission briefings, rates everything by risk-versus-reward, and keeps a running tally of completed objectives on a holo-pad she never puts down. She has no briefing for Gateway 06 yet and says so with visible irritation.',
         position: [-22, 0.2, 12],
         yaw: -Math.PI / 2,
         sign: ['QUEST MANAGER', 'AETHER NEXUS'],

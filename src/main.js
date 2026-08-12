@@ -13,6 +13,7 @@ import { SportsWorld } from './worlds/SportsWorld.js';
 import { CitadelWorld } from './worlds/CitadelWorld.js';
 import { RaceWorld } from './worlds/RaceWorld.js';
 import { MazeWorld } from './worlds/MazeWorld.js';
+import { SurveyWorld } from './worlds/SurveyWorld.js';
 import { Player } from './player/Player.js';
 import { NPCManager } from './npc/NPCManager.js';
 import { PortalSystem } from './systems/Portals.js';
@@ -110,6 +111,10 @@ worldManager.register(SportsWorld);
 worldManager.register(CitadelWorld);
 worldManager.register(RaceWorld);
 worldManager.register(MazeWorld);
+/* Gateway 06's destination. `register` is metadata-only and keyed on `static
+ * id` - nothing is constructed until the world is first requested - so a
+ * placeholder world costs nothing until somebody walks through its gateway. */
+worldManager.register(SurveyWorld);
 
 const player = new Player({ ...ctx, camera: engine.camera });
 /* Worlds are constructed before the player exists, but they only ever read this

@@ -21,8 +21,10 @@ import {
  */
 
 /* Every world's `static id`, so a rename shows up here rather than as a
- * silently un-clamped station. */
-const ROOFLESS = ['medieval', 'sports', 'citadel', 'race', 'maze'];
+ * silently un-clamped station. `survey` joined when the sixth gateway went
+ * live: it is an open pad with no roof, and its edge barrier is a collider
+ * rather than an altitude rule, so it belongs on this list and not the other. */
+const ROOFLESS = ['medieval', 'sports', 'citadel', 'race', 'maze', 'survey'];
 
 test('the station clamp reduces to the existing flat bound on the world axis', () => {
   // StationWorld already sets bounds.max.y to DOME_APEX - 6 and explains why.

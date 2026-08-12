@@ -1,4 +1,4 @@
-export const LORE_ORDER = ['overall', 'station', 'medieval', 'sports', 'citadel', 'race', 'maze'];
+export const LORE_ORDER = ['overall', 'station', 'medieval', 'sports', 'citadel', 'race', 'maze', 'survey'];
 
 export const DEFAULT_LORE = {
   overall: {
@@ -60,6 +60,21 @@ export const DEFAULT_LORE = {
     body:
       'A hedge maze that re-rolls its layout on every entry. Its districts and levels never repeat. ' +
       'The maze that cannot be learned is the entire point.',
+  },
+  /* Gateway 06's destination. It has lore for the same reason it has hoardings:
+   * `loreEntryForScope` would otherwise fall back to the Chronicle and a keeper
+   * asked about Survey Site 06 would answer about the Nexus in general, which
+   * reads as the question having been forgotten rather than as the site being
+   * genuinely unwritten. Saying "nobody has decided yet" is a real answer. */
+  survey: {
+    scope: 'survey',
+    title: 'Survey Site 06',
+    sign_label: 'Site Surveyor',
+    body:
+      'Survey Site 06 is a levelled pad on the far side of the newest gateway on the ring: a datum, ' +
+      'a setting-out grid, eighty marker stakes and no decision. The survey is complete and the site ' +
+      'has not been commissioned, so what it becomes is still an open question - which is the one ' +
+      'thing about it that is definitely true.',
   },
 };
 

@@ -141,6 +141,11 @@ const CONTRACT = [
    * districts are live - registered here for the same reason MazeChunks is. */
   { file: 'src/worlds/maze/MazePopulation.js', exports: ['MazePopulation'] },
   { file: 'src/worlds/MazeWorld.js', exports: ['MazeWorld'], methods: ['build', 'dispose'] },
+  /* Gateway 06's destination. Registered for the same reason every other world
+   * is: the sixth gateway is live and routed here, so a renamed export or a
+   * deleted file surfaces as a failed check rather than as a portal that drops
+   * the player into nothing one browser boot later. Takes the count 59 -> 60. */
+  { file: 'src/worlds/SurveyWorld.js', exports: ['SurveyWorld'], methods: ['build', 'dispose'] },
 ];
 
 /** Feature set v2 — see CONTRACTS-V2.md. Absent until those agents land. */

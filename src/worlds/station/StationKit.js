@@ -387,9 +387,17 @@ export const SPAWN_YAW = -Math.PI / 2;   // faces +X, down the plaza axis
  * `_buildTextures` - and shrinking the cell to keep the sheet the same number
  * of pixels would undo the one thing this texture exists to do. One more row
  * (the tenth, for the maze gateway arch) costs about 4.5 MB. A sign nobody can
- * read costs more. */
+ * read costs more.
+ *
+ * 11 rows, not 10. The sheet was exactly full again - 40 cells for 40 signs -
+ * and the sixth gateway needs two: its lintel placard and its approach board.
+ * The precedent above is followed rather than argued with, at the same ~4.5 MB.
+ * Two of the four new cells are spare; that is the cost of a row, not slack
+ * anybody may borrow, because every cell here is reserved BY ROLE and a
+ * wayfinding board that shares a cell with a shop fascia announces a noodle
+ * bar over a door to another world. */
 export const SIGN_COLS = 4;
-export const SIGN_ROWS = 10;
+export const SIGN_ROWS = 11;
 
 /* ------------------------------------------------------------------ */
 /* Deterministic noise + rng                                           */
@@ -825,6 +833,253 @@ export function zoneLocal(deg, lx, ly, lz, out = new THREE.Vector3()) {
  */
 export function zoneYaw(deg, localYaw = 0) {
   return -Math.PI / 2 - deg * DEG + localYaw;
+}
+
+/* ------------------------------------------------------------------ */
+/* The gateway ring                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Outer edge of an avenue's paved footprint, measured from its centreline.
+ *
+ * The carriageway is `ROAD_W` across and a hazard kerb 0.9 m wide is centred on
+ * `ROAD_W / 2 + 0.45` down each side, so the last painted metal is at 9.9. This
+ * is what every clearance below is measured to; the carriageway alone
+ * understates the obstruction by nearly a metre.
+ */
+export const ROAD_EDGE_HALF = ROAD_W / 2 + 0.45 + 0.45;
+
+/** Bearings of the avenues. One list, so a clearance cannot be measured
+ *  against a different set of roads than the one that gets built. Frozen
+ *  because `StationWorld` now assigns it straight to `this.roadAngles` and a
+ *  world quietly editing a module constant would move the roads for the
+ *  clearance maths too, without moving the roads. */
+export const ROAD_ANGLES_DEG = Object.freeze([0, 60, 120, 180, 240, 300]);
+
+/**
+ * The six gateway bearings, in degrees.
+ *
+ * ── Why 30 + 60k and not 0 + 60k ──────────────────────────────────────────
+ * The plaza has six radiating avenues on `ROAD_ANGLES_DEG`, so six gateways at
+ * 60-degree spacing have exactly two possible phases: ON the avenues, or
+ * BETWEEN them. This is the second, and the choice is measured rather than
+ * aesthetic.
+ *
+ * An avenue's paved width is 19.8 m including kerbs. Aligned with an avenue, a
+ * gateway lands its 14 m approach flight and its 8.4 m service ramp squarely
+ * inside that, from r = 36.5 at the bottom tread to r = 70.2 at the ramp tip -
+ * thirty-four metres of road you have to climb over. That is not a hypothesis.
+ * The station audit already reports avenues 0 and 180 obstructed, and `13fa912`
+ * records why: "the gateway approach RAMP and its kerbs ... 8 m wide inside an
+ * 18 m carriageway", for the citadel and race gateways, which are precisely the
+ * two that sit on avenue bearings. Aligning all six multiplies that by three,
+ * and `gatewayClearances(ROAD_ANGLES_DEG, ROAD_ANGLES_DEG)` returns a negative
+ * avenue clearance for it, so the counterfactual is pinned by a test rather
+ * than asserted here.
+ *
+ * Between the avenues nothing is spanned. `gatewayClearances()` measures it and
+ * names the binding point, which is NOT the part that looks tightest: the
+ * approach flight comes no closer than about 4.3 m, but the dais's square box
+ * collider has corners at 15.0 m where the octagon it stands for reaches only
+ * 11.4, and those corners close to 2.62 m. That 2.62 is not a cost of this
+ * change - it is exactly the clearance the medieval and sports gateways have
+ * had all along, because a square collider rotated onto a 60-degree phase
+ * presents the same corner to the same kerb. The over-reaching collider is
+ * pre-existing and is left alone here; shrinking it is a collision question,
+ * not a placement one.
+ *
+ * The decisive evidence is that this phase is not new. Medieval (270) and
+ * sports (90) already stand between avenues and are the two gateways nothing
+ * has ever been reported against; citadel (180), race (0) and the maze - which
+ * shipped off-axis entirely, at (-54, 128), 139 m from the plaza centre and on
+ * no bearing at all - are the three that have. This generalises the arrangement
+ * that already works, and it moves neither of the two that were already right.
+ */
+export const GATEWAY_BEARINGS_DEG = [30, 90, 150, 210, 270, 330];
+
+/**
+ * The gateway assembly's own dimensions, in its local frame.
+ *
+ * Local +Z points OUTWARD from the plaza centre, local -Z is the approach, and
+ * local +X is tangential. That is the frame `_buildPortalDaises` was already
+ * authored in - it is the sports gateway with `sign = +1` and `cz = 0` - so
+ * these are transcribed from it rather than chosen, and the clearance maths
+ * here and the geometry that gets built read the same numbers.
+ */
+export const GATEWAY = {
+  /** Widest drawn radius: the dais cone's bottom rim. */
+  DAIS_R: 11.4,
+  /** Half-extent of the dais box collider. Square, so its corners reach 15.0. */
+  COLLIDER_HALF: 10.6,
+  /** Approach flight: six treads of 0.40 m, the first at local z = -11. */
+  TREADS: 6,
+  TREAD_RISE: 0.40,
+  TREAD_PITCH: 1.3,
+  TREAD_Z0: 11,
+  TREAD_W0: 14,
+  TREAD_TAPER: 0.75,
+  /** Service ramp on the far side: centre at local z = +12, 8.4 m long. */
+  RAMP_Z: 12,
+  RAMP_LEN: 8.4,
+  RAMP_HALF_W: 4.2,
+};
+
+/** Yaw that maps the gateway's local frame onto the world at bearing `deg`. */
+export function gatewayFrameYaw(deg) {
+  /* `localAt` sends local +Z to (sin yaw, cos yaw). Outward at bearing `deg` is
+   * (cos, sin), so yaw = 90 - deg. This is also exactly the portal spec's
+   * `rotationY` for all four on-axis gateways as they shipped: sports (deg 90)
+   * had 0, medieval (270) PI, race (0) PI/2, citadel (180) -PI/2. */
+  return Math.PI / 2 - deg * DEG;
+}
+
+/** World (x, z) of the dais centre at bearing `deg`. */
+export function gatewayCentre(deg) {
+  const t = deg * DEG;
+  return [Math.cos(t) * PORTAL_R, Math.sin(t) * PORTAL_R];
+}
+
+/**
+ * World (x, z) of every gateway's dais centre.
+ *
+ * Derived from one bearing list rather than written out, because a hand-kept
+ * copy is what the previous version of this constant existed to survive: the
+ * maze gateway shipped off-axis and the two hardcoded four-entry position
+ * arrays in `_buildCrowd` had no way to know they needed a fifth. Nothing may
+ * hardcode the arity again - a seventh bearing added above has to reach every
+ * consumer on its own.
+ */
+export const GATEWAY_CENTRES = GATEWAY_BEARINGS_DEG.map(gatewayCentre);
+
+/**
+ * The outline of one gateway assembly in its own local frame.
+ *
+ * Corners and rim samples only - enough to bound everything that stands on the
+ * deck, which is what a clearance is measured from. Each point is labelled so a
+ * failing clearance names the part that is too close instead of a coordinate.
+ *
+ * @returns {Array<{x:number, z:number, what:string}>}
+ */
+export function gatewayLocalFootprint() {
+  const pts = [];
+  // Dais rim, at the octagon's eight corners.
+  for (let i = 0; i < 8; i++) {
+    const th = (i / 8) * Math.PI * 2 + Math.PI / 8;
+    pts.push({ x: Math.cos(th) * GATEWAY.DAIS_R, z: Math.sin(th) * GATEWAY.DAIS_R, what: 'dais rim' });
+  }
+  /* The dais collider is a square box and its corners reach 15.0 m, further
+   * than the 11.4 m octagon it stands for. A player is stopped by the collider,
+   * not by the drawing, so the corners are part of the footprint. */
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      pts.push({
+        x: sx * GATEWAY.COLLIDER_HALF, z: sz * GATEWAY.COLLIDER_HALF,
+        what: 'dais collider corner',
+      });
+    }
+  }
+  // Approach treads, widest first, marching away from the dais.
+  for (let i = 0; i < GATEWAY.TREADS; i++) {
+    const w = GATEWAY.TREAD_W0 - i * GATEWAY.TREAD_TAPER;
+    const z = -(GATEWAY.TREAD_Z0 + i * GATEWAY.TREAD_PITCH);
+    for (const sx of [-1, 1]) {
+      for (const dz of [-0.7, 0.7]) {
+        pts.push({ x: sx * (w / 2), z: z + dz, what: `approach tread ${i}` });
+      }
+    }
+  }
+  // Service ramp and its kerbs.
+  for (const sx of [-1, 1]) {
+    for (const dz of [-1, 1]) {
+      pts.push({
+        x: sx * GATEWAY.RAMP_HALF_W,
+        z: GATEWAY.RAMP_Z + dz * (GATEWAY.RAMP_LEN / 2),
+        what: 'service ramp',
+      });
+    }
+  }
+  return pts;
+}
+
+/** The same outline placed in the world at bearing `deg`. */
+export function gatewayWorldFootprint(deg) {
+  const yaw = gatewayFrameYaw(deg);
+  const [cx, cz] = gatewayCentre(deg);
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  // Matches `GeoBatch.localAt` exactly: +X -> (cos, -sin), +Z -> (sin, cos).
+  return gatewayLocalFootprint().map((p) => ({
+    x: cx + p.x * c + p.z * s,
+    z: cz - p.x * s + p.z * c,
+    what: p.what,
+  }));
+}
+
+/**
+ * Distance from a deck point to the nearest avenue's paved edge.
+ *
+ * An avenue is a strip of half-width `ROAD_EDGE_HALF` running outward from
+ * `PLAZA_R - 3`, so this is point-to-rectangle and not point-to-line: a point
+ * inboard of the avenue's mouth is clear of it however close to the bearing it
+ * lies. Negative means the point is standing on the road.
+ */
+export function avenueClearance(x, z, roadAngles = ROAD_ANGLES_DEG) {
+  let best = Infinity;
+  const r0 = PLAZA_R - 3;
+  for (const deg of roadAngles) {
+    const t = deg * DEG;
+    const along = x * Math.cos(t) + z * Math.sin(t);
+    const across = Math.abs(-x * Math.sin(t) + z * Math.cos(t));
+    const dAlong = Math.max(0, r0 - along);
+    const dAcross = across - ROAD_EDGE_HALF;
+    const d = dAcross >= 0
+      ? Math.hypot(dAlong, dAcross)
+      : (dAlong > 0 ? dAlong : dAcross);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/** Radius of the plaza-centre monument cluster - the circle `_buildPlazaCentre`
+ *  draws on the minimap for it. */
+export const MONUMENT_R = 11.6;
+
+/**
+ * Every clearance the gateway ring has to satisfy, measured rather than
+ * asserted. Exported so the headless test and the note on
+ * `GATEWAY_BEARINGS_DEG` read one implementation.
+ */
+export function gatewayClearances(bearings = GATEWAY_BEARINGS_DEG, roadAngles = ROAD_ANGLES_DEG) {
+  let avenue = Infinity, avenueAt = null;
+  let monument = Infinity;
+  let column = Infinity;
+  let neighbour = Infinity;
+
+  for (const deg of bearings) {
+    for (const p of gatewayWorldFootprint(deg)) {
+      const a = avenueClearance(p.x, p.z, roadAngles);
+      if (a < avenue) { avenue = a; avenueAt = `${deg} deg ${p.what}`; }
+      const m = Math.hypot(p.x, p.z) - MONUMENT_R;
+      if (m < monument) monument = m;
+      // Walkway support columns: twelve at 15 + 30k, 1.45 m at the hazard base.
+      for (let i = 0; i < 12; i++) {
+        const th = (i / 12) * Math.PI * 2 + 15 * DEG;
+        const d = Math.hypot(p.x - Math.cos(th) * LOOP_R, p.z - Math.sin(th) * LOOP_R) - 1.45;
+        if (d < column) column = d;
+      }
+    }
+  }
+  /* Collider corner to collider corner between the two closest daises. The
+   * square collider is the binding shape again, not the octagon. */
+  const reach = GATEWAY.COLLIDER_HALF * Math.SQRT2;
+  for (let i = 0; i < bearings.length; i++) {
+    for (let j = i + 1; j < bearings.length; j++) {
+      const [ax, az] = gatewayCentre(bearings[i]);
+      const [bx, bz] = gatewayCentre(bearings[j]);
+      const d = Math.hypot(ax - bx, az - bz) - 2 * reach;
+      if (d < neighbour) neighbour = d;
+    }
+  }
+  return { avenue, avenueAt, monument, column, neighbour };
 }
 
 /* ------------------------------------------------------------------ */

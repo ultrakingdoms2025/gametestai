@@ -24,6 +24,9 @@ import {
   boxUV, uvScale, cylUV, cylGeo, atlasUV, signUV, boxGeo,
   instanced, GeoBatch, chunkTriangles, chunkTrianglesBySpan,
   roadPos, faceRoadYaw, zoneCentre, zoneLocal, zoneYaw,
+  ROAD_ANGLES_DEG,
+  GATEWAY, GATEWAY_BEARINGS_DEG, GATEWAY_CENTRES,
+  gatewayCentre, gatewayFrameYaw, avenueClearance,
 } from './station/StationKit.js';
 import { StationActors } from './station/StationActors.js';
 import { buildOuterRing, LINK_MOUTH_HALF_DEG } from './station/OuterRing.js';
@@ -56,27 +59,16 @@ const _euler = new THREE.Euler();
 const _quat = new THREE.Quaternion();
 const _scl = new THREE.Vector3(1, 1, 1);
 
-/**
- * Offset along Z of the maze gateway's dais from the plaza centre. Named so
- * it has one source: `_buildPortalDaises` passes it to `_buildAxisGateway` as
- * `offsetZ`, and `GATEWAY_CENTRES` below reads the same constant rather than
- * a second copy of the literal.
- */
-const MAZE_GATEWAY_OFFSET_Z = 128;
-
-/**
- * World-space (x, z) centre of every gateway's dais, kept as one list so
- * `_buildCrowd`'s plinth-clearance checks cannot drift out of step with the
- * gateways again. They already had once: the maze gateway shipped off-axis
- * (the other four all sit at (0, +-PORTAL_R) or (+-PORTAL_R, 0)) and the two
- * hardcoded four-entry position arrays in `_buildCrowd` had no way to know
- * they needed a fifth.
- */
-const GATEWAY_CENTRES = [
-  [0, -PORTAL_R], [0, PORTAL_R],               // medieval, sports (Z axis)
-  [-PORTAL_R, 0], [PORTAL_R, 0],                // citadel, race (X axis)
-  [-PORTAL_R, MAZE_GATEWAY_OFFSET_Z],           // maze (X axis, Z-offset)
-];
+/* `MAZE_GATEWAY_OFFSET_Z` and the hand-written `GATEWAY_CENTRES` list are gone.
+ *
+ * Both existed to describe a ring that was not one: five gateways, four of them
+ * on the two axes and the fifth pushed 128 m up +Z to keep its dais off the
+ * citadel's. `GATEWAY_CENTRES` was written as the single source that would stop
+ * that asymmetry causing a second bug, and a hand-kept list is only a single
+ * source until somebody adds a sixth gateway and forgets it. It is now derived
+ * from `GATEWAY_BEARINGS_DEG` in station/StationKit.js, beside the clearance
+ * maths that chose those bearings, and it is imported here rather than
+ * redeclared. */
 
 
 /* ------------------------------------------------------------------ */
@@ -1077,6 +1069,16 @@ const SIGNS = [
   ['THE VERDANT COIL', 'GATEWAY 05 AHEAD', '#8fd67a'],
   ['NO WAY BACK BUT THROUGH', 'HEDGE MAZE // NO EQUIPMENT', '#8fd67a'],
   ['LOST PROPERTY', 'ENQUIRE AT GATEWAY 05', '#8fe6c8'],
+  /* --- Gateway 06: the survey site. Appended for the same reason as 05 -
+   *     `SIGN_ROLE` indexes this array positionally, so inserting anywhere
+   *     above re-letters every sign after the insertion point.
+   *
+   *     The copy is the in-world statement that this gateway is provisional.
+   *     A player who walks up to it should not have to guess why the sixth
+   *     door leads somewhere unfinished; the placard says so before they step
+   *     through, which is the difference between a placeholder and a bug. */
+  ['GATEWAY 06', 'SURVEY SITE // UNCOMMISSIONED', '#9fb8c8'],
+  ['SURVEY SITE 06', 'GATEWAY 06 AHEAD // NOT COMMISSIONED', '#9fb8c8'],
 ];
 
 /**
@@ -1116,6 +1118,8 @@ const SIGN_ROLE = {
   approachMaze: 37,
   mazeWarning: 38,
   lostProperty: 39,
+  gatewaySurvey: 40,
+  approachSurvey: 41,
 };
 
 /** Atlas of holographic signage - one texture, one draw call. */
@@ -1780,7 +1784,7 @@ export class StationWorld extends World {
     await step(0.32, 'Raising the pressure hull', this._buildHull);
     await step(0.42, 'Laying the deck and avenues', this._buildDeck);
     await step(0.50, 'Erecting Gateway Plaza', this._buildPlazaCentre);
-    await step(0.55, 'Anchoring the gateway daises', this._buildPortalDaises);
+    await step(0.55, 'Anchoring the gateway daises', this._buildGatewayRing);
     await step(0.60, 'Hanging the promenade loop', this._buildWalkwayLoop);
     await step(0.66, 'Opening the commercial strip', this._buildCommercial);
     await step(0.72, 'Pressurising Hangar Bay 4', this._buildHangar);
@@ -4535,7 +4539,10 @@ export class StationWorld extends World {
     B.at('hazard', kerbRing, 0, 0.09, 0);
 
     /* --- Avenues ---------------------------------------------------- */
-    this.roadAngles = [0, 60, 120, 180, 240, 300];
+    /* Imported, not written out. The gateway bearings are chosen by measuring
+     * against these, and a clearance measured against a different set of roads
+     * than the one that gets built is worse than no clearance at all. */
+    this.roadAngles = ROAD_ANGLES_DEG;
     const R0 = PLAZA_R - 3;
     const R1 = DECK_R - 12;
     const L = R1 - R0;
@@ -5468,8 +5475,13 @@ export class StationWorld extends World {
       const th = nearRng() * Math.PI * 2;
       const rr = 13 + nearRng() * 25;
       const nx = Math.cos(th) * rr, nz = Math.sin(th) * rr;
-      // Skip the two gateway sightlines: they stay open by design.
-      if (Math.abs(nx) < 8 && Math.abs(nz) > 12) continue;
+      /* Skip every gateway approach: they stay open by design. This tested
+       * `|x| < 8 && |z| > 12`, the medieval/sports sightline written out, and
+       * this pass reaches r = 38 while a flight's bottom tread corner is 18.9 m
+       * from its dais centre - so with six gateways it would drop grating and
+       * cable runs onto four sets of steps. Same 20 m disc as `_buildNearField`
+       * uses, from the same derived list. */
+      if (GATEWAY_CENTRES.some(([px, pz]) => Math.hypot(nx - px, nz - pz) < 20)) continue;
       const kind = nearRng();
       if (kind < 0.34) {
         // Recessed service grating with a raised kerb - a real floor feature.
@@ -5511,467 +5523,440 @@ export class StationWorld extends World {
   }
 
   /* ---------------------------------------------------------------- */
-  /* Portal daises                                                     */
+  /* The gateway ring                                                  */
   /* ---------------------------------------------------------------- */
 
-  _buildPortalDaises() {
+  /**
+   * Six gateways, evenly spaced, all built by one path.
+   *
+   * ── What this replaces, and the docstring it overrides ──────────────────
+   * There were two builders. `_buildPortalDaises` did the Z-axis pair and
+   * `_buildAxisGateway` the X-axis pair, and the latter carried this note:
+   *
+   *   "Deliberately *not* run through the loop above. That builder is written
+   *    around `s.z` and `Math.sign(s.z)` - fifty-odd references decide dais
+   *    orientation, cone direction, sign placement and contact patches from
+   *    the Z coordinate alone - so a gateway on the X axis cannot be expressed
+   *    as another entry in its spec list without rewriting it, and rewriting a
+   *    working world to add a door to a new one is a bad trade."
+   *
+   * The diagnosis was right and the trade has changed. Every one of those
+   * fifty-odd references is `cz + sign * k` or `cz - sign * k`, which is to say
+   * they were already written in a local frame - one whose +Z points away from
+   * the plaza - and `sign` was the frame's yaw expressed as the only two values
+   * a Z-axis gateway can take. `GeoBatch.localAt` already places a part
+   * described in a local frame at an arbitrary yaw, and it composes YXZ, so an
+   * outer yaw is simply added to a part's own `ry`. Substituting `sign = +1`,
+   * `cz = 0` and reading the result as local coordinates is therefore a
+   * mechanical transcription of the richer builder, not a rewrite of it, and it
+   * places a gateway on any bearing at all.
+   *
+   * What that buys is the deletion of the off-axis special case. The maze
+   * gateway stood at (-54, 128) - 139 m from the plaza centre, on no bearing,
+   * built by the path meant for the on-axis pair and offset along Z only to
+   * keep its dais clear of the citadel's. `GATEWAY_CENTRES` exists because that
+   * asymmetry had already caused one bug, and it is now derived from the
+   * bearing list rather than hand-kept.
+   *
+   * ── Taking the better of each, not one of the two ───────────────────────
+   * The Z-axis builder is the richer one and supplies the body: octagonal dais
+   * with a hazard nosing, chamfered handrails and stanchions on every facet
+   * that is not a doorway, silhouette props on the shoulders, the six-tread
+   * approach flight, the ceremonial arch, the machined aperture surround, the
+   * destination placard, the backdrop pylons, the spilled light pool and the
+   * haze cone, and two practicals.
+   *
+   * Three things come from the X-axis builder instead:
+   *   - Its service ramp note. Both builders have a ramp; only that one records
+   *     why ("walks, drives and rides without anyone having to aim for a
+   *     step"), which is the reason a mount can reach a dais at all.
+   *   - Its guide-light rule - "kept inside the rim so they sit on the deck
+   *     rather than hanging over the ramp's slope". Neither builder actually
+   *     obeyed it: the Z-axis run marched from local z = -14 to -10 at x = +-6,
+   *     which is r = 11.7 to 15.2 on an 11 m dais, at a flat y = 2.5 over
+   *     treads whose tops fall 2.40, 2.00, 1.60 - the far pair hung 0.9 m in
+   *     the air. The X-axis run reaches r = 12.0 on an 8.6 m deck. The rule is
+   *     kept and the lights are seated: one pair per tread, on the tread, at
+   *     that tread's own height, so they read as a flight rather than a row.
+   *   - Its `_solidRot` habit for anything that turns with the gateway.
+   *
+   * What does NOT survive is the citadel's four sandstone standing stones,
+   * whose note says they exist "so the citadel gateway reads as older than the
+   * two beside it before the player is close enough to read the sign". That is
+   * per-destination identity and it is a good instinct, but it was carried by
+   * the builder rather than by the spec, so it was really "the X-axis builder
+   * looks different from the Z-axis builder" wearing an argument. Identity is
+   * carried by the things that are per-destination by construction - the
+   * accent, the dedicated `emGate_*` beacon material, the emissive trim family
+   * and the placard - and the arch itself is the silhouette that differs,
+   * because `PortalSystem._kit` already styles it from the destination.
+   *
+   * @param {THREE.Group} g the gateways group
+   * @param {object} s      one entry of the table in `_buildGatewayRing`
+   * @param {number} deg    its bearing
+   */
+  _buildGateway(g, s, deg) {
     const M = this.mat;
+    const B = new GeoBatch();
+    const TH = gatewayFrameYaw(deg);
+    const [cx, cz] = gatewayCentre(deg);
+
+    /* The local frame. `P` places a part described around the gateway's own
+     * origin with +Z pointing outward; `W` answers where a local point lands,
+     * for the helpers that take world coordinates (colliders, contact patches,
+     * ramps, lights, the sign board). Both agree with `GeoBatch.localAt` by
+     * construction - `_localPoint`'s docstring says it matches it exactly - so
+     * a collider cannot drift away from the geometry it stands for. */
+    const P = (key, geo, lx, ly, lz, ry = 0, rx = 0, rz = 0) =>
+      B.localAt(key, geo, cx, 0, cz, TH, lx, ly, lz, ry, rx, rz);
+    const W = (lx, lz) => this._localPoint(cx, cz, TH, lx, 0, lz);
+
+    /* The portal is the thing the whole composition terminates on, and it was
+     * losing the frame: its luminance sat inside a stop of the cyan strips and
+     * amber practicals around it, so the eye had no reason to travel down the
+     * axis to it. This material is the separation - a dedicated emissive at
+     * roughly double the brightest competing emitter, in the destination's own
+     * hue, and deliberately *not* distance-graded, because a beacon that fades
+     * with range is not a beacon.
+     */
+    const key = `emGate_${s.target}`;
+    M[key] = new THREE.MeshStandardMaterial({
+      color: 0x05070a,
+      emissive: new THREE.Color(s.accent),
+      emissiveIntensity: 3.4,
+      metalness: 0.1,
+      roughness: 0.35,
+      toneMapped: true,
+    });
+
+    // Octagonal dais. Texel density is derived from the world size rather
+    // than from a flat uvScale: the old (20, 3) stretched the top cap into
+    // 1 x 7 m rectangles, which is why the largest object in the portal shot
+    // read as an untextured placeholder next to finely detailed pillars.
+    P('plaza', cylGeo(11, 11.4, 2.4, 8, 2.6), 0, 1.2, 0, Math.PI / 8);
+    P('trim', cylGeo(11.15, 11.15, 0.35, 8, 2.0), 0, 2.45, 0, Math.PI / 8);
+    /* Square box for an octagonal dais, so its corners reach 15.0 m where the
+     * drawing reaches 11.4. That over-reach is inherited, not introduced -
+     * both old builders used a square, and `gatewayClearances()` reports it as
+     * the binding constraint against the avenues at 2.62 m, which is exactly
+     * the figure the medieval and sports daises have always had. Rotated with
+     * the gateway rather than left world-aligned, or six daises would present
+     * six differently-shaped obstacles. */
+    this._solidRot(cx, 1.2, cz, GATEWAY.COLLIDER_HALF, 1.2, GATEWAY.COLLIDER_HALF, TH);
+
+    // Chamfered, hazard-marked nosing around the dais lip: it breaks the flat
+    // mass that eats the bottom of the hero frame and gives the silhouette an
+    // edge to catch light on.
+    for (let i = 0; i < 8; i++) {
+      const th = (i / 8) * Math.PI * 2 + Math.PI / 8;
+      const ex = Math.cos(th) * 10.6, ez = Math.sin(th) * 10.6;
+      P('hazard', boxGeo(8.6, 0.34, 0.5, 1.4), ex, 2.28, ez, -th + Math.PI / 2);
+      P(s.em, boxGeo(7.6, 0.09, 0.14, 1), ex, 2.5, ez, -th + Math.PI / 2);
+
+      /* The dais lip is the single largest tonal mass in the gateway hero
+       * frame - a bare grey parapet across the bottom third with no detail,
+       * no wear and no light interaction. AAA foregrounds are never a blank
+       * value block, so every facet that is not the approach or the ramp gets
+       * a chamfered handrail with stanchions: readable silhouette at 3 m, and
+       * a top edge that actually catches the gateway key.
+       *
+       * Local -Z is the approach and local +Z the service ramp, in every
+       * gateway, which is what makes one test serve all six. */
+      const isApproach = Math.abs(Math.sin(th) + 1) < 0.5;
+      const isRamp = Math.abs(Math.sin(th) - 1) < 0.5;
+      if (isApproach || isRamp) continue;
+      // A rolled tube reads as a handrail; a box reads as a kerb. Local +Y is
+      // the cylinder's long axis, so rz brings it horizontal and ry then
+      // aligns it with this facet (Euler order is YXZ: R = Ry * Rx * Rz).
+      // Handrails are the one family authored under roughness 0.3, so they
+      // alone throw a tight specular and the frame stops reading as a single
+      // injection-moulded material.
+      const rail = cylGeo(0.075, 0.075, 8.6, 8, 1.0);
+      P('chrome', rail, ex, 3.55, ez, -th + Math.PI / 2, 0, Math.PI / 2);
+      P('trim', boxGeo(8.6, 0.07, 0.07, 1), ex, 3.0, ez, -th + Math.PI / 2);
+      for (let k = -1; k <= 1; k++) {
+        const sx2 = ex + Math.cos(-th + Math.PI / 2) * k * 3.1;
+        const sz2 = ez - Math.sin(-th + Math.PI / 2) * k * 3.1;
+        P('trimDark', boxGeo(0.09, 1.25, 0.09, 1), sx2, 2.95, sz2, -th + Math.PI / 2);
+      }
+    }
+
+    /* Silhouette props on the dais shoulders: the foreground mass now carries
+     * readable shapes instead of one flat grey plane. Kept off the portal
+     * axis so nothing occludes the event horizon. */
+    for (const px of [-8.2, 8.2]) {
+      P('crate', boxGeo(1.5, 1.5, 1.4, 1.5), px, 3.15, 5.6, px < 0 ? 0.3 : -0.42);
+      P('crate', boxGeo(1.2, 1.1, 1.1, 1.3), px + (px < 0 ? 0.5 : -0.5), 4.45, 5.3, px < 0 ? -0.2 : 0.5);
+      P('hazard', boxGeo(1.9, 0.22, 1.8, 1.4), px, 2.5, 5.6, 0);
+      // A field terminal with a lit face - human-scale detail against the mass.
+      const tx = px * 0.72;
+      P('trimDark', boxGeo(0.9, 1.35, 0.7, 1.4), tx, 3.07, -6.4, 0);
+      P(s.em, boxGeo(0.66, 0.44, 0.06, 1), tx, 3.5, -6.78, 0);
+      P('trim', cylGeo(0.06, 0.06, 1.4, 6, 1.0), tx, 3.1, -6.0);
+      // Coiled cable run spilling off the dais edge.
+      const coil = new THREE.TorusGeometry(0.55, 0.11, 6, 20);
+      coil.rotateX(-Math.PI / 2);
+      P('rubber', coil, px * 0.5, 2.46, 8.4, 0);
+    }
+
+    /* Wide approach steps on the plaza-facing side, each with a trim nosing
+     * and an emissive edge so the flight reads as stairs at 30 m rather than
+     * as one black wedge.
+     *
+     * `i` counts *outward* from the dais, so the step nearest the gateway is
+     * the tallest. It used to count the other way, which built the flight
+     * upside down: the first thing a player walking in from the plaza met was
+     * the 2.4 m top step presented as a sheer face, with the shorter steps
+     * hidden behind it descending the wrong way.
+     *
+     * Six treads of 0.40 m, not five of 0.48 m. `CONFIG.player.stepHeight` is
+     * 0.45, so every tread in the original flight was three centimetres too
+     * tall to walk up - the flight was unclimbable on its own terms quite
+     * apart from being built upside down. Same 2.4 m total rise.
+     *
+     * The numbers live in `GATEWAY` in StationKit, because the clearance maths
+     * that chose these bearings measures this flight and has to measure the
+     * one that gets built. */
+    const TREADS = GATEWAY.TREADS;
+    for (let i = 0; i < TREADS; i++) {
+      const w = GATEWAY.TREAD_W0 - i * GATEWAY.TREAD_TAPER;
+      const lz = -(GATEWAY.TREAD_Z0 + i * GATEWAY.TREAD_PITCH);
+      const rise = GATEWAY.TREAD_RISE * (TREADS - i);
+      P('plaza', boxGeo(w, rise, 1.4, 2), 0, rise / 2, lz);
+      P('trim', boxGeo(w, 0.08, 1.5, 1), 0, rise + 0.02, lz);
+      P(s.em, boxGeo(w - 1.2, 0.06, 0.1, 1), 0, rise - 0.06, lz - 0.72);
+      const tw = W(0, lz);
+      this._solidRot(tw.x, rise / 2, tw.z, w / 2, rise / 2, 0.75, TH);
+
+      /* Guide lights marching up to the threshold - one pair per tread, ON the
+       * tread. The old run was a fixed y = 2.5 across four z values with three
+       * different tread tops under them, so it floated by up to 0.9 m; deriving
+       * the height from the tread it stands on cannot do that. The trim nosing
+       * is 0.08 thick on top of the tread, so a 0.14 pad centred at rise + 0.09
+       * sits on the nosing rather than inside it. */
+      for (const sx of [-1, 1]) {
+        P(s.em, boxGeo(0.5, 0.14, 0.5, 1), sx * (w / 2 - 1.6), rise + 0.09, lz, 0);
+      }
+    }
+
+    /* Service ramp on the far side, so the dais is reachable without stairs.
+     *
+     * Kept because of what the X-axis builder recorded about its own: eight
+     * metres of run over 2.4 m of rise is about 17 degrees, which "walks,
+     * drives and rides without anyone having to aim for a step". A mount
+     * cannot climb the flight; this is how it reaches the dais.
+     *
+     * `_ramp` builds its proxy long in local +Z and tilts that end up, so the
+     * yaw has to point the proxy's +Z back down the slope - the gateway's own
+     * frame turned through half a turn. */
+    const rampPitch = Math.atan2(2.4, 8);
+    const rw = W(0, GATEWAY.RAMP_Z);
+    this._ramp(rw.x, 0.96, rw.z, 5, 8, 2.4, TH + Math.PI);
+    P('grate', boxGeo(5, 0.2, GATEWAY.RAMP_LEN, 2), 0, 1.2, GATEWAY.RAMP_Z, Math.PI, -rampPitch);
+
+    // Ceremonial arch: two buttresses and a lintel framing the event horizon,
+    // standing on the dais.
+    const archBase = GATEWAY_DECK_Y;
+    for (const sx of [-4.6, 4.6]) {
+      P('panelDark', boxGeo(1.5, 8.6, 2.4, 3), sx, archBase + 4.3, 0);
+      P(s.em, boxGeo(0.3, 7.6, 0.3, 1), sx + (sx < 0 ? 0.9 : -0.9), archBase + 4.2, 1.25);
+      P('trim', boxGeo(2.2, 0.6, 3.0, 2), sx, archBase + 8.9, 0);
+    }
+    P('panelDark', boxGeo(11.2, 1.6, 2.4, 3), 0, archBase + 9.6, 0);
+    P(s.em, boxGeo(9.4, 0.28, 0.3, 1), 0, archBase + 8.9, 1.3);
+    P(s.em, boxGeo(9.4, 0.28, 0.3, 1), 0, archBase + 8.9, -1.3);
+
+    /* --- Aperture surround -----------------------------------------
+     * The event horizon itself is a very bright emitter owned by the portal
+     * system, and under any bright pass it clips to a featureless white disc.
+     * Structure therefore has to come from *around* it: a dark machined iris
+     * that survives the bloom as a silhouette, then two concentric rings that
+     * fall off outwards, so the aperture reads hot-core / cool-rim instead of
+     * as one flat blob. Radii start at 3.1 m to clear the portal's own arch.
+     *
+     * Concentric with the event horizon, taken from the portal system rather
+     * than guessed. This was hard-coded to 2.45 - the gateway's *floor* - while
+     * the disc's centre is a further `PORTAL_DISC_OFFSET_Y` (2.68 m) above the
+     * spec. The iris, its teeth, both rings and the backing plate therefore sat
+     * almost three metres below the aperture they exist to frame, clustered
+     * around the plinth: from the approach the surround read as the gateway and
+     * the disc appeared to be missing its lower half. */
+    const apY = GATEWAY_DECK_Y + PORTAL_DISC_OFFSET_Y;
+    const iris = new THREE.TorusGeometry(3.6, 0.5, 10, 44);
+    P('panelDark', iris, 0, apY, 0);
+    // Machined teeth around the iris: a hard, readable silhouette element.
+    for (let i = 0; i < 12; i++) {
+      const th = (i / 12) * Math.PI * 2;
+      P('trim', boxGeo(0.5, 1.0, 0.34, 1), Math.cos(th) * 3.6, apY + Math.sin(th) * 3.6, 0, 0, 0, th);
+    }
+    const ring1 = new THREE.TorusGeometry(4.35, 0.22, 8, 48);
+    P(key, ring1, 0, apY, -0.3);
+    const ring2 = new THREE.TorusGeometry(5.05, 0.11, 8, 52);
+    P('emDim', ring2, 0, apY, -0.55);
+    // Dark backing plate so the glow always has an unlit field behind it.
+    const backer = new THREE.RingGeometry(3.05, 5.6, 44, 1);
+    uvScale(backer, 3, 3);
+    P('panelDark', backer, 0, apY, -0.75);
+
+    // Destination placard above the arch. It hangs in open space over the
+    // approach axis and is read from both directions, so it gets a proper
+    // two-sided board - two correctly-wound quads around an opaque backer -
+    // rather than one DoubleSide quad that renders mirrored from behind.
+    const sw = W(0, -1.35);
+    this._signBoard(
+      B, s.signRole, 9, 2.2,
+      sw.x, GATEWAY_DECK_Y + 11.1, sw.z, TH + Math.PI,
+      { twoSided: true, accent: s.em }
+    );
+
+    /* Backdrop pylons so the portal reads against something solid.
+     *
+     * Pulled in to `PYLON_OFF`. They stood at a radius of 10.5, and a 2.6 m
+     * box at that radius puts its outer corner at 12.3 - past the 11 m dais
+     * rim, so a corner of every pylon overhung the edge with nothing under
+     * it. From the deck that reads as a tower hanging in the air, which is
+     * exactly what it is. */
+    for (const sx of [-PYLON_OFF.a, PYLON_OFF.a]) {
+      P('panel', boxGeo(2.6, 14, 2.6, 3), sx, GATEWAY_DECK_Y + 7, PYLON_OFF.b);
+      P(s.em, boxGeo(0.34, 12, 0.34, 1), sx + (sx < 0 ? 1.5 : -1.5), GATEWAY_DECK_Y + 7, PYLON_OFF.b - 1.3);
+      const pw = W(sx, PYLON_OFF.b);
+      this._solidRot(pw.x, 7, pw.z, 1.3, 7, 1.3, TH);
+    }
+
+    /* --- The light has to have a path ---------------------------------
+     *
+     * A bright disc at the end of a sightline with nothing between it and the
+     * camera reads as a decal. Two things fix that and neither is the portal
+     * itself: a pool of the destination's colour spilled across the deck in
+     * front of the steps, and a broad cone of haze running from the aperture
+     * plane back down the approach. Together they make the gateway the
+     * brightest *and* the most saturated event in the frame, and they give
+     * the eye a lit corridor to travel along to reach it.
+     *
+     * Both are laid down the gateway's own axis by setting YXZ order and
+     * putting the bearing in the Y slot, so the outer yaw composes on top of
+     * the lay-flat rotation exactly as `GeoBatch.at` composes it for geometry.
+     */
+    const poolAt = W(0, -15);
+    const pool = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), M.pool);
+    pool.position.set(poolAt.x, 0.13, poolAt.z);
+    pool.rotation.order = 'YXZ';
+    pool.rotation.set(-Math.PI / 2, TH, 0);
+    pool.scale.set(26, 34, 1);
+    pool.renderOrder = 3;
+    pool.castShadow = pool.receiveShadow = false;
+    const poolMat = M.pool.clone();
+    poolMat.color = new THREE.Color(s.accent);
+    pool.material = poolMat;
+    M[`gatePool_${s.target}`] = poolMat;
+    g.add(pool);
+
+    const coneAt = W(0, -15.5);
+    const cone = new THREE.Mesh(
+      new THREE.CylinderGeometry(3.4, 9.0, 30, 22, 6, true),
+      M.shaftBig
+    );
+    cone.position.set(coneAt.x, 3.4, coneAt.z);
+    // Narrow end at the aperture, wide end spilling across the plaza-side deck.
+    cone.rotation.order = 'YXZ';
+    cone.rotation.set(Math.PI / 2, TH, 0);
+    cone.renderOrder = 8;
+    cone.castShadow = cone.receiveShadow = false;
+    g.add(cone);
+
+    B.flush(g, M, `gateway-${s.target}`, { cast: true, recv: true });
+
+    // Local light spill from the gateway, plus a low bounce that separates
+    // the dais from the deck it sits on.
+    //
+    // 760 cd with decay 2 at y=6.5 lands >100 lux on the dais deck 2.5 m
+    // away, which is roughly thirty times the bloom threshold: that is what
+    // produced the three featureless white discs around the gateway and the
+    // blowout that erased the front planter's top face. Raising the source to
+    // 9 m gets the near field off the deck, and 210 cd at 4.5 m of throw is a
+    // practical rather than a flash unit.
+    const lampAt = W(0, 0.5);
+    const lamp = new THREE.PointLight(s.accent, 210, 32, 2);
+    lamp.position.set(lampAt.x, 9.0, lampAt.z);
+    lamp.castShadow = false;
+    g.add(lamp);
+    const spillAt = W(0, -9);
+    const spill = new THREE.PointLight(s.accent, 60, 20, 2);
+    spill.position.set(spillAt.x, 1.6, spillAt.z);
+    spill.castShadow = false;
+    g.add(spill);
+
+    // Ground the dais and the arch feet.
+    this._contact(cx, cz, 30);
+    for (const sx of [-4.6, 4.6]) {
+      const fw = W(sx, 0);
+      this._contact(fw.x, fw.z, 5.5);
+    }
+
+    this.portalSpecs.push({
+      position: new THREE.Vector3(cx, GATEWAY_DECK_Y, cz),
+      /* The frame yaw IS the portal's rotation. Both old builders arrived at
+       * the same thing by different arithmetic - `s.yaw` on one axis and
+       * `PI * 0.5 * side` on the other - and both agree with
+       * `gatewayFrameYaw` at all four bearings they covered. */
+      rotationY: TH,
+      target: s.target,
+      label: s.label,
+      accent: s.accent,
+    });
+    this._mmCircle(cx, cz, 11, 'rgba(255,180,70,0.22)', `#${new THREE.Color(s.accent).getHexString()}`);
+  }
+
+  /**
+   * The ring: one gateway per bearing, in bearing order.
+   *
+   * The table is ordered to match `GATEWAY_BEARINGS_DEG` position for position,
+   * and the two are checked against each other rather than trusted, because a
+   * table that silently ran short would build five gateways and leave the sixth
+   * bearing empty - which is the failure mode this whole change exists to make
+   * impossible.
+   *
+   * Two of the five existing gateways do not move: sports keeps 90 and medieval
+   * keeps 270, the two that already stood between avenues. Race moves 0 -> 30,
+   * citadel 180 -> 210, and the maze comes in from (-54, 128) to 150.
+   */
+  _buildGatewayRing() {
     const g = new THREE.Group();
     g.name = 'gateways';
     this.group.add(g);
 
-    const specs = [
-      { z: -PORTAL_R, target: 'medieval', label: 'Ashfall Reach', accent: 0xffb347, em: 'emAmber', yaw: Math.PI },
-      { z: PORTAL_R, target: 'sports', label: 'Meridian Athletic Complex', accent: 0x2ffb9a, em: 'emGreen', yaw: 0 },
+    const table = [
+      { target: 'race', label: 'Vellum Ridge', accent: 0xff5a3c, em: 'emSodium', signRole: SIGN_ROLE.gatewayRace },
+      { target: 'sports', label: 'Meridian Athletic Complex', accent: 0x2ffb9a, em: 'emGreen', signRole: SIGN_ROLE.gatewaySports },
+      { target: 'maze', label: 'The Verdant Coil', accent: 0x8fd67a, em: 'emGreen', signRole: SIGN_ROLE.gatewayMaze },
+      { target: 'citadel', label: 'Sunspire Citadel', accent: 0xffc46b, em: 'emAmber', signRole: SIGN_ROLE.gatewayCitadel },
+      { target: 'medieval', label: 'Ashfall Reach', accent: 0xffb347, em: 'emAmber', signRole: SIGN_ROLE.gatewayMedieval },
+      /* The sixth. Fully live and routed to a placeholder world, which is why
+       * it is in this table and not commented out: a sealed arch would have to
+       * be un-sealed by editing the builder, and the builder is the thing this
+       * change exists to stop editing per gateway. Its accent is the one
+       * deliberately desaturated hue on the ring - instrument grey-blue - so
+       * that from across the plaza it reads as the gateway that has not been
+       * given an identity yet. */
+      { target: 'survey', label: 'Survey Site 06', accent: 0x9fb8c8, em: 'emCyan', signRole: SIGN_ROLE.gatewaySurvey },
     ];
-
-    for (const s of specs) {
-      const B = new GeoBatch();
-      const sign = Math.sign(s.z);
-      const cz = s.z;
-
-      /* The portal is the thing the whole composition terminates on, and it was
-       * losing the frame: its luminance sat inside a stop of the cyan strips and
-       * amber practicals around it, so the eye had no reason to travel down the
-       * axis to it. This material is the separation - a dedicated emissive at
-       * roughly double the brightest competing emitter, in the destination's own
-       * hue, and deliberately *not* distance-graded, because a beacon that fades
-       * with range is not a beacon.
-       */
-      const key = `emGate_${s.target}`;
-      M[key] = new THREE.MeshStandardMaterial({
-        color: 0x05070a,
-        emissive: new THREE.Color(s.accent),
-        emissiveIntensity: 3.4,
-        metalness: 0.1,
-        roughness: 0.35,
-        toneMapped: true,
-      });
-
-      // Octagonal dais. Texel density is derived from the world size rather
-      // than from a flat uvScale: the old (20, 3) stretched the top cap into
-      // 1 x 7 m rectangles, which is why the largest object in the portal shot
-      // read as an untextured placeholder next to finely detailed pillars.
-      B.at('plaza', cylGeo(11, 11.4, 2.4, 8, 2.6), 0, 1.2, cz, Math.PI / 8);
-      B.at('trim', cylGeo(11.15, 11.15, 0.35, 8, 2.0), 0, 2.45, cz, Math.PI / 8);
-      this._solid(0, 1.2, cz, 10.6, 1.2, 10.6);
-
-      // Chamfered, hazard-marked nosing around the dais lip: it breaks the flat
-      // mass that eats the bottom of the hero frame and gives the silhouette an
-      // edge to catch light on.
-      for (let i = 0; i < 8; i++) {
-        const th = (i / 8) * Math.PI * 2 + Math.PI / 8;
-        const ex = Math.cos(th) * 10.6, ez = cz + Math.sin(th) * 10.6;
-        B.at('hazard', boxGeo(8.6, 0.34, 0.5, 1.4), ex, 2.28, ez, -th + Math.PI / 2);
-        B.at(s.em, boxGeo(7.6, 0.09, 0.14, 1), ex, 2.5, ez, -th + Math.PI / 2);
-
-        /* The dais lip is the single largest tonal mass in the gateway hero
-         * frame - a bare grey parapet across the bottom third with no detail,
-         * no wear and no light interaction. AAA foregrounds are never a blank
-         * value block, so every facet that is not the approach or the ramp gets
-         * a chamfered handrail with stanchions: readable silhouette at 3 m, and
-         * a top edge that actually catches the gateway key. */
-        const isApproach = Math.abs(Math.sin(th) - -sign) < 0.5;   // stairs side
-        const isRamp = Math.abs(Math.sin(th) - sign) < 0.5;        // service ramp
-        if (isApproach || isRamp) continue;
-        // A rolled tube reads as a handrail; a box reads as a kerb. Local +Y is
-        // the cylinder's long axis, so rz brings it horizontal and ry then
-        // aligns it with this facet (Euler order is YXZ: R = Ry * Rx * Rz).
-        // Handrails are the one family authored under roughness 0.3, so they
-        // alone throw a tight specular and the frame stops reading as a single
-        // injection-moulded material.
-        const rail = cylGeo(0.075, 0.075, 8.6, 8, 1.0);
-        B.at('chrome', rail, ex, 3.55, ez, -th + Math.PI / 2, 0, Math.PI / 2);
-        B.at('trim', boxGeo(8.6, 0.07, 0.07, 1), ex, 3.0, ez, -th + Math.PI / 2);
-        for (let k = -1; k <= 1; k++) {
-          const sx2 = ex + Math.cos(-th + Math.PI / 2) * k * 3.1;
-          const sz2 = ez - Math.sin(-th + Math.PI / 2) * k * 3.1;
-          B.at('trimDark', boxGeo(0.09, 1.25, 0.09, 1), sx2, 2.95, sz2, -th + Math.PI / 2);
-        }
-      }
-
-      /* Silhouette props on the dais shoulders: the foreground mass now carries
-       * readable shapes instead of one flat grey plane. Kept off the portal
-       * axis so nothing occludes the event horizon. */
-      for (const px of [-8.2, 8.2]) {
-        const pz = cz + sign * 5.6;
-        B.at('crate', boxGeo(1.5, 1.5, 1.4, 1.5), px, 3.15, pz, px < 0 ? 0.3 : -0.42);
-        B.at('crate', boxGeo(1.2, 1.1, 1.1, 1.3), px + (px < 0 ? 0.5 : -0.5), 4.45, pz - 0.3, px < 0 ? -0.2 : 0.5);
-        B.at('hazard', boxGeo(1.9, 0.22, 1.8, 1.4), px, 2.5, pz, 0);
-        // A field terminal with a lit face - human-scale detail against the mass.
-        const tx = px * 0.72, tz = cz - sign * 6.4;
-        B.at('trimDark', boxGeo(0.9, 1.35, 0.7, 1.4), tx, 3.07, tz, 0);
-        B.at(s.em, boxGeo(0.66, 0.44, 0.06, 1), tx, 3.5, tz - sign * 0.38, 0);
-        B.at('trim', cylGeo(0.06, 0.06, 1.4, 6, 1.0), tx, 3.1, tz + sign * 0.4);
-        // Coiled cable run spilling off the dais edge.
-        const coil = new THREE.TorusGeometry(0.55, 0.11, 6, 20);
-        coil.rotateX(-Math.PI / 2);
-        B.at('rubber', coil, px * 0.5, 2.46, cz + sign * 8.4, 0);
-      }
-
-      /* Wide approach steps on the plaza-facing side, each with a trim nosing
-       * and an emissive edge so the flight reads as stairs at 30 m rather than
-       * as one black wedge.
-       *
-       * `i` counts *outward* from the dais, so the step nearest the gateway is
-       * the tallest. It used to count the other way, which built the flight
-       * upside down: the first thing a player walking in from the plaza met was
-       * the 2.4 m top step presented as a sheer face, with the shorter steps
-       * hidden behind it descending the wrong way. Measured on the deck, the
-       * approach profile ran 0 -> 2.40 -> 1.92 -> 1.44 -> 0.96 -> 0.48 before
-       * reaching the dais; it now rises 0.48 -> 2.40 in five even treads. */
-      /* Six treads of 0.40 m, not five of 0.48 m. `CONFIG.player.stepHeight` is
-       * 0.45, so every tread in the original flight was three centimetres too
-       * tall to walk up - the flight was unclimbable on its own terms quite
-       * apart from being built upside down. Same 2.4 m total rise. */
-      const TREADS = 6;
-      for (let i = 0; i < TREADS; i++) {
-        const w = 14 - i * 0.75;
-        const z = cz - sign * (11 + i * 1.3);
-        const rise = 0.40 * (TREADS - i);
-        B.at('plaza', boxGeo(w, rise, 1.4, 2), 0, rise / 2, z);
-        B.at('trim', boxGeo(w, 0.08, 1.5, 1), 0, rise + 0.02, z);
-        B.at(s.em, boxGeo(w - 1.2, 0.06, 0.1, 1), 0, rise - 0.06, z - sign * 0.72);
-        this._solid(0, rise / 2, z, w / 2, rise / 2, 0.75);
-      }
-      // Service ramp on the far side, so the dais is reachable without stairs.
-      const rampYaw = sign > 0 ? Math.PI : 0;
-      const rampPitch = Math.atan2(2.4, 8);
-      this._ramp(0, 0.96, cz + sign * 12, 5, 8, 2.4, rampYaw);
-      B.at('grate', boxGeo(5, 0.2, 8.4, 2), 0, 1.2, cz + sign * 12, rampYaw, -rampPitch);
-
-      // Guide lights marching up to the threshold.
-      for (let i = 0; i < 7; i++) {
-        const t = i / 6;
-        const z = cz - sign * (14 - t * 4);
-        B.at(s.em, boxGeo(0.5, 0.14, 0.5, 1), -6, 2.5, z);
-        B.at(s.em, boxGeo(0.5, 0.14, 0.5, 1), 6, 2.5, z);
-      }
-
-      // Ceremonial arch: two buttresses and a lintel framing the event horizon,
-      // standing on the dais.
-      const archBase = GATEWAY_DECK_Y;
-      for (const sx of [-4.6, 4.6]) {
-        B.at('panelDark', boxGeo(1.5, 8.6, 2.4, 3), sx, archBase + 4.3, cz);
-        B.at(s.em, boxGeo(0.3, 7.6, 0.3, 1), sx + (sx < 0 ? 0.9 : -0.9), archBase + 4.2, cz + 1.25);
-        B.at('trim', boxGeo(2.2, 0.6, 3.0, 2), sx, archBase + 8.9, cz);
-      }
-      B.at('panelDark', boxGeo(11.2, 1.6, 2.4, 3), 0, archBase + 9.6, cz);
-      B.at(s.em, boxGeo(9.4, 0.28, 0.3, 1), 0, archBase + 8.9, cz + 1.3);
-      B.at(s.em, boxGeo(9.4, 0.28, 0.3, 1), 0, archBase + 8.9, cz - 1.3);
-
-      /* --- Aperture surround -----------------------------------------
-       * The event horizon itself is a very bright emitter owned by the portal
-       * system, and under any bright pass it clips to a featureless white disc.
-       * Structure therefore has to come from *around* it: a dark machined iris
-       * that survives the bloom as a silhouette, then two concentric rings that
-       * fall off outwards, so the aperture reads hot-core / cool-rim instead of
-       * as one flat blob. Radii start at 3.1 m to clear the portal's own arch.
-       */
-      const nx = Math.sin(s.yaw), nz = Math.cos(s.yaw);
-      /* Concentric with the event horizon, taken from the portal system rather
-       * than guessed.
-       *
-       * This was hard-coded to 2.45 - the gateway's *floor* - while the disc's
-       * centre is a further `PORTAL_DISC_OFFSET_Y` (2.68 m) above the spec. The
-       * iris, its teeth, both rings and the backing plate therefore sat almost
-       * three metres below the aperture they exist to frame, clustered around
-       * the plinth: from the approach the surround read as the gateway and the
-       * disc appeared to be missing its lower half. */
-      const apY = GATEWAY_DECK_Y + PORTAL_DISC_OFFSET_Y;
-      const back = (d) => [0 - nx * d, apY, cz - nz * d];
-      const iris = new THREE.TorusGeometry(3.6, 0.5, 10, 44);
-      B.at('panelDark', iris, 0, apY, cz, s.yaw);
-      // Machined teeth around the iris: a hard, readable silhouette element.
-      for (let i = 0; i < 12; i++) {
-        const th = (i / 12) * Math.PI * 2;
-        const rx = Math.cos(th) * 3.6, ry = Math.sin(th) * 3.6;
-        B.at('trim', boxGeo(0.5, 1.0, 0.34, 1), rx * Math.cos(s.yaw), apY + ry, cz - rx * Math.sin(s.yaw), s.yaw, 0, th);
-      }
-      const d1 = back(0.3);
-      const r1 = new THREE.TorusGeometry(4.35, 0.22, 8, 48);
-      B.at(key, r1, d1[0], d1[1], d1[2], s.yaw);
-      const d2 = back(0.55);
-      const r2 = new THREE.TorusGeometry(5.05, 0.11, 8, 52);
-      B.at('emDim', r2, d2[0], d2[1], d2[2], s.yaw);
-      // Dark backing plate so the glow always has an unlit field behind it.
-      const backer = new THREE.RingGeometry(3.05, 5.6, 44, 1);
-      uvScale(backer, 3, 3);
-      const d3 = back(0.75);
-      B.at('panelDark', backer, d3[0], d3[1], d3[2], s.yaw);
-
-      // Destination placard above the arch. It hangs in open space over the
-      // plaza axis and is approached from both directions, so it gets a proper
-      // two-sided board - two correctly-wound quads around an opaque backer -
-      // rather than one DoubleSide quad that renders mirrored from behind.
-      this._signBoard(
-        B, s.target === 'medieval' ? SIGN_ROLE.gatewayMedieval : SIGN_ROLE.gatewaySports, 9, 2.2,
-        0, GATEWAY_DECK_Y + 11.1, cz - sign * 1.35, s.yaw + Math.PI,
-        { twoSided: true, accent: s.em }
+    if (table.length !== GATEWAY_BEARINGS_DEG.length) {
+      throw new Error(
+        `[StationWorld] ${table.length} gateway destinations for ` +
+        `${GATEWAY_BEARINGS_DEG.length} bearings`
       );
-
-      /* Backdrop pylons so the portal reads against something solid.
-       *
-       * Pulled in to `PYLON_OFF`. They stood at a radius of 10.5, and a 2.6 m
-       * box at that radius puts its outer corner at 12.3 - past the 11 m dais
-       * rim, so a corner of every pylon overhung the edge with nothing under
-       * it. From the deck that reads as a tower hanging in the air, which is
-       * exactly what it is. */
-      for (const sx of [-PYLON_OFF.a, PYLON_OFF.a]) {
-        B.at('panel', boxGeo(2.6, 14, 2.6, 3), sx, GATEWAY_DECK_Y + 7, cz + sign * PYLON_OFF.b);
-        B.at(s.em, boxGeo(0.34, 12, 0.34, 1), sx + (sx < 0 ? 1.5 : -1.5), GATEWAY_DECK_Y + 7, cz + sign * (PYLON_OFF.b - 1.3));
-        this._solid(sx, 7, cz + sign * PYLON_OFF.b, 1.3, 7, 1.3);
-      }
-
-      /* --- The light has to have a path ---------------------------------
-       *
-       * A bright disc at the end of a sightline with nothing between it and the
-       * camera reads as a decal. Two things fix that and neither is the portal
-       * itself: a pool of the destination's colour spilled across the deck in
-       * front of the steps, and a broad cone of haze running from the aperture
-       * plane back down the approach. Together they make the gateway the
-       * brightest *and* the most saturated event in the frame, and they give
-       * the eye a lit corridor to travel along to reach it.
-       */
-      const poolCol = new THREE.Color(s.accent);
-      const pool = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), M.pool);
-      pool.position.set(0, 0.13, cz - sign * 15);
-      pool.rotation.x = -Math.PI / 2;
-      pool.scale.set(26, 34, 1);
-      pool.renderOrder = 3;
-      pool.castShadow = pool.receiveShadow = false;
-      const poolMat = M.pool.clone();
-      poolMat.color = poolCol;
-      pool.material = poolMat;
-      M[`gatePool_${s.target}`] = poolMat;
-      g.add(pool);
-
-      const cone = new THREE.Mesh(
-        new THREE.CylinderGeometry(3.4, 9.0, 30, 22, 6, true),
-        M.shaftBig
-      );
-      cone.position.set(0, 3.4, cz - sign * 15.5);
-      // Lay the cone down the approach axis: narrow end at the aperture, wide
-      // end spilling across the plaza-side deck.
-      cone.rotation.set(sign > 0 ? Math.PI / 2 : -Math.PI / 2, 0, 0);
-      cone.renderOrder = 8;
-      cone.castShadow = cone.receiveShadow = false;
-      g.add(cone);
-
-      B.flush(g, M, `gateway-${s.target}`, { cast: true, recv: true });
-
-      // Local light spill from the gateway, plus a low bounce that separates
-      // the dais from the deck it sits on.
-      //
-      // 760 cd with decay 2 at y=6.5 lands >100 lux on the dais deck 2.5 m
-      // away, which is roughly thirty times the bloom threshold: that is what
-      // produced the three featureless white discs around the gateway and the
-      // blowout that erased the front planter's top face. Raising the source to
-      // 9 m gets the near field off the deck, and 210 cd at 4.5 m of throw is a
-      // practical rather than a flash unit.
-      const lamp = new THREE.PointLight(s.accent, 210, 32, 2);
-      lamp.position.set(0, 9.0, cz + sign * 0.5);
-      lamp.castShadow = false;
-      g.add(lamp);
-      const spill = new THREE.PointLight(s.accent, 60, 20, 2);
-      spill.position.set(0, 1.6, cz - sign * 9);
-      spill.castShadow = false;
-      g.add(spill);
-
-      // Ground the dais and the arch feet.
-      this._contact(0, cz, 30);
-      for (const sx of [-4.6, 4.6]) this._contact(sx, cz, 5.5);
-
-      this.portalSpecs.push({
-        position: new THREE.Vector3(0, GATEWAY_DECK_Y, cz),
-        rotationY: s.yaw,
-        target: s.target,
-        label: s.label,
-        accent: s.accent,
-      });
-      this._mmCircle(0, cz, 11, 'rgba(255,180,70,0.22)', `#${new THREE.Color(s.accent).getHexString()}`);
     }
 
-    this._buildAxisGateway(g, {
-      side: -1, target: 'citadel', label: 'Sunspire Citadel', accent: 0xffc46b,
-      signRole: SIGN_ROLE.gatewayCitadel,
-    });
-    this._buildAxisGateway(g, {
-      side: 1, target: 'race', label: 'Vellum Ridge', accent: 0xff5a3c,
-      signRole: SIGN_ROLE.gatewayRace,
-    });
-    /* The fifth arch. The other four occupy the two axes at +-PORTAL_R, so this
-     * one is offset along Z to keep an 11 m dais clear of the citadel's. */
-    this._buildAxisGateway(g, {
-      side: -1, target: 'maze', label: 'The Verdant Coil', accent: 0x8fd67a,
-      signRole: SIGN_ROLE.gatewayMaze, offsetZ: MAZE_GATEWAY_OFFSET_Z,
-    });
-  }
-
-  /**
-   * Third gateway: the citadel, on the -X axis.
-   *
-   * Deliberately *not* run through the loop above. That builder is written
-   * around `s.z` and `Math.sign(s.z)` - fifty-odd references decide dais
-   * orientation, cone direction, sign placement and contact patches from the
-   * Z coordinate alone - so a gateway on the X axis cannot be expressed as
-   * another entry in its spec list without rewriting it, and rewriting a
-   * working world to add a door to a new one is a bad trade.
-   *
-   * It needs far less anyway: `PortalSystem` builds the arch, disc, halo,
-   * signage, light and collider from the spec, so all a world owes a gateway is
-   * somewhere to stand and a reason for the eye to go there.
-   *
-   * @param {THREE.Group} g the gateways group
-   */
-  /**
-   * The two gateways that stand on the plaza's east-west axis.
-   *
-   * Written for the citadel and then generalised rather than copied when the
-   * race circuit needed one: ninety lines of arch, dais and lighting duplicated
-   * for a second destination is ninety lines that drift apart the first time
-   * either is touched. `side` mirrors it across the plaza; everything else is
-   * the destination's own identity.
-   *
-   * @param {THREE.Group} g
-   * @param {{side:number, target:string, label:string, accent:number}} spec
-   */
-  _buildAxisGateway(g, spec) {
-    const M = this.mat;
-    const B = new GeoBatch();
-    const cx = PORTAL_R * spec.side;
-    const cz = spec.offsetZ ?? 0;
-
-    /* Dais: stepped discs, matching the language of the other two - and, now,
-     * their *height*.
-     *
-     * This dais topped out at 0.86 m while the Z-axis pair stand at
-     * GATEWAY_DECK_Y, and the portal spec, the approach and the backdrop pylons
-     * are all measured from that. The mismatch is what left the pylons hanging
-     * one and a half metres over their own dais. One height for all four
-     * gateways, taken from the constant, so a gateway cannot half-agree with
-     * itself again. */
-    const D = GATEWAY_DECK_Y;
-    B.at('panelDark', cylGeo(11, 11, D * 0.62, 28, 2.2), cx, D * 0.31, cz);
-    B.at('panelWarm', cylGeo(8.6, 8.6, D, 28, 1.8), cx, D * 0.5, cz);
-    B.at('trim', cylGeo(8.9, 8.9, 0.12, 28, 1.2), cx, D + 0.06, cz);
-    this._solid(cx, D * 0.5, cz, 11, D * 0.5, 11);
-
-    // Approach lip so the step up reads from across the plaza.
-    for (let i = 0; i < 3; i++) {
-      const r = 12.4 + i * 1.5;
-      B.at('panelDark', cylGeo(r, r, 0.18, 28, 1.4), cx, 0.09 - i * 0.06, cz);
+    /* `emSodium`, not `emGreen`, for the race gateway. Its structural trim was
+     * lit green while its portal accent, its placard and its light pool were
+     * all 0xff5a3c - the one gateway on the station whose own arch disagreed
+     * with the colour it was advertising. That was a consequence of the X-axis
+     * builder choosing between exactly two families with
+     * `spec.target === 'citadel' ? 'emAmber' : 'emGreen'`; with the family in
+     * the table it can simply be the right one. */
+    for (let i = 0; i < table.length; i++) {
+      this._buildGateway(g, table[i], GATEWAY_BEARINGS_DEG[i]);
     }
-
-    // Four sandstone-warm standing stones, so the citadel gateway reads as
-    // older than the two beside it before the player is close enough to read
-    // the sign.
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2 + Math.PI * 0.25;
-      const px = cx + Math.cos(a) * 6.4;
-      const pz = cz + Math.sin(a) * 6.4;
-      // Standing on the dais, not on where the dais used to end.
-      B.at('panelWarm', boxGeo(1.1, 5.2, 1.1, 1.4), px, D + 2.6, pz, -a);
-      B.at('emAmber', boxGeo(0.3, 0.22, 0.3, 1), px, D + 4.6, pz, -a);
-      this._solidRot(px, D + 2.6, pz, 0.55, 2.6, 0.55, -a);
-      this._contact(px, pz, 3.0);
-    }
-
-    /* Destination placard, stairs and a service ramp - everything the two
-     * Z-axis gateways have and these two were missing.
-     *
-     * The dais top is 0.8 m above the deck. That is over a step and under a
-     * mantle, so without a flight of stairs it was simply a wall: the two
-     * newest worlds in the game were behind the only doors on the station with
-     * no way up to them and no sign saying what they were.
-     *
-     * `sgn` points from the plaza toward the dais, so the stairs land on the
-     * plaza-facing side and the ramp on the far side, mirroring the other two.
-     */
-    const sgn = spec.side;
-    const em = spec.target === 'citadel' ? 'emAmber' : 'emGreen';
-
-    // Two-sided board on the plaza axis - it is approached from both sides.
-    this._signBoard(
-      B,
-      spec.signRole ?? SIGN_ROLE.gatewayRace,
-      9, 2.2,
-      cx - sgn * 1.35, GATEWAY_DECK_Y + 11.1, cz, Math.PI * 0.5 * sgn + Math.PI,
-      { twoSided: true, accent: em }
-    );
-
-    // Backdrop pylons, so the placard and the aperture read against something
-    // solid instead of floating against the far hull. Same inset as the pair on
-    // the other axis - see the note there.
-    for (const sz of [-PYLON_OFF.a, PYLON_OFF.a]) {
-      B.at('panel', boxGeo(2.6, 14, 2.6, 3), cx + sgn * PYLON_OFF.b, GATEWAY_DECK_Y + 7, cz + sz);
-      B.at(em, boxGeo(0.34, 12, 0.34, 1), cx + sgn * (PYLON_OFF.b - 1.3), GATEWAY_DECK_Y + 7, cz + sz + (sz < 0 ? 1.5 : -1.5));
-      this._solid(cx + sgn * PYLON_OFF.b, 7, cz + sz, 1.3, 7, 1.3);
-    }
-
-    /* Approach ramp from the plaza deck up to the gateway deck.
-     *
-     * A ramp rather than the stair flight the other two use, because these
-     * gateways sit on the raised deck at 2.87 m with nothing between them and
-     * the plaza at 0 - measured, the profile went 0, 0, 0 ... 0, then 2.87. That
-     * is a wall, and it was the only way in to two of the five worlds. Ten
-     * metres of run over 2.87 m of rise is about 16 degrees, which walks, drives
-     * and rides without anyone having to aim for a step.
-     *
-     * The collider comes from `_ramp` (an invisible tilted box, because physics
-     * only rotates colliders about Y); the visible wedge is drawn on top of it
-     * at the same pitch so the two describe the same slope. */
-    const DECK_Y = GATEWAY_DECK_Y;
-    const RUN = 10;
-    /* The ramp starts at the *rim* of the dais and runs outward. It used to
-     * start 5 m from the centre, which is six metres inside an eleven-metre
-     * dais - most of the slope was buried in the thing it was supposed to
-     * climb, and only its last few metres ever saw daylight. */
-    const DECK_EDGE = 11;
-    const rampPitch = Math.atan2(DECK_Y, RUN);
-    /* `_ramp` builds its proxy long in local +Z and tilts that end *up*, so the
-     * yaw has to point local +Z at the deck. `sgn` already points from the plaza
-     * toward the gateway, which makes this just `sgn * 90 degrees` - getting the
-     * sign backwards builds a ramp that descends into the dais, which is what
-     * the first attempt did. */
-    const rampYaw = sgn * Math.PI / 2;
-    const rampMidX = cx - sgn * (DECK_EDGE + RUN * 0.5);
-    // `_ramp`'s box is 0.5 thick, so its centre sits half a thickness below the
-    // walking surface once pitched.
-    this._ramp(rampMidX, DECK_Y * 0.5 - 0.25 / Math.cos(rampPitch), cz, 8, RUN, DECK_Y, rampYaw);
-    // Visible wedge: long in local Z to match the collider, since `GeoBatch.at`
-    // composes YXZ and therefore tilts about the yawed X axis.
-    B.at('plaza', boxGeo(8, 0.3, RUN + 0.4, 2), rampMidX, DECK_Y * 0.5, cz, rampYaw, -rampPitch);
-    // Kerbs, so the edge of the slope reads before you walk off it.
-    for (const sz of [-4.2, 4.2]) {
-      B.at('trim', boxGeo(0.4, 0.34, RUN + 0.4, 1), rampMidX, DECK_Y * 0.5 + 0.24, cz + sz, rampYaw, -rampPitch);
-      B.at(em, boxGeo(0.12, 0.07, RUN, 1), rampMidX, DECK_Y * 0.5 + 0.42, cz + sz, rampYaw, -rampPitch);
-    }
-
-    // Guide lights marching across the dais to the threshold. Kept inside the
-    // rim so they sit on the deck rather than hanging over the ramp's slope.
-    for (let i = 0; i < 7; i++) {
-      const t = i / 6;
-      const sx = cx - sgn * (10.4 - t * 4);
-      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, D + 0.1, cz - 6);
-      B.at(em, boxGeo(0.5, 0.14, 0.5, 1), sx, D + 0.1, cz + 6);
-    }
-
-    this._contact(cx, cz, 30);
-    B.flush(g, M, `gateway-${spec.target}`, { cast: true, recv: true });
-
-    this.portalSpecs.push({
-      position: new THREE.Vector3(cx, GATEWAY_DECK_Y, cz),
-      // Face the plaza, whichever side it is on.
-      rotationY: Math.PI * 0.5 * spec.side,
-      target: spec.target,
-      label: spec.label,
-      accent: spec.accent,
-    });
-    this._mmCircle(
-      cx, cz, 11, 'rgba(255,180,70,0.22)',
-      `#${new THREE.Color(spec.accent).getHexString()}`
-    );
   }
 
   /* ---------------------------------------------------------------- */
@@ -7379,10 +7364,26 @@ export class StationWorld extends World {
      */
     const specs = [];
     for (let i = 0; i < 12; i++) specs.push({ deg: 15 + i * 30, r: 158, w: 20, d: 18, floors: 6 + (i % 4) * 2 });
-    // Inter-avenue backdrop, minus the two gateway bearings.
-    for (const deg of [30, 150, 210, 330]) {
-      specs.push({ deg, r: 104, w: 26, d: 22, floors: 5 + (deg % 3) });
-    }
+    /* The inter-avenue backdrop is gone.
+     *
+     * It was four 26 x 22 blocks at r = 104 on bearings 30, 150, 210 and 330 -
+     * "inter-avenue backdrop, minus the two gateway bearings" - and those are
+     * now precisely the four bearings the race, maze and citadel gateways moved
+     * onto plus the new survey gateway. Each block would stand centred on a
+     * gateway's axis spanning r = 93..115, which the rule fifteen lines above
+     * forbids in as many words: "Nothing may stand on either gateway axis
+     * inside |x| < 26 between r = 60 and r = 128."
+     *
+     * Deleted rather than relocated, because their job was to give an
+     * inter-avenue bearing something to terminate on and those bearings now
+     * terminate on a gateway - a 16 m arch with lit pylons and a beacon, which
+     * is a better full stop than a five-storey block. What the four new
+     * gateways do NOT yet have is the flanking pair and the tall rear mass the
+     * medieval and sports gateways get below; extending that to six needs the
+     * flank width and offset retuned against the avenues at +-30 degrees, and
+     * that is a composition change that should be made with the frame in front
+     * of you rather than arithmetically. Recorded here rather than half-done.
+     */
     // Gateway backdrop: a pair flanking each axis, plus a taller mass set well
     // behind it, so the portal still reads against architecture from the plaza
     // while the axis itself stays open all the way to the hull.
@@ -7517,20 +7518,42 @@ export class StationWorld extends World {
     g.add(instanced(new THREE.CylinderGeometry(0.045, 0.045, 1, 4), M.trimDark, cables, { cast: false, recv: false }));
     g.add(instanced(new THREE.SphereGeometry(0.30, 6, 5), M.emWhite, beads, { cast: false, recv: false }));
 
-    /* --- Hung ring lights over the two gateway approaches ------------ */
-    for (const sgn of [-1, 1]) {
-      for (const [z, rr] of [[sgn * 62, 9], [sgn * 88, 7.5]]) {
-        const y = 30 - Math.abs(z) * 0.06;
+    /* --- Hung ring lights over every gateway approach -----------------
+     *
+     * Two hoops per gateway, at r = 62 and r = 88, hung from the ceiling on the
+     * gateway's own bearing. Written as `for (const sgn of [-1, 1])` with the
+     * run along world Z, so from the ceiling the plaza announced two gateways
+     * and the other three were unlit overhead. A hoop is a couple of tori and
+     * two rods and it merges into the batch, so the four missing ones cost
+     * almost nothing and are most of what makes six approaches read alike from
+     * the promenade - which is where a player sees the whole ring at once.
+     *
+     * The radii are unchanged, and so is the height law: `y` falls with
+     * distance from the plaza so the pair reads as a receding perspective. It
+     * is stated in terms of the radius rather than |z| now, which is the same
+     * number on the two bearings that already had them.
+     */
+    for (const deg of GATEWAY_BEARINGS_DEG) {
+      const hth = gatewayFrameYaw(deg);
+      const [hcx, hcz] = gatewayCentre(deg);
+      for (const [rad, rr] of [[62, 9], [88, 7.5]]) {
+        const y = 30 - rad * 0.06;
+        /* Both radii are OUTBOARD of the dais, so these are local +Z. That is
+         * not a slip in the original: the establishing shot is framed from 96 m
+         * out looking back at the plaza, so the hoops at 88 and 62 are what the
+         * gateway is seen through from the outer deck. */
+        const lz = rad - PORTAL_R;
         for (const s of [-1, 1]) {
-          B.at('trimDark', cylGeo(0.07, 0.07, CEIL_Y - 4 - y, 4, 2), s * rr * 0.8, (CEIL_Y - 4 + y) / 2, z);
+          B.localAt('trimDark', cylGeo(0.07, 0.07, CEIL_Y - 4 - y, 4, 2),
+            hcx, 0, hcz, hth, s * rr * 0.8, (CEIL_Y - 4 + y) / 2, lz);
         }
         const hoop = new THREE.TorusGeometry(rr, 0.42, 8, 40);
         hoop.rotateX(-Math.PI / 2);
         uvScale(hoop, 30, 1);
-        B.at('trim', hoop, 0, y, z);
+        B.localAt('trim', hoop, hcx, 0, hcz, hth, 0, y, lz);
         const glow = new THREE.TorusGeometry(rr - 0.5, 0.2, 6, 40);
         glow.rotateX(-Math.PI / 2);
-        B.at('emWhite', glow, 0, y - 0.35, z);
+        B.localAt('emWhite', glow, hcx, 0, hcz, hth, 0, y - 0.35, lz);
       }
     }
 
@@ -7724,7 +7747,7 @@ export class StationWorld extends World {
 
   /**
    * Distribute the ambient crowd along the routes a real transit hub funnels
-   * people down: the plaza dais ring, the two gateway queues, the commercial
+   * people down: the plaza dais ring, the six gateway queues, the commercial
    * strip pavements and the elevated promenade loop. Three depth bands so every
    * hero angle has a figure near, mid and far.
    */
@@ -7914,11 +7937,32 @@ export class StationWorld extends World {
         push(bx + ux * off, bz + uz * off, 0, 1, Math.PI - th, 3);
       }
     }
-    // Queues on both gateway approaches, loosely lined up on the axis.
-    for (const sgn of [-1, 1]) {
-      for (let i = 0; i < 18; i++) {
+    /* A queue on every gateway approach, loosely lined up on its own axis.
+     *
+     * The fourth and last place the two-gateway plaza was written out longhand:
+     * `for (const sgn of [-1, 1])` with the run laid along world Z, so the
+     * citadel, race and maze gateways had nobody waiting at them while the
+     * medieval and sports gateways had eighteen each.
+     *
+     * Seven per gateway rather than eighteen: forty-two figures across six
+     * queues against thirty-six across two, which keeps the plaza's instance
+     * count where it was while making every gateway look used. The run now
+     * stops at local z = -12.6, at the foot of the flight, instead of the old
+     * one's +10 - which ran the queue up the steps, across the dais and out the
+     * back. `_buildCrowd`'s own note says why that is the right end: "a queue
+     * that stops at the foot of the steps reads as a queue, where civilians
+     * milling about on the threshold of an interdimensional gate does not".
+     */
+    for (const deg of GATEWAY_BEARINGS_DEG) {
+      const qth = gatewayFrameYaw(deg);
+      const [qcx, qcz] = gatewayCentre(deg);
+      for (let i = 0; i < 7; i++) {
         const lane = (i % 3) - 1;
-        push(lane * 3.4 + (rng() - 0.5) * 1.6, sgn * (30 + i * 1.9 + rng() * 1.4));
+        const p = this._localPoint(
+          qcx, qcz, qth,
+          lane * 3.4 + (rng() - 0.5) * 1.6, 0, -24 + i * 1.9 + rng() * 1.4
+        );
+        push(p.x, p.z);
       }
     }
     // Commercial strip pavements, both sides of the +X avenue.
@@ -8121,16 +8165,38 @@ export class StationWorld extends World {
     const decals = [];
 
     /* --- Placement legality ------------------------------------------
-     * Keep the monument, both daises, the two gateway sightlines and the six
-     * painted routes clear. A prop standing on a wayfinding line does more
-     * damage than an empty plate does.
+     * Keep the monument, all six gateway approaches and the six painted routes
+     * clear. A prop standing on a wayfinding line does more damage than an
+     * empty plate does.
+     *
+     * ── What this used to say, and why it is shorter now ──────────────────
+     * Two rules protected the gateways: a disc of 16 m around `(0, +-PORTAL_R)`
+     * and a corridor `|x| < 9 && |z| > 12`. Both are the medieval/sports pair
+     * written out longhand. The citadel and race approaches were protected by
+     * neither, so near-field props were free to stand on them - the same class
+     * of omission `GATEWAY_CENTRES` was created to stop, in a second place
+     * nobody had looked.
+     *
+     * Derived from `GATEWAY_CENTRES`, one disc per gateway, and the corridor is
+     * GONE rather than multiplied by six. The corridor protected a sightline in
+     * a plaza that had one composition axis; with six gateways alternating with
+     * six avenues every 30 degrees, six corridors of +-9 m on top of six routes
+     * of +-5 m leaves essentially no legal deck between r = 33 and r = 44 -
+     * measured, a 2.5 degree window at r = 40 - and a dressing pass that cannot
+     * place anything is not protecting a sightline, it is deleting a layer.
+     *
+     * The disc grows 16 -> 20 to pay for it. 16 reached inward to r = 38 and
+     * the approach flight's bottom tread corner is 18.9 m from the dais centre,
+     * so props could stand on the last step; 20 covers the whole flight with a
+     * metre to spare, which is what the corridor was really doing for the two
+     * gateways that had one.
      */
     const legal = (x, z, clearance = 1.6) => {
       const r = Math.hypot(x, z);
       if (r < 12 || r > 44) return false;
-      // Gateway approach corridors stay open by design.
-      if (Math.abs(x) < 9 + clearance && Math.abs(z) > 12) return false;
-      for (const s of [-1, 1]) if (Math.hypot(x, z - s * PORTAL_R) < 16 + clearance) return false;
+      for (const [gx, gz] of GATEWAY_CENTRES) {
+        if (Math.hypot(x - gx, z - gz) < 20 + clearance) return false;
+      }
       for (const deg of this.roadAngles) {
         const t = deg * DEG;
         // Perpendicular distance from the route centreline, outbound half only.
@@ -8317,19 +8383,52 @@ export class StationWorld extends World {
     barrier(sx + 15.5, sz + 6.8, 0.35, false);
     barrier(sx + 16.4, sz - 7.4, -0.5, true);
 
-    // Both gateway approaches: queue furniture at the foot of the steps, which
-    // is where a transit hub would actually put it.
-    for (const s of [-1, 1]) {
-      const gz = s * (PORTAL_R - 18);
-      for (const ox of [-11.5, 11.5]) {
-        stanchions(ox, gz, Math.PI / 2, 4, 2.1);
-        locker(ox * 1.35, gz - s * 6, ox < 0 ? 1.2 : -1.2, 1.8);
-        wasteUnit(ox * 1.16, gz + s * 5.5, 0);
+    /* Queue furniture at the foot of every flight, which is where a transit hub
+     * would actually put it.
+     *
+     * Authored once in the gateway's own local frame - `lz` metres in front of
+     * the dais centre, `lx` across the flight - and placed at all six bearings.
+     * It used to be written out for the Z-axis pair as `gz = s * (PORTAL_R -
+     * 18)` with `s` threaded through every coordinate, which is the same shape
+     * of two-gateway assumption as the one in `legal` above, in a third place.
+     *
+     * The one thing six copies need that two did not is a check that a piece
+     * has somewhere to stand. At r = 30 the pocket between neighbouring
+     * gateways is 31 m of arc and this set is 31 m across, so the outermost
+     * pieces of adjacent queues meet - in the avenue mouth between them.
+     * Rather than retune the layout by eye, every piece is measured against the
+     * roads with the same `avenueClearance` that chose the bearings, and a
+     * piece with under 1.2 m of kerb clearance is not placed. Six full queues
+     * wherever there is room for one, and no bollard in a carriageway.
+     */
+    const QUEUE = [
+      ['stanchions', -11.5, -18, Math.PI / 2, 4, 2.1],
+      ['stanchions', 11.5, -18, Math.PI / 2, 4, 2.1],
+      ['locker', -15.525, -24, 1.2, 1.8],
+      ['locker', 15.525, -24, -1.2, 1.8],
+      ['waste', -13.34, -12.5, 0],
+      ['waste', 13.34, -12.5, 0],
+      ['crate', 13.4, -9, 0.7],
+      ['spool', -14.2, -15, 1.6, 0.9],
+      ['puddle', 8.5, -16, 5.2],
+      ['grate', 12.6, -20.4, 0, 2.8],
+    ];
+    for (const deg of GATEWAY_BEARINGS_DEG) {
+      const th = gatewayFrameYaw(deg);
+      const [gcx, gcz] = gatewayCentre(deg);
+      for (const [kind, lx, lz, a, b, c] of QUEUE) {
+        const p = this._localPoint(gcx, gcz, th, lx, 0, lz);
+        if (avenueClearance(p.x, p.z) < 1.2) continue;
+        // A puddle has no heading; everything else turns with the gateway.
+        if (kind === 'puddle') { puddle(p.x, p.z, a); continue; }
+        const yaw = th + a;
+        if (kind === 'stanchions') stanchions(p.x, p.z, yaw, b, c);
+        else if (kind === 'locker') locker(p.x, p.z, yaw, b);
+        else if (kind === 'waste') wasteUnit(p.x, p.z, yaw);
+        else if (kind === 'crate') crateStack(p.x, p.z, yaw);
+        else if (kind === 'spool') spool(p.x, p.z, yaw, b);
+        else grateInset(p.x, p.z, yaw, b);
       }
-      crateStack(s * 13.4, gz + s * 9, 0.7);
-      spool(-s * 14.2, gz + s * 3, 1.6, 0.9);
-      puddle(s * 8.5, gz + s * 2, 5.2);
-      grateInset(s * 12.6, gz - s * 2.4, 0, 2.8);
     }
 
     /* --- The rule: no empty 6 m square --------------------------------- */
@@ -8447,10 +8546,22 @@ export class StationWorld extends World {
         shaftColors.push(hue);
       }
     }
-    // Plaza perimeter lighting.
+    /* Plaza perimeter lighting.
+     *
+     * Sixteen posts on a ring at r = 37, which is the radius the gateway
+     * approach flights reach down to - the bottom tread's far corner is 18.9 m
+     * from its dais centre, i.e. r = 35.1 on the axis. Four of the sixteen fall
+     * within four degrees of a gateway bearing and would stand an 8 m lamp post
+     * on the bottom step, so they are dropped.
+     *
+     * 18.5 m and not 20: at 20 this would also drop the two posts either side
+     * of the medieval and sports flights, which clear them by 19.25 m and have
+     * stood there since the plaza was built. The bar is set to remove what is
+     * newly wrong without removing what was already right. */
     for (let i = 0; i < 16; i++) {
       const th = (i / 16) * Math.PI * 2 + 0.19;
       const p = new THREE.Vector3(Math.cos(th) * (PLAZA_R - 3), 0, Math.sin(th) * (PLAZA_R - 3));
+      if (GATEWAY_CENTRES.some(([gx, gz]) => Math.hypot(p.x - gx, p.z - gz) < 18.5)) continue;
       this._contact(p.x, p.z, 2.6);
       lampPosts.push([p.x, 4.0, p.z, 0, -th, 0, 1, 1, 1]);
       lampHeads.push([p.x, 8.0, p.z, 0, -th, 0, 1, 1, 1]);
@@ -8562,8 +8673,19 @@ export class StationWorld extends World {
         if (Math.abs(d) * rr < ROAD_W / 2 + 7) clear = false;
       }
       if (this._insideStationEnterableFootprint(x, z, 2.0)) clear = false;
-      // Keep the two gateway approach corridors readable.
-      if (Math.abs(x) < 24 && Math.abs(z) > 44 && Math.abs(z) < 100) clear = false;
+      /* Keep every gateway approach corridor readable.
+       *
+       * The same rule, generalised: within 24 m of a gateway's bearing and
+       * between r = 44 and r = 100. It was `|x| < 24 && 44 < |z| < 100`, which
+       * is that test written for the two gateways on the Z axis - and this pass
+       * puts 3-6 m container stacks anywhere from r = 52 outward, so with six
+       * gateways it would stack freight on four daises and their ramps. */
+      for (const deg of GATEWAY_BEARINGS_DEG) {
+        const t = deg * DEG;
+        const along = x * Math.cos(t) + z * Math.sin(t);
+        const across = Math.abs(-x * Math.sin(t) + z * Math.cos(t));
+        if (across < 24 && along > 44 && along < 100) { clear = false; break; }
+      }
       if (!clear) continue;
       const yaw = rng() * Math.PI * 2;
       const s = 0.85 + rng() * 0.5;
@@ -9198,7 +9320,7 @@ export class StationWorld extends World {
         [[comms.x, comms.z], [comms.x + 12, comms.z - 14], [comms.x - 16, comms.z + 8]]),
 
       F('Oyo Tannen',
-        'A relentlessly cheerful plaza food vendor selling something he insists is noodles. He upsells constantly, invents new limited-edition flavours on the spot, and treats the two gateways mainly as a source of exotic ingredients.',
+        'A relentlessly cheerful plaza food vendor selling something he insists is noodles. He upsells constantly, invents new limited-edition flavours on the spot, and treats the gateway ring mainly as a source of exotic ingredients - he has a theory about what grows on the other side of Gateway 06 and will share it unprompted.',
         -13, 19,
         [[-13, 19], [-4, 24], [-22, 12]]),
 
@@ -9208,7 +9330,7 @@ export class StationWorld extends World {
         [[cargo.x, cargo.z], [cargo.x - 18, cargo.z + 12], [cargo.x + 14, cargo.z - 10]]),
 
       F('Wen Halloway',
-        'The station lore-keeper, an old wanderer who has stepped through both gateways more times than anyone alive and come back with stories nobody quite believes. He speaks in fragments of Ashfall legend and Meridian scoreboards, and he insists the portals are older than the station bolted around them.',
+        'The station lore-keeper, an old wanderer who has stepped through every gateway on the ring more times than anyone alive and come back with stories nobody quite believes. He speaks in fragments of Ashfall legend, Meridian scoreboards and Sunspire watch-songs, claims to have walked the Verdant Coil twice without turning round, and he insists the portals are older than the station bolted around them. He is the only person on the ring who talks about Gateway 06 as though it already had a name.',
         6, -22,
         [[6, -22], [-6, -30], [16, -14], [0, -40]]),
 
@@ -9217,7 +9339,11 @@ export class StationWorld extends World {
       // commercial strip so the hero angles always have figures in them at
       // three different depths.
       F('Prue Okonkwo',
-        'Gateway marshal on the plaza approach, running the queue for the Ashfall gate with a clipboard and zero patience for people who wander onto the dais. Brisk, fair, and secretly keeps a tally of who comes back through and who does not.',
+        /* She stands at (-8, 41), which is the foot of the MERIDIAN flight -
+         * the sports gateway at (0, 54) - and her brief said she ran the
+         * Ashfall queue, which is the gateway on the opposite bearing. The
+         * position was right and the copy was wrong; the copy moved. */
+        'Gateway marshal on the plaza approach, running the queue for the Meridian gate with a clipboard and zero patience for people who wander onto the dais. Brisk, fair, and secretly keeps a tally of who comes back through and who does not. She has been told six times that Gateway 06 is not her problem.',
         -8, 41,
         [[-8, 41], [8, 41], [0, 33], [-12, 36]]),
 

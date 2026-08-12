@@ -12,6 +12,7 @@ import {
   DEG,
   DECK_R, HULL_R, WALL_H, CEIL_Y, PLAZA_R, ROAD_W, LOOP_R, LOOP_Y, PORTAL_R,
   OCULUS_R, WINDOW_HALF, GATEWAY_DECK_Y, PYLON_OFF,
+  WALKWAY, WALKWAY_DECK_TOP, walkwayStairFlight, walkwayRailRuns,
   ZONES, ZONE_R, ZONE_CENTRE_R, LINK_LEN,
   DOME_R, DOME_WALL_H, DOME_APEX, domeHeightAt, WORLD_R,
   CHUNK_TRIS, PLANTING_TRIS, PLANTING_SPAN, collideCeilingAt,
@@ -5987,7 +5988,11 @@ export class StationWorld extends World {
     const SEGS = 36;
     const segAng = (Math.PI * 2) / SEGS;
     const chord = 2 * LOOP_R * Math.tan(segAng / 2) + 0.4;
-    const width = 6;
+    /* Deck width, its walking surface and the flights that reach it all live in
+     * StationKit, beside each other, because the defect this loop carried was
+     * two of them disagreeing. See `WALKWAY`. */
+    const width = WALKWAY.WIDTH;
+    const DECK_TOP = WALKWAY_DECK_TOP;
 
     const postEntries = [];
     for (let i = 0; i < SEGS; i++) {
@@ -6006,17 +6011,46 @@ export class StationWorld extends World {
       uvScale(cond, chord / 2, 3);
       B.at('copper', cond, Math.cos(th) * (LOOP_R + 2.4), LOOP_Y - 1.2, Math.sin(th) * (LOOP_R + 2.4), yaw);
 
-      this._solidRot(x, LOOP_Y - 0.25, z, chord / 2, 0.3, width / 2, yaw);
+      // Seated by the plate it stands for, not 4.5 cm above it.
+      this._solidRot(x, DECK_TOP - 0.3, z, chord / 2, 0.3, width / 2, yaw);
 
       // Railing rails on both edges.
       for (const s of [-1, 1]) {
-        const rr = LOOP_R + s * (width / 2 - 0.15);
+        const rr = LOOP_R + s * (width / 2 - WALKWAY.RAIL_INSET);
         const rx = Math.cos(th) * rr, rz = Math.sin(th) * rr;
-        B.at('trim', boxGeo(chord, 0.09, 0.09, 1), rx, LOOP_Y + 1.08, rz, yaw);
-        B.at('emCyan', boxGeo(chord, 0.06, 0.06, 1), rx, LOOP_Y + 1.14, rz, yaw);
-        B.at('trim', boxGeo(chord, 0.07, 0.07, 1), rx, LOOP_Y + 0.6, rz, yaw);
-        // A short kickplate so you cannot see under the deck.
-        B.at('panelDark', boxGeo(chord, 0.35, 0.08, 1), rx, LOOP_Y + 0.18, rz, yaw);
+        // Tangent of the ring at this vertex; the chord pieces lie along it.
+        const tx = -Math.sin(th), tz = Math.cos(th);
+        /* Only the OUTER rail is cut, and only at the four stair arrivals.
+         * Everything above the deck is emitted per surviving run; everything
+         * below it - the soffit, its emitter, the beam and the conduit - runs
+         * the whole way round, because nothing crosses it there. */
+        const runs = walkwayRailRuns(th, rr, chord, s > 0);
+        for (const [a, b] of runs) {
+          const len = b - a;
+          const mid = (a + b) / 2;
+          const px = rx + tx * mid, pz = rz + tz * mid;
+          B.at('trim', boxGeo(len, 0.09, 0.09, 1), px, LOOP_Y + 1.08, pz, yaw);
+          B.at('emCyan', boxGeo(len, 0.06, 0.06, 1), px, LOOP_Y + 1.14, pz, yaw);
+          B.at('trim', boxGeo(len, 0.07, 0.07, 1), px, LOOP_Y + 0.6, pz, yaw);
+          // A short kickplate so you cannot see under the deck.
+          B.at('panelDark', boxGeo(len, 0.35, 0.08, 1), px, LOOP_Y + 0.18, pz, yaw);
+          // Keep the player from walking off the loop.
+          this._solidRot(px, LOOP_Y + 0.6, pz, len / 2, 0.6, 0.08, yaw);
+          /* A newel on each cheek of an opening, so it reads as a doorway that
+           * was framed rather than as a rail that stopped. Only CUT ends get
+           * one - a piece's own ends butt against its neighbour's. */
+          if (a > -chord / 2 + 0.01) {
+            postEntries.push([rx + tx * a, LOOP_Y + 0.55, rz + tz * a, 0, yaw, 0, 1, 1, 1]);
+          }
+          if (b < chord / 2 - 0.01) {
+            postEntries.push([rx + tx * b, LOOP_Y + 0.55, rz + tz * b, 0, yaw, 0, 1, 1, 1]);
+          }
+        }
+        // ...and the one post per vertex this always had, unless the vertex is
+        // standing in the middle of an opening.
+        if (runs.some(([u0, u1]) => u0 <= 0 && u1 >= 0)) {
+          postEntries.push([rx, LOOP_Y + 0.55, rz, 0, yaw, 0, 1, 1, 1]);
+        }
         /* Warm soffit run under the walkway edge.
          *
          * The gateway wide shot was a single-hue image: left wall, right
@@ -6031,9 +6065,6 @@ export class StationWorld extends World {
          */
         B.at('trim', boxGeo(chord, 0.16, 0.26, 1), rx, LOOP_Y - 0.46, rz, yaw);
         B.at('emAmber', boxGeo(chord - 0.2, 0.08, 0.17, 1), rx, LOOP_Y - 0.56, rz, yaw);
-        postEntries.push([rx, LOOP_Y + 0.55, rz, 0, yaw, 0, 1, 1, 1]);
-        // Keep the player from walking off the loop.
-        this._solidRot(rx, LOOP_Y + 0.6, rz, chord / 2, 0.6, 0.08, yaw);
       }
     }
     g.add(instanced(boxGeo(0.08, 1.1, 0.08, 1), M.trim, postEntries, { cast: true, recv: false }));
@@ -6051,17 +6082,37 @@ export class StationWorld extends World {
       this._solid(x, (LOOP_Y - 1) / 2, z, 1.0, (LOOP_Y - 1) / 2, 1.0);
     }
 
-    // Four radial stair flights up from the deck.
+    /* Four radial stair flights up from the deck.
+     *
+     * ── They used to climb to the loop's CENTRELINE ───────────────────────
+     * `rInner` was LOOP_R, and the deck is `width` wide, so the last three
+     * metres of every flight ran UNDER the walkway it was climbing to. The
+     * profile up the middle of the flight at bearing 30 was: ramp top 7.80 m at
+     * r = 75 with the deck slab solid from 9.46 to 10.04 overhead - 1.66 m of
+     * headroom for a 1.75 m capsule - falling to 0.16 m of headroom at r = 72.5,
+     * where the ramp ended inside the slab. Nobody ever reached the promenade
+     * from the deck: the flight was sealed at r ~= 75.2 by its own destination,
+     * and the 1.2 m railing the audit reported was the second wall behind the
+     * first. All four flights were identical, which is one mistake, not four.
+     *
+     * So the flight lands on the deck's outer EDGE at the height of its plate.
+     * `STAIR_R_OUTER` cannot move outward to keep the old pitch - the hub
+     * buildings begin at r = 91 on all four of these bearings - so the same
+     * rise over a 13 m run takes the pitch from 30.8 to 37.6 degrees and the
+     * drawn risers from 0.367 to 0.385 m. These flights are steep by any
+     * building code and always were; this is 5% steeper than what was there.
+     *
+     * The arithmetic is `walkwayStairFlight`, so a Node test can check the
+     * flight meets the deck without building a world.
+     */
     const stepEntries = [];
-    for (const deg of [30, 150, 210, 330]) {
+    const { rOuter, rInner, run, rise, pitch, rampSeat } = walkwayStairFlight();
+    for (const deg of WALKWAY.STAIR_DEG) {
       const th = deg * DEG;
       const yaw = -th - Math.PI / 2;
-      const rOuter = 88, rInner = LOOP_R;
-      const run = rOuter - rInner;
-      const rise = LOOP_Y - 0.45;
       const midR = (rOuter + rInner) / 2;
       const cx = Math.cos(th) * midR, cz = Math.sin(th) * midR;
-      this._ramp(cx, rise / 2 - 0.24, cz, 4.6, run, rise, yaw);
+      this._ramp(cx, rampSeat, cz, WALKWAY.STAIR_W, run, rise, yaw);
 
       const N = 26;
       for (let i = 0; i < N; i++) {
@@ -6082,7 +6133,6 @@ export class StationWorld extends World {
         const mid = p0.clone().add(p1).multiplyScalar(0.5);
         const len = p0.distanceTo(p1);
         const rail = boxGeo(0.12, 0.12, len, 1);
-        const pitch = Math.atan2(rise, run);
         B.at('trim', rail, mid.x, mid.y + 1.05, mid.z, yaw, -pitch);
         B.at('panelDark', boxGeo(0.3, 0.7, len, 2), mid.x, mid.y - 0.5, mid.z, yaw, -pitch);
       }
@@ -6091,7 +6141,7 @@ export class StationWorld extends World {
         'rgba(120,220,255,0.6)', 5, false
       );
     }
-    const stepGeo = boxGeo(4.6, 0.18, 0.62, 1.5);
+    const stepGeo = boxGeo(WALKWAY.STAIR_W, 0.18, 0.62, 1.5);
     g.add(instanced(stepGeo, M.grate, stepEntries, { cast: true, recv: true }));
 
     B.flush(g, M, 'promenade', { cast: true, recv: true });

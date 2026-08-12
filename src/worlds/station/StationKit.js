@@ -47,6 +47,103 @@ export const PORTAL_R = 54;     // distance of the portal daises from the plaza 
 export const OCULUS_R = 34;     // glazed opening in the overhead plate, over the plaza
 export const WINDOW_HALF = 55;  // hub window sector half-angle, centred on +X
 
+/* ------------------------------------------------------------------ */
+/* The elevated walkway loop                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The loop's own numbers, and the two derivations that were previously guessed.
+ *
+ * `_buildWalkwayLoop` carried these inline, and the one that mattered most -
+ * where a stair flight stops climbing - was `LOOP_R`, the loop's CENTRELINE.
+ * The deck is `WIDTH` across, so the last half-width of every flight ran
+ * underneath the walkway it was climbing to, with 1.66 m of headroom falling to
+ * 0.16 m: no flight ever reached the promenade. The arrival radius is derived
+ * here, beside the width it is derived FROM, so the two cannot disagree again.
+ */
+export const WALKWAY = {
+  /** Deck width, centred on LOOP_R. */
+  WIDTH: 6,
+  /** Drawn grate slab: thickness, and its centre relative to LOOP_Y. */
+  GRATE_T: 0.45,
+  GRATE_DY: -0.22,
+  /** Railings stand this far in from each deck edge. */
+  RAIL_INSET: 0.15,
+  /** Bearings of the four radial stair flights, in degrees. */
+  STAIR_DEG: [30, 150, 210, 330],
+  /** Foot of a flight, on the open deck. */
+  STAIR_R_OUTER: 88,
+  /** Clear width of a flight. */
+  STAIR_W: 4.6,
+  /** Half the opening cut in the outer railing at each flight: clears the
+   *  4.6 m flight and its stringer rails at +-2.5 with a hand's breadth. */
+  STAIR_GAP_HALF: 2.7,
+};
+
+/** Top face of the drawn grate - the surface anything meeting the loop meets. */
+export const WALKWAY_DECK_TOP = LOOP_Y + WALKWAY.GRATE_DY + WALKWAY.GRATE_T / 2;
+
+/** Where a flight arrives: the deck's OUTER edge, not its centreline. */
+export const WALKWAY_STAIR_R_INNER = LOOP_R + WALKWAY.WIDTH / 2;
+
+/**
+ * One flight, fully determined by the constants above.
+ *
+ * `rampSeat` is the Y of the `_ramp` proxy's centre. That proxy is 0.5 m thick
+ * and pitched, so its centre has to sit `0.25 / cos(pitch)` below the walking
+ * line for its top face to lie ON the line - the same relationship
+ * `escalatorDeckDrop` pins for the escalators. It used to be a flat 0.24, which
+ * left the collision surface 0.051 m above the treads drawn on it.
+ */
+export function walkwayStairFlight() {
+  const rOuter = WALKWAY.STAIR_R_OUTER;
+  const rInner = WALKWAY_STAIR_R_INNER;
+  const run = rOuter - rInner;
+  const rise = WALKWAY_DECK_TOP;
+  const pitch = Math.atan2(rise, run);
+  return { rOuter, rInner, run, rise, pitch, rampSeat: rise / 2 - 0.25 / Math.cos(pitch) };
+}
+
+/**
+ * The stretches of one railing piece that survive the four stair openings.
+ *
+ * Same shape as the ceiling's `chordRuns`: a run is an interval along the
+ * piece's own long axis, and cutting it returns fewer, shorter intervals rather
+ * than deciding whether to draw the whole piece at all. A segment is 12.6 m of
+ * arc and an opening is 5.4 m, so "skip the segment" would leave a hole two and
+ * a half times the width of the stair standing in it.
+ *
+ * `GeoBatch.at` maps local +X onto (-sin th, cos th) - the +theta tangent - and
+ * the piece is a straight chord, so a flight at bearing `sdeg` sits exactly
+ * `rr * dtheta` along it from its centre.
+ *
+ * @param {number} th     bearing of this piece's centre, radians
+ * @param {number} rr     radius the piece is drawn at
+ * @param {number} chord  its full length
+ * @param {boolean} cut   false for the inner railing, which is never cut: it is
+ *                        the plaza-side edge of a walkway 10 m up, nothing
+ *                        crosses it, and a gap in it is a fall, not a door
+ * @returns {Array<[number, number]>} surviving [from, to] offsets from centre
+ */
+export function walkwayRailRuns(th, rr, chord, cut) {
+  let runs = [[-chord / 2, chord / 2]];
+  if (!cut) return runs;
+  for (const sdeg of WALKWAY.STAIR_DEG) {
+    let d = sdeg * DEG - th;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    const a = rr * d - WALKWAY.STAIR_GAP_HALF;
+    const b = rr * d + WALKWAY.STAIR_GAP_HALF;
+    const next = [];
+    for (const [s, e] of runs) {
+      if (b <= s || a >= e) { next.push([s, e]); continue; }
+      if (a - s > 0.05) next.push([s, a]);
+      if (e - b > 0.05) next.push([b, e]);
+    }
+    runs = next;
+  }
+  return runs;
+}
+
 /**
  * Walking surface of a gateway dais - where the approach steps arrive, where
  * the ceremonial arch stands, and where a portal's own plinth starts.

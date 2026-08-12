@@ -2115,6 +2115,102 @@ export class PortalSystem {
     }
   }
 
+  /**
+   * Link the preview path's shader programs up front, instead of on the frame a
+   * gateway first comes within `PREVIEW_RANGE`.
+   *
+   * ── Why the existing warm does not cover this ──────────────────────────────
+   * `main.js`'s `warmWorld()` calls `compile(world.group, camera, engine.scene)`,
+   * so the destination's materials are linked against the *live* scene: the
+   * station's environment map, the station's fog, the canvas-bound render state.
+   * The preview draws exactly the same materials into a 512² half-float target
+   * with the *destination's* environment and fog instead. Three folds
+   * `envMap`, `envMapCubeUVHeight`, `fog` and the bound render target into its
+   * program cache key, so those are different keys and the pre-compile misses
+   * them entirely. Measured: a traversal of the station linked 87 further
+   * programs while walking, in seven multi-second freezes, 73% of the link time
+   * under `_renderPreview`.
+   *
+   * ── Why one render is not enough ───────────────────────────────────────────
+   * `render()` culls, so a single preview frame only links what the arrival
+   * camera happens to be looking at - which is why the cost arrived in pieces
+   * rather than all at the first gateway. The render happens first because it is
+   * the *exact* live path (it primes the shadow attachments, allocates the
+   * target and proves the key), then `compile()` with that same target still
+   * bound broadens it to every material in the group, since `compile` collects
+   * with `traverse` and does not cull.
+   *
+   * Synchronous `compile()`, not `compileAsync()`, for the reason documented on
+   * `main.js`'s `prewarm()`: some driver stacks throw from compileAsync's
+   * internal readiness polling, and this is optional work that must never be
+   * able to abort a boot.
+   *
+   * Nothing here changes what renders per frame: the previews still only run at
+   * 10 Hz inside 40 m. This just moves the one-time link cost off the walk.
+   *
+   * @param {{ target?: string }} [opts] restrict to gateways pointing at one
+   *   world - background builds warm each destination as it finishes.
+   * @returns {{ warmed: string[], skipped: string[], ms: number, programs: number }}
+   */
+  warmPreviews({ target = null } = {}) {
+    const t0 = performance.now();
+    const warmed = [];
+    const skipped = [];
+    const wm = this.worldManager;
+    for (const p of this._portals) {
+      if (target && p.target !== target) continue;
+      // A gateway whose destination has not been generated has nothing to warm:
+      // its materials do not exist yet. That is the maze's permanent state in
+      // the station - it is `static volatile = true`, so it is deliberately left
+      // out of the background builds and re-rolls on entry, and its preview
+      // never renders here either. See the note in main.js.
+      if (!wm?.isBuilt?.(p.target)) { skipped.push(p.target); continue; }
+      const world = wm.getWorld(p.target);
+      if (!world?.group || world === wm.active) { skipped.push(p.target); continue; }
+      try {
+        this._renderPreview(p, this.engine?.elapsed ?? 0);
+        this._compilePreviewGroup(p, world.group);
+        warmed.push(p.target);
+      } catch (err) {
+        // Never fatal: the cost simply reverts to being paid on approach.
+        console.warn(`[Portals] preview warm for "${p.target}" failed:`, err);
+        skipped.push(p.target);
+      }
+    }
+    return {
+      warmed,
+      skipped,
+      ms: Math.round(performance.now() - t0),
+      programs: this.renderer.info.programs.length,
+    };
+  }
+
+  /**
+   * Compile every material in a destination group against the preview scene,
+   * with the preview's render target bound so the cache key matches.
+   *
+   * `_renderPreview` must have run first: it is what sets the preview scene's
+   * environment, fog and light colours to this destination's, and those are all
+   * part of the key we are trying to hit.
+   *
+   * @param {any} portal
+   * @param {THREE.Object3D} group
+   */
+  _compilePreviewGroup(portal, group) {
+    const r = this.renderer;
+    if (!portal.rt || !portal.previewCam || typeof r.compile !== 'function') return;
+    const prevTarget = r.getRenderTarget();
+    const prevShadowAuto = r.shadowMap.autoUpdate;
+    try {
+      r.shadowMap.autoUpdate = false;
+      r.setRenderTarget(portal.rt);
+      r.compile(group, portal.previewCam, this._previewScene);
+    } finally {
+      r.setRenderTarget(prevTarget);
+      r.shadowMap.autoUpdate = prevShadowAuto;
+    }
+  }
+
   /* ---------------------------------------------------------------- */
   /* Transition overlay                                                */
   /* ---------------------------------------------------------------- */

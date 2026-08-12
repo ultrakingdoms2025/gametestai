@@ -51,6 +51,7 @@ import { RaceManager } from './race/RaceManager.js';
 import { RaceUI } from './ui/RaceUI.js';
 import { QuestBoard } from './ui/QuestBoard.js';
 import { BugReport } from './ui/BugReport.js';
+import { forceDrawable } from './gfx/RehearsalDraw.js';
 
 /**
  * AETHER NEXUS - bootstrap.
@@ -620,6 +621,15 @@ async function prewarm() {
     if (selected) loadout.select(selected);
   }
 
+  // Everything above compiles the *material graph*. What is left needs the
+  // objects actually drawn in the state the player will meet them in - see the
+  // header on `rehearse`.
+  try {
+    await rehearse();
+  } catch (err) {
+    console.warn('[rehearse] failed, first-use costs stay with the player:', err);
+  }
+
   try {
     for (const root of parked) root.visible = false;
     // Do NOT call setVisible(false) here. The prewarm used setVisible(true) to
@@ -637,6 +647,155 @@ async function prewarm() {
   console.info(
     `[prewarm] shader warmup took ${Math.round(performance.now() - t0)}ms, ` +
     `${engine.renderer.info.programs.length} programs`
+  );
+}
+
+/**
+ * Play the first few minutes of the game, invisibly, behind the loading screen.
+ *
+ * ── What this fixes ────────────────────────────────────────────────────────
+ * The player's report was "loading mounts or doing much of anything first time
+ * is slow, after a while of use the speed is better". Measured on a cold GPU
+ * program cache, with everything above this already done, that was:
+ *
+ *     summon the dragon        4 programs   4.1 s
+ *     fire each weapon         3 programs   3.2 s
+ *     summon the hoverboard    2 programs   2.6 s
+ *     summon the car           2 programs   1.7 s
+ *     first rare loot drop     5 programs   1.7 s
+ *     switch through weapons   3 programs   1.0 s
+ *     summon the bicycle       1 program    1.0 s
+ *                                          ~15 s
+ *
+ * Every other first-use action measured - opening any panel, entering a
+ * building, meeting a hostile, killing one, mounting the horse or the eagle,
+ * flying - linked nothing at all. That list is what this function reproduces,
+ * and nothing more: it is a ranking, not a guess.
+ *
+ * ── Why `compile()` was not enough, in one sentence per reason ─────────────
+ *   1. `compile` collects materials from `object.material`. A loot accent that
+ *      is never attached to a pickup, a mount that is built but never
+ *      `spawn()`ed, a weapon part that is only added when drawn - none of them
+ *      are on anything, so none of them are seen.
+ *   2. `compile` issues `linkProgram` but reads no result. Three checks the
+ *      link status on a program's first *use*, which is where the stall
+ *      actually lands, so the program must also be drawn.
+ *   3. A transparent `DoubleSide` material is *two* programs, not one - three
+ *      draws it once per face winding. That is why `loot.beam.trinket`,
+ *      `sword.trail` and `dragon.membrane` each linked twice from one material,
+ *      and why chasing "unreferenced materials" never explained it.
+ *
+ * ── What it must not do ────────────────────────────────────────────────────
+ * Leave anything behind. Mounts are spawned but never *mounted*, so the player
+ * is never seated, moved, or swung into third person; loot is posed from the
+ * pool and never enters `_active`, so nothing is dropped and nothing is
+ * awarded; the HUD is silenced so the six mounts it would announce do not greet
+ * the player as toasts for things that never happened. Everything is restored
+ * in reverse, and the program/collider/child counts are logged either side so a
+ * leak shows up as a number rather than as a bug report.
+ */
+async function rehearse() {
+  const r = engine.renderer;
+  const t0 = performance.now();
+  const p0 = r.info.programs.length;
+  /** State that must come out exactly as it went in. */
+  const state = () => ({
+    children: engine.scene.children.length,
+    colliders: physics.colliders?.length ?? 0,
+    pickups: loot?.pickups?.length ?? 0,
+    weapon: loadout.current?.id ?? null,
+    mounted: mounts.active?.id ?? null,
+    credits: economy?.credits ?? 0,
+    px: player.position.x, py: player.position.y, pz: player.position.z,
+  });
+  const before = state();
+  // Uploads, deliberately *not* part of the leak test. `info.memory` counts GPU
+  // resources, and drawing a mesh for the first time uploads its buffers and
+  // textures - which is a second first-use cost this rehearsal is paying on the
+  // player's behalf, not something it failed to clean up.
+  const g0 = r.info.memory.geometries;
+  const x0 = r.info.memory.textures;
+
+  hud?.setQuiet?.(true);
+  /** @type {Array<() => void>} */
+  const restore = [];
+  /** @type {THREE.Object3D[]} */
+  let mountRoots = [];
+  /** Where each root was parented, so the teardown can put it back. */
+  let mountParents = [];
+
+  try {
+    mountRoots = mounts.warmSpawn?.(player.position, player.yaw ?? 0) ?? [];
+    mountParents = mountRoots.map((root) => root.parent);
+  } catch (err) {
+    console.warn('[rehearse] mount spawn failed:', err);
+  }
+
+  try {
+    const undo = loot?.warmAccents?.(player.position);
+    if (undo) restore.push(undo);
+  } catch (err) {
+    console.warn('[rehearse] loot accents failed:', err);
+  }
+
+  const viewRoots = [];
+  try {
+    for (const inst of loadout.instances ?? []) {
+      inst.setVisible?.(true);
+      if (inst.root) viewRoots.push(inst.root);
+    }
+  } catch (err) {
+    console.warn('[rehearse] viewmodel show failed:', err);
+  }
+
+  restore.push(forceDrawable([...mountRoots, ...viewRoots, loot?.group, avatar?.root]));
+
+  for (let i = 0; i < 3; i++) {
+    try {
+      // Before every rehearsal frame, not just the first: `warmSpawn` and
+      // `forceDrawable` between them can expose a light that was hidden (a
+      // car's headlamps), and one such light reaching `projectObject` would
+      // rebuild every program in the scene against a light count that never
+      // occurs again.
+      lightRig.update(1 / 60);
+      if (engine.postfx) engine.postfx.render(1 / 60);
+      else r.render(engine.scene, engine.camera);
+    } catch { /* a rehearsal frame must never abort the boot */ }
+    await nextFrame();
+  }
+
+  try {
+    for (let i = restore.length - 1; i >= 0; i--) restore[i]();
+    for (const inst of loadout.instances ?? []) inst.setVisible?.(false);
+    if (before.weapon != null) loadout.current?.setVisible?.(true);
+    // Kill every mount this rehearsal spawned - an alive-but-torn-down mount is
+    // the exact hazard `unpark` documents, because `summon` only calls `spawn`
+    // on a mount that is not already alive and would otherwise seat the player
+    // on an invisible one at stale coordinates.
+    mounts.unpark?.([]);
+    // `kill()` unparents the root, so put it back where `prebuild` left it:
+    // hidden, in the scene, waiting for prewarm's own `unpark` to remove it a
+    // moment later. Without this the rehearsal would appear to eat six scene
+    // children, and the leak test below would be crying wolf every boot.
+    mountRoots.forEach((root, i) => {
+      root.visible = false;
+      if (!root.parent && mountParents[i]) mountParents[i].add(root);
+    });
+  } catch (err) {
+    console.warn('[rehearse] restore failed:', err);
+  } finally {
+    hud?.setQuiet?.(false);
+  }
+
+  const after = state();
+  const leaked = Object.keys(before).filter((k) => before[k] !== after[k]);
+  console.info(
+    `[rehearse] ${r.info.programs.length - p0} programs in ` +
+    `${Math.round(performance.now() - t0)}ms, ` +
+    `+${r.info.memory.geometries - g0} geometries +${r.info.memory.textures - x0} textures uploaded` +
+    (leaked.length
+      ? ` - LEAKED ${leaked.map((k) => `${k}: ${before[k]}->${after[k]}`).join(', ')}`
+      : ' - state clean')
   );
 }
 

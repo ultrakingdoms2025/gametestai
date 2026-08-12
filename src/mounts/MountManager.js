@@ -727,6 +727,50 @@ export class MountManager {
   }
 
   /**
+   * Put every built mount into its *spawned* draw state for the shader warm.
+   *
+   * `prebuild` is not enough, and the difference is the whole point of this
+   * method. Measured on a cold profile, summoning a mount for the first time
+   * still linked programs the prebuild had not: the dragon 4 (its leather, its
+   * membrane twice, and a shadow-pass depth program) at 4.1 s, the hoverboard 2
+   * at 2.6 s, the car 2 at 1.7 s, the bicycle 1 at 1.0 s. A prebuilt mount is
+   * constructed and parented but never `spawn()`ed, and `spawn` is what makes
+   * it *alive*, unhides its model, and lights its arrival effects - so the
+   * renderer never sees those materials in the state it will draw them in.
+   *
+   * Deliberately `spawn` and not `summon`: summoning also seats the player,
+   * swings the camera to third person and hides the avatar, none of which
+   * linked anything measurable (1 further program for the whole dragon ride)
+   * and all of which are real mutations of player state. Spawning alone buys
+   * the programs; riding buys almost nothing.
+   *
+   * Tear down with `unpark`, exactly as for `prebuild`.
+   *
+   * @param {THREE.Vector3} position Where to stand them - use the player, so
+   *   they land inside the camera *and* the sun's shadow frustum.
+   * @param {number} [yaw]
+   * @returns {THREE.Object3D[]} Roots now in the scene, for `unpark`.
+   */
+  warmSpawn(position, yaw = 0) {
+    const roots = [];
+    for (const mount of this._mounts.values()) {
+      try {
+        if (!mount.alive) mount.spawn(position, yaw);
+        const root = mount.root ?? mount.mesh;
+        if (root) {
+          root.visible = true;
+          if (!root.parent) this.scene.add(root);
+          roots.push(root);
+        }
+      } catch (err) {
+        // A mount that will not spawn simply pays for itself on first summon.
+        console.warn(`[mounts] warm spawn of "${mount.id}" failed:`, err?.message ?? err);
+      }
+    }
+    return roots;
+  }
+
+  /**
    * Remove roots parked by `prebuild` once their shaders are compiled.
    *
    * The warmup does not merely render the parked mounts - it summons and

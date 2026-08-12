@@ -263,6 +263,8 @@ export class HUD {
     this._dmg = [];
     this._kf = [];
     this._toasts = [];
+    /** @see setQuiet - true while the shader rehearsal is faking gameplay. */
+    this._quiet = false;
     this._debugT = 0;
     this._stats = { fps: 0, frameMs: 0, drawCalls: 0, triangles: 0 };
 
@@ -1455,6 +1457,23 @@ export class HUD {
   }
 
   /**
+   * Swallow every toast while the shader rehearsal is running.
+   *
+   * The rehearsal in main.js spawns each mount, swaps each weapon and shows a
+   * loot pickup of every accent for a frame - entirely behind the loading
+   * screen. Each of those is a normal gameplay event the HUD is right to
+   * announce, which would greet the player with a stack of "Dragon
+   * materialising" toasts for things that never happened. One switch here is
+   * more reliable than threading a `silent` flag through every emitter, and it
+   * covers whatever the rehearsal is extended to warm next.
+   *
+   * @param {boolean} on
+   */
+  setQuiet(on) {
+    this._quiet = !!on;
+  }
+
+  /**
    * Transient message.
    * `save` / `error` / `quiet` are HUD-local additions for save feedback; the
    * `hud:notify` contract tones are unchanged.
@@ -1462,7 +1481,7 @@ export class HUD {
    * @param {'info'|'warn'|'kill'|'lore'|'save'|'error'|'quiet'} [tone]
    */
   notify(text, tone = 'info') {
-    if (!text) return;
+    if (!text || this._quiet) return;
     const t = el('div', `toast ${tone}`, text);
     this.toastWrap.appendChild(t);
     this._toasts.push({ el: t, life: TOAST_LIFE });

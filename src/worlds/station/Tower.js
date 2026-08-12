@@ -49,7 +49,8 @@ const FLOOR_H = 3.9;
  *  well under the ~50 degrees `Physics.resolveCapsule` counts as walkable. */
 const ESC_RISE_RUN = Math.tan(30 * Math.PI / 180);
 const SLAB_T = 0.35;
-const WALL_T = 0.4;
+/** Shell wall thickness. The interior - and so every floor plate - stops here. */
+export const WALL_T = 0.4;
 /**
  * Height of the plinth the shell stands on.
  *
@@ -99,6 +100,67 @@ export const TREAD_MOUNT = 0.06;
  */
 export function escalatorDeckDrop(pitch, treadThickness = TREAD_T) {
   return TREAD_MOUNT + (treadThickness / 2) / Math.cos(Math.abs(pitch));
+}
+
+/** Depth of the string course band. */
+export const STRING_COURSE_T = 0.22;
+/** How far the band stands proud of the shell, per side. */
+export const STRING_COURSE_OUT = 0.25;
+
+/**
+ * The string course: the horizontal band that makes the stack of floors read
+ * from the avenue.
+ *
+ * ── What was wrong ────────────────────────────────────────────────────────
+ * It was one box, `w + 0.5` by `d + 0.5`, at every storey. A band round the
+ * outside of a building is a band; this was a lid. Two consequences, and the
+ * player sees both of them:
+ *
+ *   1. Its TOP FACE sits at `floorY(f + 1)` exactly - the band is 0.22 thick and
+ *      centred 0.11 below the floor above - and so does the top face of that
+ *      floor's slab. Same plane, no offset, full plan area. Raycasting the
+ *      render geometry over the hub deck and the habitation zone found this at
+ *      every storey of every tower: 144 coincident hits on the hub's six
+ *      stacks and 107 on the zone's, out of 407 in the whole world. Over half
+ *      the world's z-fighting was this one line, and it is under the player's
+ *      feet on every floor they walk onto.
+ *   2. It closed the atrium. This file's own header says "The escalator well is
+ *      an atrium: a 10 m void through every slab" - and a lid `d + 0.5` deep
+ *      crosses that void at every level, so the void a rider looks down was
+ *      floored seven times over in trim.
+ *
+ * ── The fix ───────────────────────────────────────────────────────────────
+ * Draw the band as a band: four runs over the wall line and the 0.25 m
+ * overhang, and nothing over the interior. From outside the silhouette is
+ * identical, because the only part of the old box that was ever visible from
+ * out there is the part this keeps. The inner edge lands exactly on the
+ * interior face (`w/2 - WALL_T`), which is where the floor slabs stop - edge to
+ * edge, no shared face - so there is no overlap left to order rather than an
+ * overlap ordered by a millimetre.
+ *
+ * Returned rather than drawn so the relationship can be checked under Node;
+ * `buildTower` needs a world, materials and physics and cannot be.
+ *
+ * @param {number} w  footprint width  (local X)
+ * @param {number} d  footprint depth  (local Z)
+ * @param {number} [wallT]
+ * @param {number} [out]
+ * @returns {Array<{w:number, d:number, x:number, z:number}>} four runs, sizes
+ *   and local centres; height is `STRING_COURSE_T` for all of them.
+ */
+export function stringCourseRuns(w, d, wallT = WALL_T, out = STRING_COURSE_OUT) {
+  const band = wallT + out;               // wall thickness plus the overhang
+  const iz = d / 2 - wallT;               // interior face; where the slabs stop
+  const runs = [];
+  // Front and back, full width - they own the corners.
+  for (const s of [-1, 1]) {
+    runs.push({ w: w + out * 2, d: band, x: 0, z: s * (d / 2 + out - band / 2) });
+  }
+  // Left and right, stopping at the front/back runs so nothing is drawn twice.
+  for (const s of [-1, 1]) {
+    runs.push({ w: band, d: iz * 2, x: s * (w / 2 + out - band / 2), z: 0 });
+  }
+  return runs;
 }
 
 /**
@@ -309,7 +371,9 @@ export function buildTower(world, B, g, spec, rng) {
       put('glassWindow', new THREE.PlaneGeometry(d - 5.5, FLOOR_H * 0.5), sx * (w / 2 + 0.03), ly, 0, sx > 0 ? Math.PI / 2 : -Math.PI / 2);
     }
     // String course, so the stack of floors reads from outside.
-    put('trim', boxGeo(w + 0.5, 0.22, d + 0.5, 2), 0, y + FLOOR_H - 0.11, 0);
+    for (const r of stringCourseRuns(w, d)) {
+      put('trim', boxGeo(r.w, STRING_COURSE_T, r.d, 2), r.x, y + FLOOR_H - STRING_COURSE_T / 2, r.z);
+    }
   }
 
   /* ---------------------------------------------------------------- */

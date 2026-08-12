@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { boxGeo, cylGeo, instanced } from '../StationKit.js';
+import { boxGeo, cylGeo, instanced, seamLift } from '../StationKit.js';
 
 /**
  * THE LONG GALLEY - the station's canteen, on avenue 300.
@@ -826,22 +826,36 @@ function paveTheGalley(ctx) {
    * hide the seam and two coplanar overlaps in one ring is a stripe of
    * z-fighting 500 m long.
    *
+   * That note had the diagnosis exactly right and then stopped one ring short.
+   * The 40 cm of overlap is between a quad and the NEXT QUAD IN ITS OWN BAND,
+   * and separating the bands from each other does nothing about it: the floor
+   * sweep found 16 coincident `plaza || plaza` hits in this hall, one per joint
+   * it happened to land on, and every one of them is inside a single band.
+   * `seamLift` drops alternate segments by 4 mm so the joint has a winner - the
+   * two quads carry the same texture at different UV origins either way, so
+   * which one wins is not something a player can see; that the depth buffer
+   * cannot decide, is. It drops rather than lifts, so that every surface this
+   * hall already stacks on top of the dining plate - the processional at 0.13,
+   * the marked bays at 0.145, the servery apron at 0.15 - keeps the clearance
+   * it was given.
+   *
    *      key      radius   depth   height   what it is
    *      -----    ------   -----   ------   ---------------------------------
    *      plaza    134.75    26.5    0.10    dining band 1
    *      plaza    166.00    26.0    0.11    dining band 2
    *      plaza    188.50     9.0    0.10    the window band
    */
+  const SEAM = 0.004;
   const BANDS = [
     ['plaza', 134.75, 26.5, 0.10, 16, 11],
     ['plaza', 166.0, 26.0, 0.11, 18, 11],
     ['plaza', 188.5, 9.0, 0.10, 15, 9],
   ];
   for (const [key, rad, depth, y, pitch, tile] of BANDS) {
-    arcRun(0, 360, rad, pitch, (d) => {
+    arcRun(0, 360, rad, pitch, (d, i, n) => {
       const p = at(d, rad);
       if (!ctx.onDeck(p[0], p[1], 5)) return;
-      ctx.floorQuad(key, pitch + 0.4, depth, p[0], p[1], A(d), y, tile);
+      ctx.floorQuad(key, pitch + 0.4, depth, p[0], p[1], A(d), y - seamLift(i, n, SEAM), tile);
     });
   }
 
@@ -855,9 +869,9 @@ function paveTheGalley(ctx) {
     ['plaza', 93.0, 16.0, 0.10, 15, 10],
   ];
   for (const [key, rad, depth, y, pitch, tile] of COURT) {
-    arcRun(0, 360, rad, pitch, (d) => {
+    arcRun(0, 360, rad, pitch, (d, i, n) => {
       const p = at(d, rad);
-      ctx.floorQuad(key, pitch + 0.4, depth, p[0], p[1], A(d), y, tile);
+      ctx.floorQuad(key, pitch + 0.4, depth, p[0], p[1], A(d), y - seamLift(i, n, SEAM), tile);
     });
   }
 
@@ -879,15 +893,18 @@ function paveTheGalley(ctx) {
     ctx.floorQuad('hazard', 12, 8, p[0], p[1], A(d), 0.145, 4);
   }
 
-  // Warm apron in front of the servery - the strip that is always busy.
-  arcRun(SERVERY_A0 - 4, SERVERY_A1 + 4, 146, 11, (d) => {
+  /* Warm apron in front of the servery - the strip that is always busy.
+   * Open runs, not closed rings, so `seamLift`'s wrap case never applies; the
+   * overlap between one quad and the next is the same 40 cm and wants the same
+   * 4 mm. */
+  arcRun(SERVERY_A0 - 4, SERVERY_A1 + 4, 146, 11, (d, i, n) => {
     const p = at(d, 146);
-    ctx.floorQuad('plaza', 11.4, 26, p[0], p[1], A(d), 0.15, 9);
+    ctx.floorQuad('plaza', 11.4, 26, p[0], p[1], A(d), 0.15 - seamLift(i, n, SEAM, false), 9);
   });
   // Cooler, harder floor through the back of house, where the trolleys run.
-  arcRun(BOH_A0, BOH_A1, 180, 12, (d) => {
+  arcRun(BOH_A0, BOH_A1, 180, 12, (d, i, n) => {
     const p = at(d, 180);
-    ctx.floorQuad('road', 12.4, 26, p[0], p[1], A(d), 0.16, 8);
+    ctx.floorQuad('road', 12.4, 26, p[0], p[1], A(d), 0.16 - seamLift(i, n, SEAM, false), 8);
   });
 
   ctx.mmPath(

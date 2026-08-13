@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { atlasUV, boxGeo, cylGeo, instanced, uvScale } from '../StationKit.js';
+import { buildZoneTower } from '../Tower.js';
 
 /**
  * DECK 9 ATHLETICS - the station gym, on avenue 180.
@@ -726,6 +727,7 @@ export function buildGym(ctx) {
   buildRecovery(S);
   buildCourt(S);
   dressArcade(S);
+  buildTrainingBlock(S);
 
   /* The composed pieces above are the zone's landmarks and they are placed by
    * hand. Everything after this line is the *floor* - the two hundred-odd
@@ -3013,6 +3015,63 @@ function hitsPlaza(deg, rm, d, w) {
  * all of them carrying a collectable at the top. A relic on a surface a player
  * can see and cannot reach is worse than no relic at all.
  */
+/**
+ * Deck 9's conditioning block - the zone's one enterable building.
+ *
+ * ── Why this zone gets a tower at all ─────────────────────────────────────
+ * Everything else in the gym is a single volume: a park of equipment under one
+ * 30 m arcade plate with a running track round it. It photographs well and
+ * there is nowhere in it to GO. A crew-conditioning deck of this size would
+ * have a block of treatment rooms, offices and coach's cabins somewhere on it,
+ * and the brief asks for one enterable building in each of the four outer
+ * zones; habitation has five and this had none.
+ *
+ * ── Where it stands, and why here ─────────────────────────────────────────
+ * Bearing 247 degrees at 77 m. That is inside the court (r < 112), which is
+ * forced: the arcade plate is at 30 m and `buildTower` clamps to seven storeys,
+ * which is 29.7 m to the parapet - a tower under the arcade would push its roof
+ * through the ceiling. Inside the court the dome is 115.7 m above the far
+ * corner of this footprint, so seven storeys clears by 86 m.
+ *
+ * Within the court it is the largest genuinely empty pocket. A rotated-rect
+ * sweep against every hand-placed object puts the nearest at 23.5 m (the
+ * centrifuge's access gantry). Radially it spans 61.6 to 92.4 m, so it clears
+ * the track's inner kerb at 96 by 3.6 m; angularly it sits 22 and 23 degrees
+ * off the 225 and 270 spokes, which is 13.4 m of clearance either side.
+ *
+ * ── The one thing that has to be done by hand ─────────────────────────────
+ * `ctx.solid` and `ctx.box` are wrapped in `scope()` so anything placed through
+ * them marks the occupancy raster automatically. `buildTower` uses neither - it
+ * calls `world._solidRot` directly, through its own frame - so the raster never
+ * hears about it and `fillHalls` would tile two hundred training bays straight
+ * through the building. The explicit `mark` below is the same fix `buildArena`
+ * applies to the centrifuge for the same reason, and it is why this is called
+ * before `buildArena` and `fillHalls` rather than after.
+ */
+const TRAINING_BLOCK = { deg: 247, r: 77, w: 24, d: 22, floors: 7 };
+
+function buildTrainingBlock(S) {
+  const { ctx } = S;
+  const bearing = TRAINING_BLOCK.deg * D2R;
+  const [lx, lz] = bear(TRAINING_BLOCK.deg, TRAINING_BLOCK.r);
+
+  const built = buildZoneTower(ctx, {
+    bearing, r: TRAINING_BLOCK.r,
+    w: TRAINING_BLOCK.w, d: TRAINING_BLOCK.d, floors: TRAINING_BLOCK.floors,
+    label: 'Conditioning Block',
+    body: 'panelWarm',
+    fit: 'office',
+  });
+
+  // The shell, plus the entrance steps reaching 3.4 m out of the front.
+  S.occ.mark(lx, lz, TRAINING_BLOCK.w / 2, TRAINING_BLOCK.d / 2 + 3.4, bearing, 1.2);
+
+  // A practical over the door, so the entrance reads from across the court.
+  S.lamp(lx - Math.sin(bearing) * 15, 6, lz - Math.cos(bearing) * 15, ctx.spec.accentHex, 1500, 46);
+
+  return built;
+}
+
 function buildArena(S) {
   /* The drum's cradle and the twenty metres of access ramp reaching out of it
    * are not the grid's to fill. Both are drawn almost entirely as `put()`

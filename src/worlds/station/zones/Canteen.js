@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { boxGeo, cylGeo, instanced, seamLift } from '../StationKit.js';
+import { buildZoneTower } from '../Tower.js';
 
 /**
  * THE LONG GALLEY - the station's canteen, on avenue 300.
@@ -211,6 +212,10 @@ const KEEPOUT = [
   // Where the two mezzanine stairs land on the dining floor.
   [60, 76, 128, 154],
   [106, 122, 128, 154],
+  /* The refectory block. See `buildRefectoryBlock` for why it stands where it
+   * does; this row is what makes the nine fillers flow round it instead of
+   * laying five rings of dining tables through a building. */
+  [244, 266, 50, 84],
 ];
 
 /* ------------------------------------------------------------------ */
@@ -1740,6 +1745,60 @@ function buildIsland(ctx, K) {
  * the processional keep the arrival sightline; everything either side of them
  * is somebody's lunch.
  */
+/**
+ * The refectory block - the galley's one enterable building.
+ *
+ * ── Why the canteen needs a building in it ────────────────────────────────
+ * The Long Galley is a single 400 m room. That is the right shape for a mess
+ * hall and the wrong shape for a place with anywhere to go: from the corridor
+ * mouth you can already see everything the zone contains. The brief asks for
+ * an enterable building in each of the four outer zones and this had none. A
+ * refectory block - kitchens' offices, dry store, crew mess rooms stacked over
+ * the floor they feed - is what a galley this size would actually have.
+ *
+ * ── 255 degrees at 68 m, and every constraint that fixes it ───────────────
+ *   HEIGHT. The arcade plate outside r = 112 is at 30 m and `buildTower`
+ *   clamps to seven storeys (29.7 m to the parapet), so a tower can only stand
+ *   in the court. At this footprint the dome is 118.4 m up: 88.7 m of clearance.
+ *
+ *   BEARING. 255 is the exact midpoint of the 240 and 270 spokes. At r = 68 a
+ *   30-degree sector is 35.6 m of arc; taking `SPOKE_HALF` off each side
+ *   leaves 28.8 m, which is why the block is 24 m wide and not the 26 the hub
+ *   towers use. It also sits 75 degrees off the arrival axis and on the
+ *   opposite side of the deck from the servery fan (141-217) and Galley
+ *   Provisions (211-233), so it balances the mezzanine's mass at 66-116
+ *   without competing with anything.
+ *
+ *   RADIUS. 57 to 79 m, plus 3.4 m of entrance steps reaching in to 53.6. That
+ *   lands inside the court dining band (53-80) and crosses no circulation: the
+ *   court ring corridor at 80-85, the promenade at 116.5-121.5 and all eleven
+ *   spokes are untouched. The dining that would have been here is not deleted,
+ *   it is displaced - every one of those rings is laid by `ringFill`, which
+ *   consults `blocked()`, which reads the `KEEPOUT` row added above.
+ */
+const REFECTORY = { deg: 255, r: 68, w: 24, d: 22, floors: 7 };
+
+function buildRefectoryBlock(ctx) {
+  const bearing = REFECTORY.deg * DEG;
+  const built = buildZoneTower(ctx, {
+    bearing, r: REFECTORY.r,
+    w: REFECTORY.w, d: REFECTORY.d, floors: REFECTORY.floors,
+    label: 'Refectory Block',
+    body: 'panelWarm',
+    fit: 'office',
+  });
+
+  // A practical over the door. The galley is lit warm; the entrance has to
+  // read as a way in from the far side of the court.
+  const [lx, lz] = at(REFECTORY.deg, REFECTORY.r - 15);
+  const light = new THREE.PointLight(ctx.spec.accentHex, 1600, 48, 2);
+  light.position.copy(ctx.P(lx, 6, lz));
+  light.castShadow = false;
+  ctx.group.add(light);
+
+  return built;
+}
+
 function buildCourtHall(ctx, K) {
   const ROWS = [
     [COURT_ROWS_IN[0], 9.0, 'round6', 0, 0.15],
@@ -2587,6 +2646,7 @@ export function buildCanteen(ctx) {
   buildProvisions(ctx, kit);
   buildDiningFields(ctx, kit);
   buildIsland(ctx, kit);
+  buildRefectoryBlock(ctx);
   buildCourtHall(ctx, kit);
   buildServiceRun(ctx, kit);
   buildMezzanine(ctx, kit);

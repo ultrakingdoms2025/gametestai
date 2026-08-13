@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { boxGeo, cylGeo, uvScale, instanced, seamLift } from '../StationKit.js';
-import { buildTower } from '../Tower.js';
+import { buildZoneTower } from '../Tower.js';
 
 /**
  * HAB RING C - where the station's whole crew actually sleeps.
@@ -1305,7 +1305,7 @@ function population(ctx) {
 /* ------------------------------------------------------------------ */
 
 function habStacks(ctx) {
-  const { world, B, rng, spec } = ctx;
+  const { spec } = ctx;
   const accent = spec.accent;
 
   /* Five stacks on a 78 m ring, rotated to face the court so every entrance is
@@ -1324,32 +1324,34 @@ function habStacks(ctx) {
     const floors = 7 + (i % 3);
     const w = 24, d = 22;
 
-    const p = ctx.P(lx, 0, lz);
-    // Face the court: the entrance is local -Z, so the tower's yaw points its
-    // front at the zone centre.
-    const towerYaw = ctx.yawOf(a + Math.PI);
-
-    const { enterable, roofY, footprint } = buildTower(
-      world, B, ctx.group,
-      {
-        x: p.x, z: p.z, yaw: towerYaw,
-        w, d, floors,
-        label: `Hab Stack ${String.fromCharCode(67 + i)}`,
-        accent,
-        body: i % 2 ? 'panelWarm' : 'panel',
-        fit: 'hab',
-      },
-      rng
-    );
-    ctx.enterables.push(enterable);
-    // The zones are outside the collision-soup radius so this is belt and
-    // braces here - but a footprint that is only registered in one of the two
-    // places a tower can be built is the kind of asymmetry that bites later.
-    world._selfCollided.push(footprint);
+    /* Face the court: the entrance is tower-local -Z, so the tower's yaw is
+     * the heading it stands on, NOT that heading reversed.
+     *
+     * The comment here has always said "front at the zone centre" and the code
+     * under it said `yawOf(a + Math.PI)`, which does the opposite.
+     * `GeoBatch.localAt` and `buildTower`'s own `P` both send tower-local +Z to
+     * the heading they are given, so `a + PI` - the direction from the stack
+     * back to the middle of the court - points the tower's BACK at the court
+     * and its door at the rim. Measured: with `a + PI` the door of stack C
+     * lands 89.5 m from the zone centre while the building itself stands at
+     * 78; with `a` it lands at 66.5, which is what the comment meant.
+     *
+     * The zone already contained the evidence. The entrance practical below is
+     * placed at `lx - sin(a) * 14`, fourteen metres INWARD of the stack - it
+     * has always been lighting the side the door was supposed to be on, and
+     * for five towers it has been lighting a blank wall.
+     *
+     * `buildZoneTower` now owns the frame, the `_selfCollided` registration,
+     * the rooftop and the minimap footprint, so the other three zones get the
+     * same building without the same four things to remember.
+     */
+    const { roofY } = buildZoneTower(ctx, {
+      bearing: a, r: RING, w, d, floors,
+      label: `Hab Stack ${String.fromCharCode(67 + i)}`,
+      body: i % 2 ? 'panelWarm' : 'panel',
+      fit: 'hab',
+    });
     stacks.push({ lx, lz, a, floors, roofY, w, d });
-
-    ctx.roof(lx, roofY, lz);
-    ctx.mmRect(lx, lz, w, d, a + Math.PI, 'rgba(70,120,110,0.6)', 'rgba(140,255,215,0.55)');
 
     // A practical at the entrance, so the door is legible from across the court.
     const lp = ctx.P(lx - Math.sin(a) * 14, 6, lz - Math.cos(a) * 14);

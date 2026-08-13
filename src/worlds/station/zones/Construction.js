@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { boxGeo, cylGeo, uvScale, instanced, seamLift, CoplanarLevels } from '../StationKit.js';
+import { buildZoneTower } from '../Tower.js';
 
 /**
  * RING 8 EXPANSION - the half-built zone on avenue 240.
@@ -868,6 +869,68 @@ export function buildConstruction(ctx) {
   }
   ctx.box('crate', 3.2, 2.0, 3.2, T3.cx - 11, 1.0, T3.cz + T3.d / 2 + 1.4);
   ctx.solid(T3.cx - 11, 1.0, T3.cz + T3.d / 2 + 1.4, 1.7, 1.0, 1.7);
+
+  /* ---------------------------------------------------------------- */
+  /* Block D - the one that is finished                                */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * The fourth block, handed over, with the lights on and the doors unlocked.
+   *
+   * ── Why a finished building belongs on a building site ────────────────
+   * The zone's premise, stated at the top of this file, is three towers at
+   * three stages of the same build: a bare frame, a half-clad one, and one
+   * topping out. What that arrangement has never had is the END of the
+   * sequence, and it is the only stage a player can do anything with - you
+   * cannot go inside a frame. The brief asks for an enterable building in each
+   * of the four outer zones and this had none; a completed block on the far
+   * side of the haul loop reads as the phase before these three, which is
+   * exactly the story the site is telling.
+   *
+   * ── Bearing 118 degrees at 62 m, and what it clears ───────────────────
+   *   HEIGHT. Outside the hoarding (r > 108) is the arcade, whose plate is at
+   *   30 m; `buildTower` clamps to seven storeys, 29.7 m to the parapet. So it
+   *   has to be inside the hoarding, where the dome is 116 m up - 86 m clear.
+   *
+   *   THE HAUL LOOP. Radially the shell plus its entrance steps span 45.7 to
+   *   78.3 m. The loop's inner kerb is at 81 (LOOP_R 88 less half of ROAD_W
+   *   14), so the road is untouched with 2.7 m to spare.
+   *
+   *   THE CRANE'S LOAD. `CRANE.aim` swings the trolley out to plan (56.3,
+   *   -4.8) with a bundle of beams hanging at about 25 m - which is inside the
+   *   height of a seven-storey block, so the plan clearance is the whole of
+   *   the answer. In this tower's own frame the load sits 22.2 m off its local
+   *   X centreline against a 12 m half-width: 10.2 m clear, and the crane does
+   *   not have to be re-aimed.
+   *
+   *   DRAINAGE TRENCH A. Its nearest point to the shell is (38.7, -41.9),
+   *   which is 18.8 m off the local X centreline - 6.8 m outside the shell and
+   *   4.9 m clear of the trench's own edge guards.
+   *
+   *   THE OTHER SET PIECES. T2 at (50, 30) is 26 m clear, weld station E at
+   *   (58, 14) 25 m, the crane base 24 m, T3 and the excavation both past 45 m.
+   *   Nothing stands on the main-gate-to-excavation sightline, which the
+   *   comment beside `DIG` calls the frame the whole zone is composed on.
+   */
+  const BLOCK_D = { bearing: 118 * Math.PI / 180, r: 62, w: 24, d: 22, floors: 7 };
+  {
+    const { lx, lz } = buildZoneTower(ctx, {
+      bearing: BLOCK_D.bearing, r: BLOCK_D.r,
+      w: BLOCK_D.w, d: BLOCK_D.d, floors: BLOCK_D.floors,
+      label: 'Block D // Handed Over',
+      body: 'panel',
+      fit: 'hab',
+    });
+    /* Claimed so the laydown and arcade dressing keep off it. `claim` is a
+     * circle, so the radius is the shell's half-diagonal plus the reach of the
+     * entrance steps rather than either half-extent. */
+    claim(lx, lz, Math.hypot(BLOCK_D.w / 2, BLOCK_D.d / 2 + 3.4) + 2);
+
+    const light = new THREE.PointLight(0xffd2a0, 1700, 50, 2);
+    light.position.copy(ctx.P(lx - Math.sin(BLOCK_D.bearing) * 15, 6, lz - Math.cos(BLOCK_D.bearing) * 15));
+    light.castShadow = false;
+    ctx.group.add(light);
+  }
 
   /* ---------------------------------------------------------------- */
   /* The tower crane                                                   */

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { boxGeo, cylGeo, uvScale, instanced } from './StationKit.js';
+import { boxGeo, cylGeo, uvScale, instanced, GeoBatch } from './StationKit.js';
+import { CENTRE } from '../lod/DistanceLod.js';
 
 /**
  * A tall building you can actually go inside.
@@ -64,6 +65,21 @@ export const WALL_T = 0.4;
  */
 const PLINTH = 0.9;
 
+/**
+ * How far from a tower's centre its interior stops being drawn.
+ *
+ * See the note beside the `DistanceLod` registration at the end of
+ * `buildTower` for why this is measured to the centre and why 34 is the number.
+ * Exported so a test can assert it clears the entrance steps rather than
+ * trusting a comment about them.
+ */
+export const INTERIOR_HIDE_R = 34;
+
+/** Local X/Z of the entrance step run's outer edge, from the tower centre. */
+export function entranceReach(d, stepRun = 3.4) {
+  return d / 2 + stepRun;
+}
+
 /** Thickness of a drawn escalator tread. */
 export const TREAD_T = 0.12;
 /**
@@ -101,6 +117,181 @@ export const TREAD_MOUNT = 0.06;
 export function escalatorDeckDrop(pitch, treadThickness = TREAD_T) {
   return TREAD_MOUNT + (treadThickness / 2) / Math.cos(Math.abs(pitch));
 }
+
+/* ------------------------------------------------------------------ */
+/* Floor numbers                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Why the storey numbers are drawn as SEGMENTS and not as a texture cell.
+ *
+ * Every other piece of lettering on this station comes out of the signage
+ * atlas, and the obvious thing to do here was to add a row of numerals to it
+ * and hang a quad at every landing. Two facts rule that out.
+ *
+ *   1. The sheet has no room. `SIGN_COLS * SIGN_ROWS` is 4 x 11 = 44 cells and
+ *      `SIGN_ROLE` reserves all 44 by name, right up to `surveyEnquiries: 43`.
+ *      The note beside `SIGN_ROWS` in StationKit.js is explicit that the two
+ *      cells it calls spare are "the cost of a row, not slack anybody may
+ *      borrow, because every cell here is reserved BY ROLE". Numbers 1 to 9
+ *      would need nine cells, so it would be three more rows at ~4.5 MB each -
+ *      13 MB of texture for eighteen glyphs.
+ *   2. A new material is a new draw call in every batch that uses it. The
+ *      profile this work has to protect says cost tracks draw calls at
+ *      r = 0.939, and there are eleven towers over five separately flushed
+ *      groups, so an atlas would put five to eleven more draws on the frame
+ *      permanently.
+ *
+ * Segments cost neither. They are boxes in `emWhite`, a key every tower's
+ * interior batch already carries for its ceiling strip, so they merge into an
+ * existing bucket and add exactly zero draw calls. A seven-segment glyph is
+ * also the right typography for a lift lobby, which is the one place in the
+ * world where a real building would use it.
+ *
+ * Returned as plain rectangles rather than drawn, so the layout can be checked
+ * under Node - `buildTower` needs a world, its materials and its physics and
+ * cannot be. Same arrangement as `escalatorDeckDrop` and `stringCourseRuns`.
+ */
+
+/**
+ * Which of the seven segments each digit lights.
+ *
+ * Named by the standard convention: `a` top, `b` upper right, `c` lower right,
+ * `d` bottom, `e` lower left, `f` upper left, `g` middle.
+ */
+export const SEVEN_SEGMENT = Object.freeze({
+  0: 'abcdef',
+  1: 'bc',
+  2: 'abdeg',
+  3: 'abcdg',
+  4: 'bcfg',
+  5: 'acdfg',
+  6: 'acdefg',
+  7: 'abc',
+  8: 'abcdefg',
+  9: 'abcdfg',
+});
+
+/** Glyph cell: width and height as multiples of the requested cap height. */
+export const GLYPH_W = 0.58;
+/** Stroke width, likewise. Thin enough to read as signage, fat enough to bloom. */
+export const GLYPH_STROKE = 0.15;
+/** Gap between glyphs, as a multiple of cap height. */
+export const GLYPH_GAP = 0.16;
+
+/**
+ * The lit bars of one digit, in a cell whose CENTRE is (0, 0).
+ *
+ * @param {string|number} digit  a single character, '0'-'9'
+ * @param {number} h  cap height in metres
+ * @returns {Array<{u:number, v:number, w:number, h:number}>} centres and FULL
+ *   sizes, `u` across the glyph and `v` up it.
+ */
+export function digitBars(digit, h = 1) {
+  const on = SEVEN_SEGMENT[String(digit)];
+  if (!on) throw new Error(`digitBars: "${digit}" is not a digit`);
+  const W = GLYPH_W * h;
+  const t = GLYPH_STROKE * h;
+  const barW = W - t;
+  /* A vertical arm runs from the middle bar's top edge to the top bar's bottom
+   * edge, MINUS a gap at each end.
+   *
+   * The gap is the whole point. Without it a glyph's own bars butt face to
+   * face, which is the coincident-surface pair the depth buffer cannot order -
+   * 323 of them were removed from this world in the change immediately before
+   * this one, and a seven-segment digit is the easiest place in the world to
+   * put them back. `station-floor-numbers.test.mjs` asserts every pair of bars
+   * in every digit is separated on at least one axis by a real distance.
+   *
+   * 1.2% of cap height is 7 mm at the size these are drawn, which is under the
+   * bevel a real illuminated sign would have anyway. */
+  const gp = 0.012 * h;
+  const armH = h / 2 - t * 1.5 - gp * 2;
+  const armV = h / 4 - t / 4;
+  const out = [];
+  const put = (seg, u, v, w, hh) => { if (on.includes(seg)) out.push({ u, v, w, h: hh }); };
+  put('a', 0, (h - t) / 2, barW, t);
+  put('g', 0, 0, barW, t);
+  put('d', 0, -(h - t) / 2, barW, t);
+  put('f', -(W - t) / 2, armV, t, armH);
+  put('b', (W - t) / 2, armV, t, armH);
+  put('e', -(W - t) / 2, -armV, t, armH);
+  put('c', (W - t) / 2, -armV, t, armH);
+  return out;
+}
+
+/**
+ * A whole number laid out and centred on (0, 0), plus the plate it sits on.
+ *
+ * The plate is returned rather than assumed because the bars are emissive and
+ * an emissive glyph with nothing behind it blooms into the wall it is bolted
+ * to - the same reason `paintSignAtlas` puts an opaque backing bar under every
+ * line of text it draws.
+ *
+ * @param {number} n  storey number; 1-based, matching the lift prompt's
+ *   "floor N of M" so a player reading the sign and reading the prompt is
+ *   reading the same number.
+ * @param {number} h  cap height in metres
+ * @returns {{bars: Array<{u:number,v:number,w:number,h:number}>,
+ *            plate: {u:number, v:number, w:number, h:number}}}
+ */
+export function floorNumeral(n, h = 0.62) {
+  const text = String(Math.max(0, Math.round(n)));
+  const W = GLYPH_W * h;
+  const gap = GLYPH_GAP * h;
+  const total = text.length * W + (text.length - 1) * gap;
+  const bars = [];
+  for (let i = 0; i < text.length; i++) {
+    const u0 = -total / 2 + W / 2 + i * (W + gap);
+    for (const b of digitBars(text[i], h)) bars.push({ ...b, u: b.u + u0 });
+  }
+
+  /* Centred on the INK, not on the cells.
+   *
+   * Eight of the ten digits are symmetric about their cell, so for those the
+   * two are the same thing. `1` is not: it lights only `b` and `c`, both hard
+   * against the right-hand edge, and a lift-lobby plate reading "1" with the
+   * stroke jammed against the right frame does not read as considered
+   * typography, it reads as a bug. A real seven-segment display leaves it
+   * there because its cells are a fixed grid shared with every other digit;
+   * a sign that says one number has no such constraint.
+   *
+   * The plate is then sized around the ink for the same reason - so a floor 1
+   * plaque and a floor 8 plaque are both a number in the middle of a plate. */
+  let u0 = Infinity, u1 = -Infinity;
+  for (const b of bars) { u0 = Math.min(u0, b.u - b.w / 2); u1 = Math.max(u1, b.u + b.w / 2); }
+  const shift = -(u0 + u1) / 2;
+  for (const b of bars) b.u += shift;
+  const ink = u1 - u0;
+
+  const pad = h * 0.42;
+  return { bars, plate: { u: 0, v: 0, w: Math.max(ink, W) + pad * 2, h: h + pad * 1.4 } };
+}
+
+/**
+ * How the three layers of a floor sign are stacked off the wall it hangs on.
+ *
+ * Three surfaces, each parallel to the last, is exactly the arrangement that
+ * produced 323 coincident pairs elsewhere in this world, so the two gaps are
+ * named, exported and asserted in `station-coplanar-floors.test.mjs` rather
+ * than left as two magic numbers inside a closure.
+ *
+ * `PLATE_GAP` is 30 mm because the wall behind these is drawn by four different
+ * things depending on which sign it is - a shell wall, a lift shaft wall, a
+ * door surround - and 30 mm clears the thickest of their own surface reliefs.
+ * `BAR_GAP` only has to beat depth precision at reading distance, which two
+ * metres of it does at one centimetre with a great deal to spare.
+ */
+export const SIGN_LAYERS = Object.freeze({
+  /** Backing plate thickness. */
+  PLATE_T: 0.06,
+  /** Gap between the wall face and the back of the plate. */
+  PLATE_GAP: 0.03,
+  /** Segment bar thickness. */
+  BAR_T: 0.05,
+  /** Gap between the front of the plate and the back of a bar. */
+  BAR_GAP: 0.01,
+});
 
 /** Depth of the string course band. */
 export const STRING_COURSE_T = 0.22;
@@ -222,6 +413,87 @@ export function buildTower(world, B, g, spec, rng) {
   };
 
   /* ---------------------------------------------------------------- */
+  /* The interior batch, and why there is a second one                 */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Everything a player can only see from INSIDE goes into `I`, not `B`.
+   *
+   * `B` is the caller's batch - the habitat block's, or a zone's - and it is
+   * merged once for the whole district, so a tower's fit-out ends up inside a
+   * mesh whose bounding sphere is a hundred metres across. That mesh is
+   * submitted, depth-prepassed and shaded whenever any part of the district is
+   * on screen, which from the plaza is always. Eleven towers' worth of bunks,
+   * escalator trusses, balustrades and ceiling services were being drawn from
+   * places you cannot see into any of them.
+   *
+   * `I` is flushed separately, per tower, into its own group, and registered
+   * with the world's `DistanceLod` so it stops drawing once the camera is
+   * further away than a player could read it from. That is the only mechanism
+   * here: no swap geometry, no impostor. Past the band there is nothing to see
+   * because the shell is opaque.
+   *
+   * WHAT STAYS IN `B`, and why it is not simply "everything indoors":
+   *
+   *   floor slabs        the storey lines are what you read through the window
+   *                      band from the avenue. Hiding them makes a lit shell
+   *                      with no floors in it, and the transition is visible
+   *                      from thirty metres away.
+   *   window bands,      exterior by definition.
+   *   string course,
+   *   shell, plinth,
+   *   canopy, steps
+   *   roof + parapet     seen from every other tower and from the walkway loop.
+   *
+   * Colliders are NOT split. `solid()` still registers everything, so what the
+   * capsule meets is identical whether the interior is drawn or not - a player
+   * walking in through a door never falls through a floor that has not faded
+   * up yet, because the floor was never the thing being faded.
+   */
+  const I = new GeoBatch();
+  const ig = new THREE.Group();
+  ig.name = `tower-interior-${Math.round(x)}-${Math.round(z)}`;
+  g.add(ig);
+  const iput = (key, geo, lx, ly, lz, ry = 0, rx = 0, rz = 0) =>
+    I.localAt(key, geo, x, 0, z, yaw, lx, ly, lz, ry, rx, rz);
+
+  /**
+   * A storey number on a wall, as a lit plate with segment glyphs on it.
+   *
+   * `plane` is which way the sign faces: `'-x'`, `'+x'`, `'-z'` or `'+z'` in
+   * the tower's own frame. The plate is inset from the surface it is bolted to
+   * and the glyphs stand proud of the plate, both by a centimetre or more, so
+   * no face of this assembly is coplanar with any other - the defect a whole
+   * session has just gone into removing.
+   */
+  const floorSign = (n, plane, lx, ly, lz, capH = 0.6) => {
+    const { bars, plate } = floorNumeral(n, capH);
+    const { PLATE_T, PLATE_GAP, BAR_T, BAR_GAP } = SIGN_LAYERS;
+    const nx = plane === '-x' ? -1 : plane === '+x' ? 1 : 0;
+    const nz = plane === '-z' ? -1 : plane === '+z' ? 1 : 0;
+    const pOff = PLATE_GAP + PLATE_T / 2;
+    const bOff = PLATE_GAP + PLATE_T + BAR_GAP + BAR_T / 2;
+    /* `trim`, not `panelDark`.
+     *
+     * The first version backed the glyphs with `panelDark` and the lift shaft
+     * they hang on is also `panelDark`, so the plate vanished into the wall and
+     * the number read as digits floating on a dark field. A polished plaque is
+     * both what a lift lobby actually has and the only key in the palette that
+     * separates from the two surfaces these signs are ever bolted to. */
+    if (nx) {
+      iput('trim', boxGeo(PLATE_T, plate.h, plate.w, 1), lx + nx * pOff, ly, lz);
+      for (const b of bars) {
+        iput('emWhite', boxGeo(BAR_T, b.h, b.w, 1), lx + nx * bOff, ly + b.v, lz - nx * b.u);
+      }
+    } else {
+      iput('trim', boxGeo(plate.w, plate.h, PLATE_T, 1), lx, ly, lz + nz * pOff);
+      for (const b of bars) {
+        iput('emWhite', boxGeo(b.w, b.h, BAR_T, 1), lx + nz * b.u, ly + b.v, lz + nz * bOff);
+      }
+    }
+  };
+
+  /* ---------------------------------------------------------------- */
   /* Shell                                                             */
   /* ---------------------------------------------------------------- */
 
@@ -322,8 +594,8 @@ export function buildTower(world, B, g, spec, rng) {
       }
       // Ceiling services under every slab above the ground floor.
       if (f > 0) {
-        put('trimDark', boxGeo(cw * 0.9, 0.18, 0.3, 1), cx, y - SLAB_T - 0.2, cz);
-        put('emWhite', boxGeo(cw * 0.8, 0.08, 0.16, 1), cx, y - SLAB_T - 0.32, cz);
+        iput('trimDark', boxGeo(cw * 0.9, 0.18, 0.3, 1), cx, y - SLAB_T - 0.2, cz);
+        iput('emWhite', boxGeo(cw * 0.8, 0.08, 0.16, 1), cx, y - SLAB_T - 0.32, cz);
       }
     }
 
@@ -351,10 +623,37 @@ export function buildTower(world, B, g, spec, rng) {
      * The open edge is not unguarded - the flight's own balustrades run up both
      * sides of it, which is exactly how a real escalator opening is protected.
      */
-    railRect(put, solid, WELL_X0, WELL_X1, WELL_Z0, WELL_Z1, y, accent, {
+    railRect(iput, solid, WELL_X0, WELL_X1, WELL_Z0, WELL_Z1, y, accent, {
       openZ0: f % 2 === 0,
       openZ1: f % 2 === 1,
     });
+
+    /* Storey numbers.
+     *
+     * Two per floor, because there are two ways up and a sign you cannot see
+     * from the one you took is not wayfinding. One faces whoever steps out of
+     * the lift; the other faces whoever rides an escalator up to this plate.
+     *
+     * `f + 1`, not `f`. `Interiors.update` prompts "floor N of M" with
+     * `stopIndex + 1`, so a ground floor labelled 0 would contradict the
+     * prompt the player reads with their hand on the same call plate.
+     *
+     * WHICH WALL the escalator sign goes on is decided by the same parity that
+     * decides which end of the well is open, and for the same reason: a rider
+     * arriving on an EVEN floor has come up lane B and runs out toward -Z, so
+     * they are looking at the front wall; on an ODD floor they came up lane A
+     * toward +Z and are looking at the back one. Putting both on one wall
+     * would leave half the arrivals reading the sign over their shoulder.
+     */
+    const even = f % 2 === 0;
+    floorSign(f + 1, '-x', SHAFT_X - SHAFT_HALF - 0.2, y + 1.95, SHAFT_Z + SHAFT_HALF - 0.55);
+    floorSign(
+      f + 1,
+      even ? '+z' : '-z',
+      even ? LANE_B : LANE_A,
+      y + 2.35,
+      even ? -iz : iz
+    );
 
     // Window band on all four faces.
     const ly = y + FLOOR_H * 0.55;
@@ -419,12 +718,12 @@ export function buildTower(world, B, g, spec, rng) {
     const dcy = cy - deckDrop;      // the same datum at the flight's middle
 
     // Truss, balustrades and handrails.
-    put('panelDark', boxGeo(LANE_HALF * 2 + 0.5, 0.7, len, 3), lane, dcy - 0.55, cz, 0, pitch);
-    put('grate', boxGeo(LANE_HALF * 2, 0.14, len, 2), lane, dcy - 0.05, cz, 0, pitch);
+    iput('panelDark', boxGeo(LANE_HALF * 2 + 0.5, 0.7, len, 3), lane, dcy - 0.55, cz, 0, pitch);
+    iput('grate', boxGeo(LANE_HALF * 2, 0.14, len, 2), lane, dcy - 0.05, cz, 0, pitch);
     for (const s of [-1, 1]) {
-      put('glassWindow', new THREE.PlaneGeometry(len, 1.05), lane + s * (LANE_HALF + 0.06), dcy + 0.55, cz, s > 0 ? -Math.PI / 2 : Math.PI / 2, 0, pitch);
-      put('trimDark', boxGeo(0.22, 0.22, len, 1), lane + s * (LANE_HALF + 0.06), dcy + 1.12, cz, 0, pitch);
-      put(accent, boxGeo(0.1, 0.08, len, 1), lane + s * (LANE_HALF + 0.06), dcy + 1.24, cz, 0, pitch);
+      iput('glassWindow', new THREE.PlaneGeometry(len, 1.05), lane + s * (LANE_HALF + 0.06), dcy + 0.55, cz, s > 0 ? -Math.PI / 2 : Math.PI / 2, 0, pitch);
+      iput('trimDark', boxGeo(0.22, 0.22, len, 1), lane + s * (LANE_HALF + 0.06), dcy + 1.12, cz, 0, pitch);
+      iput(accent, boxGeo(0.1, 0.08, len, 1), lane + s * (LANE_HALF + 0.06), dcy + 1.24, cz, 0, pitch);
     }
 
     /* Treads. Instanced boxes that slide along the slope and wrap, rather than
@@ -484,7 +783,7 @@ export function buildTower(world, B, g, spec, rng) {
     const lz0 = z1, lz1 = dir * WELL_Z1;
     const lcz = (lz0 + lz1) / 2, lcd = Math.abs(lz1 - lz0);
     if (lcd > 0.2) {
-      put('grate', boxGeo(LANE_HALF * 2, SLAB_T, lcd, 2), lane, y1 - SLAB_T / 2, lcz);
+      iput('grate', boxGeo(LANE_HALF * 2, SLAB_T, lcd, 2), lane, y1 - SLAB_T / 2, lcz);
       solid(lane, y1 - SLAB_T / 2, lcz, LANE_HALF, SLAB_T / 2, lcd / 2);
     }
     /* Comb plates top and bottom.
@@ -503,7 +802,7 @@ export function buildTower(world, B, g, spec, rng) {
      */
     const COMB_T = 0.03;
     for (const [pz, py] of [[z0, y0], [z1, y1]]) {
-      put('hazard', boxGeo(LANE_HALF * 2, COMB_T, 0.9, 1), lane, py + COMB_T / 2, pz);
+      iput('hazard', boxGeo(LANE_HALF * 2, COMB_T, 0.9, 1), lane, py + COMB_T / 2, pz);
     }
   }
   if (treadEntries.length) {
@@ -523,6 +822,12 @@ export function buildTower(world, B, g, spec, rng) {
        * and right for a game: a storey in under seven seconds, which is about
        * as long as the ride stays interesting. */
       (world._escalators ??= []).push({ mesh: treads, runs: escalators, speed: 1.15 });
+      /* The treads hide with the rest of the interior. `_runEscalators` keeps
+       * writing their matrices while they are hidden - which costs a little and
+       * is the right trade, because a bank that stopped being animated would
+       * snap to a new phase the moment it came back and every rider standing on
+       * the ramp collider would see the steps jump under their feet. */
+      world._lod?.add(treads, { hideBeyond: INTERIOR_HIDE_R, measure: CENTRE });
     }
   }
 
@@ -539,15 +844,15 @@ export function buildTower(world, B, g, spec, rng) {
     [SHAFT_X + SHAFT_HALF + 0.15, SHAFT_Z, 0.15, SHAFT_HALF + 0.3],
     [SHAFT_X, SHAFT_Z + SHAFT_HALF + 0.15, SHAFT_HALF + 0.3, 0.15],
   ]) {
-    put('panelDark', boxGeo(hx * 2, roofY, hz * 2, 3), lx, roofY / 2, lz);
+    iput('panelDark', boxGeo(hx * 2, roofY, hz * 2, 3), lx, roofY / 2, lz);
     solid(lx, roofY / 2, lz, hx, roofY / 2, hz);
   }
   // Door surround and a call plate at every stop, on the open face.
   for (let f = 0; f < floors; f++) {
     const y = floorY(f);
-    put('trim', boxGeo(0.2, 2.7, SHAFT_HALF * 2 + 0.4, 2), SHAFT_X - SHAFT_HALF - 0.1, y + 1.35, SHAFT_Z);
-    put(accent, boxGeo(0.12, 0.14, SHAFT_HALF * 2, 1), SHAFT_X - SHAFT_HALF - 0.2, y + 2.55, SHAFT_Z);
-    put('emWhite', boxGeo(0.08, 0.3, 0.22, 1), SHAFT_X - SHAFT_HALF - 0.22, y + 1.5, SHAFT_Z - SHAFT_HALF + 0.5);
+    iput('trim', boxGeo(0.2, 2.7, SHAFT_HALF * 2 + 0.4, 2), SHAFT_X - SHAFT_HALF - 0.1, y + 1.35, SHAFT_Z);
+    iput(accent, boxGeo(0.12, 0.14, SHAFT_HALF * 2, 1), SHAFT_X - SHAFT_HALF - 0.2, y + 2.55, SHAFT_Z);
+    iput('emWhite', boxGeo(0.08, 0.3, 0.22, 1), SHAFT_X - SHAFT_HALF - 0.22, y + 1.5, SHAFT_Z - SHAFT_HALF + 0.5);
   }
 
   const plateThick = 0.2;
@@ -639,7 +944,7 @@ export function buildTower(world, B, g, spec, rng) {
   const spots = [];
   for (let f = 0; f < floors; f++) {
     const y = floorY(f) + 0.05;
-    fitFloor(put, solid, { f, floors, y, ix, iz, wellX1: WELL_X1, shaftX: SHAFT_X, shaftHalf: SHAFT_HALF, accent, fit: spec.fit ?? 'hab', rng });
+    fitFloor(iput, solid, { f, floors, y, ix, iz, wellX1: WELL_X1, shaftX: SHAFT_X, shaftHalf: SHAFT_HALF, accent, fit: spec.fit ?? 'hab', rng });
     // One reward per floor, alternating corners so a player has to cross each
     // plate rather than riding the lift and looking down.
     const cx = f % 2 ? ix - 2.4 : WELL_X1 + 2.4;
@@ -669,6 +974,35 @@ export function buildTower(world, B, g, spec, rng) {
     solid(lx, roofY + 0.95, lz, 1.5, 0.95, 1.5);
   }
   put(accent, boxGeo(w - 6, 0.16, 0.3, 1), 0, roofY + 1.5, -(d / 2 - 0.35));
+
+  /* ---------------------------------------------------------------- */
+  /* Flush the interior, and hand it to the distance LOD               */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * `hideBeyond` is measured to the CENTRE of the tower, not to the surface.
+   *
+   * `SURFACE` is the conservative default and the wrong one here. This building
+   * is 24 by 22 by 30 m, so its bounding sphere has a 22 m radius and its
+   * nearest point is underfoot for anybody within 22 m of the shell - the band
+   * would fire almost nowhere, which is a true statement about the sphere and a
+   * useless one about the building. Measured to the centre, the band is a plain
+   * "how far is the player from this tower", which is exactly the question.
+   *
+   * 34 m with the default 6 m hysteresis means the interior is fully drawn from
+   * 28 m out. The door is 11 m from the centre and the entrance steps reach
+   * 14 m, so a player standing at the foot of the steps is 20 m inside the band
+   * with the fit-out already up: the transition happens across the pavement, not
+   * across the threshold. Nothing here is visible from outside 28 m anyway - the
+   * shell is opaque, the glazing is a 0.55-opacity band on each storey, and the
+   * doorway is 3.2 m wide seen through a 6.2 m canopy.
+   */
+  const interiorMeshes = I.flush(ig, M, `tower-int-${Math.round(x)}-${Math.round(z)}`, {
+    cast: false, recv: true, glassWindow: { cast: false, recv: false },
+  });
+  for (const mesh of interiorMeshes) {
+    world._lod?.add(mesh, { hideBeyond: INTERIOR_HIDE_R, measure: CENTRE });
+  }
 
   const enterable = {
     label: spec.label,
@@ -800,4 +1134,77 @@ function fitFloor(put, solid, o) {
   // the ceiling run.
   put('room', boxGeo(2.4, 1.4, 0.06, 1), x1 - 1.6, y + 1.8, iz - 0.5);
   void f; void ix; void rng;
+}
+
+/* ------------------------------------------------------------------ */
+/* Zone landmark towers                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Stand one enterable tower on a zone deck.
+ *
+ * ── Why this wrapper exists ───────────────────────────────────────────────
+ * `Habitation` has been raising five of these by hand since the hab stacks
+ * landed, and its call site carries four things that are not about that zone at
+ * all: the local-to-world frame, the `_selfCollided` registration that stops
+ * `_collisionSoup` walling up the inside of the building, the rooftop
+ * publication the relic placer reads, and the minimap footprint. Three more
+ * zones now want the same building, and copying that block four times is how a
+ * tower ends up in one zone with no `_selfCollided` entry and an interior full
+ * of derived colliders that nobody can walk through.
+ *
+ * ── The frame, and the trap in it ─────────────────────────────────────────
+ * `bearing` is a zone-local HEADING in radians: zero points at the corridor
+ * mouth (local +Z, back toward the hub) and increases toward local +X, which is
+ * the convention `Gym.bear` and `Canteen.at` already use. The tower stands at
+ * `r` metres along that heading and its yaw is the heading ITSELF, not the
+ * heading reversed.
+ *
+ * That last sentence is the trap. `GeoBatch.localAt` and `buildTower`'s own `P`
+ * both send tower-local +Z to the heading they are given, and the entrance is
+ * at tower-local -Z, so a yaw of `bearing` puts the door on the side facing the
+ * zone centre - which is what you want, because the zone centre is where the
+ * player is. `bearing + PI` reads like "turn round and face the middle" and
+ * does the exact opposite; `Habitation` had it that way for every one of its
+ * five stacks, with the entrance lights on the blank back wall.
+ *
+ * @param {import('./ZoneContext.js').ZoneContext} ctx
+ * @param {{ bearing:number, r:number, label:string, floors?:number,
+ *           w?:number, d?:number, fit?:'hab'|'office', body?:string }} spec
+ * @returns {{ enterable:object, roofY:number, height:number, lx:number, lz:number,
+ *             footprint:object }}
+ */
+export function buildZoneTower(ctx, spec) {
+  const { bearing, r } = spec;
+  const w = spec.w ?? 24;
+  const d = spec.d ?? 22;
+  const lx = Math.sin(bearing) * r;
+  const lz = Math.cos(bearing) * r;
+  const p = ctx.P(lx, 0, lz);
+
+  const built = buildTower(
+    ctx.world, ctx.B, ctx.group,
+    {
+      x: p.x, z: p.z, yaw: ctx.yawOf(bearing),
+      w, d,
+      floors: spec.floors ?? 7,
+      label: spec.label,
+      accent: ctx.accent,
+      body: spec.body ?? 'panel',
+      fit: spec.fit ?? 'office',
+    },
+    ctx.rng
+  );
+
+  ctx.enterables.push(built.enterable);
+  /* Without this the derived collision pass fills the building in. See the
+   * note where `buildTower` returns the footprint: a tower authors every
+   * collider it needs, and `_collisionSoup` cannot know which side of a wall
+   * is meant to be hollow. */
+  ctx.world._selfCollided.push(built.footprint);
+  ctx.roof(lx, built.roofY, lz);
+  ctx.mmRect(lx, lz, w, d, bearing, 'rgba(70,120,110,0.6)', 'rgba(150,235,255,0.55)');
+  ctx.contact(lx, lz, Math.max(w, d) + 6);
+
+  return { ...built, lx, lz };
 }

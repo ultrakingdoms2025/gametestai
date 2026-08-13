@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   stringCourseRuns, STRING_COURSE_T, STRING_COURSE_OUT, WALL_T,
+  SIGN_LAYERS,
 } from '../../src/worlds/station/Tower.js';
 import { seamLift, CoplanarLevels } from '../../src/worlds/station/StationKit.js';
 
@@ -178,4 +179,50 @@ test('the ladder is never grown past its budget', () => {
   const used = [];
   for (let i = 0; i < 10; i++) used.push(levels.claim(0, 0, 4, 4));
   assert.ok(Math.max(...used) < 3, `used ${used.join(',')}`);
+});
+
+/* ------------------------------------------------------------------ */
+/* Floor-number signs: three parallel surfaces on one wall             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The new stacked surfaces in this world, and why they get their own case.
+ *
+ * A floor sign is a wall, a backing plate in front of it, and lit segment bars
+ * in front of that: three parallel planes within seven centimetres of each
+ * other, which is precisely the shape of the defect this file exists to guard.
+ * There are two of these on every storey of every enterable tower - 20 towers
+ * at 7 to 9 floors - so getting the stacking wrong would put several hundred
+ * coincident pairs back into a world that has just had 323 taken out.
+ *
+ * The layout is arithmetic and is exported for that reason; `buildTower` itself
+ * needs a world, its materials and its physics and cannot be reached from here.
+ */
+test('a floor sign never puts two surfaces on one plane', () => {
+  const { PLATE_T, PLATE_GAP, BAR_T, BAR_GAP } = SIGN_LAYERS;
+  // Measured outward from the wall face at 0, which is what `floorSign` does.
+  const plateBack = PLATE_GAP;
+  const plateFront = PLATE_GAP + PLATE_T;
+  const barBack = PLATE_GAP + PLATE_T + BAR_GAP;
+  const barFront = barBack + BAR_T;
+  const faces = [0, plateBack, plateFront, barBack, barFront];
+  for (let i = 0; i < faces.length; i++) {
+    for (let j = i + 1; j < faces.length; j++) {
+      assert.ok(
+        Math.abs(faces[i] - faces[j]) > 0.001,
+        `sign faces at ${faces[i]} and ${faces[j]} are within a millimetre`
+      );
+    }
+  }
+});
+
+test('the sign layers are ordered, so no layer is buried in the one behind it', () => {
+  const { PLATE_T, PLATE_GAP, BAR_T, BAR_GAP } = SIGN_LAYERS;
+  assert.ok(PLATE_GAP > 0, 'the plate is flush with the wall');
+  assert.ok(BAR_GAP > 0, 'the bars are flush with the plate');
+  assert.ok(PLATE_T > 0 && BAR_T > 0);
+  // A bar standing proud of its plate by less than the plate is thick still
+  // reads as inlaid rather than as a lamp; that is a look, not a defect, so it
+  // is asserted only that the whole assembly is shallow enough to be signage.
+  assert.ok(PLATE_GAP + PLATE_T + BAR_GAP + BAR_T < 0.2, 'a floor sign is not a bollard');
 });

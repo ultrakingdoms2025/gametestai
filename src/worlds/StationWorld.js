@@ -31,6 +31,7 @@ import {
 import { StationActors } from './station/StationActors.js';
 import { buildOuterRing, LINK_MOUTH_HALF_DEG } from './station/OuterRing.js';
 import { buildTower } from './station/Tower.js';
+import { DistanceLod } from './lod/DistanceLod.js';
 
 /**
  * AETHER NEXUS - "Aether Nexus Station", the entry world.
@@ -1142,6 +1143,31 @@ const SIGN_ROLE = {
   surveyEnquiries: 43,
 };
 
+/* ------------------------------------------------------------------ */
+/* The commercial strip's open units                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Which of the twelve shopfronts you can actually walk into, as `side:index`.
+ *
+ * `side` is -1 or 1 (the two banks of avenue 0) and `index` is 0..5 outward
+ * from the plaza, matching `_buildCommercial`'s own loop.
+ *
+ * Three, not twelve. Each open unit costs a door, eight colliders and an
+ * interior fit-out, and three DIFFERENT rooms beat twelve copies of one:
+ * twelve identical counters behind twelve identical doors is a corridor of
+ * clones, not twelve places worth going into. `-1:0` and `1:1` face each other
+ * across the carriageway, so a player arriving from the plaza has a door
+ * whichever way they turn; `-1:3` keeps the outer half of the strip from being
+ * uniformly shut.
+ */
+const OPEN_SHOPS = new Set(['-1:0', '1:1', '-1:3']);
+
+/** Half-width of a shop doorway. 2.2 m clear takes two leaves, not one. */
+const SHOP_DOOR_HW = 1.1;
+/** Head height of a shop doorway, under the 4.6 m glazing band. */
+const SHOP_DOOR_H = 2.9;
+
 /** Atlas of holographic signage - one texture, one draw call. */
 function paintSignAtlas(a, W, H, rng) {
   const cells = SIGN_COLS * SIGN_ROWS;
@@ -1776,6 +1802,22 @@ export class StationWorld extends World {
      * `buildTower` publishes them.
      */
     this._selfCollided = [];
+    /**
+     * Distance LOD, used for exactly one thing: tower interiors.
+     *
+     * The station had no LOD of any kind - `grep DistanceLod` found Medieval
+     * and the race circuits and nothing here - and for the outdoor geometry
+     * that is the right answer, because the deck is one continuous space and
+     * everything on it is meant to be legible from across it.
+     *
+     * Building interiors are the exception, and the only one. A tower's
+     * fit-out, escalator machinery, balustrades, ceiling services and storey
+     * numbers are visible from inside the shell and from nowhere else, and
+     * before this they were merged into the district batch and drawn whenever
+     * any part of the district was on screen. See the note at the end of
+     * `station/Tower.js#buildTower`; this is where the per-frame update lives.
+     */
+    this._lod = new DistanceLod();
   }
 
   /* ---------------------------------------------------------------- */
@@ -6320,6 +6362,154 @@ export class StationWorld extends World {
     return h;
   }
 
+  /**
+   * Turn one shopfront into a room you can walk into.
+   *
+   * ── What was wrong ────────────────────────────────────────────────────
+   * `_buildCommercial` has always drawn the inside of every unit: a floor
+   * slab, a lit back card, a counter with a worktop, shelving and four stools,
+   * behind a full-width sheet of `glassWindow`. And then it registered the
+   * whole unit - all 13.5 by 13 by 8.5 m of it - as a single `_solidRot` box.
+   * So there was a furnished, lit shop, plainly visible from the pavement,
+   * with no door and a wall of glass you could not get past. It is the same
+   * defect `station/Tower.js` was written to fix, one storey high.
+   *
+   * ── What this does instead ────────────────────────────────────────────
+   * The mass collider is replaced by the walls it was standing in for, with a
+   * genuine gap in the front, and a pair of hinged leaves in that gap. The
+   * glazing is NOT collided - `M.glassWindow` is transparent and
+   * `_collisionSoup` rejects transparent materials by design, see the note on
+   * that function - so the panes either side of the door need colliders of
+   * their own, or the shop has three ways in and only one of them is a door.
+   *
+   * ── Why this door is two leaves and the crew pods' is one ─────────────
+   * `_buildEnterableRooms` builds a 1.9 m hatch whose single leaf swings clear
+   * of the opening. A 2.2 m shop door with one leaf would sweep a 2.2 m arc
+   * across the pavement and through the awning stanchion at `width/2 + 0.4`;
+   * two 1.1 m leaves fold back against their own jambs. Both produce the same
+   * descriptor and are driven by the same `Interiors` prompt on the same key -
+   * this is a different door, not a second idiom.
+   *
+   * @param {THREE.Group} g   group the animated leaves are parented to
+   * @param {import('./station/StationKit.js').GeoBatch} B
+   */
+  _openShop(g, B, o) {
+    const M = this.mat;
+    const { p, yaw, width, depth, height, index } = o;
+    const wallT = 0.5;
+    const L = (lx, ly, lz) => this._localPoint(p.x, p.z, yaw, lx, ly, lz);
+    const solidLocal = (lx, cy, lz, hx, hy, hz, opts) =>
+      this.track(this.physics.addRotatedBox(L(lx, cy, lz), new THREE.Vector3(hx, hy, hz), yaw, opts));
+
+    /* --- The shell, wall by wall ------------------------------------- */
+    solidLocal(0, height / 2, depth / 2, width / 2 + 0.4, height / 2, wallT / 2 + 0.1);          // back
+    for (const sx of [-1, 1]) {
+      solidLocal(sx * (width / 2), height / 2, 0, wallT / 2 + 0.1, height / 2, depth / 2 + 0.4); // sides
+    }
+    // The roof slab, and the floor the fit-out stands on.
+    solidLocal(0, height + 0.45, 0, width / 2 + 0.6, 0.45, depth / 2 + 0.6);
+    solidLocal(0, 0.1, 0, width / 2 - 0.5, 0.12, depth / 2 - 0.5);
+
+    /* --- The front: two glazed bays, a lintel, and a hole ------------ */
+    const paneW = (width - SHOP_DOOR_HW * 2) / 2;
+    for (const sx of [-1, 1]) {
+      solidLocal(sx * (SHOP_DOOR_HW + paneW / 2), height / 2, -depth / 2, paneW / 2, height / 2, wallT / 2 + 0.1);
+    }
+    solidLocal(0, SHOP_DOOR_H + (height - SHOP_DOOR_H) / 2, -depth / 2,
+      SHOP_DOOR_HW + 0.2, (height - SHOP_DOOR_H) / 2, wallT / 2 + 0.1);
+
+    /* --- Fit-out that has to stop the capsule ------------------------ */
+    solidLocal(0, 0.72, -1.4, (width - 4) / 2, 0.66, 0.5);                    // counter
+    solidLocal(0, 1.5, depth / 2 - 1.1, (width - 3) / 2, 1.3, 0.35);          // shelving
+
+    /* --- The door ----------------------------------------------------- */
+    const doorZ = -depth / 2 - 0.12;
+    const leaves = [];
+    for (const sx of [-1, 1]) {
+      const pivot = new THREE.Group();
+      pivot.position.copy(L(sx * SHOP_DOOR_HW, (SHOP_DOOR_H - 0.1) / 2 + 0.05, doorZ));
+      pivot.rotation.y = yaw;
+      const leafGeo = boxGeo(SHOP_DOOR_HW - 0.03, SHOP_DOOR_H - 0.12, 0.1, 1.2);
+      leafGeo.translate((-sx * (SHOP_DOOR_HW - 0.03)) / 2, 0, 0);
+      const leaf = new THREE.Mesh(leafGeo, M.panelDark);
+      leaf.castShadow = leaf.receiveShadow = true;
+      pivot.add(leaf);
+      const bar = new THREE.Mesh(boxGeo((SHOP_DOOR_HW - 0.03) * 0.72, 0.09, 0.14, 1), M.emAmber);
+      bar.position.set((-sx * (SHOP_DOOR_HW - 0.03)) / 2, 0.15, -0.02);
+      pivot.add(bar);
+      g.add(pivot);
+      leaves.push({ pivot, closed: yaw, open: yaw + sx * Math.PI * 0.52 });
+    }
+    const collider = this.track(
+      this.physics.addRotatedBox(
+        L(0, SHOP_DOOR_H / 2, -depth / 2),
+        new THREE.Vector3(SHOP_DOOR_HW, SHOP_DOOR_H / 2, 0.14),
+        yaw,
+        { solid: true }
+      )
+    );
+
+    /* --- Dressing that makes an open unit read as open ---------------- */
+    B.localAt('emAmber', boxGeo(SHOP_DOOR_HW * 2 + 0.6, 0.1, 0.18, 1), p.x, 0, p.z, yaw, 0, SHOP_DOOR_H + 0.28, -depth / 2 - 0.24);
+    B.localAt('grate', boxGeo(SHOP_DOOR_HW * 2 + 1.4, 0.06, 1.6, 1.4), p.x, 0, p.z, yaw, 0, 0.23, -depth / 2 + 0.9);
+    for (const sx of [-1, 1]) {
+      B.localAt('shell', boxGeo(1.5, 1.9, 0.9, 1.4), p.x, 0, p.z, yaw, sx * (width / 2 - 1.4), 1.15, depth / 2 - 2.4);
+      solidLocal(sx * (width / 2 - 1.4), 1.15, depth / 2 - 2.4, 0.78, 0.95, 0.48);
+      B.localAt('emCyan', boxGeo(1.1, 0.07, 0.1, 1), p.x, 0, p.z, yaw, sx * (width / 2 - 1.4), 2.24, depth / 2 - 2.9);
+    }
+
+    // The four stools at the counter, which the derived pass will no longer
+    // collide once this unit is in `_selfCollided` (see below).
+    for (let s = 0; s < 4; s++) solidLocal(-3.6 + s * 2.4, 0.62, -3.0, 0.3, 0.62, 0.3);
+
+    /* Keep the dressing pass out of the doorway. `_insideStationEnterableFootprint`
+     * is what the two prop scatters at the end of the build consult; without an
+     * entry here a bollard or a planter can be dropped on the threshold. */
+    this._enterableRoomFootprints.push({
+      x: p.x, z: p.z, yaw, hw: width / 2 + 0.8, hd: depth / 2 + 0.8,
+    });
+
+    /* ── The door welds itself shut without this ─────────────────────────
+     *
+     * `_collisionSoup` collides everything DRAWN that is opaque, and the two
+     * door leaves are drawn meshes standing in the doorway in their CLOSED
+     * position at build time. So `_solidifyStructure` baked a static triangle
+     * collider around the shut door, and opening it - which only clears the
+     * one collider this function registers - left that baked plug behind. The
+     * capsule stopped 3 cm short of the doorway whether the door was open or
+     * shut, which is exactly what the measurement showed: `closedStopsAt` and
+     * `openReaches` came back identical to the centimetre on all three units.
+     *
+     * `buildTower` has always published a footprint for this reason and says
+     * so at its `return`: "a tower authors every collider it needs, and it has
+     * to, because the derived pass cannot know which side of a wall is meant
+     * to be hollow". Same statement, one storey high. Everything the derived
+     * pass would have collided in here is authored above instead - shell,
+     * floor, roof, front bays, lintel, counter, shelving, units and stools.
+     *
+     * `top` is the roof slab's own top face, so the roof kit and the aerials
+     * standing on it are still collided from their own triangles. */
+    this._selfCollided.push({
+      x: p.x, z: p.z, yaw,
+      hw: width / 2 + 0.5, hd: depth / 2 + 0.5, top: height + 0.9,
+    });
+
+    this.enterables.push({
+      label: SIGNS[SIGN_ROLE.shopFirst + (index % 12)][0],
+      origin: new THREE.Vector3(p.x, 0, p.z),
+      doors: [{
+        id: `shop_door_${index}`,
+        leaves,
+        collider,
+        position: L(0, 1.4, -depth / 2 - 0.6),
+        open: false,
+        anim: 0,
+      }],
+      collectibleSpots: [{ position: L(width * 0.24, 1.55, -1.4), tier: 'common' }],
+    });
+    this._contact(p.x, p.z, Math.max(width, depth) + 4);
+  }
+
   /* ---------------------------------------------------------------- */
   /* Commercial strip + observation promenade (avenue 0, the window)   */
   /* ---------------------------------------------------------------- */
@@ -6352,7 +6542,17 @@ export class StationWorld extends World {
         B.localAt('panel', boxGeo(wallT, height, depth, 2), p.x, 0, p.z, yaw, width / 2, height / 2, 0);             // right
         B.localAt('panelDark', boxGeo(width + 1.2, 0.9, depth + 1.2, 2), p.x, 0, p.z, yaw, 0, height + 0.45, 0);     // roof slab
         B.localAt('panel', boxGeo(width, height - 5.4, wallT, 2), p.x, 0, p.z, yaw, 0, height - (height - 5.4) / 2, -depth / 2); // header
-        B.localAt('panelDark', boxGeo(width, 0.7, 1.1, 2), p.x, 0, p.z, yaw, 0, 0.35, -depth / 2 + 0.2);             // sill
+        /* Sill. On an enterable unit it stops either side of the doorway: a
+         * 0.7 m kerb across a shop door is a 0.7 m kerb, and the capsule
+         * solver does not step over anything above 0.45. */
+        if (OPEN_SHOPS.has(`${side}:${i}`)) {
+          const sillW = (width - SHOP_DOOR_HW * 2) / 2;
+          for (const sx of [-1, 1]) {
+            B.localAt('panelDark', boxGeo(sillW, 0.7, 1.1, 2), p.x, 0, p.z, yaw, sx * (SHOP_DOOR_HW + sillW / 2), 0.35, -depth / 2 + 0.2);
+          }
+        } else {
+          B.localAt('panelDark', boxGeo(width, 0.7, 1.1, 2), p.x, 0, p.z, yaw, 0, 0.35, -depth / 2 + 0.2);           // sill
+        }
         for (const sx of [-1, 1]) {
           B.localAt('trim', boxGeo(1.0, 5.4, 0.7, 2), p.x, 0, p.z, yaw, sx * (width / 2 - 0.5), 2.7, -depth / 2);
         }
@@ -6373,9 +6573,44 @@ export class StationWorld extends World {
           const stool = new THREE.CylinderGeometry(0.28, 0.22, 0.85, 8);
           B.localAt('trim', stool, p.x, 0, p.z, yaw, -3.6 + s2 * 2.4, 0.62, -3.0);
         }
-        // Shop glazing.
-        const front = new THREE.PlaneGeometry(width - 2.2, 4.6);
-        B.localAt('glassWindow', front, p.x, 0, p.z, yaw, 0, 3.0, -depth / 2 - 0.05, Math.PI);
+        /* Shop glazing, and - on three of the twelve - a way through it.
+         *
+         * ── Which three, and why not all of them ──────────────────────────
+         * A shopfront is the first thing on this station a player walks up to
+         * and tries to open; the strip is 80 m of them and every one was a
+         * sheet of glass in front of a fully dressed room. Making all twelve
+         * enterable is not the answer either: each one costs a door, six
+         * colliders and an interior that is drawn whenever the player is near
+         * it, and twelve identical shops with twelve identical counters is a
+         * corridor of clones rather than three places worth going into.
+         *
+         * The three are the first unit on the near bank, the second on the far
+         * bank, and one further up the near bank. That gives a player arriving
+         * from the plaza a door whichever way they turn, and keeps the far half
+         * of the strip from being uniformly shut.
+         */
+        const enterable = OPEN_SHOPS.has(`${side}:${i}`);
+        const GLAZE_W = width - 2.2;
+        if (!enterable) {
+          B.localAt('glassWindow', new THREE.PlaneGeometry(GLAZE_W, 4.6), p.x, 0, p.z, yaw, 0, 3.0, -depth / 2 - 0.05, Math.PI);
+        } else {
+          // Two panes and a transom, around a 2.2 m opening.
+          const paneW = (GLAZE_W - SHOP_DOOR_HW * 2) / 2;
+          for (const sx of [-1, 1]) {
+            B.localAt(
+              'glassWindow', new THREE.PlaneGeometry(paneW, 4.6),
+              p.x, 0, p.z, yaw, sx * (SHOP_DOOR_HW + paneW / 2), 3.0, -depth / 2 - 0.05, Math.PI
+            );
+          }
+          const transomH = 5.3 - SHOP_DOOR_H;
+          B.localAt(
+            'glassWindow', new THREE.PlaneGeometry(SHOP_DOOR_HW * 2, transomH),
+            p.x, 0, p.z, yaw, 0, SHOP_DOOR_H + transomH / 2, -depth / 2 - 0.05, Math.PI
+          );
+          B.localAt('trim', boxGeo(0.16, 4.6, 0.3, 1), p.x, 0, p.z, yaw, -SHOP_DOOR_HW - 0.08, 3.0, -depth / 2 - 0.05);
+          B.localAt('trim', boxGeo(0.16, 4.6, 0.3, 1), p.x, 0, p.z, yaw, SHOP_DOOR_HW + 0.08, 3.0, -depth / 2 - 0.05);
+          B.localAt('trim', boxGeo(SHOP_DOOR_HW * 2 + 0.4, 0.16, 0.3, 1), p.x, 0, p.z, yaw, 0, SHOP_DOOR_H, -depth / 2 - 0.05);
+        }
 
         // --- Signage: a fascia board plus a projecting blade sign ---------
         // Both go through _signBoard: FrontSide quads with an opaque backer,
@@ -6400,7 +6635,11 @@ export class StationWorld extends World {
         B.localAt('panelWarm', boxGeo(width, 0.18, 2.6, 2), p.x, 0, p.z, yaw, 0, 5.6, -depth / 2 - 1.3, 0, -0.16);
         B.localAt('emAmber', boxGeo(width - 1, 0.1, 0.14, 1), p.x, 0, p.z, yaw, 0, 5.2, -depth / 2 - 2.5);
 
-        this._solidRot(p.x, height / 2 + 0.5, p.z, width / 2 + 0.5, height / 2 + 0.5, depth / 2 + 0.5, yaw);
+        if (!OPEN_SHOPS.has(`${side}:${i}`)) {
+          this._solidRot(p.x, height / 2 + 0.5, p.z, width / 2 + 0.5, height / 2 + 0.5, depth / 2 + 0.5, yaw);
+        } else {
+          this._openShop(g, B, { p, yaw, width, depth, height, side, i, index: signIndex - 1 });
+        }
         this._roofKit(B, p.x, p.z, yaw, width - 2, depth - 2, height + 0.9, rng);
         this._mmRect(p.x, p.z, width, depth, yaw, 'rgba(150,120,70,0.6)', 'rgba(255,200,120,0.6)');
       }
@@ -7420,6 +7659,44 @@ export class StationWorld extends World {
       if (Math.abs(wrapped) < 22 && s.r > 140) continue;
       const p = roadPos(s.deg, s.r, 0, 0, new THREE.Vector3());
       const yaw = -s.deg * DEG + Math.PI;
+      /* Backdrop may not stand in a building you can walk into.
+       *
+       * ── The defect this removes ─────────────────────────────────────────
+       * The gateway-90 backdrop pair is placed at `base +- 25`, so one of them
+       * sits at bearing 115 - five degrees off avenue 120, where the habitat
+       * stacks stand 26 m either side of the centreline. At r = 114 that block
+       * is only 9.9 m off the avenue's centreline and its collider is 22.8 m
+       * deep, so it reaches 21.3 m across and lands ON TOP of Habitat Stack
+       * S2: a 26 x 22 x 31 m solid box covering the front door of a
+       * seven-storey building the player is meant to be able to enter.
+       *
+       * Measured with the capsule: a walk at S1's door reaches the middle of
+       * the ground floor; the identical walk at S2 stops 12.77 m from the
+       * centre, 1.3 m in front of a door it never touches. It is invisible in
+       * a screenshot, because from outside the two masses read as one
+       * building.
+       *
+       * ── Why the test is against `_selfCollided` and not a bearing list ──
+       * `_selfCollided` is the published footprint of every building that
+       * authors its own interior - which is exactly the set of buildings whose
+       * doors matter. Testing against it means the skyline gets out of the way
+       * of any tower anyone adds later, on any avenue, without this loop
+       * knowing where the towers are. The blocks that lose this argument are
+       * backdrop, 114 to 158 m out, and the thing they would have stood in is
+       * a landmark.
+       *
+       * Conservative, and deliberately so: the test is circumscribed circle
+       * against circumscribed circle, so a block is dropped when it comes
+       * close rather than only when it genuinely intersects. A backdrop block
+       * that misses a tower by a metre is not backdrop, it is a wall built
+       * against somebody's front door.
+       */
+      const blockR = Math.hypot(s.w / 2 + 0.4, s.d / 2 + 0.4);
+      let clash = false;
+      for (const f of this._selfCollided) {
+        if (Math.hypot(f.x - p.x, f.z - p.z) < blockR + Math.hypot(f.hw, f.hd)) { clash = true; break; }
+      }
+      if (clash) continue;
       this._block(B, {
         x: p.x, z: p.z, yaw, w: s.w, d: s.d, floors: s.floors, rng,
         body: rng() < 0.4 ? 'panelWarm' : 'panel',
@@ -9678,6 +9955,11 @@ export class StationWorld extends World {
       }
     }
 
+    /* Tower interiors. The world manager only calls `update` on the ACTIVE
+     * world, so this costs nothing anywhere else, and it is a no-op until a
+     * tower has registered something. */
+    this._lod.update(this.engine.camera);
+
     // Dust crawl inside the light shafts - both the lamp cones and the big
     // overhead ones compile the same shader but get their own uniform block.
     const shaftSets = this._shaftUniformSets;
@@ -10003,6 +10285,7 @@ export class StationWorld extends World {
     this._actors = null;
     this._travelators.length = 0;
     this._escalators.length = 0;
+    this._lod.clear();
     this._roofs.length = 0;
     this._keyLight = null;
     this._fillLight = null;

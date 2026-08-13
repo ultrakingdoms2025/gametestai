@@ -28,8 +28,45 @@ const WALKABLE_NORMAL_Y = 0.55;
 const STANDING_HEADROOM = 1.85;
 /** Nudge the next cast below the surface we just found, to avoid re-hitting it. */
 const STACK_EPSILON = 0.02;
-/** Hard cap on stacked surfaces per column. Nothing in these worlds needs more. */
-const MAX_STACK = 10;
+/**
+ * Hard cap on stacked surfaces per column.
+ *
+ * This used to be 10, and 10 was not enough - it is the whole of the "NPCs on
+ * the station ceiling" defect. The station hub is roofed by a raft of services
+ * rather than a plate: measured down the column at (107.7, 10.9), the surfaces
+ * are the dome at 168.47 and then 62.00, 61.70, 60.35, 60.25, 60.20, 60.09,
+ * 59.65, 59.23, 58.57 - nine ceiling members - and the DECK is the eleventh
+ * entry. At (88.9, -71.8) the raft is twelve deep and the deck is thirteenth.
+ * A walk capped at 10 therefore never reached the floor, `resolveSurfaceY` was
+ * handed a candidate list made entirely of ceiling members, and the character
+ * standing on the deck was told the surface it belonged on was 62 m overhead.
+ *
+ * The cap is still needed - a runaway column would cost unbounded raycasts -
+ * but it has to sit above what these worlds actually build. Twenty-four is
+ * twice the deepest column measured on the station, which is by a distance the
+ * densest ceiling in the game.
+ */
+const MAX_STACK = 24;
+/**
+ * How far above the hint the anchored search in `resolveSurfaceY` starts.
+ *
+ * The cap above is a safety net, not the fix. The real flaw was that the walk
+ * starts at the top of the WORLD, so it spends its budget on the surfaces
+ * furthest from the height anybody asked about and truncates before it reaches
+ * the ones that matter. Anchoring the walk near the hint spends the budget
+ * where the answer lives.
+ *
+ * Twelve metres is three storeys of the station's 3.9 m grid: deep enough to
+ * find the floor above a character that has been buried under a deck, and far
+ * short of the 58 m between the station deck and the underside of its ceiling
+ * raft, which is the gap that has to stay uncrossable.
+ *
+ * It is also cheaper, which is worth saying because a correctness fix usually
+ * is not: the anchored walk stops one or two casts in where the old one drilled
+ * through the whole raft first. Timed over 2,000 station deck columns, 34.5 us
+ * a call against 160.1.
+ */
+const SEARCH_ABOVE = 12;
 
 /** surfaceStack() owns these two exclusively. */
 const _ssOrigin = new THREE.Vector3();
@@ -83,7 +120,29 @@ export function surfaceStack(physics, x, z, topY = 400, bottomY = -80) {
  * @returns {number|null} surface height, or null if the column has no floor
  */
 export function resolveSurfaceY(physics, x, z, hintY) {
-  const stack = surfaceStack(physics, x, z, Math.max(hintY + 300, 400));
+  /* Anchored search first. See SEARCH_ABOVE: a walk that starts at the top of
+   * the world answers a question nobody asked and can run out of budget before
+   * it reaches the floor under the character's feet. */
+  const near = pickSurface(surfaceStack(physics, x, z, hintY + SEARCH_ABOVE), hintY);
+  if (near !== null) return near;
+  /* Nothing standable anywhere near the hint - a character that has fallen out
+   * from under the world, or a spawn authored into empty air. The full-column
+   * walk always returns something if the column has anything at all in it. */
+  return pickSurface(surfaceStack(physics, x, z, Math.max(hintY + 300, 400)), hintY);
+}
+
+/**
+ * Score a stack and return the height a character should stand at, or null when
+ * the stack is empty.
+ *
+ * Split out of `resolveSurfaceY` so the anchored search and the whole-column
+ * fallback score identically - the two differ only in where they look.
+ *
+ * @param {ReturnType<typeof surfaceStack>} stack
+ * @param {number} hintY
+ * @returns {number|null}
+ */
+export function pickSurface(stack, hintY) {
   if (stack.length === 0) return null;
   let best = null;
   let bestScore = Infinity;
@@ -152,6 +211,119 @@ export function auditStanding(physics, position, hintY) {
   // ground sample and harmless, but being *below* the resolved floor at all
   // means the character is inside geometry.
   return { ok: drop < 0.35 && drop > -1.2, surfaceY: y, drop };
+}
+
+/* ------------------------------------------------------------------------ */
+/* Reachability - "could this character have walked to that height?"          */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Fastest a moving surface in these worlds carries a standing rider, m/s.
+ *
+ * The station lift runs at 2.6 (`InteriorKit`), the escalators at 1.15 along a
+ * 30-degree flight which is 0.58 vertical, and the travelators are flat. Three
+ * is the lift with room to spare, and nothing else in any world moves a
+ * standing character upward at all.
+ */
+export const CARRY_SPEED = 3;
+
+/**
+ * How far above a character one simulated step of walking can put it.
+ *
+ * `stepReach` is the caller's own ground-probe reach - the height of the tallest
+ * thing its ground follower can pull it up onto in a single step, which for a
+ * character is `GROUND_PROBE_UP`. The `dt` term is the moving-surface case: a
+ * rider carried by a lift gains height without any step at all, and a character
+ * simulated in a demoted LOD band is handed up to `SIM_MAX_STEP` seconds of it
+ * in one go.
+ *
+ * @param {number} dt seconds of simulation about to be integrated
+ * @param {number} stepReach the ground follower's own reach, metres
+ * @returns {number} metres
+ */
+export function reachableRise(dt, stepReach) {
+  return stepReach + CARRY_SPEED * Math.max(0, dt);
+}
+
+/**
+ * The height a character has *walked* to, updated for one simulated step.
+ *
+ * This is the memory the whole anti-climbing rule is built on, and it is
+ * deliberately asymmetric:
+ *
+ *   - downward moves freely. Anyone can fall, and a character that drops 20 m
+ *     off a walkway has genuinely arrived at the bottom.
+ *   - upward follows only as far as one step of walking could carry it. A stair
+ *     riser, an escalator tread, a ramp and a lift car all clear that bound
+ *     comfortably every step, so a character using any of them is tracked the
+ *     whole way up.
+ *   - an upward jump larger than that is not walking, so the memory does NOT
+ *     follow it. That is the point: a character teleported onto the ceiling
+ *     keeps remembering the deck, which is what lets the watchdog recognise it
+ *     as stranded and put it back. If this followed, the character would simply
+ *     have redefined "where I belong" and stayed there forever.
+ *
+ * @param {number} lastWalkedY the height remembered so far
+ * @param {number} y where the character is now
+ * @param {number} reach @see reachableRise
+ * @returns {number} the height to remember
+ */
+export function walkedHeight(lastWalkedY, y, reach) {
+  if (y <= lastWalkedY) return y;
+  return y - lastWalkedY <= reach ? y : lastWalkedY;
+}
+
+/**
+ * How far above the height it walked to a character may be found before it is
+ * treated as stranded rather than as standing somewhere.
+ *
+ * `walkedHeight` already tracks every legitimate climb step by step, so a
+ * character using a staircase, a ramp, an escalator or a lift never builds any
+ * excess at all - the honest threshold is therefore near zero and this is pure
+ * headroom. It has to clear the largest single step the tracker itself allows,
+ * which is `reachableRise` at the longest step the simulation ever hands out
+ * (`SIM_MAX_STEP` = 0.4 s -> 0.95 + 3 x 0.4 = 2.15 m), so 3 m is that with a
+ * margin and still twenty times smaller than the smallest escape observed.
+ */
+export const STRAND_LIMIT = 3;
+
+/**
+ * Is this character somewhere it could not have walked to?
+ *
+ * @param {number} lastWalkedY @see walkedHeight
+ * @param {number} y where the character is now
+ * @param {number} [limit]
+ * @returns {boolean}
+ */
+export function isStranded(lastWalkedY, y, limit = STRAND_LIMIT) {
+  return y - lastWalkedY > limit;
+}
+
+/**
+ * Clamp a re-seat so it can only put a character where it could have walked.
+ *
+ * Applied to every runtime correction that moves a character. Lifting one out of
+ * the floor it has sunk into is a correction; lifting one onto a surface it
+ * could never have reached on foot is a relocation, and a relocation is what
+ * every reported "NPC on the ceiling" actually was.
+ *
+ * Called only once the caller has decided a correction is wanted.
+ *
+ * @param {number} lastWalkedY @see walkedHeight
+ * @param {number} y where the character is now
+ * @param {number|null} surfaceY where the surface resolver wants to put it
+ * @param {number} [limit]
+ * @returns {number|null} the height to move to, or null to leave it alone
+ */
+export function reseatY(lastWalkedY, y, surfaceY, limit = STRAND_LIMIT) {
+  const ceiling = lastWalkedY + limit;
+  /* The resolver wants a height this character could not have reached on foot.
+   * Refuse it - and if the character is ALREADY up there, the last height it
+   * really did walk to is the only trustworthy answer left. */
+  if (surfaceY === null || surfaceY > ceiling) {
+    return isStranded(lastWalkedY, y, limit) ? lastWalkedY : null;
+  }
+  return surfaceY;
 }
 
 /**

@@ -2,7 +2,10 @@ import * as THREE from 'three';
 import { CONFIG } from '../core/Config.js';
 import { NPCAnimator } from './NPCAnimator.js';
 import { Navigation } from './Navigation.js';
-import { auditStanding, resolveSurfaceY } from './Grounding.js';
+import {
+  auditStanding, resolveSurfaceY,
+  reachableRise, walkedHeight, isStranded, reseatY,
+} from './Grounding.js';
 
 /**
  * Base character actor: body, brain-agnostic locomotion, health and damage.
@@ -133,6 +136,22 @@ export class NPC {
     this._groundX = Infinity;
     this._groundZ = Infinity;
     this._airTime = 0;
+    /**
+     * The height this character actually WALKED to. @see walkedHeight
+     *
+     * Everything that re-seats a character reads this rather than the spawn
+     * point, and that is the whole of the fix for characters ending up on the
+     * station ceiling. The spawn point is a poor reference in both directions:
+     * a civilian who has legitimately climbed to a tower's fourth floor still
+     * reports a spawn height of 0 and would be dragged back down by any rule
+     * keyed to it, while a character whose spawn was itself resolved onto a
+     * ceiling member reports that ceiling and would be pinned there forever.
+     *
+     * This tracks the climb instead - it follows a character up a staircase,
+     * a ramp, an escalator or a lift step by step, and refuses to follow a jump
+     * no step could have made.
+     */
+    this._walkedY = ctx.position.y;
 
     this._lookTarget = null;
     this._headPos = new THREE.Vector3();
@@ -171,6 +190,7 @@ export class NPC {
     // Settle onto the floor before the first frame is ever drawn.
     this._sampleGround(0, true);
     this._followGround(1);
+    this._walkedY = this.position.y;
   }
 
   /** Live reference to the feet position. Do not mutate from outside. */
@@ -290,6 +310,9 @@ export class NPC {
     this._airTime = 0;
     this._sampleGround(0, true);
     this._followGround(1);
+    // A respawn is an authoritative placement: wherever it put this character
+    // is, by definition, where it now belongs.
+    this._walkedY = this.position.y;
     this.setState('IDLE');
     this.onRespawned?.();
   }
@@ -459,10 +482,18 @@ export class NPC {
       else this._noFloorTime = 0;
       if (this._airTime > 1.5) {
         const y = resolveSurfaceY(this.physics, this.position.x, this.position.z, this.position.y);
-        this.position.y = y !== null ? y : this.spawnPoint.y;
-        this.velocity.set(0, 0, 0);
-        this._airTime = 0;
-        this._sampleGround(dt, true);
+        /* Clamped for the same reason the watchdog's placements are: a recovery
+         * may put a character back on the ground, and may not promote it to a
+         * height it never climbed to. `y` is resolved against where the
+         * character IS - see the note above, that part is deliberate - and the
+         * clamp is applied to the placement, not to the search. */
+        const seat = reseatY(this._walkedY, this.position.y, y) ?? (y === null ? this.spawnPoint.y : null);
+        if (seat !== null) {
+          this.position.y = seat;
+          this.velocity.set(0, 0, 0);
+          this._airTime = 0;
+          this._sampleGround(dt, true);
+        }
       }
     }
 
@@ -472,8 +503,24 @@ export class NPC {
       this.position.copy(this.spawnPoint);
       this.velocity.set(0, 0, 0);
       this._sampleGround(dt, true);
+      this._walkedY = this.position.y;
     }
+    this._noteWalked(dt);
     this.moveSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+  }
+
+  /**
+   * Book this step's height against what walking could have achieved.
+   *
+   * Only ever called for a grounded character: a height reached in mid-air is
+   * not a height anybody stood at, and following it would let a character bank
+   * the top of an arc it was only passing through.
+   *
+   * @param {number} dt the step just integrated
+   */
+  _noteWalked(dt) {
+    if (!this.grounded) return;
+    this._walkedY = walkedHeight(this._walkedY, this.position.y, reachableRise(dt, GROUND_PROBE_UP));
   }
 
   /** Hold a seated character on its seat. */
@@ -489,6 +536,7 @@ export class NPC {
     if (Math.abs(this.position.y - this.seat.y) > 0.002) {
       this.position.y += (this.seat.y - this.position.y) * Math.min(1, 12 * dt);
     }
+    this._noteWalked(dt);
   }
 
   _integrateDead(dt) {
@@ -510,9 +558,10 @@ export class NPC {
    *
    * Steering, depenetration and the ground probe between them are enough
    * 99.9% of the time; this is the backstop for the remaining case, where a
-   * character has ended up inside or under geometry that its own short probe
-   * cannot see out of. It re-resolves the whole surface stack at the character's
-   * column and lifts them onto the walkable surface nearest their spawn height.
+   * character has ended up inside, under, or on top of geometry that its own
+   * short probe cannot see out of. It re-resolves the surface stack at the
+   * character's column and moves it onto the walkable surface nearest the
+   * height it last walked to - never more than `STRAND_LIMIT` above that.
    *
    * @returns {boolean} true if the character had to be corrected
    */
@@ -528,18 +577,63 @@ export class NPC {
 
   auditGrounding(force = false) {
     if (this.isDead) return false;
-    const hint = this.seat ? this.seat.y : this.spawnPoint.y;
+    /* The hint is what this character WALKED to, not where it was spawned.
+     *
+     * ── The defect this fixes ────────────────────────────────────────────────
+     * Every "NPC on the station ceiling" arrived here, in one fixed step, from
+     * the deck. `resolveSurfaceY` walked the column from the top of the world
+     * and ran out of stack budget in the hub's ceiling raft - nine to twelve
+     * members deep - before it ever reached the deck, so the nearest walkable
+     * surface to a hint of 0 was a ceiling member at 55 or 62 m, and the line
+     * below faithfully teleported the character onto it. Measured from a live
+     * run: Marta Vale 0 -> 62.00 in one step, Rogue Security Unit 0 -> 54.97,
+     * Hask Merrow 0.22 -> 10.45, all with the capsule solver contributing
+     * exactly zero (its largest single vertical push over 75 s across 68
+     * characters was 0.64 m).
+     *
+     * `Grounding.js` now anchors that search near the hint, which is the actual
+     * repair. The hint change and the clamp below are what stop a resolver that
+     * is wrong again from ever being able to express it as a 62 m teleport. */
+    const hint = this.seat ? this.seat.y : this._walkedY;
     const audit = auditStanding(this.physics, this.position, hint);
+    /* Standing somewhere no step could have reached is a fault in its own
+     * right, and one the checks below cannot see: such a character IS grounded
+     * and IS flush with the surface it is standing on, so it reads as perfectly
+     * healthy and would live on the ceiling forever. */
+    const stranded = isStranded(this._walkedY, this.position.y);
     // Falling is not a fault; leave anything that is mid-air to the integrator.
     // The spawn sweep passes `force` because a character has not been
     // integrated yet at that point and would otherwise look airborne.
-    if (audit.ok || (!force && !this.grounded && this._airTime < 1.2)) return false;
+    if (!stranded && (audit.ok || (!force && !this.grounded && this._airTime < 1.2))) return false;
     if (audit.surfaceY === null) {
       // No floor anywhere in this column at all: back to the spawn point.
       this.position.copy(this.spawnPoint);
       this.velocity.set(0, 0, 0);
       this._sampleGround(0, true);
       this._followGround(1);
+      this._walkedY = this.position.y;
+      return true;
+    }
+    /* Where a correction is allowed to put this character.
+     *
+     * The spawn sweep is exempt: `force` means an authored spawn is being
+     * resolved onto real geometry for the first time, the author's height is
+     * the only intent there is, and `_walkedY` is still just a copy of it. Once
+     * the character is alive and walking, `_walkedY` is evidence and the clamp
+     * applies. */
+    const target = force
+      ? audit.surfaceY
+      : reseatY(this._walkedY, this.position.y, audit.surfaceY);
+    if (target === null) return false;
+    if (stranded) {
+      this.position.y = target;
+      this.velocity.set(0, 0, 0);
+      this._noFloorTime = 0;
+      this._airTime = 0;
+      this._sampleGround(0, true);
+      this._followGround(1);
+      this._walkedY = this.position.y;
+      if (this.seat) this.seat.y = this.position.y;
       return true;
     }
     /* Hovering, not just sinking.
@@ -555,24 +649,26 @@ export class NPC {
      * `auditStanding` - a metre and a half is unambiguous, where half a metre
      * would fight the integrator on stairs and slopes. */
     if (audit.drop < -HOVER_LIMIT && (force || this._airTime > 1.2)) {
-      this.position.y = audit.surfaceY;
+      this.position.y = target;
       this.velocity.set(0, 0, 0);
       this._noFloorTime = 0;
       this._airTime = 0;
       this._sampleGround(0, true);
       this._followGround(1);
+      this._walkedY = this.position.y;
       if (this.seat) this.seat.y = this.position.y;
       return true;
     }
     // Only correct a genuine sink. Standing slightly proud of a stale sample is
     // normal and correcting it every pass would make characters twitch.
     if (audit.drop < 0.35) return false;
-    this.position.y = audit.surfaceY;
+    this.position.y = target;
     this.velocity.y = 0;
     this._noFloorTime = 0;
     this._airTime = 0;
     this._sampleGround(0, true);
     this._followGround(1);
+    this._walkedY = this.position.y;
     if (this.seat) this.seat.y = this.position.y;
     return true;
   }

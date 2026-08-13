@@ -30,7 +30,8 @@ import {
 } from './station/StationKit.js';
 import { StationActors } from './station/StationActors.js';
 import { buildOuterRing, LINK_MOUTH_HALF_DEG } from './station/OuterRing.js';
-import { buildTower } from './station/Tower.js';
+import { buildTower, drawFloorSign, railRect } from './station/Tower.js';
+import { buildControlTower } from './station/ControlTower.js';
 import { DistanceLod } from './lod/DistanceLod.js';
 
 /**
@@ -1749,6 +1750,26 @@ export class StationWorld extends World {
     this._contacts = [];
     /** Rotated footprints for authored enterable rooms; used to keep dressing clear. */
     this._enterableRoomFootprints = [];
+    /**
+     * Volumes the outer skyline may not stand in.
+     *
+     * `_buildSkyline` already refuses to put a backdrop block inside anything
+     * in `_selfCollided`, and its note there explains why that is the right
+     * set: those are the buildings that author their own interiors, so those
+     * are the buildings with doors. It is not the whole set. Hangar Bay 4 is
+     * 62 by 44 metres of interior with a 42 m opening instead of a door, so it
+     * publishes no footprint - and skyline block 3, at bearing 75 and r = 158,
+     * was standing INSIDE IT: a 20 x 18 x 38 m solid box on the bay floor,
+     * covering local x = 0..21 and z = -8..10, drawn and collided. A capsule
+     * walked in from the bay mouth stopped dead 6.6 m short of the middle of
+     * the hangar. The gateway-90 flank at bearing 65 is the same story one
+     * building along: it clips the bay's front-left corner and then stands
+     * across nineteen metres of the landing pad in front of the doors.
+     *
+     * Rotated rectangles rather than circles, because a 62 x 44 m hangar's
+     * circumscribed circle is 38 m and would have swept away half the skyline.
+     */
+    this._backdropKeepOut = [];
     /* Buildings the Interiors system can open, and the collectibles inside them.
      *
      * Created here rather than in `_buildEnterableRooms`, which is where it used
@@ -1802,6 +1823,11 @@ export class StationWorld extends World {
      * `buildTower` publishes them.
      */
     this._selfCollided = [];
+    /* Cleared here beside `_selfCollided` rather than only in the constructor,
+     * because the two lists are read by the same pass - `_buildSkyline` - and a
+     * rebuild that reset one but not the other would leave the backdrop
+     * consulting a stale set of keep-outs. */
+    this._backdropKeepOut = [];
     /**
      * Distance LOD, used for exactly one thing: tower interiors.
      *
@@ -6931,13 +6957,19 @@ export class StationWorld extends World {
       const lx = (rng() - 0.5) * (W - 12);
       const lz = (rng() - 0.5) * (D - 12);
       const bw = 1.2 + rng() * 2.4;
+      // Not under the mezzanine stair, nor on the approach to it. This scatter
+      // reaches x = +-25 and z = +-16, which is exactly the band the flight now
+      // runs up, and a fuel bowser standing in a staircase is both unwalkable
+      // and unmistakable. The band runs back to z = -8 as well, because a
+      // bowser two metres in front of the bottom tread is not blocking the
+      // stair, it is blocking the only way anybody walks at it. A capsule
+      // marched from the bay mouth at the flight stopped dead at z = -6.6 on
+      // the first attempt, on a crate whose centre was outside the band and
+      // whose 3.6 m side was not.
+      if (lx > 16.0 && lx < 24.5 && lz > -12.0 && lz < 15.5) continue;
       B.localAt(rng() < 0.5 ? 'crate' : 'panelDark', boxGeo(bw, 1.0 + rng(), bw * 0.8, 1.6), p.x, 0, p.z, yaw, lx, 0.8, lz);
     }
-    // Control mezzanine along the back wall.
-    B.localAt('grate', boxGeo(W - 14, 0.4, 5, 2), p.x, 0, p.z, yaw, 0, 8, D / 2 - 3.5);
-    B.localAt('glassWindow', new THREE.PlaneGeometry(W - 18, 3.4), p.x, 0, p.z, yaw, 0, 10, D / 2 - 6.2);
-    B.localAt('room', new THREE.PlaneGeometry(W - 18, 3.4), p.x, 0, p.z, yaw, 0, 10, D / 2 - 6.5);
-    B.localAt('trim', boxGeo(W - 14, 0.1, 0.1, 1), p.x, 0, p.z, yaw, 0, 9.3, D / 2 - 6.0);
+    this._buildHangarMezzanine(B, p, yaw, W, D, H);
 
     // Landing pad and approach markings outside the bay mouth.
     const padCentre = roadPos(deg, 108, 40, 0, new THREE.Vector3());
@@ -6964,8 +6996,174 @@ export class StationWorld extends World {
     bayLight.position.set(p.x, 16, p.z);
     g.add(bayLight);
 
+    /* Nothing from the backdrop pass may stand in the bay or on its pad. See
+     * `_backdropKeepOut` for what was standing in both. */
+    this._backdropKeepOut.push({ x: p.x, z: p.z, yaw, hw: W / 2, hd: D / 2 });
+    this._backdropKeepOut.push({ x: padCentre.x, z: padCentre.z, yaw: 0, hw: 20, hd: 20 });
+
     this._mmRect(p.x, p.z, W, D, yaw, 'rgba(70,110,140,0.6)', 'rgba(140,220,255,0.7)');
     this._mmCircle(padCentre.x, padCentre.z, 19, 'rgba(200,150,60,0.2)', 'rgba(255,190,90,0.7)');
+  }
+
+  /**
+   * Hangar Bay 4's control mezzanine - the upper level you can actually get to.
+   *
+   * ── What was wrong ────────────────────────────────────────────────────────
+   * The mezzanine was four lines: a 48 x 5 m grate slab floating at y = 8, a
+   * glazed pane in front of it, a `room` pane in front of that, and a 10 cm
+   * handrail. Nothing reached it. It had no stair, no lift, no edge protection
+   * worth the name - a 0.1 m rail over an eight-metre drop - and the pane that
+   * was supposed to make it read as a lit control room faced the WRONG WAY:
+   * `PlaneGeometry` looks along +Z and `localAt` had it at ry = 0, so its only
+   * visible face pointed at the back wall 6 m behind it. From the bay you saw
+   * its culled back; from the slab you would have seen an opaque lit board
+   * standing between you and the whole hangar. `_buildCargo` writes the same
+   * idiom one district over and passes `Math.PI`; this one never did. It is
+   * gone rather than turned round, because the room behind the glass is real
+   * now and a painted one in front of it would be hiding it.
+   *
+   * ── The stair, and why a stair ────────────────────────────────────────────
+   * A lift in a hangar would be a box in the middle of the one clear span the
+   * building exists to have. A straight industrial flight against the +X flank
+   * costs nothing but floor nobody was using, and from the bay mouth it reads
+   * as the thing that tells you the gallery is reachable - which the gallery
+   * badly needed, because a mezzanine with no visible way up looks like scenery
+   * and players do not go looking for a door they have no reason to believe in.
+   *
+   * 20 risers of 0.395 m at 35 degrees. The riser is under `CONFIG.player`'s
+   * 0.45 m step height with room to spare, and the pitch is well under the
+   * ~50 degrees `Physics.resolveCapsule` will hold a capsule on. Treads are
+   * drawn and a single hidden ramp under them is what the capsule stands on -
+   * the same arrangement, and for the same reason, as the entrance steps in
+   * `Tower.js`: the solver resolves slopes, and a bare stack of boxes with no
+   * ramp behind it relies entirely on the step probe finding every nosing.
+   *
+   * The flight's head lands ON the deck: `STAIR_Z1` is the slab's front edge
+   * and the ramp's top is the slab's top face, so the join is 0.000 m.
+   */
+  _buildHangarMezzanine(B, p, yaw, W, D, H) {
+    const FLOOR_Y = 0.30;                 // top of the bay's grate floor
+    const DECK_Y = 8.20;                  // top of the mezzanine slab
+    const DECK_T = 0.40;
+    const DECK_Z0 = D / 2 - 7.6;          // 14.4 - front edge, over the bay
+    const DECK_Z1 = D / 2 - 0.6;          // 21.4 - the back wall's inner face
+    const DECK_X0 = -24, DECK_X1 = 24;
+
+    const STAIR_CX = 20.2, STAIR_HW = 1.2;
+    const STEPS = 20;
+    const RISE = DECK_Y - FLOOR_Y;                       // 7.90
+    const RISER = RISE / STEPS;                          // 0.395
+    const PITCH = 35 * DEG;
+    const RUN = RISE / Math.tan(PITCH);                  // 11.28
+    const GOING = RUN / STEPS;
+    const STAIR_Z1 = DECK_Z0, STAIR_Z0 = STAIR_Z1 - RUN;
+
+    const L = (lx, ly, lz) => this._localPoint(p.x, p.z, yaw, lx, ly, lz);
+    const put = (key, geo, lx, ly, lz, ry = 0, rx = 0, rz = 0) =>
+      B.localAt(key, geo, p.x, 0, p.z, yaw, lx, ly, lz, ry, rx, rz);
+    const solid = (lx, ly, lz, hx, hy, hz, ra = 0) => {
+      const q = L(lx, ly, lz);
+      return this._solidRot(q.x, q.y, q.z, hx, hy, hz, yaw + ra);
+    };
+
+    /* --- The deck ------------------------------------------------------- */
+    const dw = DECK_X1 - DECK_X0, dd = DECK_Z1 - DECK_Z0;
+    put('grate', boxGeo(dw, DECK_T, dd, 2), (DECK_X0 + DECK_X1) / 2, DECK_Y - DECK_T / 2, (DECK_Z0 + DECK_Z1) / 2);
+    solid((DECK_X0 + DECK_X1) / 2, DECK_Y - DECK_T / 2, (DECK_Z0 + DECK_Z1) / 2, dw / 2, DECK_T / 2, dd / 2);
+    // Brackets carrying it off the back wall, so it is not a floating shelf.
+    for (let i = 0; i < 7; i++) {
+      const bx = DECK_X0 + 3 + (i * (dw - 6)) / 6;
+      put('panelDark', boxGeo(0.5, 2.2, 0.5, 1.5), bx, DECK_Y - DECK_T - 1.1, DECK_Z1 - 1.1, 0, 0, 0.42);
+    }
+
+    /* --- Edge protection ------------------------------------------------
+     *
+     * `railRect` from station/Tower.js, which is where every other guarded
+     * void in this world gets its rail: a top rail, a lit cap, a glass infill
+     * and one collider that spans the whole 1.1 m rather than the 0.12 m the
+     * drawn rail occupies. The back run is omitted because the back wall is
+     * the back run. The gap in the front run is the stair head - see
+     * `railSpans`, which is exported and tested so "the gap is where the stair
+     * is" is a fact and not a hope. */
+    railRect(put, solid, DECK_X0, DECK_X1, DECK_Z0, DECK_Z1, DECK_Y, 'emAmber', {
+      openZ1: true,
+      gaps: [{ side: 'z0', a: STAIR_CX - STAIR_HW - 0.4, b: STAIR_CX + STAIR_HW + 0.4 }],
+    });
+
+    /* --- The flight ------------------------------------------------------ */
+    for (let i = 0; i < STEPS; i++) {
+      const ty = FLOOR_Y + (i + 1) * RISER;
+      const tz = STAIR_Z0 + (i + 0.5) * GOING;
+      put('grate', boxGeo(STAIR_HW * 2, 0.12, GOING + 0.12, 1.5), STAIR_CX, ty - 0.06, tz);
+      put('panelDark', boxGeo(STAIR_HW * 2 - 0.1, RISER - 0.12, 0.1, 1), STAIR_CX, ty - 0.06 - RISER / 2, tz - GOING / 2);
+    }
+    {
+      // The surface the capsule actually rides. `_ramp` centres a 0.5 m slab on
+      // the point it is given, so the walkable face is 0.25/cos(pitch) above it.
+      const midY = (FLOOR_Y + DECK_Y) / 2;
+      const q = L(STAIR_CX, midY - 0.25 / Math.cos(PITCH), (STAIR_Z0 + STAIR_Z1) / 2);
+      this._ramp(q.x, q.y, q.z, STAIR_HW * 2, RUN, RISE, yaw);
+    }
+    // Stringers and handrails, and the colliders that stop a rider walking off
+    // the side of the flight. The colliders are five upright boxes per side
+    // rather than one tilted one, because `Physics` only rotates boxes about Y.
+    for (const s of [-1, 1]) {
+      const sx = STAIR_CX + s * (STAIR_HW + 0.14);
+      const len = Math.hypot(RUN, RISE);
+      put('panelDark', boxGeo(0.22, 1.05, len, 2), sx, (FLOOR_Y + DECK_Y) / 2 + 0.3, (STAIR_Z0 + STAIR_Z1) / 2, 0, -PITCH);
+      put('trimDark', boxGeo(0.14, 0.14, len, 1), sx, (FLOOR_Y + DECK_Y) / 2 + 0.98, (STAIR_Z0 + STAIR_Z1) / 2, 0, -PITCH);
+      put('emAmber', boxGeo(0.07, 0.07, len, 1), sx, (FLOOR_Y + DECK_Y) / 2 + 1.09, (STAIR_Z0 + STAIR_Z1) / 2, 0, -PITCH);
+      for (let b = 0; b < 5; b++) {
+        const z0 = STAIR_Z0 + (b * RUN) / 5, z1 = STAIR_Z0 + ((b + 1) * RUN) / 5;
+        const y0 = FLOOR_Y + (RISE * b) / 5, y1 = FLOOR_Y + (RISE * (b + 1)) / 5 + 1.1;
+        solid(sx, (y0 + y1) / 2, (z0 + z1) / 2, 0.15, (y1 - y0) / 2, (z1 - z0) / 2);
+      }
+    }
+
+    /* --- Fit-out, so the gallery is somewhere to be ----------------------
+     *
+     * Nothing in front of the stair head. The five console banks are evenly
+     * spaced across a 48 m deck and the last of them landed at x = 19, which is
+     * where the flight arrives: a capsule that had just climbed all twenty
+     * risers was stopped 4.3 m onto the gallery by a desk, and so would a
+     * player be. A gallery whose only entrance opens onto the back of a
+     * workstation is not furnished, it is barricaded. */
+    for (let i = 0; i < 5; i++) {
+      const cx = DECK_X0 + 5 + (i * (dw - 10)) / 4;
+      if (Math.abs(cx - STAIR_CX) < STAIR_HW + 2.4) continue;
+      put('panel', boxGeo(3.4, 1.02, 1.1, 1.5), cx, DECK_Y + 0.51, DECK_Z0 + 1.5);
+      put('trim', boxGeo(3.5, 0.08, 1.25, 1), cx, DECK_Y + 1.06, DECK_Z0 + 1.5);
+      solid(cx, DECK_Y + 0.51, DECK_Z0 + 1.5, 1.7, 0.51, 0.55);
+      put('holo', boxGeo(1.9, 0.85, 0.04, 1), cx, DECK_Y + 2.1, DECK_Z0 + 1.0, Math.PI);
+      put('trim', boxGeo(0.42, 0.6, 0.42, 1), cx, DECK_Y + 0.3, DECK_Z0 + 3.0);
+    }
+    // Equipment run along the back wall, and light over the gallery.
+    put('panelDark', boxGeo(dw - 8, 2.3, 0.9, 2), 0, DECK_Y + 1.15, DECK_Z1 - 0.55);
+    solid(0, DECK_Y + 1.15, DECK_Z1 - 0.55, (dw - 8) / 2, 1.15, 0.45);
+    put('emAmber', boxGeo(dw - 12, 0.09, 0.14, 1), 0, DECK_Y + 2.0, DECK_Z1 - 1.05);
+    put('emWhite', boxGeo(dw - 6, 0.3, 0.9, 2), 0, DECK_Y + 4.4, (DECK_Z0 + DECK_Z1) / 2);
+
+    /* --- Floor numbers --------------------------------------------------
+     *
+     * Same bars, same plate, same three offsets as every numbered floor in the
+     * station - `drawFloorSign` is exported from station/Tower.js for exactly
+     * this.
+     *
+     * The gallery is trimmed in `emAmber` and `panel` rather than the cyan and
+     * `panelWarm` a tower interior uses, and that is a draw-call decision as
+     * much as a palette one: a material key that is new to a batch is a new
+     * merged mesh and a permanent draw call, and this batch is never LOD-hidden
+     * because the bay mouth is 42 m wide. Amber is the hangar's own accent, so
+     * the gallery costs the group one key (`trimDark`, for the rail) and gives
+     * one back (`room`, whose only user was the backwards backdrop pane). Bay floor is 1 and the gallery is 2, which is what the lift prompt
+     * in the towers would call them and what a player who has been in a habitat
+     * stack already expects. */
+    put('panelDark', boxGeo(0.9, 2.6, 0.5, 1.5), STAIR_CX - STAIR_HW - 1.5, FLOOR_Y + 1.3, STAIR_Z0 + 1.2);
+    solid(STAIR_CX - STAIR_HW - 1.5, FLOOR_Y + 1.3, STAIR_Z0 + 1.2, 0.45, 1.3, 0.25);
+    drawFloorSign(put, 1, '-x', STAIR_CX - STAIR_HW - 1.95, FLOOR_Y + 1.75, STAIR_Z0 + 1.2, 0.5);
+    drawFloorSign(put, 2, '-z', STAIR_CX - 5.4, DECK_Y + 2.0, DECK_Z1 - 1.02, 0.5);
+
+    void H;
   }
 
   /* ---------------------------------------------------------------- */
@@ -7217,49 +7415,26 @@ export class StationWorld extends World {
     const yaw = -deg * DEG;
     const H = 44;
 
-    // Base bunker.
-    const base = new THREE.CylinderGeometry(11, 13, 6, 20);
-    uvScale(base, 30, 2);
-    B.at('panelDark', base, p.x, 3, p.z);
-    const bandRing = new THREE.TorusGeometry(11.2, 0.3, 6, 40);
-    bandRing.rotateX(-Math.PI / 2);
-    B.at('emAmber', bandRing, p.x, 5.6, p.z);
-    this._solid(p.x, 3, p.z, 12, 3, 12);
-
-    // Shaft with a spiral conduit and access ladder.
-    const shaft = new THREE.CylinderGeometry(4.6, 5.6, H - 6, 20);
-    uvScale(shaft, 22, (H - 6) / 3);
-    B.at('panel', shaft, p.x, 6 + (H - 6) / 2, p.z);
-    this._solid(p.x, H / 2, p.z, 5.2, H / 2, 5.2);
-    for (let i = 0; i < 9; i++) {
-      const ring = new THREE.TorusGeometry(4.9 - i * 0.09, 0.16, 6, 28);
-      ring.rotateX(-Math.PI / 2);
-      B.at(i % 3 === 0 ? 'emCyan' : 'trim', ring, p.x, 9 + i * 3.6, p.z);
-    }
-    for (let i = 0; i < Math.floor((H - 8) / 0.45); i++) {
-      B.at('trim', boxGeo(0.6, 0.05, 0.06, 1), p.x + 5.0, 7 + i * 0.45, p.z, yaw);
-    }
-
-    // Flared observation head with raked glazing - the classic tower read.
-    const headLower = new THREE.CylinderGeometry(10.5, 5.2, 4.5, 24);
-    uvScale(headLower, 30, 2);
-    B.at('panelDark', headLower, p.x, H - 4, p.z);
-    const headGlass = new THREE.CylinderGeometry(11.6, 10.5, 5.0, 24, 1, true);
-    B.at('glassWindow', headGlass, p.x, H + 0.6, p.z);
-    const headRoom = new THREE.CylinderGeometry(9.8, 9.4, 4.6, 24, 1, true);
-    uvScale(headRoom, 12, 1);
-    B.at('room', headRoom, p.x, H + 0.6, p.z);
-    for (let i = 0; i < 12; i++) {
-      const th = (i / 12) * Math.PI * 2;
-      B.at('trim', boxGeo(0.22, 5.2, 0.5, 1), p.x + Math.cos(th) * 11.0, H + 0.6, p.z + Math.sin(th) * 11.0, -th, 0, 0.1);
-    }
-    const roof = new THREE.CylinderGeometry(12.4, 11.9, 1.2, 24);
-    uvScale(roof, 34, 1);
-    B.at('panelDark', roof, p.x, H + 3.7, p.z);
-    const gallery = new THREE.TorusGeometry(12.6, 0.15, 6, 44);
-    gallery.rotateX(-Math.PI / 2);
-    B.at('emCyan', gallery, p.x, H + 4.4, p.z);
-    this._solid(p.x, H + 1, p.z, 11.6, 3.5, 11.6);
+    /* The tower itself is a building now, not a silhouette.
+     *
+     * Everything from the concourse floor to the roof gallery - the drum, the
+     * mast, the flare, the glazed cab, the lift core and every collider under
+     * all of it - moved to station/ControlTower.js, which carries the section
+     * and the reasoning. What is left here is what was always local to this
+     * district: where the tower stands, the beacon and the antenna field.
+     *
+     * The entrance faces local -Z, which at this yaw is the avenue side; the
+     * cab's deep view is along local -X, which is the plaza. See `CORE_X` in
+     * that file for why the lift is offset toward +X and not centred.
+     */
+    const built = buildControlTower(this, B, g, {
+      x: p.x, z: p.z, yaw,
+      label: 'Traffic Control',
+      accent: 'emCyan',
+    });
+    this.enterables.push(built.enterable);
+    this._selfCollided.push(built.footprint);
+    this._enterableRoomFootprints.push({ x: p.x, z: p.z, yaw, hw: 15.0, hd: 15.0 });
 
     // Radar mast + rotating beacon.
     const mast = new THREE.CylinderGeometry(0.5, 0.9, 10, 10);
@@ -7455,7 +7630,17 @@ export class StationWorld extends World {
 
   _buildEnterableRooms() {
     if (!Array.isArray(this.enterables)) this.enterables = [];
-    this._enterableRoomFootprints.length = 0;
+    /* The list is NOT cleared here.
+     *
+     * It used to be, from when this function created it - the same history the
+     * note beside `this.enterables = []` in the constructor tells about that
+     * list, and with the same consequence one step later. Both are built once
+     * per world in the constructor now, and this pass runs at step 0.905, so
+     * clearing meant every footprint published by an earlier builder was thrown
+     * away. Traffic Control publishes one at 0.85 to keep the dressing scatter
+     * off its threshold; with the reset in place its entry lasted 55 thousandths
+     * of a build and a container could be dropped across the only door.
+     */
 
     const M = this.mat;
     const B = new GeoBatch();
@@ -7696,6 +7881,18 @@ export class StationWorld extends World {
       let clash = false;
       for (const f of this._selfCollided) {
         if (Math.hypot(f.x - p.x, f.z - p.z) < blockR + Math.hypot(f.hw, f.hd)) { clash = true; break; }
+      }
+      /* And the same for interiors that have an opening instead of a door.
+       * Distance from the block's circumscribed circle to the keep-out's own
+       * rotated rectangle, so a 62 m hangar excludes what is actually in it
+       * rather than everything within its 38 m circumscribed radius. */
+      for (const k of this._backdropKeepOut) {
+        const dx = p.x - k.x, dz = p.z - k.z;
+        const c2 = Math.cos(k.yaw), s2 = Math.sin(k.yaw);
+        const lx = Math.abs(dx * c2 - dz * s2) - k.hw;
+        const lz = Math.abs(dx * s2 + dz * c2) - k.hd;
+        const gap = Math.hypot(Math.max(0, lx), Math.max(0, lz));
+        if (gap < blockR) { clash = true; break; }
       }
       if (clash) continue;
       this._block(B, {

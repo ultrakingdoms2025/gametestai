@@ -293,6 +293,52 @@ export const SIGN_LAYERS = Object.freeze({
   BAR_GAP: 0.01,
 });
 
+/**
+ * A storey number on a wall, as a lit plate with segment glyphs on it.
+ *
+ * `plane` is which way the sign faces: `'-x'`, `'+x'`, `'-z'` or `'+z'` in the
+ * building's own frame. The plate is inset from the surface it is bolted to and
+ * the glyphs stand proud of the plate, both by a centimetre or more, so no face
+ * of this assembly is coplanar with any other - the defect a whole session has
+ * gone into removing.
+ *
+ * Lifted out of `buildTower`'s closure and exported when the control tower and
+ * the hangar mezzanine needed the same signs. Everything that numbers a floor
+ * in this world now numbers it with these bars, in this material, at these
+ * three offsets - which is the point: a second copy of the layout is how one
+ * building ends up with its plaque a centimetre inside the wall.
+ *
+ * @param {(key:string, geo:THREE.BufferGeometry, lx:number, ly:number,
+ *          lz:number, ry?:number) => unknown} put  emitter in the building's
+ *          local frame, normally an interior batch's
+ */
+export function drawFloorSign(put, n, plane, lx, ly, lz, capH = 0.6) {
+  const { bars, plate } = floorNumeral(n, capH);
+  const { PLATE_T, PLATE_GAP, BAR_T, BAR_GAP } = SIGN_LAYERS;
+  const nx = plane === '-x' ? -1 : plane === '+x' ? 1 : 0;
+  const nz = plane === '-z' ? -1 : plane === '+z' ? 1 : 0;
+  const pOff = PLATE_GAP + PLATE_T / 2;
+  const bOff = PLATE_GAP + PLATE_T + BAR_GAP + BAR_T / 2;
+  /* `trim`, not `panelDark`.
+   *
+   * The first version backed the glyphs with `panelDark` and the lift shaft
+   * they hang on is also `panelDark`, so the plate vanished into the wall and
+   * the number read as digits floating on a dark field. A polished plaque is
+   * both what a lift lobby actually has and the only key in the palette that
+   * separates from the two surfaces these signs are ever bolted to. */
+  if (nx) {
+    put('trim', boxGeo(PLATE_T, plate.h, plate.w, 1), lx + nx * pOff, ly, lz);
+    for (const b of bars) {
+      put('emWhite', boxGeo(BAR_T, b.h, b.w, 1), lx + nx * bOff, ly + b.v, lz - nx * b.u);
+    }
+  } else {
+    put('trim', boxGeo(plate.w, plate.h, PLATE_T, 1), lx, ly, lz + nz * pOff);
+    for (const b of bars) {
+      put('emWhite', boxGeo(b.w, b.h, BAR_T, 1), lx + nz * b.u, ly + b.v, lz + nz * bOff);
+    }
+  }
+}
+
 /** Depth of the string course band. */
 export const STRING_COURSE_T = 0.22;
 /** How far the band stands proud of the shell, per side. */
@@ -457,41 +503,8 @@ export function buildTower(world, B, g, spec, rng) {
   const iput = (key, geo, lx, ly, lz, ry = 0, rx = 0, rz = 0) =>
     I.localAt(key, geo, x, 0, z, yaw, lx, ly, lz, ry, rx, rz);
 
-  /**
-   * A storey number on a wall, as a lit plate with segment glyphs on it.
-   *
-   * `plane` is which way the sign faces: `'-x'`, `'+x'`, `'-z'` or `'+z'` in
-   * the tower's own frame. The plate is inset from the surface it is bolted to
-   * and the glyphs stand proud of the plate, both by a centimetre or more, so
-   * no face of this assembly is coplanar with any other - the defect a whole
-   * session has just gone into removing.
-   */
-  const floorSign = (n, plane, lx, ly, lz, capH = 0.6) => {
-    const { bars, plate } = floorNumeral(n, capH);
-    const { PLATE_T, PLATE_GAP, BAR_T, BAR_GAP } = SIGN_LAYERS;
-    const nx = plane === '-x' ? -1 : plane === '+x' ? 1 : 0;
-    const nz = plane === '-z' ? -1 : plane === '+z' ? 1 : 0;
-    const pOff = PLATE_GAP + PLATE_T / 2;
-    const bOff = PLATE_GAP + PLATE_T + BAR_GAP + BAR_T / 2;
-    /* `trim`, not `panelDark`.
-     *
-     * The first version backed the glyphs with `panelDark` and the lift shaft
-     * they hang on is also `panelDark`, so the plate vanished into the wall and
-     * the number read as digits floating on a dark field. A polished plaque is
-     * both what a lift lobby actually has and the only key in the palette that
-     * separates from the two surfaces these signs are ever bolted to. */
-    if (nx) {
-      iput('trim', boxGeo(PLATE_T, plate.h, plate.w, 1), lx + nx * pOff, ly, lz);
-      for (const b of bars) {
-        iput('emWhite', boxGeo(BAR_T, b.h, b.w, 1), lx + nx * bOff, ly + b.v, lz - nx * b.u);
-      }
-    } else {
-      iput('trim', boxGeo(plate.w, plate.h, PLATE_T, 1), lx, ly, lz + nz * pOff);
-      for (const b of bars) {
-        iput('emWhite', boxGeo(b.w, b.h, BAR_T, 1), lx + nz * b.u, ly + b.v, lz + nz * bOff);
-      }
-    }
-  };
+  const floorSign = (n, plane, lx, ly, lz, capH = 0.6) =>
+    drawFloorSign(iput, n, plane, lx, ly, lz, capH);
 
   /* ---------------------------------------------------------------- */
   /* Shell                                                             */
@@ -1081,32 +1094,74 @@ export function buildTower(world, B, g, spec, rng) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Balustrade around a rectangular void.
+ * The spans of one balustrade run left after its openings are cut out.
+ *
+ * Exported and pure because "the rail has a gap where the stair arrives" is
+ * exactly the kind of statement that is either true or is a player walking off
+ * a gallery, and it can be settled here without a renderer.
+ *
+ * @param {number} a  run start along its own axis
+ * @param {number} b  run end
+ * @param {Array<[number, number]>} [gaps]  openings, in the same coordinate
+ * @returns {Array<[number, number]>} the remaining solid spans, ascending
+ */
+export function railSpans(a, b, gaps = []) {
+  let spans = [[a, b]];
+  for (const [g0, g1] of gaps) {
+    const lo = Math.min(g0, g1), hi = Math.max(g0, g1);
+    const next = [];
+    for (const [s0, s1] of spans) {
+      if (hi <= s0 || lo >= s1) { next.push([s0, s1]); continue; }
+      if (lo - s0 > 0.05) next.push([s0, lo]);
+      if (s1 - hi > 0.05) next.push([hi, s1]);
+    }
+    spans = next;
+  }
+  return spans;
+}
+
+/**
+ * Balustrade around a rectangular void, or along the edge of a gallery.
  *
  * `openZ0` / `openZ1` omit an entire X-aligned run, for the end of the well the
  * escalators pass through. See the call site for why it is the whole run and
  * not a gap.
+ *
+ * `gaps` cuts an OPENING in a named run instead of dropping the whole thing,
+ * which is what a stair head needs: the hangar mezzanine's stair arrives in the
+ * middle of a 21 m front edge and dropping that run would leave nineteen metres
+ * of unguarded gallery over an eight-metre fall. Each entry is
+ * `{ side: 'z0'|'z1'|'x0'|'x1', a, b }` in the run's own axis.
+ *
+ * Exported because the mezzanine is the second gallery in this world and a
+ * second implementation of "rail with glass and a collider that matches it" is
+ * how one of them ends up with a rail you can walk through.
  */
-function railRect(put, solid, x0, x1, z0, z1, y, accent, { openZ0, openZ1 } = {}) {
+export function railRect(put, solid, x0, x1, z0, z1, y, accent, { openZ0, openZ1, gaps = [] } = {}) {
   const H = 1.1;
+  const cut = (side) => gaps.filter((g) => g.side === side).map((g) => [g.a, g.b]);
   const runs = [];
-  if (!openZ0) runs.push([x0, x1, z0]);
-  if (!openZ1) runs.push([x0, x1, z1]);
-  for (const [a, b, z] of runs) {
-    const cx = (a + b) / 2, len = b - a;
-    put('trimDark', boxGeo(len, 0.12, 0.12, 1), cx, y + H, z);
-    put(accent, boxGeo(len, 0.06, 0.06, 1), cx, y + H + 0.09, z);
-    put('glassWindow', new THREE.PlaneGeometry(len, H - 0.2), cx, y + (H - 0.2) / 2 + 0.05, z, z > 0 ? 0 : Math.PI);
-    solid(cx, y + H / 2, z, len / 2, H / 2, 0.09);
+  if (!openZ0) runs.push(['z0', x0, x1, z0]);
+  if (!openZ1) runs.push(['z1', x0, x1, z1]);
+  for (const [side, a, b, z] of runs) {
+    for (const [s0, s1] of railSpans(a, b, cut(side))) {
+      const cx = (s0 + s1) / 2, len = s1 - s0;
+      put('trimDark', boxGeo(len, 0.12, 0.12, 1), cx, y + H, z);
+      put(accent, boxGeo(len, 0.06, 0.06, 1), cx, y + H + 0.09, z);
+      put('glassWindow', new THREE.PlaneGeometry(len, H - 0.2), cx, y + (H - 0.2) / 2 + 0.05, z, z > 0 ? 0 : Math.PI);
+      solid(cx, y + H / 2, z, len / 2, H / 2, 0.09);
+    }
   }
-  // The two Z-aligned runs are never interrupted - the lanes only ever open on
-  // the +/-Z faces.
-  for (const x of [x0, x1]) {
-    const cz = (z0 + z1) / 2, len = z1 - z0;
-    put('trimDark', boxGeo(0.12, 0.12, len, 1), x, y + H, cz);
-    put(accent, boxGeo(0.06, 0.06, len, 1), x, y + H + 0.09, cz);
-    put('glassWindow', new THREE.PlaneGeometry(len, H - 0.2), x, y + (H - 0.2) / 2 + 0.05, cz, x > 0 ? Math.PI / 2 : -Math.PI / 2);
-    solid(x, y + H / 2, cz, 0.09, H / 2, len / 2);
+  // In the towers the two Z-aligned runs are never interrupted - the lanes only
+  // ever open on the +/-Z faces - but a gallery may still want a gap in one.
+  for (const [side, x] of [['x0', x0], ['x1', x1]]) {
+    for (const [s0, s1] of railSpans(z0, z1, cut(side))) {
+      const cz = (s0 + s1) / 2, len = s1 - s0;
+      put('trimDark', boxGeo(0.12, 0.12, len, 1), x, y + H, cz);
+      put(accent, boxGeo(0.06, 0.06, len, 1), x, y + H + 0.09, cz);
+      put('glassWindow', new THREE.PlaneGeometry(len, H - 0.2), x, y + (H - 0.2) / 2 + 0.05, cz, x > 0 ? Math.PI / 2 : -Math.PI / 2);
+      solid(x, y + H / 2, cz, 0.09, H / 2, len / 2);
+    }
   }
 }
 

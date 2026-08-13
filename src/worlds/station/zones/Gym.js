@@ -2045,12 +2045,22 @@ function dressArcade(S) {
 /* ------------------------------------------------------------------ */
 
 /**
- * The two authored friendlies this zone is allowed.
+ * The named cast.
  *
- * There is a hard cap of eight across the whole game and the canteen owns the
- * merchant, so neither of these carries `role: 'vendor'`. They are the two
- * people you would actually meet in a gym: the one who runs the floor, and the
- * one who runs the thing in the middle of it.
+ * This was two people, with a note here explaining that the game capped
+ * authored friendlies at eight across every deck and that the canteen owned the
+ * ring's only merchant - so a sports complex the size of a village had a coach,
+ * a marshal and nowhere to buy a water bottle. The cap is now declared by the
+ * world against what it actually authors (see `friendlyBudget` in
+ * `StationWorld._fillSpawns`), and this deck takes a counter and a challenge
+ * board of its own.
+ *
+ * Everything added stands on the concourse ring at 122-127 m. That is not a
+ * guess: `dressArcade`'s `traffic` table walks instanced figures round the
+ * whole of that ring at 122, 125.4 and 128.8 m on ten bearings from 24 to 318,
+ * so the band is known-open paving for 360 degrees - which is more than can be
+ * said for the court, with a running track at 102 +/- 6 and a centrifuge drum
+ * in the middle of it.
  */
 function populateNamed(ctx) {
   const [ivoX, ivoZ] = bear(206, 168);
@@ -2067,6 +2077,44 @@ function populateNamed(ctx) {
     persona:
       'Marshal of the centrifuge, and the only person on this deck who thinks the drum is dangerous - which she is right about and says constantly. Nineteen months on a long micro-g rotation left her with an engineer\'s respect for bone density and a very dry line in safety briefings, which she delivers whether you are booked in for a session or merely walking past the ramp.',
     patrol: [bear(268, 40), bear(250, 62), bear(285, 66), bear(272, 88)],
+  });
+
+  const [proX, proZ] = bear(152, 126);
+  ctx.npc(proX, proZ, {
+    name: 'Wren Ashimolowo',
+    persona:
+      'Minds the equipment counter off the concourse: straps, chalk, replacement grips, cold packs and the single flask of electrolyte anybody on this deck actually wants. Former competitive climber, retired by a shoulder she will describe in more detail than you asked for, and physically incapable of watching somebody lift badly without saying so. She buys used kit back and grades it honestly, which loses her money.',
+    role: 'vendor',
+    vendorCategories: ['tools', 'health', 'cosmetic'],
+    vendorTitle: 'Deck 9 Equipment Counter',
+    signLines: ['EQUIPMENT', 'DECK 9 ATHLETICS'],
+    patrol: [bear(152, 126), bear(156, 123), bear(148, 123)],
+  });
+
+  const [boardX, boardZ] = bear(42, 126);
+  ctx.npc(boardX, boardZ, {
+    name: 'Meret Duhamel',
+    persona:
+      'Runs the challenge board by the link mouth, which is how this deck hands out work: standing times to beat, kit to recover, drills that somebody upstairs has decided count as training. She is relentlessly encouraging in a way that is impossible to argue with and keeps every record for the last eleven years in her head. She has held two of them herself since before you were on the ring.',
+    role: 'quest_manager',
+    isQuestManager: true,
+    signLines: ['CHALLENGE BOARD', 'DECK 9 ATHLETICS'],
+  });
+
+  const [tarX, tarZ] = bear(300, 122);
+  ctx.npc(tarX, tarZ, {
+    name: 'Tarek Bilal',
+    persona:
+      'Physiotherapist working out of a two-bed room off the concourse, walking the ring between appointments because sitting down is, he says, the whole problem. He diagnoses gaits at forty metres, is very funny about it, and every single piece of advice he gives you unprompted turns out to have been correct.',
+    patrol: [bear(300, 122), bear(288, 128), bear(312, 118), bear(296, 130)],
+  });
+
+  const [joX, joZ] = bear(96, 126);
+  ctx.npc(joX, joZ, {
+    name: 'Josipa Vrel',
+    persona:
+      'Night-shift reactor tech who trains at hours nobody else does and treats the deck as her own quiet property. Blunt, funny in a low voice, and openly contemptuous of the centrifuge - she has done the real thing for nineteen months and says the drum is a fairground ride with paperwork.',
+    patrol: [bear(96, 126), bear(108, 122), bear(84, 128), bear(102, 132)],
   });
 }
 

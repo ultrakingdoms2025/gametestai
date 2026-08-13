@@ -2595,16 +2595,26 @@ function castTheCrowd(ctx, K) {
 }
 
 /* ------------------------------------------------------------------ */
-/* The two who have names                                              */
+/* The ones who have names                                             */
 /* ------------------------------------------------------------------ */
 
 /**
- * There is a hard cap of eight authored friendlies across the whole game and
- * three other zones want theirs, so this one gets exactly two: the person you
- * buy from and the person who runs the kitchen. Everybody else in here is an
- * ambient actor, which is the right trade - a named NPC costs a conversation
- * and a character, and a canteen needs a hundred bodies far more than it needs
- * a third biography.
+ * The named cast.
+ *
+ * This was two - the person you buy from and the person who runs the kitchen -
+ * against a game-wide cap of eight authored friendlies that the world now
+ * declares for itself (`friendlyBudget` in `StationWorld._fillSpawns`). The
+ * trade the old note describes is still the right one: a canteen needs a
+ * hundred bodies far more than it needs a biography for each of them, and
+ * everybody else in here is still an instanced actor. Four more is what buys
+ * the hall the two things it had no way to offer - a second counter and
+ * somewhere to pick up work - plus two people worth stopping for.
+ *
+ * The four added stand in the radial SPOKES. Those are the hall's circulation:
+ * `blocked()` keeps all nine furniture passes out of them, so a spoke is the
+ * one place in a room with four hundred chairs in it that is guaranteed to be
+ * clear floor. Their bearings are checked against KEEPOUT too - the arrival
+ * funnel at 344-16 and the servery block at 141-217 are the two that bite.
  */
 function castTheNamed(ctx) {
   // The merchant stands behind her own counter, which is also what stops a
@@ -2629,6 +2639,55 @@ function castTheNamed(ctx) {
     persona:
       'Head cook of the Long Galley, thirty-one years on the line and audibly unimpressed by all of them. She has fed three station commanders, two evacuations and one wedding, and rates every one of them by how much was left in the trays afterwards. Ask her about the food and she will talk about the hydroponics; ask her about the hydroponics and she will tell you what the last shipment of real garlic cost.',
     patrol: [[c0[0], c0[1]], [c1[0], c1[1]], [c2[0], c2[1]]],
+  });
+
+  /* Spoke 60, well inside the mezzanine stair keep-out at r 128-154. */
+  const b0 = at(60, 100);
+  ctx.npc(b0[0], b0[1], {
+    name: 'Sedna Ilkay',
+    persona:
+      'Runs the drinks and dry-goods trolley out of a pitch in the middle of the floor, which she chose because it is the furthest point in the hall from anybody who could tell her to move it. She sells hot things, cold things, and the sort of small comfort a crew member buys at the end of a bad shift. Endlessly nosy, entirely discreet, and she will remember your order the second time.',
+    role: 'vendor',
+    vendorCategories: ['health', 'cosmetic'],
+    vendorTitle: 'The Long Galley Trolley',
+    signLines: ['TROLLEY', 'HOT + COLD'],
+    patrol: [[b0[0], b0[1]], [at(58, 104)[0], at(58, 104)[1]], [at(62, 96)[0], at(62, 96)[1]]],
+  });
+
+  /* Spoke 300, clear of the refectory block (244-266) and the provisions
+   * stall's serving room (211-233). */
+  const b1 = at(300, 110);
+  ctx.npc(b1[0], b1[1], {
+    name: 'Purser Oleander Vance',
+    persona:
+      'Keeps the mess ledger, which on this ring means she also keeps the list of everything the galley needs somebody to go and fetch. She posts it on the board beside her and reads it out in the tone of a woman who has costed every line. Immaculate, unhurried, and quietly the best-informed person about supply on five decks.',
+    role: 'quest_manager',
+    isQuestManager: true,
+    signLines: ['MESS LEDGER', 'STANDING WORK'],
+  });
+
+  /* Spoke 90 and spoke 330, walked out and back. Both stay clear of the
+   * servery arc and of the arrival funnel. */
+  const w0 = at(90, 70);
+  ctx.npc(w0[0], w0[1], {
+    name: 'Hallam Oduya',
+    persona:
+      'Hydroponics lead, in the galley to argue - politely, endlessly - about what the kitchen does to his produce. He knows to the gram what this hall eats in a week and finds the number genuinely thrilling. Talk to him for two minutes and you will know more about closed-loop nitrogen than you intended to.',
+    patrol: [
+      [w0[0], w0[1]], [at(90, 112)[0], at(90, 112)[1]],
+      [at(88, 126)[0], at(88, 126)[1]], [at(92, 58)[0], at(92, 58)[1]],
+    ],
+  });
+
+  const w1 = at(330, 96);
+  ctx.npc(w1[0], w1[1], {
+    name: 'Kesi Aliyeva',
+    persona:
+      'Off-shift tug pilot who eats here twice a day and treats the hall as a waiting room with soup. She talks about approaches and berth slots the way other people talk about weather, is superstitious about exactly one thing and will not say which, and knows every freighter crew that comes through the ring by their handling.',
+    patrol: [
+      [w1[0], w1[1]], [at(330, 132)[0], at(330, 132)[1]],
+      [at(322, 118)[0], at(322, 118)[1]], [at(336, 74)[0], at(336, 74)[1]],
+    ],
   });
 }
 

@@ -321,6 +321,41 @@ function raySphere(origin, dir, center, radius, maxDist) {
   return t > 0 && t < maxDist ? t : -1;
 }
 
+/**
+ * Which lore a gateway's keeper recites.
+ *
+ * A keeper stands beside a gateway to answer "what is through there". In every
+ * world but one that question has a single answer, because every other world
+ * has exactly one portal and it goes home to the station - so the keeper is
+ * that world's OWN lorekeeper and `world.id` is the right scope. The station is
+ * the hub: six gateways, six different destinations, and keying all six on
+ * `world.id` gave the player six characters reciting the same paragraph about
+ * the station they were already standing in.
+ *
+ * The rule is therefore derived from the ring rather than hard-coded to it -
+ * when the portals in this world lead to more than one place, each keeper takes
+ * its own gateway's destination.
+ *
+ * Keying on `spec.target` unconditionally would be WRONG, and wrong in four
+ * worlds at once: medieval's single portal targets `station`, so its keeper
+ * would stop knowing anything about Aldermoor Vale and start reciting station
+ * lore to somebody standing in a village. Same for sports, citadel and race.
+ *
+ * Exported so the rule can be pinned by a test without building a world; see
+ * scripts/tests/lorekeeper-scope.test.mjs.
+ *
+ * @param {{id:string, portalSpecs?:Array<{target?:string}>}} world
+ * @param {{target?:string}} spec the gateway this keeper is standing beside
+ * @returns {string} a key into the lore table
+ */
+export function lorekeeperScope(world, spec) {
+  const specs = world?.portalSpecs ?? [];
+  const targets = new Set();
+  for (const s of specs) if (s?.target) targets.add(s.target);
+  if (targets.size > 1 && spec?.target) return spec.target;
+  return world?.id;
+}
+
 export class NPCManager {
   /** @param {{scene:THREE.Scene, engine:any, physics:any, bus:any, materials:any, player:any}} ctx */
   constructor({ scene, engine, physics, bus, materials, player }) {
@@ -508,7 +543,28 @@ export class NPCManager {
      * to. Zeroing the budget is enough: every hostile path downstream is driven
      * by this count. */
     const hostilesAllowed = allows(world, 'hostiles');
-    const maxHostiles = hostilesAllowed ? this.maxHostiles : 0;
+    /**
+     * A world may ask for more hostiles than the default budget.
+     *
+     * `CONFIG.npc.hostileCount` is 10, and 10 was sized for a world you can
+     * cross in twenty seconds. On the station it BINDS, silently, and in the
+     * worst possible place: `spawnForWorld` walks `npcSpawns` in order and
+     * `continue`s past every hostile once the count is reached, and the hub's
+     * ten are authored before the outer ring's are appended - so the
+     * construction zone, whose own docstring says it "is deliberately the one
+     * that carries the ring's combat", shipped with zero hostiles in it. The
+     * fix has to be per-world: raising the global default would put eight more
+     * enemies in the medieval valley, which has not asked for them.
+     *
+     * Clamped to 24 for the same reason `maxNPCs` exists at all. Hostiles are
+     * the most expensive character in the world - they sense on a timer, raycast
+     * for line of sight and hold a weapon model each - and they are also the
+     * only ones that can converge on the player from anywhere. 24 is a little
+     * over twice the default and still a third of the character budget.
+     */
+    const HOSTILE_CEILING = 24;
+    const asked = Number.isFinite(world.hostileBudget) ? Math.floor(world.hostileBudget) : this.maxHostiles;
+    const maxHostiles = hostilesAllowed ? Math.max(0, Math.min(HOSTILE_CEILING, asked)) : 0;
     /* A world may forbid crowd filling outright - the maze is meant to feel
      * empty, and a manager-added crowd on top of its eight authored wanderers
      * would defeat that. Zeroing the reserve and the hub budget below is
@@ -539,8 +595,27 @@ export class NPCManager {
      */
     const CROWD_RESERVE = crowdAllowed ? 6 : 0;
     const authored = spawns.reduce((n, s) => n + (s.type === 'hostile' ? 0 : 1), 0);
+    /**
+     * A world may ask for a larger civilian budget, on the same terms as
+     * `hostileBudget` above and for the same reason.
+     *
+     * `maxFriendlies` is 30, and the station's cast passed it: the hub is a
+     * plaza, a commercial strip, a cargo yard and a traffic tower, and each of
+     * the four outer zones now wants a merchant, a quest manager and people to
+     * talk to. Over the cap the loss is silent and it is always the LAST
+     * authored spawns that go, which on the station means the zones - the
+     * districts the player has to walk half a kilometre to reach. A merchant
+     * nobody can meet is worse than no merchant, which is the same argument
+     * the `maxNPCs` note above makes about the galley.
+     *
+     * `maxNPCs` is still the hard ceiling: this only redistributes the
+     * character budget toward civilians, it cannot raise it.
+     */
+    const askedF = Number.isFinite(world.friendlyBudget)
+      ? Math.floor(world.friendlyBudget) : this.maxFriendlies;
+    const friendlyBudget = Math.max(0, Math.min(this.maxNPCs - maxHostiles, askedF));
     const authoredCap = crowdAllowed
-      ? Math.max(4, Math.min(authored, this.maxFriendlies - CROWD_RESERVE))
+      ? Math.max(4, Math.min(authored, friendlyBudget - CROWD_RESERVE))
       // No reserve to hold back and nothing to top up with - every authored
       // friendly gets a slot.
       : authored;
@@ -572,8 +647,28 @@ export class NPCManager {
         signLines: spec.signLines,
         vendorCategories: spec.vendorCategories,
         vendorTitle: spec.vendorTitle,
-        weaponId: hostile ? weaponDeal[hostileCount] : undefined,
-        weaponPool: hostile ? weaponPool : undefined,
+        /* An authored quest manager. `_spawnQuestManagers` still plants one per
+         * world from its own cast, because every world needs at least one and
+         * most worlds do not author any; this is what lets a world scatter more
+         * of them itself rather than have exactly one, always, at the spawn. */
+        isQuestManager: spec.isQuestManager === true,
+        /* An authored weapon beats the deal.
+         *
+         * The deal exists so a player meets every weapon in the theme's table
+         * before any repeats, and it stays in charge of every hostile that does
+         * not care. What it cannot express is an ARCHETYPE - a breacher that is
+         * only a breacher because it carries a baton, a marksman that is only a
+         * marksman because it carries a rifle - because the deal is shuffled
+         * precisely so the pairing is unlearnable. A named enemy whose weapon is
+         * part of its identity says so here; `weaponPool` is still passed so a
+         * respawn re-rolls within the theme rather than being frozen forever. */
+        weaponId: hostile ? (spec.weaponId ?? weaponDeal[hostileCount]) : undefined,
+        weaponPool: hostile ? (spec.weaponPool ?? weaponPool) : undefined,
+        /* Only an AUTHORED weapon is fixed. The deal above is shuffled on
+         * purpose, so a character that took its weapon from the deal keeps
+         * re-rolling on first contact exactly as it always did - see
+         * `weaponFixed` in HostileNPC. */
+        weaponFixed: hostile && !!spec.weaponId,
       });
       npc.spawnSpec = spec;
       if (hostile) hostileCount++;
@@ -585,7 +680,7 @@ export class NPCManager {
 
     friendlyCount += this._spawnLorekeepers(world);
     this._spawnQuestManagers(world);
-    this._populateHubs(anchors, crowdAllowed ? this.maxFriendlies - friendlyCount : 0);
+    this._populateHubs(anchors, crowdAllowed ? friendlyBudget - friendlyCount : 0);
     for (const npc of this._hostiles) npc.prebuildWeapons?.();
     this._seatCivilians();
     this.validateGrounding();
@@ -901,6 +996,7 @@ export class NPCManager {
       role: o.role,
       weaponId: o.weaponId,
       weaponPool: o.weaponPool,
+      weaponFixed: o.weaponFixed,
     };
     const npc = o.hostile ? new HostileNPC(ctx) : new FriendlyNPC(ctx);
     // A world-authored posture is a costume note, not a life sentence: the idle
@@ -945,9 +1041,14 @@ export class NPCManager {
     // MazeWorld.js) must not get a second, generic one standing next to it.
     if (!allows(world, 'crowd')) return 0;
     const specs = world?.portalSpecs ?? [];
+    /* Does a keeper here speak about the gateway, or about the world it stands
+     * in? See `lorekeeperScope` above - the rule is derived from the ring, and
+     * `perGateway` is only ever true at the hub. */
     let made = 0;
     for (let i = 0; i < specs.length && this._npcs.length < this.maxNPCs; i++) {
       const spec = specs[i];
+      const scope = lorekeeperScope(world, spec);
+      const perGateway = scope !== world.id;
       const rotY = spec.rotationY ?? 0;
       const right = new THREE.Vector3(Math.cos(rotY), 0, -Math.sin(rotY));
       const normal = new THREE.Vector3(Math.sin(rotY), 0, Math.cos(rotY));
@@ -956,20 +1057,26 @@ export class NPCManager {
         .addScaledVector(right, i % 2 === 0 ? 2.1 : -2.1);
       const spot = this._snapToGround(base);
       if (!spot) continue;
-      const entry = this._loreData?.[world.id] ?? loreEntryForScope(world.id);
+      const entry = this._loreData?.[scope] ?? loreEntryForScope(scope);
       const label = String(entry.sign_label ?? 'Lorekeeper').toUpperCase();
-      const persona = buildLorePersona(world.id, this._loreData);
+      const persona = buildLorePersona(scope, this._loreData);
+      /* The board says where the gateway goes, not where the player is: at the
+       * hub the keeper's own placard is the second half of the wayfinding, and
+       * six boards all reading AETHER NEXUS told the player nothing. */
+      const board = perGateway
+        ? String(spec.label ?? entry.title ?? scope)
+        : String(world.displayName ?? world.id);
       const npc = this._createNPC({
         hostile: false,
-        name: label,
+        name: perGateway ? `${label} - ${board}` : label,
         persona,
         position: spot,
         yaw: rotY + Math.PI,
         anchored: true,
         role: ROLE.LOREKEEPER,
         posture: 'crossed',
-        signLines: [label, String(world.displayName ?? world.id).toUpperCase()],
-        loreScope: world.id,
+        signLines: [label, board.toUpperCase()],
+        loreScope: scope,
       });
       npc.isLorekeeper = true;
       npc.loreTitle = String(entry.title ?? 'World Lore');

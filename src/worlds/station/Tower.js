@@ -945,10 +945,47 @@ export function buildTower(world, B, g, spec, rng) {
   for (let f = 0; f < floors; f++) {
     const y = floorY(f) + 0.05;
     fitFloor(iput, solid, { f, floors, y, ix, iz, wellX1: WELL_X1, shaftX: SHAFT_X, shaftHalf: SHAFT_HALF, accent, fit: spec.fit ?? 'hab', rng });
-    // One reward per floor, alternating corners so a player has to cross each
-    // plate rather than riding the lift and looking down.
-    const cx = f % 2 ? ix - 2.4 : WELL_X1 + 2.4;
-    const cz = f % 3 === 0 ? iz - 2.4 : -iz + 3.0;
+    /* One reward per floor, walked round the plate so a player has to cross it
+     * rather than ride the lift and look down.
+     *
+     * ── Why this is a table of four and not two modulos ─────────────────────
+     * It used to be `f % 2 ? ix - 2.4 : WELL_X1 + 2.4` crossed with
+     * `f % 3 === 0 ? iz - 2.4 : -iz + 3.0`, and one of the four combinations
+     * that produces - `(ix - 2.4, -iz + 3.0)`, which comes up on floors 1, 5, 7,
+     * 11, 13 ... - is INSIDE THE LIFT SHAFT. `SHAFT_X - SHAFT_HALF` is
+     * `ix - 4.6` and `SHAFT_Z + SHAFT_HALF` is `-iz + 4.6`, so that corner sits
+     * in the one rectangle `slabRects` deliberately leaves out. Measured across
+     * the 23 enterable towers: 34 of 210 authored collectables were hanging in
+     * a shaft void with the ground floor four to twenty-eight metres below
+     * them. They were technically collectable - by riding the car to that
+     * landing and reaching out of it - which is the exact behaviour this
+     * comment's first sentence says the alternation exists to prevent.
+     *
+     * So the corners are enumerated instead of derived, and every one is stated
+     * against the slab rectangle it belongs to:
+     *
+     *   0  the open floor, front       x in [WELL_X1, SHAFT_X - SHAFT_HALF]
+     *   1  beside the lift, back       x in [SHAFT_X - SHAFT_HALF, ix],
+     *                                  z >  SHAFT_Z + SHAFT_HALF
+     *   2  the open floor, back        as 0
+     *   3  the open floor, mid-front   as 0, at the far end of the band
+     *
+     * Three of the four are in the widest rectangle because it is the only one
+     * that is guaranteed to exist at any tower footprint; the fourth is the
+     * one that makes the player walk past the lift instead of round it.
+     * Everything is clamped into its own band so a narrower tower cannot push a
+     * corner back into a void.
+     */
+    const openX0 = WELL_X1 + 1.6;
+    const openX1 = SHAFT_X - SHAFT_HALF - 1.6;
+    const clamp = (v, lo, hi) => (lo > hi ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, v)));
+    const CORNERS = [
+      [clamp(WELL_X1 + 2.4, openX0, openX1), clamp(-iz + 2.4, -iz + 1.4, iz - 1.4)],
+      [clamp(ix - 2.4, SHAFT_X - SHAFT_HALF + 1.4, ix - 1.4), clamp(iz - 2.4, SHAFT_Z + SHAFT_HALF + 1.4, iz - 1.4)],
+      [clamp(WELL_X1 + 2.4, openX0, openX1), clamp(iz - 2.4, -iz + 1.4, iz - 1.4)],
+      [clamp(SHAFT_X - SHAFT_HALF - 2.4, openX0, openX1), clamp(-iz + 2.4, -iz + 1.4, iz - 1.4)],
+    ];
+    const [cx, cz] = CORNERS[f % CORNERS.length];
     spots.push({
       position: P(cx, y + 0.7, cz),
       tier: f === floors - 1 ? 'prize' : f >= floors - 3 ? 'rare' : 'common',

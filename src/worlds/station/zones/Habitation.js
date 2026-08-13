@@ -105,13 +105,29 @@ const ARCADE_SPOKES = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => (k * Math.PI) / 4);
 const COURT_SPOKES = [0, 1, 2, 3, 4].map((k) => (k * Math.PI * 2) / 5);
 
 /**
- * Points the two named residents stand on or walk through. Terraces leave a
+ * Points the named residents stand on or walk through. Terraces leave a
  * courtyard around each, so a warden on patrol never has to path through a
  * building that was not there when her route was written.
+ *
+ * EVERY point a named character occupies has to be listed here. That is not a
+ * nicety - `reserved()` is the only thing keeping `buildCell` and the rim
+ * services from being built straight through a character's route, and a spawn
+ * point inside a pod wall is one the capsule solver ejects upward.
+ *
+ * The block below belongs to the merchant, the warden's desk and the two extra
+ * residents added with them. All of it is authored at a radius of 96 m or more,
+ * on purpose: `stackClear` reports a hab stack only between 60 and 96 m along
+ * its own bearing, so anything past 96 clears the five stacks by construction
+ * instead of by a lateral offset somebody has to re-check whenever a stack
+ * moves.
  */
 const NPC_ANCHORS = [
   [-18, 74], [10, 84], [-38, 22], [-8, 116],
   [36, 148], [52, 132], [22, 160], [44, 118],
+  [-16, 156], [-8, 150], [-24, 162],
+  [14, 164],
+  [-30, 118], [-10, 132], [-46, 104], [-22, 146],
+  [24, 96], [52, 88], [8, 112], [34, 120],
 ];
 
 /**
@@ -153,8 +169,16 @@ export function buildHabitation(ctx) {
   population(ctx);
   relics(ctx);
 
-  /* Named residents. Two only - the game caps authored friendlies at eight
-   * across all five decks and the other three zones need theirs. */
+  /* Named residents.
+   *
+   * There used to be two, with a note here explaining that the manager capped
+   * authored friendlies at eight across all five decks. That cap is now
+   * declared by the world against what it actually authors (see
+   * `friendlyBudget` in StationWorld._fillSpawns), so a residential deck of
+   * four thousand people no longer has to be represented by two of them.
+   *
+   * Every position below is in NPC_ANCHORS. See the note there.
+   */
   ctx.npc(-18, 74, {
     name: 'Yara Bess',
     persona:
@@ -168,6 +192,43 @@ export function buildHabitation(ctx) {
     persona:
       'Night-shift welder three weeks off rotation and visibly unsure what to do with daylight hours. Speaks slowly, laughs at the end of his own sentences, and has strong opinions about which of the galley\'s four soups is a lie.',
     patrol: [[36, 148], [52, 132], [22, 160], [44, 118]],
+  });
+
+  /* The arrival concourse, which is where somebody stepping off the Hab Transit
+   * link comes out. A shop and a work board are what you would actually put in
+   * front of four thousand residents' only way in and out. */
+  ctx.npc(-16, 156, {
+    name: 'Anneke Fell',
+    persona:
+      'Keeps Hab Stores on the arrival concourse - the one counter on this deck that sells you a ration tin, a replacement seal and a clean shirt without three signatures. Twenty years of running a shop where every customer also lives upstairs has made her unshockable and completely uninterested in gossip, which she regards as somebody else\'s stock. She will tell you the price, tell you whether you actually need it, and mean both.',
+    role: 'vendor',
+    vendorCategories: ['health', 'tools', 'cosmetic'],
+    vendorTitle: 'Hab Stores',
+    signLines: ['HAB STORES', 'RING C CONCOURSE'],
+    patrol: [[-16, 156], [-8, 150], [-24, 162]],
+  });
+
+  ctx.npc(14, 164, {
+    name: 'Officer Doriane Kest',
+    persona:
+      'Holds the warden\'s desk at the concourse end of Hab Ring C, where the deck\'s standing jobs are posted. She reads a job out exactly as written, adds what she thinks of it in one flat sentence, and keeps a private tally of who takes work and finishes it. She came off a rescue tender and has never entirely stopped triaging people on sight.',
+    role: 'quest_manager',
+    isQuestManager: true,
+    signLines: ['WARDEN DESK', 'STANDING WORK'],
+  });
+
+  ctx.npc(-30, 118, {
+    name: 'Sabine Roque',
+    persona:
+      'Hydroponics technician on the deck\'s own grow racks, walking the outer paving because she has been under lamps for nine hours and wants a horizon. She talks about tomatoes the way other people talk about children, is quietly furious about the water ration, and knows precisely which residents steal from the communal beds.',
+    patrol: [[-30, 118], [-10, 132], [-46, 104], [-22, 146]],
+  });
+
+  ctx.npc(24, 96, {
+    name: 'Elian Mabuza',
+    persona:
+      'Runs the deck creche and is therefore the single best-informed person in Hab Ring C, since he hears everything twice - once from a parent and once, more accurately, from a four-year-old. Cheerful, permanently carrying something, and completely unbothered by the noise. He would like more floor space and has said so in writing eleven times.',
+    patrol: [[24, 96], [52, 88], [8, 112], [34, 120]],
   });
 }
 
@@ -659,7 +720,23 @@ function podTerrace(ctx, props, o) {
   const len = (a1 - a0) * r;
   ctx.contact(mx, mz, Math.max(len, ROW_D) + 4);
   ctx.mmRect(mx, mz, len, ROW_D, am, 'rgba(70,120,110,0.5)', 'rgba(140,255,215,0.4)');
-  if (seed % 3 === 0) ctx.roof(mx, POD_H + 0.4, mz);
+  /* The roof is published over a pod that was actually BUILT, not over the
+   * arc's midpoint.
+   *
+   * A slot is skipped whenever `siteClear` rejects it, so on a run that is
+   * built at both ends and cleared in the middle the midpoint is bare deck -
+   * and the relic placer, which trusts `_roofs` over its own probes (see
+   * `Relics._onWorld`), put a collectable four metres up in mid-air over it.
+   * One of the station's 110 relic sites was measured sitting there with
+   * nothing but the deck in its whole column.
+   *
+   * Same rule Construction.js states beside its own `ctx.roof` calls: publish
+   * reachable surfaces and only reachable ones. */
+  if (seed % 3 === 0) {
+    const madeIt = slots.filter((s) => s.ok);
+    const mid = madeIt[madeIt.length >> 1];
+    if (mid) ctx.roof(mid.lx, POD_H + 0.4, mid.lz);
+  }
 }
 
 /**

@@ -1877,6 +1877,7 @@ export class StationWorld extends World {
 
     onProgress?.(0.99, 'Registering crew');
     await yieldFrame();
+    this._hubCaches();
     this._fillSpawns();
     this._fillEnvironment();
 
@@ -9571,6 +9572,86 @@ export class StationWorld extends World {
     );
   }
 
+  /**
+   * Loose collectables on the hub's own decks.
+   *
+   * The four outer zones each hand back a list of places worth looking (see
+   * `ZoneContext.relic` and the synthetic "caches" enterable in
+   * `_buildOuterRing`), and the enterable buildings put one on every floor. The
+   * hub had neither: everything a player could pick up between the plaza and
+   * the rim came from `Relics`, and `Relics` only keeps a spot that is 2.5 m
+   * PROMINENT - a ledge, a parapet, a roof. That is the right rule for the
+   * thing it is, and it means the hub deck itself, which is where a player
+   * spends the first ten minutes of the game, had nothing on it at all.
+   *
+   * So these are the ground-level half, authored the way the zones author
+   * theirs and streamed by the same `Interiors` code, which is what makes them
+   * survive a save and stops them filling `Loot`'s pool.
+   *
+   * Every one is placed against something already standing - a planter, a
+   * kerb line, a stair foot, a container row - because a collectable in the
+   * middle of open paving is litter, and one tucked behind a planter is a
+   * reason to have walked round it. None is on a gateway dais, on an avenue
+   * carriageway (a pickup in a road is a pickup you drive over) or within 12 m
+   * of the player spawn.
+   */
+  _hubCaches() {
+    /* Pavement offsets, not carriageway. `ROAD_W` is 18 so the kerb line is at
+     * 9.9 (see ROAD_EDGE_HALF); 13 clears it with room for the capsule. */
+    const AV = 13;
+    const P = (x, y, z, tier) => ({ position: new THREE.Vector3(x, y, z), tier });
+    const road = (deg, r, off, y, tier) => {
+      const p = roadPos(deg, r, off, 0, new THREE.Vector3());
+      return P(p.x, y, p.z, tier);
+    };
+
+    const spots = [
+      // The plaza rim, behind the planter ring on three sides. 0.95 m is hip
+      // height on a 1.75 m capsule, so each reads as set down rather than
+      // dropped.
+      P(30.5, 0.95, 24.5, 'common'),
+      P(-27.0, 0.95, 29.0, 'common'),
+      P(-6.0, 0.95, -36.5, 'rare'),
+      P(34.0, 0.95, -19.0, 'common'),
+      // Monument steps, the one spot on the plaza everybody walks past.
+      P(0, 1.35, 13.5, 'common'),
+
+      // Avenue pavements, one per bearing, worked outward. The +X strip gets
+      // two because it is the longest walk on the hub.
+      road(0, 76, AV, 0.95, 'common'),
+      /* 11.5, not `AV`. This one lands opposite a shop unit rather than between
+       * two, and a shopfront's 0.7 m sill reaches back to about 13.7 from the
+       * avenue centreline - a capsule dropped at 13 was lifted 1.48 m onto it.
+       * 11.5 is still 1.6 m outside the kerb line. */
+      road(0, 152, -11.5, 0.95, 'rare'),
+      road(60, 88, -AV, 0.95, 'common'),
+      road(120, 104, AV, 0.95, 'common'),
+      road(180, 92, -AV, 0.95, 'rare'),
+      road(240, 116, AV, 0.95, 'common'),
+      road(300, 84, -AV, 0.95, 'common'),
+
+      // The cargo yard: on the carriageway itself, which is the one place in
+      // that district that is not solid containers - the same reason the
+      // dockhand's spawn is on it.
+      road(300, 128, 0, 0.95, 'rare'),
+      road(300, 152, 0, 0.95, 'common'),
+
+      // Traffic control's apron and the hangar deck, at the far end of two
+      // avenues that otherwise pay nothing for the walk.
+      road(240, 150, 6, 0.95, 'rare'),
+      road(60, 148, -8, 0.95, 'prize'),
+    ];
+
+    this.enterables.push({
+      label: 'hub caches',
+      origin: new THREE.Vector3(0, 0, 0),
+      doors: [],
+      lifts: [],
+      collectibleSpots: spots,
+    });
+    console.info(`[station] hub caches: ${spots.length} ground-level collectables`);
+  }
+
   _fillSpawns() {
     // Spawn behind the monument looking down the +X avenue: the holo-table and
     // spire frame the shot, the great window and the planet close it, and both
@@ -9578,21 +9659,76 @@ export class StationWorld extends World {
     this.playerSpawn.set(SPAWN_X, 0.25, SPAWN_Z);
     this.playerSpawnYaw = SPAWN_YAW;
 
-    const F = (name, persona, x, z, patrol) => ({
+    /**
+     * A named civilian. `extra` is anything `NPCManager.spawnForWorld` reads off
+     * a spawn descriptor - `role`, `vendorCategories`, `vendorTitle`,
+     * `signLines`, `isQuestManager` - so a shopkeeper on the strip is authored
+     * here rather than being a second kind of thing somewhere else.
+     */
+    const F = (name, persona, x, z, patrol, extra) => ({
       position: new THREE.Vector3(x, 0.2, z),
       type: 'friendly',
       name,
       persona,
       patrol: patrol ? patrol.map(([px, pz]) => new THREE.Vector3(px, 0.2, pz)) : undefined,
+      ...extra,
     });
 
-    const H = (x, z, patrol) => ({
-      position: new THREE.Vector3(x, 0.2, z),
-      type: 'hostile',
-      name: 'Rogue Security Unit',
-      persona: 'A hijacked station security drone running corrupted enforcement code. It does not negotiate.',
-      patrol: patrol.map(([px, pz]) => new THREE.Vector3(px, 0.2, pz)),
-    });
+    /**
+     * Hostile archetypes.
+     *
+     * Every enemy on the ring used to be one thing - "Rogue Security Unit" with
+     * whatever the weapon deal handed it - so the only variation a player could
+     * read was in the muzzle flash. `NPCWeapons` already gives the station four
+     * weapons with genuinely different shapes (a rifle that suppresses from 20 m,
+     * a sidearm that plinks from 8, a staff that charges for four fifths of a
+     * second and hits for 21, a baton that has to be inside 1.8 m to do anything
+     * at all), and the AI already changes behaviour off `isMelee`. What was
+     * missing was a NAME on the pairing: the deal is deliberately shuffled so
+     * that "the one with the lance keeps its distance" is a rule the player
+     * cannot learn, and an archetype is exactly the rule you want them to learn.
+     *
+     * So each of these fixes its own weapon and says why in its persona. The
+     * mix per location is the encounter design: open laydowns get lances and
+     * rifles, container alleys and half-built decks get breakers, because a
+     * brawler is only interesting where you cannot simply walk backwards.
+     *
+     * @type {Record<string, {name:string, persona:string, weaponId:string}>}
+     */
+    const HOSTILE_KIND = {
+      rifle: {
+        name: 'Rogue Security Unit',
+        persona: 'A hijacked station security drone running corrupted enforcement code. It does not negotiate.',
+        weaponId: 'rifle',
+      },
+      breaker: {
+        name: 'Breaker Frame',
+        persona: 'A riot-suppression frame with its restraint governor stripped out. It carries a shock baton, closes the distance and does not stop to talk about it.',
+        weaponId: 'baton',
+      },
+      scout: {
+        name: 'Skirmish Drone',
+        persona: 'A light patrol drone that lost its handshake with traffic control and now treats every moving thing on the deck as an incursion. Fast, jumpy, badly armed.',
+        weaponId: 'sidearm',
+      },
+      lance: {
+        name: 'Arc Lance Sentry',
+        persona: 'A heavy emplacement walker running an old perimeter-denial routine. Its lance takes almost a second to charge, and it has never seen a reason to hurry.',
+        weaponId: 'staff',
+      },
+    };
+
+    const H = (kind, x, z, patrol) => {
+      const k = HOSTILE_KIND[kind] ?? HOSTILE_KIND.rifle;
+      return {
+        position: new THREE.Vector3(x, 0.2, z),
+        type: 'hostile',
+        name: k.name,
+        persona: k.persona,
+        weaponId: k.weaponId,
+        patrol: patrol.map(([px, pz]) => new THREE.Vector3(px, 0.2, pz)),
+      };
+    };
 
     const hangar = roadPos(60, 120, 34, 0, new THREE.Vector3());
     // Kept on the carriageway itself: the yard either side is solid containers.
@@ -9619,7 +9755,17 @@ export class StationWorld extends World {
       F('Oyo Tannen',
         'A relentlessly cheerful plaza food vendor selling something he insists is noodles. He upsells constantly, invents new limited-edition flavours on the spot, and treats the gateway ring mainly as a source of exotic ingredients - he has a theory about what grows on the other side of Gateway 06 and will share it unprompted.',
         -13, 19,
-        [[-13, 19], [-4, 24], [-22, 12]]),
+        [[-13, 19], [-4, 24], [-22, 12]],
+        /* He was already written as a vendor and was not one: the Marketplace
+         * keys on the role, and without it the busiest stall on the plaza was
+         * scenery you could only talk to. Food and field remedies only - he
+         * sells noodles, not ordnance. */
+        {
+          role: 'vendor',
+          vendorCategories: ['health'],
+          vendorTitle: "Tannen's Noodle Cart",
+          signLines: ['NOODLES', 'LIMITED EDITION'],
+        }),
 
       F('Sparrow Nkemdi',
         'Maintenance engineer for the cargo yard, permanently covered in coolant and mildly annoyed at the universe. She explains catastrophic failures in a bored monotone and genuinely believes duct sealant can fix anything, including people.',
@@ -9655,9 +9801,14 @@ export class StationWorld extends World {
         [[-19, 16], [-9, 22], [-24, 6], [-14, 26]]),
 
       F('Anselm Kade',
-        'Freight broker working the plaza with a folding terminal and an unshakeable belief that everything is negotiable. Charming in a way that leaves you checking your pockets, and genuinely good at his job.',
+        'Freight broker working the plaza with a folding terminal and an unshakeable belief that everything is negotiable. Charming in a way that leaves you checking your pockets, and genuinely good at his job. He deals in bonded surplus - salvage that came off a manifest somewhere - and buys anything you are carrying, no questions asked, at a price he describes as generous and you will not.',
         30, -12,
-        [[30, -12], [20, -26], [36, 2], [24, -6]]),
+        [[30, -12], [20, -26], [36, 2], [24, -6]],
+        {
+          role: 'vendor',
+          vendorTitle: 'Kade Bonded Surplus',
+          signLines: ['BONDED SURPLUS', 'WE BUY ANYTHING'],
+        }),
 
       F('Nia Sorrel',
         'Sanitation tech on the plaza rotation, pushing a cart and unbothered by anything the station can produce. She has seen what comes out of the gateways at 04:00 and considers it a workload issue.',
@@ -9669,16 +9820,93 @@ export class StationWorld extends World {
         128, -22,
         [[128, -22], [112, -22], [144, -20], [120, -14]]),
 
-      H(cargo.x + 26, cargo.z + 30, [[cargo.x + 26, cargo.z + 30], [cargo.x + 54, cargo.z + 12], [cargo.x + 30, cargo.z - 24]]),
-      H(cargo.x - 34, cargo.z + 46, [[cargo.x - 34, cargo.z + 46], [cargo.x - 6, cargo.z + 58], [cargo.x - 48, cargo.z + 20]]),
-      H(cargo.x + 8, cargo.z + 62, [[cargo.x + 8, cargo.z + 62], [cargo.x + 40, cargo.z + 52], [cargo.x - 14, cargo.z + 74]]),
-      H(comms.x + 30, comms.z + 22, [[comms.x + 30, comms.z + 22], [comms.x + 56, comms.z - 6], [comms.x + 18, comms.z + 44]]),
-      H(comms.x - 28, comms.z - 30, [[comms.x - 28, comms.z - 30], [comms.x - 52, comms.z - 8], [comms.x - 10, comms.z - 52]]),
-      H(comms.x + 4, comms.z + 56, [[comms.x + 4, comms.z + 56], [comms.x + 34, comms.z + 68], [comms.x - 20, comms.z + 60]]),
-      H(terrace.x - 30, terrace.z + 34, [[terrace.x - 30, terrace.z + 34], [terrace.x - 58, terrace.z + 16], [terrace.x - 18, terrace.z + 58]]),
-      H(terrace.x - 52, terrace.z - 26, [[terrace.x - 52, terrace.z - 26], [terrace.x - 76, terrace.z - 2], [terrace.x - 34, terrace.z - 48]]),
-      H(hangar.x + 46, hangar.z + 34, [[hangar.x + 46, hangar.z + 34], [hangar.x + 70, hangar.z + 8], [hangar.x + 30, hangar.z + 58]]),
-      H(-140, -110, [[-140, -110], [-166, -78], [-118, -140]]),
+      /* --- Merchants and a second quest desk on the commercial strip -----
+       *
+       * The strip is eighty metres of fully dressed shopfronts with nobody
+       * selling anything in any of them, and the ring's only quest desk was
+       * Zara Vex at (-22, 12) - so a player who walked east down the avenue
+       * never found work or a shop again.
+       *
+       * All four stand on the PAVEMENT in front of their unit, not inside it.
+       *
+       * Inside was the first choice and it is where Hask Merrow already stands,
+       * which is exactly why it was rejected: measured over ten seconds of
+       * simulation, Merrow is not in his shop, he is on its roof at 9.4 m, and
+       * two traders placed inside units beside him went to 13.2 m and to the
+       * hub ceiling plate at 62 m. A shop unit is built as four separate walls
+       * around a dressed room with a counter and a shelf stack in it, and a
+       * character that ends up touching any of that gets a depenetration push
+       * with no lateral component - `resolveCapsule` falls back to straight up
+       * when it cannot find a direction - and then climbs, frame by frame,
+       * through everything above it. That is a pre-existing failure of the
+       * solver against this geometry and it is not this change's to fix; what
+       * this change can do is not walk into it.
+       *
+       * The pavement band is 10.4 to 13.0 m off the avenue centreline - outside
+       * the 9.9 m kerb (`ROAD_EDGE_HALF`) and short of the 13.5 m shopfront -
+       * and 12 is the middle of it. Marta Vale has patrolled that band at
+       * (104, 11) since the strip was built and has never left the deck.
+       */
+      F('Ivo Selk',
+        'Armourer on the commercial strip, ex-ordnance, missing the top joint of two fingers and entirely unbothered about it. He sells sidearms and rounds to anyone with a licence and to most people without one, checks every weapon you hand him before he quotes it, and refuses on principle to stock anything he calls "a toy".',
+        99.5, -12,
+        [[99.5, -12], [104, -11.5], [95, -11.5]],
+        {
+          role: 'vendor',
+          vendorCategories: ['weapons', 'tools'],
+          vendorTitle: 'Selk Ordnance',
+          signLines: ['SELK ORDNANCE', 'ARMS + FIELD KIT'],
+        }),
+
+      F('Nell Abioye',
+        'Runs the outfitters four doors up the strip from the Pale Horse, selling deck wear, EVA liners and the sort of trinket a traveller buys ten minutes before stepping through a gateway. She has an unerring eye for what somebody is about to do and dresses them for it, and she has never once been through a portal herself.',
+        146, 12,
+        [[146, 12], [150, 11.5], [142, 11.5]],
+        {
+          role: 'vendor',
+          vendorCategories: ['cosmetic', 'health'],
+          vendorTitle: 'Abioye Outfitters',
+          signLines: ['OUTFITTERS', 'WEAR + WARES'],
+        }),
+
+      F('Rooke Ilesanmi',
+        'Keeps the tack and frame shop at the far end of the strip, which is where anybody on this ring goes to buy a mount or the harness for one. He talks about every animal and every machine in the pens as though it had opinions, refuses to sell to anybody who will not stand still while he explains the rig, and is right about that more often than not.',
+        161.5, -12,
+        [[161.5, -12], [166, -11.5], [157, -11.5]],
+        {
+          role: 'vendor',
+          vendorCategories: ['mounts', 'tools'],
+          vendorTitle: 'Ilesanmi Tack + Frames',
+          signLines: ['TACK + FRAMES', 'MOUNTS OUTFITTED'],
+        }),
+
+      F('Dispatcher Ovie Kanu',
+        'Runs the standing-work board at the strip end of the concourse, a second desk opened when Zara Vex stopped being able to see the far end of her own queue. Ex-freight scheduling, so she thinks in slots and deadlines: she reads a job out flatly and then tells you what she would actually do about it. She and Vex are perfectly civil and keep separate ledgers.',
+        112, 11,
+        [[112, 11], [120, 12], [104, 12]],
+        {
+          role: 'quest_manager',
+          isQuestManager: true,
+          signLines: ['WORK BOARD', 'STRIP DISPATCH'],
+        }),
+
+      /* The cargo yard: containers stacked in rows, so this is the one hub
+       * district with real alleys in it. Two breakers work the alleys, where a
+       * player who backs away is backing into a wall of freight; the rifle unit
+       * holds the open lane between the stacks. */
+      H('rifle', cargo.x + 26, cargo.z + 30, [[cargo.x + 26, cargo.z + 30], [cargo.x + 54, cargo.z + 12], [cargo.x + 30, cargo.z - 24]]),
+      H('breaker', cargo.x - 34, cargo.z + 46, [[cargo.x - 34, cargo.z + 46], [cargo.x - 6, cargo.z + 58], [cargo.x - 48, cargo.z + 20]]),
+      H('breaker', cargo.x + 8, cargo.z + 62, [[cargo.x + 8, cargo.z + 62], [cargo.x + 40, cargo.z + 52], [cargo.x - 14, cargo.z + 74]]),
+      /* Traffic control's apron is wide, flat and overlooked, so it is the
+       * lance's ground: a weapon with a 0.8 s telegraph and 18 m of reach needs
+       * somewhere the player can see it winding up from. */
+      H('lance', comms.x + 30, comms.z + 22, [[comms.x + 30, comms.z + 22], [comms.x + 56, comms.z - 6], [comms.x + 18, comms.z + 44]]),
+      H('rifle', comms.x - 28, comms.z - 30, [[comms.x - 28, comms.z - 30], [comms.x - 52, comms.z - 8], [comms.x - 10, comms.z - 52]]),
+      H('scout', comms.x + 4, comms.z + 56, [[comms.x + 4, comms.z + 56], [comms.x + 34, comms.z + 68], [comms.x - 20, comms.z + 60]]),
+      H('scout', terrace.x - 30, terrace.z + 34, [[terrace.x - 30, terrace.z + 34], [terrace.x - 58, terrace.z + 16], [terrace.x - 18, terrace.z + 58]]),
+      H('rifle', terrace.x - 52, terrace.z - 26, [[terrace.x - 52, terrace.z - 26], [terrace.x - 76, terrace.z - 2], [terrace.x - 34, terrace.z - 48]]),
+      H('lance', hangar.x + 46, hangar.z + 34, [[hangar.x + 46, hangar.z + 34], [hangar.x + 70, hangar.z + 8], [hangar.x + 30, hangar.z + 58]]),
+      H('breaker', -140, -110, [[-140, -110], [-166, -78], [-118, -140]]),
     ];
 
     /* The zones' own characters, appended rather than authored above.
@@ -9690,6 +9918,43 @@ export class StationWorld extends World {
      * filler tops up whatever budget is left around whichever hub the player is
      * actually standing in. */
     for (const s of this._zoneNpcSpawns ?? []) this.npcSpawns.push(s);
+
+    /**
+     * Character budgets, declared because the defaults BIND here and bind
+     * silently.
+     *
+     * `NPCManager` defaults to 10 hostiles and 30 civilians, both sized for a
+     * world you can cross in twenty seconds. This one is five districts and
+     * four outer zones half a kilometre apart, and `spawnForWorld` walks
+     * `npcSpawns` in order and drops everything past the cap - so with the
+     * defaults the construction zone's three hostiles never existed (the hub's
+     * ten are authored first) and the zones' merchants were next in line to go.
+     * Both numbers are therefore stated against what this world actually
+     * authors rather than left to a default that cannot know:
+     *
+     *   hostiles   17 authored (10 hub + 7 construction), budget 18
+     *   civilians  40 authored (16 hub + 6 in each of the four zones),
+     *              plus 6 gateway lorekeepers, budget 50
+     *
+     * The slack on each is deliberate - a spawn added to a zone builder should
+     * not have to come back here to be allowed to exist - and the four spare
+     * civilian slots are what the manager's crowd filler spends on the standing
+     * groups in the plaza (`_populateHubs`). At 46 the filler got nothing and
+     * the plaza lost the little knots of people talking that make it read as
+     * occupied, which is the thing the filler exists for.
+     *
+     * 68 characters against `NPCManager.maxNPCs` of 72.
+     *
+     * What makes this affordable is the LOD that is already in place and not
+     * anything new: past 135 m a character is not drawn at all, past 68 m it
+     * simulates on one fixed step in four, and the entire outer ring is beyond
+     * both from anywhere in the hub. The costs that do scale with the count are
+     * the O(n^2) separation sweep - about 2,000 pairs of two multiplies at this
+     * population - and the grounding watchdog, which audits exactly one
+     * character per fixed step however many there are.
+     */
+    this.hostileBudget = 18;
+    this.friendlyBudget = 50;
 
     /* Bounds now describe the dome, not the hub.
      *

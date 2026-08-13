@@ -52,6 +52,29 @@ export class HostileNPC extends NPC {
 
     /** Weapon ids this hostile is allowed to draw. Set by the manager. */
     this.weaponPool = ctx.weaponPool ?? null;
+    /**
+     * This character's weapon is part of its identity and must not be re-rolled.
+     *
+     * `_patrol` re-draws on first contact, and says why: "One weapon per
+     * encounter: the draw happens as the character notices something, so a
+     * player who fights the same patrol twice does not fight the same loadout
+     * twice." That is right for an anonymous unit and it stays the default -
+     * every hostile in every world that does not ask otherwise still re-rolls.
+     *
+     * It is wrong for an ARCHETYPE. The station names four (see `HOSTILE_KIND`
+     * in StationWorld and `KINDS` in zones/Construction.js) and each one IS its
+     * weapon: a Breaker Frame is a brawler because it carries a baton and an
+     * Arc Lance Sentry telegraphs for most of a second because it carries a
+     * lance. Measured before this flag existed: a "Rogue Security Unit" dealt
+     * out a rifle at spawn was carrying a sidearm by the time it reached
+     * COMBAT, so the name on the enemy told the player nothing about the fight
+     * they were in - which is the whole thing an archetype is for.
+     *
+     * Set only when a world authored `weaponId` on the spawn descriptor. The
+     * manager's own shuffled deal does not set it, so the unlearnable pairing
+     * the note above wants is preserved everywhere it was.
+     */
+    this.weaponFixed = ctx.weaponFixed === true;
     this.weaponId = null;
     this.weaponDef = NPC_WEAPONS.rifle;
     this.magazine = this.weaponDef.magazine;
@@ -236,8 +259,9 @@ export class HostileNPC extends NPC {
     void isHeadshot;
   }
 
-  /** Fresh body, fresh loadout. */
+  /** Fresh body, fresh loadout - unless the loadout is the character. */
   onRespawned() {
+    if (this.weaponFixed) return;
     this.selectWeapon();
   }
 
@@ -299,8 +323,9 @@ export class HostileNPC extends NPC {
     if (this.awareness > 0.5) {
       // One weapon per encounter: the draw happens as the character notices
       // something, so a player who fights the same patrol twice does not fight
-      // the same loadout twice.
-      this.selectWeapon();
+      // the same loadout twice. Skipped for a character whose weapon is its
+      // identity - see `weaponFixed` in the constructor.
+      if (!this.weaponFixed) this.selectWeapon();
       this.setState('SUSPICIOUS');
     }
     void dt;

@@ -3011,25 +3011,111 @@ export function buildConstruction(ctx) {
     patrol: [[28, 14], [38, 2], [16, 12], [26, -6]],
   });
 
+  /* The works dispatcher and the tool crib.
+   *
+   * A site this size runs on two things a visitor can use: somewhere that hands
+   * out jobs and somewhere that sells you what the job needs. Both sit beside
+   * the site office at OFFICE, which is where the instanced crowd already
+   * stands and therefore known-open ground, and both are inside the hoarding so
+   * you meet them on the way in rather than after crossing the laydown.
+   */
+  ctx.npc(OFFICE.x - 7.4, OFFICE.z + 4.6, {
+    name: 'Storeman Bardhi Reka',
+    persona:
+      'Keeps the tool crib beside the site office and regards every item in it as personally his. He will issue you anything on the list, in exchange for a name, and describes the two hammers that never came back the way other people describe a bereavement. Dry, fast, and the only person on this site who can find something in under a minute.',
+    role: 'vendor',
+    vendorCategories: ['tools', 'weapons', 'health'],
+    vendorTitle: 'Ring 8 Tool Crib',
+    signLines: ['TOOL CRIB', 'SIGN IT OUT'],
+    patrol: [[OFFICE.x - 7.4, OFFICE.z + 4.6], [OFFICE.x - 9.2, OFFICE.z + 6.4], [OFFICE.x - 6.0, OFFICE.z + 7.4]],
+  });
+
+  ctx.npc(OFFICE.x - 8.6, OFFICE.z - 3.4, {
+    name: 'Planner Imke Solberg',
+    persona:
+      'Holds the works programme for Ring 8, which means she decides what is worth paying an outsider to do and what the site will get round to on its own. She talks in float and critical path, is completely unmoved by urgency, and gives you the real reason a job is on the board instead of the official one. Aleksy shouts; she reschedules, which is worse.',
+    role: 'quest_manager',
+    isQuestManager: true,
+    signLines: ['WORKS PROGRAMME', 'RING 8 EXPANSION'],
+  });
+
+  /* Both walk INSIDE the hoarding (`HOARD_R` = 108) on the loop road at
+   * `LOOP_R` = 88. That is deliberate on two counts. It is the ring the site's
+   * own instanced crowd is walked round eight abreast, so it is known-open
+   * ground; and the hostiles below patrol from 98 out to 156, which is the
+   * laydown OUTSIDE the fence. Nothing here stops a hostile shooting at a
+   * civilian - `HostileNPC.target` only ever returns the player - but a
+   * conversation you have to hold in the middle of somebody else's firefight is
+   * a conversation nobody has, and the compound is where the site's people
+   * would be anyway. */
+  ctx.npc(bx(0.985, LOOP_R), bz(0.985, LOOP_R), {
+    name: 'Ott Vasilyev',
+    persona:
+      'Steel erector, forty metres up for most of his working life and visibly happier there than on the deck. He talks about the half-built tower as a shape rather than a building, has opinions about every weld on it, and finds the finished parts of the station faintly disappointing to look at.',
+    patrol: [
+      [bx(0.985, LOOP_R), bz(0.985, LOOP_R)], [bx(1.77, LOOP_R), bz(1.77, LOOP_R)],
+      [bx(0.2, LOOP_R), bz(0.2, LOOP_R)], [bx(2.55, LOOP_R), bz(2.55, LOOP_R)],
+    ],
+  });
+
+  /* The gate approach: `x` within +/-6 and `z` from 100 to 140 is the corridor
+   * the site's own crowd is walked in and out along, which makes it the one
+   * route in this zone every visitor uses. */
+  ctx.npc(0, 118, {
+    name: 'Safety Officer Chidi Nwosu',
+    persona:
+      'Walks the gate counting harnesses, permits and the four things he has already written up twice. He is unfailingly polite about it and completely immovable, which is why the site tolerates him. He will hand you a hard hat before he answers any question, and he keeps a private list of everywhere on this site he expects somebody to die.',
+    patrol: [
+      [0, 118], [4, 136], [-4, 102],
+      [bx(4.12, LOOP_R), bz(4.12, LOOP_R)],
+    ],
+  });
+
   /**
    * Hostiles.
    *
    * A half-built sector with no permanent power, no finished bulkheads and a
    * fence where a hull should be is the most plausible place on the map for
    * security units to be running corrupted patrol routes, and this zone is
-   * deliberately the one that carries the ring's combat. All three work the
+   * deliberately the one that carries the ring's combat. All of them work the
    * outer laydown rather than the court, so nobody is dropped into a firefight
    * on a scaffold thirty metres up with nowhere to break line of sight.
+   *
+   * ── These did not exist ────────────────────────────────────────────────
+   * Three were authored here and NONE of them ever spawned. `NPCManager` had a
+   * flat budget of ten hostiles, the hub authors ten, and `spawnForWorld` walks
+   * `npcSpawns` in order and skips every hostile past the count - and the outer
+   * ring's spawns are appended after the hub's. The zone whose docstring says
+   * it carries the ring's combat shipped without an enemy in it. The world now
+   * declares its own budget (`hostileBudget` in `StationWorld._fillSpawns`) and
+   * the count here is what that budget was sized against.
+   *
+   * ── The mix ────────────────────────────────────────────────────────────
+   * Four archetypes, chosen against the ground each one stands on rather than
+   * dealt at random. The laydown between 98 and 156 m is flat and open, which
+   * is where a lance's 0.8 s telegraph is legible and a rifle's 20 m band is
+   * usable. The two breakers work the material stacks and the hoarding line,
+   * where the aisles are one skip wide and backing away is not an option -
+   * a brawler on open ground is just a shooter that cannot shoot.
    */
-  const HOSTILE =
-    'A hijacked station security drone running corrupted enforcement code. It does not negotiate.';
-  for (const [a, r, a2, r2, a3, r3] of [
-    [1.2, 98, 1.7, 124, 0.8, 130],
-    [4.1, 100, 4.6, 132, 3.6, 126],
-    [2.8, 128, 3.4, 156, 2.3, 150],
+  const KINDS = {
+    rifle: ['Rogue Security Unit', 'A hijacked station security drone running corrupted enforcement code. It does not negotiate.', 'rifle'],
+    breaker: ['Breaker Frame', 'A riot-suppression frame with its restraint governor stripped out. It carries a shock baton, closes the distance and does not stop to talk about it.', 'baton'],
+    scout: ['Skirmish Drone', 'A light patrol drone that lost its handshake with traffic control and now treats every moving thing on the deck as an incursion. Fast, jumpy, badly armed.', 'sidearm'],
+    lance: ['Arc Lance Sentry', 'A heavy emplacement walker running an old perimeter-denial routine. Its lance takes almost a second to charge, and it has never seen a reason to hurry.', 'staff'],
+  };
+  for (const [kind, a, r, a2, r2, a3, r3] of [
+    ['rifle', 1.2, 98, 1.7, 124, 0.8, 130],
+    ['lance', 4.1, 100, 4.6, 132, 3.6, 126],
+    ['rifle', 2.8, 128, 3.4, 156, 2.3, 150],
+    ['scout', 5.5, 112, 5.9, 140, 5.1, 136],
+    ['scout', 3.5, 104, 3.0, 136, 3.9, 144],
+    ['breaker', 2.1, 110, 2.5, 134, 1.9, 142],
+    ['breaker', 4.8, 122, 5.2, 148, 4.4, 146],
   ]) {
+    const [name, persona, weaponId] = KINDS[kind];
     ctx.npc(bx(a, r), bz(a, r), {
-      type: 'hostile', name: 'Rogue Security Unit', persona: HOSTILE,
+      type: 'hostile', name, persona, weaponId,
       patrol: [[bx(a, r), bz(a, r)], [bx(a2, r2), bz(a2, r2)], [bx(a3, r3), bz(a3, r3)]],
     });
   }

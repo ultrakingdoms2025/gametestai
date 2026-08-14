@@ -18,7 +18,9 @@ import {
  * same reason the terrain module owns the height function: they are shared
  * with the tests and with anything that needs to know where a place is,
  * without dragging `three` and nine thousand lines of world in behind them. */
-import { PLOTS, EXTRA_YARDS, settledAt } from './medieval/Settlements.js';
+import {
+  PLOTS, EXTRA_YARDS, SETTLEMENTS, settledAt, inSettlementCore,
+} from './medieval/Settlements.js';
 /* Who lives here, what hunts them and what is worth finding - all derived from
  * the settlement table rather than written out per town, so a settlement added
  * to `Settlements.js` is populated without this file being touched. See the
@@ -37,7 +39,8 @@ import {
   CEOLWINE_PRECINCT, CEOLWINE_GARTH, CEOLWINE_HERBS, CEOLWINE_POND,
   BLACKMARCH_PALISADE, BLACKMARCH_YARD, BLACKMARCH_BEACON,
   FENWICK_CROSS,
-  interiorPlan, groundUnder, STAIR_W, DOOR_W, DOOR_H, FLOOR_T,
+  interiorPlan, groundUnder, hasChimney, plinthCourses,
+  STAIR_W, DOOR_W, DOOR_H, FLOOR_T,
 } from './medieval/Towns.js';
 import { CAMPS, campPieces } from './medieval/Camps.js';
 /* Where the trees are and how thick they stand. The counts below are derived
@@ -81,6 +84,7 @@ const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _col = new THREE.Color();
 const _obj = new THREE.Object3D();
+const _m4 = new THREE.Matrix4();
 
 const DEG = Math.PI / 180;
 const TAU = Math.PI * 2;
@@ -1621,6 +1625,28 @@ export class MedievalWorld extends World {
     return true;
   }
 
+  /**
+   * True where something can GROW: open ground that no settlement has beaten.
+   *
+   * `_isOpenGround` is the wrong gate for vegetation and always was. It knows
+   * about roads, footprints, the river, the castle rect and the market rect,
+   * which was a complete description of the vale when there was one village in
+   * it - and it has no way at all to be told that St Ceolwine's precinct, or
+   * Grimscar's bench, or Fenwick's market place exists. The result was eleven
+   * oaks inside the abbey wall, two of them in the cloister garth, and forty
+   * leaf sheets across the one view the garth is composed around.
+   *
+   * The distinction this draws is between things that are PUT somewhere and
+   * things that grow there, which is why it is a second predicate rather than
+   * a line added to the first: a barrel in a market square is right, and a
+   * thicket in one is not. Trees, understorey, deadfall and bushes ask this;
+   * the market dressing keeps asking `_isOpenGround`.
+   */
+  _isPlantable(x, z, margin = 0) {
+    if (!this._isOpenGround(x, z, margin)) return false;
+    return !inSettlementCore(x, z);
+  }
+
   /* ---------------------------------------------------------------- */
   /* Collision helpers                                                 */
   /* ---------------------------------------------------------------- */
@@ -1633,6 +1659,174 @@ export class MedievalWorld extends World {
     return this.track(
       this.physics.addRotatedBox(_v1.set(cx, cy, cz), _v2.set(hx, hy, hz), rotY, {})
     );
+  }
+
+  /**
+   * Lay the ground up to a doorway, in courses a player can walk.
+   *
+   * ── The defect this exists for ─────────────────────────────────────────
+   * A shell sets its base to the HIGHEST corner of its own footprint so that
+   * no corner floats, and drops a plinth to below the lowest. That is right,
+   * and it means the door - which is on one FACE, not on a corner - can be
+   * left an arbitrary distance above the ground outside it. `_shell` laid one
+   * 20 cm threshold stone and stopped, so fifteen of the fifty-four enterable
+   * buildings could not be entered at all: the winding house's sill stood
+   * 2.03 m over the street, which is not a step, it is a wall, and the door
+   * prompt never even appeared.
+   *
+   * ── Why courses and not a ramp ─────────────────────────────────────────
+   * The player's step-up probe (`Player._move`) lifts the capsule by
+   * `stepHeight`, retries the same horizontal motion, and raycasts for a
+   * tread. It has no concept of a slope it can walk up that a box cannot
+   * provide, so a wedge buys nothing a stack of boxes does not - and boxes are
+   * what the collider set is made of anyway.
+   *
+   * ── Why the courses FLARE ──────────────────────────────────────────────
+   * A straight flight is climbable from directly in front and is a 2 m cheek
+   * from anywhere else, and the eleven buildings in the 0.30-0.45 m "marginal"
+   * band failed for exactly that reason: the probe casts along the direction
+   * of travel, so a diagonal approach lengthens the horizontal run without
+   * shortening the rise. Each course here is `RUN` wider on each side and
+   * `RUN` deeper than the one above it, so the courses are NESTED rectangles -
+   * and a straight line from anywhere outside to the doorway crosses each
+   * boundary exactly once, whatever its bearing. One boundary, one riser.
+   *
+   * ── Why the count is measured and not authored ─────────────────────────
+   * `_house` had steps and they were capped at six with a rise derived from
+   * the drop, so a 2.6 m drop silently produced 0.44 m risers - inside the
+   * limit by a centimetre, and past it the moment the ground under the bottom
+   * step was 2 cm lower than the sample that sized it. Here the courses are
+   * added until the outermost one is within one riser of the LOWEST ground
+   * anywhere on its own perimeter, so the flight follows the hill instead of
+   * assuming it.
+   *
+   * @param {GeoBatch} B
+   * @param {{M:THREE.Matrix4, yaw:number, hd:number, baseY:number,
+   *          sill:number, doorW:number, tint?:number}} o
+   *   `M` places the building; `sill` and everything else are in its own frame,
+   *   with the door on +Z, exactly as `_house` and `_shell` build.
+   * @returns {number} courses laid, the outermost included
+   */
+  _entrySteps(B, o) {
+    const { M, yaw, hd, baseY, sill, doorW } = o;
+    const tint = o.tint ?? 0x8e8371;
+    /** Riser. 0.30 against a 0.45 step height: a third of the budget in hand. */
+    const RISE = 0.30;
+    /** Going. */
+    const RUN = 0.62;
+    /**
+     * How much wider each course is than the one above it, per side.
+     *
+     * Any positive number makes the courses nest, which is all the "climbable
+     * from any bearing" argument needs. Half the going rather than all of it
+     * because the flare is what sets the flight's WIDTH, and a seven-course
+     * flight flared by a full going is 11.5 m across - wide enough to swallow
+     * the tramway that runs past Grimscar's winding house. 0.31 m between two
+     * side risers is closer than the 0.30 m tread the interior stairs already
+     * use, so the capsule takes them one at a time either way.
+     */
+    const FLARE = RUN / 2;
+    /** Twelve courses is 7.4 m of steps and 3.6 m of descent. Past that the
+     *  building is on a cliff and the answer is to move the building. */
+    const MAX = 12;
+    const inner = hd - 0.05;
+    const halfW = (i) => doorW / 2 + 0.62 + i * FLARE;
+    const outerZ = (i) => hd + 0.24 + i * RUN;
+    /** Lowest ground anywhere a walker could step onto course `i` from. */
+    const perimeter = (i) => {
+      const hx = halfW(i) + 0.14;
+      const zo = outerZ(i) + 0.14;
+      let lo = Infinity;
+      for (let k = 0; k <= 6; k++) {
+        _v1.set((k / 6 - 0.5) * 2 * hx, 0, zo).applyMatrix4(M);
+        const h = this._height(_v1.x, _v1.z);
+        if (h < lo) lo = h;
+      }
+      for (const sgn of [-1, 1]) {
+        for (let k = 0; k <= 4; k++) {
+          _v1.set(sgn * hx, 0, inner + (k / 4) * (zo - inner)).applyMatrix4(M);
+          const h = this._height(_v1.x, _v1.z);
+          if (h < lo) lo = h;
+        }
+      }
+      return lo - baseY;
+    };
+    let n = 0;
+    while (n < MAX && sill - n * RISE - perimeter(n) > RISE) n++;
+    for (let i = 0; i <= n; i++) {
+      const ty = sill - i * RISE;
+      /* Down to below the ground it stands on, so a course on falling ground
+       * is a step and not a floating slab. `+0.45` is the buried footing. */
+      const by = Math.min(ty, perimeter(i)) - 0.45;
+      const h = ty - by;
+      const w = halfW(i) * 2;
+      const d = outerZ(i) - inner;
+      const cz = (inner + outerZ(i)) / 2;
+      _obj.position.set(0, (ty + by) / 2, cz);
+      _obj.rotation.set(0, 0, 0);
+      _obj.scale.set(1, 1, 1);
+      _obj.updateMatrix();
+      _m4.multiplyMatrices(M, _obj.matrix);
+      grimeRamp(B.add('rubble', panelGeo(w, h, d, 0.62, 2), _m4, tint), baseY + by, h, 0.5);
+      _v1.set(0, 0, cz).applyMatrix4(M);
+      this._rbox(_v1.x, baseY + (ty + by) / 2, _v1.z, w / 2, h / 2, d / 2, yaw);
+    }
+    if (n > 0) {
+      _v1.set(0, 0, (inner + outerZ(n)) / 2).applyMatrix4(M);
+      this._footprints.push({
+        x: _v1.x, z: _v1.z, hx: halfW(n), hz: (outerZ(n) - inner) / 2 + 0.4, r: yaw,
+      });
+    }
+    return n + 1;
+  }
+
+  /**
+   * The lamp that makes an interior an interior.
+   *
+   * ── The defect ─────────────────────────────────────────────────────────
+   * Not one of the fifty-four town interiors had a light in it. `_shell` and
+   * `_shellInterior` emit additive glow CARDS - `_addGlow` quads - and emissive
+   * window glass, and neither of those lights anything: a glow card is a bright
+   * quad, an emissive material is a bright surface, and both are invisible to
+   * every other surface in the room. Measured mean frame luminance inside the
+   * five landmark interiors was 11-20 out of 255, with one frame at 0. The
+   * hearth, the mantel, the bed, the choir stalls, the altar candles, the
+   * weapon rack and the wool bales were all modelled and all invisible; the
+   * only thing making them readable in normal play was the held weapon's
+   * viewmodel light leaking into the world, which is a bug being load-bearing.
+   *
+   * ── Why this is affordable now, and was not once ───────────────────────
+   * The comment in `_house` - "fourteen cottage lamps plus the castle
+   * practicals is not a budget, it is a tax" - was written when a light in the
+   * scene was a light in the shader. It is not any more. `gfx/LightRig.js`
+   * owns a FIXED twelve point-light slots that are in the scene from boot and
+   * never added, removed or hidden, and every other light in the game is a
+   * *source*: hidden on the frame the rig first sees it, scored each frame by
+   * the irradiance it actually delivers near the camera, and copied into a slot
+   * only when it is one of the twelve strongest. So the light counts in
+   * `getProgramCacheKey` do not move, the program set does not change, and the
+   * marginal cost of a source is one `Vector3` read and two distances in
+   * `LightRig._score` - about 40 ns.
+   *
+   * ── Why `distance` is sized off the room ───────────────────────────────
+   * A point light is not occluded by the wall it is behind, so the only thing
+   * bounding how far a hearth lamp spills onto the street is its own cut-off.
+   * `_house` uses 20 m, which is the width of Aldermoor's high street and is
+   * deliberate there. Sized to the room instead, a lamp reads at the table and
+   * has fallen to nothing by the far pavement - which also stops fifty-four of
+   * them fighting the street practicals for the twelve slots.
+   *
+   * @param {THREE.Vector3} pos world position
+   * @param {number} w room width @param {number} d room depth
+   * @returns {THREE.PointLight} already parented; also returned so the
+   *   enterable descriptor can carry it.
+   */
+  _interiorLight(pos, w, d) {
+    const reach = Math.min(16, Math.max(7.5, Math.hypot(w, d) * 0.95));
+    const l = new THREE.PointLight(0xffb26a, 46, reach, 2);
+    l.position.copy(pos);
+    this.group.add(l);
+    return l;
   }
 
   /** Polygonal ring wall approximating a round tower shell. */
@@ -3785,37 +3979,89 @@ export class MedievalWorld extends World {
     g2.closePath();
     g2.fill();
 
-    // Bare, trodden market square and castle courtyard.
-    g2.fillStyle = 'rgba(124,106,76,0.55)';
-    g2.fillRect(
-      toPx(MARKET.x - MARKET.hx - 3),
-      toPx(MARKET.z - MARKET.hz - 3),
-      ((MARKET.hx + 3) * 2 * S) / SIZE,
-      ((MARKET.hz + 3) * 2 * S) / SIZE
-    );
-
-    /* Standing water and damp shade in the trodden ground.
+    /* Colour drifts, authored in METRES and converted here.
      *
-     * A packed-earth square painted at one value is the same failure as a lawn
-     * painted at one value. Real trodden ground reads as a set of dark damp
-     * hollows and pale dried crowns, and those large soft shapes are what give
-     * the surface scale when there is nothing else in the lower half of frame. */
-    for (let i = 0; i < 90; i++) {
-      const ax = MARKET.x + (rnd() - 0.5) * 78;
-      const az = MARKET.z + (rnd() - 0.5) * 74;
-      if (this._settled(ax, az) < 0.35) continue;
-      const rr = (1.4 + rnd() * 4.6) * S / SIZE;
-      const px = toPx(ax);
-      const pz = toPx(az);
-      const dark = rnd() < 0.55;
-      const gr = g2.createRadialGradient(px, pz, 0, px, pz, rr);
-      gr.addColorStop(0, dark ? 'rgba(64,54,40,0.42)' : 'rgba(176,158,120,0.34)');
-      gr.addColorStop(0.6, dark ? 'rgba(70,60,45,0.22)' : 'rgba(170,152,116,0.18)');
-      gr.addColorStop(1, 'rgba(0,0,0,0)');
-      g2.fillStyle = gr;
-      g2.beginPath();
-      g2.arc(px, pz, rr, 0, TAU);
-      g2.fill();
+     * These used to be 40-200 canvas pixels, which on a 2048 map over 400m was
+     * 8-39m of ground. Left in pixels they would have become 18-88m at 900m -
+     * the same map, the same painted shapes, twice the size on the ground -
+     * and there would have been five times fewer of them per hectare. Both the
+     * size and the count are per-area properties of the meadow, not properties
+     * of the canvas, so both derive from the extent. */
+    const mPx = S / SIZE;
+    const area = SIZE * SIZE;
+    blotches(g2, S, rnd, Math.round(area * 1.125e-3), 'rgba(38,62,26,ALPHA)', 7.8 * mPx, 39 * mPx, 0.34);
+    blotches(g2, S, rnd, Math.round(area * 6.875e-4), 'rgba(124,124,62,ALPHA)', 5.9 * mPx, 31 * mPx, 0.24);
+
+    /* ---- Trodden ground, and why it is painted LAST -----------------
+     *
+     * Two defects, one cause, and neither of them was in `settledAt`.
+     *
+     * Fenwick Cross's market place read as pasture and Grimscar's pithead yard
+     * read as pasture, while Grimscar's street twenty metres away read
+     * correctly. The obvious diagnosis - that the settlement table does not
+     * cover the works - is wrong: `settledAt` measures 1.000 at the adit, the
+     * headframe, the tip and the middle of Fenwick's square, exactly as it does
+     * on Aldermoor's. The data was right the whole time.
+     *
+     * What Aldermoor had and the five new towns did not was these two passes,
+     * both of which were written against the vale's `MARKET` rect and its
+     * literal coordinates. Grimscar's STREET reads because a street is a road
+     * and the road passes above paints it; the yard beside it is not a road,
+     * and nothing else in this function knew a yard existed.
+     *
+     * And they ran BEFORE `blotches`, which scatters nine hundred 8-40 m
+     * meadow drifts across the whole map at 0.34 alpha - including straight
+     * over the one square that must not have meadow drifting over it. That is
+     * the "same value paints differently" the report saw: the value was the
+     * same, and then a green blotch landed on half of it.
+     *
+     * So both passes now derive from the settlement table, and both run after
+     * the meadow. Ground people have beaten flat is the last thing painted. */
+    for (const s of SETTLEMENTS) {
+      for (const f of s.ground) {
+        /* Squares and yards, not doorsteps. A dwelling's own beaten apron is
+         * the `_pavedRects` pass below; this is for the open ground a whole
+         * settlement crosses, and 300 m2 is the line between the two - above
+         * it is a market place, a muster yard or a pithead, below it is one
+         * house's turning circle. */
+        const fw = f.shape === 'rect' ? f.hx * 2 : f.r * 2;
+        const fd = f.shape === 'rect' ? f.hz * 2 : f.r * 2;
+        if (fw * fd < 300) continue;
+        g2.fillStyle = 'rgba(124,106,76,0.55)';
+        if (f.shape === 'rect') {
+          g2.fillRect(toPx(f.x - f.hx), toPx(f.z - f.hz), (f.hx * 2 * S) / SIZE, (f.hz * 2 * S) / SIZE);
+        } else {
+          g2.beginPath();
+          g2.arc(toPx(f.x), toPx(f.z), (f.r * S) / SIZE, 0, TAU);
+          g2.fill();
+        }
+        /* Standing water and damp shade in it.
+         *
+         * A packed-earth square painted at one value is the same failure as a
+         * lawn painted at one value. Real trodden ground reads as a set of
+         * dark damp hollows and pale dried crowns, and those large soft shapes
+         * are what give the surface scale when there is nothing else in the
+         * lower half of frame. The count is per unit AREA so a 6,700 m2
+         * precinct is not mottled as sparsely as a 450 m2 pit yard. */
+        const blobs = Math.min(140, Math.round((fw * fd) / 62));
+        for (let i = 0; i < blobs; i++) {
+          const ax = f.x + (rnd() - 0.5) * (fw + 12);
+          const az = f.z + (rnd() - 0.5) * (fd + 12);
+          if (this._settled(ax, az) < 0.35) continue;
+          const rr = ((1.4 + rnd() * 4.6) * S) / SIZE;
+          const px = toPx(ax);
+          const pz = toPx(az);
+          const dark = rnd() < 0.55;
+          const gr = g2.createRadialGradient(px, pz, 0, px, pz, rr);
+          gr.addColorStop(0, dark ? 'rgba(64,54,40,0.42)' : 'rgba(176,158,120,0.34)');
+          gr.addColorStop(0.6, dark ? 'rgba(70,60,45,0.22)' : 'rgba(170,152,116,0.18)');
+          gr.addColorStop(1, 'rgba(0,0,0,0)');
+          g2.fillStyle = gr;
+          g2.beginPath();
+          g2.arc(px, pz, rr, 0, TAU);
+          g2.fill();
+        }
+      }
     }
 
     // Beaten earth around every dwelling. Even where the cobble apron mesh
@@ -3832,19 +4078,6 @@ export class MedievalWorld extends World {
       g2.fillRect(-w / 2 + w * 0.12, -d / 2 + d * 0.12, w * 0.76, d * 0.76);
       g2.restore();
     }
-
-    /* Colour drifts, authored in METRES and converted here.
-     *
-     * These used to be 40-200 canvas pixels, which on a 2048 map over 400m was
-     * 8-39m of ground. Left in pixels they would have become 18-88m at 900m -
-     * the same map, the same painted shapes, twice the size on the ground -
-     * and there would have been five times fewer of them per hectare. Both the
-     * size and the count are per-area properties of the meadow, not properties
-     * of the canvas, so both derive from the extent. */
-    const mPx = S / SIZE;
-    const area = SIZE * SIZE;
-    blotches(g2, S, rnd, Math.round(area * 1.125e-3), 'rgba(38,62,26,ALPHA)', 7.8 * mPx, 39 * mPx, 0.34);
-    blotches(g2, S, rnd, Math.round(area * 6.875e-4), 'rgba(124,124,62,ALPHA)', 5.9 * mPx, 31 * mPx, 0.24);
     grain(g2, S, 0x2f, 0.16, 'overlay', 4);
 
     const tex = new THREE.CanvasTexture(c);
@@ -5994,7 +6227,12 @@ export class MedievalWorld extends World {
       put('beam', boxGeo(doorHW * 2 + 0.4, 0.24, 0.5, 1.0),
         0, 0.28 + doorH2 + 0.12, hd - 0.2, 0, 0, 0, bt());
     }
-    put('rubble', boxGeo(1.6, 0.22, 0.7, 0.9), 0, 0.11, doorZ + 0.4, 0, 0, 0, 0x8e8371);
+    /* The threshold, and however much of the hill has to be built up to reach
+     * it. See `_entrySteps`: this used to be a hand-rolled flight inside the
+     * `enterable` branch alone, capped at six courses and not flared, so a
+     * cottage on a slope was reachable head-on and a cheek from anywhere else
+     * - and a solid one got a 22 cm stone and nothing. */
+    this._entrySteps(B, { M, yaw: o.ry, hd, baseY, sill: 0.22, doorW: doorHW * 2 });
     put('beam', boxGeo(1.9, 0.22, 0.9, 1.0), 0, 2.9, doorZ + 0.3, 0, 0, 0, bt());
 
     const glow = o.lit ? 0xffd9a0 : 0x6f6250;
@@ -6081,6 +6319,8 @@ export class MedievalWorld extends World {
         (0.28 + gh + (o.storeys > 1 ? uh : 0)) / 2 + plinth / 2, (d + jut * 2) / 2 + 0.1, o.ry);
     } else {
       /* ---- Enterable: per-wall colliders, interior, swinging door ---- */
+      /** What lights this cottage's room, for the enterable descriptor. */
+      const houseLights = [];
       const wallsTop = 0.28 + gh;
       const rcol = (lx, cy, lz, hx, hy, hz) => {
         _v1.set(lx, cy, lz).applyMatrix4(M);
@@ -6136,6 +6376,14 @@ export class MedievalWorld extends World {
       put('ember', boxGeo(0.66, 0.3, 0.24, 2.0), chx, fs + 0.2, -hd + 1.06, 0, 0, 0, 0xffb060);
       _v1.set(chx, fs + 0.3, -hd + 1.5).applyMatrix4(M);
       this._addGlow(_v1.x, _v1.y, _v1.z, 3.4, 0x5a3416);
+      /* Hearth light. Distinct from the street practical below, which only
+       * every other LIT cottage gets and which exists to pool key on the
+       * cobbles: this one is for the room, and every cottage you can walk into
+       * has one whether or not its windows are lit from outside. Before it, a
+       * player who opened a cottage door found a modelled table, bed and hearth
+       * in a black box. See `_interiorLight`. */
+      houseLights.push(this._interiorLight(
+        new THREE.Vector3(0, fs + Math.min(2.0, gh - 0.8), -d * 0.12).applyMatrix4(M), w, d));
       /* Swinging door leaf on a hinge pivot at the left jamb. */
       const leafW = doorHW * 2 - 0.06;
       const leafGeo = boxGeo(leafW, doorH2 - 0.12, 0.09, 0.9);
@@ -6161,28 +6409,6 @@ export class MedievalWorld extends World {
       const doorCol = this._rbox(_v1.x, _v1.y, _v1.z, doorHW, doorH2 / 2, 0.12, o.ry);
       const dpos = new THREE.Vector3(0, 1.2, hd).applyMatrix4(M);
       const cpos = new THREE.Vector3(w * 0.22, fs + 0.7, d * 0.22).applyMatrix4(M);
-      /* Entry steps: the interior floor sits at baseY + 0.38 while the lane
-       * outside can be over a metre lower on sloped plots — beyond the 0.45m
-       * step height. Rubble steps bridge the door threshold to grade. */
-      {
-        _v1.set(0, 0, hd + 0.9).applyMatrix4(M);
-        const outH = this._height(_v1.x, _v1.z);
-        const drop = baseY + 0.38 - outH;
-        if (drop > 0.3) {
-          const n = Math.min(6, Math.ceil(drop / 0.34));
-          const run = 0.6;
-          for (let i = 0; i < n; i++) {
-            const topW = baseY + 0.38 - (i + 1) * (drop / n);
-            const hgt = Math.max(0.3, topW - outH + 0.3);
-            const zc = hd + 0.25 + (i + 0.5) * run;
-            const cyL = topW - hgt / 2 - baseY;
-            put('rubble', boxGeo(2.0, hgt, run, 0.8), 0, cyL, zc, 0, 0, 0, 0x8e8371);
-            rcol(0, cyL, zc, 1.0, hgt / 2, run / 2);
-          }
-          _v1.set(0, 0, hd + 0.25 + (n * run) / 2).applyMatrix4(M);
-          this._footprints.push({ x: _v1.x, z: _v1.z, hx: 1.5, hz: (n * run) / 2 + 0.6, r: o.ry });
-        }
-      }
       if (!Array.isArray(this.enterables)) this.enterables = [];
       this.enterables.push({
         label: `cottage@${o.x | 0},${o.z | 0}`,
@@ -6196,6 +6422,7 @@ export class MedievalWorld extends World {
           anim: 0,
         }],
         collectibleSpots: [{ position: cpos, tier: 'common' }],
+        lights: houseLights,
       });
     }
     this._footprints.push({ x: o.x, z: o.z, hx: w / 2 + 1.4, hz: d / 2 + 1.4, r: o.ry });
@@ -6366,6 +6593,12 @@ export class MedievalWorld extends World {
     const d = kit.exportDescriptors();
     d.origin = new THREE.Vector3(x, baseY, z);
     d.label = spec.label || 'Parish Church';
+    /* The two parish churches came through `InteriorKit`, which builds a nave
+     * and no light to see it by - the same defect as the towns, reached by a
+     * different route. Two lamps down the nave, because one at the crossing of
+     * a 16 m church leaves the altar and the door both dark. */
+    d.lights = [-1, 1].map((s) => this._interiorLight(
+      new THREE.Vector3(x, baseY + 2.3, z + s * halfD * 0.42), halfW * 2, halfD));
     this.enterables.push(d);
     this._footprints.push({ x, z, hx: halfW + 1.4, hz: halfD + 1.8, r: 0 });
     this.minimapShapes.push({
@@ -6481,11 +6714,17 @@ export class MedievalWorld extends World {
       put('plank', boxGeo(w + 1.6, 0.22, d + 1.6, 0.65), 0, -0.11, 0, 0, 0, 0, 0x9d7f56);
       rcol(0, -0.24, 0, hw + 0.8, 0.16, hd + 0.8);
     } else {
-      grimeRamp(
-        put(o.wall === 'plank' ? 'rubble' : 'rubble', panelGeo(w + 0.12, plinth, d + 0.12, 0.6, 3),
-          0, -plinth / 2 + 0.06, 0, 0, 0, 0, 0x84796b),
-        baseY - plinth + 0.06, plinth + 0.6, 0.46
-      );
+      /* A battered footing, not a slab. See `plinthCourses`: on level ground
+       * this is the one course it always was, and under the shells that stand
+       * on 2 m of relief it is three, each stepping out below the last. */
+      for (const cs of plinthCourses(plinth)) {
+        const ch = cs.y1 - cs.y0;
+        grimeRamp(
+          put('rubble', panelGeo(w + cs.out * 2, ch, d + cs.out * 2, 0.6, 2),
+            0, -cs.y0 - ch / 2 + 0.06, 0, 0, 0, 0, shadeHex(0x84796b, 1 - cs.out * 0.28)),
+          baseY - cs.y1 + 0.06, ch + 0.6, 0.46
+        );
+      }
     }
 
     /* ---- Walls ------------------------------------------------------ *
@@ -6676,7 +6915,7 @@ export class MedievalWorld extends World {
     }
 
     /* ---- Chimney ---------------------------------------------------- */
-    if (!o.stilt && o.roof !== 'flat' && o.kind !== 'barn' && o.kind !== 'shed') {
+    if (hasChimney(o)) {
       const chx = (rnd() < 0.5 ? -1 : 1) * w * 0.32;
       const chTop = top + rh + 1.5;
       put('rubble', boxGeo(0.95, chTop + plinth, 0.95, 0.6), chx, (chTop - plinth) / 2, -hd + 0.4,
@@ -6797,12 +7036,24 @@ export class MedievalWorld extends World {
         anim: 0,
       };
     }
-    // Threshold stone and a hood over the door.
-    put('rubble', boxGeo(DOOR_W + 0.5, 0.2, 0.66, 0.9), 0, 0.1, doorZ + 0.38, 0, 0, 0, 0x8e8371);
+    /* Threshold and the ground up to it, then a hood over the door.
+     *
+     * This used to be one 20 cm stone, which is a threshold on flat ground and
+     * nothing at all on a slope - and the shells stand on slopes, because that
+     * is what an outer ring of hill towns is. `_entrySteps` measures the drop
+     * and lays as many courses as it takes. On level ground it lays exactly
+     * the one stone this replaces. */
+    if (!o.stilt) {
+      this._entrySteps(B, { M, yaw: o.yaw, hd, baseY, sill: 0.2, doorW: DOOR_W });
+    } else {
+      put('rubble', boxGeo(DOOR_W + 0.5, 0.2, 0.66, 0.9), 0, 0.1, doorZ + 0.38, 0, 0, 0, 0x8e8371);
+    }
     put('beam', boxGeo(DOOR_W + 0.8, 0.2, 0.85, 1.0), 0, plan.door.y + doorH + 0.5, doorZ + 0.28,
       0, 0, 0, bt());
 
     /* ---- Colliders and interior ------------------------------------- */
+    /** Every light this building's rooms own, for the enterable descriptor. */
+    const interiorLights = [];
     const wallsTop = plan.roofY;
     if (!enter) {
       const cy = (plan.roofY - plinth) / 2;
@@ -6821,7 +7072,7 @@ export class MedievalWorld extends World {
       if (overH > 0.05) {
         rcol(0, plan.door.y + doorH + overH / 2, hd - wt / 2, doorHW + 0.05, overH / 2, wt / 2 + 0.05);
       }
-      this._shellInterior(B, o, plan, { put, rcol, at, bt, baseY, plinth });
+      this._shellInterior(B, o, plan, { put, rcol, at, bt, baseY, plinth, lights: interiorLights });
     }
 
     /* ---- Registration ----------------------------------------------- */
@@ -6833,6 +7084,11 @@ export class MedievalWorld extends World {
         origin: new THREE.Vector3(o.x, baseY, o.z),
         doors: doorRecord ? [doorRecord] : [],
         collectibleSpots: [{ position: spot, tier: o.landmark ? 'rare' : 'common' }],
+        /* What actually lights the room. Declared on the descriptor rather
+         * than left implicit in the scene graph so "this interior is lit" is a
+         * property something can READ - which is the whole reason fifty-four
+         * unlit rooms could ship past a 1074-test suite. */
+        lights: interiorLights,
       });
     }
     if (o.lit) {
@@ -6857,7 +7113,7 @@ export class MedievalWorld extends World {
    * arithmetic is the only genuinely fiddly thing in either.
    */
   _shellInterior(B, o, plan, ctx) {
-    const { put, rcol, at, bt, baseY } = ctx;
+    const { put, rcol, at, bt, baseY, lights } = ctx;
     const rnd = mulberry32(o.seed ^ 0x5bd1);
     const hw = o.w / 2;
     const hd = o.d / 2;
@@ -6970,6 +7226,31 @@ export class MedievalWorld extends World {
     if (rnd() < 0.6) {
       put('hay', boxGeo(0.7, 0.5, 0.5, 1.6), -ihx + 0.5, fy + 0.25, ihz - 0.5, 0, rnd() * 0.6, 0, 0xd8c48a);
     }
+
+    /* ---- Light ------------------------------------------------------
+     *
+     * One lamp per STOREY, not one per building. A shell's upper floors are
+     * where the dressing that justifies the climb lives - the solar, the great
+     * chamber, the winding house's tally gallery - and a hearth lamp on the
+     * ground floor is behind a solid plank deck from all of it. See
+     * `_interiorLight` for why fifty-odd more point lights is now affordable
+     * and what stops them spilling into the street.
+     *
+     * Set back from the centre toward the hearth wall so the light has a
+     * direction: a lamp dead centre lights every wall equally, which is the
+     * one arrangement that makes a modelled room read as a lit box. */
+    for (const fl of plan.floors) {
+      const ly = fl.floorY + Math.min(2.05, fl.clear - 0.75);
+      /* A lamp reaches at most 16 m, and the abbey church is a 34 m nave: one
+       * lamp in it lights the crossing and leaves both ends black. The count
+       * follows the room, so it is right for a 5 m fisherman's hut and right
+       * for the tithe barn without either being a special case. */
+      const n = Math.max(1, Math.round(o.w / 12));
+      for (let i = 0; i < n; i++) {
+        const lx = n === 1 ? 0 : ((i + 0.5) / n - 0.5) * (ihx * 2);
+        lights?.push(this._interiorLight(at(lx, ly, -ihz * 0.3), o.w / n, o.d));
+      }
+    }
     if (o.landmark) this._landmarkInterior(o, plan, ctx, ihx, ihz);
   }
 
@@ -7020,14 +7301,21 @@ export class MedievalWorld extends World {
           put('iron', g, -2.1, fy + 1.5, -0.4, 0, Math.PI / 2, 0, 0x3a3128);
         }
         put('beam', boxGeo(0.14, 0.14, 2.2, 1.2), -2.4, fy + 1.1, 0.6, 0.5, 0, 0, bt());
-        // Ore sorting tables along the window wall, with picked ore on them.
-        for (const sz of [-1, 1]) {
-          put('plank', boxGeo(ihx * 1.2, 0.08, 0.8, 0.9), 0, fy + 0.86, sz * (ihz - 0.7), 0, 0, 0, 0x9a7a50);
+        /* Ore sorting tables, with picked ore on them - along the SIDE walls.
+         *
+         * They ran along the front and back walls, and the front wall is the
+         * one with the door in it: a 1.0 m bench 6.7 m wide stood eighty
+         * centimetres inside the entrance, across the whole opening. The
+         * building passed every interior test there was, because those probe
+         * `interiorPlan.standing` - which is deeper into the room, past the
+         * bench. You could not get to it. */
+        for (const sx of [-1, 1]) {
+          put('plank', boxGeo(0.8, 0.08, ihz * 1.2, 0.9), sx * (ihx - 0.7), fy + 0.86, 0, 0, 0, 0, 0x9a7a50);
           for (let i = 0; i < 6; i++) {
-            put('rock', boxGeo(0.22, 0.16, 0.2, 1.4), (i / 5 - 0.5) * ihx * 1.0, fy + 0.98,
-              sz * (ihz - 0.7), 0, rnd() * TAU, 0, 0x35302a);
+            put('rock', boxGeo(0.22, 0.16, 0.2, 1.4), sx * (ihx - 0.7), fy + 0.98,
+              (i / 5 - 0.5) * ihz * 1.0, 0, rnd() * TAU, 0, 0x35302a);
           }
-          rcol(0, fy + 0.5, sz * (ihz - 0.7), ihx * 0.6, 0.5, 0.45);
+          rcol(sx * (ihx - 0.7), fy + 0.5, 0, 0.45, 0.5, ihz * 0.6);
         }
         flame(-ihx + 0.4, fy + 1.9, 0, 3.2);
         flame(ihx - 0.4, fy + 1.9, 0, 3.2);
@@ -7547,8 +7835,15 @@ export class MedievalWorld extends World {
           B.add('iron', boxGeo(len, 0.08, 0.07, 1.6), place(mx, H(mx, mz) + 0.17, mz, yaw), 0x4a4038);
         }
       }
-      // Two carts, one loaded, one tipped on its side by the tip head.
-      for (const [cx, cz, tipped] of [[-364, -192, 0], [-347, -190.5, 1]]) {
+      /* Two carts, one loaded, one tipped on its side by the tip head.
+       *
+       * The loaded one stood at (-364, -192), which is 1.5 m off the winding
+       * house's front wall - so once that door got the flight of steps its
+       * 2.03 m sill has always needed, the cart was standing IN them, poking
+       * 72 cm through a course. Moved down the tramway to the stretch between
+       * the headframe and the tip, where a full cart waiting to be run out
+       * belongs anyway. */
+      for (const [cx, cz, tipped] of [[-353.5, -191.3, 0], [-347, -190.5, 1]]) {
         const y = H(cx, cz);
         const rz = tipped ? 1.35 : 0;
         B.add('plank', boxGeo(1.5, 0.95, 1.05, 0.8), place(cx, y + 0.62, cz, 0.1, rz), 0x7c6242);
@@ -8458,6 +8753,71 @@ export class MedievalWorld extends World {
     }
   }
 
+  /**
+   * Build the road up to a bridge abutment.
+   *
+   * ── The defect ─────────────────────────────────────────────────────────
+   * An abutment is sized off the DECK - it has to be, that is what it carries
+   * - and the road arrives at whatever height the bank happens to be. Nothing
+   * was joining the two. Harrowgate's north abutment stood 1.07 m over the
+   * ground its own road runs on and Ashlea's stood 0.90 m over its, so two of
+   * the five authored crossings could be looked at and not used: walking the
+   * `harrowbridgeN` road, the player jammed at (307.8, 2.2, 104.8) with the
+   * deck in front of their face. Both decks were always fine. You could just
+   * never get onto one.
+   *
+   * ── Why a ramp and not steps ───────────────────────────────────────────
+   * Carts. `_entrySteps` puts 0.30 m risers on a 0.62 m going at a doorway,
+   * which is a stair; a bridge approach is a causeway and has to read as
+   * something a waggon could be hauled over, so the going is nearly twice as
+   * long for a slightly shorter riser - a fifth, not a half. It is still a
+   * stack of boxes underneath, because the capsule solver has no other kind of
+   * surface, but at 1.15 m of run per 0.26 m of rise the eye reads a bank.
+   *
+   * @param {GeoBatch} B
+   * @param {{x:number, width:number}} c the crossing
+   * @param {number} sgn +1 to build outward in +Z, -1 in -Z
+   * @param {number} topY world Y of the abutment's top face
+   * @param {number} fromZ z of the abutment's outer edge
+   * @param {string} key material key, so a timber bridge gets a timber causeway
+   * @param {number} tint
+   * @returns {number} courses laid
+   */
+  _crossingRamp(B, c, sgn, topY, fromZ, key, tint) {
+    const RISE = 0.26;
+    const RUN = 1.15;
+    const MAX = 10;
+    const bx = c.x;
+    const half = c.width / 2 + 0.7;
+    /** Lowest ground across the head of course `i`, one course further out. */
+    const grade = (i) => {
+      const z = fromZ + sgn * (i * RUN + 0.35);
+      let lo = Infinity;
+      for (let k = -3; k <= 3; k++) {
+        const h = this._height(bx + (k / 3) * half, z);
+        if (h < lo) lo = h;
+      }
+      return lo;
+    };
+    let n = 0;
+    while (n < MAX && topY - n * RISE - grade(n) > RISE) n++;
+    for (let i = 1; i <= n; i++) {
+      const ty = topY - i * RISE;
+      const by = Math.min(ty, grade(i)) - 0.6;
+      const z0 = fromZ;
+      const z1 = fromZ + sgn * i * RUN;
+      const cz = (z0 + z1) / 2;
+      const d = Math.abs(z1 - z0);
+      _obj.position.set(bx, (ty + by) / 2, cz);
+      _obj.rotation.set(0, 0, 0);
+      _obj.scale.set(1, 1, 1);
+      _obj.updateMatrix();
+      B.add(key, boxGeo(half * 2, ty - by, d, 0.55), _obj, tint);
+      this._box(bx, (ty + by) / 2, cz, half, (ty - by) / 2, d / 2);
+    }
+    return n;
+  }
+
   /** A two-arch masonry bridge with a mid-stream cutwater and a toll house. */
   _stoneBridge(B, c) {
     const place = (x, y, z, ry = 0) => {
@@ -8488,6 +8848,8 @@ export class MedievalWorld extends World {
       const az = rz + s * ((z1 - z0) / 2 + 1.6);
       B.add('rubble', boxGeo(bw + 2.2, 5.4, 4.0, 0.5), place(bx, deckY - 2.9, az), stone);
       this._box(bx, deckY - 2.9, az, (bw + 2.2) / 2, 2.7, 2.0);
+      // ...and the causeway that gets the road up onto it. See `_crossingRamp`.
+      this._crossingRamp(B, c, s, deckY - 0.2, az + s * 2.0, 'cobble', 0xbcb6a8);
     }
     const span = z1 - z0 + 4;
     B.add('cobble', boxGeo(bw, 0.65, span, 0.55), place(bx, deckY - 0.33, rz), 0xbcb6a8);
@@ -8561,8 +8923,16 @@ export class MedievalWorld extends World {
     for (const s of [-1, 1]) {
       const az = s < 0 ? z0 : z1;
       const g = this._height(bx, az + s * 1.6);
-      B.add('rubble', boxGeo(bw + 1.4, 1.4, 2.6, 0.6), place(bx, g + 0.2, az + s * 1.0), 0x8e8371);
-      this._box(bx, g + 0.2, az + s * 1.0, (bw + 1.4) / 2, 0.7, 1.3);
+      /* The abutment's top is pinned to the DECK rather than to the bank.
+       * Sitting it at `g + 0.9` put Ashlea's north block 19 cm proud of the
+       * planks it abuts - a kerb across the mouth of the bridge - while its
+       * outer face stood 0.90 m over the road, which is the half of it that
+       * made the crossing unusable. */
+      const topY = deckY - 0.04;
+      const h = Math.max(0.5, topY - g + 0.8);
+      B.add('rubble', boxGeo(bw + 1.4, h, 2.6, 0.6), place(bx, topY - h / 2, az + s * 1.0), 0x8e8371);
+      this._box(bx, topY - h / 2, az + s * 1.0, (bw + 1.4) / 2, h / 2, 1.3);
+      this._crossingRamp(B, c, s, topY, az + s * 2.3, 'rubble', 0x8e8371);
     }
     this._footprints.push({ x: bx, z: (z0 + z1) / 2, hx: bw / 2 + 2, hz: span / 2 + 2, r: 0 });
     this.minimapShapes.push({
@@ -10635,7 +11005,7 @@ export class MedievalWorld extends World {
         pick = rnd() < 0.62 ? 0 : 1;
       }
       if (pick < 0) continue;
-      if (!this._isOpenGround(x, z, 2.2)) continue;
+      if (!this._isPlantable(x, z, 2.2)) continue;
       if (this._inHeroClear(x, z, 2.6)) continue;
       if (this._slope(x, z) > 0.55) continue;
       drop(pick, x, z, rnd());
@@ -10805,7 +11175,7 @@ export class MedievalWorld extends World {
         const edge = stand > 0.12 && stand < 0.72;
         const p = edge ? 0.95 : stand * 0.55;
         if (rnd() > p) continue;
-        if (!this._isOpenGround(x, z, 0.9)) continue;
+        if (!this._isPlantable(x, z, 0.9)) continue;
         if (this._inHeroClear(x, z, 1.4)) continue;
         if (this._slope(x, z) > 0.62) continue;
         const y = this._height(x, z);
@@ -10868,7 +11238,7 @@ export class MedievalWorld extends World {
         const x = wood.x + Math.cos(a) * rr;
         const z = wood.z + Math.sin(a) * rr;
         if (standAt(x, z) < 0.25) continue;
-        if (!this._isOpenGround(x, z, 1.2)) continue;
+        if (!this._isPlantable(x, z, 1.2)) continue;
         if (this._inHeroClear(x, z, 2.0)) continue;
         const y = this._height(x, z);
         const roll = wr();
@@ -11212,7 +11582,7 @@ export class MedievalWorld extends World {
     while (bp < 420 && bg++ < 4200) {
       const x = (rnd() - 0.5) * (SIZE - 20);
       const z = (rnd() - 0.5) * (SIZE - 20);
-      if (!this._isOpenGround(x, z, 0.8)) continue;
+      if (!this._isPlantable(x, z, 0.8)) continue;
       if (this._inHeroClear(x, z, 1.4)) continue;
       // The mask has ONE definition and it is in `Woodland.js`. This line
       // used to spell it out again, which is a second thing to keep in step

@@ -369,6 +369,39 @@ export function settledAt(x, z) {
   return w;
 }
 
+/**
+ * How trodden ground has to be before nothing woody grows on it.
+ *
+ * A half. Not a taste call: `settledAt` is a coverage fraction, so 0.5 is the
+ * point where the ground under your feet is more beaten earth than pasture,
+ * and a sapling that took root there would be walked flat inside a season.
+ * Anything softer and the fringe of a village yard stops being able to hold a
+ * hedgerow; anything harder and a precinct whose feather has begun to fall off
+ * - which is exactly what the abbey's is doing at its wall - reads as open
+ * ground to the scatter.
+ */
+export const CORE_SETTLED = 0.5;
+
+/**
+ * True on ground a settlement has beaten flat.
+ *
+ * This is the thing the vegetation scatter was missing, and the reason eleven
+ * oaks grew inside St Ceolwine's precinct wall with two of them in the cloister
+ * garth: every natural-cover pass asked `_isOpenGround`, which knows about
+ * roads, footprints, the river and the two hand-authored rectangles the old
+ * vale had - and has never had any way to be told that a settlement exists.
+ * Adding the abbey to it would have fixed the abbey; deriving it from the
+ * settlement table fixes every town at once and every town added later.
+ *
+ * Deliberately NOT folded into `_isOpenGround` itself. That predicate also
+ * gates the market dressing, and a barrel in a market square is correct where
+ * an oak in one is not: the distinction is between things that are PUT
+ * somewhere and things that GROW there.
+ */
+export function inSettlementCore(x, z) {
+  return settledAt(x, z) >= CORE_SETTLED;
+}
+
 /** The settlement whose `radius` contains (x, z), nearest first, or null. */
 export function settlementAt(x, z) {
   let best = null;

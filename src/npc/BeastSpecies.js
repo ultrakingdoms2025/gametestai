@@ -147,7 +147,33 @@ export const BEASTS = {
     // Poor eyes, famous nose: a bear sees less far than a wolf and smells you
     // from further away.
     sight: 26,
-    fovDegrees: 160,
+    /**
+     * 250, not 160.
+     *
+     * ── What 160 actually did ─────────────────────────────────────────────
+     * `fovDegrees` is the FULL cone, so 160 leaves a 200 degree blind arc -
+     * more than half the horizon - and sight is a cone off the BODY's facing,
+     * which in ROAM is wherever the last wander leg pointed. Measured headless
+     * with a stationary player 18 m away in the open and clear line of sight,
+     * over 24 starting bearings: the bear noticed in 17 of them. In the other
+     * seven it wandered for ten full seconds without ever looking at the player
+     * and drifted away. In play that reads as an animal that only wakes up when
+     * you are close enough to touch - and what has woken it at that point is
+     * `scent`, not sight, which is why a live capture put acquisition at 4.3 m,
+     * inside the 11 m nose radius where facing stops mattering.
+     *
+     * That undercuts the entire point of a bear. The design line is "poor eyes,
+     * famous nose", and the honest expression of poor eyes is the short RANGE
+     * above - 26 m against the wolf's 34 - not a narrow arc. A bear's eyes are
+     * on the sides of its head; its real horizontal field is around 280
+     * degrees, which is WIDER than a wolf's, not less than half of one.
+     *
+     * 250 leaves a 110 degree blind sector dead astern, so stalking up behind a
+     * bear is still a thing that works and `scent` is still what ends it.
+     * Re-measured on the same 24 bearings: 24 of 24 at 14 m and at 18 m, 22 of
+     * 24 at 22 m, median acquisition inside 7 frames.
+     */
+    fovDegrees: 250,
     scent: 11,
     attackDamage: 26,
     damageSpread: 0.2,

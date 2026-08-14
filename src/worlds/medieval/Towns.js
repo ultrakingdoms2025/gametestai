@@ -205,6 +205,76 @@ export function interiorPlan(b) {
   };
 }
 
+/**
+ * Kinds that are church buildings, and therefore never carry a domestic flue.
+ *
+ * A nave is not heated. It has no hearth, no kitchen and nothing to burn, and
+ * the one thing that reads instantly as "somebody lives here" on a roofline is
+ * a rubble stack - which is why the abbey church shipped with one and why it
+ * was the first thing a reviewer standing in the garth noticed. `_shell` was
+ * fitting a chimney to everything that was not on stilts, flat-roofed, a barn
+ * or a shed, and a 34 m ashlar church under lead is none of those.
+ */
+export const ECCLESIASTICAL = new Set([
+  'abbeychurch', 'chapel', 'belltower', 'chapterhouse',
+]);
+
+/**
+ * Whether a shell gets a chimney.
+ *
+ * A predicate rather than a condition inlined in `_shell`, because "which
+ * buildings have a hearth" is a fact about the TABLE and it is the kind of
+ * fact that is invisible in a screenshot taken from anywhere except the one
+ * angle that puts the ridge against the sky.
+ */
+export function hasChimney(b) {
+  if (b.stilt) return false;
+  if (b.roof === 'flat' || b.roof === 'none') return false;
+  if (b.kind === 'barn' || b.kind === 'shed') return false;
+  return !ECCLESIASTICAL.has(b.kind);
+}
+
+/**
+ * How a plinth is broken into courses, top course first.
+ *
+ * ── The defect ─────────────────────────────────────────────────────────────
+ * Fourteen shells carry more than 1.6 m of plinth and five carry over 2.1 m -
+ * `rw-s8`'s boat shed stands on 2.63 m of it under a 6.6 m building - and they
+ * read as tower bases rather than as foundations. The height itself is not
+ * the error and cannot be removed: a shell sets its base to the highest corner
+ * of its own footprint so no corner floats, so the masonry between the base and
+ * the ground at the low corner is exactly the relief under the footprint, and
+ * the only ways to have less of it are to move the building or to cut the
+ * hill. The boat shed is on the edge of a pool; it is where it needs to be.
+ *
+ * ── What actually reads as a tower ─────────────────────────────────────────
+ * A single flush face taken straight down. Every real footing on falling
+ * ground is BATTERED - it steps out as it goes down, in courses, because that
+ * is how you stop a wall on soft ground from rotating out - and the stepped
+ * shadow line under each course is the whole difference between "the bottom of
+ * a tower" and "the thing this building is standing on". So the plinth becomes
+ * a stack of courses, each oversailing the one above it, and the number of
+ * courses follows the height rather than being authored.
+ *
+ * Returned as data, and as a pure function, because "a 2.6 m plinth is broken
+ * into courses" is checkable and "the plinth looks better now" is not.
+ *
+ * @param {number} plinth total plinth height, metres
+ * @returns {Array<{y0:number, y1:number, out:number}>} `y0`/`y1` are depths
+ *   BELOW the shell's base (y0 < y1, both positive), `out` the oversail per side
+ */
+export function plinthCourses(plinth) {
+  /* One course per 0.9 m. Below that a footing has one course, which is what a
+   * shell on level ground has always had and what it should keep having. */
+  const n = Math.max(1, Math.min(4, Math.ceil(plinth / 0.9)));
+  const h = plinth / n;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    out.push({ y0: i * h, y1: (i + 1) * h, out: 0.06 + i * 0.105 });
+  }
+  return out;
+}
+
 /** Total height of a shell above its base, roof apex included. */
 export function shellHeight(b) {
   const plan = interiorPlan(b);
@@ -453,7 +523,15 @@ const CEOLWINE_BUILDINGS = [
   bld({ id: 'ab-gate', kind: 'gatehouse', label: 'The Abbey Gate', x: -272, z: 299, yaw: Math.PI, w: 10.0, d: 7.2, storeys: 2, wall: 'ashlar', roof: 'slate', windows: 'lancet', enterable: true, lit: true }),
   bld({ id: 'ab-guest', kind: 'hall', label: 'The Guest Hall', x: -264, z: 316, yaw: -Math.PI / 2, w: 13, d: 8.4, wall: 'ashlar', roof: 'slate', enterable: true, lit: true }),
   bld({ id: 'ab-infirm', kind: 'hall', label: 'The Infirmary', x: -332, z: 366, yaw: Math.PI / 2, w: 13, d: 8.4, wall: 'ashlar', roof: 'slate', windows: 'lancet', enterable: true }),
-  bld({ id: 'ab-kitchen', kind: 'kitchen', x: -322, z: 380, yaw: 0, w: 8.4, d: 8.0, wall: 'rubble', roof: 'slate', windows: 'slit', enterable: true, lit: true }),
+  /* Turned to face the cloister, not the precinct wall.
+   *
+   * At yaw 0 the door looked out across the two metres between the kitchen and
+   * the south precinct wall, into the wall. It was still enterable - you walk
+   * up the slot and turn - but a kitchen serves the frater, so its door has to
+   * open toward the frater, and a door that opens onto a blank wall two metres
+   * away is the kind of thing a plan gets right and a coordinate gets wrong.
+   * The footprint is 8.4 x 8.0, so the half-turn does not move a corner. */
+  bld({ id: 'ab-kitchen', kind: 'kitchen', x: -322, z: 380, yaw: Math.PI, w: 8.4, d: 8.0, wall: 'rubble', roof: 'slate', windows: 'slit', enterable: true, lit: true }),
   bld({ id: 'ab-barn', kind: 'barn', label: 'The Tithe Barn', x: -268, z: 366, yaw: -Math.PI / 2, w: 20, d: 10, wall: 'rubble', roof: 'thatch', windows: 'none', enterable: true }),
   bld({ id: 'ab-stable', kind: 'shed', x: -296, z: 310, yaw: Math.PI, w: 12, d: 7.0, wall: 'rubble', roof: 'thatch', windows: 'none' }),
   bld({ id: 'ab-dove', kind: 'dovecote', x: -337, z: 304, yaw: 0, w: 5.6, d: 5.6, storeys: 2, wall: 'rubble', roof: 'flat', windows: 'slit' }),

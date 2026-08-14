@@ -714,8 +714,37 @@ export class CombatSystem {
     _backOrigin.copy(position);
     _backOrigin.y += 1.0;
     const behind = this.physics.raycast(_backOrigin, dir, 4.0, COLLISION_LAYER.WORLD);
-    if (!behind) return;
-    this.decals.spawn(behind.point, behind.normal, 0.55 + Math.random() * 0.4, DECAL.CLAW, 30);
+    if (behind) {
+      this.decals.spawn(behind.point, behind.normal, 0.55 + Math.random() * 0.4, DECAL.CLAW, 30);
+      return;
+    }
+    /* No wall - so use the floor, which is always there.
+     *
+     * This used to return, and returning meant the claw mark never appeared
+     * anywhere a bear or a wolf actually lives. The horizontal probe needs a
+     * `COLLISION_LAYER.WORLD` collider within 4 m of chest height, and deep
+     * woodland has none: the trees are instanced and carry no colliders, and
+     * twenty-four bearings probed around a bear out to 8 m found nothing to
+     * hit. Three full mauls in the open stamped zero decals while the blood,
+     * the view kick, the knockback and the bleed all fired correctly - so the
+     * one mark that persists after the fight, and the only evidence left that
+     * it happened, was the one thing that never rendered.
+     *
+     * A rake that misses the wall behind you does not stop existing; it ends up
+     * in the dirt. The terrain heightfield is a WORLD collider under every
+     * point of the map, so a short downward cast just past the victim always
+     * has an answer - and where there IS a wall the original behaviour is
+     * untouched, because that branch is taken first.
+     */
+    const gx = position.x + dir.x * 1.3;
+    const gz = position.z + dir.z * 1.3;
+    /* From head height, and only far enough down to find the floor the fight is
+     * happening on. A longer drop would put the mark on the ground UNDER the
+     * bridge or the jetty the player is standing on. */
+    const y = this.physics.groundHeight(gx, gz, position.y + 1.8, 4.5);
+    if (y === null) return;
+    _backOrigin.set(gx, y, gz);
+    this.decals.spawn(_backOrigin, WORLD_UP, 0.55 + Math.random() * 0.4, DECAL.CLAW, 30);
   }
 
   _npcTracer(origin, dir, distance, force) {

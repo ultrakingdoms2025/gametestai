@@ -750,8 +750,20 @@ export class NPCManager {
    * residency bookkeeping can carry a spec with no character behind it and try
    * again later.
    *
+   * The DRESSING a spec carries is honoured here exactly as `spawnForWorld`
+   * honours it. It was not, and the omission was invisible until a world
+   * streamed a shop: a merchant arriving through this path lost its
+   * `vendorCategories` (so the Marketplace opened the whole catalogue at a
+   * fishing village), lost its `signLines` (so the stall was unlettered) and
+   * lost `isQuestManager` (so the reeve of a town two hundred metres from the
+   * spawn had no quest board). A streamed character has to be the same
+   * character as an authored one or streaming is not a placement decision, it
+   * is a downgrade.
+   *
    * @param {{position: THREE.Vector3, type?: string, name?: string, persona?: string,
-   *          patrol?: THREE.Vector3[], yaw?: number, posture?: string, role?: string}} spec
+   *          patrol?: THREE.Vector3[], yaw?: number, posture?: string, role?: string,
+   *          signLines?: string[], vendorCategories?: string[], vendorTitle?: string,
+   *          isQuestManager?: boolean}} spec
    * @returns {import('./NPC.js').NPC|null}
    */
   spawnOne(spec) {
@@ -771,6 +783,10 @@ export class NPCManager {
       yaw: spec.yaw ?? 0,
       posture: spec.posture,
       role: spec.role ?? ROLE.WANDERER,
+      signLines: spec.signLines,
+      vendorCategories: spec.vendorCategories,
+      vendorTitle: spec.vendorTitle,
+      isQuestManager: spec.isQuestManager === true,
     });
     npc.spawnSpec = spec;
     /* The same audit `spawnForWorld` runs over the whole cast at the end. A

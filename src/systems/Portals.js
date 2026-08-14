@@ -2370,6 +2370,46 @@ export class PortalSystem {
    * @returns {Promise<{ warmed: string[], skipped: string[], ms: number,
    *   programs: number, slices: number, reason: string }>}
    */
+  /**
+   * Suppress the live 10 Hz preview for every gateway pointing at `target`,
+   * before anything has begun warming it.
+   *
+   * ── Why this cannot live inside `warmPreviews` ─────────────────────────────
+   * `update()` derives `p.ready` from `worldManager.isBuilt(p.target)` every
+   * frame, and its priming pass renders a preview on the *first* frame a
+   * gateway is ready - deliberately, so the establishing frame of an approach
+   * is not an empty window. That draw links the destination's entire preview
+   * program set inside one gameplay frame, which is the freeze this whole file
+   * spends three hundred lines avoiding.
+   *
+   * Nothing used to stand between "built" and "warming" because the background
+   * chain's `warmWorld` was a single blocking `compile()` running in the same
+   * task as the build's resolution: by the time a frame could run,
+   * `warmPreviews` had already set `_warmPending`. That is an accident of
+   * timing, not a guarantee, and the moment `warmWorld` was sliced it stopped
+   * holding - measured, the priming pass landed in the new gap and cost a
+   * single frame of 8,212 ms and 14,741 ms across two cold boots.
+   *
+   * So the claim is separated from the warm and taken by the caller as soon as
+   * the destination exists. `releasePreviews` is the other half and belongs in
+   * a `finally`: a gateway left claimed shows STABILISING forever.
+   *
+   * @param {string} target world id
+   */
+  holdPreviews(target) {
+    for (const p of this._portals) if (!target || p.target === target) p._warmPending = true;
+  }
+
+  /**
+   * Undo `holdPreviews`. Idempotent, and safe to call on a gateway the warm
+   * already released itself.
+   *
+   * @param {string} target world id
+   */
+  releasePreviews(target) {
+    for (const p of this._portals) if (!target || p.target === target) p._warmPending = false;
+  }
+
   warmPreviews({ target = null, schedule = null } = {}) {
     const t0 = performance.now();
     const warmed = [];

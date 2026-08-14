@@ -1,5 +1,6 @@
 /**
- * Time-slicing for the gateway destination preview warm.
+ * Time-slicing for the shader warms that run after `engine.start()` - the
+ * gateway destination previews, and the background worlds' own precompile.
  *
  * ── What actually blocks ───────────────────────────────────────────────────
  * Not `compile()`. Three issues `linkProgram` there and never reads the result;
@@ -72,6 +73,40 @@ export function previewProgramKey(object, material) {
 }
 
 /**
+ * The dedupe both plans share: one representative renderable per distinct
+ * program signature, in traversal order.
+ *
+ * @returns {{ units: any[], visit: (o: any) => void }}
+ */
+function programUnits() {
+  /** @type {any[]} */
+  const units = [];
+  const seenKey = new Set();
+  const seenObject = new Set();
+  return {
+    units,
+    visit(o) {
+      if (!(o.isMesh || o.isLine || o.isPoints || o.isSprite)) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      let novel = false;
+      for (const m of mats) {
+        if (!m) continue;
+        const key = previewProgramKey(o, m);
+        if (seenKey.has(key)) continue;
+        seenKey.add(key);
+        novel = true;
+      }
+      // One draw of the object covers every group of a multi-material mesh, so
+      // a mesh that introduces four new keys is still one unit.
+      if (novel && !seenObject.has(o)) {
+        seenObject.add(o);
+        units.push(o);
+      }
+    },
+  };
+}
+
+/**
  * One representative renderable per distinct program the preview will need.
  *
  * `traverseVisible`, not `traverse`: a draw skips an object whose own or whose
@@ -85,11 +120,8 @@ export function previewProgramKey(object, material) {
  * @returns {any[]} objects, in traversal order
  */
 export function planPreviewWarm(group) {
-  /** @type {any[]} */
-  const units = [];
+  const { units, visit } = programUnits();
   if (!group?.traverseVisible) return units;
-  const seenKey = new Set();
-  const seenObject = new Set();
   /* The root itself is forced visible first, because an inactive world's group
    * is `visible = false` - that is how it stays off the live frame - and
    * `traverseVisible` stops dead at an invisible root. Parking a group for a
@@ -105,25 +137,37 @@ export function planPreviewWarm(group) {
     group.visible = wasVisible;
   }
   return units;
+}
 
-  function visit(o) {
-    if (!(o.isMesh || o.isLine || o.isPoints || o.isSprite)) return;
-    const mats = Array.isArray(o.material) ? o.material : [o.material];
-    let novel = false;
-    for (const m of mats) {
-      if (!m) continue;
-      const key = previewProgramKey(o, m);
-      if (seenKey.has(key)) continue;
-      seenKey.add(key);
-      novel = true;
-    }
-    // One draw of the object covers every group of a multi-material mesh, so a
-    // mesh that introduces four new keys is still one unit.
-    if (novel && !seenObject.has(o)) {
-      seenObject.add(o);
-      units.push(o);
-    }
-  }
+/**
+ * One representative renderable per distinct program a `renderer.compile()` of
+ * `root` would build.
+ *
+ * ── Why this is not `planPreviewWarm` ──────────────────────────────────────
+ * `traverse`, not `traverseVisible`, and the difference is the whole reason
+ * this exists separately. A preview *draw* skips a hidden subtree, so planning
+ * one against `traverseVisible` describes exactly the set that will be drawn.
+ * `compile()` does not skip it: it collects materials with `scene.traverse` and
+ * prepares a parked interior's walls as readily as the street outside. Handing
+ * the visible-only plan to a compile warm would therefore cover strictly LESS
+ * than the single call it replaces, and every program it dropped would be
+ * linked later - in a gameplay frame, under the player's mouse, which is the
+ * defect the slicing is here to remove. The root's own `visible` is likewise
+ * irrelevant and left untouched.
+ *
+ * The plan is a dedupe, not a substitute for the whole-group call: the key is a
+ * near-superset of Three's, but the caller is still expected to finish with one
+ * `compile()` over `root` to catch anything the key under-split. That call is
+ * cheap by then, because every program the plan covered already exists.
+ *
+ * @param {any} root
+ * @returns {any[]} objects, in traversal order
+ */
+export function planCompileWarm(root) {
+  const { units, visit } = programUnits();
+  if (!root?.traverse) return units;
+  root.traverse(visit);
+  return units;
 }
 
 /**

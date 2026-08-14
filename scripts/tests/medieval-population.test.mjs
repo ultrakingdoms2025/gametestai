@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { medievalHeight, HALF, WATER_Y, riverZ, riverHalfWidth } from '../../src/worlds/terrain/MedievalHeight.js';
+import { medievalHeight, HALF, INNER_KEEP, WATER_Y, riverZ, riverHalfWidth } from '../../src/worlds/terrain/MedievalHeight.js';
 import { SETTLEMENTS } from '../../src/worlds/medieval/Settlements.js';
 import {
   planPopulation, planSettlement, planTravellers, quotaFor, resolveKind, tradeFor,
@@ -153,7 +153,19 @@ test('nothing in the shipped inner vale is dragged onto a landform or a named re
    * expansion must still take its trade from its kind. If this fails, the
    * derivation has started reaching into the old vale and Aldermoor is about
    * to become a mining town. */
-  for (const s of SETTLEMENTS) {
+  /* INNER_KEEP, not the whole table. This iterated every settlement until the
+   * five new towns landed, at which point it failed on Reedwater deriving
+   * `river:greyoak-braid` - which is the feature working, not breaking. The
+   * comment above always said "every settlement that existed BEFORE the
+   * expansion"; the loop just did not say so. The new towns are SUPPOSED to
+   * take their trade from the map, and the merge-gate cases below assert
+   * exactly that. */
+  const inner = SETTLEMENTS.filter(
+    (s) => Math.abs(s.centre.x) <= INNER_KEEP && Math.abs(s.centre.z) <= INNER_KEEP,
+  );
+  // Guard against the filter quietly emptying and the test proving nothing.
+  assert.ok(inner.length >= 9, `only ${inner.length} inner-vale settlements found`);
+  for (const s of inner) {
     assert.equal(tradeFor(s).via, 'kind', `${s.id} now derives its trade from the map`);
   }
 });

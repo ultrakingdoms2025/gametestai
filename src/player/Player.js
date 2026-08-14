@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CONFIG } from '../core/Config.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
+import { WALKABLE_NORMAL_Y } from '../npc/Grounding.js';
 import { Weapon } from './Weapon.js';
 import { Swim } from './Swim.js';
 import { Climb } from './Climb.js';
@@ -851,20 +852,33 @@ export class Player {
    * ground-stick bias below costs; adding the lift on top would hold the player
    * off the ground. @see ../../scripts/tests/player-slope.test.mjs
    *
-   * ── The defect it DOES have ──────────────────────────────────────────────
-   * The step-up retry below cannot tell slope loss from an obstruction.
-   * Projecting a horizontal velocity onto a plane of pitch p costs a factor of
-   * `cos^2 p`, which passes the 0.86 threshold at 22 degrees, so a smooth ramp
-   * with no riser anywhere on it reads as blocked and the branch teleports the
-   * player onto the surface ~0.36 m ahead. Measured on a 30 degree ramp: 20
-   * probes a second, the feet hovering up to 0.198 m over the surface, airborne
-   * on a third of all steps, sprint dropping out on half of them, footsteps
-   * halved, and an along-slope climb of 1.10x the flat-ground walk speed
-   * (1.41x at 45 degrees). This is the same blind spot `Navigation._probe` had
-   * before it learned to classify a hit whose normal passes `WALKABLE_NORMAL_Y`
-   * as floor rather than wall, and the same idea would close it. Left alone
-   * deliberately: it changes the feel of the controller, and the investigation
-   * that found it was scoped to the treadmill.
+   * ── Why the step-up asks `minNormalY` and not just "did I get there?" ─────
+   * The retry below used to fire on the shortfall alone, and a shortfall is NOT
+   * evidence of an obstruction: projecting a horizontal velocity onto a plane of
+   * pitch p costs a factor of `cos^2 p`, which passes the 0.86 threshold at 22
+   * degrees. So every smooth ramp in every world, with no riser anywhere on it,
+   * read as blocked. Measured on a 30 degree ramp before this line existed: 20
+   * probes a second, each teleporting the player onto the surface ~0.36 m ahead,
+   * the feet hovering up to 0.198 m over it, airborne on a third of all steps,
+   * sprint dropping out on half of them, footsteps halved, `_stepSmooth` pinned
+   * at its cap - and an along-slope climb of 1.10x the flat-ground walk speed,
+   * 1.41x at 45 degrees. The player went UP a ramp faster than it crossed a
+   * floor.
+   *
+   * This was the same blind spot `Navigation._probe` had before it learned that
+   * a hit whose normal passes `WALKABLE_NORMAL_Y` is floor rather than wall, and
+   * it is closed the same way. `resolveCapsule` reports the shallowest direction
+   * it pushed in; if every push that ate the motion was floor, the motion was
+   * lost to the slope and there is nothing to step over. The threshold is
+   * `Grounding.WALKABLE_NORMAL_Y` and deliberately not a second number of its
+   * own, so "the player will not try to step over it" and "the player can stand
+   * on it" stay the same question. @see ../npc/Navigation.js `isFloorHit`
+   *
+   * A riser, kerb or wall still fails it: the capsule's bottom sphere meets a
+   * step at its top edge, whose push direction has `y` near 0.14 for a 0.30 m
+   * riser and 0 for a wall - nowhere near 0.55 - so the probe fires exactly
+   * where it always did. Flat ground never reaches the branch at all, because
+   * unobstructed motion loses nothing.
    */
   _move(dt) {
     const radius = P.radius;
@@ -894,8 +908,10 @@ export class Player {
       this._position.z = _prev.z;
     }
 
-    // Blocked, and we have ground (or coyote) to push off: probe a step.
-    if (wanted > 1e-4 && got < wanted * 0.86 && (this._grounded || this._coyote > 0)) {
+    // Blocked by something that is not floor, and we have ground (or coyote)
+    // to push off: probe a step. @see the note above on `minNormalY`.
+    const obstructed = res.minNormalY < WALKABLE_NORMAL_Y;
+    if (wanted > 1e-4 && got < wanted * 0.86 && obstructed && (this._grounded || this._coyote > 0)) {
       // 1. Lift by the step height and make sure the raised capsule fits.
       _step.set(_prev.x, _prev.y + P.stepHeight, _prev.z);
       this.physics.resolveCapsule(_step, radius, h);

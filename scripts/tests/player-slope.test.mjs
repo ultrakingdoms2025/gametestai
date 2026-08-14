@@ -41,24 +41,84 @@ const { capsuleSlopeLift } = Grounding;
  * `restingHeightAbove` below reproduces the player's settled height on a slope
  * from `capsuleSlopeLift` and the ground-stick bias alone.
  *
- * ── What is NOT pinned here, and why ─────────────────────────────────────
- * Measuring this turned up a SEPARATE defect, of the opposite sign: on any
- * smooth ramp of 15 degrees or more, `_move`'s step-up branch mistakes the
- * solver's slope loss for an obstruction and fires 20-30 times a second,
- * teleporting the player up to the surface height ~0.36 m ahead of itself. The
- * player ends up hovering up to 0.2 m over a 30-degree ramp, airborne a third
- * to a half of all steps, and climbing at 1.10x its own walk speed - it goes
- * UP a 30-degree ramp faster than it crosses flat ground, and at 45 degrees,
- * 1.41x. The cases at the bottom of this file bound that behaviour so it cannot
- * quietly get worse; they deliberately do not bless it. Fixing it is a change
- * to the feel of the core controller and was not what this investigation was
- * asked for.
+ * ── The SEPARATE defect this turned up, and which is now closed ──────────
+ * Measuring the above found a second defect of the opposite sign: on any smooth
+ * ramp of ~22 degrees or more, `_move`'s step-up branch mistook the solver's
+ * slope loss for an obstruction and fired 20-30 times a second, teleporting the
+ * player onto the surface ~0.36 m ahead of itself. Measured at 1862ed9: the
+ * feet hovering 0.121-0.198 m over a 30-degree ramp, airborne on a third of all
+ * steps, sprint dropping out on half of them, footsteps halved (36 to 18 over
+ * six seconds), `_stepSmooth` pinned at its cap 100% of the time, and an
+ * along-slope climb of 1.10x the flat-ground walk speed - 1.41x at 45 degrees.
+ * The player went UP a ramp faster than it crossed a floor.
+ *
+ * `_move` now asks `resolveCapsule` whether anything it pushed against was
+ * something other than floor before it probes a step, which is the question
+ * `Navigation._probe` learned to ask for the NPCs. The cases at the bottom of
+ * this file are the ratchet on that: probes at zero, the feet at the tangency
+ * height and nowhere else, and a climb that is the projection and no more.
+ * @see ../../src/player/Player.js `_move`
+ * @see ../../src/npc/Navigation.js `isFloorHit`
  */
 
 const DT = 1 / 60;
 const P = CONFIG.player;
-/** The downward bias `_move` applies while grounded, in metres per fixed step. */
-const STICK_PER_STEP = 2.2 * DT;
+/** The downward bias `_move` applies while grounded, m/s. */
+const GROUND_STICK = 2.2;
+/** ...and the same thing in metres per fixed step. */
+const STICK_PER_STEP = GROUND_STICK * DT;
+
+/**
+ * Along-slope speed a walk up a pitch of `p` is worth, with nothing added.
+ *
+ * A horizontal velocity `v` integrated into a plane of pitch `p` and evicted
+ * back out along its normal advances `v cos^2 p` horizontally, and the
+ * ground-stick bias, evicted by the same normal, takes `stick sin p cos p` of
+ * that back downhill. Dividing by `cos p` for the along-slope distance leaves
+ *
+ *     v cos p - stick sin p
+ *
+ * which is the whole of what climbing a ramp is worth to a character that is
+ * not being teleported. It reproduces the measured speed to four decimals from
+ * 10 to 35 degrees; past 40 the solver's own contact normals start to drift off
+ * the true face normal and the player climbs slower than this, which is a
+ * property of `resolveCapsule`'s two-pass closest point and not of `_move`.
+ */
+function projectedAlong(pitch) {
+  return P.walkSpeed * Math.cos(pitch) - GROUND_STICK * Math.sin(pitch);
+}
+
+/**
+ * `physics.groundHeight` is called from exactly ONE place in the whole player
+ * controller - the tread probe inside `_move`'s step-up branch - so wrapping it
+ * counts step probes exactly. @see ../../src/player/Player.js `_move`
+ */
+function countProbes(physics) {
+  const real = physics.groundHeight.bind(physics);
+  let n = 0;
+  physics.groundHeight = (...a) => { n++; return real(...a); };
+  return () => n;
+}
+
+/**
+ * How many times `_move`'s step-up branch was ENTERED, which is a broader
+ * question than `countProbes`: the branch resolves a lifted copy of the capsule
+ * twice before it ever reaches the tread probe, and gives up between the two
+ * whenever the lift bought no extra motion - which is what happens at a wall.
+ *
+ * The lifted copy is a module scratch vector, never the player's own
+ * `_position`, so resolves against anything else are the branch and nothing
+ * else. Every other resolve in the controller is handed `_position` directly.
+ */
+function countStepBranch(physics, player) {
+  const real = physics.resolveCapsule.bind(physics);
+  let n = 0;
+  physics.resolveCapsule = (pos, ...rest) => {
+    if (pos !== player._position) n++;
+    return real(pos, ...rest);
+  };
+  return () => n;
+}
 
 /* ------------------------------------------------------------------ */
 /* Harness                                                             */
@@ -342,15 +402,24 @@ test('a capsule that re-seats its feet at the ground height DOES slide - the fix
 
 test('uphill progress is real at every walkable pitch', () => {
   /* A treadmill of any size shows up here as a collapse in along-slope speed.
-   * Measured: 4.15-5.36 m/s from 10 to 35 degrees against a 4.6 m/s walk. */
+   *
+   * CHANGED at the step-up fix. This used to assert `along > walkSpeed * 0.85`
+   * at every pitch, and that bound was only ever met because the step-up branch
+   * was handing the player free lift: the honest projection is `walkSpeed *
+   * cos p` less the ground-stick, which is 0.70x at 25 degrees and 0.55x at 35,
+   * so 0.85 was a bound on the DEFECT and not on progress. It is replaced with
+   * the projection itself, to 1%, which is a strictly tighter statement - it
+   * fails on a treadmill exactly as before, and now also fails if any free lift
+   * ever comes back. @see projectedAlong */
   for (const deg of [10, 15, 20, 25, 30, 35]) {
     const w = rampWorld(deg);
     const player = settle(makePlayer(w.physics), 30, 0, w.surfaceY(30) + 0.5);
     player.input.state.forward = 1;
     const r = drive(player, 4, { downhillAxis: 1 });
+    const want = projectedAlong(w.pitch);
     assert.ok(
-      r.along > P.walkSpeed * 0.85,
-      `only ${r.along.toFixed(3)} m/s along a ${deg} degree slope, against a ${P.walkSpeed} m/s walk`
+      Math.abs(r.along - want) < want * 0.01,
+      `${r.along.toFixed(4)} m/s along a ${deg} degree slope; the projection is ${want.toFixed(4)}`
     );
     assert.ok(r.to.y > r.from.y + 0.5, `barely gained height on ${deg} degrees`);
     assert.equal(r.downhillSteps, 0, `${r.downhillSteps} downhill steps while climbing ${deg} degrees`);
@@ -384,59 +453,213 @@ test('walking across the fall line slips downhill, but far less than the NPC tre
 });
 
 /* ------------------------------------------------------------------ */
-/* The separate defect this turned up, bounded so it cannot get worse  */
+/* The step-up branch: fires on risers, never on a smooth ramp         */
 /* ------------------------------------------------------------------ */
 
-test('the step-up branch fires on smooth ramps, and the hover it causes is bounded', () => {
-  /* `_move` retries blocked horizontal motion as a step-up when it got less
-   * than 86% of the motion it asked for. On a slope the solver ALWAYS returns
-   * less than that - projecting a horizontal velocity onto a plane of pitch p
-   * costs a factor of cos^2 p, which passes 0.86 at 22 degrees - so a smooth
-   * ramp with no riser anywhere on it reads as an obstruction, and the branch
-   * probes a tread 0.36 m ahead and teleports the player onto it.
+test('a smooth ramp does not probe for a step, at any walkable pitch', () => {
+  /* THE FIX, in one case.
    *
-   * This is the player's version of the blind spot `Navigation._probe` had:
-   * a horizontal test that cannot tell a floor it can walk up from a wall it
-   * cannot. The navigation fix was to classify a hit whose normal passes
-   * `WALKABLE_NORMAL_Y` as floor. The same idea would apply here.
+   * CHANGED at the step-up fix, from `the step-up branch fires on smooth ramps,
+   * and the hover it causes is bounded`. That case asserted `maxHover < 0.25`
+   * and `grounded > 0.6` - a ratchet on the defect, chosen so it could not get
+   * worse, and explicitly written not to bless it. Those bounds still pass
+   * today, and that is the problem with them: they pass whether the branch
+   * fires 20 times a second or never. This asserts the mechanism instead.
    *
-   * Measured on a 30 degree ramp: 20 probes a second, the feet hovering between
-   * 0.054 m (true tangency) and 0.198 m over the surface, airborne on a third
-   * of all steps. The bounds below are the measurements with a margin. They are
-   * a ratchet on a known defect, not an endorsement of it. */
-  const w = rampWorld(30);
-  const player = settle(makePlayer(w.physics), 30, 0, w.surfaceY(30) + 0.5);
-  player.input.state.forward = 1;
-  let t = 12;
-  for (let i = 0; i < 120; i++, t += DT) player.fixedUpdate(DT, t);
+   * `_move` retried blocked horizontal motion as a step-up whenever it got less
+   * than 86% of the motion it asked for, and on a slope the solver ALWAYS
+   * returns less than that: projecting a horizontal velocity onto a plane of
+   * pitch p costs a factor of cos^2 p, which passes 0.86 at 22 degrees. So a
+   * smooth ramp with no riser anywhere on it read as an obstruction, and the
+   * branch probed a tread 0.36 m ahead and teleported the player onto it. At
+   * 1862ed9 this ran at 20-30 probes a second from 20 degrees up.
+   *
+   * It now asks whether anything the solver pushed against was something other
+   * than floor first, so the answer on a ramp is: nothing to step over. The
+   * probe count is the direct evidence, and the height is the corroboration -
+   * a player that is not being teleported sits exactly where the solver left
+   * it, which is the tangency height the case above derives from first
+   * principles. */
+  for (const deg of [10, 15, 20, 25, 30, 35]) {
+    const w = rampWorld(deg);
+    const player = settle(makePlayer(w.physics), 30, 0, w.surfaceY(30) + 0.5);
+    player.input.state.forward = 1;
+    let t = 12;
+    for (let i = 0; i < 120; i++, t += DT) player.fixedUpdate(DT, t);
 
-  let maxHover = -Infinity;
-  let grounded = 0;
-  const n = 240;
-  for (let i = 0; i < n; i++, t += DT) {
-    player.fixedUpdate(DT, t);
-    maxHover = Math.max(maxHover, player.position.y - w.surfaceY(player.position.x));
-    if (player.grounded) grounded++;
+    // Counted only over the measured window, so the settle is not on the bill.
+    const probes = countProbes(w.physics);
+    const branch = countStepBranch(w.physics, player);
+    /* Tangency exactly, with none of the `stick * tan^2 p` shortfall the
+     * STANDING case above carries: climbing, the uphill component of the
+     * motion more than pays back the sink the ground-stick bias costs, so the
+     * eviction restores full tangency every step. */
+    const tangency = capsuleSlopeLift(P.radius, Math.cos(w.pitch));
+    let maxHover = -Infinity;
+    let grounded = 0;
+    let smoothing = 0;
+    const n = 240;
+    for (let i = 0; i < n; i++, t += DT) {
+      player.fixedUpdate(DT, t);
+      maxHover = Math.max(maxHover, player.position.y - w.surfaceY(player.position.x));
+      if (player.grounded) grounded++;
+      smoothing = Math.max(smoothing, player.stepSmoothing);
+    }
+    assert.equal(branch(), 0, `the step-up branch ran on a smooth ${deg} degree ramp`);
+    assert.equal(probes(), 0, `${probes()} step probes in 4 s on a smooth ${deg} degree ramp`);
+    assert.ok(
+      Math.abs(maxHover - tangency) < 1e-3,
+      `on ${deg} degrees the feet reached ${maxHover.toFixed(4)} m over the surface; ` +
+      `the tangency the solver leaves them at is ${tangency.toFixed(4)}`
+    );
+    assert.equal(grounded, n, `airborne on ${n - grounded} of ${n} steps up a ${deg} degree ramp`);
+    /* `_stepSmooth` is a LATCH under this harness, and that is what makes it
+     * worth asserting. Only a step-up charges it on land (the other writer is
+     * the mantle landing, which no ramp reaches), and it only decays in the
+     * render-rate view pass, which a test driving `fixedUpdate` never calls -
+     * so any non-zero value means a step-up happened at some point in this
+     * player's life, the settle included. At 1862ed9 this is where 10 degrees
+     * failed: 0.198 m charged while the player was still settling onto a ramp
+     * with no riser on it, and pinned at the 0.585 m cap at every pitch above. */
+    assert.equal(smoothing, 0, `${smoothing.toFixed(4)} m of stair smoothing on a ${deg} degree ramp`);
   }
-  assert.ok(maxHover < 0.25, `the player floated ${maxHover.toFixed(4)} m over a 30 degree ramp`);
-  assert.ok(
-    grounded / n > 0.6,
-    `grounded on only ${(grounded / n * 100).toFixed(0)}% of steps walking up a 30 degree ramp`
-  );
 });
 
-test('the climb is fast rather than slow - the defect here is the opposite sign to the NPCs', () => {
-  /* Recorded because it is the surprise, and because a future fix to the
-   * step-up branch will move these numbers and should be seen to. A player that
-   * climbs a 30 degree ramp at 1.10x its own flat-ground walk speed is getting
-   * height for free; the geometrically honest answer, velocity projected onto
-   * the plane, is cos^2 p = 0.75x horizontally and 0.87x along the slope. */
-  const w = rampWorld(30);
-  const player = settle(makePlayer(w.physics), 30, 0, w.surfaceY(30) + 0.5);
+test('the climb is the projection and nothing more - never faster than a flat walk', () => {
+  /* CHANGED at the step-up fix, from `the climb is fast rather than slow - the
+   * defect here is the opposite sign to the NPCs`. That case asserted
+   * `walkSpeed * 0.85 < along < walkSpeed * 1.25` at 30 degrees, a window
+   * around a MEASURED 1.10x that was chosen to catch the free lift growing. The
+   * free lift is gone, so the window is replaced by the thing it was a proxy
+   * for: going uphill may not be quicker than going along the flat, and the
+   * amount by which it is slower is the projection.
+   *
+   * The 45 degree entry is the one that used to be worst - 1.41x, the player
+   * outrunning its own walk by half again while airborne every other step. */
+  for (const deg of [10, 20, 25, 30, 35, 45]) {
+    const w = rampWorld(deg);
+    const player = settle(makePlayer(w.physics), 30, 0, w.surfaceY(30) + 0.5);
+    player.input.state.forward = 1;
+    const r = drive(player, 4, { downhillAxis: 1 });
+    assert.ok(
+      r.along <= P.walkSpeed,
+      `${r.along.toFixed(4)} m/s up a ${deg} degree ramp against a ${P.walkSpeed} m/s flat walk - ` +
+      'the player is being handed height for free'
+    );
+    // ...and it is still going up, at every one of them.
+    assert.ok(r.to.y > r.from.y + 0.5, `only gained ${(r.to.y - r.from.y).toFixed(2)} m on ${deg} degrees`);
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* ...and what must still stop it, or still lift it                     */
+/* ------------------------------------------------------------------ */
+
+/** A straight flight of boxy steps climbing toward +X, on a flat apron. */
+function stairWorld(n, rise, going, { width = 8 } = {}) {
+  const physics = new Physics();
+  const add = (m) => { m.updateWorldMatrix(true, false); physics.addBoxFromObject(m); return m; };
+  const apron = new THREE.Mesh(new THREE.BoxGeometry(40, 2, width));
+  apron.position.set(-20, -1, 0);
+  add(apron);
+  for (let i = 0; i < n; i++) {
+    const top = (i + 1) * rise;
+    const s = new THREE.Mesh(new THREE.BoxGeometry(going, top + 2, width));
+    s.position.set(i * going + going / 2, top / 2 - 1, 0);
+    add(s);
+  }
+  const landing = new THREE.Mesh(new THREE.BoxGeometry(40, 2, width));
+  landing.position.set(n * going + 20, n * rise - 1, 0);
+  add(landing);
+  return { physics, topY: n * rise, topX: n * going };
+}
+
+test('a real riser still gets stepped, and still gets probed for', () => {
+  /* The other half of the fix. Suppressing the probe on slopes is only correct
+   * if it still fires on the things it was written for, so both flights the
+   * worlds actually ship are driven here and both the arrival AND the probe
+   * count are asserted - a flight that got climbed with zero probes would mean
+   * something else was carrying the player and the branch had quietly died.
+   *
+   * The station's walkway flight is the third case, and it is the FIRST test in
+   * this file: it is a smooth 30.478 degree ramp, so it now arrives with no
+   * probes at all, which is the point. */
+  const flights = [
+    // The maze's spiral shaft: 24 rises of 0.375 m. @see ../../src/worlds/maze/MazeShafts.js
+    { name: 'maze spiral', n: 24, rise: 0.375, going: 0.7, by: 8 },
+    // A medieval doorstep: 0.30 m risers on a 0.62 m going.
+    // @see ../../src/worlds/MedievalWorld.js `_entrySteps`
+    { name: 'medieval entry steps', n: 8, rise: 0.30, going: 0.62, by: 4 },
+  ];
+  for (const f of flights) {
+    const w = stairWorld(f.n, f.rise, f.going);
+    assert.ok(f.rise < P.stepHeight, `${f.name} has a riser taller than the step height`);
+    const player = settle(makePlayer(w.physics), -3, 0, 0.5, 120);
+    const probes = countProbes(w.physics);
+    player.input.state.forward = 1;
+    let t = 2;
+    let arrivedAt = null;
+    for (let i = 0; i < 60 * 30; i++, t += DT) {
+      player.fixedUpdate(DT, t);
+      if (arrivedAt === null && player.position.y > w.topY - 0.05) arrivedAt = t - 2;
+      if (player.position.x > w.topX + 6) break;
+    }
+    assert.notEqual(arrivedAt, null, `${f.name}: never reached the top at y = ${w.topY}`);
+    assert.ok(arrivedAt < f.by, `${f.name}: took ${arrivedAt.toFixed(2)} s to climb ${f.n} steps`);
+    assert.ok(probes() >= f.n, `${f.name}: only ${probes()} step probes for ${f.n} risers`);
+  }
+});
+
+test('a wall still stops the player dead', () => {
+  /* The step-up probe fires at a wall exactly as it always did - a wall's
+   * contact normal has y at zero, nowhere near `WALKABLE_NORMAL_Y` - and finds
+   * no tread, which is the outcome that has to survive the fix. */
+  const physics = new Physics();
+  const add = (m) => { m.updateWorldMatrix(true, false); physics.addBoxFromObject(m); return m; };
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(200, 2, 200));
+  deck.position.set(0, -1, 0);
+  add(deck);
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(2, 6, 60));
+  wall.position.set(10, 3, 0);
+  add(wall);
+
+  const player = settle(makePlayer(physics), 0, 0, 0.5, 120);
+  const probes = countProbes(physics);
+  const branch = countStepBranch(physics, player);
   player.input.state.forward = 1;
-  const r = drive(player, 4, { downhillAxis: 1 });
-  // Between the honest projection and the measured free lift, so this fails
-  // both if the climb collapses to a treadmill and if the free lift grows.
-  assert.ok(r.along > P.walkSpeed * 0.85, `along-slope ${r.along.toFixed(3)} m/s`);
-  assert.ok(r.along < P.walkSpeed * 1.25, `along-slope ${r.along.toFixed(3)} m/s - the free lift grew`);
+  let t = 2;
+  let maxY = -Infinity;
+  for (let i = 0; i < 60 * 8; i++, t += DT) {
+    player.fixedUpdate(DT, t);
+    maxY = Math.max(maxY, player.position.y);
+  }
+  assert.ok(player.position.x < 9.0, `walked to x = ${player.position.x.toFixed(3)}, through a wall at 9`);
+  assert.ok(maxY < 0.05, `climbed ${maxY.toFixed(4)} m up a sheer wall`);
+  // The branch runs and gives up: lifting by the step height buys no extra
+  // motion against 6 m of wall, so it never even reaches the tread probe.
+  assert.ok(branch() > 0, 'the step-up branch never even looked at the wall');
+  assert.equal(probes(), 0, `${probes()} tread probes at a sheer wall`);
+});
+
+test('the boundary between a slope you can climb and one you cannot has not moved', () => {
+  /* The gate reads `Grounding.WALKABLE_NORMAL_Y`, the same number that decides
+   * what a character may stand on, precisely so that no second definition of
+   * walkable exists to disagree with the first. Where the player actually stops
+   * climbing is set by `resolveCapsule`'s own contact normals rather than by
+   * this gate, and the point of pinning it is that the fix did not move it:
+   * measured at 1862ed9 and after, the last ramp the player still climbs is 58
+   * degrees and 59 defeats it. */
+  const climbs = (deg) => {
+    const w = rampWorld(deg, { run: 60, width: 120 });
+    const player = settle(makePlayer(w.physics), 8, 0, w.surfaceY(8) + 0.5, 200);
+    player.input.state.forward = 1;
+    const y0 = player.position.y;
+    let t = 4;
+    for (let i = 0; i < 60 * 4; i++, t += DT) player.fixedUpdate(DT, t);
+    return player.position.y - y0 > 0.5;
+  };
+  assert.equal(climbs(57), true, 'a 57 degree ramp stopped being climbable');
+  assert.equal(climbs(58), true, 'a 58 degree ramp stopped being climbable');
+  assert.equal(climbs(59), false, 'a 59 degree ramp became climbable');
+  assert.equal(climbs(65), false, 'a 65 degree ramp became climbable');
 });

@@ -1033,10 +1033,20 @@ export class Physics {
    * @param {THREE.Vector3} position - feet position; mutated in place.
    * @param {number} radius
    * @param {number} height - total capsule height (feet to crown).
-   * @returns {{ grounded: boolean, groundNormal: THREE.Vector3, hitCount: number }}
+   * @returns {{ grounded: boolean, groundNormal: THREE.Vector3, hitCount: number,
+   *            minNormalY: number }}
+   *   `minNormalY` is the shallowest push direction this resolve applied - the
+   *   one furthest from "up" - and 1 when it applied none. A caller that has
+   *   lost horizontal motion can ask with it whether anything it touched was
+   *   something other than floor. @see ../player/Player.js `_move`
    */
   resolveCapsule(position, radius, height) {
-    const result = { grounded: false, groundNormal: new THREE.Vector3(0, 1, 0), hitCount: 0 };
+    const result = {
+      grounded: false,
+      groundNormal: new THREE.Vector3(0, 1, 0),
+      hitCount: 0,
+      minNormalY: 1,
+    };
     const segA = _v3.set(position.x, position.y + radius, position.z);
     const segB = _v4.set(position.x, position.y + height - radius, position.z);
     const capsuleCenter = _v5.copy(segA).add(segB).multiplyScalar(0.5);
@@ -1172,6 +1182,8 @@ export class Physics {
          * the four iterations converge instead of stacking. */
         segA.set(position.x, position.y + radius, position.z);
         segB.set(position.x, position.y + height - radius, position.z);
+
+        if (delta.y < result.minNormalY) result.minNormalY = delta.y;
 
         // Surfaces up to ~50 degrees count as walkable ground.
         if (delta.y > 0.64) {

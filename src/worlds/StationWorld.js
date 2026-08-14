@@ -1852,17 +1852,44 @@ export class StationWorld extends World {
 
   /**
    * @param {(fraction:number, label:string)=>void} [onProgress]
+   *
+   * ── Why the long phases are handed a `breathe` ────────────────────────────
+   * Every `step` below yields a frame before its phase runs, which is enough
+   * while a phase is a few tens of milliseconds - and most are. Four are not,
+   * and a yield in front of a phase does nothing about the phase itself.
+   * Measured on this machine, on the entry build with per-phase timing:
+   *
+   *     _settleDressing      3,175 ms      _buildOuterRing      327 ms
+   *     _buildTextures       1,405 ms      _buildPlazaCentre    146 ms
+   *     _solidifyStructure     982 ms      everything else      <100 ms
+   *     _solidifyProps          69 ms
+   *
+   * Behind the loading screen that is a slow boot and nothing worse. In the
+   * background - the station is a background build for anyone whose start
+   * world is not the station, and every other world is one for anyone whose
+   * start world IS - each of those is a single frame of that length dropped
+   * into gameplay. So the phases in that list take a `breathe` and call it as
+   * they go; `WorldManager._runBuild` decides what it does, and behind the
+   * loading gate the answer is nothing.
+   *
+   * `_solidifyProps` is in the list at 69 ms because it is the pass that grows
+   * with the prop count, not because it is slow today.
    */
   async build(onProgress) {
+    /* One `breathe` per phase, closed over that phase's own progress fraction
+     * and label so a phase never has to know where in the build it sits. */
+    const slice = onProgress?.slice;
+    const breathe = (f, label) => (slice ? () => slice(f, label) : noBreath);
+
     const step = async (f, label, fn) => {
       onProgress?.(f, label);
       await yieldFrame();
-      fn.call(this);
+      await fn.call(this, breathe(f, label));
     };
 
     onProgress?.(0.02, 'Printing hull plating');
     await yieldFrame();
-    this._buildTextures();
+    await this._buildTextures(breathe(0.02, 'Printing hull plating'));
 
     onProgress?.(0.16, 'Fabricating materials');
     await yieldFrame();
@@ -1918,14 +1945,25 @@ export class StationWorld extends World {
   /* Textures + materials                                              */
   /* ---------------------------------------------------------------- */
 
-  /** Paint every canvas surface set this world needs. */
-  _buildTextures() {
+  /**
+   * Paint every canvas surface set this world needs.
+   *
+   * 1,405 ms measured, and the second most expensive phase in the build after
+   * the dressing settle - three 1024 px canvases per surface, ten surfaces, a
+   * height-to-normal conversion for each, and a sign atlas several megapixels
+   * wide. Every painter here is independent of every other, so the pass yields
+   * between them and no single one of them is long. See `build`.
+   *
+   * @param {() => Promise<void>} [breathe]
+   */
+  async _buildTextures(breathe = noBreath) {
     const aniso = this.engine?.renderer?.capabilities?.getMaxAnisotropy?.() ?? 8;
     this._aniso = aniso;
     const keep = this._textures;
 
     /** Run a painter over albedo/height/roughness canvases and build the set. */
-    const surface = (name, size, painter, normalStrength, seed) => {
+    const surface = async (name, size, painter, normalStrength, seed) => {
+      await breathe();
       const ca = makeCanvas(size), ch = makeCanvas(size), cr = makeCanvas(size);
       painter(ctx2d(ca), ctx2d(ch), ctx2d(cr), size, mulberry32(seed));
       const map = canvasTexture(ca, true, aniso);
@@ -1943,18 +1981,19 @@ export class StationWorld extends World {
     // plus a gentler normal is the only fix available inside the world file -
     // MSAA and temporal AA belong to the renderer.
     this._tex = {};
-    surface('deck', 1024, paintDeck, 1.35, 11);
-    surface('road', 1024, paintRoad, 1.55, 23);
-    surface('hull', 1024, paintHull, 1.5, 37);
-    surface('panel', 1024, paintPanel, 1.2, 53);
-    surface('grate', 1024, paintGrate, 1.8, 71);
-    surface('plaza', 1024, paintPlaza, 1.0, 89);
-    surface('crate', 512, paintCrate, 1.6, 101);
-    surface('hazard', 256, paintHazard, 1.4, 113);
-    surface('leaf', 512, paintLeaf, 1.9, 211);
-    surface('cloth', 512, paintCloth, 0.9, 233);
+    await surface('deck', 1024, paintDeck, 1.35, 11);
+    await surface('road', 1024, paintRoad, 1.55, 23);
+    await surface('hull', 1024, paintHull, 1.5, 37);
+    await surface('panel', 1024, paintPanel, 1.2, 53);
+    await surface('grate', 1024, paintGrate, 1.8, 71);
+    await surface('plaza', 1024, paintPlaza, 1.0, 89);
+    await surface('crate', 512, paintCrate, 1.6, 101);
+    await surface('hazard', 256, paintHazard, 1.4, 113);
+    await surface('leaf', 512, paintLeaf, 1.9, 211);
+    await surface('cloth', 512, paintCloth, 0.9, 233);
 
     // Emissive / unlit sheets.
+    await breathe();
     const room = makeCanvas(1024);
     paintRoomGlow(ctx2d(room), 1024, mulberry32(131));
     this._tex.room = canvasTexture(room, true, aniso);
@@ -1969,28 +2008,34 @@ export class StationWorld extends World {
      * left to resolve. Half again in each axis costs 28 MB for the one texture
      * in the world whose entire job is to be read.
      */
+    await breathe();
     const signs = makeCanvas(768 * SIGN_COLS, 384 * SIGN_ROWS);
     paintSignAtlas(ctx2d(signs), 768 * SIGN_COLS, 384 * SIGN_ROWS, mulberry32(151));
     this._tex.signs = canvasTexture(signs, true, aniso);
 
     // Alpha-cut leaf sprigs. RGBA, so the canvas alpha survives into the
     // texture and `alphaTest` can punch the canopy silhouette full of holes.
+    await breathe();
     const leafCard = makeCanvas(512);
     paintLeafCard(ctx2d(leafCard), 512, mulberry32(223));
     this._tex.leafCard = canvasTexture(leafCard, true, aniso);
 
+    await breathe();
     const decals = makeCanvas(1024);
     paintDecalAtlas(ctx2d(decals), 1024, mulberry32(167));
     this._tex.decals = canvasTexture(decals, true, aniso);
 
+    await breathe();
     const stars = makeCanvas(2048, 1024);
     paintStars(ctx2d(stars), 2048, 1024, mulberry32(181));
     this._tex.stars = canvasTexture(stars, true, aniso);
 
+    await breathe();
     const planet = makeCanvas(1024, 512);
     paintPlanet(ctx2d(planet), 1024, 512, mulberry32(197));
     this._tex.planet = canvasTexture(planet, true, aniso);
 
+    await breathe();
     this._tex.ramp = makeRampTexture(aniso);
     this._tex.radial = makeRadialTexture(aniso);
     this._tex.macro = makeMacroNoise(aniso);
@@ -2847,8 +2892,37 @@ export class StationWorld extends World {
    * prop's support appear, never take it away, so this settles - and it is run
    * to a fixed point rather than a fixed number of rounds because a stack is as
    * tall as its author made it.
+   *
+   * ── Why it is safe for this one to yield mid-sweep ────────────────────────
+   * This pass BUILDS COLLIDERS, and handing a frame back with half of them
+   * registered is the kind of thing that goes wrong quietly. Four things make
+   * it not go wrong here, and all four are properties of the code around it
+   * rather than of this function, so they are worth stating:
+   *
+   *   1. **It writes to a scratch physics world, not the live one.**
+   *      `WorldManager._runBuild` swaps `world.physics` for a private
+   *      `Physics` for the whole of `build()` and only harvests it afterwards.
+   *      A frame that runs inside a yield here resolves the player against a
+   *      collision world this pass has never touched.
+   *   2. **Nothing can activate this world mid-build.** `_activate` opens by
+   *      awaiting `build(id)`, which joins the in-flight build rather than
+   *      racing it, so the wholesale `world.colliders` re-registration cannot
+   *      see a partly-filled array.
+   *   3. **It only ever adds.** The invisible-wall failure needs a collider
+   *      dropped from physics but left in `world.colliders`; there is no
+   *      removal anywhere in this pass, and `Physics.add` inserts into the
+   *      broadphase grid immediately rather than deferring a rebuild. The
+   *      collision world is therefore correct, not merely eventually correct,
+   *      at every point a yield can land.
+   *   4. **The answers do not depend on when it yields.** The sweep reads what
+   *      it writes - see the note above - so the ORDER matters, and the order
+   *      is untouched: same traverse, same instances, same passes over
+   *      `noFloor`. Nothing outside this pass writes to the scratch world, so
+   *      pausing it is not the same as reordering it.
+   *
+   * @param {() => Promise<void>} [breathe] mid-pass yield; see `build`.
    */
-  _solidifyProps() {
+  async _solidifyProps(breathe = noBreath) {
     const ph = this.physics;
     const m = new THREE.Matrix4();
     const pos = new THREE.Vector3();
@@ -2860,8 +2934,14 @@ export class StationWorld extends World {
     const noFloor = [];
 
     this.group.updateMatrixWorld(true);
+    /* Collected before the sweep rather than during it: a `traverse` callback
+     * cannot await. Depth-first, in visit order, so the sweep still meets the
+     * instances in the order the note above reasons about. */
+    const meshes = [];
     this.group.traverse((o) => {
-      if (!o.isInstancedMesh || !o.visible || !o.geometry) return;
+      if (o.isInstancedMesh && o.visible && o.geometry) meshes.push(o);
+    });
+    for (const o of meshes) {
       if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
       const bb = o.geometry.boundingBox;
       const lx = bb.max.x - bb.min.x, ly = bb.max.y - bb.min.y, lz = bb.max.z - bb.min.z;
@@ -2887,6 +2967,10 @@ export class StationWorld extends World {
         // can walk through is exactly the defect this sweep exists to catch.
         if (Math.hypot(centre.x, centre.z) > WORLD_R) continue;
 
+        /* Past every cheap reject, so what follows is two ground probes and a
+         * collider. Asked here rather than at the top of the loop because the
+         * rejects above cost nothing and there are far more of them. */
+        await breathe();
         const e = new THREE.Euler().setFromQuaternion(quat, 'YXZ');
         const base = centre.y - hy;
         const floor = ph.groundHeight(centre.x, centre.z, base + 0.4, 2.0);
@@ -2899,7 +2983,7 @@ export class StationWorld extends World {
         this._solidRot(centre.x, centre.y, centre.z, hx, hy, hz, e.y);
         added++;
       }
-    });
+    }
 
     /* Props that were resting on other props. Each round stands up everything
      * whose support now exists; the loop stops the round nothing moves. */
@@ -2910,6 +2994,7 @@ export class StationWorld extends World {
         const cx = noFloor[i], cy = noFloor[i + 1], cz = noFloor[i + 2];
         const hy = noFloor[i + 4];
         if (!Number.isFinite(cx)) continue;                             // already placed
+        await breathe();
         const base = cy - hy;
         const floor = ph.groundHeight(cx, cz, base + 0.4, 2.0);
         if (floor === null || Math.abs(floor - base) > 0.6) continue;
@@ -3032,15 +3117,38 @@ export class StationWorld extends World {
    * ring offers 137,188 triangles and the enclosure drop removes 75,806 of them
    * - 55%, against the hub's 43% - because a zone is mostly buildings, and a
    * building is already a box.
+   *
+   * ── What yields here, and the one thing that does not ─────────────────────
+   * 982 ms measured, split roughly 330 extracting the soup, 130 dropping the
+   * enclosed triangles, 340 chunking, 15 registering and 170 on the planting.
+   * Everything on that list except the chunker takes the `breathe` and is no
+   * longer a frame of its own.
+   *
+   * `chunkTriangles` does not, and deliberately. It is an exported pure
+   * function in `station/StationKit.js`, called synchronously by
+   * `chunkTrianglesBySpan` beside it and by the tests, and making it async to
+   * save 340 ms would push a promise through a numerical utility and every
+   * caller of it. That leaves ~340 ms as this phase's worst frame, which is
+   * the same order as `_buildOuterRing` next door and no longer the thing
+   * worth fixing.
+   *
+   * The collider-safety argument is the one written out at length on
+   * `_solidifyProps`: scratch physics world, no activation possible mid-build,
+   * additions only, and an order that pausing does not change.
+   *
+   * @param {() => Promise<void>} [breathe] mid-pass yield; see `build`.
    */
-  _solidifyStructure() {
+  async _solidifyStructure(breathe = noBreath) {
     const t0 = performance.now();
-    const soup = this._collisionSoup();
+    const soup = await this._collisionSoup(undefined, breathe);
     const extracted = soup.length / 9;
-    const kept = this._dropEnclosedTriangles(soup);
+    const kept = await this._dropEnclosedTriangles(soup, 0.03, breathe);
     const chunks = chunkTriangles(kept, CHUNK_TRIS);
-    for (const positions of chunks) this.track(this.physics.addTriangleSoup(positions));
-    const planters = this._solidifyPlanting();
+    for (const positions of chunks) {
+      await breathe();
+      this.track(this.physics.addTriangleSoup(positions));
+    }
+    const planters = await this._solidifyPlanting(breathe);
 
     console.info(
       `[station] structure collided from geometry: ${extracted} triangles found, ` +
@@ -3083,14 +3191,15 @@ export class StationWorld extends World {
    * Leaves buried inside their own planter are dropped first, so a tub that is
    * already solid does not get a second collider inside it.
    */
-  _solidifyPlanting() {
-    const soup = this._collisionSoup((k) => PROXY_KEYS.has(k));
+  async _solidifyPlanting(breathe = noBreath) {
+    const soup = await this._collisionSoup((k) => PROXY_KEYS.has(k), breathe);
     if (!soup.length) return 0;
-    const kept = this._dropEnclosedTriangles(soup);
+    const kept = await this._dropEnclosedTriangles(soup, 0.03, breathe);
     const chunks = chunkTrianglesBySpan(kept, PLANTING_TRIS, PLANTING_SPAN);
     const box = new THREE.Box3();
     let added = 0;
     for (const positions of chunks) {
+      await breathe();
       box.makeEmpty();
       for (let i = 0; i < positions.length; i += 3) {
         _v1.set(positions[i], positions[i + 1], positions[i + 2]);
@@ -3113,8 +3222,17 @@ export class StationWorld extends World {
    * batches both reach the scene here, and the material is the one thing both
    * carry. Transparent, non-depth-writing and additive materials are holograms
    * and glow cards, which have no business being solid.
+   *
+   * @param {(key: string) => boolean} [wantKey]
+   * @param {() => Promise<void>} [breathe] mid-pass yield; see `build`. Asked
+   *   once per mesh, because a mesh is the unit that costs anything here - the
+   *   station's merged batches run to tens of thousands of triangles each and
+   *   the pass walks 328,654 of them in total.
    */
-  _collisionSoup(wantKey = (k) => !NON_SOLID_KEYS.has(k) && !PROXY_KEYS.has(k) && !k.startsWith('em')) {
+  async _collisionSoup(
+    wantKey = (k) => !NON_SOLID_KEYS.has(k) && !PROXY_KEYS.has(k) && !k.startsWith('em'),
+    breathe = noBreath,
+  ) {
     const keyOf = new Map();
     for (const [k, m] of Object.entries(this.mat ?? {})) if (m?.isMaterial) keyOf.set(m, k);
 
@@ -3122,19 +3240,26 @@ export class StationWorld extends World {
     const tris = [];
     const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
 
+    /* Collected before the walk: a `traverse` callback cannot await, and the
+     * extraction has to be able to hand the frame back between meshes. */
+    const meshes = [];
     this.group.traverse((o) => {
       // Instanced props are already covered by `_solidifyProps`, which can read
       // each instance's own yaw and give it a tight oriented box - strictly
       // better than the triangles would be.
-      if (!o.isMesh || o.isInstancedMesh || !o.visible) return;
+      if (o.isMesh && !o.isInstancedMesh && o.visible) meshes.push(o);
+    });
+
+    for (const o of meshes) {
       const m = Array.isArray(o.material) ? o.material[0] : o.material;
-      if (!m || m.transparent || m.depthWrite === false || m.blending === THREE.AdditiveBlending) return;
+      if (!m || m.transparent || m.depthWrite === false || m.blending === THREE.AdditiveBlending) continue;
       const key = keyOf.get(m) ?? (o.name || '').split(':')[1] ?? '';
-      if (!wantKey(key)) return;
+      if (!wantKey(key)) continue;
 
       const geo = o.geometry;
       const pos = geo.getAttribute('position');
-      if (!pos) return;
+      if (!pos) continue;
+      await breathe();
       const idx = geo.getIndex();
       const n = idx ? idx.count : pos.count;
       for (let i = 0; i < n; i += 3) {
@@ -3156,7 +3281,7 @@ export class StationWorld extends World {
         if (this._insideSelfCollided(cx, cy, cz)) continue;
         tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
       }
-    });
+    }
     return new Float32Array(tris);
   }
 
@@ -3175,7 +3300,7 @@ export class StationWorld extends World {
    * Its own grid, rather than `physics.query`, because that allocates a dedup
    * `Set` per call and this asks a quarter of a million questions.
    */
-  _dropEnclosedTriangles(soup, tol = 0.03) {
+  async _dropEnclosedTriangles(soup, tol = 0.03, breathe = noBreath) {
     const CELL = 16;
     const grid = new Map();
     const cellKey = (i, j) => (i + 4096) * 16384 + (j + 4096);
@@ -3214,6 +3339,11 @@ export class StationWorld extends World {
     const keep = new Float32Array(soup.length);
     let w = 0;
     for (let i = 0; i < count; i++) {
+      /* A quarter of a million triangles, each a handful of box tests, so the
+       * yield is asked for in blocks rather than per triangle - the check
+       * itself would otherwise cost more than the work between checks. 4,096
+       * is about 2 ms of this loop on the built station. */
+      if ((i & 4095) === 0) await breathe();
       const o = i * 9;
       if (
         enclosed(soup[o], soup[o + 1], soup[o + 2]) &&
@@ -3416,14 +3546,35 @@ export class StationWorld extends World {
    * "worse defect" the original note was reaching for, and it is why the ring
    * is left alone.
    */
-  _settleDressing() {
+  async _settleDressing(breathe = noBreath) {
     const groups = ['dressing', 'monument', 'cargo', 'control', 'skyline', 'commercial', 'hangar']
       .map((n) => this.group.getObjectByName(n))
       .filter(Boolean);
-    return this._settleScatter(groups);
+    return this._settleScatter(groups, breathe);
   }
 
-  _settleScatter(groups) {
+  /**
+   * @param {THREE.Object3D[]} groups
+   * @param {() => Promise<void>} [breathe] mid-pass yield; see `build`.
+   *
+   * ── Why this one yields, and what that cannot disturb ─────────────────────
+   * At 3,175 ms measured this is the longest single frame the station build
+   * produces, and by a factor of two the longest in the whole game's boot. The
+   * cost is one `Mesh.raycast` per candidate prop against the merged batches
+   * that could be holding it up - about 5 ms each across 604 candidates - so
+   * the pass yields once per candidate and the 24 ms budget upstream decides
+   * how many of those actually give a frame back.
+   *
+   * Nothing it touches can be observed half-done. It runs against a world that
+   * is not in the scene and not the active world, so no frame draws it and
+   * `update()` is never called on it. It writes only `instanceMatrix`, whose
+   * `needsUpdate` flag is still set per mesh exactly where it was - and an
+   * un-uploaded matrix buffer on a world nobody is drawing is not a state
+   * anything can see. Above all it registers NO colliders: this pass runs
+   * before `_solidifyProps` precisely so the props are still collider-free
+   * while they move, which is what makes lifting one mid-pass safe.
+   */
+  async _settleScatter(groups, breathe = noBreath) {
     const t0 = performance.now();
     this.group.updateMatrixWorld(true);
 
@@ -3506,8 +3657,14 @@ export class StationWorld extends World {
     let moved = 0, worst = 0, checked = 0;
 
     for (const group of groups) {
-      group.traverse((o) => {
-        if (!o.isInstancedMesh || !o.geometry) return;
+      /* Collected before the walk rather than during it: a `traverse` callback
+       * cannot await, and this pass has to be able to hand the frame back
+       * between props. `traverse` is depth-first and this fills the array in
+       * exactly the order it visited, group by group, so every prop still sees
+       * the same partly-settled world its unsliced self saw. */
+      const props = [];
+      group.traverse((o) => { if (o.isInstancedMesh && o.geometry) props.push(o); });
+      for (const o of props) {
         if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
         bb.copy(o.geometry.boundingBox);
         let dirty = false;
@@ -3518,6 +3675,13 @@ export class StationWorld extends World {
           // Trim, decals and cable runs are meant to lie flush; leave them.
           if (h < 0.4) continue;
           checked++;
+          /* One candidate between yields. A candidate costs a raycast against
+           * whatever merged batches could be under it - ~5 ms - and the cheap
+           * rejects above it cost nothing, so this is asked per candidate
+           * rather than per instance. Only the 24 ms budget upstream decides
+           * whether a given call actually gives the frame back. `m` holds this
+           * instance's matrix across the await and nothing else can touch it. */
+          await breathe();
           const cx = (world.min.x + world.max.x) / 2;
           const cz = (world.min.z + world.max.z) / 2;
 
@@ -3564,7 +3728,7 @@ export class StationWorld extends World {
           o.instanceMatrix.needsUpdate = true;
           o.computeBoundingSphere();
         }
-      });
+      }
     }
     console.info(
       `[station] set dressing settled: ${moved} of ${checked} props lifted out of the surface ` +
@@ -10779,3 +10943,15 @@ export class StationWorld extends World {
 function yieldFrame() {
   return new Promise((r) => requestAnimationFrame(() => r()));
 }
+
+const RESOLVED = Promise.resolve();
+
+/**
+ * The `breathe` a phase gets when nothing is slicing this build.
+ *
+ * `build()` is reachable without `WorldManager` behind it - a test that drives
+ * one pass, a tool that builds a world to measure it - and a phase must not
+ * have to check whether its yield exists before every call. One shared
+ * resolved promise, so an awaited no-op allocates nothing.
+ */
+const noBreath = () => RESOLVED;

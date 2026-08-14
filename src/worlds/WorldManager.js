@@ -26,6 +26,9 @@ function yieldFrame() {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
+/** Shared "nothing to wait for", so a slice that does not yield allocates nothing. */
+const RESOLVED = Promise.resolve();
+
 const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 
 export class WorldManager {
@@ -238,8 +241,40 @@ export class WorldManager {
         lastYield = now;
         return yieldFrame();
       }
-      return Promise.resolve();
+      return RESOLVED;
     };
+
+    /**
+     * Mid-phase yield, for a build phase that is one long synchronous pass.
+     *
+     * `report` above is only reachable BETWEEN phases, so the finest grain it
+     * can hand back is one whole phase - and a phase can be enormous. The
+     * station's set-dressing settle is a single 3.2 s pass measured on this
+     * machine, which is one 3.2 s frame no matter how diligently the phases on
+     * either side of it yield. This is the same relay called from inside such a
+     * pass, and it shares `report`'s 24 ms clock deliberately: a phase that
+     * slices and a build that steps must not each be spending a budget of
+     * their own, or the two together would stall twice as often as either was
+     * asked to.
+     *
+     * ── Why it does nothing behind the loading screen ─────────────────────
+     * The entry world is built before `engine.start()`, with the loading
+     * screen up and no gameplay frame in existence to protect. Every yield
+     * taken there is wall clock added to the boot and buys nothing anybody can
+     * see - a `requestAnimationFrame` round trip is ~8 ms on a 120 Hz panel,
+     * so slicing the station's 6.5 s entry build to a 24 ms budget would have
+     * added roughly two seconds to the loading screen for no visible gain.
+     * The builds that must not block are the ones `scheduleBackgroundBuilds`
+     * starts AFTER the gate opens, in the player's frames, and
+     * `engine.running` is exactly that distinction - already true, already
+     * maintained, and needing no flag threaded down through the world classes
+     * to say which kind of build this is.
+     *
+     * The coarse per-phase yields are untouched in both directions. They are
+     * what repaints the loading bar, and a boot that never yielded at all
+     * would leave it frozen at whatever it last said.
+     */
+    report.slice = (p, label) => (this.engine?.running ? report(p, label) : RESOLVED);
 
     // Redirect collider registration for the duration of the build.
     world.physics = scratch;

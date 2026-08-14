@@ -178,17 +178,25 @@ test('the ONLY differences are the yards the old reject box was suppressing', ()
 
 test('every existing settlement is in the table, with a name and a place', () => {
   const byId = new Map(SETTLEMENTS.map((s) => [s.id, s]));
+  /* The nine of the old vale, plus the eight the ring expansion added: five
+   * towns from `Towns.js` and three camps from `Camps.js`. Enumerated rather
+   * than counted, because a place that gets BUILT but never registered here
+   * renders as buildings standing in unbroken pasture - no beaten earth, no
+   * road setts, grass growing to the doorstep - and nothing throws. */
   assert.deepEqual([...byId.keys()].sort(), [
     'aldermoor', 'aldern-mill', 'aldermoor-keep', 'keep-approach',
     'south-parish', 'st-aldern', 'watchtower', 'west-parish', 'windmill',
+    'reedwater', 'grimscar', 'st-ceolwine', 'blackmarch', 'fenwick-cross',
+    'harrowgate-halt', 'ceolwine-rest', 'ninewells-camp',
   ].sort());
   for (const s of SETTLEMENTS) {
     assert.equal(typeof s.displayName, 'string');
     assert.ok(s.displayName.length > 2, `${s.id} has no display name`);
     assert.ok(Number.isFinite(s.centre.x) && Number.isFinite(s.centre.z), `${s.id} has no centre`);
     assert.ok(s.radius > 0, `${s.id} has no radius`);
-    assert.ok(['village', 'hamlet', 'castle', 'church', 'mill', 'ruin'].includes(s.kind),
-      `${s.id} has an unknown kind "${s.kind}"`);
+    assert.ok(['village', 'hamlet', 'town', 'castle', 'fort', 'abbey',
+      'church', 'mill', 'ruin', 'camp'].includes(s.kind),
+    `${s.id} has an unknown kind "${s.kind}"`);
     assert.ok(Array.isArray(s.ground), `${s.id} has no ground array`);
   }
 });

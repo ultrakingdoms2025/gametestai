@@ -146,6 +146,50 @@ const CONTRACT = [
     exports: ['GridIndex', 'segmentDistance'],
     methods: ['insert', 'query', 'nearest'],
   },
+  /* The outer ring's content, split out for the same reason everything above
+   * it was: these are the modules whose failures are silent.
+   *
+   * `RoadNet` owns the road table and the crossings, and it is the only thing
+   * that can answer "is every town reachable" - a disconnected network throws
+   * nothing and shows nothing, it just strands a player at a river. `Towns`
+   * owns the five layouts and the interior arithmetic, so "the stairs reach
+   * the floor above" and "you can stand up in here" are properties of a pure
+   * function rather than of nine thousand lines of renderer. `Camps` owns
+   * three camp layouts and the which-bank test. `Woodland` owns the stand
+   * field and DERIVES the tree budget from it, which is the fix for an
+   * absolute 520 trees over a map that grew five times.
+   *
+   * A renamed export in any of them surfaces here rather than as a town with
+   * no beaten earth, a road to nowhere or a bald forest one browser boot
+   * later. Takes the count 67 -> 71. */
+  {
+    file: 'src/worlds/medieval/RoadNet.js',
+    exports: ['VALE_ROADS', 'RING_ROADS', 'ROADS', 'CROSSINGS', 'GREYOAK_STAGE',
+      'ROAD_JOIN', 'ROAD_SAMPLE', 'samplePolyline', 'roadGraph'],
+  },
+  {
+    file: 'src/worlds/medieval/Towns.js',
+    exports: ['TOWNS', 'REEDWATER_DECK', 'REEDWATER_JETTIES', 'GRIMSCAR_WORKINGS',
+      'CEOLWINE_PRECINCT', 'CEOLWINE_GARTH', 'CEOLWINE_HERBS', 'CEOLWINE_POND',
+      'BLACKMARCH_PALISADE', 'BLACKMARCH_YARD', 'BLACKMARCH_BEACON',
+      'FENWICK_MARKET', 'FENWICK_CROSS', 'FENWICK_CENTRE',
+      'GROUND_H', 'UPPER_H', 'FLOOR_T', 'FLOOR_RISE', 'DOOR_W', 'DOOR_H', 'WALL_T',
+      'STAIR_RISE_MAX', 'STAIR_TREAD', 'STAIR_W',
+      'stairFlight', 'interiorPlan', 'shellHeight', 'allBuildings', 'landmarkOf',
+      'footprintCorners', 'footprintDistance', 'footprintsOverlap', 'groundUnder',
+      'isOverWater', 'townBank', 'enterableCounts'],
+  },
+  {
+    file: 'src/worlds/medieval/Camps.js',
+    exports: ['CAMPS', 'piecePosition', 'campPieces', 'bankOf', 'campGround'],
+  },
+  {
+    file: 'src/worlds/medieval/Woodland.js',
+    exports: ['WOOD_FREQ', 'woodMask', 'standAt', 'isWoodEdge', 'STAND_AREA',
+      'TREE_DENSITY', 'PLAYFIELD_TREES', 'UNDERSTOREY', 'BRACKEN',
+      'TREE_BUCKET_M', 'TREE_BUCKETS', 'STAND_SPECIES', 'standSpecies',
+      'NAMED_WOODS', 'woodAt', 'DEADFALL_PER_WOOD'],
+  },
   { file: 'src/worlds/SportsWorld.js', exports: ['SportsWorld'], methods: ['build'] },
   { file: 'src/worlds/WorldRules.js', exports: ['DEFAULT_RULES', 'makeRules', 'allows'] },
   {

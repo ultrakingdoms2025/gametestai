@@ -22,7 +22,8 @@
  *
  *   id            stable key, safe to persist
  *   displayName   shown to a player
- *   kind          'village' | 'hamlet' | 'castle' | 'church' | 'mill' | 'ruin'
+ *   kind          'village' | 'hamlet' | 'town' | 'castle' | 'fort' | 'abbey'
+ *                 | 'church' | 'mill' | 'ruin' | 'camp'
  *   centre {x,z}  where the place is, for naming, spacing and map labels
  *   radius        how far it reaches, metres - the spacing radius a later
  *                 phase uses to refuse to drop a second settlement on top
@@ -41,6 +42,13 @@
  */
 
 import { MARKET, CASTLE, VILLAGE, rectDist, smoothstep } from '../terrain/MedievalHeight.js';
+/* The outer ring's places own their own layouts, because a settlement is a
+ * list of buildings before it is a patch of trodden ground and the buildings
+ * are what the layout tests read. This file takes only the two fields it is
+ * the authority for - where a place is and what ground it wears - and leaves
+ * the rest where it belongs. */
+import { TOWNS } from './Towns.js';
+import { CAMPS, campGround } from './Camps.js';
 
 /**
  * Village plots: [x, z, yaw, width, depth, storeys, roof, lit].
@@ -239,6 +247,38 @@ export const SETTLEMENTS = [
     plots: null,
     ground: [],
   },
+  /* ---------------------------------------------------------------- *
+   * The outer ring.
+   *
+   * These are the reason the table exists. Every one of the eight entries
+   * below is generated from a layout that lives in `Towns.js` or `Camps.js`,
+   * and each contributes REAL ground features - which is the whole payoff of
+   * deriving `settledAt` from a table: a town added here gets its beaten
+   * earth, its road setts and its grass rejection with no edit anywhere else,
+   * and a town that someone forgets to add renders as five hundred buildings
+   * standing on unbroken pasture.
+   *
+   * They are appended rather than interleaved so the nine original entries
+   * keep their indices and their comments. Nothing above this line changed.
+   * ---------------------------------------------------------------- */
+  ...TOWNS.map((t) => ({
+    id: t.id,
+    displayName: t.displayName,
+    kind: t.kind,
+    centre: { ...t.centre },
+    radius: t.radius,
+    plots: null,
+    ground: t.ground,
+  })),
+  ...CAMPS.map((c) => ({
+    id: c.id,
+    displayName: c.name,
+    kind: 'camp',
+    centre: { x: c.x, z: c.z },
+    radius: c.radius + 8,
+    plots: null,
+    ground: campGround(c),
+  })),
 ];
 
 /* ------------------------------------------------------------------ */

@@ -20,6 +20,29 @@ import {
  * without dragging `three` and nine thousand lines of world in behind them. */
 import { PLOTS, EXTRA_YARDS, settledAt } from './medieval/Settlements.js';
 import { GridIndex, segmentDistance } from './medieval/GridIndex.js';
+/* The road network moved out for the same reason the settlement table did, and
+ * for one more: "can you actually get there" is a graph question with a
+ * headless answer, and a 900 m map with five towns on two banks can be
+ * disconnected without anything looking wrong. See `medieval/RoadNet.js`. */
+import { ROADS, CROSSINGS, GREYOAK_STAGE } from './medieval/RoadNet.js';
+/* The five towns of the outer ring: layouts, interiors and the arithmetic that
+ * says a staircase reaches the floor above it. Pure, and tested as such. */
+import {
+  TOWNS, REEDWATER_JETTIES, REEDWATER_DECK, GRIMSCAR_WORKINGS,
+  CEOLWINE_PRECINCT, CEOLWINE_GARTH, CEOLWINE_HERBS, CEOLWINE_POND,
+  BLACKMARCH_PALISADE, BLACKMARCH_YARD, BLACKMARCH_BEACON,
+  FENWICK_CROSS,
+  interiorPlan, groundUnder, STAIR_W, DOOR_W, DOOR_H, FLOOR_T,
+} from './medieval/Towns.js';
+import { CAMPS, campPieces } from './medieval/Camps.js';
+/* Where the trees are and how thick they stand. The counts below are derived
+ * from a density and the mask's own integral rather than authored, which is
+ * the bug that module exists to fix - 520 absolute trees over a map that got
+ * five times bigger is not a forest. */
+import {
+  standAt, isWoodEdge, NAMED_WOODS, DEADFALL_PER_WOOD,
+  PLAYFIELD_TREES, UNDERSTOREY, BRACKEN, TREE_BUCKET_M, standSpecies, woodMask,
+} from './medieval/Woodland.js';
 /* The terrain's own spatial split. Same reason as `Settlements` and
  * `GridIndex`: the tile arithmetic is the part that fails silently (a seam, a
  * crack, a bounding sphere that spans the map), and it has to be testable
@@ -214,29 +237,18 @@ const MOAT_Y = CASTLE.ground - 2.3;
 const WALL_H = 10.6;
 const WALL_TOP = CASTLE.ground + WALL_H;
 
-const ROADS = [
-  // The castle road is the spine of the whole vale: it is the one thing that
-  // tells a player standing in the market which way the landmark is. Widened
-  // to 7.6m so it survives as a readable ribbon at 110m.
-  { key: 'castle', width: 7.6, pts: [[-14, -58], [-8, -47], [0, -34], [4, -20], [11, -6], [21, 4], [34, 15]] },
-  /* The vale drove road.
-   *
-   * The castle road above joins the market to the gate, but it runs up the
-   * *east* side of the keep - so from the composed castle-approach vantage,
-   * which stands due south of the keep, there was no path in frame at all: a
-   * player would have a landmark to look at and no route to it, and the eye
-   * had nothing to follow from the bottom of the frame to the subject. This
-   * track runs south-to-north straight up that sightline and merges into the
-   * castle road at the gatehouse. It is kept at 18m or more from the castle
-   * footprint the whole way so it never drops into the moat cut.
-   */
-  { key: 'vale', width: 6.2, pts: [[-45, 72], [-41, 56], [-37, 40], [-31, 20], [-25, 0], [-19, -16], [-14, -32], [-12, -46], [-14, -58]] },
-  { key: 'high', width: 5.0, pts: [[34, 20], [50, 26], [66, 32], [82, 40], [96, 50]] },
-  { key: 'bridgeN', width: 4.8, pts: [[32, 26], [29, 48], [27, 70], [26, 90], [26, 103]] },
-  { key: 'bridgeS', width: 4.8, pts: [[26, 129], [27, 142], [31, 158], [38, 174]] },
-  { key: 'church', width: 3.8, pts: [[36, 12], [46, 2], [56, -4], [66, -7]] },
-  { key: 'mill', width: 3.4, pts: [[27, 74], [12, 80], [-2, 86], [-14, 93]] },
-];
+/* `ROADS` moved to `medieval/RoadNet.js` and is imported back at the top of
+ * this file, along with the crossings that stitch the two banks together.
+ *
+ * Same reason as `Settlements` and `GridIndex`, plus one that is specific to
+ * roads: the property that matters about a network is whether you can get
+ * anywhere on it, that is a graph question, and a graph needs no renderer. A
+ * 900 m map with five towns on two banks of a river can be disconnected in a
+ * way no screenshot shows - a town is simply unreachable and the only symptom
+ * is a player walking into water - so `medieval-roads.test.mjs` proves
+ * connectivity from the market to every town entry and every camp. It can only
+ * do that if the table it reads is the table this file builds from. */
+
 
 /* `PLOTS` and `EXTRA_YARDS` moved to `medieval/Settlements.js` and are
  * imported back at the top of this file. They are the membership list of two
@@ -367,6 +379,34 @@ const THATCH_TINTS = [0xe8c778, 0xd9b466, 0xf0d189, 0xcfa95c];
 const SLATE_TINTS = [0x9aa2ad, 0x8b939e, 0xa7afba, 0x7f8792];
 const SHUTTER_TINTS = [0x8a4b3c, 0x4f6b52, 0x3f5a78, 0x7a6132, 0x6b4a63];
 const HERALD = [0xb02a33, 0x2a5aa8, 0xd7a63f, 0x2f2723, 0x2f7a4d, 0x7d3f8f];
+
+/* ------------------------------------------------------------------ *
+ * Shell vernaculars.
+ *
+ * One tint set per wall material, because the thing that separates five towns
+ * at a glance is VALUE before it is form: Grimscar's rubble is sooted to a
+ * quarter of the abbey's ashlar, and that difference survives 400 m of aerial
+ * perspective where a difference of silhouette does not.
+ * ------------------------------------------------------------------ */
+const SHELL_WALL_TINTS = {
+  // Lime render, as Aldermoor's - Fenwick is the same building culture.
+  daub: DAUB_TINTS,
+  // Sooted moorland stone. Grimscar burns coal, and every wall in it shows it.
+  rubble: [0x6f6a63, 0x625d57, 0x7a736a, 0x585450, 0x6a635b],
+  // Dressed limestone, kept pale: the abbey is the brightest thing in the
+  // southern half of the map and it is meant to be findable from the rim.
+  ashlar: [0xd6cfbc, 0xcfc7b2, 0xdcd6c4, 0xc9c1ad],
+  // Oiled and weathered board - Reedwater's huts and Blackmarch's log walls.
+  plank: [0x8a6f4c, 0x7c6242, 0x957a56, 0x6f5940, 0x8f7550],
+};
+const SHELL_ROOF_TINTS = {
+  thatch: THATCH_TINTS,
+  slate: SLATE_TINTS,
+  // Split oak shingle: browner and much darker than slate, which is what
+  // keeps Blackmarch reading as timber from the vale floor.
+  shingle: [0x7b6448, 0x6a5540, 0x8a7152, 0x5f4d3a],
+  flat: [0xb9b1a0, 0xaaa294],
+};
 
 /* ------------------------------------------------------------------ */
 /* Canvas + texture helpers                                            */
@@ -1309,9 +1349,11 @@ export class MedievalWorld extends World {
     await step(0.58, 'Building Aldermoor Keep', this._buildCastle);
     await step(0.7, 'Thatching the village', this._buildVillage);
     await step(0.78, 'Spanning the Aldern', this._buildRiverside);
-    await step(0.84, 'Setting out the market', this._buildMarket);
-    await step(0.9, 'Sowing the woods', this._buildNature);
-    await step(0.96, 'Lighting the hearths', this._buildAtmosphere);
+    await step(0.82, 'Setting out the market', this._buildMarket);
+    await step(0.86, 'Raising the ring towns', this._buildTowns);
+    await step(0.9, 'Striking camp on the far bank', this._buildCamps);
+    await step(0.94, 'Sowing the woods', this._buildNature);
+    await step(0.97, 'Lighting the hearths', this._buildAtmosphere);
     await step(0.99, 'Opening the sky-gate', this._buildGateAndSpawns);
     onProgress?.(1, 'Aldermoor Vale');
   }
@@ -4494,14 +4536,50 @@ export class MedievalWorld extends World {
     for (const g of parts) normaliseGeo(g, 0xb4ab99);
     // Yard cobble is dirtier than the swept street it joins.
     for (const p of this._pavedRects) parts.push(apron(p, 0x8a8172));
-    const merged = mergeGeometries(parts, false);
-    for (const g of parts) g.dispose();
-    merged.computeBoundingSphere();
-    const mesh = new THREE.Mesh(merged, mat);
-    mesh.name = 'medieval:cobbles';
-    mesh.receiveShadow = true;
-    mesh.castShadow = false;
-    this.group.add(mesh);
+
+    /* Merged per 300 m cell rather than into one mesh.
+     *
+     * At 400 m the whole network occupied a 150x230 m patch and one merged
+     * mesh was obviously right: a single bounding sphere, one draw call, and
+     * it culled as a unit whenever the village was off screen. The ring
+     * roads take the network from ~1.1 km of carriageway to ~5.6 km spread
+     * corner to corner, and the same merge then produces one mesh with a
+     * 636 m bounding sphere - which is in frustum from everywhere and
+     * submits every triangle of every road in the world on every frame,
+     * including the four fifths of them that are behind the camera.
+     *
+     * Nine cells is the smallest split that fixes that: each is ~212 m
+     * across the diagonal, so a cell leaves the frustum for real, and eight
+     * extra draw calls is a price worth paying once. Bucketed by CENTROID,
+     * which can put a ribbon that straddles a boundary wholly in one cell -
+     * that is fine and deliberate, because the alternative is splitting
+     * geometry and the error it causes is a slightly larger sphere.
+     */
+    const ROAD_CELL = 300;
+    const cellsPerSide = Math.max(1, Math.round(SIZE / ROAD_CELL));
+    const cells = new Map();
+    const _c = new THREE.Vector3();
+    for (const g of parts) {
+      g.computeBoundingBox();
+      g.boundingBox.getCenter(_c);
+      const cx = Math.min(cellsPerSide - 1, Math.max(0, Math.floor((_c.x + HALF) / ROAD_CELL)));
+      const cz = Math.min(cellsPerSide - 1, Math.max(0, Math.floor((_c.z + HALF) / ROAD_CELL)));
+      const key = cz * cellsPerSide + cx;
+      let arr = cells.get(key);
+      if (!arr) cells.set(key, (arr = []));
+      arr.push(g);
+    }
+    for (const [key, arr] of cells) {
+      const merged = arr.length === 1 ? arr[0] : mergeGeometries(arr, false);
+      if (arr.length > 1) for (const g of arr) g.dispose();
+      if (!merged) continue;
+      merged.computeBoundingSphere();
+      const mesh = new THREE.Mesh(merged, mat);
+      mesh.name = `medieval:cobbles${key}`;
+      mesh.receiveShadow = true;
+      mesh.castShadow = false;
+      this.group.add(mesh);
+    }
 
     /* ---- Loose setts straddling the boundary ------------------------- *
      * Even a frayed paved edge is still an edge of one surface meeting
@@ -4520,6 +4598,11 @@ export class MedievalWorld extends World {
     normaliseGeo(sg, 0xffffff);
     this._owned.push(sg);
 
+    const nearRoads = this._roadPaths.filter((r) => {
+      const [fx, fz] = r.pts[0];
+      const [lx, lz] = r.pts[r.pts.length - 1];
+      return Math.max(Math.abs(fx), Math.abs(fz), Math.abs(lx), Math.abs(lz)) <= INNER_KEEP;
+    });
     const N = 420;
     const setts = new THREE.InstancedMesh(sg, this._mats.cobble, N);
     let placed = 0;
@@ -4535,8 +4618,16 @@ export class MedievalWorld extends World {
         x = MARKET.x + Math.cos(a) * ex;
         z = MARKET.z + Math.sin(a) * ez;
       } else {
-        // Road verges.
-        const road = this._roadPaths[(rnd() * this._roadPaths.length) | 0];
+        /* Road verges - but only the vale's own, not the ring's.
+         *
+         * These four hundred stones exist to dissolve the edge of the
+         * village's paving, which is a thing the composed street frames look
+         * straight at. Picking uniformly from a road list that is now five
+         * times longer would move four fifths of them onto ring roads seen
+         * from two hundred metres, where a 15 cm stone is sub-pixel - and
+         * would thin the village's verges to a quarter of what they were
+         * tuned at, for no gain anywhere. */
+        const road = nearRoads[(rnd() * nearRoads.length) | 0];
         const k = (rnd() * (road.pts.length - 1)) | 0;
         const [ax, az] = road.pts[k];
         const [bx, bz] = road.pts[k + 1];
@@ -6258,6 +6349,2197 @@ export class MedievalWorld extends World {
     });
   }
 
+
+  /* ================================================================== */
+  /* The outer ring: a second building vocabulary                        */
+  /* ================================================================== */
+
+  /**
+   * Build one shell from a `Towns.js` descriptor.
+   *
+   * This is the ring's answer to `_house`, and it is a separate method rather
+   * than an option on that one for a reason worth stating: `_house` is not
+   * parameterised, it is AUTHORED. Every number in it - the 0.28 sill, the
+   * 2.75 storey, the jetty at 0.42, the grime ramp at 0.42 - was tuned against
+   * Aldermoor's composed street frames, and threading five vernaculars through
+   * it would have meant changing those numbers to accept an argument. The
+   * village would then have been at the mercy of every edit made for a town
+   * four hundred metres away, and the failure would have been invisible: a
+   * cottage two centimetres taller does not throw.
+   *
+   * So: two builders, one authored and untouched, one parameterised. The
+   * shared parts are the geometry helpers, which is the right amount of
+   * sharing.
+   *
+   * Everything about the interior comes from `interiorPlan`, which is pure and
+   * tested - so "the stairs reach the floor above" and "you can stand up in
+   * here" are properties of a function rather than of this method.
+   *
+   * @param {GeoBatch} B
+   * @param {object} o a building from `TOWNS`, plus `seed`
+   * @returns {{baseY:number, top:number, roofTop:number}}
+   */
+  _shell(B, o) {
+    const rnd = mulberry32(o.seed);
+    const plan = interiorPlan(o);
+    const w = o.w;
+    const d = o.d;
+    const hw = w / 2;
+    const hd = d / 2;
+    const wt = plan.wallT;
+    const enter = !!o.enterable;
+
+    /* Ground. A stilt building's base is its DECK, which is authored: the
+     * terrain under it is a river bed and "sit on the highest corner" would
+     * put a fishing hut on the bottom of the pool. */
+    const gu = groundUnder(o, (x, z) => this._height(x, z));
+    const baseY = o.stilt ? o.deck : gu.baseY;
+    const plinth = o.stilt ? 0 : Math.max(0.42, gu.relief + 0.55);
+
+    const M = new THREE.Matrix4().makeRotationY(o.yaw).setPosition(o.x, baseY, o.z);
+    const tmp = new THREE.Matrix4();
+    const put = (key, geo, lx, ly, lz, rx, ry, rz, tint) => {
+      _obj.position.set(lx, ly, lz);
+      _obj.rotation.set(rx || 0, ry || 0, rz || 0);
+      _obj.scale.set(1, 1, 1);
+      _obj.updateMatrix();
+      tmp.multiplyMatrices(M, _obj.matrix);
+      return B.add(key, geo, tmp, tint);
+    };
+    /** A collider in the building's own frame. */
+    const rcol = (lx, cy, lz, chx, chy, chz) => {
+      _v1.set(lx, cy, lz).applyMatrix4(M);
+      return this._rbox(_v1.x, _v1.y, _v1.z, chx, chy, chz, o.yaw);
+    };
+    /** A point in the building's own frame, in world space. */
+    const at = (lx, ly, lz) => new THREE.Vector3(lx, ly, lz).applyMatrix4(M);
+
+    const wallTints = SHELL_WALL_TINTS[o.wall] || SHELL_WALL_TINTS.daub;
+    const wallTint = o.tint ?? wallTints[(rnd() * wallTints.length) | 0];
+    const roofKey = o.roof === 'shingle' ? 'plank' : (o.roof === 'flat' ? 'slate' : o.roof);
+    const roofTints = SHELL_ROOF_TINTS[o.roof] || SHELL_ROOF_TINTS.slate;
+    const roofTint = roofTints[(rnd() * roofTints.length) | 0];
+    const beamTint = BEAM_TINTS[(rnd() * BEAM_TINTS.length) | 0];
+    const bt = () => shadeHex(beamTint, 0.86 + rnd() * 0.30);
+    const wallKey = o.wall;
+    const top = plan.roofY;
+    const jut = o.jetty && o.storeys > 1 ? 0.44 : 0;
+
+    /* ---- Foundation ------------------------------------------------- */
+    if (o.stilt) {
+      /* Posts down to the bed, cross-braced, plus the deck they carry. Two
+       * rings of them: the outer ring is what you see from a boat, the inner
+       * pair is what stops the hut reading as a table with four legs. */
+      const bedY = this._height(o.x, o.z);
+      for (const [px, pz] of [
+        [-hw + 0.5, -hd + 0.5], [hw - 0.5, -hd + 0.5],
+        [-hw + 0.5, hd - 0.5], [hw - 0.5, hd - 0.5],
+        [0, -hd + 0.5], [0, hd - 0.5],
+      ]) {
+        const bh = baseY - bedY + 0.9;
+        put('beam', cylGeo(0.20, 0.26, bh, 7, 0.9), px, -bh / 2 + 0.1, pz, 0, 0, 0, 0x6a5741);
+        rcol(px, -bh / 2 + 0.1, pz, 0.26, bh / 2, 0.26);
+        // Weed and wrack at the waterline.
+        put('leaf', boxGeo(0.5, 0.34, 0.5, 3.0), px, WATER_Y - baseY + 0.1, pz, 0, rnd() * TAU, 0, 0x5d6b46);
+      }
+      for (const s of [-1, 1]) {
+        put('beam', boxGeo(w - 0.6, 0.16, 0.16, 1.1), 0, -0.9, s * (hd - 0.5), 0, 0, 0, 0x6a5741);
+      }
+      // Deck, a little proud of the walls all round so there is somewhere to
+      // stand and land a boat.
+      put('plank', boxGeo(w + 1.6, 0.22, d + 1.6, 0.65), 0, -0.11, 0, 0, 0, 0, 0x9d7f56);
+      rcol(0, -0.24, 0, hw + 0.8, 0.16, hd + 0.8);
+    } else {
+      grimeRamp(
+        put(o.wall === 'plank' ? 'rubble' : 'rubble', panelGeo(w + 0.12, plinth, d + 0.12, 0.6, 3),
+          0, -plinth / 2 + 0.06, 0, 0, 0, 0, 0x84796b),
+        baseY - plinth + 0.06, plinth + 0.6, 0.46
+      );
+    }
+
+    /* ---- Walls ------------------------------------------------------ *
+     * Hollow for the full height when the building is enterable, not just on
+     * the ground storey: a two-storey shell with a solid mass above the
+     * ceiling has an upper floor you can reach and nothing above it, which is
+     * the one way a working staircase can still be a defect. */
+    const doorHW = DOOR_W / 2;
+    const doorH = DOOR_H;
+    const storeyRects = [];
+    for (const fl of plan.floors) {
+      const s = fl.storey;
+      const y0 = fl.floorY - (s === 0 ? plan.door.y : 0);
+      const h = fl.ceilY + (s < plan.floors.length - 1 ? FLOOR_T : 0) - y0;
+      const sw = w + (s > 0 ? jut * 2 : 0);
+      const sd = d + (s > 0 ? jut * 2 : 0);
+      const shw = sw / 2;
+      const shd = sd / 2;
+      const tint = s === 0 ? wallTint : shadeHex(wallTint, 1.05);
+      storeyRects.push({ y0, h, w: sw, d: sd });
+      if (!enter) {
+        grimeRamp(put(wallKey, panelGeo(sw, h, sd, 0.5, 6), 0, y0 + h / 2, 0, 0, 0, 0, tint),
+          baseY + y0, s === 0 ? 2.0 : 0.9, s === 0 ? 0.46 : 0.7);
+        continue;
+      }
+      // Back wall, two side walls, and the front wall split around the door.
+      grimeRamp(put(wallKey, panelGeo(sw, h, wt, 0.5, 6), 0, y0 + h / 2, -shd + wt / 2, 0, 0, 0, tint),
+        baseY + y0, s === 0 ? 2.0 : 0.9, s === 0 ? 0.46 : 0.7);
+      for (const sgn of [-1, 1]) {
+        grimeRamp(put(wallKey, panelGeo(wt, h, sd - wt * 2, 0.5, 6),
+          sgn * (shw - wt / 2), y0 + h / 2, 0, 0, 0, 0, tint),
+        baseY + y0, s === 0 ? 2.0 : 0.9, s === 0 ? 0.46 : 0.7);
+      }
+      if (s === 0) {
+        const segW = shw - doorHW;
+        for (const sgn of [-1, 1]) {
+          grimeRamp(put(wallKey, panelGeo(segW, h, wt, 0.5, 6),
+            sgn * (doorHW + segW / 2), y0 + h / 2, shd - wt / 2, 0, 0, 0, tint),
+          baseY + y0, 2.0, 0.46);
+        }
+        const overH = h - (doorH + plan.door.y - y0);
+        if (overH > 0.05) {
+          put(wallKey, panelGeo(doorHW * 2, overH, wt, 0.5, 3),
+            0, y0 + (doorH + plan.door.y - y0) + overH / 2, shd - wt / 2, 0, 0, 0, tint);
+        }
+      } else {
+        grimeRamp(put(wallKey, panelGeo(sw, h, wt, 0.5, 6), 0, y0 + h / 2, shd - wt / 2, 0, 0, 0, tint),
+          baseY + y0, 0.9, 0.7);
+      }
+    }
+
+    /* ---- What the walls are dressed with ---------------------------- *
+     * This is the whole reason five towns look like five towns. */
+    for (const r of storeyRects) {
+      const rhw = r.w / 2;
+      const rhd = r.d / 2;
+      if (o.wall === 'daub') {
+        // Timber frame, applied to the faces. Fenwick's vocabulary.
+        for (let f = 0; f < 4; f++) {
+          const along = f < 2 ? r.w : r.d;
+          const out = (f < 2 ? r.d : r.w) / 2 + 0.06;
+          const yaw = f === 0 ? 0 : f === 1 ? Math.PI : f === 2 ? Math.PI / 2 : -Math.PI / 2;
+          const nx = Math.sin(yaw) * out;
+          const nz = Math.cos(yaw) * out;
+          for (const sgn of [-1, 1]) {
+            put('beam', boxGeo(0.24, r.h, 0.16, 1.0), nx + Math.cos(yaw) * sgn * (along / 2 - 0.12),
+              r.y0 + r.h / 2, nz - Math.sin(yaw) * sgn * (along / 2 - 0.12), 0, yaw, 0, bt());
+          }
+          put('beam', boxGeo(along, 0.26, 0.17, 1.0), nx, r.y0 + 0.13, nz, 0, yaw, 0, bt());
+          put('beam', boxGeo(along, 0.30, 0.17, 1.0), nx, r.y0 + r.h - 0.15, nz, 0, yaw, 0, bt());
+          const studs = Math.max(2, Math.round(along / 1.3));
+          for (let i = 1; i < studs; i++) {
+            const t = (i / studs - 0.5) * along;
+            put('beam', boxGeo(0.18, r.h - 0.3, 0.15, 1.0), nx + Math.cos(yaw) * t,
+              r.y0 + r.h / 2, nz - Math.sin(yaw) * t, 0, yaw, 0, bt());
+          }
+          for (const sgn of [-1, 1]) {
+            const bl = Math.min(r.h * 0.9, along * 0.42);
+            put('beam', boxGeo(0.18, bl, 0.15, 1.0),
+              nx + Math.cos(yaw) * sgn * (along / 2 - bl * 0.32), r.y0 + r.h * 0.36,
+              nz - Math.sin(yaw) * sgn * (along / 2 - bl * 0.32), 0, yaw, sgn * 0.62, bt());
+          }
+        }
+      } else if (o.wall === 'plank') {
+        /* Horizontal boarding with a corner post at each angle. Six courses,
+         * each pushed out a couple of centimetres, so the low sun rakes a
+         * shadow line under every one - which is what makes a boarded wall
+         * read as boards at fifty metres rather than as a brown panel. */
+        const courses = Math.max(3, Math.round(r.h / 0.52));
+        for (let i = 0; i < courses; i++) {
+          const cy = r.y0 + (i + 0.5) * (r.h / courses);
+          const push = 0.035 + (i % 2) * 0.022;
+          const k = shadeHex(wallTint, 0.9 + (i % 3) * 0.08);
+          put('plank', boxGeo(r.w + push * 2, r.h / courses - 0.04, r.d + push * 2, 0.7),
+            0, cy, 0, 0, 0, 0, k);
+        }
+        for (const sx of [-1, 1]) {
+          for (const sz of [-1, 1]) {
+            put('beam', boxGeo(0.26, r.h, 0.26, 1.0), sx * rhw, r.y0 + r.h / 2, sz * rhd, 0, 0, 0, bt());
+          }
+        }
+      } else if (o.wall === 'ashlar') {
+        // Buttresses and a string course. The abbey's vocabulary.
+        const n = Math.max(2, Math.round(r.w / 6.5));
+        for (let i = 0; i <= n; i++) {
+          const t = (i / n - 0.5) * (r.w - 1.2);
+          for (const sgn of [-1, 1]) {
+            put('ashlar', boxGeo(1.1, r.h * 0.9, 0.9, 0.5), t, r.y0 + r.h * 0.45,
+              sgn * (rhd + 0.42), 0, 0, 0, shadeHex(wallTint, 0.94));
+            put('ashlar', boxGeo(1.3, 0.26, 1.1, 0.8), t, r.y0 + r.h * 0.9,
+              sgn * (rhd + 0.42), 0, 0, 0, shadeHex(wallTint, 0.88));
+          }
+        }
+        put('ashlar', boxGeo(r.w + 0.34, 0.22, r.d + 0.34, 0.8), 0, r.y0 + r.h - 0.14, 0, 0, 0, 0,
+          shadeHex(wallTint, 0.9));
+      } else {
+        // Rubble: dressed quoins at the angles, and nothing else. Grimscar.
+        for (const sx of [-1, 1]) {
+          for (const sz of [-1, 1]) {
+            for (let i = 0; i < Math.max(2, Math.round(r.h / 0.75)); i++) {
+              const cy = r.y0 + 0.3 + i * 0.75;
+              if (cy > r.y0 + r.h - 0.2) break;
+              const long = i % 2 === 0;
+              put('ashlar', boxGeo(long ? 0.9 : 0.42, 0.34, long ? 0.42 : 0.9, 0.55),
+                sx * (rhw - (long ? 0.42 : 0.18)), cy, sz * (rhd - (long ? 0.18 : 0.42)),
+                0, 0, 0, shadeHex(wallTint, 1.22));
+            }
+          }
+        }
+      }
+      // Jetty brackets under an oversailing upper storey.
+      if (jut > 0 && r.y0 > 0.5) {
+        put('beam', boxGeo(r.w + 0.2, 0.32, r.d + 0.2, 0.8), 0, r.y0 + 0.16, 0, 0, 0, 0, bt());
+        for (let i = -3; i <= 3; i++) {
+          for (const sgn of [-1, 1]) {
+            put('beam', boxGeo(0.18, 0.18, jut + 0.3, 1.1), (i * w) / 7.5, r.y0 - 0.16,
+              sgn * (hd + jut / 2), 0, 0, 0, bt());
+          }
+        }
+      }
+    }
+
+    /* ---- Roof ------------------------------------------------------- */
+    const flat = o.roof === 'flat' || o.roof === 'none';
+    const over = o.roof === 'thatch' ? 0.7 : 0.42;
+    const rw = (o.storeys > 1 ? w + jut * 2 : w) + over * 2;
+    const rd = (o.storeys > 1 ? d + jut * 2 : d) + over * 2;
+    const rh = flat ? 0 : rd * (o.roof === 'thatch' ? 0.6 : 0.5);
+    if (flat) {
+      put(roofKey, boxGeo(rw, 0.3, rd, 0.7), 0, top + 0.15, 0, 0, 0, 0, roofTint);
+      // Parapet, so a flat roof reads as a walkable one.
+      for (const s of [-1, 1]) {
+        put(wallKey, boxGeo(rw, 0.85, 0.34, 0.7), 0, top + 0.72, s * (rd / 2 - 0.17), 0, 0, 0,
+          shadeHex(wallTint, 0.95));
+        put(wallKey, boxGeo(0.34, 0.85, rd - 0.68, 0.7), s * (rw / 2 - 0.17), top + 0.72, 0, 0, 0, 0,
+          shadeHex(wallTint, 0.95));
+      }
+    } else {
+      const slope = Math.atan2(rh, rd / 2);
+      const slabLen = Math.hypot(rd / 2, rh) + over * 0.4;
+      const thick = o.roof === 'thatch' ? 0.52 : 0.16;
+      for (const sgn of [-1, 1]) {
+        put(roofKey, boxGeo(rw, thick, slabLen, o.roof === 'thatch' ? 0.5 : 0.7),
+          0, top + rh / 2 - Math.cos(slope) * thick * 0.2, sgn * (rd / 4) * 0.98,
+          sgn * slope, 0, 0, roofTint);
+      }
+      if (o.roof === 'thatch') {
+        put('thatch', cylGeo(0.4, 0.4, rw, 10, 0.7), 0, top + rh + 0.1, 0, 0, 0, Math.PI / 2, roofTint);
+      } else {
+        put(roofKey, boxGeo(rw, 0.22, 0.56, 0.9), 0, top + rh + 0.05, 0, 0, 0, 0,
+          shadeHex(roofTint, 0.9));
+      }
+      // Gable infill and barge boards.
+      for (const sgn of [-1, 1]) {
+        const sh = new THREE.Shape();
+        sh.moveTo(-rd / 2 + over * 0.7, 0);
+        sh.lineTo(rd / 2 - over * 0.7, 0);
+        sh.lineTo(0, rh);
+        sh.closePath();
+        const gg = new THREE.ExtrudeGeometry(sh, { depth: 0.22, bevelEnabled: false });
+        MedievalWorld._uvScale(gg, 0.5);
+        put(wallKey, gg, sgn * (rw / 2 - over - 0.11), top, 0, 0, (Math.PI / 2) * sgn, 0, wallTint);
+        for (const zz of [rd / 4, -rd / 4]) {
+          put('beam', boxGeo(0.18, slabLen * 0.98, 0.16, 1.0), sgn * (rw / 2 - over), top + rh / 2, zz,
+            (zz > 0 ? 1 : -1) * (slope - Math.PI / 2) * (zz > 0 ? 1 : -1), 0, 0, bt());
+        }
+      }
+    }
+
+    /* ---- Chimney ---------------------------------------------------- */
+    if (!o.stilt && o.roof !== 'flat' && o.kind !== 'barn' && o.kind !== 'shed') {
+      const chx = (rnd() < 0.5 ? -1 : 1) * w * 0.32;
+      const chTop = top + rh + 1.5;
+      put('rubble', boxGeo(0.95, chTop + plinth, 0.95, 0.6), chx, (chTop - plinth) / 2, -hd + 0.4,
+        0, 0, 0, 0x8e8375);
+      put('rubble', boxGeo(1.24, 0.24, 1.24, 0.8), chx, chTop + 0.12, -hd + 0.4, 0, 0, 0, 0x827868);
+      if (o.lit) {
+        const sp = at(chx, chTop + 0.5, -hd + 0.4);
+        this._smokeOrigins.push(sp.x, sp.y, sp.z);
+      }
+    }
+
+    /* ---- Openings --------------------------------------------------- */
+    const glow = o.lit ? 0xffd9a0 : 0x6f6250;
+    if (o.windows !== 'none') {
+      for (const fl of plan.floors) {
+        const wy = fl.floorY + 1.25;
+        const outZ = hd + (fl.storey > 0 ? jut : 0) + 0.06;
+        const cols = w > 9 ? [-w * 0.3, 0, w * 0.3] : (w > 6 ? [-w * 0.24, w * 0.24] : [0]);
+        for (const cx of cols) {
+          for (const sgn of [1, -1]) {
+            // Never a window where the door is.
+            if (sgn > 0 && fl.storey === 0 && Math.abs(cx) < doorHW + 0.7) continue;
+            const wz = sgn * outZ;
+            if (o.windows === 'lancet') {
+              put('ashlar', boxGeo(0.95, 2.5, 0.24, 1.1), cx, wy + 0.4, wz, 0, 0, 0,
+                shadeHex(wallTint, 0.92));
+              put('glass', planeGeo(0.6, 1.9, 1.0), cx, wy + 0.4, wz - sgn * 0.07, 0,
+                sgn > 0 ? 0 : Math.PI, 0, HERALD[Math.abs((cx * 7 + fl.storey) | 0) % HERALD.length]);
+              // The pointed head, as a half-round drum set into the reveal.
+              put('ashlar', cylGeo(0.36, 0.36, 0.22, 10, 0.8), cx, wy + 1.7, wz, Math.PI / 2, 0, 0,
+                shadeHex(wallTint, 0.9));
+            } else if (o.windows === 'slit') {
+              put(wallKey, boxGeo(0.44, 1.35, 0.22, 1.2), cx, wy, wz, 0, 0, 0,
+                shadeHex(wallTint, 0.86));
+              put('glass', planeGeo(0.2, 1.0, 1.0), cx, wy, wz - sgn * 0.07, 0,
+                sgn > 0 ? 0 : Math.PI, 0, glow);
+            } else {
+              put('beam', boxGeo(1.2, 1.1, 0.18, 1.2), cx, wy, wz, 0, 0, 0, bt());
+              put('glass', planeGeo(0.88, 0.78, 1.2), cx, wy, wz - sgn * 0.07, 0,
+                sgn > 0 ? 0 : Math.PI, 0, glow);
+              put('beam', boxGeo(0.07, 0.82, 0.09, 2.0), cx, wy, wz + sgn * 0.01, 0, 0, 0,
+                shadeHex(beamTint, 0.66));
+              for (const ss of [-1, 1]) {
+                put('plank', boxGeo(0.58, 0.96, 0.08, 1.3), cx + ss * 0.88, wy, wz + sgn * 0.18,
+                  0, sgn * ss * -0.42, 0, SHUTTER_TINTS[(rnd() * SHUTTER_TINTS.length) | 0]);
+              }
+            }
+            if (o.lit && fl.storey === 0) {
+              const gp = at(cx, wy, wz + sgn * 0.2);
+              this._addGlow(gp.x, gp.y, gp.z, 2.4, 0x54301a, o.yaw + (sgn > 0 ? 0 : Math.PI));
+            }
+          }
+        }
+      }
+    }
+
+    /* ---- Door ------------------------------------------------------- */
+    const doorZ = hd + 0.06;
+    let doorRecord = null;
+    if (!enter) {
+      put('beam', boxGeo(DOOR_W + 0.4, doorH + 0.3, 0.2, 1.0), 0, plan.door.y + (doorH + 0.3) / 2,
+        doorZ, 0, 0, 0, bt());
+      put('plank', boxGeo(DOOR_W - 0.1, doorH - 0.1, 0.14, 0.9), 0, plan.door.y + doorH / 2,
+        doorZ + 0.1, 0, 0, 0, 0x6d4f30);
+      for (let i = 0; i < 2; i++) {
+        put('iron', boxGeo(DOOR_W - 0.1, 0.12, 0.18, 1.6), 0, plan.door.y + 0.6 + i * 1.0,
+          doorZ + 0.14, 0, 0, 0, 0x2c2722);
+      }
+    } else {
+      for (const sgn of [-1, 1]) {
+        put('beam', boxGeo(0.2, doorH + 0.14, 0.52, 1.0), sgn * (doorHW + 0.1),
+          plan.door.y + (doorH + 0.14) / 2, hd - 0.2, 0, 0, 0, bt());
+      }
+      put('beam', boxGeo(DOOR_W + 0.4, 0.24, 0.52, 1.0), 0, plan.door.y + doorH + 0.12, hd - 0.2,
+        0, 0, 0, bt());
+      /* One mesh per leaf, straps included.
+       *
+       * `_house` gives each cottage door three meshes - a plank leaf and two
+       * iron bands parented to the same pivot - which is fine at nineteen
+       * doors and is not fine at fifty-four: the ring towns would have added
+       * 162 draw calls of door furniture, more than the five town districts
+       * they belong to put together. The straps are merged into the leaf and
+       * carried as vertex colour on the plank material instead. A 12 cm iron
+       * band at any distance a door is looked at is a dark line across the
+       * boards; the metalness that distinguishes it is worth two thirds of
+       * the draw calls in this phase, and it is not.
+       */
+      const leafW = DOOR_W - 0.06;
+      const leafParts = [];
+      {
+        const g = boxGeo(leafW, doorH - 0.12, 0.09, 0.9);
+        g.translate(leafW / 2, 0, 0);
+        leafParts.push(normaliseGeo(g, 0x6d4f30));
+      }
+      for (const by of [-0.5, 0.5]) {
+        const g = boxGeo(leafW * 0.9, 0.11, 0.05, 1.6);
+        g.translate(leafW / 2, by, 0.06);
+        leafParts.push(normaliseGeo(g, 0x2c2722));
+      }
+      const leafGeo = mergeGeometries(leafParts, false);
+      for (const g of leafParts) g.dispose();
+      const leaf = new THREE.Mesh(leafGeo, this._mats.plank);
+      leaf.castShadow = leaf.receiveShadow = true;
+      const pivot = new THREE.Group();
+      pivot.position.copy(at(-doorHW + 0.02, plan.door.y + (doorH - 0.12) / 2 + 0.04, hd - wt / 2));
+      pivot.rotation.y = o.yaw;
+      pivot.add(leaf);
+      this.group.add(pivot);
+      this._owned.push(leafGeo);
+      const dc = at(0, plan.door.y + doorH / 2, hd - wt / 2);
+      const doorCol = this._rbox(dc.x, dc.y, dc.z, doorHW, doorH / 2, 0.12, o.yaw);
+      doorRecord = {
+        id: `${o.id}_door`,
+        leaves: [{ pivot, closed: o.yaw, open: o.yaw + Math.PI * 0.58 }],
+        collider: doorCol,
+        position: at(0, plan.door.y + 1.0, hd + 0.2),
+        open: false,
+        anim: 0,
+      };
+    }
+    // Threshold stone and a hood over the door.
+    put('rubble', boxGeo(DOOR_W + 0.5, 0.2, 0.66, 0.9), 0, 0.1, doorZ + 0.38, 0, 0, 0, 0x8e8371);
+    put('beam', boxGeo(DOOR_W + 0.8, 0.2, 0.85, 1.0), 0, plan.door.y + doorH + 0.5, doorZ + 0.28,
+      0, 0, 0, bt());
+
+    /* ---- Colliders and interior ------------------------------------- */
+    const wallsTop = plan.roofY;
+    if (!enter) {
+      const cy = (plan.roofY - plinth) / 2;
+      this._rbox(o.x, baseY + cy, o.z, (w + jut * 2) / 2 + 0.08,
+        (plan.roofY + plinth) / 2, (d + jut * 2) / 2 + 0.08, o.yaw);
+    } else {
+      const hyW = (wallsTop + plinth) / 2;
+      const cyW = (wallsTop - plinth) / 2;
+      rcol(0, cyW, -hd + wt / 2, hw + 0.06, hyW, wt / 2 + 0.05);
+      for (const sgn of [-1, 1]) rcol(sgn * (hw - wt / 2), cyW, 0, wt / 2 + 0.05, hyW, hd + 0.06);
+      const segW = hw - doorHW;
+      for (const sgn of [-1, 1]) {
+        rcol(sgn * (doorHW + segW / 2), cyW, hd - wt / 2, segW / 2 + 0.04, hyW, wt / 2 + 0.05);
+      }
+      const overH = wallsTop - (plan.door.y + doorH);
+      if (overH > 0.05) {
+        rcol(0, plan.door.y + doorH + overH / 2, hd - wt / 2, doorHW + 0.05, overH / 2, wt / 2 + 0.05);
+      }
+      this._shellInterior(B, o, plan, { put, rcol, at, bt, baseY, plinth });
+    }
+
+    /* ---- Registration ----------------------------------------------- */
+    if (enter) {
+      if (!Array.isArray(this.enterables)) this.enterables = [];
+      const spot = at(-w * 0.2, plan.floors[0].floorY + 0.4, -d * 0.2);
+      this.enterables.push({
+        label: o.label || `${o.kind}@${o.x | 0},${o.z | 0}`,
+        origin: new THREE.Vector3(o.x, baseY, o.z),
+        doors: doorRecord ? [doorRecord] : [],
+        collectibleSpots: [{ position: spot, tier: o.landmark ? 'rare' : 'common' }],
+      });
+    }
+    if (o.lit) {
+      const gp = at(0, 0.08, doorZ + 0.9);
+      this._addGlow(gp.x, gp.y, gp.z, 4.2, 0x4a2a12);
+    }
+    this._footprints.push({ x: o.x, z: o.z, hx: w / 2 + 1.3, hz: d / 2 + 1.3, r: o.yaw });
+    if (o.landmark) {
+      this.minimapShapes.push({
+        kind: 'rect', x: o.x, z: o.z, w: w + 1.4, d: d + 1.4, rotation: o.yaw,
+        fill: 'rgba(132,104,78,0.45)', stroke: 'rgba(226,198,152,0.9)',
+      });
+    }
+    return { baseY, top: baseY + plan.roofY, roofTop: baseY + plan.roofY + rh };
+  }
+
+  /**
+   * Floors, ceilings, stairs and furniture for an enterable shell.
+   *
+   * Split out of `_shell` because it is the half that has to be right rather
+   * than the half that has to look right, and because the deck-with-a-hole
+   * arithmetic is the only genuinely fiddly thing in either.
+   */
+  _shellInterior(B, o, plan, ctx) {
+    const { put, rcol, at, bt, baseY } = ctx;
+    const rnd = mulberry32(o.seed ^ 0x5bd1);
+    const hw = o.w / 2;
+    const hd = o.d / 2;
+    const wt = plan.wallT;
+    const ihx = plan.inner.hx;
+    const ihz = plan.inner.hz;
+
+    /**
+     * A floor deck with an optional rectangular well cut in it.
+     *
+     * Four boxes rather than a plane with a hole, because the deck is also the
+     * collider: a player must not be able to walk over the stair well, and a
+     * single box with a decorative hole in its geometry would let them.
+     */
+    const deck = (y, hole, tint) => {
+      const parts = hole
+        ? [
+          [-ihx, hole.x0, -ihz, ihz],
+          [hole.x1, ihx, -ihz, ihz],
+          [hole.x0, hole.x1, -ihz, hole.z0],
+          [hole.x0, hole.x1, hole.z1, ihz],
+        ]
+        : [[-ihx, ihx, -ihz, ihz]];
+      for (const [x0, x1, z0, z1] of parts) {
+        const pw = x1 - x0;
+        const pd = z1 - z0;
+        if (pw <= 0.05 || pd <= 0.05) continue;
+        put('plank', boxGeo(pw, 0.16, pd, 0.7), (x0 + x1) / 2, y - 0.08, (z0 + z1) / 2, 0, 0, 0, tint);
+        rcol((x0 + x1) / 2, y - 0.16, (z0 + z1) / 2, pw / 2, 0.1, pd / 2);
+      }
+    };
+
+    // Ground floor sits on the plinth core, so it is one solid slab.
+    const f0 = plan.floors[0];
+    put('plank', boxGeo(o.w - 0.2, 0.16, o.d - 0.2, 0.7), 0, f0.floorY - 0.08, 0, 0, 0, 0, 0x97754c);
+    rcol(0, f0.floorY - 0.3, 0, hw - 0.05, 0.24, hd - 0.05);
+
+    for (let s = 0; s < plan.stairs.length; s++) {
+      const st = plan.stairs[s];
+      // The deck this flight arrives at, with its own well cut in it.
+      deck(plan.floors[s + 1].floorY, st.well, s === 0 ? 0x8a6b45 : 0x8f7049);
+      // Joists under it.
+      for (let i = -2; i <= 2; i++) {
+        put('beam', boxGeo(0.16, 0.18, o.d - 0.5, 1.0), (i * o.w) / 6,
+          plan.floors[s + 1].floorY - 0.26, 0, 0, 0, 0, bt());
+      }
+      // The flight. Each step is solid from the floor below to its own tread,
+      // so there is nothing to fall through and the step-up probe always has a
+      // face to find.
+      for (let i = 0; i < st.steps; i++) {
+        const treadTop = st.fromY + (i + 1) * st.rise;
+        const h = treadTop - st.fromY + 0.1;
+        const cz = st.z0 + st.dir * (i + 0.5) * st.tread;
+        put('plank', boxGeo(STAIR_W, h, st.tread, 0.8), st.x, treadTop - h / 2, cz, 0, 0, 0, 0x9a7a50);
+        rcol(st.x, treadTop - h / 2, cz, STAIR_W / 2, h / 2, st.tread / 2);
+      }
+      // Newel post and a rail, so the flight reads as joinery.
+      put('beam', boxGeo(0.16, st.toY - st.fromY + 1.0, 0.16, 1.2), st.x - STAIR_W / 2,
+        st.fromY + (st.toY - st.fromY + 1.0) / 2, st.z0 + st.dir * st.run, 0, 0, 0, bt());
+      put('beam', boxGeo(0.1, 0.1, st.run, 1.2), st.x - STAIR_W / 2,
+        (st.fromY + st.toY) / 2 + 0.95, st.z0 + st.dir * st.run / 2,
+        -st.dir * Math.atan2(st.toY - st.fromY, st.run), 0, 0, bt());
+    }
+
+    // The topmost ceiling.
+    const topF = plan.floors[plan.floors.length - 1];
+    put('plank', boxGeo(o.w - 0.1, 0.14, o.d - 0.1, 0.7), 0, topF.ceilY + 0.07, 0, 0, 0, 0, 0x8a6b45);
+    rcol(0, topF.ceilY + 0.07, 0, hw, 0.1, hd);
+    for (let i = -2; i <= 2; i++) {
+      put('beam', boxGeo(0.17, 0.2, o.d - 0.5, 1.0), (i * o.w) / 6, topF.ceilY - 0.1, 0, 0, 0, 0, bt());
+    }
+
+    /* ---- Furnishing -------------------------------------------------
+     *
+     * Enough that a room is a room. The landmark buildings get their own
+     * dressing on top of this from `_townDressing`, which is what makes the
+     * walk worth it; everything else gets a hearth, a board and somewhere to
+     * sleep, which is what stops an "enterable" building being a shed. */
+    const fy = plan.floors[0].floorY;
+    const tX = -o.w * 0.2;
+    const tZ = -o.d * 0.1;
+    put('plank', boxGeo(Math.min(2.0, ihx), 0.09, 0.9, 1.0), tX, fy + 0.74, tZ, 0, 0.1, 0, 0x9a7a50);
+    for (const sx of [-1, 1]) {
+      put('beam', boxGeo(0.13, 0.7, 0.8, 1.2), tX + sx * Math.min(0.8, ihx * 0.4), fy + 0.37, tZ,
+        0, 0.1, 0, bt());
+    }
+    rcol(tX, fy + 0.4, tZ, Math.min(1.05, ihx * 0.5), 0.42, 0.55);
+    for (const [sx, sz] of [[0.95, 0.3], [-0.5, 0.9]]) {
+      put('plank', cylGeo(0.23, 0.19, 0.48, 8, 1.0), tX + sx, fy + 0.24, tZ + sz, 0, 0, 0, 0x8f6f47);
+    }
+    if (ihx > 2.2) {
+      const bX = o.w * 0.24;
+      const bZ = -o.d * 0.14;
+      put('beam', boxGeo(0.95, 0.4, 1.9, 1.0), bX, fy + 0.2, bZ, 0, 0, 0, bt());
+      put('canopy', boxGeo(0.88, 0.17, 1.8, 2.0), bX, fy + 0.48, bZ, 0, 0, 0, 0xcfc2a4);
+      put('canopy', boxGeo(0.82, 0.13, 0.48, 2.0), bX, fy + 0.6, bZ - 0.64, 0, 0, 0, 0xddd2b8);
+      rcol(bX, fy + 0.34, bZ, 0.5, 0.34, 0.98);
+    }
+    // Hearth on the back wall, under the chimney.
+    put('rubble', boxGeo(1.5, 1.25, 0.3, 0.7), 0, fy + 0.62, -hd + wt + 0.16, 0, 0, 0, 0x8d8270);
+    put('ember', boxGeo(0.62, 0.28, 0.22, 2.0), 0, fy + 0.17, -hd + wt + 0.2, 0, 0, 0, 0xffb060);
+    const hp = at(0, fy + 0.3, -hd + wt + 0.7);
+    this._addGlow(hp.x, hp.y, hp.z, 3.2, 0x5a3416);
+    // A shelf, a crock and a broom - the small stuff that says lived-in.
+    put('plank', boxGeo(Math.min(2.4, ihx * 1.2), 0.07, 0.32, 1.0), 0, fy + 1.55, -hd + wt + 0.2,
+      0, 0, 0, 0x8f7049);
+    put('rock', cylGeo(0.14, 0.17, 0.3, 8, 1.0), -0.5, fy + 1.73, -hd + wt + 0.2, 0, 0, 0, 0x9a8f7c);
+    put('rock', cylGeo(0.11, 0.13, 0.24, 8, 1.0), 0.3, fy + 1.7, -hd + wt + 0.2, 0, 0, 0, 0xa6997f);
+    put('beam', cylGeo(0.04, 0.04, 1.3, 5, 1.2), ihx - 0.25, fy + 0.65, ihz - 0.3, 0, 0, 0.12, 0x8a6c4a);
+    if (rnd() < 0.6) {
+      put('hay', boxGeo(0.7, 0.5, 0.5, 1.6), -ihx + 0.5, fy + 0.25, ihz - 0.5, 0, rnd() * 0.6, 0, 0xd8c48a);
+    }
+    if (o.landmark) this._landmarkInterior(o, plan, ctx, ihx, ihz);
+  }
+
+  /**
+   * What makes a landmark worth the walk.
+   *
+   * The generic furnishing above gives every enterable building a board, a
+   * bed and a hearth, which is what stops "enterable" meaning "shed". It is
+   * not a destination. A player who climbs a bluff, crosses a ford or walks a
+   * kilometre of abbey road has to find something inside that the cottage
+   * three metres from their spawn does not have, or the landmark is a bigger
+   * box.
+   *
+   * So each of the five gets its own set, keyed on the building's kind rather
+   * than its id - a second guildhall would get guildhall furniture. The sets
+   * are deliberately about WORK: a winding drum with the rope still on it, a
+   * high table under banners, an altar with candles burning on it. A room
+   * full of ornament reads as a museum; a room full of half-finished work
+   * reads as a place someone left ten minutes ago.
+   */
+  _landmarkInterior(o, plan, ctx, ihx, ihz) {
+    const { put, rcol, at, bt } = ctx;
+    const fy = plan.floors[0].floorY;
+    const up = plan.floors.length > 1 ? plan.floors[1].floorY : null;
+    const rnd = mulberry32(o.seed ^ 0x9e37);
+    /** A rush light or candle: an ember box plus the glow it throws. */
+    const flame = (lx, ly, lz, r = 2.6) => {
+      put('ember', boxGeo(0.09, 0.16, 0.09, 2.0), lx, ly, lz, 0, 0, 0, 0xffc074);
+      const w = at(lx, ly, lz);
+      this._addGlow(w.x, w.y - 0.2, w.z, r, 0x5a3416);
+    };
+    switch (o.kind) {
+      case 'windinghouse': {
+        /* The drum, the rope and the brake - the machine the whole town is
+         * arranged around, indoors and still rigged. */
+        put('beam', cylGeo(1.15, 1.15, 2.6, 14, 0.8), 0, fy + 1.5, -0.4, 0, 0, Math.PI / 2, 0x7a6144);
+        for (const sx of [-1, 1]) {
+          put('beam', boxGeo(0.3, 2.4, 0.3, 1.1), sx * 1.7, fy + 1.2, -0.4, 0, 0, 0, bt());
+          put('iron', cylGeo(0.14, 0.14, 0.5, 8, 1.2), sx * 1.45, fy + 1.5, -0.4, 0, 0, Math.PI / 2, 0x3a3128);
+        }
+        rcol(0, fy + 1.2, -0.4, 1.9, 1.2, 1.3);
+        // The rope, running off the drum and out through the wall to the shaft.
+        put('iron', cylGeo(0.05, 0.05, ihz * 2, 5, 2.0), 0.3, fy + 2.5, 0, Math.PI / 2, 0, 0, 0x2c2722);
+        // A geared spur wheel and the brake lever.
+        {
+          const g = new THREE.TorusGeometry(0.85, 0.1, 5, 18);
+          MedievalWorld._uvScale(g, 0.6);
+          put('iron', g, -2.1, fy + 1.5, -0.4, 0, Math.PI / 2, 0, 0x3a3128);
+        }
+        put('beam', boxGeo(0.14, 0.14, 2.2, 1.2), -2.4, fy + 1.1, 0.6, 0.5, 0, 0, bt());
+        // Ore sorting tables along the window wall, with picked ore on them.
+        for (const sz of [-1, 1]) {
+          put('plank', boxGeo(ihx * 1.2, 0.08, 0.8, 0.9), 0, fy + 0.86, sz * (ihz - 0.7), 0, 0, 0, 0x9a7a50);
+          for (let i = 0; i < 6; i++) {
+            put('rock', boxGeo(0.22, 0.16, 0.2, 1.4), (i / 5 - 0.5) * ihx * 1.0, fy + 0.98,
+              sz * (ihz - 0.7), 0, rnd() * TAU, 0, 0x35302a);
+          }
+          rcol(0, fy + 0.5, sz * (ihz - 0.7), ihx * 0.6, 0.5, 0.45);
+        }
+        flame(-ihx + 0.4, fy + 1.9, 0, 3.2);
+        flame(ihx - 0.4, fy + 1.9, 0, 3.2);
+        if (up !== null) {
+          // The upper gallery: a rail overlooking the drum, and the tally desk.
+          for (let i = -3; i <= 3; i++) {
+            put('beam', boxGeo(0.1, 0.95, 0.1, 1.2), (i / 3) * (ihx - 0.6), up + 0.5, ihz - 1.4, 0, 0, 0, bt());
+          }
+          put('beam', boxGeo(ihx * 2 - 1.0, 0.1, 0.1, 1.2), 0, up + 0.98, ihz - 1.4, 0, 0, 0, bt());
+          put('plank', boxGeo(1.6, 0.08, 0.75, 0.9), -ihx + 1.1, up + 0.82, -ihz + 0.9, 0, 0, 0, 0x9a7a50);
+          rcol(-ihx + 1.1, up + 0.45, -ihz + 0.9, 0.85, 0.45, 0.45);
+          flame(-ihx + 1.1, up + 1.05, -ihz + 0.9, 2.8);
+        }
+        break;
+      }
+      case 'abbeychurch': {
+        /* A nave: two arcades of piers, choir stalls between them, an altar
+         * under the east window and candles burning on it. The piers are what
+         * make it a church rather than a hall - the eye reads the rhythm long
+         * before it reads the altar. */
+        const bays = Math.max(4, Math.round(ihx / 3.2));
+        for (let i = 0; i <= bays; i++) {
+          const lx = (i / bays - 0.5) * (ihx * 1.75);
+          for (const sz of [-1, 1]) {
+            const lz = sz * (ihz - 1.5);
+            put('ashlar', cylGeo(0.36, 0.42, plan.floors[0].clear - 0.5, 10, 0.7),
+              lx, fy + (plan.floors[0].clear - 0.5) / 2, lz, 0, 0, 0, 0xd6cfbc);
+            put('ashlar', boxGeo(0.9, 0.28, 0.9, 0.9), lx, fy + plan.floors[0].clear - 0.35, lz, 0, 0, 0, 0xc9c1ad);
+            rcol(lx, fy + 1.2, lz, 0.42, 1.2, 0.42);
+          }
+        }
+        // Choir stalls down the middle, facing each other across the aisle.
+        for (const sz of [-1, 1]) {
+          put('plank', boxGeo(ihx * 1.3, 0.5, 0.55, 0.9), 0, fy + 0.25, sz * 1.5, 0, 0, 0, 0x8f7049);
+          put('plank', boxGeo(ihx * 1.3, 1.3, 0.14, 1.0), 0, fy + 0.65, sz * 1.85, 0, 0, 0, 0x7c6242);
+          rcol(0, fy + 0.3, sz * 1.6, ihx * 0.65, 0.3, 0.4);
+        }
+        // The altar, at the east end, with a step up to it.
+        {
+          const ax = ihx - 1.6;
+          put('flagstone', boxGeo(3.2, 0.2, ihz * 1.6, 0.7), ax + 0.6, fy + 0.1, 0, 0, 0, 0, 0xb8b2a4);
+          rcol(ax + 0.6, fy + 0.1, 0, 1.6, 0.12, ihz * 0.8);
+          put('ashlar', boxGeo(0.7, 1.0, 2.4, 0.7), ax, fy + 0.7, 0, 0, 0, 0, 0xd6cfbc);
+          put('canopy', boxGeo(0.85, 0.09, 2.6, 1.4), ax, fy + 1.24, 0, 0, 0, 0, 0xe6e0d2);
+          rcol(ax, fy + 0.7, 0, 0.4, 0.7, 1.2);
+          for (const sz of [-0.85, 0.85]) {
+            put('beam', cylGeo(0.05, 0.08, 0.55, 6, 1.2), ax, fy + 1.55, sz, 0, 0, 0, 0xcfc4ac);
+            flame(ax, fy + 1.9, sz, 3.4);
+          }
+          // A rood screen, so the chancel is a room within the room.
+          for (let i = -4; i <= 4; i++) {
+            put('beam', boxGeo(0.12, plan.floors[0].clear - 1.2, 0.12, 1.2),
+              ax - 3.4, fy + (plan.floors[0].clear - 1.2) / 2, (i / 4) * (ihz - 0.9), 0, 0, 0, bt());
+          }
+          put('beam', boxGeo(0.2, 0.22, ihz * 2 - 1.2, 1.1), ax - 3.4, fy + plan.floors[0].clear - 1.1, 0, 0, 0, 0, bt());
+        }
+        // A lectern and a bank of pricket candles by the west door.
+        put('beam', cylGeo(0.14, 0.22, 1.25, 8, 1.0), -ihx + 2.4, fy + 0.62, 0, 0, 0, 0, bt());
+        put('plank', boxGeo(0.6, 0.07, 0.45, 1.2), -ihx + 2.4, fy + 1.3, 0, 0.4, 0, 0, 0x8f7049);
+        rcol(-ihx + 2.4, fy + 0.62, 0, 0.3, 0.62, 0.3);
+        for (let i = 0; i < 5; i++) {
+          const lz = (i / 4 - 0.5) * 1.6;
+          put('iron', cylGeo(0.03, 0.05, 0.9 + (i % 2) * 0.2, 5, 1.4), -ihx + 1.0, fy + 0.5, lz, 0, 0, 0, 0x3a3128);
+          flame(-ihx + 1.0, fy + 1.05 + (i % 2) * 0.1, lz, 2.2);
+        }
+        break;
+      }
+      case 'towerhall': {
+        /* A marcher hall: a long board on trestles under the banners of
+         * whoever holds it, a weapon rack by the door and a war chest. */
+        put('plank', boxGeo(ihx * 1.5, 0.12, 1.1, 0.9), 0, fy + 0.82, -0.6, 0, 0, 0, 0x9a7a50);
+        for (const sx of [-1, 1]) {
+          put('beam', boxGeo(0.22, 0.78, 0.9, 1.1), sx * ihx * 0.55, fy + 0.4, -0.6, 0, 0, 0, bt());
+        }
+        rcol(0, fy + 0.45, -0.6, ihx * 0.78, 0.45, 0.62);
+        for (const sz of [-1.6, 0.5]) {
+          put('plank', boxGeo(ihx * 1.4, 0.14, 0.42, 0.9), 0, fy + 0.46, sz, 0, 0, 0, 0x8f6f47);
+          for (let i = -2; i <= 2; i++) {
+            put('beam', boxGeo(0.12, 0.44, 0.12, 1.2), (i / 2) * ihx * 0.6, fy + 0.22, sz, 0, 0, 0, bt());
+          }
+        }
+        for (const sx of [-1, 1]) {
+          put('banner', planeGeo(1.2, 2.6, 1.0), sx * (ihx - 0.12), fy + 2.0, -ihz * 0.4,
+            0, sx > 0 ? -Math.PI / 2 : Math.PI / 2, 0, HERALD[(sx > 0 ? 0 : 3)]);
+        }
+        put('beam', boxGeo(0.18, 0.18, ihz * 1.6, 1.1), 0, fy + plan.floors[0].clear - 0.4, 0, 0, 0, 0, bt());
+        // A war chest and a rack of spears.
+        put('plank', boxGeo(1.3, 0.7, 0.7, 0.9), -ihx + 0.9, fy + 0.35, ihz - 0.8, 0, 0.2, 0, 0x7c6242);
+        put('iron', boxGeo(1.36, 0.12, 0.76, 1.4), -ihx + 0.9, fy + 0.74, ihz - 0.8, 0, 0.2, 0, 0x3a3128);
+        rcol(-ihx + 0.9, fy + 0.35, ihz - 0.8, 0.7, 0.35, 0.4);
+        for (let i = 0; i < 5; i++) {
+          put('beam', cylGeo(0.035, 0.045, 2.3, 5, 1.2), ihx - 0.5, fy + 1.15, (i / 4 - 0.5) * 1.4, 0, 0, 0.1, 0x8a6c4a);
+          put('iron', coneGeo(0.055, 0.28, 5, 1.2), ihx - 0.38, fy + 2.28, (i / 4 - 0.5) * 1.4, 0, 0, 0, 0x4a4038);
+        }
+        flame(0, fy + 2.2, ihz - 0.5, 3.6);
+        if (up !== null) {
+          // The solar above: a bed, a chest and a brazier at the window.
+          /* Left wall, not right: the right-hand column of this shell is the
+           * stair well for both flights, and a bed there is a ceiling over the
+           * treads a player is climbing. */
+          put('beam', boxGeo(1.5, 0.45, 2.2, 1.0), -ihx + 1.2, up + 0.22, -ihz + 1.4, 0, 0, 0, bt());
+          put('canopy', boxGeo(1.4, 0.2, 2.1, 1.6), -ihx + 1.2, up + 0.55, -ihz + 1.4, 0, 0, 0, 0xcfc2a4);
+          rcol(-ihx + 1.2, up + 0.35, -ihz + 1.4, 0.78, 0.35, 1.15);
+          put('iron', cylGeo(0.5, 0.34, 0.4, 10, 1.2), 0, up + 0.9, -ihz + 1.1, 0, 0, 0, 0x3a3128);
+          for (let i = 0; i < 3; i++) {
+            put('beam', cylGeo(0.05, 0.06, 0.9, 5, 1.1), Math.cos(i * 2.09) * 0.35,
+              up + 0.45, -ihz + 1.1 + Math.sin(i * 2.09) * 0.35, 0, 0, 0, bt());
+          }
+          flame(0, up + 1.0, -ihz + 1.1, 4.0);
+        }
+        break;
+      }
+      case 'guildhall': {
+        /* An undercroft of piers with the wool weighed and stacked in it, and
+         * a great chamber over it. That IS a guildhall: the trade downstairs,
+         * the men who tax it upstairs. */
+        const bays = Math.max(3, Math.round(ihx / 3.4));
+        for (let i = 0; i <= bays; i++) {
+          const lx = (i / bays - 0.5) * (ihx * 1.6);
+          put('ashlar', boxGeo(0.55, plan.floors[0].clear - 0.4, 0.55, 0.7), lx, fy + (plan.floors[0].clear - 0.4) / 2, 0, 0, 0, 0, 0xd6cfbc);
+          rcol(lx, fy + 1.2, 0, 0.32, 1.2, 0.32);
+        }
+        for (let i = 0; i < 10; i++) {
+          const lx = (rnd() - 0.5) * ihx * 1.5;
+          const lz = (rnd() < 0.5 ? -1 : 1) * (ihz - 1.0);
+          put('hay', boxGeo(1.1, 0.75, 0.85, 1.4), lx, fy + 0.38 + (i % 2) * 0.72, lz, 0, rnd() * 0.5, 0, 0xd8cdb0);
+        }
+        // The beam scale the wool is weighed on.
+        put('beam', cylGeo(0.1, 0.14, 2.4, 8, 1.0), -ihx + 1.6, fy + 1.2, ihz - 1.6, 0, 0, 0, bt());
+        put('iron', boxGeo(1.8, 0.07, 0.07, 1.6), -ihx + 1.6, fy + 2.3, ihz - 1.6, 0, 0, 0.06, 0x3a3128);
+        for (const sx of [-1, 1]) {
+          put('iron', cylGeo(0.32, 0.32, 0.05, 10, 1.4), -ihx + 1.6 + sx * 0.85, fy + 1.7, ihz - 1.6, 0, 0, 0, 0x3a3128);
+          put('iron', cylGeo(0.02, 0.02, 0.6, 4, 2.0), -ihx + 1.6 + sx * 0.85, fy + 2.0, ihz - 1.6, 0, 0, 0, 0x2c2722);
+        }
+        rcol(-ihx + 1.6, fy + 1.2, ihz - 1.6, 0.3, 1.2, 0.3);
+        flame(ihx - 0.5, fy + 2.0, 0, 3.4);
+        if (up !== null) {
+          // The great chamber: a long table, benches, banners and a charter.
+          put('plank', boxGeo(ihx * 1.5, 0.12, 1.2, 0.9), 0, up + 0.84, 0, 0, 0, 0, 0x9a7a50);
+          for (const sx of [-1, 1]) {
+            put('beam', boxGeo(0.24, 0.8, 1.0, 1.1), sx * ihx * 0.55, up + 0.4, 0, 0, 0, 0, bt());
+          }
+          rcol(0, up + 0.45, 0, ihx * 0.78, 0.45, 0.66);
+          for (const sz of [-1.3, 1.3]) {
+            put('plank', boxGeo(ihx * 1.3, 0.13, 0.42, 0.9), 0, up + 0.46, sz, 0, 0, 0, 0x8f6f47);
+          }
+          for (let i = 0; i < 3; i++) {
+            put('banner', planeGeo(1.0, 2.2, 1.0), (i - 1) * 2.4, up + 1.6, -ihz + 0.15, 0, 0, 0, HERALD[i]);
+          }
+          put('plank', boxGeo(1.1, 0.05, 0.8, 1.2), -ihx + 1.2, up + 0.92, 0, 0.12, 0, 0, 0xe6e0d2);
+          flame(1.6, up + 1.1, 0, 3.0);
+          flame(-1.6, up + 1.1, 0, 3.0);
+        }
+        break;
+      }
+      case 'stilthall': {
+        /* A fishing headman's hall: the catch is the furniture. Nets on frames,
+         * a splitting bench with the knife still in it, a salt barrel, and the
+         * floor hatch every stilt house has for dropping a line through. */
+        put('plank', boxGeo(2.0, 0.1, 0.9, 0.9), -ihx + 1.4, fy + 0.85, ihz - 1.0, 0, 0, 0, 0x9a7a50);
+        for (const sx of [-1, 1]) {
+          put('beam', boxGeo(0.14, 0.8, 0.8, 1.1), -ihx + 1.4 + sx * 0.8, fy + 0.42, ihz - 1.0, 0, 0, 0, bt());
+        }
+        rcol(-ihx + 1.4, fy + 0.45, ihz - 1.0, 1.05, 0.45, 0.5);
+        put('iron', boxGeo(0.28, 0.04, 0.09, 1.6), -ihx + 1.4, fy + 0.94, ihz - 1.0, 0, 0.4, 0, 0x4a4038);
+        for (let i = 0; i < 4; i++) {
+          put('canopy', planeGeo(1.5, 1.9, 1.4), -ihx + 0.25, fy + 1.3, (i / 3 - 0.5) * (ihz * 1.4),
+            0, Math.PI / 2, 0, 0x8e9a76);
+        }
+        for (let i = 0; i < 3; i++) {
+          put('plank', cylGeo(0.34, 0.4, 0.8, 12, 1.0), ihx - 0.8, fy + 0.4, (i - 1) * 1.0, 0, 0, 0, 0x8f6f47);
+          put('iron', cylGeo(0.42, 0.42, 0.06, 12, 1.4), ihx - 0.8, fy + 0.7, (i - 1) * 1.0, 0, 0, 0, 0x3a3128);
+        }
+        // Fish on a drying line strung across the roof.
+        put('beam', cylGeo(0.02, 0.02, ihx * 2, 4, 2.0), 0, fy + 2.1, 0.6, 0, 0, Math.PI / 2, 0xbdae90);
+        for (let i = 0; i < 7; i++) {
+          put('hay', boxGeo(0.16, 0.5, 0.1, 1.6), (i / 6 - 0.5) * (ihx * 1.7), fy + 1.85, 0.6,
+            0, 0, (rnd() - 0.5) * 0.3, 0xb8a476);
+        }
+        flame(ihx - 0.6, fy + 1.8, -ihz + 0.8, 3.2);
+        if (up !== null) {
+          put('beam', boxGeo(1.1, 0.4, 2.0, 1.0), -ihx + 1.0, up + 0.2, 0, 0, 0, 0, bt());
+          put('canopy', boxGeo(1.0, 0.18, 1.9, 1.6), -ihx + 1.0, up + 0.48, 0, 0, 0, 0, 0xcfc2a4);
+          rcol(-ihx + 1.0, up + 0.3, 0, 0.58, 0.3, 1.02);
+          for (let i = 0; i < 4; i++) {
+            put('plank', cylGeo(0.28, 0.36, 0.7, 10, 1.0), ihx - 0.9, up + 0.35, (i - 1.5) * 0.85, 0, 0, 0, 0x8f6f47);
+          }
+          flame(0, up + 1.4, -ihz + 0.6, 3.0);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  /**
+   * Raise the five towns of the outer ring.
+   *
+   * One `GeoBatch` per town, merged and parented as its own district. That is
+   * the established pattern in this file and it is doing two jobs here: the
+   * merge collapses a town of thirty buildings to one mesh per material key,
+   * and - because a district is spatially local - each town's meshes carry a
+   * bounding sphere about ninety metres across and frustum-cull as a unit.
+   * Five towns spread over a 900 m map means four of them are usually off
+   * screen, which is worth more than the merge is.
+   *
+   * The AO bake runs per district for the same reason: it voxelises the batch's
+   * own bounding box, so a batch that spanned the map would allocate a grid for
+   * the map.
+   */
+  async _buildTowns() {
+    for (const town of TOWNS) {
+      const B = new GeoBatch();
+      const rnd = mulberry32(0x7a000 + town.id.length * 7919 + (town.centre.x | 0));
+      let seed = 0x51000;
+      for (const b of town.buildings) {
+        this._shell(B, { ...b, seed: (seed += 7919) });
+        await this._breathe();
+      }
+      this._townDressing(B, town, rnd);
+      B.build(this._mats, this.group, { ao: this._heightFn });
+      await this._breathe();
+    }
+  }
+
+  /** Everything a town has that is not a building. */
+  _townDressing(B, town, rnd) {
+    const place = (x, y, z, ry = 0, rz = 0) => {
+      _obj.position.set(x, y, z);
+      _obj.rotation.set(0, ry, rz);
+      _obj.scale.set(1, 1, 1);
+      return _obj;
+    };
+    const H = (x, z) => this._height(x, z);
+    switch (town.id) {
+      case 'reedwater': this._dressReedwater(B, place, H, rnd); break;
+      case 'grimscar': this._dressGrimscar(B, place, H, rnd); break;
+      case 'st-ceolwine': this._dressAbbey(B, place, H, rnd); break;
+      case 'blackmarch': this._dressBlackmarch(B, place, H, rnd); break;
+      case 'fenwick-cross': this._dressFenwick(B, place, H, rnd); break;
+      default: break;
+    }
+  }
+
+  /**
+   * A boarded walkway on posts, following a centreline.
+   *
+   * Reedwater's whole circulation is this: there is no street over the water,
+   * only jetty, and the approach to the village is the moment the ground stops
+   * and the planks start. Posts go down to the bed wherever the bed is under
+   * the waterline and to the ground where it is not, so the same function
+   * builds the ramp up off the bank and the stage out over the pool.
+   */
+  _jetty(B, pts, width, deckY) {
+    const hw = width / 2;
+    let run = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [ax, az] = pts[i];
+      const [bx, bz] = pts[i + 1];
+      const dx = bx - ax;
+      const dz = bz - az;
+      const len = Math.hypot(dx, dz);
+      const yaw = MedievalWorld._yaw(dx / len, dz / len);
+      const n = Math.max(1, Math.round(len / 2.2));
+      for (let k = 0; k < n; k++) {
+        const t = (k + 0.5) / n;
+        const cx = ax + dx * t;
+        const cz = az + dz * t;
+        _obj.position.set(cx, deckY - 0.09, cz);
+        _obj.rotation.set(0, yaw, 0);
+        _obj.scale.set(1, 1, 1);
+        B.add('plank', boxGeo(len / n + 0.06, 0.18, width, 0.7), _obj, 0x9d7f56);
+        this._rbox(cx, deckY - 0.22, cz, (len / n) / 2 + 0.05, 0.14, hw, yaw);
+        run += len / n;
+      }
+      // Bents every ~3.4 m, plus a handrail on the outer side.
+      const bents = Math.max(2, Math.round(len / 3.4));
+      for (let k = 0; k <= bents; k++) {
+        const t = k / bents;
+        const cx = ax + dx * t;
+        const cz = az + dz * t;
+        const g = this._height(cx, cz);
+        const ph = Math.max(0.6, deckY - g + 0.9);
+        for (const s of [-1, 1]) {
+          const px = cx - (dz / len) * s * (hw - 0.18);
+          const pz = cz + (dx / len) * s * (hw - 0.18);
+          _obj.position.set(px, deckY - ph / 2 - 0.1, pz);
+          _obj.rotation.set(0, yaw, 0);
+          B.add('beam', cylGeo(0.13, 0.17, ph, 6, 0.9), _obj, 0x6a5741);
+          if (k % 2 === 0) {
+            _obj.position.set(px, deckY + 0.52, pz);
+            B.add('beam', cylGeo(0.07, 0.08, 1.05, 5, 1.1), _obj, 0x7a6144);
+          }
+        }
+      }
+      for (const s of [-1, 1]) {
+        const mx = (ax + bx) / 2 - (dz / len) * s * (hw - 0.18);
+        const mz = (az + bz) / 2 + (dx / len) * s * (hw - 0.18);
+        _obj.position.set(mx, deckY + 0.98, mz);
+        _obj.rotation.set(0, yaw, 0);
+        B.add('beam', boxGeo(len, 0.08, 0.06, 1.2), _obj, 0x7a6144);
+      }
+      this._footprints.push({
+        x: (ax + bx) / 2, z: (az + bz) / 2, hx: len / 2 + 0.5, hz: hw + 0.5,
+        r: -yaw,
+      });
+    }
+    return run;
+  }
+
+  /**
+   * Reedwater: jetties, drying racks, traps, nets and upturned boats.
+   *
+   * The brief for this village is "the approach should feel like arriving at
+   * water", and that is a circulation problem before it is a prop problem: the
+   * strand road stops on the bank, a ramp takes you up onto a deck, and from
+   * there every door is over the pool. The props are what makes the deck read
+   * as a place of work rather than a pier - a fishing village is defined by
+   * the things that are DRYING in it.
+   */
+  _dressReedwater(B, place, H, rnd) {
+    const deck = REEDWATER_DECK;
+    for (const j of REEDWATER_JETTIES) this._jetty(B, j.pts, j.w, deck);
+    // The ramp off the bank onto the spine.
+    {
+      /* The ramp lands at z = 119, not 122: the strand road runs through
+       * z = 121.7 at this x, and a flight of 3.4 m timber steps laid across
+       * a cobbled carriageway is a z-fight and a trip hazard. */
+      const bx = -360;
+      const bz = 119;
+      const g = H(bx, bz);
+      const steps = Math.max(2, Math.ceil((deck - g) / 0.34));
+      for (let i = 0; i < steps; i++) {
+        const y = g + ((i + 1) / steps) * (deck - g);
+        B.add('plank', boxGeo(3.4, 0.5, 0.85, 0.7), place(bx, y - 0.25, bz - i * 0.85), 0x9d7f56);
+        this._rbox(bx, y - 0.25, bz - i * 0.85, 1.7, 0.25, 0.42, 0);
+      }
+    }
+    // The Greyoak stage: a dead-end plank walk out to the gravel bar. See the
+    // note in RoadNet.js for why it is not a crossing.
+    {
+      const g = GREYOAK_STAGE;
+      const pts = [];
+      const n = 8;
+      for (let i = 0; i <= n; i++) pts.push([g.x, g.fromZ + ((g.toZ - g.fromZ) * i) / n]);
+      this._jetty(B, pts, g.width, g.deckY);
+      for (let i = 0; i < 5; i++) {
+        const x = g.x + (rnd() - 0.5) * 5;
+        const z = g.toZ - 2 - rnd() * 8;
+        B.add('beam', cylGeo(0.06, 0.06, 1.5, 5, 1.2), place(x, H(x, z) + 0.7, z, 0, (rnd() - 0.5) * 0.4), 0x7a6144);
+      }
+    }
+    // Drying racks: two rows of forked posts with nets slung between them.
+    for (const [rx, rz, ry] of [[-350, 126, 0.16], [-368, 130, 0.2], [-334, 118, 0.1]]) {
+      const y = H(rx, rz);
+      for (let i = -2; i <= 2; i++) {
+        const px = rx + i * 2.1 * Math.cos(ry);
+        const pz = rz + i * 2.1 * Math.sin(ry);
+        B.add('beam', cylGeo(0.08, 0.10, 2.6, 5, 1.0), place(px, H(px, pz) + 1.3, pz), 0x7a6144);
+      }
+      for (const h of [2.35, 1.7]) {
+        B.add('beam', boxGeo(8.6, 0.06, 0.06, 1.2), place(rx, y + h, rz, ry), 0x7a6144);
+      }
+      for (let i = 0; i < 7; i++) {
+        const t = (i / 6 - 0.5) * 8.0;
+        B.add('canopy', planeGeo(1.05, 1.5, 1.4),
+          place(rx + t * Math.cos(ry), y + 1.55, rz + t * Math.sin(ry), ry + Math.PI / 2), 0x8e9a76);
+      }
+      this._contacts.push(rx, y, rz, 4.4);
+    }
+    // Fish traps, creels and floats stacked on the bank.
+    for (let i = 0; i < 22; i++) {
+      const x = -394 + rnd() * 66;
+      const z = 116 + rnd() * 16;
+      if (H(x, z) < WATER_Y + 0.2) continue;
+      const y = H(x, z);
+      const kind = rnd();
+      if (kind < 0.45) {
+        B.add('hay', cylGeo(0.3, 0.42, 0.85, 8, 1.2), place(x, y + 0.42, z, rnd() * TAU, (rnd() - 0.5) * 0.5), 0xbfa46c);
+      } else if (kind < 0.75) {
+        B.add('plank', cylGeo(0.36, 0.36, 0.6, 10, 1.0), place(x, y + 0.3, z, rnd() * TAU), 0x8f6f47);
+      } else {
+        B.add('canopy', boxGeo(0.9, 0.4, 0.7, 1.6), place(x, y + 0.2, z, rnd() * TAU), 0x9aa47e);
+      }
+      this._contacts.push(x, y, z, 0.7);
+    }
+    // Upturned boats on the strand.
+    for (const [x, z, r] of [[-382, 122, 0.5], [-340, 114, 2.2], [-364, 136, 1.1], [-326, 120, 2.8]]) {
+      const y = H(x, z);
+      const hull = new THREE.SphereGeometry(1.0, 12, 6, 0, TAU, 0, Math.PI / 2);
+      hull.scale(1.0, 0.52, 2.9);
+      MedievalWorld._uvScale(hull, 0.6);
+      B.add('plank', hull, place(x, y + 0.55, z, r, Math.PI), 0x8a6f4c);
+      B.add('beam', boxGeo(0.12, 0.12, 5.4, 1.2), place(x, y + 0.6, z, r), 0x6f5940);
+      this._box(x, y + 0.3, z, 1.1, 0.5, 2.9);
+      this._contacts.push(x, y, z, 3.0);
+      // Oars leaning on the hull.
+      for (let k = 0; k < 2; k++) {
+        B.add('beam', cylGeo(0.05, 0.07, 2.9, 5, 1.2),
+          place(x + 1.2 + k * 0.3, y + 1.1, z, r, 0.42), 0x8a6c4a);
+      }
+    }
+    // Floats and a coil of rope on the jetty head.
+    for (let i = 0; i < 12; i++) {
+      const x = -370 + (rnd() - 0.5) * 8;
+      const z = 90 + (rnd() - 0.5) * 10;
+      B.add('plank', cylGeo(0.18, 0.18, 0.28, 8, 1.4), place(x, deck + 0.14, z, rnd() * TAU), 0x9a7a50);
+    }
+  }
+
+  /**
+   * Grimscar: the headframe, the adit, the tramway and the tip.
+   *
+   * A mining town is a MACHINE, and the machine is what has to read from the
+   * vale floor: a timber headframe on the skyline above a black tip is
+   * legible at four hundred metres in a way that a street of cottages is not.
+   * So the headframe is thirteen metres tall, the tip spills over the bench's
+   * eastern lip where the ground already falls away, and the tramway that
+   * joins them runs straight past the winding house's doors.
+   */
+  _dressGrimscar(B, place, H, rnd) {
+    const W = GRIMSCAR_WORKINGS;
+    /* ---- Headframe: two A-frames, a sheave and a shaft collar ------- */
+    const hf = W.headframe;
+    const gy = H(hf.x, hf.z);
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const lean = 0.19;
+        B.add('beam', cylGeo(0.19, 0.26, hf.h, 6, 0.9),
+          place(hf.x + sx * hf.legHalf * 0.55, gy + hf.h / 2, hf.z + sz * hf.legHalf * 0.55,
+            0, 0), 0x5f4c37);
+        // Rake each leg outward at the foot.
+        B.add('beam', cylGeo(0.14, 0.2, hf.h * 0.62, 6, 0.9),
+          place(hf.x + sx * hf.legHalf, gy + hf.h * 0.31, hf.z + sz * hf.legHalf, 0,
+            sx * lean), 0x5f4c37);
+      }
+    }
+    for (let i = 1; i <= 4; i++) {
+      const y = gy + (i / 5) * hf.h;
+      const k = 1 - (i / 5) * 0.35;
+      for (const sz of [-1, 1]) {
+        B.add('beam', boxGeo(hf.legHalf * 2.2 * k, 0.14, 0.14, 1.2),
+          place(hf.x, y, hf.z + sz * hf.legHalf * 0.55 * k), 0x6a5741);
+      }
+      for (const sx of [-1, 1]) {
+        B.add('beam', boxGeo(0.14, 0.14, hf.legHalf * 1.6 * k, 1.2),
+          place(hf.x + sx * hf.legHalf * 0.55 * k, y, hf.z), 0x6a5741);
+      }
+    }
+    // Sheave wheel at the head, and the rope down the shaft.
+    {
+      const ring = new THREE.TorusGeometry(1.35, 0.14, 6, 20);
+      MedievalWorld._uvScale(ring, 0.5);
+      B.add('iron', ring, place(hf.x, gy + hf.h + 0.9, hf.z, Math.PI / 2), 0x3a3128);
+      B.add('iron', cylGeo(0.16, 0.16, 1.6, 8, 1.0), place(hf.x, gy + hf.h + 0.9, hf.z, 0, Math.PI / 2), 0x3a3128);
+      B.add('iron', cylGeo(0.04, 0.04, hf.h + 0.6, 4, 2.0), place(hf.x, gy + (hf.h + 0.6) / 2, hf.z), 0x2c2722);
+      // Shaft collar: a timbered mouth with a windlass beside it.
+      B.add('beam', boxGeo(3.0, 0.55, 3.0, 0.8), place(hf.x, gy + 0.28, hf.z), 0x6f5940);
+      B.add('rock', boxGeo(2.2, 0.4, 2.2, 0.8), place(hf.x, gy + 0.02, hf.z), 0x2a2723);
+      this._box(hf.x, gy + 0.28, hf.z, 1.5, 0.3, 1.5);
+      B.add('beam', cylGeo(0.34, 0.34, 2.2, 10, 0.9),
+        place(hf.x + 3.2, gy + 1.0, hf.z, 0, Math.PI / 2), 0x7a6144);
+      for (const s of [-1, 1]) {
+        B.add('beam', boxGeo(0.22, 1.9, 0.22, 1.1), place(hf.x + 3.2, gy + 0.95, hf.z + s * 1.3), 0x6a5741);
+      }
+      this._box(hf.x + 3.2, gy + 1.0, hf.z, 0.6, 1.0, 1.5);
+      this._contacts.push(hf.x, gy, hf.z, 4.5);
+    }
+
+    /* ---- Adit: a timbered portal cut into the scarp face ------------- */
+    {
+      const a = W.adit;
+      const ay = H(a.x, a.z);
+      const hwid = a.w / 2;
+      // Retaining wall either side, so the portal reads as cut rather than
+      // stuck on: the face here climbs 10.7 m in 8 m, which is what makes an
+      // adit believable at all.
+      for (const s of [-1, 1]) {
+        B.add('rubble', boxGeo(2.6, 4.4, 2.4, 0.55),
+          place(a.x - 0.6, ay + 1.4, a.z + s * (hwid + 1.2)), 0x6a635b);
+      }
+      B.add('rubble', boxGeo(3.0, 1.5, a.w + 4.0, 0.55), place(a.x - 0.6, ay + a.h + 0.6, a.z), 0x625d57);
+      // The timber sett: two legs and a cap, then a black mouth behind it.
+      for (const s of [-1, 1]) {
+        B.add('beam', boxGeo(0.36, a.h, 0.42, 1.0), place(a.x + 0.4, ay + a.h / 2, a.z + s * hwid), 0x5f4c37);
+      }
+      B.add('beam', boxGeo(0.42, 0.42, a.w + 0.9, 1.0), place(a.x + 0.4, ay + a.h + 0.2, a.z), 0x5f4c37);
+      B.add('rock', boxGeo(0.4, a.h, a.w, 1.0), place(a.x - 1.4, ay + a.h / 2, a.z), 0x171512);
+      this._box(a.x - 1.4, ay + a.h / 2, a.z, 0.4, a.h / 2, a.w / 2);
+      // A lamp on the sett, and the drainage launder running out of the mouth.
+      B.add('ember', boxGeo(0.16, 0.2, 0.16, 2.0), place(a.x + 0.5, ay + a.h - 0.4, a.z + hwid - 0.2), 0xffb060);
+      this._addGlow(a.x + 1.4, ay + 1.0, a.z, 4.0, 0x4a2a12);
+      B.add('plank', boxGeo(7.0, 0.16, 0.5, 0.8), place(a.x + 4.0, ay + 0.12, a.z - hwid - 0.5), 0x8a6f4c);
+    }
+
+    /* ---- Tramway: sleepers, rails and standing ore carts ------------- */
+    {
+      const pts = W.tramway;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [ax, az] = pts[i];
+        const [bx, bz] = pts[i + 1];
+        const dx = bx - ax;
+        const dz = bz - az;
+        const len = Math.hypot(dx, dz);
+        const yaw = MedievalWorld._yaw(dx / len, dz / len);
+        const n = Math.max(2, Math.round(len / 0.9));
+        for (let k = 0; k < n; k++) {
+          const t = (k + 0.5) / n;
+          const cx = ax + dx * t;
+          const cz = az + dz * t;
+          B.add('beam', boxGeo(0.5, 0.12, 1.5, 1.0), place(cx, H(cx, cz) + 0.06, cz, yaw), 0x5f4c37);
+        }
+        for (const s of [-1, 1]) {
+          const mx = (ax + bx) / 2 - (dz / len) * s * 0.42;
+          const mz = (az + bz) / 2 + (dx / len) * s * 0.42;
+          B.add('iron', boxGeo(len, 0.08, 0.07, 1.6), place(mx, H(mx, mz) + 0.17, mz, yaw), 0x4a4038);
+        }
+      }
+      // Two carts, one loaded, one tipped on its side by the tip head.
+      for (const [cx, cz, tipped] of [[-364, -192, 0], [-347, -190.5, 1]]) {
+        const y = H(cx, cz);
+        const rz = tipped ? 1.35 : 0;
+        B.add('plank', boxGeo(1.5, 0.95, 1.05, 0.8), place(cx, y + 0.62, cz, 0.1, rz), 0x7c6242);
+        B.add('iron', boxGeo(1.6, 0.1, 1.15, 1.4), place(cx, y + 1.1, cz, 0.1, rz), 0x4a4038);
+        if (!tipped) B.add('rock', boxGeo(1.3, 0.4, 0.9, 1.4), place(cx, y + 1.12, cz, 0.1), 0x2e2a25);
+        for (const s of [-1, 1]) {
+          const wheel = new THREE.TorusGeometry(0.3, 0.07, 5, 12);
+          MedievalWorld._uvScale(wheel, 0.6);
+          B.add('iron', wheel, place(cx, y + 0.3, cz + s * 0.56, 0.1), 0x4a4038);
+        }
+        this._box(cx, y + 0.6, cz, 0.9, 0.6, 0.7);
+        this._contacts.push(cx, y, cz, 1.3);
+      }
+    }
+
+    /* ---- Spoil ------------------------------------------------------- *
+     * Cones of crushed shale, dark and angular. Placed on the bench's lip so
+     * they spill over it rather than sitting on the shelf like slag hats. */
+    for (const heap of [...W.heaps, { x: W.tip.x, z: W.tip.z, r: W.tip.r, h: 4.2 }]) {
+      const y = H(heap.x, heap.z);
+      const g = coneGeo(heap.r, heap.h, 12, 0.8);
+      const p = g.attributes.position;
+      for (let i = 0; i < p.count; i++) {
+        const n = 1 + perlin2(p.getX(i) * 0.9 + heap.x, p.getZ(i) * 0.9 + heap.z) * 0.22;
+        p.setXYZ(i, p.getX(i) * n, p.getY(i), p.getZ(i) * n);
+      }
+      g.computeVertexNormals();
+      B.add('rock', g, place(heap.x, y + heap.h / 2 - 0.6, heap.z, rnd() * TAU), 0x3a352e);
+      this._box(heap.x, y + heap.h * 0.3, heap.z, heap.r * 0.55, heap.h * 0.4, heap.r * 0.55);
+      this._contacts.push(heap.x, y, heap.z, heap.r);
+      // Loose shale skirting the foot.
+      for (let i = 0; i < 10; i++) {
+        const a = rnd() * TAU;
+        const rr = heap.r * (0.85 + rnd() * 0.5);
+        const sx = heap.x + Math.cos(a) * rr;
+        const sz = heap.z + Math.sin(a) * rr;
+        B.add('rock', boxGeo(0.5 + rnd() * 0.5, 0.22, 0.4 + rnd() * 0.4, 1.2),
+          place(sx, H(sx, sz) + 0.08, sz, rnd() * TAU, (rnd() - 0.5) * 0.4), 0x413b33);
+      }
+    }
+    // Pit props, stacked timber and a water butt outside the winding house.
+    for (let i = 0; i < 14; i++) {
+      const x = -376 + rnd() * 6;
+      const z = -204 + rnd() * 8;
+      B.add('beam', cylGeo(0.13, 0.15, 2.4, 6, 1.0),
+        place(x, H(x, z) + 0.14 + (i % 4) * 0.28, z, 0.2 + (i % 3) * 0.1, Math.PI / 2), 0x7a6144);
+    }
+  }
+
+  /**
+   * St Ceolwine's: the precinct wall, the cloister arcade, the garth, the
+   * herb beds and the stew pond.
+   *
+   * The abbey's silhouette is not its church - it is the WALL. Everything
+   * else in the vale is approached across open ground; this is approached
+   * along an eighty-metre blank face with one gate in it, and the cloister
+   * behind it is the only enclosed outdoor room in the world.
+   */
+  _dressAbbey(B, place, H, rnd) {
+    const P = CEOLWINE_PRECINCT;
+    const G = CEOLWINE_GARTH;
+    /* ---- Precinct wall ---------------------------------------------- */
+    const runWall = (x0, z0, x1, z1, gap) => {
+      const dx = x1 - x0;
+      const dz = z1 - z0;
+      const len = Math.hypot(dx, dz);
+      const yaw = MedievalWorld._yaw(dx / len, dz / len);
+      const n = Math.max(2, Math.round(len / 3.0));
+      for (let i = 0; i < n; i++) {
+        const t = (i + 0.5) / n;
+        const cx = x0 + dx * t;
+        const cz = z0 + dz * t;
+        if (gap && Math.hypot(cx - gap.x, cz - gap.z) < gap.w) continue;
+        const y = H(cx, cz);
+        B.add('ashlar', boxGeo(len / n + 0.05, P.wallH, P.wallT, 0.5),
+          place(cx, y + P.wallH / 2, cz, yaw), 0xcfc7b2);
+        B.add('slate', boxGeo(len / n + 0.05, 0.16, P.wallT + 0.24, 0.8),
+          place(cx, y + P.wallH + 0.08, cz, yaw), 0x9aa4b0);
+        this._rbox(cx, y + P.wallH / 2, cz, (len / n) / 2 + 0.05, P.wallH / 2, P.wallT / 2, -yaw);
+      }
+    };
+    runWall(P.x - P.hx, P.z - P.hz, P.x + P.hx, P.z - P.hz, { x: P.gate.x, z: P.gate.z, w: 6.0 });
+    runWall(P.x - P.hx, P.z + P.hz, P.x + P.hx, P.z + P.hz, null);
+    runWall(P.x - P.hx, P.z - P.hz, P.x - P.hx, P.z + P.hz, null);
+    runWall(P.x + P.hx, P.z - P.hz, P.x + P.hx, P.z + P.hz, null);
+
+    /* ---- Cloister arcade -------------------------------------------- *
+     * Four covered walks round the garth: a dwarf wall, paired shafts, a
+     * scalloped capital and a lean-to roof back to the ranges. */
+    const walk = G.walkW;
+    for (let side = 0; side < 4; side++) {
+      const along = side < 2 ? G.hx : G.hz;
+      const outAxis = side < 2 ? G.hz : G.hx;
+      const sgn = side % 2 === 0 ? 1 : -1;
+      const n = Math.max(4, Math.round((along * 2) / 2.2));
+      for (let i = 0; i <= n; i++) {
+        const t = (i / n - 0.5) * along * 2;
+        const cx = side < 2 ? G.x + t : G.x + sgn * outAxis;
+        const cz = side < 2 ? G.z + sgn * outAxis : G.z + t;
+        const y = H(cx, cz);
+        B.add('ashlar', boxGeo(0.42, 0.66, 0.42, 0.7), place(cx, y + 0.33, cz), 0xc9c1ad);
+        for (const s of [-0.13, 0.13]) {
+          const px = side < 2 ? cx + s : cx;
+          const pz = side < 2 ? cz : cz + s;
+          B.add('ashlar', cylGeo(0.12, 0.13, 1.85, 8, 0.9), place(px, y + 1.6, pz), 0xd6cfbc);
+        }
+        B.add('ashlar', boxGeo(0.46, 0.24, 0.46, 0.8), place(cx, y + 2.62, cz), 0xc9c1ad);
+        this._box(cx, y + 1.3, cz, 0.24, 1.3, 0.24);
+      }
+      // Lean-to roof over the walk.
+      const ry = H(G.x, G.z) + 3.35;
+      const rw2 = side < 2 ? along * 2 + walk : walk;
+      const rd2 = side < 2 ? walk : along * 2 + walk;
+      const cxr = side < 2 ? G.x : G.x + sgn * (outAxis + walk / 2);
+      const czr = side < 2 ? G.z + sgn * (outAxis + walk / 2) : G.z;
+      B.add('slate', boxGeo(rw2, 0.2, rd2, 0.7),
+        place(cxr, ry, czr, 0, side < 2 ? sgn * -0.24 : 0), 0xa8b2be);
+      // Flagged walk under it.
+      B.add('flagstone', boxGeo(rw2 - 0.2, 0.12, rd2 - 0.2, 0.55),
+        place(cxr, H(cxr, czr) + 0.09, czr), 0xb8b2a4);
+    }
+    /* ---- The garth: turf, a well, and a path across it --------------- */
+    {
+      const wy = H(G.x, G.z);
+      B.add('flagstone', boxGeo(1.4, 0.9, 1.4, 0.6), place(G.x, wy + 0.45, G.z), 0xb8b2a4);
+      B.add('ashlar', cylGeo(0.95, 1.0, 0.9, 12, 0.7), place(G.x, wy + 0.9, G.z), 0xcfc7b2);
+      for (const s of [-1, 1]) {
+        B.add('beam', boxGeo(0.16, 2.4, 0.16, 1.1), place(G.x + s * 0.9, wy + 2.1, G.z), 0x6f5940);
+      }
+      B.add('slate', coneGeo(1.5, 0.9, 4, 0.7), place(G.x, wy + 3.6, G.z, Math.PI / 4), 0x9aa4b0);
+      B.add('beam', cylGeo(0.16, 0.16, 1.9, 8, 0.9), place(G.x, wy + 3.0, G.z, 0, Math.PI / 2), 0x7a6144);
+      this._box(G.x, wy + 0.6, G.z, 1.0, 0.6, 1.0);
+      this._contacts.push(G.x, wy, G.z, 1.9);
+      for (const [ax, az, bx, bz] of [
+        [G.x, G.z - G.hz, G.x, G.z + G.hz], [G.x - G.hx, G.z, G.x + G.hx, G.z],
+      ]) {
+        const n = Math.round(Math.hypot(bx - ax, bz - az) / 1.2);
+        for (let i = 0; i < n; i++) {
+          const t = (i + 0.5) / n;
+          const cx = ax + (bx - ax) * t;
+          const cz = az + (bz - az) * t;
+          B.add('flagstone', boxGeo(1.25, 0.1, 1.25, 0.55), place(cx, H(cx, cz) + 0.07, cz), 0xb0aa9c);
+        }
+      }
+    }
+    /* ---- Herb beds --------------------------------------------------- */
+    for (const [bx, bz, bhx, bhz] of CEOLWINE_HERBS) {
+      const y = H(bx, bz);
+      for (const [ox, oz, sx, sz] of [
+        [0, -bhz, bhx, 0.14], [0, bhz, bhx, 0.14], [-bhx, 0, 0.14, bhz], [bhx, 0, 0.14, bhz],
+      ]) {
+        B.add('plank', boxGeo(sx * 2 + 0.28, 0.5, sz * 2 + 0.28, 0.8),
+          place(bx + ox, y + 0.25, bz + oz), 0x7c6242);
+      }
+      B.add('rock', boxGeo(bhx * 2, 0.34, bhz * 2, 0.9), place(bx, y + 0.2, bz), 0x4a4034);
+      const rows = Math.max(2, Math.round(bhx));
+      for (let i = 0; i < rows * 3; i++) {
+        const px = bx + ((i % rows) / Math.max(1, rows - 1) - 0.5) * (bhx * 1.7);
+        const pz = bz + (((i / rows) | 0) / 2 - 0.5) * (bhz * 1.5);
+        B.add('leaf', boxGeo(0.42, 0.38, 0.42, 5.0), place(px, y + 0.6, pz, rnd() * TAU), 0x8fae66);
+      }
+      this._box(bx, y + 0.25, bz, bhx + 0.15, 0.25, bhz + 0.15);
+    }
+    /* ---- Stew pond --------------------------------------------------- */
+    {
+      const p = CEOLWINE_POND;
+      const y = H(p.x, p.z);
+      B.add('rock', boxGeo(p.hx * 2, 0.6, p.hz * 2, 0.7), place(p.x, y - 0.5, p.z), 0x4a4438);
+      /* Not the river's shader material: it carries its own attributes and its
+       * own flow uniforms, and a merged batch would hand it geometry it cannot
+       * read. A still stew pond wants a dark flat plane anyway. */
+      B.add('slate', boxGeo(p.hx * 2 - 0.5, 0.08, p.hz * 2 - 0.5, 0.5), place(p.x, y - 0.22, p.z), 0x35414a);
+      for (const [ox, oz, sx, sz] of [
+        [0, -p.hz, p.hx + 0.4, 0.4], [0, p.hz, p.hx + 0.4, 0.4],
+        [-p.hx, 0, 0.4, p.hz], [p.hx, 0, 0.4, p.hz],
+      ]) {
+        B.add('ashlar', boxGeo(sx * 2, 0.5, sz * 2, 0.6), place(p.x + ox, y + 0.05, p.z + oz), 0xc9c1ad);
+        this._box(p.x + ox, y + 0.05, p.z + oz, sx, 0.25, sz);
+      }
+      this._footprints.push({ x: p.x, z: p.z, hx: p.hx + 1, hz: p.hz + 1, r: 0 });
+    }
+    /* Beehives along the west range, inside the wall.
+     *
+     * Inside, because the precinct's north-south extent is z = 298..386 and
+     * the first cut of these stood at z = 388 - two metres outside their own
+     * abbey, which is a thing no screenshot would ever have shown. */
+    for (let i = 0; i < 5; i++) {
+      const x = -330;
+      const z = 340 + i * 3.0;
+      B.add('hay', cylGeo(0.32, 0.46, 0.66, 10, 1.2), place(x, H(x, z) + 0.33, z), 0xcbb277);
+      this._contacts.push(x, H(x, z), z, 0.7);
+    }
+  }
+
+  /**
+   * Blackmarch Hold: the palisade, its fighting walk, the gate towers over the
+   * neck, the muster yard and the beacon.
+   *
+   * The one thing this town has to communicate is EXPOSURE. The wall is
+   * therefore built as it would be: posts driven, not a fence - a continuous
+   * line of split trunks with a walk behind at 2.55 m, which is head height
+   * for a man on the ground outside and chest height for one behind it.
+   */
+  _dressBlackmarch(B, place, H, rnd) {
+    const P = BLACKMARCH_PALISADE;
+    const runs = [
+      [P.x0, P.z0, P.x1, P.z0], [P.x0, P.z1, P.x1, P.z1],
+      [P.x0, P.z0, P.x0, P.z1], [P.x1, P.z0, P.x1, P.z1],
+    ];
+    for (const [x0, z0, x1, z1] of runs) {
+      const dx = x1 - x0;
+      const dz = z1 - z0;
+      const len = Math.hypot(dx, dz);
+      const yaw = MedievalWorld._yaw(dx / len, dz / len);
+      const n = Math.round(len / P.spacing);
+      for (let i = 0; i < n; i++) {
+        const t = (i + 0.5) / n;
+        const cx = x0 + dx * t;
+        const cz = z0 + dz * t;
+        // The gate: leave the opening, but keep the towers' own posts.
+        if (Math.hypot(cx - P.gate.x, cz - P.gate.z) < P.gate.w / 2) continue;
+        const y = H(cx, cz);
+        const h = P.postH * (0.94 + ((i * 37) % 13) / 100);
+        B.add('beam', cylGeo(P.postR * 0.85, P.postR, h, 6, 0.9),
+          place(cx, y + h / 2 - 0.3, cz), shadeHex(0x7c6242, 0.86 + ((i * 17) % 9) / 30));
+        // Sharpened head.
+        B.add('beam', coneGeo(P.postR, 0.44, 6, 0.9), place(cx, y + h - 0.08, cz), 0x6f5940);
+      }
+      // The fighting walk and its rail, on the inside face.
+      const nx = -(dz / len);
+      const nz = dx / len;
+      const inward = ((P.x0 + P.x1) / 2 - (x0 + x1) / 2) * nx + ((P.z0 + P.z1) / 2 - (z0 + z1) / 2) * nz;
+      const s = inward >= 0 ? 1 : -1;
+      const wx = (x0 + x1) / 2 + nx * s * (P.walkW / 2 + 0.3);
+      const wz = (z0 + z1) / 2 + nz * s * (P.walkW / 2 + 0.3);
+      const wy = H(wx, wz) + P.walkY;
+      B.add('plank', boxGeo(len, 0.22, P.walkW, 0.7), place(wx, wy, wz, yaw), 0x8a6f4c);
+      this._rbox(wx, wy - 0.11, wz, len / 2, 0.14, P.walkW / 2, -yaw);
+      const posts = Math.max(3, Math.round(len / 2.6));
+      for (let i = 0; i <= posts; i++) {
+        const t = i / posts;
+        const px = x0 + dx * t + nx * s * (P.walkW / 2 + 0.3);
+        const pz = z0 + dz * t + nz * s * (P.walkW / 2 + 0.3);
+        const py = H(px, pz);
+        B.add('beam', cylGeo(0.14, 0.18, P.walkY + 0.2, 6, 0.9), place(px, py + (P.walkY + 0.2) / 2, pz), 0x6f5940);
+        B.add('beam', cylGeo(0.09, 0.09, 1.05, 5, 1.1), place(px, py + P.walkY + 0.55, pz), 0x7a6144);
+      }
+      B.add('beam', boxGeo(len, 0.08, 0.08, 1.2), place(wx, wy + 1.05, wz, yaw), 0x7a6144);
+      this._footprints.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, hx: len / 2 + 1, hz: 2.4, r: -yaw });
+    }
+    // Ladders up to the walk.
+    for (const [lx, lz] of [[330, -226], [330, -178], [366, -226]]) {
+      const y = H(lx, lz);
+      for (const s of [-0.3, 0.3]) {
+        B.add('beam', boxGeo(0.11, P.walkY + 0.5, 0.11, 1.2), place(lx + s, y + (P.walkY + 0.5) / 2, lz, 0, 0.16), 0x7a6144);
+      }
+      for (let i = 0; i < 6; i++) {
+        B.add('beam', boxGeo(0.7, 0.07, 0.07, 1.2), place(lx, y + 0.3 + i * 0.42, lz), 0x8a6c4a);
+      }
+      this._box(lx, y + P.walkY / 2, lz, 0.5, P.walkY / 2, 0.5);
+    }
+    /* ---- Towers ------------------------------------------------------ */
+    for (const t of P.towers) {
+      const y = H(t.x, t.z);
+      const seg = 8;
+      for (let i = 0; i < seg; i++) {
+        const a = (i / seg) * TAU;
+        B.add('beam', cylGeo(0.2, 0.24, t.h, 6, 0.9),
+          place(t.x + Math.cos(a) * t.r, y + t.h / 2, t.z + Math.sin(a) * t.r), 0x6f5940);
+      }
+      this._ringWall(t.x, y + t.h / 2, t.z, t.r, t.h / 2, 0.3, 8);
+      B.add('plank', cylGeo(t.r + 0.7, t.r + 0.7, 0.24, 10, 0.7), place(t.x, y + t.h * 0.66, t.z), 0x8a6f4c);
+      B.add('plank', coneGeo(t.r + 1.0, 1.9, 8, 0.7), place(t.x, y + t.h + 0.95, t.z), 0x6a5540);
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * TAU;
+        B.add('beam', boxGeo(0.24, 0.85, 0.24, 1.1),
+          place(t.x + Math.cos(a) * (t.r + 0.5), y + t.h * 0.66 + 0.55, t.z + Math.sin(a) * (t.r + 0.5)), 0x7a6144);
+      }
+      this._contacts.push(t.x, y, t.z, t.r + 1.2);
+    }
+    // The gate itself: a pair of leaves under a walk, with a banner over it.
+    {
+      const gx = P.gate.x;
+      const gz = P.gate.z;
+      const y = H(gx, gz);
+      B.add('beam', boxGeo(0.9, 5.6, 0.5, 1.0), place(gx, y + 2.8, gz - P.gate.w / 2), 0x5f4c37);
+      B.add('beam', boxGeo(0.9, 5.6, 0.5, 1.0), place(gx, y + 2.8, gz + P.gate.w / 2), 0x5f4c37);
+      B.add('beam', boxGeo(1.1, 0.6, P.gate.w + 1.4, 1.0), place(gx, y + 5.4, gz), 0x5f4c37);
+      B.add('plank', boxGeo(0.35, 4.4, P.gate.w - 0.2, 0.8), place(gx, y + 2.2, gz), 0x7c6242);
+      for (const yy of [1.2, 3.2]) {
+        B.add('iron', boxGeo(0.42, 0.16, P.gate.w - 0.3, 1.6), place(gx, y + yy, gz), 0x3a3128);
+      }
+      this._rbox(gx, y + 2.2, gz, 0.4, 2.2, P.gate.w / 2, 0);
+      B.add('banner', planeGeo(1.6, 2.6, 1.0), place(gx - 0.7, y + 3.9, gz), 0x2f2723);
+      this._addGlow(gx + 1.4, y + 0.1, gz, 5.0, 0x4a2a12);
+      for (const s of [-1, 1]) {
+        B.add('iron', boxGeo(0.22, 0.3, 0.22, 1.6), place(gx + 0.9, y + 3.0, gz + s * (P.gate.w / 2 - 0.3)), 0x2f2924);
+        B.add('ember', boxGeo(0.13, 0.18, 0.13, 2.0), place(gx + 0.9, y + 3.0, gz + s * (P.gate.w / 2 - 0.3)), 0xffc074);
+      }
+    }
+    /* ---- Muster yard ------------------------------------------------- */
+    {
+      const Y = BLACKMARCH_YARD;
+      for (let i = 0; i < 26; i++) {
+        const x = Y.x + (rnd() - 0.5) * Y.hx * 2;
+        const z = Y.z + (rnd() - 0.5) * Y.hz * 2;
+        B.add('rock', boxGeo(0.5 + rnd() * 0.5, 0.14, 0.4 + rnd() * 0.4, 1.2),
+          place(x, H(x, z) + 0.05, z, rnd() * TAU), 0x6a6156);
+      }
+      // Weapon racks, pells and a quintain.
+      for (const [rx, rz, ry] of [[Y.x - 7, Y.z + 6, 0.2], [Y.x + 6, Y.z - 7, 1.4]]) {
+        const y = H(rx, rz);
+        for (const s of [-1, 1]) {
+          B.add('beam', boxGeo(0.16, 1.7, 0.16, 1.1), place(rx + s * 1.4 * Math.cos(ry), y + 0.85, rz + s * 1.4 * Math.sin(ry)), 0x6f5940);
+        }
+        B.add('beam', boxGeo(3.2, 0.12, 0.12, 1.2), place(rx, y + 1.55, rz, ry), 0x7a6144);
+        for (let i = 0; i < 5; i++) {
+          const t = (i / 4 - 0.5) * 2.6;
+          B.add('beam', cylGeo(0.045, 0.05, 2.2, 5, 1.2),
+            place(rx + t * Math.cos(ry), y + 1.1, rz + t * Math.sin(ry), ry, 0.12), 0x8a6c4a);
+          B.add('iron', coneGeo(0.07, 0.28, 5, 1.2), place(rx + t * Math.cos(ry), y + 2.2, rz + t * Math.sin(ry)), 0x4a4038);
+        }
+        this._box(rx, y + 0.85, rz, 1.6, 0.85, 0.3);
+        this._contacts.push(rx, y, rz, 1.8);
+      }
+      for (let i = 0; i < 3; i++) {
+        const px = Y.x - 2 + i * 3.4;
+        const pz = Y.z + 9;
+        const y = H(px, pz);
+        B.add('beam', cylGeo(0.2, 0.26, 2.0, 8, 0.9), place(px, y + 1.0, pz), 0x6a5540);
+        B.add('iron', boxGeo(0.5, 0.5, 0.12, 1.4), place(px, y + 1.7, pz), 0x4a4038);
+        this._box(px, y + 1.0, pz, 0.3, 1.0, 0.3);
+        this._contacts.push(px, y, pz, 0.6);
+      }
+    }
+    /* ---- Beacon ------------------------------------------------------ */
+    {
+      const b = BLACKMARCH_BEACON;
+      const y = H(b.x, b.z);
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * TAU + 0.4;
+        B.add('beam', cylGeo(0.14, 0.2, b.h, 6, 0.9),
+          place(b.x + Math.cos(a) * 0.7, y + b.h / 2, b.z + Math.sin(a) * 0.7, 0, 0.1), 0x6a5540);
+      }
+      B.add('iron', cylGeo(b.basketR, b.basketR * 0.7, 0.9, 10, 1.0, true), place(b.x, y + b.h + 0.4, b.z), 0x3a3128);
+      B.add('ember', cylGeo(b.basketR * 0.85, b.basketR * 0.6, 0.8, 10, 1.4), place(b.x, y + b.h + 0.45, b.z), 0xff9040);
+      this._addGlow(b.x, y + b.h + 1.4, b.z, 9.0, 0x6a3a12);
+      this._box(b.x, y + b.h / 2, b.z, 0.9, b.h / 2, 0.9);
+      this._contacts.push(b.x, y, b.z, 1.6);
+      this._smokeOrigins.push(b.x, y + b.h + 1.0, b.z);
+      const bl = new THREE.PointLight(0xffa63c, 120, 34, 2);
+      bl.position.set(b.x, y + b.h + 1.2, b.z);
+      this.group.add(bl);
+    }
+  }
+
+  /**
+   * Fenwick Cross: the market cross, the stalls, the pillory and the well.
+   *
+   * The thing that makes a market town a market town is that its widest space
+   * is EMPTY and everything faces into it. So the dressing here is deliberately
+   * concentrated round the edges of the place - stalls against the frontages,
+   * the cross and the well in the middle, and nothing between them.
+   */
+  _dressFenwick(B, place, H, rnd) {
+    const C = FENWICK_CROSS;
+    /* ---- The market cross -------------------------------------------- */
+    {
+      const y = H(C.x, C.z);
+      for (let i = 0; i < C.steps; i++) {
+        const k = C.steps - i;
+        B.add('ashlar', boxGeo(k * 1.5, 0.32, k * 1.5, 0.6), place(C.x, y + 0.16 + i * 0.32, C.z), 0xcfc7b2);
+        this._box(C.x, y + 0.16 + i * 0.32, C.z, (k * 1.5) / 2, 0.16, (k * 1.5) / 2);
+      }
+      const baseY = y + C.steps * 0.32;
+      B.add('ashlar', boxGeo(0.9, 0.5, 0.9, 0.7), place(C.x, baseY + 0.25, C.z), 0xc9c1ad);
+      B.add('ashlar', cylGeo(0.26, 0.34, C.h - 1.4, 8, 0.8), place(C.x, baseY + 0.5 + (C.h - 1.4) / 2, C.z), 0xd6cfbc);
+      B.add('ashlar', boxGeo(0.62, 0.62, 0.62, 0.9), place(C.x, baseY + C.h - 0.7, C.z), 0xc9c1ad);
+      B.add('ashlar', boxGeo(1.5, 0.22, 0.34, 1.0), place(C.x, baseY + C.h - 0.2, C.z), 0xd6cfbc);
+      B.add('ashlar', boxGeo(0.34, 1.1, 0.34, 1.0), place(C.x, baseY + C.h + 0.2, C.z), 0xd6cfbc);
+      this._box(C.x, baseY + C.h / 2, C.z, 0.4, C.h / 2, 0.4);
+      this._contacts.push(C.x, y, C.z, 3.6);
+      this.minimapShapes.push({
+        kind: 'rect', x: C.x, z: C.z, w: 6, d: 6, rotation: 0,
+        fill: 'rgba(160,132,96,0.5)', stroke: 'rgba(240,216,168,0.95)',
+      });
+    }
+    /* ---- Stalls: a trestle, an awning and goods on the board --------- */
+    const stalls = [
+      [186, 336, 0.1], [186, 342, 0.1], [186, 348, 0.1],
+      [206, 336, Math.PI], [206, 342, Math.PI], [206, 348, Math.PI],
+      [190, 330, -Math.PI / 2], [200, 330, -Math.PI / 2],
+      [192, 356, Math.PI / 2], [202, 356, Math.PI / 2],
+    ];
+    for (const [sx, sz, syaw] of stalls) {
+      const y = H(sx, sz);
+      B.add('plank', boxGeo(2.6, 0.1, 1.1, 0.9), place(sx, y + 0.86, sz, syaw), 0x9a7a50);
+      for (const s of [-1, 1]) {
+        B.add('beam', boxGeo(0.12, 0.84, 0.9, 1.2), place(sx + s * 1.1 * Math.cos(syaw), y + 0.42, sz - s * 1.1 * Math.sin(syaw), syaw), 0x7a6144);
+        B.add('beam', cylGeo(0.07, 0.08, 2.3, 5, 1.1), place(sx + s * 1.2 * Math.cos(syaw), y + 1.15, sz - s * 1.2 * Math.sin(syaw), syaw), 0x7a6144);
+      }
+      B.add('canopy', boxGeo(3.0, 0.07, 1.7, 1.4), place(sx, y + 2.3, sz, syaw, 0.14),
+        [0xb02a33, 0x2a5aa8, 0xd7a63f, 0x2f7a4d][(rnd() * 4) | 0]);
+      for (let i = 0; i < 5; i++) {
+        const t = (i / 4 - 0.5) * 2.1;
+        B.add('hay', boxGeo(0.34, 0.24, 0.34, 1.6),
+          place(sx + t * Math.cos(syaw), y + 1.02, sz - t * Math.sin(syaw), rnd() * TAU), 0xcbb277);
+      }
+      this._box(sx, y + 0.5, sz, 1.4, 0.5, 0.7);
+      this._contacts.push(sx, y, sz, 2.0);
+    }
+    /* ---- Well, pillory, stocks, and a heap of fleeces ---------------- */
+    {
+      const wx = 202;
+      const wz = 334;
+      const y = H(wx, wz);
+      B.add('ashlar', cylGeo(0.95, 1.05, 1.0, 12, 0.7), place(wx, y + 0.5, wz), 0xc9c1ad);
+      for (const s of [-1, 1]) {
+        B.add('beam', boxGeo(0.15, 2.3, 0.15, 1.1), place(wx + s * 0.9, y + 1.65, wz), 0x6f5940);
+      }
+      B.add('slate', boxGeo(2.5, 0.14, 1.4, 0.8), place(wx, y + 2.9, wz, 0, 0.2), 0x9aa4b0);
+      B.add('beam', cylGeo(0.14, 0.14, 1.8, 8, 0.9), place(wx, y + 2.5, wz, 0, Math.PI / 2), 0x7a6144);
+      this._box(wx, y + 0.5, wz, 1.0, 0.5, 1.0);
+      this._contacts.push(wx, y, wz, 1.9);
+    }
+    {
+      const px = 190;
+      const pz = 352;
+      const y = H(px, pz);
+      B.add('beam', cylGeo(0.16, 0.2, 2.6, 8, 0.9), place(px, y + 1.3, pz), 0x6f5940);
+      B.add('beam', boxGeo(1.3, 0.22, 0.2, 1.1), place(px, y + 2.2, pz, 0.3), 0x7a6144);
+      B.add('iron', boxGeo(0.2, 0.2, 0.16, 1.6), place(px, y + 2.05, pz, 0.3), 0x3a3128);
+      this._box(px, y + 1.3, pz, 0.3, 1.3, 0.3);
+      this._contacts.push(px, y, pz, 0.8);
+    }
+    for (let i = 0; i < 9; i++) {
+      const x = 178 + rnd() * 6;
+      const z = 344 + (rnd() - 0.5) * 10;
+      const y = H(x, z);
+      B.add('hay', boxGeo(1.0, 0.7, 0.8, 1.4), place(x, y + 0.35 + (i % 3) * 0.6, z, rnd() * TAU), 0xd8cdb0);
+      this._contacts.push(x, y, z, 1.0);
+    }
+    // Carts drawn up on the market fringe.
+    for (const [cx, cz, cyaw] of [[212, 352, 0.6], [181, 348, 2.2], [192, 357, 1.1]]) {
+      const y = H(cx, cz);
+      B.add('plank', boxGeo(2.6, 0.7, 1.5, 0.8), place(cx, y + 1.0, cz, cyaw), 0x8f7550);
+      B.add('beam', boxGeo(3.4, 0.14, 0.14, 1.2), place(cx, y + 0.75, cz, cyaw), 0x6f5940);
+      for (const s of [-1, 1]) {
+        const wheel = new THREE.TorusGeometry(0.62, 0.1, 5, 14);
+        MedievalWorld._uvScale(wheel, 0.6);
+        B.add('plank', wheel, place(cx - Math.sin(cyaw) * s * 0.86, y + 0.62, cz - Math.cos(cyaw) * s * 0.86, cyaw), 0x7c6242);
+      }
+      this._box(cx, y + 0.8, cz, 1.5, 0.8, 1.0);
+      this._contacts.push(cx, y, cz, 2.2);
+    }
+    // Bunting between the frontages, because a market is an event.
+    for (const [ax, az, bx2, bz2] of [[186, 332, 206, 332], [186, 356, 206, 356]]) {
+      const n = 10;
+      for (let i = 0; i < n; i++) {
+        const t = (i + 0.5) / n;
+        const x = ax + (bx2 - ax) * t;
+        const z = az + (bz2 - az) * t;
+        const sag = Math.sin(t * Math.PI) * 0.55;
+        B.add('banner', planeGeo(0.44, 0.5, 1.0), place(x, H(x, z) + 5.1 - sag, z, 0, 0),
+          HERALD[i % HERALD.length]);
+      }
+    }
+  }
+
+  /* ================================================================== */
+  /* Camps on the far bank                                               */
+  /* ================================================================== */
+
+  /**
+   * Three camps, one district each.
+   *
+   * The layout is pure data in `medieval/Camps.js`; this is the part that
+   * needs a renderer. Everything is merged per camp, so a camp of forty
+   * pieces is four draw calls with a fifteen-metre bounding sphere - which
+   * matters more here than anywhere else in the world, because a camp is a
+   * small object a long way from everything else and the frustum will reject
+   * it almost always.
+   */
+  _buildCamps() {
+    for (const camp of CAMPS) {
+      const B = new GeoBatch();
+      const rnd = mulberry32(0x3ca000 + camp.x * 31 + camp.z);
+      const H = (x, z) => this._height(x, z);
+      const c = Math.cos(camp.yaw);
+      const s = Math.sin(camp.yaw);
+      /** Camp-local (dx, dz) to world. */
+      const W = (dx, dz) => [camp.x + dx * c - dz * s, camp.z + dx * s + dz * c];
+      const place = (x, y, z, ry = 0, rz = 0) => {
+        _obj.position.set(x, y, z);
+        _obj.rotation.set(0, ry, rz);
+        _obj.scale.set(1, 1, 1);
+        return _obj;
+      };
+
+      for (const t of camp.tents) {
+        const [x, z] = W(t.dx, t.dz);
+        const y = H(x, z);
+        const yaw = camp.yaw + (t.yaw || 0);
+        if (t.kind === 'bell') this._bellTent(B, place, x, y, z, yaw, t);
+        else if (t.kind === 'aframe') this._aframeTent(B, place, x, y, z, yaw, t);
+        else if (t.kind === 'leanto') this._leanTo(B, place, x, y, z, yaw, t);
+        else this._awning(B, place, x, y, z, yaw, t);
+      }
+      for (const f of camp.fires) {
+        const [x, z] = W(f.dx, f.dz);
+        this._firepit(B, place, x, H(x, z), z, camp.yaw + (f.yaw || 0), f, rnd);
+      }
+      for (const p of camp.props) {
+        const [x, z] = W(p.dx, p.dz);
+        this._campProp(B, place, x, H(x, z), z, camp.yaw + (p.yaw || 0), p, rnd);
+      }
+      B.build(this._mats, this.group, { ao: this._heightFn });
+      this.minimapShapes.push({
+        kind: 'rect', x: camp.x, z: camp.z, w: camp.radius, d: camp.radius,
+        rotation: camp.yaw, fill: 'rgba(120,96,64,0.35)', stroke: 'rgba(226,198,152,0.7)',
+      });
+    }
+  }
+
+  /** A conical bell tent: a ring of guys, a pole and a doorway flap. */
+  _bellTent(B, place, x, y, z, yaw, t) {
+    const r = t.r ?? 2.4;
+    const h = t.h ?? 3.0;
+    B.add('canopy', coneGeo(r, h, 14, 0.7), place(x, y + h / 2, z, yaw), t.hex ?? 0xd8cbae);
+    B.add('canopy', cylGeo(r * 0.98, r, 0.55, 14, 0.9), place(x, y + 0.27, z, yaw), shadeHex(t.hex ?? 0xd8cbae, 0.82));
+    B.add('beam', cylGeo(0.05, 0.06, h + 0.6, 5, 1.2), place(x, y + (h + 0.6) / 2, z), 0x7a6144);
+    // Guy ropes and pegs.
+    for (let i = 0; i < 8; i++) {
+      const a = yaw + (i / 8) * TAU;
+      const px = x + Math.cos(a) * (r + 1.0);
+      const pz = z + Math.sin(a) * (r + 1.0);
+      B.add('beam', cylGeo(0.02, 0.02, 1.9, 4, 2.0), place((x + px) / 2 + Math.cos(a) * 0.1, y + h * 0.42, (z + pz) / 2 + Math.sin(a) * 0.1, -a + Math.PI / 2, 0.85), 0xbdae90);
+      B.add('beam', cylGeo(0.04, 0.04, 0.34, 4, 1.4), place(px, y + 0.1, pz, 0, 0.2), 0x6f5940);
+    }
+    // The door flap, thrown back.
+    B.add('canopy', planeGeo(0.9, 1.5, 1.2), place(x + Math.sin(yaw) * (r + 0.1), y + 0.75, z + Math.cos(yaw) * (r + 0.1), yaw, 0.3), shadeHex(t.hex ?? 0xd8cbae, 0.9));
+    this._box(x, y + 0.9, z, r * 0.8, 0.9, r * 0.8);
+    this._contacts.push(x, y, z, r + 0.7);
+  }
+
+  /** An A-frame over a ridge rope, pegged out both sides. */
+  _aframeTent(B, place, x, y, z, yaw, t) {
+    const w = t.w ?? 2.2;
+    const d = t.d ?? 4.0;
+    const h = t.h ?? 2.0;
+    const slope = Math.atan2(h, w / 2);
+    const len = Math.hypot(w / 2, h) + 0.16;
+    for (const s of [-1, 1]) {
+      B.add('canopy', boxGeo(len, 0.06, d, 1.1), place(x + s * (w / 4) * Math.cos(yaw), y + h / 2, z - s * (w / 4) * Math.sin(yaw), yaw, s * (Math.PI / 2 - slope)), t.hex ?? 0xc9bda4);
+    }
+    // Gable at the back, open at the front.
+    const sh = new THREE.Shape();
+    sh.moveTo(-w / 2, 0);
+    sh.lineTo(w / 2, 0);
+    sh.lineTo(0, h);
+    sh.closePath();
+    const gg = new THREE.ExtrudeGeometry(sh, { depth: 0.05, bevelEnabled: false });
+    MedievalWorld._uvScale(gg, 0.8);
+    B.add('canopy', gg, place(x - Math.sin(yaw) * (d / 2), y, z - Math.cos(yaw) * (d / 2), yaw), shadeHex(t.hex ?? 0xc9bda4, 0.86));
+    for (const s of [-1, 1]) {
+      B.add('beam', cylGeo(0.04, 0.05, h + 0.3, 4, 1.4), place(x - Math.sin(yaw) * s * (d / 2 + 0.15), y + (h + 0.3) / 2, z - Math.cos(yaw) * s * (d / 2 + 0.15)), 0x7a6144);
+    }
+    B.add('beam', cylGeo(0.025, 0.025, d + 0.7, 4, 2.0), place(x, y + h + 0.06, z, yaw + Math.PI / 2, 0), 0xbdae90);
+    this._box(x, y + h * 0.4, z, w / 2, h * 0.4, d / 2);
+    this._contacts.push(x, y, z, Math.max(w, d) * 0.6);
+  }
+
+  /** A brushwood lean-to: three poles, a sloped hide and a bracken bed. */
+  _leanTo(B, place, x, y, z, yaw, t) {
+    const w = t.w ?? 4.0;
+    const d = t.d ?? 2.6;
+    const h = t.h ?? 1.9;
+    B.add('canopy', boxGeo(w, 0.07, Math.hypot(d, h) + 0.2, 1.1), place(x, y + h / 2, z, yaw, 0), shadeHex(t.hex ?? 0x8f7a56, 1.0));
+    for (const s of [-1, 1]) {
+      B.add('beam', cylGeo(0.06, 0.08, h + 0.2, 5, 1.1), place(x + s * (w / 2 - 0.2) * Math.cos(yaw), y + (h + 0.2) / 2, z - s * (w / 2 - 0.2) * Math.sin(yaw), 0, 0.1), 0x7a6144);
+    }
+    B.add('beam', cylGeo(0.05, 0.05, w, 5, 1.2), place(x, y + h + 0.06, z, yaw + Math.PI / 2), 0x7a6144);
+    // The back wall, woven from brush.
+    for (let i = 0; i < 7; i++) {
+      const t2 = (i / 6 - 0.5) * (w - 0.3);
+      B.add('leaf', boxGeo(0.42, h * 0.9, 0.3, 4.0), place(x + t2 * Math.cos(yaw) - Math.sin(yaw) * (d / 2), y + h * 0.45, z - t2 * Math.sin(yaw) - Math.cos(yaw) * (d / 2), yaw), 0x5f6b42);
+    }
+    B.add('hay', boxGeo(w - 0.8, 0.3, d - 0.7, 1.4), place(x, y + 0.15, z, yaw), 0xb8a476);
+    this._box(x, y + h * 0.35, z, w / 2, h * 0.35, d / 2);
+    this._contacts.push(x, y, z, Math.max(w, d) * 0.6);
+  }
+
+  /** A flat awning on four poles - a merchant's shade over his goods. */
+  _awning(B, place, x, y, z, yaw, t) {
+    const w = t.w ?? 5.0;
+    const d = t.d ?? 3.2;
+    const h = t.h ?? 2.4;
+    B.add('canopy', boxGeo(w, 0.06, d, 1.2), place(x, y + h, z, yaw, 0.09), t.hex ?? 0xc2a878);
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const px = x + (sx * (w / 2 - 0.2) * Math.cos(yaw) + sz * (d / 2 - 0.2) * Math.sin(yaw));
+        const pz = z + (-sx * (w / 2 - 0.2) * Math.sin(yaw) + sz * (d / 2 - 0.2) * Math.cos(yaw));
+        B.add('beam', cylGeo(0.06, 0.07, h, 5, 1.1), place(px, y + h / 2, pz), 0x7a6144);
+      }
+    }
+    this._contacts.push(x, y, z, Math.max(w, d) * 0.6);
+  }
+
+  /**
+   * A banked firepit, and everything that hangs over it.
+   *
+   * The bank is the detail that matters: a ring of turves and stones raised
+   * about 20 cm, with the embers set BELOW the surrounding ground rather than
+   * on it. A fire drawn as a glowing disc on grass reads as a decal; a fire
+   * drawn as a hole with a rim reads as a fire, and it costs nine boxes.
+   */
+  _firepit(B, place, x, y, z, yaw, f, rnd) {
+    const r = f.r ?? 1.15;
+    for (let i = 0; i < 11; i++) {
+      const a = yaw + (i / 11) * TAU + rnd() * 0.2;
+      const px = x + Math.cos(a) * r;
+      const pz = z + Math.sin(a) * r;
+      B.add('rock', boxGeo(0.42 + rnd() * 0.2, 0.3, 0.34 + rnd() * 0.18, 1.1),
+        place(px, y + 0.1, pz, a, (rnd() - 0.5) * 0.3), 0x7a7268);
+    }
+    B.add('rock', cylGeo(r * 0.86, r * 0.9, 0.22, 12, 1.0), place(x, y - 0.06, z), 0x2a2622);
+    B.add('ember', cylGeo(r * 0.7, r * 0.55, 0.26, 12, 1.4), place(x, y + 0.02, z), 0xff8030);
+    // Charred logs laid in.
+    for (let i = 0; i < 4; i++) {
+      const a = yaw + i * 1.31;
+      B.add('beam', cylGeo(0.09, 0.11, r * 1.4, 5, 1.2),
+        place(x + Math.cos(a) * 0.12, y + 0.16, z + Math.sin(a) * 0.12, -a + Math.PI / 2, 0.06), 0x2e261f);
+    }
+    this._addGlow(x, y + 0.06, z, 7.0, 0x7a4416);
+    if (f.smoke !== false) this._smokeOrigins.push(x, y + 0.6, z);
+    const fl = new THREE.PointLight(0xff9436, 46, 16, 2);
+    fl.position.set(x, y + 0.8, z);
+    this.group.add(fl);
+    this._contacts.push(x, y, z, r + 0.8);
+
+    if (f.spit) {
+      // Two forked uprights, a turning bar, and a carcass on it.
+      for (const s of [-1, 1]) {
+        const px = x + Math.cos(yaw + Math.PI / 2) * s * (r + 0.55);
+        const pz = z + Math.sin(yaw + Math.PI / 2) * s * (r + 0.55);
+        B.add('beam', cylGeo(0.06, 0.08, 1.5, 5, 1.1), place(px, y + 0.75, pz), 0x6f5940);
+        for (const ss of [-1, 1]) {
+          B.add('beam', cylGeo(0.035, 0.04, 0.42, 4, 1.4),
+            place(px, y + 1.42, pz, 0, ss * 0.5), 0x6f5940);
+        }
+      }
+      B.add('iron', cylGeo(0.035, 0.035, (r + 0.55) * 2 + 0.8, 6, 1.4),
+        place(x, y + 1.5, z, yaw + Math.PI / 2, 0), 0x3a3128);
+      const carcass = new THREE.SphereGeometry(0.34, 10, 7);
+      carcass.scale(1.0, 0.85, 2.1);
+      MedievalWorld._uvScale(carcass, 0.9);
+      B.add('hay', carcass, place(x, y + 1.5, z, yaw + Math.PI / 2), 0x9c6a42);
+      B.add('iron', cylGeo(0.05, 0.05, 0.34, 5, 1.4), place(x + Math.cos(yaw + Math.PI / 2) * (r + 0.9), y + 1.5, z + Math.sin(yaw + Math.PI / 2) * (r + 0.9), yaw, Math.PI / 2), 0x3a3128);
+    }
+    if (f.pot) {
+      // A tripod with a cauldron slung under it.
+      for (let i = 0; i < 3; i++) {
+        const a = yaw + (i / 3) * TAU;
+        B.add('beam', cylGeo(0.045, 0.055, 2.1, 5, 1.1),
+          place(x + Math.cos(a) * (r * 0.75), y + 1.0, z + Math.sin(a) * (r * 0.75), -a + Math.PI / 2, 0.32), 0x6f5940);
+      }
+      const pot = new THREE.SphereGeometry(0.4, 12, 8, 0, TAU, 0, Math.PI * 0.62);
+      MedievalWorld._uvScale(pot, 1.0);
+      B.add('iron', pot, place(x, y + 0.95, z, 0, Math.PI), 0x2f2924);
+      B.add('iron', cylGeo(0.02, 0.02, 0.85, 4, 2.0), place(x, y + 1.45, z), 0x2f2924);
+    }
+    for (let i = 0; i < (f.logs ?? 3); i++) {
+      const a = yaw + 0.7 + (i / (f.logs ?? 3)) * TAU;
+      const px = x + Math.cos(a) * (r + 1.5);
+      const pz = z + Math.sin(a) * (r + 1.5);
+      B.add('beam', cylGeo(0.24, 0.27, 1.5, 8, 1.0), place(px, this._height(px, pz) + 0.24, pz, -a, Math.PI / 2), 0x6a5741);
+      this._contacts.push(px, this._height(px, pz), pz, 0.9);
+    }
+  }
+
+  /** One camp prop. The vocabulary that makes three camps read as three trades. */
+  _campProp(B, place, x, y, z, yaw, p, rnd) {
+    const box = (key, w, h, d, dy, tint, rz = 0) =>
+      B.add(key, boxGeo(w, h, d, 1.0), place(x, y + dy, z, yaw, rz), tint);
+    switch (p.kind) {
+      case 'bedroll':
+        B.add('hay', boxGeo(0.78, 0.16, 1.95, 1.3), place(x, y + 0.08, z, yaw), 0xb8a476);
+        B.add('canopy', boxGeo(0.72, 0.13, 1.75, 1.4), place(x, y + 0.22, z, yaw), 0xa89a7c);
+        B.add('canopy', boxGeo(0.5, 0.16, 0.4, 1.6), place(x, y + 0.3, z - 0.8, yaw), 0xc9bda4);
+        this._contacts.push(x, y, z, 1.2);
+        break;
+      case 'woodpile': {
+        for (let i = 0; i < 16; i++) {
+          const row = (i / 4) | 0;
+          B.add('beam', cylGeo(0.11, 0.12, 1.45, 6, 1.1),
+            place(x + ((i % 4) - 1.5) * 0.26 * Math.cos(yaw), y + 0.13 + row * 0.25, z - ((i % 4) - 1.5) * 0.26 * Math.sin(yaw), yaw + Math.PI / 2, Math.PI / 2), 0x8a6c4a);
+        }
+        this._box(x, y + 0.45, z, 0.75, 0.45, 0.62);
+        this._contacts.push(x, y, z, 1.1);
+        break;
+      }
+      case 'crate':
+        box('plank', 0.9, p.h ?? 0.72, 0.8, (p.h ?? 0.72) / 2, 0x8f7550);
+        B.add('beam', boxGeo(0.95, 0.08, 0.85, 1.4), place(x, y + (p.h ?? 0.72), z, yaw), 0x6f5940);
+        this._box(x, y + 0.36, z, 0.48, 0.36, 0.42);
+        this._contacts.push(x, y, z, 0.72);
+        break;
+      case 'barrel':
+        B.add('plank', cylGeo(0.36, 0.42, 0.92, 12, 1.0), place(x, y + 0.46, z, yaw), 0x8f6f47);
+        for (const hy of [0.2, 0.72]) {
+          B.add('iron', cylGeo(0.44, 0.44, 0.07, 12, 1.4), place(x, y + hy, z), 0x3a3128);
+        }
+        this._box(x, y + 0.46, z, 0.42, 0.46, 0.42);
+        this._contacts.push(x, y, z, 0.62);
+        break;
+      case 'sacks':
+        for (let i = 0; i < 5; i++) {
+          B.add('canopy', boxGeo(0.62, 0.5, 0.44, 1.4),
+            place(x + (i % 3) * 0.5 - 0.5, y + 0.25 + ((i / 3) | 0) * 0.46, z + ((i % 2) * 0.3), yaw + i * 0.4), 0xd0c2a0);
+        }
+        this._contacts.push(x, y, z, 1.1);
+        break;
+      case 'cart': {
+        B.add('plank', boxGeo(3.0, 0.7, 1.6, 0.8), place(x, y + 1.05, z, yaw), 0x8f7550);
+        for (const s of [-1, 1]) {
+          B.add('plank', boxGeo(3.0, 0.65, 0.1, 1.0), place(x + Math.sin(yaw) * s * 0.78, y + 1.7, z + Math.cos(yaw) * s * 0.78, yaw), 0x7c6242);
+        }
+        B.add('beam', boxGeo(3.8, 0.15, 0.15, 1.2), place(x, y + 0.72, z, yaw), 0x6f5940);
+        for (const s of [-1, 1]) {
+          const wheel = new THREE.TorusGeometry(0.68, 0.1, 6, 16);
+          MedievalWorld._uvScale(wheel, 0.6);
+          B.add('plank', wheel, place(x + Math.sin(yaw) * s * 0.92, y + 0.68, z + Math.cos(yaw) * s * 0.92, yaw), 0x7c6242);
+          for (let k = 0; k < 6; k++) {
+            B.add('beam', boxGeo(0.07, 1.3, 0.07, 1.4), place(x + Math.sin(yaw) * s * 0.92, y + 0.68, z + Math.cos(yaw) * s * 0.92, yaw, (k / 6) * Math.PI), 0x7c6242);
+          }
+        }
+        // Shafts, propped on the ground.
+        for (const s of [-1, 1]) {
+          B.add('beam', cylGeo(0.06, 0.08, 2.6, 5, 1.1),
+            place(x - Math.sin(yaw) * s * 0.5 + Math.cos(yaw) * 2.4, y + 0.55, z - Math.cos(yaw) * s * 0.5 - Math.sin(yaw) * 2.4, yaw + Math.PI / 2, 0.28), 0x6f5940);
+        }
+        this._box(x, y + 1.0, z, 1.7, 1.0, 1.1);
+        this._contacts.push(x, y, z, 2.4);
+        break;
+      }
+      case 'ox': {
+        // A tethered beast, blocked out. Not an NPC - the population pass owns
+        // those - just the silhouette that makes a caravan a caravan.
+        const body = new THREE.SphereGeometry(0.8, 10, 7);
+        body.scale(0.75, 0.85, 1.5);
+        MedievalWorld._uvScale(body, 0.8);
+        B.add('hay', body, place(x, y + 1.15, z, yaw), 0x6f5b44);
+        B.add('hay', boxGeo(0.5, 0.44, 0.66, 1.2), place(x + Math.cos(yaw) * 1.3, y + 1.28, z - Math.sin(yaw) * 1.3, yaw), 0x63513c);
+        for (const sx of [-1, 1]) {
+          for (const sz of [-1, 1]) {
+            B.add('hay', cylGeo(0.11, 0.13, 1.0, 6, 1.0),
+              place(x + Math.sin(yaw) * sx * 0.42 + Math.cos(yaw) * sz * 0.8, y + 0.5, z + Math.cos(yaw) * sx * 0.42 - Math.sin(yaw) * sz * 0.8), 0x5c4b38);
+          }
+        }
+        this._box(x, y + 1.0, z, 0.9, 1.0, 1.5);
+        this._contacts.push(x, y, z, 1.7);
+        break;
+      }
+      case 'tether':
+        B.add('beam', cylGeo(0.09, 0.12, 1.5, 6, 1.0), place(x, y + 0.75, z, 0, 0.1), 0x6f5940);
+        B.add('beam', cylGeo(0.02, 0.02, 2.6, 4, 2.0), place(x + 1.3, y + 0.55, z, yaw, 1.35), 0xbdae90);
+        this._contacts.push(x, y, z, 0.5);
+        break;
+      case 'laundry': {
+        const w = p.w ?? 6.0;
+        for (const s of [-1, 1]) {
+          const px = x + Math.cos(yaw) * s * (w / 2);
+          const pz = z - Math.sin(yaw) * s * (w / 2);
+          B.add('beam', cylGeo(0.06, 0.08, 2.2, 5, 1.1), place(px, this._height(px, pz) + 1.1, pz), 0x7a6144);
+        }
+        B.add('beam', cylGeo(0.02, 0.02, w, 4, 2.0), place(x, y + 2.05, z, yaw + Math.PI / 2), 0xbdae90);
+        for (let i = 0; i < 6; i++) {
+          const t = (i / 5 - 0.5) * (w - 1.0);
+          B.add('canopy', planeGeo(0.7, 0.95, 1.2),
+            place(x + Math.cos(yaw) * t, y + 1.55, z - Math.sin(yaw) * t, yaw + Math.PI / 2),
+            [0xe6e0d2, 0xc9bda4, 0xd8cbae, 0xb9c4d0][i % 4]);
+        }
+        break;
+      }
+      case 'cross': {
+        const h = p.h ?? 3.4;
+        B.add('rock', boxGeo(1.0, 0.4, 1.0, 0.8), place(x, y + 0.2, z, yaw), 0x9a8f7c);
+        B.add('ashlar', cylGeo(0.14, 0.19, h, 8, 0.9), place(x, y + 0.4 + h / 2, z), 0xc9c1ad);
+        B.add('ashlar', boxGeo(1.05, 0.2, 0.2, 1.2), place(x, y + 0.4 + h * 0.82, z, yaw), 0xc9c1ad);
+        this._box(x, y + h / 2, z, 0.3, h / 2, 0.3);
+        this._contacts.push(x, y, z, 0.9);
+        break;
+      }
+      case 'staffs':
+        for (let i = 0; i < 5; i++) {
+          B.add('beam', cylGeo(0.035, 0.045, 1.85, 5, 1.2),
+            place(x + (i - 2) * 0.1, y + 0.9, z, yaw + i * 0.3, 0.16 + i * 0.03), 0x8a6c4a);
+        }
+        this._contacts.push(x, y, z, 0.5);
+        break;
+      case 'basket':
+        B.add('hay', cylGeo(0.3, 0.24, 0.44, 10, 1.2), place(x, y + 0.22, z, yaw), 0xcbb277);
+        this._contacts.push(x, y, z, 0.4);
+        break;
+      case 'waterpot':
+        B.add('rock', cylGeo(0.18, 0.26, 0.52, 10, 1.0), place(x, y + 0.26, z, yaw), 0x8f8474);
+        this._contacts.push(x, y, z, 0.35);
+        break;
+      case 'stool':
+        B.add('plank', cylGeo(0.21, 0.18, 0.44, 8, 1.0), place(x, y + 0.22, z, yaw), 0x8f6f47);
+        this._contacts.push(x, y, z, 0.32);
+        break;
+      case 'lantern':
+        B.add('beam', cylGeo(0.05, 0.07, 1.9, 5, 1.1), place(x, y + 0.95, z), 0x7a6144);
+        B.add('iron', boxGeo(0.24, 0.32, 0.24, 1.6), place(x, y + 1.9, z, yaw), 0x2f2924);
+        B.add('ember', boxGeo(0.15, 0.2, 0.15, 2.0), place(x, y + 1.9, z, yaw), 0xffc074);
+        this._addGlow(x, y + 0.05, z, 4.2, 0x4a2a12);
+        this._contacts.push(x, y, z, 0.3);
+        break;
+      case 'banner': {
+        B.add('beam', cylGeo(0.06, 0.08, 3.4, 5, 1.1), place(x, y + 1.7, z), 0x7a6144);
+        B.add('banner', planeGeo(1.1, 1.7, 1.0), place(x + 0.55 * Math.cos(yaw), y + 2.5, z - 0.55 * Math.sin(yaw), yaw), p.hex ?? 0xb02a33);
+        this._contacts.push(x, y, z, 0.4);
+        break;
+      }
+      case 'peltrack': {
+        const w = p.w ?? 4.2;
+        for (const s of [-1, 1]) {
+          const px = x + Math.cos(yaw) * s * (w / 2);
+          const pz = z - Math.sin(yaw) * s * (w / 2);
+          B.add('beam', cylGeo(0.07, 0.09, 2.0, 5, 1.1), place(px, this._height(px, pz) + 1.0, pz), 0x7a6144);
+        }
+        B.add('beam', cylGeo(0.05, 0.05, w, 5, 1.2), place(x, y + 1.9, z, yaw + Math.PI / 2), 0x7a6144);
+        for (let i = 0; i < 4; i++) {
+          const t = (i / 3 - 0.5) * (w - 1.2);
+          B.add('hay', planeGeo(0.85, 1.25, 1.2), place(x + Math.cos(yaw) * t, y + 1.25, z - Math.sin(yaw) * t, yaw + Math.PI / 2),
+            [0x8a6a44, 0x6f5638, 0x9c7a4e, 0x7b5f3e][i % 4]);
+        }
+        break;
+      }
+      case 'gralloch': {
+        const h = p.h ?? 2.8;
+        for (const s of [-1, 1]) {
+          B.add('beam', cylGeo(0.08, 0.1, h, 6, 1.0), place(x + Math.cos(yaw) * s * 0.9, y + h / 2, z - Math.sin(yaw) * s * 0.9, 0, s * 0.14), 0x6f5940);
+        }
+        B.add('beam', cylGeo(0.06, 0.06, 2.2, 5, 1.2), place(x, y + h - 0.1, z, yaw + Math.PI / 2), 0x7a6144);
+        const deer = new THREE.SphereGeometry(0.34, 10, 7);
+        deer.scale(0.72, 1.5, 0.72);
+        MedievalWorld._uvScale(deer, 0.9);
+        B.add('hay', deer, place(x, y + h - 0.85, z, yaw), 0x7d5b3a);
+        this._box(x, y + h / 2, z, 0.9, h / 2, 0.5);
+        this._contacts.push(x, y, z, 1.2);
+        break;
+      }
+      case 'traps':
+        for (let i = 0; i < 5; i++) {
+          B.add('iron', cylGeo(0.24, 0.24, 0.06, 10, 1.4), place(x + (i % 3) * 0.34, y + 0.06 + ((i / 3) | 0) * 0.09, z + (i % 2) * 0.28, yaw + i), 0x3a3128);
+        }
+        this._contacts.push(x, y, z, 0.7);
+        break;
+      case 'antlers':
+        B.add('beam', cylGeo(0.07, 0.09, 1.6, 5, 1.1), place(x, y + 0.8, z), 0x7a6144);
+        for (const s of [-1, 1]) {
+          for (let i = 0; i < 3; i++) {
+            B.add('rock', cylGeo(0.03, 0.045, 0.55, 4, 1.4),
+              place(x + s * (0.16 + i * 0.12), y + 1.5 + i * 0.14, z, yaw, s * (0.4 + i * 0.25)), 0xcfc4ac);
+          }
+        }
+        this._contacts.push(x, y, z, 0.4);
+        break;
+      case 'spears':
+        for (let i = 0; i < 4; i++) {
+          B.add('beam', cylGeo(0.03, 0.04, 2.3, 5, 1.2), place(x + (i - 1.5) * 0.12, y + 1.12, z, yaw + i * 0.25, 0.14), 0x8a6c4a);
+          B.add('iron', coneGeo(0.055, 0.3, 5, 1.2), place(x + (i - 1.5) * 0.12 + Math.sin(0.14) * 1.15, y + 2.28, z, yaw), 0x4a4038);
+        }
+        this._contacts.push(x, y, z, 0.5);
+        break;
+      default:
+        box('plank', 0.6, 0.5, 0.5, 0.25, 0x8f7550);
+        this._contacts.push(x, y, z, 0.5);
+        break;
+    }
+    void rnd;
+  }
+
+  /* ================================================================== */
+  /* Crossings                                                           */
+  /* ================================================================== */
+
+  /**
+   * Every bridge except the vale's own.
+   *
+   * The stone bridge at x = 26 stays where it is, hand-built inside
+   * `_buildRiverside` against a composed frame; this builds the three the ring
+   * needed. The reasoning that decided WHICH ones lives in `RoadNet.js` -
+   * fords are wadeable and bridges are for the crossings that have to work in
+   * February - and the abutment positions come from there too, because "the
+   * bridge lands on dry ground" is a claim about the heightfield and a test
+   * can check it.
+   */
+  _buildCrossings(B) {
+    for (const c of CROSSINGS) {
+      if (c.kind !== 'bridge') continue;
+      if (c.id === 'aldern-bridge') continue;    // built by hand in _buildRiverside
+      if (c.style === 'stone') this._stoneBridge(B, c);
+      else this._timberBridge(B, c);
+    }
+  }
+
+  /** A two-arch masonry bridge with a mid-stream cutwater and a toll house. */
+  _stoneBridge(B, c) {
+    const place = (x, y, z, ry = 0) => {
+      _obj.position.set(x, y, z);
+      _obj.rotation.set(0, ry, 0);
+      _obj.scale.set(1, 1, 1);
+      return _obj;
+    };
+    const stone = 0xc7bfac;
+    const bx = c.x;
+    const z0 = c.from[1];
+    const z1 = c.to[1];
+    const rz = (z0 + z1) / 2;
+    const deckY = c.deckY;
+    const bw = c.width;
+    const springY = deckY - 2.3;
+
+    this._arch(B, 'rubble', bx, z0 + 1.2, rz - 1.3, springY, 1.8, bw, 0.8, stone);
+    this._arch(B, 'rubble', bx, rz + 1.3, z1 - 1.2, springY, 1.8, bw, 0.8, stone);
+    B.add('rubble', boxGeo(bw, 4.6, 2.6, 0.5), place(bx, springY - 1.0, rz), stone);
+    for (const s of [-1, 1]) {
+      const g = new THREE.CylinderGeometry(1.2, 1.4, 4.6, 3);
+      MedievalWorld._uvScale(g, 0.5);
+      B.add('rubble', g, place(bx, springY - 1.0, rz + s * 2.0, s > 0 ? 0 : Math.PI), stone);
+    }
+    this._box(bx, springY - 1.0, rz, bw / 2, 2.3, 2.0);
+    for (const s of [-1, 1]) {
+      const az = rz + s * ((z1 - z0) / 2 + 1.6);
+      B.add('rubble', boxGeo(bw + 2.2, 5.4, 4.0, 0.5), place(bx, deckY - 2.9, az), stone);
+      this._box(bx, deckY - 2.9, az, (bw + 2.2) / 2, 2.7, 2.0);
+    }
+    const span = z1 - z0 + 4;
+    B.add('cobble', boxGeo(bw, 0.65, span, 0.55), place(bx, deckY - 0.33, rz), 0xbcb6a8);
+    this._box(bx, deckY - 0.38, rz, bw / 2, 0.38, span / 2);
+    for (const s of [-1, 1]) {
+      B.add('rubble', boxGeo(0.5, 1.05, span - 1, 0.6), place(bx + s * (bw / 2 - 0.25), deckY + 0.53, rz), stone);
+      B.add('rubble', boxGeo(0.7, 0.15, span - 1, 0.8), place(bx + s * (bw / 2 - 0.25), deckY + 1.12, rz), 0xb6ae9b);
+      this._box(bx + s * (bw / 2 - 0.25), deckY + 0.65, rz, 0.36, 0.72, (span - 1) / 2);
+    }
+    // Refuges over the cutwater, where a carter stands to let a cart past.
+    for (const s of [-1, 1]) {
+      B.add('rubble', boxGeo(1.3, 1.05, 2.2, 0.7), place(bx + s * (bw / 2 + 0.4), deckY + 0.53, rz), stone);
+    }
+    // The toll house on the downstream abutment.
+    const tz = z1 + 3.4;
+    const ty = this._height(bx + 4.6, tz);
+    B.add('rubble', boxGeo(4.4, 3.0, 4.0, 0.55), place(bx + 4.6, ty + 1.5, tz), 0xb9b1a0);
+    B.add('slate', coneGeo(3.6, 2.2, 4, 0.7), place(bx + 4.6, ty + 4.1, tz, Math.PI / 4), 0x9aa4b0);
+    B.add('glass', planeGeo(0.8, 0.8, 1.2), place(bx + 2.4, ty + 1.7, tz, -Math.PI / 2), 0xffd9a0);
+    this._box(bx + 4.6, ty + 1.5, tz, 2.2, 1.5, 2.0);
+    this._addGlow(bx + 2.2, ty + 1.7, tz, 3.4, 0x54301a, -Math.PI / 2);
+    this._footprints.push({ x: bx, z: rz, hx: bw / 2 + 3, hz: span / 2 + 2, r: 0 });
+    this.minimapShapes.push({
+      kind: 'rect', x: bx, z: rz, w: bw, d: span, rotation: 0,
+      fill: 'rgba(150,140,120,0.5)', stroke: 'rgba(226,198,152,0.9)',
+    });
+  }
+
+  /** A trestle bridge: bents in the water, a plank deck, a single handrail. */
+  _timberBridge(B, c) {
+    const place = (x, y, z, ry = 0, rz = 0) => {
+      _obj.position.set(x, y, z);
+      _obj.rotation.set(0, ry, rz);
+      _obj.scale.set(1, 1, 1);
+      return _obj;
+    };
+    const bx = c.x;
+    const z0 = c.from[1];
+    const z1 = c.to[1];
+    const deckY = c.deckY;
+    const bw = c.width;
+    const span = z1 - z0;
+    const bents = Math.max(3, Math.round(span / 4.2));
+    for (let i = 0; i <= bents; i++) {
+      const z = z0 + (span * i) / bents;
+      const g = this._height(bx, z);
+      const h = Math.max(0.8, deckY - g + 0.7);
+      for (const s of [-1, 1]) {
+        B.add('beam', cylGeo(0.16, 0.21, h, 6, 0.9), place(bx + s * (bw / 2 - 0.2), deckY - h / 2 - 0.1, z, 0, s * 0.06), 0x6a5741);
+      }
+      B.add('beam', boxGeo(bw + 0.3, 0.18, 0.18, 1.1), place(bx, deckY - 0.28, z), 0x6a5741);
+      if (i < bents) {
+        B.add('beam', cylGeo(0.09, 0.09, Math.hypot(span / bents, h * 0.7), 5, 1.1),
+          place(bx, deckY - h * 0.5, z + span / bents / 2, Math.PI / 2, Math.atan2(h * 0.7, span / bents)), 0x6a5741);
+      }
+    }
+    // The deck, in courses so the planks read individually.
+    const boards = Math.max(6, Math.round(span / 0.55));
+    for (let i = 0; i < boards; i++) {
+      const z = z0 + (span * (i + 0.5)) / boards;
+      B.add('plank', boxGeo(bw, 0.12, span / boards - 0.03, 0.7), place(bx, deckY - 0.06, z), shadeHex(0x9d7f56, 0.9 + (i % 3) * 0.07));
+    }
+    this._box(bx, deckY - 0.18, (z0 + z1) / 2, bw / 2, 0.14, span / 2);
+    for (const s of [-1, 1]) {
+      for (let i = 0; i <= bents * 2; i++) {
+        const z = z0 + (span * i) / (bents * 2);
+        B.add('beam', cylGeo(0.06, 0.07, 1.05, 5, 1.1), place(bx + s * (bw / 2 - 0.12), deckY + 0.5, z), 0x7a6144);
+      }
+      B.add('beam', cylGeo(0.055, 0.055, span, 5, 1.2), place(bx + s * (bw / 2 - 0.12), deckY + 1.0, (z0 + z1) / 2, Math.PI / 2, 0), 0x7a6144);
+    }
+    for (const s of [-1, 1]) {
+      const az = s < 0 ? z0 : z1;
+      const g = this._height(bx, az + s * 1.6);
+      B.add('rubble', boxGeo(bw + 1.4, 1.4, 2.6, 0.6), place(bx, g + 0.2, az + s * 1.0), 0x8e8371);
+      this._box(bx, g + 0.2, az + s * 1.0, (bw + 1.4) / 2, 0.7, 1.3);
+    }
+    this._footprints.push({ x: bx, z: (z0 + z1) / 2, hx: bw / 2 + 2, hz: span / 2 + 2, r: 0 });
+    this.minimapShapes.push({
+      kind: 'rect', x: bx, z: (z0 + z1) / 2, w: bw, d: span, rotation: 0,
+      fill: 'rgba(120,96,64,0.45)', stroke: 'rgba(200,176,132,0.8)',
+    });
+  }
+
   /**
    * Dress the facades, not the floor.
    *
@@ -7000,6 +9282,14 @@ export class MedievalWorld extends World {
     }
     this._footprints.push({ x: chx, z: chz, hx: 20, hz: 9, r: 0 });
     this._footprints.push({ x: mx, z: mz, hx: 9, hz: 10, r: 0 });
+
+    /* ---- The ring's crossings --------------------------------------- *
+     * Built into this batch rather than their own because they belong to the
+     * same subject - the river and what gets over it - and because two of the
+     * three are 300 m from the nearest other geometry, so a district of their
+     * own would be three meshes with nothing else in them. See RoadNet.js for
+     * which crossings exist and why. */
+    this._buildCrossings(B);
 
     B.build(this._mats, this.group, { ao: this._heightFn });
   }
@@ -8244,29 +10534,81 @@ export class MedievalWorld extends World {
       return { a, geo, list: [] };
     });
 
-    /* ---- Placement ------------------------------------------------- */
-    const total = 520;
+    /* ---- Placement ------------------------------------------------- *
+     *
+     * Two changes from the scatter this replaces, and the second is the one
+     * that turns a scatter into a wood.
+     *
+     * The count is DERIVED. `PLAYFIELD_TREES` is a density multiplied by the
+     * stand-weighted area of the map, integrated in `Woodland.js` - so the
+     * 520 absolute trees that were correct for a 400 m vale and left a 900 m
+     * one with 0.6 trees per hectare of "woodland" become ~1,450, and the
+     * number follows the mask and the extent from now on rather than needing
+     * to be remembered.
+     *
+     * Acceptance is PROPORTIONAL to `standAt` rather than gated on a
+     * threshold. `wood > 0.02` accepted 47% of the map at uniform density: no
+     * edge to arrive at, no interior to be inside, and every tree with the
+     * same neighbourhood as every other. Rejection sampling against the stand
+     * field puts the trees where the field is, which means density climbs
+     * across a fringe, holds through an interior and drops out in the glades -
+     * and it does all of that for the same one line the threshold cost.
+     */
+    const total = PLAYFIELD_TREES;
+    const BUCKETS = Math.ceil(SIZE / TREE_BUCKET_M);
+    const bucketAt = (x, z) => {
+      const bx = Math.min(BUCKETS - 1, Math.max(0, Math.floor((x + HALF) / TREE_BUCKET_M)));
+      const bz = Math.min(BUCKETS - 1, Math.max(0, Math.floor((z + HALF) / TREE_BUCKET_M)));
+      return bz * BUCKETS + bx;
+    };
+    /* Each bucket is a STAND with two species in it, not a random mix of four.
+     * That halves the instanced-mesh count against a naive per-species split
+     * and it is also what a real wood is - see `standSpecies`. */
+    const bucketSpecies = new Array(BUCKETS * BUCKETS);
+    for (let bz = 0; bz < BUCKETS; bz++) {
+      for (let bx = 0; bx < BUCKETS; bx++) {
+        const cx = -HALF + (bx + 0.5) * TREE_BUCKET_M;
+        const cz = -HALF + (bz + 0.5) * TREE_BUCKET_M;
+        bucketSpecies[bz * BUCKETS + bx] = standSpecies(bx, bz, woodMask(cx, cz));
+      }
+    }
+    /** archetype index -> Map(bucket index -> flat [x, z, r, ...]) */
+    const cells = built.map(() => new Map());
+    const drop = (pick, x, z, r) => {
+      const bi = bucketAt(x, z);
+      let arr = cells[pick].get(bi);
+      if (!arr) cells[pick].set(bi, (arr = []));
+      arr.push(x, z, r);
+    };
+    let placedTrees = 0;
     let guard = 0;
-    while (built.reduce((s, b) => s + b.list.length, 0) < total && guard++ < total * 30) {
+    while (placedTrees < total && guard++ < total * 40) {
       if ((guard & 511) === 0) await this._breathe();
       const x = (rnd() - 0.5) * (SIZE - 8);
       const z = (rnd() - 0.5) * (SIZE - 8);
       const rd = Math.abs(z - riverZ(x));
-      const wood = fbm2(x * 0.0062, z * 0.0062, 3);
       // The willow band tracks the channel rather than sitting at a fixed
       // 12-24 m: at Reedwater the channel alone is 26 m wide.
       const hw = riverHalfWidth(x);
       const nearWater = rd < hw + 14.5 && rd > hw + 2.5;
-      // Woodland mask, plus willows crowding the banks and hedgerow strays.
-      if (!nearWater && wood < 0.02 && rnd() > 0.12) continue;
+      const stand = standAt(x, z);
+      let pick = -1;
+      if (nearWater && rnd() < 0.6) {
+        pick = rnd() < 0.55 ? 3 : 0;
+      } else if (stand > 0 && rnd() < stand) {
+        const pair = bucketSpecies[bucketAt(x, z)];
+        pick = rnd() < 0.74 ? pair[0] : pair[1];
+      } else if (rnd() < 0.018) {
+        // Hedgerow and field-corner strays. A landscape with trees ONLY in
+        // woods reads as a map with woodland polygons stamped on it.
+        pick = rnd() < 0.62 ? 0 : 1;
+      }
+      if (pick < 0) continue;
       if (!this._isOpenGround(x, z, 2.2)) continue;
       if (this._inHeroClear(x, z, 2.6)) continue;
       if (this._slope(x, z) > 0.55) continue;
-      let pick;
-      if (nearWater) pick = rnd() < 0.55 ? 3 : 0;
-      else if (wood > 0.16) pick = rnd() < 0.6 ? 2 : 1;
-      else pick = rnd() < 0.62 ? 0 : rnd() < 0.5 ? 1 : 2;
-      built[pick].list.push(x, z, rnd());
+      drop(pick, x, z, rnd());
+      placedTrees++;
     }
 
     /* ---- Authored repoussoir on the castle approach ------------------ *
@@ -8281,19 +10623,32 @@ export class MedievalWorld extends World {
     for (const [fx, fz, fr, kind] of [
       [-51, 47, 0.92, 0], [-56, 44, 0.78, 0], [-58, 53, 0.66, 1], [-49, 62, 0.84, 0],
     ]) {
-      built[kind].list.push(fx, fz, fr);
+      drop(kind, fx, fz, fr);
     }
 
-    // Split each archetype into quadrant buckets. One InstancedMesh for the
-    // whole map would have a bounding sphere covering everything and would
-    // never frustum-cull; four buckets typically halve the tree draw cost.
-    for (const b of built) {
-      const buckets = [[], [], [], []];
-      for (let i = 0; i < b.list.length; i += 3) {
-        const q = (b.list[i] < 0 ? 0 : 1) + (b.list[i + 1] < 0 ? 0 : 2);
-        buckets[q].push(b.list[i], b.list[i + 1], b.list[i + 2]);
-      }
-      for (const bucket of buckets) {
+    /* ---- Instancing ------------------------------------------------- *
+     *
+     * A 150 m grid, not the four map quadrants this used to use.
+     *
+     * The quadrant split is honest about its own failure in the
+     * `CANOPY_LO_DISTANCE` docstring: a quadrant's bounding sphere has a 318 m
+     * radius at 900 m, its nearest point is underfoot from almost anywhere, so
+     * the 90 m canopy LOD swap never fires and the bucket never frustum-culls
+     * either. Both problems are the same problem - the bucket is too big to
+     * say anything about.
+     *
+     * A 150 m cell's sphere is 106 m across the diagonal plus ~8 m of crown,
+     * so its nearest point clears 90 m once the camera is ~204 m from the cell
+     * centre, which on this map is true of most cells from most standpoints.
+     * The swap is a 4x cut on broadleaf crowns and 2.5x on conifers, taken on
+     * the two thirds of the wood where the facet count is unrecoverable.
+     *
+     * The bill is meshes: 36 cells against 4. `standSpecies` caps a cell at
+     * two archetypes to keep that bounded, and empty cells cost nothing.
+     */
+    for (let ai = 0; ai < built.length; ai++) {
+      const b = built[ai];
+      for (const bucket of cells[ai].values()) {
         const n = bucket.length / 3;
         if (!n) continue;
         const trunkMesh = new THREE.InstancedMesh(b.geo.trunk, this._mats.bark, n);
@@ -8340,10 +10695,8 @@ export class MedievalWorld extends World {
           this.group.add(m);
         }
         /* Nearest-point, so a bucket only demotes once every tree in it is
-         * past the threshold. Honest, and in practice almost never true for
-         * these - see CANOPY_LO_DISTANCE. Registered anyway because the cost
-         * is one sphere transform a frame and the alternative is a per-bucket
-         * exception list that stops being true the day the buckets change. */
+         * past the threshold. At 150 m cells that is now a statement with
+         * teeth - see the note above. */
         if (leafMesh && b.geo.leafLo) {
           this._lod.add(leafMesh, {
             lo: b.geo.leafLo, swapBeyond: CANOPY_LO_DISTANCE, measure: SURFACE,
@@ -8354,6 +10707,193 @@ export class MedievalWorld extends World {
       this._owned.push(b.geo.trunk);
       if (b.geo.leaf) this._owned.push(b.geo.leaf);
       if (b.geo.leafLo) this._owned.push(b.geo.leafLo);
+    }
+
+    /* ---- Understorey ------------------------------------------------ *
+     *
+     * This is what actually makes a wood a wood to be inside, and it is the
+     * cheap half of the deal. A crown is 2,880-4,560 triangles and sits four
+     * to eleven metres up, where it blocks the sky; a hazel thicket is TWELVE
+     * triangles and stands between a player's eye and a wolf's. Buying
+     * enclosure with crowns costs roughly 7,000 triangles per metre of
+     * sightline closed. Buying it here costs about four.
+     *
+     * Thickets and bracken share one three-card geometry and one instanced
+     * mesh per map quadrant, separated only by scale - so the whole
+     * understorey of the vale is four draw calls and ~56k triangles, against
+     * the ~4.9M the trees carry.
+     */
+    {
+      const CARD_W = 1.15;
+      const CARD_H = 1.5;
+      const parts = [];
+      for (let i = 0; i < 3; i++) {
+        const g = planeGeo(CARD_W, CARD_H, 0);
+        g.translate(0, CARD_H * 0.5, 0);
+        g.rotateY((i / 3) * Math.PI);
+        parts.push(normaliseGeo(g, 0xffffff));
+      }
+      const brushGeo = mergeGeometries(parts, false);
+      for (const g of parts) g.dispose();
+      {
+        // Same two fixes the grass tuft gets: normals forced up so the cards
+        // shade off the ground plane, and a root-to-tip ramp so a thicket
+        // roots into the litter instead of ending on a hard edge.
+        const nrm = brushGeo.attributes.normal;
+        const pos = brushGeo.attributes.position;
+        const col = brushGeo.attributes.color;
+        for (let i = 0; i < nrm.count; i++) {
+          nrm.setXYZ(i, 0, 1, 0);
+          const t = smoothstep(0, 1, clamp01(pos.getY(i) / CARD_H));
+          const k = 0.30 + 0.95 * t;
+          col.setXYZ(i, k * 0.92, k, k * 0.78);
+        }
+        nrm.needsUpdate = true;
+        col.needsUpdate = true;
+      }
+      this._owned.push(brushGeo);
+      const want = UNDERSTOREY + BRACKEN;
+      const quads = [[], [], [], []];
+      let ug = 0;
+      let un = 0;
+      while (un < want && ug++ < want * 26) {
+        if ((ug & 1023) === 0) await this._breathe();
+        const x = (rnd() - 0.5) * (SIZE - 10);
+        const z = (rnd() - 0.5) * (SIZE - 10);
+        const stand = standAt(x, z);
+        /* Thickets crowd the FRINGE - which is what a woodland edge is, a
+         * belt of blackthorn you cannot walk through - and thin out under
+         * closed canopy where there is no light. Bracken does the opposite.
+         *
+         * The fringe test is inlined against the stand value already in
+         * hand rather than calling `isWoodEdge`, which would recompute the
+         * same five octaves of noise: this loop runs ~50,000 times and the
+         * mask is the only expensive thing in it. `isWoodEdge` is still the
+         * definition - see the assertion in medieval-forest.test.mjs that
+         * pins the two to the same band. */
+        const edge = stand > 0.12 && stand < 0.72;
+        const p = edge ? 0.95 : stand * 0.55;
+        if (rnd() > p) continue;
+        if (!this._isOpenGround(x, z, 0.9)) continue;
+        if (this._inHeroClear(x, z, 1.4)) continue;
+        if (this._slope(x, z) > 0.62) continue;
+        const y = this._height(x, z);
+        if (y < WATER_Y + 0.4) continue;
+        const thicket = un < UNDERSTOREY;
+        const q = (x < 0 ? 0 : 1) + (z < 0 ? 0 : 2);
+        quads[q].push(x, y, z, thicket ? 1 : 0, rnd());
+        un++;
+      }
+      for (const q of quads) {
+        const n = q.length / 5;
+        if (!n) continue;
+        const mesh = new THREE.InstancedMesh(brushGeo, this._mats.leaf, n);
+        for (let i = 0; i < n; i++) {
+          const x = q[i * 5];
+          const y = q[i * 5 + 1];
+          const z = q[i * 5 + 2];
+          const thicket = q[i * 5 + 3] === 1;
+          const r = q[i * 5 + 4];
+          const sc = thicket ? 1.15 + r * 1.0 : 0.36 + r * 0.30;
+          _obj.position.set(x, y - 0.08, z);
+          _obj.rotation.set(0, r * TAU, 0);
+          _obj.scale.set(sc * (0.85 + r * 0.4), sc * (thicket ? 1.35 : 0.85), sc * (0.85 + r * 0.4));
+          _obj.updateMatrix();
+          mesh.setMatrixAt(i, _obj.matrix);
+          if (thicket) _col.setHSL(0.24 + r * 0.05, 0.20 + r * 0.10, 0.16 + r * 0.10);
+          else _col.setHSL(0.16 + r * 0.06, 0.26 + r * 0.12, 0.22 + r * 0.14);
+          mesh.setColorAt(i, _col);
+        }
+        mesh.count = n;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        mesh.computeBoundingSphere();
+        this.group.add(mesh);
+        await this._breathe();
+      }
+    }
+
+    /* ---- Deadfall, per named wood ----------------------------------- *
+     *
+     * Fallen trunks, root plates, stumps and brash. One `GeoBatch` district
+     * per wood, so a wood costs three draw calls whatever this contains - and
+     * a district 70-90 m across frustum-culls as a unit, which is the whole
+     * reason the deadfall is bucketed by WOOD rather than scattered globally.
+     *
+     * It is also the cheapest signal there is that a wood has been standing
+     * for two centuries rather than being planted this morning: a forest floor
+     * with nothing on it reads as a lawn with trees in it, at any tree count.
+     */
+    for (const wood of NAMED_WOODS) {
+      const WB = new GeoBatch();
+      const wr = mulberry32(0xdead00 + Math.abs(wood.x * 31 + wood.z));
+      let dropped = 0;
+      let dg = 0;
+      while (dropped < DEADFALL_PER_WOOD && dg++ < DEADFALL_PER_WOOD * 30) {
+        const a = wr() * TAU;
+        const rr = Math.sqrt(wr()) * wood.r;
+        const x = wood.x + Math.cos(a) * rr;
+        const z = wood.z + Math.sin(a) * rr;
+        if (standAt(x, z) < 0.25) continue;
+        if (!this._isOpenGround(x, z, 1.2)) continue;
+        if (this._inHeroClear(x, z, 2.0)) continue;
+        const y = this._height(x, z);
+        const roll = wr();
+        _obj.scale.set(1, 1, 1);
+        if (roll < 0.42) {
+          // A fallen trunk, half sunk into the litter, with a root plate.
+          const len = 5.0 + wr() * 6.5;
+          const rad = 0.28 + wr() * 0.24;
+          const yaw = wr() * TAU;
+          _obj.position.set(x, y + rad * 0.55, z);
+          _obj.rotation.set(0, yaw, Math.PI / 2);
+          _obj.updateMatrix();
+          WB.add('bark', cylGeo(rad * 0.72, rad, len, 7, 0.9), _obj, 0x6a5a46);
+          this._box(x, y + rad * 0.6, z, Math.abs(Math.cos(yaw)) * len / 2 + rad,
+            rad, Math.abs(Math.sin(yaw)) * len / 2 + rad);
+          const px = x + Math.cos(yaw) * len * 0.5;
+          const pz = z - Math.sin(yaw) * len * 0.5;
+          _obj.position.set(px, this._height(px, pz) + 0.7, pz);
+          _obj.rotation.set(0, yaw, 0);
+          _obj.updateMatrix();
+          WB.add('bark', cylGeo(rad * 3.4, rad * 3.0, 0.5, 9, 0.8), _obj, 0x584a3a);
+          for (let k = 0; k < 5; k++) {
+            _obj.position.set(px, this._height(px, pz) + 0.9 + k * 0.18, pz);
+            _obj.rotation.set(wr() * 0.9 - 0.45, wr() * TAU, wr() * 0.9 - 0.45);
+            _obj.updateMatrix();
+            WB.add('bark', cylGeo(0.05, 0.09, 1.2 + wr() * 0.8, 4, 1.2), _obj, 0x4f4335);
+          }
+          this._contacts.push(x, y, z, len * 0.4);
+        } else if (roll < 0.72) {
+          // A stump, cut or snapped.
+          const rad = 0.35 + wr() * 0.35;
+          const h = 0.5 + wr() * 0.9;
+          _obj.position.set(x, y + h / 2 - 0.1, z);
+          _obj.rotation.set((wr() - 0.5) * 0.18, wr() * TAU, (wr() - 0.5) * 0.18);
+          _obj.updateMatrix();
+          WB.add('bark', cylGeo(rad * 0.88, rad, h, 9, 0.9), _obj, 0x6f5f4a);
+          _obj.position.set(x, y + h - 0.1, z);
+          _obj.rotation.set(0, 0, 0);
+          _obj.updateMatrix();
+          WB.add('bark', cylGeo(rad * 0.86, rad * 0.86, 0.08, 9, 1.4), _obj, 0xbaa27c);
+          this._box(x, y + h / 2, z, rad, h / 2, rad);
+          this._contacts.push(x, y, z, rad * 1.6);
+        } else {
+          // A brash pile: cut branches heaped where the coppicing stopped.
+          for (let k = 0; k < 7; k++) {
+            _obj.position.set(x + (wr() - 0.5) * 1.6, y + 0.16 + wr() * 0.5, z + (wr() - 0.5) * 1.6);
+            _obj.rotation.set((wr() - 0.5) * 0.6, wr() * TAU, Math.PI / 2 + (wr() - 0.5) * 0.5);
+            _obj.updateMatrix();
+            WB.add('bark', cylGeo(0.05, 0.08, 1.4 + wr() * 1.4, 4, 1.2), _obj, 0x5f5140);
+          }
+          this._contacts.push(x, y, z, 1.4);
+        }
+        dropped++;
+      }
+      WB.build(this._mats, this.group, { ao: this._heightFn, cast: true, receive: true });
+      await this._breathe();
     }
 
     /* ---- Layered ridge stands -------------------------------------- *
@@ -8382,8 +10922,29 @@ export class MedievalWorld extends World {
         // a 250m ring resolve as individually readable popcorn on the skyline;
         // a hundred 12m ones at the same ring merge into the ragged treeline
         // mass that is the whole point of the layer.
-        const wanted = 104 - ri * 16;
-        const tm = new THREE.InstancedMesh(pine.geo.trunk, this._mats.bark, wanted);
+        /* Scaled to the ring's own circumference, not left absolute.
+         *
+         * The rings are at 1.04-1.79 HALF, so at 900 m they are 2.25x the
+         * length they were at 400 m: an absolute count thins the treeline by
+         * the same factor, and the ragged skyline mass the layer exists for
+         * becomes a row of individually countable firs. Scaled by HALF / 250
+         * rather than by the full 2.25, because these three meshes are in
+         * frustum from every vantage in the world and their triangles are the
+         * most expensive in it - see the LOD note below. */
+        const wanted = Math.round((104 - ri * 16) * (HALF / 300));
+        /* Crowns only - the rings draw no trunks at all.
+         *
+         * A fir trunk is 468 triangles, which is 27% of a ridge tree once the
+         * canopy LOD has fired, and these three meshes are in frustum from
+         * every vantage in the world: at 475 firs that was 222,000 triangles
+         * submitted every single frame, permanently. They also cannot be seen.
+         * The stands sit 1.5 m INTO the slope specifically so the bare lower
+         * boles never show as a row of stilts (see the scale note below), the
+         * crown skirt covers the rest, they cast no shadow, and the nearest of
+         * them is 468 m away behind 60% atmospheric haze. Dropping them costs
+         * nothing that can be photographed and is the single largest saving
+         * available anywhere in the foliage.
+         */
         const lm = new THREE.InstancedMesh(pine.geo.leaf, this._mats.leaf, wanted);
         let placed = 0;
         let g3 = 0;
@@ -8419,7 +10980,6 @@ export class MedievalWorld extends World {
           _obj.rotation.set(0, rnd() * TAU, 0);
           _obj.scale.set(sc * (0.9 + rnd() * 0.2), sc, sc * (0.9 + rnd() * 0.2));
           _obj.updateMatrix();
-          tm.setMatrixAt(placed, _obj.matrix);
           lm.setMatrixAt(placed, _obj.matrix);
           // Far foliage is almost pure value: any saturation out here fights
           // the aerial perspective the fog is doing.
@@ -8431,7 +10991,7 @@ export class MedievalWorld extends World {
           placed++;
         }
         if (!placed) continue;
-        for (const m of [tm, lm]) {
+        for (const m of [lm]) {
           m.count = placed;
           // Nothing out here is inside the shadow cascade, and nothing can be
           // walked to, so both costs are simply removed.
@@ -8623,7 +11183,11 @@ export class MedievalWorld extends World {
       const z = (rnd() - 0.5) * (SIZE - 20);
       if (!this._isOpenGround(x, z, 0.8)) continue;
       if (this._inHeroClear(x, z, 1.4)) continue;
-      if (fbm2(x * 0.0062, z * 0.0062, 3) < -0.05 && rnd() > 0.25) continue;
+      // The mask has ONE definition and it is in `Woodland.js`. This line
+      // used to spell it out again, which is a second thing to keep in step
+      // with a field that now also drives the trees, the thickets and the
+      // bracken.
+      if (woodMask(x, z) < -0.05 && rnd() > 0.25) continue;
       const sc = 0.7 + rnd() * 0.9;
       _obj.position.set(x, this._height(x, z) - 0.1, z);
       _obj.rotation.set(0, rnd() * TAU, 0);

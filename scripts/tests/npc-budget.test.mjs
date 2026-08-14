@@ -25,11 +25,20 @@ const read = (p) => readFileSync(path.join(root, p), 'utf8');
  *
  * Two kinds of test, and they are deliberately different in strength:
  *
- *   SCALING gates use the `physics-remove.test.mjs` idiom - best-of-N with
- *   `hrtime`, asserting a RATIO or a generous ceiling rather than an absolute
- *   time, because "noise only ever adds time, so the minimum is the closest
- *   single statistic to the true per-call cost". They catch an accidental
- *   O(n^3), not a 20% regression.
+ *   SCALING gates are best-of-N with `hrtime`, asserting a RATIO or a generous
+ *   ceiling rather than an absolute time, because "noise only ever adds time,
+ *   so the minimum is the closest single statistic to the true per-call cost".
+ *   They catch an accidental O(n^3), not a 20% regression.
+ *
+ *   This used to cite `physics-remove.test.mjs` as the source of that idiom.
+ *   That file has since ABANDONED it: its ratio gate failed in a full-suite
+ *   run while passing 3/3 in isolation, because the two halves of a ratio are
+ *   timed in different contention windows and a lucky small paired with an
+ *   unlucky large clears the threshold with nothing wrong. It counts scanned
+ *   array entries now. The gates here carry the same exposure - the ratios at
+ *   least share a window, but `at200 < 200` is an absolute wall-clock ceiling
+ *   and is the one that will go first. If any of them flakes, count work
+ *   rather than widening the threshold.
  *
  *   GEOMETRY gates are exact. How much of a flat roster is beyond render range
  *   is arithmetic, not timing, and it is the number the whole decision rests on.

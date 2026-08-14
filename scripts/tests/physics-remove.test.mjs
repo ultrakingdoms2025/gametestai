@@ -94,23 +94,43 @@ test('remove is not linear in collider count', () => {
    * an accidental O(log n) creeping in, or a scan on one branch - still gets
    * caught decisively rather than sneaking under a threshold tuned so tight
    * it was really just asserting today's exact timing. */
-  const time = (n) => {
+  /* This measured WALL CLOCK until it flaked. The paragraph above claimed it
+   * asserted "the shape of the curve, not a wall-clock budget, so it does not
+   * go flaky on a slow machine" - and then it failed in a full-suite run while
+   * passing 3/3 in isolation, because `small` and `large` are timed in
+   * different contention windows and only their RATIO is asserted. A lucky
+   * small paired with an unlucky large clears 200 with nothing wrong.
+   *
+   * The property being claimed was never about milliseconds: it is that
+   * removal does not SCAN the collider array. So count the scanning. Every
+   * `indexOf` is charged the length of the array it walks - the work a linear
+   * removal does and an O(1) removal avoids. Deterministic, and indifferent to
+   * what else the machine is doing. */
+  const scanned = (n) => {
     const p = new Physics(null);
     const made = [];
     for (let i = 0; i < n; i++) made.push(p.addBox(i * 3, 0, 0, 1, 1, 1));
-    const t0 = process.hrtime.bigint();
-    for (const c of made) p.remove(c);
-    return Number(process.hrtime.bigint() - t0) / 1e6;
+    let work = 0;
+    const real = Array.prototype.indexOf;
+    Array.prototype.indexOf = function counted(...a) { work += this.length; return real.apply(this, a); };
+    try {
+      for (const c of made) p.remove(c);
+    } finally {
+      Array.prototype.indexOf = real;
+    }
+    return work;
   };
-  // Minimum of 3 trials: noise (GC, JIT warmup, OS scheduling) only ever
-  // adds time, so the minimum is the closest single statistic to the true
-  // per-call cost.
-  const minOf3 = (n) => Math.min(time(n), time(n), time(n));
-  minOf3(2000); // warm
-  const small = Math.max(minOf3(2000), 0.01);
-  const large = minOf3(64000);
+
+  const small = Math.max(scanned(2000), 1);
+  const large = scanned(64000);
+  /* 2,000 -> 64,000 is 32x the calls. An O(1) removal scans only inside the
+   * few broadphase buckets a collider occupies, so its total grows ~32x. A
+   * linear removal scans the whole array every call and grows ~32*32 = 1,024x.
+   * 200 sits well inside that gap: far above the O(1) ceiling, and more than
+   * 5x below the quadratic floor, so an accidental scan on one branch is still
+   * caught decisively. */
   assert.ok(large / small < 200,
-    `remove looks super-linear: 2000 took ${small.toFixed(1)}ms, 64000 took ${large.toFixed(1)}ms`);
+    `remove looks super-linear: 2000 scanned ${small} entries, 64000 scanned ${large}`);
 });
 
 test('remove still works when the collider is the last one', () => {

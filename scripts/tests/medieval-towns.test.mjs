@@ -36,6 +36,7 @@ import {
   footprintsOverlap, footprintDistance, footprintCorners, isOverWater, townBank,
   GROUND_H, UPPER_H, FLOOR_T, FLOOR_RISE, DOOR_W, DOOR_H, WALL_T,
   STAIR_RISE_MAX, STAIR_TREAD, REEDWATER_DECK,
+  ECCLESIASTICAL,
 } from '../../src/worlds/medieval/Towns.js';
 import { MedievalWorld } from '../../src/worlds/MedievalWorld.js';
 
@@ -170,8 +171,13 @@ test('every enterable interior is a room a player can stand up in', () => {
       assert.ok(fl.ceilY - fl.floorY === fl.clear);
     }
     assert.equal(plan.floors[0].floorY, FLOOR_RISE);
-    assert.equal(plan.floors[0].clear, GROUND_H);
-    if (b.storeys > 1) assert.equal(plan.floors[1].clear, UPPER_H);
+    /* The vernacular heights, everywhere they apply. A church does not take
+     * its storey height from a cottage - see `storeyClear`, and the test below
+     * for what it takes instead - and the exemption is the TOP storey only, so
+     * a bell tower's lower chambers are still held to this. */
+    const tall = (s) => ECCLESIASTICAL.has(b.kind) && s === b.storeys - 1;
+    if (!tall(0)) assert.equal(plan.floors[0].clear, GROUND_H);
+    if (b.storeys > 1 && !tall(1)) assert.equal(plan.floors[1].clear, UPPER_H);
     // The room has floor area, and the door fits in the wall it is cut into.
     assert.ok(Math.abs(plan.standing.z) < plan.inner.hz && plan.standing.x === 0,
       `${b.id} declares a standing point outside its own walls`);
@@ -181,6 +187,68 @@ test('every enterable interior is a room a player can stand up in', () => {
     assert.equal(plan.door.w, DOOR_W);
     assert.ok(plan.door.h >= 2.0 && plan.door.h === DOOR_H);
     assert.equal(plan.wallT, WALL_T);
+  }
+});
+
+test('an ecclesiastical interior stands to its own span, not to a cottage', () => {
+  /* ── The defect ────────────────────────────────────────────────────────
+   * A raycast straight up from the middle of St Ceolwine's nave floor hit
+   * `medieval:plank` at 3.19 m, in a room 34 x 12 m. `interiorPlan` had one
+   * ground-storey height for every shell in the ring and it was the domestic
+   * one, so a 34 m nave was a 2.85 m corridor and the arcade derived from
+   * that clear height was a rank of 2.35 m drums.
+   *
+   * Asserted as a PROPORTION, because the number is not the thing: 2.85 m is
+   * right in a cottage and 8.90 m would be silly in one. What cannot be right
+   * is a church a great deal wider than it is tall, in a building whose whole
+   * architectural argument is height. 0.6 of the clear span is well under the
+   * 0.8 `storeyClear` actually builds to, so this is a floor under the rule
+   * rather than a restatement of it - it would still hold if the ratio were
+   * retuned, and it would not hold for anything taking `GROUND_H`.
+   */
+  let checked = 0;
+  for (const b of ALL) {
+    if (!ECCLESIASTICAL.has(b.kind)) continue;
+    const plan = interiorPlan(b);
+    /* The TOP storey: in a tower that is the belfry, and the chambers under it
+     * are rooms. In a church, a chapel and a chapter house it is the only one. */
+    const top = plan.floors[plan.floors.length - 1];
+    const span = Math.min(b.w, b.d) - 2 * WALL_T;
+    assert.ok(top.clear >= span * 0.6,
+      `${b.town}/${b.id} (${b.kind}) is ${span.toFixed(1)} m across its clear span and only `
+      + `${top.clear.toFixed(2)} m to the ceiling - that is a corridor, not a nave`);
+    /* And bounded above, or "proportionate" becomes a licence to build a
+     * spire. Both bounds are stated here rather than imported from the module
+     * under test: a rule that can only be checked against its own constants is
+     * not being checked. */
+    assert.ok(top.clear <= span * 1.2 && top.clear <= 9.5,
+      `${b.town}/${b.id} stands ${top.clear.toFixed(2)} m over a ${span.toFixed(1)} m span`);
+    checked++;
+  }
+  assert.ok(checked >= 6, `only ${checked} ecclesiastical shells to check`);
+
+  /* The measurement that started it, as its own assertion: the height the
+   * player's own raycast reports, from the floor they stand on to the plank
+   * over their head. It read 3.19. */
+  const church = ALL.find((b) => b.id === 'ab-church');
+  assert.ok(church, 'the abbey church has gone from the table');
+  const nave = interiorPlan(church).floors[0];
+  assert.ok(nave.ceilY >= 6.0,
+    `the abbey nave's ceiling is ${nave.ceilY.toFixed(2)} m above the shell's base`);
+
+  /* Nothing below the top storey moved, which is what stops a taller church
+   * from lengthening a staircase into a room too shallow to hold it. Every
+   * flight in an ecclesiastical shell still climbs exactly one DOMESTIC storey
+   * plus a deck. */
+  for (const b of ALL) {
+    if (!ECCLESIASTICAL.has(b.kind) || b.storeys < 2) continue;
+    const plan = interiorPlan(b);
+    for (const st of plan.stairs) {
+      const domestic = (st.storey === 0 ? GROUND_H : UPPER_H) + FLOOR_T;
+      assert.ok(Math.abs((st.toY - st.fromY) - domestic) < 1e-9,
+        `${b.id} flight ${st.storey} climbs ${(st.toY - st.fromY).toFixed(2)} m - a tall storey `
+        + 'has been put under a staircase');
+    }
   }
 });
 

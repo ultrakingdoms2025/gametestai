@@ -5,7 +5,7 @@ import { CONFIG } from '../../src/core/Config.js';
 import { NPCManager } from '../../src/npc/NPCManager.js';
 import { BEASTS } from '../../src/npc/BeastSpecies.js';
 import { statsFor } from '../../src/systems/WeaponStats.js';
-import { DECAL, DECAL_GRID, cellUV, cellCanvas, DECAL_CELL, DECAL_ATLAS_SIZE }
+import { DECAL, DECAL_GRID, cellUV, cellCanvas, DECAL_CELL, DECAL_ATLAS_SIZE, paintClaw }
   from '../../src/systems/DecalPool.js';
 
 /**
@@ -388,6 +388,228 @@ test('every decal cell has its own square of the atlas', () => {
   }
   assert.equal(DECAL_ATLAS_SIZE, DECAL_CELL * DECAL_GRID);
   assert.ok(Object.keys(DECAL).length <= DECAL_GRID * DECAL_GRID, 'more decals than the sheet has cells');
+});
+
+/**
+ * A 2D canvas context, in as much as one cell of the decal atlas needs.
+ *
+ * ── What this is, honestly ─────────────────────────────────────────────────
+ * Node has no canvas and this project may not take a dependency to get one, so
+ * the painter's own draw calls are replayed into a re-implementation of the
+ * parts of the Canvas2D model they use: a stroke is the union of round caps of
+ * `lineWidth` swept along the path (which is what a round-capped, round-joined
+ * stroke IS), a fill is a point-in-shape test, and each op composites over the
+ * buffer once, source-over.
+ *
+ * ── What that proves, and what it does not ─────────────────────────────────
+ * It measures the ARTWORK. It says nothing about what the GPU finally shows:
+ * no lighting, no normal map, no roughness, no mip level, no `aFade`, no
+ * polygon offset, and no antialiasing (coverage is a pixel-centre test, so
+ * edge counts are a percent or two out either way). A cell could pass this and
+ * still be hard to see because the surface under it is unlit.
+ *
+ * What it does prove is the thing that was actually wrong: that the cell is not
+ * a single tone a few percent away from dark ground. The old claw mark was a
+ * dark cut over a pale lip laid at 0.30 alpha and then covered by that cut -
+ * composited onto woodland it came out 47/255 of luma away from the ground it
+ * was drawn on, over its brightest pixel, which is why a maul left no visible
+ * mark anywhere a bear lives.
+ */
+class MiniCtx {
+  constructor(size, bg) {
+    this.size = size;
+    this.buf = new Float64Array(size * size * 3);
+    for (let i = 0; i < size * size; i++) {
+      this.buf[i * 3] = bg[0]; this.buf[i * 3 + 1] = bg[1]; this.buf[i * 3 + 2] = bg[2];
+    }
+    this.fillStyle = '#000';
+    this.strokeStyle = '#000';
+    this.lineWidth = 1;
+    this.lineCap = 'butt';
+    this._path = [];
+    this._mask = new Uint8Array(size * size);
+  }
+
+  /** `rgb(r,g,b)` / `rgba(r,g,b,a)` -> [r, g, b, a]. */
+  static parse(css) {
+    const m = /rgba?\(([^)]+)\)/.exec(css);
+    if (!m) return [0, 0, 0, 1];
+    const p = m[1].split(',').map((s) => Number(s.trim()));
+    return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
+  }
+
+  createRadialGradient(x0, y0, r0, x1, y1, r1) {
+    return {
+      _radial: true, x: x1, y: y1, r0, r1, stops: [],
+      addColorStop(t, css) { this.stops.push([t, MiniCtx.parse(css)]); },
+    };
+  }
+
+  /** Colour and alpha of a style at one pixel. */
+  _sample(style, x, y) {
+    if (typeof style === 'string') return MiniCtx.parse(style);
+    const d = Math.hypot(x - style.x, y - style.y);
+    const t = Math.min(1, Math.max(0, (d - style.r0) / (style.r1 - style.r0)));
+    const s = style.stops;
+    let lo = s[0], hi = s[s.length - 1];
+    for (let i = 1; i < s.length; i++) {
+      if (s[i][0] >= t) { lo = s[i - 1]; hi = s[i]; break; }
+    }
+    const span = hi[0] - lo[0] || 1;
+    const k = Math.min(1, Math.max(0, (t - lo[0]) / span));
+    return lo[1].map((v, i) => v + (hi[1][i] - v) * k);
+  }
+
+  beginPath() { this._path = []; }
+  moveTo(x, y) { this._path = [[x, y]]; }
+  lineTo(x, y) { this._path.push([x, y]); }
+  closePath() {}
+  save() {} restore() {} translate() {} rotate() {}
+
+  quadraticCurveTo(cx, cy, x, y) {
+    const [x0, y0] = this._path[this._path.length - 1];
+    for (let i = 1; i <= 64; i++) {
+      const t = i / 64;
+      const u = 1 - t;
+      this._path.push([
+        u * u * x0 + 2 * u * t * cx + t * t * x,
+        u * u * y0 + 2 * u * t * cy + t * t * y,
+      ]);
+    }
+  }
+
+  ellipse(cx, cy, rx, ry, rot) { this._ellipse = { cx, cy, rx, ry, rot }; }
+  arc(cx, cy, r) { this._ellipse = { cx, cy, rx: r, ry: r, rot: 0 }; }
+
+  /** Sweep a disc of `lineWidth` along the path and composite it once. */
+  stroke() {
+    this._mask.fill(0);
+    const rad = this.lineWidth / 2;
+    for (const [px, py] of this._path) this._disc(px, py, rad);
+    this._compose(this.strokeStyle);
+  }
+
+  fill() {
+    this._mask.fill(0);
+    const e = this._ellipse;
+    if (e) {
+      const c = Math.cos(-e.rot), s = Math.sin(-e.rot);
+      const r = Math.ceil(Math.max(e.rx, e.ry));
+      for (let y = Math.floor(e.cy - r); y <= e.cy + r; y++) {
+        for (let x = Math.floor(e.cx - r); x <= e.cx + r; x++) {
+          if (x < 0 || y < 0 || x >= this.size || y >= this.size) continue;
+          const dx = x + 0.5 - e.cx, dy = y + 0.5 - e.cy;
+          const u = (dx * c - dy * s) / e.rx, v = (dx * s + dy * c) / e.ry;
+          if (u * u + v * v <= 1) this._mask[y * this.size + x] = 1;
+        }
+      }
+      this._ellipse = null;
+    }
+    this._compose(this.fillStyle);
+  }
+
+  _disc(cx, cy, rad) {
+    const r = Math.ceil(rad);
+    for (let y = Math.floor(cy - r); y <= cy + r; y++) {
+      for (let x = Math.floor(cx - r); x <= cx + r; x++) {
+        if (x < 0 || y < 0 || x >= this.size || y >= this.size) continue;
+        const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+        if (dx * dx + dy * dy <= rad * rad) this._mask[y * this.size + x] = 1;
+      }
+    }
+  }
+
+  _compose(style) {
+    for (let i = 0; i < this._mask.length; i++) {
+      if (!this._mask[i]) continue;
+      const x = i % this.size, y = (i / this.size) | 0;
+      const [r, g, b, a] = this._sample(style, x + 0.5, y + 0.5);
+      if (a <= 0) continue;
+      const o = i * 3;
+      this.buf[o] += (r - this.buf[o]) * a;
+      this.buf[o + 1] += (g - this.buf[o + 1]) * a;
+      this.buf[o + 2] += (b - this.buf[o + 2]) * a;
+    }
+  }
+
+  /** Rec. 709 luma of every pixel. */
+  luma() {
+    const out = new Float64Array(this.size * this.size);
+    for (let i = 0; i < out.length; i++) {
+      out[i] = 0.2126 * this.buf[i * 3] + 0.7152 * this.buf[i * 3 + 1] + 0.0722 * this.buf[i * 3 + 2];
+    }
+    return out;
+  }
+}
+
+/** A no-op context for the height and roughness channels, which are not measured. */
+const nullCtx = () => new Proxy({}, {
+  get: (t, k) => (k === 'createRadialGradient'
+    ? () => ({ addColorStop() {} })
+    : (typeof k === 'string' ? () => {} : undefined)),
+  set: () => true,
+});
+
+/** Paint the claw cell over one background and report its luma field. */
+function clawOver(bg) {
+  const size = 256;
+  const ctx = new MiniCtx(size, bg);
+  let s = 0x5eed1e;
+  const rnd = () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  // Painted at 0,0 because a painter takes its cell origin as an argument -
+  // the cell it lands in is `cellCanvas`'s business and is tested above.
+  paintClaw(ctx, nullCtx(), nullCtx(), 0, 0, rnd);
+  const bgLuma = 0.2126 * bg[0] + 0.7152 * bg[1] + 0.0722 * bg[2];
+  return { luma: ctx.luma(), bgLuma };
+}
+
+test('the claw mark carries its own contrast, on dark ground and on light', () => {
+  /* ── The defect ────────────────────────────────────────────────────────
+   * The stamp worked and the mark was invisible: every tone in the cell was
+   * darker than a woodland floor, and woodland is where the animals that
+   * leave it live. A decal has to bring its own contrast, because the atlas
+   * is shared by five worlds and cannot know what it will land on.
+   *
+   * So: measured against BOTH a dark ground and a light one, and required to
+   * carry a component that separates from each. One or the other alone is a
+   * mark drawn for one surface. See `MiniCtx` above for what this rasteriser
+   * does and does not prove.
+   */
+  const DARK = [26, 32, 22];    // woodland undergrowth in shadow, luma 30
+  const LIGHT = [196, 190, 178]; // ashlar in sun, luma 189
+
+  const onDark = clawOver(DARK);
+  const onLight = clawOver(LIGHT);
+
+  let lighter = 0;
+  for (const v of onDark.luma) if (v - onDark.bgLuma >= 70) lighter++;
+  let darker = 0;
+  for (const v of onLight.luma) if (onLight.bgLuma - v >= 70) darker++;
+
+  assert.ok(lighter >= 2000,
+    `only ${lighter} px of the claw cell are 70/255 of luma clear of dark ground `
+    + '- the mark cannot be seen where the beasts are');
+  assert.ok(darker >= 2000,
+    `only ${darker} px of the claw cell are 70/255 of luma below pale stone `
+    + '- the mark has no dark component left to read on a wall');
+
+  /* ...and it is not one flat tone. A cell painted a single bright colour
+   * would satisfy both counts above and read as a sticker; a gouge has a lit
+   * edge and a shadow in it. Measured over the marked area only. */
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const v of onDark.luma) {
+    if (Math.abs(v - onDark.bgLuma) < 6) continue; // unmarked ground
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  assert.ok(hi - lo >= 100,
+    `the marked pixels span only ${(hi - lo).toFixed(0)}/255 of luma - the cell is one flat tone`);
 });
 
 test('the painter and the sampler agree about which row a cell is on', () => {

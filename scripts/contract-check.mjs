@@ -175,7 +175,7 @@ const CONTRACT = [
       'FENWICK_MARKET', 'FENWICK_CROSS', 'FENWICK_CENTRE',
       'GROUND_H', 'UPPER_H', 'FLOOR_T', 'FLOOR_RISE', 'DOOR_W', 'DOOR_H', 'WALL_T',
       'STAIR_RISE_MAX', 'STAIR_TREAD', 'STAIR_W',
-      'stairFlight', 'interiorPlan', 'shellHeight', 'allBuildings', 'landmarkOf',
+      'stairFlight', 'interiorPlan', 'storeyClear', 'shellHeight', 'allBuildings', 'landmarkOf',
       'footprintCorners', 'footprintDistance', 'footprintsOverlap', 'groundUnder',
       'isOverWater', 'townBank', 'enterableCounts'],
   },

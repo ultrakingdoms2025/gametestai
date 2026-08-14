@@ -85,6 +85,93 @@ function mulberry32(seed) {
   };
 }
 
+/**
+ * The halo's alpha, as a function of distance from the middle of its quad.
+ *
+ * ── The defect ─────────────────────────────────────────────────────────────
+ * `relics:glow` was an untextured `PlaneGeometry` with a flat additive colour
+ * on it, which is not a glow, it is a card: a bright square with a hard
+ * boundary all the way round, obvious the moment you walked up to one and -
+ * with bloom off - reading as dozens of plain white rectangles scattered over
+ * the landscape. Nothing was wrong with the blending or the placement. There
+ * was simply no falloff anywhere in the material, so every texel of the quad
+ * was as bright as the middle and the edge of the quad was the edge of the
+ * light.
+ *
+ * ── The shape ──────────────────────────────────────────────────────────────
+ * Smoothstep on the radius with a little gain, so there is a saturated core
+ * out to about a quarter of the quad and a long tail from there. Two
+ * properties matter and both are asserted in `relic-glow.test.mjs`:
+ *
+ *   - it reaches EXACTLY zero at d = 1 and stays there, so the quad's own
+ *     edge and its corners (d = 1.41) contribute nothing at all. That is what
+ *     removes the boundary; a falloff that still had 2% left at the rim would
+ *     leave a faint square in bloom, which is the same defect quieter.
+ *   - it never increases. A ramp with a bump in it reads as a ring.
+ *
+ * A function rather than a literal texture so it can be checked without a GPU,
+ * and a texture rather than a shader patch so the material stays a stock
+ * `MeshBasicMaterial` - see `_build` for why that matters to the program count.
+ *
+ * @param {number} d distance from the centre in half-widths: 0 at the middle,
+ *   1 at the edge of the quad, 1.41 at a corner.
+ */
+export function glowFalloff(d) {
+  const t = Math.max(0, Math.min(1, 1 - d));
+  return Math.min(1, 1.35 * t * t * (3 - 2 * t));
+}
+
+/** Edge of the halo texture, in texels. Small: it is a smooth ramp. */
+const GLOW_TEX = 64;
+/**
+ * How much wider the halo's QUAD is than the card it replaces.
+ *
+ * The old card was uniformly bright, so its quad and its halo were the same
+ * thing. `glowFalloff` is past half strength by d = 0.6, so at the same quad
+ * size the thing a player spots at range would be a little over half as wide
+ * as before. 1.7 puts the bright core back where it was and spends the rest on
+ * the tail. It costs nothing per frame: the same one instanced draw, the same
+ * instance count, a few more fragments each - all of them additive and most of
+ * them nearly transparent.
+ */
+const GLOW_SPREAD = 1.7;
+
+/**
+ * The halo texture: white, with `glowFalloff` in its alpha.
+ *
+ * A `DataTexture` rather than a canvas one because this file is imported by
+ * tests under Node, where there is no `document` to make a canvas with, and
+ * because a 64 px ramp written by hand is smaller than the code that would
+ * draw it. White RGB throughout: the colour is the material's, in HDR, and
+ * multiplying it by a ramp as well would darken the core toward the tail
+ * instead of just thinning it.
+ */
+function makeGlowTexture() {
+  const n = GLOW_TEX;
+  const data = new Uint8Array(n * n * 4);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const dx = ((x + 0.5) / n) * 2 - 1;
+      const dy = ((y + 0.5) / n) * 2 - 1;
+      const i = (y * n + x) * 4;
+      data[i] = 255; data[i + 1] = 255; data[i + 2] = 255;
+      data[i + 3] = Math.round(glowFalloff(Math.hypot(dx, dy)) * 255);
+    }
+  }
+  const tex = new THREE.DataTexture(data, n, n, THREE.RGBAFormat);
+  tex.name = 'relic.glow.falloff';
+  /* Mipmaps and a linear filter are not optional here: a relic is spotted at
+   * a hundred metres, where this quad is a few pixels across, and a nearest
+   * sampled ramp at that size twinkles as the camera moves. */
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function hashString(str) {
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) {
@@ -167,11 +254,22 @@ export class Relics {
 
     /* Halo: an additive billboard, authored in HDR for the same reason the
      * arrow tracer is - a relic on a sunlit parapet has to out-contrast the
-     * stone behind it or it is invisible at the range you spot it from. */
+     * stone behind it or it is invisible at the range you spot it from.
+     *
+     * The falloff is a `map`, and that choice is the cheap one on purpose. The
+     * alternative was an `onBeforeCompile` patch computing the ramp from `vUv`,
+     * which would have made this the only `MeshBasicMaterial` in the game with
+     * a custom program cache key, for a ramp that is four instructions and
+     * eight bytes of texture per texel. As a stock material with a map it is
+     * still ONE draw call for every relic in the world, still one material, and
+     * the program it compiles is a variant three already builds for every other
+     * mapped basic material in the scene. */
     const gGeo = new THREE.PlaneGeometry(1, 1);
+    const gTex = makeGlowTexture();
     const gMat = new THREE.MeshBasicMaterial({
       name: 'relic.glow',
       color: new THREE.Color(3.2, 1.9, 0.7),
+      map: gTex,
       transparent: true,
       opacity: 0.9,
       blending: THREE.AdditiveBlending,
@@ -187,7 +285,7 @@ export class Relics {
     this.glow.count = 0;
     this.scene.add(this.glow);
 
-    this._disposables = [geo, mat, gGeo, gMat];
+    this._disposables = [geo, mat, gGeo, gMat, gTex];
   }
 
   /* ------------------------------------------------------------------ */
@@ -316,10 +414,17 @@ export class Relics {
       this.mesh.setMatrixAt(n++, _rm);
 
       if (cam) {
-        // Camera-facing, distance-scaled: the halo is what you spot from the
-        // far side of the souk, so it must not shrink to nothing.
+        /* Camera-facing, distance-scaled: the halo is what you spot from the
+         * far side of the souk, so it must not shrink to nothing.
+         *
+         * `GLOW_SPREAD` is what pays for the falloff. The card used to be
+         * bright to its own edge, so the quad's width WAS the halo's width;
+         * with a ramp on it the visible core is about half that, and a relic
+         * would have gone quieter at exactly the range it exists to be seen
+         * from. The quad grows, the core stays about the size it always was,
+         * and what is new is the soft tail around it. */
         const d = _rv.distanceTo(cam.position);
-        const gs = Math.min(2.6, 0.5 + d * 0.045);
+        const gs = Math.min(2.6, 0.5 + d * 0.045) * GLOW_SPREAD;
         _rm.copy(cam.matrixWorld);
         _rm.setPosition(_rv);
         _rm.scale(_rs.set(gs, gs, gs));

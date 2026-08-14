@@ -57,7 +57,7 @@ import { medievalHeight, riverZ, WATER_Y, rectDist } from '../terrain/MedievalHe
 /* ------------------------------------------------------------------ */
 
 /**
- * Clear height of a ground storey, floor surface to ceiling underside.
+ * Clear height of a DOMESTIC ground storey, floor surface to ceiling underside.
  *
  * 2.85 m rather than something tighter because the player capsule is 1.75 m
  * and the camera sits near the top of it: at 2.4 m of clear height the ceiling
@@ -66,6 +66,9 @@ import { medievalHeight, riverZ, WATER_Y, rectDist } from '../terrain/MedievalHe
  * with joists under it and the eye reads the joists as the ceiling line; the
  * shells here carry the same detail, so the same rule applies with a little
  * more room for the halls.
+ *
+ * Not every shell is domestic. See `storeyClear`, which is what `interiorPlan`
+ * actually asks - this is the answer it gets for a house.
  */
 export const GROUND_H = 2.85;
 /** Clear height of an upper storey. Lower, as every real one is. */
@@ -155,7 +158,7 @@ export function interiorPlan(b) {
   const stairs = [];
   let y = FLOOR_RISE;
   for (let s = 0; s < b.storeys; s++) {
-    const clear = s === 0 ? GROUND_H : UPPER_H;
+    const clear = storeyClear(b, s);
     floors.push({ storey: s, floorY: y, ceilY: y + clear, clear });
     if (s < b.storeys - 1) {
       const next = y + clear + FLOOR_T;
@@ -232,6 +235,71 @@ export function hasChimney(b) {
   if (b.roof === 'flat' || b.roof === 'none') return false;
   if (b.kind === 'barn' || b.kind === 'shed') return false;
   return !ECCLESIASTICAL.has(b.kind);
+}
+
+/**
+ * How much of its own clear span an ecclesiastical volume stands to.
+ *
+ * 0.8 is deliberately modest - a real abbey nave is one and a half to two
+ * times its width to the vault - and it is what keeps St Ceolwine's ridge
+ * within a couple of metres of the bell tower standing four metres off its
+ * west end. Raising it further is a decision about the SKYLINE, not about the
+ * room, and the tower is what pays for it.
+ */
+export const ECCLESIASTICAL_SPAN = 0.8;
+/**
+ * Ceiling on the rule above.
+ *
+ * Nothing in the table reaches it - the abbey nave, the widest of them, comes
+ * out at 8.90 - so it costs nothing today and stops a 30 m span authored later
+ * from quietly building a cathedral over a town of cottages.
+ */
+export const ECCLESIASTICAL_H_MAX = 9.0;
+
+/**
+ * Clear height of one storey of a shell, floor surface to ceiling underside.
+ *
+ * ── The defect ─────────────────────────────────────────────────────────────
+ * St Ceolwine's abbey church is 34 x 12 m and took `GROUND_H` like a cottage.
+ * A raycast up from the middle of the nave floor hit `medieval:plank` at
+ * 3.19 m - 2.85 m of clear height under an 11.1 m span, which is a corridor
+ * with a boarded ceiling and not a nave. Worse, it propagated: the arcade
+ * `_landmarkInterior` builds is derived FROM the clear height, so the piers
+ * came out as 2.35 m drums that met the deck almost as soon as they left the
+ * floor. Nothing was wrong anywhere; the storey height of a domestic
+ * vernacular was simply being applied to a building that has no domestic
+ * vernacular, because `interiorPlan` had only the one number to give.
+ *
+ * ── The rule ───────────────────────────────────────────────────────────────
+ * An ecclesiastical volume takes its height from its own SPAN. A nave is
+ * proportioned rather than dimensioned, and a proportion is the one thing that
+ * is right for the 11.1 m abbey nave, for the 5.5 m chapel at Blackmarch and
+ * for the belfry stage of a 9 m tower without any of the three being a special
+ * case in this file. `ECCLESIASTICAL` already exists to say which buildings
+ * are churches - it is what stops them growing chimneys - so it is the hook
+ * here too, and a chapel added to the table later is right by construction.
+ *
+ * ── Why only the TOP storey ────────────────────────────────────────────────
+ * A tower is stacked chambers with the tall one on top, not three tall ones:
+ * the ringing chamber and the room under it are rooms. That is also the half
+ * of this that could break something. A flight climbs from storey s to s+1
+ * through storey s's clear height, so raising a LOWER storey lengthens the
+ * flight that serves it - and at 0.30 m of going per step, the 9 x 9 m bell
+ * tower runs out of depth for its dog-leg long before it runs out of wall.
+ * Raising only the last storey leaves every staircase in the world at exactly
+ * the run it already had, which is why nothing here can strand a stair.
+ *
+ * @param {{kind?:string, w:number, d:number, storeys?:number}} b
+ * @param {number} storey 0-based
+ */
+export function storeyClear(b, storey) {
+  const storeys = b.storeys ?? 1;
+  const domestic = storey === 0 ? GROUND_H : UPPER_H;
+  if (!ECCLESIASTICAL.has(b.kind) || storey !== storeys - 1) return domestic;
+  // The span the roof has to cross, inside the walls: the short axis of the
+  // plan. A 34 m nave is not 34 m tall, it is as tall as it is WIDE.
+  const span = Math.min(b.w, b.d) - 2 * WALL_T;
+  return Math.max(domestic, Math.min(ECCLESIASTICAL_H_MAX, span * ECCLESIASTICAL_SPAN));
 }
 
 /**

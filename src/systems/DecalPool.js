@@ -389,8 +389,31 @@ function paintBlood(a, h, r, ox, oy, rnd) {
  * along, and slightly curved, so it looks dragged rather than stamped. The
  * height channel cuts DOWN (dark) with a raised lip either side, which is what
  * gives the normal map its groove.
+ *
+ * ── Why the cut is PALE ────────────────────────────────────────────────────
+ * It was dark: a `rgba(52,44,38,0.86)` cut with a darker core, over a pale lip
+ * laid at 0.30 alpha and then almost entirely covered by the cut itself. That
+ * is a mark drawn for a light wall, and the whole point of this decal is that a
+ * bear or a wolf leaves it - which happens in woodland, on undergrowth that is
+ * already darker than the darkest ink in the cell. A dark mark on dark ground
+ * is not a subtle mark, it is an absent one: the stamp landed, the atlas cell
+ * was right, and there was nothing to see.
+ *
+ * So the mark now carries its own contrast rather than borrowing the surface's:
+ *
+ *   1. a soft dark scuff under everything - the pad, and dragged dust;
+ *   2. a dark outline stroke, WIDER than the cut, which is the shadow in the
+ *      torn edge and is what makes the mark read on pale stone;
+ *   3. the cut itself, pale - torn material, bark and root and split wood,
+ *      which is what is actually exposed when something opens the ground;
+ *   4. a mid-tone down the middle of it, so a gouge is not a flat white line;
+ *   5. blood, unchanged.
+ *
+ * Light on dark and dark on light, from one cell, which is what a shared atlas
+ * across five worlds needs. `beast-combat.test.mjs` rasterises this cell over
+ * both a dark and a light ground and asserts both components survive.
  */
-function paintClaw(a, h, r, ox, oy, rnd) {
+export function paintClaw(a, h, r, ox, oy, rnd) {
   const cx = ox + CELL * 0.5;
   const cy = oy + CELL * 0.5;
   // The whole set is rotated a little so repeated marks on one wall never read
@@ -402,8 +425,8 @@ function paintClaw(a, h, r, ox, oy, rnd) {
 
   // A faint scuff under everything: the pad, and dust dragged along with it.
   const scuff = a.createRadialGradient(cx, cy, 12, cx, cy, 104);
-  scuff.addColorStop(0, 'rgba(48,42,38,0.20)');
-  scuff.addColorStop(1, 'rgba(48,42,38,0)');
+  scuff.addColorStop(0, 'rgba(44,38,33,0.30)');
+  scuff.addColorStop(1, 'rgba(44,38,33,0)');
   a.fillStyle = scuff;
   a.beginPath();
   a.ellipse(cx, cy, 104, 74, set, 0, Math.PI * 2);
@@ -426,23 +449,25 @@ function paintClaw(a, h, r, ox, oy, rnd) {
     const [x2, y2] = at(len * 0.5, spread + fan * 20);
     const width = 9 - Math.abs(i - 1.5) * 1.6;
 
-    // Torn lip: a wide, pale stroke under the cut itself.
-    a.strokeStyle = 'rgba(196,186,172,0.30)';
-    a.lineWidth = width * 2.1;
+    // The shadow in the torn edge: wider than the cut, so it survives as an
+    // outline on either side of it. This is the half that reads on pale stone.
+    a.strokeStyle = 'rgba(22,18,15,0.72)';
+    a.lineWidth = width * 2.6;
     a.beginPath();
     a.moveTo(x0, y0);
     a.quadraticCurveTo(x1, y1, x2, y2);
     a.stroke();
 
-    // The cut: dark, and darker still down the middle.
-    a.strokeStyle = 'rgba(52,44,38,0.86)';
-    a.lineWidth = width;
+    // The cut: pale torn material, with a mid-tone down the middle so it is a
+    // gouge rather than a chalk line. This is the half that reads on soil.
+    a.strokeStyle = 'rgba(224,215,197,0.94)';
+    a.lineWidth = width * 1.3;
     a.beginPath();
     a.moveTo(x0, y0);
     a.quadraticCurveTo(x1, y1, x2, y2);
     a.stroke();
-    a.strokeStyle = 'rgba(16,13,11,0.95)';
-    a.lineWidth = width * 0.45;
+    a.strokeStyle = 'rgba(128,114,97,0.62)';
+    a.lineWidth = width * 0.5;
     a.beginPath();
     a.moveTo(x0, y0);
     a.quadraticCurveTo(x1, y1, x2, y2);
@@ -464,15 +489,18 @@ function paintClaw(a, h, r, ox, oy, rnd) {
       a.fill();
     }
 
-    // Height: raised lip, then the groove cut into it.
+    /* Height: raised lip, then the groove cut into it. Both widths follow the
+     * albedo's - the lip the dark outline, the groove the pale cut - so the
+     * normal map's relief lands on the same pixels the eye is reading as the
+     * edge of the gouge rather than a third of the way across it. */
     h.strokeStyle = 'rgb(178,178,178)';
-    h.lineWidth = width * 2.1;
+    h.lineWidth = width * 2.6;
     h.beginPath();
     h.moveTo(x0, y0);
     h.quadraticCurveTo(x1, y1, x2, y2);
     h.stroke();
     h.strokeStyle = 'rgb(24,24,24)';
-    h.lineWidth = width * 0.8;
+    h.lineWidth = width * 1.05;
     h.beginPath();
     h.moveTo(x0, y0);
     h.quadraticCurveTo(x1, y1, x2, y2);
@@ -480,7 +508,7 @@ function paintClaw(a, h, r, ox, oy, rnd) {
 
     // Roughness: freshly torn material is rough, the wet blood is not.
     r.strokeStyle = 'rgb(246,246,246)';
-    r.lineWidth = width * 2.1;
+    r.lineWidth = width * 2.6;
     r.beginPath();
     r.moveTo(x0, y0);
     r.quadraticCurveTo(x1, y1, x2, y2);

@@ -13,6 +13,7 @@ import {
   DECK_R, HULL_R, WALL_H, CEIL_Y, PLAZA_R, ROAD_W, LOOP_R, LOOP_Y, PORTAL_R,
   OCULUS_R, WINDOW_HALF, GATEWAY_DECK_Y, PYLON_OFF,
   WALKWAY, WALKWAY_DECK_TOP, walkwayStairFlight, walkwayRailRuns,
+  RAMP_PROXY_FLAG, RAMP_PROXY_NAME,
   ZONES, ZONE_R, ZONE_CENTRE_R, LINK_LEN,
   DOME_R, DOME_WALL_H, DOME_APEX, domeHeightAt, WORLD_R,
   CHUNK_TRIS, PLANTING_TRIS, PLANTING_SPAN, collideCeilingAt,
@@ -3583,12 +3584,25 @@ export class StationWorld extends World {
   /**
    * A walkable ramp. Physics only rotates boxes about Y, so tilted surfaces go
    * through an invisible proxy mesh whose full world matrix is baked instead.
+   *
+   * ── Why the proxy is NAMED and FLAGGED ────────────────────────────────────
+   * These used to be anonymous - `visible === false` on a direct child of
+   * `world.group` was the entire signature - and the station audit's C4
+   * identified them by exactly that. `visible` belongs to the renderer, not to
+   * us: the boot shader rehearsal clears it across the whole world group for
+   * three frames (`gfx/RehearsalDraw.js`), and anything that reads C4 inside
+   * that window sees no ramp proxies at all and reports NO_RAMP_COLLIDER for
+   * every flight in the station - measured, 94 of 94, with `treadVsRamp` null
+   * so the misalignment check it exists for cannot fire either. An identity a
+   * renderer is entitled to toggle is not an identity. @see RAMP_PROXY_FLAG
    */
   _ramp(x, y, z, width, run, rise, yaw) {
     const len = Math.hypot(run, rise);
     const pitch = Math.atan2(rise, run);
     const proxy = new THREE.Mesh(new THREE.BoxGeometry(width, 0.5, len));
     proxy.visible = false;
+    proxy.name = RAMP_PROXY_NAME;
+    proxy.userData[RAMP_PROXY_FLAG] = true;
     proxy.position.set(x, y, z);
     proxy.rotation.set(0, yaw, 0, 'YXZ');
     proxy.rotateX(-pitch);
@@ -6170,25 +6184,53 @@ export class StationWorld extends World {
      * first. All four flights were identical, which is one mistake, not four.
      *
      * So the flight lands on the deck's outer EDGE at the height of its plate.
-     * `STAIR_R_OUTER` cannot move outward to keep the old pitch - the hub
-     * buildings begin at r = 91 on all four of these bearings - so the same
-     * rise over a 13 m run takes the pitch from 30.8 to 37.6 degrees and the
-     * drawn risers from 0.367 to 0.385 m. These flights are steep by any
-     * building code and always were; this is 5% steeper than what was there.
+     *
+     * ── ...and then it was too steep to climb ─────────────────────────────
+     * Paying for the landing by shortening the run to 13 m put the pitch at
+     * 37.6 degrees, which was written up as "5% steeper, the price of landing on
+     * the deck at all". It is 22% steeper, and it is the difference between a
+     * flight and a wall: measured on the running page, a civilian steered at the
+     * head of the bearing-30 flight from open deck walks to r = 88.07 and stops
+     * there for as long as you watch it. The claim that the foot could not move
+     * outward because "the hub buildings begin at r = 91" was also wrong - the
+     * deck is clear to r = 94.5 on all four bearings. The foot is at 92.8 now:
+     * a 17 m run at 30.5 degrees, topping out 0.8 m short of the deck edge with
+     * a flat landing over the last 0.8 (`WALKWAY.STAIR_LANDING` - a capsule
+     * cannot climb onto a slab's EDGE, and the flight used to arrive at one).
+     * All three properties hold at once. See the notes on
+     * `WALKWAY.STAIR_R_OUTER` and `WALKWAY.STAIR_LANDING` for the measurements.
+     *
+     * Driven end to end on the running page after the change: a civilian placed
+     * on open deck at r = 93.5 and steered at the promenade climbs the whole
+     * flight with the steering never braking and finishes standing on the plate
+     * at r = 74.4, y = 10.01.
      *
      * The arithmetic is `walkwayStairFlight`, so a Node test can check the
-     * flight meets the deck without building a world.
+     * flight meets the deck, is inside the climbable band, and has an open foot,
+     * without building a world.
      */
     const stepEntries = [];
-    const { rOuter, rInner, run, rise, pitch, rampSeat } = walkwayStairFlight();
+    const {
+      rOuter, rInner, rHead, run, rise, pitch, rampSeat, steps, landingR, landingHalf,
+    } = walkwayStairFlight();
     for (const deg of WALKWAY.STAIR_DEG) {
       const th = deg * DEG;
       const yaw = -th - Math.PI / 2;
-      const midR = (rOuter + rInner) / 2;
+      const midR = (rOuter + rHead) / 2;
       const cx = Math.cos(th) * midR, cz = Math.sin(th) * midR;
       this._ramp(cx, rampSeat, cz, WALKWAY.STAIR_W, run, rise, yaw);
 
-      const N = 26;
+      /* The landing, which is what makes the arrival walkable rather than
+       * merely coplanar. @see WALKWAY.STAIR_LANDING - a capsule climbing to a
+       * slab EDGE catches on it and stops 0.17 m short; a capsule climbing onto
+       * a flat plate at plate height simply walks on. */
+      const lx = Math.cos(th) * landingR, lz2 = Math.sin(th) * landingR;
+      B.at('grate', boxGeo(WALKWAY.STAIR_W, 0.3, landingHalf * 2, 1.6),
+        lx, DECK_TOP - 0.15, lz2, yaw);
+      this._solidRot(lx, DECK_TOP - 0.15, lz2, WALKWAY.STAIR_W / 2, 0.15, landingHalf, yaw);
+
+      // Step count follows the pitched run - see `WALKWAY.STAIR_GOING`.
+      const N = steps;
       for (let i = 0; i < N; i++) {
         const t = (i + 0.5) / N;
         const r = rOuter - t * run;
@@ -6203,7 +6245,7 @@ export class StationWorld extends World {
       for (const s of [-1, 1]) {
         const off = s * 2.5;
         const p0 = roadPos(deg, rOuter, off, 0, new THREE.Vector3());
-        const p1 = roadPos(deg, rInner, off, rise, new THREE.Vector3());
+        const p1 = roadPos(deg, rHead, off, rise, new THREE.Vector3());
         const mid = p0.clone().add(p1).multiplyScalar(0.5);
         const len = p0.distanceTo(p1);
         const rail = boxGeo(0.12, 0.12, len, 1);
@@ -9867,9 +9909,55 @@ export class StationWorld extends World {
       type: 'friendly',
       name,
       persona,
-      patrol: patrol ? patrol.map(([px, pz]) => new THREE.Vector3(px, 0.2, pz)) : undefined,
+      /* A waypoint may carry its own height. Everything on the hub deck omits
+       * it and gets 0.2 as it always has; the promenade route below needs it,
+       * because `_pickWanderTarget` resolves the ground at a waypoint by
+       * probing from `wp.y + 6` and a walkway 10 m up is not in that window
+       * from a y of 0.2. */
+      patrol: patrol ? patrol.map(([px, pz, py]) => new THREE.Vector3(px, py ?? 0.2, pz)) : undefined,
       ...extra,
     });
+
+    /**
+     * A route that goes up a stair flight, walks the promenade, and comes back.
+     *
+     * ── Why this exists ───────────────────────────────────────────────────
+     * Nothing in this world had ever routed anybody upstairs. Measured on the
+     * running station, all 68 characters were below y = 3 and not one had been
+     * on the walkway loop, which is 10 m up and is the single largest piece of
+     * circulation on the ring. Making the flights climbable (see
+     * `WALKWAY.STAIR_R_OUTER`, and the steering and grounding fixes in
+     * `Navigation`/`NPC`) is a capability; nobody exercises a capability that
+     * nothing asks for.
+     *
+     * ── Why every waypoint is within two degrees of the flight's bearing ──
+     * `FriendlyNPC._pickWanderTarget` jumps one or two waypoints ahead at
+     * random and then STEERS STRAIGHT AT the one it picked - there is no route
+     * following, and a straight line between two arbitrary points on a 72 m
+     * ring leaves the ring. So this route is deliberately a corridor rather
+     * than a circuit: every point is inside the 5.4 m opening cut in the outer
+     * railing at this bearing (+-2.07 degrees at the deck edge), which means any
+     * straight line between any two of them stays over the flight or over the
+     * walkway deck. A character cannot pick a pair that walks it into a railing.
+     *
+     * Walking the loop all the way round is the larger version of this and it
+     * needs a route follower that honours waypoint ORDER. That is a change to
+     * how every character in the game moves, and it is not this.
+     */
+    const promenadeRoute = (deg) => {
+      const P = (r, off, y) => {
+        const p = roadPos(deg, r, off, y, new THREE.Vector3());
+        return [p.x, p.z, y];
+      };
+      return [
+        P(93, 0, 0.2),                         // hub deck, outboard of the foot
+        P(WALKWAY.STAIR_R_OUTER + 0.4, 0, 0.2),// standing at the bottom step
+        P(74, 0, WALKWAY_DECK_TOP),            // arrived, on the deck's outer half
+        P(72, -1.8, WALKWAY_DECK_TOP),         // along the promenade, inside the
+        P(72, 1.8, WALKWAY_DECK_TOP),          //   railing opening either way
+        P(70.5, 0, WALKWAY_DECK_TOP),          // the inner edge, looking over
+      ];
+    };
 
     /**
      * Hostile archetypes.
@@ -10017,6 +10105,21 @@ export class StationWorld extends World {
         128, -22,
         [[128, -22], [112, -22], [144, -20], [120, -14]]),
 
+      /* --- The promenade, which nobody had ever set foot on ---------------
+       *
+       * Two characters whose routes go UP a stair flight, onto the walkway loop
+       * and back down. @see promenadeRoute for why the routes are corridors on
+       * one bearing rather than circuits of the ring. */
+      ...[30, 210].map((deg, i) => {
+        const route = promenadeRoute(deg);
+        const [name, persona] = i === 0
+          ? ['Ceri Bardo',
+            'Walks the promenade loop on a fixed round - officially checking the deck grating and the handrail runs, actually because it is the only place on the ring with a view of the whole plaza at once. She knows the sightlines from up there better than anyone and will tell you exactly where to stand to watch a gateway fire.']
+          : ['Osman Reyes',
+            'Runs the sign and lamp maintenance round on the elevated walkway, up one flight and down the other twice a shift. Cheerfully fatalistic about the state of the soffit lighting, and convinced the loop is the last honestly-built structure on the ring.'];
+        return F(name, persona, route[0][0], route[0][1], route);
+      }),
+
       /* --- Merchants and a second quest desk on the commercial strip -----
        *
        * The strip is eighty metres of fully dressed shopfronts with nobody
@@ -10130,7 +10233,7 @@ export class StationWorld extends World {
      * authors rather than left to a default that cannot know:
      *
      *   hostiles   17 authored (10 hub + 7 construction), budget 18
-     *   civilians  40 authored (16 hub + 6 in each of the four zones),
+     *   civilians  42 authored (18 hub + 6 in each of the four zones),
      *              plus 6 gateway lorekeepers, budget 50
      *
      * The slack on each is deliberate - a spawn added to a zone builder should
@@ -10138,9 +10241,10 @@ export class StationWorld extends World {
      * civilian slots are what the manager's crowd filler spends on the standing
      * groups in the plaza (`_populateHubs`). At 46 the filler got nothing and
      * the plaza lost the little knots of people talking that make it read as
-     * occupied, which is the thing the filler exists for.
+     * occupied, which is the thing the filler exists for. The two promenade
+     * walkers took two of the four; the filler still has two.
      *
-     * 68 characters against `NPCManager.maxNPCs` of 72.
+     * 70 characters against `NPCManager.maxNPCs` of 72.
      *
      * What makes this affordable is the LOD that is already in place and not
      * anything new: past 135 m a character is not drawn at all, past 68 m it

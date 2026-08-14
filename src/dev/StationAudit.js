@@ -51,6 +51,10 @@ import {
   polarPoint, arcSeparation, crossingExists, roadMouthSamples, kerbLineSamples,
   triangleHeightAt, classifyRunBreak, escalatorDeltas, round,
 } from './StationAuditMath.js';
+/* The one thing this file imports from the world it audits, and deliberately:
+ * the ramp proxies' identity has to be defined once, beside the code that
+ * writes it. Restating it here is exactly how C4 went blind. */
+import { rampProxiesIn, WALKWAY } from '../worlds/station/StationKit.js';
 
 /* ------------------------------------------------------------------ */
 /* Which groups hold props, and what is never a prop                   */
@@ -614,6 +618,12 @@ function checkEscalators(world, physics, opts) {
   const PLINTH = 0.9, FLOOR_H = 3.9;
   const floorYOf = (f) => PLINTH + f * FLOOR_H;
   const ramps = rampProxies(world);
+  /* Say it out loud. "Every flight reports NO_RAMP_COLLIDER" and "the proxy
+   * collection came back empty" look identical in the findings list, and the
+   * first is a world defect while the second is an instrument failure. */
+  if (!ramps.length) {
+    skip(skipped, 'no ramp proxies collected at all - the flights cannot be measured against a collider', 1);
+  }
 
   for (let bi = 0; bi < banks.length; bi++) {
     const bank = banks[bi];
@@ -724,22 +734,29 @@ function checkEscalators(world, physics, opts) {
 }
 
 /**
- * The invisible `_ramp` proxies, which are what a player actually stands on.
+ * The `_ramp` proxies, which are what a player actually stands on.
  *
- * They are added straight to `world.group` as unnamed, invisible box meshes
- * (StationWorld.js `_ramp`) - no marker, no `userData`, nothing to look them up
- * by. Invisible + geometry that is a box + a tilted world matrix is the whole
- * signature there is.
+ * ── This used to identify them by `visible === false` ─────────────────────
+ * The old collection was "every invisible, non-instanced DIRECT child of
+ * `world.group`" - renderer state, plus an accident of where `_ramp` happens to
+ * parent them. Both halves failed. `gfx/RehearsalDraw.js forceDrawable` clears
+ * `visible` across the whole world group for the boot shader rehearsal, and
+ * measured against this world, running C4 inside that window collected ZERO
+ * proxies and reported `NO_RAMP_COLLIDER` for all 94 flights with
+ * `treadVsRamp: null` - so the tread-versus-collider misalignment the check
+ * exists to find could not fire at all. The same run outside the window
+ * collected all 94. An instrument that reads a different world depending on
+ * what the renderer is doing is not measuring the geometry.
+ *
+ * The proxies now carry `userData[RAMP_PROXY_FLAG]`, written where they are
+ * built, and the walk is a full `traverse` so a nested proxy is found too.
+ * Nothing in the renderer, the LOD banding or the rehearsal writes `userData`.
+ *
+ * Exported so it can be driven headlessly - see
+ * scripts/tests/station-ramp-proxies.test.mjs.
  */
-function rampProxies(world) {
-  const out = [];
-  for (const child of world.group.children) {
-    if (!child.isMesh || child.visible || child.isInstancedMesh) continue;
-    if (!child.geometry?.boundingBox) child.geometry?.computeBoundingBox?.();
-    if (!child.geometry?.boundingBox) continue;
-    out.push(child);
-  }
-  return out;
+export function rampProxies(world) {
+  return rampProxiesIn(world?.group);
 }
 
 /** The proxy whose centre is nearest the middle of a flight. */
@@ -828,7 +845,7 @@ function checkRunBreaks(world, physics, opts) {
       for (const sdeg of LOOP_STAIRS) {
         const reaches = crossingExists(sdeg, deg, LOOP_R, 2.5, kerbOff);
         if (!reaches) continue;
-        for (const s of kerbLineSamples(deg, LOOP_R, 88, kerbOff, side, 5)) {
+        for (const s of kerbLineSamples(deg, LOOP_R, WALKWAY.STAIR_R_OUTER, kerbOff, side, 5)) {
           push('avenue-kerb', `loop-stair-${sdeg}@${deg}/${side > 0 ? 'L' : 'R'}`, s.x, s.z, 0, 2.5, { r: round(s.r) });
         }
       }
@@ -836,8 +853,8 @@ function checkRunBreaks(world, physics, opts) {
   }
 
   // 3. Walkway-loop railing, at each of the four stair arrival points. The
-  //    flights climb from r = 88 in to r = LOOP_R, so they arrive across the
-  //    OUTER railing at LOOP_R + (width/2 - 0.15).
+  //    flights climb from `WALKWAY.STAIR_R_OUTER` in to the deck's outer EDGE,
+  //    so they arrive across the OUTER railing at LOOP_R + (width/2 - 0.15).
   const railOuter = LOOP_R + (6 / 2 - 0.15);
   const railInner = LOOP_R - (6 / 2 - 0.15);
   for (const sdeg of LOOP_STAIRS) {

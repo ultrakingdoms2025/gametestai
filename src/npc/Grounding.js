@@ -214,6 +214,52 @@ export function auditStanding(physics, position, hintY) {
 }
 
 /* ------------------------------------------------------------------------ */
+/* Standing on a SLOPE                                                       */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * How far above the vertical ground height a capsule's feet have to sit before
+ * the capsule stops intersecting a sloped surface.
+ *
+ * ── The defect this closes: characters slid down every ramp in the game ──
+ * A capsule's lowest point is the bottom of a sphere of radius `r` whose centre
+ * is `r` above the feet. Resting on FLAT ground that sphere is exactly tangent,
+ * which is why placing the feet at `groundHeight` has always worked. On a plane
+ * pitched at `p` the perpendicular distance from that same centre to the plane
+ * is `r * cos(p)`, not `r` - so feet placed at the vertical ground height leave
+ * the sphere `r * (1 - cos p)` INSIDE the slab, and `resolveCapsule` evicts it
+ * along the surface normal, which on a slope has a horizontal component
+ * pointing downhill.
+ *
+ * That eviction is not a transient. `NPC._followGround` puts the feet back on
+ * the ground height every step, so the character is re-buried every step and
+ * pushed downhill again: measured against the station's walkway flight
+ * (30.5 degrees, capsule radius 0.33), a steady 0.0231 m of downhill drift per
+ * fixed step, which is 1.39 m/s against a 1.4 m/s walk. A character aimed
+ * straight up that flight climbed 1.7 m in fourteen seconds and then fell off
+ * the side of it. Every ramp, stair flight and escalator in every world was on
+ * the same treadmill; the steeper the flight, the faster it ran.
+ *
+ * Lifting the feet by `r * (1/cos p - 1)` puts the sphere exactly tangent to
+ * the slope, so there is nothing for the solver to evict. `normalY` IS `cos p`,
+ * which is why the ground normal is what this takes rather than an angle. Flat
+ * ground gives `normalY === 1` and a lift of exactly zero, so nothing that was
+ * standing on a floor moves by so much as a float.
+ *
+ * @param {number} radius capsule radius
+ * @param {number} normalY Y component of the surface normal (= cos of pitch)
+ * @returns {number} metres to add to the ground height
+ */
+export function capsuleSlopeLift(radius, normalY) {
+  if (!(radius > 0) || !Number.isFinite(normalY)) return 0;
+  // Anything below the walkable threshold is a wall being brushed rather than a
+  // floor being stood on; clamping there stops a grazing contact with a facade
+  // asking for an absurd lift.
+  const ny = Math.min(1, Math.max(WALKABLE_NORMAL_Y, normalY));
+  return radius * (1 / ny - 1);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Reachability - "could this character have walked to that height?"          */
 /* ------------------------------------------------------------------------ */
 

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { COLLISION_LAYER } from '../physics/Physics.js';
-import { waterDepthAt, isDeepWater, WADE_DEPTH } from './Grounding.js';
+import { waterDepthAt, isDeepWater, WADE_DEPTH, WALKABLE_NORMAL_Y } from './Grounding.js';
 
 /**
  * Per-agent steering.
@@ -102,6 +102,36 @@ const WATER_TRACK = 6;
 const WATER_DECAY = 1.5;
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+/**
+ * Is this probe hit a walking surface rather than something to steer around?
+ *
+ * ── The defect this closes ───────────────────────────────────────────────
+ * Nothing in this game ever climbed a flight of stairs, an escalator or a ramp,
+ * and this is why. The probe fan is a fan of HORIZONTAL raycasts from shin and
+ * hip height, and a slope in front of a character's shins is a solid surface a
+ * horizontal ray runs into - so every ramp in every world read to the steering
+ * as a wall, and the response to a wall is to brake and slide along it. Measured
+ * on the station: a civilian steered at the head of the walkway flight at
+ * bearing 30, starting from open deck, walks in to the bottom step and stays
+ * there - 22 s with `avoidBrake` oscillating between 0.30 and 0.62, `blocked`
+ * latching on and off, and its height never leaving the deck. It was sliding
+ * along the foot of the stair exactly as designed. The crowd's whole population
+ * sat under y = 3 in a world whose promenade is at 10.
+ *
+ * A surface whose normal points up is floor. The threshold is the one
+ * `Grounding` already uses to decide what a character may stand on, so "the
+ * steering will walk at it" and "the grounding will hold it up" are the same
+ * question answered by the same number - which is the property that stops this
+ * becoming a second, disagreeing definition of walkable.
+ *
+ * Steep faces are unaffected: a wall's normal has `y` near zero, and a slope too
+ * steep to stand on still brakes, which is what should happen to a character
+ * about to walk into a cliff.
+ */
+function isFloorHit(hit) {
+  return (hit?.normal?.y ?? 0) >= WALKABLE_NORMAL_Y;
+}
 
 /** Probe fan: angle from forward (radians) and reach multiplier. */
 const PROBES = [
@@ -316,7 +346,8 @@ export class Navigation {
     _clDir.multiplyScalar(1 / dist);
     _clOrigin.set(from.x, from.y + 1.0, from.z);
     const hit = this.physics.raycast(_clOrigin, _clDir, dist, COLLISION_LAYER.WORLD);
-    return !hit;
+    // A floor is not an obstruction, and a ramp is a floor. @see isFloorHit
+    return !hit || isFloorHit(hit);
   }
 
   /**
@@ -468,7 +499,10 @@ export class Navigation {
     const sin = Math.sin(p.angle);
     _pbDir.set(fx * cos - fz * sin, 0, fx * sin + fz * cos).normalize();
     const len = reach * p.reach;
-    const hit = this.physics.raycast(_pbOrigin, _pbDir, len, COLLISION_LAYER.WORLD);
+    const raw = this.physics.raycast(_pbOrigin, _pbDir, len, COLLISION_LAYER.WORLD);
+    // A ramp, a stair flight or a hillside is somewhere to walk, not something
+    // to steer around. @see isFloorHit
+    const hit = raw && isFloorHit(raw) ? null : raw;
     if (hit) {
       this._probeHits[i] = 1 - hit.distance / len;
       this._probeNormals[i].copy(hit.normal);
@@ -485,7 +519,12 @@ export class Navigation {
       _pbOrigin.y = position.y + 0.32;
       _pbDir.set(fx, 0, fz);
       const low = this.physics.raycast(_pbOrigin, _pbDir, reach * 0.7, COLLISION_LAYER.WORLD);
-      if (low) this._probeHits[0] = Math.max(this._probeHits[0], 1 - low.distance / (reach * 0.7));
+      // The low probe is the one a ramp fools hardest - the foot of a 30 degree
+      // flight is 0.55 m in front of a character's shins - so it gets the same
+      // floor test the fan does.
+      if (low && !isFloorHit(low)) {
+        this._probeHits[0] = Math.max(this._probeHits[0], 1 - low.distance / (reach * 0.7));
+      }
     }
 
     this._slideLock = Math.max(0, this._slideLock - dt);

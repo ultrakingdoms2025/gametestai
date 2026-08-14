@@ -18,9 +18,19 @@
  *   OVERLAP     two boxes sharing exactly 0.50 m3
  *   NO_COLLIDER a drawn box with nothing registered in physics
  *   ESCALATOR   one flight's treads nudged 0.10 m out of alignment
+ *   ESCALATOR   the same nudge, injected while `visible` is forced true across
+ *               the world group - see case 7
  *
  * ...and one CONTROL box, placed correctly, which must NOT be reported by C1
  * or C2. A detector that flags everything passes the first five and fails this.
+ *
+ * ── The gate has to model the STATE the audit runs in, not just the world ──
+ * Every case but the last runs against a settled page, and that is how C4 went
+ * blind for two phases without this file noticing: it identified the ramp
+ * colliders by `visible === false`, the boot shader rehearsal clears `visible`
+ * across the whole world group, and inside that window the check reported
+ * NO_RAMP_COLLIDER for all 94 flights while a real 0.10 m misalignment underneath
+ * went unmeasured. Case 7 injects the identical defect inside that window.
  *
  * ── This one DOES mutate the world ────────────────────────────────────────
  * Unlike the audit itself, which is strictly pure-read, this has to change the
@@ -33,6 +43,7 @@
 import * as THREE from 'three';
 import { auditStation } from './StationAudit.js';
 import { occKeyOf, OCC_CELL } from '../worlds/station/StationKit.js';
+import { forceDrawable } from '../gfx/RehearsalDraw.js';
 
 const TOL = 0.01;
 
@@ -244,6 +255,50 @@ export async function runSelfTest(game) {
             ? `treadVsFloor moved by ${dBottom?.toFixed(3)} (bottom) / ${dTop?.toFixed(3)} (top), expected 0.100`
             : 'C4 did not measure bank 0 run 0',
         });
+
+        /* 7. The SAME defect, injected while the renderer has every mesh in the
+         * world forced visible.
+         *
+         * ── Why the gate needed this case ─────────────────────────────────
+         * Cases 1-6 all run against a settled page, and a settled page is not
+         * the only state the audit is ever read in. C4 identified the tilted
+         * ramp colliders by `visible === false`, which is renderer state:
+         * `forceDrawable` clears it across the whole world group for the boot
+         * shader rehearsal, and inside that window C4 collected zero proxies
+         * out of 94, reported NO_RAMP_COLLIDER for every flight on the station,
+         * and left `treadVsRamp` null - so a 0.10 m tread misalignment sitting
+         * right under it was invisible. Case 6 passed throughout. An acceptance
+         * gate that only ever models one state of the world certifies the
+         * instrument for that state and no other, which is how this survived.
+         *
+         * `forceDrawable` is the real thing rather than a hand-written loop, so
+         * this case tracks the rehearsal rather than a memory of it, and its
+         * restore is exact. */
+        const restoreVisible = forceDrawable([world.group]);
+        try {
+          const forcedBase = escalatorRun(auditStation(game, { checks: ['C4'] }), 0, 0);
+          for (const [o] of touched) arr[o] += 0.10;
+          bank.mesh.instanceMatrix.needsUpdate = true;
+          const forcedNudged = escalatorRun(auditStation(game, { checks: ['C4'] }), 0, 0);
+          for (const [o] of touched) arr[o] -= 0.10;
+          bank.mesh.instanceMatrix.needsUpdate = true;
+
+          const sawRamp = !!forcedBase?.rampFound;
+          const dRamp = forcedBase && forcedNudged
+            ? forcedNudged.bottom.deltas.treadVsRamp - forcedBase.bottom.deltas.treadVsRamp
+            : null;
+          cases.push({
+            name: 'ESCALATOR nudge caught with `visible` forced true',
+            pass: sawRamp && near(dRamp, 0.10),
+            detail: !forcedBase || !forcedNudged
+              ? 'C4 did not measure bank 0 run 0 inside the forced-visible window'
+              : !sawRamp
+                ? 'the ramp collider was not found at all - C4 is blind inside a rehearsal frame'
+                : `treadVsRamp moved by ${dRamp?.toFixed(3)}, expected 0.100`,
+          });
+        } finally {
+          restoreVisible();
+        }
       }
     }
 

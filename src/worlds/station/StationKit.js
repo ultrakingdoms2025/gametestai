@@ -32,6 +32,57 @@ const _scl = new THREE.Vector3(1, 1, 1);
 export const DEG = Math.PI / 180;
 
 /* ------------------------------------------------------------------ */
+/* Tilted collision proxies                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How a `StationWorld._ramp` proxy says what it is.
+ *
+ * Physics only rotates boxes about Y, so every pitched walking surface in the
+ * station - the escalator flights, the tower stairs, the walkway's stair
+ * flights, the zone ramps - is collided by an invisible, fully-transformed box
+ * mesh. The audit has to be able to find those to measure them against the
+ * treads drawn on top, and it used to find them by their *renderer* state:
+ * "an invisible, non-instanced, direct child of `world.group`". Two things are
+ * wrong with that and both have bitten:
+ *
+ *   `visible` is not ours. `gfx/RehearsalDraw.js forceDrawable` clears it
+ *   across the whole world group for the boot shader rehearsal, and an audit
+ *   run inside that window matches nothing at all.
+ *
+ *   "direct child" is an accident of where `_ramp` happens to parent them, and
+ *   nothing stops a future builder nesting one inside its own group.
+ *
+ * A flag in `userData` is neither. Nothing in the renderer, the LOD banding or
+ * the rehearsal touches it.
+ */
+export const RAMP_PROXY_FLAG = 'rampProxy';
+/** Human-readable counterpart, so a proxy is identifiable in a scene dump. */
+export const RAMP_PROXY_NAME = 'ramp-proxy';
+
+/**
+ * Every tilted collision proxy under `root`, however it is parented.
+ *
+ * Exported from the kit rather than kept in the audit so the producer and the
+ * consumer of the flag are written next to each other - which is the whole of
+ * why the old signature was allowed to drift out of step with the renderer.
+ *
+ * @param {{ traverse?: Function }} root usually `world.group`
+ * @returns {Array<any>} the proxy meshes, each with a computed bounding box
+ */
+export function rampProxiesIn(root) {
+  const out = [];
+  if (!root?.traverse) return out;
+  root.traverse((o) => {
+    if (!o.isMesh || !o.userData?.[RAMP_PROXY_FLAG]) return;
+    if (!o.geometry?.boundingBox) o.geometry?.computeBoundingBox?.();
+    if (!o.geometry?.boundingBox) return;
+    out.push(o);
+  });
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
 /* Layout - every builder reads these so the map stays coherent        */
 /* ------------------------------------------------------------------ */
 
@@ -71,10 +122,117 @@ export const WALKWAY = {
   RAIL_INSET: 0.15,
   /** Bearings of the four radial stair flights, in degrees. */
   STAIR_DEG: [30, 150, 210, 330],
-  /** Foot of a flight, on the open deck. */
-  STAIR_R_OUTER: 88,
+  /**
+   * Foot of a flight, on the open deck.
+   *
+   * ── This was 88, and 88 is what made the flights unclimbable ───────────
+   * Landing the flight on the deck EDGE rather than on its centreline was the
+   * right fix and is not being undone; taking the run from 16 m to 13 m to pay
+   * for it was not. It put the pitch at 37.6 degrees, and it was recorded at the
+   * time as "5% steeper, which is the price of landing on the deck at all".
+   * That was wrong twice: it is 22% steeper, and it is not a cosmetic number.
+   * Measured on the running page, a civilian steered at the head of the flight
+   * at bearing 30 from open deck walks in to r = 88.07 and stops there - 22 s of
+   * simulation, `avoidBrake` oscillating 0.30-0.62 with `blocked` latching, y
+   * never leaving 0. The steering probe fan reads a 37.6 degree slab in front of
+   * a character's shins as a wall, because at that pitch it IS one as far as a
+   * horizontal raycast is concerned.
+   *
+   * The note also said the foot could not move outward because "the hub
+   * buildings begin at r = 91 on all four of these bearings". They do not. Swept
+   * on the running page at all four bearings, across the flight's full 5.2 m
+   * width (+-2.6 m, which covers the stringers), the hub deck is solid at y = 0
+   * with nothing standing on it and nothing overhead from r = 88 continuously
+   * out to r = 94.5. The first thing in the way is an arcade soffit at bearing
+   * 30 only, at r = 94 and 2.04 m up.
+   *
+   * So the foot goes out to 92.8: a 17 m run, 30.5 degrees, which is the
+   * station's own escalator pitch (Tower.js `ESC_RISE_RUN`, 30 degrees) to
+   * within half a degree, and still leaves 1.2 m of open deck outboard of the
+   * bottom step to stand on before the nearest obstruction. Both halves hold -
+   * the flight lands on the deck plate AND it is climbable.
+   *
+   * (The 17 m is the PITCHED run, 92.8 in to 75.8; the last 0.8 m from 75.8 to
+   * the deck edge at 75 is a flat landing - see `STAIR_LANDING`.)
+   */
+  STAIR_R_OUTER: 92.8,
+  /**
+   * A flat landing between the top of the pitch and the deck's edge.
+   *
+   * ── Without it the last 0.17 m of the climb is unwalkable ──────────────
+   * The ramp's top face and the deck plate are coplanar at r = 75, so on paper
+   * the flight arrives flush. A capsule cannot get there. The deck collider is
+   * a slab whose outer FACE is vertical, and a character climbing the ramp
+   * meets that face's top edge from below: the nearest point on the slab is the
+   * edge, the push is from the edge toward the capsule centre - outward and
+   * only slightly up - and the character parks against it. Measured on the
+   * running page, a civilian climbed the whole flight cleanly with the steering
+   * never braking, arrived at r = 75.38 and y = 9.84 (0.165 m under the plate),
+   * and then milled about there for 25 s at full walking speed without ever
+   * getting on.
+   *
+   * The general problem is that a character has no step-up: the ground follower
+   * pins its feet to whatever surface is under its own column, so nothing lifts
+   * it over a lip the way the player's `stepHeight` does. Giving every NPC a
+   * step-up is a change to how every character in the game moves; making the
+   * flight arrive FLAT is a change to one flight. The pitched part now tops out
+   * 0.8 m short of the deck edge and a flat landing carries the last 0.8 m at
+   * plate height, so there is no upward-facing edge along the arrival at all.
+   * Driven again on the running page, the same civilian finishes standing on
+   * the plate at r = 74.4, y = 10.01.
+   *
+   * (A headless fixture does NOT reproduce the stall - a lone 20 m slab lets
+   * the capsule scramble over its edge where the real deck's 36 chord segments
+   * and railings did not - which is why the landing is pinned by its geometry
+   * in scripts/tests/station-walkway-stairs.test.mjs and by the measurement
+   * above, rather than by a headless negative that would be a lie.)
+   *
+   * This is the same thing `Tower.js` already does at the head of every
+   * escalator - "Top landing, bridging from the flight's head to the solid
+   * slab" - which is why the escalators do not have this problem.
+   */
+  STAIR_LANDING: 0.8,
+  /**
+   * How far out the hub deck stays open in front of a flight, MEASURED.
+   *
+   * Swept on the running page with `physics.groundHeight`, `containsPoint` and
+   * an upward ray, at all four stair bearings and at seven offsets across the
+   * flight's full width (+-2.6 m, which covers the stringers at +-2.5): the deck
+   * is solid at y = 0, with nothing standing on it and nothing overhead, from
+   * r = 88 continuously out to r = 94.5. The first obstruction is an arcade
+   * soffit on bearing 30 alone, at r = 94 and 2.04 m up; bearings 150, 210 and
+   * 330 are clear past 96.
+   *
+   * This is here so that "the bottom step has somewhere to be approached from"
+   * is a checkable statement rather than a hope, and so that moving
+   * `STAIR_R_OUTER` again has to come past a number somebody measured.
+   */
+  DECK_CLEAR_R: 94,
+  /**
+   * The steepest a flight may be and still be walked up.
+   *
+   * Not a building code - the honest reference is what this game's own
+   * characters can do. `Physics.resolveCapsule` calls a surface ground at
+   * `normal.y > 0.64` (50 degrees) and `Grounding.WALKABLE_NORMAL_Y` is 0.55
+   * (57 degrees), but neither of those is the binding constraint: the steering
+   * is, and the measurement above is the evidence. The station's escalators run
+   * at exactly 30 degrees and are traversed, so the band is pinned just above
+   * them rather than at a physics limit no character gets near.
+   */
+  STAIR_PITCH_MAX_DEG: 32,
   /** Clear width of a flight. */
   STAIR_W: 4.6,
+  /**
+   * Going of one step - the horizontal depth of a tread.
+   *
+   * The tread is drawn 0.62 m deep, so 0.5 m of going leaves a 0.12 m nosing
+   * and no daylight between consecutive treads. The step COUNT is derived from
+   * this and the run rather than fixed, which is the thing that was wrong with
+   * the fixed 26: 26 steps over a run that changed length silently changed the
+   * going with it, and a 13 m run had already stretched the riser from 0.367 to
+   * 0.385 m without anybody choosing that.
+   */
+  STAIR_GOING: 0.5,
   /** Half the opening cut in the outer railing at each flight: clears the
    *  4.6 m flight and its stringer rails at +-2.5 with a hand's breadth. */
   STAIR_GAP_HALF: 2.7,
@@ -86,8 +244,15 @@ export const WALKWAY_DECK_TOP = LOOP_Y + WALKWAY.GRATE_DY + WALKWAY.GRATE_T / 2;
 /** Where a flight arrives: the deck's OUTER edge, not its centreline. */
 export const WALKWAY_STAIR_R_INNER = LOOP_R + WALKWAY.WIDTH / 2;
 
+/** Where the PITCHED part stops: one landing short of the deck edge. */
+export const WALKWAY_STAIR_R_HEAD = WALKWAY_STAIR_R_INNER + WALKWAY.STAIR_LANDING;
+
 /**
  * One flight, fully determined by the constants above.
+ *
+ * `rInner` is where the flight ARRIVES - the deck's outer edge - and `rHead` is
+ * where it stops climbing, one landing further out. The pitch is measured over
+ * the pitched part only, because a landing is not part of a slope.
  *
  * `rampSeat` is the Y of the `_ramp` proxy's centre. That proxy is 0.5 m thick
  * and pitched, so its centre has to sit `0.25 / cos(pitch)` below the walking
@@ -98,10 +263,26 @@ export const WALKWAY_STAIR_R_INNER = LOOP_R + WALKWAY.WIDTH / 2;
 export function walkwayStairFlight() {
   const rOuter = WALKWAY.STAIR_R_OUTER;
   const rInner = WALKWAY_STAIR_R_INNER;
-  const run = rOuter - rInner;
+  const rHead = WALKWAY_STAIR_R_HEAD;
+  const landing = WALKWAY.STAIR_LANDING;
+  const run = rOuter - rHead;
   const rise = WALKWAY_DECK_TOP;
   const pitch = Math.atan2(rise, run);
-  return { rOuter, rInner, run, rise, pitch, rampSeat: rise / 2 - 0.25 / Math.cos(pitch) };
+  /* Steps follow the run so the drawn stair keeps its going whatever the run
+   * becomes. Rounded, then the going and the riser are read back off the
+   * rounded count, so the treads land ON the run rather than near it. */
+  const steps = Math.max(2, Math.round(run / WALKWAY.STAIR_GOING));
+  return {
+    rOuter, rInner, rHead, landing, run, rise, pitch,
+    pitchDeg: pitch / DEG,
+    steps,
+    going: run / steps,
+    riser: rise / steps,
+    rampSeat: rise / 2 - 0.25 / Math.cos(pitch),
+    /** Centre radius of the flat landing, and its half-depth. */
+    landingR: (rInner + rHead) / 2,
+    landingHalf: landing / 2,
+  };
 }
 
 /**

@@ -4,7 +4,7 @@ import { NPCAnimator } from './NPCAnimator.js';
 import { Navigation } from './Navigation.js';
 import {
   auditStanding, resolveSurfaceY,
-  reachableRise, walkedHeight, isStranded, reseatY,
+  reachableRise, walkedHeight, isStranded, reseatY, capsuleSlopeLift,
 } from './Grounding.js';
 
 /**
@@ -159,6 +159,8 @@ export class NPC {
     this._groundX = Infinity;
     this._groundZ = Infinity;
     this._airTime = 0;
+    /** Y of the last ground normal `resolveCapsule` reported. @see _followGround */
+    this._groundNormalY = 1;
     /**
      * The height this character actually WALKED to. @see walkedHeight
      *
@@ -433,6 +435,19 @@ export class NPC {
    * under the fixed-step rate. Probing from hip height means a character that
    * has sunk into a mesh still finds the surface it should be standing on.
    *
+   * ── On a SLOPE the throttle is tighter, and it has to be ────────────────
+   * The staleness a throttle buys is a height error, and on flat ground the
+   * height does not change between samples so the error is zero. On a 30 degree
+   * flight, 0.12 m of travel is 0.07 m of height: the character is that far
+   * INTO the ramp by the time the sample refreshes, `resolveCapsule` evicts it
+   * along the normal, and the horizontal half of that eviction is downhill. It
+   * is the same treadmill `capsuleSlopeLift` exists to stop, arriving through
+   * the sampler instead. Measured, a character climbing the station's walkway
+   * flight makes 0.67 m/s against a 1.4 m/s walk on the 0.12 m throttle.
+   *
+   * Only characters actually standing on something pitched pay for it, which
+   * anywhere in these worlds is a handful at a time.
+   *
    * @param {number} dt
    * @param {boolean} [force] ignore the throttle (spawn, respawn, teleport)
    */
@@ -440,10 +455,11 @@ export class NPC {
     this._groundTimer -= dt;
     const moved =
       Math.abs(this.position.x - this._groundX) + Math.abs(this.position.z - this._groundZ);
-    if (!force && this._groundTimer > 0 && moved < 0.12) return;
+    const onSlope = this._groundNormalY < 0.995;
+    if (!force && this._groundTimer > 0 && moved < (onSlope ? 0.03 : 0.12)) return;
     // Distant characters do not need per-step accuracy; nobody can see the
     // difference at 45 m and the ray cost scales with the crowd.
-    this._groundTimer = this.lod.distance > 45 ? 0.3 : 0.08;
+    this._groundTimer = this.lod.distance > 45 ? 0.3 : (onSlope ? 0.02 : 0.08);
     this._groundX = this.position.x;
     this._groundZ = this.position.z;
     const up = GROUND_PROBE_UP;
@@ -461,13 +477,24 @@ export class NPC {
    * meshes read as solid ground rather than as a trampoline.
    */
   _followGround(dt) {
+    /* Where the FEET go, which on a slope is not the ground height.
+     *
+     * A capsule seated with its feet exactly on a pitched surface has its
+     * bottom sphere buried in that surface, `resolveCapsule` evicts it along
+     * the normal, and the horizontal half of that eviction points downhill -
+     * every step, forever, because this method puts the feet straight back.
+     * Measured on the station's walkway flight that was 1.39 m/s of downhill
+     * drift against a 1.4 m/s walk, which is why no character in this game had
+     * ever climbed a ramp. @see capsuleSlopeLift - it returns exactly zero on
+     * flat ground, so nothing standing on a floor is affected. */
     const g = this._groundY;
     this.groundY = g;
     if (g === null) return false;
-    const dy = this.position.y - g;
+    const seat = g + capsuleSlopeLift(this.radius, this._groundNormalY);
+    const dy = this.position.y - seat;
     if (dy < -0.004) {
       // Below the surface: this is never acceptable, correct it outright.
-      this.position.y = g;
+      this.position.y = seat;
       if (this.velocity.y < 0) this.velocity.y = 0;
       this.grounded = true;
       return true;
@@ -475,8 +502,8 @@ export class NPC {
     if (dy < GROUND_STICK && this.velocity.y <= 0.05) {
       // Settle onto the surface instead of snapping, so a stale sample taken a
       // few centimetres back along a slope does not read as a bounce.
-      this.position.y += (g - this.position.y) * Math.min(1, 22 * dt);
-      if (this.position.y - g < 0.01) this.position.y = g;
+      this.position.y += (seat - this.position.y) * Math.min(1, 22 * dt);
+      if (this.position.y - seat < 0.01) this.position.y = seat;
       this.velocity.y = 0;
       this.grounded = true;
       return true;
@@ -500,6 +527,19 @@ export class NPC {
 
     const res = this.physics.resolveCapsule(this.position, this.radius, this.height * 0.92);
     this.grounded = res.grounded;
+    /* The pitch of whatever is underfoot, remembered for `_followGround`.
+     *
+     * The solver only reports a normal on the steps where it actually PUSHES,
+     * and once `_followGround` has seated the capsule tangent to a slope there
+     * is nothing left to push - so the reading arrives every other step or so
+     * on a ramp and not at all on a floor. Holding the last one outright would
+     * hover a character 5 cm above the deck it stepped out onto; taking the
+     * absence as flat would make the seat flicker and halve the climb. So it
+     * decays back to flat over about an eighth of a second, which is short
+     * enough to be invisible on a floor and long enough to bridge the gaps on
+     * a flight. */
+    if (res.grounded) this._groundNormalY = res.groundNormal.y;
+    else this._groundNormalY += (1 - this._groundNormalY) * Math.min(1, 8 * dt);
     if (res.grounded && this.velocity.y < 0) this.velocity.y = 0;
 
     this._sampleGround(dt);
@@ -589,6 +629,9 @@ export class NPC {
     const res = this.physics.resolveCapsule(this.position, this.radius, this.height * 0.5);
     if (res.grounded && this.velocity.y < 0) this.velocity.y = 0;
     this.grounded = res.grounded;
+    // A corpse on a ramp is the same capsule on the same slope. @see _followGround
+    if (res.grounded) this._groundNormalY = res.groundNormal.y;
+    else this._groundNormalY += (1 - this._groundNormalY) * Math.min(1, 8 * dt);
     this._sampleGround(dt);
     // Corpses sink through mesh terrain just as easily as the living do.
     this._followGround(dt);

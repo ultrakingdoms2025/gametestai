@@ -53,6 +53,7 @@ import { RaceUI } from './ui/RaceUI.js';
 import { QuestBoard } from './ui/QuestBoard.js';
 import { BugReport } from './ui/BugReport.js';
 import { forceDrawable } from './gfx/RehearsalDraw.js';
+import { planCompileWarm, chunkUnits, runSliced } from './gfx/PreviewWarm.js';
 
 /**
  * AETHER NEXUS - bootstrap.
@@ -908,6 +909,24 @@ function scheduleBackgroundBuilds(startWorld) {
     const id = rest[i++];
     worldManager
       .build(id)
+      /* Claim this destination's gateways the instant its build resolves, and
+       * before anything slow runs against it.
+       *
+       * `update()` sets `p.ready` from `wm.isBuilt(target)` every frame, and its
+       * priming pass draws a preview on the very first frame a gateway is ready.
+       * That draw is the multi-second freeze `warmPreviews` exists to prevent -
+       * it links the destination's whole preview program set inside one
+       * gameplay frame. Nothing used to stand between the two because
+       * `warmWorld` was a single blocking `compile()` in the same task as the
+       * build's resolution, so `warmPortalPreviews` had already set the flag
+       * before any frame could run. Slicing `warmWorld` opened that window, and
+       * the window is not small: measured, the priming pass landed in it and
+       * cost a single frame of 8,212 ms and 14,741 ms across two cold boots,
+       * +35 programs and +512 first-draw geometry uploads.
+       *
+       * So the claim is made here, where it cannot depend on how long anything
+       * downstream takes, and released in a `finally` no matter what happens. */
+      .then(() => portals.holdPreviews?.(id))
       .then(() => warmWorld(id))
       .then(() => warmPortalPreviews(id))
       .then(() => {
@@ -917,10 +936,34 @@ function scheduleBackgroundBuilds(startWorld) {
       .catch((err) => {
         console.error(`[boot] background build of "${id}" failed:`, err);
         idle(step);
-      });
+      })
+      // A gateway must never be left permanently showing STABILISING because
+      // something upstream threw.
+      .finally(() => portals.releasePreviews?.(id));
   };
   idle(step);
 }
+
+/**
+ * How many novel program signatures one background precompile callback issues.
+ *
+ * The unit here is a *link*, not an object, and that is the opposite of the
+ * gateway preview warm next door: there the compile is nearly free and the draw
+ * is what waits, because a draw reads `LINK_STATUS`. A background world is
+ * never drawn, so nothing in `warmWorld` ever waits on a link - what it pays
+ * for is ANGLE translating GLSL to HLSL inside `glCompileShader`, which is
+ * synchronous and measured at roughly 10 ms per new program on this driver. So
+ * the slice size bounds the worst frame at about 40 ms, and most slices are
+ * free: the station's plan is 256 units carrying 51 new programs, so five
+ * slices in six compile nothing that does not already exist.
+ *
+ * It is also what the wall clock is traded against, and that is the reason not
+ * to make it smaller. `idleSoon`'s deadline is a frame, and a running game
+ * never goes genuinely idle, so every callback waits its deadline out: at two
+ * units the five worlds cost 219 callbacks and about 5 s of extra background
+ * settle, at four they cost 110 and about 2.5 s.
+ */
+const WORLD_WARM_UNITS_PER_COMPILE = 4;
 
 /**
  * Compile a world's materials before the player ever portals into it.
@@ -937,26 +980,79 @@ function scheduleBackgroundBuilds(startWorld) {
  * will ask for on arrival - without the group ever entering the scene graph or
  * rendering a frame.
  *
+ * ── Why it is sliced ───────────────────────────────────────────────────────
+ * This runs from `scheduleBackgroundBuilds`, which runs after `engine.start()`.
+ * The player is standing in the entry world while it works, so every millisecond
+ * it spends is a millisecond of dead main thread inside a gameplay frame - and
+ * as one call per world it was a big number. Measured on a cold boot with
+ * medieval as the entry world, standing still and touching nothing, the game
+ * declared itself playable at 112.6 s with 345 programs and then linked its way
+ * to 490 over the next 33 s, in frames of 396.7 ms and 553.4 ms. `dGeometries`
+ * and `dTextures` were zero on every one of them: nothing was streaming, it was
+ * purely this function.
+ *
+ * The fix is the same shape as the gateway preview warm's, and reuses the same
+ * machinery - `planCompileWarm` enumerates one representative object per
+ * distinct program signature, `runSliced` paces them against `idleSoon`, and
+ * `compile()` traverses whatever it is handed, so handing it a single mesh
+ * issues exactly that mesh's links.
+ *
+ * The plan is a dedupe, not a replacement: the run finishes with one `compile()`
+ * over the whole group, which is what it always did and what guarantees the
+ * coverage cannot shrink if the signature key ever under-splits. That call is
+ * cheap by then - every program a planned unit needed already exists, so it is
+ * a parameter walk and no shader translation at all.
+ *
  * @param {string} id
+ * @returns {Promise<void>}
  */
-async function warmWorld(id) {
+function warmWorld(id) {
   const world = worldManager.getWorld(id);
-  if (!world?.group) return;
+  if (!world?.group) return Promise.resolve();
   // Demote its lights first. A world arrives with dozens of its own, and
   // compile() collects lights with `traverseVisible` - one live light here and
   // every program it built would be keyed to counts that never occur.
   lightRig.claim(world.group);
+  const group = world.group;
   const t0 = performance.now();
-  try {
-    engine.renderer.compile(world.group, engine.camera, engine.scene);
+  const p0 = engine.renderer.info.programs.length;
+  /** @type {Array<() => void>} Appended to by the planning step; see runSliced. */
+  const steps = [];
+  let slices = 0;
+
+  // Planning walks the whole world group, so it gets a callback of its own
+  // rather than sharing one with the first batch of links.
+  steps.push(() => {
+    const batches = chunkUnits(planCompileWarm(group), WORLD_WARM_UNITS_PER_COMPILE);
+    slices = batches.length;
+    for (const batch of batches) {
+      steps.push(() => {
+        for (const o of batch) engine.renderer.compile(o, engine.camera, engine.scene);
+      });
+    }
+    steps.push(() => engine.renderer.compile(group, engine.camera, engine.scene));
+  });
+
+  return runSliced({
+    steps,
+    // The same frame-deadline scheduler the preview slices use. The 1500 ms one
+    // the world builds run on would stretch a hundred slices over minutes.
+    schedule: idleSoon,
+    // A world rebuilt or disposed while this was yielded leaves the plan
+    // holding objects that belong to the old one.
+    shouldStop: () => worldManager.getWorld(id) !== world || !world.group,
+    onError: (err) => {
+      // Never fatal: the cost simply reverts to being paid on arrival.
+      console.warn(`[warm] precompile of "${id}" failed:`, err);
+    },
+  }).then((res) => {
     console.info(
       `[warm] "${id}" precompiled in ${Math.round(performance.now() - t0)}ms ` +
-      `(${engine.renderer.info.programs.length} programs total)`
+      `across ${slices} slices (${res.reason}, ` +
+      `+${engine.renderer.info.programs.length - p0} programs, ` +
+      `${engine.renderer.info.programs.length} total)`
     );
-  } catch (err) {
-    // Never fatal: the cost simply reverts to being paid on arrival.
-    console.warn(`[warm] precompile of "${id}" failed:`, err);
-  }
+  });
 }
 
 /**

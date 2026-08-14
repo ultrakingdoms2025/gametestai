@@ -828,6 +828,43 @@ export class Player {
   /**
    * Integrate and resolve, retrying blocked horizontal motion as a step-up.
    * Kerbs and staircases must never stop the player dead.
+   *
+   * ── Why the player is immune to the slope treadmill the NPCs had ──────────
+   * Every NPC in the game used to slide down every ramp, because `_followGround`
+   * seats the feet at the VERTICAL ground height each step; on a slope that
+   * buries the capsule's bottom sphere by `r * (1 - cos p)` and `resolveCapsule`
+   * evicts it along the normal, which points downhill. They had to be given
+   * `Grounding.capsuleSlopeLift` to stop it. @see ../npc/Grounding.js
+   *
+   * This method shares that solver and does not have that defect, for one
+   * reason: IT NEVER RE-SEATS THE FEET. The capsule is integrated, handed to
+   * `resolveCapsule`, and left exactly where the solver put it - and a solver
+   * that has finished evicting a capsule from a slope has, by construction, left
+   * it tangent to that slope, which is the height `capsuleSlopeLift` computes.
+   * The NPCs had to be told that height because they overwrote it; the player is
+   * already standing on it. `physics.groundHeight` is called once in this whole
+   * controller - the tread probe below - and never to place the capsule.
+   *
+   * Do not "fix" the player by adding a lift here. Measured on a 30 degree ramp,
+   * the feet settle 0.0419 m above the ground height, which is
+   * `capsuleSlopeLift(0.35, cos 30) = 0.0541` less the `stick * tan^2 p` the
+   * ground-stick bias below costs; adding the lift on top would hold the player
+   * off the ground. @see ../../scripts/tests/player-slope.test.mjs
+   *
+   * ── The defect it DOES have ──────────────────────────────────────────────
+   * The step-up retry below cannot tell slope loss from an obstruction.
+   * Projecting a horizontal velocity onto a plane of pitch p costs a factor of
+   * `cos^2 p`, which passes the 0.86 threshold at 22 degrees, so a smooth ramp
+   * with no riser anywhere on it reads as blocked and the branch teleports the
+   * player onto the surface ~0.36 m ahead. Measured on a 30 degree ramp: 20
+   * probes a second, the feet hovering up to 0.198 m over the surface, airborne
+   * on a third of all steps, sprint dropping out on half of them, footsteps
+   * halved, and an along-slope climb of 1.10x the flat-ground walk speed
+   * (1.41x at 45 degrees). This is the same blind spot `Navigation._probe` had
+   * before it learned to classify a hit whose normal passes `WALKABLE_NORMAL_Y`
+   * as floor rather than wall, and the same idea would close it. Left alone
+   * deliberately: it changes the feel of the controller, and the investigation
+   * that found it was scoped to the treadmill.
    */
   _move(dt) {
     const radius = P.radius;

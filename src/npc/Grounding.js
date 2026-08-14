@@ -246,6 +246,18 @@ export function auditStanding(physics, position, hintY) {
  * ground gives `normalY === 1` and a lift of exactly zero, so nothing that was
  * standing on a floor moves by so much as a float.
  *
+ * ── For characters that RE-SEAT their feet. The player must NOT be given it ──
+ * The defect is not a property of the capsule or of the solver; it is a property
+ * of writing the feet back to the vertical ground height every step. `Player`
+ * never does that - it leaves the capsule wherever `resolveCapsule` left it, and
+ * a capsule the solver has finished evicting from a slope is already tangent to
+ * it. Driven up ramps from 10 to 45 degrees with no lift applied at all, the
+ * player's feet settle at exactly this height less a small term for its
+ * ground-stick bias, and it shows no downhill drift climbing any of them.
+ * Adding a lift there would hold the player off the ground.
+ * @see ../player/Player.js `_move`
+ * @see ../../scripts/tests/player-slope.test.mjs
+ *
  * @param {number} radius capsule radius
  * @param {number} normalY Y component of the surface normal (= cos of pitch)
  * @returns {number} metres to add to the ground height

@@ -19,6 +19,11 @@ import {
  * with the tests and with anything that needs to know where a place is,
  * without dragging `three` and nine thousand lines of world in behind them. */
 import { PLOTS, EXTRA_YARDS, settledAt } from './medieval/Settlements.js';
+/* Who lives here, what hunts them and what is worth finding - all derived from
+ * the settlement table rather than written out per town, so a settlement added
+ * to `Settlements.js` is populated without this file being touched. See the
+ * header of `medieval/Inhabitants.js` for why it is exactly one call. */
+import { applyMedievalPopulation } from './medieval/Inhabitants.js';
 import { GridIndex, segmentDistance } from './medieval/GridIndex.js';
 /* The terrain's own spatial split. Same reason as `Settlements` and
  * `GridIndex`: the tile arithmetic is the part that fails silently (a seam, a
@@ -9478,6 +9483,8 @@ export class MedievalWorld extends World {
         patrol: pts,
       });
     });
+
+    applyMedievalPopulation(this);
   }
 
   _buildMinimap() {
@@ -9580,6 +9587,7 @@ export class MedievalWorld extends World {
      * what has to have grass under it is whatever the lens can see, and in a
      * third-person or free-look frame those are metres apart. */
     this.engine.camera.getWorldPosition(_v1);
+    this._population?.update(_v1.x, _v1.z, dt);
     this._tickGrass(_v1.x, _v1.z);
 
     // Foliage translucency shades in view space, so the sun has to follow the

@@ -45,9 +45,10 @@ import { SETTLEMENTS, settledAt, inSettlementCore, CORE_SETTLED }
 import { CROSSINGS, ROADS } from '../../src/worlds/medieval/RoadNet.js';
 import {
   TOWNS, allBuildings, plinthCourses, hasChimney, ECCLESIASTICAL, groundUnder,
-  GRIMSCAR_WORKINGS,
+  GRIMSCAR_WORKINGS, interiorPlan,
 } from '../../src/worlds/medieval/Towns.js';
 import { MedievalWorld } from '../../src/worlds/MedievalWorld.js';
+import { mulberry32 } from '../../src/gfx/Textures.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const WORLD_SRC = readFileSync(path.join(root, 'src/worlds/MedievalWorld.js'), 'utf8');
@@ -499,6 +500,172 @@ test('interior lights are sources for the rig, not extra slots in the shader', (
   assert.match(WORLD_SRC, /_interiorLight\(/, 'the interior lamp helper has gone');
 });
 
+/**
+ * Illuminance a room's own lamps deliver to its ground-floor floor plane.
+ *
+ * ── What this proxy is ─────────────────────────────────────────────────
+ * Three's point-light falloff evaluated on a grid: `intensity / d^2`, windowed
+ * by the light's cut-off exactly as `getDistanceAttenuation` does it, times the
+ * cosine of the incidence angle on a horizontal plane. Summed over every lamp
+ * on the storey. It is the illuminance at the floor and nothing more.
+ *
+ * ── What it does NOT prove ─────────────────────────────────────────────
+ * How bright the room LOOKS. It knows nothing about what the light lands on -
+ * no albedo, no texture, no geometry between the lamp and the floor - and a
+ * room can score well here and still read as a black box, which is exactly
+ * what happened: The Marcher Hall was ahead of the Guildhall on this number
+ * while measuring 28.0 against 46.8 mean frame luma, because its interior was
+ * full of boarding. So this is a floor, not a ceiling: it catches "the lamps
+ * are too few, too weak or in the wrong place", and the geometry test below
+ * catches "the room is full of something". Neither alone would have found the
+ * defect and neither alone is a claim about how a room looks.
+ */
+function floorIlluminance(e, plan, origin, yaw) {
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+  const { hx, hz } = plan.inner;
+  const f0 = plan.floors[0];
+  const floorY = origin.y + f0.floorY;
+  const lamps = e.lights.filter((l) => Math.abs(l.position.y - (floorY + 2.05)) < 0.4);
+  if (!lamps.length) return 0;
+  const N = 21;
+  let sum = 0;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const lx = (-1 + (2 * (i + 0.5)) / N) * hx;
+      const lz = (-1 + (2 * (j + 0.5)) / N) * hz;
+      const x = origin.x + lx * cos + lz * sin;
+      const z = origin.z - lx * sin + lz * cos;
+      for (const l of lamps) {
+        const dy = l.position.y - floorY;
+        const d = Math.hypot(x - l.position.x, dy, z - l.position.z);
+        if (d < 1e-3) continue;
+        const win = Math.max(0, 1 - Math.min(1, (d / l.distance) ** 4));
+        sum += (l.intensity / (d * d)) * win * win * (dy / d);
+      }
+    }
+  }
+  return sum / (N * N);
+}
+
+test('the lamps in a big room deliver as much to its floor as those in a small one', async () => {
+  /* Held because it is the claim the previous pass at this defect made, and it
+   * was true: the two interiors a browser session measured as half as bright as
+   * the rest were, at the time it was measured, AHEAD of both controls on
+   * illuminance at the floor -
+   *
+   *     The Marcher Hall  5.17     The Guildhall     3.10
+   *     The Stilthouse    4.59     The abbey church  3.29
+   *
+   * - which is what said the answer was not another lamp. Asserted as a rule
+   * over every interior rather than as those four numbers, so that a future
+   * change which quietly halves a large room's lamps is caught here rather
+   * than in a screenshot. */
+  const w = await built();
+  const rooms = [];
+  for (const b of allBuildings()) {
+    if (!b.enterable || !b.label) continue;
+    const e = w.enterables.find((k) => k.label === b.label);
+    if (!e) continue;
+    rooms.push({ label: b.label, area: b.w * b.d, E: floorIlluminance(e, interiorPlan(b), e.origin, b.yaw ?? 0) });
+  }
+  assert.ok(rooms.length >= 12, `only ${rooms.length} labelled interiors to compare`);
+  const sorted = [...rooms].sort((a, b) => a.E - b.E);
+  const median = sorted[sorted.length >> 1].E;
+  for (const r of rooms) {
+    assert.ok(r.E > median * 0.5,
+      `${r.label} (${r.area.toFixed(0)} m2) gets ${r.E.toFixed(2)} of illuminance at its floor, `
+      + `against a median of ${median.toFixed(2)} - it is lit less than half as well as a typical room`);
+  }
+  /* And the two the browser pass named specifically, against the two it used
+   * as controls: whatever else changes, the big timber halls must not fall
+   * behind the big stone ones on the amount of light in them. */
+  const at = (l) => rooms.find((r) => r.label === l);
+  for (const dark of ['The Marcher Hall', 'The Stilthouse']) {
+    for (const control of ['The Guildhall of the Staple', "St Ceolwine's Abbey Church"]) {
+      const a = at(dark);
+      const c = at(control);
+      assert.ok(a && c, `${dark} or ${control} has gone from the world`);
+      assert.ok(a.E >= c.E * 0.9,
+        `${dark} gets ${a.E.toFixed(2)} at its floor against ${control}'s ${c.E.toFixed(2)}`);
+    }
+  }
+});
+
+test('an enterable room is clear to its ceiling in GEOMETRY, not only in colliders', async () => {
+  /* ── The defect ────────────────────────────────────────────────────────
+   * `_shell` dresses a plank wall in horizontal boarding: six courses up the
+   * wall, each pushed out a couple of centimetres so the low sun rakes a
+   * shadow under it. Each course was ONE SOLID BOX the size of the whole
+   * building. On a shed that is invisible. On a hall it fills the room:
+   * raycast straight up from the middle of The Marcher Hall's ground floor and
+   * the first surface over your head was plank at 1.66 m - 43 cm above the eye,
+   * not the ceiling at 2.85 - with two more slabs above it. Every plank
+   * interior in the world was a 1.6 m crawlspace whose real ceiling was walled
+   * off behind three slabs of the darkest material in the palette. The ashlar
+   * string course and the jettied bressumer were the same shape of mistake:
+   * a full-plan slab 3 cm under the abbey church's ceiling, and a 32 cm plinth
+   * across the floor of every jettied upper room.
+   *
+   * That is the whole of "two interiors are about half as bright as the rest".
+   * Measured mean frame luma, room centre, eight headings, viewmodel lights
+   * pinned to zero, one session: The Stilthouse 23.4 and The Marcher Hall 28.0
+   * against the Guildhall's 46.8 and the abbey church's 46.7 before; 41.7 and
+   * 50.9 against 45.2 and 37.6 after, with no change to any light in the game.
+   *
+   * ── Why nothing caught it ──────────────────────────────────────────────
+   * The boarding has no collider, and every existing interior test probes the
+   * physics: `medieval-towns.test.mjs` measures 2.85 m of clear headroom above
+   * the standing point and is CORRECT - there is nothing solid there. You just
+   * could not see across the room.
+   *
+   * ── What this proxy is, and is not ─────────────────────────────────────
+   * It rebuilds each enterable shell on its own, at the origin and unrotated so
+   * every part's axis-aligned box is the part, and looks for anything that
+   * spans the room's plan and sits between its floor and its ceiling. It is a
+   * geometric claim only: it says nothing about how bright a room is, and a
+   * room can pass this and still be under-lit - which is what the illuminance
+   * proxy above is for. The half-of-plan-area threshold is what separates a
+   * dressing slab from furniture: the boarding covered 100% of the plan, and
+   * the largest single piece of furniture in any room - the Marcher Hall's high
+   * table - covers 8%.
+   */
+  const w = headlessWorld();
+  let seed = 0x51e11;
+  let checked = 0;
+  const filled = [];
+  for (const b of allBuildings()) {
+    if (!b.enterable) continue;
+    const B = boundsBatch();
+    // At the origin and unrotated: an AABB of a yawed box is not the box.
+    const res = w._shell(B, { ...b, x: 0, z: 0, yaw: 0, seed: (seed += 7919) });
+    const plan = interiorPlan(b);
+    const area = plan.inner.hx * plan.inner.hz * 4;
+    for (const fl of plan.floors) {
+      const floorY = res.baseY + fl.floorY;
+      const ceilY = res.baseY + fl.ceilY;
+      for (const p of B.parts) {
+        if (p.foot < area * 0.5) continue;               // furniture, not a slab
+        if (p.maxY <= floorY + 0.15) continue;           // the floor deck, or under it
+        if (p.minY >= ceilY - 0.06) continue;            // the ceiling, or over it
+        /* Wholly inside the room. A roof, a gable or a chimney also spans the
+         * plan and also dips below the wall head at its eaves, but it carries
+         * on up through the ceiling and out; a slab that both starts and stops
+         * between the floor and the ceiling is in the room with you. */
+        if (p.maxY >= ceilY) continue;
+        filled.push(`${b.label || b.id} storey ${fl.storey}: a ${p.key} slab covering `
+          + `${((p.foot / area) * 100).toFixed(0)}% of the plan from y=${(p.minY - floorY).toFixed(2)} `
+          + `to ${(p.maxY - floorY).toFixed(2)} above a floor with ${fl.clear.toFixed(2)} m of clear height`);
+      }
+      checked++;
+    }
+  }
+  assert.ok(checked >= 60, `only ${checked} storeys checked`);
+  assert.equal(filled.length, 0,
+    `${filled.length} room-spanning slabs stand inside an enterable room:\n  `
+    + filled.slice(0, 10).join('\n  '));
+});
+
 /* ------------------------------------------------------------------ */
 /* 3. Every crossing can be reached ON THE ROADS THAT SERVE IT         */
 /* ------------------------------------------------------------------ */
@@ -667,6 +834,216 @@ test('a crossing approach is climbable from every bearing, not only head-on', as
     }
   }
   assert.ok(checked >= 4, `only ${checked} abutments probed`);
+});
+
+/** How far sideways a shove carries. Past the widest parapet in the world. */
+const SHOVE = 4.0;
+
+/**
+ * Walk sideways off the deck and report where you end up, or null if you
+ * cannot leave.
+ *
+ * ── What counts as being shoved off ────────────────────────────────────
+ * Not "lower than the deck". A causeway is a flight of 0.26 m courses that
+ * wraps the abutment on three sides and is MEANT to be walked down from any
+ * bearing - see `_crossingRamp` - so ending up two courses below the abutment
+ * is the structure working, not a fall. What makes a fall a fall is that it is
+ * one-way: the walk BACK has a rise in it that the player cannot climb.
+ *
+ * So the shove walks out until something walls it (a rise bigger than a step -
+ * a parapet, a handrail), then turns round and measures the return with the
+ * same `worstStep` the door probes use. A return the player can make is a
+ * ledge; a return they cannot is the river.
+ *
+ * @returns {number[]|null} `[x, y, z]`, the lowest point reached, or null
+ */
+function shoveOff(near, x0, z0, dirX, deckTop) {
+  const prof = [deckTop];
+  let prev = deckTop;
+  for (let t = STRIDE; t <= SHOVE + 1e-6; t += STRIDE) {
+    const y = surfaceAt(near, x0 + dirX * t, z0, prev);
+    if (y - prev > RISE_LIMIT) break;            // walled: a shove gets no further
+    prof.push(y);
+    prev = y;
+  }
+  if (worstStep([...prof].reverse()) <= RISE_LIMIT) return null;
+  let lo = Infinity;
+  let at = 0;
+  for (let i = 0; i < prof.length; i++) if (prof[i] < lo) { lo = prof[i]; at = i; }
+  return [x0 + dirX * at * STRIDE, lo, z0];
+}
+
+test('no crossing can be walked off sideways, anywhere along it', async () => {
+  /* ── The defect ────────────────────────────────────────────────────────
+   * `_timberBridge` built its handrail with `B.add` and nothing else: posts,
+   * a rail, no collider. Its only `this._box` is the deck slab. Eight of eight
+   * lateral probes on Ashlea's plank bridge walked straight off the planks,
+   * three of them ending in the river at (-252.70, 0.24, 50.00),
+   * (-254.02, -0.50, 41.51) and (-253.97, -0.44, 61.27). The deck top is 2.88
+   * and the ground immediately outside it is -0.2 to -0.6, so one step sideways
+   * anywhere on the 30 m span was a 3.1-3.5 m drop into the water.
+   *
+   * ── Why the existing crossing tests did not see it ─────────────────────
+   * Both of them walk ALONG a crossing - the deck's own axis, or a bearing that
+   * arrives at an abutment. Neither ever tries to leave one. That is the same
+   * omission that let fifteen unenterable buildings and two unreachable
+   * abutments ship: the test exercised the route the author had in mind.
+   *
+   * So this probes the one thing a parapet is FOR. Every metre of every
+   * crossing, both sides, plus the abutment corners, which is where Harrowgate
+   * lost a player over the shoulder of its own deck.
+   */
+  const w = await built();
+  const cols = w.testColliders;
+  let shoved = 0;
+  const off = [];
+  for (const c of CROSSINGS) {
+    if (c.kind !== 'bridge') continue;            // a ford is at water level
+    const midZ = (c.from[1] + c.to[1]) / 2;
+    const near = cols.filter((k) => Math.abs(k.x - c.x) < 60 && Math.abs(k.z - midZ) < 60);
+    const z0 = Math.min(c.from[1], c.to[1]);
+    const z1 = Math.max(c.from[1], c.to[1]);
+    /* From 3 m outside each abutment to 3 m outside the other: the deck, both
+     * abutment blocks and the head of each causeway. Anywhere in that band that
+     * stands more than a step over its surroundings has to hold you. */
+    for (let z = z0 - 3; z <= z1 + 3 + 1e-6; z += 1.0) {
+      const deckTop = surfaceAt(near, c.x, z, c.deckY);
+      // Nothing to guard where the deck is already at ground level.
+      if (deckTop - medievalHeight(c.x, z) <= RISE_LIMIT) continue;
+      for (const dir of [-1, 1]) {
+        const land = shoveOff(near, c.x, z, dir, deckTop);
+        shoved++;
+        if (land) {
+          off.push(`${c.id} at z=${z.toFixed(1)} ${dir < 0 ? 'west' : 'east'} -> `
+            + `(${land[0].toFixed(2)}, ${land[1].toFixed(2)}, ${land[2].toFixed(2)}), `
+            + `${(deckTop - land[1]).toFixed(2)} m below a deck at ${deckTop.toFixed(2)}`);
+        }
+      }
+    }
+  }
+  assert.ok(shoved >= 100, `only ${shoved} lateral probes - the crossings are not being probed`);
+  const tally = [...off.reduce((m, s) => m.set(s.split(' ')[0], (m.get(s.split(' ')[0]) ?? 0) + 1), new Map())]
+    .map(([k, n]) => `${k} x${n}`).join(', ');
+  assert.equal(off.length, 0,
+    `${off.length} of ${shoved} lateral probes walked off a bridge (${tally}):\n  `
+    + off.slice(0, 12).join('\n  '));
+});
+
+/**
+ * A stand-in for `GeoBatch` that keeps every part's world bounding box.
+ *
+ * `GeoBatch` is module-private and merges as it goes, so there is no way to ask
+ * the shipped one where any single piece ended up. This is the same three lines
+ * of transform it does, and nothing else.
+ */
+function boundsBatch() {
+  const parts = [];
+  return {
+    parts,
+    add(key, geo, xf = null) {
+      if (xf) {
+        if (xf.isObject3D) { xf.updateMatrix(); geo.applyMatrix4(xf.matrix); } else geo.applyMatrix4(xf);
+      }
+      geo.computeBoundingBox();
+      const b = geo.boundingBox;
+      /* `run` is the diagonal of the box's FOOTPRINT, not either of its sides:
+       * a 4.7 m pole laid at 40 degrees measures 3.6 x 3.0 in world axes and
+       * 4.7 across the diagonal, which is the number that means "how long is
+       * this thing, lying down". `rise` is the same question stood up. */
+      parts.push({
+        key,
+        run: Math.hypot(b.max.x - b.min.x, b.max.z - b.min.z),
+        rise: b.max.y - b.min.y,
+        foot: (b.max.x - b.min.x) * (b.max.z - b.min.z),
+        minY: b.min.y,
+        maxY: b.max.y,
+      });
+      return geo;
+    },
+  };
+}
+
+/** `_buildCamps`'s own placer, so the structures are built exactly as they ship. */
+function campPlace() {
+  const o = new THREE.Object3D();
+  return (x, y, z, ry = 0, rz = 0) => {
+    o.position.set(x, y, z);
+    o.rotation.set(0, ry, rz);
+    o.scale.set(1, 1, 1);
+    return o;
+  };
+}
+
+test('a member built to span two uprights is laid between them, not stood on end', async () => {
+  /* ── The defect ────────────────────────────────────────────────────────
+   * Every primitive in this world is a Y-AXIS cylinder, and the `place`
+   * helpers that position them expose Y and Z rotation. Rotating a Y-axis
+   * cylinder about Y does NOTHING - so `place(..., yaw + Math.PI / 2, 0)`,
+   * which reads like "swing it across", leaves the member standing exactly
+   * where it was: on end.
+   *
+   * Six places did that, and the tell is identical in all six - a pair of
+   * uprights, then a member whose length is exactly the distance between them:
+   *
+   *   `_timberBridge`   handrail, length = span. Measured off the
+   *                     `medieval:beam` batch bounds it ran y -11.08 to 18.92,
+   *                     which is `deckY + 1.0 +/- span / 2`: two 30 m masts
+   *                     standing 16 m over Ashlea's deck and 11 m below the
+   *                     riverbed, one per side, visible from the far bank.
+   *   `_aframeTent`     ridge rope, length = d + 0.7
+   *   `_leanTo`         ridge pole, length = w
+   *   `laundry`         the washing line, length = w
+   *   `peltrack`        the drying rail, length = w
+   *   `gralloch`        the bar the carcass hangs from, length = 2.2
+   *
+   * Held as one property over all six rather than as a bridge test, because
+   * the bridge was only the one somebody happened to stand in front of.
+   */
+  const w = headlessWorld();
+  const place = campPlace();
+  const rnd = mulberry32(0x5eed);
+
+  /** The `beam` part `len` long, however it is currently oriented. */
+  const member = (parts, len) => parts
+    .filter((p) => p.key === 'beam')
+    .find((p) => Math.abs(Math.max(p.run, p.rise) - len) < 0.3);
+
+  const cases = [];
+  {
+    const B = boundsBatch();
+    w._aframeTent(B, place, 0, 0, 0, 0.7, { w: 2.2, d: 4.0, h: 2.0 });
+    cases.push(['an A-frame ridge rope', member(B.parts, 4.7), 4.7]);
+  }
+  {
+    const B = boundsBatch();
+    w._leanTo(B, place, 0, 0, 0, 0.7, { w: 4.0, d: 2.6, h: 1.9 });
+    cases.push(['a lean-to ridge pole', member(B.parts, 4.0), 4.0]);
+  }
+  for (const [kind, len] of [['laundry', 6.0], ['peltrack', 4.2], ['gralloch', 2.2]]) {
+    const B = boundsBatch();
+    w._campProp(B, place, 0, 0, 0, 0.7, { kind }, rnd);
+    cases.push([`a ${kind} cross-member`, member(B.parts, len), len]);
+  }
+  {
+    const B = boundsBatch();
+    const bridge = CROSSINGS.find((c) => c.style === 'timber');
+    assert.ok(bridge, 'no timber crossing in the world to check');
+    w._timberBridge(B, bridge);
+    const span = Math.abs(bridge.to[1] - bridge.from[1]);
+    const rails = B.parts.filter((p) => p.key === 'beam' && Math.max(p.run, p.rise) > span * 0.9);
+    assert.equal(rails.length, 2,
+      `${bridge.id}: expected two full-span handrails, found ${rails.length}`);
+    for (const r of rails) cases.push([`the ${bridge.id} handrail`, r, span]);
+  }
+
+  for (const [what, part, len] of cases) {
+    assert.ok(part, `${what}: no member of length ${len} was built at all`);
+    assert.ok(part.rise < 0.35,
+      `${what} stands ${part.rise.toFixed(2)} m tall - it is on end, not laid down`);
+    assert.ok(part.run > len - 0.35,
+      `${what} runs only ${part.run.toFixed(2)} m of its ${len} m along the ground`);
+  }
+  assert.ok(cases.length >= 7, `only ${cases.length} members checked`);
 });
 
 test('the Grimscar tramway runs clear of the winding house and its doorstep', async () => {

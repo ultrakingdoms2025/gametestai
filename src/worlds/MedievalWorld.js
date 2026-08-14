@@ -417,6 +417,7 @@ const SHELL_ROOF_TINTS = {
   flat: [0xb9b1a0, 0xaaa294],
 };
 
+
 /* ------------------------------------------------------------------ */
 /* Canvas + texture helpers                                            */
 /* ------------------------------------------------------------------ */
@@ -6837,14 +6838,48 @@ export class MedievalWorld extends World {
         /* Horizontal boarding with a corner post at each angle. Six courses,
          * each pushed out a couple of centimetres, so the low sun rakes a
          * shadow line under every one - which is what makes a boarded wall
-         * read as boards at fifty metres rather than as a brown panel. */
+         * read as boards at fifty metres rather than as a brown panel.
+         *
+         * ── Why an enterable one is a RING ─────────────────────────────
+         * Each course used to be one SOLID box the size of the whole
+         * building, which is invisible on a shed and catastrophic in a hall:
+         * six slabs of dark boarding stacked through the room from floor to
+         * wall head, filling it. Raycast straight up from the middle of The
+         * Marcher Hall's ground floor and the first thing over your head was
+         * plank at 1.66 m - not the ceiling at 2.85, a board 43 cm above the
+         * eye - with two more above it. Every plank interior in the world was
+         * a 1.6 m crawlspace with its real ceiling walled off behind three
+         * slabs of the darkest material in the palette, and that is what made
+         * The Stilthouse and The Marcher Hall measure 23.4 and 28.0 mean frame
+         * luma against 46.8 and 46.7 in the two stone landmarks. They were
+         * never short of light; they were full of boarding.
+         *
+         * They have no colliders, which is exactly why nothing caught it:
+         * `medieval-towns.test.mjs` probes headroom with the physics boxes and
+         * found 2.85 m of clear height, correctly, above a room you could not
+         * see across.
+         *
+         * So an enterable shell gets four boards per course instead of one
+         * box. `T` is the wall's own thickness, so each board's inner face
+         * lands `push` INSIDE the wall panel it dresses - buried, never
+         * coplanar with anything, and identical from outside. */
         const courses = Math.max(3, Math.round(r.h / 0.52));
+        const T = wt;
         for (let i = 0; i < courses; i++) {
           const cy = r.y0 + (i + 0.5) * (r.h / courses);
           const push = 0.035 + (i % 2) * 0.022;
+          const ch = r.h / courses - 0.04;
           const k = shadeHex(wallTint, 0.9 + (i % 3) * 0.08);
-          put('plank', boxGeo(r.w + push * 2, r.h / courses - 0.04, r.d + push * 2, 0.7),
-            0, cy, 0, 0, 0, 0, k);
+          if (!enter) {
+            put('plank', boxGeo(r.w + push * 2, ch, r.d + push * 2, 0.7), 0, cy, 0, 0, 0, 0, k);
+            continue;
+          }
+          for (const sgn of [-1, 1]) {
+            put('plank', boxGeo(r.w + push * 2, ch, T, 0.7),
+              0, cy, sgn * (rhd + push - T / 2), 0, 0, 0, k);
+            put('plank', boxGeo(T, ch, r.d + push * 2 - T * 2, 0.7),
+              sgn * (rhw + push - T / 2), cy, 0, 0, 0, 0, k);
+          }
         }
         for (const sx of [-1, 1]) {
           for (const sz of [-1, 1]) {
@@ -6863,8 +6898,22 @@ export class MedievalWorld extends World {
               sgn * (rhd + 0.42), 0, 0, 0, shadeHex(wallTint, 0.88));
           }
         }
-        put('ashlar', boxGeo(r.w + 0.34, 0.22, r.d + 0.34, 0.8), 0, r.y0 + r.h - 0.14, 0, 0, 0, 0,
-          shadeHex(wallTint, 0.9));
+        /* The string course under the eaves. A band round the OUTSIDE, so on
+         * an enterable shell it is four stones and not one slab - see the note
+         * on the plank boarding above. On a single-storey range like the abbey
+         * church the solid version sat 3 cm under the ceiling and across the
+         * whole nave, which is a dropped ceiling nobody asked for. */
+        if (enter) {
+          for (const sgn of [-1, 1]) {
+            put('ashlar', boxGeo(r.w + 0.34, 0.22, 0.4, 0.8),
+              0, r.y0 + r.h - 0.14, sgn * (rhd + 0.17 - 0.2), 0, 0, 0, shadeHex(wallTint, 0.9));
+            put('ashlar', boxGeo(0.4, 0.22, r.d + 0.34 - 0.8, 0.8),
+              sgn * (rhw + 0.17 - 0.2), r.y0 + r.h - 0.14, 0, 0, 0, 0, shadeHex(wallTint, 0.9));
+          }
+        } else {
+          put('ashlar', boxGeo(r.w + 0.34, 0.22, r.d + 0.34, 0.8), 0, r.y0 + r.h - 0.14, 0, 0, 0, 0,
+            shadeHex(wallTint, 0.9));
+        }
       } else {
         // Rubble: dressed quoins at the angles, and nothing else. Grimscar.
         for (const sx of [-1, 1]) {
@@ -6882,7 +6931,18 @@ export class MedievalWorld extends World {
       }
       // Jetty brackets under an oversailing upper storey.
       if (jut > 0 && r.y0 > 0.5) {
-        put('beam', boxGeo(r.w + 0.2, 0.32, r.d + 0.2, 0.8), 0, r.y0 + 0.16, 0, 0, 0, 0, bt());
+        // The bressumer, round the outside of the oversail. Solid, it was a
+        // 32 cm plinth across the whole of every jettied upper room.
+        if (enter) {
+          for (const sgn of [-1, 1]) {
+            put('beam', boxGeo(r.w + 0.2, 0.32, wt, 0.8), 0, r.y0 + 0.16,
+              sgn * (rhd + 0.1 - wt / 2), 0, 0, 0, bt());
+            put('beam', boxGeo(wt, 0.32, r.d + 0.2 - wt * 2, 0.8), sgn * (rhw + 0.1 - wt / 2),
+              r.y0 + 0.16, 0, 0, 0, 0, bt());
+          }
+        } else {
+          put('beam', boxGeo(r.w + 0.2, 0.32, r.d + 0.2, 0.8), 0, r.y0 + 0.16, 0, 0, 0, 0, bt());
+        }
         for (let i = -3; i <= 3; i++) {
           for (const sgn of [-1, 1]) {
             put('beam', boxGeo(0.18, 0.18, jut + 0.3, 1.1), (i * w) / 7.5, r.y0 - 0.16,
@@ -8451,7 +8511,15 @@ export class MedievalWorld extends World {
     for (const s of [-1, 1]) {
       B.add('beam', cylGeo(0.04, 0.05, h + 0.3, 4, 1.4), place(x - Math.sin(yaw) * s * (d / 2 + 0.15), y + (h + 0.3) / 2, z - Math.cos(yaw) * s * (d / 2 + 0.15)), 0x7a6144);
     }
-    B.add('beam', cylGeo(0.025, 0.025, d + 0.7, 4, 2.0), place(x, y + h + 0.06, z, yaw + Math.PI / 2, 0), 0xbdae90);
+    /* The ridge rope, along the tent's depth.
+     *
+     * `cylGeo` is a Y-AXIS cylinder and this `place` sets rotation (0, ry, rz),
+     * so the Z angle is the only one that can lay it down: with `rz = 0` the
+     * ridge stood on end as a 4.7 m mast out of the apex, and turning it about
+     * Y did nothing at all. Same defect, same shape, in four other props and in
+     * `_timberBridge`'s handrail - see the note on that helper. */
+    B.add('beam', cylGeo(0.025, 0.025, d + 0.7, 4, 2.0),
+      place(x, y + h + 0.06, z, yaw + Math.PI / 2, Math.PI / 2), 0xbdae90);
     this._box(x, y + h * 0.4, z, w / 2, h * 0.4, d / 2);
     this._contacts.push(x, y, z, Math.max(w, d) * 0.6);
   }
@@ -8465,7 +8533,8 @@ export class MedievalWorld extends World {
     for (const s of [-1, 1]) {
       B.add('beam', cylGeo(0.06, 0.08, h + 0.2, 5, 1.1), place(x + s * (w / 2 - 0.2) * Math.cos(yaw), y + (h + 0.2) / 2, z - s * (w / 2 - 0.2) * Math.sin(yaw), 0, 0.1), 0x7a6144);
     }
-    B.add('beam', cylGeo(0.05, 0.05, w, 5, 1.2), place(x, y + h + 0.06, z, yaw + Math.PI / 2), 0x7a6144);
+    // The ridge, across the two uprights. `rz` lays it down; `ry` aims it.
+    B.add('beam', cylGeo(0.05, 0.05, w, 5, 1.2), place(x, y + h + 0.06, z, yaw, Math.PI / 2), 0x7a6144);
     // The back wall, woven from brush.
     for (let i = 0; i < 7; i++) {
       const t2 = (i / 6 - 0.5) * (w - 0.3);
@@ -8659,7 +8728,8 @@ export class MedievalWorld extends World {
           const pz = z - Math.sin(yaw) * s * (w / 2);
           B.add('beam', cylGeo(0.06, 0.08, 2.2, 5, 1.1), place(px, this._height(px, pz) + 1.1, pz), 0x7a6144);
         }
-        B.add('beam', cylGeo(0.02, 0.02, w, 4, 2.0), place(x, y + 2.05, z, yaw + Math.PI / 2), 0xbdae90);
+        // The line itself, strung between the two poles rather than stood on end.
+        B.add('beam', cylGeo(0.02, 0.02, w, 4, 2.0), place(x, y + 2.05, z, yaw, Math.PI / 2), 0xbdae90);
         for (let i = 0; i < 6; i++) {
           const t = (i / 5 - 0.5) * (w - 1.0);
           B.add('canopy', planeGeo(0.7, 0.95, 1.2),
@@ -8716,7 +8786,7 @@ export class MedievalWorld extends World {
           const pz = z - Math.sin(yaw) * s * (w / 2);
           B.add('beam', cylGeo(0.07, 0.09, 2.0, 5, 1.1), place(px, this._height(px, pz) + 1.0, pz), 0x7a6144);
         }
-        B.add('beam', cylGeo(0.05, 0.05, w, 5, 1.2), place(x, y + 1.9, z, yaw + Math.PI / 2), 0x7a6144);
+        B.add('beam', cylGeo(0.05, 0.05, w, 5, 1.2), place(x, y + 1.9, z, yaw, Math.PI / 2), 0x7a6144);
         for (let i = 0; i < 4; i++) {
           const t = (i / 3 - 0.5) * (w - 1.2);
           B.add('hay', planeGeo(0.85, 1.25, 1.2), place(x + Math.cos(yaw) * t, y + 1.25, z - Math.sin(yaw) * t, yaw + Math.PI / 2),
@@ -8729,7 +8799,7 @@ export class MedievalWorld extends World {
         for (const s of [-1, 1]) {
           B.add('beam', cylGeo(0.08, 0.1, h, 6, 1.0), place(x + Math.cos(yaw) * s * 0.9, y + h / 2, z - Math.sin(yaw) * s * 0.9, 0, s * 0.14), 0x6f5940);
         }
-        B.add('beam', cylGeo(0.06, 0.06, 2.2, 5, 1.2), place(x, y + h - 0.1, z, yaw + Math.PI / 2), 0x7a6144);
+        B.add('beam', cylGeo(0.06, 0.06, 2.2, 5, 1.2), place(x, y + h - 0.1, z, yaw, Math.PI / 2), 0x7a6144);
         const deer = new THREE.SphereGeometry(0.34, 10, 7);
         deer.scale(0.72, 1.5, 0.72);
         MedievalWorld._uvScale(deer, 0.9);
@@ -9009,9 +9079,27 @@ export class MedievalWorld extends World {
 
   /** A trestle bridge: bents in the water, a plank deck, a single handrail. */
   _timberBridge(B, c) {
-    const place = (x, y, z, ry = 0, rz = 0) => {
+    /**
+     * Place one part, with all three Euler angles - in `put`'s own (rx, ry, rz)
+     * order, which is the convention the rest of this file writes rotations in.
+     *
+     * ── Why the third angle matters ────────────────────────────────────
+     * It used to expose Y and Z only, and every primitive here is a Y-AXIS
+     * cylinder: rotating one about Y does nothing whatever. The handrail was
+     * laid with `place(..., Math.PI / 2, 0)` and so was never laid at all -
+     * measured off the `medieval:beam` batch bounds, y ran -11.08 to 18.92,
+     * which is `deckY + 1.0 +/- span / 2`. Two 30 m masts, one per side,
+     * standing 16 m over the deck and 11 m under the riverbed, visible from
+     * the far bank. The diagonal braces survived only because they happen to
+     * pass a non-zero Z angle, which is what actually tilts the cylinder; the
+     * Y angle they also pass has never done anything either.
+     *
+     * The bridge runs north-south, so laying a Y-axis cylinder along its deck
+     * is a rotation about X - the one axis the helper could not say.
+     */
+    const place = (x, y, z, rx = 0, ry = 0, rz = 0) => {
       _obj.position.set(x, y, z);
-      _obj.rotation.set(0, ry, rz);
+      _obj.rotation.set(rx, ry, rz);
       _obj.scale.set(1, 1, 1);
       return _obj;
     };
@@ -9027,12 +9115,13 @@ export class MedievalWorld extends World {
       const g = this._height(bx, z);
       const h = Math.max(0.8, deckY - g + 0.7);
       for (const s of [-1, 1]) {
-        B.add('beam', cylGeo(0.16, 0.21, h, 6, 0.9), place(bx + s * (bw / 2 - 0.2), deckY - h / 2 - 0.1, z, 0, s * 0.06), 0x6a5741);
+        B.add('beam', cylGeo(0.16, 0.21, h, 6, 0.9), place(bx + s * (bw / 2 - 0.2), deckY - h / 2 - 0.1, z, 0, 0, s * 0.06), 0x6a5741);
       }
       B.add('beam', boxGeo(bw + 0.3, 0.18, 0.18, 1.1), place(bx, deckY - 0.28, z), 0x6a5741);
       if (i < bents) {
+        // A rake in the ZY plane, which is a rotation about X and always was.
         B.add('beam', cylGeo(0.09, 0.09, Math.hypot(span / bents, h * 0.7), 5, 1.1),
-          place(bx, deckY - h * 0.5, z + span / bents / 2, Math.PI / 2, Math.atan2(h * 0.7, span / bents)), 0x6a5741);
+          place(bx, deckY - h * 0.5, z + span / bents / 2, Math.atan2(h * 0.7, span / bents)), 0x6a5741);
       }
     }
     // The deck, in courses so the planks read individually.
@@ -9042,12 +9131,27 @@ export class MedievalWorld extends World {
       B.add('plank', boxGeo(bw, 0.12, span / boards - 0.03, 0.7), place(bx, deckY - 0.06, z), shadeHex(0x9d7f56, 0.9 + (i % 3) * 0.07));
     }
     this._box(bx, deckY - 0.18, (z0 + z1) / 2, bw / 2, 0.14, span / 2);
+    /* ---- The handrails, and the thing that makes them rails ----------
+     *
+     * `_stoneBridge` walls its deck with `this._box` under each parapet.
+     * This built posts and a rail with `B.add` alone, so the only collider on
+     * the whole crossing was the deck slab: eight of eight lateral probes
+     * walked off the planks, three of them into the river at (-252.70, 0.24,
+     * 50.00), (-254.02, -0.50, 41.51) and (-253.97, -0.44, 61.27). Deck top
+     * 2.88, ground outside it -0.2 to -0.6 - a 3.1-3.5 m drop from anywhere on
+     * a 30 m span. See the lateral-shove test in medieval-approach. */
+    const railX = bw / 2 - 0.12;
+    const railTop = deckY + 1.03;                 // top of the posts, near enough
     for (const s of [-1, 1]) {
       for (let i = 0; i <= bents * 2; i++) {
         const z = z0 + (span * i) / (bents * 2);
-        B.add('beam', cylGeo(0.06, 0.07, 1.05, 5, 1.1), place(bx + s * (bw / 2 - 0.12), deckY + 0.5, z), 0x7a6144);
+        B.add('beam', cylGeo(0.06, 0.07, 1.05, 5, 1.1), place(bx + s * railX, deckY + 0.5, z), 0x7a6144);
       }
-      B.add('beam', cylGeo(0.055, 0.055, span, 5, 1.2), place(bx + s * (bw / 2 - 0.12), deckY + 1.0, (z0 + z1) / 2, Math.PI / 2, 0), 0x7a6144);
+      B.add('beam', cylGeo(0.055, 0.055, span, 5, 1.2),
+        place(bx + s * railX, deckY + 1.0, (z0 + z1) / 2, Math.PI / 2), 0x7a6144);
+      const deckTop = deckY - 0.04;
+      this._box(bx + s * railX, (deckTop + railTop) / 2, (z0 + z1) / 2,
+        0.16, (railTop - deckTop) / 2, span / 2);
     }
     for (const s of [-1, 1]) {
       const az = s < 0 ? z0 : z1;

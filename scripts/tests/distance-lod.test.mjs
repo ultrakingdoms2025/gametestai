@@ -224,3 +224,42 @@ test('update over an empty registry is free, and survives being called first', (
   lod.update(cameraAt(0, 0, 0));
   assert.equal(lod.entries.length, 0);
 });
+
+test('remove deregisters one entry and restores it, leaving the rest alone', () => {
+  /* Needed the moment anything streams. Medieval builds and frees grass zones
+   * as the player walks; a freed zone left registered would leave this holding
+   * the only reference to a disposed InstancedMesh and driving a distance test
+   * against geometry the GPU no longer has. */
+  const lod = new DistanceLod();
+  const hi = new THREE.BoxGeometry(1, 1, 1);
+  const lo = new THREE.BoxGeometry(1, 1, 1);
+  const a = new THREE.Mesh(hi.clone());
+  const b = new THREE.Mesh(hi.clone());
+  a.position.set(0, 0, 400);
+  b.position.set(0, 0, 0);
+  a.updateMatrixWorld(true);
+  b.updateMatrixWorld(true);
+  lod.add(a, { hideBeyond: 50, lo, swapBeyond: 50, measure: CENTRE });
+  lod.add(b, { hideBeyond: 50, measure: CENTRE });
+
+  lod.update(cameraAt(0, 0, 0));
+  assert.equal(a.visible, false, 'the far object should have hidden');
+  assert.equal(a.geometry, lo, 'the far object should have swapped');
+  assert.equal(b.visible, true);
+
+  assert.equal(lod.remove(a), true);
+  assert.equal(lod.entries.length, 1);
+  // Restored exactly as `clear` would leave it, so remove-then-dispose is safe.
+  assert.equal(a.visible, true);
+  assert.notEqual(a.geometry, lo);
+
+  // Removing something that was never registered is a no-op, not a throw.
+  assert.equal(lod.remove(new THREE.Mesh(hi.clone())), false);
+  assert.equal(lod.entries.length, 1);
+
+  // The survivor still updates.
+  b.position.set(0, 0, 400);
+  b.updateMatrixWorld(true);
+  lod.update(cameraAt(0, 0, 0));
+  assert.equal(b.visible, false);
+});

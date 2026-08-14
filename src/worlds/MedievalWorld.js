@@ -10,8 +10,9 @@ import { genPool } from '../workers/GenPool.js';
  * is the only thing keeping the mesh, the collision and every prop agreeing. */
 import {
   mulberry32, clamp01, lerp, smoothstep, smootherstep, bump, rectDist,
-  perlin2, fbm2, riverZ, medievalHeight,
-  HALF, CASTLE, MARKET, VILLAGE, CIRCLE, BRIDGE_X, CHURCH_PADS,
+  perlin2, fbm2, riverZ, medievalHeight, riverHalfWidth,
+  HALF, CASTLE, MARKET, VILLAGE, CIRCLE, BRIDGE_X, CHURCH_PADS, WATER_Y,
+  INNER_KEEP, LANDFORMS, RIVER_FEATURES,
 } from './terrain/MedievalHeight.js';
 /* Settlements own the plot table and the definition of trodden ground, for the
  * same reason the terrain module owns the height function: they are shared
@@ -19,6 +20,14 @@ import {
  * without dragging `three` and nine thousand lines of world in behind them. */
 import { PLOTS, EXTRA_YARDS, settledAt } from './medieval/Settlements.js';
 import { GridIndex, segmentDistance } from './medieval/GridIndex.js';
+/* The terrain's own spatial split. Same reason as `Settlements` and
+ * `GridIndex`: the tile arithmetic is the part that fails silently (a seam, a
+ * crack, a bounding sphere that spans the map), and it has to be testable
+ * without a renderer. */
+import {
+  tileGrid, buildTile, TILE_METRES, TILE_LO_STRIDE, TILE_SWAP_DISTANCE, TILE_SKIRT_DROP,
+} from './medieval/TerrainTiles.js';
+import { GrassResidency } from './medieval/GrassResidency.js';
 
 /**
  * ALDERMOOR VALE - the medieval world.
@@ -96,6 +105,38 @@ const SKIRT_OUTER = 1928;
  * count grow with the map is what preserves that reasoning at 900m.
  */
 const GRASS_ZONE_M = 50;
+/* ------------------------------------------------------------------ *
+ * Aerial perspective.
+ *
+ * Linear fog, so these two numbers are the whole depth cascade: haze is
+ * `(d - FOG_NEAR) / (FOG_FAR - FOG_NEAR)`, clamped.
+ *
+ * 96 / 560 was tuned against a 400 m vale, where the far corner was 283 m and
+ * the skirt began immediately behind it - saturating at 560 was correct
+ * because there was nothing between 560 m and the backdrop. At 900 m the
+ * playfield corner is 636 m, so that ramp put the outer THIRD of the world
+ * (everything past 424 m, which is 60% of its area) at 70-100% haze: Grimscar
+ * Edge, Blackmarch Bluff, the abbey combe and Fenwick Basin - four landforms
+ * authored to be seen from the vale - all arrived at the same flat white.
+ *
+ * FOG_NEAR is solved rather than chosen. The near field did not change: the
+ * keep still stands ~110 m from the village approach and was tuned to take a
+ * 3.0% veil there. Holding that fixed while moving the far edge to 880 m
+ * gives `(110 - n) / (880 - n) = 0.030`, i.e. n = 86.2.
+ *
+ * FOG_FAR = 880 m is set by the playfield, not by the backdrop: the longest
+ * sightline that ends on authored ground is rim to rim across the map, 900 m,
+ * so saturating just inside that means the far rim is the first thing to
+ * disappear and everything nearer keeps a distinct step. The resulting
+ * cascade: castle 110 m 3%, old vale rim 200 m 14%, ring landmarks 380-450 m
+ * 37-46%, playfield corner 636 m 69%, skirt foothills 100%. The distant skirt
+ * still saturates long before its 1,928 m outer ring, which is what keeps it
+ * landing on the same colour as the sky dome's horizon band - see the
+ * aerial-perspective note in the dome shader, which is the reason that
+ * matters.
+ * ------------------------------------------------------------------ */
+const FOG_NEAR = 86;
+const FOG_FAR = 880;
 /**
  * Ground covered by one repeat of the tiled relief sheet, metres.
  *
@@ -155,7 +196,9 @@ export const MEDIEVAL_LAYOUT = {
   ],
 };
 
-const WATER_Y = 0.85;
+/* `WATER_Y` moved to `terrain/MedievalHeight.js` and is imported back: the
+ * fords are authored as a depth below it, so the height function has to know
+ * where the water is. */
 const MOAT_Y = CASTLE.ground - 2.3;
 /* Curtain height.
  *
@@ -1088,12 +1131,11 @@ export class MedievalWorld extends World {
     // 55/330 was putting ~20% haze on a roof forty metres away and saturating
     // everything past 300, which is not aerial perspective - it is a white
     // curtain. The village, the keep and the ridge line all landed inside one
-    // narrow value band. 96/560 leaves the settlement (0-110m) essentially
-    // clear, gives the keep and the near woods a readable 5-15% warm veil, and
-    // still stacks the 250-400m ridges at 30-55%, which is where the depth
-    // cascade actually wants its steps.
-    env.fogNear = 96;
-    env.fogFar = 560;
+    // narrow value band. 96/560 fixed that for a 400m vale and then became the
+    // same mistake one extent later; see `FOG_NEAR` / `FOG_FAR` above for the
+    // 900m retune and the arithmetic behind both numbers.
+    env.fogNear = FOG_NEAR;
+    env.fogFar = FOG_FAR;
     env.exposure = 0.95;
     env.ambientColor = new THREE.Color(0x415e91);
     /* Key-to-fill ratio.
@@ -1517,7 +1559,11 @@ export class MedievalWorld extends World {
     if (!this._inPlayfield(x, z, 2 + Math.max(0, margin))) return false;
     if (this._height(x, z) < WATER_Y + 0.5) return false;
     if (rectDist(x - CASTLE.x, z - CASTLE.z, CASTLE.hx, CASTLE.hz) < 22) return false;
-    if (Math.abs(z - riverZ(x)) < 11.5) return false;
+    /* Was the literal 11.5 - "the 9.5 m channel plus two". The channel is no
+     * longer 9.5 m: it runs from 6 m at the fords to 26 m at Reedwater, and a
+     * fixed 11.5 would have let every scatter pass put hay bales, bushes and
+     * rocks in the middle of the pool. */
+    if (Math.abs(z - riverZ(x)) < riverHalfWidth(x) + 2) return false;
     if (rectDist(x - MARKET.x, z - MARKET.z, MARKET.hx, MARKET.hz) < 2) return false;
     if (this._roadDist(x, z) < 2.2 + margin) return false;
     // Was an inlined copy of `_inFootprint`, character for character. Two
@@ -3534,6 +3580,14 @@ export class MedievalWorld extends World {
      * If this ever needs to go further, the move is to sample it on the worker
      * - it is pure arithmetic over a height field the worker already has - not
      * to keep raising G on the main thread.
+     *
+     * The landform phase then made `medievalHeight` 1.29x more expensive - the
+     * ring's ridged relief octaves and the varied river reach - so the heights
+     * half of the G = 1536 row above is now ~724ms and the whole pass ~1.26s.
+     * That is the single largest cost this expansion added, it is all
+     * background build time, and this loop is where it would be paid back:
+     * moving it to the worker is now worth roughly a quarter of a second more
+     * than it was.
      */
     const G = 1536;
     const heights = new Float32Array(G * G);
@@ -3661,17 +3715,28 @@ export class MedievalWorld extends World {
       }
     }
 
-    // Silt bars and a wet margin either side of the river.
-    g2.strokeStyle = 'rgba(96,84,58,0.5)';
-    g2.lineWidth = (30 * S) / SIZE;
+    /* Silt bars and a wet margin either side of the river.
+     *
+     * Filled band rather than a stroked centreline. A stroke has ONE width,
+     * which was correct while the channel was a constant 9.5 m and is a lie
+     * now that it runs from 6 m at the fords to 26 m at Reedwater - the pool
+     * would have been a wide river painted as a narrow one. The band is the
+     * channel's own half-width plus a 10 m wet margin, so the silt is exactly
+     * as wide as the water it belongs to. */
+    g2.fillStyle = 'rgba(96,84,58,0.5)';
     g2.beginPath();
     for (let x = -HALF - 20; x <= HALF + 20; x += 6) {
+      const w = riverHalfWidth(x) + 10;
       const px = toPx(x);
-      const pz = toPx(riverZ(x));
-      if (x <= -HALF - 20) g2.moveTo(px, pz);
-      else g2.lineTo(px, pz);
+      if (x <= -HALF - 20) g2.moveTo(px, toPx(riverZ(x) - w));
+      else g2.lineTo(px, toPx(riverZ(x) - w));
     }
-    g2.stroke();
+    for (let x = HALF + 20; x >= -HALF - 20; x -= 6) {
+      const w = riverHalfWidth(x) + 10;
+      g2.lineTo(toPx(x), toPx(riverZ(x) + w));
+    }
+    g2.closePath();
+    g2.fill();
 
     // Bare, trodden market square and castle courtyard.
     g2.fillStyle = 'rgba(124,106,76,0.55)';
@@ -3778,12 +3843,6 @@ export class MedievalWorld extends World {
     const hfHeights = terrain.heights;
     await this._breathe();
 
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(terrain.positions, 3));
-    geo.setAttribute('uv', new THREE.BufferAttribute(terrain.uvs, 2));
-    geo.setAttribute('normal', new THREE.BufferAttribute(terrain.normals, 3));
-    geo.setIndex(new THREE.BufferAttribute(terrain.indices, 1));
-
     /* ---- Macro albedo x tiled detail. One macro map cannot carry close-up
      * detail across the whole vale, and one tiled map cannot carry the roads
      * and river silt, so the shader multiplies them. */
@@ -3883,11 +3942,43 @@ export class MedievalWorld extends World {
     this._mats.terrain = mat;
     this._owned.push(mat);
 
-    const ground = new THREE.Mesh(geo, mat);
-    ground.name = 'medieval:terrain';
-    ground.receiveShadow = true;
-    ground.castShadow = false;
-    this.group.add(ground);
+    /* ---- Tiles.
+     *
+     * One mesh at 900 m is 405,000 triangles behind one 636 m bounding sphere,
+     * which intersects the frustum from everywhere: the ground was the only
+     * thing in this world that never frustum-culled, while its own grass and
+     * trees were split spatially for exactly that reason. 81 tiles of 100 m,
+     * each with its own sphere and its own half-resolution geometry past
+     * 170 m, draw 108,000 triangles in 52 calls in the average of fourteen
+     * measured framings. The size, the stride and the distance are all
+     * measured - see `medieval/TerrainTiles.js`, which owns the reasoning and
+     * the numbers.
+     *
+     * The tiles are SLICED out of `terrain.positions`, not resampled: every
+     * tile vertex is a sample the worker already produced, so two tiles
+     * sharing an edge share the same numbers and the hi surface is still
+     * exactly the collision surface below. */
+    const src = {
+      positions: terrain.positions, uvs: terrain.uvs,
+      normals: terrain.normals, nx: terrain.nx,
+    };
+    const tiles = tileGrid({ half: HALF, step: step, tile: TILE_METRES });
+    for (let i = 0; i < tiles.length; i++) {
+      if ((i & 7) === 0) await this._breathe();
+      const t = tiles[i];
+      const hi = MedievalWorld._tileGeometry(buildTile(src, t, 1, TILE_SKIRT_DROP));
+      const lo = MedievalWorld._tileGeometry(buildTile(src, t, TILE_LO_STRIDE, TILE_SKIRT_DROP));
+      this._owned.push(lo);
+      const tile = new THREE.Mesh(hi, mat);
+      tile.name = `medieval:terrain:${t.ix},${t.iz}`;
+      tile.receiveShadow = true;
+      tile.castShadow = false;
+      this.group.add(tile);
+      /* SURFACE, not CENTRE. A 100 m tile's sphere has a ~71 m radius, so a
+       * centre measure would demote a tile whose near edge is still 100 m
+       * inside the band the deviation budget was computed against. */
+      this._lod.add(tile, { lo, swapBeyond: TILE_SWAP_DISTANCE, measure: SURFACE });
+    }
 
     /* ---- Collision: one heightfield collider for the whole playfield.
      *
@@ -3972,7 +4063,13 @@ export class MedievalWorld extends World {
          * colour and the seam would show as a value step against the playfield
          * it is supposed to continue. The 560m RUN does not: that is an
          * atmospheric distance, the same one the fog is working over. */
-        _col.copy(near).lerp(far, smoothstep(HALF + 20, HALF + 580, rad));
+        /* The RUN is the fog's own run, not a number of its own. It was the
+         * literal 580 against a 560 m fogFar - "the same atmospheric distance
+         * the fog is working over" - and that sentence was true and the number
+         * was not maintained: the fog now works over 794 m. Deriving it means
+         * the skirt's value ramp and the haze it is dissolving into can no
+         * longer drift apart. */
+        _col.copy(near).lerp(far, smoothstep(HALF + 20, HALF + (FOG_FAR - FOG_NEAR), rad));
         // Slope break-up: the crests and the steep flanks show scrub and rock
         // where the shallow ground stays grass, so the ridge shows folds.
         const d = Math.max(6, rad * 0.03);
@@ -4083,7 +4180,6 @@ export class MedievalWorld extends World {
      * curve that swings 27m either side of its mean needs about that. */
     const along = Math.max(150, Math.round((SIZE - 8) / 2.6));
     const across = 5;
-    const halfW = 11;
     const pos = [];
     const uv = [];
     const idx = [];
@@ -4097,7 +4193,12 @@ export class MedievalWorld extends World {
       const t0 = i / along;
       const x = -(HALF - 4) + t0 * (SIZE - 8);
       const cz = riverZ(x);
-      const w = halfW * (0.12 + 0.88 * smoothstep(0, 0.09, Math.min(t0, 1 - t0)));
+      /* Width follows the channel. `halfW` was a constant 11 - the 9.5 m
+       * channel plus 1.5 - and a constant is exactly what the expansion had to
+       * stop being: Reedwater's 26 m pool would have been a 22 m grey ribbon
+       * running through the middle of a 52 m trench. */
+      const w = (riverHalfWidth(x) + 1.5)
+        * (0.12 + 0.88 * smoothstep(0, 0.09, Math.min(t0, 1 - t0)));
       for (let j = 0; j <= across; j++) {
         const t = j / across;
         pos.push(x, WATER_Y, cz + (t - 0.5) * 2 * w);
@@ -5366,6 +5467,150 @@ export class MedievalWorld extends World {
   /* ---------------------------------------------------------------- */
   /* Timber-framed buildings                                           */
   /* ---------------------------------------------------------------- */
+
+  /**
+   * Build one grass zone, or return null if nothing would stand there.
+   *
+   * The placement below is the field's original pass, moved verbatim - same
+   * clump budget, same rejection order, same jitter - with one deliberate
+   * change: the RNG is seeded from the ZONE, not drawn from the world's shared
+   * scatter stream. It has to be. A zone that is freed when the player walks
+   * away and rebuilt when they come back must come back identical, and a
+   * shared stream makes a zone's contents depend on how many zones happened to
+   * be built before it.
+   *
+   * @param {number} key `GrassResidency` zone key
+   */
+  _buildGrassZone(key) {
+    const R = this._grass;
+    const zx = R.zoneX(key);
+    const zz = R.zoneZ(key);
+    const x0 = R.originX(zx);
+    const z0 = R.originZ(zz);
+    const span = R.span;
+    /* Two odd primes, so no two zones in an 18x18 grid share a seed and
+     * neighbouring zones do not share low bits either. */
+    const rnd = mulberry32((0x6a55f00d ^ (zx * 73856093) ^ (zz * 19349663)) >>> 0);
+    const CLUMPS = 720;
+    const mat4 = [];
+    const colBuf = [];
+    let g2 = 0;
+    let clumps = 0;
+    while (clumps < CLUMPS && g2++ < CLUMPS * 4) {
+      const cx = x0 + rnd() * span;
+      const cz = z0 + rnd() * span;
+      // Reject the clump centre once, then seed around it - one set of
+      // spatial queries buys seven blades instead of one.
+      // The clump radius below is 1.15m, so a centre sampled right on the
+      // rim of the outermost zone throws blades past the terrain edge -
+      // the classic "jitter walks off the last valid cell". Reject the
+      // centre with the clump radius as the inset and the blades cannot.
+      if (!this._inPlayfield(cx, cz, 1.5)) continue;
+      if (this._height(cx, cz) < WATER_Y + 0.35) continue;
+      const settle = this._settled(cx, cz);
+      // Nothing grows on ground people cross. This is the fix for a
+      // village square floored in lawn.
+      if (settle > 0.34) continue;
+      if (settle > 0.08 && rnd() < settle * 2.4) continue;
+      const lush = fbm2(cx * 0.038, cz * 0.038, 2);
+      if (lush < -0.16 && rnd() > 0.3) continue;
+      const blades = 5 + ((rnd() * 5) | 0);
+      for (let b = 0; b < blades; b++) {
+        const a = rnd() * TAU;
+        const rr = Math.sqrt(rnd()) * 1.15;
+        const x = cx + Math.cos(a) * rr;
+        const z = cz + Math.sin(a) * rr;
+        if (!this._inPlayfield(x, z, 0.4)) continue;
+        const y = this._height(x, z);
+        if (y < WATER_Y + 0.3) continue;
+        if (this._roadDist(x, z) < 1.2) continue;
+        if (this._isPaved(x, z, 0.35)) continue;
+        // Blades were growing up through floorboards and hearths because
+        // nothing here ever asked whether a house was standing on the spot.
+        if (this._inFootprint(x, z, 0.5)) continue;
+        if (rectDist(x - CASTLE.x, z - CASTLE.z, CASTLE.hx - 4, CASTLE.hz - 4) < 0) continue;
+        if (rectDist(x - MARKET.x, z - MARKET.z, MARKET.hx, MARKET.hz) < 0) continue;
+        const sc = (0.72 + rnd() * 0.62) * (0.86 + clamp01(lush + 0.4) * 0.34);
+        _obj.position.set(x, y - 0.05, z);
+        _obj.rotation.set((rnd() - 0.5) * 0.16, rnd() * TAU, (rnd() - 0.5) * 0.16);
+        _obj.scale.set(sc, sc * (0.68 + rnd() * 0.74), sc);
+        _obj.updateMatrix();
+        mat4.push(..._obj.matrix.elements);
+        // Desaturated a quarter and dropped in value so the tufts sit in
+        // the same band as the graded terrain rather than on top of it.
+        _col.setHSL(0.19 + rnd() * 0.07, 0.17 + rnd() * 0.13, 0.27 + rnd() * 0.17);
+        colBuf.push(_col.r, _col.g, _col.b);
+      }
+      clumps++;
+    }
+    const placed = colBuf.length / 3;
+    if (!placed) return null;
+    const mesh = new THREE.InstancedMesh(this._grassGeo, this._mats.grass, placed);
+    mesh.instanceMatrix.array.set(mat4);
+    mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(colBuf), 3);
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    this.group.add(mesh);
+    /* The spatial split exists so a zone can leave the frustum on its own;
+     * this is the other half of the same idea, and the reason the split has to
+     * survive. A zone whose nearest blade is past the height fade is drawing
+     * degenerate geometry - see GRASS_HIDE_DISTANCE. */
+    this._lod.add(mesh, { hideBeyond: GRASS_HIDE_DISTANCE, measure: SURFACE });
+    R.resident.set(key, mesh);
+    return mesh;
+  }
+
+  /** Free one resident grass zone, GPU buffers and LOD registration included. */
+  _freeGrassZone(key) {
+    const mesh = this._grass.resident.get(key);
+    if (!mesh) return;
+    this._grass.resident.delete(key);
+    /* Deregister BEFORE disposing. `DistanceLod` recomputes a world-space
+     * bounding sphere for every entry every frame; an entry left pointing at a
+     * disposed `InstancedMesh` is a leak and a distance test against geometry
+     * the GPU no longer holds. */
+    this._lod.remove(mesh);
+    this.group.remove(mesh);
+    // Frees instanceMatrix and instanceColor. The tuft geometry and the grass
+    // material are shared across every zone and are owned by `_buildNature`.
+    mesh.dispose();
+  }
+
+  /**
+   * Move the grass frontier with the player. Called once per frame.
+   *
+   * One build per frame, deliberately. The frontier advances by roughly one
+   * zone per second at a sprint, so a single build per frame is two orders of
+   * magnitude more headroom than the motion needs, and it means the worst
+   * frame this can cause is one zone's placement pass rather than five.
+   */
+  _tickGrass(x, z) {
+    if (!this._grass) return;
+    const { build, free } = this._grass.decide(x, z, 1);
+    for (let i = 0; i < free.length; i++) this._freeGrassZone(free[i]);
+    for (let i = 0; i < build.length; i++) this._buildGrassZone(build[i]);
+  }
+
+  /**
+   * Wrap one `TerrainTiles.buildTile` result in a `BufferGeometry`.
+   *
+   * The bounding sphere is computed here rather than left to the first render,
+   * because `DistanceLod.add` reads it at registration: a mesh registered with
+   * no sphere measures its distance as zero forever, i.e. never demotes, and
+   * does it silently.
+   */
+  static _tileGeometry(t) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(t.position, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(t.uv, 2));
+    g.setAttribute('normal', new THREE.BufferAttribute(t.normal, 3));
+    g.setIndex(new THREE.BufferAttribute(t.index, 1));
+    g.computeBoundingSphere();
+    return g;
+  }
 
   /** Scale a geometry's UVs - ShapeGeometry and friends come out at 1 unit/tile. */
   static _uvScale(geo, s) {
@@ -8008,7 +8253,10 @@ export class MedievalWorld extends World {
       const z = (rnd() - 0.5) * (SIZE - 8);
       const rd = Math.abs(z - riverZ(x));
       const wood = fbm2(x * 0.0062, z * 0.0062, 3);
-      const nearWater = rd < 24 && rd > 12;
+      // The willow band tracks the channel rather than sitting at a fixed
+      // 12-24 m: at Reedwater the channel alone is 26 m wide.
+      const hw = riverHalfWidth(x);
+      const nearWater = rd < hw + 14.5 && rd > hw + 2.5;
       // Woodland mask, plus willows crowding the banks and hedgerow strays.
       if (!nearWater && wood < 0.02 && rnd() > 0.12) continue;
       if (!this._isOpenGround(x, z, 2.2)) continue;
@@ -8322,84 +8570,23 @@ export class MedievalWorld extends World {
      * count afterwards, because a 6000-instance allocation per 50m cell that
      * only ever fills a fifth of the way is 25MB of dead matrix buffer.
      */
-    const ZONES = MEDIEVAL_LAYOUT.grassZones;
-    const CLUMPS = 720;
-    const mat4 = [];
-    const colBuf = [];
-    for (let zz = 0; zz < ZONES; zz++) {
-      for (let zx = 0; zx < ZONES; zx++) {
-        const x0 = -HALF + (zx * SIZE) / ZONES;
-        const z0 = -HALF + (zz * SIZE) / ZONES;
-        const span = SIZE / ZONES;
-        mat4.length = 0;
-        colBuf.length = 0;
-        let g2 = 0;
-        let clumps = 0;
-        while (clumps < CLUMPS && g2++ < CLUMPS * 4) {
-          const cx = x0 + rnd() * span;
-          const cz = z0 + rnd() * span;
-          // Reject the clump centre once, then seed around it - one set of
-          // spatial queries buys seven blades instead of one.
-          // The clump radius below is 1.15m, so a centre sampled right on the
-          // rim of the outermost zone throws blades past the terrain edge -
-          // the classic "jitter walks off the last valid cell". Reject the
-          // centre with the clump radius as the inset and the blades cannot.
-          if (!this._inPlayfield(cx, cz, 1.5)) continue;
-          if (this._height(cx, cz) < WATER_Y + 0.35) continue;
-          const settle = this._settled(cx, cz);
-          // Nothing grows on ground people cross. This is the fix for a
-          // village square floored in lawn.
-          if (settle > 0.34) continue;
-          if (settle > 0.08 && rnd() < settle * 2.4) continue;
-          const lush = fbm2(cx * 0.038, cz * 0.038, 2);
-          if (lush < -0.16 && rnd() > 0.3) continue;
-          const blades = 5 + ((rnd() * 5) | 0);
-          for (let b = 0; b < blades; b++) {
-            const a = rnd() * TAU;
-            const rr = Math.sqrt(rnd()) * 1.15;
-            const x = cx + Math.cos(a) * rr;
-            const z = cz + Math.sin(a) * rr;
-            if (!this._inPlayfield(x, z, 0.4)) continue;
-            const y = this._height(x, z);
-            if (y < WATER_Y + 0.3) continue;
-            if (this._roadDist(x, z) < 1.2) continue;
-            if (this._isPaved(x, z, 0.35)) continue;
-            // Blades were growing up through floorboards and hearths because
-            // nothing here ever asked whether a house was standing on the spot.
-            if (this._inFootprint(x, z, 0.5)) continue;
-            if (rectDist(x - CASTLE.x, z - CASTLE.z, CASTLE.hx - 4, CASTLE.hz - 4) < 0) continue;
-            if (rectDist(x - MARKET.x, z - MARKET.z, MARKET.hx, MARKET.hz) < 0) continue;
-            const sc = (0.72 + rnd() * 0.62) * (0.86 + clamp01(lush + 0.4) * 0.34);
-            _obj.position.set(x, y - 0.05, z);
-            _obj.rotation.set((rnd() - 0.5) * 0.16, rnd() * TAU, (rnd() - 0.5) * 0.16);
-            _obj.scale.set(sc, sc * (0.68 + rnd() * 0.74), sc);
-            _obj.updateMatrix();
-            mat4.push(..._obj.matrix.elements);
-            // Desaturated a quarter and dropped in value so the tufts sit in
-            // the same band as the graded terrain rather than on top of it.
-            _col.setHSL(0.19 + rnd() * 0.07, 0.17 + rnd() * 0.13, 0.27 + rnd() * 0.17);
-            colBuf.push(_col.r, _col.g, _col.b);
-          }
-          clumps++;
-        }
-        const placed = colBuf.length / 3;
-        if (!placed) continue;
-        const mesh = new THREE.InstancedMesh(tuftGeo, this._mats.grass, placed);
-        mesh.instanceMatrix.array.set(mat4);
-        mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(colBuf), 3);
-        mesh.castShadow = false;
-        mesh.receiveShadow = true;
-        mesh.instanceMatrix.needsUpdate = true;
-        mesh.instanceColor.needsUpdate = true;
-        mesh.computeBoundingSphere();
-        this.group.add(mesh);
-        /* The 8x8 split above exists so a zone can leave the frustum on its
-         * own; this is the other half of the same idea, and the reason the
-         * split has to survive. A zone whose nearest blade is past the height
-         * fade is drawing degenerate geometry - see GRASS_HIDE_DISTANCE. */
-        this._lod.add(mesh, { hideBeyond: GRASS_HIDE_DISTANCE, measure: SURFACE });
-        await this._breathe();
-      }
+    this._grassGeo = tuftGeo;
+    /* Zones are built on demand from here on. See `medieval/GrassResidency.js`
+     * for why: 324 zones at the (correct, unchanged) 50 m cell and 720-clump
+     * density is 1,594,413 blades and 115.6 MB of instance buffers, of which
+     * fewer than fifty zones can contribute a pixel at any instant. */
+    this._grass = new GrassResidency({
+      zones: MEDIEVAL_LAYOUT.grassZones,
+      zoneMetres: MEDIEVAL_LAYOUT.grassZoneMetres,
+      half: HALF,
+    });
+    /* Seeded at the player's spawn, not at the origin: the first frame after a
+     * portal transition has to have grass under the lens already, and there is
+     * no earlier moment to build it in than this one. */
+    const seed = this.playerSpawn;
+    for (const key of this._grass.initial(seed.x, seed.z)) {
+      this._buildGrassZone(key);
+      await this._breathe();
     }
 
     /* ---- Bushes ----------------------------------------------------- */
@@ -8539,7 +8726,9 @@ export class MedievalWorld extends World {
       // and the water ribbon both stop. The bank has to end where the terrain
       // that carries it ends, so this derives from HALF and always has.
       const x = (rnd() - 0.5) * 2 * (HALF - 3);
-      const z = riverZ(x) + (rnd() < 0.5 ? -1 : 1) * (8.2 + rnd() * 6.0);
+      // Offset from the channel EDGE, not from the centreline: reeds grow in
+      // the shallows, and where the shallows are moved with the width.
+      const z = riverZ(x) + (rnd() < 0.5 ? -1 : 1) * (riverHalfWidth(x) - 1.3 + rnd() * 6.0);
       if (!this._inPlayfield(x, z, 3)) continue;
       const y = this._height(x, z);
       if (y < WATER_Y - 0.5 || y > WATER_Y + 1.4) continue;
@@ -9387,6 +9576,11 @@ export class MedievalWorld extends World {
      * active world, so this is already a no-op everywhere else; it is also a
      * no-op before `_buildNature` has registered anything. */
     this._lod.update(this.engine.camera);
+    /* Grass residency. Driven off the CAMERA rather than off the player body:
+     * what has to have grass under it is whatever the lens can see, and in a
+     * third-person or free-look frame those are metres apart. */
+    this.engine.camera.getWorldPosition(_v1);
+    this._tickGrass(_v1.x, _v1.z);
 
     // Foliage translucency shades in view space, so the sun has to follow the
     // camera basis. One transform, no allocation.
@@ -9425,6 +9619,15 @@ export class MedievalWorld extends World {
   }
 
   dispose() {
+    /* Resident grass first, and through the same path the frontier uses. The
+     * base class disposes GEOMETRY as it walks the group, which for a grass
+     * zone is the shared tuft - the per-zone instanceMatrix and instanceColor
+     * are hung off the InstancedMesh itself and only `mesh.dispose()` releases
+     * them. At up to 58 resident zones that is ~20 MB that would otherwise
+     * survive every world unload. */
+    if (this._grass) {
+      for (const key of [...this._grass.resident.keys()]) this._freeGrassZone(key);
+    }
     /* Before the geometries go: put every swapped mesh back on its hi
      * geometry, so nothing is left holding a reference to a disposed one. */
     this._lod.clear();
@@ -9434,6 +9637,8 @@ export class MedievalWorld extends World {
     this._owned.length = 0;
     this._tex = {};
     this._mats = {};
+    this._grass = null;
+    this._grassGeo = null;
     this._skyDome = null;
     this._wheel = null;
     this._sails = null;

@@ -36,6 +36,11 @@ import * as THREE from 'three';
  * recomputed from `matrixWorld` every frame (cheap - one sphere transform)
  * so a world group that gets repositioned still works, but an object that
  * moves relative to its own bounding sphere is not what this is for.
+ *
+ * Static is not the same as permanent, though - see `remove`. A world that
+ * builds and frees renderables while it runs has to be able to deregister
+ * them, or this list grows without bound and drives a distance test against a
+ * disposed mesh every frame.
  */
 
 /* ------------------------------------------------------------------ */
@@ -190,6 +195,33 @@ export class DistanceLod {
         }
       }
     }
+  }
+
+  /**
+   * Deregister one object, restoring it exactly as `clear` would.
+   *
+   * Needed the moment anything streams. Medieval's grass zones are built and
+   * freed as the player moves, and a freed zone that stayed registered would
+   * leave this holding the only reference to a disposed `InstancedMesh` -
+   * which is both a leak and a per-frame distance test against geometry the
+   * GPU no longer has. Restoring `visible` and the hi geometry first is what
+   * makes remove-then-dispose safe: the caller disposes a mesh in the same
+   * state it handed over.
+   *
+   * Linear search, because `entries` is tens of items and the alternative is a
+   * Map whose only reader is this method. Returns whether anything was found.
+   *
+   * @param {THREE.Object3D} object
+   * @returns {boolean}
+   */
+  remove(object) {
+    const i = this.entries.findIndex((e) => e.object === object);
+    if (i < 0) return false;
+    const e = this.entries[i];
+    e.object.visible = true;
+    if (e.lo && e.swapped) e.object.geometry = e.hi;
+    this.entries.splice(i, 1);
+    return true;
   }
 
   /** Put every registration back to visible and hi-detail, and forget it. */

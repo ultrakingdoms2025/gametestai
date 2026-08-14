@@ -217,6 +217,51 @@ test('grass zones keep the 50m cell that GRASS_HIDE_DISTANCE assumes', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Aerial perspective                                                  */
+/* ------------------------------------------------------------------ */
+
+test('the fog reaches the rim instead of saturating a third of the way to it', () => {
+  /* Linear fog is two numbers and they are the entire depth cascade, so they
+   * are an extent-derived quantity exactly like the wall coordinates above -
+   * and they fail the same way, silently. 96 / 560 was right for a 400 m vale
+   * whose far corner was 283 m; against a 636 m corner it put everything past
+   * 424 m - the outer third of the radius, 60% of the AREA, and all four of
+   * the ring's landforms - at 70-100% haze.
+   *
+   * What is pinned here is the shape, not the pair: the near field must be
+   * where it was tuned, the playfield corner must still read, and the far side
+   * of the map must be the first thing to go. */
+  const src = read('src/worlds/MedievalWorld.js');
+  const near = Number(/const FOG_NEAR = ([\d.]+)/.exec(src)[1]);
+  const far = Number(/const FOG_FAR = ([\d.]+)/.exec(src)[1]);
+  const haze = (d) => Math.min(1, Math.max(0, (d - near) / (far - near)));
+  const corner = MEDIEVAL_LAYOUT.half * Math.SQRT2;
+
+  // The keep stands ~110 m from the village approach and was tuned to a 3%
+  // veil there. That composition did not change when the map grew.
+  assert.ok(Math.abs(haze(110) - 0.030) < 0.006,
+    `the keep now takes ${(haze(110) * 100).toFixed(1)}% haze instead of 3%`);
+  // The playfield corner has to be legible - deep aerial perspective, not gone.
+  assert.ok(haze(corner) > 0.55 && haze(corner) < 0.80,
+    `the ${corner.toFixed(0)} m corner sits at ${(haze(corner) * 100).toFixed(0)}% haze`);
+  // Nothing inside the playfield may be fully saturated except the far rim.
+  assert.equal(haze(MEDIEVAL_LAYOUT.half), haze(MEDIEVAL_LAYOUT.half));
+  assert.ok(haze(MEDIEVAL_LAYOUT.half) < 0.5,
+    'the rim mid-edge is already past half haze seen from the middle of the map');
+  assert.ok(far >= MEDIEVAL_LAYOUT.size * 0.9 && far <= MEDIEVAL_LAYOUT.size * 1.1,
+    `fogFar ${far} is not scaled to the ${MEDIEVAL_LAYOUT.size} m rim-to-rim sightline`);
+  // ...and the distant skirt must still saturate long before its outer ring,
+  // or it stops landing on the sky dome's horizon colour. See the dome shader.
+  assert.equal(haze(MEDIEVAL_LAYOUT.skirtOuter), 1);
+  assert.ok(far < MEDIEVAL_LAYOUT.skirtOuter * 0.55);
+
+  // The skirt's own value ramp is derived from the fog run rather than being a
+  // second copy of it.
+  assert.ok(/HALF \+ \(FOG_FAR - FOG_NEAR\)/.test(src),
+    'the skirt value ramp no longer tracks the fog it dissolves into');
+});
+
+/* ------------------------------------------------------------------ */
 /* Auto-scaling systems downstream                                     */
 /* ------------------------------------------------------------------ */
 
@@ -296,6 +341,11 @@ test('the terrain job, the walls and the grass grid are read from one place', ()
     '_buildTerrain no longer submits MEDIEVAL_LAYOUT.terrainJob');
   assert.ok(/for \(const w of MEDIEVAL_LAYOUT\.walls\)/.test(code),
     'the containment walls are no longer built from MEDIEVAL_LAYOUT.walls');
-  assert.ok(/const ZONES = MEDIEVAL_LAYOUT\.grassZones/.test(code),
-    'the grass grid no longer reads MEDIEVAL_LAYOUT.grassZones');
+  /* The grass grid is now built lazily per zone (see `GrassResidency`), so
+   * the consumer is the residency constructor rather than a loop bound - but
+   * the property being pinned is unchanged: the zone COUNT is derived from
+   * the extent, and the 50 m cell is what survives a resize. */
+  assert.ok(/zones: MEDIEVAL_LAYOUT\.grassZones/.test(code)
+    && /zoneMetres: MEDIEVAL_LAYOUT\.grassZoneMetres/.test(code),
+    'the grass grid no longer reads MEDIEVAL_LAYOUT.grassZones / grassZoneMetres');
 });

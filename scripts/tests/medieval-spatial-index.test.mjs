@@ -18,7 +18,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { rectDist } from '../../src/worlds/terrain/MedievalHeight.js';
+import { rectDist, riverZ, riverHalfWidth, WATER_Y } from '../../src/worlds/terrain/MedievalHeight.js';
 import { PLOTS } from '../../src/worlds/medieval/Settlements.js';
 import { GridIndex, segmentDistance } from '../../src/worlds/medieval/GridIndex.js';
 import { MedievalWorld } from '../../src/worlds/MedievalWorld.js';
@@ -317,9 +317,17 @@ test('_isOpenGround is identical to a fully linear reference', () => {
   const fps = w._footprints;
   const linear = (x, z, margin) => {
     if (!w._inPlayfield(x, z, 2 + Math.max(0, margin))) return false;
-    if (w._height(x, z) < 0.85 + 0.5) return false;
+    if (w._height(x, z) < WATER_Y + 0.5) return false;
     if (rectDist(x + 72, z + 58, 40, 33) < 22) return false;
-    if (Math.abs(z - (104 + 20 * Math.sin(x * 0.011) + 7 * Math.sin(x * 0.027 + 1.3))) < 11.5) return false;
+    /* The river terms call the shared functions rather than re-spelling them.
+     * They used to be the literal centreline formula and the literal 11.5 m
+     * half-width, and that copy is exactly the failure this file exists to
+     * catch, only pointing the other way: when the channel stopped being a
+     * constant 9.5 m wide, the reference kept testing a river that no longer
+     * exists. What is under test here is that the INDEX agrees with a linear
+     * sweep of the same features - the river is a shared input to both, not
+     * one of the features being indexed. */
+    if (Math.abs(z - riverZ(x)) < riverHalfWidth(x) + 2) return false;
     if (rectDist(x - 34, z - 18, 17, 15) < 2) return false;
     if (roadDistLinear(segs, x, z) < 2.2 + margin) return false;
     return !inRectsLinear(fps, x, z, margin);
@@ -383,39 +391,52 @@ test('the index kills the quadratic: cost stays flat as features multiply', () =
     xs[i] = (rnd() - 0.5) * 900;
     zs[i] = (rnd() - 0.5) * 900;
   }
-  const time = (fn) => {
-    let sink = 0;
-    for (let i = 0; i < 4000; i++) sink += fn(xs[i], zs[i]);      // warm
-    const t0 = performance.now();
-    for (let i = 0; i < N; i++) sink += fn(xs[i], zs[i]);
-    const ms = performance.now() - t0;
-    assert.ok(Number.isFinite(sink));
-    return ms;
-  };
-
-  const results = [];
-  for (const copies of [1, 5]) {
+  /* WORK, not wall clock.
+   *
+   * This was originally a benchmark, and it failed roughly one run in three
+   * under full-suite CPU contention while passing 3/3 in isolation. At one copy
+   * the index is only about 1.5x ahead - the vale's roads sit in a single
+   * 150x230 m cluster while the probes are uniform over 900x900 m, the case a
+   * grid helps least - so noise was enough to flip the comparison. A test that
+   * is red a third of the time for reasons unrelated to the code teaches you to
+   * ignore red, which is worse than not having the test at all.
+   *
+   * The property being claimed was never really about milliseconds: it is that
+   * the index examines a BOUNDED number of segments however many exist, while
+   * the scan examines all of them. `_segDist` is an injected callback, so that
+   * is directly countable - exact, reproducible, and indifferent to what else
+   * the machine is doing.
+   */
+  const probes = 20000;
+  const measure = (copies) => {
     const segs = spread(copies);
-    w._roadSegs = segs;
-    // Prove the two still agree at this size before timing either of them.
+    w._roadSegs = segs;                    // the grid cache invalidates on identity + length
+    // Prove the two still agree at this size before counting either of them.
     for (let i = 0; i < 400; i++) {
       assert.equal(w._roadDist(xs[i], zs[i]), roadDistLinear(segs, xs[i], zs[i]));
     }
-    results.push({
-      n: segs.length / 5,
-      linear: time((x, z) => roadDistLinear(segs, x, z)),
-      indexed: time((x, z) => w._roadDist(x, z)),
-    });
-  }
+    const real = w._segDist;
+    let calls = 0;
+    w._segDist = (i, x, z) => { calls++; return real(i, x, z); };
+    for (let i = 0; i < probes; i++) w._roadDist(xs[i], zs[i]);
+    w._segDist = real;
+    return { n: segs.length / 5, indexed: calls / probes, linear: segs.length / 5 };
+  };
 
-  const [one, five] = results;
-  const report = results.map((r) => `${r.n} segs: linear ${r.linear.toFixed(0)}ms, indexed ${r.indexed.toFixed(0)}ms`).join('; ');
-  assert.ok(one.indexed < one.linear, `the index is not ahead even today - ${report}`);
-  // The linear scan must have grown roughly with the feature count...
-  assert.ok(five.linear > one.linear * 3, `the linear reference did not scale as expected - ${report}`);
-  // ...and the index must NOT have. This is the quadratic being killed.
-  assert.ok(five.indexed < one.indexed * 2.5, `the index scaled with feature count - ${report}`);
-  assert.ok(five.linear / five.indexed > 3, `only ${(five.linear / five.indexed).toFixed(1)}x at 5x the roads - ${report}`);
+  const results = [1, 5, 10].map(measure);
+  const report = results
+    .map((r) => `${r.n} segs: linear ${r.linear} evals/probe, indexed ${r.indexed.toFixed(1)}`)
+    .join('; ');
+  const [one, , ten] = results;
+
+  // The linear reference grows exactly with the feature count, by construction.
+  assert.equal(ten.linear, one.linear * 10, report);
+  // The index must not: ten times the roads must not cost ten times the work.
+  assert.ok(ten.indexed < one.indexed * 2.5, `the index scaled with feature count - ${report}`);
+  // And at every size it must look at a small fraction of what is there.
+  for (const r of results) {
+    assert.ok(r.indexed < r.linear * 0.5, `index examined ${r.indexed.toFixed(1)} of ${r.linear} - ${report}`);
+  }
 });
 
 test('the footprint index is flat in the number of buildings', () => {

@@ -74,6 +74,27 @@ const CONTRACT = [
     file: 'src/worlds/medieval/Settlements.js',
     exports: ['PLOTS', 'EXTRA_YARDS', 'SETTLEMENTS', 'GROUND_BOUNDS', 'settledAt', 'settlementAt'],
   },
+  /* Added when the vale's ground was tiled and its meadow made resident.
+   * Both are pure arithmetic split out of `MedievalWorld.js` for the same
+   * reason as the two above: the failures are silent (a seam, a crack, a
+   * bounding sphere that spans the map, a bald patch in front of the player)
+   * and none of them needs a renderer to catch. */
+  {
+    file: 'src/worlds/medieval/TerrainTiles.js',
+    exports: [
+      'tileGrid', 'buildTile',
+      'TILE_METRES', 'TILE_LO_STRIDE', 'TILE_SWAP_DISTANCE', 'TILE_SKIRT_DROP',
+    ],
+  },
+  {
+    file: 'src/worlds/medieval/GrassResidency.js',
+    exports: [
+      'GrassResidency', 'cellDistance',
+      'GRASS_BUILD_DISTANCE', 'GRASS_RELEASE_DISTANCE', 'GRASS_ZONE_BUDGET',
+      'GRASS_BYTES_PER_INSTANCE',
+    ],
+    methods: ['decide', 'initial', 'distance'],
+  },
   {
     file: 'src/worlds/medieval/GridIndex.js',
     exports: ['GridIndex', 'segmentDistance'],

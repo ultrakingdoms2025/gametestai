@@ -284,6 +284,23 @@ export class Player {
       this.cameraRig?.correctShotEvent(evt);
     });
 
+    /* `camera:shake` had eight emitters across Combat, Projectiles, Bow,
+     * Fireball and Sword, and no listener anywhere in the tree - every
+     * explosion, sword hit and death has been firing it into nothing. Rather
+     * than add a ninth emitter for the maul and leave the rest dead, route the
+     * event into the same kick spring.
+     *
+     * The scales are NOT the same and must not be conflated: `viewKick` is in
+     * radians (0.12 is a bear's paw), while `amount` here runs 0.03 for a bow
+     * draw to 0.62 for the death lurch. 0.55 rad per unit puts the bow at ~1
+     * degree and death at ~20, which is the spread the emitters clearly meant.
+     *
+     * Roll alternates by event so a burst of hits shudders instead of nudging
+     * the view the same way n times. Deterministic, not random, so a test can
+     * assert it. */
+    this._shakeParity = 1;
+    this._offShake = bus.on('camera:shake', (e) => this.applyShake(e?.amount ?? 0));
+
     /** Active world, tracked for capability rules. @see ../worlds/WorldRules.js */
     this._world = null;
     this._offRules = this.bus?.on('world:changed', ({ world }) => { this._world = world; }) ?? null;
@@ -1199,10 +1216,14 @@ export class Player {
   /**
    * Kick the view.
    *
-   * Distinct from `camera:shake` on purpose, and not only because the brief
-   * asked for it: `camera:shake` is emitted by five systems and - grep the tree
-   * - listened to by none, so it currently does nothing at all. This is a real
-   * transform, applied in `_applyCamera` alongside the weapon recoil offset,
+   * The primitive that makes `camera:shake` mean something. That event had
+   * eight emitters and no listener at all until the constructor subscribed one,
+   * so every explosion, sword hit and death was firing into nothing. Damage
+   * calls this DIRECTLY rather than through the event, because the direction of
+   * the blow is known at the call site and is the whole point; `camera:shake`
+   * carries no direction and is routed in with an alternating roll instead.
+   *
+   * This is a real transform, applied in `_applyCamera` alongside the weapon recoil offset,
    * and it is DIRECTIONAL rather than random: a blow from the left rolls the
    * view right, which tells the player where it came from. A random shake tells
    * them only that something happened.
@@ -1215,6 +1236,30 @@ export class Player {
    * @param {number} [yaw]
    * @param {number} [roll]
    */
+  /**
+   * Undirected shake, routed into the same spring as a directed kick.
+   *
+   * `camera:shake` carries an `amount` and no direction, so this cannot roll
+   * away from the blow the way {@link applyViewKick} does at a damage site.
+   * Instead the roll ALTERNATES per call, so a burst - a fireball chain, a
+   * flurry of sword hits - shudders rather than nudging the view identically n
+   * times. Deterministic rather than random so a test can assert it.
+   *
+   * The two scales are not interchangeable and conflating them is the easy bug
+   * here: `applyViewKick` takes radians, where 0.12 is a bear's paw, while
+   * `amount` runs 0.03 for a bow draw to 0.62 for the death lurch. 0.55 rad per
+   * unit puts the bow at about one degree and death at about twenty.
+   *
+   * @param {number} amount as emitted with `camera:shake`
+   * @returns {boolean} false when there was nothing to do
+   */
+  applyShake(amount) {
+    if (!(amount > 0)) return false;
+    this._shakeParity = -(this._shakeParity ?? 1);
+    const s = this._shakeParity;
+    return this.applyViewKick(amount * 0.55, amount * 0.12 * s, amount * 0.3 * s);
+  }
+
   applyViewKick(pitch, yaw = 0, roll = 0) {
     const k = this._kick;
     k.vp += pitch;
@@ -1607,6 +1652,8 @@ export class Player {
     this._offRules = null;
     this._offFired?.();
     this._offFired = null;
+    this._offShake?.();
+    this._offShake = null;
     this._offWater?.();
     this._offWater = null;
     this._offMounted?.();

@@ -13,11 +13,17 @@ import {
   perlin2, fbm2, riverZ, medievalHeight,
   HALF, CASTLE, MARKET, VILLAGE, CIRCLE, BRIDGE_X, CHURCH_PADS,
 } from './terrain/MedievalHeight.js';
+/* Settlements own the plot table and the definition of trodden ground, for the
+ * same reason the terrain module owns the height function: they are shared
+ * with the tests and with anything that needs to know where a place is,
+ * without dragging `three` and nine thousand lines of world in behind them. */
+import { PLOTS, EXTRA_YARDS, settledAt } from './medieval/Settlements.js';
+import { GridIndex, segmentDistance } from './medieval/GridIndex.js';
 
 /**
  * ALDERMOOR VALE - the medieval world.
  *
- * A ~400x400m golden-hour landscape: a noise heightfield valley with a
+ * A ~900x900m golden-hour landscape: a noise heightfield valley with a
  * meandering river, a castle on a rise to the north-west, a timber-framed
  * village and market on the terrace below, woodland, and a ruined stone circle
  * housing the gateway back to the station.
@@ -45,6 +51,109 @@ const TAU = Math.PI * 2;
 /* ------------------------------------------------------------------ */
 /* World layout - one place to change where anything lives.            */
 /* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
+ * Extent.
+ *
+ * `HALF` is the one authored number (in `terrain/MedievalHeight.js`, so the
+ * generation worker sees the same value); everything below is arithmetic on
+ * it. Nothing in this file may write a playfield dimension as a literal - the
+ * vale went from 400m to 900m by changing `HALF` alone, and the only reason
+ * that was possible is that the terrain job, the collision heightfield, the
+ * macro painter, the containment walls, the distant skirt, the grass zones and
+ * every scatter bound all read it rather than remembering it.
+ * ------------------------------------------------------------------ */
+
+/** Playfield width and depth, metres. */
+const SIZE = HALF * 2;
+/** Vertex spacing of the terrain mesh AND of the collision heightfield. */
+const TERRAIN_STEP = 2;
+/** Quads per side. 2m at 900m is 450, i.e. 451^2 = 203,401 samples. */
+const TERRAIN_SEG = Math.round(SIZE / TERRAIN_STEP);
+/**
+ * Where the distant skirt's innermost ring sits.
+ *
+ * It has to start INSIDE the playfield square so its inner rows are hidden
+ * under terrain that is drawn on top of them - `_outerHeight` only drops them
+ * 2.5cm, which is not enough to hide a ring that pokes out past the rim.
+ */
+const SKIRT_INNER = HALF - 12;
+/**
+ * Where the skirt stops.
+ *
+ * Absolute, NOT derived from `HALF`: this is set by the 2km camera far plane
+ * (`CONFIG.render.far`), not by how big the playfield is. At 900m the sheet
+ * still has to reach past the horizon line from the ramparts, and that
+ * distance did not change when the vale got wider.
+ */
+const SKIRT_OUTER = 1928;
+/**
+ * Grass zone size, metres.
+ *
+ * The 50m cell is the number that matters, not the zone count: it is chosen
+ * against `GRASS_HIDE_DISTANCE` so that a zone's bounding sphere (~35m radius)
+ * can leave the 86m blade fade as a unit. Keeping it fixed and letting the
+ * count grow with the map is what preserves that reasoning at 900m.
+ */
+const GRASS_ZONE_M = 50;
+/**
+ * Ground covered by one repeat of the tiled relief sheet, metres.
+ *
+ * The terrain's UVs run 0..1 across the whole playfield, so anything expressed
+ * as a repeat count is secretly a function of `HALF`. These two are authored
+ * in metres and converted at the point of use, which is the only way the
+ * micro-shadow band and the detail octaves survive a change of extent. The
+ * macro painter's colour drifts get the same treatment - a count per square
+ * metre and a radius in metres, rather than a count and a radius in pixels.
+ */
+const RELIEF_TILE_M = 3.0;
+/** Ground per repeat of the albedo detail sheet's primary octave, metres. */
+const DETAIL_TILE_M = 4.2;
+
+/**
+ * Everything the playfield's size implies, derived once.
+ *
+ * Exported because the numbers below are the ones that go silently wrong when
+ * a world is resized - a terrain job sampled at the old size, a containment
+ * wall left at its old coordinate, a grass grid whose cells quietly stretched
+ * - and none of them can be checked from a test without a renderer unless the
+ * world publishes them. `_buildTerrain` and `_buildNature` consume this object
+ * rather than recomputing any of it, so a test that reads it is reading what
+ * the build actually used.
+ */
+export const MEDIEVAL_LAYOUT = {
+  half: HALF,
+  size: SIZE,
+  terrainStep: TERRAIN_STEP,
+  terrainSeg: TERRAIN_SEG,
+  skirtInner: SKIRT_INNER,
+  skirtOuter: SKIRT_OUTER,
+  grassZoneMetres: GRASS_ZONE_M,
+  grassZones: Math.round(SIZE / GRASS_ZONE_M),
+  /** The generation job `_buildTerrain` submits, verbatim. */
+  terrainJob: {
+    field: 'medieval',
+    originX: -HALF,
+    originZ: -HALF,
+    size: SIZE,
+    seg: TERRAIN_SEG,
+    uv: 'unit',
+    normals: true,
+  },
+  /**
+   * Invisible containment walls as `[cx, cy, cz, hx, hy, hz]`.
+   *
+   * One metre inside the rim, because each box is 2m thick about its centre:
+   * the inner face lands exactly on +/-HALF, which is where the terrain mesh
+   * and the collision heightfield both stop.
+   */
+  walls: [
+    [-(HALF - 1), 20, 0, 2, 40, HALF],
+    [HALF - 1, 20, 0, 2, 40, HALF],
+    [0, 20, -(HALF - 1), HALF, 40, 2],
+    [0, 20, HALF - 1, HALF, 40, 2],
+  ],
+};
 
 const WATER_Y = 0.85;
 const MOAT_Y = CASTLE.ground - 2.3;
@@ -86,48 +195,10 @@ const ROADS = [
   { key: 'mill', width: 3.4, pts: [[27, 74], [12, 80], [-2, 86], [-14, 93]] },
 ];
 
-/**
- * Village plots: [x, z, yaw, width, depth, storeys, roof, lit].
- *
- * Hoisted to module scope because the road builder needs them: every house
- * gets a paved yard and a lane back to the nearest street, and those have to
- * exist before the macro terrain map is painted.
- */
-const PLOTS = [
-  [14, 4, -0.55, 8.5, 6.5, 2, 't', 1], [11, 21, 1.62, 7.5, 6, 1, 't', 1],
-  [15, 35, 2.9, 9, 6.5, 2, 's', 0], [33, 41, 3.14, 8, 6, 1, 't', 1],
-  [52, 36, 2.35, 9.5, 7, 2, 's', 1], [56, 11, -1.75, 8, 6, 1, 't', 0],
-  [45, -3, 0.12, 9, 6.5, 2, 't', 1], [23, -6, 0.25, 7.5, 6, 1, 's', 0],
-  [58, 20, -0.42, 8.5, 6.5, 2, 't', 1], [69, 26, -0.42, 7.5, 6, 1, 't', 0],
-  [80, 33, -0.42, 9, 6.5, 2, 's', 1], [92, 44, -0.5, 8, 6, 1, 't', 0],
-  [63, 38, 2.7, 8.5, 6.5, 1, 't', 1], [75, 45, 2.7, 7.5, 6, 2, 's', 0],
-  [88, 53, 2.62, 8, 6, 1, 't', 1],
-  [37, 46, -0.14, 8, 6.5, 2, 't', 1], [19, 53, 1.5, 7.5, 6, 1, 't', 0],
-  [35, 64, -0.1, 9, 6.5, 1, 's', 1], [17, 70, 1.48, 8, 6, 2, 't', 0],
-  [47, 9, 0.75, 7.5, 6, 1, 't', 1], [59, 1, 0.62, 8, 6.5, 2, 's', 0],
-  // Moved off (-31, 33) in round 4. Sat 18m from the castle-approach lens and
-  // 9.5m wide, so it filled the right third of that framing, cropped by the
-  // frame edge, brighter and higher-contrast than the hero asset it was
-  // supposed to be a supporting element for.
-  [101, 9, 0.4, 10, 7.5, 1, 't', 0], [68, 56, 1.1, 9.5, 7, 1, 't', 1],
-  [85, 76, 2.2, 9, 7, 1, 't', 0], [-47, 12, -0.9, 8.5, 6.5, 1, 's', 0],
-  // Plot (8,-6) removed: it sat directly over the Quest Manager spawn at
-  // (10, -9), whose ground snap raycast landed on the thatch and left the
-  // NPC waist-deep in the roof.
-  // Expanded hamlets around the castle outer approaches (kept clear of the
-  // moat AND of the two parish-church footprints).
-  [-166, -22, 0.42, 9.5, 7.2, 2, 's', 1], [-154, -44, 0.55, 8.8, 6.8, 1, 't', 0],
-  [-148, -66, 0.62, 9.2, 7.0, 2, 's', 1], [-138, -84, 0.74, 8.4, 6.5, 1, 't', 0],
-  [-132, -104, 0.86, 9.0, 7.0, 2, 's', 1], [-108, -118, 1.0, 9.6, 7.4, 2, 's', 1],
-  [-88, -124, 1.18, 9.0, 7.0, 1, 't', 0], [-80, -142, 1.32, 9.4, 7.2, 2, 's', 1],
-  [-40, -124, 1.44, 8.6, 6.7, 1, 't', 0], [-16, -116, 1.58, 9.1, 7.0, 2, 's', 1],
-];
-
-/** The tavern and the mill are hand-placed, but they still want a yard. */
-const EXTRA_YARDS = [
-  { x: 46, z: 32, r: -0.42, w: 13, d: 8.5 },
-  { x: -13, z: 95.35, r: 0.06, w: 11, d: 8 },
-];
+/* `PLOTS` and `EXTRA_YARDS` moved to `medieval/Settlements.js` and are
+ * imported back at the top of this file. They are the membership list of two
+ * of the settlements in that table, and a table that does not own its own
+ * members is not a table. */
 
 /**
  * The one authoritative sky palette.
@@ -958,6 +1029,24 @@ export class MedievalWorld extends World {
     this._footprints = [];
     /** Flattened road polylines for distance queries and the minimap. */
     this._roadSegs = [];
+    /* Broadphase indexes over the three lists above, built on demand and
+     * invalidated by identity + length. See `_roadGrid` / `_footprintGrid` /
+     * `_pavedGrid`. */
+    this._roadGridCache = null;
+    this._footprintGridCache = null;
+    this._pavedGridCache = null;
+    /**
+     * Distance metric handed to `GridIndex.nearest` for roads.
+     *
+     * Bound once here rather than created per call: `_roadDist` is asked
+     * hundreds of thousands of times per build, and a fresh closure per call
+     * is pure garbage.
+     * @param {number} i index into `_roadSegs` @param {number} x @param {number} z
+     */
+    this._segDist = (i, x, z) => {
+      const s = this._roadSegs;
+      return segmentDistance(x, z, s[i], s[i + 1], s[i + 2], s[i + 3], s[i + 4] * 0.5);
+    };
     /** Flat [x,y,z,...] chimney positions feeding the smoke particle system. */
     this._smokeOrigins = [];
     /**
@@ -1200,9 +1289,19 @@ export class MedievalWorld extends World {
 
   /**
    * Ground height on the distant skirt - the polar continuation beyond the
-   * 400x400m playfield that turns into foothills. Shared by the skirt mesh and
-   * by the ridge tree stands, so the two can never disagree about where the
-   * hills are.
+   * playfield that turns into foothills. Shared by the skirt mesh and by the
+   * ridge tree stands, so the two can never disagree about where the hills are.
+   *
+   * Both ramps below are multiples of `HALF` rather than the metres they used
+   * to be, and the multiples are the part that carries the reasoning:
+   *
+   *   - The near/far blend must be COMPLETE beyond the playfield's corner
+   *     radius, `HALF * sqrt(2)` = 1.414 HALF, or the corners of the square
+   *     would still be reading a half-blended height and would step against
+   *     the terrain mesh. 1.6 HALF clears it with room to spare.
+   *   - It must START at or before the rim, because past `HALF` along an axis
+   *     the skirt is the visible surface. `HALF - 5` is inside the square, so
+   *     the blend is already under way while it is still hidden.
    */
   _outerHeight(x, z) {
     const rad = Math.hypot(x, z);
@@ -1210,20 +1309,21 @@ export class MedievalWorld extends World {
     const hFar =
       6.0 +
       fbm2(x * 0.0038, z * 0.0038, 4) * 11 +
-      Math.max(0, fbm2(x * 0.0011, z * 0.0011, 4)) * 240 * smoothstep(200, 430, rad);
+      Math.max(0, fbm2(x * 0.0011, z * 0.0011, 4)) * 240 * smoothstep(HALF, HALF * 2.15, rad);
     /* Seam drop.
      *
-     * The skirt is a polar sheet starting at r=188, so its inner rows sit
-     * *under* the square playfield and have to be pushed down to stay hidden.
-     * The drop has to be tiny, though: viewed from the ramparts the playfield
-     * edge is 200m away at a ~6 degree grazing angle, so every centimetre of
+     * The skirt is a polar sheet starting at `SKIRT_INNER`, so its inner rows
+     * sit *under* the square playfield and have to be pushed down to stay
+     * hidden. The drop has to be tiny, though: viewed from the ramparts the
+     * playfield edge is hundreds of metres away at a ~6 degree grazing angle,
+     * so every centimetre of
      * step occludes ten centimetres of ground behind it. The old 16cm drop hid
      * a metre-wide band and drew a continuous dark hairline straight across the
      * horizon in every elevated framing. 2.5cm hides about a pixel. The skirt's
      * angular resolution is raised to match, so its chords track the terrain
      * closely enough that this much clearance is still enough to bury them,
      * and its material carries a polygon offset as insurance. */
-    return lerp(hNear, hFar, smoothstep(195, 320, rad)) - 0.025;
+    return lerp(hNear, hFar, smoothstep(HALF - 5, HALF * 1.6, rad)) - 0.025;
   }
 
   /** Terrain steepness at a point: 0 = flat, 1 = cliff. */
@@ -1234,24 +1334,107 @@ export class MedievalWorld extends World {
     return clamp01((Math.hypot(hx, hz) / (2 * d)) * 1.15);
   }
 
-  /** Shortest distance from a point to any cobbled road edge. */
-  _roadDist(x, z) {
-    let best = 1e9;
+  /* ---------------------------------------------------------------- *
+   * Spatial indexes.
+   *
+   * `_roadDist`, `_inFootprint`, `_isPaved` and `_isOpenGround` are asked once
+   * per scatter candidate - roughly a million times across a build - and each
+   * used to walk its whole feature list. That is O(candidates x features), and
+   * both halves scale with world area, so a 5x wider vale did ~25x the work.
+   *
+   * Each index is built lazily from the array it mirrors and is invalidated by
+   * that array's identity and length. `_footprints` in particular is APPENDED
+   * to all through the build, interleaved with queries from the dressing
+   * passes, so it is topped up incrementally rather than rebuilt: a rebuild
+   * per push would put the quadratic straight back.
+   * ---------------------------------------------------------------- */
+
+  /** @returns {GridIndex} road segments, keyed by index into `_roadSegs`. */
+  _roadGrid() {
     const segs = this._roadSegs;
+    let c = this._roadGridCache;
+    if (c && c.src === segs && c.n === segs.length) return c.grid;
+    /* 24m cells.
+     *
+     * Measured, not chosen. The grass scatter asks `_roadDist` well over a
+     * million times uniformly across 900x900m while the roads occupy a
+     * 150x230m patch, so almost every probe is far from every road and the
+     * cost is dominated by how quickly the ring bound closes - which is
+     * `k * cellSize`, i.e. coarser cells close sooner. Against the authored
+     * network over 400,000 uniform probes: 8m cells 522ms, 16m 289ms, 24m
+     * 236ms, 32m 245ms, 48m 293ms, 64m 352ms, and the linear scan 297ms.
+     * The curve is flat between 24 and 32; 8m is worse than doing nothing. */
+    const grid = new GridIndex(24);
     for (let i = 0; i < segs.length; i += 5) {
+      /* Inflated by the road's own half-width, because that is what the
+       * metric subtracts. See the contract at the top of `GridIndex`. */
+      const hw = segs[i + 4] * 0.5;
       const ax = segs[i];
       const az = segs[i + 1];
-      const ex = segs[i + 2] - ax;
-      const ez = segs[i + 3] - az;
-      const len = ex * ex + ez * ez;
-      let t = len > 1e-6 ? ((x - ax) * ex + (z - az) * ez) / len : 0;
-      t = t < 0 ? 0 : t > 1 ? 1 : t;
-      const dx = x - (ax + ex * t);
-      const dz = z - (az + ez * t);
-      const d = Math.sqrt(dx * dx + dz * dz) - segs[i + 4] * 0.5;
-      if (d < best) best = d;
+      const bx = segs[i + 2];
+      const bz = segs[i + 3];
+      grid.insert(
+        i,
+        Math.min(ax, bx) - hw, Math.min(az, bz) - hw,
+        Math.max(ax, bx) + hw, Math.max(az, bz) + hw
+      );
     }
-    return best;
+    this._roadGridCache = { src: segs, n: segs.length, grid };
+    return grid;
+  }
+
+  /** @returns {GridIndex} building footprints, keyed by index into `_footprints`. */
+  _footprintGrid() {
+    const fps = this._footprints;
+    let c = this._footprintGridCache;
+    if (!c || c.src !== fps) {
+      c = { src: fps, n: 0, grid: new GridIndex(12) };
+      this._footprintGridCache = c;
+    }
+    for (; c.n < fps.length; c.n++) {
+      const f = fps[c.n];
+      /* A rotated rectangle's world AABB. `margin` is applied by the query,
+       * not here, because it differs per call site - so the box stored is the
+       * un-margined one and the query box carries the slack instead. */
+      const ca = Math.abs(Math.cos(f.r));
+      const sa = Math.abs(Math.sin(f.r));
+      const hx = f.hx * ca + f.hz * sa;
+      const hz = f.hx * sa + f.hz * ca;
+      c.grid.insert(c.n, f.x - hx, f.z - hz, f.x + hx, f.z + hz);
+    }
+    return c.grid;
+  }
+
+  /** @returns {GridIndex} paved yards, keyed by index into `_pavedRects`. */
+  _pavedGrid() {
+    const rects = this._pavedRects;
+    let c = this._pavedGridCache;
+    if (c && c.src === rects && c.n === rects.length) return c.grid;
+    const grid = new GridIndex(8);
+    for (let i = 0; i < rects.length; i++) {
+      const p = rects[i];
+      const ca = Math.abs(Math.cos(p.r));
+      const sa = Math.abs(Math.sin(p.r));
+      const hx = p.hx * ca + p.hz * sa;
+      const hz = p.hx * sa + p.hz * ca;
+      grid.insert(i, p.x - hx, p.z - hz, p.x + hx, p.z + hz);
+    }
+    this._pavedGridCache = { src: rects, n: rects.length, grid };
+    return grid;
+  }
+
+  /**
+   * Shortest distance from a point to any cobbled road edge.
+   *
+   * Exact - see the proof in `GridIndex.nearest`. It is not a "near enough"
+   * answer with a cut-off, because every caller compares it against a
+   * different threshold and one of them would eventually be past the cut-off.
+   */
+  _roadDist(x, z) {
+    const segs = this._roadSegs;
+    if (!segs.length) return 1e9;
+    const d = this._roadGrid().nearest(x, z, this._segDist);
+    return d === Infinity ? 1e9 : d;
   }
 
   /**
@@ -1288,7 +1471,17 @@ export class MedievalWorld extends World {
 
   /** True when a point lies inside a registered building footprint. */
   _inFootprint(x, z, margin = 0) {
-    for (const f of this._footprints) {
+    const fps = this._footprints;
+    if (!fps.length) return false;
+    /* A negative margin shrinks the test; the query box must not shrink with
+     * it or it would start missing footprints it should have considered. And a
+     * POSITIVE margin inflates the rect in its OWN rotated frame, which grows
+     * its world-space box by up to `margin * sqrt(2)` - inflating the query by
+     * `margin` alone would miss the corner of a rect standing at 45 degrees. */
+    const m = margin > 0 ? margin * Math.SQRT2 : 0;
+    const hits = this._footprintGrid().query(x - m, z - m, x + m, z + m);
+    for (let i = 0; i < hits.length; i++) {
+      const f = fps[hits[i]];
       const dx = x - f.x;
       const dz = z - f.z;
       const c = Math.cos(-f.r);
@@ -1309,8 +1502,8 @@ export class MedievalWorld extends World {
    * and still lands at x = 206 is a prop standing on nothing, which is the
    * single most obvious defect a landscape can have.
    *
-   * The inset exists because a sample is a *centre*: a tree at x = 199.5 has
-   * four metres of canopy hanging over the rim.
+   * The inset exists because a sample is a *centre*: a tree half a metre
+   * inside the rim has four metres of canopy hanging over it.
    */
   _inPlayfield(x, z, inset = 0) {
     const lim = HALF - inset;
@@ -1327,13 +1520,11 @@ export class MedievalWorld extends World {
     if (Math.abs(z - riverZ(x)) < 11.5) return false;
     if (rectDist(x - MARKET.x, z - MARKET.z, MARKET.hx, MARKET.hz) < 2) return false;
     if (this._roadDist(x, z) < 2.2 + margin) return false;
-    for (const f of this._footprints) {
-      const dx = x - f.x;
-      const dz = z - f.z;
-      const c = Math.cos(-f.r);
-      const s = Math.sin(-f.r);
-      if (rectDist(dx * c - dz * s, dx * s + dz * c, f.hx + margin, f.hz + margin) < 0) return false;
-    }
+    // Was an inlined copy of `_inFootprint`, character for character. Two
+    // copies of a containment test is two things to index, and the day one of
+    // them gained a margin the other did not, vegetation would grow through a
+    // wall in half the passes and not the other half.
+    if (this._inFootprint(x, z, margin)) return false;
     return true;
   }
 
@@ -3267,8 +3458,13 @@ export class MedievalWorld extends World {
   /** True inside any paved yard - vegetation must not grow through cobbles. */
   _isPaved(x, z, margin = 0) {
     const rects = this._pavedRects;
-    for (let i = 0; i < rects.length; i++) {
-      const p = rects[i];
+    if (!rects.length) return false;
+    // sqrt(2) for the same reason as `_inFootprint` - the margin inflates the
+    // rect in its own rotated frame, not in world axes.
+    const m = margin > 0 ? margin * Math.SQRT2 : 0;
+    const hits = this._pavedGrid().query(x - m, z - m, x + m, z + m);
+    for (let i = 0; i < hits.length; i++) {
+      const p = rects[hits[i]];
       const dx = x - p.x;
       const dz = z - p.z;
       // Inverse of Matrix4.makeRotationY(r), which is what the apron mesh and
@@ -3283,43 +3479,25 @@ export class MedievalWorld extends World {
   /**
    * How settled a point is: 0 = open pasture, 1 = beaten earth people stand on.
    *
-   * The single most damaging read in the round-3 build was a "village square"
-   * whose floor was continuous lawn - houses parked on grass, with sparse
-   * over-scaled tufts scattered across ground that four hundred people and
-   * their carts cross every day. Grass does not grow there, and no amount of
-   * lighting or tuft density fixes a ground *type* error.
+   * The definition moved to `medieval/Settlements.js` and now derives from the
+   * settlement table rather than from a hand-written list of plots plus a
+   * hard-coded rejection box. Three things made that necessary:
    *
-   * This is the authority for that: the macro painter uses it to lay packed
-   * earth, and the vegetation scatter uses it to refuse to seed. One function,
-   * so the painted ground and the planted ground can never disagree.
+   *   - The box (`x < -126 || x > 122 || z < -106 || z > 96`) was measured off
+   *     the settlements of the day, and was already clipping five of them: the
+   *     castle-approach hamlet's yards and the northern third of the mill's
+   *     were being silently zeroed. Derived bounds fix that as a side effect.
+   *   - A box authored for a 400m vale cannot be right for a 900m one, and
+   *     nothing would have told us it was wrong - it fails by returning 0,
+   *     which looks exactly like open pasture.
+   *   - A settlement added by a later phase has to get its beaten earth
+   *     without anyone remembering to widen a literal here.
+   *
+   * Kept as a method because it is the authority every ground pass reads, and
+   * `this._settled` is the name all of them already call.
    */
   _settled(x, z) {
-    // Cheap reject. The macro painter calls this a million times, and three
-    // quarters of the vale is nowhere near a building.
-    if (x < -126 || x > 122 || z < -106 || z > 96) return 0;
-    // The market and its aprons: fully trodden, feathered over 8m.
-    const md = rectDist(x - MARKET.x, z - MARKET.z, MARKET.hx + 3, MARKET.hz + 3);
-    let w = 1 - smoothstep(0, 8, md);
-    // Every dwelling drags a yard and a desire line with it. The radius is the
-    // plot's own size plus the width of a cart turn.
-    for (let i = 0; i < PLOTS.length; i++) {
-      const p = PLOTS[i];
-      const r = Math.max(p[3], p[4]) * 0.5 + 3.2;
-      const d = Math.hypot(x - p[0], z - p[1]) - r;
-      const t = 1 - smoothstep(0, 6.5, Math.max(0, d));
-      if (t > w) w = t;
-      if (w >= 1) return 1;
-    }
-    for (let i = 0; i < EXTRA_YARDS.length; i++) {
-      const e = EXTRA_YARDS[i];
-      const d = Math.hypot(x - e.x, z - e.z) - (Math.max(e.w, e.d) * 0.5 + 3.0);
-      const t = 1 - smoothstep(0, 6, Math.max(0, d));
-      if (t > w) w = t;
-    }
-    // The castle bailey and its glacis.
-    const cd = rectDist(x - CASTLE.x, z - CASTLE.z, CASTLE.hx - 2, CASTLE.hz - 2);
-    const t = 1 - smoothstep(0, 9, Math.max(0, cd));
-    return t > w ? t : w;
+    return settledAt(x, z);
   }
 
   /** Paint the 2048px macro albedo: grass, dry banks, mud, rock and verges. */
@@ -3327,27 +3505,50 @@ export class MedievalWorld extends World {
     const S = 2048;
     /* Source resolution.
      *
-     * 256 painted texels stretched over 400m is 0.64 texels per metre: at that
-     * density the entire ground plane inside twenty metres of the lens carries
-     * no albedo information whatsoever, which is why the village-square frame
-     * read as a smeared out-of-focus wash. 1024 is 2.56/m and matches the 2048
-     * canvas at a 2x upscale instead of an 8x one, so the painted roads, mud
-     * and silt survive the resample as edges rather than as blur.
+     * 256 painted texels stretched over the vale was 0.64 texels per metre at
+     * 400m: at that density the entire ground plane inside twenty metres of
+     * the lens carried no albedo information whatsoever, which is why the
+     * village-square frame read as a smeared out-of-focus wash. 1024 was
+     * 2.56 texels/m over a 400m vale.
+     *
+     * This is a fixed G x G loop, so widening the world does not make it
+     * slower - it makes it BLURRIER. At 900m a 1024 grid is 1.14 texels/m,
+     * less than half the density the numbers above were tuned at, and the
+     * roads, mud and silt stop surviving the resample to the 2048 canvas as
+     * edges. 1536 puts it back to 1.71/m.
+     *
+     * Measured rather than guessed, over the arithmetic that dominates it
+     * (`_height` for the pre-pass, then `_settled` + slope + five noise
+     * octaves per pixel), on the 900m field:
+     *
+     *     G = 1024   0.879 m/sample   251ms heights + 239ms pixels =  489ms
+     *     G = 1536   0.586 m/sample   561ms heights + 537ms pixels = 1098ms
+     *
+     * For reference the same G = 1024 loop over the OLD 400m vale cost 566ms -
+     * MORE than it costs over 900m, because `_settled` now rejects nine tenths
+     * of the field on a bounding box instead of scanning thirty-seven plots.
+     * So the whole expansion pays for the resolution increase and change.
+     *
+     * 1.1s of background build time, sliced by `_breathe` into ~6ms pieces
+     * while the station is still rendering, is worth 1.5x the ground detail.
+     * If this ever needs to go further, the move is to sample it on the worker
+     * - it is pure arithmetic over a height field the worker already has - not
+     * to keep raising G on the main thread.
      */
-    const G = 1024;
+    const G = 1536;
     const heights = new Float32Array(G * G);
     for (let j = 0; j < G; j++) {
       if ((j & 63) === 0) await this._breathe();
-      const z = (j / (G - 1)) * 400 - HALF;
+      const z = (j / (G - 1)) * SIZE - HALF;
       for (let i = 0; i < G; i++) {
-        const x = (i / (G - 1)) * 400 - HALF;
+        const x = (i / (G - 1)) * SIZE - HALF;
         heights[j * G + i] = this._height(x, z);
       }
     }
-    const cell = 400 / (G - 1);
+    const cell = SIZE / (G - 1);
     const base = await pixelCanvasAsync(G, G, (i, j, d, o) => {
-      const x = (i / (G - 1)) * 400 - HALF;
-      const z = (j / (G - 1)) * 400 - HALF;
+      const x = (i / (G - 1)) * SIZE - HALF;
+      const z = (j / (G - 1)) * SIZE - HALF;
       const h = heights[j * G + i];
       const hx = heights[j * G + Math.min(G - 1, i + 1)] - heights[j * G + Math.max(0, i - 1)];
       const hz = heights[Math.min(G - 1, j + 1) * G + i] - heights[Math.max(0, j - 1) * G + i];
@@ -3405,7 +3606,7 @@ export class MedievalWorld extends World {
     g2.imageSmoothingQuality = 'high';
     g2.drawImage(base, 0, 0, S, S);
 
-    const toPx = (v) => ((v + HALF) / 400) * S;
+    const toPx = (v) => ((v + HALF) / SIZE) * S;
     const rnd = mulberry32(0x77aa11);
 
     // Worn verges alongside every road, then the trodden line itself. Both
@@ -3453,7 +3654,7 @@ export class MedievalWorld extends World {
     ]) {
       for (const road of this._roadPaths) {
         g2.strokeStyle = pass.style;
-        g2.lineWidth = ((pass.abs ?? road.width * pass.w) * S) / 400;
+        g2.lineWidth = ((pass.abs ?? road.width * pass.w) * S) / SIZE;
         g2.lineJoin = 'round';
         g2.lineCap = 'round';
         strokeRoad(road, pass.off * road.width);
@@ -3462,7 +3663,7 @@ export class MedievalWorld extends World {
 
     // Silt bars and a wet margin either side of the river.
     g2.strokeStyle = 'rgba(96,84,58,0.5)';
-    g2.lineWidth = (30 * S) / 400;
+    g2.lineWidth = (30 * S) / SIZE;
     g2.beginPath();
     for (let x = -HALF - 20; x <= HALF + 20; x += 6) {
       const px = toPx(x);
@@ -3477,8 +3678,8 @@ export class MedievalWorld extends World {
     g2.fillRect(
       toPx(MARKET.x - MARKET.hx - 3),
       toPx(MARKET.z - MARKET.hz - 3),
-      ((MARKET.hx + 3) * 2 * S) / 400,
-      ((MARKET.hz + 3) * 2 * S) / 400
+      ((MARKET.hx + 3) * 2 * S) / SIZE,
+      ((MARKET.hz + 3) * 2 * S) / SIZE
     );
 
     /* Standing water and damp shade in the trodden ground.
@@ -3491,7 +3692,7 @@ export class MedievalWorld extends World {
       const ax = MARKET.x + (rnd() - 0.5) * 78;
       const az = MARKET.z + (rnd() - 0.5) * 74;
       if (this._settled(ax, az) < 0.35) continue;
-      const rr = (1.4 + rnd() * 4.6) * S / 400;
+      const rr = (1.4 + rnd() * 4.6) * S / SIZE;
       const px = toPx(ax);
       const pz = toPx(az);
       const dark = rnd() < 0.55;
@@ -3511,8 +3712,8 @@ export class MedievalWorld extends World {
       g2.save();
       g2.translate(toPx(p.x), toPx(p.z));
       g2.rotate(-p.r);
-      const w = ((p.hx + 2.6) * 2 * S) / 400;
-      const d = ((p.hz + 2.6) * 2 * S) / 400;
+      const w = ((p.hx + 2.6) * 2 * S) / SIZE;
+      const d = ((p.hz + 2.6) * 2 * S) / SIZE;
       g2.fillStyle = 'rgba(126,108,78,0.6)';
       g2.fillRect(-w / 2, -d / 2, w, d);
       g2.fillStyle = 'rgba(104,88,62,0.45)';
@@ -3520,8 +3721,18 @@ export class MedievalWorld extends World {
       g2.restore();
     }
 
-    blotches(g2, S, rnd, 180, 'rgba(38,62,26,ALPHA)', 40, 200, 0.34);
-    blotches(g2, S, rnd, 110, 'rgba(124,124,62,ALPHA)', 30, 160, 0.24);
+    /* Colour drifts, authored in METRES and converted here.
+     *
+     * These used to be 40-200 canvas pixels, which on a 2048 map over 400m was
+     * 8-39m of ground. Left in pixels they would have become 18-88m at 900m -
+     * the same map, the same painted shapes, twice the size on the ground -
+     * and there would have been five times fewer of them per hectare. Both the
+     * size and the count are per-area properties of the meadow, not properties
+     * of the canvas, so both derive from the extent. */
+    const mPx = S / SIZE;
+    const area = SIZE * SIZE;
+    blotches(g2, S, rnd, Math.round(area * 1.125e-3), 'rgba(38,62,26,ALPHA)', 7.8 * mPx, 39 * mPx, 0.34);
+    blotches(g2, S, rnd, Math.round(area * 6.875e-4), 'rgba(124,124,62,ALPHA)', 5.9 * mPx, 31 * mPx, 0.24);
     grain(g2, S, 0x2f, 0.16, 'overlay', 4);
 
     const tex = new THREE.CanvasTexture(c);
@@ -3535,15 +3746,21 @@ export class MedievalWorld extends World {
   async _buildTerrain() {
     this._buildRoadPaths();
 
-    /* ---- Visual mesh: 2m grid across the full 400x400m playfield.
+    /* ---- Visual mesh: a 2m grid across the full playfield.
+     *
+     * The GRID SPACING is the constant, not the segment count. 2m is what the
+     * collision heightfield needs to describe ground a capsule can stand on
+     * without staircasing, so widening the vale multiplies the vertex count
+     * rather than stretching the cells: 400m gave 201^2 = 40,401 samples, 900m
+     * gives 451^2 = 203,401.
      *
      * Sampled on a worker. This is the single most expensive stretch of ground
-     * arithmetic in the game - 40,401 evaluations of a height function that is
-     * five octaves of gradient noise plus a river, a causeway and five levelling
-     * pads, about 670 ms of solid main-thread work - and none of it needs the
-     * renderer, so none of it belongs on the render thread. The worker returns
-     * the finished buffers as transferables, so the main thread's entire share
-     * of the job is handing them to `BufferGeometry`.
+     * arithmetic in the game - two hundred thousand evaluations of a height
+     * function that is five octaves of gradient noise plus a river, a causeway
+     * and five levelling pads - and none of it needs the renderer, so none of
+     * it belongs on the render thread. The worker returns the finished buffers
+     * as transferables, so the main thread's entire share of the job is
+     * handing them to `BufferGeometry`.
      *
      * Normals come back from the worker too, computed from the height grid by
      * central differences rather than by `computeVertexNormals`, which would put
@@ -3555,17 +3772,9 @@ export class MedievalWorld extends World {
      * surface they are looking at. The mesh used to be sampled at 2 m and the
      * collision at 4 m; every disagreement between them was either a player
      * floating above the ground or clipped into it. */
-    const SEG = 200;
-    const step = 400 / SEG;
-    const terrain = await genPool.run('terrain', {
-      field: 'medieval',
-      originX: -HALF,
-      originZ: -HALF,
-      size: 400,
-      seg: SEG,
-      uv: 'unit',
-      normals: true,
-    });
+    const SEG = MEDIEVAL_LAYOUT.terrainSeg;
+    const step = MEDIEVAL_LAYOUT.size / SEG;
+    const terrain = await genPool.run('terrain', MEDIEVAL_LAYOUT.terrainJob);
     const hfHeights = terrain.heights;
     await this._breathe();
 
@@ -3576,23 +3785,29 @@ export class MedievalWorld extends World {
     geo.setIndex(new THREE.BufferAttribute(terrain.indices, 1));
 
     /* ---- Macro albedo x tiled detail. One macro map cannot carry close-up
-     * detail at 400m, and one tiled map cannot carry the roads and river
-     * silt, so the shader multiplies them. */
+     * detail across the whole vale, and one tiled map cannot carry the roads
+     * and river silt, so the shader multiplies them. */
     const macro = await this._paintMacro();
     const det = this._tex.detail;
     /* Relief tile size.
      *
-     * 300 repeats puts a 512px tile across 1.33m of ground - 2.6mm per texel,
+     * 300 repeats put a 512px tile across 1.33m of ground - 2.6mm per texel,
      * so the largest feature the normal map could describe was about 7cm and
      * the smallest was sub-millimetre. Past four or five metres from the lens
      * every one of those features is below a pixel, the mip chain averages the
      * normal back to flat, and the whole playfield shades as a bare lambert
-     * plane. 132 puts the tile at 3.0m: the sheet's clump octave then lands at
-     * 5-20cm and its patch octave at 40cm-1.7m, which is the band a sun
-     * seventeen degrees up can actually throw a readable micro-shadow across.
+     * plane. A 3.0m tile puts the sheet's clump octave at 5-20cm and its patch
+     * octave at 40cm-1.7m, which is the band a sun seventeen degrees up can
+     * actually throw a readable micro-shadow across.
+     *
+     * Expressed in METRES and converted to repeats, because the terrain's UVs
+     * run 0..1 across the whole playfield: the old literal 132 was "3.0m" only
+     * as long as the vale was 400m wide, and at 900m the same 132 would have
+     * silently become a 6.8m tile and taken the micro-shadow band with it.
      */
-    det.normalMap.repeat.set(132, 132);
-    det.roughnessMap.repeat.set(132, 132);
+    const reliefRepeat = SIZE / RELIEF_TILE_M;
+    det.normalMap.repeat.set(reliefRepeat, reliefRepeat);
+    det.roughnessMap.repeat.set(reliefRepeat, reliefRepeat);
     const mat = new THREE.MeshStandardMaterial({
       map: macro,
       normalMap: det.normalMap,
@@ -3605,20 +3820,22 @@ export class MedievalWorld extends World {
     const detailMap = det.map;
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.tDetail = { value: detailMap };
-      /* Primary detail tile: 4.2m of ground.
+      /* Primary detail tile: `DETAIL_TILE_M` of ground, as repeats over the
+       * playfield's 0..1 UVs - so it stays 4.2m whatever `HALF` is.
        *
-       * Round 4 ran this at 400 repeats - a one-metre tile - on the theory
-       * that finer is sharper. The opposite is true once mipping is in play:
-       * a one-metre tile whose content is all 2cm strokes has no octave left
-       * above the first mip, so from three metres out the ground is a uniform
-       * grey multiplier and the macro map shows through alone. That is exactly
-       * what "the entire village square is a smooth olive-to-khaki gradient"
-       * describes. 96 repeats lands the sheet's patch structure at 1.5-4m and
+       * Round 4 ran this at a one-metre tile on the theory that finer is
+       * sharper. The opposite is true once mipping is in play: a one-metre
+       * tile whose content is all 2cm strokes has no octave left above the
+       * first mip, so from three metres out the ground is a uniform grey
+       * multiplier and the macro map shows through alone. That is exactly what
+       * "the entire village square is a smooth olive-to-khaki gradient"
+       * describes. A 4.2m tile lands the sheet's patch structure at 1.5-4m and
        * its clump structure at 15-50cm, both of which survive several mips and
        * both of which the camera resolves out to fifty metres. The near octave
        * below then runs at 1.3m for the first thirty metres and supplies the
-       * grit the lens is close enough to see. */
-      shader.uniforms.uDetail = { value: 96.0 };
+       * grit the lens is close enough to see, and the 0.035x macro octave at
+       * the bottom of the shader lands at ~120m drifts. */
+      shader.uniforms.uDetail = { value: SIZE / DETAIL_TILE_M };
       shader.fragmentShader = shader.fragmentShader
         .replace(
           '#include <common>',
@@ -3681,10 +3898,12 @@ export class MedievalWorld extends World {
      * times the width it is 160,000 boxes and 76 MB, and at ten times it is a
      * million boxes and half a gigabyte.
      *
-     * The heightfield is 158 KB, is built from samples the mesh had already
-     * computed, and - because it shares the mesh's grid and its 00->11
-     * triangulation - describes exactly the surface that gets drawn rather than
-     * a staircase approximation of it. */
+     * That prediction is now the world we are in: at 900m the 2m grid is
+     * 203,401 samples, which as oriented boxes would have been 200,000
+     * colliders and ~95 MB. The heightfield is 814 KB, is built from samples
+     * the mesh had already computed, and - because it shares the mesh's grid
+     * and its 00->11 triangulation - describes exactly the surface that gets
+     * drawn rather than a staircase approximation of it. */
     this.track(
       this.physics.addHeightfield({
         heights: hfHeights,
@@ -3698,13 +3917,18 @@ export class MedievalWorld extends World {
     );
     await this._breathe();
 
-    /* ---- Distant continuation: a polar skirt out to 900m that becomes
+    /* ---- Distant continuation: a polar skirt out to ~1.9km that becomes
      * foothills, so the playfield never ends in a visible cliff edge. */
-    // 96 segments put a 12m chord across the inner rings, and a straight chord
-    // across 12m of rolling ground deviates far enough from the terrain mesh to
-    // punch through it. 256 cuts that to under 5m, which is what lets the seam
-    // clearance in `_outerHeight` be small enough to stop drawing a hairline.
-    const AR = 256;
+    /* Angular resolution.
+     *
+     * 96 segments put a 12m chord across the inner rings at 400m, and a
+     * straight chord across 12m of rolling ground deviates far enough from the
+     * terrain mesh to punch through it. 256 cut that to under 5m, which is
+     * what lets the seam clearance in `_outerHeight` be small enough to stop
+     * drawing a hairline. The chord is `2 * pi * SKIRT_INNER / AR`, so the
+     * segment count has to track the radius or a 900m vale would be back to a
+     * 10.7m chord and the hairline with it. */
+    const AR = Math.max(256, Math.round((TAU * SKIRT_INNER) / 4.8 / 32) * 32);
     const RR = 26;
     const opos = [];
     const ouv = [];
@@ -3720,13 +3944,15 @@ export class MedievalWorld extends World {
     for (let ri = 0; ri <= RR; ri++) {
       if ((ri & 3) === 0) await this._breathe();
       const rt = ri / RR;
-      // Out to ~1.9km, just inside the 2km far plane. At 900m the sheet simply
-      // stopped, and from any elevated vantage that terminating ring projected
-      // to a hard edge a few pixels above the fogged hills - the dark hairline
-      // that looked like it had been ruled across the horizon in every rampart
-      // framing. This far out it falls under the horizon line and the world
-      // reads as continuing rather than as ending at a rim.
-      const rad = 188 + Math.pow(rt, 2.6) * 1740;
+      /* Out to ~1.9km, just inside the 2km far plane - see `SKIRT_OUTER`,
+       * which is absolute rather than derived from HALF for exactly that
+       * reason. When the sheet stopped at a 900m radius, from any elevated
+       * vantage that terminating ring projected to a hard edge a few pixels
+       * above the fogged hills: the dark hairline that looked like it had been
+       * ruled across the horizon in every rampart framing. This far out it
+       * falls under the horizon line and the world reads as continuing rather
+       * than as ending at a rim. */
+      const rad = SKIRT_INNER + Math.pow(rt, 2.6) * (SKIRT_OUTER - SKIRT_INNER);
       for (let ai = 0; ai <= AR; ai++) {
         const ang = (ai / AR) * TAU;
         const x = Math.cos(ang) * rad;
@@ -3735,13 +3961,18 @@ export class MedievalWorld extends World {
         opos.push(x, oy, z);
         /* World-space UVs.
          *
-         * The skirt used to inherit the playfield's own 0..1-over-400m UV set
-         * on a sheet that reaches 1.9km, so a single texture tile covered most
+         * The skirt used to inherit the playfield's own 0..1-over-the-vale UV
+         * set on a sheet that reaches 1.9km, so one texture tile covered most
          * of the ring and the far hills were flat vertex colour with a clean
          * analytic silhouette - the exact tell of untextured geometry. A
          * metre-based UV tiles the detail sheet every 5m out there instead. */
         ouv.push(x / 70, z / 70);
-        _col.copy(near).lerp(far, smoothstep(220, 780, rad));
+        /* Value ramp toward the haze. The START tracks the rim - it has to,
+         * or the innermost visible ring would already be part-way to the far
+         * colour and the seam would show as a value step against the playfield
+         * it is supposed to continue. The 560m RUN does not: that is an
+         * atmospheric distance, the same one the fog is working over. */
+        _col.copy(near).lerp(far, smoothstep(HALF + 20, HALF + 580, rad));
         // Slope break-up: the crests and the steep flanks show scrub and rock
         // where the shallow ground stays grass, so the ridge shows folds.
         const d = Math.max(6, rad * 0.03);
@@ -3768,11 +3999,11 @@ export class MedievalWorld extends World {
      * below inherited the same inverted normals, so even the slivers that did
      * survive were lit from underneath.
      *
-     * The visible result was that the world simply stopped at the +/-200m
-     * playfield square with sky beyond it, and the three rings of backdrop
-     * conifers at r = 208-358 - which are placed on `_outerHeight`, i.e. on
-     * this sheet - hung in mid-air past the border. Reversing both triangles
-     * fixes the culling and the normals in one go.
+     * The visible result was that the world simply stopped at the playfield
+     * square with sky beyond it, and the three rings of backdrop conifers -
+     * which are placed on `_outerHeight`, i.e. on this sheet - hung in mid-air
+     * past the border. Reversing both triangles fixes the culling and the
+     * normals in one go.
      */
     for (let ri = 0; ri < RR; ri++) {
       for (let ai = 0; ai < AR; ai++) {
@@ -3823,11 +4054,8 @@ export class MedievalWorld extends World {
     outer.castShadow = false;
     this.group.add(outer);
 
-    // Keep the player on collidable ground.
-    for (const s of [-1, 1]) {
-      this._box(s * 199, 20, 0, 2, 40, HALF);
-      this._box(0, 20, s * 199, HALF, 40, 2);
-    }
+    // Keep the player on collidable ground. See `MEDIEVAL_LAYOUT.walls`.
+    for (const w of MEDIEVAL_LAYOUT.walls) this._box(...w);
   }
   /* ---------------------------------------------------------------- */
   /* Sky dome, water, cobbles                                          */
@@ -3848,21 +4076,26 @@ export class MedievalWorld extends World {
   _buildWater() {
     const mat = this._mats.water;
 
-    // River: a ribbon that follows the meander and runs off past the fog line.
-    const along = 150;
+    /* River: a ribbon that follows the meander and runs off past the fog line.
+     *
+     * Segment count tracks the width so the meander stays as smooth as it was:
+     * 150 spans over 392m was a 2.6m step, and a straight chord across a
+     * curve that swings 27m either side of its mean needs about that. */
+    const along = Math.max(150, Math.round((SIZE - 8) / 2.6));
     const across = 5;
     const halfW = 11;
     const pos = [];
     const uv = [];
     const idx = [];
     for (let i = 0; i <= along; i++) {
-      // Was -240..240. Past the 400m playfield the terrain skirt climbs into
-      // foothills while this plane stays dead flat at WATER_Y, so the ribbon
-      // punched out through a hillside and read as a floating grey slab with a
-      // hard straight edge. Ending inside the playfield and pinching the width
-      // to nothing lets it disappear into its own valley instead.
+      // Was -240..240 on a +/-200 playfield. Past the playfield the terrain
+      // skirt climbs into foothills while this plane stays dead flat at
+      // WATER_Y, so the ribbon punched out through a hillside and read as a
+      // floating grey slab with a hard straight edge. Ending four metres
+      // INSIDE the playfield and pinching the width to nothing lets it
+      // disappear into its own valley instead.
       const t0 = i / along;
-      const x = -196 + t0 * 392;
+      const x = -(HALF - 4) + t0 * (SIZE - 8);
       const cz = riverZ(x);
       const w = halfW * (0.12 + 0.88 * smoothstep(0, 0.09, Math.min(t0, 1 - t0)));
       for (let j = 0; j <= across; j++) {
@@ -7771,8 +8004,8 @@ export class MedievalWorld extends World {
     let guard = 0;
     while (built.reduce((s, b) => s + b.list.length, 0) < total && guard++ < total * 30) {
       if ((guard & 511) === 0) await this._breathe();
-      const x = (rnd() - 0.5) * 392;
-      const z = (rnd() - 0.5) * 392;
+      const x = (rnd() - 0.5) * (SIZE - 8);
+      const z = (rnd() - 0.5) * (SIZE - 8);
       const rd = Math.abs(z - riverZ(x));
       const wood = fbm2(x * 0.0062, z * 0.0062, 3);
       const nearWater = rd < 24 && rd > 12;
@@ -7884,7 +8117,17 @@ export class MedievalWorld extends World {
      * 85% atmospheric mix, which is what actually reads as a kilometre. */
     {
       const pine = built[2];
-      const rings = [[208, 252], [256, 302], [306, 358]];
+      /* Ring radii, as multiples of HALF.
+       *
+       * They HAVE to scale. Every sample is rejected unless it lands outside
+       * the playfield square (`_inPlayfield(x, z, -6)` below), so a ring left
+       * at a fixed 208-358m would sit entirely inside a 900m vale, place
+       * nothing at all, and burn its whole 80x guard budget finding that out -
+       * a backdrop that silently vanishes rather than one that fails loudly.
+       * 1.04-1.79 HALF is where they were at 400m. */
+      const rings = [
+        [HALF * 1.04, HALF * 1.26], [HALF * 1.28, HALF * 1.51], [HALF * 1.53, HALF * 1.79],
+      ];
       for (let ri = 0; ri < rings.length; ri++) {
         const [r0, r1] = rings[ri];
         // Many small trees, not a few big ones. Fifty-four 30m firs spread over
@@ -7903,9 +8146,9 @@ export class MedievalWorld extends World {
           const z = Math.sin(ang) * rad;
           /* A circular ring crosses a square playfield.
            *
-           * The playfield is +/-200m square, so its corners reach r = 283 and
-           * the inner two rings (208-252, 256-302) spend most of their
-           * diagonal arc *inside* the map. That put roughly 240 backdrop firs
+           * The playfield is a square, so its corners reach HALF * sqrt(2)
+           * and the inner two rings spend most of their diagonal arc *inside*
+           * the map. That put roughly 240 backdrop firs
            * on the playable terrain: no collider, no cast shadow, sized for a
            * quarter-kilometre of haze, and walkable straight through. They
            * belong strictly beyond the border, so the test is the square's,
@@ -8047,9 +8290,25 @@ export class MedievalWorld extends World {
     }
     this._owned.push(tuftGeo);
 
-    // 8x8 rather than 4x4: with a 50m cell and a 68m blade fade, only a
-    // handful of buckets are ever both in frustum and inside the fade, so the
-    // five-fold density increase costs very little in practice.
+    /* Zone size, not zone count.
+     *
+     * The 50m cell was chosen against `GRASS_HIDE_DISTANCE`: a 50m zone's
+     * bounding sphere has a ~35m radius, so "nearest point beyond 86m" is
+     * provably "every blade in this zone is past the height fade", which is
+     * what makes hiding the zone free. Fixing the COUNT at 8x8 would have
+     * stretched the cell to 112m at 900m and destroyed that argument, so the
+     * count is derived and the cell is the constant: 18x18 = 324 zones.
+     *
+     * The per-zone clump budget stays at 720 for the same reason - it is a
+     * DENSITY (720 clumps per 2,500 m2, ~0.29/m2), and the whole point of a
+     * bigger vale is more of the same meadow, not a thinner one. The bill for
+     * that is real and is recorded here rather than discovered later: ~5x the
+     * grass instances, and the instance matrices are ~4.4 KB per hundred
+     * blades. Every zone is still an independent InstancedMesh that both
+     * frustum-culls and distance-hides on its own, so the DRAW cost is
+     * unchanged - it is memory and build time that scale, and the first place
+     * to look if either bites is this constant.
+     */
     /* Clumped, not scattered.
      *
      * Poisson-ish clumps of 5-9 blades at ~1.1m radius are what real turf does
@@ -8063,15 +8322,15 @@ export class MedievalWorld extends World {
      * count afterwards, because a 6000-instance allocation per 50m cell that
      * only ever fills a fifth of the way is 25MB of dead matrix buffer.
      */
-    const ZONES = 8;
+    const ZONES = MEDIEVAL_LAYOUT.grassZones;
     const CLUMPS = 720;
     const mat4 = [];
     const colBuf = [];
     for (let zz = 0; zz < ZONES; zz++) {
       for (let zx = 0; zx < ZONES; zx++) {
-        const x0 = -HALF + (zx * 400) / ZONES;
-        const z0 = -HALF + (zz * 400) / ZONES;
-        const span = 400 / ZONES;
+        const x0 = -HALF + (zx * SIZE) / ZONES;
+        const z0 = -HALF + (zz * SIZE) / ZONES;
+        const span = SIZE / ZONES;
         mat4.length = 0;
         colBuf.length = 0;
         let g2 = 0;
@@ -8173,8 +8432,8 @@ export class MedievalWorld extends World {
     let bp = 0;
     let bg = 0;
     while (bp < 420 && bg++ < 4200) {
-      const x = (rnd() - 0.5) * 380;
-      const z = (rnd() - 0.5) * 380;
+      const x = (rnd() - 0.5) * (SIZE - 20);
+      const z = (rnd() - 0.5) * (SIZE - 20);
       if (!this._isOpenGround(x, z, 0.8)) continue;
       if (this._inHeroClear(x, z, 1.4)) continue;
       if (fbm2(x * 0.0062, z * 0.0062, 3) < -0.05 && rnd() > 0.25) continue;
@@ -8216,8 +8475,8 @@ export class MedievalWorld extends World {
       let rp = 0;
       let rg = 0;
       while (rp < count && rg++ < count * 24) {
-        const x = (rnd() - 0.5) * 388;
-        const z = (rnd() - 0.5) * 388;
+        const x = (rnd() - 0.5) * (SIZE - 12);
+        const z = (rnd() - 0.5) * (SIZE - 12);
         // Outcrops go up to 4m of scale, so 3m of inset is the minimum that
         // keeps one from hanging over the rim.
         if (!this._inPlayfield(x, z, 3)) continue;
@@ -8278,7 +8537,7 @@ export class MedievalWorld extends World {
       // Was `* 420`, i.e. +/-210 on a +/-200 playfield: 219 reed clumps stood
       // ten metres past the rim on the distant skirt, where the river channel
       // and the water ribbon both stop. The bank has to end where the terrain
-      // that carries it ends.
+      // that carries it ends, so this derives from HALF and always has.
       const x = (rnd() - 0.5) * 2 * (HALF - 3);
       const z = riverZ(x) + (rnd() < 0.5 ? -1 : 1) * (8.2 + rnd() * 6.0);
       if (!this._inPlayfield(x, z, 3)) continue;

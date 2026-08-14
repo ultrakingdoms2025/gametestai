@@ -114,7 +114,20 @@ export function fbm2(x, z, octaves, lacunarity = 2.03, gain = 0.5) {
 /* World layout - one place to change where anything lives.            */
 /* ------------------------------------------------------------------ */
 
-export const HALF = 200;
+/**
+ * Half-width of the playable square, metres. The vale is `2 * HALF` on a side.
+ *
+ * This is the ONE authored extent in the world. The terrain mesh, the
+ * collision heightfield, the macro albedo, the containment walls, the distant
+ * skirt, the grass zones, the water ribbon and every scatter bound derive from
+ * it - none of them may write a playfield dimension as a literal, because a
+ * literal is a place the world silently stops agreeing with itself. It lives
+ * in this module rather than in `MedievalWorld.js` so the generation worker,
+ * which cannot import `three`, reads the same number.
+ *
+ * 450 (900 x 900 m, 5.06x the area of the original 400 m vale).
+ */
+export const HALF = 450;
 export const CASTLE = { x: -72, z: -58, hx: 40, hz: 33, ground: 9.6 };
 export const MARKET = { x: 34, z: 18, hx: 17, hz: 15, y: 4.6 };
 export const VILLAGE = { x: 44, z: 26, hx: 58, hz: 42, y: 4.6 };

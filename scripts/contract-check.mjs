@@ -65,7 +65,20 @@ const CONTRACT = [
   },
   { file: 'src/systems/Combat.js', exports: ['CombatSystem'], methods: ['fixedUpdate', 'update'] },
   { file: 'src/worlds/StationWorld.js', exports: ['StationWorld'], methods: ['build'] },
-  { file: 'src/worlds/MedievalWorld.js', exports: ['MedievalWorld'], methods: ['build'] },
+  { file: 'src/worlds/MedievalWorld.js', exports: ['MedievalWorld', 'MEDIEVAL_LAYOUT'], methods: ['build'] },
+  /* Split out of MedievalWorld.js when the vale was widened to 900m. The
+   * settlement table owns the plots and the definition of trodden ground;
+   * the grid index owns the broadphase the scatter passes query. Both are
+   * `three`-free so the tests and the generation worker can read them. */
+  {
+    file: 'src/worlds/medieval/Settlements.js',
+    exports: ['PLOTS', 'EXTRA_YARDS', 'SETTLEMENTS', 'GROUND_BOUNDS', 'settledAt', 'settlementAt'],
+  },
+  {
+    file: 'src/worlds/medieval/GridIndex.js',
+    exports: ['GridIndex', 'segmentDistance'],
+    methods: ['insert', 'query', 'nearest'],
+  },
   { file: 'src/worlds/SportsWorld.js', exports: ['SportsWorld'], methods: ['build'] },
   { file: 'src/worlds/WorldRules.js', exports: ['DEFAULT_RULES', 'makeRules', 'allows'] },
   {

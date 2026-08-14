@@ -270,3 +270,126 @@ test('a zone is seeded from its own coordinates, not from a shared stream', () =
   }
   assert.equal(seeds.size, 324, 'two zones share a seed and would grow identical grass');
 });
+
+/* ------------------------------------------------------------------ */
+/* 3. A BUILD THAT PLACES NOTHING                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The third way to be wrong, and the one this file could not see.
+ *
+ * Every case above drives the policy with `r.resident.set(k, true)` - it models
+ * a build that always succeeds. Some zones can never place a blade: zone 133 is
+ * almost entirely inside the castle bailey's trodden ground, and `_settled`
+ * rejects every candidate in it. `_buildGrassZone` returned null for those
+ * without recording anything, so `decide()` re-offered the same key on the next
+ * frame, forever.
+ *
+ * Measured in a browser, standing perfectly still: 600 build attempts in 600
+ * frames, all returning null, 4.9-5.4 ms a frame at three of this map's
+ * vantages - and, because `decide()` sorts nearest-first and truncates to one
+ * build per frame, the empty zone won that slot every frame and NO other zone
+ * was ever built. Arriving at Ravenshaw the world settled with one resident
+ * grass zone out of about thirty.
+ *
+ * So the contract is: a build that places nothing must still take residency.
+ */
+
+/**
+ * Drive the policy the way the world does, with `empty` never placing a blade.
+ *
+ * `recordEmpty` selects between the two callers: `true` is the world today,
+ * `false` is the world before the fix, which returned null without recording.
+ * The control case below runs with `false` so that these tests are known to be
+ * capable of failing - a test that models only the fixed caller would pass
+ * against the bug it exists to catch.
+ */
+function walk(r, positions, empty = new Set(), recordEmpty = true) {
+  let attempts = 0;
+  for (const [x, z] of positions) {
+    for (let frame = 0; frame < 60; frame++) {
+      const { build, free } = r.decide(x, z, 1);
+      for (const k of free) r.resident.delete(k);
+      for (const k of build) {
+        attempts++;
+        if (empty.has(k)) {
+          // This is the line the world runs: null for a zone that placed nothing.
+          if (recordEmpty) r.resident.set(k, null);
+        } else {
+          r.resident.set(k, true);
+        }
+      }
+    }
+  }
+  return attempts;
+}
+
+test('CONTROL: not recording an empty zone starves the frontier, as it did', () => {
+  /* The failure this file was blind to, reproduced deliberately. If this ever
+   * stops failing to build the meadow, the model has drifted away from the
+   * world and the three cases below stop meaning anything. */
+  const r = R();
+  const first = r.decide(0, 0, 1).build[0];
+  const attempts = walk(r, [[0, 0]], new Set([first]), false);
+  assert.equal(attempts, 60, 'the empty zone should be retried on every one of the 60 frames');
+  assert.equal(r.resident.size, 0,
+    'with the empty zone winning the single build slot, nothing else is ever built');
+});
+
+test('a zone that places no blades is still recorded, and is not retried forever', () => {
+  const r = R();
+  const centre = [0, 0];
+  // Whatever the nearest zone to the origin is, make it place nothing.
+  const first = r.decide(centre[0], centre[1], 1).build[0];
+  assert.ok(first !== undefined, 'nothing was offered at the origin');
+
+  const attempts = walk(r, [centre], new Set([first]));
+  // One attempt per zone in range, not one per frame.
+  assert.ok(attempts <= r.budget + 1,
+    `${attempts} build attempts for at most ${r.budget} zones - the empty zone is being retried`);
+  assert.ok(r.resident.has(first), 'the empty zone did not take residency');
+  assert.equal(r.resident.get(first), null, 'an empty zone should be resident with no mesh');
+});
+
+test('an empty zone nearest the player does not starve the rest of the meadow', () => {
+  /* The half that actually showed up as a hole in the ground. */
+  const r = R();
+  const first = r.decide(0, 0, 1).build[0];
+  walk(r, [[0, 0]], new Set([first]));
+
+  // Everything within the build radius should be resident, not just the one.
+  let wanted = 0;
+  for (let zz = 0; zz < r.zones; zz++) {
+    for (let zx = 0; zx < r.zones; zx++) {
+      if (r.distance(r.key(zx, zz), 0, 0) <= r.build) wanted++;
+    }
+  }
+  const got = r.resident.size;
+  assert.ok(got >= Math.min(wanted, r.budget),
+    `${got} of ${wanted} in-range zones resident - the frontier is starved`);
+  assert.ok(got > 1, 'only one zone was ever built, which is the Ravenshaw hole');
+});
+
+test('an empty zone is released like any other when the player leaves', () => {
+  /* `_freeGrassZone` tests `has` rather than truthiness for exactly this: a
+   * null-valued entry that returns early without deleting would pin the key
+   * for the life of the world and burn one of the budget's slots. */
+  const r = R();
+  const first = r.decide(0, 0, 1).build[0];
+  walk(r, [[0, 0]], new Set([first]));
+  assert.ok(r.resident.has(first));
+
+  // Walk far enough that everything falls outside the release radius.
+  walk(r, [[0, 0], [400, 400]], new Set([first]));
+  assert.ok(!r.resident.has(first), 'the empty zone was never released');
+});
+
+test('the world records residency for an empty zone, and frees on has() not truthiness', () => {
+  /* Source-level, because the two halves live in MedievalWorld and the policy
+   * object cannot see them. Both are one line and both are easy to undo. */
+  const code = WORLD_SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/g, '');
+  assert.match(code, /if \(!placed\) \{[\s\S]{0,200}?resident\.set\(key, null\)/,
+    'a zone that places no blades no longer takes residency - it will be retried every frame');
+  assert.match(code, /if \(!this\._grass\.resident\.has\(key\)\) return;/,
+    '_freeGrassZone tests the value again - a null-valued zone will never be evicted');
+});

@@ -5640,7 +5640,28 @@ export class MedievalWorld extends World {
       clumps++;
     }
     const placed = colBuf.length / 3;
-    if (!placed) return null;
+    if (!placed) {
+      /* An EMPTY zone is still a RESIDENT zone.
+       *
+       * Some zones can never place a blade - zone 133 is almost entirely inside
+       * the castle bailey's trodden ground - and this used to return without
+       * recording anything, so `decide()` re-offered the same key on the next
+       * frame, forever. Measured standing perfectly still: 600 build attempts
+       * in 600 frames, every one returning null, costing 4.9-5.4 ms a frame at
+       * three of this map's vantages.
+       *
+       * The wasted time was the lesser half. `decide()` sorts nearest-first and
+       * truncates to ONE build per frame, so a permanently-empty zone that
+       * happens to be nearest wins that slot every frame and no other zone is
+       * ever built. Arriving at Ravenshaw, the world settled with one resident
+       * grass zone out of about thirty - the hole in the meadow this whole
+       * design exists to prevent.
+       *
+       * `null` rather than a mesh, so `_freeGrassZone` has nothing to dispose
+       * and the release path still evicts the key normally. */
+      R.resident.set(key, null);
+      return null;
+    }
     const mesh = new THREE.InstancedMesh(this._grassGeo, this._mats.grass, placed);
     mesh.instanceMatrix.array.set(mat4);
     mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(colBuf), 3);
@@ -5661,9 +5682,14 @@ export class MedievalWorld extends World {
 
   /** Free one resident grass zone, GPU buffers and LOD registration included. */
   _freeGrassZone(key) {
+    /* `has`, not truthiness: a zone that placed no blades is resident with a
+     * null mesh, and testing the value would return early WITHOUT evicting the
+     * key - pinning an empty zone in the resident set for the life of the
+     * world and burning one of the budget's slots. */
+    if (!this._grass.resident.has(key)) return;
     const mesh = this._grass.resident.get(key);
-    if (!mesh) return;
     this._grass.resident.delete(key);
+    if (!mesh) return;                      // empty zone: nothing to dispose
     /* Deregister BEFORE disposing. `DistanceLod` recomputes a world-space
      * bounding sphere for every entry every frame; an entry left pointing at a
      * disposed `InstancedMesh` is a leak and a distance test against geometry

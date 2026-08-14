@@ -4,6 +4,10 @@ import { COLLISION_LAYER } from '../physics/Physics.js';
 import { CharacterAssets, HumanoidFactory } from './Humanoid.js';
 import { FriendlyNPC } from './FriendlyNPC.js';
 import { HostileNPC } from './HostileNPC.js';
+import { BeastNPC } from './BeastNPC.js';
+import { BeastBody } from './BeastBody.js';
+import { BeastPack } from './BeastPack.js';
+import { beastDef, rollPackSize } from './BeastSpecies.js';
 import { resolveSpot, resolveSurfaceY, seatSurfaceAt, isDeepWater, nearestDrySpot } from './Grounding.js';
 import { ROLE, ROLE_ROTATION, castFor, roleDef } from './NPCRoles.js';
 import { WEAPON_TABLES } from './NPCWeapons.js';
@@ -56,6 +60,27 @@ const _projScreen = new THREE.Matrix4();
  */
 const PERSONAL_SPACE = 0.62;
 const PERSONAL_SPACE_SQ = PERSONAL_SPACE * PERSONAL_SPACE;
+/**
+ * A character may ask for more room than a person needs.
+ *
+ * 0.62 m is two 0.33 m bodies brushing shoulders. A bear is 0.62 m in radius on
+ * its own, so at the shared gap two of them share most of a torso and a bear
+ * standing next to a villager has its shoulder inside them. The pair's gap is
+ * therefore the larger of the two claims, read off `npc.personalSpace` when a
+ * character sets one - which is one property read per body in the sweep and
+ * nothing at all for the humanoids, which never set it.
+ */
+const MAX_PERSONAL_SPACE = 1.4;
+const MAX_PERSONAL_SPACE_SQ = MAX_PERSONAL_SPACE * MAX_PERSONAL_SPACE;
+/**
+ * Hard ceiling on live beasts, on the same terms as `HOSTILE_CEILING`.
+ *
+ * A beast costs more than a hostile per body - a dozen meshes rather than two,
+ * a sense pass over the whole civilian roster - and packs arrive four and five
+ * at a time, so a world that authors six wolf packs would otherwise quietly
+ * spend its entire character budget on wildlife.
+ */
+const BEAST_CEILING = 14;
 /** Fraction of the overlap resolved per step. Under 1 so simultaneous contacts settle. */
 const SEPARATION_RELAX = 0.5;
 /**
@@ -620,9 +645,29 @@ export class NPCManager {
       // friendly gets a slot.
       : authored;
 
+    /**
+     * Wildlife budget.
+     *
+     * Gated on the same `hostiles` rule the armed cast is: a world that has
+     * declared it wants nothing that fights the player - the maze - means that
+     * about bears too. A world may raise or lower the count with `beastBudget`
+     * on the same terms as `hostileBudget`, and `maxNPCs` is still the ceiling
+     * over everything.
+     */
+    const askedB = Number.isFinite(world.beastBudget) ? Math.floor(world.beastBudget) : BEAST_CEILING;
+    const beastBudget = hostilesAllowed ? Math.max(0, Math.min(BEAST_CEILING, askedB)) : 0;
+    let beastCount = 0;
+
     const anchors = [];
     for (const spec of spawns) {
       if (this._npcs.length >= this.maxNPCs) break;
+      /* A beast spawn is a GROUP, not a body: `{ type:'beast', species:'wolf' }`
+       * is a pack, and the pack is the unit a world author thinks in. */
+      if (spec.type === 'beast') {
+        if (beastCount >= beastBudget) continue;
+        beastCount += this.spawnBeastGroup(spec, beastBudget - beastCount).length;
+        continue;
+      }
       const hostile = spec.type === 'hostile';
       if (hostile && hostileCount >= maxHostiles) continue;
       if (!hostile && friendlyCount >= authoredCap) continue;
@@ -734,6 +779,159 @@ export class NPCManager {
     return npc;
   }
 
+  /* ---------------------------------------------------------------- */
+  /* Beasts                                                            */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Spawn one authored pack.
+   *
+   * The unit a world authors is a GROUP, because that is the unit the design
+   * is expressed in: "a wolf pack lives in the north woods" is one line, and
+   * whether it is three wolves or five is the species' business, not the
+   * author's. A bear's pack size is 1..1, so the same call spawns a loner.
+   *
+   * Members are scattered around the anchor rather than stacked on it, and each
+   * is resolved onto real geometry the way every other spawn is - so a pack
+   * authored on a slope arrives standing on the slope.
+   *
+   * @param {{position:THREE.Vector3, species?:string, count?:number,
+   *          territory?:number, yaw?:number, name?:string, spread?:number}} spec
+   * @param {number} [budget] hard cap on how many this call may create
+   * @returns {import('./BeastNPC.js').BeastNPC[]}
+   */
+  spawnBeastGroup(spec, budget = BEAST_CEILING) {
+    const out = [];
+    if (!spec?.position || budget <= 0) return out;
+    const def = beastDef(spec.species);
+    const seed = (this._hashSeed(this.worldId ?? '') ^ (this._seedCounter * 0x9e3779b1)) >>> 0;
+    let s = seed || 3;
+    const rnd = () => {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+
+    const home = this._snapToGround(spec.position);
+    if (!home) return out;
+
+    const asked = Number.isFinite(spec.count) ? Math.floor(spec.count) : rollPackSize(def, rnd);
+    const count = Math.max(1, Math.min(asked, budget, def.packMax));
+    // A single animal has nothing to coordinate with, and a pack of one that
+    // still holds a ring bearing would orbit its target forever without ever
+    // being given an attack slot's worth of reason to close.
+    const pack = count > 1 ? new BeastPack({ species: def.id, seed }) : null;
+    const spread = spec.spread ?? (def.bodyRadius * 4 + count * 0.5);
+
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2 + rnd() * 0.8;
+      const r = i === 0 ? 0 : spread * (0.4 + rnd() * 0.6);
+      _v1.set(home.x + Math.cos(a) * r, home.y + 1.5, home.z + Math.sin(a) * r);
+      const pos = this._snapToGround(_v1);
+      if (!pos) continue;
+      const beast = this._createBeast({
+        species: def.id,
+        name: spec.name ?? def.name,
+        position: pos,
+        home,
+        pack,
+        yaw: spec.yaw ?? rnd() * Math.PI * 2,
+        territory: spec.territory,
+      });
+      if (beast) out.push(beast);
+    }
+    return out;
+  }
+
+  /**
+   * Spawn one beast, after `spawnForWorld` has run.
+   *
+   * The programmatic path, and the mirror of `spawnOne` for civilians: a
+   * scripted encounter, a quest, or a world that streams its wildlife the way
+   * the maze streams its wanderers can reach for this without going near
+   * `npcSpawns`. Returns null rather than throwing when the budget is full.
+   *
+   * @param {{position:THREE.Vector3, species?:string, home?:THREE.Vector3,
+   *          pack?:BeastPack, yaw?:number, name?:string, territory?:number}} spec
+   * @returns {import('./BeastNPC.js').BeastNPC|null}
+   */
+  spawnBeast(spec) {
+    if (!spec?.position) return null;
+    const pos = this._snapToGround(spec.position);
+    if (!pos) return null;
+    const beast = this._createBeast({ ...spec, position: pos });
+    // The same audit `spawnForWorld` runs over the whole cast at the end.
+    beast?.auditGrounding(true);
+    return beast;
+  }
+
+  /**
+   * Build one beast and file it.
+   *
+   * Beasts are filed as HOSTILES, which is what buys the respawn queue, the
+   * alert propagation and the quest kill-tracking for free - see the note on
+   * `type` in `BeastNPC`'s constructor. They are deliberately NOT given a
+   * weapon deal: a wolf's weapon is its face.
+   */
+  _createBeast(o) {
+    if (this._npcs.length >= this.maxNPCs) return null;
+    const def = beastDef(o.species);
+    const seed = (this._hashSeed(this.worldId ?? '') ^ (this._seedCounter++ * 2654435761)) >>> 0;
+    const body = new BeastBody({ species: def.id, materials: this.materials, seed });
+
+    const npc = new BeastNPC({
+      species: def.id,
+      name: o.name ?? def.name,
+      position: o.position,
+      home: o.home ?? o.position,
+      pack: o.pack ?? null,
+      theme: this.theme,
+      scene: this.scene,
+      physics: this.physics,
+      bus: this.bus,
+      manager: this,
+      humanoid: body,
+      seed,
+      yaw: o.yaw ?? 0,
+    });
+    if (Number.isFinite(o.territory)) npc.def = { ...def, territory: o.territory };
+    o.pack?.add(npc);
+
+    npc.setWater(this.water);
+    this._npcs.push(npc);
+    this._hostiles.push(npc);
+    this.bus?.emit('npc:spawned', { npc });
+    return npc;
+  }
+
+  /**
+   * A beast's blow connected.
+   *
+   * The same contract `npcFire` has, and for the same reason: the AI decides
+   * that something was hit, and the combat system owns everything that happens
+   * next - the damage, the knockback, the camera kick, the claw decal, the
+   * bleed. If nothing is listening we resolve it here so a beast is never
+   * toothless, which is exactly the fallback a hostile's gunfire already has.
+   *
+   * @param {import('./BeastNPC.js').BeastNPC} beast
+   * @param {{target:any, isPlayer:boolean, damage:number,
+   *          origin:THREE.Vector3, direction:THREE.Vector3, def:any}} hit
+   */
+  beastMaul(beast, hit) {
+    if (!beast || !hit?.target) return;
+    const handlers = this.bus?._handlers?.get('beast:maul');
+    this.bus?.emit('beast:maul', { beast, ...hit });
+    if (handlers && handlers.size > 0) return;
+
+    // Nothing resolved it: apply the damage directly. Knockback and bleed are
+    // the combat system's to give, so a fallback maul is a plain hit - it is a
+    // safety net, not a second implementation.
+    if (hit.isPlayer) {
+      hit.target.applyDamage?.(hit.damage, hit.origin.clone(), beast.id);
+    } else {
+      hit.target.applyDamage?.(hit.damage, false, beast);
+    }
+  }
+
   /**
    * True while this manager still holds `npc`.
    *
@@ -781,6 +979,10 @@ export class NPCManager {
     for (const other of this._friendlies) {
       if (other.socialPartner === npc) other.socialPartner = null;
     }
+    // A pack holds a hard reference to every member and hands out ring bearings
+    // by rank, so a despawned wolf left in the roster would leave a permanent
+    // gap in the circle its packmates orbit.
+    npc.pack?.remove?.(npc);
     if (this._chatNPC === npc) {
       this._chatNPC = null;
       this.bus?.emit('chat:available', { npc: null });
@@ -1435,6 +1637,7 @@ export class NPCManager {
       const a = list[i];
       if (a.isDead || a.seat) continue;
       const ap = a.position;
+      const aSpace = a.personalSpace;
       for (let j = i + 1; j < n; j++) {
         const b = list[j];
         if (b.isDead || b.seat) continue;
@@ -1443,7 +1646,13 @@ export class NPCManager {
         let dx = bp.x - ap.x;
         let dz = bp.z - ap.z;
         const d2 = dx * dx + dz * dz;
-        if (d2 >= PERSONAL_SPACE_SQ) continue;
+        // Widest either body claims. The common case - two humanoids, neither
+        // of which sets `personalSpace` - short-circuits on the shared constant
+        // before any of this is evaluated.
+        if (d2 >= (aSpace === undefined && b.personalSpace === undefined
+          ? PERSONAL_SPACE_SQ : MAX_PERSONAL_SPACE_SQ)) continue;
+        const space = Math.max(aSpace ?? PERSONAL_SPACE, b.personalSpace ?? PERSONAL_SPACE);
+        if (d2 >= space * space) continue;
         let d = Math.sqrt(d2);
         if (d < 1e-4) {
           // Exactly coincident, so there is no direction to separate along.
@@ -1459,7 +1668,7 @@ export class NPCManager {
           dx /= d;
           dz /= d;
         }
-        let push = (PERSONAL_SPACE - d) * 0.5 * SEPARATION_RELAX;
+        let push = (space - d) * 0.5 * SEPARATION_RELAX;
         if (push > SEPARATION_MAX_STEP) push = SEPARATION_MAX_STEP;
         ap.x -= dx * push;
         ap.z -= dz * push;
@@ -1535,7 +1744,12 @@ export class NPCManager {
       // alpha ramp on a bright deck that was below the threshold where the eye
       // registers ground contact at all - every review read the characters as
       // floating. A standing adult occludes roughly a metre of floor.
-      const s = npc.height * 0.62 * (0.78 + 0.22 * lift);
+      //
+      // Height is the wrong ruler for something longer than it is tall: a bear
+      // is 2.3 m of animal and would get a 0.87 m disc, which is the same
+      // "floating" the note above is about. Bodies that are not upright publish
+      // the footprint they actually cover.
+      const s = (npc.contactRadius ?? npc.height * 0.62) * (0.78 + 0.22 * lift);
       this._contactScale.set(s, 1, s);
       this._contactMat.compose(pos, this._contactQuat, this._contactScale);
       inst.setMatrixAt(n++, this._contactMat);
@@ -1600,8 +1814,16 @@ export class NPCManager {
         // pointless writes per frame across a full crowd.
         lod.shadow = shadow;
         const h = npc.humanoid;
-        h.mesh.castShadow = shadow;
-        if (h.hairMesh) h.hairMesh.castShadow = shadow;
+        // A humanoid IS two casting meshes; a quadruped is a dozen, and a wolf
+        // whose barrel stops casting while its legs carry on is worse than one
+        // that casts all the way out. A body that is more than two meshes says
+        // so by offering this, and owns the whole switch itself.
+        if (h.setShadowCasting) {
+          h.setShadowCasting(shadow);
+        } else {
+          h.mesh.castShadow = shadow;
+          if (h.hairMesh) h.hairMesh.castShadow = shadow;
+        }
       }
       lod.rate = !lod.visible ? 0.12 : d < 16 ? 1 : d < 34 ? 0.5 : d < 65 ? 0.25 : 0.1;
       /* Simulation cadence. Distance only, never `lod.visible`: a character
@@ -1703,18 +1925,38 @@ export class NPCManager {
     let bestDist = maxDistance;
     for (const npc of this._npcs) {
       if (npc.isDead) continue;
-      // Cheap reject: bounding sphere around the whole character.
+      /* Cheap reject: bounding sphere around the whole character.
+       *
+       * `height * 0.75` is the right radius for something taller than it is
+       * long. A quadruped is the other way round - a wolf's nose sits a metre
+       * in front of a sphere that only reaches 0.64 m - so a body whose extent
+       * is not its height publishes `boundRadius` and the sphere is sized off
+       * that instead. */
+      const bound = npc.boundRadius ?? npc.height * 0.75;
+      // Never tighter than it was for a humanoid: the along-axis slack stays
+      // whichever of the two is larger, so this cannot start rejecting shots
+      // that used to land.
+      const slack = bound > npc.height ? bound : npc.height;
       _v3.copy(npc.position);
       _v3.y += npc.height * 0.5;
       const toC = _v3.sub(origin);
       const along = toC.dot(direction);
-      if (along < -npc.height || along > bestDist + npc.height) continue;
-      if (toC.lengthSq() - along * along > (npc.height * 0.75) ** 2) continue;
+      if (along < -slack || along > bestDist + slack) continue;
+      if (toC.lengthSq() - along * along > bound * bound) continue;
 
+      /* The hit volume. A person is a vertical capsule from the feet to the
+       * head; a wolf is a horizontal one along its spine, and asking it to be
+       * the former leaves most of the animal unshootable. Bodies that are not
+       * upright fill in their own. */
       const feet = npc.position;
-      const r = npc.radius * 0.86;
-      _capA.set(feet.x, feet.y + r, feet.z);
-      _capB.set(feet.x, feet.y + npc.height * 0.86 - r, feet.z);
+      let r;
+      if (npc.hitCapsule) {
+        r = npc.hitCapsule(_capA, _capB);
+      } else {
+        r = npc.radius * 0.86;
+        _capA.set(feet.x, feet.y + r, feet.z);
+        _capB.set(feet.x, feet.y + npc.height * 0.86 - r, feet.z);
+      }
       const body = raySegment(origin, direction, _capA, _capB, r, bestDist);
 
       const head = npc.headPosition;

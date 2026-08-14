@@ -57,6 +57,16 @@ const STRIDE = 1.55;
 const RESPAWN_DELAY = 3.2;
 const SPAWN_INVULN = 2.5;
 
+/** Fraction of the usual ground friction that applies during a stagger. */
+const IMPULSE_FRICTION = 0.22;
+/** How long ground friction stays reduced after an impulse, seconds. */
+const IMPULSE_STAGGER = 0.42;
+/** Hard cap on the horizontal speed any single impulse may leave behind, m/s. */
+const IMPULSE_MAX = 14;
+/** View-kick spring: stiffness and damping, tuned to overshoot once and settle. */
+const KICK_STIFFNESS = 78;
+const KICK_DAMPING = 12;
+
 export class Player {
   /**
    * @param {{ scene: THREE.Scene, engine: import('../core/Engine.js').Engine,
@@ -115,6 +125,29 @@ export class Player {
     this._deathAt = 0;
     this._regenCarry = 0;
     this._elapsed = 0;
+
+    /* ---- impact: knockback, bleed, view kick ---- */
+    /**
+     * Seconds of reduced ground friction after an impulse.
+     *
+     * Without it a knockback is invisible. Source-style friction at
+     * `P.friction` = 10 sheds a 7 m/s shove in about three tenths of a second
+     * and the player travels perhaps 40 cm - which reads as a stutter, not as
+     * being thrown. Cutting friction for a moment lets the impulse actually
+     * carry, and cutting it rather than disabling it means the player never
+     * loses control for longer than they can feel.
+     */
+    this._impulseTime = 0;
+    /** Damage per second of the active bleed, and how long is left of it. */
+    this._bleedRate = 0;
+    this._bleedTime = 0;
+    this._bleedCarry = 0;
+    this._bleedSource = null;
+    /**
+     * View kick: a damped spring per axis, entirely separate from the
+     * `camera:shake` event five systems already emit. See `applyViewKick`.
+     */
+    this._kick = { pitch: 0, yaw: 0, roll: 0, vp: 0, vy: 0, vr: 0 };
 
     /* ---- spawn anchor ---- */
     this._spawnPosition = this._position.clone();
@@ -250,6 +283,23 @@ export class Player {
       this._lastFiredAt = this._elapsed;
       this.cameraRig?.correctShotEvent(evt);
     });
+
+    /* `camera:shake` had eight emitters across Combat, Projectiles, Bow,
+     * Fireball and Sword, and no listener anywhere in the tree - every
+     * explosion, sword hit and death has been firing it into nothing. Rather
+     * than add a ninth emitter for the maul and leave the rest dead, route the
+     * event into the same kick spring.
+     *
+     * The scales are NOT the same and must not be conflated: `viewKick` is in
+     * radians (0.12 is a bear's paw), while `amount` here runs 0.03 for a bow
+     * draw to 0.62 for the death lurch. 0.55 rad per unit puts the bow at ~1
+     * degree and death at ~20, which is the spread the emitters clearly meant.
+     *
+     * Roll alternates by event so a burst of hits shudders instead of nudging
+     * the view the same way n times. Deterministic, not random, so a test can
+     * assert it. */
+    this._shakeParity = 1;
+    this._offShake = bus.on('camera:shake', (e) => this.applyShake(e?.amount ?? 0));
 
     /** Active world, tracked for capability rules. @see ../worlds/WorldRules.js */
     this._world = null;
@@ -493,6 +543,8 @@ export class Player {
    */
   fixedUpdate(dt, elapsed) {
     this._elapsed = elapsed;
+    this._impulseTime = Math.max(0, this._impulseTime - dt);
+    this._tickBleed(dt);
     this._tickHealth(dt, elapsed);
     if (!this.stamina) new Stamina({ bus: this.bus, player: this });
     this.stamina.fixedUpdate(dt, elapsed);
@@ -750,7 +802,10 @@ export class Player {
       return;
     }
     const control = Math.max(speed, STOP_SPEED);
-    const newSpeed = Math.max(0, speed - control * P.friction * dt);
+    // Recently shoved: bleed the impulse off over a stagger rather than in
+    // three frames. @see `_impulseTime`.
+    const mu = this._impulseTime > 0 ? P.friction * IMPULSE_FRICTION : P.friction;
+    const newSpeed = Math.max(0, speed - control * mu * dt);
     const k = newSpeed / speed;
     this._velocity.x = vx * k;
     this._velocity.z = vz * k;
@@ -1100,6 +1155,219 @@ export class Player {
     return applied;
   }
 
+  /**
+   * Throw the player. The real knockback API.
+   *
+   * ── Why it goes into velocity and not into position ───────────────────────
+   * There was no impulse API before this - the only thing in `src/player/` with
+   * "impulse" in it is the weapon's visual spring kick - so the shape of it was
+   * a decision, and there is only one safe answer. Writing `position` directly
+   * would put the player wherever the shove pointed, walls included, and the
+   * capsule solver would then eject them along the SHORTEST axis out of
+   * whatever they landed in - which, wedged into a corner, is frequently
+   * straight through to the far side. That is the exact failure `_move`'s
+   * tunnelling guard exists to catch, and it should never have to.
+   *
+   * Adding to velocity means the shove is integrated by `_move` like any other
+   * motion: it is swept, resolved by `resolveCapsule`, allowed to step up a
+   * kerb, and rolled back by the tunnelling guard if the solver ever squeezes
+   * the capsule through geometry. A player thrown at a wall stops at the wall,
+   * with no code here that knows what a wall is.
+   *
+   * The vertical component SETS rather than adds, so being hit twice does not
+   * launch anybody, and it is only ever applied upward.
+   *
+   * @param {{x:number,y:number,z:number}} impulse metres per second
+   * @param {{stagger?:number}} [opts] seconds of reduced friction, so the
+   *   shove reads as being thrown rather than as a stutter
+   * @returns {boolean} false when the player is dead or a mount owns movement
+   */
+  applyImpulse(impulse, opts = {}) {
+    if (!impulse || this._dead) return false;
+    // A mount owns the capsule while it is being ridden; shoving the rider
+    // would desynchronise them from the animal they are sitting on.
+    if (this.movementOverride && !this._selfOverride) return false;
+
+    this._velocity.x += impulse.x ?? 0;
+    this._velocity.z += impulse.z ?? 0;
+    const planar = Math.hypot(this._velocity.x, this._velocity.z);
+    if (planar > IMPULSE_MAX) {
+      const k = IMPULSE_MAX / planar;
+      this._velocity.x *= k;
+      this._velocity.z *= k;
+    }
+
+    const up = impulse.y ?? 0;
+    if (up > 0) {
+      this._velocity.y = Math.max(this._velocity.y, up);
+      this._grounded = false;
+      this._coyote = 0;
+      this._jumpBuffer = 0;
+    }
+
+    this._impulseTime = Math.max(this._impulseTime, opts.stagger ?? IMPULSE_STAGGER);
+    this.bus?.emit('player:impulse', {
+      impulse: { x: impulse.x ?? 0, y: up, z: impulse.z ?? 0 },
+      speed: Math.hypot(this._velocity.x, this._velocity.z),
+    });
+    return true;
+  }
+
+  /**
+   * Kick the view.
+   *
+   * The primitive that makes `camera:shake` mean something. That event had
+   * eight emitters and no listener at all until the constructor subscribed one,
+   * so every explosion, sword hit and death was firing into nothing. Damage
+   * calls this DIRECTLY rather than through the event, because the direction of
+   * the blow is known at the call site and is the whole point; `camera:shake`
+   * carries no direction and is routed in with an alternating roll instead.
+   *
+   * This is a real transform, applied in `_applyCamera` alongside the weapon recoil offset,
+   * and it is DIRECTIONAL rather than random: a blow from the left rolls the
+   * view right, which tells the player where it came from. A random shake tells
+   * them only that something happened.
+   *
+   * Implemented as a damped spring per axis so it overshoots once and settles,
+   * rather than as a decaying random offset - the difference between being hit
+   * and standing on a washing machine.
+   *
+   * @param {number} pitch radians, positive kicks the view up
+   * @param {number} [yaw]
+   * @param {number} [roll]
+   */
+  /**
+   * Undirected shake, routed into the same spring as a directed kick.
+   *
+   * `camera:shake` carries an `amount` and no direction, so this cannot roll
+   * away from the blow the way {@link applyViewKick} does at a damage site.
+   * Instead the roll ALTERNATES per call, so a burst - a fireball chain, a
+   * flurry of sword hits - shudders rather than nudging the view identically n
+   * times. Deterministic rather than random so a test can assert it.
+   *
+   * The two scales are not interchangeable and conflating them is the easy bug
+   * here: `applyViewKick` takes radians, where 0.12 is a bear's paw, while
+   * `amount` runs 0.03 for a bow draw to 0.62 for the death lurch. 0.55 rad per
+   * unit puts the bow at about one degree and death at about twenty.
+   *
+   * @param {number} amount as emitted with `camera:shake`
+   * @returns {boolean} false when there was nothing to do
+   */
+  applyShake(amount) {
+    if (!(amount > 0)) return false;
+    this._shakeParity = -(this._shakeParity ?? 1);
+    const s = this._shakeParity;
+    return this.applyViewKick(amount * 0.55, amount * 0.12 * s, amount * 0.3 * s);
+  }
+
+  applyViewKick(pitch, yaw = 0, roll = 0) {
+    const k = this._kick;
+    k.vp += pitch;
+    k.vy += yaw;
+    k.vr += roll;
+    return true;
+  }
+
+  /**
+   * Open a wound.
+   *
+   * Damage over time, delivered through `applyDamage` one whole point at a
+   * time. Routing it through the normal path rather than decrementing `_health`
+   * is what makes the HUD feedback "consistent with how `player:damaged` is
+   * already presented": every tick raises the same event, flashes the same
+   * vignette and pushes the same damage-direction marker, with no HUD changes
+   * at all. It also - correctly - keeps resetting the regeneration delay, so a
+   * bleeding player does not heal.
+   *
+   * Bleeds REFRESH rather than stack: a second bite takes the harsher rate and
+   * the longer clock, but four wolves biting in one second cannot compound into
+   * an unsurvivable 12/s. That is the single most important line in this method
+   * for the "survivable" half of the design target.
+   *
+   * @param {number} rate health per second
+   * @param {number} duration seconds
+   * @param {*} [sourceId] whatever opened it, for the kill feed
+   * @returns {boolean}
+   */
+  applyBleed(rate, duration, sourceId = null) {
+    if (this._dead || !(rate > 0) || !(duration > 0)) return false;
+    const wasBleeding = this._bleedTime > 0;
+    this._bleedRate = Math.max(this._bleedRate, rate);
+    this._bleedTime = Math.max(this._bleedTime, duration);
+    this._bleedSource = sourceId ?? this._bleedSource;
+    if (!wasBleeding) {
+      this.bus?.emit('player:bleed', { active: true, rate: this._bleedRate, remaining: this._bleedTime });
+      this.bus?.emit('hud:notify', { text: 'Bleeding', tone: 'warn' });
+    }
+    return true;
+  }
+
+  /** True while a wound is still open. */
+  get isBleeding() {
+    return this._bleedTime > 0;
+  }
+
+  /**
+   * Stop the bleed - a bandage, a respawn, a world change.
+   *
+   * Gated on the RATE as well as on the clock, because `_tickBleed` calls this
+   * on the step the clock reaches zero: keyed on the clock alone it would take
+   * the early return, leave `_bleedRate` set, and never announce that the wound
+   * had closed.
+   */
+  clearBleed() {
+    if (this._bleedTime <= 0 && this._bleedRate <= 0) return false;
+    this._bleedTime = 0;
+    this._bleedRate = 0;
+    this._bleedCarry = 0;
+    this._bleedSource = null;
+    this.bus?.emit('player:bleed', { active: false, rate: 0, remaining: 0 });
+    return true;
+  }
+
+  /**
+   * Run the clock down and pay out whole points of damage.
+   *
+   * Whole points, with a carry, for the same reason health regeneration uses
+   * one: a fractional `applyDamage` every step would raise sixty
+   * `player:damaged` events a second and pin the HUD's flash at maximum.
+   */
+  _tickBleed(dt) {
+    if (this._bleedTime <= 0) return;
+    if (this._dead) {
+      this.clearBleed();
+      return;
+    }
+    const step = Math.min(dt, this._bleedTime);
+    this._bleedTime -= step;
+    this._bleedCarry += this._bleedRate * step;
+    if (this._bleedCarry >= 1) {
+      const whole = Math.floor(this._bleedCarry);
+      this._bleedCarry -= whole;
+      this.applyDamage(whole, null, this._bleedSource);
+    }
+    if (this._bleedTime <= 0) this.clearBleed();
+  }
+
+  /** Integrate the view-kick springs toward rest. */
+  _tickViewKick(dt) {
+    const k = this._kick;
+    if (k.vp === 0 && k.vy === 0 && k.vr === 0
+      && k.pitch === 0 && k.yaw === 0 && k.roll === 0) return;
+    // Semi-implicit Euler: stable at this stiffness for any frame time the
+    // engine will ever hand out, and it costs six multiplies.
+    const h = Math.min(dt, 1 / 30);
+    k.vp += (-KICK_STIFFNESS * k.pitch - KICK_DAMPING * k.vp) * h;
+    k.vy += (-KICK_STIFFNESS * k.yaw - KICK_DAMPING * k.vy) * h;
+    k.vr += (-KICK_STIFFNESS * k.roll - KICK_DAMPING * k.vr) * h;
+    k.pitch += k.vp * h;
+    k.yaw += k.vy * h;
+    k.roll += k.vr * h;
+    if (Math.abs(k.pitch) < 1e-4 && Math.abs(k.vp) < 1e-3) { k.pitch = 0; k.vp = 0; }
+    if (Math.abs(k.yaw) < 1e-4 && Math.abs(k.vy) < 1e-3) { k.yaw = 0; k.vy = 0; }
+    if (Math.abs(k.roll) < 1e-4 && Math.abs(k.vr) < 1e-3) { k.roll = 0; k.vr = 0; }
+  }
+
   heal(amount) {
     if (this._dead || amount <= 0) return 0;
     const applied = Math.min(amount, this._maxHealth - this._health);
@@ -1146,6 +1414,10 @@ export class Player {
     this._dead = false;
     this._health = this._maxHealth;
     this._regenCarry = 0;
+    this.clearBleed();
+    this._impulseTime = 0;
+    this._kick.pitch = this._kick.yaw = this._kick.roll = 0;
+    this._kick.vp = this._kick.vy = this._kick.vr = 0;
     this._lastDamageAt = -999;
     this._invulnUntil = this._elapsed + SPAWN_INVULN;
     this._speedBoostUntil = 0;
@@ -1172,6 +1444,9 @@ export class Player {
     this.swim.cancel();
     this.climb.cancel();
     this._releaseMovement();
+    // A wound does not follow you through a portal, and neither does a shove.
+    this.clearBleed();
+    this._impulseTime = 0;
     this._position.copy(position);
     this._yaw = yaw;
     this._pitch = 0;
@@ -1223,6 +1498,7 @@ export class Player {
     // View springs.
     this._stepSmooth = damp(this._stepSmooth, 0, 13, dt);
     this._tickDip(dt);
+    this._tickViewKick(dt);
     this._eyeHeight = damp(
       this._eyeHeight,
       this._dead ? 0.32 : this._crouching ? CROUCH_EYE : STAND_EYE,
@@ -1359,10 +1635,14 @@ export class Player {
     const kick = this._weapon.getRecoilOffset();
     // Landing dip also pitches the view down slightly - the head nods forward.
     const dipPitch = this._dip * 0.35;
+    // Impact kick, on top of the weapon recoil and clamped with it: it moves
+    // the camera and never the aim, so a maul cannot spin the player's view
+    // round or point it at the sky.
+    const hit = this._kick;
     cam.rotation.set(
-      clamp(this._pitch + kick.y + dipPitch, -MAX_PITCH - 0.2, MAX_PITCH + 0.2),
-      this._yaw + kick.x,
-      this._roll + bobRoll,
+      clamp(this._pitch + kick.y + dipPitch + hit.pitch, -MAX_PITCH - 0.2, MAX_PITCH + 0.2),
+      this._yaw + kick.x + hit.yaw,
+      this._roll + bobRoll + hit.roll,
       'YXZ'
     );
   }
@@ -1372,6 +1652,8 @@ export class Player {
     this._offRules = null;
     this._offFired?.();
     this._offFired = null;
+    this._offShake?.();
+    this._offShake = null;
     this._offWater?.();
     this._offWater = null;
     this._offMounted?.();

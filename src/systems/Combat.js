@@ -195,6 +195,10 @@ export class CombatSystem {
       this.npcShoot(e.npc, e.origin, e.direction, e.damage, e.accuracy);
     });
 
+    // The same path for a beast's contact attack. The AI has already decided
+    // that the volume touched something; everything that happens next is ours.
+    on('beast:maul', (e) => this.resolveMaul(e));
+
     on('player:damaged', () => { this._sawPlayerDamaged = true; });
     on('npc:damaged', () => { this._sawNpcDamaged = true; });
     on('npc:killed', () => { this._sawNpcKilled = true; });
@@ -606,6 +610,112 @@ export class CombatSystem {
       this._stampDecal(strayHit.point, strayHit.normal, surface);
     }
     return false;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Beast maul                                                        */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * A beast's claws or jaws connected.
+   *
+   * This is the only place a maul turns into consequences, and it is
+   * deliberately the same shape as `npcShoot`: the AI owns "did it hit", this
+   * owns damage, feedback and everything the player feels. Against an NPC it
+   * routes through `applyNPCDamage` - the single choke point that guarantees
+   * `npc:damaged` / `npc:killed` fire exactly once - with `byPlayer: false`, so
+   * a wolf eating a villager cannot pay the player for it.
+   *
+   * Against the player it is five things, in the order the player perceives
+   * them: the hit, the shove, the view kick, the wound, the mark on the wall.
+   *
+   * @param {{beast:any, target:any, isPlayer:boolean, damage:number,
+   *          origin:THREE.Vector3, direction:THREE.Vector3, def:any}} e
+   * @returns {number} damage that actually landed
+   */
+  resolveMaul(e) {
+    if (!e?.beast || !e.target || !(e.damage > 0)) return 0;
+    const def = e.def ?? {};
+
+    _hitPoint.copy(e.origin);
+    _dir.copy(e.direction).normalize();
+
+    if (!e.isPlayer) {
+      const res = this.applyNPCDamage(e.target, e.damage, {
+        isHeadshot: false,
+        weaponId: 'maul',
+        byPlayer: false,
+        source: e.beast,
+        // A beast's damage is authored in `BeastSpecies`, not in WEAPON_STATS;
+        // re-normalising it onto a player weapon's curve would be nonsense.
+        statsApplied: true,
+      });
+      this.bloodFX(_hitPoint, _tmp.copy(_dir).negate(), _dir);
+      this._clawDecalBehind(e.target.position, _dir);
+      return res.applied;
+    }
+
+    const player = this.player;
+    if (!player || player.isDead) return 0;
+
+    const applied = this._damagePlayer(e.damage, e.origin, e.beast.id ?? null);
+    // Absorbed by spawn invulnerability: no shove, no blood, no wound. The
+    // player has to be able to trust that "invulnerable" means it.
+    if (applied <= 0) return 0;
+
+    /* --- knockback ---
+     * Straight out along the blow, resolved by the player's own capsule solver
+     * - see `Player.applyImpulse` for why it can never push anybody through a
+     * wall. */
+    if (typeof player.applyImpulse === 'function') {
+      _tmp.set(_dir.x * (def.knockback ?? 5), def.knockUp ?? 1.5, _dir.z * (def.knockback ?? 5));
+      player.applyImpulse(_tmp);
+    }
+
+    /* --- camera kick ---
+     * Directional, and distinct from `camera:shake`: the view snaps up and
+     * rolls AWAY from the side the blow came from, which tells the player where
+     * the animal is even if they were not looking at it. */
+    if (typeof player.applyViewKick === 'function') {
+      const kick = def.viewKick ?? 0.12;
+      // Sign the roll off the cross product of the blow and world up, so a hit
+      // from the left and a hit from the right do not feel the same.
+      const side = Math.sign(_dir.x * Math.sin(player.yaw ?? 0) + _dir.z * Math.cos(player.yaw ?? 0)) || 1;
+      player.applyViewKick(kick * 2.6, kick * 0.5 * side, kick * 1.4 * side);
+    }
+
+    /* --- bleed ---
+     * Short, and it REFRESHES rather than stacks - see `Player.applyBleed`. */
+    if (typeof player.applyBleed === 'function' && def.bleedRate > 0) {
+      player.applyBleed(def.bleedRate, def.bleedTime ?? 3, e.beast.id ?? null);
+    }
+
+    /* --- marks --- */
+    this.vfx.bloodImpact(_hitPoint, _tmp.copy(_dir).negate(), _dir);
+    this._clawDecalBehind(player.position, _dir);
+    this.bus.emit('combat:maul', {
+      beast: e.beast,
+      species: e.beast.species ?? null,
+      damage: applied,
+      point: _hitPoint.clone(),
+    });
+    return applied;
+  }
+
+  /**
+   * Rake a claw mark onto whatever is behind the target.
+   *
+   * The same trick `_bloodSplatterBehind` uses, and for the same reason: the
+   * mark cannot go on the victim - they move, and there is nothing to project
+   * onto - so it goes on the wall or the ground behind them, which is where a
+   * real one would end up anyway.
+   */
+  _clawDecalBehind(position, dir) {
+    _backOrigin.copy(position);
+    _backOrigin.y += 1.0;
+    const behind = this.physics.raycast(_backOrigin, dir, 4.0, COLLISION_LAYER.WORLD);
+    if (!behind) return;
+    this.decals.spawn(behind.point, behind.normal, 0.55 + Math.random() * 0.4, DECAL.CLAW, 30);
   }
 
   _npcTracer(origin, dir, distance, force) {

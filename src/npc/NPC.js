@@ -13,6 +13,25 @@ import {
  * Subclasses implement `_think()` - the state machine - and never touch the
  * transform directly; they set a movement intent and this class integrates it
  * against the physics world so no NPC can ever end up inside geometry.
+ *
+ * ── Bodies that are not people ────────────────────────────────────────────
+ * Everything below the state machine - the ground probe, the walked-height
+ * memory, the stranding watchdog, the capsule integrator, the banked-`dt`
+ * contract with `NPCManager`'s simulation bands - is about a CHARACTER, not
+ * about a biped, and none of it wants to know how many legs that character has.
+ * Only two things did:
+ *
+ *   - the BODY, which has always come in as `ctx.humanoid` and so was never a
+ *     problem;
+ *   - the ANIMATOR, which this constructor used to build inline as an
+ *     `NPCAnimator` and which now comes from {@link NPC#_createAnimator}.
+ *
+ * `NPCAnimator` cannot drive a quadruped - `this.feet` is two elements long,
+ * the phase relation between them is a hard-coded antiphase, and every bone is
+ * looked up by biped name - so `BeastNPC` overrides that one method and gets
+ * everything else here for free. That is the whole seam, and it is deliberately
+ * one method wide: the alternative was a second copy of this class that would
+ * have had to be kept in step with all of the above forever.
  */
 
 const _v1 = new THREE.Vector3();
@@ -43,10 +62,10 @@ let _nextId = 1;
 
 export class NPC {
   /**
-   * @param {{ id?:string, type:'friendly'|'hostile', name:string, persona:string,
+   * @param {{ id?:string, type:'friendly'|'hostile'|'beast', name:string, persona:string,
    *           position:THREE.Vector3, patrol?:THREE.Vector3[], theme:string,
    *           scene:THREE.Scene, physics:any, bus:any, manager:any,
-   *           humanoid:any, seed?:number }} ctx
+   *           humanoid:any, seed?:number, radius?:number }} ctx
    */
   constructor(ctx) {
     this.id = ctx.id ?? `npc-${_nextId++}`;
@@ -69,11 +88,15 @@ export class NPC {
     this.patrol = (ctx.patrol ?? []).map((p) => p.clone());
     this.patrolIndex = 0;
 
-    this.animator = new NPCAnimator({ humanoid: this.humanoid, physics: this.physics, seed: this.seed });
+    this.animator = this._createAnimator(ctx);
     this.nav = new Navigation({ physics: this.physics, seed: this.seed ^ 0x5f3a });
 
     this.height = this.humanoid.height;
-    this.radius = 0.33;
+    /**
+     * Collision capsule radius. 0.33 m is a person; a bear is not, and its
+     * shoulders end up in the walls if it is asked to be one.
+     */
+    this.radius = ctx.radius ?? 0.33;
     this.eyeHeight = this.height * 0.92;
 
     this.maxHealth = CONFIG.npc.maxHealth;
@@ -191,6 +214,25 @@ export class NPC {
     this._sampleGround(0, true);
     this._followGround(1);
     this._walkedY = this.position.y;
+  }
+
+  /**
+   * Build the animator that poses this character's body.
+   *
+   * The one hook a non-humanoid character overrides. Called from the
+   * constructor, so an override may only read what has already been assigned
+   * above it - `humanoid`, `physics`, `seed`, `bus` - and must not touch
+   * anything the subclass sets in its own constructor body.
+   *
+   * @param {object} ctx the constructor context, so an override can reach
+   *   fields (a species, say) that the base class has no opinion about
+   * @returns {any} anything presenting the animator surface `NPC` drives:
+   *   setLocomotion / setLookTarget / setAimTarget / setSeated / flinch / die /
+   *   revive / update, plus `sunk` and `beginSink` for the respawn queue.
+   */
+  _createAnimator(ctx) {
+    void ctx;
+    return new NPCAnimator({ humanoid: this.humanoid, physics: this.physics, seed: this.seed });
   }
 
   /** Live reference to the feet position. Do not mutate from outside. */

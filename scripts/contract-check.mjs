@@ -43,6 +43,52 @@ const CONTRACT = [
   { file: 'src/npc/NPC.js', exports: ['NPC'] },
   { file: 'src/npc/FriendlyNPC.js', exports: ['FriendlyNPC'] },
   { file: 'src/npc/HostileNPC.js', exports: ['HostileNPC'] },
+  /* Roaming predators. Registered for exactly the reason every other entry is:
+   * these modules are reached only through `NPCManager`'s beast branch and a
+   * world's `npcSpawns`, so a renamed export would surface as a world with no
+   * wildlife in it one browser boot later rather than as a failed check here.
+   *
+   * `BeastSpecies` and `BeastGait` are the tables the balance and the footfall
+   * patterns live in and are pure data; `BeastBody` builds the two silhouettes;
+   * `BeastAnimator` is the quadruped pose driver `NPC._createAnimator` hands
+   * back; `BeastMaul` is the contact-volume arithmetic; `BeastPack` is the wolf
+   * coordination; `BeastNPC` is the actor that ties them together.
+   * Takes the count 60 -> 67. */
+  {
+    file: 'src/npc/BeastSpecies.js',
+    exports: ['BEASTS', 'BEAST_IDS', 'beastDef', 'rollBeastDamage', 'rollPackSize'],
+  },
+  {
+    file: 'src/npc/BeastGait.js',
+    exports: ['GAITS', 'GAIT_PHASE', 'LEG_ORDER', 'gaitFor', 'legPhase', 'legPose',
+      'planted', 'supportCount', 'footfallPhases', 'suspensionFraction'],
+  },
+  {
+    file: 'src/npc/BeastBody.js',
+    exports: ['BeastBody'],
+    methods: ['getHeadWorldPosition', 'setDetailVisible', 'setShadowCasting', 'dispose'],
+  },
+  {
+    file: 'src/npc/BeastAnimator.js',
+    exports: ['BeastAnimator'],
+    methods: ['setLocomotion', 'setLookTarget', 'setIntent', 'setIntentForState', 'flinch', 'die', 'revive',
+      'beginSink', 'update'],
+  },
+  {
+    file: 'src/npc/BeastMaul.js',
+    exports: ['segmentDistanceSq', 'capsulesOverlap', 'strikeTip', 'standingCapsule',
+      'strikeHits', 'STRIKE_ARC', 'STRIKE_DROP'],
+  },
+  {
+    file: 'src/npc/BeastPack.js',
+    exports: ['BeastPack', 'SHARE_RADIUS', 'PACK_FORGET'],
+    methods: ['add', 'remove', 'share', 'slotAngle', 'requestAttack', 'releaseAttack', 'update'],
+  },
+  {
+    file: 'src/npc/BeastNPC.js',
+    exports: ['BeastNPC'],
+    methods: ['_createAnimator', 'hitCapsule', 'adoptPackTarget', 'alert'],
+  },
   {
     file: 'src/ui/HUD.js',
     exports: ['HUD'],

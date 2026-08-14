@@ -17,16 +17,72 @@ import * as THREE from 'three';
  *    visibly dissolve before their slot is reused.
  */
 
-/** Atlas cell indices. */
+/** Atlas cell indices. Stable: existing callers index by these numbers. */
 export const DECAL = {
   HARD: 0,   // concrete / stone / asphalt - cratered hole with radial cracks
   METAL: 1,  // torn metal petals, bright scarred rim
   WOOD: 2,   // splintered hole
   BLOOD: 3,  // wet splatter with cast-off droplets
+  CLAW: 4,   // four parallel gouges - a beast's paw across a surface
 };
 
-const ATLAS_SIZE = 512;
-const CELL = ATLAS_SIZE / 2;
+/**
+ * Atlas layout.
+ *
+ * A fifth decal does not fit in a 2x2 sheet, so the grid is 3x3. The CELL size
+ * is unchanged at 256 px, which matters more than it looks: every radius in
+ * every painter below is a pixel count against that cell, so keeping it fixed
+ * means the existing four cells are painted byte-for-byte as they were and only
+ * the sheet around them grew. The cell INDICES are unchanged too - a caller
+ * asking for `DECAL.BLOOD` still passes 3 - and `spawn` derives the UV offset
+ * from the index, so nothing outside this file has to know the grid changed.
+ *
+ * 768 px is not a power of two. That is fine on WebGL2 with clamped wrapping
+ * and generated mipmaps, which is what these textures use - but it does break
+ * the bitwise wrap in `heightToNormalCanvas`, so that now uses a modulo. See
+ * the note there.
+ */
+const GRID = 3;
+const CELL = 256;
+const ATLAS_SIZE = CELL * GRID;
+/** Fraction of the sheet one cell occupies, in UV. */
+const CELL_UV = 1 / GRID;
+
+/**
+ * Where a cell index lands in the sheet.
+ *
+ * ── The flip, and why the mapping is written out ──────────────────────────
+ * Canvas y runs DOWN from the top; a `CanvasTexture` uploads with
+ * `flipY = true`, so texture V = 0 is the BOTTOM row of the canvas. The old
+ * layout ignored that: it painted the hard hole at canvas (0,0) and handed
+ * `DECAL.HARD` a V offset of 0, which samples the bottom-left cell - the wood
+ * splinters. Worked all the way through, every one of the four cells rendered
+ * somebody else's artwork, and the visible one was blood, which came out as a
+ * torn metal hole.
+ *
+ * Rather than repeat that with a bigger grid, the row is converted once, here,
+ * and both the painter and `spawn` go through it. `cellUV` is what the instance
+ * attribute gets; `cellCanvas` is where the painter draws.
+ */
+function cellRowCol(cell) {
+  const i = cell | 0;
+  return { col: i % GRID, row: Math.floor(i / GRID) };
+}
+
+/** UV offset of a cell's bottom-left corner. */
+function cellUV(cell) {
+  const { col, row } = cellRowCol(cell);
+  return [col * CELL_UV, row * CELL_UV];
+}
+
+/** Canvas pixel origin of a cell, with the flip applied. */
+function cellCanvas(cell) {
+  const { col, row } = cellRowCol(cell);
+  return [col * CELL, (GRID - 1 - row) * CELL];
+}
+
+/* Exported so the atlas layout can be checked without a canvas. */
+export { GRID as DECAL_GRID, CELL as DECAL_CELL, ATLAS_SIZE as DECAL_ATLAS_SIZE, cellUV, cellCanvas };
 
 /* Module-scope scratch - decals spawn inside the shooting hot path. */
 const _q1 = new THREE.Quaternion();
@@ -321,6 +377,124 @@ function paintBlood(a, h, r, ox, oy, rnd) {
 }
 
 /**
+ * Four parallel gouges: a paw dragged across a surface.
+ *
+ * Built as strokes rather than as a blob because that is what makes it read as
+ * a CLAW rather than as another hole - the eye identifies it from the parallel
+ * repetition and the slight fan, not from the detail inside any one cut. Four
+ * of them, not five: a wolf's dew claw does not reach the ground, and four is
+ * also the count on the paws `BeastBody` builds.
+ *
+ * Each cut is a tapered quadratic: fine at both ends, widest a third of the way
+ * along, and slightly curved, so it looks dragged rather than stamped. The
+ * height channel cuts DOWN (dark) with a raised lip either side, which is what
+ * gives the normal map its groove.
+ */
+function paintClaw(a, h, r, ox, oy, rnd) {
+  const cx = ox + CELL * 0.5;
+  const cy = oy + CELL * 0.5;
+  // The whole set is rotated a little so repeated marks on one wall never read
+  // as a stamped pattern once the instance roll is added on top.
+  const set = -0.34 + rnd() * 0.16;
+  const cos = Math.cos(set);
+  const sin = Math.sin(set);
+  const at = (u, v) => [cx + u * cos - v * sin, cy + u * sin + v * cos];
+
+  // A faint scuff under everything: the pad, and dust dragged along with it.
+  const scuff = a.createRadialGradient(cx, cy, 12, cx, cy, 104);
+  scuff.addColorStop(0, 'rgba(48,42,38,0.20)');
+  scuff.addColorStop(1, 'rgba(48,42,38,0)');
+  a.fillStyle = scuff;
+  a.beginPath();
+  a.ellipse(cx, cy, 104, 74, set, 0, Math.PI * 2);
+  a.fill();
+
+  a.lineCap = 'round';
+  h.lineCap = 'round';
+  r.lineCap = 'round';
+
+  for (let i = 0; i < 4; i++) {
+    // Fanned: the outer cuts are shorter and splay away from the middle pair,
+    // the way a paw's outer toes trail.
+    const spread = (i - 1.5) * 27;
+    const fan = (i - 1.5) * 0.13;
+    const len = 96 - Math.abs(i - 1.5) * 17;
+    const bow = (rnd() - 0.5) * 16;
+
+    const [x0, y0] = at(-len * 0.5, spread - fan * 20);
+    const [x1, y1] = at(0, spread + bow);
+    const [x2, y2] = at(len * 0.5, spread + fan * 20);
+    const width = 9 - Math.abs(i - 1.5) * 1.6;
+
+    // Torn lip: a wide, pale stroke under the cut itself.
+    a.strokeStyle = 'rgba(196,186,172,0.30)';
+    a.lineWidth = width * 2.1;
+    a.beginPath();
+    a.moveTo(x0, y0);
+    a.quadraticCurveTo(x1, y1, x2, y2);
+    a.stroke();
+
+    // The cut: dark, and darker still down the middle.
+    a.strokeStyle = 'rgba(52,44,38,0.86)';
+    a.lineWidth = width;
+    a.beginPath();
+    a.moveTo(x0, y0);
+    a.quadraticCurveTo(x1, y1, x2, y2);
+    a.stroke();
+    a.strokeStyle = 'rgba(16,13,11,0.95)';
+    a.lineWidth = width * 0.45;
+    a.beginPath();
+    a.moveTo(x0, y0);
+    a.quadraticCurveTo(x1, y1, x2, y2);
+    a.stroke();
+
+    // A little blood, thrown along the cut and flicked off the end.
+    a.strokeStyle = `rgba(${74 + Math.floor(rnd() * 26)},9,10,${0.30 + rnd() * 0.3})`;
+    a.lineWidth = width * 0.32;
+    a.beginPath();
+    a.moveTo(x0, y0);
+    a.quadraticCurveTo(x1, y1 + 3, x2, y2);
+    a.stroke();
+    for (let d = 0; d < 3; d++) {
+      const t = 0.7 + rnd() * 0.5;
+      const [dx, dy] = at(len * (t - 0.5) * 1.15, spread + (rnd() - 0.5) * 26);
+      a.fillStyle = `rgba(${68 + Math.floor(rnd() * 24)},7,9,${0.45 + rnd() * 0.4})`;
+      a.beginPath();
+      a.ellipse(dx, dy, 2 + rnd() * 4.5, 1.6 + rnd() * 2.4, set, 0, Math.PI * 2);
+      a.fill();
+    }
+
+    // Height: raised lip, then the groove cut into it.
+    h.strokeStyle = 'rgb(178,178,178)';
+    h.lineWidth = width * 2.1;
+    h.beginPath();
+    h.moveTo(x0, y0);
+    h.quadraticCurveTo(x1, y1, x2, y2);
+    h.stroke();
+    h.strokeStyle = 'rgb(24,24,24)';
+    h.lineWidth = width * 0.8;
+    h.beginPath();
+    h.moveTo(x0, y0);
+    h.quadraticCurveTo(x1, y1, x2, y2);
+    h.stroke();
+
+    // Roughness: freshly torn material is rough, the wet blood is not.
+    r.strokeStyle = 'rgb(246,246,246)';
+    r.lineWidth = width * 2.1;
+    r.beginPath();
+    r.moveTo(x0, y0);
+    r.quadraticCurveTo(x1, y1, x2, y2);
+    r.stroke();
+    r.strokeStyle = 'rgb(52,52,52)';
+    r.lineWidth = width * 0.32;
+    r.beginPath();
+    r.moveTo(x0, y0);
+    r.quadraticCurveTo(x1, y1 + 3, x2, y2);
+    r.stroke();
+  }
+}
+
+/**
  * Sobel the height field into a tangent-space normal map, written into a fresh
  * canvas.
  *
@@ -337,8 +511,17 @@ function heightToNormalCanvas(heightCanvas, strength) {
   const ctx = dst.getContext('2d');
   const img = ctx.createImageData(size, size);
   const out = img.data;
-  const mask = size - 1;
-  const at = (x, y) => src[(((y & mask) * size + (x & mask)) << 2)] / 255;
+  /* Wrap by modulo, not by masking.
+   *
+   * `x & (size - 1)` is only a wrap when `size` is a power of two, and the
+   * atlas is 768 px now - under that mask every coordinate with bit 8 set
+   * (256..511) folds to the wrong row and the normal map comes out banded. The
+   * modulo costs a division per tap on a one-off startup pass. */
+  const at = (x, y) => {
+    const xx = ((x % size) + size) % size;
+    const yy = ((y % size) + size) % size;
+    return src[((yy * size + xx) << 2)] / 255;
+  };
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
@@ -401,7 +584,10 @@ export class DecalPool {
     });
     this.material.onBeforeCompile = DecalPool._patchShader;
     // Without this, three reuses the un-patched physical program.
-    this.material.customProgramCacheKey = () => 'aether-decal-v1';
+    // Bumped with the atlas grid: the patch above bakes the cell size into the
+    // program, so a cached v1 program would sample quarters of a nine-cell
+    // sheet.
+    this.material.customProgramCacheKey = () => 'aether-decal-v2';
 
     const geo = new THREE.PlaneGeometry(1, 1);
     this._atlasAttr = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2);
@@ -446,17 +632,17 @@ export class DecalPool {
         '#include <uv_vertex>',
         `#include <uv_vertex>
         vDecalFade = aFade;
-        // Remap the unit-quad UV into this instance's 2x2 atlas cell. Doing it
-        // here rather than in the fragment shader keeps texture-gradient based
+        // Remap the unit-quad UV into this instance's atlas cell. Doing it here
+        // rather than in the fragment shader keeps texture-gradient based
         // derivatives (and therefore mip selection) correct.
         #ifdef USE_MAP
-          vMapUv = vMapUv * 0.5 + aAtlas;
+          vMapUv = vMapUv * ${CELL_UV.toFixed(8)} + aAtlas;
         #endif
         #ifdef USE_NORMALMAP
-          vNormalMapUv = vNormalMapUv * 0.5 + aAtlas;
+          vNormalMapUv = vNormalMapUv * ${CELL_UV.toFixed(8)} + aAtlas;
         #endif
         #ifdef USE_ROUGHNESSMAP
-          vRoughnessMapUv = vRoughnessMapUv * 0.5 + aAtlas;
+          vRoughnessMapUv = vRoughnessMapUv * ${CELL_UV.toFixed(8)} + aAtlas;
         #endif`
       );
 
@@ -486,10 +672,17 @@ export class DecalPool {
     r.fillStyle = 'rgb(200,200,200)';
     r.fillRect(0, 0, ATLAS_SIZE, ATLAS_SIZE);
 
-    paintHardHole(a, h, r, 0, 0, rnd);
-    paintMetalHole(a, h, r, CELL, 0, rnd);
-    paintWoodHole(a, h, r, 0, CELL, rnd);
-    paintBlood(a, h, r, CELL, CELL, rnd);
+    // Painted THROUGH `cellCanvas`, so a named cell renders its own artwork -
+    // see the note on the flip above.
+    const paint = (fn, cell) => {
+      const [ox, oy] = cellCanvas(cell);
+      fn(a, h, r, ox, oy, rnd);
+    };
+    paint(paintHardHole, DECAL.HARD);
+    paint(paintMetalHole, DECAL.METAL);
+    paint(paintWoodHole, DECAL.WOOD);
+    paint(paintBlood, DECAL.BLOOD);
+    paint(paintClaw, DECAL.CLAW);
 
     const aniso = renderer?.capabilities?.getMaxAnisotropy?.() ?? 1;
 
@@ -541,8 +734,9 @@ export class DecalPool {
     this.mesh.setMatrixAt(i, _m1);
 
     const ai = i * 2;
-    this._atlasAttr.array[ai] = (cell & 1) * 0.5;
-    this._atlasAttr.array[ai + 1] = (cell >> 1) * 0.5;
+    const [u, v] = cellUV(cell);
+    this._atlasAttr.array[ai] = u;
+    this._atlasAttr.array[ai + 1] = v;
 
     this._age[i] = 0;
     this._life[i] = life;

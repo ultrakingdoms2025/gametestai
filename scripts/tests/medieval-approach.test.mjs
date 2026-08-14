@@ -42,9 +42,10 @@ import { CONFIG } from '../../src/core/Config.js';
 import { medievalHeight, rectDist } from '../../src/worlds/terrain/MedievalHeight.js';
 import { SETTLEMENTS, settledAt, inSettlementCore, CORE_SETTLED }
   from '../../src/worlds/medieval/Settlements.js';
-import { CROSSINGS } from '../../src/worlds/medieval/RoadNet.js';
+import { CROSSINGS, ROADS } from '../../src/worlds/medieval/RoadNet.js';
 import {
   TOWNS, allBuildings, plinthCourses, hasChimney, ECCLESIASTICAL, groundUnder,
+  GRIMSCAR_WORKINGS,
 } from '../../src/worlds/medieval/Towns.js';
 import { MedievalWorld } from '../../src/worlds/MedievalWorld.js';
 
@@ -244,6 +245,37 @@ function profileAlong(near, x0, z0, dx, dz, len, seed = null) {
 }
 
 /**
+ * Walk an arbitrary polyline of (x, z) points, sampling the surface a walker
+ * would find, in the order given.
+ *
+ * The straight-line `profileAlong` above cannot express "along the road, then
+ * off its end onto the deck", which is the walk that matters for a crossing.
+ */
+function profileThrough(near, pts, seed = null) {
+  const out = [];
+  let prev = seed === null ? medievalHeight(pts[0][0], pts[0][1]) : seed;
+  for (const [x, z] of pts) {
+    prev = surfaceAt(near, x, z, prev);
+    out.push(prev);
+  }
+  return out;
+}
+
+/** Resample a polyline at `STRIDE`, endpoint included. */
+function densify(pts, stride = STRIDE) {
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [ax, az] = pts[i];
+    const [bx, bz] = pts[i + 1];
+    const len = Math.hypot(bx - ax, bz - az);
+    const n = Math.max(1, Math.ceil(len / stride));
+    for (let k = 0; k < n; k++) out.push([ax + (bx - ax) * (k / n), az + (bz - az) * (k / n)]);
+  }
+  out.push(pts[pts.length - 1].slice());
+  return out;
+}
+
+/**
  * March a probe at one door along one bearing, retrying from closer if the
  * long start lands inside somebody else's gable.
  * @returns {{blocked:boolean, worst:number}}
@@ -378,6 +410,81 @@ test('every enterable interior owns at least one light', async () => {
   assert.ok(w.enterables.length >= 70);
 });
 
+/**
+ * Everything one interior's lamps deliver, as a single number.
+ *
+ * Intensity summed, not counted and not maxed: a room lit by two lamps of 46
+ * and a room lit by one of 92 have the same claim on the eye, and a rule that
+ * looked at either alone could be satisfied by splitting one lamp in two or by
+ * doubling one and leaving the far end black.
+ */
+function lumens(e) {
+  return e.lights.reduce((s, l) => s + l.intensity, 0);
+}
+
+test('a big room gets more light than a small one, by area and not by width', async () => {
+  /* THE DEFECT. `_shellInterior` sized the lamp count on `round(w / 12)` and
+   * `_interiorLight` used a flat 46 whatever the room, so the amount of light
+   * in a room depended on ONE of its two plan dimensions and on nothing else.
+   * The Marcher Hall is 14 x 11.5 m - 161 m2, bigger in plan than eight of the
+   * ten rooms that already had two lamps - and got one lamp of 46, the same as
+   * a 5 x 4 m fisherman's hut. Measured mean frame luminance, four headings,
+   * viewmodel light neutralised: 25.9 out of 255 against 37.4 in the Guildhall,
+   * and it read as one pool on a black floor.
+   *
+   * Held as a monotone property rather than as a table of expected values,
+   * because the point is the RULE and not the two rooms that exposed it. */
+  const w = await built();
+  const rooms = w.enterables
+    .map((e) => {
+      // Plan extent from the lamps' own spread plus their reach, which is what
+      // the builder sized off the room - the descriptor carries no dimensions.
+      const reach = Math.max(...e.lights.map((l) => l.distance));
+      return { label: e.label, reach, total: lumens(e), n: e.lights.length };
+    })
+    .sort((a, b) => a.reach - b.reach);
+
+  const small = rooms[0];
+  const big = rooms[rooms.length - 1];
+  assert.ok(big.reach > small.reach * 1.5,
+    'every interior is the same size - this test has nothing to compare');
+  assert.ok(big.total > small.total * 1.5,
+    `the biggest room (${big.label}, reach ${big.reach.toFixed(1)} m) gets ${big.total} of light `
+    + `and the smallest (${small.label}, reach ${small.reach.toFixed(1)} m) gets ${small.total}`);
+
+  /* And monotonically, not just at the extremes: bucket by reach and assert the
+   * mean light per room never falls as rooms get bigger. This is what the old
+   * width-only rule failed - a room could be half again as large in plan and
+   * get strictly less light, because its width happened to round down. */
+  const buckets = [[0, 9], [9, 12], [12, 15], [15, 99]];
+  const means = buckets.map(([lo, hi]) => {
+    const rs = rooms.filter((r) => r.reach >= lo && r.reach < hi);
+    return rs.length ? rs.reduce((s, r) => s + r.total, 0) / rs.length : null;
+  });
+  const seen = means.filter((m) => m !== null);
+  assert.ok(seen.length >= 3, `only ${seen.length} size bands of interior in the world`);
+  for (let i = 1; i < seen.length; i++) {
+    assert.ok(seen[i] > seen[i - 1],
+      `interiors in size band ${i} average ${seen[i].toFixed(0)} of light and the smaller `
+      + `band ${i - 1} averages ${seen[i - 1].toFixed(0)} - light does not follow the room`);
+  }
+
+  /* The two rooms the browser pass measured as unreadable, named, because a
+   * monotone rule can be satisfied while still leaving these two at 46. Both
+   * are big in PLAN and neither is wide enough for the width rule to notice:
+   * 14 x 11.5 and 10.5 x 8.4. */
+  for (const label of ['The Marcher Hall', 'The Stilthouse']) {
+    const e = w.enterables.find((k) => k.label === label);
+    assert.ok(e, `${label} has gone from the world`);
+    const perStorey = lumens(e) / e.lights.length * (e.lights.length / new Set(
+      e.lights.map((l) => l.position.y.toFixed(2))
+    ).size);
+    assert.ok(perStorey > 46 * 1.6,
+      `${label} still gets ${perStorey.toFixed(0)} of light per storey - it measured `
+      + '25.9 and 26.6 out of 255 at 46, which is a pool of light on a black floor');
+  }
+});
+
 test('interior lights are sources for the rig, not extra slots in the shader', () => {
   /* The load-bearing claim behind adding eighty of them. `gfx/LightRig.js` owns
    * a fixed set of slots and every other light in the game is hidden and pooled
@@ -393,42 +500,223 @@ test('interior lights are sources for the rig, not extra slots in the shader', (
 });
 
 /* ------------------------------------------------------------------ */
-/* 3. Every crossing can be walked                                     */
+/* 3. Every crossing can be reached ON THE ROADS THAT SERVE IT         */
 /* ------------------------------------------------------------------ */
 
-test('every crossing can be walked across, in three lanes', async () => {
-  /* The ford test next door checks that a ford is wet enough to be a ford and
-   * dry enough to be walked. Nothing did the same for the bridges, and two of
-   * the three could not be stepped onto: Harrowgate's deck sat 1.07 m over the
-   * ground at its own north abutment and Ashlea's abutment 0.90 m over its
-   * road, so walking the real approach the player simply jammed. Both decks
-   * were always fine. You could never get onto one. */
+/**
+ * ── Why this test was rewritten, which matters more than the bug ────────
+ * The first version of it walked each crossing ALONG ITS OWN AXIS: three lanes
+ * up the deck's centreline from ten metres short of one abutment to ten metres
+ * past the other. It passed, and Harrowgate Bridge still could not be walked
+ * onto - the player jammed at (307.8, 2.2, 104.8) on `harrowbridgeN`, the
+ * identical coordinate as before the fix that the test certified.
+ *
+ * The reason is the same one that let fifteen unenterable buildings ship: the
+ * test exercised the STRUCTURE and not the APPROACH TO IT. `harrowbridgeN` is
+ * `[[296,112],[304,108],[311,104]]` - it arrives at 30 degrees off the deck's
+ * axis, onto the abutment's west cheek, which the axial walk never touches
+ * because the axial walk is already on top of the abutment when it starts.
+ * A causeway with no lateral flare is a ramp head-on and a wall from anywhere
+ * else, and only a probe that arrives on a real bearing can tell the two apart.
+ *
+ * So this walks the ROAD NETWORK: for each end of each crossing, find the road
+ * the network actually reaches it by, walk the last 26 m of that road, step off
+ * its end to the crossing's own abutment point, and cross. Both ends, both
+ * directions of travel.
+ */
+
+/** How much of the serving road to walk before stepping off it, metres. */
+const APPROACH_RUN = 26;
+/**
+ * How far a road may be from a crossing's abutment and still be said to serve
+ * it. Ashlea's plank bridge is the case that sets this: it stands 12 m
+ * downstream of its own ford so that carts take the water and walkers take the
+ * planks, and the nearest carriageway sample is 9 m from its northern
+ * abutment. A crossing with nothing inside this is not served by the network at
+ * all, which is a louder defect than a step and is asserted as one.
+ */
+const SERVED_WITHIN = 22;
+
+/** Every road resampled once, at the walk's own stride. */
+const ROAD_WALKS = ROADS.map((r) => ({ key: r.key, pts: densify(r.pts) }));
+
+/**
+ * The road a traveller actually reaches (x, z) on, and every place they could
+ * step off it to do so.
+ *
+ * The step-off point is deliberately NOT fixed at the nearest sample. A player
+ * leaving the carriageway for a bridge head leaves it wherever the bridge head
+ * is convenient, and at Ashlea that is 6 m up the road from the closest point:
+ * the plank bridge stands 12 m downstream of its own ford, and the line that
+ * happens to be shortest arrives broadside onto the deck's flank, which is a
+ * parapet and is meant to be a wall. So every sample within `SERVED_WITHIN` is
+ * a candidate and the end passes if ANY of them gets you on - which is exactly
+ * the claim being made, that the crossing is reachable on foot from its road.
+ */
+function servingRoad(x, z) {
+  let best = null;
+  for (const r of ROAD_WALKS) {
+    for (let i = 0; i < r.pts.length; i++) {
+      const d = Math.hypot(r.pts[i][0] - x, r.pts[i][1] - z);
+      if (!best || d < best.d) best = { d, road: r, i };
+    }
+  }
+  const road = best.road;
+  const span = Math.round(APPROACH_RUN / STRIDE);
+  const offs = [];
+  // Every ~1.5 m of carriageway inside the serve radius, and the nearest point
+  // always, whichever side of the road's own length it falls on.
+  for (let i = 0; i < road.pts.length; i++) {
+    const d = Math.hypot(road.pts[i][0] - x, road.pts[i][1] - z);
+    if (d > SERVED_WITHIN) continue;
+    if (i !== best.i && i % Math.round(1.5 / STRIDE) !== 0) continue;
+    const runs = [];
+    if (i > 0) runs.push(road.pts.slice(Math.max(0, i - span), i + 1));
+    if (i < road.pts.length - 1) {
+      runs.push(road.pts.slice(i, Math.min(road.pts.length, i + span + 1)).reverse());
+    }
+    for (const run of runs) offs.push({ at: road.pts[i], d, run });
+  }
+  return { key: road.key, d: best.d, offs };
+}
+
+test('every crossing can be walked onto from the roads that serve it, both ends', async () => {
   const w = await built();
   const cols = w.testColliders;
   let checked = 0;
   for (const c of CROSSINGS) {
     const midZ = (c.from[1] + c.to[1]) / 2;
-    const near = cols.filter((k) => Math.abs(k.x - c.x) < 60 && Math.abs(k.z - midZ) < 60);
-    // Ten metres of approach at each end, because an abutment that cannot be
-    // reached is the same defect as a deck that cannot be reached.
-    const zA = Math.min(c.from[1], c.to[1]) - 10;
-    const zB = Math.max(c.from[1], c.to[1]) + 10;
-    const lane = Math.min(1.4, c.width / 2 - 0.5);
-    for (const off of [-lane, 0, lane]) {
-      const x = c.x + off;
-      // Both ways: an abutment can be a kerb from one side and a ramp from the
-      // other, and a crossing has to work in the direction you are travelling.
-      for (const dir of [1, -1]) {
-        const from = dir > 0 ? zA : zB;
-        const worst = worstStep(profileAlong(near, x, from, 0, dir, zB - zA));
-        assert.ok(worst <= RISE_LIMIT,
-          `${c.id}: crossing it northbound=${dir > 0} in the ${off.toFixed(1)} m lane `
-          + `needs a ${worst.toFixed(2)} m step`);
+    const near = cols.filter((k) => Math.abs(k.x - c.x) < 80 && Math.abs(k.z - midZ) < 80);
+    for (const [end, far] of [[c.from, c.to], [c.to, c.from]]) {
+      const s = servingRoad(end[0], end[1]);
+      assert.ok(s.d <= SERVED_WITHIN,
+        `${c.id}: its abutment at (${end[0]}, ${end[1]}) is ${s.d.toFixed(1)} m from the `
+        + 'nearest road - no road in the network serves this end of the crossing');
+      let best = Infinity;
+      let bestAt = null;
+      for (const off of s.offs) {
+        /* road ... step-off point ... abutment ... the far abutment, all at one
+         * stride, so the bank between the carriageway and the bridge head is
+         * probed rather than assumed. Both directions of travel on the same
+         * line, because an abutment can be a ramp from one side and a kerb from
+         * the other. */
+        const path = densify([...off.run, [end[0], end[1]], [far[0], far[1]]]);
+        const worst = Math.max(
+          worstStep(profileThrough(near, path)),
+          worstStep(profileThrough(near, [...path].reverse()))
+        );
+        if (worst < best) { best = worst; bestAt = off.at; }
+        if (best <= RISE_LIMIT) break;
       }
+      assert.ok(best <= RISE_LIMIT,
+        `${c.id}: nowhere on ${s.key} can a walker get onto the abutment at `
+        + `(${end[0]}, ${end[1]}) - the easiest line, leaving the road at `
+        + `(${bestAt?.[0].toFixed(1)}, ${bestAt?.[1].toFixed(1)}), still needs a `
+        + `${best.toFixed(2)} m step and the player can climb ${CONFIG.player.stepHeight}`);
+      checked++;
     }
-    checked++;
   }
-  assert.ok(checked >= 5, `only ${checked} crossings walked`);
+  assert.ok(checked >= 10, `only ${checked} crossing ends walked`);
+});
+
+test('a crossing approach is climbable from every bearing, not only head-on', async () => {
+  /* The property behind the fix, held independently of where the roads happen
+   * to run today: a causeway is a nested, flared stack, so a straight line from
+   * anywhere outside it crosses each course boundary exactly once whatever its
+   * bearing - which is the same argument `_entrySteps` makes for a doorstep.
+   *
+   * Nine metres out, because that is the arc the causeway itself occupies: the
+   * longest flight in the world is three courses and reaches 7.05 m, so a probe
+   * from 9 m starts on open ground just outside the toe and has to cross every
+   * riser to get in. Further out and the fan sweeps the bank either side of the
+   * bridge and starts measuring the landscape instead of the structure. */
+  const w = await built();
+  const cols = w.testColliders;
+  let checked = 0;
+  for (const c of CROSSINGS) {
+    if (c.kind !== 'bridge' || c.id === 'aldern-bridge') continue;
+    const midZ = (c.from[1] + c.to[1]) / 2;
+    const near = cols.filter((k) => Math.abs(k.x - c.x) < 80 && Math.abs(k.z - midZ) < 80);
+    for (const end of [c.from, c.to]) {
+      // Outward from the deck: the bearing a causeway descends on.
+      const out = end[1] < midZ ? -1 : 1;
+      let usable = 0;
+      let headOn = false;
+      for (let deg = -60; deg <= 60; deg += 15) {
+        const a = (deg * Math.PI) / 180;
+        const ox = Math.sin(a);
+        const oz = out * Math.cos(a);
+        const worst = worstStep(profileAlong(
+          near, end[0] + ox * 9, end[1] + oz * 9, -ox, -oz, 9
+        ));
+        if (worst > RISE_LIMIT) continue;
+        usable++;
+        if (deg === 0) headOn = true;
+      }
+      /* Head-on always, and seven of the nine. Not all nine, because the
+       * Harrowgate toll house stands on the south causeway's east cheek and one
+       * probe walks into its gable - that is a building, and walking round a
+       * building is not a defect. Seven still fails a plain unflared stack,
+       * which managed six here and would manage three. */
+      assert.ok(headOn,
+        `${c.id}: its abutment at (${end[0]}, ${end[1]}) cannot even be climbed head-on`);
+      assert.ok(usable >= 7,
+        `${c.id}: only ${usable} of 9 bearings can climb onto its abutment at `
+        + `(${end[0]}, ${end[1]}) - the causeway is a ramp head-on and a wall from the side`);
+      checked++;
+    }
+  }
+  assert.ok(checked >= 4, `only ${checked} abutments probed`);
+});
+
+test('the Grimscar tramway runs clear of the winding house and its doorstep', async () => {
+  /* The rails ran straight from the adit to the headframe at z = -192, which is
+   * inside the winding house (x -374.5..-365.5, z -196..-184) for nine metres
+   * and inside its eight-course entry apron (out to x = -360.3) for six more:
+   * buried 1.08 m at x = -365, 0.75 m at -363, 0.10 m at -361, 0.41 m at -359,
+   * so the track terminated at the steps and re-appeared beyond them.
+   *
+   * Only the stretch between the adit mouth and the headframe is probed, and
+   * deliberately: east of the headframe the rails run INTO the shaft collar and
+   * the standing carts and under the tip, all of which is what a tramway does,
+   * and west of it is the adit portal itself. The window is exactly the ground
+   * the winding house stands on.
+   */
+  const w = await built();
+  const pts = GRIMSCAR_WORKINGS.tramway;
+  const cols = w.testColliders.filter((c) => Math.abs(c.x + 368) < 30 && Math.abs(c.z + 192) < 30);
+  assert.ok(cols.length > 20, 'no colliders near Grimscar - the town did not build');
+  let worst = 0;
+  let worstAt = null;
+  let sampled = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [ax, az] = pts[i];
+    const [bx, bz] = pts[i + 1];
+    const len = Math.hypot(bx - ax, bz - az);
+    const ux = (bx - ax) / len;
+    const uz = (bz - az) / len;
+    for (let t = 0; t <= len; t += 0.5) {
+      const cx = ax + ux * t;
+      const cz = az + uz * t;
+      if (cx < -377 || cx > -361) continue;    // the winding house's own ground
+      // Both rails and the sleeper ends: a 1.5 m gauge, not a centreline.
+      for (const off of [-0.75, -0.42, 0, 0.42, 0.75]) {
+        const x = cx - uz * off;
+        const z = cz + ux * off;
+        const rail = medievalHeight(x, z) + 0.17;
+        let top = -Infinity;
+        for (const c of cols) if (overlaps(c, x, z)) top = Math.max(top, c.y + c.hy);
+        if (top === -Infinity) continue;
+        const buried = top - rail;
+        if (buried > worst) { worst = buried; worstAt = [x, z]; }
+      }
+      sampled++;
+    }
+  }
+  assert.ok(sampled > 12, `only ${sampled} sleepers fall on the winding house's ground`);
+  assert.ok(worst <= 0.25,
+    `the tramway is buried ${worst.toFixed(2)} m inside the masonry at `
+    + `(${worstAt?.[0].toFixed(1)}, ${worstAt?.[1].toFixed(1)}) - the rails run into a wall`);
 });
 
 /* ------------------------------------------------------------------ */

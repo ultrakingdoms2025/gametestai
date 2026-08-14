@@ -180,8 +180,27 @@ export const RING_ROADS = [
   { key: 'eastway', width: 5.6, pts: [[96, 50], [128, 54], [160, 52], [196, 54], [232, 62], [262, 76], [282, 96], [292, 110], [296, 118]] },
   /** Harrowgate Ford and its southern landing, under Blackmarch Bluff. */
   { key: 'harrowgate', width: 5.2, pts: [[296, 118], [296, 124], [296, 130], [294, 140], [292, 152], [288, 164]] },
-  /** The northern approach to Harrowgate Bridge, off the east road. */
-  { key: 'harrowbridgeN', width: 4.2, pts: [[296, 112], [304, 108], [311, 104]] },
+  /**
+   * The northern approach to Harrowgate Bridge, off the east road.
+   *
+   * ── Why it does not run straight at the abutment ───────────────────────
+   * It used to: `[[296,112],[304,108],[311,104]]`, ending on the crossing's own
+   * `from` point. That point is the north END OF THE DECK, and the deck is a
+   * 0.76 m slab standing 1.07 m over the ground with its north abutment filling
+   * the 4 m behind it - so the last three metres of carriageway ran into the
+   * underside of the bridge with 0.31 m of headroom, and a player walking the
+   * road jammed at (307.8, 2.2, 104.8) against the abutment's inner face. The
+   * causeway that climbs to the deck is on the far side of that block, at
+   * z = 97-100, and no amount of shaping it could reach a road pointed at the
+   * one face of the abutment a bridge deck is sitting on.
+   *
+   * So the road now swings north of the bridge head and comes back onto the
+   * causeway's own ground. It still ends 8 m from the crossing's `from` point -
+   * inside `ROAD_JOIN`, so the graph edge is unchanged - and the last leg
+   * arrives across the causeway's west cheek at about 37 degrees, which is what
+   * `MedievalWorld._crossingRamp`'s lateral flare exists to carry.
+   */
+  { key: 'harrowbridgeN', width: 4.2, pts: [[296, 112], [302, 105], [307, 99], [311, 96]] },
   /** The bridge's southern landing, rejoining the ford road. */
   { key: 'harrowbridgeS', width: 4.2, pts: [[311, 138], [303, 143], [294, 150]] },
   /**
@@ -293,9 +312,9 @@ export const CROSSINGS = [
   },
   {
     /* The east crossing's real bridge, under the fort's eye: two segmental
-     * arches on a mid-stream cutwater, with a toll house on the south
-     * abutment. Blackmarch Hold exists to watch this, so it has to be worth
-     * watching - a ford alone is a wet patch, a bridge is a chokepoint.
+     * arches on a mid-stream cutwater, with a toll house at the foot of the
+     * southern approach. Blackmarch Hold exists to watch this, so it has to be
+     * worth watching - a ford alone is a wet patch, a bridge is a chokepoint.
      *
      * Same abutment reasoning as Ashlea: dry ground is at z = 104 and z = 138,
      * so the span is 34 m and not the 15 m the channel measures. */

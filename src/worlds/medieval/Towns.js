@@ -474,11 +474,34 @@ const GRIMSCAR_WORKS = [
  * discharges over the bench's eastern lip at x = -344 - which is exactly where
  * the ground falls away, so the spoil goes somewhere instead of piling on the
  * shelf.
+ *
+ * ── Why the tramway does not run straight ──────────────────────────────────
+ * Because the winding house is in the way, and always was. The line used to be
+ * `[[-378,-192],[-368,-192],[-359,-192],[-350,-191],[-344,-190]]` - dead
+ * straight from the adit to the headframe at z = -192. The winding house stands
+ * at (-370, -190) and is 12 x 9 m turned a quarter, so it occupies
+ * x = -374.5..-365.5, z = -196..-184, and z = -192 is squarely inside it. Nine
+ * metres of rail ran through the masonry, hidden by the walls, and then six
+ * more ran through the entry apron in front of the door, where the eye COULD
+ * see it: `_entrySteps` lays eight nested courses out to x = -360.3, so the
+ * rails climbed into the flight, vanished, and re-appeared on the far side.
+ * Measured burial along the old centreline: 1.08 m at x = -365, 0.75 m at -363,
+ * 0.10 m at -361, 0.41 m at -359.
+ *
+ * The apron cannot give way - it is the only thing that makes a 2.03 m sill
+ * reachable - and the building cannot move, because the shelf either side of it
+ * is taken by the sorting shed at z = -177 and the smithy at z = -197. So the
+ * line goes round the south, which is where a tramway would go anyway: it keeps
+ * the winding house between the incline and the weather, and it still runs past
+ * the door, three metres out from the bottom step instead of through it. The
+ * dog-leg costs four metres of track and no gradient - the worst on the route
+ * is still the 110% at the tip head, which is the tip.
  */
 export const GRIMSCAR_WORKINGS = {
   adit: { x: -381, z: -192, yaw: Math.PI / 2, w: 3.4, h: 2.9 },
   headframe: { x: -359, z: -192, h: 13.5, legHalf: 3.1 },
-  tramway: [[-378, -192], [-368, -192], [-359, -192], [-350, -191], [-344, -190]],
+  tramway: [[-378, -192], [-377, -195.5], [-373, -199.5], [-365, -200], [-360, -196.5],
+    [-357.5, -192.2], [-350, -191], [-344, -190]],
   tip: { x: -343, z: -190, r: 9.5 },
   heaps: [
     { x: -344, z: -202, r: 7.0, h: 3.2 },

@@ -1718,12 +1718,14 @@ export class MedievalWorld extends World {
      * How much wider each course is than the one above it, per side.
      *
      * Any positive number makes the courses nest, which is all the "climbable
-     * from any bearing" argument needs. Half the going rather than all of it
-     * because the flare is what sets the flight's WIDTH, and a seven-course
-     * flight flared by a full going is 11.5 m across - wide enough to swallow
-     * the tramway that runs past Grimscar's winding house. 0.31 m between two
-     * side risers is closer than the 0.30 m tread the interior stairs already
-     * use, so the capsule takes them one at a time either way.
+     * from any bearing" argument needs, and the number is bounded from BOTH
+     * sides. Not smaller, because the flare is the side tread and a tread
+     * narrower than the capsule means two risers under one foot: 0.31 m against
+     * a 0.30 m riser is the same ratio the interior stairs already use, so the
+     * capsule takes the cheeks one course at a time. Not larger, because the
+     * flare is also what sets the flight's WIDTH, and the alehouse at Grimscar
+     * needs ten courses - flared by a full going that is a 13 m stepped terrace
+     * across a 10 m frontage, which reads as a monument and not as a doorstep.
      */
     const FLARE = RUN / 2;
     /** Twelve courses is 7.4 m of steps and 3.6 m of descent. Past that the
@@ -1816,14 +1818,37 @@ export class MedievalWorld extends World {
    * has fallen to nothing by the far pavement - which also stops fifty-four of
    * them fighting the street practicals for the twelve slots.
    *
+   * ── Why the INTENSITY is sized off the room too ────────────────────────
+   * Because a point light is inverse-square and a room is not a point. 46 was
+   * tuned in a 7.4 x 6.0 m cottage, where every wall is about 4 m from the
+   * lamp; in a 14 x 11.5 m hall the same lamp has to throw twice as far and
+   * delivers a quarter of the light when it gets there. Measured mean frame
+   * luminance out of 255, four headings each, viewmodel light neutralised:
+   * The Stilthouse 26.6 and The Marcher Hall 25.9 against the Guildhall's 37.4
+   * and the abbey church's 36.8 - and the two failures are not marginally
+   * worse, they read as one pool of light on a black floor with the bales and
+   * the weapon rack in silhouette. Both are plank-walled, which is the other
+   * half of it: dark timber returns a fraction of what ashlar does, so the two
+   * biggest single-lamp rooms in the world are also the two least reflective.
+   *
+   * The gain is the square of the room's diagonal over the cottage's, because
+   * that is what inverse-square asks for, capped at 2 because past that the
+   * lamp itself blows out before the far wall catches up - a room that still
+   * reads dark at twice the lamp needs another lamp, not a brighter one, which
+   * is what the count in `_shellInterior` is for.
+   *
    * @param {THREE.Vector3} pos world position
    * @param {number} w room width @param {number} d room depth
    * @returns {THREE.PointLight} already parented; also returned so the
    *   enterable descriptor can carry it.
    */
   _interiorLight(pos, w, d) {
-    const reach = Math.min(16, Math.max(7.5, Math.hypot(w, d) * 0.95));
-    const l = new THREE.PointLight(0xffb26a, 46, reach, 2);
+    const diag = Math.hypot(w, d);
+    const reach = Math.min(16, Math.max(7.5, diag * 0.95));
+    /** The diagonal of the cottage the 46 was tuned in: 7.4 x 6.0 m. */
+    const REF = 9.5;
+    const gain = Math.min(2, Math.max(1, (diag / REF) ** 2));
+    const l = new THREE.PointLight(0xffb26a, 46 * gain, reach, 2);
     l.position.copy(pos);
     this.group.add(l);
     return l;
@@ -7244,8 +7269,19 @@ export class MedievalWorld extends World {
       /* A lamp reaches at most 16 m, and the abbey church is a 34 m nave: one
        * lamp in it lights the crossing and leaves both ends black. The count
        * follows the room, so it is right for a 5 m fisherman's hut and right
-       * for the tithe barn without either being a special case. */
-      const n = Math.max(1, Math.round(o.w / 12));
+       * for the tithe barn without either being a special case.
+       *
+       * It followed the room's WIDTH only, and that is a measurement of a nave
+       * rather than of a room: The Marcher Hall is 14 x 11.5 m, which is
+       * 161 m2 - bigger in plan than eight of the ten rooms that already got
+       * two lamps - and `round(14 / 12)` is one. It read at 25.9 out of 255
+       * against the Guildhall's 37.4, as one pool on a black floor. So the
+       * count now also follows AREA, at one lamp per 64 m2 of floor. Across all
+       * fifty-four enterables that changes exactly one building, which is the
+       * one the browser pass found; every other count is held by the width
+       * term, so the abbey church keeps its three and the tithe barn its two.
+       */
+      const n = Math.max(1, Math.round(o.w / 12), Math.min(4, Math.round(Math.sqrt(o.w * o.d) / 8)));
       for (let i = 0; i < n; i++) {
         const lx = n === 1 ? 0 : ((i + 0.5) / n - 0.5) * (ihx * 2);
         lights?.push(this._interiorLight(at(lx, ly, -ihz * 0.3), o.w / n, o.d));
@@ -7809,7 +7845,11 @@ export class MedievalWorld extends World {
       // A lamp on the sett, and the drainage launder running out of the mouth.
       B.add('ember', boxGeo(0.16, 0.2, 0.16, 2.0), place(a.x + 0.5, ay + a.h - 0.4, a.z + hwid - 0.2), 0xffb060);
       this._addGlow(a.x + 1.4, ay + 1.0, a.z, 4.0, 0x4a2a12);
-      B.add('plank', boxGeo(7.0, 0.16, 0.5, 0.8), place(a.x + 4.0, ay + 0.12, a.z - hwid - 0.5), 0x8a6f4c);
+      /* The drainage launder, on the NORTH cheek of the mouth. It used to run
+       * out of the south cheek, which is the side the tramway now leaves on -
+       * a 7 m plank trough laid across the rails. Water off an adit runs
+       * wherever the invert is cut, so the side is free and the track is not. */
+      B.add('plank', boxGeo(7.0, 0.16, 0.5, 0.8), place(a.x + 4.0, ay + 0.12, a.z + hwid + 0.5), 0x8a6f4c);
     }
 
     /* ---- Tramway: sleepers, rails and standing ore carts ------------- */
@@ -8774,28 +8814,71 @@ export class MedievalWorld extends World {
    * stack of boxes underneath, because the capsule solver has no other kind of
    * surface, but at 1.15 m of run per 0.26 m of rise the eye reads a bank.
    *
+   * ── Why the first version of this did not work ─────────────────────────
+   * It laid the courses as a straight stack of CONSTANT width, nested only
+   * along the crossing's own axis. That is a ramp if you arrive head-on and a
+   * wall if you arrive at any other angle, and no approach road in the world
+   * arrives head-on: `harrowbridgeN` is `[[296,112],[304,108],[311,104]]` and
+   * comes in 30 degrees off the deck's axis, straight onto the causeway's west
+   * cheek - measured at 0.94 m tall against a 0.45 m step budget. The player
+   * jammed at (307.8, 2.2, 104.8) before the fix and at (307.8, 2.2, 104.8)
+   * after it, because the test that certified the fix walked the deck's own
+   * axis and never touched a cheek.
+   *
+   * So the courses FLARE, exactly as `_entrySteps` nests its doorstep: each
+   * course is both one going further out AND one flare wider per side than the
+   * one above it, and each spans the abutment's full depth rather than starting
+   * at its outer face. The result is a set of nested rectangles wrapped round
+   * the abutment on three sides, and a straight line from anywhere outside
+   * crosses each boundary exactly once whatever its bearing. One boundary, one
+   * riser. The fourth side is the deck, and there is nothing to be done about
+   * the fourth side - you cannot walk up through a bridge.
+   *
    * @param {GeoBatch} B
    * @param {{x:number, width:number}} c the crossing
-   * @param {number} sgn +1 to build outward in +Z, -1 in -Z
-   * @param {number} topY world Y of the abutment's top face
-   * @param {number} fromZ z of the abutment's outer edge
-   * @param {string} key material key, so a timber bridge gets a timber causeway
-   * @param {number} tint
+   * @param {{sgn:number, topY:number, fromZ:number, innerZ:number, half:number,
+   *          key:string, tint:number}} o
+   *   `sgn` is +1 to build outward in +Z and -1 in -Z; `fromZ` and `innerZ` are
+   *   the abutment's outer and inner faces; `half` its own half-width, so the
+   *   innermost course is never narrower than the block it climbs to; `key` the
+   *   material, so a timber bridge gets a timber causeway.
    * @returns {number} courses laid
    */
-  _crossingRamp(B, c, sgn, topY, fromZ, key, tint) {
+  _crossingRamp(B, c, o) {
+    const { sgn, topY, fromZ, innerZ, key, tint } = o;
     const RISE = 0.26;
     const RUN = 1.15;
+    /**
+     * How much wider each course is than the one above it, per side.
+     *
+     * Half the going, as at a doorstep. Any positive number makes the courses
+     * nest, which is all the "climbable from any bearing" argument needs; half
+     * gives a 0.575 m tread against a 0.26 m riser on the cheeks, which is a
+     * gentler side slope than the causeway's own 23% and still narrow enough
+     * that a three-course flight only widens a 5.4 m bridge to 11 m of
+     * embankment - which is what a causeway looks like.
+     */
+    const FLARE = RUN / 2;
     const MAX = 10;
     const bx = c.x;
-    const half = c.width / 2 + 0.7;
-    /** Lowest ground across the head of course `i`, one course further out. */
+    const halfW = (i) => o.half + i * FLARE;
+    const outerZ = (i) => fromZ + sgn * i * RUN;
+    /** Lowest ground anywhere a walker could step onto course `i` from. */
     const grade = (i) => {
-      const z = fromZ + sgn * (i * RUN + 0.35);
+      const hx = halfW(i) + 0.2;
+      const zo = outerZ(i) + sgn * 0.35;
       let lo = Infinity;
       for (let k = -3; k <= 3; k++) {
-        const h = this._height(bx + (k / 3) * half, z);
+        const h = this._height(bx + (k / 3) * hx, zo);
         if (h < lo) lo = h;
+      }
+      // ...and along both cheeks, which is the half of the perimeter the
+      // straight version never sampled and never built for.
+      for (const s of [-1, 1]) {
+        for (let k = 0; k <= 4; k++) {
+          const h = this._height(bx + s * hx, innerZ + (zo - innerZ) * (k / 4));
+          if (h < lo) lo = h;
+        }
       }
       return lo;
     };
@@ -8804,16 +8887,26 @@ export class MedievalWorld extends World {
     for (let i = 1; i <= n; i++) {
       const ty = topY - i * RISE;
       const by = Math.min(ty, grade(i)) - 0.6;
-      const z0 = fromZ;
-      const z1 = fromZ + sgn * i * RUN;
-      const cz = (z0 + z1) / 2;
-      const d = Math.abs(z1 - z0);
+      const z1 = outerZ(i);
+      const cz = (innerZ + z1) / 2;
+      const d = Math.abs(z1 - innerZ);
+      const w = halfW(i) * 2;
       _obj.position.set(bx, (ty + by) / 2, cz);
       _obj.rotation.set(0, 0, 0);
       _obj.scale.set(1, 1, 1);
       _obj.updateMatrix();
-      B.add(key, boxGeo(half * 2, ty - by, d, 0.55), _obj, tint);
-      this._box(bx, (ty + by) / 2, cz, half, (ty - by) / 2, d / 2);
+      B.add(key, boxGeo(w, ty - by, d, 0.55), _obj, tint);
+      this._box(bx, (ty + by) / 2, cz, w / 2, (ty - by) / 2, d / 2);
+    }
+    if (n > 0) {
+      /* The embankment is beaten ground, not meadow: without this the scatter
+       * plants oaks on the causeway, which is the same defect as the eleven
+       * trunks inside the abbey precinct. */
+      const z1 = outerZ(n);
+      this._footprints.push({
+        x: bx, z: (innerZ + z1) / 2, hx: halfW(n) + 0.4,
+        hz: Math.abs(z1 - innerZ) / 2 + 0.4, r: 0,
+      });
     }
     return n;
   }
@@ -8849,7 +8942,10 @@ export class MedievalWorld extends World {
       B.add('rubble', boxGeo(bw + 2.2, 5.4, 4.0, 0.5), place(bx, deckY - 2.9, az), stone);
       this._box(bx, deckY - 2.9, az, (bw + 2.2) / 2, 2.7, 2.0);
       // ...and the causeway that gets the road up onto it. See `_crossingRamp`.
-      this._crossingRamp(B, c, s, deckY - 0.2, az + s * 2.0, 'cobble', 0xbcb6a8);
+      this._crossingRamp(B, c, {
+        sgn: s, topY: deckY - 0.2, fromZ: az + s * 2.0, innerZ: az - s * 2.0,
+        half: (bw + 2.2) / 2, key: 'cobble', tint: 0xbcb6a8,
+      });
     }
     const span = z1 - z0 + 4;
     B.add('cobble', boxGeo(bw, 0.65, span, 0.55), place(bx, deckY - 0.33, rz), 0xbcb6a8);
@@ -8863,8 +8959,41 @@ export class MedievalWorld extends World {
     for (const s of [-1, 1]) {
       B.add('rubble', boxGeo(1.3, 1.05, 2.2, 0.7), place(bx + s * (bw / 2 + 0.4), deckY + 0.53, rz), stone);
     }
-    // The toll house on the downstream abutment.
-    const tz = z1 + 3.4;
+    /* Parapet returns across the riverward face of each abutment.
+     *
+     * The abutment is 1.1 m wider than the deck on each side, so its two
+     * riverward corners are a 3 m drop into the channel standing OUTSIDE the
+     * deck's own parapet. Nothing walled them. A player who came up the
+     * causeway on its cheek - which is now a thing they can do - arrived on the
+     * abutment beside the parapet rather than between them, walked straight on,
+     * and went over the corner: the walkthrough that found this ended swimming,
+     * stuck at (311, -0.51, 118.65). The deck's parapets were never the
+     * problem; the two metres before them were. */
+    {
+      const inner = bw / 2 - 0.5;               // the parapet's own inboard face
+      const shoulder = (bw + 2.2) / 2;          // the abutment's edge
+      const rw = shoulder - inner;
+      for (const s of [-1, 1]) {
+        const az = rz + s * ((z1 - z0) / 2 + 1.6);
+        const cz = az - s * 1.75;
+        for (const sx of [-1, 1]) {
+          const cx = bx + sx * (inner + rw / 2);
+          B.add('rubble', boxGeo(rw, 1.05, 0.5, 0.7), place(cx, deckY + 0.33, cz), stone);
+          this._box(cx, deckY + 0.33, cz, rw / 2, 0.53, 0.25);
+        }
+      }
+    }
+    /* The toll house, at the foot of the downstream approach.
+     *
+     * It stood at `z1 + 3.4`, which was beside the abutment and 1.2 m clear of
+     * the old straight causeway. The causeway flares now - see
+     * `_crossingRamp` - and at three courses it is 11 m across and reaches
+     * `z1 + 7`, so the old position put a 4.4 m building astride the embankment
+     * with its west third buried in the fill and its gable walling off the
+     * whole eastern quadrant of the approach. Moved to the toe of the ramp,
+     * which is also where a toll is actually taken: you pay before you climb,
+     * not after. */
+    const tz = z1 + 10;
     const ty = this._height(bx + 4.6, tz);
     B.add('rubble', boxGeo(4.4, 3.0, 4.0, 0.55), place(bx + 4.6, ty + 1.5, tz), 0xb9b1a0);
     B.add('slate', coneGeo(3.6, 2.2, 4, 0.7), place(bx + 4.6, ty + 4.1, tz, Math.PI / 4), 0x9aa4b0);
@@ -8932,7 +9061,10 @@ export class MedievalWorld extends World {
       const h = Math.max(0.5, topY - g + 0.8);
       B.add('rubble', boxGeo(bw + 1.4, h, 2.6, 0.6), place(bx, topY - h / 2, az + s * 1.0), 0x8e8371);
       this._box(bx, topY - h / 2, az + s * 1.0, (bw + 1.4) / 2, h / 2, 1.3);
-      this._crossingRamp(B, c, s, topY, az + s * 2.3, 'rubble', 0x8e8371);
+      this._crossingRamp(B, c, {
+        sgn: s, topY, fromZ: az + s * 2.3, innerZ: az - s * 0.3,
+        half: (bw + 1.4) / 2, key: 'rubble', tint: 0x8e8371,
+      });
     }
     this._footprints.push({ x: bx, z: (z0 + z1) / 2, hx: bw / 2 + 2, hz: span / 2 + 2, r: 0 });
     this.minimapShapes.push({

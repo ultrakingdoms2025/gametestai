@@ -7016,41 +7016,66 @@ export class MedievalWorld extends World {
     const glow = o.lit ? 0xffd9a0 : 0x6f6250;
     if (o.windows !== 'none') {
       for (const fl of plan.floors) {
-        const wy = fl.floorY + 1.25;
         const outZ = hd + (fl.storey > 0 ? jut : 0) + 0.06;
         const cols = w > 9 ? [-w * 0.3, 0, w * 0.3] : (w > 6 ? [-w * 0.24, w * 0.24] : [0]);
-        for (const cx of cols) {
-          for (const sgn of [1, -1]) {
-            // Never a window where the door is.
-            if (sgn > 0 && fl.storey === 0 && Math.abs(cx) < doorHW + 0.7) continue;
-            const wz = sgn * outZ;
-            if (o.windows === 'lancet') {
-              put('ashlar', boxGeo(0.95, 2.5, 0.24, 1.1), cx, wy + 0.4, wz, 0, 0, 0,
-                shadeHex(wallTint, 0.92));
-              put('glass', planeGeo(0.6, 1.9, 1.0), cx, wy + 0.4, wz - sgn * 0.07, 0,
-                sgn > 0 ? 0 : Math.PI, 0, HERALD[Math.abs((cx * 7 + fl.storey) | 0) % HERALD.length]);
-              // The pointed head, as a half-round drum set into the reveal.
-              put('ashlar', cylGeo(0.36, 0.36, 0.22, 10, 0.8), cx, wy + 1.7, wz, Math.PI / 2, 0, 0,
-                shadeHex(wallTint, 0.9));
-            } else if (o.windows === 'slit') {
-              put(wallKey, boxGeo(0.44, 1.35, 0.22, 1.2), cx, wy, wz, 0, 0, 0,
-                shadeHex(wallTint, 0.86));
-              put('glass', planeGeo(0.2, 1.0, 1.0), cx, wy, wz - sgn * 0.07, 0,
-                sgn > 0 ? 0 : Math.PI, 0, glow);
-            } else {
-              put('beam', boxGeo(1.2, 1.1, 0.18, 1.2), cx, wy, wz, 0, 0, 0, bt());
-              put('glass', planeGeo(0.88, 0.78, 1.2), cx, wy, wz - sgn * 0.07, 0,
-                sgn > 0 ? 0 : Math.PI, 0, glow);
-              put('beam', boxGeo(0.07, 0.82, 0.09, 2.0), cx, wy, wz + sgn * 0.01, 0, 0, 0,
-                shadeHex(beamTint, 0.66));
-              for (const ss of [-1, 1]) {
-                put('plank', boxGeo(0.58, 0.96, 0.08, 1.3), cx + ss * 0.88, wy, wz + sgn * 0.18,
-                  0, sgn * ss * -0.42, 0, SHUTTER_TINTS[(rnd() * SHUTTER_TINTS.length) | 0]);
+        /* One row of openings at sill height, and a CLERESTORY over it when the
+         * storey is tall enough to need one.
+         *
+         * A window row is placed off the floor, so on a domestic storey it is
+         * most of the wall and this loop runs once, exactly as it always has.
+         * `storeyClear` gives an ecclesiastical volume its height from its
+         * span, and the abbey nave came out of that at 8.90 m - six metres of
+         * blank ashlar above a row of lancets whose heads stop at 3.6, inside
+         * and out. That is not a nave, it is a wall with a skirting of glass.
+         *
+         * 2.75 m down from the wall head rather than a fraction of it, because
+         * what has to clear is the tallest OPENING (a lancet plus its head
+         * drum, 2.06 m over the row's own line) and the string course under the
+         * eaves, both of which are fixed sizes. The trigger is 4.6 m: above
+         * that the two rows are more than 1.5 m apart and read as two rows;
+         * below it they would merge into one band of glass. No domestic shell
+         * in the table is anywhere near it. */
+        const rows = [{ y: fl.floorY + 1.25, sill: true }];
+        if (fl.clear > 4.6) rows.push({ y: fl.floorY + fl.clear - 2.75, sill: false });
+        for (const { y: wy, sill } of rows) {
+          for (const cx of cols) {
+            for (const sgn of [1, -1]) {
+              // Never a window where the door is. Only the sill row can be: the
+              // clerestory is four metres over the lintel.
+              if (sill && sgn > 0 && fl.storey === 0 && Math.abs(cx) < doorHW + 0.7) continue;
+              const wz = sgn * outZ;
+              if (o.windows === 'lancet') {
+                put('ashlar', boxGeo(0.95, 2.5, 0.24, 1.1), cx, wy + 0.4, wz, 0, 0, 0,
+                  shadeHex(wallTint, 0.92));
+                put('glass', planeGeo(0.6, 1.9, 1.0), cx, wy + 0.4, wz - sgn * 0.07, 0,
+                  sgn > 0 ? 0 : Math.PI, 0, HERALD[Math.abs((cx * 7 + fl.storey) | 0) % HERALD.length]);
+                // The pointed head, as a half-round drum set into the reveal.
+                put('ashlar', cylGeo(0.36, 0.36, 0.22, 10, 0.8), cx, wy + 1.7, wz, Math.PI / 2, 0, 0,
+                  shadeHex(wallTint, 0.9));
+              } else if (o.windows === 'slit') {
+                put(wallKey, boxGeo(0.44, 1.35, 0.22, 1.2), cx, wy, wz, 0, 0, 0,
+                  shadeHex(wallTint, 0.86));
+                put('glass', planeGeo(0.2, 1.0, 1.0), cx, wy, wz - sgn * 0.07, 0,
+                  sgn > 0 ? 0 : Math.PI, 0, glow);
+              } else {
+                put('beam', boxGeo(1.2, 1.1, 0.18, 1.2), cx, wy, wz, 0, 0, 0, bt());
+                put('glass', planeGeo(0.88, 0.78, 1.2), cx, wy, wz - sgn * 0.07, 0,
+                  sgn > 0 ? 0 : Math.PI, 0, glow);
+                put('beam', boxGeo(0.07, 0.82, 0.09, 2.0), cx, wy, wz + sgn * 0.01, 0, 0, 0,
+                  shadeHex(beamTint, 0.66));
+                for (const ss of [-1, 1]) {
+                  put('plank', boxGeo(0.58, 0.96, 0.08, 1.3), cx + ss * 0.88, wy, wz + sgn * 0.18,
+                    0, sgn * ss * -0.42, 0, SHUTTER_TINTS[(rnd() * SHUTTER_TINTS.length) | 0]);
+                }
               }
-            }
-            if (o.lit && fl.storey === 0) {
-              const gp = at(cx, wy, wz + sgn * 0.2);
-              this._addGlow(gp.x, gp.y, gp.z, 2.4, 0x54301a, o.yaw + (sgn > 0 ? 0 : Math.PI));
+              /* Firelight out of a window is a GROUND floor thing, and it stays
+               * one row: a second glow card per opening would double the count
+               * on every church in the ring to light a window nobody can see
+               * into from the street. */
+              if (o.lit && fl.storey === 0 && sill) {
+                const gp = at(cx, wy, wz + sgn * 0.2);
+                this._addGlow(gp.x, gp.y, gp.z, 2.4, 0x54301a, o.yaw + (sgn > 0 ? 0 : Math.PI));
+              }
             }
           }
         }
@@ -7461,12 +7486,20 @@ export class MedievalWorld extends World {
             put('beam', cylGeo(0.05, 0.08, 0.55, 6, 1.2), ax, fy + 1.55, sz, 0, 0, 0, 0xcfc4ac);
             flame(ax, fy + 1.9, sz, 3.4);
           }
-          // A rood screen, so the chancel is a room within the room.
+          /* A rood screen, so the chancel is a room within the room.
+           *
+           * Capped, not derived from the storey. It used to be the clear height
+           * less 1.2, which is a screen in a 2.85 m room and a cage in a nave:
+           * `storeyClear` gives this church 8.90 m of it, and nine 12 cm posts
+           * carried all the way to the ceiling read as a grille across the
+           * building rather than as the joinery a rood screen is. A screen is
+           * about head height with a beam over it, at any scale of church. */
+          const screenH = Math.min(plan.floors[0].clear - 1.2, 4.2);
           for (let i = -4; i <= 4; i++) {
-            put('beam', boxGeo(0.12, plan.floors[0].clear - 1.2, 0.12, 1.2),
-              ax - 3.4, fy + (plan.floors[0].clear - 1.2) / 2, (i / 4) * (ihz - 0.9), 0, 0, 0, bt());
+            put('beam', boxGeo(0.12, screenH, 0.12, 1.2),
+              ax - 3.4, fy + screenH / 2, (i / 4) * (ihz - 0.9), 0, 0, 0, bt());
           }
-          put('beam', boxGeo(0.2, 0.22, ihz * 2 - 1.2, 1.1), ax - 3.4, fy + plan.floors[0].clear - 1.1, 0, 0, 0, 0, bt());
+          put('beam', boxGeo(0.2, 0.22, ihz * 2 - 1.2, 1.1), ax - 3.4, fy + screenH + 0.11, 0, 0, 0, 0, bt());
         }
         // A lectern and a bank of pricket candles by the west door.
         put('beam', cylGeo(0.14, 0.22, 1.25, 8, 1.0), -ihx + 2.4, fy + 0.62, 0, 0, 0, 0, bt());

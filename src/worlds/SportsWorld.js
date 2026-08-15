@@ -8786,7 +8786,11 @@ export class SportsWorld extends World {
         name: 'Marisol "Ripgrind" Vance',
         persona:
           'Skate coach who has run this bowl for nineteen years and has the scars to prove it. Speaks entirely in encouragement and bail advice, insists every fall is "just data", and will not let anyone drop in without checking their helmet strap. Refers to the deep end as "the office".',
-        patrol: [P(-88, 12), P(-96, 30), P(-80, 48), P(-70, 26)],
+        /* (-96, 30) is inside the bowl: `parkHeight` reads 0 there because the
+         * bowl is carved by colliders, so the waypoint was authored 3.24 m
+         * above its own floor and the leg out of it walked up the transition.
+         * Three metres south is coping, which is where a coach stands. */
+        patrol: [P(-88, 12), P(-96, 27), P(-80, 48), P(-70, 26)],
       },
       {
         position: P(-52, -56, 0),

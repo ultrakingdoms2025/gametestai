@@ -10252,7 +10252,12 @@ export class StationWorld extends World {
       F('Wen Halloway',
         'The station lore-keeper, an old wanderer who has stepped through every gateway on the ring more times than anyone alive and come back with stories nobody quite believes. He speaks in fragments of Ashfall legend, Meridian scoreboards and Sunspire watch-songs, claims to have walked the Verdant Coil twice without turning round, and he insists the portals are older than the station bolted around them. He is the only person on the ring who talks about Gateway 06 as though it already had a name.',
         6, -22,
-        [[6, -22], [-6, -30], [16, -14], [0, -40]]),
+        /* (16, -14) was (16, -14) with the diagonal from (-6, -30) running
+         * straight over the 4 m plaza block at (2..4, -26..-24): the ground
+         * follower climbed it and then had 14.1 m with nothing under it on the
+         * far side. One metre south-west of it the leg misses the block, and
+         * still does with every waypoint jittered 0.5 m. @see npc-routes.test.mjs */
+        [[6, -22], [-6, -30], [15, -13], [0, -40]]),
 
       // The plaza is the busiest space on the ring and photographed empty. This
       // second rank of friendlies works the gateway queues, the stalls and the
@@ -10274,13 +10279,22 @@ export class StationWorld extends World {
 
       F('Tobi Renner',
         'A dockhand apprentice killing time at the noodle stall, three months on the ring and still visibly amazed by the portals. Talks too fast, knows every rumour badly, and desperately wants to be taken seriously.',
-        -19, 16,
-        [[-19, 16], [-9, 22], [-24, 6], [-14, 26]]),
+        /* He stood ON Tannen's noodle cart - 0.24 m inside its collider - and
+         * his round crossed it twice: the leg to (-9, 22) climbed the cart to
+         * 4.9 m and then had 6.6 m of air off the other side. He now stands
+         * four metres south of it and walks a round that goes AROUND the
+         * plaza rather than through the stall he is loitering at. */
+        -19, 12,
+        [[-19, 12], [-24, 20], [-14, 26], [-10, 16]]),
 
       F('Anselm Kade',
         'Freight broker working the plaza with a folding terminal and an unshakeable belief that everything is negotiable. Charming in a way that leaves you checking your pockets, and genuinely good at his job. He deals in bonded surplus - salvage that came off a manifest somewhere - and buys anything you are carrying, no questions asked, at a price he describes as generous and you will not.',
         30, -12,
-        [[30, -12], [20, -26], [36, 2], [24, -6]],
+        /* (24, -6) was authored at deck height and resolved 5.28 m up, on top
+         * of the plaza structure that stands there, which left the leg home
+         * to (30, -12) walking off a 5 m drop for 6.9 m. Moved onto the deck
+         * eight metres east of it. */
+        [[30, -12], [20, -26], [36, 2], [32, -4]],
         {
           role: 'vendor',
           vendorTitle: 'Kade Bonded Surplus',
@@ -10364,7 +10378,8 @@ export class StationWorld extends World {
       F('Rooke Ilesanmi',
         'Keeps the tack and frame shop at the far end of the strip, which is where anybody on this ring goes to buy a mount or the harness for one. He talks about every animal and every machine in the pens as though it had opinions, refuses to sell to anybody who will not stand still while he explains the rig, and is right about that more often than not.',
         161.5, -12,
-        [[161.5, -12], [166, -11.5], [157, -11.5]],
+        // 166 put the far end of his beat 0.16 m inside his own shopfront.
+        [[161.5, -12], [165, -11.5], [157, -11.5]],
         {
           role: 'vendor',
           vendorCategories: ['mounts', 'tools'],
@@ -10387,7 +10402,8 @@ export class StationWorld extends World {
        * player who backs away is backing into a wall of freight; the rifle unit
        * holds the open lane between the stacks. */
       H('rifle', cargo.x + 26, cargo.z + 30, [[cargo.x + 26, cargo.z + 30], [cargo.x + 54, cargo.z + 12], [cargo.x + 30, cargo.z - 24]]),
-      H('breaker', cargo.x - 34, cargo.z + 46, [[cargo.x - 34, cargo.z + 46], [cargo.x - 6, cargo.z + 58], [cargo.x - 48, cargo.z + 20]]),
+      // +59 rather than +58: at 58 the waypoint is 0.63 m inside a container.
+      H('breaker', cargo.x - 34, cargo.z + 46, [[cargo.x - 34, cargo.z + 46], [cargo.x - 6, cargo.z + 59], [cargo.x - 48, cargo.z + 20]]),
       H('breaker', cargo.x + 8, cargo.z + 62, [[cargo.x + 8, cargo.z + 62], [cargo.x + 40, cargo.z + 52], [cargo.x - 14, cargo.z + 74]]),
       /* Traffic control's apron is wide, flat and overlooked, so it is the
        * lance's ground: a weapon with a 0.8 s telegraph and 18 m of reach needs

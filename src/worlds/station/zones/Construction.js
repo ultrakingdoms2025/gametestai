@@ -3109,7 +3109,8 @@ export function buildConstruction(ctx) {
     ['lance', 4.1, 100, 4.6, 132, 3.6, 126],
     ['rifle', 2.8, 128, 3.4, 156, 2.3, 150],
     ['scout', 5.5, 112, 5.9, 140, 5.1, 136],
-    ['scout', 3.5, 104, 3.0, 136, 3.9, 144],
+    // r2 137, not 136: at 136 the middle waypoint sits inside a material stack.
+    ['scout', 3.5, 104, 3.0, 137, 3.9, 144],
     ['breaker', 2.1, 110, 2.5, 134, 1.9, 142],
     ['breaker', 4.8, 122, 5.2, 148, 4.4, 146],
   ]) {

@@ -650,6 +650,12 @@ async function prewarm() {
     console.warn('[prewarm] restore failed:', err);
   }
 
+  /* Nothing warms the interface here, and that is deliberate rather than an
+   * oversight. The HUD does have a first-paint cost that is not shaders, and a
+   * compositor rehearsal to pay it behind the loading card was built and
+   * measured; it did not work. The reason it cannot, and the numbers, are in
+   * scripts/tests/hud-composite-cost.test.mjs. */
+
   console.info(
     `[prewarm] shader warmup took ${Math.round(performance.now() - t0)}ms, ` +
     `${engine.renderer.info.programs.length} programs`

@@ -17,6 +17,12 @@ import { CONFIG } from '../../src/core/Config.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
+/* SPRINT is `CONFIG.player.sprintSpeed`, and since `acceleration` went 60 -> 82
+ * it is exactly that rather than an over-estimate of it: a grounded player used
+ * to be capped at 6.0 whatever this constant said, so these launches now run at
+ * the real top speed with no slack. ./maze-containment.test.mjs carries the
+ * measured headroom - the same style of gate holds to 40 m/s, well past the
+ * 16.4 that a 2.0x speed potion can now produce. */
 const RADIUS = 0.35, HEIGHT = 1.75, SPRINT = 8.2, STEP = 1 / 60;
 // Kept in step with the maze's own derivation (`MAZE.HOP`) rather than
 // retyped as a sibling literal, so this file cannot drift from it.

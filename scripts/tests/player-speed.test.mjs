@@ -13,11 +13,6 @@ const readSrc = async (p) => (await readFile(path.join(root, p), 'utf8')).replac
 /**
  * HOW FAST THE PLAYER ACTUALLY GOES.
  *
- * `CONFIG.player.sprintSpeed` read 8.2 and nothing in the game could go 8.2.
- * That is not a rounding error, it is a number a reader would reason from - and
- * did: a balance test asserted "nothing outruns a sprinting player" against it,
- * and another test hard-coded 8.2 as the player's top speed.
- *
  * ── The mechanism ─────────────────────────────────────────────────────────
  * `Player._move` runs friction and then acceleration on every grounded step:
  *
@@ -25,26 +20,48 @@ const readSrc = async (p) => (await readFile(path.join(root, p), 'utf8')).replac
  *     accelerate   v += min(acceleration * dt, wish - v)
  *
  * At the fixed point the two cancel: `v * friction * dt = acceleration * dt`,
- * so **v = acceleration / friction**, 60 / 10 = 6.0 m/s. The step length
- * cancels, and so does the wish - every wish at or above the cap converges on
- * exactly the same speed. A sprint therefore tops out at 6.0 whatever the
- * config says, and so does a boosted walk, and so does a boosted sprint.
+ * so **v = acceleration / friction**. The step length cancels, and so does the
+ * wish - every wish at or above the cap converges on exactly the same speed.
+ * A gait whose wish is UNDER the cap reaches its wish exactly instead, which is
+ * why a walk is 4.6 and a sprint is whatever the ratio says.
  *
- * ── What changed, and what deliberately did not ───────────────────────────
- * `sprintSpeed` now reads 6.0, the speed a sprint reaches. The number the
- * accelerator consumes moved to `sprintWishSpeed` and is unchanged at 8.2,
- * because lowering it is NOT free: while the player is above the cap - coming
- * down from a parkour leap landing at 8.52 m/s - a wish of 8.2 keeps pushing
- * and a wish of 6.0 does not, and that is momentum you can feel.
+ * ── The two defects this file was opened for, and how they were closed ────
+ * `CONFIG.player.sprintSpeed` read 8.2 while the ratio was 60/10 = 6.0, so
+ * nothing in the game could go 8.2. That is not a rounding error, it is a
+ * number readers reasoned from - a balance test asserted "nothing outruns a
+ * sprinting player" against it, and another hard-coded 8.2 as the top speed.
+ * And a speed pickup did NOTHING to a sprint: `boostSpeed` scaled only the
+ * wish, which was already over the cap, so 1.5x and 3.0x both measured 6.0.
  *
- * The alternative was to make sprint genuinely faster instead (`acceleration:
- * 82`, or `friction: 7.3`, either of which puts the cap at 8.2 and makes the
- * old constant true). That changes how the whole game moves, so it was left for
- * the owner to decide. @see ../../src/core/Config.js
+ * The first pass made the config honest by writing 6.0 into `sprintSpeed` and
+ * moving the 8.2 to `sprintWishSpeed`. The owner's decision was the other
+ * option that pass recorded: make 8.2 TRUE, by moving the ratio.
  *
- * The last case is the ratchet on "deliberately did not": an FNV-1a hash of
- * position and velocity over a 30-second scripted run, which is unchanged from
- * c6b3b94.
+ *   - `acceleration` 60 -> 82. `friction` deliberately untouched at 10, because
+ *     friction is the only thing that sheds momentum and lowering it to 7.317
+ *     would have bought the same 8.2 by taking 37% longer to stop, to turn and
+ *     to decay a landing. @see ../../src/core/Config.js `acceleration` for the
+ *     measured comparison of the two levers.
+ *   - `_move` now scales the grounded acceleration by `speedMultiplier`, so a
+ *     boost moves the CAP as well as the wish and is felt at every gait.
+ *   - `sprintWishSpeed` 8.2 -> 11.2, holding its ratio to the cap. It is
+ *     load-bearing at that ratio in two places, both pinned below: the decay
+ *     of a parkour landing, and the FOV sprint-kick amplitude.
+ *
+ * Measured here by driving the real controller, not derived:
+ *
+ *                        was        now
+ *     walk             4.6000     4.6000     (unchanged, and asserted so)
+ *     sprint           6.0000     8.2000
+ *     crouch           2.2000     2.2000
+ *     walk  + 1.5x     6.0000     6.9000     (= 1.5 * walkSpeed)
+ *     sprint + 1.5x    6.0000    12.3000     (= 1.5 * the cap)
+ *     sprint + 3.0x    6.0000    24.6000
+ *
+ * The last case is the ratchet: an FNV-1a hash of position and velocity over a
+ * 30-second scripted run. It was recorded at c6b3b94 to prove the rename of
+ * `sprintSpeed` changed nothing, and is re-recorded here because this change is
+ * the one it existed to catch.
  */
 
 const DT = 1 / 60;
@@ -177,7 +194,10 @@ test('the top ground speed is acceleration / friction, whatever is wished for', 
 });
 
 test('CONFIG.player.sprintSpeed is that speed, and no longer a number nothing can reach', () => {
-  /* THE FIX, in one line. It read 8.2. */
+  /* THE FIX, in one line - twice over. This constant read 8.2 against a ratio
+   * of 60/10, was corrected down to the 6.0 that ratio delivered, and now reads
+   * 8.2 again because the ratio was moved to 82/10 to meet it. The assertion is
+   * the same one throughout: whatever it says, a sprint measures it. */
   const r = settledSpeed({ sprint: true });
   assert.ok(Math.abs(P.sprintSpeed - r.velocity) < 1e-9,
     `the config advertises ${P.sprintSpeed} m/s and a sprint measures ${r.velocity.toFixed(6)}`);
@@ -198,26 +218,45 @@ test('walkSpeed and crouchSpeed are under the ceiling, so they were always hones
     'the three stances no longer order the way the player expects them to');
 });
 
-test('a speed boost cannot make a sprint faster, because the wish is already over the cap', () => {
-  /* Not a hypothetical: `Player.boostSpeed` is what the speed pickup calls, and
-   * `speedMultiplier` only ever scales the WISH. Worth pinning because it is
-   * the most expensive consequence of the ceiling and the least obvious - a
-   * pickup that reads as a no-op to anyone who tries it while sprinting. */
+test('a speed boost multiplies the CAP, so it is felt at every gait', () => {
+  /* THE SECOND FIX. `Player.boostSpeed` is what the speed pickup calls, and
+   * `speedMultiplier` used to scale only the WISH - which a sprint is already
+   * over, so a 1.5x and a 3.0x potion both measured exactly the cap and the
+   * pickup read as a no-op to anyone who tried it while running.
+   *
+   * `_move` now hands `P.acceleration * speedMultiplier` to the grounded
+   * accelerator. The cap is `acceleration / friction`, so scaling the numerator
+   * scales the ceiling by the same factor the wish is scaled by, and every gait
+   * ends up at exactly `multiplier * ` its unboosted speed - a sprint because
+   * the cap moved, a walk because its wish was under the cap all along and
+   * still is. Friction is untouched, so a boosted player stops in the same
+   * time, just from further out. */
   const cap = P.acceleration / P.friction;
   for (const boost of [1.5, 3]) {
-    const r = settledSpeed({ sprint: true, boost });
-    assert.ok(Math.abs(r.velocity - cap) < 1e-9,
-      `a ${boost}x speed boost took a sprint to ${r.velocity.toFixed(6)} m/s, not ${cap}`);
+    const sprint = settledSpeed({ sprint: true, boost });
+    assert.ok(Math.abs(sprint.velocity - cap * boost) < 1e-9,
+      `a ${boost}x speed boost took a sprint to ${sprint.velocity.toFixed(6)} m/s, `
+      + `not ${(cap * boost).toFixed(6)} - the boost is scaling the wish alone again`);
+    const walk = settledSpeed({ boost });
+    assert.ok(Math.abs(walk.velocity - P.walkSpeed * boost) < 1e-9,
+      `a ${boost}x boosted walk settled at ${walk.velocity.toFixed(6)}, not `
+      + `${(P.walkSpeed * boost).toFixed(6)}`);
+    // The boosted walk has to stay WISH-limited or the row above is measuring
+    // the cap by accident: `acceleration * boost >= walkSpeed * boost * friction`
+    // holds for every multiplier at once, so this is really a claim about 82.
+    assert.ok(P.walkSpeed * boost < cap * boost,
+      'a boosted walk is now at the boosted cap, and the two rows above no longer differ');
   }
-  // A boosted WALK does move, because its wish starts under the cap - it just
-  // stops at the cap rather than at 1.5 * walkSpeed.
-  const walk = settledSpeed({ boost: 1.5 });
-  assert.ok(Math.abs(walk.velocity - cap) < 1e-9,
-    `a boosted walk settled at ${walk.velocity.toFixed(6)}, not the ceiling`);
-  assert.ok(1.5 * P.walkSpeed > cap, 'the fixture no longer exercises a boost that the cap clips');
+  /* The regression that would be silent: raising the cap by lowering `friction`
+   * instead of raising `acceleration` also gets 8.2, and every case above would
+   * still pass. This is what says which lever was pulled.
+   * @see ../../src/core/Config.js `acceleration` */
+  assert.equal(P.friction, 10,
+    'friction moved. Whatever the cap now reads, stopping, turning and landing decay all '
+    + 'just got slower together - re-read the lever comparison in Config.js before accepting it');
 });
 
-test('the controller consumes the wish, and the wish is documented as unreachable', async () => {
+test('the controller consumes the wish, and the wish is still above the reachable speed', async () => {
   const src = await readSrc('src/player/Player.js');
   assert.match(src, /this\._sprinting \? P\.sprintWishSpeed : P\.walkSpeed/,
     'the sprint wish is back to reading `sprintSpeed`; with that constant now truthful, this '
@@ -226,6 +265,20 @@ test('the controller consumes the wish, and the wish is documented as unreachabl
     'something in the controller reads the advertised speed as if it were a wish');
   assert.ok(P.sprintWishSpeed > P.sprintSpeed,
     'the wish is no longer above the ceiling, which is the only reason there are two constants');
+  /* The boost has to reach the ACCELERATION, not just the wish, or the cap
+   * stops moving with it and the pickup goes back to being a no-op on a sprint.
+   * Asserted on the source as well as on the measurement above because the
+   * measurement would also pass if someone raised the wish instead. */
+  assert.match(src, /P\.acceleration \* boost/,
+    'the grounded accelerator no longer scales with `speedMultiplier`; a speed boost can only '
+    + 'move the wish again, and a sprint is already over it');
+  /* The wish is a ratio to the cap, not a constant: `Parkour.tryLeap` scales
+   * standing velocity, so the speed the wish has to out-reach scales with the
+   * cap too. 8.2/6.0 was 1.367; 11.2/8.2 is 1.366. */
+  const ratio = P.sprintWishSpeed / P.sprintSpeed;
+  assert.ok(ratio > 1.3 && ratio < 1.45,
+    `the wish is now ${ratio.toFixed(3)}x the cap against the 1.367 it was designed at - both `
+    + 'the landing decay and the FOV sprint-kick amplitude are set by this ratio');
 });
 
 /* ------------------------------------------------------------------ */
@@ -247,10 +300,10 @@ function fnv1a(str) {
  *
  * Everything the sprint constants can touch is in the tape, not just the steady
  * jog: the acceleration ramp, a strafing turn, a stop, a crouch, and - the case
- * that actually distinguishes a wish of 8.2 from a wish of 6.0 - a sprinting
- * jump, whose `parkour.tryLeap` scales the standing velocity to 8.52 m/s and
- * lands the player back on the deck ABOVE the friction cap, where the wish is
- * still being applied on the way down.
+ * that actually distinguishes the wish from the cap - a sprinting jump, whose
+ * `parkour.tryLeap` scales the standing velocity by 1.42 to 11.64 m/s and lands
+ * the player back on the deck ABOVE the friction cap, where the wish is still
+ * being applied on the way down.
  *
  * Quantised to 0.1 mm so the hash cannot be a float-formatting artefact, and
  * over both position and velocity so a run that ends in the same place by a
@@ -295,26 +348,38 @@ function runHash() {
   return { hash: fnv1a(parts.join(';')), steps: parts.length, last: parts[parts.length - 1] };
 }
 
-test('THE RATCHET: a scripted flat-ground run is bit-identical to c6b3b94', () => {
-  /* Recorded by running this exact function against c6b3b94 - before
-   * `sprintSpeed` was split into an advertised speed and a wish - and again
-   * after. The whole no-feel-change claim is this one string.
+test('THE RATCHET: a scripted flat-ground run is bit-identical to the recorded tape', () => {
+  /* RE-RECORDED, once, deliberately, and this is the change it was waiting for.
    *
-   * If this fails, the rename stopped being a rename. Check `Player._move`'s
-   * wish first: `sprintWishSpeed` must still be 8.2 and must still be what the
-   * accelerator is handed. */
+   * It held '834f9782' from c6b3b94 through the split of `sprintSpeed` into an
+   * advertised speed and a wish, which is exactly what that ratchet was for:
+   * proving a rename was a rename. Raising `acceleration` from 60 to 82 is not
+   * a rename - it moves every velocity in the tape - so the hash moves with it,
+   * once, here.
+   *
+   * From here it ratchets the new movement. If it fails again, nothing about
+   * this run is supposed to have changed: check `acceleration`, `friction`,
+   * `sprintWishSpeed`, and that `_move` still hands the accelerator
+   * `P.acceleration * boost` and the wish `P.sprintWishSpeed`. */
   const a = runHash();
   const b = runHash();
   assert.equal(a.hash, b.hash, 'the run is not deterministic; the hash cannot ratchet anything');
   assert.equal(a.steps, 1800, 'the tape changed length - the recorded hash is about a different run');
-  assert.equal(a.hash, '834f9782',
+  assert.equal(a.hash, '61e1898c',
     `flat-ground movement changed. The run ends at ${a.last} (x,y,z,vx,vy,vz in 0.1 mm units).`);
 });
 
-test('the leap in the tape really does land the player over the friction cap', () => {
-  /* Guards the case above from decaying into a test of a jog. If the sprinting
-   * jump ever stops exceeding 6.0 m/s, the hash stops covering the ONE state in
-   * which the wish and the cap disagree, and the ratchet quietly weakens. */
+test('the leap in the tape lands the player over the cap, and the wish is what decays it', () => {
+  /* Guards the case above from decaying into a test of a jog, and pins the ONE
+   * behaviour `sprintWishSpeed` exists for.
+   *
+   * `Parkour.tryLeap` SCALES standing velocity by 1.42 rather than setting a
+   * speed, so raising the cap raised the leap with it: 6.0 * 1.42 = 8.52
+   * before, 8.2 * 1.42 = 11.64 now. That is why the wish had to be raised in
+   * proportion. Between the cap and the wish, `_accelerate` is still adding, so
+   * the landing bleeds off over about a third of a second instead of snapping.
+   * With the wish left at 8.2 - i.e. AT the new cap - the same landing measures
+   * 11.644 -> 9.703 -> 8.200 and is over in 0.033 s. */
   const physics = flatWorld();
   const player = makePlayer(physics);
   player._position.set(0, 0.5, 0);
@@ -324,16 +389,33 @@ test('the leap in the tape really does land the player over the friction cap', (
   player.input.state.sprint = true;
   let t = 3;
   for (let i = 0; i < 180; i++, t += DT) player.fixedUpdate(DT, t);
+  const cruise = planarSpeed(player);
   player.input.state.jump = true;
-  let peak = 0;
-  for (let i = 0; i < 240; i++, t += DT) {
+  let peak = 0, landStep = null, decay = null;
+  for (let i = 0; i < 400; i++, t += DT) {
     player.fixedUpdate(DT, t);
     if (i === 2) player.input.state.jump = false;
-    if (!player.grounded) peak = Math.max(peak, planarSpeed(player));
+    const v = planarSpeed(player);
+    if (!player.grounded) peak = Math.max(peak, v);
+    else if (landStep === null && i > 5) landStep = i;
+    if (landStep !== null && decay === null && v <= cruise * 1.01) decay = (i - landStep) * DT;
   }
   assert.ok(peak > P.sprintSpeed + 1,
     `a sprinting jump peaked at ${peak.toFixed(3)} m/s, which is not meaningfully over the `
     + `${P.sprintSpeed} m/s ground cap - the hash no longer exercises the wish`);
-  assert.ok(peak <= P.sprintWishSpeed + 0.4,
-    `a sprinting jump reached ${peak.toFixed(3)} m/s, past the wish it is accelerated toward`);
+  /* Tighter than the old `wish + 0.4` slack, and tied to the mechanism: the
+   * peak is the cruise scaled by `Parkour`'s LEAP_BOOST and nothing else, which
+   * is what makes "raising the cap raises the leap" a fact rather than a guess. */
+  assert.ok(Math.abs(peak - cruise * 1.42) < 1e-6,
+    `a sprinting jump peaked at ${peak.toFixed(6)} against a cruise of ${cruise.toFixed(6)} `
+    + 'scaled by Parkour\'s LEAP_BOOST of 1.42 - something else is adding speed in the air');
+  assert.ok(peak > P.sprintWishSpeed,
+    `the leap peaks at ${peak.toFixed(3)} and the wish is ${P.sprintWishSpeed} - the wish now `
+    + 'covers the whole landing, so it is no longer the decay that is being measured');
+  /* 0.350 s, and it was 0.350 s at a cap of 6.0 and a wish of 8.2. Holding the
+   * wish/cap ratio is what kept it there; the window is wide enough to allow a
+   * frame either way and far too narrow to admit the 0.033 s collapse. */
+  assert.ok(decay !== null && decay > 0.2 && decay < 0.5,
+    `a leap landing decayed to the cap in ${decay} s against the 0.350 s it has always taken - `
+    + 'check `sprintWishSpeed` against `sprintSpeed`, this is the ratio between them');
 });

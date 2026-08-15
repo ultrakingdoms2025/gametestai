@@ -630,29 +630,41 @@ test('the painter and the sampler agree about which row a cell is on', () => {
 /* Balance                                                           */
 /* ---------------------------------------------------------------- */
 
-test('every beast outruns a sprinting player - escape is disengagement, not speed', () => {
-  /* CHANGED, and the change is a finding rather than a tidy-up.
+test('a sprinting player outruns every beast - and the stamina pool is what rations it', () => {
+  /* CLOSED. This case was flagged OPEN, and the resolution is the interesting
+   * part, so the history stays.
    *
-   * This used to read `nothing outruns a sprinting player, so fleeing is always
-   * available` and assert `chargeSpeed < CONFIG.player.sprintSpeed`. It passed
-   * because that constant said 8.2 and nothing in the game could go 8.2: the
-   * friction/acceleration equilibrium caps a grounded player at
-   * `acceleration / friction` = 6.0 m/s, measured and derived in
-   * ./player-speed.test.mjs. Against the real number a wolf (7.6) and a bear
-   * (6.4) are both FASTER than a sprinting player, and always were.
+   * It originally read `nothing outruns a sprinting player, so fleeing is
+   * always available` and asserted `chargeSpeed < CONFIG.player.sprintSpeed`.
+   * It passed for the wrong reason: that constant said 8.2 and nothing in the
+   * game could go 8.2, because the friction/acceleration equilibrium capped a
+   * grounded player at `acceleration / friction` = 60/10 = 6.0 m/s. Against
+   * the real 6.0 a wolf (7.6) and a bear (6.4) were both FASTER, so the case
+   * was inverted to say so and the balance question was left to the owner.
    *
-   * OPEN, and deliberately not decided here: whether that is the balance the
-   * owner wants. A charge is not a permanent state - `_dropTarget` fires past
-   * `loseInterest` or when `memory` runs out with the line of sight broken - so
-   * a player still gets away, by breaking contact rather than by out-running
-   * anything. The bear's own docstring assumes otherwise ("being thrown four
-   * metres back is what buys the sprint away"), which is worth re-reading if
-   * the numbers are ever revisited. Slowing the charges below 6.0 would restore
-   * the original claim; so would making sprint genuinely faster. Both are
-   * balance changes.
+   * The owner decided: make the sprint genuinely reach 8.2 (`acceleration` 60
+   * -> 82, `friction` deliberately untouched - see ../../src/core/Config.js)
+   * and leave the beast speeds exactly where they are. So the original claim
+   * is true again, now for the right reason, and the numbers are real:
    *
-   * What is pinned now is the truth, and the disengagement that has to exist
-   * for the encounter to be survivable at all. */
+   *     sprinting player   8.2 m/s     (measured, ./player-speed.test.mjs)
+   *     wolf charge        7.6 m/s     player gains 0.6 m/s
+   *     bear charge        6.4 m/s     player gains 1.8 m/s
+   *
+   * ── Why this is a ration and not an escape hatch ──────────────────────
+   * Sprint is not a state you can hold. The pool is 100 and drains at 15/s, so
+   * a held sprint from full gives out after 6.68 s and the player drops back to
+   * a 4.6 m/s walk, which BOTH beasts still beat comfortably. Driven against
+   * the real controller with the real `Stamina`, one full bar spent running in
+   * a straight line buys a peak lead of 3.32 m on a wolf and 11.32 m on a bear,
+   * and the wolf's is handed straight back.
+   *
+   * So the wolf is still a chase you cannot simply win on foot; 3.3 m of a 46 m
+   * `loseInterest` leash is a head start, not an exit. The disengagement below
+   * is therefore still the mechanism that ends an encounter, and is still
+   * asserted. The bear's docstring ("being thrown four metres back is what buys
+   * the sprint away") reads correctly again: 1.8 m/s of margin plus a four
+   * metre shove is a real gap. */
   const cap = CONFIG.player.sprintSpeed;
   assert.equal(cap, CONFIG.player.acceleration / CONFIG.player.friction,
     'the player speed cap moved; re-read this whole case against the new number');
@@ -660,15 +672,26 @@ test('every beast outruns a sprinting player - escape is disengagement, not spee
     // Everything beats a walk, or there is no threat at all.
     assert.ok(def.chargeSpeed > CONFIG.player.walkSpeed,
       `a ${def.id} cannot catch a walking player`);
-    assert.ok(def.chargeSpeed > cap,
+    assert.ok(def.chargeSpeed < cap,
       `a ${def.id} charges at ${def.chargeSpeed} against a player's real top speed of ${cap} - `
-      + 'it can now be out-run in a straight line, which is a balance change, not a fix');
-    // ...so the escape has to be the chase ending. Past `loseInterest`, or with
-    // the scent cold and no line of sight, the target is dropped.
+      + 'it outruns a sprint in a straight line, and "fleeing is always available" is false again');
+    // A sprint is rationed, so out-running a charge cannot be the whole escape:
+    // past `loseInterest`, or with the scent cold and no line of sight, the
+    // target is dropped, and that is what actually ends a chase.
     assert.ok(def.loseInterest > def.sight,
       `a ${def.id} gives up at ${def.loseInterest} m but sees to ${def.sight} m - it would `
-      + 're-acquire the moment it disengaged, and a chase it always wins could never end');
+      + 're-acquire the moment it disengaged, and a chase could never end');
+    // The margin is thin on purpose. If a charge ever drops far enough under
+    // the cap that a player can stroll away from it, this stops being a chase.
+    assert.ok(cap - def.chargeSpeed < CONFIG.player.walkSpeed,
+      `a ${def.id} is ${(cap - def.chargeSpeed).toFixed(1)} m/s slower than a sprint, which is `
+      + 'more margin than a walk is worth - the pursuit has stopped being threatening');
   }
+  // The ration is the counterweight to the whole claim above, so it is pinned:
+  // one bar is 6.67 s of sprint, and the wolf takes only 0.6 m/s off that.
+  assert.ok(CONFIG.player.maxStamina / CONFIG.player.sprintStaminaDrain < 8,
+    'a sprint now lasts long enough to simply leave a wolf behind; the lead this case '
+    + 'measures at 3.32 m was the reason disengagement still had to exist');
 });
 
 test('a lone wolf is beatable with a sword; a bear is not a trade', () => {

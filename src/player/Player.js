@@ -698,17 +698,31 @@ export class Player {
 
     /* `sprintWishSpeed`, not `sprintSpeed`, and the distinction is the point:
      * the accelerator takes a target it is allowed not to reach, and friction
-     * caps a grounded character at `acceleration / friction` = 6.0 m/s however
+     * caps a grounded character at `acceleration / friction` = 8.2 m/s however
      * high that target is. @see ../core/Config.js `sprintSpeed` */
     let wishSpeed = this._crouching ? P.crouchSpeed : this._sprinting ? P.sprintWishSpeed : P.walkSpeed;
-    wishSpeed *= this.speedMultiplier;
+    const boost = this.speedMultiplier;
+    wishSpeed *= boost;
     if (aiming && !this._crouching) wishSpeed *= 0.62;
     if (wishLen < 1e-5) wishSpeed = 0;
 
     /* ---- acceleration ---------------------------------------------- */
     if (this._grounded) {
       this._applyFriction(dt);
-      this._accelerate(wishX, wishZ, wishSpeed, P.acceleration, dt);
+      /* The boost scales the ACCELERATION as well as the wish, and that is the
+       * only reason a speed pickup does anything to a sprint. Scaling the wish
+       * alone is what it used to do, and a sprint is already over the cap, so
+       * 1.5x and 3.0x both measured exactly the cap and the pickup read as a
+       * no-op to anyone who tried it while running. The cap is
+       * `acceleration / friction`, so multiplying the numerator moves the
+       * ceiling with the wish: a 1.5x boost tops out at 1.5 * 8.2 = 12.3 while
+       * sprinting and at 1.5 * 4.6 = 6.9 while walking, which is a boost felt
+       * at every gait rather than at one. Friction is untouched - a boosted
+       * player still stops in the same time, just from further out.
+       *
+       * Ground only: `_applyFriction` is what creates a ceiling to raise, and
+       * it never runs in the air. Air control keeps its own authority. */
+      this._accelerate(wishX, wishZ, wishSpeed, P.acceleration * boost, dt);
     } else {
       // Air control: same projection, far less authority.
       this._accelerate(wishX, wishZ, wishSpeed, P.airAcceleration, dt);
@@ -1675,10 +1689,12 @@ export class Player {
     // Sprint widens the frame; ADS overrides it and pulls in.
     const hSpeed = Math.hypot(this._velocity.x, this._velocity.z);
     /* Normalised against the WISH speed, deliberately. The kick therefore tops
-     * out at 6.5 * 6.0/8.2 = 4.76 degrees rather than saturating at 6.5, which
-     * is what it has always done and is a look, not an accident. Swapping in
-     * the true `sprintSpeed` would make this reach its full amplitude - a real
-     * change to how a sprint feels, and not one this rename was for.
+     * out at 6.5 * 8.2/11.2 = 4.759 degrees rather than saturating at 6.5,
+     * which is what it has always done and is a look, not an accident. It read
+     * 6.5 * 6.0/8.2 = 4.756 before the sprint cap was raised to 8.2: the wish
+     * was raised in the same proportion precisely so this number would not
+     * move. Swapping in `sprintSpeed` would make this reach its full
+     * amplitude - a real change to how a sprint feels.
      * @see ../core/Config.js `sprintWishSpeed` */
     const sprintKick = this._sprinting ? 6.5 * clamp(hSpeed / P.sprintWishSpeed, 0, 1) : 0;
     const target = THREE.MathUtils.lerp(base + sprintKick, base * 0.7, aim);

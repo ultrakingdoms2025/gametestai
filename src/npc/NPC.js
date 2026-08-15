@@ -87,6 +87,10 @@ export class NPC {
     /** @type {THREE.Vector3[]} */
     this.patrol = (ctx.patrol ?? []).map((p) => p.clone());
     this.patrolIndex = 0;
+    /** Which way round the route this character is currently walking it. */
+    this.patrolDir = 1;
+    /** Lazily measured on first use, because `patrol` may be rewritten. @see routeAhead */
+    this._routeClosed = undefined;
 
     this.animator = this._createAnimator(ctx);
     this.nav = new Navigation({ physics: this.physics, seed: this.seed ^ 0x5f3a });
@@ -359,6 +363,99 @@ export class NPC {
     this._walkedY = this.position.y;
     this.setState('IDLE');
     this.onRespawned?.();
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Routes                                                            */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * The next `count` waypoints of this character's route, in order.
+   *
+   * `Navigation.setPath` walks a list in order; this decides WHICH list, which
+   * is the half of route following that has to know what kind of thing the
+   * route is.
+   *
+   * ── Where a round resumes ────────────────────────────────────────────────
+   * From the waypoint NEAREST the character, not from a stored cursor. A round
+   * is constantly interrupted - the player is greeted, a gunshot scatters
+   * everybody, a stroll gets in the way - and a cursor that kept counting while
+   * the character stood somewhere else sends it striking out across the middle
+   * of the world for a waypoint it never walked to. Re-entering at the nearest
+   * one means the longest off-route line any character ever walks is the one
+   * back to the route, which is the shortest such line available without a
+   * planner. It is also why this is O(waypoints) rather than O(1): routes in
+   * these worlds are four to sixteen points and this runs when a character
+   * decides to set off, not per step.
+   *
+   * ── Ends ─────────────────────────────────────────────────────────────────
+   * A closed round wraps; an open one turns around and walks back. Which it is
+   * is measured, not declared: the route is closed when the leg from the last
+   * waypoint to the first is no longer than the longest leg already in it, i.e.
+   * when joining the ends adds nothing the author had not already asked for.
+   * Wrapping an OPEN route is the defect that made the promenade rounds into
+   * single-bearing corridors - the leg from the far end back to the start is a
+   * straight line across everything in between.
+   *
+   * @param {number} [count] how many legs to hand over
+   * @returns {THREE.Vector3[]} a fresh array; `setPath` clones what it keeps
+   */
+  routeAhead(count = 3) {
+    const n = this.patrol.length;
+    if (n === 0) return [];
+    if (n === 1) return [this.patrol[0]];
+    if (this._routeClosed === undefined) this._routeClosed = this._measureRouteClosed();
+
+    const near = this.nearestRouteIndex();
+    const out = [];
+    let i = near;
+    let dir = this.patrolDir;
+    for (let k = 0; k < count; k++) {
+      let next = i + dir;
+      if (next >= n) {
+        if (this._routeClosed) next = 0;
+        else { dir = -1; next = i - 1; }
+      } else if (next < 0) {
+        if (this._routeClosed) next = n - 1;
+        else { dir = 1; next = i + 1; }
+      }
+      i = next;
+      out.push(this.patrol[i]);
+    }
+    this.patrolIndex = i;
+    this.patrolDir = dir;
+    return out;
+  }
+
+  /**
+   * Which waypoint of this character's route it is standing nearest.
+   *
+   * The re-entry point for `routeAhead`, and separately the answer to "is this
+   * character part-way round, or back where it started" - which is what
+   * `FriendlyNPC._pickWanderTarget` needs in order not to abandon a round.
+   *
+   * @returns {number} index, or -1 if this character has no route
+   */
+  nearestRouteIndex() {
+    const n = this.patrol.length;
+    if (n === 0) return -1;
+    let near = 0;
+    let bestSq = Infinity;
+    for (let i = 0; i < n; i++) {
+      const d = this.patrol[i].distanceToSquared(this.position);
+      if (d < bestSq) { bestSq = d; near = i; }
+    }
+    return near;
+  }
+
+  /** @see routeAhead - "closed" means joining the ends adds no new longest leg. */
+  _measureRouteClosed() {
+    const p = this.patrol;
+    const n = p.length;
+    if (n < 3) return false;
+    let longest = 0;
+    for (let i = 1; i < n; i++) longest = Math.max(longest, p[i - 1].distanceToSquared(p[i]));
+    return p[n - 1].distanceToSquared(p[0]) <= longest;
   }
 
   /* ---------------------------------------------------------------- */

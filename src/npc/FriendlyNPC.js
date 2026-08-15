@@ -99,7 +99,11 @@ export class FriendlyNPC extends NPC {
     this.talkTimer = 0;
 
     this.setState('IDLE');
-    if (this.patrol.length > 1 && !this.stationary) this.nav.setPath(this.patrol);
+    /* No route is issued here. It used to be - `setPath(this.patrol)` from
+     * waypoint 0 - which had a character walking a round while its state
+     * machine said IDLE, and was replaced a second or two later by the first
+     * `_pickWanderTarget` anyway. A round starts when the character decides to
+     * set off, which is `_idle`'s job. */
   }
 
   /** Human-readable role, used by the interaction prompt. */
@@ -612,16 +616,65 @@ export class FriendlyNPC extends NPC {
     }
   }
 
+  /**
+   * Where to walk next: a stretch of the character's own round, or, failing
+   * that, somewhere within reach of home.
+   *
+   * ── What this used to do ─────────────────────────────────────────────────
+   * It picked ONE waypoint, "one or two ahead at random", and steered straight
+   * at it. That is not route following and it produced two separate failures.
+   * A skipped waypoint means the line walked is between two points the author
+   * never joined - across the inside of an elbow, off a walkway, through a
+   * building. And the modular wrap at the end of an open route means the line
+   * from the far end back to the start, which is every leg of the round at
+   * once. The station's two promenade rounds were authored as single-bearing
+   * corridors, every point inside one 5.4 m railing opening, purely so that no
+   * pair of their waypoints could produce a bad line.
+   *
+   * Now it hands `Navigation` a stretch of the round in order and lets the
+   * route follower walk it. Two to four legs, because a wanderer that walked
+   * the whole round in one go would never take a social turn, never notice a
+   * neighbour and never stop - the pauses between stretches are what makes it
+   * read as a person on a round rather than a tram.
+   */
   _pickWanderTarget() {
-    if (this.patrol.length > 1 && this.rnd() < 0.65) {
-      this.patrolIndex = (this.patrolIndex + 1 + ((this.rnd() * 2) | 0)) % this.patrol.length;
-      const wp = this.patrol[this.patrolIndex];
-      // Authored routes predate the water volumes and a couple of them ford the
-      // river. Fall through to a free-roam pick rather than march in.
-      if (!this.nav.isDeepWaterAt(wp.x, wp.z) && this.nav.waterFreeLine(this.position, wp)) {
-        const g = this.physics.groundHeight(wp.x, wp.z, wp.y + 6, 14);
-        _v1.set(wp.x, g ?? wp.y, wp.z);
-        this.nav.setTarget(_v1);
+    /* A round, once started, is finished.
+     *
+     * The free-roam pick below chooses a spot within `homeRadius` of the SPAWN
+     * point, so rolling it while a character is part-way round is not variety -
+     * it is a decision to walk home from wherever it has got to. Measured on
+     * the station: Ceri Bardo climbed 5.9 m of the bearing-30 flight, rolled
+     * the 35%, and walked back down to the hub deck. She never once completed a
+     * circuit of the loop. So the roll only happens where free roam makes sense
+     * - back at the head of the round, which is also where `homeRadius` is
+     * centred - and anywhere else the character carries on.
+     *
+     * This is the same nearest-waypoint scan `routeAhead` does, and it is why
+     * that scan is a method rather than a loop inside it. */
+    const atRoundHead = this.nearestRouteIndex() <= 0;
+    if (this.patrol.length > 1 && (!atRoundHead || this.rnd() < 0.65)) {
+      const legs = this.routeAhead(2 + ((this.rnd() * 3) | 0));
+      /* Authored routes predate the water volumes and a couple of them ford the
+       * river. Drop the wet legs; `setPath` does the same for the waypoints
+       * themselves. If nothing survives, fall through to a free-roam pick
+       * rather than march in. */
+      const dry = legs.filter((wp) => !this.nav.isDeepWaterAt(wp.x, wp.z));
+      if (dry.length && this.nav.waterFreeLine(this.position, dry[0])) {
+        /* Resolve each waypoint onto the ground the way the old single-target
+         * path did. An authored waypoint carries the height its author meant -
+         * the promenade round's are at 10 - and the probe window is taken from
+         * the waypoint rather than from the character, so a route that climbs
+         * still resolves.
+         *
+         * Fresh vectors, not module scratch: `setPath` clones the array it is
+         * given, but it clones it AFTER `map` has built it, so handing it the
+         * same reused vector four times would hand it four copies of the last
+         * waypoint. Two to four allocations when a character decides to set off
+         * is not a cost worth being clever about. */
+        this.nav.setPath(dry.map((wp) => {
+          const g = this.physics.groundHeight(wp.x, wp.z, wp.y + 6, 14);
+          return new THREE.Vector3(wp.x, g ?? wp.y, wp.z);
+        }));
         return;
       }
     }

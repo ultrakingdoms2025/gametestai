@@ -431,16 +431,26 @@ test('past ~45 degrees the player is not stopped, it is LADDERED up by the step 
    * player then ascends at multiples of a speed it can never reach on flat
    * ground, which is the same pathology `player-slope.test.mjs` closed for
    * ramps UNDER 45 degrees and which is still open above them. */
-  for (const [deg, along] of [[46, 6.18], [50, 7.16], [58, 8.68]]) {
+  /* The absolute speeds here were measured when `acceleration` was 60 and the
+   * ground cap was 6.0, and they are NOT the property being claimed. Sprint was
+   * subsequently made genuinely 8.2 (acceleration 60 -> 82), which moved every
+   * one of them - a merge caught this, with 46 deg's 6.18 m/s no longer clearing
+   * a cap that had risen to 8.2 underneath it.
+   *
+   * The claim is that the ladder beats the HONEST PROJECTION, which is what
+   * proves a slope is being climbed as though it were a staircase. That ratio
+   * is a property of the geometry and the step branch, not of how fast the
+   * character runs on the flat, so it survives a change to either. The absolute
+   * speed is still in the failure message, because when this does break the
+   * number is what tells you which way it went. */
+  for (const deg of [46, 50, 58]) {
     const r = walkUp(deg);
+    const proj = projectedAlong((deg * Math.PI) / 180);
     assert.ok(r.probes > 30,
       `${deg} deg fired only ${r.probes} tread probes in 3 s; the ladder stopped running`);
-    assert.ok(r.along > P.sprintSpeed,
-      `${deg} deg climbs at ${r.along.toFixed(2)} m/s along-slope, no longer over the `
-      + `${P.sprintSpeed} m/s ground speed cap`);
-    assert.ok(Math.abs(r.along - along) < 0.6,
-      `${deg} deg climbs at ${r.along.toFixed(2)} m/s along-slope, was ${along} at 7178224 `
-      + `(the projection is worth ${projectedAlong(deg * Math.PI / 180).toFixed(2)})`);
+    assert.ok(r.ratio > 3,
+      `${deg} deg climbs at ${r.along.toFixed(2)} m/s along-slope, only `
+      + `${r.ratio.toFixed(2)}x the ${proj.toFixed(2)} m/s projection - the ladder has stopped`);
     assert.ok(r.grounded < 0.8,
       `${deg} deg was grounded ${(r.grounded * 100).toFixed(0)}% of steps - a ladder is airborne`);
   }

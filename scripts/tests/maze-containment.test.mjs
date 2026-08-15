@@ -9,7 +9,15 @@ import { districtColliders, cellToWorld } from '../../src/worlds/maze/MazeCollid
 
 const RADIUS = 0.35;      // CONFIG.player.radius
 const HEIGHT = 1.75;      // CONFIG.player.height
-const SPRINT = 8.2;       // CONFIG.player.sprintSpeed
+/* CONFIG.player.sprintWishSpeed - deliberately the WISH and not the reachable
+ * speed. A grounded player is capped at `acceleration / friction` = 6.0 m/s
+ * (CONFIG.player.sprintSpeed, and see ./player-speed.test.mjs for the
+ * derivation), so launching escape attempts at 8.2 hands every one of them 37%
+ * more energy than the game can actually deliver. That makes the gate stricter
+ * than reality, which is the direction a containment proof should err in, so
+ * the number is left alone. Do not "correct" it to 6.0 - that would weaken it.
+ */
+const SPRINT = 8.2;
 const HOP = 0.93;         // jumpVelocity 6.4, gravity -22
 const STEP = 1 / 60;      // fixed timestep
 
@@ -110,7 +118,8 @@ test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
        * across a closed passage can only mean the capsule actually crossed
        * the wall, never a rounding artefact near the boundary.
        *
-       * A single step covers at most SPRINT * STEP = 8.2/60 ~= 0.137 m,
+       * A single step covers at most SPRINT * STEP = 8.2/60 ~= 0.137 m (more
+       * than a real player can move; see the note on SPRINT),
        * against a 6 m cell pitch, so consecutive cells must be identical or
        * orthogonally adjacent - Manhattan distance at most 1. Anything more
        * (a 2+ cell jump, or both axes changing in the same step) is a

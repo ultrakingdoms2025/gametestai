@@ -729,6 +729,16 @@ async function rehearse() {
   let mountRoots = [];
   /** Where each root was parented, so the teardown can put it back. */
   let mountParents = [];
+  /* Scene children as they stood before any of this, so a root the rehearsal
+   * itself introduces can be taken back out again.
+   *
+   * Only matters away from boot, and it is what `recoverFromContextLoss` made
+   * matter. During boot `prewarm` has already parked every mount root in the
+   * scene, so `warmSpawn` adds nothing and prewarm's own `unpark` removes them
+   * a moment later. Post-boot they are unparented, `warmSpawn` adds all six,
+   * nothing follows to take them out, and the leak counter below reported
+   * exactly that on the first real context recovery: `children: 160->166`. */
+  const sceneBefore = new Set(engine.scene.children);
 
   try {
     mountRoots = mounts.warmSpawn?.(player.position, player.yaw ?? 0) ?? [];
@@ -835,9 +845,20 @@ async function rehearse() {
     // hidden, in the scene, waiting for prewarm's own `unpark` to remove it a
     // moment later. Without this the rehearsal would appear to eat six scene
     // children, and the leak test below would be crying wolf every boot.
+    //
+    // The ridden mount is the exception, and it only exists because this
+    // function is no longer boot-only: `recoverFromContextLoss` runs it mid-game
+    // (see there), where `unpark` already refuses to kill the active mount for
+    // the same reason. Hiding one the player is sitting on would leave them
+    // riding an invisible dragon for the rest of the session.
+    const active = mounts.active?.root ?? mounts.active?.mesh ?? null;
     mountRoots.forEach((root, i) => {
-      root.visible = false;
+      if (root !== active) root.visible = false;
       if (!root.parent && mountParents[i]) mountParents[i].add(root);
+      // ...and out again if the rehearsal is what put it there. @see sceneBefore
+      if (root !== active && root.parent === engine.scene && !sceneBefore.has(root)) {
+        engine.scene.remove(root);
+      }
     });
   } catch (err) {
     console.warn('[rehearse] restore failed:', err);
@@ -855,6 +876,158 @@ async function rehearse() {
       ? ` - LEAKED ${leaked.map((k) => `${k}: ${before[k]}->${after[k]}`).join(', ')}`
       : ' - state clean')
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Losing the GPU, and getting it back                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Re-run the boot warm after the browser hands back a restored WebGL context.
+ *
+ * ── The failure this closes ────────────────────────────────────────────────
+ * Observed on a measurement run: `THREE.WebGLRenderer: Context Lost.`, preceded
+ * by an 11.7 s frame carrying only 8.2 ms of engine CPU - a driver hang, not
+ * anything this game did. The context came back 1.1 s later, and it came back
+ * EMPTY: `renderer.info` had dropped 392 programs, 1,375 geometries and 265
+ * textures. Nothing rebuilt any of it, so every program was linked - and every
+ * buffer re-uploaded - on demand, inside gameplay frames, and the game ran at
+ * about 1.3 fps for the remaining ELEVEN MINUTES. The trigger was
+ * environmental; the eleven minutes were ours.
+ *
+ * ── Why this is four lines and not a system ────────────────────────────────
+ * A restored context is, exactly, a cold boot's program cache with a warm CPU
+ * side: the scene graph, the geometries and the textures are all still here as
+ * JavaScript, and only their GPU copies are gone. That is the state `prewarm`
+ * was written for, so the recovery is `prewarm`'s own two steps and nothing
+ * else - `renderer.compile()` to issue the links, then `rehearse()` to DRAW
+ * them, which is the half that waits on the link and therefore the half that
+ * matters. @see ./gfx/RehearsalDraw.js for why compiling alone buys nothing.
+ *
+ * `prewarm()` itself is deliberately NOT called. Its first act is
+ * `mounts.prebuild(...)`, which is a no-op on a session where every mount is
+ * already built, and its last is an `unpark` of a list that would then be
+ * empty; what is left in the middle is exactly the compile and the two frames
+ * reproduced here. The per-weapon `loadout.select` walk is left out for the
+ * same reason: `rehearse` shows every viewmodel at once and force-draws all of
+ * them, so it covers that set without touching the player's current weapon.
+ *
+ * ── What is left to the background ─────────────────────────────────────────
+ * The worlds the player is not standing in, and the gateway previews. Both have
+ * their own sliced warms already (`warmWorld`, `warmPortalPreviews`), both are
+ * paced against `idleSoon`, and neither is needed before play resumes - so they
+ * run after, exactly as they do on a cold boot, rather than holding the player
+ * on an overlay for them.
+ *
+ * Engine-side: `Engine._runRecovery` holds the frame loop's own render and the
+ * simulation for the duration, and restores both afterwards. @see core/Engine.js
+ */
+async function recoverFromContextLoss() {
+  const t0 = performance.now();
+  const r = engine.renderer;
+  const p0 = r.info.programs.length;
+  const screen = createRecoveryScreen(uiRoot);
+  try {
+    // One frame with the overlay up before anything blocking: the whole point
+    // of showing it is that the player sees it *during* the stall, not after.
+    await nextFrame();
+
+    try {
+      r.compile(engine.scene, engine.camera);
+    } catch (err) {
+      console.warn('[recover] compile failed, falling back to lazy compile:', err);
+    }
+
+    // The same two frames `prewarm` runs, and for the same reason: they buy the
+    // shadow-pass depth programs and the PostFX chain, neither of which
+    // `compile` sees. `lightRig.update` first, every time - a stray light
+    // reaching the renderer would re-key the entire program set.
+    for (let i = 0; i < 2; i++) {
+      try {
+        lightRig.update(1 / 60);
+        if (engine.postfx) engine.postfx.render(1 / 60);
+        else r.render(engine.scene, engine.camera);
+      } catch { /* a warm frame must never abort the recovery */ }
+      await nextFrame();
+    }
+
+    screen.setStatus('Rebuilding shaders');
+    await rehearse();
+  } catch (err) {
+    console.warn('[recover] re-warm failed, first-use costs stay with the player:', err);
+  } finally {
+    screen.remove();
+  }
+
+  console.info(
+    `[recover] context re-warmed in ${Math.round(performance.now() - t0)}ms, ` +
+    `+${r.info.programs.length - p0} programs (${r.info.programs.length} total)`
+  );
+
+  // Everything the player is not looking at, on the same idle chain a cold boot
+  // uses. Deliberately not awaited: play resumes the moment this function
+  // returns, and these slices are sized to be invisible inside a live frame.
+  rewarmOtherWorlds();
+}
+
+/**
+ * The destinations and their gateway previews, re-warmed in the background
+ * after a context loss.
+ *
+ * Same chain as `scheduleBackgroundBuilds`, minus the build - the worlds are
+ * still generated, it is only their GPU programs that went. The `holdPreviews`
+ * claim is here for the identical reason it is there: `Portals.update` draws a
+ * preview on any frame a gateway is ready, and that draw is the multi-second
+ * freeze the sliced warm exists to prevent.
+ */
+function rewarmOtherWorlds() {
+  const activeId = worldManager.active?.id ?? null;
+  const rest = worldManager.ids.filter(
+    (id) => id !== activeId && worldManager.isBuilt?.(id) && !worldManager.isVolatile(id),
+  );
+  let i = 0;
+  const step = () => {
+    if (i >= rest.length) return;
+    const id = rest[i++];
+    Promise.resolve()
+      .then(() => portals.holdPreviews?.(id))
+      .then(() => warmWorld(id))
+      .then(() => warmPortalPreviews(id))
+      .catch((err) => console.warn(`[recover] re-warm of "${id}" failed:`, err))
+      .finally(() => {
+        portals.releasePreviews?.(id);
+        idle(step);
+      });
+  };
+  idle(step);
+}
+
+/**
+ * The overlay the recovery holds up. Deliberately the boot screen's own markup
+ * and classes, so it needs no new CSS and reads as the same thing it is.
+ *
+ * @param {HTMLElement} root
+ * @returns {{ setStatus: (t: string) => void, remove: () => void }}
+ */
+function createRecoveryScreen(root) {
+  const el = document.createElement('div');
+  el.className = 'boot-screen';
+  el.innerHTML = `
+    <div class="boot-inner">
+      <div class="boot-logo">AETHER<span>NEXUS</span></div>
+      <div class="boot-tagline">Graphics device restarted</div>
+      <div class="boot-bar"><div class="boot-bar-fill" style="width:100%"></div></div>
+      <div class="boot-status">Restoring graphics</div>
+    </div>`;
+  root.appendChild(el);
+  const status = el.querySelector('.boot-status');
+  return {
+    setStatus(text) { if (status) status.textContent = text; },
+    remove() {
+      el.classList.add('boot-hide');
+      setTimeout(() => el.remove(), 900);
+    },
+  };
 }
 
 /**
@@ -1123,6 +1296,10 @@ function warmPortalPreviews(id) {
 /* ------------------------------------------------------------------ */
 /* Frame wiring                                                        */
 /* ------------------------------------------------------------------ */
+
+/* Registered before `boot()` runs, because a context can be lost at any moment
+ * - including during the boot warm itself. @see recoverFromContextLoss */
+engine.setContextRecovery(recoverFromContextLoss);
 
 // Mounts run first: while ridden they own the player's position, so they must
 // have written it before the player integrates its own movement and before

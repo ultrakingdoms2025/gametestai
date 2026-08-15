@@ -696,7 +696,11 @@ export class Player {
       (this.stamina ? this.stamina.canSprint : true);
     if (this._sprinting) this.stamina?.drain(P.sprintStaminaDrain * dt, 'sprint');
 
-    let wishSpeed = this._crouching ? P.crouchSpeed : this._sprinting ? P.sprintSpeed : P.walkSpeed;
+    /* `sprintWishSpeed`, not `sprintSpeed`, and the distinction is the point:
+     * the accelerator takes a target it is allowed not to reach, and friction
+     * caps a grounded character at `acceleration / friction` = 6.0 m/s however
+     * high that target is. @see ../core/Config.js `sprintSpeed` */
+    let wishSpeed = this._crouching ? P.crouchSpeed : this._sprinting ? P.sprintWishSpeed : P.walkSpeed;
     wishSpeed *= this.speedMultiplier;
     if (aiming && !this._crouching) wishSpeed *= 0.62;
     if (wishLen < 1e-5) wishSpeed = 0;
@@ -1649,7 +1653,13 @@ export class Player {
     const aim = this._weapon.aimProgress;
     // Sprint widens the frame; ADS overrides it and pulls in.
     const hSpeed = Math.hypot(this._velocity.x, this._velocity.z);
-    const sprintKick = this._sprinting ? 6.5 * clamp(hSpeed / P.sprintSpeed, 0, 1) : 0;
+    /* Normalised against the WISH speed, deliberately. The kick therefore tops
+     * out at 6.5 * 6.0/8.2 = 4.76 degrees rather than saturating at 6.5, which
+     * is what it has always done and is a look, not an accident. Swapping in
+     * the true `sprintSpeed` would make this reach its full amplitude - a real
+     * change to how a sprint feels, and not one this rename was for.
+     * @see ../core/Config.js `sprintWishSpeed` */
+    const sprintKick = this._sprinting ? 6.5 * clamp(hSpeed / P.sprintWishSpeed, 0, 1) : 0;
     const target = THREE.MathUtils.lerp(base + sprintKick, base * 0.7, aim);
     const next = damp(this._fov, target, 9, dt);
     if (Math.abs(next - this._fov) > 0.005) {

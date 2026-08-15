@@ -281,11 +281,31 @@ test('nothing after engine.start() compiles a whole scene in one call', async ()
     'the background build chain compiles directly instead of through the sliced '
     + 'warmWorld');
 
-  // The whole-scene form, anywhere but prewarm, is the shape that cannot be
-  // sliced after the fact - it is every material in the game in one callback.
-  const elsewhere = src.replace(prewarm, '');
+  /* The whole-scene form is the shape that cannot be sliced after the fact -
+   * it is every material in the game in one callback - so it is only allowed
+   * where the player is being shown a screen that says so.
+   *
+   * There are exactly two such places. `prewarm` is the boot's, behind the
+   * loading screen. `recoverFromContextLoss` is the second, and it earns the
+   * same exemption for the same reasons rather than by assertion: a restored
+   * WebGL context IS a cold program cache, `Engine._runRecovery` holds the
+   * frame loop's render and the simulation for the duration, and the recovery
+   * puts its own full-screen overlay up before it blocks. The cases below check
+   * all three, so the exemption cannot be claimed by a function that merely has
+   * the right name. */
+  const recover = topLevelFn(src, 'async function recoverFromContextLoss()');
+  assert.match(recover, /createRecoveryScreen\(/,
+    'the recovery blocks with nothing on screen - the compile is a freeze the player cannot read');
+  assert.match(recover, /r\.compile\(engine\.scene, engine\.camera\)/,
+    'the recovery no longer compiles the live scene; a restored context is a cold program cache '
+    + 'and every program would be re-linked inside gameplay frames instead');
+  const engineSrc = await readCode('src/core/Engine.js');
+  assert.match(engineSrc, /_renderHeld = true/,
+    'the engine no longer holds its own render during a recovery, so the loop draws frames into a '
+    + 'context whose programs are still being linked');
+
+  const elsewhere = src.replace(prewarm, '').replace(recover, '');
   assert.doesNotMatch(elsewhere, /compile\(engine\.scene/,
-    'a whole-scene compile has appeared outside prewarm(). There is no loading '
-    + 'screen up by then and no way to slice it: it is every material in the game '
-    + 'in one callback');
+    'a whole-scene compile has appeared outside prewarm() and recoverFromContextLoss(). There is no '
+    + 'screen up by then and no way to slice it: it is every material in the game in one callback');
 });

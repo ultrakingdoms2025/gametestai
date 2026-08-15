@@ -214,11 +214,18 @@ test('the cadence bands sit outside the pose bands and end at the draw band', as
   assert.match(src, /const SIM_EIGHTH_OUT = RENDER_OUT;/,
     'the coarsest cadence band is no longer tied to the distance at which the body stops being drawn');
 
-  // The pose rates, which the cadence bands must sit outside of.
-  const rate = /lod\.rate = !lod\.visible \? 0\.12 : d < (\d+) \? 1 : d < (\d+) \? 0\.5 : d < (\d+) \? 0\.25 : 0\.1;/.exec(src);
-  assert.ok(rate, 'the pose-rate bands moved - re-check the cadence bands against them');
-  const poseHalf = Number(rate[2]);
-  const poseQuarter = Number(rate[3]);
+  /* The pose rates, which the cadence bands must sit outside of.
+   *
+   * CHANGED: these used to be three bare comparisons inline in `_updateLOD`
+   * and were read out of that expression. They are named constants next to the
+   * cadence bands now, because they gained the hysteresis every other switch in
+   * that file already had - measured at 190 flips per 600 frames on a character
+   * loitering on any of the three edges, against zero for every banded
+   * neighbour. @see ./npc-pose-lod.test.mjs */
+  const poseHalf = num(/const POSE_HALF_OUT = (\d+(?:\.\d+)?);/);
+  const poseQuarter = num(/const POSE_QUARTER_OUT = (\d+(?:\.\d+)?);/);
+  assert.ok(Number.isFinite(poseHalf) && Number.isFinite(poseQuarter),
+    'the pose-rate bands moved - re-check the cadence bands against them');
   assert.ok(half > poseHalf,
     `simulation drops to half rate at ${half} m but the pose is still at 1/2 out to ${poseHalf} m`);
   assert.ok(quarter > poseQuarter,

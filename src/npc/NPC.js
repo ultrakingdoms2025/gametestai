@@ -125,7 +125,13 @@ export class NPC {
      * changes - so a false start here would leave a near character casting with
      * the flag claiming it does not.
      */
-    this.lod = { distance: 0, ik: true, detail: true, rate: 1, visible: true, shadow: true, sim: 1 };
+    /* `poseRate` is the DISTANCE band behind `rate`, kept separately because
+     * `rate` also carries the off-screen value and the hysteresis has to read
+     * back a monotone sequence. @see NPCManager POSE_BAND */
+    this.lod = {
+      distance: 0, ik: true, detail: true, rate: 1, poseRate: 1,
+      visible: true, shadow: true, sim: 1,
+    };
     this._animAccum = 0;
     /**
      * Fixed-step time owed to this character because its simulation is banded.

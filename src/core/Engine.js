@@ -120,11 +120,65 @@ export class Engine {
     this._fpsAccum = 0;
     this._fpsFrames = 0;
 
+    /* ── WebGL context loss ────────────────────────────────────────────────
+     *
+     * Observed once during a measurement run and it is the worst failure this
+     * project has: a driver hang (an 11.7 s frame carrying only 8.2 ms of
+     * engine CPU) took the context, `renderer.info` collapsed by 392 programs,
+     * 1,375 geometries and 265 textures, and 1.1 s later the browser handed the
+     * context back EMPTY. Nothing re-warmed it, so every program was re-linked
+     * on demand inside gameplay frames and the game ran at ~1.3 fps for the
+     * remaining eleven minutes.
+     *
+     * Three installs its own listeners in the `WebGLRenderer` constructor -
+     * which has already run by this point, so ours are second in the queue and
+     * `onContextRestore`'s `initGLContext()` is guaranteed to have re-created
+     * the GL state before `_onContextRestored` runs. That ordering is the whole
+     * reason the wiring lives here rather than anywhere earlier.
+     *
+     * What Three does NOT do is rebuild anything. `renderer.compile()` issues
+     * `linkProgram` and drawing is what waits for the link (see
+     * gfx/RehearsalDraw.js), so a restored context is a cold program cache and
+     * the only cure is the boot warm, run again. `setContextRecovery` is where
+     * main.js hands that in; everything here is the gate that stops the game
+     * grinding through it a frame at a time in the meantime.
+     */
+    /** True between `webglcontextlost` and `webglcontextrestored`. */
+    this.contextLost = false;
+    /** Set while a recovery is drawing its own frames; see `_runRecovery`. */
+    this._renderHeld = false;
+    /** @type {null | (() => (Promise<void>|void))} */
+    this._recover = null;
+    this._recovering = false;
+    /** `_paused` as the game had it before the loss, restored on recovery. */
+    this._pausedBeforeLoss = false;
+    // Bound copies as own properties, so `removeEventListener` could match and
+    // so the prototype methods stay callable against a stub in a headless test.
+    this._onContextLost = this._onContextLost.bind(this);
+    this._onContextRestored = this._onContextRestored.bind(this);
+    canvas.addEventListener('webglcontextlost', this._onContextLost, false);
+    canvas.addEventListener('webglcontextrestored', this._onContextRestored, false);
+
     window.addEventListener('resize', () => this.resize());
     document.addEventListener('visibilitychange', () => {
       // Prevent an enormous dt spike when the tab returns.
       if (!document.hidden) this.clock.getDelta();
     });
+  }
+
+  /**
+   * Whether the frame loop may draw this frame.
+   *
+   * False in exactly two states, and for two different reasons. With no context
+   * a render is a no-op anyway - Three's `render` early-returns while
+   * `_isContextLost` - so the only thing it buys is a misleading `renderer.info`
+   * and a frame time that says everything is fine. While a recovery is running,
+   * a loop render would be a second, frustum-culled draw of a scene whose
+   * programs are still being linked, racing the un-culled warm frames that are
+   * there to pay for exactly those links. @see _runRecovery
+   */
+  _canRender() {
+    return !this.contextLost && !this._renderHeld;
   }
 
   /** Simulation tick at a fixed rate. Physics, AI and combat register here. */
@@ -153,7 +207,90 @@ export class Engine {
   }
 
   setPaused(paused) {
+    // While the context is gone (or a recovery is warming it back up) the
+    // simulation is deliberately held, and whatever the game asks for in the
+    // meantime is remembered rather than applied - `_runRecovery` restores it.
+    if (this.contextLost || this._recovering) {
+      this._pausedBeforeLoss = !!paused;
+      return;
+    }
     this._paused = paused;
+  }
+
+  /**
+   * Register what to run once a lost context comes back.
+   *
+   * Handed in rather than reached for: the warm that has to run is the boot's
+   * own (`prewarm`/`rehearse` in main.js, and the sliced background warms they
+   * hand off to), and the engine has no business knowing about mounts,
+   * viewmodels or gateways. The engine's job is to hold the frame loop still
+   * while it happens, and to put the loop back exactly as it found it.
+   *
+   * @param {null | (() => (Promise<void>|void))} fn
+   */
+  setContextRecovery(fn) {
+    this._recover = typeof fn === 'function' ? fn : null;
+  }
+
+  /**
+   * `webglcontextlost`.
+   *
+   * `preventDefault()` is not optional and it is not Three's to owe us: without
+   * it the browser never fires `webglcontextrestored` at all and the canvas is
+   * dead for the life of the page. Three does call it, and this calls it again,
+   * because a renderer that has been disposed (or replaced) has removed its
+   * listener and the difference between a recoverable hiccup and a black screen
+   * cannot rest on that.
+   */
+  _onContextLost(event) {
+    event?.preventDefault?.();
+    if (this.contextLost) return;
+    this.contextLost = true;
+    // Freeze the simulation rather than letting it run blind: every frame that
+    // passes is a frame the player has walked, been shot at and fallen through
+    // without seeing any of it.
+    this._pausedBeforeLoss = this._paused;
+    this._paused = true;
+    this.bus?.emit?.('engine:context-lost', {});
+  }
+
+  /** `webglcontextrestored`. Three has already re-created the GL state. */
+  _onContextRestored() {
+    if (!this.contextLost) return;
+    this.contextLost = false;
+    this.bus?.emit?.('engine:context-restored', {});
+    this._runRecovery();
+  }
+
+  /**
+   * Hold the loop's own render while the recovery draws its warm frames, then
+   * hand the game back in the state it was in.
+   *
+   * The hold matters: a recovery frame is deliberately un-culled and draws
+   * everything, and an ordinary loop render interleaved with it would be a
+   * second full draw of a scene whose programs are still being linked - which
+   * is the ~1.3 fps grind, arriving through the door the fix came in by.
+   */
+  async _runRecovery() {
+    if (this._recovering) return;
+    this._recovering = true;
+    this._renderHeld = true;
+    try {
+      await this._recover?.();
+    } catch (err) {
+      // Never fatal. A failed re-warm costs the player the stalls it was there
+      // to prevent; a thrown one would cost them the frame loop.
+      console.warn('[engine] context recovery failed, first-use costs stay with the player:', err);
+    } finally {
+      this._renderHeld = false;
+      this._recovering = false;
+      this._paused = this._pausedBeforeLoss;
+      // The clock has been running through all of it; drop the backlog rather
+      // than hand the first live frame a multi-second dt to sub-step through.
+      this.clock.getDelta();
+      this._accumulator = 0;
+      this.bus?.emit?.('engine:context-recovered', {});
+    }
   }
 
   start() {
@@ -193,6 +330,8 @@ export class Engine {
     }
 
     this.bus.flush();
+
+    if (!this._canRender()) return;
 
     this.renderer.info.reset();
     if (this.postfx) {

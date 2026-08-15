@@ -630,13 +630,44 @@ test('the painter and the sampler agree about which row a cell is on', () => {
 /* Balance                                                           */
 /* ---------------------------------------------------------------- */
 
-test('nothing outruns a sprinting player, so fleeing is always available', () => {
+test('every beast outruns a sprinting player - escape is disengagement, not speed', () => {
+  /* CHANGED, and the change is a finding rather than a tidy-up.
+   *
+   * This used to read `nothing outruns a sprinting player, so fleeing is always
+   * available` and assert `chargeSpeed < CONFIG.player.sprintSpeed`. It passed
+   * because that constant said 8.2 and nothing in the game could go 8.2: the
+   * friction/acceleration equilibrium caps a grounded player at
+   * `acceleration / friction` = 6.0 m/s, measured and derived in
+   * ./player-speed.test.mjs. Against the real number a wolf (7.6) and a bear
+   * (6.4) are both FASTER than a sprinting player, and always were.
+   *
+   * OPEN, and deliberately not decided here: whether that is the balance the
+   * owner wants. A charge is not a permanent state - `_dropTarget` fires past
+   * `loseInterest` or when `memory` runs out with the line of sight broken - so
+   * a player still gets away, by breaking contact rather than by out-running
+   * anything. The bear's own docstring assumes otherwise ("being thrown four
+   * metres back is what buys the sprint away"), which is worth re-reading if
+   * the numbers are ever revisited. Slowing the charges below 6.0 would restore
+   * the original claim; so would making sprint genuinely faster. Both are
+   * balance changes.
+   *
+   * What is pinned now is the truth, and the disengagement that has to exist
+   * for the encounter to be survivable at all. */
+  const cap = CONFIG.player.sprintSpeed;
+  assert.equal(cap, CONFIG.player.acceleration / CONFIG.player.friction,
+    'the player speed cap moved; re-read this whole case against the new number');
   for (const def of Object.values(BEASTS)) {
-    assert.ok(def.chargeSpeed < CONFIG.player.sprintSpeed,
-      `a ${def.id} runs at ${def.chargeSpeed} against a player's ${CONFIG.player.sprintSpeed}`);
-    // ...and everything beats a walk, or there is no threat at all.
+    // Everything beats a walk, or there is no threat at all.
     assert.ok(def.chargeSpeed > CONFIG.player.walkSpeed,
       `a ${def.id} cannot catch a walking player`);
+    assert.ok(def.chargeSpeed > cap,
+      `a ${def.id} charges at ${def.chargeSpeed} against a player's real top speed of ${cap} - `
+      + 'it can now be out-run in a straight line, which is a balance change, not a fix');
+    // ...so the escape has to be the chase ending. Past `loseInterest`, or with
+    // the scent cold and no line of sight, the target is dropped.
+    assert.ok(def.loseInterest > def.sight,
+      `a ${def.id} gives up at ${def.loseInterest} m but sees to ${def.sight} m - it would `
+      + 're-acquire the moment it disengaged, and a chase it always wins could never end');
   }
 });
 

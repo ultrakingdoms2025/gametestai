@@ -203,6 +203,49 @@ const SIM_BAND = 4;
 const SIM_HALF_OUT = 36;
 const SIM_QUARTER_OUT = 68;
 const SIM_EIGHTH_OUT = RENDER_OUT;
+
+/**
+ * Distance bands on the POSE rate - how often `NPC.update` runs the animator.
+ *
+ * These distances are not new; they were three bare comparisons inside
+ * `_updateLOD` (`d < 16 ? 1 : d < 34 ? 0.5 : d < 65 ? 0.25 : 0.1`) and they were
+ * the only switch in this file that was still a line rather than a band, which
+ * the note above DETAIL_IN already says every switch here should be. Measured
+ * against the real `_updateLOD`, a character loitering on an edge with +/-1.5 m
+ * of jitter - well over a stride, and the same fixture the cadence band is
+ * tested with:
+ *
+ *     pose rate, 16 / 34 / 65 m     190 flips per 600 frames, at every edge
+ *     sim cadence, 36 m (banded)      0
+ *     eye detail, 27 m (banded)       0
+ *     shadow casting, 49 m (banded)   0
+ *
+ * ── What that chatter was NOT doing, which is why it survived this long ────
+ * Nothing visible. A rate change conserves animation phase: `NPC.update` hands
+ * the animator `useDt = this._animAccum`, i.e. exactly the time since the last
+ * pose, so a character sampled at 30 Hz and one sampled at 15 Hz walk their
+ * cycle at the same speed and only differ in temporal resolution. Nothing
+ * appears, disappears or jumps at the edge - unlike the eye meshes, the foot IK
+ * and above all the shadow, which is why those three were banded first.
+ *
+ * So this is consistency and a removed footgun rather than a measured win, and
+ * the band width is the same 4 m as its neighbours for the same reason: a
+ * stride moves a pelvis well under a metre.
+ */
+const POSE_BAND = 4;
+const POSE_HALF_OUT = 16;
+const POSE_QUARTER_OUT = 34;
+const POSE_TENTH_OUT = 65;
+/**
+ * The pose rate for a character outside the frustum.
+ *
+ * Higher than the far-distance rate (0.1), and deliberately: `NPC.update`'s
+ * off-screen branch holds a hidden character at a 0.2 s floor before it will
+ * pose at all, so the effective cadence is about 5 Hz whatever this says. It is
+ * the rate a character resumes at the instant it comes back on screen that
+ * matters, and 0.12 is that.
+ */
+const POSE_RATE_HIDDEN = 0.12;
 /**
  * Ceiling on one catch-up step, in seconds.
  *
@@ -1841,7 +1884,39 @@ export class NPCManager {
           if (h.hairMesh) h.hairMesh.castShadow = shadow;
         }
       }
-      lod.rate = !lod.visible ? 0.12 : d < 16 ? 1 : d < 34 ? 0.5 : d < 65 ? 0.25 : 0.1;
+      /* Pose cadence. Three hysteretic edges evaluated near to far, exactly as
+       * the simulation cadence below does it - and the previous state is read
+       * back off `lod.poseRate` rather than `lod.rate` precisely because the
+       * frustum term overwrites `lod.rate` with a value (0.12) that does not
+       * sit in this monotone sequence. Keeping the distance band on its own
+       * field is what stops a character that has been off screen coming back
+       * with a nonsense band state. @see POSE_BAND
+       *
+       * NOT keyed off `npc.root.visible`, and that is measured rather than
+       * assumed. A character past RENDER_OUT but still inside the frustum is
+       * posed at 6 Hz while nothing draws it, which looks like pure waste; the
+       * cost of that waste, attributed with a wrapper around the real
+       * `NPC.update` over 600-frame samples, is 18-26 us per pose and:
+       *
+       *     station, plaza-wide (35 of 68 in that state)   0.068 ms/frame
+       *     station, dome-inside (45)                      0.085 ms/frame
+       *     station, habitation court (67)                 0.085 ms/frame
+       *     medieval, village square (15 of 47)            0.019 ms/frame
+       *     medieval, hills vista (35 of 51)               0.036 ms/frame
+       *
+       * against median frames of 9-24 ms - between 0.15% and 0.55% of a frame,
+       * inside the noise of the wall clock that measures it (an A/B that
+       * skipped the pose entirely could not be distinguished from the control).
+       * Adding the term would also make the pose band the one switch here whose
+       * state depends on another switch's, and it would trade that 0.3% for a
+       * character that has not been posed for the whole time it spent past
+       * 135 m arriving mid-stride at RENDER_IN. Not worth it. */
+      let poseRate = 1;
+      if (pastBand(lod.poseRate <= 0.5, d, POSE_HALF_OUT, POSE_BAND)) poseRate = 0.5;
+      if (pastBand(lod.poseRate <= 0.25, d, POSE_QUARTER_OUT, POSE_BAND)) poseRate = 0.25;
+      if (pastBand(lod.poseRate <= 0.1, d, POSE_TENTH_OUT, POSE_BAND)) poseRate = 0.1;
+      lod.poseRate = poseRate;
+      lod.rate = lod.visible ? poseRate : POSE_RATE_HIDDEN;
       /* Simulation cadence. Distance only, never `lod.visible`: a character
        * behind the player still has to walk to where it is going, and freezing
        * everyone off screen is how a crowd ends up teleporting the moment you

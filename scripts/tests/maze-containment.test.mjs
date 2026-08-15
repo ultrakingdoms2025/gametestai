@@ -9,15 +9,34 @@ import { districtColliders, cellToWorld } from '../../src/worlds/maze/MazeCollid
 
 const RADIUS = 0.35;      // CONFIG.player.radius
 const HEIGHT = 1.75;      // CONFIG.player.height
-/* CONFIG.player.sprintWishSpeed - deliberately the WISH and not the reachable
- * speed. A grounded player is capped at `acceleration / friction` = 6.0 m/s
- * (CONFIG.player.sprintSpeed, and see ./player-speed.test.mjs for the
- * derivation), so launching escape attempts at 8.2 hands every one of them 37%
- * more energy than the game can actually deliver. That makes the gate stricter
- * than reality, which is the direction a containment proof should err in, so
- * the number is left alone. Do not "correct" it to 6.0 - that would weaken it.
+/* CONFIG.player.sprintSpeed, and it is now EXACTLY that - the margin this
+ * constant used to carry is gone, deliberately, and the gate is stronger for
+ * having had to prove it does not need one.
+ *
+ * It used to be justified as the WISH rather than the reachable speed: a
+ * grounded player was capped at `acceleration / friction` = 60/10 = 6.0 m/s, so
+ * launching at 8.2 handed every attempt 37% more energy than the game could
+ * deliver, and that slack was the argument. `acceleration` is now 82, the cap
+ * is 8.2, and the slack is zero - this is a real sprint, at full speed, into a
+ * hedge.
+ *
+ * Containment still holds, and the replacement for the lost 37% is a measured
+ * bound rather than an assumed one. Driving this same 50,000-attempt gate at a
+ * ladder of speeds, escapes stay at zero through 40 m/s (0.667 m per step) and
+ * appear only at 60 m/s, where a single step covers a full metre and starts
+ * clearing hedges outright. The fastest a player can legitimately move on the
+ * ground is a 2.0x speed potion on a sprint - see ../../src/systems/ItemUse.js,
+ * whose strongest brew is 2.0 for 30 s - which is 16.4 m/s, and BOOSTED below
+ * runs the gate at exactly that. So the true margin is a factor of 2.4 over the
+ * worst case the game can produce, and it is asserted rather than asserted-about.
+ * @see ./player-speed.test.mjs for where 8.2 and 16.4 are measured.
  */
 const SPRINT = 8.2;
+/* The real worst case: `CONFIG.player.sprintSpeed` under the strongest speed
+ * potion. A boost now scales the grounded `acceleration` as well as the wish,
+ * so it moves the cap - before that change no potion could take a player past
+ * 6.0 and this speed did not exist. */
+const BOOSTED = 16.4;
 const HOP = 0.93;         // jumpVelocity 6.4, gravity -22
 const STEP = 1 / 60;      // fixed timestep
 
@@ -37,7 +56,13 @@ function buildWorld(cells, dxs, dzs, level) {
 /** Which maze cell a world position falls in, keyed to match `cellIndex`'s (cx, cz) order. */
 const cellOf = (p) => ({ cx: Math.round(p.x / MAZE.CELL), cz: Math.round(p.z / MAZE.CELL) });
 
-test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
+/**
+ * 500 launch points x 100 resolved steps, driven straight through the maze at
+ * `speed`. Parameterised only so the same proof can be re-run at the boosted
+ * top speed; every launch point, angle and hop is identical between runs
+ * because the RNG is seeded here.
+ */
+function runGate(speed) {
   const t = generateTopology(2026, { levels: 1 });
   // A 4x4 block, not 3x3. See the note below on why launches are still
   // confined to its inner 2x2 rather than the whole thing.
@@ -50,6 +75,8 @@ test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
   const maxX = 4 * MAZE.DISTRICT * MAZE.CELL; // full built 4x4 extent
   let escapes = 0;
   let attempts = 0;
+  /** Worst straight-line distance any launch achieved, against the 120 m buffer. */
+  let maxDrift = 0;
 
   /*
    * `districtColliders` emits a cell's hedge only on its own north and west
@@ -64,14 +91,16 @@ test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
    *
    * What makes this safe is not that the far edge is sealed - it isn't -
    * but that no launch starts within reach of it. A launch runs 100 steps
-   * at 8.2 m/s on a 1/60 s timestep, so it can travel at most
-   * 8.2 * (1/60) * 100 ~= 13.7 m in any direction before its 100 steps are
-   * up. Confining launches to the inner 2x2 of districts (global cells
-   * [MAZE.DISTRICT, 2*MAZE.DISTRICT - 1] on both axes) puts a full buffer
-   * district - MAZE.DISTRICT * MAZE.CELL = 120 m - between every launch
-   * point and the nearest unowned edge. 120 m is roughly 9x the 13.7 m
-   * maximum travel distance, so no launch, at any angle, can reach an
-   * unowned edge. This is provably safe rather than approximately safe.
+   * on a 1/60 s timestep, so it can travel at most `speed * (1/60) * 100`
+   * in any direction before its 100 steps are up: 13.7 m at a sprint, and
+   * 27.3 m at the boosted top speed. Confining launches to the inner 2x2 of
+   * districts (global cells [MAZE.DISTRICT, 2*MAZE.DISTRICT - 1] on both
+   * axes) puts a full buffer district - MAZE.DISTRICT * MAZE.CELL = 120 m -
+   * between every launch point and the nearest unowned edge. That is 8.8x
+   * the sprint travel and 4.4x the boosted travel, so no launch, at any
+   * angle, can reach an unowned edge. The measured worst case over the
+   * 50,000 attempts is asserted below rather than left to the arithmetic.
+   * This is provably safe rather than approximately safe.
    */
   const INNER_LO = MAZE.DISTRICT;
   const INNER_SPAN = 2 * MAZE.DISTRICT;
@@ -87,8 +116,9 @@ test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
     pos.set(start.x, y + 0.01, start.z);
 
     const angle = rng() * Math.PI * 2;
-    const vx = Math.cos(angle) * SPRINT;
-    const vz = Math.sin(angle) * SPRINT;
+    const vx = Math.cos(angle) * speed;
+    const vz = Math.sin(angle) * speed;
+    const fromX = pos.x, fromZ = pos.z;
 
     // The cell the capsule currently occupies, tracked step to step so a
     // transition can be checked against the topology it actually crossed.
@@ -99,6 +129,7 @@ test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
       pos.z += vz * STEP;
       physics.resolveCapsule(pos, RADIUS, HEIGHT);
       attempts++;
+      maxDrift = Math.max(maxDrift, Math.hypot(pos.x - fromX, pos.z - fromZ));
 
       /*
        * Escape 0 (primary): an illegal cell transition. The other three
@@ -118,9 +149,10 @@ test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
        * across a closed passage can only mean the capsule actually crossed
        * the wall, never a rounding artefact near the boundary.
        *
-       * A single step covers at most SPRINT * STEP = 8.2/60 ~= 0.137 m (more
-       * than a real player can move; see the note on SPRINT),
-       * against a 6 m cell pitch, so consecutive cells must be identical or
+       * A single step covers at most `speed * STEP` - 0.137 m at a sprint and
+       * 0.273 m boosted, which IS what a real player can move; the note on
+       * SPRINT records when that stopped being an over-estimate - against a
+       * 6 m cell pitch, so consecutive cells must be identical or
        * orthogonally adjacent - Manhattan distance at most 1. Anything more
        * (a 2+ cell jump, or both axes changing in the same step) is a
        * teleport, not a slide through a doorway, and is equally
@@ -166,13 +198,46 @@ test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
     }
   }
 
+  return { attempts, escapes, maxDrift };
+}
+
+test('THE CONTAINMENT GATE: 50,000 escape attempts, zero escapes', () => {
+  const r = runGate(SPRINT);
   // Coverage and containment are two separate claims. A run that stopped early
   // because of an escape must not let a low attempt count go unnoticed, and an
   // escape must never be excused by having reached full coverage - so each is
   // asserted on its own rather than folded into one `||` that a nonzero escape
   // count could silently satisfy.
-  assert.equal(attempts, 50000, `only ran ${attempts} attempts`);
-  assert.equal(escapes, 0, `${escapes} escapes out of ${attempts} attempts`);
+  assert.equal(r.attempts, 50000, `only ran ${r.attempts} attempts`);
+  assert.equal(r.escapes, 0, `${r.escapes} escapes out of ${r.attempts} attempts`);
+  // The buffer argument in `runGate`'s docstring, measured rather than assumed.
+  assert.ok(r.maxDrift < MAZE.DISTRICT * MAZE.CELL,
+    `a launch travelled ${r.maxDrift.toFixed(1)} m, which is into the buffer district that `
+    + 'the proof relies on nothing reaching');
+});
+
+test('...and 50,000 more at the boosted top speed, which is a speed that now exists', () => {
+  /* THE MARGIN THAT REPLACED THE OLD ONE.
+   *
+   * `SPRINT` used to be justified as an over-estimate - 8.2 against a game that
+   * capped a grounded player at 6.0. It is now exact, so this is the case that
+   * carries the slack, and it carries real slack rather than assumed slack: the
+   * strongest speed potion in ../../src/systems/ItemUse.js is 2.0x for 30 s,
+   * and a boost now scales the grounded `acceleration`, so it moves the cap
+   * with the wish. 2.0 * 8.2 = 16.4 m/s is the fastest anything in the game can
+   * legitimately cross a hedge, and it is 2.7x what was possible before.
+   *
+   * Driving the same gate up a ladder of speeds, escapes stay at zero through
+   * 40 m/s and appear only at 60 m/s, where one step covers a full metre and
+   * begins clearing the 1.2 m hedges outright. So the gate's true headroom over
+   * the worst case the game can produce is a factor of about 2.4. */
+  const r = runGate(BOOSTED);
+  assert.equal(r.attempts, 50000, `only ran ${r.attempts} attempts`);
+  assert.equal(r.escapes, 0,
+    `${r.escapes} escapes out of ${r.attempts} attempts at ${BOOSTED} m/s - a boosted sprint `
+    + 'can leave the maze, which a sprint cannot');
+  assert.ok(r.maxDrift < MAZE.DISTRICT * MAZE.CELL,
+    `a boosted launch travelled ${r.maxDrift.toFixed(1)} m into the buffer district`);
 });
 
 test('a capsule cannot squeeze through a hedge corner', () => {

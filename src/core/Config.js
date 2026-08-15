@@ -32,73 +32,128 @@ export const CONFIG = {
     /**
      * The speed a sprint actually reaches, and it is NOT a free parameter.
      *
-     * ── This number used to be a lie ──────────────────────────────────────
-     * It read 8.2, and nothing in the game could go 8.2. `Player._move` runs
-     * friction and then acceleration on every grounded fixed step:
+     * ── Where it comes from ───────────────────────────────────────────────
+     * `Player._move` runs friction and then acceleration on every grounded
+     * fixed step:
      *
      *     friction     v -= v * friction * dt            (above STOP_SPEED)
      *     accelerate   v += min(acceleration * dt, wish - v)
      *
      * so the fixed point is where the two cancel, `v * friction * dt =
-     * acceleration * dt`, i.e. **v = acceleration / friction**. The step
-     * length cancels out and so does the wish speed: 60 / 10 = 6.0 m/s is the
+     * acceleration * dt`, i.e. **v = acceleration / friction**. The step length
+     * cancels out and so does the wish speed: `acceleration / friction` is the
      * ceiling on ANY grounded movement, and every wish at or above it lands on
-     * exactly the same 6.0.
+     * exactly the same number. 82 / 10 = 8.2 m/s.
+     *
+     * ── This number used to be a lie, and then it was a demotion ──────────
+     * It read 8.2 while the ratio was 60 / 10, so nothing in the game could go
+     * 8.2 - a sprint measured 6.0 and so did a boosted sprint. That was first
+     * fixed by writing 6.0 here, which made the config honest at the price of
+     * making the sprint slower than it had ever claimed to be and leaving a
+     * speed pickup that did nothing to a sprinting player.
+     *
+     * The owner's decision was to make 8.2 true instead, by moving the ratio:
+     * `acceleration` went 60 -> 82 and `friction` was deliberately NOT touched.
+     * @see acceleration for the measurements that chose between those two levers.
      *
      * Measured by driving the real controller across flat ground for 20 s with
      * the stamina gate removed (scripts/tests/player-speed.test.mjs re-runs all
      * of this):
      *
-     *     walk                      4.6000 m/s     (below the cap: honest)
-     *     sprint                    6.0000 m/s     (against a config saying 8.2)
-     *     walk + 1.5x speed boost   6.0000 m/s
-     *     sprint + 1.5x boost       6.0000 m/s
-     *     sprint + 3.0x boost       6.0000 m/s
+     *     walk                      4.6000 m/s     (below the cap: wish-limited)
+     *     sprint                    8.2000 m/s     (the cap)
+     *     crouch                    2.2000 m/s
+     *     walk + 1.5x speed boost   6.9000 m/s     (= 1.5 * walkSpeed)
+     *     sprint + 1.5x boost      12.3000 m/s     (= 1.5 * the cap)
+     *     sprint + 3.0x boost      24.6000 m/s     (= 3.0 * the cap)
      *
-     * With the stamina gate in play a sprint is not even that: the pool is 100
-     * and drains at 15/s, so a held sprint averages 5.885 m/s over four seconds
-     * and 5.36 m/s over twelve.
+     * The boosted rows are the second half of the same decision: a boost used
+     * to scale only the WISH, which a sprint is already over, so it measured
+     * exactly 8.2 at 1.5x and at 3.0x alike. `_move` now scales the grounded
+     * `acceleration` by the same multiplier, which moves the cap with it.
+     * @see ../player/Player.js `_move`
      *
-     * ── Two things this number now tells you that 8.2 did not ─────────────
-     *   - A speed boost does nothing to a sprint. `boostSpeed` only scales the
-     *     wish, and the wish is already above the cap.
-     *   - A wolf charges at 7.6 and a bear at 6.4 (npc/BeastSpecies.js), so
-     *     both of them OUTRUN a sprinting player. Reading 8.2 said the
-     *     opposite, and a balance test in scripts/tests/beast-combat.test.mjs
-     *     was asserting the opposite on the strength of it.
+     * With the stamina gate in play a sprint is not sustained at this speed:
+     * the pool is 100 and drains at 15/s, so a held sprint is rationed to
+     * roughly six and a half seconds before it drops back to a walk.
+     *
+     * ── What this number now tells you that 6.0 did not ───────────────────
+     * A wolf charges at 7.6 and a bear at 6.4 (npc/BeastSpecies.js), and a
+     * sprinting player at 8.2 outruns BOTH. That is the owner's call and the
+     * beast speeds were left exactly as they were; the balance test in
+     * scripts/tests/beast-combat.test.mjs now passes for the right reason
+     * rather than on the strength of a constant that lied.
      *
      * @see sprintWishSpeed for the number the controller actually consumes.
      */
-    sprintSpeed: 6.0,
+    sprintSpeed: 8.2,
     /**
      * The target handed to `_accelerate` while sprinting - a *wish*, not a
      * speed, and deliberately well above the cap above.
      *
-     * Kept at 8.2 rather than lowered to the truth because lowering it is not
-     * free. `_accelerate` adds `min(acceleration * dt, wish - current)`, so
-     * while `current` is between the cap and the wish the two values behave
-     * differently: coming down from a parkour leap landing at 8.52 m/s, a wish
-     * of 8.2 keeps pushing and the speed decays over about a second, where a
-     * wish of 6.0 stops pushing and it collapses in two steps. That is momentum
-     * the player can feel, so the constant that names the ceiling was split off
-     * instead of being written over the one that sets the feel.
+     * Held at the same RATIO to the cap it has always had (8.2 / 6.0 = 1.367,
+     * now 11.2 / 8.2 = 1.366) rather than at the same value, because both of
+     * the things it is load-bearing for are ratios:
      *
-     * ── The option NOT taken, recorded so it stays available ──────────────
-     * Sprint could be made genuinely faster instead, by moving the ratio rather
-     * than the label: `acceleration: 82` (or `friction: 7.3`) puts the cap at
-     * 8.2 and makes the old constant true. That is a real change to how the
-     * game feels - it also raises the ceiling every other ground speed is
-     * measured against, including the boosted walk - so it is a decision for
-     * the owner, not a tidy-up. It was not taken here.
+     *   - The landing decay. `_accelerate` adds `min(acceleration * dt, wish -
+     *     current)`, so while `current` is between the cap and the wish the
+     *     wish is still pushing. `Parkour.tryLeap` SCALES standing velocity by
+     *     1.42, so raising the cap raised the leap too: it used to land at
+     *     6.0 * 1.42 = 8.52 and now lands at 8.2 * 1.42 = 11.64. Measured, the
+     *     decay back to the cap takes 0.350 s at a wish of 11.2 - the same
+     *     0.350 s it took at 6.0 and a wish of 8.2. Leaving the wish at 8.2
+     *     would have put it AT the cap, and the landing then collapses in two
+     *     steps: 11.644 -> 9.703 -> 8.200, measured, 0.033 s.
+     *   - The FOV sprint kick, which normalises measured speed against this
+     *     wish and so tops out at `6.5 * 8.2/11.2` = 4.759 degrees, against
+     *     `6.5 * 6.0/8.2` = 4.756 before. Three thousandths of a degree, i.e.
+     *     the look is unchanged. Leaving the wish at 8.2 would have saturated
+     *     it at the full 6.5. @see ../player/Player.js `_applyFov`
      */
-    sprintWishSpeed: 8.2,
+    sprintWishSpeed: 11.2,
     crouchSpeed: 2.2,
     /**
      * With `friction`, this sets the top ground speed outright:
-     * `acceleration / friction` = 6.0 m/s. @see sprintSpeed
+     * `acceleration / friction` = 8.2 m/s. @see sprintSpeed
+     *
+     * ── Why this lever and not `friction` ─────────────────────────────────
+     * The cap is a ratio, so 8.2 is reachable from either end: `acceleration:
+     * 82` at `friction: 10`, or `acceleration: 60` at `friction: 7.317`. They
+     * are not equivalent. `friction` is the ONLY thing that sheds momentum -
+     * it is what stops you, what turns you, and what decays a landing - so
+     * lowering it makes all three slower at once. Driven against the real
+     * controller on flat ground, all reaching the same 8.2:
+     *
+     *                          60/10 (was)   82/10 (this)  70.1/8.55  60/7.317
+     *     time to stop dead      0.267 s       0.283 s      0.333 s    0.400 s
+     *     stopping distance      0.454 m       0.637 m      0.767 m    0.918 m
+     *     180-degree turn, 95%   0.350 s       0.350 s      0.417 s    0.483 s
+     *     ...carrying on past    0.121 m       0.166 m      0.209 m    0.258 m
+     *     0 to 99% of top        0.433 s       0.433 s      0.500 s    0.600 s
+     *     landing decay to cap   0.350 s       0.350 s      0.417 s    0.483 s
+     *
+     * Raising `acceleration` holds every one of those TIMES exactly where it
+     * was; the only quantities that move are distances, and they move by the
+     * speed ratio 8.2/6.0 = 1.367 because the player is covering ground faster
+     * (0.121 * 1.367 = 0.166). That is what "faster" should cost. Lowering
+     * `friction` instead buys the same top speed by taking 37% longer to stop
+     * and to turn and letting the player carry twice as far past the turn,
+     * which is the definition of skatey. Splitting the difference splits the
+     * cost; it does not avoid it.
+     *
+     * What raising `acceleration` DOES cost is the standing start: a walk from
+     * rest reaches 4.6 m/s in 0.083 s rather than 0.133 s, five frames instead
+     * of eight. Both read as immediate, and no combination avoids it - holding
+     * the walk ramp means holding `acceleration` at 60, which is lever B whole.
+     * The 0.1 s friction time constant, which is what actually gives grounded
+     * movement its character, is untouched.
      */
-    acceleration: 60,
+    acceleration: 82,
     airAcceleration: 12,
+    /**
+     * Deliberately NOT the lever that was moved to raise the sprint cap.
+     * @see acceleration for the measurements.
+     */
     friction: 10,
     jumpVelocity: 6.4,
     gravity: -22,

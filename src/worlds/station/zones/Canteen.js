@@ -2628,7 +2628,9 @@ function castTheNamed(ctx) {
     vendorCategories: ['health', 'spells'],
     vendorTitle: 'Galley Provisions',
     signLines: ['PROVISIONS', 'RATIONS + MEDKITS'],
-    patrol: [[m[0], m[1]], [m[0] + 2, m[1] + 1], [m[0] - 2, m[1]]],
+    /* The third waypoint used to be [m[0] - 2, m[1]], which is 3.2 m up on
+     * the stall's own shelf stack rather than on the floor behind the counter. */
+    patrol: [[m[0], m[1]], [m[0] + 2, m[1] + 1], [m[0] - 2, m[1] - 1]],
   });
 
   const c0 = at(178, SERVERY_R + 2.4);

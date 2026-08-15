@@ -10508,15 +10508,25 @@ export class MedievalWorld extends World {
       [-38.6, 41.0, 0.32, 1, 1.02], [-36.0, 39.2, 3.30, 0, 0.97],
       [-32.4, 22.6, 0.28, 0, 1.04], [-26.0, 2.4, 0.30, 1, 0.99],
       [-19.4, -14.8, 0.34, 0, 1.01], [-14.6, -35.2, 0.26, 1, 1.03],
-      // Wall-walk sentries. Two vertical figures on a 6m parapet are the
-      // cheapest scale reference a castle silhouette can carry.
-      [-52.0, -34.0, 1.55, 0, 1.05, WALK], [-52.0, -78.0, 1.60, 1, 1.03, WALK],
-      [-96.0, -60.0, -1.55, 0, 1.04, WALK],
-      // Two more on the south curtain, which is the run the castle-approach
-      // framing actually sees. A figure on a battlement is the cheapest and
-      // most decisive scale cue a fortification can carry, and the south wall
-      // had none.
-      [-88.0, -25.0, 1.58, 1, 1.02, WALK], [-64.0, -25.0, 1.52, 0, 1.06, WALK],
+      /* Wall-walk sentries. Two vertical figures on a parapet are the cheapest
+       * scale reference a castle silhouette can carry.
+       *
+       * Three of these used to stand at x = -52 and x = -96, on a curtain wall
+       * that has not existed since `CASTLE.hx` went to 40: those are interior
+       * bailey coordinates, and with `f[5]` set they skip the ground contact,
+       * so all three stood in clear air 10.6 m over the grass. They are on the
+       * west and north curtains now - x = -111.8 and z = -91 are the centres
+       * of those two decks' walkable bands, between the merlon collider and
+       * the inner kerb. @see the sentry routes in `_buildInhabitants` for the
+       * measurements. */
+      [-111.8, -34.0, 1.55, 0, 1.05, WALK], [-111.8, -70.0, 1.60, 1, 1.03, WALK],
+      [-100.0, -91.0, -1.55, 0, 1.04, WALK],
+      /* Two more on the south curtain, which is the run the castle-approach
+       * framing actually sees. A figure on a battlement is the cheapest and
+       * most decisive scale cue a fortification can carry, and the south wall
+       * had none. Set back to z = -25.9 so the two live sentries, whose beat
+       * runs along z = -24.4, walk past them rather than through them. */
+      [-88.0, -25.9, 1.58, 1, 1.02, WALK], [-64.0, -25.9, 1.52, 0, 1.06, WALK],
       [-72.0, -91.0, -1.58, 1, 1.04, WALK],
     ];
 
@@ -12608,7 +12618,62 @@ export class MedievalWorld extends World {
      * 30-60m is what sells "inhabited" at hero-shot distance, so these are
      * clustered on the market axis, the wall walk and the approach road rather
      * than spread evenly over 400m of terrain. */
-    const WALK = WALL_TOP + 0.6;
+
+    /* ---- The wall-walk sentries -------------------------------------
+     *
+     * ── The defect this replaced ──────────────────────────────────────────
+     * Both rounds were drawn round a castle 44 m across. The one that got
+     * built is 80 m: `CASTLE.hx` is 40, so the curtains stand at x = -112 and
+     * x = -32, and Hale's two north-south legs - authored at x = -52 and
+     * x = -96, i.e. an enceinte of hx = 22 - ran the length of the bailey
+     * 10.6 m up in clear air. Measured on the built castle with the ground
+     * follower's own probe (`NPC.GROUND_PROBE_UP` + `_DROP`), 204 of the 227
+     * samples along each of those two legs have nothing under them at all.
+     * Pell was worse: all three of his waypoints are INSIDE the bailey and all
+     * three were authored at wall-top height, so every one of them resolved
+     * 11.20 m below where it was written and he did his round on the grass.
+     * `_buildFolk` carried the same wrong enceinte - three of its static
+     * sentries stood in mid-air over the bailey - and is corrected there.
+     *
+     * ── Why this is not a circuit ─────────────────────────────────────────
+     * A wall walk implies walking the wall, so the obvious repair is to move
+     * the two legs out onto the curtains that do exist. That does not work,
+     * and the reason is in the collision rather than the plan: every corner
+     * tower carries a CLOSED parapet ring (`_ringWall` at WT + 1.2, radius
+     * 5.5, 12 overlapping segments) and a solid crenellated crown to match, so
+     * the walk is chopped into four runs that do not join. Flood-filled at
+     * 0.4 m over the built castle the deck comes out as eight components -
+     * four curtain runs of ~1,020 cells and four sealed tower platforms - and
+     * no two of them touch. There is no lap to be had here without rebuilding
+     * four towers, and the towers are pre-expansion content.
+     *
+     * So each man gets the wall that does exist, which is the second of the
+     * two repairs the brief allows. Both take the SOUTH curtain: it is what
+     * Pell's persona says, and it is the face the castle-approach framing
+     * actually sees - `_heroEyes` puts lenses at (-40, 55) and (-72, 16),
+     * both looking north at this run. Their beats do not overlap, so they
+     * never have to pass each other on a 2.4 m deck.
+     *
+     * Open rounds, deliberately: `NPC.routeAhead` reverses at the end of an
+     * open route and wraps a closed one, and wrapping is what would send a
+     * sentry from one end of the wall to the other across sixty metres of
+     * bailey. Each of them walks his length and walks back, which is what a
+     * sentry does. Their spawns sit on the middle waypoint so that
+     * `FriendlyNPC._pickWanderTarget` does not see them at the head of the
+     * round on the first pick and roll for free roam.
+     *
+     * The lane is z = -24.4. The walkable band on this deck is bounded by the
+     * merlon collider at z = -23.62 and the inner kerb at z = -26.68, and
+     * `_rampartDressing` stands its braziers and spear racks along z = -26.05;
+     * -24.4 is clear of all three by more than a capsule radius, measured
+     * every 0.5 m from x = -104 to x = -40. The run itself is passable from
+     * x = -105.6 to x = -38.4 - the corner towers' rings close it at both
+     * ends - so the outermost waypoint is -102.
+     */
+    const WALK = WALL_TOP + 0.2;
+    const WALL_WALK_Z = -24.4;
+    /** A point on the south curtain's wall walk. */
+    const sentry = (x) => new THREE.Vector3(x, WALK, WALL_WALK_Z);
     this.npcSpawns.push(
       {
         position: at(33, 12),
@@ -12641,33 +12706,26 @@ export class MedievalWorld extends World {
         patrol: [at(47.5, 17.5), at(51, 21), at(44, 15)],
       },
       {
-        position: new THREE.Vector3(-96, WALK, -92),
+        // The western beat of the south curtain, tower ring to mid-wall.
+        position: sentry(-87),
         type: 'friendly',
         name: 'Serjeant Hale',
         persona:
           'A wall-walk sentry of the Aldermoor garrison. Bored, cold, and entirely ' +
           'convinced that nothing will ever happen on his watch. Will trade rumours for ' +
           'anything that breaks the monotony.',
-        patrol: [
-          new THREE.Vector3(-96, WALK, -92),
-          new THREE.Vector3(-52, WALK, -92),
-          new THREE.Vector3(-52, WALK, -24),
-          new THREE.Vector3(-96, WALK, -24),
-        ],
+        patrol: [sentry(-102), sentry(-87), sentry(-72)],
       },
       {
-        position: new THREE.Vector3(-58, WALK, -30),
+        // ...and the eastern beat, six metres clear of Hale's turning point.
+        position: sentry(-54),
         type: 'friendly',
         name: 'Watchman Pell',
         persona:
           'The other half of the south curtain watch. Says almost nothing, notices ' +
           'everything, and has an unnerving habit of answering a question a full minute ' +
           'after it was asked.',
-        patrol: [
-          new THREE.Vector3(-58, WALK, -30),
-          new THREE.Vector3(-96, WALK, -30),
-          new THREE.Vector3(-96, WALK, -86),
-        ],
+        patrol: [sentry(-66), sentry(-54), sentry(-42)],
       },
       {
         position: at(11, -6),

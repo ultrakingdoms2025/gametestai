@@ -11,6 +11,13 @@ import { waterDepthAt, isDeepWater, WADE_DEPTH, WALKABLE_NORMAL_Y } from './Grou
  * of probe raycasts and pushes away from its neighbours. A stuck detector
  * catches the cases steering alone cannot solve and re-targets.
  *
+ * The target may be a point (`setTarget`) or an ordered route (`setPath`). A
+ * route is walked IN ORDER, corner to corner - it is the authored answer to
+ * "where may this character walk", and the one thing that lets a character go
+ * somewhere the steering could not have found on its own: up a stair flight,
+ * round a walkway, along a road. @see _advancePath for what that costs and for
+ * the shortcut that used to undo it.
+ *
  * `update()` returns a desired velocity in world space; the NPC integrates it
  * and lets `physics.resolveCapsule` do the final wall correction.
  *
@@ -188,9 +195,24 @@ export class Navigation {
     /** @type {THREE.Vector3[]} */
     this.path = [];
     this.pathIndex = 0;
+    /**
+     * Where the current leg started: the previous waypoint, or the position the
+     * agent was standing at when the path was handed over. @see _advancePath
+     */
+    this._legStart = new THREE.Vector3();
+    this._legStartValid = false;
 
     this.arriveRadius = 0.55;
     this.slowRadius = 2.4;
+    /**
+     * How close counts as having turned a corner.
+     *
+     * This is the whole of the corner rounding a route gets: a waypoint is
+     * "reached" inside this radius, so the agent starts its turn this far out
+     * rather than walking into the corner and pivoting on the spot. Any larger
+     * and it is a shortcut - on a 4 m catwalk a 2 m radius is the outside edge.
+     */
+    this.waypointRadius = 1.1;
     this.separationRange = 1.35;
 
     this.desired = new THREE.Vector3();
@@ -252,6 +274,7 @@ export class Navigation {
     this.hasTarget = true;
     this.path.length = 0;
     this.pathIndex = 0;
+    this._legStartValid = false;
     this.arrived = false;
   }
 
@@ -276,7 +299,25 @@ export class Navigation {
     return true;
   }
 
-  /** Follow a waypoint list, smoothed by line-of-sight string pulling. */
+  /**
+   * Walk an ordered waypoint list, in order, corner to corner.
+   *
+   * This is the route follower. The contract is deliberately narrow and it is
+   * worth stating outright, because the thing it replaced looked like one:
+   *
+   *   - Waypoints are visited in the order given. None is ever skipped.
+   *   - The agent steers at ONE waypoint at a time, so the only ground it is
+   *     ever asked to cross is the ground between two CONSECUTIVE waypoints -
+   *     which is the ground the route's author chose.
+   *   - Avoidance still applies on top, unchanged. A route is where to go, not
+   *     a promise that nothing is in the way.
+   *
+   * It is not a planner. It cannot get a character from an arbitrary place to
+   * an arbitrary place, and nothing here builds a graph or a navmesh - see the
+   * module header for why this game does not have one. Getting BACK to a route
+   * after being knocked off it is the caller's problem; `NPC.routeAhead` solves
+   * it by re-entering at the nearest waypoint.
+   */
   setPath(points) {
     let list = points ? points.map((p) => p.clone()) : [];
     /* Authored patrol routes predate the water volumes, and some of them ford
@@ -294,6 +335,9 @@ export class Navigation {
     }
     this.path = list;
     this.pathIndex = 0;
+    // The first leg runs from wherever the agent is standing, which `update`
+    // knows and this does not. Captured on the first step. @see _advancePath
+    this._legStartValid = false;
     this.hasTarget = this.path.length > 0;
     if (this.hasTarget) this.target.copy(this.path[0]);
     this.arrived = false;
@@ -302,6 +346,8 @@ export class Navigation {
   clear() {
     this.hasTarget = false;
     this.path.length = 0;
+    this.pathIndex = 0;
+    this._legStartValid = false;
     this.arrived = true;
     this.desired.set(0, 0, 0);
   }
@@ -316,28 +362,95 @@ export class Navigation {
   }
 
   /**
-   * Advance along a waypoint path, skipping ahead to the furthest waypoint the
-   * agent can actually see. That is what turns a chain of corners into a
-   * smooth diagonal instead of a series of hard turns.
+   * Advance to the next waypoint, and only ever to the NEXT one.
+   *
+   * ── What this replaced, and why it had to go ─────────────────────────────
+   * This used to string-pull: it looked up to three waypoints ahead and jumped
+   * to the furthest one `_clearLine` said it could see, "to turn a chain of
+   * corners into a smooth diagonal". The smoothing is real. The line test is
+   * not: `_clearLine` is a single HORIZONTAL raycast at hip height, so it
+   * reports "clear" for a shortcut across a drop, off a ledge, over a stairwell
+   * or through a river - none of which put anything solid in front of a hip.
+   * Measured on a 4 m L-shaped catwalk over a 20 m void, with the shortcut
+   * across the inside of the elbow being 25 m of open air: `_clearLine` returns
+   * true, and the character spends 2,270 of 7,200 fixed steps below the deck.
+   * The station's promenade routes were authored as single-bearing corridors
+   * specifically so that no pair of waypoints could produce a line that leaves
+   * the walkway - a workaround for exactly this.
+   *
+   * So the smoothing is gone and the corner rounding that survives is
+   * `waypointRadius`, which is bounded and local. The agent walks the ground
+   * its route was authored over, and nothing else.
+   *
+   * ── Correct when a step is eight frames long ─────────────────────────────
+   * `NPCManager` bands the simulation: a demoted character is stepped every
+   * Nth frame with N frames' worth of `dt` at once, so one call to this can
+   * follow a metre and a half of travel. Two things make that safe.
+   *
+   *  1. A waypoint counts as reached when the agent is inside `waypointRadius`
+   *     of it OR has passed the plane through it perpendicular to the leg it
+   *     arrived on. The radius alone is a band, and a long step can jump clean
+   *     over a band - after which the seek turns the character round and walks
+   *     it back, which is the ping-pong this half exists to stop.
+   *  2. It LOOPS. A single long step can consume more than one waypoint on a
+   *     route with short legs, and advancing one per call would leave the
+   *     character chasing a corner it is already past.
+   *
+   * The loop is bounded by the path length: each iteration re-tests against
+   * that waypoint's own leg, so a route that doubles back stops the loop dead
+   * (the agent has not passed the reversed leg's end) rather than unwinding.
    */
   _advancePath(position) {
-    if (this.path.length === 0) return;
-    let best = this.pathIndex;
-    const limit = Math.min(this.path.length - 1, this.pathIndex + 3);
-    for (let i = limit; i > this.pathIndex; i--) {
-      if (this._clearLine(position, this.path[i])) {
-        best = i;
-        break;
-      }
+    const path = this.path;
+    const last = path.length - 1;
+    if (last < 0) return;
+    if (!this._legStartValid) {
+      this._legStart.copy(position);
+      this._legStartValid = true;
     }
-    this.pathIndex = best;
-    const wp = this.path[this.pathIndex];
-    if (position.distanceToSquared(wp) < 1.1 * 1.1) {
-      if (this.pathIndex < this.path.length - 1) this.pathIndex++;
+    let guard = path.length;
+    while (guard-- > 0 && this.pathIndex < last && this._reachedWaypoint(position, this.pathIndex)) {
+      this._legStart.copy(path[this.pathIndex]);
+      this.pathIndex++;
     }
-    this.target.copy(this.path[this.pathIndex]);
+    this.target.copy(path[this.pathIndex]);
   }
 
+  /**
+   * Is the agent at, or past, waypoint `i`?
+   *
+   * XZ only - a route up a stair flight has waypoints 10 m apart vertically and
+   * a character on the third step of it is not "far from" the one at the top in
+   * any sense the steering cares about.
+   */
+  _reachedWaypoint(position, i) {
+    const wp = this.path[i];
+    const dx = position.x - wp.x;
+    const dz = position.z - wp.z;
+    if (dx * dx + dz * dz < this.waypointRadius * this.waypointRadius) return true;
+    // Past the plane through the waypoint, normal along the leg we came in on.
+    // Only the SIGN of the projection matters, and dividing by a positive leg
+    // length cannot change a sign - so this is the plane test with the square
+    // root taken out of it, which is worth doing in something that runs once
+    // per path-following character per step.
+    const lx = wp.x - this._legStart.x;
+    const lz = wp.z - this._legStart.z;
+    // A zero-length leg has no plane. Duplicate waypoints do happen in authored
+    // routes; the radius test above is the whole answer for them.
+    if (lx * lx + lz * lz < 1e-8) return false;
+    return dx * lx + dz * lz >= 0;
+  }
+
+  /**
+   * Is the straight line from `from` to `to` free of walls?
+   *
+   * NOT a walkability test, and callers must not read it as one - see the note
+   * on `_advancePath`, which used to. It is one horizontal raycast at hip
+   * height, so it sees walls, props and cliff faces, and it is blind to
+   * everything under the agent's feet: a drop, a ledge, a stairwell, a river.
+   * It is the right question for "is there something in the way of this walk",
+   * and the wrong one for "may I cut this corner".
+   */
   _clearLine(from, to) {
     _clDir.subVectors(to, from);
     _clDir.y = 0;
@@ -375,18 +488,25 @@ export class Navigation {
     _upSeek.y = 0;
     const dist = _upSeek.length();
     this.distanceToTarget = dist;
-    if (dist < this.arriveRadius) {
-      if (this.path.length === 0 || this.pathIndex >= this.path.length - 1) {
-        // `arrived` latches until a new target is set. That is deliberate
-        // hysteresis: a character nudged half a metre off its destination by a
-        // neighbour must not re-accelerate into it.
-        this.arrived = true;
-        this._relax(dt);
-        this._trackStuck(dt, position, 0);
-        return this.desired;
-      }
+    const finalLeg = this.path.length === 0 || this.pathIndex >= this.path.length - 1;
+    if (dist < this.arriveRadius && finalLeg) {
+      // `arrived` latches until a new target is set. That is deliberate
+      // hysteresis: a character nudged half a metre off its destination by a
+      // neighbour must not re-accelerate into it.
+      this.arrived = true;
+      this._relax(dt);
+      this._trackStuck(dt, position, 0);
+      return this.desired;
     }
-    const speed = maxSpeed * clamp(dist / this.slowRadius, 0.25, 1);
+    /* Slow down for the DESTINATION, not for every corner on the way to it.
+     *
+     * The arrive term used to apply to whatever `target` currently held, which
+     * on a path is the next waypoint - so a character walking a six-point round
+     * decelerated to a quarter speed six times and read as marching between
+     * cones rather than walking a route. Overshooting a corner is what the
+     * plane test in `_advancePath` is for; it does not need to be prevented by
+     * crawling into it. */
+    const speed = finalLeg ? maxSpeed * clamp(dist / this.slowRadius, 0.25, 1) : maxSpeed;
     if (dist > 1e-4) _upSeek.multiplyScalar(speed / dist);
     this.desired.copy(_upSeek);
     // The seek direction is the reference the avoidance clamp works against, so

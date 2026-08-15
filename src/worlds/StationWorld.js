@@ -10083,7 +10083,7 @@ export class StationWorld extends World {
     });
 
     /**
-     * A route that goes up a stair flight, walks the promenade, and comes back.
+     * A round that climbs a stair flight, walks the promenade, and comes down.
      *
      * ── Why this exists ───────────────────────────────────────────────────
      * Nothing in this world had ever routed anybody upstairs. Measured on the
@@ -10094,33 +10094,61 @@ export class StationWorld extends World {
      * `Navigation`/`NPC`) is a capability; nobody exercises a capability that
      * nothing asks for.
      *
-     * ── Why every waypoint is within two degrees of the flight's bearing ──
-     * `FriendlyNPC._pickWanderTarget` jumps one or two waypoints ahead at
-     * random and then STEERS STRAIGHT AT the one it picked - there is no route
-     * following, and a straight line between two arbitrary points on a 72 m
-     * ring leaves the ring. So this route is deliberately a corridor rather
-     * than a circuit: every point is inside the 5.4 m opening cut in the outer
-     * railing at this bearing (+-2.07 degrees at the deck edge), which means any
-     * straight line between any two of them stays over the flight or over the
-     * walkway deck. A character cannot pick a pair that walks it into a railing.
+     * ── These used to be corridors, and no longer are ─────────────────────
+     * Every waypoint used to sit within two degrees of one flight's bearing,
+     * inside the 5.4 m opening cut in the outer railing, because
+     * `FriendlyNPC._pickWanderTarget` picked one waypoint "one or two ahead at
+     * random" and steered straight at it. Any straight line between two
+     * arbitrary points on a 72 m ring leaves the ring, so the only safe route
+     * was one whose every pair of points produced a line that could not. That
+     * is a workaround; the route follower in `Navigation._advancePath` is the
+     * fix, and these are now the real thing.
      *
-     * Walking the loop all the way round is the larger version of this and it
-     * needs a route follower that honours waypoint ORDER. That is a change to
-     * how every character in the game moves, and it is not this.
+     * ── Why 15 degrees, and why 72.617 ───────────────────────────────────
+     * A round has to be described by legs the character may actually walk, and
+     * a leg is a straight line. A 15 degree step subtends a chord whose middle
+     * falls `LOOP_R * (1 - cos(7.5 deg))` = 0.62 m inboard of the arc - so the
+     * waypoints are set out on the CIRCUMSCRIBED radius `LOOP_R / cos(7.5 deg)`
+     * instead, which splits that error either side of the centreline and puts
+     * every point of every leg within 0.31 m of it. The deck is 6 m wide with
+     * its railings 0.15 m in, so that is 2.5 m of clearance to the handrail on
+     * both sides - the whole point being that this is arithmetic rather than a
+     * bearing the author had to keep everything inside.
+     *
+     * @param {number} upDeg bearing of the flight the round climbs
+     * @param {number} [downDeg] bearing it descends; omitted, it goes all the
+     *   way round and comes back down the same one, and the round is CLOSED -
+     *   @see NPC.routeAhead, which walks a closed round in one direction
+     *   forever and an open one out and back.
      */
-    const promenadeRoute = (deg) => {
-      const P = (r, off, y) => {
-        const p = roadPos(deg, r, off, y, new THREE.Vector3());
+    const RING_STEP_DEG = 15;
+    const RING_R = LOOP_R / Math.cos((RING_STEP_DEG / 2) * DEG);
+    const promenadeRound = (upDeg, downDeg) => {
+      const closed = downDeg === undefined;
+      const endDeg = closed ? upDeg : downDeg;
+      const P = (deg, r, y) => {
+        const p = roadPos(deg, r, 0, y, new THREE.Vector3());
         return [p.x, p.z, y];
       };
-      return [
-        P(93, 0, 0.2),                         // hub deck, outboard of the foot
-        P(WALKWAY.STAIR_R_OUTER + 0.4, 0, 0.2),// standing at the bottom step
-        P(74, 0, WALKWAY_DECK_TOP),            // arrived, on the deck's outer half
-        P(72, -1.8, WALKWAY_DECK_TOP),         // along the promenade, inside the
-        P(72, 1.8, WALKWAY_DECK_TOP),          //   railing opening either way
-        P(70.5, 0, WALKWAY_DECK_TOP),          // the inner edge, looking over
+      const out = [
+        P(upDeg, 93, 0.2),                          // hub deck, outboard of the foot
+        P(upDeg, WALKWAY.STAIR_R_OUTER + 0.4, 0.2), // standing at the bottom step
+        P(upDeg, 74, WALKWAY_DECK_TOP),             // arrived, through the railing opening
       ];
+      // Round the ring, one leg per RING_STEP_DEG. A closed round is the whole
+      // 360; an open one is the short way to the far flight.
+      const span = closed ? 360 : (((endDeg - upDeg) % 360) + 360) % 360;
+      const legs = Math.round(span / RING_STEP_DEG);
+      for (let k = 1; k <= legs; k++) {
+        out.push(P(upDeg + (span * k) / legs, RING_R, WALKWAY_DECK_TOP));
+      }
+      out.push(P(endDeg, 74, WALKWAY_DECK_TOP));            // back at the opening
+      out.push(P(endDeg, WALKWAY.STAIR_R_OUTER + 0.4, 0.2));// down onto the deck
+      // A closed round rejoins its own first waypoint 0.2 m away, which is a
+      // shorter leg than any in it - so `NPC.routeAhead` measures it as closed
+      // and the character keeps circling. An open one needs both ends stated.
+      if (!closed) out.push(P(endDeg, 93, 0.2));
+      return out;
     };
 
     /**
@@ -10271,11 +10299,11 @@ export class StationWorld extends World {
 
       /* --- The promenade, which nobody had ever set foot on ---------------
        *
-       * Two characters whose routes go UP a stair flight, onto the walkway loop
-       * and back down. @see promenadeRoute for why the routes are corridors on
-       * one bearing rather than circuits of the ring. */
-      ...[30, 210].map((deg, i) => {
-        const route = promenadeRoute(deg);
+       * Two characters whose rounds go UP a stair flight, onto the walkway loop
+       * and back down. One walks the whole 452 m ring on a closed circuit; the
+       * other crosses between the two flights on the +X axis and walks back.
+       * @see promenadeRound. */
+      ...[promenadeRound(30), promenadeRound(210, 30)].map((route, i) => {
         const [name, persona] = i === 0
           ? ['Ceri Bardo',
             'Walks the promenade loop on a fixed round - officially checking the deck grating and the handrail runs, actually because it is the only place on the ring with a view of the whole plaza at once. She knows the sightlines from up there better than anyone and will tell you exactly where to stand to watch a gateway fire.']

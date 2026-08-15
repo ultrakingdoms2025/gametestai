@@ -102,7 +102,7 @@ export class HostileNPC extends NPC {
     this.selectWeapon(ctx.weaponId);
 
     this.setState('PATROL');
-    if (this.patrol.length > 0) this.nav.setPath(this.patrol);
+    if (this.patrol.length > 0) this.nav.setPath(this.routeAhead(3));
   }
 
   get target() {
@@ -307,14 +307,18 @@ export class HostileNPC extends NPC {
     this._lookTarget = null;
     this.animator.setAimTarget(null);
 
-    if (this.nav.path.length === 0 && this.patrol.length > 0) this.nav.setPath(this.patrol);
-    if (!this.nav.active) {
-      if (this.patrol.length > 1) {
-        // Loop the route rather than stopping at the end of it.
-        this.nav.setPath(this.patrol);
-      } else {
-        this._wanderNear(this.spawnPoint, 7);
-      }
+    /* Keep the round going, in order and from where it actually is.
+     *
+     * This used to re-issue `setPath(this.patrol)` whole, which restarts at
+     * waypoint 0 - and on an open route (every bandit route in the vale is
+     * three random points around a home, and every road traveller's is a crop
+     * of a road) waypoint 0 from the far end is a straight line back across
+     * everything in between. `routeAhead` walks a closed round round and turns
+     * an open one around. */
+    if (this.patrol.length > 1) {
+      if (this.nav.path.length === 0 || !this.nav.active) this.nav.setPath(this.routeAhead(3));
+    } else if (!this.nav.active) {
+      this._wanderNear(this.spawnPoint, 7);
     }
     if (this.nav.isStuck) {
       this.nav.acknowledgeStuck();

@@ -135,6 +135,14 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
  * Steep faces are unaffected: a wall's normal has `y` near zero, and a slope too
  * steep to stand on still brakes, which is what should happen to a character
  * about to walk into a cliff.
+ *
+ * Every caller here hands this a RAYCAST hit, whose normal is the true face
+ * normal, so the threshold means here exactly what it says: 56.6 degrees. That
+ * is worth knowing because the same constant does NOT mean 56.6 degrees where
+ * it is compared against `resolveCapsule`'s contact normals - those diverge
+ * past ~44 degrees, which is what really sets the player's walkable ceiling.
+ * Keep raycast normals and solver normals apart when reasoning about this.
+ * @see ./Grounding.js `WALKABLE_NORMAL_Y`
  */
 function isFloorHit(hit) {
   return (hit?.normal?.y ?? 0) >= WALKABLE_NORMAL_Y;

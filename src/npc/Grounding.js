@@ -22,7 +22,30 @@ import { COLLISION_LAYER } from '../physics/Physics.js';
  * raycasts and the small result array are affordable.
  */
 
-/** Below this the surface is a wall or a steep roof, not a floor. */
+/**
+ * Below this the surface is a wall or a steep roof, not a floor. 56.6 degrees.
+ *
+ * ── This is NOT the slope a character can actually walk up ────────────────
+ * It is the right threshold for the question it is asked here, where the
+ * normal comes from a RAYCAST and is the true face normal. But it is also read
+ * by `Player._move` and `Navigation._probe` against normals that come out of
+ * `Physics.resolveCapsule`, and those stop being the true face normal past
+ * ~44 degrees: a moving capsule on a 46 degree ramp reports about 0.44 here,
+ * not 0.69, so it reads as a wall to be stepped over rather than as floor.
+ *
+ * The ceiling in effect for the standing player is therefore ~45 degrees, not
+ * the 56.6 this number implies - and past it the player is not stopped, it is
+ * laddered up by the step-up probe at up to 7.3 m/s of climb against a 6.0 m/s
+ * ground speed cap. `Physics.resolveCapsule` has its own third number, 0.64
+ * (50.2 degrees), for `grounded`.
+ *
+ * Do not raise or lower this expecting the walkable ceiling to move with it;
+ * it will not until the solver's closest point is fixed. The mechanism, the
+ * measurements and why the fix was not taken alone are at the closest-point
+ * iteration in `Physics.resolveCapsule`.
+ * @see ../physics/Physics.js `resolveCapsule`
+ * @see ../../scripts/tests/capsule-normal.test.mjs
+ */
 const WALKABLE_NORMAL_Y = 0.55;
 /** A person needs this much clear air above a surface to stand on it. */
 const STANDING_HEADROOM = 1.85;

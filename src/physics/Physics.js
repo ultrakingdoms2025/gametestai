@@ -1111,9 +1111,93 @@ export class Physics {
           if (!cp) continue;
           inside = false;
         } else {
-          // Closest point on the collider to the capsule axis. Approximated by
-          // iterating: collider->axis, then axis->collider. Two passes is enough
-          // for the convex shapes we use.
+          /* Closest point on the collider to the capsule axis, by alternating
+           * projection: collider->axis, then axis->collider.
+           *
+           * ── Two passes is NOT enough past ~44 degrees ─────────────────────
+           * This is where the walkable ceiling the game actually has comes
+           * from, and it is not the one the constants say. Measured at
+           * 7178224; every number below is pinned by
+           * @see ../../scripts/tests/capsule-normal.test.mjs
+           *
+           * The pair the loop leaves is inconsistent. The re-projection after
+           * this block updates `onSeg` one more time, so the `onSeg` that
+           * forms the push direction belongs to a `cp` computed for the
+           * PREVIOUS one. On gentle ground that costs nothing: pass 1 lands its
+           * closest point at or below the bottom sphere centre, `onSeg` snaps
+           * to the endpoint `segA` immediately, and pass 2 is the exact
+           * perpendicular. On a steep face pass 1 lands ABOVE `segA`, `onSeg`
+           * is an interior point of the axis, and the surviving pair spans a
+           * chord rather than the perpendicular.
+           *
+           * The crossover is exact, and it is a property of the CAPSULE rather
+           * than of the slope. Pass 1 stays sufficient while
+           *
+           *     (height/2 - radius) * sin^2 p  <=  radius * cos p
+           *
+           * which is 43.88 deg for the standing player (r 0.35, h 1.75), 43.77
+           * for the default NPC (0.33, 1.656), 47.96 for the dismount probe
+           * (0.35, 1.55) and 67.43 crouched (0.35, 1.015) - each reproduced to
+           * within 0.01 deg by driving the solver at that size.
+           *
+           * Past it the reported normal falls away fast, and then the contact
+           * is dropped outright: the chord is LONGER than the true distance, so
+           * `dist >= radius` below rejects a real overlap until the capsule has
+           * sunk past a dead band. Standing player, at 1 mm of perpendicular
+           * penetration - identical on an oriented box and on a heightfield to
+           * 1e-7, so this is the iteration and not a box artefact:
+           *
+           *     pitch   true n.y   reported   contact needs a sink of
+           *     43.0     0.7314     0.7314          0
+           *     45.0     0.7071     0.6842        0.16 mm
+           *     46.5     0.6884     0.6323        0.98 mm
+           *     47.0     0.6820     (none)         1.4 mm
+           *     50.0     0.6428     (none)         6.4 mm
+           *     55.0     0.5736     (none)          28 mm
+           *     58.0     0.5299     (none)          54 mm
+           *
+           * So the deeper a character sinks the worse the normal it gets back,
+           * and a walking capsule sinks a long way: the ground-stick bias alone
+           * is 2.2 m/s, 37 mm per fixed step. That is why the DRIVEN onset (~40
+           * deg) is lower than the static one, and why a sprint still fires
+           * step probes on a 45 deg ramp that a walk crosses cleanly. Steep
+           * OVERHEAD faces lose their normal symmetrically: -0.7071 reads
+           * -0.5762 at 45 deg.
+           *
+           * ── Why it is still two passes ────────────────────────────────────
+           * A third pass fixes it completely - `onSeg` reaches `segA` and stays
+           * there, so the next `cp` is the exact perpendicular. Measured exact
+           * to 1e-16 at every pitch to 60.6 deg for this capsule, with contacts
+           * registering at any penetration at all, and flat ground stays
+           * bit-identical (`player-speed.test.mjs` still hashes 834f9782). It
+           * costs +24-27% of `resolveCapsule` (+0.33-0.40 us on 1.5 us, over
+           * 4,000 resolves against a heightfield plus 600 boxes; +11% where 169
+           * boxes all overlap the capsule at once).
+           *
+           * It was measured and NOT taken, because the wrong normal is masking
+           * two other defects and correcting it alone makes the game WORSE on
+           * two of the three bands it moves:
+           *
+           *   43.9-50.2 deg  the player walks up honestly, at exactly the
+           *                  projected speed, instead of being teleported.
+           *                  A real improvement. 0.45% of the medieval map.
+           *   50.2-56.6 deg  a NEW dead band. `grounded` below needs n.y > 0.64
+           *                  (50.2 deg) and `Player._move`'s step-up gate reads
+           *                  `WALKABLE_NORMAL_Y` 0.55 (56.6 deg), so an HONEST
+           *                  normal in between says both "not ground" and "not
+           *                  something to step over": the player sticks, 11-14%
+           *                  grounded, 0.1 m of climb in 4 s. 0.14% of the map.
+           *   56.6-66 deg    the step-up ladder in `Player._move` reaches 8 deg
+           *                  further than it does today and runs faster - 10.2
+           *                  m/s of climb against a 6.0 m/s ground speed cap -
+           *                  up escarpments the level currently closes.
+           *                  Grimscar Edge is 60 deg, Blackmarch Bluff 67.
+           *
+           * Fixing this safely means fixing all three together: the third pass
+           * here, ONE walkable threshold instead of 0.64 here and 0.55 in
+           * `Grounding`, and a step-up branch that will not ladder a smooth
+           * slope. That is a movement change for the player and every NPC and
+           * wants its own task, not a line in this one. */
           const axisMid = push.copy(segA).add(segB).multiplyScalar(0.5);
           cp = this._closestPoint(collider, axisMid, closest, queryRadius);
           if (!cp) continue;
@@ -1185,7 +1269,16 @@ export class Physics {
 
         if (delta.y < result.minNormalY) result.minNormalY = delta.y;
 
-        // Surfaces up to ~50 degrees count as walkable ground.
+        /* Surfaces up to ~50 degrees count as walkable ground.
+         *
+         * Two warnings on this number. It is NOT `Grounding.WALKABLE_NORMAL_Y`
+         * (0.55, 56.6 deg), which is the threshold every OTHER walkability
+         * question in the game is asked against - the two have simply never
+         * been reconciled. And neither of them is the ceiling in effect:
+         * `delta.y` is the two-pass normal, which stops being the true face
+         * normal past ~44 deg and is under 0.64 on any slope a moving capsule
+         * meets past ~45. See the note on the closest-point iteration above -
+         * that is where the real 45 deg ceiling comes from, not from here. */
         if (delta.y > 0.64) {
           if (!result.grounded || delta.y > result.groundNormal.y) {
             result.grounded = true;

@@ -883,6 +883,27 @@ export class Player {
    * riser and 0 for a wall - nowhere near 0.55 - so the probe fires exactly
    * where it always did. Flat ground never reaches the branch at all, because
    * unobstructed motion loses nothing.
+   *
+   * ── What this gate does NOT do, and it is not 56.6 degrees ────────────────
+   * `res.minNormalY` is `resolveCapsule`'s contact normal, and that stops being
+   * the true face normal past ~44 degrees: a walking capsule on a 46 degree
+   * ramp reports ~0.44 where the face is 0.69. So a SMOOTH RAMP steeper than
+   * ~45 degrees still reads as obstructed, the branch still fires, and it still
+   * finds a tread - the slope itself. Measured at 7178224 over 3 s of holding
+   * forward: 46 deg climbs at 6.18 m/s along-slope and 58 deg at 8.68 m/s,
+   * against a 6.0 m/s flat-ground speed cap and a projection worth 1.61 and
+   * 0.57 - i.e. the player is laddered up, grounded on a third to two thirds of
+   * steps, with 60-90 tread probes in those 3 s. Sprinting starts it at 45.
+   * 59 degrees is where it finally fails to find a tread and the player stops.
+   *
+   * The 45 degree boundary is therefore the SOLVER's, not this gate's, and it
+   * is why every ramp actually authored in the game (all under 45) is handled
+   * correctly by the note above. Raising `WALKABLE_NORMAL_Y` will not move it.
+   * The mechanism, and why the one-line fix to the solver was measured and
+   * rejected as making two other bands worse, is at the closest-point iteration
+   * in `resolveCapsule`.
+   * @see ../physics/Physics.js `resolveCapsule`
+   * @see ../../scripts/tests/capsule-normal.test.mjs
    */
   _move(dt) {
     const radius = P.radius;

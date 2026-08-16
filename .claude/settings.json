@@ -1,4 +1,39 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(sed -i \"s#import { planBeasts } from './WildlifeAblC.js';##\" probe9.mjs)",
+      "Bash(node -e ' *)",
+      "Bash(node --max-old-space-size=4096 probe9.mjs)",
+      "Bash(sed -e \"s/{ name: 'W1', x: -100, z: 130, amp: 0.42, rad: 75 }/{ name: 'REC', x: -125, z: 125, amp: 0.55, rad: 65 }/\" -e \"s/{ name: 'W2', x: -110, z: 120, amp: 0.42, rad: 75 }/{ name: 'ALT', x: -135, z: 125, amp: 0.50, rad: 55 }/\" forest-site-pass5.mjs)",
+      "Bash(node forest-site-final.mjs)",
+      "Bash(sed -e 's/const AMP = 0.42; const RAD = 75;/const AMP = 0.55; const RAD = 65;/' -e 's/for \\(const cand of drawable.slice\\(0, 4\\)\\)/for \\(const cand of [{cx:-125,cz:125}]\\)/' -e 's/for \\(let cz = -190; cz <= 190; cz += 10\\)/for \\(let cz = 125; cz <= 125; cz += 10\\)/' -e 's/for \\(let cx = -190; cx <= 190; cx += 10\\)/for \\(let cx = -125; cx <= -125; cx += 10\\)/' forest-site-pass4.mjs)",
+      "Bash(node forest-final-sim.mjs)",
+      "Bash(sed -e \"s/{ name: 'W1', x: -100, z: 130, amp: 0.42, rad: 75 }/{ name: 'REC-A', x: -125, z: 125, amp: 0.55, rad: 65 }/\" -e \"s/{ name: 'W2', x: -110, z: 120, amp: 0.42, rad: 75 }/{ name: 'REC-B', x: -130, z: 130, amp: 0.50, rad: 55 }/\" -e \"s/{ name: 'W3', x: -120, z: 120, amp: 0.42, rad: 75 }/{ name: 'REC-C', x: -135, z: 130, amp: 0.55, rad: 45 }/\" -e \"s/{ name: 'W4', x: -130, z: 128, amp: 0.42, rad: 62 },//\" -e \"s/{ name: 'W5', x: -125, z: 128, amp: 0.50, rad: 70 },//\" -e \"s/{ name: 'W6', x: -118, z: 132, amp: 0.45, rad: 60 },//\" -e \"s/{ name: 'SE1', x: 112, z: -130, amp: 0.50, rad: 70 },//\" -e \"s/{ name: 'SE2', x: 116, z: -124, amp: 0.60, rad: 60 },//\" forest-site-pass5.mjs)",
+      "Bash(node forest-final2.mjs)",
+      "Bash(sed -i \"s#from 'three'#from 'E:/markc/gametestai/gametestai/node_modules/three/build/three.module.js'#\" probe1.mjs)",
+      "Bash(node probe1.mjs)",
+      "Bash(sed -i \"s#from 'E:/markc/gametestai/gametestai/#from 'file:///E:/markc/gametestai/gametestai/#g\" probe1.mjs)",
+      "Bash(sed -e 's/for \\(let x = a.x - a.r; x <= a.x + a.r; x += 1\\)/for \\(let x = a.x - a.r; x <= a.x + a.r; x += STEP\\)/' -e 's/for \\(let z = a.z - a.r; z <= a.z + a.r; z += 1\\)/for \\(let z = a.z - a.r; z <= a.z + a.r; z += STEP\\)/' -e \"s#const tally = Object.create\\(null\\);#const STEP = Number\\(process.argv[2] ?? 2\\);\\\\nconst tally = Object.create\\(null\\);\\\\nconst legalCells = [];#\" -e \"s#tally\\\\[why\\\\] = \\(tally\\\\[why\\\\] ?? 0\\) + 1;#tally[why] = \\(tally[why] ?? 0\\) + 1;\\\\n if \\(why === 'LEGAL'\\) legalCells.push\\([x, z, w._roadDist\\(x, z\\).toFixed\\(2\\)]\\);#\" -e \"s#console.log\\(' refusal tally:', JSON.stringify\\(tally\\)\\);#console.log\\(' STEP', STEP, 'refusal tally:', JSON.stringify\\(tally\\)\\);\\\\nconsole.log\\(' LEGAL cells nearer a road:', legalCells.map\\(c=>c.join\\(','\\)\\).join\\(' | '\\)\\);#\" measure4.mjs)",
+      "Bash(node --max-old-space-size=4096 measure5.mjs 2)",
+      "Bash(cp src/worlds/MedievalWorld.js /tmp/MW.bak)",
+      "Bash(sed -i 's/function planeGeo\\(w, h, tile = 0.5, wSeg = 1, hSeg = 1\\)/function planeGeo\\(w, h, tile = 0.5, wSeg = 2, hSeg = 1\\)/' src/worlds/MedievalWorld.js)",
+      "Bash(node --test scripts/tests/medieval-forest.test.mjs)",
+      "Bash(cp src/npc/BeastNPC.js /tmp/B.bak)",
+      "Bash(node --test scripts/tests/beast-combat.test.mjs)",
+      "Bash(cp src/npc/BeastPack.js /tmp/BP.bak)",
+      "Bash(node --test scripts/tests/beast-pack.test.mjs)",
+      "Bash(cp /tmp/BP.bak src/npc/BeastPack.js)",
+      "Bash(rm -f scripts/_v2.mjs)",
+      "Bash(node --test scripts/tests/npc-route-follow.test.mjs)",
+      "Bash(node --test-reporter=spec --test scripts/tests/npc-route-follow.test.mjs)",
+      "Bash(cp /tmp/rf.test.mjs scripts/tests/_rf.test.mjs)",
+      "Bash(node --test scripts/tests/_rf.test.mjs)"
+    ],
+    "additionalDirectories": [
+      "\\tmp",
+      "E:\\markc\\gametestai\\gametestai\\scripts\\tests"
+    ]
+  },
   "enabledPlugins": {
     "ecc@ecc": true
   }

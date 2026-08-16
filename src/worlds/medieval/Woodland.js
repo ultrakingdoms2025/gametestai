@@ -38,12 +38,23 @@
  *
  *   3. AN UNDERSTOREY. This is the one that actually buys enclosure, and it
  *      is the cheap one. A crown is 2,880-4,560 triangles and sits 4-11 m up,
- *      where it blocks the sky and nothing else; a 2.4 m hazel thicket is
- *      TWELVE triangles and blocks the thing that matters, which is the line
- *      from a player's eye to a wolf's. Doubling the tree count to buy
- *      enclosure costs ~7,000 triangles per metre of sightline closed. The
- *      understorey costs about four. The budgets below are sized on that
- *      arithmetic: 2.8x the trees, and an understorey that did not exist.
+ *      where it blocks the sky and nothing else; a 2.4 m hazel thicket is SIX
+ *      triangles - three crossed cards, one quad each - and blocks the thing
+ *      that matters, which is the line from a player's eye to a wolf's. The
+ *      whole understorey - thickets AND bracken, which share one geometry and
+ *      one mesh - is 58,278 triangles against the canopy's 3,700,800, i.e.
+ *      1.6% of the forest's triangle bill for most of its cover. The budgets
+ *      below are sized on that arithmetic: 2.8x the trees, and an understorey
+ *      that did not exist.
+ *
+ *   4. AND BEING SOMEWHERE THE PLAYER GOES. The three above are about what a
+ *      wood is like once you are in it; this one is about whether you ever
+ *      are. The noise put no closed canopy in the starting valley at all, and
+ *      because `Wildlife` gates predator homes on this very mask, that made
+ *      the valley structurally incapable of holding a wolf - which is what the
+ *      player reported. `AUTHORED_WOODS` below is the answer, and it is a term
+ *      of the mask rather than a special case bolted beside it, so everything
+ *      derived from the mask picks the new wood up for free.
  */
 
 import { fbm2, smoothstep, clamp01, HALF } from '../terrain/MedievalHeight.js';
@@ -62,9 +73,155 @@ import { fbm2, smoothstep, clamp01, HALF } from '../terrain/MedievalHeight.js';
  */
 export const WOOD_FREQ = 0.0062;
 
-/** Raw woodland mask. Roughly -0.35..0.34 over the map, median 0.01. */
+/**
+ * Woods that are AUTHORED into the mask rather than found in it.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THERE IS SUCH A TABLE AT ALL
+ *
+ * The noise put its woods where it put them, and one place it did not put one
+ * is the starting valley. That is not a cosmetic gap. `Wildlife.rejectHome`
+ * requires `woodMask > DEEP_WOOD` before a predator may live anywhere, so a
+ * valley with no closed canopy in it is a valley with no legal wolf home in it
+ * - measured, on a 4 m lattice over the original 400 m vale, at exactly ZERO -
+ * and the player reported the consequence: "i do not see any wolves or bears in
+ * the forest areas".
+ *
+ * Every other lever was tried first and each one is a safety parameter. The
+ * cordons, `MARGIN` and `reach` are what keep a pack off a questmaster; the
+ * road clearance is what makes a road a road. See the header of `Wildlife.js`
+ * for the measurements that killed them. What was left is the honest one: if
+ * the starting valley should have a wood in it, AUTHOR a wood in it.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT AN ENTRY IS
+ *
+ * A bounded local lift of the mask: `amp` at the centre, zero at `r` and
+ * beyond, smooth in between. It is a term of the SAME field, not a second one -
+ * which is the whole point. `standAt`, `STAND_AREA`, the tree, understorey and
+ * bracken budgets, the deadfall districts and the beast legality gate are all
+ * functions of `woodMask`, so an entry here buys all of them at once and none
+ * of them has to be told about it. Adding this wood moved `STAND_AREA` from
+ * 138,985 to 142,831 m2 and the derived budgets from 1,251/4,448/5,003 trees,
+ * thickets and bracken to 1,285/4,571/5,142, with nothing hand-tuned. The wood
+ * itself is 3,435 m2 of closed canopy - 0.34 ha - and 5,671 m2 of ground over
+ * `DEEP_WOOD`.
+ *
+ * ---------------------------------------------------------------------------
+ * AND WHAT ELSE IT MOVED, DECLARED RATHER THAN DISCOVERED
+ *
+ * `Treasures.planForestCaches` also gates on this mask (`> DEEP_WOOD + 0.03`)
+ * and TIERS on it (`> 0.30` prize, `> 0.23` rare), so lifting the mask moves
+ * the treasure draw as well as the trees. Measured, by ablating this table and
+ * re-planning:
+ *
+ *   the count is unchanged at 16, and so is the ORDER of every other record.
+ *     The dart stream is the same stream; what changes is that one more dart is
+ *     now legal. `woodcache@-112,95` is accepted fifth and `woodcache@-260,-67`
+ *     falls off the end of the 16-cap - at `want: 20` the map yields 17 sites
+ *     with this wood and 16 without, and the two lists agree everywhere else.
+ *   the tier mix goes from 1 prize / 4 rare / 11 common to 1 / 5 / 10. The new
+ *     cache reads wood 0.287, which is `rare`; nothing was promoted.
+ *   relic sites are untouched - 84, identical labels - because
+ *     `planRelicSites` does not consult the woodland mask at all.
+ *   no cache is duplicated and every one is still reachable on foot from the
+ *     spawn, which `medieval-treasure.test.mjs` already gates.
+ *
+ * It is deliberately NOT a change to `medievalHeight`. The terrain function
+ * runs in a worker and must stay pure and cheap; the ground at Hazelbrake was
+ * already suitable - `settledAt` 0 over the whole disc, no hero clearance,
+ * median height 3.1 m against a 2.05 m flood line, median slope 0.084 against
+ * the scatter's 0.55 limit - so what was missing was trees, and trees are this
+ * module's business. The disc's southern edge does overhang the channel, and
+ * nothing had to be done about that either: `_isOpenGround` refuses to plant
+ * below `WATER_Y + 0.5` or within `riverHalfWidth + 2`, and `rejectHome`
+ * refuses to house a beast below the flood line or within 14 m of the channel.
+ *
+ * ---------------------------------------------------------------------------
+ * THE AMPLITUDE IS LARGE ON PURPOSE, AND THE RADIUS IS SMALL ON PURPOSE
+ *
+ * `amp` 0.65 against a natural mask that runs -0.35..0.34 is an override, not a
+ * nudge, and it has to be: the base mask across Hazelbrake's disc runs
+ * -0.260..0.268 with -0.041 at the centre, and `DEEP_WOOD` is 0.16. (The upper
+ * end is 0.2681, sampled at 0.25 m; a 1 m lattice misses the peak and reads
+ * 0.264.) A lift that merely grazed the threshold would produce a wood whose
+ * legal ground was a handful of scattered cells, and the dart stream would miss
+ * it - the pool is 20,000 darts over 810,000 m2, one dart per 40 m2.
+ *
+ * `r` 65 is the number that took the most measuring, and it is CAPPED rather
+ * than chosen. `Wildlife.planBeasts` sorts its pool by road distance, so a pack
+ * lands at the wood's LOWEST road-edge point - and to the north-west of here
+ * the nearest road is `pilgrimway` or `westway`, not one of the vale's own. Two
+ * measured counter-examples, both of which reproduce the exact bug this wood
+ * exists to fix:
+ *
+ *   centre (-135, 125) amp 0.65 r 60   pack at (-157.4, 156.5), 140.6 m from
+ *   centre (-130, 130) amp 0.60 r 60   the nearest core-vale road node
+ *
+ * Both put the pack outside the 125 m at which `NPCManager` lets a streamed
+ * character APPEAR - see the note in `Wildlife.js` on why that number is 125
+ * and not 135 - i.e. streamed and never drawn.
+ *
+ * ROW ONE is the sharper warning, because it differs from a configuration that
+ * WORKS only in the AMPLITUDE. At centre (-135, 125) the mask at the bad dart
+ * reads 0.1542 with amp 0.60 and 0.1687 with amp 0.65, so 0.65 lifts that one
+ * cell over `DEEP_WOOD` and 0.60 does not, and lifting it is what loses the
+ * wood. Row two is a different mechanism and must not be read as the same one:
+ * at centre (-130, 130) the bad dart reads 0.1616 at amp 0.60 and 0.1767 at
+ * 0.65, i.e. it is legal under BOTH, and what fails there is the centre.
+ *
+ * The bad dart's nearest road is `pilgrimway`, at 79.6 m - not `westway`, which
+ * is 126.7 m from it. `westway` is the GOOD dart's own nearest road, at 84.0 m,
+ * and a wolf reaches 68: which is precisely why the shipped pack watches no
+ * road at all and the bad one would have watched a road no core-vale player
+ * walks. A BIGGER WOOD IS A WORSE WOOD, and it fails silently.
+ *
+ * So the property that had to be measured is not where the pack lands - that is
+ * one dart out of a stream - but where it CAN land. Every cell of a 2 m lattice
+ * inside this disc that `rejectHome` accepts for either species is within
+ * 119.1 m of a core-vale road node, against the 125 m appearance radius. No
+ * dart, wherever the stream puts it, can be streamed-but-never-drawn.
+ * `medieval-wildlife.test.mjs` asserts that over the whole wood rather than
+ * over today's placement, which is the only form of it that survives a reseed.
+ */
+export const AUTHORED_WOODS = [
+  { id: 'hazelbrake', x: -110, z: 125, amp: 0.65, r: 65 },
+];
+
+/**
+ * How much the authored woods raise the mask at (x, z). Zero almost everywhere.
+ *
+ * `1 - smoothstep(0, 1, d / r)` rather than a cone, because the mask feeds
+ * `standAt`, which ramps it over 0.15 - a cone's apex and rim would both show
+ * up as a crease in the canopy density. This profile is flat at both ends, so
+ * its steepest point is the middle of the fringe, which is where a real wood's
+ * density changes fastest anyway. Peak gradient is `1.5 * amp / r` = 0.015 of
+ * mask per metre; `medieval-forest.test.mjs` bounds what that does to the
+ * canopy edge and measures it at 0.201 against a limit of 0.30.
+ */
+export function authoredLift(x, z) {
+  let lift = 0;
+  for (const a of AUTHORED_WOODS) {
+    const d = Math.hypot(x - a.x, z - a.z);
+    if (d >= a.r) continue;
+    lift += a.amp * (1 - smoothstep(0, 1, d / a.r));
+  }
+  return lift;
+}
+
+/**
+ * The woodland mask: fbm noise, plus the authored woods above.
+ *
+ * Roughly -0.35..0.34 over the map from the noise alone, median 0.01, reaching
+ * 0.609 at Hazelbrake's centre where the authored term is added.
+ *
+ * THIS IS THE ONLY DEFINITION. `Wildlife.woodlandAt` used to spell the fbm term
+ * out a second time and is now bound to this function by identity - see the
+ * note there. Two copies of a mask is two woods, and the one the beasts use is
+ * the one that decides whether the player ever meets anything.
+ */
 export function woodMask(x, z) {
-  return fbm2(x * WOOD_FREQ, z * WOOD_FREQ, WOOD_OCTAVES);
+  return fbm2(x * WOOD_FREQ, z * WOOD_FREQ, WOOD_OCTAVES) + authoredLift(x, z);
 }
 export const WOOD_OCTAVES = 3;
 
@@ -171,9 +328,15 @@ export const PLAYFIELD_TREES = Math.round(STAND_AREA * TREE_DENSITY);
 /**
  * Understorey clumps - hazel, holly and young ash, 1.8-3.2 m.
  *
- * Three crossed cards each, so twelve triangles: the whole understorey is
- * cheaper than five oaks and it is the only thing in the wood that stands
- * between a player's eye level and a wolf's.
+ * Three crossed cards each, and a card is ONE quad - `planeGeo(w, h, 0)` with
+ * the default single segment - so SIX triangles, not twelve. That number has
+ * been wrong in three docstrings and right in the one place it is used:
+ * `medieval-forest.test.mjs` sets `CARD_TRIS = 6`, and at twelve its own
+ * assertion would fail, because (4,571 + 5,142) thickets and bracken at twelve
+ * is 116,556 triangles against a limit of 74,016. At six it is 58,278.
+ *
+ * The whole understorey is cheaper than ten oaks and it is the only thing in
+ * the wood that stands between a player's eye level and a wolf's.
  */
 /*
  * 0.0320 is a 5.6 m mean spacing under full stand - four times the trees.
@@ -184,8 +347,11 @@ export const PLAYFIELD_TREES = Math.round(STAND_AREA * TREE_DENSITY);
  * the middle of a wood is visible about half the time. Adding thickets at
  * this density takes it past 1.5 and the wood starts concealing things.
  *
- * It costs 27,000 triangles across the whole map. Buying the same closure
- * with crowns would have cost about four million.
+ * The thickets cost 27,426 triangles across the whole map - 4,571 at six each -
+ * and 58,278 with `BRACKEN` on the same geometry, which is how the renderer
+ * actually pays for them. Buying the same closure with crowns would have cost
+ * about four million: the canopy's own bill is 1,285 trees at 2,880 triangles
+ * for the cheapest crown, 3,700,800.
  */
 export const UNDERSTOREY_DENSITY = 0.0320;
 export const UNDERSTOREY = Math.round(STAND_AREA * UNDERSTOREY_DENSITY);
@@ -259,16 +425,31 @@ export function standSpecies(bx, bz, mask) {
 /**
  * The woods that get a name, a deadfall district and a place on the map.
  *
- * Every one is centred on a peak of the existing mask rather than authored
- * over the top of it, so these are the woods the vale already had - they are
- * simply now dense enough to be called something. `r` is the radius the
- * deadfall district and the beast-spawn hint use; it is not a boundary, the
- * mask is.
+ * The first six are centred on peaks of the NOISE rather than authored over the
+ * top of it: those are the woods the vale already had, simply now dense enough
+ * to be called something. Hazelbrake is the exception and is marked as one - it
+ * is centred on an entry of `AUTHORED_WOODS`, which is a peak this module put
+ * there. Both kinds have to clear the same floors, and
+ * `medieval-forest.test.mjs` applies them to every row without caring which is
+ * which: closed centre, mean stand over the radius, and a real closed-canopy
+ * interior. An authored wood that could not pass them would be a name on a
+ * field.
+ *
+ * `r` is the radius the deadfall district and the beast-spawn hint use; it is
+ * not a boundary, the mask is. Hazelbrake's 55 is set INSIDE its 65 m authored
+ * radius rather than equal to it, because the deadfall wants the part of the
+ * disc that is actually wood: at 55 the district averages stand 0.44 and is
+ * 33.4% closed canopy, at 65 it is 0.35 and 25.9%, and the outer ten metres are
+ * the fringe the lift tapers through.
  *
  * `bank` says which side of the river the wood is on, because that is the
  * question the camp placement and the wildlife both need answered and it is
  * not readable from the coordinates: the river's centreline swings 120 m
- * across the map.
+ * across the map. Hazelbrake is `far` - the channel runs through z = 78.3 at
+ * x = -110, so the wood stands about forty metres north of the water, on the
+ * same bank as Bell Coppice and 124.5 m from its centre - the non-overlap rule
+ * in `medieval-forest.test.mjs` wants more than (55 + 70) * 0.6 = 75.0 m, so it
+ * passes with 49.5 m to spare.
  */
 export const NAMED_WOODS = [
   { id: 'ravenshaw', name: 'Ravenshaw', x: -119, z: -78, r: 92, bank: 'vale', kind: 'oakwood' },
@@ -277,6 +458,11 @@ export const NAMED_WOODS = [
   { id: 'bell-coppice', name: 'Bell Coppice', x: -188, z: 222, r: 70, bank: 'far', kind: 'coppice' },
   { id: 'thornhow', name: 'Thornhow Wood', x: -392, z: 414, r: 86, bank: 'far', kind: 'pinewood' },
   { id: 'coldashes', name: 'Cold Ashes', x: -196, z: -418, r: 74, bank: 'vale', kind: 'pinewood' },
+  /* The vale's own wood, and the only authored one. Hazel because that is what
+   * the understorey is made of and what a wood this young and this dense reads
+   * as; "brake" is the Middle English for a thicket, and the word bracken comes
+   * from it. See `AUTHORED_WOODS` for why it exists and why it is this size. */
+  { id: 'hazelbrake', name: 'Hazelbrake', x: -110, z: 125, r: 55, bank: 'far', kind: 'oakwood', authored: true },
 ];
 
 /** The named wood whose radius contains (x, z), nearest first, or null. */

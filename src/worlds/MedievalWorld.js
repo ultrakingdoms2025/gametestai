@@ -11393,15 +11393,15 @@ export class MedievalWorld extends World {
      *
      * This is what actually makes a wood a wood to be inside, and it is the
      * cheap half of the deal. A crown is 2,880-4,560 triangles and sits four
-     * to eleven metres up, where it blocks the sky; a hazel thicket is TWELVE
-     * triangles and stands between a player's eye and a wolf's. Buying
-     * enclosure with crowns costs roughly 7,000 triangles per metre of
-     * sightline closed. Buying it here costs about four.
+     * to eleven metres up, where it blocks the sky; a hazel thicket is SIX -
+     * three crossed cards, one quad each, as built below - and stands between
+     * a player's eye and a wolf's.
      *
      * Thickets and bracken share one three-card geometry and one instanced
      * mesh per map quadrant, separated only by scale - so the whole
-     * understorey of the vale is four draw calls and ~56k triangles, against
-     * the ~4.9M the trees carry.
+     * understorey of the vale is four draw calls and 58,278 triangles
+     * (4,571 + 5,142 instances at six), 1.6% of the 3,700,800 the trees carry
+     * at the cheapest crown. `Woodland.js` quotes the same two numbers.
      */
     {
       const CARD_W = 1.15;

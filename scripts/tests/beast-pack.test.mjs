@@ -219,6 +219,50 @@ test('the attack token is handed out, held, and given back', () => {
   assert.equal(pack.isCommitted(wolves[1]), true);
 });
 
+test('the slot goes to the member that can actually reach, not the one that asked first', () => {
+  /* THE STARVATION THIS FIXES, MEASURED IN THE GAME.
+   *
+   * A pack of three to five has exactly one slot. First-come-first-served put
+   * it wherever the roster order happened to put it, and on the Ashlea plank
+   * bridge - 2.6 m wide, with the river braking anything that strays off the
+   * planks - the holder was a wolf 8.65 m away and jammed behind two others,
+   * while wolves at 0.16 m and 1.51 m with clear line of sight were refused for
+   * thirty seconds without a single telegraph.
+   *
+   * The margin is a LUNGE, `def.reach`, which is both the scale on which
+   * "nearer" means anything and the hysteresis that stops two members swapping
+   * the slot every frame. */
+  const { pack, wolves } = makePack(4);
+  for (const w of wolves) w.def = { reach: 2 };
+  wolves[0].targetDistance = 9;
+  wolves[1].targetDistance = 8;      // nearer, but not by a lunge
+  wolves[2].targetDistance = 1;      // a lunge and then some nearer
+  wolves[3].targetDistance = 12;
+
+  assert.equal(pack.requestAttack(wolves[0]), true, 'the first asker did not get the only slot');
+  assert.equal(pack.requestAttack(wolves[3]), false, 'a member FURTHER out took the slot');
+  assert.equal(pack.requestAttack(wolves[1]), false,
+    'a member one metre nearer took the slot - that is inside a lunge and will thrash');
+  assert.equal(pack.requestAttack(wolves[2]), true,
+    'a wolf on top of the target could not get the slot off one eight metres away');
+  assert.equal(pack.isCommitted(wolves[0]), false, 'the displaced holder still holds it');
+  assert.equal(pack.isCommitted(wolves[2]), true);
+
+  /* A committed SEQUENCE is never interrupted. The telegraph is the whole
+   * fairness deal - a wind-up a neighbour could cancel would not be one. */
+  wolves[2].attackPhase = 'telegraph';
+  wolves[0].targetDistance = 0.2;
+  assert.equal(pack.requestAttack(wolves[0]), false,
+    'a wolf mid-wind-up was cut off by a neighbour standing closer');
+
+  /* And it degrades to the old rule for anything that publishes no distance,
+   * which is what keeps the rest of this file measuring what it always did. */
+  const bare = makePack(3);
+  assert.equal(bare.pack.requestAttack(bare.wolves[0]), true);
+  assert.equal(bare.pack.requestAttack(bare.wolves[1]), false,
+    'a stub with no targetDistance took the slot on a NaN comparison');
+});
+
 test('a wolf that dies mid-lunge does not hold the slot for ever', () => {
   const { pack, wolves } = makePack(4);
   pack.requestAttack(wolves[0]);

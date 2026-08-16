@@ -26,3 +26,6 @@ output/
 
 # Chrome profiles left by CDP measurement harnesses. Never source.
 .chrome-harness-profile/
+
+# Personal Claude Code overrides (permissions etc). Must never be published.
+.claude/settings.local.json

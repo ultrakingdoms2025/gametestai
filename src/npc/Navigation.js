@@ -338,7 +338,9 @@ export class Navigation {
      * nowhere is a worse bug than a patrol that gets its feet wet, and the
      * steering term will still lean the agent away from the deepest part. */
     if (this.water && list.length > 1) {
-      const dry = list.filter((p) => !this.isDeepWaterAt(p.x, p.z));
+      // At the waypoint's OWN height, so a route that crosses a bridge keeps
+      // its deck legs. @see Grounding.waterDepthAt
+      const dry = list.filter((p) => !this.isDeepWaterAt(p.x, p.z, p.y));
       if (dry.length > 1) list = dry;
     }
     this.path = list;
@@ -732,12 +734,18 @@ export class Navigation {
    * a wander target chosen in the middle of the river would have the agent
    * grinding against the bank until the stuck detector re-rolled it.
    *
+   * `probeY` is the height of whatever will be STANDING there, and it is what
+   * makes a bridge deck readable - see `Grounding.waterDepthAt`. Callers that
+   * are picking a spot on the ground have no such height and pass none, which
+   * is the conservative answer.
+   *
    * @param {number} x
    * @param {number} z
+   * @param {number} [probeY]
    * @returns {boolean}
    */
-  isDeepWaterAt(x, z) {
-    return this.water ? isDeepWater(this.physics, this.water, x, z) : false;
+  isDeepWaterAt(x, z, probeY) {
+    return this.water ? isDeepWater(this.physics, this.water, x, z, probeY) : false;
   }
 
   /**
@@ -753,6 +761,16 @@ export class Navigation {
    * water body in these worlds is narrow - and capped, so a long route costs a
    * bounded number of probes. Away from water each one is a hash miss.
    *
+   * Every sample is probed at the HIGHER of the two endpoints, not at an
+   * interpolated height, and that is the difference between a bridge being a
+   * route and a bridge being a wall. A deck is flat and both its approaches are
+   * below it, so an interpolated probe passes UNDER the planks for most of the
+   * span and reads the riverbed - which is the same deck-blindness
+   * `Grounding.waterDepthAt` exists to fix, reintroduced one level up. Taking
+   * the maximum cannot invent a crossing: the ray still has to hit real
+   * geometry above the waterline at each sample, so a line that leaves the
+   * deck and goes over open water is refused exactly as before.
+   *
    * @param {THREE.Vector3} from
    * @param {THREE.Vector3} to
    * @param {number} [step] metres between samples
@@ -762,12 +780,13 @@ export class Navigation {
     if (!this.water) return true;
     const dx = to.x - from.x;
     const dz = to.z - from.z;
+    const probeY = Math.max(from.y ?? -Infinity, to.y ?? -Infinity);
     const dist = Math.hypot(dx, dz);
-    if (dist < 1e-3) return !this.isDeepWaterAt(to.x, to.z);
+    if (dist < 1e-3) return !this.isDeepWaterAt(to.x, to.z, probeY);
     const n = Math.min(14, Math.max(1, Math.ceil(dist / step)));
     for (let i = 1; i <= n; i++) {
       const t = i / n;
-      if (this.isDeepWaterAt(from.x + dx * t, from.z + dz * t)) return false;
+      if (this.isDeepWaterAt(from.x + dx * t, from.z + dz * t, probeY)) return false;
     }
     return true;
   }
@@ -779,6 +798,22 @@ export class Navigation {
    * same way the wall fan is - so the response is continuous even though the
    * evidence arrives one point at a time. `waterDepthAt` costs a hash lookup
    * away from water, so agents nowhere near the river pay almost nothing.
+   *
+   * ── THE THIRD PLACE THE DECK HAD TO BE MADE VISIBLE ────────────────────
+   * Refusing wet destinations and wet routes is not enough on its own, because
+   * this term does not consult either: it probes the ground around the agent
+   * directly. Measured in a live session with the fix in the other two places
+   * and not this one, four wolves standing ON the Aldern deck at y = 4.4 with
+   * clear line of sight, one of them holding the pack's attack slot and asking
+   * for `chargeSpeed` 7.6: `_waterBrake` read 0.67 and the animal was moving at
+   * 2.27 m/s. They crossed thirteen metres of bridge in twelve seconds and
+   * never landed a blow. The brake was reading the riverbed 5 m under the
+   * planks they were standing on.
+   *
+   * So the probe is taken at the AGENT's own height. It cannot invent dry land
+   * - the ray still has to hit geometry above the waterline at that column -
+   * and something already in the river has its feet at or below the surface, so
+   * its answer is unchanged. @see Grounding.waterDepthAt
    */
   _waterAvoid(position, dt) {
     if (!this.water) {
@@ -806,7 +841,7 @@ export class Navigation {
       position.z + fz * ahead + fx * lateral
     );
 
-    const depth = waterDepthAt(this.physics, this.water, _waSample.x, _waSample.z);
+    const depth = waterDepthAt(this.physics, this.water, _waSample.x, _waSample.z, position.y);
     const k = 1 - Math.exp(-WATER_TRACK * dt);
     if (depth > WADE_DEPTH) {
       // Ramp over the half-metre past wading depth so a shelving bank produces

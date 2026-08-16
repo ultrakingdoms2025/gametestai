@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 import { planPopulation } from './Population.js';
-import { planBeasts } from './Wildlife.js';
+import { planBeasts, openRoadIndex } from './Wildlife.js';
 import { planRelicSites, planForestCaches, reachableFrom } from './Treasures.js';
 import { MedievalResidency } from './Residency.js';
 import { beastDef } from '../../npc/BeastSpecies.js';
@@ -158,6 +158,27 @@ export function applyMedievalPopulation(world) {
     .filter((s) => s.type !== 'hostile' && s.type !== 'beast' && s.position)
     .map((s) => ({ x: s.position.x, z: s.position.z }));
 
+  /* Everywhere a hand-placed civilian WALKS, for the beast cordon only.
+   *
+   * NOT folded into `existing`, which is a quota input - `planSettlement`
+   * subtracts it from the head count of whatever settlement it stands in, and
+   * counting one authored friendly four times would empty a village.
+   *
+   * `Wildlife.MARGIN` is 22 because `FriendlyNPC.homeRadius` is at most 22, so
+   * the people cordon covers a planned civilian's whole free-roam disc. That
+   * argument covers the PLANNER's output and nothing else: a resident's patrol
+   * reaches 21.88 m from its spawn and a traveller's 20.06 m, both inside the
+   * disc, but an authored patrol is hand-written and Sister Meriet's takes her
+   * 45.19 m from hers - twice the margin. Feeding those waypoints to the cordon
+   * is what makes "no pack can acquire a civilian" a statement about the ROUTE
+   * rather than about the spawn pin. The twelve authored friendlies contribute
+   * 41 extra points - 108 people become 149 - and cost nothing measurable. */
+  const authoredRoute = [];
+  for (const s of world.npcSpawns ?? []) {
+    if (s.type === 'hostile' || s.type === 'beast' || !s.patrol) continue;
+    for (const p of s.patrol) authoredRoute.push({ x: p.x, z: p.z });
+  }
+
   /* Standing room, asked of the world rather than re-derived: `_isOpenGround`
    * already knows about the castle, the market, the river, the road network and
    * every building footprint, and it is the same test the vegetation scatter
@@ -187,16 +208,40 @@ export function applyMedievalPopulation(world) {
    * into existence the moment the player walks over the hill. */
   const people = [
     ...existing,
+    ...authoredRoute,
     ...plan.residents.map((r) => ({ x: r.x, z: r.z })),
     ...plan.travellers.map((r) => ({ x: r.x, z: r.z })),
   ];
+  /* How much of the world was registered when the cordon was drawn. Read here
+   * rather than later, because "later" is the whole question. */
+  const beastFootprints = world._footprints.length;
   const beastSites = planBeasts({
     beastDef,
     count: ROSTER.beasts,
     height,
     people,
     settlements: SETTLEMENTS,
+    /* What the BUILDERS put down, not only what the tables describe. The
+     * Greyoak stage, the three bridges, the crossing ramps, Fenwick's market
+     * furniture and the castle's 18 m approach apron exist nowhere else: 139 of
+     * the 234 records have a corner outside the union the tables describe, the
+     * stage's eight by 8.9 to 13.3 m and the Ashlea ramp by 90.7 m.
+     *
+     * The array has to be COMPLETE when this runs, or the cordon is drawn round
+     * half a world. It is - the last push is in `_buildLandmarks` and this runs
+     * out of `_buildInhabitants`, which is strictly later - and `beastFootprints`
+     * below records the count at this instant so the gate can prove it rather
+     * than take the call order on trust. */
+    footprints: world._footprints,
     roadDist: (x, z) => world._roadDist(x, z),
+    /* WHICH ROADS ARE FOREST TRACKS.
+     *
+     * Built here rather than inside `planBeasts` because the segment list is
+     * the world's, and built ONCE because classifying 1,259 segments is 1,259
+     * ring scans of the woodland mask. `world._roadSegs` is final by now -
+     * `_buildRoadPaths` fills it and `_buildVillageLanes` extends it, both in
+     * the terrain phase, long before `_buildInhabitants`. */
+    openRoadDist: openRoadIndex(world._roadSegs),
     slope: (x, z) => world._slope(x, z),
   });
 
@@ -244,6 +289,24 @@ export function applyMedievalPopulation(world) {
     authored: existing.length,
     beastSites: beastSites.length,
     beastReasons: beastSites.reasons,
+    beastPool: beastSites.pool,
+    beastRegions: beastSites.regions,
+    beastFootprints,
+    /* The PLAN itself, not just its size.
+     *
+     * `medieval-wildlife.test.mjs` builds this world and asserts its floors
+     * against these records, which is the only way a headless gate can certify
+     * the placement the game actually ships: `world._isOpenGround` decides
+     * where the 88 residents stand, and it cannot be reproduced outside a built
+     * world - it reads `_footprints`, which seventeen builders append to. A
+     * gate that re-planned from a stand-in roster would certify a placement the
+     * game never builds. */
+    beastPlan: beastSites.map((b) => ({
+      x: b.x, y: b.y, z: b.z, species: b.species, territory: b.territory, reach: b.reach, wood: b.wood,
+    })),
+    /* Everything the plan was made against, so the gate measures the same
+     * thing the world did rather than a second guess at it. */
+    people: people.map((p) => ({ x: p.x, z: p.z })),
     relics: relics.length,
     forestCaches: caches.length,
     reachable: reach.reached / reach.cells,

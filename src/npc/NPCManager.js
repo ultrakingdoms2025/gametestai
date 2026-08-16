@@ -1204,7 +1204,12 @@ export class NPCManager {
   _auditWater(npc) {
     if (!this.water || !npc || npc.isDead) return false;
     const p = npc.position;
-    if (!isDeepWater(this.physics, this.water, p.x, p.z)) return false;
+    /* Probed at the character's own feet, or every bridge deck in the vale is
+     * a drowning: they all stand above the ray's old fixed origin, so anyone
+     * who reached one measured metres of river and was teleported to the bank.
+     * Something genuinely IN the water has its feet at or under the surface and
+     * measures exactly what it always did. @see Grounding.waterDepthAt */
+    if (!isDeepWater(this.physics, this.water, p.x, p.z, p.y)) return false;
     const dry = nearestDrySpot(this.physics, this.water, p, _dryScratch);
     if (!dry) return false;
     npc.position.copy(dry);

@@ -429,17 +429,50 @@ export const WADE_DEPTH = 0.75;
  * so away from the river this is a hash miss and nothing else, which is what
  * makes it affordable to call from steering every frame.
  *
+ * ── WHY THERE IS A PROBE HEIGHT ───────────────────────────────────────────
+ * The bed ray used to start, always, at `surfaceY + 1.0`. Over the medieval
+ * river that is y = 1.85, and EVERY DECK IN THE VALE IS ABOVE IT: the Aldern
+ * bridge carries its road at 4.35 m, Harrowgate at 3.30, the Ashlea planks at
+ * 2.92 and the Greyoak stage at 2.60. A ray that starts under a bridge cannot
+ * see the bridge, so it returned the riverbed and a character standing on dry
+ * planks measured 1.4-2.6 m of river against a 0.75 m wading depth. Everything
+ * downstream then believed it: steering refused to path onto a deck, the
+ * grounding watchdog teleported anyone who reached one into the nearest bank,
+ * and a predator whose target stood on a bridge could neither charge it nor
+ * circle it.
+ *
+ * So the caller may say how high the thing asking about this column is
+ * standing, and the ray starts a metre above the HIGHER of that and the water.
+ * Two properties, and both are why this is a probe height rather than a flag:
+ *
+ *   - it can only ever turn deep water into dry, never the reverse, and only
+ *     where there is real collision geometry above the waterline at that
+ *     column - a deck, a jetty, an abutment. Over open river the ray falls
+ *     past the surface to the bed exactly as it always did;
+ *   - and something standing IN the river reports its own feet, which are at
+ *     or below the surface, so `Math.max` picks the water and the answer is
+ *     unchanged. That is what stops this reintroducing the wolf that stood
+ *     1.7 m out of its depth at (-28.87, 113.44).
+ *
+ * Omitting it is the old behaviour exactly, so every caller that has no height
+ * to offer - a wander destination, a spawn repair - keeps the conservative
+ * answer it always got.
+ *
  * @param {any} physics
  * @param {{surfaceYAt:(x:number,z:number)=>number|null}|null} water
  * @param {number} x
  * @param {number} z
+ * @param {number} [probeY] world height of whatever is asking about this column
  * @returns {number} depth in metres, 0 if dry, Infinity if the bed is missing
  */
-export function waterDepthAt(physics, water, x, z) {
+export function waterDepthAt(physics, water, x, z, probeY = -Infinity) {
   if (!water) return 0;
   const surfaceY = water.surfaceYAt(x, z);
   if (surfaceY === null) return 0;
-  const bedY = physics.groundHeight(x, z, surfaceY + 1.0, 40);
+  const lift = probeY > surfaceY ? probeY - surfaceY : 0;
+  // The drop grows with the lift, so the ray always reaches as far BELOW the
+  // waterline as it did before - starting higher must not shorten its reach.
+  const bedY = physics.groundHeight(x, z, surfaceY + lift + 1.0, 40 + lift);
   // Water over a hole in the collision mesh: no bed to stand on at all, so this
   // is as impassable as it gets.
   if (bedY === null) return Infinity;
@@ -449,10 +482,11 @@ export function waterDepthAt(physics, water, x, z) {
 
 /**
  * Is this column too deep to stand in?
+ * @param {number} [probeY] @see waterDepthAt
  * @returns {boolean}
  */
-export function isDeepWater(physics, water, x, z) {
-  return waterDepthAt(physics, water, x, z) > WADE_DEPTH;
+export function isDeepWater(physics, water, x, z, probeY) {
+  return waterDepthAt(physics, water, x, z, probeY) > WADE_DEPTH;
 }
 
 /**

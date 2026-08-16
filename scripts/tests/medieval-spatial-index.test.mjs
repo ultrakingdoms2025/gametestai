@@ -441,9 +441,32 @@ test('the index kills the quadratic: cost stays flat as features multiply', () =
 
 test('the footprint index is flat in the number of buildings', () => {
   /* `_inFootprint` and `_isOpenGround` are the ones that bite hardest, because
-   * a bigger vale means more buildings AND more scatter candidates. Measured:
-   * 36 footprints 10x, 108 footprints 32x, 180 footprints 55x - the indexed
-   * time does not move at all. */
+   * a bigger vale means more buildings AND more scatter candidates.
+   *
+   * COUNTED, NOT TIMED - and that is a fix, not a stylistic preference. This
+   * gate used to assert `one.linear / one.indexed > 3` and `five.indexed <
+   * one.indexed * 2` on `performance.now()` deltas, and it FAILED IN A FULL
+   * SUITE RUN while passing 6/6 in isolation: twice in six paired runs of the
+   * whole suite against itself, once on each of its two assertions
+   * ("only 2.2x today - 35 footprints: linear 153ms, indexed 69ms" and "the
+   * index scaled with building count - ... 175 footprints: ... indexed 85ms").
+   * The reason is the one `npc-budget.test.mjs` and `physics-remove.test.mjs`
+   * both set out at length: the two halves of a ratio are timed in different
+   * contention windows, and a 24-way parallel `node --test` guarantees the
+   * windows are not comparable. `one.indexed` normally measures 6 ms; under
+   * contention it measured 69.
+   *
+   * So it counts RECTANGLES EVALUATED, which is the quantity the index exists
+   * to change and the one the claim is actually about. The linear scan tests
+   * every footprint on every query by construction; the indexed path tests
+   * whatever `_footprintGrid().query` hands back, and the query box is widened
+   * by `margin * sqrt(2)` exactly as `_inFootprint` widens it, so the count is
+   * the one `_inFootprint` itself incurs (an upper bound on it, since
+   * `_inFootprint` returns on its first hit).
+   *
+   * The wall-clock observation is kept as prose because it is worth knowing and
+   * is no longer load-bearing: 36 footprints 10x, 108 footprints 32x, 180
+   * footprints 55x, and the indexed time does not move at all. */
   const rnd = mulberry32(0x5eed07);
   const N = 60000;
   const xs = new Float64Array(N);
@@ -452,16 +475,8 @@ test('the footprint index is flat in the number of buildings', () => {
     xs[i] = (rnd() - 0.5) * 900;
     zs[i] = (rnd() - 0.5) * 900;
   }
-  const time = (fn) => {
-    let sink = 0;
-    for (let i = 0; i < 4000; i++) sink += fn(xs[i], zs[i]) ? 1 : 0;
-    const t0 = performance.now();
-    for (let i = 0; i < N; i++) sink += fn(xs[i], zs[i]) ? 1 : 0;
-    const ms = performance.now() - t0;
-    assert.ok(Number.isFinite(sink));
-    return ms;
-  };
 
+  const MARGIN = 0.5;
   const results = [];
   for (const copies of [1, 5]) {
     const w = new MedievalWorld({});
@@ -475,16 +490,35 @@ test('the footprint index is flat in the number of buildings', () => {
     }
     const fps = w._footprints;
     for (let i = 0; i < 400; i++) {
-      assert.equal(w._inFootprint(xs[i], zs[i], 0.5), inRectsLinear(fps, xs[i], zs[i], 0.5));
+      assert.equal(w._inFootprint(xs[i], zs[i], MARGIN), inRectsLinear(fps, xs[i], zs[i], MARGIN));
     }
-    results.push({
-      n: fps.length,
-      linear: time((x, z) => inRectsLinear(fps, x, z, 0.5)),
-      indexed: time((x, z) => w._inFootprint(x, z, 0.5)),
-    });
+    const grid = w._footprintGrid();
+    const m = MARGIN * Math.SQRT2;
+    let scanned = 0;
+    for (let i = 0; i < N; i++) {
+      scanned += grid.query(xs[i] - m, zs[i] - m, xs[i] + m, zs[i] + m).length;
+    }
+    results.push({ n: fps.length, scanned, linear: N * fps.length });
+  }
+  const report = results
+    .map((r) => `${r.n} footprints: linear ${r.linear} rect tests, indexed ${r.scanned} `
+      + `(${(r.linear / Math.max(r.scanned, 1)).toFixed(0)}x)`)
+    .join('; ');
+  /* Measured: 1,762 rect tests against 2,100,000 at 35 footprints (1,192x) and
+   * 10,107 against 10,500,000 at 175 (1,039x). Both floors are an order of
+   * magnitude below what ships, so a grid that grew a cell or lost one cannot
+   * fail them by accident and a grid that stopped pruning fails both. */
+  for (const r of results) {
+    assert.ok(r.scanned * 100 < r.linear,
+      `at ${r.n} footprints the index still evaluates `
+      + `${(100 * r.scanned / r.linear).toFixed(1)}% of the rectangles a linear scan does - ${report}`);
   }
   const [one, five] = results;
-  const report = results.map((r) => `${r.n} footprints: linear ${r.linear.toFixed(0)}ms, indexed ${r.indexed.toFixed(0)}ms`).join('; ');
-  assert.ok(one.linear / one.indexed > 3, `only ${(one.linear / one.indexed).toFixed(1)}x today - ${report}`);
-  assert.ok(five.indexed < one.indexed * 2, `the index scaled with building count - ${report}`);
+  /* THE FLATNESS CLAIM. Five times the buildings must not erode the saving:
+   * if the grid degenerated towards a linear scan as the world filled up, this
+   * ratio would collapse towards 1. Measured 1,192x -> 1,039x, i.e. 0.87. */
+  const kept = (five.linear / five.scanned) / (one.linear / one.scanned);
+  assert.ok(kept > 0.5,
+    `the index kept only ${(100 * kept).toFixed(0)}% of its pruning at five times the `
+    + `building count - it scaled with the world instead of with the neighbourhood - ${report}`);
 });

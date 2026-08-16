@@ -487,14 +487,20 @@ test('Ceri circles the ring and Osman walks between two flights and back', () =>
 test('following a route is cheaper than string-pulling it was', () => {
   /* `_advancePath` used to spend up to three raycasts per character per step
    * on the line-of-sight skip-ahead. It now spends none: the plane test is
-   * eight multiplies. Measured on this fixture, 24 characters walking the
-   * elbow round: 1.71 us per character per fixed step before, 1.66 us after.
+   * eight multiplies.
    *
-   * Asserted as a generous absolute ceiling rather than as a ratio, for the
-   * reason `npc-budget.test.mjs` sets out at length - a ratio times its two
-   * halves in different contention windows. This catches a route follower that
-   * has quietly acquired a raycast per waypoint, not a 20% regression. */
+   * COUNTED, NOT TIMED. This was `us < 12` on a best-of-five `hrtime`, and it
+   * failed a full-suite run at 12.36 us while passing in isolation - an
+   * absolute wall-clock ceiling on a 24-way parallel test runner is a
+   * statement about the machine, not about the route follower. What the
+   * comment above actually claims is a COUNT, so that is what is asserted:
+   * the raycasts a route walk spends, per character per fixed step. The
+   * grounding probe is one per character per step and is not what changed;
+   * anything above that is `_advancePath` reaching for a line test again. */
   const physics = elbowWorld();
+  let rays = 0;
+  const realRaycast = physics.raycast.bind(physics);
+  physics.raycast = (...a) => { rays++; return realRaycast(...a); };
   const manager = { npcs: [], friendlies: [], player: null, findSocialPartner: () => null };
   const npcs = [];
   for (let i = 0; i < 24; i++) {
@@ -506,12 +512,28 @@ test('following a route is cheaper than string-pulling it was', () => {
   }
   for (let s = 0; s < 600; s++) for (const n of npcs) n.fixedUpdate(DT, s * DT);
 
-  let best = Infinity;
-  for (let rep = 0; rep < 5; rep++) {
-    const t = process.hrtime.bigint();
-    for (let s = 0; s < 1500; s++) for (const n of npcs) n.fixedUpdate(DT, s * DT);
-    best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6);
-  }
-  const us = (best * 1000) / (1500 * 24);
-  assert.ok(us < 12, `${us.toFixed(2)} us per character per fixed step on a route`);
+  const STEPS = 1500;
+  rays = 0;
+  for (let s = 0; s < STEPS; s++) for (const n of npcs) n.fixedUpdate(DT, s * DT);
+  const per = rays / (STEPS * npcs.length);
+  /* Measured on this fixture, and exactly reproducible run to run: 48,411
+   * raycasts over 36,000 character-steps, 1.345 each. Those are the grounding
+   * and step-up probes every character pays whether it is on a route or not;
+   * the route walk itself adds none. The ceiling is 2, which leaves room for
+   * the grounding probes to move and still rejects the string-puller this
+   * replaced - three line tests per character per step would land above 4.
+   *
+   * TWO-SIDED, because a ceiling on a counter nobody increments is not a
+   * measurement. `rays` is collected through a monkey-patch on
+   * `physics.raycast`; if a character ever caches a bound reference, or the
+   * grounding probe moves to a different entry point, the count silently goes
+   * to zero and a route follower doing anything at all would pass. The floor is
+   * 0.5 against the 1.345 the grounding probes cost. */
+  assert.ok(per > 0.5,
+    `only ${per.toFixed(3)} raycasts per character per fixed step (${rays} over `
+    + `${STEPS * npcs.length}) - the probes are no longer going through physics.raycast, so the `
+    + 'ceiling below is counting nothing');
+  assert.ok(per < 2,
+    `${per.toFixed(3)} raycasts per character per fixed step on a route (${rays} over `
+    + `${STEPS * npcs.length} character-steps) - the route follower is casting rays again`);
 });

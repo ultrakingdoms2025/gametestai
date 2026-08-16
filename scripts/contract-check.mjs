@@ -185,7 +185,8 @@ const CONTRACT = [
   },
   {
     file: 'src/worlds/medieval/Woodland.js',
-    exports: ['WOOD_FREQ', 'woodMask', 'standAt', 'isWoodEdge', 'STAND_AREA',
+    exports: ['WOOD_FREQ', 'woodMask', 'AUTHORED_WOODS', 'authoredLift',
+      'standAt', 'isWoodEdge', 'STAND_AREA',
       'TREE_DENSITY', 'PLAYFIELD_TREES', 'UNDERSTOREY', 'BRACKEN',
       'TREE_BUCKET_M', 'TREE_BUCKETS', 'STAND_SPECIES', 'standSpecies',
       'NAMED_WOODS', 'woodAt', 'DEADFALL_PER_WOOD'],

@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { CONFIG } from '../../src/core/Config.js';
 import { NPCManager } from '../../src/npc/NPCManager.js';
-import { BEASTS } from '../../src/npc/BeastSpecies.js';
+import { BEASTS, threatRadius } from '../../src/npc/BeastSpecies.js';
+import { isDeepWater, WADE_DEPTH } from '../../src/npc/Grounding.js';
+import { CROSSINGS, GREYOAK_STAGE } from '../../src/worlds/medieval/RoadNet.js';
+import { WATER_Y } from '../../src/worlds/terrain/MedievalHeight.js';
 import { statsFor } from '../../src/systems/WeaponStats.js';
 import { DECAL, DECAL_GRID, cellUV, cellCanvas, DECAL_CELL, DECAL_ATLAS_SIZE, paintClaw }
   from '../../src/systems/DecalPool.js';
@@ -89,6 +92,90 @@ function makeManager(player) {
   mgr._spawnQuestManagers = () => {};
   mgr._populateHubs = () => {};
   return mgr;
+}
+
+/* ---------------------------------------------------------------- */
+/* A river with a bridge over it                                     */
+/* ---------------------------------------------------------------- */
+
+/** Half-width of the channel, metres. The vale's is 8 at the Aldern reach. */
+const RIVER_HALF = 8;
+/** The bed under the channel. 1.85 m under the water line, as the vale's is. */
+const BED_Y = WATER_Y - 1.85;
+
+/**
+ * A world with one river and one bridge across it.
+ *
+ * Two surfaces at any column - the ground (0 on the banks, `BED_Y` in the
+ * channel) and, over the bridge's footprint, the DECK - and a `groundHeight`
+ * that honours the ray's origin and drop, which is the whole point: the defect
+ * this fixture exists to reproduce is a ray that starts under a deck and
+ * therefore cannot see it. A fixture whose `groundHeight` ignored `startY`
+ * would pass either way.
+ *
+ * @param {number} deckY height of the deck, metres
+ */
+function riverWorld(deckY) {
+  const DECK_HX = 3.5;
+  const DECK_HZ = 13;
+  const onDeck = (x, z) => Math.abs(x) <= DECK_HX && Math.abs(z) <= DECK_HZ;
+  const surfaces = (x, z) => (onDeck(x, z)
+    ? [deckY, Math.abs(z) <= RIVER_HALF ? BED_Y : 0]
+    : [Math.abs(z) <= RIVER_HALF ? BED_Y : 0]);
+  const highestBelow = (x, z, startY, maxDrop) => {
+    let best = null;
+    for (const s of surfaces(x, z)) {
+      if (s > startY || s < startY - maxDrop) continue;
+      if (best === null || s > best) best = s;
+    }
+    return best;
+  };
+  const physics = {
+    groundHeight: (x, z, startY = 200, maxDrop = 400) => highestBelow(x, z, startY, maxDrop),
+    resolveCapsule: (p) => {
+      const g = highestBelow(p.x, p.z, p.y + 0.05, 400) ?? 0;
+      if (p.y < g) p.y = g;
+      return { grounded: p.y <= g + 0.001, groundNormal: new THREE.Vector3(0, 1, 0) };
+    },
+    raycast: (origin, dir, maxDistance) => {
+      if (dir.y > -0.5) return null;                  // only floors exist here
+      const y = highestBelow(origin.x, origin.z, origin.y, maxDistance * -dir.y);
+      if (y === null) return null;
+      const d = (origin.y - y) / -dir.y;
+      if (d > maxDistance) return null;
+      return {
+        distance: d,
+        point: new THREE.Vector3(origin.x, y, origin.z),
+        normal: new THREE.Vector3(0, 1, 0),
+        collider: { userData: { surface: 'dirt.ground' } },
+      };
+    },
+    containsPoint: () => false,
+  };
+  const water = { surfaceYAt: (x, z) => (Math.abs(z) <= RIVER_HALF ? WATER_Y : null) };
+  return { physics, water, onDeck, DECK_HX, DECK_HZ };
+}
+
+/** A wolf pack standing wherever it is told, hunting `player`, on a real pack. */
+function packOn(mgr, player, spots) {
+  const wolves = mgr.spawnBeastGroup({
+    position: new THREE.Vector3(0, 0, -30), species: 'wolf', count: spots.length,
+  });
+  assert.equal(wolves.length, spots.length, `spawned ${wolves.length} wolves, wanted ${spots.length}`);
+  wolves.forEach((w, i) => {
+    w.position.set(spots[i][0], spots[i][1], spots[i][2]);
+    // Home is the pack's, and every one of these tests stays well inside the
+    // leash - what is under test here is the water rule, not that one.
+    w.home.set(0, 0, 0);
+    w.target = player;
+    w.losClear = true;
+    w.memory = 6;
+    w.attackTimer = 0;
+    w._spooked = 0;
+    w.targetDistance = w.position.distanceTo(player.position);
+    w.setState('STALK');
+  });
+  return wolves;
 }
 
 const stubPlayer = (x = 0, z = 0) => ({
@@ -361,6 +448,172 @@ test('a beast that has made a kill stops hunting for a while', () => {
   wolf.onDamaged(10, false, next);
   assert.equal(wolf.satiated, 0);
   assert.equal(wolf.target, next, 'a fed wolf does not defend itself');
+});
+
+/* ---------------------------------------------------------------- */
+/* Water, and the bridges over it                                    */
+/* ---------------------------------------------------------------- */
+
+test('every deck in the vale stands above the depth probe\'s old origin', () => {
+  /* THE ARITHMETIC OF THE REGRESSION, on the shipped table rather than on a
+   * fixture. `Grounding.waterDepthAt` used to cast the bed ray from
+   * `surfaceY + 1.0`, which over the medieval river is 1.85 m. Every authored
+   * deck is above it - so every one of them was invisible to the ray, and a
+   * character standing on dry planks measured the riverbed.
+   *
+   * Asserted rather than recited, so that a crossing authored LOW enough for
+   * the old origin to have worked would show up here as a surprise rather than
+   * as a silently different case. */
+  const OLD_ORIGIN = WATER_Y + 1.0;
+  const decks = [
+    ...CROSSINGS.filter((c) => c.kind === 'bridge').map((c) => [c.id, c.deckY]),
+    [GREYOAK_STAGE.id, GREYOAK_STAGE.deckY],
+  ];
+  assert.ok(decks.length >= 4, `only ${decks.length} decks in the table`);
+  for (const [id, deckY] of decks) {
+    assert.ok(Number.isFinite(deckY), `${id} has no deckY`);
+    assert.ok(deckY > OLD_ORIGIN,
+      `${id}'s deck is at ${deckY} m, at or below the ${OLD_ORIGIN} m origin the depth probe used to `
+      + 'cast from - so this crossing was never affected and the note in Grounding.js is overstated');
+    // ...and the depth the old probe reported there was well past wading.
+    assert.ok(WATER_Y - BED_Y > WADE_DEPTH,
+      'the fixture river is shallower than WADE_DEPTH, so nothing below can fail');
+  }
+});
+
+test('a bridge deck reads as dry ground, and the river beside it still does not', () => {
+  /* Both halves, at every deck height the vale actually has. The second half is
+   * the one that matters: the probe height must not be a licence to walk into
+   * the water, and something standing IN the river reports feet at or under the
+   * surface, so `Math.max` picks the water and the answer is unchanged. */
+  for (const deckY of [4.35, 3.30, 2.92, 2.60]) {
+    const { physics, water } = riverWorld(deckY);
+    // Mid-channel, on the deck's centreline.
+    assert.equal(isDeepWater(physics, water, 0, 0), true,
+      `at deck ${deckY} a caller with no height still gets the conservative answer`);
+    assert.equal(isDeepWater(physics, water, 0, 0, deckY), false,
+      `a character standing on a ${deckY} m deck reads the riverbed under it as water`);
+    // Mid-channel, twelve metres off the deck: open river, at any probe height
+    // a land animal could plausibly report.
+    assert.equal(isDeepWater(physics, water, 12, 0, BED_Y), true,
+      'a wolf standing in the open channel no longer reads as out of its depth');
+    assert.equal(isDeepWater(physics, water, 12, 0, deckY), true,
+      'a high probe over open water invents a crossing where there is no deck');
+    // The dry bank is dry either way.
+    assert.equal(isDeepWater(physics, water, 12, -30, 0), false, 'the bank reads as river');
+  }
+});
+
+test('a pack does not deadlock when one member\'s line crosses the river', () => {
+  /* THE SLOT LEAK, DRIVEN.
+   *
+   * `attackSlots` is `max(1, floor(liveCount / 3))`, which is ONE for a pack of
+   * three to five. The water veto was reached AFTER `requestAttack` had already
+   * granted the slot and it never gave it back, and the beast could then never
+   * reach `def.reach`, so `_endAttack`/`releaseAttack` were unreachable too.
+   * One wolf whose line happened to cross the river therefore held the pack's
+   * only slot for as long as the target lived and the rest orbited forever.
+   *
+   * The fixture is the smallest thing that reproduces it: the player on the
+   * deck, one wolf on the far bank whose straight line crosses open water, and
+   * two whose line runs along the planks. */
+  const { physics, water } = riverWorld(4.35);
+  const player = stubPlayer(0, 0);
+  player.position.y = 4.35;                       // standing on the deck
+  const mgr = makeManager(player);
+  mgr.physics = physics;
+  const wolves = packOn(mgr, player, [
+    [-20, 0, -14],       // wet line: crosses the channel twelve metres off the deck
+    [0, 4.35, -10],      // on the deck, behind the player
+    [0, 4.35, 9],        // on the deck, in front
+  ]);
+  mgr.setWater(water);
+  const pack = wolves[0].pack;
+  assert.ok(pack, 'the three wolves are not in a pack');
+  assert.equal(pack.attackSlots, 1, 'the fixture no longer has exactly one slot to fight over');
+
+  // The blocked wolf goes first, which is the ordering that used to lose.
+  wolves[0]._stalk(1 / 60);
+  assert.equal(pack.isCommitted(wolves[0]), false,
+    'the wolf whose line crosses water is still holding the pack\'s only attack slot');
+  assert.ok(wolves[0].nav.active,
+    'the blocked wolf stopped dead instead of working round to the ring - it should hold a dry '
+    + 'ring position, which is nearer the target and on ground it can reach');
+
+  // ...and the slot is there for somebody who can use it.
+  wolves[1]._stalk(1 / 60);
+  assert.equal(pack.isCommitted(wolves[1]), true,
+    'the pack is inert: a wolf standing on the same deck as the player cannot get an attack slot');
+  assert.equal(wolves[1].desiredSpeed, BEASTS.wolf.chargeSpeed,
+    'the committed wolf is not charging');
+  assert.ok(wolves[1].nav.target
+    && Math.hypot(wolves[1].nav.target.x - player.position.x,
+      wolves[1].nav.target.z - player.position.z) < 0.5,
+    'the committed wolf is not steering at the player');
+
+  /* And it stays unblocked over time rather than flickering: run every member
+   * for a second and the pack must still be able to commit somebody. */
+  let committed = 0;
+  for (let s = 0; s < 60; s++) {
+    for (const w of wolves) w._stalk(1 / 60);
+    if (wolves.some((w) => pack.isCommitted(w))) committed++;
+  }
+  assert.equal(committed, 60, `the pack had no committed member on ${60 - committed} of 60 steps`);
+});
+
+test('a player on a bridge deck can be attacked, at every deck height the vale has', () => {
+  /* THE REGRESSION ITSELF. Before the probe height existed, the ring positions
+   * a wolf circles through - 4.2 m around the target, i.e. on the same deck -
+   * all read as a metre and a half of river, so `_stalk` cleared the nav and
+   * the whole pack held station on the bank in plain sight. Combined with the
+   * slot leak that made all five bridges permanent predator-proof zones.
+   *
+   * Driven at each of the four real deck heights, because the fix is a height
+   * comparison and the Greyoak stage at 2.60 m is the one with least clearance
+   * over the old 1.85 m origin. */
+  for (const deckY of [4.35, 3.30, 2.92, 2.60]) {
+    const { physics, water } = riverWorld(deckY);
+    const player = stubPlayer(0, 0);
+    player.position.y = deckY;
+    const mgr = makeManager(player);
+    mgr.physics = physics;
+    const wolves = packOn(mgr, player, [[0, deckY, -6], [0, deckY, 6], [1.5, deckY, -8]]);
+    mgr.setWater(water);
+    const pack = wolves[0].pack;
+
+    /* Circling. The ring is 4.2 m and the fixture's deck is 7 m across, so the
+     * ring straddles it - which is right, and is the two-sided test: a bearing
+     * ALONG the deck is a legal place to stand and a bearing across it is the
+     * river. `slotAngle` is `orbit + rank/live * TAU`, so setting `orbit` aims
+     * a named member wherever this needs it.
+     *
+     * Rank of `wolves[1]` is 1 of 3 live, so its bearing is `orbit + 2pi/3`. */
+    wolves[1].attackTimer = 9;              // denied a slot, so it holds the ring
+    pack.orbit = Math.PI / 2 - (2 * Math.PI) / 3;      // bearing +Z, along the deck
+    wolves[1]._stalk(1 / 60);
+    assert.ok(wolves[1].nav.active,
+      `at deck ${deckY} a wolf circling ALONG the deck cleared its nav - the planks read as river`);
+    assert.ok(Math.abs(wolves[1].nav.target.x) < 1e-6 && wolves[1].nav.target.z > 4,
+      `at deck ${deckY} the ring target is not where the bearing put it`);
+
+    pack.orbit = -(2 * Math.PI) / 3;                   // bearing +X, out over the water
+    wolves[1].nav.clear();
+    wolves[1]._stalk(1 / 60);
+    assert.equal(wolves[1].nav.active, false,
+      `at deck ${deckY} a wolf circling OFF the side of the deck steered into the river`);
+
+    // Charging: the committed member sets a target at the player.
+    wolves[0]._stalk(1 / 60);
+    assert.equal(wolves[0].desiredSpeed, BEASTS.wolf.chargeSpeed,
+      `at deck ${deckY} the committed wolf refused to charge a player on the planks`);
+
+    // ...and it lands the blow once it is in reach, which is the whole claim.
+    wolves[0].position.set(0, deckY, -2);
+    wolves[0].targetDistance = 2;
+    wolves[0]._stalk(1 / 60);
+    assert.equal(wolves[0].state, 'ATTACK',
+      `at deck ${deckY} a wolf in reach of a player on the deck did not attack`);
+  }
 });
 
 /* ---------------------------------------------------------------- */
@@ -802,11 +1055,158 @@ test('a wolf breaks off when it is losing; a bear has no such concept', () => {
   assert.equal(BEASTS.bear.courage, 0, 'the bear has learned to run away');
 });
 
-test('a beast gives up a chase before it leaves its own world', () => {
+test('the chase constants are in proportion to one another', () => {
+  /* Three inequalities on the table, and that is ALL they are. This test used
+   * to be called "a beast gives up a chase before it leaves its own world" and
+   * it asserted nothing whatever about position - a beast that walked to the
+   * far corner of the map passed it, which is exactly what one did. The
+   * positional claim is the test below; this is the balance check it always
+   * really was, renamed so the two are not confused again. */
   for (const def of Object.values(BEASTS)) {
     assert.ok(def.loseInterest > def.sight * 0.6,
       `${def.id} gives up at ${def.loseInterest} m but can see to ${def.sight}`);
     assert.ok(def.loseInterest < 80, `${def.id} chases for ${def.loseInterest} m`);
     assert.ok(def.territory > 10, `${def.id} roams ${def.territory} m, which is standing still`);
   }
+});
+
+test('a beast gives up a chase before it leaves its own world - measured, in metres', () => {
+  /* THE DEFECT THIS IS THE GATE FOR.
+   *
+   * Every rule that ended a pursuit was beast-to-TARGET, and `chargeSpeed` 7.6
+   * beats a walking player's 4.6, so `loseInterest` could never fire against
+   * somebody who simply kept walking. Driven here at the real fixed step with a
+   * player walking away in a straight line, a wolf followed for 40 s and the
+   * only thing that stopped it was the end of the loop.
+   *
+   * The bound is `BeastSpecies.threatRadius` - `territory + sight`, the very
+   * radius the world's own placement cordons are written against - so what this
+   * asserts is not "some number" but the number that makes the vale's clearance
+   * arithmetic true of an animal rather than of a spec. */
+  const player = stubPlayer(0, 6);
+  const mgr = makeManager(player);
+  const [wolf] = mgr.spawnBeastGroup({ position: new THREE.Vector3(0, 0, 0), species: 'wolf', count: 1 });
+  assert.equal(wolf.leash, threatRadius(BEASTS.wolf), 'the leash is not the placement radius');
+
+  wolf._acquire(player);
+  assert.equal(wolf.target, player, 'the wolf never took the target at all');
+
+  const DT = 1 / 60;
+  const WALK = CONFIG.player.walkSpeed;
+  let farthest = 0;
+  let dropped = -1;
+  for (let s = 0; s < 60 * 40 && dropped < 0; s++) {
+    // The player walks away in a straight line, which is all it takes.
+    player.position.z += WALK * DT;
+    // Drive perception and the state machine directly: the integrator needs a
+    // renderer-built body, and what is under test is the decision, not the gait.
+    wolf._sense(DT);
+    if (wolf.state === 'STALK') wolf._stalk(DT);
+    if (!wolf.target) { dropped = s * DT; break; }
+    /* Close at the charge speed, which is the whole point - the wolf is FASTER
+     * than the player it is following, so nothing beast-to-target can end this. */
+    const toward = wolf.target.position.clone().sub(wolf.position).setY(0);
+    if (toward.length() > wolf.def.reach) {
+      wolf.position.addScaledVector(toward.normalize(), wolf.def.chargeSpeed * DT);
+    }
+    farthest = Math.max(farthest, Math.hypot(wolf.position.x - wolf.home.x, wolf.position.z - wolf.home.z));
+  }
+
+  assert.ok(dropped > 0, 'the wolf never broke off - it followed a walking player for the whole run');
+  assert.ok(farthest <= wolf.leash + wolf.def.chargeSpeed * DT * 2,
+    `the wolf reached ${farthest.toFixed(1)} m from home against a ${wolf.leash} m leash`);
+  /* And it is a CHASE, not a shrug: the wolf has to have left its territory and
+   * covered real ground before breaking off, or the leash has been cut so tight
+   * that nothing can ever be caught. Measured: it reaches 65.99 m from home
+   * against its 34 m territory and lets go at t = 13.47 s, by which point it is
+   * 2.03 m behind a player who never once ran. */
+  assert.ok(farthest > wolf.def.territory,
+    `the wolf broke off at ${farthest.toFixed(1)} m, inside its own ${wolf.def.territory} m territory `
+    + '- the leash is too short to allow a chase at all');
+
+  /* And it will not pick up whoever lives where the player led it. This is the
+   * half that keeps Edmund Marsh alive: the leash gates ACQUISITION, not only
+   * pursuit, so a beast that has been drawn to the edge of its country cannot
+   * start hunting the neighbours who live past it. The villager stands where
+   * the PLAYER is - just outside the leash, which is why the wolf let go - and
+   * a wolf sees 34 m, so this is inside its eyesight by a wide margin. */
+  const villager = {
+    position: player.position.clone(), isDead: false, type: 'friendly', height: 1.8,
+  };
+  assert.ok(wolf.position.distanceTo(villager.position) < BEASTS.wolf.sight,
+    'the villager is out of sight anyway, so refusing it proves nothing');
+  mgr._friendlies.push(villager);
+  wolf._senseTimer = 0;
+  wolf.satiated = 0;
+  wolf._sense(DT);
+  assert.equal(wolf.target, null,
+    'a wolf that has been walked out of its territory picked up a civilian standing where it landed');
+  assert.equal(wolf.adoptPackTarget(villager), false, 'the pack share path ignores the leash');
+  wolf.onDamaged(10, false, villager);
+  assert.equal(wolf.target, null, 'being hit from outside the leash still starts an unbounded hunt');
+});
+
+test('a player cannot walk a pack to the vale\'s quest manager', () => {
+  /* THE CONSEQUENCE, ASSERTED AS THE CONSEQUENCE.
+   *
+   * `Inhabitants.js` plants Edmund Marsh at (10, -9) - 7.2 m from the player's
+   * spawn pin - anchored, weaponless, on 100 health, and neither
+   * `NPCManager._updateRespawns` (which walks `_hostiles`) nor
+   * `MedievalResidency.sync` (which streams specs) can bring him back, because
+   * he is placed by `_spawnQuestManagers` and is in neither list. `HUD` gates
+   * the quest board on `isQuestManager`, so his death removes it for the
+   * session.
+   *
+   * The nearest pack home to the player's spawn measures 195.5 m on the shipped
+   * placement - `medieval-wildlife.test.mjs` holds that - so what has to be
+   * true is that a pack cannot cover the difference. This drives it: a player
+   * walks from beside a pack all the way to Edmund and the pack follows as fast
+   * as it can. */
+  const EDMUND = new THREE.Vector3(10, 0, -9);
+  const NEAREST_PACK_HOME = 195.5;      // medieval-wildlife.test.mjs, shipped placement
+  const home = new THREE.Vector3(EDMUND.x, 0, EDMUND.z - NEAREST_PACK_HOME);
+  const player = stubPlayer(home.x, home.z + 5);
+  const mgr = makeManager(player);
+  const pack = mgr.spawnBeastGroup({ position: home, species: 'wolf', count: 5 });
+  assert.ok(pack.length >= 3, `only ${pack.length} wolves spawned`);
+  for (const w of pack) w._acquire(player, true);
+
+  const DT = 1 / 60;
+  let closest = Infinity;
+  for (let s = 0; s < 60 * 90; s++) {
+    // Straight at Edmund, at a walk, which is the exploit.
+    const toEdmund = EDMUND.clone().sub(player.position).setY(0);
+    if (toEdmund.length() > 0.1) {
+      player.position.addScaledVector(toEdmund.normalize(), CONFIG.player.walkSpeed * DT);
+    }
+    for (const w of pack) {
+      w._sense(DT);
+      // The same dispatch `_think` does, including the pack clock - `_roam`'s
+      // re-adopt is one of the paths the leash has to close, so it must run.
+      if (w.pack && w.pack.firstLiving() === w) w.pack.update(DT);
+      if (w.state === 'STALK') w._stalk(DT);
+      else if (w.state === 'ROAM') w._roam(DT);
+      /* A beast only ever moves at its OWN target. Steering it at the pack's
+       * target instead would be modelling a bug the code does not have and
+       * would make this test pass or fail on the harness. */
+      if (w.target) {
+        const toward = w.target.position.clone().sub(w.position).setY(0);
+        if (toward.length() > w.def.reach) {
+          w.position.addScaledVector(toward.normalize(), w.def.chargeSpeed * DT);
+        }
+      }
+      closest = Math.min(closest, Math.hypot(w.position.x - EDMUND.x, w.position.z - EDMUND.z));
+    }
+  }
+  /* A wolf sees 34 m. Anything beyond that and Edmund is never a candidate, let
+   * alone a target. Measured on this drive: the nearest wolf stopped 129.45 m
+   * short of him, against the 127.5 m the leash arithmetic allows (195.5 minus
+   * the 68 m leash). Driven in the browser against the real vale, on the real
+   * Hazelbrake pack, the same walk left the nearest wolf 136.2 m short. */
+  assert.ok(closest > BEASTS.wolf.sight,
+    `a walking player brought a wolf to within ${closest.toFixed(1)} m of Edmund Marsh, inside its `
+    + `${BEASTS.wolf.sight} m sight - the quest board can be deleted for the session`);
+  assert.ok(closest >= NEAREST_PACK_HOME - threatRadius(BEASTS.wolf) - 1,
+    `a wolf got ${closest.toFixed(1)} m from Edmund; the leash allows no closer than `
+    + `${(NEAREST_PACK_HOME - threatRadius(BEASTS.wolf)).toFixed(1)} m`);
 });

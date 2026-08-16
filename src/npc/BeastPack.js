@@ -160,14 +160,57 @@ export class BeastPack {
    * Ask to commit to an attack. Idempotent for a member that already holds a
    * slot, so a beast can call it every step of its own wind-up.
    *
+   * ── WHY IT IS NOT SIMPLY FIRST COME, FIRST SERVED ──────────────────────
+   * It was, and a pack of three to five has exactly ONE slot, so the whole
+   * pack's ability to land a blow was pinned on whichever member happened to
+   * ask first that frame - whether or not that member could get anywhere near
+   * the target. Measured on the Ashlea plank bridge, which is 2.6 m wide:
+   * three wolves on the deck with the player, two of them 0.16 m and 1.51 m
+   * away with clear line of sight, the slot held by the third at 8.65 m which
+   * was braked to 1.38 m/s by the river either side of the planks and jammed
+   * behind the other two. Thirty seconds, no telegraph, no bite. Handing the
+   * slot to the nearest member instead produced two mauls in fifteen.
+   *
+   * So a holder that is a whole lunge FURTHER from the target than the asker
+   * gives it up. Three properties make that safe:
+   *
+   *   - a member mid-sequence is never interrupted. The telegraph is the entire
+   *     fairness deal for a 26-point swipe, and a wind-up that could be
+   *     cancelled by a neighbour's arithmetic would not be one;
+   *   - the margin is a lunge - `def.reach`, so it scales with the animal -
+   *     which is the hysteresis. Two members within a lunge of each other do
+   *     not swap, so the slot cannot thrash between them frame to frame;
+   *   - and it degrades to the old rule for anything that does not publish a
+   *     `targetDistance`, because a NaN comparison is false. `beast-pack`'s
+   *     stubs are exactly that, and they still measure what they always did.
+   *
    * @param {any} beast
    * @returns {boolean}
    */
   requestAttack(beast) {
     if (this._committed.has(beast)) return true;
-    if (this._committed.size >= this.attackSlots) return false;
-    this._committed.add(beast);
-    return true;
+    if (this._committed.size < this.attackSlots) {
+      this._committed.add(beast);
+      return true;
+    }
+    /* Every slot is held. Find the holder least able to use it. */
+    let worst = null;
+    for (const m of this._committed) {
+      if (m.isDead) { this._committed.delete(m); continue; }
+      if (m.attackPhase && m.attackPhase !== 'none') continue;
+      if (!worst || m.targetDistance > worst.targetDistance) worst = m;
+    }
+    if (this._committed.size < this.attackSlots) {
+      this._committed.add(beast);
+      return true;
+    }
+    const lunge = beast?.def?.reach ?? 2;
+    if (worst && worst.targetDistance - beast.targetDistance >= lunge) {
+      this._committed.delete(worst);
+      this._committed.add(beast);
+      return true;
+    }
+    return false;
   }
 
   /** Give the slot back. Safe to call when the beast never held one. */

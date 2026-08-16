@@ -28,9 +28,13 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+/* Only the last test needs it, to BUILD the understorey card rather than grep
+ * for it - see "a thicket really is three single-quad cards". */
+import * as THREE from 'three';
+
 import { HALF, fbm2, smoothstep } from '../../src/worlds/terrain/MedievalHeight.js';
 import {
-  WOOD_FREQ, woodMask, standAt, isWoodEdge, EDGE_LO, EDGE_HI,
+  WOOD_FREQ, woodMask, AUTHORED_WOODS, authoredLift, standAt, isWoodEdge, EDGE_LO, EDGE_HI,
   STAND_AREA, TREE_DENSITY, PLAYFIELD_TREES, UNDERSTOREY, BRACKEN,
   TREE_BUCKET_M, TREE_BUCKETS, STAND_SPECIES, standSpecies,
   NAMED_WOODS, woodAt, DEADFALL_PER_WOOD,
@@ -38,6 +42,15 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const WORLD_SRC = readFileSync(path.join(root, 'src/worlds/MedievalWorld.js'), 'utf8');
+
+/**
+ * Triangles in one understorey clump: three crossed cards, one quad each.
+ *
+ * Module-scope because two tests need it and they must agree - the budget below
+ * spends it, and the last test in this file BUILDS the card out of the source's
+ * own segment counts and asserts this is what comes back.
+ */
+const CARD_TRIS = 6;
 
 /* ------------------------------------------------------------------ */
 /* 1. The budget is derived, not authored                              */
@@ -172,8 +185,27 @@ test('walking into a wood crosses a real edge, not a step', () => {
 });
 
 test('every named wood is on a real peak of the mask, and has an interior', () => {
+  /* "A real peak" now means one of two things and the floors below do not care
+   * which: six of these woods sit on peaks the NOISE made and Hazelbrake sits
+   * on one `AUTHORED_WOODS` made. An authored wood earns its name by clearing
+   * exactly the same bars as a found one - closed centre, a mean stand over its
+   * whole radius, and a genuine closed-canopy interior - and if it could not,
+   * it would be a label on a field and the table should not carry it. */
   assert.ok(NAMED_WOODS.length >= 5);
   for (const w of NAMED_WOODS) {
+    /* The two kinds are distinguishable, and the flag is not decoration: it
+     * has to agree with the table that actually does the lifting. */
+    const bump = AUTHORED_WOODS.find((a) => a.id === w.id);
+    assert.equal(!!w.authored, !!bump,
+      `${w.id} is marked authored=${!!w.authored} and AUTHORED_WOODS ${bump ? 'has' : 'has no'} entry for it`);
+    if (bump) {
+      assert.ok(w.r <= bump.r,
+        `${w.id}'s named radius ${w.r} reaches outside the ${bump.r} m disc its canopy comes from`);
+      assert.ok(authoredLift(w.x, w.z) > 0.2, `${w.id} sits off its own bump`);
+    } else {
+      assert.equal(authoredLift(w.x, w.z), 0,
+        `${w.id} is not marked authored but stands on authored canopy`);
+    }
     assert.ok(standAt(w.x, w.z) > 0.5, `${w.id}'s centre is at stand ${standAt(w.x, w.z).toFixed(2)}`);
     let sum = 0;
     let n = 0;
@@ -204,15 +236,65 @@ test('every named wood is on a real peak of the mask, and has an interior', () =
   assert.equal(woodAt(0, 0), null, 'the market square is in a wood');
 });
 
-test('the mask itself is untouched - the woods are where they always were', () => {
-  // Density and edges changed; the PLACES did not. A player who has walked the
-  // old build must find the same woods.
+test('the mask is the old noise plus the authored woods, and nothing else', () => {
+  /* THIS GATE HAS BEEN AMENDED ONCE, ON PURPOSE, AND THE INTENT SURVIVED IT.
+   *
+   * It used to assert `woodMask(x, z) === fbm2(x * 0.0062, z * 0.0062, 3)` over
+   * the 500 fixed samples below, under the title "the mask itself is untouched
+   * - the woods are where they always were". The property it was defending is
+   * that DENSITY and EDGES were free to change and the PLACES were not: a
+   * player who has walked the old build must find the same woods.
+   *
+   * `AUTHORED_WOODS` deliberately breaks the letter of that. It adds a wood
+   * that was not there - Hazelbrake, because the starting valley had no closed
+   * canopy in it and therefore could not hold a predator, which is what the
+   * player reported. So the reference gained a second term and the intent
+   * stayed: the noise is still untouched, the authored term is BOUNDED and
+   * ENUMERATED, and eight of these five hundred samples fall inside it.
+   *
+   * Three things this amendment refuses to do, because each would have thrown
+   * the gate away while appearing to keep it:
+   *
+   *   it does not loosen the comparison to a tolerance - it is still exact
+   *     equality, on every sample;
+   *   it does not move the sample points off the new wood - the eight that land
+   *     in it are counted and asserted, so a future edit that quietly sampled
+   *     round an authored wood would fail here;
+   *   it does not call `authoredLift` - the bump is re-derived below from the
+   *     table's own numbers, so this compares an implementation with a
+   *     specification rather than a function with itself.
+   */
   assert.equal(WOOD_FREQ, 0.0062);
+  assert.ok(AUTHORED_WOODS.length >= 1, 'the authored woods table is empty');
+  for (const a of AUTHORED_WOODS) {
+    assert.ok(a.id && Number.isFinite(a.x) && Number.isFinite(a.z));
+    assert.ok(a.amp > 0 && a.r > 0, `${a.id} is not a bump`);
+    /* Bounded: the lift is exactly zero at the radius and beyond, so the wood
+     * cannot reach the rest of the map however big the amplitude gets. */
+    for (const d of [a.r, a.r + 0.001, a.r * 2, 400]) {
+      assert.equal(authoredLift(a.x + d, a.z), 0, `${a.id} leaks past its radius`);
+      assert.equal(authoredLift(a.x, a.z + d), 0, `${a.id} leaks past its radius`);
+    }
+  }
+  let lifted = 0;
   for (let i = 0; i < 500; i++) {
     const x = ((i * 97) % 900) - HALF;
     const z = ((i * 173) % 900) - HALF;
-    assert.equal(woodMask(x, z), fbm2(x * 0.0062, z * 0.0062, 3));
+    // The specification: the noise the vale has always had, plus each authored
+    // wood's own bump, `1 - smoothstep(0, 1, d / r)` written out.
+    let ref = fbm2(x * 0.0062, z * 0.0062, 3);
+    for (const a of AUTHORED_WOODS) {
+      const d = Math.hypot(x - a.x, z - a.z);
+      if (d >= a.r) continue;
+      const t = d / a.r;
+      ref += a.amp * (1 - t * t * (3 - 2 * t));
+      lifted++;
+    }
+    assert.equal(woodMask(x, z), ref, `the mask at (${x}, ${z}) is not fbm2 + the authored woods`);
   }
+  assert.equal(lifted, 8,
+    `${lifted} of the 500 fixed samples land inside an authored wood - this gate is only worth `
+    + 'anything while some of them do, so do NOT fix it by moving the samples');
   assert.ok(EDGE_LO < EDGE_HI);
   assert.ok(EDGE_LO > 0.02, 'the canopy still starts at the old binary threshold');
 });
@@ -327,14 +409,24 @@ test('deadfall is bucketed per wood, so a wood is a district', () => {
 
 test('the understorey outnumbers the trees, because that is what closes a wood', () => {
   /* The trade this whole design rests on. A crown is 2,880-4,560 triangles and
-   * sits four to eleven metres up, where it blocks the sky; a thicket is
-   * TWELVE and stands between a player's eye and a wolf's. If the understorey
-   * were ever cut to "save triangles" the wood would open up for a saving of
-   * about half a percent, so the relationship is pinned rather than assumed. */
+   * sits four to eleven metres up, where it blocks the sky; a thicket is SIX
+   * and stands between a player's eye and a wolf's. If the understorey were
+   * ever cut to "save triangles" the wood would open up for a saving of about
+   * one and a half percent, so the relationship is pinned rather than assumed.
+   *
+   * SIX, NOT TWELVE, and this file was the only place that had it right.
+   * `Woodland.js` and `MedievalWorld.js` both said TWELVE in prose while the
+   * builder made three cards of one quad each - `planeGeo(w, h, 0)` at the
+   * default single segment, so two triangles per card. The prose has been
+   * corrected to match the code rather than the other way round, because the
+   * code is what the renderer runs and because twelve does not survive this
+   * assertion: at twelve the understorey costs 116,556 triangles against a
+   * limit of 74,016 and the line below would FAIL. At six it costs 58,278.
+   * `CARD_TRIS` is asserted against the geometry the world actually builds in
+   * the test below, so the two cannot drift again. */
   assert.ok(UNDERSTOREY > PLAYFIELD_TREES,
     `${UNDERSTOREY} thickets against ${PLAYFIELD_TREES} trees - the wood will be see-through`);
   assert.ok(BRACKEN > UNDERSTOREY, 'there is more shrub than there is ground cover');
-  const CARD_TRIS = 6;
   const CROWN_TRIS = 2880;
   const understoreyCost = (UNDERSTOREY + BRACKEN) * CARD_TRIS;
   const treeCost = PLAYFIELD_TREES * CROWN_TRIS;
@@ -381,4 +473,53 @@ test('the backdrop treelines scale with their own circumference', () => {
    * precisely so the boles never show. */
   assert.equal(/new THREE\.InstancedMesh\(pine\.geo\.trunk/.test(code), false,
     'the backdrop rings are drawing trunks again - 222,000 triangles a frame that cannot be seen');
+});
+
+test('a thicket really is three single-quad cards, which is where the SIX comes from', () => {
+  /* The number above is a claim about geometry the builder writes, and until
+   * now it lived only in prose - in three docstrings, two of which said twelve.
+   *
+   * ── WHAT THE FIRST VERSION OF THIS TEST ACTUALLY PINNED ─────────────────
+   * It matched `planeGeo(CARD_W, CARD_H, 0)` and called the `0` a segment
+   * count. It is not. `planeGeo(w, h, tile = 0.5, wSeg = 1, hSeg = 1)` - the
+   * third argument is the UV TILE FACTOR, and zero means "leave the unwrap
+   * alone". The segment counts are the fourth and fifth, and they are
+   * defaulted. So the single edit that genuinely changes how many triangles a
+   * card carries - moving `wSeg`/`hSeg` in the signature - left the call site
+   * byte-identical, passed the grep, and passed the budget assertion above too,
+   * because `CARD_TRIS` was a literal 6 in the test rather than anything read
+   * off the world.
+   *
+   * So this BUILDS the card instead of reading about it: the segment counts are
+   * taken from whichever of the signature's defaults and the call site's
+   * arguments actually apply, handed to three.js, and the triangles counted.
+   * `CARD_TRIS` is asserted against the result, so the two cannot drift and
+   * neither edit slips through. */
+  const src = WORLD_SRC.replace(/\/\*[\s\S]*?\*\//g, '');
+  const block = /const CARD_W = [\d.]+;[\s\S]{0,900}?const brushGeo = mergeGeometries\(parts, false\);/
+    .exec(src);
+  assert.ok(block, 'the understorey geometry is no longer built from CARD_W/parts/mergeGeometries');
+  const loop = /for \(let i = 0; i < (\d+); i\+\+\)/.exec(block[0]);
+  const cards = Number(loop?.[1]);
+  assert.equal(cards, 3, 'the understorey no longer uses three crossed cards');
+
+  const sig = /function planeGeo\(w, h, tile = [\d.]+, wSeg = (\d+), hSeg = (\d+)\)/.exec(src);
+  assert.ok(sig, 'planeGeo no longer has the (w, h, tile, wSeg, hSeg) shape this test reads defaults from');
+  const call = /planeGeo\(CARD_W, CARD_H([^)]*)\)/.exec(block[0]);
+  assert.ok(call, 'the card is no longer a planeGeo(CARD_W, CARD_H, ...) call');
+  // Arguments past (w, h): [tile, wSeg, hSeg]. Anything omitted takes the
+  // signature's default, which is the hole the grep version could not see.
+  const extra = call[1].split(',').map((a) => a.trim()).filter(Boolean);
+  const wSeg = Number(extra[1] ?? sig[1]);
+  const hSeg = Number(extra[2] ?? sig[2]);
+  assert.ok(Number.isFinite(wSeg) && Number.isFinite(hSeg),
+    `the card's segment counts are expressions (${extra.slice(1).join(', ')}) rather than literals - `
+    + 'this test can no longer evaluate them and the budget above is unproven');
+
+  const geo = new THREE.PlaneGeometry(1, 1, wSeg, hSeg);
+  const tris = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
+  geo.dispose();
+  assert.equal(cards * tris, CARD_TRIS,
+    `a thicket is ${cards} cards of ${tris} triangles = ${cards * tris}, and the budget assertion `
+    + `above is written in CARD_TRIS = ${CARD_TRIS}`);
 });

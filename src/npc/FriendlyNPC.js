@@ -658,7 +658,11 @@ export class FriendlyNPC extends NPC {
        * river. Drop the wet legs; `setPath` does the same for the waypoints
        * themselves. If nothing survives, fall through to a free-roam pick
        * rather than march in. */
-      const dry = legs.filter((wp) => !this.nav.isDeepWaterAt(wp.x, wp.z));
+      // An authored waypoint carries the height its author meant, so a leg that
+      // crosses a bridge is probed on the DECK rather than under it - see
+      // `Grounding.waterDepthAt`. Without that the vale's own routes lost every
+      // leg that used a crossing and fell through to a free-roam pick.
+      const dry = legs.filter((wp) => !this.nav.isDeepWaterAt(wp.x, wp.z, wp.y));
       if (dry.length && this.nav.waterFreeLine(this.position, dry[0])) {
         /* Resolve each waypoint onto the ground the way the old single-target
          * path did. An authored waypoint carries the height its author meant -

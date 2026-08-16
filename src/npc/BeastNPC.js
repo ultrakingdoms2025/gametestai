@@ -3,7 +3,7 @@ import { CONFIG } from '../core/Config.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { NPC, clamp } from './NPC.js';
 import { BeastAnimator } from './BeastAnimator.js';
-import { beastDef, rollBeastDamage } from './BeastSpecies.js';
+import { beastDef, rollBeastDamage, threatRadius } from './BeastSpecies.js';
 import { strikeHits, STRIKE_ARC, STRIKE_DROP } from './BeastMaul.js';
 
 /**
@@ -118,6 +118,14 @@ export class BeastNPC extends NPC {
 
     /** Territory centre. Defaults to where it was placed. */
     this.home = (ctx.home ?? ctx.position).clone();
+    /**
+     * How far from `home` this animal will hunt. @see BeastSpecies.threatRadius
+     *
+     * Held on the instance rather than recomputed, because it is read on every
+     * acquisition test and because a world that hands a beast a custom
+     * territory should get a leash that follows it.
+     */
+    this.leash = threatRadius(def);
     /** @type {import('./BeastPack.js').BeastPack|null} */
     this.pack = ctx.pack ?? null;
     this.packSlot = 0;
@@ -146,12 +154,32 @@ export class BeastNPC extends NPC {
      * Seconds left of "I have eaten", during which nothing new is hunted.
      *
      * Beasts hunt travellers as well as the player, which is what the brief
-     * asked for and is also a slow way to depopulate a village: friendlies are
-     * not in the respawn queue, so every civilian a wolf pack works through is
-     * gone for the session. A predator that has just made a kill and then
-     * immediately picks the next nearest body is not behaving like a predator
-     * anyway. This bounds the damage to roughly one kill a minute per animal
-     * without adding a system to do it.
+     * asked for and is also a slow way to depopulate a village. WHICH
+     * civilians, exactly, is worth being precise about, because the obvious
+     * claim - "friendlies are not in the respawn queue, so every one a pack
+     * works through is gone for the session" - is FALSE for most of them and
+     * was believed here for a while.
+     *
+     * `MedievalResidency` despawns a streamed civilian at 220 m and re-spawns
+     * its SPEC on the way back in, and it does not look at `isDead` on either
+     * leg. So a round trip past 220 m restores 96 of the vale's 108 - the 88
+     * planned residents and the 8 travellers - as new bodies. What genuinely
+     * does not come back is everything the manager placed rather than streamed:
+     * the twelve authored friendlies (Bram Tallow, Wilda Sorrel, Captain Osric
+     * Vane, Piety Lark, Nell Harrow, Corvin Ash, Goodman Alder, Tibb Marrow,
+     * Rook Danby, Serjeant Hale, Watchman Pell, Sister Meriet), the quest
+     * manager `_spawnQuestManagers` plants (Edmund Marsh, at (10, -9), 7.2 m
+     * from the player's spawn pin, anchored and weaponless - and `HUD` gates
+     * the quest board on `isQuestManager`, so he takes it with him), the portal
+     * lorekeeper, and the hub crowd. `NPCManager._updateRespawns` walks
+     * `_hostiles` only, so nothing else will bring any of them back.
+     *
+     * Those are also exactly the ones the placement cordon and the home leash
+     * are sized to keep a pack away from - see `BeastSpecies.threatRadius`. A
+     * predator that has just made a kill and then immediately picks the next
+     * nearest body is not behaving like a predator anyway. This bounds the
+     * damage to roughly one kill a minute per animal without adding a system to
+     * do it.
      *
      * It gates ACQUISITION only. Something that attacks a satiated beast still
      * gets its attention through `onDamaged`, so the player can always pick a
@@ -233,6 +261,30 @@ export class BeastNPC extends NPC {
   }
 
   /**
+   * Is `t` outside this animal's country?
+   *
+   * THE HOME LEASH, in one place. Horizontal distance only: a target standing
+   * on a bridge deck is four metres up and no further away for it, and the
+   * cordon this bound is paired with is drawn in plan.
+   *
+   * Written against the TARGET rather than against the beast on purpose. It
+   * makes the rule self-limiting - a beast only ever steers at something inside
+   * the disc, and a disc is convex, so it cannot walk itself out - and it
+   * gives the boundary hysteresis for free: crossing it drops the hunt, and
+   * stepping back inside starts it again, with no flicker at the line.
+   *
+   * @param {any} t
+   * @returns {boolean}
+   */
+  beyondLeash(t) {
+    const p = t?.position;
+    if (!p) return false;
+    const dx = p.x - this.home.x;
+    const dz = p.z - this.home.z;
+    return dx * dx + dz * dz > this.leash * this.leash;
+  }
+
+  /**
    * Capsule for whatever is being mauled.
    *
    * The player and an NPC report their dimensions differently - the player's
@@ -286,7 +338,13 @@ export class BeastNPC extends NPC {
       } else {
         this.memory = Math.max(0, this.memory - SENSE_INTERVAL);
       }
-      if (this.memory <= 0 || this.targetDistance > this.def.loseInterest) this._dropTarget();
+      /* Three ways to lose a hunt, and the third is the only one a walking
+       * player cannot defeat. `loseInterest` is 46 m against a `chargeSpeed` of
+       * 7.6 and a player's 4.6, so a beast closes on anybody who merely walks
+       * and that clock never runs out; the leash is measured from HOME and
+       * closes at the same rate whoever is being followed. */
+      if (this.memory <= 0 || this.targetDistance > this.def.loseInterest
+        || this.beyondLeash(this.target)) this._dropTarget();
       if (this.target) return;
     }
 
@@ -332,9 +390,19 @@ export class BeastNPC extends NPC {
     return !this.physics.raycast(_eye, _v2, d - 0.3, COLLISION_LAYER.WORLD);
   }
 
-  /** Take a target and, if this beast runs with a pack, tell the pack. */
+  /**
+   * Take a target and, if this beast runs with a pack, tell the pack.
+   *
+   * @returns {boolean} false when the leash refused it, so callers that had
+   *   something else to do with the news - `onDamaged` - still can.
+   */
   _acquire(t, share = false) {
-    if (!t || t.isDead) return;
+    if (!t || t.isDead) return false;
+    /* The leash gates ACQUISITION as well as pursuit, and that is the half
+     * that keeps the vale's cast alive. A beast that has been drawn out of its
+     * country by a player - or thrown out of it by a flee - must not arrive
+     * somewhere new and start hunting whoever lives there. */
+    if (this.beyondLeash(t)) return false;
     const fresh = this.target !== t;
     this.target = t;
     /* Measure it NOW, not on the next sense.
@@ -354,6 +422,7 @@ export class BeastNPC extends NPC {
     this.hasLastKnown = true;
     if (fresh && this.state === 'ROAM') this.setState('STALK');
     if (share && this.pack) this.pack.share(t, this);
+    return true;
   }
 
   /**
@@ -363,6 +432,11 @@ export class BeastNPC extends NPC {
   adoptPackTarget(t) {
     if (this.isDead || !t || t.isDead) return false;
     if (this.satiated > 0) return false;
+    /* Shared aggro is how a pack behaves like one, and it is also the path a
+     * dragged pack would use to re-form around a target none of its members
+     * could legally take: `_roam` re-adopts whatever the pack holds the moment
+     * it is idle. Each member answers for its own leash. */
+    if (this.beyondLeash(t)) return false;
     if (this.target === t) return true;
     this.target = t;
     // @see `_acquire` - the distance has to be fresh before `_stalk` reads it.
@@ -406,11 +480,15 @@ export class BeastNPC extends NPC {
     // Whatever hurt it becomes the thing it is interested in, if it is
     // huntable. Being attacked overrides having just eaten: a beast that has
     // made a kill still defends itself, or the player could farm one for free.
+    let took = false;
     if (source && source !== this && this._isHuntable(source)) {
       this.satiated = 0;
-      this._acquire(source, true);
+      took = this._acquire(source, true);
     }
-    else if (from?.isVector3) {
+    /* A shot from outside the leash still turns its head - it just does not
+     * become a hunt. Losing that would make a sniped beast stand there with no
+     * record of where the shot came from at all. */
+    if (!took && from?.isVector3) {
       this.lastKnown.copy(from);
       this.hasLastKnown = true;
     }
@@ -499,8 +577,11 @@ export class BeastNPC extends NPC {
      * there is nothing here to rejoin. */
     const shared = this.satiated > 0 ? null : this.pack?.target;
     if (shared && !shared.isDead
-      && this.position.distanceTo(shared.position) < this.def.loseInterest) {
-      this.adoptPackTarget(shared);
+      && this.position.distanceTo(shared.position) < this.def.loseInterest
+      // Only return if the target was actually TAKEN. The leash can refuse it,
+      // and a member that returns anyway has skipped its own wander this step
+      // for nothing - which, repeated every step, is a wolf standing still.
+      && this.adoptPackTarget(shared)) {
       return;
     }
 
@@ -558,13 +639,49 @@ export class BeastNPC extends NPC {
       return;
     }
 
+    /* Committed: straight in, at speed - but never through the river.
+     *
+     * `_roam` and the orbit branch below both refuse a wet destination and a
+     * wet route; this branch did not, and it is the only one that sets a
+     * target somebody else chose. Measured in a live session: `npc-57`, a wolf
+     * from the Hazelbrake pack, stood at (-28.87, 113.44) with the ground at
+     * -0.83 m against a 0.85 m water line - 1.7 m out of its depth, twelve
+     * metres off the channel centre, in the flooded margin - having charged
+     * there in a straight line. A wolf cannot swim, which is why `rejectHome`
+     * will not even house one below the flood line.
+     *
+     * ── WHAT THE FIRST VERSION OF THIS REFUSAL COST ────────────────────────
+     * It cleared the nav and returned, having ALREADY been granted
+     * `pack.requestAttack`. The slot was never given back, `_endAttack` was
+     * unreachable because the beast never came within `def.reach`, and
+     * `attackSlots` is `max(1, floor(liveCount / 3))` - which is ONE for any
+     * pack of three to five. So one wolf whose line happened to cross the
+     * river held the pack's only slot for as long as the target lived, and the
+     * other four orbited forever. It could not be seen in a test because there
+     * was no test, and in play it read as a pack that had noticed you and
+     * decided not to bother.
+     *
+     * So a refusal gives the slot back and falls through to the ring, which is
+     * strictly better than standing still: the ring is a legal, dry position
+     * (the branch below checks it) and it is nearer the target, so a pack held
+     * off by water works its way round to whatever side it CAN reach instead of
+     * queueing on the bank. `requestAttack` is asked again next step, so the
+     * moment the line clears, whichever member has the clearest one takes it. */
+    let holdRing = !wantsToCommit;
     if (wantsToCommit) {
-      // Committed: straight in, at speed.
-      this.desiredSpeed = def.chargeSpeed;
       _v1.copy(t.position);
-      this.nav.setTarget(_v1);
-    } else {
-      // Not our turn (or the pack has none): hold the ring.
+      if (this.nav.isDeepWaterAt(_v1.x, _v1.z, _v1.y)
+        || !this.nav.waterFreeLine(this.position, _v1)) {
+        this.pack?.releaseAttack(this);
+        holdRing = true;
+      } else {
+        this.desiredSpeed = def.chargeSpeed;
+        this.nav.setTarget(_v1);
+      }
+    }
+
+    if (holdRing) {
+      // Not our turn (or the pack has none, or the water said no): hold the ring.
       this.desiredSpeed = def.stalkSpeed;
       const ring = Math.max(def.reach + 1.6, 4.2);
       const angle = this.pack ? this.pack.slotAngle(this) : this._soloOrbitAngle(dt);
@@ -573,7 +690,12 @@ export class BeastNPC extends NPC {
         t.position.y,
         t.position.z + Math.sin(angle) * ring
       );
-      if (this.nav.isDeepWaterAt(_v1.x, _v1.z)) {
+      /* Probed at the TARGET's height, not at the ground's, which is what lets
+       * a pack circle somebody standing on a bridge. The ring is 4.2 m across
+       * so its points sit on the same deck the target does; probed from under
+       * the planks every one of them reads as a metre and a half of river and
+       * the whole pack holds station on the bank. @see Grounding.waterDepthAt */
+      if (this.nav.isDeepWaterAt(_v1.x, _v1.z, _v1.y)) {
         // Never circle through the river; hold where we are instead.
         this.nav.clear();
       } else {
@@ -582,8 +704,11 @@ export class BeastNPC extends NPC {
     }
 
     if (this.nav.isStuck) this.nav.acknowledgeStuck();
-    // Gave up: too far, or lost it for too long.
-    if (dist > def.loseInterest || (this.memory <= 0 && !this.losClear)) this._dropTarget();
+    // Gave up: too far, lost it for too long, or it left this animal's country.
+    // The last of those is the only one a player who simply keeps walking
+    // cannot outlast - @see `beyondLeash`.
+    if (dist > def.loseInterest || (this.memory <= 0 && !this.losClear)
+      || this.beyondLeash(t)) this._dropTarget();
   }
 
   /** A lone beast still circles, just on its own clock. */

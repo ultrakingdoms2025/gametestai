@@ -217,6 +217,58 @@ export function beastDef(id) {
 export const BEAST_IDS = Object.keys(BEASTS);
 
 /**
+ * THE HOME LEASH: how far from its `home` a beast will hunt, metres.
+ *
+ * ── The defect this exists for ─────────────────────────────────────────────
+ * Every rule that ended a pursuit was beast-to-TARGET - `loseInterest` and the
+ * memory clock - and not one of them mentioned home. `chargeSpeed` 7.6 beats a
+ * walking player's 4.6, so `loseInterest` can never fire against somebody who
+ * simply keeps walking: measured before this, a player led one wolf 188.1 m
+ * from its home - 5.5 territories - in 31.4 seconds, regenerating the whole
+ * way, and pacing the slowest orbiter brought all five. The vale's whole cast
+ * is inside that radius of somewhere. Edmund Marsh, the vale's quest manager,
+ * stands 7.2 m from the player's spawn pin, is anchored, weaponless and not in
+ * any respawn queue, and his death takes the quest board with it for the
+ * session.
+ *
+ * ── Why it is `territory + sight` and not a number ─────────────────────────
+ * Because that is the radius the world already placed the pack against.
+ * `Wildlife.reachFor` is this same function - it delegates to it, so the two
+ * cannot drift - and every clearance in the vale is written as `reach + ...`:
+ * a pack home is at least `reach + MARGIN` from every civilian and from every
+ * wall, and MARGIN is 22 because `FriendlyNPC.homeRadius` is at most 22. Put
+ * the leash at `reach` and that arithmetic becomes a guarantee about where an
+ * ANIMAL can be rather than about where a spec was written:
+ *
+ *     every point a civilian can occupy - pin, free-roam disc or patrol leg -
+ *     is at least `reach` from every pack home, so no beast on this leash can
+ *     ever acquire one.
+ *
+ * Measured on the shipped placement, minimised over all 108 civilians and all
+ * twelve packs: the nearest a wolf's home comes to ground a civilian occupies
+ * is 68.26 m against a 68 m leash, and a bear's 53.71 m against 52 m.
+ * `medieval-wildlife.test.mjs` asserts both, over the built world.
+ *
+ * It also costs the encounter nothing, which a smaller leash does: acquisition
+ * already happens anywhere inside this radius, so cutting the leash to 1.5
+ * territories would have taken the watched share of the road network from 92
+ * of 1,298 samples to 19.
+ *
+ * The rule is written against the TARGET's position rather than the beast's,
+ * which is what makes it self-limiting - a beast only ever steers at something
+ * inside the disc, so it stays inside the disc - and what gives it hysteresis:
+ * step back inside and the pack comes again, with no boundary flicker.
+ *
+ * @param {BeastDef} def
+ * @returns {number}
+ */
+export function threatRadius(def) {
+  const territory = Number.isFinite(def?.territory) ? def.territory : 30;
+  const sight = Number.isFinite(def?.sight) ? def.sight : 30;
+  return territory + sight;
+}
+
+/**
  * Roll one blow's damage.
  * @param {BeastDef} def
  * @param {() => number} rnd 0..1

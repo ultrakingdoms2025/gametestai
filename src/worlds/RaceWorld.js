@@ -3230,7 +3230,13 @@ export class RaceWorld extends World {
       accent: 0x4de3ff,
     });
 
-    const F = (c, name, persona, s, lat) => {
+    /**
+     * A named civilian at a lap position. `extra` is anything
+     * `NPCManager.spawnForWorld` reads off a spawn descriptor - `role`,
+     * `vendorCategories`, `vendorTitle`, `signLines` - so the garage that trades
+     * is authored here rather than being a second kind of thing somewhere else.
+     */
+    const F = (c, name, persona, s, lat, extra) => {
       const cc = c.course;
       const g = cc.pointAt(((s % cc.length) + cc.length) % cc.length, lat);
       return {
@@ -3238,11 +3244,26 @@ export class RaceWorld extends World {
         type: 'friendly',
         name,
         persona,
+        ...extra,
       };
     };
     this.npcSpawns.push(
       F(home, 'Marek Vaisey', 'Chief scrutineer at Vellum Ridge; has timed every lap run here for thirty years.', co.length - 60, -(W + 20)),
-      F(home, 'Ines Okonjo', 'Runs the tyre bay in garage four; reads a set of worn fronts like a paragraph.', co.length - 20, -(W + 22)),
+      /* The circuit's one trader.
+       *
+       * `Marketplace._findVendor` keys on `role`, on an explicit `vendor` flag,
+       * or on trade words in the name and persona, and not one of the six voices
+       * here matched any of them - so `B` could never open a shop in this world,
+       * and the five `cosmetic_car_*` liveries, which are sold ONLY here, were
+       * unbuyable everywhere. The tyre bay is the closest thing to a counter, so
+       * it becomes the counter. */
+      F(home, 'Ines Okonjo', 'Runs the tyre bay in garage four; reads a set of worn fronts like a paragraph.', co.length - 20, -(W + 22),
+        {
+          role: 'vendor',
+          vendorCategories: ['mounts', 'tools'],
+          vendorTitle: 'Garage Four Tyre Bay',
+          signLines: ['GARAGE FOUR', 'TYRES + LIVERIES'],
+        }),
       F(home, 'Devrim Aslan', 'Track marshal, ridge sector; knows exactly where the circuit bites.', co.length * 0.42, -(W + 6)),
       F(home, 'Halla Brandt', 'Timekeeper in the gantry; speaks in tenths and does not exaggerate.', 30, W + 8)
     );

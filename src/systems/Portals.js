@@ -830,6 +830,54 @@ export class PortalSystem {
     return this._near;
   }
 
+  /**
+   * Light the nearest gateway up for `seconds`, and hand it back.
+   *
+   * The Gatefinder consumable promised, in the catalogue and in `ItemDefs`, to
+   * *highlight* the nearest portal; all it ever did was print the destination
+   * name to the HUD, which is a hint, not a highlight. This is the highlight:
+   * `update()` reads `_pingUntil` and drives the disc, halo, motes and spill
+   * light off a pulse for as long as it holds.
+   *
+   * Extends rather than replaces - a second charge on an already-lit gateway
+   * must not cut the first one short, so the deadline only ever moves forward.
+   *
+   * @param {number} seconds
+   * @param {{x:number,y:number,z:number}} [from] Origin to measure from;
+   *   defaults to the player.
+   * @returns {any|null} the portal that was lit, or null if there are none.
+   */
+  pingNearest(seconds, from) {
+    const origin = from ?? this.player?.position ?? null;
+    if (!origin || this._portals.length === 0) return null;
+    let best = null;
+    let bestD2 = Infinity;
+    for (const p of this._portals) {
+      if (!p?.position) continue;
+      const dx = p.position.x - origin.x;
+      const dy = p.position.y - origin.y;
+      const dz = p.position.z - origin.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        best = p;
+      }
+    }
+    if (!best) return null;
+    const now = this.engine?.elapsed ?? 0;
+    const hold = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+    best._pingUntil = Math.max(best._pingUntil ?? 0, now + hold);
+    this.bus?.emit('portal:ping', {
+      portal: best,
+      target: best.target,
+      id: best.id ?? best.target,
+      label: best.label ?? null,
+      seconds: hold,
+      until: best._pingUntil,
+    });
+    return best;
+  }
+
   /** True while a world transition is playing. */
   get isTransitioning() {
     return this._transition !== null;
@@ -1106,6 +1154,10 @@ export class PortalSystem {
       _side: 0,
       _lightPhase: index * 1.7,
       _proximity: 0,
+      /** engine.elapsed until which `pingNearest` keeps this gateway lit. */
+      _pingUntil: 0,
+      /** True while that hold is running. Read by anything drawing the world. */
+      pinged: false,
     };
     return portal;
   }
@@ -2993,15 +3045,22 @@ export class PortalSystem {
       const want = dist < 24 ? 1 - Math.min(dist / 24, 1) : 0;
       p._proximity += (want - p._proximity) * Math.min(1, dt * 4);
 
+      // The Gatefinder highlight, added on top of proximity rather than in place
+      // of it: a pinged gateway you are also standing next to must not get
+      // *dimmer* than one you are only pointing at. 0 when not pinged, so every
+      // term below collapses back to exactly the maths it had before.
+      p.pinged = elapsed < p._pingUntil;
+      const ping = p.pinged ? 0.5 + 0.5 * Math.sin(elapsed * 4.2) : 0;
+
       const stability = p.ready ? 1 : 0.18 + 0.1 * Math.sin(elapsed * 3.1 + i);
       const du = p.discMat.uniforms;
       du.uTime.value = elapsed;
       du.uStability.value += (stability - du.uStability.value) * Math.min(1, dt * 2.5);
-      du.uIntensity.value = 1 + p._proximity * 0.55;
+      du.uIntensity.value = 1 + p._proximity * 0.55 + ping * 0.8;
       p.haloMat.uniforms.uTime.value = elapsed;
-      p.haloMat.uniforms.uIntensity.value = (p.ready ? 1 : 0.45) * (1 + p._proximity * 0.9);
+      p.haloMat.uniforms.uIntensity.value = (p.ready ? 1 : 0.45) * (1 + p._proximity * 0.9 + ping * 1.6);
       p.moteMat.uniforms.uTime.value = elapsed;
-      p.moteMat.uniforms.uBoost.value = 1 + p._proximity * 0.7;
+      p.moteMat.uniforms.uBoost.value = 1 + p._proximity * 0.7 + ping * 0.9;
       p.emberMat.uniforms.uTime.value = elapsed;
 
       // Light spill: a slow pulse plus a fast flicker so it never looks static.
@@ -3012,7 +3071,7 @@ export class PortalSystem {
       // Base candela matches the constructor: the spill has to read on the dais
       // without pushing the stone past the world's bloom threshold, which is
       // what turned the whole plinth into an amber flare in review round one.
-      if (p.light) p.light.intensity = (p.ready ? 8.5 : 3.5) * pulse * (1 + p._proximity * 0.6);
+      if (p.light) p.light.intensity = (p.ready ? 8.5 : 3.5) * pulse * (1 + p._proximity * 0.6 + ping * 1.1);
 
       p.sign.position.y = DISC_Y + ARCH_R + 0.72 + Math.sin(elapsed * 0.9 + i) * 0.05;
 

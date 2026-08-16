@@ -90,11 +90,18 @@ export class Marketplace {
    * @param {{ bus?:any, economy?:any, inventory?:any, player?:any, npcManager?:any,
    *           input?:any, root?:HTMLElement, ui?:boolean }} ctx
    */
-  constructor({ bus, economy, inventory, cosmetics, player, npcManager, input, root, ui = true } = {}) {
+  constructor({ bus, economy, inventory, cosmetics, mounts, player, npcManager, input, root, ui = true } = {}) {
     this.bus = bus ?? null;
     this.economy = economy ?? null;
     this.inventory = inventory ?? null;
     this.cosmetics = cosmetics ?? null;
+    /**
+     * Read-only here: preview() needs it to refuse a mount power the player
+     * already owns. Without it every tier stayed re-buyable at full price
+     * forever, because `quantity` is NULL on all 45 mount rows and nothing
+     * else in the purchase path knows what has already been granted.
+     */
+    this.mounts = mounts ?? null;
     this.player = player ?? null;
     this.npcManager = npcManager ?? null;
 
@@ -361,6 +368,14 @@ export class Marketplace {
     const power = this._mountPowerGrant(item);
     if (power) {
       const grant = { qty: 1, kind: 'upgrade', label: 'Mount upgrade' };
+      // A higher tier replaces a lower one (MountManager.grantPower), so owning
+      // tier 3 makes tiers 1 and 2 no-ops too - refuse anything at or below what
+      // is already granted rather than charging for a purchase that changes
+      // nothing. Mirrors the cosmetic `owned` branch below.
+      const ownedTier = Number(this.mounts?.getPowers?.(power.mount)?.[power.power] ?? 0);
+      if (ownedTier >= power.tier) {
+        return { ok: false, reason: 'owned', stock, grant, power, cost };
+      }
       if (stock <= 0) return { ok: false, reason: 'stock', stock, grant, power, cost };
       if (this.credits < cost) return { ok: false, reason: 'credits', stock, grant, power, cost };
       return { ok: true, stock, grant, power, cost };

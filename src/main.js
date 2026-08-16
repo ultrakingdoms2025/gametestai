@@ -206,7 +206,9 @@ const itemUse = new ItemUseSystem({ bus, player, inventory, loot, portals, npcMa
 // Permanent purchasable skins. Bought at a merchant, worn from the F2 menu, and
 // round-tripped through both save paths so a limited-edition unlock sticks.
 const cosmetics = new Cosmetics({ bus });
-const market = new Marketplace({ bus, economy, inventory, cosmetics, player, npcManager, input, root: uiRoot });
+// `mounts` is passed read-only so preview() can refuse a mount power the player
+// already owns - see the `owned` branch in Marketplace.preview().
+const market = new Marketplace({ bus, economy, inventory, cosmetics, mounts, player, npcManager, input, root: uiRoot });
 const helpMenu = new HelpMenu({ root: uiRoot, bus, input });
 const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts, worldManager });
 /* The maze's M map. It owns its own keydown listener rather than going through

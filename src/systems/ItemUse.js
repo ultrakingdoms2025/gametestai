@@ -115,7 +115,11 @@ export class ItemUseSystem {
         this.bus?.emit('hud:notify', { text: `Loot magnet active for ${effect.duration}s`, tone: 'info' });
         return { amount: effect.duration };
       case 'portalPing': {
-        const portal = this._nearestPortal();
+        // Light the gateway up for real, and fall back to the local search only
+        // where `PortalSystem` is old enough not to have `pingNearest` (tests
+        // stub `portals` as a bare `{ portals: [...] }`). The toast stays: the
+        // highlight tells you WHERE, the notification tells you WHICH.
+        const portal = this.portals?.pingNearest?.(effect.duration) ?? this._nearestPortal();
         if (!portal) return null;
         const dest = portal.label || this._worldNameFor(portal.target) || portal.target || 'the Nexus';
         this.bus?.emit('hud:notify', { text: `Nearest portal: ${dest}`, tone: 'lore' });

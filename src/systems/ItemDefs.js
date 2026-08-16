@@ -324,6 +324,18 @@ export const WORLD_MARKETS = {
     itemBuy: { nexus_shard: 1.25 },
     note: 'Civilian grounds — medical supplies are cheap and plentiful.',
   },
+  race: {
+    label: 'Vellum Ridge Circuits',
+    // A working paddock: everything is trucked in for the meeting and priced at
+    // face value. Deliberately flat, so the circuit is neither the place to dump
+    // cargo nor the place to stock up - it is where you go to race.
+    buy: { trinket: 1.0, ammo: 1.0, consumable: 1.0 },
+    sell: { ammo: 1.0, consumable: 1.0 },
+    // Alloy has an obvious use in a garage, and there is nothing here that wants
+    // a relic.
+    itemBuy: { alloy_scrap: 1.3, relic_coin: 0.8 },
+    note: 'Circuit paddock — everything trades at face value.',
+  },
 };
 
 /** Market in force right now. Set by Marketplace on every world change. */

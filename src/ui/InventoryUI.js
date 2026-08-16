@@ -51,8 +51,15 @@ export function menuFocusIn(input) {
  * @param {boolean} [othersOpen=false] leave the body class alone if another menu is up
  */
 export function menuFocusOut(input, relock, othersOpen = false) {
+  // Another panel is still up. MarketplaceUI shares these helpers AND the
+  // .inv-root class, so closing the inventory on top of an open marketplace
+  // used to release text capture while a live modal was still on screen -
+  // gameplay keys (WASD, weapon binds) resumed underneath it. Re-requesting
+  // pointer lock here would be wrong for the same reason, so bail entirely
+  // and let whichever panel is still open own focus until IT closes.
+  if (othersOpen) return;
   input?.setTextCapture?.(false);
-  if (!othersOpen) document.body.classList.remove('inv-menu-open');
+  document.body.classList.remove('inv-menu-open');
   if (!relock) return;
   setTimeout(() => {
     try {

@@ -46,6 +46,8 @@ const CHARGE_C = 2 * Math.PI * CHARGE_R;
 const CHARGE_HOLD = 0.14;
 const CAM_MODE_LIFE = 1.6;
 const MOUNT_LABELS = { hoverboard: 'Hoverboard', dragon: 'Dragon', car: 'Ground Car' };
+/** One-letter badges for owned mount power tiers - see `_setMountPowers`. */
+const POWER_LABELS = { power: 'PWR ', strength: 'STR ', shield: 'SHD ' };
 /** Boost meter fallback rates, used only when the mount exposes no charge. */
 const BOOST_DRAIN = 0.34;
 const BOOST_RECHARGE = 0.17;
@@ -668,6 +670,15 @@ export class HUD {
     names.appendChild(el('div', 'panel-label', 'Mounted'));
     this.mountName = el('div', 'mount-name', '—');
     names.appendChild(this.mountName);
+    /* Owned power tiers, as a row of badges.
+     *
+     * Without this a purchase is invisible: `MountManager.grantPower` banks the
+     * tier, persists it and turns it into a multiplier, and every one of the
+     * mount's own presentation values is deliberately saturated so that a tier
+     * changes none of them. The whole visible effect was a slightly earlier lap
+     * time, which is indistinguishable from having bought nothing. */
+    this.mountPow = el('div', 'mount-pow');
+    names.appendChild(this.mountPow);
     head.append(this.mountIco, names);
 
     const bar = el('div', 'mount-boost');
@@ -1165,6 +1176,8 @@ export class HUD {
     // `mount:dismissed` spelling too so a mismatch cannot strand the panel.
     this._on('mount:dismounted', () => this._setMount(null));
     this._on('mount:dismissed', () => this._setMount(null));
+    // A tier bought while already mounted has to show without a remount.
+    this._on('mount:powers', ({ mountId }) => this._setMountPowers(mountId));
     this._on('mount:boost', ({ active }) => {
       this._boostActive = !!active;
       this.mountPanel.classList.toggle('boosting', this._boostActive);
@@ -1825,11 +1838,37 @@ export class HUD {
     this.mountName.textContent = MOUNT_LABELS[this._mountId] ?? String(this._mountId).toUpperCase();
     this.mountIco.textContent = '';
     this.mountIco.appendChild(iconFor(this._mountId));
+    this._setMountPowers();
     this.mountPanel.dataset.mount = this._mountId;
     this.mountPanel.classList.remove('in');
     void this.mountPanel.offsetWidth;
     this.mountPanel.classList.add('in');
     this._boost = 1;
+  }
+
+  /**
+   * Redraw the owned-power badges for the mount being ridden.
+   *
+   * Reads `MountManager.getPowers`, which is the same bag `_applyPowers` turns
+   * into multipliers, so the badge cannot claim a tier the mount is not
+   * actually carrying. Tiers are small integers; a missing or zero tier draws
+   * nothing rather than a "0".
+   * @param {string} [mountId] only redraw if this is the mount being ridden
+   */
+  _setMountPowers(mountId) {
+    if (!this.mountPow) return;
+    if (mountId && mountId !== this._mountId) return;
+    this.mountPow.textContent = '';
+    if (!this._mountId) return;
+    const bag = this._mounts?.getPowers?.(this._mountId) ?? null;
+    if (!bag) return;
+    for (const key of ['power', 'strength', 'shield']) {
+      const tier = Math.floor(Number(bag[key]) || 0);
+      if (tier <= 0) continue;
+      const b = el('span', `mount-pip ${key}`, `${POWER_LABELS[key]}${tier}`);
+      b.title = `${key} tier ${tier}`;
+      this.mountPow.appendChild(b);
+    }
   }
 
   _updateMount(dt) {

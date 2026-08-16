@@ -319,11 +319,19 @@ export class AudioDirector {
        * They are the same number for a horse and very much not for a bird: an
        * eagle's wind noise is airspeed, which includes the vertical, so a stoop
        * straight down measured on the horizontal reads as silence at exactly
-       * the moment it should be loudest. */
+       * the moment it should be loudest.
+       *
+       * `voiceSpeed`, where a mount offers it, is that same speed saturated at
+       * whatever ceiling the mount's VISUALS saturate at. A purchased Power
+       * tier lifts the real speed past that ceiling, and a held voice driven
+       * off the raw number then runs its wingbeat faster than the wings - see
+       * Dragon.voiceSpeed for the measured drift. */
       const m = this._mount.mount;
-      const speed = typeof m?.speed === 'number'
-        ? Math.abs(m.speed)
-        : (vel ? Math.hypot(vel.x, vel.z) : 0);
+      const speed = typeof m?.voiceSpeed === 'number'
+        ? m.voiceSpeed
+        : typeof m?.speed === 'number'
+          ? Math.abs(m.speed)
+          : (vel ? Math.hypot(vel.x, vel.z) : 0);
       this._mount.handle.set({
         speed,
         throttle: Math.min(1, speed / 18),

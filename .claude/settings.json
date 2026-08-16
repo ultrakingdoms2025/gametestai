@@ -27,11 +27,16 @@
       "Bash(node --test scripts/tests/npc-route-follow.test.mjs)",
       "Bash(node --test-reporter=spec --test scripts/tests/npc-route-follow.test.mjs)",
       "Bash(cp /tmp/rf.test.mjs scripts/tests/_rf.test.mjs)",
-      "Bash(node --test scripts/tests/_rf.test.mjs)"
+      "Bash(node --test scripts/tests/_rf.test.mjs)",
+      "Bash(sed -i 's/r.worst.toFixed\\(3\\)/r.worst.toFixed\\(9\\)/; s/r.mean.toFixed\\(3\\)/r.mean.toFixed\\(9\\)/' output/measure/m-probe.mjs)",
+      "Bash(node output/measure/m-probe.mjs)",
+      "Bash(cp output/measure/Dragon.js.bak src/mounts/Dragon.js)",
+      "Bash(python -c ' *)"
     ],
     "additionalDirectories": [
       "\\tmp",
-      "E:\\markc\\gametestai\\gametestai\\scripts\\tests"
+      "E:\\markc\\gametestai\\gametestai\\scripts\\tests",
+      "E:\\markc\\gametestai\\gametestai\\output\\measure"
     ]
   },
   "enabledPlugins": {

@@ -3708,6 +3708,39 @@ body {
   text-overflow: ellipsis;
 }
 
+/* Owned mount power tiers. Empty for a stock mount, so the row collapses and
+   the panel keeps the height it has always had. */
+.mount-pow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.mount-pow:empty {
+  display: none;
+}
+
+.mount-pip {
+  font-family: var(--f-disp);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 1px 5px;
+  color: #eaf8ff;
+  background: rgba(82, 233, 255, 0.14);
+  border: 1px solid rgba(82, 233, 255, 0.42);
+  text-shadow: 0 0 8px var(--cy-glow);
+  white-space: nowrap;
+}
+
+.mount-pip.power {
+  color: #fff2d6;
+  background: rgba(255, 180, 74, 0.16);
+  border-color: rgba(255, 180, 74, 0.5);
+  text-shadow: 0 0 8px rgba(255, 180, 74, 0.55);
+}
+
 .mount-boost {
   position: relative;
   height: 7px;

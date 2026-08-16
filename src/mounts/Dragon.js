@@ -670,6 +670,14 @@ export class Dragon {
     this._vy = 0;
     this._boost = 0;
     this._boostActive = false;
+    /**
+     * Purchased-power multipliers (see MountManager.grantPower), 1 == stock.
+     * The same two knobs Car.js carries, so the shop's Power/Strength ladder
+     * means the same thing whichever mount it is spent on.
+     */
+    this._powerMul = 1;
+    this._accelMul = 1;
+    this._shieldTier = 0;
     this._groundY = 0;
     /** True when the collision solver is holding us up - i.e. we are resting */
     /** on something the terrain probe cannot see, like a roof or a tree. */
@@ -1834,8 +1842,45 @@ export class Dragon {
       const target = ctrl.yaw + carve;
       let diff = ((target - this.heading + Math.PI) % (Math.PI * 2)) - Math.PI;
       if (diff < -Math.PI) diff += Math.PI * 2;
-      const maxRate = 1.55 - clamp01(this.speed / BOOST_SPEED) * 0.55;
-      const rate = clamp(diff * 2.6, -maxRate, maxRate);
+      /* The whole heading loop carries the Power multiplier, not just the speed.
+       *
+       * What a rider meets in a corner is the turning RADIUS, v / omega, and
+       * neither term decides it alone. Multiplying the speed while leaving this
+       * cap alone widens the radius, because the cap saturates: measured off
+       * the mount at its own top speed, tiers 0/1/2 gave 30.000 m, 33.600 m and
+       * 37.200 m. A dragon that cannot turn as tightly as the stock one clips
+       * the race corridor sooner, and `RaceManager._clampPlayerDragon` cuts it
+       * to 10 m/s for that - so the more the player had spent, the worse the
+       * mount cornered. Scaling both terms by the same k restores it exactly:
+       * 30.000 m at every tier, because v/omega is k*v / (k*omega).
+       *
+       * The proportional gain scales for the same reason. Left at 2.6 it takes
+       * a 12% larger heading error to reach the 12% larger cap, so the raised
+       * budget is unreachable in exactly the gentle corners it was bought for.
+       * With all three scaled the powered dragon flies the stock trajectory k
+       * times faster rather than a different, lazier one.
+       *
+       * What this does NOT do is make the corridor bite less often. Over the
+       * whole 16-line search in scripts/tests/race-pace.test.mjs the share of
+       * fixed steps the corridor clamped went, tiers 0/1/2: Vellum 0.99 ->
+       * 1.11 -> 1.23% (was 0.99 -> 1.28 -> 1.64), Cinder 5.81 -> 7.42 -> 8.55
+       * (was 5.81 -> 6.11 -> 7.04), Aurora 5.23 -> 6.33 -> 7.40 (was 5.23 ->
+       * 6.10 -> 7.48). It rises with the tier either way, and on Cinder it
+       * rises further after the fix, because that statistic is mostly a measure
+       * of how hard the DRIVER is pushing: a mount that corners better is
+       * driven faster into the same fixed-width corridor, and braking authority
+       * is deliberately not part of the Power ladder. The claim that survives
+       * measurement is the outcome, not the hit rate - the best lap that never
+       * left the corridor falls at every tier on every circuit, and falls
+       * further than it did before: Vellum 54.01 / 48.33 / 44.06 s (was 54.01 /
+       * 48.73 / 45.13), Cinder 45.45 / 40.74 / 37.12 (was 45.45 / 41.63 /
+       * 39.50), Aurora 43.26 / 38.85 / 35.55 (was 43.26 / 39.67 / 37.11).
+       *
+       * Stock is untouched to the bit: `_powerMul` is exactly 1, and both a
+       * multiply and a divide by 1 are exact in IEEE754. */
+      const topSpeed = BOOST_SPEED * this._powerMul;
+      const maxRate = (1.55 - clamp01(this.speed / topSpeed) * 0.55) * this._powerMul;
+      const rate = clamp(diff * 2.6 * this._powerMul, -maxRate, maxRate);
       this.heading += rate * dt;
       this._turnRate = damp(this._turnRate, rate, 5, dt);
     } else {
@@ -1849,11 +1894,14 @@ export class Dragon {
       this._rollTarget = 0;
     } else {
       let targetSpeed = 0;
-      if (throttle > 0) targetSpeed = lerp(CRUISE_SPEED, BOOST_SPEED, this._boost);
+      // The multiplier rides on the powered flight speed only. Applying it to
+      // the drift and back-pedal cases too would make an upgraded dragon
+      // harder to park, which is not what a Power tier is sold as.
+      if (throttle > 0) targetSpeed = lerp(CRUISE_SPEED, BOOST_SPEED, this._boost) * this._powerMul;
       else if (throttle < 0) targetSpeed = 4;
       else targetSpeed = 6.5; // a dragon does not hover for free; it drifts
       if (this.state === 'landing') targetSpeed = Math.min(targetSpeed, 5);
-      this.speed = damp(this.speed, targetSpeed, 1.7 + this._boost * 1.6, dt);
+      this.speed = damp(this.speed, targetSpeed, (1.7 + this._boost * 1.6) * this._accelMul, dt);
 
       const lookPitch = ridden ? clamp(ctrl.pitch, -1.15, 1.15) : 0;
       this._pitchTarget =
@@ -1899,10 +1947,40 @@ export class Dragon {
     this.position.addScaledVector(this.velocity, dt);
 
     /* ---- ground and walls ---- */
-    // Probing at 20 Hz, not 60: a long downward ray marches the broadphase grid
-    // and a creature this size cannot outrun 50 ms of terrain lag.
-    this._probeTick = ((this._probeTick ?? 0) + 1) % 3;
-    if (this._probeTick === 0) {
+    /* Probing at 20 Hz, not 60: a long downward ray marches the broadphase
+     * grid, and at the stock top speed a creature this size cannot outrun
+     * 50 ms of terrain lag - 30 m/s over three fixed steps is 1.500 m, exactly
+     * one RIDE_RADIUS, with nothing left over.
+     *
+     * "Nothing left over" is why the cadence is also distance-gated: a Power
+     * tier multiplies the flight speed past 30, and on the tick count alone
+     * that would quietly falsify the sentence above - 1.680 m per interval at
+     * tier 1 and 1.860 m at tier 2, i.e. 1.12 and 1.24 radii. The gate probes
+     * early when the NEXT step would carry the body more than a radius past
+     * the last probe, which restores the invariant (measured: 1.120 m per
+     * interval at tier 1, 1.240 m at tier 2).
+     *
+     * A stock dragon is untouched, by arithmetic rather than by intent: at
+     * 30 m/s the second step after a probe evaluates the gate at exactly
+     * 1.500 m, `> RIDE_RADIUS` is false by a hair, and the tick fires on the
+     * third step as it always did - measured, 200 probes per 600 fixed steps
+     * before and after. Nothing slower than stock can trip the gate either.
+     *
+     * That "by a hair" is an exact IEEE754 identity (30 / 60 is 0.5 with no
+     * rounding, and 0.5 + 0.5 + 0.5 is 1.5 with none either), so it is pinned
+     * by a test rather than by this paragraph - scripts/tests/race-pace.test
+     * .mjs reads the probe count and the per-interval distance straight out of
+     * an instrumented physics stub, at stock and at both Power tiers, and takes
+     * RIDE_RADIUS from the production `resolveCapsule` call rather than
+     * restating it. If the identity ever stops holding the failure is benign in
+     * direction - the gate fires EARLY, costing probes, never late, costing
+     * terrain - but the test says so out loud instead of leaving it to be
+     * rediscovered. */
+    this._probeMoved = (this._probeMoved ?? 0) + this.speed * dt;
+    this._probeTick = (this._probeTick ?? 0) + 1;
+    if (this._probeTick >= 3 || this._probeMoved + this.speed * dt > RIDE_RADIUS) {
+      this._probeTick = 0;
+      this._probeMoved = 0;
       const g = this.physics.groundHeight(this.position.x, this.position.z, this.position.y + 3, 220);
       if (g !== null) this._groundY = g;
     }
@@ -2325,12 +2403,79 @@ export class Dragon {
     return clamp01(this.speed / BOOST_SPEED);
   }
 
+  /**
+   * Speed as the presentation layer is allowed to see it.
+   *
+   * Every visible speed driver on this animal is a `clamp01(speed /
+   * BOOST_SPEED)` and therefore saturates at the stock top speed. The held
+   * mount voice (`AudioDirector.update` -> `Sfx.mountLoop`) was the one that
+   * did not: the dragon patch sets its wingbeat LFO to `0.9 + speed * 0.06`
+   * Hz off the raw number, so a Power tier pushed the AUDIBLE beat past the
+   * VISIBLE one. Measured at full boost: the visible beat's speed term is
+   * pinned at its 0.420 Hz floor from 30 m/s upward, while the audible LFO
+   * went 2.700 Hz stock -> 2.916 at tier 1 -> 3.132 at tier 2, i.e. 8% and 16%
+   * fast against wings that had stopped changing. This getter is the clamp
+   * that makes the two agree.
+   */
+  get voiceSpeed() {
+    return Math.min(Math.abs(this.speed), BOOST_SPEED);
+  }
+
   get boost01() {
     return this._boost;
   }
 
   get groundY() {
     return this._groundY;
+  }
+
+  /**
+   * Apply purchased mount powers, on the same ladder Car.js uses.
+   *
+   * This hook is the whole of what `MountManager._applyPowers` needs: it
+   * early-returns on `!mount?.applyPowers`, so until it existed a Power tier
+   * bought for the dragon was banked in `_powers`, persisted, re-emitted on
+   * `mount:powers` and applied to nothing. The dragon was the only mount in
+   * the race with no way to buy pace, which is exactly the rung the standard
+   * difficulty band expects the player to be able to climb.
+   *
+   * Multiplying PAST `BOOST_SPEED` rather than moving it is deliberate: the
+   * visible speed drivers on this animal - wingbeat rate and amplitude
+   * (`_animateWing`), speed lines, the camera's FOV kick and the rider's
+   * forward lean - all read `clamp01(speed / BOOST_SPEED)`, so a multiplier
+   * saturates them and leaves the whole curve below stock top speed untouched,
+   * where raising BOOST_SPEED would re-scale all of them at every speed, in
+   * every world, for every player, including anyone who never bought anything.
+   *
+   * "It all saturates, so a tier is visually safe" is NOT true on its own, and
+   * was wrong here twice. Two consumers read the raw speed and had to be dealt
+   * with separately:
+   *
+   *   - the held audio voice, which ran its wingbeat LFO off `speed` with no
+   *     ceiling and so beat faster than the wings it was meant to be. Clamped
+   *     at the source, in `voiceSpeed`.
+   *   - the yaw-rate limiter, which saturates but must NOT: a saturated cap
+   *     against a raised speed is a WIDER turning radius, which made the race
+   *     corridor clamp fire more often the more the player had spent. Scaled
+   *     by the same multiplier instead - see the note in `fixedUpdate`.
+   *
+   * A tier is not silent, either. `MountManager.grantPower` emits
+   * `mount:powers`, and the HUD's mount panel shows the owned tiers as a badge
+   * (`HUD._setMountPowers`), because a purchase whose entire effect is a
+   * slightly earlier lap time is indistinguishable from a purchase that did
+   * nothing.
+   *
+   * @param {{strength?:number, shield?:number, power?:number}} tiers
+   */
+  applyPowers({ strength = 0, shield = 0, power = 0 } = {}) {
+    this._powerMul = 1 + Math.max(0, power) * 0.12;   // +12% flight speed / tier
+    this._accelMul = 1 + Math.max(0, strength) * 0.10; // +10% throttle bite / tier
+    this._shieldTier = Math.max(0, shield);
+  }
+
+  /** Purchased shield tier, for whatever wants to soften an impact. */
+  get shieldTier() {
+    return this._shieldTier;
   }
 
   /** Where to put the player when they climb down. */

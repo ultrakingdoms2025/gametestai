@@ -64,16 +64,25 @@ export const RACE_TYPES = { CAR: 'car', DRAGON: 'dragon' };
  * The three bands are meant to feel genuinely different rather than being the
  * same race with a faster opposition:
  *
- *   - easy   — a small field you start in the middle of and beat by driving
- *              cleanly. The rivals top out below the player's boosted car.
+ *   - easy   — a small field you start in the middle of and beat by driving or
+ *              flying cleanly. The rivals top out below either of the player's
+ *              race mounts.
  *   - medium — a bigger field, a longer race, and rivals that are *quicker in
- *              a straight line than the player's stock car*. You start near the
- *              back. Winning means spending mount/spell powers from the shop:
- *              a Power upgrade lifts your top speed, a Strength/Shield build
- *              lets you lean on the field, offensive charms slow or damage them.
+ *              a straight line than the player's stock mount*. You start near
+ *              the back. Winning means good lines, or spending mount/spell
+ *              powers from the shop: a Power upgrade lifts your top speed, a
+ *              Strength/Shield build lets you lean on the field, offensive
+ *              charms slow or damage them.
  *   - hard   — the same idea turned up: the largest field, the longest race,
  *              the fastest rivals, and the deepest grid slot. Effectively
- *              unwinnable on the stock car, which is the point.
+ *              unwinnable stock, which is the point.
+ *
+ * "Shared by the car and dragon races" is literal - `RacerAI.reset` takes a
+ * mode and branches on it only for the mount's height off the road, so a
+ * dragon race's rivals are cars flown ten metres up at car speeds. That is a
+ * deliberate calibration and not an oversight; the note on DIFFICULTIES in
+ * RacerAI.js has the measured lap times for both mounts on all three circuits
+ * and scripts/tests/race-pace.test.mjs gates them.
  *
  * `cars` counts the player. `playerSlot` is a 0-based grid index (0 = pole).
  * The AI performance band itself (top speed, grip, mistakes) lives in
@@ -893,6 +902,30 @@ export class RaceManager {
     this.player?.setYaw?.(slot.yaw);
   }
 
+  /**
+   * Hold the player's dragon inside the road corridor.
+   *
+   * The correction fires on the LATERAL OFFSET being out of range, not on the
+   * rebuilt position differing from the old one. Those look equivalent and are
+   * not, and the difference was the whole dragon race.
+   *
+   * Rebuilding `pos` from `sample(s) + normal * lat` unconditionally and then
+   * asking `pos.x !== oldX` is a float round-trip through project → lateralOf
+   * → sample, so it lands a few ulps away from the point it started at even
+   * when nothing was clamped. Measured on Vellum Ridge, with a dragon flying a
+   * clean line 0.0-2.9 m off the centreline - comfortably inside a corridor
+   * that is 2.51-4.39 m wide here - that test tripped on 2338 of 3600 fixed
+   * steps (64.9%): 2313 of them moved the mount by under a nanometre and 24 by
+   * 1-6 cm, where `project` lands on a polyline vertex and `sample` then reads
+   * the *next* segment's tangent. Every one of them ran the penalty below, so
+   * the player's dragon sat pinned at exactly 10.000 m/s for the whole lap
+   * against a field whose top speeds span 22.5-43.0 m/s. A clean Vellum lap
+   * took 133.57 s instead of 54.01 s. That is the "I have no chance" report.
+   *
+   * `THREE.MathUtils.clamp` returns its argument unchanged when it is already
+   * in range, so `lat !== raw` is an exact test for "the corridor caught you"
+   * with no epsilon to tune.
+   */
   _clampPlayerDragon() {
     if (!this.dragonRace || !this.path?.valid) return;
     const dragon = this.mounts?.active;
@@ -901,22 +934,21 @@ export class RaceManager {
     const s = this.path.project(pos.x, pos.z, -1);
     this.path.sample(s, _clampSample);
     const half = Math.max(2.5, _clampSample.width * 0.5 - 1.8);
-    const lat = THREE.MathUtils.clamp(this.path.lateralOf(pos.x, pos.z, s), -half, half);
+    const raw = this.path.lateralOf(pos.x, pos.z, s);
+    const lat = THREE.MathUtils.clamp(raw, -half, half);
     const nx = -_clampSample.tz;
     const nz = _clampSample.tx;
-    const oldX = pos.x;
     const oldY = pos.y;
-    const oldZ = pos.z;
-    pos.x = _clampSample.x + nx * lat;
-    pos.z = _clampSample.z + nz * lat;
-    const minY = _clampSample.y + DRAGON_RACE.minFlight;
-    const maxY = _clampSample.y + DRAGON_RACE.maxFlight;
-    pos.y = THREE.MathUtils.clamp(pos.y, minY, maxY);
-    if (pos.x !== oldX || pos.z !== oldZ) {
+    if (lat !== raw) {
+      pos.x = _clampSample.x + nx * lat;
+      pos.z = _clampSample.z + nz * lat;
       dragon.velocity.x = 0;
       dragon.velocity.z = 0;
       dragon.speed = Math.min(dragon.speed ?? 0, 10);
     }
+    const minY = _clampSample.y + DRAGON_RACE.minFlight;
+    const maxY = _clampSample.y + DRAGON_RACE.maxFlight;
+    pos.y = THREE.MathUtils.clamp(pos.y, minY, maxY);
     if (pos.y !== oldY) {
       dragon.velocity.y = 0;
       dragon._vy = 0;

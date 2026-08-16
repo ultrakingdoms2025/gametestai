@@ -94,24 +94,107 @@ const LIVERIES = [
 /**
  * Difficulty scales the whole field at once.
  *
- * `pace` is a fraction of the reference top speed and is deliberately below,
- * at, and just above the player's boosted 34 m/s: on easy the player wins by
- * driving competently, on expert they have to hold a line. `spread` is how
- * unequal the field is - a wide spread on easy means the tail-enders fall away
- * and there is always someone to catch.
+ * `pace` is a fraction of the reference top speed, `grip` a fraction of the
+ * reference lateral budget, and `spread` is how unequal the field is - a wide
+ * spread on easy means the tail-enders fall away and there is always someone
+ * to catch.
+ *
+ * ── One calibration, two mounts ─────────────────────────────────────────────
+ *
+ * These bands are shared by BOTH race types (RaceManager.RACE_TYPES): `reset`
+ * takes a mode but has no mode branch in the pace, grip or accel lines, so a
+ * dragon race's rivals are cars flown at car speeds ten metres up. That is
+ * fine, but it means the numbers below have to be read against whichever mount
+ * the player is on, and the two are very different machines. Measured by
+ * running them at full boost until they settle: the car tops out at 34.000 m/s
+ * and the dragon at 30.000 m/s.
+ *
+ * Reading only those two numbers says the dragon is hopeless against
+ * CONTENDER, whose top speeds run 32.5-38.5 m/s. It is not, and the reason is
+ * that a rival's top speed is not what its lap is made of: `cornerLimit` holds
+ * it well under that number for most of the way round.
+ *
+ * Stated as a quantity with no tolerance to tune - mean lap speed (two laps,
+ * running alone, seed 1234, the fastest rival of the band, measured with
+ * scripts/tests/race-pace.test.mjs's own `rivalLaps`) over that same rival's
+ * own top speed:
+ *
+ *            ROOKIE   CONTENDER   APEX
+ *   vellum   88.0%      82.5%     82.5%
+ *   cinder   81.6%      79.0%     79.4%
+ *   aurora   81.0%      78.8%     78.8%
+ *
+ * So the fastest CONTENDER on Vellum tops out at 37.84 m/s and averages 31.22.
+ * Note the direction: the harder the band, the further below its own ceiling
+ * the field actually runs, because the corners do not move. (An earlier draft
+ * of this note claimed 46% for CONTENDER against 59% for ROOKIE, on a
+ * different and unstated statistic, with the bands the other way round. It
+ * reproduced under nothing; the real figures argue the case harder.)
+ *
+ * The two mounts' cornering limits are far further apart than their top
+ * speeds, which is what the dragon spends. Measured off the mounts themselves,
+ * each at its own top speed:
+ *
+ *   car    0.397 rad/s at 34 m/s → an 85.6 m turning radius
+ *   dragon 1.000 rad/s at 30 m/s → a 30.0 m turning radius
+ *
+ * against tightest corner radii of 20.0 m (Vellum), 17.1 m (Cinder) and 16.0 m
+ * (Aurora). Those are `RaceCourse.minRadius` - the road's own figure, computed
+ * over the undecimated 2 m centreline and published on the track objects the
+ * race panel already lists - and NOT a curvature probe over some span. The
+ * distinction matters because a probe has no single answer: sweeping
+ * `TrackPath.curvature(s, span)` over the decimated spine gives 14.7/9.1/8.5 at
+ * a 12 m span, 10.5/8.1/6.7 at 5 m and 18.4/14.4/14.6 at 24 m. An earlier draft
+ * of this note quoted 15.2/12.4/10.6, which is none of those and reproduces
+ * from nothing.
+ *
+ * The dragon gives up 4 m/s on the straights and takes more than that back
+ * everywhere the road bends, which is why one calibration serves both races.
+ * Fastest clean lap against the fastest rival in the band, ratios below 1
+ * meaning the player wins (scripts/tests/race-pace.test.mjs measures these and
+ * gates them):
+ *
+ *              ROOKIE       CONTENDER    APEX
+ *   vellum     car 0.844    car 1.099    car 1.229
+ *              drg 0.810    drg 1.055    drg 1.180
+ *   cinder     car 0.904    car 1.174    car 1.319
+ *              drg 0.808    drg 1.050    drg 1.180
+ *   aurora     car 0.886    car 1.157    car 1.293
+ *              drg 0.810    drg 1.059    drg 1.184
+ *
+ * Do not "fix" a perceived dragon deficit by giving the dragon race its own
+ * REF_TOP. It was measured. Re-running the table above with REF_TOP scaled by
+ * 30/34 to 29.56 takes the stock dragon's CONTENDER ratio to 0.996 (Vellum),
+ * 0.994 (Cinder) and 1.000 (Aurora) - a dead heat with the winner before the
+ * player has spent anything, which deletes the band's whole point. What made
+ * the dragon race feel unwinnable was never the calibration; it was
+ * RaceManager._clampPlayerDragon capping the mount at 10 m/s, and the note
+ * there says how.
  */
 export const DIFFICULTIES = {
-  // pace is a fraction of REF_TOP (33.5 m/s). The player's stock car boosts to
-  // 34, and buys top speed above that with Power upgrades.
-  //   easy  → 26.8 m/s: slower than the player; win by driving cleanly.
-  //   std   → 35.2 m/s: faster than the stock boosted car; you need powers.
-  //   expert→ 40.2 m/s: much faster; effectively unwinnable stock.
+  // pace is a fraction of REF_TOP (33.5 m/s). The bracket is the envelope
+  // `spread` allows, REF_TOP*pace*(1±spread); a rolled field of this size
+  // samples most but not all of it (seed 1234, Vellum: 23.6-28.2, 32.5-38.5,
+  // 37.4-42.9).
+  //   easy  → 26.8 m/s (22.5-31.1): win by driving cleanly. Note the envelope
+  //           reaches past the dragon's 30.0 on paper, and the quickest ROOKIE
+  //           actually rolled still loses a lap to a stock dragon by 19%, which
+  //           is the clearest statement of why top speed alone is the wrong
+  //           thing to calibrate against.
+  //   std   → 35.2 m/s (31.7-38.7): over both mounts; you need lines or powers.
+  //   expert→ 40.2 m/s (37.4-43.0): far over; effectively unwinnable stock.
   easy: { label: 'ROOKIE', pace: 0.80, spread: 0.16, grip: 0.82, mistakes: 2.0 },
   standard: { label: 'CONTENDER', pace: 1.05, spread: 0.10, grip: 1.02, mistakes: 0.8 },
   expert: { label: 'APEX', pace: 1.20, spread: 0.07, grip: 1.18, mistakes: 0.3 },
 };
 
-/** Reference top speed, m/s. The player's car boosts to 34. */
+/**
+ * Reference top speed, m/s. Just under the player's boosted car (34.000,
+ * measured by running it) and above their dragon (30.000), so `pace` reads as
+ * a fraction of "about as fast as the player goes in a straight line" for
+ * either race. See DIFFICULTIES above for why one number covers both mounts
+ * even though they are 4 m/s apart.
+ */
 const REF_TOP = 33.5;
 /** Reference lateral grip budget, m/s^2 - the same currency Car.js uses. */
 const REF_LAT = 15.0;

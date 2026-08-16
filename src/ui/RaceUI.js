@@ -11,6 +11,32 @@ const RACE_TYPE_BLURB = {
   dragon: 'Aerial race on dragons through ordered floating rings.',
 };
 
+/* The footer names the machine and how a lap is validated, and BOTH differ by
+ * race type - so it is rebuilt in `_syncPicks` alongside the other facts rather
+ * than written once in the constructor. It WAS written once, which is why a
+ * dragon race told the player they were racing the Interceptor and warned them
+ * about reversing over a line they never drive across.
+ *
+ * The payout sentence is shared because the payout is: `_classify` pays the
+ * same RACE_PRIZES podium and the same 1 credit per drop for both types. */
+const RACE_TYPE_NOTE = {
+  car:
+    'You race in the Interceptor — it is summoned onto the grid for you. '
+    + 'Checkpoints must be taken in order, so cutting the circuit or reversing '
+    + 'over the line will not count a lap.',
+  dragon:
+    'You race on your dragon — it is summoned onto the grid for you. '
+    + 'The rings must be flown in order, so cutting the circuit or crossing '
+    + 'back over the line will not count a lap.',
+};
+const RACE_NOTE_PAYOUT =
+  ' Podium pays 10 / 5 / 2 credits, and drops pay 1 each whether or not you finish.';
+
+/** Footer text for a race type, falling back to the car wording. */
+function raceNote(type) {
+  return (RACE_TYPE_NOTE[type] ?? RACE_TYPE_NOTE.car) + RACE_NOTE_PAYOUT;
+}
+
 /* The internal difficulty keys are easy/standard/expert; the player sees
  * EASY / MEDIUM / HARD. Kept as a display map rather than renaming the keys,
  * which are baked into saves and the economy. */
@@ -397,13 +423,8 @@ export class RaceUI {
       this.race.start(this.race.difficulty);
     });
 
-    this.noteEl = el(
-      'div', 'rc-foot',
-      'You race in the Interceptor — it is summoned onto the grid for you. '
-      + 'Checkpoints must be taken in order, so cutting the circuit or reversing '
-      + 'over the line will not count a lap. Podium pays 10 / 5 / 2 credits, and '
-      + 'drops pay 1 each whether or not you finish.'
-    );
+    // Empty: `_syncPicks` fills it, and runs before the panel is ever shown.
+    this.noteEl = el('div', 'rc-foot', '');
 
     card.append(head, facts, trackLabel, this.trackEl, typeLabel, this.typeEl,
       pickLabel, this.pickEl, this.startBtn, this.noteEl);
@@ -612,6 +633,7 @@ export class RaceUI {
     // and "Circuit / RACE" no longer says which.
     if (this.panelKicker) this.panelKicker.textContent = this.track?.name ?? 'Circuit';
     if (this.factVehicle) this.factVehicle.textContent = String(this.race?.raceType ?? RACE_TYPES.CAR).toUpperCase();
+    if (this.noteEl) this.noteEl.textContent = raceNote(this.race?.raceType ?? RACE_TYPES.CAR);
     // Facts follow the *selected* difficulty, not the last race that ran, so the
     // player sees the length/field/grid they are about to get before starting.
     const diff = this.race?.difficulty ?? 'standard';

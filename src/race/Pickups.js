@@ -31,6 +31,17 @@ const BOB = 0.55;
 const LATERAL = 3.2;
 /** Credits per pickup. Deliberately small next to the 10 for a win. */
 export const PICKUP_VALUE = 1;
+/**
+ * How far over the road a drop floats when nobody says otherwise, in metres.
+ *
+ * A number rather than a hard-coded `+ 1.0` in `_refresh` because a dragon race
+ * is flown fifteen metres up: collection is a centreline interval and a lateral
+ * check, so a drop laid on the tarmac would be claimed by a mount that never
+ * came within fifteen metres of it. That is not a rounding error the player can
+ * be asked to ignore - it is a coin awarded for flying over a coin. `scatter`
+ * takes the height the race is actually run at.
+ */
+const ROAD_HEIGHT = 1.0;
 
 export class Pickups {
   /**
@@ -43,6 +54,8 @@ export class Pickups {
 
     /** @type {Array<{s:number, lat:number, taken:boolean, by:string|null}>} */
     this.items = [];
+    /** Metres above the centreline the current set is drawn at. @see scatter */
+    this.height = ROAD_HEIGHT;
     this._path = null;
     this._owned = [];
     this._time = 0;
@@ -92,10 +105,13 @@ export class Pickups {
    * @param {any} path a `TrackPath` - needs `length` and `sample(s, out)`
    * @param {number} count
    * @param {() => number} rnd
+   * @param {number} [height] metres above the centreline to draw them at. The
+   *   height the race is FLOWN at, not a decoration: see ROAD_HEIGHT.
    */
-  scatter(path, count, rnd = Math.random) {
+  scatter(path, count, rnd = Math.random, height = ROAD_HEIGHT) {
     this._path = path ?? null;
     this.items.length = 0;
+    this.height = Number.isFinite(height) ? height : ROAD_HEIGHT;
     if (!this._path || !this._path.length) {
       this.mesh.count = 0;
       this.root.visible = false;
@@ -204,7 +220,7 @@ export class Pickups {
       const k = it.taken ? 0 : 1;
       this._e.set(0, t * SPIN + i, 0.42);
       this._q.setFromEuler(this._e);
-      this._p.y += 1.0 + Math.sin(t * 2.2 + i) * BOB * 0.25;
+      this._p.y += this.height + Math.sin(t * 2.2 + i) * BOB * 0.25;
       this._s.setScalar(k);
       this._m4.compose(this._p, this._q, this._s);
       this.mesh.setMatrixAt(i, this._m4);

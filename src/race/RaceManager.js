@@ -442,7 +442,24 @@ export class RaceManager {
       return ps / 4294967296;
     };
     this._prepareRaceCheckpoints();
-    this.pickups.scatter(this.path, this.dragonRace ? 0 : this.plannedDrops, prnd);
+    /* Both race types get collectables, laid on the line the race is actually
+     * run on: on the tarmac for a car, at the rings' flight height for a dragon.
+     *
+     * The dragon race used to pass 0 here and skip the claim in
+     * `_syncPlayerEntry`, which made its payout a function of the finishing
+     * position ALONE - and RACE_PRIZES is three deep. A dragon race therefore
+     * paid exactly nothing for anything short of a podium, and nothing at all
+     * for a DNF, while the setup panel went on advertising "40 - 1 cr each"
+     * over it. That is not a difficulty setting, it is a whole race distance
+     * flown well for zero credits, and the car race it shares every line of
+     * this file with does not do it: a car DNF still comes home with its drops,
+     * which measure 40 on Vellum Ridge, 32 on Cinder Gorge and 30 on Aurora
+     * Rise.
+     *
+     * `plannedDrops` is what the panel promised before the flag, so scattering
+     * exactly that is also what makes the promise true. */
+    this.pickups.scatter(this.path, this.plannedDrops, prnd,
+      this.dragonRace ? DRAGON_RACE.flightHeight : undefined);
 
     const grid = this.track.startGrid;
     /* Difficulty decides how big the field is and how deep the player starts.
@@ -1072,7 +1089,10 @@ export class RaceManager {
     // Only while actually racing: rolling over the circuit before the lights
     // go out should not empty it.
     if (this.state === RACE_STATE.RACING && typeof prevS === 'number') {
-      if (!this.dragonRace) this.pickups.claim(e.id, prevS, e.s, e.lateral, true);
+      // Both race types. `claim` is a centreline interval and a lateral check,
+      // and a dragon held in `_clampPlayerDragon`'s corridor is inside the claim
+      // window for the same reason a car on the road is - see `start()`.
+      this.pickups.claim(e.id, prevS, e.s, e.lateral, true);
     }
   }
 

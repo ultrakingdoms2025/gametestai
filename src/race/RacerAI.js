@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { DRAGON_RACE } from './RaceRings.js';
 
 /**
  * AI competitors.
@@ -64,7 +65,20 @@ const WHEEL_R = 0.34;
 const WHEEL_W = 0.24;
 const AXLE_Z = 1.30;
 const HALF_TRACK = 0.80;
-const AI_DRAGON_FLIGHT = 10;
+/* A rival's flight height is the ROUTE's flight height, read from the one
+ * record that defines it, never a second copy of the number.
+ *
+ * There used to be an `AI_DRAGON_FLIGHT = 10` here beside a `flightHeight: 10`
+ * in RaceRings, and the pair is a trap rather than a duplication: the rings are
+ * hung at `flightHeight` and validated against a vertical gate of
+ * `radius * 0.9` = 4.68 m, so moving one number without the other puts the
+ * whole field outside the gate. Measured with the rings raised to 15 and the
+ * rivals left at 10, 9464 of 15637 in-radius samples fail on Vellum (60.5%),
+ * 11611 of 19671 on Cinder and 11959 of 20141 on Aurora, worst vertical gap
+ * 6.69 m - at which rate a rival can barely validate a ring, and a wider split
+ * stops it entirely. No rival finishing means the race never ends and the
+ * finish grace that closes it never starts. */
+const AI_DRAGON_FLIGHT = DRAGON_RACE.flightHeight;
 
 /** Nineteen liveries, spaced round the wheel so no two rivals read as the same
  * car. Expert fields 20 cars (19 rivals), so the list has to cover the largest

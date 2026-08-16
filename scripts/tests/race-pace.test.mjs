@@ -8,6 +8,7 @@ import { RaceCourse } from '../../src/worlds/RaceTrack.js';
 import { CIRCUITS, baseTerrain, worldControls } from '../../src/worlds/RaceCircuits.js';
 import { RacerField, TrackPath } from '../../src/race/RacerAI.js';
 import { RaceManager, DIFFICULTY_FIELD } from '../../src/race/RaceManager.js';
+import { DRAGON_RACE } from '../../src/race/RaceRings.js';
 import { Car } from '../../src/mounts/Car.js';
 import { Dragon } from '../../src/mounts/Dragon.js';
 import { AudioDirector } from '../../src/audio/AudioDirector.js';
@@ -74,6 +75,22 @@ const SEED = 1234;
 /** Aim distances and curvature-probe spans the driver is allowed to try, m. */
 const AIM = [12, 16, 20, 24];
 const SPAN = [5, 12, 24, 56];
+/**
+ * The altitude a dragon race is flown at, taken from the race's own record.
+ *
+ * This file used to hold its own `10` in three places, which made it a THIRD
+ * copy of a number that already existed twice - and the pair of copies it did
+ * not know about is what put the route through the start gantry. Nothing here
+ * moves when it changes: the flight model has no altitude term, and every lap
+ * below reproduces to the last digit at 10 m and at 15 m (vellum 54.008333 /
+ * 48.333333 / 44.058333 at tiers 0/1/2, identical at both heights; likewise
+ * cinder 45.450000 / 40.741667 / 37.116667 and aurora 43.258333 / 38.850000 /
+ * 35.550000). It is read rather than restated so that it CANNOT drift, not
+ * because it changes anything measured here - the corridor these laps are
+ * flown against has no colliders in it at all, which is why
+ * scripts/tests/race-dragon-line.test.mjs exists and builds the real world.
+ */
+const FLIGHT = DRAGON_RACE.flightHeight;
 
 /* ---- headless scaffolding ---------------------------------------------- */
 
@@ -137,7 +154,7 @@ function place(mount, path, flying) {
   const here = { x: 0, y: 0, z: 0, width: 12, tx: 0, tz: -1 };
   path.sample(0, here);
   const yaw = Math.atan2(-here.tx, -here.tz);
-  const y = here.y + (flying ? 10 : 0);
+  const y = here.y + (flying ? FLIGHT : 0);
   mount.spawn(new THREE.Vector3(here.x, y, here.z), yaw);
   if (flying) {
     mount.state = 'flying';
@@ -229,7 +246,7 @@ function cleanLap(mount, path, laps, curve, vmax, { aim, span, flying }) {
     ctrl.yaw = Math.atan2(-(at.x - mount.position.x), -(at.z - mount.position.z));
     ctrl.boost = mount.speed < want;
     ctrl.throttle = mount.speed > want * 1.03 ? -1 : 1;
-    if (flying) ctrl.up = clamp((here.y + 10 - mount.position.y) * 0.5, -1, 1);
+    if (flying) ctrl.up = clamp((here.y + FLIGHT - mount.position.y) * 0.5, -1, 1);
     mount.fixedUpdate(STEP, t, ctrl);
     if (clampCtx) RaceManager.prototype._clampPlayerDragon.call(clampCtx);
     t += STEP;
@@ -322,7 +339,7 @@ test('the dragon race corridor only bites a dragon that is outside it', () => {
     path.sample(s, here);
     path.sample(s + 18, at);
     ctrl.yaw = Math.atan2(-(at.x - dragon.position.x), -(at.z - dragon.position.z));
-    ctrl.up = clamp((here.y + 10 - dragon.position.y) * 0.5, -1, 1);
+    ctrl.up = clamp((here.y + FLIGHT - dragon.position.y) * 0.5, -1, 1);
     dragon.fixedUpdate(STEP, i * STEP, ctrl);
 
     const half = Math.max(2.5, here.width * 0.5 - 1.8);

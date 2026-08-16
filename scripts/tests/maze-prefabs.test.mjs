@@ -174,9 +174,41 @@ test('the quantiser only ever shrinks, and by less than a millimetre', () => {
    * here: rounding to nearest would gain 2.5 mm on a stair tread's half-height
    * (0.1875 -> 0.19) and hand the player a ledge the physics does not have,
    * and a coarse quantum would open a visible crack between abutting hedges
-   * with the void showing through on the upper levels. */
+   * with the void showing through on the upper levels.
+   *
+   * ── One assertion removed here, and why ─────────────────────────────────
+   *
+   * This test used to open with `assert.ok(worst >= 0, 'a prefab is LARGER
+   * than its descriptor by ...')`, and that assertion could not fail. `worst`
+   * is a `Math.max` seeded at 0, so an oversized prefab contributes a NEGATIVE
+   * candidate which the max discards and the sum stays 0. It read as live
+   * enforcement of the half of the contract that matters more - the half
+   * `MazeProfiles.extentUnits` promises "will fail loudly rather than let a
+   * sliver of unstandable surface ship" - while being incapable of making a
+   * sound.
+   *
+   * It is gone rather than repaired, because the property is already enforced,
+   * properly and two-sidedly, by THE FIT CONTRACT tests above: they assert
+   * `b.max <= d.h + 1e-6` per descriptor over every kind and every world seed.
+   * Verified by mutation rather than by reading: swapping the quantiser's
+   * `Math.floor` for the `Math.round` this comment warns against makes a
+   * `stair` prefab of (0.5, 0.1875, 0.5) stand 0.4999936 mm proud, which trips
+   * "THE FIT CONTRACT holds for every descriptor the world can emit" - while
+   * the deleted assertion stayed green, because `worst` collapses to
+   * 1.525879e-6 m under that mutation and 1.525879e-6 >= 0 is as true as 0 >= 0
+   * is. (Not "sitting at its 0 seed": the seed is what it is NEAR, not what it
+   * is. The overshoot the max is blind to has moved to the other accumulator,
+   * where it measures 4.999936e-4 m.)
+   *
+   * What remains here is the shrink bound, which needs this accumulator, plus a
+   * count. The count is not decoration: if the sweep ever stopped producing
+   * descriptors, `worst` would stay 0 and the bound below would pass on
+   * nothing. Measured on this tree: 58 505 descriptors, largest shrink
+   * 4.999936e-4 m, largest overshoot 3.815e-7 m of float32 bounding-box
+   * noise. */
   const { cells } = generateTopology(2026);
   let worst = 0;
+  let n = 0;
   for (let level = 0; level < MAZE.LEVELS; level++) {
     for (let dz = 0; dz < 6; dz++) {
       for (let dx = 0; dx < 6; dx++) {
@@ -184,12 +216,15 @@ test('the quantiser only ever shrinks, and by less than a millimetre', () => {
           const g = prefabFor({ kind: d.kind, hx: d.hx, hy: d.hy, hz: d.hz, lod: 0 });
           g.computeBoundingBox();
           const b = g.boundingBox;
+          n++;
           worst = Math.max(worst, d.hx - b.max.x, d.hy - b.max.y, d.hz - b.max.z);
         }
       }
     }
   }
-  assert.ok(worst >= 0, `a prefab is LARGER than its descriptor by ${-worst} m`);
+  assert.ok(n > 50000,
+    `only ${n} descriptors were measured - the sweep stopped covering the world, and the bound `
+    + 'below would then pass against nothing');
   assert.ok(worst < 1e-3 + 1e-9,
     `the quantiser shrinks a prefab by up to ${(worst * 1000).toFixed(3)} mm - abutting surfaces `
     + 'will show a gap');

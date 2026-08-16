@@ -5,12 +5,94 @@ const _normal = new THREE.Vector3(0, 0, 1);
 const _dir = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
 
+/**
+ * The dragon race, as one record.
+ *
+ * `flightHeight` is the whole route: the rings are hung at it, the player is
+ * placed on it and every rival flies it. That is deliberate and it is the fix
+ * for the defect below - the number used to be written here AND again in
+ * RacerAI, and two copies of a route are two routes.
+ *
+ * ── Why 15 and not 10 ──────────────────────────────────────────────────────
+ *
+ * Because the start/finish gantry is solid, and at 10 m the route went through
+ * it. The crossbeam collider (RaceWorld._buildPaddock: centre `g.y + 11.05`,
+ * half-extents `wHalf + 1.2` x 1.4 x 1.2) spans the whole road plus its
+ * run-off, 2.4 m deep along the track, from road+9.65 m to road+12.45 m. A
+ * dragon's body is a capsule of radius 1.5 and height 3.2 centred on
+ * `position`, so at a flight height of 10 the route sat 1.95 m INSIDE the beam,
+ * once per lap, at the one point every lap has to cross.
+ *
+ * What that felt like was not a bump. `Dragon._resolveCollision` scrubs 20% of
+ * the speed per step against a horizontal pushout, and `damp(v, 30, 3.3, 1/60)`
+ * followed by `speed *= 0.8` has a stable fixed point at 5.289512 m/s -
+ * reproduced here from six different starting speeds and matching the closed
+ * form `0.8*30*(1-k)/(1-0.8k)`, k = exp(-3.3/60). So the mount arrived at the
+ * beam, jammed, and sat at a sixth of its boost speed.
+ *
+ * ── What that costs, measured in the running game ──────────────────────────
+ *
+ * Not deduced from the paragraph above: measured in the browser build with
+ * `flightHeight` put back to 10, CONTENDER, all three circuits, stepped by the
+ * game's own fixed updaters. What it costs depends entirely on whether the
+ * pilot gives the altitude up, so both are quoted.
+ *
+ * A pilot that HOLDS the flight line - servoing back to `centreline + 10`, the
+ * altitude the rings are hung at - is pinned at 5.29 m/s and completes NO lap
+ * at all: zero laps in 300 s of race clock on all three circuits, stuck between
+ * the grid and the line from about t = 3 s. It never reaches the line to begin
+ * the first lap.
+ *
+ * A pilot that climbs out of the beam instead gets round, and pays between 0.86
+ * and 0.89 s a lap for it. Same autopilot at both heights, four laps each,
+ * steady-lap times in seconds:
+ *
+ *              flight 15    flight 10    per lap
+ *   Vellum       53.800       54.667      +0.867
+ *   Cinder       44.850       45.733      +0.883
+ *   Aurora       43.300       44.167      +0.867
+ *
+ * Vellum's and Aurora's laps repeat to the millisecond; Cinder's wander by a
+ * fixed step or two either way. Every lap contains exactly one gantry event, and
+ * every one of them reads the same: scrubbed below 20 m/s, bottoming at 5.29,
+ * back to 28 m/s 1.383 s later. At flight height 15 that event does not occur
+ * on any lap of any circuit.
+ *
+ * The stall DISTANCES an earlier draft of this note quoted - 1595.6 m of 1598.3
+ * on Vellum, 1291.7 of 1294.5 on Cinder, 1216.2 of 1218.9 on Aurora - are a
+ * property of one harness and not of the game. They reproduce exactly, but only
+ * in a fixed-dt level-flight lap begun ON the line at s = 0, which is the only
+ * way the mount gets to the far side of the circuit before it meets the beam.
+ * Started where the game starts it, on the grid 56 m back, it never reaches the
+ * line at all.
+ *
+ * The clear band is measured, not guessed. Sweeping the real colliders every
+ * 0.25 m round all three laps, across the corridor `_clampPlayerDragon`
+ * actually allows, every height from 8.5 to 14 is obstructed and 14.1 is the
+ * first that measures clean, so 15 carries about 0.9 m of margin. (4.5 to 8 is
+ * clear too - under the beam, 0 obstructed samples of 82 305 at every height
+ * tried in that band - and 4 starts catching road furniture at 110 samples.)
+ * scripts/tests/race-dragon-line.test.mjs is that sweep, so the next thing that
+ * grows into the flight corridor fails the suite instead of the race.
+ *
+ * Do NOT compromise between the two. 11 m is measurably WORSE than the 10 m it
+ * would be replacing, on the same sweep and by the same metric - MAXIMUM
+ * HORIZONTAL PUSHOUT over all three circuits: 2.700 m at 11 against 1.833 m at
+ * 10. At 11 m the body sits far enough inside the beam that the vertical escape
+ * measures exactly 0.000 m, so there is nowhere to be pushed but sideways,
+ * where the speed penalty lives. (At 10 m the largest vertical pushout is
+ * 1.957 m, and 1.707 m - which an earlier draft quoted as though it were the
+ * same quantity - is Vellum's horizontal maximum alone. The 1.833 is Cinder's,
+ * the largest of the three, and is the figure
+ * scripts/tests/race-dragon-line.test.mjs states.) 12 m is no better: 332
+ * obstructed samples, 1.951 m horizontal and 2.056 m vertical.
+ */
 export const DRAGON_RACE = {
   type: 'dragon',
   ringSpacing: 55,
   minRings: 10,
   maxRings: 18,
-  flightHeight: 10,
+  flightHeight: 15,
   minFlight: 3,
   maxFlight: 25,
   ringRadius: 5.2,

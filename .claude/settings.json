@@ -31,12 +31,24 @@
       "Bash(sed -i 's/r.worst.toFixed\\(3\\)/r.worst.toFixed\\(9\\)/; s/r.mean.toFixed\\(3\\)/r.mean.toFixed\\(9\\)/' output/measure/m-probe.mjs)",
       "Bash(node output/measure/m-probe.mjs)",
       "Bash(cp output/measure/Dragon.js.bak src/mounts/Dragon.js)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(cp \"C:/Users/markc/AppData/Local/Temp/claude/e--markc-gametestai-gametestai/5e851c93-040a-43a5-94a5-3abcac80be4b/scratchpad/verify.mjs\" \"scripts/_verify_tmp.mjs\")",
+      "Bash(node scripts/_verify_tmp.mjs)",
+      "Bash(rm -f \"E:/markc/gametestai/gametestai/scripts/_verify_tmp.mjs\")",
+      "Bash(git -C \"E:/markc/gametestai/gametestai\" status --porcelain)",
+      "Bash(cp \"C:/Users/markc/AppData/Local/Temp/claude/e--markc-gametestai-gametestai/5e851c93-040a-43a5-94a5-3abcac80be4b/scratchpad/verify2.mjs\" scripts/_v2_tmp.mjs)",
+      "Bash(node scripts/_v2_tmp.mjs)",
+      "Bash(cp \"C:/Users/markc/AppData/Local/Temp/claude/e--markc-gametestai-gametestai/5e851c93-040a-43a5-94a5-3abcac80be4b/scratchpad/maze2.mjs\" scripts/_m2.mjs)",
+      "Bash(node scripts/_m2.mjs)",
+      "Bash(rm -f scripts/_m2.mjs)",
+      "Bash(sed -i \"s#^import \\\\* as THREE from 'E:/markc.*#import * as THREE from 'file:///E:/markc/gametestai/gametestai/node_modules/three/build/three.module.js';#\" measure-corridor.mjs)",
+      "Bash(sed -i \"s#^const root = 'E:/markc/gametestai/gametestai';#const root = 'file:///E:/markc/gametestai/gametestai';#\" measure-corridor.mjs)"
     ],
     "additionalDirectories": [
       "\\tmp",
       "E:\\markc\\gametestai\\gametestai\\scripts\\tests",
-      "E:\\markc\\gametestai\\gametestai\\output\\measure"
+      "E:\\markc\\gametestai\\gametestai\\output\\measure",
+      "e:\\markc\\gametestai\\gametestai\\scripts"
     ]
   },
   "enabledPlugins": {

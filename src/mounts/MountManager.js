@@ -12,10 +12,11 @@ import { flightCeilingAt } from './FlightCeiling.js';
 import { normColor, cloneLivery, FINISH_PROPS } from './Livery.js';
 
 /**
- * Mount id → class, used to validate a livery patch's slot ids against the
- * slots that mount actually declares (`static CUSTOM_SLOTS`). A class that
- * has not grown `CUSTOM_SLOTS` yet (mid-migration) is not filtered - every
- * slot id is accepted until it declares its own set.
+ * Mount id → class. The single place that mapping lives: `_create` builds from
+ * it, and it is what a livery patch's slot ids (`static CUSTOM_SLOTS`) and a
+ * granted stat (`static STATS`) are validated against. A class that has not
+ * grown those declarations yet (mid-migration) is not filtered - every id is
+ * accepted until it declares its own set.
  */
 const MOUNT_CLASSES = { hoverboard: Hoverboard, dragon: Dragon, car: Car, horse: Horse, eagle: Eagle, bicycle: Bicycle };
 
@@ -614,19 +615,13 @@ export class MountManager {
       materials: this.materials,
       camera: this.camera,
     };
-    let mount = null;
-    if (id === 'hoverboard') mount = new Hoverboard(ctx);
-    else if (id === 'dragon') mount = new Dragon(ctx);
-    else if (id === 'car') mount = new Car(ctx);
-    // The eagle needs the player: beating its wings costs stamina, and stamina
-    // lives on the player rather than on the mount.
-    else if (id === 'horse') mount = new Horse(ctx);
-    else if (id === 'eagle') mount = new Eagle({ ...ctx, player: this.player });
-    else if (id === 'bicycle') mount = new Bicycle(ctx);
-    if (mount) {
-      mount.applyCustomization?.(this._liveries[id]);
-      this._applyPowers(id, mount);
-    }
+    const C = MOUNT_CLASSES[id];
+    if (!C) return null;
+    // The eagle needs the player too: beating its wings costs stamina, and
+    // stamina lives on the player rather than on the mount.
+    const mount = id === 'eagle' ? new C({ ...ctx, player: this.player }) : new C(ctx);
+    mount.applyCustomization?.(this._liveries[id]);
+    this._applyPowers(id, mount);
     return mount;
   }
 
@@ -645,6 +640,19 @@ export class MountManager {
     const slots = MOUNT_CLASSES[mountId]?.CUSTOM_SLOTS;
     if (!slots) return true;
     return slots.some((s) => s.id === slot);
+  }
+
+  /**
+   * True unless `mountId`'s class declares `STATS` and `power` is not one of
+   * them. The slot guard's twin: a mount that has not grown `STATS` yet
+   * accepts every stat id, so intermediate commits keep working.
+   * @param {string} mountId
+   * @param {string} power
+   */
+  _knownStat(mountId, power) {
+    const stats = MOUNT_CLASSES[mountId]?.STATS;
+    if (!stats) return true;
+    return stats.includes(power);
   }
 
   /**
@@ -709,6 +717,9 @@ export class MountManager {
    */
   grantPower(mountId, power, tier = 1) {
     if (!mountId || !power) return;
+    // A stat this mount does not sell (Fire on a horse) is dropped silently -
+    // never stored, never emitted - exactly as an unknown livery slot is.
+    if (!this._knownStat(mountId, power)) return;
     const bag = this._powers[mountId] || (this._powers[mountId] = {});
     bag[power] = Math.max(bag[power] || 0, tier);
     const mount = this._mounts.get(mountId);
@@ -1729,7 +1740,11 @@ export class MountManager {
       for (const mid in data.powers) {
         const bag = data.powers[mid];
         if (bag && typeof bag === 'object') {
-          this._powers[mid] = { ...bag };
+          // Same filter grantPower applies, so a save cannot smuggle in a stat
+          // the mount never sold.
+          const owned = {};
+          for (const p in bag) if (this._knownStat(mid, p)) owned[p] = bag[p];
+          this._powers[mid] = owned;
           const mount = this._mounts.get(mid);
           if (mount) this._applyPowers(mid, mount);
         }

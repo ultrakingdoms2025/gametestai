@@ -45,8 +45,6 @@ const _tr2 = new THREE.Vector3();
 
 const damp = THREE.MathUtils.damp;
 const clamp = THREE.MathUtils.clamp;
-/** Emitter tint lerps toward this at full boost - see the update loop. */
-const _WHITE = new THREE.Color(0xffffff);
 
 const HOVER_HEIGHT = 0.42;
 const DECK_LENGTH = 1.66;
@@ -715,7 +713,16 @@ export class Hoverboard {
     this._shieldTier = 0;
     this._livery = null;
     this._slotMats = null;
-    this._glowBase = new THREE.Color(0x7ff2ff);
+    /**
+     * Emitter tint the per-frame ramp starts from.
+     *
+     * `setRGB` with no colour-space argument writes the renderer's WORKING
+     * space, which is exactly what the stock hard-coded ramp used to write.
+     * The same numbers through `setHex`/`new Color(0x7ff2ff)` would be decoded
+     * sRGB -> linear and land on a visibly different cyan, so stock has to be
+     * restored this way rather than from a hex constant.
+     */
+    this._glowBase = new THREE.Color().setRGB(0.42, 0.86, 1);
 
     this._buildModel();
 
@@ -744,6 +751,11 @@ export class Hoverboard {
     this._geo = {};
     this._gripMat = M.get('mount.grip').clone();
     this._carbonMat = M.get('mount.carbon').clone();
+    // A clone, so the underglow slot can tint it without repainting every other
+    // cyan strip in the world. The library drives the ORIGINAL's emissive pulse
+    // from its own `_animate` list (Materials.js:1830) and a clone is not on that
+    // list, so this trim sits at a steady emissiveIntensity - accepted: the
+    // board's own boost ramp is the light show here, not a 6% breathe.
     this._trimMat = M.get('emissive.cyan').clone();
     const gripMat = this._gripMat;
     const carbonMat = this._carbonMat;
@@ -845,6 +857,8 @@ export class Hoverboard {
     this.scene.add(this._lightGroup);
     this._light = new THREE.PointLight(0x58d7ff, 0, 6, 2);
     this._light.castShadow = false;
+    /** Factory tint, restored when the Underglow slot carries no colour. */
+    this._lightFactory = this._light.color.clone();
     this._anchoredLight = anchorLight(
       this._light, this._lightGroup, this.bobber, { x: 0, y: -0.25, z: 0 }
     );
@@ -1197,7 +1211,10 @@ export class Hoverboard {
     const sp01 = clamp01(Math.abs(this.speed) / BOOST_SPEED);
     const heat = 0.35 + sp01 * 0.65 + this._boost * 0.5;
     this._emitterMat.opacity = (0.35 + heat * 0.55) * ease;
-    this._emitterMat.color.copy(this._glowBase).lerp(_WHITE, this._boost * 0.35);
+    // Boost heats the emitter by lifting red only - the stock ramp exactly, and
+    // a custom glow gets the same heat rather than being washed toward white.
+    this._emitterMat.color.copy(this._glowBase);
+    this._emitterMat.color.r = Math.min(1, this._emitterMat.color.r + this._boost * 0.55);
 
     const flare = clamp01(this._boost * 1.1 - 0.02) * ease;
     this._flareMat.opacity = flare * 0.6;
@@ -1350,6 +1367,16 @@ export class Hoverboard {
     return this._boost;
   }
 
+  /**
+   * Speed as the held mount voice is allowed to see it - see Dragon.voiceSpeed
+   * for the measured drift this exists to stop. Every visual cue on the board
+   * is a `clamp01(|speed| / BOOST_SPEED)`, so the audio ceiling has to be the
+   * same one or a Power tier runs the loop faster than the thrusters look.
+   */
+  get voiceSpeed() {
+    return Math.min(Math.abs(this.speed), BOOST_SPEED);
+  }
+
   /** Ground clearance in metres, used by the dismount placement. */
   get altitude() {
     return this.position.y - this._groundY;
@@ -1377,9 +1404,15 @@ export class Hoverboard {
   applyCustomization(livery) {
     this._livery = livery && typeof livery === 'object' ? livery : {};
     if (!this._slotMats) return;
-    applyLivery(this._livery, Hoverboard.CUSTOM_SLOTS, this._slotMats);
+    applyLivery(this._livery, this.constructor.CUSTOM_SLOTS, this._slotMats);
     // The emitter is re-tinted every frame from this base (see the update loop).
-    this._glowBase.setHex(normColor(this._livery.glow?.color) ?? 0x7ff2ff);
+    const glow = normColor(this._livery.glow?.color);
+    if (glow == null) this._glowBase.setRGB(0.42, 0.86, 1);
+    else this._glowBase.setHex(glow);
+    // The under-deck fill light carries the same colour, so a custom underglow
+    // actually reaches the ground. Uniform write only - never a relink.
+    // Guarded: the first call comes from _buildModel, before the light exists.
+    if (this._light) this._light.color.copy(glow == null ? this._lightFactory : this._glowBase);
   }
 
   applyPowers({ strength = 0, shield = 0, power = 0 } = {}) {
@@ -1397,16 +1430,16 @@ export class Hoverboard {
     this._lightGroup.removeFromParent();
     this._light.dispose?.();
     for (const key in this._geo) this._geo[key].dispose();
-    this._emitterMat.dispose();
-    this._flareMat.dispose();
-    this._glowMat.dispose();
-    this._glowTex.dispose();
-    this._trail.dispose();
-    this._sparks.dispose();
-    this._speedLines.dispose();
-    this._gripMat.dispose();
-    this._carbonMat.dispose();
-    this._trimMat.dispose();
+    this._emitterMat?.dispose();
+    this._flareMat?.dispose();
+    this._glowMat?.dispose();
+    this._glowTex?.dispose();
+    this._trail?.dispose();
+    this._sparks?.dispose();
+    this._speedLines?.dispose();
+    this._gripMat?.dispose();
+    this._carbonMat?.dispose();
+    this._trimMat?.dispose();
     this._slotMats = null;
   }
 }

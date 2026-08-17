@@ -809,13 +809,24 @@ export class Bicycle {
      * There is no "hold this speed" here. Pedalling adds, everything else
      * takes away, and the top speed is simply where they balance. */
     const top = (sprint ? SPRINT_SPEED : CRUISE_SPEED) * this._powerMul;
+    // Freewheel drag: rolling resistance is constant, air resistance is not.
+    // Computed once per step because the pedalling branch needs the same
+    // number - see there for why it must not then be charged a second time.
+    const dragK = this.speed > 0
+      ? ROLL_DRAG + (AIR_DRAG / (this._powerMul * this._powerMul)) * this.speed * this.speed
+      : 0;
     let drive = 0;
     if (throttle > 0.05) {
       // Effort falls away as the gear runs out, which is what a fixed
       // development means in practice.
       const head = clamp(1 - this.speed / top, 0, 1);
-      drive = throttle * PEDAL_ACCEL * this._accelMul * head * (sprint ? 1.55 : 1);
-      this.speed += drive * dt;
+      drive = throttle * PEDAL_ACCEL * head * (sprint ? 1.55 : 1);
+      /* Strength time-scales drive MINUS drag, not drive on its own. Scaling
+       * the pedal term alone moved the point where the two balance further up
+       * the speed range, so an Acceleration tier was quietly selling top speed
+       * as well - which is Speed's job. Scaling the net leaves the balance
+       * point exactly where it was and only shortens the run-up to it. */
+      this.speed += (drive - dragK) * this._accelMul * dt;
     } else if (throttle < -0.05) {
       // Back brake, then walking it backwards once stopped.
       if (this.speed > 0.05) this.speed += throttle * BRAKE_DECEL * dt;
@@ -825,11 +836,11 @@ export class Bicycle {
       this.speed = damp(this.speed, 0, 7, dt);
       if (Math.abs(this.speed) < 0.35) this._braking = false;
     }
-    // Freewheel: rolling resistance is constant, air resistance is not.
-    if (this.speed > 0) {
-      const drag = (ROLL_DRAG + (AIR_DRAG / (this._powerMul * this._powerMul)) * this.speed * this.speed) * dt;
-      this.speed = Math.max(0, this.speed - drag);
-    }
+    // Freewheeling: drag on its own. While pedalling it is already inside the
+    // net above, so charging it again here would count it twice. Rolling
+    // forwards only - `Math.max(0, ...)` on a bike being walked backwards would
+    // stop it dead every step.
+    if (throttle <= 0.05 && this.speed > 0) this.speed = Math.max(0, this.speed - dragK * dt);
     this.speed = clamp(this.speed, -REVERSE_SPEED, MAX_SPEED * this._powerMul);
     if (Math.abs(this.speed) < 0.02) this.speed = 0;
     // How hard the legs are working, for the rider's lean and the crank blur.
@@ -1125,7 +1136,7 @@ export class Bicycle {
   applyCustomization(livery) {
     this._livery = livery && typeof livery === 'object' ? livery : {};
     if (!this._slotMats) return;
-    applyLivery(this._livery, Bicycle.CUSTOM_SLOTS, this._slotMats);
+    applyLivery(this._livery, this.constructor.CUSTOM_SLOTS, this._slotMats);
   }
 
   /** Same ladder as Car: +12% top speed and +10% acceleration per tier; shield stored. */

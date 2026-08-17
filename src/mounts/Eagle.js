@@ -545,11 +545,18 @@ export class Eagle {
      * Nose down converts altitude into speed, nose up spends speed to climb.
      * That exchange is the whole feel of the mount. */
     const dive = -this._pitch;                       // +ve when nose-down
-    this.speed += dive * 17 * dt;
+    /* Strength time-scales the WHOLE net acceleration, not just the thrust
+     * term. Multiplying thrust alone moved the point where thrust balances
+     * drag, so an Acceleration tier quietly raised the bird's terminal speed
+     * as well - which is Speed's job. Scaling the sum leaves the balance
+     * point (dv = 0) exactly where it was and only changes how fast the bird
+     * gets there, which is what the stat says on the tin. */
+    let dv = dive * 17;
     // Drag, rising with the square of speed, gives a natural terminal velocity.
-    this.speed -= (0.012 / (this._powerMul * this._powerMul)) * this.speed * this.speed * dt;
+    dv -= (0.012 / (this._powerMul * this._powerMul)) * this.speed * this.speed;
     // Beating adds thrust as well as lift.
-    if (this._beat > 0.01) this.speed += this._beat * 9 * this._accelMul * dt;
+    if (this._beat > 0.01) dv += this._beat * 9;
+    this.speed += dv * this._accelMul * dt;
     /* Floored, not clamped to zero.
      *
      * At the first tuning a sustained pull-up bled 32 m/s to a dead stop in two
@@ -801,6 +808,17 @@ export class Eagle {
     return clamp(this.speed / MAX_SPEED, 0, 1);
   }
 
+  /**
+   * Speed as the held mount voice is allowed to see it - see Dragon.voiceSpeed
+   * for the measured drift this exists to stop. Every visual cue on the bird
+   * saturates at MAX_SPEED, so the wind and wingbeat loop has to saturate
+   * there too, or a Power tier runs the audio past wings that have stopped
+   * changing. Unsigned: an eagle's speed is airspeed and never negative.
+   */
+  get voiceSpeed() {
+    return Math.min(this.speed, MAX_SPEED);
+  }
+
   get bankRoll() {
     return -this._bank;
   }
@@ -838,7 +856,7 @@ export class Eagle {
   applyCustomization(livery) {
     this._livery = livery && typeof livery === 'object' ? livery : {};
     if (!this._slotMats) return;
-    applyLivery(this._livery, Eagle.CUSTOM_SLOTS, this._slotMats);
+    applyLivery(this._livery, this.constructor.CUSTOM_SLOTS, this._slotMats);
   }
 
   /** Same ladder as Car: +12% top speed, +10% thrust (and cheaper beats), shield stored. */

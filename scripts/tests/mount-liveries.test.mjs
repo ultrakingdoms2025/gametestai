@@ -155,6 +155,31 @@ test('setLivery ignores slot ids the mount does not declare', () => {
   assert.equal(emitted.filter(([e]) => e === 'mount:livery').length, n, 'an all-unknown patch is a no-op');
 });
 
+test('deserialize drops slot ids the mount does not declare', () => {
+  // A save written when a slot existed (or hand-edited) must not resurrect it:
+  // the load path needs the same guard setLivery applies, or the F10 menu ends
+  // up showing a slot no mount can paint.
+  const { mgr } = manager();
+  mgr.deserialize({ liveries: { car: { bogus: { color: 1 }, paint: { color: 0x0a0b0c } } } });
+  assert.deepEqual(mgr.getLivery('car'), { paint: { color: 0x0a0b0c } });
+});
+
+test('grantPower ignores a stat the mount does not sell', () => {
+  const { mgr, emitted } = manager();
+  mgr.grantPower('horse', 'fire', 2);
+  assert.deepEqual(mgr.getPowers('horse'), {}, 'a horse has no Fire ladder');
+  assert.equal(emitted.filter(([n]) => n === 'mount:powers').length, 0, 'and nothing was persisted');
+  mgr.grantPower('dragon', 'fire', 2);
+  assert.deepEqual(mgr.getPowers('dragon'), { fire: 2 });
+  assert.equal(emitted.filter(([n]) => n === 'mount:powers').length, 1);
+});
+
+test('deserialize drops a stat the mount does not sell', () => {
+  const { mgr } = manager();
+  mgr.deserialize({ powers: { horse: { fire: 3, power: 2 } } });
+  assert.deepEqual(mgr.getPowers('horse'), { power: 2 });
+});
+
 test('serialize writes liveries and deserialize round-trips them', () => {
   const { mgr } = manager();
   mgr.setLivery('eagle', { plumage: { color: 0xabcdef }, harness: { color: 0x010203, finish: 'gloss' } });

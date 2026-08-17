@@ -1045,7 +1045,7 @@ export class Horse {
   applyCustomization(livery) {
     this._livery = livery && typeof livery === 'object' ? livery : {};
     if (!this._slotMats) return;
-    applyLivery(this._livery, Horse.CUSTOM_SLOTS, this._slotMats);
+    applyLivery(this._livery, this.constructor.CUSTOM_SLOTS, this._slotMats);
   }
 
   /** Same ladder as Car: +12% top speed and +10% acceleration per tier; shield stored. */

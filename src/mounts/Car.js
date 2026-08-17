@@ -1913,7 +1913,7 @@ export class Car {
   applyCustomization(livery) {
     this._livery = livery && typeof livery === 'object' ? livery : {};
     if (!this._slotMats) return;
-    applyLivery(this._livery, Car.CUSTOM_SLOTS, this._slotMats);
+    applyLivery(this._livery, this.constructor.CUSTOM_SLOTS, this._slotMats);
   }
 
   /**

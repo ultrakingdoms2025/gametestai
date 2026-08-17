@@ -6,6 +6,39 @@ export type MarketplaceCategory = (typeof MARKETPLACE_CATEGORIES)[number];
 export const MARKETPLACE_WORLDS = ['station', 'medieval', 'sports', 'citadel', 'race'] as const;
 export type MarketplaceWorld = (typeof MARKETPLACE_WORLDS)[number];
 
+/* ---- Mount upgrades: shown in the F10 menu, applied by MountManager.grantPower ---- */
+
+const UPGRADE_MOUNTS = [
+  { id: 'dragon', label: 'Dragon', powers: ['power', 'strength', 'shield', 'fire'] },
+  { id: 'eagle', label: 'Eagle', powers: ['power', 'strength', 'shield'] },
+  { id: 'horse', label: 'Horse', powers: ['power', 'strength', 'shield'] },
+  { id: 'hoverboard', label: 'Hoverboard', powers: ['power', 'strength', 'shield'] },
+  { id: 'bicycle', label: 'Bicycle', powers: ['power', 'strength', 'shield'] },
+] as const;
+
+const POWER_META = {
+  power: { name: 'Speed', blurb: 'top speed', color: '#b6ff5a', base: 300 },
+  strength: { name: 'Acceleration', blurb: 'acceleration', color: '#ff8a5c', base: 260 },
+  shield: { name: 'Armour', blurb: 'damage protection while riding', color: '#52e9ff', base: 280 },
+  fire: { name: 'Fire', blurb: 'fireball damage while riding', color: '#ff6a3a', base: 340 },
+} as const;
+
+const TIER_ROMAN = ['I', 'II', 'III'] as const;
+const TIER_MUL = [1, 2, 3.15] as const;
+type UpgradeMountId = (typeof UPGRADE_MOUNTS)[number]['id'];
+type UpgradePowerId = keyof typeof POWER_META;
+// Template type over 5x4x3 = 60 ids; 12 (e.g. mount_eagle_fire_1) are never
+// generated - harmless, normalizeAction() checks the runtime array, not the type.
+export type MountUpgradeActionId = `mount_${UpgradeMountId}_${UpgradePowerId}_${1 | 2 | 3}`;
+
+const MOUNT_UPGRADE_ACTIONS: ReadonlyArray<{ id: MountUpgradeActionId; label: string; description: string; effect: 'grant_mount_power' }> =
+  UPGRADE_MOUNTS.flatMap((m) => m.powers.flatMap((p) => ([1, 2, 3] as const).map((tier) => ({
+    id: `mount_${m.id}_${p}_${tier}` as MountUpgradeActionId,
+    label: `${m.label} ${POWER_META[p].name} ${TIER_ROMAN[tier - 1]}`,
+    description: `Permanently raises your ${m.label.toLowerCase()} ${POWER_META[p].blurb} (tier ${tier}).`,
+    effect: 'grant_mount_power' as const,
+  }))));
+
 export const MARKETPLACE_ACTIONS = [
   {
     id: 'ammo_pack_rifle',
@@ -184,8 +217,14 @@ export const MARKETPLACE_ACTIONS = [
   {
     id: 'cosmetic_vehicle_skin',
     label: 'Unlock vehicle skin',
-    description: 'Unlocks a limited-edition car livery in the F2 vehicle customizer.',
-    effect: 'unlock_cosmetic',
+    description: 'Grants a car skin item; apply it from the Mount menu (F10) while driving.',
+    effect: 'grant_item',
+  },
+  {
+    id: 'mount_skin',
+    label: 'Mount skin',
+    description: 'Grants a mount skin item; apply it from the Mount menu (F10) while riding.',
+    effect: 'grant_item',
   },
   {
     id: 'mount_strength_1',
@@ -241,6 +280,7 @@ export const MARKETPLACE_ACTIONS = [
     description: 'Permanently raises your car top speed (tier 3).',
     effect: 'grant_mount_power',
   },
+  ...MOUNT_UPGRADE_ACTIONS,
 ] as const;
 
 export type MarketplaceActionId = (typeof MARKETPLACE_ACTIONS)[number]['id'];
@@ -292,7 +332,65 @@ const WORLD_PRICE_MULTIPLIERS: Record<MarketplaceWorld, {
   race: { ammoBuy: 1.0, ammoSell: 1.0, consumableBuy: 1.0, consumableSell: 1.0 },
 };
 
-const BASE_ITEMS = [
+type PricingKind = 'ammo' | 'consumable' | 'fixed';
+type BaseSeedRow = {
+  source_key: string; name: string; description: string; category: MarketplaceCategory;
+  image_label: string; image_color: string; game_action: MarketplaceActionId;
+  action_config: Record<string, unknown>; quantity: number | null; cost_buy: number; cost_sell: number;
+  pricing_kind: PricingKind; sort_order: number; worlds?: readonly MarketplaceWorld[];
+};
+
+const MOUNT_SKIN_DEFS = [
+  { key: 'dragon_obsidian', name: 'Obsidian Ember Hide', desc: 'Dragon skin — black glass hide, blood-red tack.', color: '#14161c', cost: 520 },
+  { key: 'dragon_verdant', name: 'Verdant Wyrm Hide', desc: 'Dragon skin — forest scale, worn tan leather.', color: '#1f6b3a', cost: 480 },
+  { key: 'dragon_frost', name: 'Frostscale Hide', desc: 'Dragon skin — glacier hide, deep-blue harness.', color: '#bfe6f2', cost: 560 },
+  { key: 'eagle_golden', name: 'Golden Talon Plumage', desc: 'Eagle skin — burnished gold plumage, black harness.', color: '#c98a2b', cost: 460 },
+  { key: 'eagle_storm', name: 'Storm Crest Plumage', desc: 'Eagle skin — slate-blue feathers, silver straps.', color: '#3a4a5c', cost: 440 },
+  { key: 'eagle_ember', name: 'Ember Wing Plumage', desc: 'Eagle skin — scorched russet, gold harness.', color: '#7a2a1a', cost: 480 },
+  { key: 'horse_midnight', name: 'Midnight Charger Coat', desc: 'Horse skin — coal-black coat, white leather.', color: '#141216', cost: 420 },
+  { key: 'horse_palomino', name: 'Palomino Coat', desc: 'Horse skin — golden coat, oiled brown tack.', color: '#d6b26a', cost: 400 },
+  { key: 'horse_royal', name: 'Royal Grey Coat', desc: 'Horse skin — dapple white, violet saddle.', color: '#e6e6ea', cost: 460 },
+  { key: 'hover_neon', name: 'Neon Drift Deck', desc: 'Hoverboard skin — gloss black deck, magenta underglow.', color: '#ff3bd2', cost: 440 },
+  { key: 'hover_toxic', name: 'Toxic Rail Deck', desc: 'Hoverboard skin — matt green deck, acid glow.', color: '#a8ff3b', cost: 420 },
+  { key: 'hover_solar', name: 'Solar Flare Deck', desc: 'Hoverboard skin — orange gloss deck, gold glow.', color: '#f27b1f', cost: 460 },
+  { key: 'bike_chrome', name: 'Chrome Courier Frame', desc: 'Bicycle skin — polished frame, bright rims.', color: '#d9dde2', cost: 360 },
+  { key: 'bike_racing', name: 'Racing Red Frame', desc: 'Bicycle skin — race red frame, black rims.', color: '#c21f2f', cost: 380 },
+  { key: 'bike_forest', name: 'Forest Ranger Frame', desc: 'Bicycle skin — matt green frame, brass rims.', color: '#2f4a2a', cost: 360 },
+] as const;
+
+const MOUNT_SKIN_ROWS: readonly BaseSeedRow[] = MOUNT_SKIN_DEFS.map((s, i) => ({
+  source_key: `skin_${s.key}`,
+  name: s.name,
+  description: `${s.desc} Apply from the Mount menu (F10) while riding; one use, then yours to keep.`,
+  category: 'mounts',
+  image_label: s.name.split(' ')[0].toUpperCase(),
+  image_color: s.color,
+  game_action: 'mount_skin',
+  action_config: { effect: 'grant_item', item_id: `skin_${s.key}` },
+  quantity: null,
+  cost_buy: s.cost,
+  cost_sell: Math.round(s.cost * 0.4),
+  pricing_kind: 'fixed',
+  sort_order: 450 + i,
+}));
+
+const MOUNT_UPGRADE_ROWS: readonly BaseSeedRow[] = UPGRADE_MOUNTS.flatMap((m, mi) => m.powers.flatMap((p, pi) => ([1, 2, 3] as const).map((tier) => ({
+  source_key: `mount_${m.id}_${p}_${tier}`,
+  name: `${m.label} ${POWER_META[p].name} ${TIER_ROMAN[tier - 1]}`,
+  description: `${m.label} upgrade: ${POWER_META[p].blurb} tier ${tier}. Permanent, replaces a lower tier. See your tiers in the Mount menu (F10).`,
+  category: 'mounts',
+  image_label: `${POWER_META[p].name.slice(0, 3).toUpperCase()} ${TIER_ROMAN[tier - 1]}`,
+  image_color: POWER_META[p].color,
+  game_action: `mount_${m.id}_${p}_${tier}` as MountUpgradeActionId,
+  action_config: { effect: 'grant_mount_power', mount: m.id, power: p, tier },
+  quantity: null,
+  cost_buy: Math.round(POWER_META[p].base * TIER_MUL[tier - 1]),
+  cost_sell: Math.round(POWER_META[p].base * TIER_MUL[tier - 1] * 0.4),
+  pricing_kind: 'fixed',
+  sort_order: 330 + mi * 12 + pi * 3 + (tier - 1),
+}))));
+
+export const BASE_ITEMS: readonly BaseSeedRow[] = [
   {
     source_key: 'pack_bullets',
     name: 'Rifle Round Pack',
@@ -666,82 +764,77 @@ const BASE_ITEMS = [
   {
     source_key: 'cosmetic_car_neon',
     name: 'Neon Circuit Livery',
-    description: 'Limited-edition car livery — magenta body with cyan rims. Equip in the F2 Vehicle customizer.',
+    description: 'Limited-edition car livery — magenta body with cyan rims. Apply from the Mount menu (F10) while driving; one use, then yours to keep.',
     category: 'mounts' as const,
     image_label: 'NEON',
     image_color: '#ff3bd2',
     game_action: 'cosmetic_vehicle_skin' as MarketplaceActionId,
-    action_config: { effect: 'unlock_cosmetic', kind: 'vehicle', cosmetic_id: 'car_neon' },
+    action_config: { effect: 'grant_item', item_id: 'skin_car_neon' },
     quantity: null,
     cost_buy: 420,
     cost_sell: 168,
     pricing_kind: 'fixed' as const,
     sort_order: 400,
-    worlds: ['race'] as const,
   },
   {
     source_key: 'cosmetic_car_inferno',
     name: 'Inferno Livery',
-    description: 'Limited-edition car livery — race red with gold alloys. Equip in the F2 Vehicle customizer.',
+    description: 'Limited-edition car livery — race red with gold alloys. Apply from the Mount menu (F10) while driving; one use, then yours to keep.',
     category: 'mounts' as const,
     image_label: 'INFERNO',
     image_color: '#c21f2f',
     game_action: 'cosmetic_vehicle_skin' as MarketplaceActionId,
-    action_config: { effect: 'unlock_cosmetic', kind: 'vehicle', cosmetic_id: 'car_inferno' },
+    action_config: { effect: 'grant_item', item_id: 'skin_car_inferno' },
     quantity: null,
     cost_buy: 460,
     cost_sell: 184,
     pricing_kind: 'fixed' as const,
     sort_order: 410,
-    worlds: ['race'] as const,
   },
   {
     source_key: 'cosmetic_car_phantom',
     name: 'Phantom Livery',
-    description: 'Limited-edition car livery — stealth black with chalk-white wheels. Equip in the F2 Vehicle customizer.',
+    description: 'Limited-edition car livery — stealth black with chalk-white wheels. Apply from the Mount menu (F10) while driving; one use, then yours to keep.',
     category: 'mounts' as const,
     image_label: 'PHANTOM',
     image_color: '#0d0f12',
     game_action: 'cosmetic_vehicle_skin' as MarketplaceActionId,
-    action_config: { effect: 'unlock_cosmetic', kind: 'vehicle', cosmetic_id: 'car_phantom' },
+    action_config: { effect: 'grant_item', item_id: 'skin_car_phantom' },
     quantity: null,
     cost_buy: 500,
     cost_sell: 200,
     pricing_kind: 'fixed' as const,
     sort_order: 420,
-    worlds: ['race'] as const,
   },
   {
     source_key: 'cosmetic_car_toxic',
     name: 'Toxic Surge Livery',
-    description: 'Limited-edition car livery — venom green over black rims. Equip in the F2 Vehicle customizer.',
+    description: 'Limited-edition car livery — venom green over black rims. Apply from the Mount menu (F10) while driving; one use, then yours to keep.',
     category: 'mounts' as const,
     image_label: 'TOXIC',
     image_color: '#18a86b',
     game_action: 'cosmetic_vehicle_skin' as MarketplaceActionId,
-    action_config: { effect: 'unlock_cosmetic', kind: 'vehicle', cosmetic_id: 'car_toxic' },
+    action_config: { effect: 'grant_item', item_id: 'skin_car_toxic' },
     quantity: null,
     cost_buy: 540,
     cost_sell: 216,
     pricing_kind: 'fixed' as const,
     sort_order: 430,
-    worlds: ['race'] as const,
   },
   {
     source_key: 'cosmetic_car_azure',
     name: 'Azure Bolt Livery',
-    description: 'Limited-edition car livery — electric blue with silver alloys. Equip in the F2 Vehicle customizer.',
+    description: 'Limited-edition car livery — electric blue with silver alloys. Apply from the Mount menu (F10) while driving; one use, then yours to keep.',
     category: 'mounts' as const,
     image_label: 'AZURE',
     image_color: '#1f6fd0',
     game_action: 'cosmetic_vehicle_skin' as MarketplaceActionId,
-    action_config: { effect: 'unlock_cosmetic', kind: 'vehicle', cosmetic_id: 'car_azure' },
+    action_config: { effect: 'grant_item', item_id: 'skin_car_azure' },
     quantity: null,
     cost_buy: 600,
     cost_sell: 240,
     pricing_kind: 'fixed' as const,
     sort_order: 440,
-    worlds: ['race'] as const,
   },
   {
     source_key: 'mount_strength_1',
@@ -878,18 +971,18 @@ const BASE_ITEMS = [
     pricing_kind: 'fixed' as const,
     sort_order: 322,
   },
+  ...MOUNT_SKIN_ROWS,
+  ...MOUNT_UPGRADE_ROWS,
 ] as const;
-
-type PricingKind = 'ammo' | 'consumable' | 'fixed';
 
 export function buildMarketplaceSeedItems(): MarketplaceSeedItem[] {
   const out: MarketplaceSeedItem[] = [];
   for (const world of MARKETPLACE_WORLDS) {
     const multipliers = WORLD_PRICE_MULTIPLIERS[world];
     for (const item of BASE_ITEMS) {
-      // Optional per-item world allowlist: vehicle liveries only sell at the
-      // circuit merchant, so skip worlds the item does not opt into.
-      const allow = (item as { worlds?: readonly MarketplaceWorld[] }).worlds;
+      // Optional per-item world allowlist (currently unused; kept for future
+      // world-specific stock).
+      const allow = item.worlds;
       if (allow && !allow.includes(world)) continue;
       let buyMul = 1;
       let sellMul = 1;

@@ -1,7 +1,7 @@
 # Mount Customizer (F10) — Design
 
 **Date:** 2026-08-17
-**Status:** Approved in brainstorming; spec review round 2
+**Status:** Approved in brainstorming; spec review round 3
 **Scope:** One feature: a per-mount customisation menu (skins + upgrades) for the six mounts, the data model behind it, and the marketplace/inventory flow that feeds it.
 
 ## 1. Problem
@@ -87,8 +87,8 @@ Each mount gains:
 
 ### 4.5 Marketplace catalog (site/lib/marketplaceCatalog.ts)
 
-- Skin rows: the five car liveries switch from `unlock_cosmetic` to `grant_item { item_id: 'skin_car_neon' … }`; 15 new skin rows (`category: 'cosmetic'`).
-- Stat rows: 48 new `grant_mount_power` rows — `mount ∈ {dragon, eagle, horse, hoverboard, bicycle}` × `power ∈ {power, strength, shield}` × tier 1–3, plus dragon `fire` 1–3. `MARKETPLACE_ACTIONS` union extended accordingly; images through the existing generator; per-world pricing as the existing car rows.
+- Skin rows: the five car liveries switch from `unlock_cosmetic` to `grant_item { item_id: 'skin_car_neon' … }`; 15 new skin rows.
+- Stat rows: 48 new `grant_mount_power` rows — `mount ∈ {dragon, eagle, horse, hoverboard, bicycle}` × `power ∈ {power, strength, shield}` × tier 1–3, plus dragon `fire` 1–3. `MARKETPLACE_ACTIONS` union extended accordingly; images through the existing generator; `pricing_kind: 'fixed'` like the existing car power rows (no world multiplier). No existing `source_key` is renamed (the seed sync upserts on `source_key` and never deactivates, so renames would orphan rows).
 - Rows re-seed on the deployed site's cold start as today (INVENTORY-AUDIT.md: catalog is the source of truth, never hand SQL).
 - Conventions, matching the existing rows: `category: 'mounts'` for both skins and upgrades (the five car liveries already are); one `MARKETPLACE_ACTIONS` id per row as today (`mount_dragon_power_1`, `skin_dragon_ember`, … — ~68 new ids, no parameterised ids); no `worlds` restriction (mounts are summonable everywhere; the car liveries' `['race']` limit is dropped so car skins are buyable wherever the upgrades are).
 
@@ -114,7 +114,7 @@ Unchanged: `mount:power:buy` → `MountManager.grantPower(mount, power, tier)`. 
 
 1. Resolve skin; unknown id → `{ok:false, reason:'unknown-skin'}`. Not mounted → `'not-mounted'`. Skin's `mount` ≠ `mounts.active.id` → `'wrong-mount'`.
 2. If `cosmetics.has(skinId)` → `mounts.setLivery(mount, skin.livery)` → `{ok:true, consumed:false}`.
-3. Else take one copy from the inventory — **bag first, then store**: `inventory.consumeFromBag(itemId, 1)`, and if that returns 0, `inventory.remove(itemId, 1)` (store-only by contract). If nothing was taken → `{ok:false, reason:'not-owned'}`. Otherwise `cosmetics.unlock(skinId)`, `setLivery(...)` → `{ok:true, consumed:true}`. (`cosmetic:unlocked` and `mount:livery` both fire, so both persist paths run.)
+3. Else take one copy from the inventory — **bag first, then store**: `inventory.consumeFromBag(itemId, 1)`, and if that returns `false`, `inventory.remove(itemId, 1)` (store-only by contract; returns the count removed). If nothing was taken → `{ok:false, reason:'not-owned'}`. Otherwise `cosmetics.unlock(skinId)`, `setLivery(...)` → `{ok:true, consumed:true}`. (`cosmetic:unlocked` and `mount:livery` both fire, so both persist paths run.)
 
 Callers:
 - The F10 skin card (§6).
@@ -151,7 +151,7 @@ Panel, top to bottom:
 - **Armour**: `Player.applyDamage(amount, …)` multiplies `amount` by `1 − 0.10 × (mounts.active?.shieldTier ?? 0)` when `mounts.mounted`, for every damage source. Player gets a `mounts` reference (set from `main.js` after both exist, e.g. `player.mounts = mounts`) if it does not already hold one.
 - **Speed / Accel**: per-mount multipliers at the read sites (§4.2).
 - **Dragon Fire**: `Combat` gains `mountFireMul` = `1 + 0.15 × (mounts.active?.fireTier ?? 0)` applied at the same place as `_playerDamageMul` (`Combat.js:425`) but only when `weaponId === 'fireball'` (already passed by `Projectiles.js:1139`) and the active mount is the dragon (`mounts.active?.id === 'dragon'`). Combat is constructed before MountManager (`main.js:172` vs `:195`), so it gets the same late injection as Player (`combat.mounts = mounts` in `main.js`). Dragon `_emitBreath` scales particle size/brightness by `1 + 0.1 × fireTier` (uniform only).
-- **HUD pips**: `HUD.POWER_LABELS`/`_setMountPowers` gain a `fire: 'FIR '` pip so the dragon's fourth stat shows alongside PWR/STR/SHD while riding.
+- **HUD pips**: the module-level `POWER_LABELS` const (`HUD.js:50`) and `_setMountPowers` gain a `fire: 'FIR '` pip so the dragon's fourth stat shows alongside PWR/STR/SHD while riding.
 
 ## 8. Error handling & edge cases
 

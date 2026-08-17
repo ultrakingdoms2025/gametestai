@@ -258,8 +258,29 @@ export class HUD {
     this._lockRetryIn = 0;
     /** Retries left in the current attempt. */
     this._lockTries = 0;
-    /** Count of blocking overlays currently open (quest board, race panel, etc.). */
-    this._overlayCount = 0;
+    /**
+     * Ids of the cursor-owning panels currently on screen.
+     *
+     * A Set, not a counter: `MinigameUI._showBoard` has no re-entry guard, so a
+     * repeated `minigame:finished` emitted `{open:true}` twice, an integer
+     * latched above zero, and `showPauseOverlay` - which refuses while it is -
+     * killed the pause hub for the rest of the session.
+     *
+     * Invariant: an id is present iff that module has a cursor-owning sheet on
+     * screen. Per-MODULE keying is only safe because no multi-sheet module
+     * stacks two of its own: `RaceUI._openStop` refuses unless `race.racing`
+     * (`:680`) and `_showBoard`'s only caller closes the stop sheet first
+     * (`:254`); `MinigameUI._openStop` guards on `_stopOpen || _boardOpen`
+     * (`:211`). Relaxing either needs per-sheet ids here.
+     * @type {Set<string>}
+     */
+    this._overlays = new Set();
+    /** True while the hub launched the panel that is up, so its close returns there. */
+    this._hubReturn = false;
+    /** Collapses back-to-back empty-Set re-checks into one microtask. */
+    this._hubCheckPending = false;
+    /** HelpMenu keeps pointer lock, so it is deliberately outside `_overlays`. */
+    this._helpOpen = false;
 
     /* -- transient lists ---------------------------------------------- */
     this._dmg = [];
@@ -980,6 +1001,11 @@ export class HUD {
         this._lockWait = 0;
         this._lockRetryIn = 0;
         this._setPauseBusy(false);
+        /* A real relock always wins. Cleared here rather than inside
+         * `showPauseOverlay(false)`, which `openFromHub` itself calls: a player
+         * who clicked the canvas back into mouse-look while a hub-launched
+         * panel was open does not want the hub afterwards. */
+        this._hubReturn = false;
       }
     });
 
@@ -1183,54 +1209,139 @@ export class HUD {
     // completion, world load — already emits this one event.
     this._on('quests:changed', () => this._refreshQuestTracker());
 
-    /* --- help ----------------------------------------------------------- */
-    // The chip is the affordance; dim it while the panel it advertises is open.
-    this._on('help:open', () => this.el.classList.add('helping'));
-    this._on('help:close', () => this.el.classList.remove('helping'));
+    /* --- overlays, help, and the pause hub's return path ----------------- */
+    this._wireOverlayEvents();
+  }
 
-    /* --- overlay close → re-request pointer lock ----------------------- */
-    // Every UI that calls exitLock() on open must trigger this on close so the
-    // game is never left in an unlocked / stuck state. We schedule a short
-    // delay (same as after chat) to clear the browser's post-ESC cooldown
-    // before the lock request fires; the existing _relock machinery then
-    // retries and falls back to the click-to-resume overlay if needed.
-    const _schedRelock = () => {
-      // Don't override a longer delay already in flight; only schedule if
-      // we are not actively waiting for chat to close (chat handles its own).
-      if (!this._chatOpen) this._relock = Math.max(this._relock, 0.15);
-    };
-    /* `overlaid` mirrors the counter onto the HUD element so CSS can answer
-     * "is a full-screen panel up". Only the objective tracker uses it today:
-     * the quest board states the same objective in full, so the compact copy
-     * showing through underneath it is noise, and the same is true of every
-     * other overlay that covers the vitals column. */
-    const _syncOverlaid = () => {
-      this.el?.classList.toggle('overlaid', this._overlayCount > 0);
-    };
-    const _overlayOpen  = () => {
-      this._overlayCount = Math.max(0, this._overlayCount) + 1;
-      _syncOverlaid();
-    };
-    const _overlayClose = () => {
-      this._overlayCount = Math.max(0, this._overlayCount - 1);
-      _syncOverlaid();
-      _schedRelock();
-      // If the pause overlay fired while a blocking UI was open, hide it now.
-      if (this._overlayCount === 0) this.showPauseOverlay(false);
-    };
-    this._on('race:menu',        ({ open })  => { open  ? _overlayOpen() : _overlayClose(); });
-    this._on('hud:block',        ({ block }) => { block ? _overlayOpen() : _overlayClose(); });
-    this._on('audio:menu',       ({ open })  => { open  ? _overlayOpen() : _overlayClose(); });
-    this._on('bug-report:open',  ()          => _overlayOpen());
-    this._on('bug-report:close', ()          => _overlayClose());
-    this._on('character:open',   ()          => _overlayOpen());
-    this._on('character:close',  ()          => _overlayClose());
-    this._on('inventory:open',   ()          => _overlayOpen());
-    this._on('inventory:close',  ()          => _overlayClose());
-    this._on('keybinds:open',    ()          => _overlayOpen());
-    this._on('keybinds:close',   ()          => _overlayClose());
-    this._on('mount:menu:open',  ()          => _overlayOpen());
-    this._on('mount:menu:close', ()          => _overlayClose());
+  /* ==================================================================== */
+  /* Overlay tracking and the pause hub's return path                     */
+  /* ==================================================================== */
+
+  /** How many cursor-owning panels are on screen. */
+  get overlayCount() {
+    return this._overlays.size;
+  }
+
+  /**
+   * Mirror the tracker onto the HUD element so CSS can answer "is a
+   * full-screen panel up". Only the objective tracker uses it: the quest board
+   * states the same objective in full, so the compact copy showing through
+   * underneath is noise, and the same holds for every overlay that covers the
+   * vitals column.
+   */
+  _syncOverlaid() {
+    this.el?.classList.toggle('overlaid', this._overlays.size > 0);
+  }
+
+  /**
+   * Re-take the pointer shortly. The delay clears the browser's post-Escape
+   * cooldown; `_relock` then drives it and falls back to the pause overlay.
+   * Never fights chat, which handles its own.
+   */
+  _schedRelock() {
+    if (!this._chatOpen) this._relock = Math.max(this._relock, 0.15);
+  }
+
+  _overlayOpen(id) {
+    if (!id) return;
+    this._overlays.add(id);
+    this._syncOverlaid();
+  }
+
+  _overlayClose(id) {
+    if (!id) return;
+    this._overlays.delete(id);
+    this._syncOverlaid();
+    if (this._overlays.size === 0) this._deferHubCheck();
+  }
+
+  /**
+   * Act on "nothing is open any more" - one microtask later, once.
+   *
+   * Deferred because two panels hand off inside a single synchronous sequence
+   * (`RaceUI.js:745-749` via `:254`; `MinigameUI.js:81-83`), and read
+   * synchronously that momentary gap looks like "everything closed" and would
+   * drop the hub on top of a result board. `_hubCheckPending` collapses a
+   * burst of closes into one check.
+   *
+   * Behaviour change, declared: `_schedRelock()` used to run on EVERY close; it
+   * now runs only when the Set is still empty after the microtask.
+   */
+  _deferHubCheck() {
+    if (this._hubCheckPending) return;
+    this._hubCheckPending = true;
+    queueMicrotask(() => {
+      this._hubCheckPending = false;
+      if (this._overlays.size > 0) return; // a same-tick hand-off; nothing closed
+      if (this._hubReturn) {
+        this._hubReturn = false;
+        this.showPauseOverlay(true);
+      } else {
+        this.showPauseOverlay(false);
+        this._schedRelock();
+      }
+    });
+  }
+
+  /**
+   * Run a pause-hub item that opens a panel, and remember to come back.
+   *
+   * The hub hides BEFORE `run()`, so the panel is never drawn underneath it,
+   * and the post-run check catches a panel that refused to open at all
+   * (QuestBoard's `_openGuard`, MazeMap outside a maze, RaceUI without a
+   * circuit) by putting the hub straight back.
+   *
+   * @param {() => void} run
+   * @param {{overlay?: boolean}} [opts] `overlay:false` for HelpMenu, which
+   *   keeps pointer lock, never joins `_overlays`, and sits over the hub.
+   */
+  openFromHub(run, { overlay = true } = {}) {
+    if (typeof run !== 'function') return;
+    if (!overlay) {
+      run();
+      return;
+    }
+    this._hubReturn = true;
+    this.showPauseOverlay(false);
+    try {
+      run();
+    } finally {
+      this._deferHubCheck();
+    }
+  }
+
+  /**
+   * Map every panel's open/close event onto one id in `_overlays`. Keyed on the
+   * event's own `.id` where it carries one (`hud:block`, `ui:modal`) - each has
+   * exactly one emitter today, and keying on the id stops a future second
+   * emitter silently joining the pause contract.
+   */
+  _wireOverlayEvents() {
+    const o = (id) => this._overlayOpen(id);
+    const c = (id) => this._overlayClose(id);
+    this._on('race:menu',        ({ open })      => (open ? o('race') : c('race')));
+    this._on('minigame:menu',    ({ open })      => (open ? o('minigame') : c('minigame')));
+    this._on('hud:block',        ({ id, block }) => (block ? o(id) : c(id)));
+    this._on('ui:modal',         ({ id, open })  => (open ? o(id) : c(id)));
+    this._on('audio:menu',       ({ open })      => (open ? o('audio') : c('audio')));
+    this._on('bug-report:open',  ()              => o('bug-report'));
+    this._on('bug-report:close', ()              => c('bug-report'));
+    this._on('character:open',   ()              => o('character'));
+    this._on('character:close',  ()              => c('character'));
+    this._on('inventory:open',   ()              => o('inventory'));
+    this._on('inventory:close',  ()              => c('inventory'));
+    this._on('keybinds:open',    ()              => o('keybinds'));
+    this._on('keybinds:close',   ()              => c('keybinds'));
+    this._on('mount:menu:open',  ()              => o('mount-menu'));
+    this._on('mount:menu:close', ()              => c('mount-menu'));
+
+    /* HelpMenu is deliberately NOT in the Set: it keeps pointer lock while open
+     * (`HelpMenu.js:9-12`) so it can be read mid-play, and it sits at z 80 over
+     * the hub's z 60. The flag is what stops `_onPauseKey` and the
+     * Esc-under-lock handler acting on a keystroke Help has already claimed.
+     * The chip is the affordance; dim it while the panel is up. */
+    this._on('help:open',  () => { this._helpOpen = true;  this.el?.classList.add('helping'); });
+    this._on('help:close', () => { this._helpOpen = false; this.el?.classList.remove('helping'); });
   }
 
   /* ---------------------------------------------------------------- v2 -- */
@@ -1577,7 +1688,7 @@ export class HUD {
 
   showPauseOverlay(show) {
     if (show && this._chatOpen) return; // chat deliberately released the cursor
-    if (show && this._overlayCount > 0) return; // a blocking UI overlay is open
+    if (show && this._overlays.size > 0) return; // a blocking UI overlay is open
     this.pause.classList.toggle('show', !!show);
     if (show) this._relockCheck = 0;
   }

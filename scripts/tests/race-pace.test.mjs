@@ -514,9 +514,11 @@ test('a Power tier buys the dragon speed without costing it cornering', () => {
  * was left was a slightly earlier lap time, which is what buying nothing also
  * looks like.
  *
- * Textual, like the F7 and MountWheel gates and for the same reason: `HUD.js`
- * imports its stylesheet at module scope and cannot be loaded under Node. The
- * badge itself was verified in a browser.
+ * Textual because the property is a DOM one: `_setMountPowers` writes a badge,
+ * and asserting on the writing is what a headless test can honestly do. (`HUD.js`
+ * itself imports fine under Node - `pause-menu.test.mjs` does exactly that - so
+ * anything reachable on the prototype should be driven, not grepped.) The badge
+ * itself was verified in a browser.
  */
 test('a purchased mount power tier is shown to the player', async () => {
   const hud = await readFile(nodePath.join(ROOT, 'src/ui/HUD.js'), 'utf8');

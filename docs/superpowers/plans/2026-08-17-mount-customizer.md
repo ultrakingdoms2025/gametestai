@@ -6,7 +6,7 @@
 
 **Architecture:** Generalise the car-only livery pattern: `MountManager` keeps `_liveries[mountId]`, every mount class declares `static CUSTOM_SLOTS`/`static STATS` and implements `applyCustomization`/`applyPowers`; a shared `src/mounts/Livery.js` does the tint/finish maths. Skins are `kind:'skin'` bag items (catalog `grant_item`) that a stateless `src/systems/MountSkins.js` consumes and unlocks in the existing `Cosmetics` ledger. `src/ui/MountMenu.js` is a structural clone of `CharacterMenu` rendered generically from the active mount's slots/stats. Spec: `docs/superpowers/specs/2026-08-17-mount-customizer-design.md`.
 
-**Tech Stack:** Vanilla JS ES modules + Three.js 0.185 (game, `src/`), `node --test` headless tests in `scripts/tests/*.test.mjs`, Next.js/TS catalog in `site/lib/marketplaceCatalog.ts` (vitest + tsc), esbuild (already a root devDependency via Vite) to bundle the TS catalog inside a root test.
+**Tech Stack:** Vanilla JS ES modules + Three.js 0.185 (game, `src/`), `node --test` headless tests in `scripts/tests/*.test.mjs`, Next.js/TS catalog in `site/lib/marketplaceCatalog.ts` (vitest + tsc), esbuild (added as a root devDependency in Task 19 — Vite 8 is rolldown-based and does not bring it) to bundle the TS catalog inside a root test.
 
 **Conventions for every task**
 - Run tests with `node --test scripts/tests/<file>.test.mjs` (single file) or `npm test` (all).
@@ -162,9 +162,17 @@ Create `src/mounts/Livery.js`:
  * import `MOUNT_STATS` without a renderer.
  */
 
-/** Uniform-only material presets for the two plain finishes. */
+/**
+ * Uniform-only material presets for the two plain finishes.
+ *
+ * On the library's ORM-baked materials `roughness`/`metalness` are *multipliers*
+ * over the baked maps (factory 1.0 / 1.0), so Matt keeps roughness at 1.0 -
+ * never glossier than factory - and strips the metallic bake; Gloss scales the
+ * bake down hard. On scalar `_mat` clones (Eagle tack 0.6, Bicycle frame 0.32)
+ * the same numbers read as plain matt / gloss.
+ */
 export const FINISH_PROPS = {
-  matt: { roughness: 0.85, metalness: 0.05, envMapIntensity: 0.6 },
+  matt: { roughness: 1.0, metalness: 0.05, envMapIntensity: 0.6 },
   gloss: { roughness: 0.22, metalness: 0.35, envMapIntensity: 1.0 },
 };
 export const FINISHES = Object.keys(FINISH_PROPS);
@@ -225,7 +233,11 @@ function factoryOf(m) {
  * Write a livery onto a mount's cloned materials.
  * @param {Object<string,{color?:number,finish?:string}>|null|undefined} livery
  * @param {Array<{id:string,finish:boolean}>} slots
- * @param {Object<string, Array<any|{mat:any,mix?:number,emissive?:boolean}>>} slotMats
+ * Entries are a material, or `{ mat, mix?, emissive?, finish? }`: `mix` lerps
+ * from factory toward the chosen colour (0..1), `emissive:true` also writes
+ * `.emissive`, `finish:false` opts a material out of the slot's finish (e.g. a
+ * wing membrane that takes 30% of the hide colour but must stay matt).
+ * @param {Object<string, Array<any|{mat:any,mix?:number,emissive?:boolean,finish?:boolean}>>} slotMats
  */
 export function applyLivery(livery, slots, slotMats) {
   const l = livery || {};
@@ -240,6 +252,7 @@ export function applyLivery(livery, slots, slotMats) {
       if (!m) continue;
       const mix = typeof entry?.mix === 'number' ? entry.mix : 1;
       const emissive = entry?.emissive === true;
+      const takesFinish = slot.finish && entry?.finish !== false;
       const fac = factoryOf(m);
       if (m.color) {
         if (color == null || fac.color == null) { if (fac.color != null) m.color.setHex(fac.color); }
@@ -249,7 +262,7 @@ export function applyLivery(livery, slots, slotMats) {
       if (emissive && m.emissive) {
         m.emissive.setHex(color == null ? (fac.emissive ?? 0) : color);
       }
-      if (slot.finish && 'roughness' in m) {
+      if (takesFinish && 'roughness' in m) {
         const p = finish || fac;
         if (p.roughness != null) m.roughness = p.roughness;
         if (p.metalness != null) m.metalness = p.metalness;
@@ -797,6 +810,17 @@ test('applyCustomization tints the first material of every slot and restores on 
   }
 });
 
+test('every catalogued skin only names slots its mount actually has', async () => {
+  const { MOUNT_SKINS } = await import('../../src/systems/Cosmetics.js');
+  for (const s of MOUNT_SKINS) {
+    const C = CLASSES[s.mount];
+    assert.ok(C, `${s.id}: unknown mount ${s.mount}`);
+    for (const k in s.livery) {
+      assert.ok(C.CUSTOM_SLOTS.some((sl) => sl.id === k), `${s.id}: slot ${k} is not on ${s.mount} (${C.CUSTOM_SLOTS.map((x) => x.id).join(',')})`);
+    }
+  }
+});
+
 test('Dragon has a fire tier and exposes it', () => {
   const d = new Dragon(ctx);
   assert.ok(Dragon.STATS.includes('fire'));
@@ -805,9 +829,52 @@ test('Dragon has a fire tier and exposes it', () => {
   assert.equal(d.fireTier, 3);
   d.dispose();
 });
+
+/**
+ * Speed III must *reach* the mount: drive each one flat out for a while at
+ * tier 0 and tier 3 and compare terminal speeds. Thresholds are loose on
+ * purpose (drag-limited mounts scale a little under the nominal 1.36) but a
+ * tier that only touched a clamp the mount never hits reads ~1.0 and fails.
+ * If a mount's sim needs a different control to run flat out, fix the RUN
+ * table below - never the threshold.
+ */
+const STEP = 1 / 60;
+const RUN = {
+  car: { seconds: 12, spawnY: 0, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
+  horse: { seconds: 12, spawnY: 0, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
+  hoverboard: { seconds: 12, spawnY: 0, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
+  bicycle: { seconds: 20, spawnY: 0, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
+  // Level flight, beating: steady speed is set by thrust vs v^2 drag.
+  eagle: { seconds: 15, spawnY: 250, ctrl: (m) => ({ throttle: 0, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
+  dragon: { seconds: 15, spawnY: 30, flying: true, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 1, boost: true, yaw: m.heading, pitch: 0 }) },
+};
+
+function terminalSpeed(id, C, tier) {
+  const spec = RUN[id];
+  const m = new C(ctx);
+  m.applyPowers({ power: tier });
+  m.spawn(new THREE.Vector3(0, spec.spawnY, 0), 0);
+  if (spec.flying) { m.state = 'flying'; m.position.y = spec.spawnY; m._groundY = 0; }
+  m.onMount?.();
+  const steps = Math.round(spec.seconds / STEP);
+  for (let i = 0; i < steps; i++) m.fixedUpdate(STEP, i * STEP, spec.ctrl(m));
+  const v = Math.abs(m.speed);
+  m.dispose?.();
+  return v;
+}
+
+test('a purchased Speed III reaches every mount (terminal speed rises 15-50%)', () => {
+  for (const [id, C] of Object.entries(CLASSES)) {
+    const stock = terminalSpeed(id, C, 0);
+    const tuned = terminalSpeed(id, C, 3);
+    assert.ok(stock > 3, `${id}: stock terminal speed ${stock.toFixed(2)} - the run table does not drive this mount`);
+    const ratio = tuned / stock;
+    assert.ok(ratio > 1.15 && ratio < 1.5, `${id}: Speed III gave ${stock.toFixed(2)} -> ${tuned.toFixed(2)} m/s (x${ratio.toFixed(2)})`);
+  }
+});
 ```
 
-- [ ] **Step 2: Run** `node --test scripts/tests/mount-powers.test.mjs` → FAIL at `dragon slots`. (It keeps failing for later mounts until Tasks 6–9 land — expected.)
+- [ ] **Step 2: Run** `node --test scripts/tests/mount-powers.test.mjs` → FAIL at `dragon slots`. (It keeps failing for later mounts until Tasks 6–9 land — expected. Car and Dragon already pass the reach test; if the eagle/horse/hoverboard/bicycle rows of `RUN` need a different control to move at all, fix the row, not the threshold.)
 
 - [ ] **Step 3: Implement Dragon**
 
@@ -817,13 +884,13 @@ Class head, after `export class Dragon {`:
 
 ```js
   static CUSTOM_SLOTS = [
-    { id: 'hide', label: 'Hide', finish: true, defaultColor: 0x5a3b8a, palette: 'natural' },
-    { id: 'saddle', label: 'Saddle & tack', finish: true, defaultColor: 0x6d4522, palette: 'paint' },
+    { id: 'hide', label: 'Hide', finish: true, defaultColor: 0x2b3a2e, palette: 'natural' },
+    { id: 'saddle', label: 'Saddle & tack', finish: true, defaultColor: 0x5a3a24, palette: 'paint' },
   ];
   static STATS = MOUNT_STATS.dragon;
 ```
 
-(Set `defaultColor` for `hide` to the actual `dragon.hide` library colour and `saddle` to `dragon.leather` — read them from `ensureMaterials` around `:590-635`.)
+`defaultColor` is only the swatch highlight / hex-picker seed for an untouched slot; factory *restore* reads the material's own `userData.factory`, so it need not match exactly. `dragon.hide` / `dragon.leather` are ORM-baked with `color: 0xffffff` (the tone lives in the bake shader — "deep basalt green-black" hide, dark leather), so the hexes above are picked by eye. Note for skins: `.color` multiplies the bake, so light presets over the near-black hide (e.g. Frostscale) read as a deep tint rather than pastel — intended.
 
 Fields (`:676-680`): after `this._shieldTier = 0;` add `this._fireTier = 0;`, and before `this._buildModel();` (`:700`) add `this._livery = null; this._slotMats = null;`.
 
@@ -854,13 +921,14 @@ At the end of `_buildModel()` (after `_buildHarness` at `:908` and the rest of t
 
 ```js
     this._slotMats = {
-      hide: [this._hideMat, { mat: this._membraneMat, mix: 0.3 }],
+      // Membrane takes 30% of the hide colour and no finish (spec §3.1).
+      hide: [this._hideMat, { mat: this._membraneMat, mix: 0.3, finish: false }],
       saddle: [this._leatherMat, this._tackMat],
     };
     this.applyCustomization(this._livery);
 ```
 
-Add next to `applyPowers`:
+Add next to `applyPowers` (and extend its JSDoc `@param` to `{strength?:number, shield?:number, power?:number, fire?:number}`):
 
 ```js
   /** Livery `{ hide?, saddle? }` over the cloned hide/membrane and leather/tack. */
@@ -937,9 +1005,10 @@ Constructor, before `this._build();` (`:122`):
 
 `_build()` after `const tackMat = ...` (`:169`): `this._slotMats = { plumage: [body, flight], harness: [tackMat] };` and at the very end of `_build()`: `this.applyCustomization(this._livery);`.
 
-Speed sites:
+Speed sites. **The eagle's top speed is set by its v² drag, not the clamp**: full dive + full beat settles at √((0.65·17 + 9)/0.012) ≈ 41 m/s, already under `MAX_SPEED = 46`, so scaling only the clamp would make Speed tiers a no-op. Terminal velocity scales linearly with `_powerMul` when the drag coefficient is divided by `_powerMul²`:
 - `:495` → `stam.drain(BEAT_STAMINA * this._staminaMul * dt, 'eagle');`
-- `:527` → `if (this._beat > 0.01) this.speed += this._beat * 9 * this._accelMul * dt;`
+- `:532` (`this.speed -= (0.012 * this.speed * this.speed) * dt;`) → `this.speed -= (0.012 / (this._powerMul * this._powerMul)) * this.speed * this.speed * dt;`
+- `:534` → `if (this._beat > 0.01) this.speed += this._beat * 9 * this._accelMul * dt;`
 - `:542` → `this.speed = clamp(this.speed, 4.5, MAX_SPEED * this._powerMul);`
 
 Methods (before `dispose()`):
@@ -1008,7 +1077,26 @@ Speed (`:701-707`):
     this.speed = clamp(this.speed, -4, MAX_SPEED * this._powerMul);
 ```
 
-Methods: `applyCustomization` (using `Horse.CUSTOM_SLOTS`), `applyPowers({strength, shield, power})` with the Car ladder (`_powerMul = 1 + power*0.12`, `_accelMul = 1 + strength*0.10`, `_shieldTier`), `get shieldTier()`.
+Methods (before `dispose()`):
+
+```js
+  applyCustomization(livery) {
+    this._livery = livery && typeof livery === 'object' ? livery : {};
+    if (!this._slotMats) return;
+    applyLivery(this._livery, Horse.CUSTOM_SLOTS, this._slotMats);
+  }
+
+  /** Same ladder as Car: +12% top speed and +10% acceleration per tier; shield stored. */
+  applyPowers({ strength = 0, shield = 0, power = 0 } = {}) {
+    this._powerMul = 1 + Math.max(0, power) * 0.12;
+    this._accelMul = 1 + Math.max(0, strength) * 0.10;
+    this._shieldTier = Math.max(0, shield);
+  }
+
+  get shieldTier() {
+    return this._shieldTier;
+  }
+```
 
 - [ ] **Step 2: Run** — powers test now fails at `hoverboard`. Commit.
 
@@ -1079,12 +1167,22 @@ Methods:
     this._livery = livery && typeof livery === 'object' ? livery : {};
     if (!this._slotMats) return;
     applyLivery(this._livery, Hoverboard.CUSTOM_SLOTS, this._slotMats);
-    const g = this._livery.glow?.color;
-    this._glowBase.setHex(typeof g === 'number' ? g : 0x7ff2ff);
+    // The emitter is re-tinted every frame from this base (see the update loop).
+    this._glowBase.setHex(normColor(this._livery.glow?.color) ?? 0x7ff2ff);
   }
-  applyPowers({ strength = 0, shield = 0, power = 0 } = {}) { /* Car ladder, as Horse */ }
-  get shieldTier() { return this._shieldTier; }
+
+  applyPowers({ strength = 0, shield = 0, power = 0 } = {}) {
+    this._powerMul = 1 + Math.max(0, power) * 0.12;
+    this._accelMul = 1 + Math.max(0, strength) * 0.10;
+    this._shieldTier = Math.max(0, shield);
+  }
+
+  get shieldTier() {
+    return this._shieldTier;
+  }
 ```
+
+(import `normColor` alongside `applyLivery, MOUNT_STATS`.)
 
 `dispose()`: add `this._gripMat.dispose(); this._carbonMat.dispose(); this._trimMat.dispose();`.
 
@@ -1109,7 +1207,7 @@ Statics:
 ```js
   static CUSTOM_SLOTS = [
     { id: 'frame', label: 'Frame', finish: true, defaultColor: 0x2f7fd4, palette: 'paint' },
-    { id: 'rims', label: 'Rims', finish: true, defaultColor: 0xb9bfc7, palette: 'wheel' },
+    { id: 'rims', label: 'Rims & metalwork', finish: true, defaultColor: 0xb9bfc7, palette: 'wheel' },
   ];
   static STATS = MOUNT_STATS.bicycle;
 ```
@@ -1121,7 +1219,7 @@ Speed:
 - `:801` `drive = throttle * PEDAL_ACCEL * this._accelMul * head * (sprint ? 1.55 : 1);`
 - `:817` `this.speed = clamp(this.speed, -REVERSE_SPEED, MAX_SPEED * this._powerMul);`
 
-Methods as Horse.
+Methods: copy Horse's three (`applyCustomization` with `Bicycle.CUSTOM_SLOTS`, `applyPowers`, `get shieldTier`).
 
 - [ ] **Step 2: Run** `node --test scripts/tests/mount-powers.test.mjs` → all PASS; `npm test` → PASS.
 
@@ -1168,7 +1266,7 @@ test('Combat.mountFireMul is 1 unless riding a dragon with Fire tiers', () => {
 });
 ```
 
-(Use whatever `src/player/Player.js` and `src/systems/Combat.js` actually export — `main.js:172` uses `CombatSystem`; check `Player`.)
+(`Player` and `CombatSystem` are the verified export names.)
 
 - [ ] **Step 2: Run** → FAIL.
 
@@ -1218,12 +1316,12 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 11: HUD FIR pip
 
 **Files:**
-- Modify: `src/ui/HUD.js:50` (`POWER_LABELS`), `:2011` (loop), `src/ui/hud.css:3828` (add `.mount-pip.fire`)
+- Modify: `src/ui/HUD.js:50` (`POWER_LABELS`), `:2009` (loop), `src/ui/hud.css:3828` (add `.mount-pip.fire`)
 
 - [ ] **Step 1: Implement**
 
 `HUD.js:50`: `const POWER_LABELS = { power: 'PWR ', strength: 'STR ', shield: 'SHD ', fire: 'FIR ' };`
-`HUD.js:2011`: `for (const key of ['power', 'strength', 'shield', 'fire']) {`
+`HUD.js:2009`: `for (const key of ['power', 'strength', 'shield', 'fire']) {`
 `hud.css` after `.mount-pip.power {...}`:
 
 ```css
@@ -1321,6 +1419,8 @@ for (const skin of MOUNT_SKINS) {
 }
 ```
 
+Also: extend the `ITEMS` JSDoc record type with `skinId?:string, colors?:number[]`; extend the `ICONS` JSDoc (`:529`) to `(g:string, a:string, def?:object) => string`; add `skin: 8` to `KIND_ORDER` in `src/systems/Inventory.js:581` (sorts before the trailing default); add `.inv-slot.kind-skin { --accent: #ff9ad5; }` next to the other `kind-*` rules in `src/ui/inventory.css:501-504`; add `'skin'` to `ACCENT_PRIORITY` in `src/systems/Loot.js:94` so a dropped skin pickup gets its own accent.
+
 `itemIconSVG`: `const body = ICONS[key]?.(g, accent, ITEMS[id]) ?? ICONS.unknown(g, accent);` and add to `ICONS` before `unknown`:
 
 ```js
@@ -1337,7 +1437,7 @@ for (const skin of MOUNT_SKINS) {
 - [ ] **Step 4:** `npm test` → PASS. Commit.
 
 ```bash
-git add src/systems/ItemDefs.js scripts/tests/mount-liveries.test.mjs
+git add src/systems/ItemDefs.js src/systems/Inventory.js src/systems/Loot.js src/ui/inventory.css scripts/tests/mount-liveries.test.mjs
 git commit -m "ItemDefs: kind:'skin' bag items generated from MOUNT_SKINS
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -1556,8 +1656,8 @@ test('Marketplace.preview refuses a skin item that is already unlocked or alread
   const inventory = { roomFor: () => 30, totalCount: (id) => held[id] ?? 0, count: () => 0, bagCount: () => 0 };
   const cosmetics = { has: (id) => id === 'bike_racing' };
   const m = Object.create(Marketplace.prototype);
+  // `credits` is a prototype getter over economy.credits, so this is enough.
   Object.assign(m, { economy: { credits: 9999 }, inventory, cosmetics, mounts: null, bus: null });
-  Object.defineProperty(m, 'credits', { get: () => 9999 });
   const row = (item) => ({ id: 'x', source_key: 'skin_x', quantity: null, cost_buy: 100, action_config: { effect: 'grant_item', item_id: item } });
   assert.equal(m.preview(row('skin_bike_chrome')).ok, true);
   held.skin_bike_chrome = 1;
@@ -1569,13 +1669,11 @@ test('Marketplace.preview refuses a skin item that is already unlocked or alread
 });
 ```
 
-(If `Marketplace.preview` reads other instance fields, stub them — check `:360-406`; if `credits` is a plain getter on the prototype, drop the `defineProperty` line.)
-
 - [ ] **Step 2: Run** → FAIL (held skin previews `ok:true`).
 
 - [ ] **Step 3: Implement**
 
-`Marketplace.js`: `import { skinIdFromItem } from './ItemDefs.js';`. In `preview`, after `if (!grant) return ...unsupported`:
+`Marketplace.js:1` already imports from `./ItemDefs.js` — add `skinIdFromItem` to that import. In `preview`, after `if (!grant) return ...unsupported`:
 
 ```js
     // A mount skin is one-per-player: refuse when it is burned in already or a
@@ -1590,6 +1688,7 @@ test('Marketplace.preview refuses a skin item that is already unlocked or alread
 
 `MarketplaceUI.js:379`: `: owned ? (preview.skin ? 'You already have this skin — apply it from the Mount menu (F10) while riding' : 'Already unlocked — equip it in the Character menu (F2)')`
 `MarketplaceUI.js:441`: `res.reason === 'owned' ? (res.skin ? 'You already have this skin — apply it from the Mount menu (F10) while riding' : 'You already own this skin — equip it in the Character menu (F2)') :`
+`MarketplaceUI.js:363-369` (`grantLabel`): a refused skin would fall to "1 item per buy" beside an Owned button; add a first branch `preview.skin && preview.reason === 'owned' ? 'Owned' :`. Also add `mount_skin: ['🎨', '#ff8a5c']` to `ACTION_ART` in the same file so skin rows do not fall back to the generic mount icon.
 
 - [ ] **Step 4:** `npm test` → PASS. Commit.
 
@@ -1613,8 +1712,13 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Generate the stylesheet**
 
 ```bash
-sed -e 's/\.ch-/.mm-/g' -e 's/ch-menu-open/mm-open/g' src/ui/character.css > src/ui/mount-menu.css
+# Order matters: the body-class rewrite must run BEFORE the generic `.ch-` one,
+# or `body.ch-menu-open` becomes `body.mm-menu-open` and never matches.
+sed -e 's/ch-menu-open/mm-open/g' -e 's/\.ch-/.mm-/g' -e 's/--ch-/--mm-/g' src/ui/character.css > src/ui/mount-menu.css
+grep -n "body.mm-open .pause" src/ui/mount-menu.css   # must print one line
 ```
+
+Then rewrite the header comment block at the top of `mount-menu.css` to: `/* Mount menu (F10) - derived from character.css; keep the two in step. */`.
 
 Append to `src/ui/mount-menu.css`:
 
@@ -1729,8 +1833,9 @@ import { PALETTES, statLine, skinState, SKIN_STATE_LABEL } from './MountMenuLogi
  * person view, capture-phase F10/Escape, text capture + pointer release while
  * open) but rendered *generically*: it reads the ridden mount's
  * `CUSTOM_SLOTS` / `STATS` and the skins catalogued for it, so a seventh mount
- * needs no menu code. It only opens while mounted - a mount is already in
- * third person, so no camera dance is needed here.
+ * needs no menu code. It only opens while mounted. Mounting forces third person,
+ * but `V` can flip back to first while riding, so the drawer forces third
+ * person for the preview and restores the rider's choice on close, like F2.
  *
  * Skins: owned → apply; a copy in the bag/store → apply and consume (burned in
  * from then on); neither → point at the market. Upgrades are read-only pips.
@@ -1748,22 +1853,25 @@ const quantise = (v) => v & 0xfcfcfc;
 
 export class MountMenu {
   /**
-   * @param {{ root:HTMLElement, bus?:any, input?:any, mounts:any, cosmetics?:any, inventory?:any }} ctx
+   * @param {{ root:HTMLElement, bus?:any, input?:any, mounts:any, cosmetics?:any, inventory?:any, player?:any }} ctx
    */
-  constructor({ root, bus, input, mounts, cosmetics, inventory }) {
+  constructor({ root, bus, input, mounts, cosmetics, inventory, player }) {
     this.bus = bus ?? null;
     this.input = input ?? null;
     this.mounts = mounts;
     this.cosmetics = cosmetics ?? null;
     this.inventory = inventory ?? null;
+    this.player = player ?? null;
 
     this._open = false;
     this._hadLock = false;
+    this._prevCameraMode = null;
     this._mountId = null;
     this._slots = [];
     this._stats = [];
     /** @type {Array<() => void>} */
     this._syncers = [];
+    this._liveryCache = null;
     this._pending = null;
     this._pendingRaf = 0;
 
@@ -1867,7 +1975,11 @@ export class MountMenu {
     return sec;
   }
 
-  _livery() { return this.mounts.getLivery?.(this._mountId) ?? {}; }
+  /** Livery snapshot for the ridden mount; cached for the duration of one `_sync()`. */
+  _livery() {
+    if (this._liveryCache) return this._liveryCache;
+    return this.mounts.getLivery?.(this._mountId) ?? {};
+  }
   _slotColor(slot) { const c = this._livery()[slot.id]?.color; return typeof c === 'number' ? c : slot.defaultColor; }
   _slotFinish(slot) { return this._livery()[slot.id]?.finish ?? null; }
 
@@ -2000,7 +2112,11 @@ export class MountMenu {
     });
   }
 
-  _sync() { for (const fn of this._syncers) fn(); }
+  _sync() {
+    // One deep copy per sync, not one per swatch/chip/card.
+    this._liveryCache = this._mountId ? (this.mounts.getLivery?.(this._mountId) ?? {}) : {};
+    try { for (const fn of this._syncers) fn(); } finally { this._liveryCache = null; }
+  }
 
   /* ---------------------------------------------------------------- */
   /* Open / close                                                      */
@@ -2019,6 +2135,11 @@ export class MountMenu {
     this.input?.setTextCapture?.(true);
     this.input?.exitLock?.();
     document.body.classList.add('mm-open');
+    // Third person is the preview; remember what the rider had so closing
+    // puts them back rather than in a mode they did not choose.
+    const rig = this.player?.cameraRig ?? null;
+    this._prevCameraMode = rig?.mode ?? null;
+    rig?.setMode?.('third');
     this.el.classList.add('open');
     this.bus?.emit('mount:menu:open', { mountId: mount.id });
   }
@@ -2028,6 +2149,9 @@ export class MountMenu {
     this._open = false;
     this.el.classList.remove('open');
     document.body.classList.remove('mm-open');
+    const rig = this.player?.cameraRig ?? null;
+    if (rig && this._prevCameraMode && this._prevCameraMode !== rig.mode) rig.setMode?.(this._prevCameraMode);
+    this._prevCameraMode = null;
     this.input?.setTextCapture?.(false);
     if (this._hadLock) {
       // Browsers reject a lock request that follows an Escape-driven exit too
@@ -2092,6 +2216,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `src/main.js` (new MountMenu construction after `:232`; `:438` GAME bundle; `:1450` update; `:1510-1511` gating)
+- Modify: `src/ui/HUD.js:1226-1231` (overlay counter)
 
 - [ ] **Step 1: main.js**
 
@@ -2100,7 +2225,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```js
 // F10. Customises the mount being ridden (colour slots, skins, upgrade tiers);
 // generic over each mount's CUSTOM_SLOTS/STATS. Refuses to open on foot.
-const mountMenu = new MountMenu({ root: uiRoot, bus, input, mounts, cosmetics, inventory });
+const mountMenu = new MountMenu({ root: uiRoot, bus, input, mounts, cosmetics, inventory, player });
 ```
 
   with `import { MountMenu } from './ui/MountMenu.js';` next to the `CharacterMenu` import.
@@ -2113,13 +2238,22 @@ bus.on('mount:menu:open', () => setGameplayBlocked('mount-menu', true));
 bus.on('mount:menu:close', () => setGameplayBlocked('mount-menu', false));
 ```
 
+- [ ] **Step 1b: HUD overlay counter** — `src/ui/HUD.js:1226-1231` registers `character:open/close`, `inventory:open/close`, `keybinds:open/close` with `_overlayOpen`/`_overlayClose` (suppresses the pause overlay while a drawer is up, hides the objective tracker, relocks on close). Add, in the same block:
+
+```js
+    this._on('mount:menu:open', () => _overlayOpen());
+    this._on('mount:menu:close', () => _overlayClose());
+```
+
+(match the exact call shape used by the neighbouring `character:open/close` lines).
+
 - [ ] **Step 2: Verify** `npm run build && npm test` → PASS. `grep -rn "VEHICLE_SKINS\|_liverySwatches\|CAR_PAINT_COLORS" src` → no hits.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/main.js
-git commit -m "F10 mount menu wired into main and gameplay gating
+git add src/main.js src/ui/HUD.js
+git commit -m "F10 mount menu wired into main, HUD overlay and gameplay gating
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -2183,7 +2317,13 @@ describe('mount customizer catalog rows', () => {
 });
 ```
 
-- [ ] **Step 2: Run** `cd site && npx vitest run lib/marketplaceCatalog.test.ts` → FAIL (`BASE_ITEMS` not exported).
+- [ ] **Step 2: Precondition + run.** `site/node_modules` is stale on the dev machine (`vitest`, `three`, `@types/three` declared but not installed, so `tsc` already reports ~40 unrelated errors). First:
+
+```bash
+cd site && npm ci && npx tsc --noEmit -p tsconfig.json   # must be clean BEFORE this task's edits
+```
+
+Then `npx vitest run lib/marketplaceCatalog.test.ts` → FAIL (`BASE_ITEMS` not exported).
 
 - [ ] **Step 3: Implement** in `marketplaceCatalog.ts`
 
@@ -2211,6 +2351,8 @@ const TIER_ROMAN = ['I', 'II', 'III'] as const;
 const TIER_MUL = [1, 2, 3.15] as const;
 type UpgradeMountId = (typeof UPGRADE_MOUNTS)[number]['id'];
 type UpgradePowerId = keyof typeof POWER_META;
+// Template type over 5x4x3 = 60 ids; 12 (e.g. mount_eagle_fire_1) are never
+// generated - harmless, normalizeAction() checks the runtime array, not the type.
 export type MountUpgradeActionId = `mount_${UpgradeMountId}_${UpgradePowerId}_${1 | 2 | 3}`;
 
 const MOUNT_UPGRADE_ACTIONS: ReadonlyArray<{ id: MountUpgradeActionId; label: string; description: string; effect: 'grant_mount_power' }> =
@@ -2224,7 +2366,7 @@ const MOUNT_UPGRADE_ACTIONS: ReadonlyArray<{ id: MountUpgradeActionId; label: st
 
 (b) In `MARKETPLACE_ACTIONS`: change the `cosmetic_vehicle_skin` entry to `description: 'Grants a car skin item; apply it from the Mount menu (F10) while driving.', effect: 'grant_item'`; add `{ id: 'mount_skin', label: 'Mount skin', description: 'Grants a mount skin item; apply it from the Mount menu (F10) while riding.', effect: 'grant_item' },`; and end the literal with `...MOUNT_UPGRADE_ACTIONS,` before `] as const;`.
 
-(c) `export const BASE_ITEMS = [` (was module-private).
+(c) `export const BASE_ITEMS: readonly BaseSeedRow[] = [` (was module-private and untyped). The explicit element type is what lets the vitest file read `r.action_config.mount` etc. — as a bare `as const` tuple, `action_config` is a union of ~38 literal shapes and TS refuses those property reads (7 × TS2339, which would also break `next build`). `BaseSeedRow` is declared in (e) below; it must sit above `BASE_ITEMS`. With this annotation the `(item as { worlds?: ... }).worlds` cast in `buildMarketplaceSeedItems` becomes plain `item.worlds` — simplify it and update its stale "vehicle liveries only sell at the circuit merchant" comment to "Optional per-item world allowlist (currently unused; kept for future world-specific stock)."
 
 (d) The five car livery rows (`:668-744`): `action_config: { effect: 'grant_item', item_id: 'skin_car_<x>' }`; description tail "Equip in the F2 Vehicle customizer." → "Apply from the Mount menu (F10) while driving; one use, then yours to keep."; **delete** the `worlds: ['race'] as const,` line. Keep `source_key`, `game_action`, prices, `sort_order`.
 
@@ -2297,7 +2439,7 @@ Remove the now-duplicate `type PricingKind = ...` line further down (`:883`) so 
 ```bash
 cd site && npx tsc --noEmit -p tsconfig.json && npx vitest run lib/marketplaceCatalog.test.ts
 ```
-Expected: no type errors; 4 tests PASS. If `tsc` complains that spreading `readonly BaseSeedRow[]` into the `as const` literal widens a field `buildMarketplaceSeedItems` reads (e.g. `pricing_kind`), that function already reads only `MarketplaceSeedItem`-compatible fields; fix by narrowing `BaseSeedRow` rather than loosening the function.
+Expected: no type errors; 4 tests PASS (verified against a scratch copy: 57 `grant_mount_power` rows, 20 skin rows, all action ids resolve, 505 seed rows). Also drop the `(s as { worlds?: unknown }).worlds` cast in the test's third `it` — with `BASE_ITEMS: readonly BaseSeedRow[]` it is just `s.worlds`.
 
 - [ ] **Step 5: Commit**
 
@@ -2311,9 +2453,17 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 19: Root catalog drift test (`mount-catalog.test.mjs`)
 
 **Files:**
+- Modify: `package.json`, `package-lock.json` (add `esbuild` devDependency)
 - Create: `scripts/tests/mount-catalog.test.mjs`
 
-- [ ] **Step 1: Write the test** (bundles the TS catalog with esbuild so it can be imported headlessly):
+- [ ] **Step 0: Add esbuild as a real root devDependency.** It is present in `node_modules` today only as an extraneous transitive of `vercel`; a clean `npm ci` would not have it and `npm test` would fail wholesale.
+
+```bash
+npm i -D esbuild@^0.27.0
+node -e "console.log(require('esbuild').version)"   # prints 0.27.x
+```
+
+- [ ] **Step 1: Write the test** (bundles the TS catalog with esbuild so it can be imported headlessly; the bundle is built once and cached):
 
 ```js
 import { test } from 'node:test';
@@ -2335,14 +2485,16 @@ import { itemDef, skinIdFromItem } from '../../src/systems/ItemDefs.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-async function loadCatalog() {
-  const r = await build({
-    entryPoints: [path.join(root, 'site/lib/marketplaceCatalog.ts')],
-    bundle: true, write: false, format: 'esm', platform: 'node', target: 'node22', logLevel: 'silent',
-    resolveExtensions: ['.ts', '.js'],
-  });
-  const code = r.outputFiles[0].text;
-  return import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+let catalogPromise = null;
+function loadCatalog() {
+  if (!catalogPromise) {
+    catalogPromise = build({
+      entryPoints: [path.join(root, 'site/lib/marketplaceCatalog.ts')],
+      bundle: true, write: false, format: 'esm', platform: 'node', target: 'node22', logLevel: 'silent',
+      resolveExtensions: ['.ts', '.js'],
+    }).then((r) => import(`data:text/javascript;base64,${Buffer.from(r.outputFiles[0].text).toString('base64')}`));
+  }
+  return catalogPromise;
 }
 
 test('every grant_mount_power row targets a stat the mount actually declares', async () => {
@@ -2387,7 +2539,7 @@ test('source keys are unique and the pre-existing mount keys are still present',
 - [ ] **Step 3: Commit**
 
 ```bash
-git add scripts/tests/mount-catalog.test.mjs
+git add package.json package-lock.json scripts/tests/mount-catalog.test.mjs
 git commit -m "Test: marketplace mount rows agree with the game's stat and skin tables
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -2431,7 +2583,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 22: Docs
 
-- [ ] **Step 1:** Update the spec's status line to `Implemented 2026-08-17`. Add a paragraph to `CONTRACTS-V3.md` under the MOUNTS ownership block: `MountManager` owns `_liveries` (per mount) and `_powers`; `MountSkins.applyMountSkin` is the only path that consumes a skin item; `MountMenu` (F10) is generic over `CUSTOM_SLOTS`/`STATS`; `Livery.js` owns the tint/finish maths and `MOUNT_STATS`.
+- [ ] **Step 1:** Update the spec's status line to `Implemented 2026-08-17`, and amend spec §4.5's "one `MARKETPLACE_ACTIONS` id per row … ~68 new ids" to match what shipped: one id per **upgrade** row (48) plus one shared `mount_skin` action for the 15 new skins and the existing shared `cosmetic_vehicle_skin` for the 5 car rows — the same convention `cosmetic_char_skin` already uses. Add a paragraph to `CONTRACTS-V3.md` under the MOUNTS ownership block: `MountManager` owns `_liveries` (per mount) and `_powers`; `MountSkins.applyMountSkin` is the only path that consumes a skin item; `MountMenu` (F10) is generic over `CUSTOM_SLOTS`/`STATS`; `Livery.js` owns the tint/finish maths and `MOUNT_STATS`.
 - [ ] **Step 2:** `npm test && npm run build && (cd site && npx tsc --noEmit -p tsconfig.json && npx vitest run)` → all green.
 - [ ] **Step 3: Commit**
 

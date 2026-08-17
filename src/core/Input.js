@@ -69,20 +69,27 @@ export const BINDABLE = [
 ];
 
 const BIND_STORAGE = 'aether-nexus:binds:v1';
+const FS_STORAGE = 'aether:fullscreen';
 
 /**
- * Keys the game cannot give up without breaking its own escape hatches.
+ * Keys the game cannot give up without breaking its own escape hatches, plus
+ * the ones the BROWSER will never really hand over.
  *
- * F6/F7/F8 own panels too (keybinds, race, minigame quit) - KeybindMenu's
- * FIXED_KEYS list documents all of F1-F10 as unrebindable, so this has to
- * actually cover them. Enforced in BOTH directions: `setBinding` refuses to
- * write one, and `_loadBinds` drops one that is already in storage. A build
- * that shipped a narrower list, or a hand-edited localStorage entry, would
- * otherwise leave the player with an Escape key that no longer closes
- * anything and no way in the UI to take it back.
+ * Since the Esc hub landed, F2-F10 are no longer game keys at all - but they
+ * stay reserved, because Chrome answers most of them itself (F3 find, F5
+ * reload, F6 address bar, F10 menu bar) and a binding pointed at one would work
+ * only while the page happened to have focus. F11 (fullscreen, which the hub
+ * owns as a preference) and F12 (devtools, un-preventable) are here for the
+ * same reason. Exported so `KeybindMenu` and the pause-hub source guard check
+ * against the one list rather than a copy.
+ *
+ * Enforced in BOTH directions: `setBinding` refuses to write one, and
+ * `_loadBinds` drops one already in storage. A build that shipped a narrower
+ * list, or a hand-edited entry, would otherwise leave the player with an Escape
+ * that no longer closes anything and no way in the UI to take it back.
  */
-const RESERVED_CODES = [
-  'Escape', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'Tab',
+export const RESERVED_CODES = [
+  'Escape', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12', 'Tab',
 ];
 
 export class Input {
@@ -118,6 +125,14 @@ export class Input {
     /** While the chat box has focus we swallow all gameplay input. */
     this._textCaptured = false;
 
+    /* Fullscreen is a preference now, not an unconditional side effect of
+     * taking the pointer: `requestLock` re-entered it on every resume, so the
+     * hub's "Fullscreen: Off" survived exactly until Resume was pressed.
+     * Persisted, because someone who turned it off wants it off tomorrow.
+     * Default true - `navigator.keyboard.lock`, the only thing between a
+     * crouch-walking player (Ctrl+W) and a closed window, needs fullscreen. */
+    this._fullscreenPreferred = this._loadFullscreenPref();
+
     this._bind();
   }
 
@@ -135,6 +150,27 @@ export class Input {
     if (on) {
       this._keys.clear();
       this._resetAxes();
+    }
+  }
+
+  /** Whether resuming should re-enter fullscreen. Persisted. */
+  get fullscreenPreferred() {
+    return this._fullscreenPreferred;
+  }
+
+  set fullscreenPreferred(on) {
+    this._fullscreenPreferred = !!on;
+    try {
+      localStorage.setItem(FS_STORAGE, this._fullscreenPreferred ? '1' : '0');
+    } catch { /* private mode; the session preference still applies */ }
+  }
+
+  /** @returns {boolean} stored preference, defaulting to on. */
+  _loadFullscreenPref() {
+    try {
+      return localStorage.getItem(FS_STORAGE) !== '0';
+    } catch {
+      return true;
     }
   }
 
@@ -166,12 +202,14 @@ export class Input {
      * without protection from Ctrl+W. Never awaited, because nothing downstream
      * should wait on a permission dialog. */
     const el = document.documentElement;
-    if (!document.fullscreenElement && el.requestFullscreen) {
+    if (this._fullscreenPreferred && !document.fullscreenElement && el.requestFullscreen) {
       Promise.resolve(el.requestFullscreen()).then(
         () => this._lockKeyboard(),
         () => {}
       );
     } else if (document.fullscreenElement) {
+      /* Deliberately NOT gated on the preference: a player who is fullscreen
+       * for their own reasons still gets Ctrl+W back. */
       this._lockKeyboard();
     }
   }
@@ -330,6 +368,19 @@ export class Input {
       if (!this._locked) {
         this._keys.clear();
         this._resetAxes();
+      }
+    });
+
+    /* Fullscreen can change without us asking: F11, the browser's own Escape,
+     * an OS gesture, or the hub's toggle. Keyboard lock is only granted in
+     * fullscreen, so it has to follow - otherwise leaving fullscreen keeps a
+     * lock the browser already revoked, and re-entering leaves Ctrl+W live
+     * while the player is still playing. */
+    document.addEventListener('fullscreenchange', () => {
+      if (document.fullscreenElement) {
+        if (this._locked) this.relockKeyboard();
+      } else {
+        this._unlockKeyboard();
       }
     });
 

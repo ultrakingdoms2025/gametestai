@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { bakeSurface, fbm01, clamp01, smoothstep } from '../gfx/Textures.js';
 import { anchorLight } from '../gfx/LightAnchor.js';
+import { applyLivery, MOUNT_STATS, normColor } from './Livery.js';
 
 /**
  * The hoverboard mount.
@@ -44,6 +45,8 @@ const _tr2 = new THREE.Vector3();
 
 const damp = THREE.MathUtils.damp;
 const clamp = THREE.MathUtils.clamp;
+/** Emitter tint lerps toward this at full boost - see the update loop. */
+const _WHITE = new THREE.Color(0xffffff);
 
 const HOVER_HEIGHT = 0.42;
 const DECK_LENGTH = 1.66;
@@ -658,6 +661,13 @@ function buildEmitterGeometry() {
 /* ================================================================== */
 
 export class Hoverboard {
+  /** Colour slots the F10 menu offers. `defaultColor` = factory swatch. */
+  static CUSTOM_SLOTS = Object.freeze([
+    Object.freeze({ id: 'deck', label: 'Deck', finish: true, defaultColor: 0x2c2f36, palette: 'paint' }),
+    Object.freeze({ id: 'glow', label: 'Underglow', finish: false, defaultColor: 0x7ff2ff, palette: 'glow' }),
+  ]);
+  static STATS = MOUNT_STATS.hoverboard;
+
   /**
    * @param {{scene:THREE.Scene, engine:any, physics:any, bus:any, materials:any,
    *          camera:THREE.PerspectiveCamera}} ctx
@@ -700,6 +710,13 @@ export class Hoverboard {
     this._despawnT = -1;
     this._alive = false;
 
+    this._powerMul = 1;
+    this._accelMul = 1;
+    this._shieldTier = 0;
+    this._livery = null;
+    this._slotMats = null;
+    this._glowBase = new THREE.Color(0x7ff2ff);
+
     this._buildModel();
 
     this._trail = new ParticlePool(scene, 96, { color: 0x66e8ff, drag: 1.6, gravity: 1.2 });
@@ -725,10 +742,13 @@ export class Hoverboard {
     this.tilt.add(this.bobber);
 
     this._geo = {};
-    const gripMat = M.get('mount.grip');
-    const carbonMat = M.get('mount.carbon');
+    this._gripMat = M.get('mount.grip').clone();
+    this._carbonMat = M.get('mount.carbon').clone();
+    this._trimMat = M.get('emissive.cyan').clone();
+    const gripMat = this._gripMat;
+    const carbonMat = this._carbonMat;
     const alloyMat = M.get('mount.alloy');
-    const trimMat = M.get('emissive.cyan');
+    const trimMat = this._trimMat;
 
     this._geo.deck = buildDeckGeometry();
     const deck = new THREE.Mesh(this._geo.deck, [gripMat, carbonMat]);
@@ -802,6 +822,12 @@ export class Hoverboard {
     this._glow = new THREE.Mesh(this._geo.glow, this._glowMat);
     this._glow.renderOrder = 3;
     this.root.add(this._glow);
+
+    this._slotMats = {
+      deck: [this._gripMat, this._carbonMat],
+      glow: [{ mat: this._trimMat, emissive: true }, this._flareMat, this._glowMat],
+    };
+    this.applyCustomization(this._livery);
 
     // Under-deck fill light: cheap, but it is what makes the board look like it
     // is actually pushing light onto the ground it hovers over.
@@ -995,11 +1021,11 @@ export class Hoverboard {
     this._boost = damp(this._boost, boost ? 1 : 0, boost ? 4.5 : 3, dt);
     this._boostActive = boost;
     let targetSpeed = 0;
-    if (throttle > 0) targetSpeed = THREE.MathUtils.lerp(CRUISE_SPEED, BOOST_SPEED, this._boost);
+    if (throttle > 0) targetSpeed = THREE.MathUtils.lerp(CRUISE_SPEED, BOOST_SPEED, this._boost) * this._powerMul;
     else if (throttle < 0) targetSpeed = -REVERSE_SPEED;
     // Asymmetric response: quick to spool up, quicker to shed speed on the
     // brake, and a long lazy coast when the rider lets go.
-    const accel = throttle === 0 ? 3.4 : targetSpeed > this.speed ? 9.5 + this._boost * 7 : 12;
+    const accel = throttle === 0 ? 3.4 : targetSpeed > this.speed ? (9.5 + this._boost * 7) * this._accelMul : 12;
     this.speed = damp(this.speed, targetSpeed, accel * 0.45, dt);
     if (Math.abs(this.speed) < 0.02) this.speed = 0;
 
@@ -1171,7 +1197,7 @@ export class Hoverboard {
     const sp01 = clamp01(Math.abs(this.speed) / BOOST_SPEED);
     const heat = 0.35 + sp01 * 0.65 + this._boost * 0.5;
     this._emitterMat.opacity = (0.35 + heat * 0.55) * ease;
-    this._emitterMat.color.setRGB(0.42 + this._boost * 0.55, 0.86, 1);
+    this._emitterMat.color.copy(this._glowBase).lerp(_WHITE, this._boost * 0.35);
 
     const flare = clamp01(this._boost * 1.1 - 0.02) * ease;
     this._flareMat.opacity = flare * 0.6;
@@ -1348,6 +1374,24 @@ export class Hoverboard {
     );
   }
 
+  applyCustomization(livery) {
+    this._livery = livery && typeof livery === 'object' ? livery : {};
+    if (!this._slotMats) return;
+    applyLivery(this._livery, Hoverboard.CUSTOM_SLOTS, this._slotMats);
+    // The emitter is re-tinted every frame from this base (see the update loop).
+    this._glowBase.setHex(normColor(this._livery.glow?.color) ?? 0x7ff2ff);
+  }
+
+  applyPowers({ strength = 0, shield = 0, power = 0 } = {}) {
+    this._powerMul = 1 + Math.max(0, power) * 0.12;
+    this._accelMul = 1 + Math.max(0, strength) * 0.10;
+    this._shieldTier = Math.max(0, shield);
+  }
+
+  get shieldTier() {
+    return this._shieldTier;
+  }
+
   dispose() {
     this.root.removeFromParent();
     this._lightGroup.removeFromParent();
@@ -1360,5 +1404,9 @@ export class Hoverboard {
     this._trail.dispose();
     this._sparks.dispose();
     this._speedLines.dispose();
+    this._gripMat.dispose();
+    this._carbonMat.dispose();
+    this._trimMat.dispose();
+    this._slotMats = null;
   }
 }

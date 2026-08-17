@@ -26,7 +26,7 @@ export const materials = {
 };
 export const bus = { on() {}, off() {}, emit() {} };
 export const scene = new THREE.Scene();
-export const ctx = { scene, engine: null, physics: { groundHeight: () => 0, resolveCapsule: (p) => p, sphereCast: () => null, colliders: [] }, bus, materials, camera: null };
+export const ctx = { scene, engine: null, physics: { groundHeight: () => 0, resolveCapsule: (p) => p, sphereCast: () => null, raycast: () => null, colliders: [] }, bus, materials, camera: null };
 ```
 
 ---
@@ -114,7 +114,10 @@ test('applyLivery with an empty livery restores factory colour and finish', () =
 test('a slot with finish:false ignores a finish request', () => {
   const f = fresh();
   applyLivery({ glow: { color: 0x123456, finish: 'matt' } }, SLOTS, f.mats);
-  assert.equal(f.lit.roughness, new THREE.MeshStandardMaterial().roughness);
+  const stock = new THREE.MeshStandardMaterial();
+  assert.equal(f.lit.roughness, stock.roughness);
+  assert.equal(f.lit.metalness, stock.metalness);
+  assert.equal(f.lit.envMapIntensity, stock.envMapIntensity);
 });
 
 test('liveryMatches compares colour, and finish only when the skin sets one', () => {
@@ -553,6 +556,7 @@ test('Car declares slots/stats and tints its cloned paint and wheel materials', 
   car.applyCustomization({ paint: { color: 0xff3bd2, finish: 'matt' }, wheel: { color: 0x2fe0ff } });
   assert.equal(car._slotMats.paint[0].color.getHex(), 0xff3bd2);
   assert.equal(car._slotMats.paint[0].roughness, FINISH_PROPS.matt.roughness);
+  assert.equal(car._slotMats.paint[0].metalness, FINISH_PROPS.matt.metalness);
   assert.equal(car._slotMats.wheel[0].color.getHex(), 0x2fe0ff);
   car.applyCustomization({});
   assert.equal(car._slotMats.paint[0].roughness, car._slotMats.paint[0].userData.factory.roughness);
@@ -762,7 +766,8 @@ const materials = {
 };
 const bus = { on() {}, off() {}, emit() {} };
 const scene = new THREE.Scene();
-const physics = { groundHeight: () => 0, resolveCapsule: (p) => p, sphereCast: () => null, colliders: [] };
+// raycast: Horse/Bicycle probe the ground ahead once moving (Horse.js:798, Bicycle.js:904).
+const physics = { groundHeight: () => 0, resolveCapsule: (p) => p, sphereCast: () => null, raycast: () => null, colliders: [] };
 const stamina = { drain() {}, exhausted: false };
 const player = { position: new THREE.Vector3(), stamina };
 const ctx = { scene, engine: null, physics, bus, materials, camera: null, player };
@@ -797,7 +802,11 @@ test('applyCustomization tints the first material of every slot and restores on 
       const mat = first.mat ?? first;
       const target = first.emissive ? mat.emissive : mat.color;
       assert.equal(target.getHex(), 0x123456, `${id}.${s.id} colour`);
-      if (s.finish && 'roughness' in mat) assert.equal(mat.roughness, FINISH_PROPS.matt.roughness, `${id}.${s.id} matt`);
+      if (s.finish && 'roughness' in mat) {
+        assert.equal(mat.roughness, FINISH_PROPS.matt.roughness, `${id}.${s.id} matt roughness`);
+        assert.equal(mat.metalness, FINISH_PROPS.matt.metalness, `${id}.${s.id} matt metalness`);
+        assert.equal(mat.envMapIntensity, FINISH_PROPS.matt.envMapIntensity, `${id}.${s.id} matt env`);
+      }
     }
     m.applyCustomization({});
     for (const s of C.CUSTOM_SLOTS) {
@@ -844,7 +853,8 @@ const RUN = {
   horse: { seconds: 12, spawnY: 0, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
   hoverboard: { seconds: 12, spawnY: 0, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
   bicycle: { seconds: 20, spawnY: 0, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
-  // Level flight, beating: steady speed is set by thrust vs v^2 drag.
+  // Level flight, beating: steady speed is set by thrust vs v^2 drag. (Eagle.spawn ignores
+  // position.y and places the bird at ground + 6.5; altitude does not enter its speed model.)
   eagle: { seconds: 15, spawnY: 250, ctrl: (m) => ({ throttle: 0, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
   dragon: { seconds: 15, spawnY: 30, flying: true, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 1, boost: true, yaw: m.heading, pitch: 0 }) },
 };
@@ -973,7 +983,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 6: Eagle — plumage/harness slots, powers
 
 **Files:**
-- Modify: `src/mounts/Eagle.js` (import; class head; ctor fields before `:122`; `_build` `:165-169`; `:495` stamina; `:527` thrust; `:542` clamp; new methods)
+- Modify: `src/mounts/Eagle.js` (import; class head; ctor fields before `:122`; `_build` `:165-169`; `:495` stamina; `:532` drag; `:534` thrust; `:542` clamp; new methods)
 
 - [ ] **Step 1:** Run `node --test scripts/tests/mount-powers.test.mjs` → FAIL at `eagle slots`.
 
@@ -1217,6 +1227,7 @@ Ctor fields as Horse; `_build()` after `const trim = ...`: `this._slotMats = { f
 Speed:
 - `:795` `const top = (sprint ? SPRINT_SPEED : CRUISE_SPEED) * this._powerMul;`
 - `:801` `drive = throttle * PEDAL_ACCEL * this._accelMul * head * (sprint ? 1.55 : 1);`
+- `:814` (`const drag = (ROLL_DRAG + AIR_DRAG * this.speed * this.speed) * dt;`) → `const drag = (ROLL_DRAG + (AIR_DRAG / (this._powerMul * this._powerMul)) * this.speed * this.speed) * dt;` — like the eagle, the bike's top speed is drag-limited; scaling `top` alone yields only ~+15% at tier III (measured 8.64 → 9.97), so the air-drag term scales too (→ ~×1.39).
 - `:817` `this.speed = clamp(this.speed, -REVERSE_SPEED, MAX_SPEED * this._powerMul);`
 
 Methods: copy Horse's three (`applyCustomization` with `Bicycle.CUSTOM_SLOTS`, `applyPowers`, `get shieldTier`).
@@ -1419,7 +1430,7 @@ for (const skin of MOUNT_SKINS) {
 }
 ```
 
-Also: extend the `ITEMS` JSDoc record type with `skinId?:string, colors?:number[]`; extend the `ICONS` JSDoc (`:529`) to `(g:string, a:string, def?:object) => string`; add `skin: 8` to `KIND_ORDER` in `src/systems/Inventory.js:581` (sorts before the trailing default); add `.inv-slot.kind-skin { --accent: #ff9ad5; }` next to the other `kind-*` rules in `src/ui/inventory.css:501-504`; add `'skin'` to `ACCENT_PRIORITY` in `src/systems/Loot.js:94` so a dropped skin pickup gets its own accent.
+Also: extend the `ITEMS` JSDoc record type with `skinId?:string, colors?:number[]`; extend the `ICONS` JSDoc (`:529`) to `(g:string, a:string, def?:object) => string`; add `skin: 8` to `KIND_ORDER` in `src/systems/Inventory.js:581` (sorts before the trailing default); add `.inv-slot.kind-skin { box-shadow: inset 0 -2px 0 rgba(255, 154, 213, 0.45); }` next to the other `kind-*` rules in `src/ui/inventory.css:501-504` (same shape as its siblings - nothing there reads a `--accent` variable); add `'skin'` to `ACCENT_PRIORITY` in `src/systems/Loot.js:94` so a dropped skin pickup gets its own accent.
 
 `itemIconSVG`: `const body = ICONS[key]?.(g, accent, ITEMS[id]) ?? ICONS.unknown(g, accent);` and add to `ICONS` before `unknown`:
 
@@ -1775,15 +1786,21 @@ export const PALETTES = {
     0x2b3d55, 0x14181f, 0x2c2f36, 0xb9c2cc, 0xe6e9ee,
     0xc21f2f, 0xf27b1f, 0xffd23b, 0x18a86b, 0x1f6fd0,
     0x6a2fd0, 0xff3bd2, 0x00c2b0, 0x9a4433,
+    // factory tack/leather/frame for dragon saddle, eagle harness, horse saddle, bicycle frame
+    0x6d4522, 0x5a3a24, 0x2f7fd4,
   ],
   wheel: [
     0xb9c2cc, 0x2a2e33, 0x0d0f12, 0xd9dde2, 0xf2f4f6,
     0xc9a24a, 0xe0b23a, 0xc21f2f, 0x1f6fd0, 0x18a86b,
     0xff6a3a, 0x8f2fd0,
+    0xb9bfc7, // bicycle factory rims
   ],
+  // Every mount's factory colour for a slot must appear in that slot's palette,
+  // or a factory mount opens with the custom picker lit. Car: paint[0]/wheel[0];
+  // dragon hide 0x2b3a2e; eagle plumage 0x6b4c30; horse coat 0x8a6242.
   natural: [
-    0x8a6242, 0x6b4c30, 0x4a3626, 0x2a1d13, 0x141216, 0xd6b26a,
-    0xe6e6ea, 0x9a9aa0, 0x5a3b8a, 0x1f6b3a, 0x7a2a1a, 0x3a4a5c, 0xbfe6f2, 0xc98a2b,
+    0x8a6242, 0x6b4c30, 0x2b3a2e, 0x4a3626, 0x2a1d13, 0x141216, 0xd6b26a,
+    0xe6e6ea, 0x9a9aa0, 0x1f6b3a, 0x7a2a1a, 0x3a4a5c, 0xbfe6f2, 0xc98a2b,
   ],
   glow: [
     0x7ff2ff, 0x2fe0ff, 0x3bffd2, 0xa8ff3b, 0xffe14a, 0xffae2b,
@@ -1885,7 +1902,9 @@ export class MountMenu {
       this._offs.push(bus.on('mount:powers', resync));
       this._offs.push(bus.on('cosmetic:unlocked', resync));
       this._offs.push(bus.on('inventory:changed', resync));
-      this._offs.push(bus.on('mount:dismounted', () => this.close()));
+      // A forced dismount (world change, portal) has already restored the rider's
+      // pre-mount camera; do not overwrite it with the riding mode we saved.
+      this._offs.push(bus.on('mount:dismounted', () => { this._prevCameraMode = null; this.close(); }));
     }
     this._onKey = (e) => this._key(e);
     window.addEventListener('keydown', this._onKey, true);
@@ -2303,7 +2322,7 @@ describe('mount customizer catalog rows', () => {
     }
     for (const s of skins) {
       expect(s.category).toBe('mounts');
-      expect((s as { worlds?: unknown }).worlds).toBeUndefined();
+      expect(s.worlds).toBeUndefined();
     }
     expect(BASE_ITEMS.some((r) => r.action_config.effect === 'unlock_cosmetic' && r.action_config.kind === 'vehicle')).toBe(false);
   });
@@ -2439,7 +2458,7 @@ Remove the now-duplicate `type PricingKind = ...` line further down (`:883`) so 
 ```bash
 cd site && npx tsc --noEmit -p tsconfig.json && npx vitest run lib/marketplaceCatalog.test.ts
 ```
-Expected: no type errors; 4 tests PASS (verified against a scratch copy: 57 `grant_mount_power` rows, 20 skin rows, all action ids resolve, 505 seed rows). Also drop the `(s as { worlds?: unknown }).worlds` cast in the test's third `it` — with `BASE_ITEMS: readonly BaseSeedRow[]` it is just `s.worlds`.
+Expected: no type errors; 4 tests PASS (verified against a scratch copy: 57 `grant_mount_power` rows, 20 skin rows, all action ids resolve, 505 seed rows). (The test reads `s.worlds` directly - valid because `BASE_ITEMS` is typed `readonly BaseSeedRow[]`.)
 
 - [ ] **Step 5: Commit**
 
@@ -2558,6 +2577,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - `HUD.js:1399` after `['F2', 'Customise character'],` add `['F10', 'Customise mount'],`.
 - `Input.js:436` → `if (['Escape', 'F1', 'F2', 'F3', 'F4', 'F5', 'F9', 'F10', 'Tab'].includes(code)) {`.
 - `ChatClient.js:360` → `return 'Change your own look first — F2 opens that. F10 does the same for whatever you are riding.';`
+- `site/app/api/chat/route.ts:114` (the NPC system prompt's control list enumerates F1–F9): add `F10 = customise the mount you are riding` in the same style.
 
 - [ ] **Step 2: Verify** `npm run build && npm test` → PASS. `grep -rn "F2 Vehicle\|Character menu (F2)" src site/lib` — only the character-skin strings should remain.
 

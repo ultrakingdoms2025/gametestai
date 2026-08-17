@@ -2,8 +2,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {
-  FINISH_PROPS, MOUNT_STATS, normColor, applyLivery, liveryMatches,
+  FINISH_PROPS, MOUNT_STATS, normColor, applyLivery, liveryMatches, cloneLivery,
 } from '../../src/mounts/Livery.js';
+
+const matCache = new Map();
+const materials = {
+  has: () => true,
+  get: (k) => { if (!matCache.has(k)) matCache.set(k, new THREE.MeshStandardMaterial()); return matCache.get(k); },
+  register: (k, m) => matCache.set(k, m),
+  tinted: (k) => materials.get(k),
+};
+const bus = { on() {}, off() {}, emit() {} };
+const scene = new THREE.Scene();
+const ctx = { scene, engine: null, physics: { groundHeight: () => 0, resolveCapsule: (p) => p, sphereCast: () => null, raycast: () => null, colliders: [] }, bus, materials, camera: null };
 
 /**
  * The livery helper is the one place colour and finish are written onto a
@@ -84,4 +95,75 @@ test('MOUNT_STATS lists the ladder for all six mounts, fire only on the dragon',
     for (const s of ['power', 'strength', 'shield']) assert.ok(MOUNT_STATS[id].includes(s), `${id} ${s}`);
     assert.equal(MOUNT_STATS[id].includes('fire'), id === 'dragon', `${id} fire`);
   }
+});
+
+test('cloneLivery sanitises: drops junk slots, normalises hex strings, rejects unknown finishes', () => {
+  const out = cloneLivery({ a: { color: '#ff0000', finish: 'gloss' }, b: { color: 'nope', finish: 'shiny' }, c: null, d: 'x', e: { color: 0x123456, finish: 'matt' } });
+  assert.deepEqual(out, { a: { color: 0xff0000, finish: 'gloss' }, e: { color: 0x123456, finish: 'matt' } });
+  assert.deepEqual(cloneLivery(null), {});
+});
+test('normColor rejects out-of-range numbers', () => {
+  assert.equal(normColor(-1), null);
+  assert.equal(normColor(0x1000000), null);
+  assert.equal(normColor(1.5), null);
+});
+
+import { MountManager } from '../../src/mounts/MountManager.js';
+
+const stubPlayer = { position: new THREE.Vector3(), stamina: null };
+function manager() {
+  const emitted = [];
+  const mbus = { on() {}, off() {}, emit: (n, p) => emitted.push([n, p]) };
+  const mgr = new MountManager({
+    scene: new THREE.Scene(), engine: null, physics: { groundHeight: () => 0, resolveCapsule: (p) => p, sphereCast: () => null, colliders: [] },
+    bus: mbus, materials, camera: null, player: stubPlayer, cameraRig: null, avatar: null, npcManager: null, worldManager: null,
+  });
+  return { mgr, emitted };
+}
+
+test('setLivery is per mount, normalises colours, and emits mount:livery with the mount id', () => {
+  const { mgr, emitted } = manager();
+  mgr.setLivery('horse', { coat: { color: '#ff0000', finish: 'matt' } });
+  mgr.setLivery('car', { paint: { color: 0x00ff00 } });
+  assert.deepEqual(mgr.getLivery('horse'), { coat: { color: 0xff0000, finish: 'matt' } });
+  assert.deepEqual(mgr.getLivery('car'), { paint: { color: 0x00ff00 } });
+  assert.deepEqual(mgr.getLivery('dragon'), {});
+  const ev = emitted.filter(([n]) => n === 'mount:livery');
+  assert.equal(ev.length, 2);
+  assert.equal(ev[0][1].mountId, 'horse');
+  assert.deepEqual(ev[0][1].livery, { coat: { color: 0xff0000, finish: 'matt' } });
+  // getLivery is a copy
+  mgr.getLivery('horse').coat.color = 1;
+  assert.equal(mgr.getLivery('horse').coat.color, 0xff0000);
+});
+
+test('setLivery with finish:null clears the finish; resetLivery clears the mount', () => {
+  const { mgr } = manager();
+  mgr.setLivery('bicycle', { frame: { color: 0x123456, finish: 'gloss' } });
+  mgr.setLivery('bicycle', { frame: { finish: null } });
+  assert.deepEqual(mgr.getLivery('bicycle'), { frame: { color: 0x123456 } });
+  mgr.resetLivery('bicycle');
+  assert.deepEqual(mgr.getLivery('bicycle'), {});
+});
+
+test('serialize writes liveries and deserialize round-trips them', () => {
+  const { mgr } = manager();
+  mgr.setLivery('eagle', { plumage: { color: 0xabcdef }, harness: { color: 0x010203, finish: 'gloss' } });
+  const snap = JSON.parse(JSON.stringify(mgr.serialize()));
+  assert.ok(snap.liveries, 'liveries key');
+  assert.equal('livery' in snap, false, 'legacy livery key is gone');
+  const { mgr: m2 } = manager();
+  m2.deserialize(snap);
+  assert.deepEqual(m2.getLivery('eagle'), { plumage: { color: 0xabcdef }, harness: { color: 0x010203, finish: 'gloss' } });
+});
+
+test('a legacy flat car livery migrates into liveries.car', () => {
+  const { mgr } = manager();
+  mgr.deserialize({ unlocked: ['car'], livery: { paint: 0xc21f2f, wheel: 0xe0b23a }, powers: {} });
+  assert.deepEqual(mgr.getLivery('car'), { paint: { color: 0xc21f2f }, wheel: { color: 0xe0b23a } });
+});
+
+test('deserialize still returns undefined (SaveGame relies on the falsy fall-through)', () => {
+  const { mgr } = manager();
+  assert.equal(mgr.deserialize({ unlocked: ['car'] }), undefined);
 });

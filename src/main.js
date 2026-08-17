@@ -228,8 +228,8 @@ const mazeMap = new MazeMap({ root: uiRoot, bus, input, worldManager, player });
 const keybindMenu = new KeybindMenu({ root: uiRoot, bus, input });
 // F2. Edits the avatar live and publishes `character:changed`, which SaveGame
 // snapshots and MountManager listens for so the rider on a mount is the same
-// person as the one on foot.
-const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, player, mounts, cosmetics });
+// person as the one on foot. F2 is character-only; mounts are customised from F10.
+const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, player, cosmetics });
 
 // Ammunition now comes out of the bag rather than a private per-weapon counter.
 loadout.setInventory?.(inventory);

@@ -8,7 +8,7 @@ import {
   OUTFITS,
   SEX_PROFILES,
 } from '../player/PlayerAvatar.js';
-import { CHARACTER_SKINS, VEHICLE_SKINS } from '../systems/Cosmetics.js';
+import { CHARACTER_SKINS } from '../systems/Cosmetics.js';
 
 /**
  * F2 — the character panel.
@@ -92,20 +92,6 @@ const ACCENT_COLORS = [
   0xffe14a, 0xffae2b, 0xff9a2b, 0xff6a3a, 0xff3bd2,
 ];
 
-/** Car body paint presets. First entry is the factory colour. */
-const CAR_PAINT_COLORS = [
-  0x2b3d55, 0x14181f, 0x2c2f36, 0xb9c2cc, 0xe6e9ee,
-  0xc21f2f, 0xf27b1f, 0xffd23b, 0x18a86b, 0x1f6fd0,
-  0x6a2fd0, 0xff3bd2, 0x00c2b0, 0x9a4433,
-];
-
-/** Wheel / rim presets. First entry is the factory alloy. */
-const CAR_WHEEL_COLORS = [
-  0xb9c2cc, 0x2a2e33, 0x0d0f12, 0xd9dde2, 0xf2f4f6,
-  0xc9a24a, 0xe0b23a, 0xc21f2f, 0x1f6fd0, 0x18a86b,
-  0xff6a3a, 0x8f2fd0,
-];
-
 const BUILDS = [
   { v: 0, label: 'Slim' },
   { v: 1, label: 'Average' },
@@ -158,14 +144,13 @@ const quantise = (v) => v & 0xfcfcfc;
 
 export class CharacterMenu {
   /**
-   * @param {{ root:HTMLElement, bus?:any, input?:any, avatar:any, player?:any, mounts?:any, cosmetics?:any }} ctx
+   * @param {{ root:HTMLElement, bus?:any, input?:any, avatar:any, player?:any, cosmetics?:any }} ctx
    */
-  constructor({ root, bus, input, avatar, player, mounts, cosmetics }) {
+  constructor({ root, bus, input, avatar, player, cosmetics }) {
     this.bus = bus ?? null;
     this.input = input ?? null;
     this.avatar = avatar ?? null;
     this.player = player ?? avatar?.player ?? null;
-    this.mounts = mounts ?? null;
     this.cosmetics = cosmetics ?? null;
 
     this._open = false;
@@ -174,15 +159,6 @@ export class CharacterMenu {
     /** Pending colour write, coalesced to one per frame. */
     this._pending = null;
     this._pendingRaf = 0;
-    /** Car livery, seeded from the mount manager with factory colours as fallback. */
-    this._livery = {
-      paint: CAR_PAINT_COLORS[0],
-      wheel: CAR_WHEEL_COLORS[0],
-      ...(this.mounts?.getLivery?.() ?? {}),
-    };
-    /** Pending livery write, coalesced to one per frame. */
-    this._liveryPending = null;
-    this._liveryRaf = 0;
 
     /** @type {typeof DEFAULT_CHARACTER} */
     this._cfg = { ...(this.avatar?.characterConfig ?? DEFAULT_CHARACTER) };
@@ -386,25 +362,7 @@ export class CharacterMenu {
     if (this.cosmetics) {
       body.appendChild(
         this._section('Signature skins', 'ch-skins', (host) => {
-          host.appendChild(this._skinCards(CHARACTER_SKINS, 'character'));
-        })
-      );
-    }
-
-    /* Vehicle livery - paint and wheels for the car mount. Kept last because it
-     * describes a different body than everything above it; the swatches write to
-     * the mount manager rather than the avatar config. */
-    if (this.mounts?.setLivery) {
-      body.appendChild(
-        this._section('Vehicle', 'ch-vehicle', (host) => {
-          host.appendChild(el('div', 'ch-sub', 'Car paint'));
-          host.appendChild(this._liverySwatches(CAR_PAINT_COLORS, 'paint'));
-          host.appendChild(el('div', 'ch-sub', 'Wheels'));
-          host.appendChild(this._liverySwatches(CAR_WHEEL_COLORS, 'wheel'));
-          if (this.cosmetics) {
-            host.appendChild(el('div', 'ch-sub', 'Signature liveries'));
-            host.appendChild(this._skinCards(VEHICLE_SKINS, 'vehicle'));
-          }
+          host.appendChild(this._skinCards(CHARACTER_SKINS));
         })
       );
     }
@@ -519,78 +477,20 @@ export class CharacterMenu {
   }
 
   /**
-   * Colour swatches for the car livery. Same shape as `_swatches` but writes to
-   * the mount manager instead of the avatar config.
-   * @param {number[]} colors
-   * @param {'paint'|'wheel'} field
-   */
-  _liverySwatches(colors, field) {
-    const row = el('div', 'ch-sws');
-    for (const c of colors) {
-      const b = el('button', 'ch-sw');
-      b.type = 'button';
-      b.style.setProperty('--c', hexStr(c));
-      b.title = hexStr(c);
-      b.addEventListener('click', () => this._setLivery({ [field]: c }));
-      row.appendChild(b);
-      this._syncers.push(() => b.classList.toggle('on', this._livery[field] === c));
-    }
-    const label = el('label', 'ch-pick');
-    const input = el('input');
-    input.type = 'color';
-    input.setAttribute('aria-label', `Custom ${field} colour`);
-    input.addEventListener('input', () =>
-      this._liveryPick(field, quantise(Number.parseInt(input.value.slice(1), 16) || 0))
-    );
-    label.append(input, el('i'));
-    label.title = 'Custom colour';
-    row.appendChild(label);
-    this._syncers.push(() => {
-      const hex = hexStr(this._livery[field]);
-      if (document.activeElement !== input) input.value = hex;
-      label.style.setProperty('--c', hex);
-      label.classList.toggle('on', !colors.includes(this._livery[field]));
-    });
-    return row;
-  }
-
-  /** Apply a livery patch to the car mount and refresh the swatches. */
-  _setLivery(patch) {
-    this._livery = { ...this._livery, ...patch };
-    this.mounts?.setLivery?.(patch);
-    this._sync();
-  }
-
-  /** Coalesced livery colour-picker write (one material mint per frame). */
-  _liveryPick(field, value) {
-    this._liveryPending = { ...(this._liveryPending ?? {}), [field]: value };
-    if (this._liveryRaf) return;
-    this._liveryRaf = requestAnimationFrame(() => {
-      this._liveryRaf = 0;
-      const patch = this._liveryPending;
-      this._liveryPending = null;
-      if (patch) this._setLivery(patch);
-    });
-  }
-
-  /**
    * A grid of premium skin cards. Owned skins apply their preset on click and
    * light up when active; locked ones wear a padlock and point the player at the
    * merchant. Ownership is read live from the wardrobe so a purchase relights the
    * card through the `cosmetic:unlocked` sync without a rebuild.
-   * @param {Array<{id:string,name:string,blurb:string,preset?:object,livery?:object}>} skins
-   * @param {'character'|'vehicle'} kind
+   * @param {Array<{id:string,name:string,blurb:string,preset:object}>} skins
    */
-  _skinCards(skins, kind) {
+  _skinCards(skins) {
     const grid = el('div', 'ch-skingrid');
     for (const skin of skins) {
       const card = el('button', 'ch-skincard');
       card.type = 'button';
 
       const dots = el('span', 'ch-skindots');
-      const colors = kind === 'vehicle'
-        ? [skin.livery?.paint, skin.livery?.wheel]
-        : [skin.preset?.topColor, skin.preset?.legColor, skin.preset?.accentColor];
+      const colors = [skin.preset?.topColor, skin.preset?.legColor, skin.preset?.accentColor];
       for (const c of colors) {
         if (typeof c !== 'number') continue;
         const dot = el('i', 'ch-skindot');
@@ -613,17 +513,14 @@ export class CharacterMenu {
           });
           return;
         }
-        if (kind === 'vehicle') this._setLivery({ ...skin.livery });
-        else this._set({ ...skin.preset });
+        this._set({ ...skin.preset });
       });
 
       this._syncers.push(() => {
         const owned = !!this.cosmetics?.has?.(skin.id);
-        const active = owned && (kind === 'vehicle'
-          ? this._livery.paint === skin.livery.paint && this._livery.wheel === skin.livery.wheel
-          : this._cfg.topColor === skin.preset.topColor
-            && this._cfg.legColor === skin.preset.legColor
-            && this._cfg.accentColor === skin.preset.accentColor);
+        const active = owned && this._cfg.topColor === skin.preset.topColor
+          && this._cfg.legColor === skin.preset.legColor
+          && this._cfg.accentColor === skin.preset.accentColor;
         card.classList.toggle('locked', !owned);
         card.classList.toggle('on', active);
         lock.textContent = owned ? (active ? 'Equipped' : 'Owned') : '🔒 Market';

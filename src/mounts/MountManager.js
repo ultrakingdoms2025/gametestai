@@ -9,6 +9,7 @@ import { characterCreateParams, applyCharacterColors } from '../player/PlayerAva
 import { HumanoidFactory } from '../npc/Humanoid.js';
 import { allows } from '../worlds/WorldRules.js';
 import { flightCeilingAt } from './FlightCeiling.js';
+import { normColor, cloneLivery, FINISH_PROPS } from './Livery.js';
 
 /**
  * Mount ownership and the mounted movement authority.
@@ -240,11 +241,12 @@ export class MountManager {
     this._landingFor = null;
     this._unlocked = new Set(['hoverboard', 'dragon', 'car', 'horse', 'eagle', 'bicycle']);
     /**
-     * Player car livery, 0xRRGGBB per channel. Applied to the car mount on
-     * create and re-applied whenever it is (re)built. Persisted via serialize.
-     * @type {{paint?:number, wheel?:number}}
+     * Per-mount liveries: `{ [mountId]: { [slotId]: { color?:number, finish?:'matt'|'gloss' } } }`.
+     * Applied to a mount on create and re-applied by `setLivery`; persisted via
+     * serialize. Slots are declared by each mount class (`static CUSTOM_SLOTS`).
+     * @type {Object<string, Object<string, {color?:number, finish?:string}>>}
      */
-    this._livery = {};
+    this._liveries = {};
     /**
      * Purchased mount upgrades, keyed by mount id then by power id
      * (strength | shield | power) → tier level (1..N). Bought through the
@@ -613,7 +615,7 @@ export class MountManager {
     else if (id === 'eagle') mount = new Eagle({ ...ctx, player: this.player });
     else if (id === 'bicycle') mount = new Bicycle(ctx);
     if (mount) {
-      if (id === 'car') mount.applyCustomization?.(this._livery);
+      mount.applyCustomization?.(this._liveries[id]);
       this._applyPowers(id, mount);
     }
     return mount;
@@ -624,27 +626,47 @@ export class MountManager {
   /* ================================================================ */
 
   /**
-   * Set the player's car livery and apply it live if the car exists.
-   * @param {{paint?:number|string, wheel?:number|string}} livery
+   * Merge a livery patch into one mount and apply it live if that mount exists.
+   * `patch` is `{ [slotId]: { color?, finish? } }`; `finish: null` clears the
+   * finish. Colours may be numbers or '#rrggbb'.
+   * @param {string} mountId
+   * @param {Object<string,{color?:number|string, finish?:string|null}>} patch
    */
-  setLivery(livery = {}) {
-    const norm = (c) => (typeof c === 'string' ? parseInt(c.replace('#', ''), 16) : c);
-    if (livery.paint != null) this._livery.paint = norm(livery.paint);
-    if (livery.wheel != null) this._livery.wheel = norm(livery.wheel);
-    this._mounts.get('car')?.applyCustomization?.(this._livery);
-    this.bus?.emit?.('mount:livery', { ...this._livery });
+  setLivery(mountId, patch = {}) {
+    if (!mountId || !patch || typeof patch !== 'object') return;
+    const cur = this._liveries[mountId] || (this._liveries[mountId] = {});
+    for (const slot in patch) {
+      const p = patch[slot];
+      if (!p || typeof p !== 'object') continue;
+      const s = cur[slot] || (cur[slot] = {});
+      const c = normColor(p.color);
+      if (c != null) s.color = c;
+      if (p.finish === null) delete s.finish;
+      else if (FINISH_PROPS[p.finish]) s.finish = p.finish;
+      if (!Object.keys(s).length) delete cur[slot];
+    }
+    this._mounts.get(mountId)?.applyCustomization?.(cur);
+    this.bus?.emit?.('mount:livery', { mountId, livery: cloneLivery(cur) });
   }
 
-  /** Current car livery (copy). */
-  getLivery() {
-    return { ...this._livery };
+  /** Current livery for one mount (deep copy; `{}` when untouched). */
+  getLivery(mountId) {
+    return cloneLivery(this._liveries[mountId]);
+  }
+
+  /** Back to factory colours and finish for one mount. */
+  resetLivery(mountId) {
+    if (!mountId) return;
+    delete this._liveries[mountId];
+    this._mounts.get(mountId)?.applyCustomization?.({});
+    this.bus?.emit?.('mount:livery', { mountId, livery: {} });
   }
 
   /**
    * Grant a mount power tier. Powers stack per mount:
    *   strength → durability/mass, shield → damage resistance, power → top speed/boost.
    * @param {string} mountId
-   * @param {'strength'|'shield'|'power'} power
+   * @param {'strength'|'shield'|'power'|'fire'} power
    * @param {number} tier 1-based level (a higher tier replaces a lower one)
    */
   grantPower(mountId, power, tier = 1) {
@@ -677,6 +699,7 @@ export class MountManager {
       strength: bag.strength || 0,
       shield: bag.shield || 0,
       power: bag.power || 0,
+      fire: bag.fire || 0,
     });
   }
 
@@ -1629,7 +1652,7 @@ export class MountManager {
     return {
       unlocked: [...this._unlocked],
       active: this._active?.id ?? null,
-      livery: { ...this._livery },
+      liveries: Object.fromEntries(Object.keys(this._liveries).map((id) => [id, cloneLivery(this._liveries[id])])),
       powers: this.getPowers(),
     };
   }
@@ -1644,10 +1667,24 @@ export class MountManager {
       // now generalises rather than needing a line per mount.
       for (const id of known) this._unlocked.add(id);
     }
-    if (data.livery && typeof data.livery === 'object') {
-      if (data.livery.paint != null) this._livery.paint = data.livery.paint;
-      if (data.livery.wheel != null) this._livery.wheel = data.livery.wheel;
-      this._mounts.get('car')?.applyCustomization?.(this._livery);
+    if (data.liveries && typeof data.liveries === 'object') {
+      for (const mid in data.liveries) {
+        const l = cloneLivery(data.liveries[mid]);
+        if (!Object.keys(l).length) continue;
+        this._liveries[mid] = l;
+        this._mounts.get(mid)?.applyCustomization?.(l);
+      }
+    } else if (data.livery && typeof data.livery === 'object') {
+      // Pre-F10 saves carried a flat car-only `{paint, wheel}`.
+      const car = {};
+      const paint = normColor(data.livery.paint);
+      const wheel = normColor(data.livery.wheel);
+      if (paint != null) car.paint = { color: paint };
+      if (wheel != null) car.wheel = { color: wheel };
+      if (Object.keys(car).length) {
+        this._liveries.car = car;
+        this._mounts.get('car')?.applyCustomization?.(car);
+      }
     }
     if (data.powers && typeof data.powers === 'object') {
       for (const mid in data.powers) {

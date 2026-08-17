@@ -59,7 +59,7 @@ export const STAT_META = {
  * @returns {number|null}
  */
 export function normColor(c) {
-  if (typeof c === 'number' && Number.isFinite(c)) return c & 0xffffff;
+  if (typeof c === 'number') return Number.isInteger(c) && c >= 0 && c <= 0xffffff ? c : null;
   if (typeof c === 'string') {
     const s = c.trim().replace(/^#/, '');
     if (!/^[0-9a-fA-F]{6}$/.test(s)) return null;
@@ -93,9 +93,11 @@ function factoryOf(m) {
  * wing membrane that takes 30% of the hide colour but must stay matt).
  * @param {Object<string, Array<any|{mat:any,mix?:number,emissive?:boolean,finish?:boolean}>>} slotMats
  */
+let _scratch = null; // module-level Color reused by the mix path below
+
 export function applyLivery(livery, slots, slotMats) {
   const l = livery || {};
-  for (const slot of slots) {
+  for (const slot of slots || []) {
     const entries = slotMats?.[slot.id];
     if (!entries) continue;
     const want = l[slot.id] || {};
@@ -111,7 +113,11 @@ export function applyLivery(livery, slots, slotMats) {
       if (m.color) {
         if (color == null || fac.color == null) { if (fac.color != null) m.color.setHex(fac.color); }
         else if (mix >= 1) m.color.setHex(color);
-        else m.color.setHex(fac.color).lerp(m.color.clone().setHex(color), mix);
+        else {
+          m.color.setHex(fac.color);
+          _scratch ??= m.color.clone();
+          m.color.lerp(_scratch.setHex(color), mix);
+        }
       }
       if (emissive && m.emissive) {
         m.emissive.setHex(color == null ? (fac.emissive ?? 0) : color);

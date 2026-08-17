@@ -2567,7 +2567,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 20: Discoverability — F1, F6, HUD hints, Input reserved keys, NPC chat
 
 **Files:**
-- Modify: `src/ui/HelpMenu.js:107`, `src/ui/KeybindMenu.js:44,166`, `src/ui/HUD.js:934,1399`, `src/core/Input.js:436`, `src/ai/ChatClient.js:360`
+- Modify: `src/ui/HelpMenu.js:107`, `src/ui/KeybindMenu.js:44,166`, `src/ui/HUD.js:934,1399`, `src/core/Input.js:436`, `src/ai/ChatClient.js:360`, `site/app/api/chat/route.ts:114`
 
 - [ ] **Step 1: Edits**
 
@@ -2584,7 +2584,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/ui/HelpMenu.js src/ui/KeybindMenu.js src/ui/HUD.js src/core/Input.js src/ai/ChatClient.js
+git add src/ui/HelpMenu.js src/ui/KeybindMenu.js src/ui/HUD.js src/core/Input.js src/ai/ChatClient.js site/app/api/chat/route.ts
 git commit -m "F10 in help, keybinds, boot/pause hints, reserved keys and NPC chat
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"

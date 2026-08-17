@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { sweep, blob, blade } from '../gfx/Organic.js';
+import { applyLivery, MOUNT_STATS } from './Livery.js';
 
 /**
  * EAGLE - the flight mount.
@@ -80,6 +81,13 @@ function merge(list) {
 }
 
 export class Eagle {
+  /** Colour slots the F10 menu offers. `defaultColor` = factory swatch. */
+  static CUSTOM_SLOTS = Object.freeze([
+    Object.freeze({ id: 'plumage', label: 'Plumage', finish: false, defaultColor: 0x6b4c30, palette: 'natural' }),
+    Object.freeze({ id: 'harness', label: 'Harness', finish: true, defaultColor: 0x6d4522, palette: 'paint' }),
+  ]);
+  static STATS = MOUNT_STATS.eagle;
+
   /**
    * @param {{scene:THREE.Scene, engine:any, physics:any, bus:any, materials:any,
    *          camera:THREE.PerspectiveCamera, player?:any}} ctx
@@ -117,6 +125,14 @@ export class Eagle {
     this._lastGround = new THREE.Vector3();
     this._haveGround = false;
     this._void = 0;
+
+    /** Purchased-power multipliers, 1 == stock (see MountManager.grantPower). */
+    this._powerMul = 1;
+    this._accelMul = 1;
+    this._staminaMul = 1;
+    this._shieldTier = 0;
+    this._livery = null;
+    this._slotMats = null;
 
     this._owned = [];
     this._build();
@@ -167,6 +183,7 @@ export class Eagle {
     const beakMat = this._mat(0xe2a92c, { roughness: 0.38, metalness: 0.18 });
     const flight = this._mat(0x4a3626, { surface: 'hide.feather:2,3' });
     const tackMat = this._mat(0x6d4522, { roughness: 0.6 });
+    this._slotMats = { plumage: [body, flight], harness: [tackMat] };
 
     /* ---- torso ----
      *
@@ -342,6 +359,7 @@ export class Eagle {
     this.tilt.add(new THREE.Mesh(box(0.5, 0.07, 0.1, 0, 0.42, -0.52), tackMat));
 
     this.root.visible = false;
+    this.applyCustomization(this._livery);
   }
 
   /* ------------------------------------------------------------------ */
@@ -492,7 +510,7 @@ export class Eagle {
     const stam = this.player?.stamina;
     let beating = wantBeat;
     if (beating && stam) {
-      stam.drain(BEAT_STAMINA * dt, 'eagle');
+      stam.drain(BEAT_STAMINA * this._staminaMul * dt, 'eagle');
       if (stam.exhausted) beating = false;
     }
     this._beat = damp(this._beat, beating ? 1 : 0, 5, dt);
@@ -529,9 +547,9 @@ export class Eagle {
     const dive = -this._pitch;                       // +ve when nose-down
     this.speed += dive * 17 * dt;
     // Drag, rising with the square of speed, gives a natural terminal velocity.
-    this.speed -= (0.012 * this.speed * this.speed) * dt;
+    this.speed -= (0.012 / (this._powerMul * this._powerMul)) * this.speed * this.speed * dt;
     // Beating adds thrust as well as lift.
-    if (this._beat > 0.01) this.speed += this._beat * 9 * dt;
+    if (this._beat > 0.01) this.speed += this._beat * 9 * this._accelMul * dt;
     /* Floored, not clamped to zero.
      *
      * At the first tuning a sustained pull-up bled 32 m/s to a dead stop in two
@@ -539,7 +557,7 @@ export class Eagle {
      * with a bird attached. Dropping below {@link STALL} already costs real
      * altitude, which is punishment enough; the floor keeps some way on so the
      * bird can always be flown out of it. */
-    this.speed = clamp(this.speed, 4.5, MAX_SPEED);
+    this.speed = clamp(this.speed, 4.5, MAX_SPEED * this._powerMul);
 
     /* ---- thermals ------------------------------------------------------ *
      * Derived from what is under the bird rather than authored: high, sunlit
@@ -817,10 +835,29 @@ export class Eagle {
     return { distance: 7.5 + this.speed01 * 3.5, height: 2.2 };
   }
 
+  applyCustomization(livery) {
+    this._livery = livery && typeof livery === 'object' ? livery : {};
+    if (!this._slotMats) return;
+    applyLivery(this._livery, Eagle.CUSTOM_SLOTS, this._slotMats);
+  }
+
+  /** Same ladder as Car: +12% top speed, +10% thrust (and cheaper beats), shield stored. */
+  applyPowers({ strength = 0, shield = 0, power = 0 } = {}) {
+    this._powerMul = 1 + Math.max(0, power) * 0.12;
+    this._accelMul = 1 + Math.max(0, strength) * 0.10;
+    this._staminaMul = Math.max(0.5, 1 - Math.max(0, strength) * 0.08);
+    this._shieldTier = Math.max(0, shield);
+  }
+
+  get shieldTier() {
+    return this._shieldTier;
+  }
+
   dispose() {
     this.kill();
     for (const o of this._owned) o.dispose?.();
     this._owned.length = 0;
+    this._slotMats = null;
   }
 }
 

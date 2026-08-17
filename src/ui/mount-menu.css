@@ -1,0 +1,650 @@
+/* Mount menu (F10) - derived from character.css; keep the two in step. */
+
+.mm-root {
+  --mm-cy: var(--cy, #52e9ff);
+  --mm-amber: var(--amber, #ffb44a);
+  --mm-mag: var(--mag, #d46bff);
+  --mm-txt: var(--txt, #cfe6f2);
+  --mm-dim: var(--txt-dim, #7f9db0);
+  --mm-rule: var(--rule, rgba(82, 233, 255, 0.28));
+  --mm-soft: var(--rule-soft, rgba(120, 180, 210, 0.16));
+  --mm-glass: var(--glass, rgba(9, 15, 25, 0.52));
+  --mm-glass-hi: var(--glass-hi, rgba(22, 38, 58, 0.42));
+  --mm-disp: var(--f-disp, 'Chakra Petch', 'Rajdhani', sans-serif);
+  --mm-ui: var(--f-ui, 'Rajdhani', 'Chakra Petch', sans-serif);
+
+  position: absolute;
+  inset: 0;
+  z-index: 82; /* above the inventory root (80) so both can never fight */
+  pointer-events: none;
+  font-family: var(--mm-ui);
+  color: var(--mm-txt);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The HUD's pause overlay would otherwise sit on top of a panel we deliberately
+   released the pointer for. hud.css belongs to another agent, so this hides it
+   from the outside rather than editing that file. */
+body.mm-open .pause {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* A whisper of vignette on the drawer side only, so the panel has something to
+   sit against without dimming the character. */
+.mm-root::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: min(620px, 60vw);
+  background: linear-gradient(90deg, rgba(2, 5, 10, 0), rgba(2, 5, 10, 0.72) 62%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.mm-root.open::before {
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------- shell -- */
+.mm-panel {
+  position: absolute;
+  top: 2.2vh;
+  right: 2.2vh;
+  bottom: 2.2vh;
+  width: min(432px, 34vw);
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+  background: linear-gradient(155deg, var(--mm-glass-hi), var(--mm-glass)),
+    linear-gradient(180deg, rgba(4, 8, 14, 0.92), rgba(4, 8, 14, 0.95));
+  border: 1px solid var(--mm-soft);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.5),
+    0 30px 90px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 26px 100%, 0 calc(100% - 26px));
+  transform: translateX(26px);
+  opacity: 0;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease;
+}
+
+.mm-root.open .mm-panel {
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Scanlines, felt not seen — same treatment as .hud-veil. */
+.mm-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0,
+    rgba(0, 0, 0, 0) 2px,
+    rgba(0, 0, 0, 0.14) 3px,
+    rgba(0, 0, 0, 0) 4px
+  );
+  opacity: 0.45;
+  mix-blend-mode: overlay;
+}
+
+/* --------------------------------------------------------------- header -- */
+.mm-head {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 15px 16px 13px 20px;
+  border-bottom: 1px solid var(--mm-soft);
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.08), transparent);
+}
+
+.mm-head::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 62px;
+  background: linear-gradient(180deg, var(--mm-cy), transparent);
+  box-shadow: 0 0 12px var(--cy-glow, rgba(82, 233, 255, 0.55));
+}
+
+.mm-titles {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mm-kicker {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--mm-dim);
+}
+
+.mm-title {
+  font-family: var(--mm-disp);
+  font-weight: 700;
+  font-size: 23px;
+  line-height: 1.1;
+  letter-spacing: 0.16em;
+  color: #eaf9ff;
+  text-shadow: 0 0 18px rgba(82, 233, 255, 0.35), 0 2px 5px rgba(0, 0, 0, 0.8);
+}
+
+.mm-x {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 11px;
+  background: rgba(10, 20, 32, 0.7);
+  border: 1px solid var(--mm-soft);
+  color: var(--mm-dim);
+  font-family: var(--mm-ui);
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  transition: border-color 0.18s, color 0.18s, background 0.18s;
+}
+
+.mm-x b {
+  font-family: var(--mm-disp);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--mm-cy);
+}
+
+.mm-x span {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+.mm-x:hover {
+  border-color: var(--mm-rule);
+  color: var(--mm-txt);
+  background: rgba(18, 38, 56, 0.8);
+}
+
+/* ----------------------------------------------------------------- body -- */
+.mm-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 18px 14px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--mm-rule) transparent;
+}
+
+.mm-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.mm-body::-webkit-scrollbar-thumb {
+  background: rgba(82, 233, 255, 0.24);
+}
+
+.mm-sec {
+  position: relative;
+  padding: 13px 0 3px;
+  border-bottom: 1px solid rgba(120, 180, 210, 0.09);
+}
+
+.mm-sec:last-child {
+  border-bottom: 0;
+}
+
+.mm-sec-t {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 9px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--mm-dim);
+}
+
+/* The rule after the title, and the live value after that. Reading the panel
+   with the eyes only on the left column still tells you what you have chosen. */
+.mm-sec-t::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: linear-gradient(90deg, var(--mm-soft), transparent);
+}
+
+/* The live value for the section, parked on the title line. `content` only
+   materialises when the section actually carries one, so a section with no
+   single-value summary (skin, eyes) simply has no pseudo-element. */
+.mm-sec[data-value]:not([data-value=''])::after {
+  content: attr(data-value);
+  position: absolute;
+  top: 12px;
+  right: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mm-amber);
+  text-shadow: 0 0 12px rgba(255, 180, 74, 0.35);
+}
+
+.mm-sub {
+  margin: 11px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--mm-dim);
+}
+
+/* ------------------------------------------------------------ sex cards -- */
+.mm-sexrow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.mm-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: rgba(10, 18, 30, 0.62);
+  border: 1px solid var(--mm-soft);
+  color: var(--mm-dim);
+  font-family: var(--mm-ui);
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  transition: border-color 0.2s, color 0.2s, background 0.2s, transform 0.2s;
+}
+
+.mm-card b {
+  font-family: var(--mm-disp);
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.mm-fig {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+}
+
+.mm-fig svg {
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+  transition: fill 0.2s;
+}
+
+.mm-card:hover {
+  border-color: var(--mm-rule);
+  color: var(--mm-txt);
+}
+
+.mm-card.on {
+  color: #eaf9ff;
+  border-color: var(--mm-cy);
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.18), rgba(10, 24, 38, 0.7));
+  box-shadow: inset 0 0 22px rgba(82, 233, 255, 0.14), 0 0 16px rgba(82, 233, 255, 0.16);
+}
+
+/* ---------------------------------------------------------------- chips -- */
+.mm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mm-chip {
+  padding: 6px 11px;
+  background: rgba(10, 18, 30, 0.6);
+  border: 1px solid var(--mm-soft);
+  color: var(--mm-dim);
+  font-family: var(--mm-ui);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px));
+  transition: border-color 0.16s, color 0.16s, background 0.16s;
+}
+
+.mm-chip:hover {
+  border-color: var(--mm-rule);
+  color: var(--mm-txt);
+}
+
+.mm-chip.on {
+  color: #041018;
+  border-color: var(--mm-cy);
+  background: linear-gradient(180deg, #7ff2ff, var(--mm-cy));
+  box-shadow: 0 0 14px rgba(82, 233, 255, 0.34);
+}
+
+.mm-chips-num .mm-chip {
+  min-width: 34px;
+  text-align: center;
+  font-family: var(--mm-disp);
+}
+
+/* --------------------------------------------------------------- slider -- */
+.mm-slider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.mm-slider-l {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--mm-dim);
+}
+
+.mm-slider-val {
+  flex: 0 0 62px;
+  text-align: right;
+  font-family: var(--mm-disp);
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  color: var(--mm-cy);
+  text-shadow: 0 0 12px rgba(82, 233, 255, 0.35);
+}
+
+.mm-range {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 18px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.mm-range::-webkit-slider-runnable-track {
+  height: 3px;
+  background: linear-gradient(90deg, rgba(82, 233, 255, 0.5), rgba(120, 180, 210, 0.18));
+  border-radius: 0;
+}
+
+.mm-range::-moz-range-track {
+  height: 3px;
+  background: linear-gradient(90deg, rgba(82, 233, 255, 0.5), rgba(120, 180, 210, 0.18));
+}
+
+.mm-range::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 10px;
+  height: 18px;
+  margin-top: -7.5px;
+  background: linear-gradient(180deg, #b6f6ff, var(--mm-cy));
+  border: 0;
+  box-shadow: 0 0 12px rgba(82, 233, 255, 0.55);
+  clip-path: polygon(0 0, 100% 3px, 100% calc(100% - 3px), 0 100%);
+}
+
+.mm-range::-moz-range-thumb {
+  width: 10px;
+  height: 18px;
+  border: 0;
+  border-radius: 0;
+  background: linear-gradient(180deg, #b6f6ff, var(--mm-cy));
+  box-shadow: 0 0 12px rgba(82, 233, 255, 0.55);
+}
+
+/* ------------------------------------------------------------- swatches -- */
+.mm-sws {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mm-sw,
+.mm-pick {
+  position: relative;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(120, 180, 210, 0.22);
+  background: var(--c, #444);
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
+  transition: transform 0.16s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.16s, border-color 0.16s;
+}
+
+.mm-sw:hover,
+.mm-pick:hover {
+  transform: translateY(-2px);
+  border-color: var(--mm-rule);
+}
+
+/* Selected: a bright inset frame rather than an outer ring, so the swatch's own
+   colour is never contaminated by the marker sitting on top of it. */
+.mm-sw.on,
+.mm-pick.on {
+  border-color: #eaf9ff;
+  box-shadow: inset 0 0 0 2px rgba(4, 10, 18, 0.85), 0 0 14px rgba(82, 233, 255, 0.45);
+  transform: translateY(-2px);
+}
+
+/* The native picker is unstyleable, so it becomes an invisible hit target over
+   a swatch we draw ourselves. */
+.mm-pick input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.mm-pick i {
+  position: absolute;
+  inset: 0;
+  display: block;
+  background:
+    conic-gradient(#ff5a5a, #ffd23b, #7dff5a, #3bffd2, #52e9ff, #8f6bff, #ff5abf, #ff5a5a);
+  opacity: 0.9;
+}
+
+.mm-pick.on i {
+  background: var(--c, #888);
+  opacity: 1;
+}
+
+/* --------------------------------------------------------------- footer -- */
+.mm-foot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px 14px;
+  border-top: 1px solid var(--mm-soft);
+  background: linear-gradient(0deg, rgba(82, 233, 255, 0.05), transparent);
+}
+
+.mm-btn {
+  padding: 8px 14px;
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.2), rgba(10, 24, 38, 0.7));
+  border: 1px solid var(--mm-rule);
+  color: #eaf9ff;
+  font-family: var(--mm-disp);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  transition: background 0.18s, border-color 0.18s, color 0.18s;
+}
+
+.mm-btn:hover {
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.34), rgba(14, 34, 52, 0.8));
+}
+
+.mm-btn.ghost {
+  background: rgba(10, 18, 30, 0.6);
+  border-color: var(--mm-soft);
+  color: var(--mm-dim);
+}
+
+.mm-btn.ghost:hover {
+  border-color: var(--mm-amber);
+  color: var(--mm-amber);
+}
+
+.mm-hint {
+  flex: 1 1 100%;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--mm-dim);
+}
+
+.mm-hint b {
+  color: var(--mm-amber);
+  font-weight: 700;
+}
+
+/* --------------------------------------------------------- narrow / short */
+@media (max-height: 760px) {
+  .mm-sec {
+    padding-top: 10px;
+  }
+
+  .mm-fig {
+    height: 28px;
+  }
+}
+
+@media (max-width: 1100px) {
+  .mm-panel {
+    width: min(400px, 46vw);
+  }
+}
+
+/* ------------------------------------------------------ signature skins -- */
+.mm-skingrid {
+  display: grid;
+  gap: 8px;
+}
+
+.mm-skincard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  text-align: left;
+  background: rgba(10, 18, 30, 0.62);
+  border: 1px solid var(--mm-soft);
+  color: var(--mm-dim);
+  font-family: var(--mm-ui);
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+
+.mm-skincard:hover {
+  border-color: var(--mm-rule);
+  color: var(--mm-txt);
+}
+
+.mm-skindots {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.mm-skindot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.4);
+}
+
+.mm-skintext {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mm-skintext b {
+  font-family: var(--mm-disp);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mm-skintext small {
+  font-size: 11px;
+  color: var(--mm-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-skinlock {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mm-dim);
+  white-space: nowrap;
+}
+
+.mm-skincard.locked {
+  opacity: 0.72;
+  cursor: help;
+}
+
+.mm-skincard.locked .mm-skindot {
+  filter: grayscale(0.5) brightness(0.8);
+}
+
+.mm-skincard.on {
+  color: #eaf9ff;
+  border-color: var(--mm-cy);
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.18), rgba(10, 24, 38, 0.7));
+  box-shadow: inset 0 0 22px rgba(82, 233, 255, 0.14), 0 0 16px rgba(82, 233, 255, 0.16);
+}
+
+.mm-skincard.on .mm-skinlock {
+  color: var(--mm-cy);
+}
+
+/* ---- Mount menu extras: upgrade pips and the "in inventory" card state ---- */
+.mm-stat { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.mm-stat:last-child { border-bottom: 0; }
+.mm-stat-l { font-weight: 700; letter-spacing: 0.06em; }
+.mm-stat-fx { grid-column: 1 / -1; font-size: 11px; opacity: 0.75; }
+.mm-pips { display: inline-flex; gap: 4px; }
+.mm-pip { width: 18px; height: 8px; border: 1px solid rgba(255,255,255,0.28); background: rgba(255,255,255,0.06); }
+.mm-pip.on { background: var(--mm-accent, #52e9ff); border-color: var(--mm-accent, #52e9ff); box-shadow: 0 0 8px rgba(82,233,255,0.5); }
+.mm-skincard.held .mm-skinlock { color: #b6ff5a; }
+.mm-finish { margin-top: 6px; }

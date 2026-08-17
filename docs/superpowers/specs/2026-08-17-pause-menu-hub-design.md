@@ -36,7 +36,7 @@ Items are data: `{ id, label: string|()=>string, hint?, enabled?: () => true|str
 ### 4.1 `src/ui/PauseMenu.js` + `src/ui/pause-menu.css` — new, DOM-only, game-agnostic
 
 - `export class PauseMenuModel` — pure logic, no DOM: `setItems(groups)`, `visibleItems()`, `isEnabled(item)` (`enabled` absent → true; returns `true` or the reason string), `focus` index, `move(delta)` (wraps, skips disabled/hidden), `focusFirst()`, `activate()` (calls `run`, returns `!!item.keepOpen`), `labelOf(item)`.
-- `export class PauseMenu` — wraps the model with DOM: `new PauseMenu({ root })` builds `div.pm-root` (title "PAUSED", groups of `button.pm-item` with label + optional hint, footer "Esc resume · ↑↓ Enter · click"); `setItems`, `refresh()` (re-evaluates visible/enabled/label; sets `.off`, `.focus`, `title` = disabled reason), `move`, `activate`, `focusFirst`; hover focuses, click activates. `onActivate(item, keepOpen)` callback provided by the host so the host decides whether to hide.
+- `export class PauseMenu` — wraps the model with DOM: `new PauseMenu({ root })` builds `div.pm-root` (groups of `button.pm-item` with label + optional hint; the card title and status line stay HUD-owned); `setItems`, `refresh()` (re-evaluates visible/enabled/label; sets `.off`, `.focus`, `title` = disabled reason), `move`, `activate`, `focusFirst`; hover focuses, click activates. `onActivate(item, keepOpen)` callback provided by the host so the host decides whether to hide.
 - `export const PAUSE_MENU_IDS` — the §3 id list, used by the source test to check `main.js` covers every id.
 
 ### 4.2 `src/ui/HUD.js` — edits only

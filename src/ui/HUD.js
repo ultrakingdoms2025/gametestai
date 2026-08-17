@@ -1229,6 +1229,8 @@ export class HUD {
     this._on('inventory:close',  ()          => _overlayClose());
     this._on('keybinds:open',    ()          => _overlayOpen());
     this._on('keybinds:close',   ()          => _overlayClose());
+    this._on('mount:menu:open',  ()          => _overlayOpen());
+    this._on('mount:menu:close', ()          => _overlayClose());
   }
 
   /* ---------------------------------------------------------------- v2 -- */

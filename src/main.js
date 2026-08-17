@@ -39,6 +39,7 @@ import { MountWheel } from './ui/MountWheel.js';
 import { MazeMap } from './ui/MazeMap.js';
 import { KeybindMenu } from './ui/KeybindMenu.js';
 import { CharacterMenu } from './ui/CharacterMenu.js';
+import { MountMenu } from './ui/MountMenu.js';
 import { LightRig } from './gfx/LightRig.js';
 import { Caches } from './systems/Caches.js';
 import { Contracts } from './systems/Contracts.js';
@@ -235,6 +236,9 @@ const keybindMenu = new KeybindMenu({ root: uiRoot, bus, input });
 // snapshots and MountManager listens for so the rider on a mount is the same
 // person as the one on foot. F2 is character-only; mounts are customised from F10.
 const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, player, cosmetics });
+// F10. Customises the mount being ridden (colour slots, skins, upgrade tiers);
+// generic over each mount's CUSTOM_SLOTS/STATS. Refuses to open on foot.
+const mountMenu = new MountMenu({ root: uiRoot, bus, input, mounts, cosmetics, inventory, player });
 
 // Ammunition now comes out of the bag rather than a private per-weapon counter.
 loadout.setInventory?.(inventory);
@@ -440,7 +444,7 @@ if (overrides.dev) {
   window.GAME = {
     engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
-    waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, caches, contracts,
+    waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, mountMenu, caches, contracts,
   cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   interiors, mazeMap, minigames, minigameUI,
     /* The only door out of this file the harness is allowed through. Kept
@@ -1453,6 +1457,7 @@ engine.onFrameUpdate((dt, elapsed) => {
   audio.update(dt);
   helpMenu.update?.(dt);
   characterMenu.update?.(dt);
+  mountMenu.update?.(dt);
   raceUI.update(dt);
   // Outside the `uiPaused` gate, like every other panel: its own sheets are
   // what raise the pause, so a UI that stopped ticking when they opened could
@@ -1516,6 +1521,8 @@ bus.on('character:open', () => setGameplayBlocked('character', true));
 bus.on('character:close', () => setGameplayBlocked('character', false));
 bus.on('inventory:open', () => setGameplayBlocked('inventory', true));
 bus.on('inventory:close', () => setGameplayBlocked('inventory', false));
+bus.on('mount:menu:open', () => setGameplayBlocked('mount-menu', true));
+bus.on('mount:menu:close', () => setGameplayBlocked('mount-menu', false));
 bus.on('inventory:use', ({ itemId }) => {
   const res = itemUse.use(itemId);
   if (res?.ok) return; // success path: ItemUse emits hud:notify itself

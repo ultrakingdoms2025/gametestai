@@ -74,6 +74,7 @@ const ACTION_ART = {
   mount_power_1: ['🏎️', '#b6ff5a'],
   mount_power_2: ['🏎️', '#b6ff5a'],
   mount_power_3: ['🏎️', '#b6ff5a'],
+  mount_skin: ['🎨', '#ff8a5c'],
 };
 
 const CATEGORY_FALLBACK_ICON = {
@@ -361,7 +362,9 @@ export class MarketplaceUI {
       info.appendChild(meta);
 
       const priceEl = el('div', 'mkt-price', `${preview.cost} CR`);
-      const grantLabel = preview.grant?.kind === 'upgrade'
+      const grantLabel = preview.skin && preview.reason === 'owned'
+        ? 'Owned'
+        : preview.grant?.kind === 'upgrade'
         ? (preview.grant.label || 'Mount upgrade')
         : preview.grant?.kind === 'unlock'
           ? (preview.reason === 'owned' ? 'Owned' : (preview.grant.label || 'Unlock skin'))
@@ -376,7 +379,7 @@ export class MarketplaceUI {
       buy.type = 'button';
       buy.disabled = blocked;
       buy.title = preview.ok ? 'Buy this item'
-        : owned ? 'Already unlocked — equip it in the Character menu (F2)'
+        : owned ? (preview.skin ? 'You already have this skin — apply it from the Mount menu (F10) while riding' : 'Already unlocked — equip it in the Character menu (F2)')
         : preview.reason === 'space' ? 'Not enough room'
         : preview.reason === 'credits' ? 'Not enough credits'
         : 'Not available';
@@ -438,7 +441,7 @@ export class MarketplaceUI {
         res.reason === 'credits' ? 'Not enough credits' :
         res.reason === 'space' ? 'No room — free a bag or store slot' :
         res.reason === 'stock' ? 'Out of stock' :
-        res.reason === 'owned' ? 'You already own this skin — equip it in the Character menu (F2)' :
+        res.reason === 'owned' ? (res.skin ? 'You already have this skin — apply it from the Mount menu (F10) while riding' : 'You already own this skin — equip it in the Character menu (F2)') :
         res.reason === 'unsupported' ? 'This item cannot be bought yet' :
         'Trade unavailable'
       );

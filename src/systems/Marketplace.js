@@ -1,4 +1,4 @@
-import { ITEMS, itemDef, sellValue, setMarketWorld } from './ItemDefs.js';
+import { ITEMS, itemDef, sellValue, setMarketWorld, skinIdFromItem } from './ItemDefs.js';
 import { allows } from '../worlds/WorldRules.js';
 
 /**
@@ -405,6 +405,12 @@ export class Marketplace {
     }
     const grant = this._purchaseGrant(item);
     if (!grant) return { ok: false, reason: 'unsupported', stock, grant: null, cost };
+    // A mount skin is one-per-player: refuse when it is burned in already or a
+    // copy is still sitting in the bag/store, so nobody buys a second one.
+    const skinId = skinIdFromItem(grant.itemId);
+    if (skinId && (this.cosmetics?.has?.(skinId) || (this.inventory.totalCount?.(grant.itemId) ?? 0) > 0)) {
+      return { ok: false, reason: 'owned', skin: true, stock, grant, cost };
+    }
     if (stock <= 0) return { ok: false, reason: 'stock', stock, grant, cost };
     if (this.credits < cost) return { ok: false, reason: 'credits', stock, grant, cost };
     const room = this.inventory.roomFor(grant.itemId);
@@ -423,7 +429,7 @@ export class Marketplace {
     if (!item || !this.economy) return { ok: false, reason: 'unavailable' };
 
     const preview = this.preview(item);
-    if (!preview.ok) return { ok: false, reason: preview.reason ?? 'unavailable' };
+    if (!preview.ok) return { ok: false, reason: preview.reason ?? 'unavailable', skin: preview.skin === true };
 
     const cost = preview.cost;
 

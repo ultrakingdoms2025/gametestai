@@ -373,3 +373,20 @@ test('ItemUse routes skin items through applyMountSkin and never the generic con
   assert.equal(s2.bag.skin_dragon_frost, 1);
   assert.ok(notes2.some(([n, p]) => n === 'hud:notify' && /F10/.test(p.text)));
 });
+
+test('Marketplace.preview refuses a skin item that is already unlocked or already held', () => {
+  const held = { skin_bike_chrome: 0 };
+  const inventory = { roomFor: () => 30, totalCount: (id) => held[id] ?? 0, count: () => 0, bagCount: () => 0 };
+  const cosmetics = { has: (id) => id === 'bike_racing' };
+  const m = Object.create(Marketplace.prototype);
+  // `credits` is a prototype getter over economy.credits, so this is enough.
+  Object.assign(m, { economy: { credits: 9999 }, inventory, cosmetics, mounts: null, bus: null });
+  const row = (item) => ({ id: 'x', source_key: 'skin_x', quantity: null, cost_buy: 100, action_config: { effect: 'grant_item', item_id: item } });
+  assert.equal(m.preview(row('skin_bike_chrome')).ok, true);
+  held.skin_bike_chrome = 1;
+  const p = m.preview(row('skin_bike_chrome'));
+  assert.equal(p.ok, false); assert.equal(p.reason, 'owned'); assert.equal(p.skin, true);
+  const q = m.preview(row('skin_bike_racing'));
+  assert.equal(q.ok, false); assert.equal(q.reason, 'owned'); assert.equal(q.skin, true);
+  assert.equal(m.preview(row('medkit')).ok, true);
+});

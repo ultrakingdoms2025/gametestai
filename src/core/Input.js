@@ -433,7 +433,7 @@ export class Input {
   setBinding(defaultCode, code) {
     if (!BINDABLE.some((d) => d.code === defaultCode)) return { ok: false };
     // Keys the game cannot give up without breaking its own escape hatches.
-    if (['Escape', 'F1', 'F2', 'F3', 'F4', 'F5', 'F9', 'Tab'].includes(code)) {
+    if (['Escape', 'F1', 'F2', 'F3', 'F4', 'F5', 'F9', 'F10', 'Tab'].includes(code)) {
       return { ok: false };
     }
     let displaced;

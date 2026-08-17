@@ -42,6 +42,7 @@ const FIXED_KEYS = [
   { key: 'Wheel', label: 'Cycle weapons' },
   { key: 'F1', label: 'Help & controls' },
   { key: 'F2', label: 'Customise character' },
+  { key: 'F10', label: 'Customise mount — while riding' },
   { key: 'F3', label: 'Diagnostics overlay' },
   { key: 'F4', label: 'Audio options' },
   { key: 'F5', label: 'Save' },
@@ -163,7 +164,7 @@ export class KeybindMenu {
     foot.append(reset, this._msg);
 
     const note = el('div', 'kb-note',
-      'Fixed keys (J, I, B, M, K, F1–F9 and Esc) cannot be rebound: those panels listen for '
+      'Fixed keys (J, I, B, M, K, F1–F10 and Esc) cannot be rebound: those panels listen for '
       + 'themselves so they still open when everything else is disabled, which is exactly '
       + 'when you need them.');
 

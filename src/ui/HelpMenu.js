@@ -105,6 +105,7 @@ const GROUPS = [
       ['J', 'Quest board — from anywhere'],
       ['F1', 'This panel'],
       ['F2', 'Customise your character'],
+      ['F10', 'Customise your mount — while riding'],
       ['F4', 'Audio options'],
       ['F6', 'Rebind keys'],
       ['F7', 'Race panel — in the circuit'],

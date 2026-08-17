@@ -7,6 +7,7 @@ import { Physics } from './physics/Physics.js';
 import { MaterialLibrary } from './gfx/Materials.js';
 import { createPostFX } from './gfx/PostFX.js';
 import { WorldManager } from './worlds/WorldManager.js';
+import { mapActionOwner } from './worlds/WorldRules.js';
 import { StationWorld } from './worlds/StationWorld.js';
 import { MedievalWorld } from './worlds/MedievalWorld.js';
 import { SportsWorld } from './worlds/SportsWorld.js';
@@ -419,6 +420,142 @@ window.addEventListener('pagehide', () => {
 });
 
 const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, portals, caches, contracts, questBoard });
+
+/* The Esc pause hub.
+ *
+ * Items are data because this is the only file that holds every panel; the HUD
+ * owns the card, the keyboard and the return path and knows none of these
+ * names. `keepOpen` items act in place and the hub stays up; everything else
+ * goes through `hud.openFromHub`, which hides the hub, opens the panel and
+ * brings the hub back when that panel closes. Ids are pinned by
+ * `PAUSE_MENU_IDS` and checked against this list by a source test - a silently
+ * missing row is invisible at runtime, because a menu with one fewer item still
+ * works perfectly. */
+hud.setPauseMenuItems([
+  {
+    title: 'Play',
+    items: [
+      /* `keepOpen` so it never goes through `openFromHub`: that would arm
+       * `_hubReturn`, and the post-run check would find the Set still empty a
+       * microtask later and put the hub straight back on. Resume is an act-in-
+       * place item whose run happens to hide the card, and `hud.resume()` takes
+       * the pointer lock back for real. */
+      { id: 'resume', label: 'Resume', hint: 'Esc', keepOpen: true, run: () => hud.resume() },
+      { id: 'character', label: 'Character', run: () => characterMenu.open() },
+      {
+        id: 'mount',
+        label: 'Customise mount',
+        // The panel refuses on foot and toasts; saying so up front is kinder.
+        enabled: () => (mounts?.mounted ? true : 'Mount up first (M)'),
+        run: () => mountMenu.open(),
+      },
+      /* `Inventory.open()` is synchronous ONLY once its panel exists. On the
+       * very first call it kicks off a dynamic `import('../ui/InventoryUI.js')`
+       * and returns (`Inventory.js:392-401` → `_mountUI` `:516-537`); the
+       * `inventory:open` event then lands a promise tick later, well after
+       * `_deferHubCheck`'s single microtask has already decided nothing opened
+       * and put the hub back. That window is unreachable in practice - the
+       * constructor calls `_mountUI()` eagerly at `Inventory.js:75`, long
+       * before the player can click to enter, let alone press Esc. If the
+       * eager mount is ever removed, this item needs `keepOpen: true` and its
+       * own hide, or `openFromHub` needs an async-aware check. */
+      { id: 'inventory', label: 'Inventory', hint: 'I', run: () => inventory.open() },
+      { id: 'quests', label: 'Quest board', hint: 'J', run: () => questSystem.openBoard() },
+      {
+        id: 'map',
+        label: 'Map',
+        // M is the mount wheel everywhere else; `mapActionOwner` is the same
+        // test MazeMap and MountWheel use to decide which of them owns the key.
+        visible: () => mapActionOwner(worldManager.active) === 'map',
+        run: () => mazeMap.open(),
+      },
+      {
+        id: 'race',
+        label: 'Race panel',
+        visible: () => !!(race?.ready || race?.racing),
+        run: () => raceUI.openPanel(),
+      },
+      {
+        id: 'minigame-quit',
+        label: 'Quit minigame',
+        visible: () => !!minigames?.running,
+        // Never a single keypress: the manager will not act on this itself,
+        // MinigameUI raises its confirm sheet.
+        run: () => bus.emit('minigame:quitRequest', {}),
+      },
+    ],
+  },
+  {
+    title: 'System',
+    items: [
+      {
+        id: 'help',
+        label: 'Help & controls',
+        hint: 'F1',
+        // Help keeps pointer lock and sits OVER the hub (z 80 vs 60); closing
+        // it reveals the hub again, so the hub must not hide for it.
+        overlay: false,
+        run: () => helpMenu.open(),
+      },
+      { id: 'audio', label: 'Audio', run: () => audioMenu.open() },
+      { id: 'keybinds', label: 'Rebind keys', run: () => keybindMenu.open() },
+      {
+        id: 'fullscreen',
+        // The PREFERENCE, not a live readout: `requestFullscreen` resolves
+        // asynchronously and a browser-driven exit does not change what the
+        // player asked for. The hint's first sentence says so.
+        label: () => `Fullscreen: ${input.fullscreenPreferred ? 'On' : 'Off'}`,
+        hint: 'Applies when you resume. Off gives Ctrl+W back to the browser; the save prompt still guards it',
+        keepOpen: true,
+        run: () => {
+          const on = !input.fullscreenPreferred;
+          input.fullscreenPreferred = on;
+          try {
+            if (on) document.documentElement.requestFullscreen?.()?.catch?.(() => {});
+            else if (document.fullscreenElement) document.exitFullscreen?.()?.catch?.(() => {});
+          } catch { /* refused; the preference still stands for the next resume */ }
+        },
+      },
+      {
+        id: 'diagnostics',
+        label: () => `Diagnostics: ${CONFIG.debug.showStats ? 'On' : 'Off'}`,
+        keepOpen: true,
+        run: () => {
+          CONFIG.debug.showStats = !CONFIG.debug.showStats;
+          hud.setDebugVisible(CONFIG.debug.showStats);
+        },
+      },
+      {
+        id: 'save',
+        label: 'Save',
+        hint: 'Writes local storage and a backup file',
+        keepOpen: true,
+        run: () => {
+          // Before the write: the toast reads this to tell a deliberate save
+          // from a background autosave.
+          hud.expectSave();
+          save.saveAndBackup('menu');
+        },
+      },
+      {
+        id: 'load',
+        label: 'Load',
+        hint: 'Local save, or pick a backup file',
+        // May summon a mount and move the player; the hub stays and refreshes.
+        keepOpen: true,
+        run: () => save.loadAnywhere(),
+      },
+      { id: 'bug-report', label: 'Report a bug', run: () => bugReport.open() },
+      {
+        id: 'quit',
+        label: 'Quit to menu',
+        hint: 'Back to the landing page',
+        // The game runs at /play, so the site root is one level up.
+        run: () => { window.location.href = `${window.location.origin}/`; },
+      },
+    ],
+  },
+]);
 
 // Late injection breaks what would otherwise be a circular import between the
 // world manager and the systems it has to drive on every world change.
@@ -1671,13 +1808,9 @@ bus.on('world:changed', ({ world }) => {
   engine.postfx?.setWorldGrade(world.environment);
 });
 
+// Diagnostics moved to the Esc hub; F3 is Chrome's find-in-page. KeyI stays -
+// it is a letter key, and the hub's Inventory item is the second way in.
 window.addEventListener('keydown', (e) => {
-  if (e.code === 'F3') {
-    e.preventDefault();
-    CONFIG.debug.showStats = !CONFIG.debug.showStats;
-    hud.setDebugVisible(CONFIG.debug.showStats);
-    return;
-  }
   if (e.code === 'KeyI' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;

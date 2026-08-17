@@ -86,6 +86,7 @@ export class KeybindMenu {
     this.bus = bus ?? null;
     this.input = input;
     this._open = false;
+    this._hadLock = false;
     /** The row waiting for a key, or null. */
     this._arming = null;
     /** @type {Map<string, HTMLElement>} shipped code -> key cap element */
@@ -242,6 +243,11 @@ export class KeybindMenu {
   open() {
     if (this._open) return;
     this._open = true;
+    /* Only put the lock back if there was one. Opened from the Esc hub the
+     * cursor is already free and the hub is waiting underneath, and grabbing
+     * the pointer out from under a menu the player can still see is the same
+     * bug `CharacterMenu.close` and `MazeMap.close` both record. */
+    this._hadLock = !!this.input?.locked;
     this._sync();
     this._note('');
     this.el.classList.add('show');
@@ -259,7 +265,8 @@ export class KeybindMenu {
     this._open = false;
     this.el.classList.remove('show');
     this.bus?.emit?.('keybinds:close', {});
-    setTimeout(() => this.input?.requestLock?.(), 0);
+    if (this._hadLock) setTimeout(() => this.input?.requestLock?.(), 0);
+    this._hadLock = false;
   }
 
   toggle() {

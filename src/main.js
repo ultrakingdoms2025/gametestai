@@ -1592,7 +1592,7 @@ bus.on('mount:power:buy', ({ mount, power, tier }) => {
   schedulePersist('mount-power');
   scheduleRemotePersist('mount-power');
 });
-// A livery change repaints the car and persists the choice.
+// A livery change repaints the mount and persists the choice.
 bus.on('mount:livery', () => {
   schedulePersist('mount-livery');
   scheduleRemotePersist('mount-livery');

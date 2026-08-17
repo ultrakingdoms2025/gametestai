@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { fbm01, ridgedFbm2D, clamp01, smoothstep } from '../gfx/Textures.js';
 import { ParticlePool, SpeedLines, standardFromBake, makeGlowTexture } from './Hoverboard.js';
+import { applyLivery, MOUNT_STATS } from './Livery.js';
 
 /**
  * The drivable car.
@@ -748,6 +749,13 @@ function buildWheelRimGeometry() {
 /* ================================================================== */
 
 export class Car {
+  /** Colour slots the F10 menu offers. `defaultColor` = factory swatch. */
+  static CUSTOM_SLOTS = [
+    { id: 'paint', label: 'Body paint', finish: true, defaultColor: 0x2b3d55, palette: 'paint' },
+    { id: 'wheel', label: 'Wheels', finish: true, defaultColor: 0xb9c2cc, palette: 'wheel' },
+  ];
+  static STATS = MOUNT_STATS.car;
+
   /**
    * @param {{scene:THREE.Scene, engine:any, physics:any, bus:any, materials:any,
    *          camera:THREE.PerspectiveCamera}} ctx
@@ -810,6 +818,8 @@ export class Car {
     /** Ambient darkness of the current world, 0 bright .. 1 night. */
     this._nightness = 0.6;
 
+    this._livery = null;
+    this._slotMats = null;
     this._geo = {};
     this._buildModel();
     this._buildLightRig();
@@ -844,6 +854,7 @@ export class Car {
     // customisation writes into; everything else stays on the shared material.
     this._paintMat = M.get('mount.carpaint').clone();
     this._wheelMat = M.get('mount.alloy').clone();
+    this._slotMats = { paint: [this._paintMat], wheel: [this._wheelMat] };
     const paint = this._paintMat;
     const trim = M.get('mount.cartrim');
     const alloy = M.get('mount.alloy');
@@ -851,7 +862,7 @@ export class Car {
     const cabin = M.get('mount.cabin');
     const glass = M.get('mount.carglass');
     // A livery chosen before the model existed applies now.
-    if (this._livery) this.applyCustomization(this._livery);
+    this.applyCustomization(this._livery);
 
     this.root = new THREE.Group();
     this.root.name = 'car';
@@ -1895,17 +1906,14 @@ export class Car {
   }
 
   /**
-   * Apply a player livery. Tints the *cloned* body paint and alloy, so the
-   * shared material library and the AI grid keep their factory colours. Fields
-   * are independent 0xRRGGBB values (number or '#rrggbb'); a missing one is left
-   * untouched. Safe to call before or after the model is built.
-   * @param {{paint?:number|string, wheel?:number|string}} livery
+   * Apply a livery `{ paint?:{color,finish}, wheel?:{color,finish} }` to this
+   * car's *cloned* paint and alloy, so the shared library and the AI grid keep
+   * their factory colours. Missing slots restore factory. Safe before build.
    */
   applyCustomization(livery) {
-    if (!livery) return;
-    this._livery = { ...(this._livery || {}), ...livery };
-    if (this._paintMat && this._livery.paint != null) this._paintMat.color.set(this._livery.paint);
-    if (this._wheelMat && this._livery.wheel != null) this._wheelMat.color.set(this._livery.wheel);
+    this._livery = livery && typeof livery === 'object' ? livery : {};
+    if (!this._slotMats) return;
+    applyLivery(this._livery, Car.CUSTOM_SLOTS, this._slotMats);
   }
 
   /**

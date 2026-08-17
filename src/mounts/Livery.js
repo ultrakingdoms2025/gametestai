@@ -83,6 +83,8 @@ function factoryOf(m) {
   return m.userData.factory;
 }
 
+let _scratch = null; // module-level Color reused by the mix path below
+
 /**
  * Write a livery onto a mount's cloned materials.
  * @param {Object<string,{color?:number,finish?:string}>|null|undefined} livery
@@ -93,8 +95,6 @@ function factoryOf(m) {
  * wing membrane that takes 30% of the hide colour but must stay matt).
  * @param {Object<string, Array<any|{mat:any,mix?:number,emissive?:boolean,finish?:boolean}>>} slotMats
  */
-let _scratch = null; // module-level Color reused by the mix path below
-
 export function applyLivery(livery, slots, slotMats) {
   const l = livery || {};
   for (const slot of slots || []) {

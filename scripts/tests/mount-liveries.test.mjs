@@ -167,3 +167,33 @@ test('deserialize still returns undefined (SaveGame relies on the falsy fall-thr
   const { mgr } = manager();
   assert.equal(mgr.deserialize({ unlocked: ['car'] }), undefined);
 });
+
+test('setLivery hands the mount its livery in the nested shape, and no-op patches do not emit', () => {
+  const { mgr, emitted } = manager();
+  const calls = [];
+  mgr._mounts.set('car', { applyCustomization: (l) => calls.push(JSON.parse(JSON.stringify(l))) });
+  mgr.setLivery('car', { paint: { color: 0xc21f2f } });
+  assert.deepEqual(calls.at(-1), { paint: { color: 0xc21f2f } });
+  const before = emitted.filter(([n]) => n === 'mount:livery').length;
+  mgr.setLivery('car', {});
+  mgr.setLivery('car', { paint: { color: 'not-a-colour' } });
+  mgr.resetLivery('horse');
+  assert.equal(emitted.filter(([n]) => n === 'mount:livery').length, before, 'no-ops must not persist');
+  assert.equal(calls.length, 1);
+});
+
+import { Car } from '../../src/mounts/Car.js';
+
+test('Car declares slots/stats and tints its cloned paint and wheel materials', () => {
+  assert.deepEqual(Car.CUSTOM_SLOTS.map((s) => s.id), ['paint', 'wheel']);
+  assert.equal(Car.STATS, MOUNT_STATS.car);
+  const car = new Car(ctx);
+  car.applyCustomization({ paint: { color: 0xff3bd2, finish: 'matt' }, wheel: { color: 0x2fe0ff } });
+  assert.equal(car._slotMats.paint[0].color.getHex(), 0xff3bd2);
+  assert.equal(car._slotMats.paint[0].roughness, FINISH_PROPS.matt.roughness);
+  assert.equal(car._slotMats.paint[0].metalness, FINISH_PROPS.matt.metalness);
+  assert.equal(car._slotMats.wheel[0].color.getHex(), 0x2fe0ff);
+  car.applyCustomization({});
+  assert.equal(car._slotMats.paint[0].roughness, car._slotMats.paint[0].userData.factory.roughness);
+  car.dispose();
+});

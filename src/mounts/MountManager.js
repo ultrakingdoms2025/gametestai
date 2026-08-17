@@ -596,6 +596,7 @@ export class MountManager {
   /* Internals                                                         */
   /* ================================================================ */
 
+  /** `applyCustomization` is handed `this._liveries[id]` directly - a live reference, not a copy - so a mount must treat it as read-only. */
   _create(id) {
     const ctx = {
       scene: this.scene,
@@ -628,23 +629,38 @@ export class MountManager {
   /**
    * Merge a livery patch into one mount and apply it live if that mount exists.
    * `patch` is `{ [slotId]: { color?, finish? } }`; `finish: null` clears the
-   * finish. Colours may be numbers or '#rrggbb'.
+   * finish. Colours may be numbers or '#rrggbb'. A patch that changes nothing
+   * (unknown colour, a redundant finish, an empty object) is a no-op: it never
+   * touches the mount or emits `mount:livery`, so a bad F10 slider drag cannot
+   * trigger a local+remote persist. If the patch empties out a mount's last
+   * slot, the mount's whole `_liveries` entry is dropped rather than left as
+   * `{}`.
+   *
+   * `applyCustomization` is handed the live `_liveries[mountId]` object, not a
+   * copy, so mounts must treat it as read-only.
    * @param {string} mountId
    * @param {Object<string,{color?:number|string, finish?:string|null}>} patch
    */
   setLivery(mountId, patch = {}) {
     if (!mountId || !patch || typeof patch !== 'object') return;
-    const cur = this._liveries[mountId] || (this._liveries[mountId] = {});
+    const cur = this._liveries[mountId] || {};
+    let changed = false;
     for (const slot in patch) {
       const p = patch[slot];
       if (!p || typeof p !== 'object') continue;
+      const before = cur[slot] ? JSON.stringify(cur[slot]) : undefined;
       const s = cur[slot] || (cur[slot] = {});
       const c = normColor(p.color);
       if (c != null) s.color = c;
       if (p.finish === null) delete s.finish;
       else if (FINISH_PROPS[p.finish]) s.finish = p.finish;
       if (!Object.keys(s).length) delete cur[slot];
+      const after = cur[slot] ? JSON.stringify(cur[slot]) : undefined;
+      if (before !== after) changed = true;
     }
+    if (!changed) return;
+    if (Object.keys(cur).length) this._liveries[mountId] = cur;
+    else delete this._liveries[mountId];
     this._mounts.get(mountId)?.applyCustomization?.(cur);
     this.bus?.emit?.('mount:livery', { mountId, livery: cloneLivery(cur) });
   }
@@ -654,9 +670,9 @@ export class MountManager {
     return cloneLivery(this._liveries[mountId]);
   }
 
-  /** Back to factory colours and finish for one mount. */
+  /** Back to factory colours and finish for one mount. A no-op (no emit) if it had none. */
   resetLivery(mountId) {
-    if (!mountId) return;
+    if (!mountId || !this._liveries[mountId]) return;
     delete this._liveries[mountId];
     this._mounts.get(mountId)?.applyCustomization?.({});
     this.bus?.emit?.('mount:livery', { mountId, livery: {} });

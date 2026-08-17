@@ -473,11 +473,10 @@ test('deserialize: an empty-after-filter powers bag clears an existing bag for t
   assert.equal('dragon' in mgr.getPowers(), false);
 });
 
-test('mount skin bag items prefix `short` with the mount abbreviation', () => {
-  const abbr = { car: 'CAR', dragon: 'DRG', eagle: 'EGL', horse: 'HRS', hoverboard: 'HVR', bicycle: 'BKE' };
+test('mount skin bag items prefix `short` with a 3-letter mount abbreviation', () => {
   for (const s of MOUNT_SKINS) {
     const def = itemDef(skinItemId(s.id));
-    assert.equal(def.short, `${abbr[s.mount]} SKN`, s.id);
+    assert.match(def.short, /^[A-Z]{3} SKN$/, s.id);
   }
 });
 

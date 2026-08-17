@@ -53,7 +53,7 @@ export class ItemUseSystem {
     const skinId = skinIdFromItem(itemId);
     const skin = skinId ? MOUNT_SKINS_BY_ID.get(skinId) : null;
     if (!skin) return { ok: false, reason: 'unsupported' };
-    const res = applyMountSkin({ mounts: this.mounts, cosmetics: this.cosmetics, inventory: this.inventory, bus: this.bus }, skinId);
+    const res = applyMountSkin({ mounts: this.mounts, cosmetics: this.cosmetics, inventory: this.inventory }, skinId);
     if (!res.ok) {
       const text = res.reason === 'not-mounted' || res.reason === 'wrong-mount'
         ? `Mount your ${skin.mount} and press F10 to apply this skin`

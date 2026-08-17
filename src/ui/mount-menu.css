@@ -66,7 +66,14 @@ body.mm-open .pause {
   clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 26px 100%, 0 calc(100% - 26px));
   transform: translateX(26px);
   opacity: 0;
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease, visibility 0.24s ease;
+}
+
+/* hud.css's `#ui-root .interactive { pointer-events:auto }` out-specifies the
+   `pointer-events: none` above, so the closed (invisible) panel would still
+   catch clicks and stay tabbable without this. */
+.mm-root:not(.open) .mm-panel {
+  visibility: hidden;
 }
 
 .mm-root.open .mm-panel {
@@ -645,6 +652,6 @@ body.mm-open .pause {
 .mm-stat-fx { grid-column: 1 / -1; font-size: 11px; opacity: 0.75; }
 .mm-pips { display: inline-flex; gap: 4px; }
 .mm-pip { width: 18px; height: 8px; border: 1px solid rgba(255,255,255,0.28); background: rgba(255,255,255,0.06); }
-.mm-pip.on { background: var(--mm-accent, #52e9ff); border-color: var(--mm-accent, #52e9ff); box-shadow: 0 0 8px rgba(82,233,255,0.5); }
+.mm-pip.on { background: var(--mm-cy, #52e9ff); border-color: var(--mm-cy, #52e9ff); box-shadow: 0 0 8px rgba(82,233,255,0.5); }
 .mm-skincard.held .mm-skinlock { color: #b6ff5a; }
 .mm-finish { margin-top: 6px; }

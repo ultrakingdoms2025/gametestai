@@ -79,7 +79,14 @@ body.ch-menu-open .pause {
   clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 26px 100%, 0 calc(100% - 26px));
   transform: translateX(26px);
   opacity: 0;
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease, visibility 0.24s ease;
+}
+
+/* hud.css's `#ui-root .interactive { pointer-events:auto }` out-specifies the
+   `pointer-events: none` above, so the closed (invisible) panel would still
+   catch clicks and stay tabbable without this. */
+.ch-root:not(.open) .ch-panel {
+  visibility: hidden;
 }
 
 .ch-root.open .ch-panel {

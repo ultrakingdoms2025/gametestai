@@ -296,7 +296,10 @@ for (const skin of MOUNT_SKINS) {
   ITEMS[skinItemId(skin.id)] = {
     id: skinItemId(skin.id),
     name: `${skin.name} Skin`,
-    short: `${MOUNT_ABBR[skin.mount]} SKN`,
+    // Falls back to the mount id itself for a mount that has not yet earned
+    // an entry in the abbreviation table, so a new mount's skins still get a
+    // legible bag-item prefix instead of `undefined SKN`.
+    short: `${MOUNT_ABBR[skin.mount] ?? skin.mount.slice(0, 3).toUpperCase()} SKN`,
     stack: 1,
     icon: 'skin',
     value: 200,

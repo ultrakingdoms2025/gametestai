@@ -64,6 +64,10 @@ export class MountMenu {
       this._offs.push(bus.on('mount:powers', resync));
       this._offs.push(bus.on('cosmetic:unlocked', resync));
       this._offs.push(bus.on('inventory:changed', resync));
+      // Switching mounts (e.g. dismount one, mount another) while the panel is
+      // open must rebuild it for the newly ridden mount, not keep showing the
+      // old one's slots. The event carries the mount instance itself.
+      this._offs.push(bus.on('mount:mounted', (e) => { if (this._open && e?.mount) this._buildFor(e.mount); }));
       // A forced dismount (world change, portal) has already restored the rider's
       // pre-mount camera; do not overwrite it with the riding mode we saved.
       this._offs.push(bus.on('mount:dismounted', () => { this._prevCameraMode = null; this.close(); }));
@@ -83,9 +87,9 @@ export class MountMenu {
     const panel = el('aside', 'mm-panel interactive');
     const head = el('header', 'mm-head');
     const titles = el('div', 'mm-titles');
-    this._kicker = el('div', 'mm-kicker', 'Mount');
+    const kicker = el('div', 'mm-kicker', 'Mount');
     this._title = el('div', 'mm-title', 'MOUNT');
-    titles.append(this._kicker, this._title);
+    titles.append(kicker, this._title);
     const close = el('button', 'mm-x');
     close.type = 'button';
     close.append(el('b', null, 'F10'), el('span', null, 'close'));
@@ -229,10 +233,12 @@ export class MountMenu {
           this.bus?.emit('hud:notify', { text: `Buy the ${skin.name} skin at the market (B).`, tone: 'warn' });
           return;
         }
-        const res = applyMountSkin({ mounts: this.mounts, cosmetics: this.cosmetics, inventory: this.inventory, bus: this.bus }, skin.id);
+        const res = applyMountSkin({ mounts: this.mounts, cosmetics: this.cosmetics, inventory: this.inventory }, skin.id);
         if (!res.ok) this.bus?.emit('hud:notify', { text: 'That skin could not be applied.', tone: 'warn' });
         else if (res.consumed) this.bus?.emit('hud:notify', { text: `${skin.name} applied — it is yours to keep now.`, tone: 'info' });
-        this._sync();
+        else if (state === 'equipped') this.bus?.emit('hud:notify', { text: 'Already wearing that skin', tone: 'info' });
+        // With a bus, mount:livery/cosmetic:unlocked/inventory:changed drive the resync.
+        if (!this.bus) this._sync();
       });
 
       this._syncers.push(() => {
@@ -278,7 +284,8 @@ export class MountMenu {
   _setSlot(slotId, patch) {
     if (!this._mountId) return;
     this.mounts.setLivery?.(this._mountId, { [slotId]: patch });
-    this._sync();
+    // With a bus, mount:livery drives the resync; without one, do it here.
+    if (!this.bus) this._sync();
   }
 
   /** Coalesced colour-picker write: one uniform write per frame. */
@@ -289,14 +296,22 @@ export class MountMenu {
       this._pendingRaf = 0;
       const patch = this._pending;
       this._pending = null;
-      if (patch && this._mountId) { this.mounts.setLivery?.(this._mountId, patch); this._sync(); }
+      if (patch && this._mountId) {
+        this.mounts.setLivery?.(this._mountId, patch);
+        // With a bus, mount:livery drives the resync; without one, do it here.
+        if (!this.bus) this._sync();
+      }
     });
   }
 
   _sync() {
-    // One deep copy per sync, not one per swatch/chip/card.
+    // One deep copy per sync, not one per swatch/chip/card. Saved/restored
+    // re-entrantly so a syncer that itself triggers a nested _sync() (e.g. a
+    // bus handler firing while this one is still running) cannot leave the
+    // cache pointed at the wrong livery once the outer call resumes.
+    const prev = this._liveryCache;
     this._liveryCache = this._mountId ? (this.mounts.getLivery?.(this._mountId) ?? {}) : {};
-    try { for (const fn of this._syncers) fn(); } finally { this._liveryCache = null; }
+    try { for (const fn of this._syncers) fn(); } finally { this._liveryCache = prev; }
   }
 
   /* ---------------------------------------------------------------- */
@@ -310,8 +325,8 @@ export class MountMenu {
       this.bus?.emit('hud:notify', { text: 'Mount up first (M) to customise it', tone: 'warn' });
       return;
     }
-    this._open = true;
     this._buildFor(mount);
+    this._open = true;
     this._hadLock = !!this.input?.locked;
     this.input?.setTextCapture?.(true);
     this.input?.exitLock?.();

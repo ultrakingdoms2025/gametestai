@@ -8921,6 +8921,26 @@ export class SportsWorld extends World {
         },
         rival: { name: 'Kjell Nordvik' },
       },
+      {
+        id: 'meridian_track',
+        kind: 'run',
+        label: 'Meridian 400 m',
+        /* The disc must hold the WHOLE oval: MinigameManager abandons a
+         * contest 9 s after the player leaves the venue (LEAVE_GRACE_S) and a
+         * lap takes ~70-100 s. The lap's farthest point is straight/2 + outer
+         * radius = 88.5 m from the track centre, so the disc is centred there
+         * — not at the gantry (the meridian_slope lesson). */
+        centre: new THREE.Vector3(105, 0, -100),
+        radius: 96,
+        yTolerance: 12,
+        reward: 10,
+        /* The world's own ground field: 0 across the track's flat zone, and
+         * the module then stays honest if the oval ever moves off it. */
+        config: { heightFn: parkHeight },
+        // The middle-distance runner who trains beside this track. Her ghost
+        // best-time races; her patrol is never touched.
+        rival: { name: 'Priya Raghunathan' },
+      },
     ];
 
     // Rogue security drones work the outer perimeter and the car park - all of

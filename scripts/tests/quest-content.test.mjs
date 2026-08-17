@@ -518,9 +518,11 @@ test('minigame steps resolve only where a registered venue hosts the game', () =
   assert.equal(games.swim, 'swim_challenge', 'SwimChallenge.js SWIM_GAME_ID scrape moved');
   assert.equal(games.ski, 'ski_slalom', 'SkiRun.js SKI_GAME_ID scrape moved');
   assert.equal(games.tennis, 'tennis_match', 'TennisMatch.js TENNIS_GAME_ID scrape moved');
+  assert.equal(games.run, 'track_race', 'TrackRace.js TRACK_GAME_ID scrape moved');
   const sportsVenues = VOCAB.minigames.venuesByWorld.sports ?? [];
-  assert.deepEqual(sportsVenues.map((v) => v.id).sort(), ['lido_pool', 'meridian_court', 'meridian_slope'],
-    'the SportsWorld.minigameVenues scrape no longer finds the three venues');
+  assert.deepEqual(sportsVenues.map((v) => v.id).sort(),
+    ['lido_pool', 'meridian_court', 'meridian_slope', 'meridian_track'],
+    'the SportsWorld.minigameVenues scrape no longer finds the four venues');
 
   /* `minigame` arrives as a bus event (`quest:activity` → `_onActivity`), so
    * the quests:false gate cannot touch it. That classification is CONFIRMED

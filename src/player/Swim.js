@@ -382,6 +382,28 @@ export class Swim {
     const humanoid = avatar?.humanoid;
     if (!humanoid) return;
 
+    /* Stow the gun in the water (user request, verbatim: "remove gun when
+     * swimming"). Same three-owner visibility problem the tennis racket
+     * documents: the carried carbine is re-shown by wardrobe rebuilds and the
+     * first-person viewmodel is re-asserted every frame by its owners - so
+     * while swimming both are overridden HERE, per frame, which wins because
+     * applyPose runs from Player._installLatePose, after those owners. On
+     * exit the carried flag is restored once and the viewmodel's owners
+     * re-assert themselves the very next frame. */
+    if (this._active) {
+      if (!this._weaponStowed) {
+        this._weaponStowed = true;
+        this._weaponWasVisible = avatar?._weapon?.visible ?? null;
+      }
+      if (avatar?._weapon) avatar._weapon.visible = false;
+      this.player.weapon?.setVisible?.(false);
+    } else if (this._weaponStowed) {
+      this._weaponStowed = false;
+      if (avatar?._weapon && this._weaponWasVisible !== null) {
+        avatar._weapon.visible = this._weaponWasVisible;
+      }
+    }
+
     this._poseWeight = damp(this._poseWeight, this._active ? 1 : 0, 9, dt);
     if (this._poseWeight < 0.002) {
       if (this._poseApplied) {

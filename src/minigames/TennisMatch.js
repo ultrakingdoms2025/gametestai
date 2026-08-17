@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CONFIG } from '../core/Config.js';
+import { createRacket } from './RacketProp.js';
 
 /**
  * The Meridian tennis match.
@@ -14,11 +15,15 @@ import { CONFIG } from '../core/Config.js';
  * persona has promised this challenge since the day she spawned - visibly
  * taking her end, chasing the ball's line and swinging when she returns.
  *
- * The ball itself is cosmetic-kinematic: one small sphere (the same 0.033 m
- * radius and 0xd7f23a yellow as the hopper balls by the court) carried along a
- * parabolic arc between sides over ~1.2-1.6 s. The arc's endpoints are at chest
- * height and its apex clears the 1.07 m net by a metre, so the flight reads as
- * a rally without a single collision being solved.
+ * The ball itself is cosmetic-kinematic: one sphere carried along a parabolic
+ * arc between sides over ~1.6-2.1 s. The arc's endpoints are at chest height
+ * and its apex clears the 1.07 m net by a metre, so the flight reads as a
+ * rally without a single collision being solved. It is deliberately NOT the
+ * hopper balls' 0.033 m: at regulation size the user could not track it from
+ * 20 m away (their words), so it is doubled to TUNING.BALL_RADIUS, unlit
+ * (MeshBasicMaterial - full-bright tennis yellow at any sun angle), and towed
+ * by a short pooled comet trail of fading follower spheres (`_trail`,
+ * updated at frame rate with zero per-frame allocation).
  *
  * ── The rally is a timing game ───────────────────────────────────────────────
  *
@@ -74,9 +79,28 @@ import { CONFIG } from '../core/Config.js';
  * dispose this module themselves before returning the outcome, and `dispose`
  * is idempotent so the manager's own teardown path stays safe.
  *
- * There is no racket prop, and that is a stated decision, not an omission: a
- * prop on `weaponMount` would sit alongside whatever weapon the loadout has
- * drawn there, and the swing pose reads on its own. See the report.
+ * ── The racket, and where the gun went ───────────────────────────────────────
+ *
+ * A carbine on a baseline is wrong, so for the duration of the match the
+ * firearm is stowed and a racket prop (`RacketProp.js`) hangs on the same
+ * `weaponMount` the carbine normally occupies - the mount is a child of the
+ * right hand bone, so the swing poses carry it for free, on the player and on
+ * Deborah alike. Three visibilities are managed, each by its own rule:
+ *
+ *   - the avatar's carried carbine (`avatar._weapon`): hidden at equip and
+ *     re-hidden every frame from `_frame`, because `setPreview` and
+ *     `_rebuildBody` both write that flag mid-match (the F2 wardrobe does
+ *     both); the pre-match value is restored on dispose.
+ *   - the first-person viewmodel (`player.weapon.setVisible`): overridden to
+ *     hidden every frame from `_frame`, which works for the same reason the
+ *     swing key must be `held()` - this hook registered late, so it runs
+ *     AFTER `Player._driveWeapon` and `Loadout.update` have asserted their
+ *     own per-frame visibility, and the last write before render wins. On
+ *     dispose those owners re-assert next frame, so restoration is theirs.
+ *   - the racket itself: attached through `avatar._editMaterials` so its
+ *     materials join the avatar's shadow-only bookkeeping - otherwise first
+ *     person would show a disembodied racket floating over an invisible
+ *     body. `_frame` re-attaches it if the wardrobe swapped the humanoid.
  */
 
 /** Game id. This is the handle a quest step names - see MinigameManager._finish. */
@@ -98,17 +122,34 @@ export const COURT = {
 
 /** Every number a test asserts a bound on, in one exported place. */
 export const TUNING = {
-  /** Seconds one crossing of the net takes, jittered per ball. */
-  FLIGHT_MIN_S: 1.2,
-  FLIGHT_MAX_S: 1.6,
+  /**
+   * Seconds one crossing of the net takes, jittered per ball.
+   * Was 1.2-1.6; slowed ~30% because the user could not track the ball. At
+   * 22.9 m baseline to baseline this is ~11-14 m/s - still brisk, now legible.
+   */
+  FLIGHT_MIN_S: 1.6,
+  FLIGHT_MAX_S: 2.1,
   /** Metres of extra apex over the 1.0 m contact height. Min clears the net x2. */
   ARC_MIN: 1.2,
   ARC_MAX: 1.8,
-  /** Fraction of the incoming flight at which the swing window opens. */
-  WINDOW_OPEN: 0.62,
-  /** Deborah's return probability: RETURN_START * RETURN_DECAY^exchange. */
+  /**
+   * Fraction of the incoming flight at which the swing window opens.
+   * Was 0.62 (0.46-0.61 s of window); now 0.45, which is 0.55 of the flight =
+   * 0.88-1.16 s at the new flight times - roughly twice the old window. The
+   * number is anchored to the court, not taste: the incoming ball crosses the
+   * net at u ~= 0.50 of its flight (net z 26, flights 14.1..14.5 -> 37.4), so
+   * anything <= 0.50 means "press F about when it crosses the net" is always
+   * inside the window, which is the instruction a first-time player infers.
+   */
+  WINDOW_OPEN: 0.45,
+  /**
+   * Deborah's return probability: RETURN_START * RETURN_DECAY^exchange.
+   * Decay was 0.9; 0.86 resolves rallies a touch sooner - she now misses more
+   * often than not by her 5th return (0.95 * 0.86^5 = 0.45) instead of her
+   * 7th, so a player who keeps making the window is paid within ~5 exchanges.
+   */
   RETURN_START: 0.95,
-  RETURN_DECAY: 0.9,
+  RETURN_DECAY: 0.86,
   RETURN_FLOOR: 0.25,
   /** Her winner chance: base + growth * exchange, HARD-CAPPED at WINNER_CAP. */
   WINNER_BASE: 0.05,
@@ -122,12 +163,29 @@ export const TUNING = {
   WALKON_MAX_S: 8,
   /** Whole-match safety net. Generous: a full three-setter fits twice over. */
   TIME_LIMIT_S: 420,
+  /**
+   * Ball radius, metres. Regulation is ~0.033 (the hopper balls' size) and at
+   * that size the user reported losing the ball completely, so the match ball
+   * is doubled - a readability prop, not a simulation.
+   */
+  BALL_RADIUS: 0.065,
+  /** Trail follower spheres. Pooled at construction; zero allocation per frame. */
+  TRAIL_COUNT: 5,
+  /** Opacity of the first follower; the rest fade linearly toward zero. */
+  TRAIL_OPACITY: 0.42,
+  /**
+   * Follower chase rate (per second, applied as lerp(k = dt * rate)). Each
+   * sphere chases the one ahead, so at ~12.5 m/s of ball speed the first
+   * follower trails by speed/rate ~= 0.8 m and the comet spans ~2.5 m -
+   * enough to read direction at 20 m without smearing across the court.
+   */
+  TRAIL_TIGHTNESS: 16,
 };
 
 /** Height the arc's endpoints sit at - a chest-high contact, not a bounce. */
 const CONTACT_Y = 1.0;
-/** Matches the 28 decorative hopper balls: SphereGeometry(0.033), 0xd7f23a. */
-const BALL_RADIUS = 0.033;
+/** The hopper balls' 0xd7f23a tennis yellow, kept for continuity - but see
+ *  TUNING.BALL_RADIUS for why the match ball is twice their size. */
 const BALL_COLOUR = 0xd7f23a;
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -308,20 +366,45 @@ export class TennisMatch {
     /* ---- the ball --------------------------------------------------- */
     this._ballPos = new THREE.Vector3(this.cx, CONTACT_Y, this.baseN);
     this._ball = null;
+    /** @type {THREE.Mesh[]} pooled trail followers; see TUNING.TRAIL_*. */
+    this._trail = [];
     if (this.scene) {
-      const mat = new THREE.MeshStandardMaterial({
-        color: BALL_COLOUR,
-        roughness: 0.85,
-        // A touch of self-light so 6.6 cm of ball survives being 20 m away.
-        emissive: BALL_COLOUR,
-        emissiveIntensity: 0.25,
-      });
-      this._ball = new THREE.Mesh(new THREE.SphereGeometry(BALL_RADIUS, 8, 6), mat);
+      // Unlit on purpose: MeshBasicMaterial ignores the sun, so the ball is
+      // full-bright tennis yellow from every angle - the emissive-tinted
+      // standard material it replaces still went muddy against the far court.
+      const mat = new THREE.MeshBasicMaterial({ color: BALL_COLOUR });
+      this._ball = new THREE.Mesh(new THREE.SphereGeometry(TUNING.BALL_RADIUS, 10, 8), mat);
       this._ball.castShadow = false;
       this._ball.receiveShadow = false;
       this._ball.visible = false;
       this.scene.add(this._ball);
+
+      /* Motion trail: TRAIL_COUNT followers sharing the ball's geometry, each
+       * with its own fading material (opacity is per-material in three). All
+       * of it is allocated here, once - the per-frame update in _updateTrail
+       * only writes positions and visibility flags. */
+      for (let i = 0; i < TUNING.TRAIL_COUNT; i++) {
+        const tmat = new THREE.MeshBasicMaterial({
+          color: BALL_COLOUR,
+          transparent: true,
+          opacity: TUNING.TRAIL_OPACITY * (1 - i / TUNING.TRAIL_COUNT),
+          depthWrite: false,
+        });
+        const m = new THREE.Mesh(this._ball.geometry, tmat);
+        m.castShadow = false;
+        m.receiveShadow = false;
+        m.visible = false;
+        m.scale.setScalar(1 - 0.13 * (i + 1));
+        this.scene.add(m);
+        this._trail.push(m);
+      }
     }
+
+    /* ---- racket out, carbine away ----------------------------------- */
+    this._playerRacket = null;
+    this._npcRacket = null;
+    this._prevCarbineVisible = null;
+    this._equipProps();
 
     /* ---- the late-frame hook ---------------------------------------- */
     /* Two jobs: latch the swing key at frame rate (see the header), and write
@@ -526,6 +609,9 @@ export class TennisMatch {
     this._swingQueued = false;
     this._phase = toPlayer ? 'toPlayer' : 'toNpc';
     if (this._ball) this._ball.visible = true;
+    // Gather the comet onto the strike point, so a serve - which teleports the
+    // ball to the server - never drags a streak across the whole court.
+    for (const m of this._trail) m.position.set(ax, CONTACT_Y, az);
   }
 
   /** Chest-to-chest parabola: endpoints at CONTACT_Y, apex h above them. */
@@ -564,6 +650,113 @@ export class TennisMatch {
     this._event('split', game
       ? `GAME ${game === 'player' ? 'YOU' : 'DEBORAH'} — ${this.score.gamesText()}`
       : `${texts[why] ?? 'POINT'} · ${this.score.pointsText()}`);
+  }
+
+  /* ================================================================ */
+  /* Props: rackets out, carbine away                                  */
+  /* ================================================================ */
+
+  /**
+   * Stow the firearm and hand out the rackets. See the header for the three
+   * visibility rules; this is the equip half, run once from the constructor
+   * (so the racket is in hand for the "take your ends" countdown).
+   */
+  _equipProps() {
+    const avatar = this.player?.avatar ?? null;
+    if (avatar?.humanoid?.weaponMount) {
+      this._playerRacket = createRacket();
+      this._attachPlayerRacket(avatar);
+      if (avatar._weapon) {
+        // Remembered, not assumed: restore-to-what-it-was, not restore-to-true,
+        // so a match started from a state that hides the gun stays coherent.
+        this._prevCarbineVisible = avatar._weapon.visible;
+        avatar._weapon.visible = false;
+      }
+    }
+    // The first-person viewmodel is re-asserted visible every frame by its
+    // owners; _holdProps overrides it every frame for the same reason. This
+    // first hide just covers the frames before our hook first runs.
+    this.player?.weapon?.setVisible?.(false);
+
+    if (this.npc?.humanoid?.weaponMount) {
+      this._npcRacket = createRacket();
+      this.npc.humanoid.weaponMount.add(this._npcRacket.object);
+    }
+  }
+
+  /**
+   * Parent the player's racket, routed through `_editMaterials` where the real
+   * avatar provides it: that lifts the first-person shadow-only state, adds
+   * the racket, and re-collects the material list with the racket's materials
+   * in it - so first person silences the racket along with the body instead
+   * of drawing it disembodied. Harness players without that method just get a
+   * plain add.
+   * @param {any} avatar
+   */
+  _attachPlayerRacket(avatar) {
+    const mount = avatar?.humanoid?.weaponMount;
+    const racket = this._playerRacket;
+    if (!mount || !racket) return;
+    if (typeof avatar._editMaterials === 'function') {
+      avatar._editMaterials(() => mount.add(racket.object));
+    } else {
+      mount.add(racket.object);
+    }
+  }
+
+  /**
+   * Per-frame prop discipline, from `_frame` (which runs after every system
+   * that re-asserts weapon visibility - registration order again):
+   *   - keep the viewmodel and the carried carbine hidden, undoing whatever
+   *     `Loadout.update`, `Player._driveWeapon`, `setPreview` or a wardrobe
+   *     `_rebuildBody` did earlier this frame;
+   *   - re-attach the racket if the wardrobe swapped the humanoid out from
+   *     under it. `Humanoid.dispose` frees only its OWN cached body resources
+   *     and removes its root from the scene (measured, Humanoid.js:4569), so
+   *     the racket rides out of the scene intact and unowned; moving the same
+   *     object onto the new hand is both the fix and the leak-proofing.
+   */
+  _holdProps() {
+    this.player?.weapon?.setVisible?.(false);
+    const avatar = this.player?.avatar ?? null;
+    if (!avatar) return;
+    if (avatar._weapon?.visible) avatar._weapon.visible = false;
+    const mount = avatar.humanoid?.weaponMount;
+    if (this._playerRacket && mount && this._playerRacket.object.parent !== mount) {
+      this._attachPlayerRacket(avatar);
+    }
+  }
+
+  /** The dispose half: rackets away, firearm back exactly as found. */
+  _unequipProps() {
+    const avatar = this.player?.avatar ?? null;
+    if (this._playerRacket) {
+      const racket = this._playerRacket;
+      this._playerRacket = null;
+      if (avatar && typeof avatar._editMaterials === 'function' && racket.object.parent) {
+        // Through _editMaterials again, so the avatar's material bookkeeping
+        // drops the racket's materials as cleanly as it adopted them.
+        avatar._editMaterials(() => racket.dispose());
+      } else {
+        racket.dispose();
+      }
+    }
+    if (this._npcRacket) {
+      this._npcRacket.dispose();
+      this._npcRacket = null;
+    }
+    if (avatar?._weapon) {
+      // The stored value when there is one; otherwise the avatar's own rule
+      // (visible unless previewing) - covers a weapon built mid-match by a
+      // wardrobe rebuild after an equip that found none to remember.
+      avatar._weapon.visible = this._prevCarbineVisible ?? (avatar.previewing !== true);
+    }
+    this._prevCarbineVisible = null;
+    // Match Player._driveWeapon's own rule for this frame; its per-frame
+    // assert takes over from the next frame regardless.
+    this.player?.weapon?.setVisible?.(
+      this.player?._harnessFrozen !== true && this.player?.isThirdPerson !== true
+    );
   }
 
   /* ================================================================ */
@@ -676,7 +869,27 @@ export class TennisMatch {
     const fDown = this._phase === 'toPlayer' && !!this.input?.held?.('KeyF');
     if (fDown && !this._fWasDown) this._swingQueued = true;
     this._fWasDown = fDown;
+    this._holdProps();
+    this._updateTrail(dt);
     this._poseNpcSwing(dt);
+  }
+
+  /**
+   * Frame-rate comet: each follower chases the one ahead of it (the first
+   * chases the ball), which needs no history buffer and allocates nothing.
+   * Runs at frame rate rather than fixed rate so the fade is smooth at any
+   * display rate; snapped to the strike point in `_beginFlight`.
+   */
+  _updateTrail(dt) {
+    if (!this._trail.length) return;
+    const live = !!this._flight && !!this._ball?.visible;
+    const k = Math.min(1, dt * TUNING.TRAIL_TIGHTNESS);
+    let ahead = this._ballPos;
+    for (const m of this._trail) {
+      if (m.visible !== live) m.visible = live;
+      m.position.lerp(ahead, k);
+      ahead = m.position;
+    }
   }
 
   /**
@@ -786,10 +999,17 @@ export class TennisMatch {
     }
     if (this._ball) {
       this._ball.parent?.remove(this._ball);
+      // The trail shares this geometry, so one dispose covers all six meshes.
       this._ball.geometry?.dispose?.();
       this._ball.material?.dispose?.();
       this._ball = null;
     }
+    for (const m of this._trail) {
+      m.parent?.remove(m);
+      m.material?.dispose?.();
+    }
+    this._trail.length = 0;
+    this._unequipProps();
     this._releaseNpc();
   }
 

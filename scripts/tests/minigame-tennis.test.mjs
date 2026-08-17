@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import nodePath from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import * as THREE from 'three';
+
 import { EventBus } from '../../src/core/EventBus.js';
 import { Economy } from '../../src/systems/Economy.js';
 import {
@@ -102,10 +104,37 @@ function makeDeborah() {
  * scripts Deborah - 0.5 means she returns (0.5 < 0.95) and never hits a
  * winner (0.5 > 0.15 cap); 0.99 means she misses every return (0.99 > 0.95).
  */
-function makeRig({ withNpc = true, rngDefault = 0.5, rngQueue = [] } = {}) {
+function makeRig({ withNpc = true, rngDefault = 0.5, rngQueue = [], withBody = false } = {}) {
   const bus = new EventBus();
   const economy = new Economy({ bus });
   const player = { position: { x: 0, y: 0, z: 0 } };
+  if (withBody) {
+    /* The prop surfaces the module drives, modelled on the REAL contract:
+     * `player.scene` (the ball and trail parent), `player.avatar` with a
+     * `humanoid.weaponMount`, a carried `_weapon` whose `.visible` the match
+     * must override, `_editMaterials` (the shadow-only bookkeeping route the
+     * real PlayerAvatar requires for anything added to its subtree), and
+     * `player.weapon.setVisible` (the first-person viewmodel, re-asserted
+     * visible per frame by Loadout/Player in the real game). */
+    player.scene = new THREE.Object3D();
+    player.isThirdPerson = false;
+    player.avatar = {
+      humanoid: { weaponMount: new THREE.Object3D() },
+      _weapon: { visible: true },
+      previewing: false,
+      editCalls: 0,
+      _editMaterials(fn) {
+        this.editCalls += 1;
+        fn();
+      },
+    };
+    player.weapon = {
+      visible: true,
+      setVisible(v) {
+        this.visible = !!v;
+      },
+    };
+  }
   const keys = new Set();
   /* `held` mirrors the real Input.held(): true while the key is in the down
    * set. The match's frame hook edge-detects on held() rather than pressed()
@@ -303,6 +332,42 @@ test('the winner chance never exceeds the cap, at any rally length', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Tuning: winnable by a first-time player                             */
+/* ------------------------------------------------------------------ */
+
+test('the swing window opens before the ball crosses the net', () => {
+  /* The instruction a first-time player infers from "SWING — PRESS F" is
+   * "press it about when the ball comes over the net". That press must land
+   * inside the window, so WINDOW_OPEN is bounded by the net-crossing fraction
+   * of the SHORTEST incoming flight - the serve, struck from the baseline
+   * itself (a mid-rally return starts at baseN + 0.4, which crosses later). */
+  const from = COURT.baseN;
+  const to = COURT.baseS - 0.5;
+  const uNet = (COURT.netZ - from) / (to - from);
+  assert.ok(TUNING.WINDOW_OPEN <= uNet,
+    `WINDOW_OPEN ${TUNING.WINDOW_OPEN} must not be after the net crossing at u=${uNet.toFixed(3)}`);
+});
+
+test('the window is long enough, and flights slow enough, to be human', () => {
+  // The worst case is the fastest ball: even then the window must give a
+  // first-time player the better part of a second.
+  const worst = (1 - TUNING.WINDOW_OPEN) * TUNING.FLIGHT_MIN_S;
+  const best = (1 - TUNING.WINDOW_OPEN) * TUNING.FLIGHT_MAX_S;
+  assert.ok(worst >= 0.8, `shortest window ${worst.toFixed(2)}s must be >= 0.8s`);
+  assert.ok(best <= 1.5, `longest window ${best.toFixed(2)}s should stay a timing game, not a formality`);
+  // Flights were slowed from 1.2-1.6s (untrackable, per the user) - keep them
+  // in the legible band without turning the rally into a lob-fest.
+  assert.ok(TUNING.FLIGHT_MIN_S >= 1.5 && TUNING.FLIGHT_MAX_S <= 2.5,
+    'crossing times must stay in the slowed, trackable band');
+});
+
+test('rallies resolve: Deborah is more likely to miss than return by her 5th', () => {
+  assert.ok(rivalOdds(5).pReturn < 0.5,
+    'a player who keeps making the window must be paid within ~5 exchanges');
+  assert.ok(TUNING.WINNER_CAP <= 0.15, 'the winner cap must hold at <= 0.15');
+});
+
+/* ------------------------------------------------------------------ */
 /* Geometry: can this course actually be played on this court?         */
 /* ------------------------------------------------------------------ */
 
@@ -420,7 +485,7 @@ test('swinging before the window opens is a committed early miss', () => {
   beginMatch(rig);
   const game = toIncoming(rig);
 
-  frames(rig, 0.3); // well before WINDOW_OPEN (0.62 of a >=1.2 s flight)
+  frames(rig, 0.3); // well before WINDOW_OPEN (0.45 of a >=1.6 s flight)
   assert.equal(game.windowOpen, false, 'the window must not be open this early');
   pressSwing(rig);
   assert.equal(game._phase, 'toPlayer', 'an early swing does not return the ball');
@@ -609,4 +674,122 @@ test('TennisPose writes the swing onto the bones, and only during a swing', () =
 
   assert.doesNotThrow(() => new TennisPose({}).applyPose(STEP, 0),
     'a harness with no avatar and no manager must not throw');
+});
+
+/* ------------------------------------------------------------------ */
+/* The ball the user can see, and the trail behind it                  */
+/* ------------------------------------------------------------------ */
+
+test('the match ball is the big unlit one, towed by a pooled fading trail', () => {
+  const rig = makeRig({ withBody: true });
+  beginMatch(rig);
+  const game = rig.mg._game;
+
+  const ball = game._ball;
+  assert.ok(ball, 'a player with a scene must get a visible ball');
+  assert.equal(ball.geometry.parameters.radius, TUNING.BALL_RADIUS);
+  assert.ok(TUNING.BALL_RADIUS >= 0.06,
+    'the readability fix: the match ball must stay ~2x the 0.033 hopper ball');
+  assert.equal(ball.material.isMeshBasicMaterial, true,
+    'unlit, so it is full-bright tennis yellow at any sun angle');
+
+  assert.equal(game._trail.length, TUNING.TRAIL_COUNT, 'the trail pool is built up front');
+  for (let i = 1; i < game._trail.length; i++) {
+    assert.ok(game._trail[i].material.opacity < game._trail[i - 1].material.opacity,
+      'followers must fade toward the tail');
+    assert.equal(game._trail[i].geometry, ball.geometry, 'followers share the ball geometry');
+  }
+
+  toIncoming(rig);
+  frame(rig);
+  assert.equal(game._trail[0].visible, true, 'the comet must show while a ball flies');
+
+  runUntil(rig, () => game._phase === 'point', 5);
+  frame(rig);
+  assert.equal(game._ball.visible, false);
+  assert.equal(game._trail[0].visible, false, 'and hide between points');
+
+  rig.mg.abort('player');
+  assert.equal(rig.player.scene.children.length, 0,
+    'dispose must sweep the ball and every trail sphere out of the scene');
+});
+
+/* ------------------------------------------------------------------ */
+/* The racket replaces the gun - for exactly the length of the match   */
+/* ------------------------------------------------------------------ */
+
+test('starting stows the firearm and puts a racket in both hands', () => {
+  const rig = makeRig({ withBody: true });
+  rig.deborah.humanoid = { weaponMount: new THREE.Object3D() };
+  place(rig, 112, 0.2, 30);
+  pressE(rig);
+
+  const avatar = rig.player.avatar;
+  const mount = avatar.humanoid.weaponMount;
+  assert.equal(mount.children.length, 1, 'the racket must hang on the weapon mount');
+  assert.equal(mount.children[0].name, 'racketProp');
+  assert.ok(avatar.editCalls >= 1,
+    'the racket must be added through _editMaterials, or first person draws it disembodied');
+  assert.equal(avatar._weapon.visible, false, 'the carried carbine must be hidden');
+  assert.equal(rig.player.weapon.visible, false, 'and the first-person viewmodel with it');
+  assert.equal(rig.deborah.humanoid.weaponMount.children.length, 1,
+    'Deborah gets a racket on her own weaponMount');
+});
+
+test('the frame hook re-hides the gun after its owners re-show it, and survives a wardrobe swap', () => {
+  const rig = makeRig({ withBody: true });
+  place(rig, 112, 0.2, 30);
+  pressE(rig);
+  const avatar = rig.player.avatar;
+
+  /* Loadout.update and Player._driveWeapon re-assert viewmodel visibility
+   * EVERY frame, and the F2 preview writes avatar._weapon.visible directly.
+   * The match's late-registered hook runs after all of them, so the last
+   * write before render must be the hide. */
+  rig.player.weapon.visible = true;
+  avatar._weapon.visible = true;
+  frame(rig);
+  assert.equal(rig.player.weapon.visible, false, 'the late hook must win the frame');
+  assert.equal(avatar._weapon.visible, false);
+
+  // The wardrobe's _rebuildBody: a NEW humanoid, a NEW visible carbine, and
+  // the old mount (racket aboard) disposed out from under the match.
+  avatar.humanoid = { weaponMount: new THREE.Object3D() };
+  avatar._weapon = { visible: true };
+  frame(rig);
+  assert.equal(avatar.humanoid.weaponMount.children.length, 1,
+    'the racket must follow the player onto the rebuilt body');
+  assert.equal(avatar._weapon.visible, false, 'and the rebuilt carbine must be re-hidden');
+});
+
+test('every exit gives the firearm back: quit, and a win that self-disposes', () => {
+  const quitRig = makeRig({ withBody: true });
+  quitRig.deborah.humanoid = { weaponMount: new THREE.Object3D() };
+  place(quitRig, 112, 0.2, 30);
+  pressE(quitRig);
+  quitRig.mg.abort('player');
+  const qa = quitRig.player.avatar;
+  assert.equal(qa.humanoid.weaponMount.children.length, 0, 'quit must take the racket away');
+  assert.equal(qa._weapon.visible, true, 'and hand the carbine back exactly as found');
+  assert.equal(quitRig.player.weapon.visible, true);
+  assert.equal(quitRig.deborah.humanoid.weaponMount.children.length, 0,
+    'Deborah hands hers back too');
+
+  // A FINISHED match is reset(), never disposed, by the manager - the module
+  // must have restored the loadout itself the moment the outcome returned.
+  const winRig = makeRig({ withBody: true, rngDefault: 0.99 });
+  beginMatch(winRig);
+  let t = 0;
+  while (winRig.mg.state !== MINIGAME_STATE.FINISHED && t < 240) {
+    const g = winRig.mg._game;
+    if (g && g.windowOpen) pressSwing(winRig);
+    else frame(winRig);
+    t += STEP;
+  }
+  assert.equal(winRig.mg.state, MINIGAME_STATE.FINISHED);
+  assert.equal(winRig.seen.find((s) => s.type === 'minigame:finished')?.e?.won, true);
+  const wa = winRig.player.avatar;
+  assert.equal(wa.humanoid.weaponMount.children.length, 0, 'a win must sweep the racket');
+  assert.equal(wa._weapon.visible, true, 'and restore the carbine without the manager\'s help');
+  assert.equal(winRig.player.scene.children.length, 0, 'ball and trail gone with it');
 });

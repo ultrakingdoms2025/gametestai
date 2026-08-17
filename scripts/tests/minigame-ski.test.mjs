@@ -82,9 +82,22 @@ function makeVenue(extraConfig = {}) {
   };
 }
 
-/** A MountManager stand-in with the two calls the module makes. */
+/**
+ * A MountManager stand-in modelling the REAL mount surface the module now
+ * touches: summon/dismount/active, plus the kinematic fields a Hoverboard
+ * actually carries (`position` Vector3, `heading` yaw, `velocity`, `speed`)
+ * — the start-gate placement writes them, and a double without them would
+ * silently prove nothing (the pressed-without-held lesson, one system over).
+ */
 function makeMounts({ premounted = false } = {}) {
-  const board = () => ({ id: 'hoverboard', canDismount: () => true });
+  const board = () => ({
+    id: 'hoverboard',
+    canDismount: () => true,
+    position: new THREE.Vector3(),
+    heading: 0,
+    velocity: new THREE.Vector3(),
+    speed: 0,
+  });
   return {
     summoned: 0,
     dismounted: 0,
@@ -103,16 +116,21 @@ function makeMounts({ premounted = false } = {}) {
   };
 }
 
-function makeRig({ venue = makeVenue(), mounts = makeMounts() } = {}) {
+function makeRig({ venue = makeVenue(), mounts = makeMounts(), factory = null } = {}) {
   const bus = new EventBus();
   const economy = new Economy({ bus });
   const player = { position: { x: 0, y: 0, z: 0 } };
   const keys = new Set();
-  const input = { pressed: (code) => keys.has(code) };
+  // The REAL Input contract is pressed AND held (level-trigger) — a double
+  // that models only half of it is how the tennis unwinnability bug hid.
+  const input = { pressed: (code) => keys.has(code), held: (code) => keys.has(code) };
   const mg = new MinigameManager({ bus, player, economy, input });
   // The exact wiring the integration spec gives main.js: the manager hands
-  // the factory player/bus/input, and the closure adds the mount authority.
-  mg.registerGame('ski', (v, c) => createSkiRun(v, { ...c, mounts }));
+  // the factory player/bus/input, and the closure adds the mount authority
+  // (and, for the rival's body, the humanoid factory when a test wants one).
+  mg.registerGame('ski', (v, c) =>
+    createSkiRun(v, { ...c, mounts, ...(factory ? { factory } : {}) })
+  );
 
   const seen = [];
   for (const type of [
@@ -305,6 +323,17 @@ test('the slope prompts on arrival and E starts the countdown already mounted', 
   assert.equal(rig.mounts.summoned, 1, 'accepting should summon the board');
   assert.equal(rig.mounts.lastSummon, 'hoverboard');
   assert.equal(rig.mounts.active?.id, 'hoverboard', 'and the player should be riding it');
+
+  /* Start positioning: the MOUNT (which owns position while ridden — a
+   * player teleport would snap back) is stood just above the start line,
+   * facing downhill, so the countdown shows the run laid out below. */
+  const m = rig.mounts.active;
+  const gz = SKI_COURSE.startZ - 4;
+  assert.ok(Math.abs(m.position.z - gz) < 1e-9, `the board stands just above the line (z=${m.position.z})`);
+  assert.ok(Math.abs(m.position.x - pisteCentreX(gz)) < 1e-9, 'on the groomed centreline');
+  assert.ok(Math.abs(m.position.y - (slopeHeight(pisteCentreX(gz), gz) + 0.5)) < 1e-9,
+    'seated on the snow by the height field, not a constant');
+  assert.equal(m.heading, Math.PI, 'facing +z — downhill');
 });
 
 test('a player already on their board is not toggled off it, and keeps it at the flag', () => {
@@ -358,7 +387,7 @@ test('a clean descent through every gate beats Kjell and pays exactly 10 credits
   assert.equal(rig.mounts.dismounted, 1, 'the module dismounts the board it summoned');
 });
 
-test('skipping one gate costs the stated 2 s and a fast run still wins', () => {
+test('skipping one gate costs the stated 4 s and a fast run still wins', () => {
   const rig = makeRig();
   beginRun(rig);
 
@@ -373,11 +402,12 @@ test('skipping one gate costs the stated 2 s and a fast run still wins', () => {
   const fin = rig.seen.find((s) => s.type === 'minigame:finished')?.e;
   assert.equal(fin.detail.missed, 1);
   assert.equal(fin.detail.penaltySeconds, SKI_COURSE.penaltyS);
-  assert.equal(fin.detail.penaltySeconds, 2, 'the HUD states 2 s per missed gate; it must cost 2 s');
+  assert.equal(fin.detail.penaltySeconds, 4,
+    'the HUD states 4 s per missed gate (the winnability retune); it must cost 4 s');
   assert.equal(fin.won, true, 'one miss on a fast run should still beat the ghost');
   assert.ok(fin.score > fin.detail.run, 'the penalty must be inside the recorded score');
   const missEvent = rig.seen.find((s) => s.type === 'minigame:event' && s.e.kind === 'miss')?.e;
-  assert.match(missEvent?.text ?? '', /MISSED — \+2s/, 'the miss and its price are announced');
+  assert.match(missEvent?.text ?? '', /MISSED — \+4s/, 'the miss and its price are announced');
 });
 
 test('straight-lining the course hands it to the ghost, and a loss pays nothing', () => {
@@ -400,6 +430,98 @@ test('straight-lining the course hands it to the ghost, and a loss pays nothing'
   assert.equal(rig.economy.credits, 0, 'losing must not pay');
   assert.equal(fin.rivalName, 'Kjell Nordvik');
   assert.equal(rig.mounts.dismounted, 1, 'the board is handed back on a loss too');
+});
+
+test('the winnability boundary: an ordinary run survives one miss and loses on two', () => {
+  /* "Ordinary" here is 6.5 m/s along the weaving line ≈ 18.8 s of timed
+   * descent — the middle of the 15-25 s band measured in-browser. Against the
+   * 24.8 s ghost and the 4 s penalty that must resolve exactly as the brief
+   * asks: most-gates wins, missing 2+ loses. */
+  const run = (missCount) => {
+    const rig = makeRig();
+    beginRun(rig);
+    const line = cleanLine();
+    const gates = gateCourse(slopeHeight);
+    for (let i = 0; i < missCount; i++) {
+      const g = gates[i * 2 + 1]; // gates 2 and 4: honest mid-course misses
+      line[g.i + 1] = [pisteCentreX(g.z), g.z];
+    }
+    rideThrough(rig, line, { speed: 6.5 });
+    return rig.seen.find((s) => s.type === 'minigame:finished')?.e;
+  };
+  const clean = run(0);
+  assert.equal(clean?.won, true, 'a clean ordinary descent wins');
+  const one = run(1);
+  assert.equal(one?.detail?.missed, 1);
+  assert.equal(one?.won, true, 'one missed gate on an ordinary descent still wins');
+  const two = run(2);
+  assert.equal(two?.detail?.missed, 2);
+  assert.equal(two?.won, false, 'two missed gates on an ordinary descent lose');
+  assert.equal(two?.detail?.reason, 'rival', 'because the penalties put Kjell home first');
+});
+
+/**
+ * A HumanoidFactory stand-in for the rival's body: the surface
+ * `GhostCompetitor` actually touches. The REAL factory bakes canvas textures
+ * and cannot run headless — which is also why a rig with no injected factory
+ * deterministically has no body (asserted by the furniture-count tests).
+ */
+function stubFactory() {
+  return {
+    create() {
+      const root = new THREE.Group();
+      const rig = new THREE.Group();
+      root.add(rig);
+      return {
+        root,
+        rig,
+        bones: new Map(),
+        boneList: [],
+        disposed: false,
+        dispose() {
+          this.disposed = true;
+        },
+      };
+    },
+  };
+}
+
+test("Kjell's body rides the snow at exactly the readout distance, and is torn down", () => {
+  const group = new THREE.Group();
+  const rig = makeRig({ venue: makeVenue({ group }), factory: stubFactory() });
+  beginRun(rig);
+  const game = rig.mg._game;
+  assert.ok(game._ghost, 'group + height field + factory should produce a body');
+  assert.equal(group.children.length, 2, 'the gate furniture and the rival body');
+  const gr = game._ghost.root.position;
+  assert.equal(gr.z, SKI_COURSE.startZ, 'waiting at the start line during the approach');
+
+  // Descend the bare centreline; every racing step the body must sit at
+  // startZ + rivalDist — the number the RIVAL row prints — on the snow,
+  // inside the gate corridor.
+  const p = rig.player.position;
+  place(rig, pisteCentreX(-192), slopeHeight(pisteCentreX(-192), -192) + 0.6, -192);
+  let sampled = 0;
+  for (let i = 0; i < 2000 && rig.mg.running; i++) {
+    p.z += 8 * STEP;
+    p.x = pisteCentreX(p.z);
+    p.y = slopeHeight(p.x, p.z) + 0.6;
+    frame(rig);
+    if (!rig.mg.running || game.phase !== 'racing') continue;
+    assert.ok(Math.abs(gr.z - (SKI_COURSE.startZ + game.rivalDist)) < 1e-6,
+      'the body and the readout must never disagree');
+    assert.ok(Math.abs(gr.y - (slopeHeight(gr.x, gr.z) + 0.55)) < 1e-6,
+      'his y comes from the height field: he rides the snow');
+    assert.ok(Math.abs(gr.x - pisteCentreX(gr.z)) <= SKI_COURSE.gateOffset + 1e-6,
+      'his slalom line stays inside the gate corridor');
+    sampled += 1;
+  }
+  assert.ok(sampled > 100, 'the sweep must actually have raced');
+
+  // Straight-lining missed everything, so this run LOST — and win or lose,
+  // the flag tears down gates and body alike.
+  assert.equal(rig.mg.state, MINIGAME_STATE.FINISHED);
+  assert.equal(group.children.length, 0, 'gates AND body must be gone at the flag');
 });
 
 test('quitting mid-run pays nothing, credits no quest, and still cleans up', () => {

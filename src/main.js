@@ -55,6 +55,7 @@ import { MinigamePose } from './minigames/MinigamePose.js';
 import { createSwimChallenge } from './minigames/SwimChallenge.js';
 import { createSkiRun } from './minigames/SkiRun.js';
 import { createTennisMatch } from './minigames/TennisMatch.js';
+import { createTrackRace } from './minigames/TrackRace.js';
 import { TennisPose } from './minigames/TennisPose.js';
 import { MinigameUI } from './ui/MinigameUI.js';
 import { QuestBoard } from './ui/QuestBoard.js';
@@ -281,16 +282,35 @@ const raceUI = new RaceUI({ root: uiRoot, bus, input, race });
  * is skipped, which is what keeps the tennis and ski slots inert until their
  * modules exist. */
 const minigames = new MinigameManager({ bus, player, economy, input, worldManager });
-minigames.registerGame('swim', createSwimChallenge);
+/* The closure lends the swim what its start placement and visible rival need:
+ * the shared NPC humanoid factory (shader-warm), the mount authority (a ridden
+ * board must be dismounted before the start-wall teleport can hold), and the
+ * worldManager so the rival's body parents into the active world's group. */
+minigames.registerGame('swim', (venue, ctx) =>
+  createSwimChallenge(venue, { ...ctx, npcs: npcManager, mounts, worldManager, engine })
+);
 /* The ski factory needs the mount authority (it summons and returns the
  * hoverboard) which the manager deliberately does not know about, so it is
  * closed over here rather than added to the factory contract. `worldManager`
- * rides along so the gate poles can parent into the active world's group. */
-minigames.registerGame('ski', (venue, ctx) => createSkiRun(venue, { ...ctx, mounts, worldManager }));
+ * rides along so the gate poles can parent into the active world's group;
+ * `npcs` and `engine` lend the rival ghost a shader-warm humanoid factory
+ * and the frame hook that animates it. */
+minigames.registerGame('ski', (venue, ctx) =>
+  createSkiRun(venue, { ...ctx, mounts, worldManager, npcs: npcManager, engine })
+);
 /* The closure is the only place the tennis module learns about NPCs and the
  * frame loop; the manager itself hands over only player/bus/input. */
 minigames.registerGame('tennis', (venue, ctx) =>
   createTennisMatch(venue, { ...ctx, npcs: npcManager, engine })
+);
+/* The closure lends the foot race what its start placement and visible field
+ * need: the mount authority (a ridden board must be dismounted before the
+ * start-line teleport can hold, and checkpoints refuse to count while
+ * mounted), the shared NPC humanoid factory via npcs (shader-warm), the
+ * worldManager so the three rival bodies parent into the active world's
+ * group, and the engine for their frame-rate animation hook. */
+minigames.registerGame('run', (venue, ctx) =>
+  createTrackRace(venue, { ...ctx, mounts, worldManager, npcs: npcManager, engine })
 );
 const minigameUI = new MinigameUI({ root: uiRoot, bus, input, minigames });
 /* The fourth and fifth late-pose modules, run as one pass. Assigned onto the

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { GhostCompetitor } from './GhostCompetitor.js';
 
 /**
  * The Meridian Downhill: a slalom descent of the ski mound's middle piste.
@@ -20,15 +21,22 @@ import * as THREE from 'three';
  * holds them off the ground). The board is the descent authority here, not
  * gravity.
  *
- * ── The rival is a ghost, for the swim's reasons ─────────────────────────────
+ * ── The rival is a ghost, and now the ghost has a body ───────────────────────
  *
  * Kjell Nordvik teaches at the bottom of this hill (`SportsWorld.js:8796`,
  * spawn (-52,-56)) and his patrol is authored content that must not break; an
  * NPC also cannot ride a mount. So the rival is his best time: a pace point
  * advancing down the fall line on a tuned curve, exactly like the swim's pace
  * swimmer. A missed gate does not disqualify - it hands the ghost
- * `PENALTY_S` seconds of extra running, which keeps the RIVAL gap readout
+ * `penaltyS` seconds of extra running, which keeps the RIVAL gap readout
  * honest: what you see on the hill is what decides the result.
+ *
+ * That pace point now WEARS a `GhostCompetitor`: a kinematic skinned humanoid
+ * in the board stance on a simple board, placed every fixed step at exactly
+ * the fall-line distance `_rivalDist` reports, x on a cosine weave that
+ * threads the gates, y from the world's own `heightFn` so he rides the snow.
+ * The readout and the body are the same number by construction. No factory
+ * or group (headless tests) means no body and an unchanged contest.
  *
  * ── Where the course is, and why the numbers are duplicated ──────────────────
  *
@@ -114,20 +122,33 @@ export const SKI_COURSE = {
   gateYGate: 10,
   /** Metres past a gate's z before it is called missed. */
   missMargin: 6,
-  /** Seconds a missed gate hands the ghost. Stated on the HUD subtitle. */
-  penaltyS: 2,
+  /** Seconds a missed gate hands the ghost. Stated on the HUD subtitle.
+   *  4 s is the winnability tuning (see the pace-curve comment below): one
+   *  miss on an ordinary run survives, two misses lose it. */
+  penaltyS: 4,
 };
 
 /**
  * Kjell's ghost, as a pace down the fall line (metres of z per second).
- * A skier accelerates through a course, so the curve builds; integrated over
- * the 102 m of fall line this is ≈13.9 s. The board cruises at 14 m/s
- * (Hoverboard CRUISE_SPEED) but the slalom line is longer than the fall line
- * and turning costs grip, so a clean committed run wins, a hesitant one does
- * not, and boost is how you win comfortably.
+ * A skier accelerates through a course, so the curve builds.
+ *
+ * The tuning, stated so it is auditable. Integrated over the 102 m of fall
+ * line this curve is (102/2.0)*ln(5.2/3.2) ≈ 24.8 s. A real descent that
+ * actually threads gates was measured at ~15-25 s (the board cruises at
+ * 14 m/s but the slalom line is longer than the fall line and turning costs
+ * grip), call an ordinary run ~18-20 s. Each missed gate hands the ghost
+ * `penaltyS` = 4 s of extra running, so:
+ *
+ *   0 misses  -> ghost home in ~24.8 s -> an ordinary run wins by ~5-7 s
+ *   1 miss    -> ~20.8 s              -> an ordinary run still wins, barely
+ *   2 misses  -> ~16.8 s              -> an ordinary run LOSES
+ *   3+ misses -> ~12.8 s or better    -> only a boosted flier saves it
+ *
+ * Which is the brief verbatim: take most of the gates and you win; miss two
+ * or more and you lose; boost is how you win comfortably.
  */
-const RIVAL_ZPACE_START = 5.6;
-const RIVAL_ZPACE_END = 9.4;
+const RIVAL_ZPACE_START = 3.2;
+const RIVAL_ZPACE_END = 5.2;
 
 /** Seconds before the whole contest (approach included) is called off. */
 const TIME_LIMIT_S = 240;
@@ -190,11 +211,15 @@ export function gateCourse(heightFn = null) {
 export class SkiRun {
   /**
    * @param {object} venue validated descriptor from MinigameManager
-   * @param {{player:any, bus:any, input?:any, mounts?:any, worldManager?:any}} ctx
+   * @param {{player:any, bus:any, input?:any, mounts?:any, worldManager?:any,
+   *          npcs?:any, engine?:any, factory?:any}} ctx
    *   `mounts` and `worldManager` are merged in by main.js's registerGame
-   *   closure - the manager itself only supplies player/bus/input.
+   *   closure - the manager itself only supplies player/bus/input. `npcs`
+   *   (or an explicit `factory`) lends the shared humanoid factory for the
+   *   rival's body; absent, the player's own avatar factory stands in.
    */
-  constructor(venue, { player, bus, mounts, worldManager } = {}) {
+  constructor(venue, ctx = {}) {
+    const { player, bus, mounts, worldManager } = ctx;
     this.id = SKI_GAME_ID;
     this.venue = venue;
     this.player = player;
@@ -257,6 +282,129 @@ export class SkiRun {
     if (host && typeof host.add === 'function' && this.heightFn) {
       this._buildGates(host);
     }
+
+    /* ---- the start position ----------------------------------------
+     * The factory runs during the countdown, so the placement is what makes
+     * the countdown show the run laid out below the start gate. */
+    this._placeAtStart();
+
+    /* ---- the visible rival ------------------------------------------
+     * Kjell's ghost gets a body when there is a group to hold it, a height
+     * field to seat it on and a factory to loft it; a headless test has none
+     * of those and races the readout alone, exactly as before. */
+    this._ghost = null;
+    this._offFrame = null;
+    this._ghostPrev = null;
+    this._buildGhost(ctx, host && typeof host.add === 'function' ? host : null);
+  }
+
+  /**
+   * Stand the run's opening shot: the MOUNT is moved to just above the start
+   * line, facing downhill, so the countdown shows the course laid out below.
+   * While mounted the mount owns position (measured; teleporting the player
+   * snaps back), so the BOARD is what gets placed — the seat carries the
+   * rider on the next fixed step. Every write is feature-tested because the
+   * headless double is a bare `{id, canDismount}`.
+   */
+  _placeAtStart() {
+    const c = SKI_COURSE;
+    const gz = c.startZ - 4; // a board-length or two above the line, ready to cross
+    const gx = pisteCentreX(gz);
+    const gy = this.heightFn ? this.heightFn(gx, gz) : null;
+    const m = this._mounts?.active;
+    if (m?.id === 'hoverboard' && typeof m.position?.set === 'function') {
+      m.position.set(gx, (gy ?? m.position.y) + 0.5, gz);
+      // Forward is (-sin yaw, 0, -cos yaw); PI faces +z — downhill.
+      if (typeof m.heading === 'number') m.heading = Math.PI;
+      m.velocity?.set?.(0, 0, 0);
+      if (typeof m.speed === 'number') m.speed = 0;
+      m.root?.position?.copy?.(m.position);
+      if (m.root?.rotation) m.root.rotation.y = Math.PI;
+      /* NOT player.teleport: it clears movementOverride, which is the mount's
+       * seat authority. The seat carries the player to the board on the next
+       * fixed step; only the camera boom needs telling, or it sweeps the
+       * whole venue between the old position and the summit. */
+      this.player?.cameraRig?.snap?.();
+    } else if (gy !== null && typeof this.player?.teleport === 'function') {
+      // No board (summon refused / world forbids mounts): the run is still
+      // startable on foot, so the skier is still placed at the gate.
+      this.player.teleport(new THREE.Vector3(gx, gy + 0.3, gz), Math.PI);
+    }
+  }
+
+  /** Loft the rival's body and hook its animation to the frame tick. */
+  _buildGhost(ctx, host) {
+    if (!host || !this.heightFn) return;
+    const factory =
+      ctx?.factory ??
+      ctx?.npcs?.factory ??
+      globalThis.GAME?.npcManager?.factory ??
+      this.player?.avatar?.factory ??
+      null;
+    this._ghost = GhostCompetitor.create({
+      group: host,
+      physics: this.player?.physics ?? null,
+      factory,
+      name: this.rivalName,
+      tint: 0xf47a1f,
+      seed: 71333,
+      theme: 'sports',
+    });
+    if (!this._ghost) return;
+    this._ghost.setPose('board');
+    this._syncGhost();
+    const engine = ctx?.engine ?? this.player?.engine ?? null;
+    // Registered at match start: runs after the animators, reads no input.
+    this._offFrame = engine?.onFrameUpdate?.((dt, elapsed) => this._ghost?.update(dt, elapsed)) ?? null;
+  }
+
+  /**
+   * The rival's racing line in x: the groomed centreline plus a cosine weave
+   * that passes dead-centre through every gate (gate i sits at
+   * side (-1)^(i+1) * gateOffset, gates every gateSpacing metres — one half
+   * cosine period per gate is exactly that alternation). The weave fades in
+   * before gate 1 and out after the last, so he lines up straight at the
+   * start gate and the finish.
+   */
+  _slalomX(z) {
+    const c = SKI_COURSE;
+    const u = (z - c.gateZ0) / c.gateSpacing;
+    const fade = clamp01(Math.min(u + 1, c.gateCount - u));
+    return pisteCentreX(z) - Math.cos(Math.PI * u) * c.gateOffset * fade;
+  }
+
+  /**
+   * Put the body exactly at the fall-line distance the pace logic reports —
+   * the same `rivalDist` the RIVAL row prints, so they can never disagree.
+   * y comes from the venue's own height field: he rides the snow.
+   */
+  _syncGhost() {
+    const g = this._ghost;
+    if (!g) return;
+    const racing = this.phase === 'racing';
+    const d = this.rivalDist;
+    const z = racing || d > 0 ? SKI_COURSE.startZ + d : SKI_COURSE.startZ;
+    // Waiting, he stands beside the start gate rather than inside the
+    // player's line through it.
+    const x = racing || d > 0 ? this._slalomX(z) : pisteCentreX(SKI_COURSE.startZ) + 2.6;
+    const y = this.heightFn(x, z) + 0.55;
+
+    let heading = Math.PI;
+    if (this._ghostPrev) {
+      const dx = x - this._ghostPrev.x;
+      const dz = z - this._ghostPrev.z;
+      if (dx * dx + dz * dz > 1e-8) heading = Math.atan2(-dx, -dz);
+      else heading = this._ghostPrev.h;
+    }
+    this._ghostPrev = { x, z, h: heading };
+
+    g.place({ x, y, z }, heading);
+    const u = clamp01(d / this.courseLen);
+    g.setSpeedForAnim(
+      racing && !this._rivalDone
+        ? RIVAL_ZPACE_START + (RIVAL_ZPACE_END - RIVAL_ZPACE_START) * u
+        : 0
+    );
   }
 
   /** Seconds of "racers ready". Read by the manager. */
@@ -278,6 +426,8 @@ export class SkiRun {
     this._rivalDist = 0;
     this._rivalDone = false;
     this._flash = null;
+    this._ghostPrev = null;
+    this._syncGhost();
   }
 
   /** Metres of fall line the ghost has covered. */
@@ -329,6 +479,8 @@ export class SkiRun {
         this._maxZ = p.z;
         this.bus?.emit('minigame:event', { gameId: this.id, kind: 'off', text: 'GO' });
       }
+      // The rival's body waits at the gate while nothing is armed.
+      this._syncGhost();
       // The time limit covers the approach too, or a player who never climbs
       // leaves a contest running until they walk off the mound.
       if (elapsed >= TIME_LIMIT_S) return this._lose('time');
@@ -360,6 +512,11 @@ export class SkiRun {
     }
     this._px = p.x;
     this._pz = p.z;
+
+    /* The body rides the SAME number the readout shows — synced AFTER the
+     * gate loop, because a miss credits the ghost inside it and a body synced
+     * before the credit would lag the readout for a step. */
+    this._syncGhost();
 
     if (p.z >= SKI_COURSE.finishZ) {
       // Gates still armed at the flag were skipped: each is a miss, each
@@ -568,6 +725,17 @@ export class SkiRun {
   _cleanup() {
     if (this._cleaned) return;
     this._cleaned = true;
+
+    if (this._offFrame) {
+      try {
+        this._offFrame();
+      } catch {
+        /* engine already gone */
+      }
+      this._offFrame = null;
+    }
+    this._ghost?.dispose?.();
+    this._ghost = null;
 
     if (this._gfx) {
       this._gfx.group.removeFromParent();

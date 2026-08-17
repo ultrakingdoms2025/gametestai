@@ -10,19 +10,22 @@
  * a front-crawl pose. This module adds nothing to that and changes none of it.
  * It watches where the swimmer is and decides when a length is done.
  *
- * ── The rival is a ghost, and that is a decision, not a shortcut ─────────────
+ * ── The rival is a ghost with a BODY now ─────────────────────────────────────
  *
- * There is no NPC in the water. `NPC.js` follows the ground every step, and the
- * pool floor is 1.2 m to 3.0 m *below* a water plane the NPC knows nothing
- * about; driving one into the basin would either have it walk along the tiled
- * bottom or need its ground-following disabled, and the only NPC in range is
- * Tavius Okonkwo, whose deck patrol is authored content that must not break.
+ * There is still no NPC in the water — `NPC.js` follows the ground every step
+ * and the pool floor is 1.2 m to 3.0 m below a water plane it knows nothing
+ * about, and Tavius Okonkwo's deck patrol is authored content that must not
+ * break. The rival's PACE is still exactly what it was: a distance advancing
+ * on a tuned speed curve, with `_rivalDist` as the single source of truth.
  *
- * So the rival is a paced split time - a position on the course advancing on a
- * tuned speed curve. Everything the player can see of a rival in a real lane
- * race is the gap, and the gap is exactly what this produces. When a swimming
- * NPC exists, this module's `_rivalDist` becomes the thing that drives it and
- * nothing else here changes.
+ * What changed is that the promise in the old header ("when a swimming NPC
+ * exists, `_rivalDist` becomes the thing that drives it and nothing else
+ * changes") is now kept: a `GhostCompetitor` — a kinematic skinned humanoid
+ * with no collider and no brain — swims the ADJACENT lane, placed every fixed
+ * step at exactly the course position `_rivalDist` maps to. The RIVAL gap on
+ * the HUD and the body in the next lane are the same number and can never
+ * disagree. No factory/scene available (headless tests) means no body, and
+ * the contest runs exactly as it always did.
  *
  * ── Where the course is ──────────────────────────────────────────────────────
  *
@@ -36,13 +39,18 @@
  *
  * ── The approach ────────────────────────────────────────────────────────────
  *
- * The player is standing on the deck when they accept, so the first thing they
- * do is get in - anywhere. Measuring from wherever they happened to enter would
- * make the course 48 m or 20 m depending on which end they jumped off, so leg 0
- * does not arm until they have actually reached the start wall. Until then the
- * race clock does not run and the rival does not move, which is why dawdling on
- * the approach costs nothing and rushing it gains nothing.
+ * Accepting now PLACES the player at the start: in the water at the shallow
+ * (start-wall) end of their lane, facing down-course, so the countdown shows
+ * a swimmer on their mark rather than a spectator on the deck (the user's
+ * requirement, verbatim: "when I start a game it should position me at the
+ * start"). The wall-touch arming is kept — it is what makes the course length
+ * honest — but from the placed position it fires on the first racing step, so
+ * it is immediate. A player who paddles away during the countdown just arms
+ * later, exactly as before.
  */
+
+import * as THREE from 'three';
+import { GhostCompetitor } from './GhostCompetitor.js';
 
 /** Course id. This is the handle a quest step names - see MinigameManager._finish. */
 export const SWIM_GAME_ID = 'swim_challenge';
@@ -69,6 +77,17 @@ const IN_WATER_Y = -0.35;
 /** Metres of slack on the start plane, so the touch does not require precision. */
 const TOUCH_SLACK = 1.0;
 
+/** The measured water plane (SportsWorld pool: coping 0.13, water -0.22). */
+const WATER_Y = -0.22;
+/**
+ * Lane centres. The basin spans z 103..119 — eight 2 m lanes with ropes on
+ * the odd metres — so 110 and 112 are adjacent lane centres straddling the
+ * venue's own centre (z 111). Player inside, rival one lane over (~2 m), the
+ * offset the build spec asked for.
+ */
+const PLAYER_LANE_Z = 110;
+const RIVAL_LANE_Z = 112;
+
 /**
  * Rival pace, metres per second, over the course.
  *
@@ -77,6 +96,12 @@ const TOUCH_SLACK = 1.0;
  * The mean is a little under the player's 2.2 m/s cruise, so a clean swim wins
  * and a sloppy one does not; sprinting is how you win comfortably, and it costs
  * stamina, so it is a decision rather than a button.
+ *
+ * The arithmetic, so the tuning is auditable: over the 48 m course the curve
+ * integrates to (48/0.26)*ln(1.98/1.72) ≈ 26.0 s, plus the 1.0 s turn hold =
+ * ~27.0 s. A straight 2.2 m/s cruise is 21.8 s (+~1 s for the real turn), so
+ * the honest swimmer wins by ~4 s — the ~15% margin the spec asks for — and a
+ * 3.15 m/s sprint (~16 s) wins by open water.
  */
 const RIVAL_PACE_START = 1.72;
 const RIVAL_PACE_END = 1.98;
@@ -99,9 +124,14 @@ function clockText(seconds) {
 export class SwimChallenge {
   /**
    * @param {object} venue validated descriptor from MinigameManager
-   * @param {{player:any, bus:any}} ctx
+   * @param {{player:any, bus:any, input?:any, mounts?:any, worldManager?:any,
+   *          npcs?:any, engine?:any, factory?:any}} ctx the manager supplies
+   *   player/bus/input; the rest arrive from main.js's registerGame closure
+   *   (see the integration spec) and every one degrades to "no body / no
+   *   placement extras" when absent, because the headless tests build none.
    */
-  constructor(venue, { player, bus }) {
+  constructor(venue, ctx = {}) {
+    const { player, bus } = ctx;
     this.id = SWIM_GAME_ID;
     this.venue = venue;
     this.player = player;
@@ -117,6 +147,10 @@ export class SwimChallenge {
     this.legLength = Math.abs(this.farX - this.startX);
     this.distance = this.legLength * this.lengths;
     this.rivalName = venue?.rival?.name ?? 'the pace swimmer';
+    /** Down-course direction along X. The measured course runs +X. */
+    this._dir = Math.sign(this.farX - this.startX) || 1;
+    this.laneZ = Number.isFinite(Number(c.laneZ)) ? Number(c.laneZ) : PLAYER_LANE_Z;
+    this.rivalLaneZ = Number.isFinite(Number(c.rivalLaneZ)) ? Number(c.rivalLaneZ) : RIVAL_LANE_Z;
 
     /** 'approach' until the start wall is touched, then 'racing'. */
     this.phase = 'approach';
@@ -136,6 +170,154 @@ export class SwimChallenge {
     /** Seconds the player has spent out of the basin while racing. */
     this._dryFor = 0;
     this._finished = false;
+    this._disposed = false;
+
+    /* ---- the start position ----------------------------------------
+     * start() runs this factory during the countdown, so placing here is what
+     * makes the countdown show a swimmer on their mark. */
+    this._placePlayer(ctx);
+
+    /* ---- the visible rival ------------------------------------------
+     * Built only when there is a scene to hold it and a humanoid factory to
+     * loft it; a headless test has neither and races the readout alone. */
+    this._ghost = null;
+    this._offFrame = null;
+    this._bedCacheX = Infinity;
+    this._bedCacheY = null;
+    this._ghostEffort = 0;
+    this._buildGhost(ctx);
+  }
+
+  /**
+   * Put the player on their mark: in the water at the start-wall end of the
+   * lane, facing down-course. `teleport` is the same call TennisMatch and
+   * RaceManager place with; the bare-position fallback is for harnesses that
+   * build a plain `{position}` player. A rideable in the seat would own the
+   * position and silently swallow the teleport (measured — the mount owns
+   * position while mounted), so the board is dismounted first when the mount
+   * authority is reachable and willing.
+   */
+  _placePlayer(ctx) {
+    const p = this.player;
+    if (!p) return;
+    const mounts = ctx?.mounts ?? globalThis.GAME?.mounts ?? null;
+    if (mounts?.active && (mounts.active.canDismount?.() ?? true)) {
+      try {
+        mounts.dismount?.();
+      } catch {
+        /* a mount that refuses stays; the teleport below is then cosmetic */
+      }
+    }
+    const x = this.startX + 0.5 * this._dir;
+    const z = this.laneZ;
+    // Feet on the shallow-end floor: chest-deep water at the wall (the bed
+    // gives ~1.1 m here — under Swim's 1.3 m entry depth, so the player STANDS
+    // ready, exactly as a swimmer at a real shallow-end wall does).
+    const bed = p.physics?.groundHeight?.(x, z, WATER_Y + 0.35, 14) ?? null;
+    const y = bed !== null ? bed + 0.05 : WATER_Y - 0.9;
+    // Forward is (-sin yaw, 0, -cos yaw): -PI/2 faces +X, down the course.
+    const yaw = this._dir > 0 ? -Math.PI / 2 : Math.PI / 2;
+    if (typeof p.teleport === 'function') {
+      p.teleport(new THREE.Vector3(x, y, z), yaw);
+    } else if (p.position) {
+      p.position.x = x;
+      p.position.y = y;
+      p.position.z = z;
+    }
+  }
+
+  /** Loft the rival's body and hook its animation to the frame tick. */
+  _buildGhost(ctx) {
+    const host =
+      this.venue?.config?.group ??
+      ctx?.worldManager?.active?.group ??
+      this.player?.scene ??
+      null;
+    const factory =
+      ctx?.factory ??
+      ctx?.npcs?.factory ??
+      globalThis.GAME?.npcManager?.factory ??
+      this.player?.avatar?.factory ??
+      null;
+    this._ghost = GhostCompetitor.create({
+      group: host,
+      physics: this.player?.physics ?? null,
+      factory,
+      name: this.rivalName,
+      tint: 0x2f8fd0,
+      seed: 40211,
+      theme: 'sports',
+    });
+    if (!this._ghost) return;
+    this._ghost.setPose('swim');
+    this._syncGhost(0);
+    const engine = ctx?.engine ?? this.player?.engine ?? null;
+    // Registered at match start, so it runs AFTER the animators (insertion
+    // order) and never reads input — both engine contracts by the book.
+    this._offFrame = engine?.onFrameUpdate?.((dt, elapsed) => this._ghost?.update(dt, elapsed)) ?? null;
+  }
+
+  /**
+   * Put the rival's body exactly where `_rivalDist` says it is. Same mapping
+   * the splits and the RIVAL row read, so the two can never disagree.
+   * @param {number} dt fixed step (0 from the constructor prime)
+   */
+  _syncGhost(dt) {
+    const g = this._ghost;
+    if (!g) return;
+    const d = this.rivalDist;
+    const leg = Math.min(Math.floor(d / this.legLength), this.lengths - 1);
+    const frac = clamp01((d - leg * this.legLength) / this.legLength);
+    const along = leg % 2 === 0 ? frac : 1 - frac;
+    const x = this.startX + (this.farX - this.startX) * along;
+
+    const racing = this.phase === 'racing';
+    const swimming = racing && !this._rivalDone && this._rivalHold <= 0;
+    const u = clamp01(d / this.distance);
+    const pace = swimming ? RIVAL_PACE_START + (RIVAL_PACE_END - RIVAL_PACE_START) * u : 0;
+
+    // Prone and deep while making way, upright at the walls — eased so the
+    // body settles rather than snapping between the two reads.
+    const effortTarget = clamp01(pace / 2.2);
+    this._ghostEffort += (effortTarget - this._ghostEffort) * (1 - Math.exp(-4 * (dt || 0.016)));
+    const floatY = WATER_Y - (0.62 + 0.85 * this._ghostEffort);
+    const bed = this._bedAt(x);
+    const y = bed !== null ? Math.max(bed + 0.12, floatY) : floatY;
+
+    const facing = (leg % 2 === 0 ? this._dir : -this._dir) > 0 ? -Math.PI / 2 : Math.PI / 2;
+    g.place({ x, y, z: this.rivalLaneZ }, facing);
+    g.setSpeedForAnim(pace);
+  }
+
+  /** Pool bed under the rival's lane, probed sparsely and cached by x. */
+  _bedAt(x) {
+    if (Math.abs(x - this._bedCacheX) > 0.5) {
+      this._bedCacheX = x;
+      this._bedCacheY =
+        this.player?.physics?.groundHeight?.(x, this.rivalLaneZ, WATER_Y + 0.35, 14) ?? null;
+    }
+    return this._bedCacheY;
+  }
+
+  /**
+   * Idempotent, and called from two places on purpose (the TennisMatch
+   * pattern): the manager's teardown on abort/quit/world change/death, and
+   * this module's own win/lose — a FINISHED contest is only ever `reset()`,
+   * which nulls the module without disposing it, and the body would leak.
+   */
+  dispose() {
+    if (this._disposed) return;
+    this._disposed = true;
+    if (this._offFrame) {
+      try {
+        this._offFrame();
+      } catch {
+        /* engine already gone */
+      }
+      this._offFrame = null;
+    }
+    this._ghost?.dispose?.();
+    this._ghost = null;
   }
 
   /** Seconds of "on your marks". Read by the manager. */
@@ -197,6 +379,8 @@ export class SwimChallenge {
           text: 'GO',
         });
       }
+      // The rival's body waits at its wall while nothing is armed.
+      this._syncGhost(dt);
       // The time limit covers the approach too, or a player who never gets in
       // leaves a contest running until they walk out of the venue.
       if (elapsed >= TIME_LIMIT_S) return this._lose('time');
@@ -205,6 +389,8 @@ export class SwimChallenge {
 
     this.clock += dt;
     this._advanceRival(dt);
+    // The body rides the SAME number the readout shows, every step.
+    this._syncGhost(dt);
 
     /* Getting out mid-race is not a foul, it is just slow: progress freezes
      * rather than resetting, exactly as it does when a swimmer stops. Tracked
@@ -267,6 +453,7 @@ export class SwimChallenge {
 
   _win() {
     this._finished = true;
+    this.dispose();
     return {
       won: true,
       place: 1,
@@ -287,6 +474,7 @@ export class SwimChallenge {
   /** @param {'rival'|'time'} why */
   _lose(why) {
     this._finished = true;
+    this.dispose();
     return {
       won: false,
       place: 2,

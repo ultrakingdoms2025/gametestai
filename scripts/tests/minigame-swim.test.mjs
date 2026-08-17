@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import nodePath from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import * as THREE from 'three';
+
 import { EventBus } from '../../src/core/EventBus.js';
 import { Economy } from '../../src/systems/Economy.js';
 import {
@@ -60,14 +62,46 @@ const POOL_VENUE = {
   rival: { name: 'Tavius Okonkwo' },
 };
 
-function makeRig({ venues = [POOL_VENUE] } = {}) {
+/**
+ * A HumanoidFactory stand-in for the rival's body: the surface
+ * `GhostCompetitor` actually touches (root, rig, bones map, dispose), nothing
+ * else. The REAL factory bakes canvas textures and cannot run headless, which
+ * is also why a rig with no injected factory deterministically has no body.
+ */
+function stubFactory() {
+  return {
+    create() {
+      const root = new THREE.Group();
+      const rig = new THREE.Group();
+      root.add(rig);
+      return {
+        root,
+        rig,
+        bones: new Map(),
+        boneList: [],
+        disposed: false,
+        dispose() {
+          this.disposed = true;
+        },
+      };
+    },
+  };
+}
+
+function makeRig({ venues = [POOL_VENUE], extraCtx = null } = {}) {
   const bus = new EventBus();
   const economy = new Economy({ bus });
   const player = { position: { x: 0, y: 0, z: 0 } };
   const keys = new Set();
-  const input = { pressed: (code) => keys.has(code) };
+  // The REAL Input contract is pressed AND held (level-trigger) — a double
+  // that models only half of it is how the tennis unwinnability bug hid.
+  const input = { pressed: (code) => keys.has(code), held: (code) => keys.has(code) };
   const mg = new MinigameManager({ bus, player, economy, input });
-  mg.registerGame('swim', createSwimChallenge);
+  // With extras, the registration mirrors main.js's closure shape exactly.
+  mg.registerGame(
+    'swim',
+    extraCtx ? (v, c) => createSwimChallenge(v, { ...c, ...extraCtx }) : createSwimChallenge
+  );
 
   const seen = [];
   for (const type of [
@@ -312,11 +346,15 @@ test('swimming the two lengths cleanly wins and pays exactly 10 credits', () => 
   beginRace(rig);
 
   const game = rig.mg._game;
-  assert.equal(game.phase, 'approach', 'the race does not start until the start wall is touched');
+  /* Start positioning made the wall-touch arming IMMEDIATE: the factory
+   * placed the player at the start wall during the countdown, so the first
+   * racing step finds them already touching it. The arming rule itself is
+   * unchanged — the deck-walk test below still proves dry land counts zero. */
+  assert.equal(game.phase, 'racing', 'placed on the start wall, the race arms on the first step');
   assert.equal(rig.economy.credits, 0);
 
   swimTo(rig, 34);
-  assert.equal(game.phase, 'racing', 'touching the shallow wall arms the first length');
+  assert.equal(game.phase, 'racing', 'drifting on the wall does not un-arm it');
 
   swimTo(rig, 58);
   assert.equal(game.leg, 1, 'reaching the far wall completes a length');
@@ -425,6 +463,98 @@ test('the countdown is driven from elapsed time, so a stall cannot skip a number
   for (let i = 1; i < seq.length; i++) {
     assert.ok(seq[i] < seq[i - 1], 'the countdown must never go up');
   }
+});
+
+/* ------------------------------------------------------------------ */
+/* Start positioning and the visible rival                             */
+/* ------------------------------------------------------------------ */
+
+test('accepting places the swimmer on their mark: start wall, in the water, lane centre', () => {
+  const rig = makeRig();
+  place(rig, 46, 0.13, 104); // standing on the deck, nowhere near the wall
+  pressE(rig);
+  assert.equal(rig.mg.state, MINIGAME_STATE.COUNTDOWN);
+
+  const p = rig.player.position;
+  assert.ok(Math.abs(p.x - 34.5) < 1e-9, `at the start wall inside the touch slack (x=${p.x})`);
+  assert.equal(p.z, 110, 'in a lane centre, one lane off the rival');
+  assert.ok(p.y < -0.35, `in the water, under the coping (y=${p.y})`);
+
+  // Which is what makes the wall-touch arming immediate once play begins.
+  frames(rig, 6);
+  assert.equal(rig.mg.state, MINIGAME_STATE.PLAYING);
+  assert.equal(rig.mg._game.phase, 'racing', 'no swim-to-the-wall preamble from the placed start');
+});
+
+test('the rival BODY swims the adjacent lane at exactly the readout distance', () => {
+  const group = new THREE.Group();
+  const rig = makeRig({
+    extraCtx: { factory: stubFactory(), worldManager: { active: { group } } },
+  });
+  beginRace(rig);
+  const game = rig.mg._game;
+  assert.ok(game._ghost, 'a world group and a factory should produce a body');
+  assert.ok(group.children.includes(game._ghost.root), 'the body must live in the world group');
+
+  // Swim a length at cruise; at every step the body's course position must be
+  // the same `rivalDist` mapping the RIVAL gap row is derived from — the two
+  // must never disagree.
+  const p = rig.player.position;
+  p.z = 111;
+  p.y = -1.6;
+  let sampled = 0;
+  for (let i = 0; i < 900 && rig.mg.running; i++) {
+    p.x = Math.min(58, p.x + 2.2 * STEP);
+    frame(rig);
+    if (!rig.mg.running) break;
+    const d = game.rivalDist;
+    const leg = Math.min(Math.floor(d / game.legLength), game.lengths - 1);
+    const frac = (d - leg * game.legLength) / game.legLength;
+    const along = leg % 2 === 0 ? frac : 1 - frac;
+    const x = game.startX + (game.farX - game.startX) * along;
+    assert.ok(Math.abs(game._ghost.root.position.x - x) < 1e-6,
+      `body x ${game._ghost.root.position.x} must equal the readout mapping ${x}`);
+    assert.equal(game._ghost.root.position.z, 112, 'one lane over (~2 m)');
+    sampled += 1;
+  }
+  assert.ok(sampled > 100, 'the sweep must actually have raced');
+});
+
+test('the body is removed and the humanoid handed back on finish AND on abort', () => {
+  // Finish path: _win/_lose self-dispose, because the manager only ever
+  // reset()s a finished contest (the TennisMatch cleanup contract).
+  const group = new THREE.Group();
+  let rig = makeRig({
+    extraCtx: { factory: stubFactory(), worldManager: { active: { group } } },
+  });
+  beginRace(rig);
+  const hum = rig.mg._game._ghost.humanoid;
+  swimTo(rig, 58);
+  swimTo(rig, 34);
+  assert.equal(rig.mg.state, MINIGAME_STATE.FINISHED);
+  assert.equal(group.children.length, 0, 'a finished contest must not leak the body');
+  assert.equal(hum.disposed, true, 'the humanoid must hand its geometry holds back');
+
+  // Abort path: the manager's teardown calls dispose().
+  const group2 = new THREE.Group();
+  rig = makeRig({
+    extraCtx: { factory: stubFactory(), worldManager: { active: { group: group2 } } },
+  });
+  beginRace(rig);
+  const hum2 = rig.mg._game._ghost.humanoid;
+  rig.mg.abort('player');
+  assert.equal(group2.children.length, 0, 'an abort must not leak the body');
+  assert.equal(hum2.disposed, true);
+});
+
+test('with no factory or scene there is no body, and the contest is untouched', () => {
+  const rig = makeRig();
+  beginRace(rig);
+  assert.equal(rig.mg._game._ghost, null, 'headless must mean bodiless, deterministically');
+  swimTo(rig, 58);
+  swimTo(rig, 34);
+  assert.equal(rig.mg.state, MINIGAME_STATE.FINISHED);
+  assert.equal(rig.economy.credits, 10, 'and the race still pays as always');
 });
 
 /* ------------------------------------------------------------------ */

@@ -6,10 +6,10 @@ import { STAT_META } from '../mounts/Livery.js';
 import { PALETTES, statLine, skinState, SKIN_STATE_LABEL } from './MountMenuLogic.js';
 
 /**
- * F10 - the mount panel.
+ * The mount panel. Opened from the Esc pause hub.
  *
  * A structural twin of `CharacterMenu` (right-side drawer over the live third-
- * person view, capture-phase F10/Escape, text capture + pointer release while
+ * person view, capture-phase Escape, text capture + pointer release while
  * open) but rendered *generically*: it reads the ridden mount's
  * `CUSTOM_SLOTS` / `STATS` and the skins catalogued for it, so a seventh mount
  * needs no menu code. It only opens while mounted. Mounting forces third person,
@@ -88,7 +88,7 @@ export class MountMenu {
     titles.append(kicker, this._title);
     const close = el('button', 'mm-x');
     close.type = 'button';
-    close.append(el('b', null, 'F10'), el('span', null, 'close'));
+    close.append(el('b', null, 'Esc'), el('span', null, 'close'));
     close.addEventListener('click', () => this.close());
     head.append(titles, close);
 
@@ -99,7 +99,7 @@ export class MountMenu {
     reset.type = 'button';
     reset.addEventListener('click', () => { if (this._mountId) this.mounts.resetLivery?.(this._mountId); });
     const hint = el('div', 'mm-hint');
-    hint.innerHTML = 'Changes apply to the mount at once. <b>F5</b> saves them with the game.';
+    hint.innerHTML = 'Changes apply to the mount at once. Save from the Esc menu to keep them.';
     foot.append(reset, hint);
 
     panel.append(head, this._body, foot);
@@ -378,14 +378,6 @@ export class MountMenu {
 
   _key(e) {
     if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
-    if (e.code === 'F10') {
-      // F10 is the browser's menu-bar key: claim it before the browser does.
-      e.preventDefault();
-      e.stopPropagation();
-      if (!this._open && this.input?.textCaptured) return;
-      this.toggle();
-      return;
-    }
     if (e.code === 'Escape' && this._open) {
       e.preventDefault();
       e.stopPropagation();

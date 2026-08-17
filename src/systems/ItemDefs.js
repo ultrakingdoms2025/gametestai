@@ -306,7 +306,7 @@ for (const skin of MOUNT_SKINS) {
     kind: 'skin',
     skinId: skin.id,
     colors,
-    desc: `${skin.blurb} Apply to your ${skin.mount} from the Mount menu (F10) while riding; one use.`,
+    desc: `${skin.blurb} Apply to your ${skin.mount} from the Esc menu → Customise mount, while riding; one use.`,
   };
 }
 

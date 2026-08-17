@@ -1885,7 +1885,7 @@ function createLoadingScreen(root) {
         <div class="boot-controls">
           <span><b>WASD</b> Move</span><span><b>Shift</b> Sprint</span><span><b>Space</b> Jump</span>
           <span><b>LMB</b> Fire</span><span><b>RMB</b> Aim</span><span><b>R</b> Reload</span>
-          <span><b>E</b> Talk / Enter portal</span><span><b>T</b> Chat</span><span><b>F4</b> Audio</span><span><b>Esc</b> Release cursor</span>
+          <span><b>E</b> Talk / Enter portal</span><span><b>T</b> Chat</span><span><b>Esc</b> Pause menu</span>
         </div>
       </div>
       <div class="boot-error" hidden></div>

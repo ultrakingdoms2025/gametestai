@@ -357,7 +357,7 @@ function stepClue(step) {
     case 'survive':
       return 'Stay on your feet and stay untouched. The moment something lands a hit, that clock starts again.';
     case 'customize':
-      return 'Change your own look first — F2 opens that. F10 does the same for whatever you are riding.';
+      return 'Change your own look first — the Esc menu opens that, and the same menu customises whatever you are riding.';
     default:
       return label ? `It comes down to this: ${label.toLowerCase()}.` : 'The board words it better than I can.';
   }

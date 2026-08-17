@@ -1,8 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile, readdir } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { HUD } from '../../src/ui/HUD.js';
 import { EventBus } from '../../src/core/EventBus.js';
 import { PauseMenuModel, PAUSE_MENU_IDS } from '../../src/ui/PauseMenu.js';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 /**
  * The pause hub's return path, driven through the real HUD methods.
@@ -241,5 +246,76 @@ test('PAUSE_MENU_IDS is the whole spec §3 list, with no duplicates', () => {
     'minigame-quit', 'help', 'audio', 'keybinds', 'fullscreen', 'diagnostics', 'save',
     'load', 'bug-report', 'quit']) {
     assert.ok(PAUSE_MENU_IDS.includes(id), id);
+  }
+});
+
+/* ------------------------------------------------------------ source -- */
+
+/** Comments are documentation, not UI. Strip them before matching. */
+const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+async function srcFiles() {
+  const out = [];
+  const walk = async (dir) => {
+    for (const e of await readdir(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(p);
+      else if (p.endsWith('.js')) out.push(p);
+    }
+  };
+  await walk(path.join(root, 'src'));
+  return out;
+}
+
+test('main.js wires every id PAUSE_MENU_IDS promises', async () => {
+  const src = strip(await readFile(path.join(root, 'src/main.js'), 'utf8'));
+  const at = src.indexOf('hud.setPauseMenuItems(');
+  assert.ok(at > 0, 'main.js never calls setPauseMenuItems');
+  const list = src.slice(at, src.indexOf('\n]);', at));
+  for (const id of PAUSE_MENU_IDS) {
+    assert.ok(list.includes(`id: '${id}'`), `the hub has no '${id}' item`);
+  }
+});
+
+test('no F2-F12 key handler survives anywhere in src/', async () => {
+  /* The whole point of the feature: Chrome owns most of these and only answers
+   * them when the page happens to have focus, so a handler here is a key that
+   * works about half the time. F1 (help) is the one exception; the exported
+   * RESERVED_CODES literal is data, not a handler. */
+  for (const f of await srcFiles()) {
+    let src = strip(await readFile(f, 'utf8'));
+    if (f.endsWith(path.join('core', 'Input.js'))) {
+      src = src.replace(/export const RESERVED_CODES = \[[\s\S]*?\];/, '');
+    }
+    const rel = path.relative(root, f);
+    assert.ok(!src.includes("'Shift+F9'"), `${rel}: still lists Shift+F9`);
+    for (let n = 2; n <= 12; n++) {
+      assert.ok(!new RegExp(`code\\s*===\\s*'F${n}'`).test(src), `${rel}: still handles F${n}`);
+      assert.ok(!new RegExp(`pressed\\(\\s*'F${n}'\\s*\\)`).test(src), `${rel}: still polls F${n}`);
+      assert.ok(!new RegExp(`\\[[^\\]\\n]*'F${n}'`).test(src), `${rel}: still lists F${n} in a key array`);
+      // KeybindMenu's FIXED_KEYS rows are objects, not bare array entries, so
+      // the bracket pattern above walks straight past them.
+      assert.ok(!new RegExp(`key:\\s*'F${n}'`).test(src), `${rel}: still lists F${n} in a FIXED_KEYS row`);
+    }
+  }
+});
+
+test('no UI string advertises a key the build no longer answers', async () => {
+  const DEAD = [
+    "el('b', null, 'F2')", "el('b', null, 'F10')", "el('b', null, 'F4')", "el('b', null, 'F7')",
+    "el('i', null, 'F3')",
+    'F7 or Esc', 'F7 for options', 'F8 to quit', 'F9 / F12', 'F2 opens', 'F10 does',
+    '<b>F5</b> saves', 'Mount menu (F10)', 'press F10', 'Character menu (F2)', '<b>F4</b> Audio',
+  ];
+  const files = [...await srcFiles(), path.join(root, 'site/app/api/chat/route.ts')];
+  for (const f of files) {
+    const src = strip(await readFile(f, 'utf8'));
+    for (const s of DEAD) {
+      assert.ok(!src.includes(s), `${path.relative(root, f)} still says "${s}"`);
+    }
+  }
+  const route = await readFile(path.join(root, 'site/app/api/chat/route.ts'), 'utf8');
+  for (const s of ['F2 customizes the character', 'F10 customizes the mount']) {
+    assert.ok(!route.includes(s), `chat route still says "${s}"`);
   }
 });

@@ -379,9 +379,9 @@ export class MarketplaceUI {
       buy.type = 'button';
       buy.disabled = blocked;
       buy.title = preview.ok ? 'Buy this item'
-        : owned ? (preview.skin ? 'You already have this skin — apply it from the Mount menu (F10) while riding'
+        : owned ? (preview.skin ? 'You already have this skin — apply it from the Esc menu → Customise mount, while riding'
           : preview.power ? 'You already own this tier or higher'
-          : 'Already unlocked — equip it in the Character menu (F2)')
+          : 'Already unlocked — equip it from the Esc menu → Character')
         : preview.reason === 'space' ? 'Not enough room'
         : preview.reason === 'credits' ? 'Not enough credits'
         : 'Not available';
@@ -443,9 +443,9 @@ export class MarketplaceUI {
         res.reason === 'credits' ? 'Not enough credits' :
         res.reason === 'space' ? 'No room — free a bag or store slot' :
         res.reason === 'stock' ? 'Out of stock' :
-        res.reason === 'owned' ? (res.skin ? 'You already have this skin — apply it from the Mount menu (F10) while riding'
+        res.reason === 'owned' ? (res.skin ? 'You already have this skin — apply it from the Esc menu → Customise mount, while riding'
           : res.power ? 'You already own this tier or higher'
-          : 'You already own this skin — equip it in the Character menu (F2)') :
+          : 'You already own this skin — equip it from the Esc menu → Character') :
         res.reason === 'unsupported' ? 'This item cannot be bought yet' :
         'Trade unavailable'
       );

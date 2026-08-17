@@ -111,7 +111,7 @@ function buildSystem(
     '- Aether Station is the hub world and has five outbound portals to the other five worlds.',
     '- Each of the other five worlds has one return portal back to Aether Station.',
     '- If asked how many portals exist, do not guess: say there are six worlds / five destinations from the Nexus hub, and note that the station itself has five outbound gates.',
-    '- Core controls: J opens the quest board from anywhere; E talks to friendlies, opens the quest board at quest managers, picks up loot, and enters portals; T opens chat; F1 shows help; F2 customizes the character; F10 customizes the mount you are riding; F3 opens diagnostics; F4 opens audio; F5 saves; F6 rebinds; F7 opens the race panel; F9 reports a bug; I opens inventory; B opens the marketplace; M opens the mount wheel; F dismounts; K unstucks; V swaps camera; [ and ] zoom the minimap.',
+    '- Core controls: J opens the quest board from anywhere; E talks to friendlies, opens the quest board at quest managers, picks up loot, and enters portals; T opens chat; F1 shows help; Esc opens the pause menu, which is where the character customizer, the mount customizer, diagnostics, audio, keybinds, save, load, the race panel, bug reports, fullscreen and quit all live; I opens inventory; B opens the marketplace; M opens the mount wheel; F dismounts; K unstucks; V swaps camera; [ and ] zoom the minimap.',
     '- Gameplay facts: there are six mounts, four weapons, climbing works on near-vertical surfaces, water can be swum in, credits are spent in the marketplace, and the bag holds 30 slots.',
   ]
     .filter(Boolean)

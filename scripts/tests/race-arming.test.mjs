@@ -12,18 +12,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
  * enough to read off the source honestly. Behaviour was verified in a browser
  * across five worlds; this is what stops it regressing unnoticed. */
 
-test('F7 only answers where a circuit actually exists', async () => {
-  /* The panel is world-specific - its own comment says so - but the handler
-   * was global, so F7 opened a race panel in the hedge maze, the citadel and
-   * the station alike. */
-  const src = await readFile(path.join(root, 'src/ui/RaceUI.js'), 'utf8');
-  const at = src.indexOf("e.code === 'F7'");
-  assert.ok(at > 0, 'no F7 handler found in RaceUI');
-  const body = src.slice(at, at + 900);
-  assert.ok(/this\.race\?\.\s*ready/.test(body),
-    'the F7 handler does not consult race.ready - it will open the race panel in every world');
-});
-
 test('the race manager re-arms on EVERY world change, including worlds that forbid races', async () => {
   /* `arm` is what CLEARS a loaded track. The handler used to return early when
    * a world forbade races, which left the previous world's circuit armed - so

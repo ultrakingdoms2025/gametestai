@@ -48,20 +48,13 @@ export class MinigameUI {
     this.el = this._build();
     root.appendChild(this.el);
 
-    /* Own the key rather than polling `input.pressed`.
-     *
-     * Same reason RaceUI does: Input stops reporting during a portal transition
-     * and while text is captured, and "the quit dialogue will not open" is
-     * exactly the dead end that costs a bug report. F8 because F5-F7 are taken
-     * (save, keybinds, race) and this is the next free one. */
+    /* The quit-confirm sheet is reached by E at the venue (which emits
+     * `minigame:quitRequest`, wired below to `_openStop`) and by the Esc
+     * pause hub's "Quit minigame" item - never by its own key. Escape here
+     * only ever closes a sheet that is already open. */
     this._onKey = (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.code === 'F8') {
-        if (!this.mg?.running) return;
-        e.preventDefault();
-        if (this.input?.textCaptured) return;
-        this._toggleStop();
-      } else if (e.code === 'Escape') {
+      if (e.code === 'Escape') {
         if (this._stopOpen) this._closeStop();
         else if (this._boardOpen) this._closeBoard();
       }
@@ -123,7 +116,7 @@ export class MinigameUI {
     this.barRival = el('i', 'mg-bar-rival');
     bar.append(this.barFill, this.barRival);
     this.bannerEl = el('div', 'mg-banner');
-    this.hintEl = el('div', 'mg-hint', 'E or F8 to quit');
+    this.hintEl = el('div', 'mg-hint', 'E, or Esc menu, to quit');
     hud.append(this.titleEl, this.subEl, this.rowsEl, bar, this.bannerEl, this.hintEl);
     wrap.appendChild(hud);
     this.hudEl = hud;

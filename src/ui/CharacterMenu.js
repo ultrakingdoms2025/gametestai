@@ -11,7 +11,7 @@ import {
 import { CHARACTER_SKINS } from '../systems/Cosmetics.js';
 
 /**
- * F2 — the character panel.
+ * The character panel. Opened from the Esc pause hub.
  *
  * ## What this is, and what it deliberately is not
  *
@@ -40,14 +40,6 @@ import { CHARACTER_SKINS } from '../systems/Cosmetics.js';
  * are actually standing in, and it costs nothing. The drawer sits on the right
  * because the third-person boom is offset to the player's right, which puts the
  * body on the left of frame.
- *
- * ## Why F2
- *
- * `C` is crouch. `F2` is free, is not a browser shortcut, and matches `F1`
- * (help), `F3` (diagnostics), `F5`/`F9` (save/load). The listener is on the
- * capture phase for the same reason `HelpMenu`'s is: `Input` stops reporting
- * while text capture is on — including the text capture this panel installs —
- * so polling `input.pressed()` would make the panel impossible to close.
  */
 
 /* ------------------------------------------------------------------ */
@@ -210,7 +202,7 @@ export class CharacterMenu {
     titles.append(el('div', 'ch-kicker', 'Identity'), el('div', 'ch-title', 'CHARACTER'));
     const close = el('button', 'ch-x');
     close.type = 'button';
-    close.append(el('b', null, 'F2'), el('span', null, 'close'));
+    close.append(el('b', null, 'Esc'), el('span', null, 'close'));
     close.addEventListener('click', () => this.close());
     head.append(titles, close);
 
@@ -376,7 +368,7 @@ export class CharacterMenu {
     reset.type = 'button';
     reset.addEventListener('click', () => this._set({ ...DEFAULT_CHARACTER }));
     const hint = el('div', 'ch-hint');
-    hint.innerHTML = 'Changes apply to your body at once. <b>F5</b> saves them with the game.';
+    hint.innerHTML = 'Changes apply to your body at once. Save from the Esc menu to keep them.';
     foot.append(rand, reset, hint);
 
     panel.append(head, body, foot);
@@ -654,16 +646,6 @@ export class CharacterMenu {
 
   _key(e) {
     if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
-    if (e.code === 'F2') {
-      e.preventDefault();
-      e.stopPropagation();
-      // While the chat box owns the keyboard F2 is a character, not a key — but
-      // once *this* panel is open the capture is ours, so it must still close.
-      if (!this._open && this.input?.textCaptured) return;
-      if (this._open) this.close();
-      else this.open();
-      return;
-    }
     if (e.code === 'Escape' && this._open) {
       e.preventDefault();
       e.stopPropagation();

@@ -141,34 +141,7 @@ export class RaceUI {
     // panel will not open" is exactly the dead end that costs a bug report.
     this._onKey = (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
-      /* F7, not F6.
-       *
-       * This panel and the key-rebinding panel were written at the same time by
-       * different hands and both claimed F6, so pressing it toggled both at
-       * once. F6 stays with rebinding, which sits naturally in the run of
-       * global config panels on F1-F6; this one is world-specific and opens by
-       * itself on arrival, so its key is the secondary way in rather than the
-       * only one. */
-      if (e.code === 'F7') {
-        /* Only where there is actually a circuit.
-         *
-         * This panel is world-specific - the comment above says so - but the
-         * handler was global, so F7 opened a race panel in the hedge maze, the
-         * citadel and the station alike. `ready` is the honest test: it is
-         * true once a track is loaded with a valid path and three checkpoints,
-         * which is precisely "there is a circuit here to talk about".
-         *
-         * Note this only works because `RaceManager` now re-arms on EVERY
-         * world change rather than skipping worlds that forbid races - before
-         * that, a stale track from the circuit kept `ready` true everywhere. */
-        if (!this.race?.ready && !this.race?.racing) return;
-        e.preventDefault();
-        if (this.input?.textCaptured) return;
-        // Mid-race F7 is a stop prompt, not the setup picker — the grid is
-        // already locked in, so the only meaningful choice left is to bail.
-        if (this.race?.racing) this._toggleStop();
-        else this.togglePanel();
-      } else if (e.code === 'Enter') {
+      if (e.code === 'Enter') {
         /* Start, from wherever you are.
          *
          * The panel's button is the only other way in, and a player who closed
@@ -178,6 +151,13 @@ export class RaceUI {
          * on text capture, so it still means "send" in chat.
          */
         if (this.input?.textCaptured) return;
+        /* Only while actually playing. We register before the HUD does
+         * (main.js:285 vs :421), so with the Esc hub up this branch would run
+         * first and start a race behind it - and swallow the Enter the hub
+         * needed to activate the focused item. Every panel that owns the cursor
+         * has released the lock, so this is the one test that covers all of
+         * them without naming any. */
+        if (!this.input?.locked) return;
         if (this._stopOpen || this._boardOpen || !this.race?.ready || this.race.state !== 'idle') return;
         e.preventDefault();
         this.closePanel();
@@ -378,8 +358,8 @@ export class RaceUI {
      * player, so the mouse gets one too. */
     const close = el('button', 'rc-close');
     close.type = 'button';
-    close.title = 'Close (F7 or Esc)';
-    close.append(el('b', null, 'F7'), el('span', null, 'or'), el('b', null, 'Esc'), el('span', null, 'to close'), el('i', 'rc-close-x', '✕'));
+    close.title = 'Close (Esc)';
+    close.append(el('b', null, 'Esc'), el('span', null, 'to close'), el('i', 'rc-close-x', '✕'));
     close.addEventListener('click', (ev) => {
       ev.stopPropagation();
       this.closePanel();
@@ -814,7 +794,7 @@ export class RaceUI {
       const t = this.track;
       this.readyName.textContent = t?.name ?? 'Circuit';
       this.readyMeta.textContent =
-        `${diffLabel(s.difficulty)} · ${this._lapsFor(s.difficulty)} laps · Enter, or F7 for options`;
+        `${diffLabel(s.difficulty)} · ${this._lapsFor(s.difficulty)} laps · Enter to start, Esc menu for options`;
     }
     if (!live) {
       this._lastCount = -1;

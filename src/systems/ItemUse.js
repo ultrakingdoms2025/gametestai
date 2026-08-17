@@ -56,7 +56,7 @@ export class ItemUseSystem {
     const res = applyMountSkin({ mounts: this.mounts, cosmetics: this.cosmetics, inventory: this.inventory }, skinId);
     if (!res.ok) {
       const text = res.reason === 'not-mounted' || res.reason === 'wrong-mount'
-        ? `Mount your ${skin.mount} and press F10 to apply this skin`
+        ? `Mount your ${skin.mount}, then Esc → Customise mount to apply this skin`
         : 'This skin cannot be applied right now';
       this.bus?.emit('hud:notify', { text, tone: 'warn' });
       return { ok: false, reason: res.reason };

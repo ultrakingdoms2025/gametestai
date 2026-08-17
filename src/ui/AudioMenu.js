@@ -1,7 +1,7 @@
 import './audio.css';
 
 /**
- * F4 audio options.
+ * Audio options. Opened from the Esc pause hub.
  *
  * Modelled on `HelpMenu` deliberately - same overlay behaviour, same capture-
  * phase key handling, same "build the markup once and toggle a class" rule -
@@ -46,13 +46,7 @@ export class AudioMenu {
 
     this._onKey = (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.code === 'F4') {
-        e.preventDefault();
-        if (this.input?.textCaptured) return;
-        this.toggle();
-      } else if (e.code === 'Escape' && this._open) {
-        this.close();
-      }
+      if (e.code === 'Escape' && this._open) this.close();
     };
     window.addEventListener('keydown', this._onKey, true);
 
@@ -76,7 +70,7 @@ export class AudioMenu {
     const titles = el('div', 'aud-titles');
     titles.append(el('div', 'aud-kicker', 'Options'), el('div', 'aud-title', 'AUDIO'));
     const close = el('div', 'aud-close');
-    close.append(el('b', null, 'F4'), el('span', null, 'or'), el('b', null, 'Esc'), el('span', null, 'to close'));
+    close.append(el('b', null, 'Esc'), el('span', null, 'to close'));
     head.append(titles, close);
 
     const body = el('div', 'aud-body');

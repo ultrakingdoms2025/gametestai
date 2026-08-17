@@ -373,7 +373,7 @@ test('ItemUse routes skin items through applyMountSkin and never the generic con
   const iu2 = new ItemUseSystem({ bus: { emit: (n, p) => notes2.push([n, p]) }, player: {}, inventory: s2.deps.inventory, mounts: s2.deps.mounts, cosmetics: s2.deps.cosmetics });
   assert.equal(iu2.use('skin_dragon_frost').ok, false);
   assert.equal(s2.bag.skin_dragon_frost, 1);
-  assert.ok(notes2.some(([n, p]) => n === 'hud:notify' && /F10/.test(p.text)));
+  assert.ok(notes2.some(([n, p]) => n === 'hud:notify' && /Customise mount/.test(p.text)));
 });
 
 test('Marketplace.preview refuses a skin item that is already unlocked or already held', () => {

@@ -41,16 +41,7 @@ const FIXED_KEYS = [
   { key: '1–4', label: 'Weapon slots' },
   { key: 'Wheel', label: 'Cycle weapons' },
   { key: 'F1', label: 'Help & controls' },
-  { key: 'F2', label: 'Customise character' },
-  { key: 'F10', label: 'Customise mount — while riding' },
-  { key: 'F3', label: 'Diagnostics overlay' },
-  { key: 'F4', label: 'Audio options' },
-  { key: 'F5', label: 'Save' },
-  { key: 'F6', label: 'This panel' },
-  { key: 'F7', label: 'Race panel — in the circuit' },
-  { key: 'F9', label: 'Report a bug' },
-  { key: 'Shift+F9', label: 'Load a save' },
-  { key: 'Esc', label: 'Close panels / release mouse' },
+  { key: 'Esc', label: 'Pause menu — every panel is in it' },
 ];
 
 /** Human-readable key names. `event.code` is unreadable on its own. */
@@ -117,7 +108,7 @@ export class KeybindMenu {
     const titles = el('div', 'kb-titles');
     titles.append(el('div', 'kb-kicker', 'Controls'), el('div', 'kb-title', 'KEY BINDINGS'));
     const close = el('div', 'kb-close');
-    close.append(el('b', null, 'F6'), el('span', null, 'or'), el('b', null, 'Esc'), el('span', null, 'to close'));
+    close.append(el('b', null, 'Esc'), el('span', null, 'to close'));
     head.append(titles, close);
 
     const body = el('div', 'kb-body');
@@ -165,9 +156,7 @@ export class KeybindMenu {
     foot.append(reset, this._msg);
 
     const note = el('div', 'kb-note',
-      'Fixed keys (J, I, B, M, K, F1–F10 and Esc) cannot be rebound: those panels listen for '
-      + 'themselves so they still open when everything else is disabled, which is exactly '
-      + 'when you need them.');
+      'Fixed keys (Esc, F1 and the letter keys J I B K) cannot be rebound; F2–F12 are left to the browser.');
 
     card.append(head, body, foot, note);
     wrap.appendChild(card);
@@ -210,12 +199,7 @@ export class KeybindMenu {
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.code === 'F6') {
-      e.preventDefault();
-      e.stopPropagation();
-      if (this.input?.textCaptured) return;
-      this.toggle();
-    } else if (e.code === 'Escape' && this._open) {
+    if (e.code === 'Escape' && this._open) {
       e.preventDefault();
       e.stopPropagation();
       this.close();

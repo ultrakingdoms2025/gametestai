@@ -67,8 +67,8 @@ const GROUPS = [
     rows: [
       ['V', 'First / third person'],
       ['[  ]', 'Minimap zoom out / in'],
-      ['F3', 'Diagnostics overlay'],
-      ['Esc', 'Release the mouse cursor'],
+      ['—', 'Diagnostics — in the Esc menu'],
+      ['Esc', 'Pause menu'],
     ],
   },
   {
@@ -103,16 +103,8 @@ const GROUPS = [
     rows: [
       ['T', 'Open comms / chat'],
       ['J', 'Quest board — from anywhere'],
+      ['Esc', 'Pause menu (everything below is in it)'],
       ['F1', 'This panel'],
-      ['F2', 'Customise your character'],
-      ['F10', 'Customise your mount — while riding'],
-      ['F4', 'Audio options'],
-      ['F6', 'Rebind keys'],
-      ['F7', 'Race panel — in the circuit'],
-      ['F5', 'Save — and back up to a file'],
-      ['F9', 'Report a bug'],
-      ['Shift+F9', 'Load — local save, or a backup file'],
-      ['F12', 'Report a bug (backup)'],
       ['Esc', 'Close this panel'],
     ],
   },

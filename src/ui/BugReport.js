@@ -1,8 +1,5 @@
 /**
- * F12 Bug Report Panel.
- *
- * Opens with F12 (capture-phase listener so the browser DevTools shortcut is
- * swallowed) and also closes on F12 / Esc.
+ * Bug report panel. Opened from the Esc pause hub; Esc closes it.
  *
  * Auto-populates world, player position and player handle from live state.
  * Submits a POST to /api/bug-report which emails the report to markc@cayc.io.
@@ -52,11 +49,7 @@ export class BugReport {
 
     this._onKey = (e) => {
       const code = e.code || e.key;
-      if (code === 'F9' || code === 'F12') {
-        e.preventDefault();
-        e.stopPropagation();
-        this.toggle();
-      } else if (code === 'Escape' && this._open) {
+      if (code === 'Escape' && this._open) {
         e.stopPropagation();
         this.close();
       }
@@ -77,7 +70,7 @@ export class BugReport {
     const head = el('div', 'br-head');
     const title = el('div', 'br-title');
     title.append('⚑ Bug Report');
-    const titleKey = el('span', 'br-title-key', '(F9 / F12)');
+    const titleKey = el('span', 'br-title-key', '(Esc menu → Report a bug)');
     title.append(' ', titleKey);
     const closeBtn = el('button', 'br-close-btn', 'Close');
     closeBtn.addEventListener('click', () => this.close());

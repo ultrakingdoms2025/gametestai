@@ -852,7 +852,7 @@ export class HUD {
   _buildDebug(hud) {
     const p = el('div', 'panel debug');
     const h = el('div', 'debug-h');
-    h.append(el('b', null, 'DIAGNOSTICS'), el('i', null, 'F3'));
+    h.append(el('b', null, 'DIAGNOSTICS'), el('i', null, 'Esc menu'));
     const grid = el('dl', 'debug-grid');
     this.dbg = {};
     const rows = [
@@ -1547,18 +1547,10 @@ export class HUD {
       ['B', 'Marketplace'],
       ['J', 'Quest board'],
       ['K', 'Unstuck'],
-      ['F2', 'Customise character'],
-      ['F10', 'Customise mount — while riding'],
-      ['F4', 'Audio options'],
-      ['F6', 'Rebind keys'],
-      ['F7', 'Race panel — in the circuit'],
-      ['F5', 'Save'],
-      ['Shift+F9', 'Load'],
-      ['F9', 'Bug report'],
+      ['Esc', 'Pause menu — character, mount, inventory, settings, save…'],
       ['[ ]', 'Map zoom'],
       ['E', 'Talk / Pick up / Portal'],
       ['T', 'Chat'],
-      ['Esc', 'Release cursor'],
       ['F1', 'Full controls, any time'],
     ]
       .map(([k, v]) => `<span><b>${k}</b> ${v}</span>`)
@@ -1750,7 +1742,7 @@ export class HUD {
   /**
    * The hub's Save item calls this before `saveAndBackup` so the confirmation
    * toast can tell a deliberate save from a background autosave. Replaces the
-   * `pressed('F5')` sniff in `_updateInput`, which F5 no longer reaches.
+   * old F5-polling sniff in `_updateInput`, which F5 no longer reaches.
    */
   expectSave() {
     this._saveExpectT = 1.4;

@@ -36,6 +36,8 @@ export const ctx = { scene, engine: null, physics: { groundHeight: () => 0, reso
 > **Do not push to `main` until Chunk 4 (Task 17) has landed** — the repo deploys from `main` on every push, and between Task 2 and Task 17 the car livery has no UI (F2's Vehicle section is removed in Task 2; F10 arrives in Task 16/17). All commits in Chunks 1–4 are local.
 >
 > Spec deviation, deliberate: spec §4.2 asks for `static DISPLAY_NAME`; every mount already carries an instance `displayName` (`Car.js:757`, `Dragon.js:649`, …) and the menu reads that instead. No new static is added.
+>
+> Spec deviation, deliberate: spec §3.1 gives Matt roughness 0.85; shipped 1.0 because on the ORM-baked library materials roughness is a *multiplier* over the bake (factory 1.0), so 0.85 would make Matt glossier than factory. See `FINISH_PROPS` in `Livery.js`.
 
 ### Task 1: `src/mounts/Livery.js` — shared tint/finish helper (pure, no THREE import)
 

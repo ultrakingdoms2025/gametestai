@@ -535,3 +535,44 @@ test('no UI string advertises a key the build no longer answers', async () => {
     assert.ok(!route.includes(s), `chat route still says "${s}"`);
   }
 });
+
+/* -------------------------------------------------------- race quit path -- */
+
+/**
+ * `RaceUI._openStop` (the STOP RACE sheet whose button calls `race.abort`)
+ * had zero callers once the F7 handler that used to reach it was removed -
+ * the hub's race row ran `openPanel()` unconditionally, which mid-race shows
+ * a dead setup picker (START is a no-op while racing). A full `RaceUI`
+ * cannot be constructed headlessly (`_build()` needs a real DOM: `classList`,
+ * `style.setProperty`, capturing `window` listeners, dozens of elements),
+ * so this is a source guard, in the same style as the F-key sweep above,
+ * rather than a behavioural test.
+ */
+test('RaceUI wires race:quitRequest to the stop sheet, mirroring MinigameUI', async () => {
+  const src = strip(await readFile(path.join(root, 'src/ui/RaceUI.js'), 'utf8'));
+  assert.ok(src.includes("bus.on('race:quitRequest'"),
+    'RaceUI never subscribes to race:quitRequest - the hub race row has no way to reach the stop sheet');
+  const calls = (src.match(/_openStop\(\)/g) ?? []).length;
+  assert.ok(calls >= 2,
+    `_openStop() appears ${calls} time(s) in source - expected the definition plus at least one caller`);
+});
+
+test('openPanel refuses while a race is running, so the hub row cannot open the dead setup picker', async () => {
+  const src = strip(await readFile(path.join(root, 'src/ui/RaceUI.js'), 'utf8'));
+  const at = src.indexOf('openPanel()');
+  assert.ok(at > 0, 'RaceUI has no openPanel() method');
+  const body = src.slice(at, src.indexOf('\n  }', at));
+  assert.ok(/if\s*\(\s*this\.race\?\.racing\s*\)\s*return;/.test(body),
+    'openPanel() does not refuse while this.race.racing is true');
+});
+
+test('the hub race row quits mid-race instead of opening the setup picker', async () => {
+  const src = strip(await readFile(path.join(root, 'src/main.js'), 'utf8'));
+  const at = src.indexOf("id: 'race'");
+  assert.ok(at > 0, "main.js has no id: 'race' hub item");
+  const block = src.slice(at, src.indexOf('},', at));
+  assert.ok(block.includes('race:quitRequest'),
+    "the race row's run() never emits race:quitRequest for the racing case");
+  assert.ok(block.includes('Quit race'),
+    'the race row never relabels itself to "Quit race" while racing');
+});

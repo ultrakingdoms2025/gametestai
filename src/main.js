@@ -471,9 +471,12 @@ hud.setPauseMenuItems([
       },
       {
         id: 'race',
-        label: 'Race panel',
+        label: () => (race?.racing ? 'Quit race' : 'Race panel'),
+        // Mid-race there is nothing to set up - START is a no-op while racing -
+        // so the row raises RaceUI's stop sheet instead of the dead picker.
+        hint: () => (race?.racing ? 'Stop this race' : ''),
         visible: () => !!(race?.ready || race?.racing),
-        run: () => raceUI.openPanel(),
+        run: () => (race?.racing ? bus.emit('race:quitRequest', {}) : raceUI.openPanel()),
       },
       {
         id: 'minigame-quit',

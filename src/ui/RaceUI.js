@@ -240,6 +240,10 @@ export class RaceUI {
       }));
       this._offs.push(bus.on('race:finished', (e) => { this._closeStop(); this._showBoard(e); }));
       this._offs.push(bus.on('race:aborted', () => { this._closeStop(); this._closeBoard(); }));
+      // The Esc hub's race row, mid-race: it cannot call `openPanel` (the setup
+      // picker is a dead end while racing - START is a no-op) so it asks for the
+      // stop sheet instead. Same event shape as MinigameUI's `minigame:quitRequest`.
+      this._offs.push(bus.on('race:quitRequest', () => this._openStop()));
     }
   }
 
@@ -641,6 +645,8 @@ export class RaceUI {
     if (this._panelOpen || this._boardOpen) return;
     // Don't interrupt the quest board or other overlays that share the cursor.
     if (document.body.classList.contains('quest-board-open')) return;
+    // Mid-race the setup picker is a dead end (START is a no-op while racing); callers want `_openStop` instead.
+    if (this.race?.racing) return;
     this._panelOpen = true;
     this._syncPanel();
     this.panelEl.classList.add('on');

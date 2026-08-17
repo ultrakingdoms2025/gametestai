@@ -250,7 +250,8 @@ the hub's **Character** item is character-only. Design:
    "everything closed"; `race:countdown`/`minigame:countdown` clear `_hubReturn` so a
    commit is not mistaken for a cancel. Fullscreen is a persisted
    `Input.fullscreenPreferred` (`localStorage['aether:fullscreen']`), honoured by
-   `requestLock`.
+   `requestLock`. The Race row becomes **Quit race** while racing and raises RaceUI's
+   stop sheet via `race:quitRequest`.
 
 ## 4. `main.js` wiring (orchestrator-owned — code against this)
 

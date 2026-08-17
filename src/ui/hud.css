@@ -2530,52 +2530,6 @@ body {
   }
 }
 
-.pause-hint {
-  margin-top: 22px;
-  padding-top: 18px;
-  border-top: 1px solid var(--rule-soft);
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  color: var(--txt-dim);
-}
-
-/* Reload / Quit action row inside the standby overlay */
-.pause-actions {
-  display: flex;
-  gap: 10px;
-  justify-content: center;
-  margin-top: 18px;
-}
-
-.pause-btn {
-  font-family: var(--f-ui);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  padding: 7px 18px;
-  border-radius: 3px;
-  border: 1px solid var(--rule);
-  background: rgba(82,233,255,.08);
-  color: var(--cy);
-  cursor: pointer;
-  transition: background .15s, color .15s, border-color .15s;
-}
-.pause-btn:hover {
-  background: rgba(82,233,255,.18);
-  border-color: var(--cy);
-}
-
-.pause-btn-quit {
-  background: rgba(255,61,85,.08);
-  border-color: rgba(255,61,85,.4);
-  color: var(--red, #ff3d55);
-}
-.pause-btn-quit:hover {
-  background: rgba(255,61,85,.18);
-  border-color: var(--red, #ff3d55);
-}
-
 /* ==========================================================================
    DEBUG PANEL (F3)
    ========================================================================== */

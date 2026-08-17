@@ -3,7 +3,7 @@ import { Minimap } from './Minimap.js';
 import { ChatBox } from './ChatBox.js';
 import { ChatClient } from '../ai/ChatClient.js';
 import { WeaponWheel, makeIcon } from './WeaponWheel.js';
-import { HelpMenu } from './HelpMenu.js';
+import { PauseMenu } from './PauseMenu.js';
 import { allows } from '../worlds/WorldRules.js';
 
 /**
@@ -35,6 +35,8 @@ const LOCK_TRIES = 4;
 const LOCK_RETRY_S = 0.4;
 /** How long a request is given to confirm before it counts as refused. */
 const LOCK_CONFIRM_S = 0.25;
+/** Resting text of the pause card's status line. `_setPauseBusy` overwrites it. */
+const PAUSE_SUB = 'Esc resume · ↑↓ Enter · click';
 const KF_LIFE = 6.5;
 const TOAST_LIFE = 3.6;
 const RELOAD_ARC_C = 2 * Math.PI * 18;
@@ -439,8 +441,6 @@ export class HUD {
     // then decorate any slot whose glyph the wheel does not own.
     this.wheel.setWeapons(DEFAULT_SLOTS, true);
     this._decorateSlots();
-
-    this.help = new HelpMenu({ root: this.root, bus: this.bus, input: this.input });
 
     // Chat lives outside `.hud` so it is never dimmed by the HUD fade-in.
     this.client = new ChatClient(this.bus);
@@ -924,40 +924,37 @@ export class HUD {
   _buildPause() {
     const p = el('div', 'pause');
     const inner = el('div', 'pause-in');
-    this.pauseSub = el('div', 'pause-s', 'click or press Space to resume');
+    this.pauseSub = el('div', 'pause-s', PAUSE_SUB);
 
-    // Reload and Quit buttons — visible in all standby situations
-    const actions = el('div', 'pause-actions');
+    inner.appendChild(el('div', 'pause-t', 'PAUSED'));
 
-    const reloadBtn = el('button', 'pause-btn pause-btn-reload', 'Reload Game');
-    reloadBtn.type = 'button';
-    reloadBtn.title = 'Reload the game in this tab';
-    reloadBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      window.location.reload();
+    /* The hub itself. Items arrive from main.js, which is the only file that
+     * knows every panel; this class owns the card, the keyboard and the return
+     * path and nothing else. The old Reload / Quit buttons and the F-key hint
+     * line are gone: Quit is a menu item now, and Reload was Quit-and-re-enter
+     * with a worse name. */
+    this.pauseMenu = new PauseMenu({
+      root: inner,
+      onActivate: (item, keepOpen) => {
+        if (keepOpen) {
+          // Acts in place - Resume, Save, Load, Fullscreen, Diagnostics.
+          item.run?.();
+          /* Only if the card is still up. Resume is a keepOpen item whose whole
+           * job is to hide it, and refreshing a hidden menu would re-read every
+           * label and re-run `focusFirst` for nothing - and, worse, paint a
+           * focus ring the player will see on the next open. */
+          if (this.pause.classList.contains('show')) this.pauseMenu.refresh();
+        } else {
+          this.openFromHub(item.run, { overlay: item.overlay !== false });
+        }
+      },
     });
 
-    const quitBtn = el('button', 'pause-btn pause-btn-quit', 'Quit to Menu');
-    quitBtn.type = 'button';
-    quitBtn.title = 'Return to the landing page';
-    quitBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      // Navigate to the site root; the game runs at /play so go up one level.
-      const origin = window.location.origin;
-      window.location.href = origin + '/';
-    });
-
-    actions.append(reloadBtn, quitBtn);
-
-    inner.append(
-      el('div', 'pause-t', 'STANDBY'),
-      this.pauseSub,
-      actions,
-      el('div', 'pause-hint', 'F3 diagnostics · T opens comms · F1 controls · F10 customise mount')
-    );
+    inner.appendChild(this.pauseSub);
     p.appendChild(inner);
+
     p.addEventListener('mousedown', (e) => {
-      // Don't propagate to the overlay click-to-resume if a button was clicked.
+      // Only the card background resumes; the buttons stop their own.
       if (e.target !== p && e.target !== inner) return;
       e.preventDefault();
       this._requestLock();
@@ -965,21 +962,62 @@ export class HUD {
     this.root.appendChild(p);
     this.pause = p;
 
-    /* Keyboard resume.
+    /* Keyboard on the hub.
      *
      * Capture phase and on `window`, because `Input` has stopped reporting -
-     * that is what being in standby means - so the normal `pressed()` route
-     * cannot see these. Escape is included deliberately: it is the key a player
-     * reaches for to dismiss a dialog, and here it is the one that put them in
-     * front of it. */
+     * that is what being paused means - so `pressed()` cannot see these.
+     * Escape resumes: it is the key that put the player in front of this card.
+     * Enter now ACTIVATES rather than resumes (spec §2); Space is the second
+     * resume key for anyone who was using Enter for that. */
     this._onPauseKey = (e) => {
       if (!this.pause.classList.contains('show')) return;
       if (this._chatOpen || this.input.textCaptured) return;
-      if (e.code !== 'Space' && e.code !== 'Escape' && e.code !== 'Enter') return;
+      /* Help sits ON TOP of the hub and owns its own Escape. Its capture
+       * listener is registered first, so without this one keystroke would close
+       * Help and resume the game underneath it in the same press. */
+      if (this._helpOpen) return;
+      const code = e.code;
+      if (code === 'ArrowUp' || code === 'KeyW') {
+        e.preventDefault(); e.stopPropagation();
+        this.pauseMenu.move(-1);
+        return;
+      }
+      if (code === 'ArrowDown' || code === 'KeyS') {
+        e.preventDefault(); e.stopPropagation();
+        this.pauseMenu.move(1);
+        return;
+      }
+      if (code === 'Enter') {
+        e.preventDefault(); e.stopPropagation();
+        this.pauseMenu.activate();
+        return;
+      }
+      if (code !== 'Space' && code !== 'Escape') return;
       e.preventDefault();
+      e.stopPropagation();
       this._requestLock();
     };
     window.addEventListener('keydown', this._onPauseKey, true);
+
+    /* Escape from gameplay, while the keyboard lock is held.
+     *
+     * Without `navigator.keyboard.lock` the browser exits pointer lock on
+     * Escape by itself and `input:lockchange` raises the hub. WITH the lock -
+     * every fullscreen session, i.e. the default - Escape is delivered to the
+     * page instead and until now nothing acted on it, so the one key the hub is
+     * built around did nothing for exactly the players who are most protected.
+     *
+     * Each condition is a panel that owns Escape already. `e.repeat` is ignored
+     * because HOLDING Escape is how browsers break keyboard lock, and firing on
+     * each repeat would exit and re-request in a loop. */
+    this._onLockEsc = (e) => {
+      if (e.code !== 'Escape' || e.repeat) return;
+      if (!this.input?.locked) return;
+      if (this._overlays.size > 0 || this._helpOpen) return;
+      if (this._chatOpen || this.input.textCaptured) return;
+      this.input.exitLock();
+    };
+    window.addEventListener('keydown', this._onLockEsc, true);
   }
 
   /* ====================================================================== */
@@ -1686,11 +1724,54 @@ export class HUD {
     return this._chatOpen;
   }
 
+  /**
+   * Install the pause hub's items. `main.js` owns the data (CONTRACTS-V3 §3.6)
+   * because it is the only file that holds every panel.
+   * @param {Array<{title?: string, items: Array<object>}>} groups
+   */
+  setPauseMenuItems(groups) {
+    this.pauseMenu?.setItems(groups);
+  }
+
+  /**
+   * The hub's Resume item. A real re-lock, not `showPauseOverlay(false)`.
+   *
+   * Hiding the card on its own leaves the pointer unlocked, so `main.js`'s
+   * `input:lockchange` handler is still holding the `standby` gameplay block
+   * and the `_relockCheck` fallback puts the overlay straight back up - the hub
+   * visibly flashes off and on and the world never resumes. `_requestLock` is
+   * the same path the background click and the Escape key already take,
+   * including the retry budget for Chrome's post-Escape cooldown.
+   */
+  resume() {
+    this._requestLock();
+  }
+
+  /**
+   * The hub's Save item calls this before `saveAndBackup` so the confirmation
+   * toast can tell a deliberate save from a background autosave. Replaces the
+   * `pressed('F5')` sniff in `_updateInput`, which F5 no longer reaches.
+   */
+  expectSave() {
+    this._saveExpectT = 1.4;
+  }
+
   showPauseOverlay(show) {
     if (show && this._chatOpen) return; // chat deliberately released the cursor
     if (show && this._overlays.size > 0) return; // a blocking UI overlay is open
+    const was = this.pause.classList.contains('show');
     this.pause.classList.toggle('show', !!show);
-    if (show) this._relockCheck = 0;
+    if (show) {
+      this._relockCheck = 0;
+      // Always: `mounts.mounted`, the world and the race state may all have
+      // moved since the card was last up.
+      this.pauseMenu?.refresh();
+      /* focusFirst only on the hidden→shown transition. `_lockRefused` and the
+       * `_relockCheck` fallback call this repeatedly while a re-lock is being
+       * retried, and resetting the highlight under the player's hand every
+       * 0.4 s would make the list unusable on a slow relock. */
+      if (!was) this.pauseMenu?.focusFirst();
+    }
   }
 
   setDebugVisible(show) {
@@ -1840,7 +1921,7 @@ export class HUD {
   /** Swap the overlay's prompt while a retry is in flight. */
   _setPauseBusy(busy) {
     if (!this.pauseSub) return;
-    this.pauseSub.textContent = busy ? 'resuming…' : 'click or press Space to resume';
+    this.pauseSub.textContent = busy ? 'resuming…' : PAUSE_SUB;
     this.pauseSub.classList.toggle('busy', !!busy);
   }
 
@@ -1867,9 +1948,8 @@ export class HUD {
     if (this.input.pressed('BracketLeft')) this._zoomMap(1);
     if (this.input.pressed('BracketRight')) this._zoomMap(-1);
 
-    // F5 is a save request; remember it briefly so the confirmation toast can
-    // tell a deliberate save from a background autosave.
-    if (this.input.pressed('F5')) this._saveExpectT = 1.4;
+    // A deliberate save is announced by `expectSave()` (the hub's Save item);
+    // this is only the countdown that lets the toast wording expire.
     if (this._saveExpectT > 0) this._saveExpectT -= dt;
 
     if (this.input.pressed('KeyT')) {
@@ -2751,10 +2831,11 @@ export class HUD {
     this.minimap.dispose();
     this.chatBox.dispose();
     this.wheel.dispose();
-    this.help.dispose();
     for (const f of this._creditFloats) f.el.remove();
     this._creditFloats.length = 0;
     if (this._onPauseKey) window.removeEventListener('keydown', this._onPauseKey, true);
+    if (this._onLockEsc) window.removeEventListener('keydown', this._onLockEsc, true);
+    this.pauseMenu?.dispose();
     this.el.remove();
     this.wipe.remove();
     this.pause.remove();

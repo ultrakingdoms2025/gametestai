@@ -158,6 +158,15 @@ export class HelpMenu {
         if (this.input?.textCaptured) return;
         this.toggle();
       } else if (e.code === 'Escape' && this._open) {
+        /* This Escape is spent closing Help and nothing else.
+         *
+         * We register before the HUD does (main.js:227 vs :421), so its pause
+         * handlers would otherwise run later in this same event - and by then
+         * `close()` has already emitted `help:close`, clearing the `_helpOpen`
+         * flag they guard on. The result was one keypress that closed Help AND
+         * either resumed the game or dropped pointer lock. */
+        e.preventDefault();
+        e.stopImmediatePropagation();
         this.close();
       }
     };

@@ -662,7 +662,10 @@ export class Hoverboard {
   /** Colour slots the F10 menu offers. `defaultColor` = factory swatch. */
   static CUSTOM_SLOTS = Object.freeze([
     Object.freeze({ id: 'deck', label: 'Deck', finish: true, defaultColor: 0x2c2f36, palette: 'paint' }),
-    Object.freeze({ id: 'glow', label: 'Underglow', finish: false, defaultColor: 0x7ff2ff, palette: 'glow' }),
+    // 0xadefff is the sRGB hex of the linear stock glow (0.42, 0.86, 1) - see
+    // `_glowBase` below for why the runtime tint is built from the linear
+    // triple rather than from this hex. This is only what the F10 swatch shows.
+    Object.freeze({ id: 'glow', label: 'Underglow', finish: false, defaultColor: 0xadefff, palette: 'glow' }),
   ]);
   static STATS = MOUNT_STATS.hoverboard;
 
@@ -1372,6 +1375,11 @@ export class Hoverboard {
    * for the measured drift this exists to stop. Every visual cue on the board
    * is a `clamp01(|speed| / BOOST_SPEED)`, so the audio ceiling has to be the
    * same one or a Power tier runs the loop faster than the thrusters look.
+   *
+   * Horse and Bicycle deliberately declare no `voiceSpeed`: a gait cycle and a
+   * pedal cadence are already driven from travel speed (hoofbeats, crank
+   * phase), so their audio and animation are the same derivation and can never
+   * drift apart the way a separately-clamped loop can.
    */
   get voiceSpeed() {
     return Math.min(Math.abs(this.speed), BOOST_SPEED);

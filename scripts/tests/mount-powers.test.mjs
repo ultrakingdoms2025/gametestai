@@ -223,6 +223,54 @@ test('Strength does not move terminal speed', () => {
 });
 
 /**
+ * Steps to first reach `target` m/s in the mount's own RUN, starting from a
+ * stop. Same rig as `terminalSpeed` but stops the instant the mount crosses
+ * the line instead of running the fixed duration, so this is a race rather
+ * than a speedometer reading.
+ */
+function stepsToReach(id, C, powers, target) {
+  const spec = RUN[id];
+  const m = new C(ctx);
+  m.applyPowers(powers);
+  m.spawn(new THREE.Vector3(0, spec.spawnY, 0), 0);
+  if (spec.flying) { m.state = 'flying'; m.position.y = spec.spawnY; m._groundY = 0; }
+  m.onMount?.();
+  // Several times the run's own duration: reaching 90% of a terminal that was
+  // itself measured at the end of `spec.seconds` must not be starved of steps
+  // by using that same budget.
+  const maxSteps = Math.round((spec.seconds * 4) / STEP);
+  let steps = 0;
+  for (; steps < maxSteps; steps++) {
+    m.fixedUpdate(STEP, steps * STEP, spec.ctrl(m));
+    if (Math.abs(m.speed) >= target) break;
+  }
+  m.dispose?.();
+  return steps;
+}
+
+/**
+ * R2: Strength is a ramp-rate stat (`_accelMul`, checked above) - its whole
+ * visible effect is *how fast* a mount gets up to speed, not how fast it ends
+ * up. Stock terminal is the yardstick for both runs, so a mount whose
+ * terminal speed Strength happens to leave untouched (every mount but the two
+ * covered by the drift check above) still has to show the ramp getting
+ * shorter, not just the `_accelMul` field getting set.
+ */
+test('a purchased Strength III cuts the time to reach 90% of terminal speed, for every mount', () => {
+  for (const [id, C] of Object.entries(CLASSES)) {
+    const terminal = terminalSpeed(id, C, {});
+    const target = 0.9 * terminal;
+    const t0 = stepsToReach(id, C, {}, target);
+    const t3 = stepsToReach(id, C, { strength: 3 }, target);
+    const ratio = t3 / t0;
+    assert.ok(
+      ratio < 0.95,
+      `${id}: Strength III took ${t0} -> ${t3} steps to reach 90% of terminal (x${ratio.toFixed(3)}), want < 0.95`
+    );
+  }
+});
+
+/**
  * The two mounts whose top speed is a hard `clamp`, not a balance point. A
  * Speed tier that raised the target but not the clamp would still read x1.36
  * in the run above (the clamp is never reached from a standing start) and be

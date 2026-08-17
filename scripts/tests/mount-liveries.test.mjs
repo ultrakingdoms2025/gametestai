@@ -109,6 +109,7 @@ test('normColor rejects out-of-range numbers', () => {
 });
 
 import { MountManager } from '../../src/mounts/MountManager.js';
+import { Marketplace } from '../../src/systems/Marketplace.js';
 
 const stubPlayer = { position: new THREE.Vector3(), stamina: null };
 function manager() {
@@ -178,6 +179,35 @@ test('deserialize drops a stat the mount does not sell', () => {
   const { mgr } = manager();
   mgr.deserialize({ powers: { horse: { fire: 3, power: 2 } } });
   assert.deepEqual(mgr.getPowers('horse'), { power: 2 });
+});
+
+test('deserialize does not persist an empty powers bag when every stat was filtered', () => {
+  const { mgr } = manager();
+  mgr.deserialize({ powers: { horse: { fire: 3 } } });
+  assert.deepEqual(mgr.getPowers('horse'), {});
+  // Not merely empty when read - absent, exactly as grantPower would leave it:
+  // it never allocates `_powers[mountId]` until a stat actually sticks.
+  assert.equal('horse' in mgr.getPowers(), false);
+});
+
+test('Marketplace.preview refuses a mount power row the mount does not sell', () => {
+  const { mgr } = manager();
+  const market = Object.create(Marketplace.prototype);
+  Object.assign(market, { economy: { credits: 9999 }, inventory: null, cosmetics: null, mounts: mgr });
+  const row = (mount) => ({
+    id: 'x',
+    quantity: null,
+    cost_buy: 100,
+    action_config: { effect: 'grant_mount_power', mount, power: 'fire', tier: 1 },
+  });
+  // A horse sells no Fire ladder - a mis-authored catalog row must be
+  // unavailable, not sold and then dropped by grantPower.
+  const bad = market.preview(row('horse'));
+  assert.equal(bad.ok, false);
+  assert.equal(bad.reason, 'unsupported');
+  // The dragon does sell it, so the same shape previews fine.
+  const good = market.preview(row('dragon'));
+  assert.equal(good.ok, true);
 });
 
 test('serialize writes liveries and deserialize round-trips them', () => {

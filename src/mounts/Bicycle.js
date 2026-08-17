@@ -812,6 +812,12 @@ export class Bicycle {
     // Freewheel drag: rolling resistance is constant, air resistance is not.
     // Computed once per step because the pedalling branch needs the same
     // number - see there for why it must not then be charged a second time.
+    // Taken from `this.speed` at the TOP of the step, before drive moves it:
+    // that puts the terminal speed exactly on the analytic balance point
+    // (measured 8.662 m/s stock) where drive(v) == drag(v). Computing it after
+    // `this.speed` had already been advanced this step - drag one half-step
+    // stale relative to drive - measured 8.642, a half-step integration
+    // artefact rather than the true fixed point.
     const dragK = this.speed > 0
       ? ROLL_DRAG + (AIR_DRAG / (this._powerMul * this._powerMul)) * this.speed * this.speed
       : 0;

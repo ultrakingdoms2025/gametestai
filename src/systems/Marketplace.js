@@ -368,6 +368,13 @@ export class Marketplace {
     const power = this._mountPowerGrant(item);
     if (power) {
       const grant = { qty: 1, kind: 'upgrade', label: 'Mount upgrade' };
+      // A mis-authored row (Fire on a horse) must be unavailable rather than
+      // sold and dropped: MountManager.grantPower would silently refuse to
+      // store it, and buy() must not have already spent the player's credits
+      // for nothing.
+      if (this.mounts?.sellsPower && !this.mounts.sellsPower(power.mount, power.power)) {
+        return { ok: false, reason: 'unsupported', stock, grant, power, cost };
+      }
       // A higher tier replaces a lower one (MountManager.grantPower), so owning
       // tier 3 makes tiers 1 and 2 no-ops too - refuse anything at or below what
       // is already granted rather than charging for a purchase that changes

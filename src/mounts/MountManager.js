@@ -656,6 +656,18 @@ export class MountManager {
   }
 
   /**
+   * Public twin of {@link _knownStat}, for a caller outside this class (the
+   * marketplace) that needs to refuse a purchase rather than silently drop a
+   * grant. Same rule `grantPower` and `deserialize` already apply internally.
+   * @param {string} mountId
+   * @param {string} power
+   * @returns {boolean}
+   */
+  sellsPower(mountId, power) {
+    return this._knownStat(mountId, power);
+  }
+
+  /**
    * Merge a livery patch into one mount and apply it live if that mount exists.
    * `patch` is `{ [slotId]: { color?, finish? } }`; `finish: null` clears the
    * finish. Colours may be numbers or '#rrggbb'. A patch that changes nothing
@@ -1744,6 +1756,10 @@ export class MountManager {
           // the mount never sold.
           const owned = {};
           for (const p in bag) if (this._knownStat(mid, p)) owned[p] = bag[p];
+          // A bag that lost every stat to the filter must not persist as an
+          // empty {} - grantPower never creates one (it lazily allocates only
+          // when a stat actually sticks), so a save round-trip must not either.
+          if (!Object.keys(owned).length) continue;
           this._powers[mid] = owned;
           const mount = this._mounts.get(mid);
           if (mount) this._applyPowers(mid, mount);

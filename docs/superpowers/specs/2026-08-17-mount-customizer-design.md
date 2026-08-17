@@ -1,7 +1,7 @@
 # Mount Customizer (F10) — Design
 
 **Date:** 2026-08-17
-**Status:** Approved in brainstorming; spec review round 3
+**Status:** Approved in brainstorming; spec review passed (3 rounds); awaiting user review
 **Scope:** One feature: a per-mount customisation menu (skins + upgrades) for the six mounts, the data model behind it, and the marketplace/inventory flow that feeds it.
 
 ## 1. Problem
@@ -172,7 +172,7 @@ Headless `node --test` in `scripts/tests/` (house style, see `flight-ceiling.tes
 
 - **`mount-liveries.test.mjs`** — legacy `{livery:{paint,wheel}}` migrates to `liveries.car.*.color`; `serialize/deserialize` round-trip; `applyMountSkin` with stub deps: owned → applies, inventory untouched; in bag → consumes exactly 1 from the bag, unlocks, applies; only in store → consumes 1 from the store; neither → refuses; not mounted / wrong mount → refuses; `Marketplace.preview` refuses a skin already unlocked or already held; every `MOUNT_SKINS` entry has a `skin_*` ItemDef and its livery keys ⊆ that mount's `CUSTOM_SLOTS`.
 - **`mount-powers.test.mjs`** — every mount class has `applyPowers`, `CUSTOM_SLOTS`, `STATS`; speed multiplier reaches the mount's effective top speed (instantiate headless where the class permits, else assert on exported multipliers); `Player.applyDamage` reduces by shield tier when mounted and not otherwise; Combat fireball multiplier applies only for the dragon.
-- **`mount-catalog.test.mjs`** — every `grant_mount_power` row's `(mount, power)` is declared by that mount's `STATS`; every skin `grant_item` row's `item_id` resolves in `ItemDefs` and to a `MOUNT_SKINS` id (guards catalog/ledger drift, the failure class INVENTORY-AUDIT.md documents). Reads `site/lib/marketplaceCatalog.ts` via a small TS-stripping import (or a JSON export of `BASE_ITEMS`) — whichever the plan finds simplest.
+- **`mount-catalog.test.mjs`** — every `grant_mount_power` row's `(mount, power)` is declared by that mount's `STATS`; every skin `grant_item` row's `item_id` resolves in `ItemDefs` and to a `MOUNT_SKINS` id (guards catalog/ledger drift, the failure class INVENTORY-AUDIT.md documents); every `BASE_ITEMS` `source_key` is unique and every pre-existing key is still present (enforces the no-rename rule in §4.5). Reads `site/lib/marketplaceCatalog.ts` via a small TS-stripping import (or a JSON export of `BASE_ITEMS`) — whichever the plan finds simplest.
 - **Browser smoke (Playwright, manual)** — mount each of the six → F10 → change colour + finish → dismount/resummon → change persists; F5 save / Shift+F9 load; buy a skin at B → card shows "In inventory" → Apply consumes → "Owned"; try to buy it again → market refuses "already have"; on-foot F10 → notify; F1/F6/boot hints list F10; F2 no longer shows the car section.
 
 ## 10. Build order (for the plan)

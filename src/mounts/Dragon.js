@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { fbm01, clamp01, smoothstep, worley2D, WORLEY } from '../gfx/Textures.js';
 import { ParticlePool, SpeedLines, standardFromBake, makeGlowTexture } from './Hoverboard.js';
 import { anchorLight } from '../gfx/LightAnchor.js';
+import { applyLivery, MOUNT_STATS } from './Livery.js';
 
 /**
  * The rideable dragon.
@@ -640,6 +641,13 @@ function ensureMaterials(materials) {
 /* ================================================================== */
 
 export class Dragon {
+  /** Colour slots the F10 menu offers. `defaultColor` = factory swatch. */
+  static CUSTOM_SLOTS = Object.freeze([
+    Object.freeze({ id: 'hide', label: 'Hide', finish: true, defaultColor: 0x2b3a2e, palette: 'natural' }),
+    Object.freeze({ id: 'saddle', label: 'Saddle & tack', finish: true, defaultColor: 0x5a3a24, palette: 'paint' }),
+  ]);
+  static STATS = MOUNT_STATS.dragon;
+
   /**
    * @param {{scene:THREE.Scene, engine:any, physics:any, bus:any, materials:any,
    *          camera:THREE.PerspectiveCamera}} ctx
@@ -678,6 +686,7 @@ export class Dragon {
     this._powerMul = 1;
     this._accelMul = 1;
     this._shieldTier = 0;
+    this._fireTier = 0;
     this._groundY = 0;
     /** True when the collision solver is holding us up - i.e. we are resting */
     /** on something the terrain probe cannot see, like a roof or a tree. */
@@ -696,6 +705,8 @@ export class Dragon {
     /** Hip height of whoever is in the saddle; refined by `setRiderDrop`. */
     this._riderDrop = 1.0;
 
+    this._livery = null;
+    this._slotMats = null;
     this._geos = [];
     this._buildModel();
 
@@ -716,10 +727,14 @@ export class Dragon {
 
   _buildModel() {
     const M = this.materials;
-    const hide = M.get('dragon.hide');
+    // Cloned per dragon so a livery cannot repaint the shared library (and the
+    // NPC/AI dragons that use it). Clones share maps: no new textures.
+    this._hideMat = M.get('dragon.hide').clone();
+    this._membraneMat = M.get('dragon.membrane').clone();
+    const hide = this._hideMat;
     const belly = M.get('dragon.belly');
     const horn = M.get('dragon.horn');
-    const membrane = M.get('dragon.membrane');
+    const membrane = this._membraneMat;
 
     this.root = new THREE.Group();
     this.root.name = 'dragon';
@@ -938,6 +953,13 @@ export class Dragon {
     this._aura.position.set(0, -0.05, -0.72);
     this._aura.renderOrder = 6;
     this.head.add(this._aura);
+
+    this._slotMats = {
+      // Membrane takes 30% of the hide colour and no finish (spec §3.1).
+      hide: [this._hideMat, { mat: this._membraneMat, mix: 0.3, finish: false }],
+      saddle: [this._leatherMat, this._tackMat],
+    };
+    this.applyCustomization(this._livery);
   }
 
   /** A flat, tapered membrane blade (tail fin, ear frill). */
@@ -1292,8 +1314,10 @@ export class Dragon {
    * saw straight through it.
    */
   _buildHarness(M) {
-    const leatherMat = M.get('dragon.leather');
-    const tackMat = M.get('dragon.tack');
+    this._leatherMat = M.get('dragon.leather').clone();
+    this._tackMat = M.get('dragon.tack').clone();
+    const leatherMat = this._leatherMat;
+    const tackMat = this._tackMat;
 
     this.harness = new THREE.Group();
     this.harness.name = 'dragon.harness';
@@ -2297,7 +2321,7 @@ export class Dragon {
     _br1.setFromMatrixPosition(this.head.matrixWorld);
     const fx = -Math.sin(this.heading);
     const fz = -Math.cos(this.heading);
-    const n = this._roar > 0.05 ? 3 : 1;
+    const n = (this._roar > 0.05 ? 3 : 1) + (this._fireTier > 0 && this._roar > 0.05 ? 1 : 0);
     for (let i = 0; i < n; i++) {
       this._embers.spawn(
         _br1.x + fx * 0.7 + (Math.random() - 0.5) * 0.3,
@@ -2307,7 +2331,7 @@ export class Dragon {
         0.8 + Math.random() * 1.4,
         fz * (3 + this._roar * 8) + (Math.random() - 0.5) * 1.6,
         0.5 + Math.random() * 0.5,
-        0.22 + Math.random() * 0.2,
+        (0.22 + Math.random() * 0.2) * (1 + 0.1 * this._fireTier),
         1, 0.5 + Math.random() * 0.3, 0.16
       );
     }
@@ -2465,17 +2489,30 @@ export class Dragon {
    * slightly earlier lap time is indistinguishable from a purchase that did
    * nothing.
    *
-   * @param {{strength?:number, shield?:number, power?:number}} tiers
+   * @param {{strength?:number, shield?:number, power?:number, fire?:number}} tiers
    */
-  applyPowers({ strength = 0, shield = 0, power = 0 } = {}) {
+  applyPowers({ strength = 0, shield = 0, power = 0, fire = 0 } = {}) {
     this._powerMul = 1 + Math.max(0, power) * 0.12;   // +12% flight speed / tier
     this._accelMul = 1 + Math.max(0, strength) * 0.10; // +10% throttle bite / tier
     this._shieldTier = Math.max(0, shield);
+    this._fireTier = Math.max(0, fire);
   }
 
   /** Purchased shield tier, for whatever wants to soften an impact. */
   get shieldTier() {
     return this._shieldTier;
+  }
+
+  /** Purchased Fire tier: Combat scales the rider's fireballs by it. */
+  get fireTier() {
+    return this._fireTier;
+  }
+
+  /** Livery `{ hide?, saddle? }` over the cloned hide/membrane and leather/tack. */
+  applyCustomization(livery) {
+    this._livery = livery && typeof livery === 'object' ? livery : {};
+    if (!this._slotMats) return;
+    applyLivery(this._livery, Dragon.CUSTOM_SLOTS, this._slotMats);
   }
 
   /** Where to put the player when they climb down. */
@@ -2499,5 +2536,10 @@ export class Dragon {
     this._embers.dispose();
     this._dust.dispose();
     this._speedLines.dispose();
+    this._hideMat?.dispose();
+    this._membraneMat?.dispose();
+    this._leatherMat?.dispose();
+    this._tackMat?.dispose();
+    this._slotMats = null;
   }
 }

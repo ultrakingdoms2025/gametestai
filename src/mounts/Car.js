@@ -750,10 +750,10 @@ function buildWheelRimGeometry() {
 
 export class Car {
   /** Colour slots the F10 menu offers. `defaultColor` = factory swatch. */
-  static CUSTOM_SLOTS = [
-    { id: 'paint', label: 'Body paint', finish: true, defaultColor: 0x2b3d55, palette: 'paint' },
-    { id: 'wheel', label: 'Wheels', finish: true, defaultColor: 0xb9c2cc, palette: 'wheel' },
-  ];
+  static CUSTOM_SLOTS = Object.freeze([
+    Object.freeze({ id: 'paint', label: 'Body paint', finish: true, defaultColor: 0x2b3d55, palette: 'paint' }),
+    Object.freeze({ id: 'wheel', label: 'Wheels', finish: true, defaultColor: 0xb9c2cc, palette: 'wheel' }),
+  ]);
   static STATS = MOUNT_STATS.car;
 
   /**
@@ -1952,5 +1952,6 @@ export class Car {
     this._sparks.dispose();
     this._marks.dispose();
     this._speedLines.dispose();
+    this._slotMats = null;
   }
 }

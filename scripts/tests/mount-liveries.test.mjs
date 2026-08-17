@@ -146,6 +146,15 @@ test('setLivery with finish:null clears the finish; resetLivery clears the mount
   assert.deepEqual(mgr.getLivery('bicycle'), {});
 });
 
+test('setLivery ignores slot ids the mount does not declare', () => {
+  const { mgr, emitted } = manager();
+  mgr.setLivery('car', { bogus: { color: 0x010203 }, paint: { color: 0x0a0b0c } });
+  assert.deepEqual(mgr.getLivery('car'), { paint: { color: 0x0a0b0c } });
+  const n = emitted.filter(([e]) => e === 'mount:livery').length;
+  mgr.setLivery('car', { bogus: { color: 0x010203 } });
+  assert.equal(emitted.filter(([e]) => e === 'mount:livery').length, n, 'an all-unknown patch is a no-op');
+});
+
 test('serialize writes liveries and deserialize round-trips them', () => {
   const { mgr } = manager();
   mgr.setLivery('eagle', { plumage: { color: 0xabcdef }, harness: { color: 0x010203, finish: 'gloss' } });
@@ -186,7 +195,7 @@ import { Car } from '../../src/mounts/Car.js';
 
 test('Car declares slots/stats and tints its cloned paint and wheel materials', () => {
   assert.deepEqual(Car.CUSTOM_SLOTS.map((s) => s.id), ['paint', 'wheel']);
-  assert.equal(Car.STATS, MOUNT_STATS.car);
+  assert.deepEqual(Car.STATS, MOUNT_STATS.car);
   const car = new Car(ctx);
   car.applyCustomization({ paint: { color: 0xff3bd2, finish: 'matt' }, wheel: { color: 0x2fe0ff } });
   assert.equal(car._slotMats.paint[0].color.getHex(), 0xff3bd2);

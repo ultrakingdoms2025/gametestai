@@ -12,6 +12,14 @@ import { flightCeilingAt } from './FlightCeiling.js';
 import { normColor, cloneLivery, FINISH_PROPS } from './Livery.js';
 
 /**
+ * Mount id → class, used to validate a livery patch's slot ids against the
+ * slots that mount actually declares (`static CUSTOM_SLOTS`). A class that
+ * has not grown `CUSTOM_SLOTS` yet (mid-migration) is not filtered - every
+ * slot id is accepted until it declares its own set.
+ */
+const MOUNT_CLASSES = { hoverboard: Hoverboard, dragon: Dragon, car: Car, horse: Horse, eagle: Eagle, bicycle: Bicycle };
+
+/**
  * Mount ownership and the mounted movement authority.
  *
  * While a mount is active this class *owns the player's position*. The player
@@ -627,6 +635,19 @@ export class MountManager {
   /* ================================================================ */
 
   /**
+   * True unless `mountId`'s class declares `CUSTOM_SLOTS` and `slot` is not
+   * one of them. Classes mid-migration (no `CUSTOM_SLOTS` yet) accept every
+   * slot id, so intermediate commits keep working.
+   * @param {string} mountId
+   * @param {string} slot
+   */
+  _knownSlot(mountId, slot) {
+    const slots = MOUNT_CLASSES[mountId]?.CUSTOM_SLOTS;
+    if (!slots) return true;
+    return slots.some((s) => s.id === slot);
+  }
+
+  /**
    * Merge a livery patch into one mount and apply it live if that mount exists.
    * `patch` is `{ [slotId]: { color?, finish? } }`; `finish: null` clears the
    * finish. Colours may be numbers or '#rrggbb'. A patch that changes nothing
@@ -648,6 +669,7 @@ export class MountManager {
     for (const slot in patch) {
       const p = patch[slot];
       if (!p || typeof p !== 'object') continue;
+      if (!this._knownSlot(mountId, slot)) continue;
       const before = cur[slot] ? JSON.stringify(cur[slot]) : undefined;
       const s = cur[slot] || (cur[slot] = {});
       const c = normColor(p.color);
@@ -1686,6 +1708,7 @@ export class MountManager {
     if (data.liveries && typeof data.liveries === 'object') {
       for (const mid in data.liveries) {
         const l = cloneLivery(data.liveries[mid]);
+        for (const slot in l) if (!this._knownSlot(mid, slot)) delete l[slot];
         if (!Object.keys(l).length) continue;
         this._liveries[mid] = l;
         this._mounts.get(mid)?.applyCustomization?.(l);

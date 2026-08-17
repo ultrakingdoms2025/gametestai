@@ -717,6 +717,9 @@ export class PauseMenu {
         btn.addEventListener('mouseenter', () => this._focusItem(item));
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
+          // `aria-disabled` rows still receive clicks: never act on the
+          // *focused* item when the *clicked* one is off.
+          if (this.model.isEnabled(item) !== true) return;
           this._focusItem(item);
           this.activate();
         });
@@ -751,9 +754,10 @@ export class PauseMenu {
        * native tooltip on a disabled button, and on a disabled item the tooltip
        * IS the feature - it carries the reason ("Mount up first (M)"). The
        * `.off` class does the visual work and every path that could act on the
-       * item already re-checks `isEnabled`: `_focusItem` refuses it, `move()`
-       * skips it, and `model.activate()` returns null for it. */
+       * item re-checks `isEnabled`: `_focusItem` refuses it, `move()` skips it,
+       * and the click handler returns before activating. */
       r.btn.setAttribute('aria-disabled', off ? 'true' : 'false');
+      r.btn.tabIndex = off ? -1 : 0;
       r.hintEl.textContent = hint;
       r.hintEl.hidden = !hint;
       // `title` too: the hint line is truncated on a narrow card.

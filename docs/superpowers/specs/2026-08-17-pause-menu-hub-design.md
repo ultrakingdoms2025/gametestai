@@ -1,7 +1,7 @@
 # Pause Menu Hub (Esc) — Design
 
 **Date:** 2026-08-17
-**Status:** Approved in brainstorming; spec review passed (5 rounds); ready to plan
+**Status:** Implemented 2026-08-17 (branch `feat/pause-menu-hub`; plan `docs/superpowers/plans/2026-08-17-pause-menu-hub.md` — see its "Spec deviations, declared" header for the twelve shipped deviations)
 **Scope:** Replace the F-key sprawl with an Esc-driven pause menu that lists every system panel. One feature; the panels themselves are unchanged apart from their key bindings.
 
 ## 1. Problem

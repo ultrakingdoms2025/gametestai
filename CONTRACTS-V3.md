@@ -202,14 +202,15 @@ built for the dragon harness, posed at a driving position with hands on a wheel.
 Register it alongside hoverboard and dragon, include it in `prebuild()` (main.js warms
 mounts at boot — see §4), and make sure dismount restores camera state as the others do.
 
-**Mount customisation (F10, added 2026-08-17).** `MountManager` owns `_liveries` (per
+**Mount customisation (added 2026-08-17).** `MountManager` owns `_liveries` (per
 mount, `{slot:{color,finish}}`) and `_powers`; both persist through `serialize()`. Every
 mount class declares frozen `static CUSTOM_SLOTS` / `static STATS` and implements
 `applyCustomization(livery)` (read-only reference; tints only its own *cloned* materials
 via `src/mounts/Livery.js`, which owns the tint/finish maths and `MOUNT_STATS`) and
 `applyPowers()`. `src/systems/MountSkins.js` (`applyMountSkin`) is the only path that
-consumes a skin bag item and burns it into `Cosmetics`. `src/ui/MountMenu.js` (F10) is
-generic over `CUSTOM_SLOTS`/`STATS`; F2 is character-only. Design:
+consumes a skin bag item and burns it into `Cosmetics`. `src/ui/MountMenu.js` is generic
+over `CUSTOM_SLOTS`/`STATS` and opens from the Esc hub's **Customise mount** item (§3.6);
+the hub's **Character** item is character-only. Design:
 `docs/superpowers/specs/2026-08-17-mount-customizer-design.md`.
 
 ### 3.6 UX — owns `src/ui/HUD.js`, `src/ui/hud.css`, `src/ui/HelpMenu.js`
@@ -232,6 +233,24 @@ generic over `CUSTOM_SLOTS`/`STATS`; F2 is character-only. Design:
    indicator, an `npc:attack` damage readout, and a loot pickup toast.
 
 ---
+
+5. **Esc pause hub.** `Esc` opens the HUD pause overlay as a menu; `F1` (help) is the only
+   surviving function key and `Input.RESERVED_CODES` (exported, `Escape`/`F1`–`F12`/`Tab`)
+   keeps the rest unbindable. `src/ui/PauseMenu.js` owns the list widget (pure
+   `PauseMenuModel` + DOM `PauseMenu` + `PAUSE_MENU_IDS`); `src/ui/pause-menu.css` is
+   `<link>`ed from `index.html` beside `hud.css`. **`main.js` owns the item data** — HUD
+   knows no panel names. HUD owns `this._overlays`, a `Set` of panel ids fed by
+   `race:menu`, `minigame:menu`, `hud:block.id`, `ui:modal.id`, `audio:menu`, `market:*`,
+   `bug-report:*`, `character:*`, `inventory:*`, `keybinds:*`, `mount:menu:*`; an id is
+   present iff that module has a cursor-owning sheet on screen, and any panel that takes
+   the cursor **must** join it or the hub will not come back when it closes. `HelpMenu` is
+   the one exception: it keeps pointer lock, stays out of the Set, and opens over the hub.
+   `openFromHub` / `_hubReturn` / `_deferHubCheck` own the return path; the empty-Set
+   transition is deferred one microtask so a same-tick close→open hand-off is not read as
+   "everything closed"; `race:countdown`/`minigame:countdown` clear `_hubReturn` so a
+   commit is not mistaken for a cancel. Fullscreen is a persisted
+   `Input.fullscreenPreferred` (`localStorage['aether:fullscreen']`), honoured by
+   `requestLock`.
 
 ## 4. `main.js` wiring (orchestrator-owned — code against this)
 

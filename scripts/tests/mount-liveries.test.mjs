@@ -197,3 +197,23 @@ test('Car declares slots/stats and tints its cloned paint and wheel materials', 
   assert.equal(car._slotMats.paint[0].roughness, car._slotMats.paint[0].userData.factory.roughness);
   car.dispose();
 });
+
+import { MOUNT_SKINS, MOUNT_SKINS_BY_ID, skinsForMount, Cosmetics } from '../../src/systems/Cosmetics.js';
+
+test('MOUNT_SKINS: 20 skins, 5 car ids preserved, 3 per other mount, unique ids', () => {
+  assert.equal(MOUNT_SKINS.length, 20);
+  for (const id of ['car_neon', 'car_inferno', 'car_phantom', 'car_toxic', 'car_azure']) {
+    assert.equal(MOUNT_SKINS_BY_ID.get(id)?.mount, 'car', id);
+  }
+  for (const m of ['dragon', 'eagle', 'horse', 'hoverboard', 'bicycle']) assert.equal(skinsForMount(m).length, 3, m);
+  assert.equal(new Set(MOUNT_SKINS.map((s) => s.id)).size, 20);
+  for (const s of MOUNT_SKINS) {
+    assert.ok(s.name && s.blurb && s.livery && typeof s.livery === 'object', s.id);
+    for (const slot in s.livery) assert.equal(typeof s.livery[slot].color, 'number', `${s.id}.${slot}`);
+  }
+});
+
+test('Cosmetics.unlock accepts every mount skin id', () => {
+  const c = new Cosmetics({ bus: null });
+  for (const s of MOUNT_SKINS) assert.equal(c.unlock(s.id), true, s.id);
+});

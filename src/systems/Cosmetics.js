@@ -4,7 +4,7 @@
  * A tiny ownership ledger for purchasable, *permanent* cosmetics — the kind a
  * player buys once from a merchant and then wears from the customizer. It holds
  * nothing visual itself: the customizer (F2) reads {@link CHARACTER_SKINS} and
- * {@link VEHICLE_SKINS} to draw the cards, and asks this store which ids the
+ * {@link MOUNT_SKINS} to draw the cards, and asks this store which ids the
  * player owns so a locked card cannot be applied.
  *
  * Unlocks are ids, not items, so they are cheap to persist and never touch the
@@ -15,9 +15,9 @@
  *
  * Skins are deliberately *presets over the existing customizer*, not new
  * geometry: a character skin is a garment colourway (top/leg/accent) and a
- * vehicle skin is a car livery (paint/wheel). That keeps a "limited edition
- * skin" a data row here and in the catalog, with nothing to author in the
- * humanoid or car factories.
+ * mount skin is a livery over that mount's colour slots (F10). That keeps a
+ * "limited edition skin" a data row here and in the catalog, with nothing to
+ * author in the humanoid or car factories.
  */
 
 /**
@@ -59,48 +59,51 @@ export const CHARACTER_SKINS = [
 ];
 
 /**
- * Limited-edition car liveries. `livery` maps onto MountManager.setLivery.
- * @type {Array<{id:string,name:string,blurb:string,livery:{paint:number,wheel:number}}>}
+ * Mount skins: presets over each mount's `CUSTOM_SLOTS` (see the mount class).
+ * `livery` maps onto `MountManager.setLivery(mount, livery)`. The five car ids
+ * predate F10 and are kept verbatim so old ledgers stay valid.
+ * @type {Array<{id:string,mount:string,name:string,blurb:string,livery:Object<string,{color:number,finish?:'matt'|'gloss'}>}>}
  */
-export const VEHICLE_SKINS = [
-  {
-    id: 'car_neon',
-    name: 'Neon Circuit',
-    blurb: 'Magenta body, cyan rims.',
-    livery: { paint: 0xff3bd2, wheel: 0x2fe0ff },
-  },
-  {
-    id: 'car_inferno',
-    name: 'Inferno',
-    blurb: 'Race red with gold alloys.',
-    livery: { paint: 0xc21f2f, wheel: 0xe0b23a },
-  },
-  {
-    id: 'car_phantom',
-    name: 'Phantom',
-    blurb: 'Stealth black, chalk-white wheels.',
-    livery: { paint: 0x0d0f12, wheel: 0xf2f4f6 },
-  },
-  {
-    id: 'car_toxic',
-    name: 'Toxic Surge',
-    blurb: 'Venom green over black rims.',
-    livery: { paint: 0x18a86b, wheel: 0x0d0f12 },
-  },
-  {
-    id: 'car_azure',
-    name: 'Azure Bolt',
-    blurb: 'Electric blue, silver alloys.',
-    livery: { paint: 0x1f6fd0, wheel: 0xd9dde2 },
-  },
+export const MOUNT_SKINS = [
+  // Car (legacy ids)
+  { id: 'car_neon', mount: 'car', name: 'Neon Circuit', blurb: 'Magenta body, cyan rims.', livery: { paint: { color: 0xff3bd2, finish: 'gloss' }, wheel: { color: 0x2fe0ff, finish: 'gloss' } } },
+  { id: 'car_inferno', mount: 'car', name: 'Inferno', blurb: 'Race red with gold alloys.', livery: { paint: { color: 0xc21f2f, finish: 'gloss' }, wheel: { color: 0xe0b23a, finish: 'gloss' } } },
+  { id: 'car_phantom', mount: 'car', name: 'Phantom', blurb: 'Stealth black, chalk-white wheels.', livery: { paint: { color: 0x0d0f12, finish: 'matt' }, wheel: { color: 0xf2f4f6, finish: 'gloss' } } },
+  { id: 'car_toxic', mount: 'car', name: 'Toxic Surge', blurb: 'Venom green over black rims.', livery: { paint: { color: 0x18a86b, finish: 'gloss' }, wheel: { color: 0x0d0f12, finish: 'matt' } } },
+  { id: 'car_azure', mount: 'car', name: 'Azure Bolt', blurb: 'Electric blue, silver alloys.', livery: { paint: { color: 0x1f6fd0, finish: 'gloss' }, wheel: { color: 0xd9dde2, finish: 'gloss' } } },
+  // Dragon
+  { id: 'dragon_obsidian', mount: 'dragon', name: 'Obsidian Ember', blurb: 'Black glass hide, blood-red tack.', livery: { hide: { color: 0x14161c, finish: 'gloss' }, saddle: { color: 0xc21f2f, finish: 'gloss' } } },
+  { id: 'dragon_verdant', mount: 'dragon', name: 'Verdant Wyrm', blurb: 'Forest scale, worn tan leather.', livery: { hide: { color: 0x1f6b3a, finish: 'matt' }, saddle: { color: 0x8a6a42, finish: 'matt' } } },
+  { id: 'dragon_frost', mount: 'dragon', name: 'Frostscale', blurb: 'Glacier hide, deep-blue harness.', livery: { hide: { color: 0xbfe6f2, finish: 'gloss' }, saddle: { color: 0x1f6fd0, finish: 'gloss' } } },
+  // Eagle
+  { id: 'eagle_golden', mount: 'eagle', name: 'Golden Talon', blurb: 'Burnished gold plumage, black harness.', livery: { plumage: { color: 0xc98a2b }, harness: { color: 0x2c2f36, finish: 'gloss' } } },
+  { id: 'eagle_storm', mount: 'eagle', name: 'Storm Crest', blurb: 'Slate-blue feathers, silver straps.', livery: { plumage: { color: 0x3a4a5c }, harness: { color: 0xd9dde2, finish: 'gloss' } } },
+  { id: 'eagle_ember', mount: 'eagle', name: 'Ember Wing', blurb: 'Scorched russet, gold harness.', livery: { plumage: { color: 0x7a2a1a }, harness: { color: 0xffd23b, finish: 'gloss' } } },
+  // Horse
+  { id: 'horse_midnight', mount: 'horse', name: 'Midnight Charger', blurb: 'Coal-black coat, white leather.', livery: { coat: { color: 0x141216 }, saddle: { color: 0xd9dde2, finish: 'gloss' } } },
+  { id: 'horse_palomino', mount: 'horse', name: 'Palomino', blurb: 'Golden coat, oiled brown tack.', livery: { coat: { color: 0xd6b26a }, saddle: { color: 0x6b4e35, finish: 'matt' } } },
+  { id: 'horse_royal', mount: 'horse', name: 'Royal Grey', blurb: 'Dapple white, violet saddle.', livery: { coat: { color: 0xe6e6ea }, saddle: { color: 0x6a2fd0, finish: 'gloss' } } },
+  // Hoverboard
+  { id: 'hover_neon', mount: 'hoverboard', name: 'Neon Drift', blurb: 'Gloss black deck, magenta underglow.', livery: { deck: { color: 0x14181f, finish: 'gloss' }, glow: { color: 0xff3bd2 } } },
+  { id: 'hover_toxic', mount: 'hoverboard', name: 'Toxic Rail', blurb: 'Matt green deck, acid glow.', livery: { deck: { color: 0x18a86b, finish: 'matt' }, glow: { color: 0xa8ff3b } } },
+  { id: 'hover_solar', mount: 'hoverboard', name: 'Solar Flare', blurb: 'Orange gloss deck, gold glow.', livery: { deck: { color: 0xf27b1f, finish: 'gloss' }, glow: { color: 0xffe14a } } },
+  // Bicycle
+  { id: 'bike_chrome', mount: 'bicycle', name: 'Chrome Courier', blurb: 'Polished frame, bright rims.', livery: { frame: { color: 0xd9dde2, finish: 'gloss' }, rims: { color: 0xb9c2cc, finish: 'gloss' } } },
+  { id: 'bike_racing', mount: 'bicycle', name: 'Racing Red', blurb: 'Race red frame, black rims.', livery: { frame: { color: 0xc21f2f, finish: 'gloss' }, rims: { color: 0x0d0f12, finish: 'matt' } } },
+  { id: 'bike_forest', mount: 'bicycle', name: 'Forest Ranger', blurb: 'Matt green frame, brass rims.', livery: { frame: { color: 0x2f4a2a, finish: 'matt' }, rims: { color: 0xc9a24a, finish: 'gloss' } } },
 ];
 
 /** Fast lookups by id, so the customizer and market can resolve a skin cheaply. */
 export const CHARACTER_SKINS_BY_ID = new Map(CHARACTER_SKINS.map((s) => [s.id, s]));
-export const VEHICLE_SKINS_BY_ID = new Map(VEHICLE_SKINS.map((s) => [s.id, s]));
+export const MOUNT_SKINS_BY_ID = new Map(MOUNT_SKINS.map((s) => [s.id, s]));
+
+/** Skins for one mount id, in catalog order. */
+export function skinsForMount(mountId) {
+  return MOUNT_SKINS.filter((s) => s.mount === mountId);
+}
 
 /** Every id the catalog is allowed to grant. Guards against typos in seed data. */
-const KNOWN_SKIN_IDS = new Set([...CHARACTER_SKINS_BY_ID.keys(), ...VEHICLE_SKINS_BY_ID.keys()]);
+const KNOWN_SKIN_IDS = new Set([...CHARACTER_SKINS_BY_ID.keys(), ...MOUNT_SKINS_BY_ID.keys()]);
 
 export class Cosmetics {
   constructor({ bus } = {}) {

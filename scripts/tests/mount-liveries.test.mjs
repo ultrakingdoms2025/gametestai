@@ -299,3 +299,60 @@ test('every mount skin has a stack-1 kind:skin item and the id helpers round-tri
   assert.equal(skinIdFromItem('medkit'), null);
   assert.equal(skinIdFromItem('skin_not_a_skin'), null);
 });
+
+import { applyMountSkin } from '../../src/systems/MountSkins.js';
+
+function skinDeps({ mounted = 'dragon', owned = [], bag = {}, store = {} } = {}) {
+  const liveries = {};
+  const unlocked = new Set(owned);
+  const mounts = {
+    get mounted() { return !!mounted; },
+    get active() { return mounted ? { id: mounted } : null; },
+    setLivery: (id, patch) => { liveries[id] = { ...(liveries[id] || {}), ...patch }; },
+  };
+  const cosmetics = { has: (id) => unlocked.has(id), unlock: (id) => { if (unlocked.has(id)) return false; unlocked.add(id); return true; } };
+  const inventory = {
+    bagCount: (id) => bag[id] ?? 0,
+    count: (id) => store[id] ?? 0,
+    totalCount: (id) => (bag[id] ?? 0) + (store[id] ?? 0),
+    consumeFromBag: (id, n) => { if ((bag[id] ?? 0) < n) return false; bag[id] -= n; return true; },
+    remove: (id, n) => { const k = Math.min(n, store[id] ?? 0); store[id] = (store[id] ?? 0) - k; return k; },
+  };
+  return { deps: { mounts, cosmetics, inventory, bus: { emit() {} } }, liveries, unlocked, bag, store };
+}
+
+test('applyMountSkin: unknown / not mounted / wrong mount refuse and consume nothing', () => {
+  assert.equal(applyMountSkin(skinDeps().deps, 'nope').reason, 'unknown-skin');
+  assert.equal(applyMountSkin(skinDeps({ mounted: null }).deps, 'dragon_frost').reason, 'not-mounted');
+  const s = skinDeps({ mounted: 'horse', bag: { skin_dragon_frost: 1 } });
+  assert.equal(applyMountSkin(s.deps, 'dragon_frost').reason, 'wrong-mount');
+  assert.equal(s.bag.skin_dragon_frost, 1);
+});
+
+test('applyMountSkin: owned applies without touching the inventory', () => {
+  const s = skinDeps({ owned: ['dragon_frost'], bag: { skin_dragon_frost: 1 } });
+  assert.deepEqual(applyMountSkin(s.deps, 'dragon_frost'), { ok: true, consumed: false });
+  assert.equal(s.bag.skin_dragon_frost, 1);
+  assert.equal(s.liveries.dragon.hide.color, 0xbfe6f2);
+});
+
+test('applyMountSkin: in bag consumes exactly one, unlocks, applies', () => {
+  const s = skinDeps({ bag: { skin_dragon_frost: 2 } });
+  assert.deepEqual(applyMountSkin(s.deps, 'dragon_frost'), { ok: true, consumed: true });
+  assert.equal(s.bag.skin_dragon_frost, 1);
+  assert.ok(s.unlocked.has('dragon_frost'));
+  assert.equal(s.liveries.dragon.saddle.color, 0x1f6fd0);
+});
+
+test('applyMountSkin: only in store consumes one from the store', () => {
+  const s = skinDeps({ store: { skin_dragon_frost: 1 } });
+  assert.deepEqual(applyMountSkin(s.deps, 'dragon_frost'), { ok: true, consumed: true });
+  assert.equal(s.store.skin_dragon_frost, 0);
+  assert.ok(s.unlocked.has('dragon_frost'));
+});
+
+test('applyMountSkin: neither owned nor held refuses with not-owned', () => {
+  const s = skinDeps();
+  assert.equal(applyMountSkin(s.deps, 'dragon_frost').reason, 'not-owned');
+  assert.equal(s.unlocked.size, 0);
+});

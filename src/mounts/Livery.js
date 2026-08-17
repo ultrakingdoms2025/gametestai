@@ -29,7 +29,6 @@ export const FINISH_PROPS = {
   matt: { roughness: 1.0, metalness: 0.05, envMapIntensity: 0.6 },
   gloss: { roughness: 0.22, metalness: 0.35, envMapIntensity: 1.0 },
 };
-export const FINISHES = Object.keys(FINISH_PROPS);
 
 /**
  * The stat ladder each mount sells. Kept here (pure data) rather than only on

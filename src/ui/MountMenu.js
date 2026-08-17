@@ -176,7 +176,19 @@ export class MountMenu {
       b.type = 'button';
       b.style.setProperty('--c', hexStr(c));
       b.title = hexStr(c);
-      b.addEventListener('click', () => this._setSlot(slot.id, { color: c }));
+      b.addEventListener('click', () => {
+        /* Clicking the swatch that already IS the factory colour must do
+         * nothing at all, not write its hex.
+         *
+         * `slot.defaultColor` is the swatch the palette draws for "factory",
+         * but on an ORM-baked material the real `.color` is white and the
+         * shade the player sees comes out of the map. Writing the swatch hex
+         * multiplies that map by itself and the part visibly darkens - the
+         * button that means "put it back" made it worse. An unset slot is
+         * already at factory, so there is nothing to write. */
+        if (c === slot.defaultColor && this._livery()[slot.id]?.color == null) return;
+        this._setSlot(slot.id, { color: c });
+      });
       row.appendChild(b);
       this._syncers.push(() => b.classList.toggle('on', this._slotColor(slot) === c));
     }

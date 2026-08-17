@@ -70,6 +70,21 @@ export const BINDABLE = [
 
 const BIND_STORAGE = 'aether-nexus:binds:v1';
 
+/**
+ * Keys the game cannot give up without breaking its own escape hatches.
+ *
+ * F6/F7/F8 own panels too (keybinds, race, minigame quit) - KeybindMenu's
+ * FIXED_KEYS list documents all of F1-F10 as unrebindable, so this has to
+ * actually cover them. Enforced in BOTH directions: `setBinding` refuses to
+ * write one, and `_loadBinds` drops one that is already in storage. A build
+ * that shipped a narrower list, or a hand-edited localStorage entry, would
+ * otherwise leave the player with an Escape key that no longer closes
+ * anything and no way in the UI to take it back.
+ */
+const RESERVED_CODES = [
+  'Escape', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'Tab',
+];
+
 export class Input {
   constructor(canvas, bus) {
     this.canvas = canvas;
@@ -432,13 +447,7 @@ export class Input {
    */
   setBinding(defaultCode, code) {
     if (!BINDABLE.some((d) => d.code === defaultCode)) return { ok: false };
-    // Keys the game cannot give up without breaking its own escape hatches.
-    // F6/F7/F8 own panels too (keybinds, race, minigame quit) - KeybindMenu's
-    // FIXED_KEYS list documents all of F1-F10 as unrebindable, so the guard
-    // here has to actually cover them.
-    if (['Escape', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'Tab'].includes(code)) {
-      return { ok: false };
-    }
+    if (RESERVED_CODES.includes(code)) return { ok: false };
     let displaced;
     for (const d of BINDABLE) {
       if (d.code === defaultCode) continue;
@@ -479,7 +488,13 @@ export class Input {
       // older build must not resurrect an action that no longer exists.
       for (const d of BINDABLE) {
         const v = obj?.[d.code];
-        if (typeof v === 'string' && v && v !== d.code) this._binds.set(d.code, v);
+        // ...and against the reserved list, which `setBinding` also enforces:
+        // storage outlives the build that wrote it, so an entry saved before a
+        // key joined the list would come back and take Escape or F10 away with
+        // no UI left to undo it.
+        if (typeof v === 'string' && v && v !== d.code && !RESERVED_CODES.includes(v)) {
+          this._binds.set(d.code, v);
+        }
       }
       this._rebuildBinds();
     } catch { /* corrupt or unavailable - ship defaults */ }

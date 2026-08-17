@@ -1024,10 +1024,24 @@ export class Hoverboard {
       let target = ctrl.yaw + carve;
       let diff = ((target - this.heading + Math.PI) % (Math.PI * 2)) - Math.PI;
       if (diff < -Math.PI) diff += Math.PI * 2;
-      // Turn authority falls off with speed: fast means committed.
-      const grip = 1 - clamp01(this.speed / (BOOST_SPEED * 1.35)) * 0.45;
-      const maxRate = 3.1 * grip;
-      const rate = clamp(diff * 6.5, -maxRate, maxRate);
+      /* Turn authority falls off with speed: fast means committed.
+       *
+       * All three terms carry the Power multiplier, for the reason set out at
+       * length on Dragon.js:1869 - what the rider meets in a corner is the
+       * turning RADIUS, v / omega, and scaling only v widens it. Worst of the
+       * lot here, because the grip term SATURATES at BOOST_SPEED * 1.35 and a
+       * tier-3 board runs straight past it, so the radius grew by more than
+       * the speed did. Measured off the mount boosting flat out holding a
+       * constant 0.6 rad of yaw error, tier 0 vs tier 3: 11.613 m -> 19.144 m
+       * (x1.648) before, 11.613 m -> 11.613 m (x1.000) after.
+       *
+       * Dividing by the tiered top speed is the falloff CURVE (the board is at
+       * the same fraction of its own ceiling, so it gets the same grip); the
+       * cap and the proportional gain then take the multiplier themselves,
+       * which is what actually holds v / omega put. */
+      const grip = 1 - clamp01(this.speed / (BOOST_SPEED * this._powerMul * 1.35)) * 0.45;
+      const maxRate = 3.1 * grip * this._powerMul;
+      const rate = clamp(diff * 6.5 * this._powerMul, -maxRate, maxRate);
       this.heading += rate * dt;
       this._turnRate = damp(this._turnRate, rate, 10, dt);
     } else {

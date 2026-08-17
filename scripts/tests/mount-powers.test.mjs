@@ -200,6 +200,87 @@ test('a purchased Speed III reaches every mount (terminal speed rises ~36%)', ()
 });
 
 /**
+ * Speed III must not widen the turning RADIUS.
+ *
+ * A Speed tier scales the mount's velocity, but what the rider actually meets
+ * in a corner is `v / omega`. Every one of these three measured its turn
+ * authority against the STOCK top speed, so a bought tier moved the numerator
+ * and left the denominator - and on the eagle and the board the authority
+ * curve saturates, so `omega` actually FELL and the corner got worse than the
+ * raw speed ratio. Dragon.js:1869 documents the same defect and its fix; this
+ * is that fix carried to the rest of the fleet.
+ *
+ * Measured on this rig, r(tier 3) / r(tier 0), before -> after:
+ *   horse       1.360 -> 1.000   eagle  1.516 -> 0.973   hoverboard  1.648 -> 1.000
+ * The eagle's 3% is the run, not the model: at 8 s the tier-3 bird is still
+ * converging on its own higher terminal speed, so it sits a shade further down
+ * the authority curve than the stock one. The threshold brackets the nominal
+ * 1.0 and is nowhere near any of the pre-fix figures.
+ *
+ * Each mount is driven with the control that actually turns it, read off its
+ * own `fixedUpdate`: the horse steers off `strafe` alone and ignores `yaw`,
+ * while the eagle and the board chase `ctrl.yaw`, so those two are held at a
+ * constant 0.6 rad of heading error. Never soften the threshold to make this
+ * pass - fix the mount, or fix the control in this table.
+ */
+const TURN = {
+  horse: { seconds: 8, ctrl: (m) => ({ throttle: 1, strafe: 1, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
+  eagle: { seconds: 8, ctrl: (m) => ({ throttle: 0, strafe: 0, up: 0, boost: true, yaw: m.heading + 0.6, pitch: 0 }) },
+  hoverboard: { seconds: 8, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading + 0.6, pitch: 0 }) },
+};
+
+/**
+ * Mean turning radius over the last 3 s of the run: total ground distance
+ * divided by total heading swept, which is `|v| / |omega|` averaged over the
+ * window rather than sampled on one frame. The first seconds are discarded so
+ * the spin-up out of a standing start cannot colour the figure.
+ */
+function turnRadius(id, C, tier) {
+  const spec = TURN[id];
+  const m = new C(ctx);
+  m.applyPowers({ power: tier });
+  m.spawn(new THREE.Vector3(0, RUN[id].spawnY, 0), 0);
+  m.onMount?.();
+  const steps = Math.round(spec.seconds / STEP);
+  const from = steps - Math.round(3 / STEP);
+  let dist = 0;
+  let swept = 0;
+  for (let i = 0; i < steps; i++) {
+    const h0 = m.heading;
+    m.fixedUpdate(STEP, i * STEP, spec.ctrl(m));
+    if (i < from) continue;
+    // Shortest-arc difference: heading is free to wrap, and a raw subtraction
+    // would book a 2*PI jump as a lap's worth of turning.
+    let d = ((m.heading - h0 + Math.PI) % (Math.PI * 2)) - Math.PI;
+    if (d < -Math.PI) d += Math.PI * 2;
+    swept += Math.abs(d);
+    dist += Math.abs(m.speed) * STEP;
+  }
+  m.dispose?.();
+  return { radius: dist / swept, omega: swept / 3, speed: dist / 3 };
+}
+
+test('Speed III does not widen the turning radius', () => {
+  for (const id of Object.keys(TURN)) {
+    const C = CLASSES[id];
+    const a = turnRadius(id, C, 0);
+    const b = turnRadius(id, C, 3);
+    // A mount that never turned reads radius = Infinity or NaN and would sail
+    // through the ratio check below on both runs.
+    for (const [tier, r] of [[0, a], [3, b]]) {
+      assert.ok(r.omega > 0.2, `${id} tier ${tier}: only turned ${r.omega.toFixed(3)} rad/s - the TURN table does not steer this mount`);
+      assert.ok(Number.isFinite(r.radius) && r.radius > 1, `${id} tier ${tier}: radius ${r.radius}`);
+    }
+    const ratio = b.radius / a.radius;
+    assert.ok(
+      ratio < 1.15,
+      `${id}: Speed III turned ${a.radius.toFixed(2)} m (${a.speed.toFixed(1)} m/s, ${a.omega.toFixed(2)} rad/s) into `
+      + `${b.radius.toFixed(2)} m (${b.speed.toFixed(1)} m/s, ${b.omega.toFixed(2)} rad/s) - x${ratio.toFixed(3)}, want < 1.15`
+    );
+  }
+});
+
+/**
  * Acceleration is a RAMP-RATE stat, and on a drag-limited mount that is not
  * automatic: scaling the thrust term alone moves the point where thrust
  * balances drag, so both of these were quietly selling top speed under the

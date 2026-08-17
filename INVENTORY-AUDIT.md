@@ -23,12 +23,20 @@ mounts, npcManager, player, combat, economy, bus`.
 - Runtime maps items by **`source_key`, NOT `game_action`** (`src/systems/Marketplace.js:40-56`).
   `consumableItemFor()` strips a trailing `:<world>` suffix.
 
-## DB <-> code mapping (145 items, all with clean data)
+## DB <-> code mapping (101 base rows, 505 seeded, all with clean data)
 
-| Route | Items | source_key |
-|---|---|---|
-| Consumable via ItemUse | 55 | `spell_velocity_*`(20), `spell_stasis_*`(20), `spell_loot_grab_30`(5), `spell_portal_ping_30`(5), `pack_medkit`(5) |
-| Purchase-grant | 90 | ammo `pack_*`(15), `mount_*`(45), `cosmetic_*`(30) |
+`BASE_ITEMS` in `site/lib/marketplaceCatalog.ts` holds 101 rows; `buildMarketplaceSeedItems()`
+stamps each across the 5 worlds, so the seeded table is 505. "Base" below is the row count in
+the catalog, "seeded" is base x 5. Mount rows are 77 of the 101: 57 upgrades (`grant_mount_power`)
+plus 20 skins (`grant_item` of a `skin_*` id — 15 `skin_*` rows plus the 5 pre-existing
+`cosmetic_car_*` ones). `scripts/tests/mount-catalog.test.mjs` asserts every one of those 77
+against the game's own `MOUNT_STATS` and `MOUNT_SKINS_BY_ID`, so a row granting a stat or a skin
+that does not exist fails the build rather than shipping.
+
+| Route | Base | Seeded | source_key |
+|---|---|---|---|
+| Consumable via ItemUse | 16 | 80 | `spell_velocity_*`(4), `spell_stasis_*`(4), `spell_loot_grab_30`, `spell_portal_ping_30`, `pack_medkit`, `shield_*`(1), `firepower_*`(4) |
+| Purchase-grant | 85 | 425 | ammo `pack_*`(3), `mount_*`(57), `skin_*`(15), `cosmetic_*`(10) |
 
 ## VERIFIED PASSING
 

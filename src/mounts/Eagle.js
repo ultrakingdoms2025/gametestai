@@ -183,7 +183,12 @@ export class Eagle {
     const beakMat = this._mat(0xe2a92c, { roughness: 0.38, metalness: 0.18 });
     const flight = this._mat(0x4a3626, { surface: 'hide.feather:2,3' });
     const tackMat = this._mat(0x6d4522, { roughness: 0.6 });
-    this._slotMats = { plumage: [body, flight], harness: [tackMat] };
+    /* The primaries take 70% of the plumage colour, not all of it - the same
+     * mechanism as the dragon's membrane (Dragon `_slotMats.hide`). They are
+     * authored two shades darker than the body so they read against the
+     * coverts, and painting both slots the flat swatch hex threw that away:
+     * a recoloured bird lost the wing entirely and went to one silhouette. */
+    this._slotMats = { plumage: [body, { mat: flight, mix: 0.7 }], harness: [tackMat] };
 
     /* ---- torso ----
      *
@@ -533,9 +538,27 @@ export class Eagle {
       let diff = ((ctrl.yaw - this.heading + Math.PI * 3) % TAU) - Math.PI;
       turn += clamp(diff * 2.1, -TURN_RATE * 1.6, TURN_RATE * 1.6);
     }
-    // Slower to answer at speed: a bird doing 40 m/s cannot pivot.
-    const authority = 1 - clamp(this.speed / MAX_SPEED, 0, 1) * 0.45;
-    turn *= authority;
+    /* Slower to answer at speed: a bird doing 40 m/s cannot pivot.
+     *
+     * Both halves carry the Power multiplier, for the reason set out at length
+     * on Dragon.js:1869 - what the rider meets in a corner is the turning
+     * RADIUS, v / omega, and scaling only v widens it. Worse here than
+     * anywhere, because the authority term SATURATES: a tier-3 bird sat at the
+     * clamped end of the curve with the stock rate, so the radius grew by more
+     * than the speed did. Measured off the mount in level flight holding a
+     * constant 0.6 rad of yaw error, tier 0 vs tier 3: 29.548 m -> 44.797 m
+     * (x1.516) before, 29.548 m -> 28.739 m (x0.973) after. The residual 3% is
+     * the run, not the model: the tier-3 bird is still converging on its own
+     * higher terminal speed at the 8 s mark, so it is a shade further down the
+     * authority curve than the stock one.
+     *
+     * Dividing by the tiered top speed is the falloff CURVE (the bird is at
+     * the same fraction of its own ceiling, so it gets the same authority);
+     * multiplying `turn` is what holds v / omega put. Applying the multiplier
+     * after the clamp above scales the gain and the cap together, which is
+     * exactly what the dragon does term by term. */
+    const authority = 1 - clamp(this.speed / (MAX_SPEED * this._powerMul), 0, 1) * 0.45;
+    turn *= authority * this._powerMul;
     this.heading += turn * dt;
 
     const bankTarget = clamp(-turn / TURN_RATE, -1, 1) * MAX_BANK;

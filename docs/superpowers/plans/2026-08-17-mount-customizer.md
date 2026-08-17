@@ -1,6 +1,6 @@
 # Mount Customizer (F10) Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** A per-mount customisation menu on F10 (colour slots with Matt/Gloss finish, marketplace skins that are consumed from the bag and burned in, and a read-only view of purchased stat tiers) for all six mounts, with the stat tiers actually working on every mount.
 
@@ -38,6 +38,10 @@ export const ctx = { scene, engine: null, physics: { groundHeight: () => 0, reso
 > Spec deviation, deliberate: spec §4.2 asks for `static DISPLAY_NAME`; every mount already carries an instance `displayName` (`Car.js:757`, `Dragon.js:649`, …) and the menu reads that instead. No new static is added.
 >
 > Spec deviation, deliberate: spec §3.1 gives Matt roughness 0.85; shipped 1.0 because on the ORM-baked library materials roughness is a *multiplier* over the bake (factory 1.0), so 0.85 would make Matt glossier than factory. See `FINISH_PROPS` in `Livery.js`.
+>
+> Spec deviation, deliberate: `applyMountSkin` takes `{mounts, cosmetics, inventory}` — no `bus`; it returns a reason to its caller and the caller owns the toast, so the helper never needs to emit. It also has a fifth reason, `'unavailable'`, for a skin whose mount is not the one being ridden.
+>
+> Spec deviation, deliberate: the catalog test (`scripts/tests/mount-catalog.test.mjs`) asserts a *sample* of pre-existing source keys plus uniqueness across the whole set, rather than enumerating every row — the site's vitest suite already asserts the full converted-row set, and duplicating it here would be two copies of one fixture to keep in step.
 
 ### Task 1: `src/mounts/Livery.js` — shared tint/finish helper (pure, no THREE import)
 
@@ -45,7 +49,7 @@ export const ctx = { scene, engine: null, physics: { groundHeight: () => 0, reso
 - Create: `src/mounts/Livery.js`
 - Test: `scripts/tests/mount-liveries.test.mjs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `scripts/tests/mount-liveries.test.mjs`:
 
@@ -139,12 +143,12 @@ test('MOUNT_STATS lists the ladder for all six mounts, fire only on the dragon',
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `node --test scripts/tests/mount-liveries.test.mjs`
 Expected: FAIL — `Cannot find module '.../src/mounts/Livery.js'`
 
-- [ ] **Step 3: Write the module**
+- [x] **Step 3: Write the module**
 
 Create `src/mounts/Livery.js`:
 
@@ -311,12 +315,12 @@ export function cloneLivery(livery) {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `node --test scripts/tests/mount-liveries.test.mjs`
 Expected: PASS (6 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mounts/Livery.js scripts/tests/mount-liveries.test.mjs
@@ -331,7 +335,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `src/mounts/MountManager.js:1-12` (imports), `:242-254` (fields), `:597-620` (`_create`), `:626-641` (livery API), `:673-681` (`_applyPowers`), `:1628-1651` (serialize/deserialize)
 - Test: `scripts/tests/mount-liveries.test.mjs`
 
-- [ ] **Step 1: Add failing tests**
+- [x] **Step 1: Add failing tests**
 
 Append to `scripts/tests/mount-liveries.test.mjs` (add the headless stub from "Conventions" at the top of the file first — `materials`, `bus`, `scene`, `ctx`):
 
@@ -397,12 +401,12 @@ test('deserialize still returns undefined (SaveGame relies on the falsy fall-thr
 });
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `node --test scripts/tests/mount-liveries.test.mjs`
 Expected: FAIL — `setLivery` signature mismatch (`TypeError` or deepEqual failure).
 
-- [ ] **Step 3: Implement in `MountManager.js`**
+- [x] **Step 3: Implement in `MountManager.js`**
 
 Add import after `flightCeilingAt`:
 
@@ -512,7 +516,7 @@ In `deserialize()` replace the `if (data.livery && ...)` block with:
 
 Update the JSDoc on `grantPower` to `@param {'strength'|'shield'|'power'|'fire'} power`.
 
-- [ ] **Step 3b: Remove the car livery section from F2 (`src/ui/CharacterMenu.js`)** — its `setLivery({paint})`/`getLivery()` calls no longer match the new signature, so it goes now rather than half-working until Task 17:
+- [x] **Step 3b: Remove the car livery section from F2 (`src/ui/CharacterMenu.js`)** — its `setLivery({paint})`/`getLivery()` calls no longer match the new signature, so it goes now rather than half-working until Task 17:
 
 - `:11` → `import { CHARACTER_SKINS } from '../systems/Cosmetics.js';`
 - Delete `CAR_PAINT_COLORS` and `CAR_WHEEL_COLORS` (`:95-107`) — they move to `MountMenuLogic.PALETTES` in Task 16.
@@ -525,11 +529,11 @@ Update the JSDoc on `grantPower` to `@param {'strength'|'shield'|'power'|'fire'}
 
 `grep -n "livery\|Livery\|mounts" src/ui/CharacterMenu.js` must return nothing.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `node --test scripts/tests/mount-liveries.test.mjs` → PASS. Then `npm test && npm run build` → all green (`race-pace` still passes: Car still has `applyPowers`).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mounts/MountManager.js src/ui/CharacterMenu.js src/main.js scripts/tests/mount-liveries.test.mjs
@@ -544,7 +548,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `src/mounts/Car.js:1-10` (import), class head (`static` fields), `:845-854` (`_buildModel` materials), `:1897-1909` (`applyCustomization`)
 - Test: `scripts/tests/mount-liveries.test.mjs`
 
-- [ ] **Step 1: Add failing test**
+- [x] **Step 1: Add failing test**
 
 Append to `scripts/tests/mount-liveries.test.mjs`:
 
@@ -566,11 +570,11 @@ test('Car declares slots/stats and tints its cloned paint and wheel materials', 
 });
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Expected: FAIL — `Car.CUSTOM_SLOTS` undefined.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `Car.js` add the import next to the other imports:
 
@@ -614,11 +618,11 @@ Replace `applyCustomization` (`:1897-1909`) with:
 
 The constructor does not initialise `_livery` today (only `:854` and `:1904-1908` touch it): add `this._livery = null; this._slotMats = null;` immediately before `this._buildModel();` at `:814`.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `node --test scripts/tests/mount-liveries.test.mjs && node --test scripts/tests/race-pace.test.mjs` → PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mounts/Car.js scripts/tests/mount-liveries.test.mjs
@@ -634,7 +638,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - (CharacterMenu already stopped importing `VEHICLE_SKINS` in Task 2)
 - Test: `scripts/tests/mount-liveries.test.mjs`
 
-- [ ] **Step 1: Add failing test**
+- [x] **Step 1: Add failing test**
 
 ```js
 import { MOUNT_SKINS, MOUNT_SKINS_BY_ID, skinsForMount, Cosmetics } from '../../src/systems/Cosmetics.js';
@@ -658,9 +662,9 @@ test('Cosmetics.unlock accepts every mount skin id', () => {
 });
 ```
 
-- [ ] **Step 2: Run** → FAIL — `MOUNT_SKINS` is not exported.
+- [x] **Step 2: Run** → FAIL — `MOUNT_SKINS` is not exported.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `Cosmetics.js`, replace the whole `VEHICLE_SKINS` block **and** the three lookup lines after it (`:61-103`) with:
 
@@ -715,9 +719,9 @@ const KNOWN_SKIN_IDS = new Set([...CHARACTER_SKINS_BY_ID.keys(), ...MOUNT_SKINS_
 
 Update the header comment: replace "a vehicle skin is a car livery (paint/wheel)" with "a mount skin is a livery over that mount's colour slots (F10)", and `{@link VEHICLE_SKINS}` at `:7` with `{@link MOUNT_SKINS}`. `CharacterMenu` no longer imports `VEHICLE_SKINS` (removed in Task 2 Step 3b); `grep -rn VEHICLE_SKINS src` must return nothing after this step.
 
-- [ ] **Step 4: Run** `npm test && npm run build` → PASS.
+- [x] **Step 4: Run** `npm test && npm run build` → PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/systems/Cosmetics.js scripts/tests/mount-liveries.test.mjs
@@ -736,7 +740,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `src/mounts/Dragon.js` (import; class head; `:676-680` fields; `:718-722` `_buildModel` materials; `:1294-1296` `_buildHarness`; end of `_buildModel`; `:2295-2313` `_emitBreath`; `:2470-2479` `applyPowers`; `dispose()`)
 - Test: `scripts/tests/mount-powers.test.mjs` (new)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `scripts/tests/mount-powers.test.mjs`:
 
@@ -886,9 +890,9 @@ test('a purchased Speed III reaches every mount (terminal speed rises 15-50%)', 
 });
 ```
 
-- [ ] **Step 2: Run** `node --test scripts/tests/mount-powers.test.mjs` → FAIL at `dragon slots`. (It keeps failing for later mounts until Tasks 6–9 land — expected. Car and Dragon already pass the reach test; if the eagle/horse/hoverboard/bicycle rows of `RUN` need a different control to move at all, fix the row, not the threshold.)
+- [x] **Step 2: Run** `node --test scripts/tests/mount-powers.test.mjs` → FAIL at `dragon slots`. (It keeps failing for later mounts until Tasks 6–9 land — expected. Car and Dragon already pass the reach test; if the eagle/horse/hoverboard/bicycle rows of `RUN` need a different control to move at all, fix the row, not the threshold.)
 
-- [ ] **Step 3: Implement Dragon**
+- [x] **Step 3: Implement Dragon**
 
 Import: `import { applyLivery, MOUNT_STATS } from './Livery.js';`
 
@@ -971,9 +975,9 @@ Change `applyPowers` to:
 
 `dispose()`: add `this._hideMat?.dispose(); this._membraneMat?.dispose(); this._leatherMat?.dispose(); this._tackMat?.dispose();`.
 
-- [ ] **Step 4: Run** `node --test scripts/tests/mount-powers.test.mjs` — the Dragon-only test passes; loop tests still fail on eagle (expected). `node --test scripts/tests/race-pace.test.mjs scripts/tests/race-dragon-line.test.mjs` → PASS.
+- [x] **Step 4: Run** `node --test scripts/tests/mount-powers.test.mjs` — the Dragon-only test passes; loop tests still fail on eagle (expected). `node --test scripts/tests/race-pace.test.mjs scripts/tests/race-dragon-line.test.mjs` → PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mounts/Dragon.js scripts/tests/mount-powers.test.mjs
@@ -987,9 +991,9 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `src/mounts/Eagle.js` (import; class head; ctor fields before `:122`; `_build` `:165-169`; `:495` stamina; `:532` drag; `:534` thrust; `:542` clamp; new methods)
 
-- [ ] **Step 1:** Run `node --test scripts/tests/mount-powers.test.mjs` → FAIL at `eagle slots`.
+- [x] **Step 1:** Run `node --test scripts/tests/mount-powers.test.mjs` → FAIL at `eagle slots`.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 Import: `import { applyLivery, MOUNT_STATS } from './Livery.js';`
 
@@ -1045,9 +1049,9 @@ Methods (before `dispose()`):
   }
 ```
 
-- [ ] **Step 3: Run** — powers test now fails at `horse`; `npm test` otherwise green.
+- [x] **Step 3: Run** — powers test now fails at `horse`; `npm test` otherwise green.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/mounts/Eagle.js
@@ -1061,7 +1065,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `src/mounts/Horse.js` (import; class head; ctor fields before `:194`; `_build` `:257-261`; `:701-707` speed; new methods)
 
-- [ ] **Step 1: Implement**
+- [x] **Step 1: Implement**
 
 Import + statics:
 
@@ -1110,7 +1114,7 @@ Methods (before `dispose()`):
   }
 ```
 
-- [ ] **Step 2: Run** — powers test now fails at `hoverboard`. Commit.
+- [x] **Step 2: Run** — powers test now fails at `hoverboard`. Commit.
 
 ```bash
 git add src/mounts/Horse.js
@@ -1124,7 +1128,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `src/mounts/Hoverboard.js` (import; class head; ctor fields before `:703`; `:728-731` materials; after `:802`; `:998-1002` speed; `:1174` emitter tint; new methods; `dispose()` `:1351`)
 
-- [ ] **Step 1: Implement**
+- [x] **Step 1: Implement**
 
 Statics:
 
@@ -1198,7 +1202,7 @@ Methods:
 
 `dispose()`: add `this._gripMat.dispose(); this._carbonMat.dispose(); this._trimMat.dispose();`.
 
-- [ ] **Step 2: Run** — powers test now fails at `bicycle`. Commit.
+- [x] **Step 2: Run** — powers test now fails at `bicycle`. Commit.
 
 ```bash
 git add src/mounts/Hoverboard.js
@@ -1212,7 +1216,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `src/mounts/Bicycle.js` (import; class head; ctor before `:322`; `_build` `:364-367`; `:795-817` speed; new methods)
 
-- [ ] **Step 1: Implement**
+- [x] **Step 1: Implement**
 
 Statics:
 
@@ -1234,9 +1238,9 @@ Speed:
 
 Methods: copy Horse's three (`applyCustomization` with `Bicycle.CUSTOM_SLOTS`, `applyPowers`, `get shieldTier`).
 
-- [ ] **Step 2: Run** `node --test scripts/tests/mount-powers.test.mjs` → all PASS; `npm test` → PASS.
+- [x] **Step 2: Run** `node --test scripts/tests/mount-powers.test.mjs` → all PASS; `npm test` → PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/mounts/Bicycle.js
@@ -1253,7 +1257,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `src/main.js` (after `const mounts = ...` at `:195`)
 - Test: `scripts/tests/mount-powers.test.mjs`
 
-- [ ] **Step 1: Add failing tests**
+- [x] **Step 1: Add failing tests**
 
 ```js
 import { Player } from '../../src/player/Player.js';
@@ -1281,9 +1285,9 @@ test('Combat.mountFireMul is 1 unless riding a dragon with Fire tiers', () => {
 
 (`Player` and `CombatSystem` are the verified export names.)
 
-- [ ] **Step 2: Run** → FAIL.
+- [x] **Step 2: Run** → FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `Player.js` constructor: `/** Set by main.js once MountManager exists; Armour tiers read through it. */ this.mounts = null;`. In `applyDamage`, after the invulnerability check:
 
@@ -1315,9 +1319,9 @@ player.mounts = mounts;
 combat.mounts = mounts;
 ```
 
-- [ ] **Step 4: Run** `npm test` → PASS.
+- [x] **Step 4: Run** `npm test` → PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/player/Player.js src/systems/Combat.js src/main.js scripts/tests/mount-powers.test.mjs
@@ -1331,7 +1335,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `src/ui/HUD.js:50` (`POWER_LABELS`), `:2009` (loop), `src/ui/hud.css:3828` (add `.mount-pip.fire`)
 
-- [ ] **Step 1: Implement**
+- [x] **Step 1: Implement**
 
 `HUD.js:50`: `const POWER_LABELS = { power: 'PWR ', strength: 'STR ', shield: 'SHD ', fire: 'FIR ' };`
 `HUD.js:2009`: `for (const key of ['power', 'strength', 'shield', 'fire']) {`
@@ -1346,7 +1350,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 }
 ```
 
-- [ ] **Step 2:** `npm run build` → PASS. Commit.
+- [x] **Step 2:** `npm run build` → PASS. Commit.
 
 ```bash
 git add src/ui/HUD.js src/ui/hud.css
@@ -1365,7 +1369,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `src/systems/ItemDefs.js` (`:14-22` kinds/accents; after the `ITEMS` literal; `itemIconSVG`; `ICONS`)
 - Test: `scripts/tests/mount-liveries.test.mjs`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```js
 import { itemDef, skinItemId, skinIdFromItem, itemIconSVG, KIND_ACCENT } from '../../src/systems/ItemDefs.js';
@@ -1387,9 +1391,9 @@ test('every mount skin has a stack-1 kind:skin item and the id helpers round-tri
 });
 ```
 
-- [ ] **Step 2: Run** → FAIL (`skinItemId` not exported).
+- [x] **Step 2: Run** → FAIL (`skinItemId` not exported).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Top of `ItemDefs.js`: `import { MOUNT_SKINS } from './Cosmetics.js';` (no cycle: Cosmetics imports nothing from ItemDefs).
 
@@ -1447,7 +1451,7 @@ Also: extend the `ITEMS` JSDoc record type with `skinId?:string, colors?:number[
   },
 ```
 
-- [ ] **Step 4:** `npm test` → PASS. Commit.
+- [x] **Step 4:** `npm test` → PASS. Commit.
 
 ```bash
 git add src/systems/ItemDefs.js src/systems/Inventory.js src/systems/Loot.js src/ui/inventory.css scripts/tests/mount-liveries.test.mjs
@@ -1462,7 +1466,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `src/systems/MountSkins.js`
 - Test: `scripts/tests/mount-liveries.test.mjs`
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```js
 import { applyMountSkin } from '../../src/systems/MountSkins.js';
@@ -1523,9 +1527,9 @@ test('applyMountSkin: neither owned nor held refuses with not-owned', () => {
 });
 ```
 
-- [ ] **Step 2: Run** → FAIL (module missing).
+- [x] **Step 2: Run** → FAIL (module missing).
 
-- [ ] **Step 3: Implement** `src/systems/MountSkins.js`:
+- [x] **Step 3: Implement** `src/systems/MountSkins.js`:
 
 ```js
 import { MOUNT_SKINS_BY_ID } from './Cosmetics.js';
@@ -1567,7 +1571,7 @@ export function applyMountSkin({ mounts, cosmetics, inventory }, skinId) {
 }
 ```
 
-- [ ] **Step 4:** `npm test` → PASS. Commit.
+- [x] **Step 4:** `npm test` → PASS. Commit.
 
 ```bash
 git add src/systems/MountSkins.js scripts/tests/mount-liveries.test.mjs
@@ -1583,7 +1587,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `src/ui/InventoryUI.js:331`
 - Modify: `src/main.js:211-217` (construct `Cosmetics` before `ItemUseSystem`; pass `mounts, cosmetics`)
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```js
 import { ItemUseSystem } from '../../src/systems/ItemUse.js';
@@ -1604,9 +1608,9 @@ test('ItemUse routes skin items through applyMountSkin and never the generic con
 });
 ```
 
-- [ ] **Step 2: Run** → FAIL (`use` returns `unsupported`).
+- [x] **Step 2: Run** → FAIL (`use` returns `unsupported`).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `ItemUse.js` imports: `import { itemDef, skinIdFromItem } from './ItemDefs.js'; import { applyMountSkin } from './MountSkins.js'; import { MOUNT_SKINS_BY_ID } from './Cosmetics.js';`. Constructor gains `mounts, cosmetics` → `this.mounts = mounts ?? null; this.cosmetics = cosmetics ?? null;`.
 
@@ -1643,7 +1647,7 @@ Method:
 
 `main.js`: move `const cosmetics = new Cosmetics({ bus });` (with its comment) above the `itemUse` line; `new ItemUseSystem({ bus, player, inventory, loot, portals, npcManager, combat, mounts, cosmetics })`. Reword the Cosmetics comment: "worn from the F2 (character) or F10 (mount) menu".
 
-- [ ] **Step 4:** `npm test && npm run build` → PASS. Commit.
+- [x] **Step 4:** `npm test && npm run build` → PASS. Commit.
 
 ```bash
 git add src/systems/ItemUse.js src/ui/InventoryUI.js src/main.js scripts/tests/mount-liveries.test.mjs
@@ -1659,7 +1663,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `src/ui/MarketplaceUI.js:379`, `:441`
 - Test: `scripts/tests/mount-liveries.test.mjs`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```js
 import { Marketplace } from '../../src/systems/Marketplace.js';
@@ -1682,9 +1686,9 @@ test('Marketplace.preview refuses a skin item that is already unlocked or alread
 });
 ```
 
-- [ ] **Step 2: Run** → FAIL (held skin previews `ok:true`).
+- [x] **Step 2: Run** → FAIL (held skin previews `ok:true`).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `Marketplace.js:1` already imports from `./ItemDefs.js` — add `skinIdFromItem` to that import. In `preview`, after `if (!grant) return ...unsupported`:
 
@@ -1703,7 +1707,7 @@ test('Marketplace.preview refuses a skin item that is already unlocked or alread
 `MarketplaceUI.js:441`: `res.reason === 'owned' ? (res.skin ? 'You already have this skin — apply it from the Mount menu (F10) while riding' : 'You already own this skin — equip it in the Character menu (F2)') :`
 `MarketplaceUI.js:363-369` (`grantLabel`): a refused skin would fall to "1 item per buy" beside an Owned button; add a first branch `preview.skin && preview.reason === 'owned' ? 'Owned' :`. Also add `mount_skin: ['🎨', '#ff8a5c']` to `ACTION_ART` in the same file so skin rows do not fall back to the generic mount icon.
 
-- [ ] **Step 4:** `npm test` → PASS. Commit.
+- [x] **Step 4:** `npm test` → PASS. Commit.
 
 ```bash
 git add src/systems/Marketplace.js src/ui/MarketplaceUI.js scripts/tests/mount-liveries.test.mjs
@@ -1722,7 +1726,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `src/ui/mount-menu.css` (derived from `character.css`), `src/ui/MountMenuLogic.js`, `src/ui/MountMenu.js`
 - Test: `scripts/tests/mount-menu.test.mjs` (pure-logic checks; DOM is not available headlessly)
 
-- [ ] **Step 1: Generate the stylesheet**
+- [x] **Step 1: Generate the stylesheet**
 
 ```bash
 # Order matters: the body-class rewrite must run BEFORE the generic `.ch-` one,
@@ -1748,7 +1752,7 @@ Append to `src/ui/mount-menu.css`:
 .mm-finish { margin-top: 6px; }
 ```
 
-- [ ] **Step 2: Failing test for the pure helpers** — create `scripts/tests/mount-menu.test.mjs`:
+- [x] **Step 2: Failing test for the pure helpers** — create `scripts/tests/mount-menu.test.mjs`:
 
 ```js
 import { test } from 'node:test';
@@ -1775,9 +1779,9 @@ test('skinState: equipped > owned > held > locked', () => {
 });
 ```
 
-- [ ] **Step 3: Run** → FAIL (module missing).
+- [x] **Step 3: Run** → FAIL (module missing).
 
-- [ ] **Step 4: Create `src/ui/MountMenuLogic.js`**
+- [x] **Step 4: Create `src/ui/MountMenuLogic.js`**
 
 ```js
 import { STAT_META, liveryMatches } from '../mounts/Livery.js';
@@ -1835,7 +1839,7 @@ export const SKIN_STATE_LABEL = {
 };
 ```
 
-- [ ] **Step 5: Create `src/ui/MountMenu.js`**
+- [x] **Step 5: Create `src/ui/MountMenu.js`**
 
 ```js
 import './mount-menu.css';
@@ -2220,9 +2224,9 @@ export class MountMenu {
 }
 ```
 
-- [ ] **Step 6: Run** `node --test scripts/tests/mount-menu.test.mjs` → PASS; `npm run build` → PASS (CSS import resolves).
+- [x] **Step 6: Run** `node --test scripts/tests/mount-menu.test.mjs` → PASS; `npm run build` → PASS (CSS import resolves).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/ui/MountMenu.js src/ui/MountMenuLogic.js src/ui/mount-menu.css scripts/tests/mount-menu.test.mjs
@@ -2239,7 +2243,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `src/main.js` (new MountMenu construction after `:232`; `:438` GAME bundle; `:1450` update; `:1510-1511` gating)
 - Modify: `src/ui/HUD.js:1226-1231` (overlay counter)
 
-- [ ] **Step 1: main.js**
+- [x] **Step 1: main.js**
 
 - Directly after the `characterMenu` construction:
 
@@ -2259,7 +2263,7 @@ bus.on('mount:menu:open', () => setGameplayBlocked('mount-menu', true));
 bus.on('mount:menu:close', () => setGameplayBlocked('mount-menu', false));
 ```
 
-- [ ] **Step 1b: HUD overlay counter** — `src/ui/HUD.js:1226-1231` registers `character:open/close`, `inventory:open/close`, `keybinds:open/close` with `_overlayOpen`/`_overlayClose` (suppresses the pause overlay while a drawer is up, hides the objective tracker, relocks on close). Add, in the same block:
+- [x] **Step 1b: HUD overlay counter** — `src/ui/HUD.js:1226-1231` registers `character:open/close`, `inventory:open/close`, `keybinds:open/close` with `_overlayOpen`/`_overlayClose` (suppresses the pause overlay while a drawer is up, hides the objective tracker, relocks on close). Add, in the same block:
 
 ```js
     this._on('mount:menu:open', () => _overlayOpen());
@@ -2268,9 +2272,9 @@ bus.on('mount:menu:close', () => setGameplayBlocked('mount-menu', false));
 
 (match the exact call shape used by the neighbouring `character:open/close` lines).
 
-- [ ] **Step 2: Verify** `npm run build && npm test` → PASS. `grep -rn "VEHICLE_SKINS\|_liverySwatches\|CAR_PAINT_COLORS" src` → no hits.
+- [x] **Step 2: Verify** `npm run build && npm test` → PASS. `grep -rn "VEHICLE_SKINS\|_liverySwatches\|CAR_PAINT_COLORS" src` → no hits.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/main.js src/ui/HUD.js
@@ -2289,7 +2293,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `site/lib/marketplaceCatalog.ts` (`MARKETPLACE_ACTIONS` `:9-244`; car livery rows `:668-744`; `BASE_ITEMS`; types)
 - Test: `site/lib/marketplaceCatalog.test.ts` (new, vitest)
 
-- [ ] **Step 1: Failing vitest** — create `site/lib/marketplaceCatalog.test.ts`:
+- [x] **Step 1: Failing vitest** — create `site/lib/marketplaceCatalog.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -2338,7 +2342,7 @@ describe('mount customizer catalog rows', () => {
 });
 ```
 
-- [ ] **Step 2: Precondition + run.** `site/node_modules` is stale on the dev machine (`vitest`, `three`, `@types/three` declared but not installed, so `tsc` already reports ~40 unrelated errors). First:
+- [x] **Step 2: Precondition + run.** `site/node_modules` is stale on the dev machine (`vitest`, `three`, `@types/three` declared but not installed, so `tsc` already reports ~40 unrelated errors). First:
 
 ```bash
 cd site && npm ci && npx tsc --noEmit -p tsconfig.json   # must be clean BEFORE this task's edits
@@ -2346,7 +2350,7 @@ cd site && npm ci && npx tsc --noEmit -p tsconfig.json   # must be clean BEFORE 
 
 Then `npx vitest run lib/marketplaceCatalog.test.ts` → FAIL (`BASE_ITEMS` not exported).
 
-- [ ] **Step 3: Implement** in `marketplaceCatalog.ts`
+- [x] **Step 3: Implement** in `marketplaceCatalog.ts`
 
 (a) Above `MARKETPLACE_ACTIONS`, add the upgrade generators:
 
@@ -2455,14 +2459,14 @@ const MOUNT_UPGRADE_ROWS: readonly BaseSeedRow[] = UPGRADE_MOUNTS.flatMap((m, mi
 
 Remove the now-duplicate `type PricingKind = ...` line further down (`:883`) so it is declared once. `MarketplaceActionId` is declared after `MARKETPLACE_ACTIONS` and before `BASE_ITEMS`; place `BaseSeedRow` and the two generated arrays **after** the `MarketplaceActionId` type and **before** `BASE_ITEMS`.
 
-- [ ] **Step 4: Type-check + test**
+- [x] **Step 4: Type-check + test**
 
 ```bash
 cd site && npx tsc --noEmit -p tsconfig.json && npx vitest run lib/marketplaceCatalog.test.ts
 ```
 Expected: no type errors; 4 tests PASS (verified against a scratch copy: 57 `grant_mount_power` rows, 20 skin rows, all action ids resolve, 505 seed rows). (The test reads `s.worlds` directly - valid because `BASE_ITEMS` is typed `readonly BaseSeedRow[]`.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add site/lib/marketplaceCatalog.ts site/lib/marketplaceCatalog.test.ts
@@ -2477,14 +2481,14 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `package.json`, `package-lock.json` (add `esbuild` devDependency)
 - Create: `scripts/tests/mount-catalog.test.mjs`
 
-- [ ] **Step 0: Add esbuild as a real root devDependency.** It is present in `node_modules` today only as an extraneous transitive of `vercel`; a clean `npm ci` would not have it and `npm test` would fail wholesale.
+- [x] **Step 0: Add esbuild as a real root devDependency.** It is present in `node_modules` today only as an extraneous transitive of `vercel`; a clean `npm ci` would not have it and `npm test` would fail wholesale.
 
 ```bash
 npm i -D esbuild@^0.27.0
 node -e "console.log(require('esbuild').version)"   # prints 0.27.x
 ```
 
-- [ ] **Step 1: Write the test** (bundles the TS catalog with esbuild so it can be imported headlessly; the bundle is built once and cached):
+- [x] **Step 1: Write the test** (bundles the TS catalog with esbuild so it can be imported headlessly; the bundle is built once and cached):
 
 ```js
 import { test } from 'node:test';
@@ -2555,9 +2559,9 @@ test('source keys are unique and the pre-existing mount keys are still present',
 });
 ```
 
-- [ ] **Step 2: Run** `node --test scripts/tests/mount-catalog.test.mjs` → PASS.
+- [x] **Step 2: Run** `node --test scripts/tests/mount-catalog.test.mjs` → PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add package.json package-lock.json scripts/tests/mount-catalog.test.mjs
@@ -2571,7 +2575,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `src/ui/HelpMenu.js:107`, `src/ui/KeybindMenu.js:44,166`, `src/ui/HUD.js:934,1399`, `src/core/Input.js:436`, `src/ai/ChatClient.js:360`, `site/app/api/chat/route.ts:114`
 
-- [ ] **Step 1: Edits**
+- [x] **Step 1: Edits**
 
 - `HelpMenu.js` after `['F2', 'Customise your character'],` add `['F10', 'Customise your mount — while riding'],`.
 - `KeybindMenu.js` after `{ key: 'F2', label: 'Customise character' },` add `{ key: 'F10', label: 'Customise mount — while riding' },`; in the note change `F1–F9` to `F1–F10`.
@@ -2581,9 +2585,9 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - `ChatClient.js:360` → `return 'Change your own look first — F2 opens that. F10 does the same for whatever you are riding.';`
 - `site/app/api/chat/route.ts:114` (the NPC system prompt's control list enumerates F1–F9): add `F10 = customise the mount you are riding` in the same style.
 
-- [ ] **Step 2: Verify** `npm run build && npm test` → PASS. `grep -rn "F2 Vehicle\|Character menu (F2)" src site/lib` — only the character-skin strings should remain.
+- [x] **Step 2: Verify** `npm run build && npm test` → PASS. `grep -rn "F2 Vehicle\|Character menu (F2)" src site/lib` — only the character-skin strings should remain.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/ui/HelpMenu.js src/ui/KeybindMenu.js src/ui/HUD.js src/core/Input.js src/ai/ChatClient.js site/app/api/chat/route.ts
@@ -2594,20 +2598,20 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 21: Browser smoke (Playwright MCP, or `npm run dev` + manual)
 
-- [ ] **Step 1: Start the dev server** (`npm run dev`, note the port) and open `http://localhost:<port>/?dev=1`.
-- [ ] **Step 2: For each of the six mounts:** `M` → pick the mount → `F10` → drawer opens titled with the mount → click a swatch (colour changes live) → click Matt then Gloss (surface changes) → Escape → `F` to dismount → summon again → colours persist.
-- [ ] **Step 3: On foot:** `F10` → HUD toast "Mount up first (M) to customise it"; drawer does not open. In Firefox confirm F10 does not focus the menu bar.
-- [ ] **Step 4: Persistence:** `F5` save; reload; `Shift+F9` load → liveries return. No console errors.
-- [ ] **Step 5: Skins:** in dev, `GAME.economy.add(5000,'dev')`; walk to a merchant, `B`, buy a bicycle skin → toast "Bought"; try buying it again → "You already have this skin — apply it from the Mount menu (F10) while riding"; `I` → the skin shows a **Use** button; on foot press Use → toast "Mount your bicycle and press F10…" and the item stays; mount the bicycle → `F10` → card reads "In inventory — Apply" → click → card flips to "Equipped", bag copy gone; dismount/resummon → still equipped; pick another colour → card reads "Owned".
-- [ ] **Step 6: Upgrades:** `GAME.mounts.grantPower('horse','power',2)` → HUD pip `PWR 2` while riding, F10 Upgrades row shows 2 pips + "+24% top speed"; `grantPower('dragon','fire',1)` → HUD `FIR 1`.
-- [ ] **Step 7:** `F1`, `F6`, and the boot hint card list F10; `F2` no longer shows a Vehicle section.
-- [ ] **Step 8:** Note anything broken as a follow-up task and fix before finishing.
+- [x] **Step 1: Start the dev server** (`npm run dev`, note the port) and open `http://localhost:<port>/?dev=1`.
+- [x] **Step 2: For each of the six mounts:** `M` → pick the mount → `F10` → drawer opens titled with the mount → click a swatch (colour changes live) → click Matt then Gloss (surface changes) → Escape → `F` to dismount → summon again → colours persist.
+- [x] **Step 3: On foot:** `F10` → HUD toast "Mount up first (M) to customise it"; drawer does not open. In Firefox confirm F10 does not focus the menu bar.
+- [x] **Step 4: Persistence:** `F5` save; reload; `Shift+F9` load → liveries return. No console errors.
+- [x] **Step 5: Skins:** in dev, `GAME.economy.add(5000,'dev')`; walk to a merchant, `B`, buy a bicycle skin → toast "Bought"; try buying it again → "You already have this skin — apply it from the Mount menu (F10) while riding"; `I` → the skin shows a **Use** button; on foot press Use → toast "Mount your bicycle and press F10…" and the item stays; mount the bicycle → `F10` → card reads "In inventory — Apply" → click → card flips to "Equipped", bag copy gone; dismount/resummon → still equipped; pick another colour → card reads "Owned".
+- [x] **Step 6: Upgrades:** `GAME.mounts.grantPower('horse','power',2)` → HUD pip `PWR 2` while riding, F10 Upgrades row shows 2 pips + "+24% top speed"; `grantPower('dragon','fire',1)` → HUD `FIR 1`.
+- [x] **Step 7:** `F1`, `F6`, and the boot hint card list F10; `F2` no longer shows a Vehicle section.
+- [x] **Step 8:** Note anything broken as a follow-up task and fix before finishing.
 
 ### Task 22: Docs
 
-- [ ] **Step 1:** Update the spec's status line to `Implemented 2026-08-17`, and amend spec §4.5's "one `MARKETPLACE_ACTIONS` id per row … ~68 new ids" to match what shipped: one id per **upgrade** row (48) plus one shared `mount_skin` action for the 15 new skins and the existing shared `cosmetic_vehicle_skin` for the 5 car rows — the same convention `cosmetic_char_skin` already uses. Add a paragraph to `CONTRACTS-V3.md` under the MOUNTS ownership block: `MountManager` owns `_liveries` (per mount) and `_powers`; `MountSkins.applyMountSkin` is the only path that consumes a skin item; `MountMenu` (F10) is generic over `CUSTOM_SLOTS`/`STATS`; `Livery.js` owns the tint/finish maths and `MOUNT_STATS`.
-- [ ] **Step 2:** `npm test && npm run build && (cd site && npx tsc --noEmit -p tsconfig.json && npx vitest run)` → all green.
-- [ ] **Step 3: Commit**
+- [x] **Step 1:** Update the spec's status line to `Implemented 2026-08-17`, and amend spec §4.5's "one `MARKETPLACE_ACTIONS` id per row … ~68 new ids" to match what shipped: one id per **upgrade** row (48) plus one shared `mount_skin` action for the 15 new skins and the existing shared `cosmetic_vehicle_skin` for the 5 car rows — the same convention `cosmetic_char_skin` already uses. Add a paragraph to `CONTRACTS-V3.md` under the MOUNTS ownership block: `MountManager` owns `_liveries` (per mount) and `_powers`; `MountSkins.applyMountSkin` is the only path that consumes a skin item; `MountMenu` (F10) is generic over `CUSTOM_SLOTS`/`STATS`; `Livery.js` owns the tint/finish maths and `MOUNT_STATS`.
+- [x] **Step 2:** `npm test && npm run build && (cd site && npx tsc --noEmit -p tsconfig.json && npx vitest run)` → all green.
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-08-17-mount-customizer-design.md CONTRACTS-V3.md

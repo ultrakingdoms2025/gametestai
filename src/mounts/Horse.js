@@ -725,9 +725,24 @@ export class Horse {
     /* ---- steering ---------------------------------------------------- *
      * Rate falls off with speed. A horse that can pivot at a gallop stops
      * being a horse - the commitment to a line is most of what riding one
-     * feels like. */
-    const sp01 = clamp(Math.abs(this.speed) / MAX_SPEED, 0, 1);
-    const turnRate = THREE.MathUtils.lerp(TURN_SLOW, TURN_FAST, sp01);
+     * feels like.
+     *
+     * Both terms carry the Power multiplier, for the reason set out at length
+     * on Dragon.js:1869 - what the rider meets in a corner is the turning
+     * RADIUS, v / omega, and scaling only v widens it. Measured off the mount
+     * flat out with the reins hard over, tier 0 vs tier 3: 18.235 m -> 24.800 m
+     * (x1.360) before, 18.235 m -> 18.235 m (x1.000) after.
+     *
+     * `sp01` is the falloff CURVE, so it is measured against the tiered top
+     * speed: at tier 3 the horse must still be at TURN_SLOW when it is walking
+     * and at TURN_FAST when it is flat out, not pinned to TURN_FAST for the
+     * whole upper third of its range. `turnRate` then takes the multiplier
+     * itself, which is what actually holds v / omega put - a horse at k times
+     * the speed rides the stock line k times faster rather than a lazier one.
+     * Stock is untouched to the bit: `_powerMul` is exactly 1, and both a
+     * multiply and a divide by 1 are exact in IEEE754. */
+    const sp01 = clamp(Math.abs(this.speed) / (MAX_SPEED * this._powerMul), 0, 1);
+    const turnRate = THREE.MathUtils.lerp(TURN_SLOW, TURN_FAST, sp01) * this._powerMul;
     if (steer !== 0 && (Math.abs(this.speed) > 0.15 || !gallop)) {
       this.heading += steer * turnRate * dt;
     }

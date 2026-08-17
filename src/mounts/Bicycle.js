@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
+import { applyLivery, MOUNT_STATS } from './Livery.js';
 
 /**
  * BICYCLE - the pedal mount.
@@ -270,6 +271,13 @@ function merge(list) {
 }
 
 export class Bicycle {
+  /** Colour slots the F10 menu offers. `defaultColor` = factory swatch. */
+  static CUSTOM_SLOTS = Object.freeze([
+    Object.freeze({ id: 'frame', label: 'Frame', finish: true, defaultColor: 0x2f7fd4, palette: 'paint' }),
+    Object.freeze({ id: 'rims', label: 'Rims & metalwork', finish: true, defaultColor: 0xb9bfc7, palette: 'wheel' }),
+  ]);
+  static STATS = MOUNT_STATS.bicycle;
+
   /**
    * @param {{scene:THREE.Scene, engine:any, physics:any, bus:any, materials:any,
    *          camera:THREE.PerspectiveCamera}} ctx
@@ -318,6 +326,12 @@ export class Bicycle {
     this._despawnT = -1;
     this._time = 0;
 
+    this._powerMul = 1;
+    this._accelMul = 1;
+    this._shieldTier = 0;
+    this._livery = null;
+    this._slotMats = null;
+
     this._owned = [];
     this._build();
   }
@@ -365,12 +379,14 @@ export class Bicycle {
     const alloy = this._mat(0xb9bfc7, { surface: 'metal.iron', roughness: 0.38, metalness: 0.85 });
     const rubber = this._mat(0x1b1b1e, { surface: 'rubber.track', roughness: 0.92, metalness: 0.02 });
     const trim = this._mat(0x24262b, { roughness: 0.62, metalness: 0.2 });
+    this._slotMats = { frame: [paint], rims: [alloy] };
 
     this._buildFrame(paint, alloy, trim);
     this._buildSteering(paint, alloy, rubber, trim);
     this._buildRearWheel(alloy, rubber);
     this._buildDrivetrain(alloy, trim);
     this._buildAnchors();
+    this.applyCustomization(this._livery);
   }
 
   /**
@@ -792,13 +808,13 @@ export class Bicycle {
     /* ---- drive and drag --------------------------------------------- *
      * There is no "hold this speed" here. Pedalling adds, everything else
      * takes away, and the top speed is simply where they balance. */
-    const top = sprint ? SPRINT_SPEED : CRUISE_SPEED;
+    const top = (sprint ? SPRINT_SPEED : CRUISE_SPEED) * this._powerMul;
     let drive = 0;
     if (throttle > 0.05) {
       // Effort falls away as the gear runs out, which is what a fixed
       // development means in practice.
       const head = clamp(1 - this.speed / top, 0, 1);
-      drive = throttle * PEDAL_ACCEL * head * (sprint ? 1.55 : 1);
+      drive = throttle * PEDAL_ACCEL * this._accelMul * head * (sprint ? 1.55 : 1);
       this.speed += drive * dt;
     } else if (throttle < -0.05) {
       // Back brake, then walking it backwards once stopped.
@@ -811,10 +827,10 @@ export class Bicycle {
     }
     // Freewheel: rolling resistance is constant, air resistance is not.
     if (this.speed > 0) {
-      const drag = (ROLL_DRAG + AIR_DRAG * this.speed * this.speed) * dt;
+      const drag = (ROLL_DRAG + (AIR_DRAG / (this._powerMul * this._powerMul)) * this.speed * this.speed) * dt;
       this.speed = Math.max(0, this.speed - drag);
     }
-    this.speed = clamp(this.speed, -REVERSE_SPEED, MAX_SPEED);
+    this.speed = clamp(this.speed, -REVERSE_SPEED, MAX_SPEED * this._powerMul);
     if (Math.abs(this.speed) < 0.02) this.speed = 0;
     // How hard the legs are working, for the rider's lean and the crank blur.
     this._drive = damp(this._drive, drive > 0.01 ? (sprint ? 1 : 0.55) : 0, 6, dt);
@@ -1106,10 +1122,28 @@ export class Bicycle {
     return this.speed01 * 0.14;
   }
 
+  applyCustomization(livery) {
+    this._livery = livery && typeof livery === 'object' ? livery : {};
+    if (!this._slotMats) return;
+    applyLivery(this._livery, Bicycle.CUSTOM_SLOTS, this._slotMats);
+  }
+
+  /** Same ladder as Car: +12% top speed and +10% acceleration per tier; shield stored. */
+  applyPowers({ strength = 0, shield = 0, power = 0 } = {}) {
+    this._powerMul = 1 + Math.max(0, power) * 0.12;
+    this._accelMul = 1 + Math.max(0, strength) * 0.10;
+    this._shieldTier = Math.max(0, shield);
+  }
+
+  get shieldTier() {
+    return this._shieldTier;
+  }
+
   dispose() {
     this.kill();
     for (const o of this._owned) o.dispose?.();
     this._owned.length = 0;
+    this._slotMats = null;
   }
 }
 

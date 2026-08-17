@@ -3832,6 +3832,13 @@ body {
   text-shadow: 0 0 8px rgba(255, 180, 74, 0.55);
 }
 
+.mount-pip.fire {
+  color: #ffe6d6;
+  background: rgba(255, 106, 58, 0.18);
+  border-color: rgba(255, 106, 58, 0.55);
+  text-shadow: 0 0 8px rgba(255, 106, 58, 0.6);
+}
+
 .mount-boost {
   position: relative;
   height: 7px;

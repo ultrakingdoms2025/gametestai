@@ -47,7 +47,7 @@ const CHARGE_HOLD = 0.14;
 const CAM_MODE_LIFE = 1.6;
 const MOUNT_LABELS = { hoverboard: 'Hoverboard', dragon: 'Dragon', car: 'Ground Car' };
 /** One-letter badges for owned mount power tiers - see `_setMountPowers`. */
-const POWER_LABELS = { power: 'PWR ', strength: 'STR ', shield: 'SHD ' };
+const POWER_LABELS = { power: 'PWR ', strength: 'STR ', shield: 'SHD ', fire: 'FIR ' };
 /** Boost meter fallback rates, used only when the mount exposes no charge. */
 const BOOST_DRAIN = 0.34;
 const BOOST_RECHARGE = 0.17;
@@ -2006,7 +2006,7 @@ export class HUD {
     if (!this._mountId) return;
     const bag = this._mounts?.getPowers?.(this._mountId) ?? null;
     if (!bag) return;
-    for (const key of ['power', 'strength', 'shield']) {
+    for (const key of ['power', 'strength', 'shield', 'fire']) {
       const tier = Math.floor(Number(bag[key]) || 0);
       if (tier <= 0) continue;
       const b = el('span', `mount-pip ${key}`, `${POWER_LABELS[key]}${tier}`);

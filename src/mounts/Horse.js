@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { sweep, blob } from '../gfx/Organic.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
+import { applyLivery, MOUNT_STATS } from './Livery.js';
 
 /**
  * HORSE - the ground mount.
@@ -153,6 +154,13 @@ function merge(list) {
 }
 
 export class Horse {
+  /** Colour slots the F10 menu offers. `defaultColor` = factory swatch. */
+  static CUSTOM_SLOTS = Object.freeze([
+    Object.freeze({ id: 'coat', label: 'Coat', finish: false, defaultColor: 0x8a6242, palette: 'natural' }),
+    Object.freeze({ id: 'saddle', label: 'Saddle & tack', finish: true, defaultColor: 0x6d4522, palette: 'paint' }),
+  ]);
+  static STATS = MOUNT_STATS.horse;
+
   /**
    * @param {{scene:THREE.Scene, engine:any, physics:any, bus:any, materials:any,
    *          camera:THREE.PerspectiveCamera}} ctx
@@ -189,6 +197,12 @@ export class Horse {
     this._despawnT = -1;
     this._time = 0;
     this._headBob = 0;
+
+    this._powerMul = 1;
+    this._accelMul = 1;
+    this._shieldTier = 0;
+    this._livery = null;
+    this._slotMats = null;
 
     this._owned = [];
     this._build();
@@ -259,6 +273,7 @@ export class Horse {
     const hair = this._mat(0x2a1d13, { surface: 'hide.fur:3,7', roughness: 0.95 });
     const tack = this._mat(0x6d4522, { roughness: 0.6, metalness: 0.15 });
     const metal = this._mat(0xb9a06a, { roughness: 0.35, metalness: 0.9 });
+    this._slotMats = { coat: [coat], saddle: [tack] };
 
     /* ---- barrel, chest, hindquarters: one merged body ----
      *
@@ -584,6 +599,7 @@ export class Horse {
     }
 
     this.root.visible = false;
+    this.applyCustomization(this._livery);
   }
 
   /* ------------------------------------------------------------------ */
@@ -698,13 +714,13 @@ export class Horse {
 
     /* ---- gait target ------------------------------------------------- */
     let target = 0;
-    if (throttle > 0.05) target = gallop ? GALLOP_SPEED : CRUISE_SPEED * throttle;
+    if (throttle > 0.05) target = (gallop ? GALLOP_SPEED : CRUISE_SPEED * throttle) * this._powerMul;
     else if (throttle < -0.05) target = CRUISE_SPEED * 0.28 * throttle;  // rein back
 
-    const rate = target > this.speed ? ACCEL : BRAKE;
+    const rate = target > this.speed ? ACCEL * this._accelMul : BRAKE;
     this.speed = damp(this.speed, target, rate * 0.35, dt);
     if (Math.abs(this.speed) < 0.05) this.speed = 0;
-    this.speed = clamp(this.speed, -4, MAX_SPEED);
+    this.speed = clamp(this.speed, -4, MAX_SPEED * this._powerMul);
 
     /* ---- steering ---------------------------------------------------- *
      * Rate falls off with speed. A horse that can pivot at a gallop stops
@@ -1026,10 +1042,28 @@ export class Horse {
     return this.speed01 * 0.16;
   }
 
+  applyCustomization(livery) {
+    this._livery = livery && typeof livery === 'object' ? livery : {};
+    if (!this._slotMats) return;
+    applyLivery(this._livery, Horse.CUSTOM_SLOTS, this._slotMats);
+  }
+
+  /** Same ladder as Car: +12% top speed and +10% acceleration per tier; shield stored. */
+  applyPowers({ strength = 0, shield = 0, power = 0 } = {}) {
+    this._powerMul = 1 + Math.max(0, power) * 0.12;
+    this._accelMul = 1 + Math.max(0, strength) * 0.10;
+    this._shieldTier = Math.max(0, shield);
+  }
+
+  get shieldTier() {
+    return this._shieldTier;
+  }
+
   dispose() {
     this.kill();
     for (const o of this._owned) o.dispose?.();
     this._owned.length = 0;
+    this._slotMats = null;
   }
 }
 

@@ -1759,7 +1759,10 @@ export class MountManager {
           // A bag that lost every stat to the filter must not persist as an
           // empty {} - grantPower never creates one (it lazily allocates only
           // when a stat actually sticks), so a save round-trip must not either.
-          if (!Object.keys(owned).length) continue;
+          // deserialize has replace semantics per mount id: an empty result
+          // here must clear any bag already loaded for this mount, not leave
+          // a stale one in place from an earlier deserialize() call.
+          if (!Object.keys(owned).length) { delete this._powers[mid]; continue; }
           this._powers[mid] = owned;
           const mount = this._mounts.get(mid);
           if (mount) this._applyPowers(mid, mount);

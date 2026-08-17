@@ -429,7 +429,7 @@ export class Marketplace {
     if (!item || !this.economy) return { ok: false, reason: 'unavailable' };
 
     const preview = this.preview(item);
-    if (!preview.ok) return { ok: false, reason: preview.reason ?? 'unavailable', skin: preview.skin === true };
+    if (!preview.ok) return { ok: false, reason: preview.reason ?? 'unavailable', skin: preview.skin === true, power: !!preview.power };
 
     const cost = preview.cost;
 

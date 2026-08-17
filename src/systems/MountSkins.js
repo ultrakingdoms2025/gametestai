@@ -10,15 +10,22 @@ import { skinItemId } from './ItemDefs.js';
  * inventory - bag first, then store - unlock it in the ledger, then apply. A
  * skin is only ever consumed on a successful apply.
  *
- * @param {{mounts:any, cosmetics:any, inventory:any, bus?:any}} deps
+ * @param {{mounts:any, cosmetics:any, inventory:any}} deps
  * @param {string} skinId
- * @returns {{ok:boolean, reason?:'unknown-skin'|'not-mounted'|'wrong-mount'|'not-owned', consumed?:boolean}}
+ * @returns {{ok:boolean, reason?:'unknown-skin'|'not-mounted'|'wrong-mount'|'not-owned'|'unavailable', consumed?:boolean}}
  */
 export function applyMountSkin({ mounts, cosmetics, inventory }, skinId) {
   const skin = MOUNT_SKINS_BY_ID.get(skinId);
   if (!skin) return { ok: false, reason: 'unknown-skin' };
   if (!mounts?.mounted || !mounts.active) return { ok: false, reason: 'not-mounted' };
   if (mounts.active.id !== skin.mount) return { ok: false, reason: 'wrong-mount' };
+
+  // A no-op ledger (cosmetics missing `unlock`, or mounts missing `setLivery`)
+  // must refuse before anything is taken from the bag/store - a purchase must
+  // never be consumed with nowhere for it to land.
+  if (typeof cosmetics?.unlock !== 'function' || typeof mounts?.setLivery !== 'function') {
+    return { ok: false, reason: 'unavailable' };
+  }
 
   if (cosmetics?.has?.(skinId)) {
     mounts.setLivery(skin.mount, skin.livery);

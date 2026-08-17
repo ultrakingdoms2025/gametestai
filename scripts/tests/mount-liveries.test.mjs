@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
 import {
   FINISH_PROPS, MOUNT_STATS, normColor, applyLivery, liveryMatches, cloneLivery,
@@ -389,4 +391,97 @@ test('Marketplace.preview refuses a skin item that is already unlocked or alread
   const q = m.preview(row('skin_bike_racing'));
   assert.equal(q.ok, false); assert.equal(q.reason, 'owned'); assert.equal(q.skin, true);
   assert.equal(m.preview(row('medkit')).ok, true);
+});
+
+test('applyMountSkin: a no-op ledger (cosmetics missing) refuses before consuming anything', () => {
+  const s = skinDeps({ bag: { skin_dragon_frost: 1 } });
+  const broken = { ...s.deps, cosmetics: null };
+  const res = applyMountSkin(broken, 'dragon_frost');
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, 'unavailable');
+  assert.equal(s.bag.skin_dragon_frost, 1, 'nothing was taken from the bag');
+});
+
+test('ItemUse: an already-owned skin applies without a player and without emitting inventory:item-used', () => {
+  // Skins need inventory/mounts/cosmetics, not the player, so this must work
+  // with no `player` at all - and since applyMountSkin reports consumed:false
+  // for an already-owned skin, nothing should have been taken from the bag.
+  const s = skinDeps({ owned: ['dragon_frost'], bag: { skin_dragon_frost: 1 } });
+  const notes = [];
+  const iu = new ItemUseSystem({ bus: { emit: (n, p) => notes.push([n, p]) }, inventory: s.deps.inventory, mounts: s.deps.mounts, cosmetics: s.deps.cosmetics });
+  const res = iu.use('skin_dragon_frost');
+  assert.equal(res.ok, true);
+  assert.equal(res.consumed, false);
+  assert.equal(s.bag.skin_dragon_frost, 1, 'bag untouched');
+  assert.ok(!notes.some(([n]) => n === 'inventory:item-used'), 'nothing was consumed, so nothing was used');
+});
+
+test('Marketplace.buy early return forwards skin:true for a held skin', () => {
+  const held = { skin_bike_chrome: 1 };
+  const inventory = { roomFor: () => 30, totalCount: (id) => held[id] ?? 0, count: () => 0, bagCount: () => 0 };
+  const cosmetics = { has: () => false };
+  const m = Object.create(Marketplace.prototype);
+  Object.assign(m, {
+    economy: { credits: 9999, spend: () => { throw new Error('a refused buy must never spend'); } },
+    inventory, cosmetics, mounts: null, bus: null,
+    _catalog: [{ id: 'x', source_key: 'skin_x', quantity: null, cost_buy: 100, action_config: { effect: 'grant_item', item_id: 'skin_bike_chrome' } }],
+  });
+  const res = m.buy('x');
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, 'owned');
+  assert.equal(res.skin, true);
+  assert.equal(res.power, false);
+});
+
+test('Marketplace.buy early return forwards power:true when the tier is already owned', () => {
+  const { mgr } = manager();
+  mgr.grantPower('dragon', 'fire', 3);
+  const m = Object.create(Marketplace.prototype);
+  Object.assign(m, {
+    economy: { credits: 9999, spend: () => { throw new Error('a refused buy must never spend'); } },
+    inventory: null, cosmetics: null, mounts: mgr, bus: null,
+    _catalog: [{ id: 'p', quantity: null, cost_buy: 100, action_config: { effect: 'grant_mount_power', mount: 'dragon', power: 'fire', tier: 1 } }],
+  });
+  const res = m.buy('p');
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, 'owned');
+  assert.equal(res.power, true);
+  assert.equal(res.skin, false);
+});
+
+test('Marketplace.preview: the owned-skin guard runs before the room check', () => {
+  const held = { skin_bike_chrome: 1 };
+  const inventory = { roomFor: () => 0, totalCount: (id) => held[id] ?? 0, count: () => 0, bagCount: () => 0 };
+  const cosmetics = { has: () => false };
+  const m = Object.create(Marketplace.prototype);
+  Object.assign(m, { economy: { credits: 9999 }, inventory, cosmetics, mounts: null, bus: null });
+  const row = { id: 'x', source_key: 'skin_x', quantity: null, cost_buy: 100, action_config: { effect: 'grant_item', item_id: 'skin_bike_chrome' } };
+  const p = m.preview(row);
+  assert.equal(p.ok, false);
+  assert.equal(p.reason, 'owned');
+  assert.equal(p.skin, true);
+});
+
+test('deserialize: an empty-after-filter powers bag clears an existing bag for that mount id', () => {
+  // Replace semantics: a save that filters to nothing for a mount id must not
+  // leave a stale bag in place from an earlier deserialize() call.
+  const { mgr } = manager();
+  mgr.deserialize({ powers: { dragon: { fire: 2 } } });
+  assert.deepEqual(mgr.getPowers('dragon'), { fire: 2 });
+  mgr.deserialize({ powers: { dragon: { notARealStat: 9 } } });
+  assert.deepEqual(mgr.getPowers('dragon'), {});
+  assert.equal('dragon' in mgr.getPowers(), false);
+});
+
+test('mount skin bag items prefix `short` with the mount abbreviation', () => {
+  const abbr = { car: 'CAR', dragon: 'DRG', eagle: 'EGL', horse: 'HRS', hoverboard: 'HVR', bicycle: 'BKE' };
+  for (const s of MOUNT_SKINS) {
+    const def = itemDef(skinItemId(s.id));
+    assert.equal(def.short, `${abbr[s.mount]} SKN`, s.id);
+  }
+});
+
+test('Cosmetics.js contains no import statement, keeping the ItemDefs -> Cosmetics edge one-way', () => {
+  const src = readFileSync(fileURLToPath(new URL('../../src/systems/Cosmetics.js', import.meta.url)), 'utf8');
+  assert.equal(/^import\s/m.test(src), false);
 });

@@ -283,6 +283,9 @@ export function skinIdFromItem(itemId) {
   return def && def.kind === 'skin' ? def.skinId : null;
 }
 
+/** Bag-item `short` prefix per mount, so dropped skin pickups are distinguishable. */
+const MOUNT_ABBR = { car: 'CAR', dragon: 'DRG', eagle: 'EGL', horse: 'HRS', hoverboard: 'HVR', bicycle: 'BKE' };
+
 /*
  * One bag item per mount skin. Bought at a merchant (`grant_item`), it sits in
  * the bag until applied from the Mount menu (F10) or the inventory Use button,
@@ -293,7 +296,7 @@ for (const skin of MOUNT_SKINS) {
   ITEMS[skinItemId(skin.id)] = {
     id: skinItemId(skin.id),
     name: `${skin.name} Skin`,
-    short: 'SKN',
+    short: `${MOUNT_ABBR[skin.mount]} SKN`,
     stack: 1,
     icon: 'skin',
     value: 200,

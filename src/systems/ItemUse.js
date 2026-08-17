@@ -25,13 +25,17 @@ export class ItemUseSystem {
   }
 
   use(itemId) {
-    if (!this.inventory || !this.player || typeof itemId !== 'string' || !itemId) {
+    if (!this.inventory || typeof itemId !== 'string' || !itemId) {
       return { ok: false, reason: 'unavailable' };
     }
 
     // Mount skins are not effects: they are consumed by applyMountSkin only on
     // a successful apply, so they must never reach the generic consume below.
+    // This dispatch runs before the player requirement below because a skin
+    // needs inventory/mounts/cosmetics, not the player.
     if (itemDef(itemId)?.kind === 'skin') return this._useSkin(itemId);
+
+    if (!this.player) return { ok: false, reason: 'unavailable' };
 
     const effect = this._effectFor(itemId);
     if (!effect) return { ok: false, reason: 'unsupported' };
@@ -57,7 +61,7 @@ export class ItemUseSystem {
       this.bus?.emit('hud:notify', { text, tone: 'warn' });
       return { ok: false, reason: res.reason };
     }
-    this.bus?.emit('inventory:item-used', { itemId, effect: 'skin', amount: 1 });
+    if (res.consumed) this.bus?.emit('inventory:item-used', { itemId, effect: 'skin', amount: 1 });
     this.bus?.emit('hud:notify', { text: `${skin.name} applied to your ${skin.mount}`, tone: 'info' });
     return { ok: true, consumed: res.consumed };
   }

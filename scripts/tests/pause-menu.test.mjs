@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HUD } from '../../src/ui/HUD.js';
 import { EventBus } from '../../src/core/EventBus.js';
+import { PauseMenuModel, PAUSE_MENU_IDS } from '../../src/ui/PauseMenu.js';
 
 /**
  * The pause hub's return path, driven through the real HUD methods.
@@ -149,4 +150,96 @@ test('a duplicate open cannot latch the tracker above empty', async () => {
   assert.equal(h._overlays.size, 0);
   assert.equal(h.shown, false);
   assert.equal(h.relocks, 1);
+});
+
+/* ---------------------------------------------------------------- model -- */
+
+function model(over = {}) {
+  const m = new PauseMenuModel();
+  m.setItems([
+    { title: 'Play', items: [
+      { id: 'resume', label: 'Resume', run() {} },
+      { id: 'mount', label: 'Mount', enabled: () => over.mountReason ?? true, run() {} },
+      { id: 'map', label: 'Map', visible: () => !!over.mapVisible, run() {} },
+    ] },
+    { title: 'System', items: [
+      { id: 'fullscreen', label: () => `Fullscreen: ${over.fs ? 'On' : 'Off'}`, keepOpen: true, run() {} },
+      { id: 'quit', label: 'Quit to menu', run() {} },
+    ] },
+  ]);
+  return m;
+}
+
+test('an `enabled` returning a string disables the item with that reason', () => {
+  const m = model({ mountReason: 'Mount up first (M)' });
+  assert.equal(m.isEnabled(m.visibleItems().find((i) => i.id === 'mount')), 'Mount up first (M)');
+  assert.equal(m.isEnabled(m.visibleItems().find((i) => i.id === 'resume')), true,
+    'an item with no `enabled` must be enabled');
+});
+
+test('visible:false items are skipped entirely', () => {
+  assert.deepEqual(model().visibleItems().map((i) => i.id), ['resume', 'mount', 'fullscreen', 'quit']);
+  assert.deepEqual(model({ mapVisible: true }).visibleItems().map((i) => i.id),
+    ['resume', 'mount', 'map', 'fullscreen', 'quit']);
+});
+
+test('move() wraps and skips disabled and hidden items', () => {
+  const m = model({ mountReason: 'Mount up first (M)' });
+  m.focusFirst();
+  assert.equal(m.focusedItem().id, 'resume');
+  m.move(1);
+  assert.equal(m.focusedItem().id, 'fullscreen', 'move() walked onto the disabled Mount item');
+  m.move(1);
+  assert.equal(m.focusedItem().id, 'quit');
+  m.move(1);
+  assert.equal(m.focusedItem().id, 'resume', 'move() did not wrap');
+  m.move(-1);
+  assert.equal(m.focusedItem().id, 'quit', 'move(-1) did not wrap backwards');
+});
+
+test('focusFirst lands on the first ENABLED item, not the first item', () => {
+  const m = new PauseMenuModel();
+  m.setItems([{ items: [
+    { id: 'a', label: 'A', enabled: () => 'nope', run() {} },
+    { id: 'b', label: 'B', run() {} },
+  ] }]);
+  m.focusFirst();
+  assert.equal(m.focusedItem().id, 'b');
+});
+
+test('activate() returns the focused enabled item and never runs it', () => {
+  // The host runs it, exactly once, because `openFromHub` has to hide the hub
+  // BEFORE the panel opens. See the deviation note in the plan header.
+  let ran = 0;
+  const m = new PauseMenuModel();
+  m.setItems([{ items: [
+    { id: 'save', label: 'Save', keepOpen: true, run: () => { ran++; } },
+    { id: 'off', label: 'Off', enabled: () => 'no', run: () => { ran++; } },
+  ] }]);
+  m.focusFirst();
+  const picked = m.activate();
+  assert.equal(picked?.id, 'save');
+  assert.equal(picked.keepOpen, true);
+  assert.equal(ran, 0, 'the model ran the item - the host would then run it a second time');
+  m.focus = 1;
+  assert.equal(m.activate(), null, 'a disabled item was activated');
+});
+
+test('label functions are re-evaluated, not cached', () => {
+  const flags = { fs: false };
+  const m = new PauseMenuModel();
+  m.setItems([{ items: [{ id: 'fullscreen', label: () => `Fullscreen: ${flags.fs ? 'On' : 'Off'}`, run() {} }] }]);
+  const item = m.visibleItems()[0];
+  assert.equal(m.labelOf(item), 'Fullscreen: Off');
+  flags.fs = true;
+  assert.equal(m.labelOf(item), 'Fullscreen: On');
+});
+
+test('PAUSE_MENU_IDS is the whole spec §3 list, with no duplicates', () => {
+  assert.equal(new Set(PAUSE_MENU_IDS).size, PAUSE_MENU_IDS.length);
+  for (const id of ['resume', 'character', 'mount', 'inventory', 'quests', 'map', 'race',
+    'minigame-quit', 'help', 'audio', 'keybinds', 'fullscreen', 'diagnostics', 'save',
+    'load', 'bug-report', 'quit']) {
+    assert.ok(PAUSE_MENU_IDS.includes(id), id);
+  }
 });

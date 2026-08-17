@@ -502,6 +502,7 @@ body.inv-menu-open .pause {
 .inv-slot.kind-consumable { box-shadow: inset 0 -2px 0 rgba(182, 255, 90, 0.45); }
 .inv-slot.kind-trinket { box-shadow: inset 0 -2px 0 rgba(212, 107, 255, 0.45); }
 .inv-slot.kind-currency { box-shadow: inset 0 -2px 0 rgba(255, 180, 74, 0.45); }
+.inv-slot.kind-skin { box-shadow: inset 0 -2px 0 rgba(255, 154, 213, 0.45); }
 
 /* Landed-in-this-container flash, so a move is felt. */
 .inv-slot.flash {

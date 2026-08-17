@@ -91,7 +91,7 @@ const DROP_TABLES = {
 };
 
 /** Ordered so the pickup takes its colour from the rarest thing in it. */
-const ACCENT_PRIORITY = ['trinket', 'consumable', 'ammo', 'currency'];
+const ACCENT_PRIORITY = ['skin', 'trinket', 'consumable', 'ammo', 'currency'];
 
 /* ------------------------------------------------------------------ */
 /* Procedural textures (built once, shared by every pickup)            */

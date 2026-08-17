@@ -281,3 +281,21 @@ test('Cosmetics.unlock accepts every mount skin id', () => {
   const c = new Cosmetics({ bus: null });
   for (const s of MOUNT_SKINS) assert.equal(c.unlock(s.id), true, s.id);
 });
+
+import { itemDef, skinItemId, skinIdFromItem, itemIconSVG, KIND_ACCENT } from '../../src/systems/ItemDefs.js';
+
+test('every mount skin has a stack-1 kind:skin item and the id helpers round-trip', () => {
+  assert.ok(KIND_ACCENT.skin);
+  for (const s of MOUNT_SKINS) {
+    const iid = skinItemId(s.id);
+    assert.equal(iid, `skin_${s.id}`);
+    const def = itemDef(iid);
+    assert.ok(def, iid);
+    assert.equal(def.kind, 'skin');
+    assert.equal(def.stack, 1);
+    assert.equal(skinIdFromItem(iid), s.id);
+    assert.ok(itemIconSVG(iid).includes('<svg'));
+  }
+  assert.equal(skinIdFromItem('medkit'), null);
+  assert.equal(skinIdFromItem('skin_not_a_skin'), null);
+});

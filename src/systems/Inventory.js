@@ -578,4 +578,4 @@ export class Inventory {
 }
 
 /** Sort weighting so ammo leads a sorted panel and trinkets trail it. */
-const KIND_ORDER = { ammo: 0, consumable: 1, trinket: 2, currency: 3 };
+const KIND_ORDER = { ammo: 0, consumable: 1, trinket: 2, currency: 3, skin: 8 };

@@ -1,3 +1,5 @@
+import { MOUNT_SKINS } from './Cosmetics.js';
+
 /**
  * Item catalogue, pack prices and the procedural icon set.
  *
@@ -9,9 +11,13 @@
  * `stack` is the single most load-bearing number in the file: the active bag is
  * limited to 30 **slots**, and one slot holds one full stack. `bullet.stack`
  * is 60 precisely so a 60-round pack is one slot, not sixty.
+ *
+ * One extra item is generated per catalogued mount skin (`MOUNT_SKINS` in
+ * `Cosmetics.js`) - see the loop after the `ITEMS` literal below - so a skin
+ * bought at a merchant has a bag item to sit in until it is applied.
  */
 
-/** @typedef {'ammo'|'consumable'|'trinket'|'currency'} ItemKind */
+/** @typedef {'ammo'|'consumable'|'trinket'|'currency'|'skin'} ItemKind */
 
 /** Accent colours, shared by the UI panels and the world pickups. */
 export const KIND_ACCENT = {
@@ -19,6 +25,7 @@ export const KIND_ACCENT = {
   consumable: '#b6ff5a',
   trinket: '#d46bff',
   currency: '#ffb44a',
+  skin: '#ff9ad5',
 };
 
 /**
@@ -26,7 +33,8 @@ export const KIND_ACCENT = {
  * come from `PACKS` and sell prices from `value * SELL_RATE`.
  *
  * @type {Record<string, {id:string, name:string, short:string, stack:number,
- *   icon:string, value:number, kind:ItemKind, virtual?:boolean, desc:string}>}
+ *   icon:string, value:number, kind:ItemKind, virtual?:boolean, desc:string,
+ *   skinId?:string, colors?:number[]}>}
  */
 export const ITEMS = {
   credits: {
@@ -262,6 +270,39 @@ export const ITEMS = {
     desc: 'Struck for a king three worlds ago. Still worth something here.',
   },
 };
+
+/** Bag item id for a mount skin id. */
+export function skinItemId(skinId) {
+  return `skin_${skinId}`;
+}
+
+/** Skin id for a bag item id, or null if the item is not a skin. */
+export function skinIdFromItem(itemId) {
+  if (typeof itemId !== 'string' || !itemId.startsWith('skin_')) return null;
+  const def = ITEMS[itemId];
+  return def && def.kind === 'skin' ? def.skinId : null;
+}
+
+/*
+ * One bag item per mount skin. Bought at a merchant (`grant_item`), it sits in
+ * the bag until applied from the Mount menu (F10) or the inventory Use button,
+ * which consumes it and burns the skin into the Cosmetics ledger.
+ */
+for (const skin of MOUNT_SKINS) {
+  const colors = Object.values(skin.livery).map((v) => v.color).filter((c) => typeof c === 'number');
+  ITEMS[skinItemId(skin.id)] = {
+    id: skinItemId(skin.id),
+    name: `${skin.name} Skin`,
+    short: 'SKN',
+    stack: 1,
+    icon: 'skin',
+    value: 200,
+    kind: 'skin',
+    skinId: skin.id,
+    colors,
+    desc: `${skin.blurb} Apply to your ${skin.mount} from the Mount menu (F10) while riding; one use.`,
+  };
+}
 
 /** Fraction of `value` a vendor pays when buying an item back off the player. */
 export const SELL_RATE = 0.4;
@@ -520,14 +561,16 @@ export function itemIconSVG(id, size = 32) {
   const key = ITEMS[id]?.icon ?? id;
   const accent = KIND_ACCENT[ITEMS[id]?.kind ?? 'ammo'] ?? '#52e9ff';
   const g = `ig${_iconSeq++}`;
-  const body = ICONS[key]?.(g, accent) ?? ICONS.unknown(g, accent);
+  const body = ICONS[key]?.(g, accent, ITEMS[id]) ?? ICONS.unknown(g, accent);
   return `<svg class="inv-ico" viewBox="0 0 32 32" width="${size}" height="${size}" aria-hidden="true">${body}</svg>`;
 }
 
 /**
  * Each entry returns the SVG body for one icon. They take the unique gradient
- * prefix and the accent so a single definition serves every panel.
- * @type {Record<string, (g:string, a:string) => string>}
+ * prefix and the accent so a single definition serves every panel; the third
+ * argument is the item's own catalogue entry, for an icon (like `skin`) whose
+ * artwork depends on data the item carries rather than just its kind.
+ * @type {Record<string, (g:string, a:string, def?:object) => string>}
  */
 const ICONS = {
   bullet: (g, a) => `
@@ -637,6 +680,14 @@ const ICONS = {
     <circle cx="16" cy="16" r="11" fill="url(#${g}a)" stroke="${a}" stroke-width="1"/>
     <circle cx="16" cy="16" r="8" fill="none" stroke="#5a3a0d" stroke-width="0.7" opacity="0.65"/>
     <path d="M11.5 18.5 l2 -6 l2.5 4 l2.5 -4 l2 6 z" fill="#4a2f08" opacity="0.85"/>`,
+  skin: (g, a, def) => {
+    const [c1 = 0x888888, c2 = c1] = def?.colors ?? [];
+    const hex = (c) => `#${(c & 0xffffff).toString(16).padStart(6, '0')}`;
+    return `
+    <rect x="5" y="5" width="22" height="22" rx="4" fill="${hex(c1)}" stroke="${a}" stroke-width="1"/>
+    <path d="M27 5 L27 27 L5 27 z" fill="${hex(c2)}" opacity="0.95"/>
+    <path d="M9 22 q7 -9 14 -12" stroke="#ffffff" stroke-width="1.2" fill="none" opacity="0.55"/>`;
+  },
   unknown: (g, a) => `
     <rect x="6" y="6" width="20" height="20" rx="3" fill="rgba(120,180,210,0.12)" stroke="${a}" stroke-width="1"/>
     <path d="M16 20 v-2 q3 -1 3 -3.5 a3 3 0 1 0 -6 0" fill="none" stroke="${a}" stroke-width="1.5"/>

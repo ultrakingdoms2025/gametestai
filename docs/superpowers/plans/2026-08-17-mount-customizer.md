@@ -13,7 +13,7 @@
 - Commit messages end with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 - Never rename an existing marketplace `source_key`.
 - No new `THREE.Material` allocation at menu-edit time; clone at build, tint at runtime.
-- Headless mount construction (used by the tests) works with this stub, copied from `scripts/tests/race-pace.test.mjs:96-108`:
+- Headless mount construction (used by the tests) works with this stub, copied from `scripts/tests/race-pace.test.mjs:97-108` (drop the `export`s when pasting into a test file):
 
 ```js
 import * as THREE from 'three';
@@ -31,7 +31,11 @@ export const ctx = { scene, engine: null, physics: { groundHeight: () => 0, reso
 
 ---
 
-## Chunk 1: Data model + car migration (no visible change)
+## Chunk 1: Data model + car migration
+
+> **Do not push to `main` until Chunk 4 (Task 17) has landed** — the repo deploys from `main` on every push, and between Task 2 and Task 17 the car livery has no UI (F2's Vehicle section is removed in Task 2; F10 arrives in Task 16/17). All commits in Chunks 1–4 are local.
+>
+> Spec deviation, deliberate: spec §4.2 asks for `static DISPLAY_NAME`; every mount already carries an instance `displayName` (`Car.js:757`, `Dragon.js:649`, …) and the menu reads that instead. No new static is added.
 
 ### Task 1: `src/mounts/Livery.js` — shared tint/finish helper (pure, no THREE import)
 
@@ -87,9 +91,11 @@ test('applyLivery tints, mixes, sets emissive, and applies a finish', () => {
   assert.equal(f.body.roughness, FINISH_PROPS.matt.roughness);
   assert.equal(f.body.metalness, FINISH_PROPS.matt.metalness);
   assert.equal(f.body.envMapIntensity, FINISH_PROPS.matt.envMapIntensity);
-  // 50% mix from factory 0x445566 toward 0xff0000
-  const c = f.skirt.color;
-  assert.ok(Math.abs(c.r - (0x44 / 255 + 1) / 2) < 0.02, `skirt r=${c.r}`);
+  // 50% mix from factory 0x445566 toward 0xff0000. Three's ColorManagement is
+  // on, so setHex() lands in linear space and lerp() blends linear values -
+  // build the expectation the same way rather than hand-computing an sRGB midpoint.
+  const exp = new THREE.Color(0x445566).lerp(new THREE.Color(0xff0000), 0.5);
+  assert.equal(f.skirt.color.getHex(), exp.getHex());
   assert.equal(f.glow.color.getHex(), 0xff00ff);
   assert.equal(f.lit.emissive.getHex(), 0xff00ff);
 });
@@ -488,15 +494,28 @@ In `deserialize()` replace the `if (data.livery && ...)` block with:
 
 Update the JSDoc on `grantPower` to `@param {'strength'|'shield'|'power'|'fire'} power`.
 
+- [ ] **Step 3b: Remove the car livery section from F2 (`src/ui/CharacterMenu.js`)** — its `setLivery({paint})`/`getLivery()` calls no longer match the new signature, so it goes now rather than half-working until Task 17:
+
+- `:11` → `import { CHARACTER_SKINS } from '../systems/Cosmetics.js';`
+- Delete `CAR_PAINT_COLORS` and `CAR_WHEEL_COLORS` (`:95-107`) — they move to `MountMenuLogic.PALETTES` in Task 16.
+- Constructor (`:163-185`): drop `mounts` from the destructure and the `this.mounts = mounts ?? null;` line; delete the `_livery` object and the `_liveryPending` / `_liveryRaf` fields (and their comments).
+- Delete the whole `/* Vehicle livery ... */ if (this.mounts?.setLivery) { ... }` block (`:394-410`).
+- Delete `_liverySwatches`, `_setLivery`, `_liveryPick` (`:522-575`).
+- `_skinCards(skins, kind)` (`:584-633`) → `_skinCards(skins)`: `const colors = [skin.preset?.topColor, skin.preset?.legColor, skin.preset?.accentColor];`; the click handler becomes just `this._set({ ...skin.preset });` after the ownership guard; the syncer's `active` is `owned && this._cfg.topColor === skin.preset.topColor && this._cfg.legColor === skin.preset.legColor && this._cfg.accentColor === skin.preset.accentColor`. Update its JSDoc: `@param {Array<{id:string,name:string,blurb:string,preset:object}>} skins` and drop the `kind` param.
+- The `_section('Signature skins', ...)` call at `:388` becomes `this._skinCards(CHARACTER_SKINS)`.
+- `main.js:232` → `const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, player, cosmetics });` and change its comment's "F2. Edits the avatar live" paragraph to end with "F2 is character-only; mounts are customised from F10."
+
+`grep -n "livery\|Livery\|mounts" src/ui/CharacterMenu.js` must return nothing.
+
 - [ ] **Step 4: Run tests**
 
-Run: `node --test scripts/tests/mount-liveries.test.mjs` → PASS. Then `npm test` → all green (`race-pace` still passes: Car still has `applyPowers`).
+Run: `node --test scripts/tests/mount-liveries.test.mjs` → PASS. Then `npm test && npm run build` → all green (`race-pace` still passes: Car still has `applyPowers`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/mounts/MountManager.js scripts/tests/mount-liveries.test.mjs
-git commit -m "MountManager: per-mount liveries with legacy car migration
+git add src/mounts/MountManager.js src/ui/CharacterMenu.js src/main.js scripts/tests/mount-liveries.test.mjs
+git commit -m "MountManager: per-mount liveries with legacy car migration; F2 is character-only
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -513,11 +532,10 @@ Append to `scripts/tests/mount-liveries.test.mjs`:
 
 ```js
 import { Car } from '../../src/mounts/Car.js';
-import { MOUNT_STATS as STATS_TABLE } from '../../src/mounts/Livery.js';
 
 test('Car declares slots/stats and tints its cloned paint and wheel materials', () => {
   assert.deepEqual(Car.CUSTOM_SLOTS.map((s) => s.id), ['paint', 'wheel']);
-  assert.equal(Car.STATS, STATS_TABLE.car);
+  assert.equal(Car.STATS, MOUNT_STATS.car);
   const car = new Car(ctx);
   car.applyCustomization({ paint: { color: 0xff3bd2, finish: 'matt' }, wheel: { color: 0x2fe0ff } });
   assert.equal(car._slotMats.paint[0].color.getHex(), 0xff3bd2);
@@ -575,7 +593,7 @@ Replace `applyCustomization` (`:1897-1909`) with:
   }
 ```
 
-Confirm the constructor sets `this._livery` (any value, including `null`/undefined) before `_buildModel()` at `:814` — if it does not, add `this._livery = null; this._slotMats = null;` before that call.
+The constructor does not initialise `_livery` today (only `:854` and `:1904-1908` touch it): add `this._livery = null; this._slotMats = null;` immediately before `this._buildModel();` at `:814`.
 
 - [ ] **Step 4: Run tests**
 
@@ -594,7 +612,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `src/systems/Cosmetics.js:1-104`
-- Modify: `src/ui/CharacterMenu.js:11` (import only — full removal comes in Task 17)
+- (CharacterMenu already stopped importing `VEHICLE_SKINS` in Task 2)
 - Test: `scripts/tests/mount-liveries.test.mjs`
 
 - [ ] **Step 1: Add failing test**
@@ -676,16 +694,14 @@ export function skinsForMount(mountId) {
 const KNOWN_SKIN_IDS = new Set([...CHARACTER_SKINS_BY_ID.keys(), ...MOUNT_SKINS_BY_ID.keys()]);
 ```
 
-Update the header comment: replace "a vehicle skin is a car livery (paint/wheel)" with "a mount skin is a livery over that mount's colour slots (F10)".
+Update the header comment: replace "a vehicle skin is a car livery (paint/wheel)" with "a mount skin is a livery over that mount's colour slots (F10)", and `{@link VEHICLE_SKINS}` at `:7` with `{@link MOUNT_SKINS}`. `CharacterMenu` no longer imports `VEHICLE_SKINS` (removed in Task 2 Step 3b); `grep -rn VEHICLE_SKINS src` must return nothing after this step.
 
-In `src/ui/CharacterMenu.js:11` change the import to `import { CHARACTER_SKINS, MOUNT_SKINS as VEHICLE_SKINS } from '../systems/Cosmetics.js';` — a temporary alias so the game boots until Task 17 removes the section (the old cards will mis-render `skin.livery.paint`; acceptable for the intermediate commits).
-
-- [ ] **Step 4: Run** `npm test` → PASS.
+- [ ] **Step 4: Run** `npm test && npm run build` → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/systems/Cosmetics.js src/ui/CharacterMenu.js scripts/tests/mount-liveries.test.mjs
+git add src/systems/Cosmetics.js scripts/tests/mount-liveries.test.mjs
 git commit -m "Cosmetics: MOUNT_SKINS for all six mounts (legacy car ids kept)
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -2070,25 +2086,16 @@ git commit -m "MountMenu: F10 drawer rendered from the ridden mount's slots, ski
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
-### Task 17: Remove the car section from F2 and wire F10 in `main.js`
+### Task 17: Wire F10 into `main.js`
+
+(The F2 car-section removal already happened in Task 2 Step 3b.)
 
 **Files:**
-- Modify: `src/ui/CharacterMenu.js` (`:11` import; `:96-107` palettes; `:163-185` ctor; `:394-410` section; `:522-575` `_liverySwatches/_setLivery/_liveryPick`; `:584-633` `_skinCards`)
-- Modify: `src/main.js` (`:232` CharacterMenu ctor; new MountMenu construction; `:438` GAME bundle; `:1450` update; `:1510-1511` gating)
+- Modify: `src/main.js` (new MountMenu construction after `:232`; `:438` GAME bundle; `:1450` update; `:1510-1511` gating)
 
-- [ ] **Step 1: CharacterMenu**
+- [ ] **Step 1: main.js**
 
-- `:11` → `import { CHARACTER_SKINS } from '../systems/Cosmetics.js';`
-- Delete `CAR_PAINT_COLORS` and `CAR_WHEEL_COLORS` (`:95-107`).
-- Ctor: drop `mounts` from the destructure and `this.mounts`; delete `_livery`, `_liveryPending`, `_liveryRaf`.
-- Delete the whole `/* Vehicle livery ... */ if (this.mounts?.setLivery) {...}` block (`:394-410`).
-- Delete `_liverySwatches`, `_setLivery`, `_liveryPick` (`:522-575`).
-- `_skinCards(skins, kind)` → `_skinCards(skins)`; colours are always `[skin.preset.topColor, legColor, accentColor]`; click always `this._set({ ...skin.preset })`; the syncer's `active` uses only the `_cfg` comparison. Update the JSDoc.
-
-- [ ] **Step 2: main.js**
-
-- `:232` → `const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, player, cosmetics });` and update its comment (F2 is character-only).
-- Directly after it:
+- Directly after the `characterMenu` construction:
 
 ```js
 // F10. Customises the mount being ridden (colour slots, skins, upgrade tiers);
@@ -2106,13 +2113,13 @@ bus.on('mount:menu:open', () => setGameplayBlocked('mount-menu', true));
 bus.on('mount:menu:close', () => setGameplayBlocked('mount-menu', false));
 ```
 
-- [ ] **Step 3: Verify** `npm run build && npm test` → PASS. `grep -rn "VEHICLE_SKINS\|_liverySwatches\|CAR_PAINT_COLORS" src` → no hits.
+- [ ] **Step 2: Verify** `npm run build && npm test` → PASS. `grep -rn "VEHICLE_SKINS\|_liverySwatches\|CAR_PAINT_COLORS" src` → no hits.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add src/ui/CharacterMenu.js src/main.js
-git commit -m "F2 is character-only; F10 mount menu wired into main and gameplay gating
+git add src/main.js
+git commit -m "F10 mount menu wired into main and gameplay gating
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```

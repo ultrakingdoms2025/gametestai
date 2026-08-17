@@ -21,7 +21,11 @@
 3. **`overlay:false` is item data, not an id special-case**, so HUD never has to know the string `'help'`.
 4. **`_helpOpen` is set inside `_wireOverlayEvents()`**, not in the handlers at `HUD.js:1188`. Same subscriptions, moved so the hand-off test exercises the real handler.
 5. **Spec §4.6's string list is incomplete.** Seven more player-visible strings advertise keys Task 6 removes: `CharacterMenu.js:379` and `MountMenu.js:102` (`<b>F5</b> saves them with the game.`), `ItemDefs.js:309` (`Mount menu (F10)`), `ItemUse.js:59` (`press F10`), `MarketplaceUI.js:384/446/448` (`Mount menu (F10)` / `Character menu (F2)`), `main.js:1755` (the boot card's own `<b>F4</b> Audio`, visible until the first HUD frame). Task 6 fixes all of them and adds `el('b', null, 'F7')` to guard (c)'s literal list, which §6 omits.
-6. **`scripts/tests/race-f7.test.mjs:15-25` will fail** the moment RaceUI's F7 handler goes — it asserts `src.indexOf("e.code === 'F7'") > 0`. Not mentioned in the spec. Task 6 deletes that one test and renames the file `race-arming.test.mjs`; its other three tests are unrelated and kept verbatim.
+6. **Resume is a `keepOpen` item calling a new `hud.resume()`**, not `openFromHub(() => hud.showPauseOverlay(false))`. Spec §3 lists Resume as an ordinary Play item; routed through `openFromHub` it would arm `_hubReturn`, find the Set still empty one microtask later and re-show the card. And hiding the card without re-locking leaves `main.js`'s `standby` gameplay block on with `_relockCheck` waiting to raise the overlay again.
+7. **`HelpMenu`'s Escape branch gains `stopImmediatePropagation()`** (Task 3 Step 6). Spec §4.2(b)/(c) assume HUD can read `_helpOpen` while it is still true, but HelpMenu registers first (`main.js:227` vs `:421`) and `close()` emits `help:close` synchronously, so both guards were dead on arrival.
+8. **`RaceUI`'s Enter branch gains `if (!this.input?.locked) return;`** (Task 6 Step 3). Not in the spec. RaceUI also registers before the HUD, so with the hub up Enter started a race behind it and swallowed the hub's own Enter.
+9. **Disabled items use `aria-disabled` + the `.off` class, not the `disabled` property.** Spec §4.1 asks for a `title` carrying the disabled reason; Firefox suppresses tooltips on disabled buttons, which would silently drop "Mount up first (M)" — the one string that explains the state. Every act-on-item path re-checks `isEnabled` already.
+10. **`scripts/tests/race-f7.test.mjs:15-25` will fail** the moment RaceUI's F7 handler goes — it asserts `src.indexOf("e.code === 'F7'") > 0`. Not mentioned in the spec. Task 6 deletes that one test and renames the file `race-arming.test.mjs`; its other three tests are unrelated and kept verbatim.
 
 ---
 
@@ -29,6 +33,7 @@
 
 **Files:**
 - Modify: `src/ui/HUD.js:262` (fields), `:978-984` (`input:lockchange`), `:1186-1233` (help + overlay closures), `:1580` (`showPauseOverlay` guard)
+- Modify: `scripts/tests/race-pace.test.mjs:517-519` (a comment that is now provably wrong)
 - Test: `scripts/tests/pause-menu.test.mjs` (new)
 
 - [ ] **Step 1: Write the failing test**
@@ -52,6 +57,13 @@ import { EventBus } from '../../src/core/EventBus.js';
  *
  * Assertions are made AFTER a macrotask, because `_deferHubCheck` settles on a
  * microtask and `setTimeout` drains the whole microtask queue first.
+ *
+ * What these tests CANNOT see: keydown listener ordering. They drive the bus
+ * directly, so the Help case below proves the `_helpOpen` flag is maintained -
+ * not that HUD's Escape handlers ever get to read it while it is still true.
+ * That depends on `HelpMenu` calling `stopImmediatePropagation` (Task 3 Step 6)
+ * and on registration order in `main.js`, neither of which exists headlessly.
+ * Task 7 Step 6 is the check that covers it.
  */
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
@@ -106,7 +118,11 @@ test('every hub-reachable panel joins the Set and hands the player back to the h
     assert.equal(h._hubReturn, false, `${p.id}: hub return not cleared`);
     assert.equal(h.relocks, 0, `${p.id}: relocked instead of returning to the hub`);
   }
-  assert.equal(stubHud().overlayCount, 0, 'overlayCount no longer answers');
+  // The three old readers of the integer now read this getter.
+  const fresh = stubHud();
+  assert.equal(fresh.overlayCount, 0, 'overlayCount does not report an empty tracker as 0');
+  fresh.bus.emit('audio:menu', { open: true });
+  assert.equal(fresh.overlayCount, 1, 'overlayCount does not follow the Set');
 });
 
 test('a panel closed without the hub having opened it relocks, as today', async () => {
@@ -381,12 +397,30 @@ Add these methods immediately after `_wire()` closes, before the `/* -------- v2
 
 `grep -n "_overlayCount" src/ui/HUD.js` must return nothing.
 
+Finally, correct a comment this task disproves. `scripts/tests/race-pace.test.mjs:517-519` reads:
+
+```js
+ * Textual, like the F7 and MountWheel gates and for the same reason: `HUD.js`
+ * imports its stylesheet at module scope and cannot be loaded under Node. The
+ * badge itself was verified in a browser.
+```
+
+It is not true and never was - `HUD.js` imports no stylesheet, and `pause-menu.test.mjs` now imports it under Node on every run. Left alone it is the kind of note that talks the next author out of a test they could have written. Replace with:
+
+```js
+ * Textual because the property is a DOM one: `_setMountPowers` writes a badge,
+ * and asserting on the writing is what a headless test can honestly do. (`HUD.js`
+ * itself imports fine under Node - `pause-menu.test.mjs` does exactly that - so
+ * anything reachable on the prototype should be driven, not grepped.) The badge
+ * itself was verified in a browser.
+```
+
 - [ ] **Step 6: Run tests** — `node --test scripts/tests/pause-menu.test.mjs` → PASS (6 tests). Then `npm test` → all green.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/ui/HUD.js scripts/tests/pause-menu.test.mjs
+git add src/ui/HUD.js scripts/tests/pause-menu.test.mjs scripts/tests/race-pace.test.mjs
 git commit -m "HUD: overlay tracker becomes a Set of panel ids, with a hub return path
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -713,7 +747,13 @@ export class PauseMenu {
       const off = why !== true;
       const hint = off ? String(why) : this.model.hintOf(r.item);
       r.btn.classList.toggle('off', off);
-      r.btn.disabled = off;
+      /* `aria-disabled`, NOT the `disabled` property. Firefox suppresses the
+       * native tooltip on a disabled button, and on a disabled item the tooltip
+       * IS the feature - it carries the reason ("Mount up first (M)"). The
+       * `.off` class does the visual work and every path that could act on the
+       * item already re-checks `isEnabled`: `_focusItem` refuses it, `move()`
+       * skips it, and `model.activate()` returns null for it. */
+      r.btn.setAttribute('aria-disabled', off ? 'true' : 'false');
       r.hintEl.textContent = hint;
       r.hintEl.hidden = !hint;
       // `title` too: the hint line is truncated on a narrow card.
@@ -767,6 +807,11 @@ Create `src/ui/pause-menu.css`:
   margin-top: 24px;
   text-align: left;
   min-width: 320px;
+  /* Seventeen items plus two headings overflow a short window, and the card is
+     centre-placed so the overflow is clipped at BOTH ends - Quit becomes
+     unreachable with no indication it is there. Scroll the list, not the page. */
+  max-height: 70vh;
+  overflow-y: auto;
 }
 
 .pm-group { display: flex; flex-direction: column; gap: 2px; }
@@ -838,7 +883,13 @@ Create `src/ui/pause-menu.css`:
     <link rel="stylesheet" href="/src/ui/pause-menu.css" />
 ```
 
-- [ ] **Step 6: Run tests** — `node --test scripts/tests/pause-menu.test.mjs` → PASS (13 tests). `npm run build` → clean; check `dist/index.html` references a hashed `pause-menu` asset.
+- [ ] **Step 6: Run tests** — `node --test scripts/tests/pause-menu.test.mjs` → PASS (13 tests). Then `npm run build` → clean.
+
+Vite concatenates every `<link>`ed stylesheet into one hashed chunk, so there is no `pause-menu-*.css` in `dist/` to look for. Check the rules landed instead:
+
+```bash
+grep -c pm-item dist/assets/index-*.css   # must be >= 1
+```
 
 - [ ] **Step 7: Commit**
 
@@ -854,9 +905,10 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ## Task 3: HUD hosts the hub
 
 **Files:**
-- Modify: `src/ui/HUD.js:6` (import), `:422` + `:2643` (delete duplicate HelpMenu), `:903-965` (`_buildPause`), `:1578-1582` (`showPauseOverlay`), `:1732` (`_setPauseBusy`), `:1759-1762` (`_updateInput` F5), plus new public methods
+- Modify: `src/ui/HUD.js:6` (import), `:422` + `:2643` (delete duplicate HelpMenu), `:903-962` (`_buildPause`), `:1578-1582` (`showPauseOverlay`), `:1732` (`_setPauseBusy`), `:1759-1762` (`_updateInput` F5), plus new public methods
+- Modify: `src/ui/HelpMenu.js:161-163` (Escape must stop the propagation chain — Step 6)
 - Modify: `src/ui/hud.css:2533-2578` (delete `.pause-hint`, `.pause-actions`, `.pause-btn*`)
-- Test: none new — Task 1's flow tests cover the return path; the keyboard is browser-verified in Task 7.
+- Test: none new — Task 1's flow tests cover the return path; listener ordering is only observable in a browser, so Task 7 Step 6 is what proves Step 6 here works.
 
 - [ ] **Step 1: Import and constant**
 
@@ -877,7 +929,7 @@ Delete `src/ui/HUD.js:422` (`this.help = new HelpMenu({ root: this.root, bus: th
 
 - [ ] **Step 3: Rebuild the pause card**
 
-`src/ui/HUD.js:903-965` — replace the whole of `_buildPause()`:
+`src/ui/HUD.js:903-962` — replace the whole of `_buildPause()`:
 
 ```js
   _buildPause() {
@@ -896,10 +948,13 @@ Delete `src/ui/HUD.js:422` (`this.help = new HelpMenu({ root: this.root, bus: th
       root: inner,
       onActivate: (item, keepOpen) => {
         if (keepOpen) {
-          // Acts in place - Save, Load, Fullscreen, Diagnostics. Another item's
-          // label or enabled-state may have moved with it.
+          // Acts in place - Resume, Save, Load, Fullscreen, Diagnostics.
           item.run?.();
-          this.pauseMenu.refresh();
+          /* Only if the card is still up. Resume is a keepOpen item whose whole
+           * job is to hide it, and refreshing a hidden menu would re-read every
+           * label and re-run `focusFirst` for nothing - and, worse, paint a
+           * focus ring the player will see on the next open. */
+          if (this.pause.classList.contains('show')) this.pauseMenu.refresh();
         } else {
           this.openFromHub(item.run, { overlay: item.overlay !== false });
         }
@@ -999,6 +1054,20 @@ Add to the `/* Public API */` block, next to `showPauseOverlay`:
   }
 
   /**
+   * The hub's Resume item. A real re-lock, not `showPauseOverlay(false)`.
+   *
+   * Hiding the card on its own leaves the pointer unlocked, so `main.js`'s
+   * `input:lockchange` handler is still holding the `standby` gameplay block
+   * and the `_relockCheck` fallback puts the overlay straight back up - the hub
+   * visibly flashes off and on and the world never resumes. `_requestLock` is
+   * the same path the background click and the Escape key already take,
+   * including the retry budget for Chrome's post-Escape cooldown.
+   */
+  resume() {
+    this._requestLock();
+  }
+
+  /**
    * The hub's Save item calls this before `saveAndBackup` so the confirmation
    * toast can tell a deliberate save from a background autosave. Replaces the
    * `pressed('F5')` sniff in `_updateInput`, which F5 no longer reaches.
@@ -1046,12 +1115,43 @@ Replace `showPauseOverlay` (`:1578-1582`):
 
 `grep -n "pause-hint\|pause-actions\|pause-btn" src/ui/hud.css src/ui/HUD.js` must return nothing.
 
-- [ ] **Step 6: Run tests** — `npm test && npm run build` → all green (`race-pace.test.mjs:517` reads `HUD.js` textually; confirm it still passes).
+- [ ] **Step 6: Make the `_helpOpen` guards actually reachable**
 
-- [ ] **Step 7: Commit**
+**Without this the two guards added in Step 3 are dead code.** Both read `this._helpOpen` — but `HelpMenu` registers its capture-phase listener in `main.js:227`, well before the HUD is constructed at `main.js:421`, so on one Escape press the browser runs HelpMenu's handler *first*. It calls `close()`, which emits `help:close` **synchronously** on the bus, which sets `this._helpOpen = false`. HUD's two handlers then run in the same event and see `false`: `_onPauseKey` resumes the game the player was only trying to get Help off the top of, and `_onLockEsc` exits pointer lock. Help closing and the game resuming on a single keystroke is precisely what the guards were written to prevent.
+
+Registering first is also what makes the fix available: `stopImmediatePropagation` stops later listeners on the *same* element and phase, and HelpMenu is the earlier registration on `window`/capture.
+
+`src/ui/HelpMenu.js:161-163` — old:
+
+```js
+      } else if (e.code === 'Escape' && this._open) {
+        this.close();
+      }
+```
+
+new:
+
+```js
+      } else if (e.code === 'Escape' && this._open) {
+        /* This Escape is spent closing Help and nothing else.
+         *
+         * We register before the HUD does (main.js:227 vs :421), so its pause
+         * handlers would otherwise run later in this same event - and by then
+         * `close()` has already emitted `help:close`, clearing the `_helpOpen`
+         * flag they guard on. The result was one keypress that closed Help AND
+         * either resumed the game or dropped pointer lock. */
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        this.close();
+      }
+```
+
+- [ ] **Step 7: Run tests** — `npm test && npm run build` → all green (`race-pace.test.mjs:521` reads `HUD.js` textually; confirm it still passes).
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/ui/HUD.js src/ui/hud.css
+git add src/ui/HUD.js src/ui/HelpMenu.js src/ui/hud.css
 git commit -m "HUD: the pause card becomes the Esc hub - PAUSED, a menu, and Esc under lock
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -1062,7 +1162,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ## Task 4: `Input` — exported reserved keys, F11/F12, fullscreen as a preference
 
 **Files:**
-- Modify: `src/core/Input.js:70` (storage key), `:72-85` (`RESERVED_CODES`), `:118` (field), accessors, `:168-176` (`requestLock`), `_bind()` (new listener)
+- Modify: `src/core/Input.js:71` (storage key), `:73-86` (`RESERVED_CODES` + its comment), `:120` (new field), accessors, `:168-176` (`requestLock`), `_bind()` (new listener)
 - Test: `scripts/tests/input-binds.test.mjs` (extend)
 
 - [ ] **Step 1: Add the failing tests**
@@ -1171,9 +1271,9 @@ test('requestLock only asks for fullscreen when the preference says so', async (
 
 - [ ] **Step 3: Edit `Input`**
 
-`src/core/Input.js:70` — add beside `BIND_STORAGE`: `const FS_STORAGE = 'aether:fullscreen';`
+`src/core/Input.js:71` — add beside `BIND_STORAGE`: `const FS_STORAGE = 'aether:fullscreen';`
 
-`:72-85` — export, extend, and correct the comment:
+`:73-86` — export, extend, and correct the comment (the doc block is `:73-83`, the array `:84-86`):
 
 ```js
 /**
@@ -1198,7 +1298,7 @@ export const RESERVED_CODES = [
 ];
 ```
 
-`:118` — after `this._textCaptured = false;`:
+`:120` — after `this._textCaptured = false;` (`:119`):
 
 ```js
     /* Fullscreen is a preference now, not an unconditional side effect of
@@ -1310,7 +1410,12 @@ hud.setPauseMenuItems([
   {
     title: 'Play',
     items: [
-      { id: 'resume', label: 'Resume', hint: 'Esc', run: () => hud.showPauseOverlay(false) },
+      /* `keepOpen` so it never goes through `openFromHub`: that would arm
+       * `_hubReturn`, and the post-run check would find the Set still empty a
+       * microtask later and put the hub straight back on. Resume is an act-in-
+       * place item whose run happens to hide the card, and `hud.resume()` takes
+       * the pointer lock back for real. */
+      { id: 'resume', label: 'Resume', hint: 'Esc', keepOpen: true, run: () => hud.resume() },
       { id: 'character', label: 'Character', run: () => characterMenu.open() },
       {
         id: 'mount',
@@ -1319,6 +1424,16 @@ hud.setPauseMenuItems([
         enabled: () => (mounts?.mounted ? true : 'Mount up first (M)'),
         run: () => mountMenu.open(),
       },
+      /* `Inventory.open()` is synchronous ONLY once its panel exists. On the
+       * very first call it kicks off a dynamic `import('../ui/InventoryUI.js')`
+       * and returns (`Inventory.js:392-401` → `_mountUI` `:516-537`); the
+       * `inventory:open` event then lands a promise tick later, well after
+       * `_deferHubCheck`'s single microtask has already decided nothing opened
+       * and put the hub back. That window is unreachable in practice - the
+       * constructor calls `_mountUI()` eagerly at `Inventory.js:75`, long
+       * before the player can click to enter, let alone press Esc. If the
+       * eager mount is ever removed, this item needs `keepOpen: true` and its
+       * own hide, or `openFromHub` needs an async-aware check. */
       { id: 'inventory', label: 'Inventory', hint: 'I', run: () => inventory.open() },
       { id: 'quests', label: 'Quest board', hint: 'J', run: () => questSystem.openBoard() },
       {
@@ -1468,7 +1583,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ## Task 6: F-key removals and the discoverability sweep
 
 **Files:**
-- Modify: `src/ui/CharacterMenu.js:14,44-50,213,379,655-672` · `src/ui/MountMenu.js:9,12,91,102,379-396` · `src/ui/AudioMenu.js:4,47-57,79` · `src/ui/KeybindMenu.js:36-54,167-170,212-217` · `src/ui/BugReport.js:2-5,53-64,80` · `src/systems/SaveGame.js:126-146` · `src/ui/RaceUI.js:144-190,381-382,817` · `src/ui/MinigameUI.js:50-68,126` · `src/ui/HelpMenu.js:65-72,100-118` · `src/ui/HUD.js:834,1391-1414` · `src/main.js:1755` · `src/systems/ItemDefs.js:309` · `src/systems/ItemUse.js:59` · `src/ui/MarketplaceUI.js:384,446,448` · `src/ai/ChatClient.js:360` · `site/app/api/chat/route.ts:114`
+- Modify: `src/ui/CharacterMenu.js:14,44-50,213,379,655-672` · `src/ui/MountMenu.js:9,12,91,102,379-396` · `src/ui/AudioMenu.js:4,47-57,79` · `src/ui/KeybindMenu.js:37-53,167-170,212-217` · `src/ui/BugReport.js:2-5,53-64,80` · `src/systems/SaveGame.js:125-146` · `src/ui/RaceUI.js:144-190,181,381-382,817` · `src/ui/MinigameUI.js:51-56,57-68,126` · `src/ui/HelpMenu.js:65-72,100-118` · `src/ui/HUD.js:834,1391-1414` · `src/main.js:1755` · `src/systems/ItemDefs.js:309` · `src/systems/ItemUse.js:59` · `src/ui/MarketplaceUI.js:384,446,448` · `src/ai/ChatClient.js:360` · `site/app/api/chat/route.ts:114`
 - Rename: `scripts/tests/race-f7.test.mjs` → `scripts/tests/race-arming.test.mjs`
 - Test: `scripts/tests/pause-menu.test.mjs` (source guards)
 
@@ -1516,10 +1631,14 @@ test('no F2-F12 key handler survives anywhere in src/', async () => {
       src = src.replace(/export const RESERVED_CODES = \[[\s\S]*?\];/, '');
     }
     const rel = path.relative(root, f);
+    assert.ok(!src.includes("'Shift+F9'"), `${rel}: still lists Shift+F9`);
     for (let n = 2; n <= 12; n++) {
       assert.ok(!new RegExp(`code\\s*===\\s*'F${n}'`).test(src), `${rel}: still handles F${n}`);
       assert.ok(!new RegExp(`pressed\\(\\s*'F${n}'\\s*\\)`).test(src), `${rel}: still polls F${n}`);
       assert.ok(!new RegExp(`\\[[^\\]\\n]*'F${n}'`).test(src), `${rel}: still lists F${n} in a key array`);
+      // KeybindMenu's FIXED_KEYS rows are objects, not bare array entries, so
+      // the bracket pattern above walks straight past them.
+      assert.ok(!new RegExp(`key:\\s*'F${n}'`).test(src), `${rel}: still lists F${n} in a FIXED_KEYS row`);
     }
   }
 });
@@ -1560,10 +1679,31 @@ test('no UI string advertises a key the build no longer answers', async () => {
   ```
   and `:4` becomes `Audio options. Opened from the Esc pause hub.`
 - `KeybindMenu.js:212-217` — drop the `F6` branch, keep `Escape`.
-- `BugReport.js:53-64` — drop the `F9 || F12` branch, keep `Escape`; header (`:2-5`) → `Bug report panel. Opened from the Esc pause hub; Esc closes it.`
-- `SaveGame.js:126-146` — delete `this._onKeyDown`, its comment block and its `window.addEventListener('keydown', this._onKeyDown, true);`, plus the matching `removeEventListener` in `dispose()`. `saveAndBackup` (`:804`) and `loadAnywhere` (`:822`) are unchanged and are now called only from the hub. **`_onBeforeUnload` and its `_autoSave('unload')` stay untouched** — that is what still protects a Ctrl+W with fullscreen off.
-- `RaceUI.js:144-190` — delete the `if (e.code === 'F7') { … }` block and the `/* F7, not F6 */` comment above it. Keep the `Enter` and `Escape` branches verbatim, including `Enter`'s `race.ready` / `state === 'idle'` guards.
-- `MinigameUI.js:56-68` — delete the `if (e.code === 'F8') { … }` block; keep `Escape`. Rewrite `:50-55` to say the sheets are reached by E at the venue and by the hub's **Quit minigame** item.
+- `BugReport.js:53-64` — in `_onKey` (`:53-63`, listener `:64`) drop the `F9 || F12` branch (`:55-58`), keep `Escape`; header (`:2-5`) → `Bug report panel. Opened from the Esc pause hub; Esc closes it.`
+- `SaveGame.js:125-146` — delete `this._onKeyDown` (comment `:125-130`, handler `:131-145`) and its `window.addEventListener('keydown', this._onKeyDown, true);` at `:146`, plus the matching `removeEventListener` in `dispose()`. `saveAndBackup` (`:804`) and `loadAnywhere` (`:822`) are unchanged and are now called only from the hub. **`_onBeforeUnload` and its `_autoSave('unload')` stay untouched** — that is what still protects a Ctrl+W with fullscreen off.
+- `RaceUI.js:144-190` — delete the `if (e.code === 'F7') { … }` block and the `/* F7, not F6 */` comment above it. Keep the `Escape` branch verbatim.
+
+  **The `Enter` branch needs one new guard.** `RaceUI` registers its capture listener in `main.js:285`, before the HUD at `:421`, so on the circuit Enter now starts a race *from behind the open hub* — and the hub's own Enter (activate the focused item) never fires, because RaceUI called `preventDefault` and `closePanel` first. Pointer lock is the honest test for "the player is driving, not reading a menu": every hub-owning panel releases it. `RaceUI.js:181` — old:
+
+  ```js
+        if (this.input?.textCaptured) return;
+        if (this._stopOpen || this._boardOpen || !this.race?.ready || this.race.state !== 'idle') return;
+  ```
+
+  new:
+
+  ```js
+        if (this.input?.textCaptured) return;
+        /* Only while actually playing. We register before the HUD does
+         * (main.js:285 vs :421), so with the Esc hub up this branch would run
+         * first and start a race behind it - and swallow the Enter the hub
+         * needed to activate the focused item. Every panel that owns the cursor
+         * has released the lock, so this is the one test that covers all of
+         * them without naming any. */
+        if (!this.input?.locked) return;
+        if (this._stopOpen || this._boardOpen || !this.race?.ready || this.race.state !== 'idle') return;
+  ```
+- `MinigameUI.js:57-68` — delete the `if (e.code === 'F8') { … }` block (`:59-63`); keep `Escape`. Rewrite the comment at `:51-56` to say the sheets are reached by E at the venue and by the hub's **Quit minigame** item.
 
 - [ ] **Step 4: Rewrite the player-visible text**
 
@@ -1577,7 +1717,7 @@ test('no UI string advertises a key the build no longer answers', async () => {
 | `HelpMenu.js:71` | `['Esc', 'Release the mouse cursor'],` | `['Esc', 'Pause menu'],` |
 | `HelpMenu.js:105-116` | the System group's `F1`/`F2`/`F10`/`F4`/`F6`/`F7`/`F5`/`F9`/`Shift+F9`/`F12` rows | `['Esc', 'Pause menu (everything below is in it)'],` then `['F1', 'This panel'],` |
 | `HelpMenu.js:117` | `['Esc', 'Close this panel'],` | *(keep — Help's own Esc is real)* |
-| `KeybindMenu.js:36-54` | the `F2`/`F3`/`F4`/`F5`/`F6`/`F7`/`F9`/`F10`/`Shift+F9` rows | `{ key: 'Esc', label: 'Pause menu — every panel is in it' },` and `{ key: 'F1', label: 'Help & controls' },`; **add the missing** `{ key: 'M', label: 'Mount wheel / maze map' },`; keep `J`, `I`, `B`, `K`, `1–4`, `Wheel` |
+| `KeybindMenu.js:37-53` | the `F2`/`F3`/`F4`/`F5`/`F6`/`F7`/`F9`/`F10`/`Shift+F9` rows | `{ key: 'Esc', label: 'Pause menu — every panel is in it' },` and `{ key: 'F1', label: 'Help & controls' },`; **add the missing** `{ key: 'M', label: 'Mount wheel / maze map' },`; keep `J`, `I`, `B`, `K`, `1–4`, `Wheel` |
 | `KeybindMenu.js:167-170` | `'Fixed keys (J, I, B, M, K, F1–F10 and Esc) cannot be rebound: …'` | `'Fixed keys (Esc, F1 and the letter keys J I B M K) cannot be rebound; F2–F12 are left to the browser.'` |
 | `CharacterMenu.js:213` | `close.append(el('b', null, 'F2'), el('span', null, 'close'));` | `close.append(el('b', null, 'Esc'), el('span', null, 'close'));` |
 | `CharacterMenu.js:379` | `'Changes apply to your body at once. <b>F5</b> saves them with the game.'` | `'Changes apply to your body at once. Save from the Esc menu to keep them.'` |
@@ -1585,8 +1725,8 @@ test('no UI string advertises a key the build no longer answers', async () => {
 | `MountMenu.js:102` | `'Changes apply to the mount at once. <b>F5</b> saves them with the game.'` | `'Changes apply to the mount at once. Save from the Esc menu to keep them.'` |
 | `AudioMenu.js:79` | `close.append(el('b', null, 'F4'), el('span', null, 'or'), el('b', null, 'Esc'), el('span', null, 'to close'));` | `close.append(el('b', null, 'Esc'), el('span', null, 'to close'));` |
 | `RaceUI.js:381-382` | `close.title = 'Close (F7 or Esc)';` and the `el('b', null, 'F7'), el('span', null, 'or'), …` append | `close.title = 'Close (Esc)';` and `close.append(el('b', null, 'Esc'), el('span', null, 'to close'), el('i', 'rc-close-x', '✕'));` |
-| `RaceUI.js:817` | `… laps · Enter, or F7 for options` | `… laps · Enter to start, Esc for options` |
-| `MinigameUI.js:126` | `el('div', 'mg-hint', 'E or F8 to quit')` | `el('div', 'mg-hint', 'E or Esc to quit')` |
+| `RaceUI.js:817` | `… laps · Enter, or F7 for options` | `… laps · Enter to start, Esc menu for options` — “Esc” alone reads as “close”; the options are *in* the hub |
+| `MinigameUI.js:126` | `el('div', 'mg-hint', 'E or F8 to quit')` | `el('div', 'mg-hint', 'E, or Esc menu, to quit')` — bare Esc closes the confirm sheet, it does not raise it |
 | `BugReport.js:80` | `el('span', 'br-title-key', '(F9 / F12)')` | `el('span', 'br-title-key', '(Esc menu → Report a bug)')` |
 | `ItemDefs.js:309` | `Apply to your ${skin.mount} from the Mount menu (F10) while riding; one use.` | `Apply to your ${skin.mount} from the Esc menu → Customise mount, while riding; one use.` |
 | `ItemUse.js:59` | `` `Mount your ${skin.mount} and press F10 to apply this skin` `` | `` `Mount your ${skin.mount}, then Esc → Customise mount to apply this skin` `` |
@@ -1623,20 +1763,37 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ## Task 7: Browser smoke and docs
 
-**Files:** `docs/superpowers/specs/2026-08-17-pause-menu-hub-design.md:4`, `CONTRACTS-V3.md:215-232`
+**Files:** `docs/superpowers/specs/2026-08-17-pause-menu-hub-design.md:4`, `CONTRACTS-V3.md:205-213` (§3.5) and `:215-232` (§3.6)
 
 - [ ] **Step 1:** `npm run dev`, note the port, open `http://localhost:<port>/?dev=1`, click to enter. (Playwright MCP if available, otherwise by hand.)
-- [ ] **Step 2: Entry and exit.** Esc from gameplay → card reads **PAUSED**, two groups, status line `Esc resume · ↑↓ Enter · click`. Esc again → relocked and playing; repeat with Space and with a background click. No Reload/Quit buttons, no F-key hint line.
+- [ ] **Step 2: Entry and exit.** Esc from gameplay → card reads **PAUSED**, two groups, status line `Esc resume · ↑↓ Enter · click`. Esc again → relocked and playing; repeat with Space and with a background click. No Reload/Quit buttons, no F-key hint line. Then choose **Resume** with the mouse and again with Enter: the pointer must actually lock and the world must run — the card must not blink off and back on. In a short window (or with devtools docked) confirm the list scrolls and **Quit to menu** is reachable.
 - [ ] **Step 3: Keyboard only.** ↑/↓ and W/S walk the highlight, wrap at both ends, and skip **Customise mount** on foot (tooltip "Mount up first (M)"). Enter opens the focused panel.
 - [ ] **Step 4: Each item, then Esc.** Character, Customise mount (while riding), Inventory, Quest board, Audio, Rebind keys, Report a bug — each opens with the hub hidden; Esc closes it and **the hub comes back** (must not relock, must not resume). Resume from the hub → pointer locked.
 - [ ] **Step 5: Conditional items.** In the hedge maze **Map** appears and opens the floorplan; elsewhere it is absent. In Vellum Ridge **Race panel** appears and opens; it goes on leaving. Start a minigame → **Quit minigame** appears, raises the confirm sheet, and cancelling returns to the hub.
-- [ ] **Step 6: Help over the hub.** From the hub choose **Help & controls**: Help appears *over the still-visible hub*. Esc closes Help only; the hub is still there; a second Esc resumes. During locked gameplay F1 → Help, Esc → closes Help and does **not** open the hub.
+- [ ] **Step 6: Listener ordering — the two fixes no headless test can see.** From the hub choose **Help & controls**: Help appears *over the still-visible hub*. Esc closes Help **only** — the hub must still be there and the world must still be paused; a second Esc resumes. During locked gameplay F1 → Help, then Esc → closes Help and does **not** open the hub and does **not** drop pointer lock. Then on the circuit, armed and idle, open the hub and press **Enter**: it must activate the focused hub item and must **not** start a race behind the card; close the hub, press Enter while playing, and the race must still start.
 - [ ] **Step 7: keepOpen items.** **Save** → deliberate-save toast, hub stays. **Load** → restores, hub stays and refreshes. **Diagnostics** toggles the overlay and flips its label. **Fullscreen** flips label and window; with it Off, Resume must **not** re-enter fullscreen; reload the page and confirm the preference persisted; turn it back On.
 - [ ] **Step 8: Escape under keyboard lock.** With Fullscreen On, Esc from gameplay raises the hub. **Hold** Esc two seconds: opens once, no flicker, no lock/unlock loop.
 - [ ] **Step 9: Dead keys and text.** F2–F10 and Shift+F9 do nothing in game (the browser may answer); Ctrl+F5 still hard-reloads. The boot card, F1's panel and the keybind panel show the Esc row and no F2–F12 rows. T opens chat, Esc goes to chat with no hub behind it; ask the NPC how to customise a character and confirm the answer names the Esc menu. Zero new console errors across all six worlds. Note anything broken as a follow-up and fix it before finishing.
 - [ ] **Step 10: Docs.**
 
-Spec status line (`…-pause-menu-hub-design.md:4`) → `**Status:** Implemented 2026-08-17`, and append a "Shipped deviations" section listing the six items from this plan's header.
+Spec status line (`…-pause-menu-hub-design.md:4`) → `**Status:** Implemented 2026-08-17`, and append a "Shipped deviations" section listing the ten items from this plan's header.
+
+`CONTRACTS-V3.md` §3.5 (`:211-212`) still routes players at a removed key. Old:
+
+```
+consumes a skin bag item and burns it into `Cosmetics`. `src/ui/MountMenu.js` (F10) is
+generic over `CUSTOM_SLOTS`/`STATS`; F2 is character-only. Design:
+```
+
+New:
+
+```
+consumes a skin bag item and burns it into `Cosmetics`. `src/ui/MountMenu.js` is generic
+over `CUSTOM_SLOTS`/`STATS` and opens from the Esc hub's **Customise mount** item (§3.6);
+the hub's **Character** item is character-only. Design:
+```
+
+Also retitle the paragraph's lead: **Mount customisation (F10, added 2026-08-17)** → **Mount customisation (added 2026-08-17)** (`:205`).
 
 `CONTRACTS-V3.md` §3.6 — append to the numbered list under `### 3.6 UX`:
 

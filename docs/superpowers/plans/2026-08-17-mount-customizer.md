@@ -1227,7 +1227,7 @@ Ctor fields as Horse; `_build()` after `const trim = ...`: `this._slotMats = { f
 Speed:
 - `:795` `const top = (sprint ? SPRINT_SPEED : CRUISE_SPEED) * this._powerMul;`
 - `:801` `drive = throttle * PEDAL_ACCEL * this._accelMul * head * (sprint ? 1.55 : 1);`
-- `:814` (`const drag = (ROLL_DRAG + AIR_DRAG * this.speed * this.speed) * dt;`) → `const drag = (ROLL_DRAG + (AIR_DRAG / (this._powerMul * this._powerMul)) * this.speed * this.speed) * dt;` — like the eagle, the bike's top speed is drag-limited; scaling `top` alone yields only ~+15% at tier III (measured 8.64 → 9.97), so the air-drag term scales too (→ ~×1.39).
+- `:814` (`const drag = (ROLL_DRAG + AIR_DRAG * this.speed * this.speed) * dt;`) → `const drag = (ROLL_DRAG + (AIR_DRAG / (this._powerMul * this._powerMul)) * this.speed * this.speed) * dt;` — like the eagle, the bike's top speed is drag-limited; scaling `top` alone yields only ~+15% at tier III (measured 8.64 → 9.97), so the air-drag term scales too (→ ~×1.36 at 60 Hz).
 - `:817` `this.speed = clamp(this.speed, -REVERSE_SPEED, MAX_SPEED * this._powerMul);`
 
 Methods: copy Horse's three (`applyCustomization` with `Bicycle.CUSTOM_SLOTS`, `applyPowers`, `get shieldTier`).

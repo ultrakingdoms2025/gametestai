@@ -1,12 +1,12 @@
 # Mount Customizer (F10) — Design
 
 **Date:** 2026-08-17
-**Status:** Approved in brainstorming; awaiting spec review
+**Status:** Approved in brainstorming; spec review round 2
 **Scope:** One feature: a per-mount customisation menu (skins + upgrades) for the six mounts, the data model behind it, and the marketplace/inventory flow that feeds it.
 
 ## 1. Problem
 
-Only the car can be customised today, and only from F2 (paint + wheel colour, plus five limited-edition liveries held as permanent unlocks in `Cosmetics`). Marketplace "Mount Power / Strength / Shield" tiers exist but all nine catalog rows target the car, no UI shows what a player owns, and the Shield tier is written by `Car`/`Dragon.applyPowers` yet **read by nothing** — it does nothing in play. Dragon, eagle, horse, hoverboard and bicycle have no customisation surface at all.
+Only the car can be customised today, and only from F2 (paint + wheel colour, plus five limited-edition liveries held as permanent unlocks in `Cosmetics`). Marketplace "Mount Power / Strength / Shield" tiers exist but all nine catalog rows target the car, the only UI is three HUD tier pips shown while mounted (`HUD._setMountPowers`), and the Shield tier is written by `Car`/`Dragon.applyPowers` yet **read by nothing** — it does nothing in play. Dragon, eagle, horse, hoverboard and bicycle have no customisation surface at all.
 
 The player wants: a dedicated mount customiser (like F2 for the character) that is appropriate to each mount — car body/wheel skins and speed/hit protection, dragon fire power and saddle skin, similar for eagle and horse, skins for hoverboard and bike. Default options are plain matt and gloss finishes; a skin bought at the marketplace sits in the inventory bag, appears as an option, and is removed from the bag when used.
 
@@ -35,7 +35,7 @@ Each mount class declares `static CUSTOM_SLOTS: Array<{ id, label, finish: boole
 | Dragon | `hide` Hide (colour + finish; wing membrane tinted 30 % toward it) | `saddle` Saddle & tack (colour + finish) | clone `dragon.hide`, `dragon.membrane`, `dragon.leather`, `dragon.tack` at build |
 | Eagle | `plumage` Plumage (body + flight feathers; colour only, matt) | `harness` Harness (colour + finish) | promote local `_mat` clones to fields |
 | Horse | `coat` Coat (colour only, matt) | `saddle` Saddle & tack (colour + finish) | promote local clones to fields; mane/tail unchanged |
-| Hoverboard | `deck` Deck (colour + finish) | `glow` Underglow (emissive colour, no finish) | clone `mount.grip`/`mount.carbon`; glow mats already owned |
+| Hoverboard | `deck` Deck (colour + finish) | `glow` Underglow (emissive colour, no finish) | clone `mount.grip`/`mount.carbon` and the shared `emissive.cyan` lip; `_emitterMat`/`_flareMat`/`_glowMat` already owned |
 | Bicycle | `frame` Frame (colour + finish) | `rims` Rims (colour + finish) | promote local clones to fields |
 
 **Finish** touches only `roughness`, `metalness`, `envMapIntensity` (Matt: 0.85 / 0.05 / 0.6; Gloss: 0.22 / 0.35 / 1.0). No clearcoat, no define changes — **no shader recompiles** (see the station-perf memory: compile does not block, but a program relink during play does). Materials are cloned once at build; menu edits set uniforms only. Colours are quantised as F2 does (`v & 0xfcfcfc`) because material caches never evict.
@@ -61,8 +61,8 @@ Each mount declares `static STATS = ['power','strength','shield'(,'fire')]`; the
 - `setLivery(mountId, patch)` merges a slot patch, calls `this._mounts.get(mountId)?.applyCustomization(liveries[mountId])`, emits `mount:livery { mountId, livery }`.
 - `getLivery(mountId)` → deep copy. `resetLivery(mountId)` → clears and re-applies mount defaults.
 - `_create(id)` (currently `if (id === 'car') …applyCustomization`) → `mount.applyCustomization?.(this._liveries[id])` for any mount, then `_applyPowers` as now.
-- `serialize()` writes `liveries` (drops `livery`). `deserialize()` accepts both: legacy `livery:{paint,wheel}` numbers migrate to `liveries.car = { paint:{color}, wheel:{color} }` so existing saves keep their car colours. Returns `true` when it consumed anything (fixes the falsy-return fall-through in `SaveGame._restoreMounts`).
-- New `applySkin(skinId) → {ok, reason?, consumed?}` — the single "wear a skin" entry point (§5.3). `MountManager` receives `cosmetics` and `inventory` references for this (constructor options; both already exist in `main.js`).
+- `serialize()` writes `liveries` (drops `livery`). `deserialize()` accepts both: legacy `livery:{paint,wheel}` numbers migrate to `liveries.car = { paint:{color}, wheel:{color} }` so existing saves keep their car colours. Its return value is **unchanged** (undefined): `SaveGame._restoreMounts` relies on the falsy fall-through to dismount the rider on load (`SaveGame.js:652`), and load-while-mounted behaviour stays exactly as today.
+- `MountManager` does **not** learn about cosmetics or inventory. "Wear a skin" lives in a new small module (§4.6) so construction order in `main.js` (MountManager at :195, inventory :211, cosmetics :216) is irrelevant and the flow is testable with stub deps.
 - Persistence hooks in `main.js` (`bus.on('mount:livery')` → local + remote persist) need no change beyond reading the new event payload.
 
 ### 4.2 Mount classes (src/mounts/*.js)
@@ -71,7 +71,7 @@ Each mount gains:
 - `static CUSTOM_SLOTS`, `static STATS`, `static DISPLAY_NAME`.
 - `applyCustomization(livery)` — safe pre/post-build (store, apply if built), sets `.color` per slot and finish uniforms where `finish` applies. Car keeps its current method but reads the new nested shape.
 - `applyPowers({strength, shield, power, fire})` — Car/Dragon already have it; Horse, Eagle, Hoverboard, Bicycle get the same shape (`_powerMul`, `_accelMul`, `_shieldTier`; Dragon adds `_fireTier`). Getters `shieldTier`, `fireTier` (dragon).
-- The one or two sites where each mount reads its speed cap / accel constant multiply by `_powerMul` / `_accelMul`, following the clamping notes already documented in `Dragon.js:2432-2469`.
+- The one or two sites where each mount reads its speed cap / accel constant multiply by `_powerMul` / `_accelMul`, following the clamping notes already documented in `Dragon.js:2432-2469`. Hard clamps must scale too, not just targets (e.g. Horse `clamp(this.speed, -4, MAX_SPEED)` at `Horse.js:707`), or the tier is silently capped away.
 
 ### 4.3 `Cosmetics` (src/systems/Cosmetics.js)
 
@@ -90,29 +90,40 @@ Each mount gains:
 - Skin rows: the five car liveries switch from `unlock_cosmetic` to `grant_item { item_id: 'skin_car_neon' … }`; 15 new skin rows (`category: 'cosmetic'`).
 - Stat rows: 48 new `grant_mount_power` rows — `mount ∈ {dragon, eagle, horse, hoverboard, bicycle}` × `power ∈ {power, strength, shield}` × tier 1–3, plus dragon `fire` 1–3. `MARKETPLACE_ACTIONS` union extended accordingly; images through the existing generator; per-world pricing as the existing car rows.
 - Rows re-seed on the deployed site's cold start as today (INVENTORY-AUDIT.md: catalog is the source of truth, never hand SQL).
+- Conventions, matching the existing rows: `category: 'mounts'` for both skins and upgrades (the five car liveries already are); one `MARKETPLACE_ACTIONS` id per row as today (`mount_dragon_power_1`, `skin_dragon_ember`, … — ~68 new ids, no parameterised ids); no `worlds` restriction (mounts are summonable everywhere; the car liveries' `['race']` limit is dropped so car skins are buyable wherever the upgrades are).
+
+### 4.6 `MountSkins` (src/systems/MountSkins.js) — new
+
+One exported function, no state:
+
+`applyMountSkin({ mounts, cosmetics, inventory, bus }, skinId) → { ok:boolean, reason?:'unknown-skin'|'not-mounted'|'wrong-mount'|'not-owned', consumed?:boolean }`
+
+It is the single "wear a skin" entry point (§5.3), called by `MountMenu` and `ItemUse`. Deps are passed explicitly, so it is unit-testable with stubs and immune to `main.js` construction order.
 
 ## 5. Flows
 
 ### 5.1 Buying a skin
 
-`Marketplace.preview/buy` already route `grant_item` into the bag. One extra guard in `preview`: if the item is a skin (`ItemDefs.kind === 'skin'`) and `cosmetics.has(skinIdFromItem(id))` → `{ ok:false, reason:'owned' }` (no pointless repurchase; mirrors the existing cosmetic branch). MarketplaceUI's `owned` message becomes "Already unlocked — apply it from the Mount menu (F10) while riding".
+`Marketplace.preview/buy` already route `grant_item` into the bag. One extra guard in `preview`: if the item is a skin (`ItemDefs.kind === 'skin'`) and either `cosmetics.has(skinIdFromItem(id))` **or** `inventory.totalCount(id) > 0` (a copy already in bag or store) → `{ ok:false, reason:'owned', skin:true }`. This blocks both re-buying a burned-in skin and buying a second copy before the first is applied. `MarketplaceUI` branches its `owned` strings (`:379`, `:441`): character skins keep the F2 wording; skin items say "You already have this skin — apply it from the Mount menu (F10) while riding". A skin item can be sold back through the generic `Marketplace.sell` path like any other item — intended.
 
 ### 5.2 Buying an upgrade
 
 Unchanged: `mount:power:buy` → `MountManager.grantPower(mount, power, tier)`. Works for any mount id already; the menu just displays it.
 
-### 5.3 Applying a skin — `MountManager.applySkin(skinId)`
+### 5.3 Applying a skin — `applyMountSkin(deps, skinId)`
 
-1. Resolve skin; unknown id → `{ok:false, reason:'unknown-skin'}`. If its `mount` ≠ the active mount id → `{ok:false, reason:'wrong-mount'}`.
-2. If `cosmetics.has(skinId)` → `setLivery(mount, skin.livery)` → `{ok:true, consumed:false}`.
-3. Else if `inventory.bagCount(skinItemId) > 0` → `inventory.consumeFromBag(itemId, 1)`; if that returns false → `{ok:false, reason:'not-owned'}`; else `cosmetics.unlock(skinId)`, `setLivery(...)` → `{ok:true, consumed:true}`. (`cosmetic:unlocked` and `mount:livery` both fire, so both persist paths run.)
-4. Else → `{ok:false, reason:'not-owned'}`.
+1. Resolve skin; unknown id → `{ok:false, reason:'unknown-skin'}`. Not mounted → `'not-mounted'`. Skin's `mount` ≠ `mounts.active.id` → `'wrong-mount'`.
+2. If `cosmetics.has(skinId)` → `mounts.setLivery(mount, skin.livery)` → `{ok:true, consumed:false}`.
+3. Else take one copy from the inventory — **bag first, then store**: `inventory.consumeFromBag(itemId, 1)`, and if that returns 0, `inventory.remove(itemId, 1)` (store-only by contract). If nothing was taken → `{ok:false, reason:'not-owned'}`. Otherwise `cosmetics.unlock(skinId)`, `setLivery(...)` → `{ok:true, consumed:true}`. (`cosmetic:unlocked` and `mount:livery` both fire, so both persist paths run.)
 
-Callers: the F10 skin card, and `ItemUse.use()` for `kind === 'skin'` items (InventoryUI **Use**): `ItemUse` checks `itemDef(id).kind === 'skin'` before its literal-id switch and delegates to `mounts.applySkin`; on `wrong-mount`/not mounted it emits a HUD notify "Mount your <name> and press F10 to apply this skin" and the item is **not** consumed.
+Callers:
+- The F10 skin card (§6).
+- `ItemUse.use()` for `kind === 'skin'` items: the skin branch runs **before** the generic `consumeFromBag` at `ItemUse.js:29` and returns its own result, so a skin never goes through the literal-id effect switch or the generic consume. `ItemUse` gains `mounts` and `cosmetics` deps; `main.js` constructs `Cosmetics` (bus-only dep) before `ItemUse` so both can be passed in the constructor. On `not-mounted`/`wrong-mount` it emits a HUD notify "Mount your <name> and press F10 to apply this skin" and nothing is consumed.
+- `InventoryUI` shows its **Use** button for `kind === 'skin'` as well as `'consumable'` (`InventoryUI.js:331`), otherwise the path is unreachable.
 
 ### 5.4 Opening the menu
 
-F10 (capture-phase `keydown`, like F2): if `!mounts.mounted` → HUD notify, no open. Else `input.setTextCapture(true)`, `input.exitLock()`, force third-person camera (restore on close), body class `mm-open`, emit `mount:menu:open`. Close on F10/Escape/dismount (`mount:dismount` or equivalent existing event): reverse, re-request pointer lock after 140 ms, emit `mount:menu:close`. `main.js` adds these two events to the same gameplay-block gating as `character:open/close`.
+F10 (capture-phase `keydown`, like F2): if `!mounts.mounted` → HUD notify, no open. Else `input.setTextCapture(true)`, `input.exitLock()`, force third-person camera (restore on close), body class `mm-open`, emit `mount:menu:open`. The handler calls `preventDefault()` on F10 (Chrome/Firefox use it for menu-bar focus). Close on F10/Escape or on `mount:dismounted` (`MountManager.js:906`): reverse, re-request pointer lock after 140 ms, emit `mount:menu:close`. `main.js` adds these two events to the same gameplay-block gating as `character:open/close`.
 
 ## 6. UI — `src/ui/MountMenu.js` + `src/ui/mount-menu.css` (`.mm-` prefix)
 
@@ -121,7 +132,7 @@ Structural clone of `CharacterMenu` (right-side drawer, `_section`, `_swatches`,
 Panel, top to bottom:
 1. **Header** — `DISPLAY_NAME` + "F10 close" chip.
 2. **One section per slot** — swatch row (palette by slot `palette`), hex picker, Matt/Gloss chips (omitted when `finish:false`). Section summary (right-aligned) shows the current hex + finish.
-3. **Skins** — one card per skin. States: **Equipped** (livery equals skin), **Owned** (click → apply), **In bag — Apply** (click → `applySkin`, consumes; card flips to Owned/Equipped), **🔒 Market** (click → HUD notify "Buy it at the market (B)"). Bag state from `inventory.bagCount`; re-synced on `inventory:changed`, `cosmetic:unlocked`, `mount:livery`.
+3. **Skins** — one card per skin. States: **Equipped** (livery equals skin), **Owned** (click → apply), **In inventory — Apply** (a copy in bag *or* store; click → `applyMountSkin`, consumes one; card flips to Owned/Equipped), **🔒 Market** (click → HUD notify "Buy it at the market (B)"). Inventory state from `inventory.totalCount`; re-synced on `inventory:changed`, `cosmetic:unlocked`, `mount:livery`.
 4. **Upgrades** — one row per stat in `STATS`: label, three tier pips lit to the owned tier (`mounts.getPowers(id)`), effect line ("+24 % top speed" computed from tier), locked pips read "Buy at market (B)". Read-only; re-synced on `mount:powers`.
 5. **Footer** — "Reset to factory" → `mounts.resetLivery(id)`.
 
@@ -139,13 +150,16 @@ Panel, top to bottom:
 
 - **Armour**: `Player.applyDamage(amount, …)` multiplies `amount` by `1 − 0.10 × (mounts.active?.shieldTier ?? 0)` when `mounts.mounted`, for every damage source. Player gets a `mounts` reference (set from `main.js` after both exist, e.g. `player.mounts = mounts`) if it does not already hold one.
 - **Speed / Accel**: per-mount multipliers at the read sites (§4.2).
-- **Dragon Fire**: `Combat` gains `mountFireMul` = `1 + 0.15 × (mounts.active?.fireTier ?? 0)` applied at the same place as `_playerDamageMul` (`Combat.js:425`) but only when the damage is from a **fireball** projectile and the active mount is the dragon (`mounts.active?.id === 'dragon'`). If the fireball hit path does not already carry a weapon id into Combat, the plan adds it from `Projectiles`. Dragon `_emitBreath` scales particle size/brightness by `1 + 0.1 × fireTier` (uniform only).
+- **Dragon Fire**: `Combat` gains `mountFireMul` = `1 + 0.15 × (mounts.active?.fireTier ?? 0)` applied at the same place as `_playerDamageMul` (`Combat.js:425`) but only when `weaponId === 'fireball'` (already passed by `Projectiles.js:1139`) and the active mount is the dragon (`mounts.active?.id === 'dragon'`). Combat is constructed before MountManager (`main.js:172` vs `:195`), so it gets the same late injection as Player (`combat.mounts = mounts` in `main.js`). Dragon `_emitBreath` scales particle size/brightness by `1 + 0.1 × fireTier` (uniform only).
+- **HUD pips**: `HUD.POWER_LABELS`/`_setMountPowers` gain a `fire: 'FIR '` pip so the dragon's fourth stat shows alongside PWR/STR/SHD while riding.
 
 ## 8. Error handling & edge cases
 
 - Legacy save with flat `livery` → migrated; unknown slot ids in a saved livery are ignored; unknown skin ids in the ledger are ignored (existing `KNOWN_SKIN_IDS` guard extended).
-- Skin item in bag whose skin id is unknown (catalog drift) → `applySkin` refuses with `reason:'unknown-skin'`, item untouched, HUD warn.
-- `applySkin` while not mounted / wrong mount → refuse, nothing consumed.
+- Skin item whose skin id is unknown (catalog drift) → `applyMountSkin` refuses with `reason:'unknown-skin'`, item untouched, HUD warn.
+- `applyMountSkin` while not mounted / wrong mount → refuse, nothing consumed.
+- Skin copy sitting in the **store** (bag overflow on purchase, or moved by the player) → still applies (store fallback in §5.3); never shows as "🔒 Market" while any copy is held.
+- F10 in Firefox/Chrome → `preventDefault` stops the browser menu-bar focus; smoke test includes a Firefox check.
 - Bag consumption and ledger unlock happen in that order; if `consumeFromBag` returns false, no unlock and no livery change.
 - Menu open + world change: `MountManager.clear()` on `world:changing` dismounts → menu closes via the dismount hook.
 - Menu open + `mount:powers` / `inventory:changed` events → resync only (no rebuild).
@@ -156,11 +170,19 @@ Panel, top to bottom:
 
 Headless `node --test` in `scripts/tests/` (house style, see `flight-ceiling.test.mjs`):
 
-- **`mount-liveries.test.mjs`** — legacy `{livery:{paint,wheel}}` migrates to `liveries.car.*.color`; `serialize/deserialize` round-trip; `applySkin`: owned → applies, bag untouched; in bag → consumes exactly 1, unlocks, applies; neither → refuses; wrong mount → refuses; every `MOUNT_SKINS` entry has a `skin_*` ItemDef and its livery keys ⊆ that mount's `CUSTOM_SLOTS`.
+- **`mount-liveries.test.mjs`** — legacy `{livery:{paint,wheel}}` migrates to `liveries.car.*.color`; `serialize/deserialize` round-trip; `applyMountSkin` with stub deps: owned → applies, inventory untouched; in bag → consumes exactly 1 from the bag, unlocks, applies; only in store → consumes 1 from the store; neither → refuses; not mounted / wrong mount → refuses; `Marketplace.preview` refuses a skin already unlocked or already held; every `MOUNT_SKINS` entry has a `skin_*` ItemDef and its livery keys ⊆ that mount's `CUSTOM_SLOTS`.
 - **`mount-powers.test.mjs`** — every mount class has `applyPowers`, `CUSTOM_SLOTS`, `STATS`; speed multiplier reaches the mount's effective top speed (instantiate headless where the class permits, else assert on exported multipliers); `Player.applyDamage` reduces by shield tier when mounted and not otherwise; Combat fireball multiplier applies only for the dragon.
 - **`mount-catalog.test.mjs`** — every `grant_mount_power` row's `(mount, power)` is declared by that mount's `STATS`; every skin `grant_item` row's `item_id` resolves in `ItemDefs` and to a `MOUNT_SKINS` id (guards catalog/ledger drift, the failure class INVENTORY-AUDIT.md documents). Reads `site/lib/marketplaceCatalog.ts` via a small TS-stripping import (or a JSON export of `BASE_ITEMS`) — whichever the plan finds simplest.
 - **Browser smoke (Playwright, manual)** — mount each of the six → F10 → change colour + finish → dismount/resummon → change persists; F5 save / Shift+F9 load; buy a skin at B → card shows "In bag" → Apply consumes → "Owned"; on-foot F10 → notify; F1/F6/boot hints list F10; F2 no longer shows the car section.
 
-## 10. Out of scope
+## 10. Build order (for the plan)
+
+1. Data model + car migration: `_liveries`, `applyCustomization` new shape on Car, `MOUNT_SKINS`, save migration, `mount-liveries` tests green — no visible change.
+2. Per-mount slots + `applyPowers` on the other five mounts; Armour in `Player.applyDamage`; Dragon fire in Combat; HUD fire pip; `mount-powers` tests.
+3. `ItemDefs` skin items, `MountSkins.applyMountSkin`, `ItemUse`/`InventoryUI` skin path, `Marketplace.preview` guard + UI strings.
+4. `MountMenu` (F10) + F2 section removal + gameplay-block gating.
+5. Catalog rows, `mount-catalog` test, discoverability (F1/F6/HUD/Input/Chat), browser smoke.
+
+## 11. Out of scope
 
 - A new dragon breath attack; new mount geometry; per-mount summon preview from the menu; making stat upgrades consumable; changes to character skins or the character customiser beyond removing the car section.

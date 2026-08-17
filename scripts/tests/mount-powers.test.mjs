@@ -8,6 +8,8 @@ import { Horse } from '../../src/mounts/Horse.js';
 import { Hoverboard } from '../../src/mounts/Hoverboard.js';
 import { Bicycle } from '../../src/mounts/Bicycle.js';
 import { MOUNT_STATS, FINISH_PROPS } from '../../src/mounts/Livery.js';
+import { Player } from '../../src/player/Player.js';
+import { CombatSystem } from '../../src/systems/Combat.js';
 
 /**
  * Every mount must expose the same customisation surface, and a bought tier
@@ -159,4 +161,23 @@ test('a purchased Speed III reaches every mount (terminal speed rises 15-50%)', 
     const ratio = tuned / stock;
     assert.ok(ratio > 1.15 && ratio < 1.5, `${id}: Speed III gave ${stock.toFixed(2)} -> ${tuned.toFixed(2)} m/s (x${ratio.toFixed(2)})`);
   }
+});
+
+test('a mounted rider with Armour tiers takes 10% less damage per tier', () => {
+  const p = Object.create(Player.prototype);
+  Object.assign(p, { _dead: false, _elapsed: 10, _invulnUntil: 0, _health: 100, _maxHealth: 100, _lastDamageAt: 0, _regenCarry: 0, bus: { emit() {} }, _die() {} });
+  p.mounts = { mounted: true, active: { id: 'horse', shieldTier: 2 } };
+  assert.equal(p.applyDamage(50), 40);
+  p.mounts = { mounted: false, active: null };
+  assert.equal(p.applyDamage(50), 50);
+});
+
+test('Combat.mountFireMul is 1 unless riding a dragon with Fire tiers', () => {
+  const c = Object.create(CombatSystem.prototype);
+  c.mounts = null;
+  assert.equal(c.mountFireMul, 1);
+  c.mounts = { mounted: true, active: { id: 'car', fireTier: 3 } };
+  assert.equal(c.mountFireMul, 1);
+  c.mounts = { mounted: true, active: { id: 'dragon', fireTier: 2 } };
+  assert.ok(Math.abs(c.mountFireMul - 1.3) < 1e-9);
 });

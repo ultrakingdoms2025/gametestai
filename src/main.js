@@ -193,6 +193,10 @@ const loadout = new Loadout({ ...ctx, camera: engine.camera, player, npcManager,
 player.loadout = loadout;
 
 const mounts = new MountManager({ ...ctx, player, camera: engine.camera, cameraRig, avatar, npcManager, worldManager });
+// Late injection: Player and Combat are built before the mounts exist, and both
+// read purchased mount tiers (Armour, Dragon Fire) through this reference.
+player.mounts = mounts;
+combat.mounts = mounts;
 const unstuck = new UnstuckSystem({ bus, player, physics, worldManager, input });
 
 /* ------------------------------------------------------------------ */

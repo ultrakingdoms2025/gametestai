@@ -126,6 +126,8 @@ export class Player {
     this._deathAt = 0;
     this._regenCarry = 0;
     this._elapsed = 0;
+    /** Set by main.js once MountManager exists; Armour tiers read through it. */
+    this.mounts = null;
 
     /* ---- impact: knockback, bleed, view kick ---- */
     /**
@@ -1246,6 +1248,10 @@ export class Player {
   applyDamage(amount, sourcePosition = null, sourceId = null) {
     if (this._dead || amount <= 0) return 0;
     if (this._elapsed < this._invulnUntil) return 0;
+
+    // Purchased Armour on the mount being ridden: -10% per tier.
+    const shield = this.mounts?.mounted ? Math.max(0, Number(this.mounts.active?.shieldTier) || 0) : 0;
+    if (shield > 0) amount *= Math.max(0.1, 1 - 0.10 * shield);
 
     const applied = Math.min(this._health, amount);
     this._health -= applied;

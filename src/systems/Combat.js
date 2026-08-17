@@ -155,6 +155,8 @@ export class CombatSystem {
     this._elapsed = 0;
     this._playerDamageMul = 1;
     this._playerDamageBoostUntil = 0;
+    /** Set by main.js once MountManager exists; Dragon Fire tiers read through it. */
+    this.mounts = null;
 
     /* Re-entrancy guards: the Player/NPC modules may already emit the damage
      * events themselves. We watch for that and only emit as a fallback, so the
@@ -423,6 +425,7 @@ export class CombatSystem {
       }
     }
     if (byPlayer) amount *= this._playerDamageMul;
+    if (byPlayer && weaponId === 'fireball') amount *= this.mountFireMul;
 
     const wasDead = npc.isDead === true;
     const before = Number.isFinite(npc.health) ? npc.health : 0;
@@ -851,6 +854,13 @@ export class CombatSystem {
     this.vfx.update(dt);
     this.decals.update(dt);
     this._updateFlashes(dt);
+  }
+
+  /** Dragon Fire tiers: +15% fireball damage per tier while riding the dragon. */
+  get mountFireMul() {
+    const m = this.mounts;
+    if (!m?.mounted || m.active?.id !== 'dragon') return 1;
+    return 1 + 0.15 * Math.max(0, Number(m.active.fireTier) || 0);
   }
 
   boostPlayerDamage(multiplier, duration) {

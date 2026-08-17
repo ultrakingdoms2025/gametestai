@@ -269,6 +269,11 @@ export class Player {
 
     /** Installed lazily on the first frame - see `_installLatePose`. */
     this._offLate = null;
+    /**
+     * Optional fourth late-pose module, assigned by main.js.
+     * @type {{applyPose:(dt:number, elapsed:number)=>void}|null}
+     */
+    this.minigamePose = null;
 
     // Third-person parallax correction.
     //
@@ -1205,6 +1210,17 @@ export class Player {
       // both have weight.
       this.freeClimb.applyPose(dt, elapsed);
       this.climb.applyPose(dt, elapsed);
+      /* Minigame poses last, and only when a contest is actually in its "take
+       * your marks" or finish beat - so on every other frame in the game this
+       * is one null check. It goes after swim deliberately: a swimmer punching
+       * the air at the wall has to be able to write arms over the crawl cycle
+       * that ran a line above. It shares the humanoid `rig` with swim rather
+       * than fighting for it; see MinigamePose's header for the handover rule.
+       *
+       * Assigned from main.js rather than constructed here, because the pose
+       * needs the minigame manager and the player must not know that system
+       * exists. Absent in any harness that builds a Player on its own. */
+      this.minigamePose?.applyPose?.(dt, elapsed);
     });
   }
 

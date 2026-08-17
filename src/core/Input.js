@@ -374,6 +374,21 @@ export class Input {
     return this._pressedThisFrame.has(this._bindsInverse.get(code) ?? code);
   }
 
+  /**
+   * Level-trigger companion to {@link pressed}: true while the action's key is
+   * physically down, with the same rebind resolution.
+   *
+   * Exists because `pressed` is cleared by `endFrame()`, which runs inside a
+   * frame callback main.js registers at BOOT — so any frame callback
+   * registered later (a minigame's late-frame hook, say) runs after the clear
+   * and reads `pressed()` as always-false. Such callers edge-detect on this
+   * instead. Measured before this existed: 44 correctly-timed tennis swings
+   * across two matches, zero registered.
+   */
+  held(code) {
+    return this._keys.has(this._bindsInverse.get(code) ?? code);
+  }
+
   /* ================================================================== */
   /* Rebinding                                                          */
   /* ================================================================== */

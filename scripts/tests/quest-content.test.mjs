@@ -508,6 +508,56 @@ test('race steps only resolve where a world publishes a trackPath', () => {
   assert.equal(VOCAB.worlds.race.publishesTrack, true, 'race still has one');
 });
 
+test('minigame steps resolve only where a registered venue hosts the game', () => {
+  /* The derivation floors first: an empty scrape rejects everything, which
+   * would read as a content failure and be a validator one. Three files have
+   * to agree for a game to exist — the world's `minigameVenues` descriptor,
+   * `main.js`'s registerGame call, and the module's GAME_ID export — and the
+   * scrape reads all three, so each is pinned here. */
+  const games = VOCAB.minigames.games;
+  assert.equal(games.swim, 'swim_challenge', 'SwimChallenge.js SWIM_GAME_ID scrape moved');
+  assert.equal(games.ski, 'ski_slalom', 'SkiRun.js SKI_GAME_ID scrape moved');
+  assert.equal(games.tennis, 'tennis_match', 'TennisMatch.js TENNIS_GAME_ID scrape moved');
+  const sportsVenues = VOCAB.minigames.venuesByWorld.sports ?? [];
+  assert.deepEqual(sportsVenues.map((v) => v.id).sort(), ['lido_pool', 'meridian_court', 'meridian_slope'],
+    'the SportsWorld.minigameVenues scrape no longer finds the three venues');
+
+  /* `minigame` arrives as a bus event (`quest:activity` → `_onActivity`), so
+   * the quests:false gate cannot touch it. That classification is CONFIRMED
+   * against the derivation, not asserted by hand: readQuestGate finds no
+   * literal _advanceSteps('minigame') call site to sit behind the gate, so the
+   * type lands in the ungated set on its own. */
+  assert.ok(UNGATED_STEP_TYPES.includes('minigame'),
+    'minigame must derive as UNGATED — its emitter is a bus subscription, and the gate only reaches literal call sites');
+  assert.equal(GATED_STEP_TYPES.includes('minigame'), false,
+    'minigame must never derive as gated');
+
+  /* KNOWN-GOOD, in the one world whose venues host the games. The bare game
+   * id is deliberately NOT an engine candidate (it would complete "win it"
+   * steps on a loss, as a token-subrun of the composite) — it matches
+   * THROUGH the `_won`/`_lost` composites, and this asserts that path works. */
+  ok('minigame', 'tennis_match', 'sports', 'any finish — the game id is a token run inside both composites');
+  ok('minigame', 'tennis_match_won', 'sports', 'the win composite is offered exactly, on a won finish');
+  ok('minigame', 'swim_challenge', 'sports', 'any finish of the lido challenge');
+  ok('minigame', 'swim_challenge_won', 'sports', 'a won swim, and only a won one');
+  ok('minigame', 'ski_slalom_won', 'sports', 'a won slalom, and only a won one');
+  ok('minigame', 'Lido Swim Challenge', 'sports', 'the venue label rides on the event as `name`');
+  ok('minigame', 'meridian_court', 'sports', 'the venue id rides on the event as `venueId`');
+  ok('minigame', 'won', 'sports', 'the last token of every win composite');
+  ok('minigame', 'place_1', 'sports', 'a minigame win is first place, in the namespaced spelling');
+
+  /* KNOWN-BAD. The same real game in a world with no venue must fail for the
+   * world reason — nothing there can emit the event — and a game nobody wrote
+   * must fail everywhere, including where the emitter exists. */
+  const away = rejects('minigame', 'tennis_match', 'medieval',
+    'no medieval venue hosts tennis — the vale publishes no minigameVenues at all');
+  assert.equal(away.reason, 'no-candidates',
+    'the failure must say the world cannot emit a minigame event, not merely "unknown target"');
+  for (const world of VOCAB.questWorlds) {
+    rejects('minigame', 'poker_night', world, 'no such game is registered anywhere');
+  }
+});
+
 /* ---------------------------------------------------------------------- */
 /* quests:false gates the BOARD, not the engagement                        */
 /* ---------------------------------------------------------------------- */
@@ -697,6 +747,14 @@ test('2. every step target resolves against the engine vocabulary', () => {
     '                   — and ONLY where a world publishes a trackPath, which is race alone',
     '  purchase         an item id, a pack id, or `buy`/`sell`, where a vendor exists',
     '  customize        a character field value (outfit, hairStyle, headgear, sex, build)',
+    '  minigame         a venue label or venue id, a `<gameId>_won`/`<gameId>_lost`',
+    '                   composite (or the bare game id / kind / won / lost, which match',
+    '                   THROUGH the composites), or a win place token — only where the',
+    '                   world publishes a minigameVenues entry whose kind main.js',
+    '                   registers a module for, which today is sports alone:',
+    ...Object.entries(VOCAB.minigames.venuesByWorld)
+      .filter(([, v]) => v.length)
+      .map(([id, v]) => `                     ${id.padEnd(9)} ${v.map((x) => `${x.gameId} (${x.id})`).join(', ')}`),
     '',
     'A name being written down in src/ is NOT enough. It has to get a spawn slot in',
     'the world the step names — see the spawn model tests above.',

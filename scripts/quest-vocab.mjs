@@ -14,10 +14,12 @@
  * files the running game reads — `ITEMS`, `CIRCUITS`, `ROLE`, `ROLE_ROTATION`,
  * the `static id` on each World subclass, the quest-manager cast in
  * `NPCManager`, the authored casts in each world file AND in each world's own
- * source directory, the drop and cache tables, and the NPC budget arithmetic in
- * `NPCManager.spawnForWorld` — so a new item, a fourth circuit, a renamed NPC
- * or one extra civilian in a zone builder changes the ruler on the next test
- * run rather than six months later in production. Nothing here is a
+ * source directory, the drop and cache tables, the minigame venue registrations
+ * (`minigameVenues`) against the game modules `main.js` actually registers, and
+ * the NPC budget arithmetic in `NPCManager.spawnForWorld` — so a new item, a
+ * fourth circuit, a renamed NPC, a fourth minigame venue or one extra civilian
+ * in a zone builder changes the ruler on the next test run rather than six
+ * months later in production. Nothing here is a
  * hand-maintained duplicate list; where a value cannot be imported it is
  * scraped from the source text and the scrape is asserted non-empty by the
  * test, so a refactor that breaks the scrape fails loudly instead of quietly
@@ -195,17 +197,18 @@ export function targetMatches(target, candidate) {
  *
  * VERIFIED against `src/systems/QuestSystem.js` (the `this.bus.on(...)` block
  * in the constructor plus every `_advanceSteps(...)` call site) and against the
- * only four `emit('quest:activity', ...)` sites in `src/`:
+ * only five `emit('quest:activity', ...)` sites in `src/`:
  *
  *   src/ui/HUD.js:1773        type:'interact'  (quest-manager NPC ONLY)
  *   src/ui/HUD.js:1776        type:'talk'      (every NPC that is NOT one)
  *   src/systems/Loot.js:602   type:'collect'   (credits from a pickup)
  *   src/systems/Loot.js:610   type:'collect'   (any other item from a pickup)
  *   src/systems/Portals.js:2830 type:'interact' (the portal itself)
+ *   src/minigames/MinigameManager.js:679 type:'minigame' (a contest FINISH)
  *
- * `_onActivity` forwards `e.type` verbatim, so ONLY `talk`, `interact` and
- * `collect` can ever arrive that way. Everything else has a dedicated
- * subscription, listed below.
+ * `_onActivity` forwards `e.type` verbatim, so ONLY `talk`, `interact`,
+ * `collect` and `minigame` can ever arrive that way. Everything else has a
+ * dedicated subscription, listed below.
  *
  * @type {Record<string, {emitter:string, note?:string}>}
  */
@@ -237,6 +240,18 @@ export const STEP_TYPE_EMITTERS = {
   survive: {
     emitter: 'QuestSystem.update() timer, one count per SURVIVE_TICK_S (30 s) without damage',
     note: 'Event carries the CURRENT world as its only candidate.',
+  },
+  minigame: {
+    emitter: "quest:activity type 'minigame' (MinigameManager.js:679) → _onActivity",
+    note: 'Emitted on any FINISH, win or loss — never on an abort, so quitting counts for '
+      + 'nothing. A bus subscription, so it is UNGATED by quests:false; readQuestGate agrees '
+      + 'by derivation, because there is no literal _advanceSteps(\'minigame\') call site to '
+      + 'sit behind the gate. Candidates are the venue label, the venue id, exactly one '
+      + '`<gameId>_won`/`<gameId>_lost` composite per finish, and the win\'s place tokens. '
+      + 'The bare game id, the module kind and bare won/lost are deliberately NOT offered — '
+      + 'each is a whole-token subrun of a composite, so offering one on every finish would '
+      + 'complete "win it" steps on a loss (the race branch\'s bare-integer landmine, one '
+      + 'level up). They all still WORK as step targets, by matching through the composite.',
   },
 };
 
@@ -935,6 +950,16 @@ function buildWorlds() {
     const tiers = new Set();
     let authorsStashes = false;
     let publishesTrack = false;
+    /**
+     * Minigame venues this world PUBLISHES, `MinigameManager.arm()`-style:
+     * plain descriptors on `world.minigameVenues`, validated field by field.
+     * The `requires` capability check is applied here (a lido in a world with
+     * `swim: false` is scenery — MinigameManager.js:238); whether the venue's
+     * `kind` has a registered game module is a fact about `main.js`, not about
+     * the world, and is applied by MINIGAME_VENUES below.
+     * @type {Array<{id:string, kind:string, label:string|null, requires:string|null, file:string}>}
+     */
+    const minigameVenues = [];
 
     for (const f of ownFiles) {
       /* Comments blanked, strings kept. Everything below scrapes CODE; a
@@ -984,6 +1009,39 @@ function buildWorlds() {
         for (const q of m[1].matchAll(/'([a-z]+)'/g)) tiers.add(q[1]);
       }
       if (/\btrackPath\s*[:=]/.test(text)) publishesTrack = true;
+
+      /* `this.minigameVenues = [ {…}, {…} ]` — walked object by object with the
+       * bracket matcher, because a venue literal nests freely (a `config`
+       * block, a `rival`, even an IIFE computing `centre`). The venue's own
+       * `id:` is always its first, top-of-object key in the authored shape, and
+       * no nested block in the repo carries an `id:` of its own — the same
+       * assumption `readIdTable` leans on. */
+      for (const m of text.matchAll(/\.minigameVenues\s*=\s*\[/g)) {
+        const open = (m.index ?? 0) + m[0].length - 1;
+        const close = matchBracket(text, open);
+        if (close < 0) continue;
+        const body = text.slice(open + 1, close);
+        for (let i = 0; i < body.length; i++) {
+          if (body[i] !== '{') continue;
+          const end = matchBracket(body, i);
+          if (end < 0) break;
+          const obj = body.slice(i, end + 1);
+          i = end;
+          const vid = /\bid:\s*'([a-z0-9_]+)'/.exec(obj)?.[1];
+          const kind = /\bkind:\s*'([a-z0-9_]+)'/.exec(obj)?.[1];
+          if (!vid || !kind) continue;
+          const requires = /\brequires:\s*'([a-z0-9_]+)'/.exec(obj)?.[1] ?? null;
+          // Mirror of arm(): `if (v.requires && !allows(world, v.requires)) continue;`
+          if (requires && !rule(requires)) continue;
+          minigameVenues.push({
+            id: vid,
+            kind,
+            label: /\blabel:\s*'((?:\\.|[^'\n])*)'/.exec(obj)?.[1] ?? null,
+            requires,
+            file: f,
+          });
+        }
+      }
     }
 
     for (const h of hostiles) friendly.delete(h);
@@ -1028,6 +1086,7 @@ function buildWorlds() {
       ownRoles: [...ownRoles].sort(),
       stashTiers: authorsStashes ? [...tiers].filter((t) => ['common', 'rare', 'prize'].includes(t)) : [],
       publishesTrack,
+      minigameVenues,
       friendlyBudget: budget('friendlyBudget'),
       hostileBudget: budget('hostileBudget'),
     });
@@ -1100,6 +1159,76 @@ const PLACE_TOKENS = (() => {
   }
   return out;
 })();
+
+/* ---------------------------------------------------------------------- */
+/* Minigame identity                                                       */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * kind → registered game module, derived the way the engine wires it.
+ *
+ * A minigame exists where THREE files agree, and this reads all three rather
+ * than trusting any one: the world publishes a venue with a `kind`
+ * (`minigameVenues`, scraped per world in {@link buildWorlds}); `main.js`
+ * registers a factory for that kind (`minigames.registerGame('swim', …)`); and
+ * the factory's module exports the game id the finish event will carry
+ * (`SWIM_GAME_ID = 'swim_challenge'` and friends — `MinigameManager` emits
+ * `result.gameId` as the event's `target`/`id`). The kind → module binding is
+ * read from the `registerGame` call's own argument text against `main.js`'s
+ * import map, so renaming a module or re-keying a kind moves this scrape with
+ * it instead of leaving a hand-copied table behind.
+ *
+ * @returns {Map<string, {gameId:string, gameConst:string, gameFile:string}>}
+ */
+function readMinigameGames() {
+  const src = stripComments(read('src/main.js'));
+
+  /** import identifier → repo-relative module path, minigame modules only */
+  const imports = new Map();
+  for (const m of src.matchAll(/import\s*\{([^}]*)\}\s*from\s*'\.\/(minigames\/[\w.]+)'/g)) {
+    for (const piece of m[1].split(',')) {
+      const name = piece.trim().split(/\s+as\s+/).pop();
+      if (name) imports.set(name, `src/${m[2]}`);
+    }
+  }
+
+  const out = new Map();
+  for (const m of src.matchAll(/\.registerGame\(/g)) {
+    const open = (m.index ?? 0) + m[0].length - 1;
+    const close = matchBracket(src, open);
+    if (close < 0) continue;
+    const args = src.slice(open + 1, close);
+    const kind = /^\s*'([a-z0-9_]+)'/.exec(args)?.[1];
+    if (!kind) continue;
+    // Whichever imported minigame factory the argument text mentions is the
+    // module this kind runs — the ski and tennis registrations wrap theirs in
+    // an arrow, so this searches the text rather than assuming a bare name.
+    for (const [name, file] of imports) {
+      if (!new RegExp(`\\b${name}\\b`).test(args)) continue;
+      const gm = /export const (\w*GAME_ID)\s*=\s*'([a-z0-9_]+)'/.exec(read(file));
+      if (!gm) continue;
+      out.set(kind, { gameId: gm[2], gameConst: gm[1], gameFile: file });
+      break;
+    }
+  }
+  return out;
+}
+
+const MINIGAME_GAMES = readMinigameGames();
+
+/**
+ * world id → the venues that actually ARM there, with their game identity.
+ *
+ * The second half of `MinigameManager.arm()`'s filter: a venue whose `kind`
+ * has no registered factory is "a published slot, not an error"
+ * (MinigameManager.js:234) and stays inert — so it is no quest target either.
+ * The `requires`-capability half was already applied in the per-world scrape.
+ */
+const MINIGAME_VENUES = new Map([...WORLDS].map(([id, w]) => [id,
+  (w.minigameVenues ?? [])
+    .filter((v) => MINIGAME_GAMES.has(v.kind))
+    .map((v) => ({ ...v, ...MINIGAME_GAMES.get(v.kind) })),
+]));
 
 /* ====================================================================== */
 /* The spawn model — who actually gets a body                             */
@@ -1461,6 +1590,16 @@ export const VOCAB = Object.freeze({
   circuits: CIRCUITS.map((c) => ({ id: c.id, name: c.name })),
   raceTypes: RACE_TYPES,
   placeTokens: PLACE_TOKENS,
+  /** Registered minigames and where their venues arm. See readMinigameGames. */
+  minigames: Object.freeze({
+    /** kind → game id, e.g. tennis → tennis_match. */
+    games: Object.fromEntries([...MINIGAME_GAMES].map(([k, g]) => [k, g.gameId])),
+    /** world id → armed venues (registered kind, requires permitted). */
+    venuesByWorld: Object.fromEntries([...MINIGAME_VENUES].map(([id, list]) => [
+      id,
+      list.map((v) => ({ id: v.id, kind: v.kind, label: v.label, gameId: v.gameId })),
+    ])),
+  }),
   roles: Object.values(ROLE),
   /** `NPCManager._spawnQuestManagers` only. Worlds author more; see `worlds`. */
   questManagers: Object.fromEntries(QUEST_MANAGERS),
@@ -1625,6 +1764,34 @@ export function candidatesFor(type, worldId = null) {
     case 'customize': {
       for (const [field, values] of Object.entries(VOCAB.character)) {
         for (const v of values) add(v, `character-${field}`, 'src/player/PlayerAvatar.js');
+      }
+      break;
+    }
+
+    case 'minigame': {
+      /* Mirror of the `minigame` branch of `_eventTargetCandidates`, over the
+       * venues that actually ARM in this world ({@link MINIGAME_VENUES} — a
+       * registered module for the kind, and no forbidden `requires`). The
+       * engine offers the venue label, the venue id, exactly one
+       * `<gameId>_won`/`<gameId>_lost` composite per finish, and the win's
+       * place tokens — NEVER the bare game id, the kind, or bare `won`/`lost`,
+       * each of which is a whole-token subrun of a composite and would
+       * complete a "win it" step on a loss. Those plainer spellings are still
+       * valid TARGETS here, exactly as they are in game: `targetMatches` finds
+       * them inside the composites as token runs. */
+      const venues = MINIGAME_VENUES.get(world.id) ?? [];
+      for (const v of venues) {
+        const where = `${v.file} minigameVenues`;
+        const outcome = `${where} + ${v.gameFile} ${v.gameConst}`;
+        if (v.label) add(v.label, 'minigame-label', where);
+        add(v.id, 'minigame-venue', where);
+        add(`${v.gameId}_won`, 'minigame-outcome', outcome);
+        add(`${v.gameId}_lost`, 'minigame-outcome', outcome);
+      }
+      if (venues.length) {
+        for (const p of ['place_1', 'p1', 'first']) {
+          add(p, 'minigame-place', 'QuestSystem._eventTargetCandidates minigame, won === true');
+        }
       }
       break;
     }

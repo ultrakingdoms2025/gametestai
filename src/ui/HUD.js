@@ -1064,6 +1064,16 @@ export class HUD {
       this._interiorPrompt = p?.text ?? null;
     });
 
+    /* The minigame venue prompt. Same free-form contract as `interior:prompt`,
+     * but split into a verb and the venue name so the name can be BOLD like
+     * every other noun in this prompt without any system outside this file
+     * being able to put markup on screen. */
+    this._on('minigame:prompt', (p) => {
+      this._minigamePrompt = p?.text ?? null;
+      this._minigameVerb = p?.verb ?? null;
+      this._minigameLabel = p?.label ?? null;
+    });
+
     this._on('portal:entering', ({ to, duration }) => this._runWipe(to, duration));
 
     this._on('world:changed', ({ id, world }) => {
@@ -1075,6 +1085,9 @@ export class HUD {
       this._chatNpc = null;
       this.minimap.chatNpcId = null;
       this._interiorPrompt = null;
+      this._minigamePrompt = null;
+      this._minigameVerb = null;
+      this._minigameLabel = null;
       this.notify(`${world?.displayName ?? id} — anchor locked`, 'lore');
       // A world with no weapons shows no weapon bar and no ammo panel. Only
       // the wheel also answers to `_dead`, so the two are merged rather than
@@ -1747,7 +1760,17 @@ export class HUD {
 
     if (this.input.pressed('KeyT')) {
       this._openChat(this._chatNpc);
-    } else if (this.input.pressed('KeyE') && this._chatNpc && (!this._nearPortal || this._chatNpc.isLorekeeper || this._chatNpc.isQuestManager)) {
+    /* `!this._minigamePrompt` is the guard that stops E double-firing at a
+     * sports venue.
+     *
+     * `Input.pressed` does not consume, so every consumer guards itself by
+     * hand. The lifeguard patrols the pool deck, so a talkable NPC and the swim
+     * venue overlap by design - and without this, one E would open a chat AND
+     * start a match. The venue wins, because walking up to a pool and being
+     * offered a match is the whole point; talking still works on T, which opens
+     * chat unconditionally two lines above. MinigameManager holds the mirror of
+     * this guard and stands ITSELF down for doors, lifts and portals. */
+    } else if (this.input.pressed('KeyE') && this._chatNpc && !this._minigamePrompt && (!this._nearPortal || this._chatNpc.isLorekeeper || this._chatNpc.isQuestManager)) {
       /* Publish the NPC's whole identity, not one pre-picked field.
        *
        * This was `npc.id ?? npc.name ?? npc.role`, and `npc.id` is an
@@ -2440,6 +2463,18 @@ export class HUD {
       text = `Read lore — Talk to <b>${escapeHtml(String(this._chatNpc.name ?? 'Lorekeeper'))}</b>`;
     } else if (this._interiorPrompt && !this._chatOpen) {
       text = `${escapeHtml(String(this._interiorPrompt))}`;
+    /* One branch, below the door/lift prompt and above the portal.
+     *
+     * Below interiors because a door you are standing at is a more specific
+     * thing than a venue you are standing in, and `MinigameManager` stands its
+     * own E handling down whenever an interior prompt is up - so the two can
+     * never both act on one keypress. Above the portal and the chat prompt
+     * because arriving somewhere that offers a match should say so. */
+    } else if (this._minigamePrompt && !this._chatOpen) {
+      text = this._minigameLabel
+        ? `${escapeHtml(String(this._minigameVerb ?? 'Start'))} the `
+          + `<b>${escapeHtml(String(this._minigameLabel))}</b>`
+        : escapeHtml(String(this._minigamePrompt));
     } else if (this._nearPortal) {
       const po = this._nearPortal;
       const dest = po.label || this.worldManager?.getWorld?.(po.target)?.displayName || po.target || 'the Nexus';

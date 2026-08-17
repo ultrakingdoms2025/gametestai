@@ -1,0 +1,411 @@
+/* Minigame UI. Palette, radii and typography follow race.css and hud.css, so a
+   swim challenge reads as part of the same machine as a race rather than a
+   bolted-on mode.
+
+   Two z bands, deliberately far apart — the same split race.css documents:
+     .mg-sheet  86  modal, above the audio menu (84), because releasing the
+                    pointer raises the pause overlay (60) behind it and a tie
+                    there is what makes buttons unclickable.
+     .mg-count  13  above the base HUD, below anything modal.
+     .mg-hud    12  HUD furniture, pointer-events:none so it can never eat a
+                    click while the player is swimming.
+
+   The readout sits in the same left column as the race readout. They can never
+   be up together — a circuit and a venue are different worlds — and that column
+   is the only one that is empty in every world (the killfeed is right-anchored,
+   the mount and weapon strips are bottom-centre). */
+
+.mg {
+  font-family: 'Chakra Petch', system-ui, sans-serif;
+}
+
+/* ====================================================== live readout ==== */
+
+.mg-hud {
+  position: fixed;
+  left: 24px;
+  top: 250px;
+  transform: translateY(10px);
+  z-index: 12;
+  width: 216px;
+  padding: 10px 12px 9px;
+  border: 1px solid rgba(82, 233, 255, 0.22);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(7, 17, 27, 0.82), rgba(4, 10, 17, 0.88));
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.mg-hud.on {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.mg-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: #eaf6ff;
+}
+
+.mg-sub {
+  margin-top: 1px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: rgba(127, 157, 176, 0.85);
+}
+
+.mg-rows {
+  margin-top: 7px;
+  display: grid;
+  gap: 2px;
+}
+
+.mg-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 3px;
+  border-radius: 4px;
+}
+
+.mg-k {
+  font-size: 9px;
+  letter-spacing: 0.24em;
+  color: rgba(127, 157, 176, 0.9);
+}
+
+.mg-v {
+  font-size: 15px;
+  font-weight: 700;
+  color: #dcecf6;
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+
+.mg-dim .mg-v {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(140, 215, 235, 0.85);
+}
+
+/* The gap row carries the only colour in the block, because it is the only
+   number that answers "am I winning". */
+.mg-row.good .mg-v { color: #86f2b6; }
+.mg-row.warn .mg-v { color: #ff9d7a; }
+
+/* ---- progress ---------------------------------------------------------
+   The player's fill and the rival's marker on one track, so the gap is a
+   picture as well as a number. */
+.mg-bar {
+  position: relative;
+  margin-top: 8px;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(120, 170, 200, 0.16);
+  overflow: hidden;
+}
+
+.mg-bar-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-radius: 3px;
+  background: linear-gradient(90deg, rgba(82, 233, 255, 0.5), #52e9ff);
+}
+
+.mg-bar-rival {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  left: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #ffca6e;
+  box-shadow: 0 0 6px rgba(255, 176, 58, 0.8);
+}
+
+.mg-banner {
+  margin-top: 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: #ffca6e;
+  text-shadow: 0 0 10px rgba(255, 160, 40, 0.6);
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.mg-banner.on { opacity: 1; }
+
+.mg-hint {
+  margin-top: 6px;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: rgba(127, 157, 176, 0.62);
+}
+
+/* ========================================================= countdown ==== */
+
+.mg-count {
+  position: fixed;
+  left: 50%;
+  top: 22vh;
+  transform: translate(-50%, 6px);
+  z-index: 13;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 12px 26px 14px;
+  border: 1px solid rgba(120, 170, 200, 0.22);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(8, 13, 20, 0.82), rgba(4, 8, 14, 0.88));
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease, visibility 0s linear 160ms;
+}
+
+.mg-count.on {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+  transition: opacity 160ms ease, transform 160ms ease, visibility 0s;
+}
+
+.mg-count-n {
+  font-size: 56px;
+  font-weight: 700;
+  line-height: 1;
+  color: #eaf6ff;
+  text-shadow: 0 0 24px rgba(82, 233, 255, 0.5);
+  font-variant-numeric: tabular-nums;
+}
+
+.mg-count-n.beat {
+  animation: mg-beat 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes mg-beat {
+  0% { transform: scale(1.35); opacity: 0.35; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.mg-count-c {
+  font-size: 10px;
+  letter-spacing: 0.34em;
+  color: rgba(140, 215, 235, 0.75);
+}
+
+/* =========================================================== callout ==== */
+
+.mg-callout {
+  position: fixed;
+  left: 50%;
+  top: 34vh;
+  transform: translateX(-50%);
+  z-index: 13;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: #eaf8ff;
+  text-shadow: 0 0 22px rgba(82, 233, 255, 0.7);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mg-callout.on {
+  animation: mg-callout 1700ms ease-out forwards;
+}
+
+@keyframes mg-callout {
+  0% { opacity: 0; transform: translate(-50%, 8px); }
+  12% { opacity: 1; transform: translate(-50%, 0); }
+  76% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -12px); }
+}
+
+/* ============================================================ sheets ==== */
+
+.mg-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 86;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(ellipse at 50% 40%, rgba(6, 16, 26, 0.72), rgba(2, 6, 12, 0.92));
+  backdrop-filter: blur(3px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 160ms ease, visibility 0s linear 160ms;
+}
+
+.mg-sheet.on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 160ms ease, visibility 0s;
+}
+
+.mg-card {
+  width: min(480px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 22px 24px 18px;
+  border: 1px solid rgba(82, 233, 255, 0.28);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(9, 20, 32, 0.97), rgba(5, 12, 20, 0.98));
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(0, 0, 0, 0.4) inset;
+  transform: translateY(8px) scale(0.99);
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.mg-sheet.on .mg-card {
+  transform: none;
+}
+
+.mg-kicker {
+  font-size: 10px;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: rgba(140, 215, 235, 0.75);
+}
+
+.mg-h {
+  margin-top: 4px;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #eaf6ff;
+  text-shadow: 0 0 18px rgba(82, 233, 255, 0.35);
+}
+
+.mg-h.lost {
+  color: #ffc7b2;
+  text-shadow: 0 0 18px rgba(255, 120, 70, 0.3);
+}
+
+.mg-badge {
+  display: none;
+  margin-top: 8px;
+  padding: 4px 10px;
+  justify-self: start;
+  width: max-content;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  border-radius: 8px;
+  color: rgba(180, 200, 214, 0.7);
+  border: 1px solid rgba(120, 170, 200, 0.24);
+}
+
+.mg-badge.on {
+  display: block;
+  color: #0a1a12;
+  background: linear-gradient(180deg, #9df5c2, #57d894);
+  border-color: transparent;
+}
+
+.mg-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(82, 233, 255, 0.16);
+}
+
+.mg-stat {
+  flex: 1 1 88px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgba(82, 233, 255, 0.06);
+  border: 1px solid rgba(82, 233, 255, 0.14);
+}
+
+.mg-stat-v {
+  font-size: 17px;
+  font-weight: 700;
+  color: #dcecf6;
+  font-variant-numeric: tabular-nums;
+}
+
+.mg-stat-k {
+  margin-top: 2px;
+  font-size: 9px;
+  letter-spacing: 0.24em;
+  color: rgba(127, 157, 176, 0.9);
+}
+
+.mg-foot {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: rgba(178, 202, 218, 0.85);
+}
+
+.mg-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.mg-go,
+.mg-ghost {
+  flex: 1 1 auto;
+  padding: 10px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.mg-go {
+  color: #05121b;
+  border: 1px solid transparent;
+  background: linear-gradient(180deg, #8ef0ff, #35c9e6);
+}
+
+.mg-go:hover {
+  background: linear-gradient(180deg, #a9f5ff, #4dd7f2);
+}
+
+/* Quitting is destructive and is coloured as such — it is the one button here
+   that throws away a match in progress. */
+.mg-danger {
+  color: #2a0b06;
+  background: linear-gradient(180deg, #ffb59a, #f0654a);
+}
+
+.mg-danger:hover {
+  background: linear-gradient(180deg, #ffc8b3, #ff7c60);
+}
+
+.mg-ghost {
+  color: rgba(200, 226, 240, 0.9);
+  border: 1px solid rgba(82, 233, 255, 0.22);
+  background: rgba(82, 233, 255, 0.05);
+}
+
+.mg-ghost:hover {
+  color: #eaf8ff;
+  border-color: rgba(82, 233, 255, 0.5);
+  background: rgba(82, 233, 255, 0.14);
+}
+
+@media (max-width: 900px) {
+  .mg-hud {
+    left: 12px;
+    top: 210px;
+    width: 184px;
+  }
+}

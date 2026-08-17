@@ -50,6 +50,13 @@ import { AudioDirector } from './audio/AudioDirector.js';
 import { AudioMenu } from './ui/AudioMenu.js';
 import { RaceManager } from './race/RaceManager.js';
 import { RaceUI } from './ui/RaceUI.js';
+import { MinigameManager } from './minigames/MinigameManager.js';
+import { MinigamePose } from './minigames/MinigamePose.js';
+import { createSwimChallenge } from './minigames/SwimChallenge.js';
+import { createSkiRun } from './minigames/SkiRun.js';
+import { createTennisMatch } from './minigames/TennisMatch.js';
+import { TennisPose } from './minigames/TennisPose.js';
+import { MinigameUI } from './ui/MinigameUI.js';
 import { QuestBoard } from './ui/QuestBoard.js';
 import { BugReport } from './ui/BugReport.js';
 import { forceDrawable } from './gfx/RehearsalDraw.js';
@@ -265,6 +272,40 @@ const audioMenu = new AudioMenu({ root: uiRoot, bus, input, audio });
 const race = new RaceManager({ ...ctx, player, mounts, economy, worldManager });
 const raceUI = new RaceUI({ root: uiRoot, bus, input, race });
 
+/* Minigames. Same arrangement as racing above and for the same reason: the
+ * manager arms itself off `world:changed` by reading whatever the active world
+ * publishes as `minigameVenues`, so a world that carries a venue needs no
+ * registration here and one that does not costs a failed property read per
+ * world change. Only the *games* are registered, once, because a game module is
+ * code and cannot come from a world. A venue whose kind is not registered here
+ * is skipped, which is what keeps the tennis and ski slots inert until their
+ * modules exist. */
+const minigames = new MinigameManager({ bus, player, economy, input, worldManager });
+minigames.registerGame('swim', createSwimChallenge);
+/* The ski factory needs the mount authority (it summons and returns the
+ * hoverboard) which the manager deliberately does not know about, so it is
+ * closed over here rather than added to the factory contract. `worldManager`
+ * rides along so the gate poles can parent into the active world's group. */
+minigames.registerGame('ski', (venue, ctx) => createSkiRun(venue, { ...ctx, mounts, worldManager }));
+/* The closure is the only place the tennis module learns about NPCs and the
+ * frame loop; the manager itself hands over only player/bus/input. */
+minigames.registerGame('tennis', (venue, ctx) =>
+  createTennisMatch(venue, { ...ctx, npcs: npcManager, engine })
+);
+const minigameUI = new MinigameUI({ root: uiRoot, bus, input, minigames });
+/* The fourth and fifth late-pose modules, run as one pass. Assigned onto the
+ * player rather than built by it, because the poses need the minigame manager
+ * and Player must not know that system exists - see `Player._installLatePose`. */
+const minigamePose = new MinigamePose({ player, minigames });
+const tennisPose = new TennisPose({ player, minigames });
+player.minigamePose = {
+  applyPose(dt, elapsed) {
+    minigamePose.applyPose(dt, elapsed);
+    // Tennis last: mid-stroke, the swing must win over the generic poses.
+    tennisPose.applyPose(dt, elapsed);
+  },
+};
+
 const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts, input, inventory, cosmetics });
 /* Ask the browser not to evict this origin's storage under pressure. Fire and
  * forget - it resolves to false on browsers that do not offer it, and nothing
@@ -376,7 +417,7 @@ if (overrides.dev) {
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
     waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, caches, contracts,
   cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
-  interiors, mazeMap,
+  interiors, mazeMap, minigames, minigameUI,
     /* The only door out of this file the harness is allowed through. Kept
      * behind `__dev` rather than spread across GAME so it is obvious at a call
      * site that a measurement is reaching into the integration layer. */
@@ -1320,6 +1361,9 @@ engine.onFixedUpdate((dt, elapsed) => {
   // player actually travelled this step, and reading their position before the
   // mount has written the seat would test last step's line.
   race.fixedUpdate(dt, elapsed);
+  // After the player, for the same reason the race is: a length is measured
+  // against the position the swimmer holds THIS step, not last step's.
+  minigames.fixedUpdate(dt, elapsed);
   npcManager.fixedUpdate(dt, elapsed);
   combat.fixedUpdate(dt, elapsed);
   projectiles.fixedUpdate(dt, elapsed);
@@ -1370,6 +1414,10 @@ engine.onFrameUpdate((dt, elapsed) => {
     contracts.update(dt);
     relics.update(dt);
     interiors.update(dt);
+    // After `interiors`, which is what publishes the door/lift prompt the
+    // minigame venue stands down for — reading it in the same frame it was
+    // written keeps the E key from ever meaning two things at once.
+    minigames.update(dt);
     questSystem.update(dt);
   }
   questBoard.update(dt);
@@ -1381,6 +1429,10 @@ engine.onFrameUpdate((dt, elapsed) => {
   helpMenu.update?.(dt);
   characterMenu.update?.(dt);
   raceUI.update(dt);
+  // Outside the `uiPaused` gate, like every other panel: its own sheets are
+  // what raise the pause, so a UI that stopped ticking when they opened could
+  // never draw the button that closes them.
+  minigameUI.update(dt);
   hud.update(dt, elapsed);
   // Last, and deliberately so: every light in the game has now been moved and
   // dimmed for this frame, so the rig is ranking final positions. It also
@@ -1537,6 +1589,10 @@ bus.on('keybinds:open', () => setGameplayBlocked('keybinds', true));
 bus.on('keybinds:close', () => setGameplayBlocked('keybinds', false));
 bus.on('audio:menu', ({ open }) => setGameplayBlocked('audio', !!open));
 bus.on('race:menu', ({ open }) => setGameplayBlocked('race', !!open));
+// Same contract as the race sheets: while the quit confirm or the result card
+// is up the world stops, so the contest cannot be lost while it is being
+// decided whether to abandon it.
+bus.on('minigame:menu', ({ open }) => setGameplayBlocked('minigame', !!open));
 // Use hud:block (emitted by QuestBoard only when it actually opens/closes,
 // after guards) rather than quests:board:open (emitted by HUD as a request
 // that QuestBoard may silently reject via _justClosed). If we reacted to the

@@ -166,10 +166,22 @@ export class FriendlyNPC extends NPC {
     const dist = player ? this.position.distanceTo(player.position) : Infinity;
     this.playerDistance = dist;
 
+    /* FLEE is dispatched BEFORE the minigame lock below, and deliberately:
+     * `onGunfire` and `onDamaged` set state to FLEE from their event handlers,
+     * and fear has to outrank a borrowed match - a locked tennis opponent
+     * still scatters from gunfire, cowers when cornered, and only stands down
+     * again once her own flee recovery has run. */
+    if (this.state === 'FLEE') {
+      this._flee(dt);
+      return;
+    }
+
+    /* A minigame has borrowed this character and drives nav/face/look itself
+     * (see minigames/TennisMatch.js). The body keeps walking - _steer and
+     * _integrate still run in NPC.fixedUpdate - but the brain stands down. */
+    if (this._minigameLock) return;
+
     switch (this.state) {
-      case 'FLEE':
-        this._flee(dt);
-        return;
       case 'GREET':
         this._greet(dt, player, dist);
         return;

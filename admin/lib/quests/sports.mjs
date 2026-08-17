@@ -2,8 +2,9 @@
  * SPORTS quest content — 10 quests for the Meridian Athletic Grounds (n 21-30).
  *
  * ─────────────────────────────────────────────────────────────────────────────
- *  READ `QUEST-AUDIT.md` AT THE REPO ROOT BEFORE YOU EDIT THIS FILE.
- *  `admin/lib/quests/station.mjs` is the reference for shape and rigour.
+ *  READ `QUEST-AUDIT.md` AND `MINIGAMES-AUDIT.md` AT THE REPO ROOT BEFORE YOU
+ *  EDIT THIS FILE. `admin/lib/quests/station.mjs` is the reference for shape
+ *  and rigour.
  * ─────────────────────────────────────────────────────────────────────────────
  *
  * THE CONSTRAINT THIS FILE EXISTS TO HONOUR:
@@ -24,16 +25,20 @@
  * `championship_final`, …). Every one of them was permanently dead — not
  * "mistargeted", but unreachable even with a perfect target, because the
  * emitter does not exist in this world. `scripts/quest-vocab.mjs` encodes the
- * same rule at line 1604 — `if (!world.rules.races || !world.publishesTrack) break;`
+ * same rule — `if (!world.rules.races || !world.publishesTrack) break;`
  * — which is scraped from the world itself rather than hard-coded against the id,
  * so giving SportsWorld a real `trackPath` would open race steps up here without
  * anyone having to edit the validator.
  *
- * ⇒ THIS FILE CONTAINS ZERO `race` STEPS. Do not add one. If you want a
- *   "competition" beat, ground it on combat, collection, conversation, trade,
- *   customisation or survival — all six of which DO fire here — and make the
- *   label say what the player is competing at. The label is what the player
- *   reads; the type/target is only what the engine watches.
+ * ⇒ THIS FILE CONTAINS ZERO `race` STEPS. Do not add one.
+ *
+ * WHAT CHANGED SINCE THAT RULE WAS WRITTEN: the grounds grew three REAL,
+ * browser-verified contests — the minigame framework (`src/minigames/`,
+ * MINIGAMES-AUDIT.md) — and `QuestSystem._eventTargetCandidates` grew a
+ * `minigame` branch. A "competition" beat no longer has to be grounded on
+ * combat or conversation; it can be grounded on an actual swim, ski or tennis
+ * RESULT, and "WIN it" is now expressible as distinct from "play it". That is
+ * what this revision of the file does. The race rule above is still the law.
  *
  * ── THE STEP TYPES THAT WORK IN THIS WORLD ───────────────────────────────────
  *
@@ -41,6 +46,43 @@
  *             target = `sports`. Note `accept()` also credits the current world,
  *             so a `visit sports` step inside a sports quest completes the
  *             moment the quest is taken. That is deliberate where it is used.
+ *
+ *  minigame   `quest:activity{type:'minigame'}` — MinigameManager.js:679, on
+ *             any FINISH, win or loss. An ABORT (quitting, walking off the
+ *             venue) emits NOTHING and pays NOTHING, so a "play it" step cannot
+ *             be cleared by starting and bailing. SportsWorld publishes three
+ *             venues (SportsWorld.js:8852 `minigameVenues`) and `main.js`
+ *             registers a module for each kind, so all three arm:
+ *
+ *               swim_challenge  the lido (venue `lido_pool`) — press E on the
+ *                               deck; two lengths against Tavius Okonkwo's pace
+ *               ski_slalom      the mound (venue `meridian_slope`, label
+ *                               "Meridian Downhill") — press E; gates down the
+ *                               middle piste against Kjell's ghost, a missed
+ *                               gate costs 2 s
+ *               tennis_match    the court (venue `meridian_court`) — press E to
+ *                               start, F to swing; best of 3 games against
+ *                               Deborah Quint-Halloway
+ *
+ *             A win pays 10 CR (`MINIGAME_PRIZE`); a loss or an abort pays 0.
+ *             TARGETS, exactly as the `minigame` branch of
+ *             `_eventTargetCandidates` offers candidates:
+ *
+ *               <gameId>        any finish — the bare id is never offered as a
+ *                               candidate, but it matches the `_won`/`_lost`
+ *                               composite as a whole-token run, and exactly one
+ *                               composite rides on every finish
+ *               <gameId>_won    a WIN, and only a win (exact composite match)
+ *               <gameId>_lost   a LOSS, and only a loss
+ *               venue label / venue id   any finish
+ *               won / lost / place_1 / p1 / first   outcome of ANY game here
+ *
+ *             ⚠ NEVER pair `X` with `X_won` (or `won` with any `_won`, or a
+ *               venue id with its game) inside ONE quest: `_advanceSteps` walks
+ *               every step per event, so a single win would advance both at
+ *               once and let the player skip whatever was written between them
+ *               — the same defect as two Petra interacts in one quest. Every
+ *               quest below carries at most ONE minigame target per game.
  *
  *  collect    `loot:collected` (Loot.js:605, :613) → `_onCollect`. `count` is a
  *             number of PICKUPS; the stack `qty` is ignored, so a cache holding
@@ -80,8 +122,8 @@
  *             defend counts are deliberately higher than kill counts.
  *             ⚠ EVERY hostile on the grounds is called `Rogue Security Unit`.
  *               `_buildSpawns` pushes ten of them from one literal
- *               (SportsWorld.js:8852-8859, `name: 'Rogue Security Unit'` at
- *               :8855) and the kill event carries `npc.name`
+ *               (SportsWorld.js:8940-8948, `name: 'Rogue Security Unit'` at
+ *               :8944) and the kill event carries `npc.name`
  *               (QuestSystem.js:648). There is no second archetype to name.
  *               They work the outer perimeter and the car park, all of them
  *               over 80 m from the gate, and they respawn after
@@ -135,7 +177,7 @@
  * (Config.js:202), `maxNPCs = 72`. The arithmetic:
  *
  *   authored friendlies   6   SportsWorld.js:8782-8835
- *   authored hostiles    10   SportsWorld.js:8851-8860 (all one name)
+ *   authored hostiles    10   SportsWorld.js:8940-8948 (all one name)
  *   friendlyBudget       30   min(72 - 10, 30)
  *   authoredCap           6   max(4, min(6, 30 - CROWD_RESERVE 6))  → all six spawn
  *   lorekeepers           1   one per portalSpec, and there is one portal
@@ -156,6 +198,12 @@
  *  None of the six declares a `role:`, so every one defaults to
  *  `ROLE.WANDERER` (NPCManager.js:730) — which is what makes
  *  `{type:'talk', target:'wanderer'}` safe here.
+ *
+ *  THREE OF THE SIX ARE ALSO MINIGAME RIVALS (SportsWorld.js:8852): Tavius is
+ *  the lido pace, Kjell is the downhill ghost, Deborah is the tennis opponent —
+ *  she is genuinely driven onto the court by the match. Talking to a rival and
+ *  playing their contest are DIFFERENT step types (`talk` vs `minigame`), so a
+ *  coach chat and their contest can safely share a quest.
  *
  *  QUEST MANAGER: Petra Vance, NPCManager.js:1386-1392, planted at (-8, 0.9,
  *  128) — about seventeen metres up the avenue from the arrival gate at
@@ -194,10 +242,19 @@
  * match `Marisol "Ripgrind" Vance`: [petra, vance] is not a contiguous run
  * inside [marisol, ripgrind, vance].
  *
+ * The token run is also what makes minigame outcome targeting SOUND: on a won
+ * tennis match the engine offers `tennis_match_won` and never the bare
+ * `tennis_match`, `tennis` or `won` — each of those is a token-subrun of the
+ * composite and would have completed a "win it" step on a loss (or a swim win)
+ * had it been offered alongside. The bare spellings still work as TARGETS,
+ * through the composite. See the `minigame` branch of
+ * `_eventTargetCandidates` for the full argument.
+ *
  * ⚠ `_advanceSteps` (QuestSystem.js:547) walks EVERY step of the engagement on
  *   each event, so two steps in one quest sharing a type, a target AND a world
  *   both advance from a single action — which lets the player skip whatever was
- *   written between them. No quest below repeats a (type, target) pair.
+ *   written between them. No quest below repeats a (type, target) pair, and no
+ *   quest pairs a minigame target with a composite it is a token-subrun of.
  *
  * ── EVERY STEP STAYS IN ITS OWN WORLD ────────────────────────────────────────
  *
@@ -232,6 +289,7 @@ export const SPORTS_QUESTS = [
    * groomed pistes and a terrain-park kicker, pickleball and tennis courts, an
    * open-air lido, mown greens, a running track, and a car park on the far
    * perimeter where the decommissioned security drones still patrol.
+   * Three of those venues now run real contests — see the header.
    * ══════════════════════════════════════════════════════════════════════════ */
 
   {
@@ -259,11 +317,11 @@ export const SPORTS_QUESTS = [
     dur: 120,
     pre: null,
     notes:
-      '3 steps. Both named NPCs are authored in `SportsWorld._buildSpawns` and are therefore guaranteed a spawn slot (six authored friendlies against an authoredCap of six). alloy_scrap is a 20% drop off a security drone AND 2-5 a cache in `CACHE_TABLES.sports`, so count 2 is one lucky cache or a handful of kills.',
+      '3 steps. Both named NPCs are authored in `SportsWorld._buildSpawns` and are therefore guaranteed a spawn slot (six authored friendlies against an authoredCap of six). alloy_scrap is a 20% drop off a security drone AND 2-5 a cache in `CACHE_TABLES.sports`, so count 2 is one lucky cache or a handful of kills. Deborah is met here as the club secretary; her tennis court runs a real match later in the set.',
     steps: [
       { order: 1, label: 'Press E on Bernard "Bernie" Ashgrove out on the mown greens — forty years of stripes and he wants you to see what got walked over', type: 'talk', target: 'Bernard "Bernie" Ashgrove', count: 1, world: 'sports' },
       { order: 2, label: 'Someone has been stripping fittings. Recover 2 alloy scrap — the drones drop it, and the supply caches hold it in bulk', type: 'collect', target: 'alloy_scrap', count: 2, world: 'sports' },
-      { order: 3, label: 'Press E on Deborah Quint-Halloway at the pickleball courts and let her tell you which net posts are missing bolts', type: 'talk', target: 'Deborah Quint-Halloway', count: 1, world: 'sports' },
+      { order: 3, label: 'Press E on Deborah Quint-Halloway at the courts and let her tell you which net posts are missing bolts', type: 'talk', target: 'Deborah Quint-Halloway', count: 1, world: 'sports' },
     ],
   },
 
@@ -304,17 +362,17 @@ export const SPORTS_QUESTS = [
     n: 25,
     world: 'sports',
     line: 'Bowl and Piste',
-    title: 'Take a session in the bowl and a run down the mound',
+    title: 'Earn your stripes in the bowl and beat the ghost on the mound',
     credits: 520,
     dur: 300,
     pre: ['Opening Ceremony'],
     notes:
-      '5 steps. The two hardest bits of terrain on the site: a carved concrete bowl and a 23-degree artificial snow mound with three groomed corridors, a mogul field and a terrain-park kicker (SportsWorld.js:832-884). Neither dropping in nor skiing emits anything, so each is grounded on the coach who runs it plus a survival tick that cannot be banked while the player is being shot at. `sportskit` is a real change — the default outfit is `flightsuit`.',
+      "5 steps, and the first REAL contest in the set. `ski_slalom_won` is the Meridian Downhill module (SkiRun.js, venue `meridian_slope`) and the composite only ever appears in the candidate list on a WON finish — so step 4 is a genuine beat-the-ghost, not a talk dressed as one, and losing or quitting advances nothing. Kjell is both the coach (step 3, `talk`) and the ghost time (the venue rival), which is why the two steps sit together — different step types, so one E press cannot clear both. `sportskit` is a real change: the default outfit is `flightsuit`.",
     steps: [
       { order: 1, label: 'Press E on Marisol "Ripgrind" Vance on the coping — nineteen years of this bowl, and she will not let you drop in without checking your helmet strap', type: 'talk', target: 'Marisol "Ripgrind" Vance', count: 1, world: 'sports' },
       { order: 2, label: 'Press F2 and change into the Sports kit. You are not skating the deep end in a flight suit', type: 'customize', target: 'sportskit', count: 1, world: 'sports' },
       { order: 3, label: 'Press E on Kjell Nordvik at the foot of the ski mound and let him talk you down the fall line', type: 'talk', target: 'Kjell Nordvik', count: 1, world: 'sports' },
-      { order: 4, label: 'Take one clean minute on the pistes without being hit — the drones do not come this far in, so this is about staying off the moguls', type: 'survive', target: 'sports', count: 2, world: 'sports' },
+      { order: 4, label: 'Now beat him. Walk up the Meridian Downhill mound and press E to start the slalom — gates down the middle piste against Kjell\'s ghost time, a missed gate costs 2 seconds, and the win pays 10 credits', type: 'minigame', target: 'ski_slalom_won', count: 1, world: 'sports' },
       { order: 5, label: 'Every session ends at the first-aid box. Pick up a medkit from a cache or a wreck', type: 'collect', target: 'medkit', count: 1, world: 'sports' },
     ],
   },
@@ -323,17 +381,17 @@ export const SPORTS_QUESTS = [
     n: 26,
     world: 'sports',
     line: 'Deep End Duty',
-    title: 'Stand a shift on the lido and restock the poolside kit',
+    title: 'Stand a shift on the lido and take the swim record off the lifeguard',
     credits: 660,
     dur: 360,
     pre: ["Groundskeeper's Round", 'Gateway Handbook'],
     notes:
-      '6 steps. CROSS-WORLD PREREQUISITE: `Gateway Handbook` is the station education line that teaches how the arches work, and step 6 sends the player to the keeper standing beside this world\'s only arch. The lido is genuine water as far as the engine is concerned — its material is named `water.pool`, so `WaterVolumes` builds a swimmable volume over it (WaterVolumes.js:33) and `Caches._findSunken` can put a cache on the bottom (Caches.js:217). `cap` is a real change: the default headgear is `none`.',
+      '6 steps. CROSS-WORLD PREREQUISITE: `Gateway Handbook` is the station education line that teaches how the arches work, and step 6 sends the player to the keeper standing beside this world\'s only arch. Step 3 is the Lido Swim Challenge (SwimChallenge.js, venue `lido_pool`) targeted on `swim_challenge_won` — the ghost is paced off Tavius, so beating "his" time right after talking to him is the story writing itself. The lido is genuine water as far as the engine is concerned — its material is named `water.pool`, so `WaterVolumes` builds a swimmable volume over it (WaterVolumes.js:33) and `Caches._findSunken` can put a cache on the bottom (Caches.js:217). `cap` is a real change: the default headgear is `none`.',
     steps: [
       { order: 1, label: 'Press E on Tavius Okonkwo on the lido deck — a lifeguard who has never once had to rescue anybody and is professionally furious about it', type: 'talk', target: 'Tavius Okonkwo', count: 1, world: 'sports' },
       { order: 2, label: 'Restock the poolside first-aid box: collect 2 medkits. There is a supply cache on the bottom of the pool if you are willing to dive for it', type: 'collect', target: 'medkit', count: 2, world: 'sports' },
-      { order: 3, label: 'Two drones have drifted in off the perimeter. Destroy 2 Rogue Security Units before they reach the water', type: 'kill', target: 'Rogue Security Unit', count: 2, world: 'sports' },
-      { order: 4, label: 'Clear the deck: pick up 3 credit drops the wrecks leave behind', type: 'collect', target: 'credits', count: 3, world: 'sports' },
+      { order: 3, label: 'Win the Lido Swim Challenge — press E on the pool deck to start, then swim two lengths and touch the walls faster than Tavius\'s pace. The win pays 10 credits', type: 'minigame', target: 'swim_challenge_won', count: 1, world: 'sports' },
+      { order: 4, label: 'Two drones have drifted in off the perimeter. Destroy 2 Rogue Security Units before they reach the water', type: 'kill', target: 'Rogue Security Unit', count: 2, world: 'sports' },
       { order: 5, label: 'Press F2 and put on the Peaked cap — nobody takes a bare-headed lifeguard seriously', type: 'customize', target: 'cap', count: 1, world: 'sports' },
       { order: 6, label: 'Press E on the keeper standing beside the Aether Station arch and log the shift with the hub', type: 'talk', target: 'lorekeeper', count: 1, world: 'sports' },
     ],
@@ -369,13 +427,13 @@ export const SPORTS_QUESTS = [
     dur: 1440,
     pre: ['Bowl and Piste', 'Kit Check'],
     notes:
-      '8 steps. This is the quest the old data tried to write as nineteen race steps, and it is the reason the header is as long as it is: there is no `race` emitter here, so a multi-discipline meeting is grounded on the five coaches who actually run the five venues. Each of the five is a DIFFERENT authored name, so one E press advances exactly one step — this quest cannot be skipped through. `tracksuit` is a real change from the `sportskit` that Bowl and Piste (a prerequisite) put the player in.',
+      '8 steps. This is the quest the old data tried to write as nineteen dead race steps — and three of its five disciplines are now REAL contests. Steps 3-5 use ANY-RESULT targets (`ski_slalom`, `tennis_match`, `swim_challenge`): the bare game id matches its `_won`/`_lost` composite as a token run, exactly one of which rides on every finish, so entering and FINISHING counts whatever the scoreboard says — but an abort still counts for nothing, so the player cannot clear an entry by quitting. The bowl and the running track have no contest modules, so those two disciplines stay grounded on the coaches who run them. No `X`/`X_won` pair shares this quest (the wins live in n25, n26, n29 and n30), and each finish advances exactly one step because the three game ids share no token run.',
     steps: [
       { order: 1, label: 'Press F2 and change into the Tracksuit — the trials have a dress code and the officials enforce it', type: 'customize', target: 'tracksuit', count: 1, world: 'sports' },
       { order: 2, label: 'Discipline 1 of 5 — press E on Marisol "Ripgrind" Vance at the skate bowl and enter the bowl session', type: 'talk', target: 'Marisol "Ripgrind" Vance', count: 1, world: 'sports' },
-      { order: 3, label: 'Discipline 2 of 5 — press E on Kjell Nordvik at the ski mound and enter the downhill', type: 'talk', target: 'Kjell Nordvik', count: 1, world: 'sports' },
-      { order: 4, label: 'Discipline 3 of 5 — press E on Deborah Quint-Halloway at the courts and get your name on the laminated ladder', type: 'talk', target: 'Deborah Quint-Halloway', count: 1, world: 'sports' },
-      { order: 5, label: 'Discipline 4 of 5 — press E on Tavius Okonkwo at the lido and enter the open-water leg', type: 'talk', target: 'Tavius Okonkwo', count: 1, world: 'sports' },
+      { order: 3, label: 'Discipline 2 of 5 — ride the Meridian Downhill: press E on the ski mound to start the slalom and carry it through the finish gate. A finished run counts whatever the clock says; a win pays 10 credits on top', type: 'minigame', target: 'ski_slalom', count: 1, world: 'sports' },
+      { order: 4, label: 'Discipline 3 of 5 — play a full tennis match against Deborah at the Meridian court: press E courtside to start, F to swing, best of three games. Win or lose, a completed match counts; a win pays 10 credits', type: 'minigame', target: 'tennis_match', count: 1, world: 'sports' },
+      { order: 5, label: 'Discipline 4 of 5 — swim the Lido Challenge: press E on the pool deck, then two full lengths, wall to wall. Finishing is what counts today; beat the pace and it pays 10 credits', type: 'minigame', target: 'swim_challenge', count: 1, world: 'sports' },
       { order: 6, label: 'Discipline 5 of 5 — press E on Priya Raghunathan on the running track and enter the middle distance', type: 'talk', target: 'Priya Raghunathan', count: 1, world: 'sports' },
       { order: 7, label: 'Two clean minutes on the grounds with no damage taken — a trial you finish bleeding is a trial you did not finish', type: 'survive', target: 'sports', count: 4, world: 'sports' },
       { order: 8, label: 'Press E on Petra Vance and have the five entries signed off as a single card', type: 'interact', target: 'Petra Vance', count: 1, world: 'sports' },
@@ -391,13 +449,13 @@ export const SPORTS_QUESTS = [
     dur: 2880,
     pre: ['Car Park Lockdown', 'Deep End Duty'],
     notes:
-      '9 steps. The big combat quest. Counts are sized against the ten authored hostiles and their 22 s respawn: 8 kills and 12 landed hits is roughly two full sweeps of the perimeter. The four collect steps are spread across four different drop lines so the player has to actually work the whole table rather than farming one — nexus_shard is a 5% kill roll but 1-2 guaranteed in a cache, so step 6 is one cache. Opens on the groundskeeper and closes on Petra Vance; the two ends share no type at all.',
+      '9 steps. The big combat quest, with one defiant beat in the middle: step 5 is `tennis_match_won` — the composite is only offered on a won finish, so the ladder final has to actually be WON, mid-siege, not merely played. It cannot collide with The Meridian Trials\' any-result `tennis_match` step because the prerequisite chain retires that quest first (n28 needs Bowl and Piste; this needs Deep End Duty and Car Park Lockdown; n30 needs both lines complete). Counts are sized against the ten authored hostiles and their 22 s respawn: 8 kills and 12 landed hits is roughly two full sweeps of the perimeter. nexus_shard is a 5% kill roll but 1-2 guaranteed in a cache, so step 6 is one cache. Opens on the groundskeeper and closes on Petra Vance; the two ends share no type at all.',
     steps: [
       { order: 1, label: 'Press E on Bernard "Bernie" Ashgrove — he saw them come over the boundary and he is more upset about the lawn than about the drones', type: 'talk', target: 'Bernard "Bernie" Ashgrove', count: 1, world: 'sports' },
       { order: 2, label: 'Destroy 8 Rogue Security Units across the perimeter. They respawn, so this is a sustained fight rather than a single clearance', type: 'kill', target: 'Rogue Security Unit', count: 8, world: 'sports' },
       { order: 3, label: 'Land 12 hits on Rogue Security Units — chip them down from cover instead of trading in the open', type: 'defend', target: 'Rogue Security Unit', count: 12, world: 'sports' },
       { order: 4, label: 'Strip 3 alloy scrap out of the wreckage for the repair bill', type: 'collect', target: 'alloy_scrap', count: 3, world: 'sports' },
-      { order: 5, label: 'Keep yourself fed: recover 3 bullet drops mid-fight', type: 'collect', target: 'bullet', count: 3, world: 'sports' },
+      { order: 5, label: 'The club plays on. Win the ladder final at the Meridian tennis court — press E courtside to start, F to swing, best of three games against Deborah, who is not cancelling tennis for a drone incursion. The win pays 10 credits', type: 'minigame', target: 'tennis_match_won', count: 1, world: 'sports' },
       { order: 6, label: 'One of them was carrying something it should not have been. Recover a nexus shard — the supply caches hold them too', type: 'collect', target: 'nexus_shard', count: 1, world: 'sports' },
       { order: 7, label: 'Restock the first-aid boxes the fight emptied: collect 2 medkits', type: 'collect', target: 'medkit', count: 2, world: 'sports' },
       { order: 8, label: 'Hold the grounds for three unbroken minutes without taking a hit — any damage puts the timer back to zero', type: 'survive', target: 'sports', count: 6, world: 'sports' },
@@ -414,13 +472,13 @@ export const SPORTS_QUESTS = [
     dur: 5760,
     pre: ['The Meridian Trials', 'Grounds Under Siege', 'Nexus Passport'],
     notes:
-      'Capstone, 10 steps — the longest list in the sports set. CROSS-WORLD PREREQUISITE: `Nexus Passport` is the station global that requires setting foot in every world, because a Meridian record is only a Nexus record once the hub has seen you. Steps 1 and 10 are BOTH `interact` and are deliberately different targets — Petra Vance at the board, and the gateway home — because `_advanceSteps` walks every step on each event and two Petra steps would let the player clear the whole capstone with one E press (the exact defect found in the station set, QUEST-AUDIT.md).',
+      'Capstone, 10 steps — the longest list in the sports set, and the one the minigames were built for: steps 3-5 require ALL THREE contests WON. The three `_won` composites are mutually exclusive by token arithmetic (no game id is a token run inside another\'s composite), so a swim win advances the swim step and nothing else, and a loss advances none of them. The earlier `_won` steps (n25 ski, n26 swim, n29 tennis) are retired before this quest can be accepted, so no single win double-credits across engagements. CROSS-WORLD PREREQUISITE: `Nexus Passport` is the station global that requires setting foot in every world, because a Meridian record is only a Nexus record once the hub has seen you. Steps 1 and 10 are BOTH `interact` and are deliberately different targets — Petra Vance at the board, and the gateway home — because `_advanceSteps` walks every step on each event and two Petra steps would let the player clear the whole capstone with one E press (the exact defect found in the station set, QUEST-AUDIT.md).',
     steps: [
       { order: 1, label: 'Press E on Petra Vance at the grounds board to accept the nomination', type: 'interact', target: 'Petra Vance', count: 1, world: 'sports' },
       { order: 2, label: 'Press F2 and put on the Headband. Every photograph in that corridor has one in it', type: 'customize', target: 'band', count: 1, world: 'sports' },
-      { order: 3, label: 'Record 1 of 3 — press E on Marisol "Ripgrind" Vance and have the bowl record witnessed', type: 'talk', target: 'Marisol "Ripgrind" Vance', count: 1, world: 'sports' },
-      { order: 4, label: 'Record 2 of 3 — press E on Kjell Nordvik and have the downhill time witnessed', type: 'talk', target: 'Kjell Nordvik', count: 1, world: 'sports' },
-      { order: 5, label: 'Record 3 of 3 — press E on Priya Raghunathan and have the track split witnessed', type: 'talk', target: 'Priya Raghunathan', count: 1, world: 'sports' },
+      { order: 3, label: 'Record 1 of 3 — win the Lido Swim Challenge: press E on the pool deck, two lengths, and touch home ahead of Tavius\'s pace. The win pays 10 credits', type: 'minigame', target: 'swim_challenge_won', count: 1, world: 'sports' },
+      { order: 4, label: 'Record 2 of 3 — win the Meridian Downhill: press E on the ski mound, make every gate on the middle piste, and beat Kjell\'s ghost to the line. The win pays 10 credits', type: 'minigame', target: 'ski_slalom_won', count: 1, world: 'sports' },
+      { order: 5, label: 'Record 3 of 3 — win the tennis match: press E at the Meridian court, F to swing, and take the best of three off Deborah. The win pays 10 credits', type: 'minigame', target: 'tennis_match_won', count: 1, world: 'sports' },
       { order: 6, label: 'The drones always come back for a ceremony. Destroy 6 Rogue Security Units before the induction', type: 'kill', target: 'Rogue Security Unit', count: 6, world: 'sports' },
       { order: 7, label: 'Recover the nexus shard the last one was carrying', type: 'collect', target: 'nexus_shard', count: 1, world: 'sports' },
       { order: 8, label: 'Gather 4 credit drops off the field — the trophy fund pays for itself', type: 'collect', target: 'credits', count: 4, world: 'sports' },

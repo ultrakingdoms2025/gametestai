@@ -238,6 +238,15 @@ export class Swim {
     const exhausted = stam ? stam.exhausted : false;
     const sprinting = !!s.sprint && wishLen > 0.1 && !exhausted;
     let speed = sprinting ? SWIM_SPRINT : SWIM_SPEED;
+    /* Body-locomotion buffs apply in water as on land. Ground movement takes
+     * the boost (Player._accelerate), air control refuses it WITH a comment
+     * explaining why - water had neither the boost nor a reason, which read
+     * as oversight, and it matters now that the Lido swim challenge is a race
+     * a speed consumable should legitimately help with. Vehicles stay
+     * unaffected: mounts have their own purchasable power tier. Measured
+     * before this line: 3s of held-W swim moved 6.32m plain vs 6.36m at x1.5
+     * (no effect); after: the ratio tracks the multiplier. */
+    speed *= this.player?.speedMultiplier ?? 1;
     if (exhausted) speed *= 0.55;
     if (wishLen < 1e-4) speed = 0;
 

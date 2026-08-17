@@ -750,6 +750,66 @@ export class QuestSystem {
           }
         }
         break;
+      case 'minigame':
+        /* Contest identity, as of MinigameManager's finish-time `quest:activity`
+         * (MinigameManager.js:679) — emitted on any FINISH, win or loss, and
+         * never on an abort, so "played it" is countable and "walked out" is
+         * not. Without this branch a step could say WHICH contest was played
+         * (the default branch reads `target`/`id`/`name`) but never whether it
+         * was WON: `won` rode on the payload and no candidate encoded it.
+         *
+         * The outcome-neutral identities offered are the venue label (`name`)
+         * and the venue id. The game id itself is deliberately NOT offered
+         * bare: it only ever appears inside the `<gameId>_won` /
+         * `<gameId>_lost` COMPOSITE below, exactly one of which rides on every
+         * finish.
+         *
+         * That omission is the race branch's bare-integer lesson one level up.
+         * `_tokenRunMatch` is bidirectional — the SHORTER token list matching
+         * as a contiguous run inside the longer — so a bare `tennis_match`
+         * (or the module kind, `tennis`) present on every finish would sit
+         * inside the target `tennis_match_won` as a whole-token run and
+         * complete a "win the match" step on a LOSS. A bare `won` is worse
+         * still: it is the last token of EVERY win composite, so it would let
+         * a tennis win complete "win the swim challenge". So no candidate here
+         * is ever a token-subrun of a composite, and the COMPOSITE carries the
+         * identity — which is the trick: every plainer spelling still matches
+         * THROUGH it, while the outcome spellings only match the outcome that
+         * actually happened.
+         *
+         *   step target            matches because
+         *   tennis_match_won       the composite, exactly — and ONLY on a win
+         *   tennis_match_lost      the composite, exactly — and ONLY on a loss
+         *   tennis_match           tennis_match ⊂ tennis_match_won AND _lost,
+         *                          so any finish counts (the "play it" step)
+         *   tennis (the kind)      the same run, one token shorter
+         *   won / lost             the composite's own last token
+         *   Meridian Tennis Match  the venue label, offered as-is
+         *   meridian_court         the venue id, offered as-is
+         */
+        push(event?.name);     // venue label, e.g. 'Meridian Tennis Match'
+        push(event?.venueId);  // venue id, e.g. 'meridian_court'
+        {
+          const raw = typeof event?.target === 'string' && event.target.trim()
+            ? event.target
+            : event?.id;
+          const gameId = typeof raw === 'string' ? raw.trim() : '';
+          if (event?.won === true) {
+            if (gameId) push(`${gameId}_won`);
+            /* A minigame win is first place, in the race branch's namespaced
+             * spelling — never the bare integer (the audit's landmine). */
+            push('place_1');
+            push('p1');
+            push('first');
+          } else if (event?.won === false) {
+            if (gameId) push(`${gameId}_lost`);
+          } else if (gameId) {
+            // No outcome on the event: fall back to the bare game id, so a
+            // hand-rolled or legacy emit still identifies its contest.
+            push(gameId);
+          }
+        }
+        break;
       case 'purchase':
         push(event?.itemId);
         push(event?.packId);

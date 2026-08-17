@@ -1,0 +1,713 @@
+import { allows } from '../worlds/WorldRules.js';
+
+/**
+ * Minigames: the shared lifecycle behind every abstracted contest in the game.
+ *
+ * ── What this is, and what it deliberately is not ────────────────────────────
+ *
+ * The three contests the sports world is getting - swimming, tennis, skiing -
+ * are *abstracted*. None of them is a physics simulation of a sport. What they
+ * all genuinely need is the same five things, and this file owns exactly those:
+ *
+ *   1. a place in the world that offers the contest,
+ *   2. a way in that does not fight the five other systems already reading E,
+ *   3. a state machine with a countdown, a score and a definite end,
+ *   4. a way OUT, mid-contest, that pays nothing,
+ *   5. a payout and a quest event when it is over.
+ *
+ * Everything a specific sport does - what a length is, how a rival paces
+ * itself, what a point is - lives in a *game module* registered against a
+ * `kind`. This file never learns what swimming is.
+ *
+ * ── The shape it copies ──────────────────────────────────────────────────────
+ *
+ * `race/RaceManager.js` is the same problem solved once already: arm off the
+ * world, run a countdown, classify, pay, emit. The state names, the
+ * `abort(reason)` = quit-with-no-payout contract, the `snapshot()`-polled-by-UI
+ * convention and the "countdown from ELAPSED, never from a tick count" rule are
+ * all lifted from it on purpose, so a reader who knows one knows the other.
+ *
+ * ── Venues are published by the world, not registered here ───────────────────
+ *
+ * Following `Interiors` / `world.enterables`: a world puts plain descriptor
+ * objects on itself as `world.minigameVenues`, and this rebuilds its list on
+ * `world:changed`. A world that publishes none is not a special case; it just
+ * arms nothing. See `_readVenue` for the descriptor contract - every field is
+ * validated and a malformed venue is dropped, never thrown on, because a world
+ * and this file ship independently.
+ */
+
+/** @enum {string} */
+export const MINIGAME_STATE = {
+  IDLE: 'idle',
+  COUNTDOWN: 'countdown',
+  PLAYING: 'playing',
+  FINISHED: 'finished',
+};
+
+/**
+ * Credits a win pays.
+ *
+ * One number for every sport, because the user asked for one number: "if I win
+ * I get 10 credits". A venue may override it with `reward`, which is how a
+ * harder contest would be worth more later without this constant moving.
+ */
+export const MINIGAME_PRIZE = 10;
+
+/** Seconds of "on your marks" before a contest begins. */
+const COUNTDOWN_S = 4.0;
+
+/**
+ * Metres added to a venue's radius once the player is inside it.
+ *
+ * Without hysteresis a player standing exactly on the boundary makes the prompt
+ * - and, worse, the *meaning of the E key* - flicker every frame. Same fix
+ * `Interiors._streamSpots` uses for the same reason.
+ */
+const PROMPT_HYSTERESIS = 2.5;
+
+/** Seconds the result stays up before the venue offers a rematch. */
+const RESULT_HOLD_S = 14;
+
+/**
+ * Seconds outside the venue before a running contest is abandoned.
+ *
+ * A player who walks away has quit; making them find the prompt again to say so
+ * would leave a state machine running over a pool they are no longer near. Long
+ * enough that a wide turn or an overshoot at the far wall is never mistaken for
+ * leaving.
+ */
+const LEAVE_GRACE_S = 9;
+
+export class MinigameManager {
+  /**
+   * @param {{ bus:any, player:any, economy?:any, input?:any, worldManager?:any }} ctx
+   */
+  constructor({ bus, player, economy, input, worldManager }) {
+    this.bus = bus ?? null;
+    this.player = player ?? null;
+    this.economy = economy ?? null;
+    this.input = input ?? null;
+    this.worldManager = worldManager ?? null;
+
+    /** @type {Map<string, (venue:object, ctx:object)=>object>} kind -> factory */
+    this._factories = new Map();
+
+    /** @type {Array<object>} validated venues in the active world */
+    this._venues = [];
+    /** @type {object|null} venue the player is standing in */
+    this._near = null;
+    /** @type {object|null} venue the running contest belongs to */
+    this._venue = null;
+    /** @type {object|null} live game module */
+    this._game = null;
+
+    this.state = MINIGAME_STATE.IDLE;
+    this.clock = 0;
+    this._countdown = 0;
+    this._countdownTotal = 0;
+    this._lastCount = -1;
+    this._resultHold = 0;
+    this._awayFor = 0;
+    /** @type {object|null} last finished result, for the UI */
+    this.result = null;
+
+    this._worldId = null;
+    this._promptText = null;
+
+    /* ---- other E consumers, watched so this one never double-fires ----
+     *
+     * `Input.pressed` does NOT consume: five systems already poll KeyE
+     * independently (HUD, Portals, Interiors, Loot, QuestBoard) and each guards
+     * itself by hand. This is the sixth, so it does the same. A door, a lift or
+     * a portal in reach means E belongs to them; the venue prompt stands down
+     * rather than firing alongside.
+     *
+     * NPC chat is the other way round - Tavius Okonkwo patrols the pool deck,
+     * so the venue and a talkable NPC overlap by design. There the venue WINS
+     * (the whole point is that arriving at the pool offers a match) and `HUD`
+     * carries the one-line guard that stands its E branch down while a venue
+     * prompt is up. Talking still works: `T` opens chat unconditionally.
+     */
+    this._interiorPrompt = null;
+    this._nearPortal = null;
+
+    /** @type {Array<() => void>} */
+    this._offs = [];
+    if (bus) {
+      this._offs.push(bus.on('interior:prompt', (e) => { this._interiorPrompt = e?.text ?? null; }));
+      this._offs.push(bus.on('portal:near', (e) => { this._nearPortal = e?.portal ?? null; }));
+      // A contest is bound to the world it started in. Leaving mid-contest
+      // abandons it rather than leaving a state machine running over a pool
+      // that is no longer in the scene. Same reasoning as RaceManager's.
+      this._offs.push(bus.on('world:changing', () => this._teardown()));
+      /* Re-arm on EVERY world change - and in a world with no venues, re-arm on
+       * NOTHING, which is what clears the last one.
+       *
+       * Deliberately NOT an early return for worlds that publish no venues.
+       * `arm` is what clears the previous world's list, so returning early
+       * would leave the pool armed after a portal out: walk from the lido into
+       * the maze and the venue would still be there, three worlds away, still
+       * answering E. `arm(null)` finds nothing and clears everything, which is
+       * both the rule and the cleanup in one call. RaceManager.js has the same
+       * comment over the same decision, for the same bug. */
+      this._offs.push(bus.on('world:changed', ({ id, world }) => {
+        this._worldId = id ?? null;
+        this.arm(world ?? null);
+      }));
+      this._offs.push(bus.on('player:died', () => this._teardown()));
+    }
+  }
+
+  /* ================================================================ */
+  /* Registration                                                      */
+  /* ================================================================ */
+
+  /**
+   * Teach the manager one sport.
+   *
+   * @param {string} kind matched against a venue's `kind`
+   * @param {(venue:object, ctx:object)=>object} factory builds a game module
+   * @returns {this}
+   */
+  registerGame(kind, factory) {
+    if (typeof kind === 'string' && kind && typeof factory === 'function') {
+      this._factories.set(kind, factory);
+    }
+    return this;
+  }
+
+  /* ================================================================ */
+  /* Contract surface                                                  */
+  /* ================================================================ */
+
+  /** @returns {Array<object>} venues armed in the active world */
+  get venues() {
+    return this._venues;
+  }
+
+  /** True while a contest is counting down or being played. */
+  get running() {
+    return this.state === MINIGAME_STATE.COUNTDOWN || this.state === MINIGAME_STATE.PLAYING;
+  }
+
+  /** The venue the player is standing in, or null. */
+  get nearest() {
+    return this._near;
+  }
+
+  /** The venue the running contest belongs to, or null. */
+  get venue() {
+    return this._venue;
+  }
+
+  /** True when `start()` would do something where the player is standing. */
+  get ready() {
+    return !this.running && !!this._near;
+  }
+
+  /**
+   * Read the world's venue contract, if it publishes one.
+   *
+   * Written to tolerate every partial state a world can be in - not built yet,
+   * built with no venues, a venue missing a centre - because a missing field
+   * must degrade to "no contest here", never to a thrown exception on a world
+   * change.
+   *
+   * @param {any} world
+   * @returns {boolean} true when at least one usable venue was found
+   */
+  arm(world = this.worldManager?.active ?? null) {
+    this._teardown();
+    this._venues = [];
+    this._near = null;
+    this._setPrompt(null, null);
+
+    const list = Array.isArray(world?.minigameVenues) ? world.minigameVenues : null;
+    if (list) {
+      for (const raw of list) {
+        const v = this._readVenue(raw);
+        if (!v) continue;
+        // A venue whose sport has not been written yet is a published slot, not
+        // an error: the tennis court and the ski slope ship their descriptors
+        // before their game modules, and both must be inert until they do not.
+        if (!this._factories.has(v.kind)) continue;
+        // A world that forbids the underlying capability cannot host the
+        // contest that needs it - a lido in a world with `swim:false` is
+        // scenery. `allows` defaults to permitted, so this costs nothing.
+        if (v.requires && !allows(world, v.requires)) continue;
+        this._venues.push(v);
+      }
+    }
+
+    this.bus?.emit('minigame:armed', {
+      worldId: this._worldId,
+      venues: this._venues.map((v) => ({ id: v.id, kind: v.kind, label: v.label })),
+    });
+    return this._venues.length > 0;
+  }
+
+  /**
+   * Begin a contest.
+   *
+   * @param {string} [venueId] defaults to the venue the player is standing in
+   * @returns {boolean}
+   */
+  start(venueId = this._near?.id) {
+    if (this.running) return false;
+    const venue = this._venues.find((v) => v.id === venueId) ?? null;
+    if (!venue) {
+      this.bus?.emit('hud:notify', { text: 'Nothing to compete in here', tone: 'warn' });
+      return false;
+    }
+    const factory = this._factories.get(venue.kind);
+    if (!factory) return false;
+
+    let game = null;
+    try {
+      game = factory(venue, { player: this.player, bus: this.bus, input: this.input });
+    } catch (err) {
+      console.warn(`[minigame] "${venue.id}" failed to start:`, err);
+      game = null;
+    }
+    if (!game) {
+      this.bus?.emit('hud:notify', { text: `${venue.label} is not available`, tone: 'warn' });
+      return false;
+    }
+
+    this._venue = venue;
+    this._game = game;
+    this.result = null;
+    this.state = MINIGAME_STATE.COUNTDOWN;
+    this.clock = 0;
+    this._awayFor = 0;
+    this._resultHold = 0;
+    this._countdownTotal = Number(game.countdown) > 0 ? Number(game.countdown) : COUNTDOWN_S;
+    this._countdown = this._countdownTotal;
+    this._lastCount = -1;
+    this._setPrompt(null, null);
+
+    this.bus?.emit('minigame:countdown', {
+      count: Math.ceil(this._countdown),
+      of: Math.ceil(this._countdownTotal),
+      gameId: game.id,
+      venueId: venue.id,
+    });
+    return true;
+  }
+
+  /**
+   * Abandon a contest in progress. No payout, no result, no quest credit.
+   *
+   * The user asked for this by name ("also have option to quit match if one is
+   * in progress"), and the reason it pays nothing is the same reason
+   * `RaceManager.abort` does: a contest you can leave for free the moment it
+   * stops going your way is not a contest.
+   *
+   * @param {string} [reason]
+   */
+  abort(reason = 'abandoned') {
+    if (!this.running) return;
+    const venue = this._venue;
+    const gameId = this._game?.id ?? null;
+    this._teardown();
+    this.bus?.emit('minigame:aborted', {
+      reason,
+      gameId,
+      venueId: venue?.id ?? null,
+      label: venue?.label ?? null,
+    });
+    if (reason === 'player') {
+      this.bus?.emit('hud:notify', { text: `${venue?.label ?? 'Contest'} abandoned`, tone: 'info' });
+    }
+  }
+
+  /** Clear the result card and go back to offering a rematch. */
+  reset() {
+    if (this.running) return;
+    this.state = MINIGAME_STATE.IDLE;
+    this.result = null;
+    this._resultHold = 0;
+    this._venue = null;
+    this._game = null;
+    /* Announce the reset so UI sheets tied to the previous result can close.
+     * Without this, a programmatic reset() while the result card was up left
+     * the card's `minigame:menu {open:true}` gameplay block latched forever -
+     * and the deadlock was self-sealing, because the countdown that would
+     * eventually emit `minigame:started` (the other close path) only ticks in
+     * fixedUpdate, which that very block freezes. The UI's close handlers are
+     * idempotent, so the _closeBoard -> reset() -> this emit cycle terminates. */
+    this.bus?.emit('minigame:reset', {});
+  }
+
+  /**
+   * Everything the UI needs for one frame, in one object.
+   *
+   * A snapshot rather than a stream of events, for the reason RaceManager gives:
+   * a split-time readout that updated 60 times a second would be 60 emits a
+   * second for a two-character change, and the UI already has a frame tick.
+   */
+  snapshot() {
+    const g = this._game;
+    return {
+      state: this.state,
+      running: this.running,
+      ready: this.ready,
+      gameId: g?.id ?? null,
+      venueId: this._venue?.id ?? null,
+      label: this._venue?.label ?? null,
+      kind: this._venue?.kind ?? null,
+      clock: this.clock,
+      countdown: Math.max(0, Math.ceil(this._countdown)),
+      countdownOf: Math.ceil(this._countdownTotal),
+      result: this.result,
+      near: this._near ? { id: this._near.id, label: this._near.label, kind: this._near.kind } : null,
+      /* The sport's own readout, whatever it is. The UI renders rows out of
+       * `live.rows`, so a new sport needs no UI change to get a HUD. */
+      live: (this.state === MINIGAME_STATE.COUNTDOWN || this.state === MINIGAME_STATE.PLAYING)
+        ? (g?.snapshot?.() ?? null)
+        : null,
+    };
+  }
+
+  /* ================================================================ */
+  /* Simulation                                                        */
+  /* ================================================================ */
+
+  /**
+   * Proximity, prompt and the E key.
+   *
+   * Frame-rate, not fixed-rate, and deliberately: `Input.pressed` is cleared by
+   * `input.endFrame()`, so a fixed step - which runs zero or two times in a
+   * frame - would miss keypresses or read them twice.
+   *
+   * @param {number} dt
+   */
+  update(dt) {
+    this._pollNear();
+    this._pollPrompt();
+    this._pollKey();
+    if (this.state === MINIGAME_STATE.FINISHED && this._resultHold > 0) {
+      this._resultHold -= dt;
+      if (this._resultHold <= 0) this.reset();
+    }
+  }
+
+  /**
+   * The contest itself.
+   *
+   * Runs AFTER `player.fixedUpdate` in main.js, so the position a length is
+   * measured against is this step's, not last step's - the same ordering
+   * requirement `race.fixedUpdate` documents.
+   *
+   * @param {number} dt fixed timestep
+   * @param {number} elapsed engine time
+   */
+  fixedUpdate(dt, elapsed) {
+    if (!this.running) return;
+
+    if (this.state === MINIGAME_STATE.COUNTDOWN) {
+      this._countdown -= dt;
+      /* Derived from elapsed time, never counted down on a tick.
+       *
+       * A dropped frame must not be able to skip "1". RaceManager's start
+       * lights are built the same way and the note there is the reason. */
+      const left = Math.max(0, Math.ceil(this._countdown));
+      if (left !== this._lastCount) {
+        this._lastCount = left;
+        this.bus?.emit('minigame:countdown', {
+          count: left,
+          of: Math.ceil(this._countdownTotal),
+          gameId: this._game?.id ?? null,
+          venueId: this._venue?.id ?? null,
+        });
+      }
+      if (this._countdown <= 0) {
+        this.state = MINIGAME_STATE.PLAYING;
+        this.clock = 0;
+        try {
+          this._game?.begin?.(elapsed);
+        } catch (err) {
+          console.warn('[minigame] begin failed:', err);
+          this.abort('error');
+          return;
+        }
+        this.bus?.emit('minigame:started', {
+          gameId: this._game?.id ?? null,
+          venueId: this._venue?.id ?? null,
+          label: this._venue?.label ?? null,
+        });
+      }
+      return;
+    }
+
+    this.clock += dt;
+
+    // Walking away is quitting. Measured against the venue the contest belongs
+    // to, not the nearest one, so wandering into an adjacent venue still counts
+    // as leaving this one.
+    if (this._venue && !this._inVenue(this._venue, PROMPT_HYSTERESIS)) {
+      this._awayFor += dt;
+      if (this._awayFor >= LEAVE_GRACE_S) {
+        this.abort('left');
+        return;
+      }
+    } else {
+      this._awayFor = 0;
+    }
+
+    let outcome = null;
+    try {
+      outcome = this._game?.fixedUpdate?.(dt, this.clock) ?? null;
+    } catch (err) {
+      console.warn('[minigame] update failed:', err);
+      this.abort('error');
+      return;
+    }
+    if (outcome) this._finish(outcome);
+  }
+
+  /* ================================================================ */
+  /* Private                                                           */
+  /* ================================================================ */
+
+  /**
+   * Normalise and validate one published venue descriptor.
+   *
+   * @param {any} raw
+   * @returns {object|null} null for anything unusable
+   */
+  _readVenue(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+    const kind = typeof raw.kind === 'string' ? raw.kind.trim() : '';
+    if (!id || !kind) return null;
+
+    const c = raw.centre ?? raw.center ?? null;
+    const cx = Number(c?.x);
+    const cy = Number(c?.y ?? 0);
+    const cz = Number(c?.z);
+    if (!Number.isFinite(cx) || !Number.isFinite(cz)) return null;
+
+    const radius = Number(raw.radius);
+    if (!Number.isFinite(radius) || radius <= 0) return null;
+
+    const reward = Number(raw.reward);
+    return {
+      id,
+      kind,
+      label: typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : id,
+      centre: { x: cx, y: Number.isFinite(cy) ? cy : 0, z: cz },
+      radius,
+      /* The pool basin floor is 3 m below its deck and the ski slope will be
+       * 50 m above its lodge, so a planar radius alone would either miss the
+       * swimmer or offer a race to somebody on a gantry overhead. */
+      yTolerance: Number.isFinite(Number(raw.yTolerance)) ? Number(raw.yTolerance) : 8,
+      reward: Number.isFinite(reward) && reward > 0 ? Math.floor(reward) : MINIGAME_PRIZE,
+      /** World rule this venue needs; see `arm`. */
+      requires: typeof raw.requires === 'string' ? raw.requires : null,
+      /** Opaque to this file - handed straight to the game module. */
+      config: raw.config ?? null,
+      rival: raw.rival ?? null,
+    };
+  }
+
+  /** Planar-with-height-band containment test. */
+  _inVenue(v, slack = 0) {
+    const p = this.player?.position;
+    if (!p || !v) return false;
+    if (Math.abs(p.y - v.centre.y) > v.yTolerance + slack) return false;
+    const dx = p.x - v.centre.x;
+    const dz = p.z - v.centre.z;
+    return Math.hypot(dx, dz) < v.radius + slack;
+  }
+
+  _pollNear() {
+    if (!this._venues.length) {
+      this._near = null;
+      return;
+    }
+    const p = this.player?.position;
+    if (!p) return;
+    let best = null;
+    let bestD = Infinity;
+    for (const v of this._venues) {
+      // Only the venue already entered gets the slack, so the boundary is sharp
+      // on the way in and forgiving on the way out.
+      const slack = this._near?.id === v.id ? PROMPT_HYSTERESIS : 0;
+      if (!this._inVenue(v, slack)) continue;
+      const d = Math.hypot(p.x - v.centre.x, p.z - v.centre.z);
+      if (d < bestD) {
+        bestD = d;
+        best = v;
+      }
+    }
+    this._near = best;
+  }
+
+  /** True when another system has a better claim on E this frame. */
+  get _keyTaken() {
+    return !!this._interiorPrompt || !!this._nearPortal;
+  }
+
+  _pollPrompt() {
+    if (this._keyTaken) {
+      this._setPrompt(null, null);
+      return;
+    }
+    if (this.running) {
+      // Mid-contest, the venue offers the only decision left: stop. This is the
+      // affordance the user asked for - it needs no key they have to discover.
+      const v = this._venue;
+      this._setPrompt(v ? 'Quit' : null, v);
+      return;
+    }
+    if (this.state === MINIGAME_STATE.FINISHED) {
+      this._setPrompt(null, null);
+      return;
+    }
+    this._setPrompt(this._near ? 'Start' : null, this._near);
+  }
+
+  _pollKey() {
+    if (!this._promptText) return;
+    if (!this.input?.pressed?.('KeyE')) return;
+    /* Quitting is a request, not an action: the confirm sheet owns the actual
+     * `abort`, so a stray E over a venue can never throw a match away. */
+    if (this.running) this.bus?.emit('minigame:quitRequest', { venueId: this._venue?.id ?? null });
+    else if (this._near) this.start(this._near.id);
+  }
+
+  /**
+   * Publish the venue prompt.
+   *
+   * Verb and label are sent separately rather than as one formatted string: the
+   * HUD wants the venue name bold like every other noun in that prompt, and
+   * keeping the markup on its side is what stops a world's authored label from
+   * being able to put HTML on screen. `text` is the plain-language fallback for
+   * anything that just wants a sentence.
+   *
+   * @param {string|null} verb
+   * @param {object|null} venue
+   */
+  _setPrompt(verb, venue) {
+    const text = verb && venue ? `${verb} the ${venue.label}` : null;
+    if (text === this._promptText) return;
+    this._promptText = text;
+    this.bus?.emit('minigame:prompt', {
+      text,
+      verb: text ? verb : null,
+      label: text ? venue.label : null,
+      venueId: text ? venue.id : null,
+    });
+  }
+
+  /** Stop everything, right now, with no announcement and no payout. */
+  _teardown() {
+    if (this._game?.dispose) {
+      try {
+        this._game.dispose();
+      } catch {
+        /* a module that already tore itself down is not an error */
+      }
+    }
+    this._game = null;
+    this._venue = null;
+    this.state = MINIGAME_STATE.IDLE;
+    this.clock = 0;
+    this._countdown = 0;
+    this._lastCount = -1;
+    this._awayFor = 0;
+    this._resultHold = 0;
+    this._setPrompt(null, null);
+  }
+
+  /**
+   * Classify, pay, and tell the rest of the game.
+   *
+   * @param {object} outcome from the game module: `{won, place, total, score,
+   *   scoreLabel, rivalName, detail}`
+   */
+  _finish(outcome) {
+    const venue = this._venue;
+    const game = this._game;
+    const won = !!outcome.won;
+    const credits = won ? (venue?.reward ?? MINIGAME_PRIZE) : 0;
+    if (credits > 0) this.economy?.add?.(credits, 'minigame');
+
+    const result = {
+      gameId: game?.id ?? null,
+      venueId: venue?.id ?? null,
+      kind: venue?.kind ?? null,
+      label: venue?.label ?? 'Contest',
+      won,
+      /* 1 or 2 in a head-to-head, which is what all three sports are. Carried
+       * rather than derived so a future three-way contest needs no new field. */
+      place: Number.isFinite(Number(outcome.place)) ? Number(outcome.place) : (won ? 1 : 2),
+      total: Number.isFinite(Number(outcome.total)) ? Number(outcome.total) : 2,
+      score: outcome.score ?? null,
+      scoreLabel: outcome.scoreLabel ?? null,
+      rivalName: outcome.rivalName ?? null,
+      detail: outcome.detail ?? null,
+      time: this.clock,
+      credits,
+      worldId: this._worldId,
+    };
+
+    this.state = MINIGAME_STATE.FINISHED;
+    this.result = result;
+    this._resultHold = RESULT_HOLD_S;
+    this._setPrompt(null, null);
+
+    this.bus?.emit('minigame:finished', result);
+
+    /* Quest credit.
+     *
+     * Shaped for `QuestSystem._eventTargetCandidates`' DEFAULT branch, which is
+     * what an unknown `type` falls through to: it reads `target`, `id`, `name`,
+     * `role`, `itemId`, `npc.*`, `portal.*`, `worldId` and `world` off the
+     * event and nothing else. So the three handles a quest author can name are
+     * `target`/`id` (the game id, e.g. `swim_challenge`) and `name` (the venue
+     * label, e.g. "Lido Swim Challenge"). `_matchesStepTarget` matches whole
+     * token runs, so a step written `{type:'minigame', target:'swim_challenge'}`
+     * matches both.
+     *
+     * Emitted on any FINISH, win or lose, and never on an abort: completing a
+     * contest is the thing a step counts, and walking out of one is not
+     * completing it. `won` and `place` ride along for a future step type that
+     * wants them - today's matcher does not read either. */
+    this.bus?.emit('quest:activity', {
+      type: 'minigame',
+      target: result.gameId,
+      id: result.gameId,
+      name: result.label,
+      kind: result.kind,
+      venueId: result.venueId,
+      won: result.won,
+      place: result.place,
+      score: result.score,
+      worldId: this._worldId,
+    });
+
+    this.bus?.emit('hud:notify', {
+      text: won
+        ? `${result.label} won — +${credits} credits`
+        : `${result.label} lost${result.rivalName ? ` — ${result.rivalName} took it` : ''}`,
+      tone: won ? 'good' : 'warn',
+    });
+  }
+
+  dispose() {
+    this._teardown();
+    for (const off of this._offs) {
+      try {
+        off();
+      } catch {
+        /* handlers already gone */
+      }
+    }
+    this._offs.length = 0;
+  }
+}
+
+export default MinigameManager;

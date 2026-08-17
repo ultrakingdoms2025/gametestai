@@ -8834,6 +8834,95 @@ export class SportsWorld extends World {
       },
     ];
 
+    /* ---- minigame venues ----------------------------------------------
+     *
+     * Published as plain descriptors on the world, exactly like `enterables`:
+     * `MinigameManager` rebuilds its list on `world:changed` and validates every
+     * field, so this file states WHERE a contest happens and never how one
+     * works. A venue whose `kind` has no game module registered is skipped, so
+     * the tennis court and the ski slope can carry their descriptors from now
+     * and stay inert until their modules land.
+     *
+     * `centre`/`radius` are the trigger, and the radius is generous on purpose:
+     * the prompt is what tells a player this place does anything at all, so it
+     * has to appear on the approach rather than on one exact tile. `yTolerance`
+     * is what lets the same venue answer from the deck and from three metres
+     * under it - the basin floor is 1.2 m to 3.0 m below the water.
+     */
+    this.minigameVenues = [
+      {
+        id: 'lido_pool',
+        kind: 'swim',
+        label: 'Lido Swim Challenge',
+        // Centre of the basin. The deck runs x 25..75, z 100..125 around it.
+        centre: new THREE.Vector3(46, 0, 111),
+        radius: 20,
+        yTolerance: 8,
+        reward: 10,
+        // A world that forbids swimming cannot host a swimming contest.
+        requires: 'swim',
+        /* The measured course, inside the basin walls at x 32 / 60. Both touch
+         * planes sit where the water is deep enough for `Swim` to hold the
+         * player: the floor gives about 1.1 m at x 34 and 2.6 m at x 58, and
+         * `Swim` releases below 1.0 m of bed depth, which happens at x ~32.3. */
+        config: {
+          startX: 34,
+          farX: 58,
+          lengths: 2,
+          basin: { x0: 32, x1: 60, z0: 103, z1: 119 },
+        },
+        // Named so the HUD and the result card can say who beat you. There is
+        // no NPC in the water - see the header of minigames/SwimChallenge.js.
+        rival: { name: 'Tavius Okonkwo' },
+      },
+      {
+        id: 'meridian_court',
+        kind: 'tennis',
+        label: 'Meridian Tennis Match',
+        centre: P(112, 26),
+        radius: 22,
+        yTolerance: 6,
+        reward: 10,
+        // The measured court; south (+Z) is the player's end.
+        config: {
+          centreX: 112,
+          netZ: 26,
+          baselineS: 37.9,
+          baselineN: 14.1,
+          halfWidth: 4.115,
+        },
+        rival: { name: 'Deborah Quint-Halloway' },
+      },
+      {
+        id: 'meridian_slope',
+        kind: 'ski',
+        label: 'Meridian Downhill',
+        /* Mid-course on the middle piste, seated on the snow by the height
+         * field itself. The disc must cover the WHOLE descent: MinigameManager
+         * abandons a contest 9 s after the player leaves the venue
+         * (LEAVE_GRACE_S) and a run takes ~15-25 s, so a summit-only trigger
+         * self-aborts halfway down. The START is enforced by the module's
+         * approach phase at the summit gate instead - same pattern as the
+         * lido's deck-wide venue and its start-wall arming. */
+        centre: (() => {
+          const z = -139;
+          const x = -62 + 5.5 * Math.sin((z + 200) * 0.034 + 1);
+          return new THREE.Vector3(x, skiHeight(x, z), z);
+        })(),
+        radius: 60,
+        // Summit ~52 m, run-out ~0 m: the band spans the whole face.
+        yTolerance: 34,
+        reward: 10,
+        config: {
+          /* The module computes every gate's y from the world's own snow
+           * field, so the course sits on the piste by construction rather
+           * than by copy. */
+          heightFn: skiHeight,
+        },
+        rival: { name: 'Kjell Nordvik' },
+      },
+    ];
+
     // Rogue security drones work the outer perimeter and the car park - all of
     // them well over 80 m from the gate so arrival is never an ambush.
     const hostilePosts = [

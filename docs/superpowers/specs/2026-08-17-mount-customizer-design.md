@@ -1,7 +1,7 @@
 # Mount Customizer (F10) — Design
 
 **Date:** 2026-08-17
-**Status:** Approved in brainstorming; spec review passed (3 rounds); awaiting user review
+**Status:** Implemented 2026-08-17 (branch `feat/mount-customizer`; plan `docs/superpowers/plans/2026-08-17-mount-customizer.md`)
 **Scope:** One feature: a per-mount customisation menu (skins + upgrades) for the six mounts, the data model behind it, and the marketplace/inventory flow that feeds it.
 
 ## 1. Problem
@@ -90,7 +90,7 @@ Each mount gains:
 - Skin rows: the five car liveries switch from `unlock_cosmetic` to `grant_item { item_id: 'skin_car_neon' … }`; 15 new skin rows.
 - Stat rows: 48 new `grant_mount_power` rows — `mount ∈ {dragon, eagle, horse, hoverboard, bicycle}` × `power ∈ {power, strength, shield}` × tier 1–3, plus dragon `fire` 1–3. `MARKETPLACE_ACTIONS` union extended accordingly; images through the existing generator; `pricing_kind: 'fixed'` like the existing car power rows (no world multiplier). No existing `source_key` is renamed (the seed sync upserts on `source_key` and never deactivates, so renames would orphan rows).
 - Rows re-seed on the deployed site's cold start as today (INVENTORY-AUDIT.md: catalog is the source of truth, never hand SQL).
-- Conventions, matching the existing rows: `category: 'mounts'` for both skins and upgrades (the five car liveries already are); one `MARKETPLACE_ACTIONS` id per row as today (`mount_dragon_power_1`, `skin_dragon_ember`, … — ~68 new ids, no parameterised ids); no `worlds` restriction (mounts are summonable everywhere; the car liveries' `['race']` limit is dropped so car skins are buyable wherever the upgrades are).
+- Conventions, matching the existing rows: `category: 'mounts'` for both skins and upgrades (the five car liveries already are); one `MARKETPLACE_ACTIONS` id per **upgrade** row (`mount_dragon_power_1`, … — 48 new ids) plus one shared `mount_skin` action for the 15 new skins and the existing shared `cosmetic_vehicle_skin` for the 5 car rows (the convention `cosmetic_char_skin` already uses); no `worlds` restriction (mounts are summonable everywhere; the car liveries' `['race']` limit is dropped so car skins are buyable wherever the upgrades are).
 
 ### 4.6 `MountSkins` (src/systems/MountSkins.js) — new
 

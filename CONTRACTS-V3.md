@@ -202,6 +202,16 @@ built for the dragon harness, posed at a driving position with hands on a wheel.
 Register it alongside hoverboard and dragon, include it in `prebuild()` (main.js warms
 mounts at boot — see §4), and make sure dismount restores camera state as the others do.
 
+**Mount customisation (F10, added 2026-08-17).** `MountManager` owns `_liveries` (per
+mount, `{slot:{color,finish}}`) and `_powers`; both persist through `serialize()`. Every
+mount class declares frozen `static CUSTOM_SLOTS` / `static STATS` and implements
+`applyCustomization(livery)` (read-only reference; tints only its own *cloned* materials
+via `src/mounts/Livery.js`, which owns the tint/finish maths and `MOUNT_STATS`) and
+`applyPowers()`. `src/systems/MountSkins.js` (`applyMountSkin`) is the only path that
+consumes a skin bag item and burns it into `Cosmetics`. `src/ui/MountMenu.js` (F10) is
+generic over `CUSTOM_SLOTS`/`STATS`; F2 is character-only. Design:
+`docs/superpowers/specs/2026-08-17-mount-customizer-design.md`.
+
 ### 3.6 UX — owns `src/ui/HUD.js`, `src/ui/hud.css`, `src/ui/HelpMenu.js`
 
 1. **Move health under credits.** Credits sit top-left; health goes directly beneath it,

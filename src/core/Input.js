@@ -433,7 +433,10 @@ export class Input {
   setBinding(defaultCode, code) {
     if (!BINDABLE.some((d) => d.code === defaultCode)) return { ok: false };
     // Keys the game cannot give up without breaking its own escape hatches.
-    if (['Escape', 'F1', 'F2', 'F3', 'F4', 'F5', 'F9', 'F10', 'Tab'].includes(code)) {
+    // F6/F7/F8 own panels too (keybinds, race, minigame quit) - KeybindMenu's
+    // FIXED_KEYS list documents all of F1-F10 as unrebindable, so the guard
+    // here has to actually cover them.
+    if (['Escape', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'Tab'].includes(code)) {
       return { ok: false };
     }
     let displaced;

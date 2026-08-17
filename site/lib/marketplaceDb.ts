@@ -65,39 +65,48 @@ export async function ensureMarketplaceSchema() {
 
 async function syncMarketplaceSeedItems() {
   const seed = buildMarketplaceSeedItems();
-  for (const item of seed) {
-    await query(
-      `INSERT INTO marketplace_items
-        (source_key, name, description, category, image, game_action, action_config,
-          quantity, cost_buy, cost_sell, world_name, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
-       ON CONFLICT (source_key) DO UPDATE
-       SET name = EXCLUDED.name,
-          description = EXCLUDED.description,
-          category = EXCLUDED.category,
-          image = EXCLUDED.image,
-          game_action = EXCLUDED.game_action,
-          action_config = EXCLUDED.action_config,
-          cost_buy = EXCLUDED.cost_buy,
-          cost_sell = EXCLUDED.cost_sell,
-          world_name = EXCLUDED.world_name,
-          sort_order = EXCLUDED.sort_order,
-          updated_at = NOW()`,
-      [
-       item.source_key,
-       item.name,
-        item.description,
-        item.category,
-        item.image,
-        item.game_action,
-        JSON.stringify(item.action_config),
-        item.quantity,
-        item.cost_buy,
-        item.cost_sell,
-        item.world_name,
-        item.sort_order,
-      ]
-    );
+  // 505 rows on a cold-start path (ensureMarketplaceSchema): open ONE
+  // connection and reuse it for every row, not one connection per row via
+  // the module's query() helper (which connect()s and end()s each call).
+  const client = makeClient();
+  await client.connect();
+  try {
+    for (const item of seed) {
+      await client.query(
+        `INSERT INTO marketplace_items
+          (source_key, name, description, category, image, game_action, action_config,
+            quantity, cost_buy, cost_sell, world_name, sort_order)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
+         ON CONFLICT (source_key) DO UPDATE
+         SET name = EXCLUDED.name,
+            description = EXCLUDED.description,
+            category = EXCLUDED.category,
+            image = EXCLUDED.image,
+            game_action = EXCLUDED.game_action,
+            action_config = EXCLUDED.action_config,
+            cost_buy = EXCLUDED.cost_buy,
+            cost_sell = EXCLUDED.cost_sell,
+            world_name = EXCLUDED.world_name,
+            sort_order = EXCLUDED.sort_order,
+            updated_at = NOW()`,
+        [
+         item.source_key,
+         item.name,
+          item.description,
+          item.category,
+          item.image,
+          item.game_action,
+          JSON.stringify(item.action_config),
+          item.quantity,
+          item.cost_buy,
+          item.cost_sell,
+          item.world_name,
+          item.sort_order,
+        ]
+      );
+    }
+  } finally {
+    await client.end();
   }
 }
 

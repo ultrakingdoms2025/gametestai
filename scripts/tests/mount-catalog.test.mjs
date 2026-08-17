@@ -63,6 +63,8 @@ test('source keys are unique and the pre-existing mount keys are still present',
   }
   const ids = new Set(MARKETPLACE_ACTIONS.map((a) => a.id));
   for (const r of BASE_ITEMS) assert.ok(ids.has(r.game_action), `${r.source_key} action ${r.game_action}`);
+  // Buy must always cost more than sell, or buy->sell->buy prints credits.
+  for (const r of BASE_ITEMS) assert.ok(r.cost_buy > r.cost_sell, `${r.source_key}: cost_buy ${r.cost_buy} <= cost_sell ${r.cost_sell}`);
 
   // Buy->sell->buy must not print credits: a skin's catalog price must stay
   // well above what the game pays back for the bag item it grants.

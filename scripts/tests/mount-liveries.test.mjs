@@ -284,7 +284,7 @@ test('Cosmetics.unlock accepts every mount skin id', () => {
   for (const s of MOUNT_SKINS) assert.equal(c.unlock(s.id), true, s.id);
 });
 
-import { itemDef, skinItemId, skinIdFromItem, itemIconSVG, KIND_ACCENT } from '../../src/systems/ItemDefs.js';
+import { itemDef, skinItemId, skinIdFromItem, itemIconSVG, KIND_ACCENT, MOUNT_ABBR } from '../../src/systems/ItemDefs.js';
 
 test('every mount skin has a stack-1 kind:skin item and the id helpers round-trip', () => {
   assert.ok(KIND_ACCENT.skin);
@@ -473,10 +473,12 @@ test('deserialize: an empty-after-filter powers bag clears an existing bag for t
   assert.equal('dragon' in mgr.getPowers(), false);
 });
 
-test('mount skin bag items prefix `short` with a 3-letter mount abbreviation', () => {
+test('mount skin bag items prefix `short` with the mount\'s declared MOUNT_ABBR entry', () => {
+  const mounts = new Set(MOUNT_SKINS.map((s) => s.mount));
+  for (const m of mounts) assert.ok(MOUNT_ABBR[m], `MOUNT_ABBR missing entry for ${m}`);
   for (const s of MOUNT_SKINS) {
     const def = itemDef(skinItemId(s.id));
-    assert.match(def.short, /^[A-Z]{3} SKN$/, s.id);
+    assert.equal(def.short, `${MOUNT_ABBR[s.mount]} SKN`, s.id);
   }
 });
 

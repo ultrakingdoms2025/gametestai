@@ -216,7 +216,7 @@ export const MARKETPLACE_ACTIONS = [
   },
   {
     id: 'cosmetic_vehicle_skin',
-    label: 'Unlock vehicle skin',
+    label: 'Car skin',
     description: 'Grants a car skin item; apply it from the Mount menu (F10) while driving.',
     effect: 'grant_item',
   },

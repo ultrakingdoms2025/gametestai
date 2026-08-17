@@ -64,10 +64,6 @@ export class MountMenu {
       this._offs.push(bus.on('mount:powers', resync));
       this._offs.push(bus.on('cosmetic:unlocked', resync));
       this._offs.push(bus.on('inventory:changed', resync));
-      // Switching mounts (e.g. dismount one, mount another) while the panel is
-      // open must rebuild it for the newly ridden mount, not keep showing the
-      // old one's slots. The event carries the mount instance itself.
-      this._offs.push(bus.on('mount:mounted', (e) => { if (this._open && e?.mount) this._buildFor(e.mount); }));
       // A forced dismount (world change, portal) has already restored the rider's
       // pre-mount camera; do not overwrite it with the riding mode we saved.
       this._offs.push(bus.on('mount:dismounted', () => { this._prevCameraMode = null; this.close(); }));
@@ -115,6 +111,10 @@ export class MountMenu {
 
   /** (Re)build the body for the mount being ridden. */
   _buildFor(mount) {
+    // A colour-picker write coalesced for the previous mount's slot ids must
+    // not land on this one once the body is rebuilt out from under it.
+    if (this._pendingRaf) { cancelAnimationFrame(this._pendingRaf); this._pendingRaf = 0; }
+    this._pending = null;
     this._mountId = mount.id;
     const C = mount.constructor;
     this._slots = Array.isArray(C.CUSTOM_SLOTS) ? C.CUSTOM_SLOTS : [];

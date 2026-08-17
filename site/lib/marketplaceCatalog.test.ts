@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BASE_ITEMS, MARKETPLACE_ACTIONS, buildMarketplaceSeedItems } from './marketplaceCatalog';
+import { BASE_ITEMS, MARKETPLACE_ACTIONS, MARKETPLACE_WORLDS, buildMarketplaceSeedItems } from './marketplaceCatalog';
 
 describe('mount customizer catalog rows', () => {
   it('sells Speed/Acceleration/Armour I-III for the five non-car mounts and Fire I-III for the dragon', () => {
@@ -39,6 +39,6 @@ describe('mount customizer catalog rows', () => {
     const keys = BASE_ITEMS.map((r) => r.source_key);
     expect(new Set(keys).size).toBe(keys.length);
     for (const k of ['mount_strength_1', 'mount_shield_3', 'mount_power_2', 'cosmetic_car_neon', 'pack_medkit']) expect(keys).toContain(k);
-    expect(buildMarketplaceSeedItems().length).toBeGreaterThan(170);
+    expect(buildMarketplaceSeedItems().length).toBe(BASE_ITEMS.length * MARKETPLACE_WORLDS.length);
   });
 });

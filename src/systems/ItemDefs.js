@@ -284,7 +284,7 @@ export function skinIdFromItem(itemId) {
 }
 
 /** Bag-item `short` prefix per mount, so dropped skin pickups are distinguishable. */
-const MOUNT_ABBR = { car: 'CAR', dragon: 'DRG', eagle: 'EGL', horse: 'HRS', hoverboard: 'HVR', bicycle: 'BKE' };
+export const MOUNT_ABBR = { car: 'CAR', dragon: 'DRG', eagle: 'EGL', horse: 'HRS', hoverboard: 'HVR', bicycle: 'BKE' };
 
 /*
  * One bag item per mount skin. Bought at a merchant (`grant_item`), it sits in

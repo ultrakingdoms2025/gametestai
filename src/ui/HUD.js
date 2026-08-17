@@ -932,7 +932,7 @@ export class HUD {
       el('div', 'pause-t', 'STANDBY'),
       this.pauseSub,
       actions,
-      el('div', 'pause-hint', 'F3 diagnostics · T opens comms · F1 controls · F10 mount')
+      el('div', 'pause-hint', 'F3 diagnostics · T opens comms · F1 controls · F10 customise mount')
     );
     p.appendChild(inner);
     p.addEventListener('mousedown', (e) => {
@@ -1399,7 +1399,7 @@ export class HUD {
       ['J', 'Quest board'],
       ['K', 'Unstuck'],
       ['F2', 'Customise character'],
-      ['F10', 'Customise mount'],
+      ['F10', 'Customise mount — while riding'],
       ['F4', 'Audio options'],
       ['F6', 'Rebind keys'],
       ['F7', 'Race panel — in the circuit'],

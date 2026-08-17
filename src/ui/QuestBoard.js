@@ -1,7 +1,9 @@
 /**
  * QuestBoard — full-screen overlay UI for the quest system.
  *
- * Opens when the player presses E near a Quest Manager NPC.
+ * Opens on J from anywhere, or on E next to a Quest Manager NPC. Until J
+ * existed the board was reachable only by walking to one of the five Quest
+ * Managers, which made every quest in the game invisible from everywhere else.
  * Shows three tabs: Available / In Progress / Completed.
  * Quest steps now advance automatically from player activity and target IDs.
  */
@@ -35,14 +37,47 @@ export class QuestBoard {
     this._el = this._build();
     root.appendChild(this._el);
 
-    // Window-level Escape listener so closing works regardless of focus or
-    // pointer-lock state (same pattern as HelpMenu, AudioMenu, etc.).
+    /* Window-level key listener so the board works regardless of focus or
+     * pointer-lock state (same pattern as HelpMenu, AudioMenu, KeybindMenu).
+     *
+     * ── Why J is a FIXED key, not a rebindable one ─────────────────────────
+     *
+     * `Input.BINDABLE` is for actions gameplay reads through `Input.pressed`,
+     * and `Input` stops reporting entirely while a panel has the keyboard —
+     * which is exactly when a player needs to be able to close that panel. So
+     * every panel key (I, B, K, F1–F9, Esc) owns its own listener instead, and
+     * `KeybindMenu.FIXED_KEYS` documents them without offering to move them.
+     * The quest board is a panel, so J joins that list rather than BINDABLE.
+     *
+     * `textCaptured` is checked because this listener runs OUTSIDE `Input`:
+     * `Input._bind` swallows gameplay keys while the chat field has focus, but
+     * it cannot swallow ours, and without the check typing "jump" into a
+     * conversation would throw the quest board over it.
+     */
     this._onWindowKey = (e) => {
-      if (this._open && this._openGuard === 0 && e.code === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        this.close();
+      if (e.code === 'Escape') {
+        if (this._open && this._openGuard === 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.close();
+        }
+        return;
       }
+      if (e.code !== 'KeyJ' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (this.input?.textCaptured) return;
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (this._open) {
+        if (this._openGuard === 0) this.close();
+        return;
+      }
+      /* Through QuestSystem rather than straight to `open()`: `openBoard()` is
+       * the system's own front door and publishes the quest/engagement payload
+       * with the request. It had no caller at all before this key existed. */
+      if (this.questSystem?.openBoard) this.questSystem.openBoard();
+      else this.open();
     };
     window.addEventListener('keydown', this._onWindowKey, true);
 
@@ -122,13 +157,13 @@ export class QuestBoard {
             <button class="qb-tab"         data-tab="active">IN PROGRESS</button>
             <button class="qb-tab"         data-tab="completed">COMPLETED</button>
           </div>
-          <button class="qb-close" title="Close [E / ESC]">\u2715</button>
+          <button class="qb-close" title="Close [J / E / ESC]">\u2715</button>
         </div>
         <div class="qb-body">
           <div class="qb-list"></div>
           <div class="qb-detail"></div>
         </div>
-        <div class="qb-footer">Press <kbd>E</kbd> or <kbd>ESC</kbd> to close</div>
+        <div class="qb-footer">Press <kbd>J</kbd>, <kbd>E</kbd> or <kbd>ESC</kbd> to close</div>
       </div>`;
 
     el.querySelector('.qb-close').addEventListener('click', () => this.close());

@@ -34,6 +34,7 @@ const CAPTURE_HINT = 'Press any key…  (Esc to cancel)';
  * footer for why), so the menu documents them rather than hiding them.
  */
 const FIXED_KEYS = [
+  { key: 'J', label: 'Quest board — anywhere' },
   { key: 'I', label: 'Inventory & bag' },
   { key: 'B', label: 'Marketplace (near a vendor)' },
   { key: 'K', label: 'Unstuck — teleport to safety' },
@@ -162,7 +163,7 @@ export class KeybindMenu {
     foot.append(reset, this._msg);
 
     const note = el('div', 'kb-note',
-      'Fixed keys (I, B, M, K, F1–F9 and Esc) cannot be rebound: those panels listen for '
+      'Fixed keys (J, I, B, M, K, F1–F9 and Esc) cannot be rebound: those panels listen for '
       + 'themselves so they still open when everything else is disabled, which is exactly '
       + 'when you need them.');
 

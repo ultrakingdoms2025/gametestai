@@ -48,13 +48,17 @@ export class ChatClient {
    * Send a player line and stream the reply.
    * @param {any} npc            NPC object (`.id .name .persona`)
    * @param {string} text        player message
-   * @param {{onToken?:(t:string)=>void, signal?:AbortSignal, world?:string}} opts
+   * @param {{onToken?:(t:string)=>void, signal?:AbortSignal, world?:string,
+   *          quests?:Array<object>|null}} opts  `quests` is
+   *   `QuestSystem.summary()` — the player's in-progress objectives, so the
+   *   model can answer "how do I finish this" instead of inventing an answer.
    * @returns {Promise<string>}  the complete reply text
    */
-  async send(npc, text, { onToken, signal, world } = {}) {
+  async send(npc, text, { onToken, signal, world, quests } = {}) {
     const npcId = npc?.id ?? 'unknown';
     const history = this.history(npcId);
     const worldName = world ?? npc?.worldId ?? npc?.world ?? 'the Nexus';
+    const questList = Array.isArray(quests) ? quests : [];
 
     this.bus?.emit('chat:npc-message', { npc, text: '', streaming: true });
 
@@ -62,7 +66,17 @@ export class ChatClient {
     if (!this.offline) {
       try {
         reply = await this._sendRemote(
-          { npcId, npcName: npc?.name ?? 'Stranger', persona: npc?.persona ?? '', world: worldName, playerMessage: text, history: history.slice(-HISTORY_TURNS * 2) },
+          {
+            npcId,
+            npcName: npc?.name ?? 'Stranger',
+            persona: npc?.persona ?? '',
+            world: worldName,
+            // Own field, not folded into `persona`: that one is cut at 700
+            // characters by both chat backends.
+            quests: questList,
+            playerMessage: text,
+            history: history.slice(-HISTORY_TURNS * 2),
+          },
           onToken,
           signal
         );
@@ -74,7 +88,7 @@ export class ChatClient {
     }
 
     if (!reply) {
-      reply = await this._sendLocal(npc, text, worldName, onToken, signal);
+      reply = await this._sendLocal(npc, text, worldName, onToken, signal, questList);
     }
 
     history.push({ role: 'user', content: text });
@@ -189,8 +203,8 @@ export class ChatClient {
   /* -------------------------------------------------- offline generation -- */
 
   /** Renders the local reply with the same token-by-token cadence as the API. */
-  async _sendLocal(npc, text, world, onToken, signal) {
-    const reply = this._compose(npc, text, world);
+  async _sendLocal(npc, text, world, onToken, signal, quests = []) {
+    const reply = this._compose(npc, text, world, quests);
     if (!onToken) return reply;
 
     const chunks = reply.match(/\S+\s*/g) ?? [reply];
@@ -212,7 +226,7 @@ export class ChatClient {
    * Classifies intent by keyword, then fills a template with facts drawn from
    * the NPC's own persona, name and world so lines stay in character.
    */
-  _compose(npc, text, world) {
+  _compose(npc, text, world, quests = []) {
     const name = npc?.name ?? 'Stranger';
     const persona = npc?.persona ?? '';
     const hostile = npc?.type === 'hostile';
@@ -221,6 +235,18 @@ export class ChatClient {
     const q = (text ?? '').toLowerCase();
     const intent = classify(q, hostile);
     const subject = keyNoun(text) || bits.role;
+
+    /* A player with no API key used to get "Help? Always." when they asked how
+     * to finish a quest — a canned line from the `help` template bank, which
+     * matches on the word "quest" and then says nothing about one. The offline
+     * generator now reads the same summary the remote prompt gets, so the one
+     * question a quest-blind fallback most obviously fails at is answered from
+     * real data. Hostiles are excluded: they are not a hint system.
+     * Checked before `_gameFactReply` because "how do I …" hits that too. */
+    if (!hostile) {
+      const questReply = questClue(q, quests);
+      if (questReply) return questReply.replace(/\{name\}/g, name).replace(/\{world\}/g, worldName);
+    }
 
     const factReply = this._gameFactReply(q);
     if (factReply) return factReply.replace(/\{name\}/g, name).replace(/\{world\}/g, worldName);
@@ -249,7 +275,7 @@ export class ChatClient {
       return 'The Nexus has five worlds: Aether Station, Medieval Valley, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge (three race circuits: Vellum Ridge Circuit, Cinder Gorge, and Aurora Rise, which has a 360 loop). Station is the hub; the other four worlds each have one return portal.';
     }
     if (/\b(how do i|how do you|controls|key|keys|button|buttons|move|play|do i)\b/.test(q)) {
-      return 'E talks to friendlies, opens the quest board at quest managers, picks up loot, and enters portals; T opens chat; F1 shows help; I opens inventory; B opens the marketplace; K unstucks.';
+      return 'J opens the quest board anywhere; E talks to friendlies, picks up loot, and enters portals; T opens chat; F1 shows help; I opens inventory; B opens the marketplace; K unstucks.';
     }
     if (/\b(worlds?|places?|where is|where do|what is in)\b/.test(q)) {
       return 'The Nexus has five worlds: Aether Station, Medieval Valley, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge (three race circuits: Vellum Ridge Circuit, Cinder Gorge, and Aurora Rise, which has a 360 loop).';
@@ -285,6 +311,87 @@ const WORLD_NAMES = {
 function prettyWorld(id) {
   if (!id) return 'the Nexus';
   return WORLD_NAMES[id] ?? id;
+}
+
+/* ---------------------------------------------------------------- quests -- */
+
+/**
+ * Asking about a quest, as opposed to asking how to walk.
+ *
+ * Two tiers rather than one loose pattern. A bare "how do I …" is far more
+ * often a controls question — `_gameFactReply` answers those — so the phrase
+ * only counts here when the player also named a quest-shaped noun. The second
+ * tier catches the ways a player asks "what now" without ever using the word.
+ */
+const QUEST_NOUN_RE = /\b(quest|quests|objective|objectives|mission|missions|task|tasks|assignment|errand|bounty|contract)\b/;
+const QUEST_NEXT_RE = /\b(what (do|should) i do next|what(?:'s| is) next|what next|what now|where (do|should) i go( next)?|what am i (supposed to|meant to) do)\b/;
+
+/** A target id like `nexus_shard` reads as prose once the underscores go. */
+function readable(target) {
+  return String(target ?? '').replace(/[_-]+/g, ' ').trim();
+}
+
+/**
+ * An in-character CLUE for one quest step — what to go and do, not a
+ * numbered walkthrough. Falls back to the step's own label, which is the
+ * author's own words for it.
+ */
+function stepClue(step) {
+  const what = readable(step?.target);
+  const label = String(step?.label ?? '').trim();
+  switch (step?.type) {
+    case 'kill':
+      return what ? `Something needs putting down — ${what}. They don't come quietly.` : 'There is killing to be done, and it will not do itself.';
+    case 'collect':
+      return what ? `You're short on ${what}. It does not walk to you; go where it falls.` : 'You are short on salvage. Look where things break.';
+    case 'visit':
+      return what ? `You have not set foot in ${prettyWorld(step.target)} yet. The portals are how.` : 'There is ground you have not walked yet.';
+    case 'talk':
+      return what ? `${what} is the one to ask. Find them and open your mouth.` : 'Somebody here is waiting to be spoken to.';
+    case 'interact':
+      return what ? `${what} — put your hands on it. E does the rest.` : 'Something out there wants handling, not looking at.';
+    case 'purchase':
+      return what ? `The market has ${what}. Credits talk; B opens the stalls.` : 'The market has what you need. B opens the stalls.';
+    case 'race':
+      return what ? `${what}. Get in and drive it, and mind that finishing is the point — quitting halfway counts for nothing.` : 'A circuit is waiting. Finishing is the part that counts.';
+    case 'survive':
+      return 'Stay on your feet and stay untouched. The moment something lands a hit, that clock starts again.';
+    case 'customize':
+      return 'Change your own look first — F2 opens that.';
+    default:
+      return label ? `It comes down to this: ${label.toLowerCase()}.` : 'The board words it better than I can.';
+  }
+}
+
+/**
+ * Offline quest answer, or '' to let the persona templates handle the line.
+ *
+ * @param {string} q lower-cased player message
+ * @param {Array<object>} quests `QuestSystem.summary()`
+ */
+function questClue(q, quests) {
+  const asked = QUEST_NOUN_RE.test(q) || QUEST_NEXT_RE.test(q);
+  if (!asked) return '';
+
+  const list = Array.isArray(quests) ? quests : [];
+  if (!list.length) {
+    // Still useful: it names the thing the player could not find, which is the
+    // whole reason the board got a hotkey.
+    return 'Nothing on your slate that I can see. Press J — the board lists what is going, wherever you happen to be standing.';
+  }
+
+  const quest = list[0];
+  const step = quest?.steps?.find((s) => !s.done);
+  if (!step) {
+    return `"${quest?.title ?? 'That job'}" is as good as done — every part of it is behind you. Go and collect on it.`;
+  }
+
+  const progress = step.count > 1 ? ` You are ${step.have} of ${step.count} in.` : '';
+  const elsewhere = step.world && quest.world && step.world !== quest.world
+    ? ` And not here — that part is in ${prettyWorld(step.world)}.`
+    : '';
+  const more = list.length > 1 ? ` You have ${list.length} jobs running, mind.` : '';
+  return `"${quest.title}" is the one still open. ${stepClue(step)}${progress}${elsewhere}${more}`;
 }
 
 /**

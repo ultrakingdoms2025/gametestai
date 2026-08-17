@@ -33,13 +33,15 @@ function stamp() {
 export class ChatBox {
   /**
    * @param {{ root: HTMLElement, bus: any, input: any, client: any,
-   *           worldManager: any, onClose?: Function }} ctx
+   *           worldManager: any, questSystem?: any, onClose?: Function }} ctx
    */
-  constructor({ root, bus, input, client, worldManager, onClose }) {
+  constructor({ root, bus, input, client, worldManager, questSystem, onClose }) {
     this.bus = bus;
     this.input = input;
     this.client = client;
     this.worldManager = worldManager;
+    /** Optional — supplies the quest context sent with each line. See `_submit`. */
+    this.questSystem = questSystem ?? null;
     this._onClose = onClose;
 
     this._open = false;
@@ -341,10 +343,18 @@ export class ChatBox {
     const speaker = (npc?.name ?? 'CONTACT').toUpperCase();
     let body = null;
     const world = this.worldManager?.active?.id;
+    /* What the player is actually trying to do, sent alongside where they are.
+     *
+     * Deliberately its OWN payload field rather than appended to `persona`:
+     * `persona` is truncated at 700 characters server-side, so smuggling the
+     * quest log through it would silently cut either the character or the
+     * objectives — whichever happened to be second. */
+    const quests = this.questSystem?.summary?.() ?? null;
 
     try {
       await this.client.send(npc, text, {
         world,
+        quests,
         signal: ctrl.signal,
         onToken: (tok) => {
           if (ctrl.signal.aborted) return;

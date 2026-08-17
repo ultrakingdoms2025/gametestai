@@ -1274,6 +1274,97 @@ body {
 }
 
 /* ==========================================================================
+   OBJECTIVE TRACKER  (top-left, last in the vitals stack)
+
+   The persistent half of quest feedback — everything else about a quest was a
+   toast that had already faded by the time the player wondered what they were
+   doing. Deliberately the quietest panel in the column: it is a reminder, not
+   a readout, so it carries no bar, no colour of its own and no animation, and
+   it is dimmer than stamina, which is already dimmer than health.
+
+   It has no coordinates because it has no corner: the flex column places it,
+   which is what stops it colliding with a vitals panel that grows.
+   ========================================================================== */
+.questtrack {
+  padding: 8px 15px 10px;
+  clip-path: var(--clip-br);
+  opacity: 0.88;
+  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.questtrack[hidden] {
+  display: none;
+}
+
+.questtrack::before {
+  /* Left accent rule, matching health and stamina — amber, so a glance can
+     tell the objective apart from the two survival readouts above it. */
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 180, 74, 0.55);
+}
+
+.qt-title {
+  margin-top: 2px;
+  font-family: var(--f-disp);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #ffe6c2;
+  text-shadow: 0 0 10px rgba(255, 180, 74, 0.35);
+  /* Authored titles can be long; the panel's width is not theirs to set. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qt-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.qt-step-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--f-ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--txt-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qt-step-count {
+  flex: 0 0 auto;
+  font-family: var(--f-disp);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #ffd9a0;
+  font-variant-numeric: tabular-nums;
+}
+
+.qt-step-count:empty {
+  display: none;
+}
+
+/* A full-screen panel is up — the quest board says all of this at length, and
+   the rest cover this corner outright. Same treatment the help chip gets. */
+.hud.overlaid .questtrack,
+.hud.chatting .questtrack,
+.hud.dead .questtrack {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+/* ==========================================================================
    AMMO  (bottom-right)
    ========================================================================== */
 .ammo {

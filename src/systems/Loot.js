@@ -598,16 +598,19 @@ export class Loot {
     for (const entry of p.contents) {
       if (entry.itemId === 'credits') {
         this.economy?.add(entry.qty, 'loot');
+        /* `loot:collected` is the canonical pickup event - QuestSystem advances
+         * collect steps straight from it (_onCollect). Emitting quest:activity
+         * here as well made every real pickup count TWICE, because QuestSystem
+         * subscribes to both. Measured in-game: one pickup, +2 progress. */
         this.bus?.emit('loot:collected', { itemId: 'credits', qty: entry.qty, fromCache, pickup: p });
-        this.bus?.emit('quest:activity', { type: 'collect', target: entry.itemId, id: entry.itemId, itemId: entry.itemId, pickup: p });
         took++;
         continue;
       }
       const res = this.inventory?.acquire(entry.itemId, entry.qty) ?? { taken: 0, dropped: entry.qty };
       if (res.taken > 0) {
         took++;
+        // See the note above: quest:activity here double-counted every pickup.
         this.bus?.emit('loot:collected', { itemId: entry.itemId, qty: res.taken, fromCache, pickup: p });
-        this.bus?.emit('quest:activity', { type: 'collect', target: entry.itemId, id: entry.itemId, itemId: entry.itemId, pickup: p });
         this.bus?.emit('hud:notify', {
           text: `+${res.taken} ${itemDef(entry.itemId)?.name ?? entry.itemId}${res.toStore > 0 ? ' (store)' : ''}`,
           tone: 'info',

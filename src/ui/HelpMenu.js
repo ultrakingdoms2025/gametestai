@@ -102,6 +102,7 @@ const GROUPS = [
     accent: 'amber',
     rows: [
       ['T', 'Open comms / chat'],
+      ['J', 'Quest board — from anywhere'],
       ['F1', 'This panel'],
       ['F2', 'Customise your character'],
       ['F4', 'Audio options'],

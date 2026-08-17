@@ -442,13 +442,28 @@ export async function siteAudit(
 // Quest system DB functions
 // ---------------------------------------------------------------------------
 
-let questSchemaDone = false;
+let questSchemaPromise: Promise<void> | null = null;
 
-async function ensureQuestSchema(): Promise<void> {
-  if (questSchemaDone) return;
-  questSchemaDone = true;
-  // The quests table is seeded by admin; just ensure the steps column exists.
+/**
+ * Idempotent, additive-only schema guard. Every statement here MUST be safe to
+ * run repeatedly against production (CREATE ... IF NOT EXISTS / ADD COLUMN IF
+ * NOT EXISTS). Never drop or rewrite existing data.
+ */
+function ensureQuestSchema(): Promise<void> {
+  // Memoise the promise (not a bare boolean) so concurrent callers wait for the
+  // DDL to finish instead of racing ahead of it and querying missing columns.
+  if (!questSchemaPromise) questSchemaPromise = runQuestSchema();
+  return questSchemaPromise;
+}
+
+async function runQuestSchema(): Promise<void> {
+  // The quests table is seeded by admin; just ensure the columns this app reads
+  // exist. `repeatable` defaults FALSE so any quest authored before the column
+  // existed stays one-shot — the safe direction for the credit economy.
   await pgQuery(`ALTER TABLE quests ADD COLUMN IF NOT EXISTS steps TEXT`).catch(() => {});
+  await pgQuery(
+    `ALTER TABLE quests ADD COLUMN IF NOT EXISTS repeatable BOOLEAN NOT NULL DEFAULT FALSE`
+  ).catch(() => {});
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS player_quest_engagements (
       id                 TEXT PRIMARY KEY,
@@ -472,9 +487,82 @@ async function ensureQuestSchema(): Promise<void> {
   await pgQuery(
     `ALTER TABLE player_quest_engagements ADD COLUMN IF NOT EXISTS step_states TEXT`
   ).catch(() => {});
+  // quest_line is what pre_steps names, so it must live on the engagement for
+  // cross-world prerequisite matching to survive a quest row being deleted.
+  await pgQuery(
+    `ALTER TABLE player_quest_engagements ADD COLUMN IF NOT EXISTS quest_line TEXT`
+  ).catch(() => {});
+  // Denormalised copy of quests.reward_credits so out-of-world engagements can
+  // render (and complete) without the client resolving the quest object.
+  // Deliberately NO default: pre-existing rows stay NULL so reads fall through
+  // to the live quests row instead of being masked by a fabricated 0.
+  await pgQuery(
+    `ALTER TABLE player_quest_engagements ADD COLUMN IF NOT EXISTS reward_credits INTEGER`
+  ).catch(() => {});
   await pgQuery(
     `CREATE INDEX IF NOT EXISTS pqe_player_idx ON player_quest_engagements(player_id, updated_at DESC)`
   ).catch(() => {});
+}
+
+/**
+ * pre_steps / post_steps hold a JSON array of quest-LINE names. Older rows may
+ * hold a comma/newline delimited string, so tolerate both (mirrors the parser
+ * used by the admin quest editor).
+ */
+function parseQuestLineList(value: unknown): string[] {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => String(item).trim()).filter(Boolean);
+    }
+  } catch { /* not JSON — fall through to delimited parsing */ }
+  return value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
+}
+
+export type QuestRow = {
+  id: string; quest_number: number; world: string; quest_line: string;
+  title: string; reward_credits: number; duration_minutes: number | null;
+  pre_steps: string | null; steps: string | null; is_active: boolean;
+  repeatable: boolean;
+};
+
+/** Authoritative quest lookup — never trust the client for these fields. */
+export async function getQuestById(questId: string): Promise<QuestRow | null> {
+  await ensureQuestSchema();
+  const { rows } = await pgQuery<QuestRow>(
+    `SELECT id, quest_number, world, quest_line, title, reward_credits,
+            duration_minutes, pre_steps, steps, is_active, repeatable
+     FROM quests WHERE id = $1 LIMIT 1`,
+    [questId]
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Quest-line names in `preSteps` that this player has NOT completed, in ANY
+ * world (that global scope is what makes cross-world gating possible).
+ */
+export async function findMissingPrerequisites(
+  playerId: string,
+  preSteps: unknown
+): Promise<string[]> {
+  const required = parseQuestLineList(preSteps);
+  if (!required.length) return [];
+  await ensureQuestSchema();
+  // COALESCE so engagements accepted before quest_line existed still count via
+  // their quest_id, without needing a data-rewriting backfill.
+  const { rows } = await pgQuery<{ quest_line: string | null }>(
+    `SELECT DISTINCT COALESCE(e.quest_line, q.quest_line) AS quest_line
+     FROM player_quest_engagements e
+     LEFT JOIN quests q ON q.id = e.quest_id
+     WHERE e.player_id = $1 AND e.status = 'completed'`,
+    [playerId]
+  );
+  const completed = new Set(
+    rows.map((r) => (r.quest_line ?? '').trim().toLowerCase()).filter(Boolean)
+  );
+  return required.filter((line) => !completed.has(line.trim().toLowerCase()));
 }
 
 export async function listActiveQuestsForWorld(world: string) {
@@ -502,85 +590,217 @@ export async function getPlayerQuestEngagements(playerId: string) {
     percent_complete: number; credits_rewarded: number; failure_reason: string | null;
     step_states: string | null; accepted_at: string; completed_at: string | null;
     failed_at: string | null; updated_at: string;
+    quest_line: string | null; reward_credits: number; quest_steps: string | null;
   }>(
-    `SELECT id, quest_id, quest_number, quest_title, world, duration_minutes,
-            status, percent_complete, credits_rewarded, failure_reason, step_states,
-            accepted_at, completed_at, failed_at, updated_at
-     FROM player_quest_engagements WHERE player_id = $1
-     ORDER BY updated_at DESC`,
+    // Denormalised quest fields are carried on the row so the client can render
+    // engagements from OTHER worlds, where it cannot resolve the quest object.
+    // COALESCE covers rows accepted before these columns existed.
+    `SELECT e.id, e.quest_id, e.quest_number, e.quest_title, e.world, e.duration_minutes,
+            e.status, e.percent_complete, e.credits_rewarded, e.failure_reason, e.step_states,
+            e.accepted_at, e.completed_at, e.failed_at, e.updated_at,
+            COALESCE(e.quest_line, q.quest_line)              AS quest_line,
+            COALESCE(e.reward_credits, q.reward_credits, 0)   AS reward_credits,
+            q.steps                                           AS quest_steps
+     FROM player_quest_engagements e
+     LEFT JOIN quests q ON q.id = e.quest_id
+     WHERE e.player_id = $1
+     ORDER BY e.updated_at DESC`,
     [playerId]
   );
   return rows;
 }
 
+export type AcceptQuestResult =
+  | { ok: true; engagementId: string; existing: boolean }
+  | { ok: false; reason: 'quest_not_found' }
+  | { ok: false; reason: 'already_completed' }
+  | { ok: false; reason: 'prerequisites'; missing: string[] };
+
+/**
+ * Accept a quest. Every stored field is read from the `quests` table, never
+ * from the caller, and `pre_steps` is enforced before the row is written.
+ * Idempotent: an existing in_progress engagement is returned untouched (and
+ * without re-running the prerequisite check, so a quest accepted before a
+ * prerequisite was authored stays playable).
+ * A COMPLETED engagement blocks re-accept unless `quests.repeatable` is TRUE —
+ * otherwise accept -> complete -> accept -> complete farms credits forever.
+ */
 export async function acceptQuestEngagement(
   playerId: string,
-  questId: string,
-  questNumber: number,
-  questTitle: string,
-  world: string,
-  durationMinutes: number | null
-): Promise<string> {
+  questId: string
+): Promise<AcceptQuestResult> {
   await ensureQuestSchema();
   const { rows: existing } = await pgQuery<{ id: string }>(
     `SELECT id FROM player_quest_engagements
      WHERE player_id = $1 AND quest_id = $2 AND status = 'in_progress' LIMIT 1`,
     [playerId, questId]
   );
-  if (existing[0]) return existing[0].id;
+  if (existing[0]) return { ok: true, engagementId: existing[0].id, existing: true };
+
+  const quest = await getQuestById(questId);
+  if (!quest) return { ok: false, reason: 'quest_not_found' };
+
+  // One-shot quests may only ever pay out once. Checked AFTER the in_progress
+  // lookup so an accept already in flight still returns its existing row.
+  if (!quest.repeatable) {
+    const { rows: done } = await pgQuery<{ id: string }>(
+      `SELECT id FROM player_quest_engagements
+       WHERE player_id = $1 AND quest_id = $2 AND status = 'completed' LIMIT 1`,
+      [playerId, questId]
+    );
+    if (done[0]) return { ok: false, reason: 'already_completed' };
+  }
+
+  const missing = await findMissingPrerequisites(playerId, quest.pre_steps);
+  if (missing.length) return { ok: false, reason: 'prerequisites', missing };
 
   const id = randomUUID();
   await pgQuery(
     `INSERT INTO player_quest_engagements
-       (id, player_id, quest_id, quest_number, quest_title, world, duration_minutes, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 'in_progress')`,
-    [id, playerId, questId, questNumber, questTitle, world, durationMinutes]
+       (id, player_id, quest_id, quest_number, quest_title, world, duration_minutes,
+        status, quest_line, reward_credits)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'in_progress', $8, $9)`,
+    [
+      id, playerId, quest.id, quest.quest_number, quest.title, quest.world,
+      quest.duration_minutes, quest.quest_line, quest.reward_credits ?? 0,
+    ]
   );
-  return id;
+  return { ok: true, engagementId: id, existing: false };
 }
 
+/** Ownership-scoped: an engagement id alone must not let a player write to another's row. */
 export async function updateQuestStepStates(
   engagementId: string,
+  playerId: string,
   stepStates: unknown,
   percentComplete: number
 ): Promise<void> {
+  const pct = Number.isFinite(percentComplete)
+    ? Math.min(100, Math.max(0, Math.round(percentComplete)))
+    : 0;
   await pgQuery(
     `UPDATE player_quest_engagements
      SET step_states = $1, percent_complete = $2, updated_at = NOW()
-     WHERE id = $3`,
-    [JSON.stringify(stepStates), Math.round(percentComplete), engagementId]
+     WHERE id = $3 AND player_id = $4`,
+    [JSON.stringify(stepStates), pct, engagementId, playerId]
   );
 }
 
+export type CompleteQuestResult = {
+  ok: boolean;
+  alreadyCompleted: boolean;
+  creditsAwarded: number;
+  /** Authoritative post-grant balance, so the client can mirror instead of guess. */
+  creditBalance: number | null;
+  status: string | null;
+};
+
+async function readCreditBalance(playerId: string): Promise<number | null> {
+  const { rows } = await pgQuery<{ credit_balance: number }>(
+    `SELECT credit_balance FROM players WHERE id = $1 LIMIT 1`,
+    [playerId]
+  );
+  return rows[0] ? Number(rows[0].credit_balance) : null;
+}
+
+/**
+ * Complete a quest and pay the reward the SERVER decides.
+ *
+ * - The award is `quests.reward_credits` for the engagement's quest (falling
+ *   back to the denormalised copy stored at accept time). No client input is
+ *   consulted, so the amount cannot be forged.
+ * - The status flip and the credit are ONE statement whose WHERE clause only
+ *   matches `in_progress`, so a replayed or concurrent 'complete' pays nothing
+ *   and cannot half-apply.
+ * - The resulting balance is returned because /api/game/state SETs
+ *   `credit_balance` from the client's mirror; a client left guessing would
+ *   overwrite this grant on its next state push.
+ */
 export async function completeQuestEngagement(
   engagementId: string,
-  playerId: string,
-  creditsRewarded: number
-): Promise<void> {
-  await pgQuery(
-    `UPDATE player_quest_engagements
-     SET status = 'completed', credits_rewarded = $1, percent_complete = 100,
-         step_states = step_states, completed_at = NOW(), updated_at = NOW()
-     WHERE id = $2`,
-    [creditsRewarded, engagementId]
+  playerId: string
+): Promise<CompleteQuestResult> {
+  await ensureQuestSchema();
+  const { rows: found } = await pgQuery<{
+    status: string;
+    quest_reward: number | null;
+    engagement_reward: number | null;
+    credit_balance: number;
+  }>(
+    `SELECT e.status,
+            q.reward_credits AS quest_reward,
+            e.reward_credits AS engagement_reward,
+            pl.credit_balance
+     FROM player_quest_engagements e
+     JOIN players pl ON pl.id = e.player_id
+     LEFT JOIN quests q ON q.id = e.quest_id
+     WHERE e.id = $1 AND e.player_id = $2
+     LIMIT 1`,
+    [engagementId, playerId]
   );
-  if (creditsRewarded > 0) {
-    await pgQuery(
-      `UPDATE players SET credit_balance = credit_balance + $1, updated_at = NOW() WHERE id = $2`,
-      [creditsRewarded, playerId]
-    );
+  const engagement = found[0];
+  if (!engagement) {
+    return {
+      ok: false, alreadyCompleted: false, creditsAwarded: 0,
+      creditBalance: null, status: null,
+    };
   }
+  const balanceBefore = Number(engagement.credit_balance);
+  if (engagement.status === 'completed') {
+    return {
+      ok: true, alreadyCompleted: true, creditsAwarded: 0,
+      creditBalance: balanceBefore, status: 'completed',
+    };
+  }
+  if (engagement.status !== 'in_progress') {
+    return {
+      ok: false, alreadyCompleted: false, creditsAwarded: 0,
+      creditBalance: balanceBefore, status: engagement.status,
+    };
+  }
+
+  const rawReward = Number(engagement.quest_reward ?? engagement.engagement_reward ?? 0);
+  const reward = Number.isFinite(rawReward) ? Math.max(0, Math.trunc(rawReward)) : 0;
+
+  const { rows: credited } = await pgQuery<{ id: string; credit_balance: number }>(
+    `WITH finished AS (
+       UPDATE player_quest_engagements
+          SET status = 'completed', credits_rewarded = $1::int, percent_complete = 100,
+              completed_at = NOW(), updated_at = NOW()
+        WHERE id = $2 AND player_id = $3 AND status = 'in_progress'
+        RETURNING id, player_id
+     )
+     UPDATE players p
+        SET credit_balance = credit_balance + $1::int, updated_at = NOW()
+       FROM finished f
+      WHERE p.id = f.player_id
+      RETURNING f.id, p.credit_balance`,
+    [reward, engagementId, playerId]
+  );
+  if (!credited[0]) {
+    // Lost the race with a concurrent completion — that one paid, this one must not.
+    return {
+      ok: true, alreadyCompleted: true, creditsAwarded: 0,
+      creditBalance: await readCreditBalance(playerId), status: 'completed',
+    };
+  }
+  return {
+    ok: true, alreadyCompleted: false, creditsAwarded: reward,
+    creditBalance: Number(credited[0].credit_balance), status: 'completed',
+  };
 }
 
+/** Ownership-scoped for the same reason as updateQuestStepStates. */
 export async function failQuestEngagement(
   engagementId: string,
+  playerId: string,
   reason: string
 ): Promise<void> {
   await pgQuery(
     `UPDATE player_quest_engagements
      SET status = 'failed', failure_reason = $1, failed_at = NOW(), updated_at = NOW()
-     WHERE id = $2`,
-    [reason, engagementId]
+     WHERE id = $2 AND player_id = $3 AND status = 'in_progress'`,
+    [reason, engagementId, playerId]
   );
 }
 

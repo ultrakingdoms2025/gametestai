@@ -51,37 +51,85 @@ export async function POST(request: NextRequest) {
   const { action } = body;
 
   if (action === 'accept') {
-    const { questId, questNumber, questTitle, world, durationMinutes } = body as {
-      questId: string; questNumber: number; questTitle: string;
-      world: string; durationMinutes: number | null;
-    };
-    const engagementId = await acceptQuestEngagement(
-      playerId, questId, questNumber, questTitle, world, durationMinutes ?? null
-    );
-    return NextResponse.json({ engagementId });
+    // Only questId is trusted from the client — quest_number/title/world/
+    // duration/reward/quest_line are all read from the quests table server-side.
+    const { questId } = body as { questId: string };
+    if (typeof questId !== 'string' || !questId.trim()) {
+      return NextResponse.json({ ok: false, error: 'questId is required.' }, { status: 400 });
+    }
+    const result = await acceptQuestEngagement(playerId, questId.trim());
+    if (!result.ok) {
+      if (result.reason === 'quest_not_found') {
+        return NextResponse.json(
+          { ok: false, reason: 'quest_not_found', error: 'Quest not found.' },
+          { status: 404 }
+        );
+      }
+      if (result.reason === 'already_completed') {
+        // 409, same as prerequisites: well-formed request, ineligible player.
+        return NextResponse.json(
+          {
+            ok: false,
+            reason: 'already_completed',
+            error: 'You have already completed this quest.',
+          },
+          { status: 409 }
+        );
+      }
+      // 409: the request is well-formed, the player just is not eligible yet.
+      return NextResponse.json(
+        {
+          ok: false,
+          reason: 'prerequisites',
+          missing: result.missing,
+          error: `Complete first: ${result.missing.join(', ')}`,
+        },
+        { status: 409 }
+      );
+    }
+    return NextResponse.json({
+      ok: true,
+      engagementId: result.engagementId,
+      existing: result.existing,
+    });
   }
 
   if (action === 'progress') {
     const { engagementId, stepStates, percentComplete } = body as {
       engagementId: string; stepStates: unknown; percentComplete: number;
     };
-    await updateQuestStepStates(engagementId, stepStates, percentComplete ?? 0);
+    await updateQuestStepStates(engagementId, playerId, stepStates, percentComplete ?? 0);
     return NextResponse.json({ ok: true });
   }
 
   if (action === 'complete') {
-    const { engagementId, creditsRewarded } = body as {
-      engagementId: string; creditsRewarded: number;
-    };
-    await completeQuestEngagement(engagementId, playerId, creditsRewarded ?? 0);
-    return NextResponse.json({ ok: true });
+    // creditsRewarded is deliberately NOT read from the body — the server
+    // re-reads quests.reward_credits so the award cannot be forged.
+    const { engagementId } = body as { engagementId: string };
+    const result = await completeQuestEngagement(engagementId, playerId);
+    if (!result.ok) {
+      return NextResponse.json(
+        { ok: false, error: 'Engagement not found or not completable.', status: result.status },
+        { status: 404 }
+      );
+    }
+    return NextResponse.json({
+      ok: true,
+      // creditsRewarded/creditsAwarded are the same server-decided delta under
+      // both names the client reads; creditBalance is the authoritative total
+      // so the next /api/game/state push cannot overwrite this grant.
+      creditsRewarded: result.creditsAwarded,
+      creditsAwarded: result.creditsAwarded,
+      creditBalance: result.creditBalance,
+      alreadyCompleted: result.alreadyCompleted,
+    });
   }
 
   if (action === 'fail') {
     const { engagementId, reason } = body as {
       engagementId: string; reason: string;
     };
-    await failQuestEngagement(engagementId, reason ?? 'expired');
+    await failQuestEngagement(engagementId, playerId, reason ?? 'expired');
     return NextResponse.json({ ok: true });
   }
 

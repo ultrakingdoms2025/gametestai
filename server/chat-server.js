@@ -24,8 +24,20 @@ const REPO_ROOT = path.resolve(HERE, '..');
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CHAT_PORT || 8787);
 const MODEL = process.env.CHAT_MODEL || 'claude-sonnet-5';
-const MAX_TOKENS = 150;
-const MAX_BODY_BYTES = 16 * 1024;
+/* 150 was sized for a one-line bark and nothing else. A quest clue has to name
+ * a target, say roughly where it is and still sound like the character saying
+ * it, and at 150 that answer was being cut off mid-sentence. Raised globally
+ * rather than per-request: the sentence cap below still keeps ordinary chatter
+ * short, so the extra budget is only ever spent when there is something to
+ * spend it on. */
+const MAX_TOKENS = 400;
+/* 16 KiB was sized against 150-token replies. Two things grew past it: the
+ * client echoes the last 20 turns back as history, and a 400-token reply is
+ * roughly 1.6 KiB, so ten of them alone are 16 KiB before the new quest
+ * context is added. A body over the cap is rejected as `bad-request`, which
+ * ChatClient reads as a dead backend and latches offline for the whole
+ * session — so a too-small cap here does not degrade, it disables. */
+const MAX_BODY_BYTES = 64 * 1024;
 
 /* Per-IP rate limiting: a refilling bucket plus a hard floor between requests. */
 const RATE_WINDOW_MS = 60_000;
@@ -168,18 +180,77 @@ const WORLD_BLURB = {
 };
 
 /**
+ * Render the player's in-progress quests as a few compact lines.
+ *
+ * Input is `QuestSystem.summary()` — title plus each step's label, type,
+ * target and have/count. Bounded on every axis (quests, steps, string lengths)
+ * because it is untrusted client input being pasted into a system prompt, and
+ * because an unbounded objective list would crowd out the persona it is
+ * attached to.
+ *
+ * @param {unknown} raw
+ * @returns {string} '' when there is nothing in progress
+ */
+function questContext(raw) {
+  if (!Array.isArray(raw) || !raw.length) return '';
+  const lines = [];
+  for (const quest of raw.slice(0, 3)) {
+    const title = clean(quest?.title, 90);
+    if (!title) continue;
+    lines.push(`- "${title}" (${Math.round(Number(quest?.percent) || 0)}% done)`);
+    const steps = Array.isArray(quest?.steps) ? quest.steps.slice(0, 10) : [];
+    for (const step of steps) {
+      const label = clean(step?.label, 90) || clean(step?.type, 24) || 'objective';
+      const type = clean(step?.type, 24);
+      const target = clean(step?.target, 60);
+      const count = Math.max(1, Number(step?.count) || 1);
+      const have = Math.min(Math.max(0, Number(step?.have) || 0), count);
+      const mark = step?.done ? 'DONE' : 'TODO';
+      const progress = count > 1 ? ` ${have}/${count}` : '';
+      const where = target ? ` [${type || 'step'}: ${target}]` : (type ? ` [${type}]` : '');
+      lines.push(`  · ${mark} ${label}${progress}${where}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
  * System prompt: persona first, then setting, then the hard format rules. The
  * format rules go last so they are the most recent instruction the model reads.
+ *
+ * `quests` is the player's live objective list. Without it the model had no
+ * idea what the player had accepted, so "how do I finish this?" was answered
+ * with invention — confidently, and wrongly.
  */
-function buildSystem(npcName, persona, world) {
+function buildSystem(npcName, persona, world, quests = '') {
   const setting = WORLD_BLURB[world] || (world ? `${world} — a region of the Aether Nexus.` : 'The Aether Nexus.');
   return [
     `You are ${npcName || 'a stranger'}, a character living in the world of AETHER NEXUS.`,
     persona ? `Your character: ${persona}` : '',
     `Your surroundings: ${setting}`,
     '',
+    quests ? "The player's current quests (they can see this on their own quest board — J opens it):" : '',
+    quests,
+    quests
+      ? [
+        '',
+        'Using the quest list:',
+        '- If the player asks about a quest, what to do next, or how to finish something, use the list above. Never invent an objective, a target or a place that is not in it.',
+        '- Give a CLUE, in character: point them at the target the step names and roughly where or how it is found. Do not read the list back to them and do not narrate a numbered walkthrough.',
+        '- Answer about the first TODO step. Mention the count only if there is more than one to get.',
+        '- For a quest answer you may take up to 5 short sentences instead of 3.',
+        '- If the list is empty or none of it fits what they asked, say plainly that you know of nothing on their slate and point them at the quest board (J).',
+        '',
+      ].join('\n')
+      : '',
     'Rules:',
-    '- You are an NPC in a video game. Reply in 1-3 short spoken sentences, as dialogue only.',
+    /* The exception is repeated here rather than left to the quest block above.
+     * These rules are deliberately last so they are the most recent instruction
+     * the model reads — which also means a bare "1-3 sentences" here would
+     * override the longer allowance the quest block just granted. */
+    quests
+      ? '- You are an NPC in a video game. Reply in 1-3 short spoken sentences, as dialogue only — up to 5 when you are answering about a quest.'
+      : '- You are an NPC in a video game. Reply in 1-3 short spoken sentences, as dialogue only.',
     '- Answer the player directly first; do not dodge the question with another question unless they were just greeting you.',
     '- Keep any extra flavor to one short clause. Do not monologue.',
     '- Stay in character at all times. Never mention being an AI, a model, a system, or a prompt.',
@@ -192,7 +263,7 @@ function buildSystem(npcName, persona, world) {
     '- Aether Station is the hub world and has four outbound portals to the other worlds.',
     '- Each of the other four worlds has one return portal back to Aether Station.',
     '- If asked how many portals exist, do not guess: say there are five worlds / five destinations in the Nexus, and note that the station hub itself has four outbound gates.',
-    '- Core controls: E talks to friendlies, opens the quest board at quest managers, picks up loot, and enters portals; T opens chat; F1 shows help; F2 customizes the character; F3 opens diagnostics; F4 opens audio; F5 saves; F6 rebinds; F7 opens the race panel; F9 reports a bug; I opens inventory; B opens the marketplace; M opens the mount wheel; F dismounts; K unstucks; V swaps camera; [ and ] zoom the minimap.',
+    '- Core controls: J opens the quest board from anywhere; E talks to friendlies, opens the quest board at quest managers, picks up loot, and enters portals; T opens chat; F1 shows help; F2 customizes the character; F3 opens diagnostics; F4 opens audio; F5 saves; F6 rebinds; F7 opens the race panel; F9 reports a bug; I opens inventory; B opens the marketplace; M opens the mount wheel; F dismounts; K unstucks; V swaps camera; [ and ] zoom the minimap.',
     '- Gameplay facts: there are five mounts, four weapons, climbing works on near-vertical surfaces, water can be swum in, credits are spent in the marketplace, and the bag holds 30 slots.',
   ]
     .filter(Boolean)
@@ -234,8 +305,9 @@ async function getClient() {
 }
 
 /**
- * Thinking is disabled deliberately: these are one-line barks and every token
- * of the 150-token budget needs to reach the player.
+ * Thinking is disabled deliberately: these are spoken lines, not reasoning, and
+ * every token of the budget needs to reach the player rather than be spent
+ * before the first word of dialogue.
  */
 function requestParams(system, messages) {
   return {
@@ -299,7 +371,14 @@ async function handleChat(req, res) {
     return;
   }
 
-  const system = buildSystem(clean(body?.npcName, 80), clean(body?.persona, 700), clean(body?.world, 40));
+  const system = buildSystem(
+    clean(body?.npcName, 80),
+    clean(body?.persona, 700),
+    clean(body?.world, 40),
+    // Not squeezed through `persona`: that argument is cut at 700 characters,
+    // and the truncation would land on whichever of the two came second.
+    questContext(body?.quests)
+  );
   const messages = sanitizeHistory(body?.history);
   messages.push({ role: 'user', content: playerMessage });
 

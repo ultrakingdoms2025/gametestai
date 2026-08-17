@@ -100,6 +100,8 @@ export default async function QuestsPage({
     const postSteps = formData.getAll('post_steps').map(s).filter(Boolean);
     const notes = s(formData.get('notes'));
     const isActive = toBool(formData.get('is_active'));
+    // Off => one-shot: the site refuses to re-accept a completed engagement.
+    const repeatable = toBool(formData.get('repeatable'));
 
     // Steps come as a single JSON string from the client StepEditor component
     let stepsJson: string | null = null;
@@ -131,7 +133,7 @@ export default async function QuestsPage({
       await updateQuest(id, {
         questNumber, world, questLine, title, rewardCredits, durationMinutes,
         preSteps: serializeSelections(preSteps), postSteps: serializeSelections(postSteps),
-        steps: stepsJson, notes, isActive, updatedBy: session.username,
+        steps: stepsJson, notes, isActive, repeatable, updatedBy: session.username,
       });
       await audit(session.username, 'quest.update', `quest:${id}`, `#${questNumber} ${title}`);
       revalidatePath('/dashboard');
@@ -142,7 +144,7 @@ export default async function QuestsPage({
     const newId = await createQuest({
       questNumber, world, questLine, title, rewardCredits, durationMinutes,
       preSteps: serializeSelections(preSteps), postSteps: serializeSelections(postSteps),
-      steps: stepsJson, notes, isActive, updatedBy: session.username,
+      steps: stepsJson, notes, isActive, repeatable, updatedBy: session.username,
     });
     await audit(session.username, 'quest.create', `quest:${newId}`, `#${questNumber} ${title}`);
     revalidatePath('/dashboard');
@@ -292,6 +294,18 @@ export default async function QuestsPage({
                   <option value="0">Disabled</option>
                 </select>
               </div>
+
+              <div className="form-row">
+                <label className="form-label" htmlFor="repeatable">Repeatable</label>
+                <select id="repeatable" name="repeatable"
+                  defaultValue={editing?.repeatable ? '1' : '0'}>
+                  <option value="0">One-shot (pays once)</option>
+                  <option value="1">Repeatable (farmable)</option>
+                </select>
+                <div style={{ fontSize: 11, color: 'var(--txt-dim)', marginTop: 6 }}>
+                  One-shot quests cannot be re-accepted after completion.
+                </div>
+              </div>
             </div>
 
             <button type="submit" className="btn btn-primary" style={{ marginTop: 18 }}>
@@ -320,6 +334,7 @@ export default async function QuestsPage({
                   <th>Steps</th>
                   <th>Reward</th>
                   <th>Time limit</th>
+                  <th>Repeat</th>
                   <th>Status</th>
                   <th></th>
                 </tr>
@@ -341,6 +356,11 @@ export default async function QuestsPage({
                       <td>{String(r.reward_credits)}</td>
                       <td>{r.duration_minutes != null ? `${String(r.duration_minutes)} min` : 'No limit'}</td>
                       <td>
+                        {r.repeatable
+                          ? <span className="tag tag-amber">Repeatable</span>
+                          : <span className="tag tag-green">One-shot</span>}
+                      </td>
+                      <td>
                         {r.is_active
                           ? <span className="tag tag-green">Active</span>
                           : <span className="tag tag-amber">Disabled</span>}
@@ -359,7 +379,7 @@ export default async function QuestsPage({
                 })}
                 {rows.length === 0 ? (
                   <tr>
-                    <td colSpan={9} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 32 }}>
+                    <td colSpan={10} style={{ textAlign: 'center', color: 'var(--txt-dim)', padding: 32 }}>
                       No quests yet
                     </td>
                   </tr>

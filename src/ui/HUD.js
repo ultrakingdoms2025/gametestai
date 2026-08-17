@@ -429,6 +429,11 @@ export class HUD {
       input: this.input,
       client: this.client,
       worldManager: this.worldManager,
+      /* The NPC has never been able to see the player's quest log, so asked
+       * "how do I finish this" it confabulated an answer. The board owns the
+       * system; read it off the board rather than adding a second constructor
+       * argument threaded through main.js for the same object. */
+      questSystem: this.questBoard?.questSystem,
       onClose: () => this._onChatClosed(),
     });
   }
@@ -528,6 +533,84 @@ export class HUD {
     this._buildCredits(col);
     this._buildHealth(col);
     this._buildStamina(col);
+    this._buildQuestTracker(col);
+  }
+
+  /**
+   * Current objective, under the vitals stack.
+   *
+   * Quest feedback was transient toasts and nothing else: a player who accepted
+   * a quest and then looked away had no way to recall what it wanted short of
+   * walking back to a Quest Manager. This is the persistent half of that — one
+   * quest, one step, one count.
+   *
+   * It is appended to the `.vitals` flex column rather than given its own
+   * absolute corner deliberately. Every corner is already spoken for (credits /
+   * health / stamina top-left, minimap and killfeed top-right, ammo
+   * bottom-right, help chip bottom-left, prompt and mount bottom-centre,
+   * toasts top-centre), and a column that lays its children out by flow cannot
+   * be made to overlap its neighbours by a panel changing height — which is the
+   * same reason the vitals were stacked in the first place.
+   */
+  _buildQuestTracker(col) {
+    const p = el('div', 'panel questtrack');
+    p.appendChild(el('div', 'panel-label', 'Objective'));
+    this.questTitle = el('div', 'qt-title', '');
+    const row = el('div', 'qt-step');
+    this.questStepLabel = el('div', 'qt-step-label', '');
+    this.questStepCount = el('div', 'qt-step-count', '');
+    row.append(this.questStepLabel, this.questStepCount);
+    p.append(this.questTitle, row);
+    // Hidden until a quest is actually in progress; see `_refreshQuestTracker`.
+    p.hidden = true;
+    col.appendChild(p);
+    this.questTrack = p;
+  }
+
+  /**
+   * Redraw the objective tracker from `QuestSystem.summary()`.
+   *
+   * Driven by the existing `quests:changed` bus event rather than polled — the
+   * quest system emits it on accept, on every step advance, on completion and
+   * on world load, which is every moment this can change.
+   *
+   * `summary()` is the same shape `QuestBoard._renderDetail` draws, so the
+   * tracker cannot drift out of agreement with the board about what a step is
+   * called or how far along it is.
+   */
+  _refreshQuestTracker() {
+    const p = this.questTrack;
+    if (!p) return;
+
+    const quests = this.questBoard?.questSystem?.summary?.(1) ?? [];
+    const quest = quests[0] ?? null;
+    // The first step that is not finished IS the current objective. A quest
+    // whose steps are all done is mid-completion and about to disappear, so it
+    // shows nothing rather than a stale last step.
+    const step = quest?.steps?.find((s) => !s.done) ?? null;
+    if (!quest || !step) {
+      p.hidden = true;
+      return;
+    }
+
+    p.hidden = false;
+    // textContent, never innerHTML: titles and step labels are authored content
+    // that arrives from the database.
+    if (this._qtTitleText !== quest.title) {
+      this._qtTitleText = quest.title;
+      this.questTitle.textContent = quest.title;
+    }
+    const label = step.label || step.type || 'Objective';
+    if (this._qtLabelText !== label) {
+      this._qtLabelText = label;
+      this.questStepLabel.textContent = label;
+    }
+    // A one-shot step has no meaningful "1/1" to show.
+    const count = step.count > 1 ? `${step.have}/${step.count}` : '';
+    if (this._qtCountText !== count) {
+      this._qtCountText = count;
+      this.questStepCount.textContent = count;
+    }
   }
 
   _buildHealth(hud) {
@@ -1082,6 +1165,11 @@ export class HUD {
       this.notify(kind === 'sell' ? `Sold ${n} ${name}` : `Bought ${n} ${name}`, 'save');
     });
 
+    /* --- quests --------------------------------------------------------- */
+    // Every mutation the objective tracker cares about — accept, step advance,
+    // completion, world load — already emits this one event.
+    this._on('quests:changed', () => this._refreshQuestTracker());
+
     /* --- help ----------------------------------------------------------- */
     // The chip is the affordance; dim it while the panel it advertises is open.
     this._on('help:open', () => this.el.classList.add('helping'));
@@ -1098,9 +1186,21 @@ export class HUD {
       // we are not actively waiting for chat to close (chat handles its own).
       if (!this._chatOpen) this._relock = Math.max(this._relock, 0.15);
     };
-    const _overlayOpen  = () => { this._overlayCount = Math.max(0, this._overlayCount) + 1; };
+    /* `overlaid` mirrors the counter onto the HUD element so CSS can answer
+     * "is a full-screen panel up". Only the objective tracker uses it today:
+     * the quest board states the same objective in full, so the compact copy
+     * showing through underneath it is noise, and the same is true of every
+     * other overlay that covers the vitals column. */
+    const _syncOverlaid = () => {
+      this.el?.classList.toggle('overlaid', this._overlayCount > 0);
+    };
+    const _overlayOpen  = () => {
+      this._overlayCount = Math.max(0, this._overlayCount) + 1;
+      _syncOverlaid();
+    };
     const _overlayClose = () => {
       this._overlayCount = Math.max(0, this._overlayCount - 1);
+      _syncOverlaid();
       _schedRelock();
       // If the pause overlay fired while a blocking UI was open, hide it now.
       if (this._overlayCount === 0) this.showPauseOverlay(false);
@@ -1281,6 +1381,7 @@ export class HUD {
       ['Space / Ctrl', 'Fly up / down'],
       ['I', 'Inventory'],
       ['B', 'Marketplace'],
+      ['J', 'Quest board'],
       ['K', 'Unstuck'],
       ['F2', 'Customise character'],
       ['F4', 'Audio options'],
@@ -1647,13 +1748,33 @@ export class HUD {
     if (this.input.pressed('KeyT')) {
       this._openChat(this._chatNpc);
     } else if (this.input.pressed('KeyE') && this._chatNpc && (!this._nearPortal || this._chatNpc.isLorekeeper || this._chatNpc.isQuestManager)) {
-      const activityTarget = this._chatNpc?.id ?? this._chatNpc?.name ?? this._chatNpc?.role ?? null;
-      if (this._chatNpc.isQuestManager) {
-        this.bus?.emit('quest:activity', { type: 'interact', target: activityTarget });
+      /* Publish the NPC's whole identity, not one pre-picked field.
+       *
+       * This was `npc.id ?? npc.name ?? npc.role`, and `npc.id` is an
+       * auto-generated `npc-N` (NPC.js:71) that is ALWAYS truthy - so the name
+       * and role fallbacks were unreachable and every talk/interact reported
+       * something like `npc-17`. That id is not stable across sessions, so no
+       * quest can ever name it: by construction, no talk or interact step could
+       * match. The name and the role are the only handles a quest author has.
+       *
+       * QuestSystem._eventTargetCandidates reads `target`, `id`, `name`, `role`
+       * and `npc.{id,name,role}` off the event, so all of them are sent and the
+       * matcher picks whichever the step named. `target` leads with the name
+       * because that is the one a human writes. */
+      const npc = this._chatNpc;
+      const activity = {
+        target: npc?.name ?? npc?.role ?? npc?.id ?? null,
+        npc,
+        id: npc?.id ?? null,
+        name: npc?.name ?? null,
+        role: npc?.role ?? null,
+      };
+      if (npc.isQuestManager) {
+        this.bus?.emit('quest:activity', { type: 'interact', ...activity });
         this.bus?.emit('quests:board:open');
       } else {
-        this.bus?.emit('quest:activity', { type: 'talk', target: activityTarget });
-        this._openChat(this._chatNpc);
+        this.bus?.emit('quest:activity', { type: 'talk', ...activity });
+        this._openChat(npc);
       }
     }
   }

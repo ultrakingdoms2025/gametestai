@@ -1152,6 +1152,11 @@ export class RaceManager {
     this.bus?.emit('race:lap', {
       id: e.id,
       name: e.name,
+      // Same circuit identity as `race:finished`: a multi-lap quest step counts
+      // laps from here, and without it could not say which circuit's laps.
+      circuitId: this.track?.trackId ?? this.trackId ?? null,
+      circuitName: this.track?.trackName ?? null,
+      raceType: this.raceType,
       isPlayer: !!e.isPlayer,
       lap: e.lap - 1,
       laps: this.lapCount,
@@ -1270,6 +1275,16 @@ export class RaceManager {
 
     this.bus?.emit('race:finished', {
       results,
+      /* Which race this was.
+       *
+       * The payload used to describe the RESULT and nothing else, so a listener
+       * - the quest system above all - could tell that a race had been won but
+       * not which circuit it was won on. `track.trackId` is the id the world
+       * published (`vellum`, `cinder`, `aurora`); the live getter is the
+       * fallback for the synthetic test circuit, which has neither. */
+      circuitId: this.track?.trackId ?? this.trackId ?? null,
+      circuitName: this.track?.trackName ?? null,
+      raceType: this.raceType,
       place: mine?.place ?? 0,
       credits: paid,
       pickups: this.pickups.collected,

@@ -3,8 +3,11 @@
  *
  * Streaming NPC chat powered by Anthropic Claude.
  *
- * Accepts: { npcId, npcName, persona, world, playerMessage, history }
+ * Accepts: { npcId, npcName, persona, world, quests, playerMessage, history }
  *   history: Array<{ role: 'user'|'assistant', content: string }>
+ *   quests:  QuestSystem.summary() — the player's in-progress objectives, so
+ *            the NPC can answer "how do I finish this" from data instead of
+ *            inventing one.
  *
  * Returns: text/event-stream  SSE with lines of the form:
  *   data: {"type":"delta","text":"<chunk>"}
@@ -20,14 +23,85 @@ export const dynamic = 'force-dynamic';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-haiku-4-5';
-const MAX_TOKENS = 256;
+/* 256 was sized for a one-line bark. A quest clue has to name a target, say
+ * roughly where it is, and still sound like the character saying it — at 256
+ * that answer was being cut off mid-sentence. Raised globally rather than
+ * per-request; the sentence cap below still keeps ordinary chatter short, so
+ * the extra budget is only spent when there is something to spend it on. */
+const MAX_TOKENS = 400;
 
-function buildSystem(npcName: string, persona: string, worldName: string): string {
+/** One in-progress quest as `QuestSystem.summary()` reports it. */
+type QuestStepSummary = {
+  label?: unknown; type?: unknown; target?: unknown;
+  have?: unknown; count?: unknown; done?: unknown;
+};
+type QuestSummary = { title?: unknown; percent?: unknown; steps?: unknown };
+
+const trim = (v: unknown, max: number) =>
+  String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+
+/**
+ * Render the player's in-progress quests as a few compact lines.
+ *
+ * Bounded on every axis — quests, steps, and each string — because this is
+ * untrusted client input being pasted into a system prompt, and because an
+ * unbounded objective list would crowd out the persona it is attached to.
+ */
+function questContext(raw: unknown): string {
+  if (!Array.isArray(raw) || raw.length === 0) return '';
+  const lines: string[] = [];
+  for (const quest of (raw as QuestSummary[]).slice(0, 3)) {
+    const title = trim(quest?.title, 90);
+    if (!title) continue;
+    lines.push(`- "${title}" (${Math.round(Number(quest?.percent) || 0)}% done)`);
+    const steps: QuestStepSummary[] = Array.isArray(quest?.steps)
+      ? (quest.steps as QuestStepSummary[]).slice(0, 10)
+      : [];
+    for (const step of steps) {
+      const label = trim(step?.label, 90) || trim(step?.type, 24) || 'objective';
+      const type = trim(step?.type, 24);
+      const target = trim(step?.target, 60);
+      const count = Math.max(1, Number(step?.count) || 1);
+      const have = Math.min(Math.max(0, Number(step?.have) || 0), count);
+      const mark = step?.done ? 'DONE' : 'TODO';
+      const progress = count > 1 ? ` ${have}/${count}` : '';
+      const where = target ? ` [${type || 'step'}: ${target}]` : type ? ` [${type}]` : '';
+      lines.push(`  · ${mark} ${label}${progress}${where}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * `quests` is the player's live objective list. Without it the model had never
+ * seen a single piece of quest data, so "how do I finish this?" was answered
+ * with invention — confidently, and wrongly.
+ */
+function buildSystem(
+  npcName: string,
+  persona: string,
+  worldName: string,
+  quests = ''
+): string {
   return [
     `You are ${npcName}, a character in the game world "${worldName}".`,
     persona ? `Your character description: ${persona}` : '',
+    quests ? "The player's current quests (they can see this on their own quest board — J opens it):" : '',
+    quests,
+    quests
+      ? [
+        '',
+        'Using the quest list:',
+        '- If the player asks about a quest, what to do next, or how to finish something, use the list above. Never invent an objective, a target or a place that is not in it.',
+        '- Give a CLUE, in character: point them at the target the step names and roughly where or how it is found. Do not read the list back to them and do not narrate a numbered walkthrough.',
+        '- Answer about the first TODO step. Mention the count only if there is more than one to get.',
+        '- For a quest answer you may take up to 5 short sentences instead of 3.',
+        '- If the list is empty or none of it fits what they asked, say plainly that you know of nothing on their slate and point them at the quest board (J).',
+        '',
+      ].join('\n')
+      : '',
     'Stay fully in character at all times.',
-    'Keep your replies concise — 1 to 3 spoken sentences at most.',
+    'Keep your replies concise — 1 to 3 spoken sentences at most, except for the quest answers described above.',
     'Answer the player directly first; do not dodge the question with a question of your own.',
     'Keep any extra flavor to one short clause. Do not monologue.',
     'Never break the fourth wall, never mention you are an AI or a game.',
@@ -37,7 +111,7 @@ function buildSystem(npcName: string, persona: string, worldName: string): strin
     '- Aether Station is the hub world and has five outbound portals to the other five worlds.',
     '- Each of the other five worlds has one return portal back to Aether Station.',
     '- If asked how many portals exist, do not guess: say there are six worlds / five destinations from the Nexus hub, and note that the station itself has five outbound gates.',
-    '- Core controls: E talks to friendlies, opens the quest board at quest managers, picks up loot, and enters portals; T opens chat; F1 shows help; F2 customizes the character; F3 opens diagnostics; F4 opens audio; F5 saves; F6 rebinds; F7 opens the race panel; F9 reports a bug; I opens inventory; B opens the marketplace; M opens the mount wheel; F dismounts; K unstucks; V swaps camera; [ and ] zoom the minimap.',
+    '- Core controls: J opens the quest board from anywhere; E talks to friendlies, opens the quest board at quest managers, picks up loot, and enters portals; T opens chat; F1 shows help; F2 customizes the character; F3 opens diagnostics; F4 opens audio; F5 saves; F6 rebinds; F7 opens the race panel; F9 reports a bug; I opens inventory; B opens the marketplace; M opens the mount wheel; F dismounts; K unstucks; V swaps camera; [ and ] zoom the minimap.',
     '- Gameplay facts: there are six mounts, four weapons, climbing works on near-vertical surfaces, water can be swum in, credits are spent in the marketplace, and the bag holds 30 slots.',
   ]
     .filter(Boolean)
@@ -76,12 +150,16 @@ export async function POST(req: Request) {
     npcName = 'Stranger',
     persona = '',
     world = 'the Nexus',
+    // Its own field, deliberately: `persona` is truncated, so folding the
+    // objective list into it would silently cut one or the other.
+    quests = null,
     playerMessage = '',
     history = [],
   } = body as {
     npcName?: string;
     persona?: string;
     world?: string;
+    quests?: unknown;
     playerMessage?: string;
     history?: Array<{ role: string; content: string }>;
   };
@@ -113,7 +191,12 @@ export async function POST(req: Request) {
       body: JSON.stringify({
         model: MODEL,
         max_tokens: MAX_TOKENS,
-        system: buildSystem(String(npcName), String(persona), String(world)),
+        system: buildSystem(
+          String(npcName),
+          String(persona),
+          String(world),
+          questContext(quests)
+        ),
         messages,
         stream: true,
       }),

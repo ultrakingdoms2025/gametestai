@@ -269,16 +269,24 @@ export class HUD {
      * killed the pause hub for the rest of the session.
      *
      * Invariant: an id is present iff that module has a cursor-owning sheet on
-     * screen. Per-MODULE keying is only safe because no multi-sheet module
-     * stacks two of its own: `RaceUI._openStop` refuses unless `race.racing`
-     * (`:680`) and `_showBoard`'s only caller closes the stop sheet first
-     * (`:254`); `MinigameUI._openStop` guards on `_stopOpen || _boardOpen`
-     * (`:211`). Relaxing either needs per-sheet ids here.
+     * screen - INCLUDING sheets the hub cannot launch. `market` is the one with
+     * no hub row (B near a vendor is the only way in) and it is tracked anyway,
+     * because the contract is "a panel owns the cursor", not "the hub opened
+     * it": every reader here - the Escape guard, `showPauseOverlay`'s refusal,
+     * `_overlayOpen`'s hub-launch arm - is wrong about a panel it cannot see.
+     *
+     * Per-MODULE keying is only safe because no multi-sheet module stacks two
+     * of its own: `RaceUI._openStop` refuses unless `race.racing` (`:672`) and
+     * `_showBoard`'s only caller closes the stop sheet first (`:254`);
+     * `MinigameUI._openStop` guards on `_stopOpen || _boardOpen` (`:203`).
+     * Relaxing either needs per-sheet ids here.
      * @type {Set<string>}
      */
     this._overlays = new Set();
     /** True while the hub launched the panel that is up, so its close returns there. */
     this._hubReturn = false;
+    /** Index into `visibleItems()` the hub highlighted when it stood aside; -1 for none. */
+    this._pendingFocus = -1;
     /** Collapses back-to-back empty-Set re-checks into one microtask. */
     this._hubCheckPending = false;
     /** HelpMenu keeps pointer lock, so it is deliberately outside `_overlays`. */
@@ -939,10 +947,15 @@ export class HUD {
         if (keepOpen) {
           // Acts in place - Resume, Save, Load, Fullscreen, Diagnostics.
           item.run?.();
-          /* Only if the card is still up. Resume is a keepOpen item whose whole
-           * job is to hide it, and refreshing a hidden menu would re-read every
-           * label and re-run `focusFirst` for nothing - and, worse, paint a
-           * focus ring the player will see on the next open. */
+          /* Only if the card is still up.
+           *
+           * Not about Resume: `hud.resume()` calls `_requestLock()`, which is
+           * asynchronous - the card is still shown when `run()` returns and
+           * only comes down on `input:lockchange`. The guard is for any
+           * keepOpen item whose `run` hides the card synchronously, where
+           * refreshing a hidden menu would re-read every label and re-run
+           * `focusFirst` for nothing - and, worse, paint a focus ring the
+           * player will see on the next open. */
           if (this.pause.classList.contains('show')) this.pauseMenu.refresh();
         } else {
           this.openFromHub(item.run, { overlay: item.overlay !== false });
@@ -962,62 +975,86 @@ export class HUD {
     this.root.appendChild(p);
     this.pause = p;
 
-    /* Keyboard on the hub.
+    /* Both keyboard handlers are prototype methods, bound once here.
+     *
+     * Bound rather than written inline so a headless test can drive the real
+     * logic - `HUD.prototype._onPauseKey.call(stub, fakeEvent)` - instead of
+     * re-implementing the guard order and quietly agreeing with itself. The
+     * bound copies shadow the prototype on this instance, so `dispose` removes
+     * exactly what was added.
      *
      * Capture phase and on `window`, because `Input` has stopped reporting -
-     * that is what being paused means - so `pressed()` cannot see these.
-     * Escape resumes: it is the key that put the player in front of this card.
-     * Enter now ACTIVATES rather than resumes (spec §2); Space is the second
-     * resume key for anyone who was using Enter for that. */
-    this._onPauseKey = (e) => {
-      if (!this.pause.classList.contains('show')) return;
-      if (this._chatOpen || this.input.textCaptured) return;
-      /* Help sits ON TOP of the hub and owns its own Escape. Its capture
-       * listener is registered first, so without this one keystroke would close
-       * Help and resume the game underneath it in the same press. */
-      if (this._helpOpen) return;
-      const code = e.code;
-      if (code === 'ArrowUp' || code === 'KeyW') {
-        e.preventDefault(); e.stopPropagation();
-        this.pauseMenu.move(-1);
-        return;
-      }
-      if (code === 'ArrowDown' || code === 'KeyS') {
-        e.preventDefault(); e.stopPropagation();
-        this.pauseMenu.move(1);
-        return;
-      }
-      if (code === 'Enter') {
-        e.preventDefault(); e.stopPropagation();
-        this.pauseMenu.activate();
-        return;
-      }
-      if (code !== 'Space' && code !== 'Escape') return;
-      e.preventDefault();
-      e.stopPropagation();
-      this._requestLock();
-    };
+     * that is what being paused means - so `pressed()` cannot see these. */
+    this._onPauseKey = this._onPauseKey.bind(this);
+    this._onLockEsc = this._onLockEsc.bind(this);
     window.addEventListener('keydown', this._onPauseKey, true);
-
-    /* Escape from gameplay, while the keyboard lock is held.
-     *
-     * Without `navigator.keyboard.lock` the browser exits pointer lock on
-     * Escape by itself and `input:lockchange` raises the hub. WITH the lock -
-     * every fullscreen session, i.e. the default - Escape is delivered to the
-     * page instead and until now nothing acted on it, so the one key the hub is
-     * built around did nothing for exactly the players who are most protected.
-     *
-     * Each condition is a panel that owns Escape already. `e.repeat` is ignored
-     * because HOLDING Escape is how browsers break keyboard lock, and firing on
-     * each repeat would exit and re-request in a loop. */
-    this._onLockEsc = (e) => {
-      if (e.code !== 'Escape' || e.repeat) return;
-      if (!this.input?.locked) return;
-      if (this._overlays.size > 0 || this._helpOpen) return;
-      if (this._chatOpen || this.input.textCaptured) return;
-      this.input.exitLock();
-    };
     window.addEventListener('keydown', this._onLockEsc, true);
+  }
+
+  /**
+   * Keyboard on the hub.
+   *
+   * Escape resumes: it is the key that put the player in front of this card.
+   * Enter ACTIVATES rather than resumes (spec §2); Space is the second resume
+   * key for anyone who was using Enter for that.
+   *
+   * @param {KeyboardEvent} e
+   */
+  _onPauseKey(e) {
+    if (!this.pause.classList.contains('show')) return;
+    if (this._chatOpen || this.input.textCaptured) return;
+    /* Help sits ON TOP of the hub and owns its own Escape. Its capture
+     * listener is registered first, so without this one keystroke would close
+     * Help and resume the game underneath it in the same press. */
+    if (this._helpOpen) return;
+    /* Belt and braces. `showPauseOverlay` refuses while the Set is non-empty
+     * and `_overlayOpen` now hides a card a panel opened over, so the card
+     * should never be up with a panel on top of it - but if it ever is, the
+     * panel owns the keyboard and Enter must not activate a row behind it. */
+    if (this._overlays.size > 0) return;
+    const code = e.code;
+    if (code === 'ArrowUp' || code === 'KeyW') {
+      e.preventDefault(); e.stopPropagation();
+      this.pauseMenu.move(-1);
+      return;
+    }
+    if (code === 'ArrowDown' || code === 'KeyS') {
+      e.preventDefault(); e.stopPropagation();
+      this.pauseMenu.move(1);
+      return;
+    }
+    if (code === 'Enter') {
+      e.preventDefault(); e.stopPropagation();
+      this.pauseMenu.activate();
+      return;
+    }
+    if (code !== 'Space' && code !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    this._requestLock();
+  }
+
+  /**
+   * Escape from gameplay, while the keyboard lock is held.
+   *
+   * Without `navigator.keyboard.lock` the browser exits pointer lock on
+   * Escape by itself and `input:lockchange` raises the hub. WITH the lock -
+   * every fullscreen session, i.e. the default - Escape is delivered to the
+   * page instead and until now nothing acted on it, so the one key the hub is
+   * built around did nothing for exactly the players who are most protected.
+   *
+   * Each condition is a panel that owns Escape already. `e.repeat` is ignored
+   * because HOLDING Escape is how browsers break keyboard lock, and firing on
+   * each repeat would exit and re-request in a loop.
+   *
+   * @param {KeyboardEvent} e
+   */
+  _onLockEsc(e) {
+    if (e.code !== 'Escape' || e.repeat) return;
+    if (!this.input?.locked) return;
+    if (this._overlays.size > 0 || this._helpOpen) return;
+    if (this._chatOpen || this.input.textCaptured) return;
+    this.input.exitLock();
   }
 
   /* ====================================================================== */
@@ -1282,6 +1319,18 @@ export class HUD {
 
   _overlayOpen(id) {
     if (!id) return;
+    /* A panel raised by its own letter key WHILE the hub is up.
+     *
+     * J, I, B, M and the rest keep their private listeners, so pressing one
+     * over the card never goes through `openFromHub` - the panel drew itself
+     * behind a hub that then swallowed its Escape. From the player's side that
+     * keystroke IS picking the row, so treat it as one: hide the card and
+     * remember to bring it back. Guarded on `!this._hubReturn` so a
+     * hub-launched panel opening a second sheet does not re-arm.
+     *
+     * `_armHubReturn` reads the highlight before hiding, so the round trip
+     * lands the player back on the row they were on. */
+    if (!this._hubReturn && this.pause.classList.contains('show')) this._armHubReturn();
     this._overlays.add(id);
     this._syncOverlaid();
   }
@@ -1314,6 +1363,7 @@ export class HUD {
       if (this._hubReturn) {
         this._hubReturn = false;
         this.showPauseOverlay(true);
+        this._restoreHubFocus();
       } else {
         this.showPauseOverlay(false);
         this._schedRelock();
@@ -1339,13 +1389,45 @@ export class HUD {
       run();
       return;
     }
-    this._hubReturn = true;
-    this.showPauseOverlay(false);
+    this._armHubReturn();
     try {
       run();
     } finally {
       this._deferHubCheck();
     }
+  }
+
+  /**
+   * Arm the return to the hub and take the card down.
+   *
+   * Remembers which row was highlighted first: `showPauseOverlay(true)` runs
+   * `focusFirst()` on every hidden→shown transition, so without this a player
+   * who opened Audio from the bottom of the list came back to Resume at the
+   * top and had to walk down again.
+   */
+  _armHubReturn() {
+    this._hubReturn = true;
+    this._pendingFocus = this.pauseMenu.model.focus ?? -1;
+    this.showPauseOverlay(false);
+  }
+
+  /** Put the highlight back where `_armHubReturn` found it, if it still fits. */
+  _restoreHubFocus() {
+    const i = this._pendingFocus;
+    this._pendingFocus = -1;
+    if (i >= 0) this.pauseMenu.focusIndex(i);
+  }
+
+  /**
+   * Forget a pending hub return: the player committed rather than cancelled.
+   *
+   * Starting a race or a contest from a hub-launched panel closes that panel,
+   * which empties the Set - and an armed `_hubReturn` would then drop the pause
+   * card over the lights going out. Clearing it sends the close down the other
+   * branch of `_deferHubCheck`: hide the card, re-take the pointer, play.
+   */
+  clearHubReturn() {
+    this._hubReturn = false;
   }
 
   /**
@@ -1372,6 +1454,30 @@ export class HUD {
     this._on('keybinds:close',   ()              => c('keybinds'));
     this._on('mount:menu:open',  ()              => o('mount-menu'));
     this._on('mount:menu:close', ()              => c('mount-menu'));
+    /* The market is a cursor-owning sheet like the rest: `MarketplaceUI` opens
+     * with `menuFocusIn` (`:489`), which exits pointer lock and captures text.
+     * It has no hub row - B near a vendor is the only way in - so it reaches
+     * the tracker purely through `_overlayOpen`'s hub-launch arm, which is
+     * exactly the case that needs it. */
+    this._on('market:open',      ()              => o('market'));
+    this._on('market:close',     ()              => c('market'));
+
+    /* Committing, not cancelling. A race or a contest started from the panel
+     * the hub opened closes that panel; without this the hub would come back
+     * over the starting lights. See `clearHubReturn`.
+     *
+     * The COUNTDOWN events are the load-bearing pair, not the `:started` ones.
+     * Both managers emit `:countdown` synchronously from `start()`
+     * (`RaceManager.js:506`, `MinigameManager.js:290`) and `:started` only when
+     * the lights go out, seconds later (`:671` / `:435`). `RaceUI.startBtn`
+     * calls `closePanel()` and then `race.start()` in one turn, so only the
+     * synchronous one lands before `_deferHubCheck`'s microtask reads
+     * `_hubReturn`. `:started` is kept as the backstop for any future path that
+     * begins without a countdown; a second clear costs nothing. */
+    this._on('race:countdown',     ()            => this.clearHubReturn());
+    this._on('race:started',       ()            => this.clearHubReturn());
+    this._on('minigame:countdown', ()            => this.clearHubReturn());
+    this._on('minigame:started',   ()            => this.clearHubReturn());
 
     /* HelpMenu is deliberately NOT in the Set: it keeps pointer lock while open
      * (`HelpMenu.js:9-12`) so it can be read mid-play, and it sits at z 80 over
@@ -1722,7 +1828,7 @@ export class HUD {
    * @param {Array<{title?: string, items: Array<object>}>} groups
    */
   setPauseMenuItems(groups) {
-    this.pauseMenu?.setItems(groups);
+    this.pauseMenu.setItems(groups);
   }
 
   /**
@@ -1757,12 +1863,12 @@ export class HUD {
       this._relockCheck = 0;
       // Always: `mounts.mounted`, the world and the race state may all have
       // moved since the card was last up.
-      this.pauseMenu?.refresh();
+      this.pauseMenu.refresh();
       /* focusFirst only on the hidden→shown transition. `_lockRefused` and the
        * `_relockCheck` fallback call this repeatedly while a re-lock is being
        * retried, and resetting the highlight under the player's hand every
        * 0.4 s would make the list unusable on a slow relock. */
-      if (!was) this.pauseMenu?.focusFirst();
+      if (!was) this.pauseMenu.focusFirst();
     }
   }
 
@@ -2827,7 +2933,7 @@ export class HUD {
     this._creditFloats.length = 0;
     if (this._onPauseKey) window.removeEventListener('keydown', this._onPauseKey, true);
     if (this._onLockEsc) window.removeEventListener('keydown', this._onLockEsc, true);
-    this.pauseMenu?.dispose();
+    this.pauseMenu.dispose();
     this.el.remove();
     this.wipe.remove();
     this.pause.remove();

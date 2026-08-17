@@ -147,6 +147,12 @@ export class PauseMenu {
     /** @type {Array<{item, btn, labelEl, hintEl}>} */
     this._rows = [];
     this.el = el('div', 'pm-root');
+    /* A real menu, not a div of buttons. `aria-activedescendant` on the
+     * container is what tells a screen reader the highlight moved: the rows are
+     * focusable in their own right (see `_paintFocus`), but the arrow keys are
+     * intercepted at `window` in capture, so DOM focus alone would never
+     * announce anything. */
+    this.el.setAttribute('role', 'menu');
     root?.appendChild(this.el);
   }
 
@@ -166,6 +172,9 @@ export class PauseMenu {
         const btn = el('button', 'pm-item');
         btn.type = 'button';
         btn.dataset.id = String(item.id ?? '');
+        btn.setAttribute('role', 'menuitem');
+        // `aria-activedescendant` can only point at an element with an id.
+        btn.id = `pm-item-${item.id ?? this._rows.length}`;
         const labelEl = el('span', 'pm-label');
         const hintEl = el('span', 'pm-hint');
         btn.append(labelEl, hintEl);
@@ -198,7 +207,10 @@ export class PauseMenu {
 
   /** Re-read every item's visible / enabled / label. Cheap; call it freely. */
   refresh() {
-    const shown = new Set(this.model.visibleItems());
+    // Once: every `visible()` is a live predicate reading game state, and
+    // calling the list twice can legitimately return two different lists.
+    const items = this.model.visibleItems();
+    const shown = new Set(items);
     for (const r of this._rows) {
       const on = shown.has(r.item);
       r.btn.hidden = !on;
@@ -224,7 +236,6 @@ export class PauseMenu {
     }
     /* A row that just went hidden or disabled must not keep the highlight -
      * Enter on it would do nothing and look broken. */
-    const items = this.model.visibleItems();
     const focused = items[this.model.focus];
     if (!focused || this.model.isEnabled(focused) !== true) this.model.focusFirst();
     this._paintFocus();
@@ -232,12 +243,41 @@ export class PauseMenu {
 
   _paintFocus() {
     const focused = this.model.focusedItem();
-    for (const r of this._rows) r.btn.classList.toggle('focus', r.item === focused);
+    let activeId = '';
+    for (const r of this._rows) {
+      const on = r.item === focused;
+      r.btn.classList.toggle('focus', on);
+      if (!on) continue;
+      activeId = r.btn.id;
+      /* Real DOM focus too, not just the class. Without it Tab starts from
+       * wherever the browser last was - usually the top of the document - so
+       * the keyboard highlight and the Tab order disagreed about where the
+       * player is. `preventScroll` because the card is short enough to need no
+       * scrolling and a jump would be pure noise. */
+      r.btn.focus?.({ preventScroll: true });
+    }
+    if (activeId) this.el.setAttribute('aria-activedescendant', activeId);
+    else this.el.removeAttribute('aria-activedescendant');
   }
 
   move(delta) { this.model.move(delta); this._paintFocus(); }
 
   focusFirst() { this.model.focusFirst(); this._paintFocus(); }
+
+  /**
+   * Put the highlight back on a remembered row - the hub's return path, after
+   * the panel it stood aside for closed. Refuses an index the list no longer
+   * has or can no longer act on, leaving whatever `refresh` chose.
+   * @param {number} i index into `visibleItems()`
+   * @returns {boolean} whether the highlight moved
+   */
+  focusIndex(i) {
+    const item = this.model.visibleItems()[i];
+    if (!item || this.model.isEnabled(item) !== true) return false;
+    this.model.focus = i;
+    this._paintFocus();
+    return true;
+  }
 
   /** Hand the chosen item to the host, which owns the single call to `run`. */
   activate() {

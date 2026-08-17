@@ -118,6 +118,8 @@ export class SaveGame {
     this._started = false;
     /** One corruption message per session; a broken save must not spam the console. */
     this._corruptLogged = false;
+    /** @see suppressUnloadPrompt - true once the player has asked to leave. */
+    this._suppressPrompt = false;
     this._lastSaveAt = 0;
     /** @type {Array<() => void>} */
     this._offs = [];
@@ -159,6 +161,19 @@ export class SaveGame {
   /* ================================================================ */
   /* Contract surface                                                  */
   /* ================================================================ */
+
+  /**
+   * Stand down the "leave site?" prompt for a navigation the player chose.
+   *
+   * The prompt exists to catch Ctrl+W, which is crouch-walking - an accident.
+   * The hub's "Quit to menu" is the opposite: the player picked it off a menu
+   * and confirming a second time reads as the game refusing to let them go.
+   * One-way and permanent for the session, because the only caller is on its
+   * way out; the unload autosave still runs, so nothing is lost either way.
+   */
+  suppressUnloadPrompt() {
+    this._suppressPrompt = true;
+  }
 
   /**
    * Write the current game state.

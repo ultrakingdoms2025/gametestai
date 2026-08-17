@@ -222,11 +222,6 @@ export class MinigameUI {
     this.bus?.emit('minigame:menu', { open: false });
   }
 
-  _toggleStop() {
-    if (this._stopOpen) this._closeStop();
-    else this._openStop();
-  }
-
   _showBoard(result) {
     if (!result) return;
     this.boardKicker.textContent = result.label ?? 'Contest';

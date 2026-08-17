@@ -551,7 +551,14 @@ hud.setPauseMenuItems([
         label: 'Quit to menu',
         hint: 'Back to the landing page',
         // The game runs at /play, so the site root is one level up.
-        run: () => { window.location.href = `${window.location.origin}/`; },
+        run: () => {
+          /* The player chose to leave; do not also ask "leave site?". That
+           * prompt is the Ctrl+W backstop (SaveGame.js:125-146) and firing it
+           * on a menu item reads as the game refusing to quit. The unload
+           * autosave still runs. */
+          save.suppressUnloadPrompt();
+          window.location.href = `${window.location.origin}/`;
+        },
       },
     ],
   },

@@ -30,6 +30,13 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
  */
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
+/**
+ * A HUD with only the fields the overlay path touches.
+ *
+ * `pause.classList.contains('show')` is answered from `h.shown`, so the stub
+ * agrees with itself: `_overlayOpen`'s hub-launch arm reads the card's real
+ * state through the same channel the browser would.
+ */
 function stubHud() {
   const h = Object.create(HUD.prototype);
   h.bus = new EventBus();
@@ -41,8 +48,11 @@ function stubHud() {
   h._helpOpen = false;
   h._chatOpen = false;
   h._relock = 0;
+  h._pendingFocus = -1;
   h.shown = null;
   h.relocks = 0;
+  h.pause = { classList: { contains: (c) => c === 'show' && h.shown === true } };
+  h.pauseMenu = { model: { focus: 0 }, focused: -1, focusIndex(i) { this.focused = i; return true; } };
   h.showPauseOverlay = (s) => { h.shown = !!s; };
   h._schedRelock = () => { h.relocks++; };
   h._wireOverlayEvents();
@@ -61,6 +71,9 @@ const PANELS = [
   { id: 'audio',       open: ['audio:menu', { open: true }],    close: ['audio:menu', { open: false }] },
   { id: 'keybinds',    open: ['keybinds:open', {}],   close: ['keybinds:close', {}] },
   { id: 'bug-report',  open: ['bug-report:open', {}], close: ['bug-report:close', {}] },
+  // No hub row - B near a vendor is the only way in - but tracked all the same:
+  // it owns the cursor, which is the whole contract. See the `_overlays` doc.
+  { id: 'market',      open: ['market:open', {}],     close: ['market:close', {}] },
 ];
 
 test('every hub-reachable panel joins the Set and hands the player back to the hub', async () => {
@@ -155,6 +168,204 @@ test('a duplicate open cannot latch the tracker above empty', async () => {
   assert.equal(h._overlays.size, 0);
   assert.equal(h.shown, false);
   assert.equal(h.relocks, 1);
+});
+
+test('a letter key that opens a panel over the hub is treated as picking the row', async () => {
+  /* J, I, B and M keep their own listeners, so they never reach `openFromHub`.
+   * Before this, the panel drew itself behind the card and the hub swallowed
+   * its Escape. `market` is the case with no hub row at all. */
+  for (const p of PANELS) {
+    const h = stubHud();
+    h.shown = true;                 // the hub is up
+    h.pauseMenu.model.focus = 3;    // ...on the fourth row
+    h.bus.emit(...p.open);
+    assert.equal(h.shown, false, `${p.id}: the panel opened behind the hub`);
+    assert.equal(h._hubReturn, true, `${p.id}: closing it would resume instead of returning`);
+    await settle();
+    assert.equal(h.shown, false, `${p.id}: the hub came back over the panel`);
+
+    h.bus.emit(...p.close);
+    await settle();
+    assert.equal(h.shown, true, `${p.id}: the hub did not come back`);
+    assert.equal(h.relocks, 0, `${p.id}: relocked instead of returning to the hub`);
+    assert.equal(h.pauseMenu.focused, 3, `${p.id}: the highlight was not restored`);
+  }
+});
+
+test('a second sheet opening over a hub-launched panel does not re-arm', () => {
+  const h = stubHud();
+  h.shown = true;
+  h.openFromHub(() => h.bus.emit('race:menu', { open: true }));
+  assert.equal(h.shown, false);
+  h._pendingFocus = 7; // must survive: the arm ran once, at the hub
+  h.bus.emit('minigame:menu', { open: true });
+  assert.equal(h._pendingFocus, 7, 're-armed over an already hidden card');
+});
+
+test('starting a race or a contest spends the hub return instead of coming back', async () => {
+  /* The panel that started it closes, which empties the Set. Without
+   * `clearHubReturn` the pause card lands on top of the starting lights. */
+  for (const started of ['race:countdown', 'race:started', 'minigame:countdown', 'minigame:started']) {
+    const h = stubHud();
+    h.shown = true;
+    h.bus.emit('race:menu', { open: true });
+    assert.equal(h._hubReturn, true);
+    h.bus.emit(started, {});
+    assert.equal(h._hubReturn, false, `${started}: hub return survived the start`);
+    h.bus.emit('race:menu', { open: false });
+    await settle();
+    assert.equal(h.shown, false, `${started}: the hub landed on the starting lights`);
+    assert.equal(h.relocks, 1, `${started}: play never resumed`);
+  }
+});
+
+test('the real START order clears the hub return before the microtask reads it', async () => {
+  /* The bug the `:started` subscription alone would not catch. `RaceUI`'s START
+   * button runs `closePanel()` then `race.start()` in one synchronous turn, and
+   * `start()` emits `race:countdown` (`RaceManager.js:506`) - `race:started`
+   * only arrives when the lights go out, long after `_deferHubCheck` has
+   * already decided. */
+  const h = stubHud();
+  h.shown = true;
+  h.openFromHub(() => h.bus.emit('race:menu', { open: true }));
+  await settle();
+  h.bus.emit('race:menu', { open: false }); // closePanel()
+  h.bus.emit('race:countdown', { count: 3 }); // race.start(), same turn
+  await settle();
+  assert.equal(h.shown, false, 'the hub came back over the starting lights');
+  assert.equal(h.relocks, 1, 'play never resumed');
+  h.bus.emit('race:started', {}); // seconds later; must change nothing
+  await settle();
+  assert.equal(h.shown, false);
+});
+
+/* ------------------------------------------------------------ keyboard -- */
+
+/**
+ * The two `window` keydown handlers, driven as prototype methods.
+ *
+ * Bound copies are installed in `_buildPause`, which needs a DOM; the logic
+ * itself is on the prototype precisely so this test can reach it. What it still
+ * cannot see is listener ORDER - see the note at the top of this file.
+ */
+function keyHud(over = {}) {
+  const h = Object.create(HUD.prototype);
+  h._overlays = new Set(over.overlays ?? []);
+  h._helpOpen = !!over.helpOpen;
+  h._chatOpen = !!over.chatOpen;
+  h.shown = over.shown !== false;
+  h.pause = { classList: { contains: (c) => c === 'show' && h.shown === true } };
+  h.input = { locked: !!over.locked, textCaptured: !!over.textCaptured, exitLock: () => { h.exits++; } };
+  h.exits = 0;
+  h.moves = 0;
+  h.activations = 0;
+  h.locks = 0;
+  h.pauseMenu = { move: () => { h.moves++; }, activate: () => { h.activations++; } };
+  h._requestLock = () => { h.locks++; };
+  return h;
+}
+
+const key = (code, extra = {}) => ({
+  code, repeat: false, prevented: 0, stopped: 0,
+  preventDefault() { this.prevented++; }, stopPropagation() { this.stopped++; }, ...extra,
+});
+
+test('the hub keyboard stands down while a panel owns the screen', () => {
+  for (const code of ['Enter', 'Space', 'ArrowDown']) {
+    const h = keyHud({ overlays: ['inventory'] });
+    HUD.prototype._onPauseKey.call(h, key(code));
+    assert.equal(h.activations, 0, `${code}: activated a hub row behind a panel`);
+    assert.equal(h.locks, 0, `${code}: resumed the game from behind a panel`);
+    assert.equal(h.moves, 0, `${code}: moved the hub highlight behind a panel`);
+  }
+});
+
+test('the hub keyboard stands down for Help, chat and captured text', () => {
+  for (const over of [{ helpOpen: true }, { chatOpen: true }, { textCaptured: true }, { shown: false }]) {
+    const h = keyHud(over);
+    HUD.prototype._onPauseKey.call(h, key('Enter'));
+    HUD.prototype._onPauseKey.call(h, key('Escape'));
+    const why = Object.keys(over)[0];
+    assert.equal(h.activations, 0, `${why}: Enter activated a row`);
+    assert.equal(h.locks, 0, `${why}: Escape resumed the game`);
+  }
+});
+
+test('the hub keyboard acts when nothing else owns it', () => {
+  const h = keyHud();
+  HUD.prototype._onPauseKey.call(h, key('ArrowDown'));
+  HUD.prototype._onPauseKey.call(h, key('Enter'));
+  HUD.prototype._onPauseKey.call(h, key('Escape'));
+  assert.equal(h.moves, 1);
+  assert.equal(h.activations, 1);
+  assert.equal(h.locks, 1);
+});
+
+test('Escape under pointer lock exits it, but never on a key repeat', () => {
+  /* Holding Escape is how browsers break keyboard lock; acting on each repeat
+   * would exit and re-request in a loop. */
+  const held = keyHud({ locked: true, shown: false });
+  HUD.prototype._onLockEsc.call(held, key('Escape', { repeat: true }));
+  assert.equal(held.exits, 0, 'a held Escape exited the lock');
+
+  const tap = keyHud({ locked: true, shown: false });
+  HUD.prototype._onLockEsc.call(tap, key('Escape'));
+  assert.equal(tap.exits, 1, 'Escape under lock did not raise the hub');
+
+  const busy = keyHud({ locked: true, shown: false, overlays: ['quest-board'] });
+  HUD.prototype._onLockEsc.call(busy, key('Escape'));
+  assert.equal(busy.exits, 0, 'Escape was taken from the panel that owns it');
+
+  const unlocked = keyHud({ locked: false, shown: false });
+  HUD.prototype._onLockEsc.call(unlocked, key('Escape'));
+  assert.equal(unlocked.exits, 0, 'exited a lock that was not held');
+});
+
+/* -------------------------------------------------- showPauseOverlay -- */
+
+/** The real `showPauseOverlay`, over a fake card and a counting menu. */
+function cardHud(over = {}) {
+  const h = Object.create(HUD.prototype);
+  const classes = new Set(over.shown ? ['show'] : []);
+  h._overlays = new Set(over.overlays ?? []);
+  h._chatOpen = !!over.chatOpen;
+  h._relockCheck = 9;
+  h.refreshes = 0;
+  h.firsts = 0;
+  h.pause = {
+    classList: {
+      contains: (c) => classes.has(c),
+      toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)),
+    },
+  };
+  h.isShown = () => classes.has('show');
+  h.pauseMenu = { refresh: () => { h.refreshes++; }, focusFirst: () => { h.firsts++; } };
+  return h;
+}
+
+test('showPauseOverlay refuses to raise the card over a panel or chat', () => {
+  for (const over of [{ overlays: ['inventory'] }, { chatOpen: true }]) {
+    const h = cardHud(over);
+    h.showPauseOverlay(true);
+    assert.equal(h.isShown(), false, `${Object.keys(over)[0]}: the hub covered a panel`);
+    assert.equal(h.refreshes, 0);
+  }
+});
+
+test('focusFirst runs only on the hidden->shown transition', () => {
+  // `_lockRefused` and the `_relockCheck` fallback call this every 0.4 s while
+  // a re-lock is retried; resetting the highlight under the player's hand
+  // each time would make the list unusable on a slow relock.
+  const h = cardHud();
+  h.showPauseOverlay(true);
+  assert.equal(h.isShown(), true);
+  assert.deepEqual([h.refreshes, h.firsts], [1, 1]);
+  h.showPauseOverlay(true);
+  h.showPauseOverlay(true);
+  assert.deepEqual([h.refreshes, h.firsts], [3, 1], 'focusFirst re-ran while already shown');
+  h.showPauseOverlay(false);
+  h.showPauseOverlay(true);
+  assert.deepEqual([h.refreshes, h.firsts], [4, 2], 'focusFirst did not run on a fresh open');
 });
 
 /* ---------------------------------------------------------------- model -- */
@@ -290,7 +501,12 @@ test('no F2-F12 key handler survives anywhere in src/', async () => {
     const rel = path.relative(root, f);
     assert.ok(!src.includes("'Shift+F9'"), `${rel}: still lists Shift+F9`);
     for (let n = 2; n <= 12; n++) {
-      assert.ok(!new RegExp(`code\\s*===\\s*'F${n}'`).test(src), `${rel}: still handles F${n}`);
+      /* `[!=]==` because a guard is a handler too: `if (e.code !== 'F8') return`
+       * is exactly the shape the `===` pattern walks past. `e.key` because it
+       * is the other spelling of the same test - `code` is the physical key,
+       * `key` the produced value, and for F-keys they are the same string. */
+      assert.ok(!new RegExp(`code\\s*[!=]==\\s*'F${n}'`).test(src), `${rel}: still handles F${n}`);
+      assert.ok(!new RegExp(`e\\.key\\s*===\\s*'F${n}'`).test(src), `${rel}: still handles F${n} by key`);
       assert.ok(!new RegExp(`pressed\\(\\s*'F${n}'\\s*\\)`).test(src), `${rel}: still polls F${n}`);
       assert.ok(!new RegExp(`\\[[^\\]\\n]*'F${n}'`).test(src), `${rel}: still lists F${n} in a key array`);
       // KeybindMenu's FIXED_KEYS rows are objects, not bare array entries, so

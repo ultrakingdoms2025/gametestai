@@ -151,13 +151,20 @@ export class RaceUI {
          * on text capture, so it still means "send" in chat.
          */
         if (this.input?.textCaptured) return;
-        /* Only while actually playing. We register before the HUD does
-         * (main.js:285 vs :421), so with the Esc hub up this branch would run
-         * first and start a race behind it - and swallow the Enter the hub
-         * needed to activate the focused item. Every panel that owns the cursor
-         * has released the lock, so this is the one test that covers all of
-         * them without naming any. */
-        if (!this.input?.locked) return;
+        /* Playing, or standing in this panel.
+         *
+         * We register before the HUD does (main.js:285 vs :421), so with the
+         * Esc hub up this branch would run first, start a race behind it and
+         * swallow the Enter the hub needed to activate the focused item. The
+         * lock test covers every cursor-owning panel without naming one.
+         *
+         * But `openPanel` exits the lock itself, so the bare test also locked
+         * out the panel that exists to start races: the START button worked and
+         * Enter, two inches away, did nothing. `_panelOpen` is safe to add
+         * because it and "the hub is up" are mutually exclusive - the hub
+         * refuses to show while the Set is non-empty, and `race:menu` puts
+         * `race` in the Set for exactly as long as this panel is open. */
+        if (!this._panelOpen && !this.input?.locked) return;
         if (this._stopOpen || this._boardOpen || !this.race?.ready || this.race.state !== 'idle') return;
         e.preventDefault();
         this.closePanel();
@@ -648,12 +655,6 @@ export class RaceUI {
     this.bus?.emit('race:menu', { open: false });
   }
 
-  togglePanel() {
-    if (this._boardOpen) return;
-    if (this._panelOpen) this.closePanel();
-    else this.openPanel();
-  }
-
   /* Mid-race stop confirm. Frees the cursor like the picker so the buttons are
    * clickable, but leaves the race running behind it — resuming just closes. */
   _openStop() {
@@ -670,11 +671,6 @@ export class RaceUI {
     this.stopEl?.classList.remove('on');
     this.input?.relockKeyboard?.();
     this.bus?.emit('race:menu', { open: false });
-  }
-
-  _toggleStop() {
-    if (this._stopOpen) this._closeStop();
-    else this._openStop();
   }
 
   _showBoard(payload) {

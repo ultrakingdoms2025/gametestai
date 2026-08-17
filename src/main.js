@@ -214,10 +214,11 @@ const stamina = new Stamina({ bus, player });
 
 const inventory = new Inventory({ bus, economy, input, root: uiRoot });
 const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
-const itemUse = new ItemUseSystem({ bus, player, inventory, loot, portals, npcManager, combat });
-// Permanent purchasable skins. Bought at a merchant, worn from the F2 menu, and
-// round-tripped through both save paths so a limited-edition unlock sticks.
+// Permanent purchasable skins. Bought at a merchant, worn from the F2 (character)
+// or F10 (mount) menu, and round-tripped through both save paths so a
+// limited-edition unlock sticks.
 const cosmetics = new Cosmetics({ bus });
+const itemUse = new ItemUseSystem({ bus, player, inventory, loot, portals, npcManager, combat, mounts, cosmetics });
 // `mounts` is passed read-only so preview() can refuse a mount power the player
 // already owns - see the `owned` branch in Marketplace.preview().
 const market = new Marketplace({ bus, economy, inventory, cosmetics, mounts, player, npcManager, input, root: uiRoot });

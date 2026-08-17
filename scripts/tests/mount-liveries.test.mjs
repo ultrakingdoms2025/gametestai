@@ -356,3 +356,20 @@ test('applyMountSkin: neither owned nor held refuses with not-owned', () => {
   assert.equal(applyMountSkin(s.deps, 'dragon_frost').reason, 'not-owned');
   assert.equal(s.unlocked.size, 0);
 });
+
+import { ItemUseSystem } from '../../src/systems/ItemUse.js';
+
+test('ItemUse routes skin items through applyMountSkin and never the generic consume', () => {
+  const s = skinDeps({ bag: { skin_dragon_frost: 1 } });
+  const notes = [];
+  const iu = new ItemUseSystem({ bus: { emit: (n, p) => notes.push([n, p]) }, player: {}, inventory: s.deps.inventory, mounts: s.deps.mounts, cosmetics: s.deps.cosmetics });
+  assert.equal(iu.use('skin_dragon_frost').ok, true);
+  assert.equal(s.bag.skin_dragon_frost, 0);
+  assert.ok(notes.some(([n, p]) => n === 'inventory:item-used' && p.itemId === 'skin_dragon_frost'));
+  const s2 = skinDeps({ mounted: null, bag: { skin_dragon_frost: 1 } });
+  const notes2 = [];
+  const iu2 = new ItemUseSystem({ bus: { emit: (n, p) => notes2.push([n, p]) }, player: {}, inventory: s2.deps.inventory, mounts: s2.deps.mounts, cosmetics: s2.deps.cosmetics });
+  assert.equal(iu2.use('skin_dragon_frost').ok, false);
+  assert.equal(s2.bag.skin_dragon_frost, 1);
+  assert.ok(notes2.some(([n, p]) => n === 'hud:notify' && /F10/.test(p.text)));
+});

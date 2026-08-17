@@ -328,7 +328,7 @@ export class InventoryUI {
     this._detailZone = row ? zone : null;
     const def = row?.def;
     const inBag = zone === 'bag';
-    const usable = !!def && inBag && def.kind === 'consumable';
+    const usable = !!def && inBag && (def.kind === 'consumable' || def.kind === 'skin');
     const droppable = !!def && inBag;
     this.useBtn.hidden = !usable;
     this.useBtn.disabled = !usable;

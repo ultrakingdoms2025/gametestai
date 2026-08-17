@@ -1,3 +1,7 @@
+import { itemDef, skinIdFromItem } from './ItemDefs.js';
+import { applyMountSkin } from './MountSkins.js';
+import { MOUNT_SKINS_BY_ID } from './Cosmetics.js';
+
 /**
  * Inventory item use dispatcher.
  *
@@ -8,7 +12,7 @@
  */
 
 export class ItemUseSystem {
-  constructor({ bus, player, inventory, loot, portals, npcManager, combat } = {}) {
+  constructor({ bus, player, inventory, loot, portals, npcManager, combat, mounts, cosmetics } = {}) {
     this.bus = bus ?? null;
     this.player = player ?? null;
     this.inventory = inventory ?? null;
@@ -16,12 +20,18 @@ export class ItemUseSystem {
     this.portals = portals ?? null;
     this.npcManager = npcManager ?? null;
     this.combat = combat ?? null;
+    this.mounts = mounts ?? null;
+    this.cosmetics = cosmetics ?? null;
   }
 
   use(itemId) {
     if (!this.inventory || !this.player || typeof itemId !== 'string' || !itemId) {
       return { ok: false, reason: 'unavailable' };
     }
+
+    // Mount skins are not effects: they are consumed by applyMountSkin only on
+    // a successful apply, so they must never reach the generic consume below.
+    if (itemDef(itemId)?.kind === 'skin') return this._useSkin(itemId);
 
     const effect = this._effectFor(itemId);
     if (!effect) return { ok: false, reason: 'unsupported' };
@@ -33,6 +43,23 @@ export class ItemUseSystem {
 
     this.bus?.emit('inventory:item-used', { itemId, effect: effect.type, amount: effect.amount ?? effect.duration ?? 0 });
     return { ok: true, ...applied };
+  }
+
+  _useSkin(itemId) {
+    const skinId = skinIdFromItem(itemId);
+    const skin = skinId ? MOUNT_SKINS_BY_ID.get(skinId) : null;
+    if (!skin) return { ok: false, reason: 'unsupported' };
+    const res = applyMountSkin({ mounts: this.mounts, cosmetics: this.cosmetics, inventory: this.inventory, bus: this.bus }, skinId);
+    if (!res.ok) {
+      const text = res.reason === 'not-mounted' || res.reason === 'wrong-mount'
+        ? `Mount your ${skin.mount} and press F10 to apply this skin`
+        : 'This skin cannot be applied right now';
+      this.bus?.emit('hud:notify', { text, tone: 'warn' });
+      return { ok: false, reason: res.reason };
+    }
+    this.bus?.emit('inventory:item-used', { itemId, effect: 'skin', amount: 1 });
+    this.bus?.emit('hud:notify', { text: `${skin.name} applied to your ${skin.mount}`, tone: 'info' });
+    return { ok: true, consumed: res.consumed };
   }
 
   _effectFor(itemId) {

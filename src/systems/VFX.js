@@ -23,6 +23,8 @@ const _dir = new THREE.Vector3();
 const _up = new THREE.Vector3(0, 1, 0);
 const _alt = new THREE.Vector3(1, 0, 0);
 const _pos = new THREE.Vector3();
+/* `_burst` owns `_pos`, so a caller that wants to hand it a point needs its own. */
+const _puff = new THREE.Vector3();
 
 const TAU = Math.PI * 2;
 
@@ -746,6 +748,43 @@ export class VFX {
       scene.add(l);
       this._lights.push({ light: l, t: 0, dur: 1, peak: 0 });
     }
+
+    /* --- bus-driven effects -------------------------------------------
+     *
+     * This constructor has taken a `bus` since it was written and never used
+     * it: every effect in here was called directly by `Combat`. The parkour
+     * verbs have no such owner - `Parkour` knows nothing about a particle pool
+     * and should not - so the two ground cues subscribe here instead, which is
+     * also the reason the existing pool is reused rather than a second one
+     * being built for dust that is already in `PRESETS.dust`.
+     */
+    this._offs = [];
+    this._bindBus(bus);
+  }
+
+  /**
+   * Subscribe the bus-driven effects.
+   *
+   * A method rather than six lines in the constructor so a test can drive it
+   * against a recording stub - the precedent is `race-pace.test.mjs` calling
+   * `AudioDirector.prototype.update.call({...})`. A grep for `on('player:roll'`
+   * in the source proves a string exists; it does not prove the handler calls
+   * anything, which is the defect class this whole phase is about.
+   *
+   * @param {any} bus
+   */
+  _bindBus(bus) {
+    if (!bus) return;
+    const on = (type, fn) => this._offs.push(bus.on(type, fn));
+    /* A LANDING roll is skipped deliberately. `Parkour._onLand` raises
+     * `player:roll` and then exactly one of `player:hardland` /
+     * `player:falldamage` for the same touchdown, so puffing on both spends
+     * two bursts of the shared 288-quad pool on one event. The arrival owns
+     * the dust; the roll owns the dust only when it is a dodge, which raises
+     * neither of the other two. */
+    on('player:roll', (e) => { if (e?.kind !== 'land') this.groundPuff(e?.position, 0.7); });
+    on('player:hardland', (e) => this.groundPuff(e?.position, 1));
+    on('player:falldamage', (e) => this.groundPuff(e?.position, 1.35));
   }
 
   /* ---------------- public effects ---------------- */
@@ -881,6 +920,32 @@ export class VFX {
     }
   }
 
+  /**
+   * A puff of dust kicked up off the ground at the feet.
+   *
+   * The existing `dust` preset and the existing `smoke` pool - a roll does not
+   * need a particle system of its own, it needs the one that is already
+   * resident and already inside the 288-quad budget. Sprayed off +Y rather
+   * than off a queried surface normal, because the caller is a player standing
+   * on the floor and a raycast per roll would buy nothing but a slope.
+   *
+   * @param {{x:number,y:number,z:number}|null} point feet position
+   * @param {number} intensity 0.5 for a dodge, 1 for a hard landing, more for a fall that hurt
+   */
+  groundPuff(point, intensity = 1) {
+    if (!point || !Number.isFinite(point.x)) return;
+    const s = Math.max(0.2, Math.min(2, intensity));
+    _puff.set(point.x, point.y + 0.06, point.z);
+    // Wide and low: the cone hugs the normal, so a shallow spray reads as dust
+    // going outward across the ground instead of a puff of smoke going up.
+    this._burst(this.smoke, PRESETS.dust, _puff, _up, Math.max(3, (7 * s) | 0),
+      0.7 * s, 2.4 * s, 0.9 + 0.35 * s, 0.86, 0.83, 0.78);
+    if (s > 1) {
+      this._burst(this.debris, PRESETS.clod, _puff, _up, (4 * s) | 0,
+        1.2, 3.4, 0.8, 0.62, 0.58, 0.5);
+    }
+  }
+
   /** Short bright flare, used for near-miss cracks and suppressive impacts. */
   sparkle(point, normal, count = 4) {
     this._burst(this.sparks, PRESETS.sparkHot, point, normal, count, 3, 9, 0.7, 1, 1, 1);
@@ -958,6 +1023,8 @@ export class VFX {
   }
 
   dispose() {
+    for (const off of this._offs) off?.();
+    this._offs.length = 0;
     this.sparks.dispose();
     this.smoke.dispose();
     this.debris.dispose();

@@ -69,6 +69,7 @@ function stubPlayer({ wallX = null } = {}) {
   // Only what `_die` reaches for, so a bleed that kills can run to the end.
   p.swim = { cancel() {} };
   p.climb = { cancel() {} };
+  p.parkour = { cancel() {} };
   p._weapon = { setEnabled() {}, setAim() {} };
   p._releaseMovement = () => {};
 

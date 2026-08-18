@@ -864,11 +864,21 @@ export class PlayerAvatar {
     if (!this._dead) this._driveLocomotion(dt, elapsed, third, rig);
 
     this.animator.update(dt, elapsed, {
-      // Foot IK grounds the feet to whatever is under them. In the air that is
-      // the floor several metres below, and the animator would drag the pelvis
-      // all the way down to it, so IK is off while airborne - and always while
-      // riding, because a rider's feet belong to the mount, not the terrain.
-      ik: this._airWeight < 0.3 && !p.movementOverride,
+      /* Foot IK grounds the feet to whatever is under them. In the air that is
+       * the floor several metres below, and the animator would drag the pelvis
+       * all the way down to it, so IK is off while airborne - and always while
+       * riding, because a rider's feet belong to the mount, not the terrain.
+       *
+       * ...and during a roll, which is the only full-body pose in the codebase
+       * that is GROUNDED and raises no `movementOverride`, so it satisfies
+       * neither of the other two terms. `Parkour.applyPose` slerps every leg
+       * bone to an absolute tuck at weight ~1, so the whole two-bone solve is
+       * computed and thrown away - but `_poseLegs` also writes
+       * `pelvis.position.y`, and a POSITION is not overwritten by a pose that
+       * only writes quaternions. The pelvis would be dropped to reach ground
+       * the body is mid-somersault above, worst exactly on the stepped rooftops
+       * the landing roll is authored for. */
+      ik: this._airWeight < 0.3 && !p.movementOverride && !p.parkour?.rolling,
       detail: third || this._preview,
     });
     this.humanoid.setDetailVisible(third || this._preview);

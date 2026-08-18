@@ -67,6 +67,18 @@ const IMPULSE_MAX = 14;
 /** View-kick spring: stiffness and damping, tuned to overshoot once and settle. */
 const KICK_STIFFNESS = 78;
 const KICK_DAMPING = 12;
+/** How fast an FOV punch decays back into the ordinary sprint kick. @see punchFov */
+const FOV_PUNCH_DECAY = 3.2;
+/**
+ * Radians the view pitches down at full dive weight.
+ *
+ * Deliberately a fraction of the body's own {@link Parkour} tilt of 1.18 rad.
+ * The avatar goes fully head-first because that is what a dive looks like from
+ * outside; the camera nods, because 68 degrees of involuntary pitch in first
+ * person is the motion-sickness failure state `_tickDip` already refuses to
+ * ship for a landing.
+ */
+const DIVE_VIEW_PITCH = 0.34;
 
 export class Player {
   /**
@@ -112,6 +124,35 @@ export class Player {
     this._dipVel = 0;
     this._roll = 0;
     this._fov = CONFIG.render.fov;
+    /**
+     * Additive FOV punch in degrees, decayed in `_applyFov`.
+     *
+     * Distinct from the sprint kick, which is a state: this is an EVENT, and it
+     * has to be able to fire while the sprint kick is already at its ceiling -
+     * a leap is taken at a sprint by definition. @see punchFov
+     */
+    this._fovPunch = 0;
+    /**
+     * Body-state view offsets: a bank and a pitch written by whichever movement
+     * module owns the body this frame, composed in `_applyCamera`.
+     *
+     * NOT folded into `_roll` and `_pitch`. `_roll` is a damped spring chasing
+     * the strafe input, and handing it a half-second envelope makes the damper
+     * lag the pose it is supposed to be following; `_pitch` is the aim, and the
+     * whole rule about `applyViewKick` is that a body movement moves the camera
+     * and never the aim.
+     */
+    this._poseRoll = 0;
+    this._posePitch = 0;
+    /**
+     * True while the capsule is held at `Parkour.ROLL_HEIGHT` because an
+     * ordinary crouch does not fit where the roll has put us.
+     *
+     * Written by the stance block, read by the eye spring. It is not the same
+     * thing as `parkour.rolling` - the roll is over by then; what is left is a
+     * player under a beam who cannot stand up yet.
+     */
+    this._stancePinned = false;
     this._lastLookX = 0;
     this._lastLookY = 0;
 
@@ -266,6 +307,7 @@ export class Player {
       this.swim.cancel();
       this.climb.cancel();
       this.freeClimb.cancel();
+      this.parkour.cancel();
       this._releaseMovement();
     });
 
@@ -577,7 +619,16 @@ export class Player {
     if (this.movementOverride && !this._selfOverride) {
       if (this.swim.active) this.swim.cancel();
       if (this.climb.active) this.climb.cancel();
+      /* And the roll, for the reason the other two are here: this branch
+       * RETURNS, so `parkour.fixedUpdate` never runs while a mount owns the
+       * body - but `update()` is not gated and keeps reading `rolling`.
+       * Measured: tap crouch at a sprint, summon a mount inside the 0.55 s
+       * roll, and `rollTime` freezes at 0.55 with the eye pinned at
+       * `Parkour.ROLL_EYE` - the third-person boom pivot 1.07 m below the
+       * rider - for the entire ride. @see ./Parkour.js `cancel` */
+      this.parkour.cancel();
       this._crouching = false;
+      this._stancePinned = false;
       this._sprinting = false;
       this._capsuleHeight = damp(this._capsuleHeight, STAND_HEIGHT, 16, dt);
       if (this.movementOverrideCollide) {
@@ -604,6 +655,11 @@ export class Player {
      * which would eject the capsule out of the very wall it is climbing. */
     if (this.climb.active) {
       this._claimMovement();
+      // Same reason as the mount branch above: this returns before
+      // `parkour.fixedUpdate`, so a roll caught by a mantle would freeze rather
+      // than finish, and the frozen `rolling` would hold the eye at 0.55 m for
+      // the length of the hoist.
+      this.parkour.cancel();
       this._jumpHeld = !!s.jump;
       this.climb.fixedUpdate(dt, elapsed);
       // The final step of a hoist calls `setClimbLanding`, which publishes the
@@ -656,22 +712,44 @@ export class Player {
     }
     this._releaseMovement();
 
-    /* ---- stance ---------------------------------------------------- */
-    const wasCrouching = this._crouching;
-    const wantsCrouch = s.crouch;
-    // Never stand up into a ceiling.
-    if (!wantsCrouch && this._crouching && !this._hasHeadroom(STAND_HEIGHT)) {
-      this._crouching = true;
+    /* ---- stance ---------------------------------------------------- *
+     * A roll owns the stance outright for its duration. It has to: a dodge is
+     * a TAP of crouch, so by the second frame `s.crouch` is already false and
+     * the block below would be standing the capsule back up underneath a body
+     * that is still somersaulting. This is one of the two real readers of
+     * `parkour.rolling`; the other is the eye spring in `update()`, which is a
+     * separate spring and does not follow the capsule. */
+    const rollTuck = allows(this._world, 'parkour') ? this.parkour.rollTuck : 0;
+    if (rollTuck > 0) {
+      // The crouch key is still the roll key, so a crouch held through a roll
+      // must not also read as a stance change and rustle cloth every frame.
+      const wasCrouching = this._crouching;
+      this._crouching = false;
+      if (wasCrouching) this.bus?.emit('player:crouch', { crouching: false });
+      this.setRollStance(rollTuck, dt);
     } else {
-      this._crouching = wantsCrouch;
+      const wasCrouching = this._crouching;
+      const wantsCrouch = s.crouch;
+      /* Never stand up into a ceiling. The second term is a cheap gate on the
+       * raycast - and it asks the CAPSULE rather than `_crouching`, because a
+       * roll that ends under a low beam leaves the capsule tucked with
+       * `_crouching` already false, and asking the flag would let it grow
+       * straight back into the beam it had just gone under. */
+      const tucked = this._crouching || this._capsuleHeight < STAND_HEIGHT - 0.01;
+      if (!wantsCrouch && tucked && !this._hasHeadroom(STAND_HEIGHT)) {
+        this._crouching = true;
+      } else {
+        this._crouching = wantsCrouch;
+      }
+      // Audio cares about the transition, not the state: cloth moves when the
+      // stance changes, in either direction.
+      if (this._crouching !== wasCrouching) {
+        this.bus?.emit('player:crouch', { crouching: this._crouching });
+      }
+      const targetHeight = this._fittingHeight(this._crouching ? CROUCH_HEIGHT : STAND_HEIGHT);
+      this._stancePinned = targetHeight < CROUCH_HEIGHT;
+      this._capsuleHeight = damp(this._capsuleHeight, targetHeight, 16, dt);
     }
-    // Audio cares about the transition, not the state: cloth moves when the
-    // stance changes, in either direction.
-    if (this._crouching !== wasCrouching) {
-      this.bus?.emit('player:crouch', { crouching: this._crouching });
-    }
-    const targetHeight = this._crouching ? CROUCH_HEIGHT : STAND_HEIGHT;
-    this._capsuleHeight = damp(this._capsuleHeight, targetHeight, 16, dt);
 
     /* ---- wish direction -------------------------------------------- */
     const sinY = Math.sin(this._yaw);
@@ -797,6 +875,15 @@ export class Player {
     if (!this._grounded) this._velocity.y += P.gravity * dt;
     // Terminal velocity - stops the solver from tunnelling on long drops.
     if (this._velocity.y < -60) this._velocity.y = -60;
+
+    /* ---- the roll's speed floor -------------------------------------- *
+     * Here and nowhere else. Friction and the wish have both taken their bite
+     * for this step and `_move` has not integrated yet, so what the floor
+     * writes is exactly what gets travelled. A step earlier and friction takes
+     * a sixth of it back inside the same step; a step later and the metre just
+     * covered was covered at the wrong speed.
+     * @see ./Parkour.js `holdRollSpeed` */
+    if (allows(this._world, 'parkour')) this.parkour.holdRollSpeed();
 
     /* ---- integrate + collide ---------------------------------------- */
     this._move(dt);
@@ -1064,8 +1151,35 @@ export class Player {
     // Dip proportional to impact, capped so a long fall cannot black out the
     // view. Motion sickness is a failure state: 0.42 m is the hard ceiling.
     this._dipVel -= Math.min(1.35, Math.max(0, fallSpeed - 2.6) * 0.062);
-    this.bus.emit('player:landed', { speed: fallSpeed, position: this._position });
-    this._emitFootstep(fallSpeed, true);
+    /* Resolved ONCE and handed to both. `player:landed` carried no `material`,
+     * so `AudioDirector`'s handler - which has always read `e.material` - got
+     * `undefined` and fell through to 'concrete' on every landing in the game,
+     * and `Parkour` then passed the same nothing on to the roll and hard-land
+     * cues. A per-surface table that is never reached reads like working
+     * variation. @see _surfaceUnderfoot */
+    const material = this._surfaceUnderfoot();
+    this.bus.emit('player:landed', { speed: fallSpeed, position: this._position, material });
+    this._emitFootstep(fallSpeed, true, material);
+  }
+
+  /**
+   * What is under the feet right now, as a material name.
+   *
+   * One short raycast. Colliders may tag themselves via `userData.material` /
+   * `.surface` / `.type`; anything untagged reports 'default'.
+   *
+   * @returns {string}
+   */
+  _surfaceUnderfoot() {
+    _v1.set(this._position.x, this._position.y + 0.25, this._position.z);
+    const hit = this.physics.raycast(_v1, _down, 0.8, COLLISION_LAYER.WORLD);
+    const ud = hit?.collider?.userData;
+    return ud?.material ?? ud?.surface ?? ud?.type ?? 'default';
+  }
+
+  /** Public read of {@link _surfaceUnderfoot}, for the movement modules. */
+  surfaceUnderfoot() {
+    return this._surfaceUnderfoot();
   }
 
   /** Raycast up from the feet to see whether we can extend to `height`. */
@@ -1076,15 +1190,13 @@ export class Player {
   }
 
   /**
-   * Footsteps carry a surface guess so audio/VFX can vary. Colliders may tag
-   * themselves via `userData.material` / `.surface`; anything untagged reports
-   * 'default'.
+   * Footsteps carry a surface guess so audio/VFX can vary.
+   *
+   * `material` is a parameter with a default rather than always a fresh probe,
+   * so `_land` can resolve the surface once and spend it on both the landing
+   * event and the footstep. @see _surfaceUnderfoot
    */
-  _emitFootstep(speed, isLanding = false) {
-    _v1.set(this._position.x, this._position.y + 0.25, this._position.z);
-    const hit = this.physics.raycast(_v1, _down, 0.8, COLLISION_LAYER.WORLD);
-    const ud = hit?.collider?.userData;
-    const material = ud?.material ?? ud?.surface ?? ud?.type ?? 'default';
+  _emitFootstep(speed, isLanding = false, material = this._surfaceUnderfoot()) {
     this._footIndex ^= 1;
     this.bus.emit('player:footstep', {
       position: this._position,
@@ -1179,6 +1291,92 @@ export class Player {
   }
 
   /**
+   * Stance during a roll. `tuck` runs 0 (standing) to 1 (fully tucked), which
+   * is the OPPOSITE sense to {@link setClimbStance} because the two states are
+   * opposites: a mantle is a body on its way back up and a roll is a body on
+   * its way down.
+   *
+   * The target is `Parkour.ROLL_HEIGHT` and not `CROUCH_HEIGHT`, and that is
+   * the whole mechanic - a roll has to fit under things a crouch does not, or
+   * "pass under a low obstacle" is just a crouch-walk with an animation on it.
+   * Rate 16, the same rate the crouch uses, so the two stances tuck at the same
+   * speed and only the depth differs.
+   *
+   * @param {number} tuck
+   * @param {number} dt
+   */
+  setRollStance(tuck, dt) {
+    const want = THREE.MathUtils.lerp(STAND_HEIGHT, Parkour.ROLL_HEIGHT, clamp(tuck, 0, 1));
+    /* Clamped, because `rollTuck` eases back off over the last third of the
+     * roll and that easing happens wherever the roll ended - including under
+     * the 0.9 m beam the verb exists to pass. @see _fittingHeight */
+    const target = this._fittingHeight(want);
+    this._stancePinned = target < CROUCH_HEIGHT;
+    this._capsuleHeight = damp(this._capsuleHeight, target, 16, dt);
+  }
+
+  /**
+   * The tallest stance at or below `desired` that there is actually room for.
+   *
+   * THE ROLL MADE THIS NECESSARY. Before it, the capsule could never be under
+   * `CROUCH_HEIGHT`, so a crouch fitted anywhere a player could get to and two
+   * targets were enough. A roll reaches 0.735 m, which means a player can now
+   * be somewhere 1.015 m does not fit - and damping toward a height that does
+   * not fit hands `resolveCapsule` an impossible body. Measured under a 12 m
+   * wide beam at a 0.9 m gap: the feet were ejected from y = 0.0 up to y = 0.9,
+   * gravity dropped them, and the pair repeated at about 20 Hz with
+   * `_crouching` flickering, for as long as the player stayed underneath.
+   *
+   * Probes only while the capsule is GROWING - shrinking always fits, and
+   * standing up already paid for a probe before this existed. An ordinary
+   * crouch-walk damps 1.75 -> 1.015 from above and so never asks.
+   *
+   * @param {number} desired
+   * @returns {number} `desired`, `CROUCH_HEIGHT` or `Parkour.ROLL_HEIGHT`
+   */
+  _fittingHeight(desired) {
+    if (desired <= this._capsuleHeight + 1e-4) return desired;
+    if (this._hasHeadroom(desired)) return desired;
+    if (desired > CROUCH_HEIGHT && this._hasHeadroom(CROUCH_HEIGHT)) return CROUCH_HEIGHT;
+    return Parkour.ROLL_HEIGHT;
+  }
+
+  /**
+   * Nudge the landing-dip spring. Negative dips the view down.
+   *
+   * The primitive `_land` uses, exposed so the sibling movement modules do not
+   * have to reach into `_dipVel` - the rule for the whole of this block. The
+   * spring is critically damped and clamped in `_tickDip`, so an over-large
+   * impulse is bounded rather than blinding.
+   *
+   * @param {number} amount metres per second of dip velocity
+   */
+  addViewDip(amount) {
+    if (!Number.isFinite(amount)) return false;
+    this._dipVel += amount;
+    return true;
+  }
+
+  /**
+   * A short additive FOV punch, in degrees, decaying in `_applyFov`.
+   *
+   * Separate from the sprint kick because it is an event and the kick is a
+   * state: a leap is taken at a sprint by definition, so the kick is already at
+   * or near its 4.76-degree ceiling and widening the frame further has to be
+   * additive or it does nothing at the exact moment it is wanted.
+   *
+   * Takes the larger of the two rather than summing, so a burst of leaps off a
+   * rooftop chain reads as one wide frame instead of ratcheting the lens open.
+   *
+   * @param {number} degrees
+   */
+  punchFov(degrees) {
+    if (!(degrees > 0)) return false;
+    this._fovPunch = Math.max(this._fovPunch, degrees);
+    return true;
+  }
+
+  /**
    * Called once as a mantle completes, with the settled capsule resolve.
    * @param {{grounded:boolean, groundNormal:THREE.Vector3}} res
    */
@@ -1207,6 +1405,22 @@ export class Player {
     if (this._offLate || !this.engine?.onFrameUpdate) return;
     this._offLate = this.engine.onFrameUpdate((dt, elapsed) => {
       this.swim.applyPose(dt, elapsed);
+      /* Parkour BEFORE the two climbs, and the order is the whole rule: later
+       * wins, so this is the statement that a climb outranks a leap.
+       *
+       * It used to sit after them with a comment claiming the opposite - "a
+       * leap that ends in a wall grab is posed by the wall" - which is what the
+       * ordering should say and was not what it did. The overlap is real and it
+       * is the interaction the citadel is built around: a leap or a dive that
+       * ends in a wall grab leaves `_leapT` and `_diveW` decaying for up to
+       * half a second AFTER `FreeClimb` has taken the body, and parkour running
+       * last meant a head-first dive pose and a 0.57 m rig lift over the wall
+       * pose for the whole of that tail. The same ordering keeps a mantle's
+       * pose safe from a roll that has not finished.
+       *
+       * It shares `humanoid.rig` with swim, so it honours the same handover
+       * guard `MinigamePose` does, and that guard is order-independent. */
+      this.parkour.applyPose(dt, elapsed);
       // Free climb before the mantle: topping out hands off from one to the
       // other, and the mantle is the pose that should win on the frames where
       // both have weight.
@@ -1503,9 +1717,29 @@ export class Player {
     return true;
   }
 
-  grantShield(duration) {
+  /**
+   * Raise invulnerability without announcing a buff.
+   *
+   * The silent half of {@link grantShield}. A shield is a PICKUP - it has an
+   * icon, a duration a player is meant to watch, and `player:buffed` is how the
+   * HUD would learn about it. A dodge roll's i-frames are part of a movement,
+   * and routing them through `grantShield` put a 1.7 Hz emitter on that event:
+   * measured, 52 `player:buffed` in thirty seconds of crouch-tapping. The
+   * design forbade it for the right reason even though the reason it gave (a
+   * flashing HUD icon) has no listener to flash yet.
+   *
+   * `Math.max`, so a brief roll can never SHORTEN a real shield.
+   *
+   * @param {number} duration seconds
+   */
+  grantIFrames(duration) {
     if (!(duration > 0)) return false;
     this._invulnUntil = Math.max(this._invulnUntil, this._elapsed + duration);
+    return true;
+  }
+
+  grantShield(duration) {
+    if (!this.grantIFrames(duration)) return false;
     this.bus.emit('player:buffed', { kind: 'shield', duration });
     return true;
   }
@@ -1516,6 +1750,14 @@ export class Player {
     this._deathAt = this._elapsed;
     this.swim.cancel();
     this.climb.cancel();
+    /* The design named `_die` as one of the four cancel sites and it was the
+     * one that got missed. The dead branch of `fixedUpdate` returns before
+     * `parkour.fixedUpdate`, so without this the corpse holds whatever it was
+     * doing for the full 3.2 s respawn delay: measured, killed 0.45 s into a
+     * dodge, `humanoid.rig` stayed at 0.54 rad with the body floating 0.36 m
+     * off its own feet and 4 degrees of bank on the death camera, every frame
+     * until `respawn`. */
+    this.parkour.cancel();
     this._releaseMovement();
     this._velocity.set(0, this._velocity.y, 0);
     this._weapon.setEnabled(false);
@@ -1557,6 +1799,8 @@ export class Player {
     // re-detects on the following step from the bed depth there.
     this.swim.cancel();
     this.climb.cancel();
+    // A roll does not follow you through a portal either. @see Parkour.cancel
+    this.parkour.cancel();
     this._releaseMovement();
     // A wound does not follow you through a portal, and neither does a shove.
     this.clearBleed();
@@ -1570,6 +1814,10 @@ export class Player {
     this._stepSmooth = 0;
     this._dip = 0;
     this._dipVel = 0;
+    this._fovPunch = 0;
+    this._poseRoll = 0;
+    this._posePitch = 0;
+    this._stancePinned = false;
     this._bobWeight = 0;
     this._footAccum = 0;
     // Settle out of anything we landed inside.
@@ -1613,12 +1861,30 @@ export class Player {
     this._stepSmooth = damp(this._stepSmooth, 0, 13, dt);
     this._tickDip(dt);
     this._tickViewKick(dt);
+    /* The eye is its OWN spring, keyed off `_crouching` and not off the
+     * capsule, which is why a roll has to name it explicitly: the capsule
+     * tucking to `Parkour.ROLL_HEIGHT` moves `crouchAmount` and the avatar's
+     * legs and nothing else, and a camera left at 1.62 m over a body rolling
+     * at 0.735 m is the whole reason this line is called out in the design.
+     * Faster than the crouch rate too - a roll is 0.55 s long and a 14 rate
+     * spring is still a third of the way from home when it ends. */
+    const parkour = allows(this._world, 'parkour') ? this.parkour : null;
+    // `rolling` OR still pinned under something a crouch does not fit: the
+    // capsule is at ROLL_HEIGHT in both cases, and a 0.891 m crouch eye under a
+    // 0.9 m beam is a camera inside the beam.
+    const rolling = !!parkour?.rolling || this._stancePinned;
     this._eyeHeight = damp(
       this._eyeHeight,
-      this._dead ? 0.32 : this._crouching ? CROUCH_EYE : STAND_EYE,
-      14,
+      this._dead ? 0.32 : rolling ? Parkour.ROLL_EYE : this._crouching ? CROUCH_EYE : STAND_EYE,
+      rolling ? 22 : 14,
       dt
     );
+    /* Body-state view offsets. Composed in `_applyCamera` rather than folded
+     * into `_roll`/`_pitch` - see the field comment. The roll banks; the dive
+     * pitches the view down with the body, which is what makes `diveWeight` a
+     * live number instead of a getter nothing called. */
+    this._poseRoll = parkour ? parkour.poseRoll : 0;
+    this._posePitch = parkour ? -DIVE_VIEW_PITCH * parkour.diveWeight : 0;
 
     const s = this.input.state;
     const speed = Math.hypot(this._velocity.x, this._velocity.z);
@@ -1719,7 +1985,13 @@ export class Player {
      * amplitude - a real change to how a sprint feels.
      * @see ../core/Config.js `sprintWishSpeed` */
     const sprintKick = this._sprinting ? 6.5 * clamp(hSpeed / P.sprintWishSpeed, 0, 1) : 0;
-    const target = THREE.MathUtils.lerp(base + sprintKick, base * 0.7, aim);
+    // Event kick on top of the state kick. @see punchFov
+    const punch = this._fovPunch;
+    if (punch > 0) {
+      this._fovPunch = damp(punch, 0, FOV_PUNCH_DECAY, dt);
+      if (this._fovPunch < 0.01) this._fovPunch = 0;
+    }
+    const target = THREE.MathUtils.lerp(base + sprintKick + punch, base * 0.7, aim);
     const next = damp(this._fov, target, 9, dt);
     if (Math.abs(next - this._fov) > 0.005) {
       this._fov = next;
@@ -1762,9 +2034,13 @@ export class Player {
     // round or point it at the sky.
     const hit = this._kick;
     cam.rotation.set(
-      clamp(this._pitch + kick.y + dipPitch + hit.pitch, -MAX_PITCH - 0.2, MAX_PITCH + 0.2),
+      clamp(
+        this._pitch + kick.y + dipPitch + hit.pitch + this._posePitch,
+        -MAX_PITCH - 0.2,
+        MAX_PITCH + 0.2
+      ),
       this._yaw + kick.x + hit.yaw,
-      this._roll + bobRoll + hit.roll,
+      this._roll + bobRoll + hit.roll + this._poseRoll,
       'YXZ'
     );
   }

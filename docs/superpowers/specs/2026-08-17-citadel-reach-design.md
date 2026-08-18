@@ -102,9 +102,28 @@ the real integrator:
 
 | Move | Horizontal | Vertical | Flat gap | Apex |
 |---|---|---|---|---|
-| Walk jump | 4.6 | 6.4 | **2.61 m** | 0.93 m |
-| Sprint jump | 8.2 | 6.4 | **4.65 m** | 0.93 m |
-| Leap (Sprint+Space) | 11.64 | 7.17 | **7.57 m** | 1.17 m |
+| Walk jump | 4.6 | 6.4 | **2.61 m** | **0.878 m** |
+| Sprint jump | 8.2 | 6.4 | **4.65 m** | **0.878 m** |
+| Leap (Sprint+Space) | 11.64 | 7.17 | **7.57 m** | **1.109 m** |
+
+> **Corrected 2026-08-18 (Phase 1 implementation + browser).** The gap distances were exactly right
+> (measured 2.607 / 4.647 / 7.569 against the derived 2.61 / 4.65 / 7.57). **The apexes were not.**
+> An earlier draft gave 0.93 / 0.93 / 1.17 — the continuous closed form `v²/2g`. `Player.fixedUpdate`
+> applies gravity *before* `_move` integrates, so the first step of the rise is taken at `v₀ + g·dt`
+> and the trajectory permanently loses `|g|·dt²/2`. Real apexes are **0.878 / 0.878 / 1.109 m**.
+> The leap apex was confirmed live in the browser at **1.109 m**.
+>
+> **A 5 cm error is a ledge band a leap does not clear** — §4.2's gap spectrum must be authored
+> against 0.878 / 1.109, not the closed form.
+>
+> The fall thresholds are wrong in the same direction for a different reason. Driven off a real
+> ledge: damage first appears on a **7.5 m** drop (18.33 m/s) and death on a **40.0 m** drop
+> (42.17 m/s). Both closed forms (7.36 / 40.09) integrate a fall from *rest*, but a player stepping
+> off a lip already carries `_move`'s −2.2 m/s ground-stick bias. **Use 7.5 m and 40.0 m.**
+>
+> The lesson generalises and is now a rule for this project: *for anything a player's body does,
+> derive nothing — drive the real integrator.* Three separate figures in this spec were wrong in the
+> same direction because they were computed instead of measured.
 
 Free-climb sustains **29.3 m** of continuous ascent on one stamina bar. Fall damage begins at
 18 m/s = **7.36 m** of free fall; lethal at 42 m/s = **40.09 m** (the docstring's "about 36" is

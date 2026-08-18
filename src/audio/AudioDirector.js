@@ -167,6 +167,38 @@ export class AudioDirector {
       }
     });
     on('player:crouch', () => this.sfx.crouchRustle(null));
+    /* --- parkour ------------------------------------------------------ *
+     * All five of these were emitted into nothing. `player:landed` above
+     * already covers the footfall of an ordinary arrival; these are the four
+     * verbs on top of it, plus the body impact of a fall that actually hurt.
+     * @see ../player/Parkour.js */
+    on('player:leap', (e) => this.sfx.leapGrunt(e?.position ?? null));
+    on('player:dive', (e) => {
+      // A dive is a state with a start and an end; only the start is a cue.
+      if (e?.state === 'start') this.sfx.diveWind(e?.position ?? null, { speed: e?.speed ?? 12 });
+    });
+    on('player:roll', (e) => {
+      // `hard` is how much of the roll came out of a fall: a deliberate dodge
+      // on the flat is the same movement done quietly.
+      const speed = e?.speed ?? 0;
+      this.sfx.rollThump(e?.position ?? null, surfaceOf(e?.material), {
+        hard: e?.kind === 'land' ? Math.min(1, speed / 30) : 0.25,
+      });
+    });
+    on('player:softland', (e) => {
+      if (e?.kind === 'hay') this.sfx.haystackWhump(e?.position ?? null);
+      else this.sfx.impact(e?.position ?? null, 'soft');
+    });
+    /* Fall damage and a hard-but-harmless arrival are mutually exclusive by
+     * construction in `Parkour._onLand`, so routing both to a body impact
+     * cannot double up. Flesh for the one that hurt, the surface for the one
+     * that did not. The ROLL is not exclusive with either - a rolled hard
+     * landing raises `player:roll` and then one of these - and that is
+     * deliberate here: a thump plus a body impact is the sound of a rolled
+     * arrival. It is only the dust that must not double, and `VFX` handles
+     * that by ignoring the landing roll. */
+    on('player:falldamage', (e) => this.sfx.impact(e?.position ?? null, 'flesh'));
+    on('player:hardland', (e) => this.sfx.impact(e?.position ?? null, surfaceOf(e?.material)));
     on('player:died', () => {
       this._stopMount();
       this._stopSwim();

@@ -407,6 +407,108 @@ export class Sfx {
     this.engine.release(0.35);
   }
 
+  /* ---------------- parkour ---------------- *
+   * Four recipes for the verbs in `player/Parkour.js`, which had no audio at
+   * all: `player:leap`, `player:dive`, `player:roll` and `player:softland`
+   * were emitted into nothing. Each is built the same way every other cue in
+   * this file is - a voice, a couple of noise bands and a tone - so there is
+   * no new audio path here, only new recipes on the existing one.
+   */
+
+  /**
+   * Leap: the exhalation of a committed jump, and the scuff of the foot that
+   * pushed off. Body first, ground a moment later, because that is the order
+   * a bound happens in - you have already breathed out by the time the toe
+   * leaves the roof.
+   */
+  leapGrunt(at) {
+    if (this._throttled('leap', 0.25)) return;
+    const v = this.engine.voice(at, 0.42, 0.3);
+    if (!v) return;
+    // Vocal: a short falling tone with a breath band over it. Two partials,
+    // because one sine reads as a beep and never as a person.
+    this._tone(v, { seconds: 0.20, type: 'sine', freq: rnd(178, 205), toFreq: 118, gain: 0.34 });
+    this._tone(v, { seconds: 0.16, type: 'triangle', freq: rnd(356, 410), toFreq: 250, gain: 0.11 });
+    this._noise(v, { seconds: 0.22, type: 'bandpass', freq: 900, q: 0.7, sweepTo: 420, gain: 0.22 });
+    // Toe-off, half-rate for texture rather than hiss - the trick climbScrape uses.
+    this._noise(v, { seconds: 0.09, type: 'bandpass', freq: 1400, q: 1.4, sweepTo: 700,
+      gain: 0.30, rate: 0.5, delay: 0.05 });
+    this.engine.release(0.4);
+  }
+
+  /**
+   * Dive: wind over the ears. A long lowpassed band opening as the fall
+   * steepens, plus a narrow whistle a fifth above it - the two things a
+   * head-first drop actually sounds like from inside it.
+   *
+   * @param {number} speed downward speed, m/s. Brightens and lengthens the band.
+   */
+  diveWind(at, { speed = 12 } = {}) {
+    if (this._throttled('dive', 0.5)) return;
+    const s = Math.min(1, Math.max(0, speed / 30));
+    const v = this.engine.voice(at, 0.30 + 0.22 * s, 0.2);
+    if (!v) return;
+    this._noise(v, { seconds: 0.85, type: 'lowpass', freq: 380 + 520 * s,
+      sweepTo: 1300 + 900 * s, q: 0.6, gain: 0.5 });
+    this._noise(v, { seconds: 0.7, type: 'bandpass', freq: 1750 + 700 * s, q: 5,
+      sweepTo: 2400 + 900 * s, gain: 0.14, delay: 0.1 });
+    this.engine.release(0.5);
+  }
+
+  /**
+   * Roll: the thump of the shoulder arriving and the long scuff of the body
+   * going over it. Two transients and a tail, in that order, which is the
+   * same anatomy `footstep` uses for the same reason - one burst cannot fake
+   * a movement that takes half a second.
+   *
+   * @param {number} hard 0..1, how much of the roll came out of a fall
+   */
+  rollThump(at, surface = 'concrete', { hard = 0.5 } = {}) {
+    if (this._throttled('roll', 0.3)) return;
+    const h = Math.min(1, Math.max(0, hard));
+    const v = this.engine.voice(at, 0.42 + 0.2 * h, 0.4);
+    if (!v) return;
+    const F = {
+      metal: 1500, stone: 900, concrete: 800, wood: 620,
+      dirt: 380, snow: 520, grass: 440, water: 700,
+    }[surface] ?? 800;
+    // Shoulder down: low and heavy, and heavier the further you fell.
+    this._tone(v, { seconds: 0.16, type: 'sine', freq: 88 + 18 * h, toFreq: 46, gain: 0.55 + 0.25 * h });
+    this._noise(v, { seconds: 0.07, type: 'bandpass', freq: F * 1.3, q: 0.8, sweepTo: F * 0.5,
+      gain: 0.5 + 0.3 * h });
+    // ...then the body rolling across it. Half-rate: this is grit, not hiss.
+    this._noise(v, { seconds: 0.34, type: 'bandpass', freq: F * 0.9, q: 1.2, sweepTo: F * 0.35,
+      gain: 0.34, rate: 0.5, delay: 0.06 });
+    // Coming back up onto the feet.
+    this._noise(v, { seconds: 0.05, type: 'bandpass', freq: F * 1.1, q: 1.0, sweepTo: F * 0.6,
+      gain: 0.26, delay: 0.34 });
+    this.engine.release(0.5);
+  }
+
+  /**
+   * Hay: the whump of a fall being caught. All body and no transient, which
+   * is the whole difference between landing in a haystack and landing on the
+   * roof beside it - there is no crack, only a lot of dry stalks moving at
+   * once and then settling.
+   */
+  haystackWhump(at) {
+    /* The only one of the four with a throttle it genuinely needs: 1 tone +
+     * 1 noise + a twelve-grain loop is 41 WebAudio nodes against 5-11 for its
+     * siblings, and `engine.release(0.8)` holds the voice slot for most of a
+     * second each time. */
+    if (this._throttled('hay', 0.4)) return;
+    const v = this.engine.voice(at, 0.5, 0.45);
+    if (!v) return;
+    this._tone(v, { seconds: 0.22, type: 'sine', freq: 96, toFreq: 44, gain: 0.4 });
+    this._noise(v, { seconds: 0.30, type: 'lowpass', freq: 900, sweepTo: 320, q: 0.7, gain: 0.55 });
+    // Twelve staggered dry grains: the stalks settling after the body stops.
+    for (let i = 0; i < 12; i++) {
+      this._noise(v, { seconds: 0.05, type: 'bandpass', freq: rnd(2200, 5200), q: 2.5,
+        gain: rnd(0.05, 0.13), delay: 0.06 + Math.random() * 0.55 });
+    }
+    this.engine.release(0.8);
+  }
+
   /** Pickup: a short bright two-note lift. Reward, not alert. */
   pickup(at, { rare = false } = {}) {
     const v = this.engine.voice(at, 0.4, 0.5);

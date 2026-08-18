@@ -3,6 +3,7 @@ import { TrackPath, RacerField, DIFFICULTIES, makeTestCircuit } from './RacerAI.
 import { Pickups, PICKUP_VALUE } from './Pickups.js';
 import { Contacts } from './Contacts.js';
 import { RaceRings, buildDragonRingCheckpoints, DRAGON_RACE } from './RaceRings.js';
+import { sweptPass } from './CheckpointSweep.js';
 import { RaceLoops } from './RaceLoops.js';
 import { allows } from '../worlds/WorldRules.js';
 
@@ -135,18 +136,6 @@ const DROP_SPACING_M = 40;
 const _v = new THREE.Vector3();
 const _seat = new THREE.Vector3();
 const _clampSample = { x: 0, y: 0, z: 0, width: 12, tx: 0, tz: -1 };
-
-/** Squared distance from point `p` to the segment `a`->`b`, in XZ. */
-function segDistSq(ax, az, bx, bz, px, pz) {
-  const ex = bx - ax;
-  const ez = bz - az;
-  const e2 = ex * ex + ez * ez;
-  let t = e2 > 1e-9 ? ((px - ax) * ex + (pz - az) * ez) / e2 : 0;
-  t = t < 0 ? 0 : t > 1 ? 1 : t;
-  const dx = px - (ax + ex * t);
-  const dz = pz - (az + ez * t);
-  return dx * dx + dz * dz;
-}
 
 export class RaceManager {
   /**
@@ -1109,18 +1098,22 @@ export class RaceManager {
     const px = e.position.x;
     const pz = e.position.z;
 
-    // Swept test against the segment travelled, so a faster mount or a longer
-    // fixed step can never tunnel a checkpoint.
-    const d2 = segDistSq(e._px, e._pz, px, pz, cp.x, cp.z);
+    /* Swept test against the segment travelled, so a faster mount or a longer
+     * fixed step can never tunnel a checkpoint - and a generous vertical gate
+     * that still rejects a bridge crossing over a line it is not part of.
+     * Dragon rings are tighter because the player must fly THROUGH them.
+     *
+     * The test itself lives in `CheckpointSweep.sweptPass`, which is the same
+     * function the rooftop time trials use; the cursor, the lap arithmetic and
+     * the events below stay here, because they are the race's and not the
+     * test's. `_px/_pz` advance on every step, hit or miss - see that file. */
+    const swept = sweptPass(
+      e._px, e._pz, px, pz, e.position.y, cp,
+      this.dragonRace ? cp.radius * 0.9 : 14
+    );
     e._px = px;
     e._pz = pz;
-    if (d2 > cp.radius * cp.radius) return;
-    // A generous vertical gate still rejects a bridge crossing over the line
-    // it is not part of, without demanding the world get checkpoint heights
-    // exactly right. Dragon rings are tighter because the player must fly through them.
-    const yGap = Math.abs((e.position.y ?? cp.y) - cp.y);
-    const gate = cp.yGate > 0 ? cp.yGate : (this.dragonRace ? cp.radius * 0.9 : 14);
-    if (yGap > gate) return;
+    if (!swept) return;
 
     const passed = e.nextCp;
     e.cpDone++;

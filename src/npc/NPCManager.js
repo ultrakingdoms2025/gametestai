@@ -258,8 +258,17 @@ const POSE_RATE_HIDDEN = 0.12;
  */
 const SIM_MAX_STEP = 0.4;
 
-const THEME_BY_WORLD = {
+/**
+ * World id -> character theme. The theme is what every cast, costume, name and
+ * weapon table below is keyed on, and every one of those lookups carries a
+ * `?? station`, so a world missing from here is not an error - it is a world
+ * quietly dressed as the space station. Exported, with the three name tables
+ * below, so that can be pinned without building a world; see
+ * scripts/tests/citadel-cast.test.mjs.
+ */
+export const THEME_BY_WORLD = {
   station: 'station', medieval: 'medieval', sports: 'sports', maze: 'maze',
+  citadel: 'citadel',
 };
 const MERCHANT_SIGN_WORLD = {
   station: 'AETHER NEXUS',
@@ -270,10 +279,18 @@ const MERCHANT_SIGN_WORLD = {
 };
 
 /** Fallback names so a world that forgets to name its friendlies still reads. */
-const FALLBACK_NAMES = {
+export const FALLBACK_NAMES = {
   station: ['Vex Orrin', 'Dr. Hala Mensu', 'Rig-Chief Danno', 'Sable Ito', 'Quartermaster Rhee', 'Pilot Ashe'],
   medieval: ['Alwin the Cooper', 'Mistress Bryda', 'Father Osric', 'Tam the Fletcher', 'Goodwife Elgiva', 'Sergeant Cuthred'],
   sports: ['Coach Marra', 'Deuce Kowalski', 'Nia Sandoval', 'Ollie Trent', 'Ref Bastian', 'Skye Larsen'],
+  /* Sunspire Citadel. Written to the same register as the four characters
+   * CitadelWorld authors by hand - Rafiq, Hafsa, Bashir, Yusra - so a friendly
+   * the world forgot to name still sounds like it lives on the mesa rather
+   * than on Ring 7. This row is not optional decoration: `spawnForWorld` reads
+   * FALLBACK_NAMES[theme] with no `??`, so naming a theme without adding it
+   * here is a TypeError the first time an unnamed friendly spawns. */
+  citadel: ['Idris the Watercarrier', 'Sitt Marwa', 'Tahar the Ropemaker',
+    'Layla of the Cisterns', 'Serjeant Kamal', 'Umm Zaynab'],
   /* Unreachable while MazeWorld sets crowd: false and names all nine of its
    * own spawns (see WANDERER_CAST in MazeWorld.js) - kept correct anyway, in
    * case that ever stops being true, rather than left as a station name a
@@ -286,7 +303,7 @@ const FALLBACK_NAMES = {
  * handful of named characters, which leaves plazas and market squares reading
  * as evacuated, so the manager tops the population up itself.
  */
-const CROWD_NAMES = {
+export const CROWD_NAMES = {
   station: [
     'Deck Tech Ruiz', 'Nav Cadet Bell', 'Hauler Kito', 'Medtech Vos', 'Fitter Okonjo',
     'Comms Officer Idi', 'Longshore Yusuf', 'Rations Clerk Pia', 'Welder Strand', 'Inspector Tamm',
@@ -302,6 +319,11 @@ const CROWD_NAMES = {
     'Kenji Ito', 'Bex Ferrara', 'Dev Chaudhary', 'Lena Wojcik', 'Toby Nkemelu',
     'Nadia Reyes', 'Grant Okafor',
   ],
+  citadel: [
+    'Ghalib the Tanner', 'Sabiha the Potter', 'Munir Saltbearer', 'Halima the Weaver',
+    'Jamil the Drover', 'Sister Rahma', 'Zuhayr the Smith', 'Little Anis',
+    'Karim the Watchman', 'Nawal Basketmaker', 'Old Widow Thurayya', 'Faris the Carter',
+  ],
   /* Unreachable while MazeWorld sets crowd: false - _populateHubs is never
    * called for it (see spawnForWorld). Kept correct anyway, per the same
    * reasoning as the maze entry in FALLBACK_NAMES above: a wrong fallback
@@ -314,7 +336,7 @@ const CROWD_NAMES = {
 };
 
 /** One-line briefs so a filler civilian still has something to say. */
-const CROWD_PERSONAS = {
+export const CROWD_PERSONAS = {
   station: [
     'A shift worker on Ring 7 who talks about hull maintenance backlogs and bad recycled coffee.',
     'A dock hand waiting on a delayed freighter, cheerful but tired of the paperwork.',
@@ -332,6 +354,12 @@ const CROWD_PERSONAS = {
     'A club coach between sessions, upbeat and relentlessly encouraging.',
     'A weekend skier waiting for the lift queue to clear, hyped about the fresh piste.',
     'A spectator killing time before the next match, keen to talk scores.',
+  ],
+  citadel: [
+    'A water-carrier working the cistern round, who can tell you how many steps there are between the gate and the upper ward.',
+    'A trader up off the caravan road, still dusty, certain the mule toll at the gate has doubled since spring.',
+    'A roof-runner of the souk who takes the high line on every errand and thinks the stairs are for visitors.',
+    'A mason patching the outer wall, quietly certain the old order built it better and unwilling to say who they were.',
   ],
   maze: [
     'Lost long enough to have stopped panicking about it, and unsure whether that is a good sign.',

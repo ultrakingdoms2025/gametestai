@@ -184,7 +184,10 @@ export class HUD {
    *           worldManager:any, npcManager:any, portals:any,
    *           questBoard?:any }} ctx
    */
-  constructor({ bus, engine, input, root, player, worldManager, npcManager, portals, caches, contracts, questBoard }) {
+  constructor({
+    bus, engine, input, root, player, worldManager, npcManager, portals, caches, contracts,
+    questBoard, relics, viewpoints,
+  }) {
     this.bus = bus;
     this.engine = engine;
     this.input = input;
@@ -196,6 +199,9 @@ export class HUD {
     this.caches = caches ?? null;
     this.contracts = contracts ?? null;
     this.questBoard = questBoard ?? null;
+    /** Handed straight to `Minimap`, and read by the collectibles panel. */
+    this.relics = relics ?? null;
+    this.viewpoints = viewpoints ?? null;
     /** Reused by `_weapon()`; see the note there on why this is not a spread. */
     this._weaponView = {
       id: null, name: null, ammo: 0, reserve: 0, magazine: 0,
@@ -249,6 +255,16 @@ export class HUD {
     this._chatNpc = null;
     this._nearPortal = null;
     this._promptKey = '';
+    /** Free-form leap-of-faith line, from `Viewpoints`. Keyless: see `_updatePrompt`. */
+    this._viewpointPrompt = null;
+
+    /* -- discoveries (relics / viewpoints) ---------------------------- */
+    this._relicFound = 0;
+    this._relicTotal = 0;
+    this._vpSynced = 0;
+    this._vpTotal = 0;
+    this._relicText = '';
+    this._vpText = '';
 
     /* -- chat / lock -------------------------------------------------- */
     this._chatOpen = false;
@@ -563,6 +579,7 @@ export class HUD {
     this._buildHealth(col);
     this._buildStamina(col);
     this._buildQuestTracker(col);
+    this._buildCollectibles(col);
   }
 
   /**
@@ -639,6 +656,81 @@ export class HUD {
     if (this._qtCountText !== count) {
       this._qtCountText = count;
       this.questStepCount.textContent = count;
+    }
+  }
+
+  /**
+   * Relics found and viewpoints synchronised, for the active world.
+   *
+   * ── Why this exists ────────────────────────────────────────────────────
+   * Thirty relics worth 3,600 CR and five named viewpoints shipped with **no
+   * counter anywhere**. `relics:changed` was emitted on every world change and
+   * every pickup and had no listener at all, so the only way a player could
+   * learn how many were left was the transient toast on the one they had just
+   * picked up. A finite collectible with no visible tally is a collectible with
+   * no progress bar, which is most of what makes it a collectible.
+   *
+   * Same flex column as the objective tracker and for the same reason (see
+   * `_buildQuestTracker`): every corner is spoken for, and a column that lays
+   * its children out by flow cannot be made to overlap its neighbours by a
+   * panel appearing. Hidden outright when the active world has neither - four
+   * of the five worlds publish no viewpoints, and three publish no relics.
+   */
+  _buildCollectibles(col) {
+    const p = el('div', 'panel collect');
+    p.appendChild(el('div', 'panel-label', 'Discoveries'));
+    const relicRow = el('div', 'col-row');
+    this.relicCount = el('div', 'col-count', '0/0');
+    relicRow.append(el('div', 'col-name', 'Relics'), this.relicCount);
+    const vpRow = el('div', 'col-row');
+    this.vpCount = el('div', 'col-count', '0/0');
+    vpRow.append(el('div', 'col-name', 'Viewpoints'), this.vpCount);
+    p.append(relicRow, vpRow);
+    this.collectRelicRow = relicRow;
+    this.collectVpRow = vpRow;
+    p.hidden = true;
+    col.appendChild(p);
+    this.collectPanel = p;
+  }
+
+  /**
+   * Write the discovery counts. Called only from the two `*:changed` events,
+   * never per frame, and every write is compared against what is already on
+   * screen first - the HUD's standing rule.
+   *
+   * @param {{found?:number, total?:number}} [relics]
+   * @param {{synced?:number, total?:number}} [viewpoints]
+   */
+  _setDiscoveries(relics, viewpoints) {
+    if (relics) {
+      this._relicFound = Math.max(0, Number(relics.found) || 0);
+      this._relicTotal = Math.max(0, Number(relics.total) || 0);
+    }
+    if (viewpoints) {
+      this._vpSynced = Math.max(0, Number(viewpoints.synced) || 0);
+      this._vpTotal = Math.max(0, Number(viewpoints.total) || 0);
+    }
+    const p = this.collectPanel;
+    if (!p) return;
+
+    const hasRelics = this._relicTotal > 0;
+    const hasVps = this._vpTotal > 0;
+    const show = hasRelics || hasVps;
+    if (p.hidden === show) p.hidden = !show;
+    if (!show) return;
+
+    if (this.collectRelicRow.hidden === hasRelics) this.collectRelicRow.hidden = !hasRelics;
+    if (this.collectVpRow.hidden === hasVps) this.collectVpRow.hidden = !hasVps;
+
+    const rt = hasRelics ? `${this._relicFound}/${this._relicTotal}` : '';
+    if (rt && this._relicText !== rt) {
+      this._relicText = rt;
+      this.relicCount.textContent = rt;
+    }
+    const vt = hasVps ? `${this._vpSynced}/${this._vpTotal}` : '';
+    if (vt && this._vpText !== vt) {
+      this._vpText = vt;
+      this.vpCount.textContent = vt;
     }
   }
 
@@ -836,6 +928,8 @@ export class HUD {
       portals: this.portals,
       caches: this.caches,
       contracts: this.contracts,
+      relics: this.relics,
+      viewpoints: this.viewpoints,
     });
 
     this.killfeed = el('div', 'killfeed');
@@ -1175,6 +1269,23 @@ export class HUD {
       this._minigameLabel = p?.label ?? null;
     });
 
+    /* The leap of faith. Free-form like `interior:prompt`, but it takes NO key:
+     * standing on the beam is the whole interaction and there is nothing to
+     * press. See `_updatePrompt` for how the key chip is stood down. */
+    this._on('viewpoint:prompt', (p) => {
+      this._viewpointPrompt = p?.text ?? null;
+    });
+
+    /* The discovery counts. Both systems emit on world change as well as on
+     * every find, so the panel is correct from the first frame in the world
+     * rather than after the first pickup. */
+    this._on('relics:changed', (p) => {
+      this._setDiscoveries({ found: p?.found ?? 0, total: p?.total ?? 0 }, null);
+    });
+    this._on('viewpoints:changed', (p) => {
+      this._setDiscoveries(null, { synced: p?.synced ?? 0, total: p?.total ?? 0 });
+    });
+
     this._on('portal:entering', ({ to, duration }) => this._runWipe(to, duration));
 
     this._on('world:changed', ({ id, world }) => {
@@ -1189,6 +1300,7 @@ export class HUD {
       this._minigamePrompt = null;
       this._minigameVerb = null;
       this._minigameLabel = null;
+      this._viewpointPrompt = null;
       this.notify(`${world?.displayName ?? id} — anchor locked`, 'lore');
       // A world with no weapons shows no weapon bar and no ammo panel. Only
       // the wheel also answers to `_dead`, so the two are merged rather than
@@ -2766,6 +2878,11 @@ export class HUD {
   _updatePrompt() {
     let text = '';
     let portal = false;
+    /* The leap of faith is the one prompt with nothing to press: the beam is
+     * the interaction. Everything else in this widget answers to E, so the key
+     * chip is hidden for this branch alone rather than the widget growing a
+     * second permanent state. */
+    let keyless = false;
 
     // Quest Manager takes priority over everything else.
     if (this._chatNpc?.isQuestManager && !this._chatOpen) {
@@ -2787,6 +2904,26 @@ export class HUD {
         ? `${escapeHtml(String(this._minigameVerb ?? 'Start'))} the `
           + `<b>${escapeHtml(String(this._minigameLabel))}</b>`
         : escapeHtml(String(this._minigamePrompt));
+    /* Above the portal, and below the venue branch WITHOUT that costing it
+     * anything - which is a fact about `MinigameManager`, not about this order.
+     *
+     * The earlier note here claimed the two could never collide because
+     * `Viewpoints` only raises the leap prompt within 3 m of the launch point
+     * while the Skyline venue is a 12 m disc about the crown. Measured, that
+     * was false in both halves: the venue disc has to hold the whole 101.6 m
+     * route or `LEAVE_GRACE_S` abandons every run, so it is r 60.8 / yTol 33.5
+     * about (-22.7, 44.1, -63.5), and the beam tip at (0, 68.15, -9.8) is
+     * 58.3 m out and 24.1 m up - inside. The venue branch won on the diving
+     * board, and the player walking to the end of it was told about a race.
+     *
+     * The repair is upstream: `MinigameManager._keyTaken` now counts a live
+     * `viewpoint:prompt` the same way it counts an interior prompt, so
+     * `_minigamePrompt` is null wherever the leap is offered and this branch is
+     * reached. That keeps the words and the KEY agreeing, which reordering
+     * these two branches would not have done. */
+    } else if (this._viewpointPrompt && !this._chatOpen) {
+      text = escapeHtml(String(this._viewpointPrompt));
+      keyless = true;
     } else if (this._nearPortal) {
       const po = this._nearPortal;
       const dest = po.label || this.worldManager?.getWorld?.(po.target)?.displayName || po.target || 'the Nexus';
@@ -2803,6 +2940,9 @@ export class HUD {
     }
     if (this.prompt.classList.contains('show') !== show) this.prompt.classList.toggle('show', show);
     if (this.prompt.classList.contains('portal') !== portal) this.prompt.classList.toggle('portal', portal);
+    if (this.prompt.classList.contains('keyless') !== keyless) {
+      this.prompt.classList.toggle('keyless', keyless);
+    }
   }
 
   /* --------------------------------------------------------- transients -- */

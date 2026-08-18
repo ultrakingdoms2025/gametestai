@@ -90,25 +90,38 @@
  *   ⚠ Do NOT write `Sentinel 3` — that names one body out of eight and would
  *     make a count above 1 depend on the 22 s respawn (Config.js:213).
  *
- *   ROLES. `wanderer` is the four above. `lorekeeper` is planted beside the
+ *   ROLES. The four above now carry authored roles: Rafiq, Hafsa and Bashir are
+ *   `vendor`, and Yusra alone is `wanderer` — which is what all four were by
+ *   default before the posts were authored. `lorekeeper` is planted beside the
  *   single gateway by `_spawnLorekeepers` (NPCManager.js:1303) from the one
- *   portalSpec at CitadelWorld.js:2032. `vendor`, `loiterer`, `guard` and
- *   `spectator` reach this world only through the crowd filler
- *   (ROLE_ROTATION, NPCRoles.js:300) and are second choice — an authored NAME is
- *   the stronger guarantee, so only `wanderer` and `lorekeeper` are targeted.
+ *   portalSpec at CitadelWorld.js:2032. `loiterer`, `guard` and `spectator`
+ *   reach this world only through the crowd filler (ROLE_ROTATION,
+ *   NPCRoles.js:300) and are second choice — an authored NAME is the stronger
+ *   guarantee, so only `wanderer` and `lorekeeper` are targeted.
+ *   ⚠ Yusra is the world's ONLY `wanderer`, measured on the built world:
+ *     vendor 5 · wanderer 1 · quest_manager 1 · guard 2 · spectator 1 ·
+ *     loiterer 2. So NOTHING here may target `wanderer` with a count above 1 -
+ *     Q31 step 2 asked for three and could only be finished by pressing E on
+ *     Yusra three times (`_advanceSteps` passes no `onceKey` for
+ *     `quest:activity`, QuestSystem.js:552). It targets `vendor` now, which is
+ *     the three counters the label always named.
  *
  * ── WHAT DROPS HERE ──────────────────────────────────────────────────────────
  *
- * ⚠ `DROP_TABLES` HAS NO `citadel` ENTRY AT ALL. Loot falls back to the STATION
- *   table (Loot.js:309), so what a Sentinel drops on this rock is:
- *     bullet .72 · fireball_charge .20 · arrow .14 · alloy_scrap .30 ·
- *     medkit .13 · nexus_shard .06
+ * `DROP_TABLES.citadel` now exists (Loot.js), so a Sentinel on this rock drops:
+ *     relic_coin .44 (2-6) · arrow .66 (6-16) · nexus_shard .05 · medkit .10
  *   plus `credits`, which every pickup carries unconditionally (Loot.js:314).
- * ⚠ THERE IS NO relic_coin IN THE DROP TABLE. `CACHE_TABLES.citadel`
- *   (Caches.js:79-84) is the only source: relic_coin 4-10, nexus_shard 1-2,
- *   arrow 18-34, medkit 1-2, two or three lines to a cache (Caches.js:377).
- *   Every relic_coin step below is therefore a CACHE HUNT and the label says so,
- *   and no relic_coin count exceeds 3.
+ * ⚠ THERE IS NO bullet, fireball_charge OR alloy_scrap ANYWHERE IN THIS WORLD.
+ *   The citadel used to have no row of its own and fell back to the STATION
+ *   table, which is the only reason two steps below ever named bullet and alloy
+ *   scrap; both were retargeted when the row landed. Nothing here manufactures
+ *   cartridges, ember cores or hull plate, and `CACHE_TABLES.citadel` never
+ *   carried them either.
+ * `CACHE_TABLES.citadel` (Caches.js:79-84) is the richer source and still the
+ *   only one for large stacks: relic_coin 4-10, nexus_shard 1-2, arrow 18-34,
+ *   medkit 1-2, two or three lines to a cache (Caches.js:377). A relic_coin
+ *   step is now satisfiable from EITHER a cache or a body; no relic_coin count
+ *   below exceeds 3 regardless.
  * ⚠ `count` is a number of PICKUPS, not of items. Stack `qty` is ignored, so a
  *   cache holding 10 relic coin advances a relic_coin step by exactly 1.
  * ⚠ Loot only spawns from `npc:killed` (Loot.js:169) and from caches, so every
@@ -118,11 +131,17 @@
  *
  * Buying is gated by the vendor's `vendorCategories`; a vendor that authors none
  * is a general trader and sells the whole catalogue (Marketplace.js:657-666).
- * Hafsa the Dyer authors none and reads as a trader to `Marketplace._isVendor`
- * (Marketplace.js:669-676) through VENDOR_WORDS (Marketplace.js:29) — her
- * persona is 'Runs the cloth stall by the gate', and `stall` is in that
- * expression. She is authored in `npcSpawns` and therefore guaranteed a slot, so
- * she is the one shop on this rock a quest can name. The packs are seeded for
+ * The citadel now authors THREE counters, each with `role: 'vendor'` and its own
+ * `vendorCategories`, so `Marketplace._isVendor` reaches all three by role
+ * rather than by the VENDOR_WORDS regex (Marketplace.js:29) that used to match
+ * Hafsa's 'cloth stall' and miss the other two entirely:
+ *     Rafiq the Keeper    health, spells    'Archive & Physic'
+ *     Hafsa the Dyer      cosmetic, tools   'Cloth & Colour'
+ *     Bashir the Ostler   mounts, weapons   'Harness & Arms'
+ * Between them that is the whole catalogue, which matters because there is one
+ * portal off this mesa. ⚠ A buy step must now name a category one of them
+ * stocks: Hafsa can no longer sell a medkit, Rafiq can. All three are authored
+ * in `npcSpawns` and therefore guaranteed a slot. The packs are seeded for
  * every world (site/lib/marketplaceCatalog.ts BASE_ITEMS — no `worlds`
  * restriction) and `_purchaseGrant` (Marketplace.js:309-312) maps
  * pack_arrows→arrow, pack_medkit→medkit. Selling is UNGATED and emits
@@ -167,10 +186,10 @@ export const CITADEL_QUESTS = [
     dur: 60,
     pre: null,
     notes:
-      'Opening quest, 2 steps. Teaches the two actions every other citadel quest depends on: pressing E on the garrison\'s quest desk, and pressing E on ordinary people. `wanderer` is the default role for an authored friendly with no explicit role (NPCManager.js:730), and the four authored citadel civilians are the only wanderers on the rock — Rafiq, Hafsa and Bashir all stand within about twenty metres of the gate, so count 3 is a short walk.',
+      'Opening quest, 2 steps. Teaches the two actions every other citadel quest depends on: pressing E on the garrison\'s quest desk, and pressing E on ordinary people. Step 2 targets `vendor`, NOT `wanderer`, and that is the whole of the repair: Drop Two gave Rafiq, Hafsa and Bashir `role: \'vendor\'`, leaving Yusra the Falconer as the world\'s ONLY wanderer (measured: vendor 5, wanderer 1, quest_manager 1, guard 2, spectator 1, loiterer 2) and `ROLE_ROTATION` never produces another. `HUD.js` emits `quest:activity {type:\'talk\', role:\'vendor\', ...}` for each of the three, so `count: 3` over `vendor` is three different people and a short walk — the three counters stand 19.7 m and 34.2 m apart just inside the gate. Aimed at `wanderer` it was finishable only by pressing E on Yusra three times, since `_advanceSteps` passes no `onceKey` for `quest:activity`.',
     steps: [
       { order: 1, label: 'The player spawn is just inside the gate. Walk up the ramp and press E on Aldric Storne of the Citadel garrison to be entered on the roll', type: 'interact', target: 'Aldric Storne', count: 1, world: 'citadel' },
-      { order: 2, label: 'Press E on 3 of the citadel\'s own — the keeper, the dyer, the ostler — and find out what a stranger is worth here', type: 'talk', target: 'wanderer', count: 3, world: 'citadel' },
+      { order: 2, label: 'Press E on all three of the citadel\'s counters — Rafiq the Keeper, Hafsa the Dyer, Bashir the Ostler — and find out what a stranger is worth here', type: 'talk', target: 'vendor', count: 3, world: 'citadel' },
     ],
   },
 
@@ -183,10 +202,10 @@ export const CITADEL_QUESTS = [
     dur: 120,
     pre: ['The Cliff Gate'],
     notes:
-      '4 steps. The merchant lesson for the citadel. Hafsa is authored in `npcSpawns` (CitadelWorld.js:2048), so she is guaranteed a slot, and she declares no `vendorCategories`, so she is a general trader and can sell any pack (Marketplace.js:657-666). Step 3 is a CACHE step on purpose: relic_coin is not in any drop table this world reaches (Loot.js:309 falls back to the station table) and comes only from `CACHE_TABLES.citadel` (Caches.js:79). Step 4 targets the trade KIND, which is the only way to prove a sale.',
+      '4 steps. The merchant lesson for the citadel. Hafsa is authored in `npcSpawns`, so she is guaranteed a slot — but she is NOT a general trader any more: Drop Two gave her `vendorCategories: [\'cosmetic\', \'tools\']` (CitadelWorld.js), and `Marketplace.refreshCatalog` filters `_catalog` itself by that list, so the Trauma Twin-Pack (`pack_medkit`, category `health`) is simply not in her window. Rafiq the Keeper stocks `health`; he is 19.7 m from her stall, against `VENDOR_RANGE` 7, so step 2 has to name HIS counter and does. Step 4 stays at Hafsa because selling is not category-gated — `Marketplace.sellables` reads the player\'s own bag. Step 3 is a CACHE step on purpose: relic_coin comes from `CACHE_TABLES.citadel` (Caches.js:79) as well as the world\'s own drop table.',
     steps: [
       { order: 1, label: 'Press E on Hafsa the Dyer at the cloth stall just inside the gate — she knows every roof in the souk and will say so', type: 'talk', target: 'Hafsa the Dyer', count: 1, world: 'citadel' },
-      { order: 2, label: 'Stand within a few paces of her stall and press B to open the market. Buy the Trauma Twin-Pack — nothing on this rock heals you for free', type: 'purchase', target: 'medkit', count: 1, world: 'citadel' },
+      { order: 2, label: 'Hafsa deals in cloth and tools, not medicine. Walk twenty paces to Rafiq the Keeper\'s counter — Archive & Physic — press B and buy the Trauma Twin-Pack. Nothing on this rock heals you for free', type: 'purchase', target: 'medkit', count: 1, world: 'citadel' },
       { order: 3, label: 'Sunspire prices in relic coin and nothing here drops it — it sits in the hidden caches on the roofs and terraces. Climb up and recover 1', type: 'collect', target: 'relic_coin', count: 1, world: 'citadel' },
       { order: 4, label: 'Press B again, switch to the sell side, and sell a stack back to Hafsa. You get less than you paid; that is the spread', type: 'purchase', target: 'sell', count: 1, world: 'citadel' },
     ],
@@ -218,11 +237,11 @@ export const CITADEL_QUESTS = [
     dur: 300,
     pre: ['The Ostler\'s Round', 'Weapons Free'],
     notes:
-      'CROSS-WORLD PREREQUISITE — requires the station education line "Weapons Free", because this is the first real fight in the citadel. 6 steps. The hostiles here are authored unnamed in a ring at radius 62 (CitadelWorld.js:2052-2058) and are auto-named `Sentinel N` (NPCManager.js:721); the token-run matcher means the target `Sentinel` reaches all eight. Steps 3 and 4 are both fed by the same bodies — this world has no drop table of its own and falls back to the station one (Loot.js:309), where bullet rolls at .72 and credits are guaranteed on every pickup (Loot.js:314).',
+      'CROSS-WORLD PREREQUISITE — requires the station education line "Weapons Free", because this is the first real fight in the citadel. 6 steps. The hostiles here are authored unnamed in a ring at radius 62 (CitadelWorld.js:2052-2058) and are auto-named `Sentinel N` (NPCManager.js:721); the token-run matcher means the target `Sentinel` reaches all eight. Steps 3 and 4 are both fed by the same bodies through DROP_TABLES.citadel (Loot.js), where arrow rolls at .66 and credits are guaranteed on every pickup (Loot.js:314). Step 3 named `bullet` until the citadel got a drop table of its own; there are no cartridges on this rock and there never were.',
     steps: [
       { order: 1, label: 'Press E on Aldric Storne and take the patrol order for the plateau approaches', type: 'interact', target: 'Aldric Storne', count: 1, world: 'citadel' },
       { order: 2, label: 'The sentinels stand in a ring out on the open rock, well clear of the souk. Destroy 3 of them — there is no cover out there, so keep moving', type: 'kill', target: 'Sentinel', count: 3, world: 'citadel' },
-      { order: 3, label: 'Strip the wrecks for ammunition: pick up 2 bullet drops', type: 'collect', target: 'bullet', count: 2, world: 'citadel' },
+      { order: 3, label: 'Strip the wrecks for ammunition: pick up 2 arrow drops', type: 'collect', target: 'arrow', count: 2, world: 'citadel' },
       { order: 4, label: 'Take the pay off them too — collect 2 credit drops', type: 'collect', target: 'credits', count: 2, world: 'citadel' },
       { order: 5, label: 'Then get off the open ground: one clean minute back inside the walls without taking a hit', type: 'survive', target: 'citadel', count: 2, world: 'citadel' },
       { order: 6, label: 'Press E on Hafsa the Dyer and let her patch what the sentinels did to your kit', type: 'talk', target: 'Hafsa the Dyer', count: 1, world: 'citadel' },
@@ -293,11 +312,11 @@ export const CITADEL_QUESTS = [
     dur: 1440,
     pre: ['The Archive of Rafiq', 'Station Saboteur'],
     notes:
-      'CROSS-WORLD PREREQUISITE — requires the station line "Station Saboteur", the quest that teaches all four station hostile shapes; this is the same lesson against an emplaced ring on open rock. 8 steps. Count 6 against `Sentinel` is comfortable: eight bodies are authored (CitadelWorld.js:2052) and the hostile budget is the engine default of 10 (Config.js:202), so all eight spawn, and any that fall come back after 22 s (NPCManager.js:1944). Steps 3-5 are all fed by those bodies through the station drop table this world falls back to (Loot.js:309): alloy_scrap .30, medkit .13, credits guaranteed.',
+      'CROSS-WORLD PREREQUISITE — requires the station line "Station Saboteur", the quest that teaches all four station hostile shapes; this is the same lesson against an emplaced ring on open rock. 8 steps. Count 6 against `Sentinel` is comfortable: eight bodies are authored (CitadelWorld.js:2052) and the hostile budget is the engine default of 10 (Config.js:202), so all eight spawn, and any that fall come back after 22 s (NPCManager.js:1944). Steps 3-5 are all fed by those bodies through DROP_TABLES.citadel (Loot.js): relic_coin .44, medkit .10, credits guaranteed. Step 3 named `alloy_scrap` while this world was still borrowing the station table; there is no foundry within a hundred miles of the mesa and nothing here sheds hull plate.',
     steps: [
       { order: 1, label: 'Press E on Aldric Storne and take the order to break the ring, not just thin it', type: 'interact', target: 'Aldric Storne', count: 1, world: 'citadel' },
       { order: 2, label: 'Destroy 6 sentinels. They stand in a ring at about sixty metres out, which means no two of them are ever in the same fight unless you make them be', type: 'kill', target: 'Sentinel', count: 6, world: 'citadel' },
-      { order: 3, label: 'Strip the emplacements: collect 3 alloy scrap off the wrecks', type: 'collect', target: 'alloy_scrap', count: 3, world: 'citadel' },
+      { order: 3, label: 'Strip the emplacements: collect 3 crown-coin drops off the wrecks — the garrison is paid in old coin like everyone else here', type: 'collect', target: 'relic_coin', count: 3, world: 'citadel' },
       { order: 4, label: 'Recover a medkit from the field — you will want it before this is over', type: 'collect', target: 'medkit', count: 1, world: 'citadel' },
       { order: 5, label: 'And take the garrison\'s pay: 3 credit drops', type: 'collect', target: 'credits', count: 3, world: 'citadel' },
       { order: 6, label: 'Hold the cleared ground: two unbroken minutes on the plateau without taking a hit', type: 'survive', target: 'citadel', count: 4, world: 'citadel' },
@@ -315,12 +334,12 @@ export const CITADEL_QUESTS = [
     dur: 2880,
     pre: ['The Sunspire Garrison', 'Merchant Trade'],
     notes:
-      'CROSS-WORLD PREREQUISITE — requires the station education line "Merchant Trade", because half of this quest is the shop. 9 steps. Steps 3, 4 and 6 are three DIFFERENT purchase targets (two item ids and the trade kind `sell`), so no two of them advance from one action. Step 8 fires on `portal:entering` (Portals.js:2822) and therefore carries world:citadel — the world being LEFT, because `_worldId` has not changed yet — and step 9 fires on arrival and carries station. Step 1 (interact/Aldric Storne/citadel) and step 8 (interact/station/citadel) share a type and a world but not a target.',
+      'CROSS-WORLD PREREQUISITE — requires the station education line "Merchant Trade", because half of this quest is the shop. 9 steps. Steps 3, 4 and 6 are three DIFFERENT purchase targets (two item ids and the trade kind `sell`), so no two of them advance from one action. Each buy step names the counter that actually stocks it: `pack_medkit` is category `health` (Rafiq), `pack_arrows` is `weapons` (Bashir), and Hafsa stocks neither — `Marketplace.refreshCatalog` filters the catalogue by the open vendor\'s `vendorCategories`, and `_findVendor` only sees NPCs inside `VENDOR_RANGE` 7 m, with Rafiq 19.7 m and Bashir 34.2 m from her stall. Step 6 stays with her because selling is not category-gated. Step 8 fires on `portal:entering` (Portals.js:2822) and therefore carries world:citadel — the world being LEFT, because `_worldId` has not changed yet — and step 9 fires on arrival and carries station. Step 1 (interact/Aldric Storne/citadel) and step 8 (interact/station/citadel) share a type and a world but not a target.',
     steps: [
       { order: 1, label: 'Press E on Aldric Storne and take the citadel\'s trade ledger', type: 'interact', target: 'Aldric Storne', count: 1, world: 'citadel' },
       { order: 2, label: 'Press E on Hafsa the Dyer — the cloth stall by the gate is the whole of Sunspire\'s export trade and she keeps its prices in her head', type: 'talk', target: 'Hafsa the Dyer', count: 1, world: 'citadel' },
-      { order: 3, label: 'Press B at her stall and buy the Trauma Twin-Pack, so the ledger has a health line on it', type: 'purchase', target: 'medkit', count: 1, world: 'citadel' },
-      { order: 4, label: 'Buy the Arrow Bundle as well — the citadel prices ammunition higher than anywhere in the Nexus and the hub needs to see it', type: 'purchase', target: 'arrow', count: 1, world: 'citadel' },
+      { order: 3, label: 'A ledger needs every counter on it. Press B at Rafiq the Keeper\'s — Archive & Physic — and buy the Trauma Twin-Pack for the health line', type: 'purchase', target: 'medkit', count: 1, world: 'citadel' },
+      { order: 4, label: 'Then Bashir the Ostler\'s — Harness & Arms — for the Arrow Bundle. The citadel prices ammunition higher than anywhere in the Nexus and the hub needs to see it', type: 'purchase', target: 'arrow', count: 1, world: 'citadel' },
       { order: 5, label: 'Enter the coin line: recover 3 relic coin from the caches, since nothing here drops it', type: 'collect', target: 'relic_coin', count: 3, world: 'citadel' },
       { order: 6, label: 'Now the other half of a market. Press B, switch to the sell side, and sell 2 stacks back so the ledger shows the spread', type: 'purchase', target: 'sell', count: 2, world: 'citadel' },
       { order: 7, label: 'Press E on Bashir the Ostler and get the freight rate down the cliff road out of him', type: 'talk', target: 'Bashir the Ostler', count: 1, world: 'citadel' },

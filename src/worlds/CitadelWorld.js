@@ -6,6 +6,7 @@ import { World } from './World.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { genPool } from '../workers/GenPool.js';
 import { terrainH, MESA_Y, MESA_R, SHOULDER, HALF } from './terrain/CitadelHeight.js';
+import { venueBounds } from '../minigames/RooftopTrial.js';
 
 /**
  * CITADEL - "Sunspire Citadel".
@@ -28,14 +29,31 @@ import { terrainH, MESA_Y, MESA_R, SHOULDER, HALF } from './terrain/CitadelHeigh
  *    ledges - string courses, balconies, roof lips - at 6-9 m intervals, which
  *    are rest points, and which is also why real fortifications look like that.
  *
- * 3. **Roofs form a connected network.** The souk is laid out so adjacent roofs
- *    are within a running leap of each other, with the gaps widening as you get
- *    closer to the citadel. That gradient is the difficulty curve: the outer
- *    town teaches, the inner town tests.
+ * 3. **Roofs form a connected network, and the gaps widen inward.** Both
+ *    halves of that sentence used to be aspiration. The souk's spacing is now
+ *    solved from a target gap per ring (`SOUK_RINGS`) rather than rolled:
+ *    2.98 m mean at the outer ring rising to 6.59 m at the inner, per-ring
+ *    scatter of 0.07-0.12 m, and a step up between rings that is under a
+ *    sprint jump's 0.878 m apex on the outer three and over a leap's 1.109 m
+ *    on the inner two. Outer rings are crossed with a sprint jump, middle
+ *    rings need the leap, and the saw-toothed inner two need the leap and then
+ *    a mantle. Measured, not asserted: `scripts/tests/citadel-reach.test.mjs`.
+ *
+ *    The one break in the network is deliberate - the processional corridor
+ *    cleared at the gate bearing on every ring - and the network routes around
+ *    it. Two rope-bridge spans out to the curtain wall and two short landfall
+ *    spans back down into the souk are what make the citadel core and the town
+ *    one rooftop network rather than two.
  *
  * 4. **Every fall has an answer.** Haystacks sit under the high traversal lines
  *    so a leap of faith is a route rather than a death, and the roll window
- *    covers everything else.
+ *    covers everything else. They are placed with `_deckAt`, which asks the
+ *    collision world - placed with `_groundAt`, which is terrain and nothing
+ *    else, eight of the eleven stood inside the surface they were meant to
+ *    catch a body on. Each viewpoint publishes the line it is LAUNCHED along
+ *    and the hay goes downrange of that, not on the radial bearing that put the
+ *    great tower's hay 12.5 m behind its own jump. The tallest fall off any
+ *    deck in the world is 21.40 m against a lethal 40.0 m.
  *
  * ── Layout ────────────────────────────────────────────────────────────────
  *
@@ -71,9 +89,162 @@ const _color = new THREE.Color();
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+/** Signed angular difference folded into (-pi, pi]. */
+const wrapPi = (v) => { const t = ((v + Math.PI) % TAU + TAU) % TAU; return t - Math.PI; };
 /** Edge round applied to batched boxes, and the size below which it is skipped. */
 const BEVEL = 0.075;
 const BEVEL_MIN = 0.55;
+
+/* ------------------------------------------------------------------ */
+/* Layout constants shared by more than one builder                    */
+/* ------------------------------------------------------------------ */
+/** Curtain wall: radius of its centre line, its thickness, its height. */
+const WALL_R = 118;
+const WALL_T = 2.6;
+const WALL_H = 9;
+/** Every roof in the souk overhangs its walls by this much on all four sides. */
+const SOUK_LIP = 0.7;
+/** Radius of the innermost souk ring. The inner ward is a 60 m square. */
+const SOUK_R0 = 34;
+
+/**
+ * THE SOUK'S DIFFICULTY GRADIENT, AUTHORED.
+ *
+ * -- Why this table exists -------------------------------------------------
+ *
+ * The file header has always claimed "the gaps widen as you get closer to the
+ * citadel ... that gradient is the difficulty curve". It was not true. The old
+ * generator set `count = max(8, round(tau*r / 15))`, which pins tangential
+ * CENTRE spacing to 14.8-15.4 m at every ring, and then let three independent
+ * random terms decide the gap that actually mattered:
+ *
+ *   - `w = 8 + rnd()*5` and `d = 8 + rnd()*5`, so a pair of neighbours could
+ *     differ by 10 m of footprint;
+ *   - `a = ... + (rnd() - 0.5) * 0.06`, which at r = 103 is +/-3.1 m of
+ *     tangential slop PER BUILDING, so +/-6 m on a gap;
+ *   - `rotY = a` while the building was PLACED at `a`, which rotates the
+ *     footprint frame at -2a relative to the ring, so the tangentially
+ *     projected width was `|w cos| + |d sin|` and swung with compass bearing.
+ *
+ * Measured over the built world, the result was a mean tangential deck gap of
+ * 2.01 m with a standard deviation of 2.03 m, 34 pairs physically OVERLAPPING,
+ * a maximum of 7.99 m, and `pearson(ring, gap) = 0.1485`. Not a gradient: noise.
+ *
+ * -- What replaced it ------------------------------------------------------
+ *
+ * Three changes, in the order they matter.
+ *
+ * 1. **The footprint frame is now radial.** A box at `rotY = t` has its local
+ *    +X at world `(cos t, -sin t)` and its local +Z at `(sin t, cos t)`. Set
+ *    `t = pi/2 - a` and local +Z lands on `(cos a, sin a)` - straight out along
+ *    the radius - so `w` is the building's TANGENTIAL width and `d` is its
+ *    RADIAL depth, exactly and at every bearing. Every gap in the ring becomes
+ *    a quantity this file can solve for instead of a quantity it discovers.
+ *
+ * 2. **The angular jitter is gone** and the footprint jitter is +/-0.25 m
+ *    rather than +/-2.5 m. Variety comes from height, parapets, domes, awnings
+ *    and colour, none of which touch the gap. A town whose difficulty is a
+ *    dice roll is not a difficulty curve however pretty the dice are.
+ *
+ * 3. **`w` is derived from the gap, not the gap from `w`.** For two
+ *    neighbours an angular pitch `D` apart on a ring of radius `r`, with roof
+ *    lips `wLip` wide tangentially and `dLip` deep radially, the closest points
+ *    are the two INNER corners of the facing edges and their separation is
+ *
+ *        gap = 2 r sin(D/2) - wLip cos(D/2) - dLip sin(D/2)
+ *
+ *    which inverts to the `w` computed below. Derived, then confirmed against
+ *    `footprintGap`'s SAT measurement of the assembled world - the derivation
+ *    is only allowed to stand because a probe agreed with it.
+ *
+ * -- The gradient itself ---------------------------------------------------
+ *
+ * Ring 0 is innermost. The budgets are the measured ones, and the margins
+ * matter: a jump has to land 0.4 m inside the target lip to count, so the
+ * usable reach of each budget is its flat distance minus 0.4.
+ *
+ *   walk    2.607 m flat, 0.878 m apex  ->  crosses up to 2.2 m
+ *   sprint  4.647 m flat, 0.878 m apex  ->  crosses up to 4.25 m
+ *   leap    7.569 m flat, 1.109 m apex  ->  crosses up to 7.17 m
+ *
+ * `deck` is the top of the roof lip above `MESA_Y`, and it is authored as
+ * carefully as the gap, because a step UP taller than the apex is a wall
+ * whatever the gap is:
+ *
+ *   rings 6,5,4  gaps 3.0-3.85 m, steps inward 0.7 m  ->  sprint clears both
+ *   rings 3,2    gaps 5.1-5.7 m, steps inward 1.0 m   ->  the leap is required
+ *   rings 1,0    gaps 6.2-6.6 m, steps inward >= 1.4 m and a saw-toothed ring
+ *                                                     ->  leap, then a mantle
+ *
+ * `sawtooth` alternates the deck height of consecutive buildings by +/- that
+ * much, which makes the uphill half of every inner-ring crossing a jump into a
+ * wall - a grab and a mantle - while the downhill half stays a plain landing.
+ * `count` is even on those two rings so the alternation closes on itself.
+ */
+const SOUK_RINGS = (() => {
+  const spec = [
+    { count: 12, gapT: 6.60, gapR: 5.4, deck: 14.2, sawtooth: 0.80, depth: 7.0 },
+    { count: 18, gapT: 6.20, gapR: 4.8, deck: 12.0, sawtooth: 0.60, depth: 7.0 },
+    { count: 22, gapT: 5.70, gapR: 3.9, deck: 10.0, sawtooth: 0, depth: 7.0 },
+    { count: 28, gapT: 5.10, gapR: 3.4, deck: 9.0, sawtooth: 0, depth: 7.0 },
+    { count: 34, gapT: 3.85, gapR: 2.9, deck: 8.0, sawtooth: 0, depth: 7.0 },
+    { count: 40, gapT: 3.50, gapR: 2.4, deck: 7.3, sawtooth: 0, depth: 7.0 },
+    { count: 46, gapT: 3.00, gapR: 0, deck: 6.6, sawtooth: 0, depth: 7.0 },
+  ];
+  let r = SOUK_R0;
+  for (let k = 0; k < spec.length; k++) {
+    const s = spec[k];
+    s.ring = k;
+    s.r = r;
+    const dLip = s.depth + SOUK_LIP;
+    const half = Math.PI / s.count;              // half the angular pitch
+    s.w = (2 * r * Math.sin(half) - dLip * Math.sin(half) - s.gapT) / Math.cos(half) - SOUK_LIP;
+    const next = spec[k + 1];
+    if (next) r += s.gapR + (dLip + next.depth + SOUK_LIP) * 0.5;
+  }
+  return spec.map((e) => Object.freeze(e));
+})();
+
+/** Outer face of the outermost roof lip. Everything past this is the pomerium. */
+const SOUK_OUTER_FACE = SOUK_RINGS[SOUK_RINGS.length - 1].r
+  + (SOUK_RINGS[SOUK_RINGS.length - 1].depth + SOUK_LIP) * 0.5;
+/**
+ * The lane the haystacks under the rampart traversal line stand in.
+ *
+ * Halfway between the outer souk face and the inside of the curtain wall. It
+ * used to be a literal 104, which the re-authored souk builds ON TOP of - the
+ * hay would have been placed on a roof, which `_deckAt` would happily have
+ * agreed with and no assertion in the world would have caught it.
+ */
+const RAMPART_HAY_R = (SOUK_OUTER_FACE + (WALL_R - WALL_T * 0.5)) * 0.5;
+
+/**
+ * The four houses whose interiors are built, keyed by something that survives
+ * a layout change.
+ *
+ * They used to be keyed `${ring}:${i}` - `1:2`, `2:8`, `3:17`, `5:24` - which
+ * is an index into a generated array. Change `count`, or change anything
+ * upstream of the shared `rnd` stream, and `i` names a different building or
+ * no building at all; `_nudgeClear`'s docstring records that this has already
+ * happened TWICE, both times leaving NPCs standing inside walls. A bearing is
+ * stable under every one of those changes: the nearest surviving building to a
+ * compass direction is the same house whatever the ring count is.
+ *
+ * The bearings are the ones the old indices resolved to, so the four interiors
+ * stay roughly where they have always been. None of them is near the
+ * processional corridor at +Z (90 deg), which is cleared at every ring.
+ */
+const ENTERABLE_SITES = Object.freeze([
+  Object.freeze({ ring: 1, bearing: 56 * DEG, label: 'Spice Merchants House', flipDoor: true }),
+  Object.freeze({ ring: 2, bearing: 151 * DEG, label: 'Scribes Courtyard House', flipDoor: false }),
+  Object.freeze({ ring: 3, bearing: 257 * DEG, label: 'Carpet Loom House', flipDoor: false }),
+  Object.freeze({ ring: 5, bearing: 305 * DEG, label: 'Dyers Roof House', flipDoor: false }),
+]);
+
+/** Half-width of the processional corridor, in radians. Cleared at every ring. */
+const CORRIDOR_HALF = 0.26;
+/** Bearing of the gate, and so of the corridor. +Z. */
+const GATE_BEARING = Math.PI * 0.5;
 
 /* `terrainH` and the mesa constants live in `terrain/CitadelHeight.js` (imported
  * at the top of this file) so the generation worker can sample this ground
@@ -448,8 +619,22 @@ export class CitadelWorld extends World {
     this._towers = [];
     /** Haystack positions - the landing sites that make a leap of faith survivable. */
     this.haystacks = [];
-    /** Viewpoints: high, isolated, and worth the climb. */
+    /**
+     * Viewpoints: high, isolated, and worth the climb.
+     *
+     * Each entry carries more than a label, and every field has a consumer:
+     *   `id`               stable key for save data and the map reveal
+     *   `x, y, z`, `r`     the platform, and how big it is
+     *   `launch`           the exact point a leap of faith leaves from
+     *   `bearing`          the direction it leaves on - NOT the radial bearing
+     *   `hay`              the haystack that answers it, resolved during the
+     *                      build to `{x, y, z, r}` on a real surface
+     */
     this.viewpoints = [];
+    /** Rope-bridge spans, published so nothing has to re-derive the generator. */
+    this.ropeBridges = [];
+    /** Trial venues; see `_publishVenues`. */
+    this.minigameVenues = [];
 
     this._owned = [];
     this._time = 0;
@@ -961,9 +1146,10 @@ export class CitadelWorld extends World {
    */
   _buildCurtainWall() {
     const B = new Batch({ ao: 0.4, sky: 0.34, grime: 0.55, span: 5 }, TILE_METRES);
-    const R = 118;
-    const WALL_H = 9;
-    const WALL_T = 2.6;
+    // Module constants: the souk's outer radius and the rampart haystack lane
+    // are both derived from them, so a second copy here would be a second copy
+    // that could drift.
+    const R = WALL_R;
     const segs = 40;
     const top = MESA_Y + WALL_H;
 
@@ -972,17 +1158,38 @@ export class CitadelWorld extends World {
       const a1 = ((i + 1) / segs) * TAU;
       const mid = (a0 + a1) * 0.5;
       // Leave the gate open on the +Z side, where the approach road arrives.
-      if (Math.abs(((mid - Math.PI * 0.5 + Math.PI) % TAU) - Math.PI) < 0.1) continue;
+      if (Math.abs(((mid - GATE_BEARING + Math.PI) % TAU) - Math.PI) < 0.1) continue;
 
       const px = Math.cos(mid) * R;
       const pz = Math.sin(mid) * R;
       const len = (TAU * R) / segs * 1.06;
+      /* THE SIGN, and it was wrong for the whole life of this world.
+       *
+       * `Matrix4.makeRotationY(t)` puts the local +X axis at world
+       * `(cos t, -sin t)`, so the WORLD BEARING of local +X is `-t`, not `+t`.
+       * A segment rotated `mid + pi/2` therefore lies along bearing
+       * `-(mid + pi/2)`, which differs from the tangent by `2*mid + pi` - zero
+       * only where `mid` is a multiple of pi/2. Everywhere else the segment is
+       * turned off the ring, and at mid = pi/4 it is turned by a right angle
+       * and lies RADIALLY.
+       *
+       * Measured with `deckAt` on a radial sweep, the curtain wall was a
+       * rosette: solid stone reaching in to r = 111.8 at some bearings and open
+       * mesa at r = 118 at others. The town was not walled. The merlon
+       * positions two lines down were computed off the true tangent
+       * `(cos(mid + pi/2), sin(mid + pi/2))` all along, so the blocks and the
+       * wall they stand on disagreed with each other, which is the tell.
+       *
+       * `pi/2 - mid` is the rotation that puts local +Z on the radius and
+       * local +X on the tangent, and it is the same expression `_buildSouk`
+       * uses for the same reason. */
+      const wallRot = Math.PI / 2 - mid;
 
-      B.box('stone.castle', len, WALL_H, WALL_T, px, MESA_Y + WALL_H * 0.5, pz, mid + Math.PI / 2, 0xc4b494);
+      B.box('stone.castle', len, WALL_H, WALL_T, px, MESA_Y + WALL_H * 0.5, pz, wallRot, 0xc4b494);
       this.track(this.physics.addRotatedBox(
         _v1.set(px, MESA_Y + WALL_H * 0.5, pz),
         _v2.set(len * 0.5, WALL_H * 0.5, WALL_T * 0.5),
-        mid + Math.PI / 2
+        wallRot
       ));
 
       // Merlons: alternating blocks along the parapet.
@@ -993,11 +1200,11 @@ export class CitadelWorld extends World {
         const mx = px + Math.cos(mid + Math.PI / 2) * len * t;
         const mz = pz + Math.sin(mid + Math.PI / 2) * len * t;
         B.box('stone.castle', len / merlons * 0.86, 1.5, WALL_T * 0.55,
-          mx, top + 0.75, mz, mid + Math.PI / 2, 0xbfae8c);
+          mx, top + 0.75, mz, wallRot, 0xbfae8c);
         this.track(this.physics.addRotatedBox(
           _v1.set(mx, top + 0.75, mz),
           _v2.set(len / merlons * 0.43, 0.75, WALL_T * 0.28),
-          mid + Math.PI / 2
+          wallRot
         ));
       }
     }
@@ -1024,7 +1231,11 @@ export class CitadelWorld extends World {
         _v1.set(px, MESA_Y + h + 0.6, pz), _v2.set((w + 1.4) * 0.5, 0.6, (w + 1.4) * 0.5), a
       ));
 
-      this._towers.push({ x: px, y: MESA_Y + h + 1.2, z: pz, r: w * 0.5 });
+      // `wall: true` so `_buildRopeBridges` can name these rather than
+      // finding them by a height predicate. The old `find(t => !t.minaret &&
+      // t.y < MESA_Y + 34)` matched whichever wall tower happened to be pushed
+      // first, which is a layout detail wearing the costume of a choice.
+      this._towers.push({ x: px, y: MESA_Y + h + 1.2, z: pz, r: w * 0.5, wall: true });
       this._roofs.push({ x: px, y: MESA_Y + h + 1.2, z: pz, w, d: w });
     }
 
@@ -1064,25 +1275,39 @@ export class CitadelWorld extends World {
     // a town built entirely from boxes.
     const B = new Batch({ ao: 0.46, sky: 0.34, grime: 0.65, span: 3.4 }, TILE_METRES);
     const rnd = this.rnd;
-    const rings = 7;
-    const enterableLabels = new Map([
-      ['1:2', 'Spice Merchants House'],
-      ['2:8', 'Scribes Courtyard House'],
-      ['3:17', 'Carpet Loom House'],
-      ['5:24', 'Dyers Roof House'],
-    ]);
-    // Houses whose +Z alley face is walled in by a neighbour: put the door on
-    // the -Z face instead. 1:2's +Z face opens 0.2m from the next block's
-    // wall - the door was physically unreachable there.
-    const flipDoorFace = new Set(['1:2']);
 
-    for (let ring = 0; ring < rings; ring++) {
-      const r = 34 + ring * 12.5;
-      const count = Math.max(8, Math.round((TAU * r) / 15));
-      // Closer to the citadel = taller and further apart.
-      const inward = 1 - ring / rings;
+    /* Resolve the four authored interiors BEFORE anything is placed.
+     *
+     * `ENTERABLE_SITES` names a ring and a compass bearing; this turns each
+     * into the index of the nearest surviving building on that ring, at the
+     * counts this build is actually using. That is the whole re-key: the
+     * authored data no longer contains an index, so changing `count` moves the
+     * interior a couple of metres round the ring instead of moving it onto a
+     * different house or losing it entirely. */
+    const enterableAt = new Map();
+    for (const site of ENTERABLE_SITES) {
+      const spec = SOUK_RINGS[site.ring];
+      let best = -1;
+      let bestD = Infinity;
+      for (let i = 0; i < spec.count; i++) {
+        const a = (i / spec.count) * TAU + site.ring * 0.31;
+        if (this._inCorridor(a)) continue;
+        const d = Math.abs(wrapPi(a - site.bearing));
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      if (best >= 0) enterableAt.set(`${site.ring}:${best}`, site);
+    }
+
+    for (const spec of SOUK_RINGS) {
+      const ring = spec.ring;
+      const r = spec.r;
+      const count = spec.count;
       for (let i = 0; i < count; i++) {
-        const a = (i / count) * TAU + ring * 0.31 + (rnd() - 0.5) * 0.06;
+        /* No angular jitter. It used to be `+ (rnd() - 0.5) * 0.06`, which is
+         * +/-3.1 m of tangential slop per building at the outer ring - twice
+         * the whole difference between a sprint jump and a leap - and it was
+         * the single largest term in the old gap distribution. */
+        const a = (i / count) * TAU + ring * 0.31;
         /* Keep the whole gate approach clear, at every ring.
          *
          * The first version only cleared the inner four, and the outer two
@@ -1090,15 +1315,35 @@ export class CitadelWorld extends World {
          * spawn probe found a rooftop and dropped them onto it, staring at a
          * wall, in a world whose entire first impression is meant to be the
          * town rising toward the tower. A processional route has to be
-         * processional the whole way in. */
-        const towardGate = Math.abs(((a - Math.PI * 0.5 + Math.PI) % TAU) - Math.PI);
-        if (towardGate < 0.26) continue;
+         * processional the whole way in.
+         *
+         * It is also the one break in the roof network that is DELIBERATE.
+         * Connectivity routes around it; it does not get closed to buy a
+         * component. */
+        if (this._inCorridor(a)) continue;
 
         const px = Math.cos(a) * r;
         const pz = Math.sin(a) * r;
-        const w = 8 + rnd() * 5;
-        const d = 8 + rnd() * 5;
-        const h = 5 + inward * 9 + rnd() * 3.5;
+        /* The footprint frame, and the reason the whole ring is solvable.
+         *
+         * `rotY = rot` puts the box's local +X on `(cos rot, -sin rot)` and its
+         * local +Z on `(sin rot, cos rot)`; at `rot = pi/2 - a` that is the
+         * ring TANGENT and the RADIUS respectively. So `w` is tangential width
+         * and `d` is radial depth at every bearing, which is what lets
+         * `SOUK_RINGS` solve `w` from a target gap. The old code passed `a`
+         * itself, rotating the footprint frame at -2a relative to the ring. */
+        const rot = Math.PI * 0.5 - a;
+        const w = spec.w + (rnd() - 0.5) * 0.5;
+        const d = spec.depth + (rnd() - 0.5) * 0.5;
+        /* Deck height: the ring's authored value, saw-toothed on the inner two
+         * rings, plus a little noise. The noise is +/-0.12 m and not the old
+         * +/-1.75 m, because a step taller than a jump's apex is a wall and the
+         * apexes are 0.878 m and 1.109 m - there is no room in that budget for
+         * a metre of dice. */
+        const deck = spec.deck
+          + (spec.sawtooth ? (i % 2 ? -spec.sawtooth : spec.sawtooth) : 0)
+          + (rnd() - 0.5) * 0.24;
+        const h = deck - 0.55;                 // the roof lip is 0.55 m thick
         const y0 = MESA_Y;
         /* Per-building colour, drawn from a real palette.
          *
@@ -1109,22 +1354,23 @@ export class CitadelWorld extends World {
          * lightness per building, is what makes a skyline read as a place where
          * people paint their own houses. */
         const tint = pick(rnd, WASH);
-        const enterable = enterableLabels.has(`${ring}:${i}`);
+        const site = enterableAt.get(`${ring}:${i}`);
+        const enterable = !!site;
         const wallT = 0.42;
         const doorHW = 0.86;
         const doorH = 2.45;
         const roomCeil = Math.min(h - 0.45, 3.65);
 
         if (!enterable) {
-          B.box('plaster.wall', w, h, d, px, y0 + h * 0.5, pz, a, tint);
+          B.box('plaster.wall', w, h, d, px, y0 + h * 0.5, pz, rot, tint);
           this.track(this.physics.addRotatedBox(
-            _v1.set(px, y0 + h * 0.5, pz), _v2.set(w * 0.5, h * 0.5, d * 0.5), a
+            _v1.set(px, y0 + h * 0.5, pz), _v2.set(w * 0.5, h * 0.5, d * 0.5), rot
           ));
         } else {
           // Flipped houses build their whole local frame rotated 180 deg so
           // the doorway lands on the clear alley face; the w x d footprint is
           // symmetric under that rotation so nothing else moves.
-          const da = flipDoorFace.has(`${ring}:${i}`) ? a + Math.PI : a;
+          const da = site.flipDoor ? rot + Math.PI : rot;
           const hw = w * 0.5;
           const hd = d * 0.5;
           const M = new THREE.Matrix4().makeRotationY(da).setPosition(px, y0, pz);
@@ -1199,7 +1445,7 @@ export class CitadelWorld extends World {
           if (!Array.isArray(this.enterables)) this.enterables = [];
           const n = this.enterables.length;
           this.enterables.push({
-            label: enterableLabels.get(`${ring}:${i}`),
+            label: site.label,
             origin: new THREE.Vector3(px, y0, pz),
             doors: [{
               id: `citadel_souk_${n}`,
@@ -1213,23 +1459,26 @@ export class CitadelWorld extends World {
           });
         }
 
-        // Roof lip - the ledge you actually mantle onto.
-        B.box('stone.castle', w + 0.7, 0.55, d + 0.7, px, y0 + h + 0.27, pz, a, 0xbfae8a);
+        // Roof lip - the ledge you actually mantle onto, and the footprint
+        // every gap in `SOUK_RINGS` is measured between.
+        B.box('stone.castle', w + SOUK_LIP, 0.55, d + SOUK_LIP, px, y0 + h + 0.27, pz, rot, 0xbfae8a);
         this.track(this.physics.addRotatedBox(
-          _v1.set(px, y0 + h + 0.27, pz), _v2.set((w + 0.7) * 0.5, 0.28, (d + 0.7) * 0.5), a
+          _v1.set(px, y0 + h + 0.27, pz),
+          _v2.set((w + SOUK_LIP) * 0.5, 0.28, (d + SOUK_LIP) * 0.5), rot
         ));
         this._roofs.push({ x: px, y: y0 + h + 0.55, z: pz, w, d, ring });
 
         /* Window course. Two bands of shallow boxes proud of the wall: the
          * handholds that make a plaster face climbable instead of blank. They
          * are colliders, which is the whole point - a decal would look the same
-         * and grip nothing. */
+         * and grip nothing. Narrower than the roof lip, so they never become
+         * the thing a jump is measured against. */
         const bands = h > 9 ? 2 : 1;
         for (let bnd = 0; bnd < bands; bnd++) {
           const by = y0 + h * (bnd === 0 ? 0.42 : 0.74);
-          B.box('wood.beam', w + 0.5, 0.34, d + 0.5, px, by, pz, a, 0x6d5334);
+          B.box('wood.beam', w + 0.5, 0.34, d + 0.5, px, by, pz, rot, 0x6d5334);
           this.track(this.physics.addRotatedBox(
-            _v1.set(px, by, pz), _v2.set((w + 0.5) * 0.5, 0.17, (d + 0.5) * 0.5), a
+            _v1.set(px, by, pz), _v2.set((w + 0.5) * 0.5, 0.17, (d + 0.5) * 0.5), rot
           ));
         }
 
@@ -1248,17 +1497,16 @@ export class CitadelWorld extends World {
          * player can see and not grab would be a lie. */
         /* Face directions, derived rather than guessed.
          *
-         * A box at `rotY = a` has its local +Z pointing along world
-         * (sin a, cos a) and its local +X along (cos a, -sin a) - *not*
-         * (cos a, sin a), which is the radial direction the buildings happen to
-         * be placed on. Offsetting by the radius instead of by the local axis
-         * puts every detail on a building that is not exactly north-south out
-         * in the open air beside its own wall. That is what was wrong with the
-         * parapets and awnings below, and it is the difference between a facade
-         * and a cloud of loose boxes. */
+         * A box at `rotY = rot` has its local +Z pointing along world
+         * (sin rot, cos rot) and its local +X along (cos rot, -sin rot).
+         * Offsetting by the radius instead of by the local axis puts every
+         * detail out in the open air beside its own wall - that is what was
+         * wrong with the parapets and awnings below, and it is the difference
+         * between a facade and a cloud of loose boxes. With the radial frame,
+         * `fa = 0` is the face that looks straight out down the hill. */
         const faces = [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5];
         for (const fa of faces) {
-          const wa = a + fa;
+          const wa = rot + fa;
           const nx = Math.sin(wa);
           const nz = Math.cos(wa);
           const tx = Math.cos(wa);     // tangent, for spacing bays along the face
@@ -1270,7 +1518,10 @@ export class CitadelWorld extends World {
           const rows = h > 9 ? 2 : 1;
           for (let row = 0; row < rows; row++) {
             const wy = y0 + h * (rows === 1 ? 0.58 : row === 0 ? 0.36 : 0.68);
-            const cols = along > 5 ? 2 : 1;
+            // The blocks are wide and shallow now, so the threshold that
+            // decides a two-bay face sits between the two: 4.2 m of half-width
+            // puts two windows on every street frontage and one on the ends.
+            const cols = along > 4.2 ? 2 : 1;
             for (let cidx = 0; cidx < cols; cidx++) {
               if (rnd() < 0.22) continue;                 // not every bay
               const off = cols === 1 ? 0 : (cidx - 0.5) * along * 0.95;
@@ -1291,7 +1542,8 @@ export class CitadelWorld extends World {
           }
 
           // A doorway on the alley-facing side only, so the ground floor is not
-          // ringed with four front doors.
+          // ringed with four front doors. `fa === 0` is the outward radial
+          // face: every house in the souk fronts onto the street below it.
           if (fa === 0) {
             const hasDecorDoor = rnd() < 0.75;
             if (!enterable && hasDecorDoor) {
@@ -1307,31 +1559,37 @@ export class CitadelWorld extends World {
          * Offset along the building's own +Z, for the reason set out above -
          * this one used to displace on z only, which slid the parapet clean off
          * the roof of every building on a diagonal. Seated ON the roof plane:
-         * the earlier +0.55 lift left a visible air gap under every one. */
+         * the earlier +0.55 lift left a visible air gap under every one.
+         *
+         * Visual only - no collider. A parapet that stood up as a solid on the
+         * deck would be a wall across the middle of every landing. */
         if (rnd() < 0.45) {
           const ph = 0.9 + rnd() * 0.6;
           B.box('plaster.wall', w * 0.9, ph, 0.5,
-            px + Math.sin(a) * d * 0.45, y0 + h + ph * 0.5 - 0.02,
-            pz + Math.cos(a) * d * 0.45, a, tint);
+            px + Math.sin(rot) * d * 0.45, y0 + h + ph * 0.5 - 0.02,
+            pz + Math.cos(rot) * d * 0.45, rot, tint);
         }
 
-        // An awning over the alley, and its posts: cover, and a mid-height perch.
+        /* An awning over the street, and its posts: cover, and a mid-height
+         * perch. It projects 1.8 m rather than the old 3.2, because the ring
+         * streets are now an authored width - 3.1 m at the outer rings - and a
+         * 3.2 m awning would have grown straight through the next ring's wall. */
         if (rnd() < 0.3) {
-          const ax = px + Math.sin(a) * (d * 0.5 + 1.6);
-          const az = pz + Math.cos(a) * (d * 0.5 + 1.6);
-          B.box('fabric.banner', w * 0.8, 0.12, 3.2, ax, y0 + 3.4, az, a, 0xc2543a);
+          const ax = px + Math.sin(rot) * (d * 0.5 + 0.9);
+          const az = pz + Math.cos(rot) * (d * 0.5 + 0.9);
+          B.box('fabric.banner', w * 0.8, 0.12, 1.8, ax, y0 + 3.4, az, rot, 0xc2543a);
           this.track(this.physics.addRotatedBox(
-            _v1.set(ax, y0 + 3.4, az), _v2.set(w * 0.4, 0.06, 1.6), a
+            _v1.set(ax, y0 + 3.4, az), _v2.set(w * 0.4, 0.06, 0.9), rot
           ));
           // Posts under the outer corners - without them the fabric slab
           // reads as a plank floating in the alley.
-          const pox = px + Math.sin(a) * (d * 0.5 + 3.0);
-          const poz = pz + Math.cos(a) * (d * 0.5 + 3.0);
+          const pox = px + Math.sin(rot) * (d * 0.5 + 1.7);
+          const poz = pz + Math.cos(rot) * (d * 0.5 + 1.7);
           for (const sgn of [-1, 1]) {
             B.box('wood.beam', 0.16, 3.34, 0.16,
-              pox + Math.cos(a) * sgn * (w * 0.35),
+              pox + Math.cos(rot) * sgn * (w * 0.35),
               y0 + 1.67,
-              poz - Math.sin(a) * sgn * (w * 0.35), a, 0x6a4f31);
+              poz - Math.sin(rot) * sgn * (w * 0.35), rot, 0x6a4f31);
           }
         }
 
@@ -1342,13 +1600,13 @@ export class CitadelWorld extends World {
          * however well the faces are shaded. The cornice puts a horizontal
          * shadow line under every roof, and the domes break the ridge line with
          * the one shape in the world that has no edges at all. */
-        B.box('stone.castle', w + 1.15, 0.28, d + 1.15, px, y0 + h - 0.32, pz, a,
+        B.box('stone.castle', w + 1.15, 0.28, d + 1.15, px, y0 + h - 0.32, pz, rot,
           0xd6c6a0);
 
         if (rnd() < 0.3) {
           const dr = Math.min(w, d) * 0.42;
           const dome = new THREE.SphereGeometry(dr, 14, 8, 0, TAU, 0, Math.PI * 0.52);
-          _e1.set(0, a, 0);
+          _e1.set(0, rot, 0);
           _q1.setFromEuler(_e1);
           // Centre sits just above the roof plane so the dome's rim (slightly
           // below its centre) tucks into the slab - the old +0.55 lift left
@@ -1360,13 +1618,41 @@ export class CitadelWorld extends World {
           this.track(this.physics.addBox(px, y0 + h + 0.12 + dr * 0.32, pz,
             dr * 0.72, dr * 0.32, dr * 0.72));
           // Finial, so the dome terminates rather than just stopping.
-          B.box('wood.beam', 0.16, 0.5, 0.16, px, y0 + h + 0.12 + dr * 0.82 + 0.25, pz, a, 0x8a6a3a);
+          B.box('wood.beam', 0.16, 0.5, 0.16, px, y0 + h + 0.12 + dr * 0.82 + 0.25, pz, rot, 0x8a6a3a);
         }
       }
     }
 
     B.flush(this.group, (k) => this._mat(k), 'souk');
     B.dispose();
+
+    /* A standing spot per roof, resolved once the whole souk is standing.
+     *
+     * It cannot be done as each roof is pushed: the dome that would block the
+     * centre is built LATER IN THE SAME ITERATION, so a probe taken at push
+     * time reads the bare deck and answers the centre for every roof. This
+     * pass runs after every collider in the souk exists.
+     *
+     * `x/y/z` are left exactly where they were - they are the footprint centre
+     * and the datum every gap in this world is measured between, and moving
+     * them would move the rope-bridge landfall anchors and the trial routes
+     * with them. `anchor` is the separate question "where on this roof can a
+     * body stand", and it is what `Relics` consumes. Without it 8 of the 30
+     * citadel relics were sealed inside a dome. */
+    for (const r of this._roofs) r.anchor = this._deckSpot(r);
+  }
+
+  /**
+   * Is this bearing inside the processional corridor?
+   *
+   * The corridor is the one deliberate break in the roof network: every ring
+   * deletes the buildings within `CORRIDOR_HALF` of the gate bearing, which at
+   * the outer ring is a 53 m radial gap. It exists so the player arrives on a
+   * street that runs the whole way in, and it is not to be closed to buy a
+   * connected component - the network routes around the other side.
+   */
+  _inCorridor(a) {
+    return Math.abs(wrapPi(a - GATE_BEARING)) < CORRIDOR_HALF;
   }
 
   /* ------------------------------------------------------------------ */
@@ -1422,20 +1708,70 @@ export class CitadelWorld extends World {
     const tz = -18;
     B.box('stone.castle', tw, th, tw, tx, wardTop + th * 0.5, tz, 0, 0xd6c69c);
     this.track(this.physics.addBox(tx, wardTop + th * 0.5, tz, tw * 0.5, th * 0.5, tw * 0.5));
-    // Rest ledges every 7 m. Load-bearing for the climb, not decoration.
+    /* Rest ledges every 7 m. Load-bearing for the climb, not decoration - and
+     * since Drop Two, load-bearing for the *fall* as well.
+     *
+     * They used to be `tw + 1.5` = 12.5 m across against a `tw + 2.4` = 13.4 m
+     * crown, so the crown overhung its own galleries by 0.45 m. Measured, that
+     * one number was the whole of R4's failure: a body stepping off the crown
+     * cleared every ledge on the tower and hit the inner ward 47.60 m below,
+     * which is past `LETHAL_SPEED`. All 25 unsurvivable roof-edge samples in
+     * the world were this edge.
+     *
+     * `LEDGE_OUT` is now 2.2 m rather than 0.75, which puts the gallery 1.0 m
+     * PROUD of the crown: the drop off the crown is caught by the top gallery
+     * 5.32 m down, and 5.32 is inside the 7.5 m at which fall damage begins. It
+     * is also what a machicolated tower actually looks like - the fighting
+     * gallery is meant to overhang the wall it defends - so the fix reads as
+     * architecture rather than as a safety rail.
+     *
+     * The clearance is checked against the probe, not by eye: the fall sampler
+     * steps 0.45 m off the crown edge, i.e. 6.7 + 0.45 = 7.15 m from the axis,
+     * and the gallery half-extent is 7.60 m. 0.45 m of margin. */
+    const LEDGE_OUT = 2.2;
     for (let y = 7; y < th; y += 7) {
-      B.box('stone.castle', tw + 1.5, 0.55, tw + 1.5, tx, wardTop + y, tz, 0, 0xb9a887);
-      this.track(this.physics.addBox(tx, wardTop + y, tz, (tw + 1.5) * 0.5, 0.28, (tw + 1.5) * 0.5));
+      B.box('stone.castle', tw + LEDGE_OUT * 2, 0.55, tw + LEDGE_OUT * 2, tx, wardTop + y, tz, 0, 0xb9a887);
+      this.track(this.physics.addBox(tx, wardTop + y, tz,
+        tw * 0.5 + LEDGE_OUT, 0.28, tw * 0.5 + LEDGE_OUT));
     }
     // Crown and the jutting beam a leap of faith launches from.
     B.box('stone.castle', tw + 2.4, 1.6, tw + 2.4, tx, wardTop + th + 0.8, tz, 0, 0xcabb96);
     this.track(this.physics.addBox(tx, wardTop + th + 0.8, tz, (tw + 2.4) * 0.5, 0.8, (tw + 2.4) * 0.5));
-    B.box('wood.beam', 1.1, 0.5, 7, tx, wardTop + th + 1.9, tz + 5, 0, 0x5d462c);
-    this.track(this.physics.addBox(tx, wardTop + th + 1.9, tz + 5, 0.55, 0.25, 3.5));
+    const beamHalf = 3.5;
+    // 0.3 m in from the very tip: a launch point published exactly on a
+    // collider's boundary is a coin toss between the beam and the air.
+    const beamTipZ = tz + 5 + beamHalf - 0.3;
+    const beamTopY = wardTop + th + 2.15;
+    B.box('wood.beam', 1.1, 0.5, beamHalf * 2, tx, wardTop + th + 1.9, tz + 5, 0, 0x5d462c);
+    this.track(this.physics.addBox(tx, wardTop + th + 1.9, tz + 5, 0.55, 0.25, beamHalf));
 
     const towerTopY = wardTop + th + 1.6;
-    this._towers.push({ x: tx, y: towerTopY, z: tz, r: tw * 0.5 });
-    this.viewpoints.push({ x: tx, y: towerTopY, z: tz, name: 'The Great Tower' });
+    this._towers.push({ x: tx, y: towerTopY, z: tz, r: tw * 0.5, great: true });
+    /* The beam points at +Z, toward the keep and the ward beyond it - and the
+     * haystack rule used to offset *radially outward*, which for a tower at
+     * (0, -18) is -Z. The hay landed 12.5 m behind the jump, on the wrong side
+     * of the tower entirely. Every viewpoint now publishes the line it is
+     * launched along, and the hay is placed on that line rather than on a
+     * bearing derived from where the tower happens to stand.
+     *
+     * `run` is not a guess. Driven through the real integrator: a leap leaves
+     * the beam at 11.64 m/s horizontal and 7.168 m/s up, clears the keep roof
+     * (26.75 m down, and the arc is still at y 55.4 when it crosses the keep's
+     * far parapet), and comes down on the ward 48.15 m below after 28.53 m.
+     * Launched from the beam's root instead of its tip it falls 5.8 m short of
+     * the keep's far edge and lands ON the keep roof, 26.75 m - damage, not
+     * death. So the survivable band for a leap from anywhere along the beam is
+     * z 13.6 to 19.0, and the hay sits in the middle of it with a radius that
+     * covers the whole band. */
+    this.viewpoints.push({
+      id: 'great-tower',
+      name: 'The Great Tower',
+      x: tx, y: towerTopY, z: tz,
+      r: (tw + 2.4) * 0.5,
+      launch: { x: tx, y: beamTopY, z: beamTipZ },
+      bearing: Math.PI * 0.5,
+      hay: { run: 26.1, r: 3.6 },
+    });
 
     /* Minarets: four thin towers, the rope-bridge anchors. Thin is the point -
      * they are the hardest free-climbs in the world because there is no wide
@@ -1481,7 +1817,53 @@ export class CitadelWorld extends World {
         _v1.set(px, wardTop + mh + 0.6, pz), _v2.set(capR * 0.7, 0.9, capR * 0.7), a
       ));
       this._towers.push({ x: px, y: wardTop + mh + 1.5, z: pz, r: mw * 0.5, minaret: true });
-      this.viewpoints.push({ x: px, y: wardTop + mh + 1.5, z: pz, name: `Minaret ${i + 1}` });
+      /* Tangential, not radial. Offsetting the hay radially outward from a
+       * minaret at r = 21 puts it at r = 28.6, which is under the inner souk
+       * ring's roof overhang - measured, three of the four landed on a souk
+       * roof 9 to 12 m over the ward. Along the ring instead, 8 m out, every
+       * one of them stands on open ward: the keep occupies x +/-14 and z -15.4
+       * to +7.4 and the great tower x +/-6.7, and these four clear both.
+       *
+       * A minaret is not the leap-of-faith platform - the drop to the ward is
+       * 31.5 m, which is damage rather than death - so this hay is the answer
+       * to a missed balcony rather than to a committed jump. That is why the
+       * run is 8 m and not the 23.9 m a leap from up here would carry.
+       *
+       * AND THAT IS WHY THERE IS NO `launch` HERE.
+       *
+       * `Viewpoints.normaliseViewpoint` treats `launch` + `hay` published
+       * together as the declaration "this viewpoint HAS a leap of faith", and
+       * raises "Leap of faith - hay 29 m below" the moment a body stands
+       * within LEAP_R = 3.0 m of the launch point. The minaret launch point
+       * WAS the platform centre, so syncing a minaret always raised the offer.
+       * Flown through the real integrator from that point on the published
+       * bearing, against the built colliders, not one of the four arrives:
+       *
+       *   minaret-1  leap   lands (-2.44, 18.20, 32.14)  run 24.45  16.45 m
+       *                     from its hay, 40.7 m/s into the souk
+       *   minaret-2  leap   BLOCKED by the ward wall at (-30.49, 25.06, -0.79)
+       *   minaret-3  leap   lands on the great tower's rest gallery at y 48.28
+       *   minaret-4  leap   BLOCKED by the ward wall at (30.63, 24.48, 0.93)
+       *
+       * A sprint jump instead runs 16.40 m off all four and lands on the ward
+       * at y 20.0 - a 31.5 m fall at 38.5 m/s against SAFE_SPEED 18, still
+       * 8.40 m from the hay. Only a standing walk jump (2.61 m, still on the
+       * platform) or a plain step-off reaches it, which is the "missed
+       * balcony" this hay was placed for.
+       *
+       * Withholding `launch` is the whole fix: `normaliseViewpoint`'s `paired`
+       * gate drops BOTH fields, so there is no prompt. The hay is still built -
+       * `_buildDressing` falls back to the viewpoint's own point, which for a
+       * minaret is the identical coordinate - and syncing, revealing and fast
+       * travel are untouched, because none of them reads `launch`. */
+      this.viewpoints.push({
+        id: `minaret-${i + 1}`,
+        name: `Minaret ${i + 1}`,
+        x: px, y: wardTop + mh + 1.5, z: pz,
+        r: (mw + 2.6) * 0.5,
+        bearing: a + Math.PI * 0.5,
+        hay: { run: 8.0, r: 3.2 },
+      });
     }
 
     B.flush(this.group, (k) => this._mat(k), 'citadel');
@@ -1505,46 +1887,173 @@ export class CitadelWorld extends World {
     // sky term carries this one and the ground-contact AO is nearly off.
     const B = new Batch({ ao: 0.12, sky: 0.4, grime: 0.2, span: 1.2 }, TILE_METRES);
     const minarets = this._towers.filter((t) => t.minaret);
+    const walls = this._towers.filter((t) => t.wall);
+    const great = this._towers.find((t) => t.great);
     if (minarets.length < 2) return;
 
     const links = [];
     for (let i = 0; i < minarets.length; i++) {
-      links.push([minarets[i], minarets[(i + 1) % minarets.length]]);
+      links.push({ a: minarets[i], b: minarets[(i + 1) % minarets.length], id: `minaret-loop-${i}` });
     }
-    // And one span from a minaret out to a wall tower, so the network reaches
-    // the perimeter rather than looping only around the citadel.
-    const outer = this._towers.find((t) => !t.minaret && t.y < MESA_Y + 34);
-    if (outer) links.push([minarets[0], outer]);
 
-    for (const [a, b] of links) {
+    /* And out to the perimeter, which is what this function has always said it
+     * did and never once managed.
+     *
+     * The old code was three lines: find a non-minaret tower under 48 m, link
+     * it to `minarets[0]`, then `if (span < 6 || span > 90) continue`. The span
+     * is 99.0 m. It was rejected silently on the very next line, every build,
+     * since the day it was written - so four 29.7 m loops shipped, all of them
+     * inside r = 21, and the "network reaches the perimeter" comment described
+     * a bridge that did not exist. The 46 m great tower had none at all.
+     *
+     * Three things had to change to make the intent real:
+     *
+     *  1. the limit. 90 -> 132, which is the diagonal of this mesa and so the
+     *     longest span the world can physically want;
+     *  2. the anchor pick. `find` returned whichever wall tower was pushed
+     *     first; each perimeter span now names the bearing it wants to leave on
+     *     and takes the wall tower nearest to it;
+     *  3. **the height interpolation, which was the real bug.** `y0 = min(a.y,
+     *     b.y) - 0.6` then `py = y0 + (b.y - a.y) * t` starts the deck at the
+     *     LOWER anchor's height and then applies the full difference again. For
+     *     the four minaret loops `a.y === b.y` so it is correct by accident;
+     *     for a minaret at 51.5 m running out to a wall tower at 32.2 m it puts
+     *     the first plank 19.9 m below the minaret it is tied to and the last
+     *     one 19.3 m below the tower. Every unequal span this function could
+     *     ever have built would have been a bridge to nowhere with a 20 m drop
+     *     at each end. It lerps between the two anchors now.
+     *
+     * Walkability is not asserted here, it is measured: `citadel-reach`
+     * detects the planks by their collider shape and walks the chain, and the
+     * per-plank step is what has to stay under `NPC.GROUND_PROBE_UP` = 0.95 m.
+     * The great-tower span is the steep one - 35.4 m of descent over 101.6 m of
+     * span, plus the catenary - and it comes out at 0.63 m per plank.
+     */
+    const perimeter = [
+      { from: minarets[0], out: Math.PI * 0.25, id: 'minaret-perimeter' },
+      { from: great, out: -Math.PI * 0.62, id: 'great-tower-perimeter' },
+    ];
+    for (const spec of perimeter) {
+      if (!spec.from || !walls.length) continue;
+      let best = null;
+      let bestD = Infinity;
+      for (const t of walls) {
+        const d = Math.abs(wrapPi(Math.atan2(t.z - spec.from.z, t.x - spec.from.x) - spec.out));
+        if (d < bestD) { bestD = d; best = t; }
+      }
+      if (!best) continue;
+      links.push({ a: spec.from, b: best, id: spec.id });
+
+      /* Landfall: the same wall tower, back down into the outer souk.
+       *
+       * Reaching the perimeter is only half of what "so the network reaches
+       * the perimeter" means. Measured with only the long span in place, the
+       * citadel core and its bridges formed their own 166-node island: the
+       * minarets could see the wall and the wall could see the minarets, and
+       * neither could see the town. A 15 m span from the tower down onto the
+       * nearest outer-ring roof is what makes the whole thing one network, and
+       * it is also the route the design wants a player to find - run the souk
+       * out to the wall, take the ramparts, and cross the sky to the citadel.
+       *
+       * Anchored on the roof's own edge rather than its centre, or the last
+       * few planks hang in the air over somebody's roof. */
+      let roof = null;
+      let roofD = Infinity;
+      const outerRing = SOUK_RINGS.length - 1;
+      for (const r of this._roofs) {
+        if (r.ring !== outerRing) continue;
+        const d = Math.hypot(r.x - best.x, r.z - best.z);
+        if (d < roofD) { roofD = d; roof = r; }
+      }
+      if (!roof) continue;
+      const toTower = Math.atan2(best.z - roof.z, best.x - roof.x);
+      const edge = Math.min(roof.w, roof.d) * 0.5 - 0.4;
+      links.push({
+        a: best,
+        b: { x: roof.x + Math.cos(toTower) * edge, y: roof.y, z: roof.z + Math.sin(toTower) * edge },
+        id: `${spec.id}-landfall`,
+      });
+    }
+
+    // Published so the trials, the minimap and the viewpoint prompts can all
+    // read the same spans rather than each recomputing the generator.
+    this.ropeBridges.length = 0;
+
+    for (const { a, b, id } of links) {
       const dx = b.x - a.x;
       const dz = b.z - a.z;
       const span = Math.hypot(dx, dz);
-      if (span < 6 || span > 90) continue;
+      if (span < 6 || span > 132) continue;
       const dirY = Math.atan2(dz, dx);
-      const steps = Math.max(6, Math.round(span / 1.4));
-      const y0 = Math.min(a.y, b.y) - 0.6;
+      /* THE SIGN AGAIN, and this is the second time in this file.
+       *
+       * `dirY` is the WORLD BEARING of the span and is what the lateral rail
+       * offsets below are measured on. It is NOT the rotation that puts a box
+       * along it: `makeRotationY(t)` (and `Batch.box`, which composes the same
+       * Euler) puts local +X at world `(cos t, -sin t)`, so the world bearing
+       * of local +X is `-t`. Passing `dirY` turns every plank by `2*dirY` off
+       * its own span.
+       *
+       * The four minaret loops run at bearings 180/-90/0/90, where `2*dirY` is
+       * a multiple of pi and a box is symmetric under it - so this was correct
+       * by accident for the whole life of the loops and only became visible on
+       * the long spans this drop adds. Measured off the collider matrices, the
+       * skew was 36.0 deg on minaret-perimeter and 53.1 deg on
+       * great-tower-perimeter, and a 2.2 m walkway laid herringbone develops
+       * saw-tooth voids at both rails: sampling plank coverage every 5 cm at
+       * lateral +-1.0 m found a longest hole of 0.90 m and 1.15 m on those two
+       * spans against the authored 0.25 m plank gap on the centreline. Wide
+       * enough to drop a body that drifts to the rail. */
+      const rotY = -dirY;
+      /* Plank count is bounded by the STEP as well as by the span. 1.4 m of
+       * span per plank is right for a level bridge; on the landfall span it
+       * would be 11.6 m of descent over eleven planks, a 1.05 m drop each,
+       * which is over `NPC.GROUND_PROBE_UP` = 0.95 m and so is not a walk at
+       * all. Capping the rise at 0.6 m per plank leaves room for the catenary
+       * on top of it - the sag contributes another 0.15 m at the ends. */
+      const steps = Math.max(6, Math.round(span / 1.4), Math.ceil(Math.abs(b.y - a.y) / 0.6));
+      // Both ends hang 0.6 m under the deck they are tied to, and the walk
+      // between them is a straight lerp with the catenary taken off it.
+      const ay = a.y - 0.6;
+      const by = b.y - 0.6;
 
+      let worstStep = 0;
+      let prevY = a.y;
+      let mid = null;
+      const midStep = Math.round(steps / 2);
       for (let s = 0; s <= steps; s++) {
         const t = s / steps;
         const px = a.x + dx * t;
         const pz = a.z + dz * t;
         // Catenary sag - a taut bridge reads as a girder, a sagging one as rope.
         const sag = Math.sin(t * Math.PI) * Math.min(3.4, span * 0.055);
-        const py = y0 + (b.y - a.y) * t - sag;
-        B.box('wood.plank', 1.15, 0.13, 2.2, px, py, pz, dirY, 0x74583a);
+        const py = ay + (by - ay) * t - sag;
+        worstStep = Math.max(worstStep, Math.abs(py - prevY));
+        prevY = py;
+        // The lowest point of the catenary, published rather than re-derived:
+        // a trial checkpoint on a rope bridge has to sit on a plank that
+        // exists, and `(a.y + b.y)/2 - sag` is arithmetic, not a plank.
+        if (s === midStep) mid = { x: px, y: py, z: pz };
+        B.box('wood.plank', 1.15, 0.13, 2.2, px, py, pz, rotY, 0x74583a);
         this.track(this.physics.addRotatedBox(
-          _v1.set(px, py, pz), _v2.set(0.6, 0.09, 1.1), dirY
+          _v1.set(px, py, pz), _v2.set(0.6, 0.09, 1.1), rotY
         ));
-        // Hand ropes either side, as thin rails.
+        // Hand ropes either side, as thin rails. The OFFSET is a world-space
+        // displacement and so is measured on `dirY`; the rail's own rotation
+        // is `rotY`, for the reason recorded above.
         if (s % 2 === 0) {
           for (const side of [-1, 1]) {
             const ox = Math.cos(dirY + Math.PI / 2) * 1.05 * side;
             const oz = Math.sin(dirY + Math.PI / 2) * 1.05 * side;
-            B.box('wood.beam', 1.3, 0.08, 0.08, px + ox, py + 0.95, pz + oz, dirY, 0x4f3d28);
+            B.box('wood.beam', 1.3, 0.08, 0.08, px + ox, py + 0.95, pz + oz, rotY, 0x4f3d28);
           }
         }
       }
+      worstStep = Math.max(worstStep, Math.abs(b.y - prevY));
+      this.ropeBridges.push({
+        id, span, planks: steps + 1, worstStep, mid,
+        a: { x: a.x, y: a.y, z: a.z }, b: { x: b.x, y: b.y, z: b.z },
+      });
     }
 
     B.flush(this.group, (k) => this._mat(k), 'bridges', { cast: true, recv: false });
@@ -1566,23 +2075,54 @@ export class CitadelWorld extends World {
     const B = new Batch({ ao: 0.44, sky: 0.3, grime: 0.6, span: 1.8 }, TILE_METRES);
     const rnd = this.rnd;
 
-    // A haystack below each viewpoint, offset toward the open side.
+    /* One haystack per viewpoint, on the line that viewpoint is LAUNCHED along
+     * and standing on a surface that exists.
+     *
+     * Both halves of that sentence are repairs. The height came from
+     * `_groundAt`, which is terrain and nothing else, so all five viewpoint
+     * haystacks were recorded at y 16.4 while the inner ward they stand on is
+     * solid from y 14 to y 20: the thatch was invisible, its collider was
+     * inside another solid, and `Parkour._softLandingAt` - which compares the
+     * body's y against the hay's recorded y - could never credit any of them.
+     * Three of eleven caught anything. `_deckAt` asks the collision world
+     * instead, and its docstring says why `_groundAt` was not simply replaced.
+     *
+     * The bearing came from `atan2(vp.z, vp.x)`, the direction of the viewpoint
+     * from the middle of the world, which has nothing to do with which way the
+     * player is facing when they jump. Each viewpoint now publishes its own
+     * `launch` point and `bearing`; see `_buildCitadel` for how each was
+     * derived and what it was measured against. */
     for (const vp of this.viewpoints) {
-      const a = Math.atan2(vp.z, vp.x);
-      const hx = vp.x + Math.cos(a) * 7.5;
-      const hz = vp.z + Math.sin(a) * 7.5;
-      const hy = this._groundAt(hx, hz);
-      B.box('thatch.roof', 5.2, 2.4, 5.2, hx, hy + 1.2, hz, rnd() * 0.4, 0xd8bd6e);
-      this.track(this.physics.addBox(hx, hy + 1.0, hz, 2.6, 1.0, 2.6));
-      this.haystacks.push({ x: hx, y: hy + 2.4, z: hz, r: 3.2 });
+      const spec = vp.hay;
+      /* `launch ?? vp`: a viewpoint that publishes no launch point still gets
+       * its haystack, laid on its own bearing from its own centre. The four
+       * minarets are that case and their launch point WAS their centre, so the
+       * hay lands on the identical coordinate it always did - see the comment
+       * over the minaret `viewpoints.push` for why the field went away. */
+      const origin = vp.launch ?? vp;
+      const hx = origin.x + Math.cos(vp.bearing) * spec.run;
+      const hz = origin.z + Math.sin(vp.bearing) * spec.run;
+      const hy = this._deckAt(hx, hz);
+      const bw = spec.r * 1.625;                 // the thatch pile around the catch radius
+      B.box('thatch.roof', bw, 2.4, bw, hx, hy + 1.2, hz, rnd() * 0.4, 0xd8bd6e);
+      this.track(this.physics.addBox(hx, hy + 1.0, hz, bw * 0.5, 1.0, bw * 0.5));
+      const hay = { x: hx, y: hy + 2.4, z: hz, r: spec.r };
+      this.haystacks.push(hay);
+      vp.hay = hay;                              // resolved, for anything downstream
     }
 
-    // A few more along the rampart, under the traversal line.
+    /* A few more in the pomerium - the open lane the souk leaves between its
+     * outer ring and the curtain wall - under the rampart traversal line.
+     *
+     * `RAMPART_HAY_R` sits in that lane by construction: the souk's outer roof
+     * face is at RING_R[6] + (dLip)/2 and the wall's inner face at 118 - 1.3,
+     * and this radius is the middle of what is left. It was 104 m, which the
+     * re-authored souk now builds on top of. */
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * TAU + 0.7;
-      const hx = Math.cos(a) * 104;
-      const hz = Math.sin(a) * 104;
-      const hy = this._groundAt(hx, hz);
+      const hx = Math.cos(a) * RAMPART_HAY_R;
+      const hz = Math.sin(a) * RAMPART_HAY_R;
+      const hy = this._deckAt(hx, hz);
       B.box('thatch.roof', 4.6, 2.2, 4.6, hx, hy + 1.1, hz, rnd() * 0.5, 0xd2b768);
       this.track(this.physics.addBox(hx, hy + 0.95, hz, 2.3, 0.95, 2.3));
       this.haystacks.push({ x: hx, y: hy + 2.2, z: hz, r: 2.9 });
@@ -1965,6 +2505,91 @@ export class CitadelWorld extends World {
     return terrainH(Math.hypot(x, z));
   }
 
+  /**
+   * The surface a falling body actually lands on: terrain PLUS everything
+   * built on top of it.
+   *
+   * ── Why this is a second method and not a better `_groundAt` ─────────────
+   *
+   * `_groundAt` is `terrainH(hypot(x, z))` and it has to stay that way. Nine
+   * call sites read it, and two of them - `_openSpot` and `_nudgeClear` - use
+   * it as the *terrain datum* a physics cast is compared against:
+   *
+   *     const g = this._groundAt(x, z);
+   *     const hit = this.physics.groundHeight(x, z, g + 12, 20);
+   *     return hit !== null && hit > g + 0.6;      // is something standing here
+   *
+   * Make `_groundAt` a physics query and `g === hit` on every clear column, so
+   * `hit > g + 0.6` can never fire and both clearance probes silently become
+   * no-ops. That reintroduces the embedded-in-a-wall defect `_nudgeClear`'s own
+   * docstring exists to record. `_nudgeClear` is on the path of every NPC
+   * spawn, the player spawn and every portal, so the failure would be the whole
+   * cast standing in masonry with a roof over their heads - which is exactly
+   * what the audit found the last two times this world's PRNG stream moved.
+   *
+   * So: terrain-only stays terrain-only, and anything that wants the REAL deck
+   * asks for it by name. `physics.groundHeight` already exists and is already
+   * called during this very build, so there is no ordering problem - the only
+   * requirement is that the thing being stood on has been built first, which
+   * for `_buildDressing` (last but for the spawns) is everything.
+   *
+   * @param {number} x
+   * @param {number} z
+   * @param {number} [from] height the downward cast starts at
+   * @param {number} [dist] how far it may travel
+   * @returns {number} the top of the highest solid over this column, or the
+   *   terrain height where the cast finds nothing at all.
+   */
+  _deckAt(x, z, from = 400, dist = 900) {
+    const g = this._groundAt(x, z);
+    const hit = this.physics.groundHeight(x, z, from, dist);
+    return hit === null || hit < g ? g : hit;
+  }
+
+  /**
+   * A standing spot on a souk roof, moved off whatever is standing in the
+   * middle of it.
+   *
+   * 30% of souk blocks carry a dome, and a dome is a collider standing proud
+   * of the deck at its own centre - `dr*0.72 x dr*0.32 x dr*0.72` about
+   * `(r.x, r.z)`, where `dr = min(w, d) * 0.42`. Anything that takes a roof's
+   * published centre as a place to PUT something therefore puts it inside a
+   * solid for three roofs in ten. Measured on the built world, that was 8 of
+   * the 30 citadel relic sites sealed inside a dome, invisible from the deck
+   * and 2.49-2.62 m from the nearest place a body can stand against a 2.00 m
+   * pickup radius - not collectable at all without mantling the dome.
+   *
+   * Asked of the collision world rather than of the dome probability: try the
+   * centre, then four offsets along the building's own axes, and take the
+   * first that answers with the roof's own height. Both axes matter. The
+   * tangential half-width is `w/2 - 1.6` against a dome half-extent of
+   * `min(w,d)*0.42*0.72 = 2.12 m`, so a ring whose solved `w` falls under
+   * 7.44 m fails BOTH tangential probes - and the radial half-extent is
+   * 3.85 m, so a radial probe would still clear. An earlier version of this
+   * block wrote four tuples but left `oz` at zero in every one of them, which
+   * made both `sin(rot)*oz` and `cos(rot)*oz` dead and left only the two
+   * tangential candidates its own comment did not describe.
+   *
+   * `_deckAt` is the same probe the haystacks use.
+   *
+   * @param {{x:number,y:number,z:number,w:number,d:number}|null} r
+   * @returns {{x:number,y:number,z:number}|null}
+   */
+  _deckSpot(r) {
+    if (!r) return null;
+    const rot = Math.PI * 0.5 - Math.atan2(r.z, r.x);
+    const ux = Math.cos(rot);
+    const uz = -Math.sin(rot);              // the building's local +X
+    const out = r.w * 0.5 - 1.6;            // tangential
+    const rOut = r.d * 0.5 - 1.6;           // radial
+    for (const [ox, oz] of [[0, 0], [out, 0], [-out, 0], [0, rOut], [0, -rOut]]) {
+      const x = r.x + ux * ox + Math.sin(rot) * oz;
+      const z = r.z + uz * ox + Math.cos(rot) * oz;
+      if (Math.abs(this._deckAt(x, z) - r.y) < 0.06) return { x, y: r.y, z };
+    }
+    return { x: r.x, y: r.y, z: r.z };
+  }
+
   /* ------------------------------------------------------------------ */
   /* Spawns, portals, minimap                                            */
   /* ------------------------------------------------------------------ */
@@ -2037,17 +2662,72 @@ export class CitadelWorld extends World {
       accent: 0x4de3ff,
     });
 
-    const F = (name, persona, x, z) => ({
+    /**
+     * A named civilian. `extra` is anything `NPCManager.spawnForWorld` reads
+     * off a spawn descriptor - `role`, `vendorCategories`, `vendorTitle`,
+     * `signLines`, `isQuestManager` - so a counter in the citadel is authored
+     * here rather than being a second kind of thing somewhere else. Copied in
+     * shape from `StationWorld._fillSpawns`, which is where the convention is.
+     *
+     * These four carried a name and a persona and nothing else, and the cost
+     * was not cosmetic. With no `role`, the only route into a citadel shop was
+     * `Marketplace._isVendor`'s VENDOR_WORDS regex, which matches Hafsa's
+     * "cloth stall" and misses Rafiq's archive and Bashir's stable entirely -
+     * two of the three counters on the mesa could not be opened at all, and
+     * `WORLD_MARKETS.citadel`'s price table had nowhere to be quoted.
+     */
+    const F = (name, persona, x, z, extra) => ({
       position: new THREE.Vector3(x, MESA_Y + 0.2, z),
       type: 'friendly',
       name,
       persona,
+      ...extra,
     });
+    /* Between them the three counters stock all six marketplace categories.
+     * That is deliberate rather than tidy: there is exactly one portal off this
+     * mesa, so a category nobody stocks is a category the player cannot buy in
+     * this world. Split by trade, on the medieval `TRADE` pattern - an archive
+     * keeps physic and ink, a dye yard keeps cloth and the tools of the dyeing,
+     * and the horse lines under the wall keep the garrison's tack and its
+     * spare arms on the same racks. */
     this.npcSpawns.push(
-      F('Rafiq the Keeper', 'Keeper of the citadel archive; speaks in riddles about the old order.', 6, 92),
-      F('Hafsa the Dyer', 'Runs the cloth stall by the gate; knows every roof in the souk.', -12, 84),
-      F('Bashir the Ostler', 'Tends the horses below the wall; gruff, fond of his animals.', 20, 96),
-      F('Yusra the Falconer', 'Flies the eagles from the great tower; watches everything.', -4, 40),
+      F('Rafiq the Keeper', 'Keeper of the citadel archive; speaks in riddles about the old order.', 6, 92, {
+        role: 'vendor',
+        vendorCategories: ['health', 'spells'],
+        vendorTitle: 'Archive & Physic',
+        signLines: ['ARCHIVE & PHYSIC', 'SUNSPIRE CITADEL'],
+      }),
+      F('Hafsa the Dyer', 'Runs the cloth stall by the gate; knows every roof in the souk.', -12, 84, {
+        role: 'vendor',
+        vendorCategories: ['cosmetic', 'tools'],
+        vendorTitle: 'Cloth & Colour',
+        signLines: ['CLOTH & COLOUR', 'SUNSPIRE CITADEL'],
+      }),
+      F('Bashir the Ostler', 'Tends the horses below the wall; gruff, fond of his animals.', 20, 96, {
+        role: 'vendor',
+        vendorCategories: ['mounts', 'weapons'],
+        vendorTitle: 'Harness & Arms',
+        signLines: ['HARNESS & ARMS', 'SUNSPIRE CITADEL'],
+      }),
+      /* Yusra is deliberately NOT a counter and NOT a quest desk, and both
+       * halves of that were measured rather than chosen.
+       *
+       * She is a `talk` target in three shipped quests (Q33, Q36, Q40), and
+       * `HUD.js` emits `interact` rather than `talk` for a quest manager - so
+       * flagging her `isQuestManager` breaks all three, which
+       * scripts/tests/quest-content.test.mjs says out loud. The world already
+       * has a desk: `NPCManager._spawnQuestManagers` plants Aldric Storne at
+       * (8, 14.3, 88), four metres from Rafiq.
+       *
+       * The role is `wanderer` - which is what `spawnForWorld` was already
+       * giving all four of these characters by default - and it is written
+       * down rather than left implicit because it is now load-bearing: the
+       * other three have been given posts, so Yusra is the only NPC in the
+       * citadel carrying the role at all, and Q31 step 2 is `talk:"wanderer"`.
+       */
+      F('Yusra the Falconer', 'Flies the eagles from the great tower; watches everything.', -4, 40, {
+        role: 'wanderer',
+      }),
     );
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * TAU;
@@ -2080,6 +2760,150 @@ export class CitadelWorld extends World {
     for (const t of this._towers) {
       this.minimapShapes.push({ kind: 'circle', x: t.x, z: t.z, r: 3.2, fill: 0xbfae8a });
     }
+
+    this._publishVenues();
+  }
+
+  /**
+   * The souk roof on `ring` whose bearing is closest to `bearing`.
+   *
+   * Checkpoints are taken from the built world rather than recomputed from
+   * `SOUK_RINGS`, so a route point is always the exact centre of a deck that
+   * exists - including the +/-0.12 m of height noise. A trial whose checkpoint
+   * floats 0.12 m inside a roof is a trial the swept validator never fires.
+   *
+   * @param {number} ring
+   * @param {number} bearing
+   * @returns {{x:number,y:number,z:number,w:number,d:number,ring:number}|null}
+   */
+  _roofNear(ring, bearing) {
+    let best = null;
+    let bestD = Infinity;
+    for (const r of this._roofs) {
+      if (r.ring !== ring) continue;
+      const d = Math.abs(wrapPi(Math.atan2(r.z, r.x) - bearing));
+      if (d < bestD) { bestD = d; best = r; }
+    }
+    return best;
+  }
+
+  /**
+   * Rooftop trial venues, published in the shape `MinigameManager._readVenue`
+   * reads (`:480-512`).
+   *
+   * ── What is published and what is deliberately NOT ────────────────────────
+   *
+   * `kind: 'rooftop'` has no factory registered yet, and `MinigameManager.arm`
+   * treats that as "a published slot, not an error" - the venue is inert until
+   * the game module lands, which is exactly how the tennis court and the ski
+   * slope shipped. So these three descriptors can go in now and light up when
+   * the trial module registers `rooftop`.
+   *
+   * `config.checkpoints` are read out of the ASSEMBLED world by `_roofNear`,
+   * not recomputed from the ring table, because the deck heights carry a small
+   * per-building noise term and a checkpoint that misses its deck by 12 cm is
+   * a checkpoint the swept validator never crosses.
+   *
+   * `config.ringRadius` is 2.6 m and it is here because the only in-world
+   * waypoint marker that exists, `RaceRings`, hard-codes `DRAGON_RACE
+   * .ringRadius` = 5.2 m. A 5.2 m torus is wider than most of these roofs. The
+   * marker has to take the radius from the venue.
+   *
+   * There are NO bronze/silver/gold times. Those have to come from measured
+   * route times and nothing in this file has run a route; `config.routeLength`
+   * is the summed 3D length of the checkpoint chain, which IS measured, and is
+   * the honest input to deriving them. Publishing a guessed par time would be
+   * the fourth number in this project to be computed instead of driven.
+   */
+  _publishVenues() {
+    this.minigameVenues.length = 0;
+    // A checkpoint at a roof's centre is a checkpoint inside a dome for three
+    // roofs in ten, and a ring the player cannot pass through is not a
+    // checkpoint. `_deckSpot` is the shared answer; `_roofs[].anchor` carries
+    // the same answer to everything else that puts something on a roof.
+    const P = (r) => this._deckSpot(r);
+    const outer = SOUK_RINGS.length - 1;
+
+    /* The dash stays on the two outer rings, where every tangential gap is
+     * 2.83-3.68 m and a sprint jump clears 4.25: it is the ring that teaches.
+     * The ascent crosses every ring inward, which by construction is the whole
+     * gradient - sprint, sprint, sprint, leap, leap, leap-and-mantle. */
+    const dash = [];
+    for (let k = 0; k < 9; k++) {
+      const b = GATE_BEARING - 0.5 - (k / 8) * (TAU - 1.4);
+      dash.push(P(this._roofNear(k % 2 ? outer - 1 : outer, b)));
+    }
+    const ascent = [];
+    for (let ring = outer; ring >= 0; ring--) {
+      ascent.push(P(this._roofNear(ring, GATE_BEARING + 0.85 + (outer - ring) * 0.18)));
+    }
+    const skyline = [];
+    const great = this._towers.find((t) => t.great);
+    const span = this.ropeBridges.find((b) => b.id === 'great-tower-perimeter');
+    const land = this.ropeBridges.find((b) => b.id === 'great-tower-perimeter-landfall');
+    if (great && span && land) {
+      skyline.push({ x: great.x, y: great.y, z: great.z });
+      skyline.push(span.mid);                      // a real plank, not a midpoint
+      skyline.push({ x: span.b.x, y: span.b.y, z: span.b.z });
+      skyline.push({ x: land.b.x, y: land.b.y, z: land.b.z });
+    }
+
+    const clean = (pts) => pts.filter(Boolean);
+    const length = (pts) => {
+      let sum = 0;
+      for (let i = 1; i < pts.length; i++) {
+        sum += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y, pts[i].z - pts[i - 1].z);
+      }
+      return sum;
+    };
+    const venue = (id, kind, label, pts, reward, note, rival) => {
+      const checkpoints = clean(pts);
+      if (checkpoints.length < 3) return;
+      /* The disc has to hold the WHOLE ROUTE, not the start line.
+       *
+       * `MinigameManager.fixedUpdate` calls `abort('left')` LEAVE_GRACE_S = 9 s
+       * after the player leaves this disc. A start-line-sized disc therefore
+       * abandons every contest that lasts longer than nine seconds, which is
+       * all of them: measured on this world, the dash reaches 198.4 m from
+       * checkpoint 0, the ascent 96.4 m, and the skyline swings 47.1 m of Dy.
+       * Gold on the dash is 91.8 s, so no trial in this world could ever be
+       * finished. `venueBounds` is exported by `RooftopTrial` for exactly this
+       * and returns the numbers below; `SportsWorld` records the same
+       * requirement twice in comments, over the ski slope and over the track.
+       *
+       * The START LINE does not move with it: `createRooftopTrial` refuses to
+       * build unless the player is within START_RADIUS = 12 m of checkpoint 0,
+       * which is the same split the ski run uses - a wide venue with a
+       * module-enforced gate on where the run begins. */
+      const b = venueBounds(checkpoints);
+      this.minigameVenues.push({
+        id,
+        kind,
+        label,
+        centre: new THREE.Vector3(b.centre.x, b.centre.y, b.centre.z),
+        radius: b.radius,
+        yTolerance: b.yTolerance,
+        reward,
+        rival,
+        // A world with parkour switched off cannot host a parkour contest.
+        requires: 'parkour',
+        config: { note, checkpoints, ringRadius: 2.6, routeLength: length(checkpoints) },
+      });
+    };
+
+    /* Each trial names its rival, the way `SportsWorld` names all four of its
+     * own: `RooftopTrial` falls back to "the pacesetter" when a venue does not,
+     * and three ghosts all called the pacesetter is a rival nobody remembers
+     * losing to. Souk runners, so they belong to the roofs they run on. */
+    venue('citadel_souk_dash', 'rooftop', 'Souk Rooftop Dash', dash, 10,
+      'Rings 6 and 5 only: every crossing on this route is inside a sprint jump.',
+      { name: 'Nadira the Swift' });
+    venue('citadel_ascent', 'rooftop', 'The Long Ascent', ascent, 14,
+      'One roof per ring, gate to ward. Crosses the whole authored gradient.',
+      { name: 'Idris Roof-Runner' });
+    venue('citadel_skyline', 'rooftop', 'The Skyline', skyline, 18,
+      'Great tower, the long span, the wall, and back down into the souk.',
+      { name: 'Zeynab of the Spans' });
   }
 
   /* ------------------------------------------------------------------ */
@@ -2103,6 +2927,8 @@ export class CitadelWorld extends World {
     this._towers.length = 0;
     this.haystacks.length = 0;
     this.viewpoints.length = 0;
+    this.ropeBridges.length = 0;
+    this.minigameVenues.length = 0;
     this._matCache?.clear();
     super.dispose();
   }

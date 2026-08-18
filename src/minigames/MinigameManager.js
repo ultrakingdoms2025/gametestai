@@ -131,12 +131,35 @@ export class MinigameManager {
      */
     this._interiorPrompt = null;
     this._nearPortal = null;
+    /* The leap of faith is the third claim on E, and it is the one that needed
+     * MEASURING rather than reasoning about.
+     *
+     * `Viewpoints` raises its prompt within LEAP_R = 3.0 m of a published
+     * launch point. The citadel's great tower launch beam tip is
+     * (0, 68.15, -9.8) and the `citadel_skyline` venue - whose disc has to hold
+     * its whole 101.6 m route or `LEAVE_GRACE_S` abandons every run - is
+     * centred (-22.73, 44.07, -63.45) with radius 60.81 and yTolerance 33.53.
+     * The beam tip is 58.27 m out and 24.08 m up: inside, on both axes. So
+     * `_pollNear` resolves the Skyline while the player is standing on the
+     * diving board, `_pollPrompt` says "Start the Skyline", and the HUD's venue
+     * branch - which sits above the viewpoint branch - buries the leap prompt
+     * at the one place in the world it was built for. Minaret 3's platform is
+     * inside the same disc.
+     *
+     * Standing down here rather than only in the HUD keeps the KEY and the
+     * WORDS agreeing: a HUD-only fix would show "Leap of faith" on the beam and
+     * still start a race on E. Same rule as the interior prompt above, and it
+     * costs the player nothing - the Skyline's own start gate is START_RADIUS
+     * 12 m of the crown centre and the leap prompt reaches 3 m of a point 8.2 m
+     * away from it, so both are pressable from their own spots. */
+    this._viewpointPrompt = null;
 
     /** @type {Array<() => void>} */
     this._offs = [];
     if (bus) {
       this._offs.push(bus.on('interior:prompt', (e) => { this._interiorPrompt = e?.text ?? null; }));
       this._offs.push(bus.on('portal:near', (e) => { this._nearPortal = e?.portal ?? null; }));
+      this._offs.push(bus.on('viewpoint:prompt', (e) => { this._viewpointPrompt = e?.text ?? null; }));
       // A contest is bound to the world it started in. Leaving mid-contest
       // abandons it rather than leaving a state machine running over a pool
       // that is no longer in the scene. Same reasoning as RaceManager's.
@@ -547,7 +570,7 @@ export class MinigameManager {
 
   /** True when another system has a better claim on E this frame. */
   get _keyTaken() {
-    return !!this._interiorPrompt || !!this._nearPortal;
+    return !!this._interiorPrompt || !!this._nearPortal || !!this._viewpointPrompt;
   }
 
   _pollPrompt() {

@@ -4454,3 +4454,86 @@ body {
   background: #8fd67a;
   border-radius: 2px;
 }
+
+/* ==========================================================================
+   DISCOVERIES  (relics / viewpoints — in the vitals column)
+   ==========================================================================
+   Thirty relics and five named viewpoints shipped with no counter anywhere.
+   Placed in the same flex column as the objective tracker for the same reason
+   given there: every corner is already spoken for, and a column that lays its
+   children out by flow cannot be made to overlap a neighbour by a panel
+   appearing. Hidden outright in the worlds that publish neither. */
+.collect {
+  padding: 8px 15px 9px;
+  clip-path: var(--clip-br);
+  opacity: 0.88;
+  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.collect[hidden],
+.col-row[hidden] {
+  display: none;
+}
+
+.collect::before {
+  /* Left accent rule, matching health, stamina and the objective — teal, so a
+     glance separates "what I have found" from "what I was asked to do". */
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(138, 255, 208, 0.5);
+}
+
+.col-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 3px;
+}
+
+.col-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--f-ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--txt-dim);
+  white-space: nowrap;
+}
+
+.col-count {
+  flex: 0 0 auto;
+  font-family: var(--f-disp);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #b6ffe4;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Same treatment the objective tracker gets: a full-screen panel is up and the
+   corner belongs to it. */
+.hud.overlaid .collect,
+.hud.chatting .collect,
+.hud.dead .collect {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+/* ==========================================================================
+   KEYLESS PROMPT  (the leap of faith)
+   ==========================================================================
+   Every other prompt answers to E. Standing on the great tower's launch beam
+   there is nothing to press — the beam IS the interaction — so the key chip is
+   stood down rather than lying about a binding that does not exist. Padding is
+   evened up because the chip was what made the left inset smaller. */
+.prompt.keyless .prompt-key {
+  display: none;
+}
+
+.prompt.keyless {
+  padding-left: 18px;
+}

@@ -898,9 +898,10 @@ export class MountManager {
     c.strafe = s ? s.right : 0;
     c.yaw = this.player.yaw;
     c.pitch = this.player.pitch ?? 0;
-    // Ctrl-as-descend rides on the crouch axis: the shared Input drops raw
-    // ControlLeft keydowns (they arrive with ctrlKey set, which it treats as a
-    // browser shortcut), and crouch already covers both Ctrl and C.
+    // Descend rides on the crouch axis. Crouch is C only - Ctrl was removed as
+    // a second binding because the game cannot reliably receive it (a
+    // ControlLeft keydown arrives with ctrlKey set, and Ctrl+W closes the tab
+    // outside fullscreen). See Input._syncAxes.
     c.up = (s && s.jump ? 1 : 0) - (s && s.crouch ? 1 : 0);
     c.boost = !!(s && s.sprint);
     /* The rider's consumable speed buff, carried onto the mount.

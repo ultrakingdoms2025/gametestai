@@ -145,16 +145,63 @@ export function buildDragonRingCheckpoints(path) {
   return rings;
 }
 
+/**
+ * Everything about a ring that is a property of the CONTEST rather than of the
+ * dragon race, with the dragon race's own values as the defaults.
+ *
+ * -- Why this is a parameter block and not a constant --------------------------
+ *
+ * `RaceRings` is the only in-world waypoint marker this project has, and it
+ * looked generic while being nothing of the kind: the torus radius WAS
+ * `DRAGON_RACE.ringRadius` = 5.2 m, the root was named `dragon-race-rings`,
+ * the groups `dragon-ring-N`, and the number sprite hung off the same 5.2. A
+ * 5.2 m unlit torus is not a rooftop checkpoint - a souk roof measures 8.5 m
+ * across its lip on the outer ring, so the marker would stand wider than the
+ * building it marks and the player would pass BESIDE it rather than through
+ * it.
+ *
+ * Every default below is the dragon race's shipped value to the digit, so
+ * `new RaceRings({ scene })` builds exactly what it built before.
+ *
+ * @typedef {object} RingStyle
+ * @property {number} [radius] torus radius, metres
+ * @property {number} [tube] torus tube radius, metres
+ * @property {number} [labelGap] metres between the ring's top and the number
+ * @property {number} [labelScale] number sprite size, metres
+ * @property {number} [color] an unpassed ring
+ * @property {number} [nextColor] the ring the cursor is on
+ * @property {string} [name] the root object's name
+ * @property {string} [groupPrefix] each ring group is named `${groupPrefix}-${n}`
+ */
+
 export class RaceRings {
-  constructor({ scene }) {
+  /**
+   * @param {{scene?:THREE.Object3D} & RingStyle} opts
+   */
+  constructor({
+    scene,
+    radius = DRAGON_RACE.ringRadius,
+    tube = 0.18,
+    labelGap = 1.25,
+    labelScale = 3.6,
+    color = 0xffd166,
+    nextColor = 0x52e9ff,
+    name = 'dragon-race-rings',
+    groupPrefix = 'dragon-ring',
+  } = {}) {
     this.scene = scene;
+    /** Torus radius in metres. Read by callers that size a pass test off it. */
+    this.radius = radius;
+    this.labelGap = labelGap;
+    this.labelScale = labelScale;
+    this.groupPrefix = groupPrefix;
     this.root = new THREE.Group();
-    this.root.name = 'dragon-race-rings';
+    this.root.name = name;
     this.scene?.add?.(this.root);
     this.rings = [];
-    this._torusGeo = new THREE.TorusGeometry(DRAGON_RACE.ringRadius, 0.18, 10, 48);
-    this._mat = new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9, toneMapped: false });
-    this._nextMat = new THREE.MeshBasicMaterial({ color: 0x52e9ff, transparent: true, opacity: 1, toneMapped: false });
+    this._torusGeo = new THREE.TorusGeometry(radius, tube, 10, 48);
+    this._mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, toneMapped: false });
+    this._nextMat = new THREE.MeshBasicMaterial({ color: nextColor, transparent: true, opacity: 1, toneMapped: false });
     this._passed = new Set();
   }
 
@@ -167,7 +214,7 @@ export class RaceRings {
     for (let i = 0; i < cps.length; i++) {
       const cp = cps[i];
       const group = new THREE.Group();
-      group.name = `dragon-ring-${i + 1}`;
+      group.name = `${this.groupPrefix}-${i + 1}`;
       group.position.set(cp.x, cp.y, cp.z);
       _dir.set(cp.tx ?? 0, 0, cp.tz ?? -1).normalize();
       if (_dir.lengthSq() < 0.5) _dir.set(0, 0, -1);
@@ -181,8 +228,8 @@ export class RaceRings {
       const tex = makeNumberTexture(cp.number ?? i + 1);
       const labelMat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false });
       const label = new THREE.Sprite(labelMat);
-      label.position.set(0, DRAGON_RACE.ringRadius + 1.25, 0.1);
-      label.scale.set(3.6, 3.6, 1);
+      label.position.set(0, this.radius + this.labelGap, 0.1);
+      label.scale.set(this.labelScale, this.labelScale, 1);
       group.add(label);
 
       this.root.add(group);

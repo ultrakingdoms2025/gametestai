@@ -84,7 +84,10 @@ export class SaveGame {
    *           player: any, worldManager: any, economy: any,
    *           loadout?: any, mounts?: any, input?: any }} ctx
    */
-  constructor({ bus, player, worldManager, economy, loadout, mounts, input, inventory, avatar, cosmetics }) {
+  constructor({
+    bus, player, worldManager, economy, loadout, mounts, input, inventory, avatar, cosmetics,
+    relics, viewpoints, trials,
+  }) {
     this.bus = bus;
     this.player = player;
     this.worldManager = worldManager;
@@ -96,6 +99,30 @@ export class SaveGame {
     this.inventory = inventory ?? null;
     /** @type {any} Optional wardrobe of purchased skins. */
     this.cosmetics = cosmetics ?? null;
+    /**
+     * The world-local progress layer, all three optional.
+     *
+     * These carried NOTHING before. Thirty relics worth 3,600 CR, five named
+     * viewpoints and every contest time were rebuilt from scratch on every
+     * reload, so the only finite content in the game was in fact infinite and
+     * the only permanent content was in fact temporary.
+     *
+     * Same probe-first arrangement `loadout` and `mounts` already use: if the
+     * system exposes `serialize`/`deserialize` this file uses them and knows
+     * nothing else about it.
+     * @type {any}
+     */
+    this.relics = relics ?? null;
+    /** @type {any} */
+    this.viewpoints = viewpoints ?? null;
+    /**
+     * Best contest times. Optional, and when it is absent this file keeps the
+     * ledger itself off `minigame:finished` - see `_trialLedger`.
+     * @type {any}
+     */
+    this.trials = trials ?? null;
+    /** @type {Map<string, {time:number, label:string, worldId:string|null}>} */
+    this._trials = new Map();
     /**
      * The player's body, for the character configuration. Optional and resolved
      * lazily by `_avatar()`: `main.js` builds the avatar before this system, but
@@ -151,6 +178,7 @@ export class SaveGame {
     if (bus) {
       this._offs.push(bus.on('game:started', () => { this._started = true; }));
       this._offs.push(bus.on('world:changed', () => this._autoSave('world-change')));
+      this._offs.push(bus.on('minigame:finished', (r) => this._recordTrial(r)));
     }
 
     // On by default: the contract requires a 30 s autosave, and a feature that
@@ -279,6 +307,8 @@ export class SaveGame {
       }
 
       this._restoreCosmetics(data.cosmetics);
+      // Last, and after the world is up: see `_restoreProgress`.
+      this._restoreProgress(data);
     } catch (err) {
       // Should be unreachable - every step guards itself - but a load must not
       // be the thing that kills the session.
@@ -389,7 +419,131 @@ export class SaveGame {
       // Who the player *is*: sex, build, height, skin, hair, garment colours.
       // A flat JSON-safe object by contract - see `PlayerAvatar.characterConfig`.
       character: safe(() => this._avatar()?.characterConfig) ?? null,
+      /* The world-local progress layer. Every one of these was missing, and a
+       * finite collectible that resets is not finite. */
+      relics: safe(() => this.relics?.serialize?.()) ?? null,
+      viewpoints: safe(() => this.viewpoints?.serialize?.()) ?? null,
+      trials: this._trialLedger(),
     };
+  }
+
+  /* ================================================================ */
+  /* Trial times                                                       */
+  /* ================================================================ */
+
+  /**
+   * Best contest times, keyed `worldId/venueId`.
+   *
+   * Kept here rather than in `MinigameManager` for one reason: the manager has
+   * no ledger and is owned elsewhere, and a best time that lives only in a
+   * running manager is lost on the world change that follows the race. The
+   * moment a system with `serialize()` is passed in as `trials`, that wins and
+   * this ledger is bypassed entirely - the same probe-first arrangement
+   * `_snapshotWeapons` and `_snapshotMounts` already use.
+   *
+   * @returns {{best:Object<string,{time:number,label:string,worldId:string|null}>}|null}
+   */
+  _trialLedger() {
+    const custom = safe(() => this.trials?.serialize?.());
+    if (custom && typeof custom === 'object') return custom;
+    if (!this._trials.size) return null;
+    const best = {};
+    for (const [key, row] of this._trials) best[key] = { ...row };
+    return { best };
+  }
+
+  /**
+   * Note a finished contest, keeping only the quicker of the two.
+   *
+   * Only a WIN records. A losing run is a run the game already told the player
+   * was not good enough, and a "best time" that could be set by losing is not a
+   * record of anything. Guarded end to end because this is a bus handler: an
+   * exception here would be swallowed by `EventBus.emit`, but the save it was
+   * about to feed would silently lose the row.
+   *
+   * @param {{venueId?:string, worldId?:string, label?:string, time?:number, won?:boolean}} r
+   */
+  _recordTrial(r) {
+    try {
+      if (!r?.won) return;
+      const venueId = typeof r.venueId === 'string' ? r.venueId : null;
+      if (!venueId) return;
+      const time = Number(r.time);
+      if (!Number.isFinite(time) || time <= 0) return;
+      const worldId = typeof r.worldId === 'string' ? r.worldId : null;
+      const key = `${worldId ?? '?'}/${venueId}`;
+      const prev = this._trials.get(key);
+      if (prev && prev.time <= time) return;
+      this._trials.set(key, {
+        time,
+        label: typeof r.label === 'string' ? r.label : venueId,
+        worldId,
+      });
+      this.bus?.emit('trial:best', { key, venueId, worldId, time, previous: prev?.time ?? null });
+    } catch (err) {
+      console.warn('[SaveGame] trial time not recorded:', err?.message ?? err);
+    }
+  }
+
+  /**
+   * The best recorded time for one venue, or null.
+   * @param {string} venueId
+   * @param {string|null} [worldId]
+   */
+  bestTrialTime(venueId, worldId = null) {
+    const row = this._trials.get(`${worldId ?? '?'}/${venueId}`);
+    return row ? row.time : null;
+  }
+
+  /**
+   * Put a stored ledger back. Non-fatal in exactly the way the cosmetics
+   * restore is: a lost best time must never stop a load.
+   * @param {any} snap
+   */
+  _restoreTrials(snap) {
+    if (!snap || typeof snap !== 'object' || Array.isArray(snap)) return;
+    try {
+      if (this.trials?.deserialize?.(snap)) return;
+      const best = snap.best;
+      if (!best || typeof best !== 'object' || Array.isArray(best)) return;
+      for (const key of Object.keys(best)) {
+        const row = best[key];
+        const time = Number(row?.time);
+        if (!Number.isFinite(time) || time <= 0) continue;
+        this._trials.set(key, {
+          time,
+          label: typeof row.label === 'string' ? row.label : key,
+          worldId: typeof row.worldId === 'string' ? row.worldId : null,
+        });
+      }
+    } catch (err) {
+      console.warn('[SaveGame] trial restore skipped:', err?.message ?? err);
+    }
+  }
+
+  /**
+   * Relic tallies and synchronised viewpoints.
+   *
+   * Deliberately AFTER `_restoreWorld` in `load()` and deliberately non-fatal.
+   * After, because both systems rebuild their per-world state from
+   * `world:changed` and a restore applied before the world arrived would be
+   * wiped by it. Non-fatal, because progress in a collectible is not worth
+   * refusing to load a save over.
+   *
+   * @param {any} data the whole payload
+   */
+  _restoreProgress(data) {
+    try {
+      if (data.relics) this.relics?.deserialize?.(data.relics);
+    } catch (err) {
+      console.warn('[SaveGame] relic restore skipped:', err?.message ?? err);
+    }
+    try {
+      if (data.viewpoints) this.viewpoints?.deserialize?.(data.viewpoints);
+    } catch (err) {
+      console.warn('[SaveGame] viewpoint restore skipped:', err?.message ?? err);
+    }
+    this._restoreTrials(data.trials);
   }
 
   /**
@@ -889,6 +1043,16 @@ export class SaveGame {
     // a wrong type (not absence) is a structural failure.
     if (data.cosmetics !== null && data.cosmetics !== undefined && typeof data.cosmetics !== 'object') {
       return false;
+    }
+    /* The progress layer is newer than all of the above, so every save written
+     * before it has none of these keys and must stay valid. Same rule as every
+     * other late arrival: absence is fine, a wrong TYPE is not. An array counts
+     * as a wrong type here - all three are keyed records, and `Object.keys` on
+     * an array would happily walk its indices. */
+    for (const key of ['relics', 'viewpoints', 'trials']) {
+      const v = data[key];
+      if (v === null || v === undefined) continue;
+      if (typeof v !== 'object' || Array.isArray(v)) return false;
     }
     return true;
   }

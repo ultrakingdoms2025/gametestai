@@ -16,7 +16,7 @@ import path from 'node:path';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-/** @type {Array<{file:string, exports:string[], methods?:string[]}>} */
+/** @type {Array<{file:string, exports:string[], methods?:string[], fields?:string[]}>} */
 const CONTRACT = [
   { file: 'src/gfx/Textures.js', exports: ['makeNoiseTexture', 'makeNormalFromHeight'] },
   {
@@ -192,6 +192,71 @@ const CONTRACT = [
       'NAMED_WOODS', 'woodAt', 'DEADFALL_PER_WOOD'],
   },
   { file: 'src/worlds/SportsWorld.js', exports: ['SportsWorld'], methods: ['build'] },
+  /* Gateway 05's destination, and the only one of the six that was never
+   * registered here. Registered now for the reason every other world is: it is
+   * reached by name from `main.js:123` through `worldManager.register`, so a
+   * renamed export is a portal that drops the player into nothing one browser
+   * boot later rather than a failed check in half a second.
+   *
+   * `build` is what `WorldManager.build` awaits and `update` is what the
+   * gameplay block calls each frame - the banners are the only thing that
+   * moves in this world, and a world whose `update` quietly stopped existing
+   * would look almost right, which is the failure mode this file is for.
+   * `dispose` is load-bearing here rather than optional: `CitadelWorld` owns
+   * the sky dome's geometry, material and canvas texture plus every batched
+   * geometry in `_owned`, and it is the one world that also clears four
+   * published arrays (`_roofs`, `_towers`, `haystacks`, `viewpoints`) which
+   * would otherwise be re-appended to on the next build.
+   *
+   * `terrain/CitadelHeight.js` is registered alongside it because that split
+   * is a CROSS-THREAD contract, not a tidy-up: `terrain/index.js` maps the job
+   * name `citadel` to `citadelHeight`, and the generation worker imports the
+   * module directly (it may not import `three`). `CitadelWorld` imports the
+   * same four constants back and builds the visible heightfield, the collision
+   * heightfield and every prop placement off them - the file's own header
+   * records that this slope was once three disagreeing approximations and the
+   * player walked underneath the visible world across 7% of the map. A rename
+   * of `terrainH`, `citadelHeight` or any of `MESA_Y` / `MESA_R` / `SHOULDER`
+   * / `HALF` splits it back into two descriptions of one surface, in two
+   * threads, with no error anywhere. Takes the count 75 -> 77. */
+  {
+    file: 'src/worlds/CitadelWorld.js',
+    exports: ['CitadelWorld'],
+    methods: ['build', 'update', 'dispose'],
+    /* The five surfaces the other four agents' code is built on, and the class
+     * name is not one of them. `MinigameManager.arm` reads `minigameVenues`,
+     * `Viewpoints._onWorld` reads `viewpoints`, `Relics._onWorld` reads
+     * `_roofs` and `_towers` (and `_roofs[].anchor` inside them),
+     * `_publishVenues` and the minimap read `ropeBridges`. Each is consumed by
+     * an optional-chained property read, so a rename is not an error anywhere -
+     * it is a trial venue that never arms, a leap prompt that never fires and
+     * thirty relics scattered by random dart instead of onto the skyline. */
+    fields: ['minigameVenues', 'viewpoints', '_roofs', '_towers', 'ropeBridges'],
+  },
+  /* Drop Two's three new modules, each consumed by a DIFFERENT agent's file -
+   * which is precisely the shape this checker exists for. `Viewpoints` is
+   * constructed in `main.js:268`, driven at `:1641`, feeds the pause hub at
+   * `:509` and is read by `HUD` and `Minimap`; `createRooftopTrial` is the
+   * factory `main.js:350` registers for the `rooftop` venue kind, and
+   * `venueBounds` is imported back by `CitadelWorld` to size the venue discs;
+   * `CheckpointSweep` is the swept ordered-checkpoint test `RaceManager` and
+   * `RooftopTrial` both call. Takes the count 77 -> 80. */
+  {
+    file: 'src/systems/Viewpoints.js',
+    exports: ['Viewpoints', 'normaliseViewpoint', 'REVEAL_R', 'LEAP_R', 'MAX_TRAVEL_ROWS'],
+    methods: ['update', 'reveals', 'travelTo', 'hubItems', 'serialize', 'deserialize', 'dispose'],
+  },
+  {
+    file: 'src/minigames/RooftopTrial.js',
+    exports: ['createRooftopTrial', 'RooftopTrial', 'ROOFTOP_GAME_ID', 'parTimes', 'medalFor',
+      'venueBounds', 'venueCoversRoute', 'START_RADIUS'],
+    methods: ['begin', 'fixedUpdate', 'snapshot', 'dispose'],
+  },
+  { file: 'src/race/CheckpointSweep.js', exports: ['segDistSq', 'sweptPass'] },
+  {
+    file: 'src/worlds/terrain/CitadelHeight.js',
+    exports: ['MESA_Y', 'MESA_R', 'SHOULDER', 'HALF', 'terrainH', 'citadelHeight'],
+  },
   { file: 'src/worlds/WorldRules.js', exports: ['DEFAULT_RULES', 'makeRules', 'allows'] },
   {
     file: 'src/worlds/maze/MazeTopology.js',
@@ -320,6 +385,23 @@ for (const entry of CONTRACT) {
     // Class methods, object-literal methods, or assigned arrow properties.
     const re = new RegExp(`(^|[\\s;{,])(?:async\\s+)?${m}\\s*(\\(|[:=]\\s*(?:async\\s*)?\\()`, 'm');
     if (!re.test(src)) problems.push(`${entry.file}: missing method "${m}"`);
+  }
+
+  /* PUBLISHED FIELDS, not methods.
+   *
+   * A world's contract with the rest of the engine is mostly an array it hangs
+   * on itself: `RaceManager` reads `trackPath`, `MinigameManager` reads
+   * `minigameVenues`, `Relics` reads `_roofs` and `_towers`, `Viewpoints` reads
+   * `viewpoints`, and the trials and the minimap read `ropeBridges`. None of
+   * those is a method, so the `methods` regex above - which insists on a `(` -
+   * cannot see any of them, and this file reported "all contracts satisfied"
+   * while pinning only the class name. Renaming one is a whole system quietly
+   * finding nothing, one browser boot later.
+   */
+  for (const f of entry.fields ?? []) {
+    if (!new RegExp(`this\\.${f}\\b`).test(src)) {
+      problems.push(`${entry.file}: missing published field "this.${f}"`);
+    }
   }
 
   // House rules that are cheap to check and expensive to discover in a browser.

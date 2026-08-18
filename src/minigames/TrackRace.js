@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GhostCompetitor } from './GhostCompetitor.js';
+import { segDistSq } from '../race/CheckpointSweep.js';
 
 /**
  * The Meridian 400 m: one lap of the athletics oval, on foot, against three
@@ -144,21 +145,6 @@ function clockText(seconds) {
   return `${m}:${s < 10 ? '0' : ''}${s.toFixed(2)}`;
 }
 
-/**
- * Squared distance from point `p` to the segment `a`->`b`, in XZ.
- * Copied from RaceManager.js:140 - the swept test that makes a fast pass
- * unable to tunnel a checkpoint, used here for the same reason.
- */
-function segDistSq(ax, az, bx, bz, px, pz) {
-  const ex = bx - ax;
-  const ez = bz - az;
-  const e2 = ex * ex + ez * ez;
-  let t = e2 > 1e-9 ? ((px - ax) * ex + (pz - az) * ez) / e2 : 0;
-  t = t < 0 ? 0 : t > 1 ? 1 : t;
-  const dx = px - (ax + ex * t);
-  const dz = pz - (az + ez * t);
-  return dx * dx + dz * dz;
-}
 
 /** Centre radius of a 1-based lane. Lane 1 hugs the kerb. */
 export function laneRadius(lane) {

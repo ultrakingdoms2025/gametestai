@@ -8,19 +8,15 @@ import { CONFIG } from './Config.js';
  * single tap cannot fire twice.
  */
 
-/**
- * Keys the game reads *while Ctrl is held*, because Ctrl is crouch.
+/* Ctrl is NOT a game key.
  *
- * Everything else pressed with Ctrl is left to the browser - Ctrl+R, Ctrl+T,
- * Ctrl+Shift+I and the rest stay exactly as the player expects. Only the keys
- * a crouching player genuinely needs are claimed, which is the movement set
- * plus jump.
+ * This used to be a `CTRL_GAME_KEYS` allow-list, because Ctrl was a second
+ * crouch binding and a crouching player still needs to walk. That set claimed
+ * the movement keys while Ctrl was held, which meant the game saw Ctrl+W and
+ * the browser did too - and outside fullscreen the browser wins and closes the
+ * tab. Crouch now lives on `KeyC` alone (see `_syncAxes`), so there is nothing
+ * left to claim and every Ctrl combination goes back to the browser untouched.
  */
-const CTRL_GAME_KEYS = new Set([
-  'ControlLeft', 'ControlRight',
-  'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight',
-  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-]);
 
 /**
  * Rebindable actions, and the key each one ships on.
@@ -90,6 +86,11 @@ const FS_STORAGE = 'aether:fullscreen';
  */
 export const RESERVED_CODES = [
   'Escape', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12', 'Tab',
+  /* The modifiers, for the second reason above rather than the first: a keydown
+   * for ControlLeft itself arrives with `ctrlKey` set, so `onKey` drops it and
+   * the game can never see it. An action bound here would simply never fire.
+   * Ctrl was crouch until a player found that it could not be made to work. */
+  'ControlLeft', 'ControlRight',
 ];
 
 export class Input {
@@ -290,14 +291,11 @@ export class Input {
 
   _bind() {
     const onKey = (e, down) => {
-      /* Ctrl is a game key - it is crouch - and it used to be discarded here
-       * along with everything pressed alongside it. That had two consequences:
-       * Ctrl never actually worked as crouch, because the ControlLeft keydown
-       * itself arrives with ctrlKey set and was dropped; and Ctrl+W went
-       * straight to the browser. Ctrl now reaches the game, and the genuine
-       * browser combinations are listed explicitly instead. */
-      if (e.metaKey || e.altKey) return;
-      if (e.ctrlKey && !CTRL_GAME_KEYS.has(e.code)) return;
+      /* Every modifier combination belongs to the browser and the OS, not to
+       * the game. An earlier build carved out an exception so Ctrl could act as
+       * a second crouch key; that let the game see Ctrl+W while the browser saw
+       * it too, and outside fullscreen the browser wins by closing the tab. */
+      if (e.metaKey || e.altKey || e.ctrlKey) return;
       if (this._textCaptured) {
         // Escape and Enter still need to reach the chat UI, which listens itself.
         return;
@@ -409,21 +407,40 @@ export class Input {
     s.right = (b('KeyD') || k.has('ArrowRight') ? 1 : 0) - (b('KeyA') || k.has('ArrowLeft') ? 1 : 0);
     s.jump = b('Space');
     s.sprint = b('ShiftLeft') || k.has('ShiftRight');
-    /* Held, on either key - and C is the one that actually works.
+    /* Held, and on ONE key, which is deliberately not a modifier.
      *
-     * Ctrl cannot carry this on its own: Ctrl+<key> is claimed before the page
-     * sees it, by the browser for Ctrl+W and by the Windows input-method
-     * switcher for Ctrl+Space, and Keyboard Lock has no authority over the
-     * latter. So Ctrl crouches, but only reliably by itself.
+     * Ctrl used to crouch as well, and the comment that stood here argued
+     * correctly that it should not - then the line below kept it anyway. A
+     * player reported the consequence ("ctrl does the same thing and I think
+     * that might be making it hard to roll"). They were right, and it was
+     * worse than an annoyance:
      *
-     * I briefly made Ctrl a *toggle* to sidestep that, which was wrong. Crouch
-     * is not only a stance here - five systems read it as a momentary action:
-     * dive, roll, let go of a wall, swim down, fly down. A latched crouch makes
-     * a dive that never ends and a wall that cannot be held, because FreeClimb
-     * releases the moment it sees the flag. The fix belongs on the *binding*,
-     * not on the semantics: crouch stays a hold, and it lives on a key that is
-     * not a modifier, so it composes with everything. */
-    s.crouch = k.has('ControlLeft') || k.has('ControlRight') || b('KeyC');
+     *   - Crouch KILLS sprint (`_sprinting` is gated on `!_crouching`), and the
+     *     ground dodge needs >= LEAP_MIN_SPEED to arm. Ctrl is a modifier, so
+     *     players HOLD it; held from a standstill it caps you at `crouchSpeed`
+     *     2.2 and the dodge can then never fire. Tapping C works, holding Ctrl
+     *     cannot, and nothing on screen explained the difference.
+     *   - Ctrl+W CLOSES THE TAB outside fullscreen. `preventDefault` is only
+     *     called for the scroll keys, and `navigator.keyboard.lock()` - which
+     *     does claim KeyW - is only in force while `document.fullscreenElement`
+     *     is set. Fullscreen is only the default *preference* and the pause hub
+     *     offers to turn it off, so "crouch and walk forward" ended the session
+     *     for anyone playing windowed.
+     *   - Ctrl+Shift is the Windows input-method switcher when more than one
+     *     layout is installed - and Ctrl+Shift+W is exactly the dodge input.
+     *     Keyboard Lock has no authority over an OS-level combination.
+     *
+     * Crouch is also not merely a stance: five systems read it as a momentary
+     * action - dive, roll, let go of a wall, swim down, fly down - so making
+     * Ctrl a toggle to sidestep the problem was tried and was wrong (a latched
+     * crouch is a dive that never ends and a wall that cannot be held, because
+     * FreeClimb releases the moment it sees the flag).
+     *
+     * So the fix is the one the old comment already named: crouch lives on a
+     * key that is not a modifier and composes with everything. `KeyC` is
+     * rebindable; Ctrl is no longer a game key at all, which also hands every
+     * Ctrl shortcut back to the browser intact. */
+    s.crouch = b('KeyC');
     s.reload = b('KeyR');
     s.interact = b('KeyE');
   }

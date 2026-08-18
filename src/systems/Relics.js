@@ -58,6 +58,32 @@ const BASE_EXTENT = 400;
 const MAX_PER_WORLD = 110;
 /** Credits each is worth. */
 const VALUE = 120;
+
+/* ── The prizes ─────────────────────────────────────────────────────────────
+ *
+ * A quest can only pay credits (`QuestSystem._completeQuest`), and until now so
+ * could a relic: `_collect` added `VALUE` and one coin, and the thirtieth relic
+ * paid exactly what the first one did. Thirty finds across a world is the
+ * longest single activity in it, and it ended with a slightly larger number in
+ * the corner of the screen.
+ *
+ * So the set pays in things credits cannot buy back: an item at the halfway
+ * mark, and a cosmetic plus a permanent mount power for finishing. All three
+ * grants are made through the published contracts (`Inventory.acquire`,
+ * `Cosmetics.unlock`, `MountManager.grantPower`), each of which silently
+ * refuses an id it does not know - so this file holds no copy of any
+ * catalogue and cannot drift out of step with one.
+ */
+/** Handed over the first time a world is half stripped. */
+export const HALFWAY_ITEM = 'speed_boost_50';
+export const HALFWAY_ITEM_QTY = 2;
+/** Every relic in a world: a marketplace skin, free. */
+export const SET_COSMETIC = 'char_jade';
+/** ..and a horse that can carry what you have been picking up. */
+export const SET_POWER = { mount: 'horse', power: 'strength', tier: 1 };
+/** Completion bonus, on top of the last relic's own `VALUE`. */
+export const SET_CREDITS = 500;
+
 /** Pickup radius. Generous - you should not have to stand exactly on it. */
 const PICKUP_R = 2.0;
 /** Minimum separation, so a rooftop never gets two. */
@@ -74,6 +100,9 @@ const _rq = new THREE.Quaternion();
 const _rs = new THREE.Vector3(1, 1, 1);
 const _rm = new THREE.Matrix4();
 const _down = new THREE.Vector3(0, -1, 0);
+const _up = new THREE.Vector3(0, 1, 0);
+/** Refilled by the `markers` getter, which `Minimap` calls every frame. */
+const _markerScratch = [];
 
 function mulberry32(seed) {
   let s = seed >>> 0 || 1;
@@ -184,15 +213,20 @@ function hashString(str) {
 export class Relics {
   /**
    * @param {{scene:THREE.Scene, bus:any, physics:any, player:any,
-   *          economy:any, inventory?:any, worldManager:any}} ctx
+   *          economy:any, inventory?:any, cosmetics?:any, mounts?:any,
+   *          worldManager:any}} ctx
    */
-  constructor({ scene, bus, physics, player, economy, inventory, worldManager } = {}) {
+  constructor({ scene, bus, physics, player, economy, inventory, cosmetics, mounts, worldManager } = {}) {
     this.scene = scene;
     this.bus = bus ?? null;
     this.physics = physics ?? null;
     this.player = player ?? null;
     this.economy = economy ?? null;
     this.inventory = inventory ?? null;
+    /** Wardrobe, for the set prize. Optional - the loop works without one. */
+    this.cosmetics = cosmetics ?? null;
+    /** Mount authority, for the set prize. Also optional. */
+    this.mounts = mounts ?? null;
     this.worldManager = worldManager ?? null;
 
     /** @type {Array<{pos:THREE.Vector3, taken:boolean, phase:number}>} */
@@ -201,6 +235,14 @@ export class Relics {
     this._time = 0;
     /** Per-world tally, so a returning player is not told to find them twice. */
     this._found = new Map();
+    /**
+     * Milestones already paid, keyed `worldId:half` / `worldId:set`.
+     *
+     * Separate from `_found` because the two answer different questions. A
+     * count can be reached twice - walk out of the world at 15 of 30 and back
+     * in, and `_onWorld` re-marks 15 sites taken - but a prize is paid once.
+     */
+    this._paid = new Set();
 
     this._build();
 
@@ -220,11 +262,139 @@ export class Relics {
     return this.sites.length;
   }
 
-  /** Positions for the minimap - only the ones already found, as a record. */
+  /**
+   * Positions for the minimap: the ones still out there.
+   *
+   * (The old docstring said "only the ones already found", which the code has
+   * never done and which would have been the wrong list anyway - a marker on a
+   * relic you have already picked up is a marker with nothing under it. The
+   * code was right and the sentence was wrong.)
+   *
+   * Which of these a player actually SEES is not decided here: `Minimap` asks
+   * `Viewpoints.reveals(x, z)` first, so in a world with viewpoints a relic
+   * appears only once the district it sits in has been climbed. A relic marked
+   * on the map from the first frame is not hidden, and hidden is the whole
+   * mechanic - see this file's header.
+   */
   get markers() {
-    const out = [];
-    for (const s of this.sites) if (!s.taken) out.push(s.pos);
-    return out;
+    /* Module-level scratch, refilled. `Minimap.update` reads this getter every
+     * frame it draws and `Minimap.update` is called from `HUD.update` every
+     * frame, so building a fresh array here was thirty pushes and one array of
+     * garbage per frame in the one world that has relics. House rule is no
+     * allocation in a frame path.
+     *
+     * The array is LIVE and shared: read it, do not keep it. The only two
+     * callers are the minimap draw, which iterates it immediately, and the
+     * tests, which do the same. */
+    _markerScratch.length = 0;
+    for (const s of this.sites) if (!s.taken) _markerScratch.push(s.pos);
+    return _markerScratch;
+  }
+
+  /** How many have been found in the active world. */
+  get found() {
+    return this.total - this.remaining;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Persistence                                                         */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * The tally, per world.
+   *
+   * `Relics._found` was absent from `SaveGame._snapshot` altogether, so thirty
+   * relics worth 3,600 CR reset to thirty on every single reload - the one
+   * collectible in the game that is explicitly finite was in fact infinite, and
+   * the "count is the progress bar" claim in this file's header was false.
+   *
+   * A count per world rather than a set of site ids, because that is exactly
+   * what `_onWorld` restores: placement is deterministic per world id, so the
+   * first N sites in the generated order are the found ones. Storing ids would
+   * imply a stability the placement does not have - change `PER_WORLD`, the
+   * bounds or the authored roof list and every id would move.
+   *
+   * @returns {{found:Object<string,number>, paid:string[]}}
+   */
+  serialize() {
+    const found = {};
+    for (const [worldId, n] of this._found) {
+      if (worldId && n > 0) found[worldId] = n;
+    }
+    return { found, paid: [...this._paid] };
+  }
+
+  /**
+   * Restore the tally. Never pays a prize: the milestone list rides along in
+   * `paid` precisely so a load cannot re-grant a cosmetic.
+   *
+   * REPLACE, not merge. A load has to be able to take progress AWAY: sync
+   * nothing, collect thirty relics in the citadel, then load a save written
+   * before any of that, and a merging restore left all thirty marked taken and
+   * the milestone cosmetics still paid - the player kept progress the save they
+   * loaded does not contain. `MountManager.deserialize` writes the same rule
+   * down for the same reason ("replace semantics per mount id"). The clear is
+   * total rather than per world id, because a world missing from the payload is
+   * a world with nothing found in it, which is exactly what `serialize` does
+   * with a zero tally.
+   *
+   * @param {{found?:Object<string,number>, paid?:string[]}|null} data
+   * @returns {boolean} true when a well-formed payload was applied
+   */
+  deserialize(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    this._found.clear();
+    this._paid.clear();
+    const found = data.found;
+    if (found && typeof found === 'object' && !Array.isArray(found)) {
+      for (const worldId of Object.keys(found)) {
+        const n = Math.max(0, Math.floor(Number(found[worldId])));
+        if (Number.isFinite(n) && n > 0) this._found.set(worldId, n);
+      }
+    }
+    if (Array.isArray(data.paid)) {
+      for (const key of data.paid) if (typeof key === 'string' && key) this._paid.add(key);
+    }
+    /* A load can land while a world is already active - `SaveGame.load` only
+     * rebuilds the world when the save names a different one - so the restored
+     * tally has to be stamped onto the sites that are already standing. */
+    this._applyFound();
+    this._announce();
+    return true;
+  }
+
+  /**
+   * Mark the first N sites of the active world taken, from `_found`.
+   *
+   * ── KNOWN LIMITATION, decided rather than overlooked ──────────────────────
+   *
+   * N is a COUNT, so this marks the first N sites in generation order - not the
+   * N the player actually picked up. Within one session that is the same set,
+   * because `_collect` takes them in whatever order the player walks and the
+   * count only ever grows; ACROSS A RELOAD it is not. Collect the four relics
+   * on the wall towers and reload, and the four the generator happened to emit
+   * first are gone instead: a relic the player really took can be standing
+   * there again, and one they never went near has vanished.
+   *
+   * What is exactly right either way is the number and the money - `remaining`,
+   * the HUD counter, the milestone thresholds and the 120 CR a relic pays are
+   * all functions of N alone, and N round-trips exactly. What is wrong is only
+   * WHICH thirty of the thirty, which is unobservable except to a player who
+   * remembers a rooftop.
+   *
+   * The alternative is a set of site ids, and there are no stable ids to store:
+   * placement is `mulberry32(hashString('relic:' + worldId))` over
+   * `world._roofs` and `world._towers` with a random shuffle and a random dart
+   * pass, so changing `PER_WORLD`, the world bounds, the authored roof list or
+   * anything upstream of the shuffle renumbers every site. A stored id set
+   * would silently mark the WRONG sites after any content change, which is the
+   * same defect with a longer fuse and a save-schema migration on top. So: the
+   * count is kept, and the consequence is written down here rather than left
+   * for the next reader to rediscover.
+   */
+  _applyFound() {
+    const already = this._found.get(this._worldId) ?? 0;
+    for (let i = 0; i < this.sites.length; i++) this.sites[i].taken = i < already;
   }
 
   /* ------------------------------------------------------------------ */
@@ -297,6 +467,17 @@ export class Relics {
     this.sites.length = 0;
     this.mesh.count = 0;
     this.glow.count = 0;
+    /* Announce the EMPTY world before either early return, not only the worlds
+     * that get relics.
+     *
+     * `relics:changed` had no listener before this drop, so returning without
+     * one was harmless. It has one now: `HUD._setDiscoveries` keeps `_relicTotal`
+     * from the last announcement, so a player who found 12 of 30 in the citadel
+     * and portalled into the maze (`MazeWorld` sets `relics: false`) kept
+     * reading "Relics 12/30" in a world that has none, until they walked back
+     * into a world that does. `Viewpoints._onWorld` already announces on every
+     * path for the same reason. */
+    this._announce();
     // No relics: the only collectible is the stack at the centre.
     if (!allows(world, 'relics')) return;
     if (!world || !this.physics) return;
@@ -328,7 +509,19 @@ export class Relics {
      * rather than wherever a dart happened to land. */
     const authored = [];
     for (const t of world._towers ?? []) authored.push({ x: t.x, y: t.y, z: t.z });
-    for (const r of world._roofs ?? []) authored.push({ x: r.x, y: r.y, z: r.z });
+    /* `anchor`, not the centre, where the world publishes one.
+     *
+     * A roof's `x/z` is its FOOTPRINT centre, and 30% of the citadel's souk
+     * blocks stand a dome on exactly that point. Taking the centre put 8 of
+     * these 30 relics inside an opaque hemisphere: nothing to see from the
+     * deck, and the nearest a body could stand was 2.49-2.62 m against
+     * PICKUP_R = 2.0, so they could not be collected at all. `CitadelWorld`
+     * resolves `anchor` against its real colliders once the souk is built;
+     * a world that publishes no anchor is unchanged. */
+    for (const r of world._roofs ?? []) {
+      const a = r.anchor ?? r;
+      authored.push({ x: a.x, y: a.y, z: a.z });
+    }
     // Shuffle deterministically so the same subset is not used every time.
     for (let i = authored.length - 1; i > 0; i--) {
       const j = Math.floor(rnd() * (i + 1));
@@ -365,10 +558,9 @@ export class Relics {
       this.sites.push({ pos: new THREE.Vector3(x, y + 0.55, z), taken: false, phase: rnd() * 6.283 });
     }
 
-    const already = this._found.get(id) ?? 0;
     // Mark the first N as already taken, so a returning player does not
     // re-collect a world they have already stripped.
-    for (let i = 0; i < already && i < this.sites.length; i++) this.sites[i].taken = true;
+    this._applyFound();
 
     if (this.sites.length) {
       console.info(`[Relics] "${id}": ${this.remaining}/${this.sites.length} hidden`);
@@ -408,7 +600,9 @@ export class Relics {
       const bob = Math.sin(t * 1.6 + s.phase) * 0.16;
       _rv.set(s.pos.x, s.pos.y + bob, s.pos.z);
 
-      _rq.setFromAxisAngle(new THREE.Vector3(0, 1, 0), t * 1.1 + s.phase);
+      // `_up`, not a fresh Vector3: this is inside the per-site loop of a frame
+      // handler, so it built one throwaway vector per relic per frame.
+      _rq.setFromAxisAngle(_up, t * 1.1 + s.phase);
       _rs.setScalar(1);
       _rm.compose(_rv, _rq, _rs);
       this.mesh.setMatrixAt(n++, _rm);
@@ -451,19 +645,81 @@ export class Relics {
     // Also add a relic_coin to the store so it shows up in the inventory panel.
     this.inventory?.add?.('relic_coin', 1);
     const left = this.remaining;
-    this.bus?.emit('relic:found', { value: VALUE, remaining: left, total: this.total });
+    const total = this.total;
+    this.bus?.emit('relic:found', {
+      value: VALUE,
+      remaining: left,
+      total,
+      // The count is the progress bar, so hand the listener the filled part of
+      // it rather than making every consumer subtract.
+      found: total - left,
+      worldId: this._worldId,
+      position: { x: site.pos.x, y: site.pos.y, z: site.pos.z },
+    });
     this.bus?.emit('hud:notify', {
       text: left > 0
         ? `Relic recovered — +${VALUE} CR (${left} left)`
         : `Relic recovered — +${VALUE} CR. That was the last one.`,
       tone: 'good',
     });
+    this._payMilestones();
     this._announce();
   }
 
+  /**
+   * Halfway and the full set, once each per world.
+   *
+   * Ordered halfway-then-set and NOT else-if: a one-relic world (or a debug
+   * build with `PER_WORLD` at 1) crosses both on the same pickup, and paying
+   * only one of them would make the smaller world quietly cheaper.
+   */
+  _payMilestones() {
+    const total = this.total;
+    if (!this._worldId || total <= 0) return;
+    const found = total - this.remaining;
+
+    if (found >= Math.ceil(total / 2) && this._claim('half')) {
+      const got = this.inventory?.acquire?.(HALFWAY_ITEM, HALFWAY_ITEM_QTY);
+      this.bus?.emit('relics:milestone', {
+        worldId: this._worldId, milestone: 'half', found, total, item: HALFWAY_ITEM,
+        qty: got?.taken ?? 0,
+      });
+      this.bus?.emit('hud:notify', {
+        text: `Half the relics recovered — ${HALFWAY_ITEM_QTY} Rushline Glyphs`,
+        tone: 'good',
+      });
+    }
+
+    if (found >= total && this._claim('set')) {
+      this.economy?.add?.(SET_CREDITS, 'relic-set');
+      const gotSkin = this.cosmetics?.unlock?.(SET_COSMETIC) === true;
+      this.mounts?.grantPower?.(SET_POWER.mount, SET_POWER.power, SET_POWER.tier);
+      this.bus?.emit('relics:milestone', {
+        worldId: this._worldId, milestone: 'set', found, total,
+        credits: SET_CREDITS, cosmetic: SET_COSMETIC, power: { ...SET_POWER },
+      });
+      this.bus?.emit('hud:notify', {
+        text: gotSkin
+          ? `Every relic recovered — +${SET_CREDITS} CR, Jade Sovereign unlocked`
+          : `Every relic recovered — +${SET_CREDITS} CR, your horse is stronger`,
+        tone: 'good',
+      });
+    }
+  }
+
+  /** Claim a one-time milestone for the active world. @returns {boolean} */
+  _claim(milestone) {
+    const key = `${this._worldId}:${milestone}`;
+    if (this._paid.has(key)) return false;
+    this._paid.add(key);
+    return true;
+  }
+
   _announce() {
+    const total = this.total;
+    const remaining = this.remaining;
     this.bus?.emit('relics:changed', {
-      worldId: this._worldId, remaining: this.remaining, total: this.total,
+      worldId: this._worldId, remaining, total, found: total - remaining,
     });
   }
 

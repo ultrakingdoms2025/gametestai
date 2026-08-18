@@ -136,6 +136,113 @@ const VIEWS = {
     { name: 'lift-car', computed: true },
     { name: 'tower-top', computed: true },
   ],
+  /* Sunspire Citadel, read off the built world rather than off the docstring.
+   *
+   * The mesa top is a flat plateau at y = 14 out to r = 132, falling to the
+   * desert over a 46 m shoulder; the playfield is +-200. On it, from the
+   * outside in:
+   *
+   *   curtain wall  r = 118, walk top y = 23, gate opening on +Z
+   *   gatehouse     (0, 118), arch clear at x = 0, lintel top y = 28
+   *   corner towers r = 118, eight of them, tops y = 32.2
+   *   souk          seven rings at r = 34.0 / 47.1 / 59.6 / 71.2 / 82.3 /
+   *                 92.9 / 103.0; roof decks y 20.5-20.7 (ring 6) up to
+   *                 27.3-29.1 (ring 0)
+   *   inner ward    a 60 m square slab, top y = 20
+   *   keep          (0, -4), roof y = 41.4
+   *   minarets      (+-14.85, +-14.85), tops y = 51.5, rope bridges between
+   *                 them at y ~ 50.9, plus two 99-102 m perimeter spans out to
+   *                 wall towers and their two short landfalls into the souk
+   *   great tower   (0, -18), crown y = 67.6, launch beam jutting to z = -9.8
+   *   player spawn  (0, 14.3, 104), yaw 0 - facing the town
+   *
+   * `_buildSouk` deletes every building within 0.26 rad of the gate bearing at
+   * every ring, so the +Z axis is an open processional corridor from the gate
+   * all the way to the ward stair. That is why three framings here sit on x = 0:
+   * it is the one line through this town that is clear by construction rather
+   * than by luck of the generator's PRNG.
+   *
+   * Every framing below was checked against the world as actually built - the
+   * same headless build `scripts/tests/npc-routes.test.mjs` does, then
+   * `physics.containsPoint` for the camera, `physics.groundHeight` under it,
+   * and a `physics.raycast` down the view axis, and RE-checked against the
+   * present build rather than inherited.
+   *
+   * Two candidates were once thrown out here for reasons that are no longer
+   * true, and both are recorded because the repairs are worth knowing about:
+   * a rampart-walk framing, because the curtain wall used to be a rosette
+   * (segments rotated `mid + PI/2` in a frame where `makeRotationY(t)` puts
+   * local +X at bearing `-t`, so they stood radially everywhere but the four
+   * cardinals); and a haystack framing under the great tower, because every
+   * viewpoint haystack was placed off `_groundAt` - pure terrain - and sat at
+   * y 16.4-18.8 inside the ward slab, solid from 14 to 20. Both were fixed in
+   * Drop Two: the wall rotation is `PI/2 - mid` and 354 of 360 bearings at
+   * r = 118 now read stone (the six are the gate), and the haystacks are
+   * placed off `_deckAt` and stand at y 22.4 on the ward. A rampart framing
+   * and a hay framing are both available now; neither has been added, because
+   * neither has been composed and measured, and an unmeasured framing is the
+   * thing this comment block exists to prevent. */
+  citadel: [
+    // Outside the wall on the approach, looking through the gate arch. The
+    // camera stands on a cliff-ring step: deck 14.22 at (0, 136).
+    { name: 'gate-approach', pos: [0, 15.84, 136], look: [0, 22, 118], fov: 72 },
+    // The player's own spawn eye, framing what this world opens on: the souk
+    // stepping up ring by ring, the keep, and the great tower above it. The
+    // keep occludes the tower below y ~ 43; everything above that is in shot.
+    { name: 'gate-spawn', pos: [0, 15.92, 104], look: [0, 34, -14], fov: 74 },
+    /* A real alley, found by probing rather than by picking a radius, and
+     * RE-probed against the re-authored rings.
+     *
+     * The old framing stood at (112, 1.6). The souk's outermost ring is r =
+     * 103.0 now, so r = 112 is open pomerium: the camera stood on bare terrain
+     * at deck 14.00 and the view ray hit the town's outer face at 12.3 m of a
+     * nominal 28.4 - a photograph of a wall, captioned as a street.
+     *
+     * This is the ring-5/ring-6 street at r = 97.95, walked from bearing 24 deg
+     * to 41.2 deg: 29.3 m of unbroken line of sight at eye height (deck 14.00
+     * plus 1.62), 2.9 m between the two rings' faces at the far end and opening
+     * into a junction at the near one. Souk geometry is generated, so a
+     * hand-picked "alley" coordinate is a coin flip; this one is measured. */
+    { name: 'souk-alley', pos: [89.48, 15.62, 39.84], look: [73.7, 16.2, 64.52], fov: 78, clear: 29.2 },
+    /* Standing on a real ring-5 roof deck, looking in across four more rings of
+     * roofs to the tower.
+     *
+     * Also re-probed: ring 5's deck is y 21.31 now, not the 24.21 this comment
+     * used to claim, and the old camera at y 25.80 floated 4.49 m over it. The
+     * point below is that roof's `anchor` - the standing spot `_deckSpot`
+     * resolved off the dome in its middle - with the camera 1.62 m above a
+     * 9.7 x 7.1 m footprint. The clear line still holds: the first thing this
+     * ray meets is the tower's own face, at 99.1 m of 106.1. */
+    { name: 'souk-roofs', pos: [83.63, 22.93, 40.45], look: [0, 52, -18], fov: 76, clear: 99.0 },
+    /* The inner ward. Its geometric centre is inside the keep, so this stands
+     * on the ward deck at the head of the souk stair and looks across it: keep
+     * facade, the two near minarets, and the great tower crown clear above the
+     * keep's 41.4 m roof line. The ward's four corners are NOT open - ring 0
+     * of the souk is at r = 34 and the 60 m square reaches r = 42 at the
+     * diagonal, so houses stand on the slab there. */
+    { name: 'ward-centre', pos: [0, 21.7, 28], look: [0, 40, -6], fov: 78 },
+    /* The rope bridges. Square on to the +Z minaret span, minarets flanking,
+     * tower behind; the ray from here to the middle of that span is clear over
+     * all 31.8 m of it.
+     *
+     * This used to say the four minaret loops were "the only spans that got
+     * built", because the perimeter span computes to 99.0 m against
+     * `_buildRopeBridges`' own `span > 90` reject. The reject is 132 now and
+     * the world builds eight spans: four 29.7 m loops, a 98.9 m minaret
+     * perimeter and a 101.6 m great-tower perimeter out to wall towers at
+     * r = 118, and their two ~11.8 m landfalls down into the outer souk ring.
+     * The two long ones are what put the whole rooftop network on one
+     * component; they are 35 m over the mesa and want a framing of their own,
+     * which is a measurement nobody has taken yet. */
+    { name: 'minaret-bridge', pos: [0, 56, 46], look: [0, 49.6, 14.85], fov: 70, aerial: true },
+    { name: 'tower-top', computed: true },
+    /* The mesa from outside it. Placed at bearing -40 deg, about 78 deg off
+     * the sun's own bearing (`sunDirection` (0.55, 0.42, 0.72) -> 37.4 deg),
+     * so the town is cross-lit and every ledge casts the line this world was
+     * built to be read by. 231 m out, inside the +-200 heightfield on both
+     * axes, so nothing beyond the mesh edge is in shot. */
+    { name: 'desert-overview', pos: [-150, 76, 176], look: [0, 46, -10], fov: 74, aerial: true },
+  ],
 };
 
 class Harness {
@@ -549,13 +656,90 @@ class Harness {
   }
 
   /**
+   * Frame the Citadel from over its great tower - the world's high anchor.
+   *
+   * COMPUTED, for a different reason than the maze's views are. Nothing here
+   * streams, so this does not have to teleport anyone to make geometry appear;
+   * what it cannot do is hard-code the crown. `CitadelWorld` derives the tower
+   * top as `MESA_Y + wardH + th + 1.6` and the crown slab as `tw + 2.4` wide,
+   * and a literal 67.6 typed into the table above would survive any change to
+   * those four numbers by silently putting the camera inside the stone or
+   * thirty metres over it - the failure a review instrument is least able to
+   * report on itself. So the anchor is taken from the world's own published
+   * `viewpoints`, and the crown's back lip is MEASURED off the collision world
+   * rather than recomputed from `tw`: the maze's rule, that a computed view
+   * checks what was actually emitted rather than what the generator chose.
+   *
+   * WHY IT LOOKS DOWN FROM ABOVE RATHER THAN STANDING ON THE CROWN. The
+   * leap-of-faith beam is proud of the crown deck by 0.55 m and juts 8.5 m out
+   * over the +Z lip (both measured). From a standing eye on the crown, any
+   * look steeper than about 4.4 deg down is blocked by that beam, so the only
+   * shot available from up there is horizon and sky - the town this view
+   * exists to show would be entirely below frame. Sixteen metres up puts the
+   * crown, the beam, the ward, all seven souk rings and the gate in one frame,
+   * which is the same trade `_computeTowerTop` makes in the maze at 30 m.
+   *
+   * The player is NOT held back: `_vantage` moves them to the vantage as it
+   * does for every other framing, which is what drags the sun's 120 m shadow
+   * box onto the citadel instead of leaving it at spawn.
+   *
+   * @returns {{pos:number[], look:number[], fov:number}|null}
+   */
+  _findGreatTowerFraming() {
+    const w = this.game.worldManager.active;
+    if (w?.id !== 'citadel') return null;
+    const physics = this.game.physics;
+    if (!physics) return null;
+
+    /* The world publishes its five viewpoints; the great tower is the high one
+     * and the only named anchor this framing wants. Falling back to the
+     * tallest entry in `_towers` rather than to a literal keeps this working
+     * if the name is ever re-authored, and returning null keeps `view()`
+     * throwing a clear error rather than framing sand if both are gone. */
+    const vp = (w.viewpoints ?? []).find((v) => v.name === 'The Great Tower')
+      ?? (w._towers ?? []).reduce((hi, t) => (!hi || t.y > hi.y ? t : hi), null);
+    if (!vp) return null;
+
+    /* Walk back along -Z until the deck stops being the crown. The probe drops
+     * only 9 m from just above the crown, so a step that leaves the slab reads
+     * as the ward roof 47 m below (or as null) rather than as another storey
+     * of the same tower. `< vp.y - 0.35` and not `!== vp.y`: the launch beam
+     * and the crown parapet are both a little PROUD of the deck, and a strict
+     * equality would stop this walk on the first piece of dressing. */
+    const crownAt = (x, z) => physics.groundHeight(x, z, vp.y + 4, 9);
+    let back = 0;
+    for (let d = 0.5; d <= 14; d += 0.5) {
+      const y = crownAt(vp.x, vp.z - d);
+      if (y === null || y < vp.y - 0.35) break;
+      back = d;
+    }
+
+    const RISE = 16;       // above the crown - clears the beam, see above
+    const STAND_OFF = 8;   // behind the measured lip, so the crown is in frame
+    const REACH = 92;      // horizontal, down the gate axis (+Z)
+    const DROP = 44;       // below the camera at that reach -> 25.5 deg down
+    const pos = [vp.x, vp.y + RISE, vp.z - back - STAND_OFF];
+    const look = [vp.x, vp.y + RISE - DROP, pos[2] + REACH];
+    return { pos, look, fov: 80 };
+  }
+
+  /**
    * Compute view parameters for dynamically generated views.
+   *
+   * Dispatched on the world first and the name second: `tower-top` exists in
+   * two worlds now and means a different computation in each.
    */
   async _computeView(name, worldId) {
-    if (worldId !== 'maze') return null;
-    if (name === 'shaft-up') return this._findShaftFraming();
-    if (name === 'lift-car') return this._findLiftFraming();
-    if (name === 'tower-top') return this._computeTowerTop();
+    if (worldId === 'maze') {
+      if (name === 'shaft-up') return this._findShaftFraming();
+      if (name === 'lift-car') return this._findLiftFraming();
+      if (name === 'tower-top') return this._computeTowerTop();
+      return null;
+    }
+    if (worldId === 'citadel') {
+      if (name === 'tower-top') return this._findGreatTowerFraming();
+      return null;
+    }
     return null;
   }
 

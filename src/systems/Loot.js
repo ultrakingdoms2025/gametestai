@@ -62,8 +62,14 @@ const AUTO_RANGE = 1.7;
 /** `E` range, metres. */
 const PROMPT_RANGE = 3.2;
 
-/** Credits are always part of a drop; ammo depends on the world. */
-const DROP_TABLES = {
+/**
+ * Credits are always part of a drop; ammo depends on the world.
+ *
+ * Exported so the rows can be pinned without constructing a `Loot`, whose
+ * constructor paints canvas textures and therefore cannot run under Node; see
+ * scripts/tests/citadel-economy.test.mjs.
+ */
+export const DROP_TABLES = {
   station: [
     { id: 'bullet', chance: 0.72, min: 20, max: 60 },
     { id: 'fireball_charge', chance: 0.2, min: 1, max: 3 },
@@ -79,6 +85,40 @@ const DROP_TABLES = {
     { id: 'fireball_charge', chance: 0.14, min: 1, max: 2 },
     { id: 'medkit', chance: 0.12, min: 1, max: 1 },
     { id: 'nexus_shard', chance: 0.05, min: 1, max: 1 },
+  ],
+  /* Sunspire Citadel. A fortress on a mesa with no foundry and one mule road.
+   *
+   * It had no row at all, so `_dropFor`'s `?? DROP_TABLES.station` fallback had
+   * the garrison of a desert citadel dropping 6 mm caseless and ember cores -
+   * in a world whose caches pay in crown coins and broadhead arrows and whose
+   * market charges 1.55x for ammunition precisely because none is made here.
+   *
+   * Every number below is derived from something already in the repo rather
+   * than chosen, and each derivation is an assertion in
+   * scripts/tests/citadel-economy.test.mjs:
+   *
+   *   arrow      the ammunition CACHE_TABLES.citadel already pays in, and the
+   *              only one. Expected 7.3 shafts a body against the vale's 18.0
+   *              units of mixed ammunition, because WORLD_MARKETS pays 1.30
+   *              here against the vale's 1.15 - a vendor paying more is the
+   *              game saying the place is short of it.
+   *   relic_coin the denomination. WORLD_MARKETS discounts a crown coin to
+   *              0.50 here, the lowest anywhere one is priced at all and below
+   *              the vale's 0.55, so coins must fall more freely here than they
+   *              do there (0.44 against 0.32).
+   *   medkit     0.10, the lowest of any world (0.12-0.20 elsewhere), because
+   *              consumables buy at 1.45 here - the highest of the five.
+   *   nexus_shard 0.05, the rarity every other world already gives it
+   *              (0.05, 0.06 at the station); a shard is a portal artefact and
+   *              belongs to no local economy.
+   *
+   * No alloy_scrap, matching CACHE_TABLES.citadel: hull plate is a station
+   * by-product and there is nothing on this mesa that sheds it. */
+  citadel: [
+    { id: 'relic_coin', chance: 0.44, min: 2, max: 6 },
+    { id: 'arrow', chance: 0.66, min: 6, max: 16 },
+    { id: 'nexus_shard', chance: 0.05, min: 1, max: 1 },
+    { id: 'medkit', chance: 0.1, min: 1, max: 1 },
   ],
   sports: [
     { id: 'bullet', chance: 0.5, min: 20, max: 50 },

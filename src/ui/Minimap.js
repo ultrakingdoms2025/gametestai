@@ -56,7 +56,7 @@ export class Minimap {
    * @param {{ canvas: HTMLCanvasElement, player: any, worldManager: any,
    *           npcManager: any, portals: any, input: any }} ctx
    */
-  constructor({ canvas, player, worldManager, npcManager, portals, caches, contracts }) {
+  constructor({ canvas, player, worldManager, npcManager, portals, caches, contracts, relics, viewpoints }) {
     this.canvas = canvas;
     this.player = player;
     this.worldManager = worldManager;
@@ -66,6 +66,22 @@ export class Minimap {
     this.caches = caches ?? null;
     /** Standing jobs, so the giver is findable. @see systems/Contracts.js */
     this.contracts = contracts ?? null;
+    /**
+     * Hidden collectibles. Thirty of them existed with no marker of any kind,
+     * anywhere - the map was constructed with `{portals, caches, contracts}`
+     * and nothing else, so the one collectible in the game that never restocks
+     * was also the one the player was never told about.
+     * @see systems/Relics.js
+     */
+    this.relics = relics ?? null;
+    /**
+     * The reveal authority, and the reason relics are drawn a district at a
+     * time rather than all at once. `reveals(x, z)` answers `true` for
+     * everything in a world that publishes no viewpoints, so this coupling
+     * costs nothing in the four worlds that do not have them.
+     * @see systems/Viewpoints.js
+     */
+    this.viewpoints = viewpoints ?? null;
 
     this.size = CONFIG.minimap.size;
     this.baseRange = CONFIG.minimap.range;
@@ -503,6 +519,67 @@ export class Minimap {
         this._project(c.position.x, c.position.z, px, pz, sin, cos, scale);
         this._cacheMarker(ctx, cx, cy, elapsed, _pt.inside, c.kind, i);
       }
+    }
+
+    /* --- viewpoints ------------------------------------------------------
+     *
+     * Drawn for every world that publishes them, synchronised or not. A
+     * viewpoint is a hundred-foot tower you can see from the far side of the
+     * world - hiding its marker would not be mystery, it would be the map
+     * disagreeing with the window. What the marker says is whether you have
+     * BEEN there: hollow diamond for unclimbed, filled with a ring for
+     * synchronised, which is also the fast-travel list. */
+    const vps = this.viewpoints?.list;
+    if (vps && vps.length) {
+      for (let i = 0; i < vps.length; i++) {
+        const v = vps[i];
+        this._project(v.x, v.z, px, pz, sin, cos, scale);
+        this._viewpointMarker(ctx, cx, cy, elapsed, _pt.inside, !!v.synced, i);
+      }
+    }
+
+    /* --- relics ----------------------------------------------------------
+     *
+     * Under the crowd and over the floorplan, and gated on the reveal: see
+     * `Relics.markers` for why the gate exists rather than plotting all thirty
+     * from the first frame. `reveals` is one squared-distance test per synced
+     * viewpoint, so this is a handful of multiplies per relic per frame in the
+     * one world that has any, and a single length check in the ones that do
+     * not.
+     *
+     * The list itself is `Relics`' own module-level scratch, refilled per call
+     * and never kept: this getter is read from `Minimap.update`, which
+     * `HUD.update` calls every frame, and the house rule is no allocation on a
+     * frame path. Iterate it here; do not hold it. */
+    const relicList = this.relics?.markers;
+    if (relicList && relicList.length) {
+      const vpSys = this.viewpoints;
+      ctx.save();
+      ctx.fillStyle = '#ffd08a';
+      ctx.shadowColor = 'rgba(255,180,74,0.9)';
+      ctx.shadowBlur = 5;
+      for (let i = 0; i < relicList.length; i++) {
+        const r = relicList[i];
+        if (vpSys && !vpSys.reveals(r.x, r.z)) continue;
+        this._project(r.x, r.z, px, pz, sin, cos, scale);
+        // No rim chevron: a relic is a thing you stumble on inside a district
+        // you have opened, not a destination to be steered toward from afar.
+        if (!_pt.inside) continue;
+        // A small four-pointed spark - reads as "treasure" at 3 px and is not
+        // any of the circles, squares, chevrons or droplets already on here.
+        ctx.beginPath();
+        ctx.moveTo(_pt.x, _pt.y - 3.2);
+        ctx.lineTo(_pt.x + 1.1, _pt.y - 1.1);
+        ctx.lineTo(_pt.x + 3.2, _pt.y);
+        ctx.lineTo(_pt.x + 1.1, _pt.y + 1.1);
+        ctx.lineTo(_pt.x, _pt.y + 3.2);
+        ctx.lineTo(_pt.x - 1.1, _pt.y + 1.1);
+        ctx.lineTo(_pt.x - 3.2, _pt.y);
+        ctx.lineTo(_pt.x - 1.1, _pt.y - 1.1);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
     }
 
     // --- NPCs ------------------------------------------------------------
@@ -961,6 +1038,75 @@ export class Minimap {
     }
     ctx.closePath();
     ctx.fill();
+    ctx.restore();
+  }
+
+  /**
+   * A named vantage point at {@link _pt}.
+   *
+   * Two states and one silhouette, which is the opposite call from
+   * {@link _cacheMarker}: a cache's two kinds are two different journeys, but a
+   * viewpoint is always the same journey and the only question is whether it is
+   * done. Hollow diamond -> go and climb it. Filled, ringed and gently pulsing
+   * -> synchronised, district revealed, and on the travel list.
+   *
+   * Keeps a rim chevron when off-range, like a trader and a cache: a viewpoint
+   * the player cannot take a bearing on is a viewpoint they will not climb.
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {number} cx map centre x
+   * @param {number} cy map centre y
+   * @param {number} elapsed seconds
+   * @param {boolean} inside within the mapped range
+   * @param {boolean} synced already reached
+   * @param {number} i index, to decorrelate the pulses
+   */
+  _viewpointMarker(ctx, cx, cy, elapsed, inside, synced, i) {
+    const tint = synced ? '#8affd0' : '#cfe4ff';
+    const x = _pt.x;
+    const y = _pt.y;
+    ctx.save();
+    ctx.translate(x, y);
+
+    if (!inside) {
+      const a = Math.atan2(y - cy, x - cx);
+      ctx.save();
+      ctx.rotate(a);
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = tint;
+      ctx.beginPath();
+      ctx.moveTo(6, 0);
+      ctx.lineTo(-1.5, 3.2);
+      ctx.lineTo(-1.5, -3.2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      ctx.translate(Math.cos(a) * -6, Math.sin(a) * -6);
+    }
+
+    ctx.shadowColor = tint;
+    ctx.shadowBlur = synced ? 7 : 3;
+    ctx.strokeStyle = tint;
+    ctx.fillStyle = tint;
+    ctx.lineWidth = 1.4;
+
+    ctx.beginPath();
+    ctx.moveTo(0, -5);
+    ctx.lineTo(3.6, 0);
+    ctx.lineTo(0, 5);
+    ctx.lineTo(-3.6, 0);
+    ctx.closePath();
+    if (synced) ctx.fill();
+    else ctx.stroke();
+
+    if (synced) {
+      const pulse = 0.5 + 0.5 * Math.sin(elapsed * 1.4 + i * 1.7);
+      ctx.globalAlpha = 0.2 + 0.35 * (1 - pulse);
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.arc(0, 0, 6.5 + pulse * 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 

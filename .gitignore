@@ -29,3 +29,6 @@ output/
 
 # Personal Claude Code overrides (permissions etc). Must never be published.
 .claude/settings.local.json
+
+# Agent scratch probes - never commit
+.probe/

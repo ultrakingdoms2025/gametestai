@@ -256,6 +256,57 @@ export const ROLE_CAST = {
       },
     ],
   },
+  /* Sunspire Citadel. Added with `THEME_BY_WORLD.citadel`: until then the
+   * citadel took the station theme, so `castFor` handed a desert fortress
+   * Quartermaster Bex and Deck Warden Ilse and twenty-odd more of the same -
+   * silently, because every lookup on the theme ends in `?? station`. The
+   * personas follow the house recipe: the job, an opinion and a grievance,
+   * which is all a chat model needs to hold a short conversation. */
+  citadel: {
+    [ROLE.VENDOR]: [
+      {
+        name: 'Sitt Nadira',
+        persona:
+          'Keeps the spice and salt pitch under the gate arch, and has done since the last siege. Quick with a price, quicker with an opinion, and convinced every caravan that comes up the mule road arrives short-weighted.',
+      },
+      {
+        name: 'Pedlar Ghassan',
+        persona:
+          'Works a folding tray of oddments along the souk steps. Sells anything, buys anything, and swears on each trinket that it came off the great tower itself.',
+      },
+    ],
+    [ROLE.GUARD]: [
+      {
+        name: 'Wall-Serjeant Tariq',
+        persona:
+          'Holds the gate watch where the mesa road tops out. Unhurried and courteous, and perfectly clear about which roofs the garrison will pretend not to have seen you on.',
+      },
+      {
+        name: 'Watchwoman Sana',
+        persona:
+          'Walks the rampart round between bells. Blunt, observant, and keeps a private tally of everyone who has come off the souk roofs this season.',
+      },
+    ],
+    [ROLE.SPECTATOR]: [
+      {
+        name: 'Pilgrim Bahri',
+        persona:
+          'Came up the mule road to watch the sun strike the great tower and is reluctant to discuss anything else. Gentle, dazzled, asks far more than he answers.',
+      },
+    ],
+    [ROLE.LOITERER]: [
+      {
+        name: 'Goodman Rashid',
+        persona:
+          'A souk householder taking the shade. Proud of a roof he re-laid himself, deeply sceptical of the archive and everyone in it, and happy to gossip about the falconer.',
+      },
+      {
+        name: 'Old Yasmina',
+        persona:
+          'Sits out by the cistern most days. Sharp memory, sharper tongue, and three separate accounts of who the citadel was built against.',
+      },
+    ],
+  },
   /* Unreachable while MazeWorld sets crowd: false (see WorldRules.js and
    * NPCManager._populateHubs, which this table only feeds through castFor).
    * Written anyway so a lapsed crowd flag would surface lost travellers

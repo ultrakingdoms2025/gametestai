@@ -461,6 +461,96 @@ test('interact is quest-manager-only; every other NPC must use talk', () => {
   }
 });
 
+/* ====================================================================== */
+/* Purchase steps against the VENDOR's stock, not just the catalogue       */
+/* ====================================================================== */
+
+/**
+ * Every marketplace row's category, and the game item id it grants.
+ *
+ * Scraped, like everything else in this ruler, because the two ends live in
+ * different languages: the categories are in `site/lib/marketplaceCatalog.ts`
+ * and the vendor restrictions are `vendorCategories` arrays inside world files.
+ * Nothing in `src/` joins them, which is exactly why the join has to be made
+ * here.
+ */
+function catalogueRows() {
+  const src = readFileSync(new URL('../../site/lib/marketplaceCatalog.ts', import.meta.url), 'utf8');
+  const rows = [];
+  const re = /source_key:\s*'([^']+)'[\s\S]{0,700}?category:\s*'([a-z]+)'/g;
+  for (const m of src.matchAll(re)) {
+    const tail = src.slice(m.index, m.index + 900);
+    const ammo = /ammo_item:\s*'([^']+)'/.exec(tail);
+    rows.push({ key: m[1], category: m[2], item: ammo ? ammo[1] : null });
+  }
+  return rows;
+}
+
+/** `vendorCategories` authored per world, one entry per counter. */
+function vendorStockFor(worldFile) {
+  const src = readFileSync(new URL(`../../src/worlds/${worldFile}`, import.meta.url), 'utf8');
+  const out = [];
+  for (const m of src.matchAll(/vendorCategories:\s*\[([^\]]*)\]/g)) {
+    out.push([...m[1].matchAll(/'([a-z]+)'/g)].map((c) => c[1]));
+  }
+  return out;
+}
+
+test('a purchase step must name goods a vendor in that world actually stocks', () => {
+  /* THE DEFECT this half can see. Drop Two gave the citadel three counters and
+   * gave each one a `vendorCategories` list. `Marketplace.refreshCatalog`
+   * filters `_catalog` itself by that list, so a category no counter in the
+   * world stocks is a purchase step nobody can complete anywhere on the map.
+   * The previous ruler validated a purchase target against the ITEM catalogue
+   * and never against the counters, which is why it was green.
+   *
+   * ── AND THE HALF A MACHINE CANNOT READ ─────────────────────────────────
+   * The citadel's three counters cover the whole catalogue between them, so
+   * the assertion below passes for every citadel step - and the shipped defect
+   * was still real, because `_findVendor` only sees NPCs inside `VENDOR_RANGE`
+   * = 7 m (measured: Rafiq 19.7 m from Hafsa's stall, Bashir 34.2 m) and three
+   * steps sent the player to HER stall for a `medkit` (`health`, Rafiq) and an
+   * `arrow` (`weapons`, Bashir). What was wrong was the LABEL, and the worst
+   * of the three said "stand within a few paces of her stall" - a pronoun
+   * pointing back at the previous step. No regex over prose can be trusted to
+   * catch that without failing honest labels that name a counter in order to
+   * say it is the wrong one. That half is guarded by the ⚠ in
+   * `admin/lib/quests/citadel.mjs`'s header and by review, not by this file.
+   */
+  const rows = catalogueRows();
+  assert.ok(rows.length >= 20, `the marketplace catalogue scrape collapsed: ${rows.length} rows`);
+  assert.ok(rows.some((r) => r.key === 'pack_medkit' && r.category === 'health'),
+    'the scrape lost pack_medkit/health - the regex no longer matches the catalogue');
+
+  /* Worlds that RESTRICT. A world whose counters author no `vendorCategories`
+   * is a general trader and this test has nothing to say about it. */
+  const restricted = { citadel: 'CitadelWorld.js', station: 'StationWorld.js', race: 'RaceWorld.js' };
+  let checked = 0;
+  for (const [world, file] of Object.entries(restricted)) {
+    const stock = vendorStockFor(file);
+    assert.ok(stock.length, `${file} authors no vendorCategories any more - drop it from this list`);
+    const stocked = new Set(stock.flat());
+    for (const q of QUESTS) {
+      for (const s of q.steps ?? []) {
+        if (s.type !== 'purchase') continue;
+        if ((s.world ?? resolveQuestWorld(q)) !== world) continue;
+        // A trade KIND (`buy`/`sell`) is not a row in any catalogue, and
+        // selling is not category-gated: `Marketplace.sellables` reads the
+        // player's own bag.
+        const want = rows.filter((r) => r.key === s.target || r.item === s.target
+          || r.key.split('_').includes(s.target));
+        if (!want.length) continue;
+        checked++;
+        const cats = [...new Set(want.map((r) => r.category))];
+        assert.ok(cats.some((c) => stocked.has(c)),
+          `Q${q.n} step ${s.order}: "${s.target}" is category ${cats.join('/')} and no ${world} counter `
+          + `stocks it - the counters between them sell ${[...stocked].sort().join(', ')}`);
+      }
+    }
+  }
+  assert.ok(checked >= 3, `only ${checked} purchase steps resolved to a catalogue row - the join is vacuous`);
+});
+
 test('collect targets must be obtainable in the world that names them', () => {
   /* Three sources and no others: corpse drops (which need hostiles), caches,
    * and authored interior stashes. `DROP_TABLES` has station/medieval/sports
@@ -478,10 +568,18 @@ test('collect targets must be obtainable in the world that names them', () => {
   ok('collect', 'bullet', 'race', 'the station cache table is the race fallback and stocks bullets');
   ok('collect', 'relic_coin', 'race', 'RaceWorld authors an interior stash, and a common stash is a relic coin');
 
-  // Citadel: no drop table of its own, and no relic_coin in the station table
-  // it falls back to — so its relic coins come from its OWN cache table.
-  ok('collect', 'relic_coin', 'citadel', 'CACHE_TABLES.citadel stocks relic_coin');
-  assert.equal(VOCAB.dropTables.citadel, undefined, 'DROP_TABLES still has no citadel entry');
+  /* Citadel: it HAS a drop table of its own now, and the whole point of that
+   * table is what it refuses to contain. While it fell back to the station's,
+   * a quest could ask a player to collect rifle rounds and hull plate on a
+   * mesa that manufactures neither, and two shipped steps did exactly that. */
+  ok('collect', 'relic_coin', 'citadel', 'DROP_TABLES.citadel and CACHE_TABLES.citadel both stock relic_coin');
+  ok('collect', 'arrow', 'citadel', 'arrows are the local ammunition, from bodies and from caches alike');
+  assert.ok(VOCAB.dropTables.citadel, 'DROP_TABLES.citadel went away again — the station fallback is back');
+  for (const gone of ['bullet', 'fireball_charge', 'alloy_scrap']) {
+    const r = rejects('collect', gone, 'citadel',
+      'a station item the citadel only ever yielded through the DROP_TABLES fallback');
+    assert.match(r.detail, /the world yields/, 'the failure must list what the world DOES yield');
+  }
 
   // Shop-only goods are in ITEMS and in no table anywhere: unobtainable by
   // collecting, in every world.

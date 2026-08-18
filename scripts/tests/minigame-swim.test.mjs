@@ -314,7 +314,24 @@ test('the venue prompts on arrival and stands down for doors and portals', () =>
   pressE(rig);
   assert.equal(rig.mg.state, MINIGAME_STATE.IDLE, 'E belongs to the portal while one is in reach');
 
+  /* And the third claim, which is the citadel's.
+   *
+   * `Viewpoints` raises a leap-of-faith prompt within 3 m of a published launch
+   * point. In the citadel the great tower's launch beam tip stands 58.3 m and
+   * 24.1 m inside the `citadel_skyline` venue disc - which is r 60.8 / yTol
+   * 33.5 because a trial disc has to hold its whole route or `LEAVE_GRACE_S`
+   * abandons the run - so the venue prompt buried the leap prompt at the one
+   * place in the world it exists for, and E started a race off a diving board.
+   * Suppressing it HERE rather than in the HUD is what keeps the key and the
+   * words agreeing. */
   rig.bus.emit('portal:near', { portal: null });
+  rig.bus.emit('viewpoint:prompt', { text: 'Leap of faith — hay 46 m below', viewpointId: 'great-tower' });
+  rig.mg.update(STEP);
+  assert.equal(prompts().at(-1).text, null, 'a leap-of-faith prompt must suppress the venue prompt');
+  pressE(rig);
+  assert.equal(rig.mg.state, MINIGAME_STATE.IDLE, 'E belongs to nobody while the leap prompt is up');
+
+  rig.bus.emit('viewpoint:prompt', { text: null, viewpointId: null });
   rig.mg.update(STEP);
   assert.equal(prompts().at(-1).verb, 'Start');
   pressE(rig);

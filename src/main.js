@@ -47,6 +47,7 @@ import { Contracts } from './systems/Contracts.js';
 import { QuestSystem } from './systems/QuestSystem.js';
 import { AdminCheats } from './systems/AdminCheats.js';
 import { Relics } from './systems/Relics.js';
+import { Viewpoints } from './systems/Viewpoints.js';
 import { Interiors } from './systems/Interiors.js';
 import { AudioDirector } from './audio/AudioDirector.js';
 import { AudioMenu } from './ui/AudioMenu.js';
@@ -58,6 +59,7 @@ import { createSwimChallenge } from './minigames/SwimChallenge.js';
 import { createSkiRun } from './minigames/SkiRun.js';
 import { createTennisMatch } from './minigames/TennisMatch.js';
 import { createTrackRace } from './minigames/TrackRace.js';
+import { createRooftopTrial } from './minigames/RooftopTrial.js';
 import { TennisPose } from './minigames/TennisPose.js';
 import { MinigameUI } from './ui/MinigameUI.js';
 import { QuestBoard } from './ui/QuestBoard.js';
@@ -250,7 +252,22 @@ loadout.setInventory?.(inventory);
 const caches = new Caches({ bus, physics, player, loot, worldManager, waterVolumes });
 
 // Hidden collectibles that pay on pickup - the reason to look at the skyline.
-const relics = new Relics({ scene: engine.scene, bus, physics, player, economy, inventory, worldManager });
+// `cosmetics` and `mounts` ride along for the set prize: a quest can only pay
+// credits, and a thirty-relic sweep should end in something credits cannot buy.
+const relics = new Relics({
+  scene: engine.scene, bus, physics, player, economy, inventory, cosmetics, mounts, worldManager,
+});
+
+/* Viewpoint synchronisation - the consumer `world.viewpoints` never had.
+ *
+ * Arms itself off `world:changed` exactly as the race and minigame managers do,
+ * so a world that publishes the array gets the loop and one that does not costs
+ * a failed property read. It owns the relic-map reveal (`reveals(x, z)`, asked
+ * by `Minimap`) and the fast-travel anchor list the pause hub draws its Travel
+ * rows from. */
+const viewpoints = new Viewpoints({
+  bus, player, economy, inventory, cosmetics, mounts, worldManager,
+});
 
 // Enterable building interiors: doors, stairs, elevators and multi-floor
 // collectibles. Constructed after Loot so its world:changed collectible spawn
@@ -322,6 +339,16 @@ minigames.registerGame('tennis', (venue, ctx) =>
 minigames.registerGame('run', (venue, ctx) =>
   createTrackRace(venue, { ...ctx, mounts, worldManager, npcs: npcManager, engine })
 );
+/* Rooftop time trials. The closure lends the trial the shared NPC humanoid
+ * factory (shader-warm) and the frame hook its rival's run cycle needs, the
+ * worldManager so the checkpoint rings and the rival's body parent into the
+ * active world's group rather than the scene root, and `save` so the HUD can
+ * show a personal best that `SaveGame._recordTrial` already stores off
+ * `minigame:finished`. `save` is declared below this line and read only when a
+ * trial actually starts, which is long after module evaluation. */
+minigames.registerGame('rooftop', (venue, ctx) =>
+  createRooftopTrial(venue, { ...ctx, worldManager, npcs: npcManager, engine, save })
+);
 const minigameUI = new MinigameUI({ root: uiRoot, bus, input, minigames });
 /* The fourth and fifth late-pose modules, run as one pass. Assigned onto the
  * player rather than built by it, because the poses need the minigame manager
@@ -336,7 +363,12 @@ player.minigamePose = {
   },
 };
 
-const save = new SaveGame({ bus, player, worldManager, economy, loadout, mounts, input, inventory, cosmetics });
+const save = new SaveGame({
+  bus, player, worldManager, economy, loadout, mounts, input, inventory, cosmetics,
+  // The world-local progress layer. Absent from the snapshot until now, so
+  // 3,600 CR of relics and every synchronised viewpoint reset on each reload.
+  relics, viewpoints,
+});
 /* Ask the browser not to evict this origin's storage under pressure. Fire and
  * forget - it resolves to false on browsers that do not offer it, and nothing
  * downstream depends on the answer. */
@@ -419,7 +451,12 @@ window.addEventListener('pagehide', () => {
   } catch { /* best effort */ }
 });
 
-const hud = new HUD({ ...ctx, root: uiRoot, player, worldManager, npcManager, portals, caches, contracts, questBoard });
+const hud = new HUD({
+  ...ctx, root: uiRoot, player, worldManager, npcManager, portals, caches, contracts, questBoard,
+  // Straight through to `Minimap`, which had no relic layer at all, plus the
+  // reveal authority that decides which of those relics a player can see yet.
+  relics, viewpoints,
+});
 
 /* The Esc pause hub.
  *
@@ -461,6 +498,15 @@ hud.setPauseMenuItems([
        * own hide, or `openFromHub` needs an async-aware check. */
       { id: 'inventory', label: 'Inventory', hint: 'I', run: () => inventory.open() },
       { id: 'quests', label: 'Quest board', hint: 'J', run: () => questSystem.openBoard() },
+      /* Fast travel to the viewpoints already synchronised.
+       *
+       * A fixed block of `visible()`-gated rows rather than a submenu: the hub
+       * is built once at boot and re-reads every predicate on each open (see
+       * `HUD.showPauseOverlay`), so gated rows ARE a live list and the hub
+       * needs to know nothing about `Viewpoints`. They sit inside the Play
+       * group on purpose - a group of their own would render its heading in
+       * the four worlds that publish no viewpoints, with nothing beneath it. */
+      ...viewpoints.hubItems(),
       {
         id: 'map',
         label: 'Map',
@@ -592,7 +638,7 @@ if (overrides.dev) {
     engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
     waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, mountMenu, caches, contracts,
-  cheats, audio, audioMenu, relics, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
+  cheats, audio, audioMenu, relics, viewpoints, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   interiors, mazeMap, minigames, minigameUI,
     /* The only door out of this file the harness is allowed through. Kept
      * behind `__dev` rather than spread across GAME so it is obvious at a call
@@ -1589,6 +1635,10 @@ engine.onFrameUpdate((dt, elapsed) => {
     caches.update(dt);
     contracts.update(dt);
     relics.update(dt);
+    // After the relics: a viewpoint synchronisation reveals the district those
+    // relics are in, and reading the reveal in the frame it was written is what
+    // keeps the map from lagging the climb by one frame.
+    viewpoints.update(dt);
     interiors.update(dt);
     // After `interiors`, which is what publishes the door/lift prompt the
     // minigame venue stands down for — reading it in the same frame it was

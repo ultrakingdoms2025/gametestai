@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { Input, BINDABLE, RESERVED_CODES } from '../../src/core/Input.js';
 
 /**
@@ -165,4 +166,105 @@ test('requestLock only asks for fullscreen when the preference says so', async (
     if (saved === undefined) delete globalThis.document;
     else globalThis.document = saved;
   }
+});
+
+/* ------------------------------------------------------------------ */
+/* Crouch is not a modifier                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Ctrl was a second, hard-coded crouch binding for a long time, invisible to
+ * the rebinding panel and impossible to remove. A player found it the way these
+ * things are always found - by trying to use it: "ctrl does the same thing and
+ * I think that might be making it hard to roll".
+ *
+ * They were right, and there were three separate faults behind it:
+ *
+ *   1. Crouch kills sprint (`Player._sprinting` is gated on `!_crouching`) and
+ *      the ground dodge needs LEAP_MIN_SPEED to arm. Ctrl is a modifier, so it
+ *      gets HELD; held from a standstill it pins you at `crouchSpeed` and the
+ *      dodge can never fire. Tapping C works and holding Ctrl cannot.
+ *   2. Ctrl+W closes the tab outside fullscreen. `preventDefault` covers only
+ *      the scroll keys, and Keyboard Lock is in force only while
+ *      `document.fullscreenElement` is set - and fullscreen is a *preference*
+ *      the pause hub offers to turn off.
+ *   3. Ctrl+Shift is the Windows input-method switcher, and Ctrl+Shift+W is
+ *      exactly the dodge input. No web API can claim that combination.
+ *
+ * These pin the fix from both ends: the axis must ignore the modifier, and the
+ * event path must never let a Ctrl-modified key reach the game at all.
+ */
+
+/** Drive `_syncAxes` over a synthetic key set, without touching the DOM. */
+function axesFor(codes, binds = new Map()) {
+  const inp = Object.create(Input.prototype);
+  inp._keys = new Set(codes);
+  inp._bindsInverse = binds;
+  inp.state = {
+    forward: 0, right: 0, jump: false, sprint: false, crouch: false,
+    fire: false, aim: false, reload: false, interact: false,
+    lookX: 0, lookY: 0, wheel: 0,
+  };
+  inp._syncAxes();
+  return inp.state;
+}
+
+test('crouch ignores both Control keys', () => {
+  assert.equal(axesFor(['ControlLeft']).crouch, false, 'ControlLeft must not crouch');
+  assert.equal(axesFor(['ControlRight']).crouch, false, 'ControlRight must not crouch');
+  assert.equal(axesFor(['ControlLeft', 'ControlRight']).crouch, false);
+});
+
+test('crouch is on C, and follows a rebind', () => {
+  assert.equal(axesFor(['KeyC']).crouch, true, 'the shipped key must crouch');
+  // `_bindsInverse` maps the shipped code to whatever the player chose.
+  const rebound = new Map([['KeyC', 'KeyZ']]);
+  assert.equal(axesFor(['KeyZ'], rebound).crouch, true, 'a rebind must crouch');
+  assert.equal(axesFor(['KeyC'], rebound).crouch, false, 'the old key must stop crouching');
+});
+
+test('crouch does not kill the sprint input it is combined with', () => {
+  // The dodge is sprint-then-tap, so the two must be readable in one frame.
+  const s = axesFor(['KeyW', 'ShiftLeft', 'KeyC']);
+  assert.equal(s.crouch, true);
+  assert.equal(s.sprint, true);
+  assert.equal(s.forward, 1);
+});
+
+test('a Ctrl-modified key never reaches the game', () => {
+  // The guard lives in the `onKey` closure inside `_bind`, so this asserts the
+  // source rather than the behaviour: there must be no allow-list carve-out
+  // that lets a ctrlKey event through. Ctrl+W closing the tab while the game
+  // also acted on the W is precisely the defect being pinned.
+  const src = readFileSync(new URL('../../src/core/Input.js', import.meta.url), 'utf8');
+  assert.match(
+    src,
+    /if \(e\.metaKey \|\| e\.altKey \|\| e\.ctrlKey\) return;/,
+    'onKey must drop every modifier combination outright'
+  );
+  // Match the DECLARATION, not the name: the comment above it legitimately
+  // narrates why the allow-list was removed, and this repo's extent gate makes
+  // the same distinction by stripping comments before scanning for literals.
+  assert.doesNotMatch(
+    src,
+    /const\s+CTRL_GAME_KEYS\s*=/,
+    'the Ctrl allow-list must be gone, not merely unused'
+  );
+});
+
+test('the Control keys are reserved, so the panel cannot bind an action to them', () => {
+  for (const code of ['ControlLeft', 'ControlRight']) {
+    assert.ok(RESERVED_CODES.includes(code), `${code} must be reserved`);
+  }
+  // And the write guard must honour it, or storage fills with dead bindings.
+  const inp = Object.create(Input.prototype);
+  inp._binds = new Map();
+  inp._bindsInverse = new Map();
+  inp._rebuildBinds = () => {};
+  inp._saveBinds = () => {};
+  const crouch = BINDABLE.find((b) => b.action === 'crouch');
+  assert.equal(crouch.code, 'KeyC', 'crouch must ship on a non-modifier key');
+  // `setBinding` reports a result object, not a bare boolean.
+  assert.equal(inp.setBinding('KeyC', 'ControlLeft').ok, false, 'setBinding must refuse a modifier');
+  assert.equal(inp._binds.size, 0, 'and must not have written the refused binding');
 });

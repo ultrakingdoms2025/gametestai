@@ -199,6 +199,10 @@ export class Horse {
     this._headBob = 0;
 
     this._powerMul = 1;
+    /* The rider's consumable speed buff, read off `ctrl.speedMul` every fixed
+     * step and stacked on `_powerMul` there. A potion, not a purchase, so it is
+     * deliberately outside `applyPowers` and never persisted. */
+    this._buffMul = 1;
     this._accelMul = 1;
     this._shieldTier = 0;
     this._livery = null;
@@ -711,16 +715,23 @@ export class Horse {
     const throttle = ridden ? clamp(ctrl.throttle, -1, 1) : 0;
     const steer = ridden ? -clamp(ctrl.strafe, -1, 1) : 0;
     const gallop = ridden && !!ctrl.boost && throttle > 0.1;
+    /* Consumable speed buff (`MountManager._gatherControls`) times the
+     * purchased Speed tier. `pm` stands in for `_powerMul` everywhere below -
+     * the steering included, for the reason spelled out there: scaling the
+     * speed and not the turn rate widens the turning radius, and a potion must
+     * not undo the fix that closed that. */
+    this._buffMul = ridden && ctrl.speedMul > 0 ? ctrl.speedMul : 1;
+    const pm = this._powerMul * this._buffMul;
 
     /* ---- gait target ------------------------------------------------- */
     let target = 0;
-    if (throttle > 0.05) target = (gallop ? GALLOP_SPEED : CRUISE_SPEED * throttle) * this._powerMul;
+    if (throttle > 0.05) target = (gallop ? GALLOP_SPEED : CRUISE_SPEED * throttle) * pm;
     else if (throttle < -0.05) target = CRUISE_SPEED * 0.28 * throttle;  // rein back
 
     const rate = target > this.speed ? ACCEL * this._accelMul : BRAKE;
     this.speed = damp(this.speed, target, rate * 0.35, dt);
     if (Math.abs(this.speed) < 0.05) this.speed = 0;
-    this.speed = clamp(this.speed, -4, MAX_SPEED * this._powerMul);
+    this.speed = clamp(this.speed, -4, MAX_SPEED * pm);
 
     /* ---- steering ---------------------------------------------------- *
      * Rate falls off with speed. A horse that can pivot at a gallop stops
@@ -739,10 +750,10 @@ export class Horse {
      * whole upper third of its range. `turnRate` then takes the multiplier
      * itself, which is what actually holds v / omega put - a horse at k times
      * the speed rides the stock line k times faster rather than a lazier one.
-     * Stock is untouched to the bit: `_powerMul` is exactly 1, and both a
-     * multiply and a divide by 1 are exact in IEEE754. */
-    const sp01 = clamp(Math.abs(this.speed) / (MAX_SPEED * this._powerMul), 0, 1);
-    const turnRate = THREE.MathUtils.lerp(TURN_SLOW, TURN_FAST, sp01) * this._powerMul;
+     * Stock is untouched to the bit: `pm` is exactly 1 with no tier and no
+     * potion, and both a multiply and a divide by 1 are exact in IEEE754. */
+    const sp01 = clamp(Math.abs(this.speed) / (MAX_SPEED * pm), 0, 1);
+    const turnRate = THREE.MathUtils.lerp(TURN_SLOW, TURN_FAST, sp01) * pm;
     if (steer !== 0 && (Math.abs(this.speed) > 0.15 || !gallop)) {
       this.heading += steer * turnRate * dt;
     }

@@ -712,6 +712,10 @@ export class Hoverboard {
     this._alive = false;
 
     this._powerMul = 1;
+    /* The rider's consumable speed buff, read off `ctrl.speedMul` every fixed
+     * step and stacked on `_powerMul` there. A potion, not a purchase, so it is
+     * deliberately outside `applyPowers` and never persisted. */
+    this._buffMul = 1;
     this._accelMul = 1;
     this._shieldTier = 0;
     this._livery = null;
@@ -1015,6 +1019,13 @@ export class Hoverboard {
     const throttle = ridden ? ctrl.throttle : 0;
     const strafe = ridden ? ctrl.strafe : 0;
     const boost = ridden && !!ctrl.boost && throttle > 0;
+    /* Consumable speed buff (`MountManager._gatherControls`) times the
+     * purchased Speed tier. `pm` stands in for `_powerMul` everywhere below -
+     * the three heading terms included, for the reason spelled out there:
+     * scaling the speed and not the grip widens the turning radius, and a
+     * potion must not undo the fix that closed that. */
+    this._buffMul = ridden && ctrl.speedMul > 0 ? ctrl.speedMul : 1;
+    const pm = this._powerMul * this._buffMul;
 
     /* ---- heading: chase the look direction at a limited rate ---- */
     if (ridden) {
@@ -1039,9 +1050,9 @@ export class Hoverboard {
        * the same fraction of its own ceiling, so it gets the same grip); the
        * cap and the proportional gain then take the multiplier themselves,
        * which is what actually holds v / omega put. */
-      const grip = 1 - clamp01(this.speed / (BOOST_SPEED * this._powerMul * 1.35)) * 0.45;
-      const maxRate = 3.1 * grip * this._powerMul;
-      const rate = clamp(diff * 6.5 * this._powerMul, -maxRate, maxRate);
+      const grip = 1 - clamp01(this.speed / (BOOST_SPEED * pm * 1.35)) * 0.45;
+      const maxRate = 3.1 * grip * pm;
+      const rate = clamp(diff * 6.5 * pm, -maxRate, maxRate);
       this.heading += rate * dt;
       this._turnRate = damp(this._turnRate, rate, 10, dt);
     } else {
@@ -1052,7 +1063,7 @@ export class Hoverboard {
     this._boost = damp(this._boost, boost ? 1 : 0, boost ? 4.5 : 3, dt);
     this._boostActive = boost;
     let targetSpeed = 0;
-    if (throttle > 0) targetSpeed = THREE.MathUtils.lerp(CRUISE_SPEED, BOOST_SPEED, this._boost) * this._powerMul;
+    if (throttle > 0) targetSpeed = THREE.MathUtils.lerp(CRUISE_SPEED, BOOST_SPEED, this._boost) * pm;
     else if (throttle < 0) targetSpeed = -REVERSE_SPEED;
     // Asymmetric response: quick to spool up, quicker to shed speed on the
     // brake, and a long lazy coast when the rider lets go.

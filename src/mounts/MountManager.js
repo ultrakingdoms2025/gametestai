@@ -265,11 +265,11 @@ export class MountManager {
     this._powers = {};
 
     /** Reused control block - the mount API takes it every fixed step. */
-    this._ctrl = { throttle: 0, strafe: 0, yaw: 0, pitch: 0, up: 0, boost: false };
+    this._ctrl = { throttle: 0, strafe: 0, yaw: 0, pitch: 0, up: 0, boost: false, speedMul: 1 };
     /**
      * Dev/test override. Set fields on this object (see `?dev=1` harness use)
      * to drive a mount without pointer lock; null fields fall through to input.
-     * @type {null|{throttle?:number, strafe?:number, up?:number, boost?:boolean, yaw?:number, pitch?:number}}
+     * @type {null|{throttle?:number, strafe?:number, up?:number, boost?:boolean, yaw?:number, pitch?:number, speedMul?:number}}
      */
     this.debugControl = null;
 
@@ -903,6 +903,16 @@ export class MountManager {
     // browser shortcut), and crouch already covers both Ctrl and C.
     c.up = (s && s.jump ? 1 : 0) - (s && s.crouch ? 1 : 0);
     c.boost = !!(s && s.sprint);
+    /* The rider's consumable speed buff, carried onto the mount.
+     *
+     * `Player.speedMultiplier` is what a speed potion (ItemUse `speed_boost_*`
+     * -> `Player.boostSpeed`) actually sets, and before this it was read only
+     * by on-foot movement and by Swim - so a potion drunk in the saddle did
+     * precisely nothing, which is not what the shop sold. Every mount applies
+     * it on top of its own purchased Speed tier (`_powerMul`), so the two
+     * stack: baseline boost x tier x potion.
+     */
+    c.speedMul = Number(this.player?.speedMultiplier) || 1;
 
     const d = this.debugControl;
     if (d) {
@@ -912,6 +922,7 @@ export class MountManager {
       if (d.boost !== undefined) c.boost = d.boost;
       if (d.yaw !== undefined) c.yaw = d.yaw;
       if (d.pitch !== undefined) c.pitch = d.pitch;
+      if (d.speedMul !== undefined) c.speedMul = d.speedMul;
     }
     return c;
   }

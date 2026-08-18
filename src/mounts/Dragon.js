@@ -684,6 +684,10 @@ export class Dragon {
      * means the same thing whichever mount it is spent on.
      */
     this._powerMul = 1;
+    /* The rider's consumable speed buff, read off `ctrl.speedMul` every fixed
+     * step and stacked on `_powerMul` there. A potion, not a purchase, so it is
+     * deliberately outside `applyPowers` and never persisted. */
+    this._buffMul = 1;
     this._accelMul = 1;
     this._shieldTier = 0;
     this._fireTier = 0;
@@ -1842,6 +1846,13 @@ export class Dragon {
     const boost = ridden && !!ctrl.boost && throttle > 0;
     this._boost = damp(this._boost, boost ? 1 : 0, 3.2, dt);
     this._boostActive = boost;
+    /* Consumable speed buff (`MountManager._gatherControls`) times the
+     * purchased Speed tier. `pm` stands in for `_powerMul` everywhere below -
+     * the heading loop included, for the reason spelled out there: scaling the
+     * speed and not the turn authority widens the turning radius, and a potion
+     * must not undo the fix that closed that. */
+    this._buffMul = ridden && ctrl.speedMul > 0 ? ctrl.speedMul : 1;
+    const pm = this._powerMul * this._buffMul;
 
     /* ---- takeoff ---- */
     // A landing dragon aborts back into the air the moment the rider asks for
@@ -1900,11 +1911,11 @@ export class Dragon {
        * 48.73 / 45.13), Cinder 45.45 / 40.74 / 37.12 (was 45.45 / 41.63 /
        * 39.50), Aurora 43.26 / 38.85 / 35.55 (was 43.26 / 39.67 / 37.11).
        *
-       * Stock is untouched to the bit: `_powerMul` is exactly 1, and both a
-       * multiply and a divide by 1 are exact in IEEE754. */
-      const topSpeed = BOOST_SPEED * this._powerMul;
-      const maxRate = (1.55 - clamp01(this.speed / topSpeed) * 0.55) * this._powerMul;
-      const rate = clamp(diff * 2.6 * this._powerMul, -maxRate, maxRate);
+       * Stock is untouched to the bit: `pm` is exactly 1 with no tier and no
+       * potion, and both a multiply and a divide by 1 are exact in IEEE754. */
+      const topSpeed = BOOST_SPEED * pm;
+      const maxRate = (1.55 - clamp01(this.speed / topSpeed) * 0.55) * pm;
+      const rate = clamp(diff * 2.6 * pm, -maxRate, maxRate);
       this.heading += rate * dt;
       this._turnRate = damp(this._turnRate, rate, 5, dt);
     } else {
@@ -1921,7 +1932,7 @@ export class Dragon {
       // The multiplier rides on the powered flight speed only. Applying it to
       // the drift and back-pedal cases too would make an upgraded dragon
       // harder to park, which is not what a Power tier is sold as.
-      if (throttle > 0) targetSpeed = lerp(CRUISE_SPEED, BOOST_SPEED, this._boost) * this._powerMul;
+      if (throttle > 0) targetSpeed = lerp(CRUISE_SPEED, BOOST_SPEED, this._boost) * pm;
       else if (throttle < 0) targetSpeed = 4;
       else targetSpeed = 6.5; // a dragon does not hover for free; it drifts
       if (this.state === 'landing') targetSpeed = Math.min(targetSpeed, 5);

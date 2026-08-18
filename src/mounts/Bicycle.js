@@ -327,6 +327,10 @@ export class Bicycle {
     this._time = 0;
 
     this._powerMul = 1;
+    /* The rider's consumable speed buff, read off `ctrl.speedMul` every fixed
+     * step and stacked on `_powerMul` there. A potion, not a purchase, so it is
+     * deliberately outside `applyPowers` and never persisted. */
+    this._buffMul = 1;
     this._accelMul = 1;
     this._shieldTier = 0;
     this._livery = null;
@@ -804,11 +808,18 @@ export class Bicycle {
     const throttle = ridden && seated ? clamp(ctrl.throttle, -1, 1) : 0;
     const steerIn = ridden ? -clamp(ctrl.strafe, -1, 1) : 0;
     const sprint = ridden && seated && !!ctrl.boost && throttle > 0.1;
+    /* Consumable speed buff (`MountManager._gatherControls`) times the
+     * purchased Speed tier. `pm` stands in for `_powerMul` everywhere below.
+     * The bike's steering is not one of those places either: it comes from
+     * the bicycle model (bar angle over wheelbase), which is geometry and
+     * already answers to whatever speed the bike is actually doing. */
+    this._buffMul = ridden && ctrl.speedMul > 0 ? ctrl.speedMul : 1;
+    const pm = this._powerMul * this._buffMul;
 
     /* ---- drive and drag --------------------------------------------- *
      * There is no "hold this speed" here. Pedalling adds, everything else
      * takes away, and the top speed is simply where they balance. */
-    const top = (sprint ? SPRINT_SPEED : CRUISE_SPEED) * this._powerMul;
+    const top = (sprint ? SPRINT_SPEED : CRUISE_SPEED) * pm;
     // Freewheel drag: rolling resistance is constant, air resistance is not.
     // Computed once per step because the pedalling branch needs the same
     // number - see there for why it must not then be charged a second time.
@@ -819,7 +830,7 @@ export class Bicycle {
     // stale relative to drive - measured 8.642, a half-step integration
     // artefact rather than the true fixed point.
     const dragK = this.speed > 0
-      ? ROLL_DRAG + (AIR_DRAG / (this._powerMul * this._powerMul)) * this.speed * this.speed
+      ? ROLL_DRAG + (AIR_DRAG / (pm * pm)) * this.speed * this.speed
       : 0;
     let drive = 0;
     if (throttle > 0.05) {
@@ -847,7 +858,7 @@ export class Bicycle {
     // forwards only - `Math.max(0, ...)` on a bike being walked backwards would
     // stop it dead every step.
     if (throttle <= 0.05 && this.speed > 0) this.speed = Math.max(0, this.speed - dragK * dt);
-    this.speed = clamp(this.speed, -REVERSE_SPEED, MAX_SPEED * this._powerMul);
+    this.speed = clamp(this.speed, -REVERSE_SPEED, MAX_SPEED * pm);
     if (Math.abs(this.speed) < 0.02) this.speed = 0;
     // How hard the legs are working, for the rider's lean and the crank blur.
     this._drive = damp(this._drive, drive > 0.01 ? (sprint ? 1 : 0.55) : 0, 6, dt);

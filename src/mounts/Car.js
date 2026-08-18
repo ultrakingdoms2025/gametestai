@@ -798,6 +798,10 @@ export class Car {
      * `_shieldTier` is read by the collision code to soften impacts.
      */
     this._powerMul = 1;
+    /* The rider's consumable speed buff, read off `ctrl.speedMul` every fixed
+     * step and stacked on `_powerMul` there. A potion, not a purchase, so it is
+     * deliberately outside `applyPowers` and never persisted. */
+    this._buffMul = 1;
     this._accelMul = 1;
     this._shieldTier = 0;
     this._braking = false;
@@ -1352,6 +1356,14 @@ export class Car {
     const throttle = ridden ? ctrl.throttle : 0;
     const strafe = ridden ? ctrl.strafe : 0;
     const wantBoost = ridden && !!ctrl.boost && throttle > 0;
+    /* Consumable speed buff (`MountManager._gatherControls`) times the
+     * purchased Speed tier. `pm` stands in for `_powerMul` everywhere below, so
+     * a potion moves exactly the numbers a bought tier moves and no others. The
+     * car's steering is not one of them either: its cornering limit is a
+     * grip budget (LAT_GRIP / v), a lateral-acceleration ceiling that already
+     * answers to whatever speed the car is actually doing. */
+    this._buffMul = ridden && ctrl.speedMul > 0 ? ctrl.speedMul : 1;
+    const pm = this._powerMul * this._buffMul;
     const v = Math.abs(this.speed);
 
     /* ---- steering ---------------------------------------------------- */
@@ -1392,7 +1404,7 @@ export class Car {
     this._braking = braking;
     this._reversing = this.speed < -0.4;
     let targetSpeed = 0;
-    if (throttle > 0) targetSpeed = lerp(CRUISE_SPEED, BOOST_SPEED, this._boost) * this._powerMul;
+    if (throttle > 0) targetSpeed = lerp(CRUISE_SPEED, BOOST_SPEED, this._boost) * pm;
     else if (throttle < 0) targetSpeed = braking ? 0 : -REVERSE_SPEED;
 
     // Airborne wheels have nothing to push against: coast only.

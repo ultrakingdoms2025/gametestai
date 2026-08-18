@@ -128,6 +128,10 @@ export class Eagle {
 
     /** Purchased-power multipliers, 1 == stock (see MountManager.grantPower). */
     this._powerMul = 1;
+    /* The rider's consumable speed buff, read off `ctrl.speedMul` every fixed
+     * step and stacked on `_powerMul` there. A potion, not a purchase, so it is
+     * deliberately outside `applyPowers` and never persisted. */
+    this._buffMul = 1;
     this._accelMul = 1;
     this._staminaMul = 1;
     this._shieldTier = 0;
@@ -491,6 +495,14 @@ export class Eagle {
     // and requiring a second key for the obvious thing is the same trap again.
     if (climb > 0.01) wantBeat = true;
 
+    /* Consumable speed buff (`MountManager._gatherControls`) times the
+     * purchased Speed tier. `pm` stands in for `_powerMul` everywhere below -
+     * the turn authority included, for the reason spelled out there: scaling
+     * the speed and not the authority widens the turning radius, and a potion
+     * must not undo the fix that closed that. */
+    this._buffMul = ridden && ctrl.speedMul > 0 ? ctrl.speedMul : 1;
+    const pm = this._powerMul * this._buffMul;
+
     /* A requested landing overrides the stick.
      *
      * Held nose-down until the last few metres and then flared, which both
@@ -557,8 +569,8 @@ export class Eagle {
      * multiplying `turn` is what holds v / omega put. Applying the multiplier
      * after the clamp above scales the gain and the cap together, which is
      * exactly what the dragon does term by term. */
-    const authority = 1 - clamp(this.speed / (MAX_SPEED * this._powerMul), 0, 1) * 0.45;
-    turn *= authority * this._powerMul;
+    const authority = 1 - clamp(this.speed / (MAX_SPEED * pm), 0, 1) * 0.45;
+    turn *= authority * pm;
     this.heading += turn * dt;
 
     const bankTarget = clamp(-turn / TURN_RATE, -1, 1) * MAX_BANK;
@@ -576,7 +588,7 @@ export class Eagle {
      * gets there, which is what the stat says on the tin. */
     let dv = dive * 17;
     // Drag, rising with the square of speed, gives a natural terminal velocity.
-    dv -= (0.012 / (this._powerMul * this._powerMul)) * this.speed * this.speed;
+    dv -= (0.012 / (pm * pm)) * this.speed * this.speed;
     // Beating adds thrust as well as lift.
     if (this._beat > 0.01) dv += this._beat * 9;
     this.speed += dv * this._accelMul * dt;
@@ -587,7 +599,7 @@ export class Eagle {
      * with a bird attached. Dropping below {@link STALL} already costs real
      * altitude, which is punishment enough; the floor keeps some way on so the
      * bird can always be flown out of it. */
-    this.speed = clamp(this.speed, 4.5, MAX_SPEED * this._powerMul);
+    this.speed = clamp(this.speed, 4.5, MAX_SPEED * pm);
 
     /* ---- thermals ------------------------------------------------------ *
      * Derived from what is under the bird rather than authored: high, sunlit

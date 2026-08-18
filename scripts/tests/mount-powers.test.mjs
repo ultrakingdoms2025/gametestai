@@ -164,18 +164,24 @@ test('Dragon has a fire tier and exposes it', () => {
  * threshold.
  */
 const STEP = 1 / 60;
+/**
+ * `speedMul` is the rider's consumable buff, the second half of the ladder:
+ * `MountManager._gatherControls` copies `Player.speedMultiplier` onto the
+ * control block every fixed step and each mount multiplies it into its own
+ * purchased tier. Defaulted to 1 so every existing run is bit-identical.
+ */
 const RUN = {
-  car: { seconds: 12, spawnY: 0, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
-  horse: { seconds: 12, spawnY: 0, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
-  hoverboard: { seconds: 12, spawnY: 0, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
-  bicycle: { seconds: 20, spawnY: 0, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
+  car: { seconds: 12, spawnY: 0, ctrl: (m, speedMul = 1) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0, speedMul }) },
+  horse: { seconds: 12, spawnY: 0, ctrl: (m, speedMul = 1) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0, speedMul }) },
+  hoverboard: { seconds: 12, spawnY: 0, ctrl: (m, speedMul = 1) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0, speedMul }) },
+  bicycle: { seconds: 20, spawnY: 0, ctrl: (m, speedMul = 1) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0, speedMul }) },
   // Level flight, beating: steady speed is set by thrust vs v^2 drag. (Eagle.spawn ignores
   // position.y and places the bird at ground + 6.5; altitude does not enter its speed model.)
-  eagle: { seconds: 15, spawnY: 250, ctrl: (m) => ({ throttle: 0, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
-  dragon: { seconds: 15, spawnY: 30, flying: true, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 1, boost: true, yaw: m.heading, pitch: 0 }) },
+  eagle: { seconds: 15, spawnY: 250, ctrl: (m, speedMul = 1) => ({ throttle: 0, strafe: 0, up: 0, boost: true, yaw: m.heading, pitch: 0, speedMul }) },
+  dragon: { seconds: 15, spawnY: 30, flying: true, ctrl: (m, speedMul = 1) => ({ throttle: 1, strafe: 0, up: 1, boost: true, yaw: m.heading, pitch: 0, speedMul }) },
 };
 
-function terminalSpeed(id, C, powers) {
+function terminalSpeed(id, C, powers, speedMul = 1) {
   const spec = RUN[id];
   const m = new C(ctx);
   m.applyPowers(powers);
@@ -183,7 +189,7 @@ function terminalSpeed(id, C, powers) {
   if (spec.flying) { m.state = 'flying'; m.position.y = spec.spawnY; m._groundY = 0; }
   m.onMount?.();
   const steps = Math.round(spec.seconds / STEP);
-  for (let i = 0; i < steps; i++) m.fixedUpdate(STEP, i * STEP, spec.ctrl(m));
+  for (let i = 0; i < steps; i++) m.fixedUpdate(STEP, i * STEP, spec.ctrl(m, speedMul));
   const v = Math.abs(m.speed);
   m.dispose?.();
   return v;
@@ -224,9 +230,9 @@ test('a purchased Speed III reaches every mount (terminal speed rises ~36%)', ()
  * pass - fix the mount, or fix the control in this table.
  */
 const TURN = {
-  horse: { seconds: 8, ctrl: (m) => ({ throttle: 1, strafe: 1, up: 0, boost: true, yaw: m.heading, pitch: 0 }) },
-  eagle: { seconds: 8, ctrl: (m) => ({ throttle: 0, strafe: 0, up: 0, boost: true, yaw: m.heading + 0.6, pitch: 0 }) },
-  hoverboard: { seconds: 8, ctrl: (m) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading + 0.6, pitch: 0 }) },
+  horse: { seconds: 8, ctrl: (m, speedMul = 1) => ({ throttle: 1, strafe: 1, up: 0, boost: true, yaw: m.heading, pitch: 0, speedMul }) },
+  eagle: { seconds: 8, ctrl: (m, speedMul = 1) => ({ throttle: 0, strafe: 0, up: 0, boost: true, yaw: m.heading + 0.6, pitch: 0, speedMul }) },
+  hoverboard: { seconds: 8, ctrl: (m, speedMul = 1) => ({ throttle: 1, strafe: 0, up: 0, boost: true, yaw: m.heading + 0.6, pitch: 0, speedMul }) },
 };
 
 /**
@@ -235,7 +241,7 @@ const TURN = {
  * window rather than sampled on one frame. The first seconds are discarded so
  * the spin-up out of a standing start cannot colour the figure.
  */
-function turnRadius(id, C, tier) {
+function turnRadius(id, C, tier, speedMul = 1) {
   const spec = TURN[id];
   const m = new C(ctx);
   m.applyPowers({ power: tier });
@@ -247,7 +253,7 @@ function turnRadius(id, C, tier) {
   let swept = 0;
   for (let i = 0; i < steps; i++) {
     const h0 = m.heading;
-    m.fixedUpdate(STEP, i * STEP, spec.ctrl(m));
+    m.fixedUpdate(STEP, i * STEP, spec.ctrl(m, speedMul));
     if (i < from) continue;
     // Shortest-arc difference: heading is free to wrap, and a raw subtraction
     // would book a 2*PI jump as a lap's worth of turning.
@@ -278,6 +284,104 @@ test('Speed III does not widen the turning radius', () => {
       + `${b.radius.toFixed(2)} m (${b.speed.toFixed(1)} m/s, ${b.omega.toFixed(2)} rad/s) - x${ratio.toFixed(3)}, want < 1.15`
     );
   }
+});
+
+/**
+ * A speed potion must reach the mount.
+ *
+ * `Player.speedMultiplier` - what ItemUse's `speed_boost_*` items set through
+ * `Player.boostSpeed` - was read only by on-foot movement and by Swim, so a
+ * potion drunk in the saddle did nothing at all: the player paid for a buff
+ * and the horse kept walking at exactly the same speed. It now rides on
+ * `ctrl.speedMul` and every mount folds it into the same `pm` its purchased
+ * Speed tier uses.
+ *
+ * x1.5 nominal on all six, including the two whose top speed is a drag
+ * balance point rather than a target - the eagle and the bicycle land on 1.5
+ * exactly because their air-drag coefficient is divided by pm^2, which moves
+ * the balance point by pm. If one of these ever lands outside the bracket,
+ * fix the mount; the buff is a plain multiplier and there is nothing here to
+ * negotiate.
+ */
+test('a consumable speed buff multiplies every mount\'s top speed', () => {
+  for (const [id, C] of Object.entries(CLASSES)) {
+    const stock = terminalSpeed(id, C, {}, 1);
+    const buffed = terminalSpeed(id, C, {}, 1.5);
+    assert.ok(stock > 3, `${id}: stock terminal speed ${stock.toFixed(2)} - the run table does not drive this mount`);
+    const ratio = buffed / stock;
+    assert.ok(
+      ratio > 1.40 && ratio < 1.60,
+      `${id}: a x1.5 buff gave ${stock.toFixed(2)} -> ${buffed.toFixed(2)} m/s (x${ratio.toFixed(3)})`
+    );
+  }
+});
+
+/**
+ * The two are independent multipliers and must compound: the wish is baseline
+ * boost (free) x purchased Speed tier x active consumable. A buff that
+ * REPLACED the tier - `Math.max` of the two, say - would still pass the test
+ * above and quietly refund every player who had bought Speed III.
+ */
+test('a consumable speed buff stacks with a purchased Speed tier', () => {
+  for (const [id, C] of Object.entries(CLASSES)) {
+    const stock = terminalSpeed(id, C, {}, 1);
+    const both = terminalSpeed(id, C, { power: 3 }, 1.5);
+    const ratio = both / stock;
+    assert.ok(
+      Math.abs(ratio - 2.04) < 0.08,
+      `${id}: Speed III + x1.5 buff gave ${stock.toFixed(2)} -> ${both.toFixed(2)} m/s (x${ratio.toFixed(3)}, want x1.36 * 1.5 = 2.04)`
+    );
+  }
+});
+
+/**
+ * And a potion must not widen the turning RADIUS either. Same rig and the same
+ * reasoning as the Speed III case above - v / omega, with the buff in both
+ * terms - because the buff multiplies the very same `pm` the tier does, and
+ * scaling the speed while leaving the turn authority alone is exactly the
+ * defect that fix closed.
+ */
+test('a consumable speed buff does not widen the turning radius', () => {
+  for (const id of Object.keys(TURN)) {
+    const C = CLASSES[id];
+    const a = turnRadius(id, C, 0, 1);
+    const b = turnRadius(id, C, 0, 1.5);
+    for (const [what, r] of [['stock', a], ['buffed', b]]) {
+      assert.ok(r.omega > 0.2, `${id} ${what}: only turned ${r.omega.toFixed(3)} rad/s - the TURN table does not steer this mount`);
+      assert.ok(Number.isFinite(r.radius) && r.radius > 1, `${id} ${what}: radius ${r.radius}`);
+    }
+    const ratio = b.radius / a.radius;
+    assert.ok(
+      ratio < 1.15,
+      `${id}: a x1.5 buff turned ${a.radius.toFixed(2)} m (${a.speed.toFixed(1)} m/s, ${a.omega.toFixed(2)} rad/s) into `
+      + `${b.radius.toFixed(2)} m (${b.speed.toFixed(1)} m/s, ${b.omega.toFixed(2)} rad/s) - x${ratio.toFixed(3)}, want < 1.15`
+    );
+  }
+});
+
+/**
+ * The plumbing itself: `_gatherControls` must actually copy the player's live
+ * multiplier onto the block the mounts read, and a mount with no rider must
+ * not be buffed by a stale field. Driven through the real method on a bare
+ * prototype - the manager's constructor builds a scene.
+ */
+test('MountManager._gatherControls carries the rider speed buff onto the control block', async () => {
+  const { MountManager } = await import('../../src/mounts/MountManager.js');
+  const mm = Object.create(MountManager.prototype);
+  mm._ctrl = { throttle: 0, strafe: 0, yaw: 0, pitch: 0, up: 0, boost: false, speedMul: 1 };
+  mm.debugControl = null;
+  mm.input = { state: { forward: 1, right: 0, jump: false, crouch: false, sprint: true } };
+  mm.player = { yaw: 0, pitch: 0, speedMultiplier: 1.75 };
+  assert.equal(mm._gatherControls().speedMul, 1.75);
+  // No buff running: `Player.speedMultiplier` reads 1, not 0 or undefined.
+  mm.player.speedMultiplier = 1;
+  assert.equal(mm._gatherControls().speedMul, 1);
+  // A player object that has never heard of the buff must not zero the mounts.
+  mm.player = { yaw: 0, pitch: 0 };
+  assert.equal(mm._gatherControls().speedMul, 1);
+  // The dev harness can drive it, same as every other axis.
+  mm.debugControl = { speedMul: 2 };
+  assert.equal(mm._gatherControls().speedMul, 2);
 });
 
 /**

@@ -2310,12 +2310,32 @@ export class HUD {
   _updateMount(dt) {
     if (!this._mountId) return;
 
-    // Prefer the mount's own reservoir; simulate a plausible one otherwise so
-    // the meter is never a dead decoration.
+    /* A mount's `boost01` is an EFFORT readout, not a fuel gauge.
+     *
+     * Every one of the six answers "how hard am I boosting right now" -
+     * Horse.js:1005 is 1 only while galloping and 0 otherwise, Car.js:1869 is
+     * the damped `_boost` - and not one of them carries a reservoir at all
+     * (`boostCharge` is undefined on all six). Reading effort as a charge level
+     * parked the bar at zero and tagged it RECHARGING whenever the rider was
+     * standing still or cruising, which reads as "boost unavailable, go and buy
+     * a boost item". That is a lie: Shift boosts every mount at any time, and
+     * there is nothing to spend.
+     *
+     * So a reported effort only ever FILLS the bar; it can never drive the
+     * empty/RECHARGING state. That state is left to the two cases where the
+     * number really is a reservoir: a mount reporting `boostCharge` (none do
+     * yet), and the simulated one below, which keeps the meter from being a
+     * dead decoration on a mount that reports nothing at all.
+     */
     const live = this._mounts?.active;
-    const reported = live?.boost01 ?? live?.boostCharge ?? live?.boost;
-    if (typeof reported === 'number' && Number.isFinite(reported)) {
-      this._boost = clamp01(reported);
+    const effort = live?.boost01 ?? live?.boost;
+    const isEffort = typeof effort === 'number' && Number.isFinite(effort);
+    const charge = live?.boostCharge;
+    const isCharge = !isEffort && typeof charge === 'number' && Number.isFinite(charge);
+    if (isEffort) {
+      this._boost = clamp01(effort);
+    } else if (isCharge) {
+      this._boost = clamp01(charge);
     } else if (this._boostActive) {
       this._boost = Math.max(0, this._boost - BOOST_DRAIN * dt);
     } else {
@@ -2327,7 +2347,7 @@ export class HUD {
       this._boostWritten = w;
       this.boostFill.style.transform = `scaleX(${this._boost.toFixed(3)})`;
     }
-    const empty = this._boost < 0.12;
+    const empty = !isEffort && this._boost < 0.12;
     if (this.mountPanel.classList.contains('empty') !== empty) {
       this.mountPanel.classList.toggle('empty', empty);
     }

@@ -32,6 +32,21 @@ import * as THREE from 'three';
  * Citadel AFTER the oases are added to it, through `Caves.SolidField`, which
  * has never heard of an oasis plan.
  *
+ * ── DRAWN AND SWUM is not LOOKED AT ───────────────────────────────────────
+ *
+ * Every case below section 4 was green, and the oasis was a rectangle of flat
+ * saturated blue on a stepped grey ziggurat in the middle of a desert. Not one
+ * assertion in this file had anything to say about it, because every one of
+ * them was about whether the thing WORKS. A pool you cannot look at is a pool
+ * nobody walks to, which is the same failure as a pool you cannot climb out
+ * of, arriving by a different road.
+ *
+ * So section 4b measures the FORM: that the bank is sand rather than pool
+ * lining, that the waterline is not a rectangle, that the water is tinted and
+ * faded by its own depth, and that the sand which the irregular waterline
+ * makes necessary actually covers what it leaves dry. Each one is pinned to a
+ * number a photograph would have argued about.
+ *
  * ── Mutation report ───────────────────────────────────────────────────────
  *
  * Seventeen mutations of the KIT (not of the assertions) were applied one at a
@@ -50,9 +65,24 @@ import * as THREE from 'three';
  * coarse to hit a 2 m object; and the lattice-drift case agreed with any pitch
  * you like until it was made to measure ground that is not flat.
  *
+ * The form pass added ten more, each aimed at the case that claims to catch
+ * it: key the rings on the old `depth > 0` boolean again; flatten the shore
+ * function (twice - once against the outline, once against the strand); give
+ * every sand lobe a collider; drop the water's alpha channel; flatten the
+ * opacity ramp; emit no sand bars; seat a lobe on the HIGHEST surface under it
+ * instead of the lowest; drop the ghost clamp; and put the library's pool blue
+ * back. **10 of 10 went red.** Every assertion added in this pass was also
+ * reversed one at a time and the case re-run: **32 of 32 went red.**
+ *
+ * TWO of the ten found real defects rather than confirming a guard, and both
+ * are recorded in the kit: seating a lobe on the lowest surface under it is
+ * correct and buries 29% of the sand unless the placement keeps each lobe
+ * inside its own annulus, and the physics-side ghost probe read 2.30 m on a
+ * 0.28 m lobe because it cast its ray from under the masonry.
+ *
  * ── Cost ──────────────────────────────────────────────────────────────────
  * One shared Citadel build (~0.5 s) plus two oases and two site searches;
- * the whole file runs in about 5 s.
+ * the whole file runs in about 6 s.
  */
 
 /* ================================================================== */
@@ -134,11 +164,84 @@ const {
    * audits its result. The kit still exports both and
    * `citadel-traffic-live.test.mjs` covers the world's use of them. */
   oasisPlan, oasisProfile, settleOasis, auditVacancy,
-  auditShoreline, auditGrounded, buildOases, solidCost, triangleCount,
-  palmGeometry,
+  auditShoreline, auditGrounded, auditDressing, buildOases, solidCost, triangleCount,
+  palmGeometry, ringSurface, shoreInset, shoreRadius, waterShade, ringAt, depthAt,
   POOL_DEPTH, FLOAT_DEPTH, SWIM_ENTER_DEPTH, SWIM_EXIT_DEPTH, STEP_MAX,
-  MIN_DIVE, MAX_RELIEF, CAPSULE_R,
+  MIN_DIVE, MAX_RELIEF, CAPSULE_R, GHOST_MAX, SHORE_INSET, WATER_SEGMENTS,
 } = Oasis;
+
+/**
+ * THE BROADPHASE, read out of the grid the physics actually built.
+ *
+ * `_grid` is private and this is the only place in the suite that opens it.
+ * The alternative is to re-derive the cell mapping here, which is a second
+ * opinion about the thing being measured - and `Oasis.COLLIDER_SEG_M` is a
+ * whole essay about a number that came out of this map.
+ */
+function worstBroadphaseCell(physics) {
+  let count = 0;
+  let key = null;
+  let cells = 0;
+  let entries = 0;
+  for (const [k, list] of physics._grid) {
+    cells++;
+    entries += list.length;
+    if (list.length > count) { count = list.length; key = k; }
+  }
+  const cs = physics.cellSize;
+  const x = key === null ? 0 : (((key >> 13) & 0x1fff) - 2048) * cs;
+  const z = key === null ? 0 : ((key & 0x1fff) - 2048) * cs;
+  return { count, cells, entries, x, z };
+}
+
+/**
+ * What the worst cell WOULD be if every dressing lobe carried a collider.
+ *
+ * The counterfactual, computed with `Physics._gridRange`'s own rule - a box
+ * goes into the grid on its BOUNDING SPHERE, radius `|halfExtents|` - so it is
+ * the same arithmetic the real insertion runs, applied to boxes that were
+ * never inserted. This is the ablation on the claim that the sand is free.
+ */
+function broadphaseWithDressing(physics, oases) {
+  const cs = physics.cellSize;
+  /** @type {Map<number, number>} */
+  const counts = new Map();
+  for (const [k, list] of physics._grid) counts.set(k, list.length);
+  let added = 0;
+  for (const o of oases) {
+    const { plan } = o;
+    const cos = Math.cos(plan.yaw);
+    const sin = Math.sin(plan.yaw);
+    for (const dr of o.dressing) {
+      const x = plan.x + dr.lx * cos + dr.lz * sin;
+      const z = plan.z - dr.lx * sin + dr.lz * cos;
+      const r = Math.hypot(dr.w * 0.5, dr.h * 0.5, dr.d * 0.5);
+      const minX = Math.floor((x - r) / cs);
+      const maxX = Math.floor((x + r) / cs);
+      const minZ = Math.floor((z - r) / cs);
+      const maxZ = Math.floor((z + r) / cs);
+      for (let cx = minX; cx <= maxX; cx++) {
+        for (let cz = minZ; cz <= maxZ; cz++) {
+          const k = ((cx + 2048) << 13) | (cz + 2048);
+          counts.set(k, (counts.get(k) ?? 0) + 1);
+          added++;
+        }
+      }
+    }
+  }
+  let worst = 0;
+  for (const n of counts.values()) if (n > worst) worst = n;
+  return { worst, added };
+}
+
+/** Is a local point inside a dressing lobe's footprint? Plan-local, XZ only. */
+function inLobe(dr, lx, lz) {
+  const dx = lx - dr.lx;
+  const dz = lz - dr.lz;
+  const bx = dx * Math.cos(dr.rot) - dz * Math.sin(dr.rot);
+  const bz = dx * Math.sin(dr.rot) + dz * Math.cos(dr.rot);
+  return Math.abs(bx) <= dr.w * 0.5 && Math.abs(bz) <= dr.d * 0.5;
+}
 
 const DT = 1 / 60;
 /** Drop at which fall damage first appears. `citadel-reach-kit.mjs`. */
@@ -540,6 +643,469 @@ test('WaterVolumes finds both pools without being told where they are', async ()
     floorCheck(`${p.id} centre depth x100`, Math.round(SWIM_ENTER_DEPTH * 100) + 50,
       Math.round(depth * 100), Math.round(POOL_DEPTH * 100));
   }
+});
+
+/* ================================================================== */
+/* 4b. THE FORM: it has to read as an oasis, not as a tank             */
+/* ================================================================== */
+
+/**
+ * The four cases below exist because the tank passed every case above it in
+ * this file and still looked wrong: a rectangle of flat blue on a stepped grey
+ * ziggurat in the middle of a desert. Everything a screenshot shows and no
+ * assertion here caught is a hole in this suite, so each one is pinned to a
+ * number that a photograph would have argued about.
+ */
+
+test('the bank is sand, and the boolean that made it a pool lining is gone', () => {
+  /* THE DEFECT, restated as a test.
+   *
+   * Every ring used to be keyed on `r.depth > 0`. On an apron course `depth`
+   * is a fiction - the depth the water WOULD have if the tank had no walls -
+   * so the first apron course, which is dry ground on the desert side of a
+   * wall, tested true and came out in cobblestone in the pool-lining tints.
+   * All fifteen of them did. That is the grey ziggurat.
+   *
+   * The pin: `a1` and `c2` have the SAME `depth` by construction, 0.15 m, and
+   * one of them is a bank and the other is a strand under water. If they ever
+   * agree about their surface again, the bug is back.
+   */
+  const plan = oasisPlan({ id: 'unit', x: 0, z: 0, bedY: 0 });
+  const a1 = plan.rings.find((r) => r.id === 'a1');
+  const c2 = plan.rings.find((r) => r.id === 'c2');
+  assert.ok(Math.abs(a1.depth - c2.depth) < 1e-9,
+    `a1 and c2 no longer share a depth (${a1.depth} vs ${c2.depth}) - re-derive this case`);
+  const sa = ringSurface(a1);
+  const sc = ringSurface(c2);
+  console.info(`  a1 (bank, depth ${a1.depth.toFixed(2)}) -> ${sa.key} #${sa.tint.toString(16)}`
+    + ` | c2 (strand, depth ${c2.depth.toFixed(2)}) -> ${sc.key} #${sc.tint.toString(16)}`);
+  assert.notEqual(sa.tint, sc.tint,
+    'the bank and the strand are painted the same, on the same fictional depth');
+
+  /* And no part of the tank is stone any more except the two things somebody
+   * built. `stone.cobble` on a terrace course is the failure being ruled out. */
+  for (const r of plan.rings) {
+    const surf = ringSurface(r);
+    assert.equal(surf.key, 'dirt.ground',
+      `ring ${r.id} is keyed to "${surf.key}" - a terrace course is ground, not masonry`);
+  }
+
+  /* The bank washes OUT into the desert as it descends: the outermost course
+   * has to be closer to the sand beside it than the innermost is. `DESERT` is
+   * derived in the kit from the terrain's own colour over the same material. */
+  const inner = ringSurface(plan.rings.find((r) => r.id === 'a1')).tint;
+  const outer = ringSurface(plan.rings.find((r) => r.id === 'a7')).tint;
+  const lum = (h) => ((h >> 16) & 255) + ((h >> 8) & 255) + (h & 255);
+  console.info(`  bank ramp: a1 #${inner.toString(16)} (${lum(inner)}) ->`
+    + ` a7 #${outer.toString(16)} (${lum(outer)})`);
+  assert.ok(lum(outer) > lum(inner),
+    'the bank does not lighten toward the desert - it will read as a plinth');
+});
+
+test('the pool is not a rectangle', async () => {
+  /* Measured on the BUILT geometry, not on the plan: the outer ring of the
+   * water mesh, in the tank's own frame, against the rectangle it used to be.
+   *
+   * The number is the perpendicular offset from that rectangle's nearest face,
+   * and the claim is its RANGE - a pool inset by a constant is still a
+   * rectangle, just a smaller one.
+   */
+  const b = await built();
+  for (const o of b.kit.oases) {
+    const p = o.plan;
+    const g = o.water.mesh.geometry;
+    const pos = g.attributes.position;
+    let lo = Infinity;
+    let hi = -Infinity;
+    // The outer ring is the last `WATER_SEGMENTS` vertices.
+    for (let i = pos.count - WATER_SEGMENTS; i < pos.count; i++) {
+      const lx = Math.abs(pos.getX(i));
+      const lz = Math.abs(pos.getZ(i));
+      // Perpendicular gap to whichever face this vertex belongs to.
+      const gap = Math.min(p.water.hx - lx, p.water.hz - lz);
+      if (gap < lo) lo = gap;
+      if (gap > hi) hi = gap;
+    }
+    const wander = hi - lo;
+    console.info(`  ${p.id.padEnd(12)} waterline stands ${lo.toFixed(2)}..${hi.toFixed(2)} m`
+      + ` inside the ${(p.water.hx * 2).toFixed(1)} x ${(p.water.hz * 2).toFixed(1)} m rectangle`
+      + ` - it wanders ${wander.toFixed(2)} m`);
+    /* FLOOR 1.00 m, and the ablation below is why it is not lower: a pool
+     * inset by a CONSTANT still measures 0.27 m on this probe, because the
+     * rectangle fit runs a bearing into a corner rather than into a face. So a
+     * metre is roughly four times the noise floor, and it is a metre of
+     * shoreline the player watches move as they walk round. The ceiling is
+     * `SHORE_INSET`: the most the sand behind it can follow without breaking
+     * the ghost bound. */
+    floorCheck(`${p.id} waterline wander, cm`, 100, Math.round(wander * 100),
+      Math.round(SHORE_INSET * 100));
+    assert.ok(hi <= SHORE_INSET + 0.01,
+      `the waterline pulls back ${hi.toFixed(2)} m, past the ${SHORE_INSET} m the sand can fill`);
+  }
+
+  /* ABLATION. The same measurement against a plan whose shore function is
+   * flat - i.e. a rectangle, pulled in by a constant, which is what this
+   * replaced. It must come out at the probe's own noise floor and nowhere
+   * near the shipped pools. */
+  const flat = oasisPlan({ id: 'flat', x: 0, z: 0, bedY: 0 });
+  flat.shore = new Float64Array(15);   // every amplitude zero
+  let flo = Infinity;
+  let fhi = -Infinity;
+  for (let i = 0; i < 360; i++) {
+    const t = (i / 360) * Math.PI * 2;
+    const r = shoreRadius(flat, t);
+    const gap = Math.min(flat.water.hx - Math.abs(Math.cos(t) * r),
+      flat.water.hz - Math.abs(Math.sin(t) * r));
+    flo = Math.min(flo, gap);
+    fhi = Math.max(fhi, gap);
+  }
+  console.info(`  ablation: a constant inset "wanders" ${(fhi - flo).toFixed(3)} m`
+    + ' - the rectangle-fit artefact at the corners, and the probe\'s noise floor');
+  assert.ok(fhi - flo < 0.4,
+    `a constant inset reads ${(fhi - flo).toFixed(2)} m of wander - the probe cannot`
+    + ' tell an irregular pool from a smaller rectangle');
+});
+
+test('the water is depth-tinted and fades out at the shore', async () => {
+  const b = await built();
+  for (const o of b.kit.oases) {
+    const g = o.water.mesh.geometry;
+    const col = g.attributes.color;
+    /* FOUR components. Three renders opaque: three.js only compiles vertex
+     * alpha when `color.itemSize === 4`, which is a silent failure and the
+     * exact trap this shoreline fade would fall into. */
+    assert.equal(col.itemSize, 4,
+      'the water carries RGB and not RGBA - the shoreline fade is not compiled');
+    const mat = o.water.mesh.material;
+    assert.equal(mat.vertexColors, true, 'the water material ignores its own vertex colours');
+    assert.equal(mat.transparent, true, 'the water material is opaque - nothing fades');
+
+    let aLo = 1;
+    let aHi = 0;
+    let shallow = null;
+    let deep = null;
+    const pos = g.attributes.position;
+    for (let i = 0; i < col.count; i++) {
+      const a = col.getW(i);
+      if (a < aLo) aLo = a;
+      if (a > aHi) aHi = a;
+      const d = depthAt(o.plan, pos.getX(i), pos.getZ(i));
+      if (!shallow || d < shallow.d) shallow = { d, r: col.getX(i), g: col.getY(i), b: col.getZ(i) };
+      if (!deep || d > deep.d) deep = { d, r: col.getX(i), g: col.getY(i), b: col.getZ(i) };
+    }
+    const lum = (c) => c.r + c.g + c.b;
+    console.info(`  ${o.plan.id.padEnd(12)} alpha ${aLo.toFixed(2)}..${aHi.toFixed(2)},`
+      + ` shallow ${shallow.d.toFixed(2)} m luma ${lum(shallow).toFixed(2)}`
+      + ` -> deep ${deep.d.toFixed(2)} m luma ${lum(deep).toFixed(2)}`);
+    /* See-through at the strand. The whole point of the fade is that the sand
+     * under the edge shows through it, so the rim has to be well under half. */
+    assert.ok(aLo <= 0.35, `the shallowest water is ${aLo.toFixed(2)} opaque - the shore is a hard line`);
+    assert.ok(aHi >= 0.85, `the deepest water is only ${aHi.toFixed(2)} opaque - the pool has no body`);
+    // And it is DEPTH that drives it, not noise: the deep end is darker.
+    assert.ok(lum(deep) < lum(shallow) * 0.7,
+      'the deep water is not appreciably darker than the shallows');
+  }
+
+  /* ABLATION. The ramp itself, at the two ends of the range it is written for.
+   * A `waterShade` that returned one colour would satisfy every "is there a
+   * colour attribute" check above and none of these. */
+  const a = waterShade(0.15, [0, 0, 0, 0]).slice();
+  const c = waterShade(POOL_DEPTH, [0, 0, 0, 0]).slice();
+  console.info(`  ablation: shade at 0.15 m [${a.map((v) => v.toFixed(2)).join(', ')}]`
+    + ` vs at ${POOL_DEPTH} m [${c.map((v) => v.toFixed(2)).join(', ')}]`);
+  assert.ok(c[3] - a[3] > 0.4, 'the depth ramp barely moves the opacity');
+  assert.ok(a[1] > c[1] + 0.2, 'the shallows are not lighter in green than the deep floor');
+});
+
+test('the ripple has something to sample: the water carries a uv, and the maps that read it', async () => {
+  /* THE REGRESSION THE REWRITE INTRODUCED AND THIS FILE COULD NOT SEE.
+   *
+   * The old water was a `PlaneGeometry`, which carries a `uv` for nothing. The
+   * fan that replaced it wrote `position`, `color` and the index and stopped -
+   * and a bound texture with no `uv` does not fail, it samples the constant
+   * generic attribute (0, 0). One texel, for all 568 m2 of pool, moving as one
+   * sheet under `MaterialLibrary._animate`. That is the exact artefact the
+   * recipe's SECOND counter-scrolling normal layer exists to prevent, so the
+   * whole stated reason for reusing `water.pool` was gone and every case in
+   * this file stayed green.
+   *
+   * Two halves, and the defect needs both to be visible:
+   *
+   *   1. the shipped geometry has a `uv` that spans more than one tile. An
+   *      attribute of the right shape full of zeros is the same single texel;
+   *   2. the material still HAS maps that read it - asserted against the REAL
+   *      `MaterialLibrary`, because `built()` stubs the library with a bare
+   *      `MeshStandardMaterial` and a stub with no maps cannot lose any.
+   */
+  const b = await built();
+  let worst = Infinity;
+  for (const o of b.kit.oases) {
+    const g = o.water.mesh.geometry;
+    const uv = g.attributes.uv;
+    assert.ok(uv, `${o.plan.id}: the water plane has no uv - the ripple normal map has one texel`);
+    assert.equal(uv.itemSize, 2, 'the water uv is not a 2-component attribute');
+    assert.equal(uv.count, g.attributes.position.count, 'the water uv does not cover every vertex');
+    let uLo = Infinity; let uHi = -Infinity; let vLo = Infinity; let vHi = -Infinity;
+    for (let i = 0; i < uv.count; i++) {
+      const u = uv.getX(i); const v = uv.getY(i);
+      if (u < uLo) uLo = u; if (u > uHi) uHi = u;
+      if (v < vLo) vLo = v; if (v > vHi) vHi = v;
+    }
+    const tiles = Math.min(uHi - uLo, vHi - vLo);
+    console.info(`  ${o.plan.id.padEnd(12)} uv spans ${(uHi - uLo).toFixed(2)} x ${(vHi - vLo).toFixed(2)} tiles`);
+    worst = Math.min(worst, tiles);
+  }
+  /* Floor 4 tiles. The pools are 24.4 x 21.4 m across the rectangle and the
+   * recipe is authored for 4 m a tile, so the honest value is ~5; a uv that is
+   * present, correctly shaped and all one value scores 0. */
+  floorCheck('the water uv spans, in tiles', 4, worst.toFixed(2), 5.35,
+    '(ceiling = the pool rectangle / tileMeters)');
+
+  /* And the maps are still bound. `map` is the one that had to go - it is the
+   * library's chlorinated blue mottle - and the three that read `uv` for the
+   * ripple are the reason the geometry has to carry one at all. */
+  const { MaterialLibrary } = await import('../../src/gfx/Materials.js');
+  const renderer = {
+    capabilities: { getMaxAnisotropy: () => 4, isWebGL2: true },
+    initTexture() {}, getContext: () => ({}),
+    getRenderTarget: () => null, setRenderTarget() {}, render() {}, clear() {},
+  };
+  const lib = new MaterialLibrary(renderer);
+  const base = lib.get('water.pool');
+  assert.equal(base.userData.tileMeters, Oasis.WATER_TILE_METRES,
+    `the library authors water.pool for ${base.userData.tileMeters} m a tile and the water `
+    + `geometry divides by ${Oasis.WATER_TILE_METRES} - the ripple is at the wrong scale`);
+  const m = Oasis.oasisWaterMaterial({ mat: (k) => lib.get(k).clone() });
+  assert.equal(m.map, null, 'the library\'s chlorinated blue mottle is still on the pool');
+  assert.ok(m.normalMap, 'the ripple normal map is gone - nothing on this surface moves');
+  assert.ok(m.clearcoatNormalMap,
+    'the second, counter-scrolling normal layer is gone - the ripple is one sliding sheet');
+  assert.ok(m.roughnessMap, 'the water lost its roughness map');
+  // The scroll is on the TEXTURE, which the clone shares, so it reaches this
+  // material. That sharing is the entire argument for reusing the recipe.
+  assert.equal(m.normalMap, base.normalMap, 'the clone re-baked the normal map - the scroll cannot reach it');
+  assert.ok(lib._animated.length > 0, 'nothing in the library animates - water.pool lost its scroll');
+  const before = base.normalMap.offset.x;
+  lib.update(1.0);
+  assert.notEqual(base.normalMap.offset.x, before, 'the ripple offset does not move under update()');
+  lib.dispose();
+});
+
+test('every metre of exposed strand is sand, not a dry gutter under the plane', async () => {
+  /* THE FAILURE THE SHORE FUNCTION COULD HAVE INTRODUCED.
+   *
+   * The waterline pulls back by up to `SHORE_INSET`; what it leaves behind is
+   * shelf standing BELOW the plane, which reads as water held up by nothing -
+   * strictly worse than the rectangle. The sand bars are generated from the
+   * same function so that cannot happen, and this is the proof: walk the
+   * annulus between the waterline and the crest and ask whether a dressing
+   * lobe standing at or above strand level covers every point of it.
+   */
+  const b = await built();
+  for (const o of b.kit.oases) {
+    const p = o.plan;
+    const crest = p.rings.find((r) => r.id === 'crest');
+    const strand = p.rings.find((r) => r.id === 'c2');
+    let checked = 0;
+    let bare = 0;
+    let worstAt = null;
+    for (let i = 0; i < 720; i++) {
+      const t = (i / 720) * Math.PI * 2;
+      const ex = Math.cos(t);
+      const ez = Math.sin(t);
+      const rOut = 1 / Math.max(Math.abs(ex) / crest.ihx, Math.abs(ez) / crest.ihz);
+      const rIn = shoreRadius(p, t);
+      if (rOut - rIn < 0.12) continue;
+      for (let k = 0.1; k < rOut - rIn; k += 0.15) {
+        const lx = ex * (rIn + k);
+        const lz = ez * (rIn + k);
+        checked++;
+        let covered = false;
+        for (const dr of o.dressing) {
+          if (dr.top < strand.top - 0.02) continue;
+          if (inLobe(dr, lx, lz)) { covered = true; break; }
+        }
+        if (!covered) {
+          bare++;
+          if (!worstAt) worstAt = `(${lx.toFixed(1)}, ${lz.toFixed(1)})`;
+        }
+      }
+    }
+    console.info(`  ${p.id.padEnd(12)} ${checked} probes across the exposed strand,`
+      + ` ${bare} bare${worstAt ? ` (first at ${worstAt})` : ''}`);
+    floorCheck(`${p.id} strand probes taken`, 1500, checked, checked);
+    assert.equal(bare, 0,
+      `${p.id}: ${bare} of ${checked} points of exposed strand are not filled -`
+      + ` the water plane ends over dry ground at ${worstAt}`);
+  }
+
+  /* ABLATION. The same sweep with the sand bars taken away. It has to find the
+   * gutter, or it is a sweep over ground that was never at risk. */
+  const o = b.kit.oases[0];
+  const p = o.plan;
+  const strand = p.rings.find((r) => r.id === 'c2');
+  const crest = p.rings.find((r) => r.id === 'crest');
+  const withoutBars = o.dressing.filter((dr) => dr.top < strand.top - 0.02);
+  let bare = 0;
+  let checked = 0;
+  for (let i = 0; i < 720; i++) {
+    const t = (i / 720) * Math.PI * 2;
+    const ex = Math.cos(t);
+    const ez = Math.sin(t);
+    const rOut = 1 / Math.max(Math.abs(ex) / crest.ihx, Math.abs(ez) / crest.ihz);
+    const rIn = shoreRadius(p, t);
+    if (rOut - rIn < 0.12) continue;
+    for (let k = 0.1; k < rOut - rIn; k += 0.15) {
+      checked++;
+      if (!withoutBars.some((dr) => inLobe(dr, ex * (rIn + k), ez * (rIn + k)))) bare++;
+    }
+  }
+  console.info(`  ablation: with the bars removed, ${bare} of ${checked} strand probes are bare`);
+  assert.ok(bare > checked * 0.8,
+    'removing every sand bar left the strand covered - the sweep is not measuring them');
+});
+
+/* ================================================================== */
+/* 4c. What the sand cost, which has to be nothing                     */
+/* ================================================================== */
+
+test('no dressed sand stands higher than one bank course', async () => {
+  /* THE DRESSING RULE. The sand is visual only, so the price is that a player
+   * can walk through it, and the bound is that the tallest thing they can walk
+   * through is one course - the step they were taking anyway.
+   */
+  const b = await built();
+  for (const o of b.kit.oases) {
+    const a = auditDressing(o.plan, o.dressing);
+    console.info(`  ${o.plan.id.padEnd(12)} ${a.count} lobes, worst ghost`
+      + ` ${a.worstGhost.toFixed(3)} m of ${GHOST_MAX} at ${a.worstAt},`
+      + ` ${a.bevelled} bevelled`);
+    floorCheck(`${o.plan.id} sand lobes`, 200, a.count, a.count);
+    assert.ok(a.ok, `${o.plan.id}: a lobe stands ${a.worstGhost.toFixed(2)} m over the ground`
+      + ` under it, past the ${GHOST_MAX} m bound, at ${a.worstAt}`);
+    /* And every one of them is under `BEVEL_MIN` on its smallest side, which
+     * is what keeps the sand at 12 triangles a lobe instead of 108. */
+    assert.equal(a.bevelled, 0,
+      `${o.plan.id}: ${a.bevelled} lobes are big enough for Batch.box to bevel - 9x the cost`);
+
+    /* THE SAME NUMBER, ASKED OF THE PHYSICS INSTEAD OF THE PLAN.
+     *
+     * `auditDressing` calls the kit's own `dressFloor`, and `dress` clamps
+     * against that same function - so on its own the audit can only ever
+     * agree with itself, and a `dressFloor` that returned the highest surface
+     * under a lobe instead of the lowest would sail through it. This asks the
+     * REAL collider set what is under each lobe and measures the ghost against
+     * that, which is the same "emitted is not present" rule the rest of this
+     * file runs on. Probed from just above the lobe's own top, so the ray
+     * cannot start inside the shade roof or a palm.
+     */
+    let physWorst = -Infinity;
+    let physAt = null;
+    let probed = 0;
+    const cos = Math.cos(o.plan.yaw);
+    const sin = Math.sin(o.plan.yaw);
+    for (const dr of o.dressing) {
+      const x = o.plan.x + dr.lx * cos + dr.lz * sin;
+      const z = o.plan.z - dr.lx * sin + dr.lz * cos;
+      /* FROM THE CREST DOWN, not from the lobe's own top.
+       *
+       * A lobe seated below the tread it overlaps - which the kit allows, and
+       * which its own note at the corner wedges explains - starts a ray from
+       * its top UNDER the masonry, and the ray then runs to the desert and
+       * reports a 2.30 m ghost on a 0.28 m lobe. That is a broken probe, not a
+       * broken lobe. Started at the crest the ray meets the tank first, and
+       * 0.30 m over it is the same offset `the tank cannot be fallen into`
+       * uses to pass under the shade roof and the well curb. */
+      const ground = b.physics.groundHeight(x, z, o.plan.crestY + 0.3, 12);
+      if (ground === null) continue;
+      probed++;
+      const ghost = dr.top - ground;
+      if (ghost > physWorst) {
+        physWorst = ghost;
+        physAt = `${dr.key} at (${dr.lx.toFixed(1)}, ${dr.lz.toFixed(1)})`;
+      }
+    }
+    console.info(`  ${o.plan.id.padEnd(12)} against the real colliders: ${probed} lobes probed,`
+      + ` worst ghost ${physWorst.toFixed(3)} m at ${physAt}`);
+    floorCheck(`${o.plan.id} lobes probed against physics`, 200, probed, o.dressing.length);
+    /* The same bound, plus a centimetre for the ray landing on a bevelled
+     * course edge rather than on its flat top. */
+    assert.ok(physWorst <= GHOST_MAX + 0.01,
+      `${o.plan.id}: the collider set says a lobe stands ${physWorst.toFixed(2)} m over the`
+      + ` ground under it - past the ${GHOST_MAX} m bound - at ${physAt}`);
+  }
+
+  /* ABLATION. Raise one lobe by a course and a half. The audit must refuse it,
+   * and it must name the lobe rather than just going red. */
+  const o = b.kit.oases[0];
+  const broken = o.dressing.map((dr, i) => (i === 3 ? { ...dr, top: dr.top + 0.6 } : dr));
+  const bad = auditDressing(o.plan, broken);
+  console.info(`  ablation: one lobe raised 0.60 m -> worst ghost ${bad.worstGhost.toFixed(2)} m`
+    + ` at ${bad.worstAt}, ok=${bad.ok}`);
+  assert.ok(!bad.ok, 'a lobe standing 0.6 m over its own ground passed the dressing audit');
+});
+
+test('the sand costs nothing in the broadphase, and it would if it were solid', async () => {
+  /* THE MEASUREMENT THIS WHOLE SECTION IS BUILT AROUND.
+   *
+   * `Oasis.COLLIDER_SEG_M` records that the worst broadphase cell in the world
+   * is 63, at (-312, -96), which is the SAND-MIRROR'S WEST BANK - the exact
+   * ground the dressing wants to pile sand on - and that getting it there from
+   * 97 cost 200 extra colliders. So the sand registers none, and this asserts
+   * both halves: the real number, and what it would have been.
+   */
+  const b = await built();
+  const real = worstBroadphaseCell(b.physics);
+  const counter = broadphaseWithDressing(b.physics, b.kit.oases);
+  const lobes = b.kit.oases.reduce((n, o) => n + o.dressing.length, 0);
+  console.info(`  worst cell ${real.count} at (${real.x}, ${real.z}),`
+    + ` ${real.cells} cells, ${real.entries} entries, ${b.physics.colliders.length} colliders`);
+  console.info(`  counterfactual: ${lobes} sand lobes as colliders would add`
+    + ` ${counter.added} grid entries and take the worst cell to ${counter.worst}`);
+
+  /* The ceiling `COLLIDER_SEG_M` bought, restated where a regression would be
+   * read rather than inferred. */
+  assert.ok(real.count <= 63,
+    `the worst broadphase cell is ${real.count} against the 63 the collider split bought`);
+  /* And the counterfactual is doing work: if solid sand cost nothing either,
+   * this case proves nothing about the choice not to make it solid. */
+  assert.ok(counter.worst > real.count,
+    `solid sand would leave the worst cell at ${counter.worst} - this case is measuring nothing`);
+
+  /* The sand is not there, physically. Sampled at each lobe's own centre, one
+   * centimetre under its own top - which is above the course it stands on by
+   * construction, so anything solid there is a collider the kit registered for
+   * a lobe. */
+  let solid = 0;
+  let outside = 0;
+  let solidAt = null;
+  for (const o of b.kit.oases) {
+    const cos = Math.cos(o.plan.yaw);
+    const sin = Math.sin(o.plan.yaw);
+    for (const dr of o.dressing) {
+      /* Lobes on the tank only. The toe drift stands OUTSIDE the footprint on
+       * desert this file never levelled, and it is sunk into it on purpose -
+       * `containsPoint` there is answering about the heightfield, not about a
+       * collider the kit registered, and four of them read solid for exactly
+       * that reason. `ringAt` is the discriminator. */
+      if (!ringAt(o.plan, dr.lx, dr.lz)) { outside++; continue; }
+      const under = Oasis.surfaceAt(o.plan, dr.lx, dr.lz);
+      // Only meaningful where the lobe's top clears the ground it sits on.
+      if (dr.top - under < 0.06) continue;
+      const x = o.plan.x + dr.lx * cos + dr.lz * sin;
+      const z = o.plan.z - dr.lx * sin + dr.lz * cos;
+      if (b.physics.containsPoint(new THREE.Vector3(x, dr.top - 0.01, z))) {
+        solid++;
+        if (!solidAt) solidAt = `${o.plan.id} ${dr.key} at (${dr.lx.toFixed(1)}, ${dr.lz.toFixed(1)})`;
+      }
+    }
+  }
+  console.info(`  ${solid} of ${lobes - outside} lobes on the tank read as solid to the`
+    + ` physics (${outside} toe drifts skipped: they are buried in the desert)`
+    + `${solidAt ? ` - first ${solidAt}` : ''}`);
+  floorCheck('lobes the solidity probe could test', 400, lobes - outside, lobes);
+  assert.equal(solid, 0,
+    `${solid} sand lobes registered a collider - see the dressing rule in Oasis.js`);
 });
 
 /* ================================================================== */
@@ -1048,7 +1614,7 @@ test('the oasis is what finally makes a sunken cache possible in the Citadel', a
 /* 7. Cost                                                             */
 /* ================================================================== */
 
-test('one oasis costs three draw calls of its own and merges the rest', async () => {
+test('one oasis costs three draw calls of its own, and seven more in the host batch', async () => {
   const b = await built();
   const world = b.world;
   const worldTris = (() => {
@@ -1066,7 +1632,8 @@ test('one oasis costs three draw calls of its own and merges the rest', async ()
   for (const o of b.kit.oases) {
     const c = o.cost;
     console.info(`  ${o.plan.id.padEnd(12)} ${c.boxes} boxes`
-      + ` (${c.bevelled} bevelled, ${c.plain} plain) = ${c.triangles} tri merged into the host batch`
+      + ` (${c.bevelled} bevelled, ${c.plain} plain, ${c.dressed} of them sand`
+      + ` = ${c.dressedTriangles} tri) = ${c.triangles} tri merged into the host batch`
       + ` + water ${o.water.triangles} + ${o.palms.count} palms ${o.palms.triangles}`
       + ` = ${c.submitted} submitted, ${c.draws} own draw calls,`
       + ` ${o.colliders.length} colliders, ${o.water.area.toFixed(0)} m2 of water`);
@@ -1084,23 +1651,69 @@ test('one oasis costs three draw calls of its own and merges the rest', async ()
     assert.equal(c.draws, 3,
       `${o.plan.id} adds ${c.draws} draw calls - the terraces are not merging into the host batch`);
     /* The structure itself. The palms are counted separately because they are
-     * a dial (`ctx.palms`) and the tank is not. */
-    assert.ok(c.triangles < 12500,
+     * a dial (`ctx.palms`) and the tank is not.
+     *
+     * 15,500 and 32,000, RAISED from 12,500 and 29,000 when the sand landed,
+     * and both are re-derived rather than nudged. The tank's own masonry did
+     * not change - the terraces are the same boxes in different tints - and
+     * the increase is the dressing, which is broken out below so the two can
+     * never be confused again. Measured on the shipped tanks:
+     *
+     *                 masonry   of that, sand   submitted
+     *   palm-well      13,008       2,760        29,000
+     *   sand-mirror    14,160       2,724        30,152
+     *
+     * The two differ by 1,152 for a reason that predates this and is not the
+     * sand - their sand is within 40 triangles of each other. The sand-mirror
+     * sits on 0.835 m of relief against the palm-well's 0.302, so its rings
+     * run deeper, more of them clear `BEVEL_MIN` on their smallest side, and a
+     * bevelled box is nine boxes' worth of triangles. The ceilings are set 6-9%
+     * over the worse of the two, which is the margin they carried before. */
+    assert.ok(c.triangles < 15500,
       `${o.plan.id}'s masonry is ${c.triangles} triangles`);
-    assert.ok(c.submitted < 29000,
+    assert.ok(c.submitted < 32000,
       `${o.plan.id} submits ${c.submitted} triangles`);
+    /* THE SAND, priced separately, and the floor is what stops it being
+     * quietly deleted the next time somebody is short of triangles. Every
+     * lobe is a 12-triangle plain box by construction - see the dressing
+     * rule - so this is the lobe count times twelve and nothing else. */
+    floorCheck(`${o.plan.id} sand triangles`, 2400, c.dressedTriangles, c.triangles);
+    assert.equal(c.dressedTriangles, c.dressed * 12,
+      `${o.plan.id}: ${c.dressed} sand lobes cost ${c.dressedTriangles} triangles,`
+      + ' which is not 12 each - something in the dressing is being bevelled');
     // The palm fields are frustum-cullable, which the world's own are not.
     for (const m of o.palms.meshes) {
       const r = m.boundingSphere?.radius ?? Infinity;
       assert.ok(r < 40, `${m.name} has a ${r.toFixed(1)} m sphere - it will never be culled`);
     }
   }
-  /* What the host batch received, and it is the other half of the draw-call
-   * claim: every key here is a bucket `CitadelWorld` ALREADY flushes -
-   * `stone.cobble`, `plaster.wall`, `wood.beam`, `wood.plank` and
-   * `thatch.roof` all appear in its own `B.box` calls - so the merged geometry
-   * rides into a mesh that exists whether or not there is an oasis.
-   * `grass.field` is the one exception and it is named rather than hidden. */
+  /* What the host batch received - and it is the OTHER HALF OF THE BILL, which
+   * this case used to get wrong.
+   *
+   * It used to argue that a key `CitadelWorld` already flushes elsewhere costs
+   * nothing, because the geometry "rides into a mesh that exists whether or not
+   * there is an oasis". That is true of a host that merges the oasis into its
+   * world-wide buckets. `CitadelWorld` does not: it opens a `Batch` PER OASIS
+   * and flushes it as `oasis:<id>:<key>` (`CitadelWorld.js:4569`), for the
+   * measured reason that the two sites are 210 m apart and one shared mesh
+   * comes back from the district splitter as many more leaves than two. So in
+   * this world every DISTINCT KEY a tank touches is one more mesh and one more
+   * draw call, whether or not the key is used anywhere else.
+   *
+   * That is not theory. The art pass added a seventh key, `dirt.ground`, and
+   * the built world went from 164 scene meshes to 166: exactly
+   * `oasis:palm-well:dirt.ground` and `oasis:sand-mirror:dirt.ground`. TWO
+   * things emit it - the bank repainted off `stone.cobble`/`plaster.wall` (186
+   * boxes over the two tanks) and the sand dressing (431) - so it survives the
+   * removal of either, and neither looks like a draw call from where it is
+   * written: one is a tint change and the other is dressing that deliberately
+   * costs no colliders. Nothing here or in `citadel-budgets` could see it,
+   * because both counted only what the KIT emits.
+   *
+   * So the COUNT is what prices the draw calls and the count is what is
+   * asserted. `CITADEL_KEYS` stays, demoted to what it can honestly say: which
+   * of these keys the Citadel paints anywhere else, which is worth knowing when
+   * the oasis palette is being chosen and is not a draw-call argument. */
   const CITADEL_KEYS = new Set([
     'stone.castle', 'stone.cobble', 'plaster.wall', 'wood.beam', 'wood.plank',
     'thatch.roof', 'roof.tile', 'dirt.ground', 'fabric.banner',
@@ -1108,16 +1721,32 @@ test('one oasis costs three draw calls of its own and merges the rest', async ()
   const fresh = [];
   for (const [key, rec] of b.hostBuckets) {
     console.info(`  host bucket ${key.padEnd(14)} ${String(rec.boxes).padStart(4)} boxes,`
-      + ` ${rec.bevelled} bevelled${CITADEL_KEYS.has(key) ? '' : '   <- NEW bucket in this world'}`);
+      + ` ${rec.bevelled} bevelled${CITADEL_KEYS.has(key) ? '' : '   <- the Citadel paints nothing else with this'}`);
     if (!CITADEL_KEYS.has(key)) fresh.push(key);
   }
-  floorCheck('material buckets the tank merges into', 4, b.hostBuckets.size, b.hostBuckets.size);
+  floorCheck('material buckets the tank merges into', 4, b.hostBuckets.size, 7,
+    '(ceiling = one mesh per key, per oasis, in this host)');
   assert.deepEqual(fresh, ['grass.field'],
-    `the oases introduce ${fresh.length} new material buckets: ${fresh.join(', ')}`);
+    `the oases paint with materials the Citadel uses nowhere else: ${fresh.join(', ')}`);
+  /* SEVEN keys, so seven host meshes per oasis on top of the kit's three, and
+   * the world reports exactly that. Held as equality in both directions: this
+   * is a draw-call bill and a key added by accident is the way it grows. */
+  assert.equal(b.hostBuckets.size, 7,
+    `the tanks paint with ${b.hostBuckets.size} materials, so each one costs `
+    + `${b.hostBuckets.size} host meshes and not the 7 the cost notes are written against`);
+  for (const p of b.world.traffic.oases) {
+    assert.equal(p.hostMeshes, b.hostBuckets.size,
+      `${p.id} flushed ${p.hostMeshes} host meshes for ${b.hostBuckets.size} keys - the two `
+      + 'have come apart, so the bucket count no longer prices the draw calls');
+    assert.equal(p.draws, p.kitDraws + p.hostMeshes,
+      `${p.id}'s reported ${p.draws} draw calls are not its ${p.kitDraws} kit meshes `
+      + `plus its ${p.hostMeshes} host meshes`);
+  }
 
   const pct = (totalTris / worldTris) * 100;
+  const hostDraws = b.world.traffic.oases.reduce((a, o) => a + o.hostMeshes, 0);
   console.info(`  two oases: ${totalTris} triangles on a ${worldTris} triangle world`
-    + ` (+${pct.toFixed(1)}%), ${totalDraws} own draw calls + 1 shared bucket,`
+    + ` (+${pct.toFixed(1)}%), ${totalDraws} kit draw calls + ${hostDraws} host meshes,`
     + ` ${b.physics.colliders.length - b.baseColliders} colliders on ${b.baseColliders}`);
   /* Most of that is palms, and palms are what an oasis IS. The world already
    * spends 46 of them; these are the dial `ctx.palms` turns. */

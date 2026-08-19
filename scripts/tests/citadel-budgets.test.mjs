@@ -20,26 +20,42 @@
  * number is measured" was three stages stale. These are this file's own
  * printed values on the current tree.
  *
- *                              HALF 200, shipped     HALF 450, the Reach   + the caravans
- *   world triangles               306-324k                  484,520            541,168
- *   scene meshes / draws                48                      136                164
- *   triangles per draw call          ~6,700                    3,563              3,300
- *   worst bounding sphere           282.9 m                  126.9 m            126.9 m
- *   triangles culled, worst mesa       0.0%                    17.9%              16.4%
- *   triangles culled, souk alley       0.0%                    36.7%              43.1%
- *   triangles culled, worst ring          -                     4.4%               3.9%
- *   triangles culled, worst ring          -                   21,240             21,240
- *   resident geometry              28.59 MB                 43.34 MB           47.45 MB
- *   colliders                        ~3,500                    3,883              4,225
- *   broadphase cells                  5,776                    3,742              3,868
- *   worst owned build slice           192 ms                   16.7 ms            16.7 ms
+ *                              HALF 200, shipped   HALF 450, the Reach   + the caravans   + the art pass
+ *   world triangles               306-324k                484,520           541,168          547,704
+ *   scene meshes / draws                48                    136               164              166
+ *   triangles per draw call          ~6,700                  3,563             3,300            3,299
+ *   worst bounding sphere           282.9 m                126.9 m           126.9 m          126.9 m
+ *   triangles culled, worst mesa       0.0%                  17.9%             16.4%            16.2%
+ *   triangles culled, souk alley       0.0%                  36.7%             43.1%            43.1%
+ *   triangles culled, worst ring          -                   4.4%              3.9%             3.9%
+ *   triangles culled, worst ring          -                 21,240            21,240           21,240
+ *   resident geometry              28.59 MB               43.34 MB          47.27 MB         48.49 MB
+ *   colliders                        ~3,500                  3,883             4,425            4,425
+ *   broadphase cells                  5,776                  3,742             3,830            3,830
+ *   worst owned build slice           192 ms                 16.7 ms           14.5 ms          17.4 ms
  *
- * The third column is the caravan drop: two stepped oases and eight wayside
- * wells out in the flats, 56,648 triangles and 342 colliders of content in the
- * 810,000 m2 the player reported as empty. Its two visible costs are the draw
- * calls (+28) and the ring culling SHARE - and the share fell only because the
- * denominator grew, which is why the count is now asserted beside it and why
- * the draw-call bound is now paired with a rate. See the two notes at C3.
+ * THE THIRD COLUMN IS RE-MEASURED AND THREE OF ITS NUMBERS WERE WRONG. It read
+ * 4,225 colliders, 3,868 broadphase cells and 47.45 MB resident. 092740c was
+ * checked out into a sandbox and this file run against it: 4,425 colliders,
+ * 3,830 cells, 47.27 MB. Which is the header's own thesis landing on the header
+ * a second time - a column copied forward is not a column measured.
+ *
+ * The FOURTH column is the camel and oasis art pass, and its whole cost is
+ * +6,536 triangles and +2 draw calls. Both are the oases: +510 dressing boxes
+ * at 12 triangles each is +6,120, the finer water fan is +208 triangles a pool,
+ * and the two draw calls are a seventh material bucket, `dirt.ground`, opened
+ * in each tank's own batch by the sand and the repainted bank together - either
+ * of them alone would have opened it. The camel rebuilt to +656 triangles an
+ * animal and NO NUMBER IN THIS TABLE CAN SEE IT: `CitadelWorld.build`
+ * constructs no `BeastBody` at all, the herds are streamed. `camel.test.mjs`
+ * prices them.
+ *
+ * The caravan drop is two stepped oases and eight wayside wells out in the
+ * flats, 56,648 triangles and 342 colliders of content in the 810,000 m2 the
+ * player reported as empty. Its two visible costs are the draw calls (+28) and
+ * the ring culling SHARE - and the share fell only because the denominator
+ * grew, which is why the count is now asserted beside it and why the draw-call
+ * bound is now paired with a rate. See the two notes at C3.
  *
  * The resident figure is post-LOD and counts everything the world holds, not
  * only what is in the scene graph: 36.75 MB of drawn geometry plus 6.60 MB of
@@ -484,11 +500,20 @@ test('FLOOR: C3 - the frustum now has something to reject, from every framing', 
    * and eight wayside wells (two buckets split to five leaves each) take the
    * Citadel from 136 to 164.
    *
+   * 166 NOW, and the +2 is the oases again. Each tank's masonry is one mesh per
+   * DISTINCT MATERIAL KEY - `_buildTraffic` gives each oasis a batch of its own
+   * - and the art pass opened a seventh, `dirt.ground`, for the repainted bank
+   * and the sand drifted over it. Two draw calls, from a tint change and some
+   * set dressing. Nothing in this file could see it: the kit's own `cost.draws`
+   * counts only the three meshes the KIT makes, and it was the number both cost
+   * notes quoted. `citadel-oasis.test.mjs` holds the bucket count against
+   * `hostMeshes` now.
+   *
    * A COUNT IS THE WRONG BOUND ON ITS OWN, and that is why the rate is asserted
    * with it. What costs frame time is submitted draws against the work they
    * carry, and on that measure the Citadel is well ahead of the number 150 came
    * from: medieval ships 150 draws against 260k triangles (1,733 per draw), and
-   * the Citadel is 164 against 541,168 (3,300 per draw). Raising the count and
+   * the Citadel is 166 against 547,704 (3,299 per draw). Raising the count and
    * flooring the rate is a stronger gate than the count alone - it fails on the
    * day somebody adds fifty meshes of nothing, which the old bound would have
    * passed at 149. */
@@ -743,6 +768,68 @@ test('FLOOR: C5 - no build slice this world owns carries more than a frame of wo
     `one slice registered ${worstWork.colliders} colliders in "${worstWork.label}"; floor 250`);
   floorCheck('C5  colliders between two yields', 250, worstWork.colliders, 2500,
     '(ceiling = _buildSouk unsliced)');
+
+  /* ── WHERE THE COLLIDER PROXY IS BLIND, AND THE SECOND MEASURE ────────────
+   *
+   * The proxy holds because colliders and geometry scaled together in every
+   * pass it was derived from. SET DRESSING BREAKS THAT BY DESIGN. The oasis
+   * kit's dressing rule is `collide: false` - sand drifted over a terrace must
+   * not be something the player walks into - so its lobes contribute EXACTLY
+   * ZERO to the quantity above, however many of them there are.
+   *
+   * That is not hypothetical either. The art pass put 510 more dressing boxes
+   * into the two tanks (634 -> 1,144 host-batch boxes; the BEVELLED count is
+   * unchanged at 182, so every one of the new ones is a plain 12-triangle box)
+   * and took the oasis build from 13.7-17.3 ms to 19.9-25.9 ms for the pair,
+   * warm, three runs each on this machine. The collider count moved by 0 and
+   * this case stayed green at 8/8. "citadel-budgets is green" was therefore not
+   * evidence that the slice budget had been respected; the guard could not see
+   * that class of work at all.
+   *
+   * So the boxes are counted too, in the one place the world publishes them.
+   * The conversion is measured the same way the collider one was: 1,144 boxes
+   * in 22.6 ms mean of build gives ~51 boxes per ms, and the slower of the two
+   * trees measured gives ~37, so a 24 ms slice is ~890 boxes at the pessimistic
+   * rate. There is ONE `breathe` per tank (`CitadelWorld.js:4583`), so a tank
+   * IS a slice and the per-tank count is the per-slice count.
+   *
+   * WHAT THIS STILL DOES NOT COVER: collider-free work anywhere else in the
+   * build. The oases are the only place the world publishes a box count, and
+   * `Batch` is module-private to `CitadelWorld.js`, so a general per-span box
+   * counter is not reachable from here. Anything else that dresses without
+   * colliding is still invisible to both measures. Say so before adding one.
+   *
+   * ceiling  890 boxes in a tank's slice, at 37 boxes/ms and a 24 ms frame */
+  const tanks = world.traffic?.oasis;
+  assert.ok(tanks && tanks.hostBuckets?.size,
+    'the world stopped publishing traffic.oasis.hostBuckets - the dressing is unmeasured again');
+  let dressBoxes = 0;
+  let dressBevelled = 0;
+  for (const rec of tanks.hostBuckets.values()) {
+    dressBoxes += rec.boxes;
+    dressBevelled += rec.bevelled;
+  }
+  /* `hostBuckets` is the fuller count - it is every `ctx.box` call, where each
+   * kit's own `cost.boxes` is only the solids it tracked (936 against 1,144;
+   * the 208 are reeds emitted straight through `rawBox`) - but it is totalled
+   * over both tanks and a slice is ONE tank. Dividing is only honest if the
+   * tanks are the same size, so that is asserted rather than assumed: they run
+   * 468 structural boxes each, exactly equal, which is why the mean stands in
+   * for the worst. If they ever diverge this goes red and the divide has to be
+   * replaced with a per-tank count. */
+  const each = tanks.parts.map((o) => o.cost.boxes);
+  assert.ok(Math.max(...each) - Math.min(...each) <= Math.max(...each) * 0.1,
+    `the two tanks emit ${each.join(' and ')} boxes - too far apart for the host-batch total `
+    + 'to be divided evenly into per-slice work');
+  const perTank = Math.ceil(dressBoxes / tanks.parts.length);
+  console.log(`      ${dressBoxes} host-batch boxes (${dressBevelled} bevelled) over`
+    + ` ${tanks.parts.length} evenly sized oasis slices (${each.join('/')} tracked solids each)`
+    + ` = ${perTank} a slice, 0 of them colliders`);
+  assert.ok(perTank <= 890,
+    `one oasis slice merges ${perTank} boxes and registers no colliders for any of them, so `
+    + 'the collider budget above sees none of it; ceiling 890 at 37 boxes/ms against 24 ms');
+  floorCheck('C5  merged boxes in one oasis slice', 890, perTank, 317,
+    '(ceiling = the same tanks before the sand)');
 
   /* The slicing has to be REAL, not one yield per phase: eight phases would
    * give eight slices and still contain a 192 ms block. */

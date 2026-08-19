@@ -100,14 +100,17 @@ await world.build(() => {});
 
 test('every published viewpoint survives normalisation', () => {
   /* A dropped entry is invisible: the list is simply shorter and the player is
-   * never told a vantage point exists. Five are authored - the great tower and
-   * four minarets. */
+   * never told a vantage point exists. TEN are authored - the great tower and
+   * four minarets on the mesa, and one apiece on five of the six outer-ring
+   * regions. The aqueduct has none, deliberately: it is a route rather than a
+   * place, and its whole length is overlooked by the Eyrie at one end and the
+   * mesa at the other. */
   assert.ok(Array.isArray(world.viewpoints), 'the citadel stopped publishing viewpoints');
-  assert.equal(world.viewpoints.length, 5, `the citadel publishes ${world.viewpoints.length}, not 5`);
+  assert.equal(world.viewpoints.length, 10, `the citadel publishes ${world.viewpoints.length}, not 10`);
 
   const kept = world.viewpoints.map((v, i) => normaliseViewpoint(v, i)).filter(Boolean);
-  assert.equal(kept.length, 5, 'the consumer drops citadel viewpoints on the floor');
-  assert.equal(new Set(kept.map((v) => v.id)).size, 5, 'two viewpoints share an id');
+  assert.equal(kept.length, 10, 'the consumer drops citadel viewpoints on the floor');
+  assert.equal(new Set(kept.map((v) => v.id)).size, 10, 'two viewpoints share an id');
   for (const v of kept) {
     assert.ok(v.name && v.name !== `Viewpoint ${kept.indexOf(v) + 1}`,
       `"${v.id}" fell back to a generated name - the world stopped naming it`);
@@ -157,7 +160,7 @@ test('a player standing on each viewpoint synchronises it', () => {
   const player = { position: { x: 0, y: 0, z: 0 }, teleport() {} };
   const vps = new Viewpoints({ bus, player });
   bus.emit('world:changed', { id: 'citadel', world });
-  assert.equal(vps.total, 5);
+  assert.equal(vps.total, 10);
 
   for (const v of vps.list) {
     // Feet exactly on the published platform top, dead centre.
@@ -167,8 +170,8 @@ test('a player standing on each viewpoint synchronises it', () => {
     vps.update(1 / 60);
     assert.ok(v.synced, `standing on "${v.name}" did not synchronise it`);
   }
-  assert.equal(vps.syncedCount, 5);
-  assert.equal(vps.anchors.length, 5, 'the fast-travel list did not fill');
+  assert.equal(vps.syncedCount, 10);
+  assert.equal(vps.anchors.length, 10, 'the fast-travel list did not fill');
 });
 
 test('standing on the real launch beam raises the real prompt', () => {
@@ -227,7 +230,7 @@ function relicSites() {
   return r.sites.map((s) => ({ x: s.pos.x, z: s.pos.z }));
 }
 
-test('one climb does not reveal the whole citadel, and five do', () => {
+test('one climb does not reveal the whole citadel, and ten do', () => {
   const bus = {
     handlers: new Map(),
     on(t, fn) { (this.handlers.get(t) ?? this.handlers.set(t, new Set()).get(t)).add(fn); return () => {}; },
@@ -260,15 +263,19 @@ test('one climb does not reveal the whole citadel, and five do', () => {
     player.position.x = v.x; player.position.y = v.y; player.position.z = v.z;
     vps.update(1 / 60);
   }
-  /* All five stand inside r = 21 of the centre, so their discs overlap heavily
-   * and the set opens the citadel core while the outer souk rings and the
-   * curtain wall (roofs run out to r = 118) stay something you find by looking.
-   * Measured today: 104 of 192. */
+  /* The mesa's five stand inside r = 21 of the centre and their discs overlap
+   * heavily; the ring's five stand 280-420 m out, one per region, and each
+   * opens its own neighbourhood and nothing else. So the set opens the citadel
+   * core and six islands, while the outer souk rings, the curtain wall and
+   * every stretch of flat between the regions stay something you find by
+   * looking. Measured today: 182 of 369, against 104 of 192 before the ring
+   * was authored - the SHARE barely moved (49.3% against 54.2%), which is the
+   * property this floor is really about. */
   const afterAll = revealed();
-  assert.ok(afterAll > afterOne, 'climbing the other four revealed nothing more');
+  assert.ok(afterAll > afterOne, 'climbing the other nine revealed nothing more');
   assert.ok(afterAll >= 90, `the whole set revealed only ${afterAll}/${rel.length} roofs - floor 90`);
   assert.ok(afterAll <= rel.length * 0.75,
-    `synchronising all five revealed ${afterAll}/${rel.length} roofs - the hunt is over on arrival`);
+    `synchronising all ten revealed ${afterAll}/${rel.length} roofs - the hunt is over on arrival`);
 
   /* ---- and the population that actually matters --------------------- */
   /* Roofs are the SUBSTRATE. The thing `Minimap` gates on `reveals` is a relic
@@ -283,13 +290,22 @@ test('one climb does not reveal the whole citadel, and five do', () => {
    * at REVEAL_R = 120 one climb marks 27 of 30 and the set marks all 30, which
    * is the map handing over the collection. Measured today at 9 and 14. */
   const sites = relicSites();
-  assert.equal(sites.length, 30, 'the citadel stopped hiding thirty relics');
+  /* 109, not 30, and the number is the ring's doing rather than a tuning
+   * change: `Relics._onWorld` budgets by the AREA of `contentBounds`, which was
+   * the protected core alone while the ring was empty and is now the union of
+   * the core and six authored regions. `MAX_PER_WORLD` 110 is the ceiling and
+   * this world is one relic under it. */
+  assert.equal(sites.length, 109, `the citadel hides ${sites.length}, not 109`);
   const markedAll = sites.filter((s) => vps.reveals(s.x, s.z)).length;
-  assert.ok(markedAll >= 10,
-    `the whole set marks only ${markedAll}/30 relics - climbing every tower has to be worth a map`);
-  assert.ok(markedAll <= 21,
-    `the whole set marks ${markedAll}/30 relics - past two thirds the sparks ARE the collection`);
-  console.log(`    relics marked: ${markedAll}/30 with all five synchronised (roofs ${afterAll}/${rel.length})`);
+  /* Held as a SHARE rather than a count, because the count now moves with the
+   * content box and the property being defended never did: climbing every
+   * tower has to be worth a map, and must not hand over the collection.
+   * Measured today 55/109 = 50.5%; before the ring, 14/30 = 46.7%. */
+  assert.ok(markedAll >= sites.length * 0.30,
+    `the whole set marks only ${markedAll}/${sites.length} relics - climbing every tower has to be worth a map`);
+  assert.ok(markedAll <= sites.length * 0.70,
+    `the whole set marks ${markedAll}/${sites.length} relics - past two thirds the sparks ARE the collection`);
+  console.log(`    relics marked: ${markedAll}/${sites.length} with all ten synchronised (roofs ${afterAll}/${rel.length})`);
 });
 
 test('the citadel bands are not so tight that a body misses them', () => {

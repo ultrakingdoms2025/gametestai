@@ -242,6 +242,47 @@ const VIEWS = {
      * built to be read by. 231 m out, inside the +-200 heightfield on both
      * axes, so nothing beyond the mesh edge is in shot. */
     { name: 'desert-overview', pos: [-150, 76, 176], look: [0, 46, -10], fov: 74, aerial: true },
+
+    /* ---- THE OUTER RING ------------------------------------------------
+     *
+     * Every framing above stands on the mesa, which is the one part of the map
+     * Drop Three did not change. Six authored regions, 153 decks, two caves and
+     * a 700 m aqueduct had no vantage at all, and `citadel-budgets.test.mjs`'s
+     * C3 cull floor is measured over this list - so the floor was only ever
+     * asserted where it already passed.
+     *
+     * All five below were composed and MEASURED, not chosen: each camera stands
+     * 1.62 m over a deck the world publishes (`idx.deckAt` at its own column),
+     * none is inside a collider, and each `clear` is the distance its centre
+     * ray actually travels before it meets its subject. They are also the
+     * spread the C3 floor needs, and the spread is the finding: an inward
+     * framing on a ring terrace culls 72-95%, and the long view back at the
+     * citadel from the Eyrie culls 4.4%, because from out there almost the
+     * whole world is inside a 72-degree frustum and there is nothing for the
+     * split to reject. */
+
+    /* A serai roof looking at the Caravan Mast across the outpost - tier 0,
+     * the flattest ground in the world, and the region a player meets first if
+     * they walk out of the gate rather than climbing. The ray meets the mast's
+     * own shaft at 45.8 m of 49.6. Culled 95.1%. */
+    { name: 'caravanserai-mast', pos: [318, 19.22, 282.5], look: [366, 26, 272], fov: 74, ring: true, clear: 45.0 },
+    /* The Undercliff's top terrace looking along the shoulder at the Watch. The
+     * terrace steps down and away to the right of frame, which is the descent
+     * this region teaches. Ray meets the watchtower at 62.7 m of 66.6. 72.9%. */
+    { name: 'undercliff-terrace', pos: [-30.42, 37.65, 322], look: [-93.38, 46, 301.89], fov: 74, ring: true, clear: 62.0 },
+    /* The Deepworks rim, looking back UP at the Headframe with the mesa behind
+     * it. Deliberately the low-culling ring vantage - the pit and the citadel
+     * are both in shot - and its 10.0% is half of what pins the ring floor
+     * honest. Ray meets the headframe at 30.0 m of 34.6. */
+    { name: 'deepworks-rim', pos: [314.37, 27.37, -58.29], look: [286.16, 40, -42.64], fov: 74, ring: true, clear: 29.0 },
+    /* Ashfall's broken ward, looking across the scar at the Beacon. Ray meets
+     * the beacon at 77.6 m of 82.2. Culled 91.0%. */
+    { name: 'ashfall-ward', pos: [-282, 37.47, 171.06], look: [-352, 40, 128], fov: 74, ring: true, clear: 77.0 },
+    /* The Eyrie, looking back at the citadel across 312 m of massif and desert
+     * - the view the longest climb in the game pays for, and the worst case for
+     * culling anywhere in the world at 4.4%. Ray meets the mesa's own cliff
+     * mass at 306.3 m of 311.9, which is the subject. */
+    { name: 'eyrie-summit', pos: [-40.43, 65.12, -326.98], look: [0, 52, -18], fov: 72, ring: true, clear: 300.0 },
   ],
 };
 

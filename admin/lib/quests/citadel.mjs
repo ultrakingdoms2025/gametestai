@@ -172,8 +172,77 @@
  *   `quests/medieval.mjs`. `dur` is duration_minutes and a too-short timer
  *   AUTO-FAILS the quest, so it is generous throughout.
  *
- * Numbering: 31-40. Station owns 1-10 / 101-110 / 201-203; medieval owns 11-20.
- * Never reuse those.
+ * Numbering: 31-40 for the mesa, 131-135 for the outer ring. Station owns
+ * 1-10 / 101-110 / 201-203; medieval owns 11-20; sports 21-30; race 41-50.
+ * Never reuse those. The 1xx block mirrors the station's own second block.
+ *
+ * ── THE OUTER RING, AND THE ONE STEP TYPE THAT MADE IT POSSIBLE ──────────────
+ *
+ * The citadel is 900 m across now and holds six authored regions - the
+ * Caravanserai, the Undercliff, the Deepworks, the Aqueduct, Ashfall and the
+ * Eyrie - none of which contains an NPC, a vendor, a portal or a hostile. So
+ * the whole vocabulary the mesa quests are built out of is unavailable out
+ * there: `talk`, `interact`, `purchase` and `kill` have no body to name, and
+ * `survive` and `collect` are world-scoped and cannot tell the Undercliff from
+ * the inner ward.
+ *
+ * `minigame` can. `MinigameManager` emits `quest:activity {type:'minigame'}`
+ * on every FINISH, win or loss, carrying `venueId` - and `_matchesStepTarget`
+ * offers that id as a candidate (QuestSystem.js:791). A rooftop trial is
+ * therefore the ONLY objective in the outer ring a quest step can witness, and
+ * every ring quest below is built round one.
+ *
+ * ⚠ THE VENUE IDS HAD TO BECOME SOURCE LITERALS BEFORE ANY OF THIS RESOLVED.
+ *   `scripts/quest-vocab.mjs` scrapes venue ids from SOURCE with
+ *   `/\.minigameVenues\s*=\s*\[/`, and `CitadelWorld` used to publish all of
+ *   its trials with `.push({...})` from inside two methods. The vocabulary
+ *   therefore listed FOUR minigame venues for `sports` and ZERO for `citadel`,
+ *   and any step naming a citadel trial was rejected as an invented target.
+ *   The catalogue is now a literal array in `_publishVenues` which the build
+ *   fills in and `_pruneVenues` trims, so source and runtime cannot disagree.
+ *   Seven ids are reachable here:
+ *
+ *     citadel_souk_dash          citadel_serai_circuit     citadel_undercliff_run
+ *     citadel_ascent             citadel_deepworks_plunge  citadel_aqueduct_run
+ *     citadel_skyline
+ *
+ * ⚠ A VENUE ID COUNTS A FINISH, NOT A WIN. On a win the candidate list carries
+ *   the venue id AND `rooftop_trial_won`; on a loss it carries the venue id and
+ *   `rooftop_trial_lost`. So `{type:'minigame', target:'citadel_aqueduct_run'}`
+ *   advances either way - which is what a "run it" step wants - and only the
+ *   bare `rooftop_trial_won` is outcome-gated. There is no spelling that means
+ *   "WIN this particular trial": `citadel_aqueduct_run_won` matches the venue
+ *   id as a whole-token run and would complete on a loss. Every label below is
+ *   worded "run" or "finish" for exactly that reason, except n135's, which
+ *   names `rooftop_trial_won` and says "win".
+ *
+ * ⚠ ASHFALL AND THE EYRIE CARRY NO STEP, AND THAT IS DELIBERATE.
+ *   Neither region has a trial - measured, not chosen: the par model's route
+ *   graph links two decks only within 26 m, Ashfall's ranges stand 28 m apart
+ *   across a 9 m scar, and the Eyrie's three cloister ranges are 66 m apart
+ *   round a peak. Neither is a rooftop RUN. Both hold relics, a cache and a
+ *   viewpoint, and the Eyrie holds the longest leap of faith in the game - but
+ *   NOTHING IN THE ENGINE EMITS "the player reached this place". Writing a
+ *   step whose label says "climb to the Eyrie" and whose emitter counts relic
+ *   coin anywhere in the world is the audit's own defect wearing better prose,
+ *   so it is not written. The fix is one event and one vocabulary entry:
+ *   `Viewpoints._sync` emitting `quest:activity {type:'viewpoint', target:id}`
+ *   plus a `viewpoint` row in `STEP_TYPE_EMITTERS`. Both are outside this
+ *   file; this note is the hand-off.
+ *
+ * ── WHERE THE RING'S LOOT COMES FROM ─────────────────────────────────────────
+ *
+ * The ring now carries SIX of the world's nine high caches, one per region
+ * (`CitadelWorld.cacheSites`; before that list existed the darts put seven of
+ * nine on the old mesa). `CACHE_TABLES.citadel` is unchanged, so a ring cache
+ * is the same relic_coin 4-10 / nexus_shard 1-2 / arrow 18-34 / medkit 1-2 the
+ * mesa ones hold. The two caves add a third source: `Interiors` streams their
+ * six authored collectible spots in as persistent pickups, common → relic_coin
+ * 1, rare → relic_coin 1 + medkit 1, prize → relic_coin 3 + shield_5s 1.
+ * ⚠ A CAVE SPOT NEVER RESTOCKS (`Interiors._collected` is permanent), so no
+ *   step below names `shield_5s`: there are exactly two in the world and a
+ *   player who took both before accepting could never finish it. medkit and
+ *   relic_coin are on the cache and drop tables as well and cannot run out.
  */
 
 export const CITADEL_QUESTS = [
@@ -369,6 +438,104 @@ export const CITADEL_QUESTS = [
       { order: 8, label: 'Take the hub gateway on to Aldermoor Vale and arrive there carrying the compact', type: 'visit', target: 'medieval', count: 1, world: 'medieval' },
       { order: 9, label: 'Press E on Edmund Marsh at his stall on the Aldermoor market square and get the vale\'s mark beside the citadel\'s', type: 'interact', target: 'Edmund Marsh', count: 1, world: 'medieval' },
       { order: 10, label: 'Come the whole way home through the hub, climb to the inner ward and press E on Yusra the Falconer — she will have watched you come up the cliff road', type: 'talk', target: 'Yusra the Falconer', count: 1, world: 'citadel' },
+    ],
+  },
+
+  /* ═══════════════════════════════════════════════════════════════════════
+   * THE OUTER RING — 131-135. See the header block for why every one of
+   * these is built round a `minigame` step and why two regions have none.
+   * ═══════════════════════════════════════════════════════════════════════ */
+
+  {
+    n: 131,
+    world: 'citadel',
+    line: 'The Outer Road',
+    title: 'Walk out to the Caravanserai and learn the jump on flat ground',
+    credits: 240,
+    dur: 120,
+    pre: ['The Cliff Gate'],
+    notes:
+      '3 steps, and the gentlest quest in the world on purpose. `citadel_serai_circuit` is the tier-0 trial: measured over the built decks its route resolves to EIGHT edges and all eight are classified `walk` — 75.1 m of standing walk jumps round two ranges and the mast corner, with gold at 14.3 s against a best line of 13.1 s and a jogger inside bronze by 6.8%. Nothing else in the ring is winnable without the sprint. Step 2 says "run", not "win": the venue id rides on a LOSS as well as a win (see the header), so a finish is what it counts. Step 3 is the region\'s own cache — the Caravanserai holds exactly one high place with a 7 m drop on five sides and it is the mast, which is where `CitadelWorld.cacheSites` nominates it.',
+    steps: [
+      { order: 1, label: 'Press E on Aldric Storne and take the survey of the outer road — the garrison has not had a report off the flats in a year', type: 'interact', target: 'Aldric Storne', count: 1, world: 'citadel' },
+      { order: 2, label: 'Walk out east across the sand to the Caravanserai and run the Caravanserai Round. Every crossing on it is a standing jump: this is where you learn the distance before anything asks you for it', type: 'minigame', target: 'citadel_serai_circuit', count: 1, world: 'citadel' },
+      { order: 3, label: 'Climb the five-storey mast in the north-east corner and take what is cached at the head of it — 1 relic coin', type: 'collect', target: 'relic_coin', count: 1, world: 'citadel' },
+    ],
+  },
+
+  {
+    n: 132,
+    world: 'citadel',
+    line: 'Down the Undercliff',
+    title: 'Take the terraced town down the shoulder and come back up it',
+    credits: 520,
+    dur: 180,
+    pre: ['The Outer Road'],
+    notes:
+      '4 steps. The Undercliff is the descent region — four terraces of nine, 25.8 m of relief, twelve authored drops over the 7.5 m fall-damage floor and TWELVE haystacks under them, which is why step 3 can ask for a clean minute in the one region of the ring where falling is the mechanic. `citadel_undercliff_run` is the top terrace end to end: eight edges, every one a `sprint`, gold 15.3 s against a best line of 11.6 s. Step 1 is Yusra rather than Bashir because she is the world\'s only `wanderer` and the one authored civilian with no counter to stand behind — and because `_advanceSteps` walks every step on each event, no other step in this quest is `talk`.',
+    steps: [
+      { order: 1, label: 'Press E on Yusra the Falconer in the inner ward. She flies the shoulder and can tell you where the terraces start and where the thatch is', type: 'talk', target: 'Yusra the Falconer', count: 1, world: 'citadel' },
+      { order: 2, label: 'Go north-west off the mesa and run the Undercliff Terrace, end to end. Sprint jumps the whole way — hold Shift and do not stop at the lips', type: 'minigame', target: 'citadel_undercliff_run', count: 1, world: 'citadel' },
+      { order: 3, label: 'Then go down the terraces properly. Every terrace change is a ten-metre drop with hay under it — take them, and take 2 relic coin off the terrace cache and whatever else is up there', type: 'collect', target: 'relic_coin', count: 2, world: 'citadel' },
+      { order: 4, label: 'Get back up to the watchtower without taking a hit: one unbroken minute, and a fall you misjudge counts', type: 'survive', target: 'citadel', count: 2, world: 'citadel' },
+    ],
+  },
+
+  {
+    n: 133,
+    world: 'citadel',
+    line: 'The Quarry Adit',
+    title: 'Go down the gantries into the Deepworks and into the mine',
+    credits: 780,
+    dur: 240,
+    pre: ['The Outer Road'],
+    notes:
+      '5 steps. `citadel_deepworks_plunge` is the seven-platform gantry chain from the pit rim to the floor — six edges, every one classified `walk` because each platform stands 1.7 m over the highest rock under its own footprint and the biggest fall between two of them is 6.6 m, inside the 7.5 m where damage starts. Gold 9.9 s against a best line of 9.2 s; it is the shortest trial in the world and the tightest, which suits a region whose verb is vertical DOWN. Steps 3 and 4 are the Quarry Adit itself: `Interiors` streams its three authored spots in as persistent pickups at 46 m and out again at 64 m, common → relic_coin, rare → relic_coin + medkit, prize → relic_coin 3. Both counts are also satisfiable off the region cache and off a sentinel, so neither can strand a player who stripped the cave before accepting.',
+    steps: [
+      { order: 1, label: 'Press E on Bashir the Ostler at the horse lines. The quarry road is his — nothing came off that pit that a mule did not carry', type: 'talk', target: 'Bashir the Ostler', count: 1, world: 'citadel' },
+      { order: 2, label: 'Ride or walk east to the Deepworks and run the Deepworks Plunge, rim to pit floor down the seven gantries. Every drop on it is survivable; none of them is comfortable', type: 'minigame', target: 'citadel_deepworks_plunge', count: 1, world: 'citadel' },
+      { order: 3, label: 'The adit is cut into the pit wall and it is lit. Go in, follow the gallery to the winze and bring out 2 relic coin', type: 'collect', target: 'relic_coin', count: 2, world: 'citadel' },
+      { order: 4, label: 'There is a field kit on the ledge above the winze. Take it — 1 medkit', type: 'collect', target: 'medkit', count: 1, world: 'citadel' },
+      { order: 5, label: 'Press E on Aldric Storne and put the pit on the garrison\'s map, which it has never been', type: 'interact', target: 'Aldric Storne', count: 1, world: 'citadel' },
+    ],
+  },
+
+  {
+    n: 134,
+    world: 'citadel',
+    line: 'The Long Water',
+    title: 'Run the aqueduct from the massif and find what is under it',
+    credits: 1400,
+    dur: 360,
+    pre: ['Down the Undercliff'],
+    notes:
+      '5 steps. The aqueduct is the piece of design that makes a 900 m map crossable on foot: twenty-six slabs on thirteen piers from the karst massif to the mesa, with four broken spans that only the leap crosses. `citadel_aqueduct_run` is authored DOWNHILL, with the water, and that is a par-model decision as much as a fictional one — run the other way its five 2.3 m joints each buy a `CLIMB_LEG_S` and gold comes out at 73.1 s against a 22.6 s best line. Downhill: 25 edges, 21 walk and 4 leap, gold 28.1 s against a best line of 23.4 s. Step 4 is the Sunken Hall, whose mouth stands 14 m from the spine\'s far abutment; its prize spot is the richest single pickup in the world. `nexus_shard` is on `CACHE_TABLES.citadel` at 1-2 and on `DROP_TABLES.citadel` at .05, so step 3 has two sources and neither is the cave.',
+    steps: [
+      { order: 1, label: 'Press E on Rafiq the Keeper. The archive has the survey drawings for the water and he will want them back', type: 'talk', target: 'Rafiq the Keeper', count: 1, world: 'citadel' },
+      { order: 2, label: 'Get out to the karst massif at the far end and run The Long Water back down the spine to the mesa. Four spans are broken and the leap — Shift and Space together — is the only budget that crosses them', type: 'minigame', target: 'citadel_aqueduct_run', count: 1, world: 'citadel' },
+      { order: 3, label: 'Bring back a nexus shard so the archive can date the stone. The caches carry them reliably; the sentinels almost never do', type: 'collect', target: 'nexus_shard', count: 1, world: 'citadel' },
+      { order: 4, label: 'There is a hall under the massif at the head of the water. Go in and strip it — 3 relic coin', type: 'collect', target: 'relic_coin', count: 3, world: 'citadel' },
+      { order: 5, label: 'Two clean minutes getting home along the spine with no damage taken. It stands twenty-five metres over the flats at its worst and there are only four haystacks on it', type: 'survive', target: 'citadel', count: 4, world: 'citadel' },
+    ],
+  },
+
+  {
+    n: 135,
+    world: 'citadel',
+    line: 'The Ring of Sunspire',
+    title: 'Be the runner the whole ring knows',
+    credits: 3600,
+    dur: 1440,
+    pre: ['The Long Water', 'The Quarry Adit', 'Rope Bridge Run'],
+    notes:
+      'Capstone for the outer ring, 6 steps, and the only quest in the game that asks for a WIN rather than a finish. `rooftop_trial_won` is the composite `MinigameManager` puts on the candidate list only when `result.won` is true, and it is the one outcome-gated spelling available: there is no target that means "win THIS trial", because a venue id is a whole-token subrun of its own `_won` composite and would complete on a loss. Count 3 over seven venues, and the rival on each runs the SILVER par, so three wins is three ghosts beaten and not three laps. Step 2 is the only `minigame` step in this quest, so nothing else in it advances from a finish. Steps 3 and 4 are two different item ids and cannot pay into each other. The prerequisites are deliberately all three: the two ring lines and the mesa\'s own bridge line, because a runner the ring knows has to have run the mesa too.',
+    steps: [
+      { order: 1, label: 'Press E on Aldric Storne. The garrison keeps a book on the roof-runners and you are not in it yet', type: 'interact', target: 'Aldric Storne', count: 1, world: 'citadel' },
+      { order: 2, label: 'Win three rooftop trials — any three of the seven, mesa or ring. Each one has a pacesetter on it running the silver time, and beating the clock means beating the body in front of you', type: 'minigame', target: 'rooftop_trial_won', count: 3, world: 'citadel' },
+      { order: 3, label: 'A runner is paid in coin here like everyone else. Recover 4 relic coin from the caches — there is one in every region of the ring now', type: 'collect', target: 'relic_coin', count: 4, world: 'citadel' },
+      { order: 4, label: 'And take 2 arrow off whatever tries to stop you on the way back in', type: 'collect', target: 'arrow', count: 2, world: 'citadel' },
+      { order: 5, label: 'Three unbroken minutes anywhere on this rock without taking a hit, to prove the last one was not luck', type: 'survive', target: 'citadel', count: 6, world: 'citadel' },
+      { order: 6, label: 'Press E on Yusra the Falconer on the great tower. She has watched every one of those runs from up here and is the only person whose opinion of them counts', type: 'talk', target: 'Yusra the Falconer', count: 1, world: 'citadel' },
     ],
   },
 ];

@@ -240,6 +240,17 @@ export class Contracts {
   _onKill(e) {
     const npc = e?.npc;
     if (!npc || npc.type !== 'hostile') return;
+    /* A HERBIVORE IS NOT A BOUNTY.
+     *
+     * `BeastNPC` files every animal as a hostile, which is right for the
+     * respawn queue and wrong here: the Citadel's camels are `predator: false`,
+     * cannot attack the player by three independent locks, carry 220 HP and
+     * respawn 22 s after they are killed. Without this guard "Clear N hostiles
+     * from Sunspire Citadel" advances on camel kills, which makes any wayside
+     * well an unbounded contract farm against an animal that cannot fight back.
+     * Keyed on the species row rather than on the species, so a predator added
+     * to the table later still counts. */
+    if (npc.isBeast && npc.def?.predator === false) return;
     let changed = false;
     for (const c of this.list) {
       if (c.state === 'active' && c.kind === 'bounty' && c.have < c.need) {

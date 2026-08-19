@@ -619,7 +619,16 @@ test('FLOOR: the ring fits inside every budget the extent stage set', async () =
     assert.ok(Number(achieved) <= budget, `${label}: ${achieved} is over the budget of ${budget}`);
   };
 
-  budgetCheck('C3  draw calls, whole world', 150, meshes.length, 118);
+  /* 175 and not the 150 this shipped with, and the change is priced in
+   * `citadel-budgets.test.mjs` where the same ceiling lives with its reasoning:
+   * 150 was borrowed from `medieval-towns.test.mjs:607`, where it bounds five
+   * towns at ~177k triangles rather than a whole world, and the caravan drop's
+   * two oases and eight wayside wells take the Citadel from 136 to 164 for
+   * 56,648 triangles of content in the empty flats. The bound that catches
+   * meshes which are NOT carrying content is the triangles-per-draw floor
+   * asserted there (1,733 from medieval; the Citadel is at 3,300), not a count.
+   */
+  budgetCheck('C3  draw calls, whole world', 175, meshes.length, 118);
   budgetCheck('C3  worst ring mesh bounding sphere, m', MAX_DISTRICT_RADIUS, worstSphere.toFixed(1), 126.9);
   budgetCheck('C4  colliders, whole world', 20000, physics.colliders.length, 3102);
   budgetCheck('C5  colliders between two yields, worst region', 250, worstSlice, 139);

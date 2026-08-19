@@ -596,7 +596,15 @@ export class Minimap {
         if (!n || n.isDead || !n.position) continue;
         if (n.isVendor) { traders.push(n); continue; }
         this._project(n.position.x, n.position.z, px, pz, sin, cos, scale);
-        const hostile = n.type === 'hostile';
+        /* `BeastNPC` files every animal as `type: 'hostile'` on purpose - it is
+         * what buys the respawn queue, the alert propagation and the kill
+         * tracking - and its own comment says the code that genuinely cares
+         * reads `isBeast` and the species row instead. This is that code. A
+         * camel is `predator: false`, cannot attack by three independent locks,
+         * and has no business being a glowing red threat contact: measured on
+         * the desert roads, 20 live hostiles near the player and 12 of them
+         * camels, so the minimap read as an ambush where there was a herd. */
+        const hostile = n.type === 'hostile' && !(n.isBeast && n.def?.predator === false);
 
         if (!_pt.inside) {
           // Off-range contacts collapse to a rim chevron pointing outward.

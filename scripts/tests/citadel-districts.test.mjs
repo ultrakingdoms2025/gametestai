@@ -294,8 +294,15 @@ function withoutTerrain(group, fn) {
      * arrive under the ceiling. `citadel-regions.test.mjs` owns the ring's own
      * culling ledger. This file measures the mesa's districts, which is what it
      * splits. */
+    /* The caravan drop's oases and wells join the list on the same terms as the
+     * ring and the caves: `_buildTraffic` merges one batch per oasis and one for
+     * all eight wells, and what comes back out of the splitter there is leaves
+     * of 20-40 m scattered over the flats. Left in, the UNSPLIT world culls
+     * 10.7% of its own triangles from a street framing - which is not a ceiling
+     * of 100% and, again, is not this module's doing either way. */
     if (o.name.startsWith('citadel:terrain') || o.name.startsWith('region:')
-      || o.name.startsWith('cave:') || o.isInstancedMesh) {
+      || o.name.startsWith('cave:') || o.name.startsWith('oasis:')
+      || o.name.startsWith('wells') || o.isInstancedMesh) {
       o.visible = false;
       hidden.push(o);
     }
@@ -580,13 +587,24 @@ test('the split stays inside the draw-call budget this project ships', async () 
   const before = districtStats(virgin.group);
   const after = districtStats(split.group);
 
-  /* floor    <= 150 draw calls, the ceiling `medieval-towns.test.mjs:607`
-   *          ships for five towns and ~177k triangles
-   * achieved  96
+  /* floor    <= 175 draw calls for the whole 900 m world
+   * achieved  164
    * ceiling   48 - the unsplit world, which is the cheapest possible and also
-   *           the one that culls nothing */
-  assert.ok(after.meshes <= 150,
-    `${after.meshes} draw calls after the split; floor 150, unsplit ${before.meshes}`);
+   *           the one that culls nothing
+   *
+   * WHY 175 AND NOT THE 150 THIS SHIPPED WITH. 150 came from
+   * `medieval-towns.test.mjs:607`, where it bounds FIVE TOWNS at ~177k
+   * triangles and ~116 draws - a subset of a world rather than a world. The
+   * caravan drop is where the borrowed number bound on content instead of on
+   * cost: two oases (nine meshes each - six masonry buckets, a water plane and
+   * two instanced palm fields) and eight wayside wells take the Citadel from
+   * 136 to 164 for 56,648 triangles of content in the flats the player reported
+   * as empty. `citadel-budgets.test.mjs` carries the same ceiling and pairs it
+   * with a floor on TRIANGLES PER DRAW CALL, which is the bound that actually
+   * catches fifty meshes of nothing: medieval ships 1,733 per draw and the
+   * Citadel is at 3,300. */
+  assert.ok(after.meshes <= 175,
+    `${after.meshes} draw calls after the split; floor 175, unsplit ${before.meshes}`);
 
   /* The rate the split buys triangles at, said out loud next to the rate this
    * project already pays. Medieval ships 150 draws against 260k triangles and
@@ -678,6 +696,15 @@ function lodTargets(root) {
      * candidates for this module's split and counting them as buckets it
      * produced measures the AUTHORING and calls it the splitter. */
     if (o.name.startsWith('region:') || o.name.startsWith('cave:')) return;
+    /* And the caravan drop's oases and wayside wells, for the third time and
+     * the same reason. `_buildTraffic` merges one batch per oasis and one for
+     * the eight wells; the wells land 70-450 m apart, so what comes out of
+     * `_splitDistricts` there is five leaves under 40 m across each - already
+     * bucketed, and never a candidate for the mesa split this module is about.
+     * Left in, they took the "merged world hides nothing" ablation from 0 to
+     * 14, which is not the merged mesa becoming cullable, it is fourteen
+     * pre-split meshes joining the count. */
+    if (o.name.startsWith('oasis:') || o.name.startsWith('wells')) return;
     out.push(o);
   });
   return out;

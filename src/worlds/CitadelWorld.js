@@ -17,10 +17,29 @@ import { buildRegions } from './citadel/Regions.js';
 import {
   planMine, planKarst, liftToClear, auditVacancy, buildCave, buildPlinth, SolidField,
 } from './citadel/Caves.js';
+import {
+  citadelOases, findOasisSite, settleOasis, buildOases, palmGeometry,
+} from './citadel/Oasis.js';
+import {
+  CARAVAN_ROADS, WELL_SITES, WANDERERS, CitadelTraffic,
+  roadWaypoints, roadLength, buildWell, groundFor, WELL_R,
+} from './citadel/Caravans.js';
+import { beastDef } from '../npc/BeastSpecies.js';
 import { citadelHeight } from './terrain/CitadelHeight.js';
 import {
   tileGrid, buildTile, TILE_LO_STRIDE, TILE_SKIRT_DROP,
 } from './medieval/TerrainTiles.js';
+
+/**
+ * The most camels one `spawnBeastGroup` call can ever produce.
+ *
+ * Read off the species row rather than written down, because it is the number
+ * that decides whether a declared herd size is a promise or a lie:
+ * `NPCManager.spawnBeastGroup` computes `min(asked, budget, def.packMax)`, so a
+ * herd declared over the cap reports more animals to the encounter gate than
+ * the world ever puts on the ground.
+ */
+const CAMEL_PACK_MAX = beastDef('camel').packMax;
 
 /**
  * CITADEL - "Sunspire Citadel".
@@ -1012,6 +1031,30 @@ export class CitadelWorld extends World {
      * the lattice found exactly ONE point in it with a 7 m drop on five sides.
      */
     this.cacheSites = [];
+
+    /**
+     * THE TRAFFIC CONTRACT, declared empty here so a world that has not built
+     * yet reads as empty rather than as undefined.
+     *
+     * `citadel-traffic-kit.caravanContent` reads both of these off the world
+     * and scores them against five floors on ENCOUNTER; `_buildTraffic` fills
+     * them. `oases` carries the two stepped tanks AND the eight wayside wells,
+     * distinguished by `kind`, because what the encounter measurement means by
+     * an oasis is "a static herd standing at a place with a radius" and both
+     * are that - see `citadel/Caravans.js` for why the ground allows two of the
+     * first and needed eight of the second.
+     * @type {Array<{id:string,label:string,kind:string,x:number,y:number,z:number,r:number,herd:number}>}
+     */
+    this.oases = [];
+    /** @type {Array<{id:string,points:Array<{x:number,y:number,z:number}>,trains:number,animals:number}>} */
+    this.caravanRoutes = [];
+    /**
+     * The streamed cast: drovers, herd keepers, lone travellers and the oasis
+     * staff. Named `_population` because that is the property
+     * `npc-routes.test.mjs` audits routes off. @see CitadelTraffic
+     * @type {import('./citadel/Caravans.js').CitadelTraffic|null}
+     */
+    this._population = null;
 
     this._owned = [];
     this._time = 0;
@@ -3652,6 +3695,37 @@ export class CitadelWorld extends World {
     for (const t of this._towers) {
       this.minimapShapes.push({ kind: 'circle', x: t.x, z: t.z, r: 3.2, fill: 0xbfae8a });
     }
+
+    /* THE WATER, and the caravan roads that join it up.
+     *
+     * Drawn last so they sit over the ring rectangles, and drawn at all because
+     * they are the only content in the flats: a player who has been told the
+     * desert has oases in it and cannot find one on the map has been told about
+     * content, not given it. The two tanks get their water colour and their
+     * real half-width; the eight wayside wells get a dot the size of the tower
+     * dots, because they are landmarks of the same order.
+     *
+     * The roads are polylines, which is `kind: 'path'` - `Minimap._bakePlan`
+     * has exactly three shapes and `path` is the one that walks a `points`
+     * array, as `[x, z]` PAIRS rather than as `{x, z}` objects. Neither mistake
+     * throws: the shape switch `continue`s past a kind it does not know and
+     * `moveTo(undefined, undefined)` draws nothing, so the roads would simply
+     * not be on the map - the same optional-chained silence the extent gate was
+     * written for. */
+    for (const r of this.caravanRoutes ?? []) {
+      this.minimapShapes.push({
+        kind: 'path',
+        points: r.points.map((p) => [p.x, p.z]),
+        stroke: 0x8a7a55,
+        width: 2,
+      });
+    }
+    for (const o of this.oases ?? []) {
+      const tank = o.tank ?? o;
+      this.minimapShapes.push(o.kind === 'oasis'
+        ? { kind: 'circle', x: tank.x, z: tank.z, r: Math.max(6, tank.r), fill: 0x2f7f96, stroke: 0x8fd0e0, width: 2 }
+        : { kind: 'circle', x: o.x, z: o.z, r: 3.6, fill: 0x2f7f96 });
+    }
   }
 
   /**
@@ -4014,6 +4088,9 @@ export class CitadelWorld extends World {
 
     await breathe();
     this.caves = await this._buildCaves(breathe);
+    /* AFTER the caves, because the oasis kit sites itself against the FINAL
+     * collider set and a cave's plinth is part of it. See `_buildTraffic`. */
+    this.traffic = await this._buildTraffic(breathe);
     return report;
   }
 
@@ -4134,6 +4211,534 @@ export class CitadelWorld extends World {
     return out;
   }
 
+  /* ------------------------------------------------------------------ */
+  /* The traffic in the flats                                            */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Where an oasis herd stands: on the desert OUTSIDE the tank, on the side
+   * the road comes in from.
+   *
+   * Not on the crest, and the reason is the one `Oasis.js` spends a whole audit
+   * on. The tank is a stepped bank whose crest promenade has 1.30 m of clear
+   * walkway all the way round and 0.40 m risers under it; a camel is 2.85 m
+   * tall with a 0.55 m capsule and a 2.83 m body, and eight of them on a 3.60 m
+   * tread is a wall between the player and the water. So the herd grazes on
+   * grade beside the tank, which is also where the encounter measurement
+   * spreads it.
+   *
+   * The bearing sweep STARTS toward the world origin because the mesa is there
+   * and so is every road: the animals should be met on the way in rather than
+   * found round the back. Each candidate has to have ground under it and has to
+   * be clear of the masonry, tested with the world's own probe rather than by
+   * arithmetic on the plan, so a herd cannot be placed inside the shade shelter
+   * the kit happened to build on that side.
+   *
+   * ── WHY THE RING COMES BACK WITH THE POINT ───────────────────────────────
+   *
+   * The caller publishes a herd RADIUS as well as a herd anchor, and the first
+   * cut published the tank's own half-width, 26.9 m, for both. That number then
+   * became `CitadelTraffic`'s `spread`, so `spawnBeastGroup` scattered the other
+   * six animals up to 26.9 m from an anchor standing only `ring` metres clear
+   * of the rim - onto the masonry. Measured over 30 seeds x 2 oasis herds = 420
+   * bodies on the real world: 143 of them (34%) stood more than 1.5 m off their
+   * own anchor's ground and 89 (21%) inside the tank footprint, the worst
+   * 10.45 m up on a three-deck structure at (-73.1, -126.0). The eight wayside
+   * wells, whose spread is 9.9 m, are clean by comparison.
+   *
+   * So the ring the sweep actually settled on is the honest radius: clear
+   * ground runs from the tank rim outward, the anchor sits `ring` beyond it,
+   * and a spread of `ring` reaches exactly back to the rim. The caller takes
+   * 80% of it, which keeps the animals off the masonry with a margin - and it
+   * publishes THE SAME number to the encounter gate, because a declared radius
+   * the bodies do not fill is the medieval defect wearing a hat.
+   *
+   * @param {{x:number,y:number,z:number,r:number}} lm the oasis landmark
+   * @returns {{pos:THREE.Vector3, ring:number}}
+   */
+  _oasisGrazing(lm) {
+    const inward = Math.atan2(-lm.z, -lm.x);
+    for (const ring of [10, 15, 21]) {
+      for (let i = 0; i < 16; i++) {
+        /* Alternating outward from the inward bearing, so the first acceptable
+         * answer is the one nearest the road rather than the first one on an
+         * arbitrary sweep. */
+        const step = ((i + 1) >> 1) * (Math.PI / 8) * (i % 2 ? 1 : -1);
+        const a = inward + step;
+        const x = lm.x + Math.cos(a) * (lm.r + ring);
+        const z = lm.z + Math.sin(a) * (lm.r + ring);
+        const g = this.physics.groundHeight(x, z, lm.y + 12, 30);
+        if (g === null) continue;
+        _v1.set(x, g + 0.05, z);
+        this.physics.resolveCapsule(_v1, 0.6, 2.9);
+        if (Math.hypot(_v1.x - x, _v1.z - z) > 0.45) continue;
+        return { pos: new THREE.Vector3(x, g, z), ring };
+      }
+    }
+    /* Nothing clear anywhere round the tank is a finding, not a crash: the
+     * herd goes on the crest and the audit that reads `traffic.oases` will say
+     * where it ended up. */
+    console.warn(`[CitadelWorld] oasis "${lm.id}" has no clear grazing ground round it`);
+    return { pos: new THREE.Vector3(lm.x, lm.y, lm.z), ring: 10 };
+  }
+
+  /**
+   * Two oases, eight wayside wells, three caravan roads and ten travellers.
+   *
+   * ── The complaint, and the measurement that answers it ──────────────────
+   *
+   * The player walked the finished ring and said the six new regions all work
+   * and *"it desperately needs npc's in the new areas. In the large open areas
+   * between objects/villages/caves we should have npc's leading wandering the
+   * areas with herds of camels and maybe 1 or 2 oasis areas"*.
+   *
+   * `scripts/tests/citadel-traffic.test.mjs` measures exactly how empty that
+   * ground is: of the 160 places this world publishes to some system or other -
+   * 109 relics, 9 caches, 10 viewpoints, 7 venues, 7 region anchors, 6 region
+   * centres, 10 cave mouths, the spawn and the portal - **not one stands in the
+   * open flats**, 51.0% of the map is over 30 m from anything built, and the
+   * longest featureless stretch on an inter-region walk has a p90 of 272 m.
+   *
+   * `scripts/tests/citadel-caravans.test.mjs` turns that into five floors on
+   * ENCOUNTER rather than on placement, because the medieval expansion answered
+   * this same complaint with ten wildlife packs, passed 29 of 29 assertions,
+   * and shipped a forest the player could not find an animal in. What this
+   * method builds reads, against those five floors:
+   *
+   *     journeys meeting a caravan      floor 40    achieved 60.7
+   *     camels met per journey          floor 3.0   achieved 7.52
+   *     journeys meeting a herd         floor 20    achieved 42.7
+   *     spawn journeys meeting a camel  floor 60    achieved 76.3
+   *     walks with no 150 m of nothing  floor 72    achieved 80.1
+   *
+   * ── Why it runs here ─────────────────────────────────────────────────────
+   *
+   * After `_buildCaves`, for the reason the caves themselves run last: the
+   * oasis kit sites itself against the FINAL collider set through
+   * `auditVacancy`, and a tank levelled onto ground that a region has since
+   * built a gantry over is a tank built round somebody else's geometry. And
+   * before `_splitDistricts`, because every box emitted here goes into
+   * `this._districts` and the splitter is what keeps eight wells spread over
+   * 900 m from merging into one mesh with a 900 m bounding sphere.
+   *
+   * @param {() => Promise<void>} breathe
+   */
+  async _buildTraffic(breathe = noBreath) {
+    /**
+     * `colliders` is every collider this method registers, and it is published
+     * for one reason: an ABLATION nobody can build any other way.
+     *
+     * `citadel-traffic.test.mjs` measures how empty the flats are off the
+     * world's own collider set, and the negative control under its five floors
+     * asks "does an empty placement fail every gate". Once the oases and the
+     * wells are BUILT they break up the featureless stretches by themselves,
+     * and the control starts passing on masonry rather than on camels - so the
+     * control needs a collider set with this drop's own content subtracted, and
+     * the only honest way to get one is for the drop to say what it added.
+     */
+    const report = { oases: [], wells: [], roads: [], refusedOases: [], colliders: [] };
+    const field = new SolidField(this.physics.colliders);
+    /* SLICED HERE, and the first three yields in this method are the ones that
+     * matter. Everything from the top down to the first `breathe` below used to
+     * run in one synchronous block: the `SolidField` over 3,883 colliders, both
+     * oasis site searches, both fine settles, and the first `buildOases`.
+     * Measured over three cold processes, that block was 32.6 / 32.8 / 33.3 ms
+     * - the worst slice in the whole build, ahead of the souk's - and this
+     * world is built by `scheduleBackgroundBuilds` in the player's own frames,
+     * so it is a 33 ms frame in live gameplay against a 24 ms budget.
+     *
+     * C5 could not see it. That gate counts COLLIDERS between two yields as its
+     * proxy for work, calibrated at 12 colliders/ms off the souk; this block
+     * registers 127 in 33 ms, which is 3.8/ms, so C5 scored a 33 ms stall as if
+     * it were ten. The search is arithmetic over a collider index and emits
+     * almost nothing, which is exactly the shape the proxy is blind to. */
+    await breathe();
+    /**
+     * The oasis kit's own audit surface.
+     *
+     * `citadel-oasis.test.mjs` used to build its own pair of tanks on top of a
+     * finished world and audit those. It cannot any more - the world ships
+     * them, and `findOasisSite` correctly refuses the ground they stand on - so
+     * what it audits now is what SHIPS, which is what its own header always
+     * said it wanted. Everything that suite needs and cannot recover from the
+     * scene graph is published here: the settled plans, the parts each oasis
+     * returned, the colliders it registered (so a pre-oasis `SolidField` can be
+     * reconstructed by subtraction) and what the host batch received.
+     */
+    const oasis = {
+      sites: [], parts: [], colliders: [],
+      hostBuckets: new Map(),
+      baseColliders: this.physics.colliders.length,
+      searchMs: 0, buildMs: 0,
+      /* ONE palm pair for both tanks. Two `buildOases` calls with no `ctx.palm`
+       * between them build two 1,964-triangle palms and hold both resident for
+       * ever, which is 1,964 triangles of geometry nobody needed; the instanced
+       * fields stay separate either way, so sharing costs nothing. */
+      palm: palmGeometry(),
+    };
+
+    /* ---- the two oases ------------------------------------------------ *
+     * SEARCHED, never authored. `citadelOases` returns ANCHORS with no `y` on
+     * purpose and its own docstring records the sweep behind them: 18 of ~4,900
+     * desert cells can carry a 53.8 x 50.8 m tank and all eighteen are in the
+     * south-west, because a 24 m horizontal water plane cannot be levelled into
+     * a dune field without a plinth taller than the tank.
+     *
+     * One batch per oasis, exactly as the caves get one each and for the same
+     * measured reason: the two sites are 210 m apart, and a shared masonry mesh
+     * holding both comes back from the splitter as many more leaves than two.
+     */
+    let B = null;
+    const ctx = {
+      physics: this.physics,
+      group: this.group,
+      track: (c) => this.track(c),
+      mat: (k, o) => this._mat(k, o),
+      palm: oasis.palm,
+      box: (key, w, h, d, x, y, z, rotY = 0, tint = null) => {
+        /* Recorded with the SAME bevel rule `Batch.box` applies below, so the
+         * cost report and the geometry cannot disagree about what was drawn.
+         * @see Batch#box - a box under BEVEL_MIN on its smallest side is a
+         * plain 12-triangle box and everything else is a 108-triangle rounded
+         * one, which is the factor of nine `solidCost` exists to price. */
+        const rec = oasis.hostBuckets.get(key) ?? { boxes: 0, bevelled: 0 };
+        rec.boxes++;
+        const r = Math.min(BEVEL, w * 0.22, h * 0.22, d * 0.22);
+        if (Math.min(w, h, d) >= BEVEL_MIN && r > 0.02) rec.bevelled++;
+        oasis.hostBuckets.set(key, rec);
+        B.box(key, w, h, d, x, y, z, rotY, tint);
+      },
+    };
+    const plans = [];
+    const tSearch = performance.now();
+    for (const anchor of citadelOases()) {
+      const found = findOasisSite(field, anchor, {
+        id: anchor.id,
+        label: anchor.label,
+        reach: 60,
+        /* Two oases 40 m apart are one oasis with a wall down the middle. The
+         * kit's own suite uses the same 140 m. */
+        avoid: plans.map((p) => ({ x: p.plan.x, z: p.plan.z, r: 140 })),
+      });
+      if (!found) {
+        console.warn(`[CitadelWorld] oasis "${anchor.id}" found no viable site near (${anchor.x}, ${anchor.z})`);
+        report.refusedOases.push({ id: anchor.id, reason: 'no viable site' });
+        continue;
+      }
+      /* Re-settle the winner at the full 1 m lattice: the search runs coarser,
+       * and the kit's own docstring records a site that measured 0.39 m of
+       * relief at 2.5 m and 1.0 m at 1.0 m because the coarse pass stepped
+       * straight over a ridge. */
+      const fine = settleOasis(
+        { id: anchor.id, label: anchor.label, x: found.plan.x, z: found.plan.z, yaw: found.plan.yaw },
+        field, { step: 1.0 }
+      );
+      if (!fine.viable) {
+        console.warn(`[CitadelWorld] oasis "${anchor.id}" failed the fine settle: ${fine.reasons.join('; ')}`);
+        report.refusedOases.push({ id: anchor.id, reason: fine.reasons.join('; ') });
+        continue;
+      }
+      plans.push({ plan: fine.plan, relief: fine.profile.relief, lift: fine.lift });
+      oasis.sites.push({ ...fine, distance: found.distance, anchor });
+      /* One site search plus one fine settle is 9-10 ms of its own. */
+      await breathe();
+    }
+    oasis.searchMs = performance.now() - tSearch;
+
+    if (!Array.isArray(this.enterables)) this.enterables = [];
+    /** Every static herd in the world - the oasis herds and the well herds. */
+    const camps = [];
+    /** @type {Array<{id:string,x:number,y:number,z:number,r:number,herd:number,kind:string,label:string}>} */
+    this.oases = [];
+    const oasisStaff = [];
+    /* Between the last search and the first build: `buildOases` is 7.5 ms a
+     * tank and the search that precedes it is 9-10 ms, so without this the two
+     * still land in one slice. */
+    await breathe();
+    for (const { plan, relief, lift } of plans) {
+      B = new Batch({ ao: 0.5, sky: 0.28, grime: 0.62, span: 3.0 }, TILE_METRES);
+      const t0 = performance.now();
+      const kit = buildOases(ctx, [plan]);
+      const ms = performance.now() - t0;
+      oasis.buildMs += ms;
+      oasis.parts.push(...kit.oases);
+      oasis.colliders.push(...kit.colliders);
+      report.colliders.push(...kit.colliders);
+      /* The meshes the HOST paid for, which `kit.draws` cannot see: it counts
+       * the water plane and the two palm fields, and the masonry only when the
+       * kit had to open a batch of its own. This world gives each oasis a batch
+       * and flushes it here, so these are real draw calls and the report has to
+       * say so. Measured: 6 masonry meshes per oasis on top of the kit's 3. */
+      const emitted = this._emit(B, `oasis:${plan.id}`).length;
+      B.dispose();
+      B = null;
+      /* THE WATER AND THE PALMS ARE MESHES THE KIT MAKES ITSELF, and the world
+       * has to own them or nothing ever frees them. `_emit` only owns what came
+       * through the batch; the water plane and the two instanced palm fields
+       * are built by `buildOasis` directly, and the first draft of this method
+       * left all six of them - two trunks, two crowns, two water planes - in
+       * the scene with nothing on `_owned` pointing at them. `citadel-budgets`
+       * C2 asserts that in both directions and named all six. */
+      for (const o of kit.oases) {
+        if (o.water?.mesh?.geometry) this._owned.push(o.water.mesh.geometry);
+        /* An `InstancedMesh` draws the SOURCE geometry, so `m.geometry` is the
+         * palm trunk and crown themselves - which is also why both oases share
+         * one pair and this list holds each of them once however many times it
+         * is pushed. */
+        for (const m of o.palms?.meshes ?? []) if (m.geometry) this._owned.push(m.geometry);
+      }
+      /* Streamed as ENTERABLES with no doors, which is the same shape
+       * `buildCave` publishes, so `Interiors` handles the collectible spots at
+       * an oasis with no new code. */
+      for (const e of kit.enterables) this.enterables.push(e);
+      /* THE KIT'S `cacheSites` ARE DELIBERATELY NOT PUBLISHED.
+       *
+       * `this.cacheSites` is a list of HIGH places for `Caches` to nominate,
+       * and `citadel-objectives` floors it at exactly one per outer region -
+       * six, which is what the region stage measured with `Caches._highAt` on a
+       * 2 m lattice. An oasis crest is 2.57 m over the desert and would be
+       * refused by that predicate anyway, but the nomination is not free: the
+       * authored channel is counted against `highWanted`, so two oasis
+       * nominations are two regions' worth of cache budget spent on ground that
+       * is not high.
+       *
+       * The oases pay into the cache system the other way instead, and it is
+       * the better one. `Caches._findSunken`'s own comment says "Citadel has no
+       * water: `_findSunken` places 0 and logs 0 sunken, 9 high" - with a 2.45 m
+       * pool it now finds one per tank, which is a sunken cache in a world that
+       * has never had one. */
+      /* The staff are STREAMED rather than pushed onto `npcSpawns`. Two
+       * permanent characters standing at a pool 200 m off every corridor is
+       * exactly the flat roster `medieval/Residency.js` measured at 74.6%
+       * beyond `RENDER_OUT`, and `_fillSpawns` has already run its
+       * `_nudgeClear` pass over `npcSpawns`, so anything appended here would
+       * skip it. */
+      for (const s of kit.npcSpawns) oasisStaff.push(s);
+      /* The viewpoint the kit returns is deliberately NOT published: the kit's
+       * own docstring explains that `Viewpoints` treats the array as a
+       * completion set with a cosmetic and a mount power at the end of it, and
+       * the Citadel's five are its five hardest climbs. An oasis you walk onto
+       * is not one of those. */
+      const lm = kit.landmarks[0];
+      /* THE HERD, which is the half of an oasis the player asked for.
+       * Declaring a herd and spawning nothing would be the medieval defect in
+       * miniature: a number in a contract that no body in the world answers to.
+       * It stands on the ground OUTSIDE the tank, on the side the roads come in
+       * from - see `_oasisGrazing` for why not on the crest. */
+      const { pos: graze, ring: grazeRing } = this._oasisGrazing(lm);
+      /* The ground the herd actually has, and the SAME number goes to the
+       * encounter gate below. @see _oasisGrazing for the 420 bodies that were
+       * measured standing on the masonry when this was `lm.r`. */
+      const grazeR = grazeRing * 0.8;
+      camps.push({
+        id: `${lm.id}-herd`,
+        label: lm.name,
+        position: graze,
+        /* SEVEN, not the reference placement's eight, and it is the camel row's
+         * own `packMax` that decides it: `NPCManager.spawnBeastGroup` clamps
+         * every group to the species cap, so a declared eight would stand seven
+         * animals at the water and tell the encounter gate there were eight.
+         * @see Caravans.TRAIN_ANIMALS for the same correction on the roads and
+         * what it cost. */
+        herd: CAMEL_PACK_MAX,
+        r: grazeR,
+        keeper: null,
+      });
+      this.oases.push({
+        id: lm.id,
+        label: lm.name,
+        kind: 'oasis',
+        /* WHERE THE ANIMALS ARE, not where the water is, and the difference is
+         * 37 m at the Palm Well. `caravanContent` reads this to spread a herd
+         * over `r` and count what a walk passes within recognition of; giving
+         * it the tank centre would be declaring eight camels standing in a
+         * 2.45 m deep pool. The pool is `tank` below, for anything that wants
+         * the landmark rather than the herd. */
+        x: graze.x, y: graze.y, z: graze.z,
+        /* The clear grazing ring, which is both the ground the herd spreads
+         * over and the `spread` `CitadelTraffic` spawns them at - one number,
+         * so the animals the gate counts stand where the animals the player
+         * counts stand. NOT the tank's half-width: that put a quarter of them
+         * inside the masonry. @see _oasisGrazing. */
+        r: grazeR,
+        herd: CAMEL_PACK_MAX,
+        tank: { x: lm.x, y: lm.y, z: lm.z, r: lm.r },
+      });
+      report.oases.push({
+        id: plan.id, x: plan.x, z: plan.z, ms, relief, lift,
+        colliders: kit.colliders.length,
+        triangles: kit.triangles,
+        /* The kit's own three plus the masonry meshes this world's batch
+         * emitted for it. @see the note above and `Oasis.cost.draws`. */
+        draws: kit.draws + emitted,
+        kitDraws: kit.draws,
+        hostMeshes: emitted,
+        herdAt: { x: graze.x, y: graze.y, z: graze.z },
+        herdR: grazeR,
+      });
+      await breathe();
+    }
+
+    /* NOTHING BUILT, NOTHING TO HANG THE PALMS ON.
+     *
+     * `oasis.palm` is built before the site search, because both tanks share
+     * one trunk/crown pair and building it twice would hold 1,964 triangles
+     * nobody needs. It reaches `_owned` only through an oasis's own
+     * `palms.meshes` - an `InstancedMesh` draws the SOURCE geometry - so on the
+     * two documented refusal paths above ("no viable site", "failed the fine
+     * settle") both geometries would be orphaned with nothing pointing at them.
+     * Never live today, because both oases build; a leak that is only latent is
+     * still the reason the water planes were left in the scene in the first
+     * draft of this method. */
+    if (!plans.length) {
+      oasis.palm.trunk?.dispose?.();
+      oasis.palm.crown?.dispose?.();
+      oasis.palm = null;
+    }
+
+    /* ---- the eight wayside wells --------------------------------------- *
+     * ONE batch for all eight, and that is the opposite of the oasis rule for
+     * a reason that is about what the splitter can do rather than about taste:
+     * a well is 26 boxes, so eight of them separately would be sixteen tiny
+     * meshes with sixteen draw calls, while one merge of 208 boxes goes through
+     * `_splitDistricts` and comes back as leaves under the 130 m sphere ceiling
+     * - the same treatment the souk and the regions get. (26 and 208, measured
+     * off the build's own report: the first cut of this comment said 22 and
+     * 176, which was the box count before the awning cross-beams and the two
+     * crates went in.)
+     */
+    B = new Batch({ ao: 0.5, sky: 0.28, grime: 0.7, span: 2.4 }, TILE_METRES);
+    for (const site of WELL_SITES) {
+      const y = groundFor(this.physics, site.x, site.z, citadelHeight(site.x, site.z));
+      if (y === null) {
+        console.warn(`[CitadelWorld] well "${site.id}" has no ground at (${site.x}, ${site.z})`);
+        continue;
+      }
+      /* Yaw from the site's own coordinates, so the awning faces the mesa and
+       * two wells never read as the same prop turned the same way. */
+      const yaw = Math.atan2(-site.z, -site.x);
+      const built = buildWell(ctx, site, y, yaw);
+      camps.push({
+        id: site.id,
+        label: site.label,
+        position: new THREE.Vector3(site.x, y, site.z),
+        herd: site.herd,
+        r: WELL_R * 1.8,
+        keeper: {
+          position: new THREE.Vector3(built.spots[0].x, y, built.spots[0].z),
+          type: 'friendly',
+          role: 'wanderer',
+          name: site.keeper.name,
+          persona: site.keeper.persona,
+          patrol: [
+            new THREE.Vector3(built.spots[0].x, y, built.spots[0].z),
+            new THREE.Vector3(built.spots[1].x, y, built.spots[1].z),
+          ],
+        },
+      });
+      this.oases.push({
+        id: site.id,
+        label: site.label,
+        kind: 'well',
+        x: site.x, y, z: site.z,
+        r: WELL_R * 1.8,
+        herd: site.herd,
+        /* The measured share of the 8,384 inter-region journeys that pass
+         * within the 15 m recognition distance of this site, carried through
+         * from `Caravans.WELL_SITES` so a well that is moved has to be
+         * re-measured rather than re-argued. */
+        share: site.share,
+      });
+      report.wells.push({ id: site.id, x: site.x, y, z: site.z, boxes: built.boxes, colliders: built.colliders.length });
+      report.colliders.push(...built.colliders);
+      await breathe();
+    }
+    this._emit(B, 'wells');
+    B.dispose();
+    B = null;
+
+    /* ---- the three roads ----------------------------------------------- *
+     * The authored `y` on every waypoint is a HINT that
+     * `npc-routes.test.mjs` checks against the real surface with a 2 m
+     * tolerance; `roadWaypoints` is what turns it into the real surface, once,
+     * so the drover's patrol, the camel homes and the published contract all
+     * read one list of points.
+     */
+    const roads = CARAVAN_ROADS.map((road) => ({
+      ...road,
+      waypoints: roadWaypoints(road, this.physics),
+    }));
+
+    /**
+     * THE CONTRACT the encounter measurement reads.
+     *
+     * `citadel-traffic-kit.caravanContent` takes `world.caravanRoutes` and
+     * `world.oases` and scores them; publishing them is what lets a headless
+     * gate certify the placement the game actually ships rather than a model of
+     * it. `points` is the one-way road - the kit mirrors it into an
+     * out-and-back cycle itself, which is exactly what `CitadelTraffic` does
+     * with the same list.
+     */
+    this.caravanRoutes = roads.map((r) => ({
+      id: r.id,
+      label: r.label,
+      cargo: r.cargo,
+      points: r.waypoints.map((p) => ({ x: p.x, y: p.y, z: p.z })),
+      trains: r.trains,
+      animals: r.animals,
+      length: roadLength(r.waypoints),
+    }));
+    for (const r of this.caravanRoutes) report.roads.push({ id: r.id, points: r.points.length, length: r.length });
+
+    /* ---- and the people on them ---------------------------------------- */
+    const wanderers = [];
+    for (const w of WANDERERS) {
+      const pts = [];
+      let ok = true;
+      for (const [x, z] of w.legs) {
+        const y = groundFor(this.physics, x, z, citadelHeight(x, z));
+        if (y === null) { ok = false; break; }
+        pts.push(new THREE.Vector3(x, y, z));
+      }
+      if (!ok) {
+        console.warn(`[CitadelWorld] wanderer "${w.id}" has no ground on its round`);
+        continue;
+      }
+      wanderers.push({
+        position: pts[0].clone(),
+        type: 'friendly',
+        role: 'wanderer',
+        name: w.name,
+        persona: w.persona,
+        patrol: pts,
+      });
+    }
+
+    /**
+     * The streaming population, published as `_population`.
+     *
+     * The name is not incidental: `npc-routes.test.mjs` reads
+     * `world._population?.people` precisely so that a streamed cast cannot
+     * become a second, unchecked kind of route, which is what the vale's two
+     * mid-air sentries were. Every drover's patrol IS its road, so this
+     * publishes all three roads for that audit as well.
+     */
+    this._population = new CitadelTraffic({
+      npcManager: () => (this.active ? this.ctx?.npcManager ?? null : null),
+      physics: this.physics,
+      roads,
+      camps,
+      wanderers,
+      residents: oasisStaff,
+    });
+    if (Array.isArray(this._owned)) this._owned.push(this._population);
+
+    report.declaredAnimals = this._population.declaredAnimals;
+    report.roster = this._population.rosterSize;
+    report.oasis = oasis;
+    return report;
+  }
+
   /**
    * The ring's three trials, appended to the souk's.
    *
@@ -4250,6 +4855,18 @@ export class CitadelWorld extends World {
        * far corner stands 264 m from the dome in front and 1,536 m behind it,
        * and the horizon band tilts as the player walks. */
       if (this._skyDome) this._skyDome.position.copy(cam.position);
+      /* The caravans, and the herds and travellers with them.
+       *
+       * Driven off the CAMERA rather than off the player body, on the same
+       * reasoning `MedievalWorld` gives for its grass: what has to have content
+       * near it is whatever the lens can see, and in a third-person or free-look
+       * frame those are metres apart.
+       *
+       * Every train advances every frame - nine trains of four floats, no
+       * allocation - and the streaming decision behind it is throttled to
+       * 0.4 s or 8 m of travel. @see CitadelTraffic#update */
+      cam.getWorldPosition(_v1);
+      this._population?.update(_v1.x, _v1.z, dt);
     }
 
     // Banners only - everything else in this world is static, and it should be:
@@ -4275,6 +4892,19 @@ export class CitadelWorld extends World {
     this.ropeBridges.length = 0;
     this.minigameVenues.length = 0;
     this.cacheSites.length = 0;
+    /* The caravans go with everything else. `_owned` holds the population and
+     * the loop above has already called its `dispose`, which releases every
+     * streamed body through the manager; this drops the roster so a rebuilt
+     * world does not inherit one. */
+    this._population = null;
+    /* The build report holds `oasis.parts` and every geometry reference the kit
+     * returned; `_owned` has already disposed the geometries themselves, and
+     * this drops the last strong reference to the rest of the graph so a
+     * rebuilt world does not inherit it. Every other published list below is
+     * cleared for the same reason and this one was missed. */
+    this.traffic = null;
+    this.oases.length = 0;
+    this.caravanRoutes.length = 0;
     this._terrainTiles.length = 0;
     this._terrainSwap.length = 0;
     this._districts.length = 0;

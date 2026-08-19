@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { gaitFor, legPhase, legPose, planted, GAIT_PHASE } from './BeastGait.js';
+import { BEASTS, isPredator } from './BeastSpecies.js';
 
 /**
  * Poses a {@link BeastBody} from a gait table.
@@ -34,6 +35,16 @@ import { gaitFor, legPhase, legPose, planted, GAIT_PHASE } from './BeastGait.js'
  * wind-up; a bear rears, lifts a paw and turns its shoulders. Both hold that
  * shape for the whole telegraph and snap out of it on the strike, so a player
  * watching the animal - rather than the health bar - can step out of the arc.
+ *
+ * ── And the animal that has no telegraph ──────────────────────────────────
+ * A camel is not a predator, so three of the five intent weights - crouch, rear
+ * and gape - have no meaning on it, and the state machine that would set them
+ * was written for hunters. `setIntentForState` therefore forks on the species
+ * ONCE, at the top, and the herbivore path (`_setPreyIntent`) can only ever
+ * reach the two weights that a prey animal actually expresses. Two other things
+ * are its alone and neither touches the predator path: the pace ROLL, added in
+ * `update` only when the gait declares one, and the CUD, a chewing jaw for an
+ * animal standing still.
  */
 
 const clamp = THREE.MathUtils.clamp;
@@ -58,6 +69,21 @@ export class BeastAnimator {
     this.species = species;
     this.bus = bus;
     this.owner = owner;
+
+    /**
+     * Does this animal's pose vocabulary include predation?
+     *
+     * Everything below the intent layer - legs, bob, flex, nod, ears, tail,
+     * death - is quadruped and shared. What is NOT shared is what a STATE means
+     * as a SHAPE: a wolf stalking crouches and half-opens its jaws, and there
+     * is no reading of a camel doing either. `setIntentForState` branches on
+     * this once and the two paths never meet, so a herbivore cannot be handed a
+     * crouch by a state machine that was written for hunters.
+     *
+     * Absent means predator - see `isPredator` - so the wolf and the bear take
+     * the path they always did, byte for byte.
+     */
+    this._predator = isPredator(BEASTS[species]);
 
     this.speed = 0;
     this.turnRate = 0;
@@ -131,6 +157,10 @@ export class BeastAnimator {
    *          stalking:boolean}} s
    */
   setIntentForState(s) {
+    if (!this._predator) {
+      this._setPreyIntent(s);
+      return;
+    }
     if (s.state === 'ATTACK') {
       if (s.phase === 'telegraph') {
         this.setIntent({
@@ -159,6 +189,58 @@ export class BeastAnimator {
       rear: 0,
       gape: s.hunting ? 0.2 : 0,
       alert: s.hunting ? 1 : 0.35,
+      cower: 0,
+    });
+  }
+
+  /**
+   * What a state looks like on an animal that does not hunt.
+   *
+   * Three of the five intent weights are structurally unavailable here and that
+   * is the entire content of this method:
+   *
+   *   - `crouch` is a wolf gathering itself to spring. A camel that dropped its
+   *     chest would read as a camel sitting down, which is a completely
+   *     different and much more specific animal behaviour than anything the AI
+   *     is trying to say.
+   *   - `rear` is a bear standing up to swing. There is nothing to swing.
+   *   - `gape` is the bite telegraph. The jaw still moves on a herbivore - see
+   *     the chew in `update` - but never because the AI asked for a mouth.
+   *
+   * What is left is the pair that actually carry a prey animal's mood, and they
+   * run the OPPOSITE way round from a predator's. A wolf is most alert when it
+   * is closing; a camel is most alert when something has just hurt it and it is
+   * about to leave, and the rest of the time it is a head-down grazing animal
+   * paying no attention to anybody. That is `alert`, which lifts the head and
+   * points the ears, and `cower`, which pins them back and drops the tail.
+   *
+   * `cower` is deliberately held at 0.5 rather than the predator FLEE path's
+   * 1.0: at 1.0 the tail clamps flat between the legs, which is a dog's fear
+   * signal and not a camel's - a bolting camel carries its tail UP. Half of it
+   * pins the ears, which is the part that is true, without the part that is not.
+   *
+   * `BeastNPC` can only ever hand a camel three of the five states it publishes
+   * - ROAM, FLEE and a STALK that is overwritten inside the same call - and the
+   * ATTACK branch above is unreachable for it. This method still answers for
+   * every state anyway: a pose driver that assumes its caller's state machine
+   * is smaller than it says is a pose driver that breaks the day somebody
+   * spawns a camel some other way.
+   *
+   * @param {{state:string, phase:string, wind:number, hunting:boolean,
+   *          stalking:boolean}} s
+   */
+  _setPreyIntent(s) {
+    if (s.state === 'FLEE') {
+      this.setIntent({ crouch: 0, rear: 0, gape: 0.2, alert: 0.15, cower: 0.5 });
+      return;
+    }
+    this.setIntent({
+      crouch: 0,
+      rear: 0,
+      gape: 0,
+      // `hunting` on a herbivore means "something is still on my mind" - the
+      // only way it has a target at all is that the thing hit it.
+      alert: s.hunting ? 0.85 : 0.2,
       cower: 0,
     });
   }
@@ -310,6 +392,22 @@ export class BeastAnimator {
     const lean = clamp(this.turnRate * 0.16, -0.32, 0.32);
     b.tilt.rotation.z = damp(b.tilt.rotation.z, -lean * (0.4 + sp01), 8, dt)
       + this._flinch * this._flinchDir.x * 0.14;
+
+    /* THE SHIP OF THE DESERT.
+     *
+     * A pacing animal lifts both legs on one side at once, so for half of every
+     * cycle there is nothing under that side and the body falls toward it. That
+     * roll is the single most recognisable thing about a camel in motion and it
+     * is not something the leg tables can express on their own - the legs are
+     * already in the right pattern, but the barrel above them has to answer.
+     *
+     * One sine per stride cycle, in phase with the pace: it peaks as the left
+     * pair is airborne and troughs as the right pair is. Added rather than
+     * damped so it cannot fight the turn lean above, and added ONLY when the
+     * gait declares a roll - which no diagonal or staggered gait does, so the
+     * wolf and the bear never reach this line at all. */
+    const roll = gait.roll ?? 0;
+    if (roll !== 0) b.tilt.rotation.z += Math.sin(this.stridePhase * TAU) * roll;
     b.tilt.rotation.y = damp(b.tilt.rotation.y, lean * 0.22, 8, dt);
 
     /* ---- neck + head ---- */
@@ -327,6 +425,23 @@ export class BeastAnimator {
 
     /* ---- jaw ---- */
     b.jaw.rotation.x = h.gape * b.jawGape;
+
+    /* THE CUD.
+     *
+     * A standing predator's mouth is shut and that is correct - a wolf's jaw
+     * only opens to bite. A standing herbivore's mouth is never still, and at
+     * the ranges a player actually meets one of these (measured recognition
+     * distance for this project's animals is 15-20 m) a chewing jaw is the
+     * cheapest possible signal that the thing is alive rather than placed.
+     *
+     * Two sines beating against each other so the rhythm wanders instead of
+     * ticking, faded out with speed because an animal at a run is not eating,
+     * and gated on `_predator` so no wolf ever chews. */
+    if (!this._predator) {
+      const chew = 0.5 + 0.5 * Math.sin(this._time * 5.2 + this._flickOffset)
+        * Math.sin(this._time * 0.9 + this._flickOffset * 0.5);
+      b.jaw.rotation.x += chew * b.jawGape * 0.30 * (1 - clamp(speed, 0, 1));
+    }
 
     /* ---- ears ----
      * Forward and flicking when alert, pinned flat when charging or cowed.

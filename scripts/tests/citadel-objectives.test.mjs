@@ -136,6 +136,17 @@ function entrances(e) {
     if (m.face === '+y' || m.face === '-y') continue;
     out.push({ id: m.id, kind: 'mouth', position: m.position });
   }
+  /* AN OASIS IS DOORLESS ON PURPOSE, and that is a third kind of entrance
+   * rather than a missing one. `citadel/Oasis.js` publishes the same
+   * `enterable` shape a cave does - so `Interiors` streams its collectibles
+   * with no new code - but a stepped water tank standing in the open desert has
+   * no threshold: you walk onto the crest from any bearing at all. So its spots
+   * are scored at the crest origin, which is the same rule the note at the call
+   * site states (score an interior spot at the way in) applied to a structure
+   * whose way in is everywhere. */
+  if (!out.length && e.oasis && e.origin) {
+    out.push({ id: e.oasis.id ?? 'oasis', kind: 'crest', position: e.origin });
+  }
   return out;
 }
 

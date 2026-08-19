@@ -229,8 +229,12 @@ export class Caches {
      *
      * The guard was `this.sites.length >= PER_WORLD.sunken + highWanted`, which
      * reserves three slots for sunken caches whether or not any were placed.
-     * Citadel has no water: `_findSunken` places 0 and logs "0 sunken, 9 high",
-     * so the authored channel was free to run to TWELVE high sites against a
+     * Citadel had no water when that was written: `_findSunken` placed 0 and
+     * the world logged "0 sunken, 9 high" - it now has two oasis tanks, and
+     * with `WaterVolumes` wired the same world logs "2 sunken, 9 high", so the
+     * shortfall is one rather than three. The bug the guard had is unchanged by
+     * that and so is its fix, because a world with no water at all is still the
+     * common case: the authored channel was free to run to TWELVE high sites against a
      * `highWanted` of 9 - and because the dart loop below starts at
      * `fromAuthored`, it would then contribute nothing and `placement.darted`
      * would read 0 while `placed` quietly exceeded `want`. Not live today only

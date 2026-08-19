@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { sweep, blob, blade } from '../gfx/Organic.js';
 
 /**
- * Procedural quadruped bodies: the wolf and the bear.
+ * Procedural quadruped bodies: the wolf, the bear and the camel.
  *
  * ── Why procedural, and why not the Humanoid factory ──────────────────────
  * Nothing in this project loads a model, and the one working quadruped it has -
@@ -36,6 +36,12 @@ import { sweep, blob, blade } from '../gfx/Organic.js';
  *
  * Everything else - fur colour, ear shape, paw size - is detail that only helps
  * once the player is already close.
+ *
+ * The camel is the third silhouette and it is the easiest of the three, because
+ * it is separated from both predators by HEIGHT and by HEAD CARRIAGE before any
+ * other cue gets a chance: 2.20 m at the hump against a bear's 1.40, and a head
+ * carried at 2.70 m on a vertical metre of neck - ABOVE its own hump, where a
+ * bear's hangs below. See the note on its profile.
  *
  * ── The interface this presents ───────────────────────────────────────────
  * `NPC` and `NPCManager` between them read exactly seven things off the body
@@ -291,6 +297,210 @@ const PROFILES = {
     },
     fur: 'hide.fur:4,8',
   },
+
+  /**
+   * CAMEL - a dromedary, and the proof that this parameterisation was general
+   * all along.
+   *
+   * -- WHAT HAD TO BE ADDED, AND WHAT DID NOT --------------------------------
+   * Almost nothing. The single-hump profile is what the `hump` field ALREADY
+   * described: on a bear it is the shoulder mass, on a camel it is the hump,
+   * and it is the same ellipsoid merged into the same barrel. The long neck is
+   * the same `sweep` with more stations and a genuine S in it - `Organic.sweep`
+   * parallel-transports its frames precisely so a path may stand vertical
+   * without the ring flipping, which is what a camel's neck needs and a wolf's
+   * never exercised. The long thin legs are the same two-segment chain with
+   * different radii; the splayed foot is the same paw blob, flattened in y and
+   * widened in x and z.
+   *
+   * Two fields are new, both optional and both defaulted to the expression they
+   * replace, so the wolf and the bear come out of the builder bit-for-bit
+   * identical (pinned by SHA-256 in `camel.test.mjs`):
+   *
+   *   - `head.eye`, because the eye beads were derived from `cheeks` and a
+   *     camel's eyes are set higher and further out on a much narrower skull
+   *     than that expression can reach. Big dark eyes are most of what stops a
+   *     camel's small head reading as a blank peg at close range.
+   *   - `legs.clawCount`, because a camel has TWO toenails, not four claws.
+   *
+   * -- READING A CAMEL AT FORTY METRES ---------------------------------------
+   * The same budget as the wolf and the bear - silhouette only - spent on four
+   * things, none of which any other animal in this game has:
+   *
+   *   1. HEIGHT. 2.20 m at the hump against a bear's 1.40 and a player's 1.75.
+   *      It is the tallest thing that walks in this world, and it is the first
+   *      thing that reads.
+   *   2. THE NECK. Just over a metre of it, rising almost vertically out of the
+   *      chest and arching forward at the top, carrying the head at 2.7 m -
+   *      ABOVE the hump. A bear's head hangs below its hump and a wolf's is
+   *      level with its shoulder; a camel's is the highest point on the animal.
+   *      Nothing else here has that profile and nothing else can be mistaken
+   *      for it.
+   *   3. THE HUMP. One, centred, narrower than the barrel it stands on, so it
+   *      reads as a mound on the back rather than as a thick shoulder.
+   *   4. THE LEGS. Long, thin, and finishing in a flat splayed pad rather than
+   *      a paw. A camel's belly is 1.2 m off the ground; a bear's is 0.6.
+   *
+   * Every y below is metres above the ground with the animal standing, so the
+   * foot pads finish at y = 0 and the root can be dropped straight onto the
+   * terrain. -Z is forward, as everywhere else in this file.
+   */
+  camel: {
+    /* The crest of the hump, and the same number as `BEASTS.camel.
+     * shoulderHeight` - `NPC` reads `humanoid.height` for its collision capsule
+     * and `beast-body` asserts the two agree. The head stands ~0.5 m higher
+     * still, which is the point of the animal. */
+    height: 2.2,
+    /* Barrel. Deep and NARROW - a camel is a slab-sided animal seen from the
+     * front and a deep one seen from the side, the opposite of a bear. The
+     * topline is nearly flat because the hump does all the shaping. */
+    barrel: [
+      { y: 1.440, z: -1.000, rx: 0.150, ry: 0.200 },  // point of the chest, keeled
+      { y: 1.460, z: -0.820, rx: 0.215, ry: 0.290 },
+      { y: 1.480, z: -0.550, rx: 0.245, ry: 0.335 },  // girth, deepest
+      { y: 1.500, z: -0.200, rx: 0.238, ry: 0.320 },
+      { y: 1.540, z: 0.180, rx: 0.215, ry: 0.285 },   // flank
+      { y: 1.580, z: 0.520, rx: 0.205, ry: 0.255 },   // croup
+      { y: 1.600, z: 0.780, rx: 0.150, ry: 0.180 },
+      { y: 1.560, z: 0.920, rx: 0.070, ry: 0.085 },   // dock
+    ],
+    masses: [
+      { r: [0.085, 0.115, 0.190], p: [-0.150, 1.470, -0.600] },  // shoulder
+      { r: [0.085, 0.115, 0.190], p: [0.150, 1.470, -0.600] },
+      { r: [0.090, 0.125, 0.195], p: [-0.140, 1.510, 0.520] },   // haunch
+      { r: [0.090, 0.125, 0.195], p: [0.140, 1.510, 0.520] },
+    ],
+    /* THE HUMP. Crest at 1.845 + 0.360 = 2.205 m, which is the tallest point of
+     * the BODY and the number `height` is taken from. Narrower in x than the
+     * barrel underneath it (0.215 against 0.245) so it stands proud as a mound
+     * rather than swelling the whole animal, and its base is buried 0.33 m
+     * inside the back so there is no seam to see. Mid-back, a shade forward of
+     * centre, which is where a dromedary carries it. */
+    hump: { r: [0.215, 0.360, 0.400], p: [0, 1.845, -0.080] },
+    neck: {
+      at: [0, 1.640, -0.880],
+      /* THE S. Up first, almost vertically out of the chest, then arching
+       * forward over the last third. Six stations rather than the wolf's three
+       * because a curve this long read from three is a bent pipe. The poll ends
+       * 1.01 m above the base and 0.40 m in front of it - a camel's neck is as
+       * long as a wolf's whole body. */
+      sections: [
+        { y: -0.120, z: 0.150, rx: 0.200, ry: 0.235 },  // buried in the chest
+        { y: 0.140, z: -0.020, rx: 0.150, ry: 0.170 },
+        { y: 0.400, z: -0.120, rx: 0.125, ry: 0.140 },
+        { y: 0.660, z: -0.150, rx: 0.112, ry: 0.125 },  // crest of the S
+        { y: 0.880, z: -0.245, rx: 0.100, ry: 0.112 },
+        { y: 1.010, z: -0.395, rx: 0.088, ry: 0.098 },  // poll
+      ],
+    },
+    head: {
+      at: [0, 1.055, -0.455],
+      /* Small, narrow, and long in the muzzle - a camel's skull is 2.4 times as
+       * long as it is wide against a wolf's 1.9 and a bear's 1.0. The last
+       * station drops away: the upper lip hangs, which along with the eyes is
+       * the whole of a camel's expression. */
+      sections: [
+        { y: 0.010, z: 0.070, rx: 0.078, ry: 0.086 },   // back of the skull
+        { y: 0.020, z: -0.010, rx: 0.086, ry: 0.092 },  // braincase, small
+        { y: -0.020, z: -0.120, rx: 0.062, ry: 0.070 }, // stop
+        { y: -0.070, z: -0.250, rx: 0.055, ry: 0.062 }, // muzzle
+        { y: -0.105, z: -0.335, rx: 0.048, ry: 0.052 }, // the hanging lip
+      ],
+      cheeks: { r: [0.040, 0.048, 0.060], p: [0.052, -0.010, -0.050] },
+      /* Set high and WIDE, and standing proud of a skull that is only 0.086 m
+       * in half-width at that station - the beads poke out either side rather
+       * than sitting in the surface. This is what `head.eye` exists for. */
+      eye: { x: 0.070, y: 0.045, z: -0.070, r: 0.024, rz: 0.020 },
+      /* Small, rounded and set far back - closer to the bear's than the wolf's,
+       * but half the size and tipped further out. */
+      ear: { at: [0.062, 0.062, 0.055], len: 0.085, baseW: 0.070, tipW: 0.030,
+             thick: 0.024, curve: 0.10, tilt: 0.62 },
+      jaw: {
+        at: [0, -0.052, -0.095],
+        sections: [
+          { y: 0, z: 0.02, rx: 0.048, ry: 0.032 },
+          { y: -0.010, z: -0.110, rx: 0.042, ry: 0.028 },
+          { y: -0.024, z: -0.225, rx: 0.036, ry: 0.024 },
+          { y: -0.034, z: -0.300, rx: 0.030, ry: 0.020 },
+        ],
+        /* Small. On a predator the gape is the telegraph and it is driven by
+         * the wind-up; a camel has no wind-up, so this is only ever driven by
+         * the chew `BeastAnimator` gives a resting herbivore. */
+        gape: 0.30,
+      },
+      /* Camels do have canines - the tusks a bull shows when it is annoyed -
+       * and they are the same four spikes every other row builds, an order of
+       * magnitude smaller. */
+      teeth: { x: 0.024, z: -0.170, upperY: -0.028, lowerY: 0.014, len: 0.024, r: 0.007 },
+    },
+    tail: {
+      at: [0, 1.560, 0.935],
+      /* A thin rope with a tuft on the end, half a metre of it. The tuft is one
+       * fat station: it is the only part of the tail that is visible at any
+       * distance and without it a camel's rear reads as a bear's. */
+      sections: [
+        { y: 0, z: 0, rx: 0.042, ry: 0.045 },
+        { y: -0.150, z: 0.075, rx: 0.030, ry: 0.032 },
+        { y: -0.330, z: 0.105, rx: 0.024, ry: 0.026 },
+        { y: -0.470, z: 0.120, rx: 0.040, ry: 0.042 },  // the tuft
+        { y: -0.545, z: 0.125, rx: 0.014, ry: 0.015 },
+      ],
+      hair: true,
+    },
+    legs: {
+      /* Narrow-tracked, which is the other half of why a pacing camel rolls:
+       * the feet fall almost under the centre line, so there is nothing much
+       * holding the body up sideways when one side lifts. */
+      track: 0.185,
+      frontZ: -0.600,
+      hindZ: 0.550,
+      /* Both hips at the same height, so both pairs of feet finish at exactly
+       * y = 0: 1.46 - 0.66 (knee) - 0.745 (pad centre) - 0.055 (pad half-depth). */
+      frontHipY: 1.460,
+      hindHipY: 1.460,
+      /* Long and thin. 0.66 m of upper and 0.68 m of lower against a bear's
+       * 0.52 and 0.40 on an animal only 1.6x its height - a camel is mostly
+       * leg, and the belly clearing 1.2 m of ground is the cue that says so. */
+      upperFront: [
+        { y: 0.045, rx: 0.098, ry: 0.115 },
+        { y: -0.300, rx: 0.070, ry: 0.082 },
+        { y: -0.660, rx: 0.048, ry: 0.052 },
+      ],
+      upperHind: [
+        { y: 0.055, rx: 0.115, ry: 0.140 },
+        { y: -0.280, rx: 0.082, ry: 0.098 },
+        { y: -0.660, rx: 0.046, ry: 0.050 },
+      ],
+      kneeY: -0.660,
+      lower: [
+        { y: 0.010, rx: 0.045, ry: 0.048 },
+        { y: -0.360, rx: 0.034, ry: 0.036 },
+        { y: -0.680, rx: 0.038, ry: 0.040 },
+      ],
+      /* THE SPLAYED FOOT. Not a paw: a broad flat pad, 0.34 m across and 0.11 m
+       * deep, that spreads on sand. The measurement that actually reads is not
+       * how big it is but how much it FLARES: the pad is 4.5 times the width of
+       * the cannon bone directly above it, where a bear's plate is 1.2 times
+       * its own column and a wolf's ball 1.5 times its own. A camel's foot
+       * looks stuck on, and that is correct. */
+      paw: { r: [0.170, 0.055, 0.180], p: [0, -0.745, -0.030] },
+      pawGap: 0.016,
+      /* TWO toenails, not four claws. @see the claw loop in `_build`. */
+      clawCount: 2,
+    },
+    colours: {
+      coat: [0xc2a276, 0xa8875c, 0xd6bd92, 0x8e7148],
+      belly: 0xdcc9a6,
+      dark: 0x241d16,
+      /* Horn, not bone: a camel's toenails are dark against a pale coat, which
+       * is the opposite of the bear's pale claws against a dark one. */
+      claw: 0x6b5b45,
+    },
+    /* More repeats ALONG than the predators get, fewer around: a camel's coat
+     * lies in long vertical hanks off the neck and shoulder rather than in the
+     * short back-swept grain of a wolf's. */
+    fur: 'hide.fur:4,10',
+  },
 };
 
 /** Merge a list of geometries into one, disposing the parts. */
@@ -452,12 +662,24 @@ export class BeastBody {
     );
 
     /* Eyes: two dark beads. Six triangles' worth of geometry that does more
-     * for "this thing is looking at me" than the whole skull does. */
+     * for "this thing is looking at me" than the whole skull does.
+     *
+     * Placed off `cheeks` by default, which is where the wolf's and the bear's
+     * have always come from and is exactly reproduced below. A profile may
+     * override with `head.eye` when that expression cannot reach: a camel's
+     * skull is a third of a bear's width and its eyes stand proud of it, so
+     * derived-from-the-cheeks would bury them inside the head. */
+    const eye = P.head.eye ?? {
+      x: P.head.cheeks.p[0] * 0.62,
+      y: P.head.cheeks.p[1] + 0.038,
+      z: P.head.sections[2].z + 0.02,
+      r: 0.017,
+      rz: 0.014,
+    };
+    const eyeRz = eye.rz ?? eye.r;
     const eyeGeo = merge([
-      blob(0.017, 0.017, 0.014, -P.head.cheeks.p[0] * 0.62, P.head.cheeks.p[1] + 0.038,
-        P.head.sections[2].z + 0.02, 8),
-      blob(0.017, 0.017, 0.014, P.head.cheeks.p[0] * 0.62, P.head.cheeks.p[1] + 0.038,
-        P.head.sections[2].z + 0.02, 8),
+      blob(eye.r, eye.r, eyeRz, -eye.x, eye.y, eye.z, 8),
+      blob(eye.r, eye.r, eyeRz, eye.x, eye.y, eye.z, 8),
     ]);
     this._add(this.head, eyeGeo, dark, { cast: false, detail: true });
 
@@ -541,10 +763,22 @@ export class BeastBody {
         blob(L.paw.r[0], L.paw.r[1], L.paw.r[2], L.paw.p[0], L.paw.p[1], L.paw.p[2], 10),
       ]), coat);
 
-      // Claws: four short spikes off the front of the paw.
+      /* Claws: short spikes off the front of the paw.
+       *
+       * Four by default, which is what a wolf and a bear have. A profile may
+       * ask for another number - the camel has TWO toenails - and the spacing
+       * widens by the same factor so however many there are they still span the
+       * same fraction of the foot. At `n === 4` both expressions are the ones
+       * that were here before: `(n - 1) / 2` is exactly 1.5 and `4 / n` is
+       * exactly 1, multiplying an IEEE754 double by 1 is the identity, and the
+       * multiplication ORDER below is unchanged - so the wolf's and the bear's
+       * claws come out bit-for-bit unchanged. */
       const claws = [];
-      for (let i = 0; i < 4; i++) {
-        const cx = (i - 1.5) * L.paw.r[0] * 0.52;
+      const clawN = L.clawCount ?? 4;
+      const clawMid = (clawN - 1) / 2;
+      const clawSpread = 4 / clawN;
+      for (let i = 0; i < clawN; i++) {
+        const cx = (i - clawMid) * L.paw.r[0] * 0.52 * clawSpread;
         claws.push(sweep([
           { x: cx, y: L.paw.p[1], z: L.paw.p[2] - L.paw.r[2] * 0.7, rx: L.pawGap, ry: L.pawGap },
           { x: cx, y: L.paw.p[1] - L.pawGap * 0.6, z: L.paw.p[2] - L.paw.r[2] * 1.25,

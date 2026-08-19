@@ -469,6 +469,13 @@ export class QuestSystem {
   _onKill(e) {
     const npc = e?.npc;
     if (!npc || npc.type !== 'hostile') return;
+    /* A herbivore is not a kill anybody asked for. `BeastNPC` files every
+     * animal as a hostile - see the note on `type` there - and
+     * `_matchesStepTarget` returns true for a step with no `target` at all, so
+     * an untargeted "kill N" step advanced on the Sunspire camels: 220 HP,
+     * no attack of any kind, and a 22 s respawn. Keyed on the species row
+     * rather than on the species, so a predator added later still counts. */
+    if (npc.isBeast && npc.def?.predator === false) return;
     this._advanceSteps('kill', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
     this._advanceSteps('defend', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
   }

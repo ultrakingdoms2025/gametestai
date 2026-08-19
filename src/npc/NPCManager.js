@@ -883,7 +883,8 @@ export class NPCManager {
    * authored on a slope arrives standing on the slope.
    *
    * @param {{position:THREE.Vector3, species?:string, count?:number,
-   *          territory?:number, yaw?:number, name?:string, spread?:number}} spec
+   *          territory?:number, roamSpeed?:number, yaw?:number, name?:string,
+   *          spread?:number}} spec
    * @param {number} [budget] hard cap on how many this call may create
    * @returns {import('./BeastNPC.js').BeastNPC[]}
    */
@@ -923,6 +924,7 @@ export class NPCManager {
         pack,
         yaw: spec.yaw ?? rnd() * Math.PI * 2,
         territory: spec.territory,
+        roamSpeed: spec.roamSpeed,
       });
       if (beast) out.push(beast);
     }
@@ -938,7 +940,8 @@ export class NPCManager {
    * `npcSpawns`. Returns null rather than throwing when the budget is full.
    *
    * @param {{position:THREE.Vector3, species?:string, home?:THREE.Vector3,
-   *          pack?:BeastPack, yaw?:number, name?:string, territory?:number}} spec
+   *          pack?:BeastPack, yaw?:number, name?:string, territory?:number,
+   *          roamSpeed?:number}} spec
    * @returns {import('./BeastNPC.js').BeastNPC|null}
    */
   spawnBeast(spec) {
@@ -980,7 +983,27 @@ export class NPCManager {
       seed,
       yaw: o.yaw ?? 0,
     });
-    if (Number.isFinite(o.territory)) npc.def = { ...def, territory: o.territory };
+    /* PER-SPAWN OVERRIDES, copied onto a fresh object rather than written into
+     * the shared species row: `beastDef` returns the ONE table entry every
+     * animal of that species reads, so mutating it would re-tune every wolf in
+     * the game.
+     *
+     * `roamSpeed` is here for the same reason `territory` is, and it is the
+     * caravan that needs it. `Caravans.driveHerds` walks a train's `home`
+     * anchors along the road at `CARAVAN_SPEED`, and `BeastNPC._roam` steers at
+     * `def.roamSpeed`; the camel row's grazing pace is 1.15 m/s, which is
+     * exactly `CARAVAN_SPEED`, so an animal's top speed equalled its own
+     * anchor's and the gap could only ever grow. Measured on the shipped
+     * placement before this override, one train followed for 300 s: 0.61 m/s
+     * made good against an anchor at 1.15, and camel-to-slot distance climbing
+     * 19 m -> 96 m on a 5 m territory. @see Caravans.TRAIN_ROAM_SPEED. */
+    if (Number.isFinite(o.territory) || Number.isFinite(o.roamSpeed)) {
+      npc.def = {
+        ...def,
+        territory: Number.isFinite(o.territory) ? o.territory : def.territory,
+        roamSpeed: Number.isFinite(o.roamSpeed) ? o.roamSpeed : def.roamSpeed,
+      };
+    }
     o.pack?.add(npc);
 
     npc.setWater(this.water);

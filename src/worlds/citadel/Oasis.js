@@ -73,12 +73,56 @@ import { sweep, blob } from '../../gfx/Organic.js';
  * that chose it, and `the pool can be swum out of by holding forward` drives
  * the real `Player` through it rather than believing any of this.
  *
+ * ── 4. The tank was right and it did not look like an oasis ──────────────
+ *
+ * Everything above is about whether the thing WORKS, and it does: the pool is
+ * swimmable, climbable out of, level, grounded, and cheap. It also shipped
+ * looking like a rectangle of flat saturated blue on a stepped grey ziggurat
+ * in the middle of a desert, and none of the eighteen cases in
+ * `citadel-oasis.test.mjs` had a word to say about that.
+ *
+ * Three things were wrong and none of them was the profile.
+ *
+ * THE BANK WAS PAINTED AS POOL LINING. Every ring was keyed on `r.depth > 0`,
+ * and `depth` on an apron course is a fiction - stated as such in the note on
+ * {@link auditShoreline}, which walks the apron separately for exactly this
+ * reason. The first apron course tops out 0.15 m under the waterline, so all
+ * fifteen of them tested true and the whole outer bank came out in
+ * `stone.cobble` in the algae tints meant for the bed. One boolean, and it is
+ * most of the grey ziggurat. Keyed on `kind` now - {@link ringSurface}.
+ *
+ * THE POOL WAS A RECTANGLE. The colliders have to be axis-aligned rectangles;
+ * the water surface does not, and neither does the shoreline. Both now come
+ * off one radial function - {@link shoreRadius} - and the sand that fills what
+ * the water leaves dry comes off the same one, which is the only way the two
+ * can be guaranteed not to disagree.
+ *
+ * AND THE SAND. The terraces themselves cannot move: they are the profile, and
+ * every riser in them is justified against a controller threshold. So they are
+ * DRESSED - see the dressing rule below - with sand that costs no colliders,
+ * no draw calls and 12 triangles a lobe, and that turns a flight of parallel
+ * rectangles into a bank with drift on it. The four things the eye reads as
+ * "built" are the parallel riser lines, the rectangular plan, the corners, and
+ * the colour; the sand is aimed at the first three and the palette at the
+ * fourth.
+ *
+ * The water is the world's own `water.pool`, adjusted: see
+ * {@link oasisWaterMaterial} for why the library's chlorinated blue and its
+ * transmission pass both had to go, and {@link waterShade} for the depth ramp
+ * that replaced them.
+ *
  * ── What the world gets ───────────────────────────────────────────────────
  *
  * `buildOasis` emits its solids through the host's own `Batch.box`, so the
- * terraces cost ZERO extra draw calls - they merge into the buckets Citadel
- * already flushes. Only the water plane and the two instanced palm fields are
- * its own meshes. It publishes an `enterable` (doorless, exactly like a cave),
+ * terraces cost the kit ZERO draw calls of its own: only the water plane and
+ * the two instanced palm fields are its meshes. What they cost the HOST depends
+ * on the host, and in the Citadel it is not zero - `_buildTraffic` opens a
+ * batch per oasis, so each DISTINCT MATERIAL KEY the tank paints with is one
+ * more mesh there. Seven, measured, up from six before the art pass.
+ * @see `cost.draws` for the whole bill and for what the sand and the repainted
+ * bank cost between them when they landed.
+ *
+ * It publishes an `enterable` (doorless, exactly like a cave),
  * `cacheSites`, `npcSpawns` for a vendor pitch and a water carrier, and
  * `restSpots`, and it makes `Caches._findSunken` work in the Citadel for the
  * first time - that channel has always placed 0 here because the world had no
@@ -251,7 +295,295 @@ export const WALKWAY = SHELVES[SHELVES.length - 1].tread - FURNITURE_MARGIN - FU
 /** Palms per oasis, and where on the rim they may stand. */
 export const PALM_COUNT = 9;
 /** Reed clumps along the strand. */
-export const REED_CLUMPS = 30;
+export const REED_CLUMPS = 34;
+
+/* ====================================================================== */
+/* The shore, and the sand that buries the tank                           */
+/* ====================================================================== */
+
+/**
+ * THE DRESSING RULE, and it is the only reason any of this is safe.
+ *
+ * Everything in this section is VISUAL ONLY - every box goes into the host's
+ * batch with `collide: false` and registers no collider at all. That is not
+ * timidity, it is the measurement in {@link COLLIDER_SEG_M} refusing to be
+ * spent twice. The worst broadphase cell in the whole world is 63 and it is at
+ * (-312, -96), which is the sand-mirror's WEST BANK - exactly the ground this
+ * section wants to pile sand on. One collider per sand lobe out there is one
+ * more collider in the worst cell in the game, and the 97 -> 63 split was
+ * bought with 200 extra colliders precisely to get it down. So the dressing
+ * spends none: the collider set after this change is the same 4,425 boxes it
+ * was before, box for box, and the 63 stands by construction.
+ *
+ * The price is that a player can walk through the sand. That is BOUNDED rather
+ * than hoped for. No dressing box's top may stand more than {@link GHOST_MAX}
+ * above the lowest surface under its own footprint - see {@link dressFloor}
+ * for what "surface" means where the plan and the desert disagree - and
+ * `GHOST_MAX` is `APRON_RISE`, one course. A player climbing the bank is
+ * already stepping 0.40 m up at every course, so the tallest thing they can
+ * walk through is the step they were taking anyway; it reads as loose sand
+ * round the ankles, which is what it is.
+ *
+ * {@link auditDressing} measures it, `no dressed sand stands higher than one
+ * bank course` is the ratchet, and that case does NOT trust the audit on its
+ * own: the audit and the emitter both call `dressFloor`, so on its own it can
+ * only agree with itself. The case re-measures every lobe against the real
+ * collider set and requires the two to agree, which is how a `dressFloor` that
+ * returned the highest surface instead of the lowest is caught. Measured on
+ * the shipped tanks, the worst ghost is 0.388 m measured against the plan and
+ * 0.385 m measured against the colliders.
+ *
+ * Everything here is also under `BEVEL_MIN` (0.55 m) in its smallest dimension,
+ * so `Batch.box` leaves it square: 12 triangles a lobe against a bevelled
+ * box's 108.
+ *
+ * WHAT IT COSTS, and where the dial is. 230 and 227 lobes on the two shipped
+ * tanks - 2,760 and 2,724 triangles - no colliders and no draw calls at all,
+ * but 4.5 ms of BUILD apiece, because a
+ * box through `CitadelWorld.Batch.box` costs ~17 us (the UV reprojection and
+ * the per-vertex AO ramp) against 2.5 through the kit's own `OasisBatch`.
+ * Measured on the shipped world, the worst owned build slice went from
+ * 15.0-16.9 ms to 17.0-19.8 ms over three runs each, against C5's 24 ms
+ * budget; `citadel-budgets.test.mjs` is where that is watched. If it ever
+ * needs to come back, {@link BANK_LOBES} is half the boxes and
+ * {@link SHORE_ARCS} is a fifth, and both are honest dials: nothing else
+ * depends on their value.
+ */
+
+/** The tallest a dressing box may stand over the lowest plan surface under it. */
+export const GHOST_MAX = APRON_RISE;
+/** How far a lobe standing on masonry reaches below that surface. Never floats. */
+export const DRESS_SINK = 0.12;
+/**
+ * The toe drift runs out past the footprint onto ground this file never
+ * sampled, so it is sunk further and stands lower: at most {@link TOE_GHOST}
+ * over the LOWEST terrain the profile found, and buried wherever the desert is
+ * higher than that. `TOE_GHOST + TOE_SINK` is 0.52, still under `BEVEL_MIN`.
+ */
+export const TOE_GHOST = 0.22;
+export const TOE_SINK = 0.30;
+
+/**
+ * How far the waterline may pull back from the crest, metres.
+ *
+ * BOUNDED BY WHAT THE SAND CAN FILL BEHIND IT, and that is the whole argument.
+ * Wherever the water retreats it leaves shelf standing dry BELOW the plane -
+ * water visibly held up by nothing, which is worse than the rectangle it
+ * replaced - so the retreat is only legal as far as a sand bar can follow it
+ * without breaking {@link GHOST_MAX}.
+ *
+ * Two shelves can. `c2` is 0.15 m under the plane and 0.90 m wide, so a bar on
+ * it tops out just proud of the water at a ghost of 0.37. `c1` is 0.55 m under
+ * and 0.90 m wide, and a bar on it at a ghost of exactly `GHOST_MAX` - which
+ * is `APRON_RISE`, which is the `c1` to `c2` riser - tops out level with `c2`.
+ * So the beach simply gets wider, at the same height, and the waterline can
+ * wander across both treads. Past `c1` is `b4` at 0.95 m under, which no bar
+ * inside the bound can reach, and that is where this stops.
+ *
+ * 1.65 rather than 1.80 leaves 0.15 m of margin against the `b4` edge for the
+ * turn skew on a bar - see the note at the inner clamp. Measured on the two
+ * shipped tanks, the waterline then stands 0.00-1.27 m and 0.12-1.54 m inside
+ * the 24.4 x 21.4 m rectangle it used to be: it wanders 1.27 m and 1.42 m as
+ * the player walks round it, against the 0.27 m a CONSTANT inset would show,
+ * which is a rectangle-fit artefact at the corners rather than a shoreline.
+ * `the pool is not a rectangle` measures both and separates them.
+ */
+export const SHORE_INSET = 1.65;
+/** Harmonics in the shore function. Five gives 2-11 lobes round the rim. */
+const SHORE_HARMONICS = 5;
+
+/** Sand lobes per exposed bank course, plus one at each corner of that course. */
+export const BANK_LOBES = 6;
+/** Drift lobes lapping the toe of the bank, out past the footprint. */
+export const TOE_LOBES = 12;
+/**
+ * Arcs the shoreline is dressed in. One sand bar per arc that needs one.
+ *
+ * FORTY, and the number was measured rather than chosen. Each bar reaches in
+ * as far as the WORST inset over its own arc, so an arc longer than the
+ * shortest wavelength in {@link shoreWaves} can have the water pull back
+ * behind it and leave a strip of strand standing dry. Measured on the
+ * standalone tank, as the fraction of the exposed strand left bare:
+ *
+ *   28 arcs, 3 samples each                 12.2%
+ *   40 arcs, 7 samples each                  7.8%
+ *   ...plus the turn-skew margin below       0.0%
+ *
+ * The last row is not an arc count - it is the clamp at the bar's inner edge,
+ * and it was two thirds of the problem. `every metre of exposed strand is
+ * sand` is the ratchet, and it runs on the shipped tanks rather than on this
+ * one.
+ */
+export const SHORE_ARCS = 40;
+/** Submerged pale shoals, which is what makes the shallows read as shallow. */
+export const SHOAL_BARS = 6;
+/**
+ * Rocks at the strand and up the bank. Two boxes each: a base and a smaller
+ * cap turned across it, which is 24 triangles for something that reads as a
+ * boulder, against 108 for a single box big enough for `Batch.box` to bevel -
+ * and a bevelled box at this size is still a box with 7 cm off its edges.
+ */
+export const SHORE_ROCKS = 8;
+
+/**
+ * Fit a bearing to a rectangle: the radius at which the ray leaves it.
+ * The tank is rectangular and so is every ring of it, so every "how far out is
+ * the edge at this bearing" in this file is this one function.
+ */
+function fitRect(ex, ez, hx, hz) {
+  return 1 / Math.max(Math.abs(ex) / hx, Math.abs(ez) / hz);
+}
+
+/**
+ * The harmonics of one pool's shoreline, packed flat as [k, amp, phase] x N.
+ *
+ * Flat because it is read once per vertex of the water plane and once per sand
+ * bar, and an array of objects there is an array of pointer chases for a sum
+ * of five sines.
+ */
+function shoreWaves(seed) {
+  const rnd = mulberry32(seed);
+  const w = new Float64Array(SHORE_HARMONICS * 3);
+  let norm = 0;
+  for (let i = 0; i < SHORE_HARMONICS; i++) {
+    w[i * 3] = 2 + i * 2 + (rnd() < 0.5 ? 0 : 1);
+    w[i * 3 + 1] = 1 / (1 + i * 0.85);
+    w[i * 3 + 2] = rnd() * Math.PI * 2;
+    norm += w[i * 3 + 1];
+  }
+  for (let i = 0; i < SHORE_HARMONICS; i++) w[i * 3 + 1] /= norm;
+  return w;
+}
+
+/**
+ * How far the water pulls back from the crest at this bearing, metres.
+ *
+ * In [0, {@link SHORE_INSET}] by construction: the harmonics are normalised so
+ * the sine sum is in [-1, 1], and the remap below is clamped either side.
+ *
+ * @param {object} plan
+ * @param {number} theta bearing in the plan's local frame
+ */
+export function shoreInset(plan, theta) {
+  const w = plan.shore;
+  if (!w) return 0;
+  let sum = 0;
+  for (let i = 0; i < w.length; i += 3) sum += w[i + 1] * Math.sin(w[i] * theta + w[i + 2]);
+  /* 0.62 and not 0.5: five normalised harmonics almost never sum to +-1, so a
+   * straight remap uses about three quarters of the range and the shoreline
+   * comes out timid. Over-driving and clamping spends the whole of it - the
+   * inset measured over 360 bearings runs 0.02..1.53 of a 1.65 cap. */
+  const t = 0.5 + 0.62 * sum;
+  return SHORE_INSET * (t < 0 ? 0 : t > 1 ? 1 : t);
+}
+
+/**
+ * The local radius of the WATERLINE at this bearing.
+ *
+ * ONE function, and both the water plane and the sand that fills what it
+ * leaves behind are generated from it - which is the only way the two can be
+ * guaranteed to agree. Two independent "irregular" outlines would leave gaps
+ * of dry shelf below the water plane wherever they disagreed, and the bound on
+ * {@link SHORE_INSET} exists so that that cannot happen.
+ */
+export function shoreRadius(plan, theta) {
+  const ex = Math.cos(theta);
+  const ez = Math.sin(theta);
+  return fitRect(ex, ez, plan.water.hx, plan.water.hz) - shoreInset(plan, theta);
+}
+
+/**
+ * Which ring of the plan is the ground at this local point, or null outside.
+ *
+ * The rings are nested annuli in outward order, so the first one that contains
+ * the point and is not hollow there is the surface a player stands on. Used by
+ * the water plane to know its own depth and by the dressing to know what it is
+ * standing on. It is the same lookup `the tank cannot be fallen into from the
+ * desert` writes out inline for its own reasons; if that ever drifts from
+ * this, one of the two is wrong about where the ground is.
+ */
+export function ringAt(plan, lx, lz) {
+  const ax = Math.abs(lx);
+  const az = Math.abs(lz);
+  for (const r of plan.rings) {
+    if (ax > r.hx || az > r.hz) continue;
+    if (r.kind !== 'floor' && ax < r.ihx && az < r.ihz) continue;
+    return r;
+  }
+  return null;
+}
+
+/** The plan surface at a local point; outside the footprint, the lowest terrain. */
+export function surfaceAt(plan, lx, lz) {
+  const r = ringAt(plan, lx, lz);
+  return r ? r.top : plan.baseY + BURY;
+}
+
+/** Water depth over the plan surface at a local point. Negative on dry ground. */
+export function depthAt(plan, lx, lz) {
+  return plan.waterY - surfaceAt(plan, lx, lz);
+}
+
+/**
+ * The lowest surface under a dressing box's footprint - plan or desert.
+ *
+ * Five probes: the four rotated corners and the centre. The MINIMUM, not the
+ * mean, and that is the whole safety argument - a lobe seated on the lowest
+ * ground it covers can never float over any part of its own footprint, and its
+ * ghost height is measured against the worst case rather than the average one.
+ * Floored at the lowest terrain the profile found, for the reason at the
+ * bottom of the function.
+ */
+function dressFloor(plan, lx, lz, w, d, rot) {
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  const hw = w * 0.5;
+  const hd = d * 0.5;
+  let lo = surfaceAt(plan, lx, lz);
+  for (let i = 0; i < 4; i++) {
+    const sx = i & 1 ? hw : -hw;
+    const sz = i & 2 ? hd : -hd;
+    const y = surfaceAt(plan, lx + sx * c - sz * s, lz + sx * s + sz * c);
+    if (y < lo) lo = y;
+  }
+  /* ...but never below the LOWEST terrain the profile found, because the
+   * desert is there. The feather courses run down past that line on purpose -
+   * that is what buries the bank - and a toe drift clipping the corner of one
+   * would otherwise be seated a metre under the sand and disappear. Nine of
+   * twelve were. Clamping here rather than at the one call site that needs it
+   * keeps `dress` and {@link auditDressing} measuring the same thing, which is
+   * the only reason the audit is worth running. */
+  const floor = plan.baseY + BURY;
+  return lo < floor ? floor : lo;
+}
+
+/**
+ * AUDIT 3 - how far can a player walk through the sand?
+ *
+ * Every dressing box, against {@link dressFloor} under its own footprint. See
+ * the dressing rule above: the answer has to stay inside one bank course,
+ * because that is the step the player is taking anyway. And see it again for
+ * why the case that runs this does not stop here - the audit and the emitter
+ * share `dressFloor`, so on its own it can only agree with itself.
+ *
+ * @param {object} plan
+ * @param {Array<{key:string,w:number,h:number,d:number,lx:number,lz:number,
+ *                top:number,rot:number}>} dressing as `buildOasis` returns it
+ */
+export function auditDressing(plan, dressing) {
+  let worstGhost = 0;
+  let worstAt = null;
+  let bevelled = 0;
+  for (const dr of dressing) {
+    const ghost = dr.top - dressFloor(plan, dr.lx, dr.lz, dr.w, dr.d, dr.rot);
+    if (ghost > worstGhost) { worstGhost = ghost; worstAt = `${dr.key} at (${dr.lx.toFixed(1)}, ${dr.lz.toFixed(1)})`; }
+    if (Math.min(dr.w, dr.h, dr.d) >= 0.55) bevelled++;
+  }
+  return {
+    count: dressing.length, worstGhost, worstAt, bevelled,
+    ok: worstGhost <= GHOST_MAX + 1e-6,
+  };
+}
 
 /* Scratch. One set per function - see the note in physics/Physics.js. */
 const _v = new THREE.Vector3();
@@ -408,13 +740,26 @@ export function oasisPlan(site) {
     });
   }
 
+  /* The shoreline travels WITH the plan, seeded off the site so the two oases
+   * are two different pools and a rebuild of either is the same pool twice.
+   * On the plan rather than in `buildOasis` because the water plane, the sand
+   * bars that fill what it leaves dry, the reeds and the rocks all read it,
+   * and a shoreline computed four times is four shorelines. */
+  const id = site.id ?? 'oasis';
+  // charCodeAt in a loop rather than split('').reduce(): `findOasisSite` builds
+  // a plan per candidate bearing per ring - up to 512 of them for one site -
+  // and the split allocates an array of single-character strings for each.
+  let seed = 7;
+  for (let i = 0; i < id.length; i++) seed = (seed * 131 + id.charCodeAt(i)) >>> 0;
+  seed ^= Math.round(site.x * 7 + site.z * 13) >>> 0;
+
   return {
     id: site.id ?? 'oasis',
     label: site.label ?? 'The Oasis',
     x: site.x, z: site.z, yaw,
     bedY, baseY, waterY, crestY,
     grade: site.grade ?? null,
-    rings, water,
+    rings, water, shore: shoreWaves(seed),
     /** Outer footprint half-extents, for the placement helpers. */
     hx: ahx, hz: ahz,
     /** Water area, m^2. Quoted in the cost report. */
@@ -956,10 +1301,341 @@ export function triangleCount(geo) {
 /* The build                                                              */
 /* ====================================================================== */
 
-/** Mud-brick and rammed-earth tints, so no two courses read the same. */
-const BRICK = [0xc9b189, 0xbfa67e, 0xd2ba92, 0xb59b74, 0xc4ac84];
-/** The bed and the wet shelves: darker, algae-stained, cooler. */
-const WET = [0x8b7f5f, 0x94886a, 0x7f7455, 0x9c9074, 0x877b5c];
+/**
+ * The palette, and it is the single biggest thing that was wrong here.
+ *
+ * Every ring used to be keyed on `r.depth > 0` - `stone.cobble` if the water
+ * would reach it, `plaster.wall` if not. `depth` on an APRON course is a
+ * fiction, and the file says so two hundred lines up: it is the depth the
+ * water would have if the tank had no walls. The first apron course tops out
+ * 0.15 m under the waterline, so `depth > 0` was true for all fifteen of them
+ * and the ENTIRE OUTER BANK - the part of this thing that is dry ground on the
+ * desert side of a wall - was being drawn in cobblestone, in the algae tints
+ * meant for the pool lining. That is the stepped grey ziggurat in the frame,
+ * and it was one boolean.
+ *
+ * Keyed on `kind` now, which cannot lie: apron and crest are dry sand, the
+ * basin is wet sand going olive as it deepens, and the only stone left in the
+ * oasis is the well curb and the fire ring - the two things somebody built.
+ */
+/**
+ * THE DESERT'S OWN COLOUR, and the number is derived rather than picked.
+ *
+ * `CitadelWorld._buildTerrain` draws the whole desert with the library's
+ * `dirt.ground` under `color = 0xe3d0a6`. Everything this file emits also goes
+ * out as `dirt.ground`, and `CitadelWorld._mat` pre-multiplies that key by
+ * `0xe0cda3` before the per-box tint reaches it. So the tint that makes a box
+ * EXACTLY the colour of the sand beside it is 0xe3d0a6 / 0xe0cda3, which is
+ * (1.013, 1.015, 1.018) - white, to within a rounding error.
+ *
+ * That is what "bury it" means here in practice. The outer bank is tinted to
+ * the desert, the crest a shade paler where the sun bleaches a rim, the strand
+ * darker because damp sand is darker, and the bed paler again because a pool
+ * only reads turquoise when there is bright sand under it. The tank stops
+ * being an object standing ON the desert and becomes a hollow IN it.
+ *
+ * 0xfdf7ea rather than the 0xffffff the division gives, because `Batch.box`
+ * bakes an AO ramp into every piece it merges and the tint is what that ramp
+ * scales: at pure white the sunward top of a lobe has nowhere left to go and
+ * the sand flat-tops. One percent of headroom is enough and is invisible.
+ */
+const DESERT = 0xfdf7ea;
+/** The bank, inner course to outer: a bleached rim washing out into the sand. */
+const BANK_IN = 0xe9dcc0;
+const BANK_OUT = DESERT;
+/** The crest promenade, walked bare and bleached. */
+const SAND = [0xf2e8d2, 0xece0c6, 0xf6eeda, 0xe6dabe];
+/** The strand and the shallows: damp, a shade darker and browner. */
+const WET_SAND = [0xd8ccb0, 0xcfc2a4, 0xe1d5b8, 0xc7ba9c];
+/**
+ * The bed. PALE, and that is not an accident either: a pool reads turquoise
+ * because there is bright sand under it, and the old bed was 0x8b7f5f - a dark
+ * olive that any amount of water over it resolves to near-black. The water is
+ * transparent now (see {@link oasisWaterMaterial}), so what is under it is
+ * most of what the player sees of it.
+ */
+const BED = [0xc6c0a2, 0xbcb698, 0xd0caac, 0xb2ad90];
+/** Rock at the strand and on the bank. Warm grey, not the world's cold stone. */
+const ROCK = [0xa89a82, 0x9c8f79, 0xb4a68c, 0x91856f];
+
+/** Blend two packed sRGB hexes. Channel-wise, which is what a tint is. */
+function mixHex(a, b, t) {
+  const k = t < 0 ? 0 : t > 1 ? 1 : t;
+  const r = ((a >> 16) & 255) + (((b >> 16) & 255) - ((a >> 16) & 255)) * k;
+  const g = ((a >> 8) & 255) + (((b >> 8) & 255) - ((a >> 8) & 255)) * k;
+  const bl = (a & 255) + ((b & 255) - (a & 255)) * k;
+  return ((r & 255) << 16) | ((g & 255) << 8) | (bl & 255);
+}
+
+/**
+ * How far out on the bank a course is, 0 at the crest and 1 at the last one.
+ * The apron ids are `a1`..`a15` in outward order, which is the only ordering
+ * this needs and the only one the plan guarantees.
+ */
+function apronFraction(r) {
+  const i = Number(r.id.slice(1));
+  return Number.isFinite(i) ? (i - 1) / (APRON_COURSES + FEATHER_COURSES - 1) : 0;
+}
+
+/**
+ * What a ring is made of. One place, so the bank cannot silently become a pool
+ * lining again the day somebody edits the profile.
+ */
+export function ringSurface(r) {
+  const h = (r.id.charCodeAt(0) * 131 + r.id.charCodeAt(r.id.length - 1) * 7 + r.id.length) >>> 0;
+  if (r.kind === 'crest') {
+    return { key: 'dirt.ground', tint: SAND[h % SAND.length] };
+  }
+  if (r.kind === 'apron') {
+    /* Washing out into the desert as it descends, with a little jitter so no
+     * two courses land on the same value and the ramp does not band. */
+    const j = ((h % 7) - 3) * 0.03;
+    return { key: 'dirt.ground', tint: mixHex(BANK_IN, BANK_OUT, apronFraction(r) * 1.35 + j) };
+  }
+  if (r.kind === 'floor' || r.depth >= 1.4) {
+    return { key: 'dirt.ground', tint: BED[h % BED.length] };
+  }
+  return { key: 'dirt.ground', tint: WET_SAND[h % WET_SAND.length] };
+}
+
+/* ====================================================================== */
+/* The water surface                                                      */
+/* ====================================================================== */
+
+/** Bearings round the pool. 56 puts a vertex every 1.4 m on a 24 m pool. */
+export const WATER_SEGMENTS = 56;
+/**
+ * Concentric rings of the water plane, as a fraction of {@link shoreRadius}.
+ *
+ * THREE of them and not one, and the reason is the colour rather than the
+ * shape. The body colour and the alpha are per-vertex functions of the bed
+ * depth under that vertex, and the depth runs 2.45 m at the centre to 0.15 m
+ * at the strand - almost all of it in the outer third, where the shelves are.
+ * A single fan from the centre would interpolate that whole ramp linearly
+ * across 12 m and the pool would fade out as a flat wash. The rings are placed
+ * where the profile actually turns.
+ */
+const WATER_RINGS = [0.42, 0.78, 1.0];
+
+/**
+ * Metres of pool per UV tile, for the ripple normal map.
+ *
+ * The library's own number for this surface: `Materials.js:1444` sets
+ * `water.pool`'s `userData.tileMeters = 4`, and the authoring rule at the head
+ * of that file is that the material keeps `repeat = 1` and the GEOMETRY divides
+ * world metres by this. Restated rather than read off the material because
+ * {@link waterGeometry} is handed a plan and never a material, and because the
+ * geometry is built before {@link oasisWaterMaterial} is called.
+ *
+ * @see waterGeometry the `uv` attribute, and what happened when there was none
+ */
+export const WATER_TILE_METRES = 4;
+
+/** Shallow water over pale sand. */
+const WATER_SHALLOW = new THREE.Color(0xa9dcc4);
+/** A metre down. */
+const WATER_MID = new THREE.Color(0x46a793);
+/** Over the deep floor. */
+const WATER_DEEP = new THREE.Color(0x15544f);
+/** Scratch for the ramp - see the note in physics/Physics.js. */
+const _wc = new THREE.Color();
+
+/**
+ * The colour and opacity of the water over a bed this deep.
+ *
+ * Not a guess at "blue". A desert pool is the colour of the sand under it seen
+ * through a metre or two of green water, which means the shallows are jade,
+ * the middle is teal, and only the deep floor is dark - and the ALPHA has to
+ * carry as much of that as the hue does, or the edge of the pool is a hard
+ * line whatever colour it is painted. This is the same shallow/deep body ramp
+ * the Lido's pool shader runs in `SportsWorld._makeWaterMaterial`, evaluated
+ * per vertex on the CPU instead of per fragment - which costs nothing at
+ * runtime, survives the world's own material clone, and needs no second
+ * shader program in a build that already compiles one per material key.
+ *
+ * @param {number} depth metres of water over the bed at this vertex
+ * @param {number[]} out [r, g, b, a], written in place
+ */
+export function waterShade(depth, out) {
+  const d = depth < 0 ? 0 : depth;
+  if (d < 1.0) {
+    _wc.copy(WATER_SHALLOW).lerp(WATER_MID, d / 1.0);
+  } else {
+    const t = Math.min(1, (d - 1.0) / (POOL_DEPTH - 1.0));
+    _wc.copy(WATER_MID).lerp(WATER_DEEP, t * t * (3 - 2 * t));
+  }
+  // Alpha: see-through at the strand, near-opaque over the floor.
+  const a = (d - 0.05) / 1.65;
+  const k = a < 0 ? 0 : a > 1 ? 1 : a;
+  out[0] = _wc.r;
+  out[1] = _wc.g;
+  out[2] = _wc.b;
+  out[3] = 0.30 + 0.60 * (k * k * (3 - 2 * k));
+  return out;
+}
+
+const _ws = [0, 0, 0, 0];
+
+/**
+ * The water plane: an irregular polygon, coloured and faded by its own depth.
+ *
+ * THE OUTLINE. It was a `PlaneGeometry` - a rectangle of flat saturated blue,
+ * which is the second half of what was wrong with this oasis. It is now a fan
+ * over {@link shoreRadius}, so the waterline wanders in and out by up to
+ * {@link SHORE_INSET} and no two bearings share an edge. The bound on that
+ * inset is what keeps it honest: the water may retreat across the strand and
+ * no further, and every metre it retreats is filled by a sand bar from the
+ * same function, so the plane never ends over ground it is higher than.
+ *
+ * Costs 280 triangles against the old 72. The extra 208 also buy a better
+ * water VOLUME: `WaterVolumes` decomposes a surface triangle by triangle onto
+ * an 8 m lattice, so a finer surface traces a tighter swimmable body.
+ *
+ * THE `uv` IS NOT DECORATION AND IT IS NOT OPTIONAL. `PlaneGeometry` carries
+ * one; a fan built by hand does not unless it is written, and the first cut of
+ * this function wrote `position`, `color` and the index and stopped. The
+ * material this feeds ({@link oasisWaterMaterial}) nulls the base `map` and
+ * KEEPS `normalMap`, `roughnessMap` and `clearcoatNormalMap` - the whole reason
+ * for reusing the library's recipe is that `MaterialLibrary._animate` scrolls
+ * those two normal layers against each other. With no `uv` attribute WebGL
+ * feeds the shader the constant generic attribute (0, 0), so all three maps
+ * sample ONE texel and the entire 568 m2 pool carries a single normal that
+ * wobbles in unison - which is precisely the "single sliding sheet" the second
+ * counter-scrolling layer exists to prevent (`Materials.js:1415-1417`).
+ * Measured on the built world before the fix: `oasis:palm-well:water` had
+ * `[position, color, normal]` and nothing else, against `[position, normal,
+ * uv]` on the `PlaneGeometry` it replaced. @see WATER_TILE_METRES
+ *
+ * @param {object} plan
+ * @param {number} [segments]
+ * @returns {THREE.BufferGeometry} local to the plan; the mesh carries the yaw
+ */
+export function waterGeometry(plan, segments = WATER_SEGMENTS) {
+  const nr = WATER_RINGS.length;
+  const count = 1 + segments * nr;
+  const pos = new Float32Array(count * 3);
+  const col = new Float32Array(count * 4);
+  const uv = new Float32Array(count * 2);
+  const tris = segments + segments * 2 * (nr - 1);
+  const idx = new Uint16Array(tris * 3);
+
+  waterShade(depthAt(plan, 0, 0), _ws);
+  col[0] = _ws[0]; col[1] = _ws[1]; col[2] = _ws[2]; col[3] = _ws[3];
+  // The centre vertex is the local origin, so its tile coordinate is (0, 0).
+  uv[0] = 0; uv[1] = 0;
+
+  for (let r = 0; r < nr; r++) {
+    const f = WATER_RINGS[r];
+    for (let i = 0; i < segments; i++) {
+      const a = (i / segments) * Math.PI * 2;
+      const rad = shoreRadius(plan, a) * f;
+      const lx = Math.cos(a) * rad;
+      const lz = Math.sin(a) * rad;
+      const v = 1 + r * segments + i;
+      pos[v * 3] = lx;
+      pos[v * 3 + 2] = lz;
+      /* PLANAR, off the local XZ, and not the fan's own (ring, bearing). A
+       * radial parameterisation would wind the ripple round the pool like a
+       * record groove and pinch every tile to nothing at the centre vertex;
+       * water ripples do not care which way the shore runs. */
+      uv[v * 2] = lx / WATER_TILE_METRES;
+      uv[v * 2 + 1] = lz / WATER_TILE_METRES;
+      waterShade(depthAt(plan, lx, lz), _ws);
+      col[v * 4] = _ws[0];
+      col[v * 4 + 1] = _ws[1];
+      col[v * 4 + 2] = _ws[2];
+      col[v * 4 + 3] = _ws[3];
+    }
+  }
+
+  let k = 0;
+  for (let i = 0; i < segments; i++) {
+    const j = (i + 1) % segments;
+    idx[k++] = 0; idx[k++] = 1 + j; idx[k++] = 1 + i;
+  }
+  for (let r = 0; r < nr - 1; r++) {
+    const a0 = 1 + r * segments;
+    const b0 = 1 + (r + 1) * segments;
+    for (let i = 0; i < segments; i++) {
+      const j = (i + 1) % segments;
+      idx[k++] = a0 + i; idx[k++] = b0 + j; idx[k++] = b0 + i;
+      idx[k++] = a0 + i; idx[k++] = a0 + j; idx[k++] = b0 + j;
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  // FOUR components, not three: three.js reads `color.itemSize === 4` as vertex
+  // alpha, which is the whole shoreline fade. With three it renders opaque.
+  g.setAttribute('color', new THREE.BufferAttribute(col, 4));
+  // Without this the ripple normal map has one texel to sample. @see the note
+  // at the head of this function - it is the whole point of reusing `water.pool`.
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  return g;
+}
+
+/**
+ * The pool surface material.
+ *
+ * IT IS THE WORLD'S OWN `water.pool`, adjusted in place, and both the choice
+ * and the mutation need defending.
+ *
+ * The library's recipe is the Lido's pool: a physical material over a baked
+ * ripple normal map that `MaterialLibrary._animate` scrolls two ways at once.
+ * That animation lives on the TEXTURE, which a clone shares, so taking the
+ * world's clone keeps the moving water for free - and this kit has no frame
+ * hook of its own to drive one with. What the recipe is wrong about here is
+ * everything else: `color: 0x2f9fc4` is chlorinated municipal blue, its baked
+ * `map` is that same blue mottled, and `transmission: 0.85` puts the pool in
+ * the renderer's transmission pass to buy a refraction nobody can see through
+ * 2.45 m of water. Flat saturated blue is exactly what the frame shows.
+ *
+ * So: the map goes, the colour goes white, and the geometry's per-vertex RGBA
+ * carries both body colour and opacity ({@link waterShade}). Ordinary alpha
+ * blending over a pale bed is cheaper than transmission and, unlike it, fades
+ * to nothing at the strand.
+ *
+ * WHAT STAYS BOUND, AND WHAT IT NEEDS FROM THE GEOMETRY. Only `map` is nulled.
+ * `normalMap`, `roughnessMap` and `clearcoatNormalMap` are all left in place on
+ * purpose - they are the ripple, and the two normal layers are the only thing
+ * here that moves. All three are sampled through `uv`, which {@link
+ * waterGeometry} has to write by hand: a `BufferGeometry` assembled from
+ * scratch has no `uv` unless one is set, and a bound map with no `uv` samples a
+ * single texel rather than failing loudly. @see WATER_TILE_METRES
+ *
+ * Mutating a cached material is normally somebody else's bug. It is safe here
+ * for one checkable reason: `water.pool` has exactly one consumer in the
+ * Citadel, this file, and `grep water.pool src` says so. Taking a private
+ * clone instead would be tidier and would leak - `CitadelWorld._owned` holds
+ * what `_mat` handed out, and a clone of it is not in that list.
+ *
+ * @param {object} ctx as {@link buildOasis} takes it
+ */
+export function oasisWaterMaterial(ctx) {
+  const m = ctx.mat
+    ? ctx.mat('water.pool', { vertexColors: true })
+    : new THREE.MeshStandardMaterial({ name: 'water.pool' });
+  m.vertexColors = true;
+  m.color.setHex(0xffffff);
+  m.map = null;
+  m.transparent = true;
+  m.opacity = 1;
+  // A single horizontal plane per pool, and reeds and rocks stand through it:
+  // writing depth would let the surface occlude the stems behind it.
+  m.depthWrite = false;
+  m.side = THREE.DoubleSide;
+  m.metalness = 0;
+  m.roughness = 0.42;
+  m.envMapIntensity = 1.15;
+  if ('transmission' in m) { m.transmission = 0; m.thickness = 0; }
+  if ('clearcoat' in m) { m.clearcoat = 1; m.clearcoatRoughness = 0.08; }
+  if (m.normalScale) m.normalScale.set(0.8, 0.8);
+  m.needsUpdate = true;
+  return m;
+}
 
 /**
  * Build one oasis into a world.
@@ -997,10 +1673,14 @@ export function buildOasis(ctx, plan) {
    * One solid: a visual box in the host's batch and a collider under it.
    * Local coordinates, so the whole oasis rotates with `plan.yaw`.
    */
-  const solid = (key, w, h, d, lx, cy, lz, tint, { collide = true } = {}) => {
+  const solid = (key, w, h, d, lx, cy, lz, tint, { collide = true, rot = 0 } = {}) => {
     if (w <= 1e-4 || h <= 1e-4 || d <= 1e-4) return;
     toWorld(plan, lx, lz, _v);
-    rawBox(key, w, h, d, _v.x, cy, _v.z, plan.yaw, tint);
+    /* `rot` is a turn RELATIVE to the tank, and only the dressing uses it.
+     * Everything structural is axis-aligned in the plan's frame because every
+     * audit in this file walks nested rectangles; a rotated terrace course
+     * would be a course `ringAt` could not find. */
+    rawBox(key, w, h, d, _v.x, cy, _v.z, plan.yaw + rot, tint);
     solids.push({ key, w, h, d, x: _v.x, y: cy, z: _v.z });
     if (!collide) return;
     /* ONE VISUAL BOX, A RUN OF COLLIDERS. @see COLLIDER_SEG_M - a terrace
@@ -1041,11 +1721,7 @@ export function buildOasis(ctx, plan) {
   for (const r of plan.rings) {
     const h = r.top - plan.baseY;
     const cy = plan.baseY + h * 0.5;
-    const wet = r.depth > 0;
-    const key = wet ? 'stone.cobble' : 'plaster.wall';
-    const tint = wet
-      ? WET[(r.id.charCodeAt(0) + r.id.charCodeAt(1)) % WET.length]
-      : BRICK[(r.id.charCodeAt(0) + r.id.charCodeAt(1)) % BRICK.length];
+    const { key, tint } = ringSurface(r);
     if (r.kind === 'floor') {
       solid(key, r.hx * 2, h, r.hz * 2, 0, cy, 0, tint);
       continue;
@@ -1126,25 +1802,405 @@ export function buildOasis(ctx, plan) {
       fireX + Math.cos(a) * 0.62, plan.crestY + 0.11, fireZ + Math.sin(a) * 0.62, 0x9a8a6e);
   }
 
-  /* ---- reeds along the strand --------------------------------------- *
-   * On `c2`, the ankle-deep shelf. Thin, so `Batch.box` leaves them square -
-   * 12 triangles each instead of 108 - and there are 90 of them.
+  /* ================================================================== *
+   * THE SAND                                                            *
+   *                                                                     *
+   * Everything from here to the water plane is dressing: `collide:false`,
+   * no colliders, nothing over {@link GHOST_MAX} proud of the lowest plan
+   * surface under its own footprint, nothing over `BEVEL_MIN` in its
+   * smallest dimension. @see the dressing rule.
+   * ================================================================== */
+
+  /** @type {Array<{key:string,w:number,h:number,d:number,lx:number,lz:number,top:number,rot:number}>} */
+  const dressing = [];
+
+  /**
+   * The sand gets its OWN stream, and that is a structural choice rather than
+   * a stylistic one. Everything below draws several hundred randoms, and the
+   * palm grove - the only thing after it that registers colliders - draws from
+   * `rnd` after it. Sharing one stream would mean that tuning a sand lobe
+   * moves eight palm trunks, which moves eight colliders, which moves the
+   * broadphase; and the whole argument for this section is that it does not
+   * touch the broadphase. Two streams, and the sand is free to be re-tuned.
    */
-  const strand = plan.rings.find((r) => r.id === 'c2');
-  const clumps = ctx.reeds ?? REED_CLUMPS;
-  for (let i = 0; i < clumps; i++) {
-    const t = (i + rnd() * 0.6) / clumps;
-    const a = t * Math.PI * 2;
-    // Around the rectangle, not around a circle: the strand is a rectangle.
+  const drnd = mulberry32((0x5a4d ^ Math.round(plan.x * 31 + plan.z * 17)) >>> 0);
+
+  /**
+   * One lobe of sand. `ghost` is how far it stands proud of the ground under
+   * it, `sink` how far it reaches below, so nothing floats where the ground it
+   * covers steps down.
+   *
+   */
+  const dress = (key, w, d, lx, lz, rot, ghost, tint, sink = DRESS_SINK) => {
+    const g = Math.min(ghost, GHOST_MAX);
+    const h = g + sink;
+    if (w <= 1e-3 || d <= 1e-3 || h <= 1e-3) return;
+    const top = dressFloor(plan, lx, lz, w, d, rot) + g;
+    solid(key, w, h, d, lx, top - h * 0.5, lz, tint, { collide: false, rot });
+    dressing.push({ key, w, h, d, lx, lz, top, rot });
+  };
+
+  /**
+   * Place a lobe INSIDE one ring's annulus, working in FACE coordinates.
+   *
+   * The whole of this helper is one correction, and it is worth the paragraph
+   * because the first draft placed everything radially and 72 of 251 lobes -
+   * 29% of the sand, 864 triangles a tank - came out invisible.
+   *
+   * `dressFloor` seats a lobe on the LOWEST plan surface under it. That is the
+   * right conservative rule: it is what stops anything floating over a step.
+   * Its consequence is that a lobe which strays one course OUTBOARD drops
+   * 0.40 m and ends up BELOW the tread it was drawn for. So the placement has
+   * to keep each lobe inside its own annulus, and radius is the wrong
+   * coordinate to do that in: a margin of `m` along a bearing is a margin of
+   * `m * |cos|` against an X face, so a lobe placed 0.5 m clear of the edge at
+   * a shallow bearing was 0.15 m clear of it in the direction that mattered.
+   *
+   * In face coordinates the margin is the margin. The lobe is offset
+   * perpendicular to its own face by at least half its width plus the skew its
+   * turn adds, and its run along the face is clamped so it cannot reach round
+   * a corner into the next ring. `buried` on the audit is what watches this.
+   *
+   * @returns {{lx:number, lz:number}|null} where it went, or null if it did
+   *   not fit - a ring narrower than the lobe is a ring that gets no lobe.
+   */
+  const onRing = (r, a, key, long, widthFrac, turn, ghost, tint, alongOff = 0) => {
     const ex = Math.cos(a);
     const ez = Math.sin(a);
-    const k = 1 / Math.max(Math.abs(ex) / (strand.hx - 0.35), Math.abs(ez) / (strand.hz - 0.35));
-    const px = ex * k;
-    const pz = ez * k;
-    for (let b = 0; b < 3; b++) {
-      const hgt = 0.9 + rnd() * 0.7;
+    const rOut = fitRect(ex, ez, r.hx, r.hz);
+    const onX = Math.abs(ex) / r.hx >= Math.abs(ez) / r.hz;
+    const sgn = onX ? (ex >= 0 ? 1 : -1) : (ez >= 0 ? 1 : -1);
+    const outerF = onX ? r.hx : r.hz;
+    const innerF = onX ? r.ihx : r.ihz;
+    const band = outerF - innerF;
+    const skew = Math.abs(Math.sin(turn)) * long * 0.5;
+    const room = band - 2 * skew - 0.06;
+    if (room <= 0.08) return null;
+    const wide = Math.min(band * widthFrac, room);
+    const half = wide * 0.5 + skew + 0.03;
+    const span = Math.max(0, band - 2 * half);
+    const perp = sgn * (innerF + half + drnd() * span);
+    const reach = (onX ? r.hz : r.hx) - 0.06 - long * 0.5;
+    const start = onX ? ez * rOut : ex * rOut;
+    const at = reach <= 0 ? 0 : Math.max(-reach, Math.min(reach, start + alongOff));
+    const lx = onX ? perp : at;
+    const lz = onX ? at : perp;
+    dress(key, onX ? wide : long, onX ? long : wide, lx, lz, turn, ghost, tint);
+    return { lx, lz };
+  };
+
+  /**
+   * The golden angle. Every lobe bearing in this section is a multiple of it
+   * off one running counter, which is the cheapest way to get a scatter that
+   * never repeats a bearing and never lines two lobes up on the same radius -
+   * a modular sweep put one lobe per course at exactly the same bearing and
+   * drew a seam straight down the bank.
+   */
+  const GOLDEN = 2.39996322972865332;
+  let lobe = 0;
+  /** The highest ground the profile found under the tank. A bank
+   * course under this is under the sand on some bearing, so it is not dressed;
+   * the toe drift is what meets the desert below that line. */
+  const grade = plan.grade ?? (plan.bedY - BED_CLEAR);
+  /** The bank courses that are actually above the sand. Filled by the loop below. */
+  const exposed = [];
+
+  /* ---- the bank ----------------------------------------------------- *
+   * The apron reads as a ziggurat because it is a flight of rectangles of
+   * identical rise and the eye locks onto the parallel lines. What draws a
+   * line is the RISER face, so the sand goes into the re-entrant angle at the
+   * foot of each riser and along the lip above it, in runs of random length
+   * with gaps between them. Courses already under the desert are skipped -
+   * the feather is buried by design and dressing it would be sand inside sand.
+   */
+  for (const r of plan.rings) {
+    if (r.kind !== 'apron') continue;
+    /* Against the HIGHEST ground under the tank, not the lowest.
+     *
+     * A course below `grade` is under the sand somewhere on its ring and under
+     * it everywhere on the flat sites, and the first draft tested against
+     * `plan.baseY + BURY` - the LOWEST - which at the sand-mirror's 0.835 m of
+     * relief dressed eleven courses instead of seven. Measured on the shipped
+     * tank, that rule against this one: 583 boxes and 15,540 masonry triangles
+     * against 494 and 14,472, for 89 lobes a player cannot see. The toe drift
+     * is what meets the desert below this line. */
+    if (r.top < grade - 0.10) continue;
+    const bankTint = mixHex(BANK_IN, BANK_OUT, apronFraction(r) * 1.35);
+    exposed.push(r);
+    for (let i = 0; i < BANK_LOBES; i++) {
+      const a = lobe++ * GOLDEN;
+      /* A RUN, not a bar. One long box along a course is a plank; three or
+       * four shorter ones laid end to end, each with its own width and its own
+       * height, is a drift. They cost the same 12 triangles each and they are
+       * the difference between "the step has a kerb on it" and "sand has blown
+       * along the step". */
+      /* TWO OR THREE segments of 2.2-5.0 m, and not the three or four of
+       * 1.6-4.2 m this started at. Same metres of drift along the course for
+       * a quarter fewer boxes, and a box in the host's batch is 17 us of build
+       * time - measured, by building one tank through `CitadelWorld.Batch.box`
+       * and through the kit's own `OasisBatch`, which costs 2.5. The sand is
+       * ~256 boxes a tank and the whole of it is 4.5 ms of the build. */
+      const segs = 2 + ((drnd() * 2) | 0);
+      let along = -(segs * 3.4) * 0.5;
+      for (let k = 0; k < segs; k++) {
+        const long = 2.2 + drnd() * 2.8;
+        const off = along + long * 0.5;
+        along += long * (0.86 + drnd() * 0.3);
+        /* WIDE and LOW. A tall narrow lobe on a 0.9 m tread is a block sitting
+         * on a step; a wide shallow one is sand that has drifted along it. The
+         * ghost tops out at four fifths of a riser for the same reason: what
+         * has to disappear is the FOOT of the riser face, which is what draws
+         * the parallel line. Burying the whole face just moves the line up. */
+        onRing(r, a, 'dirt.ground', long, 0.5 + drnd() * 0.42,
+          (drnd() - 0.5) * 0.14, r.rise * (0.35 + drnd() * 0.45), bankTint, off);
+      }
+    }
+    /* The four corners, explicitly. A rectangle announces itself at its
+     * corners before it does anywhere else, and a bearing sweep hits them only
+     * by luck: at 45 degrees `fitRect` lands on the middle of a face, not on
+     * the corner, whenever the rectangle is not square.
+     *
+     * These are the one thing here that {@link onRing} cannot place, because a
+     * wedge laid across a corner at 45 degrees has a diagonal longer than the
+     * annulus is wide and so cannot be kept inside it. They are given the FULL
+     * ghost for exactly that reason: seated by `dressFloor` on the course
+     * below, `GHOST_MAX` brings them back up flush with the tread they are
+     * filling - a talus across the corner riser, which is what a corner wedge
+     * is for - and where one does stay inside the annulus it stands a full
+     * riser proud, which is also what it is for. At the runs' ghost they came
+     * out 0.12 m UNDER the tread instead.
+     */
+    const band = r.hz - r.ihz;
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        /* ALONG the corner, not across it. `solid` turns a box so its local +X
+         * lands on (cos rot, -sin rot) in the plan frame, so the direction that
+         * runs tangentially round a corner at (sx, sz) is (sx, -sz) and the
+         * angle is `sx * sz * PI/4`. The sign was wrong in the first draft and
+         * every wedge pointed radially outward across three courses. */
+        dress('dirt.ground', 1.3 + drnd() * 1.9, band * 0.95,
+          sx * (r.ihx + band * (0.35 + drnd() * 0.4)),
+          sz * (r.ihz + band * (0.35 + drnd() * 0.4)),
+          sx * sz * (Math.PI * 0.25 + (drnd() - 0.5) * 0.25),
+          /* 0.97 and not 1.0: at the full riser the wedge's top is EXACTLY
+           * coplanar with the tread above it, and two coplanar surfaces
+           * z-fight. A centimetre and a half under tucks it inside the
+           * masonry where it is hidden, and leaves it standing 0.385 m proud
+           * on the course it is actually seated on, which is the side of it
+           * the player sees. */
+          GHOST_MAX * (0.86 + drnd() * 0.11),
+          mixHex(BANK_IN, BANK_OUT, apronFraction(r) * 1.35 + 0.05));
+        lobe++;
+      }
+    }
+  }
+
+  /* ---- the toe ------------------------------------------------------ *
+   * Where the bank meets the sand the plan is a rectangle with four corners
+   * and the desert is not. These drifts lap past the footprint, seated on the
+   * LOWEST ground the profile found, so wherever the desert is higher than
+   * that they are buried and invisible - which is most of the rim, and is the
+   * point. What shows is a ragged line instead of a plinth edge.
+   */
+  for (let i = 0; i < TOE_LOBES; i++) {
+    const a = i * GOLDEN + 0.71;
+    const ex = Math.cos(a);
+    const ez = Math.sin(a);
+    const rOut = fitRect(ex, ez, plan.hx, plan.hz);
+    /* OUTSIDE the footprint, and the first draft had this at `rOut - 1.4 +
+     * rnd * 2.6`, which put eight of twelve drifts on the feather courses -
+     * i.e. under the desert, where they are 96 invisible triangles. Measured
+     * on the standalone tank: 4 of 12 outside before, 12 of 12 after. */
+    const rad = rOut + 0.25 + drnd() * 2.1;
+    const long = 3.5 + drnd() * 7.0;
+    const wide = 1.4 + drnd() * 2.4;
+    const onX = Math.abs(ex) / plan.hx >= Math.abs(ez) / plan.hz;
+    dress('dirt.ground', onX ? wide : long, onX ? long : wide,
+      ex * rad, ez * rad, (drnd() - 0.5) * 0.55,
+      TOE_GHOST * (0.45 + drnd() * 0.55), DESERT, TOE_SINK);
+  }
+
+  /* ---- the strand --------------------------------------------------- *
+   * Where {@link shoreRadius} pulls the water back, it leaves shelf standing
+   * under the plane - a dry gutter beside the pool, which is worse than the
+   * rectangle it replaced. One sand bar per arc fills exactly that gap, so the
+   * two are the same function and cannot drift apart.
+   *
+   * Walked round the PERIMETER rather than swept by bearing, and that is not
+   * style: a bar placed on a bearing near a corner is a straight box across a
+   * right angle, half of it hanging over the crest or over nothing, and
+   * `dressFloor` would seat the whole thing on whichever of those is lowest -
+   * i.e. under the water, leaving the gutter it was there to fill.
+   */
+  const strand = plan.rings.find((r) => r.id === 'c2');
+  const shelf = plan.rings.find((r) => r.id === 'c1');
+  const perim = 4 * (strand.hx + strand.hz);
+  for (const face of [0, 1, 2, 3]) {
+    const alongZ = face === 0 || face === 2;
+    const sgn = face < 2 ? 1 : -1;
+    const half = alongZ ? strand.hz : strand.hx;
+    const outer = alongZ ? strand.hx : strand.hz;
+    const inner = alongZ ? strand.ihx : strand.ihz;
+    const n = Math.max(2, Math.round((SHORE_ARCS * 2 * half) / perim));
+    const step = (2 * half) / n;
+    for (let j = 0; j < n; j++) {
+      const t = -half + (j + 0.5) * step;
+      /* The WORST inset anywhere across the arc, on seven samples, and the
+       * seven are the fix for a 12.2% gap: three samples over a 3.27 m arc
+       * step straight over a trough in the shore function and the bar came out
+       * short of the water it was meant to meet. */
+      let inset = 0;
+      for (let k = -3; k <= 3; k++) {
+        const tt = t + k * step * (1 / 6);
+        const bx = alongZ ? sgn * outer : tt;
+        const bz = alongZ ? tt : sgn * outer;
+        const v = shoreInset(plan, Math.atan2(bz, bx));
+        if (v > inset) inset = v;
+      }
+      if (inset < 0.06) continue;
+      /* OVERLAPPING, deliberately. Bars sized to their own arc leave a seam at
+       * every join, and a seam here is a strip of strand standing dry 0.15 m
+       * under the plane. Measured on the standalone tank: 9.8% of the exposed
+       * strand uncovered at 0.82-0.98 of the step, 7.8% at 1.0-1.14. */
+      const long = step * (1.0 + drnd() * 0.14);
+      const turn = (drnd() - 0.5) * 0.09;
+      /* THE INNER EDGE, and the margin on it is the last 7% of that number.
+       * `dressFloor` takes the LOWEST plan surface under the box, so a bar
+       * whose turned corner crosses `c2`'s inner edge by a single centimetre
+       * is seated on `c1` instead - 0.40 m lower - and the whole bar sinks
+       * under the water it was there to meet. Measured: one bar at (6.65,
+       * 10.31) with a corner 1 cm inside `c2` came out at 2.37 against a
+       * waterline of 2.57. The turn moves a corner by `halfLen * sin(turn)`,
+       * so that is exactly what the margin has to cover. */
+      const skew = Math.abs(Math.sin(turn)) * long * 0.5;
+      const lo = Math.max(inner + 0.05 + skew, outer - inset - 0.22);
+      const hi = outer + 0.08;
+      const wide = hi - lo;
+      if (wide < 0.12) continue;
+      const mid = sgn * (lo + hi) * 0.5;
+      /* Proud of the water by 2 to 22 cm: a wet bar that just breaks the
+       * surface at one end of the run and a dry spit at the other. `c2` is
+       * 0.15 m under the plane, so the ghost is that plus the freeboard. */
+      const ghost = 0.15 + 0.02 + drnd() * 0.20;
+      dress('dirt.ground', alongZ ? wide : long, alongZ ? long : wide,
+        alongZ ? mid : t, alongZ ? t : mid, turn,
+        ghost, WET_SAND[(j + face) % WET_SAND.length]);
+
+      /* THE SECOND TIER. Past the strand tread the water is over `c1`, and the
+       * bar above has already been clamped to `c2`'s inner edge, so what is
+       * left dry is filled here at a ghost of exactly one riser - which puts
+       * its top level with `c2` and makes the beach one flat surface across
+       * both treads. @see SHORE_INSET. */
+      const over = inset - (outer - inner);
+      if (over <= 0.02) continue;
+      const sOuter = alongZ ? shelf.hx : shelf.hz;
+      const sInner = alongZ ? shelf.ihx : shelf.ihz;
+      const lo2 = Math.max(sInner + 0.05 + skew, sOuter - over - 0.22);
+      /* Overlapping the tier above by the same skew its own inner clamp gave
+       * away: at `sOuter + 0.06` the two bars left a 4 cm sliver of `c2` bare
+       * wherever the turn was near its limit, which is 1.1% of the strand. */
+      const hi2 = sOuter + 0.10 + skew;
+      if (hi2 - lo2 < 0.12) continue;
+      const mid2 = sgn * (lo2 + hi2) * 0.5;
+      dress('dirt.ground', alongZ ? hi2 - lo2 : long, alongZ ? long : hi2 - lo2,
+        alongZ ? mid2 : t, alongZ ? t : mid2, turn,
+        // A centimetre and a half under the full riser, so the part of this
+        // bar that laps onto `c2` is under it rather than coplanar with it.
+        GHOST_MAX - 0.015, WET_SAND[(j + face + 2) % WET_SAND.length]);
+    }
+  }
+
+  /* The four corners of the strand, which the face walk above cannot reach:
+   * a bar on the +x face stops at z = +hz and the one on the +z face stops at
+   * x = +hx, and the square between them belongs to neither. */
+  const cBand = Math.min(strand.hx - strand.ihx, strand.hz - strand.ihz) * 0.9;
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      /* AXIS-ALIGNED and sized to the corner square of the annulus itself. A
+       * turned box here reaches past `c2` on its diagonal, `dressFloor`
+       * correctly seats it on `c1` 0.40 m lower, and the corner comes out
+       * under the water instead of beside it. */
+      dress('dirt.ground', cBand, cBand,
+        sx * (strand.hx - cBand * 0.5), sz * (strand.hz - cBand * 0.5), 0,
+        0.17 + drnd() * 0.16, WET_SAND[(sx + sz + 2) % WET_SAND.length]);
+    }
+  }
+
+  /* ---- shoals -------------------------------------------------------- *
+   * Pale sand under the water, out on the shelves. Nothing breaks the surface
+   * here; they exist so the shallows have something bright to be shallow OVER,
+   * which is the other half of why a real oasis is turquoise.
+   *
+   * Placed ON a named shelf through {@link onRing}, not at a radius: a shoal
+   * sized freely spans three 0.60 m annuli, `dressFloor` seats it on the
+   * outermost and lowest of them, and all six came out under the shelf they
+   * were drawn for.
+   */
+  const shoalRings = plan.rings.filter((r) => r.id === 'b1' || r.id === 'b2'
+    || r.id === 'b3' || r.id === 'b4' || r.id === 's2');
+  for (let i = 0; i < SHOAL_BARS; i++) {
+    const a = i * GOLDEN + 1.93;
+    const r = shoalRings[(drnd() * shoalRings.length) | 0];
+    onRing(r, a, 'dirt.ground', 2.2 + drnd() * 3.2, 0.85,
+      (drnd() - 0.5) * 0.12, 0.16 + drnd() * 0.22,
+      WET_SAND[(i * 3) % WET_SAND.length]);
+  }
+
+  /* ---- rocks --------------------------------------------------------- *
+   * Half-drowned at the strand and scattered up the bank. Small, so the eye
+   * has a scale reference at the shore, and placed ON a ring so a boulder
+   * straddling two shelves is not quietly sunk into the lower one - seven of
+   * ten were, before {@link onRing}.
+   *
+   * Two boxes each, a base and a smaller cap turned across it: 24 triangles
+   * for something that reads as a boulder, against 108 for one box big enough
+   * for `Batch.box` to bevel - and a bevelled box at this size is still a box
+   * with 7 cm off its edges. The cap is measured from the same plan surface as
+   * the base, not stacked on it: the ghost bound is about the ground.
+   */
+  const rockRings = plan.rings.filter((r) => r.id === 'c2' || r.id === 'c1'
+    || r.kind === 'crest' || (r.kind === 'apron' && exposed.includes(r)));
+  for (let i = 0; i < SHORE_ROCKS; i++) {
+    const a = i * GOLDEN + 3.31;
+    const r = i % 3 === 2 && exposed.length
+      ? exposed[(drnd() * exposed.length) | 0]
+      : rockRings[(drnd() * Math.min(2, rockRings.length)) | 0];
+    const long = 0.62 + drnd() * 0.55;
+    const turn = drnd() * Math.PI;
+    const tint = ROCK[i % ROCK.length];
+    const seat = onRing(r, a, 'stone.cobble', long, 0.9, turn, 0.2 + drnd() * 0.08, tint);
+    if (!seat) continue;
+    dress('stone.cobble', long * 0.6, long * 0.5,
+      seat.lx + (drnd() - 0.5) * 0.16, seat.lz + (drnd() - 0.5) * 0.16,
+      turn + 0.5 + drnd() * 0.6, 0.3 + drnd() * 0.09, tint);
+  }
+
+  /* ---- reeds along the strand --------------------------------------- *
+   * Now placed against {@link shoreRadius} rather than against the strand
+   * rectangle, so they cluster in the inlets the water cuts and thin out on
+   * the spits - which is what breaks the remaining straight edge at eye level.
+   * Thin, so `Batch.box` leaves them square: 12 triangles a stem.
+   *
+   * Not in `dressing` and not bound by {@link GHOST_MAX}: a reed is grass, it
+   * is 6 cm across, and every blade of `grass.field` in this world is walked
+   * through. The bound is about sand you could mistake for a step.
+   */
+  const clumps = ctx.reeds ?? REED_CLUMPS;
+  for (let i = 0; i < clumps; i++) {
+    const a = i * GOLDEN + 0.37;
+    const ex = Math.cos(a);
+    const ez = Math.sin(a);
+    // Straddling the waterline: some stems in the shallows, some on the sand.
+    const rad = shoreRadius(plan, a) + (drnd() - 0.45) * 1.1;
+    const px = ex * rad;
+    const pz = ez * rad;
+    const stems = 3 + (drnd() < 0.4 ? 1 : 0);
+    for (let b = 0; b < stems; b++) {
+      const sx = px + (drnd() - 0.5) * 0.55;
+      const sz = pz + (drnd() - 0.5) * 0.55;
+      const hgt = 0.9 + drnd() * 0.8;
       solid('grass.field', 0.06, hgt, 0.06,
-        px + (rnd() - 0.5) * 0.5, strand.top + hgt * 0.5, pz + (rnd() - 0.5) * 0.5,
+        sx, surfaceAt(plan, sx, sz) + hgt * 0.5, sz,
         0xb9c47e, { collide: false });
     }
   }
@@ -1228,19 +2284,14 @@ export function buildOasis(ctx, plan) {
    *
    * It cannot go in the batch: `WaterVolumes` discovers water by MATERIAL NAME
    * and a merged bucket would hand it a mesh whose name is the bucket's, and
-   * `Batch` bakes vertex AO into everything it merges, which on a transmissive
-   * material reads as dirt in the water. `water.pool` is the library's animated
-   * pool surface - the same one the Lido uses - so this is the world's water,
-   * not a new one.
+   * `Batch` bakes vertex AO into everything it merges - which would fight the
+   * per-vertex depth shading the surface now carries instead of a shader.
+   *
+   * @see waterGeometry      the irregular outline and the depth ramp
+   * @see oasisWaterMaterial why this is the world's `water.pool`, adjusted
    */
-  const wgeo = new THREE.PlaneGeometry(plan.water.hx * 2, plan.water.hz * 2, 6, 6);
-  wgeo.rotateX(-Math.PI / 2);
-  const waterMat = ctx.mat
-    ? ctx.mat('water.pool', { vertexColors: false })
-    : new THREE.MeshStandardMaterial({
-      name: 'water.pool', color: 0x2f9fc4, transparent: true, opacity: 0.82,
-      roughness: 0.12, metalness: 0, side: THREE.DoubleSide,
-    });
+  const wgeo = waterGeometry(plan);
+  const waterMat = oasisWaterMaterial(ctx);
   const water = new THREE.Mesh(wgeo, waterMat);
   water.name = `oasis:${plan.id}:water`;
   water.position.set(plan.x, plan.waterY, plan.z);
@@ -1333,8 +2384,15 @@ export function buildOasis(ctx, plan) {
   ), `oasis:${plan.id}`) : [];
 
   const cost = solidCost(solids);
+  const dressCost = solidCost(dressing);
   return {
     plan, colliders, solids, meshes, batch: ownBatch,
+    /**
+     * Every visual-only sand lobe, in PLAN-LOCAL coordinates, so
+     * {@link auditDressing} is a pure function of the plan and this list and
+     * needs neither the scene nor the physics to check the ghost bound.
+     */
+    dressing,
     water: {
       mesh: water, y: plan.waterY,
       hx: plan.water.hx, hz: plan.water.hz, area: plan.area,
@@ -1349,6 +2407,14 @@ export function buildOasis(ctx, plan) {
     cost: {
       ...cost,
       /**
+       * What the sand cost, as a slice of the whole. Broken out because it is
+       * the dial anybody trimming this file will reach for first, and because
+       * `dressed` being zero while the tank still builds is the signature of
+       * the dressing having been skipped rather than the tank being cheap.
+       */
+      dressed: dressing.length,
+      dressedTriangles: dressCost.triangles,
+      /**
        * Draw calls this oasis adds ON ITS OWN: the water plane, the two palm
        * fields, and the private batch's meshes if it had to open one.
        *
@@ -1358,9 +2424,20 @@ export function buildOasis(ctx, plan) {
        * host is ALREADY going to flush. `CitadelWorld` gives each oasis a batch
        * of its own - the two sites are 210 m apart and a shared masonry mesh
        * comes back from the splitter as many more leaves than two - so the
-       * masonry costs it a measured 6 meshes per oasis on top of these 3.
+       * masonry costs it ONE MESH PER DISTINCT MATERIAL KEY, on top of these 3.
        * `_buildTraffic` counts what its own `_emit` returned and reports that;
        * this number cannot see it, so do not read it as the total.
+       *
+       * Measured on the shipped tanks: SEVEN, and it was six before the art
+       * pass. The seventh is `dirt.ground`, and TWO independent things in this
+       * file now emit it - the repainted bank ({@link ringSurface}, 186 boxes
+       * over the two tanks) and the sand dressing (431) - so removing either
+       * alone leaves the bucket standing. Neither looks like a draw call: one
+       * is a tint change, the other is dressing that costs no colliders. The
+       * built world went from 164 scene meshes to 166 all the same, and the two
+       * are `oasis:palm-well:dirt.ground` and `oasis:sand-mirror:dirt.ground`.
+       * `citadel-oasis.test.mjs` asserts the key count against the world's own
+       * `hostMeshes` now, because nothing did and this number cannot.
        */
       draws: 1 + (palmMeshes.length ? 2 : 0) + meshes.length,
       submitted: cost.triangles
@@ -1379,7 +2456,7 @@ export function buildOases(ctx, plans) {
   const out = {
     oases: [], colliders: [], enterables: [], cacheSites: [],
     npcSpawns: [], restSpots: [], viewpoints: [], landmarks: [],
-    triangles: 0, draws: 0,
+    triangles: 0, draws: 0, dressed: 0,
   };
   // ONE palm pair for every oasis in the set. Two oases with two copies of the
   // same 1,700-triangle crown is 1,700 triangles of resident geometry nobody
@@ -1398,6 +2475,7 @@ export function buildOases(ctx, plans) {
     out.landmarks.push(o.landmark);
     out.triangles += o.cost.submitted;
     out.draws += o.cost.draws;
+    out.dressed += o.cost.dressed;
   }
   out.palm = palm;
   return out;

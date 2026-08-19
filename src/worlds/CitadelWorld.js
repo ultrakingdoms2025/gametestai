@@ -4468,7 +4468,11 @@ export class CitadelWorld extends World {
        * the water plane and the two palm fields, and the masonry only when the
        * kit had to open a batch of its own. This world gives each oasis a batch
        * and flushes it here, so these are real draw calls and the report has to
-       * say so. Measured: 6 masonry meshes per oasis on top of the kit's 3. */
+       * say so. One mesh per DISTINCT MATERIAL KEY the tank painted with:
+       * measured 7 per oasis on top of the kit's 3, up from 6 before the art
+       * pass gave the bank and the sand drifted over it a `dirt.ground` bucket
+       * of their own. `citadel-oasis.test.mjs` holds the count against
+       * `hostMeshes` below - a key added by accident is how this grows. */
       const emitted = this._emit(B, `oasis:${plan.id}`).length;
       B.dispose();
       B = null;

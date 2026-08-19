@@ -40,8 +40,13 @@ import { sweep, blob, blade } from '../gfx/Organic.js';
  * The camel is the third silhouette and it is the easiest of the three, because
  * it is separated from both predators by HEIGHT and by HEAD CARRIAGE before any
  * other cue gets a chance: 2.20 m at the hump against a bear's 1.40, and a head
- * carried at 2.70 m on a vertical metre of neck - ABOVE its own hump, where a
- * bear's hangs below. See the note on its profile.
+ * carried at 2.69 m on 1.32 m of near-vertical neck - ABOVE its own hump, where
+ * a bear's hangs below. See the note on its profile.
+ *
+ * The camel is also the one animal here that is NOT built from an ellipse swept
+ * along a path. It was, and at close range it read as the pile of primitives it
+ * was: a sphere on a tube on four rods. Its body is now a single lofted
+ * superellipse - @see `loft` - and the reasoning is on the profile.
  *
  * ── The interface this presents ───────────────────────────────────────────
  * `NPC` and `NPCManager` between them read exactly seven things off the body
@@ -299,29 +304,48 @@ const PROFILES = {
   },
 
   /**
-   * CAMEL - a dromedary, and the proof that this parameterisation was general
-   * all along.
+   * CAMEL - a dromedary, and the place where this parameterisation ran out.
    *
-   * -- WHAT HAD TO BE ADDED, AND WHAT DID NOT --------------------------------
-   * Almost nothing. The single-hump profile is what the `hump` field ALREADY
-   * described: on a bear it is the shoulder mass, on a camel it is the hump,
-   * and it is the same ellipsoid merged into the same barrel. The long neck is
-   * the same `sweep` with more stations and a genuine S in it - `Organic.sweep`
-   * parallel-transports its frames precisely so a path may stand vertical
-   * without the ring flipping, which is what a camel's neck needs and a wolf's
-   * never exercised. The long thin legs are the same two-segment chain with
-   * different radii; the splayed foot is the same paw blob, flattened in y and
-   * widened in x and z.
+   * -- THE FIRST VERSION, AND WHY IT WAS REBUILT -----------------------------
+   * The camel first shipped as `barrel` + `hump` + `masses` + two-station legs,
+   * exactly like the wolf and the bear, on the argument that a single-hump
+   * profile was what the `hump` field already described. The silhouette that
+   * came out of that was right and the animal was not. From three metres it read
+   * as what it was: a SPHERE resting on a tube, on four rods. Four faults, and
+   * every one of them a consequence of building a 2.2 m animal out of parts that
+   * work at 0.85 m.
    *
-   * Two fields are new, both optional and both defaulted to the expression they
-   * replace, so the wolf and the bear come out of the builder bit-for-bit
-   * identical (pinned by SHA-256 in `camel.test.mjs`):
+   *   1. The hump was a separate closed surface merged into another one, and a
+   *      merge is not a join - the intersection is visible from anywhere.
+   *   2. There was no ribcage worth the name between the legs: an ellipse
+   *      0.490 m wide under 1.400 m of leg, with a round underside.
+   *   3. The legs were cones of even taper, with the muscle left behind on the
+   *      barrel as two 0.085 m ellipsoids that were invisible beside them, and a
+   *      knee narrower than both bones it joined.
+   *   4. The neck was a tube of near-constant thickness meeting the chest at a
+   *      hard circle.
    *
-   *   - `head.eye`, because the eye beads were derived from `cheeks` and a
-   *     camel's eyes are set higher and further out on a much narrower skull
-   *     than that expression can reach. Big dark eyes are most of what stops a
-   *     camel's small head reading as a blank peg at close range.
+   * The fix for the first two is one idea: the body is a `hull`, lofted from a
+   * superellipse whose shape changes along the length (@see `loft`), so the hump
+   * is made of the same skin as the back and the section can be keeled,
+   * slab-sided and deep all at once. The fix for the last two is to move each
+   * mass into the part that owns it - the shoulder into the foreleg, the thigh
+   * into the hind leg, the withers into the base of the neck.
+   *
+   * The wolf and the bear were not touched. They still take the `barrel` arm of
+   * `_build`, and `camel.test.mjs` pins SHA-256 over their spec rows, their gait
+   * tables, their built vertices at three seeds and 600 posed frames.
+   *
+   * -- THE FIELDS THAT ARE NOT ON THE OTHER TWO ------------------------------
+   *   - `hull` instead of `barrel` + `hump`. @see `loft`.
+   *   - `head.eye`, because the eye beads are derived from `cheeks` by default
+   *     and a camel's eyes are set higher and further out on a much narrower
+   *     skull than that expression can reach. Big dark eyes are most of what
+   *     stops a camel's small head reading as a blank peg at close range.
    *   - `legs.clawCount`, because a camel has TWO toenails, not four claws.
+   *
+   * Both of the last two default to the expression they replace, which is what
+   * lets the two predators come out of the builder bit-for-bit as they did.
    *
    * -- READING A CAMEL AT FORTY METRES ---------------------------------------
    * The same budget as the wolf and the bear - silhouette only - spent on four
@@ -330,16 +354,25 @@ const PROFILES = {
    *   1. HEIGHT. 2.20 m at the hump against a bear's 1.40 and a player's 1.75.
    *      It is the tallest thing that walks in this world, and it is the first
    *      thing that reads.
-   *   2. THE NECK. Just over a metre of it, rising almost vertically out of the
-   *      chest and arching forward at the top, carrying the head at 2.7 m -
-   *      ABOVE the hump. A bear's head hangs below its hump and a wolf's is
-   *      level with its shoulder; a camel's is the highest point on the animal.
-   *      Nothing else here has that profile and nothing else can be mistaken
-   *      for it.
-   *   3. THE HUMP. One, centred, narrower than the barrel it stands on, so it
-   *      reads as a mound on the back rather than as a thick shoulder.
-   *   4. THE LEGS. Long, thin, and finishing in a flat splayed pad rather than
-   *      a paw. A camel's belly is 1.2 m off the ground; a bear's is 0.6.
+   *   2. THE NECK. 1.32 m of it, rising almost vertically out of the withers and
+   *      arching forward at the top, carrying the head at 2.69 m - ABOVE the
+   *      hump. A bear's head hangs below its hump and a wolf's is level with its
+   *      shoulder; a camel's is the highest point on the animal. Nothing else
+   *      here has that profile and nothing else can be mistaken for it.
+   *   3. THE HUMP. One, mid-back, 0.400 m of rise above the withers, and 0.229 m
+   *      across near its top on a back 0.504 m across - a mound standing on the
+   *      body rather than a thickening of it.
+   *   4. THE LEGS. Long, and finishing in a flat splayed pad rather than a paw.
+   *      A camel's belly clears 1.145 m at the keel and 1.324 m at the haunch; a
+   *      bear's is 0.625.
+   *
+   * -- AND AT THREE METRES ----------------------------------------------------
+   * A different set of facts has to carry it, and they are the ones the rebuild
+   * is actually made of: a chest that hangs 0.315 m below the shoulder joint the
+   * forelegs swing from, a shoulder and a thigh standing 0.042 m and 0.062 m
+   * proud of the ribs, knees and hocks that are knobs twice the width of the
+   * cannon, and a sternal pad. Each of those is MEASURED in `camel.test.mjs`,
+   * because "it looks better" is not a test.
    *
    * Every y below is metres above the ground with the animal standing, so the
    * foot pads finish at y = 0 and the root can be dropped straight onto the
@@ -348,53 +381,126 @@ const PROFILES = {
   camel: {
     /* The crest of the hump, and the same number as `BEASTS.camel.
      * shoulderHeight` - `NPC` reads `humanoid.height` for its collision capsule
-     * and `beast-body` asserts the two agree. The head stands ~0.5 m higher
+     * and `beast-body` asserts the two agree. The head stands 0.49 m higher
      * still, which is the point of the animal. */
     height: 2.2,
-    /* Barrel. Deep and NARROW - a camel is a slab-sided animal seen from the
-     * front and a deep one seen from the side, the opposite of a bear. The
-     * topline is nearly flat because the hump does all the shaping. */
-    barrel: [
-      { y: 1.440, z: -1.000, rx: 0.150, ry: 0.200 },  // point of the chest, keeled
-      { y: 1.460, z: -0.820, rx: 0.215, ry: 0.290 },
-      { y: 1.480, z: -0.550, rx: 0.245, ry: 0.335 },  // girth, deepest
-      { y: 1.500, z: -0.200, rx: 0.238, ry: 0.320 },
-      { y: 1.540, z: 0.180, rx: 0.215, ry: 0.285 },   // flank
-      { y: 1.580, z: 0.520, rx: 0.205, ry: 0.255 },   // croup
-      { y: 1.600, z: 0.780, rx: 0.150, ry: 0.180 },
-      { y: 1.560, z: 0.920, rx: 0.070, ry: 0.085 },   // dock
+    /**
+     * THE HULL. One lofted surface from the brisket to the dock, built by
+     * `loft` above rather than by `sweep`, and it is the whole of the body:
+     * chest, ribcage, belly, back, croup AND hump, with no seam anywhere on it.
+     *
+     * -- WHY THIS IS NOT A `barrel` -------------------------------------------
+     * The camel that shipped had `barrel` + `hump`, an ellipse with a sphere
+     * merged into it, and close up it read as exactly that: a ball resting on a
+     * tube. Every fault in it came from the ellipse:
+     *
+     *   - a hump that was a separate object with a visible intersection;
+     *   - a barrel 0.490 m wide under a back carrying 1.400 m of leg, which is a
+     *     rod, so the animal read as a ball on stilts;
+     *   - a round underside, where a dromedary's chest is a KEEL;
+     *   - a flat disc across the front, because collapsing a full-width section
+     *     to its centre is a fan and not a dome.
+     *
+     * -- HOW TO READ A STATION ------------------------------------------------
+     * `z` along the spine, -Z forward. `y` is the height of the WAIST - the
+     * widest line of the section, which on a barrel-chested animal is well above
+     * the middle of it. `top` and `bot` are absolute heights of the topline and
+     * the underline. `hw` is the half-width at the waist. `ex`, `et` and `eb`
+     * are the three shape exponents documented on `loft`.
+     *
+     * The table is dense on purpose - sixteen stations, and eight of them over
+     * the metre of back the hump occupies - because the hump's profile along the
+     * body is a curve, and a curve read from four stations is a tent. Every
+     * `top` here is a smooth backline plus a quartic bell 0.498 m high centred
+     * at z = -0.030 with a half-length of 0.560 m; every `et` is 1.10 plus 0.30
+     * of the same bell. That is why the numbers are not round.
+     *
+     * -- THE FOUR THINGS THE NUMBERS ARE DOING --------------------------------
+     *   1. THE HUMP is `top` climbing from 1.800 at the withers to 2.200 over
+     *      the middle of the back and falling to 1.778 at the croup - 0.400 m of
+     *      rise - with `et` climbing 1.10 -> 1.40 alongside it so the section
+     *      NARROWS as it rises. At the crest the back is 0.504 m across at the
+     *      waist and 0.229 m across at 90% of the rise: the hump stands on the
+     *      back rather than swelling it.
+     *   2. THE KEEL is `bot` at 1.145 under the girth against 1.324 at the
+     *      haunch, with `eb` at 1.55 through the chest so the underside comes to
+     *      a rounded edge rather than to the bottom of a circle. The deepest
+     *      point of the chest is 0.315 m BELOW the shoulder joint the forelegs
+     *      swing from, which is what "the chest hangs below the shoulder line"
+     *      means as a number. The section is 0.655 m top to bottom - the same
+     *      ribcage depth the ellipse had. The depth never was the problem; the
+     *      shape of it was.
+     *   3. THE SLAB SIDES are `ex` at 0.80 from shoulder to flank, which holds
+     *      the flank at 96.7% of full width a quarter of the way up towards the
+     *      topline where an ellipse is down to 87%. Total width at the girth is
+     *      0.620 m against the ellipse's 0.490.
+     *   4. THE ENDS are stations 1 and 16, drawn 0.030 m in half-width, so the
+     *      fan that closes each end is 3 cm across and cannot be seen.
+     */
+    hull: [
+      { z: -1.020, y: 1.495, hw: 0.030, top: 1.570, bot: 1.445, ex: 1.00, et: 1.10, eb: 1.00 },
+      { z: -0.980, y: 1.487, hw: 0.105, top: 1.684, bot: 1.288, ex: 0.97, et: 1.10, eb: 1.25 },
+      // brisket
+      { z: -0.905, y: 1.491, hw: 0.162, top: 1.762, bot: 1.205, ex: 0.90, et: 1.10, eb: 1.45 },
+      { z: -0.780, y: 1.497, hw: 0.232, top: 1.791, bot: 1.160, ex: 0.86, et: 1.10, eb: 1.49 },
+      // withers, widest section on the animal
+      { z: -0.620, y: 1.505, hw: 0.310, top: 1.800, bot: 1.145, ex: 0.80, et: 1.10, eb: 1.55 },
+      { z: -0.470, y: 1.507, hw: 0.296, top: 1.851, bot: 1.156, ex: 0.80, et: 1.14, eb: 1.49 },
+      { z: -0.330, y: 1.508, hw: 0.279, top: 1.996, bot: 1.168, ex: 0.80, et: 1.25, eb: 1.44 },
+      { z: -0.190, y: 1.510, hw: 0.264, top: 2.136, bot: 1.189, ex: 0.80, et: 1.35, eb: 1.34 },
+      // HUMP CREST
+      { z: -0.030, y: 1.512, hw: 0.252, top: 2.200, bot: 1.213, ex: 0.80, et: 1.40, eb: 1.24 },
+      { z: 0.130, y: 1.517, hw: 0.247, top: 2.134, bot: 1.252, ex: 0.80, et: 1.35, eb: 1.17 },
+      // flank
+      { z: 0.290, y: 1.522, hw: 0.243, top: 1.981, bot: 1.294, ex: 0.80, et: 1.24, eb: 1.11 },
+      // haunch
+      { z: 0.450, y: 1.528, hw: 0.292, top: 1.832, bot: 1.324, ex: 0.81, et: 1.12, eb: 1.12 },
+      { z: 0.620, y: 1.545, hw: 0.272, top: 1.797, bot: 1.359, ex: 0.85, et: 1.10, eb: 1.14 },
+      // croup
+      { z: 0.790, y: 1.567, hw: 0.201, top: 1.778, bot: 1.410, ex: 0.89, et: 1.10, eb: 1.10 },
+      // dock
+      { z: 0.910, y: 1.598, hw: 0.112, top: 1.736, bot: 1.485, ex: 0.95, et: 1.10, eb: 1.04 },
+      { z: 0.985, y: 1.622, hw: 0.030, top: 1.660, bot: 1.580, ex: 1.00, et: 1.10, eb: 1.00 },
     ],
+    /* THE STERNAL PAD. A dromedary kneels on a horn callus under its breastbone,
+     * and the pad is a real, visible lump - the one thing on a camel's underside
+     * you can name from ten metres. Centred on x = 0, so the one pass in
+     * `_build` builds it once. It is the only mass this animal has: the shoulder
+     * and haunch masses the wolf and the bear carry are gone, because on this
+     * body they are IN the leg (see `upperFront` / `upperHind`), which is where
+     * a muscle that drives a limb belongs. */
     masses: [
-      { r: [0.085, 0.115, 0.190], p: [-0.150, 1.470, -0.600] },  // shoulder
-      { r: [0.085, 0.115, 0.190], p: [0.150, 1.470, -0.600] },
-      { r: [0.090, 0.125, 0.195], p: [-0.140, 1.510, 0.520] },   // haunch
-      { r: [0.090, 0.125, 0.195], p: [0.140, 1.510, 0.520] },
+      { r: [0.088, 0.058, 0.130], p: [0, 1.180, -0.742] },
     ],
-    /* THE HUMP. Crest at 1.845 + 0.360 = 2.205 m, which is the tallest point of
-     * the BODY and the number `height` is taken from. Narrower in x than the
-     * barrel underneath it (0.215 against 0.245) so it stands proud as a mound
-     * rather than swelling the whole animal, and its base is buried 0.33 m
-     * inside the back so there is no seam to see. Mid-back, a shade forward of
-     * centre, which is where a dromedary carries it. */
-    hump: { r: [0.215, 0.360, 0.400], p: [0, 1.845, -0.080] },
+    /* No `hump` field. It IS the back. @see `hull` above. */
     neck: {
-      at: [0, 1.640, -0.880],
-      /* THE S. Up first, almost vertically out of the chest, then arching
-       * forward over the last third. Six stations rather than the wolf's three
-       * because a curve this long read from three is a bent pipe. The poll ends
-       * 1.01 m above the base and 0.40 m in front of it - a camel's neck is as
-       * long as a wolf's whole body. */
+      at: [0, 1.615, -0.760],
+      /* THE S, and the taper.
+       *
+       * Seven stations. The base ring is 0.228 m in half-width and sits at
+       * (0, 1.445, -0.580), which is 0.30 m inside the underline of a chest
+       * 0.310 m wide - so the neck grows out of the withers instead of being
+       * planted on them. The taper is 0.228 -> 0.185 -> 0.150 over the first
+       * 0.345 m of a 1.319 m run: 55% of all the narrowing in the first 26% of
+       * the length, which is a wedge. A cone tapers evenly and meets a body at
+       * the same hard circle a cylinder does, and that circle was the fault the
+       * shipped animal wore most plainly.
+       *
+       * Then up, almost vertically, and arching forward over the last third.
+       * The poll finishes 1.155 m above the base and 0.575 m in front of it, and
+       * carries the head at 2.690 m - 0.490 m above the crest of the hump. */
       sections: [
-        { y: -0.120, z: 0.150, rx: 0.200, ry: 0.235 },  // buried in the chest
-        { y: 0.140, z: -0.020, rx: 0.150, ry: 0.170 },
-        { y: 0.400, z: -0.120, rx: 0.125, ry: 0.140 },
-        { y: 0.660, z: -0.150, rx: 0.112, ry: 0.125 },  // crest of the S
-        { y: 0.880, z: -0.245, rx: 0.100, ry: 0.112 },
-        { y: 1.010, z: -0.395, rx: 0.088, ry: 0.098 },  // poll
+        { y: -0.170, z: 0.180, rx: 0.228, ry: 0.268 },  // buried in the chest
+        { y: -0.075, z: 0.115, rx: 0.185, ry: 0.225 },  // the withers swell
+        { y: 0.130, z: 0.010, rx: 0.150, ry: 0.178 },   // clear of the shoulder
+        { y: 0.365, z: -0.055, rx: 0.126, ry: 0.148 },
+        { y: 0.605, z: -0.105, rx: 0.111, ry: 0.130 },  // crest of the S
+        { y: 0.815, z: -0.215, rx: 0.099, ry: 0.114 },
+        { y: 0.985, z: -0.395, rx: 0.086, ry: 0.098 },  // poll
       ],
     },
     head: {
-      at: [0, 1.055, -0.455],
+      at: [0, 1.075, -0.480],
       /* Small, narrow, and long in the muzzle - a camel's skull is 2.4 times as
        * long as it is wide against a wolf's 1.9 and a bear's 1.0. The last
        * station drops away: the upper lip hangs, which along with the eyes is
@@ -434,7 +540,7 @@ const PROFILES = {
       teeth: { x: 0.024, z: -0.170, upperY: -0.028, lowerY: 0.014, len: 0.024, r: 0.007 },
     },
     tail: {
-      at: [0, 1.560, 0.935],
+      at: [0, 1.632, 0.960],
       /* A thin rope with a tuft on the end, half a metre of it. The tuft is one
        * fat station: it is the only part of the tail that is visible at any
        * distance and without it a camel's rear reads as a bear's. */
@@ -452,37 +558,98 @@ const PROFILES = {
        * the feet fall almost under the centre line, so there is nothing much
        * holding the body up sideways when one side lifts. */
       track: 0.185,
-      frontZ: -0.600,
-      hindZ: 0.550,
+      frontZ: -0.620,
+      hindZ: 0.520,
       /* Both hips at the same height, so both pairs of feet finish at exactly
        * y = 0: 1.46 - 0.66 (knee) - 0.745 (pad centre) - 0.055 (pad half-depth). */
       frontHipY: 1.460,
       hindHipY: 1.460,
-      /* Long and thin. 0.66 m of upper and 0.68 m of lower against a bear's
-       * 0.52 and 0.40 on an animal only 1.6x its height - a camel is mostly
-       * leg, and the belly clearing 1.2 m of ground is the cue that says so. */
+      /**
+       * THE LEG IS THE MUSCLE.
+       *
+       * The wolf and the bear carry their shoulder and haunch as ellipsoids
+       * merged into the barrel, and on a 0.85 m animal that works. On a camel it
+       * did not: the legs left the body at 0.098 m of half-width, dead straight,
+       * and the two shoulder ellipsoids were 0.085 m lumps lost against a 0.245 m
+       * barrel - which is why the shipped animal read as four rods pushed into a
+       * tube.
+       *
+       * So the mass moved into the limb that uses it. Six stations, not three:
+       *
+       *   y = +0.155  a 0.030 m tip, deep INSIDE the body wall. The ring is
+       *               open here (`capStart: false`) so the hull has to swallow
+       *               it, which is why the withers and haunch stations are drawn
+       *               0.310 and 0.292 wide - the widest sections on the animal -
+       *               and why `camel.test.mjs` measures every open ring against
+       *               the hull's own cross-section rather than trusting this.
+       *               It is a TIP and not a wide ring on purpose: the limb has
+       *               to come out of the body as a dome, because a cone that
+       *               crosses the skin at a shallow angle leaves a spike
+       *               standing on the shoulder, which is what the first attempt
+       *               at this did.
+       *   y = -0.060  the shoulder / thigh, 0.140 and 0.148 of half-width and
+       *               standing PROUD of the ribs by 0.042 m at the front and
+       *               0.062 m at the back. That is a muscle, and because it
+       *               belongs to the limb it swings with the limb - which is
+       *               also where a muscle that drives a limb should be.
+       *   y = -0.360  forearm / gaskin, a bit over half the thickness.
+       *   y = -0.660  0.054 at the knee: a quarter of the width at the shoulder,
+       *               and that taper is the whole of "heavy thigh, thin cannon".
+       *
+       * The hind is heavier than the fore at every station above the hock, which
+       * is the ordinary quadruped arrangement and reads at any distance where
+       * the animal is more than a brush stroke wide: the drive is behind.
+       */
       upperFront: [
-        { y: 0.045, rx: 0.098, ry: 0.115 },
-        { y: -0.300, rx: 0.070, ry: 0.082 },
-        { y: -0.660, rx: 0.048, ry: 0.052 },
+        { y: 0.120, rx: 0.030, ry: 0.032 },    // the tip, deep inside the chest
+        { y: 0.045, rx: 0.076, ry: 0.080 },
+        { y: -0.060, rx: 0.140, ry: 0.132 },   // shoulder, proud of the ribs
+        { y: -0.190, rx: 0.126, ry: 0.130 },   // upper arm
+        { y: -0.360, rx: 0.080, ry: 0.088 },   // forearm
+        { y: -0.530, rx: 0.061, ry: 0.066 },
+        { y: -0.660, rx: 0.054, ry: 0.058 },   // above the knee
       ],
       upperHind: [
-        { y: 0.055, rx: 0.115, ry: 0.140 },
-        { y: -0.280, rx: 0.082, ry: 0.098 },
-        { y: -0.660, rx: 0.046, ry: 0.050 },
+        { y: 0.120, rx: 0.028, ry: 0.030 },    // the tip, deep inside the flank
+        { y: 0.040, rx: 0.080, ry: 0.084 },
+        { y: -0.070, rx: 0.148, ry: 0.140 },   // THE THIGH, the heaviest mass
+        { y: -0.200, rx: 0.132, ry: 0.138 },
+        { y: -0.380, rx: 0.086, ry: 0.096 },   // gaskin
+        { y: -0.540, rx: 0.063, ry: 0.069 },
+        { y: -0.660, rx: 0.056, ry: 0.060 },   // above the hock
       ],
       kneeY: -0.660,
+      /**
+       * THE KNEE AND THE CANNON.
+       *
+       * Station 2 is a knob 0.140 m across on a cannon 0.066 m across - the
+       * carpus in front and the hock behind, and on a camel both are genuinely
+       * knobbly, calloused, and wider than the leg they interrupt. The shipped
+       * leg had 0.045 here under an upper that finished at 0.048: a joint
+       * narrower than both bones it joins, which is a rod with a crimp in it.
+       * It sits at y = -0.010, a centimetre from the joint it turns about, so
+       * folding the knee rotates the knob about its own centre instead of
+       * swinging it out sideways.
+       *
+       * Station 1 is 0.052 against the 0.054 and 0.056 the uppers finish at: the
+       * open ring is a hair narrower than the tube above it and is therefore
+       * inside it, and the upper's end fan is inside the knob. Neither hole can
+       * be reached by a camera.
+       */
       lower: [
-        { y: 0.010, rx: 0.045, ry: 0.048 },
-        { y: -0.360, rx: 0.034, ry: 0.036 },
-        { y: -0.680, rx: 0.038, ry: 0.040 },
+        { y: 0.055, rx: 0.052, ry: 0.056 },    // hidden inside the upper
+        { y: -0.010, rx: 0.070, ry: 0.078 },   // THE KNEE / HOCK
+        { y: -0.090, rx: 0.048, ry: 0.052 },
+        { y: -0.330, rx: 0.034, ry: 0.036 },   // cannon, the thinnest bone here
+        { y: -0.560, rx: 0.033, ry: 0.035 },
+        { y: -0.680, rx: 0.042, ry: 0.045 },   // fetlock, swelling into the pad
       ],
       /* THE SPLAYED FOOT. Not a paw: a broad flat pad, 0.34 m across and 0.11 m
        * deep, that spreads on sand. The measurement that actually reads is not
-       * how big it is but how much it FLARES: the pad is 4.5 times the width of
-       * the cannon bone directly above it, where a bear's plate is 1.2 times
-       * its own column and a wolf's ball 1.5 times its own. A camel's foot
-       * looks stuck on, and that is correct. */
+       * how big it is but how much it FLARES: the pad is 4.0 times the width of
+       * the fetlock directly above it, where a bear's plate is 1.2 times its own
+       * column and a wolf's ball 1.5 times its own. A camel's foot looks stuck
+       * on, and that is correct. */
       paw: { r: [0.170, 0.055, 0.180], p: [0, -0.745, -0.030] },
       pawGap: 0.016,
       /* TWO toenails, not four claws. @see the claw loop in `_build`. */
@@ -502,6 +669,118 @@ const PROFILES = {
     fur: 'hide.fur:4,10',
   },
 };
+
+/**
+ * ── THE HULL: a lofted cross-section, for a body whose section is not an
+ *    ellipse ─────────────────────────────────────────────────────────────
+ *
+ * `Organic.sweep` sweeps an ELLIPSE, and an ellipse is the right description of
+ * a wolf's barrel, a leg, a neck and a tail. It is the wrong description of a
+ * dromedary, for three reasons that all bite at once:
+ *
+ *   - the hump. An ellipse cannot rise out of a back; the only way to get a
+ *     hump out of `sweep` is to stick a separate ellipsoid on top, and a sphere
+ *     resting on a tube reads as a sphere resting on a tube from any distance
+ *     at which the intersection is visible at all.
+ *   - the keel. A camel's chest hangs BELOW the shoulder line and comes to a
+ *     rounded edge, not to the bottom of a circle.
+ *   - the slab sides. A camel is flat-sided between the shoulder and the flank.
+ *
+ * So the camel's body is one lofted surface whose section is a piecewise
+ * superellipse, described by six numbers rather than two:
+ *
+ *      x = hw · sign(cos a) · |cos a|^ex
+ *      y = y  + (top − y) · |sin a|^et      for the upper half
+ *      y = y  − (y − bot) · |sin a|^eb      for the lower half
+ *
+ *   `hw`  half-width at the waist, `y` the height of that waist
+ *   `top` `bot`  absolute heights of the topline and the underline
+ *   `ex`  side fullness. 1 is an ellipse; below 1 the flank stays out at full
+ *         width for longer and the animal goes slab-sided.
+ *   `et`  `eb`  how POINTED the top and the bottom are. 1 is an ellipse; above
+ *         1 the surface stays low across the width and then climbs, which is a
+ *         ridge - and a ridge that rises and falls along the length of the back
+ *         IS the hump, made of the same skin as the back it grows out of.
+ *
+ * At `ex = et = eb = 1` and `top − y === y − bot` this draws exactly the ellipse
+ * `sweep` would have drawn, which is the check that this is a generalisation of
+ * the ellipse and not a different thing standing next to it.
+ *
+ * Rings stand perpendicular to Z rather than to the path. A quadruped's spine
+ * runs along Z and rises 0.2 m over 2 m of length, so the difference is under
+ * six degrees, and standing the rings up is what lets the crest of the hump be
+ * one ridge line instead of a seam that wanders across the back.
+ *
+ * @param {Array<{z:number,y:number,hw:number,top:number,bot:number,ex:number,
+ *   et:number,eb:number}>} stations at least two, ordered along +Z
+ * @param {number} [radial] vertices around the section. Must be a multiple of
+ *   four so that a = 90 deg lands ON a vertex and the crest is a ridge rather
+ *   than a chamfer between the two rings of vertices either side of it.
+ * @returns {THREE.BufferGeometry} non-indexed and flat-shaded, like every other
+ *   surface in this file
+ */
+function loft(stations, radial = 24) {
+  const n = stations.length;
+  if (n < 2) throw new Error('loft needs at least two stations');
+  if (radial % 4 !== 0) throw new Error('loft radial must be a multiple of four');
+
+  const rings = [];
+  for (let i = 0; i < n; i++) {
+    const st = stations[i];
+    const ring = [];
+    for (let k = 0; k < radial; k++) {
+      const a = (k / radial) * TAU;
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      const x = st.hw * Math.sign(c) * Math.abs(c) ** st.ex;
+      const y = s >= 0
+        ? st.y + (st.top - st.y) * Math.abs(s) ** st.et
+        : st.y - (st.y - st.bot) * Math.abs(s) ** st.eb;
+      ring.push(new THREE.Vector3(x, y, st.z));
+    }
+    rings.push(ring);
+  }
+
+  const pos = [];
+  const uv = [];
+  const push = (v, u, w) => { pos.push(v.x, v.y, v.z); uv.push(u, w); };
+  for (let i = 0; i < n - 1; i++) {
+    const a = rings[i];
+    const b = rings[i + 1];
+    const v0 = i / (n - 1);
+    const v1 = (i + 1) / (n - 1);
+    for (let k = 0; k < radial; k++) {
+      const k2 = (k + 1) % radial;
+      const u0 = k / radial;
+      const u1 = (k + 1) / radial;
+      push(a[k], u0, v0); push(b[k2], u1, v1); push(b[k], u0, v1);
+      push(a[k], u0, v0); push(a[k2], u1, v0); push(b[k2], u1, v1);
+    }
+  }
+  /* Both ends collapse to their own waist centre. The end stations are drawn
+   * small on purpose: a fan across a full-width section is a flat disc, and a
+   * flat disc across the front of the chest is exactly what made the old body
+   * look cut off from three-quarters front. */
+  for (const [i, dir] of [[0, -1], [n - 1, 1]]) {
+    const st = stations[i];
+    const centre = new THREE.Vector3(0, st.y, st.z);
+    const r = rings[i];
+    const v = i / (n - 1);
+    for (let k = 0; k < radial; k++) {
+      const k2 = (k + 1) % radial;
+      const u0 = k / radial;
+      const u1 = (k + 1) / radial;
+      if (dir < 0) { push(centre, 0.5, v); push(r[k], u0, v); push(r[k2], u1, v); }
+      else { push(centre, 0.5, v); push(r[k2], u1, v); push(r[k], u0, v); }
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.computeVertexNormals();
+  return geo;
+}
 
 /** Merge a list of geometries into one, disposing the parts. */
 function merge(list) {
@@ -632,8 +911,15 @@ export class BeastBody {
     const claw = this._mat(C.claw, { roughness: 0.35, metalness: 0.1 });
     this.materialSet = { coat, belly, dark, claw };
 
-    /* ---- barrel: one merged, continuous mass ---- */
-    const bodyParts = [sweep(P.barrel, 18)];
+    /* ---- body: one merged, continuous mass ----
+     *
+     * Two descriptions of the same thing, and a profile carries exactly one of
+     * them. `barrel` is an ellipse swept along a path and is what a wolf and a
+     * bear are; `hull` is a lofted superellipse and is what a camel is, because
+     * a hump has to be part of the back rather than an ellipsoid resting on it.
+     * The `barrel` arm below is untouched to the character, so the two
+     * predators come out of this line bit-for-bit as they always did. */
+    const bodyParts = [P.hull ? loft(P.hull, 24) : sweep(P.barrel, 18)];
     for (const m of P.masses) bodyParts.push(massGeo(m, 1));
     if (P.hump) bodyParts.push(massGeo(P.hump, 1, 14));
     const bodyMesh = this._add(this.tilt, merge(bodyParts), coat);
@@ -803,7 +1089,8 @@ export class BeastBody {
     this.muzzleLocal = new THREE.Vector3(0, muzzleY, muzzleZ).multiplyScalar(this.heightScale);
 
     /** Nose to dock, for the manager's cheap hit-rejection sphere. */
-    this.bodyLength = (P.barrel[P.barrel.length - 1].z - muzzleZ) * this.heightScale;
+    const spine = P.hull ?? P.barrel;
+    this.bodyLength = (spine[spine.length - 1].z - muzzleZ) * this.heightScale;
 
     this._head3 = new THREE.Vector3();
   }

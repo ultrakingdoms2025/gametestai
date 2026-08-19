@@ -101,6 +101,8 @@ export class BeastAnimator {
 
     this._flinch = 0;
     this._flinchDir = new THREE.Vector3();
+    /** Last frame's pace roll, so the damp that follows it never sees it. */
+    this._rolled = 0;
 
     this.dead = false;
     this.sunk = false;
@@ -287,6 +289,18 @@ export class BeastAnimator {
       this._want[k] = 0;
       this._have[k] = 0;
     }
+    /* THE ROLL IS PART OF `rotation.z` AND HAS TO BE CLEARED WITH IT.
+     *
+     * `_rolled` is the invariant "whatever is in `tilt.rotation.z` right now,
+     * `_rolled` of it is mine and I take it back before the damp". `_poseDead`
+     * writes `rotation.z` outright, so a camel that dies mid-stride keeps the
+     * last live `_rolled` all the way through the corpse. Zeroing the node here
+     * without zeroing this leaves the two disagreeing, and the first live frame
+     * after `NPC.respawn` subtracts a stale +/-0.075 rad from a node holding
+     * zero - a step of up to 4.3 degrees the wrong way, decaying at the damp's
+     * rate of 8 (~0.3 s). The wolf and the bear never set it, so for them this
+     * line is a write of 0 over 0. */
+    this._rolled = 0;
     const b = this.body;
     b.tilt.position.set(0, 0, 0);
     b.tilt.rotation.set(0, 0, 0);
@@ -388,8 +402,14 @@ export class BeastAnimator {
     // animal look like it is driving itself forward.
     const flex = Math.sin(this.stridePhase * TAU * 2) * gait.bob * 0.9 * (0.35 + drive);
     b.tilt.rotation.x = flex - h.crouch * 0.10 - h.rear * 0.62 + this._flinch * 0.10;
-    // Lean into the turn, and shudder sideways when hit.
+    /* Lean into the turn, and shudder sideways when hit.
+     *
+     * The damp reads `rotation.z` back out of the node, so whatever was written
+     * there last frame is the state it is smoothing. That is fine for the lean,
+     * which is the only thing that used to be written - and it is why the roll
+     * below has to take its own contribution back out first. @see THE SHIP. */
     const lean = clamp(this.turnRate * 0.16, -0.32, 0.32);
+    if (this._rolled !== 0) b.tilt.rotation.z -= this._rolled;
     b.tilt.rotation.z = damp(b.tilt.rotation.z, -lean * (0.4 + sp01), 8, dt)
       + this._flinch * this._flinchDir.x * 0.14;
 
@@ -405,9 +425,36 @@ export class BeastAnimator {
      * pair is airborne and troughs as the right pair is. Added rather than
      * damped so it cannot fight the turn lean above, and added ONLY when the
      * gait declares a roll - which no diagonal or staggered gait does, so the
-     * wolf and the bear never reach this line at all. */
+     * wolf and the bear never reach this line at all.
+     *
+     * -- THE FEEDBACK, AND WHY `_rolled` EXISTS -------------------------------
+     * "Added" is not free. The damp above reads `rotation.z` back, so a sine
+     * added here comes round again next frame as part of the state being
+     * smoothed, and the sum of the tail that survives each damp is a geometric
+     * series with ratio `exp(-8 dt)`. Measured on the real animator, seed 5,
+     * straight line at 2.6 m/s, peak to peak over 15 s with the first 2 s
+     * discarded - the fixture `camel.test.mjs` uses, restated here because the
+     * numbers that used to sit in this note were two fixtures spliced together
+     * and one of them did not reproduce:
+     *
+     *      30 Hz  0.550 rad   31.5 deg      120 Hz  1.994 rad  114.2 deg
+     *      60 Hz  1.030 rad   59.0 deg      240 Hz  3.922 rad  224.7 deg
+     *
+     * against a declared 0.150. A walking camel rolling 59 degrees peak to
+     * peak, and a different 114 on a faster machine. The legs were right and
+     * the barrel above them was capsizing.
+     *
+     * So the term is REMOVED before the damp and re-applied after it. The damp
+     * then smooths the lean alone, which is the only thing it was ever written
+     * to smooth, and the roll is exactly what the gait table declares: +/-0.075
+     * rad, 8.6 degrees, at 30, 60, 120 and 240 Hz and at both the grazing walk
+     * and 2.6 m/s - 0.1500 to four places in all ten. Both halves are guarded on a
+     * non-zero value, so for a wolf and a bear `_rolled` is 0 for the life of
+     * the animator and neither line executes - which is what keeps their posed
+     * digests bit-for-bit identical. */
     const roll = gait.roll ?? 0;
-    if (roll !== 0) b.tilt.rotation.z += Math.sin(this.stridePhase * TAU) * roll;
+    this._rolled = roll !== 0 ? Math.sin(this.stridePhase * TAU) * roll : 0;
+    if (this._rolled !== 0) b.tilt.rotation.z += this._rolled;
     b.tilt.rotation.y = damp(b.tilt.rotation.y, lean * 0.22, 8, dt);
 
     /* ---- neck + head ---- */

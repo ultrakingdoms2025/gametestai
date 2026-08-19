@@ -192,6 +192,66 @@ const GLOW_TEX = 64;
 const GLOW_SPREAD = 1.7;
 
 /**
+ * Widest the halo's quad ever gets, in metres, and the range it gets there.
+ *
+ * Both are the old law's own numbers: it read `min(2.6, 0.5 + d * 0.045)`, so
+ * it topped out at 2.6 m and reached that at (2.6 - 0.5) / 0.045 = 46.67 m.
+ * Beyond 46.67 m nothing below changes anything at all.
+ */
+const GLOW_MAX = 2.6;
+const GLOW_HOLD = 46.67;
+/**
+ * Narrowest, in metres, also the old law's constant term. The relic itself is
+ * an `OctahedronGeometry(0.32)` - 0.64 m across - and a halo has to be wider
+ * than the thing it is a halo around, so the quad has a floor and does not
+ * follow the range all the way down to nothing.
+ */
+const GLOW_MIN = 0.5;
+/**
+ * Metres of quad per metre of range: the APPARENT size the halo holds.
+ *
+ * 2.6 / 46.67. Multiplied by `GLOW_SPREAD` that is 0.0947 rad, or 5.42
+ * degrees across - measured as 99 px in a 1600 px frame at the default 75
+ * degree fov, which is exactly what the halo already subtends at 46.67 m.
+ */
+const GLOW_ARC = GLOW_MAX / GLOW_HOLD;
+
+/**
+ * How wide the halo's quad is, in metres, for a relic `d` metres from the eye.
+ *
+ * ── The defect ────────────────────────────────────────────────────────────
+ * The law was `min(2.6, 0.5 + d * 0.045) * GLOW_SPREAD`, and the `+` is the
+ * bug. `d * 0.045` alone is an apparent-size law - a quad that grows in step
+ * with its range holds the same number of pixels - but ADDING it to 0.5 leaves
+ * a fixed 0.85 m of quad that does not, so the halo's screen size ran away as
+ * the player approached. Quad width in a 1600 px frame at 75 deg fov: 99 px at
+ * 46.67 m, 124 px at 20 m, 174 px at 9.4 m, 523 px at 2 m.
+ *
+ * That is what two relics on adjacent Caravanserai roofs look like: the pair
+ * in `output/cv-caravan-desert.jpeg` stand 8.2 m and 9.6 m from the camera and
+ * measure 110 px and 101 px across at half power, each with a 60 px flat top
+ * where {@link glowFalloff}'s clamped core is at full HDR radiance. Nothing is
+ * wrong with the colour, the blending or the bloom: this is the same quad as
+ * the warm points that read correctly on the souk roofs in
+ * `output/citadel-baseline-town.jpeg` - fourteen of them clear luminance 235
+ * there - and the only difference between them is range.
+ *
+ * ── The law ───────────────────────────────────────────────────────────────
+ * A clamp instead of an offset. Between 8.97 m (where the floor lets go) and
+ * 46.67 m (where the ceiling takes over) the halo holds 5.42 degrees, which is
+ * the size it already had at 46.67 m; outside that band it is a fixed 0.85 m
+ * near and a fixed 4.42 m far, both unchanged from before. It is never WIDER
+ * than the old law at any range, which is the property that makes this a
+ * reduction and not a re-author, and `relic-glow.test.mjs` floors all of it.
+ *
+ * @param {number} d metres from the camera to the relic
+ * @returns {number} the quad's width in metres, `GLOW_SPREAD` included
+ */
+export function glowScale(d) {
+  return Math.min(GLOW_MAX, Math.max(GLOW_MIN, d * GLOW_ARC)) * GLOW_SPREAD;
+}
+
+/**
  * The halo texture: white, with `glowFalloff` in its alpha.
  *
  * A `DataTexture` rather than a canvas one because this file is imported by
@@ -756,8 +816,10 @@ export class Relics {
       this.mesh.setMatrixAt(n++, _rm);
 
       if (cam) {
-        /* Camera-facing, distance-scaled: the halo is what you spot from the
-         * far side of the souk, so it must not shrink to nothing.
+        /* Camera-facing, and sized by {@link glowScale} - which is a whole
+         * function because the sizing is where this halo's one visual defect
+         * lived, and a law that has to be argued about wants to be checkable
+         * without a GPU.
          *
          * `GLOW_SPREAD` is what pays for the falloff. The card used to be
          * bright to its own edge, so the quad's width WAS the halo's width;
@@ -766,7 +828,7 @@ export class Relics {
          * from. The quad grows, the core stays about the size it always was,
          * and what is new is the soft tail around it. */
         const d = _rv.distanceTo(cam.position);
-        const gs = Math.min(2.6, 0.5 + d * 0.045) * GLOW_SPREAD;
+        const gs = glowScale(d);
         _rm.copy(cam.matrixWorld);
         _rm.setPosition(_rv);
         _rm.scale(_rs.set(gs, gs, gs));

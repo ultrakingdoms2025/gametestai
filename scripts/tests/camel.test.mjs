@@ -221,11 +221,56 @@ test('the camel is a different animal from both of them under the same digest', 
 const build = (species, seed = 7) => new BeastBody({ species, seed });
 const boxOf = (body) => new THREE.Box3().setFromObject(body.root);
 
-/** Lowest point of the barrel: where the belly hangs. */
-const bellyOf = (species) =>
-  Math.min(...BEAST_PROFILES[species].barrel.map((s) => s.y - s.ry));
-/** Deepest section of the barrel, top to bottom. */
-const depthOf = (species) => Math.max(...BEAST_PROFILES[species].barrel.map((s) => s.ry)) * 2;
+/**
+ * TWO BODY DESCRIPTIONS, ONE SET OF MEASUREMENTS.
+ *
+ * A wolf and a bear are `barrel`: an ellipse `{y, z, rx, ry}` swept along a
+ * path. A camel is `hull`: a superellipse `{z, y, hw, top, bot, ex, et, eb}`
+ * lofted along Z, because a hump has to be part of the back and an ellipse
+ * cannot do that. Every helper below reads whichever a species carries and
+ * answers the SAME question about it, so the comparisons between the three
+ * animals stay comparisons and not two different measurements side by side.
+ *
+ * The ellipse arms are the expressions that were here before the camel had a
+ * hull, so the wolf's and the bear's numbers are unchanged to the last bit.
+ */
+const sectionsOf = (species) => {
+  const P = BEAST_PROFILES[species];
+  return P.hull
+    ? P.hull.map((s) => ({ z: s.z, top: s.top, bot: s.bot, half: s.hw }))
+    : P.barrel.map((s) => ({ z: s.z, top: s.y + s.ry, bot: s.y - s.ry, half: s.rx }));
+};
+/** Lowest point of the body: where the belly hangs. */
+const bellyOf = (species) => Math.min(...sectionsOf(species).map((s) => s.bot));
+/**
+ * Highest point of the body.
+ *
+ * On a camel that is the crest of the hump and it is IN the hull; on a bear and
+ * a wolf the hump is a separate ellipsoid that may stand above the barrel, so
+ * both have to be considered. Returns 2.200, 1.420 and 0.905 - and the bear's
+ * 1.420 is the number the shipped version of this test used, taken from the
+ * ellipsoid, so the comparison it makes is unchanged.
+ */
+const crestOf = (species) => {
+  const P = BEAST_PROFILES[species];
+  const skin = Math.max(...sectionsOf(species).map((s) => s.top));
+  return P.hump ? Math.max(skin, P.hump.p[1] + P.hump.r[1]) : skin;
+};
+/**
+ * Depth of the ribcage, measured at the GIRTH - the section that is widest.
+ *
+ * Not `max(top - bot)`, which on a camel would measure through the hump and
+ * report a ribcage half a metre deeper than the animal has. On the wolf and the
+ * bear the widest section is also the deepest one, so this returns exactly what
+ * `max(ry) * 2` returned: 0.49 and 0.79.
+ */
+const depthOf = (species) => {
+  const k = sectionsOf(species);
+  const girth = k.reduce((a, b) => (b.half > a.half ? b : a));
+  return girth.top - girth.bot;
+};
+/** Half-width at the girth. */
+const girthOf = (species) => Math.max(...sectionsOf(species).map((s) => s.half));
 
 test('a camel is the tallest thing that walks here, and a wolf could walk under it', () => {
   const camel = build('camel');
@@ -258,13 +303,12 @@ test('a camel carries its head ABOVE its own hump - the bear does the opposite',
    * of the animal and its head hangs below it; a camel's head is the tallest
    * point and the hump is below THAT. Same two parts, opposite order, and it
    * survives being a hundred pixels tall in bad light. */
-  const crest = (s) => BEAST_PROFILES[s].hump.p[1] + BEAST_PROFILES[s].hump.r[1];
   const head = new THREE.Vector3();
 
   const camel = build('camel', 3);
   camel.getHeadWorldPosition(head);
   const camelHead = head.y;
-  const camelCrest = crest('camel') * camel.heightScale;
+  const camelCrest = crestOf('camel') * camel.heightScale;
   assert.ok(camelHead > camelCrest * 1.15,
     `a camel's head is at ${camelHead.toFixed(2)} m and its hump crest at ${camelCrest.toFixed(2)} `
     + '- they read as the same height');
@@ -272,35 +316,236 @@ test('a camel carries its head ABOVE its own hump - the bear does the opposite',
 
   const bear = build('bear', 3);
   bear.getHeadWorldPosition(head);
-  assert.ok(head.y < crest('bear') * bear.heightScale,
+  assert.ok(head.y < crestOf('bear') * bear.heightScale,
     'the bear has started carrying its head above its hump, and the two are no longer opposites');
   bear.dispose();
 
-  // One hump, and it is narrower than the back it sits on - a mound, not a
-  // thickened shoulder. (A bear's is WIDER than its barrel, which is the whole
-  // difference between the two uses of the same field.)
-  const P = BEAST_PROFILES.camel;
-  const backWidth = Math.max(...P.barrel.map((s) => s.rx));
-  assert.ok(P.hump.r[0] < backWidth,
-    `the camel's hump is ${P.hump.r[0]} wide on a ${backWidth} back - it swells the animal `
-    + 'instead of standing on it');
+  /* One hump, and it is a MOUND: narrow where it is tall. On the hull that is a
+   * measurement rather than a field - take the section at the crest and ask how
+   * wide the skin is at 90% of its rise above the waist. `et` is the number that
+   * makes it small, so this fails the moment somebody flattens the exponent and
+   * turns the hump into a ridge as wide as the back it stands on. */
+  const peak = BEAST_PROFILES.camel.hull.reduce((a, b) => (b.top > a.top ? b : a));
+  const nearCrest = peak.hw * Math.sqrt(1 - 0.9 ** (2 / peak.et)) ** peak.ex;
+  assert.ok(nearCrest < peak.hw * 0.5,
+    `the hump is ${(nearCrest * 2).toFixed(3)} m across near its top on a back `
+    + `${(peak.hw * 2).toFixed(3)} m across - it swells the animal instead of standing on it`);
 
   /* And it is MID-BACK. A bear's hump is a shoulder mass sitting in the front
    * fifth of the barrel; a camel's is a load carried over the middle of it.
-   * Expressed as a fraction along the barrel from the chest, which is scale
-   * free and therefore comparable between two animals of different sizes. */
-  const along = (s) => {
-    const b = BEAST_PROFILES[s].barrel;
-    const front = b[0].z;
-    const rear = b[b.length - 1].z;
-    return (BEAST_PROFILES[s].hump.p[2] - front) / (rear - front);
+   * Expressed as a fraction along the body from the chest, which is scale free
+   * and therefore comparable between two animals of different sizes. */
+  const along = (s, z) => {
+    const k = sectionsOf(s);
+    return (z - k[0].z) / (k[k.length - 1].z - k[0].z);
   };
-  assert.ok(along('camel') > 0.35 && along('camel') < 0.65,
-    `the camel's hump sits ${(along('camel') * 100).toFixed(0)}% along its back - a dromedary's `
-    + 'is over the middle of it, not over a shoulder');
-  assert.ok(along('bear') < 0.3,
-    `the bear's hump has moved to ${(along('bear') * 100).toFixed(0)}% along its back and is no `
-    + 'longer the shoulder mass this comparison is against');
+  const camelAt = along('camel', peak.z);
+  assert.ok(camelAt > 0.35 && camelAt < 0.65,
+    `the camel's hump sits ${(camelAt * 100).toFixed(0)}% along its back - a dromedary's is over `
+    + 'the middle of it, not over a shoulder');
+  const bearAt = along('bear', BEAST_PROFILES.bear.hump.p[2]);
+  assert.ok(bearAt < 0.3,
+    `the bear's hump has moved to ${(bearAt * 100).toFixed(0)}% along its back and is no longer `
+    + 'the shoulder mass this comparison is against');
+});
+
+test('the hump IS the back - one skin over it, where a bear wears a second one', () => {
+  /* THE FAULT THIS FILE WAS REOPENED FOR.
+   *
+   * The camel shipped with `barrel` + `hump`: an ellipse with an ellipsoid
+   * merged into it. Merged is not joined. Two closed surfaces that intersect are
+   * still two closed surfaces, and at any range where the intersection is more
+   * than a pixel wide the animal reads as a ball resting on a tube - which is
+   * exactly what the screenshot that reopened this showed.
+   *
+   * "One surface" is measurable without reading a profile field: drop a ray
+   * straight down onto the back and count the OUTWARD-facing faces it meets. One
+   * skin answers one, everywhere. A body with a second body merged on top
+   * answers two or three - the outer object's skin, and then the inner object's
+   * skin underneath it, still facing the sky from inside the first.
+   *
+   * The bear is the ablation and it is not hypothetical: its shoulder mass IS an
+   * ellipsoid merged into a barrel, so the same scan over the same kind of
+   * region has to come back with more than one. If it ever comes back with one,
+   * this test has stopped being able to tell the two constructions apart. */
+  const scan = (species, zLo, zHi, xLim) => {
+    const b = build(species, 7);
+    b.root.updateWorldMatrix(true, true);
+    const rc = new THREE.Raycaster();
+    const down = new THREE.Vector3(0, -1, 0);
+    const from = new THREE.Vector3();
+    let worst = 0;
+    let worstAt = null;
+    for (let iz = 0; iz <= 24; iz++) {
+      for (let ix = 0; ix <= 12; ix++) {
+        const z = (zLo + (zHi - zLo) * (iz / 24)) * b.heightScale;
+        const x = (-xLim + 2 * xLim * (ix / 12)) * b.heightScale;
+        rc.set(from.set(x, 9, z), down);
+        const n = rc.intersectObject(b.mesh, false).length;
+        if (n > worst) { worst = n; worstAt = [+x.toFixed(3), +z.toFixed(3)]; }
+      }
+    }
+    b.dispose();
+    return { worst, worstAt };
+  };
+
+  /* The whole back from the withers to the croup, inboard of the leg masses:
+   * the forelegs reach back to z = -0.488 and the thighs forward to z = 0.380,
+   * and both are outboard of |x| = 0.035, so this window touches nothing but the
+   * body's own skin.
+   *
+   * AND IT IS A WINDOW, WHICH IS WORTH SAYING OUT LOUD, because the claim in
+   * this test's title is about the HUMP and the file's prose is looser than
+   * that. The same scan run down the whole centreline answers 1 everywhere
+   * except z in [-0.840, -0.630], where it answers 2 - the STERNAL PAD, the one
+   * `masses` entry this animal keeps, sitting under the brisket at z = -0.742.
+   * It is a deliberate, named, visible lump and not a second barrel, but it is
+   * a second surface and the window excludes it. The hull is one skin; the
+   * ANIMAL is one skin plus one callus. */
+  const camel = scan('camel', -0.48, 0.35, 0.12);
+  assert.equal(camel.worst, 1,
+    `a ray dropped on the camel's back at ${JSON.stringify(camel.worstAt)} passes through `
+    + `${camel.worst} outward-facing surfaces. The hump is an object sitting on the body again`);
+
+  const bear = scan('bear', -0.70, -0.30, 0.12);
+  assert.ok(bear.worst > 1,
+    `the bear's hump now reads as one skin with its back (${bear.worst} surface), so this scan `
+    + 'can no longer tell a merged ellipsoid from a lofted one');
+
+  // And the camel genuinely still HAS a hump to be one skin with: no `hump`
+  // field, and a topline that climbs and falls again over the middle of the back.
+  assert.equal(BEAST_PROFILES.camel.hump, undefined, 'the camel grew a `hump` ellipsoid back');
+  assert.ok(BEAST_PROFILES.bear.hump, 'the bear lost the ellipsoid this test compares against');
+  const tops = BEAST_PROFILES.camel.hull.map((s) => s.top);
+  const peak = tops.indexOf(Math.max(...tops));
+  assert.ok(peak > 2 && peak < tops.length - 3,
+    'the camel topline peaks at an end station, so there is no hump in it at all');
+  // Measured from the WITHERS - the widest section, which is where the back
+  // proper starts - because that is the line the hump has to stand above.
+  const withers = BEAST_PROFILES.camel.hull.reduce((a, b) => (b.hw > a.hw ? b : a));
+  const rise = tops[peak] - withers.top;
+  assert.ok(rise > 0.35,
+    `the back rises ${rise.toFixed(3)} m from the withers into the hump - flat enough to read as `
+    + 'a fat camel rather than a humped one');
+});
+
+test('nothing on the animal has an open ring showing', () => {
+  /* THE PRICE OF PUTTING THE MUSCLE IN THE LIMB.
+   *
+   * Every limb here is a swept tube built with `capStart: false`, so its top is
+   * an OPEN RING. That is deliberate and it is how the wolf and the bear are
+   * built too: the parent mass covers the hole. On a wolf the barrel is 0.41 m
+   * across and the leg tops are 0.14, so it covers them by a mile. On this camel
+   * the shoulder and thigh are 0.28 and 0.30 across on a body 0.62 across, and
+   * the fit is 2-4 cm - which is what the withers and haunch stations are drawn
+   * 0.310 and 0.292 wide for.
+   *
+   * So it is measured rather than assumed: every vertex of every open ring is
+   * tested against the hull's own cross-section at that station, by
+   * point-in-polygon on the superellipse the loft actually draws. A hole here is
+   * a camera looking into the inside of an animal.
+   */
+  const P = BEAST_PROFILES.camel;
+  const H = P.hull;
+  const stationAt = (z) => {
+    if (z <= H[0].z || z >= H[H.length - 1].z) return null;
+    for (let i = 1; i < H.length; i++) {
+      if (z <= H[i].z) {
+        const a = H[i - 1];
+        const b = H[i];
+        const t = (z - a.z) / (b.z - a.z);
+        const m = (k) => a[k] + (b[k] - a[k]) * t;
+        return {
+          y: m('y'), hw: m('hw'), top: m('top'), bot: m('bot'),
+          ex: m('ex'), et: m('et'), eb: m('eb'),
+        };
+      }
+    }
+    return null;
+  };
+  const outlineAt = (st, n = 360) => {
+    const pts = [];
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * Math.PI * 2;
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      pts.push([
+        st.hw * Math.sign(c) * Math.abs(c) ** st.ex,
+        s >= 0 ? st.y + (st.top - st.y) * Math.abs(s) ** st.et
+          : st.y - (st.y - st.bot) * Math.abs(s) ** st.eb,
+      ]);
+    }
+    return pts;
+  };
+  const insideHull = (x, y, z) => {
+    const st = stationAt(z);
+    if (!st) return false;
+    const pts = outlineAt(st);
+    let n = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xi, yi] = pts[i];
+      const [xj, yj] = pts[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) n = !n;
+    }
+    return n;
+  };
+
+  /* Each entry is the open ring, parameterised by angle and by a factor that
+   * fattens it about its own centre - which is what the ablation below turns up. */
+  const rings = [
+    ['left fore', P.legs.upperFront[0], -P.legs.track, P.legs.frontHipY, P.legs.frontZ],
+    ['right fore', P.legs.upperFront[0], P.legs.track, P.legs.frontHipY, P.legs.frontZ],
+    ['left hind', P.legs.upperHind[0], -P.legs.track, P.legs.hindHipY, P.legs.hindZ],
+    ['right hind', P.legs.upperHind[0], P.legs.track, P.legs.hindHipY, P.legs.hindZ],
+  ].map(([name, t, cx, cy, cz]) => [name, (a, sc) => [
+    cx + Math.cos(a) * t.rx * sc, cy + t.y, cz + Math.sin(a) * t.ry * sc,
+  ]]);
+  const s0 = P.neck.sections[0];
+  rings.push(['neck base', (a, sc) => [
+    Math.cos(a) * s0.rx * sc,
+    P.neck.at[1] + s0.y + Math.sin(a) * s0.ry * sc,
+    P.neck.at[2] + s0.z,
+  ]]);
+
+  for (const [name, at] of rings) {
+    for (let k = 0; k < 96; k++) {
+      const [x, y, z] = at((k / 96) * Math.PI * 2, 1);
+      assert.ok(insideHull(x, y, z),
+        `the ${name} open ring reaches (${x.toFixed(3)}, ${y.toFixed(3)}, ${z.toFixed(3)}), which `
+        + 'is outside the hull - there is a hole in the animal there');
+    }
+  }
+
+  /* THE ABLATION, and it is the whole reason the stations above are the sizes
+   * they are. "No holes" on its own is satisfied perfectly by limbs drawn thin
+   * enough to disappear inside the body - which is the version of the fix that
+   * also means "no shoulder". So the very next station down each limb, the one
+   * carrying the muscle, has to be OUTSIDE: a shoulder and a thigh that stand
+   * proud of the ribs, and a neck that has left the withers. If any of these
+   * three ever fits inside the hull, the test above has stopped being able to
+   * detect a hole because there is nothing left near the surface to make one. */
+  const proud = [
+    ['fore shoulder', P.legs.upperFront[2], P.legs.track, P.legs.frontHipY, P.legs.frontZ],
+    ['hind thigh', P.legs.upperHind[2], P.legs.track, P.legs.hindHipY, P.legs.hindZ],
+  ].map(([name, t, cx, cy, cz]) => [name, (a) => [
+    cx + Math.cos(a) * t.rx, cy + t.y, cz + Math.sin(a) * t.ry,
+  ]]);
+  const s2 = P.neck.sections[2];
+  proud.push(['neck at the withers', (a) => [
+    Math.cos(a) * s2.rx,
+    P.neck.at[1] + s2.y + Math.sin(a) * s2.ry,
+    P.neck.at[2] + s2.z,
+  ]]);
+  for (const [name, at] of proud) {
+    let outside = 0;
+    for (let k = 0; k < 96; k++) {
+      const [x, y, z] = at((k / 96) * Math.PI * 2);
+      if (!insideHull(x, y, z)) outside++;
+    }
+    assert.ok(outside > 4,
+      `the ${name} is entirely inside the hull (${outside} of 96 points proud of it) - it is a `
+      + 'mass nobody can see, and the open-ring check above is therefore measuring nothing');
+  }
 });
 
 test('the neck is a metre of near-vertical, which nothing else here has', () => {
@@ -372,6 +617,215 @@ test('the legs are long and the feet are splayed', () => {
     'the wolf gained an explicit claw count, which is a change to a profile that must not change');
 });
 
+test('the leg carries its own muscle, and the joints in it are knobs', () => {
+  /* THE SECOND FAULT THIS FILE WAS REOPENED FOR: "thin cylinders with ball
+   * joints and no muscle mass at the top".
+   *
+   * The wolf and the bear hang their shoulder and haunch off the BARREL, as
+   * ellipsoids merged into it, and at 0.85 m and 1.4 m tall that reads. It did
+   * not read on a 2.2 m animal whose legs are 1.4 m long: the leg left the body
+   * at 0.098 m of half-width and went straight down, and two 0.085 m lumps on a
+   * 0.245 m barrel were invisible beside it. Four rods pushed into a tube.
+   *
+   * The mass is now IN the limb, which is also where it belongs kinematically -
+   * a shoulder that swings with the leg instead of staying behind on the ribs.
+   * Three measurements say so, and none of them is "the numbers are bigger":
+   *
+   *   TAPER: the widest point of the upper leg against the cannon bone below
+   *     the knee. A rod is 1; this has to be a limb.
+   *   DRIVE: the hind heavier than the fore at every station above the hock,
+   *     which is the ordinary quadruped arrangement and the thing that makes a
+   *     standing animal look like it could move.
+   *   JOINT: the knee wider than the bone above it AND the bone below it. The
+   *     shipped leg had 0.045 at the top of the lower segment under an 0.048
+   *     upper - a joint narrower than both, which is a rod with a crimp in it.
+   */
+  const L = BEAST_PROFILES.camel.legs;
+  const cannon = Math.min(...L.lower.map((k) => k.rx));
+  const widestFore = Math.max(...L.upperFront.map((k) => k.rx));
+  const widestHind = Math.max(...L.upperHind.map((k) => k.rx));
+
+  assert.ok(widestFore / cannon > 3.5,
+    `the foreleg is ${(widestFore / cannon).toFixed(2)} cannons wide at the shoulder - that is a `
+    + 'rod, not a limb');
+  assert.ok(widestHind > widestFore,
+    `the thigh (${widestHind}) is no heavier than the shoulder (${widestFore}) - a quadruped's `
+    + 'drive is behind');
+
+  /* The hind outweighs the fore at every visible station, not just at the one
+   * somebody happened to type a bigger number into. Station 0 is exempt: it is
+   * the buried tip, and it is sized by how much room the hull has to swallow it
+   * at that station rather than by the animal. */
+  assert.equal(L.upperFront.length, L.upperHind.length);
+  for (let i = 1; i < L.upperFront.length; i++) {
+    assert.ok(L.upperHind[i].rx >= L.upperFront[i].rx,
+      `station ${i}: the hind leg (${L.upperHind[i].rx}) is thinner than the fore `
+      + `(${L.upperFront[i].rx})`);
+  }
+
+  // THE KNEE. Widest station of the lower segment, and it has to be wider than
+  // the end of the upper segment above it and the cannon below it.
+  const knee = L.lower.reduce((a, b) => (b.rx > a.rx ? b : a));
+  const aboveFore = L.upperFront[L.upperFront.length - 1].rx;
+  const aboveHind = L.upperHind[L.upperHind.length - 1].rx;
+  assert.ok(knee.rx > aboveFore && knee.rx > aboveHind,
+    `the knee is ${knee.rx} under an upper leg that finishes at ${aboveFore} / ${aboveHind} - `
+    + 'the joint is narrower than the bones it joins, which is a crimp and not a knee');
+  assert.ok(knee.rx > cannon * 1.8,
+    `the knee is only ${(knee.rx / cannon).toFixed(2)} cannons wide - it does not read as a joint`);
+  assert.ok(Math.abs(knee.y) < 0.05,
+    `the knee knob sits ${knee.y} from the joint it turns about, so folding the leg swings it out `
+    + 'sideways instead of rotating it about its own centre');
+
+  // And the wolf did NOT acquire any of this: it is still three stations with
+  // the muscle on the barrel, which is what its digest is pinned to.
+  assert.equal(BEAST_PROFILES.wolf.legs.upperFront.length, 3);
+  assert.equal(BEAST_PROFILES.bear.legs.upperFront.length, 3);
+  assert.equal(BEAST_PROFILES.camel.masses.length, 1,
+    'the camel grew shoulder and haunch ellipsoids back onto its barrel');
+  assert.equal(BEAST_PROFILES.wolf.masses.length, 4);
+});
+
+test('the neck TAPERS into the shoulder instead of being planted on it', () => {
+  /* THE THIRD FAULT: "a smooth tube with no taper into the shoulders".
+   *
+   * Two things are wrong with a tube. It is one thickness, and it meets the body
+   * at a hard circle. Both are measurable.
+   *
+   * THICKNESS: the base against the poll. A camel's neck is a wedge - it is a
+   *   third of the girth of the chest where it leaves it and a fifth of that at
+   *   the head - and it must narrow at EVERY station, or it is a tube with a
+   *   bulge somewhere in it.
+   * JOIN: the base ring has to be genuinely buried. Not "inside the hull", which
+   *   the open-ring test already holds, but inside it with the whole of the
+   *   first third of the neck's run still under the skin, so the surface a
+   *   player sees leaves the withers as a swelling rather than as a rim.
+   */
+  const N = BEAST_PROFILES.camel.neck;
+  const k = N.sections;
+  assert.ok(k.length >= 7, `${k.length} stations cannot describe a metre of curve`);
+  for (let i = 1; i < k.length; i++) {
+    assert.ok(k[i].rx < k[i - 1].rx,
+      `the neck is ${k[i].rx} at station ${i} under ${k[i - 1].rx} at ${i - 1} - it swells `
+      + 'somewhere along its length instead of tapering');
+  }
+  const taper = k[0].rx / k[k.length - 1].rx;
+  assert.ok(taper > 2.5,
+    `the neck is ${taper.toFixed(2)} times thicker at the shoulder than at the poll - a tube is 1`);
+  assert.ok(k[0].rx > girthOf('camel') * 0.65,
+    `the neck leaves a ${(girthOf('camel') * 2).toFixed(2)} m chest at ${(k[0].rx * 2).toFixed(2)} `
+    + 'm across - too thin at the root to be part of the shoulder');
+
+  /* Most of the taper happens EARLY, over the buried third: 0.228 -> 0.150 in
+   * the first 0.35 m of a 1.32 m run. A neck that tapers evenly over its whole
+   * length is a cone, and a cone planted on a body has the same hard rim a
+   * cylinder does. */
+  const run = (i) => Math.hypot(k[i].y - k[i - 1].y, k[i].z - k[i - 1].z);
+  let total = 0;
+  for (let i = 1; i < k.length; i++) total += run(i);
+  const early = run(1) + run(2);
+  const dropEarly = k[0].rx - k[2].rx;
+  const dropAll = k[0].rx - k[k.length - 1].rx;
+  assert.ok(early / total < 0.35 && dropEarly / dropAll > 0.5,
+    `the first ${((early / total) * 100).toFixed(0)}% of the neck's run does `
+    + `${((dropEarly / dropAll) * 100).toFixed(0)}% of the narrowing - the taper is spread evenly, `
+    + 'which is a cone');
+
+  // The predators keep the three-station necks their digests are pinned to.
+  assert.equal(BEAST_PROFILES.wolf.neck.sections.length, 3);
+  assert.equal(BEAST_PROFILES.bear.neck.sections.length, 3);
+});
+
+test('the chest is a KEEL that hangs below the shoulder, and the flank is slab-sided', () => {
+  /* THE FOURTH FAULT: "almost no barrel/ribcage between the legs - the body
+   * reads as a ball on stilts".
+   *
+   * The shipped barrel was an ellipse 0.49 m wide and 0.67 m deep with a round
+   * underside. The hull is the same 0.655 m deep - the depth was never the
+   * problem - and 0.62 m WIDE, and its underside comes to an edge 0.32 m below
+   * the shoulder joint the legs swing from. That is what a dromedary's chest is,
+   * and it is the difference between a body and a tube.
+   *
+   * Slab-sidedness is `ex`, and it is checked the way a player sees it: how much
+   * of its full width the section still has a quarter of the way up towards the
+   * topline. An ellipse holds 87%; this holds better than 93%; a cylinder would
+   * be 100% and would read as a barrel of oil.
+   */
+  const P = BEAST_PROFILES.camel;
+  const girth = P.hull.reduce((a, b) => (b.hw > a.hw ? b : a));
+
+  const belowShoulder = P.legs.frontHipY - girth.bot;
+  assert.ok(belowShoulder > 0.28,
+    `the deepest point of the chest is only ${belowShoulder.toFixed(3)} m below the shoulder `
+    + 'joint - there is no keel under this animal');
+  assert.ok(girth.bot < bellyOf('camel') + 1e-9,
+    'the deepest section of the chest is not the lowest part of the body');
+  // ...and it is a keel and not a bowl: the underside comes to an edge, which is
+  // `eb` above 1. An ellipse is exactly 1 and a flat pan is below it.
+  assert.ok(girth.eb > 1.35,
+    `the underside exponent at the girth is ${girth.eb} - the chest is round-bottomed`);
+
+  const widthAt = (st, frac) => {
+    const dy = (st.top - st.y) * frac;
+    const sinA = (dy / (st.top - st.y)) ** (1 / st.et);
+    return st.hw * Math.sqrt(1 - sinA * sinA) ** st.ex;
+  };
+  const held = widthAt(girth, 0.25) / girth.hw;
+  assert.ok(held > 0.93,
+    `the flank is down to ${(held * 100).toFixed(0)}% of its width a quarter of the way up - `
+    + 'that is an ellipse, not a slab-sided animal');
+  assert.ok(girth.ex < 0.9, `the side exponent is ${girth.ex}; 1 is an ellipse`);
+
+  // Wider than it was, and wider than deep is still wrong - a camel seen head on
+  // is a TALL narrow animal, which is the half of the shape the keel provides.
+  assert.ok(depthOf('camel') > girth.hw * 2,
+    `the ribcage is ${depthOf('camel').toFixed(3)} m deep and ${(girth.hw * 2).toFixed(3)} m wide `
+    + '- a dromedary is deeper than it is wide');
+  // The ellipse arms still answer for the two predators, unchanged.
+  assert.ok(Math.abs(depthOf('wolf') - 0.49) < 1e-9);
+  assert.ok(Math.abs(depthOf('bear') - 0.79) < 1e-9);
+});
+
+test('the rebuilt camel is still cheap enough to put seven of on screen', () => {
+  /* This is streamed content: `packMax` is 7, and a herd is built and thrown
+   * away as the player crosses the flats. The rebuild spends its triangles on a
+   * lofted hull with 16 stations and on limbs with six and seven stations
+   * instead of three - and gets some of them back by deleting the hump
+   * ellipsoid and the four muscle ellipsoids, which are now geometry the hull
+   * and the limbs already own.
+   *
+   * Measured, not asserted: 3016 -> 3672 per camel, +21.8%, and a seven-strong
+   * herd goes 21112 -> 25704. The bound below is the wolf's cost plus a third,
+   * which is where the numbers actually landed with room to breathe; the point
+   * of it is that the next person to add detail has to notice they are doing it.
+   */
+  const trisOf = (species) => {
+    const b = build(species, 7);
+    let t = 0;
+    b.root.traverse((o) => { if (o.isMesh) t += o.geometry.getAttribute('position').count / 3; });
+    b.dispose();
+    return t;
+  };
+  const wolf = trisOf('wolf');
+  const camel = trisOf('camel');
+  assert.equal(wolf, 3016, 'the wolf changed size, which no digest would catch as a count');
+  assert.ok(camel < wolf * 1.35,
+    `a camel is ${camel} triangles against a wolf's ${wolf}, `
+    + `+${((camel / wolf - 1) * 100).toFixed(1)}% - a herd of seven is streamed, so this `
+    + 'is not free');
+  assert.ok(camel * BEASTS.camel.packMax < 28000,
+    `a full herd is ${camel * BEASTS.camel.packMax} triangles`);
+  // And the detail band still has something to drop at distance.
+  const b = build('camel', 7);
+  b.setDetailVisible(false);
+  let hidden = 0;
+  b.root.traverse((o) => { if (o.isMesh && !o.visible) hidden++; });
+  assert.equal(hidden, 7,
+    `${hidden} meshes are culled at range, not the seven this animal files as detail - the eyes, `
+    + 'the two rows of teeth and one pair of toenails on each of four feet');
+  b.dispose();
+});
+
 test('a camel stands on the floor, inside its capsule, and can be shot along its length', () => {
   /* The three invariants `beast-body.test.mjs` holds over `['wolf', 'bear']` -
    * a hard-coded pair, so a third species is covered by NOTHING there. Held
@@ -402,9 +856,46 @@ test('a camel stands on the floor, inside its capsule, and can be shot along its
     + '- its shoulders are in the walls');
   assert.ok(narrowest > def.bodyRadius * 0.4,
     `the narrowest camel of 200 is ${narrowest.toFixed(3)} m inside a ${def.bodyRadius} m capsule`);
+  /* WHAT THIS NUMBER IS, AND WHAT IT IS NOT.
+   *
+   * It is `boundRadius` against the body's own extent, in the BODY'S FRAME,
+   * origin at the feet. That is the comparison `BeastNPC.js:107` is written
+   * against and it is worth holding: it is what stops a 2.7 m animal being
+   * given a wolf's reach.
+   *
+   * It is NOT the test the engine performs. `NPCManager.raycastNPCs:2083`
+   * centres the rejection sphere at `position.y + height * 0.5`, and this
+   * expression has no y offset in it at all, so a positive margin here says
+   * nothing about whether the sphere contains the animal. Measured properly -
+   * distance from that centre to the head sphere's far edge, worst of 200
+   * seeds - the camel's head sits OUTSIDE the rejection sphere by 0.3191 m on
+   * this tree and by 0.3709 m at 092740c, while the wolf clears it by 0.301 m
+   * and the bear by 0.573 m. So some head shots on a camel are rejected before
+   * the head sphere is ever tested.
+   *
+   * That is a live defect and it is NOT this branch's: it is the same at
+   * 092740c, the rebuilt body shortened `bodyLength` from 2.719 m to 2.686 m
+   * and so IMPROVED it by 0.052 m, and the fix belongs in `BeastNPC` rather
+   * than in an art pass. It is printed here rather than asserted because
+   * asserting it would be red, and left here rather than deleted because the
+   * reason nobody had noticed is that the line below reads like a proof of it.
+   */
+  let worstHead = -Infinity;
+  for (let seed = 1; seed <= 200; seed++) {
+    const b = build('camel', seed);
+    b.root.updateWorldMatrix(true, true);
+    const head = b.getHeadWorldPosition(new THREE.Vector3());
+    const bound = b.bodyLength * 0.55 + def.bodyRadius;
+    head.y -= b.height * 0.5;
+    worstHead = Math.max(worstHead, head.length() + 0.135 * b.heightScale - bound);
+    b.dispose();
+  }
+  console.info(`  published bound clears the body by ${worstBound.toFixed(4)} m in the body frame;`
+    + ` the engine's rejection sphere MISSES the head by ${worstHead.toFixed(4)} m`
+    + ' (pre-existing, 0.3709 m at 092740c - see the note above)');
   assert.ok(worstBound > 0,
-    `the published hit bound falls ${(-worstBound).toFixed(3)} m short of the body, so shots at `
-    + 'the head or the rump are rejected before the capsule is ever tested');
+    `the published hit bound is ${(-worstBound).toFixed(3)} m shorter than the body it is `
+    + 'published for, so a camel is given a bound sized for a smaller animal');
 });
 
 /* ================================================================== */
@@ -524,6 +1015,154 @@ test('only the pace declares a roll, and it actually reaches the body', () => {
   assert.ok(wHi - wLo < 1e-6,
     `a trotting wolf's barrel swings ${(wHi - wLo).toFixed(6)} rad - the roll leaked`);
   wolfBody.dispose();
+});
+
+test('the pace roll is the roll the table declares, and the same at any frame rate', () => {
+  /* THE CAPSIZE.
+   *
+   * `only the pace declares a roll` above proves the roll REACHES the body. It
+   * cannot prove the body gets the right amount of it, and it did not: the sine
+   * was added to `tilt.rotation.z` after a `damp` that reads the same property
+   * back, so every frame's roll returned as part of the next frame's state and
+   * the whole thing summed to a geometric series. Measured before the fix, on
+   * THIS fixture - seed 5, 2.6 m/s, 15 s, first 2 s discarded - a declared
+   * 0.150 rad of swing produced:
+   *
+   *      30 Hz  0.550      60 Hz  1.030      120 Hz  1.994      240 Hz  3.922
+   *
+   * A walking camel leaning 59 degrees peak to peak, and 225 on a fast machine.
+   * The pair of numbers that used to be here (1.161 at 60 Hz, 1.994 at 120 Hz)
+   * were both real and were from DIFFERENT fixtures - 1.161 is the grazing
+   * walk, not 2.6 m/s - so the first of them did not reproduce off this case.
+   * Every figure above is from `swingAt` below with the fix reverted, and each
+   * is stable to four places from 900 steps out to 60,000.
+   *
+   * Two independent things are wrong there and this holds both:
+   *   the AMPLITUDE has to be the one the gait table asked for, and
+   *   it has to be the SAME at two frame rates, which no feedback loop through
+   *   an exponential damp can be.
+   *
+   * The turn rate is pinned at zero throughout so none of the lean term is in
+   * the number, and the first two seconds are discarded so none of the settle is.
+   */
+  const swingAt = (dt, steps, speed) => {
+    const body = build('camel', 5);
+    const an = new BeastAnimator({ body, species: 'camel', seed: 5 });
+    an.setIntentForState({
+      state: 'ROAM', phase: 'none', wind: 0, hunting: false, stalking: false,
+    });
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < steps; i++) {
+      an.setLocomotion(speed, 0);
+      an.update(dt, i * dt, { detail: false, ik: false, distance: 20 });
+      if (i * dt <= 2) continue;
+      lo = Math.min(lo, body.tilt.rotation.z);
+      hi = Math.max(hi, body.tilt.rotation.z);
+    }
+    body.dispose();
+    return hi - lo;
+  };
+
+  const declared = paceGait().roll;
+  const slow = swingAt(1 / 60, 900, 2.6);
+  const fast = swingAt(1 / 240, 3600, 2.6);
+  for (const [label, got] of [['60 Hz', slow], ['240 Hz', fast]]) {
+    assert.ok(Math.abs(got - declared * 2) < declared * 0.06,
+      `at ${label} the barrel swings ${got.toFixed(4)} rad where the table declares `
+      + `${(declared * 2).toFixed(4)} - the roll is being amplified or eaten somewhere between `
+      + 'the gait and the node');
+  }
+  assert.ok(Math.abs(slow - fast) < declared * 0.04,
+    `the same camel rolls ${slow.toFixed(4)} rad at 60 Hz and ${fast.toFixed(4)} at 240 - the `
+    + 'roll is coming out of a feedback loop and the animal looks different on a faster machine');
+
+  // A grazing camel is already pacing, so this is the roll a player mostly sees.
+  const grazing = swingAt(1 / 60, 900, BEASTS.camel.roamSpeed);
+  assert.ok(Math.abs(grazing - declared * 2) < declared * 0.06,
+    `a camel at its ${BEASTS.camel.roamSpeed} m/s grazing walk swings ${grazing.toFixed(4)} rad`);
+
+  /* The ablation: a wolf under exactly the same drive. Its trot declares no
+   * roll, so `_rolled` stays 0, neither guarded line runs, and `rotation.z`
+   * holds still - which is also the proof that the two lines added to the pose
+   * driver cannot be reached by a predator. */
+  const wolfBody = build('wolf', 5);
+  const wolfAn = new BeastAnimator({ body: wolfBody, species: 'wolf', seed: 5 });
+  let wLo = Infinity;
+  let wHi = -Infinity;
+  for (let i = 0; i < 900; i++) {
+    wolfAn.setLocomotion(2.6, 0);
+    wolfAn.update(1 / 60, i / 60, { detail: false, ik: false, distance: 20 });
+    if (i <= 120) continue;
+    wLo = Math.min(wLo, wolfBody.tilt.rotation.z);
+    wHi = Math.max(wHi, wolfBody.tilt.rotation.z);
+  }
+  assert.ok(wHi - wLo < 1e-9, `a trotting wolf's barrel swings ${(wHi - wLo).toFixed(9)} rad`);
+  wolfBody.dispose();
+});
+
+test('a camel that dies mid-stride comes back upright, not carrying the roll it died with', () => {
+  /* THE ONE STATE IN WHICH THE ROLL INVARIANT IS VIOLATED.
+   *
+   * `_rolled` is a claim about the NODE: "of whatever is in `tilt.rotation.z`,
+   * this much is mine, and I take it back before the damp". Every live frame
+   * keeps that true. Death does not - `_poseDead` writes `rotation.z` outright
+   * and never touches `_rolled` - so the two only have to be re-synchronised in
+   * one place, `revive()`, which zeroes the node and used not to zero the flag.
+   *
+   * `NPC.respawn` calls `revive()`, so the first live frame of a respawned
+   * camel subtracted a roll the node no longer held.
+   *
+   * Measured as the WORST |rotation.z| over the second after revival, against
+   * the same animator brought to the same standstill without ever dying. The
+   * control matters: a camel at rest has some settle of its own, and asserting
+   * a bare number would pass on a build where nothing moves at all.
+   */
+  const paceTo = (kill) => {
+    const body = build('camel', 5);
+    const an = new BeastAnimator({ body, species: 'camel', seed: 5 });
+    an.setIntentForState({
+      state: 'ROAM', phase: 'none', wind: 0, hunting: false, stalking: false,
+    });
+    // Pace far enough in that the roll is at full amplitude, then stop on a
+    // frame where the sine is well off zero - a stale 0 proves nothing.
+    let i = 0;
+    for (; i < 600; i++) {
+      an.setLocomotion(2.6, 0);
+      an.update(1 / 60, i / 60, { detail: false, ik: false, distance: 20 });
+    }
+    for (let g = 0; g < 120 && Math.abs(an._rolled) < paceGait().roll * 0.8; g++, i++) {
+      an.setLocomotion(2.6, 0);
+      an.update(1 / 60, i / 60, { detail: false, ik: false, distance: 20 });
+    }
+    const carried = an._rolled;
+    if (kill) {
+      an.die(new THREE.Vector3(1, 0, 0));
+      for (let d = 0; d < 30; d++, i++) an.update(1 / 60, i / 60, { detail: false, ik: false, distance: 20 });
+      an.revive();
+    }
+    // Standing still from here: nothing should be driving the barrel at all.
+    let worst = 0;
+    for (let s = 0; s < 60; s++, i++) {
+      an.setLocomotion(0, 0);
+      an.update(1 / 60, i / 60, { detail: false, ik: false, distance: 20 });
+      worst = Math.max(worst, Math.abs(body.tilt.rotation.z));
+    }
+    body.dispose();
+    return { carried, worst };
+  };
+
+  const control = paceTo(false);
+  const revived = paceTo(true);
+  console.info(`  carried ${revived.carried.toFixed(4)} rad into death;`
+    + ` worst tilt after revive ${revived.worst.toFixed(6)} rad`
+    + ` against ${control.worst.toFixed(6)} standing on`);
+  assert.ok(Math.abs(revived.carried) > paceGait().roll * 0.8,
+    `the fixture stopped the camel at ${revived.carried.toFixed(4)} rad of roll - it has to die `
+    + 'with a real one or this case cannot detect a stale flag');
+  assert.ok(revived.worst <= control.worst + 1e-9,
+    `a respawned camel's barrel starts ${revived.worst.toFixed(4)} rad over where the same camel `
+    + `stands at ${control.worst.toFixed(4)} - revive() left the pace roll latched`);
 });
 
 test('a resting camel chews and a resting wolf does not', () => {

@@ -392,9 +392,15 @@ export const DRAY = Object.freeze({
    * over it. Tip at (10.2, 8.6) clears the crossing by 2 m of hull and the
    * deck by 4 m.
    */
+  /* `hookY` is the underside of the GRAPPLE HEAD, and it used to be 6.90 — a
+   * block on a 1.70 m wire. See the note at `Hulls.buildDray`: a mass hanging
+   * on a fall is a statement about gravity, and it is why four reviews in a row
+   * called this ship a harbour tug. It is a stowed telescopic ram now, 0.75 m
+   * under the tip, and the deck clearance the paragraph above is about gets
+   * BETTER rather than worse — 4.0 m becomes 5.7 m over the foredeck at 4.56. */
   derrick: Object.freeze({
     mastX: 0, mastZ: -1.6, mastTop: 12.2, heelY: 7.1,
-    tipZ: 9.2, tipY: 8.6, hookY: 6.9,
+    tipZ: 9.2, tipY: 8.6, hookY: 7.85,
   }),
   /**
    * Four ore hoppers on the deck house top, outboard of the walking lane.

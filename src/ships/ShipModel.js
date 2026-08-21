@@ -116,6 +116,11 @@ export function buildShipModel({ id, yardMaterials }) {
     track: (c) => { colliderCount++; return c; },
     group: loose,
     x: 0, y: 0, z: 0, yaw: 0,
+    /* THE BERTH DOES NOT COME WITH YOU. See `ShipBuild.yard`: with this false
+     * the builders skip the berth stencil, the boarding brow and the Pike's
+     * yard scaffold, all three of which used to be welded into the flown hull
+     * and photographed in deep space. */
+    yard: false,
   });
 
   /* `side` is which flank the boarding hatch is cut in. -1 for every berth in

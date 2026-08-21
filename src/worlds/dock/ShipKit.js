@@ -152,8 +152,43 @@ export class ShipBuild {
    * @param {number} o.y world Y of the cradle bearing face — ship-local y 0
    * @param {number} o.z world Z of the cradle centre
    * @param {number} o.yaw world yaw of the ship's local frame
+   * @param {boolean} [o.yard] true when this hull is being built INTO A BERTH —
+   *   see {@link ShipBuild#yard}. `ShipModel` passes false.
    */
-  constructor({ batch, interior, physics, track, group, x, y, z, yaw }) {
+  constructor({ batch, interior, physics, track, group, x, y, z, yaw, yard = true }) {
+    /**
+     * IS THIS HULL STANDING IN THE YARD, OR IS IT THE ONE YOU FLY?
+     *
+     * ── The defect, in a screenshot ─────────────────────────────────────
+     * `ShipModel.buildShipModel` runs the SAME builders as `DockWorld`, which
+     * is the whole point of that file — one description of a hull, so the ship
+     * on the pier and the ship you fly cannot drift apart. What nobody noticed
+     * is that a hull builder does not only draw a hull. It also draws the
+     * YARD'S fittings on it: the berth stencil, the boarding brow with its
+     * landing plate and hazard stripes, and the Pike's dorsal access scaffold.
+     *
+     * So the Kestrel flew through interstellar space with `BERTH B1 / KESTREL
+     * // COURIER` lit on both flanks and a flight of stairs trailing off her
+     * belly; the Pike towed a railed scaffold larger than her own tail; the
+     * Dray's group measured 35.5 x 15.7 m against a 29.6 x 13.2 m hull —
+     * roughly 6 m of yard furniture projecting past her nose and 2.4 m of
+     * gangway out to starboard, in vacuum. Four reviews reported it.
+     *
+     * ── Why a flag and not a second builder ─────────────────────────────
+     * For exactly the reason {@link ShipBuild#mute} is a flag: two copies of a
+     * hull drift. This is the same code path with one boolean off, and the
+     * things it gates are the things that belong to the BERTH rather than to
+     * the ship — a berth number is not part of a spacecraft, and a brow that
+     * descends to the cradle's bearing face has nothing to descend to once the
+     * cradle is 400 km astern. `Piloting.disembark` teleports the pilot to a
+     * ground-resolved point beside the hull and has never used the brow, so
+     * nothing is lost when it is not built.
+     *
+     * Nothing gated here is collided in the yard's own reach graph in a way
+     * the flown hull needs: `DockWorld` reads `out.ramp` behind an `if`, and
+     * the flown build already throws its colliders away.
+     */
+    this.yard = !!yard;
     this.B = batch;
     this.I = interior;
     this.physics = physics;

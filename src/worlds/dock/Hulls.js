@@ -666,6 +666,37 @@ function innerRibs(b, room, n, key = 'dark', o = {}) {
 }
 
 /**
+ * The berth stencil on both flanks — `BERTH B1 / KESTREL // COURIER` and its
+ * three sisters.
+ *
+ * ── One function because it was four copies, and one of them flew ─────────
+ * This is the yard numbering a hull it has in a cradle. It is not livery and
+ * it is not part of the ship: `BERTH B2` on a hull 400 km out is the same
+ * mistake as a price ticket left on a shirt. `ShipModel` builds the flown hull
+ * from these very builders (that is the point of that file), so every one of
+ * the four call sites shipped its stencil into deep space, lit, on both
+ * flanks. Four separate reviews photographed it.
+ *
+ * The gate lives HERE rather than at each call site so a fifth hull cannot
+ * forget it — the same reasoning `slidePocket` is exported for.
+ *
+ * @param {ShipBuild} b
+ * @param {number} w   plane width, metres — the stencil is sized per hull
+ * @param {number} h   plane height, metres
+ * @param {any} sign   a `YARD_SIGN` entry
+ * @param {number} hw  outer face of the flank the stencil lies on
+ * @param {number} y   height in the hull frame
+ * @param {number} z   station in the hull frame
+ */
+function berthStencil(b, w, h, sign, hw, y, z) {
+  if (!b.yard) return;
+  for (const s of [-1, 1]) {
+    b.put('signs', yardSignUV(new THREE.PlaneGeometry(w, h), sign),
+      s * (hw + 0.02), y, z, s > 0 ? Math.PI / 2 : -Math.PI / 2);
+  }
+}
+
+/**
  * A boarding ramp and its landing.
  *
  * `from: 'cradle'` starts at the cradle's bearing face (ship-local y 0), which
@@ -674,8 +705,22 @@ function innerRibs(b, room, n, key = 'dark', o = {}) {
  * what the Dray's cargo ramp does — and its foot lands within a metre of the
  * `apron` point `shipSpecs` published in drop one, which is what that anchor
  * was for.
+ *
+ * ── And it is BERTH FURNITURE, so a flown hull does not get one ───────────
+ * Both datums it is measured from are the berth's: the cradle bearing face and
+ * the shed floor. On the flown hull `keelY` is 0 and there is no cradle, so
+ * what was built was a staircase, a landing plate, two runs of hazard stripe
+ * and a row of legs hanging in vacuum — 6 m past the Dray's own nose and 2.4 m
+ * out to starboard of her flank. It is not load-bearing either: `Piloting.
+ * disembark` teleports the pilot to a ground-resolved point beside the hull and
+ * has never walked a tread, and a landed ship's keel rests `TOUCH_CLEAR * 0.5`
+ * = 0.70 m above the surface, so the brow would not reach the ground anyway.
+ * `DockWorld` reads the return behind an `if`, so null is the whole contract.
+ *
+ * @returns {{run:number, footX:number, footY:number}|null} null off a berth
  */
 function boardingRamp(b, hull, side, keelY) {
+  if (!b.yard) return null;
   const r = hull.ramp;
   const y0 = r.from === 'deck' ? -keelY : 0;
   const total = r.headY - y0;
@@ -1350,10 +1395,7 @@ export function buildKestrel(b, side, keelY, mats) {
    * hitting. It cannot be CUT the way a course or a panel line can — half a
    * stencil is a broken stencil — so it moves. At z 1.6 it spans 0.50..2.70
    * against plating that runs to 3.80, clear of the pocket by 0.93 m. */
-  for (const s of [-1, 1]) {
-    b.put('signs', yardSignUV(new THREE.PlaneGeometry(2.2, 0.9), YARD_SIGN.berthB1),
-      s * (H.lower.hw + 0.02), 2.1, 1.6, s > 0 ? Math.PI / 2 : -Math.PI / 2);
-  }
+  berthStencil(b, 2.2, 0.9, YARD_SIGN.berthB1, H.lower.hw, 2.1, 1.6);
 
   /* ── Interior ─────────────────────────────────────────────────────── */
   deckSlab(b, 'deckg', H.deck.y, H.deck.hw, H.deck.z0, H.deck.z1);
@@ -1760,9 +1802,28 @@ export function buildDray(b, side, keelY, mats) {
       0, Math.atan2(D.mastTop - 0.9 - D.tipY, D.tipZ - D.mastZ), 0, 1);
   }
   b.box('glow', 0.2, 0.2, 0.2, 0, D.mastTop + 0.2, D.mastZ - 0.3, 0, 1);
-  b.box('trim', 0.09, D.tipY - D.hookY, 0.09, 0, (D.tipY + D.hookY) / 2, D.tipZ - 0.1, 0, 1);
+  /* ── THE GRAPPLE, AND WHY IT NO LONGER HANGS ──────────────────────────
+   *
+   * This was a 0.09 m wire with a 0.7 x 0.6 x 0.5 m block and a ring swinging
+   * 1.7 m under the boom tip, and it is the single loudest thing on this hull:
+   * a block on a wire is a statement about GRAVITY, and a ship that makes that
+   * statement is a harbour tug however you shape her plating. Every review of
+   * this yard has called the Dray a tug, and this is what they were reading.
+   *
+   * It is a ram now, not a fall: a 0.24 m square telescopic column hard under
+   * the tip with the grapple head clamped on the end of it, stowed. Same
+   * silhouette element in the same place, drawn with the same three material
+   * keys, and no longer a plumb line. `DRAY.derrick.hookY` moves with it — the
+   * plan and the drawing are the same number, as they were before. */
+  const ramLen = D.tipY - D.hookY;
+  b.box('trim', 0.24, ramLen, 0.24, 0, (D.tipY + D.hookY) / 2, D.tipZ - 0.1, 0, 1);
   b.box('dark', 0.7, 0.6, 0.5, 0, D.hookY, D.tipZ - 0.1, 0, 1);
-  b.put('trim', new THREE.TorusGeometry(0.28, 0.07, 5, 8), 0, D.hookY - 0.5, D.tipZ - 0.1);
+  /* Rotated into the vertical plane: a grapple ring clamped under the head,
+   * not a hook dangling from it. A `TorusGeometry` lies in XY by default, so
+   * the untouched one was a ring lying FLAT — which reads as a hook's eye seen
+   * from above, i.e. as a fall again. */
+  b.put('trim', new THREE.TorusGeometry(0.28, 0.07, 5, 8).rotateX(Math.PI / 2),
+    0, D.hookY - 0.36, D.tipZ - 0.1);
 
   /* ── The radiator bank, starboard only ────────────────────────────────
    * The asymmetry is deliberate and it is the only one in the yard: it tells
@@ -1822,13 +1883,10 @@ export function buildDray(b, side, keelY, mats) {
   deckDetail(b, { hw: H.ledge.outer - 0.6, y: H.ledge.y, z0: H.foredeck.z0 + 0.5, z1: H.foredeck.z1 - 0.8, n: 48, seed: 59 });
   // Only the OPEN run of the spine deck: aft of z -6.2 is the castle's floor.
   deckDetail(b, { hw: H.spine.hw - 0.4, y: H.spine.y, z0: H.bridge.z1 + 0.3, z1: H.spine.z1 - 2.6, n: 22, seed: 61, key: 'accent' });
-  for (const s of [-1, 1]) {
-    /* Aft of the cargo door, not over it. A 4.0 m plane at z -2.0 spanned
-     * -4.00..0.00 and the cargo aperture is -4.00..1.00; at z -8.0 it spans
-     * -10.00..-6.00, on plating that runs back to -13.00. */
-    b.put('signs', yardSignUV(new THREE.PlaneGeometry(4.0, 1.6), YARD_SIGN.berthB2),
-      s * (H.lower.hw + 0.02), 3.2, -8.0, s > 0 ? Math.PI / 2 : -Math.PI / 2);
-  }
+  /* Aft of the cargo door, not over it. A 4.0 m plane at z -2.0 spanned
+   * -4.00..0.00 and the cargo aperture is -4.00..1.00; at z -8.0 it spans
+   * -10.00..-6.00, on plating that runs back to -13.00. */
+  berthStencil(b, 4.0, 1.6, YARD_SIGN.berthB2, H.lower.hw, 3.2, -8.0);
 
   /* ── Interior ─────────────────────────────────────────────────────── */
   deckSlab(b, 'deckg', H.deck.y, H.deck.hw, H.deck.z0, H.deck.z1);
@@ -2242,16 +2300,13 @@ export function buildPike(b, side, keelY, mats) {
   deckDetail(b, { hw: H.ledge.outer - 0.5, y: H.ledge.y, z0: H.ledge.z0 + 0.8, z1: H.ledge.z1 - 0.5, n: 30, seed: 73 });
   deckDetail(b, { hw: H.wing.x1 - 0.5, y: H.wing.y1, z0: H.wing.z0 + 0.6, z1: H.wing.z1 - 0.6, n: 24, seed: 79, key: 'accent' });
   gear(b, { hw: H.lower.hw, y0: -0.34, y1: H.lower.y0 + 0.1, stations: [[-1.6, -4.6], [1.6, -4.6], [0, 3.6]] });
-  for (const s of [-1, 1]) {
-    /* Forward, on the flank under the gun fairing. At z -5.2 it spanned
-     * -6.40..-4.00 against an aperture of -4.90..-2.90, so its forward end lay
-     * over the door. Aft is no good either — the plating stops at -6.50 — and
-     * amidships is inside the wing, whose root is at local x 2.20 from y 1.95.
-     * z 4.6 spans 3.40..5.80 at y 1.40..2.40, which is under the fairing
-     * (hw 1.60, from y 2.20) and clear of everything. */
-    b.put('signs', yardSignUV(new THREE.PlaneGeometry(2.4, 1.0), YARD_SIGN.berthB3),
-      s * (H.lower.hw + 0.02), 1.9, 4.6, s > 0 ? Math.PI / 2 : -Math.PI / 2);
-  }
+  /* Forward, on the flank under the gun fairing. At z -5.2 it spanned
+   * -6.40..-4.00 against an aperture of -4.90..-2.90, so its forward end lay
+   * over the door. Aft is no good either — the plating stops at -6.50 — and
+   * amidships is inside the wing, whose root is at local x 2.20 from y 1.95.
+   * z 4.6 spans 3.40..5.80 at y 1.40..2.40, which is under the fairing
+   * (hw 1.60, from y 2.20) and clear of everything. */
+  berthStencil(b, 2.4, 1.0, YARD_SIGN.berthB3, H.lower.hw, 1.9, 4.6);
 
   /* The authored skin, placed in the hull's own frame — which is the frame it
    * was generated in, so there is no transform and nothing to get wrong. Each
@@ -2425,41 +2480,50 @@ export function buildPike(b, side, keelY, mats) {
     mat: mats.trim,
   });
 
-  /* ── The yard's dorsal access scaffold ────────────────────────────── */
-  const S = H.scaffold;
-  const headY = -keelY + S.rise;
-  b.flight('z', S.lx, -keelY, S.footZ, S.run, S.rise, S.width, S.risers);
-  /* ONE deck from the flight head across to the spine, not a platform and a
-   * bridge that overlap: two decks at the same height whose edges cross are two
-   * decks whose rails cross too, and the rail across the arrival is a stair
-   * that ends at a fence. */
-  b.cbox('deckg', S.deckX1 - S.deckX0, 0.12, S.deckZ1 - S.deckZ0,
-    (S.deckX0 + S.deckX1) / 2, headY - 0.06, (S.deckZ0 + S.deckZ1) / 2, 0, 1.4);
-  /* The scaffold IS railed and the hull it serves is not: this is yard
-   * structure over a five-metre drop, and nothing mantles onto it. The rails
-   * guard only the narrow run between the spine and the flight head — the
-   * flank the ramp arrives on is left open, because that is the way in. */
-  for (const s of [-1, 1]) {
-    b.rail('trim', 'glow', 'x', S.deckX0, S.lx - S.width / 2 - 0.05,
-      s > 0 ? S.deckZ1 - 0.06 : S.deckZ0 + 0.06, headY);
-  }
-  b.rail('trim', 'glow', 'z', S.deckZ0 + 0.1, S.deckZ1 - 0.1, S.deckX1 - 0.06, headY);
-  for (let i = 1; i <= 4; i++) {
-    const t = i / 5;
-    const lz = S.footZ + S.run * t;
-    const ly = -keelY + S.rise * t;
+  /* ── The yard's dorsal access scaffold ──────────────────────────────
+   *
+   * THE YARD'S, and that word is now load-bearing. Every member of this thing
+   * is measured from `-keelY`, the shed floor: on the flown hull `keelY` is 0,
+   * so a railed flight, a deck, four pairs of stanchions and two stringers
+   * were built hanging off the Pike's belly and flown to Cinder. It was
+   * photographed there. `ShipBuild.yard` gates it for the same reason it gates
+   * the berth stencil and the brow. */
+  if (b.yard) {
+    const S = H.scaffold;
+    const headY = -keelY + S.rise;
+    b.flight('z', S.lx, -keelY, S.footZ, S.run, S.rise, S.width, S.risers);
+    /* ONE deck from the flight head across to the spine, not a platform and a
+     * bridge that overlap: two decks at the same height whose edges cross are two
+     * decks whose rails cross too, and the rail across the arrival is a stair
+     * that ends at a fence. */
+    b.cbox('deckg', S.deckX1 - S.deckX0, 0.12, S.deckZ1 - S.deckZ0,
+      (S.deckX0 + S.deckX1) / 2, headY - 0.06, (S.deckZ0 + S.deckZ1) / 2, 0, 1.4);
+    /* The scaffold IS railed and the hull it serves is not: this is yard
+     * structure over a five-metre drop, and nothing mantles onto it. The rails
+     * guard only the narrow run between the spine and the flight head — the
+     * flank the ramp arrives on is left open, because that is the way in. */
     for (const s of [-1, 1]) {
-      b.box('dark', 0.12, ly + keelY, 0.12, S.lx + s * (S.width / 2 + 0.05), (-keelY + ly) / 2, lz, 0, 1);
+      b.rail('trim', 'glow', 'x', S.deckX0, S.lx - S.width / 2 - 0.05,
+        s > 0 ? S.deckZ1 - 0.06 : S.deckZ0 + 0.06, headY);
     }
-    b.box('dark', S.width + 0.3, 0.1, 0.1, S.lx, ly - 0.4, lz, 0, 1);
-  }
-  const pitch = Math.atan2(S.rise, S.run);
-  for (const s of [-1, 1]) {
-    /* The stringer under the boarding flight, pitched to follow it. Was a
-     * tenth argument to `box`, so the pitch landed in `tile` and the member
-     * lay flat with uvs scaled by -0.28. */
-    b.rbox('trim', 0.08, 0.08, Math.hypot(S.run, S.rise), S.lx + s * (S.width / 2 + 0.06),
-      -keelY + S.rise / 2 + 1.0, S.footZ + S.run / 2, 0, -pitch, 0, 1);
+    b.rail('trim', 'glow', 'z', S.deckZ0 + 0.1, S.deckZ1 - 0.1, S.deckX1 - 0.06, headY);
+    for (let i = 1; i <= 4; i++) {
+      const t = i / 5;
+      const lz = S.footZ + S.run * t;
+      const ly = -keelY + S.rise * t;
+      for (const s of [-1, 1]) {
+        b.box('dark', 0.12, ly + keelY, 0.12, S.lx + s * (S.width / 2 + 0.05), (-keelY + ly) / 2, lz, 0, 1);
+      }
+      b.box('dark', S.width + 0.3, 0.1, 0.1, S.lx, ly - 0.4, lz, 0, 1);
+    }
+    const pitch = Math.atan2(S.rise, S.run);
+    for (const s of [-1, 1]) {
+      /* The stringer under the boarding flight, pitched to follow it. Was a
+       * tenth argument to `box`, so the pitch landed in `tile` and the member
+       * lay flat with uvs scaled by -0.28. */
+      b.rbox('trim', 0.08, 0.08, Math.hypot(S.run, S.rise), S.lx + s * (S.width / 2 + 0.06),
+        -keelY + S.rise / 2 + 1.0, S.footZ + S.run / 2, 0, -pitch, 0, 1);
+    }
   }
 
   return {
@@ -2762,10 +2826,7 @@ export function buildBastion(b, keelY, mats) {
   b.mute(false);
   deckDetail(b, { hw: H.ledge.outer - 0.9, y: H.ledge.y, z0: H.lower.z0 + 2, z1: H.lower.z1 - 2, n: 54, seed: 97 });
   deckDetail(b, { hw: H.spine.hw - 0.8, y: H.spine.y, z0: H.spine.z0 + 1.5, z1: H.spine.z1 - 1.5, n: 42, seed: 101, key: 'accent' });
-  for (const s of [-1, 1]) {
-    b.put('signs', yardSignUV(new THREE.PlaneGeometry(6.0, 2.4), YARD_SIGN.berthB4),
-      s * (H.lower.hw + 0.02), 2.6, -4.0, s > 0 ? Math.PI / 2 : -Math.PI / 2);
-  }
+  berthStencil(b, 6.0, 2.4, YARD_SIGN.berthB4, H.lower.hw, 2.6, -4.0);
   b.mute(!!skin);
   /* Open access panels, with the loom hanging out of them. A hulk that was
    * never finished is a hulk somebody stopped working on halfway, and the panel

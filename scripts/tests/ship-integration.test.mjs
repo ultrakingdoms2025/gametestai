@@ -119,7 +119,7 @@ function stubMaterials() {
  * the authored arm here is the arm the player sees; `resetShipAssets` on the
  * way out keeps one hull's asset from leaking into the next one's build.
  */
-function build(id, useAsset, side = 1) {
+function build(id, useAsset, side = 1, yard = true) {
   ASSETS.resetShipAssets();
   if (useAsset) ASSETS.installShipAssets(assetMap());
   const physics = new Physics();
@@ -133,7 +133,7 @@ function build(id, useAsset, side = 1) {
   const b = new ShipBuild({
     batch: ext, interior: int, physics,
     track: (c) => { cols.push(c); return c; },
-    group, x: 0, y: 0, z: 0, yaw: 0,
+    group, x: 0, y: 0, z: 0, yaw: 0, yard,
   });
   const result = HULLS_SRC[BUILDER[id]](b, side, CRADLE_TOP[id] ?? 0, mats);
   const extRoot = new THREE.Group();
@@ -328,7 +328,12 @@ test('painting an authored hull moves every slot, and resetting puts it back', (
   let hulls = 0;
   for (const id of HULL_IDS) {
     const slots = SHIP_SLOTS[id];
-    if (!slots) continue;
+    /* `!slots.length`, not `!slots`. The Bastion now DECLARES an empty slot
+     * table rather than having none — an absent table means "accept every
+     * slot" to `ShipRegistry._knownSlot`, which is how a livery for the hulk
+     * used to reach the save. An empty array is truthy, so the old guard let
+     * her through with nothing to paint and the count came out four. */
+    if (!slots?.length) continue;
     const { slotMats } = ARMS[id].asset;
     const before = {}, painted = {}, after = {};
     const readInto = (o) => {
@@ -355,6 +360,128 @@ test('painting an authored hull moves every slot, and resetting puts it back', (
     hulls++;
   }
   assert.equal(hulls, 3, 'the three fitted hulls all sell livery slots; the hulk sells none');
+});
+
+/* ================================================================== */
+/* 4b. The berth does not come with you                                */
+/* ================================================================== */
+
+test('a flown hull carries no berth stencil, no brow and no yard scaffold', () => {
+  /* ═══════════════════════════════════════════════════════════════════════
+   *  THE DEFECT, PHOTOGRAPHED FOUR TIMES BEFORE ANYONE FIXED IT
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * `ShipModel.buildShipModel` runs these very builders, which is the point of
+   * that file — one description of a hull, so the ship on the pier and the
+   * ship you fly cannot drift. What nobody noticed is that a hull builder also
+   * draws the YARD'S fittings onto the hull. So:
+   *
+   *   - the Kestrel flew through interstellar space with `BERTH B1 / KESTREL
+   *     // COURIER` lit on BOTH flanks, a boarding stair, a landing plate and
+   *     two runs of hazard stripe trailing off her belly;
+   *   - the Pike towed a railed dorsal access scaffold measured from the SHED
+   *     FLOOR, larger than her own tail;
+   *   - the Dray flew with `BERTH B2` and a gangway projecting to starboard.
+   *
+   * `ShipBuild.yard` gates all three. Measured here, authored arm, hull-local,
+   * berthed -> flown:
+   *
+   *   kestrel  7,806 -> 7,598 tris   width  9.46 -> 9.26 m
+   *   dray    13,029 -> 12,581 tris  width 20.23 -> 13.29 m,  keel -1.65 -> -0.59
+   *   pike    10,046 ->  9,058 tris  length 23.42 -> 19.78 m, keel -1.34 -> -0.34
+   *
+   * ── The control matters more than the counts ───────────────────────────
+   * A gate that removed the whole ship would pass every assertion about what
+   * is GONE. So the last block asserts what must be UNCHANGED: the hull,
+   * accent, dark and glass buckets — the ship itself, authored skin included —
+   * are triangle-for-triangle identical between the two arms. */
+  const bounds = (root) => {
+    const bb = new THREE.Box3();
+    root.traverse((m) => {
+      if (!m.isMesh) return;
+      m.geometry.computeBoundingBox();
+      bb.union(m.geometry.boundingBox.clone().applyMatrix4(m.matrixWorld));
+    });
+    return bb;
+  };
+  /** Triangles per material bucket, which is how `GeoBatch` names its meshes. */
+  const buckets = (root) => {
+    const out = {};
+    root.traverse((m) => {
+      if (!m.isMesh) return;
+      const key = (m.name || '').split(':').pop();
+      const idx = m.geometry.getIndex();
+      out[key] = (out[key] ?? 0) + (idx ? idx.count : m.geometry.attributes.position.count) / 3;
+    });
+    return out;
+  };
+
+  for (const id of ['kestrel', 'dray', 'pike']) {
+    const berthed = build(id, true, 1, true);
+    const flown = build(id, true, 1, false);
+
+    /* THE STENCIL. A berth number lit on the flank of a ship in interstellar
+     * space is the single most visible thing in this defect. */
+    assert.ok(buckets(berthed.extRoot).signs > 0,
+      `${id}: the BERTHED hull draws no berth stencil - the yard stopped numbering its cradles`);
+    assert.equal(buckets(flown.extRoot).signs, undefined,
+      `${id}: the FLOWN hull still carries its berth stencil`);
+
+    /* THE BROW. `DockWorld` reads `out.ramp` behind an `if`, so null is the
+     * contract; the berthed arm must still publish a foot or the yard loses
+     * the anchor `shipSpecs` measures the apron against. */
+    assert.equal(flown.result.ramp, null, `${id}: the FLOWN hull still builds a boarding ramp`);
+    assert.ok(Number.isFinite(berthed.result.ramp?.footX),
+      `${id}: the BERTHED hull publishes no ramp foot`);
+
+    /* And it is smaller, in the direction the furniture actually stuck out —
+     * which is a different axis on each hull, because each brow runs out to its
+     * own berth's apron and only two of the three descend to the shed floor.
+     * Written per hull, from the measurement, rather than as one loose rule
+     * that would be satisfied by any hull shrinking anywhere. */
+    const nb = triCount(berthed.extRoot), nf = triCount(flown.extRoot);
+    assert.ok(nf < nb, `${id}: the flown hull draws ${nf} triangles, no fewer than the berthed ${nb}`);
+    const b0 = bounds(berthed.extRoot), b1 = bounds(flown.extRoot);
+    const shrink = {
+      // The brow runs out to +x off the cradle face; nothing descends.
+      kestrel: [['max', 'x', 0.15]],
+      // The cargo brow runs to the SHED FLOOR and 7 m out to the apron.
+      dray: [['max', 'x', 5.0], ['min', 'y', 0.9]],
+      // The dorsal scaffold stands on the shed floor aft of the transom.
+      pike: [['min', 'z', 3.0], ['min', 'y', 0.9]],
+    }[id];
+    for (const [end, axis, least] of shrink) {
+      const d = end === 'max' ? b0.max[axis] - b1.max[axis] : b1.min[axis] - b0.min[axis];
+      assert.ok(d >= least,
+        `${id}: the flown hull's ${end} ${axis} moved in by only ${d.toFixed(2)} m against ${least} - `
+        + `the yard furniture on that side is still welded on (${b0.min[axis].toFixed(2)}..${b0.max[axis].toFixed(2)} `
+        + `berthed, ${b1.min[axis].toFixed(2)}..${b1.max[axis].toFixed(2)} flown)`);
+    }
+
+    /* THE CONTROL: the ship itself did not move.
+     *
+     * `hull`, `accent` and `glass` are the three buckets NO piece of yard
+     * furniture draws into — the brow is `deckg`/`dark`/`hazard`, the scaffold
+     * adds `trim`/`glow`, the stencil is `signs` — so they are the buckets that
+     * can hold the gate honest. Between them they carry 4,344 of the Kestrel's
+     * 5,990 authored triangles. The interior is checked whole, because nothing
+     * gated here is inside the ship at all. */
+    const kb = buckets(berthed.extRoot), kf = buckets(flown.extRoot);
+    for (const key of ['hull', 'accent', 'glass']) {
+      assert.equal(kf[key], kb[key],
+        `${id}: the '${key}' bucket is ${kf[key]} flown against ${kb[key]} berthed - the gate is eating the ship`);
+    }
+    assert.equal(triCount(flown.intRoot), triCount(berthed.intRoot),
+      `${id}: the gate changed the INTERIOR, which no berth fitting is part of`);
+  }
+
+  /* The Pike's scaffold is the one piece that is neither a stencil nor a brow,
+   * and it is 3.64 m of the hull's own published length. */
+  const pb = bounds(build('pike', true, 1, true).extRoot);
+  const pf = bounds(build('pike', true, 1, false).extRoot);
+  assert.ok(pb.min.z < -11.9 && pf.min.z > -8.6,
+    `the Pike's dorsal scaffold runs to z ${pb.min.z.toFixed(2)} berthed and ${pf.min.z.toFixed(2)} flown; `
+    + 'it should be gone entirely off a berth');
 });
 
 /* ================================================================== */

@@ -58,6 +58,14 @@
  * ship-assets.test.mjs` pins BOTH arms, because a fallback nobody exercises is
  * a fallback that has already rotted.
  *
+ * A STALLED connection is not one of those paths and used to be the one hole
+ * in that promise: nothing rejects, so nothing degrades, and `DockWorld.build`
+ * stays open behind a loading screen for as long as the socket does. Every
+ * request here therefore carries {@link FETCH_TIMEOUT_MS} on an `AbortSignal`,
+ * which converts the stall into a failure the existing `catch` already
+ * handles. The four hulls are fetched CONCURRENTLY for the same reason they
+ * are on the critical path at all - see the note on `loadAll`.
+ *
  * ## Where the file lives, and why the URL shape is load-bearing
  *
  * Vite serves `public/` verbatim and this project sets `base: '/game/'`, so
@@ -169,6 +177,30 @@ function mirrorX(geo) {
   return geo;
 }
 
+/**
+ * How long any one request here may take before it is abandoned.
+ *
+ * ── A STALL IS NOT A FAILURE PATH, AND THAT WAS THE HOLE ──────────────────
+ * The header above promises "every failure path resolves". A connection that
+ * neither answers nor errors is not a failure path: `fetch` simply never
+ * settles, `loadAll` never returns, `DockWorld.build` never resolves, and the
+ * player sits on a loading screen for as long as the socket stays open — with
+ * a fully working procedural fallback sitting one `catch` away. `AbortSignal.
+ * timeout` turns the stall into the `AbortError` the existing `catch` already
+ * knows how to degrade from.
+ *
+ * 12 s rather than 2 or 3: this is 1.19 MB of hull over a link that may be a
+ * phone, and a slow-but-working download must not be cancelled into a worse
+ * ship. It is a deadlock bound, not a performance bound.
+ */
+const FETCH_TIMEOUT_MS = 12000;
+
+/** `AbortSignal.timeout` where it exists; undefined on a runtime without it. */
+const timeoutSignal = () =>
+  (typeof AbortSignal !== 'undefined' && AbortSignal.timeout
+    ? AbortSignal.timeout(FETCH_TIMEOUT_MS)
+    : undefined);
+
 async function loadAll() {
   /* BASE_URL, not '/': the built game mounts under /game/ and a hard-coded
    * absolute path is the bug the whole URL shape exists to prevent. Guarded so
@@ -178,7 +210,7 @@ async function loadAll() {
 
   let manifest;
   try {
-    const res = await fetch(`${dir}manifest.json`);
+    const res = await fetch(`${dir}manifest.json`, { signal: timeoutSignal() });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     manifest = await res.json();
   } catch (e) {
@@ -191,21 +223,43 @@ async function loadAll() {
   const out = {};
   /* One loader for the batch, imported lazily so the glTF parser only ever
    * downloads on the first yard build of a session - and never at all for a
-   * player who never docks. Vite splits it into its own chunk. */
+   * player who never docks. Vite splits it into its own chunk.
+   *
+   * HOISTED ABOVE THE FETCHES, and awaited once. Inside the loop it was also
+   * inside the serialisation below, so the chunk download sat between hull one
+   * and hull two instead of overlapping both. */
   let loader = null;
-  for (const entry of entries) {
+  try {
+    const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+    loader = new GLTFLoader();
+  } catch (e) {
+    warnOnce('loader', `could not load the glTF parser (${e.message})`);
+    return {};
+  }
+
+  /* ── FOUR HULLS AT ONCE, NOT ONE AFTER ANOTHER ─────────────────────────
+   *
+   * This was a `for … await`, inherited from `MazeAssets.js` — where it is
+   * correct, because that manifest holds ONE 12 KB prop. Here it is four files
+   * totalling 1,188,228 bytes on `DockWorld.build`'s awaited critical path, so
+   * the inherited shape is a 100x amplification rather than a like-for-like
+   * copy. Measured in the live page against this repo's dev server: the four
+   * fetches take 222 ms serially and 107 ms in parallel on a zero-latency
+   * loopback, and every extra millisecond of real RTT is paid three more times
+   * by the serial arm.
+   *
+   * Each arm keeps its OWN try/catch and its own `warnOnce`, so one 404 still
+   * costs exactly one hull and one warning — `Promise.all` never sees a
+   * rejection because none escapes. */
+  await Promise.all(entries.map(async (entry) => {
     if (entry.kind !== 'geometry') {
       warnOnce(`kind:${entry.id}`, `asset '${entry.id}' has unhandled kind '${entry.kind}'`);
-      continue;
+      return;
     }
     try {
-      const res = await fetch(dir + entry.file);
+      const res = await fetch(dir + entry.file, { signal: timeoutSignal() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = await res.arrayBuffer();
-      if (!loader) {
-        const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
-        loader = new GLTFLoader();
-      }
       const gltf = await loader.parseAsync(buf, dir);
       const parts = namedParts(gltf, entry.id);
       if (!parts.length) throw new Error('no usable mesh in scene');
@@ -213,7 +267,7 @@ async function loadAll() {
     } catch (e) {
       warnOnce(`asset:${entry.id}`, `could not load asset '${entry.id}' (${entry.file}: ${e.message})`);
     }
-  }
+  }));
   return out;
 }
 

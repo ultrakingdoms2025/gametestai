@@ -65,6 +65,130 @@ function berthPoint(b, lx, ly, lz) {
 }
 
 /**
+ * The frame this file reasons about when it says "fills the frame".
+ *
+ * The canvas is whatever the reviewer's window is; 16:9 is the shape every
+ * screenshot in this project has been taken at and the shape
+ * `harness-framings.test.mjs` re-derives coverage against, so the two agree.
+ */
+export const FRAME_ASPECT = 16 / 9;
+
+/**
+ * How much of the frame a hull framing puts its subject across, on the worse
+ * of the two axes.
+ *
+ * 0.88 rather than 1.0 so the extremities — a fin tip, the Dray's derrick head
+ * — sit inside the frame with a margin instead of touching the edge, which is
+ * what a photographer would do and what makes a silhouette legible. Fitted
+ * against the hull's PLAN box; `harness-framings.test.mjs` then holds the
+ * DRAWN hull to a floor well under it, because drawn dressing can exceed the
+ * plan and a ceiling would be a false failure.
+ */
+const FRAME_TARGET = 0.88;
+
+/**
+ * Where a world point lands in normalised device coordinates, for a camera at
+ * `eye` looking at `at`. ±1 is the edge of frame on each axis.
+ *
+ * Hand-rolled rather than borrowed from a `THREE.PerspectiveCamera` so that the
+ * FRAMING TABLE can be computed at module load, in Node, with no renderer and
+ * no DOM — which is what lets the test assert coverage on the same arithmetic
+ * the harness used to choose the camera.
+ *
+ * @returns {[number, number, number]} x, y, and camera-space depth (negative
+ *   means the point is behind the camera).
+ */
+function ndcOf(p, eye, at, fovDeg, aspect = FRAME_ASPECT) {
+  let fx = at[0] - eye[0], fy = at[1] - eye[1], fz = at[2] - eye[2];
+  const fl = Math.hypot(fx, fy, fz) || 1;
+  fx /= fl; fy /= fl; fz /= fl;
+  // right = normalise(forward x worldUp); worldUp is +Y, so this collapses.
+  let rx = -fz, rz = fx;
+  const rl = Math.hypot(rx, rz) || 1;
+  rx /= rl; rz /= rl;
+  // up = right x forward
+  const ux = -rz * fy, uy = rz * fx - rx * fz, uz = rx * fy;
+  const dx = p[0] - eye[0], dy = p[1] - eye[1], dz = p[2] - eye[2];
+  const cz = dx * fx + dy * fy + dz * fz;
+  if (cz <= 1e-6) return [0, 0, cz];
+  const cx = dx * rx + dz * rz;
+  const cy = dx * ux + dy * uy + dz * uz;
+  const t = Math.tan((fovDeg * Math.PI) / 360);
+  return [cx / (cz * t * aspect), cy / (cz * t), cz];
+}
+
+/**
+ * How much of the frame a set of world points covers, as a fraction per axis.
+ * 1.0 is edge to edge; over 1.0 is cropped.
+ */
+export function frameCoverage(points, eye, at, fovDeg, aspect = FRAME_ASPECT) {
+  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+  for (const p of points) {
+    const [x, y, z] = ndcOf(p, eye, at, fovDeg, aspect);
+    if (z <= 1e-6) return { w: Infinity, h: Infinity };
+    if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+    if (y < mny) mny = y; if (y > mxy) mxy = y;
+  }
+  return { w: (mxx - mnx) / 2, h: (mxy - mny) / 2 };
+}
+
+/**
+ * The extremities of a hull, read out of its own `HullPlan` entry.
+ *
+ * ── WHY THIS IS A WALK AND NOT THREE FIELD READS ─────────────────────────
+ * The obvious box is `ledge.outer` by `z0..z1` by `spine.y`, and it is wrong
+ * by a factor of two on two of the three hulls. The Pike's plan half-beam is
+ * 2.35 and she is 5.60 across her wings; the Kestrel's is 2.30 and she is 4.73
+ * across her nacelles; the Dray's crown is 6.54 and her derrick head is at
+ * 12.20. A framing fitted to the narrow box walks the camera inside the ship.
+ *
+ * So every nested plan record is walked and every field whose NAME says which
+ * axis it is on contributes. That is mechanical, so it keeps tracking the hull
+ * when a hull grows a part, which is exactly the drift that put the old typed
+ * framings on the shop floor. It over-includes rather than under-includes —
+ * the yard's own brow and the Pike's scaffold are in these numbers and they
+ * are in the shot, because this framing photographs a hull IN ITS BERTH.
+ *
+ * @returns {{hw:number, top:number, z0:number, z1:number}} hull-local
+ */
+function planExtents(H) {
+  let hw = 0, top = 0, z0 = 0, z1 = 0;
+  const X = ['hw', 'outer', 'x0', 'x1', 'lx', 'headX', 'mastX', 'width', 'deckX0', 'deckX1'];
+  const Y = ['y', 'y0', 'y1', 'top', 'ceilY', 'headY', 'heelY', 'mastTop', 'tipY', 'rise'];
+  const Z = ['z', 'z0', 'z1', 'lz', 'mastZ', 'tipZ', 'footZ', 'deckZ0', 'deckZ1'];
+  const eat = (o, depth) => {
+    if (!o || typeof o !== 'object' || depth > 2) return;
+    for (const k in o) {
+      const v = o[k];
+      if (v && typeof v === 'object') { eat(v, depth + 1); continue; }
+      if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+      if (X.includes(k)) hw = Math.max(hw, Math.abs(v));
+      else if (Y.includes(k)) top = Math.max(top, v);
+      else if (Z.includes(k)) { z0 = Math.min(z0, v); z1 = Math.max(z1, v); }
+    }
+  };
+  eat(H, 0);
+  return { hw, top, z0, z1 };
+}
+
+/**
+ * The eight corners of a hull's extremity box, in world space.
+ *
+ * The PLAN, not the drawn geometry: this runs at module load with no world
+ * built and no renderer, which is what lets `harness-framings.test.mjs` check
+ * the same arithmetic under `node --test`.
+ */
+function hullCorners(b, e) {
+  const out = [];
+  for (const lx of [-e.hw, e.hw]) {
+    for (const ly of [Math.min(0, -0.6), e.top]) {
+      for (const lz of [e.z0, e.z1]) out.push(berthPoint(b, lx, ly, lz));
+    }
+  }
+  return out;
+}
+
+/**
  * Two framings for one berthed hull: a three-quarter from the apron side, and
  * one standing inside its largest compartment.
  *
@@ -86,24 +210,75 @@ function berthViews(b, H) {
   const al = Math.hypot(ax, az) || 1;
   const ux = ax / al;
   const uz = az / al;
-  /* Along the hull, so the shot is a three-quarter and not a flat broadside. */
-  const lx = -uz;
-  const lz = ux;
-  /* CLOSE AND LOW, because the question this framing answers is "does that read
-   * as a spacecraft" and the answer is decided by the silhouette against the
-   * sky. Driven and photographed: at `hw + 13` and two thirds of the way up the
-   * spine the hull was a dark structure in the middle of a lit pier, and the
-   * pier was the subject. At `hw + 8`, with the camera at chest height on the
-   * apron, the hull fills the frame and the sky is behind it. */
-  const stand = b.hw + 8;
-  const along = b.hd * 0.85;
-  const crown = b.cradleTop + (H.spine?.y ?? 5);
+  /* Along the hull, so the shot is a three-quarter and not a flat broadside —
+   * and specifically along the hull's OWN NOSE, `berthPoint`'s +Z. Taken as a
+   * 90-degree turn off the apron bearing it landed on whichever quarter that
+   * happened to give, which for the Kestrel was ASTERN: the shot showed a
+   * transom, two nacelles and no nose at all, and the nose is the single thing
+   * in a silhouette that says "spacecraft". */
+  const lx = Math.sin(b.yaw);
+  const lz = Math.cos(b.yaw);
+  /* ── THE LENS, AND THE CLAIM THAT WAS NOT A MEASUREMENT ─────────────────
+   *
+   * What stood here said, as a measured fact: "At `hw + 8`, with the camera at
+   * chest height on the apron, the hull fills the frame and the sky is behind
+   * it." It does not. Driven live and the hull's own bounding box projected
+   * through the camera the harness actually sets:
+   *
+   *   kestrel   camera (-51.0, 2.9, -132.8)  fov 74  19.8 m off a 6.8 m hull
+   *                                          -> 33.3% of frame width, 36.9% of height
+   *   pike                                   -> 45.7% x  53.3%
+   *   dray                                   -> 63.5% x 182.8%   (mast out of shot)
+   *
+   * The rendered kestrel row is a lamp-lit pier with a small dark lump behind
+   * a gantry column, and `harness-framings.test.mjs` passed it green — because
+   * its ray hit `hatchleaf:dock_kestrel_hatch` at 17 m and a hatch leaf is
+   * "something". A framing that shows 30% ship is the wrong instrument for the
+   * one question this drop exists to answer, and three art reviews were taken
+   * through it.
+   *
+   * WHAT IT IS NOW. The stand-off is SOLVED rather than guessed. The hull's
+   * own published box — beam, walked crown, length, from `HullPlan`, not the
+   * berth reservation — is projected through the candidate camera and the
+   * distance is bisected until the box covers {@link FRAME_TARGET} of the
+   * frame on its worst axis. A closed-form fit was tried first and is wrong by
+   * a factor of two on these subjects: at 15 m from a 15 m hull the NEAR
+   * corner projects far larger than the bounding sphere predicts, and the
+   * three hulls came out at 111%, 148% and 184% of frame from one constant.
+   * Bisection has no such blind spot and needs no per-hull tuning, which is
+   * the property that stops this table going stale the next time a hull
+   * changes shape.
+   *
+   * The camera STAYS at chest height on the apron, which was the one good
+   * instinct in the old row: the question is what a player sees walking up to
+   * the ship, and a hero shot from above answers a different one.
+   */
+  const ext = planExtents(H);
+  const FOV = 46;
+  const corners = hullCorners(b, ext);
+  const eyeY = b.cradleTop + 1.7;
+  const at = [b.x, b.cradleTop + ext.top * 0.42, b.z];
+  /* Out from the flank and along the hull, normalised, so the shot is a
+   * three-quarter — the angle a silhouette is read at — not a broadside. */
+  const kOut = 0.82 / Math.hypot(0.82, 0.57);
+  const kAlong = 0.57 / Math.hypot(0.82, 0.57);
+  const eyeAt = (d) => [b.x + (ux * kOut + lx * kAlong) * d, eyeY, b.z + (uz * kOut + lz * kAlong) * d];
+  let lo = 4, hi = 240;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    const c = frameCoverage(corners, eyeAt(mid), at, FOV);
+    if (Math.max(c.w, c.h) > FRAME_TARGET) lo = mid; else hi = mid;
+  }
+  const dist = (lo + hi) / 2;
   out.push({
     name: b.id,
-    pos: [b.x + ux * stand + lx * along, b.cradleTop + 1.7, b.z + uz * stand + lz * along],
-    look: [b.x, b.cradleTop + (H.ledge?.y ?? 3) * 0.55, b.z],
-    fov: 74,
-    subject: stand + b.hw,
+    pos: eyeAt(dist),
+    look: at,
+    fov: FOV,
+    subject: dist + ext.hw,
+    /* The framing's own promise, for `harness-framings.test.mjs` to hold it
+     * to against the DRAWN hull rather than against this box. */
+    fills: b.id,
   });
   /* Inside. The largest declared compartment, standing at eye height on its
    * own sole and looking down its own length - so the framing is bounded by

@@ -468,6 +468,64 @@ test('a manifest entry whose file never arrives leaves the map empty', async () 
   }
 });
 
+test('the four hulls are fetched at once, and every request can be abandoned', async () => {
+  /* ═══════════════════════════════════════════════════════════════════════
+   *  TWO PROPERTIES OF THE SAME LOOP, AND BOTH WERE WRONG
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * 1. IT WAS SERIAL. `for (const entry of entries) { await fetch(...) }`,
+   *    inherited from `MazeAssets.js` — where it is right, because that
+   *    manifest holds ONE 12 KB prop. Here it is four files totalling
+   *    1,188,228 bytes on `DockWorld.build`'s awaited critical path, so the
+   *    inherited shape is a 100x amplification rather than a copy. Measured in
+   *    the live page against this repo's dev server: 222 ms serial, 107 ms
+   *    parallel on a ZERO-latency loopback, and every millisecond of real RTT
+   *    is paid three extra times by the serial arm.
+   *
+   * 2. NOTHING COULD BE ABANDONED. The header promises "every failure path
+   *    resolves". A stall is not a failure path: `fetch` never settles,
+   *    `loadAll` never returns, and the player sits on a loading screen with a
+   *    working procedural fallback one `catch` away. Every request now carries
+   *    an `AbortSignal` with a timeout, which turns the stall into the error
+   *    the existing `catch` already degrades from.
+   *
+   * Driven, not grepped: the stub counts how many hull fetches are in flight
+   * at once and records the options it was handed. Peak in-flight was 1 before
+   * and must be the whole manifest now.
+   */
+  ASSETS.resetShipAssets();
+  const realFetch = globalThis.fetch;
+  const hulls = MANIFEST.assets.filter((a) => a.kind === 'geometry');
+  let live = 0, peak = 0;
+  const signals = [];
+  globalThis.fetch = async (url, opts) => {
+    signals.push(opts?.signal ?? null);
+    if (String(url).endsWith('manifest.json')) return { ok: true, json: async () => MANIFEST };
+    live++;
+    peak = Math.max(peak, live);
+    /* Two macrotask hops, so a serial loop cannot accidentally overlap: each
+     * arm has to be started before any of them finishes for `peak` to rise. */
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    live--;
+    return { ok: false, status: 503 };
+  };
+  try {
+    await ASSETS.loadShipAssets();
+    assert.equal(peak, hulls.length,
+      `only ${peak} of the ${hulls.length} hull files were ever in flight together - the loader is serialising `
+      + `${(hulls.reduce((n, a) => n + a.bytes, 0) / 1024).toFixed(0)} KB on the yard's critical path`);
+    assert.equal(signals.length, hulls.length + 1, 'the manifest and every hull must be fetched exactly once');
+    const naked = signals.filter((s) => !s || typeof s.aborted !== 'boolean');
+    assert.equal(naked.length, 0,
+      `${naked.length} of ${signals.length} requests carried no AbortSignal - a stalled connection would hold `
+      + 'the world build open for ever, and "every failure path resolves" would be false');
+  } finally {
+    globalThis.fetch = realFetch;
+    ASSETS.resetShipAssets();
+  }
+});
+
 test('a missing manifest is not an error either', async () => {
   ASSETS.resetShipAssets();
   const realFetch = globalThis.fetch;

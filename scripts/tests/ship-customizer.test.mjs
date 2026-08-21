@@ -69,8 +69,20 @@ test('every fitted hull sells slots and stats, and the hulk sells neither', () =
     assert.ok(SHIP_STATS[id]?.length === 4, `${id} sells ${SHIP_STATS[id]?.length ?? 0} stats`);
     assert.ok(SHIP_BASE_STATS[id], `${id} publishes no base bias, so every hull starts identical`);
   }
-  assert.ok(!SHIP_SLOTS.bastion, 'the Bastion sells livery slots; she is a hulk with her frames open');
-  assert.ok(!SHIP_STATS.bastion, 'the Bastion sells upgrade tiers');
+  /* DECLARED AND EMPTY, not absent — and the difference is the whole defect.
+   *
+   * These two lines used to read `assert.ok(!SHIP_SLOTS.bastion)`, i.e. they
+   * asserted the tables were MISSING. `ShipRegistry._knownSlot`/`_knownStat`
+   * treat a missing table as "this hull is mid-migration, accept everything",
+   * so what those assertions actually pinned was the opposite of their own
+   * message: every slot and every stat was known for the hulk, `setLivery` and
+   * `grantPower` merged, stored, emitted and persisted them, and nothing
+   * applied them because `_ships` has no Bastion. A test that could not fail
+   * while stating the thing it was there to protect. */
+  assert.deepEqual(SHIP_SLOTS.bastion, [],
+    'the Bastion must DECLARE an empty slot table; absent means "accept every slot"');
+  assert.deepEqual(SHIP_STATS.bastion, [],
+    'the Bastion must DECLARE an empty stat table; absent means "sell every stat"');
   assert.deepEqual([...SHIP_ORDER], [...WALKABLE],
     'the menu order and the walkable set have drifted apart');
 });
@@ -494,6 +506,47 @@ test('grantPower refuses a stat the hull does not sell, and sellsPower says so f
   reg.grantPower('kestrel', 'power', 2);
   reg.grantPower('kestrel', 'power', 1);
   assert.deepEqual(reg.getPowers('kestrel'), { power: 2 }, 'a lower tier overwrote a higher one');
+});
+
+test('the hulk takes no paint and no credits, and does not persist either', () => {
+  /* THE DEFECT, MEASURED IN THE LIVE YARD BEFORE THE FIX.
+   *
+   * `SHIP_SLOTS`/`SHIP_STATS` had no `bastion` entry at all, and a hull with no
+   * table is treated as mid-migration and accepts everything. The Bastion is
+   * not mid-migration — she is a hulk with her frames open and `_ships` never
+   * holds her, so `applyCustomization` and `applyPowers` are never reached. The
+   * result, driven in the browser:
+   *
+   *   reg.setLivery('bastion', { hull: { color: '#ff00ff' } })
+   *     -> serialize().liveries === { bastion: { hull: { color: 16711935 } } }
+   *     -> the Bastion's five material colours unchanged, byte for byte
+   *   reg.sellsPower('bastion', 'power') === true
+   *     -> the marketplace would sell a refit for a hull that cannot fit one
+   *
+   * Both halves are asserted here rather than only the table shape, because
+   * the table shape is what the old assertion checked and it checked it
+   * backwards. `nosuchship` keeps the mid-migration escape hatch proven in the
+   * same breath, so this cannot be "fixed" by deleting that behaviour. */
+  const { reg, events } = harnessRegistry();
+  const liveries = () => events.filter((e) => e.name === 'ship:livery').length;
+
+  reg.setLivery('bastion', { hull: { color: 0xff00ff }, trim: { color: 0x00ff00 } });
+  assert.deepEqual(reg.getLivery('bastion'), {}, 'the hulk stored a livery nothing can apply');
+  assert.equal(liveries(), 0, 'painting the hulk emitted ship:livery');
+  assert.deepEqual(reg.serialize().liveries, {}, 'the hulk wrote a livery into the save');
+
+  assert.equal(reg.sellsPower('bastion', 'power'), false, 'the marketplace would sell the hulk a refit');
+  reg.grantPower('bastion', 'power', 3);
+  assert.deepEqual(reg.getPowers('bastion'), {}, 'the hulk banked an upgrade tier');
+  assert.deepEqual(reg.serialize().powers, {}, 'the hulk wrote a power tier into the save');
+
+  // A save that already carries one is filtered on the way back in.
+  reg.deserialize({ liveries: { bastion: { hull: { color: 0xff00ff } } }, powers: { bastion: { power: 2 } } });
+  assert.deepEqual(reg.getLivery('bastion'), {}, 'a stale hulk livery survived deserialize');
+  assert.deepEqual(reg.getPowers('bastion'), {}, 'a stale hulk power tier survived deserialize');
+
+  // ...and the mid-migration escape hatch is still open for a hull with no table.
+  assert.equal(reg.sellsPower('nosuchship', 'power'), true);
 });
 
 test('applyScheme refuses before it paints', () => {

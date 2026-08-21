@@ -99,11 +99,32 @@ function slotsFor(id) {
   ]);
 }
 
-/** Livery slots per hull. Five each; the fifth is what the hull is FOR. */
+/**
+ * Livery slots per hull. Five each; the fifth is what the hull is FOR.
+ *
+ * ── THE BASTION IS PRESENT, AND EMPTY, AND THAT IS THE FIX ────────────────
+ * `ShipRegistry._knownSlot` returns TRUE for a hull with no table at all —
+ * deliberately, so a hull committed before its tables keeps working. The
+ * Bastion is not mid-migration: it is a hulk that sells nothing, for ever. It
+ * was ABSENT here, so every slot was "known" for it, and `setLivery('bastion',
+ * …)` merged the patch, stored it, emitted `ship:livery` and wrote it into the
+ * save — while `_ships.get('bastion')` is undefined, so `applyCustomization`
+ * was never called and not one pixel moved. Verified live in the yard:
+ *
+ *   setLivery('bastion', { hull: { color: '#ff00ff' } })
+ *   -> serialize() === {"liveries":{"bastion":{"hull":{"color":16711935}}}, …}
+ *   -> the Bastion's five material colours byte-identical to before
+ *
+ * That is precisely the "purchase consumed with nowhere to land" failure
+ * `applyScheme` and `MountSkins.js:26-28` document, one hull over. An empty
+ * FROZEN array is truthy, so `[].some(...)` is false and every slot is now
+ * refused — in `setLivery` and in `deserialize`, which shares the same filter.
+ */
 export const SHIP_SLOTS = Object.freeze({
   kestrel: slotsFor('kestrel'),
   dray: slotsFor('dray'),
   pike: slotsFor('pike'),
+  bastion: Object.freeze([]),
 });
 
 /**
@@ -128,6 +149,12 @@ export const SHIP_STATS = Object.freeze({
   kestrel: Object.freeze(['power', 'shield', 'fire', 'hold']),
   dray: Object.freeze(['power', 'shield', 'fire', 'hold']),
   pike: Object.freeze(['power', 'shield', 'fire', 'hold']),
+  /* The stat half of the same defect, and the worse half, because this one is
+   * wired to a till: `sellsPower('bastion', 'power')` returned TRUE, so the
+   * marketplace would have taken the credits and `grantPower` would have
+   * banked `{"bastion":{"power":3}}` into the save with no `Ship` to apply it
+   * to. Measured in the yard before the fix. See the note on `SHIP_SLOTS`. */
+  bastion: Object.freeze([]),
 });
 
 /** Per-tier effect. `unit` is UI copy and appears verbatim in the panel. */

@@ -2049,6 +2049,11 @@ export class DockWorld extends World {
          * be a lift whose collider and whose car disagree at 41 m. */
         group: this.group,
         x: berth.x, y: berth.cradleTop, z: berth.z, yaw: berth.yaw,
+        /* This IS the berth, so the berth's own fittings belong on it: the
+         * stencil, the brow, the Pike's scaffold. `ShipModel` passes false and
+         * gets the ship without the yard around it. Written out rather than
+         * left to the default so the two call sites read as a pair. */
+        yard: true,
       });
       const side = boardSide(berth);
 

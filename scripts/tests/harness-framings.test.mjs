@@ -5,7 +5,7 @@ import { rig, goto, domHarness } from './_flightrig.mjs';
 import { SPACE_BODIES } from '../../src/worlds/space/Bodies.js';
 
 domHarness();
-const { VIEWS } = await import('../../src/dev/Harness.js');
+const { VIEWS, frameCoverage } = await import('../../src/dev/Harness.js');
 
 /**
  * DOES EVERY HARNESS FRAMING LOOK AT ANYTHING?
@@ -128,6 +128,86 @@ for (const worldId of ['dock', 'cinder']) {
       `only ${solid} of ${rows.length} framings in "${worldId}" met any geometry at all - the probe is blind\n  ${t}`);
   });
 }
+
+/** The least of the frame a hull framing may put its subject across, per axis. */
+const FILL_FLOOR = 0.45;
+
+test('a hull framing puts the hull across the frame, not a corner of it', async () => {
+  /* ═══════════════════════════════════════════════════════════════════════
+   *  THE HOLE THIS CLOSES, AND IT IS THIS FILE'S OWN FAILURE MODE
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * Everything above asks "does a ray down the view axis meet something?".
+   * That is a test of AIM and it cannot see SIZE, so the `kestrel` framing
+   * passed green for three art reviews while rendering a lamp-lit pier with a
+   * small dark lump behind a gantry column. Its ray met
+   * `hatchleaf:dock_kestrel_hatch` at 17 m against a declared subject of 26,
+   * which is a hatch leaf, which is "something".
+   *
+   * Measured through the live harness at the time, by projecting each hull
+   * group's bounding box through the camera the harness actually sets:
+   *
+   *   kestrel  33.3% of frame width  x  36.9% of height   (fov 74, 19.8 m off)
+   *   pike     45.7%                 x  53.3%
+   *   dray     63.5%                 x 182.8%             (mast out of shot)
+   *
+   * A framing that shows 30% ship is the wrong instrument for "does that read
+   * as a spacecraft", and it is the instrument three reviews used.
+   *
+   * ── Why a FLOOR and no ceiling ─────────────────────────────────────────
+   * The framing is fitted to the hull's PLAN box; the DRAWN group carries
+   * things the plan does not name — the Dray's brow runs 13.6 m out to her
+   * apron side against a 6.4 m plan half-beam — so a ceiling would fail on
+   * dressing rather than on framing. Cropping the end of a gangway is fine;
+   * showing a third of a ship is not.
+   *
+   * ── Why this cannot be made green by deleting the hulls ────────────────
+   * The subject group has to exist and carry triangles, and the count of
+   * framings checked is asserted, so a hull that stopped being built fails
+   * here rather than passing vacuously. */
+  const r = await rig();
+  await goto(r, 'dock');
+  const group = r.wm.active?.group;
+  assert.ok(group, 'the dock world published no group to measure');
+
+  const bboxOf = (name) => {
+    let target = null;
+    group.traverse((o) => { if (o.name === name) target = o; });
+    if (!target) return null;
+    target.updateWorldMatrix(true, true);
+    const box = new THREE.Box3();
+    let meshes = 0;
+    target.traverse((o) => {
+      if (!o.isMesh || !o.geometry) return;
+      meshes++;
+      o.geometry.computeBoundingBox();
+      box.union(o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld));
+    });
+    return meshes ? box : null;
+  };
+
+  const rows = [];
+  const bad = [];
+  for (const v of VIEWS.dock ?? []) {
+    if (!v.fills) continue;
+    const box = bboxOf(`yard:ship-${v.fills}`);
+    assert.ok(box, `no drawn hull group "yard:ship-${v.fills}" to frame`);
+    const pts = [];
+    for (const x of [box.min.x, box.max.x]) {
+      for (const y of [box.min.y, box.max.y]) {
+        for (const z of [box.min.z, box.max.z]) pts.push([x, y, z]);
+      }
+    }
+    const c = frameCoverage(pts, v.pos, v.look, v.fov);
+    rows.push(`${v.name.padEnd(10)} ${(c.w * 100).toFixed(1).padStart(6)}% wide  ${(c.h * 100).toFixed(1).padStart(6)}% high`);
+    if (!(c.w >= FILL_FLOOR) || !(c.h >= FILL_FLOOR)) {
+      bad.push(`${v.name}: the hull covers ${(c.w * 100).toFixed(1)}% x ${(c.h * 100).toFixed(1)}% of the frame, `
+        + `under the ${(FILL_FLOOR * 100).toFixed(0)}% floor - this framing photographs the yard, not the ship`);
+    }
+  }
+  assert.equal(rows.length, 3, `${rows.length} hull framings declare \`fills\`; there are three flyable hulls`);
+  assert.deepEqual(bad, [], `${bad.join('\n  ')}\n\n  ${rows.join('\n  ')}`);
+});
 
 test('every space bearing framing actually has its body in shot', async () => {
   /* The bearing rows are aimed at planets 60-640 km away that `Backdrop` draws

@@ -157,6 +157,37 @@ export const CONFIG = {
     friction: 10,
     jumpVelocity: 6.4,
     gravity: -22,
+    /**
+     * The real-world acceleration that `gravity` above is this game's rendering
+     * OF, in m/s². It is NOT a second gravity and nothing integrates it.
+     *
+     * ── Why a per-planet gravity needs this constant to mean anything ──────
+     * Nine planets publish a `gravity` in honest m/s²: Tessera 1.62, Verdigris
+     * 10.10, Cinder 8.44 and so on. The player integrates -22. Those two
+     * numbers are not on the same scale and never were: -22 is 2.24 real g,
+     * chosen because a 0.93 m jump that lands in 0.58 s reads as crisp and a
+     * 9.81 one reads as a moon jump. Every hand-built world - station,
+     * medieval, citadel, sports, race, maze, dock - is authored against it and
+     * is fiction set at one Earth gravity.
+     *
+     * So -22 IS one g, in this game. Feeding a descriptor's 10.10 straight into
+     * the player integrator would not make Verdigris "the heaviest world in the
+     * system"; it would make the heaviest planet in the system LESS than half
+     * the weight of a shopping concourse, and Tessera's sixth-g moon would come
+     * out at 1.62/22 = a fourteenth. The descriptor's number is a RATIO to
+     * Earth, and this constant is what turns it into one:
+     *
+     *     player gravity on a planet = gravity * (planet.gravity / 9.81)
+     *
+     * which puts Verdigris at -22.65 (a shade heavier than every other world in
+     * the game, exactly as its descriptor claims) and Tessera at -3.63 (a sixth
+     * of it, exactly as ITS descriptor claims). A world that publishes 9.81
+     * gets -22 and is indistinguishable from the ones that publish nothing.
+     *
+     * @see ../player/Player.js `setWorldGravity`
+     * @see ../worlds/WorldRules.js `worldGravity`
+     */
+    gravityReference: 9.81,
     maxHealth: 100,
     healthRegenDelay: 6.0,
     healthRegenRate: 8.0,

@@ -239,16 +239,49 @@ test('every space bearing framing actually has its body in shot', async () => {
    * bodies are in five genuinely different directions, which is the property
    * the player asked for by name and the reason there are five framings rather
    * than one. */
+  /* A SATELLITE IS EXEMPT FROM ITS OWN PRIMARY, and nothing else is.
+   *
+   * A moon sits close to the planet it orbits because that is what a moon is,
+   * and the framing that shows Lathe with Ceraunus and its rings behind it is
+   * the framing you want - it is the reason to fly out there at all. So a body
+   * that declares `orbits` is exempt from that one pair.
+   *
+   * It is NOT exempt from everything else, and the pair still has to be
+   * separable: a satellite that sat on top of its primary would be a body you
+   * could never frame alone. Hence the floor below rather than a skip. */
+  const primaryOf = new Map(SPACE_BODIES.filter((b) => b.orbits).map((b) => [b.id, b.orbits]));
+  const isSatellitePair = (a, b) => primaryOf.get(a.id) === b.id || primaryOf.get(b.id) === a.id;
+
   let minSep = 180;
+  let minPair = '';
+  let minMoonSep = 180;
   for (let i = 0; i < SPACE_BODIES.length; i++) {
     for (let j = i + 1; j < SPACE_BODIES.length; j++) {
-      const a = new THREE.Vector3(...SPACE_BODIES[i].position).normalize();
-      const c = new THREE.Vector3(...SPACE_BODIES[j].position).normalize();
-      minSep = Math.min(minSep, THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(a.dot(c), -1, 1))));
+      const A = SPACE_BODIES[i];
+      const B = SPACE_BODIES[j];
+      const a = new THREE.Vector3(...A.position).normalize();
+      const c = new THREE.Vector3(...B.position).normalize();
+      const d = THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(a.dot(c), -1, 1)));
+      if (isSatellitePair(A, B)) { minMoonSep = Math.min(minMoonSep, d); continue; }
+      if (d < minSep) { minSep = d; minPair = `${A.name}/${B.name}`; }
     }
   }
   assert.ok(minSep > 25,
-    `the two closest bodies are ${minSep.toFixed(1)} deg apart in the sky; two framings would show the same thing`);
+    `the two closest bodies are ${minSep.toFixed(1)} deg apart in the sky (${minPair}); two framings would show the same thing`);
+
+  /* And the exemption is not a hole: a declared satellite must still be far
+   * enough from its primary to be framed on its own. 8 degrees at the game's
+   * 75-degree FOV is a tenth of the screen height apart, which is the least
+   * that reads as two objects rather than one. */
+  for (const b of SPACE_BODIES) {
+    if (!b.orbits) continue;
+    const p = SPACE_BODIES.find((x) => x.id === b.orbits);
+    assert.ok(p, `${b.name} declares it orbits "${b.orbits}", which is not a body`);
+    const a = new THREE.Vector3(...b.position).normalize();
+    const c = new THREE.Vector3(...p.position).normalize();
+    const d = THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(a.dot(c), -1, 1)));
+    assert.ok(d > 8, `${b.name} is only ${d.toFixed(1)} deg from ${p.name}; it can never be framed alone`);
+  }
 });
 
 test('every framing declares what it is looking at, and aims somewhere else', () => {

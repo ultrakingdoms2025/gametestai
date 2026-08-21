@@ -364,10 +364,28 @@ test('the atmosphere phase is REACHABLE, with a floor on how much air you fly', 
    * seconds of glow - the shortest transition that reads as one rather than
    * as a cut. Ceiling by ablation: more than half the air must remain BELOW
    * the handoff, or space is doing the planet's job. */
-  for (const b of landableBodies()) {
+  /* AIRLESS BODIES ARE A CATEGORY, NOT AN EXEMPTION.
+   *
+   * Phase 1 had one landable body and it had air, so this case asserted air of
+   * everything landable. Phase 2 lands Tessera and Lathe, which have none - and
+   * "no air" is a real, visible property of those two worlds (black sky at
+   * noon, no haze, no fill in the shadows), not a shortcut.
+   *
+   * So the two cases are split and BOTH are asserted, rather than the airless
+   * one being skipped. A body that claims air must let you fly a real amount of
+   * it; a body that claims none must SKIP the atmosphere phase cleanly - which
+   * means the descent walks cruise -> approach -> handoff and `atmoDepth` never
+   * leaves 0. The failure this guards is the mirror of the original defect: not
+   * a phase that cannot be entered, but a phase entered with a negative depth,
+   * which is how a NaN gets into a shader uniform. */
+  const withAir = landableBodies().filter((b) => b.atmosphere > b.radius);
+  const airless = landableBodies().filter((b) => b.atmosphere <= b.radius);
+  assert.ok(withAir.length > 0, 'no landable body has any air at all');
+  assert.ok(airless.length > 0, 'the airless category has no members - delete it or fill it');
+
+  for (const b of withAir) {
     const air = b.atmosphere - b.radius;
     const flown = b.atmosphere - b.handoff;
-    assert.ok(air > 0, `${b.name} has no atmosphere to descend through`);
     assert.ok(
       flown >= 300,
       `${b.name}: only ${flown} m of air above the handoff (floor 300, air ${air})`
@@ -377,6 +395,35 @@ test('the atmosphere phase is REACHABLE, with a floor on how much air you fly', 
       `${b.name}: ${flown} m of ${air} m of air is flown in space - the planet should get most of it`
     );
     console.log(`   ${b.name}: ${air} m of air, handoff after ${flown} m of it`);
+  }
+
+  for (const b of airless) {
+    assert.equal(b.atmosphere, b.radius,
+      `${b.name} claims to be airless but its atmosphere radius is not its surface radius`);
+    assert.ok(b.handoff > b.radius,
+      `${b.name}: the handoff is at or under the surface, so the ship reaches the ground before the world does`);
+
+    /* Walk the real descent and prove the phase is skipped rather than
+     * entered badly. */
+    const len = Math.hypot(...b.position);
+    const u = b.position.map((v) => v / len);
+    const at = (alt) => {
+      const r = b.radius + alt;
+      return { x: b.position[0] - u[0] * r, y: b.position[1] - u[1] * r, z: b.position[2] - u[2] * r };
+    };
+    const handoffAlt = b.handoff - b.radius;
+    for (const alt of [b.radius * 8, b.radius * 2, handoffAlt + 1, handoffAlt - 1]) {
+      const st = approachState(at(alt));
+      assert.notEqual(st.phase, 'atmosphere',
+        `${b.name} has no air but reports phase 'atmosphere' at ${alt} m`);
+      assert.equal(st.atmoDepth, 0,
+        `${b.name} has no air but reports atmoDepth ${st.atmoDepth} at ${alt} m`);
+      assert.ok(Number.isFinite(st.atmoDepth) && Number.isFinite(st.altitude) && Number.isFinite(st.distance),
+        `${b.name}: a non-finite approach value at ${alt} m - this is how a NaN reaches a uniform`);
+    }
+    assert.equal(approachState(at(handoffAlt - 1)).shouldHandoff, true,
+      `${b.name}: inside the handoff radius and still not handing off`);
+    console.log(`   ${b.name}: airless, handoff ${handoffAlt} m up, atmosphere phase correctly skipped`);
   }
 });
 
@@ -391,7 +438,7 @@ test('approachState picks the nearest SURFACE, not the nearest centre', () => {
   // than Tessera's centre... no - confirm instead that surface ranking put
   // Tessera first while its centre distance is not the smallest coordinate.
   assert.ok(s.altitude > 0 && s.altitude < 500, `altitude ${s.altitude}`);
-  assert.equal(s.shouldHandoff, false, 'Tessera is not landable this phase');
+  assert.equal(s.shouldHandoff, true, 'Tessera is landable as of Phase 2 and this is inside its handoff');
 });
 
 test('a body with no handoff never claims one, however deep you go', () => {
@@ -417,17 +464,54 @@ test('approachState allocates nothing per call', () => {
 /* The published contract                                              */
 /* ------------------------------------------------------------------ */
 
-test('exactly one body is landable this phase, and it is the volcanic one', () => {
+test('ten bodies are landable, the volcanic one is still first, and the two that are not landable say why', () => {
+  /* Phase 1 asserted "exactly one, and it is Cinder". Phase 2 makes that ten, so
+   * the assertion moves from a COUNT to the two properties the count was really
+   * standing in for:
+   *
+   *  - Cinder is still `landable[0]`. That is the ablation guard on the ORDER of
+   *    `SPACE_BODIES`: new bodies are APPENDED, never prepended, and several
+   *    tests and save migrations index off that.
+   *  - Everything NOT landable is not landable for a stated reason. A body with
+   *    `handoff: 0` and no `surfaceWorld` is either deliberate scenery or a
+   *    planet somebody forgot to finish, and those two look identical from here.
+   *    Naming them is what makes the difference visible. */
   const landable = landableBodies();
-  assert.equal(landable.length, 1);
-  assert.equal(landable[0].id, 'cinder');
-  assert.equal(landable[0].kind, 'rock');
+  assert.equal(landable.length, 10, `${landable.length} landable bodies: ${landable.map((b) => b.id).join(', ')}`);
+  assert.equal(landable[0].id, 'cinder', 'Cinder must stay first - new bodies are appended, never prepended');
+
+  const scenery = SPACE_BODIES.filter((b) => !(b.handoff > 0 && b.surfaceWorld)).map((b) => b.id).sort();
+  assert.deepEqual(scenery, ['ceraunus', 'erenmark'],
+    'a body that is not landable must be one of the two that have a reason: a gas giant with no surface, and the star');
+
+  for (const b of landable) {
+    assert.ok(typeof b.surfaceWorld === 'string' && b.surfaceWorld.startsWith('planet:'),
+      `${b.name} is landable but its surfaceWorld is ${b.surfaceWorld}`);
+  }
 });
 
 test('a landable body carries a handoff radius above its surface', () => {
   for (const b of landableBodies()) {
     assert.ok(b.handoff > b.radius, `${b.name} hands off at or below its own surface`);
-    assert.ok(b.handoff <= b.atmosphere, `${b.name} hands off outside its own atmosphere`);
+
+    /* THE AIRLESS CASE INVERTS THIS, and it is not a loosening.
+     *
+     * For a body with air the handoff must sit INSIDE the atmosphere, or the
+     * surface world takes the ship before it has flown any of the air and the
+     * atmosphere phase is unreachable - the exact defect Cinder shipped with.
+     *
+     * For an airless body `atmosphere === radius`, so a handoff above the
+     * surface is necessarily above the atmosphere, and demanding otherwise
+     * would demand a handoff at or below the ground. The two cases want
+     * opposite inequalities against the same field because the field means
+     * something different when there is no air, so both are asserted rather
+     * than the airless one being skipped. */
+    if (b.atmosphere > b.radius) {
+      assert.ok(b.handoff <= b.atmosphere, `${b.name} has air but hands off outside it`);
+    } else {
+      assert.equal(b.atmosphere, b.radius, `${b.name} is neither airless nor has usable air`);
+      assert.ok(b.handoff > b.atmosphere, `${b.name} is airless, so its handoff must stand off the surface`);
+    }
   }
 });
 

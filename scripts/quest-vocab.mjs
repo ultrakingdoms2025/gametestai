@@ -910,7 +910,116 @@ const CAST_FALLBACK_THEME = /ROLE_CAST\[theme\]\s*\?\?\s*ROLE_CAST\.([a-z]+)/
 /* Worlds                                                                  */
 /* ---------------------------------------------------------------------- */
 
-const PLANET_BASE = /static\s+id\s*=\s*'([^']+)'/.exec(read('src/worlds/PlanetWorld.js'))?.[1] ?? 'planet';
+const PLANET_REGISTRY = 'src/worlds/planets/index.js';
+const PLANET_WORLD = 'src/worlds/PlanetWorld.js';
+
+/**
+ * THE PLANET SCRAPE, AND WHY IT SHOUTS.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * Everything from here to `planetFileFor` is a REGEX READING OF SOURCE, and
+ * every one of these readings used to degrade to "found nothing" instead of
+ * "stopped working". That distinction is the whole reason this block is
+ * commented at this length.
+ *
+ * A planet that this file cannot see is not merely absent from `VOCAB.worlds`.
+ * It is UN-CHECKED: `dock-registration.test.mjs`'s "no registered world boots
+ * into silence" iterates `Object.keys(VOCAB.worlds)`, so a planet the scrape
+ * drops is a planet nobody notices has no music; every quest-step world
+ * validation resolves against the same map, so a step naming that planet is
+ * neither accepted nor rejected - it is simply never asked about. The suite
+ * goes green with less in it. That is the precise failure this project keeps
+ * shipping, one level up: not content that is broken, content that is not
+ * looked at.
+ *
+ * There were FOUR ways to fall out of the old scrape without a word:
+ *
+ *   1. `PLANET_BASE` fell back to the string `'planet'` when it could not read
+ *      `static id` off `PlanetWorld.js`. The expansion below then looked up a
+ *      base world that did not exist, found nothing, and registered NO planets
+ *      at all - not one - while every other world carried on normally.
+ *   2. A literal key. `PLANETS = { glass: ICE }` matched no `[Binding.id]`, so
+ *      that planet vanished - and the registry's own docblock shows exactly
+ *      that form, so it was a trap the file set for its own readers.
+ *   3. An import the pattern did not admit - anything with a `/` in it, i.e.
+ *      any subfolder. `continue`, and that planet vanished.
+ *   4. A descriptor whose `id:` the pattern could not find, because it was not
+ *      the first key or was preceded by a line comment rather than a block
+ *      one. `if (id)`, and that planet vanished.
+ *
+ * (2), (3) and (4) are FIXED rather than reported, because the fix is cheaper
+ * than the rule: entries are followed by their VALUE binding, whatever the key
+ * looks like; the import is resolved relative to the registry the way the
+ * module system would; and the id is read out of the real
+ * `definePlanet({ … })` object by bracket matching rather than by hoping it
+ * comes first. A literal key is then CHECKED against the descriptor instead of
+ * being refused - `getPlanet` answers to the key while `PlanetWorld.of` stamps
+ * `static id` from the descriptor, so the two disagreeing is a planet the
+ * registry can find and the engine cannot, and THAT is worth a throw.
+ *
+ * (1), an entry shape that cannot be followed at all, and anything unreadable
+ * above it, THROW - because they are statements about shape that nothing else
+ * in the repo pins, and a wrong answer from them is indistinguishable from a
+ * correct one.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+function planetFail(rel, why) {
+  throw new Error(
+    `[quest-vocab] ${rel}: ${why} — the PLANETS scrape has stopped working. `
+    + 'Every planet it cannot read silently disappears from VOCAB.worlds, which '
+    + 'un-checks it in "no registered world boots into silence" and in every '
+    + 'quest-step world validation.'
+  );
+}
+
+/**
+ * The base world id the planets are expanded out of - `PlanetWorld`'s own
+ * `static id`. Scraped rather than typed because `buildWorlds` finds the base
+ * by that id and DELETES it; a mismatch is nine planets that never appear.
+ */
+const PLANET_BASE = (() => {
+  const m = /static\s+id\s*=\s*'([^']+)'/.exec(read(PLANET_WORLD));
+  if (!m) planetFail(PLANET_WORLD, "no `static id = '…'` on PlanetWorld");
+  return m[1];
+})();
+
+/**
+ * Split an object-literal body on its TOP-LEVEL commas, skipping brackets and
+ * strings. Used to enumerate `PLANETS`' entries and to find a descriptor's own
+ * `id` key without matching the `id` of a mineral nested three levels down.
+ * @param {string} body comment-stripped source between `{` and `}`
+ */
+function topLevelParts(body) {
+  const parts = [];
+  let depth = 0, quote = null, start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') { quote = c; continue; }
+    if (c === '{' || c === '[' || c === '(') { depth++; continue; }
+    if (c === '}' || c === ']' || c === ')') { depth--; continue; }
+    if (c === ',' && depth === 0) { parts.push(body.slice(start, i)); start = i + 1; }
+  }
+  parts.push(body.slice(start));
+  return parts.filter((p) => p.trim() !== '');
+}
+
+/** The body of the first `<head>{ … }` object in `src`, comments stripped. */
+function objectAfter(src, head) {
+  const m = head.exec(src);
+  if (!m) return null;
+  const open = src.indexOf('{', m.index + m[0].length - 1);
+  if (open < 0) return null;
+  const close = matchBracket(src, open);
+  if (close < 0) return null;
+  return stripComments(src.slice(open + 1, close));
+}
+
+let _planetEntries = null;
 
 /**
  * Every planet in `src/worlds/planets/index.js`, as `{ id, file }`.
@@ -918,40 +1027,104 @@ const PLANET_BASE = /static\s+id\s*=\s*'([^']+)'/.exec(read('src/worlds/PlanetWo
  * `PLANETS` is keyed by `[VOLCANIC.id]`, so the id is not written in the
  * registry at all - it lives in the descriptor. Follow the import to the
  * descriptor file and read it from `definePlanet`, which is the same single
- * source `PlanetWorld.of` stamps its subclass from.
+ * source `PlanetWorld.of` stamps its subclass from. That indirection is the
+ * point: one statement of a planet's id, in the file that defines the planet.
  *
- * `String.raw` on every pattern: these are regexes built from a binding name,
- * so they have to be strings rather than literals, and a backslash in an
+ * `String.raw` on every pattern built from a binding name: a backslash in an
  * ordinary template is an escape rather than a character.
  */
 function planetEntries() {
-  const src = read('src/worlds/planets/index.js');
-  const body = /PLANETS\s*=\s*Object\.freeze\(\{([\s\S]*?)\}\)/.exec(src)?.[1] ?? '';
-  const out = [];
-  for (const m of body.matchAll(/\[\s*([A-Za-z_$][\w$]*)\.id\s*\]/g)) {
-    const b = m[1];
-    const from = new RegExp(
-      String.raw`import\s*\{[^}]*\b${b}\b[^}]*\}\s*from\s*'\.\/([\w.-]+)'`
-    ).exec(src)?.[1];
-    if (!from) continue;
-    const file = `src/worlds/planets/${from}`;
-    const id = new RegExp(
-      String.raw`export\s+const\s+${b}\s*=\s*definePlanet\(\{\s*(?:\/\*[\s\S]*?\*\/\s*)?id:\s*'([^']+)'`
-    ).exec(read(file))?.[1];
-    if (id) out.push({ id, file });
+  if (_planetEntries) return _planetEntries;
+  const src = read(PLANET_REGISTRY);
+  const fail = (why) => planetFail(PLANET_REGISTRY, why);
+
+  const body = objectAfter(src, /export\s+const\s+PLANETS\s*=\s*Object\.freeze\s*\(\s*\{/);
+  if (body === null) {
+    fail('no readable `export const PLANETS = Object.freeze({ … })` — either the '
+      + 'declaration changed shape or its braces are unbalanced');
   }
+
+  const out = [];
+  for (const part of topLevelParts(body)) {
+    const raw = part.trim().replace(/\s+/g, ' ').slice(0, 70);
+    /* THE VALUE, not the key, is what this follows. Whatever the key is
+     * written as, the registered thing is a binding, and the binding is the
+     * only route to the file the id is declared in. */
+    const entry = /^\s*(\[\s*([A-Za-z_$][\w$]*)\s*\.\s*id\s*\]|'([\w$-]+)'|"([\w$-]+)"|([A-Za-z_$][\w$]*))\s*:\s*([A-Za-z_$][\w$]*)\s*$/
+      .exec(part);
+    if (!entry) {
+      fail(`the entry \`${raw}\` is neither \`[BINDING.id]: BINDING\` nor `
+        + '`key: BINDING`. A spread, a shorthand or an inline descriptor cannot be '
+        + 'followed to the file its `id` is declared in, so the planet would be '
+        + 'registered by the engine and invisible to every check that reads '
+        + 'VOCAB.worlds');
+    }
+    const b = entry[6];
+    /* `[X.id]: Y` — two different descriptors, one of them silently unused. */
+    if (entry[2] && entry[2] !== b) {
+      fail(`the entry \`${raw}\` keys \`${b}\` by \`${entry[2]}.id\` — two `
+        + 'different descriptors, and the engine would register the value while '
+        + '`getPlanet` answered to the key');
+    }
+    /* A literal key is ALLOWED - the module's own docblock shows one - but it
+     * is a second copy of an id that lives in the descriptor, so it is checked
+     * against the descriptor rather than trusted. `getPlanet` answers to this
+     * key while `PlanetWorld.of` stamps `static id` from the descriptor, so a
+     * disagreement is a planet the registry can find and the engine cannot. */
+    const literalKey = entry[3] ?? entry[4] ?? entry[5] ?? null;
+
+    /* Any relative specifier, resolved the way the module system would rather
+     * than by a pattern that admits only `'./Ice.js'`. */
+    const from = new RegExp(
+      String.raw`import\s*\{[^}]*\b${b}\b[^}]*\}\s*from\s*'(\.{1,2}/[\w./-]+)'`
+    ).exec(src)?.[1];
+    if (!from) fail(`\`${b}\` is registered but never imported from a relative path`);
+    const file = path.posix.normalize(path.posix.join('src/worlds/planets', from));
+    if (!existsSync(path.join(REPO_ROOT, file))) {
+      fail(`\`${b}\` is imported from '${from}', which resolves to ${file} — no such file`);
+    }
+
+    const dsrc = read(file);
+    const obj = objectAfter(dsrc, new RegExp(
+      String.raw`export\s+const\s+${b}\s*=\s*definePlanet\s*\(\s*\{`
+    ));
+    if (obj === null) {
+      planetFail(file, `no readable \`export const ${b} = definePlanet({ … })\``);
+    }
+    /* Top level only: every mineral and every prop field in a descriptor has an
+     * `id` of its own, and the first one down the file is not the planet's. */
+    const idPart = topLevelParts(obj).find((p) => /^\s*id\s*:/.test(p));
+    const id = idPart && /^\s*id\s*:\s*'([^']+)'/.exec(idPart)?.[1];
+    if (!id) planetFail(file, `\`${b}\` declares no top-level \`id: '…'\``);
+    if (literalKey !== null && literalKey !== id) {
+      fail(`the entry \`${raw}\` registers \`${b}\` under the key '${literalKey}', `
+        + `but ${file} declares \`id: '${id}'\`. \`PlanetWorld.of\` stamps the `
+        + `DESCRIPTOR's id, so the engine would register a world called '${id}' `
+        + `while \`getPlanet('${literalKey}')\` was the only way to look it up. `
+        + 'Write the key as `[' + b + '.id]` and it cannot happen');
+    }
+
+    /* The display name, off the SAME top-level object. Read with the id rather
+     * than by the first `name:` down the file, because every mineral and every
+     * landing site in a descriptor has a `name` too - and the fallback here is
+     * the id, so getting it wrong would have shown the player a world named
+     * after an ore. `definePlanet` requires `name`, so a miss means the
+     * descriptor is broken in a way that throws where it is built. */
+    const namePart = topLevelParts(obj).find((p) => /^\s*name\s*:/.test(p));
+    const name = (namePart && /^\s*name\s*:\s*'([^']+)'/.exec(namePart)?.[1]) || id;
+    out.push({ id, name, file });
+  }
+
+  _planetEntries = out;
   return out;
 }
 
-/** Just the ids. */
-function planetIds() {
-  return planetEntries().map((p) => p.id);
-}
-
-/** The descriptor file a planet id is declared in, or null. */
-function planetFileFor(wanted) {
-  return planetEntries().find((p) => p.id === wanted)?.file ?? null;
-}
+/* `planetIds()` and `planetFileFor()` used to live here - `map` and `find` over
+ * the list above, each re-running the whole scrape, and each with the sole
+ * caller now taking `{ id, name, file }` straight off `planetEntries()`. They
+ * are deleted rather than left: an unused helper beside a scrape whose entire
+ * subject is "what silently stops being read" is the wrong thing for the next
+ * reader to find. */
 
 /**
  * Every World subclass, read from the `static id` the engine itself keys on,
@@ -1192,16 +1365,26 @@ function buildWorlds() {
    */
   const base = worlds.get(PLANET_BASE);
   worlds.delete(PLANET_BASE);
+  const entries = planetEntries();
+  /* THE FIFTH SILENT PATH, and the widest. The base is found by scanning
+   * `src/worlds/*.js` for a `static id` equal to `PLANET_BASE`; if that scan
+   * ever stops finding `PlanetWorld.js` - moved, renamed, or excluded by the
+   * file walk - this loop simply does not run and EVERY planet disappears at
+   * once, with the other eight worlds still present and every test still
+   * green. It is not a degraded answer, it is a different question. */
+  if (!base && entries.length) {
+    planetFail(PLANET_REGISTRY,
+      `${entries.length} planet(s) are registered but the base world '${PLANET_BASE}' `
+      + `was not found among the World subclasses in src/worlds — nothing would expand `
+      + 'them, so none of them would appear at all');
+  }
   if (base) {
-    for (const id of planetIds()) {
-      const rel = planetFileFor(id);
-      const src = rel ? read(rel) : '';
-      const displayName = /name:\s*'([^']+)'/.exec(src)?.[1] ?? id;
+    for (const { id, name: displayName, file: rel } of entries) {
       worlds.set(id, {
         ...base,
         id,
         displayName,
-        files: [...base.files, ...(rel ? [rel] : [])],
+        files: [...base.files, rel],
         theme: THEMES.get(id) ?? base.theme,
         themed: THEMES.has(id),
       });

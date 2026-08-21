@@ -563,6 +563,18 @@ export class NPCManager {
      * @type {import('../systems/WaterVolumes.js').WaterVolumes|null}
      */
     this.water = null;
+    /**
+     * The active world, held for ONE thing: its published surface gravity.
+     *
+     * A character resolves its own gravity from it - the same
+     * `worldGravityRatio` the player uses - so this has to survive past
+     * `spawnForWorld`, which is not the only place a body is built. Beast
+     * top-ups (`Caravans`), respawns and `spawnOne` all create characters
+     * long after the world changed, and a body that missed the world it was
+     * born into falls in the previous one's physics.
+     * @type {{gravity?:number, id?:string}|null}
+     */
+    this.gravityWorld = null;
     this._offs = [];
     if (this.bus) {
       this._offs.push(this.bus.on('water:volumes', ({ water }) => this.setWater(water)));
@@ -664,6 +676,7 @@ export class NPCManager {
    */
   spawnForWorld(world) {
     this.clear();
+    this.gravityWorld = world ?? null;
     if (!world) return;
     this.worldId = world.id;
     this.theme = THEME_BY_WORLD[world.id] ?? 'station';
@@ -1039,6 +1052,7 @@ export class NPCManager {
     o.pack?.add(npc);
 
     npc.setWater(this.water);
+    npc.setWorldGravity(this.gravityWorld);
     this._npcs.push(npc);
     this._hostiles.push(npc);
     this.bus?.emit('npc:spawned', { npc });
@@ -1370,8 +1384,10 @@ export class NPCManager {
       ]);
     }
     // Before the first step it takes: a character created after the world's
-    // water was announced would otherwise steer blind until the next swap.
+    // water was announced would otherwise steer blind until the next swap. The
+    // gravity goes with it, and for the same reason - see `gravityWorld`.
     npc.setWater(this.water);
+    npc.setWorldGravity(this.gravityWorld);
     this._npcs.push(npc);
     if (o.hostile) {
       this._hostiles.push(npc);

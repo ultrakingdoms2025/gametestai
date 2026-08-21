@@ -21,9 +21,22 @@ import { pickPrompt, pickPromptSlot, promptSlot } from './PromptSlots.js';
  *   BOOST FUEL   because boost is a budget (3.35 s from full) and a pilot
  *                emptying it into open space with a planet still 40 km away has
  *                made a decision they could not see.
- *   TRANSIT      the multiplier, when it is engaged. It changes how far a
- *                second of flight goes by a factor of eight; an unannounced 8x
- *                is a bug report.
+ *   TRANSIT      TWO different things share one tag, and they are mutually
+ *                exclusive by construction so it can only ever be showing one.
+ *                The DRIVE (`Flight`'s transit mode, on Z) draws its state -
+ *                spinning up, engaged, dropping - in amber, because a 1.8 s
+ *                spool with nothing on screen to show for it reads as a key
+ *                that did not register. The MULTIPLIER (`Piloting._transit`,
+ *                which engages itself) draws its factor in cyan, because it
+ *                changes how far a second of flight goes by eight and an
+ *                unannounced 8x is a bug report. `Piloting._transitFactor`
+ *                returns 1 whenever the drive is live, which is what makes
+ *                "only one" true rather than merely likely.
+ *   SPEED UNIT   m/s below 1,000 and km/s above it. The drive tops out at
+ *                5,000 and the last three digits of that change every frame.
+ *   ETA          time to arrival, on the nav row the nose is pointed at, off
+ *                the CLOSING speed. See `_drawNav` - the selection is the
+ *                `.ahead` class this file has always drawn, not a new one.
  *   NAV          every body, nearest first, WITH THE YARD PINNED TO THE TOP.
  *                This is the anti-stranding row. `Piloting.navReport` puts it
  *                first unconditionally and this draws it in the yard's amber so
@@ -59,6 +72,27 @@ import { pickPrompt, pickPromptSlot, promptSlot } from './PromptSlots.js';
  *                whether to stay in, the capacitor decides whether to keep the
  *                trigger down. Neither is visible outside the seat.
  *   CONTACT      name, range and integrity of what is being shot at.
+ *   CONTACTS     every live hostile, as a bearing glyph and a range, in the
+ *                SAME rows the nav list draws Cinder in. This is the answer to
+ *                "combat is invisible at range" that is not a range change: a
+ *                skiff at 850 m is nine pixels and no amount of emissive fixes
+ *                that, so past the range where a contact can be SEEN it has to
+ *                be FINDABLE, and findable is a glyph you can steer on and a
+ *                number you can act on. `SpaceCombat.contactReport` fills the
+ *                same shape `Piloting.navReport` does precisely so that this
+ *                file draws both with one `arrow()`, one `range()` and one
+ *                `.row`; the only difference is a class name.
+ *   CONTACT PIPS one hollow bracket per hostile at its screen position, with
+ *                its range under it - CLAMPED TO THE EDGE when the contact is
+ *                off the plate or astern, because a marker that vanishes
+ *                exactly when the target leaves the frame is a marker that is
+ *                absent whenever it is needed, and FADED once the hull is big
+ *                enough to be its own marker, because a box round a ship you
+ *                can already see is one more thing between you and the fight.
+ *   HELD         one line, shown only while the transit drive is being denied,
+ *                counting down the seconds of broken contact left before it
+ *                comes back. Being pinned with no idea why - or for how long -
+ *                is the failure mode an interdiction invites.
  *   FLASH        a vignette when hit, cyan / white / red for shield holding,
  *                shield breaking and hull.
  *
@@ -101,12 +135,99 @@ const NAV_HZ = 5;
  */
 const NAV_ROWS = 7;
 
+/**
+ * Contact rows and pips built up front. Six, which is `SpaceCombat`'s own
+ * `MAX_HOSTILES` - the pool cannot produce a seventh, so this cannot be the
+ * number that cuts one off the way `NAV_ROWS: 5` used to cut the two furthest
+ * bodies off the nav list.
+ *
+ * They are PERSISTENT NODES rather than an `innerHTML` rebuild, and that is
+ * the whole reason the contact list can run every frame while the nav list
+ * runs at 5 Hz: a hostile's range changes every step of a fight, so a string
+ * compare would fail every frame and rebuild six rows of DOM sixty times a
+ * second. Writing `textContent` on two spans behind a compare is what the rest
+ * of this file does and it costs nothing.
+ */
+const MAX_CONTACTS = 6;
+
+/** NDC -> the CSS percentage of the overlay. -1..1 with +Y up becomes 0..100%
+ *  with +Y down, which is the same conversion `_mark` makes. */
+function pct(n) { return (n * 50 + 50).toFixed(2); }
+
 /** Distance, in the unit a pilot can act on. */
 function range(m) {
   if (m < 1000) return `${Math.round(m)} m`;
   if (m < 100000) return `${(m / 1000).toFixed(1)} km`;
   return `${Math.round(m / 1000)} km`;
 }
+
+/**
+ * Speed, in the unit that is READABLE at that speed.
+ *
+ * The transit drive tops out at 5,000 m/s and the last three digits of that
+ * number change every frame, so "4,983" is not a reading, it is noise - a
+ * pilot cannot tell it from 3,983 at a glance and gets no sense of closing at
+ * all. The switch is at 1,000 because that is where the m/s figure stops
+ * fitting a mental model built on 120-455, and because 1 km/s is a round place
+ * to change units.
+ *
+ * Returned as a pair rather than one string: the markup already has a `<small>`
+ * for the unit and re-writing both nodes only when they change is what keeps
+ * this file's every-frame block down to two text writes.
+ *
+ * @returns {[string, string]} [number, unit]
+ */
+function speedText(mps) {
+  const v = Number.isFinite(mps) ? Math.max(0, mps) : 0;
+  if (v < 1000) return [String(Math.round(v)), 'm/s'];
+  return [(v / 1000).toFixed(2), 'km/s'];
+}
+
+/**
+ * Seconds as a DURATION a pilot reads, in the unit that duration fits in.
+ *
+ * ── WHY THIS IS NOT JUST m:ss WITH A CLAMP ─────────────────────────────────
+ *
+ * It was, and the clamp was `99:59`. That is the FIRST ETA the game ever shows
+ * you: leave the yard under thrust and the nearest unaimed body is 155 km off
+ * at 19 m/s, which is 8,158 seconds, which clamped. So the player's opening
+ * impression of the instrument was a readout stuck at the maximum a clock can
+ * count to - and a clock stuck at its maximum does not read as "a long way", it
+ * reads as BROKEN. An ETA nobody believes is worse than no ETA, because it also
+ * discredits the four rows above it.
+ *
+ * The honest number is 2 h 16 m, and the honest number happens to be exactly
+ * the thing the player needs to know at that moment: you are crawling, and this
+ * is what the transit drive is for. So past an hour this stops pretending to be
+ * a stopwatch and becomes a duration - the same switch, and the same reason, as
+ * `speedText` changing to km/s at 1,000.
+ *
+ * `--:--` survives for the two cases that genuinely have no number: not closing
+ * at all (`navReport` already publishes `null` there, so this only sees it via
+ * a NaN) and closing so slowly that even hours are noise.
+ */
+function clock(s) {
+  if (!Number.isFinite(s) || s < 0) return '--:--';
+  if (s < 3600) {
+    const m = Math.floor(s / 60);
+    return `${m}:${String(Math.floor(s - m * 60)).padStart(2, '0')}`;
+  }
+  /* 99 h is where a duration stops being one. At the yard's own scale that is a
+   * ship closing on a 250 km body at under a metre a second - drifting, not
+   * flying - and the answer to "when do I arrive" is honestly "you do not". */
+  if (s < 356400) {
+    const h = Math.floor(s / 3600);
+    return `${h}h ${String(Math.floor((s - h * 3600) / 60)).padStart(2, '0')}m`;
+  }
+  return '--:--';
+}
+
+/** What the tag says, per drive state. Null hides it. */
+const TRANSIT_TAG = {
+  spooling: 'TRANSIT ▸ SPINNING UP',
+  engaged: 'TRANSIT ▸ ENGAGED',
+  dropping: 'TRANSIT ▸ DROPPING',
+};
 
 /**
  * Where a target is, as one glyph.
@@ -136,8 +257,17 @@ export class FlightHUD {
     this._lastNavKey = '';
     this._lastTgtKey = '';
     this._took = false;
+    /* Last strings written into the speed block and the transit tag. Every
+     * write in `update` is behind a compare, per this file's own rule that the
+     * DOM write is the expensive half. */
+    this._spdText = '';
+    this._spdUnit = '';
+    this._tagText = '';
     /** Last value written into the landed hint. See `update`. */
     this._sitText = '';
+    /* Last touchdown-envelope string drawn, so the row is a compare and not a
+     * DOM write per frame - the same rule every other row in this file keeps. */
+    this._landKey = null;
 
     this.el = this._build();
     root?.appendChild?.(this.el);
@@ -199,18 +329,25 @@ export class FlightHUD {
     wrap.innerHTML = `
       <div class="fl-speed">
         <div class="lab" data-fl="name">SHIP</div>
-        <div class="n"><span data-fl="spd">0</span><small>m/s</small></div>
+        <div class="n"><span data-fl="spd">0</span><small data-fl="spdunit">m/s</small></div>
         <div class="fl-bar"><u data-fl="mark"></u><i data-fl="bar"></i></div>
         <div class="fl-bar fl-fuel"><i data-fl="fuel"></i></div>
         <span class="fl-tag" data-fl="tag">TRANSIT</span>
         <div class="fl-sit" data-fl="sit"></div>
       </div>
       <div class="fl-nav">
+        <div class="fl-hostiles" data-fl="hostiles">
+          <h4>Contacts</h4>
+          <div data-fl="hrows"></div>
+          <div class="fl-held" data-fl="held"></div>
+        </div>
         <h4>Navigation</h4>
         <div data-fl="rows"></div>
         <div class="fl-alt" data-fl="alt"></div>
+        <div class="fl-land" data-fl="land"></div>
         <div class="fl-hold" data-fl="hold"></div>
       </div>
+      <div class="fl-pips" data-fl="pips"></div>
       <div class="fl-def" data-fl="def">
         <div class="lab" data-fl="deflab">Shields <b>100%</b></div>
         <div class="fl-shield" data-fl="shwrap"><i data-fl="shield"></i></div>
@@ -237,6 +374,7 @@ export class FlightHUD {
     const q = (k) => wrap.querySelector(`[data-fl="${k}"]`);
     this.nameEl = q('name');
     this.spdEl = q('spd');
+    this.spdUnitEl = q('spdunit');
     this.barEl = q('bar');
     this.markEl = q('mark');
     this.fuelEl = q('fuel');
@@ -244,6 +382,7 @@ export class FlightHUD {
     this.sitEl = q('sit');
     this.rowsEl = q('rows');
     this.altEl = q('alt');
+    this.landEl = q('land');
     this.holdEl = q('hold');
     this.barWrap = this.barEl.parentElement;
 
@@ -258,8 +397,43 @@ export class FlightHUD {
     this.tgtRangeEl = q('tgtrange');
     this.tgtHpEl = q('tgthp');
     this.warnEl = q('warn');
+    this.hostilesEl = q('hostiles');
+    this.heldEl = q('held');
+    this.pipsEl = q('pips');
     this.aimEl = q('aim');
     this.leadEl = q('lead');
+
+    /* The contact rows and the contact pips, built once. See `MAX_CONTACTS`.
+     * Each entry caches the last string written into each node, because the
+     * DOM write is the expensive half and a range that has not changed is a
+     * write that should not happen. */
+    this._hrows = [];
+    this._pips = [];
+    const hrowsEl = q('hrows');
+    for (let i = 0; i < MAX_CONTACTS; i++) {
+      const row = document.createElement('div');
+      row.className = 'row hostile';
+      const ar = document.createElement('span');
+      ar.className = 'ar';
+      const nm = document.createElement('span');
+      nm.className = 'nm';
+      const rg = document.createElement('span');
+      rg.className = 'rg';
+      row.append(ar, nm, rg);
+      hrowsEl.appendChild(row);
+      this._hrows.push({ el: row, arEl: ar, nmEl: nm, rgEl: rg, ar: '', nm: '', rg: '', on: false });
+
+      const pip = document.createElement('div');
+      pip.className = 'fl-ct';
+      const mark = document.createElement('i');
+      const lab = document.createElement('b');
+      pip.append(mark, lab);
+      this.pipsEl.appendChild(pip);
+      this._pips.push({ el: pip, labEl: lab, lab: '', cls: '', on: false });
+    }
+    /** Filled in place by `SpaceCombat.contactReport`; this file owns it. */
+    this._cts = [];
+    this._heldText = '';
     this.flashEl = q('flash');
     this.downEl = q('down');
     this.downWhatEl = q('downwhat');
@@ -307,17 +481,35 @@ export class FlightHUD {
 
     const r = p.report(this._report);
     this.nameEl.textContent = (r.name ?? 'SHIP').toUpperCase();
-    this.spdEl.textContent = Math.round(r.speed * (r.transit > 1 ? r.transit : 1));
 
+    /* THE NUMBER, and it is `speed x multiplier` because the displacement
+     * multiplier keeps `flight.speed` honest while covering eight times the
+     * ground - so the honest number would be a speedometer that disagrees with
+     * the window. The DRIVE needs no such correction: it moves the ship for
+     * real, so its 5,000 is 5,000, and `_transitFactor` returns 1 whenever the
+     * drive is live precisely so these two can never both be applied. */
+    const shown = r.speed * (r.transit > 1 ? r.transit : 1);
+    const [num, unit] = speedText(shown);
+    if (num !== this._spdText) { this._spdText = num; this.spdEl.textContent = num; }
+    if (unit !== this._spdUnit) { this._spdUnit = unit; this.spdUnitEl.textContent = unit; }
+
+    /* The bar is drawn against the HULL's own cap and therefore pins at 100%
+     * for the whole of a transit leg - which is correct and useless, so the
+     * drive gets the tag and the ETA instead of a bar that has nothing to say. */
     const cap = r.boostTop || 1;
     this.barEl.style.width = `${Math.min(100, (r.speed / cap) * 100).toFixed(1)}%`;
     this.markEl.style.left = `${Math.min(100, (r.cruiseTop / cap) * 100).toFixed(1)}%`;
     this.barWrap.classList.toggle('boost', r.speed > r.cruiseTop);
     this.fuelEl.style.width = `${Math.max(0, Math.min(1, r.boostFuel)) * 100}%`;
 
-    const transit = r.transit > 1.05;
-    this.tagEl.classList.toggle('on', transit);
-    if (transit) this.tagEl.textContent = `TRANSIT x${r.transit.toFixed(1)}`;
+    /* THE DRIVE FIRST, then the multiplier. They are mutually exclusive by
+     * construction (see `Piloting._transitFactor`), and the drive is the one
+     * the player pressed a key for - a state they asked for outranks one that
+     * happened to them. */
+    const tag = TRANSIT_TAG[r.transitState] ?? (r.transit > 1.05 ? `TRANSIT x${r.transit.toFixed(1)}` : null);
+    this.tagEl.classList.toggle('on', !!tag);
+    this.tagEl.classList.toggle('drive', !!TRANSIT_TAG[r.transitState]);
+    if (tag && tag !== this._tagText) { this._tagText = tag; this.tagEl.textContent = tag; }
 
     /* HOW TO TAKE OFF, WHILE YOU ARE SITTING THERE NOT TAKING OFF.
      *
@@ -361,10 +553,75 @@ export class FlightHUD {
      * the pilot to work out that the 9,000 m difference is the planet's
      * radius. Two numbers for one body that visibly disagree read as a bug,
      * every time, and the fix is one word. */
-    this.altEl.innerHTML = r.altitude === null || r.altitude === undefined
-      ? `<b>${r.bodyName ?? ''}</b>${falling ? ` · <i class="fl-vs${hot ? ' hot' : ''}">▼ ${r.descent.toFixed(0)} m/s</i>` : ''}`
-      : `<b>${r.bodyName ?? ''}</b> · ALT ${range(Math.max(0, r.altitude))} · ${String(r.phase).toUpperCase()}`
-        + `${falling ? ` · <i class="fl-vs${hot ? ' hot' : ''}">▼ ${r.descent.toFixed(0)} m/s</i>` : ''}`;
+    /* ── A BODY WITH NO GROUND SAYS SO, IN THE ROW THAT INVITED THE DESCENT ─
+     *
+     * This printed `Ceraunus · ALT 0 m · ATMOSPHERE` for four and a half
+     * minutes while the ship flew from 20 km outside the gas giant to 24 m
+     * from its centre, because ALT is clamped at zero and ATMOSPHERE is a
+     * phase name that reads as "you have arrived". The objective panel one
+     * corner over was simultaneously saying "fly in until the readout says
+     * APPROACH, then descend". Two rows, both true-looking, both wrong about
+     * the only thing that mattered.
+     *
+     * For a body the ship cannot land on, the useful number is not the height
+     * above a surface that does not exist - it is HOW MUCH IS LEFT before the
+     * hull stops, which `Piloting.report` publishes as `hullClear`. */
+    const phase = r.noSurface ? 'NO SURFACE' : String(r.phase).toUpperCase();
+    const height = r.noSurface && r.hullClear !== null && r.hullClear !== undefined
+      ? `HULL ${range(Math.max(0, r.hullClear))}`
+      : (r.altitude === null || r.altitude === undefined ? null : `ALT ${range(Math.max(0, r.altitude))}`);
+    const vs = falling ? ` · <i class="fl-vs${hot ? ' hot' : ''}">▼ ${r.descent.toFixed(0)} m/s</i>` : '';
+    this.altEl.innerHTML = height === null
+      ? `<b>${r.bodyName ?? ''}</b>${vs}`
+      : `<b>${r.bodyName ?? ''}</b> · ${height} · ${phase}${vs}`;
+
+    /* ── THE TWO NUMBERS THE TOUCHDOWN IS JUDGED ON ────────────────────────
+     *
+     * Six landings out of six came in as "Hard landing - 78 to 139 m/s" for
+     * 55 integrity apiece, and the reason is not that the rule is harsh: it is
+     * that the rule was invisible. `Piloting._groundContact` refuses a landing
+     * on EITHER of two tests, and the HUD published one of the two live values
+     * and neither of the two limits - so the failing state was the default
+     * state and there was nothing on screen to fly against.
+     *
+     * Both, with their limits, in the shape of a gauge rather than a warning:
+     * a pilot reads "4 / 21" as "I have room" without being told anything, and
+     * the number turns red at the line the seam actually enforces. Shown from
+     * the moment there is ground under the ship rather than only while it is
+     * falling fast, because an envelope you are only shown once you are
+     * outside it is a post-mortem. */
+    const envelope = r.world !== 'space' && !r.landed && r.active
+      && r.altitude !== null && r.altitude !== undefined;
+    if (envelope) {
+      const dHot = r.descent > r.descentLimit;
+      const sHot = r.speed > r.touchdownSpeed;
+      const key = `${Math.round(r.descent)}|${Math.round(r.speed)}|${dHot}|${sHot}|${r.padName}|${r.padRimDeg}`;
+      if (key !== this._landKey) {
+        this._landKey = key;
+        /* "SET DOWN" and not "SET DOWN UNDER": measured in the built page, the
+         * longer label wrapped the row onto two lines inside the nav panel and
+         * left a naked "m/s" underneath it. The slash already reads as
+         * "against". */
+        this.landEl.innerHTML = 'SET DOWN'
+          + ` <i class="${dHot ? 'hot' : ''}">▼ ${Math.max(0, r.descent).toFixed(0)}/${r.descentLimit.toFixed(0)}</i>`
+          + ` <i class="${sHot ? 'hot' : ''}">▶ ${r.speed.toFixed(0)}/${r.touchdownSpeed.toFixed(0)}</i> m/s`
+          /* AND WHAT YOU ARE LANDING ON. Seven of the ten worlds have a pad you
+           * can walk off and never climb back onto, and they are the rich ones
+           * - the pads worth flying to. `PlanetWorld` has always measured each
+           * disc's rim; this is the first thing to read it. The name shows for
+           * every pad in range; the rim only when it is a shelf rather than a
+           * clearing, because annotating a 12 m drop is annotating "this is a
+           * pad". */
+          + (r.padName
+            ? `<b class="pad">${r.padName}${r.padRimDeg !== null && r.padRimDeg !== undefined
+              ? ` · <i class="hot">${r.padRimDeg}° rim, ${r.padDrop} m drop</i>` : ''}</b>`
+            : '');
+      }
+    } else if (this._landKey !== null) {
+      this._landKey = null;
+      this.landEl.innerHTML = '';
+    }
+    this.landEl.classList.toggle('on', !!envelope);
 
     this._drawFight();
 
@@ -416,6 +673,7 @@ export class FlightHUD {
 
     this._mark(this.aimEl, r.aim);
     this._mark(this.leadEl, r.lead);
+    this._drawContacts(c, r);
 
     /* Opacity straight off the system's countdown rather than a CSS
      * animation: two hits 80 ms apart have to restart one decay, and a
@@ -423,6 +681,117 @@ export class FlightHUD {
     const f = Math.max(0, Math.min(1, r.hitFlash / 0.34));
     this.flashEl.style.opacity = f > 0 ? f.toFixed(3) : '0';
     this.flashEl.className = `fl-flash${r.hitKind === 'hull' ? ' hull' : r.hitKind === 'down' ? ' down' : ''}`;
+  }
+
+  /**
+   * THE FINDABILITY HALF: every live hostile as a row and a pip.
+   *
+   * Nothing here computes anything, per this file's rule. `contactReport`
+   * fills rows in the shape `Piloting.navReport` publishes - `ahead`, `above`,
+   * `right`, `range` - and this draws them with the same `arrow()` glyph and
+   * the same `range()` formatter the nav list uses. A hostile is a nav target
+   * that shoots back; it should read like one.
+   *
+   * Every write is behind a compare and no node is created or destroyed, so
+   * this runs at frame rate. That matters: a nav range moves 91 m in a frame
+   * and a contact's moves by nothing you would notice either - but its BEARING
+   * moves through a whole quadrant in a turn, and a glyph that updated at 5 Hz
+   * would point the wrong way for a fifth of a second at the exact moments a
+   * pilot is reading it.
+   *
+   * @param {object} c the combat system, for `contactReport`
+   * @param {object} r its `report()`, already read by the caller
+   */
+  _drawContacts(c, r) {
+    const rows = c.contactReport ? c.contactReport(this._cts) : this._cts;
+    const n = rows.length;
+    this.hostilesEl.classList.toggle('on', n > 0 || r.locked);
+
+    for (let i = 0; i < MAX_CONTACTS; i++) {
+      const row = this._hrows[i];
+      const pip = this._pips[i];
+      const t = i < n ? rows[i] : null;
+
+      if (!t) {
+        if (row.on) { row.on = false; row.el.classList.remove('on'); }
+        if (pip.on) { pip.on = false; pip.el.classList.remove('on'); }
+        continue;
+      }
+
+      if (!row.on) { row.on = true; row.el.classList.add('on'); }
+      const g = arrow(t.ahead, t.above, t.right);
+      if (g !== row.ar) { row.ar = g; row.arEl.textContent = g; }
+      if (t.name !== row.nm) { row.nm = t.name; row.nmEl.textContent = t.name; }
+      const rg = range(t.range);
+      if (rg !== row.rg) { row.rg = rg; row.rgEl.textContent = rg; }
+      row.el.classList.toggle('lock', !!t.locked);
+      row.el.classList.toggle('hot', !!t.inRange);
+
+      /* THE PIP. `contactReport` has already resolved the awkward half - a
+       * contact behind the camera or off the plate arrives with `edge` set and
+       * `ndc` carrying the BEARING instead of a projection, because a
+       * projection of something astern is a confident lie in the opposite
+       * corner. All that is left here is where on the border to put it.
+       *
+       * The finite test is not defensive theatre. `left: NaN%` is dropped by
+       * the browser without complaint, which pins the pip silently to the
+       * top-left corner - a marker pointing at a hostile that is not there is
+       * worse than no marker, and this project has a NaN in its history that
+       * cost a day. */
+      let x = t.ndc?.x;
+      let y = t.ndc?.y;
+      if (!t.ndc?.on || !Number.isFinite(x) || !Number.isFinite(y)) {
+        if (pip.on) { pip.on = false; pip.el.classList.remove('on'); }
+        continue;
+      }
+      if (t.edge) {
+        /* Pushed out to the border along its own bearing. `|| 1` because a
+         * bearing of exactly zero in both axes is the one case this cannot
+         * normalise, and dividing by it is the mistake. */
+        const m = Math.max(Math.abs(x), Math.abs(y)) || 1;
+        x = (x / m) * 0.86;
+        y = (y / m) * 0.86;
+      } else {
+        x = Math.max(-0.97, Math.min(0.97, x));
+        y = Math.max(-0.97, Math.min(0.97, y));
+      }
+      if (!pip.on) { pip.on = true; pip.el.classList.add('on'); }
+      pip.el.style.left = `${pct(x)}%`;
+      pip.el.style.top = `${pct(-y)}%`;
+      /* `legible` is `SpaceCombat`'s own answer to "can the player see this
+       * without help", derived from the hull's real span and the camera's real
+       * FOV rather than from a range typed here. Past it the bracket fades -
+       * see the note on `.fl-ct.near` in `flight.css`. */
+      const cls = `fl-ct on${t.edge ? ' edge' : ''}${t.locked ? ' lock' : ''}`
+        + `${t.inRange ? ' hot' : ''}${t.legible ? ' near' : ''}`;
+      if (cls !== pip.cls) { pip.cls = cls; pip.el.className = cls; }
+      if (rg !== pip.lab) { pip.lab = rg; pip.labEl.textContent = rg; }
+    }
+
+    /* HOW TO GET AWAY, ON SCREEN, WHILE YOU CANNOT.
+     *
+     * `SpaceCombat` denies the transit drive while something has been in reach
+     * of you or gaining on you within the last `LOCK_GRACE` seconds, and
+     * `Piloting` refuses the key with a toast that expires. A pilot who
+     * pressed Z ten seconds ago and is still in normal space has no way to
+     * know whether they are being held or whether the key is broken, and no
+     * way to know what would fix it.
+     *
+     * So it is a COUNTDOWN and not a label. The moment the player is clear of
+     * every gun and nothing is gaining, the number starts ticking - and a
+     * number that runs down while you hold a heading, and snaps back to
+     * "BREAK CONTACT" the instant a skiff turns in again, teaches the whole
+     * rule in one encounter without a word of tutorial. */
+    const held = r.locked
+      ? (typeof r.lockIn === 'number'
+        ? `TRANSIT HELD · CLEAR IN ${Math.ceil(r.lockIn)}s`
+        : 'TRANSIT HELD · BREAK CONTACT')
+      : '';
+    if (held !== this._heldText) {
+      this._heldText = held;
+      this.heldEl.textContent = held;
+      this.heldEl.classList.toggle('on', !!held);
+    }
   }
 
   /**
@@ -449,12 +818,33 @@ export class FlightHUD {
       if (this._lastNavKey !== 'empty') { this.rowsEl.innerHTML = ''; this._lastNavKey = 'empty'; }
       return;
     }
+    /* TIME TO ARRIVAL, ON THE TARGET THE PILOT IS AIMED AT.
+     *
+     * There has never been a "selected nav target" in this game and this is
+     * not the file to invent one: `navReport` sorts by range and pins home to
+     * row 0, and the only selection that exists anywhere is the `.ahead` class
+     * this loop already puts on the row the nose is on. So THAT is the
+     * selection - the row with the largest `ahead` above the same 0.93 cone -
+     * and the ETA is drawn on it and on nothing else. One number, on the thing
+     * you are pointed at, which is what a pilot is asking.
+     *
+     * The arithmetic is `Piloting.navReport`'s, off the closing speed rather
+     * than the speed; see the note there for why that distinction is the whole
+     * point at 5 km/s.
+     */
+    let focus = -1;
+    for (let i = 0; i < Math.min(NAV_ROWS, rows.length); i++) {
+      if (rows[i].ahead > 0.93 && (focus < 0 || rows[i].ahead > rows[focus].ahead)) focus = i;
+    }
+
     let html = '';
     for (let i = 0; i < Math.min(NAV_ROWS, rows.length); i++) {
       const t = rows[i];
       const cls = `row${t.kind === 'dock' ? ' home' : ''}${t.ahead > 0.93 ? ' ahead' : ''}`;
+      const eta = i === focus && t.eta !== null && t.eta !== undefined
+        ? `<span class="eta">ETA ${clock(t.eta)}</span>` : '';
       html += `<div class="${cls}"><span class="ar">${arrow(t.ahead, t.above, t.right)}</span>`
-        + `<span class="nm">${t.name}</span><span class="rg">${range(t.range)}</span></div>`;
+        + `<span class="nm">${t.name}</span><span class="rg">${range(t.range)}</span>${eta}</div>`;
     }
     // The DOM write is the expensive half; skip it when nothing visible changed.
     if (html === this._lastNavKey) return;

@@ -45,7 +45,7 @@ import { rig, goto, settle, DT, steerTo, approach, fly, liftOff } from './_fligh
  * cannot be told why.
  */
 
-const { BODY_BY_ID, DOCK_ANCHOR } = await import('../../src/worlds/space/Bodies.js');
+const { BODY_BY_ID, SPACE_BODIES, DOCK_ANCHOR } = await import('../../src/worlds/space/Bodies.js');
 const { BERTHS } = await import('../../src/worlds/dock/YardPlan.js');
 const { holdCapacity, SHIP_BASE_STATS } = await import('../../src/ships/ShipStats.js');
 const PIL = await import('../../src/ships/Piloting.js');
@@ -131,6 +131,254 @@ test('every landing site on Cinder can be lifted off from, and no engines means 
   assert.equal(got, sites.length,
     `stranded at ${flown.filter(([, v]) => !v.ok).map(([id]) => id).join(', ')}`);
   assert.equal(ceil, 0, 'a ship with the engines cut still climbed to orbit, so this case measures nothing');
+  await reset(r);
+});
+
+test('the take-off on the card own keys leaves every pad, and costs the pilot nothing', async () => {
+  const r = await rig();
+  await reset(r, 'cinder');
+  const sites = r.wm.active.landingSites;
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════
+   *  THE CASE ABOVE THIS ONE PASSED WHILE THE TAKE-OFF WAS FATAL
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * `liftOff()` in the rig holds the throttle at ZERO until the hull is 260 m
+   * up and only then applies it. That is a correct take-off and it is not the
+   * one anybody flies: the loading card says `W Throttle` and `Space Jump`,
+   * `Piloting.board` toasts "systems live. W to lift", and `FlightHUD`'s sit
+   * row says "W to lift". Every one of those tells the player to hold W.
+   *
+   * Flown in a real boot, three times out of three, holding exactly W and
+   * Space off a Cinder set-down:
+   *
+   *     t+0.3  1.0 m up, 16.9 m/s, integrity 100 -> 80
+   *     t+0.8  1.3 m up, 28.4 m/s, integrity     -> 25
+   *     t+1.4  dead, back in the yard, 10 m3 of ore gone, card reads SHOT DOWN
+   *
+   * So this case holds the documented keys and nothing else, from every
+   * authored pad, and asserts the two things that were false: it gets off the
+   * planet, and it does not cost a single point of integrity.
+   *
+   * THE ABLATION IS THE LAUNCH ASSIST ITSELF, not the engines - the case above
+   * already ablates those. `Piloting._liftoff` is zeroed every step, which is
+   * exactly the code that shipped, and the run has to fail: if it still gets
+   * off every pad unhurt then the assist is not what is carrying it and this
+   * case is measuring nothing.
+   */
+  async function holdWandSpace(site, { assist }) {
+    r.piloting._recoverToBerth();
+    await goto(r, 'cinder');
+    r.piloting.shipId = 'dray';
+    r.piloting._parked = 'ground';
+    r.piloting._parkedWorld = 'cinder';
+    r.piloting.flight.place(
+      new THREE.Vector3(site.position.x, site.position.y + PIL.TOUCH_CLEAR * 0.5, site.position.z)
+    );
+    r.piloting._landed = true;
+    r.player.position.copy(r.piloting.flight.position);
+    assert.equal(r.piloting.board('dray'), true, `could not board at ${site.id}`);
+    r.player.damageTaken = 0;
+
+    let impacts = 0;
+    const off = r.bus.on('pilot:impact', () => { impacts++; });
+    const res = await fly(r,
+      () => {
+        if (!assist) r.piloting._liftoff = 0;
+        r.piloting.flight.setCommand({ pitch: 0, yaw: 0, roll: 0, throttle: 1, vertical: 1, boost: false });
+      },
+      () => r.wm.active.id === 'space', { limit: 90 });
+    off();
+    return { ok: res.done, t: res.t, hurt: r.player.damageTaken, impacts };
+  }
+
+  const flown = [];
+  for (const s of sites) flown.push([s.id, await holdWandSpace(s, { assist: true })]);
+  const ablated = [];
+  for (const s of sites) ablated.push([s.id, await holdWandSpace(s, { assist: false })]);
+
+  const clean = flown.filter(([, v]) => v.ok && v.hurt === 0).length;
+  const ablatedClean = ablated.filter(([, v]) => v.ok && v.hurt === 0).length;
+  console.log(`    W+Space take-off: floor ${sites.length}/${sites.length} clean | achieved ${clean}/${sites.length} `
+    + `| ablated (no launch assist) ${ablatedClean}/${sites.length} | `
+    + flown.map(([id, v]) => `${id} ${v.ok ? `${v.t.toFixed(1)}s` : 'STRANDED'}/${v.hurt}hp`).join(' '));
+  console.log('      ablated: ' + ablated.map(([id, v]) => `${id} ${v.ok ? `${v.t.toFixed(1)}s` : 'STRANDED'}/${v.hurt}hp/${v.impacts} impacts`).join(' '));
+
+  for (const [id, v] of flown) {
+    assert.ok(v.ok, `holding W and Space at ${id} never left the planet`);
+    assert.equal(v.impacts, 0, `holding W and Space at ${id} hit the ground ${v.impacts} times`);
+    assert.equal(v.hurt, 0, `holding W and Space at ${id} cost the pilot ${v.hurt} integrity`);
+  }
+  assert.ok(ablatedClean < sites.length,
+    'the same run is clean with the launch assist disabled, so the assist is not what carries it');
+  await reset(r);
+});
+
+test('an impact does not cascade into a second one on the same held key', async () => {
+  const r = await rig();
+  await reset(r, 'cinder');
+  const site = r.wm.active.landingSites.find((s) => s.primary);
+  r.piloting.shipId = 'dray';
+  r.piloting._parked = 'ground';
+  r.piloting._parkedWorld = 'cinder';
+  r.piloting.flight.place(new THREE.Vector3(site.position.x, site.position.y + 0.7, site.position.z));
+  r.piloting._landed = true;
+  r.player.position.copy(r.piloting.flight.position);
+  r.piloting.board('dray');
+  r.player.damageTaken = 0;
+
+  /**
+   * THE THREE-IMPACTS-IN-1.1-SECONDS DEFECT, in one case.
+   *
+   * `_forceSetDown` is the anti-stranding rule and it works. What it could not
+   * survive was being called again on the next step by keys that were never
+   * released: measured in a real boot, one 20 hp knock became 20 + 55 + 55 and
+   * a death inside 1.1 s, because the hull was put back on a pad with the
+   * throttle still pinned and lifted straight into the same hillside.
+   *
+   * Fired here directly rather than by flying into a hill, because the thing
+   * under test is what happens AFTER the set-down and a flown approach would
+   * make the interval depend on the terrain. The throttle is pinned for the
+   * whole two seconds, which is the pilot who has not let go.
+   */
+  let impacts = 0;
+  const off = r.bus.on('pilot:impact', () => { impacts++; });
+  let lifts = 0;
+  const off3 = r.bus.on('pilot:liftoff', () => { lifts++; });
+
+  r.piloting._forceSetDown('cinder', 90);
+  assert.equal(impacts, 1, 'the set-down did not report itself');
+  assert.ok(r.piloting._settleLock > 0, 'an impact left no settling time at all');
+
+  for (let i = 0; i < 120; i++) {
+    r.piloting.flight.setCommand({ pitch: 0, yaw: 0, roll: 0, throttle: 1, vertical: 1, boost: false });
+    r.piloting.fixedUpdate(DT, i * DT);
+  }
+  off(); off3();
+  console.log(`    after the set-down: ${impacts} impact(s), ${lifts} lift-off(s) over 2 s of pinned throttle`);
+  assert.equal(impacts, 1,
+    `the held throttle produced ${impacts} impacts - the settling lock is not holding`);
+  assert.ok(lifts >= 1, 'the lock never released, so a pilot who holds the throttle is stranded');
+  await reset(r);
+});
+
+test('the touchdown envelope the HUD draws is the envelope the seam enforces', async () => {
+  const r = await rig();
+  await reset(r, 'cinder');
+  const site = r.wm.active.landingSites.find((s) => s.primary);
+  const f = r.piloting.flight;
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════
+   *  SIX LANDINGS, SIX "HARD LANDINGS", AND NO NUMBER ON SCREEN
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * Flown cold: every one of six touchdowns came in at 78 to 139 m/s and cost
+   * 55 integrity. The rule is not harsh - it is that it was invisible.
+   * `_groundContact` refuses a landing on EITHER of two tests, and the HUD
+   * published one of the two live values and neither of the two limits, so the
+   * failing state was the default state and there was nothing to fly against.
+   *
+   * `report()` now publishes both limits and `FlightHUD` draws each beside its
+   * own live number. This is the case that stops those two numbers drifting
+   * from the rule they claim to describe: it flies a touchdown at each limit
+   * and just outside it, and asserts the seam agrees.
+   */
+  async function setDown({ down, along }) {
+    r.piloting._recoverToBerth();
+    await goto(r, 'cinder');
+    r.piloting.shipId = 'dray';
+    r.piloting._parked = null;
+    f.place(new THREE.Vector3(site.position.x, site.position.y + 3.2, site.position.z));
+    r.player.position.copy(f.position);
+    r.piloting.board('dray');
+    r.piloting._landed = false;
+    r.piloting._airborne = true;
+    r.piloting._settleLock = 0;
+    r.piloting._prevY = null;
+    r.player.damageTaken = 0;
+    f.velocity.set(along, -down, 0);
+
+    let impact = false;
+    let landed = false;
+    const offI = r.bus.on('pilot:impact', () => { impact = true; });
+    const offL = r.bus.on('pilot:landed', () => { landed = true; });
+    for (let i = 0; i < 90 && !impact && !landed; i++) {
+      /* Hands off. The velocity above IS the arrival; anything commanded here
+       * would be flying the case rather than measuring it. */
+      f.setCommand({ pitch: 0, yaw: 0, roll: 0, throttle: 0, vertical: 0, boost: false, brake: false });
+      f.velocity.set(along, -down, 0);
+      r.piloting.fixedUpdate(DT, i * DT);
+    }
+    offI(); offL();
+    return { impact, landed, hurt: r.player.damageTaken };
+  }
+
+  const rep = r.piloting.report({});
+  const vLim = rep.descentLimit;
+  const sLim = rep.touchdownSpeed;
+  assert.ok(vLim > 0 && sLim > 0, 'the HUD is being handed no limits to draw');
+
+  const insideV = await setDown({ down: vLim * 0.8, along: 0 });
+  const outsideV = await setDown({ down: vLim * 1.35, along: 0 });
+  /* 4 m/s of sink on the two ground-speed cases, not 1: at 1 m/s the hull
+   * takes three seconds to fall the 3.2 m onto the pad and covers sixty
+   * metres of ground doing it, which walks it off the pad and turns the test
+   * into a measurement of what is beyond the apron. At 4 m/s it is down in
+   * nine metres, and 4 is a quarter of the descent limit so it cannot be the
+   * thing that trips the rule. */
+  const insideS = await setDown({ down: 4, along: sLim * 0.8 });
+  const outsideS = await setDown({ down: 4, along: sLim * 1.6 });
+
+  console.log(`    published limits: descent ${vLim} m/s, ground speed ${sLim} m/s`);
+  console.log(`      descent ${(vLim * 0.8).toFixed(1)} -> ${insideV.landed ? 'LANDED' : 'impact'}`
+    + `  |  ${(vLim * 1.35).toFixed(1)} -> ${outsideV.impact ? 'IMPACT' : 'landed'}`);
+  console.log(`      speed   ${(sLim * 0.8).toFixed(1)} -> ${insideS.landed ? 'LANDED' : 'impact'}`
+    + `  |  ${(sLim * 1.6).toFixed(1)} -> ${outsideS.impact ? 'IMPACT' : 'landed'}`);
+
+  assert.ok(insideV.landed && !insideV.impact,
+    `${(vLim * 0.8).toFixed(1)} m/s of sink is inside the published ${vLim} limit and still hurt the pilot`);
+  assert.equal(insideV.hurt, 0, 'a touchdown inside the published envelope cost integrity');
+  assert.ok(outsideV.impact,
+    `${(vLim * 1.35).toFixed(1)} m/s of sink is outside the published ${vLim} limit and was accepted`);
+  assert.ok(insideS.landed && !insideS.impact,
+    `${(sLim * 0.8).toFixed(1)} m/s of ground speed is inside the published ${sLim} limit and still hurt`);
+  assert.ok(outsideS.impact,
+    `${(sLim * 1.6).toFixed(1)} m/s of ground speed is outside the published ${sLim} limit and was accepted`);
+  await reset(r);
+});
+
+test('a set-down that kills the pilot does not tell them the hull held', async () => {
+  const r = await rig();
+  await reset(r, 'cinder');
+  const site = r.wm.active.landingSites.find((s) => s.primary);
+  r.piloting.shipId = 'dray';
+  r.piloting._parked = 'ground';
+  r.piloting._parkedWorld = 'cinder';
+  r.piloting.flight.place(new THREE.Vector3(site.position.x, site.position.y + 0.7, site.position.z));
+  r.piloting._landed = true;
+  r.player.position.copy(r.piloting.flight.position);
+  r.piloting.board('dray');
+
+  /* "Hull holds" and the SHOT DOWN card used to fire one frame apart on the
+   * same touchdown, and the reassurance is read first. */
+  const said = [];
+  const off = r.bus.on('hud:notify', (e) => said.push(e.text));
+  r.player.health = 100;
+  r.piloting._forceSetDown('cinder', 90);
+  assert.ok(said.some((t) => /hull holds/i.test(t)), 'a survivable impact said nothing reassuring');
+  assert.ok(said.some((t) => /\d+%/.test(t)),
+    'the reassurance does not say what is left, so "holds" is unfalsifiable to the player');
+
+  said.length = 0;
+  r.player.health = 1;
+  r.piloting._settleLock = 0;
+  r.piloting._forceSetDown('cinder', 200);
+  off();
+  console.log(`    fatal set-down said: ${said.length ? said.join(' | ') : '(nothing, which is correct)'}`);
+  assert.ok(!said.some((t) => /hull holds/i.test(t)),
+    'an impact that killed the pilot still told them the hull held');
   await reset(r);
 });
 
@@ -287,8 +535,13 @@ test('the yard is the first row of the nav readout, unconditionally', async () =
   /* Sit right on top of a planet 250 km from home, where every sane ranking
    * would put the yard last, and assert it is still row one. This is the whole
    * anti-stranding guarantee expressed as one assertion. */
-  for (const id of ['cinder', 'ceraunus', 'vitrine', 'tessera']) {
-    const b = BODY_BY_ID[id];
+  /* EVERY body, derived, rather than the four that existed when this was
+   * written. The anti-stranding guarantee is about the layout, not about a list,
+   * and a hand-typed list is a list that stops covering the layout the day a
+   * planet is added - which is exactly what Phase 2 did to it, taking it from
+   * four bodies to twelve. */
+  for (const b of SPACE_BODIES) {
+    const id = b.id;
     f.place(new THREE.Vector3(...b.position).add(new THREE.Vector3(0, b.radius * 1.4, 0)));
     const rows = r.piloting.navReport();
     assert.equal(rows[0].id, 'dock', `standing off ${id}, the readout's first row is ${rows[0].id}`);
@@ -397,8 +650,22 @@ test('flying flat out at the edge of the playfield is turned back, not lost', as
     await goto(r, 'cinder');
     r.piloting.shipId = 'kestrel';
     r.piloting._parked = null;
+    /* ── WHERE THE RUN STARTS, AND WHY IT MOVED OFF THE ORIGIN ────────────
+     *
+     * It used to start at (0, 130, 0), 2.1 m over Cinder's 127.9 m central
+     * dome, and that is 11 m under the 140 m the departure seam wants. It
+     * worked, but only just, and only by accident: on heading 1.75pi the
+     * terrain rises to 141.0 m FORTY METRES from the origin, so the run began
+     * by flying into a hill that is itself above the seam's altitude.
+     *
+     * The case is about the boundary CLAMP, so it now begins 200 m out on each
+     * diagonal, where the terrain on all four headings tops out at 71.8 m -
+     * 28 m of clearance at 100 m, and 40 m of headroom under the seam for the
+     * whole 260 m run at the wall. Nothing about the claim changed; the ship
+     * now spends the run flying rather than bouncing off a dome. */
+    const outward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
     r.piloting.flight.place(
-      new THREE.Vector3(0, 130, 0),
+      outward.clone().multiplyScalar(200).setY(100),
       new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0, 'YXZ'))
     );
     r.player.position.copy(r.piloting.flight.position);
@@ -406,6 +673,31 @@ test('flying flat out at the edge of the playfield is turned back, not lost', as
     r.piloting._landed = false;
     r.piloting._airborne = true;
     const f = r.piloting.flight;
+    /* "LOW AND FAST" - AND IT USED TO BE PLACED AT A DEAD STOP.
+     *
+     * Cinder's terrain at the origin is 127.9 m and this starts the hull at
+     * 130, which is 2.1 m of clearance. From rest, three steps of thrust move
+     * the ship a few metres while gravity takes all of it, so the very first
+     * thing that happened was a TOUCHDOWN on the hilltop - and then a
+     * take-off, because the throttle is pinned. That cost nothing while a
+     * lift-off was a shallow forward shove; with the launch assist
+     * (`Piloting.LIFTOFF_S`) it is a 17 m climb, which puts the hull over the
+     * 140 m the departure seam wants and the case leaves the planet through
+     * the roof instead of being held by the wall it is about.
+     *
+     * The speed the name promises is the fix. Boost top for a stock Kestrel is
+     * 455 m/s and it settles there within a second either way; starting AT
+     * speed means the hull is off the hilltop before gravity can put it on the
+     * ground, which is the state this case exists to fly. */
+    f.velocity.copy(f.forward(new THREE.Vector3())).multiplyScalar(240);
+    /* ...AND THE SEAM COOLDOWN HAS TO GO WITH IT. `_seams` - which is where
+     * the boundary clamp lives - returns early for `SEAM_COOLDOWN` (2.5 s)
+     * after any world change, and the four legs above each arrive through one.
+     * A hull that starts at 240 m/s covers 600 m inside that window, which is
+     * past the wall this case is about: measured, it read 521 m on a 460 m
+     * clamp with the clamp not yet running. Zeroed here because the cooldown
+     * is an artefact of teleporting into the world, not of flying in it. */
+    r.piloting._seamLock = 0;
 
     let out = 0;
     await fly(r, () => f.setCommand({ pitch: 0, yaw: 0, roll: 0, throttle: 1, vertical: 0, boost: true }),
@@ -1213,15 +1505,42 @@ test('a ship that lifts off is not standing in its own ground probe', async () =
    * the flight model is built for: vertical thrust to unstick, then nose up on
    * the main engine. Pure vertical thrust does NOT climb on Cinder -
    * `FLIGHT.verticalFrac` is 0.50 and the planet pulls 8.44 - and a case that
-   * demanded it would be testing a manoeuvre the game does not have. */
+   * demanded it would be testing a manoeuvre the game does not have.
+   *
+   * ── THE WINDOW IS 2.0 s, AND IT USED TO BE 3.3 s ─────────────────────────
+   *
+   * Tightened, not loosened: the floor below is the same 20 m and it is now
+   * demanded in 60% of the time, which is a strictly stronger claim.
+   *
+   * The 3.3 s window was measured when the rig re-boarded on a planet through
+   * `Piloting.board`, whose `_shipRecord` found nothing outside the yard, so
+   * `Flight.setShip` took its `powerMul: 1` fallback and the hull climbed 83.4
+   * m in 3.3 s. Boarding now hands over the real stock Kestrel (powerMul 1.75)
+   * and the same profile climbs 555.6 m in 3.3 s - which crosses Cinder's
+   * handoff shell at 3.28 s and fires the REAL `_travel('space')` seam. The
+   * second half of this case then asserts against a `Piloting` that is
+   * mid-world-change: `_syncHullSolid` refuses while `_travelling` (correctly
+   * - registering colliders into a world being torn down is the hazard it
+   * exists for), so "the hull did not become solid again" failed.
+   *
+   * 2.0 s of the same profile climbs 131.4 m, which is six times the floor and
+   * 1.3 s clear of the seam. The `_travelling` assertion below is the guard
+   * that keeps it that way: if the hulls ever get fast enough to leave Cinder
+   * inside this window again, that line says so instead of the confusing
+   * failure two blocks further down. */
   const pad = site.position.y + 0.7;
-  for (let i = 1; i < 200; i++) {
+  const CLIMB_STEPS = 120;
+  for (let i = 1; i <= CLIMB_STEPS; i++) {
     liftOff(r.piloting.flight, pad + 40);
     r.piloting.fixedUpdate(DT, i * DT);
   }
   const climbed = r.piloting.flight.position.y - pad;
-  console.log(`  climbed ${climbed.toFixed(1)} m in ${(199 * DT).toFixed(1)} s`);
-  assert.ok(climbed > 20, `floor: the ship climbed ${climbed.toFixed(1)} m in ${(199 * DT).toFixed(1)} s of lift-off`);
+  const window = CLIMB_STEPS * DT;
+  console.log(`  climbed ${climbed.toFixed(1)} m in ${window.toFixed(1)} s`);
+  assert.ok(climbed > 20, `floor: the ship climbed ${climbed.toFixed(1)} m in ${window.toFixed(1)} s of lift-off`);
+  assert.equal(r.piloting._travelling, false,
+    `the lift-off window now leaves Cinder (${climbed.toFixed(0)} m in ${window.toFixed(1)} s) - `
+    + 'shorten it, or the rest of this case runs against a world change in flight');
 
   /* THE OTHER WAY A LANDED HULL STOPS BEING LANDED, and it has the same
    * hazard. `Flight.place` is a public verb that moves a ship without telling

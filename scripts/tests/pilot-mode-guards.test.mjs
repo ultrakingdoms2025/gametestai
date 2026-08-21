@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { rig, goto, settle, DT, domHarness } from './_flightrig.mjs';
+import { rig, goto, settle, DT, domHarness, boardHull, expectedHull, SHIP_ORDER } from './_flightrig.mjs';
 
 domHarness();
 
@@ -244,6 +244,93 @@ test('walking from a seam back to the ship gets the board prompt back', async ()
       'the board prompt was cleared by the mining prompt and never came back');
   } finally {
     off?.();
+    await settle();
+  }
+});
+
+/* ====================================================================== */
+/*  THE RIG MUST FLY THE SHIP THE GAME FLIES                              */
+/* ====================================================================== */
+
+/**
+ * THE GUARD THE OTHER SEVEN SUITES ARE ONLY AS GOOD AS.
+ *
+ * `space-combat`, `space-objectives`, `piloting-return` and `piloting-loop`
+ * all measure ranges, closing speeds and leg times by flying a hull. Every one
+ * of those numbers is worth nothing if the hull is not the game's.
+ *
+ * It was not. `Piloting._shipRecord` looked in two world-scoped places -
+ * `worldManager.active.ships`, which only `DockWorld` publishes, and
+ * `ShipRegistry.hulls()`, which `_adopt` empties on every `world:changed` - so
+ * a board anywhere but inside the yard fell through to `Flight.setShip`'s
+ * `powerMul: 1` branch and the flown Kestrel cruised at 120 m/s instead of
+ * 210. Slower than the skiffs shooting at it. Nothing said so, because a bare
+ * `{ powerMul: 1 }` snapshot is exactly the shape `setShip`'s own throw is
+ * documented to exempt.
+ *
+ * This is the case that would have caught it, and it is deliberately the
+ * WHOLE matrix rather than one hull in one world: three hulls x four tiers x
+ * three worlds, boarded through the real `Piloting.board` and checked against
+ * `ShipStats` restated from the data.
+ *
+ * ── AND IT IS NOT THE SAME CHECK THE RIG ALREADY RUNS ─────────────────────
+ * `_flightrig` asserts on every board, but only against the tier bag the
+ * registry happens to be holding. This one SETS the tier through the real
+ * `grantPower` purchase path first, so it also pins that a purchased tier
+ * reaches the integrator - which is the `Dragon.js` failure `Ship.js:107-118`
+ * is written against - and it pins the tiers in a world where the hull object
+ * does not exist, which is where the hole was.
+ */
+test('every hull, at every tier, in every world, flies the stats ShipStats declares', async () => {
+  const r = await rig();
+  const rows = [];
+  try {
+    for (const world of ['dock', 'space', 'cinder']) {
+      await goto(r, world);
+      for (const id of SHIP_ORDER) {
+        for (let tier = 0; tier <= 3; tier++) {
+          const want = expectedHull(id, { power: tier });
+          const f = boardHull(r, id, { tiers: { power: tier } });
+
+          /* NOT `assert.equal(f.powerMul, want.powerMul)` alone: a NaN would
+           * fail that too, but so would a legitimate float wobble, and the
+           * house rule about non-finite values reaching the bloom pass is
+           * worth its own line. */
+          for (const [name, got] of [['powerMul', f.powerMul], ['accelMul', f.accelMul],
+            ['cruiseTop', f.cruiseTop], ['boostTop', f.boostTop]]) {
+            assert.ok(Number.isFinite(got), `${world}/${id}+${tier}: ${name} is ${got}`);
+          }
+          assert.ok(Math.abs(f.powerMul - want.powerMul) < 1e-9,
+            `${world}/${id}+${tier}: powerMul ${f.powerMul} against ShipStats' ${want.powerMul}`);
+          assert.ok(Math.abs(f.cruiseTop - want.cruiseTop) < 1e-9,
+            `${world}/${id}+${tier}: cruise top ${f.cruiseTop.toFixed(1)} against ${want.cruiseTop.toFixed(1)}`);
+          assert.equal(r.piloting.cargoCapacity, want.hold,
+            `${world}/${id}+${tier}: hold ${r.piloting.cargoCapacity} against ${want.hold}`);
+
+          /* THE FLOOR THAT MAKES THE THREE LINES ABOVE MEAN SOMETHING. The
+           * defect this case exists for produced powerMul EXACTLY 1 and a
+           * 120 m/s cruise for every hull in the yard, so a matrix in which
+           * nothing beats the slowest ship is the defect, whatever else
+           * agrees. Every hull the yard sells is faster than that. */
+          assert.ok(f.cruiseTop > 120 + 1e-9,
+            `${world}/${id}+${tier} cruises at ${f.cruiseTop.toFixed(1)} m/s - `
+            + 'that is the powerMul-1 fallback, not a hull');
+
+          if (world === 'space') rows.push(`${id}+${tier} ${f.cruiseTop.toFixed(1)}`);
+        }
+      }
+      if (r.piloting.active) r.piloting.disembark({ silent: true, force: true });
+    }
+    /* THE SPREAD IS THE OTHER HALF: twelve identical numbers would satisfy
+     * every equality above if `ShipStats` itself went flat. */
+    console.log(`    cruise top by hull and thrust tier, boarded in the VOID: ${rows.join('  ')}`);
+    const speeds = rows.map((x) => Number(x.split(' ')[1]));
+    assert.ok(Math.max(...speeds) / Math.min(...speeds) > 1.9,
+      `the twelve hull/tier pairs span only x${(Math.max(...speeds) / Math.min(...speeds)).toFixed(2)}`);
+  } finally {
+    for (const id of SHIP_ORDER) delete r.ships._powers[id];
+    if (r.piloting.active) r.piloting.disembark({ silent: true, force: true });
+    await goto(r, 'dock');
     await settle();
   }
 });

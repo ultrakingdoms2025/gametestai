@@ -106,6 +106,7 @@ const GROUPS = [
       ['W', 'Throttle up'],
       ['S', 'Reverse thrust'],
       ['Shift', 'Boost — burns boost fuel, refills when you let go'],
+      ['Z', 'Transit drive — press to spin up, press again to drop out'],
       ['X', 'Airbrake — hold, kills speed fast'],
       ['A D', 'Roll'],
       ['Space', 'Thrust up'],
@@ -148,6 +149,12 @@ const NOTES = [
   ['Swimming', 'Enter any lake, moat or pool and you switch to a swim stroke. Space rises, C dives. Stamina drains slowly; at zero you sink and start drowning.'],
   ['Climbing', 'Face a ledge above jump height and press Space to mantle up. Costs stamina, and only works when there is room to stand on top.'],
   ['Stamina', 'The bar under your health. Sprinting, swimming and climbing spend it; it refills after a short pause. Sprint is gated on it.'],
+  /* The one ship verb a keycap genuinely cannot teach: the drive refuses in
+   * two situations that are invisible from the cockpit (a gravity well and a
+   * hostile lock) and governs itself by altitude, which nothing on screen
+   * explains. It says why every time it refuses, but a player who never gets
+   * it to light once will never see that sentence. */
+  ['Transit drive', 'Z spins up the ship’s interplanetary drive: a couple of seconds of spool, then thousands of metres a second. Its top speed is set by how high you are above the nearest world, so it slows you down on its own as you close and you cannot arrive too fast. It will not spin up close to a planet, inside the yard, or while something has a lock on you — and taking a hit drops you back into normal space.'],
 ];
 
 function el(tag, cls, text) {

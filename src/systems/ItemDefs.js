@@ -395,6 +395,516 @@ export const ITEMS = {
     desc: 'Iridium locked in impact melt, still warm from the floor of the Ash Throne. One cubic metre of it outbids a full Kestrel of ash.',
   },
 
+
+  /* ==================================================================== *
+   * PHASE 2 ORE - nine more planets, and the ladder that spans them
+   * ====================================================================
+   *
+   * Same unit as the Cinder block above: `value` is CREDITS PER CUBIC METRE
+   * OF HOLD. A node is priced by `PlanetDescriptor` as `unitValue * hold`,
+   * and `hold` is the volume `Piloting.stow` charges for it, so one row here,
+   * one cubic metre of cargo and one bag unit are all the same quantity.
+   *
+   * ── The one rule that spans planets ───────────────────────────────────
+   * VALUE CLIMBS WITH THE LEG. An ore is a reason to fly somewhere; if the
+   * ore 288 km out is worth what the ore 62 km out is worth, then the far
+   * planets are scenery with a mining prompt on them. So the bands are
+   * ordered by distance from the yard, and the four-rung ladder inside each
+   * planet (which `definePlanet` enforces) does the local work:
+   *
+   *     planet      km    common      uncommon    rare    exotic
+   *     Cinder      62    6, 16       34, 52      190     310   (above)
+   *     Tessera     88    7           22          140     240
+   *     Sirocco    118    8, 14       30, 46      175     285
+   *     Shoal      142    10          36          200     340
+   *     Vitrine    155    12, 20      44          215     380
+   *     Verdigris  176    14          48, 62      240     430
+   *     Carnelian  205    15          52          260     470
+   *     Sallow     232    17          58, 74      290     520
+   *     Cathedra   288    20          78          320     620
+   *     Lathe      ~250   22          88          360     700
+   *
+   * Lathe is out of order on distance and dearest on value ON PURPOSE. It is
+   * a shepherd moon parked outside Ceraunus's outer ring edge, so reaching it
+   * means crossing a ring plane - the hardest arrival in the system, and the
+   * reward has to say so.
+   *
+   * ── `stack` and `icon` are DERIVED, not chosen ────────────────────────
+   * `stack` steps 20 / 12 / 6 / 4 at 25, 100 and 300 cr/m3, and `icon` turns
+   * over from `ore` to `crystal` at 100. Forty-one hand-picked pairs would be
+   * forty-one chances to make the dear ore the plentiful one by accident.
+   *
+   * ── Every one of these is `trinket`, and that is load-bearing ─────────
+   * A cargo ore never reaches the bag: `Mining.mine` hands the node to
+   * `Piloting.stow` and `Piloting._dock` sells the hold at face value. So a
+   * cargo ore must have NO `ItemUse` case (a `consumable` with no case is a
+   * Use button that returns `unsupported`), NO `BASE_ITEMS` row (the shop
+   * would refund the mine) and NO `WORLD_MARKETS.*.itemBuy` multiplier (a
+   * price signal no price path consults). `planet-minerals.test.mjs` asserts
+   * all three, in both directions. `ferrobasalt` is the single deliberate
+   * exception and it stays the only one.
+   */
+  /* ---- Tessera ---- */
+  regolith: {
+    id: 'regolith',
+    name: 'Regolith Fines',
+    short: 'REG',
+    stack: 20,
+    icon: 'ore',
+    value: 7,
+    kind: 'trinket',
+    colors: [0x8a8781, 0x45433f],
+    desc: "Powdered rock, ground for four billion years by nothing but micrometeorites. It packs like flour and it gets into everything, including the seals.",
+  },
+  anorthite: {
+    id: 'anorthite',
+    name: 'Anorthite',
+    short: 'ANO',
+    stack: 20,
+    icon: 'ore',
+    value: 22,
+    kind: 'trinket',
+    colors: [0xd8d4c6, 0x77736a],
+    desc: "Pale highland feldspar off a crater rim. Cheap, clean and light — the one thing on Tessera that does not stain the gloves.",
+  },
+  sperrylite: {
+    id: 'sperrylite',
+    name: 'Sperrylite',
+    short: 'SPR',
+    stack: 6,
+    icon: 'crystal',
+    value: 140,
+    kind: 'trinket',
+    colors: [0xb6bcc4, 0x4b525c],
+    desc: "Platinum arsenide in tin-bright cubes, shocked out of the bedrock by whatever dug the crater. A find, not a seam.",
+  },
+  helion: {
+    id: 'helion',
+    name: 'Helion Ice',
+    short: 'HEL',
+    stack: 6,
+    icon: 'crystal',
+    value: 240,
+    kind: 'trinket',
+    colors: [0xcfe8f2, 0x4a7f96],
+    desc: "Helium-3 held in ice on a crater floor the sun has not touched since the crater was made. Carry it warm and you carry an empty flask.",
+  },
+  /* ---- Sirocco ---- */
+  silica: {
+    id: 'silica',
+    name: 'Silica Sand',
+    short: 'SIL',
+    stack: 20,
+    icon: 'ore',
+    value: 8,
+    kind: 'trinket',
+    colors: [0xe2c78e, 0x8a7040],
+    desc: "Wind-rounded quartz off the dune sea. Worth almost nothing and there is almost no end of it, which is the entire relationship.",
+  },
+  halite: {
+    id: 'halite',
+    name: 'Halite Slab',
+    short: 'HAL',
+    stack: 20,
+    icon: 'ore',
+    value: 14,
+    kind: 'trinket',
+    colors: [0xf0e6dc, 0x9a8c80],
+    desc: "Rock salt cut out of a dry pan in plates the size of a door. It rings when you strike it and it dissolves if you are careless with the hold.",
+  },
+  selenite: {
+    id: 'selenite',
+    name: 'Selenite Rose',
+    short: 'SEL',
+    stack: 12,
+    icon: 'ore',
+    value: 30,
+    kind: 'trinket',
+    colors: [0xe8d8b0, 0x8d7a52],
+    desc: "Gypsum grown into a bladed rosette under a salt crust. Beautiful, fragile, and it arrives at the yard as gravel if you fly badly.",
+  },
+  cassiterite: {
+    id: 'cassiterite',
+    name: 'Cassiterite',
+    short: 'CAS',
+    stack: 12,
+    icon: 'ore',
+    value: 46,
+    kind: 'trinket',
+    colors: [0x6b5a48, 0x2e2620],
+    desc: "Tin oxide, panned out of a wadi floor by ten thousand years of flash floods that each lasted an hour.",
+  },
+  chalcanth: {
+    id: 'chalcanth',
+    name: 'Chalcanthite',
+    short: 'CHA',
+    stack: 6,
+    icon: 'crystal',
+    value: 175,
+    kind: 'trinket',
+    colors: [0x2f7ec4, 0x11395e],
+    desc: "Copper sulfate in vivid blue blades, grown where a seep bleeds out of a canyon wall. It only forms where water has been, which on Sirocco is almost nowhere.",
+  },
+  fulgurite: {
+    id: 'fulgurite',
+    name: 'Fulgurite',
+    short: 'FUL',
+    stack: 6,
+    icon: 'crystal',
+    value: 285,
+    kind: 'trinket',
+    colors: [0x9c8a6e, 0xd8c9a0],
+    desc: "A hollow glass tube of fused sand — the cast of a lightning strike, taken from the dune it died in. Every one is the shape of one instant.",
+  },
+  /* ---- Shoal ---- */
+  brinesalt: {
+    id: 'brinesalt',
+    name: 'Brine Salt',
+    short: 'BRN',
+    stack: 20,
+    icon: 'ore',
+    value: 10,
+    kind: 'trinket',
+    colors: [0xe6eef0, 0x8fa2a8],
+    desc: "Evaporite scraped off a tidal flat between islands. Coarse, grey and heavy with whatever else the sea left behind.",
+  },
+  nacre: {
+    id: 'nacre',
+    name: 'Nacre Plate',
+    short: 'NAC',
+    stack: 12,
+    icon: 'ore',
+    value: 36,
+    kind: 'trinket',
+    colors: [0xe8e4f0, 0x9c8fb8],
+    desc: "Iridescent shell laid down in sheets on the shallow shelf by something that has been dead a long time. It throws a different colour at every angle.",
+  },
+  polymetal: {
+    id: 'polymetal',
+    name: 'Polymetallic Nodule',
+    short: 'PLY',
+    stack: 6,
+    icon: 'crystal',
+    value: 200,
+    kind: 'trinket',
+    colors: [0x3b3630, 0x16130f],
+    desc: "A black potato of manganese, cobalt and nickel, grown one atom a century on the shelf floor. Nothing about it is quick.",
+  },
+  abyssite: {
+    id: 'abyssite',
+    name: 'Abyssite',
+    short: 'ABY',
+    stack: 4,
+    icon: 'crystal',
+    value: 340,
+    kind: 'trinket',
+    colors: [0x1a3a52, 0x63c8d8],
+    desc: "Hydrothermal precipitate off the wall of the tidal chasm, still faintly warm and faintly luminous. Cut only where the sea is deepest and the ledge narrowest.",
+  },
+  /* ---- Vitrine ---- */
+  rime: {
+    id: 'rime',
+    name: 'Rime Crust',
+    short: 'RIM',
+    stack: 20,
+    icon: 'ore',
+    value: 12,
+    kind: 'trinket',
+    colors: [0xdff0f7, 0x8fb2c4],
+    desc: "Frost feathers scraped off the windward side of anything that stands up. Free, plentiful and it sublimes if the hold runs warm.",
+  },
+  clathrate: {
+    id: 'clathrate',
+    name: 'Clathrate Ice',
+    short: 'CLA',
+    stack: 20,
+    icon: 'ore',
+    value: 20,
+    kind: 'trinket',
+    colors: [0xbcdcec, 0x5d8aa4],
+    desc: "Methane caged inside a lattice of water ice. It fizzes when it thaws and it burns while it melts, which never stops being unsettling.",
+  },
+  cryolite: {
+    id: 'cryolite',
+    name: 'Cryolite',
+    short: 'CRY',
+    stack: 12,
+    icon: 'ore',
+    value: 44,
+    kind: 'trinket',
+    colors: [0xeaf2f6, 0xa8bcc8],
+    desc: "Sodium aluminium fluoride in colourless blocks that all but vanish in meltwater. Miners on Vitrine mark every load with dye for exactly that reason.",
+  },
+  azurine: {
+    id: 'azurine',
+    name: 'Azurine',
+    short: 'AZR',
+    stack: 6,
+    icon: 'crystal',
+    value: 215,
+    kind: 'trinket',
+    colors: [0x2f6fd0, 0x0e2a5e],
+    desc: "Deep blue mineral ice out of a crevasse wall, laid down under a pressure nothing at the surface can reproduce. It fractures along planes you cannot see until it does.",
+  },
+  hyaline: {
+    id: 'hyaline',
+    name: 'Hyaline',
+    short: 'HYA',
+    stack: 4,
+    icon: 'crystal',
+    value: 380,
+    kind: 'trinket',
+    colors: [0xd6f4ff, 0x5fc8e8],
+    desc: "Clear glacial glass from the roof of a subglacial vault, grown in still water in the dark. A flawless piece the size of a fist funds a month.",
+  },
+  /* ---- Verdigris ---- */
+  humic: {
+    id: 'humic',
+    name: 'Humic Nodule',
+    short: 'HUM',
+    stack: 20,
+    icon: 'ore',
+    value: 14,
+    kind: 'trinket',
+    colors: [0x4a3f28, 0x231c11],
+    desc: "Compressed forest floor, wrung into a lump by its own weight. It smells alive and it stains the hold a colour that never comes out.",
+  },
+  malachite: {
+    id: 'malachite',
+    name: 'Malachite',
+    short: 'MAL',
+    stack: 12,
+    icon: 'ore',
+    value: 48,
+    kind: 'trinket',
+    colors: [0x2f8a56, 0x14472b],
+    desc: "Banded green copper carbonate out of a river gorge. The bands are growth rings of a sort, and the wide ones were wet centuries.",
+  },
+  resin: {
+    id: 'resin',
+    name: 'Amber Resin',
+    short: 'RSN',
+    stack: 12,
+    icon: 'ore',
+    value: 62,
+    kind: 'trinket',
+    colors: [0xd08a24, 0x6b3f08],
+    desc: "Hardened sap in fist-sized gouts down a trunk. Warm to hold, light in the hand, and every third piece has something in it.",
+  },
+  sporecryst: {
+    id: 'sporecryst',
+    name: 'Spore Crystal',
+    short: 'SPO',
+    stack: 6,
+    icon: 'crystal',
+    value: 240,
+    kind: 'trinket',
+    colors: [0x7ad8a0, 0x1e5c3c],
+    desc: "A mineral seeded and grown by something in the cave dark, faceted the way a crystal is and branched the way a fungus is. Nobody has settled which it is.",
+  },
+  verdite: {
+    id: 'verdite',
+    name: 'Verdite Heartwood',
+    short: 'VRD',
+    stack: 4,
+    icon: 'crystal',
+    value: 430,
+    kind: 'trinket',
+    colors: [0x1f6b4a, 0x86e8b0],
+    desc: "Wood from the crown of a canopy mesa, mineralised in place and still standing. Cutting one is a day up and a day down, and there are not many left.",
+  },
+  /* ---- Carnelian ---- */
+  ochre: {
+    id: 'ochre',
+    name: 'Ochre Earth',
+    short: 'OCH',
+    stack: 20,
+    icon: 'ore',
+    value: 15,
+    kind: 'trinket',
+    colors: [0xb85c28, 0x5e2b10],
+    desc: "Iron-stained dust, red as a wound and fine as smoke. It is the whole surface of the planet and it is worth what that implies.",
+  },
+  hematite: {
+    id: 'hematite',
+    name: 'Hematite',
+    short: 'HEM',
+    stack: 12,
+    icon: 'ore',
+    value: 52,
+    kind: 'trinket',
+    colors: [0x6e4038, 0x2b1a16],
+    desc: "Specular iron oxide in mirror-bright plates. Held to the light it is silver; held to the ground it is the same red as everything else.",
+  },
+  carnelite: {
+    id: 'carnelite',
+    name: 'Carnelite',
+    short: 'CRN',
+    stack: 6,
+    icon: 'crystal',
+    value: 260,
+    kind: 'trinket',
+    colors: [0xd4552a, 0x6e1c08],
+    desc: "Banded orange chalcedony out of a gorge wall, lit from inside when the sun is low. The planet is named for it, not the other way round.",
+  },
+  monazite: {
+    id: 'monazite',
+    name: 'Monazite',
+    short: 'MNZ',
+    stack: 4,
+    icon: 'crystal',
+    value: 470,
+    kind: 'trinket',
+    colors: [0xc8a24a, 0x584010],
+    desc: "Rare-earth phosphate off the floor of the deep gorge, faintly and permanently warm. Handled with tongs by anyone who intends to keep handling things.",
+  },
+  /* ---- Sallow ---- */
+  brimstone: {
+    id: 'brimstone',
+    name: 'Brimstone',
+    short: 'BRM',
+    stack: 20,
+    icon: 'ore',
+    value: 17,
+    kind: 'trinket',
+    colors: [0xe0cc38, 0x6e6010],
+    desc: "Native sulfur crusted round a vent in yellow cauliflower heads. It is everywhere on Sallow, and so is the smell of it.",
+  },
+  realgar: {
+    id: 'realgar',
+    name: 'Realgar',
+    short: 'RLG',
+    stack: 12,
+    icon: 'ore',
+    value: 58,
+    kind: 'trinket',
+    colors: [0xd4482c, 0x66180c],
+    desc: "Arsenic sulfide in orange-red prisms. It turns to yellow powder in daylight over months, which is why the good pieces come out of shadow.",
+  },
+  orpiment: {
+    id: 'orpiment',
+    name: 'Orpiment',
+    short: 'ORP',
+    stack: 12,
+    icon: 'ore',
+    value: 74,
+    kind: 'trinket',
+    colors: [0xe8b820, 0x6e5208],
+    desc: "Golden arsenic sulfide in sheaves that split like mica. Painters wanted it for two thousand years and it killed a good number of them.",
+  },
+  cinnabar: {
+    id: 'cinnabar',
+    name: 'Cinnabar',
+    short: 'CIN',
+    stack: 6,
+    icon: 'crystal',
+    value: 290,
+    kind: 'trinket',
+    colors: [0xc41c1c, 0x520606],
+    desc: "Mercury sulfide, the most violent red there is. It beads liquid metal if you are careless with heat, and Sallow is not short of heat.",
+  },
+  stibnite: {
+    id: 'stibnite',
+    name: 'Stibnite',
+    short: 'STB',
+    stack: 4,
+    icon: 'crystal',
+    value: 520,
+    kind: 'trinket',
+    colors: [0xa8b0bc, 0x3a4048],
+    desc: "Antimony sulfide in steel-grey needle sprays out of a fumarole throat. A good cluster is a metre of parallel blades and worth a hull plate a blade.",
+  },
+  /* ---- Cathedra ---- */
+  quartzite: {
+    id: 'quartzite',
+    name: 'Quartzite',
+    short: 'QTZ',
+    stack: 20,
+    icon: 'ore',
+    value: 20,
+    kind: 'trinket',
+    colors: [0xd8d2c8, 0x87817a],
+    desc: "Fractured white rock off a shattered plate. Hard, dull and abundant — the gravel the cathedral is built of.",
+  },
+  beryl: {
+    id: 'beryl',
+    name: 'Beryl',
+    short: 'BER',
+    stack: 12,
+    icon: 'ore',
+    value: 78,
+    kind: 'trinket',
+    colors: [0x63c8b0, 0x1e5a4e],
+    desc: "Pale green hexagonal prisms grown in the seams between plates. Common enough here that nobody looks up when one comes in.",
+  },
+  spectrolite: {
+    id: 'spectrolite',
+    name: 'Spectrolite',
+    short: 'SPC',
+    stack: 4,
+    icon: 'crystal',
+    value: 320,
+    kind: 'trinket',
+    colors: [0x2a4a8c, 0x8ad4ff],
+    desc: "Feldspar that throws a sheet of colour across the whole face when the light crosses it, and is grey stone from any other angle.",
+  },
+  lucent: {
+    id: 'lucent',
+    name: 'Lucent',
+    short: 'LUC',
+    stack: 4,
+    icon: 'crystal',
+    value: 620,
+    kind: 'trinket',
+    colors: [0xeef8ff, 0xa0d8ff],
+    desc: "Grown in the vault where nothing has moved for an age, and it holds light — set one down in the dark and come back an hour later and it is still glowing.",
+  },
+  /* ---- Lathe ---- */
+  rimefall: {
+    id: 'rimefall',
+    name: 'Rimefall Ice',
+    short: 'RMF',
+    stack: 20,
+    icon: 'ore',
+    value: 22,
+    kind: 'trinket',
+    colors: [0xe4f0f8, 0x93a8ba],
+    desc: "Ring ice swept up by the moon it shepherds and dropped in drifts on the leading face. It falls slowly enough to watch.",
+  },
+  sider: {
+    id: 'sider',
+    name: 'Siderite Iron',
+    short: 'SDR',
+    stack: 12,
+    icon: 'ore',
+    value: 88,
+    kind: 'trinket',
+    colors: [0x7a7268, 0x2e2a26],
+    desc: "Meteoric nickel-iron, etched inside with a crystal pattern that takes a million years of cooling to grow and cannot be faked.",
+  },
+  tychite: {
+    id: 'tychite',
+    name: 'Tychite',
+    short: 'TYC',
+    stack: 4,
+    icon: 'crystal',
+    value: 360,
+    kind: 'trinket',
+    colors: [0xa8e0d0, 0x2e6a5e],
+    desc: "A carbonate that only grows where ring ice lands, melts under the pressure of its own arrival and freezes again. Lathe is the only address it has.",
+  },
+  aurichalc: {
+    id: 'aurichalc',
+    name: 'Aurichalc',
+    short: 'AUR',
+    stack: 4,
+    icon: 'crystal',
+    value: 700,
+    kind: 'trinket',
+    colors: [0xf0c040, 0x8a5c08],
+    desc: "A gold-copper alloy nobody can account for, cut from the floor of the shepherd crater under a sky filled edge to edge with rings. The dearest cubic metre in the system, and the furthest.",
+  },
+
   /* ---- Lodestar Yard ------------------------------------------------
    *
    * Three items, and every one of them is in a table something already rolls.

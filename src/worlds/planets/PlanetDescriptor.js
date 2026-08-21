@@ -28,10 +28,40 @@
  *                          collision heightfield are both this grid - see
  *                          `PlanetWorld._buildTerrain` on why they must be.
  *
- * gravity       number     m/s^2 at the surface. Reported and published on the
- *                          world; Phase 1 does not retune the player integrator
- *                          against it, and saying so is better than a number
- *                          nobody applied.
+ * gravity       number     m/s^2 at the surface. It reaches BOTH the ship
+ *                          (`Piloting._env`) and the player on foot
+ *                          (`Player.setWorldGravity`, via `worldGravity()` in
+ *                          `WorldRules.js`, which is the single reader).
+ *
+ *                          Phase 1 said here that it did NOT reach the player,
+ *                          "and saying so is better than a number nobody
+ *                          applied" - which was the honest call while one planet
+ *                          existed. With ten spanning 1.62 to 10.10 it was a
+ *                          whole dimension of variety left unused, so it landed.
+ *
+ *                          It is applied as a RATIO, not as m/s^2:
+ *                          `g_player = CONFIG.player.gravity * (gravity / 9.81)`.
+ *                          The default is -22, i.e. 2.24 real g, and every
+ *                          hand-built world is authored against it - feed raw
+ *                          m/s^2 in and Verdigris, the HEAVIEST body in the
+ *                          system, would weigh less than half a shopping
+ *                          concourse. A planet publishing 9.81 is byte-identical
+ *                          to one publishing nothing.
+ *
+ *                          The jump is re-solved rather than left alone: apex
+ *                          scales as r^-1/3 and hang time as r^-2/3, so airtime
+ *                          grows as the SQUARE of jump height. Leaving the
+ *                          impulse alone gives Tessera 6.1x the default apex (a
+ *                          catapult over roofless geometry); preserving apex
+ *                          exactly makes the one famous fact about low gravity
+ *                          untrue. Measured: Tessera 1.67 m apex / 1.88 s hang
+ *                          against a default 0.88 / 0.53.
+ *
+ *                          `airAcceleration` scales as r^2/3 so the total mid-air
+ *                          delta-v one jump buys is INVARIANT. Without that,
+ *                          3.5x the airtime is 3.5x the steering - a floaty jump
+ *                          would be an easier one, which is backwards. It should
+ *                          be a COMMITTED one.
  *
  * ---- terrain -------------------------------------------------------------
  * terrain       object     verbatim params for `HEIGHT_FIELDS.planet`. Plain
@@ -45,6 +75,18 @@
  * ---- look ----------------------------------------------------------------
  * palette       object     how the ground is coloured.
  *   material      string   material-library key for the terrain surface.
+ *                          IT MUST BE A HUE-FREE KEY. `_buildTerrain` writes
+ *                          `bands` as vertex colours and vertex colours
+ *                          MULTIPLY into the material's albedo map, so any hue
+ *                          baked into that map is a filter over this entire
+ *                          table. `dirt.ground` measures linear R:G:B =
+ *                          1.79 : 1 : 0.49 and rendered the ice world as brown
+ *                          moorland while `planet-atmosphere.test.mjs` was
+ *                          happily measuring 176 degrees of hue in its bands -
+ *                          a numeric gate on THIS FILE cannot see what this
+ *                          file gets multiplied by. Use `rock.neutral` (the
+ *                          general case) or `ice.sheet`; `dirt.ground` is
+ *                          grandfathered on Cinder alone and deliberately.
  *   tile          number   metres one texture tile covers on the ground.
  *   bands         array    [{ upTo, color }] absolute-height colour bands,
  *                          interpolated. The last band's `upTo` is ignored.
@@ -92,17 +134,74 @@
  * ---- what is on the ground ----------------------------------------------
  * props         array      scatter fields. Each:
  *   id            string   unique within the planet.
- *   kind          string   'columns' | 'shards' | 'boulders' | 'vents' - the
- *                          instanced prop families `PlanetProps` knows how to
- *                          build. A planet that needs a new SHAPE adds a kind
- *                          there; a planet that needs a new PLACE only adds a
- *                          record here.
+ *   kind          string   one of `PROP_KINDS` - the instanced prop families
+ *                          `PlanetProps` knows how to build, listed below. A
+ *                          planet that needs a new SHAPE adds a kind there; a
+ *                          planet that needs a new PLACE only adds a record
+ *                          here.
  *   region        object   see below.
  *   count         number   how many to try to place.
- *   size          object   kind-specific dimensions, all metres.
+ *   size          object   kind-specific dimensions, all metres. The per-kind
+ *                          records are below. NOT validated here: the two
+ *                          styles below ('rMin/rMax' and '[min, max]') are
+ *                          read, range-checked and REFUSED by
+ *                          `PlanetProps.buildPropField`, which is also the only
+ *                          module that knows what each field means. A second
+ *                          copy of those rules here would be a second copy that
+ *                          goes stale.
  *   tint          array    colours to pick between.
- *   collide       bool     whether each instance gets a box collider.
+ *   trunkTint     array    `growth` only - the second palette, for the trunk.
+ *   glow          number   emissive colour for the whole field, 0/absent for
+ *                          none. Per FIELD and not per instance: an instance
+ *                          colour multiplies the diffuse and never the
+ *                          emissive, so a glowing crystal field is one material
+ *                          off the shared rock - still one mesh, still one draw
+ *                          call. `glowStrength` (default 1.4) scales it.
+ *   collide       bool     whether each instance gets a collider. WHAT that
+ *                          collider is depends on the kind - a spire gets its
+ *                          foot, growth gets its trunk, a slab gets a rotated
+ *                          step. See the `PlanetProps` header.
  *   spacing       number   minimum centre-to-centre distance, metres.
+ *
+ *   THE FAMILIES, and the `size` record each one reads:
+ *
+ *   columns    hexagonal basalt prisms, tall and near-plumb.
+ *                { rMin, rMax, hMin, hMax, sides? }
+ *   shards     four-sided obsidian spikes, leaning hard.
+ *                { wMin, wMax, hMin, hMax }
+ *   boulders   faceted ejecta blocks, half-buried, tumbled.
+ *                { rMin, rMax }
+ *   vents      flared open fumarole mouths. A `vents` field also gets a plume
+ *              field driven off the same points.
+ *                { rMin, rMax, plumeMin?, plumeMax? }
+ *   spires     tall, sharply tapering faceted pinnacles - ice on a glacier,
+ *              crystal on a shattered plate. Concave profile, near-zero tip,
+ *              random lean off vertical so a field looks grown.
+ *                { h: [min, max], base: [min, max], lean?, facets? }
+ *                lean   radians off plumb, +/-, default 0.16, capped 0.6
+ *                facets sides, default 5, clamped to 4..7
+ *   growth     biotic growth for a jungle: a slim tapered trunk under a
+ *              squashed, lumped, drooping canopy mass. Takes TWO palettes -
+ *              `tint` is the canopy and `trunkTint` the trunk.
+ *                { trunk: [min, max], h: [min, max], canopy: [min, max], droop? }
+ *                trunk  trunk radius; the canopy is what is sampled per
+ *                       instance and the trunk follows it in proportion, so
+ *                       this sets the MEAN
+ *                canopy canopy radius, sampled twice per instance so no crown
+ *                       is round
+ *                droop  0..1, how far the underside sags and flares, default
+ *                       0.35
+ *   slabs      tilted flat plates - shattered ice, upended tectonic sheets,
+ *              cracked pavement. Every instance is tilted, yawed and a
+ *              different thickness, or a field of them reads as a floor.
+ *                { w: [min, max], d: [min, max], t: [min, max], tilt? }
+ *                tilt   radians off horizontal, +/-, default 0.5, capped 1.35
+ *
+ *   Every `[min, max]` pair must be finite and positive with max >= min.
+ *   min === max is allowed and means "this dimension does not vary"; anything
+ *   that could produce a zero, a negative or a NaN throws at build time,
+ *   because a zero scale is a singular instance matrix and decomposing one
+ *   divides by the scale.
  *
  * ==========================================================================
  *  MINERALS - the reason to fly to THIS planet rather than any planet
@@ -219,7 +318,7 @@
 import { LANDFORM_KINDS } from '../terrain/PlanetHeight.js';
 
 const REGION_SHAPES = new Set(['disc', 'annulus', 'corridor', 'rect', 'field']);
-const PROP_KINDS = new Set(['columns', 'shards', 'boulders', 'vents']);
+const PROP_KINDS = new Set(['columns', 'shards', 'boulders', 'vents', 'spires', 'growth', 'slabs']);
 const SKY_KINDS = new Set(['daylight', 'alpine', 'space']);
 
 /**

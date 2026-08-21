@@ -1,5 +1,6 @@
 import { cloneLivery, normColor, FINISH_PROPS } from '../mounts/Livery.js';
-import { SHIP_SLOTS, SHIP_STATS, SHIP_ORDER, SHIP_SKINS_BY_ID } from './ShipStats.js';
+import { SHIP_SLOTS, SHIP_STATS, SHIP_ORDER, SHIP_SKINS_BY_ID, SHIP_CLASSES } from './ShipStats.js';
+import { Ship } from './Ship.js';
 
 /**
  * Who owns which hull's colours and upgrade tiers.
@@ -43,6 +44,9 @@ export class ShipRegistry {
     this._powers = {};
     /** @type {Map<string, import('./Ship.js').Ship>} */
     this._ships = new Map();
+    /** Stat-only hulls that outlive a world change. See {@link statsFor}. */
+    /** @type {Map<string, Ship>} */
+    this._records = new Map();
     /** The hull the panel opens on. Null when the player is not in a yard. */
     this._selected = null;
 
@@ -231,6 +235,67 @@ export class ShipRegistry {
     this.bus?.emit?.('ship:powers', { shipId, powers: { ...bag } });
   }
 
+  /**
+   * THE FLIGHT STATS FOR A HULL, VALID IN EVERY WORLD.
+   *
+   * ── The hole this closes, and it was open in the GAME, not only in a rig ──
+   *
+   * `_ships` is world-scoped ON PURPOSE: `_adopt` replaces it on every
+   * `world:changed` because a `Ship` whose cloned materials have been disposed
+   * is a livery write into a dead uniform. But `Piloting.board` used `_ships`
+   * (through `_shipRecord`) to fetch the object it hands `Flight.setShip`, and
+   * `powerMul` is not a material — it is the hull's whole flight envelope. So
+   * every board that did not happen INSIDE THE YARD fell through to
+   * `setShip({ powerMul: 1 })`:
+   *
+   *   - land on Cinder, get out to mine, get back in  ->  your Kestrel is no
+   *     longer a 210 m/s courier, it is a 120 m/s hull, slower than the skiffs
+   *     shooting at it, and nothing anywhere says so;
+   *   - load a save taken in flight (`Piloting.deserialize` re-boards) -> same;
+   *   - and every headless suite that boards after `goto('space')`, which is
+   *     how `space-combat`, `space-objectives` and `ship-transit` came to fly a
+   *     hull the game does not have.
+   *
+   * That is `Flight.setShip`'s own documented failure ("every hull would fly at
+   * 120 m/s") arriving through the ONE door that guard cannot watch: the
+   * fallback branch hands it a bare `{ powerMul: 1 }` snapshot, and snapshots
+   * are exempt from the throw because a rig may legitimately have one.
+   *
+   * ── Why a detached `Ship` and not a number ────────────────────────────────
+   *
+   * The arithmetic that turns `SHIP_BASE_STATS` plus an owned bag into
+   * `powerMul` / `accelMul` / `holdCapacity` lives in `Ship.applyPowers`, and
+   * `BIAS_PER_POINT` is derived there against the tier ladder. Recomputing it
+   * here would be a second copy of a derivation that has already been wrong
+   * once (`0.10` made a tiered Dray faster than a stock Kestrel). So this
+   * builds a real `Ship` with an EMPTY `slotMats` — no geometry, no materials,
+   * nothing a world can dispose — and runs the real `applyPowers` on it.
+   *
+   * It is re-synced from the owned bag on every call, so a tier bought in the
+   * yard is already on the record by the time the player is on a planet, and
+   * there is no second copy of the truth to drift.
+   *
+   * The live world's hull is preferred when there is one, so a caller in the
+   * yard still gets the object the panel is painting.
+   *
+   * @param {string} shipId
+   * @returns {Ship|null} null only for a hull id that is not a ship
+   */
+  statsFor(shipId) {
+    if (!shipId) return null;
+    const live = this._ships.get(shipId);
+    const bag = { ...(this._powers[shipId] || {}) };
+    if (live) { live.applyPowers?.(bag); return live; }
+    if (!SHIP_CLASSES[shipId]) return null;
+    let rec = this._records.get(shipId);
+    if (!rec) {
+      rec = new Ship({ id: shipId, displayName: SHIP_CLASSES[shipId].name, slotMats: {} });
+      this._records.set(shipId, rec);
+    }
+    rec.applyPowers(bag);
+    return rec;
+  }
+
   /** Owned tiers for one hull (copy), or every hull if no id is given. */
   getPowers(shipId) {
     if (shipId) return { ...(this._powers[shipId] || {}) };
@@ -290,5 +355,6 @@ export class ShipRegistry {
     this._offWorld?.();
     this._offWorld = null;
     this._ships.clear();
+    this._records.clear();
   }
 }

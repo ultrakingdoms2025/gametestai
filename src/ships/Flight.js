@@ -129,6 +129,74 @@ const clamp = THREE.MathUtils.clamp;
  * point governs cruise (so lesson 2 has teeth) and the cap governs boost (so
  * "a hard speed cap" is a thing that actually binds), rather than one of them
  * being decoration.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  THE THIRD CEILING: THE TRANSIT DRIVE
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Cruise and boost are both about a FIGHT: 120 to 260 m/s is the band in which
+ * a turning radius and a boost budget mean something. They are the wrong tool
+ * for a solar system, and the arithmetic says so out loud.
+ *
+ * `worlds/space/Bodies.js` puts Cinder 62 km from the dock and admits, in its
+ * own docblock, that the layout was pinned to an ASSUMED envelope of "cruise
+ * 260 m/s, boost 1600 m/s" and should be re-derived "when the flight model
+ * lands". The flight model landed at 120-285 m/s sustained. 62 km at 120 m/s
+ * is 517 seconds - eight and a half minutes of holding one key in a straight
+ * line - and Phase 2 puts nine more bodies out to ~300 km, where the same
+ * arithmetic gives forty minutes. The layout cannot be shrunk to fix it: the
+ * radii and distances were chosen so that the sky reads with depth (see the
+ * `screen fraction` table in `Bodies.js`) and collapsing them turns a solar
+ * system into a diorama.
+ *
+ * So there is a third ceiling, and it is a SEPARATE DRIVE rather than a bigger
+ * boost. Five things make it a mode instead of a number:
+ *
+ *   1. IT IS TOGGLED, not held, and it SPOOLS. `transitSpoolUp` seconds in and
+ *      `transitSpoolDown` out, with the FOV, the chase distance and the drive
+ *      note all riding the same 0..1 `transitSpool`. Engaging is an event you
+ *      hear and see, not a number that changes.
+ *
+ *   2. ITS SPEED IS GOVERNED BY ALTITUDE, and that one rule replaces every
+ *      separate drop-out rule a supercruise usually needs:
+ *
+ *          maxTransitSpeed = clamp(altitude * transitK, cruiseTop, transitTop)
+ *
+ *      A ship 50 km above a surface may do 5,000 m/s; a ship 2 km up may do
+ *      360; a ship at Cinder's handoff radius (900 m up) is held to its own
+ *      cruise top and cannot exceed it. The consequences are all free:
+ *      closing on a planet DECELERATES you automatically, you cannot overshoot
+ *      into a world at 5 km/s, and by the time `approachState()` is calling it
+ *      an approach you are already flying at a speed you can land from. The
+ *      deceleration is real and it is `dv/dt = -transitK * v`: at 5,000 m/s
+ *      that is 900 m/s² of braking that nobody had to write.
+ *
+ *   3. IT IS CAP-GOVERNED, NOT DRAG-GOVERNED, and that is `Ship.js` lesson 2
+ *      paid a second way. Drag is suppressed in proportion to the spool, and
+ *      the drive pushes along the velocity until the altitude cap stops it -
+ *      so `accelMul` changes how fast a hull REACHES transit speed and has no
+ *      effect at all on what that speed is. Every hull crosses the volume in
+ *      the same time, which is deliberate: a slow hull must not lock a player
+ *      out of a planet.
+ *
+ *   4. STEERING IS THE SAME ASSIST, TURNED DOWN. `transitFalloff` multiplies
+ *      the SAME `gain` that `authorityFalloff` builds in `_stepAngular` -
+ *      there is no second steering mechanism and no separate clamp. At
+ *      5,000 m/s full authority would make a mouse twitch a 90-degree course
+ *      change; 30% of it is a supercruise you can hold a bearing in.
+ *
+ *   5. IT DOES NOT KNOW WHAT A PLANET IS. This file has no `Bodies.js` import
+ *      and is not getting one. The altitude and the mass lock arrive through
+ *      `env.transitAltitude` and `env.transitLock`, filled by `Piloting`,
+ *      which is the class that already owns `approachState`. `engageTransit`
+ *      is therefore a dumb latch: it is `Piloting._pollTransit` that refuses,
+ *      and refuses out loud.
+ *
+ * -- Where the two numbers came from -----------------------------------------
+ *
+ * `transitTop` 5,000 m/s and `transitK` 0.20 1/s were solved against the real
+ * layout and then MEASURED by flying it; the arithmetic is written out at the
+ * constants and the flown times are in `scripts/tests/ship-transit.test.mjs`.
  */
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -216,6 +284,136 @@ export const FLIGHT = Object.freeze({
   /** Seconds after releasing boost before the pool starts refilling. */
   boostRegenDelay: 1.2,
 
+  /* ── TRANSIT DRIVE. See the third-ceiling section in the header. ─────── */
+  /**
+   * The drive's own ceiling, m/s. NOT multiplied by `powerMul`, and that is
+   * the one deliberate break with every other speed in this table.
+   *
+   * `thrust`, `hardCap` and `omegaCap` are all per-hull because cruise and
+   * boost are what a DOGFIGHT is made of and a hull should be better or worse
+   * at one. Transit is not a fight, it is the road between them: a Dray
+   * hauling ore and a tier-3 Kestrel cross the volume in the same time, so a
+   * player who bought the cheap hull is not locked out of a planet by it.
+   *
+   * The `powerMul` spread is x1.90 (Dray stock 1.25 to Kestrel tier 3 2.38).
+   * Run the closed form at the constant below with this number tiered as
+   * `2,857 * powerMul` - which gives a stock Kestrel the same 5,000 - and the
+   * dock-to-Cinder leg becomes 24.8 s in a stock Dray against 20.5 s in a
+   * tier-3 Kestrel. Not a disaster, but it is a 21% tax on being poor levied
+   * on the one part of the game that is pure travel time, and it buys nothing:
+   * there is no skill in it, no decision in it and nothing to feel.
+   *
+   * 5,000 m/s is 5 km/s, which is why the HUD switches to km/s above 1,000 -
+   * "4,983" is a number a pilot reads as noise.
+   */
+  transitTop: 5000,
+  /**
+   * The altitude law, 1/s: metres of surface clearance to m/s of allowance.
+   *
+   * ── THE ARITHMETIC, against the real layout in `Bodies.js` ───────────────
+   *
+   * Cinder sits 62,000 m from the dock with a 9,000 m radius and a 9,900 m
+   * handoff, so the outbound leg is 52,100 m long and the altitude above its
+   * surface runs 53,000 m (at the dock) down to 900 m (at handoff). Flying it
+   * radially, the time is the integral of da/v(a) with v = clamp(aK, cruise,
+   * transitTop), which splits into three closed-form pieces:
+   *
+   *   a1 = transitTop/K      the altitude above which the drive is flat out
+   *   a0 = cruiseTop/K       the altitude below which it is back at cruise
+   *
+   *   t = (53,000 - a1)/transitTop  +  (1/K)·ln(a1/a0)  +  (a0 - 900)/cruiseTop
+   *
+   * At K = 0.20 and transitTop = 5,000, for a stock Kestrel (powerMul 1.75,
+   * cruiseTop 210): a1 = 25,000 m, a0 = 1,050 m, and
+   *
+   *   t = 28,000/5,000 + (1/0.20)·ln(23.81) + 150/210
+   *     = 5.60 + 15.85 + 0.71 = 22.2 s
+   *
+   * against a target window of 15-25 s. The same arithmetic on a 270 km leg
+   * (the furthest Phase 2 body) gives 47.2 s of flat-out running plus the same
+   * 16.6 s tail = 63.8 s, against a target of 60-90 s. Both land inside, and
+   * the middle term - the logarithm - is what makes that possible: it is the
+   * only part that does not scale with the length of the leg, so a leg five
+   * times longer costs under three times the time.
+   *
+   * The closed form is the DERIVATION, not the claim. `ship-transit.test.mjs`
+   * flies both legs through the real integrator with the real steering and
+   * asserts the flown numbers; the flown Cinder time comes out about 1.4 s
+   * longer than 22.2 s because a real leg pays for the 1.8 s spool and for the
+   * ship not starting at 5,000 m/s.
+   *
+   * ── AND K IS PINNED FROM ABOVE BY A SAFETY PROPERTY, NOT BY TASTE ────────
+   *
+   * The speed at a given altitude is `a·K` directly, so raising K makes the
+   * hop faster AND the arrival hotter in the same stroke. Cinder's atmosphere
+   * shell is 1,600 m above its surface, and the slowest thing the yard sells -
+   * a stock Dray, powerMul 1.25 - boosts at 260 x 1.25 = 325 m/s. Requiring
+   * that the drive never put ANY hull into a body's air faster than that hull
+   * could have got there on its own engine gives
+   *
+   *     1,600 · K  <=  325       ->       K <= 0.203
+   *
+   * 0.20 is that ceiling, rounded down to two figures: 320 m/s at the
+   * atmosphere shell, 5 m/s of margin under the slowest hull's own boost. Go
+   * to 0.25 and it is 400 m/s, faster than a stock Dray can ever move, which
+   * is the "arrived at a planet at a speed the flight model has no answer for"
+   * failure with a smaller number on it. By the handoff radius (900 m up) the
+   * law wants 180 m/s and the cruise floor has already taken over for every
+   * hull above a Dray tier 1.
+   */
+  transitK: 0.20,
+  /** Seconds from the key to full drive. Long enough to be an event, short
+   *  enough that a player who mis-timed it is not stuck watching. */
+  transitSpoolUp: 1.8,
+  /**
+   * Seconds from full drive back to normal space.
+   *
+   * Shorter than the spool-up because dropping out is usually URGENT - it is
+   * what you do when something appears - but not instant: the speed cap sweeps
+   * `transitTop` -> `hardCap*pm` across this window, so a Kestrel sheds 5,000
+   * to 455 m/s at about 3,800 m/s² over 1.2 s and 3.3 km. Cutting it to one
+   * frame instead would be a `setLength` from 5,000 to 455 in 16 ms, which is
+   * the same one-frame teleport the two-cap boost arrangement was thrown out
+   * for at the top of this file.
+   */
+  transitSpoolDown: 1.2,
+  /**
+   * The drive's push along the velocity, m/s², at full spool. Times accelMul.
+   *
+   * Drag is suppressed by the spool (see `_stepLinear`), so this does not
+   * fight a drag term the way `thrust` does - it runs until the altitude cap
+   * stops it. 5,000 - 210 = 4,790 m/s of build at 2,400 m/s² is 2.0 s, which
+   * lands just after the 1.8 s spool finishes, so the drive reaches its
+   * ceiling right as the sound settles rather than long after.
+   */
+  transitThrust: 2400,
+  /**
+   * ASSIST 4, in transit: authority LOST at full spool. 1 -> 0.30.
+   *
+   * Multiplied into the same `gain` that `authorityFalloff` builds, so this is
+   * a turn of the existing knob and not a second steering system. The number
+   * is set by what a mouse can hold: at 5,000 m/s a stock Kestrel with full
+   * authority (0.6, since speed/cruiseTop is pinned) turns at 1.42 rad/s and a
+   * 20 ms twitch is 1.6 degrees of course - 140 m of lateral error per second
+   * of flight, which is unflyable over a 250 km leg. At 0.30 of that it turns
+   * at 0.42 rad/s: 90 degrees takes 3.7 s, which is a supercruise you steer
+   * rather than one you fight.
+   */
+  transitFalloff: 0.70,
+  /**
+   * FOV at full spool is `baseFov + this`, BLENDED toward rather than added.
+   *
+   * Added would stack on top of the cruise and boost kicks, which are both
+   * already pinned at their maxima at 5,000 m/s - 75 + 7 + 12 = 94 for any
+   * hull - and 94 + 24 is a fisheye. Blending means transit HOLDS 99 degrees
+   * whatever the speed and whatever the hull, which is 5 degrees clear of the
+   * boost peak (so the two read differently) and cannot run away.
+   */
+  fovTransitKick: 24,
+  /** Chase distance added at full spool, m. 21 m at boost -> 35 m in transit;
+   *  the hull has to get small for 5 km/s to read as 5 km/s. */
+  chaseTransitPull: 14,
+
   /* ── ASSIST 3: velocity alignment ────────────────────────────────────── */
   /** rad/s the velocity vector is rotated toward the nose while coasting. */
   alignBase: 0.45,
@@ -254,15 +452,68 @@ export function boostTopSpeed(powerMul = 1) {
  * Exported because it is the number lesson 1 is about, and a caller (a spec
  * board, a tutorial, the test) should read it from the same arithmetic the
  * integrator uses rather than restating it.
+ *
+ * `spool` defaults to 0, so every existing caller asks the question it always
+ * asked. Pass the drive's spool to get the transit answer from the same line
+ * rather than from a second formula that could drift.
  */
-export function turnRadius(speed, powerMul = 1, axis = 'pitch') {
+export function turnRadius(speed, powerMul = 1, axis = 'pitch', spool = 0) {
   const rate = axis === 'roll' ? FLIGHT.rollRate
     : axis === 'yaw' ? FLIGHT.yawRate
       : FLIGHT.pitchRate;
   const authority = 1 - FLIGHT.authorityFalloff * clamp(speed / cruiseTopSpeed(powerMul), 0, 1);
-  const omega = Math.min(rate * powerMul * authority, FLIGHT.omegaCap * powerMul);
+  const trim = 1 - FLIGHT.transitFalloff * clamp(spool, 0, 1);
+  const omega = Math.min(rate * powerMul * authority * trim, FLIGHT.omegaCap * powerMul);
   return omega > 0 ? speed / omega : Infinity;
 }
+
+/**
+ * THE ALTITUDE LAW. The whole of the transit drive's speed rule, in one line.
+ *
+ *     clamp(altitude * transitK, cruiseTop(powerMul), transitTop)
+ *
+ * Exported and pure so the HUD, the test and the integrator all read the same
+ * arithmetic - a governor whose displayed number is computed by a second copy
+ * of the rule is a governor that will one day disagree with itself.
+ *
+ * ── EVERY WAY `altitude` CAN BE HOSTILE, AND WHAT EACH ONE GETS ─────────────
+ *
+ * This project lost a day to a single NaN reaching `UnrealBloomPass` and
+ * blacking out a whole frame (19 NaN pixels destroyed 921,600), so the guards
+ * here are not defensive habit, they are the house rule:
+ *
+ *   NEGATIVE   `approachState().altitude` is surface distance and goes NEGATIVE
+ *              inside a body. Unclamped, `-9,000 * 0.18` is -1,620 m/s, and a
+ *              negative cap fed to `Vector3.setLength` reverses the velocity -
+ *              a ship that clipped a planet would fly out backwards at 1.6
+ *              km/s. Clamped to 0 first, so inside a body the answer is the
+ *              cruise floor.
+ *   +Infinity  a volume with no bodies in it. There is nothing to be near, so
+ *              the drive gets its ceiling.
+ *   NaN / -Inf both mean "the caller does not know", and the safe answer to
+ *              that is never the fast one: they get the cruise floor, which is
+ *              a speed the ship can already reach without this drive at all.
+ *
+ * @param {number} altitude metres to the nearest SURFACE, negative inside
+ * @param {number} [powerMul]
+ * @returns {number} a finite, positive m/s ceiling. Always.
+ */
+export function transitSpeedLimit(altitude, powerMul = 1) {
+  const cruise = cruiseTopSpeed(powerMul);
+  if (altitude === Infinity) return FLIGHT.transitTop;
+  if (!Number.isFinite(altitude)) return cruise;
+  const clear = altitude > 0 ? altitude : 0;
+  const want = clear * FLIGHT.transitK;
+  return want < cruise ? cruise : want > FLIGHT.transitTop ? FLIGHT.transitTop : want;
+}
+
+/** The drive's states, in the order a flight walks them. */
+export const TRANSIT_STATE = Object.freeze({
+  off: 'off',
+  spooling: 'spooling',
+  engaged: 'engaged',
+  dropping: 'dropping',
+});
 
 /* ══════════════════════════════════════════════════════════════════════════
  *  Module-level scratch. HOUSE RULE: never allocate inside a frame handler.
@@ -333,6 +584,23 @@ export class Flight {
     this._boostIdle = FLIGHT.boostRegenDelay;
     /** Whether boost was actually granted last step (fuel AND throttle both). */
     this.boosting = false;
+
+    /* ── The transit drive. See the third-ceiling section in the header. ──
+     *
+     * Four fields and nothing else: a state, the 0..1 ramp everything else
+     * rides, the altitude cap recomputed each step, and why it last dropped.
+     * Deliberately NOT part of `command`: the command struct is what a
+     * keyboard writes sixty times a second, and this is a latched mode that
+     * survives the player letting go of every key. */
+    /** @type {'off'|'spooling'|'engaged'|'dropping'} */
+    this.transitState = TRANSIT_STATE.off;
+    /** 0..1. Drives speed, steering authority, FOV, chase distance and sound. */
+    this._transitSpool = 0;
+    /** m/s, from the altitude law. Recomputed every step, never stale. */
+    this._transitCap = cruiseTopSpeed(this._powerMul);
+    /** Why the drive last left `engaged`. Null while it never has. */
+    this.transitDropReason = null;
+
     if (ship) this.setShip(ship);
   }
 
@@ -392,6 +660,69 @@ export class Flight {
   /** The hard cap for this ship, which is what boost reaches. */
   get boostTop() { return boostTopSpeed(this._powerMul); }
 
+  /* ── Transit drive ─────────────────────────────────────────────────── */
+
+  /** 0..1: how far into the drive this ship is. The one number everything rides. */
+  get transitSpool() { return this._transitSpool; }
+  /** True once the drive is at full authority. False all through the spool. */
+  get transitEngaged() { return this.transitState === TRANSIT_STATE.engaged; }
+  /** True from the key press until the drive is fully back down. */
+  get transitLive() { return this.transitState !== TRANSIT_STATE.off; }
+  /** m/s the altitude law is allowing right now. */
+  get transitCap() { return this._transitCap; }
+
+  /**
+   * Start the drive. A DUMB LATCH, and that is the design.
+   *
+   * Every reason to refuse - an approach phase, the yard's handoff sphere, a
+   * hostile lock - is a fact about the body layout, and this file has no
+   * `Bodies.js` import and is not getting one (see the header). `Piloting`
+   * owns `approachState`, so `Piloting._pollTransit` is what refuses and what
+   * tells the player why. What this DOES own is the one refusal that is a fact
+   * about the drive itself: you cannot re-engage something already running.
+   *
+   * @returns {boolean} true if the spool actually started
+   */
+  engageTransit() {
+    if (this.transitState === TRANSIT_STATE.spooling
+      || this.transitState === TRANSIT_STATE.engaged) return false;
+    this.transitState = TRANSIT_STATE.spooling;
+    this.transitDropReason = null;
+    return true;
+  }
+
+  /**
+   * Bring the drive down.
+   *
+   * `hard` exists for exactly two callers and neither of them is gameplay:
+   * `halt()` and `place()`, which teleport a ship into a berth or a cutscene
+   * and must not leave a drive spooling in a hangar. Everything a PLAYER can
+   * do - the toggle, a mass lock, taking a hit - goes through the ramp, so the
+   * speed cap sweeps down over `transitSpoolDown` instead of snapping.
+   *
+   * @param {string|null} reason recorded for the HUD and the tests
+   * @param {boolean} [hard] skip the ramp entirely
+   * @returns {boolean} true if there was anything to drop
+   */
+  dropTransit(reason = null, hard = false) {
+    const was = this.transitState !== TRANSIT_STATE.off;
+    if (was) this.transitDropReason = reason;
+    if (hard) {
+      this.transitState = TRANSIT_STATE.off;
+      this._transitSpool = 0;
+      return was;
+    }
+    if (this.transitState === TRANSIT_STATE.off
+      || this.transitState === TRANSIT_STATE.dropping) return false;
+    this.transitState = TRANSIT_STATE.dropping;
+    return true;
+  }
+
+  /** The player's key: engage if it is down, drop if it is up. */
+  toggleTransit(reason = 'pilot') {
+    return this.transitLive ? this.dropTransit(reason) : this.engageTransit();
+  }
+
   /** Unit nose vector, into `out` (allocation-free for callers that pass one). */
   forward(out = _fwd) { return out.copy(FWD_LOCAL).applyQuaternion(this.quaternion); }
   up(out = _up) { return out.copy(UP_LOCAL).applyQuaternion(this.quaternion); }
@@ -411,6 +742,11 @@ export class Flight {
     this.omega.set(0, 0, 0);
     this._stick.x = 0;
     this._stick.y = 0;
+    /* A ship that has been stopped dead is not in transit, and the drop is
+     * HARD rather than ramped: `halt` is called by `place`, which is how a
+     * hull gets put in a berth, and a berthed ship counting down a spool would
+     * come back up to 5 km/s the moment anybody read `transitLive`. */
+    this.dropTransit('halted', true);
     return this;
   }
 
@@ -471,6 +807,17 @@ export class Flight {
    *   `BINDABLE` row only because this file does not own `Input.js`; adding
    *   the row is a one-line change and `held()` already resolves rebinds.
    *
+   *   THE TRANSIT KEY IS NOT READ HERE, and that is the one deliberate hole
+   *   in "readInput is the ONE method that knows what a keyboard is". The
+   *   drive is a LATCH with a refusal, and every reason to refuse - an
+   *   approach phase, the yard's handoff sphere, a hostile lock - is a fact
+   *   about `Bodies.js`, which this file does not import and is not going to.
+   *   A toggle read here could only ever engage blindly and then be dropped a
+   *   step later by the mass lock, which is a control that appears to do
+   *   nothing. So `Piloting._pollTransit` owns the key (Z, see `TRANSIT_KEY`
+   *   there), polls it exactly the way `_pollBoard` polls F, and calls
+   *   `toggleTransit` / `dropTransit` on this object.
+   *
    *   `cmd.lateral` IS NOT BOUND, and that is a decision rather than an
    *   oversight. The integrator supports it fully and it is tested; there is
    *   simply no free ADJACENT key pair left for it. Q is free and E is
@@ -522,9 +869,16 @@ export class Flight {
    *   planet's pull. NOT scaled by `accelMul` - see `_stepLinear`.
    * @param {number} [env.dragMul] 1 in vacuum, higher in an atmosphere. The
    *   volcanic planet's descent is the first caller that will want it.
+   * @param {number} [env.transitAltitude] metres to the NEAREST SURFACE, for
+   *   the transit drive's altitude law. Negative inside a body, `Infinity`
+   *   when there is nothing to be near. Absent means "no idea", which the law
+   *   reads as the cruise floor - see `transitSpeedLimit`.
+   * @param {string|null} [env.transitLock] a mass-lock reason. Non-null drops
+   *   the drive. `Piloting` fills it; this file does not know what a planet is.
    */
   step(dt, env = null) {
     if (!(dt > 0)) return this;
+    this._stepTransit(dt, env);
     this._stepAngular(dt);
     this._stepBoost(dt);
     this._stepLinear(dt, env);
@@ -535,6 +889,46 @@ export class Flight {
   }
 
   /* ------------------------------------------------------------------ */
+
+  /**
+   * Advance the drive's state machine and re-read the altitude law.
+   *
+   * Runs FIRST, before any of the other four, because `_stepAngular`,
+   * `_stepLinear` and `_stepAlign` all read `_transitSpool` and all three have
+   * to see this step's value rather than last step's. `SpaceCombat` had the
+   * mirror-image bug against `interdicted` (see its header) and paid one step
+   * of 8x displacement for it every time a wing launched; one step at 5,000
+   * m/s is 83 m, and it is free to not have.
+   *
+   * The cap is recomputed unconditionally - not only while the drive is live -
+   * so the HUD can show a pilot what the drive WOULD give them here before
+   * they press the key.
+   */
+  _stepTransit(dt, env) {
+    this._transitCap = transitSpeedLimit(env?.transitAltitude ?? NaN, this._powerMul);
+
+    /* MASS LOCK. `Piloting` decides what counts; this only obeys. The drop is
+     * ramped, so entering a lock at 5 km/s is a deceleration you feel over
+     * `transitSpoolDown` rather than a one-frame `setLength`. */
+    const lock = env?.transitLock ?? null;
+    if (lock) this.dropTransit(lock);
+
+    const climbing = this.transitState === TRANSIT_STATE.spooling
+      || this.transitState === TRANSIT_STATE.engaged;
+    /* `dt` can spike - a tab regaining focus, a world build stalling a frame -
+     * and `dt / transitSpoolUp` is unbounded above. `clamp` to 0..1 is what
+     * makes a 0.5 s spike a completed spool rather than a spool of 1.28, which
+     * would leak into every consumer as a >100% authority trim and a cap above
+     * `transitTop`. */
+    const step = climbing ? dt / FLIGHT.transitSpoolUp : -dt / FLIGHT.transitSpoolDown;
+    this._transitSpool = clamp(this._transitSpool + step, 0, 1);
+
+    if (this.transitState === TRANSIT_STATE.spooling && this._transitSpool >= 1) {
+      this.transitState = TRANSIT_STATE.engaged;
+    } else if (this.transitState === TRANSIT_STATE.dropping && this._transitSpool <= 0) {
+      this.transitState = TRANSIT_STATE.off;
+    }
+  }
 
   _stepAngular(dt) {
     const pm = this._powerMul;
@@ -550,7 +944,22 @@ export class Flight {
      * which is exactly what the mounts measured (eagle x1.52, board x1.65). */
     const authority = 1 - FLIGHT.authorityFalloff
       * clamp(this.velocity.length() / cruiseTopSpeed(pm), 0, 1);
-    const gain = pm * authority;
+
+    /* ASSIST 4 AGAIN, FOR THE TRANSIT DRIVE, AND ON THE SAME LINE ON PURPOSE.
+     *
+     * The falloff above is already pinned at its floor of 0.6 in transit -
+     * `speed / cruiseTop` is 24 at 5,000 m/s and the clamp eats it - so it has
+     * nothing left to say about the difference between 300 m/s and 5,000. This
+     * trim is what says it, and it is a second factor on the SAME `gain`
+     * rather than a separate clamp or a separate rate table, because a second
+     * steering mechanism is a second thing that can disagree with `turnRadius`
+     * (which multiplies the identical trim, from the identical constant).
+     *
+     * It rides `_transitSpool` rather than switching on `transitEngaged`, so
+     * authority bleeds away over the spool and comes back over the drop -
+     * a ship does not become a truck in one frame. */
+    const trim = 1 - FLIGHT.transitFalloff * this._transitSpool;
+    const gain = pm * authority * trim;
 
     /* Pilot terms -> body axes. See the axis note at the top of the file:
      * two of these three signs are inverted from the naive reading. */
@@ -629,9 +1038,50 @@ export class Flight {
     if (c.vertical) _accel.addScaledVector(_up, base * FLIGHT.verticalFrac * c.vertical);
     if (c.lateral) _accel.addScaledVector(_right, base * FLIGHT.lateralFrac * c.lateral);
 
+    const sp = this._transitSpool;
+
+    /* ── THE TRANSIT DRIVE IS CAP-GOVERNED, WHICH MEANS DRAG HAS TO GO ─────
+     *
+     * Cruise is drag-governed on purpose (`thrust / drag` IS the cruise top),
+     * and that is exactly why the drive cannot be. Holding 5,000 m/s against
+     * `drag` 0.65 would need 3,250 m/s² of engine, and every metre of that
+     * would be a thrust term inside the `accelMul` multiply - which is lesson
+     * 2's leak, wearing a bigger number: a tier-3 Kestrel would settle at a
+     * different transit speed from a stock Dray and the volume would take a
+     * different time to cross depending on what you had bought.
+     *
+     * So drag is faded out by the spool and the ALTITUDE CAP below is what
+     * stops the ship instead. `accelMul` then changes how fast a hull reaches
+     * transit speed and nothing whatsoever about what that speed is.
+     *
+     * The airbrake fades with it, and that is the intended answer to "how do I
+     * slow down in transit": you drop the drive. A 5x drag term that still
+     * bit at 5,000 m/s would be 16,250 m/s² of deceleration on one held key. */
     const dragMul = env?.dragMul ?? 1;
-    const drag = (FLIGHT.drag + (c.brake ? FLIGHT.brakeDrag : 0)) * dragMul;
+    const drag = (FLIGHT.drag + (c.brake ? FLIGHT.brakeDrag : 0)) * dragMul * (1 - sp);
     _accel.addScaledVector(this.velocity, -drag);
+
+    /* The drive's own push. ALONG THE VELOCITY, not along the nose.
+     *
+     * Along the nose it would be a second steering mechanism fighting ASSIST
+     * 3, which already rotates the velocity onto the nose and which
+     * `_stepAlign` runs at full rate in transit for this reason. Along the
+     * velocity it is a pure speed governor: direction stays entirely the
+     * assist's job and there is exactly one thing turning the ship.
+     *
+     * From a dead stop there is no velocity to push along, so it falls back to
+     * the nose - `_dir` would otherwise be a normalise of a zero vector, which
+     * is three NaNs and, downstream, a black frame. */
+    if (sp > 0) {
+      const s = this.velocity.length();
+      if (s > 1e-3) _dir.copy(this.velocity).divideScalar(s);
+      else _dir.copy(_fwd);
+      /* The target ramps with the spool from this hull's own cruise top, so
+       * engaging never asks the drive to SLOW a ship that is already boosting
+       * and dropping out never asks it to hold a speed it has lost. */
+      const want = this.cruiseTop + (this._transitCap - this.cruiseTop) * sp;
+      if (s < want) _accel.addScaledVector(_dir, FLIGHT.transitThrust * sp);
+    }
 
     /* ═══ LESSON 2, and it is this ONE line ═══════════════════════════════
      *
@@ -669,8 +1119,25 @@ export class Flight {
     /* The hard cap. One number, boost or not - see the header note on why two
      * caps snapped. It binds under boost (drag alone would settle at 312*pm)
      * and never at cruise (120*pm), so releasing boost is a drag settle rather
-     * than a one-frame teleport. */
-    const cap = FLIGHT.hardCap * pm;
+     * than a one-frame teleport.
+     *
+     * ── ...AND IN TRANSIT IT IS THE ALTITUDE LAW, BLENDED IN BY THE SPOOL ──
+     *
+     * `hardCap*pm -> transitCap` across the spool, and back again across the
+     * drop. Written as a blend rather than a branch for the reason the two-cap
+     * boost arrangement was thrown out: a cap that CHANGES VALUE between one
+     * frame and the next is a `setLength` you can see, and a 5,000 -> 455 step
+     * is that same defect with an extra digit. Because the blend is continuous
+     * in both the spool AND the altitude, everything about closing on a planet
+     * is smooth for free - the ship rides the cap down as the surface comes up,
+     * shedding `transitK * v` m/s² without a single line of braking code.
+     *
+     * It is a CLAMP and not just a governor target on purpose. The governor
+     * above decides the feel; this decides the guarantee. "You cannot arrive
+     * at a planet at 5 km/s" has to be true on the frame a caller hands in a
+     * spiked `dt` or a hostile impulse, not merely true in the steady state. */
+    const capBase = FLIGHT.hardCap * pm;
+    const cap = sp > 0 ? capBase + (this._transitCap - capBase) * sp : capBase;
     if (this.velocity.lengthSq() > cap * cap) this.velocity.setLength(cap);
 
     /* A braking ship gets a real zero. An exponential never reaches one, and
@@ -722,7 +1189,17 @@ export class Flight {
     const dot = clamp(_dir.dot(_fwd), -1, 1);
     if (dot > 0.999999) return;
     const angle = Math.acos(dot);
-    const rate = FLIGHT.alignBase + FLIGHT.alignThrust * Math.abs(this.command.throttle);
+    /* THE SPOOL COUNTS AS THROTTLE HERE, and it has to.
+     *
+     * Coasting, the assist runs at `alignBase` 0.45 rad/s. In transit the NOSE
+     * turns at about 0.42 rad/s (the `transitFalloff` trim in `_stepAngular`),
+     * so at 0.45 the velocity would track the nose by a whisker and every turn
+     * would be flown half-sideways at 5 km/s. The drive is not a coast: its
+     * field is carrying the ship, so the velocity is locked to the nose
+     * whether or not the player is also holding the throttle down. `max`, not
+     * a sum, so full throttle in transit is still 2.00 rad/s and not 3.55. */
+    const pull = Math.max(Math.abs(this.command.throttle), this._transitSpool);
+    const rate = FLIGHT.alignBase + FLIGHT.alignThrust * pull;
     const stepAngle = Math.min(angle, rate * dt);
     if (stepAngle <= 0) return;
 
@@ -772,13 +1249,35 @@ export class Flight {
     const s = this.speed;
     const cruiseFrac = clamp(s / cruise, 0, 1);
     const boostFrac = cap > cruise ? clamp((s - cruise) / (cap - cruise), 0, 1) : 0;
-    out.fov = baseFov + FLIGHT.fovCruiseKick * cruiseFrac + FLIGHT.fovBoostKick * boostFrac;
-    out.distance = FLIGHT.chaseBase + FLIGHT.chasePull * clamp(s / cap, 0, 1);
+    const normalFov = baseFov + FLIGHT.fovCruiseKick * cruiseFrac + FLIGHT.fovBoostKick * boostFrac;
+
+    /* ── TRANSIT: A BLEND, NOT A THIRD ADDEND ──────────────────────────────
+     *
+     * Both kicks above are pinned at their maxima anywhere near transit speed
+     * - `s / cruise` is 24 at 5,000 m/s - so any hull is already sitting at
+     * baseFov + 19 before the drive is even mentioned, and stacking a fourth
+     * term on top of that is a fisheye. Blending toward one fixed transit FOV
+     * means the drive HOLDS `baseFov + fovTransitKick` at full spool whatever
+     * the speed and whatever the hull, it is bounded by construction, and the
+     * sweep from 82 (cruise) to 99 over the 1.8 s spool is the visual half of
+     * "engaging is an event". `Player._applyFov`'s sprint kick is the
+     * precedent for the shape; this is that shape with a ceiling on it. */
+    const tf = this._transitSpool;
+    const transitFov = baseFov + FLIGHT.fovTransitKick;
+    out.fov = normalFov + (transitFov - normalFov) * tf;
+    out.distance = FLIGHT.chaseBase + FLIGHT.chasePull * clamp(s / cap, 0, 1)
+      + FLIGHT.chaseTransitPull * tf;
     out.height = FLIGHT.chaseHeight;
     out.speed = s;
     out.speedFrac = clamp(s / cap, 0, 1);
     out.boosting = this.boosting;
     out.boostFuel = this.boostFuel / FLIGHT.boostEnergy;
+    out.transitState = this.transitState;
+    out.transitSpool = tf;
+    /* Normalised against the DRIVE's ceiling rather than the hull's, because
+     * `speedFrac` is stuck at 1 for the whole of a transit leg and therefore
+     * cannot drive anything that is meant to change during one. */
+    out.transitFrac = clamp(s / FLIGHT.transitTop, 0, 1);
     return out;
   }
 
@@ -791,6 +1290,14 @@ export class Flight {
     out.boosting = this.boosting;
     out.boostFuel = this.boostFuel;
     out.omega = this.omega.length();
+    out.transitState = this.transitState;
+    out.transitSpool = this._transitSpool;
+    /* The cap is published even when the drive is off: it is what the drive
+     * WOULD give you here, which is the number that tells a pilot whether it
+     * is worth engaging at all. */
+    out.transitCap = this._transitCap;
+    out.transitTop = FLIGHT.transitTop;
+    out.transitDropReason = this.transitDropReason;
     return out;
   }
 
@@ -816,12 +1323,21 @@ export class Flight {
       && Number.isFinite(this.omega.x) && Number.isFinite(this.omega.y)
       && Number.isFinite(this.omega.z)
       && Number.isFinite(this.quaternion.x) && Number.isFinite(this.quaternion.y)
-      && Number.isFinite(this.quaternion.z) && Number.isFinite(this.quaternion.w);
+      && Number.isFinite(this.quaternion.z) && Number.isFinite(this.quaternion.w)
+      /* The drive's two scalars are in here for the same reason as the rest:
+       * `_transitSpool` multiplies the steering gain, the drag term, the FOV
+       * and the chase distance, and `_transitCap` is a `setLength` argument.
+       * A NaN in either reaches a camera matrix within one frame - and one NaN
+       * in a camera matrix is a black screen with no stack trace, which is the
+       * defect this whole guard exists for. */
+      && Number.isFinite(this._transitSpool) && this._transitSpool >= 0 && this._transitSpool <= 1
+      && Number.isFinite(this._transitCap) && this._transitCap > 0;
     if (!ok) {
       throw new Error(
         `Flight: non-finite state. pos=${this.position.toArray()} `
         + `vel=${this.velocity.toArray()} omega=${this.omega.toArray()} `
-        + `quat=${this.quaternion.toArray()}`
+        + `quat=${this.quaternion.toArray()} `
+        + `transit=${this.transitState}/${this._transitSpool}/${this._transitCap}`
       );
     }
   }

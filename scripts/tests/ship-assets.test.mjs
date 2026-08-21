@@ -230,8 +230,18 @@ test('the generator holds the plan constants it duplicates', async () => {
   assert.equal(P.hatch.w, K.hatch.w);
   assert.equal(P.hatch.h, K.hatch.h);
   assert.equal(P.hatch.sill, K.deck.y);
-  assert.equal(P.vtail.rootX, K.vtail.rootX);
-  assert.equal(P.vtail.span, K.vtail.span);
+  /* THE WHOLE V-TAIL RECORD, not two fields of it.
+   *
+   * This used to assert `rootX` and `span` only, and the gap cost a real
+   * defect the first time the tail moved: re-proportioning the hull put the
+   * generator's fin at z -6.90 / rootY 1.96 and left `HullPlan`'s at -7.30 /
+   * 2.00, and every test in the repo was happy with it — `Hulls.buildKestrel`
+   * takes the fin's COLLIDER from the plan and the authored fin's SURFACE from
+   * the .glb, so the two arms silently disagreed by 0.40 m about where the
+   * empennage was. That is this file's own headline invariant ("the ship the
+   * player walks on and the ship the player sees are different objects")
+   * failing through a PARTIAL assertion rather than through a missing one. */
+  assert.deepEqual(P.vtail, { ...K.vtail });
 });
 
 /* ================================================================== */
@@ -241,10 +251,17 @@ test('the generator holds the plan constants it duplicates', async () => {
 test('the authored arm draws the asset and the procedural arm does not', () => {
   /* Exact counts, and they are the deliverable's own headline numbers:
    *
-   *   procedural   9,572 exterior triangles   (+468 interior, unchanged)
-   *   authored     7,806 exterior triangles   (+468 interior, unchanged)
+   *   procedural   9,700 exterior triangles   (+468 interior, unchanged)
+   *   authored     8,622 exterior triangles   (+468 interior, unchanged)
    *
-   * of which 5,990 are the .glb itself; the rest is the deck plates, the
+   * They went up by 128 and 692 when the hull went from 14 m to 20 m: nine
+   * more fuselage stations, four more dorsal stations, two more frame rings
+   * and a longer chine strake in the .glb, and five more inscribed loft
+   * colliders on both arms. `dock-hull-shape`'s ceiling is 38,000 exterior
+   * triangles per hull, so re-proportioning the whole ship cost 1.8% of one
+   * hull's head.
+   *
+   * of which 6,682 are the .glb itself; the rest is the deck plates, the
    * hatch, the gear, the stencil and the two bulkheads both arms draw. The
    * authored hull is LIGHTER than the box hull it replaces, which is the
    * answer to "state your triangle budget and justify it": the budget went
@@ -255,8 +272,8 @@ test('the authored arm draws the asset and the procedural arm does not', () => {
    * mode - it is the hull `dock-hulls`, `dock-reach`, `dock-interiors` and
    * `dock-hull-shape` all measure - so a change to it should be a decision
    * somebody made, not a number that drifted. */
-  assert.equal(triCountOf(noAsset.extRoot), 9572, 'the procedural hull changed shape');
-  assert.equal(triCountOf(withAsset.extRoot), 7806, 'the authored hull changed shape');
+  assert.equal(triCountOf(noAsset.extRoot), 9700, 'the procedural hull changed shape');
+  assert.equal(triCountOf(withAsset.extRoot), 8622, 'the authored hull changed shape');
   assert.equal(triCountOf(withAsset.intRoot), triCountOf(noAsset.intRoot),
     'the authored skin must not touch the interior');
 });
@@ -282,22 +299,33 @@ test('both arms register the same STRUCTURE, and the differences are named', () 
    * There are exactly four deliberate exceptions and they are all named here,
    * by half-extent, so that a fifth one cannot appear quietly.
    *
-   *   authored only  the dorsal fin (0.09 x 0.74 x 0.55), which stands where
-   *                  the mast used to, and one wing box per side
+   *   authored only  the dorsal fin (0.09 x 0.74 x 0.55), which stands aft of
+   *                  the spine deck, and one wing box per side
    *                  (0.35 x 0.27 x 0.85) under a wing longer than the pylon
-   *   procedural only  the mast (0.10 x 0.97 x 0.10), and four `relief`
-   *                  patches (0.05 x 0.11 x 0.11) — dressing the authored arm
-   *                  does not draw, so it does not collide it either
+   *   procedural only  four `relief` patches (0.05 x 0.11 x 0.11) — dressing
+   *                  the authored arm does not draw, so it does not collide it
+   *                  either
+   *
+   * The RELAY ARRAY's post used to be the fifth entry on the procedural-only
+   * list. It is drawn and collided on BOTH arms now — see the note at its site
+   * in `buildKestrel` — because a fin that sits on the fairing is contiguous
+   * with the body in every column and therefore answers none of the question
+   * the array was put there to answer, and the arm that had no answer was the
+   * one the player sees.
    */
   const halves = (s) => s.split(',').slice(3).join(',');
   const FIN = '0.09,0.74,0.55', WING = '0.35,0.27,0.85';
-  const MAST = '0.1,0.97,0.1', PATCH = '0.05,0.11,0.11';
+  const PATCH = '0.05,0.11,0.11';
   assert.deepEqual(onlyA.map(halves).sort(), [FIN, WING, WING].sort(),
     `unexpected authored-only colliders:\n${onlyA.join('\n')}`);
-  assert.deepEqual(onlyB.map(halves).sort(), [MAST, PATCH, PATCH, PATCH, PATCH].sort(),
+  assert.deepEqual(onlyB.map(halves).sort(), [PATCH, PATCH, PATCH, PATCH].sort(),
     `unexpected procedural-only colliders:\n${onlyB.join('\n')}`);
-  /* And the shared set is the whole of the structure: 60 boxes. */
-  assert.equal(A.length - onlyA.length, 60);
+  /* And the shared set is the whole of the structure: 65 boxes. It was 60 on
+   * the 14 m hull; the five new ones are the inscribed colliders under the two
+   * extra nose loft stations and the three extra tail-cone ones, which is
+   * `loftSolid`'s rule holding — a longer loft is more boxes inside it, on
+   * BOTH arms, or the drawn skin and the thing a body walks into disagree. */
+  assert.equal(A.length - onlyA.length, 66);
 });
 
 test('both arms publish the same rooms, doors and boarding point', () => {

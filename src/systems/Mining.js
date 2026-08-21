@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { holdUnitsFor } from '../worlds/planets/PlanetDescriptor.js';
 
 /**
  * WORKING A SEAM.
@@ -183,11 +184,33 @@ export class Mining {
     );
   }
 
-  /** Why the player cannot take this node, if they cannot. */
+  /**
+   * Why the player cannot take this node, if they cannot.
+   *
+   * ── The size-to-volume law is BORROWED, not copied ────────────────────────
+   *
+   * There were three copies of `max(1, round(size * 1.6))`: `Piloting.stow`,
+   * which is the one that actually charges the hold;
+   * `PlanetDescriptor.HOLD_UNITS_PER_SIZE`, which prices a node against the
+   * volume the ship will charge for it; and this one, which decides whether the
+   * prompt says "hold full" before either of them is asked.
+   *
+   * `planet-minerals.test.mjs` scrapes the text of `Piloting.stow` and fails if
+   * the descriptor's copy drifts from it - so two of the three were watched and
+   * the third was not. A third copy that nothing compares is the one that goes
+   * stale, and the way it would go stale is quiet and specific: the prompt would
+   * refuse a node the hold would in fact have taken, or invite one it would not,
+   * and the only symptom is a player standing at a seam being told something
+   * untrue about their own ship.
+   *
+   * So this asks `holdUnitsFor` instead of restating it. That leaves two copies,
+   * one of them scraped against the other, which is the arrangement the
+   * descriptor's docblock describes and the one this file was quietly outside.
+   */
   _roomFor(node) {
     const p = this.piloting;
     if (!p?.shipId) return { ok: false, text: 'No ship to load it into.' };
-    const units = Math.max(1, Math.round((node.size ?? 1) * 1.6));
+    const units = holdUnitsFor(node.size ?? 1);
     if (p.cargoUnits + units > p.cargoCapacity) {
       return { ok: false, text: `Hold full — ${p.cargoUnits}/${p.cargoCapacity} m³. Sell at the yard.` };
     }

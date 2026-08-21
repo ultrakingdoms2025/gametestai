@@ -54,7 +54,30 @@ const SWIM_SPRINT = 3.15;
 const SWIM_ACCEL = 7.5;
 const RISE_SPEED = 2.1;
 const DIVE_SPEED = 2.4;
-/** Vertical spring toward the waterline, and its terminal speeds. */
+/**
+ * Vertical spring toward the waterline, and its terminal speeds.
+ *
+ * NO GRAVITY TERM, and after the per-world gravity pass there is still none.
+ * Not an oversight and not laziness - it is unreachable. `PlanetWorld` sets
+ * `swim: false` in its rules for all ten planets (a sea there is flown to, not
+ * swum in), and `Player` gates this module on `allows(world, 'swim')`, so the
+ * only worlds this code ever runs in are the hand-built ones, every one of
+ * which publishes no gravity and therefore has a ratio of exactly 1. There is
+ * nothing for a gravity term to multiply.
+ *
+ * It would also have almost nothing to say if it were reachable: the two low-g
+ * bodies, Tessera at 1.62 and Lathe at 1.90, publish `liquid: null` - neither
+ * has anything liquid on it - and the six planets that DO have a sea run 7.80
+ * to 10.10 m/s², i.e. 0.80 to 1.03 g. Physically a buoyant restoring force
+ * scales with g, so the correction over that whole span is a few per cent of a
+ * spring whose job is to stop a documented oscillation at the waterline. The
+ * risk of destabilising that is larger than the fidelity gained.
+ *
+ * If a planet is ever authored with `swim: true`, THIS is the block to revisit,
+ * and the honest scaling is `BUOY_UP_MAX`/`BUOY_DOWN_MAX` as terminal speeds
+ * (√r under quadratic drag), not `BUOYANCY`, which is a 1/s rate.
+ * @see ../worlds/PlanetWorld.js `rules`
+ */
 const BUOYANCY = 2.8;
 const BUOY_UP_MAX = 1.7;
 const BUOY_DOWN_MAX = 1.4;

@@ -616,6 +616,87 @@ function shadeDirt(u, v, o) {
   o.ao = clamp01(1 - crack * 0.45 - (1 - mid) * 0.12);
 }
 
+/* ------------------------------------------------------------------ *
+ *  NEUTRAL GROUND, AND WHY IT HAS TO EXIST                            *
+ * ------------------------------------------------------------------ *
+ *
+ * `PlanetWorld._buildTerrain` colours a planet by writing `palette.bands` into
+ * the terrain's vertex colours, and vertex colours MULTIPLY into the albedo
+ * map. So whatever hue a terrain material bakes into its albedo is a filter
+ * over every band the descriptor ever authored.
+ *
+ * `Verdigris.js` worked that out from one side. It refused `grass.field`
+ * because `shadeGrass` bakes `g = lush * 2.20` against `b = lush * 0.70`, and a
+ * green filter would have collapsed its whole table toward one hue. It then
+ * chose `dirt.ground` - which bakes `r = base * 1.48` against `b = base * 0.78`
+ * and is a BROWN filter of very nearly the same strength. Nine planets picked
+ * it for nine good-sounding reasons and all nine came out brown: the ICE WORLD
+ * rendered its Firn Shelf as tan moorland, with a table spending 214 degrees of
+ * hue underneath doing nothing whatever.
+ *
+ * `planet-atmosphere.test.mjs` measured that table and passed it, because the
+ * table was never the defect. A numeric gate on the DESCRIPTOR cannot see what
+ * the descriptor gets multiplied by.
+ *
+ * The fix is a ground material that carries VALUE and no HUE, so `palette.bands`
+ * is the only thing saying what colour the ground is - which is what the
+ * `palette` docblock has always claimed it does.
+ *
+ * The greyscale is taken in LINEAR light and re-encoded, because `bakeSurface`
+ * publishes the albedo as an `SRGBColorSpace` texture: a Rec. 709 luminance
+ * taken on the encoded bytes is not the grey the renderer actually multiplies
+ * by. The error is only about 4% of level, but it is the difference between
+ * "same brightness, no hue" being a measurement and being a slogan.
+ */
+function srgbToLinear(c) {
+  const x = c > 0 ? (c < 1 ? c : 1) : 0;
+  return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+}
+function linearToSrgb(c) {
+  const x = c > 0 ? (c < 1 ? c : 1) : 0;
+  return x <= 0.0031308 ? x * 12.92 : 1.055 * Math.pow(x, 1 / 2.4) - 0.055;
+}
+/**
+ * Replace a texel's albedo with its own luminance, optionally scaled.
+ *
+ * `gain` is a LINEAR multiplier on that luminance, so `gain === 1` is exactly
+ * luminance-preserving: a planet moved from `dirt.ground` onto a material built
+ * this way renders at the same measured brightness and loses only the brown.
+ * Anything above 1 is a claim that this surface is brighter than soil, and that
+ * claim has to be paid for with a screenshot.
+ *
+ * The clamps are not decoration. `Math.pow` of a negative is NaN, NaN survives
+ * the bloom pass, and 19 NaN pixels blacked out 921,600 in this project once.
+ *
+ * @param {typeof import('./Textures.js').TEXEL} o
+ * @param {number} [gain] linear luminance multiplier
+ */
+function neutraliseAlbedo(o, gain = 1) {
+  const y = 0.2126 * srgbToLinear(o.r) + 0.7152 * srgbToLinear(o.g) + 0.0722 * srgbToLinear(o.b);
+  const g = linearToSrgb(Number.isFinite(y) ? y * gain : 0.18);
+  o.r = g; o.g = g; o.b = g;
+}
+
+/**
+ * NEUTRAL GROUND: `dirt.ground`'s grain with the hue taken out of it.
+ *
+ * Deliberately the SAME noise walk rather than a new one. Height, roughness, AO
+ * and therefore the normal map come out bit-identical to `dirt.ground`, so
+ * moving a planet onto this changes exactly one thing - the colour cast - and
+ * anything that moves in the screenshot is attributable to it.
+ *
+ * What it is, physically: pulverised rock. Metre-scale drifts, a pebble lag,
+ * shrinkage polygons where the fines have dried and pulled apart. That is an
+ * honest description of regolith, volcanic ash, iron hardpan, salt crust, a
+ * drained sea bed and crystalline gravel alike. The thing that makes those
+ * surfaces DIFFERENT from one another is their colour - and their colour now
+ * comes from the descriptor that claims it.
+ */
+function shadeRockNeutral(u, v, o) {
+  shadeDirt(u, v, o);
+  neutraliseAlbedo(o, 1);
+}
+
 /** Meadow grass: three scales of variation so a 400 m field never looks flat. */
 function shadeGrass(u, v, o) {
   const patch = fbm01(u, v, 2, 2, 4, 1101);
@@ -918,6 +999,71 @@ function shadeSnow(u, v, o) {
   o.rough = sparkle ? 0.06 : clamp01(0.62 - packed * 0.12 + (grain - 0.5) * 0.1);
   o.metal = 0;
   o.ao = clamp01(0.88 + cord * 0.12);
+}
+
+/**
+ * WIND-PACKED ICE SHEET: sastrugi, sintered firn, scoured blue-ice patches.
+ *
+ * Vitrine's descriptor calls the Firn Shelf "a 140 m ice table combed with
+ * sastrugi". On `dirt.ground` it rendered as tan moorland with dried mud cracks
+ * in it, and the only ice in frame was three white prop crystals.
+ *
+ * `snow.piste` is not the answer either, and Lathe already said half of why:
+ * it is a sheened `MeshPhysicalMaterial` that would put a wet gloss on
+ * everything. The other half is that `shadeSnow`'s albedo is 0.86 to 1.0 - a
+ * near-WHITE filter, which is the brown trap run the other way. A white filter
+ * over Vitrine's table would flatten the compressed-blue vault floor, the
+ * rock-flour ablation ice and the bare Blackhorn rock into one pale nothing.
+ * Its corduroy is also a snowcat's - a regular `sin()` at 34 cycles a tile -
+ * and there are no grooming machines on Vitrine.
+ *
+ * So: neutral albedo, exactly like {@link shadeRockNeutral}, and the two things
+ * that actually separate ice from pale rock when you are standing on it.
+ *
+ *   1. IT IS BRIGHTER THAN SOIL. About 1.8x `dirt.ground`'s albedo in linear
+ *      light, which is a bit under a stop. Not more: the shader multiplies this
+ *      by the band colour and then lights it with a sun tuned against a
+ *      0.10-linear ground, so an albedo that reads correct in isolation blows
+ *      the frame out. The number was picked to be measurable in the harness's
+ *      luminance table rather than to be "white".
+ *   2. IT IS SLICK. Roughness runs about 0.16 on wind-polished lee faces to
+ *      0.68 in the sintered firn, against dirt's flat 0.94, so the low sun
+ *      leaves a sheen strung along the sastrugi crests. That sheen is the read:
+ *      hue says cold, but specular says frozen.
+ *
+ * The grain is WIND, not machinery: one prevailing direction, so the noise is
+ * an order of magnitude finer across a ridge than along it, ridged rather than
+ * smooth because a sastruga has a sharp windward lip and a soft lee, and
+ * domain-warped so the combing wanders instead of ruling parallel lines across
+ * 400 m of shelf.
+ */
+function shadeIceSheet(u, v, o) {
+  const warp = domainWarp2D(u, v, 3, 0.09, 3301);
+  const wu = warp[0];
+  const wv = warp[1];
+
+  const comb = ridgedFbm2D(wu, wv, 4, 60, 3, 3307, 0.55);
+  const lip = smoothstep(0.42, 0.95, comb);
+  // Low whalebacks: the shelf is level in plan, never flat underfoot.
+  const drift = fbm01(u, v, 3, 3, 4, 3313);
+  const sinter = fbm01(u, v, 30, 30, 3, 3319);
+  const sugar = fbm01(u, v, 170, 170, 2, 3323);
+  /* Blue ice, where the wind has stripped the firn off. Patches with edges, and
+   * DARKER than the firn around them - bubble-free ice absorbs, bubbly firn
+   * scatters, which is why a scoured patch reads as a bruise from a distance. */
+  const bare = smoothstep(0.56, 0.86, drift * 0.6 + fbm01(u, v, 8, 8, 3, 3331) * 0.4);
+  /* Facets: sparse near-mirror texels. Mipmapping averages them out with
+   * distance, which is exactly how real glare behaves. */
+  const facet = hash2D(Math.floor(u * 512), Math.floor(v * 512), 3337) > 0.9955;
+
+  const val = 0.40 + drift * 0.07 + lip * 0.10 + (sugar - 0.5) * 0.05 - bare * 0.10;
+  o.r = val; o.g = val; o.b = val;
+  neutraliseAlbedo(o, 1);
+
+  o.h = 0.5 + lip * 0.30 + (drift - 0.5) * 0.22 + (sinter - 0.5) * 0.10 + (sugar - 0.5) * 0.05;
+  o.rough = facet ? 0.05 : clamp01(0.60 - lip * 0.24 - bare * 0.20 + (sinter - 0.5) * 0.10);
+  o.metal = 0;
+  o.ao = clamp01(0.86 + lip * 0.14 - bare * 0.06);
 }
 
 /** Bound-rubber running track: crumb granules, matte, faintly banded by the laying machine. */
@@ -1331,6 +1477,19 @@ const RECIPES = {
   }),
   'grass.field': (lib) => lib._standard(HERO, shadeGrass, {
     normalStrength: 2.4, tileMeters: 4, envMapIntensity: 0.6,
+  }),
+  /* --- planet ground ---------------------------------------------- *
+   * Hue-free by construction, because a planet's ground colour comes from
+   * `palette.bands` and vertex colours multiply into the albedo. See the long
+   * note above `shadeRockNeutral`. Identical build options to `dirt.ground`, so
+   * the ONLY difference between the two is the colour cast. */
+  'rock.neutral': (lib) => lib._standard(HERO, shadeRockNeutral, {
+    normalStrength: 2.6, tileMeters: 5, envMapIntensity: 0.6,
+  }),
+  /* Brighter, slicker, wind-combed. `envMapIntensity` is up because the sheen
+   * off a low sun is the whole point; see the note above `shadeIceSheet`. */
+  'ice.sheet': (lib) => lib._standard(HERO, shadeIceSheet, {
+    normalStrength: 1.8, tileMeters: 5, envMapIntensity: 0.95,
   }),
   /* Foliage. Double-sided, because a frond seen from underneath is the normal
    * case for anything the player walks beneath, and a single-sided leaf simply

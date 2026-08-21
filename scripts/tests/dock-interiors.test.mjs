@@ -1329,11 +1329,19 @@ test('the fit-out costs no new draw calls and stays inside the triangle budget',
     const g = o.geometry;
     tris += (g?.index ? g.index.count : (g?.attributes?.position?.count ?? 0)) / 3;
   });
-  /* Tracks `dock-hulls`' own ceiling, which moved to 156 when the yard grew a
-   * sky: a starfield, three bodies and their limb haloes, a ring, the
-   * containment-field scrim and the pier edge-light bucket. */
-  assert.ok(meshes <= 156,
-    `${meshes} meshes in the world group against dock-hulls' ceiling of 156`);
+  /* ONE SOURCE, TWO READERS.
+   *
+   * This used to assert a hand-typed 156 with a comment saying it "tracks
+   * dock-hulls' own ceiling" — which is two copies of one fact, and the second
+   * copy is always the one that goes stale. It duly did: the sky went from five
+   * bodies to twelve, `dock-hulls` was updated, and this was not.
+   *
+   * `YardPlan.meshCeiling()` derives it from `BODIES.length`, so an eleventh
+   * planet moves both readers at once and neither can drift from the other. */
+  const ceiling = PLAN.meshCeiling();
+  assert.ok(meshes <= ceiling,
+    `${meshes} meshes in the world group against the yard's derived ceiling of ${ceiling} `
+    + `for a ${PLAN.BODIES.length}-body sky`);
   assert.ok(interior >= 18 && interior <= 30,
     `${interior} interior meshes across three fitted hulls - one merged mesh per material key per hull`);
   assert.ok(keys.size <= 10,

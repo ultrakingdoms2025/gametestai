@@ -191,8 +191,25 @@ export const VOLCANIC = definePlanet({
    */
   seg: 256,
 
-  /** 0.86 g. Published for the flight model and the HUD; Phase 1 does not
-   *  retune the player integrator against it. */
+  /**
+   * 0.86 g, and BOTH consumers read it.
+   *
+   * This used to say "Phase 1 does not retune the player integrator against
+   * it", which was true and honest while gravity reached only the ship. It
+   * reaches the player on foot now, through the one predicate in
+   * `WorldRules.worldGravity`: `Piloting._env` gives the flight model
+   * `(0, -8.44, 0)`, and `Player.setWorldGravity` converts 8.44 to a ratio
+   * against `CONFIG.player.gravityReference` (9.81) and walks in -18.93 m/s²
+   * rather than the global -22.
+   *
+   * Measured here by driving the real controller: apex 0.964 m, hang 0.577 s,
+   * against 0.878 m / 0.533 s on a world that publishes no gravity at all. At
+   * 0.86 g the difference is meant to be felt rather than played with - the
+   * variety is at the other end of the ladder, on Tessera (0.17 g) and Lathe
+   * (0.19 g).
+   *
+   * @see ../../player/Player.js `setWorldGravity`
+   */
   gravity: 8.44,
 
   /* ---------------------------------------------------------------- */
@@ -296,6 +313,23 @@ export const VOLCANIC = definePlanet({
 
   /* ---------------------------------------------------------------- */
   palette: {
+    /**
+     * `dirt.ground`, AND IT IS THE ONLY PLANET LEFT ON IT. Do not "tidy" this
+     * to `rock.neutral` for consistency.
+     *
+     * The other nine moved because `dirt.ground`'s albedo is not neutral: it
+     * measures a linear R:G:B of 1.79 : 1 : 0.49, and `_buildTerrain` MULTIPLIES
+     * the bands below into it. That brown filter is what rendered the ice world
+     * as moorland and this system's grey moon as chocolate.
+     *
+     * Here it is doing wanted work. Cinder is oxidised basaltic ash - the one
+     * ground in the system that IS the colour of the filter - and this planet's
+     * look was tuned by measurement against the render it produces, so it is
+     * the reference every other planet's before/after is judged against. Moving
+     * it would cost the comparison and gain nothing: the bands below already
+     * carry their own cool basalt at hue 214 and their own ochre at hue 26, and
+     * they arrive with the sun on them.
+     */
     material: 'dirt.ground',
     tile: 6.0,
     /**

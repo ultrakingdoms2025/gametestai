@@ -48,8 +48,9 @@ import { rig, goto, settle, DT, steerTo, approach, fly } from './_flightrig.mjs'
  */
 
 /* Every landable body has to resolve to a registered world. */
-const { BODY_BY_ID, DOCK_ANCHOR, landableBodies, approachState } =
+const { BODY_BY_ID, DOCK_ANCHOR, landableBodies, approachState, hulledBodies } =
   await import('../../src/worlds/space/Bodies.js');
+const { surveyRange } = await import('../../src/systems/SpaceObjectives.js');
 const { BERTHS } = await import('../../src/worlds/dock/YardPlan.js');
 const { NOSE_YAW, FLYABLE } = await import('../../src/ships/ShipModel.js');
 const PIL = await import('../../src/ships/Piloting.js');
@@ -359,9 +360,31 @@ test('the whole loop: board, launch, cross, descend, land, walk, mine, return, d
   r.player.position.copy(f.position);
   assert.equal(r.piloting.boardableAt(), 'dray', 'cannot board the ship you are standing next to');
   assert.equal(r.piloting.board('dray'), true);
-  res = await fly(r, () => f.setCommand({ pitch: 0.6, yaw: 0, roll: 0, throttle: 1, vertical: 1, boost: true }),
+  /* THE TAKE-OFF A PLAYER ACTUALLY FLIES: throttle, up-thruster, boost, and
+   * NO HELD PITCH.
+   *
+   * It used to hold `pitch: 0.6` for the whole leg, which is not a climb - it
+   * is a loop. Driven with the trace printed, the hull went up to 425 m in
+   * four seconds, went over the top, and came down; what had been carrying
+   * this case was the LATERAL departure seam (`out > half + 60 && y > 140`)
+   * firing before the loop closed, which is an accident of which way the ship
+   * happened to be parked rather than the climb the case is named for.
+   *
+   * The keys the loading card, the boarding toast and the HUD's sit row all
+   * name are W, Space and Shift. That is what this holds now, and it clears
+   * `DEPART_ALT` with the launch assist doing the first two seconds of it. */
+  const hurtBeforeLift = r.player.damageTaken;
+  res = await fly(r, () => f.setCommand({ pitch: 0, yaw: 0, roll: 0, throttle: 1, vertical: 1, boost: true }),
     () => r.wm.active.id === 'space', { limit: 120 });
   assert.ok(res.done, 'could not climb off the planet');
+  /* AND IT COST NOTHING. The obvious take-off used to be fatal: measured in a
+   * real boot, holding W and Space off a Cinder pad produced three impacts in
+   * 1.1 seconds - 20 hp, then 55, then 55 - and a death card that said SHOT
+   * DOWN one frame after a toast that said "Hull holds". See LIFTOFF_S in
+   * `Piloting.js`. A lift-off that hurts the pilot at all is that defect
+   * coming back. */
+  assert.equal(r.player.damageTaken, hurtBeforeLift,
+    `taking off cost ${r.player.damageTaken - hurtBeforeLift} hp - the launch assist is not carrying the hull clear`);
   log.push(['liftoff', res.t]);
 
   /* Out along the line home, and OUTSIDE the atmosphere - otherwise the
@@ -550,6 +573,120 @@ test('a ship that flies at a body with no surface is told, not silently bounced'
   assert.equal(r.wm.active.id, 'space', 'flew to a world that does not exist');
   assert.ok(warned.some((t) => /no surface/i.test(t)), 'the player was told nothing');
   off();
+  r.piloting._recoverToBerth();
+});
+
+test('a body with no surface stops the ship at a hull, and says so', async () => {
+  const r = await rig();
+  await goto(r, 'dock');
+  r.piloting.board('kestrel', { silent: true });
+  await goto(r, 'space');
+  const f = r.piloting.flight;
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════
+   *  CERAUNUS WAS A HOLOGRAM
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * Flown in a real boot: nose on the gas giant from 20 km, throttle pinned,
+   * and the nav range went 20,000 -> 5,614 -> 1,246 -> 193 -> **24 metres from
+   * the centre of a 38,000 m body**. Integrity 100 the whole way. No
+   * collision, no seam, no message, and nothing on screen but stars, because
+   * the camera was inside the sphere looking at its back faces. The readout
+   * said `Ceraunus - ALT 0 m - ATMOSPHERE` for four and a half minutes.
+   *
+   * `Bodies.js` now publishes a pressure hull for every body with no surface
+   * world, and this flies at each of them and asserts three things: the hull
+   * is never crossed, the pilot is told in the body's own words, and it costs
+   * them nothing - it is a wall you lean on, not a damage field.
+   *
+   * THE ABLATION IS THE HULL FIELD. With it zeroed the same run has to reach
+   * the middle of the body, because that is precisely what shipped.
+   */
+  async function flyAt(body, { hull }) {
+    const keep = body.hull;
+    if (!hull) body.hull = 0;
+    try {
+      const centre = new THREE.Vector3(...body.position);
+      /* Twenty kilometres OUTSIDE the hull, not outside the centre: Ceraunus
+       * is 38 km across and a start 20 km from its middle would begin the run
+       * already inside the thing being tested. */
+      const from = centre.clone().addScaledVector(centre.clone().normalize(), (keep || body.radius) * 2 + 20000);
+      const q = new THREE.Quaternion().setFromRotationMatrix(
+        new THREE.Matrix4().lookAt(from, centre, new THREE.Vector3(0, 1, 0))
+      );
+      f.place(from, q);
+      f.velocity.set(0, 0, 0);
+      r.piloting._landed = false;
+      r.piloting._airborne = true;
+      r.piloting._transit = 1;
+      r.piloting._hullSaid = null;
+      r.piloting._hullWarned = null;
+      r.player.damageTaken = 0;
+
+      const said = [];
+      const offSay = r.bus.on('hud:notify', (e) => said.push(e.text));
+      let pressed = 0;
+      const offPress = r.bus.on('pilot:hullpress', () => { pressed++; });
+
+      let closest = Infinity;
+      await fly(r, () => steerTo(f, centre, { throttle: 1, boost: false }),
+        () => {
+          closest = Math.min(closest, f.position.distanceTo(centre));
+          return closest < Math.max(200, body.radius * 0.02);
+        }, { limit: 240 });
+      offSay(); offPress();
+      return { closest, said, pressed, hurt: r.player.damageTaken };
+    } finally { body.hull = keep; }
+  }
+
+  const rows = [];
+  for (const body of hulledBodies()) {
+    const held = await flyAt(body, { hull: true });
+    const ablated = await flyAt(body, { hull: false });
+    rows.push([body, held, ablated]);
+    console.log(`    ${body.name.padEnd(9)} hull ${body.hull} m | held at ${held.closest.toFixed(0)} m `
+      + `(${held.pressed} press, ${held.hurt} hp) | ablated reached ${ablated.closest.toFixed(0)} m `
+      + `from a ${body.radius} m body`);
+  }
+  assert.ok(rows.length >= 1, 'no body in the volume publishes a hull, so nothing here is tested');
+
+  for (const [body, held, ablated] of rows) {
+    /* One fixed step of slack: the clamp runs after the integrator, so the
+     * sample the flight loop reads can be one step inside before it is put
+     * back. At the speed the altitude law allows at a hull that is metres. */
+    assert.ok(held.closest > body.hull - 60,
+      `${body.id}: the ship got to ${held.closest.toFixed(0)} m, inside its ${body.hull} m hull`);
+    assert.ok(held.pressed > 0, `${body.id}: the hull stopped the ship and published nothing`);
+    /* THE BODY'S OWN WORDS, not a phrase this case happens to like: `hullNote`
+     * is where the sentence lives, so a body that gets a new one keeps this
+     * green and a body that gets NO note fails here rather than shipping a
+     * silent wall. */
+    assert.ok(held.said.includes(body.hullNote),
+      `${body.id}: the pilot was stopped and not told why - said ${JSON.stringify(held.said)}`);
+    assert.ok(held.said.some((t) => /no surface, nowhere to land/i.test(t)),
+      `${body.id}: no turn-back warning before the wall - said ${JSON.stringify(held.said)}`);
+    assert.ok(held.said.indexOf(body.hullNote) > 0,
+      `${body.id}: the wall spoke before the turn-back warning did`);
+    assert.equal(held.hurt, 0,
+      `${body.id}: leaning on the hull cost ${held.hurt} integrity - it is a wall, not a hazard`);
+    assert.ok(ablated.closest < body.radius,
+      `${body.id}: with the hull ablated the ship still stopped at ${ablated.closest.toFixed(0)} m, `
+      + 'so this case is not measuring the hull');
+  }
+
+  /* AND A HULL MUST NOT PUT ITS OWN BODY OUT OF REACH. `surveyRange` is where
+   * a body fills half the screen and pays its survey; a hull outside that
+   * radius makes the body impossible to survey, which is the built-but-
+   * unreachable defect with a new coat on. The first draft of Erenmark's hull
+   * was 52,700 m against a 48,220 m survey sphere and this is the shape of the
+   * assertion that caught it. */
+  for (const body of hulledBodies()) {
+    const sphere = surveyRange(body.radius);
+    assert.ok(body.hull < sphere,
+      `${body.id}'s ${body.hull} m hull is outside its ${sphere.toFixed(0)} m survey sphere - `
+      + 'the body can never be surveyed');
+  }
   r.piloting._recoverToBerth();
 });
 

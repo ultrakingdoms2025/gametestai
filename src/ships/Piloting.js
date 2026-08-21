@@ -1,11 +1,14 @@
 import * as THREE from 'three';
 import { CONFIG } from '../core/Config.js';
-import { Flight } from './Flight.js';
+import { Flight, FLIGHT } from './Flight.js';
 import { buildShipModel, FLYABLE, NOSE_YAW } from './ShipModel.js';
 import { holdCapacity, SHIP_CLASSES } from './ShipStats.js';
 import { BERTHS } from '../worlds/dock/YardPlan.js';
-import { DOCK_ANCHOR, BODY_BY_ID, approachState, navTargets } from '../worlds/space/Bodies.js';
+import {
+  DOCK_ANCHOR, BODY_BY_ID, approachState, navTargets, APPROACH_PHASE, HULL_WARN_BAND,
+} from '../worlds/space/Bodies.js';
 import { applyLivery } from '../mounts/Livery.js';
+import { worldGravity } from '../worlds/WorldRules.js';
 
 /**
  * PILOTING - the mode that joins the yard, the void and the planet into one loop.
@@ -115,6 +118,72 @@ import { applyLivery } from '../mounts/Livery.js';
  * anything comes within `TRANSIT_CLEAR`, because a scaled displacement near a
  * planet is a ship that teleports through it. Measured with a stock Kestrel:
  * the dock-to-Cinder run is 136 s without it and 20.4 s with it.
+ *
+ * ===========================================================================
+ *  ...AND THE TRANSIT *DRIVE*, WHICH IS A DIFFERENT THING WITH THE SAME NAME
+ * ===========================================================================
+ *
+ * The multiplier above is a COURTESY. It is invisible, it engages itself when
+ * you hold W in the open, and it exists so a player who never learns anything
+ * is not stranded in a nine-minute hold. It is not a control and it teaches a
+ * player nothing.
+ *
+ * `Flight`'s transit DRIVE is the control: a latched mode on Z, with a spool,
+ * a sound, an FOV sweep, a speed governed by altitude above the nearest body,
+ * a mass lock that refuses out loud, and a HUD row. It is the thing a player
+ * uses to cross a solar system on purpose. Everything about how it FLIES is in
+ * `Flight.js`; what lives here is the three things `Flight` deliberately
+ * cannot know, because it has no `Bodies.js` import:
+ *
+ *   1. THE KEY.        `_pollTransit`, polled exactly the way `_pollBoard`
+ *                      polls F.
+ *   2. THE ALTITUDE.   `_env` fills `transitAltitude` from `approachState`
+ *                      every step. The whole speed law hangs off it.
+ *   3. THE MASS LOCK.  `transitRefusal` (may I start?) and `_transitBreak`
+ *                      (must I stop?). Two rings, not one - see below.
+ *
+ * -- THE TWO RINGS, AND WHY THEY ARE NOT THE SAME RING ----------------------
+ *
+ * The obvious design is one rule: refuse to engage inside a body's `approach`
+ * phase, and cut a live drive that enters one. Measured against THIS layout,
+ * the second half of that is a feature that builds itself and cannot be used.
+ *
+ * `APPROACH_AT_RADII` is 6 and Cinder's radius is 9,000 m, so its approach
+ * ring is 54,000 m from its centre. The dock is 62,000 m from that same
+ * centre. The outbound leg is 52,100 m long and 44,100 m of it - 85% - is
+ * inside Cinder's approach ring. A drive cut at the ring would therefore die
+ * 8,000 m after leaving the yard, and the remaining 44.1 km would be flown at
+ * cruise: 210 seconds against a 23-second budget. Built, shipped, useless.
+ *
+ * So:
+ *
+ *   ENGAGE RING   `approach` phase, the yard's own sphere, a hostile lock, or
+ *                 a world a ship cannot fly in. You may not START a run here.
+ *   BREAK RING    `atmosphere` phase - one ring tighter - plus the same yard,
+ *                 lock and world tests. A LIVE run is cut here.
+ *
+ * The approach ring is safe to fly through under drive precisely because the
+ * altitude law is doing the work a cut would otherwise have to do: at the ring
+ * a ship is 45 km up and allowed 5,000 m/s, and by the atmosphere shell the
+ * same law has already brought it to 320 m/s - under the boost ceiling of the
+ * slowest hull the yard sells. The approach ring stops you STARTING a run you
+ * should be finishing; it does not need to end one.
+ *
+ * -- Taking fire ends a run. That is a decision, and here is the reasoning ---
+ *
+ * `SpaceCombat` already writes `interdicted` for the multiplier, and the drive
+ * reads the same flag: a wing with a lock keeps you in normal space. But an
+ * interdiction only exists while the wing is ENGAGED, and a drive that could
+ * be spooled up mid-fight the moment the flag flickered would be an "I win"
+ * button - three hostiles built, aimed and never fought, which is the same
+ * defect the interdiction hook was added to fix.
+ *
+ * So a HIT also drops the drive, and it drops it whatever the flag says:
+ * `combat:playerHit` is listened for here and calls `dropTransit('hit')`. The
+ * cost of getting this wrong in the other direction is small - a player who is
+ * genuinely fleeing has `transitSpoolDown` + `transitSpoolUp` = 3.0 s of
+ * exposure per attempt - and the cost of getting it wrong this way is that the
+ * whole combat drop becomes optional.
  */
 
 /* ------------------------------------------------------------------ */
@@ -175,10 +244,212 @@ export const TOUCH_CLEAR = 1.4;
  */
 export const LAND_SPEED = 26;
 
+/* ------------------------------------------------------------------ */
+/* LIFT-OFF. The three constants that make "W to lift" a true sentence. */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ===========================================================================
+ *  THE TAKE-OFF THAT KILLED YOU, AND WHAT EACH NUMBER BELOW IS FOR
+ * ===========================================================================
+ *
+ * Measured in a real boot, three times out of three. Land a Kestrel on Cinder
+ * at 5.3 m/s with a full hold, then hold **W and Space** - which is exactly
+ * what the loading card, `board`'s own toast and the HUD's sit row all say
+ * those keys do:
+ *
+ *     t+0.0   parked, integrity 100
+ *     t+0.3   1.0 m up, 16.9 m/s, integrity 80   ("Hard landing - 42 m/s")
+ *     t+0.8   1.3 m up, 28.4 m/s, integrity 25   ("Hard landing - 85 m/s")
+ *     t+1.4   dead. World back to 'dock'. Hold gone. Card: SHOT DOWN.
+ *
+ * Three impacts in 1.1 seconds. Three compounding causes, and all three are
+ * fixed here rather than one of them:
+ *
+ *  1. A LANDED HULL WOULD NOT ROTATE. `fixedUpdate` returns before `f.step`
+ *     while `_landed`, so `_stepAngular` never runs: 180 frames of nose-up
+ *     mouse moved the pitch from 0.00 to 0.00 degrees. "Pitch up before you
+ *     go" was not available to the player, so the only take-off attitude was
+ *     dead level. `_aimOnGround` restores it, clamped - see there.
+ *
+ *  2. FULL THROTTLE ON A LEVEL NOSE IS A RUNWAY, AND THERE IS NO RUNWAY.
+ *     `FLIGHT.thrust * powerMul` is 136.5 m/s^2 forward; vertical is
+ *     `verticalFrac` of it, 68.25, and inside Cinder's air `dragMul` is 2.8,
+ *     so the settled climb is 37 m/s against a horizontal that is off the
+ *     scale. The hull covers a hundred metres of rising caldera before it
+ *     clears its own landing gear.
+ *
+ *  3. THE KEYS WERE STILL DOWN WHEN `_forceSetDown` PUT IT BACK ON A PAD, so
+ *     the next step lifted off into the same hillside. That is what turned one
+ *     survivable knock into a death.
+ *
+ * ── WHY AN ASSIST AND NOT "TELL THE PLAYER TO PITCH UP" ───────────────────
+ * Because the game already tells them the opposite, in three places, and all
+ * three are right: a ship with 68 m/s^2 of vertical thrust SHOULD go straight
+ * up off a pad. The defect was never the instruction. It was that holding the
+ * documented keys did not do the documented thing.
+ */
+
+/** Seconds of launch assist after a commanded lift-off. */
+export const LIFTOFF_S = 2.6;
+/**
+ * Keel clearance at which the assist ends early, metres.
+ *
+ * 45 m is above every authored pad structure and above the caldera lip the
+ * measured crash ran into, and it is reached in about 1.4 s of assisted climb
+ * - so on flat ground the assist is over before its timer is, and the pilot
+ * has the throttle back while still inside the first breath of the take-off.
+ */
+export const LIFTOFF_CLEAR = 45;
+/**
+ * Fraction of forward throttle allowed while the assist runs.
+ *
+ * Not zero, and that is deliberate: a launch with the throttle GATED SHUT
+ * reads as a control that stopped working, and the player is holding W. A
+ * fifth of it is 30 m/s^2, enough that the hull visibly moves off the pad the
+ * way the pilot asked and nowhere near enough to reach the 42 m/s the first
+ * impact was recorded at.
+ */
+export const LIFTOFF_THROTTLE = 0.2;
+/**
+ * m/s of climb the assist guarantees, as a FLOOR on the vertical velocity.
+ *
+ * A floor rather than an impulse because the thing being promised is "you
+ * leave the ground", and an impulse has to be re-derived for every hull, every
+ * gravity and every atmosphere in the system. 14 m/s clears `LIFTOFF_CLEAR`
+ * in 3.2 s from a standstill - inside the timer - on the heaviest hull the
+ * yard sells and in the thickest air any planet has, without ever exceeding a
+ * speed the touchdown rule itself calls a landing (`LAND_SPEED * 0.8` is
+ * 20.8). So a pilot who lifts and immediately changes their mind can set back
+ * down without being hurt for it.
+ */
+export const LIFTOFF_CLIMB = 14;
+/**
+ * Seconds after an impact set-down during which a lift-off is refused.
+ *
+ * THE WHOLE OF FIX 3 ABOVE. `_forceSetDown` is the anti-stranding rule and it
+ * works; what it could not survive was being called again on the next step by
+ * keys that were never released. One second is under the reaction time of a
+ * player who is about to let go anyway, and long enough that three impacts in
+ * 1.1 s cannot happen: the second is 1.0 s after the first, by which time the
+ * assist is available again and takes the hull straight up.
+ */
+export const SETTLE_LOCK = 1.0;
+/**
+ * Attitude a hull standing on its gear may be aimed to, degrees.
+ *
+ * NOSE-UP ONLY, and no roll. The pilot needs exactly one thing on a pad -
+ * to point the ship where they intend to leave - and a hull that could pitch
+ * 40 degrees DOWN on its own landing gear, or lie on its side, would look
+ * broken in the one framing the player is guaranteed to be looking at
+ * (`_composeCamera` is behind and above a stationary ship). Yaw is
+ * unrestricted because turning on the spot is what a ship on a pad does.
+ */
+export const GROUND_PITCH_MAX = 42;
+
+/**
+ * Metres from a landing pad's centre inside which the HUD names it.
+ *
+ * 400 m is about nine seconds at the 45 m/s a controlled descent runs at, and
+ * it is nearly twenty times the widest authored disc - so the pad is named
+ * while there is still time to go round, rather than as an epitaph.
+ */
+export const PAD_HINT_RANGE = 400;
+/**
+ * How exposed a pad has to be before the readout says so, in degrees of
+ * horizon lost and metres of fall.
+ *
+ * `PlanetWorld` publishes `drop: { deg, metres }` per pad and until now
+ * nothing read it. Cinder's three read 38 deg / 12 m (Ashfall), 75 / 18.1
+ * (Colonnade) and 270 / 66.9 (Rimhold Shelf) - and only the last of those is
+ * something a pilot needs telling, because it is the one where stepping off
+ * the disc is a fall you do not climb back up. A readout that annotated all
+ * three would be annotating "this is a pad".
+ */
+export const PAD_EXPOSED_DEG = 120;
+export const PAD_EXPOSED_DROP = 25;
+
 /** Transit: displacement multiplier, ramp time, and the clear-space it needs. */
 export const TRANSIT_MAX = 8;
 export const TRANSIT_RAMP = 1.6;
 export const TRANSIT_CLEAR = 4000;
+
+/**
+ * THE TRANSIT DRIVE'S KEY. Z, and every other letter was taken.
+ *
+ * The claimed set, swept out of the source rather than remembered: W A S D
+ * Space Shift C (movement), E R F V T M L [ ] (BINDABLE actions), X (the
+ * airbrake, via `held`), I B J K (panels: inventory, marketplace, quest board,
+ * unstuck), N (inside `navigator.keyboard.lock`), and 1-6 (weapons and the
+ * mount wheel). That leaves G H O P Q U Y Z, and only Q Z G are anywhere near
+ * a left hand resting on WASD.
+ *
+ * Q IS DELIBERATELY NOT TAKEN. `Flight.readInput` records that Q is the only
+ * free half of a Q/E lateral-thruster pair, that `cmd.lateral` is fully
+ * implemented and tested and unbound for want of exactly that pair, and that E
+ * is `interact`. Taking Q here would quietly close that door.
+ *
+ * Z is the same argument that put the airbrake on X, one key over: X was
+ * chosen because "the brake and the down-thruster are neighbours". Z X C is
+ * now a contiguous run of three ship verbs under the left hand - drive,
+ * airbrake, thrust down - and it composes with W, Shift and the mouse.
+ *
+ * It is a real `BINDABLE` row rather than a bare `pressed('KeyZ')`, so it
+ * appears in the rebinding panel and in F1 like every other ship control. The
+ * literal here IS the action's identity; `Input.pressed` resolves the rebind.
+ */
+export const TRANSIT_KEY = 'KeyZ';
+
+/**
+ * Metres from the yard's centre inside which the drive is mass-locked.
+ *
+ * The requirement is "inside the dock's handoff radius", which is
+ * `DOCK_ANCHOR.handoff` = 130 m - and 130 m is smaller than the yard itself.
+ * `DOCK_ANCHOR.radius` is 285 m, measured against the geometry in
+ * `DockExterior.js` as the sphere that contains the whole structure, so it
+ * strictly contains the 130 m the rule asks for and additionally covers every
+ * pier a spooling ship could be pointed at.
+ *
+ * BIGGER WAS MEASURED AND REJECTED. `TRANSIT_CLEAR` (4,000 m) is the radius
+ * the displacement multiplier uses for the same question, and it looked like
+ * the obvious answer - but a launched ship arrives at `SPACE_ARRIVAL_OUT`
+ * (380 m) and would then have to fly 3.6 km of ordinary space before the drive
+ * would light. At a stock Kestrel's 210 m/s cruise from a standing start that
+ * is 19 seconds added to a 23-second budget, which is most of the problem the
+ * drive exists to solve. At 285 m the launch point is already 95 m clear and
+ * the drive is available from the moment the blast door closes.
+ */
+export const TRANSIT_DOCK_LOCK = DOCK_ANCHOR.radius;
+
+/**
+ * Why the drive refused or dropped, keyed by code.
+ *
+ * A CONTROL THAT SILENTLY DOES NOTHING IS WORSE THAN ONE THAT IS NOT THERE,
+ * and this table is the whole of that promise: `_pollTransit` looks the code
+ * up and puts the sentence on the HUD. Written out here rather than at the
+ * three call sites so the same refusal cannot be phrased two ways, and so a
+ * new lock reason without a sentence is a missing key rather than a silent
+ * return.
+ *
+ * Each one names the CONDITION and, where the player can act, the ACTION -
+ * "mass-locked" alone tells a pilot nothing they can do about it.
+ */
+export const TRANSIT_REASONS = Object.freeze({
+  /* Both halves, because this fires in the hangar AND over a planet and a
+   * sentence that named only one of them would be wrong half the time. */
+  world: 'Transit drive needs open vacuum. Get clear of the yard or the planet first.',
+  landed: 'Transit drive needs open vacuum. Lift off first.',
+  dock: 'Mass-locked by Lodestar Yard. Clear the structure first.',
+  approach: 'Mass-locked by the gravity well. Pull away from the body first.',
+  atmosphere: 'Transit drive cut - atmospheric interface.',
+  /* A body with no ground under it. `_hullContact` cuts the drive on the step
+   * the clamp fires, because a drive still pushing at a wall is a drive
+   * holding you against it. */
+  hull: 'Transit drive cut - pressure hull.',
+  interdicted: 'Interdicted. Transit drive will not spin up while something has a lock.',
+  hit: 'Transit drive cut - hull under fire.',
+  pilot: 'Transit drive disengaged.',
+});
 
 /**
  * Downward pull inside the pressurised bay, m/s^2.
@@ -224,7 +495,17 @@ const _hc = new THREE.Vector3();
 const _hh = new THREE.Vector3();
 const _mouth = new THREE.Vector3(...DOCK_ANCHOR.mouth);
 const _normal = new THREE.Vector3(...DOCK_ANCHOR.mouthNormal).normalize();
-const _snap = { speed: 0, cruiseTop: 0, boostTop: 0, powerMul: 1, boosting: false, boostFuel: 0, omega: 0 };
+/* Every field `Flight.snapshot` writes, declared up front: an object that
+ * grows keys after creation is a hidden-class transition on the first frame of
+ * every flight, and this is read sixty times a second. */
+const _snap = {
+  speed: 0, cruiseTop: 0, boostTop: 0, powerMul: 1, boosting: false, boostFuel: 0, omega: 0,
+  transitState: 'off', transitSpool: 0, transitCap: 0, transitTop: 0, transitDropReason: null,
+};
+/** The one `env` object handed to `Flight.step`. Refilled, never reallocated. */
+const _envOut = { gravity: null, dragMul: 1, transitAltitude: NaN, transitLock: null };
+/** The yard's centre, for the drive's mass lock. `_mouth` is 18 m in front. */
+const _dockCentre = new THREE.Vector3(...DOCK_ANCHOR.position);
 
 const clamp = THREE.MathUtils.clamp;
 
@@ -306,6 +587,9 @@ export class Piloting {
      * mode still runs identically with no combat system present at all.
      */
     this.interdicted = false;
+    /** Last transit state the bus was told about, so `pilot:transit` is an
+     *  EDGE and the audio director is not asked to start a sound per step. */
+    this._transitSaid = 'off';
     this._prevMode = null;
     this._boardPrompt = null;
     this._fov = CONFIG.render?.fov ?? 75;
@@ -313,6 +597,18 @@ export class Piloting {
     this._prevY = null;
     /** False from lift-off until the hull is genuinely clear of the ground. */
     this._airborne = true;
+    /** Seconds of launch assist left. See LIFTOFF_S. */
+    this._liftoff = 0;
+    /** Seconds a lift-off is refused for after an impact. See SETTLE_LOCK. */
+    this._settleLock = 0;
+    /**
+     * Which hulled body the pilot has already been warned about, so the
+     * sentence is said once per approach rather than sixty times a second.
+     * Cleared when they leave the band. @see `_hullContact`
+     */
+    this._hullWarned = null;
+    /** ...and which one has already said its hull is the end of the road. */
+    this._hullSaid = null;
     /** Where the ship was when it last touched down. See `fixedUpdate`. */
     this._landedAt = new THREE.Vector3();
     /**
@@ -348,6 +644,13 @@ export class Piloting {
     /* A repaint on the pier has to reach the hull you are flying, or a livery
      * bought in the yard is invisible the moment you leave it. */
     this._offLivery = bus?.on?.('ship:livery', (e) => this._applyLivery(e?.shipId));
+    /* TAKING FIRE ENDS A TRANSIT RUN. See the header for the reasoning.
+     *
+     * A bus listener rather than a hook inside `SpaceCombat._playerHit`,
+     * because `combat:playerHit` is already published for the HUD flash and
+     * the audio, and a mode that reads an event nobody had to add for it keeps
+     * working in a build with no combat system at all. */
+    this._offHit = bus?.on?.('combat:playerHit', () => this._breakTransit('hit'));
   }
 
   /* ================================================================== */
@@ -550,6 +853,28 @@ export class Piloting {
 
     const shipId = this.shipId;
     this._active = false;
+    /* NOBODY IS IN THE SEAT, SO NOTHING IS SPOOLING.
+     *
+     * `fixedUpdate` returns before the integrator when `_active` is false, so
+     * a live drive left behind here does not wind down - it FREEZES at
+     * whatever spool it had, and the next `board` resumes a ship at 5 km/s
+     * with a mass lock that has not been evaluated since. The normal exits
+     * (dock, land) go through `place` -> `halt`, which already hard-drops it;
+     * `force: true` - which `_onDied` uses to hand a body back mid-flight -
+     * does not, and that is the hole. `_transitSaid` goes with it so the next
+     * flight's first `pilot:transit` is a clean edge rather than a stale one. */
+    this.flight.dropTransit('disembark', true);
+    this._transitSaid = 'off';
+    /* A HULL YOU WALK AWAY FROM SITS LEVEL.
+     *
+     * `_aimOnGround` lets a pilot point the nose up to 42 degrees before they
+     * leave, and `_addHullSolid` builds the parked hull's colliders from its
+     * YAW alone - which is right for a ship on its gear and wrong for one
+     * standing nose-up, because the boxes would then be somewhere the drawn
+     * hull is not. Levelling on the way out keeps the two honest and costs the
+     * pilot nothing: the aim was for the take-off, and there is no take-off
+     * happening while they are outside it. */
+    if (this._landed) this._settle(this.flight, this._yawOf(this.flight.quaternion));
     this._giveBody();
 
     /* ── WHICH SIDE YOU GET OUT OF, AND IT WAS THE WRONG ONE ────────────
@@ -605,6 +930,7 @@ export class Piloting {
    */
   fixedUpdate(dt, elapsed) {
     if (this._seamLock > 0) this._seamLock -= dt;
+    if (this._settleLock > 0) this._settleLock -= dt;
     if (!this._active || this._travelling) return;
 
     const wid = this.worldManager?.active?.id ?? null;
@@ -647,6 +973,16 @@ export class Piloting {
     if (this._landed) {
       const c = f.command;
       const wantsUp = c.vertical > 0.1 || c.throttle > 0.1 || c.boost;
+      /* AIM IT WHILE IT SITS THERE. Runs before the lift test, so the frame a
+       * pilot lines up on is the frame they leave on. See `_aimOnGround`. */
+      this._aimOnGround(dt);
+      /* A HULL THAT HAS JUST BEEN PUT DOWN BY AN IMPACT DOES NOT LEAVE AGAIN
+       * ON THE SAME HELD KEY. See SETTLE_LOCK - this one line is the
+       * difference between one survivable knock and three in 1.1 seconds. */
+      if (wantsUp && this._settleLock > 0) {
+        this._seatPlayer();
+        return;
+      }
       if (wantsUp) {
         /* `_setLanded(false)` AND NOT `_landed = false`, and the difference is
          * a stranding.
@@ -676,6 +1012,12 @@ export class Piloting {
         this._parked = null;
         this._parkedWorld = null;
         this._showParkedHull(this.shipId, false);
+        /* THE LAUNCH ASSIST ARMS HERE, and only in a world with a floor. In
+         * the yard the bay is 23.6 m high, the hull is already flying under a
+         * roof, and a guaranteed 14 m/s climb would put it through that roof;
+         * the yard has its own launch (`_launch`, past the pier heads) and
+         * does not need this one. */
+        this._liftoff = wid === 'dock' ? 0 : LIFTOFF_S;
         this.bus?.emit?.('pilot:liftoff', { shipId: this.shipId, world: wid });
       } else {
         this._seatPlayer();
@@ -684,7 +1026,20 @@ export class Piloting {
     }
 
     const env = this._env(wid);
+    /* BEFORE the step: the assist is a change to the COMMAND, so the
+     * integrator sees one consistent set of inputs and every number
+     * `ship-flight.test.mjs` pins still comes out of an untouched `step`. */
+    if (this._liftoff > 0) this._applyLiftoff(dt, wid);
     f.step(dt, env);
+    /* ...and the climb FLOOR after it, because it is a floor on the result
+     * rather than a force: drag, gravity and `dragMul` have all had their say
+     * by now and the promise is about what the hull is doing, not about what
+     * is being applied to it. */
+    if (this._liftoff > 0 && f.velocity.y < LIFTOFF_CLIMB) f.velocity.y = LIFTOFF_CLIMB;
+    /* Immediately after the step, so a mass lock that fired INSIDE
+     * `_stepTransit` is announced on the step it fired rather than a frame
+     * later. It is an edge compare and a return when nothing moved. */
+    this._announceTransit();
 
     /* TRANSIT. Displacement only - see the header. The integrator above ran
      * with the honest numbers and `f.speed` still reports them. */
@@ -692,28 +1047,212 @@ export class Piloting {
     if (this._transit > 1) f.position.addScaledVector(f.velocity, (this._transit - 1) * dt);
 
     this._groundContact(wid);
+    /* AFTER the transit displacement, deliberately: the multiplier can move a
+     * hull four kilometres in one step and a hull limit tested before that
+     * displacement is a limit the displacement steps straight over. */
+    this._hullContact(wid);
     this._seams(wid, elapsed);
     this._seatPlayer();
   }
 
-  /** Gravity and air for the world the ship is in. */
+  /**
+   * The launch assist, applied to the COMMAND for one step.
+   *
+   * Two edits and both are named in the block above LIFTOFF_S:
+   *
+   *   THE THROTTLE IS GATED to `LIFTOFF_THROTTLE` while the hull is still
+   *   inside its own landing clearance, because 136.5 m/s^2 along a level nose
+   *   is a runway and a caldera has no runway.
+   *
+   *   THE UP-THRUSTER IS COMMANDED whether or not the pilot is holding Space,
+   *   because the card, the boarding toast and the HUD's own sit row all say
+   *   **W lifts**, and this is that sentence being true.
+   *
+   * It ends on any of three things, and the third is the one that matters:
+   * the timer runs out, the hull gets `LIFTOFF_CLEAR` metres of daylight under
+   * it, or THE PILOT ASKS TO GO DOWN. An assist a player cannot cancel is a
+   * cutscene; C cancels it on the frame it is pressed.
+   */
+  _applyLiftoff(dt, wid) {
+    const f = this.flight;
+    const c = f.command;
+    if (c.vertical < -0.1) { this._liftoff = 0; return; }
+    this._liftoff -= dt;
+    if (this._liftoff <= 0) { this._liftoff = 0; return; }
+
+    /* Clear of the ground already? Then the assist has done its job and the
+     * throttle is the pilot's again, whatever the timer says. `groundHeight`
+     * is the same probe `_groundContact` uses and it is null in a world with
+     * no floor, which is the yard - where this never runs anyway. */
+    const g = this.physics?.groundHeight?.(f.position.x, f.position.z, f.position.y + 6, 400);
+    if (g !== null && g !== undefined && f.position.y - g > LIFTOFF_CLEAR) {
+      this._liftoff = 0;
+      return;
+    }
+
+    if (c.throttle > LIFTOFF_THROTTLE) c.throttle = LIFTOFF_THROTTLE;
+    if (c.vertical < 1) c.vertical = 1;
+    void wid;
+  }
+
+  /**
+   * A HULL STANDING ON ITS GEAR CAN STILL BE AIMED.
+   *
+   * `fixedUpdate` returns before `f.step` while `_landed`, which is right -
+   * running gravity against a heightfield probe every step would sink or
+   * jitter a parked ship - but it also meant `_stepAngular` never ran, and
+   * measured, 180 frames of nose-up mouse moved the pitch from 0.00 to 0.00
+   * degrees. The pilot could not point the ship anywhere before leaving, which
+   * is half of why the obvious take-off flew into a hillside.
+   *
+   * So the attitude is integrated here and NOTHING else is: no thrust, no
+   * gravity, no drag, no position. It is composed from the yaw and pitch the
+   * stick has accumulated rather than by calling into the integrator, because
+   * the clamp is the whole point - see GROUND_PITCH_MAX - and a clamp applied
+   * after a free rotation would fight the assist's own damping every step.
+   *
+   * Roll is deliberately dropped rather than clamped: there is no reading of
+   * "roll while standing on three legs" that is not a bug.
+   */
+  _aimOnGround(dt) {
+    const f = this.flight;
+    const c = f.command;
+    if (!(dt > 0)) return;
+    if (Math.abs(c.yaw) < 1e-3 && Math.abs(c.pitch) < 1e-3) return;
+
+    _e.setFromQuaternion(f.quaternion, 'YXZ');
+    /* The same rates the integrator turns at, so a pilot who learns the ship
+     * in the air is not learning a second ship on the ground. */
+    const yaw = _e.y - c.yaw * FLIGHT.yawRate * dt;
+    let pitch = _e.x + c.pitch * FLIGHT.pitchRate * dt;
+    const lim = GROUND_PITCH_MAX * Math.PI / 180;
+    if (pitch > lim) pitch = lim;
+    if (pitch < 0) pitch = 0;
+    _e.set(pitch, yaw, 0);
+    f.quaternion.setFromEuler(_e);
+    f.omega.set(0, 0, 0);
+  }
+
+  /**
+   * THE PRESSURE HULL of a body that has no ground to hand you to.
+   *
+   * See the block in `space/Bodies.js`; this is the enforcement. A position
+   * clamp and a velocity projection, both onto the same sphere:
+   *
+   *   - the ship is put back ON the hull radius, so it can never end a step
+   *     inside a body however big the step was;
+   *   - the INWARD component of the velocity is removed and the tangential
+   *     component is left alone, so the hull skims the cloud deck rather than
+   *     stopping dead against an invisible wall;
+   *   - the pilot is told, once, in the body's own words.
+   *
+   * The warning band is a separate sentence said further out, because a pilot
+   * who only learns there is no surface at the moment they stop has spent the
+   * whole approach believing they were going to land.
+   */
+  _hullContact(wid) {
+    if (wid !== 'space') return;
+    const f = this.flight;
+    const a = approachState(f.position);
+    const b = a.body;
+    if (!b || !(b.hull > 0)) { this._hullWarned = null; return; }
+
+    /* Out of the band entirely: forget the warning so a second approach, or a
+     * second body, gets its own sentence. */
+    if (a.distance > b.hull * HULL_WARN_BAND) {
+      if (this._hullWarned === b.id) this._hullWarned = null;
+      if (this._hullSaid === b.id) this._hullSaid = null;
+      return;
+    }
+
+    if (this._hullWarned !== b.id) {
+      this._hullWarned = b.id;
+      this.bus?.emit?.('hud:notify', {
+        text: `${b.name}: no surface, nowhere to land. Turn back.`,
+        tone: 'warn',
+      });
+    }
+
+    if (a.hullDepth <= 0) return;
+
+    _v.copy(f.position).sub(_v2.set(b.position[0], b.position[1], b.position[2]));
+    const d = _v.length();
+    /* Dead centre is the one degenerate case and it is reachable - a save
+     * loaded at a body's origin, or a debug teleport. Any radial will do; the
+     * one that matters is that it is a UNIT vector, because the alternative is
+     * three NaNs and, through the bloom, a black frame. */
+    if (d > 1e-3) _v.divideScalar(d); else _v.set(0, 1, 0);
+    f.position.copy(_v2).addScaledVector(_v, b.hull);
+
+    const inward = f.velocity.dot(_v);
+    if (inward < 0) f.velocity.addScaledVector(_v, -inward);
+    /* A drive still running against a wall is a drive holding you there. */
+    this._breakTransit('hull');
+    this._transit = 1;
+
+    if (this._hullSaid !== b.id) {
+      this._hullSaid = b.id;
+      this.bus?.emit?.('pilot:hullpress', { body: b.id, speed: +f.speed.toFixed(2) });
+      this.bus?.emit?.('hud:notify', {
+        text: b.hullNote ?? `${b.name} has no surface. The hull will go no deeper.`,
+        tone: 'warn',
+      });
+    }
+  }
+
+  /**
+   * Gravity, air, and the two facts the transit drive cannot look up itself.
+   *
+   * Filled into ONE reused object rather than the three different literals the
+   * first version returned: `step` is called sixty times a second and the
+   * house rule is that a frame handler allocates nothing. It also means every
+   * branch below has to think about `transitAltitude` and `transitLock`, and a
+   * branch that forgot one would hand `Flight` a stale altitude from the last
+   * world - which is a 5 km/s drive governed by how high something was over a
+   * planet you already left.
+   */
   _env(wid) {
     const w = this.worldManager?.active ?? null;
+    const e = _envOut;
+    e.gravity = null;
+    e.dragMul = 1;
+    /* NOT `Infinity`. Outside the void there is no "nearest surface" this law
+     * means anything about, and `transitSpeedLimit` reads a non-finite,
+     * non-Infinity altitude as "the caller does not know" and answers with the
+     * cruise floor - the safe answer. `transitLock` below stops the drive in
+     * these worlds anyway; this is the belt to that pair of braces. */
+    e.transitAltitude = NaN;
+
     if (wid === 'space') {
       /* Falling into a planet's air is the one place the void has weather. The
        * flight model takes `dragMul` for exactly this and the planet agent flew
        * it: a coasting Dray settles at 8.49 m/s down and 4.71 m/s forward,
        * because the alignment assist acts as a wing. */
       const a = approachState(this.flight.position);
-      if (a.atmoDepth > 0) {
-        _v.set(0, 0, 0);
-        return { gravity: null, dragMul: 1 + a.atmoDepth * 1.8 };
-      }
-      return null;
+      e.transitAltitude = a.altitude;
+      if (a.atmoDepth > 0) e.dragMul = 1 + a.atmoDepth * 1.8;
+      /* The SAME approach state, handed on rather than recomputed. It is a
+       * loop over every body in the volume with a square root each, and the
+       * break ring wants exactly the phase this call just produced. */
+      e.transitLock = this._transitBreak(wid, a);
+      return e;
     }
-    if (typeof w?.gravity === 'number' && Number.isFinite(w.gravity)) {
-      _v.set(0, -w.gravity, 0);
-      return { gravity: _v, dragMul: 1.35 };
+    e.transitLock = this._transitBreak(wid, null);
+    /* THE SHARED READER, not the predicate this line used to inline.
+     *
+     * It was the finite-number test spelled out here in full, and the identical
+     * test spelled out again in
+     * `Player.setWorldGravity`. Two copies of one question is how a hull came to
+     * settle onto Tessera at a sixth of a g while the pilot who stepped out of
+     * it walked in the station's -22, and the fix for that was to give both
+     * consumers ONE reader. Re-implementing it here would have kept the shape
+     * of the defect alive underneath the fix. @see ../worlds/WorldRules.js */
+    const surface = worldGravity(w);
+    if (surface !== null) {
+      _v.set(0, -surface, 0);
+      e.gravity = _v;
+      e.dragMul = 1.35;
+      return e;
     }
     /* The yard. There IS gravity in a pressurised hangar - the ships sit on
      * cradles - but a ship under a 23.6 m roof needs to hover on the spot while
@@ -721,17 +1260,170 @@ export class Piloting {
      * player looks at the nav readout is a hull that lands on the deck. Held at
      * a quarter g, which is enough to feel and not enough to punish. */
     _v.set(0, -YARD_GRAVITY, 0);
-    return { gravity: _v, dragMul: 1.1 };
+    e.gravity = _v;
+    e.dragMul = 1.1;
+    return e;
   }
 
   /** Ramp the transit multiplier up or drop it instantly. See the header. */
   _transitFactor(dt, wid) {
     const f = this.flight;
+    /* THE DRIVE SUPERSEDES THE MULTIPLIER, and they must never compound.
+     *
+     * x8 displacement on top of a 5,000 m/s drive is 40 km/s, which crosses
+     * Cinder's whole 18 km diameter inside half a fixed step - the exact
+     * tunnelling `_groundContact` was rewritten as a swept probe to stop. The
+     * multiplier is the courtesy for a player who never presses Z; the moment
+     * they do, the honest speed is the only speed. */
+    if (f.transitLive) return 1;
     const clear = wid === 'space' && this._clearOfEverything();
     const pinned = f.command.throttle > 0.9 && f.speed > f.cruiseTop * 0.6;
     if (!clear || !pinned) return 1;
     const next = this._transit + (TRANSIT_MAX - 1) * (dt / TRANSIT_RAMP);
     return next > TRANSIT_MAX ? TRANSIT_MAX : next;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The transit drive: the key, the two rings, and the readout           */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * THE ENGAGE RING. May the drive be started, here, now?
+   *
+   * Returns null when it may, and a key of `TRANSIT_REASONS` when it may not.
+   * A code rather than a sentence so the caller can act on it (`_pollTransit`
+   * notifies, the test asserts) without matching on prose.
+   *
+   * The order is the order a pilot would ask the questions in, and it matters
+   * only for which sentence they get: "lift off first" is more use than
+   * "mass-locked by Lodestar Yard" to someone sitting on a pier, and both are
+   * true of a hull parked at berth 3.
+   *
+   * @returns {keyof typeof TRANSIT_REASONS | null}
+   */
+  transitRefusal() {
+    const wid = this.worldManager?.active?.id ?? null;
+    if (wid !== 'space') return this._landed ? 'landed' : 'world';
+    if (this._landed) return 'landed';
+    if (this.interdicted) return 'interdicted';
+    const p = this.flight.position;
+    if (p.distanceTo(_dockCentre) <= TRANSIT_DOCK_LOCK) return 'dock';
+    /* THE SPECIFIED RULE, and `APPROACH_PHASE` is compared by RANK rather than
+     * by string: `Bodies.js` publishes the ranks precisely so a caller can ask
+     * "am I at least in approach" without a lookup table of its own, and a
+     * three-way string comparison here would have to be re-edited the day a
+     * fifth phase is added between two of them. */
+    const a = approachState(p);
+    if ((APPROACH_PHASE[a.phase] ?? 0) >= APPROACH_PHASE.approach) return 'approach';
+    return null;
+  }
+
+  /**
+   * THE BREAK RING. Must a LIVE drive be cut, here, now?
+   *
+   * One ring tighter than `transitRefusal` and the header explains at length
+   * why: cutting at the approach ring would end 85% of the dock-to-Cinder leg
+   * before it started, because that ring is 54 km from Cinder's centre and the
+   * yard is 62 km. Everything else - the yard, a lock, a world with a floor in
+   * it - is the same test in both directions, because none of those is
+   * something the altitude law can make safe.
+   *
+   * Handed to `Flight` through `env.transitLock` every single step, so a ship
+   * that arrives inside a ring by any route at all - a seam, a save load, a
+   * debug teleport - is dropped on the next step rather than only on the frame
+   * something noticed it move.
+   *
+   * @param {string|null} wid the active world id
+   * @param {ReturnType<typeof approachState>|null} [state] the approach state
+   *   `_env` has already computed this step. Reused rather than recomputed:
+   *   `approachState` walks every body in the volume with a square root each,
+   *   and this runs inside the fixed step.
+   * @returns {keyof typeof TRANSIT_REASONS | null}
+   */
+  _transitBreak(wid, state = null) {
+    if (!this.flight.transitLive) return null;
+    if (wid !== 'space') return this._landed ? 'landed' : 'world';
+    if (this._landed) return 'landed';
+    if (this.interdicted) return 'interdicted';
+    const p = this.flight.position;
+    if (p.distanceTo(_dockCentre) <= TRANSIT_DOCK_LOCK) return 'dock';
+    const a = state ?? approachState(p);
+    if ((APPROACH_PHASE[a.phase] ?? 0) >= APPROACH_PHASE.atmosphere) return 'atmosphere';
+    /* ── AND THE TURN-BACK BAND OF A BODY WITH NO GROUND ──────────────────
+     *
+     * The altitude law governs the drive by height above the nearest SURFACE,
+     * and a gas giant does not have one: `approachState` measures Ceraunus's
+     * altitude from its 38 km radius, so at the wall the law still reads 26 km
+     * of clearance and allows the full 5,000 m/s. The `atmosphere` ring above
+     * would have caught it - except that for Ceraunus that ring is at 38,000 m
+     * and the wall is at 64,600, so it sits INSIDE the wall and can never
+     * fire. Cut here instead, at the same band the turn-back sentence is said
+     * in, which is 29 km of ordinary space before the stop. */
+    if (a.body?.hull > 0 && a.distance <= a.body.hull * HULL_WARN_BAND) return 'hull';
+    return null;
+  }
+
+  /** Cut a live drive. The sentence is said by `_announceTransit`, on the edge. */
+  _breakTransit(code) {
+    if (!this.flight.transitLive) return false;
+    return this.flight.dropTransit(code);
+  }
+
+  /**
+   * Z, polled the way `_pollBoard` polls F.
+   *
+   * A CONTROL THAT SILENTLY DOES NOTHING IS WORSE THAN ONE THAT IS NOT THERE:
+   * the refusal path is the whole reason this is not three lines inside
+   * `Flight.readInput`. Every press produces either a drive or a sentence.
+   */
+  _pollTransit() {
+    if (!this.input || this.input.textCaptured) return;
+    if (!this.input.pressed?.(TRANSIT_KEY)) return;
+    const f = this.flight;
+    /* A second press is always a DROP, whatever the rings say. A pilot who
+     * wants out must never be told they may not have it - the refusal path
+     * below is about starting, and only about starting. */
+    if (f.transitLive) { f.dropTransit('pilot'); return; }
+    const why = this.transitRefusal();
+    if (why) { this._sayTransit(why); return; }
+    f.engageTransit();
+    this.bus?.emit?.('hud:notify', { text: 'Transit drive spinning up.', tone: 'info' });
+  }
+
+  /** One sentence from `TRANSIT_REASONS`, on the channel the HUD already draws. */
+  _sayTransit(code, tone = 'warn') {
+    const text = TRANSIT_REASONS[code];
+    if (!text) return;
+    this.bus?.emit?.('hud:notify', { text, tone });
+  }
+
+  /**
+   * Publish the drive's state on the EDGE, for the audio director.
+   *
+   * `pilot:transit` carries the state it moved to and the spool it moved at,
+   * so a listener can play a spin-up on `spooling`, a settle on `engaged` and
+   * a wind-down on `dropping` without polling anything. Edge-latched because
+   * `fixedUpdate` runs sixty times a second and `Sfx` would otherwise be asked
+   * to start sixty overlapping voices.
+   */
+  _announceTransit() {
+    const f = this.flight;
+    const s = f.transitState;
+    if (s === this._transitSaid) return;
+    this._transitSaid = s;
+    /* THE ONE PLACE A DROP IS EXPLAINED, and it is the edge rather than the
+     * three call sites, because a drop can arrive from four directions - the
+     * key, a bus event, a mass lock inside `Flight._stepTransit`, and a hard
+     * `halt()` - and a sentence written at each of them is four sentences that
+     * will one day disagree. `'pilot'` is the player's own key and reads as
+     * information; everything else is something happening TO them. */
+    if (s === 'dropping') this._sayTransit(f.transitDropReason, f.transitDropReason === 'pilot' ? 'info' : 'warn');
+    this.bus?.emit?.('pilot:transit', {
+      state: s,
+      spool: f.transitSpool,
+      reason: f.transitDropReason,
+      shipId: this.shipId,
+    });
   }
 
   /** Nothing worth colliding with inside `TRANSIT_CLEAR`. */
@@ -944,13 +1636,43 @@ export class Piloting {
     this._parked = wid === 'dock' ? 'berth' : 'ground';
     this._parkedWorld = wid;
 
+    /* THE KEYS ARE PROBABLY STILL DOWN. See SETTLE_LOCK: without this the very
+     * next step lifts the hull back into whatever it just hit, and measured,
+     * that turned one 20-point knock into three impacts and a death inside
+     * 1.1 seconds. The assist above then takes the hull straight up when the
+     * lock expires, so the recovery is a launch rather than a crash loop. */
+    this._settleLock = SETTLE_LOCK;
+    this._liftoff = 0;
+
     const hurt = clamp(Math.round((speed - LAND_SPEED) * 1.2), 6, 55);
     this.player?.applyDamage?.(hurt, null, 'impact');
     this.bus?.emit?.('pilot:impact', { shipId: this.shipId, speed: +speed.toFixed(2), damage: hurt });
-    this.bus?.emit?.('hud:notify', {
-      text: `Hard landing - ${Math.round(speed)} m/s. Hull holds. Set down at ${this._landedSite?.name ?? 'the nearest flat'}.`,
-      tone: 'warn',
-    });
+
+    /* ── "HULL HOLDS" AND "SHOT DOWN", ONE FRAME APART ────────────────────
+     *
+     * This sentence used to say `Hull holds` unconditionally, and the death
+     * card that follows an impact that kills says `SHOT DOWN - Lost to impact
+     * over Cinder`. Both fired on the same touchdown, one frame apart, and the
+     * reassurance is read first. A player told the hull held and then shown a
+     * death card does not learn that they were hurt twice; they learn that the
+     * game is lying to one of them.
+     *
+     * So the health is READ BACK after the damage is applied rather than
+     * predicted: `applyDamage` owns armour, difficulty and whatever else the
+     * player system decides, and a copy of that arithmetic here would be a
+     * second answer to the same question. When it is fatal this says nothing
+     * at all - the card is already on its way and it is specific and correct,
+     * and a toast underneath it would only be competing with it. */
+    const left = this.player?.health;
+    const killed = typeof left === 'number' && left <= 0;
+    if (!killed) {
+      this.bus?.emit?.('hud:notify', {
+        text: `Hard landing - ${Math.round(speed)} m/s. Hull holds`
+          + `${typeof left === 'number' ? ` at ${Math.round(left)}%` : ''}`
+          + `. Set down at ${this._landedSite?.name ?? 'the nearest flat'}.`,
+        tone: 'warn',
+      });
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -1196,6 +1918,13 @@ export class Piloting {
      * self-centres at the wrong rate on every machine but this one. */
     if (this.input && !this.input.textCaptured) this.flight.readInput(this.input, dt);
     else this.flight.setCommand({ pitch: 0, yaw: 0, roll: 0, throttle: 0, vertical: 0, boost: false, brake: false });
+
+    /* AFTER `readInput`, because the drive is a latch and not a command:
+     * `readInput` overwrites the whole command struct every frame and would
+     * wipe anything the drive had written into it. It is polled here rather
+     * than inside `readInput` because refusing needs `Bodies.js`, which
+     * `Flight` deliberately does not import - see `TRANSIT_KEY`. */
+    this._pollTransit();
 
     this._takeBody();
     this._poseModel();
@@ -1486,6 +2215,7 @@ export class Piloting {
     const wid = this.worldManager?.active?.id ?? null;
     if (wid !== 'space') return rows;
     const p = this.flight.position;
+    const vel = this.flight.velocity;
     this.flight.forward(_fwd);
     this.flight.up(_up);
     this.flight.right(_right);
@@ -1493,11 +2223,29 @@ export class Piloting {
       _v.set(t.position[0], t.position[1], t.position[2]);
       const range = _v.distanceTo(p);
       _v2.copy(_v).sub(p).normalize();
+      /* CLOSING SPEED, not speed: the component of the velocity that is
+       * actually shortening the range. A ship doing 5,000 m/s across a
+       * target's bearing is not arriving at all, and `range / speed` would
+       * cheerfully report that it lands in forty seconds.
+       *
+       * `_v2` is already the unit vector to the target, so this is one dot and
+       * no allocation - which is what lets the ETA live on every row instead
+       * of on a "selected target" that this readout has never had. The
+       * selection the HUD draws is `ahead`, and it is already published below;
+       * building a second one here would be a second thing to keep in step. */
+      const closing = vel.dot(_v2);
       rows.push({
         id: t.id,
         name: t.name,
         kind: t.kind,
         range,
+        closing,
+        /* Seconds, or null when nothing is closing. Null and not Infinity:
+         * `Infinity` formats as "Infinity" in a template string and looks like
+         * a bug on the HUD, and a caller that wants to draw a dash has to test
+         * for it either way. The 0.5 m/s floor stops a ship drifting sideways
+         * from publishing a four-hour ETA that ticks backwards. */
+        eta: closing > 0.5 ? range / closing : null,
         /* Signed dot with the nose: 1 dead ahead, -1 dead astern. A bearing in
          * degrees would need a plane to measure in, and there is no horizon out
          * here to pick one. */
@@ -1533,17 +2281,39 @@ export class Piloting {
     out.boosting = _snap.boosting;
     out.boostFuel = _snap.boostFuel;
     out.transit = this._transit;
+    /* The DRIVE, which is not the multiplier above. See the header. */
+    out.transitState = _snap.transitState;
+    out.transitSpool = _snap.transitSpool;
+    out.transitCap = _snap.transitCap;
+    out.transitTop = _snap.transitTop;
+    /* What would happen if the player pressed Z right now: null means "it
+     * would work". Published so the HUD can grey the row rather than waiting
+     * for the pilot to press a key and be told no. */
+    out.transitRefusal = this._active ? this.transitRefusal() : 'world';
     out.landed = this._landed;
     out.world = this.worldManager?.active?.id ?? null;
     out.cargoUnits = this._cargoUnits;
     out.cargoCap = this.cargoCapacity;
     out.cargoValue = this.cargoValue;
+    out.noSurface = false;
+    out.hullClear = null;
     if (out.world === 'space') {
       const a = approachState(this.flight.position);
       out.bodyName = a.body?.name ?? null;
       out.altitude = a.altitude;
       out.phase = a.phase;
       out.atmoDepth = a.atmoDepth;
+      /* WHAT THE NEAREST BODY IS FOR, published because the HUD cannot ask.
+       *
+       * The readout used to print `Ceraunus - ALT 0 m - ATMOSPHERE` while the
+       * ship was thirty-seven kilometres INSIDE a gas giant, and the objective
+       * line one panel over said "fly in until the readout says APPROACH, then
+       * descend". Two true-looking rows inviting a descent onto a body that
+       * has no ground. `noSurface` is what lets the phase read NO SURFACE
+       * instead, and `hullClear` is how far there is left before the hull
+       * stops - the number a pilot can actually act on. */
+      out.noSurface = !!a.body && !a.body.surfaceWorld;
+      out.hullClear = Number.isFinite(a.hullClear) ? a.hullClear : null;
     } else {
       const g = this.physics?.groundHeight?.(this.flight.position.x, this.flight.position.z, this.flight.position.y + 4, 600);
       out.bodyName = this.worldManager?.active?.displayName ?? null;
@@ -1572,6 +2342,59 @@ export class Piloting {
      */
     out.descent = -this.flight.velocity.y;
     out.descentLimit = LAND_SPEED * 0.8;
+    /**
+     * ...AND THE OTHER HALF OF THE TOUCHDOWN RULE, WHICH WAS NEVER PUBLISHED.
+     *
+     * `_groundContact` refuses a landing on EITHER `speed > LAND_SPEED` or
+     * `down > LAND_SPEED * 0.8`, and only the second of the two had a number
+     * on screen. That is why six landings out of six were "hard": a pilot
+     * flying the descent rate perfectly still arrives at 78 m/s of GROUND
+     * speed, fails the first test, and is told they landed hard with no idea
+     * which of the two numbers they missed. Both are published, both are drawn
+     * beside their limits, and neither is duplicated in the HUD.
+     */
+    out.touchdownSpeed = LAND_SPEED;
+
+    /**
+     * THE PAD YOU ARE ABOUT TO BE COMMITTED TO.
+     *
+     * Seven of the ten worlds have a landing site you can walk off and never
+     * climb back onto, and they are exactly the exotic-seam pads - the ones
+     * worth flying to. `PlanetWorld` measures each disc's rim by marching the
+     * height field around it and publishes `drop: { deg, metres }`, and until
+     * this line nothing anywhere read it. A pilot on final has no way to know
+     * whether the disc under them is a clearing or a shelf until they are
+     * standing on it, which is one step too late.
+     *
+     * Named while AIRBORNE and inside `PAD_HINT_RANGE`, which is the window in
+     * which going round is still a decision.
+     */
+    out.padName = null;
+    out.padRimDeg = null;
+    out.padDrop = null;
+    if (!this._landed && out.world !== 'space') {
+      const sites = this.worldManager?.active?.landingSites;
+      if (Array.isArray(sites)) {
+        let best = null;
+        let bestD = PAD_HINT_RANGE * PAD_HINT_RANGE;
+        for (const site of sites) {
+          const dx = this.flight.position.x - site.position.x;
+          const dz = this.flight.position.z - site.position.z;
+          const d = dx * dx + dz * dz;
+          if (d < bestD) { bestD = d; best = site; }
+        }
+        if (best) {
+          out.padName = best.name;
+          const deg = best.drop?.deg;
+          const metres = best.drop?.metres;
+          if (Number.isFinite(deg) && Number.isFinite(metres)
+            && (deg >= PAD_EXPOSED_DEG || metres >= PAD_EXPOSED_DROP)) {
+            out.padRimDeg = deg;
+            out.padDrop = metres;
+          }
+        }
+      }
+    }
     return out;
   }
 
@@ -1858,13 +2681,35 @@ export class Piloting {
   /* Internals                                                           */
   /* ------------------------------------------------------------------ */
 
+  /**
+   * The hull record `board` hands to `Flight.setShip`.
+   *
+   * ── THE LAST TWO LINES ARE THE FIX, AND THE BUG WAS IN THE GAME ──────────
+   *
+   * Both of the first two lookups are world-scoped: `worldManager.active.ships`
+   * is only published by `DockWorld`, and `ShipRegistry.hulls()` reads
+   * `_ships`, which `_adopt` REPLACES on every `world:changed` (deliberately —
+   * a `Ship` holding disposed materials is a livery write into a dead uniform).
+   *
+   * So this returned null everywhere except inside the yard, `board` took its
+   * `{ powerMul: 1 }` fallback, and the hull flew at 120 m/s — the exact
+   * failure `Flight.setShip`'s throw exists to catch, arriving through the one
+   * door that guard cannot watch, because a bare snapshot is exempt from it.
+   * Reached in play by getting out of the ship on a planet and getting back in,
+   * and by loading a save taken in flight (`deserialize` re-boards at :2217).
+   *
+   * `statsFor` is world-independent by construction and re-syncs from the owned
+   * tier bag on every call, so it is correct in the yard, in the void, and on
+   * a planet, and there is no second copy of the ladder arithmetic to drift.
+   */
   _shipRecord(shipId) {
     const list = this.worldManager?.active?.ships;
     if (Array.isArray(list)) {
       const found = list.find((s) => s.id === shipId);
       if (found) return found;
     }
-    return this.ships?.hulls?.().find?.((s) => s.id === shipId) ?? null;
+    const known = this.ships?.hulls?.().find?.((s) => s.id === shipId);
+    return known ?? this.ships?.statsFor?.(shipId) ?? null;
   }
 
   _ensureModel(shipId) {
@@ -1954,7 +2799,12 @@ export class Piloting {
   /** Set (or clear) the landed flag and remember where it was set. */
   _setLanded(on) {
     this._landed = on;
-    if (on) this._landedAt.copy(this.flight.position);
+    if (on) {
+      this._landedAt.copy(this.flight.position);
+      /* Whatever is left of a launch assist belongs to the launch that is over.
+       * One choke point rather than a clear at each of the three callers. */
+      this._liftoff = 0;
+    }
     this._syncHullSolid();
   }
 
@@ -2098,6 +2948,7 @@ export class Piloting {
     this._offChanged?.();
     this._offDied?.();
     this._offLivery?.();
+    this._offHit?.();
     if (this._active) this._recoverToBerth();
     for (const m of this._models.values()) m.dispose?.();
     this._models.clear();

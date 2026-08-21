@@ -66,6 +66,10 @@
  *   LEFT             Halberd Reach   the asteroid belt (see Belt.js)
  *   BEHIND AND UP    Erenmark        the star, over the dock's shoulder
  *
+ * Phase 2 added seven more and made Vitrine and Tessera landable; the full
+ * twelve-body table, and the constraint solve that placed them, are in the
+ * "PHASE 2 - the rest of the system" block further down.
+ *
  * Erenmark being BEHIND is deliberate and does two things at once. It means
  * everything the player flies towards is front-lit rather than a silhouette,
  * and it means that when they are lost, the way home and the brightest thing
@@ -73,15 +77,36 @@
  *
  * -- Distances: how they were chosen ----------------------------------------
  *
- * Assumed flight envelope, which is the number this layout is pinned to and
- * the one to come back and re-derive against when the flight model lands:
+ * ┌──────────────────────────────────────────────────────────────────────────┐
+ * │ THIS SECTION WAS WRONG FOR A WHOLE PHASE. READ THE CORRECTION.           │
+ * └──────────────────────────────────────────────────────────────────────────┘
  *
- *     cruise 260 m/s, boost 1600 m/s
+ * It used to say the layout was pinned to an assumed envelope of
+ * "cruise 260 m/s, boost 1600 m/s", and to come back and re-derive it when the
+ * flight model landed. The flight model landed and nobody came back.
  *
- * Cinder at 62 km is 39 s at boost, 4 min at cruise. That is a trip: long
- * enough that arriving is an event, short enough to do twice in a session.
- * Everything else is scenery this phase, so it is placed for how it LOOKS
- * from the dock rather than for how long it takes to reach.
+ * What actually shipped (`src/ships/Flight.js`):
+ *
+ *     cruise  `thrust / drag` = 78 / 0.65   =  120 m/s * powerMul
+ *     cap     `FLIGHT.hardCap`              =  260 m/s * powerMul, boost only
+ *     boost   `boostEnergy / boostDrain`    =  3.33 SECONDS of it
+ *
+ * So the claim above that "Cinder at 62 km is 39 s at boost, 4 min at cruise"
+ * was out by an order of magnitude: at a sustained 120 m/s it is **517 seconds
+ * - eight and a half minutes of holding one key in a straight line**, and that
+ * was true of the only landable body in the game for the whole of Phase 1.
+ *
+ * The distances are NOT the thing that was wrong, and shrinking them is not the
+ * fix - the radii and ranges below are what give the sky depth, and collapsing
+ * them turns a solar system into a diorama. The ship was wrong. See the transit
+ * drive in `Flight.js`, whose top speed is governed by altitude above the
+ * nearest body, which makes the volume crossable AND decelerates a ship
+ * automatically as it closes so it arrives at a sane speed.
+ *
+ * The lesson worth keeping: a layout pinned to an ASSUMED number needs a test
+ * that fails when the assumption does. `ship-transit.test.mjs` now flies the
+ * real integrator from the dock to Cinder's handoff and asserts the duration,
+ * so this cannot rot silently a second time.
  *
  * -- Sizes: how they were chosen --------------------------------------------
  *
@@ -95,6 +120,9 @@
  *   Ceraunus     245      38,000       0.24 (0.55 incl. rings)
  *   Tessera       88       4,200       0.07           -
  *   Erenmark     640      15,500       0.04           -
+ *
+ * Every Phase 2 body clears the same 0.02 floor; the smallest is Cathedra at
+ * 0.036 and Lathe was sized UP to 5.2 km to clear it. See that block below.
  *
  * 0.22 is a hand's breadth at arm's length: unmistakably a world, clearly not
  * reachable by reaching. 0.71 at 20 km is the moment the approach stops being
@@ -133,6 +161,11 @@ function at(dir, dist) {
  *                                     `planet:<id>` form. The descriptor for
  *                                     that id owns everything about the
  *                                     ground; this file owns nothing about it.
+ * @property {number}   [hull]         PRESSURE HULL: metres from the centre a
+ *                                     ship cannot pass. 0 or absent for a body
+ *                                     whose `handoff` takes the ship first.
+ *                                     See the block on THE PRESSURE HULL below.
+ * @property {string}   [hullNote]     what the pilot is told when they reach it.
  * @property {number}   spin           radians/second about the body's axis
  * @property {number[]} axis           spin axis, unit-ish
  * @property {Object}   look           palette and shader parameters
@@ -142,6 +175,88 @@ function at(dir, dist) {
 
 /** Metres. Reused by the layout and by anything that wants to reason in km. */
 const KM = 1000;
+
+/**
+ * ===========================================================================
+ *  THE PRESSURE HULL - what stops you at a body you cannot land on
+ * ===========================================================================
+ *
+ * A body with `handoff: 0` has nothing that takes the ship off `SpaceWorld`,
+ * and until this field existed that meant it had nothing at all. Flown and
+ * measured in a real boot: a Kestrel held nose-on to Ceraunus from 20 km
+ * passed the cloud tops without a sound and reached **24 metres from the
+ * centre of a 38 km body** with integrity 100, no collision, no seam and no
+ * message. The readout said `Ceraunus · ALT 0 m · ATMOSPHERE` for four
+ * minutes while the screen showed empty black and stars, because the camera
+ * was inside the sphere looking at its back faces.
+ *
+ * That is the worst kind of nothing: the HUD says APPROACH, the objective line
+ * says "fly in until the readout says APPROACH, then descend", and the largest
+ * object in the sky turns out to be a hologram.
+ *
+ * So a body with no surface world publishes the radius its hull stops at. It
+ * is a POSITION CLAMP rather than a raycast - every step that ends inside the
+ * radius is put back on it and the inward half of the velocity is removed,
+ * which cannot tunnel however large the step is, and which leaves the
+ * tangential half alone so a ship skims the cloud deck instead of being nailed
+ * to it. The altitude law in `Flight.transitSpeedLimit` has already brought
+ * any drive down to a few hundred m/s by the time the hull is reached
+ * (`altitude` there is measured from `radius`, and the hull sits just above
+ * it), so there is no arrival speed this has to absorb that a hull would not.
+ *
+ * WHY NOT DAMAGE INSTEAD. It was the other option and it is worse for the same
+ * reason the take-off crash loop was: a wall you can lean on teaches you where
+ * the edge is in one second, and a damage field teaches you the same thing by
+ * taking your run away. Ceraunus is scenery you are meant to go and look at.
+ *
+ * ── WHERE THE WALL GOES, AND IT WAS MEASURED WITH A CAMERA ────────────────
+ *
+ * The first attempt put Ceraunus's wall at 1.04 radii, hard against the cloud
+ * deck, on the reasoning that a hull should stop where the planet is. Shot in
+ * the built page on the approach a player actually flies - straight out from
+ * the yard - that is a BLACK SCREEN. The yard-facing hemisphere is 129 degrees
+ * from the sub-solar point, so the near side of the giant is night, and at
+ * 1.04 radii it subtends 147 degrees against a 75 degree field: the plate is
+ * entirely unlit cloud. Frame luminance by stand-off, same approach, same
+ * camera, `mean` over the whole plate:
+ *
+ *      1.04 radii  ( 39.5 km)   mean  2.8    black
+ *      1.35 radii  ( 51.3 km)   mean  5.7    black with a hint of ring
+ *      1.70 radii  ( 64.6 km)   mean 20.8    the ring system sweeps the frame
+ *      2.10 radii  ( 79.8 km)   mean 31.4    rings and the lit crescent
+ *      3.20 radii  (121.6 km)   mean 24.0    the giant is receding again
+ *
+ * (`.probe/tk/cershots.mjs` takes that table; `.probe/tk/lanes.mjs` derives
+ * the lane separations `SpaceWorld._fillEncounters` cites.)
+ *
+ * `.probe/shoot-planets.mjs` calls anything under mean 12 "not an image at
+ * all", and it is right: stopping the player against an invisible black wall
+ * is the same defect as letting them fly through an invisible black nothing,
+ * with a message on it. The wall goes where the player can SEE what stopped
+ * them, which is 1.70 radii - far enough out that the ring system is across
+ * the whole plate and the lit limb is above it, close enough that the giant
+ * still dominates rather than receding into scenery.
+ *
+ *   Ceraunus  64,600 m = 1.70 radii. Inside the ring system (1.42 to 2.28
+ *             radii), which is the thing the pilot can see holding them off,
+ *             and 26.6 km clear of the cloud deck.
+ *   Erenmark  43,400 m = 2.80 radii, INSIDE the drawn corona (`coronaScale`
+ *             is 3.4 radii), so again the thing that stops you is the thing
+ *             filling the screen rather than an invisible sphere in front of
+ *             it.
+ *
+ * ── AND EVERY WALL IS BOUNDED FROM ABOVE, WHICH THE FIRST DRAFT WAS NOT ───
+ *
+ * `SpaceObjectives.surveyRange` fires a survey when a body fills half the
+ * screen height, which for a 15.5 km star is 48,220 m from its centre. A wall
+ * outside that radius makes the body impossible to survey - built, not
+ * reachable, this project's signature defect - and `space-objectives.test.mjs`
+ * caught a 52,700 m first attempt at Erenmark's on the spot. Every hull must
+ * sit INSIDE its own body's survey sphere; 43,400 leaves 4.8 km of margin and
+ * Ceraunus's 64,600 sits inside a 118,214 m sphere.
+ */
+const CERAUNUS_HULL = 64600;
+const ERENMARK_HULL = 43400;
 
 /**
  * ERENMARK - the primary.
@@ -162,6 +277,9 @@ const ERENMARK = {
   atmosphere: 15500,
   handoff: 0,
   surfaceWorld: null,
+  /* "Do not approach" was a blurb; this is the sentence being true. */
+  hull: ERENMARK_HULL,
+  hullNote: 'The corona of Erenmark. The hull comes no closer.',
   spin: 0.0,
   axis: [0, 1, 0],
   look: {
@@ -242,10 +360,11 @@ const CINDER = {
  * that it is plainly further than Cinder, which is how the sky teaches depth:
  * two discs of similar size at obviously different distances.
  *
- * Not landable this phase - `handoff` is 0 and `surfaceWorld` is null, which
- * is the only difference between it and Cinder. Making it landable is writing
- * a descriptor in planets/ and setting those two fields; nothing here changes
- * shape. That is the boundary working.
+ * LANDABLE AS OF PHASE 2, and the boundary is what made it cheap: making it
+ * landable was writing a descriptor in planets/ and setting `handoff` and
+ * `surfaceWorld`. Nothing else in this file changed shape, and no renderer,
+ * height function or world class was added. That is exactly the claim the
+ * Phase 1 docblock made about this exact body, now collected.
  */
 const VITRINE = {
   id: 'vitrine',
@@ -253,9 +372,16 @@ const VITRINE = {
   kind: 'ice',
   position: at([0.16, 0.10, -0.98], 155 * KM),
   radius: 15000,
-  atmosphere: 15900,
-  handoff: 0,
-  surfaceWorld: null,
+  /* 1,800 m of air, and the handoff 1,000 m up.
+   *
+   * The Phase 1 numbers were 900 m of air and no handoff at all, because
+   * Vitrine was scenery. Landing it needed the air DEEPENED rather than the
+   * handoff lowered: `space-scale.test.mjs` holds every landable body to at
+   * least 300 m of air flown in space AND to no more than half its air being
+   * flown there, and 900 m of air cannot satisfy both. */
+  atmosphere: 16800,
+  handoff: 16000,
+  surfaceWorld: 'planet:vitrine',
   spin: 0.0004,
   axis: [-0.22, 1, 0.05],
   look: {
@@ -277,7 +403,7 @@ const VITRINE = {
     detail: 1.7,
   },
   ring: null,
-  blurb: 'Ice. Deep clathrate fields. No berth.',
+  blurb: 'Ice. Crevasse fields and a subglacial vault. Landable.',
 };
 
 /**
@@ -303,6 +429,9 @@ const CERAUNUS = {
   atmosphere: 38000,
   handoff: 0,
   surfaceWorld: null,
+  /* No ground, and now something that says so. See THE PRESSURE HULL above. */
+  hull: CERAUNUS_HULL,
+  hullNote: 'Ceraunus has no surface - and the ring system is as close as a hull comes.',
   spin: 0.0022,
   axis: [0.12, 1, -0.19],
   look: {
@@ -329,7 +458,7 @@ const CERAUNUS = {
     /** Opacity at normal incidence. Rings are mostly gap. */
     density: 0.62,
   },
-  blurb: 'Gas giant. Ring system. No surface.',
+  blurb: 'Gas giant. Ring system. No surface - but Lathe rides its outer edge.',
 };
 
 /**
@@ -338,6 +467,11 @@ const CERAUNUS = {
  * The small one. Every other body is big; without something that stays a chip
  * of grey at 5.5 degrees no matter how long you look at it, the sky has no
  * bottom to its size range and the big ones stop reading as big.
+ *
+ * Landable as of Phase 2, and the FIRST AIRLESS one - see the note on its
+ * `atmosphere` field. Vacuum is the whole point of going: no fog, no haze, a
+ * black sky at noon, shadows with nothing filling them at all, and a sixth of
+ * a g. Every other world in the system is a place with weather.
  */
 const TESSERA = {
   id: 'tessera',
@@ -345,9 +479,21 @@ const TESSERA = {
   kind: 'moon',
   position: at([0.94, -0.16, -0.30], 88 * KM),
   radius: 4200,
+  /* AIRLESS AND LANDABLE, which is a category that did not exist in Phase 1.
+   *
+   * `atmosphere === radius`, so `approachState` can never return
+   * `phase: 'atmosphere'` and the descent runs cruise -> approach -> handoff
+   * with `atmoDepth` flat at 0 the whole way. That is CORRECT for a body with
+   * no air, and it is a different thing from the defect Cinder shipped with,
+   * where a body that HAD air could not be flown through any of it.
+   *
+   * `space-scale.test.mjs` used to require air of every landable body. It now
+   * splits the two cases and asserts each: a body that claims air must let you
+   * fly at least 300 m of it, and a body that claims none must skip the phase
+   * cleanly rather than report a negative depth. */
   atmosphere: 4200,
-  handoff: 0,
-  surfaceWorld: null,
+  handoff: 4900,
+  surfaceWorld: 'planet:tessera',
   spin: 0.00035,
   axis: [0.4, 0.9, 0.1],
   look: {
@@ -362,7 +508,432 @@ const TESSERA = {
     detail: 4.2,
   },
   ring: null,
-  blurb: 'Airless moonlet. Platinum-group traces.',
+  blurb: 'Airless moonlet. Sixth of a g. Platinum-group and helion. Landable.',
+};
+
+/* ==================================================================== *
+ * PHASE 2 - the rest of the system                                     *
+ * ====================================================================
+ *
+ * Seven new bodies, and Vitrine and Tessera promoted from scenery to
+ * destinations above. Ten landable worlds in total.
+ *
+ * -- The four constraints every one of these satisfies at once ---------
+ *
+ * 1. A DISC, NOT A STAR. `screenFraction(radius, dist, 75deg) >= 0.02` from
+ *    the dock - 21 pixels at 1080p, unambiguously a shape with an edge. This
+ *    is what sets the minimum radius at each distance, and it is why Lathe is
+ *    5.2 km rather than the 2.6 km a shepherd moon would really be: at 185 km
+ *    a 2.6 km moon subtends nine pixels, which is a star.
+ *
+ * 2. SURFACES KILOMETRES APART. `sep > 2 * (rA + rB)` for every pair, because
+ *    the painter ordering the far-limb cap forces (`depthTest: false`, see
+ *    Scale.js) is exact only while no two bodies interpenetrate. Lathe against
+ *    Ceraunus is the tight pair by design and clears it by 21.9 km.
+ *
+ * 3. FRONT-LIT. `dot(bearing, STAR_DIRECTION) < 0.35`, so nothing the player
+ *    flies toward is a silhouette. Verdigris at +0.03 is nearest the limit and
+ *    is deliberately the one near-half-phase body in the sky - a sky of full
+ *    discs and nothing else is a sticker album.
+ *
+ * 4. AIR YOU CAN FLY, OR NONE AT ALL. For a body that claims air:
+ *    `atmosphere - handoff >= 300` (a transition rather than a cut) and
+ *    `<= (atmosphere - radius) * 0.5` (the planet gets most of its own sky).
+ *    Tessera and Lathe claim none and skip the phase - see Tessera.
+ *
+ * -- Direction, and why the layout is built from bearings first --------
+ *
+ * The player asked for direction variety in as many words. Phase 1 spent five
+ * bearings; Phase 2 fills the gaps between them so no two destinations share a
+ * heading and a player told "down and to port" cannot arrive at the wrong
+ * planet:
+ *
+ *     out & down       Cinder      62 km    volcanic
+ *     right            Tessera     88 km    airless moonlet
+ *     down & right     Sirocco    118 km    desert
+ *     down & left      Shoal      142 km    ocean
+ *     straight ahead   Vitrine    155 km    ice
+ *     up & right       Verdigris  176 km    biotic
+ *     far up           Lathe      185 km    ring shepherd (Ceraunus's moon)
+ *     starboard, low   Carnelian  205 km    red iron
+ *     straight down    Sallow     232 km    toxic
+ *     out & up         Ceraunus   245 km    gas giant, no surface
+ *     ahead & to port  Cathedra   288 km    crystal
+ *     behind & up      Erenmark   640 km    the star
+ *
+ * -- These bearings were SOLVED, not chosen, and here is the constraint --
+ *
+ * `harness-framings.test.mjs` holds every pair of bodies more than 25 degrees
+ * apart in the sky, on the grounds that two framings closer than that show the
+ * same thing - and, more to the point, that a player told "down and to port"
+ * cannot then arrive at the wrong planet.
+ *
+ * The first Phase 2 draft failed it three times over: Vitrine/Cathedra at 15.4
+ * degrees, Tessera/Carnelian at 16.6, Cinder/Shoal at 23.8. That is not a test
+ * being fussy. Ten landable bodies in the forward hemisphere is close to the
+ * packing limit - 2*pi steradians over ten bodies is about 26 degrees a body -
+ * so the bearings have to be solved rather than picked, and they were: a search
+ * over the free six, holding Cinder, Vitrine, Ceraunus, Tessera and the star at
+ * their Phase 1 bearings, subject to
+ *
+ *     separation >= 25 deg     dot(bearing, STAR_DIRECTION) < 0.35
+ *     forward component >= 0.30 (so the hangar mouth has sky worth looking at)
+ *
+ * The achieved minimum is 27.7 degrees (Vitrine/Verdigris and Cinder/Shoal).
+ *
+ * CARNELIAN IS WHY THE TABLE SAYS "starboard, low" RATHER THAN "hard right".
+ * The obvious hard-right bearing is 25 degrees from Tessera, and every bearing
+ * that fixes THAT tips the body up toward Erenmark and back-lights it: at
+ * [0.883, 0.321, -0.342] its star dot was 0.433 and it read as a silhouette.
+ * The two constraints have no common solution at "hard right", so the identity
+ * moved rather than the rule. A planet you cannot see is worse than a planet
+ * that needs two words to describe.
+ *
+ * THE ONE PAIR UNDER 25 DEGREES IS CERAUNUS AND LATHE, at 24.4, and that is
+ * what a MOON IS. Lathe declares `orbits: 'ceraunus'` and the test exempts a
+ * satellite from its primary, because the framing that shows both of them
+ * together is the framing you want - it is the whole point of going.
+ *
+ * -- And the distances are now crossable, which they were not ----------
+ *
+ * This layout was pinned to an ASSUMED "cruise 260 m/s, boost 1600 m/s". The
+ * shipped flight model cruises at 120 m/s (`thrust / drag` = 78 / 0.65) and
+ * caps at 260, with 3.33 seconds of boost - so Cinder at 62 km was an EIGHT AND
+ * A HALF MINUTE flight and Cathedra at 288 km would have been forty. The
+ * distances were never the thing that was wrong; the ship was. See the transit
+ * drive in `src/ships/Flight.js`, whose speed is governed by altitude above
+ * the nearest body, so closing on a planet decelerates you automatically.
+ */
+
+/**
+ * SIROCCO - the desert world, down and to starboard.
+ *
+ * Dune seas, salt pans and one slot canyon. The first body in the system with
+ * deep air (2.2 km), which is what a dust world needs: the descent is long, the
+ * air is opaque and orange most of the way down, and the ground arrives late.
+ * Cinder's descent is 700 m of glow; this one is 1,000 m of nothing followed by
+ * a horizon.
+ */
+const SIROCCO = {
+  id: 'sirocco',
+  name: 'Sirocco',
+  kind: 'rock',
+  position: at([0.470, -0.671, -0.574], 118 * KM),
+  radius: 11000,
+  atmosphere: 13200,
+  handoff: 12200,
+  surfaceWorld: 'planet:sirocco',
+  spin: 0.0011,
+  axis: [0.21, 1, 0.06],
+  look: {
+    base: 0xc79a5e,
+    high: 0xe8cd9a,
+    low: 0x8a6234,
+    /* Almost no vein network. What makes Sirocco recognisable at range is the
+     * DUST BAND instead: a wide, bright, low-contrast limb no other body has. */
+    fissure: 0xb08a52,
+    fissureHot: 0xb08a52,
+    fissureCover: 0.06,
+    atmosphere: 0xe0a860,
+    /* 0.95 is the fattest halo in the system and still under the 1.1 that put
+     * Vitrine's rim over the space grade's 1.60 bloom threshold. A dust planet
+     * SHOULD have the fattest halo; it just may not flare. */
+    atmoStrength: 0.95,
+    haloScale: 1.09,
+    detail: 2.1,
+  },
+  ring: null,
+  blurb: 'Desert. Dune seas, salt pans, a slot canyon. Landable.',
+};
+
+/**
+ * SHOAL - the ocean world, down and to port.
+ *
+ * The only body that is mostly liquid, and the only one whose albedo swings
+ * hard within a hemisphere - which is what makes it read as water rather than
+ * as a blue rock. `fissureCover` 0.55 with a bright `fissure` colour is the
+ * vein channel doing archipelago-and-shallows duty.
+ */
+const SHOAL = {
+  id: 'shoal',
+  name: 'Shoal',
+  kind: 'rock',
+  position: at([-0.628, -0.439, -0.643], 142 * KM),
+  radius: 12500,
+  atmosphere: 14900,
+  handoff: 13900,
+  surfaceWorld: 'planet:shoal',
+  spin: 0.0013,
+  axis: [-0.16, 1, 0.22],
+  look: {
+    base: 0x1c5a86,
+    high: 0x6fd0d8,
+    low: 0x0b2e4a,
+    fissure: 0xdcecf2,
+    fissureHot: 0xffffff,
+    fissureCover: 0.55,
+    atmosphere: 0x8fd6f0,
+    atmoStrength: 0.88,
+    haloScale: 1.06,
+    detail: 1.9,
+  },
+  ring: null,
+  blurb: 'Ocean. Island chains over a shallow shelf, and one tidal chasm. Landable.',
+};
+
+/**
+ * VERDIGRIS - the biotic world, up and to starboard.
+ *
+ * The one near-half-phase body in the sky. Its bearing dots the star direction
+ * at +0.03: inside the 0.35 front-lighting limit with room, but far enough
+ * round that the terminator crosses the visible disc. So from the dock
+ * Verdigris is a lit crescent against a dark limb while everything else is a
+ * full disc, and it is the body that stops the sky being a sticker album.
+ */
+const VERDIGRIS = {
+  id: 'verdigris',
+  name: 'Verdigris',
+  kind: 'rock',
+  position: at([0.310, 0.516, -0.799], 176 * KM),
+  radius: 10200,
+  atmosphere: 12800,
+  handoff: 11600,
+  surfaceWorld: 'planet:verdigris',
+  spin: 0.0008,
+  axis: [0.05, 1, -0.28],
+  look: {
+    base: 0x2f6b46,
+    high: 0x86c47a,
+    low: 0x14331f,
+    fissure: 0x8fd8b0,
+    fissureHot: 0xd8f4e0,
+    /* The rivers. 0.24 is enough that the drainage network reads from orbit as
+     * a pale tracery and not so much that the planet reads as cracked - which
+     * is what the same channel does on Cinder at 0.19 with a hot colour instead
+     * of a cold one. Same shader, opposite reading. */
+    fissureCover: 0.24,
+    atmosphere: 0xa8e0b8,
+    atmoStrength: 0.9,
+    haloScale: 1.07,
+    detail: 2.4,
+  },
+  ring: null,
+  blurb: 'Biotic. Canopy mesas over river gorges. Landable.',
+};
+
+/**
+ * LATHE - Ceraunus's shepherd moon, and the answer to a dead end.
+ *
+ * Ceraunus is the biggest thing in the sky and it has no surface, so a player
+ * who flew the two hundred and forty-five kilometres out to it in Phase 1
+ * arrived at a wall. Lathe is what is actually out there: a small moon riding
+ * just outside the outer ring edge, carrying the richest ore in the system.
+ *
+ * -- The orbit, and the three numbers that set it ----------------------
+ *
+ * Placed at 2.85 body radii from Ceraunus - 108,300 m - along the vector that
+ * is (a) in the RING PLANE, i.e. perpendicular to Ceraunus's spin axis, and
+ * (b) projected back toward the dock, so the moon is on the near side and the
+ * trip is 185 km rather than 353. The rings run 1.42 to 2.28 radii (54-87 km),
+ * so 2.85 puts Lathe 21.7 km clear of the outer edge: outside the rings,
+ * shepherding them, which is what a shepherd moon does.
+ *
+ * 2.85 rather than the 2.35 the first draft used, and the reason is the
+ * separation rule rather than the astronomy. Surfaces must be more than
+ * `2 * (rA + rB)` apart or the painter ordering the far-limb cap forces stops
+ * being exact: 2.35 radii is 89.3 km against a required 86.4 km, under three
+ * kilometres of margin. 2.85 clears it by 21.9 km.
+ *
+ * 5.2 km of radius rather than 2.6, and that is a legibility decision that
+ * overrules the physics. At 185 km a 2.6 km moon subtends 0.010 of screen
+ * height - nine pixels at 1080p, which is a star, and this system has a rule
+ * that every body is a disc. 5.2 km reads at 0.037.
+ *
+ * AIRLESS, like Tessera, so the descent skips the atmosphere phase.
+ *
+ * The payoff is on the ground rather than in this file: the surface descriptor
+ * hangs Ceraunus and its rings in Lathe's sky by way of the `space` sky's
+ * `planetDirection` and `planetAngularRadius` params. That view is what the
+ * whole trip is for.
+ *
+ * The position is COMPUTED from Ceraunus rather than typed, so the day the gas
+ * giant moves its moon goes with it. A hand-copied position is two copies of
+ * one fact and the second one goes stale.
+ */
+const LATHE = (() => {
+  const c = CERAUNUS.position;
+  /* The ring plane is perpendicular to the spin axis. */
+  const ax = CERAUNUS.axis;
+  const al = Math.hypot(ax[0], ax[1], ax[2]);
+  const a = [ax[0] / al, ax[1] / al, ax[2] / al];
+  /* Back toward the dock at the origin, projected into that plane. */
+  const cl = Math.hypot(c[0], c[1], c[2]);
+  const home = [-c[0] / cl, -c[1] / cl, -c[2] / cl];
+  const d = home[0] * a[0] + home[1] * a[1] + home[2] * a[2];
+  const inPlane = [home[0] - d * a[0], home[1] - d * a[1], home[2] - d * a[2]];
+  const pl = Math.hypot(inPlane[0], inPlane[1], inPlane[2]);
+  if (!(pl > 1e-6)) throw new Error('[space/Bodies] Lathe: the way home is along the ring axis');
+  const ORBIT = CERAUNUS.radius * 2.85;
+  return {
+    id: 'lathe',
+    name: 'Lathe',
+    kind: 'moon',
+    position: [
+      c[0] + (inPlane[0] / pl) * ORBIT,
+      c[1] + (inPlane[1] / pl) * ORBIT,
+      c[2] + (inPlane[2] / pl) * ORBIT,
+    ],
+    radius: 5200,
+    atmosphere: 5200,
+    handoff: 5900,
+    surfaceWorld: 'planet:lathe',
+    /** The body this one is a satellite of. The ONLY use of this field is the
+     *  sky-separation rule: a moon sits close to its primary because that is
+     *  what a moon is, so the pair is exempt from the 25-degree floor every
+     *  other pair is held to. Anything else that wants to know about orbits
+     *  should get a real orbital model rather than borrow this. */
+    orbits: 'ceraunus',
+    spin: 0.00022,
+    axis: [0.12, 1, -0.19],
+    look: {
+      base: 0x8e8878,
+      high: 0xcfc8b4,
+      low: 0x4a463c,
+      fissure: 0x36322a,
+      fissureHot: 0x36322a,
+      fissureCover: 0.38,
+      atmosphere: 0x000000,
+      atmoStrength: 0.0,
+      detail: 3.8,
+    },
+    ring: null,
+    blurb: 'Ring shepherd. Airless. Aurichalc under a sky full of rings. Landable.',
+  };
+})();
+
+/**
+ * CARNELIAN - the red iron world, hard to starboard.
+ *
+ * The one body whose bearing is dominated by a single axis other than -Z: 0.90
+ * of +X. A player told "hard right and hold it" arrives, which is worth having
+ * in a system where every other heading needs two components.
+ *
+ * Thin air (1.5 km) over a high, dry, oxidised highland. The descent is short
+ * and the ground is visible for most of it - the opposite of Sirocco, and
+ * deliberately so. Two dusty red planets that fly the same way are one planet
+ * twice.
+ */
+const CARNELIAN = {
+  id: 'carnelian',
+  name: 'Carnelian',
+  kind: 'rock',
+  position: at([0.669, -0.230, -0.707], 205 * KM),
+  radius: 8400,
+  atmosphere: 9900,
+  handoff: 9250,
+  surfaceWorld: 'planet:carnelian',
+  spin: 0.0010,
+  axis: [0.30, 1, 0.11],
+  look: {
+    base: 0x8e3a1e,
+    high: 0xd2764a,
+    low: 0x4a1a0c,
+    /* Dark, not hot. The same vein channel Cinder uses for incandescent
+     * fissures draws Carnelian's gorge system as SHADOW - a cold
+     * `fissureHot` is the whole difference, and it is why one planet reads
+     * as alight and the other as cut. */
+    fissure: 0x2a0e06,
+    fissureHot: 0x6a2a12,
+    fissureCover: 0.28,
+    atmosphere: 0xe08050,
+    atmoStrength: 0.72,
+    haloScale: 1.04,
+    detail: 2.8,
+  },
+  ring: null,
+  blurb: 'Iron highlands. Scarps, dust and one very deep gorge. Landable.',
+};
+
+/**
+ * SALLOW - the toxic world, straight down.
+ *
+ * The only near-axial bearing other than Vitrine's: 0.82 of -Y. "Straight down
+ * from the yard" is a direction nothing else occupies, and it is the one
+ * heading a player can hold with the nose on the deck.
+ *
+ * Fully back-lit at dot -0.83, so from the dock Sallow is the dimmest disc in
+ * the sky and stays that way until you are on top of it. That is correct for
+ * the planet: a sulfur world under permanent yellow overcast should look like
+ * somewhere you have to decide to go.
+ */
+const SALLOW = {
+  id: 'sallow',
+  name: 'Sallow',
+  kind: 'rock',
+  position: at([-0.031, -0.882, -0.469], 232 * KM),
+  radius: 7600,
+  atmosphere: 9600,
+  handoff: 8700,
+  surfaceWorld: 'planet:sallow',
+  spin: 0.0006,
+  axis: [-0.24, 1, 0.08],
+  look: {
+    base: 0xb8a038,
+    high: 0xe8dc76,
+    low: 0x6a5610,
+    fissure: 0xff9a2a,
+    fissureHot: 0xffe08a,
+    /* Hot veins again, but sparse - 0.11 against Cinder's 0.19. Sallow's heat
+     * is in its vent fields rather than in a fissure network, so what shows
+     * from orbit is a scatter of bright points rather than a web. */
+    fissureCover: 0.11,
+    atmosphere: 0xd8c840,
+    atmoStrength: 0.93,
+    haloScale: 1.08,
+    detail: 2.2,
+  },
+  ring: null,
+  blurb: 'Toxic. Acid lakes and fumarole fields under yellow overcast. Landable.',
+};
+
+/**
+ * CATHEDRA - the crystal world, ahead and up, and the far edge of the system.
+ *
+ * 288 km, the longest leg there is and about ninety seconds under the transit
+ * drive. Being furthest is its whole identity: the dearest ore that is not on
+ * Lathe, and the smallest disc from the dock at 0.031 of screen height - just
+ * over the 0.02 floor, so it reads as a real destination a long way off rather
+ * than as a body that happens to be small.
+ */
+const CATHEDRA = {
+  id: 'cathedra',
+  name: 'Cathedra',
+  kind: 'rock',
+  position: at([-0.317, 0.128, -0.940], 288 * KM),
+  radius: 6800,
+  atmosphere: 8200,
+  handoff: 7600,
+  surfaceWorld: 'planet:cathedra',
+  spin: 0.0015,
+  axis: [0.44, 1, 0.30],
+  look: {
+    base: 0x6a6e8c,
+    high: 0xd8dcf4,
+    low: 0x2a2c42,
+    /* The one body where the vein channel is BRIGHTER than the high band. The
+     * shattered plate boundaries catch the star and throw it back, so from
+     * orbit Cathedra is a dark blue-grey sphere webbed in white - the only
+     * body in the sky legible by its cracks rather than by its disc. */
+    fissure: 0xeaf0ff,
+    fissureHot: 0xffffff,
+    fissureCover: 0.34,
+    atmosphere: 0xb8c4f0,
+    atmoStrength: 0.8,
+    haloScale: 1.05,
+    detail: 3.4,
+  },
+  ring: null,
+  blurb: 'Crystal. Shattered plates, spire fields and a hollow vault. Landable.',
 };
 
 /**
@@ -370,7 +941,13 @@ const TESSERA = {
  * sorts per frame and nothing should depend on this order.
  * @type {SpaceBody[]}
  */
-export const SPACE_BODIES = [CINDER, VITRINE, CERAUNUS, TESSERA, ERENMARK];
+export const SPACE_BODIES = [
+  /* CINDER STAYS FIRST and new bodies are APPENDED, never prepended:
+   * `scripts/tests/space-scale.test.mjs` pins `landableBodies()[0].id` to
+   * 'cinder' as the ablation guard on this ordering. */
+  CINDER, VITRINE, CERAUNUS, TESSERA, ERENMARK,
+  SIROCCO, SHOAL, VERDIGRIS, LATHE, CARNELIAN, SALLOW, CATHEDRA,
+];
 
 /** @type {Record<string, SpaceBody>} */
 export const BODY_BY_ID = Object.fromEntries(SPACE_BODIES.map((b) => [b.id, b]));
@@ -499,6 +1076,14 @@ const _approach = {
   atmoDepth: 0,
   /** True on the frame the surface world should be activated. */
   shouldHandoff: false,
+  /**
+   * Metres the ship is INSIDE this body's pressure hull, 0 when it is not and
+   * 0 for every body that has one of its own to land on. Positive means the
+   * caller must put the ship back - see THE PRESSURE HULL at the top.
+   */
+  hullDepth: 0,
+  /** Metres to the hull, +ve outside. `Infinity` when the body has no hull. */
+  hullClear: Infinity,
 };
 
 /**
@@ -564,7 +1149,35 @@ export function approachState(shipPos, out = _approach) {
     const t = 1 - out.altitude / air;
     out.atmoDepth = t < 0 ? 0 : t > 1 ? 1 : t;
   }
+
+  /* The hull, measured here rather than by the caller: it is the same
+   * centre-distance the phases above are cut from, and a second subtraction
+   * one file over is a second thing to keep in step with `hull`. */
+  if (b.hull > 0) {
+    out.hullClear = out.distance - b.hull;
+    out.hullDepth = out.hullClear < 0 ? -out.hullClear : 0;
+  }
   return out;
+}
+
+/**
+ * How far out the "there is nothing to land on here" warning starts, as a
+ * multiple of the hull radius.
+ *
+ * 1.45 on Ceraunus is 93,670 m from the centre - just outside the ring
+ * system's outer edge (2.28 radii, 86,640 m), so the sentence arrives as the
+ * rings come into frame and 29 km before the wall. It is also where a live
+ * transit drive is cut (`Piloting._transitBreak`), which is what stops a ship
+ * arriving on the wall at 5,000 m/s: the altitude law allows that speed out
+ * here because the nearest SURFACE is 55 km below, and there is no surface.
+ * A pilot who is told at the last kilometre has been told nothing; one who is
+ * told from 6 body radii out has been nagged.
+ */
+export const HULL_WARN_BAND = 1.45;
+
+/** Bodies that stop a ship instead of taking it. Data, so a test can sweep them. */
+export function hulledBodies() {
+  return SPACE_BODIES.filter((b) => b.hull > 0);
 }
 
 /** Bodies a ship can actually land on this phase. */

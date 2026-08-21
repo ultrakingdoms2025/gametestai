@@ -267,18 +267,34 @@ export class ChatClient {
       .trim();
   }
 
+  /**
+   * THE OFFLINE MAP OF THE NEXUS, AND IT GOES STALE THE SAME WAY THE
+   * LOREKEEPER'S DOES.
+   *
+   * These four canned lines are what an NPC says when the chat service is
+   * unreachable, and they are hardcoded prose derived from nothing - the same
+   * shape of defect `buildLorePersona`'s canonical-facts sentence carries, and
+   * the same one it shipped with. They said "five worlds ... four outbound
+   * portals" while the station had SIX gateways and there were ten landable
+   * planets on the far side of the yard's launch portal.
+   *
+   * The count is what `main.js` registers: station, medieval, sports, citadel,
+   * race, maze, dock, space, and the ten planets - eighteen. If a world is
+   * added, this is the second place after `WORLD_NAMES` that has to be told,
+   * and the fourth after `api/chat.js` and `server/chat-server.js`.
+   */
   _gameFactReply(q) {
     if (/\b(how many|count|number of)\b/.test(q) && /\b(portal|gate|gateway|world|worlds)\b/.test(q)) {
-      return 'There are five worlds in the Nexus. Aether Station is the hub and has four outbound portals; each of the other four worlds has one return portal.';
+      return 'Eighteen places, all told. Aether Station is the hub with six outbound portals, each of those six worlds has one return portal back, and Lodestar Yard has a second gate that opens onto open space - where ten planets can be set down on.';
     }
     if (/\b(portal|gate|gateway)\b/.test(q)) {
-      return 'The Nexus has five worlds: Aether Station, Medieval Valley, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge (three race circuits: Vellum Ridge Circuit, Cinder Gorge, and Aurora Rise, which has a 360 loop). Station is the hub; the other four worlds each have one return portal.';
+      return 'Six gateways ring Aether Station: Medieval Valley, the Meridian Athletic Grounds, Sunspire Citadel, Vellum Ridge, the Verdant Coil, and Lodestar Yard. Each of them sends you back the way you came. The Yard has one more - a launch portal onto open space, and that one takes a ship rather than a step.';
     }
     if (/\b(how do i|how do you|controls|key|keys|button|buttons|move|play|do i)\b/.test(q)) {
       return 'J opens the quest board anywhere; E talks to friendlies, picks up loot, and enters portals; T opens chat; F1 shows help; I opens inventory; B opens the marketplace; K unstucks.';
     }
     if (/\b(worlds?|places?|where is|where do|what is in)\b/.test(q)) {
-      return 'The Nexus has five worlds: Aether Station, Medieval Valley, Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge (three race circuits: Vellum Ridge Circuit, Cinder Gorge, and Aurora Rise, which has a 360 loop).';
+      return 'Through the ring: Aether Station, Medieval Valley, the Meridian Athletic Grounds, Sunspire Citadel, Vellum Ridge and its three circuits, the Verdant Coil, and Lodestar Yard. Beyond the Yard is open space, and in it ten planets you can land on - Cinder, Tessera, Sirocco, Shoal, Vitrine, Verdigris, Lathe, Carnelian, Sallow and Cathedra.';
     }
     return '';
   }
@@ -302,10 +318,43 @@ function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * World id -> the name a person would say out loud.
+ *
+ * `prettyWorld` falls back to `?? id`, which is SILENT and reads as a bug in
+ * the writing rather than as a missing row: an NPC would say "that part is in
+ * cathedra" and a subtitle would read "friendly - dock". So the table is kept
+ * complete against everything `main.js` registers, not against the three
+ * worlds that happened to exist when it was written.
+ *
+ * The bare descriptor id is the world id for a planet - `PlanetWorld.of` sets
+ * `static id = descriptor.id` - so these keys are `cinder`, not
+ * `planet:cinder`. The `planet:` form only ever appears in a body's
+ * `surfaceWorld`, which is not a world id but a request to activate one.
+ */
 const WORLD_NAMES = {
   station: 'Aether Station',
   medieval: 'Karnholt',
   sports: 'the Meridian Complex',
+  citadel: 'Sunspire Citadel',
+  race: 'Vellum Ridge',
+  maze: 'the Verdant Coil',
+  dock: 'Lodestar Yard',
+  /* Not "Space". A keeper answering "where?" with a proper noun for the void
+   * sounds like a place; the yard's own people call it what it is. */
+  space: 'open space beyond the Yard',
+  /* The ten landable planets, in the order Bodies.js lists them by distance.
+   * Names are copied from that file's `name` field and nowhere else. */
+  cinder: 'Cinder',
+  tessera: 'Tessera',
+  sirocco: 'Sirocco',
+  shoal: 'Shoal',
+  vitrine: 'Vitrine',
+  verdigris: 'Verdigris',
+  lathe: 'Lathe',
+  carnelian: 'Carnelian',
+  sallow: 'Sallow',
+  cathedra: 'Cathedra',
 };
 
 function prettyWorld(id) {

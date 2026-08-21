@@ -252,6 +252,19 @@ export class AudioDirector {
      * not, and `mount:dismounted` therefore must not stop it. */
     on('pilot:boarded', (e) => this._startShip(e?.shipId ?? null));
     on('pilot:left', () => this._stopShip());
+    /* THE TRANSIT DRIVE, which is an EVENT and not a speed.
+     *
+     * The held ship voice below already tracks speed and throttle, and if that
+     * were all the drive got, engaging it would sound exactly like accelerating
+     * - which is the whole thing it is not. `Piloting` publishes the state on
+     * the edge (never per step), so this is one voice per transition: a rising
+     * sweep as the drive catches and a falling one as it lets go. `engaged` and
+     * `off` are deliberately silent - they are the ARRIVALS, and the sweep that
+     * announced them is still ringing out when they land. */
+    on('pilot:transit', (e) => {
+      if (e?.state === 'spooling') this.sfx.transitDrive?.({ rising: true });
+      else if (e?.state === 'dropping') this.sfx.transitDrive?.({ rising: false });
+    });
 
     /* --- ship-to-ship ------------------------------------------------
      *
@@ -464,11 +477,21 @@ export class AudioDirector {
        * loud as a Kestrel at its ceiling rather than two thirds as loud. */
       const f = this.piloting?.flight ?? null;
       if (f) {
+        /* THE DRIVE HOLDS THE THROTTLE AND THE AFTERBURNER OPEN.
+         *
+         * Both are `max`, not sums. In transit the player usually has their
+         * hand off W entirely - the drive carries the ship - so a note driven
+         * by the command struct alone would go quiet at 5,000 m/s, which is
+         * the engine sounding idle at the loudest moment in the game. The
+         * spool is the honest answer to "how hard is this thing working", and
+         * it fades the note in and out over the same second and a half the
+         * FOV does. */
+        const sp = f.transitSpool ?? 0;
         this._ship.handle.set({
           speed: f.speed,
-          frac: Math.min(1, f.speed / (f.boostTop || 400)),
-          throttle: Math.abs(f.command?.throttle ?? 0),
-          boost: !!f.boosting,
+          frac: Math.max(sp, Math.min(1, f.speed / (f.boostTop || 400))),
+          throttle: Math.max(sp, Math.abs(f.command?.throttle ?? 0)),
+          boost: !!f.boosting || sp > 0.25,
         });
       }
     }

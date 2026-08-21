@@ -93,6 +93,22 @@
   opacity: 0;
 }
 .fl-tag.on { opacity: 1; }
+/* The transit DRIVE, as opposed to the displacement multiplier that shares the
+ * element. Amber rather than cyan, and pulsing while it is not yet at its final
+ * state - the spool is a second and a half of nothing else changing on screen,
+ * and a tag that just sat there read as though the key had not registered. The
+ * animation runs only on `.drive`, so the multiplier's tag is unchanged. */
+.fl-tag.drive { border-color: #ffb45a; color: #ffb45a; }
+.fl-tag.drive { animation: fl-transit-pulse 1.1s ease-in-out infinite; }
+@keyframes fl-transit-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+/* Motion is a preference. `prefers-reduced-motion` gets the colour and the
+ * words and none of the throb; the state is carried by the text either way. */
+@media (prefers-reduced-motion: reduce) {
+  .fl-tag.drive { animation: none; }
+}
 
 /* The landed hint. Under the speed block, only while the ship is stationary on
  * a surface - see the note in FlightHUD.update. The boarding toast that used to
@@ -132,6 +148,19 @@
 }
 .fl-nav .row {
   display: flex;
+  /* WRAP, AND IT IS LOAD-BEARING - see the note on `.eta` below.
+   *
+   * `.eta` asks for `flex-basis: 100%` so that it takes a line of its own under
+   * the range. In a `nowrap` flex line that basis does not START a line, it
+   * COMPETES for the one line there is: the 100% basis shrank `.nm` (which is
+   * `flex: 1; overflow: hidden`) to zero width and pushed `.rg` onto a second
+   * visual line inside its own box. The screenshot of it is unambiguous - the
+   * one row carrying an ETA lost its planet name entirely and read
+   * "155 / km  ETA ..." over two lines, while the five rows without an ETA
+   * were perfect. The row that broke was the row you are flying at.
+   *
+   * One declaration, and it is the one the `.eta` rule always assumed. */
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 6px;
   padding: 2px 0;
@@ -142,6 +171,144 @@
 .fl-nav .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fl-nav .row .rg { opacity: 0.75; }
 .fl-nav .row.ahead .ar { color: #64d8ff; }
+/* Time to arrival, drawn on the one row the nose is on. Its own line under the
+ * range rather than a fourth column: seven rows of three columns already fill
+ * the 226 px panel, and a fourth would push the body names into ellipses. */
+.fl-nav .row .eta {
+  /* The line of its own. `.fl-nav .row` must be `flex-wrap: wrap` for this to
+   * mean what it says; without it this basis crushes the name instead. */
+  flex-basis: 100%;
+  margin-left: 20px;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: #ffb45a;
+  opacity: 0.9;
+}
+
+/* ---- contacts, in the nav panel and above the bodies ----------------------
+ *
+ * IN THE NAV PANEL ON PURPOSE, and above rather than below it. A hostile is a
+ * navigation target that shoots back: it wants the same three columns, the
+ * same bearing glyph and the same corner of the screen the pilot's eye already
+ * goes to for "what is out there". A second panel somewhere else would be a
+ * second place to look during the one part of the game where looking away
+ * costs something.
+ *
+ * The whole block is hidden when nothing is out there, so the nav list sits
+ * exactly where it always did on a quiet run.
+ * ------------------------------------------------------------------------ */
+.fl-hostiles {
+  display: none;
+  margin-bottom: 8px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(255, 110, 60, 0.28);
+}
+.fl-hostiles.on { display: block; }
+.fl-hostiles h4 { color: #ff9a7a; opacity: 0.72; }
+
+.fl-nav .row.hostile { display: none; color: #ffb9a0; }
+.fl-nav .row.hostile.on { display: flex; }
+.fl-nav .row.hostile .ar { color: #ff7a52; opacity: 1; }
+/* In your gun. The one state change that says "you could be shooting now". */
+.fl-nav .row.hostile.hot { color: #ffd2c4; }
+.fl-nav .row.hostile.hot .rg { opacity: 1; }
+/* The one the lead pip is solving for - the same amber the pip is drawn in,
+ * so the row and the mark on the glass are visibly the same object. */
+.fl-nav .row.hostile.lock { color: #ffb45a; }
+.fl-nav .row.hostile.lock .ar { color: #ffb45a; }
+
+.fl-held {
+  display: none;
+  margin-top: 5px;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: #ffb45a;
+  opacity: 0.9;
+}
+.fl-held.on { display: block; }
+
+/* ---- contact pips on the glass --------------------------------------------
+ *
+ * One per live hostile. Percentages against the overlay, exactly as `.fl-mark`
+ * is and for the same reason - see the note there.
+ * ------------------------------------------------------------------------ */
+.fl-pips {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.fl-ct {
+  position: absolute;
+  width: 0;
+  height: 0;
+  display: none;
+}
+.fl-ct.on { display: block; }
+/* A diamond, not a circle: the two rings on the glass are already circles (the
+ * gun line and the lead pip) and a third would be a third thing to tell apart
+ * in a quarter of a second. A square on its corner reads as "contact" at four
+ * pixels, which is the size it has to work at.
+ *
+ * ── HOLLOW, AND BIG ENOUGH TO FRAME RATHER THAN COVER ──────────────────────
+ * The first build drew it 12 px and filled it when the contact was in gun
+ * range, and the screenshot at 300 m showed the defect immediately: a skiff at
+ * 300 m is 25 px across, and a filled 12 px diamond sat exactly on top of the
+ * only 25 px in the frame the player wanted to look at. That is the mistake
+ * `.fl-mark.aim` broke its own ring into four arcs to avoid, one selector
+ * further up this file. Twenty-two pixels and never filled: it is a bracket
+ * around the contact, not a mark on it. */
+.fl-ct i {
+  position: absolute;
+  left: -11px;
+  top: -11px;
+  width: 22px;
+  height: 22px;
+  border: 1.4px solid rgba(255, 122, 82, 0.9);
+  transform: rotate(45deg);
+  box-shadow: 0 0 7px rgba(255, 90, 50, 0.4);
+}
+.fl-ct b {
+  position: absolute;
+  left: 50%;
+  top: 17px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  color: rgba(255, 185, 160, 0.9);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 3px #000;
+}
+.fl-ct.hot i { border-color: #ff8a5a; }
+.fl-ct.lock i {
+  border-color: #ffb45a;
+  box-shadow: 0 0 10px rgba(255, 180, 90, 0.6);
+}
+.fl-ct.lock b { color: #ffd2a0; }
+/* ── AND IT GETS OUT OF THE WAY ONCE THE SHIP IS ITS OWN MARKER ─────────────
+ * The whole job of this pip is to make a contact FINDABLE while it is too
+ * small to be legible. Inside about 250 m a skiff is thirty pixels of swept
+ * wings with a lit leading edge - it does not need a box round it, and a box
+ * round it is one more thing between the player and the fight. The bracket
+ * fades to a hint and the range stays, because the range is still a number
+ * worth having at the merge. */
+.fl-ct.near i { opacity: 0.3; }
+.fl-ct.near b { opacity: 0.8; }
+/* Off the plate or astern. Hollow, dimmer and bigger, because it is pointing
+ * at something rather than sitting on it - and it must not be mistaken for a
+ * contact you could be shooting at. */
+.fl-ct.edge i {
+  left: -8px;
+  top: -8px;
+  width: 16px;
+  height: 16px;
+  border-style: dashed;
+  border-color: rgba(255, 122, 82, 0.6);
+  background: none;
+  box-shadow: none;
+}
+.fl-ct.edge b { opacity: 0.7; }
 
 .fl-alt {
   margin-top: 8px;
@@ -155,6 +322,37 @@
    the seam actually enforces (`Piloting.report().descentLimit`). */
 .fl-alt .fl-vs { font-style: normal; color: #ffd9a8; }
 .fl-alt .fl-vs.hot { color: #ff6a4a; font-weight: 700; }
+
+/* ---- the touchdown envelope ----
+   The two numbers `Piloting._groundContact` actually judges a landing on, each
+   beside the limit it is judged against. Amber while there is room, red on the
+   number that is over - so a pilot can see WHICH of the two they are about to
+   fail, which the single un-annotated descent figure could never say. */
+.fl-land {
+  margin-top: 4px;
+  font-size: 11.5px;
+  /* Tighter than the rows around it on purpose: this line carries four numbers
+   * and two glyphs and it has to stay on ONE line inside the nav panel. The
+   * longer label it started with wrapped and left a naked "m/s" underneath. */
+  letter-spacing: 0.01em;
+  color: rgba(255, 217, 168, 0.72);
+  display: none;
+}
+.fl-land.on { display: block; }
+.fl-land i {
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  color: #ffd9a8;
+  font-weight: 600;
+}
+.fl-land i.hot { color: #ff6a4a; font-weight: 700; }
+/* The pad under the approach, on its own line under the envelope. */
+.fl-land b.pad {
+  display: block;
+  margin-top: 2px;
+  font-weight: 600;
+  color: #ffd9a8;
+}
 
 .fl-hold { margin-top: 4px; font-size: 12px; opacity: 0.8; }
 .fl-hold.full { color: #ff8a5a; opacity: 1; }

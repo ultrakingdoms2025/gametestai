@@ -66,7 +66,12 @@ const SPEC = Object.assign(
     damageMax: 102,
     speedMin: 40,
     speedMax: 88,
-    /** Arrows are heavy: a real arc, not a bullet with a hint of droop. */
+    /** Arrows are heavy: a real arc, not a bullet with a hint of droop.
+     *
+     *  A WEAPON parameter and not the world's gravity - it is 0.52x
+     *  `CONFIG.player.gravity` and always was - so it does NOT scale on a
+     *  planet that publishes one. The reasoning, and the rule it belongs to, is
+     *  at `p.grav[slot]` in `../systems/Projectiles.js`. */
     gravity: -11.5,
     /** Holding full draw is tiring - the archer starts to shake and then sags. */
     holdTime: 3.2,

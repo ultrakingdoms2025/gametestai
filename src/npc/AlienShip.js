@@ -32,9 +32,13 @@ import * as THREE from 'three';
  * the bottom of the craft catch the star differently, which is most of what
  * makes it look grown rather than machined.
  *
- * Three silhouette cues do the "hostile at a glance" work, and they were
- * chosen because they are the ones that survive being 900 m away and forty
- * pixels tall:
+ * Three silhouette cues do the "hostile at a glance" work. This paragraph
+ * used to say they "survive being 900 m away and forty pixels tall" and that
+ * was two claims, both false: a 900 m skiff is EIGHT pixels across, not forty,
+ * and at eight pixels none of the three cues survives anything. The numbers
+ * are now measured (see the `range` note on `skiff` below) and the design has
+ * been moved to meet them - the fight is fought at 130-420 m, where these
+ * cues are 18 to 52 px and do read:
  *
  *   FORWARD-SWEPT, DOWN-RAKED BLADES. Every friendly hull in this game sweeps
  *   its wings BACK, because that is what a thing that is running looks like.
@@ -228,7 +232,40 @@ export const ALIEN_CLASSES = Object.freeze({
     cadence: 1.35,
     burst: 2,
     burstGap: 0.13,
-    range: 780,
+    /**
+     * ENGAGEMENT RANGE, AND IT IS A LEGIBILITY NUMBER BEFORE IT IS A BALANCE
+     * NUMBER. It was 780 m.
+     *
+     * `range` is the only thing that decides where the fight HAPPENS: it is
+     * the gate on `_intercept -> ATTACK`, ATTACK is the only state that fires,
+     * and ATTACK ends at `BREAK_RANGE`. So the whole shooting half of an
+     * encounter lives in the band `[BREAK_RANGE, range]` and nowhere else.
+     *
+     * At 780 m that band was mostly invisible. Measured - not judged - by
+     * projecting this hull's real vertices through the live 75-degree camera
+     * at 1920x1080 (`.probe/engagement.mjs`), a skiff subtends:
+     *
+     *     1250 m    5 px      a star
+     *      780 m   10 px      four coloured pixels; the screenshot at the
+     *                         skiff's own old gun range shows NOTHING in the
+     *                         full frame and a violet fleck at 4x
+     *      520 m   15 px      a smudge with a direction
+     *      420 m   18 px      an object; the blades separate from the body
+     *      300 m   25 px      a SHAPE - swept wings, amber leading edge, and
+     *                         you can see which way it is pointing
+     *      200 m   36 px      a craft, banking, with damage flashes on it
+     *      130 m   52 px      the merge
+     *
+     * The rule is `px = 703.7 * metres / range` at 1080p (the plate is
+     * `2 * tan(37.5deg) = 1.535` world units tall per metre of range, mapped
+     * to 1080 rows), and this hull's widest span is 11.0 m across the forward
+     * blades - so the arithmetic and the measurement agree inside 10%.
+     *
+     * 420 m is where "an object with a facing" starts and it is therefore
+     * where the shooting starts. The band is now [130, 420] and its MEDIAN is
+     * 275 m, which is inside the shape-reading range rather than past it.
+     */
+    range: 420,
     /** Radians of aim scatter before range and jink are added. */
     spread: 0.0055,
     /** Credits traffic control pays for the transponder. */
@@ -260,7 +297,16 @@ export const ALIEN_CLASSES = Object.freeze({
     cadence: 2.1,
     burst: 3,
     burstGap: 0.16,
-    range: 900,
+    /**
+     * 520 m, from 900 m, and it is 100 m further out than the skiff's for a
+     * reason that is arithmetic rather than flavour: the lance is 16.4 m
+     * across its three arms against the skiff's 11.0 m, so at 520 m it
+     * subtends 22 px - the same angular size a skiff has at 350 m, and inside
+     * the same "reads as a shape" threshold. The heavy out-ranges the light
+     * craft AND is legible where it shoots from. That is the standoff its
+     * whole design implies, and it was not true at 900 m, where it was 13 px.
+     */
+    range: 520,
     spread: 0.0048,
     bounty: 180,
     salvage: 110,
@@ -594,8 +640,17 @@ export function buildAlienModel(classId) {
   });
   /* Over 1.0 in red with `toneMapped:false`, exactly as `DockExterior`'s bay
    * mouth and nav lights are. That is what carries these past the space
-   * grade's 1.60 bloom threshold and makes a skiff at 900 m a red spark
-   * rather than four dark pixels. */
+   * grade's 1.60 bloom threshold.
+   *
+   * The old note here claimed it "makes a skiff at 900 m a red spark rather
+   * than four dark pixels". Photographed at 1920x1080: at 780 m the craft is
+   * four dark pixels ANYWAY, and against Cinder's lit caldera - which is the
+   * background the outbound picket is actually fought over - it is a violet
+   * silhouette DARKER than what is behind it, so the seams are not even a
+   * spark. Emissive cannot buy legibility at 10 px; only range can, and only
+   * a HUD marker can buy findability past that. Both of those now exist (see
+   * `SpaceCombat`'s engagement-geometry header). The seams still earn their
+   * place at 130-420 m, which is where they are now looked at. */
   const glowMat = new THREE.MeshBasicMaterial({
     color: new THREE.Color(4.6, 0.34, 0.18), fog: false, toneMapped: false,
   });
@@ -837,7 +892,7 @@ export class AlienShip {
    *     ablated              mean separation 504 m, closest 33 m
    *
    * The ablated wing separated BETTER. The geometry of an interception is
-   * already dominated by where each craft launched (a 900-1,250 m shell across
+   * already dominated by where each craft launched (a 600-850 m shell across
    * a 40-degree cone) and by the random break vectors, and an offset applied
    * to a lead point that is itself moving at 200 m/s is noise against both.
    *

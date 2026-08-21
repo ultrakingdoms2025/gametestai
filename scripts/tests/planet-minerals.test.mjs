@@ -51,6 +51,61 @@ import { BODY_BY_ID, DOCK_ANCHOR } from '../../src/worlds/space/Bodies.js';
  * asserts is read out of a source table or derived from another measurement in
  * the same run, and the floors are stated as floor / achieved / ceiling with
  * the ceiling taken by ablation.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  BLOCK 5 RUNS ON ALL TEN PLANETS, AND HERE IS WHAT THAT COSTS
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Block 5 builds a REAL `PlanetWorld` with real physics and floods it. That was
+ * written for one planet; there are ten now, and the honest question was whether
+ * to run it ten times or to subset it. Measured, on the machine this was written
+ * on, before deciding:
+ *
+ *   build one world, and its walk lattice                     170-600 ms
+ *   the SAME lattice, flooded from each of its three pads      ~100 ms
+ *   the SAME lattice, one flood PER NODE for the seam tours    2.0-6.5 s
+ *
+ * over 933 ore nodes and 47 seams on ten planets. Two runs on a machine with
+ * other work on it: 4.4 s / 39.6 s and 13.5 s / 72.1 s for the cheap gates and
+ * the economy, so 48 to 88 s for this file against the 8 s it cost when Cinder
+ * was the only planet. The tour is the expensive half by a factor of five to
+ * ten, and it is the half that cannot be reused between seams: a
+ * nearest-neighbour tour needs the distance from every node to every other, and
+ * that is one relaxation of a 160,000-cell lattice per node.
+ *
+ * IT RUNS ALL TEN. There is no rotation, no sample and no cap, because a gate
+ * that quietly covers two planets while its name says ten is worse than no gate:
+ * the project's own rule is no silent caps, and the cheapest way to obey it is
+ * to not have a cap. A minute or so is what ten worlds cost, and the timings
+ * are printed - a `[planet] world built in ... ms` line each, and a total for
+ * the tours at the end - so the day it stops being affordable is a day somebody
+ * can see rather than infer.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  WHAT GENERALISES AND WHAT IS ABOUT CINDER
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * "The rare tier costs more to reach" is a rule about every planet. "The rare
+ * tier has the longest median march" is a rule about CINDER, and generalising
+ * it naively breaks on five of the ten:
+ *
+ *   sirocco    chalcanth  rare      median 392 m   vs cassiterite uncommon 571 m
+ *   shoal      polymetal  rare      median 170 m   vs abyssite    exotic   286 m
+ *   verdigris  sporecryst rare      median 118 m   vs resin       uncommon 427 m
+ *   lathe      tychite    rare      median 230 m   vs aurichalc   exotic   557 m
+ *   carnelian  carnelite  rare      median 344 m   vs hematite    uncommon 392 m
+ *
+ * Sirocco's chalcanth is the clearest: it sits 392 m out at the median while an
+ * UNCOMMON ore sits at 571 m, because chalcanth's cost is finding and descending
+ * a canyon stair and cassiterite's cost is a long flat walk. That is a different
+ * design, not a defect, and a gate that called it one would be telling nine
+ * authors to make their planets more like the first one.
+ *
+ * So the generalised version asks what the rule is FOR - the rare tier costs
+ * more - and measures the cost the way each planet actually charges it: from
+ * THE PAD THE PLAYER ARRIVES AT, and for the rarest tier, not at all from
+ * there. Cinder's own march and its 4x nearest-node ratio keep their case,
+ * named as Cinder's.
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -395,17 +450,24 @@ function harness(THREE) {
   THREE.PMREMGenerator.prototype.compileEquirectangularShader = () => {};
 }
 
-let _cinder = null;
-async function cinder() {
-  if (_cinder) return _cinder;
+/** Every planet the game registers, in registry order. */
+const ALL = Object.values(PLANETS);
+
+const _worlds = new Map();
+/**
+ * One real world per planet, built once. `PLANETS.cinder` by default so the
+ * Cinder-only cases below read the way they always did.
+ */
+async function world_(planet = PLANETS.cinder) {
+  if (_worlds.has(planet.id)) return _worlds.get(planet.id);
   const THREE = await import('three');
   harness(THREE);
   const { Physics, COLLISION_LAYER } = await import('../../src/physics/Physics.js');
   const { PlanetWorld } = await import('../../src/worlds/PlanetWorld.js');
   const { polyDist } = await import('../../src/worlds/planets/Placement.js');
   const physics = new Physics();
-  const Cls = PlanetWorld.of(PLANETS.cinder);
-  const world = new Cls({
+  const Cls = PlanetWorld.of(planet);
+  const built = new Cls({
     physics,
     scene: new THREE.Scene(),
     bus: { on: () => () => {}, emit() {} },
@@ -419,10 +481,11 @@ async function cinder() {
     },
     materials: { get: () => new THREE.MeshStandardMaterial(), dispose() {} },
   });
-  world.physics = physics;
-  await world.build(() => {});
-  _cinder = { world, physics, COLLISION_LAYER, polyDist };
-  return _cinder;
+  built.physics = physics;
+  await built.build(() => {});
+  const out = { world: built, physics, COLLISION_LAYER, polyDist };
+  _worlds.set(planet.id, out);
+  return out;
 }
 
 /** Every solid world box, indexed on XZ. Straight out of `physics.colliders`. */
@@ -493,7 +556,18 @@ function lattice({ ground, blocked, lava, half }) {
       ok[at(i, j)] = 1;
     }
   }
-  const dist = new Float32Array(n * n);
+  /* Float64, NOT Float32, AND THIS IS A BUG THAT WAS ALREADY HERE.
+   *
+   * The relaxation below accepts an improvement of more than 1e-6 m and then
+   * STORES it. In a `Float32Array` a distance of about 1 km has a ULP of 6e-5,
+   * so an improvement between 1e-6 and 6e-5 passes the test and rounds away in
+   * the store: `dist[kk]` does not move, the node is queued again, the same
+   * edge relaxes again, and the queue grows without bound. On Cinder the graph
+   * never triggered it. On Sallow it does immediately - `q.push` throws
+   * `RangeError: Invalid array length` - which is what running this on a second
+   * planet found. Float64 carries the 1e-6 threshold with fifteen digits to
+   * spare and the loop terminates. */
+  const dist = new Float64Array(n * n);
   const cellsNear = (x, z) => {
     const i0 = Math.round((x + half) / PITCH); const j0 = Math.round((z + half) / PITCH);
     const r = Math.ceil(ARRIVE / PITCH); const out = [];
@@ -541,10 +615,19 @@ function lattice({ ground, blocked, lava, half }) {
   };
 }
 
-let _walk = null;
-async function walkGraph() {
-  if (_walk) return _walk;
-  const { world, physics, COLLISION_LAYER, polyDist } = await cinder();
+const _walk = new Map();
+/**
+ * One walk lattice per planet, with the standing-room mask built once.
+ *
+ * Timed and printed: this is the expensive half of block 5 and the header says
+ * what it costs. A nearest-neighbour tour runs one flood PER NODE, so the mask
+ * is built once and only the distance field is refilled.
+ */
+async function walkGraph(planet = PLANETS.cinder) {
+  if (_walk.has(planet.id)) return _walk.get(planet.id);
+  const t0 = Date.now();
+  const { world, physics, COLLISION_LAYER, polyDist } = await world_(planet);
+  const tBuild = Date.now() - t0;
   const field = physics.heightfields[0];
   const blocked = boxIndex(physics, COLLISION_LAYER);
   const bodies = world.planet.liquid?.bodies ?? [];
@@ -555,112 +638,175 @@ async function walkGraph() {
     }
     return false;
   };
-  _walk = {
-    world,
-    blocked,
-    lava,
-    L: lattice({ ground: (x, z) => field.sampleHeight(x, z), blocked, lava, half: world.planet.half }),
-  };
-  return _walk;
+  const t1 = Date.now();
+  const L = lattice({ ground: (x, z) => field.sampleHeight(x, z), blocked, lava, half: world.planet.half });
+  console.log(`   [${planet.id}] world built in ${tBuild} ms, walk lattice in ${Date.now() - t1} ms,`
+    + ` ${world.mineralNodes.length} ore nodes, ${world.landingSites.length} pads`);
+  const out = { world, blocked, lava, L };
+  _walk.set(planet.id, out);
+  return out;
 }
 
-test('the rare elements cost a walk, and the common ones do not', async () => {
-  const { world, L } = await walkGraph();
-  /** Nearest pad, in walking metres, for every node. */
+/**
+ * Nearest-pad and from-the-primary-pad walking distances for one planet.
+ *
+ * `nearest` is the distance to each node from whichever pad is closest to it.
+ * `fromPrimary` is the distance from the pad the player ARRIVES at, which is a
+ * different question and the one the rarity ladder is actually priced in.
+ */
+async function distances(planet) {
+  const { world, L } = await walkGraph(planet);
+  const primary = world.landingSites.find((site) => site.primary);
   const nearest = new Map();
-  for (const s of world.landingSites) {
-    L.from(s.position.x, s.position.z);
+  for (const site of world.landingSites) {
+    L.from(site.position.x, site.position.z);
     for (const nd of world.mineralNodes) {
       const d = L.to(nd.position.x, nd.position.z);
       const cur = nearest.get(nd);
-      if (!cur || d < cur.d) nearest.set(nd, { d, pad: s.id });
+      if (!cur || d < cur.d) nearest.set(nd, { d, pad: site.id });
     }
   }
-
-  const byTier = new Map();
-  console.log('   THE WALK (floor: every node reachable from some pad, on foot, no jump)');
+  L.from(primary.position.x, primary.position.z);
+  const fromPrimary = new Map();
+  for (const nd of world.mineralNodes) fromPrimary.set(nd, L.to(nd.position.x, nd.position.z));
+  const rows = [];
   for (const min of world.planet.minerals) {
     const nodes = world.mineralNodes.filter((nd) => nd.type === min.id);
     const ds = nodes.map((nd) => nearest.get(nd).d).sort((a, b) => a - b);
-    const lost = ds.filter((d) => !(d < Infinity)).length;
-    const pads = new Set(nodes.map((nd) => nearest.get(nd).pad));
-    console.log(`     ${min.id.padEnd(12)} ${min.rarity.padEnd(9)} ${min.terrain.padEnd(11)} ${nodes.length - lost}/${nodes.length}`
-      + `  walk min ${ds[0].toFixed(0)} m, median ${ds[Math.floor(ds.length / 2)].toFixed(0)} m, max ${ds[ds.length - 1].toFixed(0)} m`
-      + `  via ${[...pads].join(', ')}`);
-    assert.equal(lost, 0, `${min.id}: ${lost} nodes nothing can walk to`);
-    const t = byTier.get(min.rarity) ?? [];
-    t.push({ min, ds });
-    byTier.set(min.rarity, t);
+    const pd = nodes.map((nd) => fromPrimary.get(nd)).sort((a, b) => a - b);
+    rows.push({
+      min,
+      nodes,
+      ds,
+      pd,
+      lost: ds.filter((d) => !(d < Infinity)).length,
+      pads: new Set(nodes.map((nd) => nearest.get(nd).pad)),
+      onPrimary: pd.filter((d) => d < Infinity).length,
+      median: ds[Math.floor(ds.length / 2)],
+    });
   }
+  return { world, L, primary, rows };
+}
 
-  /* HARD, NOT IMPOSSIBLE - and the difference stated in metres.
+test('on every planet the rare tier costs more to reach than the common one', async () => {
+  /* ALL TEN. `planet-reach.test.mjs` already proves every node is reachable.
+   * This case asks the next question - what does reaching it COST - and it asks
+   * it in the units each planet actually charges in.
    *
-   * IMPOSSIBLE is `lost > 0`, asserted at zero above: there is no ore on this
-   * planet a walking body cannot stand at.
+   * ── WHY THIS IS NOT "THE RARE TIER IS FURTHER AWAY" ──────────────────────
    *
-   * HARD is three separate measurements, because one of them on its own is
-   * gameable:
+   * Because on five of the ten planets it is not, and they are right. Sirocco's
+   * chalcanth sits at a 392 m median while its UNCOMMON cassiterite sits at
+   * 571 m: chalcanth is down a canyon stair and cassiterite is a long flat
+   * walk, and the canyon is the more expensive of the two. Distance is one way
+   * a planet can charge for an ore and it is not the only one.
    *
-   *   (a) the NEAREST node of each rare tier is a multiple of the nearest
-   *       common node. Nearest and not median, because median is an artefact
-   *       of how wide a region is - tephra's `field` region spreads it over
-   *       the whole plain and drags its median to 521 m, when in practice you
-   *       pick up the one 52 m from the ramp and never walk to the far ones.
-   *   (b) the exotic tier is unreachable FROM THE PRIMARY PAD AT ALL. It is
-   *       not a longer walk, it is a second landing: you fly to Rimhold Shelf
-   *       and take the spiral road down.
-   *   (c) the rare tier has the longest median walk of any ore on the planet.
-   *       Rheniite is the march.                                             */
-  const nearestOf = (rarity) => Math.min(...(byTier.get(rarity) ?? []).map((t) => t.ds[0]));
-  const commonNearest = nearestOf('common');
-  const NEAREST_FLOOR = 4;
-  for (const rarity of ['rare', 'exotic']) {
-    for (const { min, ds } of byTier.get(rarity) ?? []) {
-      const ratio = ds[0] / commonNearest;
-      console.log(`     ${rarity.padEnd(9)} ${min.id.padEnd(10)} nearest node ${ds[0].toFixed(0)} m against ${commonNearest.toFixed(0)} m for the nearest common ore`
-        + `  = floor ${NEAREST_FLOOR.toFixed(1)}x, achieved ${ratio.toFixed(1)}x`);
-      assert.ok(ratio >= NEAREST_FLOOR,
-        `${min.id}'s nearest node is ${ds[0].toFixed(0)} m from a pad and the nearest common ore is ${commonNearest.toFixed(0)} m`
-        + ` - only ${ratio.toFixed(1)}x, so the rare tier barely costs more walking than the common one`);
+   * What IS true of all ten, and is what the rule was always for:
+   *
+   *   1. NOTHING IS LOST. Every node is reachable from some pad, on foot, with
+   *      no jump and no mantle.
+   *   2. THE EXOTIC SEAM IS NOT ON THE DOORSTEP. Zero of its nodes reachable
+   *      from the primary pad AT ANY DISTANCE. It is not a longer walk, it is a
+   *      second landing: you fly to its own pad and start again. Ten out of ten
+   *      planets are authored this way.
+   *   3. FROM THE PAD THE PLAYER ARRIVES AT, THE RARE SEAM IS FURTHER THAN THE
+   *      COMMON ONE. Measured from the PRIMARY pad specifically rather than
+   *      from the nearest, because "nearest pad" flatters an ore that has a pad
+   *      of its own - Verdigris's sporecryst is 64 m from Sumphead and 525 m
+   *      from Greenspan, and the second number is the one a player pays on
+   *      arrival. Floor 1.5x, and the tightest planet in the registry is Lathe
+   *      at 1.9x. */
+  const lost = [];
+  const freeExotic = [];
+  const cheapRare = [];
+  console.log('   THE WALK, ON EVERY PLANET (floor: nothing lost; exotic 0-from-primary; rare >= 1.5x common from the primary)');
+  for (const planet of ALL) {
+    const { primary, rows } = await distances(planet);
+    const commonFromPrimary = Math.min(...rows.filter((r) => r.min.rarity === 'common').map((r) => r.pd[0]));
+    for (const r of rows) {
+      const fp = r.pd[0] < Infinity ? `${r.pd[0].toFixed(0)} m` : 'UNREACHABLE';
+      console.log(`     ${planet.id.padEnd(11)} ${r.min.id.padEnd(12)} ${r.min.rarity.padEnd(9)} ${r.min.terrain.padEnd(11)}`
+        + ` ${r.nodes.length - r.lost}/${String(r.nodes.length).padEnd(3)}`
+        + `  nearest pad: min ${r.ds[0].toFixed(0).padStart(4)} m, median ${r.median.toFixed(0).padStart(4)} m,`
+        + ` max ${r.ds[r.ds.length - 1].toFixed(0).padStart(4)} m`
+        + `   from ${primary.id}: ${fp.padStart(11)}, ${r.onPrimary}/${r.nodes.length} nodes`
+        + `   via ${[...r.pads].join(', ')}`);
+      if (r.lost) lost.push(`${planet.id}/${r.min.id}: ${r.lost} nodes nothing can walk to`);
+      if (r.min.rarity === 'exotic' && r.onPrimary !== 0) {
+        freeExotic.push(`${planet.id}/${r.min.id}: ${r.onPrimary} of ${r.nodes.length} exotic nodes can be walked to from`
+          + ` ${primary.id}, the pad you arrive at - the exotic tier costs no second landing`);
+      }
+      if (r.min.rarity === 'rare') {
+        const ratio = r.pd[0] / commonFromPrimary;
+        console.log(`     ${' '.repeat(11)} ${r.min.id} from ${primary.id}: ${r.pd[0].toFixed(0)} m against`
+          + ` ${commonFromPrimary.toFixed(0)} m for the nearest common ore = floor 1.5x, achieved ${ratio.toFixed(1)}x`);
+        if (!(ratio >= 1.5)) {
+          cheapRare.push(`${planet.id}/${r.min.id}: ${r.pd[0].toFixed(0)} m from ${primary.id} against`
+            + ` ${commonFromPrimary.toFixed(0)} m for the nearest common ore - only ${ratio.toFixed(1)}x, so the rare`
+            + ' tier is on the doorstep of the pad the player arrives at');
+        }
+      }
     }
   }
+  assert.deepEqual(lost, [], 'ore nothing can walk to is ore that does not exist');
+  assert.deepEqual(freeExotic, [], 'the exotic tier is a second landing, not a longer walk');
+  assert.deepEqual(cheapRare, [], 'the rare tier has to cost something measured from where the player lands');
+});
 
-  const primary = world.landingSites.find((s) => s.primary);
-  L.from(primary.position.x, primary.position.z);
-  for (const { min } of byTier.get('exotic') ?? []) {
-    const fromPrimary = world.mineralNodes
-      .filter((nd) => nd.type === min.id)
-      .filter((nd) => L.to(nd.position.x, nd.position.z) < Infinity).length;
-    console.log(`     exotic    ${min.id.padEnd(10)} reachable from the primary pad (${primary.id}) on foot: ${fromPrimary} of `
-      + `${world.mineralNodes.filter((nd) => nd.type === min.id).length}  - floor 0, achieved ${fromPrimary}`);
-    assert.equal(fromPrimary, 0,
-      `${min.id} can be walked to from ${primary.id}, the pad you arrive at - the exotic tier costs no second landing`);
+test('CINDER: the rare tier is the longest march on the planet, and the exotic is off it', async () => {
+  /* CINDER ONLY, and both halves of it are why.
+   *
+   * (a) THE 4x NEAREST-NODE RATIO. Rheniite's nearest node is 326 m from a pad
+   *     against 48 m for the nearest common ore, 6.8x. Measured against the
+   *     NEAREST pad rather than the primary, which is a stricter thing to ask
+   *     and only Cinder, Tessera, Vitrine, Carnelian, Sallow and Cathedra
+   *     clear it - Verdigris's sporecryst is 1.1x by that measure, because it
+   *     has a pad of its own 64 m away. The registry-wide version of this claim
+   *     is the from-the-primary-pad ratio in the case above.
+   *
+   * (b) THE LONGEST MARCH. Rheniite's median walk is longer than every other
+   *     ore's on Cinder. Five of the ten planets invert that deliberately and
+   *     the header lists them; it is a fact about a rift that runs the length
+   *     of one map, not a rule.
+   *
+   * Nearest and not median for (a), because median is an artefact of how wide a
+   * region is - tephra's `field` region spreads it over the whole plain and
+   * drags its median to 521 m, when in practice you pick up the one 52 m from
+   * the ramp and never walk to the far ones. */
+  const { rows } = await distances(PLANETS.cinder);
+  const commonNearest = Math.min(...rows.filter((r) => r.min.rarity === 'common').map((r) => r.ds[0]));
+  const NEAREST_FLOOR = 4;
+  for (const r of rows.filter((x) => x.min.rarity === 'rare' || x.min.rarity === 'exotic')) {
+    const ratio = r.ds[0] / commonNearest;
+    console.log(`     ${r.min.rarity.padEnd(9)} ${r.min.id.padEnd(10)} nearest node ${r.ds[0].toFixed(0)} m against`
+      + ` ${commonNearest.toFixed(0)} m for the nearest common ore = floor ${NEAREST_FLOOR.toFixed(1)}x,`
+      + ` achieved ${ratio.toFixed(1)}x`);
+    assert.ok(ratio >= NEAREST_FLOOR,
+      `${r.min.id}'s nearest node is ${r.ds[0].toFixed(0)} m from a pad and the nearest common ore is`
+      + ` ${commonNearest.toFixed(0)} m - only ${ratio.toFixed(1)}x`);
   }
-
-  const medianOf = (t) => t.ds[Math.floor(t.ds.length / 2)];
-  const rare = (byTier.get('rare') ?? [])[0];
-  if (rare) {
-    const others = [...byTier.entries()]
-      .filter(([r]) => r !== 'rare')
-      .flatMap(([, list]) => list)
-      .map((t) => ({ id: t.min.id, m: medianOf(t) }));
-    const worst = others.reduce((a, b) => (b.m > a.m ? b : a));
-    console.log(`     rare      ${rare.min.id.padEnd(10)} median walk ${medianOf(rare).toFixed(0)} m`
-      + `  - floor ${worst.m.toFixed(0)} m (the next longest, ${worst.id}), achieved ${medianOf(rare).toFixed(0)} m`);
-    assert.ok(medianOf(rare) > worst.m,
-      `${rare.min.id}'s median walk is ${medianOf(rare).toFixed(0)} m and ${worst.id}'s is ${worst.m.toFixed(0)} m`
-      + ' - the rare tier is not the longest march on the planet');
-  }
+  const rare = rows.find((r) => r.min.rarity === 'rare');
+  const worst = rows.filter((r) => r.min.rarity !== 'rare').reduce((a, b) => (b.median > a.median ? b : a));
+  console.log(`     rare      ${rare.min.id.padEnd(10)} median walk ${rare.median.toFixed(0)} m`
+    + `  - floor ${worst.median.toFixed(0)} m (the next longest, ${worst.min.id}), achieved ${rare.median.toFixed(0)} m`);
+  assert.ok(rare.median > worst.median,
+    `${rare.min.id}'s median walk is ${rare.median.toFixed(0)} m and ${worst.min.id}'s is ${worst.median.toFixed(0)} m`
+    + ' - the rare tier is not the longest march on Cinder');
 });
 
 test('CEILING BY ABLATION: the rare ore is held where it is by one road and one channel', async () => {
-  /* The case above can only go red if something is actually gating the rare
+  /* CINDER ONLY: it names Cinder's spiral road, Cinder's iridite and Cinder's
+   * rheniite. Its registry-wide sibling is the exotic-tier measurement above -
+   * 0 of N from the primary pad on all ten planets - which is the same claim
+   * made by measurement rather than by deletion.
+   *
+   * The case above can only go red if something is actually gating the rare
    * ore, and on an open plain nothing would be. So: delete the spiral road and
    * re-flood. Iridite must go to ZERO, which proves the road is the route. And
    * rheniite must NOT, because its two ends hang off two different pads - a
    * rare ore behind a single point of failure is one edit from unreachable, and
    * this is the case that would notice. */
-  const { world, blocked, lava } = await walkGraph();
+  const { world, blocked, lava } = await walkGraph(PLANETS.cinder);
   const { HEIGHT_FIELDS } = await import('../../src/worlds/terrain/index.js');
   const P = world.planet;
   const rim = P.landing.find((s) => s.id === 'rimhold');
@@ -688,8 +834,15 @@ test('CEILING BY ABLATION: the rare ore is held where it is by one road and one 
     `rheniite went ${rh.after}/${rh.total} under ablation: it is either behind the same single road as iridite, or behind nothing at all`);
 });
 
-test('credits per minute climbs with rarity once the hold and the flight are counted', async () => {
-  const { world, L } = await walkGraph();
+/**
+ * One planet's mining economy, door to door: land, walk the seam on the real
+ * walk graph, walk back, fly home, and price the hold.
+ *
+ * This is the expensive part of the file - one flood PER NODE for the
+ * nearest-neighbour tour - and its cost is timed and printed per planet.
+ */
+async function economy(planet) {
+  const { world, L } = await walkGraph(planet);
   const P = world.planet;
   const WALK = CONFIG.player.walkSpeed;
   /* The hulls, with their own numbers rather than a quoted pair. `powerMul` is
@@ -699,36 +852,37 @@ test('credits per minute climbs with rarity once the hold and the flight are cou
     hold: holdCapacity(id),
     boost: boostTopSpeed(1 + (SHIP_BASE_STATS[id].power ?? 0) * BIAS_PER_POINT),
   }));
-  const body = BODY_BY_ID.cinder;
+  const body = BODY_BY_ID[P.id];
+  assert.ok(body, `${P.id} has no body in Bodies.js - a planet with no place in the system cannot be flown to`);
   /* Handoff sphere to handoff sphere: the stretch of the trip that is holding W
    * with nothing to do. A FLOOR on the flight and not the flight - it counts no
    * turn, no descent, no landing and no walk to the ramp. */
   const cruise = Math.hypot(...body.position.map((v, i) => v - DOCK_ANCHOR.position[i]))
     - body.handoff - DOCK_ANCHOR.handoff;
-  console.log(`   yard to Cinder, handoff to handoff: ${(cruise / 1000).toFixed(2)} km`);
-  for (const h of hulls) {
-    console.log(`     ${h.id.padEnd(8)} hold ${String(h.hold).padStart(2)} m3, boost ${h.boost} m/s,`
-      + ` cruise leg ${(cruise / h.boost).toFixed(0)} s each way`);
-  }
 
+  const t0 = Date.now();
   const rows = [];
   for (const min of P.minerals) {
     const nodes = world.mineralNodes.filter((nd) => nd.type === min.id);
     // The pad a miner would pick: most of this seam reachable, then nearest.
-    let pad = null; let bestScore = -Infinity;
-    for (const s of world.landingSites) {
-      L.from(s.position.x, s.position.z);
+    let pad = null;
+    let bestScore = -Infinity;
+    for (const site of world.landingSites) {
+      L.from(site.position.x, site.position.z);
       const ds = nodes.map((nd) => L.to(nd.position.x, nd.position.z)).filter((d) => d < Infinity);
       const score = ds.length * 1e7 - ds.reduce((a, b) => a + b, 0);
-      if (score > bestScore) { bestScore = score; pad = s; }
+      if (score > bestScore) { bestScore = score; pad = site; }
     }
     // Nearest-neighbour tour from that pad, over the real walk graph.
     L.from(pad.position.x, pad.position.z);
     const left = new Set(nodes.filter((nd) => L.to(nd.position.x, nd.position.z) < Infinity));
     const steps = [];
-    let tour = 0; let credits = 0; let vol = 0;
+    let tour = 0;
+    let credits = 0;
+    let vol = 0;
     while (left.size) {
-      let best = null; let bestD = Infinity;
+      let best = null;
+      let bestD = Infinity;
       for (const nd of left) { const d = L.to(nd.position.x, nd.position.z); if (d < bestD) { bestD = d; best = nd; } }
       if (!best || !(bestD < Infinity)) break;
       tour += bestD; credits += best.credits; vol += holdUnitsFor(best.size ?? 1);
@@ -737,63 +891,136 @@ test('credits per minute climbs with rarity once the hold and the flight are cou
       steps.push({ n: steps.length + 1, tour, credits, vol, home: L.to(pad.position.x, pad.position.z) });
     }
     const trips = hulls.map((h) => {
-      const s = [...steps].reverse().find((e) => e.vol <= h.hold);
-      if (!s) return { id: h.id, cr: 0, sec: Infinity, rate: 0, n: 0, vol: 0 };
-      const sec = (s.tour + s.home) / WALK + s.n * MINE_TIME + 2 * (cruise / h.boost);
-      return { id: h.id, cr: s.credits, sec, rate: s.credits / (sec / 60), n: s.n, vol: s.vol };
+      const e = [...steps].reverse().find((q) => q.vol <= h.hold);
+      if (!e) return { id: h.id, cr: 0, sec: Infinity, rate: 0, n: 0, vol: 0 };
+      const sec = (e.tour + e.home) / WALK + e.n * MINE_TIME + 2 * (cruise / h.boost);
+      return { id: h.id, cr: e.credits, sec, rate: e.credits / (sec / 60), n: e.n, vol: e.vol };
     });
     rows.push({ min, pad, steps, trips });
   }
+  return { world, P, hulls, cruise, rows, ms: Date.now() - t0 };
+}
 
-  console.log('   CREDITS PER MINUTE, door to door: land, walk the seam, walk back, fly home');
-  console.log('     element      rarity     cr/m3  seam    kestrel 10 m3               dray 40 m3');
-  for (const r of rows) {
-    const [k, d] = r.trips;
-    console.log(`     ${r.min.id.padEnd(12)} ${r.min.rarity.padEnd(9)} ${String(r.min.unitValue).padStart(5)}`
-      + ` ${String(r.steps[r.steps.length - 1].credits).padStart(5)}cr`
-      + `   ${String(k.n).padStart(2)} nodes ${String(k.cr).padStart(4)} cr in ${k.sec.toFixed(0).padStart(3)} s = ${k.rate.toFixed(0).padStart(3)}/min`
-      + `   ${String(d.n).padStart(2)} nodes ${String(d.cr).padStart(4)} cr in ${d.sec.toFixed(0).padStart(3)} s = ${d.rate.toFixed(0).padStart(3)}/min`);
-  }
-
-  /* THE FLOOR: on the hull a player starts with, the rate has to ASCEND the
-   * ladder. Compared between adjacent rows only where the rarity actually
-   * steps up, so two ores of the same tier are free to differ. */
-  const kestrel = rows.map((r) => ({ rarity: r.min.rarity, id: r.min.id, rate: r.trips[0].rate }));
-  for (let i = 1; i < kestrel.length; i++) {
-    const a = kestrel[i - 1]; const b = kestrel[i];
-    if (MINERAL_RARITY.indexOf(b.rarity) <= MINERAL_RARITY.indexOf(a.rarity)) continue;
-    assert.ok(b.rate > a.rate,
-      `a Kestrel earns ${b.rate.toFixed(0)} cr/min on ${b.rarity} ${b.id} against ${a.rate.toFixed(0)} on ${a.rarity} ${a.id}`
-      + ' - the rarity ladder does not pay');
-  }
-  const first = kestrel[0].rate;
-  const last = kestrel[kestrel.length - 1].rate;
-  console.log(`     floor: strictly ascending across the four tiers for a stock Kestrel.`
-    + ` achieved ${first.toFixed(0)} -> ${last.toFixed(0)} cr/min, a ${(last / first).toFixed(1)}x spread`);
-
-  /* And the honest note, measured rather than asserted.
+test('credits per minute climbs with rarity on every planet, once the hold and the flight are counted', async () => {
+  /* ALL TEN, and the header records what that costs and why there is no subset.
    *
-   * The Dray's column is NOT monotone, and that is a property worth keeping
-   * rather than a failure worth tuning away: 40 m3 rewards a dense seam under
-   * a landing pad more than a scarce one at the end of a march. Rheniite has
-   * nine reachable nodes at one cubic metre each, so a bulk hauler flies 40 m3
-   * of hold to Cinder and brings back nine - and earns less doing it than it
-   * would on ferro-basalt, which has eighteen nodes inside 66 m of its own
-   * landing pad.
+   * ── THE FLOORS, AND WHY THEY ARE NOT "EVERY STEP ASCENDS" ────────────────
    *
-   * Printed and not asserted: pinning it would pin an accident of two hull
-   * stats, and the thing that must hold is the Kestrel floor above. */
-  const drayRates = new Map(rows.map((r) => [r.min.id, r.trips[1]]));
-  const inversions = [];
-  for (let i = 1; i < rows.length; i++) {
-    const a = rows[i - 1].min; const b = rows[i].min;
-    if (MINERAL_RARITY.indexOf(b.rarity) <= MINERAL_RARITY.indexOf(a.rarity)) continue;
-    if (drayRates.get(b.id).rate <= drayRates.get(a.id).rate) {
-      inversions.push(`${b.id} ${drayRates.get(b.id).rate.toFixed(0)}/min <= ${a.id} ${drayRates.get(a.id).rate.toFixed(0)}/min`);
+   * Cinder's own case asserts that each adjacent row of its mineral table pays
+   * more than the one above it wherever the rarity steps up, and it keeps that
+   * assertion below because Cinder is the reference table. Across the registry
+   * two of those steps are not strict:
+   *
+   *   lathe   rare tychite 237.28 cr/min   ->   exotic aurichalc 236.98 cr/min
+   *
+   * a shortfall of 0.13%, and it is a hull arithmetic outcome rather than a
+   * ladder that does not pay: a Kestrel fills its 10 m3 on ten tychite worth
+   * 3,602 cr in 911 s, or on six aurichalc worth 4,150 cr in 1,051 s. The
+   * exotic pays MORE PER TRIP and the same per minute, because the walk to it
+   * is 140 s longer. Pinning that to a strict inequality would be pinning two
+   * hull stats and a road length.
+   *
+   * So the registry-wide floors are the two claims that survive:
+   *
+   *   THE TIERS ASCEND UP TO RARE. Each tier's best rate beats the tier below,
+   *   for common -> uncommon -> rare. Achieved: the tightest is Lathe at
+   *   13.6 -> 62.5 -> 237.3.
+   *
+   *   THE LADDER PAYS AT ALL. The exotic tier earns at least 10x the common
+   *   one. Achieved 15x (Sallow) to 37x (Cinder).
+   *
+   * Every adjacent-row inversion is PRINTED for every planet, with both rates,
+   * so a ladder that stops paying is visible in the log the run it happens. */
+  const stepFail = [];
+  const spreadFail = [];
+  let totalMs = 0;
+  for (const planet of ALL) {
+    const { P, hulls, cruise, rows, ms } = await economy(planet);
+    totalMs += ms;
+    console.log(`   ${P.name.toUpperCase()} - yard to ${P.id}, handoff to handoff: ${(cruise / 1000).toFixed(2)} km`
+      + `   (tour measured in ${(ms / 1000).toFixed(1)} s)`);
+    for (const h of hulls) {
+      console.log(`     ${h.id.padEnd(8)} hold ${String(h.hold).padStart(2)} m3, boost ${h.boost} m/s,`
+        + ` cruise leg ${(cruise / h.boost).toFixed(0)} s each way`);
     }
+    console.log('     element      rarity     cr/m3  seam    kestrel 10 m3               dray 40 m3');
+    for (const r of rows) {
+      const [k, d] = r.trips;
+      console.log(`     ${r.min.id.padEnd(12)} ${r.min.rarity.padEnd(9)} ${String(r.min.unitValue).padStart(5)}`
+        + ` ${String(r.steps[r.steps.length - 1]?.credits ?? 0).padStart(5)}cr`
+        + `   ${String(k.n).padStart(2)} nodes ${String(k.cr).padStart(4)} cr in ${k.sec.toFixed(0).padStart(4)} s = ${k.rate.toFixed(0).padStart(3)}/min`
+        + `   ${String(d.n).padStart(2)} nodes ${String(d.cr).padStart(4)} cr in ${d.sec.toFixed(0).padStart(4)} s = ${d.rate.toFixed(0).padStart(3)}/min`);
+    }
+
+    /* Adjacent-row check: printed for every planet, asserted for Cinder. */
+    const kestrel = rows.map((r) => ({ rarity: r.min.rarity, id: r.min.id, rate: r.trips[0].rate }));
+    const inversions = [];
+    for (let i = 1; i < kestrel.length; i++) {
+      const a = kestrel[i - 1];
+      const b = kestrel[i];
+      if (MINERAL_RARITY.indexOf(b.rarity) <= MINERAL_RARITY.indexOf(a.rarity)) continue;
+      if (!(b.rate > a.rate)) {
+        inversions.push(`${b.rarity} ${b.id} ${b.rate.toFixed(2)}/min <= ${a.rarity} ${a.id} ${a.rate.toFixed(2)}/min`);
+      }
+    }
+    console.log(`     kestrel adjacent-row ladder: ${inversions.length ? `INVERTS at ${inversions.join('; ')}` : 'ascends at every rarity step'}`);
+    if (P.id === 'cinder') {
+      assert.deepEqual(inversions, [],
+        'Cinder is the reference mineral table and its ladder has to pay at every step');
+    }
+
+    /* Tier best rates: the registry-wide floors. */
+    const byTier = new Map();
+    for (const r of rows) {
+      const t = MINERAL_RARITY.indexOf(r.min.rarity);
+      byTier.set(t, Math.max(byTier.get(t) ?? 0, r.trips[0].rate));
+    }
+    const tiers = [...byTier.entries()].sort((a, b) => a[0] - b[0]);
+    console.log('     kestrel by tier: '
+      + tiers.map(([t, rate]) => `${MINERAL_RARITY[t]} ${rate.toFixed(0)}`).join('  ->  ')
+      + `   exotic/common ${(tiers[tiers.length - 1][1] / tiers[0][1]).toFixed(1)}x (floor 10x)`);
+    for (let i = 1; i < tiers.length; i++) {
+      /* Up to `rare` only - see the docblock for the Lathe rare/exotic tie. */
+      if (MINERAL_RARITY[tiers[i][0]] === 'exotic') continue;
+      if (!(tiers[i][1] > tiers[i - 1][1])) {
+        stepFail.push(`${P.id}: ${MINERAL_RARITY[tiers[i][0]]} pays ${tiers[i][1].toFixed(0)} cr/min against`
+          + ` ${tiers[i - 1][1].toFixed(0)} for ${MINERAL_RARITY[tiers[i - 1][0]]} - the ladder does not pay`);
+      }
+    }
+    const spread = tiers[tiers.length - 1][1] / tiers[0][1];
+    if (!(spread >= 10)) {
+      spreadFail.push(`${P.id}: the exotic tier pays ${spread.toFixed(1)}x the common one`
+        + ' - the payoff for a second landing is inside the noise of a common seam');
+    }
+
+    /* And the honest note, measured rather than asserted.
+     *
+     * The Dray's column is NOT monotone, and that is a property worth keeping
+     * rather than a failure worth tuning away: 40 m3 rewards a dense seam under
+     * a landing pad more than a scarce one at the end of a march. Rheniite has
+     * nine reachable nodes at one cubic metre each, so a bulk hauler flies 40 m3
+     * of hold to Cinder and brings back nine - and earns less doing it than it
+     * would on ferro-basalt, which has eighteen nodes inside 66 m of its own
+     * landing pad.
+     *
+     * Printed and not asserted: pinning it would pin an accident of two hull
+     * stats, and the thing that must hold is the Kestrel floor above. */
+    const dray = new Map(rows.map((r) => [r.min.id, r.trips[1]]));
+    const drayInv = [];
+    for (let i = 1; i < rows.length; i++) {
+      const a = rows[i - 1].min;
+      const b = rows[i].min;
+      if (MINERAL_RARITY.indexOf(b.rarity) <= MINERAL_RARITY.indexOf(a.rarity)) continue;
+      if (dray.get(b.id).rate <= dray.get(a.id).rate) {
+        drayInv.push(`${b.id} ${dray.get(b.id).rate.toFixed(0)}/min <= ${a.id} ${dray.get(a.id).rate.toFixed(0)}/min`);
+      }
+    }
+    console.log(`     note: the Dray inverts the ladder at ${drayInv.length ? drayInv.join('; ') : 'nothing'}`
+      + ' - a 40 m3 hold is paid by seam DENSITY, and a dense seam under a pad beats a scarce one at the end of a march.');
+    console.log(`     what a Dray actually leaves with: ${rows.map((r) => `${r.min.id} ${r.trips[1].vol}/${hulls[1].hold} m3`).join(', ')}`);
   }
-  console.log(`     note: the Dray inverts the ladder at ${inversions.length ? inversions.join('; ') : 'nothing'}`
-    + ' - a 40 m3 hold is paid by seam DENSITY, and the densest seam on Cinder has a pad on top of it.');
-  const fill = rows.map((r) => `${r.min.id} ${r.trips[1].vol}/${hulls[1].hold} m3`).join(', ');
-  console.log(`     what a Dray actually leaves with: ${fill}`);
+  console.log(`   the nearest-neighbour tours cost ${(totalMs / 1000).toFixed(1)} s across ${ALL.length} planets`
+    + ' - every planet measured, nothing sampled and nothing capped');
+  assert.deepEqual(stepFail, [], 'the rarity ladder has to pay more per minute at every tier up to rare');
+  assert.deepEqual(spreadFail, [], 'the exotic tier is the payoff for a second landing and has to look like one');
 });

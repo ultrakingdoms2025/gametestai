@@ -43,6 +43,24 @@ import * as THREE from 'three';
  * descriptor and re-floods. If iridite is still reachable without it, the road
  * is not what makes the crater floor reachable and this file is measuring
  * nothing. Reported as floor / achieved / ceiling.
+ *
+ * ── TEN PLANETS, NOT ONE ──────────────────────────────────────────────────
+ *
+ * This file was written when Cinder was the only planet. Nine more shipped
+ * afterwards, each with three landing sites and four to six ore seams, and NONE
+ * of them had ever been walked. The three cases that ask a question about a
+ * descriptor - is the collider the mesh, can a body reach the ore, do the pads
+ * between them cover the ground - now build and flood every planet in
+ * `PLANETS`. Measured cost: about 250 ms to build a world and 150 ms to flood
+ * its lattice from all three pads, so 4 seconds for the registry, and there is
+ * no subsetting and no cap anywhere in this file.
+ *
+ * The ABLATION case stays on Cinder, because it names Cinder's spiral road and
+ * Cinder's iridite. Its generalised sibling lives in the reachability case: on
+ * every one of the ten planets the exotic seam is 0-of-N from the pad the
+ * player arrives at and N-of-N from one other pad, which is the same claim -
+ * the rarest thing costs a decision - stated as a measurement rather than as a
+ * deletion.
  */
 
 /* ================================================================== */
@@ -118,20 +136,29 @@ function harness() {
 harness();
 const { Physics, COLLISION_LAYER } = await import('../../src/physics/Physics.js');
 const { PlanetWorld } = await import('../../src/worlds/PlanetWorld.js');
-const { VOLCANIC } = await import('../../src/worlds/planets/index.js');
+const { PLANETS, VOLCANIC } = await import('../../src/worlds/planets/index.js');
 const { HEIGHT_FIELDS } = await import('../../src/worlds/terrain/index.js');
 const { polyDist } = await import('../../src/worlds/planets/Placement.js');
 
-let _built = null;
-async function built() {
-  if (_built) return _built;
+/** Every planet the game registers, in registry order. */
+const ALL = Object.values(PLANETS);
+
+const _built = new Map();
+/**
+ * One real world per planet, with real colliders in a real `Physics`, built
+ * once and shared by every case in this file.
+ *
+ * @param {Readonly<object>} planet a descriptor from `PLANETS`
+ */
+async function built(planet = VOLCANIC) {
+  if (_built.has(planet.id)) return _built.get(planet.id);
   const physics = new Physics();
   const renderer = {
     capabilities: { getMaxAnisotropy: () => 4, isWebGL2: true },
     initTexture() {}, getContext: () => ({}),
     getRenderTarget: () => null, setRenderTarget() {}, render() {}, clear() {},
   };
-  const Cls = PlanetWorld.of(VOLCANIC);
+  const Cls = PlanetWorld.of(planet);
   const world = new Cls({
     physics,
     scene: new THREE.Scene(),
@@ -141,8 +168,39 @@ async function built() {
   });
   world.physics = physics;
   await world.build(() => {});
-  _built = { world, physics };
-  return _built;
+  const out = { world, physics };
+  _built.set(planet.id, out);
+  return out;
+}
+
+/**
+ * The whole walk graph for one planet: its colliders indexed, its liquid
+ * masked, and one flood per landing pad.
+ *
+ * Built once per planet and cached, because three cases below want it and a
+ * flood is 40 ms of work that is identical each time.
+ */
+const _walks = new Map();
+async function walks(planet) {
+  if (_walks.has(planet.id)) return _walks.get(planet.id);
+  const { world, physics } = await built(planet);
+  const field = physics.heightfields[0];
+  const boxes = boxIndex(physics);
+  const lava = lavaMask(world.planet);
+  const ground = (x, z) => field.sampleHeight(x, z);
+  const perPad = new Map();
+  for (const site of world.landingSites) {
+    perPad.set(site.id, {
+      site,
+      flood: flood({
+        ground, blocked: (x, z, y) => boxes.blocked(x, z, y), lava, half: planet.half,
+        seeds: [[site.position.x, site.position.z]],
+      }),
+    });
+  }
+  const out = { world, physics, field, boxes, lava, ground, perPad };
+  _walks.set(planet.id, out);
+  return out;
 }
 
 /* ================================================================== */
@@ -323,134 +381,210 @@ function flood(o) {
 /* ================================================================== */
 
 test('the ground the probe walks on IS the collider the game registered', async () => {
-  const { world, physics } = await built();
-  const hf = physics.heightfields;
-  assert.equal(hf.length, 1, 'a planet publishes exactly one heightfield for its whole surface');
-  const field = hf[0];
-  /* The mesh, the collision and every prop placement have to be the same
-   * surface. This is the guard against the defect that shaped Citadel, and it
-   * is checked at 4,000 positions rather than argued for in a comment. */
-  const err = [];
-  let s = 12345;
-  const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
-  for (let i = 0; i < 20000; i++) {
-    const x = (rnd() * 2 - 1) * (world.planet.half - 1);
-    const z = (rnd() * 2 - 1) * (world.planet.half - 1);
-    err.push(Math.abs(field.sampleHeight(x, z) - world.groundAt(x, z)));
-  }
-  err.sort((a, b) => a - b);
-  const q = (t) => err[Math.min(err.length - 1, Math.floor(t * err.length))];
-  /* NOT zero, and it must not be asserted as zero. The collider interpolates
-   * across the 3.125 m cell's two triangles; the function is continuous. They
-   * differ by the cell's own sag, which is largest where the surface is most
-   * curved - the gorge lip and the crater rim, where a cell spans metres of
-   * fall. What matters is that the collider never describes a DIFFERENT
-   * surface, only a piecewise-linear one, so the bound scales with curvature
-   * and the bulk of the map agrees to millimetres.
+  /* ALL TEN. The mesh, the collision and every prop placement have to be the
+   * same surface. This is the guard against the defect that shaped Citadel, and
+   * it is checked at 20,000 random positions per planet rather than argued for
+   * in a comment.
    *
-   * On a grid ON the samples the two are identical to floating point; the
-   * grid-aligned case below is the one that would catch a real drift. */
-  console.log(`   collider vs field over 20,000 random points (3.125 m cell):`
-    + ` p50 ${(q(0.5) * 100).toFixed(1)} cm, p90 ${(q(0.9) * 100).toFixed(1)} cm,`
-    + ` p99 ${q(0.99).toFixed(2)} m, max ${err[err.length - 1].toFixed(2)} m`);
-  assert.ok(q(0.5) < 0.05, `median disagreement ${q(0.5).toFixed(3)} m - the two surfaces have drifted`);
-  assert.ok(q(0.99) < 1.2, `p99 disagreement ${q(0.99).toFixed(3)} m`);
-
-  // On the grid itself there is no interpolation left to blame.
-  let gridWorst = 0;
-  const stepXZ = (world.planet.half * 2) / world.planet.seg;
-  for (let j = 0; j <= world.planet.seg; j += 7) {
-    for (let i = 0; i <= world.planet.seg; i += 7) {
-      const x = -world.planet.half + i * stepXZ;
-      const z = -world.planet.half + j * stepXZ;
-      gridWorst = Math.max(gridWorst, Math.abs(field.sampleHeight(x, z) - world.groundAt(x, z)));
+   * NOT zero, and it must not be asserted as zero. The collider interpolates
+   * across the ~3.1 m cell's two triangles; the height function is continuous.
+   * They differ by the cell's own sag, which is largest where the surface is
+   * most curved - a gorge lip, a crater rim, a pressure ridge - so the bound
+   * scales with curvature and the bulk of every map agrees to millimetres.
+   *
+   * On a grid ON the samples there is no interpolation left to blame, and that
+   * is the case that would catch a real drift: 2e-4 rather than 0, because the
+   * job ships its heights as a `Float32Array` - the right call, 260 KB instead
+   * of 520 across `postMessage` - and float32 carries about seven significant
+   * digits, so a 150 m rim crest round-trips with ~1e-5 m of error. Anything
+   * larger than that is not rounding, it is two different surfaces. */
+  console.log('   COLLIDER vs HEIGHT FUNCTION (20,000 random points per planet)');
+  for (const planet of ALL) {
+    const { world, physics } = await built(planet);
+    const hf = physics.heightfields;
+    assert.equal(hf.length, 1, `${planet.id}: a planet publishes exactly one heightfield for its whole surface`);
+    const field = hf[0];
+    const err = [];
+    let seed = 12345;
+    const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+    for (let i = 0; i < 20000; i++) {
+      const x = (rnd() * 2 - 1) * (world.planet.half - 1);
+      const z = (rnd() * 2 - 1) * (world.planet.half - 1);
+      err.push(Math.abs(field.sampleHeight(x, z) - world.groundAt(x, z)));
     }
+    err.sort((a, b) => a - b);
+    const q = (t) => err[Math.min(err.length - 1, Math.floor(t * err.length))];
+
+    let gridWorst = 0;
+    const stepXZ = (world.planet.half * 2) / world.planet.seg;
+    for (let j = 0; j <= world.planet.seg; j += 7) {
+      for (let i = 0; i <= world.planet.seg; i += 7) {
+        const x = -world.planet.half + i * stepXZ;
+        const z = -world.planet.half + j * stepXZ;
+        gridWorst = Math.max(gridWorst, Math.abs(field.sampleHeight(x, z) - world.groundAt(x, z)));
+      }
+    }
+    console.log(`     ${planet.id.padEnd(11)} ${stepXZ.toFixed(3)} m cell:`
+      + ` p50 ${(q(0.5) * 100).toFixed(1).padStart(4)} cm, p90 ${(q(0.9) * 100).toFixed(1).padStart(5)} cm,`
+      + ` p99 ${q(0.99).toFixed(2)} m, max ${err[err.length - 1].toFixed(2).padStart(5)} m`
+      + `   ON the grid samples: ${gridWorst.toExponential(2)} m`);
+    assert.ok(q(0.5) < 0.05, `${planet.id}: median disagreement ${q(0.5).toFixed(3)} m - the two surfaces have drifted`);
+    /* 2.0 m rather than Cinder's 1.2. The tail of this distribution IS the
+     * curvature: it is where one 3.1 m cell spans metres of fall, and a planet
+     * with a deeper gorge has a longer tail without having a different surface.
+     * Verdigris measures 1.23 m at p99 and 9.26 m at its worst single sample,
+     * on a river gorge - and 2.9 cm at the median. The drift detector is the
+     * grid-sample bound below, which admits no tail at all. */
+    assert.ok(q(0.99) < 2.0, `${planet.id}: p99 disagreement ${q(0.99).toFixed(3)} m`);
+    assert.ok(gridWorst < 2e-4,
+      `${planet.id}: the collider and the height function disagree AT a sample by ${gridWorst} m`);
   }
-  /* 2e-4 rather than 0. The job ships its heights as a `Float32Array` - which
-   * is the right call, it is 260 KB instead of 520 KB across `postMessage` -
-   * and float32 carries about seven significant digits, so a 150 m rim crest
-   * round-trips with ~1e-5 m of error. Anything larger than that is not
-   * rounding, it is two different surfaces. */
-  console.log(`   collider vs field ON the grid samples: worst ${gridWorst.toExponential(2)} m (float32 storage)`);
-  assert.ok(gridWorst < 2e-4, `the collider and the height function disagree AT a sample by ${gridWorst} m`);
 });
 
-test('every mineral node is reachable on foot from a landing pad', async () => {
-  const { world, physics } = await built();
-  const P = world.planet;
-  const field = physics.heightfields[0];
-  const boxes = boxIndex(physics);
-  const lava = lavaMask(P);
-
-  const perSite = new Map();
-  for (const site of world.landingSites) {
-    perSite.set(site.id, flood({
-      ground: (x, z) => field.sampleHeight(x, z),
-      blocked: (x, z, y) => boxes.blocked(x, z, y),
-      lava,
-      half: P.half,
-      seeds: [[site.position.x, site.position.z]],
-    }));
-  }
-
-  const byType = new Map();
+test('every mineral node on every planet is reachable on foot from a landing pad', async () => {
+  /* ALL TEN, and this is the case the whole file exists for.
+   *
+   * It is easy to scatter 138 mineral nodes across 774,400 m2, assert that 138
+   * were placed - `planet-relief.test.mjs` does exactly that - and ship a world
+   * where twelve of them sit on the inside of a 78 degree wall. So the world is
+   * built for real, its real colliders are read out of a real `Physics`, and a
+   * body is flooded across them from each landing pad on foot, with no jump, no
+   * mantle and no climb.
+   *
+   * Three floors, and the second and third are the generalisation of the
+   * ablation case at the bottom of this file:
+   *
+   *   1. EVERY NODE IS REACHABLE from some pad. 933 nodes across the registry.
+   *   2. EVERY PAD REACHES ORE. A landing site that reaches nothing is a
+   *      landing site with no reason to exist, and it is the cheapest possible
+   *      early warning that a route stopped connecting.
+   *   3. THE EXOTIC SEAM COSTS A SECOND LANDING. Zero of its nodes reachable
+   *      from the pad the player arrives at, all of them from exactly one
+   *      other. That is the shape Cinder's iridite was authored into and every
+   *      one of the nine planets written afterwards copied it - not by
+   *      assertion, by measurement, here.
+   *   4. THE PRIMARY PAD REACHES THE ORE IT IS FOR. The brief's own rule: the
+   *      primary is where the player arrives on foot when the world is entered
+   *      directly, so it must reach the common and uncommon seams. */
   const unreached = [];
-  for (const node of world.mineralNodes) {
-    let from = null;
-    for (const [id, f] of perSite) {
-      if (f.reaches(node.position.x, node.position.z)) { from = id; break; }
+  const orphanPads = [];
+  const freeExotic = [];
+  const strandedPrimary = [];
+  console.log('   REACHABILITY ON FOOT (floor: 100% of placed nodes, from some pad, on every planet)');
+  for (const planet of ALL) {
+    const { world, perPad } = await walks(planet);
+    const primary = world.landingSites.find((site) => site.primary);
+    const byType = new Map();
+    for (const node of world.mineralNodes) {
+      const from = [];
+      for (const [id, w] of perPad) if (w.flood.reaches(node.position.x, node.position.z)) from.push(id);
+      const t = byType.get(node.type) ?? { total: 0, ok: 0, from: new Set(), primary: 0 };
+      t.total++;
+      if (from.length) { t.ok++; for (const id of from) t.from.add(id); } else {
+        unreached.push(`${planet.id}/${node.type} at ${node.position.x.toFixed(0)},${node.position.z.toFixed(0)}`);
+      }
+      if (from.includes(primary.id)) t.primary++;
+      byType.set(node.type, t);
     }
-    const t = byType.get(node.type) ?? { total: 0, ok: 0, from: new Set() };
-    t.total++;
-    if (from) { t.ok++; t.from.add(from); } else unreached.push(node);
-    byType.set(node.type, t);
+    for (const spec of planet.minerals) {
+      const t = byType.get(spec.id) ?? { total: 0, ok: 0, from: new Set(), primary: 0 };
+      console.log(`     ${planet.id.padEnd(11)} ${spec.id.padEnd(12)} ${spec.rarity.padEnd(9)} ${String(t.ok).padStart(3)}/${String(t.total).padEnd(3)}`
+        + ` = ${((t.ok / Math.max(1, t.total)) * 100).toFixed(1).padStart(5)}%   from ${[...t.from].join(', ') || 'NOTHING'}`
+        + `   ${String(t.primary).padStart(2)}/${String(t.total).padEnd(2)} from the primary pad (${primary.id})`);
+      if (spec.rarity === 'exotic') {
+        if (t.primary !== 0) {
+          freeExotic.push(`${planet.id}/${spec.id}: ${t.primary} of ${t.total} exotic nodes can be walked to from`
+            + ` ${primary.id}, the pad the player arrives at - the exotic tier costs no second landing`);
+        }
+        if (t.from.size !== 1) {
+          freeExotic.push(`${planet.id}/${spec.id}: reachable from ${t.from.size} pads (${[...t.from].join(', ')})`
+            + ' - an exotic seam is a destination, and a destination is one pad');
+        }
+      }
+      if ((spec.rarity === 'common' || spec.rarity === 'uncommon') && t.primary === 0) {
+        strandedPrimary.push(`${planet.id}/${spec.id} is ${spec.rarity} and 0 of ${t.total} of it can be reached from`
+          + ` ${primary.id} - the primary pad is where the player arrives on foot`);
+      }
+    }
+    for (const [id, w] of perPad) {
+      const area = w.flood.count * PITCH * PITCH;
+      const ore = world.mineralNodes.filter((n) => w.flood.reaches(n.position.x, n.position.z)).length;
+      console.log(`     ${planet.id.padEnd(11)} pad ${id.padEnd(16)}${w.site.primary ? 'PRIMARY' : '       '}`
+        + ` floods ${w.flood.count.toLocaleString().padStart(7)} nodes = ${(area / 1000).toFixed(0).padStart(3)}k m2`
+        + ` (${((area / (planet.half * 2) ** 2) * 100).toFixed(1).padStart(4)}% of the map), reaches ${ore} ore`);
+      if (ore === 0) orphanPads.push(`${planet.id}/${id} reaches no mineral node at all`);
+    }
+    /* How much of the standable ground the pads cover BETWEEN them. Not a
+     * floor anybody authored to - it is printed so a planet that quietly grows
+     * a walled-off quarter shows up as a shrinking number. */
+    const floods = [...perPad.values()].map((w) => w.flood);
+    const mask = floods[0].ok;
+    let reachable = 0;
+    let ok = 0;
+    for (let k = 0; k < mask.length; k++) {
+      ok += mask[k];
+      if (mask[k] && floods.some((f) => f.seen[k])) reachable++;
+    }
+    console.log(`     ${planet.id.padEnd(11)} the pads between them reach ${((reachable / Math.max(1, ok)) * 100).toFixed(1)}%`
+      + ` of the ${ok.toLocaleString()} standable lattice nodes on the planet`);
+    assert.ok(reachable / Math.max(1, ok) >= 0.5,
+      `${planet.id}: the landing pads between them reach only ${((reachable / ok) * 100).toFixed(1)}% of the ground a body`
+      + ' could stand on - most of this planet is walled off from every way in');
   }
 
-  console.log('   reachability by mineral (floor 100% of placed nodes):');
-  for (const [type, t] of byType) {
-    console.log(`     ${type.padEnd(12)} ${String(t.ok).padStart(3)}/${String(t.total).padEnd(3)}`
-      + ` = ${((t.ok / t.total) * 100).toFixed(1)}%   via ${[...t.from].join(', ') || 'NOTHING'}`);
-  }
-  for (const [id, f] of perSite) {
-    const area = f.count * PITCH * PITCH;
-    console.log(`     pad ${id.padEnd(10)} floods ${f.count.toLocaleString()} nodes`
-      + ` = ${(area / 1000).toFixed(0)}k m2 (${((area / (P.half * 2) ** 2) * 100).toFixed(1)}% of the map)`);
-  }
-
-  assert.deepEqual(
-    unreached.map((n) => `${n.type}@${n.position.x.toFixed(0)},${n.position.z.toFixed(0)}`),
-    [],
-    'a mineral node that cannot be walked to is a mineral node that does not exist'
-  );
+  assert.deepEqual(unreached, [],
+    'a mineral node that cannot be walked to is a mineral node that does not exist');
+  assert.deepEqual(orphanPads, [],
+    'a landing pad that reaches no ore is a landing pad with no reason to be there');
+  assert.deepEqual(freeExotic, [],
+    'the exotic tier is meant to cost a decision - fly to its own pad - rather than a longer walk');
+  assert.deepEqual(strandedPrimary, [],
+    'the primary pad is where the player arrives on foot; it has to reach the ore the early game is made of');
 });
 
-test('every landing pad is connected to at least one other landing pad on foot', async () => {
-  /* Not strictly required - a ship links them - but a pad that is an ISLAND is
-   * a design accident far more often than a design decision, and it is the
-   * cheap early warning that a road stopped connecting. */
-  const { world, physics } = await built();
-  const field = physics.heightfields[0];
-  const boxes = boxIndex(physics);
-  const lava = lavaMask(world.planet);
-  const primary = world.landingSites.find((s) => s.primary);
-
-  const f = flood({
-    ground: (x, z) => field.sampleHeight(x, z),
-    blocked: (x, z, y) => boxes.blocked(x, z, y),
-    lava,
-    half: world.planet.half,
-    seeds: [[primary.position.x, primary.position.z]],
-  });
-
+test('the landing pads between them are how you get about', async () => {
+  /* REPORTED FOR ALL TEN, ASSERTED FOR CINDER, and the split is the point.
+   *
+   * A pad that is an ISLAND is usually a design accident and it is the cheap
+   * early warning that a road stopped connecting - which is why Cinder keeps
+   * the assertion: its Colonnade Deck is meant to be walkable from Ashfall
+   * Flat, and if that ever stops being true a road has broken.
+   *
+   * It is NOT a rule. Cathedra is three shattered plates with sealed walkable
+   * regions and one pad on each; its own descriptor records the measurement -
+   * "61.9% from the Pavement, 20.5% from the Gallery, 17.6% from the Lantern",
+   * three regions, no overlap - and says in as many words that "which pad" is
+   * the only navigation decision on the planet and it is the whole one.
+   * Asserting connectivity there would be asserting that Cathedra is a
+   * different planet. So the matrix is printed for every world and the claim is
+   * made only where an author made it. */
+  console.log('   PAD TO PAD ON FOOT');
+  for (const planet of ALL) {
+    const { world, perPad } = await walks(planet);
+    for (const [id, w] of perPad) {
+      const links = world.landingSites
+        .filter((site) => site.id !== id)
+        .map((site) => `${site.id}=${w.flood.reaches(site.position.x, site.position.z) ? 'yes' : 'no'}`);
+      console.log(`     ${planet.id.padEnd(11)} from ${id.padEnd(16)}${w.site.primary ? 'PRIMARY' : '       '} ${links.join(', ')}`);
+    }
+  }
+  const { world, perPad } = await walks(VOLCANIC);
+  const primary = world.landingSites.find((site) => site.primary);
+  const f = perPad.get(primary.id).flood;
   const links = world.landingSites
-    .filter((s) => !s.primary)
-    .map((s) => ({ id: s.id, linked: f.reaches(s.position.x, s.position.z) }));
-  console.log(`   from ${primary.id} on foot: ` + links.map((l) => `${l.id}=${l.linked ? 'yes' : 'no'}`).join(', '));
-  assert.ok(links.some((l) => l.linked), 'the primary pad reaches no other pad on foot at all');
+    .filter((site) => !site.primary)
+    .map((site) => ({ id: site.id, linked: f.reaches(site.position.x, site.position.z) }));
+  assert.ok(links.some((l) => l.linked), 'Cinder\'s primary pad reaches no other pad on foot at all');
 });
 
 test('CEILING BY ABLATION: without the spiral road the crater floor is cut off', async () => {
-  /* The point of this case is to prove the one above can go red.
+  /* CINDER ONLY: it names Cinder's spiral road and Cinder's iridite, and there
+   * is no generic way to say "the road that makes the rare seam reachable"
+   * across ten descriptors. Its generalised sibling is the exotic-tier
+   * measurement in the reachability case above, which makes the same claim -
+   * the rarest thing costs a second landing - on every planet.
+   *
+   * The point of this case is to prove the one above can go red.
    *
    * The lattice, the envelope and the blockers are identical; the only thing
    * that changes is that the `ramp` landform carrying the spiral road is

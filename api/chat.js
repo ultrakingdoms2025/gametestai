@@ -7,12 +7,49 @@ import Anthropic from '@anthropic-ai/sdk';
 const MODEL = process.env.CHAT_MODEL || 'claude-haiku-4-5';
 const MAX_TOKENS = 150;
 
+/**
+ * WHERE THE PLAYER IS STANDING, AS ONE LINE OF SETTING.
+ *
+ * TWO COPIES OF THIS TABLE EXIST - this one and the one in `server/chat-server.js`.
+ * The Vercel function and the local dev server share no module, so neither
+ * reads the other and nothing compares them: a row added to one and not the
+ * other is invisible until somebody talks to an NPC on the half that is
+ * missing it, and then only on that half. Add to BOTH.
+ *
+ * `buildSystem` falls back to "<world id> - a region of the Aether Nexus",
+ * which is why a missing row is silent rather than broken: an NPC standing in
+ * a lava field is told they are in a region of the Aether Nexus and answers
+ * accordingly. The nine planets Phase 2 added went in here on the day they
+ * were added, for exactly that reason.
+ *
+ * Keys are WORLD IDS. For a planet that is the bare descriptor id -
+ * `PlanetWorld.of` sets `static id = descriptor.id` - so `cinder`, never
+ * `planet:cinder`. Every claim below is taken from the docblocks in
+ * `src/worlds/space/Bodies.js`, which is the source of truth for what each
+ * body is.
+ */
 const WORLD_BLURB = {
   station:  'Aether Station — an orbital habitat of plated roads, gantries and glass, hanging above a planet.',
   medieval: 'Aldermoor Vale — a castle keep and timber village of cobbled streets, market stalls and rolling grass hills.',
   sports:   'The Meridian Athletic Grounds — a floodlit sports campus of skate bowls, courts, a snow slope and a running track.',
   citadel:  'Sunspire Citadel — a vertical fortress-town of terraces, rope bridges and guarded gates cut into a desert cliff.',
   race:     'Vellum Ridge Circuit — a mountain race course that climbs, dives and threads city blocks before snapping back to the line.',
+  maze:     'The Verdant Coil — a hedge maze that re-rolls its layout on every entry, so its districts and levels never repeat.',
+  dock:     'Lodestar Yard — the shipyard behind gateway six: an assembly bay of cradles, gantries, piers and berths, with four fitted-out hulls standing in it.',
+  space:    'Open space beyond Lodestar Yard — a black volume some 640 km across holding a star, a ringed gas giant, an asteroid belt, and ten planets a ship can land on.',
+
+  /* The ten landable planets, nearest first - the order Bodies.js lists them
+     in, which is distance from Lodestar Yard. */
+  cinder:    'Cinder — a volcanic world of near-black basalt: a caldera, lava lakes, and a fissure network that still glows orange on the night side.',
+  tessera:   'Tessera — an airless cratered moonlet at a sixth of a gravity. No air and no haze, so the sky is black at noon and nothing fills the shadows.',
+  sirocco:   'Sirocco — a desert world of dune seas and salt pans under deep orange dust, with one slot canyon cut down through it.',
+  shoal:     'Shoal — an ocean world: island chains strung across a shallow shelf, and one tidal chasm that drains and fills.',
+  vitrine:   'Vitrine — an ice world of crevasse fields and pressure ridges, with a subglacial vault underneath them.',
+  verdigris: 'Verdigris — a living world of canopy mesas standing over river gorges.',
+  lathe:     'Lathe — an airless shepherd moon riding just outside the rings of the gas giant Ceraunus, which fills most of its sky.',
+  carnelian: 'Carnelian — red iron highlands of scarps and dust under thin air, cut by one very deep gorge.',
+  sallow:    'Sallow — a sulfur world of acid lakes and fumarole fields under permanent yellow overcast.',
+  cathedra:  'Cathedra — a crystal world of shattered plates and spire fields, with a hollow vault beneath them. The furthest thing in the system.',
 };
 
 function buildSystem(npcName, persona, world) {
@@ -32,10 +69,20 @@ function buildSystem(npcName, persona, world) {
     '- If you do not know something, answer plainly, admit it, or give the shortest believable guess.',
     '',
     'Canonical game facts:',
-    '- The Nexus has five worlds: Aether Station, Medieval Valley (Aldermoor Vale), Meridian Athletic Grounds, Sunspire Citadel, and Vellum Ridge Circuit.',
-    '- Aether Station is the hub world and has four outbound portals to the other worlds.',
-    '- Each of the other four worlds has one return portal back to Aether Station.',
-    '- If asked how many portals exist, do not guess: say there are five worlds / five destinations in the Nexus, and note that the station hub itself has four outbound gates.',
+    /* THE COUNT IS `main.js`'s REGISTRATIONS, NOT A GUESS. Eight world
+     * classes are registered by hand - station, medieval, sports, citadel,
+     * race, maze, dock, space - and `worldClasses()` in
+     * `src/worlds/planets/index.js` registers one more per planet
+     * descriptor, of which there are ten. Eighteen. This block said FIVE
+     * while the station ring already had six gateways and a shipyard behind
+     * the sixth, so an NPC asked about the Verdant Coil or Lodestar Yard
+     * denied that either of them existed - which is worse than not knowing. */
+    '- The Nexus has eighteen worlds. Seven are reached through the gateway ring: Aether Station, Medieval Valley (Aldermoor Vale), the Meridian Athletic Grounds, Sunspire Citadel, Vellum Ridge, the Verdant Coil, and Lodestar Yard.',
+    '- The other eleven are out past Lodestar Yard: open space itself, and the ten planets in it you can land a ship on - Cinder, Tessera, Sirocco, Shoal, Vitrine, Verdigris, Lathe, Carnelian, Sallow and Cathedra.',
+    '- Aether Station is the hub world and has six outbound portals; each of the other six ring worlds has one return portal back to it.',
+    '- Lodestar Yard is the shipyard behind gateway six, and the only world with a second portal: a launch portal onto open space. That one is crossed in a ship, not on foot.',
+    '- The ten planets have no portals at all. You fly to them and set down, and the nearest is Cinder at 62 km from the Yard while the furthest is Cathedra at 288 km.',
+    '- If asked how many portals exist, do not guess: the station hub has six outbound gates, the six worlds beyond them have one return gate each, and Lodestar Yard has one more that opens onto space.',
     '- Core controls: E talks to friendlies, opens the quest board at quest managers, picks up loot, and enters portals; T opens chat; F1 shows help; F2 customizes the character; F3 opens diagnostics; F4 opens audio; F5 saves; F6 rebinds; F7 opens the race panel; F9 reports a bug; I opens inventory; B opens the marketplace; M opens the mount wheel; F dismounts; K unstucks; V swaps camera; [ and ] zoom the minimap.',
     '- Gameplay facts: there are five mounts, four weapons, climbing works on near-vertical surfaces, water can be swum in, credits are spent in the marketplace, and the bag holds 30 slots.',
   ].filter(Boolean).join('\n');

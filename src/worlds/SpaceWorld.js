@@ -10,6 +10,7 @@ import {
   BODY_BY_ID,
   STAR_DIRECTION,
   approachState,
+  landableBodies,
   navTargets,
 } from './space/Bodies.js';
 import { Backdrop } from './space/Backdrop.js';
@@ -534,7 +535,7 @@ export class SpaceWorld extends World {
   /* ------------------------------------------------------------------ */
 
   /**
-   * The three places a raider wing will find you.
+   * WHERE THE FIGHTING IS: two authored fights, and one picket on every route.
    *
    * ── PLACEMENT IS THE WHOLE PROBLEM ────────────────────────────────────────
    *
@@ -544,97 +545,384 @@ export class SpaceWorld extends World {
    * up: a picket at a random bearing 200 km out would be perfectly built,
    * fully functional, and never once seen by a player.
    *
-   * So the zones are not placed in space. They are placed on the two ROUTES,
-   * and there are only two, because there is only one landable planet and one
-   * belt:
+   * So the zones are not placed in space. They are placed on the ROUTES, and a
+   * route is `yard -> landable body` plus the one detour worth taking:
    *
-   *   dock -> Cinder   the mining run. Every trip in this world is this line
-   *                    or a return along it, so a zone astride it at 20 km is
-   *                    a zone every player meets on their first flight out.
+   *   dock -> <body>   every trip in this world is one of these lines or a
+   *                    return along it, so a zone astride one is a zone the
+   *                    player meets on the way to somewhere they chose to go.
    *   Halberd Reach    26 km to port, in the nav list from the moment you
-   *                    launch, and the only other thing close enough to be
-   *                    worth a detour. A nest there is what makes the detour
-   *                    a decision rather than sightseeing.
+   *                    launch, and the only thing close enough to be worth a
+   *                    detour rather than a destination. A nest there is what
+   *                    makes the detour a decision rather than sightseeing.
    *
-   * The two Cinder zones are derived from `BODY_BY_ID.cinder.position` rather
-   * than written out, so if the body layout ever moves the pickets move with
-   * it. A hand-typed coordinate here is a picket left behind in empty space
-   * the first time somebody re-tunes the volume.
+   * Every position below is DERIVED from `Bodies.js` rather than written out,
+   * so if the body layout moves the pickets move with it. A hand-typed
+   * coordinate here is a picket left behind in empty space the first time
+   * somebody re-tunes the volume.
    *
-   * ── THE OFFSETS, WHICH ARE NOT DECORATION ─────────────────────────────────
+   * ── PHASE 2: TEN ROUTES, NOT ONE ─────────────────────────────────────────
+   *
+   * This method used to take `BODY_BY_ID.cinder` by name and build three zones
+   * on the one route that existed. Phase 2 made nine more bodies landable and
+   * that hard-coded name became a SILENT hole: every new planet was a route
+   * with nothing on it, so nine of ten trips out of the yard were an empty
+   * volume and a landing. Nothing failed; the world just got quieter the more
+   * of it there was.
+   *
+   * The fix is to sweep `landableBodies()`, which is the same list the nav
+   * readout, the survey plot and the descent all read - so a planet cannot be
+   * added to the system and be missed here.
+   *
+   * ── AND THE POPULATION DID NOT GO UP TENFOLD ─────────────────────────────
+   *
+   *   before   3 zones,  9 hostiles
+   *   after   12 zones, 30 hostiles
+   *
+   * Ten routes with the old three-zone density on each would have been ninety
+   * hostiles, which is not a system, it is a shooting gallery. What is held
+   * constant is the thing a player actually experiences: ONE fight of two to
+   * four hostiles on a trip out, exactly as before. The volume holds more
+   * because there is more volume in use; the DENSITY per route went down.
+   *
+   * ── ...EXCEPT ON THE ONE ROUTE EVERY NEW PLAYER FLIES FIRST ──────────────
+   *
+   * That paragraph used to end "because the Cinder run keeps two zones and
+   * every other run has one", and it said it as though it were a rounding
+   * error. It was the most expensive sentence in this file.
+   *
+   * Flown in a real boot with the encounters live - not in `_flightrig`, which
+   * has no `SpaceCombat` in it and once "verified" this leg at 23.5 s - the
+   * dock-to-Cinder run timed 67 to 72 seconds, six runs out of six, against
+   * Tessera at 87 km in 56.6 s and Shoal at 140 km in 59.6. THE NEAREST PLANET
+   * TOOK LONGER THAN THE SECOND-FURTHEST. The trace says exactly why:
+   *
+   *     t+0.0   Z pressed, drive spools
+   *     t+1.9   engaged, 4,211 m/s
+   *     t+4.7   the Ashlane picket arms at 16.3 km - drive CUT
+   *     t+6.0   two skiffs in the sky, 210 m/s
+   *     t+25.1  lock releases (19.1 s), the x8 multiplier ramps back
+   *     t+36.6  Cinder's own picket arms - cut AGAIN
+   *     t+53.1  lock releases (16.5 s)
+   *     t+56.3  atmosphere
+   *
+   * An interdiction costs about 19 seconds of flying at cruise whether or not
+   * you take the fight, and this route was charging it twice. One is content;
+   * two on a 62 km leg is thirty-eight seconds of holding W.
+   *
+   * So the Ashlane picket moved. It did NOT get deleted - see the note on it
+   * in `zones` below - because the fix for "the tutorial route has two tolls"
+   * is not "the tutorial route has no fight", and its two skiffs are still the
+   * ladder's bottom rung. What changed is which lane pays for them, and the
+   * wings were swapped with it so that the fight a player meets FIRST is still
+   * the smallest one in the system.
+   *
+   * ── THE PICKETS VARY, BECAUSE THE ROUTES ARE NOT THE SAME ROUTE ──────────
+   *
+   * A lawless belt is not an approach to a body somebody is already working.
+   * The wing on each route is authored in `PICKETS` below with a line saying
+   * what that route is; the only thing derived is WHERE it sits. Three shapes
+   * recur and each says something:
+   *
+   *   a pair of skiffs      opportunists. The cheap runs - Tessera, Sirocco,
+   *                         Verdigris - where the hold coming home is not
+   *                         worth a heavy.
+   *   skiffs plus a lance   somebody is invested. Cinder, Vitrine, Lathe and
+   *                         Cathedra: the four richest holds in the system.
+   *   a lance alone         Shoal. Not a wing at all - one heavy sitting on a
+   *                         line, which reads as a toll rather than an ambush,
+   *                         and it is the only zone in the volume you can lose
+   *                         to without ever being outnumbered.
+   *
+   * ── THE STANDOFF, WHICH IS DERIVED AND WAS NOT ───────────────────────────
+   *
+   * Cinder's picket used to be typed as "78% of the way out", justified in a
+   * comment as clearing Cinder's 10.6 km atmosphere and 9.9 km handoff so the
+   * fight can never fire a descent seam underneath itself. That is the right
+   * rule and the wrong way to hold it - it is one planet's arithmetic, and the
+   * other nine have different air. So the rule is now written down instead:
+   *
+   *     standoff = max(atmosphere, handoff) + PICKET_R + CLEARANCE
+   *
+   * which clears the outer of the two shells by the whole trigger sphere plus
+   * two kilometres, rather than by the zone's centre only. It is stricter than
+   * the number it replaces (Cinder moves from 13.6 km out to 16.8 km) and it
+   * is the same rule on an airless moonlet, where `atmosphere === radius` and
+   * the handoff is the shell that matters.
+   *
+   * ── THE OFFSETS, WHICH ARE NOT DECORATION ────────────────────────────────
    *
    * Each zone sits `off` metres to one side of the line, on a perpendicular.
    * Dead centre would mean a player holding a perfect course flies through the
    * exact origin of the trigger sphere and the wing appears symmetrically
-   * around them; a few hundred metres off means the encounter has a side, and
-   * the two Cinder zones are offset in different directions so the outbound
-   * and homebound fights do not feel like the same fight twice.
+   * around them; a few hundred metres off means the encounter has a side. The
+   * two zones on the Lathe run are offset in different directions so the outer
+   * screen and the ring-shadow picket do not feel like the same fight twice,
+   * and the ten approach pickets alternate their side IN DISTANCE ORDER -
+   * Cinder to port,
+   * Tessera to starboard, Sirocco to port, and so on out to Cathedra - because
+   * distance order is the order a player works through them, and two trips in
+   * a row should not open the same way. The array itself is in `Bodies.js`
+   * order, which is not the same thing; the alternation lives in the authored
+   * signs rather than in the loop.
    *
-   * ── THE DIFFICULTY LADDER ─────────────────────────────────────────────────
+   * ── THE DIFFICULTY LADDER, AND THE ORDER OF THIS ARRAY ───────────────────
    *
-   *   Ashlane        2 skiffs.            190 integrity, 18 dps if both hold
+   *   Cinder orbit   2 skiffs.            190 integrity, 18 dps if both hold
    *                                       a firing solution, which they will
    *                                       not. Survivable in a stock Kestrel
    *                                       (55 shield + 100 hull at -10%): it
    *                                       takes them about half a minute of
    *                                       unanswered fire, and killing both is
-   *                                       about four seconds of yours.
-   *   Cinder orbit   2 skiffs + 1 lance.  450 integrity. The one you meet with
-   *                                       a full hold, which is when you have
-   *                                       the most to lose.
+   *                                       about four seconds of yours. THE
+   *                                       FIRST FIGHT ANYBODY HAS, which is
+   *                                       why it is the smallest one.
+   *   Lathe screen   2 skiffs + 1 lance.  450 integrity. Met on the run to the
+   *                                       richest ore in the system, which is
+   *                                       when you have the most to lose.
    *   Halberd Reach  3 skiffs + 1 lance.  545 integrity, 291 credits of
    *                                       bounty. Optional, off the route, and
    *                                       the reason to buy a Pike.
    *
-   * `rearm` is longer than a round trip to Cinder on purpose: coming home past
-   * a picket you have just cleared should be quiet, because the reward for
-   * winning a fight is not having to fight it again on the way back.
+   * Those three are the whole of the INNER SYSTEM - every zone inside Cinder's
+   * own orbit - and that set is what `KILL_TIERS` in
+   * `systems/SpaceObjectives.js` spaces its rungs on: nine hostiles and 745
+   * credits of bounty, both unchanged by the move above, because the same
+   * hulls are still in the same three zones and only two of the zones swapped
+   * which wing they hold.
+   *
+   * THOSE THREE STAY AT THE FRONT OF THE ARRAY and the pickets are APPENDED,
+   * for the same reason `SPACE_BODIES` keeps Cinder first. They are the whole
+   * of the inner system - everything inside Cinder's orbit - which is the run
+   * a player flies before they have bought anything, and `KILL_TIERS` in
+   * `systems/SpaceObjectives.js` is built on one full sweep of exactly them.
+   * `space-objectives.test.mjs` re-derives that rung from this array by
+   * distance, so re-ordering is safe; putting a 288 km fight in front of the
+   * tutorial one is not.
+   *
+   * `rearm` is longer than a round trip to the body in question on purpose:
+   * coming home past a picket you have just cleared should be quiet, because
+   * the reward for winning a fight is not having to fight it again on the way
+   * back. It scales with the leg, which is why Cathedra's is 400 s and
+   * Tessera's is 240.
    */
   _fillEncounters() {
-    const cinder = BODY_BY_ID.cinder;
-    /* Unit vector from the yard to Cinder, and two perpendiculars to offset
-     * along. `crossVectors` against world up is degenerate only for a body
-     * directly overhead, which Cinder - out and DOWN - is the furthest thing
-     * in the layout from being. */
-    const line = new THREE.Vector3(cinder.position[0], cinder.position[1], cinder.position[2]);
-    const dist = line.length();
-    const dir = line.clone().normalize();
-    const side = new THREE.Vector3().crossVectors(dir, _UP).normalize();
-    const lift = new THREE.Vector3().crossVectors(side, dir).normalize();
+    /* Trigger radius of every approach picket: 4,200 m, which is the smallest
+     * trigger this file has ever authored and therefore the one that does not
+     * turn a near miss into an ambush. Uniform on purpose - a trigger that grew with
+     * the planet would make the far routes harder to AVOID as well as harder
+     * to survive, and avoiding them is a decision worth leaving to the pilot. */
+    const PICKET_R = 4200;
+    /* How far the trigger sphere must clear the body's outer shell. Two
+     * kilometres is about a second and a half of transit at the speed you
+     * arrive on a planet, which is enough that a fight and a descent never
+     * begin on the same frame. */
+    const CLEARANCE = 2000;
+    /* No picket lands nearer the yard than this. Nothing in the current layout
+     * comes close - Cinder's, the innermost, sits at 45.2 km - but a body added
+     * at 20 km would otherwise put a wing on top of the apron, and
+     * `SpaceCombat.SAFE_RADIUS` (9 km) refuses to spawn there, which would be a
+     * picket that silently never fires. Pushed out instead of dropped. */
+    const MIN_ALONG = 14000;
 
-    const onLine = (frac, off, up) => {
-      const p = dir.clone().multiplyScalar(dist * frac)
-        .addScaledVector(side, off)
-        .addScaledVector(lift, up);
+    /**
+     * The frame a route is measured in: the unit vector out to a target and
+     * two perpendiculars to offset along.
+     * @param {number[]} target `[x,y,z]` in the true frame
+     */
+    const laneOf = (target) => {
+      const line = new THREE.Vector3(target[0], target[1], target[2]);
+      const dist = line.length();
+      const dir = line.clone().normalize();
+      const side = new THREE.Vector3().crossVectors(dir, _UP);
+      /* Degenerate only for a body directly overhead or underfoot. Nothing in
+       * the layout is - Sallow, at 0.82 of -Y, is the closest anything comes -
+       * but the fallback is written rather than argued away, because the
+       * failure would be a NaN position and this project has already lost a
+       * day to a NaN reaching the bloom pass. */
+      if (side.lengthSq() < 1e-8) side.crossVectors(dir, new THREE.Vector3(1, 0, 0));
+      side.normalize();
+      const lift = new THREE.Vector3().crossVectors(side, dir).normalize();
+      return { dist, dir, side, lift };
+    };
+
+    /** A point `along` metres out on a lane, offset `off` sideways and `up`. */
+    const onLane = (lane, along, off, up) => {
+      const p = lane.dir.clone().multiplyScalar(along)
+        .addScaledVector(lane.side, off)
+        .addScaledVector(lane.lift, up);
       return [p.x, p.y, p.z];
     };
 
-    this.encounters = [
-      {
-        id: 'ashlane',
-        name: 'the Ashlane picket',
-        /* 33% of the way out: 20.5 km, which clears `SpaceCombat.SAFE_RADIUS`
-         * (9 km) by more than a factor of two and is far enough that a player
-         * has already engaged transit and has to be pulled out of it. */
-        position: onLine(0.33, 620, -240),
-        radius: 4200,
-        warn: 'Unknown transponders - closing',
+    /**
+     * One row per landable body, saying what that route IS. Position and
+     * standoff are derived; everything here is a decision about the place.
+     *
+     * A body with no row gets `DEFAULT_PICKET`, which is the whole point of
+     * having a default: the failure this method shipped with was a route with
+     * NOTHING on it, and a wrong-flavoured pair of skiffs is a far smaller
+     * defect than silence. `space-combat.test.mjs` logs every zone with its
+     * wing, so an unauthored route shows up in the run log as "unclaimed
+     * lane" the day it appears.
+     */
+    const DEFAULT_PICKET = {
+      name: 'unclaimed lane', off: 700, up: -260, rearm: 280,
+      wing: [{ class: 'skiff', count: 2 }],
+      warn: 'Unknown transponders - closing',
+      blurb: 'Somebody is working this lane and did not file it.',
+    };
+    const PICKETS = {
+      /* The one authored fight of Phase 1, unchanged in everything but where
+       * the standoff comes from. Kept because it is the fight the difficulty
+       * ladder above was measured on. */
+      cinder: {
+        name: 'Cinder high orbit', off: -900, up: 380, rearm: 300,
+        /* TWO SKIFFS, AND THEY USED TO BE TWO SKIFFS AND A LANCE.
+         *
+         * The wing swapped with the Ashlane's when the Ashlane moved off this
+         * lane (see the header). It has to: with the Ashlane gone this is the
+         * FIRST fight anybody has, and the difficulty ladder below was built
+         * so the first one is the 190-integrity pair a stock Kestrel can take
+         * with 55 shield and 100 hull. Promoting a 450-integrity wing into
+         * that slot would have fixed the travel time by making the tutorial
+         * harder, which is a trade nobody asked for.
+         *
+         * The name and the blurb still fit: a pair sitting over the caldera
+         * waiting for a laden hull is what this was always about. */
         wing: [{ class: 'skiff', count: 2 }],
-        rearm: 240,
-        blurb: 'Two skiffs working the ash lane between the yard and Cinder.',
-      },
-      {
-        id: 'cinder-orbit',
-        /* 78% out: 48 km, which is 13.6 km short of Cinder - outside its
-         * 10.6 km atmosphere AND outside the 9.9 km handoff, so the fight can
-         * never fire a descent seam underneath itself. */
-        name: 'Cinder high orbit',
-        position: onLine(0.78, -900, 380),
-        radius: 4600,
         warn: 'Raiders holding over Cinder',
+        blurb: 'They wait above the caldera for hulls that come up heavy.',
+      },
+      /* Airless, close in, and platinum-group ore under a black sky. The
+       * shortest run after Cinder's and a hold that is not worth a heavy: two
+       * skiffs, sitting in the moonlet's shadow because there is no air to
+       * scatter light into it. Vacuum is the only cover in the system. */
+      tessera: {
+        name: 'the Tessera terminator', off: 640, up: -300, rearm: 240,
+        wing: [{ class: 'skiff', count: 2 }],
+        warn: 'Two contacts off the terminator',
+        blurb: 'They sit in the moonlet\'s own shadow, where nothing lights them.',
+      },
+      /* Two kilometres of opaque orange air below them. A wing here does not
+       * have to be heavy - the planet does half the work, because anything
+       * that dives for the deck loses sight of everything including the
+       * ground. */
+      sirocco: {
+        name: 'the Sirocco dust line', off: -720, up: 340, rearm: 260,
+        wing: [{ class: 'skiff', count: 2 }],
+        warn: 'Contacts above the dust line',
+        blurb: 'They hold above the haze and let the planet do the hiding.',
+      },
+      /* ONE LANCE, ALONE, and it is the only zone in the volume where you are
+       * not outnumbered. A single heavy parked on a line reads as a toll: it
+       * turns like a barge and cannot chase you, so this is the one fight in
+       * the system that is genuinely optional while you are inside it. */
+      shoal: {
+        name: 'the Shoal toll', off: 810, up: -220, rearm: 300,
+        wing: [{ class: 'lance', count: 1 }],
+        warn: 'One heavy holding the approach',
+        blurb: 'It does not chase. It sits on the line and charges for the crossing.',
+      },
+      /* The deepest air in the system and a subglacial vault under it - the
+       * first genuinely rich hold on a long leg, so the first picket with a
+       * lance in it since Cinder. */
+      vitrine: {
+        name: 'the Vitrine shelf watch', off: -880, up: -310, rearm: 300,
+        wing: [{ class: 'skiff', count: 2 }, { class: 'lance', count: 1 }],
+        warn: 'Three contacts over the ice',
+        blurb: 'Whatever comes up out of the vault, they would rather have it.',
+      },
+      /* Half-lit from the yard and the only body with anything growing on it.
+       * Two skiffs: nobody has bothered to garrison a jungle. */
+      verdigris: {
+        name: 'the Verdigris crescent', off: 690, up: 360, rearm: 260,
+        wing: [{ class: 'skiff', count: 2 }],
+        warn: 'Contacts on the terminator',
+        blurb: 'They work the crescent, where the canopy stops being visible.',
+      },
+      /* The richest ore in the system, on a moon that shepherds a ring system.
+       * Heavy, and the longest rearm short of Cathedra: this is the run worth
+       * defending. */
+      lathe: {
+        name: 'the Lathe ring shadow', off: -760, up: 400, rearm: 360,
+        wing: [{ class: 'skiff', count: 2 }, { class: 'lance', count: 1 }],
+        warn: 'Three contacts out of the ring shadow',
+        blurb: 'They come out of the ring plane, where the giant hides them.',
+      },
+      /* Thin air, a short descent, and iron nobody is short of. Three skiffs
+       * and no heavy: numerous rather than dangerous, which is the one wing
+       * shape a Dray with its span cap can actually farm. */
+      carnelian: {
+        name: 'the Carnelian scarp picket', off: 830, up: -280, rearm: 280,
+        wing: [{ class: 'skiff', count: 3 }],
+        warn: 'Three light contacts - closing',
+        blurb: 'A scarp-line picket. Cheap hulls, and there are always three.',
+      },
+      /* Back-lit, dim, and under permanent overcast. One skiff and one lance,
+       * which is the least legible wing in the system: you cannot tell from
+       * the contact count what is out there until the lance fires. */
+      sallow: {
+        name: 'the Sallow overcast', off: -700, up: -370, rearm: 320,
+        wing: [{ class: 'skiff', count: 1 }, { class: 'lance', count: 1 }],
+        warn: 'Two contacts - one heavy',
+        blurb: 'Two transponders under the cloud, and they are not the same size.',
+      },
+      /* 288 km, the longest leg there is and the dearest ore off Lathe. The
+       * heaviest picket and the longest rearm: if you clear it, the trip home
+       * is quiet, and the trip home is ninety seconds long. */
+      cathedra: {
+        name: 'the Cathedra spire watch', off: 900, up: 330, rearm: 400,
+        wing: [{ class: 'skiff', count: 2 }, { class: 'lance', count: 1 }],
+        warn: 'Three contacts among the spires',
+        blurb: 'They hold off the spire fields, at the far edge of anything.',
+      },
+    };
+
+    /* ---- the inner system: the run every player flies first ---------- */
+
+    const latheLane = laneOf(BODY_BY_ID.lathe.position);
+    const zones = [
+      {
+        /* ── THE ZONE THAT MOVED, AND WHY IT MOVED HERE ────────────────────
+         *
+         * `ashlane` keeps its id and nothing else. The id is save data -
+         * `SpaceObjectives._wings` is a set of these and a rename would
+         * silently un-break the wing for every existing save - so it is
+         * history rather than a place name, exactly as `cinder-orbit`'s is.
+         *
+         * IT COULD NOT SIMPLY BE DELETED. `space-combat.test.mjs` requires
+         * every zone to sit within half its own trigger radius of a route, and
+         * the routes are the ten yard-to-body lanes plus the belt: eleven
+         * routes for twelve zones, so one lane carries two whatever happens.
+         * The only decision available is WHICH, and the measurement in the
+         * header answers it - the doubled lane must not be the 62 km one every
+         * new player flies before they have bought anything.
+         *
+         * SO IT IS LATHE'S. 45 km out on a 185 km run, which is:
+         *   - 20.9 km clear of the nearest other lane at that range, so no
+         *     other route crosses it (the whole table is in
+         *     `.probe/tk/lanes.mjs`, which derives it from `Bodies.js`);
+         *   - inside Cinder's own orbit, so the kill ladder's "one full sweep
+         *     of the inner system" is still nine hostiles and 745 credits and
+         *     `space-objectives.test.mjs` still finds exactly three zones
+         *     there;
+         *   - 128 km short of Lathe's own ring-shadow picket, so the two are
+         *     an outer screen and an inner guard rather than one fight twice;
+         *   - and on the run the PICKETS table already calls "the run worth
+         *     defending", which is where a second toll is content rather than
+         *     a tax. Nineteen seconds on a 185 km leg is a fifth of what it
+         *     was on a 62 km one.
+         *
+         * It takes Cinder's old wing with it - see the note on `cinder` in
+         * PICKETS - because the heavier of the two belongs on the richer run. */
+        id: 'ashlane',
+        name: 'the Lathe outer screen',
+        position: onLane(latheLane, 45000, 640, -260),
+        radius: 4200,
+        warn: 'Three contacts across the lane',
         wing: [{ class: 'skiff', count: 2 }, { class: 'lance', count: 1 }],
         rearm: 300,
-        blurb: 'They wait above the caldera for hulls that come up heavy.',
+        blurb: 'They sit on the top of the ring run and let nothing up it unseen.',
       },
       {
         id: 'reach-nest',
@@ -647,6 +935,39 @@ export class SpaceWorld extends World {
         blurb: 'Whatever lives in the Reach does not want the rocks surveyed.',
       },
     ];
+
+    /* ---- one approach picket per landable body ----------------------- */
+
+    for (const body of landableBodies()) {
+      const spec = PICKETS[body.id] ?? DEFAULT_PICKET;
+      const lane = laneOf(body.position);
+      const standoff = Math.max(body.atmosphere, body.handoff) + PICKET_R + CLEARANCE;
+      const along = Math.max(lane.dist - standoff, MIN_ALONG);
+      zones.push({
+        /* `cinder-orbit` keeps the id it shipped with - it is in save data as
+         * a broken-wing marker (`SpaceObjectives._wings` is a set of these) and
+         * renaming it would silently un-break it for every existing save. The
+         * nine new ones are `<body>-approach`. */
+        id: body.id === 'cinder' ? 'cinder-orbit' : `${body.id}-approach`,
+        name: spec.name,
+        position: onLane(lane, along, spec.off, spec.up),
+        radius: PICKET_R,
+        warn: spec.warn,
+        wing: spec.wing.map((w) => ({ class: w.class, count: w.count })),
+        rearm: spec.rearm,
+        blurb: spec.blurb,
+      });
+    }
+
+    /* Cinder's picket belongs in the inner three, ahead of the belt nest: see
+     * the note on ordering above. It is the only one of the ten that is inside
+     * its own tutorial run, so it is lifted out of the appended block rather
+     * than the whole list being sorted - sorting by distance would put the
+     * belt nest, which is not on a planet route at all, somewhere arbitrary. */
+    const orbit = zones.findIndex((z) => z.id === 'cinder-orbit');
+    if (orbit > 1) zones.splice(1, 0, zones.splice(orbit, 1)[0]);
+
+    this.encounters = zones;
   }
 
   /* ------------------------------------------------------------------ */

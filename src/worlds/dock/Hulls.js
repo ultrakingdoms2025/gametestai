@@ -39,7 +39,7 @@ import { shipParts } from '../../ships/ShipAssets.js';
  *
  * | hull    | len  | beam   | crown | slender | parallel | interior           |
  * |---------|------|--------|-------|---------|----------|--------------------|
- * | Kestrel | 14 m |  9.2 m | 6.36  | 1.52    | 0.27     | cockpit + cabin    |
+ * | Kestrel | 20 m |  9.2 m | 6.36  | 2.17    | 0.18     | cockpit + cabin    |
  * | Dray    | 28 m | 13.4 m | 8.14  | 2.09    | 0.19     | hold, engine, cab  |
  * | Pike    | 18 m | 11.2 m | 5.80  | 1.61    | 0.12     | cockpit + gun bay  |
  * | Bastion | 44 m | 26.8 m | 9.54  | 1.64    | 0.15     | none — unfinished  |
@@ -53,8 +53,11 @@ import { shipParts } from '../../ships/ShipAssets.js';
  * What each one is trying to be, in one line, because that is the thing a
  * later change can most easily undo without noticing:
  *
- * - **Kestrel, a courier.** Needle nose, raised glasshouse, V-tail, and two
- *   engine pods carried outboard on pylons. The pods are the silhouette.
+ * - **Kestrel, a courier.** 20 m long on a 4.6 m beam: a 7.4 m needle nose, a
+ *   raised glasshouse, a 4.4 m tail cone with the V-tail on the end of it, and
+ *   two engine pods carried outboard on wings at the aft quarter. She was 14 m
+ *   and read as a compact shuttle, because a fineness of 3.04 is a van; the
+ *   length went up and the cabin did not move. See `HullPlan.KESTREL`.
  * - **Dray, an ore tender.** Bluff raked bow, open well deck, bridge castle
  *   aft, a lattice derrick over the hatch, ore hoppers to port and a radiator
  *   bank to starboard. The asymmetry is deliberate and it is the only one in
@@ -1080,11 +1083,13 @@ export function buildKestrel(b, side, keelY, mats) {
   }
   // The knuckles at the deck edge and the turn of the bilge, which is as much
   // section shape as a hull with a 4.16 m room inside a 4.60 m beam can have.
+  // The beam is the one dimension the re-proportioning did NOT touch: it is
+  // the cabin, and the cabin is the feature.
   knuckle(b, 'hull', H.lower.hw, H.ledge.y, H.lower.z0, H.lower.z1, 1, 0.3);
   knuckle(b, 'hull', H.lower.hw, H.lower.y0, H.lower.z0, H.lower.z1, -1, 0.3);
   /* ── The canopy ───────────────────────────────────────────────────────
    * A RAISED faceted glasshouse on a coaming, not a lid: this is the detail
-   * that decides whether a 14 m hull reads as a courier or as a container,
+   * that decides whether this hull reads as a courier or as a container,
    * because from the shed floor a flush canopy puts no cockpit in the
    * silhouette at all. Its underside is 0.10 m clear of the cockpit's
    * declared ceiling, so the room is never shorter than the contract says.
@@ -1120,18 +1125,24 @@ export function buildKestrel(b, side, keelY, mats) {
 
   /* ── The nose ─────────────────────────────────────────────────────────
    * A lofted needle with a chine and a droop: nine sections from the
-   * cockpit's forward bulkhead to a 0.28 m tip four metres out. It was four
-   * stepped boxes, which from the floor is a staircase lying on its side.
+   * cockpit's forward bulkhead to a 0.28 m tip SEVEN AND A HALF METRES out.
+   * It was four stepped boxes, which from the floor is a staircase lying on
+   * its side, and then it was the same loft over 4.0 m, which is a wedge on a
+   * van. 7.4 m of it is the single biggest thing that turns a fineness of 3.04
+   * into one of 4.35, and it costs nothing: nothing is climbed out here,
+   * nothing stands on it and no room is behind it.
    * Collided by `loftSolid`'s inscribed boxes — nothing stands on it. */
   const NS = H.nose;
   const noseSt = [
-    { z: NS.z0, pts: sec(2.30, 0.60, 2.92, { ct: 0.3, cb: 0.3 }) },
-    { z: 4.6, pts: sec(2.18, 0.70, 2.86, { ct: 0.6, cb: 0.5, tw: 1.35 }) },
-    { z: 5.4, pts: sec(1.88, 0.86, 2.70, { ct: 0.68, cb: 0.55, tw: 1.05 }) },
-    { z: 6.2, pts: sec(1.44, 1.02, 2.42, { ct: 0.6, cb: 0.5, tw: 0.78 }) },
-    { z: 6.9, pts: sec(0.98, 1.16, 2.10, { ct: 0.46, cb: 0.4, tw: 0.5 }) },
-    { z: 7.4, pts: sec(0.58, 1.28, 1.80, { ct: 0.26, cb: 0.24, tw: 0.28 }) },
-    { z: NS.z1, pts: sec(0.14, 1.42, 1.60, { ct: 0.08, cb: 0.07, tw: 0.07 }) },
+    { z: NS.z0, pts: sec(2.30, 0.60, 2.92, { ct: 0.30, cb: 0.30 }) },
+    { z: 4.60, pts: sec(2.20, 0.68, 2.86, { ct: 0.55, cb: 0.45, tw: 1.55 }) },
+    { z: 5.60, pts: sec(1.98, 0.84, 2.66, { ct: 0.60, cb: 0.48, tw: 1.30 }) },
+    { z: 6.70, pts: sec(1.72, 0.98, 2.42, { ct: 0.44, cb: 0.36, tw: 1.05 }) },
+    { z: 7.80, pts: sec(1.45, 1.10, 2.20, { ct: 0.34, cb: 0.28, tw: 0.82 }) },
+    { z: 8.90, pts: sec(1.18, 1.19, 2.02, { ct: 0.26, cb: 0.20, tw: 0.60 }) },
+    { z: 9.90, pts: sec(0.90, 1.26, 1.90, { ct: 0.20, cb: 0.15, tw: 0.42 }) },
+    { z: 10.70, pts: sec(0.62, 1.33, 1.80, { ct: 0.14, cb: 0.11, tw: 0.26 }) },
+    { z: NS.z1, pts: sec(0.14, 1.40, 1.68, { ct: 0.08, cb: 0.06, tw: 0.07 }) },
   ];
   loftSolid(b, 'hull', noseSt, { tile: 2.5, capFore: true });
   /* The chine: one strake down the widest line of each flank, which is what
@@ -1146,21 +1157,28 @@ export function buildKestrel(b, side, keelY, mats) {
         Math.atan2(s * (cxx - ax), c.z - a.z), -Math.atan2(cy - ay, c.z - a.z), 0, 1);
     }
   }
-  b.box('glow', 0.34, 0.09, 0.22, 0, 1.51, NS.z1 - 0.1, 0, 1);
-  for (const s of [-1, 1]) b.box('glow', 0.1, 0.08, 0.5, s * 1.0, 1.95, 6.5, 0, 1);
+  b.box('glow', 0.20, 0.08, 0.22, 0, 1.54, NS.z1 - 0.1, 0, 1);
+  for (const s of [-1, 1]) b.box('glow', 0.1, 0.08, 0.8, s * 1.70, 1.60, 6.70, 0, 1);
 
-  /* ── The boat-tail ────────────────────────────────────────────────────
-   * The stern was a flat transom at z -5.6 with a plated drum in front of it.
-   * It is a lofted taper now, sealed by its own inscribed colliders, and it
-   * is what the V-tail is rooted on. */
+  /* ── The tail cone ────────────────────────────────────────────────────
+   * The stern was a flat transom at z -5.6 with a plated drum in front of it,
+   * and then a 1.8 m boat-tail that stopped where the engine pods stopped —
+   * which is a body with engines bolted to the back of it and no stern at all.
+   * It is 4.4 m now and runs 2.2 m PAST the pods to a 0.52 x 0.32 m knife, so
+   * the ship has an empennage: engines at the aft quarter, a tapering boom
+   * behind them, and the V-tail standing on the last two metres of it.
+   * Sealed by its own inscribed colliders. */
   const TL = H.tail;
   loftSolid(b, 'hull', [
-    { z: TL.z1, pts: sec(2.30, 0.60, 2.92, { ct: 0.3, cb: 0.3 }) },
-    { z: -5.0, pts: sec(2.05, 0.76, 2.80, { ct: 0.55, cb: 0.5, tw: 1.2 }) },
-    { z: -5.7, pts: sec(1.55, 0.92, 2.56, { ct: 0.5, cb: 0.45, tw: 0.9 }) },
-    { z: TL.z0, pts: sec(1.05, 1.06, 2.24, { ct: 0.34, cb: 0.3, tw: 0.6 }) },
+    { z: TL.z1, pts: sec(2.30, 0.60, 2.92, { ct: 0.30, cb: 0.30 }) },
+    { z: -5.20, pts: sec(2.06, 0.72, 2.80, { ct: 0.55, cb: 0.48, tw: 1.30 }) },
+    { z: -6.00, pts: sec(1.78, 0.84, 2.64, { ct: 0.58, cb: 0.50, tw: 1.05 }) },
+    { z: -6.80, pts: sec(1.44, 0.96, 2.44, { ct: 0.52, cb: 0.44, tw: 0.82 }) },
+    { z: -7.60, pts: sec(1.06, 1.08, 2.22, { ct: 0.40, cb: 0.34, tw: 0.58 }) },
+    { z: -8.30, pts: sec(0.68, 1.18, 2.00, { ct: 0.26, cb: 0.22, tw: 0.34 }) },
+    { z: TL.z0, pts: sec(0.26, 1.30, 1.74, { ct: 0.12, cb: 0.10, tw: 0.13 }) },
   ], { tile: 2.5, capAft: true });
-  b.box('glow', 1.5, 0.1, 0.1, 0, 2.3, TL.z0 + 0.1, 0, 1);
+  b.box('glow', 0.42, 0.08, 0.10, 0, 1.56, TL.z0 + 0.12, 0, 1);
 
   /* ── The V-tail ───────────────────────────────────────────────────────
    * Two fins splayed 34 degrees off vertical off the boat-tail. Drawn as
@@ -1266,40 +1284,6 @@ export function buildKestrel(b, side, keelY, mats) {
     b.rbox('trim', 0.12, 0.12, 1.9, s * (H.lower.hw + 0.35), 1.16, -5.3, s * 0.42, 0, 0, 1);
   }
 
-  /* ── The dorsal array ─────────────────────────────────────────────────
-   * A MAST AND A BOOM OVER THE AFT SPINE, AND IT IS THE ONE THING ON THIS
-   * HULL THAT PUTS DAYLIGHT ABOVE IT.
-   *
-   * Everything that makes the Kestrel a courier — the pods, the pylons, the
-   * V-tail — is OUTBOARD, and outboard is invisible in profile: from the beam
-   * the pods sit behind the fuselage at the same height as it, and the hull
-   * reads as one unbroken lump from keel to crown. The silhouette probe says
-   * so: 1.18 lit runs per column broadside, against 1.92 for the Dray once she
-   * had legs and a floor of 1.24. A courier with an antenna farm on it is the
-   * cheapest honest thing that breaks that line, and it is what a ship whose
-   * whole job is carrying messages would actually have.
-   *
-   * ── The two heights are both climb numbers ────────────────────────────
-   * `bands[2]` mantles from the ledge onto the spine at z -1.50 and `Climb`
-   * lands the body 0.77 m inboard of the flank it gripped, at local x 0.38,
-   * where it demands `MANTLE_HEADROOM` = 1.55 m of clear air. The boom is at
-   * y 7.00, which is 1.84 m over a spine deck at 5.16.
-   *
-   * And the mast is at z -3.20, not amidships: the capsule that finishes that
-   * mantle occupies z -1.85..-1.15, so a post anywhere near the middle of this
-   * deck is a post the climb lands inside of. It is collided, because it
-   * stands on a deck a player walks. */
-  if (!skin) {
-    b.cbox('trim', 0.20, 1.94, 0.20, 0, H.spine.y + 0.97, -3.20, 0, 1);
-    b.box('trim', 0.16, 0.18, 2.40, 0, H.spine.y + 1.93, -3.20, 0, 1);
-    for (const s of [-1, 1]) {
-      b.rbox('trim', 0.08, 0.08, 1.15, 0, H.spine.y + 1.42, -3.20 + s * 0.52, 0, s * 0.72, 0, 1);
-      b.put('accent', new THREE.CylinderGeometry(0.34, 0.06, 0.30, 8).rotateX(s * Math.PI / 2),
-        0, H.spine.y + 1.93, -3.20 + s * 1.34);
-    }
-    b.box('glow', 0.1, 0.1, 0.1, 0, H.spine.y + 2.10, -3.20, 0, 1);
-  }
-
   /* ── The shell ends here ─────────────────────────────────────────────
    * Everything below is drawn on BOTH arms, and the mute comes off. */
   b.mute(false);
@@ -1332,6 +1316,63 @@ export function buildKestrel(b, side, keelY, mats) {
     }
   }
 
+  /* ── The relay array ──────────────────────────────────────────────────
+   * A POST, A RAIL AND TWO REFLECTORS OVER THE AFT SPINE, AND IT IS THE ONE
+   * THING ON THIS HULL THAT PUTS DAYLIGHT ABOVE IT.
+   *
+   * Everything that makes the Kestrel a courier — the pods, the wings, the
+   * V-tail — is OUTBOARD, and outboard is invisible in profile: from the beam
+   * the pods sit behind the fuselage at the same height as it, and the hull
+   * reads as one unbroken lump from keel to crown. The silhouette probe says
+   * so: 1.18 lit runs per column broadside, against 1.92 for the Dray once she
+   * had legs and a floor of 1.24. An antenna farm is the cheapest honest thing
+   * that breaks that line, and it is what a ship whose whole job is carrying
+   * messages would actually have.
+   *
+   * ── IT IS ON BOTH ARMS NOW, AND IT GREW WITH THE HULL ─────────────────
+   * Two things changed when the hull went from 14 m to 20 m.
+   *
+   * It was inside `if (!skin)`, on the reasoning that the authored hull got a
+   * dorsal FIN instead. But a fin sits ON the fairing: it is contiguous with
+   * the body in every column, so it does not answer the descriptor the mast
+   * was put here to answer, and the arm the player actually sees was the one
+   * without an answer. It is drawn on both arms now — the same precedent
+   * `buildDray` sets with her hoppers, conveyor gallery and derrick, all of
+   * which are drawn after the mute comes off. The .glb is the HULL; equipment
+   * bolted to a hull is a different thing and may be boxes, because equipment
+   * IS boxes.
+   *
+   * And the rail is 4.20 m rather than 2.40, with the reflectors at +/-1.95
+   * rather than +/-1.34. That is the same SHARE of a 20 m hull that 2.40 was
+   * of a 14 m one: the descriptor is runs per column averaged over the hull's
+   * own width in frame, so a fixed-length boom on a longer ship is a smaller
+   * answer to the same question. Measured broadside, without this it reads
+   * 1.23 against a floor of 1.24.
+   *
+   * ── The two heights are both climb numbers ────────────────────────────
+   * `bands[2]` mantles from the ledge onto the spine at z -1.50 and `Climb`
+   * lands the body 0.77 m inboard of the flank it gripped, at local x 0.38,
+   * where it demands `MANTLE_HEADROOM` = 1.55 m of clear air. The rail is at
+   * y 7.00, which is 1.84 m over a spine deck at 5.16 — and also clear of a
+   * 1.75 m standing capsule, which is what lets the rail run the length of the
+   * deck rather than stopping short of the landing.
+   *
+   * And the post is at z -3.00, not amidships: the capsule that finishes that
+   * mantle occupies z -1.85..-1.15, so a post anywhere near the middle of this
+   * deck is a post the climb lands inside of. It is collided, because it
+   * stands on a deck a player walks. -3.00 rather than the old -3.20 keeps its
+   * two braces 0.28 m clear of the authored dorsal fin's leading edge at
+   * z -3.80, which they did not have to be while this was procedural-only. */
+  const AR = -3.00;
+  b.cbox('dark', 0.20, 1.94, 0.20, 0, H.spine.y + 0.97, AR, 0, 1);
+  b.box('dark', 0.14, 0.16, 4.20, 0, H.spine.y + 1.93, AR, 0, 1);
+  for (const s of [-1, 1]) {
+    b.rbox('dark', 0.08, 0.08, 0.92, 0, H.spine.y + 1.50, AR + s * 0.42, 0, s * 0.72, 0, 1);
+    b.put('accent', new THREE.CylinderGeometry(0.30, 0.06, 0.26, 8).rotateX(s * Math.PI / 2),
+      0, H.spine.y + 1.93, AR + s * 1.95);
+  }
+  b.box('glow', 0.1, 0.1, 0.1, 0, H.spine.y + 2.10, AR, 0, 1);
+
   /* The two walkable plates, drawn on both arms. Each one's TOP is a ledge the
    * climb mantles onto and its UNDERSIDE is a compartment's ceiling — rule 2 —
    * and the authored skin closes exactly beneath each of them rather than
@@ -1355,9 +1396,17 @@ export function buildKestrel(b, side, keelY, mats) {
    * curve forward of z 1.00 exists to satisfy. */
   b.cbox('hull', (H.lower.hw - SKIN) * 2, 0.12, H.canopy.z1 - H.canopy.z0 + 0.3,
     0, H.canopy.y - 0.06, (H.canopy.z0 + H.canopy.z1) / 2, 0, 2);
-  // The sensor boom: the last half metre of a courier is an instrument.
-  b.put('trim', new THREE.CylinderGeometry(0.05, 0.02, 1.1, 6).rotateX(Math.PI / 2),
-    0, 1.51, H.nose.z1 + 0.5);
+  /* The sensor boom: the last half metre of a courier is an instrument.
+   *
+   * 0.9 m at z +0.30 and it used to be 1.1 m at +0.50, which on the 20 m hull
+   * put its tip at local z 12.25. `BERTHS.kestrel` reserves `hd` 12 — that is
+   * the painted bay on the pad AND the footprint the ship stage publishes to
+   * `_collisionSoup` so the derived pass leaves the hull alone — so a quarter
+   * of a metre of antenna was sticking out of the berth the yard thinks this
+   * ship occupies. At 11.95 the whole ship is inside its own bay, bow tip
+   * included, with 0.05 m to spare. */
+  b.put('trim', new THREE.CylinderGeometry(0.05, 0.02, 0.9, 6).rotateX(Math.PI / 2),
+    0, 1.54, H.nose.z1 + 0.30);
   for (const s of [-1, 1]) {
     const N2 = H.nacelle, ncx2 = (N2.x0 + N2.x1) / 2;
     // The mantle target, marked. Both arms: it is a stripe on a flat pod top.

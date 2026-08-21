@@ -5,11 +5,12 @@ import * as THREE from 'three';
 import { rig, goto, settle, DT, steerTo } from './_flightrig.mjs';
 
 const { SpaceCombat, GUN, CONVERGE, MAX_SPAN, SHIELD_PER_TIER, SHIELD_FLOOR, SAFE_RADIUS,
-  SPAWN_MIN, SPAWN_MAX } =
+  SPAWN_MIN, SPAWN_MAX, LOCK_GRACE, DISENGAGE, TARGET_RANGE, HOLD_FIRE } =
   await import('../../src/ships/SpaceCombat.js');
 const { AlienShip, ALIEN_CLASSES, ALIEN_PLANS, buildAlienModel, BREAK_RANGE } =
   await import('../../src/npc/AlienShip.js');
-const { DOCK_ANCHOR, BODY_BY_ID } = await import('../../src/worlds/space/Bodies.js');
+const { DOCK_ANCHOR, BODY_BY_ID, BELT, landableBodies } =
+  await import('../../src/worlds/space/Bodies.js');
 const { cruiseTopSpeed } = await import('../../src/ships/Flight.js');
 const { SHIP_CLASSES } = await import('../../src/ships/ShipStats.js');
 
@@ -600,13 +601,50 @@ test('two skiffs kill a pilot who flies straight and does not shoot back', async
     const off = r.bus.on('player:died', () => { died = true; });
     let shieldZeroAt = null;
 
-    await step(r, combat, 60 * 110, (t) => {
+    /* ── THE CLOCK IS 160 s, AND IT WAS 110 s ────────────────────────────────
+     *
+     * NOT a weakened floor - the floor below is the same `died || health < 40`
+     * and was not touched. What moved is the SAMPLE, and it moved for the same
+     * reason the jinking case's clock moved from 70 s to 110 s: the flown hull
+     * changed, so a fixed number of seconds now contains a different number of
+     * seconds of ATTACK.
+     *
+     * The rig used to board through `_shipRecord` in a world that publishes no
+     * hulls, so `Flight.setShip` took its `powerMul: 1` fallback and this case
+     * flew a Kestrel whose cruise top was 120 m/s. At throttle 0.55 that is
+     * 66 m/s against a skiff's 174 - a target that cannot get away from
+     * anything, pinned for the whole clock. Flown, at 110 s:
+     *
+     *     shield down at 43.4 s, 198 damage taken, health 37
+     *
+     * and `health < 40` passed by three points.
+     *
+     * The real stock Kestrel cruises at 210, so throttle 0.55 is 116 m/s. Still
+     * slower than the wing - you are still caught - but each pass is shorter
+     * and the shield pool regenerates between them, so the same 110 s now reads
+     *
+     *     shield down at 65.7 s, 189 damage taken, health 77
+     *
+     * The claim is unchanged and still true: two skiffs DO kill a pilot who
+     * flies straight and does not shoot back. It takes longer. Flown out, the
+     * same seed crosses `health < 40` at 138.4 s and reaches health 14 by 160 s.
+     * 160 s is that with 21 s of margin.
+     *
+     * ── AND THE HONEST CAVEAT, BECAUSE THE SAMPLE IS CHAOTIC ─────────────────
+     * The spawn geometry dominates this measurement. Re-flown at 200 s across
+     * five seeds, `health < 40` arrives at 156.7 s (7), 138.4 s (11), 7.8 s
+     * (23), 6.8 s (61) and 7.0 s (101). Seed 11 - the one this case has always
+     * used - is close to the WORST case for the pilot's survival, not the best,
+     * so the clock here is not cherry-picked in the direction of passing. It
+     * does mean "how long two skiffs need" is a distribution and 138 s is one
+     * draw from it. */
+    await step(r, combat, 60 * 160, (t) => {
       /* Straight and level, at the throttle of a pilot who is IN the fight
        * rather than leaving it. At full throttle a Kestrel simply outruns a
-       * skiff (210 m/s against 174) and the honest result is that nothing much
-       * happens - which is correct behaviour and a useless measurement. This
-       * case is about what happens to a pilot who stays and does not
-       * manoeuvre. */
+       * skiff (210 m/s against 174) - measured here at 18 damage taken over
+       * the whole clock and health untouched - which is correct behaviour and
+       * a useless measurement. This case is about what happens to a pilot who
+       * stays and does not manoeuvre. */
       r.piloting.flight.setCommand({ pitch: 0, yaw: 0, roll: 0, throttle: 0.55, vertical: 0, boost: false, brake: false });
       if (shieldZeroAt === null && combat.shield <= 0 && combat.engaged) shieldZeroAt = t;
     });
@@ -620,7 +658,7 @@ test('two skiffs kill a pilot who flies straight and does not shoot back', async
       + `damage taken ${combat.stats.taken.toFixed(0)}, health ${r.player.health.toFixed(0)}, died ${died}`);
 
     assert.ok(combat.stats.taken > 0, 'floor: they must be able to hit a target flying straight');
-    assert.ok(shieldZeroAt !== null, 'floor: 90 s of unanswered fire must break a stock Kestrel shield');
+    assert.ok(shieldZeroAt !== null, 'floor: unanswered fire must break a stock Kestrel shield');
     assert.ok(died || r.player.health < 40,
       `floor: the pilot must be in real trouble - health ${r.player.health.toFixed(0)}`);
   } finally { teardown(r, combat); }
@@ -648,8 +686,30 @@ test('jinking measurably beats flying straight, and it is the aim model that doe
        * catch up. That is correct behaviour - you can always run - but it is
        * not a sample. Held at 0.55 the two are matched and both fights last
        * the clock. The player never shoots in either run, so neither sample is
-       * truncated by a kill. */
-      await step(r, combat, 60 * 70, (t) => {
+       * truncated by a kill.
+       *
+       * ── AND THE CLOCK WENT FROM 70 s TO 110 s ─────────────────────────────
+       * Not a weakened floor - the same floor, given the same sample. The
+       * shooting band is `[BREAK_RANGE, class.range]` and `class.range` came
+       * in from 780 m to 420 m when the engagement geometry was measured (see
+       * the `range` note on `skiff`), so each pass now has about half the
+       * seconds of ATTACK in it and 70 s of clock produced 16 shots where it
+       * used to produce more than 20. The claim under test is a RATIO of hit
+       * rates and is untouched by how long the two runs are; `shots > 20` is a
+       * statement about whether the ratio means anything. Lowering the floor
+       * to fit 16 would have been the fudge; buying the sample back with 40
+       * more seconds of identical flying is not.
+       *
+       * ── RE-MEASURED ON THE REAL HULL ─────────────────────────────────────
+       * The clock is unchanged at 110 s. The rig used to fly this at
+       * `powerMul: 1` (see the header note), and correcting it to the game's
+       * stock Kestrel moved both samples UP - straight 27/30 -> 35/38, jinking
+       * 28/44 -> 37/56 - because a faster hull re-merges sooner. Every floor
+       * and the ceiling are untouched and all five still hold: the hit rates
+       * moved 90.0% -> 92.1% straight and 63.6% -> 66.1% jinking, so the ratio
+       * this case is actually about barely moved (0.707 -> 0.718). The jink
+       * metric rose 0.68 -> 0.98. */
+      await step(r, combat, 60 * 110, (t) => {
         r.piloting.flight.setCommand({
           pitch: jinking ? Math.sin(t * 1.9) : 0,
           yaw: jinking ? Math.cos(t * 1.3) * 0.8 : 0,
@@ -934,6 +994,47 @@ test('a hostile merges, breaks off, separates, and comes back', async () => {
       `floor: it must actually merge - closest was ${minRange.toFixed(0)} m`);
     assert.ok(maxAfterBreak > 500,
       `floor: a break must produce real separation - only ${maxAfterBreak.toFixed(0)} m`);
+
+    /* ══════════════════════════════════════════════════════════════════════
+     *  THE NUMBER THIS CASE SUPPLIES TO `DISENGAGE` HAS MOVED, AND `DISENGAGE`
+     *  IS NOW A TUNING CHOICE RATHER THAN A DERIVED BOUND
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * `SpaceCombat.js` cites THIS case by name for the sentence "a normal
+     * break-off opens 3,590 m on its own", and sets `DISENGAGE = 3600`
+     * "precisely BECAUSE that is where a break-off tops out". That number was
+     * taken through a rig that flew a Kestrel at `powerMul: 1` - 120 m/s
+     * against a skiff's 174 - i.e. a hull the wing could always out-run, so
+     * the separation was bounded by the PLAYER's speed.
+     *
+     * Re-flown with the game's stock Kestrel (210 m/s) and `DISENGAGE` lifted
+     * out of the way to 60 km, the same break-off opens 11,015 m. Three times
+     * the constant.
+     *
+     * So `maxAfterBreak` no longer measures the break-off at all: it measures
+     * `DISENGAGE`, because `_spawner` stands the wing down the moment the gap
+     * passes 3,600 m. The reading is 3,599 m and it is 3,599 because the
+     * constant is 3,600.
+     *
+     * That is asserted here rather than left in a comment, so the day
+     * `DISENGAGE` moves, this says so:
+     *
+     *   - it is NOT the claim that the derivation was right (it was not);
+     *   - it IS the claim that this case can no longer be read as evidence for
+     *     `DISENGAGE`, because it saturates it.
+     *
+     * The design consequence is NOT changed here - a tuning change is a
+     * separate decision. What it means, stated plainly: with the real hull the
+     * wing gives up while a break-and-reform cycle is still running, where the
+     * derivation assumed 3.6 km was past the end of one. The `LOCK_GRACE`
+     * reasoning that a radius-based release is structurally wrong is
+     * STRENGTHENED by this, not weakened - the radius that would have been
+     * needed is now 11 km, not 3.6. */
+    assert.ok(maxAfterBreak > DISENGAGE - 50 && maxAfterBreak <= DISENGAGE,
+      `the break-off separation reads ${maxAfterBreak.toFixed(0)} m against a ${DISENGAGE} m `
+      + 'DISENGAGE. It used to saturate it (3,599 of 3,600). If it no longer does, the '
+      + 'stand-down bound and the natural break-off have crossed, and the derivation '
+      + 'note on DISENGAGE needs re-deriving - see the block above this line.');
   } finally { teardown(r, combat); }
 });
 
@@ -945,35 +1046,147 @@ test('every authored zone is on a route, outside the safe radius, and names a re
   const r = await rig();
   await goto(r, 'space');
   const zones = r.wm.active.encounters;
-  assert.ok(Array.isArray(zones) && zones.length >= 3, 'space must publish encounter zones');
+  const bodies = landableBodies();
+  /* One picket per landable world, plus the Ashlane and the Reach nest. The
+   * floor is DERIVED so that adding a planet and forgetting its route fails
+   * here, which is the defect this file exists to catch one layer down: for a
+   * whole phase `_fillEncounters` took `BODY_BY_ID.cinder` by name and nine
+   * routes out of ten had nothing on them at all. */
+  assert.ok(Array.isArray(zones) && zones.length >= bodies.length + 2,
+    `space publishes ${zones?.length ?? 0} zones for ${bodies.length} landable worlds `
+    + '- a route with no picket on it is an empty trip');
 
   const mouth = new THREE.Vector3(...DOCK_ANCHOR.mouth);
-  const cinder = new THREE.Vector3(...BODY_BY_ID.cinder.position);
-  const belt = new THREE.Vector3(...(await import('../../src/worlds/space/Bodies.js')).BELT.position);
+  const belt = new THREE.Vector3(...BELT.position);
+  /* Every route there is: the yard to each landable body, and the belt. */
+  const lanes = bodies.map((b) => ({ id: b.id, at: new THREE.Vector3(...b.position) }));
 
+  /** Perpendicular distance from `p` to the nearest route, and which one. */
+  const nearestLane = (p) => {
+    let best = { id: 'halberd-reach', off: p.distanceTo(belt) };
+    for (const lane of lanes) {
+      const t = Math.max(0, Math.min(1, p.dot(lane.at) / lane.at.lengthSq()));
+      const off = p.distanceTo(lane.at.clone().multiplyScalar(t));
+      if (off < best.off) best = { id: lane.id, off };
+    }
+    return best;
+  };
+
+  const covered = new Set();
   for (const z of zones) {
     const p = new THREE.Vector3(...z.position);
     const home = p.distanceTo(mouth);
     assert.ok(home > SAFE_RADIUS,
       `${z.id} is ${Math.round(home)} m from the yard, inside the ${SAFE_RADIUS} m safe radius`);
 
-    /* ON A ROUTE. Perpendicular distance to the dock-Cinder line, or distance
-     * to the belt: a zone that is neither is a zone nobody will ever fly into,
-     * which is the zero-reachable-wildlife defect with guns. */
-    const t = Math.max(0, Math.min(1, p.dot(cinder) / cinder.lengthSq()));
-    const offLine = p.distanceTo(cinder.clone().multiplyScalar(t));
-    const offBelt = p.distanceTo(belt);
-    const off = Math.min(offLine, offBelt);
-    assert.ok(off < z.radius * 0.5,
-      `${z.id} sits ${Math.round(off)} m off both routes with a ${z.radius} m trigger`);
+    /* ON A ROUTE. Perpendicular distance to some yard-to-body line, or
+     * distance to the belt: a zone that is neither is a zone nobody will ever
+     * fly into, which is the zero-reachable-wildlife defect with guns. */
+    const near = nearestLane(p);
+    assert.ok(near.off < z.radius * 0.5,
+      `${z.id} sits ${Math.round(near.off)} m off every route with a ${z.radius} m trigger`);
+    covered.add(near.id);
+
+    /* AND OUTSIDE THE PLANET IT GUARDS. A trigger sphere that reaches into a
+     * body's handoff shell can fire a wing and a descent on the same frame,
+     * which is a fight that begins in a world that is being torn down. */
+    for (const b of bodies) {
+      const d = p.distanceTo(new THREE.Vector3(...b.position));
+      assert.ok(d - z.radius > Math.max(b.atmosphere, b.handoff),
+        `${z.id}'s trigger reaches inside ${b.id}: ${Math.round(d - z.radius)} m from centre `
+        + `against a ${Math.max(b.atmosphere, b.handoff)} m shell`);
+    }
 
     for (const w of z.wing) {
       assert.ok(ALIEN_CLASSES[w.class], `${z.id} names unknown class "${w.class}"`);
       assert.ok((w.count ?? 1) >= 1);
     }
-    console.log(`  ${z.id.padEnd(13)} ${Math.round(home / 1000)} km out, `
-      + `${Math.round(off)} m off route, trigger ${z.radius} m, `
-      + `wing ${z.wing.map((w) => `${w.count ?? 1}x${w.class}`).join(' + ')}`);
+    console.log(`  ${z.id.padEnd(20)} ${String(Math.round(home / 1000)).padStart(3)} km out, `
+      + `${String(Math.round(near.off)).padStart(4)} m off the ${near.id} lane, `
+      + `trigger ${z.radius} m, wing ${z.wing.map((w) => `${w.count ?? 1}x${w.class}`).join(' + ')}`);
+  }
+
+  /* THE ASSERTION THAT WOULD HAVE CAUGHT THE HOLE. Twelve zones all piled on
+   * the Cinder run would satisfy every check above and still leave nine routes
+   * empty, so coverage is checked by ROUTE rather than by count. */
+  const empty = bodies.map((b) => b.id).filter((id) => !covered.has(id));
+  assert.deepEqual(empty, [],
+    `${empty.length} landable worlds have no encounter anywhere on the run out to them, `
+    + `so the whole trip is an empty volume and a landing: ${empty.join(', ')}`);
+});
+
+test('the route a new player flies first carries one toll, and the doubled lane is a long one', async () => {
+  const r = await rig();
+  await goto(r, 'space');
+  const zones = r.wm.active.encounters;
+  const bodies = landableBodies();
+  const belt = new THREE.Vector3(...BELT.position);
+  const lanes = bodies.map((b) => ({ id: b.id, at: new THREE.Vector3(...b.position) }));
+
+  /** Same rule the placement case above uses: which route is this zone on. */
+  const routeOf = (p) => {
+    let best = { id: 'halberd-reach', off: p.distanceTo(belt) };
+    for (const lane of lanes) {
+      const t = Math.max(0, Math.min(1, p.dot(lane.at) / lane.at.lengthSq()));
+      const off = p.distanceTo(lane.at.clone().multiplyScalar(t));
+      if (off < best.off) best = { id: lane.id, off };
+    }
+    return best.id;
+  };
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════
+   *  ELEVEN ROUTES, TWELVE ZONES - SO ONE LANE DOUBLES, AND IT MATTERS WHICH
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * The placement case above requires every zone to sit on a route and every
+   * route to carry one, and there are ten landable lanes plus the belt against
+   * twelve zones. One lane therefore carries two whatever anybody does; the
+   * only decision available is WHICH, and for a whole phase it was the
+   * shortest one in the system.
+   *
+   * The cost is measured, in a real boot with the encounters live rather than
+   * in `_flightrig` - which has no `SpaceCombat` in it and once "verified"
+   * this leg at 23.5 s. An interdiction holds a ship in normal space for about
+   * nineteen seconds whether or not the pilot takes the fight (the wing
+   * launches, `LOCK_GRACE` runs, the drive comes back), and the dock-to-Cinder
+   * leg was paying it twice:
+   *
+   *     Cinder    62 km, 2 zones   67.9 - 88.5 s
+   *     Tessera   87 km, 1 zone            56.6 s
+   *     Shoal    140 km, 1 zone     59.6 - 61.3 s
+   *
+   * The nearest planet in the system took longer to reach than the second
+   * furthest, on the one route every new player flies before they have bought
+   * anything. Two derived assertions, so this cannot come back by accident on
+   * whichever lane happens to be shortest next time.
+   */
+  const count = new Map();
+  for (const z of zones) {
+    const id = routeOf(new THREE.Vector3(...z.position));
+    count.set(id, (count.get(id) ?? 0) + 1);
+  }
+  const distOf = (id) => new THREE.Vector3(...(BODY_BY_ID[id]?.position ?? BELT.position)).length();
+  const rows = [...count].sort((a, b) => distOf(a[0]) - distOf(b[0]));
+  console.log('  ' + rows.map(([id, n]) => `${id} ${(distOf(id) / 1000).toFixed(0)}km x${n}`).join('  '));
+
+  const nearest = bodies.slice().sort(
+    (a, b) => new THREE.Vector3(...a.position).length() - new THREE.Vector3(...b.position).length()
+  )[0];
+  assert.equal(count.get(nearest.id), 1,
+    `${nearest.id} is the nearest landable world - the run every new player flies first - and its `
+    + `route carries ${count.get(nearest.id)} encounters. Two interdictions on the shortest leg is `
+    + 'thirty-eight seconds of holding W.');
+
+  const doubled = rows.filter(([, n]) => n > 1);
+  assert.ok(doubled.length <= 1,
+    `${doubled.length} routes carry more than one encounter: ${doubled.map(([id]) => id).join(', ')}`);
+  if (doubled.length === 1) {
+    const [id] = doubled[0];
+    const near = new THREE.Vector3(...nearest.position).length();
+    assert.ok(distOf(id) > near * 2,
+      `the doubled route is ${id} at ${(distOf(id) / 1000).toFixed(0)} km against a ${(near / 1000).toFixed(0)} km `
+      + 'shortest leg - a second toll belongs on a run long enough to absorb it');
   }
 });
 
@@ -991,29 +1204,65 @@ test('flying the Cinder run finds a fight, and shrinking the trigger removes it'
       }
       let contactsAt = null;
       let transitPeak = 1;
-      let transitWhileEngaged = 0;
+      let transitWhileLocked = 0;
+      let lockedSteps = 0;
       let engagedSteps = 0;
+      /* THE MULTIPLIER ON THE FIRST STEP THE PLAYER FLIES AFTER A LAUNCH.
+       *
+       * Not on the launch step itself, and the difference is the whole
+       * subtlety of the frame order. `piloting` runs BEFORE `combat`, so on
+       * the step a wing appears the ship has already been integrated at
+       * whatever multiplier was in force - a reading taken there is of a
+       * number that has already been superseded and cannot be acted on. The
+       * step AFTER is the first one `interdicted` can have reached, and it is
+       * the first metre of the run-in that the standoff is supposed to buy.
+       *
+       * (`Piloting`'s displacement multiplier disengages instantly rather than
+       * damping, so one stale step is 28 m of a 600 m shell. The transit DRIVE
+       * is the one that cannot be cancelled in a step - it sheds 5,000 m/s
+       * over `transitSpoolDown` - and it has its own case below.) */
+      let launchStep = null;
+      let spawnFactor = null;
       const off = r.bus.on('combat:contacts', () => { contactsAt = true; });
       await step(r, combat, 60 * 100, () => {
         steerTo(r.piloting.flight, cinder, { throttle: 1 });
-      }, () => {
+      }, (t, i) => {
+        void t;
+        if (contactsAt && launchStep === null) launchStep = i;
+        if (launchStep !== null && i === launchStep + 1 && spawnFactor === null) {
+          spawnFactor = r.piloting._transit;
+        }
         /* Sampled AFTER both systems have stepped - see the note on `step`.
          * `_transit` is written by `piloting` and `interdicted` by `combat`,
          * so a reading taken between them always has one of the two stale.
+         *
+         * ── SAMPLED ON THE LOCK, NOT ON `engaged` ──────────────────────────
+         * `interdicted` used to mean "anything is alive anywhere", so
+         * "engaged" and "held" were the same condition and either could stand
+         * in for the other. They are now different by design: the lock is a
+         * CLOCK (`LOCK_GRACE`), because a flag that outlived the danger by
+         * 3.6 km denied the drive for about ninety seconds after a player had
+         * broken off. So the assertion is the one the mechanism actually
+         * makes: while something is IN REACH of you, the multiplier is off.
+         * Testing it against `engaged` would now be asserting the bug that was
+         * removed.
          *
          * The first two steps of an engagement are skipped, and that is an
          * honest allowance rather than a fudge: `piloting` runs first in the
          * frame order, so the step on which a wing launches has already been
          * integrated at whatever multiplier was in force, and the step after
-         * it is the first that can see the flag. Two steps at x8 is 121 m of
-         * a 1,000 m spawn shell. */
+         * it is the first that can see the flag. */
         if (combat.engaged) engagedSteps++;
         transitPeak = Math.max(transitPeak, r.piloting._transit);
-        if (engagedSteps > 2) transitWhileEngaged = Math.max(transitWhileEngaged, r.piloting._transit);
+        const p = r.piloting.flight.position;
+        const held = combat.hostiles.some(
+          (h) => h.alive && h.position.distanceTo(p) <= h.def.range);
+        if (held) lockedSteps++; else lockedSteps = 0;
+        if (lockedSteps > 2) transitWhileLocked = Math.max(transitWhileLocked, r.piloting._transit);
       });
       off();
       return {
-        contacts: !!contactsAt, transitPeak, transitWhileEngaged, engagedSteps,
+        contacts: !!contactsAt, transitPeak, transitWhileLocked, engagedSteps, spawnFactor,
         range: r.piloting.flight.position.length(),
       };
     } finally { teardown(r, combat); }
@@ -1021,19 +1270,132 @@ test('flying the Cinder run finds a fight, and shrinking the trigger removes it'
 
   const real = await run(false);
   console.log(`  live zones : contacts ${real.contacts}, transit peaked at x${real.transitPeak.toFixed(1)}, `
-    + `x${real.transitWhileEngaged.toFixed(2)} over ${real.engagedSteps} engaged steps, `
+    + `x${real.transitWhileLocked.toFixed(2)} while locked over ${real.engagedSteps} engaged steps, `
     + `${Math.round(real.range / 1000)} km out`);
+  console.log(`  displacement multiplier on the first step after the launch: `
+    + `x${(real.spawnFactor ?? 0).toFixed(2)}`);
   assert.ok(real.contacts, 'floor: a straight run at Cinder must find the Ashlane picket');
   assert.ok(real.transitPeak > 4, `floor: transit must engage on the outbound leg (x${real.transitPeak.toFixed(1)})`);
   /* INTERDICTION. The whole reason `Piloting.interdicted` exists: without it,
    * the wing is flown past at 3,640 m/s and the fight never happens. */
   assert.ok(real.engagedSteps > 300, `floor: the fight must last (${real.engagedSteps} steps)`);
-  assert.ok(real.transitWhileEngaged < 1.05,
-    `floor: transit must drop while interdicted (x${real.transitWhileEngaged.toFixed(2)})`);
+  assert.ok(real.transitWhileLocked < 1.05,
+    `floor: transit must drop while something holds a lock (x${real.transitWhileLocked.toFixed(2)})`);
+  /* THE ARM-BEFORE-LAUNCH SPLIT, AND IT IS ITS OWN ASSERTION.
+   *
+   * A wing launched into a live multiplier is 600-850 m of standoff crossed in
+   * a third of a second; the whole spawn shell is decoration if this is not
+   * held. It is a strictly stronger claim than "the fight lasted", because a
+   * fight can also last by the hostiles catching up afterwards. */
+  assert.ok(real.spawnFactor !== null && real.spawnFactor < 1.05,
+    `floor: the run-in must be flown in normal space, not at a x${(real.spawnFactor ?? 0).toFixed(2)} `
+    + 'displacement multiplier');
 
   const ablated = await run(true);
   console.log(`  1 m triggers: contacts ${ablated.contacts}, transit peaked at x${ablated.transitPeak.toFixed(1)}`);
   assert.equal(ablated.contacts, false, 'ablation: a 1 m trigger must never fire');
+});
+
+/* ================================================================== */
+/* 7b. The engagement geometry itself                                  */
+/* ================================================================== */
+
+/**
+ * HOW MANY PIXELS IS A HOSTILE. The complaint, as arithmetic.
+ *
+ * "Combat is invisible at range - a 4.2 m skiff at 1.1 km is ~6 px" is a claim
+ * about angular size, and angular size is the one thing in this whole system
+ * that can be checked without flying anything. `CONFIG.render.fov` is 75
+ * degrees VERTICAL, so the image plane at range d is `2*d*tan(37.5deg)` world
+ * units tall mapped to 1080 rows:
+ *
+ *     pixels = 1080 / (2 * tan(37.5deg)) * metres / range = 703.7 * m / r
+ *
+ * `.probe/engagement.mjs` measured the same thing the hard way - a real
+ * hostile at a real range, its own vertices projected through the live camera
+ * - and agreed inside 10% at every range from 130 m to 1,250 m.
+ *
+ * This case pins the CONSEQUENCE: the range at which each class opens fire
+ * must be a range at which it can be seen to be a ship. Without it, `range`
+ * is a balance number that anyone may re-tune to 900 for feel, and the
+ * complaint comes straight back.
+ */
+test('a hostile is legible at the range it shoots from - the pixel arithmetic', () => {
+  const FOV_V = 75;
+  const ROWS = 1080;
+  const PX_PER_METRE_AT_1M = ROWS / (2 * Math.tan((FOV_V / 2) * Math.PI / 180));
+  const px = (metres, rangeM) => PX_PER_METRE_AT_1M * metres / rangeM;
+
+  /* The span each hull actually presents, taken off `ALIEN_PLANS` rather than
+   * typed: the widest |x| in any authored triangle, doubled. A hull whose
+   * blades were re-authored narrower would move this number and the case would
+   * follow it, which is the point of deriving it. */
+  const spanOf = (planId) => {
+    const plan = ALIEN_PLANS[planId];
+    let w = 0;
+    const eat = (pts) => { for (const p of pts) w = Math.max(w, Math.abs(p[0])); };
+    for (const b of plan.blades ?? []) { eat(b.root); eat(b.tip); }
+    for (const f of plan.fins ?? []) { eat(f.root); eat(f.tip); }
+    if (plan.arm) { eat(plan.arm.root); eat(plan.arm.tip); }
+    if (plan.spur) { eat(plan.spur.root); eat(plan.spur.tip); }
+    for (const s of plan.sections) w = Math.max(w, s.r * (s.w ?? 1));
+    return w * 2;
+  };
+
+  console.log(`  ${ROWS}p at ${FOV_V}deg vertical: ${PX_PER_METRE_AT_1M.toFixed(1)} px per metre at 1 m`);
+  for (const [id, def] of Object.entries(ALIEN_CLASSES)) {
+    const span = spanOf(id);
+    const atRange = px(span, def.range);
+    const atBreak = px(span, BREAK_RANGE);
+    const atSpawn = px(span, SPAWN_MAX);
+    console.log(`  ${id}: ${span.toFixed(1)} m across; ${atSpawn.toFixed(1)} px at the ${SPAWN_MAX} m spawn, `
+      + `${atRange.toFixed(1)} px at its own ${def.range} m gun, ${atBreak.toFixed(1)} px at the ${BREAK_RANGE} m merge`);
+
+    /* THE FLOOR, and it is the number the complaint is about. Eighteen pixels
+     * is where the forward-swept blades leave the body and the craft stops
+     * being a dot with a colour: measured in `.probe/engage/`, 780 m (10 px)
+     * is four violet pixels at 4x magnification and NOTHING in the unzoomed
+     * frame, 420 m (18 px) is an object, 300 m (25 px) is a shape with a
+     * facing. A hostile that opens fire from further out than this is
+     * shooting at the player from somewhere the player cannot look. */
+    assert.ok(atRange >= 18,
+      `${id} opens fire at ${def.range} m, where it is ${atRange.toFixed(1)} px across - a dot`);
+    /* And the merge has to be a spectacle, not merely legible. */
+    assert.ok(atBreak >= 45,
+      `${id} merges at ${BREAK_RANGE} m and is only ${atBreak.toFixed(1)} px across`);
+    /* CEILING BY THE OTHER SIDE OF THE ARGUMENT. The hulls are authored .glb-
+     * scale craft and the fix for "invisible" must never be "make them
+     * bigger" - a skiff you can see because it is the size of a house is a
+     * worse lie than a fight at 300 m. So the fight is also not allowed to be
+     * fought so close that a light raider fills the plate. */
+    assert.ok(atBreak <= ROWS * 0.5,
+      `${id} at the merge is ${atBreak.toFixed(0)} px - over half the frame; the fight is too close`);
+  }
+
+  /* The player's gun must out-reach the heaviest hostile, or a good merge buys
+   * nothing; and the spawn shell must sit outside every hostile's own gun, or
+   * a wing arrives already shooting. Both are relations between numbers that
+   * live in two different files, which is exactly what drifts. */
+  const worstHostile = Math.max(...Object.values(ALIEN_CLASSES).map((c) => c.range));
+  console.log(`  player gun ${GUN.range} m against the heaviest hostile's ${worstHostile} m; `
+    + `spawn shell ${SPAWN_MIN}-${SPAWN_MAX} m; convergence ${CONVERGE} m`);
+  assert.ok(GUN.range > worstHostile + 100,
+    `the player's ${GUN.range} m gun must meaningfully out-reach ${worstHostile} m`);
+  assert.ok(SPAWN_MIN > worstHostile,
+    `the spawn shell starts at ${SPAWN_MIN} m, inside a ${worstHostile} m gun`);
+
+  /* THE RETICLE MUST BE TRUE ACROSS THE WHOLE ENVELOPE. A bolt aimed at the
+   * convergence point is `span * (1 - d / CONVERGE)` off the axis at range d,
+   * and the smallest thing it has to hit is a skiff's 4.2 m sphere. Checked at
+   * both ends, because convergence is exact in the middle by construction and
+   * wrong at whichever end is further from it. */
+  const smallest = Math.min(...Object.values(ALIEN_CLASSES).map((c) => c.radius));
+  for (const d of [BREAK_RANGE * 0.85, GUN.range]) {
+    const off = Math.abs(MAX_SPAN * (1 - d / CONVERGE));
+    console.log(`  a ${MAX_SPAN} m span converged at ${CONVERGE} m is ${off.toFixed(2)} m off axis at ${d.toFixed(0)} m`);
+    assert.ok(off < smallest,
+      `a max-span hull misses a ${smallest} m target by ${off.toFixed(2)} m at ${d.toFixed(0)} m`);
+  }
 });
 
 test('nothing spawns near the yard, on the ground, or while out of the seat', async () => {
@@ -1625,5 +1987,421 @@ test('the capacitor is a resource and not a jam: a held trigger sustains its rat
      * the player sees on the bar. */
     assert.equal(Math.floor(GUN.capacity / GUN.cost), 11,
       'the burst off a full capacitor is 11 shots');
+  } finally { teardown(r, combat); }
+});
+
+/* ================================================================== */
+/* 14. Getting away                                                    */
+/* ================================================================== */
+
+/**
+ * A FIGHT MUST BE ESCAPABLE, AND THE ESCAPE MUST BE SOMETHING YOU DO.
+ *
+ * Taking a hit drops the transit drive (`Piloting._breakTransit`), so a player
+ * who cannot break the lock cannot leave at all - they are held in normal
+ * space by a wing that has already stopped shooting at them. That is the pin
+ * `LOCK_RANGE` exists to bound, and a bound with no case on it is a comment.
+ *
+ * Flown, not derived: a real merge at real speed, then the throttle pinned
+ * away from the fight and the boost spent, and the clock read off the step
+ * `interdicted` goes false. Both ends are asserted, because the interesting
+ * failure is in either direction - a lock you cannot break is a pin, and one
+ * that falls off in a second and a half is the fly-through defect returning
+ * (which is exactly what `LOCK_RANGE: 1500` did, and what the interdiction
+ * case caught).
+ *
+ * ── AND IT IS NOW FLOWN BY A HULL THAT *CAN* OUT-RUN THE WING ─────────────
+ * This block used to read the other way round, and the correction is the
+ * whole point of it. `_flightrig` boards through `Piloting.board`, and
+ * `_shipRecord`'s two lookups were both world-scoped - only `DockWorld`
+ * publishes `world.ships`, and `ShipRegistry._adopt` replaces its map on every
+ * `world:changed`. `combatRig` boards AFTER `goto('space')`, so every case in
+ * this file took `Flight.setShip`'s `powerMul: 1` fallback and flew a Kestrel
+ * that cruised at 120 m/s against a skiff's 174. Slower than the wing, slower
+ * than any hull the yard sells.
+ *
+ * `_shipRecord` now falls back to `ShipRegistry.statsFor`, which is
+ * world-independent, so the flown Kestrel cruises at 210 m/s - the game's
+ * number - and every comment in this file that says so is now describing this
+ * rig too. `_flightrig` asserts it on every board.
+ *
+ * Escape here still cannot come from speed alone: at cruise the margin over a
+ * skiff is 36 m/s, so opening the 3.6 km `DISENGAGE` bound by running takes
+ * about 100 s. It has to come from the release rule, which is what this case
+ * measures.
+ */
+test('the lock survives a break-off, and releases a grace after contact is lost', async () => {
+  /* ── PART A: IT MUST NOT FALL OFF MID-FIGHT ──────────────────────────────
+   *
+   * The two radius attempts documented on `LOCK_GRACE` both died here. A
+   * normal break-and-reform opens thousands of metres - this file's own
+   * merge case measures 3,590 m - so a lock that keys on distance releases
+   * the drive between passes, the displacement multiplier spools to x8, and
+   * the encounter ends itself. Flown: merge, then let the wing break, and
+   * assert the lock holds through the whole cycle. */
+  const { r, combat } = await combatRig({ ship: 'kestrel', seed: 61 });
+  try {
+    placeShip(r, V(0, 0, -30000), V(0, 0, -30600), 180);
+    combat._zones = [{
+      id: 't-flee', name: 'test', position: [0, 0, -30000], radius: 3000,
+      wing: [{ class: 'skiff', count: 2 }],
+    }];
+
+    let merged = false;
+    let widest = 0;
+    let clearRun = 0;
+    let longestClearRun = 0;
+    let heldThroughout = true;
+    let worstLockT = 0;
+    await step(r, combat, 60 * 45, (t) => {
+      /* LOITERING ON THE ZONE, which is what a player who has decided to fight
+       * does, and what the guns-cold ablation in `space-objectives.test.mjs`
+       * does. It is deliberately not a chase: pointing at the nearest hostile
+       * keeps the gap under 600 m and never produces the separation this case
+       * is about. Holding a point lets the wing break off properly, which is
+       * exactly the geometry a distance-based lock cannot survive.
+       *
+       * (The flown hull is the game's stock Kestrel - 210 m/s cruise, boost
+       * ceiling 455 - and `_flightrig` asserts that on every board. It used
+       * not to be; see the header note.) */
+      steerTo(r.piloting.flight, V(0, 0, -30000), { throttle: 1 });
+      void t;
+    }, (t) => {
+      void t;
+      const p = r.piloting.flight.position;
+      let near = Infinity;
+      let reach = false;
+      for (const h of combat.hostiles) {
+        if (!h.alive) continue;
+        const d = h.position.distanceTo(p);
+        near = Math.min(near, d);
+        if (d < 400) merged = true;
+        if (d <= h.def.range) reach = true;
+      }
+      if (!Number.isFinite(near)) return;
+      if (merged) {
+        widest = Math.max(widest, near);
+        clearRun = reach ? 0 : clearRun + DT;
+        longestClearRun = Math.max(longestClearRun, clearRun);
+        if (!r.piloting.interdicted && combat.engaged) heldThroughout = false;
+        /* THE INVARIANT, and it is the ceiling this case exists to state:
+         * while you are held, the clock that will release you is running and
+         * has not been sitting at its limit. */
+        if (r.piloting.interdicted) worstLockT = Math.max(worstLockT, combat._lockT);
+      }
+    });
+
+    console.log(`  through the fight: widest gap ${widest.toFixed(0)} m, longest stretch with `
+      + `nothing in reach ${longestClearRun.toFixed(1)} s, worst lock clock `
+      + `${worstLockT.toFixed(1)} s of ${LOCK_GRACE}`);
+    assert.ok(merged, 'staging: the wing never got close enough for this to be a fight');
+    /* THE STAGING BAR IS THE CLEAR RUN, NOT THE DISTANCE, and that is the
+     * right bar now that the lock is a clock: what it has to survive is a
+     * stretch with nothing able to shoot, and `BREAK_MAX` + a `REFORM` run is
+     * up to 10.4 s of exactly that. Four seconds is a real break-off rather
+     * than a gap between bursts. The widest gap is printed alongside because
+     * it is what the two failed radius attempts were measured against. */
+    assert.ok(longestClearRun > 4,
+      `staging: the wing never broke off (longest stretch out of reach `
+      + `${longestClearRun.toFixed(1)} s) - this case is about a lock surviving one`);
+    assert.ok(widest > 700,
+      `staging: the wing never left its own gun range by a margin (widest ${widest.toFixed(0)} m)`);
+    assert.ok(heldThroughout,
+      `floor: the lock fell off during a fight that was still on - the wing reached `
+      + `${widest.toFixed(0)} m and was out of reach for ${longestClearRun.toFixed(1)} s, `
+      + 'and a lock keyed on either would have released there');
+    assert.ok(worstLockT < LOCK_GRACE,
+      `the release clock reached ${worstLockT.toFixed(1)} s while still holding the player`);
+  } finally { teardown(r, combat); }
+
+  /* ── PART B: AND IT MUST LET GO ──────────────────────────────────────────
+   *
+   * The failure a lock invites is the pin: taking a hit drops the transit
+   * drive, so a player held by a wing that has already lost them cannot leave
+   * at all. The wing is held on a break heading straight away - the same
+   * staging the sweep and span cases use, and for the same reason: left to
+   * think, this measures the skiff's autopilot rather than the rule.
+   */
+  const b = await combatRig({ ship: 'kestrel', seed: 62 });
+  try {
+    placeShip(b.r, V(0, 0, -30000), V(0, 0, -31000), 0);
+    const s2 = b.combat._take('skiff');
+    /* PINNED AT 3,000 m, EVERY STEP, and the pin is the point.
+     *
+     * The rule under test is `SpaceCombat._locked`, not the skiff's autopilot,
+     * and two attempts to produce "the wing has lost you" by flying failed for
+     * reasons that belong to the autopilot: a hostile spawned facing the
+     * player spends two and a half seconds turning round while closing at
+     * 147 m/s, and `_break` exits the moment `range > 900` and REFORMS - which
+     * steers back at the player's future position and starts closing again.
+     * Closing is one of the two things that reset the clock, so with the AI
+     * left to think, the clock never ran. Pinning is the same idiom the Dray
+     * span case uses for the same reason, and it is applied AFTER the system
+     * has stepped, so every read `_locked` makes is of a real position the AI
+     * wrote. The craft is alive, in the pool, and inside `DISENGAGE`. */
+    const at = V(0, 0, -33000);
+    s2.spawn(at, at.clone().add(V(0, 0, -2000)), { holdFire: 0 });
+    b.combat.fixedUpdate(DT, 0);
+    /* Held from the moment it arrives, at 900 m and pointing away - because
+     * the clock starts at zero. A wing that had to shoot at you before it
+     * counted would let a player jump out of the spawn shell. */
+    assert.equal(b.r.piloting.interdicted, true,
+      'staging: a live wing must hold the lock from the moment it arrives');
+
+    let freeAt = null;
+    await step(b.r, b.combat, Math.round(20 / DT), () => {
+      b.r.piloting.flight.setCommand({
+        pitch: 0, yaw: 0, roll: 0, throttle: 0, vertical: 0, boost: false, brake: false,
+      });
+    }, (t) => {
+      if (freeAt === null && !b.r.piloting.interdicted) freeAt = t;
+      s2.position.copy(at);
+      s2.velocity.set(0, 0, 0);
+    });
+
+    const gap = s2.position.distanceTo(b.r.piloting.flight.position);
+    console.log(`  nothing in reach and nothing gaining from t=0; drive released at `
+      + `${freeAt === null ? 'never' : `${freeAt.toFixed(1)} s`} (grace ${LOCK_GRACE} s), `
+      + `hostile now ${gap.toFixed(0)} m out and still alive: ${s2.alive}`);
+    assert.ok(s2.alive, 'staging: the hostile must still be alive, or this measures a standdown');
+    assert.ok(freeAt !== null,
+      `floor: the drive must come back once nothing can reach the player - still held after 20 s `
+      + `with the hostile ${gap.toFixed(0)} m away`);
+    assert.ok(freeAt >= LOCK_GRACE - 0.5 && freeAt <= LOCK_GRACE + 1.5,
+      `the release came at ${freeAt.toFixed(1)} s against a ${LOCK_GRACE} s grace`);
+  } finally { teardown(b.r, b.combat); }
+});
+
+/* ================================================================== */
+/* 15. The contact readout, and every way it could publish a NaN       */
+/* ================================================================== */
+
+/**
+ * THE HUD HALF, AND THE ONE RULE IT CANNOT BREAK.
+ *
+ * `contactReport` is what makes a hostile findable before it is legible, and
+ * everything it publishes ends up in a CSS `left:` or a `textContent`. A
+ * non-finite number there is not a visible error - `left: NaN%` is DROPPED by
+ * the browser, which silently pins the marker to the top-left corner and
+ * points the pilot at nothing. And this project has already lost a day to a
+ * NaN: 19 of them through `UnrealBloomPass` blacked out a 921,600-pixel frame.
+ *
+ * So every field is checked finite, in every degenerate pose the geometry
+ * admits: a contact dead astern (where `project` divides by a negative w and
+ * answers confidently in the wrong corner), one exactly on the camera (where
+ * it divides by zero), and one moving at exactly the player's velocity (which
+ * is a real case in a co-speed turning fight and is why no time-to-close is
+ * published at all).
+ */
+test('the contact readout is finite in every degenerate pose', async () => {
+  const { r, combat } = await combatRig({ ship: 'kestrel', seed: 71 });
+  try {
+    placeShip(r, V(0, 0, -30000), V(0, 0, -31000), 120);
+    const f = r.piloting.flight;
+
+    const poses = [
+      ['dead ahead, 500 m', V(0, 0, -30500), V(0, 0, 0)],
+      ['dead astern, 400 m', V(0, 0, -29600), V(0, 0, 0)],
+      ['abeam, 900 m', V(900, 0, -30000), V(0, 0, 0)],
+      ['above, 1.2 km', V(0, 1200, -30000), V(0, 0, 0)],
+      /* Exactly on the camera. `distanceTo` is 0, the bearing cannot be
+       * normalised, and `project` divides by a w of about zero. */
+      ['inside the hull', f.position.clone(), V(0, 0, 0)],
+      /* Matched velocity: the closing speed is exactly 0. Any time-to-close
+       * would be a division by it. */
+      ['matched velocity', V(0, 0, -30400), f.velocity.clone()],
+    ];
+
+    for (const [what, at, vel] of poses) {
+      for (const h of combat.hostiles) h.retire();
+      const s = combat._take('skiff');
+      s.spawn(at, f.position, { holdFire: 99 });
+      s.velocity.copy(vel);
+      /* THE REAL CHASE CAMERA, COMPOSED. `_project` runs through whatever
+       * `Piloting._composeCamera` last placed, and the first version of this
+       * case never called it - so every pose came back `edge`, the on-plate
+       * branch was never taken, and the case would have passed with the
+       * projection deleted entirely. */
+      r.piloting.update(0.016, 0);
+      combat.update(0.016);
+      const rows = combat.contactReport();
+      assert.equal(rows.length, 1, `${what}: expected exactly one contact`);
+      const row = rows[0];
+      for (const k of ['range', 'frac', 'ahead', 'above', 'right', 'closing']) {
+        assert.ok(Number.isFinite(row[k]), `${what}: ${k} is ${row[k]}`);
+      }
+      assert.ok(Number.isFinite(row.ndc.x) && Number.isFinite(row.ndc.y),
+        `${what}: ndc is (${row.ndc.x}, ${row.ndc.y})`);
+      /* The marker must always be DRAWABLE. A contact off the plate or behind
+       * the camera falls back to its bearing and is pinned to the edge; one
+       * that simply switched off would be absent exactly when it is needed. */
+      assert.equal(row.ndc.on, true, `${what}: the pip switched itself off`);
+      assert.ok(Math.abs(row.ndc.x) <= 1.2 && Math.abs(row.ndc.y) <= 1.2,
+        `${what}: ndc (${row.ndc.x.toFixed(2)}, ${row.ndc.y.toFixed(2)}) is off the plate`);
+      assert.ok(row.ahead >= -1.0001 && row.ahead <= 1.0001,
+        `${what}: ahead ${row.ahead} is not a unit dot`);
+      console.log(`  ${what.padEnd(22)} ${row.edge ? 'edge' : 'on  '} `
+        + `ndc (${row.ndc.x.toFixed(2)}, ${row.ndc.y.toFixed(2)}) `
+        + `ahead ${row.ahead.toFixed(2)} closing ${row.closing.toFixed(1)} m/s`);
+    }
+
+    /* A camera that has not been composed yet - the first frame of a world
+     * change - is the other way a projection goes non-finite. It must produce
+     * a bearing-pinned marker, not a NaN. */
+    const cam = combat.camera;
+    combat.camera = null;
+    const blind = combat.contactReport();
+    assert.equal(blind.length, 1, 'no camera must not mean no contacts');
+    assert.ok(Number.isFinite(blind[0].ndc.x) && Number.isFinite(blind[0].ndc.y),
+      'a missing camera published a non-finite pip');
+    combat.camera = cam;
+
+    /* And the ordering contract the HUD leans on: nearest first, so the six
+     * drawn rows are the six that matter when a seventh could not exist. */
+    for (const h of combat.hostiles) h.retire();
+    for (const d of [900, 200, 1500, 600]) {
+      const s = combat._take('skiff');
+      s.spawn(V(0, 0, -30000 - d), f.position, { holdFire: 99 });
+    }
+    r.piloting.update(0.016, 0);
+    combat.update(0.016);
+    const many = combat.contactReport();
+    const ranges = many.map((x) => Math.round(x.range));
+    console.log(`  four contacts, sorted: ${ranges.join(', ')} m`);
+    for (let i = 1; i < many.length; i++) {
+      assert.ok(many[i].range >= many[i - 1].range,
+        `contacts are not nearest-first: ${ranges.join(', ')}`);
+    }
+    /* `locked` names exactly the one the lead pip is solving for, and only
+     * inside `TARGET_RANGE` - a pip on a six-pixel speck 3 km away is telling
+     * the pilot about something they cannot act on. */
+    const locked = many.filter((x) => x.locked);
+    assert.ok(locked.length <= 1, `${locked.length} contacts claim the lock`);
+    for (const x of many) {
+      if (x.locked) {
+        assert.ok(x.range <= TARGET_RANGE,
+          `the lead pip is solving for something ${Math.round(x.range)} m away`);
+      }
+    }
+  } finally { teardown(r, combat); }
+});
+
+/* ================================================================== */
+/* 16. Hold fire, as a distance rather than a time                     */
+/* ================================================================== */
+
+test('the first bolt of an encounter arrives where the player can see what fired it', () => {
+  /* `HOLD_FIRE` is a time and it is spent as a DISTANCE. From the near edge of
+   * the spawn shell at the closure a merge actually produces, the ship the
+   * player is being shot by has to be inside the range at which it reads as a
+   * ship - otherwise the first thing that happens in an encounter is damage
+   * from nowhere, which is the session the hull alarm was written for.
+   *
+   * Closure: a stock Kestrel cruises at 210 m/s and a fresh wing arrives at
+   * half its own top speed pointed at the player (`AlienShip.spawn`), so a
+   * skiff contributes 87 m/s - 297 m/s head-on, which is the worst (fastest)
+   * case and therefore the right one to bound with. */
+  const CRUISE = cruiseTopSpeed(1.75);
+  const skiff = ALIEN_CLASSES.skiff;
+  const closure = CRUISE + (skiff.thrust / skiff.drag) * 0.5;
+  const firstBolt = SPAWN_MIN - closure * HOLD_FIRE;
+  console.log(`  spawn ${SPAWN_MIN} m, closure ${closure.toFixed(0)} m/s, hold ${HOLD_FIRE} s `
+    + `-> first bolt at about ${firstBolt.toFixed(0)} m`);
+  assert.ok(firstBolt > BREAK_RANGE,
+    `the hold runs past the merge (${firstBolt.toFixed(0)} m against a ${BREAK_RANGE} m break) - `
+    + 'the opening pass would have no shots in it at all');
+  assert.ok(firstBolt < skiff.range,
+    `the first bolt would arrive at ${firstBolt.toFixed(0)} m, outside the ${skiff.range} m `
+    + 'range this class can even shoot from');
+});
+
+/* ================================================================== */
+/* 17. Arming and launching are two different things                   */
+/* ================================================================== */
+
+/**
+ * A WING MUST NOT BE LAUNCHED INTO A LIVE TRANSIT DRIVE.
+ *
+ * ── THE DEFECT, IN ARITHMETIC ──────────────────────────────────────────────
+ * `Flight`'s transit drive tops out at 5,000 m/s. A picket's trigger sphere is
+ * 4,200 m in radius - 0.84 seconds of it. The old spawner launched on the step
+ * the sphere was crossed and `interdicted` was written from `engaged`, so the
+ * flag could not possibly be true until AFTER the wing existed; the drive then
+ * spent `transitSpoolDown` (1.2 s) shedding 5,000 m/s to cruise, over which
+ * the ship covers about 3.1 km. The wing was three kilometres astern before
+ * its first bolt and had to catch a faster ship from behind, which it cannot.
+ * The encounter existed and never happened.
+ *
+ * So crossing the sphere now ARMS the zone - which writes `interdicted`
+ * immediately, and `Piloting._transitBreak` drops the drive - and the wing
+ * launches only once `flight.transitState` is back to `off`.
+ *
+ * This case holds the drive open by hand and checks both halves: nothing
+ * launches while it is live, and something does the moment it is not. The
+ * ablation is the same flight with the gate removed, which is the shape the
+ * old code had.
+ */
+test('a zone arms on entry and holds its wing until the transit drive has dropped', async () => {
+  const { r, combat } = await combatRig({ ship: 'kestrel', seed: 83 });
+  try {
+    placeShip(r, V(0, 0, -30000), V(0, 0, -60000), 210);
+    combat._zones = [{
+      id: 't-arm', name: 'test', position: [0, 0, -30000], radius: 4200,
+      wing: [{ class: 'skiff', count: 2 }],
+    }];
+
+    /* The drive, latched directly. `Flight.engageTransit` is deliberately a
+     * dumb latch - `Piloting._pollTransit` is the thing that refuses - so this
+     * is the same door the Z key opens and not a back one. */
+    const f = r.piloting.flight;
+    f.engageTransit();
+    /* `env.transitAltitude` is filled by `Piloting` from `approachState` every
+     * step, and out here between bodies it is large, so the altitude law
+     * allows the top speed. Nothing is stubbed. */
+
+    let contacts = 0;
+    const off = r.bus.on('combat:contacts', () => { contacts++; });
+
+    /* Ten steps with the drive held open by re-latching it every step, which
+     * is what a player holding a course under transit looks like to this
+     * system. `interdicted` must already be true and the wing must not be
+     * out. */
+    let armedWhileUnderway = 0;
+    let contactsWhileUnderway = 0;
+    await step(r, combat, 40, () => {
+      if (f.transitState === 'off') f.engageTransit();
+    }, () => {
+      if (f.transitState !== 'off') {
+        if (combat._armed) armedWhileUnderway++;
+        contactsWhileUnderway = contacts;
+      }
+    });
+
+    console.log(`  under way: transit ${f.transitState}, armed for ${armedWhileUnderway} steps, `
+      + `interdicted ${r.piloting.interdicted}, contacts ${contactsWhileUnderway}`);
+    assert.ok(armedWhileUnderway > 0,
+      'floor: crossing the trigger sphere must ARM the zone even though it cannot launch yet');
+    assert.equal(r.piloting.interdicted, true,
+      'floor: an armed zone must interdict - that is what drops the drive');
+    assert.equal(contactsWhileUnderway, 0,
+      `floor: ${contactsWhileUnderway} wings launched into a live transit drive`);
+
+    /* Now let it drop. Nothing is forced: `Piloting._transitBreak` reads the
+     * flag this system wrote and calls `dropTransit('interdicted')` itself. */
+    await step(r, combat, 60 * 6, () => {
+      steerTo(r.piloting.flight, V(0, 0, -60000), { throttle: 1 });
+    });
+    off();
+
+    console.log(`  after the drop: transit ${f.transitState}, contacts ${contacts}, `
+      + `${combat.contacts} alive, speed ${f.speed.toFixed(0)} m/s`);
+    assert.equal(f.transitState, 'off', 'the drive should have been dropped by the interdiction');
+    assert.ok(contacts > 0, 'floor: the wing must launch once the drive is down');
+    assert.ok(combat.engaged, 'floor: the fight must actually be on');
+    /* And it must have launched into a speed a 600-850 m standoff means
+     * something at. A stock Kestrel's boost top is 455 m/s; anything above
+     * that is the drive still running. */
+    assert.ok(f.speed < 600,
+      `the wing launched at ${f.speed.toFixed(0)} m/s - the standoff is 1.4 s of that`);
   } finally { teardown(r, combat); }
 });

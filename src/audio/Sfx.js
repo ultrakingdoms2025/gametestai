@@ -602,6 +602,51 @@ export class Sfx {
     this.engine.release(1.4);
   }
 
+  /**
+   * The transit drive catching, or letting go.
+   *
+   * Not a one-shot fired at a position: the drive is the ship you are sitting
+   * in, so this is un-panned (`at` null) and it belongs in the middle of the
+   * head where the hull sound already is. `portal()` is the closest existing
+   * relative and the shape is deliberately borrowed from it - a stack of
+   * harmonics sweeping together, plus a noise band riding over the top - but
+   * an octave lower and twice as long, because a portal is a doorway and this
+   * is 300 tonnes of reactor spinning up.
+   *
+   * `rising` is the whole of the difference. Spinning up sweeps the harmonics
+   * UP a fifth and the noise band up two octaves; dropping out runs both back
+   * down. The two must not be the same sound: a pilot who has just been
+   * mass-locked out of a run at 5 km/s needs to know it from the ear alone,
+   * because their eyes are on the thing that locked them.
+   *
+   * @param {{rising?: boolean}} [opts]
+   */
+  transitDrive({ rising = true } = {}) {
+    const v = this.engine.voice(null, 0.55, 1);
+    if (!v) return;
+    const root = rising ? 110 : 165;
+    const to = rising ? 165 : 96;
+    for (const [mult, delay] of [[1, 0], [1.5, 0.05], [2.01, 0.11], [3.02, 0.19]]) {
+      this._tone(v, {
+        seconds: rising ? 1.5 : 1.0,
+        type: 'sawtooth',
+        freq: root * mult,
+        toFreq: to * mult,
+        gain: 0.11 / mult,
+        delay,
+      });
+    }
+    this._noise(v, {
+      seconds: rising ? 1.7 : 1.1,
+      type: 'bandpass',
+      freq: rising ? 500 : 2600,
+      q: 1.6,
+      sweepTo: rising ? 2600 : 400,
+      gain: 0.16,
+    });
+    this.engine.release(rising ? 1.9 : 1.3);
+  }
+
   /* ================================================================== */
   /* Mounts - continuous voices                                          */
   /* ================================================================== */

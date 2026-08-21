@@ -32,11 +32,21 @@
  *  WHAT THE SHAPE IS ALLOWED TO BE, AND WHAT IT IS NOT
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * The Kestrel is a 14 m courier with a 4.16 m wide, 2.00 m tall, 6.8 m long
+ * The Kestrel is a 20 m courier with a 4.16 m wide, 2.00 m tall, 6.8 m long
  * walk-in compartment inside her, a walkable deck at y 2.92, a walkable dorsal
  * spine at 5.16 and three climb bands that grip named faces. Those are
  * contracts in `HullPlan.js` and this file does not get to break them — so the
  * flanks stay near-vertical over the room, and the two decks stay flat.
+ *
+ * ── THE HULL IS 20 m NOW AND NONE OF THOSE CONTRACTS MOVED ────────────────
+ * She was 14 m and the verdict on that hull was "a compact shuttle, not a lean
+ * courier". It was arithmetic rather than taste: a 4.60 m beam over 14 m is a
+ * fineness of 3.04 — a van — and 8.2 m of the 14 was carried at full beam. The
+ * fix is LENGTH, not width, because the width is a walk-in cabin and that is a
+ * feature. `HullPlan.KESTREL`'s header carries the whole measurement; what
+ * this file had to do about it is that every curve below now runs from -8.80
+ * to 11.20 with the SAME plateau over the compartment, so the taper is spent
+ * on 7.4 m of nose and 4.4 m of tail cone instead of 4.4 and 1.8.
  *
  * Everything else is free, and everything else is where a courier lives:
  *
@@ -46,8 +56,13 @@
  *     flank and a crowned deck edge. There is no step in it anywhere.
  *   - **A chisel nose, drooped.** The top line falls faster than the keel
  *     rises, so the profile forward of the cockpit is a wedge aimed slightly
- *     down — 4.4 m of it, ending in a chisel measured at 0.20 m across and
+ *     down — 7.4 m of it, ending in a chisel measured at 0.20 m across and
  *     0.28 m deep.
+ *   - **A tail cone, and it is the other half of the answer.** 4.4 m aft of
+ *     the engine bulkhead, tapering in plan and in profile to a 0.52 x 0.32 m
+ *     knife, with the V-tail standing on its last two metres. The pods stayed
+ *     where they were — the climb grips them — so the engines sit at the aft
+ *     quarter with a boom behind them.
  *   - **A raked windscreen that IS the front of the dorsal.** The spine deck
  *     has to be 2.24 m above the section ledge, and a box that tall behind a
  *     flat canopy is a deckhouse — which is precisely what the player saw. So
@@ -75,7 +90,7 @@
  * asserted against the live plan by `ship-assets.test.mjs`, so the copy cannot
  * drift silently.
  *
- *   z0/z1        -6.20 / 7.80   overall length, keel origin at y 0
+ *   z0/z1        -8.80 / 11.20  overall length, keel origin at y 0
  *   belly.y0      0.36          SADDLE_TOP: the cradle's bearing blocks
  *   lower.hw      2.30          flank outer face; climb band 1 grips it
  *   ledge.y       2.92          walkable section deck (drawn as a slab)
@@ -85,7 +100,7 @@
  *   upper.hw      1.15          dorsal flank; climb band 2 grips it
  *   nacelle       x 3.00..4.60, y 0.60..1.60, z -6.60..-2.90
  *   hatch         lz -1.50, w 1.10, h 2.00, sill at deck.y 0.76
- *   vtail         rootX 0.30, rootY 2.48, z -5.15, span 2.85, cant 0.66
+ *   vtail         rootX 0.30, rootY 1.96, z -6.90, span 3.10, cant 0.66
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -113,7 +128,7 @@ const OUT = process.env.SHIP_GLB_OUT
 /* ------------------------------------------------------------------ */
 
 export const PLAN = {
-  z0: -6.20, z1: 7.80,
+  z0: -8.80, z1: 11.20,
   bellyY0: 0.36,
   lowerHW: 2.30,
   ledgeY: 2.92,
@@ -123,7 +138,7 @@ export const PLAN = {
   upperHW: 1.15,
   nacelle: { x0: 3.00, x1: 4.60, y0: 0.60, y1: 1.60, z0: -6.60, z1: -2.90 },
   hatch: { lz: -1.50, w: 1.10, h: 2.00, sill: 0.76 },
-  vtail: { rootX: 0.30, rootY: 2.48, z: -5.15, span: 2.85, cant: 0.66, chordRoot: 1.65, chordTip: 0.78 },
+  vtail: { rootX: 0.30, rootY: 1.96, z: -6.90, span: 3.10, cant: 0.66, chordRoot: 1.70, chordTip: 0.85 },
 };
 
 /** Metres of hull per texture tile. `ShipKit.boxUV` uses 2 for plating. */
@@ -199,13 +214,17 @@ const smooth = (t) => { const u = clamp01(t); return u * u * (3 - 2 * u); };
  * z -4.20, and the compartment behind it is 4.16 m across. Pinching the plan
  * where the room is would either hand the player a collider 20 cm outboard of
  * the plating they can see, or eat the cabin. So the taper is spent where it
- * is free: 2.8 m of boat-tail aft and 4.4 m of nose forward, both faired.
+ * is free — and there is half again as much of it to spend as there was:
+ * 4.4 m of tail cone aft and 7.4 m of nose forward, both faired, against 2.8
+ * and 4.4 on the 14 m hull. The plateau is 7.8 m either way; what changed is
+ * everything on both sides of it.
  */
 const HW = curve([
-  [-6.20, 0.30], [-5.90, 0.62], [-5.40, 1.22], [-4.90, 1.86], [-4.55, 2.18],
-  [-4.40, 2.28], [-3.40, 2.30], [0.00, 2.30], [3.40, 2.28], [3.80, 2.20],
-  [4.40, 1.92], [5.10, 1.50], [5.80, 1.06], [6.50, 0.68], [7.20, 0.36],
-  [7.80, 0.10],
+  [-8.80, 0.26], [-8.40, 0.46], [-7.80, 0.78], [-7.10, 1.16], [-6.40, 1.52],
+  [-5.70, 1.84], [-5.10, 2.06], [-4.70, 2.20], [-4.40, 2.28], [-3.40, 2.30],
+  [0.00, 2.30], [3.40, 2.28], [3.80, 2.20], [4.60, 1.98], [5.60, 1.72],
+  [6.70, 1.45], [7.80, 1.18], [8.90, 0.90], [9.90, 0.62], [10.70, 0.34],
+  [11.20, 0.10],
 ]);
 
 /**
@@ -215,9 +234,10 @@ const HW = curve([
  * one big plane the audit measured at 15% of the Kestrel's visible skin.
  */
 const YBOT = curve([
-  [-6.20, 1.44], [-5.80, 1.05], [-5.20, 0.70], [-4.60, 0.47], [-4.00, 0.38],
-  [-3.20, 0.36], [2.40, 0.36], [3.20, 0.40], [3.90, 0.56], [4.60, 0.80],
-  [5.40, 1.03], [6.30, 1.22], [7.20, 1.33], [7.80, 1.38],
+  [-8.80, 1.30], [-8.30, 1.15], [-7.60, 0.94], [-6.80, 0.72], [-6.00, 0.54],
+  [-5.20, 0.42], [-4.40, 0.37], [-3.20, 0.36], [2.40, 0.36], [3.20, 0.40],
+  [3.90, 0.52], [4.80, 0.70], [5.80, 0.88], [6.90, 1.03], [8.00, 1.15],
+  [9.10, 1.25], [10.20, 1.33], [11.20, 1.40],
 ]);
 
 /**
@@ -233,16 +253,17 @@ const YBOT = curve([
  * rather than as a cone on a tube.
  */
 const YTOP = curve([
-  [-6.20, 1.86], [-5.80, 2.18], [-5.20, 2.52], [-4.60, 2.70], [-4.40, 2.74],
-  [-3.40, 2.76], [1.00, 2.76], [1.45, 2.88], [3.40, 2.90], [3.62, 2.86],
-  [4.20, 2.62], [5.00, 2.32], [5.80, 2.06], [6.60, 1.86], [7.20, 1.74],
-  [7.80, 1.66],
+  [-8.80, 1.62], [-8.30, 1.80], [-7.60, 2.03], [-6.80, 2.26], [-6.00, 2.46],
+  [-5.20, 2.62], [-4.60, 2.70], [-4.40, 2.74], [-3.40, 2.76], [1.00, 2.76],
+  [1.45, 2.88], [3.40, 2.90], [3.62, 2.86], [4.40, 2.68], [5.30, 2.44],
+  [6.30, 2.22], [7.40, 2.05], [8.50, 1.92], [9.60, 1.82], [10.50, 1.74],
+  [11.20, 1.68],
 ]);
 
 /** Half-width of the flat of the keel, as a fraction of the half-beam. */
 const KEELW = curve([
-  [-6.20, 0.55], [-5.20, 0.42], [-4.40, 0.38], [0.00, 0.40], [3.40, 0.40],
-  [5.00, 0.46], [6.60, 0.60], [7.80, 0.72],
+  [-8.80, 0.62], [-7.40, 0.50], [-5.60, 0.42], [-4.40, 0.38], [0.00, 0.40],
+  [3.40, 0.40], [5.60, 0.46], [8.20, 0.58], [10.20, 0.68], [11.20, 0.74],
 ]);
 
 /**
@@ -255,8 +276,9 @@ const KEELW = curve([
  * edge — and the roll happens where there is no plate over it.
  */
 const TOPW = curve([
-  [-6.20, 0.52], [-5.20, 0.62], [-4.40, 0.80], [-3.40, 0.94], [0.00, 0.94],
-  [3.40, 0.90], [4.60, 0.72], [6.00, 0.56], [7.80, 0.42],
+  [-8.80, 0.48], [-7.40, 0.56], [-5.60, 0.68], [-4.40, 0.80], [-3.40, 0.94],
+  [0.00, 0.94], [3.40, 0.90], [5.00, 0.74], [7.00, 0.58], [9.20, 0.46],
+  [11.20, 0.40],
 ]);
 
 /** Radius of the turn of the bilge. 0.36 puts the flank's foot on y 0.72. */
@@ -388,10 +410,11 @@ const portRail = (r) => 2 * HALF_RAILS - 2 - r;
  * have lines where the hole is.
  */
 const FUSE_Z = [
-  -6.20, -6.00, -5.75, -5.45, -5.15, -4.85, -4.60, -4.40, -4.10, -3.70,
-  -3.30, -2.90, -2.60, DOOR.z0, -1.80, -1.50, -1.20, DOOR.z1, -0.70, -0.30,
-  0.20, 0.70, 1.20, 1.70, 2.30, 2.90, 3.40, 3.70, 4.05, 4.45,
-  4.90, 5.40, 5.90, 6.40, 6.90, 7.35, 7.80,
+  -8.80, -8.50, -8.15, -7.75, -7.30, -6.85, -6.40, -5.95, -5.50, -5.10,
+  -4.75, -4.40, -4.10, -3.70, -3.30, -2.90, -2.60, DOOR.z0, -1.80, -1.50,
+  -1.20, DOOR.z1, -0.70, -0.30, 0.20, 0.70, 1.20, 1.70, 2.30, 2.90,
+  3.40, 3.70, 4.05, 4.45, 4.90, 5.40, 5.95, 6.50, 7.10, 7.70,
+  8.30, 8.90, 9.50, 10.10, 10.65, 11.20,
 ];
 
 /* ------------------------------------------------------------------ */
@@ -410,9 +433,10 @@ const FUSE_Z = [
  * away into the boat-tail.
  */
 const DORSAL_TOP = curve([
-  [-5.85, 2.48], [-5.55, 3.02], [-5.10, 3.66], [-4.60, 4.28], [-4.10, 4.72],
-  [-3.60, 5.00], [-0.60, 5.00], [0.20, 4.98], [0.80, 4.72], [1.40, 4.28],
-  [2.00, 3.86], [2.60, 3.50], [3.20, 3.18], [3.90, 2.86],
+  [-7.60, 2.12], [-7.10, 2.42], [-6.50, 2.86], [-5.85, 3.34], [-5.20, 3.84],
+  [-4.55, 4.34], [-4.05, 4.72], [-3.60, 5.00], [-0.60, 5.00], [0.20, 4.98],
+  [0.80, 4.72], [1.40, 4.28], [2.00, 3.86], [2.60, 3.50], [3.20, 3.18],
+  [3.90, 2.86],
 ]);
 
 /**
@@ -421,15 +445,16 @@ const DORSAL_TOP = curve([
  * shoulders and aft of it it closes into the tail.
  */
 const DORSAL_HW = curve([
-  [-5.85, 0.18], [-5.55, 0.40], [-4.90, 0.70], [-4.20, 0.96], [-3.60, 1.12],
-  [-2.60, 1.15], [0.20, 1.15], [0.80, 1.26], [1.40, 1.37], [2.20, 1.44],
-  [3.00, 1.41], [3.90, 1.24],
+  [-7.60, 0.14], [-7.00, 0.34], [-6.30, 0.56], [-5.60, 0.76], [-4.90, 0.94],
+  [-4.20, 1.08], [-3.60, 1.13], [-2.60, 1.15], [0.20, 1.15], [0.80, 1.26],
+  [1.40, 1.37], [2.20, 1.44], [3.00, 1.41], [3.90, 1.24],
 ]);
 
 /** The foot of the fairing: the cockpit roof forward, the section deck aft. */
 const DORSAL_BASE = curve([
-  [-5.85, 1.98], [-5.55, 2.18], [-4.90, 2.50], [-4.20, 2.78], [-3.60, 2.90],
-  [1.00, 2.90], [1.45, 2.86], [3.40, 2.82], [3.90, 2.74],
+  [-7.60, 1.94], [-7.00, 2.14], [-6.30, 2.34], [-5.60, 2.48], [-4.90, 2.62],
+  [-4.40, 2.74], [-4.00, 2.84], [-3.60, 2.90], [1.00, 2.90], [1.45, 2.86],
+  [3.40, 2.82], [3.90, 2.74],
 ]);
 
 /**
@@ -444,9 +469,9 @@ const DORSAL_BASE = curve([
  * refuses a descending list rather than drawing an invisible one.
  */
 const DORSAL_Z = [
-  -5.85, -5.60, -5.25, -4.85, -4.40, -4.00, -3.60, -3.10, -2.50, -1.80,
-  -1.10, -0.50, 0.00, 0.30, 0.60, 0.90, 1.20, 1.50, 1.80, 2.10,
-  2.40, 2.70, 3.00, 3.30, 3.60, 3.90,
+  -7.60, -7.20, -6.75, -6.30, -5.85, -5.40, -4.95, -4.50, -4.10, -3.75,
+  -3.60, -3.10, -2.50, -1.80, -1.10, -0.50, 0.00, 0.30, 0.60, 0.90,
+  1.20, 1.50, 1.80, 2.10, 2.40, 2.70, 3.00, 3.30, 3.60, 3.90,
 ];
 
 /**
@@ -1068,7 +1093,13 @@ const fuseCentre = (z) => (YBOT(z) + YTOP(z)) / 2;
  */
 function frameRings() {
   const parts = [];
-  for (const z of [-4.15, -0.35, 3.15]) {
+  /* Five rather than three, and they are what tells the eye the hull is 20 m
+   * long rather than 14: a ring every ~3.6 m from the tail cone to the middle
+   * of the nose. The two new ones are out on the lofted ends, where the
+   * section is small and changing fastest, which is exactly where a ring reads
+   * as a frame rather than as a stripe. Neither of them is anywhere near the
+   * aperture at -2.05..-0.95. */
+  for (const z of [-6.30, -4.15, -0.35, 3.15, 6.30]) {
     const stations = [z - 0.09, z + 0.09].map((zz) => ({
       z: zz, pts: offsetPts(fuseSection(zz), fuseCentre(zz), 0.025),
     }));
@@ -1086,7 +1117,7 @@ function frameRings() {
  * crease is already there for it to sit on.
  */
 function chineStrake() {
-  const zs = FUSE_Z.filter((z) => z >= -5.0 && z <= 6.2);
+  const zs = FUSE_Z.filter((z) => z >= -7.3 && z <= 9.5);
   const stations = zs.map((z) => {
     const sec = fuseSection(z);
     const cy = fuseCentre(z);
@@ -1144,7 +1175,7 @@ function lamps() {
     out.push(p);
   };
   // Nose light, in the chisel.
-  slab(0.20, 0.07, 0.18, 0, 1.52, 7.62);
+  slab(0.20, 0.07, 0.18, 0, 1.54, 11.02);
   // Wingtip navigation lights, on the pods' outboard shoulders.
   for (const s of [-1, 1]) {
     slab(0.10, 0.07, 0.36, s * (PLAN.nacelle.x1 - 0.06), 1.34, -3.30);

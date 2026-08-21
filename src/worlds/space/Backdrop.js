@@ -230,6 +230,28 @@ export class Backdrop {
       const D = _dir.length();
       m.D = D;
 
+      /* NAME THE MEMBER, DO NOT LET `proxyDistance` THROW A RIDDLE.
+       *
+       * `NaN < 1e-3` is FALSE, so a non-finite distance sails straight past the
+       * zero guard below and dies two frames later inside `Scale.proxyDistance`
+       * as "needs a finite positive distance, got NaN" - with no member, no
+       * world and no position in the message. That cost a real debugging
+       * session: the error names the arithmetic that noticed, not the data that
+       * was wrong, and the data is a hundred metres up the call stack.
+       *
+       * Checked here, where the member is still in hand. `_camPos` is included
+       * because the other half of this subtraction is the camera, and a camera
+       * with a NaN in its matrix produces exactly the same symptom from a
+       * completely different cause. */
+      if (!Number.isFinite(D)) {
+        throw new Error(
+          `[space/Backdrop] member "${m.name}" is ${D} metres from the camera: `
+          + `pos (${m.pos.x}, ${m.pos.y}, ${m.pos.z}), `
+          + `camera (${_camPos.x}, ${_camPos.y}, ${_camPos.z}), `
+          + `radius ${m.radius}`
+        );
+      }
+
       /* The camera sitting exactly on a member's centre is not a hypothetical:
        * it is the frame the dock exterior is placed on when the player spawns
        * inside it. Leave it where it is rather than dividing by zero. */

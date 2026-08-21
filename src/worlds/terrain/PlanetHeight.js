@@ -27,9 +27,15 @@
  * -- Evaluation order, and why it is fixed ---------------------------------
  *
  *   1. base plain    swells + ripples + grain + the rim falloff
- *   2. ADD  layer    volcano, cone, plateau, ridge          (relief up)
- *   3. CUT  layer    basin, trench, channel                 (relief down)
- *   4. LEVEL layer   pad, ramp                              (flatten to a target)
+ *   2. ADD  layer    volcano, cone, plateau, ridge, dunes, scarp    (relief up)
+ *   3. CUT  layer    basin, trench, channel, crater                 (relief down)
+ *   4. LEVEL layer   pad, ramp                            (flatten to a target)
+ *
+ * "CUT" names what the layer is FOR, not an operator. Only `basin` is negated;
+ * `trench`, `channel` and `crater` return signed deltas so the spoil, the levee
+ * and the ejecta rim they each throw up ride along in the same pass as the cut
+ * that produced them. A layer that could only subtract would need a second ADD
+ * record beside every one of them, kept in sync by hand.
  *
  * The level layer is last because it is the only one that makes a PROMISE. A
  * pad says "a ship can set down inside this disc" and a ramp says "a body can
@@ -141,12 +147,22 @@ function segDist2(px, pz, ax, az, bx, bz) {
   return qx * qx + qz * qz;
 }
 
-/** Nearest point on a polyline: distance in `_polyD`, arclength fraction in `_polyS`. */
+/**
+ * Nearest point on a polyline: distance in `_polyD`, arclength fraction in
+ * `_polyS`, and which SIDE of the nearest segment the sample fell on in
+ * `_polyC` - the raw cross product, so only its sign is meaningful.
+ *
+ * `_polyC` is what `scarp` needs and nothing else reads it; it is computed here
+ * rather than in a second traversal because the nearest segment is already
+ * known at exactly this point and a polyline walk is the expensive part.
+ */
 let _polyD = 0;
 let _polyS = 0;
+let _polyC = 0;
 function polyNearest(px, pz, pts, cum, total) {
   let bestD2 = Infinity;
   let bestS = 0;
+  let bestC = 0;
   for (let i = 0; i + 1 < pts.length; i++) {
     const a = pts[i];
     const b = pts[i + 1];
@@ -154,10 +170,12 @@ function polyNearest(px, pz, pts, cum, total) {
     if (d2 < bestD2) {
       bestD2 = d2;
       bestS = cum[i] + _segT * (cum[i + 1] - cum[i]);
+      bestC = (b[0] - a[0]) * (pz - a[1]) - (b[1] - a[1]) * (px - a[0]);
     }
   }
   _polyD = Math.sqrt(bestD2);
   _polyS = total > 0 ? bestS / total : 0;
+  _polyC = bestC;
   return _polyD;
 }
 
@@ -168,6 +186,97 @@ export function arclength(pts) {
     cum[i] = cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
   }
   return { cum, total: cum[cum.length - 1] };
+}
+
+/**
+ * A polyline continued past both ends, along the bearing of its first and last
+ * segments. Build time only - it allocates, and it runs once per `scarp`.
+ *
+ * A scarp raises a HALF-PLANE, and the half-plane a finite polyline separates
+ * is only well defined beside the line: walk off the end of it and "which side
+ * am I on" is answered by the perpendicular of the last segment, which flips
+ * across the segment's own extension while the distance to the line is still
+ * tens of metres. That is a `height`-tall step standing in mid-air, invisible in
+ * a screenshot and lethal to walk into. Continuing the line to well outside the
+ * playfield removes the question rather than special-casing it: the extended
+ * curve cuts the plane in two, so the sign only ever changes where the distance
+ * is zero and the profile is continuous everywhere.
+ */
+function extendPolyline(pts, ext) {
+  const n = pts.length;
+  const hdx = pts[0][0] - pts[1][0];
+  const hdz = pts[0][1] - pts[1][1];
+  const hl = Math.hypot(hdx, hdz);
+  const tdx = pts[n - 1][0] - pts[n - 2][0];
+  const tdz = pts[n - 1][1] - pts[n - 2][1];
+  const tl = Math.hypot(tdx, tdz);
+  const out = [[pts[0][0] + (hdx / hl) * ext, pts[0][1] + (hdz / hl) * ext]];
+  for (let i = 0; i < n; i++) out.push([pts[i][0], pts[i][1]]);
+  out.push([pts[n - 1][0] + (tdx / tl) * ext, pts[n - 1][1] + (tdz / tl) * ext]);
+  return out;
+}
+
+/**
+ * Parameter checks for the three kinds that were added after the vocabulary
+ * shipped - `crater`, `dunes` and `scarp`.
+ *
+ * DELIBERATELY not applied to the eight originals. Tightening those here would
+ * be a behaviour change dressed as a guard: a planet that has been shipping for
+ * months would start throwing at boot on a parameter it has always had.
+ *
+ * Throwing is the point. A descriptor is data, so `wavelength: 0` or a `pts`
+ * with the same point twice arrives as a plain number and a plain array and
+ * divides in the sampler - and a single NaN through the bloom pass took this
+ * project's whole frame to black once already. A build-time throw names the
+ * landform and the field; a NaN names nothing.
+ */
+function checkForm(f, i) {
+  const at = `[PlanetHeight] landforms[${i}] (${f.kind})`;
+  const num = (name, v, { positive = false, optional = false } = {}) => {
+    if (v === undefined && optional) return;
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      // `String`, not `JSON.stringify`: the latter renders NaN as `null`, which
+      // is the single most misleading thing this message could say.
+      throw new Error(`${at}: "${name}" must be a finite number, got ${String(v)}`);
+    }
+    if (positive && v <= 0) throw new Error(`${at}: "${name}" must be > 0, got ${v}`);
+  };
+  const line = (min) => {
+    if (!Array.isArray(f.pts) || f.pts.length < min) {
+      throw new Error(`${at}: "pts" must be an array of at least ${min} points`);
+    }
+    for (let k = 0; k < f.pts.length; k++) {
+      const p = f.pts[k];
+      if (!Array.isArray(p) || p.length < 2 || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) {
+        throw new Error(`${at}: "pts[${k}]" is not a finite [x, z] pair`);
+      }
+      if (k > 0 && p[0] === f.pts[k - 1][0] && p[1] === f.pts[k - 1][1]) {
+        throw new Error(`${at}: "pts[${k}]" repeats pts[${k - 1}] at (${p[0]}, ${p[1]})`
+          + ' - a zero-length segment has no direction, so the line has no sides');
+      }
+    }
+  };
+
+  if (f.kind === 'crater') {
+    num('x', f.x); num('z', f.z); num('r', f.r, { positive: true }); num('depth', f.depth);
+    num('rim', f.rim, { optional: true });
+    num('rimWidth', f.rimWidth, { positive: true, optional: true });
+    num('floor', f.floor, { optional: true });
+  } else if (f.kind === 'dunes') {
+    num('x', f.x); num('z', f.z); num('r', f.r, { positive: true }); num('amp', f.amp);
+    num('wavelength', f.wavelength, { positive: true });
+    num('angle', f.angle, { optional: true });
+    num('sharpness', f.sharpness, { optional: true });
+    num('taper', f.taper, { optional: true });
+    num('seed', f.seed, { optional: true });
+  } else if (f.kind === 'scarp') {
+    line(2);
+    num('height', f.height);
+    num('run', f.run, { positive: true, optional: true });
+    if (f.side !== undefined && f.side !== 1 && f.side !== -1) {
+      throw new Error(`${at}: "side" must be +1 or -1, got ${JSON.stringify(f.side)}`);
+    }
+  }
 }
 
 /* ================================================================== */
@@ -205,11 +314,41 @@ export function arclength(pts) {
  *   A spatter rampart / flow levee along a polyline. Crest at `height` above the
  *   ground it stands on, falling to nothing at `width`.
  *
+ * `dunes`    { x, z, r, amp, wavelength, angle?, sharpness?, taper? }
+ *   A transverse dune field inside `r`: crests `amp` tall every `wavelength`
+ *   metres, running ACROSS the `angle` bearing because that is the direction the
+ *   wind piled them from. `sharpness` (0..1) warps the wave off a sine toward
+ *   the profile a real dune has - a long shallow windward back and a short steep
+ *   slip face - since a symmetric ripple reads as corduroy rather than as sand.
+ *   `taper` fades the outer fraction of `r` so the field does not end in a wall.
+ *   Seeded off the planet seed AND the field's own origin, so two fields on one
+ *   planet get different crest phases instead of one pattern stamped twice.
+ *
+ * `scarp`    { pts, height, run?, side? }
+ *   A fault scarp along a polyline: the ground on the `side` (+1/-1) of the line
+ *   stands `height` proud and falls back to the level it left over `run` metres
+ *   on the other. The one landform whose edge is a LINE - a canyon rim, a
+ *   plateau lip and a fault block are all BOUNDARIES, and the nearest circle to
+ *   a boundary is a saucer. The polyline is extended past both of its ends
+ *   before it is sampled, so the raised half-plane cannot stop dead and leave a
+ *   `height`-tall step hanging in mid-air off the end of the authored line.
+ *
  * -- CUT layer -------------------------------------------------------------
  *
  * `basin`    { x, z, r, depth, flat? }
  *   A depression `depth` metres deep, its inner `flat` fraction level. Where a
  *   lava lake goes.
+ *
+ * `crater`   { x, z, r, depth, rim?, rimWidth?, floor? }
+ *   An impact bowl: `depth` deep inside `r`, its inner `floor` fraction a level
+ *   basin, ringed by an ejecta rim that crests `rim` ABOVE the surrounding
+ *   ground exactly at the crater edge and dies away `rimWidth` outside it. The
+ *   rim is the whole point - a bowl without one is a dent, and a moonlet paved
+ *   in dents reads as a golf ball. It lives in the CUT layer, but that layer is
+ *   NOT a subtraction: `basin` is the only kind the pass negates, while `trench`
+ *   and `channel` already hand back SIGNED deltas so their lips and levees can
+ *   stand proud. `crater` follows them - `craterAt` returns rim-minus-bowl and
+ *   the pass adds it, so the rim is raised by the same pass that digs the floor.
  *
  * `trench`   { pts, width, depth, lip?, lipWidth? }
  *   A fissure. Steep-sided, `depth` deep, with an optional raised `lip` of
@@ -231,8 +370,8 @@ export function arclength(pts) {
  *   Both default to the pre-level field at the respective endpoint, so a ramp
  *   meets the ground it starts and ends on. This is the reachability guarantee.
  */
-const ADD_KINDS = new Set(['volcano', 'cone', 'plateau', 'ridge']);
-const CUT_KINDS = new Set(['basin', 'trench', 'channel']);
+const ADD_KINDS = new Set(['volcano', 'cone', 'plateau', 'ridge', 'dunes', 'scarp']);
+const CUT_KINDS = new Set(['basin', 'trench', 'channel', 'crater']);
 const LEVEL_KINDS = new Set(['pad', 'ramp']);
 
 /** Every landform kind this module understands. */
@@ -283,10 +422,12 @@ export function planetHeight(params) {
   const rimDrop = p.rim?.drop ?? 0;
 
   const forms = Array.isArray(p.landforms) ? p.landforms : [];
-  for (const f of forms) {
+  for (let i = 0; i < forms.length; i++) {
+    const f = forms[i];
     if (!KNOWN.has(f.kind)) {
       throw new Error(`[PlanetHeight] unknown landform kind "${f.kind}" - known: ${LANDFORM_KINDS.join(', ')}`);
     }
+    checkForm(f, i);
   }
 
   /* Polyline setup, done ONCE per build rather than once per sample. Being able
@@ -296,6 +437,15 @@ export function planetHeight(params) {
   const levels = [];
   for (const f of forms) {
     const rec = { f, k: f.pts ? arclength(f.pts) : null };
+    if (f.kind === 'scarp') {
+      /* A scarp samples its own EXTENDED line, long enough to leave any
+       * playfield this descriptor could describe, and its arclength is measured
+       * over that - `scarp` reads `_polyD` and `_polyC` and never `_polyS`. */
+      rec.pts = extendPolyline(f.pts, Math.max(half * 4, rec.k.total * 4, 1000));
+      rec.k = arclength(rec.pts);
+    } else if (f.kind === 'dunes') {
+      rec.q = dunesPrep(f);
+    }
     if (ADD_KINDS.has(f.kind)) adds.push(rec);
     else if (CUT_KINDS.has(f.kind)) cuts.push(rec);
     else levels.push(rec);
@@ -396,10 +546,126 @@ export function planetHeight(params) {
     return f.height * taper * w * w;
   }
 
+  /**
+   * The per-field constants a dune field needs, resolved once at build time.
+   *
+   * The seed is the field's own: `f.seed` if the author pinned one, otherwise a
+   * hash of the field's ORIGIN against the planet seed. Two dune fields on one
+   * planet therefore get different crest phases and different crest wander for
+   * free - falling back to the bare planet seed would stamp one identical
+   * pattern twice and read as a tiling artefact the moment both are on screen.
+   */
+  function dunesPrep(f) {
+    const ang = f.angle ?? 0;
+    const own = f.seed !== undefined
+      ? f.seed | 0
+      : (hash2(Math.round(f.x), Math.round(f.z), seed ^ 0x5ea1) * 4294967296) | 0;
+    /* The wave's break point: the fraction of a wavelength spent climbing the
+     * windward back. At `sharpness` 0 it is 0.5 and the profile is exactly a
+     * raised cosine; at 1 it is 0.95 and the slip face takes the last twentieth
+     * of the wavelength, which is the asymmetry a real transverse dune has.
+     * Capped short of 1 so the `1 - b` divide below cannot vanish. */
+    const b = 0.5 + 0.45 * clamp01(f.sharpness ?? 0.55);
+    return {
+      ux: Math.cos(ang),
+      uz: Math.sin(ang),
+      inv: 1 / f.wavelength,
+      b,
+      invB: 1 / b,
+      invB1: 1 / (1 - b),
+      inner: f.r * (1 - clamp01(f.taper ?? 0.25)),
+      wob: 1 / (f.wavelength * 5),
+      own,
+      phase0: hash2(own, 7717, 91),
+    };
+  }
+
+  /**
+   * A transverse dune field: a periodic wave along the wind axis, held constant
+   * across it.
+   *
+   * The asymmetry is a PHASE WARP, not a different waveform. The wave stays a
+   * raised cosine and the time it is evaluated at is stretched - the first `b`
+   * of the wavelength is mapped onto the cosine's first half and the remaining
+   * `1 - b` onto its second. A piecewise-linear warp normally prints a crease
+   * where the two pieces meet, but here the joins land exactly on the cosine's
+   * crest and trough, where its own slope is zero, so the field stays smooth at
+   * every sharpness including the extremes. Subtracting a sawtooth instead
+   * would put a slope discontinuity along every single slip face.
+   */
+  function dunesAt(x, z, f, q) {
+    const dx = x - f.x;
+    const dz = z - f.z;
+    const d = Math.hypot(dx, dz);
+    if (d > f.r) return 0;
+    const s = dx * q.ux + dz * q.uz;        // downwind - the wave runs along this
+    const t = -dx * q.uz + dz * q.ux;       // along the crest - the wave is flat along this
+    /* Crest wander. Ruler-straight crests are the giveaway that a dune field is
+     * a sine and not sand, so the phase drifts by up to a twelfth of a
+     * wavelength over about six of them. Small on purpose: any more and the
+     * crests stop being transverse and the field reads as lumps. */
+    const wob = (vnoise(t * q.wob, s * q.wob * 0.25, q.own) - 0.5) * 0.28;
+    let ph = s * q.inv + q.phase0 + wob;
+    ph -= Math.floor(ph);                   // -> [0, 1)
+    const tw = ph < q.b ? 0.5 * ph * q.invB : 0.5 + 0.5 * (ph - q.b) * q.invB1;
+    const wave = 0.5 - 0.5 * Math.cos(Math.PI * 2 * tw);
+    return f.amp * wave * (1 - smoothstep(q.inner, f.r, d));
+  }
+
+  /**
+   * A cliff line. Everything on the high side stands `height` proud; the other
+   * side falls back to the ground it left, over `run` metres.
+   *
+   * `rec.pts` is the AUTHORED line continued past both ends (see
+   * `extendPolyline`), so `side * _polyD` here is a true signed distance: its
+   * sign turns over only where the distance is zero, and the profile below is
+   * therefore continuous across the whole map rather than only beside the
+   * authored span. `_polyC`'s magnitude is meaningless - it is a cross product
+   * scaled by a segment length that may be 4 km - so only its sign is read.
+   */
+  function scarpAt(x, z, f, k, pts) {
+    const run = f.run ?? 18;
+    const d = polyNearest(x, z, pts, k.cum, k.total);
+    const into = (_polyC >= 0 ? 1 : -1) * (f.side ?? 1) * d;
+    if (into >= 0) return f.height;                       // the raised block
+    return f.height * (1 - smoothstep(0, run, -into));    // the face, and the ground below it
+  }
+
   function basinAt(x, z, f) {
     const d = Math.hypot(x - f.x, z - f.z);
     if (d > f.r) return 0;
     return f.depth * (1 - smoothstep((f.flat ?? 0.45) * f.r, f.r, d));
+  }
+
+  /**
+   * An impact crater: a bowl and the ejecta rim around it, as ONE signed delta.
+   *
+   * Radially outward:
+   *   0     .. floor*r    flat basin floor, `depth` below the ground outside
+   *   floor*r .. r        the wall, climbing back to that ground level at `r`
+   *   r                   the rim crest, `rim` ABOVE it
+   *   r     .. r+rimWidth ejecta thinning away to nothing
+   *
+   * The rim is a smoothstep on each side of the crest rather than one bump
+   * spanning both, so it reaches full height exactly at `r` and its slope is
+   * zero there - the crest is round, the way a degraded rim is, and there is no
+   * crease along the crater edge where the two halves meet.
+   *
+   * `floor` is capped at 0.92 rather than 1: at 1 the bowl term would be a step
+   * function of radius and the crater would be a cylinder punched in the ground.
+   */
+  function craterAt(x, z, f) {
+    const rimW = f.rimWidth ?? f.r * 0.45;
+    const outer = f.r + rimW;
+    const d = Math.hypot(x - f.x, z - f.z);
+    if (d > outer) return 0;
+    const fr = f.r * Math.min(0.92, clamp01(f.floor ?? 0.35));
+    const rim = f.rim ?? f.depth * 0.18;
+    const bowl = f.depth * (1 - smoothstep(fr, f.r, d));
+    const crest = d >= f.r
+      ? rim * (1 - smoothstep(f.r, outer, d))
+      : rim * smoothstep(f.r - Math.min(rimW, (f.r - fr) * 0.6), f.r, d);
+    return crest - bowl;
   }
 
   function trenchAt(x, z, f, k) {
@@ -459,12 +725,18 @@ export function planetHeight(params) {
       if (f.kind === 'volcano') y = volcanoAt(y, x, z, f);
       else if (f.kind === 'cone') y += coneAt(x, z, f);
       else if (f.kind === 'plateau') y = plateauAt(y, x, z, f);
+      else if (f.kind === 'dunes') y += dunesAt(x, z, f, adds[i].q);
+      else if (f.kind === 'scarp') y += scarpAt(x, z, f, adds[i].k, adds[i].pts);
       else y += ridgeAt(x, z, f, adds[i].k);
     }
     for (let i = 0; i < cuts.length; i++) {
       const f = cuts[i].f;
       if (f.kind === 'basin') y -= basinAt(x, z, f);
       else if (f.kind === 'trench') y += trenchAt(x, z, f, cuts[i].k);
+      /* ADDED, not subtracted. `craterAt` hands back rim-minus-bowl in one
+       * signed number, exactly as `trench` and `channel` do for their lip and
+       * levee - the CUT layer negates `basin` and nothing else. */
+      else if (f.kind === 'crater') y += craterAt(x, z, f);
       else y += channelAt(x, z, f, cuts[i].k);
     }
     return y;

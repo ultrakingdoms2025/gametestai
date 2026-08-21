@@ -158,6 +158,10 @@ const { ROLE_CAST, ROLE } = await import('../../src/npc/NPCRoles.js');
 const { THEME_VARIANTS, THEME_RIM } = await import('../../src/npc/Humanoid.js');
 const { DEFAULT_LORE, LORE_ORDER, buildLorePersona, loreEntryForScope } =
   await import('../../src/content/Lore.js');
+/* The body layout, imported rather than scraped. `Bodies.js` deliberately
+ * imports no three and holds only plain data, so it is safe here and it is the
+ * only derived list of landable worlds there is. */
+const { landableBodies } = await import('../../src/worlds/space/Bodies.js');
 const PLAN = await import('../../src/worlds/dock/YardPlan.js');
 
 const SRC = {
@@ -510,6 +514,28 @@ test('SILENT: the lore exists, is ordered, and the keeper knows the yard is ther
   assert.match(list[1], /Lodestar Yard/,
     "the yard is not in the lorekeeper's list of worlds — the Yard Warden denies the yard exists");
   assert.match(list[1], /Aether Station/, 'the world-list scrape has stopped working');
+
+  /* AND THE LIST IS CHECKED AGAINST THE CONTENT, not just against itself.
+   *
+   * The two assertions above pin two names a human typed. That was enough
+   * while the Nexus was seven places and stopped being enough the moment
+   * Phase 2 put nine more landable planets in the volume: the sentence read
+   * "seven worlds ... the eighth place" while TEN worlds sat in that eighth
+   * place, so a keeper asked about Cinder - the destination the whole flight
+   * loop exists to reach - said it did not exist.
+   *
+   * A hand-typed list can only be kept honest against something derived, and
+   * `landableBodies()` is derived: it is whatever `Bodies.js` says has a
+   * handoff radius and a surface world. A planet added to that file is now red
+   * HERE on the day it is added, rather than denied for a release. */
+  const landable = landableBodies();
+  assert.ok(landable.length >= 10,
+    `only ${landable.length} landable bodies - the Bodies.js import is not seeing the layout`);
+  const denied = landable.map((b) => b.name).filter((n) => !list[1].includes(n));
+  assert.deepEqual(denied, [],
+    `the lorekeeper's list of worlds does not name ${denied.length} of the landable planets, `
+    + `so a keeper asked about any of them denies it exists: ${denied.join(', ')}`);
+
   assert.match(persona, /six outbound portals/,
     'the canonical-facts sentence still says the hub has five outbound portals');
   assert.doesNotMatch(persona, /the Nexus has six worlds/,

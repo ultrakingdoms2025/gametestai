@@ -86,8 +86,13 @@ const { worldClasses } = await import('../../src/worlds/planets/index.js');
 const { Piloting } = await import('../../src/ships/Piloting.js');
 const { Mining } = await import('../../src/systems/Mining.js');
 const { ShipRegistry } = await import('../../src/ships/ShipRegistry.js');
+const { FLIGHT } = await import('../../src/ships/Flight.js');
+const { BIAS_PER_POINT } = await import('../../src/ships/Ship.js');
+const { SHIP_BASE_STATS, SHIP_STAT_META, SHIP_ORDER, holdCapacity } =
+  await import('../../src/ships/ShipStats.js');
 
 export { Physics, WorldManager, Piloting, Mining, ShipRegistry, EventBus };
+export { SHIP_ORDER };
 
 /** The fixed step the engine runs at. Everything below is driven at this. */
 export const DT = 1 / 60;
@@ -135,6 +140,126 @@ export function fakeInput() {
     press(code) { this._pressed.add(code); },
     endFrame() { this._pressed.clear(); },
   };
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  THE RIG MUST FLY THE SHIP THE GAME FLIES
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── What went wrong, and it invalidated four suites' worth of numbers ──────
+ *
+ * `Piloting.board` asks `_shipRecord` for the hull it hands `Flight.setShip`,
+ * and both of that method's original lookups were WORLD-SCOPED: only
+ * `DockWorld` publishes `world.ships`, and `ShipRegistry._adopt` replaces its
+ * `_ships` map on every `world:changed`. Every board that did not happen
+ * inside the yard therefore fell through to `setShip({ powerMul: 1 })`, and a
+ * bare snapshot is exempt from `setShip`'s own throw — so nothing said a word.
+ *
+ * The rig boards after `goto('space')` (combat, objectives, transit) and after
+ * landing on a planet (returns), so the flown Kestrel cruised at 120 m/s where
+ * the game's stock Kestrel cruises at 210. Slower than a skiff. Every suite
+ * that measured an engagement range, a leg time or a closing speed through
+ * this rig measured a hull the game does not have — optimistic in one
+ * direction (a slow ship is easy to hold in a gunsight) and pessimistic in the
+ * other (it can never outrun anything).
+ *
+ * That is this project's signature defect — a harness that measures something
+ * the game does not do — for the third time in one day, after reach probes
+ * flooding at 38 degrees where the game walks 56.6, and a `contract-check`
+ * regex reporting a method present against a file with the method deleted.
+ *
+ * ── So the rig now refuses to fly a substitute ────────────────────────────
+ *
+ * `rig()` wraps the live `Piloting.board` with {@link assertFlownHull}. Every
+ * successful board — including the two `Piloting` makes internally, off KeyF
+ * and out of `deserialize` — is checked against `ShipStats` before the caller
+ * gets control back, and a mismatch THROWS out of `board` into the test.
+ *
+ * The expectation is restated from the DATA rather than read back off the code
+ * path under test: `SHIP_BASE_STATS` x `BIAS_PER_POINT`, the ladder's own
+ * `SHIP_STAT_META.power.perTier`, `FLIGHT.thrust / FLIGHT.drag`,
+ * `FLIGHT.hardCap` and `holdCapacity`. Calling `cruiseTopSpeed(f.powerMul)`
+ * here would have passed against a `powerMul` of 1 quite happily, which is the
+ * whole reason this guard exists.
+ *
+ * It is a wrapper on the instance rather than a `pilot:boarded` subscriber
+ * because `EventBus.emit` CATCHES handler exceptions and logs them — a guard
+ * that can only console.error is the silent substitution again with an extra
+ * step.
+ */
+
+/** What `ShipStats` says this hull is, at this owned power tier. */
+export function expectedHull(shipId, tiers = {}) {
+  const base = SHIP_BASE_STATS[shipId];
+  if (!base) return null;
+  const t = (k) => Math.max(0, Math.floor(Number(tiers?.[k]) || 0));
+  const powerMul = (1 + base.power * BIAS_PER_POINT)
+    * (1 + (t('power') * SHIP_STAT_META.power.perTier) / 100);
+  return {
+    powerMul,
+    accelMul: powerMul,
+    cruiseTop: (FLIGHT.thrust * powerMul) / FLIGHT.drag,
+    boostTop: FLIGHT.hardCap * powerMul,
+    hold: holdCapacity(shipId, t('hold')),
+  };
+}
+
+/** Equal to within a float epsilon, and FINITE — a NaN must never read equal. */
+function near(a, b) {
+  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b));
+}
+
+/**
+ * Throw unless the hull now in the seat is the one `ShipStats` describes.
+ *
+ * Checks the three numbers a substituted ship changes and one that catches a
+ * NaN reaching the integrator: `powerMul`, cruise top, boost top and hold.
+ * Called on every successful `board` by the wrapper `rig()` installs, and
+ * exported so a case that reaches for `Flight` directly can use it too.
+ */
+export function assertFlownHull(r, shipId) {
+  const want = expectedHull(shipId);
+  if (!want) return;              // not a hull with a stat ladder; nothing to pin
+  const tiers = r.ships?.getPowers?.(shipId) ?? {};
+  const full = expectedHull(shipId, tiers);
+  const f = r.piloting.flight;
+  const bad = [];
+  if (!near(f.powerMul, full.powerMul)) bad.push(`powerMul ${f.powerMul} != ${full.powerMul}`);
+  if (!near(f.accelMul, full.accelMul)) bad.push(`accelMul ${f.accelMul} != ${full.accelMul}`);
+  if (!near(f.cruiseTop, full.cruiseTop)) bad.push(`cruiseTop ${f.cruiseTop} != ${full.cruiseTop}`);
+  if (!near(f.boostTop, full.boostTop)) bad.push(`boostTop ${f.boostTop} != ${full.boostTop}`);
+  if (r.piloting.cargoCapacity !== full.hold) {
+    bad.push(`hold ${r.piloting.cargoCapacity} != ${full.hold}`);
+  }
+  if (!bad.length) return;
+  throw new Error(
+    `_flightrig: the rig is not flying the game's ${shipId}.\n`
+    + `  world  : ${r.wm?.active?.id ?? 'none'}\n`
+    + `  tiers  : ${JSON.stringify(tiers)}\n`
+    + `  wrong  : ${bad.join('; ')}\n`
+    + '  A stock hull at powerMul 1 cruises at 120 m/s, slower than every ship the\n'
+    + '  yard sells. Every range, leg time and closing speed measured through a rig\n'
+    + '  in that state describes a ship the game does not have. See the note above\n'
+    + '  assertFlownHull in scripts/tests/_flightrig.mjs.'
+  );
+}
+
+/**
+ * Board a hull at an explicit upgrade tier, through the real purchase path.
+ *
+ * The tier bag is set with `ShipRegistry.grantPower`, which is what the
+ * marketplace calls, so `_knownStat` still refuses a stat a hull does not
+ * sell. `grantPower` only ever RAISES, and the registry is shared across
+ * cases, so the bag is cleared first — the same test-isolation reset
+ * `space-combat.test.mjs` documents.
+ */
+export function boardHull(r, shipId, { tiers = null, silent = true } = {}) {
+  if (r.piloting.active) r.piloting.disembark({ silent: true, force: true });
+  delete r.ships._powers[shipId];
+  if (tiers) for (const k in tiers) if (tiers[k] > 0) r.ships.grantPower(shipId, k, tiers[k]);
+  const ok = r.piloting.board(shipId, { silent });
+  if (!ok) throw new Error(`_flightrig: could not board the ${shipId} in ${r.wm?.active?.id}`);
+  return r.piloting.flight;
 }
 
 let _rig = null;
@@ -190,6 +315,19 @@ export async function rig() {
   const mining = new Mining({ bus, player, input, worldManager: wm, piloting });
 
   _rig = { wm, bus, physics, scene, camera, player, input, piloting, mining, ships, economy, ctx };
+
+  /* THE GUARD. See the block above `assertFlownHull`.
+   *
+   * Wrapped on the instance, so `this.board(...)` from inside `Piloting` -
+   * KeyF at a berth, and the re-board `deserialize` performs - is checked too.
+   * Only a board that SUCCEEDED is checked: a refusal never touched `Flight`. */
+  const realBoard = piloting.board.bind(piloting);
+  piloting.board = (shipId, opts) => {
+    const ok = realBoard(shipId, opts);
+    if (ok) assertFlownHull(_rig, shipId);
+    return ok;
+  };
+
   return _rig;
 }
 

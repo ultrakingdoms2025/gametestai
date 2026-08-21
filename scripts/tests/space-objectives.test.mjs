@@ -9,10 +9,15 @@ const {
   SpaceObjectives, surveyRange, surveyReward, wingBounty,
   SURVEY_FRACTION, SURVEY_FOV_DEG, SURVEY_CR_PER_SECOND,
   LEG_FIXED_S, LEG_PER_KM_S, LANDFALL_S, LANDFALL_CREDITS,
+  LANDFALL_PAD_PER_KM_S, landfallSeconds, landfallReward,
+  FIELD_CREDITS, SYSTEM_ORE_CREDITS,
   KILL_TIERS, ORE_TIERS, ASSAY_CREDITS, SURVEY_SET_COSMETIC,
+  LANDFALL_SET_COSMETIC, LANDFALL_SET_POWER,
 } = await import('../../src/systems/SpaceObjectives.js');
-const { SPACE_BODIES, BODY_BY_ID, DOCK_ANCHOR } =
+const { SPACE_BODIES, BODY_BY_ID, DOCK_ANCHOR, landableBodies } =
   await import('../../src/worlds/space/Bodies.js');
+const { PLANETS } = await import('../../src/worlds/planets/index.js');
+const { SYNC_CREDITS } = await import('../../src/systems/Viewpoints.js');
 const { screenFraction } = await import('../../src/worlds/space/Scale.js');
 const { ALIEN_CLASSES } = await import('../../src/npc/AlienShip.js');
 const { SpaceCombat } = await import('../../src/ships/SpaceCombat.js');
@@ -199,51 +204,350 @@ test('no survey sphere reaches the yard, so nothing is surveyed from the berth',
 
 test('what a body pays is what its distance says, and the far ones pay most', () => {
   /* A flat per-body payment is the defect this replaces: Erenmark is a
-   * twelve-minute round trip and Cinder is a one-minute hop. The payouts must
-   * therefore be in the same ORDER as the trips, with no ties. */
+   * twelve-minute round trip and Cinder is a one-minute hop.
+   *
+   * ── WHY THIS IS NO LONGER "STRICTLY INCREASING, NO TIES" ─────────────────
+   *
+   * It was, and with five bodies it held. Phase 2 made it twelve, and two of
+   * them - Tessera at 74.9 km and Sirocco at 83.8 km - are 8.9 km apart, which
+   * at 0.5875 s/km and 4 cr/s is 21 credits. `round25` cannot represent 21
+   * credits, so the two tie at 250 and the old assertion failed on a payout
+   * table that is completely correct.
+   *
+   * The claim being made was never "no two bodies may ever pay the same". It
+   * was "a longer trip is never worth less", and the ties are the ROUNDING
+   * rather than the rule. So both halves are asserted separately and the
+   * quantisation is asserted too, which is strictly more than the old case
+   * checked: nothing may pay less than something nearer, and a tie is only
+   * allowed where the unrounded payouts are inside one 25-credit increment. A
+   * flat table would fail the second half everywhere. */
   const rows = SPACE_BODIES.map((b) => {
     const trip = Math.hypot(...b.position) - surveyRange(b.radius);
-    return { id: b.id, tripKm: trip / 1000, pay: surveyReward(b) };
+    const tripKm = trip / 1000;
+    return {
+      id: b.id,
+      tripKm,
+      raw: SURVEY_CR_PER_SECOND * (LEG_FIXED_S + tripKm * LEG_PER_KM_S),
+      pay: surveyReward(b),
+    };
   }).sort((a, b) => a.tripKm - b.tripKm);
   for (const r of rows) {
-    console.log(`  ${r.id.padEnd(9)} trip ${r.tripKm.toFixed(1).padStart(6)} km -> ${String(r.pay).padStart(5)} cr`);
+    console.log(`  ${r.id.padEnd(9)} trip ${r.tripKm.toFixed(1).padStart(6)} km -> `
+      + `${r.raw.toFixed(1).padStart(7)} cr raw -> ${String(r.pay).padStart(5)} cr`);
   }
+  let ties = 0;
   for (let i = 1; i < rows.length; i++) {
-    assert.ok(rows[i].pay > rows[i - 1].pay,
-      `floor: ${rows[i].id} is a longer trip than ${rows[i - 1].id} and pays no more`);
+    assert.ok(rows[i].pay >= rows[i - 1].pay,
+      `floor: ${rows[i].id} is a longer trip than ${rows[i - 1].id} and pays LESS`);
+    if (rows[i].pay === rows[i - 1].pay) {
+      ties++;
+      assert.ok(rows[i].raw - rows[i - 1].raw < 25,
+        `${rows[i].id} and ${rows[i - 1].id} pay the same and are `
+        + `${(rows[i].raw - rows[i - 1].raw).toFixed(1)} cr apart before rounding - `
+        + 'that is a flat payment, not a rounding artefact');
+    }
   }
+  console.log(`  ${ties} tie(s), every one of them inside one 25-credit increment`);
+
+  /* THE BAND, RE-BASED PER DESTINATION.
+   *
+   * It was "the whole sweep pays between 750 and 3,600" - the five citadel
+   * viewpoints and the thirty citadel relics - and it was written when the
+   * sweep was five bodies. The sweep is twelve now and pays 5,650, so reading
+   * the old total against the new one would be comparing two different sized
+   * jobs. What did NOT change is the rate, so the band is stated per body:
+   * no body pays less than walking to a citadel viewpoint (`SYNC_CREDITS`),
+   * and the AVERAGE body pays less than the whole five-viewpoint set. */
   const total = rows.reduce((s, r) => s + r.pay, 0);
-  /* The band the header claims: above the five citadel viewpoints (750) and
-   * below the thirty citadel relics (3,600). Both are real numbers in
-   * `Viewpoints.SYNC_CREDITS` and `Relics`. */
-  console.log(`  floor 750 / achieved ${total} / ceiling 3600 for the whole sweep`);
-  assert.ok(total > 750 && total < 3600, `the sweep pays ${total}, outside the band it was set in`);
+  const per = total / rows.length;
+  const viewpointSet = SYNC_CREDITS * 5;
+  console.log(`  sweep ${total} cr over ${rows.length} bodies = ${per.toFixed(0)} a body`);
+  console.log(`  floor ${SYNC_CREDITS} (one citadel viewpoint) / achieved ${Math.min(...rows.map((r) => r.pay))}`
+    + ` cheapest, ${per.toFixed(0)} mean / ceiling ${viewpointSet} (all five viewpoints)`);
+  assert.ok(Math.min(...rows.map((r) => r.pay)) >= SYNC_CREDITS,
+    'a body in this volume pays less than walking across a citadel to a viewpoint');
+  assert.ok(per < viewpointSet,
+    `the average body pays ${per.toFixed(0)}, more than the whole citadel viewpoint set (${viewpointSet})`);
+  /* And the spread is the whole point: the furthest body must be worth many
+   * times the nearest, or the payouts are flat with extra steps. */
+  const spread = Math.max(...rows.map((r) => r.pay)) / Math.min(...rows.map((r) => r.pay));
+  console.log(`  floor 5x / achieved ${spread.toFixed(1)}x between the dearest and cheapest body`);
+  assert.ok(spread > 5, `the furthest body pays only ${spread.toFixed(1)}x the nearest`);
+});
+
+test('what a LANDING pays is what its descent says, and it is not one number for ten worlds', () => {
+  /* THE DEFECT THIS REPLACES, NAMED: `LANDFALL_CREDITS` was a single constant
+   * and it paid the same for setting down on Cinder, which is a 9 km world with
+   * 700 m of air to fly, as for Shoal, which is a 12.5 km ocean handed over
+   * 1,400 m up. One flown leg, ten bodies, one number - the same shape of
+   * mistake `surveyReward`'s straight line was written to stop. */
+  const rows = landableBodies().map((b) => ({
+    id: b.id,
+    airless: b.atmosphere <= b.radius,
+    sphereKm: surveyRange(b.radius) / 1000,
+    padM: b.handoff - b.radius,
+    dockKm: Math.hypot(...b.position) / 1000,
+    s: landfallSeconds(b),
+    pay: landfallReward(b),
+  })).sort((a, b) => a.s - b.s);
+  for (const r of rows) {
+    console.log(`  ${r.id.padEnd(10)}${r.airless ? ' AIRLESS' : '        '} `
+      + `sphere ${r.sphereKm.toFixed(1).padStart(5)} km  handoff +${String(r.padM).padStart(4)} m  `
+      + `${r.s.toFixed(1).padStart(5)} s -> ${String(r.pay).padStart(4)} cr   (dock ${r.dockKm.toFixed(0)} km)`);
+  }
+
+  /* FLOOR: the law has to reproduce the leg that was actually flown. 26.2 s of
+   * cruise from the 28.0 km sphere plus 16.3 s of pad approach, 42.5 s total,
+   * measured onto Ashfall Flat. Half a second of tolerance, which is the
+   * residual of the same straight line the outbound legs are fitted with. */
+  const cinder = BODY_BY_ID.cinder;
+  const err = Math.abs(landfallSeconds(cinder) - LANDFALL_S);
+  console.log(`  floor 0.5 s / achieved ${err.toFixed(2)} s error against the flown Cinder leg `
+    + `(${landfallSeconds(cinder).toFixed(2)} s vs ${LANDFALL_S} s)`);
+  assert.ok(err < 0.5,
+    `the law says ${landfallSeconds(cinder).toFixed(2)} s for the one descent that was flown at ${LANDFALL_S}`);
+  assert.equal(landfallReward(cinder), LANDFALL_CREDITS);
+
+  /* Every payout is finite, positive and a printable increment. A NaN here
+   * reaches `economy.add` and then the HUD, and this world has already lost a
+   * day to one reaching the bloom pass. */
+  for (const r of rows) {
+    assert.ok(Number.isFinite(r.pay) && r.pay > 0, `${r.id} pays ${r.pay}`);
+    assert.equal(r.pay % 25, 0, `${r.id} pays ${r.pay}, which is not a 25-credit increment`);
+  }
+  /* And a body with no readable geometry pays the floor rather than a NaN -
+   * `_onEntry` hands `_landfall` whatever `pilot:entry` names. */
+  for (const bad of [null, undefined, {}, { radius: NaN, handoff: 9 }, { radius: 9, handoff: 9 }]) {
+    const p = landfallReward(bad);
+    assert.ok(Number.isFinite(p) && p > 0, `${JSON.stringify(bad)} paid ${p}`);
+  }
+
+  /* THE CLAIM THAT MAKES IT A LAW AND NOT A TABLE: it is not flat. */
+  const spread = rows[rows.length - 1].pay / rows[0].pay;
+  console.log(`  floor 1.5x / achieved ${spread.toFixed(2)}x between the longest and shortest descent`);
+  assert.ok(spread >= 1.5,
+    `the dearest landing is only ${spread.toFixed(2)}x the cheapest - that is a flat constant again`);
+
+  /* AIRLESSNESS FALLS OUT OF THE GEOMETRY, which is why it gets no term of its
+   * own. The two bodies with `atmosphere === radius` carry the two shortest
+   * handoff altitudes in the system, so their descents are the two shortest
+   * without anybody writing "if airless" anywhere. If a future airless body is
+   * handed over from 2 km up this reddens, and it SHOULD: at that point the
+   * claim in `landfallSeconds` has stopped being true and the term has to be
+   * argued for on its own measurements. */
+  const airless = rows.filter((r) => r.airless);
+  const withAir = rows.filter((r) => !r.airless);
+  console.log(`  airless: ${airless.map((r) => `${r.id} ${r.padM} m`).join(', ')}`
+    + `  |  shallowest with air: ${Math.min(...withAir.map((r) => r.padM))} m`);
+  assert.ok(airless.length >= 2, 'there are no airless bodies, so this claim is untested');
+  assert.ok(Math.max(...airless.map((r) => r.padM)) <= Math.min(...withAir.map((r) => r.padM)),
+    'an airless body is handed over higher than a body with air - the descent length no longer '
+    + 'says what the airlessness says, so landfallSeconds owes air a term of its own');
+
+  /* AND THE DISTANCE IS NOT PAID TWICE. Cathedra is the furthest body in the
+   * system and has one of the shortest descents; that is correct, because
+   * `surveyReward` already paid it 700 credits for the 267 km trip out. What a
+   * landing pays for is the part of the flight the survey did not cover. */
+  const cathedra = BODY_BY_ID.cathedra;
+  console.log(`  cathedra: survey ${surveyReward(cathedra)} + landfall ${landfallReward(cathedra)}`
+    + `   cinder: survey ${surveyReward(cinder)} + landfall ${landfallReward(cinder)}`);
+  assert.ok(surveyReward(cathedra) > surveyReward(cinder),
+    'the distance is not being paid by the survey, so the landfall would have to pay it');
+  assert.ok(surveyReward(cathedra) + landfallReward(cathedra)
+    > surveyReward(cinder) + landfallReward(cinder),
+    'reaching AND landing on the far edge of the system is worth no more than the nearest world');
+});
+
+test('landfall has a denominator, and it counts ground rather than sky', async () => {
+  /* `landfallCount` had a numerator and nothing to finish: the HUD could say
+   * "4 landed" for ever. `surveyTotal` could not stand in for it, because it
+   * counts all twelve bodies including a star and a gas giant with no surface -
+   * a set nobody can complete, which is the reachability defect with a nav
+   * marker on it. */
+  const r = await rig();
+  const { obj } = await ledger(r);
+  try {
+    const landable = landableBodies();
+    console.log(`  survey ${obj.surveyTotal} bodies / landfall ${obj.landfallTotal} worlds: `
+      + `${landable.map((b) => b.id).join(', ')}`);
+    assert.equal(obj.landfallTotal, landable.length);
+    assert.ok(obj.landfallTotal < obj.surveyTotal,
+      'the landfall denominator counts things with no ground on them');
+    /* Every body it counts really does have somewhere to hand a ship over to,
+     * and every body it does NOT count really has nowhere. Both directions, or
+     * a filter that returned everything would pass the first one. */
+    for (const b of SPACE_BODIES) {
+      const counted = landable.includes(b);
+      assert.equal(counted, b.handoff > 0 && !!b.surfaceWorld,
+        `${b.id} is ${counted ? '' : 'not '}in the landfall set and its handoff is ${b.handoff}`);
+    }
+    assert.equal(obj.progress().landfallTotal, obj.landfallTotal,
+      'the HUD surface cannot see the denominator');
+  } finally {
+    obj.dispose();
+  }
+});
+
+test('setting down on every world pays the second set prize, once, and a fly-by does not', async () => {
+  const r = await rig();
+  const { obj, cosmetics, ships } = await ledger(r);
+  try {
+    /* Surveying everything is twelve fly-bys and pays the FIRST set prize.
+     * It must not pay the second one: nothing has been landed on. */
+    for (const b of SPACE_BODIES) obj._sight(b, surveyReward(b));
+    console.log(`  after twelve fly-bys: cosmetics ${[...cosmetics.owned].join(', ')}`);
+    assert.equal(cosmetics.owned.has(SURVEY_SET_COSMETIC), true);
+    assert.equal(cosmetics.owned.has(LANDFALL_SET_COSMETIC), false,
+      'the landfall set paid for flying past ten worlds without landing on one');
+    assert.equal(ships.powers.kestrel?.[LANDFALL_SET_POWER] ?? 0, 0);
+
+    /* Land on all but one. Still nothing: a set is a set. */
+    const landable = landableBodies();
+    for (const b of landable.slice(0, -1)) obj._landfall(b);
+    console.log(`  ${obj.landfallCount}/${obj.landfallTotal} landed: `
+      + `${cosmetics.owned.has(LANDFALL_SET_COSMETIC) ? 'PAID' : 'not paid'}`);
+    assert.equal(obj.landfallCount, landable.length - 1);
+    assert.equal(cosmetics.owned.has(LANDFALL_SET_COSMETIC), false,
+      'the set paid one world short');
+
+    obj._landfall(landable[landable.length - 1]);
+    console.log(`  ${obj.landfallCount}/${obj.landfallTotal} landed: cosmetics `
+      + `${[...cosmetics.owned].join(', ')}  powers ${JSON.stringify(ships.powers)}`);
+    assert.equal(cosmetics.owned.has(LANDFALL_SET_COSMETIC), true, 'the set cosmetic was not granted');
+    /* Every hull the yard sells, for the reason `_refit` records: two of these
+     * landings are reachable with the ship parked, and a prize that landed on
+     * whichever hull happened to be selected is a prize you can miss by walking. */
+    for (const id of ['kestrel', 'dray', 'pike']) {
+      assert.equal(ships.powers[id]?.[LANDFALL_SET_POWER], 1,
+        `${id} did not get the ${LANDFALL_SET_POWER} refit`);
+    }
+    /* The prize id has to be one the wardrobe will actually grant - `unlock`
+     * refuses an id it does not know, and a cosmetic that silently never
+     * arrives is this project's signature defect in a wardrobe. */
+    assert.notEqual(LANDFALL_SET_COSMETIC, SURVEY_SET_COSMETIC,
+      'both set prizes are the same skin, so the second one grants nothing');
+
+    /* And a re-landing does not re-pay. */
+    for (const b of landable) obj._landfall(b);
+    for (const id of ['kestrel', 'dray', 'pike']) {
+      assert.equal(ships.powers[id][LANDFALL_SET_POWER], 1, 'a second landing refitted again');
+    }
+  } finally {
+    obj.dispose();
+  }
+});
+
+test('the hint names the world to go to next, and never names a planet that is not one', async () => {
+  /* THE DEFECT: the line read "Cinder is the one body you can land on", which
+   * was true of Phase 1 and false of nine tenths of Phase 2. The repair is not
+   * to list ten names - a sentence with ten proper nouns in it is a table - it
+   * is to answer the question the counter above it raises. */
+  const r = await rig();
+  await goto(r, 'space');
+  const { obj } = await ledger(r);
+  try {
+    obj._sight(BODY_BY_ID.erenmark, surveyReward(BODY_BY_ID.erenmark));
+    const first = obj.hint();
+    console.log(`  nothing landed on: "${first}"`);
+    /* From the yard, the nearest landable body is Cinder at 62 km - which is
+     * why it was hard-coded in the first place, and is still the right answer
+     * for a player who has not been anywhere. The point is that it is now
+     * DERIVED: it comes out of the layout rather than out of this sentence. */
+    assert.ok(first.includes('Cinder'), `the first landfall hint says "${first}"`);
+    assert.equal(obj.nextLandfall().id, 'cinder');
+
+    /* Land on it and the sentence moves on by itself. */
+    obj._landfall(BODY_BY_ID.cinder);
+    const second = obj.hint();
+    console.log(`  after Cinder: "${second}"  (next = ${obj.nextLandfall()?.id})`);
+    assert.ok(!second.includes('Cinder'),
+      'the hint still sends the player to the world they are standing on the far side of');
+    assert.equal(obj.nextLandfall().id, 'tessera', 'the next nearest landable body is not Tessera');
+    assert.ok(second.includes('Tessera'), `the hint after Cinder says "${second}"`);
+    assert.ok(second.includes(`${obj.landfallCount}/${obj.landfallTotal}`),
+      'the hint carries no sense of how far through the set the player is');
+
+    /* NO SENTENCE MAY EVER NAME A BODY YOU CANNOT LAND ON. That is the whole
+     * class of bug the old line belonged to. */
+    for (const b of SPACE_BODIES) {
+      if (b.handoff > 0 && b.surfaceWorld) continue;
+      assert.ok(!second.includes(b.name),
+        `the hint names ${b.name}, which has no ground on it`);
+    }
+
+    /* Land on everything and the line stops being about landing at all, rather
+     * than pointing at a world that does not exist. */
+    for (const b of landableBodies()) obj._landfall(b);
+    const done = obj.hint();
+    console.log(`  everything landed on: "${done}"`);
+    assert.equal(obj.nextLandfall(), null);
+    assert.ok(done.includes('Lodestar Yard'), `the finished hint says "${done}"`);
+
+    /* And on a surface it never tells you to go where you already are. */
+    await goto(r, 'cinder');
+    const b2 = await ledger(r);
+    b2.obj._sight(BODY_BY_ID.cinder, surveyReward(BODY_BY_ID.cinder));
+    b2.obj._onOre({ type: 'tephra', name: 'Tephra Nodules', credits: 12 });
+    const ground = b2.obj.hint();
+    console.log(`  standing on Cinder, nothing landed: "${ground}"  `
+      + `(next = ${b2.obj.nextLandfall()?.id})`);
+    assert.ok(!ground.includes('Cinder'),
+      'the hint tells a player standing on Cinder to go to Cinder');
+    assert.ok(ground.includes('seam'), 'the surface hint stopped being about mining');
+    b2.obj.dispose();
+  } finally {
+    obj.dispose();
+    await goto(r, 'space');
+  }
 });
 
 /* ================================================================== */
 /* 2. The ladders are re-derived from the content                      */
 /* ================================================================== */
 
-test('the kill ladder is built on one full sweep of the authored zones', async () => {
+test('the kill ladder is built on one full sweep of the inner system', async () => {
   const r = await rig();
   await goto(r, 'space');
   const zones = r.wm.active.encounters;
-  const sweep = zones.reduce(
+  const hostiles = (list) => list.reduce(
     (s, z) => s + z.wing.reduce((n, w) => n + w.count, 0), 0
   );
-  const bounty = zones.reduce((s, z) => s + wingBounty(z), 0);
-  console.log(`  ${zones.length} zones, ${sweep} hostiles, ${bounty} cr of bounty in one sweep`);
+
+  /* THE UNIT THE LADDER IS SPACED IN, AND WHY IT IS NO LONGER "THE VOLUME".
+   *
+   * Nine was one full sweep of the system when the system was three zones on
+   * two routes. Phase 2 put an approach picket on the run out to all ten
+   * landable worlds, so a sweep of the whole volume is now twelve zones and
+   * about 1,500 km of flying - a campaign, not a session, and useless as the
+   * second rung of a ladder whose first rung is three kills.
+   *
+   * The INNER SYSTEM is what has not changed: everything inside Cinder's
+   * orbit, which is the Ashlane, Cinder high orbit and the Halberd Reach nest
+   * - the fights on the run every player flies first, before they have bought
+   * anything. Still nine hostiles, still 745 credits of bounty.
+   *
+   * Derived rather than typed, and the cut is Cinder's own distance from the
+   * yard: a planet added INSIDE that orbit moves the rung, and this goes red
+   * so somebody decides where it should be. The nearest picket outside it is
+   * Tessera's at 77 km, so the cut has 15 km of margin on both sides. */
+  const cinderDist = new THREE.Vector3(...BODY_BY_ID.cinder.position).length();
+  const inner = zones.filter((z) => new THREE.Vector3(...z.position).length() <= cinderDist);
+  const sweep = hostiles(inner);
+  const bounty = inner.reduce((s, z) => s + wingBounty(z), 0);
+
+  console.log(`  ${zones.length} zones, ${hostiles(zones)} hostiles in the volume; `
+    + `${inner.length} of them inside Cinder's orbit holding ${sweep}, ${bounty} cr of bounty`);
   for (const z of zones) {
-    console.log(`    ${z.id.padEnd(14)} ${z.wing.map((w) => `${w.count}x${w.class}`).join('+').padEnd(20)}`
+    const where = inner.includes(z) ? 'INNER' : '     ';
+    console.log(`    ${where} ${z.id.padEnd(20)} ${z.wing.map((w) => `${w.count}x${w.class}`).join('+').padEnd(20)}`
       + ` ${String(wingBounty(z)).padStart(4)} cr  rearm ${z.rearm}s`);
   }
+  assert.equal(inner.length, 3,
+    `${inner.length} zones inside Cinder's orbit, not 3 - the inner system has changed shape`);
 
-  /* THE RUNG, AND WHY IT IS THIS ONE. Nine is not a number somebody liked: it
-   * is how many hostiles exist in the volume at once. If a zone is added this
-   * assertion fails, which is correct - the ladder HAS moved and somebody
-   * should decide where. */
   assert.equal(KILL_TIERS[1].kills, sweep,
-    `the second rung must be one full sweep (${sweep} hostiles), not ${KILL_TIERS[1].kills}`);
+    `the second rung must be one full sweep of the inner system (${sweep} hostiles), `
+    + `not ${KILL_TIERS[1].kills}`);
   /* The rungs above it are whole sweeps too, so "wait out a rearm" is the only
    * thing that separates them. */
   assert.equal(KILL_TIERS[2].kills, sweep * 2);
@@ -251,15 +555,98 @@ test('the kill ladder is built on one full sweep of the authored zones', async (
   assert.equal(KILL_TIERS[0].kills, 3,
     'the first rung is the smallest wing that contains a lance');
 
+  /* AND THE VOLUME MUST NOT QUIETLY BECOME A SHOOTING GALLERY. Generalising
+   * the pickets over `landableBodies()` is one line away from putting the old
+   * three-zone density on all ten routes, which is ninety hostiles. The bound
+   * is four inner sweeps: enough room for one picket per world and then some,
+   * not enough for anybody to multiply by ten without this going red. */
+  assert.ok(hostiles(zones) <= sweep * 4,
+    `${hostiles(zones)} hostiles in the volume against an inner sweep of ${sweep} - `
+    + 'the population has been multiplied rather than spread');
+
   /* Payouts against the bounty the same kills already pay: a ladder that paid
    * ten times the bounty would make the bounty decoration, and one that paid a
-   * tenth of it would make the ladder decoration. */
+   * tenth of it would make the ladder decoration. Measured against the INNER
+   * bounty, because that is what the rungs ask for. */
   const ladder = KILL_TIERS.reduce((s, t) => s + t.credits, 0);
   const earned = bounty * 3; // three sweeps is what the top rung asks for
   console.log(`  floor ${Math.round(earned * 0.5)} / achieved ${ladder} / ceiling ${earned * 2}`
-    + ` (bounty over three sweeps is ${earned})`);
+    + ` (inner bounty over three sweeps is ${earned})`);
   assert.ok(ladder > earned * 0.5 && ladder < earned * 2,
     `the ladder pays ${ladder} against ${earned} of bounty - out of band`);
+});
+
+test('the first mining brief names the pad worth flying to, and never names a shelf', async () => {
+  const r = await rig();
+  await goto(r, 'cinder');
+  r.piloting.shipId = 'kestrel';
+  const { obj } = await ledger(r);
+  const w = r.wm.active;
+  const sites = w.landingSites;
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════
+   *  SEVENTEEN MINUTES VERSUS FOUR, DECIDED BY A CHOICE NOBODY MENTIONED
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * Every atmospheric entry lands at the `primary` pad, and on Cinder that is
+   * Ashfall Flat - the poorest of its three. Walked, a 10 m3 Kestrel load is
+   * 114 cr off Ashfall, 497 off Colonnade and 2,839 off Rimhold, so the 500 cr
+   * ore rung is five trips from where the game puts you and one from the rim.
+   *
+   * `richerPad` is the one-sentence fix, and this is what it must never do:
+   * name RIMHOLD. It is the richest pad on the planet by a factor of four and
+   * it reads 270 degrees of horizon falling away over a 66.9 m drop - it is
+   * one of the pads a player can walk off and not climb back onto. Sending a
+   * new pilot there would swap a slow objective for a stranding.
+   */
+  const worth = (id) => {
+    const near = w.mineralNodes.filter((n) => {
+      let best = null;
+      let bd = Infinity;
+      for (const s of sites) {
+        const d = n.position.distanceToSquared(s.position);
+        if (d < bd) { bd = d; best = s; }
+      }
+      return best?.id === id;
+    });
+    near.sort((a, b) => (b.credits / Math.max(1e-6, b.size)) - (a.credits / Math.max(1e-6, a.size)));
+    let room = 10;
+    let paid = 0;
+    for (const n of near) { if (n.size > room) continue; room -= n.size; paid += n.credits; if (room <= 1e-6) break; }
+    return paid;
+  };
+  for (const s of sites) {
+    console.log(`    ${s.id.padEnd(11)} ${s.primary ? 'PRIMARY' : '       '} rim ${String(s.drop?.deg ?? '?').padStart(3)} deg / `
+      + `${String(s.drop?.metres ?? '?').padStart(5)} m   best load ${String(worth(s.id)).padStart(5)} cr`);
+  }
+
+  const primary = sites.find((s) => s.primary);
+  assert.ok(primary, 'the planet has no primary pad, so there is nothing to be landed at');
+  r.piloting._landedSite = { id: primary.id, name: primary.name };
+
+  const pick = obj.richerPad();
+  assert.ok(pick, `standing on ${primary.id}, the richest pad on the planet, nothing was suggested`);
+  console.log(`    from ${primary.id}: "${pick.name}" at ${pick.credits} cr a load`);
+  assert.notEqual(pick.id, primary.id, 'the hint names the pad the player is already standing on');
+  assert.ok(pick.credits >= worth(primary.id) * 1.5,
+    `${pick.id} is only ${pick.credits} against ${worth(primary.id)} - not worth crossing a planet for`);
+
+  const shelf = sites.find((s) => (s.drop?.deg ?? 0) > 180);
+  assert.ok(shelf, 'no pad on Cinder is a shelf, so the exclusion below proves nothing');
+  assert.notEqual(pick.id, shelf.id,
+    `the hint sends a new pilot to ${shelf.id}, which loses ${shelf.drop.deg} degrees of horizon over `
+    + `${shelf.drop.metres} m - a pad you can walk off and not climb back onto`);
+
+  const said = obj.hint();
+  console.log(`    hint: "${said}"`);
+  assert.ok(said.includes(pick.name), `the brief does not name the pad it picked: "${said}"`);
+
+  /* ...and standing on the good one, it says nothing about pads at all. */
+  r.piloting._landedSite = { id: pick.id, name: pick.name };
+  assert.equal(obj.richerPad(), null, 'the hint sends a player to the pad they are standing on');
+  assert.ok(!obj.hint().includes(pick.name), 'the brief still names the pad underfoot');
+  obj.dispose();
 });
 
 test('every wing pays its own bounty back, and no wing pays the session total', async () => {
@@ -279,7 +666,24 @@ test('every wing pays its own bounty back, and no wing pays the session total', 
     'the per-wing prize must not be the running total');
 });
 
-test('the ore ladder tops out inside the ore that is actually in the ground', async () => {
+/**
+ * Every mineral field the game has a descriptor for, in credits.
+ *
+ * `unitValue * hold * count` per mineral, which is `definePlanet`'s own
+ * arithmetic with the per-node dice taken out - the same number
+ * `SpaceObjectives.FIELD_CREDITS` claims to be, re-derived here rather than
+ * quoted, so a descriptor that is trimmed or enriched moves this and not the
+ * constant.
+ */
+function registeredFields() {
+  return Object.values(PLANETS).map((p) => ({
+    id: p.id,
+    credits: p.minerals.reduce((s, m) => s + m.unitValue * m.hold * m.count, 0),
+    nodes: p.minerals.reduce((s, m) => s + m.count, 0),
+  }));
+}
+
+test('the ore ladder tops out inside the ore the SYSTEM holds, not inside one planet', async () => {
   const r = await rig();
   await goto(r, 'cinder');
   const nodes = r.wm.active.mineralNodes;
@@ -294,16 +698,68 @@ test('the ore ladder tops out inside the ore that is actually in the ground', as
     console.log(`  ${id.padEnd(12)} ${String(t.n).padStart(3)} nodes  ${String(t.cr).padStart(5)} cr`);
   }
   const top = ORE_TIERS[ORE_TIERS.length - 1].credits;
-  console.log(`  field ${field} cr in ${nodes.length} nodes; top rung ${top} cr `
-    + `= ${((top / field) * 100).toFixed(1)}% of it, margin ${field - top} cr`);
+
+  /* ── THE UNIT THE LADDER IS SPACED IN, RE-DERIVED ────────────────────────
+   *
+   * `FIELD_CREDITS` is one field in credits and the top two rungs are multiples
+   * of it. It is written down rather than imported because `PLANETS` drags
+   * `PlanetWorld` and therefore `three` in behind it, and this module's import
+   * graph is asserted to be two frozen data modules further down this file. So
+   * the scrape happens HERE instead - the same arrangement `HOLD_UNITS_PER_SIZE`
+   * lives under against `Piloting.stow`. */
+  const fields = registeredFields();
+  for (const f of fields) {
+    console.log(`  descriptor ${f.id.padEnd(10)} ${f.nodes} nodes, ${f.credits} cr`);
+  }
+  const poorest = Math.min(...fields.map((f) => f.credits));
+  console.log(`  FIELD_CREDITS ${FIELD_CREDITS} against the poorest registered field ${poorest} cr`
+    + ` (placed, with the dice in: ${field} cr)`);
+  assert.ok(FIELD_CREDITS <= poorest,
+    `the ladder is spaced in units of ${FIELD_CREDITS} cr and the poorest field registered `
+    + `holds ${poorest} - every rung derived from it is a rung nobody can reach on that planet`);
+  /* SYSTEM_ORE_CREDITS is a SUM now, not `FIELD_CREDITS * bodies`.
+   *
+   * It was a projection while Cinder was the only descriptor. All ten exist, so
+   * it is measured - and it has to be, because `FIELD_CREDITS` is now the
+   * POOREST field rather than a typical one. Multiplying the poorest by ten
+   * under-counts the system by half AND would make authoring one lean world look
+   * like the system had shrunk. Two questions, two constants. */
+  const systemTotal = fields.reduce((s, f) => s + f.credits, 0);
+  console.log(`  SYSTEM_ORE_CREDITS ${SYSTEM_ORE_CREDITS} against the summed descriptors ${systemTotal} cr`);
+  assert.equal(SYSTEM_ORE_CREDITS, systemTotal,
+    `the stated system total is ${SYSTEM_ORE_CREDITS} and the ten descriptors sum to ${systemTotal}`);
+  assert.equal(fields.length, landableBodies().length,
+    'a landable body has no descriptor, or a descriptor has no landable body');
 
   /* FLOOR: the top rung must be reachable - a haul target larger than the ore
-   * that exists is the "gold nobody can reach" defect with a pickaxe. This is
-   * the assertion that fails LOUDLY if the descriptor is ever trimmed, which is
-   * the whole reason the rung carries margin rather than sitting on the total.
-   * The margin is printed above so a trim shows up as a shrinking number long
-   * before it shows up as a failure. */
-  assert.ok(top <= field, `the top rung asks for ${top} cr and the planet holds ${field}`);
+   * that exists is the "gold nobody can reach" defect with a pickaxe. It is
+   * measured against the SYSTEM now and not against Cinder, because that is
+   * what changed: ten landable bodies exist, the old top rung asked for 90% of
+   * the first one, and a career you can finish without leaving your first
+   * landing site is not a career. The margin is printed so a trim shows up as a
+   * shrinking number long before it shows up as a failure. */
+  console.log(`  top rung ${top} cr against a projected system of ${SYSTEM_ORE_CREDITS} cr `
+    + `= ${((top / SYSTEM_ORE_CREDITS) * 100).toFixed(1)}%, margin ${SYSTEM_ORE_CREDITS - top} cr`);
+  assert.ok(top <= SYSTEM_ORE_CREDITS,
+    `the top rung asks for ${top} cr and ten fields hold ${SYSTEM_ORE_CREDITS}`);
+
+  /* CEILING, AND IT IS THE ONE THIS DROP EXISTS FOR: the top rung must NOT be
+   * inside a single field. This is the assertion that reddens if somebody puts
+   * it back where it was. */
+  console.log(`  floor ${field} (one whole field) / achieved ${top} for the top rung`);
+  assert.ok(top > field,
+    `the top rung (${top}) is inside the one field this rig built (${field}) - `
+    + 'the whole ladder can be climbed without leaving the first planet you land on');
+  assert.ok(top > Math.max(...fields.map((f) => f.credits)),
+    'the top rung is inside the richest field the game has a descriptor for');
+
+  /* And the rung below it is one field, with margin, which is what the old top
+   * rung claimed and is now the third of four. */
+  const third = ORE_TIERS[ORE_TIERS.length - 2].credits;
+  console.log(`  third rung ${third} cr = ${((third / field) * 100).toFixed(1)}% of the built field, `
+    + `margin ${field - third} cr`);
+  assert.ok(third < field,
+    `the third rung (${third}) asks for more than the field holds (${field})`);
 
   /* CEILING, IN HOLD LOADS AND NOT IN PERCENT.
    *
@@ -438,11 +894,25 @@ test('FLOWN: a straight run at every body in the volume surveys it and pays its 
   const { obj, economy } = await ledger(r);
   try {
     /* The measured one-way trips at frac 0.50 were 36 / 61 / 79 / 90 / 364
-     * seconds. The limit is that plus half again, which is slack for the
-     * turn-in and not slack for a trigger that does not fire. */
+     * seconds for the five Phase 1 bodies. The limit is that plus half again,
+     * which is slack for the turn-in and not slack for a trigger that does not
+     * fire.
+     *
+     * The seven Phase 2 bodies had NO row here, so `fly` fell through to its
+     * own 240 s default - which is nine times the slack Cinder gets and, for
+     * Erenmark's neighbours, would have been a budget that could not be blown.
+     * A limit that cannot be reached is not a limit. These are the flown times
+     * from this same case (66 / 77 / 100 / 115 / 121 / 138 / 172 s), rounded up
+     * with the same half-again margin. */
     const budget = {
       cinder: 60, tessera: 95, vitrine: 125, ceraunus: 140, erenmark: 550,
+      sirocco: 100, shoal: 115, verdigris: 150, lathe: 175,
+      carnelian: 185, sallow: 210, cathedra: 260,
     };
+    for (const b of SPACE_BODIES) {
+      assert.ok(typeof budget[b.id] === 'number',
+        `${b.id} has no flight budget, so its leg is bounded by nothing this case chose`);
+    }
     const rows = [];
     for (const b of SPACE_BODIES) {
       const out = await flyTo(r, obj, b, budget[b.id]);
@@ -460,10 +930,14 @@ test('FLOWN: a straight run at every body in the volume surveys it and pays its 
     const paid = economy.log.filter(([w]) => w === 'objective:survey').reduce((s, [, n]) => s + n, 0);
     console.log(`  floor ${expected} / achieved ${paid} credits of survey money`);
     assert.equal(paid, expected, 'the wallet did not get what the distances say');
-    /* Cinder is the only landable body, so the set is complete without a
-     * landing and the set prize must have been paid exactly once. */
+    /* The SURVEY set is complete without a single landing - reaching is a
+     * fly-by and that is the whole of the claim it makes - so the survey set
+     * prize is payable here and each body must have paid exactly once. The
+     * landfall set is a different question and is not touched by this leg. */
     assert.ok(economy.log.filter(([w]) => w === 'objective:survey').length === SPACE_BODIES.length,
       'a body paid twice, or one paid nothing');
+    assert.equal(economy.log.filter(([w]) => w === 'objective:landfall').length, 0,
+      'a fly-by paid a landfall');
   } finally {
     obj.dispose();
     if (r.piloting.active) r.piloting.disembark({ silent: true, force: true });
@@ -528,9 +1002,14 @@ test('FLOWN: a descent onto Cinder pays the landfall bonus, once, on top of the 
     assert.equal(obj.landfallCount, 1, 'the landfall did not register');
 
     const landfalls = economy.log.filter(([w]) => w === 'objective:landfall');
-    console.log(`  landfall paid ${landfalls.length}x ${LANDFALL_CREDITS} cr`
-      + ` (measured leg ${LANDFALL_S} s at ${SURVEY_CR_PER_SECOND} cr/s)`);
+    console.log(`  landfall paid ${landfalls.length}x ${landfallReward(cinder)} cr`
+      + ` (law says ${landfallSeconds(cinder).toFixed(1)} s, flown leg was ${LANDFALL_S} s,`
+      + ` at ${SURVEY_CR_PER_SECOND} cr/s)`);
     assert.equal(landfalls.length, 1, 'the landfall paid more than once');
+    assert.equal(landfalls[0][1], landfallReward(cinder),
+      'the descent paid something other than what the law says its descent is worth');
+    /* The law has to still produce the flown number for the body it was fitted
+     * to, or it is a different law wearing the same measurement. */
     assert.equal(landfalls[0][1], LANDFALL_CREDITS);
 
     /* Re-entering must not pay again. `pilot:entry` fires on every descent and
@@ -578,7 +1057,26 @@ test('FLOWN: the first two rungs of the kill ladder are reachable, and the ledge
     let lastAction = 0;
     /* 300 s. The reference run reached rung two (nine kills) at 148 s with the
      * same autopilot and the same seed; double it is slack for the turn-ins and
-     * is not slack for a ladder nobody can climb. */
+     * is not slack for a ladder nobody can climb.
+     *
+     * Re-measured after Phase 2 at 188 s. The rung did not move - it is still
+     * one sweep of the inner three - but the tour visits them in array order
+     * and Cinder's picket now stands off further from the planet, so the legs
+     * between them are longer.
+     *
+     * ── AND RE-MEASURED AGAIN ON THE REAL HULL: 167 s -> 94 s ───────────────
+     * This case boards after `goto('space')`, and `Piloting._shipRecord` used
+     * to find nothing outside the yard, so `Flight.setShip` took its
+     * `powerMul: 1` fallback and the ladder was climbed by a Kestrel cruising
+     * at 120 m/s. It now flies the game's 210 m/s hull and the legs between
+     * the inner three pickets take a little over half as long:
+     *
+     *     rung 1 (3 kills)   90.7 s -> 50.8 s
+     *     rung 2 (9 kills)  167.2 s -> 94.5 s
+     *
+     * The 300 s ceiling is deliberately NOT tightened onto 94 s. It is a
+     * "nobody can climb this" bound, and the spawn geometry it depends on is
+     * chaotic; 206 s of margin is the point of it. */
     for (let i = 0; i < 60 * 300 && obj.killCount < KILL_TIERS[1].kills; i++) {
       t = i * DT;
       if (r.piloting._travelling) { await settle(2); continue; }
@@ -615,7 +1113,8 @@ test('FLOWN: the first two rungs of the kill ladder are reachable, and the ledge
     console.log(`  ${obj.killCount} kills in ${t.toFixed(0)} s; rung 1 (${KILL_TIERS[0].kills}) at `
       + `${marks[KILL_TIERS[0].kills - 1] ?? 'NEVER'} s, rung 2 (${KILL_TIERS[1].kills}) at `
       + `${marks[KILL_TIERS[1].kills - 1] ?? 'NEVER'} s`);
-    console.log(`  reference run: rung 1 at 91 s, rung 2 at 148 s`);
+    console.log(`  reference run: rung 1 at 50.8 s, rung 2 at 94.5 s `
+      + `(before the flown hull was corrected: 90.7 s / 167.2 s at powerMul 1)`);
     assert.ok(obj.killCount >= KILL_TIERS[1].kills,
       `floor: only ${obj.killCount} kills in ${t.toFixed(0)} s - the ladder is not climbable`);
     assert.ok(marks[KILL_TIERS[1].kills - 1] < 300,
@@ -772,14 +1271,46 @@ test('FLOWN: cutting real seams fills the assay chart and climbs the haul ladder
       'a second node of a known kind paid the first-find bonus again');
     assert.equal(obj.assayCount, kinds.size);
 
-    /* Now mine the whole planet and check every rung pays exactly once. */
+    /* Now mine the whole planet and check every rung THIS FIELD CAN REACH pays
+     * exactly once, in order, with its own reward.
+     *
+     * ── Why this is no longer "every rung" ────────────────────────────────
+     *
+     * It was, and it was right when the ladder topped out at 90% of the one
+     * field that existed. The top rung is now three fields, deliberately, so
+     * that a career cannot be finished on the first planet a player lands on -
+     * and this rig has one planet in it, because nine of the ten descriptors
+     * are being written as this is read. Asserting "all four rungs pay" would
+     * therefore be asserting that the defect is still there.
+     *
+     * So the reachable set is DERIVED from the ore this run actually cut, and
+     * the case says out loud which rungs are waiting on content. The day the
+     * remaining descriptors land and a case mines more than one field, this
+     * assertion covers all four again with no edit - and until then it still
+     * checks the thing it was written to check: that a rung pays once, that it
+     * pays its own reward, and that they pay in order. */
     for (const n of r.wm.active.mineralNodes) cut(n);
     const rungs = economy.log.filter(([w]) => w === 'objective:ore');
+    const reachable = ORE_TIERS.filter((t) => t.credits <= obj.oreCredits);
+    const waiting = ORE_TIERS.filter((t) => t.credits > obj.oreCredits);
     console.log(`  whole field cut: ${obj.oreNodes} nodes, ${obj.oreCredits} cr, `
       + `${trips} hold-loads (a Dray carries 20 nodes), rungs ${JSON.stringify(rungs)}`);
-    assert.equal(rungs.length, ORE_TIERS.length, 'not every rung of the haul ladder was reachable');
-    for (let i = 0; i < ORE_TIERS.length; i++) assert.equal(rungs[i][1], ORE_TIERS[i].reward);
-    assert.ok(inventory.got.length >= ORE_TIERS.length, 'the rungs paid no items');
+    console.log(`  reachable from this one field: ${reachable.map((t) => t.title).join(', ')}`
+      + `   waiting on more fields: ${waiting.map((t) => `${t.title} (${t.credits} cr)`).join(', ') || 'none'}`);
+    assert.ok(reachable.length > 0, 'a whole field does not reach the first rung of the ladder');
+    assert.equal(rungs.length, reachable.length,
+      'a rung the field can pay for did not pay, or one it cannot pay for did');
+    for (let i = 0; i < reachable.length; i++) assert.equal(rungs[i][1], reachable[i].reward);
+    assert.ok(inventory.got.length >= reachable.length, 'the rungs paid no items');
+    /* And the rungs that did not pay are exactly the ones above what one field
+     * holds - stated as an assertion so "the ladder is unclimbable" and "the
+     * ladder is longer than one planet" cannot be confused for each other. */
+    for (const t of waiting) {
+      assert.ok(t.credits > obj.oreCredits,
+        `${t.title} did not pay and the field holds more than it asks for`);
+    }
+    console.log(`  ${Object.keys(PLANETS).length} of ${landableBodies().length} landable bodies have a `
+      + 'descriptor; when they all do, a case that flies more than one of them covers the top rung');
   } finally {
     obj.dispose();
     /* The mining ledger is per-process and shared with the other cases in the
@@ -934,7 +1465,15 @@ test('a receipt that claims more than the ledger earned is clamped, not trusted'
       kills: { skiff: 2 }, killTier: 4,
       ore: { tephra: { n: 1, credits: 12, name: 'Tephra Nodules' } }, oreTier: 4,
       surveySet: true, wings: [], wingSet: true,
+      /* And the landfall receipt. It is clamped against the LANDED grades
+       * rather than against the plot, which is a distinction the survey twin
+       * does not have to make: a save can carry twelve sightings and no
+       * landings and be perfectly well formed, so a `landfallSet` clamped
+       * against `_survey.size` would pass on a save where nothing had ever
+       * touched ground. */
+      landfallSet: true,
     });
+    assert.equal(obj.landfallCount, 0, 'the setup landed on something');
     console.log(`  claimed tier 4/4 with ${obj.killCount} kills and ${obj.oreCredits} cr of ore`);
     assert.equal(obj.rank, null, 'a rank was restored that nothing in the save earned');
     r.bus.emit('combat:kill', { classId: 'skiff' });
@@ -949,6 +1488,14 @@ test('a receipt that claims more than the ledger earned is clamped, not trusted'
     assert.equal(economy.log.filter(([w]) => w === 'objective:survey').length, SPACE_BODIES.length);
     assert.equal(cosmetics.owned.has(SURVEY_SET_COSMETIC), true,
       'the set prize was silenced by a receipt the plot did not back');
+    /* Same for its landfall twin: twelve fly-bys are not ten landings, so the
+     * prize is still owed and must still pay when the landings happen. */
+    assert.equal(cosmetics.owned.has(LANDFALL_SET_COSMETIC), false,
+      'surveying everything paid the landfall set');
+    for (const b of landableBodies()) obj._landfall(b);
+    console.log(`  after ten landings: ${[...cosmetics.owned].join(', ')}`);
+    assert.equal(cosmetics.owned.has(LANDFALL_SET_COSMETIC), true,
+      'the landfall set prize was silenced for the whole save by a receipt nothing backed');
   } finally {
     obj.dispose();
   }

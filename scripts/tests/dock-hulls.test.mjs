@@ -1223,7 +1223,7 @@ test('the hulls fit inside the drop budget they were given', async () => {
   // NPCs and the HUD still to pay for.
   let meshes = 0;
   world.group.traverse((o) => { if (o.isMesh) meshes++; });
-  /* 156, up from 140, and the eleven are all one thing: THE SKY.
+  /* 156, up from 140, and the eleven were all one thing: THE SKY.
    *
    * The yard's north end is a 164 m aperture onto space now, so the world
    * draws a starfield (1 `Points`), three bodies with their limb haloes
@@ -1234,10 +1234,35 @@ test('the hulls fit inside the drop budget they were given', async () => {
    *
    * The ceiling moves rather than the sky being trimmed because the sky is
    * what the rebuild is FOR: eleven draw calls is what the whole difference
-   * between "a big dark room" and a hangar bay open to a lit void costs. */
-  assert.ok(meshes <= 156,
-    `ceiling: 156 meshes in the world group (the frame budget is 220 draws with the portals, NPCs and HUD still to pay for). `
+   * between "a big dark room" and a hangar bay open to a lit void costs.
+   *
+   * ── AND PHASE 2 MOVED IT AGAIN, FOR THE SAME REASON ──────────────────────
+   *
+   * The sky went from FIVE bodies to TWELVE. `YardPlan.BODIES` hangs every
+   * entry of `SPACE_BODIES` on a proxy shell between `VOID_NEAR` and
+   * `VOID_FAR` — it does not pick a subset — so seven new bodies is seven new
+   * spheres plus a limb halo for each of the six that has air. Measured 150 →
+   * 165, i.e. +15 for seven bodies, which is the ~2.1 a body that arithmetic
+   * predicts. Effective draws are 165 − 22 hidden ramp proxies = 143 against a
+   * 220 frame budget.
+   *
+   * THE CEILING IS DERIVED NOW, NOT TYPED. A hand-set number is what let this
+   * rot: it was correct for a five-body sky and silently became a failure the
+   * day the sky grew, with nothing saying which of the two was wrong. Deriving
+   * it from `PLAN.BODIES.length` means an eleventh planet updates the budget by
+   * itself, while `PER_BODY` still fails loudly if a body starts costing more
+   * than a sphere and a halo — which is the regression this case is actually
+   * for. */
+  const ceiling = PLAN.meshCeiling();
+  assert.ok(meshes <= ceiling,
+    `ceiling: ${ceiling} meshes for a ${PLAN.BODIES.length}-body sky `
+    + `(the frame budget is 220 draws with the portals, NPCs and HUD still to pay for). `
     + `achieved: ${meshes}`);
+  /* The frame budget is the thing that actually matters, and it is absolute:
+   * no number of planets may push the yard past what a frame can draw. */
+  assert.ok(meshes - PLAN.HIDDEN_RAMP_PROXIES <= PLAN.FRAME_DRAW_BUDGET,
+    `${meshes} meshes less ${PLAN.HIDDEN_RAMP_PROXIES} hidden ramp proxies is past `
+    + `the ${PLAN.FRAME_DRAW_BUDGET}-draw frame budget`);
 
   // Triangles. Measured off the merged buffers rather than `renderer.info`,
   // which moves 10-13% between loads of the same framing because the shadow

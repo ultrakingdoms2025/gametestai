@@ -128,14 +128,69 @@ export const BROW = Object.freeze({
 /* ------------------------------------------------------------------ */
 
 /**
- * A narrow courier: a short plated midbody between a lofted needle nose and a
- * boat-tail, a raised canopy over the cockpit, a V-tail, and two engine pods
- * carried OUTBOARD on swept pylons.
+ * A lean courier: a plated midbody amidships between a long lofted needle nose
+ * and a long tapered tail cone, a raised canopy over the cockpit, a V-tail
+ * carried at the extreme stern, and two engine pods on swept wings.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  THE HULL GREW FROM 14 m TO 20 m, AND THE CABIN DID NOT MOVE
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * The complaint this answers is "the Kestrel is a compact shuttle, not a lean
+ * courier", and the reason recorded beside it was that a 6.8 m walk-in
+ * compartment forces a long parallel body. Measured on the 14 m hull:
+ *
+ *   overall length                    14.00 m
+ *   fuselage beam (`lower.hw` x 2)     4.60 m
+ *   keel to spine                      4.80 m
+ *   L : B : H                       3.04 : 1 : 1.04
+ *   parallel body (>=92% of beam)      8.30 m  = 0.59 of the length
+ *   nose forward of the compartment    4.40 m  = 0.31
+ *   tail aft of the engine bulkhead    1.80 m  = 0.13
+ *
+ * A fuselage fineness of 3.04 is a VAN. Aircraft read lean at 8 and up (a
+ * Learjet is 9.4, a DC-3 8.5); they read as pods and capsules under about 4.
+ * Worse, the section is square — height is 1.04 of the beam — and 59% of the
+ * ship is one constant section, which is the definition of a container with
+ * ends stuck on it. Three art passes over that shape could not have won,
+ * because the ratio was the subject and none of them changed it.
+ *
+ * ── The trade that was NOT taken ──────────────────────────────────────────
+ * The other way to fix a ratio is to take the width out, and it was refused:
+ * this cabin is 4.16 m across because a player walks around inside their own
+ * ship, and that is a feature you do not delete to fix a silhouette. Lean is
+ * a RATIO, so the length is what moved.
+ *
+ * ── What the length was allowed to be ─────────────────────────────────────
+ * Not free. `BERTHS.kestrel` reserves `hd` 12, so the hull may reach local
+ * z +/-12 before it overhangs its own painted bay and the footprint the ship
+ * stage publishes to `_collisionSoup`; Pier One's pad is `hd` 13. 20 m
+ * (-8.80..11.20) leaves 1.6 m of bay at each end and 2.2 m of pad. It is also
+ * as far as the FICTION goes: this is still the smallest hull in the yard by
+ * volume — a 4.6 m needle against the Pike's 11.2 m beam — and a courier that
+ * is long and thin is exactly the thing a courier is.
+ *
+ * Measured on the hull this file now describes:
+ *
+ *   overall length                    20.00 m   (+43%)
+ *   fuselage beam                      4.60 m   unchanged
+ *   keel to spine                      4.80 m   unchanged
+ *   L : B : H                       4.35 : 1 : 1.04
+ *   parallel body                      8.30 m  = 0.42 of the length
+ *   nose forward of the compartment    7.40 m  = 0.37
+ *   tail aft of the engine bulkhead    4.40 m  = 0.22
+ *
+ * The cabin, the cockpit, the deck, the hatch, the ramp, the ledge, the spine,
+ * the pods, the wings and all three climb bands are at the SAME stations they
+ * were. Every metre of the 6 m is spent outside them, forward of `lower.z1`
+ * and aft of `lower.z0`, and both ends taper to something: a 0.20 x 0.28 m
+ * chisel at the bow and a 0.52 x 0.32 m knife at the transom. The widest point
+ * is the compartment, and it is now a bulge amidships rather than the body.
  *
  * ── The pods moved out, and what that cost and bought ────────────────────
  * They used to sit at local x 2.40-4.00, which is 0.10 m off the flank: a
  * courier with two blisters. They are at 3.00-4.60 now, with a 0.70 m pylon
- * spanning the gap, and the beam over the pods is 9.2 m on a 14 m hull. That
+ * spanning the gap, and the beam over the pods is 9.2 m on a 20 m hull. That
  * is the silhouette — a fuselage with outriggers, legible as a courier from
  * across the shed — and it is the whole reason this hull no longer reads as
  * the same drum as the other three.
@@ -156,14 +211,20 @@ export const BROW = Object.freeze({
  */
 export const KESTREL = Object.freeze({
   id: 'kestrel',
-  length: 14,
-  z0: -6.2, z1: 7.8,
+  length: 20,
+  z0: -8.8, z1: 11.2,
   belly: Object.freeze({ y0: 0.36, y1: 0.60, hw: 2.05, z0: -4.2, z1: 3.6 }),
   /**
-   * The plated midbody, and it is SHORT on purpose: 8.2 m of the 14, from the
-   * boat-tail joint to the cockpit's forward bulkhead. Everything outside it
+   * The plated midbody, and it is SHORT on purpose: 8.2 m of the 20, from the
+   * tail-cone joint to the cockpit's forward bulkhead. Everything outside it
    * is lofted. It used to run -5.6 to 4.6 and the two ends of the hull were
    * therefore a stack of stepped boxes with a drum behind them.
+   *
+   * These two numbers did not move when the hull went from 14 m to 20 m and
+   * that is the point of the change: the compartment behind this plating is
+   * 4.16 m across and 6.8 m long and it stays exactly where it was, so the
+   * share of the LENGTH carried at full beam fell from 0.59 to 0.42 without
+   * one centimetre coming off the room.
    */
   lower: Object.freeze({ y0: 0.60, y1: 2.92, hw: 2.30, z0: -4.4, z1: 3.8 }),
   /**
@@ -193,10 +254,28 @@ export const KESTREL = Object.freeze({
    * and never shorter. Nothing behind it is painted: rule 6.
    */
   canopy: Object.freeze({ z0: 0.8, z1: 3.7, y: 2.86, top: 3.66, hw: 2.05 }),
-  /** The nose, forward of the compartment: a lofted needle, no interior. */
-  nose: Object.freeze({ z0: 3.8, z1: 7.8, y0: 0.60, y1: 2.92 }),
-  /** The boat-tail, aft of the engine bulkhead. Lofted, sealed, no interior. */
-  tail: Object.freeze({ z0: -6.2, z1: -4.4, y0: 0.60, y1: 2.92 }),
+  /**
+   * The nose, forward of the compartment: a lofted needle, no interior.
+   *
+   * 7.4 m of it and it used to be 4.0. This is 37% of the hull's length and it
+   * is where most of the re-proportioning went, because it is the one part of
+   * a hull that is FREE: nothing is climbed here, nothing stands on it, no
+   * room is behind it, and the collision proxy is `loftSolid`'s own inscribed
+   * boxes. A courier reads lean at the bow before it reads lean anywhere else.
+   */
+  nose: Object.freeze({ z0: 3.8, z1: 11.2, y0: 0.60, y1: 2.92 }),
+  /**
+   * The tail cone, aft of the engine bulkhead. Lofted, sealed, no interior.
+   *
+   * 4.4 m and it used to be 1.8, which is why the old hull's stern was the
+   * transom of the compartment with two engine pods bolted to it: there was no
+   * tail, the body just stopped. It runs past the pods now and the V-tail
+   * stands on the last two metres of it. The pods did NOT move with it — see
+   * `bands` — so the engines sit at the aft quarter with a tapering boom
+   * behind them, which is what an aircraft with rear-mounted engines looks
+   * like and what makes the stern read as a stern.
+   */
+  tail: Object.freeze({ z0: -8.8, z1: -4.4, y0: 0.60, y1: 2.92 }),
   /**
    * Two engine pods, carried outboard. Their tops are the first move of the
    * climb, so `y1` and the flat between `x0` and `x1` are both load-bearing:
@@ -219,8 +298,7 @@ export const KESTREL = Object.freeze({
    * inside of an engine pod.
    *
    * At -6.6..-2.9 the pod's nose is 0.33 m clear of the aperture's own pocket
-   * and 0.60 m clear of the ramp, its bells project 0.74 m aft of the transom
-   * at z -6.94 (which is what an engine looks like), and the pylon at
+   * and 0.60 m clear of the ramp, and the pylon at
    * -4.35..-3.05 lands on plating that is still full-beam — `lower.z0` is
    * -4.4, and a pylon rooted any further aft would be floating off the
    * boat-tail's taper.
@@ -237,11 +315,29 @@ export const KESTREL = Object.freeze({
    */
   pylon: Object.freeze({ z0: -4.35, z1: -3.05, y0: 0.86, y1: 1.56 }),
   /**
-   * The V-tail: two fins splayed 34 degrees off vertical, rooted on the
-   * boat-tail. Nothing mantles onto them and nothing stands under them — the
-   * spine deck ends at z -3.6 and these start at -4.3.
+   * The V-tail: two fins splayed 38 degrees off vertical, rooted on the tail
+   * cone. Nothing mantles onto them and nothing stands under them — the spine
+   * deck ends at z -3.6 and these start at -6.3.
+   *
+   * ── It moved 1.75 m aft with the tail, and grew ──────────────────────────
+   * It used to sit at z -5.15, which on a 14 m hull was hard against the pods
+   * and level with the top of the body: a fin on a lump. On the 20 m hull the
+   * tail cone runs to -8.80 and this stands on the last two and a half metres
+   * of it — so it rises out of a hull that is already narrow and already
+   * falling away, which is the whole reason an empennage reads as one.
+   *
+   * `rootY` 1.96 and `chordRoot` 1.70 are settled against the cone rather than
+   * chosen: `foil()` builds a HORIZONTAL root chord, and the cone's crown
+   * falls from 2.44 at the leading edge (z -6.05) to 1.98 at the trailing edge
+   * (z -7.75). A root at 1.96 is therefore 0.48 m inside the hull at the front
+   * of the chord and flush with the crown at the back of it — buried, never
+   * floating. A longer chord or a higher root puts a knife edge of aerofoil in
+   * open air over the tail, which is rule 4 in `Hulls.js` wearing a small hat.
+   *
+   * `span` 3.10 gives 4.4 m tip to tip against a 4.6 m beam, which is what
+   * keeps the empennage in proportion to a hull half again as long as it was.
    */
-  vtail: Object.freeze({ rootX: 0.30, rootY: 2.48, z: -5.15, span: 2.85, cant: 0.66, chordRoot: 1.65, chordTip: 0.78 }),
+  vtail: Object.freeze({ rootX: 0.30, rootY: 1.96, z: -6.90, span: 3.10, cant: 0.66, chordRoot: 1.70, chordTip: 0.85 }),
   rooms: Object.freeze([
     Object.freeze({ id: 'cabin', z0: -3.4, z1: 0.6, hw: 2.08, floorY: 0.76, ceilY: 2.76 }),
     Object.freeze({ id: 'cockpit', z0: 0.8, z1: 3.4, hw: 2.08, floorY: 0.76, ceilY: 2.76 }),

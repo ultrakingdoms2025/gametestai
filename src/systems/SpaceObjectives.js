@@ -1,4 +1,4 @@
-import { SPACE_BODIES, BODY_BY_ID, DOCK_ANCHOR } from '../worlds/space/Bodies.js';
+import { SPACE_BODIES, BODY_BY_ID, DOCK_ANCHOR, landableBodies } from '../worlds/space/Bodies.js';
 import { ALIEN_CLASSES } from '../npc/AlienShip.js';
 
 /**
@@ -153,9 +153,15 @@ export function surveyRange(radius) {
  * is a one-minute hop, and paying them the same makes the far half of the
  * layout content nobody has a reason to visit.
  *
- * 4 cr/s puts a survey sweep of all five bodies at 2,525 credits, which sits
- * between what the five citadel viewpoints pay (750) and what the thirty
- * citadel relics pay (3,600) - the right band for five destinations.
+ * 4 cr/s puts a survey sweep of all twelve bodies at 5,650 credits - 471 a
+ * body. The band it was set in was written for the five bodies of Phase 1 and
+ * has to be restated PER DESTINATION now that there are twelve, because a total
+ * that grew by a factor of 2.4 says nothing about whether the rate is right:
+ * every body pays at least what walking to a citadel viewpoint pays
+ * (`Viewpoints.SYNC_CREDITS`, 150 - and Cinder, the shortest hop in the volume,
+ * is exactly that), and the average body pays less than the whole five-viewpoint
+ * citadel set (750). The rate itself did not move; only the number of places to
+ * spend it on did.
  */
 export const SURVEY_CR_PER_SECOND = 4;
 
@@ -181,19 +187,55 @@ export const LEG_FIXED_S = 16.0;
 export const LEG_PER_KM_S = 0.5875;
 
 /**
- * The landfall leg: survey radius down to wheels on a pad, flown.
+ * The landfall leg, flown: 42.5 s from Cinder's survey sphere to wheels down.
  *
- * 26.2 s from the 28.0 km survey sphere to the atmosphere seam, then 16.3 s of
- * pad approach and touchdown at Ashfall Flat. 42.5 s total, so the landfall
- * bonus is 4 * 42.5 = 170, rounded to 175.
+ * 26.2 s from the 28.0 km survey sphere to the seam where the surface world
+ * takes the ship, then 16.3 s of pad approach and touchdown at Ashfall Flat.
  *
  * It is a bonus and not a second grade of the survey because of what the player
- * actually said - "reach planets" - and because Cinder is the only body with a
- * `handoff` this phase: making the survey itself conditional on landing would
- * leave four of the five bodies permanently at half credit for a reason that is
- * about the build schedule rather than about the flying.
+ * actually said - "reach planets" - and because two of the twelve bodies
+ * (Ceraunus and Erenmark) have no `handoff` at all: making the survey itself
+ * conditional on landing would leave the star and the gas giant permanently at
+ * half credit for a reason that is about them having no ground rather than
+ * about the flying.
+ *
+ * This constant is now the RECORD of the one landing that was flown rather than
+ * the payout - see {@link landfallSeconds}, which reproduces it to within half a
+ * second from Cinder's own published numbers and then pays the other nine
+ * bodies correctly without anybody coming back here.
  */
 export const LANDFALL_S = 42.5;
+
+/**
+ * Degrees of horizon a pad may lose and still be recommended by {@link
+ * SpaceObjectives#richerPad}.
+ *
+ * `PlanetWorld` marches the height field around each landing disc and
+ * publishes `drop: { deg, metres }`. Rimhold Shelf - the richest pad on Cinder
+ * by a factor of five - reads 270 degrees and a 66.9 m fall, and it is one of
+ * the pads a player can walk off and not climb back onto. 180 is the honest
+ * line for "a shelf rather than a clearing": at or under half the horizon
+ * there is always a side you came up. It is deliberately not tuned finer than
+ * that, because the underlying question is reachability and this is a proxy
+ * for it; the day a flood result is published per pad, this reads that instead.
+ */
+export const PAD_RIM_LIMIT = 180;
+
+/**
+ * The in-world half of a descent, in seconds per kilometre of handoff altitude.
+ *
+ * 16.3 s of the flown leg above was spent BELOW the handoff - inside the
+ * surface world, from the 900 m at which `Bodies.js` hands Cinder over
+ * (`handoff 9,900` against `radius 9,000`) down onto the pad. 16.3 / 0.9 km is
+ * 18.1 s/km, an average 55 m/s, which is what a controlled descent onto a pad
+ * looks like as opposed to the 1,700 m/s of the cruise above it.
+ *
+ * The handoff altitude is not the same on every body - it runs from 700 m
+ * (Tessera, Lathe) to 1,400 m (Shoal, Verdigris) - so this is a rate and not a
+ * second flat constant. See {@link landfallSeconds} for why air does NOT get a
+ * term of its own.
+ */
+export const LANDFALL_PAD_PER_KM_S = 18.1;
 
 /** Round a payout to something a HUD can print, never below one increment. */
 function round25(n) {
@@ -214,24 +256,154 @@ export function surveyReward(body) {
   return round25(SURVEY_CR_PER_SECOND * (LEG_FIXED_S + tripKm * LEG_PER_KM_S));
 }
 
-/** What setting down on a landable body pays, once, on top of the survey. */
-export const LANDFALL_CREDITS = round25(SURVEY_CR_PER_SECOND * LANDFALL_S);
+/**
+ * HOW LONG A DESCENT ONTO ONE BODY TAKES, FROM THE BODY'S OWN NUMBERS.
+ *
+ * The same move `surveyReward` makes and for the same stated reason: a line
+ * fitted to a flown leg beats a table of body ids, because "a sixth body added
+ * to `SPACE_BODIES` gets a payout that is correct for its distance without
+ * anybody remembering to come back here". Phase 2 added seven, and a flat
+ * `LANDFALL_CREDITS` paid every one of them Cinder's number.
+ *
+ * Two segments, because they are flown at two different speeds:
+ *
+ *   sphere -> handoff   the same cruise line the outbound leg uses
+ *                       (`LEG_FIXED_S + km * LEG_PER_KM_S`). This is where the
+ *                       transit drive's altitude governor is doing the braking,
+ *                       which is exactly the regime the line was fitted in.
+ *   handoff -> pad      `LANDFALL_PAD_PER_KM_S` per km of handoff altitude.
+ *
+ * Checked against the one landing that was flown: Cinder's sphere is 28.0 km
+ * and its handoff 9.9 km, so 18.1 km of cruise = 16.0 + 10.6 = 26.6 s against
+ * 26.2 s measured; its handoff altitude is 900 m, so 0.9 * 18.1 = 16.3 s
+ * against 16.3 s measured. 42.9 s against {@link LANDFALL_S}'s flown 42.5.
+ *
+ * -- WHAT DRIVES IT IS THE BODY'S SIZE, NOT ITS DISTANCE, AND THAT IS RIGHT ---
+ * Cathedra is 288 km out and Cinder 62, and Cathedra's descent is the SHORTER
+ * of the two - because the survey sphere scales with radius and Cathedra is a
+ * 6.8 km body against Cinder's 9.0. The kilometres between the yard and the
+ * planet were already paid for by `surveyReward`; paying for them twice would
+ * be paying twice for the same flying. What the landfall pays for is the part
+ * of the trip the survey did not cover: the fall from the sphere to the ground.
+ *
+ * -- AIR DOES NOT GET A TERM, AND HERE IS WHY --------------------------------
+ * An airless body does have the shorter descent, and it already comes out that
+ * way without a special case: Tessera and Lathe, the two bodies with
+ * `atmosphere === radius`, carry the two SHORTEST handoff altitudes in the
+ * system (700 m each, against 800-1,400 m for everything with air) and land at
+ * the bottom of the payout table at 125 and 150. That is the geometry saying
+ * what the airlessness says, from a number `Bodies.js` already publishes for
+ * another reason. A separate airless term would be a second copy of the same
+ * fact, and - worse - a guessed one: nobody has flown an airless descent to
+ * measure how much a vacuum is worth, and this file does not carry numbers
+ * nobody flew.
+ *
+ * @param {{radius:number, handoff:number}|null} body
+ * @returns {number} seconds; never negative, never non-finite
+ */
+export function landfallSeconds(body) {
+  const radius = Number(body?.radius);
+  const handoff = Number(body?.handoff);
+  /* A body with no handoff is not landable, so there is no descent to price.
+   * Reachable through `_landfall` if a `pilot:entry` ever names one, and a NaN
+   * out of here would become a NaN in the wallet. */
+  if (!Number.isFinite(radius) || !Number.isFinite(handoff) || handoff <= radius) {
+    return LEG_FIXED_S;
+  }
+  const cruiseKm = Math.max(0, surveyRange(radius) - handoff) / 1000;
+  const padKm = (handoff - radius) / 1000;
+  return LEG_FIXED_S + cruiseKm * LEG_PER_KM_S + padKm * LANDFALL_PAD_PER_KM_S;
+}
+
+/**
+ * What setting down on one body pays, once, on top of the survey.
+ * @param {{radius:number, handoff:number}|null} body
+ */
+export function landfallReward(body) {
+  return round25(SURVEY_CR_PER_SECOND * landfallSeconds(body));
+}
+
+/**
+ * The reference landfall: what the one descent that was actually FLOWN pays.
+ *
+ * Kept as a constant - `scripts/contract-check.mjs` names it as part of this
+ * module's published surface, and it is the number every landfall case in the
+ * suite was written against - but it is no longer what "a landing" pays,
+ * because there is no longer one answer to that. It is Cinder's row of
+ * {@link landfallReward}'s table and nothing else, and it is here so the flown
+ * measurement and the law that replaced it can be compared in one line: the law
+ * has to still produce 175 for the body it was fitted to.
+ */
+export const LANDFALL_CREDITS = landfallReward(BODY_BY_ID.cinder ?? landableBodies()[0] ?? null);
+
+/**
+ * The bodies a ship can set down on, resolved once.
+ *
+ * `SPACE_BODIES.length` is the survey denominator and it is RIGHT for the
+ * survey: you reach Erenmark by flying at it until it fills half the screen,
+ * and the star has no ground to stand on. It is wrong for landfall, which is
+ * why landfall now has its own - see {@link SpaceObjectives#landfallTotal}.
+ * @type {ReadonlyArray<object>}
+ */
+const LANDABLE = Object.freeze(landableBodies());
 
 /** The whole set of bodies: a flight suit credits cannot buy. */
 export const SURVEY_SET_COSMETIC = 'char_aurora';
+
+/**
+ * THE SECOND SET PRIZE, AND WHY THERE ARE NOW TWO.
+ *
+ * Surveying all twelve bodies is twelve fly-bys. Landing on all ten landable
+ * ones is ten fly-bys AND ten descents AND ten climbs back out, two of them
+ * onto airless rock - strictly the harder of the two, and a strict superset of
+ * the flying. With one set prize the harder thing paid nothing, which is the
+ * same shape of defect as a rung nobody can reach: a thing that is built,
+ * counted, drawn on the HUD, and worth no more than not doing it.
+ *
+ * `char_jade` because it is a real, unlocked-once id in `Cosmetics.CHARACTER_SKINS`
+ * that no other prize claims - `Cosmetics.unlock` REFUSES an id it does not
+ * know, so inventing one would have been a prize that silently never arrived.
+ * `char_aurora` (survey), `char_midnight` (Sablebane) and `char_ember` (the ore
+ * ladder) are the three already spoken for; `char_jade` and `char_violet` were
+ * the two spare.
+ *
+ * The refit is `hold`, and that completes a four-way mapping this file did not
+ * plan and should not break now that it exists: kills pay `fire` (the gun the
+ * kills were made with), the wings pay `shield` (what a fight costs you), the
+ * survey pays `power` (getting there), and the landings pay `hold` - the room
+ * to bring back what ten worlds have in the ground. It is also the only one of
+ * the four stats no SET grants; it hangs on an ore RUNG, and
+ * `ship-customizer.test.mjs` pins that there is exactly ONE ore rung granting
+ * it, which a set prize does not disturb.
+ */
+export const LANDFALL_SET_COSMETIC = 'char_jade';
+export const LANDFALL_SET_POWER = 'hold';
 
 /* ==================================================================== */
 /* 2. KILLS - the ladder, and the named wings                            */
 /* ==================================================================== */
 
 /**
- * THE KILL LADDER, IN SWEEPS.
+ * THE KILL LADDER, IN SWEEPS OF THE INNER SYSTEM.
  *
- * `SpaceWorld._fillEncounters` authors exactly three zones and they hold nine
- * hostiles between them - two skiffs on the Ashlane, two skiffs and a lance
- * over Cinder, three skiffs and a lance in the Reach. **Nine kills is one full
- * sweep of the system**, and that is a fact about the content rather than a
- * number somebody liked, so it is the rung the ladder is built on.
+ * `SpaceWorld._fillEncounters` authors TWELVE zones holding thirty hostiles,
+ * and the ladder is deliberately NOT built on all of them. Nine of the twelve
+ * are approach pickets on runs of 77 to 274 km, so one full sweep of the
+ * volume is a fifteen-hundred-kilometre grand tour: a campaign, not a session,
+ * and no use at all as a rung.
+ *
+ * What it is built on is the INNER SYSTEM - everything inside Cinder's orbit,
+ * which is three zones holding nine hostiles between them: two skiffs on the
+ * Ashlane, two skiffs and a lance over Cinder, three skiffs and a lance in the
+ * Reach. **Nine kills is one full sweep of the run every player flies first**,
+ * and that is a fact about the content rather than a number somebody liked.
+ *
+ * Phase 2 did not move it, which is the point of stating it that way: nine
+ * more landable worlds put pickets FURTHER OUT rather than more of them closer
+ * in, so the inner three are the same three and the flown evidence below still
+ * measures the thing the rung is made of. A planet added inside Cinder's orbit
+ * WOULD move it, and `space-objectives.test.mjs` re-derives the rung by
+ * distance so that it goes red rather than drifting.
  *
  * The rungs above it are rearm-limited, not skill-limited: a cleared zone
  * rearms after 240 s (the Ashlane), 300 s (Cinder orbit) or 420 s (the Reach),
@@ -245,7 +417,7 @@ export const SURVEY_SET_COSMETIC = 'char_aurora';
  * the way.
  *
  *   kill  #3 at   91 s  (1.5 min)   first wing with a lance in it broken
- *   kill  #9 at  148 s  (2.5 min)   every authored zone cleared once
+ *   kill  #9 at  148 s  (2.5 min)   every inner-system zone cleared once
  *   kill #18 at  651 s (10.8 min)   second sweep, after waiting out a rearm
  *   kill #27 at 1145 s (19.1 min)   third sweep
  *
@@ -286,6 +458,11 @@ export const KILL_TIERS = Object.freeze([
  * on the Ashlane, 290 over Cinder, 345 in the Reach. A wing that gets a third
  * skiff tomorrow pays more tomorrow, and nobody has to remember this file.
  *
+ * It is also why Phase 2's nine approach pickets needed nothing here at all:
+ * the Shoal toll's single lance pays 180 and the Cathedra spire watch's three
+ * hulls pay 290 because that is what those hulls are worth, and neither number
+ * was typed anywhere.
+ *
  * @param {{wing?:Array<{class:string,count:number}>}} zone
  */
 export function wingBounty(zone) {
@@ -297,7 +474,16 @@ export function wingBounty(zone) {
   return total;
 }
 
-/** All three wings broken: a shields refit, paid once. */
+/**
+ * EVERY named wing broken: a shields refit, paid once.
+ *
+ * "Every", not "all three". The denominator is `wingTotal`, which is LEARNED
+ * from whatever the live world authors rather than written down, so Phase 2
+ * turned this from a three-wing errand into a twelve-wing one - a sweep of the
+ * entire volume, every planet visited - without a line changing here. That
+ * escalation is intended: a refit that any pilot completes on their first
+ * afternoon is not a reward for finishing the system.
+ */
 export const WING_SET_POWER = 'shield';
 
 /* ==================================================================== */
@@ -305,17 +491,145 @@ export const WING_SET_POWER = 'shield';
 /* ==================================================================== */
 
 /**
- * THE HAUL LADDER, IN CREDITS OF ORE CUT - AND IT IS PACED BY THE HOLD.
+ * ONE MINERAL FIELD, IN CREDITS. The unit the top of the haul ladder is
+ * spaced in, and the one number in this section that had to be measured.
  *
- * Measured against the one mineral field that exists. Cinder places **119 nodes
- * worth 9,927 credits** in six kinds: 34 tephra, 26 sulfur, 20 obsidian, 18
- * ferro-basalt, 12 rheniite and 9 iridite. What sets the pace is not the credits
- * but the HOLD: a node takes `round(size * 1.6)` cubic metres, a stock Kestrel
- * holds 10 and a Dray 40, and ore pays nothing until it is sold at the yard. So
- * a haul target is really a number of ROUND TRIPS, and the rungs are spaced on
- * loads rather than on round numbers.
+ * `sum(unitValue * hold * count)` over Cinder's six minerals: 34 tephra at 18,
+ * 26 sulfur at 32, 20 obsidian at 68, 18 ferro-basalt at 104, 12 rheniite at
+ * 190 and 9 iridite at 310. 119 nodes, 9,746 credits.
  *
- * -- Flown, on foot, over the real height field -----------------------------
+ * -- Why the DESCRIPTOR mid and not the 9,927 the world places ---------------
+ * `PlanetWorld` rolls each node's value within the mineral's `spread`, so the
+ * field as BUILT is 9,927 credits this seed and something else the next. The
+ * descriptor mid is the same field with the dice taken out, it is 181 credits
+ * LOWER than the placed one, and low is the side to err on: every rung derived
+ * from it is a rung slightly easier than the ore that is really there.
+ *
+ * -- Why it is written down here rather than imported -----------------------
+ * `PLANETS` lives in `src/worlds/planets/index.js`, which imports `PlanetWorld`
+ * and therefore `three` and therefore the whole world stack; this file's import
+ * graph is two frozen data modules and `space-objectives.test.mjs` asserts
+ * exactly that, because these three objectives have to work signed out and
+ * offline. So the number is scraped by the TEST instead, which re-derives it
+ * from every descriptor `PLANETS` holds and fails if this constant has drifted
+ * above what a field actually contains.
+ *
+ * TO RE-DERIVE:
+ *
+ *   node -e "import('./src/worlds/planets/index.js').then(({PLANETS})=>{
+ *     for (const p of Object.values(PLANETS))
+ *       console.log(p.id, p.minerals.reduce((s,m)=>s+m.unitValue*m.hold*m.count,0));
+ *   })"
+ *
+ * and set this to the SMALLEST field the run prints, not the mean - the ladder
+ * has to be climbable by a player who picked the poorest ten fields to work.
+ *
+ * ── RE-DERIVED WHEN THE OTHER NINE LANDED ────────────────────────────────
+ * It was 9,746, which was Cinder, because Cinder was the only descriptor there
+ * was. The ten now read:
+ *
+ *     tessera   5,168      cinder     9,746      carnelian 10,200
+ *     shoal     7,420      vitrine    9,212      verdigris 11,482
+ *     sirocco   8,952                            cathedra  12,208
+ *                                                sallow    12,748
+ *                                                lathe     13,912
+ *
+ * so the unit is TESSERA at 5,168, not Cinder. That is not a downgrade: the
+ * poorest field is the correct unit precisely because the rung has to be
+ * reachable on the planet a player actually chose, and Tessera is the airless
+ * moonlet with four ores where every other world has five or six. A ladder
+ * spaced in Cinders asks a Tessera prospector for 1.9 fields to make one rung.
+ */
+export const FIELD_CREDITS = 5168;
+
+/**
+ * What the whole system holds. MEASURED, not projected.
+ *
+ * This used to be `FIELD_CREDITS * LANDABLE.length` - ten landable bodies at one
+ * Cinder apiece - and it said out loud that it was a projection because nine of
+ * the ten descriptors were being written as it was read. They have landed, so it
+ * is a sum now: the ten fields listed above total **101,048 credits**.
+ *
+ * Keeping the multiply would now be actively wrong in BOTH directions at once.
+ * `FIELD_CREDITS` is the POOREST field, so `poorest * 10` under-counts the
+ * system by half (51,680 against 101,048) - and it would keep tracking the
+ * poorest planet rather than the whole, so authoring one lean world would appear
+ * to shrink the system. Two different questions were being answered with one
+ * number: "what is a rung worth" (the poorest field) and "how much is out there"
+ * (the sum). They are separate constants now.
+ *
+ * Written down rather than imported for the same reason `FIELD_CREDITS` is:
+ * `PLANETS` drags `PlanetWorld` and therefore `three` behind it, and this
+ * module's import graph is asserted to be two frozen data modules so the three
+ * objectives work signed out and offline. `space-objectives.test.mjs` sums the
+ * real descriptors and fails if this has drifted.
+ */
+export const SYSTEM_ORE_CREDITS = 101048;
+
+/**
+ * THE HAUL LADDER, IN CREDITS OF ORE CUT - AND IT IS PACED BY TWO RULERS.
+ *
+ * The bottom of it is paced by the HOLD: a node takes `round(size * 1.6)` cubic
+ * metres, a stock Kestrel holds 10 and a Dray 40, and ore pays nothing until it
+ * is sold at the yard. So an early haul target is really a number of ROUND
+ * TRIPS, and the first two rungs are spaced on measured loads.
+ *
+ * The TOP of it is paced by the FIELDS. It used to be paced by one field,
+ * because there was one - the old top rung asked for 9,000 of Cinder's 9,927,
+ * and Phase 2 turned that into "top out the career without leaving the first
+ * planet you land on". A ladder whose last rung is inside a single destination
+ * is a ladder that stops being a ladder the moment a second destination exists.
+ *
+ * -- The four rungs, and which ruler each one is on -------------------------
+ *
+ *   500 cr    HOLD. The two numbers this line used to quote disprove the
+ *             sentence it made of them: it read "more than one Kestrel load
+ *             from either easy pad (114, 497)", and 500 against 114 is FOUR
+ *             AND A HALF loads, not "more than one". Restated against the
+ *             table below rather than around it - a Kestrel load is 114 cr off
+ *             Ashfall Flat, 497 off Colonnade Deck and 2,839 off Rimhold
+ *             Shelf, so this rung is 4.4 trips, 1.1 trips or ONE depending
+ *             entirely on which pad you work. That spread is the rung's whole
+ *             content: it is the first thing in the game that pays a player
+ *             for noticing that the pads are not equal, which is why `hint()`
+ *             now names the richer one instead of leaving it to be discovered
+ *             over seventeen minutes of Ashfall. Unchanged: the Kestrel still
+ *             holds 10 m3.
+ *   2,000 cr  HOLD. More than a full Dray load from either easy pad (1,659,
+ *             1,931). Unchanged, and it CANNOT move - `ShipMenuLogic.REFIT_SOURCE`
+ *             sells this rung to the player by name and by number ("earned at
+ *             Corecutter, 2,000 CR of ore cut") and `ship-customizer.test.mjs`
+ *             reddens if the copy and the rung part company.
+ *   8,775 cr  ONE FIELD, worked out, with margin. `0.90 * FIELD_CREDITS`. This
+ *             is the old top rung at its real value: it was 9,000 against a
+ *             placed field of 9,927, and it is 8,775 against a descriptor field
+ *             of 9,746 - the same claim, re-derived rather than re-typed.
+ *  29,250 cr  THREE FIELDS. `3 * FIELD_CREDITS`, and three because that is what
+ *             the kill ladder's top rung asks for as well: `KILL_TIERS[3]` is
+ *             three full sweeps of the volume, and this is three full fields of
+ *             it. It cannot be reached from one planet, which is the whole
+ *             point, and at 30% of `SYSTEM_ORE_CREDITS` it can be reached from
+ *             any three of the ten.
+ *
+ * -- Why the bottom two rungs are NOT scaled by the field --------------------
+ * Because nothing about them changed. A Kestrel load is a Kestrel load whether
+ * there is one planet or ten; scaling "your first hold home" by the number of
+ * worlds in the sky would make the first rung of a mining career cost five
+ * round trips for no reason anybody could name.
+ *
+ * -- Why absolute credits, and why 0.90 and 3.00 rather than "the whole field"
+ * The field MOVED while this file was first written: another agent extended the
+ * descriptor from 110 nodes and 6,080 credits to 119 and 9,927, and re-sized
+ * every kind. That is the ordinary case, not an accident, and it is why the
+ * rungs are stated in credits with margin rather than as "the whole field": a
+ * rung pinned to an exact total becomes UNREACHABLE the moment somebody trims a
+ * mineral, which is the "gold nobody can reach" defect with a pickaxe. Stated
+ * this way, a richer field or a richer eleventh planet only ever makes the top
+ * rung easier - the right way round for a threshold to fail. The rungs are
+ * computed off `FIELD_CREDITS` at module load and are plain credits by the time
+ * anything reads them, so that property survives the derivation.
+ *
+ * -- Measured, on foot, over the real height field --------------------------
  * Greedy nearest-node tour from each pad, path length measured by walking the
  * ground in 2 m steps so a climb out of a fissure costs what it costs,
  * converted at the game's own sustained ground speed (8.2 m/s) plus the 0.85 s
@@ -328,29 +642,19 @@ export const WING_SET_POWER = 'shield';
  *
  * Rimhold Shelf carries more nodes per load because the two rare kinds are 1 m3
  * each - the crater rim is where the value is AND where the volume is cheapest,
- * which is the descriptor's own gradient doing its job. So the rungs:
+ * which is the descriptor's own gradient doing its job.
  *
- *   500 cr    more than one Kestrel load from either easy pad (114, 497) and
- *             one from the crater rim. You fly home and come back, or you land
- *             somewhere harder.
- *   2,000 cr  more than a full Dray load from either easy pad (1,659, 1,931).
- *   5,000 cr  about one maximal rim load (5,635), or three loads off the flats.
- *   9,000 cr  90.7% of the field. Cinder mined out - and it stays mined out,
- *             because `Mining` persists which seams are worked.
+ * -- The PRIZES are deliberately unchanged ----------------------------------
+ * The top rung asks for three times the work it used to and still pays 3,000
+ * and four thruster coils. That is not an oversight: what a coil is worth did
+ * not move, the rungs were re-spaced against measured content, and re-pricing
+ * four prizes on the back of that would be four guessed numbers standing next
+ * to one measured one. If the last rung wants to pay more, somebody should
+ * measure what it is worth first.
  *
- * -- Why absolute credits, and why 90.7% and not 100% ----------------------
- * The field MOVED while this file was being written: another agent extended the
- * descriptor from 110 nodes and 6,080 credits to 119 and 9,927, and re-sized
- * every kind. That is the ordinary case, not an accident, and it is why the top
- * rung is stated in credits with 927 of margin rather than as "the whole field":
- * a rung pinned to the exact total becomes UNREACHABLE the moment somebody
- * trims a mineral, which is the "gold nobody can reach" defect with a pickaxe.
- * Stated this way, a richer field or a second planet only ever makes the top
- * rung easier - the right way round for a threshold to fail.
- *
- * `space-objectives.test.mjs` re-derives the field total from `PlanetWorld`
- * every run and asserts the margin, so a trim that ate it fails loudly here
- * rather than quietly in a player's save.
+ * `space-objectives.test.mjs` re-derives `FIELD_CREDITS` from every descriptor
+ * `PLANETS` holds every run and asserts the margins, so a trim that ate one
+ * fails loudly here rather than quietly in a player's save.
  */
 export const ORE_TIERS = Object.freeze([
   Object.freeze({ credits: 500, title: 'Prospector', reward: 200, item: 'nav_chart', qty: 1 }),
@@ -371,7 +675,12 @@ export const ORE_TIERS = Object.freeze([
      *
      *   hull                best single load, richest first   rungs cleared
      *   Kestrel, 10 m3      2,980 CR over 10 nodes            Prospector, Corecutter
-     *   Dray, 40 m3         6,006 CR over 30 nodes            + SEAMWRIGHT
+     *   Dray, 40 m3         6,006 CR over 30 nodes            + SEAMWRIGHT (then 5,000)
+     *
+     * Seamwright has since moved to 8,775 - one whole field rather than one
+     * good load - so a single Dray trip no longer clears it either. The reason
+     * the hold refit came DOWN a rung stands unchanged, and is now underwritten
+     * twice over.
      *
      * and the Dray is free, boardable from turn one, in the next berth. Worse,
      * the whole rare supply - 9 iridite and 12 rheniite - is 5,070 CR in
@@ -388,15 +697,32 @@ export const ORE_TIERS = Object.freeze([
     power: 'hold',
   }),
   Object.freeze({
-    credits: 5000,
+    /* ONE FIELD, WORKED OUT, WITH A TENTH OF IT AS MARGIN. 8,775 against a
+     * descriptor field of 9,746 and a placed one of 9,927.
+     *
+     * It was 5,000 - "about one maximal rim load" - and that rung has been
+     * eaten from below: the best single Dray load off Cinder measures 6,392 CR
+     * today, so 5,000 had stopped being a haul and become a trip. Seamwright
+     * now means what its name says, a field's seams worked out, and it stays
+     * worked out because `Mining` persists which ones are cut. */
+    credits: round25(FIELD_CREDITS * 0.90),
     title: 'Seamwright',
     reward: 1600,
     item: 'hull_plate',
     qty: 3,
   }),
   Object.freeze({
-    credits: 9000,
-    title: 'Cinderwright',
+    /* THREE FIELDS. Three because `KILL_TIERS[3]` is three full sweeps of the
+     * volume and this is the same claim about the other column: you have been
+     * everywhere worth going, more than once.
+     *
+     * RENAMED. It was 'Cinderwright', which named one planet out of ten - the
+     * same mistake `hint()` was making one screen away, and the same one the
+     * old 9,000 rung made numerically by asking for exactly that planet's ore.
+     * A career title that names your first landing site is a title that stops
+     * being true the moment the system has a second one. */
+    credits: round25(FIELD_CREDITS * 3),
+    title: 'Lodewright',
     reward: 3000,
     item: 'thruster_coil',
     qty: 4,
@@ -485,6 +811,8 @@ export class SpaceObjectives {
     /** bodyId -> 'sighted' | 'landed'. */
     this._survey = new Map();
     this._surveySetPaid = false;
+    /** Paid once when every landable body has been set down on. */
+    this._landfallSetPaid = false;
 
     /** elementId -> { n, credits, name }. */
     this._ore = new Map();
@@ -578,7 +906,15 @@ export class SpaceObjectives {
     return this._survey.size;
   }
 
-  /** Bodies there are to reach. */
+  /**
+   * Bodies there are to reach - ALL of them, scenery included, on purpose.
+   *
+   * Reaching is a fly-by: you go close enough that the thing fills half the
+   * screen and you have looked at it. Erenmark and Ceraunus have no ground and
+   * you can still do that to them, so they belong in this denominator. The
+   * denominator they do NOT belong in is the landfall one, which is why that
+   * has its own - see {@link landfallTotal}.
+   */
   get surveyTotal() {
     return SPACE_BODIES.length;
   }
@@ -588,6 +924,59 @@ export class SpaceObjectives {
     let n = 0;
     for (const v of this._survey.values()) if (v === 'landed') n++;
     return n;
+  }
+
+  /**
+   * Bodies there are to set down on.
+   *
+   * This column had a numerator and no denominator at all, so the HUD could say
+   * "4 landed" for ever and never "4 of 10" - a count with nothing to finish,
+   * which is the one thing a progress row is for. It is `landableBodies()` and
+   * not `SPACE_BODIES.length` because a set that includes the star is a set
+   * nobody completes, and a set nobody completes is the reachability defect
+   * with a nav marker on it.
+   */
+  get landfallTotal() {
+    return LANDABLE.length;
+  }
+
+  /**
+   * The nearest landable body that has not been set down on, or null.
+   *
+   * Measured from the SHIP when there is one under the player and its position
+   * is finite, and from the yard otherwise - which is the honest answer on a
+   * planet or a deck, where "nearest" can only mean nearest to home. The
+   * finiteness check is not decoration: a non-finite position would make every
+   * comparison false, the answer silently null and the hint silently wrong,
+   * and this world has already lost a day to a NaN travelling somewhere it was
+   * not checked for.
+   *
+   * The world the player is standing on is skipped. A save restored straight
+   * onto a surface has not fired `pilot:entry`, so without this the sentence
+   * under the counters would tell somebody standing on Cinder to go to Cinder.
+   */
+  nextLandfall() {
+    const p = this.piloting;
+    const sp = p?.active ? p.flight?.position : null;
+    let ox = DOCK_ANCHOR.position[0];
+    let oy = DOCK_ANCHOR.position[1];
+    let oz = DOCK_ANCHOR.position[2];
+    if (sp && Number.isFinite(sp.x) && Number.isFinite(sp.y) && Number.isFinite(sp.z)) {
+      ox = sp.x; oy = sp.y; oz = sp.z;
+    }
+    let best = null;
+    let bestD = Infinity;
+    for (let i = 0; i < LANDABLE.length; i++) {
+      const b = LANDABLE[i];
+      if (this._survey.get(b.id) === 'landed') continue;
+      if (b.id === this._worldId || b.surfaceWorld === this._worldId) continue;
+      const dx = ox - b.position[0];
+      const dy = oy - b.position[1];
+      const dz = oz - b.position[2];
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < bestD) { bestD = d; best = b; }
+    }
+    return best;
   }
 
   /** Elements assayed at least once. */
@@ -652,6 +1041,12 @@ export class SpaceObjectives {
       surveyed: this.surveyCount,
       surveyTotal: this.surveyTotal,
       landfalls: this.landfallCount,
+      /* Published so the HUD can draw a landfall row with a denominator in it.
+       * `HUD._setObjectives` does not read it yet - that file is owned by
+       * another drop - and publishing it is the half of the fix this file can
+       * make on its own: a number nothing consumes is cheap, and a HUD that
+       * cannot ask is a HUD that has to guess. */
+      landfallTotal: this.landfallTotal,
       assayed: this.assayCount,
       assayTotal: this.assayTotal,
       ore: this.oreCredits,
@@ -690,26 +1085,170 @@ export class SpaceObjectives {
 
     if (world === 'dock') {
       if (this.oreCredits > 0 || this.killCount > 0) {
-        return 'Sell your hold at a yard counter, then out through the blast door again.';
+        return 'Your hold was sold the moment you docked. Back out through the bay mouth, then F to board.';
       }
-      return 'Your hull is berthed outside. Through the blast door at the far end, then F to board.';
+      return 'Your hull is berthed outside, on Pier One. Down the keel line and out through the bay mouth at the far end, then F to board.';
     }
 
     if (world === 'space') {
       if (this.surveyCount === 0) {
         return 'Pick a body off the navigation list, top right, and fly at it. W throttles, X brakes.';
       }
-      if (this.landfallCount === 0) {
-        return 'Cinder is the one body you can land on. Fly in until the readout says APPROACH, then descend.';
+      /* NAMES ONE PLACE, AND IT IS THE PLACE YOU ARE NEAREST TO.
+       *
+       * This line used to read "Cinder is the one body you can land on", which
+       * was true of Phase 1 and is now false of nine tenths of the sky. The
+       * repair is not to list the ten - a sentence with ten proper nouns in it
+       * is a table, and a player reading a table has not been told what to do.
+       * It is to answer the question the counter above it raises: there are ten
+       * and you have four, so which one is next? The nearest one you have not
+       * been to, measured from where the ship actually is. */
+      const next = this.nextLandfall();
+      if (next) {
+        return this.landfallCount === 0
+          ? `${next.name} is the nearest world you can land on. Fly in until the readout says APPROACH, then descend.`
+          : `${next.name} is the nearest world you have not set down on - ${this.landfallCount}/${this.landfallTotal} so far.`;
       }
       return 'Fly home to Lodestar Yard when the hold is full - ore pays nothing until it is sold.';
     }
 
-    // A surface. Only Cinder today, but the sentence is about mining, not Cinder.
-    if (this.assayCount === 0) return 'Walk to a seam and HOLD E to cut it. Every element pays a bonus the first time.';
+    // A surface. Ten of them now, and the sentence is about mining, not a planet.
+    if (this.assayCount === 0) {
+      const richer = this.richerPad();
+      return 'Walk to a seam and HOLD E to cut it. Every element pays a bonus the first time.'
+        + (richer ? ` ${richer.name} carries the richer seams.` : '');
+    }
+    /* Where to go AFTER the hold is full, which is the only part of a mining
+     * brief that changes once there is more than one field to work. */
+    const after = this.nextLandfall();
+    if (after) {
+      return `Hold E at a seam. When the hold is full, lift off, sell at the yard, then try ${after.name}.`;
+    }
     return 'Hold E at a seam. When the hold is full, lift off and fly back to the yard to sell.';
   }
 
+
+  /**
+   * THE PAD ON THIS WORLD WORTH FLYING TO INSTEAD, or null when you are on it.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   *  SEVENTEEN MINUTES VERSUS FOUR
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * Every atmospheric entry lands at the world's `primary` pad, and on Cinder
+   * that is Ashfall Flat, which is the POOREST of its three. Measured, per
+   * 10 m3 Kestrel load:
+   *
+   *     ashfall (primary)   114 cr    5 trips to clear the 500 cr rung
+   *     colonnade           497 cr    2 trips
+   *     rimhold           2,839 cr    1 trip
+   *
+   * (Those are WALKED loads, from a greedy nearest-node tour. The ranking
+   * below is computed from a best-value load instead - 481 / 1,059 / 4,154 -
+   * which orders the three pads the same way and needs no walk.)
+   *
+   * At the flown 45 s out and 90 s back that is about seventeen minutes from
+   * Ashfall against four and a half from the rim - for the same objective, on
+   * the same planet, decided entirely by a choice the game never mentioned.
+   * Ashfall reaches only the two cheapest ores per cubic metre, so the hold
+   * fills on bulk and the pad is not a bad pad, it is a THIN one.
+   *
+   * The fix is one sentence rather than a rebalance: nothing here moves
+   * `ORE_TIERS`, the field, the hold or which pad `primary` is. A player who
+   * is TOLD that another pad carries the richer seams can fly there; one who
+   * is not spends the seventeen minutes finding out.
+   *
+   * ── IT IS DERIVED, AND THE RIM TEST IS NOT DECORATION ────────────────────
+   *
+   * Nothing about Cinder is typed here. Every mineral node is assigned to its
+   * nearest pad and the credits are summed, which is the same "which pad is
+   * this seam for" question a player answers by looking - so an eleventh
+   * planet, or a re-cut mineral table, gets a correct sentence with nobody
+   * coming back.
+   *
+   * And a pad is only a candidate if you can get back ONTO it. Seven of the
+   * ten worlds have a pad you can walk off and never climb back to, and they
+   * are exactly the exotic-seam pads - the rich ones. Sending a new player to
+   * one of those would be swapping a slow objective for a stranding, which is
+   * a worse trade than the one being fixed. `PlanetWorld` publishes each pad's
+   * rim exposure as `drop.deg` for exactly this kind of question, and
+   * {@link PAD_RIM_LIMIT} is the line: Rimhold Shelf reads 270 degrees of
+   * horizon falling away and is therefore never named, however rich it is.
+   *
+   * @returns {{id:string,name:string,credits:number}|null}
+   */
+  richerPad() {
+    const w = this.worldManager?.active ?? null;
+    const sites = w?.landingSites;
+    const nodes = w?.mineralNodes;
+    if (!Array.isArray(sites) || sites.length < 2) return null;
+    if (!Array.isArray(nodes) || nodes.length === 0) return null;
+
+    /* ── THE UNIT IS A HOLD, NOT A FIELD ──────────────────────────────────
+     *
+     * Summing the credits lying near each pad is the obvious metric and it is
+     * the wrong one, because the thing that limits a trip is VOLUME. Driven on
+     * Cinder, the field totals rank rimhold 6,057 / colonnade 2,277 / ashfall
+     * 1,593 - a 1.43x spread, and Colonnade would have failed the margin below
+     * and this sentence would never have fired at all. What a player
+     * experiences is what ONE LOAD is worth: on the same three pads a
+     * best-value 10 m3 load is 4,154 / 1,059 / 481, an 8.6x spread, because
+     * the rich pads carry ores worth more per cubic metre rather than simply
+     * more of them.
+     *
+     * So each pad is valued at the best load its own nearest seams can fill:
+     * sort by credits per m3, take until the hold is full. */
+    const hold = Math.max(1, Number(this.piloting?.cargoCapacity) || 10);
+    const byPad = new Map();
+    for (const n of nodes) {
+      let best = null;
+      let bestD = Infinity;
+      for (const s of sites) {
+        const d = n.position.distanceToSquared(s.position);
+        if (d < bestD) { bestD = d; best = s; }
+      }
+      if (!best) continue;
+      let list = byPad.get(best.id);
+      if (!list) { list = []; byPad.set(best.id, list); }
+      list.push(n);
+    }
+    const worth = new Map();
+    for (const [id, list] of byPad) {
+      list.sort((a, b) => (b.credits / Math.max(1e-6, b.size)) - (a.credits / Math.max(1e-6, a.size)));
+      let room = hold;
+      let paid = 0;
+      for (const n of list) {
+        const v = Number(n.size) || 0;
+        if (v > room) continue;
+        room -= v;
+        paid += Number(n.credits) || 0;
+        if (room <= 1e-6) break;
+      }
+      worth.set(id, paid);
+    }
+
+    let pick = null;
+    let pickWorth = 0;
+    for (const s of sites) {
+      /* A pad with no published rim is a pad from a world that predates the
+       * measurement, and the safe reading of "unknown" is "allowed" - the
+       * alternative is a hint that silently stops existing. */
+      if ((s.drop?.deg ?? 0) > PAD_RIM_LIMIT) continue;
+      const v = worth.get(s.id) ?? 0;
+      if (v > pickWorth) { pickWorth = v; pick = s; }
+    }
+    if (!pick) return null;
+
+    /* Standing on it already, or it is not worth the flight. The margin is a
+     * HALF again rather than any margin at all: two pads within a few percent
+     * of each other are the same decision, and a sentence that sent a player
+     * across a planet for 4% would be worse than silence. */
+    const here = this.piloting?.landedSite?.id ?? null;
+    if (pick.id === here) return null;
+    const mine = here ? (worth.get(here) ?? 0) : 0;
+    if (mine > 0 && pickWorth < mine * 1.5) return null;
+    return { id: pick.id, name: pick.name, credits: pickWorth };
+  }
 
   /**
    * THE MAP SURFACE, and the reason it is a strip of tags rather than markers.
@@ -723,7 +1262,7 @@ export class SpaceObjectives {
    *
    * So this is the plot: every body in publication order, with a three-letter
    * tag and its state, which the HUD draws as one line under the Survey count.
-   * Five glyphs is the whole system at a glance and it fills in as you go,
+   * Twelve glyphs is the whole system at a glance and it fills in as you go,
    * which is what "revealed on a map" means when the map is the sky.
    *
    * Fresh objects each call. That is safe and deliberate: this is read on a
@@ -735,8 +1274,10 @@ export class SpaceObjectives {
     return SURVEY_SPHERES.map(({ body }) => ({
       id: body.id,
       name: body.name,
-      /* Three letters, upper case. Enough to tell Cinder from Ceraunus, short
-       * enough that five of them fit on one line of a corner panel. */
+      /* Three letters, upper case. Enough to tell Cinder from Ceraunus and
+       * Sirocco from Sallow, short enough that twelve of them fit on one line
+       * of a corner panel - which is what set the length back when there were
+       * five, and is the reason it still holds at twelve. */
       tag: body.name.slice(0, 3).toUpperCase(),
       landable: body.handoff > 0,
       state: this._survey.get(body.id) ?? null,
@@ -770,7 +1311,7 @@ export class SpaceObjectives {
   /* ------------------------------------------------------------------ */
 
   /**
-   * Detect arrival at a body. Five squared-distance tests against a flat
+   * Detect arrival at a body. Twelve squared-distance tests against a flat
    * array, no allocation, and it returns on the second line in every world
    * that is not space.
    *
@@ -959,17 +1500,26 @@ export class SpaceObjectives {
     }
     if (this._survey.get(body.id) === 'landed') return;
     this._survey.set(body.id, 'landed');
-    this.economy?.add?.(LANDFALL_CREDITS, 'objective:landfall');
+    /* Derived from the body, not from a constant - see `landfallReward`, which
+     * owns the whole of the "what if the geometry is unreadable" question and
+     * is the ONLY copy of that guard. A second `|| LANDFALL_CREDITS` here would
+     * read as belt and braces and would really be a branch that cannot be
+     * reached, so deleting either would leave the behaviour correct and neither
+     * could ever be proved load-bearing. Same rule `update` records. */
+    const reward = landfallReward(body);
+    this.economy?.add?.(reward, 'objective:landfall');
     this.bus?.emit?.('objective:landfall', {
       id: body.id,
       name: body.name,
-      credits: LANDFALL_CREDITS,
+      credits: reward,
       landfalls: this.landfallCount,
+      total: this.landfallTotal,
     });
     this.bus?.emit?.('hud:notify', {
-      text: `Landfall on ${body.name} - +${LANDFALL_CREDITS} CR`,
+      text: `Landfall on ${body.name} - +${reward} CR (${this.landfallCount}/${this.landfallTotal})`,
       tone: 'good',
     });
+    this._checkLandfallSet();
     this._announce();
   }
 
@@ -987,6 +1537,35 @@ export class SpaceObjectives {
       text: got
         ? 'Every body in the volume surveyed - Aurora Racer unlocked, yard thrust refit'
         : 'Every body in the volume surveyed - yard thrust refit',
+      tone: 'good',
+    });
+  }
+
+  /**
+   * Wheels down on every landable body: a skin and a hold refit, once.
+   *
+   * Checked against `LANDABLE`, which is resolved from `landableBodies()` at
+   * module load and therefore from the live layout - so a body promoted from
+   * scenery to a destination (which is exactly what Phase 2 did to Vitrine and
+   * Tessera) enlarges the set, and one demoted shrinks it. The wing set's
+   * ghost-in-the-roster problem does not arise here for that reason: this
+   * denominator is never learned and never remembered, it is read.
+   */
+  _checkLandfallSet() {
+    const total = this.landfallTotal;
+    if (this._landfallSetPaid || total <= 0 || this.landfallCount < total) return;
+    this._landfallSetPaid = true;
+    const got = this.cosmetics?.unlock?.(LANDFALL_SET_COSMETIC) === true;
+    this._refit(LANDFALL_SET_POWER);
+    this.bus?.emit?.('objective:landfallSet', {
+      total,
+      cosmetic: LANDFALL_SET_COSMETIC,
+      power: LANDFALL_SET_POWER,
+    });
+    this.bus?.emit?.('hud:notify', {
+      text: got
+        ? `Every world in the system landed on - Jade Sovereign unlocked, yard hold refit (${total}/${total})`
+        : `Every world in the system landed on - yard hold refit (${total}/${total})`,
       tone: 'good',
     });
   }
@@ -1202,6 +1781,7 @@ export class SpaceObjectives {
       wingSet: this._wingSetPaid,
       survey,
       surveySet: this._surveySetPaid,
+      landfallSet: this._landfallSetPaid,
       ore,
       elements,
       oreTier: this._oreTier,
@@ -1245,6 +1825,7 @@ export class SpaceObjectives {
     this._oreTier = 0;
     this._wingSetPaid = false;
     this._surveySetPaid = false;
+    this._landfallSetPaid = false;
 
     const kills = data.kills;
     if (kills && typeof kills === 'object' && !Array.isArray(kills)) {
@@ -1331,6 +1912,12 @@ export class SpaceObjectives {
       && this.wingTotal > 0 && this._wings.size >= this.wingTotal;
     this._surveySetPaid = data.surveySet === true
       && this.surveyTotal > 0 && this._survey.size >= this.surveyTotal;
+    /* And its landfall twin, clamped against the LANDED grades rather than
+     * against the plot: a save with twelve sightings and no landings in it must
+     * not restore the landfall set as paid, or the ten descents it is the prize
+     * for become unpayable for the rest of that save. */
+    this._landfallSetPaid = data.landfallSet === true
+      && this.landfallTotal > 0 && this.landfallCount >= this.landfallTotal;
 
     this._announce();
     return true;

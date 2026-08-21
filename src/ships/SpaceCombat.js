@@ -18,7 +18,7 @@ import { DOCK_ANCHOR } from '../worlds/space/Bodies.js';
  *
  *   SPEED. An arrow is 80 m/s and a fireball is 52. A laser bolt has to
  *   outrun a Kestrel doing 455 m/s under boost, and be quick enough that a
- *   700 m shot is a lead problem rather than a prayer. Ours is 1,600 m/s -
+ *   500 m shot is a lead problem rather than a prayer. Ours is 1,600 m/s -
  *   twenty times a fireball.
  *
  *   WHAT IT HITS. Every `Projectiles` shot resolves through `physics.raycast`
@@ -36,7 +36,7 @@ import { DOCK_ANCHOR } from '../worlds/space/Bodies.js';
  *   not a trade worth making for a flash that bloom already draws.
  *
  *   HOW MANY. `MAX_PROJECTILES` is 32. Two skiffs and a lance firing bursts of
- *   two and three at 1,350 m/s over 900 m, plus a player holding the trigger
+ *   two and three at 1,350 m/s over 500 m, plus a player holding the trigger
  *   at five a second, saturates 32 in about a second and a half - at which
  *   point `spawn` starts recycling the oldest LIVE bolt, and shots begin
  *   vanishing mid-flight.
@@ -98,9 +98,9 @@ import { DOCK_ANCHOR } from '../worlds/space/Bodies.js';
  *      close still could not fire. The nearest authored zone is 20 km out.
  *
  *   3. THEY ARRIVE AHEAD OF YOU, OUTSIDE WEAPONS RANGE, AND HOLD FIRE. The
- *      launch cone is 900-1,250 m and biased into the forward hemisphere, so a
- *      wing appears as three red sparks you can see coming; `holdFire` gives
- *      1.8 s of warning before the first bolt. Never behind, never inside
+ *      launch cone is 600-850 m and biased into the forward hemisphere, so a
+ *      wing appears as three contacts you can see coming; `holdFire` gives
+ *      1.2 s of warning before the first bolt. Never behind, never inside
  *      `SPAWN_MIN`, never while docked, landed or mid-seam.
  *
  * ===========================================================================
@@ -117,6 +117,108 @@ import { DOCK_ANCHOR } from '../worlds/space/Bodies.js';
  * reads it. That is the entire change to a file this drop does not own, it is
  * two lines, and it is the genre's own answer: something has a lock on you, so
  * you are in normal space until it does not.
+ *
+ * ===========================================================================
+ *  THE ENGAGEMENT GEOMETRY, WHICH WAS WRONG AND IS NOW MEASURED
+ * ===========================================================================
+ *
+ * The complaint was "combat is invisible at range", and it was right. It is
+ * not a VFX bug and it was not fixed with one: the hulls are authored at real
+ * scales - a skiff is 9.9 m long and 11.0 m across the blades - and a ship you
+ * can see because it is the size of a house is a worse lie than a fight that
+ * happens at 300 m. So the DISTANCE moved and the hulls did not.
+ *
+ * -- HOW MANY PIXELS IS A SKIFF ---------------------------------------------
+ *
+ * `CONFIG.render.fov` is 75 degrees VERTICAL. The image plane at range d is
+ * `2 * d * tan(37.5deg) = 1.5347 * d` world units tall, mapped to 1080 rows,
+ * so at 1080p:
+ *
+ *     pixels = 1080 / 1.5347 * (metres / range) = 703.7 * metres / range
+ *
+ * `.probe/engagement.mjs` parks a real hostile at a real range and projects
+ * ITS OWN VERTICES through the live camera, so this is a measurement and not
+ * a derivation. Skiff (11.0 m span), 1920x1080, largest screen extent:
+ *
+ *     range     arithmetic   measured   what the screenshot shows
+ *     1250 m       6.2 px      5.0 px   indistinguishable from a star
+ *     1100 m       7.0 px      7.1 px   the complaint's "~6 px". Nothing.
+ *      780 m       9.9 px      9.9 px   4 violet pixels at 4x magnification;
+ *                                       NOTHING in the unzoomed frame - and
+ *                                       780 m was the skiff's own gun range
+ *      520 m      14.9 px     14.6 px   a smudge with a long axis
+ *      420 m      18.4 px     17.9 px   an object; blades leave the body
+ *      300 m      25.8 px     24.6 px   a SHAPE with a facing: swept wings,
+ *                                       amber leading edge, a nose
+ *      200 m      38.7 px     35.6 px   a craft you can watch bank
+ *      130 m      59.5 px     51.9 px   the merge
+ *
+ * The threshold is not taste either: the design's own cue is the pair of
+ * forward-swept blades whose runners sit 3.4 m off the spine, and two glow
+ * features 3.4 m apart need about 8 px between them to survive the bloom -
+ * which is `703.7 * 3.4 / 8 = 299 m`. The wings become wings at 300 m.
+ *
+ * -- WHAT MOVED -------------------------------------------------------------
+ *
+ *     skiff gun      780 -> 420 m     the fight band is [130, 420]
+ *     lance gun      900 -> 520 m     16.4 m of arms; 22 px at its own reach
+ *     spawn shell   900-1250 -> 600-850 m
+ *     player gun    1000 -> 700 m     still 180 m past the heaviest hostile
+ *     convergence    550 -> 380 m     the reticle is true where the fight is
+ *     hold fire      1.8 -> 1.2 s     the first bolt arrives inside 400 m
+ *
+ * -- IS 420 m SURVIVABLE, OR IS IT A FLYBY ---------------------------------
+ *
+ * The band is 290 m wide. Closure decides whether that is a fight:
+ *
+ *     head-on, both flat out    210 + 174 = 384 m/s   0.76 s   a merge
+ *     player throttled to 100   100 + 174 = 274 m/s   1.06 s   a pass
+ *     hostile in ATTACK inside 320 m it throttles to 0.72 -> 125 m/s
+ *     a turning fight            50-150 m/s          2-6 s     the fight
+ *
+ * A head-on merge is 0.76 s and always was; that is what a merge IS. What
+ * changed is that the TURNING part - `ATTACK` runs up to `ATTACK_LIMIT`
+ * seconds and both craft are circling at 125-210 m/s - now happens inside
+ * 420 m instead of inside 780 m, so the several seconds a player spends
+ * tracking a target are spent on 18-52 px of ship rather than on 8-18.
+ *
+ * -- AND THE OTHER HALF: A WING MUST NOT BE FLOWN PAST AT 5,000 m/s ---------
+ *
+ * `Flight`'s transit drive tops out at 5,000 m/s and a picket's trigger sphere
+ * is 4,200 m, which is 0.84 seconds of it. The old spawner launched the wing
+ * on the step the sphere was entered - while the player was still at transit
+ * speed - and `interdicted` was only written AFTERWARDS, so the drive spent
+ * `transitSpoolDown` (1.2 s) shedding 5,000 m/s to cruise and the ship was
+ * about 3 km past the wing before its first bolt. The wing then had to catch a
+ * faster ship from astern, which it cannot. The encounter existed and did not
+ * happen: this project's signature defect, again.
+ *
+ * So arming and launching are now two different things. Crossing into a zone
+ * ARMS it, which writes `interdicted` immediately - the drive drops and the
+ * displacement multiplier is cancelled the same step - and the wing launches
+ * only once `flight.transitState` is back to `off`. The player is therefore
+ * always in normal space when three craft appear 600-850 m ahead, which is
+ * what that standoff was always supposed to buy and never did.
+ *
+ * The arm is on a LEASH rather than on the sphere, because a drive shedding
+ * 5,000 m/s covers about 3.1 km doing it and would otherwise coast out of the
+ * trigger it had just fired.
+ *
+ * -- HOW YOU LEAVE ---------------------------------------------------------
+ *
+ * Being pinned is the failure mode a transit drop-out invites, so the lock is
+ * a CLOCK and not a flag: you are held while the fight is on and something has
+ * either had you inside its own gun range or been gaining on you within
+ * `LOCK_GRACE` (12 s). Break contact and hold it, and the drive comes back.
+ *
+ * It is deliberately not a radius. Two were tried and both were measured out
+ * of existence - see the note on `LOCK_GRACE`, which is worth reading before
+ * anyone tries a third, because the reason is structural rather than a matter
+ * of tuning: a normal break-off opens 11,015 m on its own.
+ *
+ * What it costs, flown: a hull that can out-run the wing is free about twelve
+ * seconds after it breaks contact; a hull that cannot is held until the wing
+ * gives up. `DISENGAGE` stands the wing down at 3,600 m either way.
  */
 
 /* ------------------------------------------------------------------ */
@@ -133,12 +235,28 @@ import { DOCK_ANCHOR } from '../worlds/space/Bodies.js';
  */
 export const GUN = Object.freeze({
   damage: 16,
-  /** m/s. Fast enough that 700 m is a lead problem, not a prayer. */
+  /** m/s. Fast enough that 500 m is a lead problem, not a prayer. */
   speed: 1600,
-  /** Metres. Comfortably inside `Scale.NEAR_FIELD` (1400), which is the
-   *  distance out to which everything is drawn at its TRUE position - so the
-   *  thing you are shooting at is where the maths says it is. */
-  range: 1000,
+  /**
+   * Metres. 700, from 1,000.
+   *
+   * Two floors and one ceiling decide this number and none of them is taste:
+   *
+   *   IT MUST OUT-REACH THE HEAVIEST HOSTILE. The lance shoots at 520 m, so
+   *   a player who flies a good merge gets 180 m of opening fire that cannot
+   *   be answered. That is the reward for pointing your nose first.
+   *   IT MUST BE SEVERAL TURN RADII. A stock Kestrel turns in 148 m at cruise
+   *   and every hull in the yard turns in the same 148 m (see `Flight`), so
+   *   700 m is 4.7 radii - an arena with room for the knife.
+   *   IT MUST BE INSIDE `Scale.NEAR_FIELD` (1400 m), out to which `Backdrop`
+   *   draws everything at its TRUE position, so the thing you are shooting at
+   *   is where the maths says it is.
+   *
+   * 1,000 m satisfied all three and was still wrong, because a gun that
+   * reaches 1,000 m invites shooting at 1,000 m, and at 1,000 m a skiff is
+   * seven pixels. A range you cannot aim inside is not reach, it is a tease.
+   */
+  range: 700,
   /** Seconds between shots when the capacitor can pay for them. 5/s. */
   interval: 0.20,
   /**
@@ -167,10 +285,23 @@ export const GUN = Object.freeze({
  * Metres up the nose line where the two guns cross, and the furthest a muzzle
  * may sit from the keel. Both exist because of the Dray - see `_playerGun`.
  *
- * 550 is `GUN.range * 0.55`, and it is deliberately the same point `_drawAim`
+ * 380 is `GUN.range * 0.54`, and it is deliberately the same point `_drawAim`
  * puts the reticle at: the crosshair is exact exactly where the bolts meet.
+ *
+ * It came in from 550 with the rest of the envelope, and the guarantee it has
+ * to keep is arithmetic. A bolt aimed at the convergence point is
+ * `span * (1 - d / CONVERGE)` off the axis at range d; the widest span the cap
+ * allows is `MAX_SPAN`, and a skiff's hit sphere is 4.2 m. Over the whole new
+ * envelope [110 m, 700 m]:
+ *
+ *     110 m   3.2 * (1 - 0.289) =  2.28 m   hit
+ *     275 m   3.2 * (1 - 0.724) =  0.88 m   hit   <- the median of the fight
+ *     700 m   3.2 * (1 - 1.842) = -2.69 m   hit
+ *
+ * so a maximum-span hull hits a stationary skiff sitting on the reticle at
+ * every range it can shoot from, which is a stronger claim than 550 m made.
  */
-export const CONVERGE = 550;
+export const CONVERGE = 380;
 export const MAX_SPAN = 3.2;
 
 /** Shield pool per point of `shieldTier`. See the ladder note in the header. */
@@ -183,11 +314,38 @@ export const SHIELD_DELAY = 4.5;
 
 /** No hostile may exist within this of the yard mouth. Rule 2 in the header. */
 export const SAFE_RADIUS = 9000;
-/** Launch shell around the player: never nearer, never further. */
-export const SPAWN_MIN = 900;
-export const SPAWN_MAX = 1250;
-/** Seconds a fresh wing may not fire for. The warning. */
-export const HOLD_FIRE = 1.8;
+/**
+ * Launch shell around the player: never nearer, never further. 600-850, from
+ * 900-1250.
+ *
+ * Both ends are pinned to something:
+ *
+ *   THE FAR END is as far out as a craft can be and still be SEEN arriving.
+ *   At 850 m a skiff is 9 px and a lance 14 - a moving speck, but a speck the
+ *   contact marker is now pointing at, so "three sparks you can see coming"
+ *   becomes true for the first time. Past that it is a HUD event with nothing
+ *   under it, which is what 1,250 m was.
+ *   THE NEAR END is outside the heaviest hostile's own gun (520 m), so nothing
+ *   ever arrives already shooting - and `space-combat.test.mjs` asserts
+ *   exactly that, per class, so the two numbers cannot drift apart.
+ *
+ * The shell is now reached in normal space rather than at transit speed - see
+ * `_spawner` - which is what makes a 600 m standoff a closing engagement
+ * instead of 0.12 s of it.
+ */
+export const SPAWN_MIN = 600;
+export const SPAWN_MAX = 850;
+/**
+ * Seconds a fresh wing may not fire for. The warning. 1.2, from 1.8.
+ *
+ * It is a DISTANCE dressed as a time: at a 300 m/s closure 1.8 s is 540 m of
+ * dead space, which from a 700 m spawn put the first bolt at 160 m - past the
+ * merge, so the opening pass had no shots in it at all. At 1.2 s it is 360 m
+ * and the first bolt arrives at about 340 m, which is inside the range where
+ * the player can see what is shooting at them. That is the entire point of
+ * the number and it was not being met.
+ */
+export const HOLD_FIRE = 1.2;
 
 /**
  * THE HULL ALARM. The warning that was not there.
@@ -214,6 +372,128 @@ export const WARN_HOLD = 3.4;
 export const WARN_REPEAT = 6.0;
 /** Leave the fight by this much and the wing stands down. */
 export const DISENGAGE = 3600;
+/**
+ * THE MASS LOCK, AND WHY IT IS A CLOCK RATHER THAN A RADIUS.
+ *
+ * `interdicted` used to mean "any hostile is alive anywhere", which with
+ * `DISENGAGE` at 3,600 m denied the transit drive for as long as it took to
+ * open 3.6 km - about ninety seconds at the 36 m/s a stock Kestrel gains on a
+ * skiff at cruise, most of it spent well outside the hostiles' own 420 m guns,
+ * flying in a straight line, not being shot at, and unable to leave. Taking a
+ * hit drops you out of transit (`Piloting._breakTransit`), so that stretch was
+ * also un-re-enterable. That is being pinned by bookkeeping.
+ *
+ * ── A RADIUS WAS THE OBVIOUS ANSWER AND IT IS THE WRONG ONE ────────────────
+ *
+ * Two of them were tried and both were measured out of existence:
+ *
+ *   1,500 m failed `space-combat.test.mjs` in one line. `Piloting`'s
+ *   displacement multiplier covers 1,680 m/s while the throttle is pinned, so
+ *   a player holding W - which is what a player travelling DOES - opened
+ *   1,500 m in under a second and a half and left without a decision.
+ *
+ *   2,200 m failed `space-objectives.test.mjs`, and the trace is worth
+ *   keeping: at t=48 s a two-skiff wing broke off, and by t=55 s the gap had
+ *   opened to 2,298 m ON ITS OWN - the player was orbiting the zone, not
+ *   running. The lock fell off, the multiplier spooled to x8, and the wing
+ *   stood down at t=56 s. A guns-cold ablation shook a live encounter by
+ *   doing nothing at all.
+ *
+ * The second failure is not a tuning problem, it is structural: this file's
+ * own `a hostile merges, breaks off, separates, and comes back` case measures
+ * the separation a normal break produces, and it is far past any radius worth
+ * having - so a lock radius below it fires during a fight the player is still
+ * in, and one at or above it is the flag we started with.
+ *
+ * ── AND THE NUMBER THAT SENTENCE USED TO CARRY WAS WRONG ──────────────────
+ *
+ * It read "3,590 m ... `DISENGAGE` is 3,600 m precisely BECAUSE that is where
+ * a break-off tops out". That 3,590 m came off a headless rig which boarded
+ * through `Piloting.board` in a world publishing no hulls, so `Flight.setShip`
+ * took its `powerMul: 1` fallback and the flown Kestrel cruised at 120 m/s -
+ * a hull the wing could always out-run, which is what bounded the separation.
+ *
+ * Re-flown with the game's stock Kestrel (210 m/s) and `DISENGAGE` lifted out
+ * of the way, the same case opens 11,015 m. So:
+ *
+ *   - the CONCLUSION stands, harder than before: a radius-based release is
+ *     structurally wrong, and the radius it would have needed is 11 km rather
+ *     than the 3.6 km originally claimed;
+ *   - the DERIVATION of `DISENGAGE = 3600` does not. It is not "where a
+ *     break-off tops out"; it is a tuning choice about how far you have to get
+ *     before the wing loses interest, and with the real hull it lands INSIDE a
+ *     break-and-reform cycle rather than past the end of one. That is a live
+ *     design question and it has deliberately not been answered here.
+ *
+ * ── SO THE RELEASE IS A CLOCK, AND IT MEASURES THE RIGHT THING ─────────────
+ *
+ * You are held while the fight is on and something has had you recently.
+ * "Recently" resets on either of two conditions, and both are needed:
+ *
+ *   IN REACH. Something is inside its own gun range. A hostile that is in
+ *   range and missing is still shooting at you, so this is reach and not
+ *   damage - a lock that only held while you were being hit would reward
+ *   flying badly.
+ *   OR STILL GAINING. The nearest is closing the range on you faster than
+ *   5 m/s. This is the term that survives a break-and-reform: a craft that has
+ *   overshot and is coming round again is not out of the fight, and the range
+ *   readout cannot tell the difference on its own.
+ *
+ * Twelve seconds is set against the wing's own cycle: `BREAK_MAX` is 3.4 s and
+ * a `REFORM` run is capped at 7, so a craft mid-cycle is out of reach for at
+ * most about 10.4 s - and for most of that it is closing again, which resets
+ * the clock anyway. Below ten the lock falls off between passes; much above
+ * fifteen it stops being a release at all.
+ *
+ * What it costs, flown: a hull that can out-run the wing is free about twelve
+ * seconds after it breaks contact. A hull that CANNOT - a stock Dray cruises
+ * at 150 m/s against a skiff's 174 - is held until the wing loses interest.
+ * Both are correct: you cannot outrun something faster than you, and the
+ * answer to that is the gun.
+ *
+ * (This paragraph used to cite "the headless rig ... cruising at 120 m/s" and
+ * a measured 67 s. That rig was flying a hull the game does not have - see the
+ * note above on where 3,590 m came from - so the 67 s described nothing. The
+ * Dray is the real hull that cannot out-run a skiff.)
+ */
+export const LOCK_GRACE = 12;
+/**
+ * How far past a zone's own trigger sphere an ARMED zone stays armed.
+ *
+ * A drive shedding 5,000 m/s to cruise over `transitSpoolDown` covers about
+ * 3.1 km doing it, so a zone that disarmed at its own sphere edge would fire
+ * the interdiction and then be coasted out of before the wing could launch -
+ * the fly-through defect wearing a different hat. Six kilometres covers the
+ * whole spool-down from the far side of the sphere with room to spare.
+ */
+export const ARM_LEASH = 6000;
+/**
+ * Furthest a contact may be and still be the LOCKED target - the one with the
+ * lead pip and the name plate. 1,200 m: past the gun by enough that you can
+ * line a merge up, short of the point where a pip on a 6 px speck is telling
+ * you about something you cannot act on. Every live contact is still listed
+ * and still has a marker at any range; this is only about which one the
+ * gunnery solution is run for.
+ */
+export const TARGET_RANGE = 1200;
+/**
+ * The angular size, in radians, at which a hull stops needing a marker.
+ *
+ * The whole job of a contact pip is to make something FINDABLE while it is too
+ * small to be legible - so it has to know when that stops being true, or it
+ * spends the rest of the fight sitting on top of the one thing the player is
+ * trying to look at. (It did: the first build drew a filled 12 px diamond, and
+ * the screenshot at 300 m showed it covering a 25 px skiff.)
+ *
+ * 0.035 rad is 25 px at 1080p and 75 degrees vertical - `1080 / 1.5347` rows
+ * per radian - and 25 px is where `.probe/engage/` shows the swept blades
+ * separating from the body and the craft reading as a shape with a facing. It
+ * is stated as an ANGLE and not as a range or a pixel count because it is the
+ * only one of the three that is true on every screen and for every hull: a
+ * lance is legible from 423 m and a skiff from 240 m, and neither number had
+ * to be typed.
+ */
+export const LEGIBLE_ANGLE = 0.035;
 /** Seconds before a cleared zone can fire again. */
 export const REARM_CLEARED = 210;
 /** ...and before one the player merely ran away from can. */
@@ -287,6 +567,15 @@ export class SpaceCombat {
     this._zones = [];
     /** zone id -> seconds until it may fire again. */
     this._cool = new Map();
+    /**
+     * The zone whose trigger sphere has fired but whose wing has not launched
+     * yet, because the player is still coming out of transit. Arming is what
+     * writes `interdicted`; see the header. Null the rest of the time.
+     * @type {object|null}
+     */
+    this._armed = null;
+    /** Seconds since a hostile was last inside its own gun range. See `_locked`. */
+    this._lockT = 0;
 
     /* Player state. */
     this.shield = 0;
@@ -325,6 +614,30 @@ export class SpaceCombat {
      * `on` is false when the point is behind the camera or off the plate. */
     this.aim = { x: 0, y: 0, on: false };
     this.lead = { x: 0, y: 0, on: false, range: 0 };
+    /**
+     * One row per live hostile, in the same shape `Piloting.navReport` fills.
+     *
+     * POOLED, and `navReport`'s precedent is deliberately not followed here.
+     * That method pushes a fresh object literal per body, which is right for
+     * it - it runs at 5 Hz behind the HUD's own timer, because a body 245 km
+     * away moves 91 m in a frame. A contact's BEARING sweeps a whole quadrant
+     * in a turn, so this list has to be read at frame rate, and six object
+     * literals and six nested `ndc` objects sixty times a second is 720
+     * allocations a second inside a fight - against this file's own house rule
+     * that a frame handler allocates nothing. The rows are therefore built
+     * once and filled in place; `contactReport` hands out references to them.
+     * @type {Array<object>}
+     */
+    this._pool = [];
+    for (let i = 0; i < MAX_HOSTILES; i++) {
+      this._pool.push({
+        name: '', kind: 'hostile', range: 0, frac: 0, locked: false, inRange: false, legible: false,
+        ahead: 0, above: 0, right: 0, closing: 0,
+        ndc: { x: 0, y: 0, on: false }, edge: false,
+      });
+    }
+    /** The array `contactReport` fills when the caller does not supply one. */
+    this._contacts = [];
 
     /* A HULL LEAVES THE YARD WITH ITS SHIELDS UP.
      *
@@ -377,10 +690,117 @@ export class SpaceCombat {
     return GUN.damage * (1 + (SHIP_STAT_META.fire.perTier / 100) * this.tiers(shipId).fire);
   }
 
+  /**
+   * EVERY LIVE HOSTILE, AS A BEARING AND A RANGE. The findability half.
+   *
+   * A skiff at 780 m is ten pixels and at 1,250 m it is five, and no amount of
+   * emissive fixes that - so past the range where a contact is LEGIBLE it has
+   * to be FINDABLE instead, and findable means a bearing you can steer on and
+   * a number you can act on. That is exactly what `Piloting.navReport` already
+   * publishes for the planets, so this fills the SAME SHAPE rather than
+   * inventing a second one: `FlightHUD` draws these rows with the same
+   * `arrow()` glyph, the same `range()` formatter and the same `.row` markup
+   * it draws Cinder with, and the only difference is a class name.
+   *
+   * `ahead` / `above` / `right` are all three signed dots, for the reason
+   * `navReport` gives at length: two of them cannot say which way to turn.
+   *
+   * `ndc` is the extra a planet does not need. A body 245 km away is a marker
+   * on a list; a hostile 400 m away is a thing you have to put your nose on
+   * this second, so it also gets a screen position - and one that is CLAMPED
+   * to the plate with `edge` set when the contact is off it or astern, which
+   * is what turns "somewhere behind you" into an arrow you can fly.
+   *
+   * NOTHING HERE DIVIDES BY A VELOCITY. `closing` is a dot product; the time
+   * it would take to close is deliberately not published, because a zero
+   * relative velocity is a real case in a co-speed turning fight and this
+   * project has already lost a day to 19 NaN pixels through `UnrealBloomPass`
+   * blacking out a 921,600-pixel frame. Every number below is finite by
+   * construction and `_project` refuses to publish one that is not.
+   *
+   * @param {Array<object>} [out] filled in place; the caller owns it.
+   */
+  contactReport(out = null) {
+    const rows = out ?? this._contacts;
+    rows.length = 0;
+    const p = this.piloting;
+    if (!p?.active || !this._playable()) return rows;
+    const f = p.flight;
+    f.forward(_fwd);
+    f.up(_up);
+    f.right(_right);
+    let n = 0;
+    for (const h of this.hostiles) {
+      if (!h.alive || n >= this._pool.length) continue;
+      const row = this._pool[n++];
+      const range = h.position.distanceTo(f.position);
+      _v.copy(h.position).sub(f.position);
+      /* A hostile exactly on the camera is a can't-happen (the hit spheres
+       * would have met first) and it is still written down, because
+       * `normalize()` on a zero vector leaves a zero vector and every dot
+       * below would then be 0 rather than NaN - which is a wrong glyph, not a
+       * black frame, but it is still wrong. Dead ahead is the honest answer
+       * for something you are inside. */
+      const near = range < 1e-3;
+      if (!near) _v.divideScalar(range);
+      row.name = h.name;
+      row.range = range;
+      /** 0..1 integrity, for the bar. */
+      row.frac = h.healthFrac;
+      /** True for the one the lead pip is solving for. */
+      row.locked = h === this.target;
+      /** Is it close enough to shoot at right now? */
+      row.inRange = range <= GUN.range;
+      /* Big enough on the plate to be its own marker. `2 * radius` is the hit
+       * sphere the rest of this file already uses as the hull's size, and the
+       * guard is the near case: something you are inside subtends everything. */
+      row.legible = near || (2 * h.radius) / range > LEGIBLE_ANGLE;
+      row.ahead = near ? 1 : _v.dot(_fwd);
+      row.above = near ? 0 : _v.dot(_up);
+      row.right = near ? 0 : _v.dot(_right);
+      /** Closing speed, m/s, positive when the range is shortening. */
+      row.closing = near ? 0 : _v.dot(_v2.copy(f.velocity).sub(h.velocity));
+      /** True when `ndc` had to be pinned to the plate to be drawable. */
+      row.edge = false;
+      this._project(h.position, row.ndc);
+      /* OFF THE PLATE IS THE CASE THAT MATTERS. `_project` reports `on: false`
+       * for anything behind the camera or outside the frame, and a marker that
+       * simply vanishes there is a marker that disappears at exactly the
+       * moment a pilot needs it. So the direction is re-derived from the
+       * BEARING - which is always valid - and pinned to the edge. */
+      if (!row.ndc.on) {
+        row.edge = true;
+        let ex = row.right;
+        let ey = row.above;
+        const m = Math.hypot(ex, ey);
+        if (m > 1e-4) { ex /= m; ey /= m; } else { ex = 0; ey = -1; }
+        row.ndc.x = ex;
+        row.ndc.y = ey;
+        row.ndc.on = true;
+      }
+      rows.push(row);
+    }
+    rows.sort((a, b) => a.range - b.range);
+    return rows;
+  }
+
   /** Everything the flight HUD draws, in one read. Fills a caller's object. */
   report(out = {}) {
     out.engaged = this.engaged;
     out.contacts = this.contacts;
+    /* Whether the transit drive is being denied, and by what. Published so the
+     * HUD can say "you are held" and, more usefully, stop saying it the
+     * instant the player has opened the range - which is the whole of how you
+     * get away. */
+    out.locked = !!this.piloting?.interdicted;
+    /* Seconds of "clear" still to run before the drive is yours, or null when
+     * something has you right now. This is the countdown the HUD draws, and it
+     * is the whole of teaching the mechanic: a number that ticks down while
+     * you hold a heading is a rule a player can learn in one encounter. */
+    out.lockIn = this._armed || this._lockT <= 0
+      ? null
+      : Math.max(0, LOCK_GRACE - this._lockT);
+    out.lockGrace = LOCK_GRACE;
     out.shield = this.shield;
     out.shieldMax = this.shieldMax;
     out.shieldFrac = this.shieldMax > 0 ? this.shield / this.shieldMax : 0;
@@ -449,8 +869,78 @@ export class SpaceCombat {
      * the next step, and the stale window is gone.
      *
      * It is also cleared the step the last hostile dies, so a cleared field
-     * lets the player leave at transit immediately rather than after a timer. */
-    if (this.piloting) this.piloting.interdicted = live && this.engaged;
+     * lets the player leave at transit immediately rather than after a timer.
+     *
+     * ── AND IT IS A CLOCK NOW, NOT A FLAG ───────────────────────────────────
+     * `live && this.engaged` meant "anything is alive anywhere", and combined
+     * with `DISENGAGE` at 3,600 m that denied the drive for about ninety
+     * seconds after a player had broken off - most of them spent out of the
+     * hostiles' 420 m gun, flying straight, not being shot at, and unable to
+     * leave. That is being pinned by bookkeeping. `_locked` makes breaking the
+     * lock a thing the player DOES: get clear of their guns, stop being gained
+     * on, hold it for `LOCK_GRACE`. The armed-zone term is what interdicts you
+     * BEFORE the wing exists, which is the whole of the fly-through fix. */
+    if (this.piloting) this.piloting.interdicted = live && (!!this._armed || this._locked(dt));
+  }
+
+  /**
+   * Does anything still have a lock? Two conditions, and BOTH must hold.
+   *
+   *   IN REACH. Something is inside its own gun range right now.
+   *   OR GAINING. The nearest is closing the range faster than 5 m/s.
+   *
+   * Either resets the clock; twelve seconds of neither releases the drive.
+   *
+   * The clock is reset by REACH and not by damage on purpose. A hostile that
+   * is in range and missing is still shooting at you, and a lock that only
+   * held while you were being hit would reward flying badly.
+   *
+   * ── AND IT IS ALSO RESET BY ANYTHING STILL CLOSING ────────────────────────
+   * "Out of reach" alone was not enough, and `space-objectives.test.mjs` is
+   * what said so: a wing's own cycle - `BREAK_MAX` 3.4 s, then a REFORM run
+   * capped at 7, then however long the INTERCEPT takes to get back inside
+   * 420 m - can legitimately keep every craft out of range for well over
+   * twelve seconds while the fight is very much still on. With reach as the
+   * only reset the guns-cold ablation shook a three-craft wing inside sixty
+   * seconds of doing nothing at all, which is a fight ending itself.
+   *
+   * So the clock only runs while nothing can shoot you AND nothing is gaining
+   * on you. That is the honest reading of "they have lost me", it is a
+   * statement about both craft rather than about a radius, and it is why a
+   * slower hull cannot use it: if they can still close, you have not escaped.
+   */
+  _locked(dt) {
+    const p = this.piloting?.flight?.position;
+    const v = this.piloting?.flight?.velocity;
+    if (!p || !v) { this._lockT = LOCK_GRACE; return false; }
+    /* No fight, no lock. `DISENGAGE` is the outer bound and it is already
+     * enforced by `_spawner`, which stands the wing down at 3,600 m - so
+     * "engaged" is the range test, and duplicating it here as a second radius
+     * is exactly the mistake documented on `LOCK_GRACE`. */
+    let nearest = Infinity;
+    let inReach = false;
+    let gaining = false;
+    for (const h of this.hostiles) {
+      if (!h.alive) continue;
+      const d = h.position.distanceTo(p);
+      if (d < nearest) nearest = d;
+      if (d <= h.def.range) inReach = true;
+      /* Rate of change of the range, as one dot: the hostile's velocity
+       * relative to ours, along the line from it to us. Positive means the gap
+       * is shrinking. No division - `d` is only used to normalise and the
+       * degenerate `d === 0` is skipped, because a hostile at zero range is
+       * not a question about whether it is catching up. */
+      if (d > 1e-3) {
+        _v.copy(p).sub(h.position).divideScalar(d);
+        if (_v.dot(_v2.copy(h.velocity).sub(v)) > 5) gaining = true;
+      }
+    }
+    /* Nothing alive: the clock is meaningless and is parked at zero so the
+     * next wing starts with its full grace rather than with the last one's
+     * leftovers. */
+    if (!Number.isFinite(nearest)) { this._lockT = 0; return false; }
+    this._lockT = (inReach || gaining) ? 0 : this._lockT + dt;
+    return this._lockT < LOCK_GRACE;
   }
 
   /** Is there a ship, flying, in the void, not mid-seam? */
@@ -595,20 +1085,20 @@ export class SpaceCombat {
     if (cur?.alive) {
       const d = cur.position.distanceTo(f.position);
       _v.copy(cur.position).sub(f.position);
-      if (d < 1600 && (d < 1e-3 || _v.normalize().dot(_fwd) > 0.35)) return;
+      if (d < TARGET_RANGE && (d < 1e-3 || _v.normalize().dot(_fwd) > 0.35)) return;
     }
     let best = null;
     let bestScore = -Infinity;
     for (const h of this.hostiles) {
       if (!h.alive) continue;
       const d = h.position.distanceTo(f.position);
-      if (d > 1600) continue;
+      if (d > TARGET_RANGE) continue;
       _v.copy(h.position).sub(f.position);
       const ahead = d > 1e-3 ? _v.normalize().dot(_fwd) : 1;
       /* Ahead beats near: the thing you are pointing at is the thing you want
        * a range readout for, and a hostile 200 m behind you is not one you can
        * do anything about this second. */
-      const score = ahead * 2 - d / 1600;
+      const score = ahead * 2 - d / TARGET_RANGE;
       if (score > bestScore) { bestScore = score; best = h; }
     }
     this.target = best;
@@ -929,6 +1419,11 @@ export class SpaceCombat {
     }
     this.zone = null;
     this.target = null;
+    /* An armed-but-unlaunched zone is part of the fight and dies with it -
+     * otherwise disembarking or changing world would leave an interdiction
+     * standing over an empty patch of sky. */
+    this._armed = null;
+    this._lockT = 0;
     if (this.piloting) this.piloting.interdicted = false;
     if (any) this.bus?.emit?.('combat:standdown', { reason });
   }
@@ -940,6 +1435,23 @@ export class SpaceCombat {
     this.zone = null;
     this.bus?.emit?.('combat:cleared', { zone: z.id, name: z.name, bounty: this.stats.bounty });
     this.bus?.emit?.('hud:notify', { text: `${z.name} clear.`, tone: 'info' });
+  }
+
+  /**
+   * ARMING AND LAUNCHING ARE TWO DIFFERENT THINGS, and separating them is what
+   * stops a wing being flown past at 5,000 m/s. See the header.
+   *
+   * Crossing a trigger sphere arms the zone; arming writes `interdicted`,
+   * which drops the transit drive and cancels `Piloting`'s displacement
+   * multiplier the same step; the wing launches on the first step after the
+   * drive has finished spooling down. `Flight.transitState` is the whole test:
+   * the multiplier is not damped and is already 1 by then (its
+   * `_clearOfEverything` refuses while interdicted), so the drive is the only
+   * thing left that can still be moving the ship faster than it looks.
+   */
+  _underway() {
+    const s = this.piloting?.flight?.transitState;
+    return !!s && s !== 'off';
   }
 
   _spawner(dt) {
@@ -963,18 +1475,44 @@ export class SpaceCombat {
       return;
     }
     /* Wrecks are still burning; do not start a second fight over the first. */
-    for (const h of this.hostiles) if (h.dying > 0) return;
+    for (const h of this.hostiles) if (h.dying > 0) { this._armed = null; return; }
 
     const p = this.piloting.flight.position;
-    if (p.distanceTo(_mouth) < SAFE_RADIUS) return;
+    if (p.distanceTo(_mouth) < SAFE_RADIUS) { this._armed = null; return; }
 
-    for (const z of this._zones) {
-      if (this._cool.has(z.id)) continue;
-      _v.set(z.position[0], z.position[1], z.position[2]);
-      if (p.distanceTo(_v) > z.radius) continue;
-      this._launch(z);
-      return;
+    /* An already-armed zone stays armed on its LEASH rather than on its own
+     * sphere: the drive it just cut covers about 3.1 km shedding 5,000 m/s,
+     * and a zone that disarmed at the sphere edge would interdict the player
+     * and then be coasted out of before it could launch anything. */
+    if (this._armed) {
+      if (this._cool.has(this._armed.id)) {
+        this._armed = null;
+      } else {
+        _v.set(this._armed.position[0], this._armed.position[1], this._armed.position[2]);
+        if (p.distanceTo(_v) > this._armed.radius + ARM_LEASH) this._armed = null;
+      }
     }
+
+    if (!this._armed) {
+      for (const z of this._zones) {
+        if (this._cool.has(z.id)) continue;
+        _v.set(z.position[0], z.position[1], z.position[2]);
+        if (p.distanceTo(_v) > z.radius) continue;
+        this._armed = z;
+        break;
+      }
+    }
+    if (!this._armed) return;
+
+    /* Held here, and only here, while the drive spools down. `interdicted` is
+     * already true this step - it is written from `_armed` at the bottom of
+     * `fixedUpdate` - so this is a wait of about `transitSpoolDown`, not an
+     * open-ended one. */
+    if (this._underway()) return;
+
+    const z = this._armed;
+    this._armed = null;
+    this._launch(z);
   }
 
   /**
@@ -1379,11 +1917,29 @@ export class SpaceCombat {
   }
 
   _project(worldPoint, out) {
+    if (!this.camera) { out.on = false; out.x = 0; out.y = 0; return; }
     _v3.copy(worldPoint).project(this.camera);
     /* `project` divides by w, and w is negative behind the camera - which
      * flips both axes and puts a marker for something astern in the opposite
      * corner of the screen, confidently. The z test is the only honest way to
-     * ask "is this in front of me". */
+     * ask "is this in front of me".
+     *
+     * AND IT CAN DIVIDE BY ZERO. A point exactly on the camera plane has
+     * `w === 0` and `project` hands back three infinities or three NaNs; a
+     * point at the origin of a camera whose matrix has not been composed yet
+     * does the same. Either one goes straight into a CSS `left:` as
+     * "NaN%" - which the browser drops, silently pinning the marker to the
+     * top-left corner - and, worse, is the exact class of value that put 19
+     * NaN pixels through `UnrealBloomPass` and blacked out a frame. So the
+     * finite test comes FIRST and a non-finite projection is simply not a
+     * projection: `on` is false and the caller falls back to the bearing,
+     * which is a normalised dot product and cannot be either. */
+    if (!Number.isFinite(_v3.x) || !Number.isFinite(_v3.y) || !Number.isFinite(_v3.z)) {
+      out.on = false;
+      out.x = 0;
+      out.y = 0;
+      return;
+    }
     out.on = _v3.z < 1 && Math.abs(_v3.x) <= 1.2 && Math.abs(_v3.y) <= 1.2;
     out.x = _v3.x;
     out.y = _v3.y;

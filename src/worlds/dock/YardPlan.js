@@ -18,6 +18,11 @@
  */
 
 import { SPACE_BODIES } from '../space/Bodies.js';
+import { CONFIG } from '../../core/Config.js';
+
+/** The player's own numbers, for the one dimension that is about their legs.
+ *  @see MOUTH_SCREEN_H */
+const PLAYER = CONFIG.player;
 
 /* ------------------------------------------------------------------ */
 /* Levels                                                              */
@@ -292,7 +297,14 @@ export const CROSSING_COLUMN_X = Object.freeze([-74, -48, -20, 20, 48, 74]);
  */
 export const BERTHS = Object.freeze([
   Object.freeze({
-    id: 'kestrel', berth: 'B1', side: -1, klass: 'courier', length: 14,
+    /* 20, not the 14 this shipped with. The Kestrel was re-proportioned from
+     * a 3.04 : 1 fineness (a van) to 4.35 : 1 (a courier) by adding LENGTH at
+     * an unchanged 4.60 m beam, because 'lean' is a ratio and the 4.16 m walk-in
+     * cabin was not up for negotiation. This field's only consumer is
+     * `DockWorld._buildBerths`' saddle count, `max(3, round(length / 6))`, which
+     * is 3 at either value - so nothing rendered differently and nothing failed,
+     * which is exactly why a stale number here could sit unnoticed. */
+    id: 'kestrel', berth: 'B1', side: -1, klass: 'courier', length: 20,
     pier: 'P1', x: -68, z: -143, yaw: Math.PI, cradleTop: 1.2, hw: 9, hd: 12,
     apron: Object.freeze({ x: -60, z: -143 }),
   }),
@@ -558,12 +570,70 @@ export const ROOF_CUT_Z = -34;
  * between two piers walks off a 164 m ledge into hard vacuum — `Unstuck`
  * rescues them below `bounds.min.y`, but a world that relies on the rescue
  * system as its edge treatment is a world with a hole in it. So the mouth
- * threshold carries a solid 1.15 m balustrade for its whole width with a GATE
- * at each pier: over `CONFIG.player.stepHeight` 0.45 so it cannot be walked
- * over, under the 1.55 m a mantle needs so it cannot be climbed by accident,
- * and glazed so it does not wall the view it exists to guard.
+ * threshold carries a solid balustrade for its whole width with a GATE at each
+ * pier: over `CONFIG.player.stepHeight` 0.45 so it cannot be walked over, and
+ * glazed above head height so it does not wall the view it exists to guard.
+ *
+ * ── 1.15 m WAS NOT A BARRIER, AND ONLY A WALK EVER TESTED IT ─────────────
+ * Measured in a real boot, ten x positions 16 m inside the bay:
+ *
+ *   walk          stopped at z -103.2 at every one of them.        correct
+ *   jump          stopped at every one of them.                    correct
+ *   sprint+jump   OVER, at ten of ten, landing at y -30 in the void.
+ *
+ * The arithmetic nobody had done: `Player#jumpApex` on a world that publishes
+ * no gravity is 0.931 m, `Parkour.LEAP_LIFT` is 1.12, and a leap's apex is the
+ * standing apex times the SQUARE of that — 1.168 m. Against a 1.15 m rail the
+ * gate was 2 centimetres, in the wrong direction. The comment here used to say
+ * 1.15 was "under the 1.55 m a mantle needs"; `Climb.MIN_RISE_GROUND` is 1.0
+ * and `MAX_RISE` is 2.4, so 1.15 was inside the mantle band as well.
+ *
+ * So the height is DERIVED now and no longer typed. The screen has to clear the
+ * running leap AND the mantle reach, and the solid part below it stays at 1.15
+ * because that is the part that reads as a kerb from the apron.
+ *
+ * `CONFIG` is the second import this file has ever taken, and it is the same
+ * kind as the first: a number the yard is dimensioned off that is authored
+ * somewhere else. Typing 2.7 here instead is how the rail and the player's legs
+ * get out of step again the day the jump is retuned.
  */
 export const MOUTH_KERB_H = 1.15;
+/** `Parkour.LEAP_LIFT`. @see MOUTH_SCREEN_H */
+const LEAP_LIFT = 1.12;
+/** `Climb.MAX_RISE` — how far a pair of arms reaches. Does not scale. */
+const MANTLE_MAX = 2.4;
+/** The standing apex on a world that publishes no gravity, which the yard is. */
+const STAND_APEX = (PLAYER.jumpVelocity * PLAYER.jumpVelocity) / (2 * -PLAYER.gravity);
+/** The running leap's apex: the standing apex times LEAP_LIFT squared. */
+export const MOUTH_LEAP_APEX = STAND_APEX * LEAP_LIFT * LEAP_LIFT;
+/**
+ * Top of the glazed screen over the balustrade, above `DECK_Y`.
+ *
+ * ── THE TWO REACHES ADD, and that is the number ──────────────────────────
+ * The first version of this took the LARGER of "leap plus head room" and "mantle
+ * plus head room" — 2.70 m — and driving it held at twelve inputs out of twelve,
+ * including nine seconds of held-Space free climbing. It held for a reason that
+ * is not in this file: the mouth collider is 0.5 m deep, and there is nowhere on
+ * top of half a metre of rail to put a body.
+ *
+ * The same 2.70 m rule applied to Shoal's shore, whose posts are 2.2 m square
+ * and therefore have standable tops, was crossed on six bearings out of eight —
+ * and the trajectories show the body's peak was the POST TOP plus one standing
+ * jump. `Player` offers the mantle on the JUMP PRESS and `Climb._probe` measures
+ * the rise from the FEET, so a body that jumps first mantles a ledge one apex
+ * higher. Jump, press jump again at the top of the arc, and the real reach is
+ *
+ *      leap apex  +  MAX_RISE
+ *
+ * So this is that sum plus head room — 3.90 m — rather than the 2.70 m that
+ * happened to survive because this particular rail is thin. A barrier that holds
+ * for a reason recorded in another file's constant is a barrier waiting for that
+ * constant to move.
+ *
+ * 1.15 m of solid kerb and 2.75 m of glass, in a 23.6 m aperture: 16% of the
+ * opening, and you see the piers, the ships and the starfield through all of it.
+ */
+export const MOUTH_SCREEN_H = MOUTH_LEAP_APEX + MANTLE_MAX + 0.35;
 
 /* ------------------------------------------------------------------ */
 /* THE PIERS                                                           */
@@ -724,6 +794,52 @@ export const STAR_SHELL = 1500;
  */
 export const VOID_NEAR = 900;
 export const VOID_FAR = 1300;
+
+/**
+ * THE YARD'S MESH CEILING, DERIVED FROM THE SKY IT DRAWS.
+ *
+ * `BODIES` below hangs EVERY entry of `SPACE_BODIES` on a proxy shell — it does
+ * not pick a subset — so the yard's draw-call count is a function of how many
+ * bodies the solar system has. Phase 1 had five and the ceiling was hand-set to
+ * 156; Phase 2 has twelve, which measured 165, and the hand-set number became a
+ * failure with nothing to say which of the two was wrong.
+ *
+ * It lives HERE, in production source, rather than in a test, because two tests
+ * were each carrying their own copy of it: `dock-hulls.test.mjs` asserted 156
+ * and `dock-interiors.test.mjs` asserted 156 again with a comment saying it
+ * "tracks dock-hulls' own ceiling". Two copies of one fact is the defect this
+ * project keeps writing down, and the second copy is always the one that goes
+ * stale. One source, two readers.
+ *
+ * The arithmetic, all measured:
+ *   BASE      the yard with no bodies at all       150 − 5 × 2.1 = 139.5
+ *   PER_BODY  one sphere, plus a limb halo where    2.1
+ *             there is air (6 of the 12 bodies)
+ *   MARGIN    the same slack the hand-set 156       6
+ *             carried over its measured 150
+ *
+ * `PER_BODY` is the number that must stay honest: if a body ever costs more
+ * than a sphere and a halo the ceiling stops tracking reality, and the tests
+ * that read this will fail — which is what they are for.
+ *
+ * @returns {number} the most meshes `world.group` may hold
+ */
+export function meshCeiling() {
+  const BASE = 150 - 5 * 2.1;
+  const PER_BODY = 2.1;
+  const MARGIN = 6;
+  return Math.ceil(BASE + PER_BODY * BODIES.length + MARGIN);
+}
+
+/**
+ * The absolute frame budget, which no number of planets may exceed.
+ *
+ * 220 draws with the portal system, the NPCs and the HUD still to pay for. 22
+ * of the yard's meshes are the flights' hidden ramp proxies, which
+ * `projectObject` never pushes, so the comparison is `meshes - 22`.
+ */
+export const FRAME_DRAW_BUDGET = 220;
+export const HIDDEN_RAMP_PROXIES = 22;
 
 export const BODIES = Object.freeze(
   SPACE_BODIES

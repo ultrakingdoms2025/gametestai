@@ -22,7 +22,7 @@ import {
   STAIR_RISERS, STAIR_RUN, STAIR_W, STAIRS, CROSSINGS, CROSSING_COLUMN_X,
   BERTHS, SECTIONS, COUNTER_X, COUNTERS, APRON_Z, OFFICE, CRANE_CAB, CRANE_RUN, CRANE_WALK,
   SIGNAL_POST, SIGNAL_POST_HD, SIGNAL_RUN, SPARES_PILE, FLOOR_AREA,
-  MOUTH_Z, MOUTH_HW, MOUTH_Y1, MOUTH_KERB_H, ROOF_CUT_Z,
+  MOUTH_Z, MOUTH_HW, MOUTH_Y1, MOUTH_KERB_H, MOUTH_SCREEN_H, ROOF_CUT_Z,
   PIERS, PIER_HW, PIER_T, PIER_GATE_HW, pierPad, pierOf,
   STAR_SHELL, BODIES,
 } from './dock/YardPlan.js';
@@ -2689,11 +2689,18 @@ export class DockWorld extends World {
     }
     this._solid(0, MOUTH_Y1 + 1.2, z + 1.3, HW + 3, 1.2, 1.3);
 
-    /* ── The threshold balustrade ───────────────────────────────────────
-     * 1.15 m, solid, glazed, the whole width of the mouth EXCEPT a gate at
-     * each pier. Over `stepHeight` 0.45 so it cannot be walked over and under
-     * the 1.55 m a mantle needs so it cannot be climbed by accident; see
-     * `YardPlan.MOUTH_KERB_H` for why this is not left to `Unstuck`.
+    /* ── The threshold balustrade and its screen ────────────────────────
+     * A solid 1.15 m kerb with a GLAZED SCREEN over it to `MOUTH_SCREEN_H`,
+     * the whole width of the mouth EXCEPT a gate at each pier. One collider
+     * carries both: the kerb is the part that reads from the apron, the glass
+     * is the part that holds, and a player looking north sees the piers, the
+     * ships and three lit bodies straight through it.
+     *
+     * THE SCREEN IS WHY THIS IS NOT 1.15 m ANY MORE. A running leap clears
+     * 1.168 m on this world and a mantle reaches 2.4 m; the old rail was under
+     * both, and sprint+jump went over it at ten positions out of ten in a real
+     * boot. `YardPlan.MOUTH_SCREEN_H` derives the height from the player's own
+     * constants rather than from a number typed here, so the two cannot drift.
      *
      * The gaps are computed from `PIERS`, so a pier that moves takes its gate
      * with it — a gate authored by hand at a hard-coded x is how a pier ends
@@ -2710,10 +2717,25 @@ export class DockWorld extends World {
       put('plate', boxGeo(len, MOUTH_KERB_H, 0.5, 3), c, MOUTH_KERB_H / 2, z + 0.25);
       put('hazard', boxGeo(len, 0.18, 0.62, 2), c, MOUTH_KERB_H + 0.09, z + 0.25);
       put('emPier', boxGeo(len, 0.06, 0.16, 1), c, MOUTH_KERB_H + 0.2, z + 0.02);
-      this._solid(c, MOUTH_KERB_H / 2, z + 0.25, len / 2, MOUTH_KERB_H / 2, 0.25);
-      // Stanchions, so 164 m of kerb is not one extruded box.
+      /* The screen: one pane per span, plus a capping handrail so the top edge
+       * is a made thing rather than where the glass stops. `PlaneGeometry` and
+       * not a box — the yard's own rails glaze exactly this way, and a 164 m
+       * pane of solid glass would cost the transparent pass a depth sort it
+       * does not need. */
+      const glassH = MOUTH_SCREEN_H - MOUTH_KERB_H - 0.14;
+      if (glassH > 0.2) {
+        put('glass', new THREE.PlaneGeometry(len, glassH), c, MOUTH_KERB_H + 0.07 + glassH / 2, z + 0.25);
+      }
+      put('steelDark', boxGeo(len, 0.12, 0.16, 1), c, MOUTH_SCREEN_H - 0.06, z + 0.25);
+      put('emPier', boxGeo(len - 1, 0.05, 0.05, 1), c, MOUTH_SCREEN_H + 0.02, z + 0.25);
+      /* ONE collider, deck to screen top. Two stacked boxes would leave a seam
+       * for the solver to find, and the whole point of this run is that there
+       * is nothing between the deck and the top of it. */
+      this._solid(c, MOUTH_SCREEN_H / 2, z + 0.25, len / 2, MOUTH_SCREEN_H / 2, 0.25);
+      // Stanchions, so 164 m of kerb is not one extruded box. They run the full
+      // height now, because they are what the screen is actually hung on.
       for (let sx = a + 2; sx < b; sx += 4) {
-        put('steelDark', boxGeo(0.22, MOUTH_KERB_H + 0.3, 0.7, 1), sx, (MOUTH_KERB_H + 0.3) / 2, z + 0.25);
+        put('steelDark', boxGeo(0.22, MOUTH_SCREEN_H, 0.24, 1), sx, MOUTH_SCREEN_H / 2, z + 0.25);
       }
     }
     // Hazard chevrons on the deck along the whole threshold, and a launch

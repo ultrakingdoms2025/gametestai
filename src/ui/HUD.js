@@ -1998,6 +1998,15 @@ export class HUD {
       ['Space / C', 'Fly up / down'],
       ['F', 'Board / leave a ship'],
       ['W S', 'Throttle / reverse'],
+      /* THE ONE CONTROL THAT MAKES INTERPLANETARY FLIGHT BEARABLE.
+       *
+       * It was missing from this card while being present in F1, and this card
+       * is the one every player actually reads - it is on screen for the whole
+       * shader warm with nothing else to look at. Without Z the first leg out
+       * of the yard is over two minutes of holding W at 455 m/s, which is the
+       * exact experience the transit drive was built to delete. A summary that
+       * omits the verb that makes the mode playable is not a summary. */
+      ['Z', 'Transit drive — cross the system'],
       ['X', 'Airbrake — hold'],
       ['A D', 'Roll'],
       ['E', 'Hold to cut ore'],
@@ -2005,7 +2014,23 @@ export class HUD {
       ['B', 'Marketplace'],
       ['J', 'Quest board'],
       ['K', 'Unstuck'],
-      ['Esc', 'Pause menu — character, mount, inventory, settings, save…'],
+      /* TRIMMED TO PAY FOR THE Z CHIP, AND MEASURED BOTH WAYS.
+       *
+       * This list WRAPS, so a chip is not free - it costs a whole line if it
+       * does not fit on the one it lands on. Measured in the browser at
+       * 1440x760 with a save banner shown (the worst case, because the banner
+       * is another 32 px above this):
+       *
+       *   as shipped, no Z                8 lines, bottom 745  fits
+       *   + Z, this label unchanged       9 lines, bottom 785  CLIPPED
+       *   + Z, this label trimmed         8 lines, bottom 745  fits
+       *
+       * Nine lines put "F1 - Full controls, any time" under the fold, which
+       * would trade the transit drive for the pointer to every other control:
+       * a straight loss. What the tail listed was SUBMENUS, not controls, and
+       * this card already teaches I, M and J on their own chips. Shortening
+       * the Z chip does NOT buy the line back - measured, it is still 9. */
+      ['Esc', 'Pause menu'],
       ['[ ]', 'Map zoom'],
       ['E', 'Talk / Pick up / Portal'],
       ['T', 'Chat'],

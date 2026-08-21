@@ -1,0 +1,741 @@
+/* Ship drawer — the yard's customiser.
+ *
+ * Derived from `mount-menu.css` by namespace, deliberately and completely: the
+ * two panels are structural twins (right-side drawer over the live view,
+ * capture-phase Escape, released pointer) and a player who has used one should
+ * not have to learn the other. Keep them in step.
+ *
+ * The one thing that is NOT shared is the accent. The mount drawer is cyan on
+ * the game's default; the yard's colour script runs sodium OVER cyan, so this
+ * one takes amber for its rules and headings and leaves cyan for the swatch
+ * selection state — which is the same inversion the world itself uses.
+ */
+
+.sm-root {
+  --sm-cy: var(--amber, #ffb44a);
+  --sm-sel: var(--cy, #52e9ff);
+  --sm-amber: var(--amber, #ffb44a);
+  --sm-mag: var(--mag, #d46bff);
+  --sm-txt: var(--txt, #cfe6f2);
+  --sm-dim: var(--txt-dim, #7f9db0);
+  --sm-rule: var(--rule, rgba(82, 233, 255, 0.28));
+  --sm-soft: var(--rule-soft, rgba(120, 180, 210, 0.16));
+  --sm-glass: var(--glass, rgba(9, 15, 25, 0.52));
+  --sm-glass-hi: var(--glass-hi, rgba(22, 38, 58, 0.42));
+  --sm-disp: var(--f-disp, 'Chakra Petch', 'Rajdhani', sans-serif);
+  --sm-ui: var(--f-ui, 'Rajdhani', 'Chakra Petch', sans-serif);
+
+  position: absolute;
+  inset: 0;
+  z-index: 82; /* above the inventory root (80) so both can never fight */
+  pointer-events: none;
+  font-family: var(--sm-ui);
+  color: var(--sm-txt);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The HUD's pause overlay would otherwise sit on top of a panel we deliberately
+   released the pointer for. hud.css belongs to another agent, so this hides it
+   from the outside rather than editing that file. */
+body.sm-open .pause {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* A whisper of vignette on the drawer side only, so the panel has something to
+   sit against without dimming the character. */
+.sm-root::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: min(620px, 60vw);
+  background: linear-gradient(90deg, rgba(2, 5, 10, 0), rgba(2, 5, 10, 0.72) 62%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.sm-root.open::before {
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------- shell -- */
+.sm-panel {
+  position: absolute;
+  top: 2.2vh;
+  right: 2.2vh;
+  bottom: 2.2vh;
+  width: min(432px, 34vw);
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+  background: linear-gradient(155deg, var(--sm-glass-hi), var(--sm-glass)),
+    linear-gradient(180deg, rgba(4, 8, 14, 0.92), rgba(4, 8, 14, 0.95));
+  border: 1px solid var(--sm-soft);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.5),
+    0 30px 90px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 26px 100%, 0 calc(100% - 26px));
+  transform: translateX(26px);
+  opacity: 0;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease, visibility 0.24s ease;
+}
+
+/* hud.css's `#ui-root .interactive { pointer-events:auto }` out-specifies the
+   `pointer-events: none` above, so the closed (invisible) panel would still
+   catch clicks and stay tabbable without this. */
+.sm-root:not(.open) .sm-panel {
+  visibility: hidden;
+}
+
+.sm-root.open .sm-panel {
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Scanlines, felt not seen — same treatment as .hud-veil. */
+.sm-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0,
+    rgba(0, 0, 0, 0) 2px,
+    rgba(0, 0, 0, 0.14) 3px,
+    rgba(0, 0, 0, 0) 4px
+  );
+  opacity: 0.45;
+  mix-blend-mode: overlay;
+}
+
+/* --------------------------------------------------------------- header -- */
+.sm-head {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 15px 16px 13px 20px;
+  border-bottom: 1px solid var(--sm-soft);
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.08), transparent);
+}
+
+.sm-head::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 62px;
+  background: linear-gradient(180deg, var(--sm-cy), transparent);
+  box-shadow: 0 0 12px var(--cy-glow, rgba(82, 233, 255, 0.55));
+}
+
+.sm-titles {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sm-kicker {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--sm-dim);
+}
+
+.sm-title {
+  font-family: var(--sm-disp);
+  font-weight: 700;
+  font-size: 23px;
+  line-height: 1.1;
+  letter-spacing: 0.16em;
+  color: #eaf9ff;
+  text-shadow: 0 0 18px rgba(82, 233, 255, 0.35), 0 2px 5px rgba(0, 0, 0, 0.8);
+}
+
+.sm-x {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 11px;
+  background: rgba(10, 20, 32, 0.7);
+  border: 1px solid var(--sm-soft);
+  color: var(--sm-dim);
+  font-family: var(--sm-ui);
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  transition: border-color 0.18s, color 0.18s, background 0.18s;
+}
+
+.sm-x b {
+  font-family: var(--sm-disp);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--sm-cy);
+}
+
+.sm-x span {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+.sm-x:hover {
+  border-color: var(--sm-rule);
+  color: var(--sm-txt);
+  background: rgba(18, 38, 56, 0.8);
+}
+
+/* ----------------------------------------------------------------- body -- */
+.sm-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 18px 14px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sm-rule) transparent;
+}
+
+.sm-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sm-body::-webkit-scrollbar-thumb {
+  background: rgba(82, 233, 255, 0.24);
+}
+
+.sm-sec {
+  position: relative;
+  padding: 13px 0 3px;
+  border-bottom: 1px solid rgba(120, 180, 210, 0.09);
+}
+
+.sm-sec:last-child {
+  border-bottom: 0;
+}
+
+.sm-sec-t {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 9px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--sm-dim);
+}
+
+/* The rule after the title, and the live value after that. Reading the panel
+   with the eyes only on the left column still tells you what you have chosen. */
+.sm-sec-t::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: linear-gradient(90deg, var(--sm-soft), transparent);
+}
+
+/* The live value for the section, parked on the title line. `content` only
+   materialises when the section actually carries one, so a section with no
+   single-value summary (skin, eyes) simply has no pseudo-element. */
+.sm-sec[data-value]:not([data-value=''])::after {
+  content: attr(data-value);
+  position: absolute;
+  top: 12px;
+  right: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sm-amber);
+  text-shadow: 0 0 12px rgba(255, 180, 74, 0.35);
+}
+
+.sm-sub {
+  margin: 11px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--sm-dim);
+}
+
+/* ------------------------------------------------------------ sex cards -- */
+.sm-sexrow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.sm-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: rgba(10, 18, 30, 0.62);
+  border: 1px solid var(--sm-soft);
+  color: var(--sm-dim);
+  font-family: var(--sm-ui);
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  transition: border-color 0.2s, color 0.2s, background 0.2s, transform 0.2s;
+}
+
+.sm-card b {
+  font-family: var(--sm-disp);
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.sm-fig {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+}
+
+.sm-fig svg {
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+  transition: fill 0.2s;
+}
+
+.sm-card:hover {
+  border-color: var(--sm-rule);
+  color: var(--sm-txt);
+}
+
+.sm-card.on {
+  color: #eaf9ff;
+  border-color: var(--sm-cy);
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.18), rgba(10, 24, 38, 0.7));
+  box-shadow: inset 0 0 22px rgba(82, 233, 255, 0.14), 0 0 16px rgba(82, 233, 255, 0.16);
+}
+
+/* ---------------------------------------------------------------- chips -- */
+.sm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sm-chip {
+  padding: 6px 11px;
+  background: rgba(10, 18, 30, 0.6);
+  border: 1px solid var(--sm-soft);
+  color: var(--sm-dim);
+  font-family: var(--sm-ui);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px));
+  transition: border-color 0.16s, color 0.16s, background 0.16s;
+}
+
+.sm-chip:hover {
+  border-color: var(--sm-rule);
+  color: var(--sm-txt);
+}
+
+.sm-chip.on {
+  color: #041018;
+  border-color: var(--sm-cy);
+  background: linear-gradient(180deg, #7ff2ff, var(--sm-cy));
+  box-shadow: 0 0 14px rgba(82, 233, 255, 0.34);
+}
+
+.sm-chips-num .sm-chip {
+  min-width: 34px;
+  text-align: center;
+  font-family: var(--sm-disp);
+}
+
+/* --------------------------------------------------------------- slider -- */
+.sm-slider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.sm-slider-l {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--sm-dim);
+}
+
+.sm-slider-val {
+  flex: 0 0 62px;
+  text-align: right;
+  font-family: var(--sm-disp);
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  color: var(--sm-cy);
+  text-shadow: 0 0 12px rgba(82, 233, 255, 0.35);
+}
+
+.sm-range {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 18px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sm-range::-webkit-slider-runnable-track {
+  height: 3px;
+  background: linear-gradient(90deg, rgba(82, 233, 255, 0.5), rgba(120, 180, 210, 0.18));
+  border-radius: 0;
+}
+
+.sm-range::-moz-range-track {
+  height: 3px;
+  background: linear-gradient(90deg, rgba(82, 233, 255, 0.5), rgba(120, 180, 210, 0.18));
+}
+
+.sm-range::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 10px;
+  height: 18px;
+  margin-top: -7.5px;
+  background: linear-gradient(180deg, #b6f6ff, var(--sm-cy));
+  border: 0;
+  box-shadow: 0 0 12px rgba(82, 233, 255, 0.55);
+  clip-path: polygon(0 0, 100% 3px, 100% calc(100% - 3px), 0 100%);
+}
+
+.sm-range::-moz-range-thumb {
+  width: 10px;
+  height: 18px;
+  border: 0;
+  border-radius: 0;
+  background: linear-gradient(180deg, #b6f6ff, var(--sm-cy));
+  box-shadow: 0 0 12px rgba(82, 233, 255, 0.55);
+}
+
+/* ------------------------------------------------------------- swatches -- */
+.sm-sws {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sm-sw,
+.sm-pick {
+  position: relative;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(120, 180, 210, 0.22);
+  background: var(--c, #444);
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
+  transition: transform 0.16s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.16s, border-color 0.16s;
+}
+
+.sm-sw:hover,
+.sm-pick:hover {
+  transform: translateY(-2px);
+  border-color: var(--sm-rule);
+}
+
+/* Selected: a bright inset frame rather than an outer ring, so the swatch's own
+   colour is never contaminated by the marker sitting on top of it. */
+.sm-sw.on,
+.sm-pick.on {
+  border-color: #eaf9ff;
+  box-shadow: inset 0 0 0 2px rgba(4, 10, 18, 0.85), 0 0 14px rgba(82, 233, 255, 0.45);
+  transform: translateY(-2px);
+}
+
+/* The native picker is unstyleable, so it becomes an invisible hit target over
+   a swatch we draw ourselves. */
+.sm-pick input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.sm-pick i {
+  position: absolute;
+  inset: 0;
+  display: block;
+  background:
+    conic-gradient(#ff5a5a, #ffd23b, #7dff5a, #3bffd2, #52e9ff, #8f6bff, #ff5abf, #ff5a5a);
+  opacity: 0.9;
+}
+
+.sm-pick.on i {
+  background: var(--c, #888);
+  opacity: 1;
+}
+
+/* --------------------------------------------------------------- footer -- */
+.sm-foot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px 14px;
+  border-top: 1px solid var(--sm-soft);
+  background: linear-gradient(0deg, rgba(82, 233, 255, 0.05), transparent);
+}
+
+.sm-btn {
+  padding: 8px 14px;
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.2), rgba(10, 24, 38, 0.7));
+  border: 1px solid var(--sm-rule);
+  color: #eaf9ff;
+  font-family: var(--sm-disp);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  transition: background 0.18s, border-color 0.18s, color 0.18s;
+}
+
+.sm-btn:hover {
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.34), rgba(14, 34, 52, 0.8));
+}
+
+.sm-btn.ghost {
+  background: rgba(10, 18, 30, 0.6);
+  border-color: var(--sm-soft);
+  color: var(--sm-dim);
+}
+
+.sm-btn.ghost:hover {
+  border-color: var(--sm-amber);
+  color: var(--sm-amber);
+}
+
+.sm-hint {
+  flex: 1 1 100%;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--sm-dim);
+}
+
+.sm-hint b {
+  color: var(--sm-amber);
+  font-weight: 700;
+}
+
+/* --------------------------------------------------------- narrow / short */
+@media (max-height: 760px) {
+  .sm-sec {
+    padding-top: 10px;
+  }
+
+  .sm-fig {
+    height: 28px;
+  }
+}
+
+@media (max-width: 1100px) {
+  .sm-panel {
+    width: min(400px, 46vw);
+  }
+}
+
+/* ------------------------------------------------------ signature skins -- */
+.sm-schemegrid {
+  display: grid;
+  gap: 8px;
+}
+
+.sm-schemecard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  text-align: left;
+  background: rgba(10, 18, 30, 0.62);
+  border: 1px solid var(--sm-soft);
+  color: var(--sm-dim);
+  font-family: var(--sm-ui);
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+
+.sm-schemecard:hover {
+  border-color: var(--sm-rule);
+  color: var(--sm-txt);
+}
+
+.sm-schemedots {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.sm-schemedot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.4);
+}
+
+.sm-schemetext {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sm-schemetext b {
+  font-family: var(--sm-disp);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sm-schemetext small {
+  font-size: 11px;
+  color: var(--sm-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sm-schemetag {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sm-dim);
+  white-space: nowrap;
+}
+
+.sm-schemecard.locked {
+  opacity: 0.72;
+  cursor: help;
+}
+
+.sm-schemecard.locked .sm-schemedot {
+  filter: grayscale(0.5) brightness(0.8);
+}
+
+.sm-schemecard.on {
+  color: #eaf9ff;
+  border-color: var(--sm-cy);
+  background: linear-gradient(180deg, rgba(82, 233, 255, 0.18), rgba(10, 24, 38, 0.7));
+  box-shadow: inset 0 0 22px rgba(82, 233, 255, 0.14), 0 0 16px rgba(82, 233, 255, 0.16);
+}
+
+.sm-schemecard.on .sm-schemetag {
+  color: var(--sm-cy);
+}
+
+/* ---- Mount menu extras: upgrade pips and the "in inventory" card state ---- */
+.sm-stat { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.sm-stat:last-child { border-bottom: 0; }
+.sm-stat-l { font-weight: 700; letter-spacing: 0.06em; }
+.sm-stat-fx { grid-column: 1 / -1; font-size: 11px; opacity: 0.75; }
+.sm-pips { display: inline-flex; gap: 4px; }
+.sm-pip { width: 18px; height: 8px; border: 1px solid rgba(255,255,255,0.28); background: rgba(255,255,255,0.06); }
+/* No --sm-cy-glow is defined at .sm-root (unlike --sm-cy above), so this stays a literal rather than var(--sm-cy-glow, rgba(82,233,255,0.5)) referencing a token that does not exist. */
+.sm-pip.on { background: var(--sm-cy, #52e9ff); border-color: var(--sm-cy, #52e9ff); box-shadow: 0 0 8px rgba(82,233,255,0.5); }
+.sm-schemecard.held .sm-schemetag { color: #b6ff5a; }
+.sm-finish { margin-top: 6px; }
+
+
+/* ---------------------------------------------------------------- tabs -- */
+/* The one element the mount drawer has no equivalent of, because a mount is
+   the one you are riding and a ship is one of the ones in front of you. */
+.sm-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 14px 10px;
+  pointer-events: auto;
+}
+
+.sm-tab {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 6px 6px;
+  border: 1px solid var(--sm-soft);
+  border-bottom-color: var(--sm-rule);
+  background: rgba(10, 18, 28, 0.5);
+  color: var(--sm-dim);
+  font-family: var(--sm-ui);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.sm-tab b {
+  font-family: var(--sm-disp);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sm-tab small {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  opacity: 0.72;
+}
+
+.sm-tab:hover {
+  color: var(--sm-txt);
+  border-color: var(--sm-rule);
+}
+
+.sm-tab.on {
+  color: #05131c;
+  background: linear-gradient(180deg, var(--sm-cy), rgba(255, 180, 74, 0.72));
+  border-color: var(--sm-cy);
+}
+
+/* The hull's one line of copy, under the tabs. */
+.sm-blurb {
+  margin: 0 0 12px;
+  padding: 0 2px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--sm-dim);
+}
+
+/* A scheme that is already on the hull is marked in the SELECTION colour, not
+   the panel accent: "this is the one you are wearing" is the same statement a
+   lit swatch makes, and it should look like it. */
+.sm-schemecard.on {
+  border-color: var(--sm-sel);
+  box-shadow: inset 0 0 0 1px rgba(82, 233, 255, 0.18);
+}
+
+.sm-schemecard.on .sm-schemetag {
+  color: var(--sm-sel);
+}

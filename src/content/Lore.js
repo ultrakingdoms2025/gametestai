@@ -1,4 +1,4 @@
-export const LORE_ORDER = ['overall', 'station', 'medieval', 'sports', 'citadel', 'race', 'maze', 'survey'];
+export const LORE_ORDER = ['overall', 'station', 'medieval', 'sports', 'citadel', 'race', 'maze', 'dock', 'space'];
 
 export const DEFAULT_LORE = {
   overall: {
@@ -61,20 +61,45 @@ export const DEFAULT_LORE = {
       'A hedge maze that re-rolls its layout on every entry. Its districts and levels never repeat. ' +
       'The maze that cannot be learned is the entire point.',
   },
-  /* Gateway 06's destination. It has lore for the same reason it has hoardings:
-   * `loreEntryForScope` would otherwise fall back to the Chronicle and a keeper
-   * asked about Survey Site 06 would answer about the Nexus in general, which
-   * reads as the question having been forgotten rather than as the site being
-   * genuinely unwritten. Saying "nobody has decided yet" is a real answer. */
-  survey: {
-    scope: 'survey',
-    title: 'Survey Site 06',
-    sign_label: 'Site Surveyor',
+  /* Gateway 06's destination. Survey Site 06 was commissioned and is a working
+   * yard now; the entry is REPLACED rather than kept beside a new one, because
+   * `LORE_ORDER` is what the admin lore page and the site both enumerate and a
+   * dead scope in it is a row somebody has to keep answering questions about.
+   *
+   * `sign_label` becomes the keeper NPC's on-screen name, uppercased
+   * (`NPCManager._spawnLorekeepers`). It is not used by an AUTOMATIC keeper
+   * here: the yard has two gateways, so `lorekeeperScope` gives each of its
+   * keepers the DESTINATION's scope rather than the world's. The Yard Warden
+   * `DockWorld` authors herself is the one who speaks this, and she takes her
+   * persona from `buildLorePersona('dock')` so the two cannot drift. */
+  dock: {
+    scope: 'dock',
+    title: 'Lodestar Yard',
+    sign_label: 'Yard Warden',
     body:
-      'Survey Site 06 is a levelled pad on the far side of the newest gateway on the ring: a datum, ' +
-      'a setting-out grid, eighty marker stakes and no decision. The survey is complete and the site ' +
-      'has not been commissioned, so what it becomes is still an open question - which is the one ' +
-      'thing about it that is definitely true.',
+      'Lodestar Yard was Survey Site 06 until the ring commissioned it. Nothing here was built here. ' +
+      'Every hull came through the gateway in sections narrower than the arch and was pinned back ' +
+      'together on a cradle, which is why they are slab-sided and ribbed and why a yard rat can climb ' +
+      'one like a wall. The datum the surveyors left is still bolted to the floor at the centre of the ' +
+      'assembly bay, and every berth in the yard is measured off it. Four hulls are fitted out. The ' +
+      'board on the blast door reads LAUNCHES: 000.',
+  },
+  /* The far side of the blast door.
+   *
+   * It has an entry because the DOCK needs it, not because anybody lives
+   * there: with two gateways in the yard, one of its two keepers is given the
+   * scope `space`, and without a row here `loreEntryForScope` falls back to
+   * the Chronicle and that keeper answers a question about open space with a
+   * summary of the Nexus. */
+  space: {
+    scope: 'space',
+    title: 'Open Space',
+    sign_label: 'Launch Control',
+    body:
+      'Beyond the blast door at the north end of Lodestar Yard there is no floor and no roof. ' +
+      'The yard keeps one lit holding platform out there and nothing else: somewhere for a hull to ' +
+      'be handed over to whoever is flying it. Nobody has ever needed it, because nothing has ever ' +
+      'launched from the yard.',
   },
 };
 
@@ -90,7 +115,17 @@ export function buildLorePersona(scope, entries = DEFAULT_LORE) {
     `You guard the histories of the worlds and answer questions about the portals, the people, and the place itself.`,
     `Overall lore: ${overall.body}`,
     `World lore: ${world.body}`,
-    'Canonical game facts: the Nexus has six worlds (Aether Station, Medieval Valley / Aldermoor Vale, Meridian Athletic Grounds, Sunspire Citadel, Vellum Ridge, which carries three circuits - Vellum Ridge Circuit, Cinder Gorge and Aurora Rise, and The Verdant Coil); Aether Station is the hub and has five outbound portals, while each of the other five worlds has one return portal.',
+    /* THIS SENTENCE IS THE LOREKEEPER'S ONLY MAP OF THE NEXUS.
+     *
+     * It is hardcoded, it is not derived from `LORE_ORDER`, and nothing checks
+     * it against the world registry - so it goes stale silently and the model
+     * then denies the existence of anything it does not list. It said "six
+     * worlds ... five outbound portals" while the station had SIX gateways and
+     * Survey Site 06 was on the other side of one of them, which meant a
+     * keeper standing in the survey site would tell a player the survey site
+     * did not exist. Pinned now by scripts/tests/dock-registration.test.mjs,
+     * which asserts the yard is named here. */
+    'Canonical game facts: the Nexus has seven worlds reachable through the gateway ring (Aether Station, Medieval Valley / Aldermoor Vale, Meridian Athletic Grounds, Sunspire Citadel, Vellum Ridge, which carries three circuits - Vellum Ridge Circuit, Cinder Gorge and Aurora Rise, The Verdant Coil, and Lodestar Yard); Aether Station is the hub and has six outbound portals, and each of the other six worlds has one return portal to the station. Lodestar Yard is the shipyard behind gateway six and is the only world with a second portal: a launch portal at its blast door leading out to open space, which is the eighth place and has no gateway of its own.',
     'Keep answers short, clear, and in character.',
     'Answer the player directly first; keep any flavor to one brief clause.',
     'If asked about the lore, explain it plainly and directly instead of sounding cryptic or poetic.',

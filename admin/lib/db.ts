@@ -68,6 +68,47 @@ const DEFAULT_LORE_ROWS = [
       'Vellum Ridge Circuit is the Nexus at full speed: a mountain course that climbs, dives, and threads the city blocks before snapping back to the line. ' +
       'It is where drivers prove nerve, machine, and memory all at once.',
   },
+  /* Keep in step with `DEFAULT_LORE` in src/content/Lore.js. These rows are
+   * what a fresh database is seeded with, and a scope missing here is a world
+   * whose lore an admin cannot edit - the seeded set was TWO behind when the
+   * yard landed (`maze` and the old `survey` never got rows), which is how a
+   * keeper ends up reciting a bundled default nobody can change. `dock` and
+   * `space` are added together because the yard's second gateway gives one of
+   * its two keepers the `space` scope; `maze` is added because
+   * `scripts/tests/dock-economy.test.mjs` now compares this list against
+   * `DEFAULT_LORE` scope for scope and found it, which is the whole reason for
+   * comparing two hand-maintained copies mechanically rather than by eye. */
+  {
+    scope: 'maze',
+    title: 'Maze Lore',
+    sign_label: 'Keeper of the Verdant Coil',
+    body:
+      'The Verdant Coil is a hedge maze that re-rolls its layout on every entry. ' +
+      'Its districts and levels never repeat, and no two travellers have ever walked the same one. ' +
+      'The maze that cannot be learned is the entire point.',
+  },
+  {
+    scope: 'dock',
+    title: 'Lodestar Yard',
+    sign_label: 'Yard Warden',
+    body:
+      'Lodestar Yard was Survey Site 06 until the ring commissioned it. Nothing here was built here. ' +
+      'Every hull came through the gateway in sections narrower than the arch and was pinned back ' +
+      'together on a cradle, which is why they are slab-sided and ribbed and why a yard rat can climb ' +
+      'one like a wall. The datum the surveyors left is still bolted to the floor at the centre of the ' +
+      'assembly bay, and every berth in the yard is measured off it. Four hulls are fitted out. The ' +
+      'board on the blast door reads LAUNCHES: 000.',
+  },
+  {
+    scope: 'space',
+    title: 'Open Space',
+    sign_label: 'Launch Control',
+    body:
+      'Beyond the blast door at the north end of Lodestar Yard there is no floor and no roof. ' +
+      'The yard keeps one lit holding platform out there and nothing else: somewhere for a hull to ' +
+      'be handed over to whoever is flying it. Nobody has ever needed it, because nothing has ever ' +
+      'launched from the yard.',
+  },
 ] as const;
 
 // ── Schema initialisation ──────────────────────────────────────────────────

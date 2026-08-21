@@ -1,0 +1,76 @@
+{
+  "comment": "Every authored asset the yard's hulls may load. src/ships/ShipAssets.js loads ONLY what is declared here; scripts/tests/ship-assets.test.mjs holds every entry to the licence allow-list (generated, CC0-1.0, CC-BY-4.0 with attribution, proprietary-owned) and re-runs the generator into a temp directory to prove the committed file is the one the script produces. A geometry entry's `parts` names the meshes inside the .glb and the MATERIAL KEY each one is drawn with - the loader reads the key off the mesh name and discards the glTF material unread, so an authored hull costs no shader program. `bytes` and `tris` are the on-disk size and the triangle total, both asserted by the test suite so a silently re-exported file cannot drift from its declaration. A file missing at runtime degrades to the procedural hull - see ShipAssets.js and the asset arm of Hulls.buildKestrel.",
+  "assets": [
+    {
+      "id": "kestrel-hull",
+      "file": "kestrel-hull.glb",
+      "kind": "geometry",
+      "hull": "kestrel",
+      "licence": "generated",
+      "source": "scripts/make-ship-glb.mjs - procedurally authored in this repository, 2026-08-20",
+      "parts": [
+        "hull",
+        "accent",
+        "dark",
+        "glass",
+        "trim",
+        "glow"
+      ],
+      "tris": 5990,
+      "bytes": 174124
+    },
+    {
+      "id": "bastion-hull",
+      "file": "bastion-hull.glb",
+      "kind": "geometry",
+      "hull": "bastion",
+      "licence": "generated",
+      "source": "scripts/make-ship-glb.mjs (SHIP_GLB_HULL=bastion) - procedurally authored in this repository, 2026-08-20",
+      "parts": [
+        "hull",
+        "accent",
+        "dark",
+        "trim",
+        "glow"
+      ],
+      "tris": 14582,
+      "bytes": 537708
+    },
+    {
+      "id": "pike-hull",
+      "file": "pike-hull.glb",
+      "kind": "geometry",
+      "hull": "pike",
+      "licence": "generated",
+      "source": "scripts/make-ship-glb.mjs SHIP_GLB_HULL=pike - procedurally authored in this repository, 2026-08-20",
+      "parts": [
+        "hull",
+        "accent",
+        "dark",
+        "glass",
+        "trim",
+        "glow"
+      ],
+      "tris": 7102,
+      "bytes": 213304
+    },
+    {
+      "id": "dray-hull",
+      "file": "dray-hull.glb",
+      "kind": "geometry",
+      "hull": "dray",
+      "licence": "generated",
+      "source": "scripts/make-ship-glb.mjs (SHIP_GLB_HULL=dray) - procedurally authored in this repository, 2026-08-20",
+      "parts": [
+        "hull",
+        "accent",
+        "dark",
+        "glass",
+        "trim",
+        "glow"
+      ],
+      "tris": 8391,
+      "bytes": 263092
+    }
+  ]
+}

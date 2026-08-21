@@ -1,0 +1,791 @@
+import * as THREE from 'three';
+import { World } from './World.js';
+import { makeRules } from './WorldRules.js';
+import { createSky } from '../gfx/Sky.js';
+
+import {
+  SPACE_BODIES,
+  BELT,
+  DOCK_ANCHOR,
+  BODY_BY_ID,
+  STAR_DIRECTION,
+  approachState,
+  navTargets,
+} from './space/Bodies.js';
+import { Backdrop } from './space/Backdrop.js';
+import { Belt } from './space/Belt.js';
+import { DockExterior, APRON_Z, APRON_Z1, APRON_HALF_W } from './space/DockExterior.js';
+import {
+  makeBodyMaterial,
+  makeAtmosphereMaterial,
+  makeRingMaterial,
+  makeCoronaMaterial,
+} from './space/BodyShaders.js';
+import { screenFraction, NEAR_FIELD } from './space/Scale.js';
+
+/**
+ * OPEN SPACE - the volume the ship flies in.
+ *
+ * ===========================================================================
+ *  WHAT THIS WORLD IS
+ * ===========================================================================
+ *
+ * Eight hundred kilometres of navigable volume with six real bodies in it, the
+ * yard at the origin, and a debris field to port. It replaces the 60 m holding
+ * platform that stood here to prove the registration seam; the seam it proved
+ * is unchanged, and the return portal is still one spec pointing at `dock`.
+ *
+ * The three files it is mostly made of, in the order worth reading them:
+ *
+ *   space/Scale.js       how 800 km fits inside a 2,000 m far plane. Read this
+ *                        first; nothing else makes sense without it.
+ *   space/Bodies.js      where everything is, and the interface the planet
+ *                        system consumes to run a descent.
+ *   space/Backdrop.js    the per-frame driver, and why the depth buffer is
+ *                        switched off for planets.
+ *
+ * ===========================================================================
+ *  THE SKY IS TWO THINGS
+ * ===========================================================================
+ *
+ * `gfx/Sky.js` already had a space dome - nebula, galactic band and four
+ * layers of spectrally-classed stars - and it is reused verbatim for the
+ * INFINITE part of the sky. Its painted planet, moon and sun disc are switched
+ * off, because this world draws those as real objects you can fly to.
+ *
+ * `sunSize` is set to 0.004 rather than 0, and the difference matters. At 0
+ * the dome's `smoothstep(cos(uSunSize*1.35), cos(uSunSize*0.85), sd)` gets
+ * equal edges, which is a divide by zero in GLSL and produces NaN across the
+ * disc. NaN through the bloom blacks out the whole frame - it happened one
+ * folder over and cost a day. 0.004 rad is 0.23 degrees, hidden entirely
+ * inside Erenmark's real 2.78-degree disc, and it keeps the dome's glare bleed
+ * (`pow(sd, 400)` and `pow(sd, 40)`), which is the wide soft halo around the
+ * star that the real geometry cannot draw.
+ *
+ * ===========================================================================
+ *  BUDGET - every number below was measured in Chrome at 1600x900, not
+ *  estimated. `world.skyReport()` reproduces the per-frame one.
+ * ===========================================================================
+ *
+ *   meshes in
+ *   world:space   41   sky 1, bodies 9 (5 surfaces, 2 halos, 1 ring,
+ *                      1 corona), belt 3, dock 28 including the beacon
+ *   triangles     72,634 in the group. The five body spheres and two halo
+ *                 shells are 43,008 of it (one shared 64x48 unit sphere), the
+ *                 belt 20,800, the sky dome 4,096, the dock about 4,400
+ *   drawn/frame   92 standing off a planet, 116 on the apron, 146 from 6 km
+ *                 off the yard. Those are WHOLE-FRAME counts including the
+ *                 HUD, the viewmodel and the shared systems every world runs;
+ *                 this world contributes at most its 41
+ *   point lights  0. The star is the scene directional; everything that looks
+ *                 like a lamp is emissive geometry above the bloom threshold.
+ *                 `RIG_BUDGET.point` is 12 for the whole game and every one of
+ *                 them is compiled into every shader in every world.
+ *   per frame     0.020 to 0.030 ms for `Backdrop.update` over 7 members PLUS
+ *                 all 260 belt placements, averaged over 300-400 frames across
+ *                 several runs. No allocation after `build`.
+ *
+ * The dock was 70 of those meshes before its boxes were batched per material -
+ * see the note in DockExterior.js. It is the one structure here that is on
+ * screen from nearly every vantage, so it is the one whose draw count is paid
+ * continuously rather than occasionally.
+ */
+
+/* Module-level scratch. */
+const _UP = new THREE.Vector3(0, 1, 0);
+const _axis = new THREE.Vector3();
+const _shipPos = new THREE.Vector3();
+/* Scratch for the rim fill. Written every frame; nothing here allocates. */
+const _rimFwd = new THREE.Vector3();
+const _rimRight = new THREE.Vector3();
+const _rimAt = new THREE.Vector3();
+
+/** Where the return portal stands, just outside the hangar mouth. */
+const PORTAL_Z = -24;
+
+export class SpaceWorld extends World {
+  static id = 'space';
+  static displayName = 'Open Space';
+
+  constructor(ctx) {
+    super(ctx);
+
+    this.rules = makeRules({
+      /* Everything that belongs to a place rather than to the player is off.
+       * There is no economy in vacuum, no garrison, no caches, nothing to
+       * find on foot. Leaving them on would scatter traders and relic spawns
+       * across a docking apron. */
+      merchants: false,
+      quests: false,
+      contracts: false,
+      caches: false,
+      relics: false,
+      loot: false,
+      races: false,
+      interiors: false,
+      swim: false,
+      crowd: false,
+      /* Hostiles ON. Alien craft attacking the player in flight is the
+       * headline feature of this volume; the combat agent needs the gate open
+       * even while the spawner is still being written. */
+      hostiles: true,
+      /* Mounts off - a flying mount out here is the flight model, badly. */
+      mounts: false,
+    });
+
+    /* Bounds frame the MINIMAP, and a minimap of 800 km of empty volume is a
+     * blank square. So this is the yard and its piers, which is the only part
+     * of this world a floorplan means anything for. A space map wants a
+     * different projection entirely - range rings and body bearings - and
+     * that belongs to whoever owns the HUD, with `navTargets()` as its input. */
+    this.bounds = new THREE.Box3(
+      new THREE.Vector3(-300, -120, -320),
+      new THREE.Vector3(300, 220, 300)
+    );
+
+    /**
+     * The single Vector3 every terminator in this world points at. The body
+     * shaders, the atmosphere shells, the ring shadow and the scene's own
+     * directional light all hold THIS instance, so the star cannot end up
+     * lighting one thing from a direction it is not in.
+     */
+    this.starDirection = new THREE.Vector3(
+      STAR_DIRECTION[0], STAR_DIRECTION[1], STAR_DIRECTION[2]
+    );
+
+    this.environment = {
+      ...this.environment,
+      background: new THREE.Color(0x01020a),
+      fogColor: new THREE.Color(0x01020a),
+      /* No fog. There is no medium out here, and haze between the ship and a
+       * planet would read as a dirty lens. Set far beyond anything drawn
+       * rather than disabled, so a material that forgets `fog: false` degrades
+       * to "no visible fog" instead of to a hard cut. */
+      fogNear: 6000,
+      fogFar: 60000,
+      exposure: 1.02,
+      /* Ambient is nearly nothing and slightly blue: the only fill in space is
+       * starlight, and the value exists so a hull's night side is a shape
+       * rather than a hole. */
+      ambientColor: new THREE.Color(0x1b2740),
+      /* 0.28, up from 0.16, and it does NOT flatten the planets.
+       *
+       * That was the objection to raising it and it is wrong about this world:
+       * every body out here is a raw `ShaderMaterial` from `BodyShaders.js`
+       * with its own `uAmbient` uniform and no `lights: true`, so the scene
+       * ambient reaches the SHIP, the belt and the yard's exterior and reaches
+       * nothing that has a terminator on it. Measured over the flown Kestrel's
+       * own bounding box in the chase view at 0.16: median luma 9/255 with
+       * 55.7% of hull pixels under 12, and 2/255 with 72.4% under 12 when
+       * flying at the star - which is the framing a player spends the whole
+       * space half of the loop looking at. */
+      ambientIntensity: 0.28,
+      skyColor: new THREE.Color(0x16203a),
+      groundColor: new THREE.Color(0x08070c),
+      hemiIntensity: 0.22,
+      sunColor: new THREE.Color(0xffdcb4),
+      sunIntensity: 3.1,
+      sunDirection: this.starDirection,
+      envMapIntensity: 0.95,
+      /* null keeps GRADE_PRESETS.space, whose bloom threshold is 1.60. Every
+       * emissive value in this world was chosen against that number: the star
+       * at 2.9, the bay mouth at 2.4, the running lights at 2.6, Cinder's
+       * fissures up to 4.2. Change the threshold and the sky goes out. */
+      bloom: null,
+    };
+
+    /** @type {THREE.Material[]} */
+    this._mats = [];
+    /** @type {THREE.BufferGeometry[]} */
+    this._geoms = [];
+    /** @type {Array<{body:object, spin:THREE.Object3D}>} */
+    this._spinners = [];
+
+    /**
+     * WHERE THE FIGHTING IS. Consumed by `ships/SpaceCombat.js`, which arms
+     * off this field on `world:changed` exactly as `ShipRegistry` arms off
+     * `world.ships` and `Mining` off `world.mineralNodes` - so this world does
+     * not know that a combat system exists and a world with no zones simply
+     * has none. Filled by `_fillEncounters`; see the reasoning there.
+     * @type {Array<object>}
+     */
+    this.encounters = [];
+
+    this.backdrop = null;
+    this.belt = null;
+    this.dock = null;
+    this._dockMember = null;
+    this._sky = null;
+    this._corona = null;
+  }
+
+  _mat(m) {
+    this._mats.push(m);
+    return m;
+  }
+
+  _geo(g) {
+    this._geoms.push(g);
+    return g;
+  }
+
+  async build(onProgress) {
+    onProgress?.(0.06, 'Opening the bay');
+    this.backdrop = new Backdrop(this.engine?.camera ?? null);
+
+    this._buildSky();
+    onProgress?.(0.24, 'Hanging the stars');
+
+    this._buildBodies();
+    onProgress?.(0.56, 'Placing the worlds');
+
+    this._buildBelt();
+    onProgress?.(0.72, 'Scattering Halberd Reach');
+
+    this._buildDock();
+    onProgress?.(0.9, 'Lighting the beacon');
+
+    this._buildRim();
+    this._fillSpawns();
+    this._fillEncounters();
+
+    /* Place everything once, now, against the camera as it currently stands.
+     * Without this the first rendered frame has every body sitting at the
+     * scene origin at unit scale - five planets stacked inside the dock - and
+     * whether the player ever sees it depends on whether the loading screen
+     * happens to still be up.
+     *
+     * Both calls no-op when there is no camera, which is the case for every
+     * head-less build in the suite. */
+    this.backdrop.update();
+    this.belt.update(0);
+
+    onProgress?.(1, 'Open space');
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The infinite sky                                                    */
+  /* ------------------------------------------------------------------ */
+
+  _buildSky() {
+    this._sky = createSky('space', {
+      radius: 1920,
+      camera: this.engine?.camera ?? null,
+      sunDirection: this.starDirection,
+      sunColor: 0xffcf9a,
+      /* NOT zero. See the header - zero is a divide by zero in the dome's
+       * smoothstep and NaN through the bloom is a black frame. */
+      sunSize: 0.004,
+
+      /* The painted bodies are off; this world has real ones. */
+      planetAngularRadius: 0,
+      moonAngularRadius: 0,
+
+      nebulaA: 0x2a1547,
+      nebulaB: 0x0b3550,
+      nebulaC: 0x6d2352,
+      nebulaDensity: 0.5,
+
+      /* THE THING TO NAVIGATE BY.
+       *
+       * A player in a six-degree world with no ground has no absolute
+       * orientation at all, and "which way is up" stops being a question with
+       * an answer about four seconds after their first roll. The galactic band
+       * is the answer: a bright lane right across the sky, visible from every
+       * point in the volume, that does not move when they do.
+       *
+       * The axis is close to +Y, which lays the band roughly across the XZ
+       * plane - so it reads as a horizon. Tilted 18 degrees off vertical so it
+       * is not exactly the plane the bodies are laid out in, which would make
+       * the two hard to tell apart.
+       *
+       * Strength up from the preset's 0.11: at 0.11 it is a hint, and a
+       * navigation reference has to be legible against a lit planet.
+       */
+      galaxyAxis: new THREE.Vector3(0.30, 0.90, -0.31),
+      galaxyStrength: 0.17,
+
+      starBrightness: 1.15,
+      exposure: 1.0,
+    });
+    this._sky.mesh.name = 'space:sky';
+    this.group.add(this._sky.mesh);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The bodies                                                          */
+  /* ------------------------------------------------------------------ */
+
+  _buildBodies() {
+    /* One sphere geometry, shared by every body. It is a unit sphere; each
+     * body's true radius is the scale on its own mesh and the proxy factor is
+     * the scale on the group above it, so the two multiply to the drawn
+     * radius. 64x48 is 6,144 triangles - at Cinder's landing approach that is
+     * one triangle per 340 screen pixels, and the silhouette is smooth.
+     * Cheaper is visible: at 32x24 the limb is a visible polygon against the
+     * atmosphere halo, which is the one place on a planet the eye is looking. */
+    const sphere = this._geo(new THREE.SphereGeometry(1, 64, 48));
+
+    for (const body of SPACE_BODIES) {
+      const g = new THREE.Group();
+      g.name = `space:body:${body.id}`;
+      this.group.add(g);
+
+      /* Axis node: tilts the whole body so its poles are where the descriptor
+       * says. The ring hangs off this too, which is what keeps a ring in its
+       * planet's equatorial plane rather than in the world's. */
+      const axisNode = new THREE.Object3D();
+      _axis.set(body.axis[0], body.axis[1], body.axis[2]).normalize();
+      axisNode.quaternion.setFromUnitVectors(_UP, _axis);
+      g.add(axisNode);
+
+      const spinNode = new THREE.Object3D();
+      axisNode.add(spinNode);
+
+      const mat = this._mat(makeBodyMaterial(body, this.starDirection));
+      const mesh = new THREE.Mesh(sphere, mat);
+      mesh.name = `space:body:${body.id}:surface`;
+      mesh.scale.setScalar(body.radius);
+      mesh.frustumCulled = false;
+      /* Sub-order inside this body's render-order band. The surface is the
+       * floor; the ring sits on it, the atmosphere over both, the corona last.
+       * See the renderOrder note in Backdrop.js - these are the only things
+       * in this world whose relative order the depth buffer does not decide. */
+      mesh.userData.backdropSub = 0;
+      spinNode.add(mesh);
+
+      if (body.spin) this._spinners.push({ body, spin: spinNode });
+
+      /* Atmosphere, when there is one. Outside the axis node: a haze shell has
+       * no poles and spinning it would be spinning nothing.
+       *
+       * The shell is drawn at `look.haloScale` radii, NOT at `atmosphere`, and
+       * the two are deliberately different numbers. `atmosphere` is a GAMEPLAY
+       * radius: Cinder carries 1,600 m of air on a 9 km world so a descent has
+       * several seconds of entry in it. Drawn at that radius the halo is a
+       * band 18% of the planet's radius wide, and that does not read as an
+       * atmosphere - it reads as an orange rubber tyre round the planet, which
+       * is exactly what the first screenshot showed. A real atmosphere is a
+       * percent or two of the radius, and 1.05 is what that looks like. */
+      if (body.atmosphere > body.radius && (body.look.atmoStrength ?? 0) > 0) {
+        const shell = new THREE.Mesh(sphere, this._mat(makeAtmosphereMaterial(body, this.starDirection)));
+        shell.name = `space:body:${body.id}:air`;
+        shell.scale.setScalar(body.radius * (body.look.haloScale ?? 1.05));
+        shell.frustumCulled = false;
+        shell.userData.backdropSub = 2;
+        g.add(shell);
+      }
+
+      let ringMat = null;
+      let boundRadius = body.radius;
+      if (body.ring) {
+        /* Built in units of PLANET radii and scaled by the planet radius, so
+         * the shader can compare `length(vLocal.xy)` straight against
+         * `uInner`/`uOuter` from the descriptor without a conversion nobody
+         * would remember to keep in step. */
+        const ringGeo = this._geo(
+          new THREE.RingGeometry(body.ring.inner, body.ring.outer, 160, 1)
+        );
+        ringMat = this._mat(makeRingMaterial(body, this.starDirection));
+        const ring = new THREE.Mesh(ringGeo, ringMat);
+        ring.name = `space:body:${body.id}:ring`;
+        ring.rotation.x = -Math.PI / 2;
+        ring.scale.setScalar(body.radius);
+        ring.frustumCulled = false;
+        ring.userData.backdropSub = 1;
+        axisNode.add(ring);
+        /* The BOUNDING radius, not the body radius, is what the far-limb cap
+         * has to work from - otherwise the outer edge of an 87 km ring system
+         * is placed beyond the far plane and the rings get their far half
+         * sliced off in a perfect straight line. */
+        boundRadius = body.radius * body.ring.outer;
+      }
+
+      if (body.kind === 'star') {
+        const corona = new THREE.Mesh(
+          this._geo(new THREE.PlaneGeometry(1, 1)),
+          this._mat(makeCoronaMaterial(body))
+        );
+        corona.name = 'space:body:erenmark:corona';
+        corona.scale.setScalar(body.radius * (body.look.coronaScale ?? 3));
+        corona.frustumCulled = false;
+        corona.userData.backdropSub = 3;
+        g.add(corona);
+        this._corona = corona;
+        boundRadius = Math.max(boundRadius, body.radius * (body.look.coronaScale ?? 3) * 0.5);
+      }
+
+      this.backdrop.addBody(g, body.position, boundRadius, {
+        name: body.name,
+        onPlace: ringMat
+          ? (obj, _d, scale) => {
+              /* The ring's occlusion and shadow rays are cast in the RENDER
+               * frame, so they need the planet's PROXY centre and PROXY
+               * radius. Feeding them the true values puts the shadow tens of
+               * degrees away from the planet casting it. */
+              ringMat.uniforms.uPlanetCenter.value.copy(obj.position);
+              ringMat.uniforms.uPlanetRadius.value = body.radius * scale;
+            }
+          : null,
+      });
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Halberd Reach                                                       */
+  /* ------------------------------------------------------------------ */
+
+  _buildBelt() {
+    this.belt = new Belt(BELT, this.engine?.camera ?? null);
+    this.group.add(this.belt.group);
+
+    /* Ranked with the bodies so it paints in the right order against them, but
+     * NOT transformed: it places its own rocks. See the header of Belt.js. */
+    this.backdrop.addStructure(this.belt.group, BELT.position, BELT.extent[0], {
+      name: BELT.name,
+      transform: false,
+    });
+
+    /* Colliders for the rocks big enough to matter, at TRUE positions. Boxes
+     * because that is what `Physics` has; the inscribed box of a sphere of
+     * radius r has half-extent r*0.62, which under-covers the corners and
+     * over-covers nothing - the failure mode is clipping a rock's edge rather
+     * than hitting empty space, and of the two that is the one a pilot
+     * forgives. `Belt.colliderRocks` publishes the true spheres for whoever
+     * writes the real flight collision. */
+    let n = 0;
+    for (const r of this.belt.colliderRocks) {
+      const h = r.r * 0.62;
+      this.track(this.physics.addBox(r.x, r.y, r.z, h, h, h));
+      n++;
+    }
+    this.beltColliderCount = n;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The yard                                                            */
+  /* ------------------------------------------------------------------ */
+
+  _buildDock() {
+    this.dock = new DockExterior(DOCK_ANCHOR, this);
+    this.group.add(this.dock.group);
+    this._dockMember = this.backdrop.addStructure(
+      this.dock.group, DOCK_ANCHOR.position, DOCK_ANCHOR.radius, { name: DOCK_ANCHOR.name }
+    );
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Spawns, the way home, the map                                       */
+  /* ------------------------------------------------------------------ */
+
+  _fillSpawns() {
+    /* On the apron, outside the mouth, facing out along the piers. Yaw 0 faces
+     * -Z, which is outbound - the first thing a player sees on arriving is the
+     * four piers and Vitrine straight ahead beyond them. */
+    this.playerSpawn.fromArray(DOCK_ANCHOR.apronSpawn);
+    this.playerSpawnYaw = 0;
+
+    /* The way home. ONE spec, targeting `dock`.
+     *
+     * `rotationY: Math.PI` for the same reason the yard's own gateway carries
+     * it: `arrivalFor` puts an arriving player 2.6 m along
+     * `(sin rotY, cos rotY)` and turns them further along it, so PI lands them
+     * at z -26.6 facing out across the apron rather than at z -21.4 facing the
+     * blast door they just came through. */
+    this.portalSpecs.push({
+      position: new THREE.Vector3(0, 0.4, PORTAL_Z),
+      rotationY: Math.PI,
+      target: 'dock',
+      label: 'Lodestar Yard',
+      accent: 0xffb45a,
+      style: 'launch',
+    });
+
+    /* The apron and the four piers, which is all a floorplan can say here.
+     *
+     * Both apron numbers are DERIVED, not typed. `APRON_HALF_W` was renamed to
+     * `HALL_OUTER_HW - 2` = 88 and this rect stayed at the old `w: 130`, so
+     * the map drew a 130 m apron over a 176 m one: a player standing legally
+     * at x = ±80 was drawn off the edge of their own deck. The adjacent
+     * cross-walk rect (224) had been updated and this one had not, which is
+     * exactly what a hand-copied constant does. */
+    const apronZ0 = APRON_Z, apronZ1 = APRON_Z1;
+    this.minimapShapes.push(
+      { kind: 'rect', x: 0, z: (apronZ0 + apronZ1) / 2, w: APRON_HALF_W * 2, d: apronZ1 - apronZ0, rotation: 0,
+        fill: 'rgba(18,26,40,0.85)', stroke: 'rgba(255,180,90,0.9)' },
+      { kind: 'rect', x: 0, z: -91, w: 224, d: 14, rotation: 0,
+        fill: 'rgba(18,26,40,0.85)', stroke: 'rgba(255,180,90,0.7)' },
+      { kind: 'circle', x: 0, z: PORTAL_Z, r: 4,
+        fill: 'rgba(255,180,90,0.3)', stroke: '#ffb45a' }
+    );
+    for (const b of DOCK_ANCHOR.berths) {
+      const [bx, , bz] = b.position;
+      this.minimapShapes.push(
+        { kind: 'rect', x: bx, z: (bz - 98) / 2 - 0, w: 9, d: Math.abs(bz - 98) - 10, rotation: 0,
+          fill: 'rgba(18,26,40,0.7)', stroke: 'rgba(255,180,90,0.5)' },
+        { kind: 'circle', x: bx, z: bz, r: 8,
+          fill: 'rgba(255,180,90,0.14)', stroke: 'rgba(255,180,90,0.8)' }
+      );
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Where the fighting is                                               */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * The three places a raider wing will find you.
+   *
+   * ── PLACEMENT IS THE WHOLE PROBLEM ────────────────────────────────────────
+   *
+   * Citadel shipped a world with zero reachable wildlife and 29 green tests,
+   * because the wildlife was placed where nobody walks. Eight hundred
+   * kilometres of empty volume is that failure mode with the difficulty turned
+   * up: a picket at a random bearing 200 km out would be perfectly built,
+   * fully functional, and never once seen by a player.
+   *
+   * So the zones are not placed in space. They are placed on the two ROUTES,
+   * and there are only two, because there is only one landable planet and one
+   * belt:
+   *
+   *   dock -> Cinder   the mining run. Every trip in this world is this line
+   *                    or a return along it, so a zone astride it at 20 km is
+   *                    a zone every player meets on their first flight out.
+   *   Halberd Reach    26 km to port, in the nav list from the moment you
+   *                    launch, and the only other thing close enough to be
+   *                    worth a detour. A nest there is what makes the detour
+   *                    a decision rather than sightseeing.
+   *
+   * The two Cinder zones are derived from `BODY_BY_ID.cinder.position` rather
+   * than written out, so if the body layout ever moves the pickets move with
+   * it. A hand-typed coordinate here is a picket left behind in empty space
+   * the first time somebody re-tunes the volume.
+   *
+   * ── THE OFFSETS, WHICH ARE NOT DECORATION ─────────────────────────────────
+   *
+   * Each zone sits `off` metres to one side of the line, on a perpendicular.
+   * Dead centre would mean a player holding a perfect course flies through the
+   * exact origin of the trigger sphere and the wing appears symmetrically
+   * around them; a few hundred metres off means the encounter has a side, and
+   * the two Cinder zones are offset in different directions so the outbound
+   * and homebound fights do not feel like the same fight twice.
+   *
+   * ── THE DIFFICULTY LADDER ─────────────────────────────────────────────────
+   *
+   *   Ashlane        2 skiffs.            190 integrity, 18 dps if both hold
+   *                                       a firing solution, which they will
+   *                                       not. Survivable in a stock Kestrel
+   *                                       (55 shield + 100 hull at -10%): it
+   *                                       takes them about half a minute of
+   *                                       unanswered fire, and killing both is
+   *                                       about four seconds of yours.
+   *   Cinder orbit   2 skiffs + 1 lance.  450 integrity. The one you meet with
+   *                                       a full hold, which is when you have
+   *                                       the most to lose.
+   *   Halberd Reach  3 skiffs + 1 lance.  545 integrity, 291 credits of
+   *                                       bounty. Optional, off the route, and
+   *                                       the reason to buy a Pike.
+   *
+   * `rearm` is longer than a round trip to Cinder on purpose: coming home past
+   * a picket you have just cleared should be quiet, because the reward for
+   * winning a fight is not having to fight it again on the way back.
+   */
+  _fillEncounters() {
+    const cinder = BODY_BY_ID.cinder;
+    /* Unit vector from the yard to Cinder, and two perpendiculars to offset
+     * along. `crossVectors` against world up is degenerate only for a body
+     * directly overhead, which Cinder - out and DOWN - is the furthest thing
+     * in the layout from being. */
+    const line = new THREE.Vector3(cinder.position[0], cinder.position[1], cinder.position[2]);
+    const dist = line.length();
+    const dir = line.clone().normalize();
+    const side = new THREE.Vector3().crossVectors(dir, _UP).normalize();
+    const lift = new THREE.Vector3().crossVectors(side, dir).normalize();
+
+    const onLine = (frac, off, up) => {
+      const p = dir.clone().multiplyScalar(dist * frac)
+        .addScaledVector(side, off)
+        .addScaledVector(lift, up);
+      return [p.x, p.y, p.z];
+    };
+
+    this.encounters = [
+      {
+        id: 'ashlane',
+        name: 'the Ashlane picket',
+        /* 33% of the way out: 20.5 km, which clears `SpaceCombat.SAFE_RADIUS`
+         * (9 km) by more than a factor of two and is far enough that a player
+         * has already engaged transit and has to be pulled out of it. */
+        position: onLine(0.33, 620, -240),
+        radius: 4200,
+        warn: 'Unknown transponders - closing',
+        wing: [{ class: 'skiff', count: 2 }],
+        rearm: 240,
+        blurb: 'Two skiffs working the ash lane between the yard and Cinder.',
+      },
+      {
+        id: 'cinder-orbit',
+        /* 78% out: 48 km, which is 13.6 km short of Cinder - outside its
+         * 10.6 km atmosphere AND outside the 9.9 km handoff, so the fight can
+         * never fire a descent seam underneath itself. */
+        name: 'Cinder high orbit',
+        position: onLine(0.78, -900, 380),
+        radius: 4600,
+        warn: 'Raiders holding over Cinder',
+        wing: [{ class: 'skiff', count: 2 }, { class: 'lance', count: 1 }],
+        rearm: 300,
+        blurb: 'They wait above the caldera for hulls that come up heavy.',
+      },
+      {
+        id: 'reach-nest',
+        name: 'the Halberd Reach nest',
+        position: [BELT.position[0], BELT.position[1], BELT.position[2]],
+        radius: 5200,
+        warn: 'Nest roused - four contacts',
+        wing: [{ class: 'skiff', count: 3 }, { class: 'lance', count: 1 }],
+        rearm: 420,
+        blurb: 'Whatever lives in the Reach does not want the rocks surveyed.',
+      },
+    ];
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Per frame                                                           */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * THE HULL'S OWN RIM, AND WHY IT IS A LIGHT RATHER THAN MORE AMBIENT.
+   *
+   * There is exactly one directional key out here - the star - and the chase
+   * camera sits OPPOSITE it whenever the player flies toward it. So flying at
+   * the only light in the system is the worst-lit framing, not the best:
+   * measured over the flown Kestrel's bounding box, nose on Erenmark with
+   * `ahead 0.997`, the hull read median 9/255 with 55.7% of its pixels under
+   * 12; turned so the star was behind, 2/255 and 72.4%. It is not a shadow-
+   * frustum bug - with the harness pin cleared the sun's target tracks the ship
+   * correctly - it is structural.
+   *
+   * A second directional, carried on the camera and aimed at what the camera is
+   * looking at, is the fix a film crew would use and it costs nothing:
+   * `LightRig` claims any non-slot light a world adds and ranks it into one of
+   * `RIG_BUDGET.dirFill`'s three slots, so the number of lights compiled into
+   * every shader does not move and there is no warm-up cost. It is cool and
+   * weak - it is a fill, not a key - and it is deliberately off the camera's
+   * shoulder rather than on its axis, because a light on the view axis flattens
+   * a hull exactly as much as ambient does.
+   *
+   * It reaches the belt and the yard's exterior too, which is correct: those
+   * are the other two things in this world made of plate.
+   */
+  _buildRim() {
+    this._rim = new THREE.DirectionalLight(0x9fc4ff, 0.85);
+    this._rim.castShadow = false;
+    this._rim.name = 'space:rim';
+    this.group.add(this._rim);
+    this.group.add(this._rim.target);
+  }
+
+  update(dt, elapsed) {
+    /* Order matters and it is not arbitrary:
+     *   1. the dome re-centres on the camera
+     *   2. bodies spin in their own frames
+     *   3. the backdrop places every group against the camera and re-ranks
+     *   4. the belt places its rocks
+     *   5. the dock reads the scale the backdrop just wrote
+     * Run 5 before 3 and the beacon is sized from the previous frame's
+     * distance, which is a visible flutter when the ship is moving fast. */
+    const camera = this.engine?.camera ?? null;
+    this._sky.update(dt);
+
+    for (let i = 0; i < this._spinners.length; i++) {
+      const s = this._spinners[i];
+      s.spin.rotation.y = elapsed * s.body.spin;
+    }
+
+    this.backdrop.update();
+    this.belt.update(elapsed);
+
+    if (!camera) return;
+    if (this._corona) this._corona.quaternion.copy(camera.quaternion);
+    if (this._rim) {
+      /* Aim at what the camera is looking at, from over its left shoulder and
+       * a little above. 40 m ahead is the chase camera's own boom length plus
+       * a hull, so the target sits on the ship rather than behind it - a
+       * directional light does not attenuate, but its TARGET is what fixes the
+       * direction, and a target on the camera would light the hull edge-on. */
+      camera.getWorldDirection(_rimFwd);
+      _rimRight.crossVectors(_rimFwd, _UP);
+      if (_rimRight.lengthSq() < 1e-6) _rimRight.set(1, 0, 0);
+      _rimRight.normalize();
+      camera.getWorldPosition(_rimAt);
+      _rimAt.addScaledVector(_rimFwd, 40);
+      this._rim.target.position.copy(_rimAt);
+      this._rim.position.copy(_rimAt)
+        .addScaledVector(_rimRight, -70)
+        .addScaledVector(_UP, 52)
+        .addScaledVector(_rimFwd, -26);
+    }
+    if (this.dock) {
+      this.dock.update(camera, elapsed, this._dockMember.scale, this._dockMember.D);
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Published surface                                                   */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Which body the ship is falling towards and how far into the fall.
+   * Forwarded from Bodies.js so callers holding the world do not have to
+   * import the module as well. See `Bodies.approachState`.
+   *
+   * @param {THREE.Vector3} [shipPos] defaults to the camera
+   */
+  approach(shipPos) {
+    if (shipPos) return approachState(shipPos);
+    this.engine.camera.getWorldPosition(_shipPos);
+    return approachState(_shipPos);
+  }
+
+  /** Everything worth a HUD marker, as plain data. */
+  navTargets() {
+    return navTargets();
+  }
+
+  /**
+   * What the sky actually looks like from where the camera is standing, as
+   * numbers. This is the harness's window into the scale scheme: it is how
+   * "does a planet grow convincingly" gets checked without a screenshot.
+   */
+  skyReport() {
+    this.engine.camera.getWorldPosition(_shipPos);
+    const fov = this.engine.camera.fov;
+    const rows = this.backdrop.report();
+    for (const r of rows) {
+      const body = SPACE_BODIES.find((b) => b.name === r.name);
+      r.screenFraction = body
+        ? +screenFraction(body.radius, r.trueKm * 1000, fov).toFixed(4)
+        : null;
+    }
+    return {
+      camera: [+_shipPos.x.toFixed(1), +_shipPos.y.toFixed(1), +_shipPos.z.toFixed(1)],
+      nearField: NEAR_FIELD,
+      backdropCostMs: +this.backdrop.lastCostMs.toFixed(3),
+      approach: this.approach(_shipPos),
+      members: rows,
+    };
+  }
+
+  dispose() {
+    this._sky?.dispose();
+    this.belt?.dispose();
+    this.dock?.dispose();
+    for (const g of this._geoms) g.dispose();
+    for (const m of this._mats) m.dispose?.();
+    this._geoms.length = 0;
+    this._mats.length = 0;
+    this._spinners.length = 0;
+    this.backdrop = null;
+    super.dispose();
+  }
+}

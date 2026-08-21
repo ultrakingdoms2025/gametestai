@@ -1,12 +1,26 @@
 import { buildMarketplaceAiImageUrl } from './marketplaceImages';
 
-export const MARKETPLACE_CATEGORIES = ['cosmetic', 'weapons', 'tools', 'health', 'spells', 'mounts'] as const;
+/* `'ships'` is the seventh, and it is added HERE AND IN `ALL_CATEGORIES`
+ * (src/systems/Marketplace.js) or in neither.
+ *
+ * Half-done is the dangerous half: `normalizeCategory` in marketplaceDb.ts
+ * THROWS on an unknown category, which is loud and fine, but
+ * `Marketplace._readVendorCategories` in the game silently DROPS one it does
+ * not recognise - so a counter authored as `vendorCategories: ['ships']` with
+ * this list unchanged becomes a general trader stocking the whole catalogue
+ * rather than an empty one. Filing ship hulls under `mounts` and ship liveries
+ * under `cosmetic` would work and would be a lie in the UI tabs. */
+export const MARKETPLACE_CATEGORIES = ['cosmetic', 'weapons', 'tools', 'health', 'spells', 'mounts', 'ships'] as const;
 export type MarketplaceCategory = (typeof MARKETPLACE_CATEGORIES)[number];
 
-export const MARKETPLACE_WORLDS = ['station', 'medieval', 'sports', 'citadel', 'race'] as const;
+/* Every world whose vendors have a catalogue. `normalizeWorld` throws on
+ * anything not in here, and it is called from `rowToItem` for EVERY row in a
+ * listing - so a `dock` row reaching the API before this changed would take
+ * the whole marketplace down, not just its own row. */
+export const MARKETPLACE_WORLDS = ['station', 'medieval', 'sports', 'citadel', 'race', 'dock'] as const;
 export type MarketplaceWorld = (typeof MARKETPLACE_WORLDS)[number];
 
-/* ---- Mount upgrades: shown in the F10 menu, applied by MountManager.grantPower ---- */
+/* ---- Mount upgrades: shown in Esc -> Customise mount, applied by MountManager.grantPower ---- */
 
 const UPGRADE_MOUNTS = [
   { id: 'dragon', label: 'Dragon', powers: ['power', 'strength', 'shield', 'fire'] },
@@ -57,6 +71,43 @@ export const MARKETPLACE_ACTIONS = [
     label: 'Ember ammo pack',
     description: 'Consumes one item and adds ember charges to the player bag.',
     effect: 'grant_ammo',
+  },
+  /* ---- Lodestar Yard ---------------------------------------------------
+   *
+   * All three use the GENERIC effects `Marketplace._purchaseGrant` already
+   * reads off `action_config` (`grant_ammo` / `grant_item`), which is the
+   * documented way to skip step 7 of the nine-step item registration - the
+   * `MARKETPLACE_CONSUMABLE_ITEMS` mapping whose recorded failure is a
+   * prettier `source_key` resolving to nothing and every purchase returning
+   * `unsupported` (Marketplace.js:605-613). Nothing here needs a bespoke
+   * grant, so nothing here takes that risk. */
+  {
+    id: 'ammo_pack_laser',
+    label: 'Laser cell rack',
+    description: 'Consumes one item and adds laser cells to the player bag.',
+    effect: 'grant_ammo',
+  },
+  {
+    id: 'ship_part',
+    label: 'Ship part',
+    description: 'Consumes one item and adds a fitting-out part to the player bag.',
+    effect: 'grant_item',
+  },
+  {
+    id: 'nav_chart',
+    label: 'Navigation chart',
+    description: 'Consumes one item and adds a navigation chart to the player bag.',
+    effect: 'grant_item',
+  },
+  /* Refined Cinder ore, sold across a counter. `grant_item` for the same
+   * reason the three rows above use a generic effect: it is the documented way
+   * past step 7, the `MARKETPLACE_CONSUMABLE_ITEMS` mapping, whose failure mode
+   * is a purchase that resolves to nothing and returns `unsupported`. */
+  {
+    id: 'refined_ore',
+    label: 'Refined ore',
+    description: 'Consumes one item and adds a worked piece of planetary ore to the player bag.',
+    effect: 'grant_item',
   },
   {
     id: 'heal_25',
@@ -217,13 +268,13 @@ export const MARKETPLACE_ACTIONS = [
   {
     id: 'cosmetic_vehicle_skin',
     label: 'Car skin',
-    description: 'Grants a car skin item; apply it from the Mount menu (F10) while driving.',
+    description: 'Grants a car skin item; apply it from Esc → Customise mount while driving.',
     effect: 'grant_item',
   },
   {
     id: 'mount_skin',
     label: 'Mount skin',
-    description: 'Grants a mount skin item; apply it from the Mount menu (F10) while riding.',
+    description: 'Grants a mount skin item; apply it from Esc → Customise mount while riding.',
     effect: 'grant_item',
   },
   {
@@ -330,6 +381,12 @@ const WORLD_PRICE_MULTIPLIERS: Record<MarketplaceWorld, {
   sports: { ammoBuy: 0.9, ammoSell: 1.05, consumableBuy: 0.7, consumableSell: 0.65 },
   citadel: { ammoBuy: 1.3, ammoSell: 1.55, consumableBuy: 1.45, consumableSell: 1.4 },
   race: { ammoBuy: 1.0, ammoSell: 1.0, consumableBuy: 1.0, consumableSell: 1.0 },
+  /* MUST match `WORLD_MARKETS.dock` in src/systems/ItemDefs.js exactly:
+   * `buy.ammo`, `sell.ammo`, `buy.consumable`, `sell.consumable`. This table
+   * and that one are two independent copies of the same four numbers and
+   * nothing in either codebase compares them, so the check lives in
+   * scripts/tests/dock-registration.test.mjs. */
+  dock: { ammoBuy: 0.9, ammoSell: 0.8, consumableBuy: 0.95, consumableSell: 1.1 },
 };
 
 type PricingKind = 'ammo' | 'consumable' | 'fixed';
@@ -361,7 +418,7 @@ const MOUNT_SKIN_DEFS = [
 const MOUNT_SKIN_ROWS: readonly BaseSeedRow[] = MOUNT_SKIN_DEFS.map((s, i) => ({
   source_key: `skin_${s.key}`,
   name: s.name,
-  description: `${s.desc} Apply from the Mount menu (F10) while riding; one use, then yours to keep.`,
+  description: `${s.desc} Apply from Esc → Customise mount while riding; one use, then yours to keep.`,
   category: 'mounts',
   image_label: s.name.split(' ')[0].toUpperCase(),
   image_color: s.color,
@@ -377,7 +434,7 @@ const MOUNT_SKIN_ROWS: readonly BaseSeedRow[] = MOUNT_SKIN_DEFS.map((s, i) => ({
 const MOUNT_UPGRADE_ROWS: readonly BaseSeedRow[] = UPGRADE_MOUNTS.flatMap((m, mi) => m.powers.flatMap((p, pi) => ([1, 2, 3] as const).map((tier) => ({
   source_key: `mount_${m.id}_${p}_${tier}`,
   name: `${m.label} ${POWER_META[p].name} ${TIER_ROMAN[tier - 1]}`,
-  description: `${m.label} upgrade: ${POWER_META[p].blurb} tier ${tier}. Permanent, replaces a lower tier. See your tiers in the Mount menu (F10).`,
+  description: `${m.label} upgrade: ${POWER_META[p].blurb} tier ${tier}. Permanent, replaces a lower tier. See your tiers in Esc → Customise mount.`,
   category: 'mounts',
   image_label: `${POWER_META[p].name.slice(0, 3).toUpperCase()} ${TIER_ROMAN[tier - 1]}`,
   image_color: POWER_META[p].color,
@@ -451,6 +508,142 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
     pricing_kind: 'consumable' as const,
     sort_order: 40,
   },
+
+  /* ==================================================================== */
+  /* Lodestar Yard                                                        */
+  /* ==================================================================== */
+  /*
+   * Four rows, and every one of them carries a `worlds` allowlist - the first
+   * use of a field that shipped with the comment "currently unused; kept for
+   * future world-specific stock".
+   *
+   * ── Why an allowlist and not the usual six copies ────────────────────────
+   * A `BASE_ITEMS` row without one is seeded into all six worlds, and three of
+   * these four have nowhere to be bought outside the yard: `MARKETPLACE_WORLDS`
+   * has one counter carrying the `ships` category in the entire Nexus (Suri
+   * Vane, `DockWorld._publish`), and `Marketplace.refreshCatalog` filters the
+   * open window by the standing vendor's `vendorCategories`. A `ships` row in
+   * Aldermoor Vale is a row no NPC alive can show you - a catalogue entry that
+   * is built and unreachable, which is this project's signature defect
+   * expressed as five database rows.
+   *
+   * `pack_nav_chart` is allowed in TWO worlds and the second one is not a
+   * guess: the chart's whole effect is `Viewpoints.chartNearest`, and
+   * `Viewpoints` arms off `world.viewpoints`. Exactly two worlds publish that
+   * array - Sunspire Citadel (five) and Lodestar Yard (three) - and the
+   * citadel's Cosmetic counter already carries `tools`. In the other four the
+   * chart would be a purchase `ItemUse._canApply` refuses to apply, which is
+   * the good half of that failure (the unit is not consumed) attached to the
+   * bad half (you paid for it).
+   */
+  {
+    source_key: 'pack_laser_cell',
+    name: 'Laser Cell Rack',
+    description: '40 charged capacitor cells, racked. Ship ordnance, cut and wound in this yard.',
+    category: 'weapons' as const,
+    image_label: 'CELL',
+    image_color: '#7fe8ff',
+    game_action: 'ammo_pack_laser' as MarketplaceActionId,
+    action_config: { effect: 'grant_ammo', ammo_item: 'laser_cell', amount: 40 },
+    quantity: null,
+    cost_buy: 160,
+    cost_sell: 64,
+    pricing_kind: 'ammo' as const,
+    sort_order: 50,
+    worlds: ['dock'] as const,
+  },
+  {
+    source_key: 'part_hull_plate',
+    name: 'Hull Plate',
+    description: 'One cut and drilled section plate, stamped with its frame number. The unit the yard counts in.',
+    category: 'ships' as const,
+    image_label: 'PLATE',
+    image_color: '#b8c6d4',
+    game_action: 'ship_part' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'hull_plate', amount: 1 },
+    quantity: null,
+    cost_buy: 85,
+    cost_sell: 34,
+    pricing_kind: 'fixed' as const,
+    sort_order: 52,
+    worlds: ['dock'] as const,
+  },
+  {
+    source_key: 'part_thruster_coil',
+    name: 'Thruster Coil',
+    description: 'A wound field coil out of a courier drive. The one fitting-out part nobody in this yard leaves lying about.',
+    category: 'ships' as const,
+    image_label: 'COIL',
+    image_color: '#e8b06a',
+    game_action: 'ship_part' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'thruster_coil', amount: 1 },
+    quantity: null,
+    cost_buy: 195,
+    cost_sell: 78,
+    pricing_kind: 'fixed' as const,
+    sort_order: 54,
+    worlds: ['dock'] as const,
+  },
+  {
+    source_key: 'pack_nav_chart',
+    name: 'Navigation Chart',
+    description: 'A rolled survey chart of one district, drawn from a height somebody else climbed to. Marks that ground on your map; it does not put you on it.',
+    category: 'tools' as const,
+    image_label: 'CHART',
+    image_color: '#5f8b98',
+    game_action: 'nav_chart' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'nav_chart', amount: 1 },
+    quantity: null,
+    cost_buy: 220,
+    cost_sell: 88,
+    pricing_kind: 'consumable' as const,
+    sort_order: 56,
+    worlds: ['citadel', 'dock'] as const,
+  },
+
+  /* ---- Cinder ore, over a yard counter ---------------------------------
+   *
+   * One row, and the restraint is the point. `BASE_ITEMS` is the BUY side: a
+   * row here is a thing a vendor hands you for credits. Seeding the six Cinder
+   * elements into it would let a player buy iridite off a counter without ever
+   * flying to Cinder, which is not a catalogue entry, it is a refund on the
+   * entire mining loop. The five cargo ores are therefore sold BY the player,
+   * out of the ship's hold, and appear nowhere in this file.
+   *
+   * `ferrobasalt` is the exception because it is the one Cinder element that
+   * has a use in the hand rather than a price by the tonne - `ItemUse` routes
+   * it to the loot-magnet effect - and a finished, belt-clipped lodestone is a
+   * manufactured article the yard is entitled to sell. 175 credits, which is
+   * above both of the numbers it has to sit above: the 104 the raw two cubic
+   * metres fetch out of the hold, and the 165 the purpose-built Vacuum Rune
+   * costs - and the lodestone is the weaker of the two effects (20 s at 4.5 m
+   * against 30 s at 5.5 m). So buying one is a convenience for a pilot who
+   * never went to Cinder, and digging one out of the colonnade stays the cheap
+   * way to have it. A shop row that undercut the mine would end the mine.
+   *
+   * `worlds: ['dock']`. Two independent reasons, and the row needs both:
+   * `tools` is carried by a yard counter (the same one `pack_nav_chart` leans
+   * on, asserted against `DockWorld` in dock-economy.test.mjs), and the yard is
+   * the only place in the Nexus that refines Cinder ore at all. A row in a
+   * world whose counters carry no `tools` is a purchase nobody can be shown.
+   */
+  {
+    source_key: 'ore_lodestone',
+    name: 'Ferro-Basalt Lodestone',
+    description: 'A belt-clipped slab of magnetite basalt off Cinder, trimmed and cased in the yard. Pulls loose salvage to you for twenty seconds, then the field bleeds off.',
+    category: 'tools' as const,
+    image_label: 'LODE',
+    image_color: '#4d5866',
+    game_action: 'refined_ore' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'ferrobasalt', amount: 1 },
+    quantity: null,
+    cost_buy: 175,
+    cost_sell: 70,
+    pricing_kind: 'fixed' as const,
+    sort_order: 58,
+    worlds: ['dock'] as const,
+  },
+
   {
     source_key: 'spell_stasis_5s',
     name: 'Stasis Rune',
@@ -764,7 +957,7 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
   {
     source_key: 'cosmetic_car_neon',
     name: 'Neon Circuit Livery',
-    description: 'Limited-edition car livery — magenta body with cyan rims. Apply from the Mount menu (F10) while driving; one use, then yours to keep.',
+    description: 'Limited-edition car livery — magenta body with cyan rims. Apply from Esc → Customise mount while driving; one use, then yours to keep.',
     category: 'mounts' as const,
     image_label: 'NEON',
     image_color: '#ff3bd2',
@@ -779,7 +972,7 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
   {
     source_key: 'cosmetic_car_inferno',
     name: 'Inferno Livery',
-    description: 'Limited-edition car livery — race red with gold alloys. Apply from the Mount menu (F10) while driving; one use, then yours to keep.',
+    description: 'Limited-edition car livery — race red with gold alloys. Apply from Esc → Customise mount while driving; one use, then yours to keep.',
     category: 'mounts' as const,
     image_label: 'INFERNO',
     image_color: '#c21f2f',
@@ -794,7 +987,7 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
   {
     source_key: 'cosmetic_car_phantom',
     name: 'Phantom Livery',
-    description: 'Limited-edition car livery — stealth black with chalk-white wheels. Apply from the Mount menu (F10) while driving; one use, then yours to keep.',
+    description: 'Limited-edition car livery — stealth black with chalk-white wheels. Apply from Esc → Customise mount while driving; one use, then yours to keep.',
     category: 'mounts' as const,
     image_label: 'PHANTOM',
     image_color: '#0d0f12',
@@ -809,7 +1002,7 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
   {
     source_key: 'cosmetic_car_toxic',
     name: 'Toxic Surge Livery',
-    description: 'Limited-edition car livery — venom green over black rims. Apply from the Mount menu (F10) while driving; one use, then yours to keep.',
+    description: 'Limited-edition car livery — venom green over black rims. Apply from Esc → Customise mount while driving; one use, then yours to keep.',
     category: 'mounts' as const,
     image_label: 'TOXIC',
     image_color: '#18a86b',
@@ -824,7 +1017,7 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
   {
     source_key: 'cosmetic_car_azure',
     name: 'Azure Bolt Livery',
-    description: 'Limited-edition car livery — electric blue with silver alloys. Apply from the Mount menu (F10) while driving; one use, then yours to keep.',
+    description: 'Limited-edition car livery — electric blue with silver alloys. Apply from Esc → Customise mount while driving; one use, then yours to keep.',
     category: 'mounts' as const,
     image_label: 'AZURE',
     image_color: '#1f6fd0',
@@ -980,8 +1173,8 @@ export function buildMarketplaceSeedItems(): MarketplaceSeedItem[] {
   for (const world of MARKETPLACE_WORLDS) {
     const multipliers = WORLD_PRICE_MULTIPLIERS[world];
     for (const item of BASE_ITEMS) {
-      // Optional per-item world allowlist (currently unused; kept for future
-      // world-specific stock).
+      // Optional per-item world allowlist. Used: the yard's four ship-fitting
+      // rows are stocked in 'dock' only.
       const allow = item.worlds;
       if (allow && !allow.includes(world)) continue;
       let buyMul = 1;

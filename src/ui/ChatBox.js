@@ -35,17 +35,35 @@ export class ChatBox {
    * @param {{ root: HTMLElement, bus: any, input: any, client: any,
    *           worldManager: any, questSystem?: any, onClose?: Function }} ctx
    */
-  constructor({ root, bus, input, client, worldManager, questSystem, onClose }) {
+  constructor({ root, bus, input, client, worldManager, questSystem, onClose, camera }) {
     this.bus = bus;
     this.input = input;
     this.client = client;
     this.worldManager = worldManager;
+    /* THE CAMERA, FOR THE ONE THING IT IS USED FOR: NOT BEING INSIDE A HEAD.
+     *
+     * Every conversation in this game is entered by walking up to somebody
+     * until the prompt appears and pressing E, and the prompt appears at
+     * arm's length. A tester's note on the merchant flow: "Talking to any
+     * merchant puts the camera inside their skull. E at prompt range plants
+     * you in a giant distorted face with two lidless black eyeballs. That is
+     * the composition for every trade in the game."
+     *
+     * Gameplay is BLOCKED while a channel is open (`main.js` puts 'chat' into
+     * `gameplayUiBlocks` on `chat:open`), so the camera rig is not running and
+     * a single write here holds for the whole conversation. That is what makes
+     * this six lines instead of a system. */
+    this.camera = camera ?? null;
+    /** Saved camera pose, restored on close. Null while shut. */
+    this._camSave = null;
     /** Optional — supplies the quest context sent with each line. See `_submit`. */
     this.questSystem = questSystem ?? null;
     this._onClose = onClose;
 
     this._open = false;
     this._npc = null;
+    /** Who the last `Channel open` line was written for. See `open`. */
+    this._lastNpcId = null;
     this._busy = false;
     this._abort = null;
     this._streamNode = null;
@@ -150,9 +168,24 @@ export class ChatBox {
 
     const firstTime = npc && !this._greeted(npc);
 
-    if (firstTime) {
+    /* THE SEPARATOR IS ABOUT WHO YOU ARE TALKING TO, NOT ABOUT WHETHER YOU
+     * HAVE MET THEM.
+     *
+     * The transcript is one scrolling log shared by every contact, which is
+     * fine - but this line only printed `if (firstTime)`. So opening a channel
+     * with somebody you had already greeted printed NOTHING, and their reply
+     * landed directly under the previous contact's. Driven cold, a tester
+     * pressed E on Suri Vane, a vendor, and read the Lorekeeper's paragraph
+     * about Aether Station sitting in her channel with no break above it, and
+     * reported it as a merchant reciting the wrong world's lore.
+     *
+     * Printed whenever the CONTACT CHANGES, which is the thing the reader
+     * actually needs marked. `setNpc` already had this right for a retarget
+     * mid-conversation; `open` did not. */
+    if (npc && (firstTime || npc.id !== this._lastNpcId)) {
       this._systemLine(`Channel open — ${npc.name ?? 'unknown contact'}`);
     }
+    if (npc) this._lastNpcId = npc.id;
 
     // Lorekeepers: immediately display the world lore text on first open
     // so the player sees the lore without having to ask for it.
@@ -164,6 +197,8 @@ export class ChatBox {
       this._row('npc', speaker, npc.loreBody);
       this._systemLine('Ask me anything about this world or the Nexus.');
     }
+
+    this._frameSpeaker(npc);
 
     this.field.value = '';
     this.field.disabled = false;
@@ -177,6 +212,7 @@ export class ChatBox {
   close() {
     if (!this._open) return;
     this._open = false;
+    this._releaseCamera();
     this.el.classList.remove('open');
     this.field.blur();
     this._abort?.abort();
@@ -190,8 +226,72 @@ export class ChatBox {
   setNpc(npc) {
     if (!npc || npc === this._npc) return;
     this._npc = npc;
+    this._lastNpcId = npc.id;
     this._refreshHeader();
     this._systemLine(`Channel open — ${npc.name ?? 'unknown contact'}`);
+    this._frameSpeaker(npc);
+  }
+
+  /* ------------------------------------------------------------ camera -- */
+
+  /**
+   * Stand off, and look at the person rather than through them.
+   *
+   * The framing is derived from the NPC's OWN pose - `headPosition` off the
+   * rigged skeleton and `forward` off their yaw - so it is a three-quarter on
+   * whoever is actually speaking, at whatever height they are, whether they
+   * are standing, seated or on a crate.
+   *
+   * The chat panel occupies the lower band of the frame, so the speaker is
+   * lifted above centre rather than put in the middle of it.
+   *
+   * Every guard here is a real case: no camera injected (the panel must still
+   * work), an NPC with no rig yet, a head position that has come back
+   * non-finite. A conversation that cannot be framed is a conversation held at
+   * the old camera, which is the behaviour this replaces and is never worse.
+   */
+  _frameSpeaker(npc) {
+    const cam = this.camera;
+    if (!cam || !npc) return;
+    let head;
+    try {
+      head = npc.headPosition;
+    } catch { return; }
+    if (!head || !Number.isFinite(head.x) || !Number.isFinite(head.y) || !Number.isFinite(head.z)) return;
+    const fwd = npc.forward;
+    if (!fwd || !Number.isFinite(fwd.x)) return;
+
+    if (!this._camSave) {
+      this._camSave = { pos: cam.position.clone(), quat: cam.quaternion.clone(), fov: cam.fov };
+    }
+
+    /* 2.4 m out along the NPC's own facing and 25 degrees off it - a
+     * conversational distance and the angle a listener stands at. Straight
+     * down their nose reads as an interrogation and straight side-on reads as
+     * eavesdropping. */
+    const a = 0.44;
+    const dx = fwd.x * Math.cos(a) - fwd.z * Math.sin(a);
+    const dz = fwd.x * Math.sin(a) + fwd.z * Math.cos(a);
+    cam.position.set(head.x + dx * 2.4, head.y + 0.16, head.z + dz * 2.4);
+    /* Aim slightly BELOW the head so the speaker sits above the middle of the
+     * frame, clear of the transcript.
+     *
+     * `lookAt(x, y, z)` rather than a scratch Vector3: this file imports
+     * nothing from three and does not need to start. The three-number
+     * overload is the same call. */
+    cam.lookAt(head.x, head.y - 0.30, head.z);
+  }
+
+  /** Give the camera back. */
+  _releaseCamera() {
+    const cam = this.camera;
+    const save = this._camSave;
+    this._camSave = null;
+    if (!cam || !save) return;
+    cam.position.copy(save.pos);
+    cam.quaternion.copy(save.quat);
+    cam.fov = save.fov;
+    cam.updateProjectionMatrix();
   }
 
   _greeted(npc) {

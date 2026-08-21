@@ -14,7 +14,9 @@ import { SportsWorld } from './worlds/SportsWorld.js';
 import { CitadelWorld } from './worlds/CitadelWorld.js';
 import { RaceWorld } from './worlds/RaceWorld.js';
 import { MazeWorld } from './worlds/MazeWorld.js';
-import { SurveyWorld } from './worlds/SurveyWorld.js';
+import { DockWorld } from './worlds/DockWorld.js';
+import { SpaceWorld } from './worlds/SpaceWorld.js';
+import { worldClasses as planetWorldClasses } from './worlds/planets/index.js';
 import { Player } from './player/Player.js';
 import { NPCManager } from './npc/NPCManager.js';
 import { PortalSystem } from './systems/Portals.js';
@@ -41,6 +43,12 @@ import { MazeMap } from './ui/MazeMap.js';
 import { KeybindMenu } from './ui/KeybindMenu.js';
 import { CharacterMenu } from './ui/CharacterMenu.js';
 import { MountMenu } from './ui/MountMenu.js';
+import { ShipMenu } from './ui/ShipMenu.js';
+import { ShipRegistry } from './ships/ShipRegistry.js';
+import { Piloting } from './ships/Piloting.js';
+import { SpaceCombat } from './ships/SpaceCombat.js';
+import { FlightHUD } from './ui/FlightHUD.js';
+import { Mining } from './systems/Mining.js';
 import { LightRig } from './gfx/LightRig.js';
 import { Caches } from './systems/Caches.js';
 import { Contracts } from './systems/Contracts.js';
@@ -48,6 +56,7 @@ import { QuestSystem } from './systems/QuestSystem.js';
 import { AdminCheats } from './systems/AdminCheats.js';
 import { Relics } from './systems/Relics.js';
 import { Viewpoints } from './systems/Viewpoints.js';
+import { SpaceObjectives } from './systems/SpaceObjectives.js';
 import { Interiors } from './systems/Interiors.js';
 import { AudioDirector } from './audio/AudioDirector.js';
 import { AudioMenu } from './ui/AudioMenu.js';
@@ -60,6 +69,7 @@ import { createSkiRun } from './minigames/SkiRun.js';
 import { createTennisMatch } from './minigames/TennisMatch.js';
 import { createTrackRace } from './minigames/TrackRace.js';
 import { createRooftopTrial } from './minigames/RooftopTrial.js';
+import { createTestFire } from './minigames/TestFire.js';
 import { TennisPose } from './minigames/TennisPose.js';
 import { MinigameUI } from './ui/MinigameUI.js';
 import { QuestBoard } from './ui/QuestBoard.js';
@@ -125,10 +135,33 @@ worldManager.register(SportsWorld);
 worldManager.register(CitadelWorld);
 worldManager.register(RaceWorld);
 worldManager.register(MazeWorld);
-/* Gateway 06's destination. `register` is metadata-only and keyed on `static
- * id` - nothing is constructed until the world is first requested - so a
- * placeholder world costs nothing until somebody walks through its gateway. */
-worldManager.register(SurveyWorld);
+/* Gateway 06's destination, and the one place beyond it.
+ *
+ * `register` is metadata-only and keyed on `static id` - nothing is
+ * constructed until the world is first requested - so registering the yard and
+ * the space beyond it costs nothing until somebody walks through the gateway.
+ *
+ * `SpaceWorld` is registered in the DOCK drop rather than in the flight drop
+ * on purpose. The yard's launch portal targets it, so without it the blast
+ * door leads to `[WorldManager] unknown world "space"`; and standing it up now
+ * exercises the whole registration surface - background builds, the light rig
+ * claim, portal previews, `arrivalFor`'s return-portal-by-target lookup, the
+ * PostFX grade, the music score and `lorekeeperScope`'s two-target branch - at
+ * a point where every one of those answers is still cheap to change. */
+worldManager.register(DockWorld);
+worldManager.register(SpaceWorld);
+/* Every planet surface, from its descriptor.
+ *
+ * One registration per descriptor and no world class per planet - `PlanetWorld.of`
+ * stamps a four-field subclass, which is the whole point of the parameterised
+ * surface system. Ten planets later this loop is unchanged.
+ *
+ * They register HERE, beside the void that names them, because `Bodies.CINDER`
+ * carries `surfaceWorld: 'planet:cinder'` and a body that names a world nobody
+ * registered is a planet you can fly at forever and never reach. That is the
+ * signature defect of this project, and `piloting-loop.test.mjs` asserts every
+ * landable body resolves to something in `worldManager.ids`. */
+for (const PlanetClass of planetWorldClasses()) worldManager.register(PlanetClass);
 
 const player = new Player({ ...ctx, camera: engine.camera });
 /* Worlds are constructed before the player exists, but they only ever read this
@@ -242,6 +275,72 @@ const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, play
 // F10. Customises the mount being ridden (colour slots, skins, upgrade tiers);
 // generic over each mount's CUSTOM_SLOTS/STATS. Refuses to open on foot.
 const mountMenu = new MountMenu({ root: uiRoot, bus, input, mounts, cosmetics, inventory, player });
+/* Hull liveries and upgrade tiers. It arms off a published field — `world.ships`
+ * — exactly as `Relics`, `Caches`, `Viewpoints` and `MinigameManager` do, so no
+ * world knows this exists and a world with no hulls simply has none. The panel
+ * is in the Esc hub rather than on a function key: F2-F12 are Chrome's and only
+ * answer when the page happens to have focus. */
+const ships = new ShipRegistry({ bus, worldManager });
+const shipMenu = new ShipMenu({
+  root: uiRoot, bus, input, ships, player,
+  /* The camera and the scene, so the panel can point at the hull it is
+   * painting. See the turntable note in ShipMenu's constructor: the
+   * customiser used to open while the player stood at the ship's stern
+   * looking at a grey wall. */
+  camera: engine.camera, scene: engine.scene,
+});
+
+/* PILOTING - the mode that turns four separate worlds into one loop.
+ *
+ * Constructed here, after `ships` and before the save, because it owns state
+ * the save round-trips (which hull, where it is parked, what is in the hold)
+ * and it reads liveries and upgrade tiers off the registry above.
+ *
+ * It is a MODE and not a world: it takes the player's body the way
+ * `MountManager` does and hands it back the same way, and it survives a world
+ * change instead of being cleared by one - because it is HOW the world
+ * changes. See the header of ships/Piloting.js. */
+const piloting = new Piloting({
+  scene: engine.scene,
+  engine,
+  physics,
+  bus,
+  input,
+  player,
+  camera: engine.camera,
+  cameraRig,
+  avatar,
+  worldManager,
+  ships,
+  economy,
+  mounts,
+  portals,
+});
+/* The cockpit readout. Its own overlay rather than five more branches in
+ * `HUD.js`, and its own file so the nav list - the row that makes stranding
+ * impossible - is somewhere a reader can find it. */
+/* SHIP-TO-SHIP. Constructed after `piloting`, because it writes that mode's
+ * `interdicted` flag and reads its flight state every step, and after `ships`,
+ * because the shield pool and the gun's damage are both derived from the
+ * upgrade tiers the registry owns. It arms off `world.encounters`, so it is
+ * inert in every world that does not publish any - which is all of them but
+ * `space`. */
+const spaceCombat = new SpaceCombat({
+  scene: engine.scene,
+  camera: engine.camera,
+  bus,
+  input,
+  player,
+  worldManager,
+  piloting,
+  ships,
+  economy,
+});
+const flightHUD = new FlightHUD({ root: uiRoot, bus, piloting, combat: spaceCombat });
+/* The consumer `world.mineralNodes` has been waiting for. Ore goes into the
+ * SHIP, not the bag, and pays nothing until it is sold at the yard - which is
+ * what makes the flight home part of the loop rather than optional. */
+const mining = new Mining({ bus, player, input, worldManager, piloting });
 
 // Ammunition now comes out of the bag rather than a private per-weapon counter.
 loadout.setInventory?.(inventory);
@@ -268,6 +367,31 @@ const relics = new Relics({
 const viewpoints = new Viewpoints({
   bus, player, economy, inventory, cosmetics, mounts, worldManager,
 });
+/* The yard's `nav_chart` is the one bag item whose effect is a viewpoint, and
+ * `ItemUseSystem` is constructed a hundred lines above this because the
+ * marketplace needs it. Handed over here rather than by re-ordering the two:
+ * `Viewpoints` reads `player` and `inventory`, and moving IT up would only
+ * move the same knot. `ItemUse._canApply` treats a null `viewpoints` as
+ * "cannot chart", so the wire being absent refuses the use instead of eating
+ * the chart. */
+itemUse.viewpoints = viewpoints;
+
+/* THE THREE THINGS THE PLAYER ASKED FOR, COUNTED.
+ *
+ * "so i have a few objectives, kill spacealiens, reach planets, mine for rare
+ * elements". All three were already verbs - `SpaceCombat` kills, `Piloting`
+ * lands, `Mining` cuts - and none of them was counted, paid, persisted or
+ * shown. This is the consumer, and it consumes only what those three already
+ * emit: `combat:kill`, `combat:cleared`, `pilot:entry`, `pilot:landed` and
+ * `mining:node`. Not one line of any of them changed to make it work.
+ *
+ * Constructed after `piloting` because the survey sweep reads the ship's
+ * position out of the flight integrator, and after `ships` because two of its
+ * milestones pay a hull refit through `ShipRegistry.grantPower` - the same
+ * purchase path the yard's spec board uses. */
+const objectives = new SpaceObjectives({
+  bus, economy, inventory, cosmetics, ships, piloting, worldManager,
+});
 
 // Enterable building interiors: doors, stairs, elevators and multi-floor
 // collectibles. Constructed after Loot so its world:changed collectible spawn
@@ -289,7 +413,7 @@ const cheats = new AdminCheats({ bus, input, loadout, player, economy });
 
 // All sound is synthesised at runtime - see audio/AudioDirector.js for why
 // there is not a single audio file in this project.
-const audio = new AudioDirector({ bus, camera: engine.camera, player, worldManager, input });
+const audio = new AudioDirector({ bus, camera: engine.camera, player, worldManager, input, piloting });
 const audioMenu = new AudioMenu({ root: uiRoot, bus, input, audio });
 
 // Racing. The manager arms itself off `world:changed` by reading whatever the
@@ -349,6 +473,17 @@ minigames.registerGame('run', (venue, ctx) =>
 minigames.registerGame('rooftop', (venue, ctx) =>
   createRooftopTrial(venue, { ...ctx, worldManager, npcs: npcManager, engine, save })
 );
+/* The yard's test-fire butts. The closure lends it `inventory`, which the
+ * manager deliberately does not know about and which this contest genuinely
+ * needs: the butts burn eight `laser_cell` to light the plates, and that is
+ * the only thing in this drop that consumes one. `worldManager` rides along so
+ * the plate lamps parent into the active world's group rather than the scene
+ * root - a lamp left on the root survives a world change and hangs in the next
+ * world at the same coordinates. No NPC factory and no frame hook: there is no
+ * rival here, only the clock. */
+minigames.registerGame('test_fire', (venue, ctx) =>
+  createTestFire(venue, { ...ctx, inventory, worldManager })
+);
 const minigameUI = new MinigameUI({ root: uiRoot, bus, input, minigames });
 /* The fourth and fifth late-pose modules, run as one pass. Assigned onto the
  * player rather than built by it, because the poses need the minigame manager
@@ -368,6 +503,22 @@ const save = new SaveGame({
   // The world-local progress layer. Absent from the snapshot until now, so
   // 3,600 CR of relics and every synchronised viewpoint reset on each reload.
   relics, viewpoints,
+  // Hull liveries and tiers. World-local, and restored with the rest of that
+  // layer after the world is live - a livery written before the yard is built
+  // is a write into a hull that does not exist yet.
+  ships,
+  /* Where the ship is, what is in its hold, and whether the player was in the
+   * seat when they quit. Without this, quitting mid-flight is a player who
+   * reloads standing in a hangar with their ore gone. */
+  piloting,
+  /* Which seams are already worked out. There are 110 nodes on Cinder and they
+   * do not come back; a finite collectible that resets is not finite, which is
+   * the note `relics` and `viewpoints` are already here for. */
+  mining,
+  /* Hostiles killed by class, wings broken, bodies reached, elements assayed.
+   * The one ledger here that is a CAREER rather than a world, and the one that
+   * keys every column by identity - see the note in `SpaceObjectives`. */
+  objectives,
 });
 /* Ask the browser not to evict this origin's storage under pressure. Fire and
  * forget - it resolves to false on browsers that do not offer it, and nothing
@@ -485,6 +636,16 @@ hud.setPauseMenuItems([
         // The panel refuses on foot and toasts; saying so up front is kinder.
         enabled: () => (mounts?.mounted ? true : 'Mount up first (M)'),
         run: () => mountMenu.open(),
+      },
+      {
+        id: 'ship',
+        label: 'Customise ship',
+        /* Gated on the WORLD rather than on the player, which is the whole
+         * difference from the mount row above: a mount is ridden and a hull is
+         * selected, so the question is "is there a cradle here" and not "what
+         * am I sitting on". */
+        enabled: () => (ships?.canCustomise ? true : 'No hull on a cradle here'),
+        run: () => shipMenu.open(),
       },
       /* `Inventory.open()` is synchronous ONLY once its panel exists. On the
        * very first call it kicks off a dynamic `import('../ui/InventoryUI.js')`
@@ -639,6 +800,7 @@ if (overrides.dev) {
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
     waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, mountMenu, caches, contracts,
   cheats, audio, audioMenu, relics, viewpoints, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
+  ships, shipMenu, piloting, spaceCombat, flightHUD, mining, objectives,
   interiors, mazeMap, minigames, minigameUI,
     /* The only door out of this file the harness is allowed through. Kept
      * behind `__dev` rather than spread across GAME so it is obvious at a call
@@ -660,7 +822,25 @@ if (overrides.dev) {
 /* Boot sequence                                                       */
 /* ------------------------------------------------------------------ */
 
-const loader = createLoadingScreen(uiRoot);
+const loader = createLoadingScreen(uiRoot, {
+  /* A human-readable stamp for the card, or null when there is nothing to
+   * offer. `SaveGame.savedAt` reads the same validated payload `hasSave`
+   * does, so a corrupt save offers nothing rather than offering a crash. */
+  savedAt: () => {
+    const at = save.savedAt();
+    if (!at) return null;
+    const mins = Math.max(0, Math.round((Date.now() - at) / 60000));
+    if (mins < 1) return 'moments ago';
+    if (mins < 60) return `${mins} min ago`;
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return `${hrs} hour${hrs === 1 ? '' : 's'} ago`;
+    return new Date(at).toLocaleDateString();
+  },
+  resume: () => save.load(),
+  /* Explicit and immediate. A "new game" that leaves the old save in place is
+   * the overwrite defect again, delayed by one autosave tick. */
+  discard: () => save.clear(),
+});
 const accountStatePromise = fetch('/api/game/session', { cache: 'no-store' })
   .then(async (res) => {
     if (!res.ok) return null;
@@ -1578,6 +1758,19 @@ engine.setContextRecovery(recoverFromContextLoss);
 engine.onFixedUpdate((dt, elapsed) => {
   if (gameplayBlocked()) return;
   mounts.fixedUpdate(dt, elapsed);
+  /* Beside the mounts and for the same reason: while the player is in a seat,
+   * this owns their position, so it has to have written it before the player
+   * integrates and before anything downstream reads where they are. The two
+   * are mutually exclusive - `SpaceWorld` and `PlanetWorld` both set
+   * `mounts: false`, and the yard's ships are boarded, not summoned. */
+  piloting.fixedUpdate(dt, elapsed);
+  /* AFTER the ship has been integrated, never before: every hostile leads its
+   * shots against the position `piloting` just wrote, and every bolt in flight
+   * is swept against the hull where it is THIS step. At a 455 m/s closure,
+   * aiming at last step's position hands the enemy a 7.6 m error - in the
+   * player's favour closing and against them separating, which is the worst
+   * kind of wrong because it makes the fight inconsistent rather than hard. */
+  spaceCombat.fixedUpdate(dt, elapsed);
   player.fixedUpdate(dt, elapsed);
   // After the player, never before: lap validation sweeps the segment the
   // player actually travelled this step, and reading their position before the
@@ -1607,6 +1800,17 @@ engine.onFrameUpdate((dt, elapsed) => {
     // The rig reads the player's final position, and the avatar and mounts then
     // pose against the camera the rig just placed.
     cameraRig.update(dt, elapsed);
+    /* AFTER the rig, and that ordering is the whole reason a barrel roll works.
+     * The rig composes a boom from yaw and pitch, which has no roll in it; this
+     * overwrites the camera from the flight quaternion, which has all three
+     * axes. Running it first would have the rig level the horizon again every
+     * frame. It is a no-op when nobody is flying. */
+    piloting.update(dt, elapsed);
+    /* AFTER `piloting.update`, which is the frame the chase camera is placed
+     * in. The gun reticle and the lead pip are projected through that camera;
+     * projecting through last frame's puts both a frame behind the nose, which
+     * at 2.6 rad/s of roll is visibly detached from the ship they belong to. */
+    spaceCombat.update(dt, elapsed);
     avatar.update(dt, elapsed);
     mounts.update(dt, elapsed);
     npcManager.update(dt, elapsed);
@@ -1640,6 +1844,17 @@ engine.onFrameUpdate((dt, elapsed) => {
     // keeps the map from lagging the climb by one frame.
     viewpoints.update(dt);
     interiors.update(dt);
+    /* After `interiors` for the reason the minigames are: both publish an E
+     * prompt, and reading interiors' in the same frame it was written is what
+     * keeps one key from ever meaning two things at once. Mining stands down
+     * entirely while the player is in a seat. */
+    mining.update(dt);
+    /* After `mining` and after `piloting` has stepped: the ore ledger is driven
+     * by the `mining:node` this frame may just have emitted, and the survey
+     * sweep reads the ship position the flight integrator has just written.
+     * Reading either one frame late would put the HUD a frame behind the toast
+     * that announced it. */
+    objectives.update(dt);
     // After `interiors`, which is what publishes the door/lift prompt the
     // minigame venue stands down for — reading it in the same frame it was
     // written keeps the E key from ever meaning two things at once.
@@ -1655,12 +1870,16 @@ engine.onFrameUpdate((dt, elapsed) => {
   helpMenu.update?.(dt);
   characterMenu.update?.(dt);
   mountMenu.update?.(dt);
+  shipMenu.update?.(dt);
   raceUI.update(dt);
   // Outside the `uiPaused` gate, like every other panel: its own sheets are
   // what raise the pause, so a UI that stopped ticking when they opened could
   // never draw the button that closes them.
   minigameUI.update(dt);
   hud.update(dt, elapsed);
+  /* Outside the `uiPaused` gate, like every other overlay: the readout has to
+   * keep drawing behind the Esc hub or a paused flight looks like a crashed one. */
+  flightHUD.update(dt);
   // Last, and deliberately so: every light in the game has now been moved and
   // dimmed for this frame, so the rig is ranking final positions. It also
   // re-hides any light that appeared since the previous frame, which is what
@@ -1931,21 +2150,28 @@ engine.onFrameUpdate(() => {
 /* Loading screen                                                      */
 /* ------------------------------------------------------------------ */
 
-function createLoadingScreen(root) {
+function createLoadingScreen(root, hooks = {}) {
   const el = document.createElement('div');
   el.className = 'boot-screen';
   el.innerHTML = `
     <div class="boot-inner">
       <div class="boot-logo">AETHER<span>NEXUS</span></div>
-      <div class="boot-tagline">Five worlds. One gateway.</div>
+      <div class="boot-tagline">Seven worlds, one gateway ring, and the space beyond.</div>
       <div class="boot-bar"><div class="boot-bar-fill"></div></div>
       <div class="boot-status">Initialising</div>
       <div class="boot-start" hidden>
         <div class="boot-start-title">CLICK TO ENTER</div>
+        <div class="boot-save" hidden>
+          <span class="boot-save-note"></span>
+          <button type="button" class="boot-fresh">Start a new game instead</button>
+        </div>
         <div class="boot-controls">
           <span><b>WASD</b> Move</span><span><b>Shift</b> Sprint</span><span><b>Space</b> Jump</span>
-          <span><b>LMB</b> Fire</span><span><b>RMB</b> Aim</span><span><b>R</b> Reload</span>
-          <span><b>E</b> Talk / Enter portal</span><span><b>T</b> Chat</span><span><b>Esc</b> Pause menu</span>
+          <span><b>C</b> Crouch / roll</span><span><b>LMB</b> Fire</span><span><b>RMB</b> Aim</span>
+          <span><b>R</b> Reload</span><span><b>E</b> Talk / Enter portal</span>
+          <span><b>F</b> Board your ship</span><span><b>W</b> Throttle</span>
+          <span><b>X</b> Airbrake</span><span><b>Esc</b> Pause menu</span>
+          <span><b>F1</b> Every control</span>
         </div>
       </div>
       <div class="boot-error" hidden></div>
@@ -1957,6 +2183,9 @@ function createLoadingScreen(root) {
   const start = el.querySelector('.boot-start');
   const title = el.querySelector('.boot-start-title');
   const errorEl = el.querySelector('.boot-error');
+  const saveRow = el.querySelector('.boot-save');
+  const saveNote = el.querySelector('.boot-save-note');
+  const freshBtn = el.querySelector('.boot-fresh');
 
   /* The card is shown while the shader warm is still running, so a click has to
    * be able to arrive before the game is in a state to be entered. Rather than
@@ -1965,6 +2194,23 @@ function createLoadingScreen(root) {
   let warm = false;
   let queued = false;
   let entered = false;
+  /* Whether the click on this card restores the previous session.
+   *
+   * -- THE DEFECT THIS EXISTS FOR ----------------------------------------
+   * The game autosaved and never auto-LOADED. Enter, and 30 s later the
+   * autosave timer wrote a pristine spawn state over the save you had not
+   * been told existed - measured three times: 7,777 cr became 0, and a real
+   * 90-minute session's 2,066-byte payload became 1,558 bytes with
+   * `credits: 0` and `liveries: {}`. `SaveGame` already guarded the boot
+   * screen itself and says so in a comment; the thirty seconds AFTER the
+   * click were the hole.
+   *
+   * The guard is not a longer timer. It is that entering with a save present
+   * LOADS it, so there is no window in which the live state and the stored
+   * state disagree. Starting fresh is still available and is explicit: it
+   * clears the save on the click, which is the only way a new game can be
+   * safe from the same overwrite. */
+  let resume = false;
 
   const enter = () => {
     if (entered) return;
@@ -1972,7 +2218,13 @@ function createLoadingScreen(root) {
     el.classList.add('boot-hide');
     setTimeout(() => el.remove(), 900);
     input.requestLock();
-    bus.emit('game:started');
+    /* Load BEFORE `game:started`, which is what arms the autosave. Failure is
+     * non-fatal: a save that will not apply must still let the player into
+     * the world, and `SaveGame.load` reports its own reason. */
+    Promise.resolve()
+      .then(() => (resume ? hooks.resume?.() : null))
+      .catch((err) => { console.error('[boot] could not restore the save:', err); })
+      .then(() => bus.emit('game:started'));
   };
 
   const tryEnter = () => {
@@ -1995,12 +2247,34 @@ function createLoadingScreen(root) {
     /** Shaders are done: unlock entry, and honour a click that already landed. */
     warmComplete() {
       warm = true;
-      title.textContent = 'CLICK TO ENTER';
+      title.textContent = resume ? 'CLICK TO CONTINUE' : 'CLICK TO ENTER';
+      /* `setWarming` overwrote the status line with "Preparing shaders" and
+       * nothing ever put it back, so the card sat reading that it was still
+       * compiling for the whole time it was ready to play. */
+      status.textContent = 'Ready';
       if (queued) enter();
     },
     showStartPrompt(worldName) {
       status.textContent = `Entering ${worldName}`;
       start.hidden = false;
+      /* A save is offered, never restored silently: the card says what the
+       * click will do and names the alternative beside it. */
+      const found = hooks.savedAt?.() ?? null;
+      if (found) {
+        resume = true;
+        title.textContent = 'CLICK TO CONTINUE';
+        saveRow.hidden = false;
+        saveNote.textContent = `Saved game found - ${found}`;
+        freshBtn.addEventListener('click', (e) => {
+          /* Stop the card's own click handler: this button is the one control
+           * on this screen that must not also enter the world. */
+          e.stopPropagation();
+          resume = false;
+          hooks.discard?.();
+          title.textContent = 'CLICK TO ENTER';
+          saveRow.hidden = true;
+        });
+      }
       el.addEventListener('click', tryEnter);
       if (overrides.autoStart) setTimeout(tryEnter, 120);
     },

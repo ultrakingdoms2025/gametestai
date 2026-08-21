@@ -1,4 +1,5 @@
 import { CONFIG } from '../core/Config.js';
+import { venueArticle } from './PromptSlots.js';
 import { Minimap } from './Minimap.js';
 import { ChatBox } from './ChatBox.js';
 import { ChatClient } from '../ai/ChatClient.js';
@@ -48,6 +49,29 @@ const CHARGE_C = 2 * Math.PI * CHARGE_R;
 const CHARGE_HOLD = 0.14;
 const CAM_MODE_LIFE = 1.6;
 const MOUNT_LABELS = { hoverboard: 'Hoverboard', dragon: 'Dragon', car: 'Ground Car' };
+
+/**
+ * The rows of the OBJECTIVES panel, in the order the player earns them.
+ *
+ * Kills first because it is the one that moves in the first minute; ore last
+ * because it is the only row whose number is credits rather than a count, and a
+ * unit change reads better at the bottom of a list than in the middle of one.
+ * The keys are the fields `SpaceObjectives.progress()` publishes, so a renamed
+ * field is a row that stops updating rather than a row that draws garbage.
+ */
+const OBJECTIVE_ROWS = [
+  ['kills', 'Kills'],
+  ['wings', 'Wings'],
+  ['survey', 'Survey'],
+  ['assay', 'Elements'],
+  /* "Ore cut", not "Ore". The ladder increments on `mining:node`, at the
+   * moment of the CUT, and the toast beside it says "N CR when sold" - so the
+   * row was denominated in money the player has not been paid and, since being
+   * shot down now costs the un-banked hold, may never be paid. One word makes
+   * the row a prospecting record instead of a bank balance, which is what its
+   * four rung titles have always said it was. */
+  ['ore', 'Ore cut'],
+];
 /** One-letter badges for owned mount power tiers - see `_setMountPowers`. */
 const POWER_LABELS = { power: 'PWR ', strength: 'STR ', shield: 'SHD ', fire: 'FIR ' };
 /** Boost meter fallback rates, used only when the mount exposes no charge. */
@@ -266,6 +290,11 @@ export class HUD {
     this._relicText = '';
     this._vpText = '';
 
+    /* -- space objectives (kills / survey / ore) ---------------------- */
+    /** Last rank chip written. Compared before every write, like every other
+     *  string in this file - see `_setObjectives`. */
+    this._objRankText = '';
+
     /* -- chat / lock -------------------------------------------------- */
     this._chatOpen = false;
     this._relock = 0;
@@ -479,6 +508,9 @@ export class HUD {
        * system; read it off the board rather than adding a second constructor
        * argument threaded through main.js for the same object. */
       questSystem: this.questBoard?.questSystem,
+      /* So a conversation is framed on the person rather than held from
+       * inside their skull. See `ChatBox._frameSpeaker`. */
+      camera: this.engine?.camera ?? null,
       onClose: () => this._onChatClosed(),
     });
   }
@@ -580,6 +612,7 @@ export class HUD {
     this._buildStamina(col);
     this._buildQuestTracker(col);
     this._buildCollectibles(col);
+    this._buildObjectives(col);
   }
 
   /**
@@ -732,6 +765,202 @@ export class HUD {
       this._vpText = vt;
       this.vpCount.textContent = vt;
     }
+  }
+
+  /**
+   * THE THREE SPACE OBJECTIVES, IN THE SAME COLUMN AS THE DISCOVERIES.
+   *
+   * ── What it is for ──────────────────────────────────────────────────────
+   * The player named three things they wanted to do out here - "kill
+   * spacealiens, reach planets, mine for rare elements" - and every one of them
+   * was a verb with no tally. `SpaceObjectives` counts them; this draws them.
+   *
+   * ── Why a second panel and not five more rows in DISCOVERIES ────────────
+   * `.collect` is WORLD-LOCAL: it shows what the active world publishes and
+   * hides itself when that world publishes neither relics nor viewpoints. These
+   * five are the opposite - one career ledger that spans the yard, the void and
+   * every planet - and folding them in would mean a panel labelled Discoveries
+   * that stayed up in worlds with no discoveries in them. Same visual language,
+   * same column, same `.col-row` markup, different lifetime.
+   *
+   * ── Why it is in the vitals column at all ───────────────────────────────
+   * Every corner is spoken for, and a flex column cannot be made to overlap its
+   * neighbours by a panel appearing - the reason the quest tracker and the
+   * discoveries panel are both here, recorded in `_buildQuestTracker`. It also
+   * survives the cockpit takeover: `flight.css` hides the crosshair, the ammo,
+   * the weapon strip, the minimap and the stamina under `body.is-piloting` and
+   * deliberately does not hide the vitals - so the tally the player is flying
+   * FOR stays on screen while they fly.
+   *
+   * Five rows and a rank chip, hidden outright in the worlds where none of it
+   * can move (the citadel, the maze, the medieval map). `SpaceObjectives.live`
+   * decides that, not this file - one place knows which worlds are the space
+   * campaign.
+   */
+  _buildObjectives(col) {
+    const p = el('div', 'panel objectives');
+    const head = el('div', 'obj-head');
+    head.appendChild(el('div', 'panel-label', 'Objectives'));
+    this.objRank = el('div', 'obj-rank', '');
+    this.objRank.hidden = true;
+    head.appendChild(this.objRank);
+    p.appendChild(head);
+
+    /* Built from a table rather than five copies of the same six lines: the
+     * rows are identical in every way except their label and which field of
+     * the payload they read, and five hand-written blocks is five places for
+     * one of them to drift. */
+    this.objRows = {};
+    for (const [key, label] of OBJECTIVE_ROWS) {
+      const row = el('div', 'col-row');
+      const value = el('div', 'col-count', '0/0');
+      row.append(el('div', 'col-name', label), value);
+      p.appendChild(row);
+      this.objRows[key] = { row, value, text: '' };
+      /* THE SURVEY PLOT, directly under the count it belongs to.
+       *
+       * There is no map out here that will take a marker: `Minimap` is a
+       * world-XZ floorplan baked for a citadel 240 m across, and the volume is
+       * 800 km across. So the map IS this strip - one tag per body, in the
+       * order `SPACE_BODIES` publishes them, dark until you have been there.
+       * Five glyphs is the whole system at a glance and it fills in as you
+       * fly, which is what revealing a map means when the map is the sky.
+       *
+       * Built empty and populated on the first payload, because the bodies are
+       * `SpaceObjectives`' data and this file must not carry a second copy of
+       * the layout. */
+      if (key === 'survey') {
+        this.objPlot = el('div', 'obj-plot');
+        this.objPlot.hidden = true;
+        p.appendChild(this.objPlot);
+        this._objPlotTags = [];
+      }
+    }
+    /* THE BRIEF. One sentence, under the counters, saying what to do next.
+     *
+     * Not a row: it is prose and it wraps, where every row above it is a
+     * label and a number on one line. `SpaceObjectives.hint` derives the
+     * sentence from the same ledger the rows are drawn from, so the two can
+     * never disagree - and it returns null once the campaign is finished, at
+     * which point this hides rather than repeating itself for ever. */
+    this.objHint = el('div', 'obj-hint', '');
+    this.objHint.hidden = true;
+    p.appendChild(this.objHint);
+    this._objHintText = '';
+
+    p.hidden = true;
+    col.appendChild(p);
+    this.objPanel = p;
+  }
+
+  /**
+   * Draw the survey strip.
+   *
+   * The tags are created once, on the first payload that carries any, and then
+   * only their class changes - so a body being surveyed is one `classList`
+   * write and not a rebuild of the row. Every write is compared first, like
+   * everything else in this file.
+   *
+   * @param {Array<{id:string,name:string,tag:string,state:string|null}>} plot
+   */
+  _setObjectivePlot(plot) {
+    const host = this.objPlot;
+    if (!host) return;
+    if (!Array.isArray(plot) || plot.length === 0) {
+      if (!host.hidden) host.hidden = true;
+      return;
+    }
+    if (host.hidden) host.hidden = false;
+    if (this._objPlotTags.length !== plot.length) {
+      host.textContent = '';
+      this._objPlotTags = plot.map((b) => {
+        const tag = el('div', 'obj-tag', b.tag);
+        /* The full name on hover. The strip is deliberately terse and CIN/CER
+         * are two different worlds; a reader who cannot tell them apart has a
+         * map that is decoration. */
+        tag.title = b.name;
+        host.appendChild(tag);
+        return { el: tag, state: undefined };
+      });
+    }
+    for (let i = 0; i < plot.length; i++) {
+      const slot = this._objPlotTags[i];
+      const state = plot[i].state ?? '';
+      if (slot.state === state) continue;
+      slot.state = state;
+      slot.el.classList.toggle('on', state !== '');
+      slot.el.classList.toggle('landed', state === 'landed');
+    }
+  }
+
+  /**
+   * Write the objective counts.
+   *
+   * Called only from `objectives:changed`, never per frame, and every write is
+   * compared against what is already on screen first - the HUD's standing rule,
+   * and the reason five rows of DOM cost nothing between events.
+   *
+   * The `kills` and `ore` rows read `x/next` where `next` is the rung being
+   * chased, and fall back to a bare total once the top rung is paid - a
+   * denominator that has stopped moving is a denominator that is lying about
+   * there being something left to do.
+   *
+   * @param {ReturnType<import('../systems/SpaceObjectives.js').SpaceObjectives['progress']>} p
+   */
+  _setObjectives(p) {
+    const panel = this.objPanel;
+    if (!panel || !p) return;
+
+    const show = p.live === true;
+    if (panel.hidden === show) panel.hidden = !show;
+    if (!show) return;
+
+    const rank = typeof p.rank === 'string' && p.rank ? p.rank.toUpperCase() : '';
+    if (this._objRankText !== rank) {
+      this._objRankText = rank;
+      this.objRank.textContent = rank;
+      this.objRank.hidden = !rank;
+    }
+
+    const ladder = (have, next) => (next === null || next === undefined
+      ? `${Math.round(have)}`
+      : `${Math.round(have)}/${next}`);
+    const set = (have, total) => `${Math.round(have)}/${Math.round(total)}`;
+
+    this._writeObjRow('kills', ladder(p.kills, p.killNext), true);
+    this._writeObjRow('wings', set(p.wings, p.wingTotal), p.wingTotal > 0);
+    this._writeObjRow('survey', set(p.surveyed, p.surveyTotal), p.surveyTotal > 0);
+    this._writeObjRow('assay', set(p.assayed, p.assayTotal), p.assayTotal > 0);
+    this._writeObjRow('ore', `${ladder(p.ore, p.oreNext)} cr`, true);
+    this._setObjectivePlot(p.plot);
+    this._setObjectiveHint(p.hint);
+  }
+
+  /**
+   * The "what do I do next" line under the counters.
+   *
+   * Same write-if-changed rule as every other panel here: this is driven off
+   * `objectives:changed` and never off a frame, and the string only moves when
+   * the player crosses a state.
+   */
+  _setObjectiveHint(text) {
+    const el_ = this.objHint;
+    if (!el_) return;
+    const t = typeof text === 'string' && text ? text : '';
+    if (this._objHintText === t) return;
+    this._objHintText = t;
+    el_.textContent = t;
+    el_.hidden = !t;
+  }
+
+  /** One objective row: hide it when it has nothing to say, write when it changes. */
+  _writeObjRow(key, text, visible) {
+    const r = this.objRows?.[key];
+    if (!r) return;
+    if (r.row.hidden === visible) r.row.hidden = !visible;
+    if (!visible || r.text === text) return;
+    r.text = text;
+    r.value.textContent = text;
   }
 
   _buildHealth(hud) {
@@ -1286,6 +1515,12 @@ export class HUD {
       this._setDiscoveries(null, { synced: p?.synced ?? 0, total: p?.total ?? 0 });
     });
 
+    /* The space campaign's three objectives. `SpaceObjectives` emits on every
+     * world change as well as on every kill, arrival and seam, so the panel is
+     * right from the first frame in the yard rather than after the first kill -
+     * the same contract the two discovery counters above already have. */
+    this._on('objectives:changed', (p) => this._setObjectives(p));
+
     this._on('portal:entering', ({ to, duration }) => this._runWipe(to, duration));
 
     this._on('world:changed', ({ id, world }) => {
@@ -1750,8 +1985,8 @@ export class HUD {
       ['Space', 'Jump / Swim'],
       ['Space', 'Hold at a wall to climb it'],
       ['Shift Space', 'Running leap'],
-      ['Ctrl / C', 'Crouch'],
-      ['Ctrl', 'Dive in air / roll on landing'],
+      ['C', 'Crouch'],
+      ['C', 'Dive in air / roll on landing'],
       ['LMB', 'Fire / Charge'],
       ['RMB', 'Aim'],
       ['R', 'Reload'],
@@ -1760,7 +1995,12 @@ export class HUD {
       ['V', 'First / third person'],
       ['M', 'Mount wheel'],
       ['F', 'Dismount'],
-      ['Space / Ctrl', 'Fly up / down'],
+      ['Space / C', 'Fly up / down'],
+      ['F', 'Board / leave a ship'],
+      ['W S', 'Throttle / reverse'],
+      ['X', 'Airbrake — hold'],
+      ['A D', 'Roll'],
+      ['E', 'Hold to cut ore'],
       ['I', 'Inventory'],
       ['B', 'Marketplace'],
       ['J', 'Quest board'],
@@ -2901,7 +3141,8 @@ export class HUD {
      * because arriving somewhere that offers a match should say so. */
     } else if (this._minigamePrompt && !this._chatOpen) {
       text = this._minigameLabel
-        ? `${escapeHtml(String(this._minigameVerb ?? 'Start'))} the `
+        ? `${escapeHtml(String(this._minigameVerb ?? 'Start'))} `
+          + `${venueArticle(this._minigameLabel)}`
           + `<b>${escapeHtml(String(this._minigameLabel))}</b>`
         : escapeHtml(String(this._minigamePrompt));
     /* Above the portal, and below the venue branch WITHOUT that costing it

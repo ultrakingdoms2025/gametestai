@@ -30,19 +30,35 @@ const STATION = {
   id: 'station',
   portalSpecs: [
     { target: 'race' }, { target: 'sports' }, { target: 'maze' },
-    { target: 'citadel' }, { target: 'medieval' }, { target: 'survey' },
+    { target: 'citadel' }, { target: 'medieval' }, { target: 'dock' },
   ],
 };
 
-/** Every other world: one portal, and it goes home. */
-const RETURNERS = ['medieval', 'sports', 'citadel', 'race', 'maze'].map((id) => ({
+/** Every one-portal world: one portal, and it goes home. */
+const RETURNERS = ['medieval', 'sports', 'citadel', 'race', 'maze', 'space'].map((id) => ({
   id,
-  portalSpecs: [{ target: 'station' }],
+  portalSpecs: [{ target: id === 'space' ? 'dock' : 'station' }],
 }));
+
+/**
+ * Lodestar Yard, the first world in the Nexus with TWO destinations.
+ *
+ * This is the case the rule was derived for and the case that had never
+ * existed: `lorekeeperScope` returns the world's own id while its portals name
+ * one place and the DESTINATION's id once they name more than one, so the yard
+ * gets two keepers reciting `station` and `space` and NEITHER of them recites
+ * the yard. That is correct - a keeper beside a gateway is signposting the
+ * gateway - and it is also why `DockWorld` authors its own Yard Warden and why
+ * `DEFAULT_LORE.space` has to exist at all.
+ */
+const DOCK = {
+  id: 'dock',
+  portalSpecs: [{ target: 'station' }, { target: 'space' }],
+};
 
 test('at the hub every keeper takes its own gateway destination', () => {
   const scopes = STATION.portalSpecs.map((s) => lorekeeperScope(STATION, s));
-  assert.deepEqual(scopes, ['race', 'sports', 'maze', 'citadel', 'medieval', 'survey']);
+  assert.deepEqual(scopes, ['race', 'sports', 'maze', 'citadel', 'medieval', 'dock']);
 });
 
 test('the hub keepers are six DIFFERENT scopes, which was the whole defect', () => {
@@ -59,13 +75,24 @@ test('a one-portal world keeps its OWN lore, not the portal target', () => {
   }
 });
 
+test('the yard has two destinations, so it has two keepers and neither is its own', () => {
+  const scopes = DOCK.portalSpecs.map((s) => lorekeeperScope(DOCK, s));
+  assert.deepEqual(scopes, ['station', 'space'],
+    'the two-target branch is what makes the yard the first non-hub world with a keeper per gateway');
+  assert.ok(!scopes.includes('dock'),
+    'if a yard keeper ever recites the yard, the rule has stopped being derived from the ring');
+});
+
 test('every scope the rule can produce has a real lore entry behind it', () => {
   // A scope with no entry falls back to the Chronicle, which reads as the
-  // question having been forgotten. Gateway 06 is in the table for exactly
-  // this reason - see the note on `survey` in content/Lore.js.
+  // question having been forgotten. `dock` and `space` are both in the table
+  // for exactly this reason - see the notes on them in content/Lore.js. The
+  // yard is what makes `space` reachable by this rule at all: it is the only
+  // scope in the game produced by a keeper standing in a DIFFERENT world.
   const produced = [
     ...STATION.portalSpecs.map((s) => lorekeeperScope(STATION, s)),
     ...RETURNERS.map((w) => lorekeeperScope(w, w.portalSpecs[0])),
+    ...DOCK.portalSpecs.map((s) => lorekeeperScope(DOCK, s)),
   ];
   for (const scope of produced) {
     assert.ok(DEFAULT_LORE[scope], `no lore entry for "${scope}"`);

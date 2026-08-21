@@ -211,7 +211,29 @@ const WORLDS = [
   { id: 'sports', path: '../../src/worlds/SportsWorld.js', cls: 'SportsWorld', minRoutes: 15 },
   { id: 'citadel', path: '../../src/worlds/CitadelWorld.js', cls: 'CitadelWorld', minRoutes: 0 },
   { id: 'race', path: '../../src/worlds/RaceWorld.js', cls: 'RaceWorld', minRoutes: 0 },
-  { id: 'survey', path: '../../src/worlds/SurveyWorld.js', cls: 'SurveyWorld', minRoutes: 1 },
+  /* Lodestar Yard. Four of its seven authored friendlies carry a patrol - the
+   * Yard Warden down the keel line and the three yard hands round their own
+   * berths - and the three counters are `anchored` on purpose, so the floor is
+   * four rather than seven.
+   *
+   * `levelTol` is 0.45 here and 2.0 everywhere else, and the difference is a
+   * fact about the worlds rather than a preference. Two metres is loose
+   * because `y` on a station or medieval waypoint is a HINT over terrain the
+   * author did not compute; every surface in the yard is a published datum -
+   * deck 0, catwalk 8.0, a cradle top - so a yard waypoint that resolves onto
+   * something ELSE is furniture, not slop. 0.45 is `CONFIG.player.stepHeight`:
+   * a rise the walk absorbs.
+   *
+   * The defect this was written for: the Yard Warden's third waypoint was
+   * (-9, 0.2, 8), which is 0.25 m inside the +x face and 0.30 m inside the +z
+   * face of the Fitting Shop counter. `auditRoute` resolves a waypoint onto
+   * whatever it is standing in FIRST and then tests the capsule there, so the
+   * counter registered as ground and the 0.855 m level error sat comfortably
+   * inside two metres - a lorekeeper finishing her round on a merchant's
+   * worktop, past a green route audit. The other five worlds do NOT hold 0.45
+   * today (station 1.46, sports 1.60, medieval 0.95, all measured); tightening
+   * them is a change to those worlds and not to this file. */
+  { id: 'dock', path: '../../src/worlds/DockWorld.js', cls: 'DockWorld', minRoutes: 4, levelTol: 0.45 },
   { id: 'maze', path: '../../src/worlds/MazeWorld.js', cls: 'MazeWorld', minRoutes: 0 },
 ];
 
@@ -309,7 +331,7 @@ function isClosed(pts) {
 }
 
 /** Audit one route. Returns a finding list; empty means the route is walkable. */
-function auditRoute(physics, pts) {
+function auditRoute(physics, pts, levelTol = LEVEL_TOL) {
   const level = [];
   const inside = [];
   const air = [];
@@ -321,7 +343,7 @@ function auditRoute(physics, pts) {
     ground.push(y);
     const where = `waypoint ${i} at (${p.x.toFixed(1)}, ${p.z.toFixed(1)})`;
     if (y === null) { level.push(`${where} has no surface under it at all`); continue; }
-    if (Math.abs(y - p.y) > LEVEL_TOL) {
+    if (Math.abs(y - p.y) > levelTol) {
       level.push(`${where} is authored at y = ${p.y.toFixed(2)} and the ground there is ${y.toFixed(2)} - ${Math.abs(p.y - y).toFixed(2)} m out`);
     }
     const push = capsulePush(physics, p.x, y, p.z);
@@ -368,7 +390,7 @@ function auditRoute(physics, pts) {
 const AUDIT = [];
 for (const spec of WORLDS) {
   const { world, physics } = await buildWorld(spec);
-  const routes = routesOf(world).map((r) => ({ ...r, ...auditRoute(physics, r.pts) }));
+  const routes = routesOf(world).map((r) => ({ ...r, ...auditRoute(physics, r.pts, spec.levelTol) }));
   AUDIT.push({ ...spec, routes, colliders: world.colliders.length });
   world.dispose?.();
 }
@@ -395,7 +417,7 @@ test('every world builds headlessly and is asked about its routes', () => {
   // is a fact about them, and it is asserted rather than assumed so that the
   // day one of them gains a route, it gains this file's attention with it.
   const withRoutes = AUDIT.filter((w) => w.routes.length > 0).map((w) => w.id);
-  assert.deepEqual(withRoutes.sort(), ['medieval', 'sports', 'station', 'survey']);
+  assert.deepEqual(withRoutes.sort(), ['dock', 'medieval', 'sports', 'station']);
   const total = AUDIT.reduce((n, w) => n + w.routes.length, 0);
   assert.ok(total >= 90, `only ${total} routes found across every world`);
 });

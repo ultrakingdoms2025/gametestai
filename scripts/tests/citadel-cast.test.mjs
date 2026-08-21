@@ -214,7 +214,27 @@ test('a citadel vendor stocks part of the catalogue, and between them they stock
    * caller outside that module. */
   const all = /const ALL_CATEGORIES = \[([^\]]*)\]/.exec(read('src/systems/Marketplace.js'));
   assert.ok(all, 'ALL_CATEGORIES moved');
-  const categories = [...all[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]);
+  /**
+   * Categories that are deliberately NOT sold everywhere.
+   *
+   * The premise of this test - "a category no counter stocks is a category the
+   * player cannot buy in this world at all" - held while every category was a
+   * portable good. `'ships'` is not: it was added with Lodestar Yard, and a
+   * ship is a thing that stands on a cradle in one world. A citadel counter
+   * that stocked it would be selling a courier off a mesa reachable by one
+   * mule road, which is a worse outcome than the gap this test exists to
+   * catch.
+   *
+   * The exemption is a list rather than a special case so that the next
+   * world-bound category has to be argued for here, in writing, rather than
+   * quietly appended. The other half of the statement - that SOMEBODY sells
+   * ships - is asserted in dock-registration.test.mjs against the yard's own
+   * counters.
+   */
+  const WORLD_BOUND = new Set(['ships']);
+  const categories = [...all[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1])
+    .filter((c) => !WORLD_BOUND.has(c));
+  assert.ok(categories.length >= 6, 'the category scrape collapsed');
 
   const stocked = new Set();
   let counters = 0;
@@ -226,7 +246,9 @@ test('a citadel vendor stocks part of the catalogue, and between them they stock
     assert.ok(s.vendorCategories.length < categories.length,
       `${s.name} stocks everything, which is the same as authoring nothing`);
     for (const c of s.vendorCategories) {
-      assert.ok(categories.includes(c), `${s.name} stocks "${c}", which is not a marketplace category`);
+      assert.ok(categories.includes(c) || WORLD_BOUND.has(c),
+        `${s.name} stocks "${c}", which is not a marketplace category`);
+      assert.ok(!WORLD_BOUND.has(c), `${s.name} stocks "${c}", which is bound to another world`);
       stocked.add(c);
     }
     assert.ok(typeof s.vendorTitle === 'string' && s.vendorTitle.length,

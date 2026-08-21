@@ -146,6 +146,90 @@ const SCORES = {
     bells: { density: 0.09, octave: 3, gain: 0.05 },
   },
 
+  /* DOCK - "Launches: 000". Slow industrial minor in C: a frame-drum pulse on
+     the one and the three that reads as a hull being struck, a sine drone
+     under it, a sparse bell arp for the gantry, and a long, patient lead that
+     never resolves. The yard has fitted out four hulls and launched none of
+     them; the tune is written not to arrive either.
+
+     Deliberately the QUIETEST score in the game - every gain below is at or
+     under the corresponding station value. The reason is diegetic: this world
+     already makes a great deal of noise on its own account (the strip runs
+     hum, the crane is parked, the trench echoes), and a hangar is a place you
+     are meant to hear yourself walk across.
+
+     No hat and no snare anywhere. A kit turns a shed into a level. */
+  dock: {
+    bpm: 66, beatsPerBar: 4, root: 36, seed: 97,
+    progression: [[0, 'm'], [0, 'm7'], [10, 'M'], [0, 'm'], [3, 'M'], [10, 'M'], [8, 'M7'], [0, 'm']],
+    pad: { voice: 'strings', gain: 0.22, cutoff: 620, octave: 1 },
+    bass: { style: 'drone', gain: 0.24, type: 'sine' },
+    drums: {
+      // Struck steel. Two taiko voices a fifth apart: the low one is the hull
+      // being rung, the high one is a hammer answering it from up the bay.
+      hull: { A: '1000000000000000', B: '1000000010000000', gain: 0.30, voice: 'taiko', pitch: 58 },
+      hammer: { A: '0000000000000000', B: '0000100000000010', gain: 0.13, voice: 'frame' },
+    },
+    swellEveryBars: 8, swellGain: 0.06,
+    arp: { div: 4, densityA: 0.07, densityB: 0.18, type: 'bell', octave: 2, gain: 0.045, cutoff: 2100 },
+    lead: {
+      voice: 'tone', type: 'sine', octave: 1, gain: 0.13, cutoff: 1400,
+      vibHz: 3.6, vibCents: 12, vibDelay: 0.6, rvb: 0.6, inA: true,
+      phrase: [
+        [0, 0, 0, 4], [1, 0, 3, 2], [1, 2, 2, 2],
+        [2, 0, 7, 3], [2, 3, 5, 1], [3, 0, 3, 4],
+        [4, 0, 10, 2], [4, 2, 7, 2], [5, 0, 5, 4],
+        [6, 0, 3, 2], [6, 2, 5, 2], [7, 0, 2, 4],
+      ],
+    },
+    bells: { density: 0.04, octave: 3, gain: 0.035 },
+  },
+
+  /* SPACE - "Nothing Between". The stub beyond the blast door. A drone, a
+     choir pad and a bell every few bars, and that is the whole arrangement:
+     no pulse of any kind, because the one thing a holding platform in vacuum
+     must not sound like is a place with a tempo.
+
+     It exists at all because `Music.setWorld` sets `score = null` for a world
+     with no row and the failure is TOTAL SILENCE - which reads as the audio
+     having broken rather than as a design. Twelve lines is cheaper than the
+     bug report. */
+  space: {
+    bpm: 48, beatsPerBar: 4, root: 33, seed: 103,
+    progression: [[0, 'm'], [0, 'm'], [7, 'M'], [7, 'M'], [3, 'M7'], [3, 'M7'], [10, 'M'], [0, 'm']],
+    pad: { voice: 'choir', gain: 0.30, octave: 1 },
+    bass: { style: 'drone', gain: 0.22, type: 'sine' },
+    drums: {},
+    swellEveryBars: 8, swellGain: 0.07,
+    arp: { div: 2, densityA: 0.04, densityB: 0.07, type: 'sine', octave: 2, gain: 0.035, cutoff: 1500 },
+    bells: { density: 0.05, octave: 3, gain: 0.04 },
+  },
+
+  /* CINDER - "Ashfall". The volcanic surface, and the row that was MISSING.
+     `SCORES` carried eight of the nine registered worlds and `setWorld` sets
+     `score = null` for one with no row, so landing on the planet the whole loop
+     exists to reach faded the space score out and started nothing: the
+     destination was silent, and silent immediately after a track that had been
+     playing all the way there.
+
+     Slow, heavy and tonally unresolved - C minor over a drone, 54 BPM, a taiko
+     on the downbeat and a second off-grid hit in the B half so the pulse reads
+     as ground movement rather than as a tempo. No lead: there is nobody out
+     here. The bells are the only bright thing and they are rare, which is what
+     a fissure network looks like from the ground. */
+  cinder: {
+    bpm: 54, beatsPerBar: 4, root: 36, seed: 137,
+    progression: [[0, 'm'], [0, 'm'], [10, 'M'], [10, 'M'], [8, 'M'], [3, 'm'], [10, 'M'], [0, 'm']],
+    pad: { voice: 'strings', gain: 0.26, cutoff: 560, octave: 1 },
+    bass: { style: 'drone', gain: 0.26, type: 'sine' },
+    drums: {
+      boom: { A: '1000000000000000', B: '1000000010000010', gain: 0.26, voice: 'taiko', pitch: 54 },
+    },
+    swellEveryBars: 8, swellGain: 0.08,
+    arp: { div: 2, densityA: 0.05, densityB: 0.11, type: 'triangle', octave: 2, gain: 0.04, cutoff: 1200 },
+    bells: { density: 0.04, octave: 3, gain: 0.035 },
+  },
+
   /* RACE - "Redline". 140 BPM synth rock in E minor: 16th-note saw bass
      ostinato, full kit, crash every 4 bars, power-chord stabs. */
   race: {

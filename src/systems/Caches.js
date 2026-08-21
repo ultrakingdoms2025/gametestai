@@ -88,6 +88,19 @@ const CACHE_TABLES = {
     { id: 'alloy_scrap', min: 2, max: 5 },
     { id: 'bullet', min: 30, max: 60 },
   ],
+  /* Lodestar Yard. With `hostiles: false` this is the ONLY source of the
+   * yard's own goods that is not a shop, so it carries more of the load here
+   * than in any other world: the trench and the gantry are the two obvious
+   * homes (`PER_WORLD` places three sunken and three high), and a cache is a
+   * destination that has to pay out better than a body would. Same four lines
+   * as `DROP_TABLES.dock` minus the shard and the coil - a cache is a
+   * forgotten stores box, not a stripped drive. */
+  dock: [
+    { id: 'alloy_scrap', min: 4, max: 9 },
+    { id: 'hull_plate', min: 2, max: 4 },
+    { id: 'laser_cell', min: 20, max: 50 },
+    { id: 'medkit', min: 1, max: 2 },
+  ],
 };
 
 /** Deterministic PRNG so a world's caches land in the same places every time. */
@@ -187,12 +200,35 @@ export class Caches {
     const extent = Math.max(maxX - minX, maxZ - minZ, 1);
     const highWanted = Math.min(12, Math.max(PER_WORLD.high, Math.round(PER_WORLD.high * (extent / 400) ** 1.5)));
 
+    /* Authored sites first, where a world publishes them.
+     *
+     * `_findHigh` is a dart from above and it cannot work under a ROOF: it
+     * takes the first thing the ray meets, which in a roofed world is always
+     * the roof. Measured in Lodestar Yard, whose shed is a flat 172 x 162 m
+     * plate at y 26: 400 of 400 darts landed on it at 26.80, all eight ring
+     * probes came back on the same continuous plate so `sheer` was 0 every
+     * time, and the world placed ZERO caches - silently, because the log line
+     * below only prints when something landed. That took the only in-world
+     * source of three of that world's items with it.
+     *
+     * So a world may name its own, exactly as it may name its relic ground
+     * (`Relics._onWorld`), and for the same reason: a world knows where a body
+     * can get to and a probe does not. `y` is the site's own height here, not
+     * a surface to be lifted off. A world that publishes nothing is unchanged.
+     */
+    const authored = [];
+    for (const c of world._caches ?? []) authored.push({ x: c.x, y: c.y, z: c.z });
+    for (let i = authored.length - 1; i > 0; i--) {
+      const j = Math.floor(rnd() * (i + 1));
+      [authored[i], authored[j]] = [authored[j], authored[i]];
+    }
+
     for (let i = 0; i < PER_WORLD.sunken; i++) {
       const p = this._findSunken(rnd, minX, maxX, minZ, maxZ);
       if (p) this.sites.push({ kind: 'sunken', pos: p, pickup: null, restock: 0 });
     }
     for (let i = 0; i < highWanted; i++) {
-      const p = this._findHigh(rnd, minX, maxX, minZ, maxZ);
+      const p = this._findHigh(rnd, minX, maxX, minZ, maxZ, authored);
       if (p) this.sites.push({ kind: 'high', pos: p, pickup: null, restock: 0 });
     }
 
@@ -244,7 +280,19 @@ export class Caches {
    * anything you could simply walk onto, and cheap enough to run a few hundred
    * times during a world change.
    */
-  _findHigh(rnd, minX, maxX, minZ, maxZ) {
+  _findHigh(rnd, minX, maxX, minZ, maxZ, authored = []) {
+    /* An authored site is a decision, not a candidate.
+     *
+     * The world named it because a body can get to it, so none of the tests
+     * below apply - they exist to decide whether a random point is worth
+     * walking to. The one rule that still holds is separation, because three
+     * "finds" thirty metres apart are one find. */
+    while (authored.length) {
+      const a = authored.shift();
+      if (this._tooClose(a.x, a.z, 30)) continue;
+      return new THREE.Vector3(a.x, a.y, a.z);
+    }
+
     /* Best-effort fallback.
      *
      * The strict test wants a level platform with a sheer drop, which is a

@@ -12,7 +12,7 @@ import { MOUNT_SKINS_BY_ID } from './Cosmetics.js';
  */
 
 export class ItemUseSystem {
-  constructor({ bus, player, inventory, loot, portals, npcManager, combat, mounts, cosmetics } = {}) {
+  constructor({ bus, player, inventory, loot, portals, npcManager, combat, mounts, cosmetics, viewpoints } = {}) {
     this.bus = bus ?? null;
     this.player = player ?? null;
     this.inventory = inventory ?? null;
@@ -22,6 +22,11 @@ export class ItemUseSystem {
     this.combat = combat ?? null;
     this.mounts = mounts ?? null;
     this.cosmetics = cosmetics ?? null;
+    /* Lodestar Yard's `nav_chart`. Optional like every other collaborator
+     * here: a missing system makes `_canApply` answer false, which refuses the
+     * use BEFORE `consumeFromBag` at `use()`, so an unwired chart is a chart
+     * you still have. */
+    this.viewpoints = viewpoints ?? null;
   }
 
   use(itemId) {
@@ -80,6 +85,22 @@ export class ItemUseSystem {
         return { type: 'speed', multiplier: 2.0, duration: 30 };
       case 'loot_magnet_30s':
         return { type: 'magnet', duration: 30, range: 5.5 };
+      /* FERRO-BASALT. The one Cinder ore with a use in the hand.
+       *
+       * It is magnetite-bearing basalt - a lodestone - so it routes to the
+       * magnet effect that already exists rather than to an effect invented
+       * for it. Weaker than the Vacuum Rune on both axes (20 s at 4.5 m
+       * against 30 s at 5.5 m) because a rock out of the ground should not
+       * beat the manufactured article; a rune stays worth its 165 credits.
+       *
+       * Nothing else in `ItemDefs`' six-element Cinder set appears here, and
+       * that is deliberate rather than unfinished: the other five are cargo.
+       * Giving a lump of tephra a switch case would be an effect nobody wants
+       * attached to an item whose whole job is to be sold, and the recorded
+       * cost of a use that fires and does nothing is the unit destroyed for
+       * nothing (see `chart` in `_canApply` below). */
+      case 'ferrobasalt':
+        return { type: 'magnet', duration: 20, range: 4.5, label: 'Lodestone clipped on' };
       case 'portal_ping_30s':
         return { type: 'portalPing', duration: 30 };
       case 'npc_pause_5s':
@@ -100,6 +121,8 @@ export class ItemUseSystem {
         return { type: 'firepower', multiplier: 1.75, duration: 30 };
       case 'firepower_boost_100':
         return { type: 'firepower', multiplier: 2.0, duration: 30 };
+      case 'nav_chart':
+        return { type: 'chart' };
       default:
         return null;
     }
@@ -112,6 +135,10 @@ export class ItemUseSystem {
       case 'speed':
         return typeof this.player.boostSpeed === 'function';
       case 'magnet':
+        /* Covers the Vacuum Rune and the ferro-basalt lodestone alike: the
+         * guard is on the SYSTEM, and it is asked before `consumeFromBag`, so
+         * an unwired `Loot` refuses the use and leaves the rock in the bag
+         * rather than eating it. */
         return typeof this.loot?.setMagnet === 'function';
       case 'portalPing':
         return Array.isArray(this.portals?.portals) && this.portals.portals.length > 0;
@@ -121,6 +148,14 @@ export class ItemUseSystem {
         return typeof this.player.grantShield === 'function';
       case 'firepower':
         return typeof this.combat?.boostPlayerDamage === 'function';
+      case 'chart':
+        /* Asked BEFORE the consume, and it asks two things: that the system
+         * exists at all, and that there is something left in this world for a
+         * chart to mark. Without the second half, reading a fourth chart in a
+         * three-viewpoint world would destroy the unit and mark nothing - the
+         * `_apply` default-return-null case, which the header calls out as
+         * destroying the unit for nothing, arrived at by a different door. */
+        return typeof this.viewpoints?.canChart === 'function' && this.viewpoints.canChart();
       default:
         return !!itemId;
     }
@@ -143,7 +178,15 @@ export class ItemUseSystem {
         return { amount: effect.duration };
       case 'magnet':
         if (!this.loot.setMagnet(effect.duration, effect.range)) return null;
-        this.bus?.emit('hud:notify', { text: `Loot magnet active for ${effect.duration}s`, tone: 'info' });
+        /* `label` so the toast names the thing the player just used. A pilot
+         * who clipped a rock to their belt and read "Loot magnet active" would
+         * have no way to tell whether the rock did it or something else did. */
+        this.bus?.emit('hud:notify', {
+          text: effect.label
+            ? `${effect.label} — loose salvage comes to you for ${effect.duration}s`
+            : `Loot magnet active for ${effect.duration}s`,
+          tone: 'info',
+        });
         return { amount: effect.duration };
       case 'portalPing': {
         // Light the gateway up for real, and fall back to the local search only
@@ -171,6 +214,15 @@ export class ItemUseSystem {
           tone: 'info',
         });
         return { amount: effect.duration };
+      case 'chart': {
+        const marked = this.viewpoints.chartNearest();
+        if (!marked) return null;
+        this.bus?.emit('hud:notify', {
+          text: `${marked.name} charted — that district is on your map, and you have still never stood on it`,
+          tone: 'lore',
+        });
+        return { amount: 1, viewpointId: marked.id };
+      }
       default:
         return null;
     }

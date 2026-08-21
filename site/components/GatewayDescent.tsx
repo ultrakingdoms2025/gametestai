@@ -24,6 +24,9 @@ export interface GatewayDescentProps {
  * Diorama scene registry — world scene factories are registered here one per
  * task as they are authored (station first). A world with no entry simply
  * has no 3D backdrop yet; the panel text still reads over the page ground.
+ * `dock` (Lodestar Yard) is the current gap: it ships with its static painter
+ * plate and the no-op scene below, which is the incremental path this registry
+ * was built for.
  */
 const SCENE_FACTORIES: Partial<Record<WorldId, () => DioramaScene>> = {
   station: createStationScene,
@@ -49,7 +52,7 @@ function makeNoopScene(id: string): DioramaScene {
 }
 
 /**
- * The descent itself: six WorldPanels stacked full-viewport, composed over either
+ * The descent itself: one WorldPanel per world, stacked full-viewport, composed over either
  * a single fixed WebGL canvas (enhanced) or per-panel static painter plates
  * (fallback). SSR and the first client paint always render the fallback path, so
  * the page is complete without JS/WebGL; a mount effect upgrades to the diorama

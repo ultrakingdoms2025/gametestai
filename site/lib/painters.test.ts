@@ -21,8 +21,8 @@ describe('painters registry', () => {
     }
   });
 
-  it('covers all six expected keys including the maze painter', () => {
-    for (const key of ['station', 'valley', 'sports', 'citadel', 'circuit', 'maze']) {
+  it('covers all seven expected keys including the maze and yard painters', () => {
+    for (const key of ['station', 'valley', 'sports', 'citadel', 'circuit', 'maze', 'yard']) {
       expect(typeof painters[key], `painter "${key}"`).toBe('function');
     }
   });

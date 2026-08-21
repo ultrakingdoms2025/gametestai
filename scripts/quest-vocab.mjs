@@ -910,6 +910,49 @@ const CAST_FALLBACK_THEME = /ROLE_CAST\[theme\]\s*\?\?\s*ROLE_CAST\.([a-z]+)/
 /* Worlds                                                                  */
 /* ---------------------------------------------------------------------- */
 
+const PLANET_BASE = /static\s+id\s*=\s*'([^']+)'/.exec(read('src/worlds/PlanetWorld.js'))?.[1] ?? 'planet';
+
+/**
+ * Every planet in `src/worlds/planets/index.js`, as `{ id, file }`.
+ *
+ * `PLANETS` is keyed by `[VOLCANIC.id]`, so the id is not written in the
+ * registry at all - it lives in the descriptor. Follow the import to the
+ * descriptor file and read it from `definePlanet`, which is the same single
+ * source `PlanetWorld.of` stamps its subclass from.
+ *
+ * `String.raw` on every pattern: these are regexes built from a binding name,
+ * so they have to be strings rather than literals, and a backslash in an
+ * ordinary template is an escape rather than a character.
+ */
+function planetEntries() {
+  const src = read('src/worlds/planets/index.js');
+  const body = /PLANETS\s*=\s*Object\.freeze\(\{([\s\S]*?)\}\)/.exec(src)?.[1] ?? '';
+  const out = [];
+  for (const m of body.matchAll(/\[\s*([A-Za-z_$][\w$]*)\.id\s*\]/g)) {
+    const b = m[1];
+    const from = new RegExp(
+      String.raw`import\s*\{[^}]*\b${b}\b[^}]*\}\s*from\s*'\.\/([\w.-]+)'`
+    ).exec(src)?.[1];
+    if (!from) continue;
+    const file = `src/worlds/planets/${from}`;
+    const id = new RegExp(
+      String.raw`export\s+const\s+${b}\s*=\s*definePlanet\(\{\s*(?:\/\*[\s\S]*?\*\/\s*)?id:\s*'([^']+)'`
+    ).exec(read(file))?.[1];
+    if (id) out.push({ id, file });
+  }
+  return out;
+}
+
+/** Just the ids. */
+function planetIds() {
+  return planetEntries().map((p) => p.id);
+}
+
+/** The descriptor file a planet id is declared in, or null. */
+function planetFileFor(wanted) {
+  return planetEntries().find((p) => p.id === wanted)?.file ?? null;
+}
+
 /**
  * Every World subclass, read from the `static id` the engine itself keys on,
  * together with everything its OWN sources author.
@@ -920,8 +963,30 @@ const CAST_FALLBACK_THEME = /ROLE_CAST\[theme\]\s*\?\?\s*ROLE_CAST\.([a-z]+)/
  * how the previous version came to believe the station had two quest managers
  * and 18 named NPCs.
  *
- * The base class is excluded by its id (`base`) rather than by filename, so a
- * world added in a differently-named file is still picked up.
+ * ── ONLY WORLDS `main.js` ACTUALLY REGISTERS ───────────────────────────────
+ *
+ * Excluding the id `base` was not enough. `PlanetWorld` declares
+ * `static id = 'planet'` and is an ABSTRACT class - `PlanetWorld.of(descriptor)`
+ * stamps a subclass per planet and `main.js` registers those, never the base -
+ * so `planet` was scraped into the vocabulary as a real world. A quest step
+ * written `world: 'planet'` validated through `STEP_WORLDS` and was dead
+ * forever: this repo's signature defect, in the tooling that exists to prevent
+ * it. Meanwhile `cinder`, the one world Phase 1 added that a player can stand
+ * in, could not be named by any quest at all.
+ *
+ * So the base is scraped, used once for its rules and its files, and then
+ * REPLACED by one entry per descriptor in `src/worlds/planets/index.js` - which
+ * is what `main.js` iterates through `planetWorldClasses()`. Each planet
+ * inherits `PlanetWorld`'s rules, because that is the class it is a four-field
+ * stamp of, and supplies its own id and display name.
+ *
+ * There is deliberately no "is this class registered" gate here. One was
+ * written and taken out again: with the base expanded, `planet` cannot survive,
+ * and for any OTHER unregistered world class the gate would have hidden the
+ * problem instead of reporting it. `quest-content.test.mjs` asserts the
+ * property directly - every non-planet id in the vocabulary must have a class
+ * whose name reaches `worldManager.register` - so an unregistered world goes
+ * red with its own name in the message rather than vanishing quietly.
  */
 function buildWorlds() {
   const dir = path.join(REPO_ROOT, 'src', 'worlds');
@@ -1090,6 +1155,33 @@ function buildWorlds() {
       friendlyBudget: budget('friendlyBudget'),
       hostileBudget: budget('hostileBudget'),
     });
+  }
+
+  /* ── Expand the planet base into the planets that are really registered ──
+   *
+   * `PlanetWorld.of(descriptor)` stamps a subclass whose whole content is four
+   * static fields, so a planet world IS `PlanetWorld` plus a descriptor: it
+   * inherits the rules block, the file list and the (empty) cast, and it
+   * supplies its own id and display name. Doing it here rather than scraping
+   * `src/worlds/planets/*.js` as worlds keeps one source for the rules - the
+   * class that actually implements them.
+   */
+  const base = worlds.get(PLANET_BASE);
+  worlds.delete(PLANET_BASE);
+  if (base) {
+    for (const id of planetIds()) {
+      const rel = planetFileFor(id);
+      const src = rel ? read(rel) : '';
+      const displayName = /name:\s*'([^']+)'/.exec(src)?.[1] ?? id;
+      worlds.set(id, {
+        ...base,
+        id,
+        displayName,
+        files: [...base.files, ...(rel ? [rel] : [])],
+        theme: THEMES.get(id) ?? base.theme,
+        themed: THEMES.has(id),
+      });
+    }
   }
 
   // A portal target is only real if it names a world that exists.

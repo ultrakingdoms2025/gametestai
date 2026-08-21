@@ -590,8 +590,27 @@ export class Relics {
     if (!this.sites.length) return;
     this._time += dt;
     const t = this._time;
-    const p = this.player?.position;
     const cam = this.player?.camera ?? null;
+    /* NOT WHILE SOMETHING ELSE IS DRIVING THE BODY.
+     *
+     * `player.position` IS THE SHIP while `Piloting` holds the body, so a relic
+     * pickup test against it is a 22 m hull sweeping the yard at 200 m/s.
+     * Measured on three separate launches out of the hangar with no other
+     * income: credits 895->1015, 1068->1188, 1188->1308 - +120 every time, one
+     * relic per take-off, and the session reached Relics 9/30 without the
+     * player ever looking for one. The yard's fifteen pier relics are eaten
+     * silently in the first few flights, and a complete round trip to Cinder -
+     * land, mine, take off, fly home, dock - sells for 53.
+     *
+     * `movementOverrideCollide === false` is the exact condition: it means the
+     * body is not being resolved as a capsule in this world, which is what
+     * `Piloting.board` sets and what a mount does NOT (a rider still collides,
+     * and a rider picking a relic up is correct). `Mining.update` stands down
+     * for the same reason off `piloting.active`; this file has no reference to
+     * that mode and does not need one to answer the same question.
+     * @see ../ships/Piloting.js `_takeBody`, ./Loot.js, ./Mining.js */
+    const driven = !!this.player?.movementOverride && this.player?.movementOverrideCollide === false;
+    const p = driven ? null : this.player?.position;
 
     let n = 0;
     let g = 0;

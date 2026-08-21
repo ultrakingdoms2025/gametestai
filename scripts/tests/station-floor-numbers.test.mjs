@@ -32,7 +32,7 @@ import { pastBand, DEFAULT_BAND } from '../../src/worlds/lod/DistanceLod.js';
 test('the signage atlas has no free cell, which is why numerals are geometry', () => {
   // The brief said to check capacity before assuming a cell could be added.
   // Reserved roles, transcribed independently from SIGN_ROLE's own listing.
-  const RESERVED_ROLES = 44;      // shopFirst 0-11 .. surveyEnquiries 43
+  const RESERVED_ROLES = 44;      // shopFirst 0-11 .. dockEnquiries 43
   assert.equal(SIGN_COLS * SIGN_ROWS, 44, 'atlas is 4 x 11');
   assert.equal(
     SIGN_COLS * SIGN_ROWS - RESERVED_ROLES, 0,

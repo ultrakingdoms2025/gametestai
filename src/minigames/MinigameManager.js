@@ -1,4 +1,5 @@
 import { allows } from '../worlds/WorldRules.js';
+import { venueArticle } from '../ui/PromptSlots.js';
 
 /**
  * Minigames: the shared lifecycle behind every abstracted contest in the game.
@@ -614,7 +615,7 @@ export class MinigameManager {
    * @param {object|null} venue
    */
   _setPrompt(verb, venue) {
-    const text = verb && venue ? `${verb} the ${venue.label}` : null;
+    const text = verb && venue ? `${verb} ${venueArticle(venue.label)}${venue.label}` : null;
     if (text === this._promptText) return;
     this._promptText = text;
     this.bus?.emit('minigame:prompt', {

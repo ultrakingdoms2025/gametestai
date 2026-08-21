@@ -524,7 +524,15 @@ test('a purchase step must name goods a vendor in that world actually stocks', (
 
   /* Worlds that RESTRICT. A world whose counters author no `vendorCategories`
    * is a general trader and this test has nothing to say about it. */
-  const restricted = { citadel: 'CitadelWorld.js', station: 'StationWorld.js', race: 'RaceWorld.js' };
+  const restricted = {
+    citadel: 'CitadelWorld.js', station: 'StationWorld.js', race: 'RaceWorld.js',
+    /* Lodestar Yard restricts hard: three counters split the whole catalogue
+     * three ways, including the `ships` tab nowhere else has. Without the row
+     * here every `purchase` step in a dock quest goes unchecked - which is the
+     * silent half, and the same silence that let a citadel quest send a player
+     * to a cloth stall for a medkit. */
+    dock: 'DockWorld.js',
+  };
   let checked = 0;
   for (const [world, file] of Object.entries(restricted)) {
     const stock = vendorStockFor(file);
@@ -981,4 +989,57 @@ test('the seeded content is completable end to end', () => {
   ].join('\n');
 
   assert.equal(FINDINGS.length, 0, summary);
+});
+
+test('the world vocabulary is exactly the worlds main.js registers', () => {
+  /* THE SIGNATURE DEFECT, IN THE RULER ITSELF.
+   *
+   * `buildWorlds` used to scrape `static id` out of every file in
+   * `src/worlds/` and exclude only the id `base`. `PlanetWorld` declares
+   * `static id = 'planet'` and is ABSTRACT - `PlanetWorld.of(descriptor)`
+   * stamps a subclass per planet and `main.js` registers those, never the base
+   * - so `planet` was in the vocabulary as if it were a place. A quest step
+   * written `world: 'planet'` validated through `STEP_WORLDS` and was dead
+   * forever: content that is BUILT but cannot be REACHED, in the tool that
+   * exists to catch content that is built but cannot be reached.
+   *
+   * And the converse: `cinder`, the one world Phase 1 added that a player can
+   * stand in, could not be named by any quest at all, because no file in
+   * `src/worlds/` declares `static id = 'cinder'` - the id lives in a
+   * descriptor and the class is stamped at runtime.
+   *
+   * Both directions are asserted, because fixing one and not the other is how
+   * this came to be wrong in the first place.
+   */
+  const src = readFileSync(new URL('../../src/main.js', import.meta.url), 'utf8');
+  const registered = new Set([...src.matchAll(/worldManager\.register\(\s*([A-Za-z_$][\w$]*)\s*\)/g)]
+    .map((m) => m[1]));
+  assert.ok(registered.size >= 3, `only ${registered.size} register() call sites found in main.js - the scrape is blind`);
+
+  const vocab = Object.keys(VOCAB.worlds).sort();
+  assert.ok(!vocab.includes('planet'),
+    `VOCAB.worlds carries "planet", which is PlanetWorld's abstract id and is never registered: ${vocab.join(', ')}`);
+  assert.ok(vocab.includes('cinder'),
+    `VOCAB.worlds does not carry "cinder", the first landable planet, so no quest can name it: ${vocab.join(', ')}`);
+
+  /* Every id in the vocabulary has to be reachable. A world class is reachable
+   * when its own name is passed to `register`; a planet is reachable when it is
+   * in `src/worlds/planets/index.js`, which `main.js` iterates. */
+  const planets = new Set(vocab
+    .filter((id) => (VOCAB.worlds[id].files ?? []).some((f) => f.startsWith('src/worlds/planets/'))));
+  assert.ok(planets.has('cinder'), 'the cinder entry does not name its own descriptor file');
+
+  /* Every non-planet world in the vocabulary must have a class whose name is
+   * registered. Read the class out of the world's own file, which the
+   * vocabulary already records. */
+  const unreachable = [];
+  for (const id of vocab) {
+    if (planets.has(id)) continue;
+    const file = VOCAB.worlds[id].file;
+    const body = readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8');
+    const cls = /export\s+class\s+([A-Za-z_$][\w$]*)\s+extends/.exec(body)?.[1];
+    if (!cls || !registered.has(cls)) unreachable.push(`${id} (${file}, class ${cls ?? 'unknown'})`);
+  }
+  assert.deepEqual(unreachable, [],
+    `${unreachable.length} world ids are in the quest vocabulary and are never registered:\n  ${unreachable.join('\n  ')}`);
 });

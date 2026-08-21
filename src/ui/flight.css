@@ -1,0 +1,545 @@
+/* ===========================================================================
+ *  THE COCKPIT READOUT
+ *
+ *  Two panels and a prompt line, all `pointer-events: none` - nothing here is
+ *  clickable, because everything it reports is driven by keys the player's
+ *  hands are already on. Absolutely positioned against the same `#ui` root
+ *  every other overlay uses, so the pause hub's blur and the HUD's own
+ *  stacking order apply without this file knowing about either.
+ *
+ *  The colour is the yard's own amber (#ffb45a) against the void's cyan
+ *  (#9fd8ff), which are the two accents `DockWorld` and `SpaceWorld` already
+ *  put on their portals - so the HUD reads as part of the same machine rather
+ *  than as a debug overlay.
+ * ======================================================================== */
+
+.fl-wrap {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-family: 'Rajdhani', 'Segoe UI', system-ui, sans-serif;
+  display: none;
+}
+.fl-wrap.on { display: block; }
+
+/* ---- speed / thrust block, bottom left ---- */
+.fl-speed {
+  position: absolute;
+  left: 26px;
+  bottom: 92px;
+  min-width: 178px;
+  padding: 10px 14px 12px;
+  background: linear-gradient(180deg, rgba(6, 12, 20, 0.72), rgba(6, 12, 20, 0.46));
+  border-left: 2px solid #ffb45a;
+  border-radius: 3px;
+  color: #dfe9f5;
+}
+.fl-speed .n {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: #ffd9a8;
+  font-variant-numeric: tabular-nums;
+}
+.fl-speed .n small { font-size: 13px; opacity: 0.65; margin-left: 4px; font-weight: 500; }
+.fl-speed .lab {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  margin-bottom: 2px;
+}
+
+/* Throttle bar: cruise band then the boost band, in one 100% strip. The split
+ * is at `cruiseTop / boostTop`, written as a flex-basis from JS, so the bar
+ * shows WHERE cruise ends on this particular hull rather than pretending every
+ * ship has the same ceiling. */
+.fl-bar {
+  height: 5px;
+  margin-top: 7px;
+  background: rgba(255, 255, 255, 0.09);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+.fl-bar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: #64d8ff;
+  transition: width 60ms linear;
+}
+.fl-bar.boost i { background: #ffb45a; }
+.fl-bar u {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.4);
+}
+.fl-fuel { margin-top: 4px; height: 3px; }
+.fl-fuel i { background: #ff7a1c; }
+
+.fl-tag {
+  display: inline-block;
+  margin-top: 7px;
+  padding: 1px 7px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  border: 1px solid #64d8ff;
+  color: #64d8ff;
+  border-radius: 2px;
+  opacity: 0;
+}
+.fl-tag.on { opacity: 1; }
+
+/* The landed hint. Under the speed block, only while the ship is stationary on
+ * a surface - see the note in FlightHUD.update. The boarding toast that used to
+ * carry this had expired by the time the player looked for it. */
+.fl-sit {
+  margin-top: 7px;
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  color: rgba(255, 217, 168, 0.78);
+  display: none;
+}
+.fl-sit.on { display: block; }
+
+/* ---- nav block, top right ---- */
+.fl-nav {
+  position: absolute;
+  right: 26px;
+  /* Where the minimap sits on foot. The minimap is hidden while piloting - see
+   * the takeover block at the bottom of this file - so the nav list gets the
+   * corner the player's eye already goes to for "where am I". */
+  top: 30px;
+  width: 226px;
+  padding: 9px 12px 10px;
+  background: linear-gradient(180deg, rgba(6, 12, 20, 0.72), rgba(6, 12, 20, 0.42));
+  border-right: 2px solid #9fd8ff;
+  border-radius: 3px;
+  color: #cfe0f0;
+  font-size: 12px;
+}
+.fl-nav h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  opacity: 0.5;
+  font-weight: 600;
+}
+.fl-nav .row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  font-variant-numeric: tabular-nums;
+}
+.fl-nav .row.home { color: #ffb45a; }
+.fl-nav .row .ar { width: 14px; text-align: center; opacity: 0.85; }
+.fl-nav .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl-nav .row .rg { opacity: 0.75; }
+.fl-nav .row.ahead .ar { color: #64d8ff; }
+
+.fl-alt {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+  opacity: 0.85;
+}
+.fl-alt b { color: #ffd9a8; font-weight: 600; }
+/* Rate of descent. Amber while it is a descent, red past the touchdown limit
+   the seam actually enforces (`Piloting.report().descentLimit`). */
+.fl-alt .fl-vs { font-style: normal; color: #ffd9a8; }
+.fl-alt .fl-vs.hot { color: #ff6a4a; font-weight: 700; }
+
+.fl-hold { margin-top: 4px; font-size: 12px; opacity: 0.8; }
+.fl-hold.full { color: #ff8a5a; opacity: 1; }
+
+/* ---- prompt, centre-bottom. Shown on foot as well as in the seat. ---- */
+.fl-prompt {
+  position: absolute;
+  left: 50%;
+  /* ABOVE the HUD's own interact prompt, not on top of it.
+   *
+   * `.hud .prompt` sits at 588-632 px in a 720 px frame and this was at
+   * 616-646 - so standing on a pier apron beside both a ship and a deck hand
+   * drew "[F] Board the Dray" straight through "E Talk to Rig-Chief Odalys
+   * Prieto". Two live prompts, one unreadable. 214 px puts this one clear
+   * ABOVE the HUD prompt's tallest form (two lines with a key chip). Measured
+   * in the browser rather than derived: the overlay root is not the viewport,
+   * so the CSS offset and the rendered y are not the same number. */
+  bottom: 214px;
+  transform: translateX(-50%);
+  /* Keycap chip + sentence, the same composition `.prompt` uses in hud.css -
+   * because the two are on screen at the same time on the pier apron and were
+   * drawn in two different visual languages. Amber rather than cyan is the
+   * one deliberate difference: this prompt belongs to the ship and the yard,
+   * which are amber everywhere else in this file. */
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px 6px 8px;
+  background: linear-gradient(150deg, rgba(28, 20, 10, 0.55), rgba(6, 10, 16, 0.72));
+  border: 1px solid rgba(255, 180, 90, 0.55);
+  clip-path: polygon(0 7px, 7px 0, calc(100% - 7px) 0, 100% 7px, 100% calc(100% - 7px), calc(100% - 7px) 100%, 7px 100%, 0 calc(100% - 7px));
+  white-space: nowrap;
+}
+.fl-prompt.on { display: flex; }
+
+.fl-prompt-key {
+  font-family: 'Rajdhani', 'Segoe UI', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+  color: #fff3e2;
+  background: linear-gradient(180deg, rgba(255, 180, 90, 0.32), rgba(255, 180, 90, 0.07));
+  border: 1px solid rgba(255, 180, 90, 0.6);
+  border-bottom-width: 3px;
+  padding: 3px 0 2px;
+  width: 28px;
+  text-align: center;
+  box-shadow: 0 0 14px rgba(255, 180, 90, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  animation: fl-key-breathe 1.9s ease-in-out infinite;
+}
+
+@keyframes fl-key-breathe {
+  0%,
+  100% { box-shadow: 0 0 10px rgba(255, 180, 90, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.3); }
+  50%  { box-shadow: 0 0 22px rgba(255, 180, 90, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.4); }
+}
+
+.fl-prompt-text {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: #ffd9a8;
+}
+
+/* ===========================================================================
+ *  THE COCKPIT TAKEOVER
+ *
+ *  `FlightHUD` puts `is-piloting` on <body> while the player is in a seat, and
+ *  everything below is a panel that means nothing from a cockpit and was
+ *  actively in the way.
+ *
+ *  This was not a tidy-up. The first screenshot of a launch had the navigation
+ *  list drawn straight through the minimap - two panels of small type in the
+ *  same 220 x 190 px of the top right corner, both unreadable - and a "[E] Open
+ *  door" prompt from the hull's own boarding hatch floating over the middle of
+ *  the screen at 40 km from anything. The crosshair is the same class of
+ *  wrongness: it is the aim point of a rifle nobody is holding, sitting exactly
+ *  where a pilot looks.
+ *
+ *  Hidden rather than removed, and by ONE class on the body, so every panel
+ *  comes straight back the instant the hatch opens. Nothing here reaches into
+ *  `HUD.js` or knows how those panels are built - only what they are called.
+ * ======================================================================== */
+
+/* The rifle's aim point, its ammunition, and the strip of weapon slots. */
+body.is-piloting .hud .xhair,
+body.is-piloting .hud .panel.ammo,
+body.is-piloting .wstrip,
+/* A hangar floorplan, 62 km from the hangar. */
+body.is-piloting .hud .minimap,
+/* A pilot is sitting down. */
+body.is-piloting .hud .panel.stamina,
+/* "Aiming at" / camera-mode chips, both about a body that is in a seat. */
+body.is-piloting .hud .attackline,
+body.is-piloting .hud .cammode,
+/* The hull's own boarding hatch, prompting from inside the hull. */
+body.is-piloting .hud .prompt {
+  display: none !important;
+}
+
+/* ===========================================================================
+ *  GUNNERY
+ *
+ *  Four things, and each one answers a question a pilot asks in a fight:
+ *
+ *    the reticle    where is my nose pointing
+ *    the lead pip   where do I have to point it
+ *    the shield bar how much more of this can I take
+ *    the flash      was that me
+ *
+ *  All four are drawn only while `.fl-wrap.on` - i.e. only in the seat - and
+ *  all four are `pointer-events: none` like everything else in this file.
+ *
+ *  The reticle and the pip are positioned from NDC that `SpaceCombat` publishes
+ *  (`report().aim` / `.lead`), converted to percentages here. The HUD never
+ *  touches the camera; the system that owns the camera frame does the
+ *  projection and hands over two numbers. That split is why this file has no
+ *  idea what a projection matrix is.
+ * ======================================================================== */
+
+.fl-mark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  display: none;
+  will-change: transform;
+}
+.fl-mark.on { display: block; }
+
+/* The gun line. A broken ring - four arcs with gaps on the diagonals - so it
+ * frames a target without covering the one thing you are trying to see. */
+.fl-mark.aim::before,
+.fl-mark.aim::after {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  border: 1.5px solid rgba(159, 216, 255, 0.85);
+  border-radius: 50%;
+  border-left-color: transparent;
+  border-right-color: transparent;
+}
+.fl-mark.aim::after { transform: rotate(90deg); }
+.fl-mark.aim i {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  margin: -1.5px 0 0 -1.5px;
+  border-radius: 50%;
+  background: #9fd8ff;
+  box-shadow: 0 0 6px rgba(159, 216, 255, 0.9);
+}
+
+/* The firing solution. Amber, because it is the yard's colour and because it
+ * must never be confused with the cyan gun line - "put the amber pip on the
+ * red ship" is the whole of aerial gunnery and it has to be readable in a
+ * quarter of a second. */
+.fl-mark.lead {
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+}
+.fl-mark.lead::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1.6px solid #ffb45a;
+  border-radius: 50%;
+  box-shadow: 0 0 9px rgba(255, 180, 90, 0.5);
+  animation: fl-pip 1.1s ease-in-out infinite;
+}
+@keyframes fl-pip {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+/* ---- shield / gun block, above the speed block ---- */
+.fl-def {
+  position: absolute;
+  left: 26px;
+  bottom: 214px;
+  min-width: 178px;
+  padding: 9px 14px 11px;
+  background: linear-gradient(180deg, rgba(6, 12, 20, 0.72), rgba(6, 12, 20, 0.46));
+  border-left: 2px solid #9fd8ff;
+  border-radius: 3px;
+  color: #dfe9f5;
+  display: none;
+}
+.fl-def.on { display: block; }
+.fl-def .lab {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+.fl-def .lab b { color: #9fd8ff; font-weight: 600; opacity: 0.95; }
+.fl-def .lab.down b { color: #ff6a4a; }
+/* The gun's own label. See the note in FlightHUD's header: an empty shield bar
+ * left the words SHIELDS DOWN sitting on top of a full green bar that belonged
+ * to something else. */
+.fl-def .lab2 { margin-top: 9px; opacity: 0.42; }
+.fl-shield,
+.fl-gun {
+  height: 6px;
+  margin-top: 6px;
+  background: rgba(255, 255, 255, 0.09);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.fl-shield i,
+.fl-gun i {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: 3px;
+  transition: width 90ms linear;
+}
+.fl-shield i { background: linear-gradient(90deg, #4fb8ff, #9fd8ff); }
+.fl-shield.low i { background: linear-gradient(90deg, #ff8a3a, #ffc77a); }
+.fl-shield.out i { background: #ff4a3a; }
+.fl-gun i { background: linear-gradient(90deg, #6ad39a, #b6f2c9); }
+.fl-gun.dry i { background: #b06a3a; }
+
+/* ---- the contact you are shooting at, top centre ---- */
+.fl-tgt {
+  position: absolute;
+  left: 50%;
+  top: 74px;
+  transform: translateX(-50%);
+  min-width: 210px;
+  text-align: center;
+  padding: 7px 14px 9px;
+  background: rgba(28, 8, 8, 0.6);
+  border: 1px solid rgba(255, 90, 60, 0.45);
+  border-radius: 3px;
+  color: #ffd2c4;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  display: none;
+}
+.fl-tgt.on { display: block; }
+.fl-tgt .rg { opacity: 0.7; margin-left: 8px; font-variant-numeric: tabular-nums; }
+.fl-tgt .hp {
+  height: 4px;
+  margin-top: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.fl-tgt .hp i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #ff4a3a, #ff9a6a);
+  transition: width 110ms linear;
+}
+
+/* ---- the contacts banner ---- */
+.fl-warn {
+  position: absolute;
+  left: 50%;
+  top: 30px;
+  transform: translateX(-50%);
+  padding: 8px 20px;
+  background: rgba(46, 8, 4, 0.72);
+  border: 1px solid rgba(255, 110, 60, 0.7);
+  border-radius: 3px;
+  color: #ffb9a0;
+  font-size: 15px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  display: none;
+  animation: fl-warn 0.85s steps(2, end) infinite;
+}
+.fl-warn.on { display: block; }
+@keyframes fl-warn {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* ---- taking fire ----------------------------------------------------------
+ *
+ *  A vignette rather than a full-screen wash, because a wash over a cockpit
+ *  view hides the thing that is shooting at you and the point of the feedback
+ *  is to make you look for it. Three colours, and they are three different
+ *  pieces of information: cyan is the shield holding, white-hot is the shield
+ *  breaking, red is the hull. Driven by an opacity written from JS so the
+ *  decay is the system's `hitFlash` clock and not a CSS animation that could
+ *  drift out of step with it.
+ */
+.fl-flash {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: radial-gradient(ellipse at center,
+    rgba(0, 0, 0, 0) 42%, rgba(80, 190, 255, 0.55) 100%);
+}
+.fl-flash.hull {
+  background: radial-gradient(ellipse at center,
+    rgba(0, 0, 0, 0) 34%, rgba(255, 40, 24, 0.72) 100%);
+}
+.fl-flash.down {
+  background: radial-gradient(ellipse at center,
+    rgba(0, 0, 0, 0) 30%, rgba(255, 220, 200, 0.75) 100%);
+}
+
+/* ===========================================================================
+ *  SHOT DOWN
+ *
+ *  The whole death experience used to be one `warn` toast that expired. This
+ *  card does not expire. It sits outside `.fl-wrap` in the DOM - see the note
+ *  on `pilot:downed` in FlightHUD.js - because the wrap is hidden the instant
+ *  `piloting.active` goes false, which is exactly when this has to be visible.
+ * ======================================================================== */
+
+.fl-down {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(40, 4, 4, 0.55), rgba(2, 3, 6, 0.86));
+  pointer-events: auto;
+  font-family: 'Rajdhani', 'Segoe UI', system-ui, sans-serif;
+  animation: fl-down-in 0.5s ease both;
+}
+.fl-down.on { display: flex; }
+
+@keyframes fl-down-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.fl-down-card {
+  max-width: 520px;
+  padding: 30px 40px 24px;
+  text-align: center;
+  background: linear-gradient(160deg, rgba(30, 10, 10, 0.72), rgba(6, 8, 14, 0.9));
+  border: 1px solid rgba(255, 90, 74, 0.5);
+  border-top-color: rgba(255, 120, 90, 0.85);
+  clip-path: polygon(0 12px, 12px 0, calc(100% - 12px) 0, 100% 12px, 100% calc(100% - 12px), calc(100% - 12px) 100%, 12px 100%, 0 calc(100% - 12px));
+}
+
+.fl-down-title {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+  color: #ff8f7a;
+  text-shadow: 0 0 26px rgba(255, 90, 74, 0.55);
+}
+
+.fl-down-what {
+  margin-top: 14px;
+  font-size: 15px;
+  line-height: 1.55;
+  letter-spacing: 0.03em;
+  color: #e6eef7;
+}
+
+.fl-down-cost {
+  margin-top: 12px;
+  font-size: 14px;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  color: #ffb45a;
+}
+/* An empty hold is not a loss, and must not be coloured like one. */
+.fl-down-cost.none { color: #7f8b99; font-weight: 500; }
+
+.fl-down-go {
+  margin-top: 22px;
+  display: inline-block;
+  padding: 9px 30px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-indent: 0.22em;
+  color: #06131c;
+  background: linear-gradient(180deg, #ffd9a8, #ffb45a);
+  cursor: pointer;
+  clip-path: polygon(10px 0, 100% 0, calc(100% - 10px) 100%, 0 100%);
+}
+.fl-down-go:hover { filter: brightness(1.12); }

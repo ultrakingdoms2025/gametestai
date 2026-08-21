@@ -269,6 +269,16 @@ const SIM_MAX_STEP = 0.4;
 export const THEME_BY_WORLD = {
   station: 'station', medieval: 'medieval', sports: 'sports', maze: 'maze',
   citadel: 'citadel',
+  /* Lodestar Yard has a costume set of its own in `Humanoid.js` - variants,
+   * palette, cloth kind and rim, all four - so this maps to `dock` rather than
+   * borrowing `station`. Without the row the yard's whole cast would wear
+   * Aether Nexus deck uniforms and nothing would say so; that is precisely
+   * what happened to the citadel, whose twenty-five crowd slots stood in a
+   * desert souk dressed as station dockhands. */
+  dock: 'dock',
+  /* `space` deliberately absent. `SpaceWorld` sets `crowd: false` and authors
+   * nobody, so no character is ever created there and a theme for it would be
+   * a costume set with no wearer. */
 };
 const MERCHANT_SIGN_WORLD = {
   station: 'AETHER NEXUS',
@@ -276,6 +286,7 @@ const MERCHANT_SIGN_WORLD = {
   sports: 'MERIDIAN ARENA',
   citadel: 'SUNSPIRE CITADEL',
   race: 'VELLUM CIRCUIT',
+  dock: 'LODESTAR YARD',
 };
 
 /** Fallback names so a world that forgets to name its friendlies still reads. */
@@ -296,6 +307,15 @@ export const FALLBACK_NAMES = {
    * case that ever stops being true, rather than left as a station name a
    * hedge maze would never produce. */
   maze: ['A Lost Wanderer', 'Someone Turned Around', 'A Voice Past the Hedge', 'Someone Still Walking'],
+  /* Lodestar Yard. NOT optional decoration: `spawnForWorld` reads
+   * `FALLBACK_NAMES[theme]` with no `??`, so naming a theme in
+   * `THEME_BY_WORLD` without adding it here is a TypeError the first time an
+   * unnamed friendly spawns - which in this world is the first crowd slot the
+   * filler reaches. Written to the same register as the yard's own authored
+   * cast (Teodora, Ivo, Suri, Beck, Odalys, Casimir, Wren) so a friendly the
+   * world forgot to name still sounds like it works here. */
+  dock: ['Deck-Boss Ilarion', 'Plater Nkechi Abara', 'Slinger Tove Rask',
+    'Burner Halim Qadri', 'Storesman Bo Lindqvist', 'Rigger Mireia Sol'],
 };
 
 /**
@@ -333,6 +353,12 @@ export const CROWD_NAMES = {
     'Thistle Vance', 'Old Mossop', 'Corda Vale', 'Half-Found Mabel',
     'Yew Barrow', 'Sil the Turned-Around',
   ],
+  dock: [
+    'Plater Anouk Verhoef', 'Burner Sabo Danjuma', 'Slinger Petra Kalnina',
+    'Crane-Hand Yusuf Tekin', 'Storesman Reidun Aas', 'Rigger Emeka Nwosu',
+    'Welder Sanna Koivisto', 'Fitter Dario Bellucci', 'Checker Marit Sund',
+    'Painter Ola Adeyemi', 'Gate Clerk Ines Prado', 'Dogger Kwabena Osei',
+  ],
 };
 
 /** One-line briefs so a filler civilian still has something to say. */
@@ -366,6 +392,12 @@ export const CROWD_PERSONAS = {
     'Convinced the hedges rearrange themselves overnight and eager to argue the point.',
     'Rationing the last of their food and trying not to mention it to anyone they meet.',
     'Still following a thread of string that ran out three days ago, out of habit more than hope.',
+  ],
+  dock: [
+    'A plater on the cradle gang, filthy, cheerful, and able to tell you which section joint on which hull was pinned crooked.',
+    'A slinger waiting on the crane, killing time and convinced the yard will never launch anything while the paperwork looks like this.',
+    'A burner on a break with a cutting torch still warm, quietly proud of a seam nobody has noticed yet.',
+    'A storesman doing a stock count that has not balanced since commissioning, and blaming the trench for it.',
   ],
 };
 
@@ -1362,14 +1394,26 @@ export class NPCManager {
         : String(world.displayName ?? world.id);
       const npc = this._createNPC({
         hostile: false,
-        name: perGateway ? `${label} - ${board}` : label,
+        /* "TO <somewhere>", not just "<somewhere>".
+         *
+         * A keeper beside the yard's gateway to the station is CORRECTLY given
+         * the station's scope and correctly recites station lore - that is the
+         * whole point of `lorekeeperScope`, and it is pinned by a test. But it
+         * read as a bug from the floor: a tester in the shipyard met
+         * "LOREKEEPER - AETHER NEXUS STATION" over a subtitle reading
+         * "friendly · Lodestar Yard", listened to a paragraph about a station
+         * they were nowhere near, and wrote it up as content in the wrong
+         * world. One preposition turns the name from a claim about where you
+         * are into a claim about where the arch goes, which is what it always
+         * meant. */
+        name: perGateway ? `${label} - to ${board}` : label,
         persona,
         position: spot,
         yaw: rotY + Math.PI,
         anchored: true,
         role: ROLE.LOREKEEPER,
         posture: 'crossed',
-        signLines: [label, board.toUpperCase()],
+        signLines: perGateway ? [label, `TO ${board.toUpperCase()}`] : [label, board.toUpperCase()],
         loreScope: scope,
       });
       npc.isLorekeeper = true;
@@ -1399,7 +1443,7 @@ export class NPCManager {
     const CAST = {
       station: {
         name: 'Zara Vex',
-        persona: 'The Quest Manager for Aether Nexus Station: a sharp, efficient coordinator who has dispatched hundreds of agents through every gateway on the ring. She speaks in mission briefings, rates everything by risk-versus-reward, and keeps a running tally of completed objectives on a holo-pad she never puts down. She has no briefing for Gateway 06 yet and says so with visible irritation.',
+        persona: 'The Quest Manager for Aether Nexus Station: a sharp, efficient coordinator who has dispatched hundreds of agents through every gateway on the ring. She speaks in mission briefings, rates everything by risk-versus-reward, and keeps a running tally of completed objectives on a holo-pad she never puts down. Gateway 06 finally has a briefing - the yard behind it got commissioned - and she is faintly annoyed at how long that took.',
         position: [-22, 0.2, 12],
         yaw: -Math.PI / 2,
         sign: ['QUEST MANAGER', 'AETHER NEXUS'],
@@ -1424,6 +1468,23 @@ export class NPCManager {
         position: [8, 14.3, 88],
         yaw: 0,
         sign: ['QUEST MANAGER', 'SUNSPIRE CITADEL'],
+      },
+      /* Lodestar Yard's dispatcher, and NOT its Yard Warden.
+       *
+       * The warden is authored by the world itself (`DockWorld._publish`)
+       * because she is the yard's lore voice: the dock has two gateways, so
+       * `lorekeeperScope` gives each of its automatic keepers the DESTINATION's
+       * scope - `station` and `space` - and nobody in the yard would otherwise
+       * recite the yard. Making her the quest manager as well would have put
+       * two characters with the same name on the same apron, since this table
+       * and `npcSpawns` do not know about each other. */
+      dock: {
+        name: 'Dispatcher Selim Bregovic',
+        persona:
+          'Quest Manager for Lodestar Yard: the man who turns what the Yard Warden wants into jobs with numbers on them. Brisk, faintly harassed, works off a board of chalked section numbers and hands out work by berth. He has been holding a launch checklist for four hulls since the site was commissioned and has never got to the bottom of it.',
+        position: [10, 0.2, 40],
+        yaw: -0.6,
+        sign: ['QUEST MANAGER', 'LODESTAR YARD'],
       },
       race: {
         name: 'Kai Torres',

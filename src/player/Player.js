@@ -80,6 +80,12 @@ const FOV_PUNCH_DECAY = 3.2;
  */
 const DIVE_VIEW_PITCH = 0.34;
 
+/**
+ * Returned in place of a real look delta when something else owns the mouse.
+ * Frozen because it is handed out every frame and must never be written to.
+ */
+const ZERO_LOOK = Object.freeze({ dx: 0, dy: 0 });
+
 export class Player {
   /**
    * @param {{ scene: THREE.Scene, engine: import('../core/Engine.js').Engine,
@@ -1848,8 +1854,31 @@ export class Player {
     this._elapsed = elapsed;
     this._installLatePose();
 
-    const look = this.input.consumeLook();
+    /* ── DO NOT CONSUME A LOOK DELTA SOMEBODY ELSE OWNS ──────────────────────
+     *
+     * `consumeLook` is destructive: it returns the accumulated mouse delta and
+     * ZEROES it. This method runs before every other consumer in `main.js`'s
+     * frame order, so whatever it takes, nothing downstream can have.
+     *
+     * That was fine while `lookOwned` only ever described a mount, because a
+     * mount steers from `player.yaw` and wants this class to keep integrating
+     * the mouse. `Piloting` is the other kind of driver: `Flight.readInput`
+     * calls `input.consumeLook()` itself, from `piloting.update`, which runs
+     * AFTER this - and it was getting {0, 0} every frame of every flight.
+     *
+     * The symptom was total: pitch and yaw are the only two axes a ship steers
+     * with, `Flight`'s virtual stick is fed entirely from that delta, and both
+     * sat at exactly zero. A player could throttle, boost, brake and thrust
+     * vertically, and could not turn. Nothing caught it because every test of
+     * the flight model - and the autopilot in `_flightrig.mjs` - writes
+     * `flight.setCommand` directly, which is downstream of the missing half.
+     * It was found by trying to aim a gun.
+     *
+     * So the delta is left in the input when it is owned elsewhere. The flag
+     * that says so already existed and was already computed here; it simply had
+     * no writer, and `Piloting._takeBody` is now it. */
     const lookOwned = this.movementOverride && !this.movementOverrideLook;
+    const look = lookOwned ? ZERO_LOOK : this.input.consumeLook();
     if (!this._harnessFrozen && !this._dead && !lookOwned) {
       this._yaw -= look.dx;
       this._pitch = clamp(this._pitch - look.dy, -MAX_PITCH, MAX_PITCH);

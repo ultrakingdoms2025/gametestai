@@ -244,12 +244,42 @@ const CONTRACT = [
   {
     file: 'src/systems/Viewpoints.js',
     exports: ['Viewpoints', 'normaliseViewpoint', 'REVEAL_R', 'LEAP_R', 'MAX_TRAVEL_ROWS'],
-    methods: ['update', 'reveals', 'travelTo', 'hubItems', 'serialize', 'deserialize', 'dispose'],
+    /* `chartNearest`/`canChart` are the `nav_chart` bag item's entire effect,
+     * and they are pinned here because the item's registration chain crosses
+     * four files and this is the only link in it that is a METHOD. */
+    methods: ['update', 'reveals', 'chartNearest', 'canChart', 'travelTo', 'hubItems',
+      'serialize', 'deserialize', 'dispose'],
+  },
+  /* The three objectives the player named. Pinned for the reason every entry
+   * here is: this system reaches nothing and is reached only from `main.js` and
+   * `SaveGame`, so a renamed export is a HUD panel that quietly stops counting
+   * one browser boot later rather than a failure here.
+   *
+   * The thresholds are pinned by NAME as well as the class: `KILL_TIERS`,
+   * `ORE_TIERS`, `surveyRange` and `surveyReward` are all read by
+   * `scripts/tests/space-objectives.test.mjs`, which re-derives every one of
+   * them from the world rather than restating them - so a rename would take the
+   * measurement with it. */
+  {
+    file: 'src/systems/SpaceObjectives.js',
+    exports: ['SpaceObjectives', 'surveyRange', 'surveyReward', 'wingBounty',
+      'SURVEY_FRACTION', 'SURVEY_FOV_DEG', 'KILL_TIERS', 'ORE_TIERS',
+      'LANDFALL_CREDITS', 'ASSAY_CREDITS'],
+    methods: ['update', 'progress', 'chart', 'reached', 'serialize', 'deserialize', 'dispose'],
   },
   {
     file: 'src/minigames/RooftopTrial.js',
     exports: ['createRooftopTrial', 'RooftopTrial', 'ROOFTOP_GAME_ID', 'parTimes', 'medalFor',
       'venueBounds', 'venueCoversRoute', 'START_RADIUS'],
+    methods: ['begin', 'fixedUpdate', 'snapshot', 'dispose'],
+  },
+  /* Lodestar Yard's test-fire butts. `TEST_FIRE_GAME_ID` is pinned by name
+   * because `scripts/quest-vocab.mjs` SCRAPES it to decide whether a `minigame`
+   * step in the dock has a legal target at all - rename it silently and the
+   * quest vocabulary loses a verb rather than erroring. */
+  {
+    file: 'src/minigames/TestFire.js',
+    exports: ['createTestFire', 'TestFire', 'TEST_FIRE_GAME_ID', 'readTargets'],
     methods: ['begin', 'fixedUpdate', 'snapshot', 'dispose'],
   },
   { file: 'src/race/CheckpointSweep.js', exports: ['segDistSq', 'sweptPass'] },
@@ -331,11 +361,105 @@ const CONTRACT = [
    * districts are live - registered here for the same reason MazeChunks is. */
   { file: 'src/worlds/maze/MazePopulation.js', exports: ['MazePopulation'] },
   { file: 'src/worlds/MazeWorld.js', exports: ['MazeWorld'], methods: ['build', 'dispose'] },
-  /* Gateway 06's destination. Registered for the same reason every other world
-   * is: the sixth gateway is live and routed here, so a renamed export or a
-   * deleted file surfaces as a failed check rather than as a portal that drops
-   * the player into nothing one browser boot later. Takes the count 59 -> 60. */
-  { file: 'src/worlds/SurveyWorld.js', exports: ['SurveyWorld'], methods: ['build', 'dispose'] },
+  /* Gateway 06's destination, and the space beyond it. Registered for the same
+   * reason every other world is: the sixth gateway is live and routed here, so
+   * a renamed export or a deleted file surfaces as a failed check rather than
+   * as a portal that drops the player into nothing one browser boot later.
+   *
+   * `fields` is the important half, and it is the ONLY mechanism in this repo
+   * that pins a published array NAME. Every one of these is read through an
+   * optional chain by a system that names no world - `Interiors` reads
+   * `enterables`, `Viewpoints` reads `viewpoints`, `Parkour` reads
+   * `haystacks`, `MinigameManager` reads `minigameVenues`, `Relics` reads
+   * `_roofs` and `_towers`, `Caches` reads `_caches`, the ship stage reads
+   * `shipSpecs`, `PortalSystem` reads `portalSpecs`, `NPCManager` reads
+   * `npcSpawns` and `Minimap` reads `minimapShapes` - so a typo in any of them
+   * is a whole system quietly finding nothing, one browser boot later. And
+   * `_caches` is the newest and the most silent of them: without it this world
+   * places no caches at all and says nothing, because the dart that would find
+   * them lands on the shed roof. */
+  {
+    file: 'src/worlds/DockWorld.js',
+    exports: ['DockWorld'],
+    methods: ['build', 'update', 'dispose'],
+    fields: [
+      'enterables', 'viewpoints', 'haystacks', 'minigameVenues',
+      '_roofs', '_towers', '_caches', 'shipSpecs', 'ships', 'portalSpecs', 'npcSpawns', 'minimapShapes',
+    ],
+  },
+  /* The yard's plan, three-free so the tests can read the numbers the world is
+   * dimensioned off without building it. */
+  {
+    file: 'src/worlds/dock/YardPlan.js',
+    exports: [
+      'DECK_Y', 'GANTRY_Y', 'CRANE_Y', 'ROOF_Y', 'TRENCH_Y',
+      'YARD_X', 'YARD_Z0', 'YARD_Z1', 'APRON_Z', 'BERTHS', 'COUNTERS', 'STAIRS',
+      'TRENCH_RUNS', 'TRENCH_BAYS', 'CRANE_CAB', 'SIGNAL_POST', 'SPARES_PILE',
+      'PORTAL_STATION_Z', 'PORTAL_SPACE_Z',
+      'BUTTS_FIRE_Z', 'BUTTS_RANKS', 'BUTTS_PLATES', 'BUTTS_CELL_COST',
+      'BUTTS_SECONDS', 'BUTTS_REWARD',
+    ],
+  },
+  { file: 'src/worlds/dock/YardKit.js', exports: ['railRun', 'stairTreads', 'signBoard', 'paintQuad', 'workLight'] },
+  /* The hulls. `HullPlan` is three-free for the same reason `YardPlan` is: the
+   * numbers a mantle, a crouch bay and a companionway depend on are read by the
+   * tests rather than re-derived, so there is one place a measurement lives. */
+  {
+    file: 'src/worlds/dock/HullPlan.js',
+    exports: [
+      'SKIN', 'DECK_T', 'MIN_STEP_IN', 'MANTLE_MAX', 'MANTLE_MIN_GROUND', 'STEP_UP',
+      'CLIMB_BUDGET', 'BROW', 'KESTREL', 'DRAY', 'PIKE', 'BASTION', 'HULLS', 'WALKABLE',
+      'boardSide',
+    ],
+  },
+  {
+    file: 'src/worlds/dock/ShipKit.js',
+    exports: ['ShipBuild', 'shipMaterials', 'MANTLE_INBOARD', 'MANTLE_HEADROOM', 'GRIP_HEIGHT'],
+  },
+  { file: 'src/worlds/dock/Hulls.js', exports: ['buildKestrel', 'buildDray', 'buildPike', 'buildBastion'] },
+  /* The hulls' authored-asset pipeline, modelled on the maze's. `loadShipAssets`
+   * is awaited once by `DockWorld.build`; `shipParts` is the synchronous read
+   * the hull builders make, and returns null - the procedural hull - whenever
+   * the file is absent, which is every headless test in this repo. */
+  {
+    file: 'src/ships/ShipAssets.js',
+    exports: [
+      'loadShipAssets', 'shipParts', 'resetShipAssets', 'installShipAssets',
+      'SHIP_ASSET_HULLS', 'SHIP_PART_KEYS',
+    ],
+  },
+  /* The customiser. `ShipStats` is renderer-free and `three`-free so the
+   * catalogue test can read the ladder without building a world, exactly as
+   * `mounts/Livery.js` is for `MOUNT_STATS`. */
+  {
+    file: 'src/ships/ShipStats.js',
+    exports: [
+      'SHIP_ORDER', 'SHIP_CLASSES', 'SHIP_TINTS', 'SHIP_SLOTS', 'SHIP_STATS',
+      'SHIP_STAT_META', 'SHIP_BASE_STATS', 'SHIP_SKINS', 'SHIP_SKINS_BY_ID',
+      'KNOWN_SHIP_SKIN_IDS', 'shipSkinsFor', 'shipSkinItemId', 'holdCapacity',
+    ],
+  },
+  { file: 'src/ships/Ship.js', exports: ['Ship'], methods: ['applyCustomization', 'applyPowers', 'snapshot'] },
+  {
+    file: 'src/ships/ShipRegistry.js',
+    exports: ['ShipRegistry'],
+    methods: ['setLivery', 'getLivery', 'resetLivery', 'grantPower', 'getPowers', 'sellsPower',
+      'applyScheme', 'select', 'serialize', 'deserialize'],
+  },
+  { file: 'src/ui/ShipMenu.js', exports: ['ShipMenu'], methods: ['open', 'close', 'toggle', 'dispose'] },
+  {
+    file: 'src/ui/ShipMenuLogic.js',
+    exports: ['SHIP_PALETTES', 'shipStatLine', 'schemeState', 'SCHEME_STATE_LABEL'],
+  },
+  { file: 'src/worlds/dock/YardTextures.js', exports: ['buildYardTextures', 'buildYardMaterials', 'YARD_SIGNS', 'YARD_SIGN'] },
+  /* The far side of the blast door. A stub, registered in the dock drop so the
+   * launch seam is exercised end to end before a flight model exists. */
+  {
+    file: 'src/worlds/SpaceWorld.js',
+    exports: ['SpaceWorld'],
+    methods: ['build', 'dispose'],
+    fields: ['portalSpecs', 'minimapShapes'],
+  },
 ];
 
 /** Feature set v2 — see CONTRACTS-V2.md. Absent until those agents land. */

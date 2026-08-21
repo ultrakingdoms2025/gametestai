@@ -80,10 +80,40 @@ const GROUPS = [
       ['F', 'Dismount'],
       ['Shift', 'Gallop, sprint the pedals, or beat the eagle’s wings'],
       ['Space', 'Fly up — dragon and eagle; hop on the bicycle'],
-      ['Ctrl', 'Fly down — dragon and eagle'],
+      ['C', 'Fly down — dragon and eagle'],
       ['Mouse', 'Steer your mount'],
       ['W S', 'Eagle: pitch trim, trades height for speed'],
       ['W', 'Bicycle: pedal. Let go and it freewheels'],
+    ],
+  },
+  /* ── SHIP ───────────────────────────────────────────────────────────────
+   * Added because it was entirely absent. F1 is the canonical list, and it
+   * taught none of boarding, throttle, boost, airbrake, roll, vertical
+   * thrust, landing or mining - so every verb of the space campaign was
+   * reachable and untaught, which is this project's signature defect wearing
+   * a keycap. The bindings here are the ones `Flight._readInput` and
+   * `Piloting` actually read, not a wish list: W/S throttle, Space/C vertical,
+   * Shift boost, X airbrake (a HOLD), A/D roll, F board and leave.
+   *
+   * CTRL APPEARS NOWHERE, in this section or any other. `Input.onKey` drops
+   * every event with `ctrlKey` set, so a Ctrl row on this panel is a control
+   * that provably cannot fire. Three of them shipped on the title card. */
+  {
+    title: 'Ship',
+    accent: 'cy',
+    rows: [
+      ['F', 'Board the ship you are standing at, or leave the seat'],
+      ['W', 'Throttle up'],
+      ['S', 'Reverse thrust'],
+      ['Shift', 'Boost — burns boost fuel, refills when you let go'],
+      ['X', 'Airbrake — hold, kills speed fast'],
+      ['A D', 'Roll'],
+      ['Space', 'Thrust up'],
+      ['C', 'Thrust down'],
+      ['Mouse', 'Pitch and yaw'],
+      ['LMB', 'Fire the guns'],
+      ['E', 'Hold at a seam to cut ore'],
+      ['—', 'Fly within 230 m of the yard to dock; the hold is sold on arrival'],
     ],
   },
   {
@@ -115,7 +145,7 @@ const NOTES = [
   ['Portals', 'Each world holds a gateway to the others. Walk into the ring and press E. The destination keeps building while the transition holds — the spinner means it is working, not stuck.'],
   ['Credits', 'Earned from kills and loot, spent in the marketplace. The counter sits top-left; every award floats up from it.'],
   ['Marketplace', 'Stand near a vendor and press B to buy ammo packs or sell trinkets back. Your bag holds 30 slots — a stack of 60 bullets is one slot, not sixty.'],
-  ['Swimming', 'Enter any lake, moat or pool and you switch to a swim stroke. Space rises, Ctrl dives. Stamina drains slowly; at zero you sink and start drowning.'],
+  ['Swimming', 'Enter any lake, moat or pool and you switch to a swim stroke. Space rises, C dives. Stamina drains slowly; at zero you sink and start drowning.'],
   ['Climbing', 'Face a ledge above jump height and press Space to mantle up. Costs stamina, and only works when there is room to stand on top.'],
   ['Stamina', 'The bar under your health. Sprinting, swimming and climbing spend it; it refills after a short pause. Sprint is gated on it.'],
 ];

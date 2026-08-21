@@ -128,6 +128,72 @@ export const DROP_TABLES = {
     { id: 'alloy_scrap', chance: 0.2, min: 1, max: 2 },
     { id: 'nexus_shard', chance: 0.05, min: 1, max: 1 },
   ],
+  /* Lodestar Yard, and NOTHING IN THE WORLD ROLLS IT TODAY.
+   *
+   * `DockWorld` sets `rules.hostiles: false` - it is a civilian worksite, and
+   * a firefight inside a hangar full of walk-in hulls puts the interior work
+   * and the combat work in each other's way for no gain. So this table exists
+   * for three reasons, none of which is "the yard drops loot":
+   *
+   *   1. The rule can flip. When it does, the fallback three lines below is
+   *      SILENT, and a security detail in a shipyard would start dropping
+   *      6 mm caseless and ember cores out of the Aether Nexus armoury -
+   *      which is exactly what a desert citadel's garrison did for a whole
+   *      release.
+   *   2. `quest-vocab` reads this table to decide whether a `collect` step is
+   *      completable. Without a row here it reads the STATION's, and a quest
+   *      step asking for `bullet` in the yard would pass validation while
+   *      being unobtainable. Two shipped citadel steps did precisely that.
+   *   3. It is the honest statement of what this world manufactures, which is
+   *      the same list `CACHE_TABLES.dock` pays out and `WORLD_MARKETS.dock`
+   *      prices at a discount, and those three have to agree.
+   *
+   * Every number is derived rather than chosen:
+   *   laser_cell    the ammunition the yard makes and the flight drop fires.
+   *                 Highest chance and by far the biggest quantity, because
+   *                 `WORLD_MARKETS.dock` pays only 0.9 for ammo here - a
+   *                 vendor paying LESS is the game saying the place is full
+   *                 of it. 14-50 rather than the 10-30 first drafted, and the
+   *                 spread is DRIVEN by the law in citadel-economy.test.mjs
+   *                 ("what a corpse carries falls as the region's price for
+   *                 that kind rises"): at 0.62 x 20 = 12.40 expected units the
+   *                 yard carried LESS ammunition than the vale, which pays
+   *                 1.15 and carries 18.01 - i.e. the drop table said the yard
+   *                 was short of the thing its own market says it is drowning
+   *                 in. 0.62 x 32 = 19.84 sits above the vale's 18.01 and
+   *                 below the sports ground's 22.57, which is exactly where a
+   *                 world paying 0.9 belongs between one paying 1.15 and
+   *                 another paying 0.9 with a supply chain behind it. Cells
+   *                 come racked in tens, so a wide spread is also what they
+   *                 physically are.
+   *   hull_plate    the yard's own by-product; vendors pay 0.7.
+   *   alloy_scrap   0.48, higher than the station's 0.30, because a yard sheds
+   *                 more offcut than a concourse does. Bought at 0.6, the
+   *                 lowest price paid for it anywhere.
+   *   thruster_coil 0.16 and never more than one: it is a 78 CR component out
+   *                 of a drive, not swarf.
+   *   medkit        0.18, and driven by the same law. `WORLD_MARKETS.dock`
+   *                 pays 0.95 for a consumable against the station's 1.00 and
+   *                 the sports ground's 0.70, so the yard has to carry MORE
+   *                 medicine than the station (0.13) and LESS than the sports
+   *                 ground (0.30). It reads true as well as computing: an
+   *                 industrial site with a first-aid point at every berth has
+   *                 more trauma kit lying about than a concourse and less than
+   *                 a place whose entire business is people hurting
+   *                 themselves.
+   *   nexus_shard   0.05, the rarity every world gives it. A shard is a portal
+   *                 artefact and belongs to no local economy.
+   * No `relic_coin` and no `arrow`: nothing on this site has ever produced
+   * either, which is the whole point of `WORLD_MARKETS.dock` paying 1.7 for a
+   * coin. */
+  dock: [
+    { id: 'laser_cell', chance: 0.62, min: 14, max: 50 },
+    { id: 'hull_plate', chance: 0.4, min: 1, max: 3 },
+    { id: 'alloy_scrap', chance: 0.48, min: 2, max: 5 },
+    { id: 'thruster_coil', chance: 0.16, min: 1, max: 1 },
+    { id: 'medkit', chance: 0.18, min: 1, max: 1 },
+    { id: 'nexus_shard', chance: 0.05, min: 1, max: 1 },
+  ],
 };
 
 /** Ordered so the pickup takes its colour from the rarest thing in it. */
@@ -543,7 +609,18 @@ export class Loot {
     if (this._fullNotifyT > 0) this._fullNotifyT -= dt;
     if (elapsed >= this._magnetUntil) this._magnetRange = AUTO_RANGE;
 
-    const player = this.player;
+    /* NOT WHILE SOMETHING ELSE IS DRIVING THE BODY. See the same guard, with
+     * the measurements, in `./Relics.js`: `player.position` is the SHIP while
+     * `Piloting` holds the body, so both the magnet and the [E] pickup were
+     * being served by a 22 m hull crossing the yard at flight speed. Driven, a
+     * single climb out of the hangar took "+3 Old Crown Coin" and "+1 Aegis
+     * Shard" out of a world cache in mid-air.
+     *
+     * A MOUNT still collects, which is right: `movementOverrideCollide` is left
+     * true for a rider, and only `Piloting.board` clears it.
+     * @see ./Relics.js, ./Mining.js, ../ships/Piloting.js `_takeBody` */
+    const player = (this.player?.movementOverride && this.player?.movementOverrideCollide === false)
+      ? null : this.player;
     const pressedE = this._consumeInteract();
 
     for (let i = this._active.length - 1; i >= 0; i--) {

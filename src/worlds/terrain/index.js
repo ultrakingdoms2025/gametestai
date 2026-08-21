@@ -26,8 +26,21 @@
  */
 import { medievalHeight } from './MedievalHeight.js';
 import { citadelHeight } from './CitadelHeight.js';
+import { planetHeight } from './PlanetHeight.js';
 
 export const HEIGHT_FIELDS = {
   medieval: () => medievalHeight,
   citadel: () => citadelHeight,
+  /**
+   * Every planet surface, and the reason the factory signature above takes
+   * params at all.
+   *
+   * `medieval` and `citadel` ignore their params because each names exactly one
+   * piece of ground. A planet does not: the whole point of `PlanetWorld` is that
+   * a tenth planet costs a tenth DESCRIPTOR and no new world class, so the field
+   * is one function and the planet is the argument. What crosses `postMessage`
+   * is the descriptor's `terrain` block - plain numbers, strings and arrays,
+   * never a closure - and both sides resolve it through this one entry.
+   */
+  planet: (params) => planetHeight(params),
 };

@@ -344,6 +344,26 @@ export class QuestSystem {
   /* Private — world load                                                */
   /* ------------------------------------------------------------------ */
 
+  /**
+   * A BACKEND THAT IS DOWN IS NOT AN ERROR THE PLAYER CAN ACT ON.
+   *
+   * This threw a red `bad` toast in the player's face on every world change
+   * when `/api/game/quests` was unreachable - which is every session run
+   * against the vite dev server alone, and every session where the Next site
+   * is simply not up. A tester playing the whole loop cold reported it as a
+   * defect, and they were right to: red is the game's colour for "you have a
+   * problem", and the player has no problem and nothing to do about it.
+   *
+   * The quest board already degrades correctly on its own - it draws "No
+   * quests in this category" - so the toast added nothing except alarm. The
+   * failure is still recorded, once per session, in the console where the
+   * person who can act on it will look. This is the same rule the marketplace
+   * now follows and the same one Lore has always followed.
+   *
+   * ONE exception is kept loud: a response that is 200 but is not JSON. That
+   * is a proxy or a login wall answering for the API, and it is a
+   * configuration fault rather than an absent service - it needs saying.
+   */
   async _loadQuestsForWorld(worldId) {
     try {
       const res = await fetch(`/api/game/quests?world=${worldId}`, {
@@ -351,7 +371,7 @@ export class QuestSystem {
         credentials: 'include',
       });
       if (!res.ok) {
-        this.bus?.emit('hud:notify', { text: 'Could not load quests', tone: 'bad' });
+        this._questsOffline(`http ${res.status}`);
         return;
       }
       const contentType = res.headers.get('content-type') ?? '';
@@ -394,9 +414,31 @@ export class QuestSystem {
         engagements: this.engagements,
       });
     } catch (err) {
-      console.warn('[QuestSystem] load failed:', err);
-      this.bus?.emit('hud:notify', { text: 'Could not load quests', tone: 'bad' });
+      this._questsOffline(err);
     }
+  }
+
+  /**
+   * Record that the quest service is unreachable. Once per session, quietly.
+   *
+   * @param {unknown} why
+   */
+  _questsOffline(why) {
+    if (!this._questsOfflineLogged) {
+      this._questsOfflineLogged = true;
+      console.warn('[QuestSystem] quest service unreachable; the board will show what is '
+        + 'bundled and nothing else:', why);
+    }
+    /* And the board is told, so it can say "offline" rather than "empty" -
+     * the same distinction the marketplace draws. `quests:changed` is what it
+     * listens to; sending it with an empty list is what stops a stale list
+     * from a previous world sitting there looking live. */
+    this.bus?.emit('quests:changed', {
+      worldId: this.worldManager?.active?.id ?? null,
+      quests: this.worldQuests,
+      engagements: this.engagements,
+      offline: true,
+    });
   }
 
   /**

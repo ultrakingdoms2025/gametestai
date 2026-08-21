@@ -130,7 +130,7 @@ export function escalatorDeckDrop(pitch, treadThickness = TREAD_T) {
  * and hang a quad at every landing. Two facts rule that out.
  *
  *   1. The sheet has no room. `SIGN_COLS * SIGN_ROWS` is 4 x 11 = 44 cells and
- *      `SIGN_ROLE` reserves all 44 by name, right up to `surveyEnquiries: 43`.
+ *      `SIGN_ROLE` reserves all 44 by name, right up to `dockEnquiries: 43`.
  *      The note beside `SIGN_ROWS` in StationKit.js is explicit that the two
  *      cells it calls spare are "the cost of a row, not slack anybody may
  *      borrow, because every cell here is reserved BY ROLE". Numbers 1 to 9

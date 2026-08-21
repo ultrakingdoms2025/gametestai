@@ -2,11 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { WORLDS, MOUNTS, WEAPONS, heroTicker, statBar, worldSeq } from './worlds';
 
 describe('canonical world model', () => {
-  it('has exactly 6 worlds in order with unique ids and 1-based index', () => {
-    expect(WORLDS).toHaveLength(6);
-    expect(WORLDS.map(w => w.id)).toEqual(['station','medieval','sports','citadel','race','maze']);
+  it('has exactly 7 worlds in order with unique ids and 1-based index', () => {
+    expect(WORLDS).toHaveLength(7);
+    expect(WORLDS.map(w => w.id)).toEqual(['station','medieval','sports','citadel','race','maze','dock']);
     WORLDS.forEach((w, i) => expect(w.index).toBe(i + 1));
-    expect(new Set(WORLDS.map(w => w.id)).size).toBe(6);
+    expect(new Set(WORLDS.map(w => w.id)).size).toBe(7);
   });
   it('uses canonical in-game display names', () => {
     const byId = Object.fromEntries(WORLDS.map(w => [w.id, w.name]));
@@ -14,9 +14,10 @@ describe('canonical world model', () => {
     expect(byId.race).toBe('Vellum Ridge');
     expect(byId.maze).toBe('The Verdant Coil');
     expect(byId.station).toBe('Aether Nexus Station');
+    expect(byId.dock).toBe('Lodestar Yard');
   });
   it('every world has copy, fact, accent, a scene id equal to its id, and a valid painterKey', () => {
-    const validPainterKeys = new Set(['station','valley','sports','citadel','circuit','maze']);
+    const validPainterKeys = new Set(['station','valley','sports','citadel','circuit','maze','yard']);
     for (const w of WORLDS) {
       expect(w.copy.length).toBeGreaterThan(10);
       expect(w.fact.length).toBeGreaterThan(3);
@@ -31,13 +32,13 @@ describe('canonical world model', () => {
   });
   it('derivation helpers reflect six and never say five', () => {
     const ticker = heroTicker();
-    expect(ticker).toContain('Six worlds');
+    expect(ticker).toContain('Seven worlds');
     expect(ticker).toContain('Six mounts');
     expect(ticker).toContain('Four weapons');
-    expect(ticker.join(' ')).not.toMatch(/five/i);
+    expect(ticker.join(' ')).not.toMatch(/five|six worlds/i);
 
-    expect(statBar()).toEqual(['6', '6', '4', '0 GB']);
-    expect(worldSeq(1)).toBe('01 / 06');
-    expect(worldSeq(6)).toBe('06 / 06');
+    expect(statBar()).toEqual(['7', '6', '4', '0 GB']);
+    expect(worldSeq(1)).toBe('01 / 07');
+    expect(worldSeq(7)).toBe('07 / 07');
   });
 });

@@ -1,6 +1,7 @@
 import { AudioEngine } from './AudioEngine.js';
 import { Sfx } from './Sfx.js';
 import { Music } from './Music.js';
+import { SHIP_BASE_STATS } from '../ships/ShipStats.js';
 
 /**
  * The only thing in the game that knows both what happened and what it sounds
@@ -61,7 +62,7 @@ export class AudioDirector {
   /**
    * @param {{bus:any, camera:any, player:any, worldManager:any, input:any}} ctx
    */
-  constructor({ bus, camera, player, worldManager, input } = {}) {
+  constructor({ bus, camera, player, worldManager, input, piloting } = {}) {
     this.bus = bus ?? null;
     this.camera = camera ?? null;
     this.player = player ?? null;
@@ -72,6 +73,19 @@ export class AudioDirector {
     this.sfx = new Sfx(this.engine);
     this.music = new Music(this.engine);
 
+    /**
+     * The piloting mode, for the held drive voice.
+     *
+     * Late-injected by `main.js` (`audio.piloting = piloting`) as well as
+     * accepted here, because `AudioDirector` is constructed before `Piloting`
+     * is - and a voice that silently read `undefined.flight` every frame would
+     * be a ship with no engine and no error.
+     * @type {any}
+     */
+    this.piloting = piloting ?? null;
+
+    /** @type {{handle:any, shipId:string}|null} */
+    this._ship = null;
     /** @type {{handle:any, id:string}|null} */
     this._mount = null;
     this._swimTimer = null;
@@ -209,6 +223,17 @@ export class AudioDirector {
     on('loot:collected', (e) => {
       this.sfx.pickup(null, { rare: !!e?.fromCache });
     });
+    /* A door was worked. `Interiors` says WHICH door and what kind of door it
+     * is; what that sounds like is decided here, which is this file's whole
+     * contract. The ship hatches in Lodestar Yard publish `sound: 'slide'` and
+     * get the pneumatic shutter; every other door in the game publishes
+     * nothing and gets the hinge, so adding a voice to one world did not give
+     * a medieval plank door a compressor. */
+    on('interior:door', (e) => {
+      const at = e?.position ?? null;
+      if (e?.sound === 'slide') this.sfx.doorSlide(at, { open: !!e.open, size: e?.size ?? 1 });
+      else this.sfx.doorHinge(at, { open: !!e?.open });
+    });
     on('portal:entering', () => this.sfx.portal(null));
     on('npc:killed', (e) => this.sfx.impact(e?.npc?.position ?? null, 'flesh'));
 
@@ -220,6 +245,41 @@ export class AudioDirector {
       else if (e?.id === 'eagle') this.sfx.eagleScreech(e?.position ?? null);
     });
     on('mount:mounted', (e) => this._startMount(e?.id, e?.mount ?? null));
+
+    /* A SHIP'S DRIVE. Held for as long as the player is in the seat, and
+     * deliberately NOT routed through `_startMount`: a ship survives world
+     * changes, which is the one thing `MountManager` guarantees a mount does
+     * not, and `mount:dismounted` therefore must not stop it. */
+    on('pilot:boarded', (e) => this._startShip(e?.shipId ?? null));
+    on('pilot:left', () => this._stopShip());
+
+    /* --- ship-to-ship ------------------------------------------------
+     *
+     * Positioned, all of them, and that is the point: the whole fight happens
+     * outside the chase camera's frame half the time, and which side a burst
+     * came from is the only cue a pilot gets that something is on their six.
+     * `combat:enemyFire` carries the muzzle, not the shooter's centre, because
+     * a 17 m lance firing from an arm tip is 8 m off its own origin and the
+     * pan is computed from whatever it is handed. */
+    on('combat:fire', (e) => this.sfx.laser(e?.position ?? null, { hostile: false }));
+    on('combat:enemyFire', (e) => this.sfx.laser(e?.position ?? null, { hostile: true }));
+    /* A bolt landing on THEM. Quieter than one landing on you, and it has to
+     * be, or a pilot holding the trigger at 5/s drowns out the two shots that
+     * are actually hurting them. */
+    on('combat:hit', (e) => {
+      if (!e?.died) this.sfx.impact(e?.position ?? null, 'metal');
+    });
+    on('combat:kill', (e) => this.sfx.shipExplode(e?.position ?? null, { size: 1 }));
+    /* Taking fire. The kind decides the sound, which is the same three-way
+     * split the HUD's vignette draws - shield holding, shield breaking, hull -
+     * so the ear and the eye are saying the same thing. */
+    on('combat:playerHit', (e) => {
+      const at = e?.position ?? null;
+      if (e?.kind === 'hull') this.sfx.hullHit(at);
+      else this.sfx.shieldHit(at, { hard: e?.kind === 'down' ? 1 : 0.4 });
+    });
+    on('combat:contacts', () => this.sfx.contactAlarm());
+    on('combat:salvage', () => this.sfx.pickup(null, { rare: true }));
     on('mount:dismounted', () => this._stopMount());
     on('mount:boost', (e) => {
       if (this._mount?.id === 'dragon') this.sfx.dragonRoar(e?.position ?? null);
@@ -296,6 +356,29 @@ export class AudioDirector {
     if (id === 'dragon') this.sfx.dragonRoar(this.player?.position ?? null);
   }
 
+  /**
+   * Start the drive for a hull.
+   *
+   * `tone` is the one thing that differs between them, and it is derived from
+   * the hull's own thrust bias rather than chosen: a Kestrel (`power` 3) is a
+   * courier and sits high, a Dray (`power` 1) is an ore tender and sits low.
+   * One number, from the same table the flight model reads, so the three hulls
+   * cannot end up sounding identical by omission.
+   */
+  _startShip(shipId) {
+    this._stopShip();
+    if (!shipId || !this.sfx.startShip) return;
+    const bias = SHIP_BASE_STATS[shipId]?.power ?? 2;
+    const handle = this.sfx.startShip({ tone: Math.max(0, Math.min(1, (bias - 1) / 2)) });
+    if (handle) this._ship = { handle, shipId };
+  }
+
+  _stopShip() {
+    if (!this._ship) return;
+    try { this._ship.handle.stop(); } catch { /* already stopped */ }
+    this._ship = null;
+  }
+
   _stopMount() {
     if (!this._mount) return;
     try { this._mount.handle.stop(); } catch { /* already stopped */ }
@@ -369,6 +452,25 @@ export class AudioDirector {
         throttle: Math.min(1, speed / 18),
         boost: p?.isBoosting ? 1 : 0,
       });
+    }
+
+    if (this._ship) {
+      /* Read straight off the flight model, not off the player's velocity.
+       *
+       * `throttle` and `speed` are different questions and the drive answers
+       * both: a ship coasting at 200 m/s with the throttle shut has to go
+       * quiet, or the airbrake and the cruise sound the same. `speedFrac` is
+       * normalised against THIS hull's own cap, so a Dray at its ceiling is as
+       * loud as a Kestrel at its ceiling rather than two thirds as loud. */
+      const f = this.piloting?.flight ?? null;
+      if (f) {
+        this._ship.handle.set({
+          speed: f.speed,
+          frac: Math.min(1, f.speed / (f.boostTop || 400)),
+          throttle: Math.abs(f.command?.throttle ?? 0),
+          boost: !!f.boosting,
+        });
+      }
     }
     void dt;
   }

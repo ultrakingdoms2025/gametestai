@@ -21,10 +21,24 @@ import {
  */
 
 /* Every world's `static id`, so a rename shows up here rather than as a
- * silently un-clamped station. `survey` joined when the sixth gateway went
- * live: it is an open pad with no roof, and its edge barrier is a collider
- * rather than an altitude rule, so it belongs on this list and not the other. */
-const ROOFLESS = ['medieval', 'sports', 'citadel', 'race', 'maze', 'survey'];
+ * silently un-clamped station.
+ *
+ * `survey` was on this list and is gone: Survey Site 06 was an open pad and is
+ * a roofed shipyard now. `dock` is deliberately NOT here, and that is the
+ * whole of the decision - the yard HAS a roof, so it must not be asserted to
+ * have an open sky.
+ *
+ * What replaces the clamp for it is geometry rather than arithmetic. The yard
+ * is 172 x 162 m under a flat plate at y 26, and a flat plate is something
+ * collision can express exactly: `DockWorld._buildShell` registers ONE box
+ * over the roof, and `dock-registration.test.mjs` asserts that box exists and
+ * spans the floor. A `flightCeilingAt` branch would be a second, independent
+ * statement of the same surface, which is precisely the arrangement that let
+ * the station's flat ceiling sit above its own glass for most of the floor.
+ *
+ * `space` IS here. It is open vacuum with a kerb, and there is nothing over it
+ * to clamp against. */
+const ROOFLESS = ['medieval', 'sports', 'citadel', 'race', 'maze', 'space'];
 
 test('the station clamp reduces to the existing flat bound on the world axis', () => {
   // StationWorld already sets bounds.max.y to DOME_APEX - 6 and explains why.

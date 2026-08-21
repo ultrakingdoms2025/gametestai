@@ -922,7 +922,7 @@ export class PortalSystem {
     root.rotation.y = rotationY;
 
     // --- frame, styled after the destination -------------------------
-    const kit = this._kit(target);
+    const kit = this._kit(target, spec.style);
     const frame = kit.template.clone(true);
     this._retintAccents(frame, accent);
     // Gateways are emissive energy structures whose arch shadows are barely
@@ -1057,11 +1057,24 @@ export class PortalSystem {
 
     this.scene.add(root);
 
-    // --- collision: walkable plinth, solid jambs ----------------------
-    // The dais is round, so each tier is approximated by two boxes 45 degrees
-    // apart - an octagon that stays within ~4% of the visible silhouette.
+    /* --- collision: walkable plinth, solid jambs ----------------------
+     *
+     * ── The launch aperture has NONE of it ────────────────────────────────
+     * A blast-door aperture is flush with the deck it stands in: no dais, no
+     * processional steps, no jambs. Skipping the plinth is only safe because
+     * the DECK is solid there and `arrivalFor` snaps an arriving body onto
+     * whatever the ground probe finds - `buildForWorld` runs after the physics
+     * rebuild and before the player is placed for exactly that reason
+     * (`WorldManager.js:371-378`), and the plinth is normally the ground under
+     * the arrival point. `dock-launch.test.mjs` asserts the deck is solid
+     * under both ends of this pair, which is the assertion that makes the
+     * omission safe rather than lucky.
+     *
+     * The dais is round, so each tier is approximated by two boxes 45 degrees
+     * apart - an octagon within ~4% of the visible silhouette. */
     const colliders = [];
-    for (const tier of PLINTH_TIERS) {
+    const flush = kit.style === 'launch';
+    for (const tier of flush ? [] : PLINTH_TIERS) {
       const h = tier.r * 0.96;
       _v1.set(spec.position.x, spec.position.y + tier.top * 0.5, spec.position.z);
       _v2.set(h, tier.top * 0.5, h);
@@ -1077,7 +1090,7 @@ export class PortalSystem {
     // straight through the visible stair and pops up onto the dais.
     const sinY = Math.sin(rotationY);
     const cosY = Math.cos(rotationY);
-    for (let s = 0; s < 3; s++) {
+    for (let s = 0; flush ? false : s < 3; s++) {
       const tier = PLINTH_TIERS[s];
       const zL = tier.r + 0.47 - s * 0.02;
       _v1.set(
@@ -1093,7 +1106,7 @@ export class PortalSystem {
     }
 
     const jambHalfH = (DISC_Y - PLINTH_TOP) * 0.5;
-    for (const sx of [-1, 1]) {
+    for (const sx of flush ? [] : [-1, 1]) {
       const ox = sx * ARCH_R;
       _v1.set(
         spec.position.x + Math.cos(rotationY) * ox,
@@ -1211,19 +1224,38 @@ export class PortalSystem {
   /* Style kits                                                        */
   /* ---------------------------------------------------------------- */
 
-  /** Build (once) the shared arch template + materials for a destination style. */
-  _kit(target) {
+  /**
+   * Build (once) the shared arch template + materials for a destination style.
+   *
+   * ── Why a spec may name its own style ─────────────────────────────────────
+   * This branched only on `target`, which is right while every portal in the
+   * game is a ceremonial gateway on a plaza. The launch portal at Lodestar
+   * Yard is not: it is an aperture in a blast door at the end of a working
+   * bay, and left to the default it would grow an alloy arch with three
+   * processional approach steps, two jambs and a stepped dais in the middle of
+   * a hangar floor. Worse, the two legs of that pair could not agree - the
+   * outbound names `space` and the inbound names `dock`, so a target-only
+   * branch would have to name both, and the next world with a plain gateway to
+   * the yard would silently inherit the blast door.
+   *
+   * So a world may declare `style` on the spec itself, and only the styles
+   * this file knows are honoured. Everything with no opinion behaves exactly
+   * as it did.
+   */
+  _kit(target, wanted = null) {
     // The citadel borrows the medieval arch: it is cut stone with a keystone,
     // which is what a gateway into a fortress town should be. Anything
     // unrecognised still falls back to the station's alloy frame.
-    const style = target === 'medieval' || target === 'citadel' ? 'medieval'
-      : target === 'sports' ? 'sports'
-        : 'station';
+    const style = wanted === 'launch' ? 'launch'
+      : target === 'medieval' || target === 'citadel' ? 'medieval'
+        : target === 'sports' ? 'sports'
+          : 'station';
     let kit = this._kits.get(style);
     if (kit) return kit;
     kit = { style, template: new THREE.Group(), disposables: [] };
     if (style === 'medieval') this._buildMedievalArch(kit);
     else if (style === 'sports') this._buildSportsArch(kit);
+    else if (style === 'launch') this._buildLaunchAperture(kit);
     else this._buildStationArch(kit);
     // Emissive trim and fake volumetrics must not write to the shadow map or
     // they punch black holes in the light spill they are meant to sell.
@@ -1450,6 +1482,133 @@ export class PortalSystem {
       const a = Math.PI * t;
       for (const zs of [1, -1]) {
         _v1.set(Math.cos(a) * (ARCH_R + 0.30), DISC_Y + Math.sin(a) * (ARCH_R + 0.30), zs * 0.30);
+        _q1.setFromAxisAngle(_v3.set(0, 1, 0), zs > 0 ? 0 : Math.PI);
+        _m1.compose(_v1, _q1, _v2.set(1, 1, 1));
+        lights.setMatrixAt(n++, _m1);
+      }
+    }
+    lights.count = n;
+    lights.instanceMatrix.needsUpdate = true;
+    lights.castShadow = false;
+    g.add(lights);
+    kit.disposables.push(lensGeo);
+  }
+
+  /* ---- LAUNCH: a blast-door aperture, flush with the deck ---------- */
+
+  /**
+   * The aperture in the blast door at the north end of Lodestar Yard.
+   *
+   * ── What this is NOT, and why that is the whole point ─────────────────────
+   * Every other portal in the Nexus is a CEREMONIAL GATEWAY: an arch on a
+   * stepped dais with two jambs and a processional approach, standing on a
+   * plaza. That is right for a door between worlds that a civilisation built
+   * to be walked through. It is completely wrong for the last thing a ship
+   * passes before open space, and left alone `_kit`'s default would have put
+   * one in the middle of a hangar floor - three steps up to a dais, an alloy
+   * arch, and a set of status lights, ten metres from a sealed 34 m blast door
+   * that already IS the way out.
+   *
+   * So: no arch, no steps, no jambs, no dais. A ring concentric with
+   * `PORTAL_DISC_OFFSET_Y` - imported rather than remembered, which is exactly
+   * why that constant is exported - a floor pool the ring stands out of, and
+   * four hold-down clamps at the quadrants. The collider block skips the
+   * plinth for this style, so the deck the yard already laid is the ground.
+   *
+   * It is built at 60-odd lines against the station arch's 130 because it is
+   * the absence of things.
+   */
+  _buildLaunchAperture(kit) {
+    const g = kit.template;
+    const steel = this._surface('launchsteel', {
+      base: [72, 78, 88],
+      tint: [150, 160, 174],
+      scale: 3,
+      octaves: 4,
+      streak: 0.4,
+      contrast: 1.2,
+      grain: 0.04,
+      metalness: 0.9,
+      roughLo: 0.3,
+      roughHi: 0.62,
+      bump: 2.0,
+      repeat: 2,
+      stamp: (ctx, sz) => {
+        // Radial seam plates and a ring of countersunk bolts: an aperture is
+        // machined, not carved.
+        ctx.strokeStyle = 'rgba(24,30,38,0.8)';
+        ctx.lineWidth = Math.max(1, sz / 300);
+        for (let i = 0; i < 8; i++) {
+          ctx.beginPath();
+          ctx.moveTo((sz * i) / 8, 0);
+          ctx.lineTo((sz * i) / 8, sz);
+          ctx.stroke();
+        }
+        ctx.fillStyle = 'rgba(18,22,28,0.7)';
+        for (let i = 0; i < 64; i++) {
+          const x = hash2(i, 5, 3) * sz;
+          const y = hash2(i, 11, 7) * sz;
+          ctx.beginPath();
+          ctx.arc(x, y, sz / 210, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      },
+    });
+
+    /* The aperture ring. Concentric with the event horizon, which is what the
+     * exported offset is for: the station's own surround was hard-coded at
+     * 2.45 while the disc sat at 2.68, and the two being three quarters of a
+     * metre apart is what made a gateway read as though only its top half
+     * existed. */
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(ARCH_R + 0.05, 0.30, 10, 64), steel);
+    ring.position.y = DISC_Y;
+    g.add(ring);
+    kit.disposables.push(ring.geometry);
+
+    // A second, thinner ring inboard, so the aperture has a lip to look into.
+    const lip = new THREE.Mesh(new THREE.TorusGeometry(DISC_R + 0.06, 0.08, 8, 56), steel);
+    lip.position.y = DISC_Y;
+    g.add(lip);
+    kit.disposables.push(lip.geometry);
+
+    /* Four hold-down clamps at the quadrants, and nothing between them: the
+     * ring is bolted to the deck, not standing on a plinth. */
+    for (let i = 0; i < 4; i++) {
+      const a = Math.PI / 4 + (i * Math.PI) / 2;
+      const clamp = new THREE.Mesh(new RoundedBoxGeometry(0.52, 0.34, 0.62, 2, 0.04), steel);
+      clamp.position.set(
+        Math.cos(a) * (ARCH_R + 0.05),
+        DISC_Y + Math.sin(a) * (ARCH_R + 0.05),
+        0
+      );
+      clamp.rotation.z = a;
+      g.add(clamp);
+      kit.disposables.push(clamp.geometry);
+    }
+
+    /* The floor pool: a shallow recessed disc the aperture rises out of,
+     * FLUSH, with a hazard ring painted round it. This is what replaces the
+     * dais - the thing a player stands on is the yard's own deck. */
+    const pool = new THREE.Mesh(new THREE.RingGeometry(0.6, ARCH_R + 0.9, 48, 1), steel);
+    pool.rotation.x = -Math.PI / 2;
+    pool.position.y = 0.012;
+    pool.receiveShadow = true;
+    g.add(pool);
+    kit.disposables.push(pool.geometry);
+
+    /* Status lights along the ring, accent-tinted per portal when cloned. A
+     * blast door has these because a blast door is interlocked; they are the
+     * one piece of ceremony an aperture is allowed. */
+    const lensGeo = new THREE.CylinderGeometry(0.07, 0.07, 0.1, 10);
+    lensGeo.rotateX(Math.PI / 2);
+    const lights = new THREE.InstancedMesh(lensGeo, this._placeholderAccent(), 40);
+    lights.userData.accent = true;
+    lights.userData.noShadow = true;
+    let n = 0;
+    for (let i = 0; i < 20; i++) {
+      const a = (Math.PI * 2 * (i + 0.5)) / 20;
+      for (const zs of [1, -1]) {
+        _v1.set(Math.cos(a) * (ARCH_R + 0.38), DISC_Y + Math.sin(a) * (ARCH_R + 0.38), zs * 0.26);
         _q1.setFromAxisAngle(_v3.set(0, 1, 0), zs > 0 ? 0 : Math.PI);
         _m1.compose(_v1, _q1, _v2.set(1, 1, 1));
         lights.setMatrixAt(n++, _m1);
@@ -2776,6 +2935,24 @@ export class PortalSystem {
    * not generated yet - the gateway shows STABILISING and the warp holds at
    * full white until the build lands.
    */
+  /**
+   * Begin a transition through the portal with this id, e.g. `dock->space`.
+   *
+   * Three lines, and they exist so a caller that is not a proximity trigger
+   * has a door to knock on. The flight drop's cockpit seat is exactly that
+   * caller: pressing E in a pilot's seat has to enter the launch portal, and
+   * the launch portal is on the deck at the blast door rather than in the
+   * cockpit (see `YardPlan.PORTAL_SPACE_Z` for the `arrivalFor` reason). The
+   * alternative is a caller reaching into `_portals`, which is how a private
+   * array becomes a public one by accident.
+   *
+   * @param {string} id `${worldId}->${target}`
+   */
+  enterById(id) {
+    const rec = this._portals.find((p) => p.id === id);
+    return rec ? this.enter(rec) : false;
+  }
+
   enter(portal) {
     if (!portal || this._transition) return false;
     const wm = this.worldManager;

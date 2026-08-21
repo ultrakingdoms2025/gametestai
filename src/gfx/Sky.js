@@ -156,25 +156,69 @@ vec3 starLayer(vec3 dir, float scale, float density, float sizeMul, float bright
   vec3 sp = vec3(hash13(cell + 11.13), hash13(cell + 23.71), hash13(cell + 47.37));
   sp = 0.5 + (sp - 0.5) * 0.5;
 
+  /* MAGNITUDE, AND WHY IT IS NOW A FOURTH POWER.
+   *
+   * -- THE DEFECT -----------------------------------------------------------
+   * A tester who played the whole campaign described the sky as "a dense field
+   * of white square dots that reads as dirt on the lens, not as stars", and a
+   * capture through the launch well is exactly that: a couple of thousand
+   * hard-edged two-pixel blocks, all within a stop or so of each other, a
+   * surprising number of them fully saturated blue or orange.
+   *
+   * Two causes, and neither of them is density.
+   *
+   * 1. NO HIERARCHY. mag was squared, which is not nearly enough spread
+   *    across a 0..1 hash - half of every layer still came out over 0.25 and
+   *    the floor term (0.16 + 0.95 * mag) gave even a zero-magnitude star
+   *    16% of full brightness. A real sky is a handful of things you could
+   *    name and a wash of things you cannot resolve at all. A fourth power
+   *    gives that: the median star is a faint smudge and the rare bright one
+   *    is worth looking at. A FOURTH power was the first try and overshot -
+   *    driven in a browser, it left a sky with about a dozen visible stars in
+   *    it - so the curve is a cube and the floor is 0.14, matched to the
+   *    Points field DockWorld hangs behind its own mouth. The two have to
+   *    agree or the sky changes identity at the blast door, which is the
+   *    defect the yard's BODIES were rebuilt to fix.
+   *
+   * 2. HARD EDGES. pow(clamp(1 - d/radius), 2.4) reaches EXACTLY zero at
+   *    d = radius, and the radius of the near layer is 0.077 cell units, which
+   *    at this scale is one to two pixels. A term that goes to zero over a
+   *    single pixel cannot antialias - it lands as a square. A gaussian never
+   *    reaches zero, so the same star spreads its energy over the pixels
+   *    around it and reads as a point of light.
+   *
+   * The halo stays deliberately tight. The original note here is still right
+   * and is the reason the fix is not simply "make them bigger": anything wider
+   * gets caught by the bloom threshold and the starfield turns into snow.
+   */
   float mag = hash13(cell + 3.31);
-  mag = mag * mag;                       // few bright stars, many faint ones
-  float radius = (0.022 + 0.055 * mag) * sizeMul;
+  mag = mag * mag * mag;                 // few bright stars, a great many faint
+  float radius = (0.020 + 0.060 * mag) * sizeMul;
 
-  // Tight halo on purpose: anything wider gets caught by the bloom threshold
-  // and the starfield turns into falling snow.
   float d = length(f - sp);
-  float core = pow(clamp(1.0 - d / radius, 0.0, 1.0), 2.4);
-  float halo = exp(-d / max(radius * 1.25, 1e-3)) * (0.045 + 0.17 * mag);
+  float q = d / max(radius, 1e-3);
+  // Gaussian core: no zero crossing, so a sub-pixel star antialiases instead
+  // of stamping a block.
+  float core = exp(-q * q * 2.6);
+  float halo = exp(-d / max(radius * 1.35, 1e-3)) * (0.030 + 0.20 * mag);
 
   // Spectral class ramp: O/B blue-white -> G white -> K amber -> M red.
   float t = hash13(cell + 71.93);
   vec3 col = mix(vec3(0.60, 0.72, 1.00), vec3(1.00, 0.97, 0.93), smoothstep(0.00, 0.45, t));
   col = mix(col, vec3(1.00, 0.83, 0.58), smoothstep(0.64, 0.90, t));
   col = mix(col, vec3(1.00, 0.55, 0.38), smoothstep(0.92, 1.00, t));
+  /* COLOUR IS A PROPERTY OF THE BRIGHT ONES ONLY.
+   *
+   * The eye has no colour vision at the threshold of detection - faint stars
+   * are grey to a real observer, and drawing them at full chroma is what put a
+   * scatter of saturated blue and orange pixels across the frame and made the
+   * field read as sensor dust. Only a star with magnitude left to spare keeps
+   * its class. */
+  col = mix(vec3(0.92, 0.94, 1.00), col, smoothstep(0.02, 0.35, mag));
 
   float twinkle = 1.0 + tw * sin(uTime * (1.3 + mag * 4.0) + present * 63.0) * (0.30 + 0.70 * mag);
 
-  return col * (core + halo) * bright * (0.16 + 0.95 * mag) * twinkle;
+  return col * (core + halo) * bright * (0.14 + 1.25 * mag) * twinkle;
 }
 
 // Shaded planet disc. Returns colour; "cover" is 1 inside the solid disc.

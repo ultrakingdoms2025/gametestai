@@ -520,6 +520,68 @@ export class Sfx {
     this.engine.release(0.6);
   }
 
+  /**
+   * A powered sliding hatch: the pneumatic release, the swoosh, and the seat.
+   *
+   * Three parts, and the middle one is the whole sound. A door that slides is
+   * heard as MOVEMENT, so the swoosh is a bandpass on noise sweeping across the
+   * spectrum for as long as the leaves take - `Interiors` runs its animation at
+   * `dt * 3.2`, i.e. 0.31 s from shut to open, so that is the length here and
+   * the two are not independently chosen. Opening sweeps UP (the gap widening)
+   * and closing sweeps DOWN, which is the only cue that tells a player standing
+   * behind the door which way it went.
+   *
+   * The release is a short hiss ahead of the movement - the reason a pressure
+   * door reads as powered rather than pushed - and the seat is a soft low thud
+   * at the far end, damped, because a shutter that lands with a bang is a
+   * shutter that would have taken somebody's hand off.
+   *
+   * `size` scales the pitch: the Dray's 3.0 m cargo door is the same mechanism
+   * as the Kestrel's 1.1 m hatch and a bigger one, so it runs lower and longer.
+   */
+  doorSlide(at, { open = true, size = 1 } = {}) {
+    if (this._throttled('doorslide', 0.12)) return;
+    const v = this.engine.voice(at, 0.5, 0.6);
+    if (!v) return;
+    const s = Math.max(0.6, Math.min(2.2, size));
+    const dur = 0.31 * Math.sqrt(s);
+    // The pneumatic release, ahead of any movement.
+    this._noise(v, { seconds: 0.09, type: 'highpass', freq: 2600 / s, q: 0.7, gain: 0.20 });
+    // The swoosh itself. Up on the way open, down on the way shut.
+    const lo = 380 / s, hi = 1750 / s;
+    this._noise(v, {
+      seconds: dur, type: 'bandpass', q: 1.1, gain: 0.34, delay: 0.05,
+      freq: open ? lo : hi, sweepTo: open ? hi : lo,
+    });
+    // The rail rumble under it: what makes a big door big.
+    this._noise(v, { seconds: dur, type: 'lowpass', freq: 240 / s, q: 0.5, gain: 0.16, delay: 0.05, rate: 0.5 });
+    // The seat, damped.
+    this._tone(v, { seconds: 0.14, type: 'sine', freq: 130 / s, toFreq: 72 / s, gain: 0.22, delay: 0.05 + dur });
+    this._noise(v, { seconds: 0.10, type: 'bandpass', freq: 520 / s, q: 1.6, gain: 0.14, delay: 0.05 + dur });
+    this.engine.release(dur + 0.4);
+  }
+
+  /**
+   * A hinged door on its hinges: the swing, and the latch at the end of it.
+   *
+   * The counterpart to {@link doorSlide}, and it exists so that giving ship
+   * hatches a voice does not silently give every plank door in the medieval
+   * world a pneumatic hiss. `AudioDirector` picks between them off the door's
+   * own `sound` field.
+   */
+  doorHinge(at, { open = true } = {}) {
+    if (this._throttled('doorhinge', 0.12)) return;
+    const v = this.engine.voice(at, 0.45, 0.8);
+    if (!v) return;
+    // Slow, granular noise is what dry wood turning on iron is made of.
+    this._noise(v, {
+      seconds: 0.34, type: 'bandpass', q: 3.4, gain: 0.16, rate: 0.35,
+      freq: open ? 420 : 620, sweepTo: open ? 700 : 380,
+    });
+    this._tone(v, { seconds: 0.10, type: 'triangle', freq: 190, toFreq: 120, gain: 0.18, delay: 0.34 });
+    this.engine.release(0.7);
+  }
+
   /** UI blip. Deliberately dry - menu sound in a reverb tail is disorienting. */
   ui(kind = 'click') {
     const v = this.engine.voice(null, 0.28, 0);
@@ -736,6 +798,109 @@ export class Sfx {
   }
 
   /**
+   * A SHIP'S DRIVE, HELD FOR AS LONG AS THE PLAYER IS IN THE SEAT.
+   *
+   * Same contract as {@link startMount}: returns a handle with `set`, `setPan`
+   * and `stop`, and `AudioDirector` holds it and feeds it once a frame. It is a
+   * separate method rather than another `kind` in `startMount` because a ship
+   * is not a mount - it is held across world changes, it has a boost state and
+   * a throttle state that are not the same thing, and it wants two things a
+   * mount voice does not have.
+   *
+   * THREE LAYERS, and each one is doing a different job:
+   *
+   *   THRUST BED   Brown-ish noise through a lowpass. Level and cutoff both
+   *                track throttle, NOT speed - an engine is loud because it is
+   *                working, and a ship coasting at 200 m/s with the throttle
+   *                shut should go quiet. That distinction is the whole reason
+   *                the airbrake and the cruise feel different.
+   *   CORE         Two detuned sawtooths an octave apart, well down in level,
+   *                whose pitch tracks SPEED. This is the part that says how
+   *                fast you are going: the noise bed alone is a hairdryer, and
+   *                a pitched core under it is a drive.
+   *   AFTERBURNER  A second, brighter noise path that only opens under boost,
+   *                with its own attack. Boost is 3.35 s of a finite pool and
+   *                the pilot has to be able to hear it running out.
+   *
+   * The bed is started at silence and ramped, so boarding does not click.
+   *
+   * @param {{tone?:number}} [o] `tone` 0..1 - hull character. 0 is a heavy ore
+   *   tender, 1 is a courier. Shifts every band, so the three hulls do not
+   *   sound like the same engine in different boxes.
+   */
+  startShip({ tone = 0.5 } = {}) {
+    const eng = this.engine;
+    if (!eng.ready || !eng.settings.sfxOn) return null;
+    const ctx = eng.ctx;
+    const t = ctx.currentTime;
+
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.0001, t);
+    out.gain.exponentialRampToValueAtTime(0.30, t + 0.6);
+    const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    if (pan) { out.connect(pan); pan.connect(eng.sfxBus); } else out.connect(eng.sfxBus);
+
+    const nodes = [];
+    /** Heavier hulls sit lower in every band. */
+    const base = 46 + tone * 34;
+
+    // ---- thrust bed ----
+    const bed = ctx.createBufferSource(); bed.buffer = eng.noiseBuffer(2); bed.loop = true;
+    const bedLp = ctx.createBiquadFilter(); bedLp.type = 'lowpass'; bedLp.frequency.value = 320; bedLp.Q.value = 0.8;
+    const bedHp = ctx.createBiquadFilter(); bedHp.type = 'highpass'; bedHp.frequency.value = 60;
+    const bedG = ctx.createGain(); bedG.gain.value = 0.05;
+    bed.connect(bedLp); bedLp.connect(bedHp); bedHp.connect(bedG); bedG.connect(out);
+    bed.start(t);
+    nodes.push(bed);
+
+    // ---- pitched core ----
+    const a = ctx.createOscillator(); a.type = 'sawtooth'; a.frequency.value = base;
+    const b = ctx.createOscillator(); b.type = 'sawtooth'; b.frequency.value = base * 2.01;
+    const coreLp = ctx.createBiquadFilter(); coreLp.type = 'lowpass'; coreLp.frequency.value = 900; coreLp.Q.value = 3;
+    const coreG = ctx.createGain(); coreG.gain.value = 0.10;
+    a.connect(coreLp); b.connect(coreLp); coreLp.connect(coreG); coreG.connect(out);
+    a.start(t); b.start(t);
+    nodes.push(a, b);
+
+    // ---- afterburner ----
+    const ab = ctx.createBufferSource(); ab.buffer = eng.noiseBuffer(2); ab.loop = true;
+    const abBp = ctx.createBiquadFilter(); abBp.type = 'bandpass'; abBp.frequency.value = 1400; abBp.Q.value = 0.7;
+    const abG = ctx.createGain(); abG.gain.value = 0.0001;
+    ab.connect(abBp); abBp.connect(abG); abG.connect(out);
+    ab.start(t);
+    nodes.push(ab);
+
+    const setter = ({ speed = 0, throttle = 0, boost = false, frac = 0 }) => {
+      const now = ctx.currentTime;
+      const th = Math.min(1, Math.abs(throttle));
+      const s = Math.min(1, frac || speed / 400);
+      bedG.gain.setTargetAtTime(0.03 + th * 0.30, now, 0.12);
+      bedLp.frequency.setTargetAtTime(240 + th * 900 + s * 700, now, 0.14);
+      const f = base * (1 + s * 0.85);
+      a.frequency.setTargetAtTime(f, now, 0.10);
+      b.frequency.setTargetAtTime(f * 2.01, now, 0.10);
+      coreLp.frequency.setTargetAtTime(700 + s * 2200 + th * 500, now, 0.12);
+      coreG.gain.setTargetAtTime(0.05 + th * 0.10, now, 0.15);
+      abG.gain.setTargetAtTime(boost ? 0.20 : 0.0001, now, boost ? 0.09 : 0.28);
+      abBp.frequency.setTargetAtTime(1200 + s * 2400, now, 0.15);
+    };
+
+    return {
+      set(o) { try { setter(o); } catch { /* node torn down mid-frame */ } },
+      setPan(p) { if (pan) pan.pan.setTargetAtTime(p, ctx.currentTime, 0.05); },
+      stop() {
+        const now = ctx.currentTime;
+        try {
+          out.gain.cancelScheduledValues(now);
+          out.gain.setValueAtTime(out.gain.value, now);
+          out.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
+        } catch { /* already gone */ }
+        for (const n of nodes) { try { n.stop(now + 0.5); } catch { /* not a source */ } }
+      },
+    };
+  }
+
+  /**
    * One hoof striking the ground.
    *
    * Three layers, because a hoof is not a footstep. The knock is a short pitched
@@ -896,6 +1061,124 @@ export class Sfx {
     });
     this._tone(v, { seconds: 0.5, type: 'sine', freq: up ? 180 : 520, toFreq: up ? 520 : 160, gain: 0.3 });
     this.engine.release(0.8);
+  }
+
+  /* ================================================================== */
+  /* Ship-to-ship                                                        */
+  /* ================================================================== */
+
+  /**
+   * A laser bolt leaving a ship.
+   *
+   * ── Why it is a DOWN-sweep and not a "pew" ────────────────────────────────
+   * The instinct is a rising zap. It is wrong for two reasons and both are
+   * about the thing the sound has to do here. A rising note reads as a charge -
+   * as something ABOUT to happen - and this is the release. And a laser fires
+   * five times a second: a rise, repeated, climbs out of the band and the fifth
+   * shot is a whistle. A hard transient followed by a fast fall sits in the
+   * same place every time, so a burst reads as a burst.
+   *
+   * Three layers. The transient is a 40 ms highpassed crack, which is what the
+   * ear times the shot by. Under it a square wave falling an octave and a half
+   * in 90 ms - square rather than sine because the odd harmonics are what make
+   * it read as energy rather than as a bell. Then a bandpassed tail sweeping
+   * down, which is the discharge and the only part that survives being one of
+   * two hundred shots in a fight.
+   *
+   * `hostile` shifts everything down about a fifth and widens the tail: the
+   * SAME recipe, so the two sides are audibly the same technology, and a lower
+   * one because the player must be able to tell incoming from outgoing without
+   * looking. That distinction is the whole reason this takes a parameter.
+   *
+   * Rate-limited at 55 ms. Four hostiles in burst plus a player holding the
+   * trigger is eleven shots a second, and eleven simultaneous voice graphs is
+   * a click.
+   */
+  laser(at, { hostile = false, volume = 1 } = {}) {
+    if (this._throttled(hostile ? 'laser-h' : 'laser-p', 0.055)) return;
+    const v = this.engine.voice(at, (hostile ? 0.34 : 0.42) * volume, hostile ? 0.85 : 0.7);
+    if (!v) return;
+    const k = hostile ? 0.62 : 1;
+    this._noise(v, { seconds: 0.04, type: 'highpass', freq: 2600 * k, q: 0.8, gain: 0.5 });
+    this._tone(v, {
+      seconds: 0.09, type: 'square',
+      freq: rnd(1500, 1720) * k, toFreq: 520 * k, gain: 0.3,
+    });
+    this._noise(v, {
+      seconds: hostile ? 0.20 : 0.15, type: 'bandpass',
+      freq: 3200 * k, q: hostile ? 1.6 : 2.4, sweepTo: 400 * k, gain: 0.34,
+    });
+    this.engine.release(hostile ? 0.4 : 0.3);
+  }
+
+  /**
+   * A bolt landing on a shield: a bright ring that swallows itself.
+   *
+   * Deliberately PITCHED and deliberately short. The hull hit below is noise;
+   * this is a tone, because "the shield held" and "that was the hull" have to
+   * be distinguishable in the quarter second before the player decides whether
+   * to stay in the fight. Colour in the HUD is not enough - they are looking
+   * at the thing shooting at them, not at the bar.
+   */
+  shieldHit(at, { hard = 0.5 } = {}) {
+    if (this._throttled('shieldhit', 0.045)) return;
+    const v = this.engine.voice(at, 0.34 + hard * 0.2, 0.7);
+    if (!v) return;
+    this._tone(v, { seconds: 0.22, type: 'sine', freq: rnd(880, 1040), toFreq: 300, gain: 0.34 });
+    this._tone(v, { seconds: 0.12, type: 'triangle', freq: rnd(1700, 1950), toFreq: 900, gain: 0.18 });
+    this._noise(v, { seconds: 0.10, type: 'bandpass', freq: 2400, q: 3.2, sweepTo: 900, gain: 0.22 });
+    this.engine.release(0.4);
+  }
+
+  /** A bolt through the shield and into the plate. Noise, low, and it hurts. */
+  hullHit(at) {
+    if (this._throttled('hullhit', 0.05)) return;
+    const v = this.engine.voice(at, 0.55, 0.8);
+    if (!v) return;
+    this._noise(v, { seconds: 0.06, type: 'highpass', freq: 1100, q: 0.7, gain: 0.7 });
+    this._tone(v, { seconds: 0.30, type: 'triangle', freq: rnd(96, 128), toFreq: 42, gain: 0.6 });
+    this._noise(v, { seconds: 0.45, type: 'lowpass', freq: 520, q: 0.9, sweepTo: 120, gain: 0.4, rate: 0.7 });
+    this.engine.release(0.7);
+  }
+
+  /**
+   * A hostile coming apart.
+   *
+   * `explosion` already exists and was tried first - it is tuned for a
+   * fireball detonating against masonry, and out here it reads as a distant
+   * cannon. This is the same idea one octave down with a long metallic tail:
+   * the initial slam, a shaped noise burst for the atmosphere-less flash, and
+   * a slow band sweep that is the hull venting.
+   */
+  shipExplode(at, { size = 1 } = {}) {
+    const v = this.engine.voice(at, 0.8, 0.9);
+    if (!v) return;
+    this._noise(v, { seconds: 0.10, type: 'highpass', freq: 900, q: 0.6, gain: 0.9 });
+    this._tone(v, { seconds: 0.55 * size, type: 'sine', freq: rnd(66, 84), toFreq: 28, gain: 0.85 });
+    this._tone(v, { seconds: 0.40, type: 'triangle', freq: rnd(150, 190), toFreq: 50, gain: 0.4, delay: 0.02 });
+    this._noise(v, {
+      seconds: 1.5 * size, type: 'lowpass', freq: 1800, q: 0.8,
+      sweepTo: 90, gain: 0.55, rate: 0.55,
+    });
+    this.engine.release(1.8 * size);
+  }
+
+  /**
+   * Contacts. A two-note klaxon, unpositioned.
+   *
+   * Unpositioned on purpose and for the same reason `race:pickup` is: it is
+   * the SHIP telling the pilot something, not a sound happening in the world,
+   * and panning it to the hostiles' bearing would make it quieter exactly when
+   * they are behind you.
+   */
+  contactAlarm() {
+    const v = this.engine.voice(null, 0.42, 1);
+    if (!v) return;
+    for (let i = 0; i < 2; i++) {
+      this._tone(v, { seconds: 0.17, type: 'square', freq: 760, toFreq: 700, gain: 0.16, delay: i * 0.24 });
+      this._tone(v, { seconds: 0.17, type: 'sine', freq: 380, toFreq: 352, gain: 0.20, delay: i * 0.24 });
+    }
+    this.engine.release(0.7);
   }
 
   /** Splash, for entering water. */

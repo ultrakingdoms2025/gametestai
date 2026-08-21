@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CONFIG } from '../core/Config.js';
+import { worldGravityRatio } from '../worlds/WorldRules.js';
 import { NPCAnimator } from './NPCAnimator.js';
 import { Navigation } from './Navigation.js';
 import {
@@ -209,6 +210,23 @@ export class NPC {
     this.seat = null;
     /** Water volumes for this world; injected by NPCManager. @see setWater */
     this.water = null;
+    /**
+     * Downward acceleration this character integrates, m/s². Negative.
+     *
+     * Seeded at the config value and rewritten per world by
+     * {@link NPC#setWorldGravity}, which `NPCManager` calls the moment a body
+     * is created - exactly where it calls {@link NPC#setWater}, and for exactly
+     * the same reason: a character built after the world arrived would
+     * otherwise live in the last one's physics.
+     *
+     * Both integration sites read THIS, not `CONFIG.player.gravity`. They used
+     * to read the config, and the result was the whole per-world gravity change
+     * undone one class over: on Tessera the player floated at -3.633 and every
+     * beast, bandit and corpse in the world dropped at -22. Nothing in a
+     * wilderness is exempt from its own gravity.
+     * @see ../worlds/WorldRules.js `worldGravityRatio`
+     */
+    this._gravity = CONFIG.player.gravity;
     /** Long-run grounding watchdog: seconds with no floor under the feet. */
     this._noFloorTime = 0;
 
@@ -624,7 +642,11 @@ export class NPC {
       this._integrateSeated(dt);
       return;
     }
-    this.velocity.y += CONFIG.player.gravity * dt;
+    this.velocity.y += this._gravity * dt;
+    /* Terminal velocity, and DELIBERATELY not per-world: it is a metres-per-
+     * step limit that keeps a 0.33 m capsule from tunnelling through a floor,
+     * and the tunnel is the same whatever accelerated the body into it. On the
+     * lightest world it needs 220 m of drop to bind, so it never does. */
     if (this.velocity.y < -40) this.velocity.y = -40;
     this.position.addScaledVector(this.velocity, dt);
 
@@ -725,7 +747,9 @@ export class NPC {
   }
 
   _integrateDead(dt) {
-    this.velocity.y += CONFIG.player.gravity * dt;
+    // The world's gravity, not the config's: a corpse on a sixth-g moon falls
+    // at a sixth of a g, the same as the body did a second earlier.
+    this.velocity.y += this._gravity * dt;
     this.velocity.x *= Math.exp(-6 * dt);
     this.velocity.z *= Math.exp(-6 * dt);
     this.position.addScaledVector(this.velocity, dt);
@@ -761,6 +785,22 @@ export class NPC {
   setWater(water) {
     this.water = water || null;
     if (this.nav) this.nav.water = this.water;
+  }
+
+  /**
+   * Adopt a world's published surface gravity, or fall back to the config.
+   *
+   * The ONLY writer of `_gravity`, and the same call `Player.setWorldGravity`
+   * makes: one ratio, one clamp, one warning, so a beast and the player who
+   * shot it cannot come out on different planets. What the player does with the
+   * ratio on top of this - the jump exponent, the air-control exponent - has no
+   * counterpart here, because a character has no jump and no air control.
+   *
+   * @param {{gravity?:number, id?:string}|null|undefined} world
+   * @see ../worlds/WorldRules.js `worldGravityRatio`
+   */
+  setWorldGravity(world) {
+    this._gravity = CONFIG.player.gravity * worldGravityRatio(world);
   }
 
   auditGrounding(force = false) {

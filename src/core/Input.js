@@ -60,6 +60,11 @@ export const BINDABLE = [
    * able to leave from anywhere, and requires that the control cannot be
    * fumbled mid-run. See `AbandonHold`. */
   { action: 'abandon', code: 'KeyL', label: 'Hold to leave the maze', group: 'Actions' },
+  /* The ship's transit drive. A real row rather than a bare `pressed('KeyZ')`
+   * so it is rebindable and appears in the panel like every other ship
+   * control; `Piloting.TRANSIT_KEY` holds the literal and explains why Z and
+   * not Q (Q is the only free half of the unbuilt lateral-thruster pair). */
+  { action: 'transit', code: 'KeyZ', label: 'Transit drive (ship)', group: 'Actions' },
   { action: 'mapOut', code: 'BracketLeft', label: 'Minimap zoom out', group: 'Actions' },
   { action: 'mapIn', code: 'BracketRight', label: 'Minimap zoom in', group: 'Actions' },
 ];

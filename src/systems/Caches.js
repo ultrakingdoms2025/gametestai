@@ -97,6 +97,19 @@ const CACHE_TABLES = {
     { id: 'alloy_scrap', min: 2, max: 5 },
     { id: 'bullet', min: 30, max: 60 },
   ],
+  /* Lodestar Yard. With `hostiles: false` this is the ONLY source of the
+   * yard's own goods that is not a shop, so it carries more of the load here
+   * than in any other world: the trench and the gantry are the two obvious
+   * homes (`PER_WORLD` places three sunken and three high), and a cache is a
+   * destination that has to pay out better than a body would. Same four lines
+   * as `DROP_TABLES.dock` minus the shard and the coil - a cache is a
+   * forgotten stores box, not a stripped drive. */
+  dock: [
+    { id: 'alloy_scrap', min: 4, max: 9 },
+    { id: 'hull_plate', min: 2, max: 4 },
+    { id: 'laser_cell', min: 20, max: 50 },
+    { id: 'medkit', min: 1, max: 2 },
+  ],
 };
 
 /** Deterministic PRNG so a world's caches land in the same places every time. */
@@ -203,27 +216,45 @@ export class Caches {
       const p = this._findSunken(rnd, minX, maxX, minZ, maxZ);
       if (p) this.sites.push({ kind: 'sunken', pos: p, pickup: null, restock: 0 });
     }
-
-    /* ── AUTHORED HIGH SITES FIRST, AND WHY THIS HAD TO EXIST ───────────
+    /* ---- AUTHORED HIGH SITES FIRST, AND WHY THIS CHANNEL EXISTS -------
      *
-     * `_findHigh` is a UNIFORM DART at the content box, and a uniform dart
-     * spends its budget in proportion to AREA, not to content. That was a fair
-     * trade while the box and the town were the same 400 m. The citadel's outer
-     * ring broke it in the only way that never shows up in a log: the box went
-     * to 805 m and the nine caches the area law asks for came out SEVEN on the
-     * old mesa and TWO on the aqueduct, with the Undercliff, the Deepworks,
-     * Ashfall, the Eyrie and the Caravanserai holding NONE - five authored
-     * regions, hundreds of decks, and not one reason to go and stand on any of
-     * them. The log said "0 sunken, 9 high" and every one of the nine was real.
+     * Two separate defects converged on one answer, so they share one channel.
      *
-     * The answer is the one `Relics` already uses: let the world nominate
-     * places, because a world knows where its high places are and a dart does
-     * not. What is NOT copied from `Relics` is trust - a nominated site is put
-     * through {@link Caches#_highAt}, the same predicate the dart has to
-     * satisfy, against the same real colliders. A site that stops being
-     * prominent because somebody built a terrace beside it is REFUSED and
-     * logged, not placed. `world.cacheSites` is a hint about where to look,
-     * never a licence to skip the test.
+     * THE FIRST IS AREA. `_findHigh` is a UNIFORM DART at the content box, and
+     * a uniform dart spends its budget in proportion to AREA, not to content.
+     * That was a fair trade while the box and the town were the same 400 m. The
+     * citadel's outer ring broke it in the only way that never shows up in a
+     * log: the box went to 805 m and the nine caches the area law asks for came
+     * out SEVEN on the old mesa and TWO on the aqueduct, with the Undercliff,
+     * the Deepworks, Ashfall, the Eyrie and the Caravanserai holding NONE -
+     * five authored regions, hundreds of decks, and not one reason to go and
+     * stand on any of them. The log said "0 sunken, 9 high" and every one of
+     * the nine was real.
+     *
+     * THE SECOND IS A ROOF. The dart starts above the map and takes the first
+     * thing it hits, which under a shed is always the shed. Measured in
+     * Lodestar Yard, whose hangar is a flat 172 x 162 m plate at y 26: 400 of
+     * 400 darts landed on it at 26.80, all eight ring probes came back on the
+     * same continuous plate so `sheer` was 0 every time, and the world placed
+     * ZERO caches - silently, because the log line below only prints when
+     * something landed. That took the only in-world source of three of that
+     * world's items with it, and with them quest 54 step 1.
+     *
+     * The answer to both is the one `Relics` already uses: let the world
+     * nominate places, because a world knows where its high places are and a
+     * dart does not.
+     *
+     * WHAT IS NOT COPIED FROM `Relics` IS BLANKET TRUST, and the split is
+     * exactly the roof. A nomination that gives only `x, z` is a HINT ABOUT
+     * WHERE TO LOOK: it goes through {@link Caches#_highAt}, the same predicate
+     * the dart has to satisfy, against the same real colliders, and a site that
+     * stopped being prominent because somebody built a terrace beside it is
+     * REFUSED and logged. A nomination that also carries a finite `y` is a
+     * DECISION: the world is naming a deck under its own roof, where the probe
+     * cannot see and has already been measured returning the roof instead, so
+     * the probe is skipped and the height is taken as authored. The one rule
+     * that holds either way is separation, because three "finds" thirty metres
+     * apart are one find.
      */
     /* COUNTED IN HIGH SITES, NOT IN ALL SITES, and the difference is the bug.
      *
@@ -234,14 +265,10 @@ export class Caches {
      * with `WaterVolumes` wired the same world logs "2 sunken, 9 high", so the
      * shortfall is one rather than three. The bug the guard had is unchanged by
      * that and so is its fix, because a world with no water at all is still the
-     * common case: the authored channel was free to run to TWELVE high sites against a
-     * `highWanted` of 9 - and because the dart loop below starts at
+     * common case: the authored channel was free to run to TWELVE high sites
+     * against a `highWanted` of 9 - and because the dart loop below starts at
      * `fromAuthored`, it would then contribute nothing and `placement.darted`
-     * would read 0 while `placed` quietly exceeded `want`. Not live today only
-     * because `world.cacheSites` nominates exactly six; the regions stage's own
-     * hand-off says a seventh region is expected. The area law this channel was
-     * written to restore would have been overspent by the number of sunken
-     * caches the world failed to place. */
+     * would read 0 while `placed` quietly exceeded `want`. */
     let high = 0;
     for (const raw of world.cacheSites ?? []) {
       if (high >= highWanted) break;
@@ -249,6 +276,13 @@ export class Caches {
       const z = Number(raw?.z);
       if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
       if (this._tooClose(x, z, HIGH_APART)) continue;
+      const y = Number(raw?.y);
+      if (Number.isFinite(y)) {
+        /* Authored height: a deck under a roof. No probe - see above. */
+        this.sites.push({ kind: 'high', pos: new THREE.Vector3(x, y, z), pickup: null, restock: 0, authored: true });
+        high++;
+        continue;
+      }
       const hit = this._highAt(x, z);
       if (!hit || !hit.strict) {
         console.warn(`[Caches] "${id}": authored site ${raw?.label ?? `(${x}, ${z})`} refused`

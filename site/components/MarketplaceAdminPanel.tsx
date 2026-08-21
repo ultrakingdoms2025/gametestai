@@ -56,6 +56,11 @@ function readFileAsDataUrl(file: File): Promise<string> {
 const CATEGORY_COLORS: Record<MarketplaceCategory, string> = {
   cosmetic: '#d46bff', weapons: '#52e9ff', tools: '#ffb44a', health: '#b6ff5a', spells: '#ff7d3c',
   mounts: '#ff8a5c',
+  /* Added with Lodestar Yard. `Record<MarketplaceCategory, …>` is exhaustive,
+   * so this map and the fallback-art one below are the two places a new
+   * category is a compile error rather than a silent gap — which is the point
+   * of typing them that way. */
+  ships: '#9fd8ff',
 };
 
 const ACTION_ICONS: Record<string, [string, string]> = {
@@ -107,6 +112,7 @@ const CATEGORY_FALLBACK_ART: Record<MarketplaceCategory, [string, string]> = {
   health:   ['💊', '#b6ff5a'],
   spells:   ['✨', '#ff7d3c'],
   mounts:   ['🏎️', '#ff8a5c'],
+  ships:    ['🚀', '#9fd8ff'],
 };
 
 function resolveArt(name: string, category: MarketplaceCategory, gameAction?: string): [string, string] {

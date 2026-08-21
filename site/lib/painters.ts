@@ -465,6 +465,161 @@ export const painters: Record<string, Painter> = {
       ctx.fillRect(cx - cw * 0.3, cy + cw * 0.06, cw * 0.6, cw * 0.16);
     }
   },
+
+  /**
+   * Lodestar Yard, looking down the keel line from the apron.
+   *
+   * The framing is the world's own opening shot: `arrivalFor` stands a player
+   * at z 49.4 facing the blast door, with the berths staggered either side and
+   * the crane bridge overhead. So the plate is one-point perspective on the
+   * keel line, a hull on a cradle each side, the gantry across at eight metres
+   * and the countdown board over the door at the vanishing point.
+   *
+   * Sodium over cyan, which is the world's own lighting rule: the worklights
+   * are warm and the wayfinding is cold, and that inversion is what stops the
+   * yard reading as another station concourse.
+   */
+  yard(ctx, w, h, rnd) {
+    const vpX = w * 0.5;
+    const vpY = h * 0.52;
+
+    // Shed interior: cold at the roof, warmer down at the deck where the
+    // worklights are, and never black - the yard has a roof over it.
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#0b1119');
+    g.addColorStop(0.55, '#141c26');
+    g.addColorStop(1, '#20242a');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+
+    // Roof trusses, converging.
+    ctx.strokeStyle = 'rgba(120,140,160,0.30)';
+    ctx.lineWidth = Math.max(1, w * 0.0022);
+    for (let i = 0; i < 7; i++) {
+      const y = h * (0.04 + i * 0.028);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(vpX, vpY - h * 0.16);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+
+    // Deck: the keel line and the setting-out grid running to the door.
+    ctx.strokeStyle = 'rgba(147,163,180,0.22)';
+    ctx.lineWidth = Math.max(1, w * 0.0016);
+    for (let i = -6; i <= 6; i++) {
+      ctx.beginPath();
+      ctx.moveTo(vpX + i * w * 0.17, h);
+      ctx.lineTo(vpX + i * w * 0.012, vpY);
+      ctx.stroke();
+    }
+    for (let i = 1; i < 7; i++) {
+      const t = i / 7;
+      const y = vpY + (h - vpY) * t * t;
+      ctx.globalAlpha = 0.5 - t * 0.3;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // The keel line itself - chalk with a brass inlay either side.
+    ctx.fillStyle = 'rgba(127,216,239,0.14)';
+    ctx.beginPath();
+    ctx.moveTo(vpX - w * 0.115, h);
+    ctx.lineTo(vpX - w * 0.008, vpY);
+    ctx.lineTo(vpX + w * 0.008, vpY);
+    ctx.lineTo(vpX + w * 0.115, h);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(127,216,239,0.55)';
+    ctx.lineWidth = Math.max(1, w * 0.0018);
+    for (const s2 of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(vpX + s2 * w * 0.108, h);
+      ctx.lineTo(vpX + s2 * w * 0.0075, vpY);
+      ctx.stroke();
+    }
+
+    // Two hulls on cradles, staggered so neither occludes the other.
+    const hull = (cx: number, cy: number, len: number, tint: string, trim: string) => {
+      const bh = len * 0.30;
+      ctx.fillStyle = tint;
+      ctx.beginPath();
+      ctx.moveTo(cx - len / 2, cy);
+      ctx.lineTo(cx - len * 0.28, cy - bh);
+      ctx.lineTo(cx + len * 0.34, cy - bh * 0.92);
+      ctx.lineTo(cx + len / 2, cy - bh * 0.35);
+      ctx.lineTo(cx + len * 0.42, cy + bh * 0.22);
+      ctx.lineTo(cx - len * 0.4, cy + bh * 0.2);
+      ctx.closePath();
+      ctx.fill();
+      // The bolted string course at the section joint - the yard's one motif.
+      ctx.fillStyle = trim;
+      ctx.fillRect(cx - len * 0.42, cy - bh * 0.30, len * 0.82, bh * 0.10);
+      // Cradle.
+      ctx.fillStyle = '#2b3138';
+      ctx.fillRect(cx - len * 0.34, cy + bh * 0.18, len * 0.09, bh * 0.55);
+      ctx.fillRect(cx + len * 0.22, cy + bh * 0.18, len * 0.09, bh * 0.55);
+      // Canopy.
+      ctx.fillStyle = 'rgba(90,150,175,0.75)';
+      ctx.fillRect(cx + len * 0.30, cy - bh * 0.72, len * 0.14, bh * 0.30);
+    };
+    hull(w * 0.24, h * 0.80, w * 0.40, '#8d97a4', '#c9a13c');
+    hull(w * 0.79, h * 0.70, w * 0.30, '#6f7d8c', '#c23a2f');
+
+    // The gantry at eight metres, and the crane bridge above it.
+    ctx.fillStyle = '#39424c';
+    ctx.fillRect(0, vpY + h * 0.06, w, h * 0.017);
+    ctx.fillStyle = '#2a323a';
+    ctx.fillRect(0, vpY - h * 0.10, w, h * 0.022);
+    ctx.strokeStyle = 'rgba(160,180,200,0.45)';
+    ctx.lineWidth = Math.max(1, w * 0.0015);
+    ctx.beginPath();
+    ctx.moveTo(0, vpY + h * 0.035);
+    ctx.lineTo(w, vpY + h * 0.035);
+    ctx.stroke();
+
+    // Sodium worklights hung high, warm against the cold wayfinding.
+    for (let i = 0; i < 5; i++) {
+      const lx = w * (0.1 + i * 0.2);
+      const ly = vpY - h * 0.14;
+      const lg = ctx.createRadialGradient(lx, ly, 0, lx, ly, w * 0.11);
+      lg.addColorStop(0, 'rgba(255,186,92,0.55)');
+      lg.addColorStop(1, 'rgba(255,186,92,0)');
+      ctx.fillStyle = lg;
+      ctx.beginPath();
+      ctx.arc(lx, ly, w * 0.11, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ffcf86';
+      ctx.fillRect(lx - w * 0.012, ly - h * 0.006, w * 0.024, h * 0.012);
+    }
+
+    // The blast door, and the board over it that has never moved.
+    ctx.fillStyle = '#171d25';
+    ctx.fillRect(vpX - w * 0.085, vpY - h * 0.055, w * 0.17, h * 0.115);
+    ctx.strokeStyle = 'rgba(255,160,64,0.7)';
+    ctx.lineWidth = Math.max(1, w * 0.002);
+    ctx.strokeRect(vpX - w * 0.085, vpY - h * 0.055, w * 0.17, h * 0.115);
+    ctx.fillStyle = '#0a0f16';
+    ctx.fillRect(vpX - w * 0.062, vpY - h * 0.088, w * 0.124, h * 0.028);
+    ctx.fillStyle = '#ff4b45';
+    ctx.font = `${Math.round(h * 0.021)}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('LAUNCHES: 000', vpX, vpY - h * 0.074);
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'alphabetic';
+
+    // Dust in the light shafts. Seeded, so the plate is the same every load.
+    ctx.fillStyle = 'rgba(255,214,160,0.5)';
+    for (let i = 0; i < 70; i++) {
+      ctx.globalAlpha = 0.06 + rnd() * 0.18;
+      ctx.fillRect(rnd() * w, vpY - h * 0.2 + rnd() * h * 0.55, 1, 1);
+    }
+    ctx.globalAlpha = 1;
+  },
 };
 
 /** A cool grade and a bottom fade, applied to every world plate. */

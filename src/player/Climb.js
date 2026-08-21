@@ -35,15 +35,52 @@ const smootherstep = (t) => t * t * t * (t * (t * 6 - 15) + 10);
 /** How far past the capsule the wall probe reaches. */
 const REACH = 0.55;
 /**
- * Lowest ledge worth a mantle from solid ground.
+ * Lowest ledge worth a mantle from solid ground, AT THIS GAME'S OWN GRAVITY.
  *
  * Jump apex is v^2/2g = 6.4^2/44 = 0.93 m, so anything below this is already
  * reachable and a mantle would only feel like the game taking the controls.
+ *
+ * ── Why that sentence needed a world attached to it ───────────────────────
+ * It was written when 0.93 m was the apex EVERYWHERE. Ten planets publish a
+ * surface gravity now and the apex goes as `r^(-1/3)`, so on Tessera it is
+ * 1.668 m - and the constant, left absolute, would have mantled every ledge
+ * between 1.0 m and 1.67 m on a moon where a hop clears all of them. The
+ * mantle would not have BROKEN there; it takes priority over the jump, so it
+ * would quietly have taken the controls for the exact case the sentence above
+ * says it must not - and the justification, not the code, is what would have
+ * been wrong, which is the harder defect to find.
+ *
+ * So the constant stays what it is and the SENTENCE is what is implemented:
+ * "above what a jump already clears", scaled by the ratio of this world's apex
+ * to the default one. It is a literal 1.0 on every world that publishes no
+ * gravity, and 0.990 m on Verdigris, which is what a planet at 1.03 g deserves.
+ * @see ./Player.js `jumpApex` and the per-world gravity design block
  */
 const MIN_RISE_GROUND = 1.0;
 /** In water there is no jump, so a swimmer may haul out over a much lower lip. */
 const MIN_RISE_WATER = 0.25;
 const MAX_RISE = 2.4;
+/**
+ * The apex the ratio above is measured against - `v^2/2g` at the config's own
+ * numbers, i.e. the 0.93 m the sentence quotes, computed rather than retyped so
+ * the two can never drift.
+ */
+const DEFAULT_APEX = (P.jumpVelocity * P.jumpVelocity) / (2 * -P.gravity);
+/**
+ * ...and the hard ceiling on where that scaling may put the floor.
+ *
+ * `MAX_RISE` does NOT scale - it is how far a pair of arms reaches, not how
+ * hard the world pulls - so a floor that scales without a ceiling eventually
+ * crosses it, and `minRise >= MAX_RISE` is not a narrow band, it is the verb
+ * DELETED, silently, with no log and no error. `worldGravityRatio` clamps at
+ * 0.01, which puts the unclamped floor at 4.64 m: nearly twice MAX_RISE.
+ *
+ * 2.0 m is a clear step below MAX_RISE so a band always survives, and it does
+ * not bind on any planet in the game - the lightest, Tessera at 1.62 m/s²,
+ * asks for 1.823 m. It is a rail against a descriptor typo, on the same terms
+ * as the ratio clamp itself, and not a tuning knob.
+ */
+const MIN_RISE_CEILING = 2.0;
 /** Heights the wall probe samples, relative to the feet. */
 const WALL_PROBE_H = [0.45, 0.95, 1.45];
 /** A surface this far from vertical is a ramp the movement code already climbs. */
@@ -193,6 +230,26 @@ export class Climb {
   }
 
   /**
+   * `MIN_RISE_GROUND` on the world the player is standing on.
+   *
+   * Reads the apex off `Player`, which resolved it once on `world:changed`,
+   * rather than recomputing the exponent here - see the note on
+   * {@link Player#jumpScale}. On a world that publishes no gravity `jumpApex`
+   * is the same expression as `DEFAULT_APEX` over the same config constants, so
+   * the quotient is exactly 1 and the product is exactly `MIN_RISE_GROUND`.
+   *
+   * `DEFAULT_APEX` is a positive config constant, so this cannot divide by
+   * zero; `jumpApex` is finite because the ratio behind it is clamped; and the
+   * ceiling bounds the result whatever arrives. @see MIN_RISE_CEILING
+   */
+  _minRiseGround() {
+    const apex = this.player?.jumpApex;
+    if (!Number.isFinite(apex) || apex <= 0) return MIN_RISE_GROUND;
+    const scaled = MIN_RISE_GROUND * (apex / DEFAULT_APEX);
+    return scaled > MIN_RISE_CEILING ? MIN_RISE_CEILING : scaled;
+  }
+
+  /**
    * Look for a mantle-able ledge in front of the player.
    * @returns {{topY:number, rise:number, landX:number, landZ:number,
    *            wallX:number, wallZ:number}|null}
@@ -210,7 +267,7 @@ export class Climb {
      * ground minimum exists to stop the game taking the controls for something a
      * jump would clear - it does not apply to someone already hanging off the
      * wall. See player/FreeClimb.js. */
-    const minRise = (inWater || fromWall) ? MIN_RISE_WATER : MIN_RISE_GROUND;
+    const minRise = (inWater || fromWall) ? MIN_RISE_WATER : this._minRiseGround();
     const reach = P.radius + REACH;
 
     /* ---- 1. a wall in front ------------------------------------------ */

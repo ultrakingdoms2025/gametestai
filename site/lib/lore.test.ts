@@ -5,9 +5,12 @@ const rows = (r: Partial<LoreEntryRow>[]): LoreEntryRow[] =>
   r.map(x => ({ scope: 'station', title: 't', sign_label: 'Lorekeeper', body: 'b', ...x })) as LoreEntryRow[];
 
 describe('getLore', () => {
-  it('returns all 6 worlds even when the DB is empty', async () => {
+  it('returns every world even when the DB is empty', async () => {
     const lore = await getLore(async () => []);
-    expect(Object.keys(lore).sort()).toEqual(['citadel','maze','medieval','race','sports','station']);
+    expect(Object.keys(lore).sort()).toEqual(['citadel','dock','maze','medieval','race','sports','station']);
+    // The yard has a DB row in DEFAULT_LORE_ROWS, so this is the fallback path
+    // proving the two copies agree rather than the maze's never-a-row case.
+    expect(lore.dock.sign_label).toBe('Yard Warden');
     // maze has no DB row ever → must come from fallback
     expect(lore.maze.body).toBe(FALLBACK_LORE.maze.body);
   });

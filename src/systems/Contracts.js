@@ -45,6 +45,14 @@ const SUPPLY_WANTS = {
   medieval: [{ id: 'alloy_scrap', min: 3, max: 6 }, { id: 'relic_coin', min: 3, max: 6 }],
   citadel: [{ id: 'alloy_scrap', min: 4, max: 8 }, { id: 'medkit', min: 2, max: 3 }],
   sports: [{ id: 'medkit', min: 2, max: 3 }, { id: 'alloy_scrap', min: 3, max: 6 }],
+  /* Lodestar Yard wants what a yard wants: plate, coil and scrap. Without this
+   * row the lookup falls back to the station's, and the shipyard that MAKES
+   * hull plate would be asking the player to fetch it `nexus_shard`. */
+  dock: [
+    { id: 'hull_plate', min: 3, max: 6 },
+    { id: 'thruster_coil', min: 1, max: 2 },
+    { id: 'alloy_scrap', min: 4, max: 8 },
+  ],
 };
 
 const KIND_TEXT = {

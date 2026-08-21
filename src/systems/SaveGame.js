@@ -86,7 +86,7 @@ export class SaveGame {
    */
   constructor({
     bus, player, worldManager, economy, loadout, mounts, input, inventory, avatar, cosmetics,
-    relics, viewpoints, trials,
+    relics, viewpoints, trials, ships, piloting, mining, objectives,
   }) {
     this.bus = bus;
     this.player = player;
@@ -94,6 +94,42 @@ export class SaveGame {
     this.economy = economy;
     this.loadout = loadout ?? null;
     this.mounts = mounts ?? null;
+    /** @type {any} Optional - hull liveries and upgrade tiers, in worlds that have hulls. */
+    this.ships = ships ?? null;
+    /**
+     * Where the ship is and what is in its hold.
+     *
+     * Restored in the same late pass as the liveries above, and for a stronger
+     * version of the same reason: the ship is a thing that exists in a world,
+     * and boarding one before its world is live puts it at the origin of the
+     * wrong place. `Piloting.deserialize` re-enters the seat only when the
+     * restored world matches the one the save was taken in - which is what
+     * makes "quit mid-flight" resume mid-flight rather than in a hangar.
+     * @type {any}
+     */
+    this.piloting = piloting ?? null;
+    /**
+     * Which mineral seams are already worked out.
+     *
+     * There are 110 nodes on Cinder and they do not come back. Exactly the note
+     * `relics` carries: a finite collectible that resets is not finite.
+     * @type {any}
+     */
+    this.mining = mining ?? null;
+    /**
+     * The three objectives the player asked for by name: hostiles killed,
+     * bodies reached, elements assayed.
+     *
+     * Unlike everything either side of it this one is NOT world-local - it is a
+     * career ledger that spans the yard, the void and every planet - but it
+     * rides in the same probe-first arrangement and is restored in the same
+     * late pass, because two of its three columns are read against what the
+     * live world publishes (`encounters` for the named wings,
+     * `mineralNodes` for the element roster) and a restore that landed before
+     * the world would read both as empty.
+     * @type {any}
+     */
+    this.objectives = objectives ?? null;
     this.input = input ?? null;
     /** @type {any} Optional - the game is playable without an inventory wired. */
     this.inventory = inventory ?? null;
@@ -329,6 +365,23 @@ export class SaveGame {
     return this._read({ quiet: true }) !== null;
   }
 
+  /**
+   * When the present save was written, as epoch ms, or null when there is no
+   * usable save.
+   *
+   * Same validated read `hasSave` performs, so a corrupt or wrong-version
+   * payload reports nothing rather than reporting a date for a save that
+   * cannot be loaded. The boot card offers CONTINUE on this answer, and
+   * offering a continue that then fails is worse than not offering one.
+   *
+   * @returns {number|null}
+   */
+  savedAt() {
+    const data = this._read({ quiet: true });
+    const at = Number(data?.at);
+    return Number.isFinite(at) && at > 0 ? at : null;
+  }
+
   /** Remove the save. Safe to call when there is nothing there. */
   clear() {
     try {
@@ -423,6 +476,19 @@ export class SaveGame {
        * finite collectible that resets is not finite. */
       relics: safe(() => this.relics?.serialize?.()) ?? null,
       viewpoints: safe(() => this.viewpoints?.serialize?.()) ?? null,
+      /* Hull liveries and upgrade tiers. World-local like the two above and
+       * restored in the same place, because a `Ship` only exists while the
+       * world that built it is live: writing a livery before the yard is up
+       * would be a write into a hull that does not exist yet. */
+      ships: safe(() => this.ships?.serialize?.()) ?? null,
+      /* The ship itself: which hull, where it is parked, whether the player was
+       * in the seat, and the ore aboard. `Piloting.serialize` is plain JSON. */
+      piloting: safe(() => this.piloting?.serialize?.()) ?? null,
+      mining: safe(() => this.mining?.serialize?.()) ?? null,
+      /* Kills by class, wings broken, bodies reached, elements assayed. Every
+       * one of them keyed by IDENTITY rather than by a count, which is the one
+       * thing the relic ledger above got wrong. */
+      objectives: safe(() => this.objectives?.serialize?.()) ?? null,
       trials: this._trialLedger(),
     };
   }
@@ -542,6 +608,35 @@ export class SaveGame {
       if (data.viewpoints) this.viewpoints?.deserialize?.(data.viewpoints);
     } catch (err) {
       console.warn('[SaveGame] viewpoint restore skipped:', err?.message ?? err);
+    }
+    try {
+      if (data.ships) this.ships?.deserialize?.(data.ships);
+    } catch (err) {
+      console.warn('[SaveGame] ship livery restore skipped:', err?.message ?? err);
+    }
+    /* Mining BEFORE piloting: the ledger of worked-out seams has to be in place
+     * before anything re-reads the world's nodes, and `Piloting.deserialize`
+     * can trigger a board, which emits into the same frame. */
+    try {
+      if (data.mining) this.mining?.deserialize?.(data.mining);
+    } catch (err) {
+      console.warn('[SaveGame] mining restore skipped:', err?.message ?? err);
+    }
+    try {
+      if (data.piloting) this.piloting?.deserialize?.(data.piloting);
+    } catch (err) {
+      console.warn('[SaveGame] ship position restore skipped:', err?.message ?? err);
+    }
+    /* AFTER piloting, and the ordering is load-bearing in one direction only:
+     * `Piloting.deserialize` can re-enter the seat, which is what makes "quit
+     * mid-flight resume mid-flight" work, and `SpaceObjectives.update` refuses
+     * to survey anything unless the player is in it. Restoring the ledger first
+     * would leave one frame in which a ship parked inside a survey sphere was
+     * not yet flown - harmless today, and free to get right. */
+    try {
+      if (data.objectives) this.objectives?.deserialize?.(data.objectives);
+    } catch (err) {
+      console.warn('[SaveGame] objective restore skipped:', err?.message ?? err);
     }
     this._restoreTrials(data.trials);
   }
@@ -1047,9 +1142,9 @@ export class SaveGame {
     /* The progress layer is newer than all of the above, so every save written
      * before it has none of these keys and must stay valid. Same rule as every
      * other late arrival: absence is fine, a wrong TYPE is not. An array counts
-     * as a wrong type here - all three are keyed records, and `Object.keys` on
+     * as a wrong type here - all four are keyed records, and `Object.keys` on
      * an array would happily walk its indices. */
-    for (const key of ['relics', 'viewpoints', 'trials']) {
+    for (const key of ['relics', 'viewpoints', 'trials', 'objectives']) {
       const v = data[key];
       if (v === null || v === undefined) continue;
       if (typeof v !== 'object' || Array.isArray(v)) return false;

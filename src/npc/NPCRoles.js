@@ -339,6 +339,62 @@ export const ROLE_CAST = {
       },
     ],
   },
+  /* Lodestar Yard.
+   *
+   * The lookup at `castFor` is `ROLE_CAST[theme] ?? ROLE_CAST.station`, and
+   * missing rows are exactly how twenty-five citadel crowd slots came to be
+   * called Quartermaster Bex and Deck Warden Ilse in a desert souk. The yard's
+   * crowd budget is large - it authors seven friendlies against a friendly cap
+   * of 30 - so most of the people a player meets here come out of this table.
+   *
+   * Three of the four stationary roles are filled and GUARD is deliberately
+   * thin: this is a civilian worksite with `hostiles: false`, so a guard here
+   * is a gate checker, not a garrison. */
+  dock: {
+    [ROLE.VENDOR]: [
+      {
+        name: 'Storesman Halvard Ek',
+        persona:
+          'Keeps the stores hatch at the end of the chandlery row. Sells consumables and hand tools, buys hull plate and coil by weight without looking up, and can quote the yard stock book from memory. Convinced the trench is where everything that goes missing ends up.',
+      },
+      {
+        name: 'Broker Nadia Ferran',
+        persona:
+          'A parts broker working a folding stall between the berths. Fast-talking, cheerful, will buy anything you are carrying and swears every piece of it is going straight onto a hull this week.',
+      },
+    ],
+    [ROLE.GUARD]: [
+      {
+        name: 'Gate Checker Roan Iveta',
+        persona:
+          'Checks what comes through gateway six and what goes near the blast door. Unarmed, unhurried, and entirely immovable about the rule that nobody stands on the clean strip behind the door.',
+      },
+      {
+        name: 'Safety Officer Bram Okoro',
+        persona:
+          'Walks the yard with a clipboard looking for open trench bays and unclipped harnesses. Dry, thorough, and will tell you the exact height above which you are supposed to clip on, which is two metres.',
+      },
+    ],
+    [ROLE.SPECTATOR]: [
+      {
+        name: 'Apprentice Sunniva Dahl',
+        persona:
+          'First year in the yard and still stops to watch the crane move. Full of half-right facts about how the hulls came through the gateway in sections, and desperate for somebody to launch something.',
+      },
+    ],
+    [ROLE.LOITERER]: [
+      {
+        name: 'Slinger Tobias Marek',
+        persona:
+          'A crane slinger waiting on a lift that has been ten minutes away for an hour. Friendly, bored, endlessly opinionated about which of the four hulls is worth finishing.',
+      },
+      {
+        name: 'Plater Zofia Kaminska',
+        persona:
+          'Leaning on a cradle prop with a cold flask, taking the break she is owed. Talks about section joints the way other people talk about weather, and thinks the covered berth should have been uncovered years ago.',
+      },
+    ],
+  },
 };
 
 /**

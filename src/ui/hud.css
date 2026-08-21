@@ -423,6 +423,42 @@ body {
   }
 }
 
+/* The save offer. Sits under the enter button because the button's own label
+ * is what changes ("CLICK TO CONTINUE"); this line says WHICH save, and the
+ * button beside it is the only way to throw it away. */
+.boot-save {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.boot-save-note {
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  color: var(--txt-dim);
+}
+
+.boot-fresh {
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--txt-dim);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--rule-soft);
+  padding: 5px 12px;
+  cursor: pointer;
+  clip-path: var(--clip-tr);
+  pointer-events: auto;
+}
+
+.boot-fresh:hover {
+  color: #ffd9a8;
+  border-color: rgba(255, 180, 90, 0.55);
+  background: rgba(255, 180, 90, 0.1);
+}
+
 .boot-controls {
   display: flex;
   flex-wrap: wrap;
@@ -4519,6 +4555,152 @@ body {
 .hud.overlaid .collect,
 .hud.chatting .collect,
 .hud.dead .collect {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+/* ==========================================================================
+   OBJECTIVES  (kills / survey / ore — in the vitals column)
+   ==========================================================================
+   The three things the player asked for by name. Deliberately the same panel
+   as DISCOVERIES above — same padding, same clip, same `.col-row` markup, same
+   tabular figures — because they ARE the same kind of thing to a reader: a
+   count of what you have done against a count of what there is. What differs is
+   lifetime, which is why they are two panels: `.collect` is world-local and
+   hides itself when the world publishes nothing, `.objectives` is a career
+   ledger and hides itself only outside the space campaign.
+
+   The accent rule is AMBER rather than the discoveries' teal, and that is the
+   one deliberate difference. Amber is already the yard's own colour in this
+   interface — `FlightHUD` draws the home berth row in it so a lost pilot can
+   find it without reading — so a glance separates "what traffic control is
+   paying me for" from "what I have found lying about". */
+.objectives {
+  padding: 8px 15px 9px;
+  clip-path: var(--clip-br);
+  opacity: 0.88;
+  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.objectives[hidden] {
+  display: none;
+}
+
+.objectives::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 190, 92, 0.55);
+}
+
+/* Label and rank share a baseline so the chip cannot push the heading around
+   as the title grows from BLOODED to CINDERWRIGHT. */
+.obj-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.obj-rank {
+  flex: 0 0 auto;
+  font-family: var(--f-disp);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #ffd79a;
+  text-shadow: 0 0 10px rgba(255, 170, 60, 0.35);
+  white-space: nowrap;
+}
+
+.obj-rank[hidden] {
+  display: none;
+}
+
+/* The counts, in the yard's amber rather than the discoveries' mint. Everything
+   else about the row — flex, baseline, tabular numerals — is inherited from
+   `.col-row` / `.col-count`, which is the point of reusing them. */
+.objectives .col-count {
+  color: #ffd79a;
+}
+
+/* ---- the survey plot -----------------------------------------------------
+   The only map of the system there is. `Minimap` bakes a world-XZ floorplan and
+   the volume is 800 km across, so a marker has nowhere to go; this strip is the
+   map instead — one tag per body in layout order, dark until you have been
+   there, ringed on the one you set down on. It reads left to right like the
+   nav list and it fills in as you fly. */
+.obj-plot {
+  display: flex;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.obj-plot[hidden] {
+  display: none;
+}
+
+.obj-tag {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  padding: 2px 0 3px;
+  font-family: var(--f-disp);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  /* Unvisited: an outline with nothing in it. It has to be legible — a player
+     has to be able to read the name of the place they have not been to yet, or
+     the strip is five grey blocks and not a chart. */
+  color: rgba(255, 215, 154, 0.42);
+  border: 1px solid rgba(255, 190, 92, 0.22);
+  background: rgba(255, 190, 92, 0.03);
+  border-radius: 2px;
+  transition: color 0.35s ease, background 0.35s ease, border-color 0.35s ease;
+}
+
+.obj-tag.on {
+  color: #ffe6bd;
+  border-color: rgba(255, 190, 92, 0.6);
+  background: rgba(255, 190, 92, 0.16);
+}
+
+/* ---- the brief ----------------------------------------------------------
+   One sentence saying what to do next. The panel used to be three counters and
+   nothing else, and a tester who played the loop cold could not tell that two
+   of the three needed them to leave the building. Prose, so it wraps; dimmer
+   than the counts, because it is instruction and they are score. */
+.obj-hint {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--rule-soft);
+  font-size: 11.5px;
+  line-height: 1.45;
+  letter-spacing: 0.02em;
+  color: rgba(255, 215, 154, 0.72);
+}
+
+.obj-hint[hidden] {
+  display: none;
+}
+
+/* Landed, not just seen. A filled block rather than a second hue: the strip is
+   already amber-on-amber and a third colour in a 9 px glyph is a colour nobody
+   can name. */
+.obj-tag.landed {
+  color: #1a1206;
+  background: #ffce85;
+  border-color: #ffce85;
+}
+
+/* Same treatment every other vitals panel gets when a full-screen sheet is up
+   and the corner belongs to it. */
+.hud.overlaid .objectives,
+.hud.chatting .objectives,
+.hud.dead .objectives {
   opacity: 0;
   transform: translateY(6px);
 }

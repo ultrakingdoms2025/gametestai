@@ -269,6 +269,733 @@ export const ITEMS = {
     kind: 'trinket',
     desc: 'Struck for a king three worlds ago. Still worth something here.',
   },
+
+  /* ==================================================================== *
+   * CINDER ORE - what a mining run is actually carrying
+   * ====================================================================
+   *
+   * Six elements, and the value here is quoted PER CUBIC METRE OF HOLD, not
+   * per node and not per "one of them". That unit is not a flourish: a mineral
+   * node on a planet is priced by `PlanetDescriptor` as `unitValue * hold`,
+   * where `hold` is the volume `Piloting.stow` charges the ship for it, so one
+   * bag unit, one cubic metre of cargo and one row of this table are all the
+   * same quantity of rock. The alternative - a per-node price here and a
+   * volume over in the descriptor - is two numbers for one fact, and the
+   * project already knows which of the two goes stale.
+   *
+   * ── Where the ladder came from ────────────────────────────────────────
+   * Not guessed. `scripts/tests/planet-minerals.test.mjs` floods Cinder's real
+   * colliders from each landing pad, walks a nearest-neighbour tour of every
+   * deposit of one element at `CONFIG.player.walkSpeed`, adds `MINE_TIME` a
+   * node, and reports credits per minute. These six numbers are what make that
+   * rate climb with the walk rather than in spite of it: tephra is underfoot
+   * and pays least per minute, rheniite is 900 m out along a lava channel and
+   * pays most.
+   *
+   * ── `kind` ────────────────────────────────────────────────────────────
+   * Five of the six are `trinket`, which is what an ore IS to a vendor:
+   * something bought by weight with no use in the hand. `ferrobasalt` is
+   * `consumable` and that is a deliberate, load-bearing exception - see its
+   * own note.
+   *
+   * ── What is NOT here, and why ─────────────────────────────────────────
+   * No `WORLD_MARKETS.*.itemBuy` rows for the five cargo ores. Mined ore never
+   * touches the bag: `Mining.mine` hands the node to `Piloting.stow` and
+   * `Piloting._dock` sells the whole hold at face value the moment you land at
+   * the yard, so a regional multiplier on tephra would be a number no
+   * transaction in the game reads. A price signal that no price path consults
+   * is the `MARKETPLACE_CONSUMABLE_ITEMS` defect wearing different clothes.
+   * `ferrobasalt` DOES have one, because `ferrobasalt` is the one ore that
+   * reaches a bag.
+   */
+  tephra: {
+    id: 'tephra',
+    name: 'Tephra Nodules',
+    short: 'TEF',
+    stack: 20,
+    icon: 'ore',
+    value: 6,
+    kind: 'trinket',
+    colors: [0x6b5a4a, 0x3a2f26],
+    desc: 'Welded ash lumps off the plain. Bulky, brittle and barely worth the hold space it eats — but it is lying at your feet the moment the ramp comes down.',
+  },
+  sulfur: {
+    id: 'sulfur',
+    name: 'Sulfur Crust',
+    short: 'SUL',
+    stack: 20,
+    icon: 'ore',
+    value: 16,
+    kind: 'trinket',
+    colors: [0xd9c341, 0x6b5c12],
+    desc: 'Yellow crust broken off a fumarole lip. Smells of the rift for days afterwards and no amount of scrubbing the hold shifts it.',
+  },
+  obsidian: {
+    id: 'obsidian',
+    name: 'Obsidian Glass',
+    short: 'OBS',
+    stack: 12,
+    icon: 'ore',
+    value: 34,
+    kind: 'trinket',
+    colors: [0x241533, 0x0d0a10],
+    desc: 'Volcanic glass off the shelf, chilled too fast to grow a crystal. Takes an edge sharper than any blade a foundry can draw.',
+  },
+  /* FERRO-BASALT, and the one place in this table where `kind` is a decision.
+   *
+   * It is magnetite-bearing basalt: a lodestone. Clipped to a belt it drags
+   * loose pickups in for half a minute and then bleeds its field off, which is
+   * exactly `loot_magnet_30s` and is why `ItemUse` routes it there rather than
+   * inventing an effect for it.
+   *
+   * `consumable` and NOT `trinket`, and that is not flavour. `InventoryUI.js`
+   * gates the Use button on `def.kind === 'consumable' || def.kind === 'skin'`
+   * (InventoryUI.js:331). A `trinket` with a live `ItemUse` case is an effect
+   * with no button — implemented, registered, and unreachable, which is this
+   * project's signature defect one size smaller. The kind is what the UI reads,
+   * so the kind is what has to be true.
+   *
+   * It is still ore. It still mines into the hold as `ferrobasalt`, it is still
+   * priced per cubic metre, and selling the rock is still the obvious thing to
+   * do with it — a Vacuum Rune costs 165 at a counter and two cubic metres of
+   * ferro-basalt fetch 104, so using one is giving up most of a rune's worth
+   * for a rune. That is the point: it is the one ore with a decision attached.
+   */
+  ferrobasalt: {
+    id: 'ferrobasalt',
+    name: 'Ferro-Basalt',
+    short: 'FRB',
+    stack: 4,
+    icon: 'ore',
+    value: 52,
+    kind: 'consumable',
+    colors: [0x4d5866, 0x232a33],
+    desc: 'Magnetite-heavy basalt out of the colonnade. Sells by the cubic metre — or clip one on and it pulls loose salvage to you for thirty seconds before the field bleeds off.',
+  },
+  rheniite: {
+    id: 'rheniite',
+    name: 'Rheniite',
+    short: 'RHN',
+    stack: 6,
+    icon: 'crystal',
+    value: 190,
+    kind: 'trinket',
+    colors: [0xb9a888, 0x4a3a20],
+    desc: 'Rhenium disulfide, grown in flakes on the lip of a nine-hundred-degree vent and nowhere else. It condenses out of the gas; you cannot dig for it, you can only go where the gas goes.',
+  },
+  iridite: {
+    id: 'iridite',
+    name: 'Iridite',
+    short: 'IRD',
+    stack: 4,
+    icon: 'crystal',
+    value: 310,
+    kind: 'trinket',
+    colors: [0xff8a3a, 0x7a2408],
+    desc: 'Iridium locked in impact melt, still warm from the floor of the Ash Throne. One cubic metre of it outbids a full Kestrel of ash.',
+  },
+
+
+  /* ==================================================================== *
+   * PHASE 2 ORE - nine more planets, and the ladder that spans them
+   * ====================================================================
+   *
+   * Same unit as the Cinder block above: `value` is CREDITS PER CUBIC METRE
+   * OF HOLD. A node is priced by `PlanetDescriptor` as `unitValue * hold`,
+   * and `hold` is the volume `Piloting.stow` charges for it, so one row here,
+   * one cubic metre of cargo and one bag unit are all the same quantity.
+   *
+   * ── The one rule that spans planets ───────────────────────────────────
+   * VALUE CLIMBS WITH THE LEG. An ore is a reason to fly somewhere; if the
+   * ore 288 km out is worth what the ore 62 km out is worth, then the far
+   * planets are scenery with a mining prompt on them. So the bands are
+   * ordered by distance from the yard, and the four-rung ladder inside each
+   * planet (which `definePlanet` enforces) does the local work:
+   *
+   *     planet      km    common      uncommon    rare    exotic
+   *     Cinder      62    6, 16       34, 52      190     310   (above)
+   *     Tessera     88    7           22          140     240
+   *     Sirocco    118    8, 14       30, 46      175     285
+   *     Shoal      142    10          36          200     340
+   *     Vitrine    155    12, 20      44          215     380
+   *     Verdigris  176    14          48, 62      240     430
+   *     Carnelian  205    15          52          260     470
+   *     Sallow     232    17          58, 74      290     520
+   *     Cathedra   288    20          78          320     620
+   *     Lathe      ~250   22          88          360     700
+   *
+   * Lathe is out of order on distance and dearest on value ON PURPOSE. It is
+   * a shepherd moon parked outside Ceraunus's outer ring edge, so reaching it
+   * means crossing a ring plane - the hardest arrival in the system, and the
+   * reward has to say so.
+   *
+   * ── `stack` and `icon` are DERIVED, not chosen ────────────────────────
+   * `stack` steps 20 / 12 / 6 / 4 at 25, 100 and 300 cr/m3, and `icon` turns
+   * over from `ore` to `crystal` at 100. Forty-one hand-picked pairs would be
+   * forty-one chances to make the dear ore the plentiful one by accident.
+   *
+   * ── Every one of these is `trinket`, and that is load-bearing ─────────
+   * A cargo ore never reaches the bag: `Mining.mine` hands the node to
+   * `Piloting.stow` and `Piloting._dock` sells the hold at face value. So a
+   * cargo ore must have NO `ItemUse` case (a `consumable` with no case is a
+   * Use button that returns `unsupported`), NO `BASE_ITEMS` row (the shop
+   * would refund the mine) and NO `WORLD_MARKETS.*.itemBuy` multiplier (a
+   * price signal no price path consults). `planet-minerals.test.mjs` asserts
+   * all three, in both directions. `ferrobasalt` is the single deliberate
+   * exception and it stays the only one.
+   */
+  /* ---- Tessera ---- */
+  regolith: {
+    id: 'regolith',
+    name: 'Regolith Fines',
+    short: 'REG',
+    stack: 20,
+    icon: 'ore',
+    value: 7,
+    kind: 'trinket',
+    colors: [0x8a8781, 0x45433f],
+    desc: "Powdered rock, ground for four billion years by nothing but micrometeorites. It packs like flour and it gets into everything, including the seals.",
+  },
+  anorthite: {
+    id: 'anorthite',
+    name: 'Anorthite',
+    short: 'ANO',
+    stack: 20,
+    icon: 'ore',
+    value: 22,
+    kind: 'trinket',
+    colors: [0xd8d4c6, 0x77736a],
+    desc: "Pale highland feldspar off a crater rim. Cheap, clean and light — the one thing on Tessera that does not stain the gloves.",
+  },
+  sperrylite: {
+    id: 'sperrylite',
+    name: 'Sperrylite',
+    short: 'SPR',
+    stack: 6,
+    icon: 'crystal',
+    value: 140,
+    kind: 'trinket',
+    colors: [0xb6bcc4, 0x4b525c],
+    desc: "Platinum arsenide in tin-bright cubes, shocked out of the bedrock by whatever dug the crater. A find, not a seam.",
+  },
+  helion: {
+    id: 'helion',
+    name: 'Helion Ice',
+    short: 'HEL',
+    stack: 6,
+    icon: 'crystal',
+    value: 240,
+    kind: 'trinket',
+    colors: [0xcfe8f2, 0x4a7f96],
+    desc: "Helium-3 held in ice on a crater floor the sun has not touched since the crater was made. Carry it warm and you carry an empty flask.",
+  },
+  /* ---- Sirocco ---- */
+  silica: {
+    id: 'silica',
+    name: 'Silica Sand',
+    short: 'SIL',
+    stack: 20,
+    icon: 'ore',
+    value: 8,
+    kind: 'trinket',
+    colors: [0xe2c78e, 0x8a7040],
+    desc: "Wind-rounded quartz off the dune sea. Worth almost nothing and there is almost no end of it, which is the entire relationship.",
+  },
+  halite: {
+    id: 'halite',
+    name: 'Halite Slab',
+    short: 'HAL',
+    stack: 20,
+    icon: 'ore',
+    value: 14,
+    kind: 'trinket',
+    colors: [0xf0e6dc, 0x9a8c80],
+    desc: "Rock salt cut out of a dry pan in plates the size of a door. It rings when you strike it and it dissolves if you are careless with the hold.",
+  },
+  selenite: {
+    id: 'selenite',
+    name: 'Selenite Rose',
+    short: 'SEL',
+    stack: 12,
+    icon: 'ore',
+    value: 30,
+    kind: 'trinket',
+    colors: [0xe8d8b0, 0x8d7a52],
+    desc: "Gypsum grown into a bladed rosette under a salt crust. Beautiful, fragile, and it arrives at the yard as gravel if you fly badly.",
+  },
+  cassiterite: {
+    id: 'cassiterite',
+    name: 'Cassiterite',
+    short: 'CAS',
+    stack: 12,
+    icon: 'ore',
+    value: 46,
+    kind: 'trinket',
+    colors: [0x6b5a48, 0x2e2620],
+    desc: "Tin oxide, panned out of a wadi floor by ten thousand years of flash floods that each lasted an hour.",
+  },
+  chalcanth: {
+    id: 'chalcanth',
+    name: 'Chalcanthite',
+    short: 'CHA',
+    stack: 6,
+    icon: 'crystal',
+    value: 175,
+    kind: 'trinket',
+    colors: [0x2f7ec4, 0x11395e],
+    desc: "Copper sulfate in vivid blue blades, grown where a seep bleeds out of a canyon wall. It only forms where water has been, which on Sirocco is almost nowhere.",
+  },
+  fulgurite: {
+    id: 'fulgurite',
+    name: 'Fulgurite',
+    short: 'FUL',
+    stack: 6,
+    icon: 'crystal',
+    value: 285,
+    kind: 'trinket',
+    colors: [0x9c8a6e, 0xd8c9a0],
+    desc: "A hollow glass tube of fused sand — the cast of a lightning strike, taken from the dune it died in. Every one is the shape of one instant.",
+  },
+  /* ---- Shoal ---- */
+  brinesalt: {
+    id: 'brinesalt',
+    name: 'Brine Salt',
+    short: 'BRN',
+    stack: 20,
+    icon: 'ore',
+    value: 10,
+    kind: 'trinket',
+    colors: [0xe6eef0, 0x8fa2a8],
+    desc: "Evaporite scraped off a tidal flat between islands. Coarse, grey and heavy with whatever else the sea left behind.",
+  },
+  nacre: {
+    id: 'nacre',
+    name: 'Nacre Plate',
+    short: 'NAC',
+    stack: 12,
+    icon: 'ore',
+    value: 36,
+    kind: 'trinket',
+    colors: [0xe8e4f0, 0x9c8fb8],
+    desc: "Iridescent shell laid down in sheets on the shallow shelf by something that has been dead a long time. It throws a different colour at every angle.",
+  },
+  polymetal: {
+    id: 'polymetal',
+    name: 'Polymetallic Nodule',
+    short: 'PLY',
+    stack: 6,
+    icon: 'crystal',
+    value: 200,
+    kind: 'trinket',
+    colors: [0x3b3630, 0x16130f],
+    desc: "A black potato of manganese, cobalt and nickel, grown one atom a century on the shelf floor. Nothing about it is quick.",
+  },
+  abyssite: {
+    id: 'abyssite',
+    name: 'Abyssite',
+    short: 'ABY',
+    stack: 4,
+    icon: 'crystal',
+    value: 340,
+    kind: 'trinket',
+    colors: [0x1a3a52, 0x63c8d8],
+    desc: "Hydrothermal precipitate off the wall of the tidal chasm, still faintly warm and faintly luminous. Cut only where the sea is deepest and the ledge narrowest.",
+  },
+  /* ---- Vitrine ---- */
+  rime: {
+    id: 'rime',
+    name: 'Rime Crust',
+    short: 'RIM',
+    stack: 20,
+    icon: 'ore',
+    value: 12,
+    kind: 'trinket',
+    colors: [0xdff0f7, 0x8fb2c4],
+    desc: "Frost feathers scraped off the windward side of anything that stands up. Free, plentiful and it sublimes if the hold runs warm.",
+  },
+  clathrate: {
+    id: 'clathrate',
+    name: 'Clathrate Ice',
+    short: 'CLA',
+    stack: 20,
+    icon: 'ore',
+    value: 20,
+    kind: 'trinket',
+    colors: [0xbcdcec, 0x5d8aa4],
+    desc: "Methane caged inside a lattice of water ice. It fizzes when it thaws and it burns while it melts, which never stops being unsettling.",
+  },
+  cryolite: {
+    id: 'cryolite',
+    name: 'Cryolite',
+    short: 'CRY',
+    stack: 12,
+    icon: 'ore',
+    value: 44,
+    kind: 'trinket',
+    colors: [0xeaf2f6, 0xa8bcc8],
+    desc: "Sodium aluminium fluoride in colourless blocks that all but vanish in meltwater. Miners on Vitrine mark every load with dye for exactly that reason.",
+  },
+  azurine: {
+    id: 'azurine',
+    name: 'Azurine',
+    short: 'AZR',
+    stack: 6,
+    icon: 'crystal',
+    value: 215,
+    kind: 'trinket',
+    colors: [0x2f6fd0, 0x0e2a5e],
+    desc: "Deep blue mineral ice out of a crevasse wall, laid down under a pressure nothing at the surface can reproduce. It fractures along planes you cannot see until it does.",
+  },
+  hyaline: {
+    id: 'hyaline',
+    name: 'Hyaline',
+    short: 'HYA',
+    stack: 4,
+    icon: 'crystal',
+    value: 380,
+    kind: 'trinket',
+    colors: [0xd6f4ff, 0x5fc8e8],
+    desc: "Clear glacial glass from the roof of a subglacial vault, grown in still water in the dark. A flawless piece the size of a fist funds a month.",
+  },
+  /* ---- Verdigris ---- */
+  humic: {
+    id: 'humic',
+    name: 'Humic Nodule',
+    short: 'HUM',
+    stack: 20,
+    icon: 'ore',
+    value: 14,
+    kind: 'trinket',
+    colors: [0x4a3f28, 0x231c11],
+    desc: "Compressed forest floor, wrung into a lump by its own weight. It smells alive and it stains the hold a colour that never comes out.",
+  },
+  malachite: {
+    id: 'malachite',
+    name: 'Malachite',
+    short: 'MAL',
+    stack: 12,
+    icon: 'ore',
+    value: 48,
+    kind: 'trinket',
+    colors: [0x2f8a56, 0x14472b],
+    desc: "Banded green copper carbonate out of a river gorge. The bands are growth rings of a sort, and the wide ones were wet centuries.",
+  },
+  resin: {
+    id: 'resin',
+    name: 'Amber Resin',
+    short: 'RSN',
+    stack: 12,
+    icon: 'ore',
+    value: 62,
+    kind: 'trinket',
+    colors: [0xd08a24, 0x6b3f08],
+    desc: "Hardened sap in fist-sized gouts down a trunk. Warm to hold, light in the hand, and every third piece has something in it.",
+  },
+  sporecryst: {
+    id: 'sporecryst',
+    name: 'Spore Crystal',
+    short: 'SPO',
+    stack: 6,
+    icon: 'crystal',
+    value: 240,
+    kind: 'trinket',
+    colors: [0x7ad8a0, 0x1e5c3c],
+    desc: "A mineral seeded and grown by something in the cave dark, faceted the way a crystal is and branched the way a fungus is. Nobody has settled which it is.",
+  },
+  verdite: {
+    id: 'verdite',
+    name: 'Verdite Heartwood',
+    short: 'VRD',
+    stack: 4,
+    icon: 'crystal',
+    value: 430,
+    kind: 'trinket',
+    colors: [0x1f6b4a, 0x86e8b0],
+    desc: "Wood from the crown of a canopy mesa, mineralised in place and still standing. Cutting one is a day up and a day down, and there are not many left.",
+  },
+  /* ---- Carnelian ---- */
+  ochre: {
+    id: 'ochre',
+    name: 'Ochre Earth',
+    short: 'OCH',
+    stack: 20,
+    icon: 'ore',
+    value: 15,
+    kind: 'trinket',
+    colors: [0xb85c28, 0x5e2b10],
+    desc: "Iron-stained dust, red as a wound and fine as smoke. It is the whole surface of the planet and it is worth what that implies.",
+  },
+  hematite: {
+    id: 'hematite',
+    name: 'Hematite',
+    short: 'HEM',
+    stack: 12,
+    icon: 'ore',
+    value: 52,
+    kind: 'trinket',
+    colors: [0x6e4038, 0x2b1a16],
+    desc: "Specular iron oxide in mirror-bright plates. Held to the light it is silver; held to the ground it is the same red as everything else.",
+  },
+  carnelite: {
+    id: 'carnelite',
+    name: 'Carnelite',
+    short: 'CRN',
+    stack: 6,
+    icon: 'crystal',
+    value: 260,
+    kind: 'trinket',
+    colors: [0xd4552a, 0x6e1c08],
+    desc: "Banded orange chalcedony out of a gorge wall, lit from inside when the sun is low. The planet is named for it, not the other way round.",
+  },
+  monazite: {
+    id: 'monazite',
+    name: 'Monazite',
+    short: 'MNZ',
+    stack: 4,
+    icon: 'crystal',
+    value: 470,
+    kind: 'trinket',
+    colors: [0xc8a24a, 0x584010],
+    desc: "Rare-earth phosphate off the floor of the deep gorge, faintly and permanently warm. Handled with tongs by anyone who intends to keep handling things.",
+  },
+  /* ---- Sallow ---- */
+  brimstone: {
+    id: 'brimstone',
+    name: 'Brimstone',
+    short: 'BRM',
+    stack: 20,
+    icon: 'ore',
+    value: 17,
+    kind: 'trinket',
+    colors: [0xe0cc38, 0x6e6010],
+    desc: "Native sulfur crusted round a vent in yellow cauliflower heads. It is everywhere on Sallow, and so is the smell of it.",
+  },
+  realgar: {
+    id: 'realgar',
+    name: 'Realgar',
+    short: 'RLG',
+    stack: 12,
+    icon: 'ore',
+    value: 58,
+    kind: 'trinket',
+    colors: [0xd4482c, 0x66180c],
+    desc: "Arsenic sulfide in orange-red prisms. It turns to yellow powder in daylight over months, which is why the good pieces come out of shadow.",
+  },
+  orpiment: {
+    id: 'orpiment',
+    name: 'Orpiment',
+    short: 'ORP',
+    stack: 12,
+    icon: 'ore',
+    value: 74,
+    kind: 'trinket',
+    colors: [0xe8b820, 0x6e5208],
+    desc: "Golden arsenic sulfide in sheaves that split like mica. Painters wanted it for two thousand years and it killed a good number of them.",
+  },
+  cinnabar: {
+    id: 'cinnabar',
+    name: 'Cinnabar',
+    short: 'CIN',
+    stack: 6,
+    icon: 'crystal',
+    value: 290,
+    kind: 'trinket',
+    colors: [0xc41c1c, 0x520606],
+    desc: "Mercury sulfide, the most violent red there is. It beads liquid metal if you are careless with heat, and Sallow is not short of heat.",
+  },
+  stibnite: {
+    id: 'stibnite',
+    name: 'Stibnite',
+    short: 'STB',
+    stack: 4,
+    icon: 'crystal',
+    value: 520,
+    kind: 'trinket',
+    colors: [0xa8b0bc, 0x3a4048],
+    desc: "Antimony sulfide in steel-grey needle sprays out of a fumarole throat. A good cluster is a metre of parallel blades and worth a hull plate a blade.",
+  },
+  /* ---- Cathedra ---- */
+  quartzite: {
+    id: 'quartzite',
+    name: 'Quartzite',
+    short: 'QTZ',
+    stack: 20,
+    icon: 'ore',
+    value: 20,
+    kind: 'trinket',
+    colors: [0xd8d2c8, 0x87817a],
+    desc: "Fractured white rock off a shattered plate. Hard, dull and abundant — the gravel the cathedral is built of.",
+  },
+  beryl: {
+    id: 'beryl',
+    name: 'Beryl',
+    short: 'BER',
+    stack: 12,
+    icon: 'ore',
+    value: 78,
+    kind: 'trinket',
+    colors: [0x63c8b0, 0x1e5a4e],
+    desc: "Pale green hexagonal prisms grown in the seams between plates. Common enough here that nobody looks up when one comes in.",
+  },
+  spectrolite: {
+    id: 'spectrolite',
+    name: 'Spectrolite',
+    short: 'SPC',
+    stack: 4,
+    icon: 'crystal',
+    value: 320,
+    kind: 'trinket',
+    colors: [0x2a4a8c, 0x8ad4ff],
+    desc: "Feldspar that throws a sheet of colour across the whole face when the light crosses it, and is grey stone from any other angle.",
+  },
+  lucent: {
+    id: 'lucent',
+    name: 'Lucent',
+    short: 'LUC',
+    stack: 4,
+    icon: 'crystal',
+    value: 620,
+    kind: 'trinket',
+    colors: [0xeef8ff, 0xa0d8ff],
+    desc: "Grown in the vault where nothing has moved for an age, and it holds light — set one down in the dark and come back an hour later and it is still glowing.",
+  },
+  /* ---- Lathe ---- */
+  rimefall: {
+    id: 'rimefall',
+    name: 'Rimefall Ice',
+    short: 'RMF',
+    stack: 20,
+    icon: 'ore',
+    value: 22,
+    kind: 'trinket',
+    colors: [0xe4f0f8, 0x93a8ba],
+    desc: "Ring ice swept up by the moon it shepherds and dropped in drifts on the leading face. It falls slowly enough to watch.",
+  },
+  sider: {
+    id: 'sider',
+    name: 'Siderite Iron',
+    short: 'SDR',
+    stack: 12,
+    icon: 'ore',
+    value: 88,
+    kind: 'trinket',
+    colors: [0x7a7268, 0x2e2a26],
+    desc: "Meteoric nickel-iron, etched inside with a crystal pattern that takes a million years of cooling to grow and cannot be faked.",
+  },
+  tychite: {
+    id: 'tychite',
+    name: 'Tychite',
+    short: 'TYC',
+    stack: 4,
+    icon: 'crystal',
+    value: 360,
+    kind: 'trinket',
+    colors: [0xa8e0d0, 0x2e6a5e],
+    desc: "A carbonate that only grows where ring ice lands, melts under the pressure of its own arrival and freezes again. Lathe is the only address it has.",
+  },
+  aurichalc: {
+    id: 'aurichalc',
+    name: 'Aurichalc',
+    short: 'AUR',
+    stack: 4,
+    icon: 'crystal',
+    value: 700,
+    kind: 'trinket',
+    colors: [0xf0c040, 0x8a5c08],
+    desc: "A gold-copper alloy nobody can account for, cut from the floor of the shepherd crater under a sky filled edge to edge with rings. The dearest cubic metre in the system, and the furthest.",
+  },
+
+  /* ---- Lodestar Yard ------------------------------------------------
+   *
+   * Three items, and every one of them is in a table something already rolls.
+   * The rule this file learned the hard way is that an item declared here and
+   * present in no drop, cache or stash table anywhere is unobtainable by
+   * collecting IN EVERY WORLD, and `quest-content.test.mjs` will say so - so
+   * `laser_cell`, `hull_plate` and `thruster_coil` are all in `DROP_TABLES`
+   * and/or `CACHE_TABLES` for `dock`, and `hull_plate` and `thruster_coil`
+   * are what `SUPPLY_WANTS.dock` asks for.
+   *
+   * `laser_cell` IS THE ODD ONE, AND THE OLD NOTE HERE PROMISED SOMETHING
+   * THAT DID NOT HAPPEN. It said "the flight drop turns it into ammunition".
+   * The flight drop shipped and it did not: `SpaceCombat` contains no
+   * reference to ammo, inventory or `laser_cell` at all - the ship gun runs
+   * off a self-recharging capacitor (`GUN.capacity` / `GUN.regen`), which is
+   * a deliberate design and a good one, because a dry gun 60 km from the yard
+   * is a walk home.
+   *
+   * That left an item described as "charged capacitor cells for a ship-mounted
+   * laser" which no ship-mounted laser consumes, handed out 20 and 40 at a
+   * time by the first two rungs of the KILL ladder - the two rungs most
+   * players reach - as if it were combat resupply. A reward that reads as
+   * ammunition for the gun you just used and is not is worse than no reward.
+   *
+   * Its real sinks, both of which are live: the Test-Fire Butts burn eight a
+   * plate (`minigames/TestFire.js`), and the Fitter buys them at 0.75. The
+   * description below says so. The stack stays 240 because a rack is 40 and
+   * six racks to a slot is the same "one pack is one slot" rule the 60-round
+   * rifle pack is sized by. */
+  laser_cell: {
+    id: 'laser_cell',
+    name: 'Laser Cells',
+    short: 'CEL',
+    stack: 240,
+    icon: 'cell',
+    value: 4,
+    kind: 'ammo',
+    desc: 'Charged capacitor cells, cut and wound in this yard. Ship guns run off their own capacitors — these are for the Test-Fire Butts, and the Fitter buys them by the rack.',
+  },
+  hull_plate: {
+    id: 'hull_plate',
+    name: 'Hull Plate',
+    short: 'PLT',
+    stack: 20,
+    icon: 'plate',
+    value: 34,
+    kind: 'trinket',
+    desc: 'A cut and drilled section plate, stamped with its frame number. The yard makes these by the ton and still counts every one.',
+  },
+  thruster_coil: {
+    id: 'thruster_coil',
+    name: 'Thruster Coil',
+    short: 'COL',
+    stack: 10,
+    icon: 'coil',
+    value: 78,
+    kind: 'trinket',
+    desc: 'A wound field coil out of a courier drive. Worth more in a fitting shop than anywhere else in the Nexus.',
+  },
+
+  /* ---- The chart ----------------------------------------------------
+   *
+   * The fourth yard item, and the one that had to earn its place TWICE.
+   *
+   * It is the flight drop's planet seed, which is a reason to author it and
+   * NOT a reason to sell it now: a buyable whose entire effect is in a drop
+   * that does not exist is indistinguishable from a buyable that does
+   * nothing, and that is the recorded `Dragon.js:2499` complaint one level
+   * worse - there the tier at least banked. So it ships with a real effect
+   * TODAY, and the effect is the one thing a chart honestly does: it puts a
+   * vantage point on your map without your having to stand on it.
+   *
+   * `ItemUse` routes it to `Viewpoints.chartNearest()`, which reveals the
+   * nearest UNSYNCHRONISED viewpoint's `REVEAL_R = 70` m district on the
+   * minimap and pays nothing else. Reading a chart is not standing on the
+   * crane cab: no `SYNC_CREDITS`, no coin, no fast-travel anchor, and the
+   * viewpoint stays unsynchronised so the climb is still worth making.
+   *
+   * `consumable`, so `WORLD_MARKETS.dock.sell.consumable = 1.1` prices it -
+   * the yard charges over the odds for a chart, which is right: it is the one
+   * thing here nobody in the yard makes. */
+  nav_chart: {
+    id: 'nav_chart',
+    name: 'Navigation Chart',
+    short: 'CHT',
+    stack: 5,
+    icon: 'chart',
+    value: 90,
+    kind: 'consumable',
+    desc: 'A rolled survey chart of one district, drawn from a height somebody else climbed to. Reading it marks that ground on your map; it does not put you on it.',
+  },
 };
 
 /** Bag item id for a mount skin id. */
@@ -383,6 +1110,31 @@ export const WORLD_MARKETS = {
     itemBuy: { alloy_scrap: 1.3, relic_coin: 0.8 },
     note: 'Circuit paddock — everything trades at face value.',
   },
+  dock: {
+    label: 'Lodestar Yard',
+    /* The inverse of the citadel, and for the same kind of reason stated the
+     * other way round. Sunspire is cut off on a mesa and everything
+     * manufactured arrives by mule, so manufactured goods are dear there and
+     * antiquity is not. The yard is the only place in the Nexus that MAKES
+     * things and it has no relic culture at all: plate and coil are swept up
+     * off the floor here, and a crown coin is a curiosity somebody carried
+     * through a gateway.
+     *
+     * `WORLD_PRICE_MULTIPLIERS.dock` in site/lib/marketplaceCatalog.ts is a
+     * SECOND, INDEPENDENT copy of the four kind multipliers below and nothing
+     * in the codebase enforces the correspondence - so it is asserted in
+     * scripts/tests/dock-registration.test.mjs instead. */
+    buy: { trinket: 0.85, ammo: 0.9, consumable: 0.95 },
+    sell: { ammo: 0.8, consumable: 1.1 },
+    /* `ferrobasalt` is the one Cinder ore that ever reaches a bag (the other
+     * five are hold cargo and `Piloting._dock` sells them at face value, so a
+     * multiplier on them would be read by nothing). The yard is where Cinder
+     * ore is refined and it is the only counter in the Nexus that knows what
+     * a lodestone is worth. */
+    itemBuy: { alloy_scrap: 0.6, hull_plate: 0.7, thruster_coil: 0.75, relic_coin: 1.7, nexus_shard: 1.6, ferrobasalt: 1.35 },
+    itemSell: { pack_laser_cell: 0.75 },
+    note: 'A yard makes hull plate and coil by the ton and cannot get a relic for love nor money.',
+  },
 };
 
 /** Market in force right now. Set by Marketplace on every world change. */
@@ -496,6 +1248,35 @@ export const PACKS = [
     price: 95,
     name: 'Trauma Twin-Pack',
     blurb: '2 medkits',
+  },
+  /* ---- Lodestar Yard --------------------------------------------------
+   *
+   * `pack_laser_cell` is the id `WORLD_MARKETS.dock.itemSell` already names,
+   * and it is spelled the same in `BASE_ITEMS` (site/lib/marketplaceCatalog.ts)
+   * so ONE string identifies the rack everywhere: the regional multiplier, the
+   * catalogue row the counter actually serves, and the `purchase` vocabulary
+   * `scripts/quest-vocab.mjs` builds out of this array. A pack id present in
+   * `itemSell` and absent from here is a price adjustment on nothing.
+   *
+   * 40 cells, not a full 240-cell stack: one rack is one purchase decision and
+   * six of them fill a slot, which is the same "one pack is one slot" rule the
+   * 60-round rifle pack is sized by, applied to an item whose stack is four
+   * racks deep. */
+  {
+    id: 'pack_laser_cell',
+    itemId: 'laser_cell',
+    qty: 40,
+    price: 160,
+    name: 'Laser Cell Rack',
+    blurb: '40 cells — a quarter of a slot',
+  },
+  {
+    id: 'pack_nav_chart',
+    itemId: 'nav_chart',
+    qty: 1,
+    price: 220,
+    name: 'Navigation Chart',
+    blurb: '1 district, drawn from a height',
   },
 ];
 
@@ -694,6 +1475,82 @@ const ICONS = {
     <path d="M27 5 L27 27 L5 27 z" fill="${hex(c2)}" opacity="0.95"/>
     <path d="M9 22 q7 -9 14 -12" stroke="#ffffff" stroke-width="1.2" fill="none" opacity="0.55"/>`;
   },
+  /* ---- Cinder ore ----------------------------------------------------
+   *
+   * Two renderers for six elements, tinted from the item's own `colors` the
+   * way `skin` already is. Six hand-drawn rocks would be six things to keep in
+   * step with a palette that lives in the planet descriptor; two silhouettes
+   * carry the distinction that matters at 32 px, which is bulk against
+   * crystal - a lump you shovel versus a flake you pick off a vent. */
+  ore: (g, a, def) => {
+    const [c1 = 0x6b5a4a, c2 = 0x2a2118] = def?.colors ?? [];
+    const hex = (c) => `#${(c & 0xffffff).toString(16).padStart(6, '0')}`;
+    return `
+    <defs><linearGradient id="${g}a" x1="0.1" y1="1" x2="0.8" y2="0">
+      <stop offset="0" stop-color="${hex(c2)}"/><stop offset="1" stop-color="${hex(c1)}"/>
+    </linearGradient></defs>
+    <path d="M7 21 L10 11 L18 7 L26 12 L25 22 L16 27 Z" fill="url(#${g}a)" stroke="${a}" stroke-width="0.9" stroke-linejoin="round"/>
+    <path d="M10 11 L17 16 L26 12 M17 16 L16 27" fill="none" stroke="#000" stroke-width="0.8" opacity="0.45"/>
+    <path d="M12 13 l3 -1.5" stroke="#fff" stroke-width="0.9" opacity="0.35" stroke-linecap="round"/>`;
+  },
+  crystal: (g, a, def) => {
+    const [c1 = 0xff8a3a, c2 = 0x5a2008] = def?.colors ?? [];
+    const hex = (c) => `#${(c & 0xffffff).toString(16).padStart(6, '0')}`;
+    return `
+    <defs><linearGradient id="${g}a" x1="0" y1="1" x2="0.7" y2="0">
+      <stop offset="0" stop-color="${hex(c2)}"/><stop offset="1" stop-color="${hex(c1)}"/>
+    </linearGradient>
+    <radialGradient id="${g}b" cx="50%" cy="60%" r="55%">
+      <stop offset="0" stop-color="${hex(c1)}" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="${hex(c1)}" stop-opacity="0"/>
+    </radialGradient></defs>
+    <circle cx="16" cy="18" r="13" fill="url(#${g}b)"/>
+    <path d="M16 3 L23 15 L19 28 L13 28 L9 15 Z" fill="url(#${g}a)" stroke="${a}" stroke-width="0.9" stroke-linejoin="round"/>
+    <path d="M16 3 L16 28 M9 15 L23 15" stroke="#fff" stroke-width="0.7" opacity="0.45"/>
+    <path d="M11 22 l4 -9" stroke="#fff" stroke-width="0.9" opacity="0.5" stroke-linecap="round"/>`;
+  },
+  /* ---- Lodestar Yard ------------------------------------------------ */
+  cell: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#123844"/><stop offset="1" stop-color="#7fe8ff"/>
+    </linearGradient></defs>
+    <rect x="10" y="7" width="12" height="18" rx="2" fill="url(#${g}a)" stroke="${a}" stroke-width="1"/>
+    <rect x="13.5" y="4.5" width="5" height="3" rx="1" fill="${a}"/>
+    <g stroke="#eafcff" stroke-width="1" opacity="0.9">
+      <path d="M12.5 12 h7"/><path d="M12.5 16 h7"/><path d="M12.5 20 h7"/>
+    </g>`,
+  plate: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4a5560"/><stop offset="1" stop-color="#b8c6d4"/>
+    </linearGradient></defs>
+    <path d="M6 11 L16 6 L26 11 L26 21 L16 26 L6 21 Z" fill="url(#${g}a)" stroke="${a}" stroke-width="1"/>
+    <g fill="${a}" opacity="0.9">
+      <circle cx="10" cy="13" r="1.2"/><circle cx="22" cy="13" r="1.2"/>
+      <circle cx="10" cy="19" r="1.2"/><circle cx="22" cy="19" r="1.2"/>
+    </g>
+    <path d="M6 11 L16 16 L26 11" stroke="#dceaf5" stroke-width="0.8" fill="none" opacity="0.6"/>`,
+  coil: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#5a3a1c"/><stop offset="1" stop-color="#e8b06a"/>
+    </linearGradient></defs>
+    <g stroke="url(#${g}a)" stroke-width="2.4" fill="none" stroke-linecap="round">
+      <path d="M9 10 h14"/><path d="M9 14 h14"/><path d="M9 18 h14"/><path d="M9 22 h14"/>
+    </g>
+    <g stroke="${a}" stroke-width="1.1" fill="none">
+      <path d="M9 8 v16"/><path d="M23 8 v16"/>
+    </g>`,
+  chart: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#243a44"/><stop offset="1" stop-color="#5f8b98"/>
+    </linearGradient></defs>
+    <path d="M6 8 q5 -2 10 0 q5 2 10 0 v16 q-5 2 -10 0 q-5 -2 -10 0 z"
+          fill="url(#${g}a)" stroke="${a}" stroke-width="1"/>
+    <path d="M16 8 v16" stroke="${a}" stroke-width="0.8" opacity="0.7"/>
+    <g stroke="#cfeaf5" stroke-width="0.8" fill="none" opacity="0.75">
+      <path d="M8 13 q4 -1.5 7 1"/><path d="M17 18 q4 -1.5 7 1"/>
+    </g>
+    <circle cx="21" cy="12" r="1.6" fill="none" stroke="${a}" stroke-width="1"/>
+    <path d="M21 10.4 v3.2 M19.4 12 h3.2" stroke="${a}" stroke-width="0.8"/>`,
   unknown: (g, a) => `
     <rect x="6" y="6" width="20" height="20" rx="3" fill="rgba(120,180,210,0.12)" stroke="${a}" stroke-width="1"/>
     <path d="M16 20 v-2 q3 -1 3 -3.5 a3 3 0 1 0 -6 0" fill="none" stroke="${a}" stroke-width="1.5"/>

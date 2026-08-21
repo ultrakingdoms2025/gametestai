@@ -5,7 +5,11 @@ import { getSession } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
-const LORE_ORDER = ['overall', 'station', 'medieval', 'sports', 'citadel', 'race'] as const;
+/* Mirrors `LORE_ORDER` in src/content/Lore.js. This copy had drifted two
+ * scopes behind - the maze and gateway six's destination both had lore in the
+ * game and no row on this page, so an admin could not edit either - which is
+ * the failure a second hardcoded list always eventually produces. */
+const LORE_ORDER = ['overall', 'station', 'medieval', 'sports', 'citadel', 'race', 'maze', 'dock', 'space'] as const;
 
 const LORE_LABELS: Record<(typeof LORE_ORDER)[number], string> = {
   overall: 'Overall lore',
@@ -14,6 +18,9 @@ const LORE_LABELS: Record<(typeof LORE_ORDER)[number], string> = {
   sports: 'Sports lore',
   citadel: 'Citadel lore',
   race: 'Race lore',
+  maze: 'Maze lore (The Verdant Coil)',
+  dock: 'Dock lore (Lodestar Yard)',
+  space: 'Open space lore',
 };
 
 function s(v: FormDataEntryValue | null) {

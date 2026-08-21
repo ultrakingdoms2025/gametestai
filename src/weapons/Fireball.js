@@ -1053,7 +1053,11 @@ export class FireballWeapon {
       direction: _fi1,
       speed,
       damage,
-      gravity: -2.4, // a touch of droop; a perfectly flat bolt reads as a laser
+      /* A touch of droop; a perfectly flat bolt reads as a laser. Which is
+       * also why it does not scale with a planet's gravity: at Tessera's
+       * ratio this would be -0.40 and the bolt would BE the laser the number
+       * exists to avoid. @see ../systems/Projectiles.js `p.grav[slot]` */
+      gravity: -2.4,
       radius: 0.26 * scale,
       aoe,
       scale,

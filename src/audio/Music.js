@@ -146,6 +146,421 @@ const SCORES = {
     bells: { density: 0.09, octave: 3, gain: 0.05 },
   },
 
+  /* DOCK - "Launches: 000". Slow industrial minor in C: a frame-drum pulse on
+     the one and the three that reads as a hull being struck, a sine drone
+     under it, a sparse bell arp for the gantry, and a long, patient lead that
+     never resolves. The yard has fitted out four hulls and launched none of
+     them; the tune is written not to arrive either.
+
+     Deliberately the QUIETEST score in the game - every gain below is at or
+     under the corresponding station value. The reason is diegetic: this world
+     already makes a great deal of noise on its own account (the strip runs
+     hum, the crane is parked, the trench echoes), and a hangar is a place you
+     are meant to hear yourself walk across.
+
+     No hat and no snare anywhere. A kit turns a shed into a level. */
+  dock: {
+    bpm: 66, beatsPerBar: 4, root: 36, seed: 97,
+    progression: [[0, 'm'], [0, 'm7'], [10, 'M'], [0, 'm'], [3, 'M'], [10, 'M'], [8, 'M7'], [0, 'm']],
+    pad: { voice: 'strings', gain: 0.22, cutoff: 620, octave: 1 },
+    bass: { style: 'drone', gain: 0.24, type: 'sine' },
+    drums: {
+      // Struck steel. Two taiko voices a fifth apart: the low one is the hull
+      // being rung, the high one is a hammer answering it from up the bay.
+      hull: { A: '1000000000000000', B: '1000000010000000', gain: 0.30, voice: 'taiko', pitch: 58 },
+      hammer: { A: '0000000000000000', B: '0000100000000010', gain: 0.13, voice: 'frame' },
+    },
+    swellEveryBars: 8, swellGain: 0.06,
+    arp: { div: 4, densityA: 0.07, densityB: 0.18, type: 'bell', octave: 2, gain: 0.045, cutoff: 2100 },
+    lead: {
+      voice: 'tone', type: 'sine', octave: 1, gain: 0.13, cutoff: 1400,
+      vibHz: 3.6, vibCents: 12, vibDelay: 0.6, rvb: 0.6, inA: true,
+      phrase: [
+        [0, 0, 0, 4], [1, 0, 3, 2], [1, 2, 2, 2],
+        [2, 0, 7, 3], [2, 3, 5, 1], [3, 0, 3, 4],
+        [4, 0, 10, 2], [4, 2, 7, 2], [5, 0, 5, 4],
+        [6, 0, 3, 2], [6, 2, 5, 2], [7, 0, 2, 4],
+      ],
+    },
+    bells: { density: 0.04, octave: 3, gain: 0.035 },
+  },
+
+  /* SPACE - "Nothing Between". The stub beyond the blast door. A drone, a
+     choir pad and a bell every few bars, and that is the whole arrangement:
+     no pulse of any kind, because the one thing a holding platform in vacuum
+     must not sound like is a place with a tempo.
+
+     It exists at all because `Music.setWorld` sets `score = null` for a world
+     with no row and the failure is TOTAL SILENCE - which reads as the audio
+     having broken rather than as a design. Twelve lines is cheaper than the
+     bug report. */
+  space: {
+    bpm: 48, beatsPerBar: 4, root: 33, seed: 103,
+    progression: [[0, 'm'], [0, 'm'], [7, 'M'], [7, 'M'], [3, 'M7'], [3, 'M7'], [10, 'M'], [0, 'm']],
+    pad: { voice: 'choir', gain: 0.30, octave: 1 },
+    bass: { style: 'drone', gain: 0.22, type: 'sine' },
+    drums: {},
+    swellEveryBars: 8, swellGain: 0.07,
+    arp: { div: 2, densityA: 0.04, densityB: 0.07, type: 'sine', octave: 2, gain: 0.035, cutoff: 1500 },
+    bells: { density: 0.05, octave: 3, gain: 0.04 },
+  },
+
+  /* CINDER - "Ashfall". The volcanic surface, and the row that was MISSING.
+     `SCORES` carried eight of the nine registered worlds and `setWorld` sets
+     `score = null` for one with no row, so landing on the planet the whole loop
+     exists to reach faded the space score out and started nothing: the
+     destination was silent, and silent immediately after a track that had been
+     playing all the way there.
+
+     Slow, heavy and tonally unresolved - C minor over a drone, 54 BPM, a taiko
+     on the downbeat and a second off-grid hit in the B half so the pulse reads
+     as ground movement rather than as a tempo. No lead: there is nobody out
+     here. The bells are the only bright thing and they are rare, which is what
+     a fissure network looks like from the ground. */
+  cinder: {
+    bpm: 54, beatsPerBar: 4, root: 36, seed: 137,
+    progression: [[0, 'm'], [0, 'm'], [10, 'M'], [10, 'M'], [8, 'M'], [3, 'm'], [10, 'M'], [0, 'm']],
+    pad: { voice: 'strings', gain: 0.26, cutoff: 560, octave: 1 },
+    bass: { style: 'drone', gain: 0.26, type: 'sine' },
+    drums: {
+      boom: { A: '1000000000000000', B: '1000000010000010', gain: 0.26, voice: 'taiko', pitch: 54 },
+    },
+    swellEveryBars: 8, swellGain: 0.08,
+    arp: { div: 2, densityA: 0.05, densityB: 0.11, type: 'triangle', octave: 2, gain: 0.04, cutoff: 1200 },
+    bells: { density: 0.04, octave: 3, gain: 0.035 },
+  },
+
+  /* ================================================================== *
+   * PHASE 2 - the other nine planet surfaces                            *
+   * ==================================================================
+   *
+   * Cinder above shipped MISSING and the destination of the whole Phase 1
+   * loop was silent. Nine more landable worlds is nine more chances to make
+   * that mistake nine times, so every one of them has a row here and every
+   * row says what it is going for.
+   *
+   * -- The rules these nine were written under -------------------------
+   *
+   * 1. NO TWO SHARE A ROOT, A TEMPO AND AN ARRANGEMENT. A jungle and an
+   *    airless moon reaching for the same progression is the sticker-album
+   *    failure the sky itself was designed against - see Bodies.js on
+   *    Verdigris. Roots are spread across the MIDI notes the other nine
+   *    worlds do not already sit on; tempos run 40 to 84 BPM.
+   *
+   * 2. PERCUSSION IS AIR. Tessera and Lathe are vacuum, and a drum is a
+   *    pressure wave: neither of them has a `drums` block at all. That is the
+   *    same fact `Bodies.js` records as `atmosphere === radius` and the same
+   *    one the descent uses to skip its atmosphere phase, heard rather than
+   *    flown. The two are told apart by everything else - Tessera is thin and
+   *    has no melody, Lathe is enormous and has almost nothing but one.
+   *
+   * 3. NOBODY LIVES ON ANY OF THEM. Four of the nine have no `lead` at all,
+   *    for Cinder's stated reason: a composed melody is a voice, and a
+   *    wilderness with a singer in it is a settlement. Where a lead does
+   *    appear it is what the PLACE does - Lathe's rings coming round, Shoal's
+   *    water, Cathedra's plates ringing - never a character.
+   *
+   * 4. QUIETER THAN THE SPACE ABOVE THEM. `space` is the score a player fades
+   *    out of on every descent, and a surface that arrives LOUDER than the
+   *    void reads as a cut rather than as a landing. No pad here exceeds the
+   *    0.30 the void itself runs at.
+   */
+
+  /* TESSERA - "Vacuum Noon". The airless moonlet, and the thinnest thing in
+     the game.
+
+     No air, so no percussion and no reverberant ensemble: a drone, a fifth
+     above it, and a bell every eight bars or so. The progression is entirely
+     `s` chords - root, fourth, fifth, NO THIRD anywhere in the score - which
+     is the one harmonic trick that reads as "this place has no mood": a third
+     is what makes a chord happy or sad, and Tessera is neither. 40 BPM is the
+     slowest tempo in the game - four under Lathe, eight under the void.
+
+     No lead. Nothing sings at a sixth of a g under a black noon sky. */
+  tessera: {
+    bpm: 40, beatsPerBar: 4, root: 34, seed: 149,
+    progression: [[0, 's'], [0, 's'], [7, 's'], [7, 's'], [0, 's'], [5, 's'], [10, 's'], [0, 's']],
+    /* `drone5` rather than `strings`: it plays the root and the fifth ONLY and
+       ignores the chord, which is the correct instrument for a progression
+       that has already thrown its thirds away. */
+    pad: { voice: 'drone5', gain: 0.18, cutoff: 480, octave: 1 },
+    bass: { style: 'drone', gain: 0.20, type: 'sine' },
+    drums: {},
+    arp: { div: 4, densityA: 0.03, densityB: 0.06, type: 'sine', octave: 3, gain: 0.030, cutoff: 1300 },
+    bells: { density: 0.035, octave: 3, gain: 0.032 },
+  },
+
+  /* SIROCCO - "Long Dust". The desert, and the longest blind descent in the
+     system - 1,000 m of orange nothing before a horizon arrives.
+
+     So the progression NEVER lands: eight bars that walk i - bVII - v - bIII -
+     i - bVI - bVII - v and hand the cycle back on the minor fifth rather than
+     on the root. A player who tries to feel where the bar line resolves
+     cannot, which is the descent written as harmony.
+
+     Frame drum and hat, and the hat is a SHAKER here rather than a kit voice:
+     a dry 16th tick under a slow frame pulse is sand moving. There is no kick
+     and no taiko under either of them, so the world has a pulse without having
+     a heartbeat, which is the difference between wind and weather. Pluck arp
+     for heat shimmer, and a wide-vibrato reed lead in the B half - the only
+     melody on any of the nine that could be called a tune, because Sirocco is
+     the one that is merely inhospitable rather than lethal. */
+  sirocco: {
+    bpm: 66, beatsPerBar: 4, root: 39, seed: 151,
+    progression: [[0, 'm7'], [10, 'M'], [7, 'm'], [3, 'M7'], [0, 'm7'], [8, 'M'], [10, 'M'], [7, 'm']],
+    pad: { voice: 'strings', gain: 0.24, cutoff: 700, octave: 1 },
+    bass: { style: 'rootBeat', gain: 0.21, type: 'sine' },
+    drums: {
+      frame: { A: '1000000000000000', B: '1000000010000000', gain: 0.20, voice: 'frame' },
+      sand: { A: '0010001000100010', B: '1010101010101010', gain: 0.035, voice: 'hat' },
+    },
+    arp: { div: 2, densityA: 0.10, densityB: 0.24, type: 'pluck', octave: 2, gain: 0.055, cutoff: 2400 },
+    lead: {
+      voice: 'tone', type: 'triangle', octave: 2, gain: 0.11, cutoff: 1800,
+      /* 22 cents is the widest vibrato in the game. A reed bending that far is
+         a player breathing hard, which is what deep dust does to a landing. */
+      vibHz: 5.0, vibCents: 22, vibDelay: 0.35, rvb: 0.5, inA: false,
+      phrase: [
+        [0, 0, 0, 2], [0, 2, 3, 1], [0, 3, 5, 1], [1, 0, 3, 2], [1, 2, 0, 2],
+        [2, 0, 10, 2], [2, 2, 7, 1], [2, 3, 5, 1], [3, 0, 3, 4],
+        [4, 0, 0, 1], [4, 1, 3, 1], [4, 2, 5, 2], [5, 0, 7, 2], [5, 2, 5, 2],
+        [6, 0, 3, 2], [6, 2, 5, 1], [6, 3, 3, 1], [7, 0, 7, 3.5],
+      ],
+    },
+    bells: { density: 0.03, octave: 3, gain: 0.030 },
+  },
+
+  /* SHOAL - "Shelf Light". The ocean world: island chains over a shallow
+     shelf, and the only body in the sky whose albedo swings inside a
+     hemisphere.
+
+     Major, and the brightest of the ten - only Cathedra's sevenths come near
+     it and those are cold. It earns the key: every other landable world is
+     somewhere you survive. Brush rather than any drum with a skin on it, and
+     it is the only landable world whose entire percussion section is filtered
+     noise - a soft wash on the one and the three, which is surf.
+
+     A BELL lead, hushed and present in both halves of the cycle
+     (`inA: true`), because water does not have a quiet half. High bell
+     density for the same reason - light off a shallow shelf is a scatter of
+     bright points, which is exactly what `bells` does. */
+  shoal: {
+    bpm: 58, beatsPerBar: 4, root: 37, seed: 157,
+    progression: [[0, 'M'], [0, 'M7'], [7, 'M'], [5, 'M'], [9, 'm'], [7, 'M'], [2, 'm7'], [5, 'M']],
+    pad: { voice: 'strings', gain: 0.26, cutoff: 1050, octave: 1 },
+    bass: { style: 'rootBeat', gain: 0.19, type: 'sine' },
+    drums: {
+      surf: { A: '1000000000000000', B: '1000000010000000', gain: 0.07, voice: 'brush' },
+    },
+    swellEveryBars: 8, swellGain: 0.05,
+    arp: { div: 2, densityA: 0.14, densityB: 0.30, type: 'bell', octave: 2, gain: 0.050 },
+    lead: {
+      voice: 'bell', octave: 2, gain: 0.11, inA: true,
+      phrase: [
+        [0, 0, 7, 2], [0, 2, 4, 1], [0, 3, 2, 1], [1, 0, 0, 2], [1, 2, 4, 2],
+        [2, 0, 7, 1], [2, 1, 9, 1], [2, 2, 11, 2], [3, 0, 7, 4],
+        [4, 0, 4, 2], [4, 2, 2, 1], [4, 3, 0, 1], [5, 0, 2, 2], [5, 2, 4, 2],
+        [6, 0, 9, 2], [6, 2, 7, 2], [7, 0, 0, 3.5],
+      ],
+    },
+    bells: { density: 0.10, octave: 3, gain: 0.042 },
+  },
+
+  /* VITRINE - "Under the Vault". Ice: crevasse fields, pressure ridges and a
+     subglacial vault.
+
+     Brittle rather than cold-and-warm. The pad is `strings` at a cutoff of
+     1,700 - the BRIGHTEST pad in the game, where every other slow world runs
+     its strings dark at 420-700 - because a lowpass at 560 is a blanket and
+     ice is the opposite of a blanket.
+
+     Bass on `pulse`, the only style that plays twice a bar: a root on the one
+     and a fifth on the ten reads as something under the ice shifting its
+     weight. The frame drum is that too, and it appears ONLY in the B half -
+     pressure ridges do not crack on a schedule.
+
+     A bell arp and a bell-heavy high register, and no melodic lead at all. */
+  vitrine: {
+    bpm: 50, beatsPerBar: 4, root: 35, seed: 163,
+    progression: [[0, 'm'], [3, 'M'], [10, 'M'], [0, 'm'], [5, 'm'], [3, 'M7'], [8, 'M'], [0, 'm']],
+    pad: { voice: 'strings', gain: 0.25, cutoff: 1700, octave: 1 },
+    bass: { style: 'pulse', gain: 0.22, type: 'sine' },
+    drums: {
+      ridge: { A: '0000000000000000', B: '0000000010000000', gain: 0.15, voice: 'frame' },
+    },
+    swellEveryBars: 8, swellGain: 0.06,
+    arp: { div: 4, densityA: 0.09, densityB: 0.22, type: 'bell', octave: 3, gain: 0.045 },
+    bells: { density: 0.07, octave: 3, gain: 0.040 },
+  },
+
+  /* VERDIGRIS - "Standing Growth". Canopy mesas over river gorges, and the
+     only body Bodies.js calls biotic.
+
+     84 BPM: eight faster than the next quickest planet and quicker than four
+     of the eight gateway worlds. That is the whole argument - every other
+     surface in the system is a place where nothing is happening, and this one
+     is busy.
+
+     Dorian - a minor world with a MAJOR sixth in it - because pure aeolian is
+     what the dead planets use and the raised sixth is the single interval that
+     turns a minor key green rather than grey.
+
+     Frame drum and brush, both wooden and neither of them a kit, and a dense
+     pluck arp: the canopy is the arrangement. */
+  verdigris: {
+    bpm: 84, beatsPerBar: 4, root: 42, seed: 167,
+    progression: [[0, 'm'], [10, 'M'], [5, 'M'], [0, 'm'], [3, 'M'], [10, 'M'], [7, 'm7'], [5, 'M']],
+    pad: { voice: 'strings', gain: 0.20, cutoff: 900, octave: 1 },
+    bass: { style: 'rootBeat', gain: 0.18, type: 'sine' },
+    drums: {
+      log: { A: '1000000000100000', B: '1000001000100100', gain: 0.17, voice: 'frame' },
+      leaf: { A: '0000100000000000', B: '0000100000001000', gain: 0.06, voice: 'brush' },
+    },
+    arp: { div: 2, densityA: 0.22, densityB: 0.44, type: 'pluck', octave: 2, gain: 0.070, cutoff: 2800 },
+    lead: {
+      voice: 'tone', type: 'triangle', octave: 2, gain: 0.10, cutoff: 2200,
+      vibHz: 5.6, vibCents: 9, rvb: 0.45, inA: false,
+      phrase: [
+        [0, 0, 0, 1], [0, 1, 3, 1], [0, 2, 5, 1], [0, 3, 7, 1], [1, 0, 9, 2], [1, 2, 7, 2],
+        [2, 0, 5, 1], [2, 1, 3, 1], [2, 2, 5, 2], [3, 0, 0, 4],
+        [4, 0, 7, 1], [4, 1, 9, 1], [4, 2, 10, 2], [5, 0, 9, 2], [5, 2, 5, 2],
+        [6, 0, 3, 1], [6, 1, 5, 1], [6, 2, 7, 2], [7, 0, 0, 3.5],
+      ],
+    },
+    bells: { density: 0.05, octave: 3, gain: 0.035 },
+  },
+
+  /* LATHE - "Ringlight". The shepherd moon, airless, with Ceraunus and the
+     whole of its ring system filling the sky.
+
+     The other vacuum world, and deliberately the OPPOSITE of Tessera under the
+     same rule. No percussion on either - see the header - but where Tessera is
+     a drone with the thirds taken out and no melody at all, Lathe is a choir,
+     a riser every four bars and one long held line that climbs and does not
+     come back down. The progression ends on bIII MAJOR rather than on the
+     minor root: eight bars that open out instead of closing, which is what is
+     actually over your head when you stand there.
+
+     `inA: true` on the lead, so the tune is present in the restrained half of
+     the cycle as well. The view does not have a quiet half either. */
+  lathe: {
+    bpm: 44, beatsPerBar: 4, root: 44, seed: 173,
+    progression: [[0, 'm'], [0, 'm'], [3, 'M'], [3, 'M'], [7, 'm'], [8, 'M'], [10, 'M'], [3, 'M']],
+    pad: { voice: 'choir', gain: 0.29, octave: 1 },
+    bass: { style: 'drone', gain: 0.23, type: 'sine' },
+    drums: {},
+    swellEveryBars: 4, swellGain: 0.055,
+    arp: { div: 4, densityA: 0.05, densityB: 0.13, type: 'sine', octave: 3, gain: 0.035, cutoff: 1600 },
+    lead: {
+      voice: 'tone', type: 'sine', octave: 2, gain: 0.12, cutoff: 1900,
+      vibHz: 3.4, vibCents: 11, vibDelay: 0.7, rvb: 0.7, inA: true,
+      phrase: [
+        [0, 0, 0, 4], [1, 0, 3, 4],
+        [2, 0, 7, 2], [2, 2, 10, 2], [3, 0, 12, 4],
+        [4, 0, 10, 2], [4, 2, 7, 2], [5, 0, 8, 4],
+        [6, 0, 10, 2], [6, 2, 12, 2], [7, 0, 15, 4],
+      ],
+    },
+    bells: { density: 0.045, octave: 3, gain: 0.038 },
+  },
+
+  /* CARNELIAN - "Ironfall". Red iron highlands: scarps, dust, one very deep
+     gorge, and thin air over all of it.
+
+     The only planet with a PULSE you could walk to. Thin air means a short
+     descent with the ground in sight the whole way - the opposite of Sirocco,
+     and the arrangement is the opposite too: where Sirocco refuses to land on
+     a root, Carnelian hits one on every downbeat with a taiko under it.
+
+     Brass stabs on the bar line, and they are the only stabs on any surface.
+     A stab is a hit of ensemble, which is normally a settlement noise; it
+     works here because Carnelian's identity is GEOLOGY rather than emptiness,
+     and a scarp face is a struck thing. `inA: false` keeps them out of the
+     restrained half so the world still has somewhere quiet to be.
+
+     The tick is a hat used dry and off the beat: iron dust, not a kit. */
+  carnelian: {
+    bpm: 76, beatsPerBar: 4, root: 41, seed: 179,
+    progression: [[0, 'm'], [10, 'M'], [8, 'M'], [0, 'm'], [3, 'M'], [10, 'M'], [0, 'm'], [7, 'm']],
+    pad: { voice: 'strings', gain: 0.22, cutoff: 640, octave: 1 },
+    bass: { style: 'rootBeat', gain: 0.23, type: 'sine' },
+    drums: {
+      scarp: { A: '1000000000000000', B: '1000000010001000', gain: 0.25, voice: 'taiko', pitch: 68 },
+      grit: { A: '0000001000000010', B: '0010001000100010', gain: 0.040, voice: 'hat' },
+    },
+    stabs: { pattern: '1000000000000000', gain: 0.11, octave: 1, inA: false },
+    arp: { div: 4, densityA: 0.08, densityB: 0.19, type: 'triangle', octave: 2, gain: 0.045, cutoff: 1700 },
+    bells: { density: 0.035, octave: 3, gain: 0.032 },
+  },
+
+  /* SALLOW - "Yellow Overcast". Acid lakes and fumarole fields under
+     permanent yellow cloud, and the body Bodies.js describes as "somewhere
+     you have to decide to go".
+
+     So the score has to be UNPLEASANT without being unlistenable, and the way
+     it does that is the progression: the root minor and the chord a TRITONE
+     above it, alternating, four times in eight bars. A tritone is the one
+     interval in twelve-tone music with no resolution in either direction - it
+     is the same distance up as it is down - so the cycle never decides where
+     home is. Nothing else in the game uses one.
+
+     46 BPM: the slowest score that still has a drum. That drum is one frame
+     hit, off the grid, in the B half only, and it is a VENT rather than a
+     pulse - which is why it sits on step 11 and not on any beat.
+
+     Murky pad (cutoff 420, the darkest in the game), no lead, dull bells. */
+  sallow: {
+    bpm: 46, beatsPerBar: 4, root: 45, seed: 181,
+    progression: [[0, 'm'], [6, 'M'], [0, 'm'], [6, 'M'], [1, 'M'], [0, 'm'], [6, 'm'], [0, 'm']],
+    pad: { voice: 'strings', gain: 0.27, cutoff: 420, octave: 1 },
+    bass: { style: 'drone', gain: 0.25, type: 'sine' },
+    drums: {
+      vent: { A: '0000000000000000', B: '0000000000010000', gain: 0.14, voice: 'frame' },
+    },
+    swellEveryBars: 8, swellGain: 0.05,
+    arp: { div: 4, densityA: 0.04, densityB: 0.09, type: 'sine', octave: 2, gain: 0.032, cutoff: 900 },
+    bells: { density: 0.03, octave: 2, gain: 0.030 },
+  },
+
+  /* CATHEDRA - "The Hollow Vault". Shattered crystal plates, spire fields and
+     a hollow vault, 288 km out and the last thing in the system.
+
+     Every chord is a SEVENTH - four notes where the rest of the game mostly
+     plays three - because a triad is a solid and a seventh chord is a solid
+     with something ringing inside it, which is the whole planet in one
+     decision. Only two chords in the eight bars are minor; the rest are major
+     sevenths, so the world reads as luminous rather than as dead.
+
+     The one struck voice is a taiko at 190 Hz. Every other taiko authored in
+     this table runs 54-82 - a drum. At 190 the same synth is a PLATE being
+     rung, and that is the only percussion a crystal world can honestly have.
+
+     A bell lead and the densest bell scatter of the nine, in the highest
+     octave: from orbit Cathedra is legible by its cracks rather than by its
+     disc - see Bodies.js on why `fissure` is brighter than `high` here - and
+     this is that, heard from underneath. */
+  cathedra: {
+    bpm: 52, beatsPerBar: 4, root: 32, seed: 191,
+    progression: [[0, 'M7'], [4, 'm7'], [9, 'M7'], [2, 'm7'], [7, 'M7'], [0, 'M7'], [5, 'M7'], [7, 'M']],
+    pad: { voice: 'choir', gain: 0.28, octave: 1 },
+    bass: { style: 'drone', gain: 0.21, type: 'sine' },
+    drums: {
+      plate: { A: '1000000000000000', B: '1000000000100000', gain: 0.16, voice: 'taiko', pitch: 190 },
+    },
+    swellEveryBars: 8, swellGain: 0.06,
+    arp: { div: 2, densityA: 0.12, densityB: 0.28, type: 'bell', octave: 3, gain: 0.045 },
+    lead: {
+      voice: 'bell', octave: 2, gain: 0.12, inA: false,
+      phrase: [
+        [0, 0, 0, 2], [0, 2, 7, 1], [0, 3, 11, 1], [1, 0, 12, 2], [1, 2, 7, 2],
+        [2, 0, 9, 2], [2, 2, 4, 1], [2, 3, 2, 1], [3, 0, 0, 4],
+        [4, 0, 7, 1], [4, 1, 11, 1], [4, 2, 14, 2], [5, 0, 12, 2], [5, 2, 7, 2],
+        [6, 0, 5, 2], [6, 2, 9, 2], [7, 0, 7, 3.5],
+      ],
+    },
+    bells: { density: 0.12, octave: 4, gain: 0.038 },
+  },
+
   /* RACE - "Redline". 140 BPM synth rock in E minor: 16th-note saw bass
      ostinato, full kit, crash every 4 bars, power-chord stabs. */
   race: {

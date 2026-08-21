@@ -55,10 +55,7 @@ export class Interiors {
         d.open = false;
         d.anim = 0;
         if (d.collider) d.collider.solid = true;
-        for (const leaf of d.leaves) {
-          leaf.pivot.rotation.y = leaf.closed;
-          leaf.pivot.updateMatrixWorld(true);
-        }
+        for (const leaf of d.leaves) this._poseLeaf(leaf, 0);
         this._doors.push(d);
       }
       for (const l of e.lifts || []) {
@@ -431,8 +428,19 @@ export class Interiors {
     this._setPrompt(prompt);
 
     if (best && this.input?.pressed?.('KeyE')) {
-      if (best.kind === 'door') best.ref.open = !best.ref.open;
-      else this._callLift(best.ref, p.y);
+      if (best.kind === 'door') {
+        const d = best.ref;
+        d.open = !d.open;
+        /* Announced, never played from here. `AudioDirector`'s header states
+         * the rule: "Nothing else in the codebase imports the audio layer" —
+         * every system says what happened and the director decides what that
+         * sounds like. `sound` is the door's own voice, so a ship's shutter can
+         * hiss where a medieval plank door creaks, from one event. */
+        this.bus?.emit?.('interior:door', {
+          id: d.id, open: d.open, position: d.position,
+          sound: d.sound ?? 'hinge', size: d.size ?? 1,
+        });
+      } else this._callLift(best.ref, p.y);
     }
 
     for (const d of this._doors) {
@@ -440,10 +448,7 @@ export class Interiors {
       if (d.anim !== target) {
         const step = dt * 3.2;
         d.anim = target > d.anim ? Math.min(target, d.anim + step) : Math.max(target, d.anim - step);
-        for (const leaf of d.leaves) {
-          leaf.pivot.rotation.y = leaf.closed + (leaf.open - leaf.closed) * d.anim;
-          leaf.pivot.updateMatrixWorld(true);
-        }
+        for (const leaf of d.leaves) this._poseLeaf(leaf, d.anim);
       }
       if (d.collider) d.collider.solid = !d.open && d.anim < 0.05;
     }
@@ -464,6 +469,25 @@ export class Interiors {
         l.car.updateMatrixWorld(true);
       }
     }
+  }
+
+  /**
+   * Put one leaf at `t` of the way open, whichever verb it uses.
+   *
+   * TWO verbs now, and the second one is the reason: a hinged leaf lerps
+   * `rotation.y` between `closed` and `open`, and a SLIDING leaf translates
+   * from `closedPos` along `slide`. A leaf that carries `slide` has `closed`
+   * and `open` equal, so a caller that only knew about rotation would animate
+   * nothing at all rather than animate wrongly — but this is the one place
+   * either is written, so neither can drift from the other.
+   */
+  _poseLeaf(leaf, t) {
+    if (leaf.slide) {
+      leaf.pivot.position.copy(leaf.closedPos).addScaledVector(leaf.slide, t);
+    } else {
+      leaf.pivot.rotation.y = leaf.closed + (leaf.open - leaf.closed) * t;
+    }
+    leaf.pivot.updateMatrixWorld(true);
   }
 
   _nearestStop(l, y) {

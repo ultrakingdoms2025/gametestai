@@ -1,4 +1,5 @@
 import { ITEMS, itemDef, sellValue, setMarketWorld, skinIdFromItem } from './ItemDefs.js';
+import { offlineCatalog } from './MarketplaceOffline.js';
 import { allows } from '../worlds/WorldRules.js';
 
 /**
@@ -35,7 +36,7 @@ const VENDOR_WORDS =
  * that authors no restriction sells all of them, which is what the shop has
  * always done.
  */
-const ALL_CATEGORIES = ['cosmetic', 'weapons', 'tools', 'health', 'spells', 'mounts'];
+const ALL_CATEGORIES = ['cosmetic', 'weapons', 'tools', 'health', 'spells', 'mounts', 'ships'];
 
 const MARKETPLACE_CONSUMABLE_ITEMS = {
   spell_velocity_25: 'speed_boost_25',
@@ -111,6 +112,8 @@ export class Marketplace {
     this._catalog = [];
     this._catalogLoading = false;
     this._catalogError = null;
+    /** True while the stock on show came from the bundled offline catalogue. */
+    this._catalogOffline = false;
     this._catalogSeq = 0;
     this._filters = { search: '', category: '' };
     /** Categories the open vendor is allowed to sell, or null for "everything". */
@@ -174,6 +177,17 @@ export class Marketplace {
   /** Everything on sale. @returns {typeof PACKS} */
   get items() {
     return this._catalog;
+  }
+
+  /**
+   * True when the stock on show is the bundled catalogue rather than the API's.
+   *
+   * Read by `MarketplaceUI` so an offline shop says so once, at the top, and
+   * is otherwise a working shop. Silence here is what turned a 404 into "this
+   * vendor sells nothing".
+   */
+  get offline() {
+    return this._catalogOffline === true && this._catalog.length > 0;
   }
 
   get loading() {
@@ -281,9 +295,38 @@ export class Marketplace {
         ? items.filter((entry) => allowed.includes(String(entry?.category ?? '')))
         : items;
       this._catalogError = null;
+      this._catalogOffline = false;
       this.ui?.refresh?.();
     } catch (err) {
       if (requestId !== this._catalogSeq) return;
+      /* THE SHOP DEGRADES. It used to stop here.
+       *
+       * `_catalogError` was set, the panel drew "not found" in the same
+       * neutral style as an empty shop, and every credit in the game became
+       * unspendable - including the ship-stat upgrades `ShipMenuLogic` points
+       * the player at by name. Lore has degraded to bundled defaults since it
+       * was written; the shop, which is the only sink for the currency,
+       * degraded to nothing.
+       *
+       * `offlineCatalog` returns the same row shape the API does, priced
+       * through `WORLD_MARKETS` with the seeder's own arithmetic. The vendor's
+       * category restriction is applied to it identically, because the point
+       * of putting that restriction on `_catalog` rather than on the drawing
+       * code was that no other path could get round it.
+       *
+       * `_catalogError` still carries the reason - the UI shows it as a
+       * one-line notice ABOVE stock rather than instead of it - so an offline
+       * shop is legible as offline instead of silently pretending. */
+      const offline = offlineCatalog(world);
+      if (offline.length) {
+        this._catalog = allowed
+          ? offline.filter((entry) => allowed.includes(String(entry?.category ?? '')))
+          : offline;
+        this._catalogOffline = true;
+      } else {
+        this._catalog = [];
+        this._catalogOffline = false;
+      }
       this._catalogError = err instanceof Error ? err.message : 'Failed to load marketplace catalog';
       this.ui?.refresh?.();
     } finally {

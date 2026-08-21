@@ -194,6 +194,19 @@ export const WEAPON_TABLES = {
     ['bow', 2],
     ['baton', 2],
   ],
+  /* Lodestar Yard. `rules.hostiles` is FALSE there, so nothing in this row is
+   * drawn today - and it is here anyway for the reason `DROP_TABLES.dock`
+   * exists: the rule can flip, the fallback at the lookup is silent, and the
+   * failure mode is a civilian shipyard whose security detail turns up armed
+   * out of the Aether Nexus armoury. A yard's own violence is tools: the baton
+   * is a spanner, the blade is a cutting torch, and the two firearms are what
+   * a site security officer would actually be issued. */
+  dock: [
+    ['baton', 4],
+    ['blade', 3],
+    ['sidearm', 3],
+    ['rifle', 1],
+  ],
 };
 
 /** Ids that close to contact range rather than trading fire. */

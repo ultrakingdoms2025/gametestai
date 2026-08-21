@@ -9,7 +9,7 @@ import { FreeClimb } from './FreeClimb.js';
 import { Parkour } from './Parkour.js';
 import { Stamina } from '../systems/Stamina.js';
 import { WaterVolumes } from '../systems/WaterVolumes.js';
-import { allows } from '../worlds/WorldRules.js';
+import { allows, worldGravity, worldGravityRatio } from '../worlds/WorldRules.js';
 
 /**
  * First-person player controller.
@@ -80,6 +80,143 @@ const FOV_PUNCH_DECAY = 3.2;
  */
 const DIVE_VIEW_PITCH = 0.34;
 
+/* ==================================================================== */
+/* Per-world gravity                                                     */
+/* ==================================================================== */
+
+/**
+ * ── The fact, and who reads it ────────────────────────────────────────────
+ * A planet descriptor publishes `gravity` in m/s² and `PlanetWorld` copies it
+ * onto the world. Until now exactly one thing read it: `Piloting._env`, for the
+ * SHIP. A pilot could feel a sixth of a g settle their hull onto Tessera, step
+ * out of the airlock, and jump precisely as high as they do in a shopping
+ * concourse. Ten planets spanning 1.62 to 10.10 m/s² were a whole dimension of
+ * variety that stopped at the cockpit door.
+ *
+ * `worldGravity()` is now the single reader of the field and both consumers go
+ * through the same predicate. @see ../worlds/WorldRules.js
+ *
+ * ── The ratio, not the number ─────────────────────────────────────────────
+ * `CONFIG.player.gravity` is -22, which is 2.24 real g. It is not a mistake to
+ * be corrected: it is what makes a 0.93 m jump land in 0.58 s, and every
+ * hand-built world is authored against it. So -22 is what one g LOOKS like
+ * here, and a descriptor's m/s² is converted to a multiple of Earth before it
+ * touches anything. @see ../core/Config.js `gravityReference`
+ *
+ * ── What is preserved across gravities, and what is not ───────────────────
+ * Scaling gravity and leaving the jump impulse alone is not an option. Apex is
+ * `v²/2g`, so Tessera at a sixth of a g would jump six times as high as it does
+ * now and 5.2 times as high as Cinder - that is not a moon, it is a catapult,
+ * and it would put the player on top of authored geometry that no world in the
+ * game has a roof on. The other extreme, holding apex exactly (`v ∝ √g`), makes
+ * the most famous fact about low gravity - you jump higher - simply not true.
+ *
+ * The rule chosen instead, and it is one sentence: **AIRTIME GROWS AS THE
+ * SQUARE OF JUMP HEIGHT.** Double the apex and you get four times the hang
+ * time. That is the difference between "floaty" and "trampoline" stated as a
+ * number, and it fixes the exponent outright rather than leaving it to taste:
+ * with `v = v₀·rᵏ` on a gravity of `g₀·r`, apex goes as `r^(2k-1)` and hang
+ * time as `r^(k-1)`, so requiring `(k-1) = 2(2k-1)` gives **k = 1/3** and
+ * nothing else. Apex `∝ r^(-1/3)`, hang time `∝ r^(-2/3)`.
+ *
+ * MEASURED, not derived, by driving the real integrator on Tessera (1.62 m/s²,
+ * r = 0.1651, player gravity -3.633) and Verdigris (10.10, r = 1.0296, player
+ * gravity -22.650). `scripts/tests/player-gravity.test.mjs` re-runs every row:
+ *
+ *                          default (-22)   Tessera      Verdigris
+ *     jump velocity          6.400 m/s     3.509 m/s     6.463 m/s
+ *     apex height            0.878 m       1.668 m       0.868 m
+ *     hang time              0.533 s       1.883 s       0.533 s
+ *     air acceleration      12.000 m/s²   3.607 m/s²   12.236 m/s²
+ *     mid-air Δv per jump    6.982 m/s     6.982 m/s     6.982 m/s
+ *     20 m fall, impact     29.70 m/s     12.00 m/s    30.20 m/s
+ *     20 m fall, damage        49             0            51
+ *     first drop that hurts   7.49 m       45.26 m       7.10 m
+ *     first drop that kills  40.06 m      242.68 m      39.11 m
+ *
+ * So Tessera is 1.90x the apex for 3.53x the airtime - hang = apex², the rule,
+ * to within 2% - and Verdigris is inside 1.2% of the default on both, which is
+ * what a planet at 1.03 g should be. The default column is unchanged from what
+ * shipped: 7.49 and 40.06 are the same two numbers `Parkour`'s header measured
+ * at "about 7.5" and "40.0". @see ./Parkour.js
+ *
+ * ── Committed, not just slow ──────────────────────────────────────────────
+ * Hang time alone would make low gravity EASIER to steer, not harder: air
+ * control is `airAcceleration` applied for as long as you are off the ground,
+ * so 3.5x the airtime is 3.5x the mid-air Δv, and a player could reverse a full
+ * sprint twice over before landing. That is the opposite of "hard to change
+ * your mind mid-air". `airAcceleration` therefore scales as `r^(1-k)` = `r^⅔`,
+ * which holds the PRODUCT `a·T` - the total steering authority one jump buys -
+ * invariant across every planet. You go further and you commit to it.
+ *
+ * ── What deliberately does NOT scale ──────────────────────────────────────
+ *   - The **terminal clamp** (-60 m/s in `fixedUpdate`) is a solver limit
+ *     expressed in metres per step, not a feel parameter: 1 m of travel in one
+ *     60 Hz step against a 0.35 m capsule is where depenetration stops being
+ *     trustworthy, and what accelerated you there is irrelevant. It is above
+ *     `Parkour.LETHAL_SPEED` (42) on every world, so it never rescues a fall.
+ *     On Tessera it needs 495 m of drop to bind and so never does.
+ *   - The **ground-stick bias** (-2.2 m/s). It is what keeps the capsule
+ *     welded to stair treads and ramp crests; scaling it down on a light world
+ *     would make the player skip off every ramp in it. Being fixed is also what
+ *     keeps the `-3.0` landing threshold correctly above it everywhere.
+ *   - **Fall damage**, which is keyed to impact SPEED in `Parkour` and needs no
+ *     change at all: `v = √(2gh)` does the scaling for free, and the table
+ *     above is the proof rather than the claim. A 20 m fall costs 0 on Tessera
+ *     and 51 on Verdigris; the drop that first hurts moves from 7.49 m to
+ *     45.26 m and the drop that kills from 40.06 m to 242.68 m. That is the
+ *     item this whole change exists for: low gravity is a feature and not a
+ *     trap, and the two heights a player LEARNS move with the world they
+ *     learned them on.
+ *   - **Step-up, slope limit and headroom**, none of which read gravity in the
+ *     first place - the step probe is geometric off `P.stepHeight` and the
+ *     slope ceiling is the solver's `WALKABLE_NORMAL_Y`. The walk graph the
+ *     planet reach tests flood (0.45 m step, 38°, 3.0 m drop, no jump) is
+ *     therefore measuring exactly what it measured before, and everything it
+ *     proves reachable is still reachable. @see ../../scripts/tests/planet-reach.test.mjs
+ *
+ * ── Who else reads the ratio, and what each does with it ──────────────────
+ * The player was the first consumer and is no longer the only one. Everything
+ * below goes through `worldGravityRatio` in `../worlds/WorldRules.js`, and
+ * each applies the exponent ITS OWN quantity has - which is the whole reason
+ * the three scales are published as plain numbers rather than left to be
+ * recomputed, because a consumer that wrote `Math.pow(ratio, 1/3)` for itself
+ * would be a second definition of the design rule:
+ *
+ *   `Parkour`  the dive. `DIVE_ACCEL` is a downward ACCELERATION, so it takes
+ *              {@link Player#gravityRatio} and a dive stays 0.73x the world it
+ *              is in rather than becoming 4.4x Tessera. `DIVE_FORWARD` is air
+ *              control by another name and takes {@link Player#airScale}, so
+ *              the forward carry one dive buys is invariant for the same reason
+ *              `a·T` is. `DIVE_MIN_FALL` is a vertical SPEED and takes
+ *              {@link Player#jumpScale}, so the dive arms at the same fraction
+ *              of the arc everywhere. @see ./Parkour.js
+ *   `Climb`    the lowest ledge worth a mantle, whose whole justification is
+ *              "a jump already clears this", so it reads
+ *              {@link Player#jumpApex} - the number that sentence is about.
+ *              @see ./Climb.js
+ *   `NPC`      resolves `_gravity` off the same ratio, so a beast, a corpse
+ *              and the player who shot it all fall together. Until it did, the
+ *              player floated on Tessera and the wildlife plummeted at -22.
+ *              @see ../npc/NPC.js
+ */
+/* The ratio itself, its [0.01, 4] clamp and the one warning it logs live in
+ * `../worlds/WorldRules.js` as `worldGravityRatio`. They moved there the day
+ * the player stopped being the only body that falls: the dive, the mantle and
+ * every NPC divide by the same number now, and four copies of a division are
+ * four chances to disagree about the same planet. What stays HERE is the LAW
+ * built on top of it, which is the block above and the two exponents below. */
+/** Jump-velocity exponent. Derived, not tuned - see the block above. */
+const JUMP_EXP = 1 / 3;
+/** Air-control exponent. `1 - JUMP_EXP`, which is what holds `a·T` invariant. */
+const AIR_EXP = 1 - JUMP_EXP;
+
+/**
+ * Returned in place of a real look delta when something else owns the mouse.
+ * Frozen because it is handed out every frame and must never be written to.
+ */
+const ZERO_LOOK = Object.freeze({ dx: 0, dy: 0 });
+
 export class Player {
   /**
    * @param {{ scene: THREE.Scene, engine: import('../core/Engine.js').Engine,
@@ -112,6 +249,26 @@ export class Player {
     this._eyeHeight = STAND_EYE;
     this._crouching = false;
     this._sprinting = false;
+
+    /* ---- gravity, and the three constants it moves ---- *
+     * Resolved once per world change rather than per step: `setWorldGravity`
+     * is the only writer, `world:changed` is the only caller, and the fixed
+     * step then reads three plain numbers with no branch and no lookup. They
+     * are seeded at exactly the config values, so a world that publishes no
+     * gravity - which is every world but the planets - is byte-for-byte the
+     * game that shipped. @see the design block above `JUMP_EXP` */
+    this._gravityRatio = 1;
+    this._gravity = P.gravity;
+    /** `ratio ** JUMP_EXP`. Held separately because `Parkour.tryLeap` writes an
+     *  absolute lift off the config and this is what rescales it, and because
+     *  `Parkour`'s dive threshold is a vertical speed with the same exponent. */
+    this._jumpScale = 1;
+    /** `ratio ** AIR_EXP`. The scale on any mid-air steering acceleration. */
+    this._airScale = 1;
+    this._jumpVelocity = P.jumpVelocity;
+    this._airAcceleration = P.airAcceleration;
+    /** Closed-form apex of a standing jump on this world, metres. @see jumpApex */
+    this._jumpApex = (P.jumpVelocity * P.jumpVelocity) / (2 * -P.gravity);
 
     /* ---- view feel ---- */
     this._stepSmooth = 0;
@@ -353,7 +510,14 @@ export class Player {
 
     /** Active world, tracked for capability rules. @see ../worlds/WorldRules.js */
     this._world = null;
-    this._offRules = this.bus?.on('world:changed', ({ world }) => { this._world = world; }) ?? null;
+    /* One handler for both, and deliberately not two: the capability flags and
+     * the gravity are read off the same object and must never be a world
+     * apart. A second subscription would run in registration order and a
+     * reorder would be invisible until someone jumped on the wrong planet. */
+    this._offRules = this.bus?.on('world:changed', ({ world }) => {
+      this._world = world;
+      this.setWorldGravity(world);
+    }) ?? null;
 
     this.camera.rotation.order = 'YXZ';
     this._applyCamera(0);
@@ -398,6 +562,59 @@ export class Player {
 
   get grounded() {
     return this._grounded;
+  }
+
+  /** Downward acceleration this world integrates, m/s². Negative. */
+  get gravity() {
+    return this._gravity;
+  }
+
+  /** This world's gravity as a multiple of `CONFIG.player.gravity`. 1 by default. */
+  get gravityRatio() {
+    return this._gravityRatio;
+  }
+
+  /** Upward speed a jump writes here, m/s. @see setWorldGravity */
+  get jumpVelocity() {
+    return this._jumpVelocity;
+  }
+
+  /** Mid-air steering authority, m/s². @see setWorldGravity */
+  get airAcceleration() {
+    return this._airAcceleration;
+  }
+
+  /**
+   * `ratio ^ 1/3` - what any VERTICAL SPEED authored against `CONFIG.player`
+   * must be multiplied by on this world. 1 by default.
+   *
+   * Published rather than left to be recomputed: `Parkour` needs it for the
+   * leap lift and the dive threshold, and an exponent written down twice is a
+   * design rule with two definitions. @see setWorldGravity
+   */
+  get jumpScale() {
+    return this._jumpScale;
+  }
+
+  /**
+   * `ratio ^ 2/3` - the scale on any MID-AIR ACCELERATION, which is what holds
+   * `a·T` invariant. 1 by default. @see setWorldGravity
+   */
+  get airScale() {
+    return this._airScale;
+  }
+
+  /**
+   * How high a standing jump goes on this world, metres, closed form.
+   *
+   * `v²/2g` off the two resolved numbers rather than a remembered 0.93. The 60
+   * Hz integrator quantises about 5.6% under it (0.878 m measured against 0.931
+   * analytic at default gravity), so this is the GENEROUS side - which is the
+   * correct side for anything asking "would a jump already have cleared that".
+   * @see ./Climb.js `MIN_RISE_GROUND`
+   */
+  get jumpApex() {
+    return this._jumpApex;
   }
 
   get isCrouching() {
@@ -582,6 +799,60 @@ export class Player {
     return false;
   }
 
+  /**
+   * Adopt a world's published surface gravity, or fall back to the config.
+   *
+   * The ONLY writer of `_gravity`, `_jumpVelocity`, `_jumpScale`, `_airScale`,
+   * `_airAcceleration` and `_jumpApex`. Called from the `world:changed`
+   * handler, and public so that a test or the dev harness can drive a planet
+   * without a world manager.
+   *
+   * A world that publishes nothing - station, medieval, citadel, sports, race,
+   * maze, dock, the yard, and `null` before the first world loads - restores
+   * the config values EXACTLY, by assignment and not by a multiply, so there is
+   * no float residue to make an unchanged world drift. Everything downstream is
+   * then multiplying by a literal 1, which IEEE-754 leaves alone to the bit.
+   *
+   * @param {{gravity?:number, id?:string}|null|undefined} world
+   * @see the design block above `JUMP_EXP`
+   * @see ../worlds/WorldRules.js `worldGravityRatio` for the clamp
+   */
+  setWorldGravity(world) {
+    const published = worldGravity(world);
+    /* No opinion published: restore the shipped feel by assignment. */
+    if (published === null) {
+      this._gravityRatio = 1;
+      this._jumpScale = 1;
+      this._airScale = 1;
+      this._gravity = P.gravity;
+      this._jumpVelocity = P.jumpVelocity;
+      this._airAcceleration = P.airAcceleration;
+      this._jumpApex = (P.jumpVelocity * P.jumpVelocity) / (2 * -P.gravity);
+      return;
+    }
+
+    /* The division, the clamp and the one warning it logs are all in
+     * `worldGravityRatio` - the same function `NPC` and, through it, every
+     * beast in the world call. @see ../worlds/WorldRules.js */
+    const ratio = worldGravityRatio(world);
+
+    this._gravityRatio = ratio;
+    this._gravity = P.gravity * ratio;
+    /* Apex ∝ r^(-1/3), hang time ∝ r^(-2/3): airtime grows as the square of
+     * jump height, which is the whole design rule. */
+    this._jumpScale = Math.pow(ratio, JUMP_EXP);
+    this._jumpVelocity = P.jumpVelocity * this._jumpScale;
+    /* `a · T` invariant, so one jump buys the same total mid-air Δv on every
+     * planet however long it lasts. */
+    this._airScale = Math.pow(ratio, AIR_EXP);
+    this._airAcceleration = P.airAcceleration * this._airScale;
+    /* Derived from the two resolved numbers, not from the exponent again: a
+     * second closed form is a second thing to keep in step. `_gravity` is
+     * negative and clamped away from zero at both ends, so this cannot divide
+     * by zero and cannot go non-finite. */
+    this._jumpApex = (this._jumpVelocity * this._jumpVelocity) / (2 * -this._gravity);
+  }
+
   /* ================================================================ */
   /* Fixed-rate simulation                                             */
   /* ================================================================ */
@@ -605,7 +876,9 @@ export class Player {
       // hanging in mid-air.
       this._velocity.x = damp(this._velocity.x, 0, 6, dt);
       this._velocity.z = damp(this._velocity.z, 0, 6, dt);
-      this._velocity.y += P.gravity * dt;
+      // The world's gravity, not the config's: a corpse on a sixth-g moon
+      // settles at a sixth of a g, or death is the one place the planet stops.
+      this._velocity.y += this._gravity * dt;
       this._position.addScaledVector(this._velocity, dt);
       this.physics.resolveCapsule(this._position, P.radius, CROUCH_HEIGHT);
       if (elapsed - this._deathAt > RESPAWN_DELAY) this.respawn();
@@ -809,8 +1082,12 @@ export class Player {
        * it never runs in the air. Air control keeps its own authority. */
       this._accelerate(wishX, wishZ, wishSpeed, P.acceleration * boost, dt);
     } else {
-      // Air control: same projection, far less authority.
-      this._accelerate(wishX, wishZ, wishSpeed, P.airAcceleration, dt);
+      /* Air control: same projection, far less authority - and on a light
+       * world, less again. `_airAcceleration` scales as `r^⅔` against a hang
+       * time that scales as `r^-⅔`, so the total Δv one jump buys is the same
+       * everywhere and a long floaty arc is a COMMITMENT rather than three
+       * times the usual steering. @see setWorldGravity */
+      this._accelerate(wishX, wishZ, wishSpeed, this._airAcceleration, dt);
     }
 
     /* ---- mantle: offered before the jump, never instead of it -------- *
@@ -857,12 +1134,23 @@ export class Player {
     this._jumpHeld = !!s.jump;
 
     if (this._jumpBuffer > 0 && this._coyote > 0) {
-      this._velocity.y = P.jumpVelocity;
+      this._velocity.y = this._jumpVelocity;
       // A sprinting jump becomes a leap: `tryLeap` scales what is already in
       // the velocity rather than setting a fixed speed, so it rewards the
       // run-up, and it returns false (leaving an ordinary jump) if the player
       // was not running or could not pay the stamina.
-      this.parkour.tryLeap();
+      /* ...except for the LIFT, which is the one part of a leap that is written
+       * absolutely: `Parkour.tryLeap` sets `v.y = P.jumpVelocity * LEAP_LIFT`
+       * straight off the config and has no way to know what world it is on.
+       * Left alone, a sprinting leap on Tessera would take off at 7.17 m/s
+       * against an ordinary jump's 3.51 and clear four times the height of it,
+       * on the same key. Rescale what it wrote rather than reaching in for
+       * `LEAP_LIFT` - that keeps the leap's own constant its own business, and
+       * the multiply is skipped outright on every world that publishes no
+       * gravity, so nothing that shipped is touched by a float. */
+      if (this.parkour.tryLeap() && this._jumpScale !== 1) {
+        this._velocity.y *= this._jumpScale;
+      }
       this._jumpBuffer = 0;
       this._coyote = 0;
       this._grounded = false;
@@ -872,8 +1160,13 @@ export class Player {
       this._velocity.y = -2.2;
     }
 
-    if (!this._grounded) this._velocity.y += P.gravity * dt;
-    // Terminal velocity - stops the solver from tunnelling on long drops.
+    if (!this._grounded) this._velocity.y += this._gravity * dt;
+    /* Terminal velocity - stops the solver from tunnelling on long drops, and
+     * DELIBERATELY not scaled with the world. It is a metres-per-step limit
+     * against a 0.35 m capsule, and the tunnel is the same whatever
+     * accelerated you into it. It also sits above `Parkour.LETHAL_SPEED` on
+     * every world, so it never quietly rescues a fall that should have killed
+     * you. @see setWorldGravity */
     if (this._velocity.y < -60) this._velocity.y = -60;
 
     /* ---- the roll's speed floor -------------------------------------- *
@@ -1848,8 +2141,31 @@ export class Player {
     this._elapsed = elapsed;
     this._installLatePose();
 
-    const look = this.input.consumeLook();
+    /* ── DO NOT CONSUME A LOOK DELTA SOMEBODY ELSE OWNS ──────────────────────
+     *
+     * `consumeLook` is destructive: it returns the accumulated mouse delta and
+     * ZEROES it. This method runs before every other consumer in `main.js`'s
+     * frame order, so whatever it takes, nothing downstream can have.
+     *
+     * That was fine while `lookOwned` only ever described a mount, because a
+     * mount steers from `player.yaw` and wants this class to keep integrating
+     * the mouse. `Piloting` is the other kind of driver: `Flight.readInput`
+     * calls `input.consumeLook()` itself, from `piloting.update`, which runs
+     * AFTER this - and it was getting {0, 0} every frame of every flight.
+     *
+     * The symptom was total: pitch and yaw are the only two axes a ship steers
+     * with, `Flight`'s virtual stick is fed entirely from that delta, and both
+     * sat at exactly zero. A player could throttle, boost, brake and thrust
+     * vertically, and could not turn. Nothing caught it because every test of
+     * the flight model - and the autopilot in `_flightrig.mjs` - writes
+     * `flight.setCommand` directly, which is downstream of the missing half.
+     * It was found by trying to aim a gun.
+     *
+     * So the delta is left in the input when it is owned elsewhere. The flag
+     * that says so already existed and was already computed here; it simply had
+     * no writer, and `Piloting._takeBody` is now it. */
     const lookOwned = this.movementOverride && !this.movementOverrideLook;
+    const look = lookOwned ? ZERO_LOOK : this.input.consumeLook();
     if (!this._harnessFrozen && !this._dead && !lookOwned) {
       this._yaw -= look.dx;
       this._pitch = clamp(this._pitch - look.dy, -MAX_PITCH, MAX_PITCH);

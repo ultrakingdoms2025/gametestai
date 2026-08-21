@@ -163,6 +163,51 @@ void main() {
 `;
 
 /**
+ * ONE BAD TEXEL MUST NOT BLACK OUT THE FRAME.
+ *
+ * `UnrealBloomPass` high-passes the scene, blurs the result through five mip
+ * levels and then blends the pyramid additively back over the image. Every one
+ * of those steps is a weighted sum, and a weighted sum containing a NaN is a
+ * NaN — so ONE non-finite fragment anywhere on screen is smeared across the
+ * whole pyramid and the additive composite writes NaN over EVERY pixel of the
+ * frame. Nothing downstream can recover it: the grade, the tone map and the
+ * sRGB transfer all carry NaN through to a black pixel.
+ *
+ * That is not hypothetical. Four boxes in `dock/Hulls.js` shipped with a `tile`
+ * of 0, which divides by zero in `boxUV` and gives them NaN texture
+ * coordinates. Nineteen NaN pixels at `VIEWS.dock` `gantry-crossing` took the
+ * frame's mean luminance from 18.99 to 4.08 out of 255 — a world that looked
+ * unlit, that no light in it could brighten (ambient 0.22 -> 6.0 moved the mean
+ * by 0.07), and that read for a whole review cycle as a lighting problem.
+ *
+ * This does not fix the cause and is not meant to; it bounds the blast radius
+ * to the pixels that are actually broken, so the next occurrence looks like a
+ * few black specks on a hull instead of a black world. `scripts/tests/
+ * dock-light.test.mjs` is what finds the cause.
+ *
+ * `notEqual(c, c)` is the NaN test — NaN is the only value not equal to itself
+ * — and the `min` clamps an Inf, which blurs into a NaN one step later.
+ */
+function sanitiseBloomInput(bloomPass) {
+  const m = bloomPass?.materialHighPassFilter;
+  if (!m || typeof m.fragmentShader !== 'string') return false;
+  const anchor = 'vec4 texel = texture2D( tDiffuse, vUv );';
+  if (!m.fragmentShader.includes(anchor)) {
+    // The addon's shader changed shape. Say so rather than silently not guarding.
+    console.warn('[postfx] bloom high-pass shader not in the expected shape; NaN guard NOT installed');
+    return false;
+  }
+  m.fragmentShader = m.fragmentShader.replace(
+    anchor,
+    `${anchor}
+    texel.rgb = mix( texel.rgb, vec3( 0.0 ), vec3( notEqual( texel.rgb, texel.rgb ) ) );
+    texel.rgb = min( texel.rgb, vec3( 1.0e4 ) );`
+  );
+  m.needsUpdate = true;
+  return true;
+}
+
+/**
  * Scene-referred colour grade. Runs after bloom and *before* `OutputPass`, so
  * the input is linear HDR with values well above 1.0 and nothing is clipped
  * yet. Tone mapping deliberately happens downstream.
@@ -220,7 +265,15 @@ const GradeShader = {
     const float MIDGREY = 0.18;
 
     void main() {
-      vec3 col = max(texture2D(tDiffuse, vUv).rgb, 0.0);
+      vec3 col = texture2D(tDiffuse, vUv).rgb;
+      /* NaN survives a max() - every comparison against it is false - so it
+       * has to be tested for by name. Same guard as sanitiseBloomInput, one
+       * pass later, so a non-finite fragment that reaches the grade stays one
+       * black pixel instead of being multiplied through the contrast and
+       * saturation operators. (No backticks in here: this whole shader is a
+       * template literal and one would end it.) */
+      col = mix(col, vec3(0.0), vec3(notEqual(col, col)));
+      col = max(col, 0.0);
 
       /* --- white balance and exposure gain ------------------------- */
       col *= uBalance * uGain;
@@ -409,10 +462,39 @@ const FilmShader = {
       /* --- film grain ----------------------------------------------- */
       // Quantised to 24 fps so the grain steps like film instead of
       // strobing at whatever refresh rate the display happens to run at.
-      float tq = floor(uTime * 24.0);
+      //
+      // AND WRAPPED, WHICH IS THE WHOLE OF WHY THE GAME USED TO GO DARK AND
+      // STAY DARK. uTime is unbounded - PostFX.update does this._time += dt
+      // and never wraps it - and this line used to be a bare
+      // floor(uTime * 24.0) feeding hash21. hash21's first operation is
+      // p * vec2(123.34, 456.21); once that product passes 2^23 the float32
+      // ULP is >= 1, so the rounded product IS an integer, fract returns
+      // exactly 0 for both components, and the hash returns 0. Both taps
+      // return 0, grain is 0 + 0 - 1 = -1.0 on every pixel of every frame from
+      // then on, and the pass subtracts a flat uGrain from the whole image for
+      // the rest of the session.
+      //
+      // Measured by float32 emulation of this exact expression - see
+      // scripts/tests/postfx-grain.test.mjs, which runs the sweep - the
+      // collapse is total at tq = 3971, i.e. at uTime 165.5 s, and the hash is
+      // already down to 8 distinct values over a 64x64 tile by tq 1080 (45 s)
+      // with a mean of -0.14. In the browser at the kestrel framing, world
+      // frozen: mean frame luma 23.20 at uTime 0.5, 16.54 at 170 s and locked
+      // at 16.63 from there on; 21.14 with uGrain forced to 0 at the same
+      // instant.
+      //
+      // Two changes, and both are needed. The mod keeps the argument small
+      // enough that no hash can degenerate however long the tab is left open;
+      // ign replaces hash21 because even under the wrap hash21 is badly
+      // conditioned at these magnitudes - emulated at tq 1440 it gives 8
+      // distinct values and an adjacent-column mean swing of 0.357, which is
+      // the vertical striping this pass used to lay over every flat wall. ign
+      // measures 0.012 at the same tq, and it is what the dither below has
+      // always used.
+      float tq = mod(floor(uTime * 24.0), 512.0);
       vec2 gp = vUv * uResolution;
-      float n1 = hash21(gp + tq * 17.13);
-      float n2 = hash21(gp + tq * 17.13 + 91.7);
+      float n1 = ign(gp + tq * 17.13);
+      float n2 = ign(gp + tq * 17.13 + 91.7);
       float grain = n1 + n2 - 1.0;   // triangular PDF - far less "crawly" than uniform
       col += grain * uGrain * (0.35 + 0.65 * (1.0 - smoothstep(0.15, 0.95, luma)));
 
@@ -604,6 +686,132 @@ const GRADE_PRESETS = {
     shaftTint: [0.72, 0.92, 1.0],
     shaftWeight: 0.014,
     shaftThreshold: 3.20,
+  },
+
+  /**
+   * Lodestar Yard: a cold shed lit by sodium.
+   *
+   * Built as the STATION'S INVERSE, deliberately. The station preset is a
+   * complementary split-tone with cold shadows and warm highlights over a
+   * near-neutral balance, and it works because the world's own palette is a
+   * cold blue hull. The yard's palette is already warm - amber worklights,
+   * ochre hazard paint, rust weep - so repeating that in the highlights would
+   * give a monochrome amber frame with nothing to separate a lit hull from a
+   * lit floor. So the split runs the other way: the SHADOWS carry the blue
+   * that is genuinely in the room (a clerestory band of daylight, the cyan
+   * wayfinding, the cool rim on every character) and the highlights stay
+   * nearly neutral, letting the sodium do its own work rather than being
+   * pushed further into orange by the grade.
+   *
+   * Contrast and toe are the other half. This is the darkest interior in the
+   * game - ambient 0.22 plus hemi 0.34 - and a shed read through the station's
+   * 0.08 toe collapses the unlit two thirds of the bay to black. A higher toe
+   * lift plus slightly less contrast keeps structure in the dark, which is
+   * what makes a half-finished world read as half finished rather than as
+   * under-lit.
+   *
+   * -- THE THIRD PASS, and it is on the SHADOW end deliberately -----------
+   * `toe` 0.06 -> 0.030 and `toeLift` 0.030 -> 0.058. Measured off the
+   * drawing buffer at 1600x900 with `readPixels`, Rec.709 luma 0-255, over
+   * the framings a player actually stands in:
+   *
+   *   framing          before   after
+   *   apron-arrival     38.0
+   *   keel-line         33.2
+   *   chandlery         36.2
+   *   yard-wide         32.1
+   *   kestrel           31.2
+   *   mouth-inside      32.3
+   *
+   * A tester who played the loop cold called that "a big dark room", which is
+   * the player's own second rejection of this world word for word.
+   *
+   * These two controls and not `exposure`, for two reasons that both matter.
+   * The bloom threshold below (2.40) is calibrated against this world's
+   * measured LINEAR luminance and exposure scales that before tone mapping, so
+   * reaching for exposure silently re-points the bloom - `dock-light.test.mjs`
+   * pins 1.20 for exactly that reason. And the complaint is not that the lit
+   * parts are dim; it is that everything between them is black. `uToe`
+   * multiplies the darks DOWN (`col *= mix(1.0, smoothstep(0, 0.12, ln),
+   * uToe)`) and `uToeLift` adds back only under 26% luma
+   * (`col += uToeLift * (1 - smoothstep(0, 0.26, luma))`), so this pair acts
+   * on precisely the pixels that were the problem and leaves the sodium pools
+   * and the bloom operating point where they were.
+   *
+   * Bloom threshold 2.40, not the station's 3.00: the sodium practicals are
+   * authored at 22-26 cd against the station's 1050-at-5 m fittings and the
+   * emissive strip runs sit lower again, so at 3.00 nothing in this world
+   * blooms at all and the worklights read as painted rectangles.
+   */
+  dock: {
+    bloom: { strength: 0.34, radius: 0.90, threshold: 2.40 },
+    distortion: 0.018,
+    chroma: 0.0018,
+    balance: [1.012, 1.0, 0.982],
+    lift: [0.0042, 0.0044, 0.0062],
+    gamma: [1.0, 1.0, 1.0],
+    gain: [1.0, 1.0, 1.0],
+    shadowTint: [0.66, 0.86, 1.28],
+    highlightTint: [1.06, 1.0, 0.90],
+    split: 0.50,
+    toe: 0.030,
+    contrast: 1.07,
+    saturation: 1.06,
+    hiKnee: 0.94,
+    hiShoulder: 1.55,
+    haze: 0.038,
+    hazeColor: [0.070, 0.090, 0.140],
+    vignette: 0.42,
+    vignetteSoft: 0.26,
+    toeLift: 0.058,
+    grain: 0.026,
+    scanline: 0.010,
+    /* God rays through the clerestory band, and only there. Kept low and
+     * cool: the shafts a shed gets are daylight through high glazing, not the
+     * medieval world's 0.55 of golden hour through trees. */
+    shafts: 0.22,
+    shaftTint: [0.78, 0.90, 1.0],
+    shaftWeight: 0.016,
+    shaftThreshold: 2.60,
+  },
+
+  /**
+   * Open space: hard, clean and almost ungraded.
+   *
+   * One key, no atmosphere and no bounce. Everything this preset does is
+   * subtractive - no haze, no shafts, a low toe and a small vignette - because
+   * the only thing that sells vacuum is that nothing softens the terminator.
+   * The bloom threshold is the lowest in the game so the beacons and the
+   * portal actually flare against a black field; there is nothing else in the
+   * frame bright enough for it to catch.
+   */
+  space: {
+    bloom: { strength: 0.42, radius: 0.94, threshold: 1.60 },
+    distortion: 0.010,
+    chroma: 0.0012,
+    balance: [0.976, 1.0, 1.048],
+    lift: [0.0, 0.0, 0.0012],
+    gamma: [1.0, 1.0, 1.0],
+    gain: [1.0, 1.0, 1.0],
+    shadowTint: [0.74, 0.88, 1.18],
+    highlightTint: [1.0, 1.0, 1.02],
+    split: 0.34,
+    toe: 0.03,
+    contrast: 1.16,
+    saturation: 1.04,
+    hiKnee: 0.96,
+    hiShoulder: 1.35,
+    haze: 0.0,
+    hazeColor: [0.0, 0.0, 0.0],
+    vignette: 0.30,
+    vignetteSoft: 0.30,
+    toeLift: 0.004,
+    grain: 0.014,
+    scanline: 0.008,
+    shafts: 0.0,
+    shaftTint: [1.0, 1.0, 1.0],
+    shaftWeight: 0.0,
+    shaftThreshold: 4.0,
   },
 
   /** Castle + village at golden hour: warm, soft bloom, hazy depth. */
@@ -960,6 +1168,7 @@ class PostFX {
         BASE_GRADE.bloom.radius,
         BASE_GRADE.bloom.threshold
       );
+      sanitiseBloomInput(this.bloomPass);
       composer.addPass(this.bloomPass);
 
       // --- creative grade, still linear and unclamped ------------------------

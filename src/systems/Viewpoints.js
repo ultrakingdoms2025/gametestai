@@ -188,6 +188,8 @@ export function normaliseViewpoint(raw, index) {
     launch: paired ? launch : null,
     hay: paired ? hay : null,
     synced: false,
+    /* Charted is NOT a weaker synced. See {@link Viewpoints.chartNearest}. */
+    charted: false,
   };
 }
 
@@ -210,6 +212,13 @@ export class Viewpoints {
     this._worldId = null;
     /** worldId -> Set of synchronised ids. Survives a world round trip. */
     this._synced = new Map();
+    /**
+     * worldId -> Set of ids a chart has marked. Deliberately a SEPARATE map
+     * from `_synced` rather than a second flag folded into the same set: the
+     * two grant different things, and one set would have made a bought chart
+     * pay a climb's prizes the next time anything counted it.
+     */
+    this._charted = new Map();
     /** Worlds whose whole set has already paid, so the set prize pays once. */
     this._setPaid = new Set();
     /** Whose leap is on offer, so the prompt only writes when it changes. */
@@ -242,6 +251,78 @@ export class Viewpoints {
     return !!this._syncedSet(this._worldId)?.has(id);
   }
 
+  /** @param {string} id */
+  isCharted(id) {
+    return !!this._chartedSet(this._worldId)?.has(id);
+  }
+
+  /** Districts a chart has marked and a climb has not. */
+  get chartedCount() {
+    let n = 0;
+    for (const v of this.list) if (v.charted && !v.synced) n++;
+    return n;
+  }
+
+  /**
+   * Mark the nearest un-marked viewpoint's district on the map.
+   *
+   * The whole effect of the `nav_chart` bag item, and the reason that item is
+   * sellable in this drop rather than being a purchase whose effect arrives in
+   * a later one.
+   *
+   * -- What a chart is NOT --------------------------------------------------
+   * It is not a cheaper synchronisation. `_sync` pays SYNC_CREDITS, three
+   * coins, a fast-travel anchor and a place in the set that pays a cosmetic
+   * and a mount power; a chart pays NONE of those and leaves `synced` false,
+   * so the climb is still worth making and the set still has to be earned on
+   * foot. All it moves is `reveals()`, which is the one thing a piece of paper
+   * drawn by somebody who did climb it could honestly do.
+   *
+   * Nearest is measured from the player, falling back to publication order
+   * when there is no player (a headless caller, a test). Synchronised
+   * viewpoints are skipped because charting one would buy nothing, and that is
+   * a purchase the player should be REFUSED rather than sold: `ItemUse` asks
+   * `canChart()` first and never consumes the chart when the answer is no.
+   *
+   * @returns {{id:string, name:string}|null} the viewpoint marked, or null
+   */
+  chartNearest() {
+    const vp = this._nextChartable();
+    if (!vp) return null;
+    const set = this._chartedSet(this._worldId, true);
+    if (!set) return null;
+    set.add(vp.id);
+    vp.charted = true;
+    this.bus?.emit('viewpoint:charted', {
+      worldId: this._worldId,
+      id: vp.id,
+      name: vp.name,
+      position: { x: vp.x, y: vp.y, z: vp.z },
+      revealRadius: REVEAL_R,
+    });
+    this._announce();
+    return { id: vp.id, name: vp.name };
+  }
+
+  /** True when {@link Viewpoints.chartNearest} would mark something. */
+  canChart() {
+    return this._nextChartable() !== null;
+  }
+
+  /** Nearest viewpoint that is neither synchronised nor already charted. */
+  _nextChartable() {
+    const p = this.player?.position;
+    let best = null;
+    let bestD = Infinity;
+    for (const v of this.list) {
+      if (v.synced || v.charted) continue;
+      if (!p) return v;
+      const d = (v.x - p.x) ** 2 + (v.y - p.y) ** 2 + (v.z - p.z) ** 2;
+      if (d < bestD) { bestD = d; best = v; }
+    }
+    return best;
+  }
+
   /**
    * Fast-travel anchors: the synchronised subset, in publication order.
    * A fresh array each call - this is a menu read, never a frame read.
@@ -271,7 +352,10 @@ export class Viewpoints {
     if (!Number.isFinite(px) || !Number.isFinite(pz)) return false;
     const r2 = REVEAL_R * REVEAL_R;
     for (const v of this.list) {
-      if (!v.synced) continue;
+      /* A charted district reveals on the map and does nothing else - see
+       * `chartNearest`. Same radius, because it is the same claim about what
+       * can be seen from up there; only the way you came by it differs. */
+      if (!v.synced && !v.charted) continue;
       const dx = v.x - px;
       const dz = v.z - pz;
       if (dx * dx + dz * dz <= r2) return true;
@@ -338,13 +422,17 @@ export class Viewpoints {
   /* Persistence                                                         */
   /* ------------------------------------------------------------------ */
 
-  /** @returns {{worlds:Object<string,string[]>, sets:string[]}} */
+  /** @returns {{worlds:Object<string,string[]>, sets:string[], charts:Object<string,string[]>}} */
   serialize() {
     const worlds = {};
     for (const [worldId, set] of this._synced) {
       if (set.size) worlds[worldId] = [...set];
     }
-    return { worlds, sets: [...this._setPaid] };
+    const charts = {};
+    for (const [worldId, set] of this._charted) {
+      if (set.size) charts[worldId] = [...set];
+    }
+    return { worlds, sets: [...this._setPaid], charts };
   }
 
   /**
@@ -372,6 +460,11 @@ export class Viewpoints {
     if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
     this._synced.clear();
     this._setPaid.clear();
+    /* Cleared under the same REPLACE rule as `_synced`, and for a reason of
+     * its own: a chart is a CONSUMED item. Merging would let a player read one,
+     * load a save written before the purchase, and keep both the chart in the
+     * bag and the district it marked. */
+    this._charted.clear();
     // `this.list`'s own `synced` flags need no separate clear: `_applySynced`
     // below assigns `!!set?.has(v.id)` to every one of them, so it un-stamps
     // as well as it stamps. A second loop here would be a guard nothing could
@@ -387,6 +480,15 @@ export class Viewpoints {
     }
     if (Array.isArray(data.sets)) {
       for (const w of data.sets) if (typeof w === 'string' && w) this._setPaid.add(w);
+    }
+    const charts = data.charts;
+    if (charts && typeof charts === 'object' && !Array.isArray(charts)) {
+      for (const worldId of Object.keys(charts)) {
+        const ids = charts[worldId];
+        if (!Array.isArray(ids)) continue;
+        const set = this._chartedSet(worldId, true);
+        for (const id of ids) if (typeof id === 'string' && id) set.add(id);
+      }
     }
     this._applySynced();
     this._announce();
@@ -433,10 +535,28 @@ export class Viewpoints {
     return set ?? null;
   }
 
+  /** @param {string|null} worldId */
+  _chartedSet(worldId, create = false) {
+    if (worldId === null || worldId === undefined) return null;
+    let set = this._charted.get(worldId);
+    if (!set && create) {
+      set = new Set();
+      this._charted.set(worldId, set);
+    }
+    return set ?? null;
+  }
+
   /** Stamp the stored ids onto the live list. */
   _applySynced() {
     const set = this._syncedSet(this._worldId);
-    for (const v of this.list) v.synced = !!set?.has(v.id);
+    const charted = this._chartedSet(this._worldId);
+    for (const v of this.list) {
+      v.synced = !!set?.has(v.id);
+      /* Un-stamps as well as stamps, and it must: `deserialize` REPLACES both
+       * maps, and a load that left a stale `charted` on the live list would
+       * keep a district the save it loaded does not contain. */
+      v.charted = !!charted?.has(v.id);
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -565,6 +685,7 @@ export class Viewpoints {
     this.bus?.emit('viewpoints:changed', {
       worldId: this._worldId,
       synced: this.syncedCount,
+      charted: this.chartedCount,
       total: this.total,
     });
   }

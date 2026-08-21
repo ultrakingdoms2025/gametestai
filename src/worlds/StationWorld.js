@@ -1072,34 +1072,21 @@ const SIGNS = [
   ['THE VERDANT COIL', 'GATEWAY 05 AHEAD', '#8fd67a'],
   ['NO WAY BACK BUT THROUGH', 'HEDGE MAZE // NO EQUIPMENT', '#8fd67a'],
   ['LOST PROPERTY', 'ENQUIRE AT GATEWAY 05', '#8fe6c8'],
-  /* --- Gateway 06: the survey site. Appended for the same reason as 05 -
+  /* --- Gateway 06: Lodestar Yard. Appended for the same reason as 05 -
    *     `SIGN_ROLE` indexes this array positionally, so inserting anywhere
    *     above re-letters every sign after the insertion point.
    *
-   *     The copy is the in-world statement that this gateway is provisional.
-   *     A player who walks up to it should not have to guess why the sixth
-   *     door leads somewhere unfinished; the placard says so before they step
-   *     through, which is the difference between a placeholder and a bug. */
-  ['GATEWAY 06', 'SURVEY SITE // UNCOMMISSIONED', '#9fb8c8'],
-  ['SURVEY SITE 06', 'GATEWAY 06 AHEAD // NOT COMMISSIONED', '#9fb8c8'],
-  /* Four, not two.
-   *
-   * A row is four cells and `paintSignAtlas` destructures `SIGNS[i]`
-   * unconditionally for every cell in the sheet, so a row holding two entries
-   * throws "Cannot destructure property" before the station finishes building.
-   * I had called the other two "spare"; the painter has no such concept, and
-   * `rules-applied.test.mjs` caught the boot crash on the first run - which is
-   * exactly the failure its docstring says it exists to catch.
-   *
-   * Filled with real role-reserved copy rather than blanks, which is the
-   * pattern the maze set: it authored GATEWAY 05, an approach board, a warning
-   * and a lost-property notice for one gateway, and places exactly one of the
-   * four. `approachMaze`, `mazeWarning` and `lostProperty` have been reserved
-   * and unplaced ever since. These two are the same - authored, reserved, and
-   * ready the moment the survey site earns the signage a commissioned world
-   * would carry. */
-  ['NO WORKS AUTHORISED', 'SITE UNDER SURVEY // 06', '#9fb8c8'],
-  ['GATEWAY 06 ENQUIRIES', 'SITE OFFICE // NOT YET BUILT', '#8fb8ff'],
+   *     These four rows were written for Survey Site 06 and said, in order,
+   *     that the site was uncommissioned, that it was uncommissioned, that no
+   *     works were authorised, and that the site office had not been built.
+   *     The site IS commissioned now and the office IS built, so the copy is
+   *     replaced in place rather than added to: four cells, four roles, same
+   *     indices, and `RESERVED_ROLES = 44` in station-floor-numbers.test.mjs
+   *     stays 44. */
+  ['GATEWAY 06', 'LODESTAR YARD // SHIPYARD', '#ffa040'],
+  ['LODESTAR YARD', 'GATEWAY 06 AHEAD // ASSEMBLY BAY 06', '#ffa040'],
+  ['YARD TRAFFIC', 'HULL SECTIONS THROUGH GATE 06', '#ffb020'],
+  ['GATEWAY 06 ENQUIRIES', 'SITE OFFICE // LODESTAR YARD', '#8fb8ff'],
 ];
 
 /**
@@ -1139,10 +1126,12 @@ const SIGN_ROLE = {
   approachMaze: 37,
   mazeWarning: 38,
   lostProperty: 39,
-  gatewaySurvey: 40,
-  approachSurvey: 41,
-  surveyWarning: 42,
-  surveyEnquiries: 43,
+  /* Gateway 06. The four indices do not move - see the note beside the copy
+   * above - only what they now say. */
+  gatewayDock: 40,
+  approachDock: 41,
+  dockTraffic: 42,
+  dockEnquiries: 43,
 };
 
 /* ------------------------------------------------------------------ */
@@ -6198,14 +6187,20 @@ export class StationWorld extends World {
       { target: 'maze', label: 'The Verdant Coil', accent: 0x8fd67a, em: 'emGreen', signRole: SIGN_ROLE.gatewayMaze },
       { target: 'citadel', label: 'Sunspire Citadel', accent: 0xffc46b, em: 'emAmber', signRole: SIGN_ROLE.gatewayCitadel },
       { target: 'medieval', label: 'Ashfall Reach', accent: 0xffb347, em: 'emAmber', signRole: SIGN_ROLE.gatewayMedieval },
-      /* The sixth. Fully live and routed to a placeholder world, which is why
-       * it is in this table and not commented out: a sealed arch would have to
-       * be un-sealed by editing the builder, and the builder is the thing this
-       * change exists to stop editing per gateway. Its accent is the one
-       * deliberately desaturated hue on the ring - instrument grey-blue - so
-       * that from across the plaza it reads as the gateway that has not been
-       * given an identity yet. */
-      { target: 'survey', label: 'Survey Site 06', accent: 0x9fb8c8, em: 'emCyan', signRole: SIGN_ROLE.gatewaySurvey },
+      /* The sixth, and no longer a placeholder: Survey Site 06 was commissioned
+       * and is Lodestar Yard now. The row is EDITED rather than added -
+       * `GATEWAY_BEARINGS_DEG` is still six long and the length check below
+       * throws if this table and the bearing list ever disagree, so retiring
+       * the survey site by deleting its row would have built five gateways and
+       * left the 330-degree bearing empty.
+       *
+       * Its accent moves off the deliberately desaturated instrument grey-blue
+       * the survey site carried, because that hue MEANT "this gateway has not
+       * been given an identity yet" and it has one now. Amber, with the sodium
+       * emissive family: from across the plaza the sixth door now reads as
+       * industrial rather than provisional, which is the one thing about it
+       * that changed. */
+      { target: 'dock', label: 'Lodestar Yard', accent: 0xffa040, em: 'emAmber', signRole: SIGN_ROLE.gatewayDock },
     ];
     if (table.length !== GATEWAY_BEARINGS_DEG.length) {
       throw new Error(
@@ -8020,7 +8015,7 @@ export class StationWorld extends World {
      * It was four 26 x 22 blocks at r = 104 on bearings 30, 150, 210 and 330 -
      * "inter-avenue backdrop, minus the two gateway bearings" - and those are
      * now precisely the four bearings the race, maze and citadel gateways moved
-     * onto plus the new survey gateway. Each block would stand centred on a
+     * onto plus the sixth gateway to the yard. Each block would stand centred on a
      * gateway's axis spanning r = 93..115, which the rule fifteen lines above
      * forbids in as many words: "Nothing may stand on either gateway axis
      * inside |x| < 26 between r = 60 and r = 128."

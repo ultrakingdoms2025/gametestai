@@ -39,6 +39,51 @@ describe('mount customizer catalog rows', () => {
     const keys = BASE_ITEMS.map((r) => r.source_key);
     expect(new Set(keys).size).toBe(keys.length);
     for (const k of ['mount_strength_1', 'mount_shield_3', 'mount_power_2', 'cosmetic_car_neon', 'pack_medkit']) expect(keys).toContain(k);
-    expect(buildMarketplaceSeedItems().length).toBe(BASE_ITEMS.length * MARKETPLACE_WORLDS.length);
+    // Seeded per world, MINUS the rows a `worlds` allowlist withholds. Written
+    // as the sum rather than the product because the yard's four rows are the
+    // first ever to carry one; a flat product would go green again the day
+    // somebody deleted an allowlist and seeded a `ships` row into a world with
+    // no counter that stocks it.
+    const seeded = MARKETPLACE_WORLDS.reduce((n, w) => n
+      + BASE_ITEMS.filter((r) => !r.worlds || (r.worlds as readonly string[]).includes(w)).length, 0);
+    expect(buildMarketplaceSeedItems().length).toBe(seeded);
+    expect(seeded).toBeLessThan(BASE_ITEMS.length * MARKETPLACE_WORLDS.length);
+  });
+
+  /**
+   * The yard's four rows, and the reach rule behind the allowlist on each.
+   *
+   * `Marketplace.refreshCatalog` filters the open window by the standing
+   * vendor's `vendorCategories` and `_findVendor` only sees NPCs within
+   * `VENDOR_RANGE = 7` m, so a row seeded into a world where no counter
+   * carries its category is a catalogue entry nobody in that world can be
+   * shown. The in-game half of this - that the yard's own counters do stock
+   * every one of these - is asserted against `DockWorld` itself in
+   * scripts/tests/dock-economy.test.mjs, which is the suite that actually runs
+   * in CI.
+   */
+  it('the Lodestar Yard rows exist, grant real items and are stocked only where a counter carries them', () => {
+    const yard = Object.fromEntries(BASE_ITEMS
+      .filter((r) => ['pack_laser_cell', 'part_hull_plate', 'part_thruster_coil', 'pack_nav_chart'].includes(r.source_key))
+      .map((r) => [r.source_key, r]));
+    expect(Object.keys(yard).sort()).toEqual(['pack_laser_cell', 'pack_nav_chart', 'part_hull_plate', 'part_thruster_coil']);
+
+    expect(yard.pack_laser_cell.category).toBe('weapons');
+    expect(yard.pack_laser_cell.action_config).toEqual({ effect: 'grant_ammo', ammo_item: 'laser_cell', amount: 40 });
+    expect(yard.part_hull_plate.category).toBe('ships');
+    expect(yard.part_thruster_coil.category).toBe('ships');
+    expect(yard.pack_nav_chart.category).toBe('tools');
+
+    // `ships` exists nowhere but the yard, so its rows go nowhere but the yard.
+    for (const r of BASE_ITEMS) {
+      if (r.category !== 'ships') continue;
+      expect(r.worlds, `${r.source_key} is a ships row with no world allowlist`).toEqual(['dock']);
+    }
+    // The chart's effect is a viewpoint, and exactly two worlds publish any.
+    expect(yard.pack_nav_chart.worlds).toEqual(['citadel', 'dock']);
+    expect(yard.pack_laser_cell.worlds).toEqual(['dock']);
+
+    // Buy over sell on every one: buy -> sell -> buy must never print credits.
+    for (const r of Object.values(yard)) expect(r.cost_buy).toBeGreaterThan(r.cost_sell);
   });
 });

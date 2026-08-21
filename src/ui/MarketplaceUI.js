@@ -327,9 +327,23 @@ export class MarketplaceUI {
       this.body.appendChild(el('div', 'mkt-empty', 'Loading catalog...'));
       return;
     }
-    if (this.market.error) {
+    /* An offline shop is a SHOP, with a notice on it.
+     *
+     * This used to `return` on any error, so a 404 from the catalogue endpoint
+     * drew one neutral line - "not found" - and the vendor sold nothing. That
+     * is indistinguishable from a vendor who stocks nothing, and it made every
+     * credit in the game unspendable on a `vite`-only build.
+     *
+     * `Marketplace` now falls back to the bundled catalogue, so the error is
+     * only fatal when the fallback ALSO came back empty (a world with no
+     * market table, which is a world whose vendors should not open anyway). */
+    if (this.market.error && !this.market.offline) {
       this.body.appendChild(el('div', 'mkt-empty', this.market.error));
       return;
+    }
+    if (this.market.offline) {
+      this.body.appendChild(el('div', 'mkt-offline',
+        'Trade network unreachable — showing the counter’s standing stock. Prices are local.'));
     }
 
     const rows = this.market.items ?? [];

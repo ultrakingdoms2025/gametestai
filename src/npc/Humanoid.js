@@ -508,6 +508,12 @@ export const THEME_RIM = {
   // silhouette has the least background contrast of the three worlds and needs
   // the *most* edge, not the least. At 0.30 the limbs merged into the deck.
   sports: { hex: 0xbfe6ff, strength: 0.45 },
+  /* The yard is the darkest interior in the game and its key is amber, so the
+   * rim does two jobs at once: it separates a figure from an unlit bay, and it
+   * is the only cool light on a character standing in a sodium pool. Cooler
+   * and slightly weaker than the station's - the background is darker here, so
+   * the silhouette already has contrast the station's does not. */
+  dock: { hex: 0xbcd8ff, strength: 0.52 },
 };
 
 /* ------------------------------------------------------------------ */
@@ -3909,6 +3915,23 @@ export const THEME_VARIANTS = {
   station: ['eva', 'rig', 'jumpsuit'],
   medieval: ['tunic', 'mail', 'robe'],
   sports: ['jersey', 'track', 'skate'],
+  /* Lodestar Yard.
+   *
+   * The GARMENTS are the station's, and that is a decision rather than a
+   * shortcut: `runOutfit` falls through to `buildStationOutfit` for anything
+   * that is not medieval or sports, so the three names below are three real
+   * builders that already exist, and they are exactly the three a shipyard
+   * wears - a hard EVA suit for the ones working outside a hull, a rig harness
+   * for the ones up the gantry, a jumpsuit for everybody else. Inventing
+   * `overalls` as a fourth name would give the yard a variant with no builder,
+   * which resolves to the jumpsuit anyway and would only make the table lie.
+   *
+   * What is NOT the station's is everything below - palette, cloth kind and
+   * rim - which is where a costume set actually lives. `citadel` and `maze`
+   * are still absent from all four of these tables and still fall back to
+   * `station` silently; that is a defect in those worlds, not a licence to add
+   * a seventh. */
+  dock: ['eva', 'rig', 'jumpsuit'],
 };
 
 /**
@@ -3973,9 +3996,32 @@ const PALETTES = {
     { primary: 0x8f2fd0, secondary: 0xf0f0f5, leather: 0x202227, metal: 0xb2b8bf, glow: 0xff3bd2 },
     { primary: 0x101418, secondary: 0xe8e8ee, leather: 0x1a1c20, metal: 0xbcc2c8, glow: 0x3bd2ff },
   ],
+  /* Lodestar Yard, built on the same VALUE contract as the station and on the
+   * opposite HUE from it, because the two worlds light their people
+   * differently and a set copied across would dissolve.
+   *
+   * The station is a cold blue-grey hull lit neutrally, so its crew are warm:
+   * ochre and rust secondaries read out of a blue bay. The yard is the inverse
+   * - a dark shed with amber sodium pools - and a warm secondary in an amber
+   * pool is the same colour as the light falling on it. So every secondary
+   * here is COOL and high, 0.45-0.60 linear: bleached grey-green, ice, pale
+   * slate. Against a sodium worklight they read as hi-vis, and in the unlit
+   * parts of the bay they are the one thing in the frame that is not brown.
+   *
+   * The glow accent is cyan and cyan only, matching the yard's own wayfinding
+   * (the keel line, the berth numbers) rather than its lighting. It covers
+   * under 8% of the figure; nothing else on a yard hand is saturated. */
+  dock: [
+    { primary: 0x2b2e33, secondary: 0xc6d0c4, leather: 0x565b60, metal: 0x99a3ae, glow: 0x4fe3ff },
+    { primary: 0x35302a, secondary: 0xb8c4c8, leather: 0x5f5850, metal: 0xa2aab4, glow: 0x6cd8ff },
+    { primary: 0x2e3336, secondary: 0xd0d6d2, leather: 0x5a6166, metal: 0x949ca6, glow: 0x4fe3ff },
+    { primary: 0x3b332c, secondary: 0xb2bfbb, leather: 0x655a4e, metal: 0x8f98a4, glow: 0x8ce4ff },
+    { primary: 0x2a3130, secondary: 0xc8cec0, leather: 0x545c58, metal: 0x9aa09a, glow: 0x5ad8f2 },
+    { primary: 0x38312e, secondary: 0xbec6cc, leather: 0x635850, metal: 0xa09796, glow: 0x4fe3ff },
+  ],
 };
 
-const CLOTH_KIND = { station: 'tech', medieval: 'knit', sports: 'jersey' };
+const CLOTH_KIND = { station: 'tech', medieval: 'knit', sports: 'jersey', dock: 'tech' };
 
 /**
  * The top of this ramp used to sit at 0xffe2c8, which is 1.0 in red before the

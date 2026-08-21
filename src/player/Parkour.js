@@ -105,9 +105,20 @@ const P = CONFIG.player;
 const clamp = THREE.MathUtils.clamp;
 const damp = THREE.MathUtils.damp;
 
-/** Impact speed below which a landing is free. Measured: a 7.0 m drop. */
+/**
+ * Impact speed below which a landing is free. Measured: a 7.0 m drop.
+ *
+ * DELIBERATELY NOT PER-WORLD, and this is the item the whole per-world gravity
+ * change exists for. Damage is keyed to impact SPEED, and `v = √(2gh)` does the
+ * scaling for free: the same 18 m/s is a 7.49 m drop at default gravity and a
+ * 45.26 m drop on Tessera, so the HEIGHT a player learns moves with the world
+ * they learned it on without a single constant here being touched. Scaling this
+ * as well would scale it twice and hand Tessera back its lethal 7 m ledge.
+ * @see ./Player.js the per-world gravity design block
+ */
 const SAFE_SPEED = 18;
-/** Impact speed that kills outright from full health. Measured: a 40.0 m drop. */
+/** Impact speed that kills outright from full health. Measured: a 40.0 m drop.
+ *  Absolute for the same reason - 40.06 m at default, 242.68 m on Tessera. */
 const LETHAL_SPEED = 42;
 /**
  * A roll removes this much of the damage above the safe threshold.
@@ -187,7 +198,17 @@ const ROLL_IFRAMES = 0.40;
  */
 const DODGE_COOLDOWN = 1.2;
 
-/** Extra horizontal speed a running leap adds, and what it costs. */
+/**
+ * Extra horizontal speed a running leap adds, and what it costs.
+ *
+ * `LEAP_BOOST` is a MULTIPLIER on the run-up already in the velocity, and
+ * `LEAP_MIN_SPEED`, `ROLL_SPEED` and `ROLL_FLOOR_MAX` are planar speeds off
+ * `P.sprintSpeed`. None of them is a gravity, none of them scales, and none of
+ * them should: how fast a body runs is not a statement about the ground pulling
+ * it. The only per-world term in a leap is the LIFT, which `tryLeap` writes
+ * absolutely off the config and `Player` rescales by `jumpScale` on the same
+ * step - see the note at the jump in `Player.fixedUpdate`.
+ */
 const LEAP_BOOST = 1.42;
 const LEAP_LIFT = 1.12;
 const LEAP_STAMINA = 14;
@@ -202,10 +223,39 @@ const LEAP_STAMINA = 14;
  */
 const LEAP_MIN_SPEED = 5.2;
 
-/** Downward and forward acceleration while diving. */
+/**
+ * Downward and forward acceleration while diving, and the fall speed that arms
+ * it - all three authored against `CONFIG.player.gravity` and all three scaled
+ * per world in {@link Parkour#fixedUpdate}.
+ *
+ * ── Why an absolute dive is the worst of the three to leave alone ─────────
+ * `DIVE_ACCEL` is 16 against a gravity of 22, i.e. **a dive is 0.73x gravity**,
+ * and that fraction is the whole feel of it: crouch and you fall about three
+ * quarters again as fast. Left absolute it is 0.73x on the station and **4.4x
+ * on Tessera**, where gravity is -3.633 - so the one verb whose entire purpose
+ * is "go down faster" would go from a steepening to a rocket, and the moon
+ * whose design is a floaty jump would ship with a button that cancels it. It
+ * scales as `r` ({@link Player#gravityRatio}), and 0.73x is 0.73x everywhere.
+ *
+ * `DIVE_FORWARD` is mid-air steering by another name - the same quantity
+ * `P.airAcceleration` is, applied on top of it - so it takes the same exponent,
+ * `r^⅔` ({@link Player#airScale}). That holds the product `a·T` invariant, so
+ * the forward CARRY one dive buys is the same on every world however long the
+ * dive lasts. A dive is committed and not free, for the reason a jump is.
+ *
+ * `DIVE_MIN_FALL` is a vertical SPEED, so it takes `r^⅓`
+ * ({@link Player#jumpScale}). Left absolute, 3.0 m/s is 22% of the way down
+ * from a default apex and 73% of the way down from Tessera's - the dive would
+ * arm almost too late to use on the world it matters most on. Scaled, it arms
+ * at the same fraction of the arc everywhere.
+ *
+ * All three multiply by exactly 1 on a world that publishes no gravity, which
+ * IEEE-754 leaves alone to the bit - the parkour ratchet is the proof.
+ * @see ../../scripts/tests/parkour.test.mjs 'THE RATCHET'
+ * @see ./Player.js the per-world gravity design block
+ */
 const DIVE_ACCEL = 16;
 const DIVE_FORWARD = 7.5;
-/** A dive only starts once you are actually falling this fast. */
 const DIVE_MIN_FALL = 3.0;
 
 /* ------------------------------------------------------------------ *
@@ -468,7 +518,13 @@ export class Parkour {
      * full dive weight - the body held its head-first pose and the camera held
      * 19.5 degrees of pitch-down for the whole of a four-second ASCENT. Written
      * as one boolean it cannot drift apart again. */
-    const wantsDive = !grounded && !!s.crouch && vy < -DIVE_MIN_FALL && !p.isFreeClimbing;
+    /* The three dive constants, on this world. Read off `Player`, which
+     * resolved them once on `world:changed`, rather than recomputed here: a
+     * cube root of the ratio taken a second time is the design rule stated a
+     * second time. Three plain property reads, and every one of
+     * them is a literal 1 on a world that publishes no gravity. @see DIVE_ACCEL */
+    const minFall = DIVE_MIN_FALL * p.jumpScale;
+    const wantsDive = !grounded && !!s.crouch && vy < -minFall && !p.isFreeClimbing;
     if (wantsDive) {
       if (!this.diving) {
         this.diving = true;
@@ -476,10 +532,11 @@ export class Parkour {
       }
       // Steepen and lengthen: a dive is how you *reach* the haystack, so it has
       // to add forward carry as well as speed, or it is only a faster death.
-      p.velocity.y -= DIVE_ACCEL * dt;
+      p.velocity.y -= DIVE_ACCEL * p.gravityRatio * dt;
       const yaw = p.yaw;
-      p.velocity.x += -Math.sin(yaw) * DIVE_FORWARD * dt;
-      p.velocity.z += -Math.cos(yaw) * DIVE_FORWARD * dt;
+      const diveFwd = DIVE_FORWARD * p.airScale;
+      p.velocity.x += -Math.sin(yaw) * diveFwd * dt;
+      p.velocity.z += -Math.cos(yaw) * diveFwd * dt;
     } else if (this.diving) {
       this._endDive();
     }

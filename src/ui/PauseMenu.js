@@ -24,7 +24,7 @@
  * item still works perfectly.
  */
 export const PAUSE_MENU_IDS = [
-  'resume', 'character', 'mount', 'inventory', 'quests', 'map', 'race', 'minigame-quit',
+  'resume', 'character', 'mount', 'ship', 'inventory', 'quests', 'map', 'race', 'minigame-quit',
   'help', 'audio', 'keybinds', 'fullscreen', 'diagnostics', 'save', 'load', 'bug-report', 'quit',
 ];
 

@@ -992,6 +992,36 @@ export class ProjectileSystem {
 
     p.px[slot] = o.x; p.py[slot] = o.y; p.pz[slot] = o.z;
     p.vx[slot] = d.x * speed; p.vy[slot] = d.y * speed; p.vz[slot] = d.z * speed;
+    /* THE WEAPON'S DROOP, AND DELIBERATELY NOT THE WORLD'S GRAVITY.
+     *
+     * Ten planets publish a surface gravity, the player's legs scale with it,
+     * and the obvious next step is to scale this too. It is the wrong step, and
+     * the numbers say so before the design does: the arrow asks for -11.5 and
+     * the fireball for -2.4 against a player gravity of -22, i.e. 0.52x and
+     * 0.11x. Neither was ever the world's gravity. They are WEAPON parameters -
+     * the arrow's heft, the bolt's "not a laser" - authored on the same page
+     * as its draw time and its damage, and there is nothing in them to scale.
+     *
+     * Scaling them anyway would cost the one thing the player actually owns
+     * here. A jump announces its own gravity in the first step you take; a shot
+     * announces nothing at all. There is no ballistic reticle in this game, so
+     * the arc IS the aim, learned by firing - and the same bow is carried
+     * through a portal from the citadel to a moon with no HUD element anywhere
+     * saying the drop just changed by 6x. Worse, the direction of the change is
+     * the boring one: only Tessera (0.165) and Lathe (0.194) are light enough to
+     * matter, and on both of them a scaled arrow flies flat, which does not make
+     * archery different, it deletes it. The other eight planets sit between 0.67
+     * and 1.03 g, where the whole correction is smaller than the spread of a
+     * hurried shot.
+     *
+     * The rule that falls out is worth stating, because it is what tells the
+     * next reader which side of the line a new number is on: **a BODY in the
+     * world falls at the world's gravity - the player, an NPC, a beast, a
+     * corpse. A projectile falls at its weapon's.** Accepted consequence: fire
+     * an arrow while jumping on Tessera and it visibly outruns you downward.
+     * @see ../weapons/Bow.js `SPEC.gravity`
+     * @see ../player/Player.js the per-world gravity design block
+     */
     p.grav[slot] = opts.gravity ?? 0;
     p.damage[slot] = opts.damage ?? 30;
     p.radius[slot] = opts.radius ?? (kind === KIND_ARROW ? 0.05 : 0.28);

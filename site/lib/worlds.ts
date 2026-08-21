@@ -1,4 +1,4 @@
-export type WorldId = 'station' | 'medieval' | 'sports' | 'citadel' | 'race' | 'maze';
+export type WorldId = 'station' | 'medieval' | 'sports' | 'citadel' | 'race' | 'maze' | 'dock';
 export type WorldSceneId = WorldId;
 
 export interface WorldDef {
@@ -36,9 +36,22 @@ export const WORLDS: readonly WorldDef[] = [
   { id: 'maze',     index: 6, name: 'The Verdant Coil',     role: 'Volatile world',    kicker: 'Hedge maze',
     copy: 'A hedge maze that re-rolls its layout on every single entry. The maze that cannot be learned — that is the entire point.',
     fact: 'Re-generates its layout every visit', accent: '#8fd67a', loreScope: 'maze', scene: 'maze', painterKey: 'maze' },
+  /* World 06 behind gateway six. `accent` is not chosen here — it is
+   * `0xffa040`, the colour StationWorld.js gives the sixth gateway arch, so the
+   * card on this page and the door in the game are the same amber.
+   *
+   * `scene: 'dock'` has no factory in `GatewayDescent`'s SCENE_FACTORIES yet
+   * and that is legal by construction: the registry falls back to a trivial
+   * empty scene for any world missing from it, "so scenes can land
+   * incrementally with zero wiring". The STATIC painter is not optional the
+   * same way — a missing `painterKey` renders a blank plate — so `yard` is
+   * authored in painters.ts alongside this row. */
+  { id: 'dock',     index: 7, name: 'Lodestar Yard',        role: 'Industrial world',  kicker: 'Shipyard',
+    copy: 'A cold, half-finished shipyard under a 26 m roof. Four hulls on cradles, a gantry over them, and a countdown board that has never moved.',
+    fact: 'Four walk-in ships · LAUNCHES: 000', accent: '#ffa040', loreScope: 'dock', scene: 'dock', painterKey: 'yard' },
 ] as const;
 // painterKey maps canonical ids → existing painters.ts keys (medieval→valley, race→circuit).
-// 'station/sports/citadel' already match; 'maze' painter is authored later (Task 11).
+// 'station/sports/citadel/maze' already match; 'dock' paints as 'yard'.
 
 // Roster counts verified against src/mounts/MountManager.js (6) and src/player/Loadout.js (4).
 export const MOUNTS = 6;

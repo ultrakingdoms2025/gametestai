@@ -38,6 +38,300 @@ import { cellToWorld } from '../worlds/maze/MazeColliders.js';
 import { shaftColliders, connectorHoleBounds } from '../worlds/maze/MazeShafts.js';
 import { setMazeSurfaceMode, mazeSurfaceMode } from '../worlds/maze/MazeMaterials.js';
 import { walkWorldTriangles } from './WorldTriangles.js';
+import { BERTHS } from '../worlds/dock/YardPlan.js';
+import { HULLS } from '../worlds/dock/HullPlan.js';
+import { SPACE_BODIES } from '../worlds/space/Bodies.js';
+
+/* ------------------------------------------------------------------ */
+/* Framings that are DERIVED rather than typed                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A point in a berthed hull's own local frame, in world coordinates.
+ *
+ * The same transform `ShipBuild` uses to place every box in the hull
+ * (`ox + lx*cos + lz*sin`, `oz - lx*sin + lz*cos`), so a framing computed from
+ * a room's declared span lands where that room actually is. All three flyable
+ * berths are yawed PI, but the arithmetic is written in full because the
+ * Bastion is not and the next berth added may not be either.
+ *
+ * @param {object} b a `YardPlan.BERTHS` row
+ * @param {number} lx @param {number} ly above the cradle top @param {number} lz
+ */
+function berthPoint(b, lx, ly, lz) {
+  const c = Math.cos(b.yaw);
+  const s = Math.sin(b.yaw);
+  return [b.x + lx * c + lz * s, b.cradleTop + ly, b.z - lx * s + lz * c];
+}
+
+/**
+ * The frame this file reasons about when it says "fills the frame".
+ *
+ * The canvas is whatever the reviewer's window is; 16:9 is the shape every
+ * screenshot in this project has been taken at and the shape
+ * `harness-framings.test.mjs` re-derives coverage against, so the two agree.
+ */
+export const FRAME_ASPECT = 16 / 9;
+
+/**
+ * How much of the frame a hull framing puts its subject across, on the worse
+ * of the two axes.
+ *
+ * 0.88 rather than 1.0 so the extremities — a fin tip, the Dray's derrick head
+ * — sit inside the frame with a margin instead of touching the edge, which is
+ * what a photographer would do and what makes a silhouette legible. Fitted
+ * against the hull's PLAN box; `harness-framings.test.mjs` then holds the
+ * DRAWN hull to a floor well under it, because drawn dressing can exceed the
+ * plan and a ceiling would be a false failure.
+ */
+const FRAME_TARGET = 0.88;
+
+/**
+ * Where a world point lands in normalised device coordinates, for a camera at
+ * `eye` looking at `at`. ±1 is the edge of frame on each axis.
+ *
+ * Hand-rolled rather than borrowed from a `THREE.PerspectiveCamera` so that the
+ * FRAMING TABLE can be computed at module load, in Node, with no renderer and
+ * no DOM — which is what lets the test assert coverage on the same arithmetic
+ * the harness used to choose the camera.
+ *
+ * @returns {[number, number, number]} x, y, and camera-space depth (negative
+ *   means the point is behind the camera).
+ */
+function ndcOf(p, eye, at, fovDeg, aspect = FRAME_ASPECT) {
+  let fx = at[0] - eye[0], fy = at[1] - eye[1], fz = at[2] - eye[2];
+  const fl = Math.hypot(fx, fy, fz) || 1;
+  fx /= fl; fy /= fl; fz /= fl;
+  // right = normalise(forward x worldUp); worldUp is +Y, so this collapses.
+  let rx = -fz, rz = fx;
+  const rl = Math.hypot(rx, rz) || 1;
+  rx /= rl; rz /= rl;
+  // up = right x forward
+  const ux = -rz * fy, uy = rz * fx - rx * fz, uz = rx * fy;
+  const dx = p[0] - eye[0], dy = p[1] - eye[1], dz = p[2] - eye[2];
+  const cz = dx * fx + dy * fy + dz * fz;
+  if (cz <= 1e-6) return [0, 0, cz];
+  const cx = dx * rx + dz * rz;
+  const cy = dx * ux + dy * uy + dz * uz;
+  const t = Math.tan((fovDeg * Math.PI) / 360);
+  return [cx / (cz * t * aspect), cy / (cz * t), cz];
+}
+
+/**
+ * How much of the frame a set of world points covers, as a fraction per axis.
+ * 1.0 is edge to edge; over 1.0 is cropped.
+ */
+export function frameCoverage(points, eye, at, fovDeg, aspect = FRAME_ASPECT) {
+  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+  for (const p of points) {
+    const [x, y, z] = ndcOf(p, eye, at, fovDeg, aspect);
+    if (z <= 1e-6) return { w: Infinity, h: Infinity };
+    if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+    if (y < mny) mny = y; if (y > mxy) mxy = y;
+  }
+  return { w: (mxx - mnx) / 2, h: (mxy - mny) / 2 };
+}
+
+/**
+ * The extremities of a hull, read out of its own `HullPlan` entry.
+ *
+ * ── WHY THIS IS A WALK AND NOT THREE FIELD READS ─────────────────────────
+ * The obvious box is `ledge.outer` by `z0..z1` by `spine.y`, and it is wrong
+ * by a factor of two on two of the three hulls. The Pike's plan half-beam is
+ * 2.35 and she is 5.60 across her wings; the Kestrel's is 2.30 and she is 4.73
+ * across her nacelles; the Dray's crown is 6.54 and her derrick head is at
+ * 12.20. A framing fitted to the narrow box walks the camera inside the ship.
+ *
+ * So every nested plan record is walked and every field whose NAME says which
+ * axis it is on contributes. That is mechanical, so it keeps tracking the hull
+ * when a hull grows a part, which is exactly the drift that put the old typed
+ * framings on the shop floor. It over-includes rather than under-includes —
+ * the yard's own brow and the Pike's scaffold are in these numbers and they
+ * are in the shot, because this framing photographs a hull IN ITS BERTH.
+ *
+ * @returns {{hw:number, top:number, z0:number, z1:number}} hull-local
+ */
+function planExtents(H) {
+  let hw = 0, top = 0, z0 = 0, z1 = 0;
+  const X = ['hw', 'outer', 'x0', 'x1', 'lx', 'headX', 'mastX', 'width', 'deckX0', 'deckX1'];
+  const Y = ['y', 'y0', 'y1', 'top', 'ceilY', 'headY', 'heelY', 'mastTop', 'tipY', 'rise'];
+  const Z = ['z', 'z0', 'z1', 'lz', 'mastZ', 'tipZ', 'footZ', 'deckZ0', 'deckZ1'];
+  const eat = (o, depth) => {
+    if (!o || typeof o !== 'object' || depth > 2) return;
+    for (const k in o) {
+      const v = o[k];
+      if (v && typeof v === 'object') { eat(v, depth + 1); continue; }
+      if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+      if (X.includes(k)) hw = Math.max(hw, Math.abs(v));
+      else if (Y.includes(k)) top = Math.max(top, v);
+      else if (Z.includes(k)) { z0 = Math.min(z0, v); z1 = Math.max(z1, v); }
+    }
+  };
+  eat(H, 0);
+  return { hw, top, z0, z1 };
+}
+
+/**
+ * The eight corners of a hull's extremity box, in world space.
+ *
+ * The PLAN, not the drawn geometry: this runs at module load with no world
+ * built and no renderer, which is what lets `harness-framings.test.mjs` check
+ * the same arithmetic under `node --test`.
+ */
+function hullCorners(b, e) {
+  const out = [];
+  for (const lx of [-e.hw, e.hw]) {
+    for (const ly of [Math.min(0, -0.6), e.top]) {
+      for (const lz of [e.z0, e.z1]) out.push(berthPoint(b, lx, ly, lz));
+    }
+  }
+  return out;
+}
+
+/**
+ * Two framings for one berthed hull: a three-quarter from the apron side, and
+ * one standing inside its largest compartment.
+ *
+ * The stand-off is measured from the BERTH BOX (`b.hw`/`b.hd`, which is what
+ * the yard reserved for this hull) rather than from a guess, and the camera is
+ * put on whichever flank the apron is on - the side a player actually walks
+ * up. Both are the reason these are generated: the previous table had them
+ * typed, the berths moved onto the piers, and every one of them ended up
+ * framing empty floor.
+ *
+ * @param {object} b a `YardPlan.BERTHS` row
+ * @param {object} H the matching `HullPlan.HULLS` entry
+ */
+function berthViews(b, H) {
+  const out = [];
+  /* Which way the apron lies from the berth centre, in world XZ. */
+  const ax = b.apron.x - b.x;
+  const az = b.apron.z - b.z;
+  const al = Math.hypot(ax, az) || 1;
+  const ux = ax / al;
+  const uz = az / al;
+  /* Along the hull, so the shot is a three-quarter and not a flat broadside —
+   * and specifically along the hull's OWN NOSE, `berthPoint`'s +Z. Taken as a
+   * 90-degree turn off the apron bearing it landed on whichever quarter that
+   * happened to give, which for the Kestrel was ASTERN: the shot showed a
+   * transom, two nacelles and no nose at all, and the nose is the single thing
+   * in a silhouette that says "spacecraft". */
+  const lx = Math.sin(b.yaw);
+  const lz = Math.cos(b.yaw);
+  /* ── THE LENS, AND THE CLAIM THAT WAS NOT A MEASUREMENT ─────────────────
+   *
+   * What stood here said, as a measured fact: "At `hw + 8`, with the camera at
+   * chest height on the apron, the hull fills the frame and the sky is behind
+   * it." It does not. Driven live and the hull's own bounding box projected
+   * through the camera the harness actually sets:
+   *
+   *   kestrel   camera (-51.0, 2.9, -132.8)  fov 74  19.8 m off a 6.8 m hull
+   *                                          -> 33.3% of frame width, 36.9% of height
+   *   pike                                   -> 45.7% x  53.3%
+   *   dray                                   -> 63.5% x 182.8%   (mast out of shot)
+   *
+   * The rendered kestrel row is a lamp-lit pier with a small dark lump behind
+   * a gantry column, and `harness-framings.test.mjs` passed it green — because
+   * its ray hit `hatchleaf:dock_kestrel_hatch` at 17 m and a hatch leaf is
+   * "something". A framing that shows 30% ship is the wrong instrument for the
+   * one question this drop exists to answer, and three art reviews were taken
+   * through it.
+   *
+   * WHAT IT IS NOW. The stand-off is SOLVED rather than guessed. The hull's
+   * own published box — beam, walked crown, length, from `HullPlan`, not the
+   * berth reservation — is projected through the candidate camera and the
+   * distance is bisected until the box covers {@link FRAME_TARGET} of the
+   * frame on its worst axis. A closed-form fit was tried first and is wrong by
+   * a factor of two on these subjects: at 15 m from a 15 m hull the NEAR
+   * corner projects far larger than the bounding sphere predicts, and the
+   * three hulls came out at 111%, 148% and 184% of frame from one constant.
+   * Bisection has no such blind spot and needs no per-hull tuning, which is
+   * the property that stops this table going stale the next time a hull
+   * changes shape.
+   *
+   * The camera STAYS at chest height on the apron, which was the one good
+   * instinct in the old row: the question is what a player sees walking up to
+   * the ship, and a hero shot from above answers a different one.
+   */
+  const ext = planExtents(H);
+  const FOV = 46;
+  const corners = hullCorners(b, ext);
+  const eyeY = b.cradleTop + 1.7;
+  const at = [b.x, b.cradleTop + ext.top * 0.42, b.z];
+  /* Out from the flank and along the hull, normalised, so the shot is a
+   * three-quarter — the angle a silhouette is read at — not a broadside. */
+  const kOut = 0.82 / Math.hypot(0.82, 0.57);
+  const kAlong = 0.57 / Math.hypot(0.82, 0.57);
+  const eyeAt = (d) => [b.x + (ux * kOut + lx * kAlong) * d, eyeY, b.z + (uz * kOut + lz * kAlong) * d];
+  let lo = 4, hi = 240;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    const c = frameCoverage(corners, eyeAt(mid), at, FOV);
+    if (Math.max(c.w, c.h) > FRAME_TARGET) lo = mid; else hi = mid;
+  }
+  const dist = (lo + hi) / 2;
+  out.push({
+    name: b.id,
+    pos: eyeAt(dist),
+    look: at,
+    fov: FOV,
+    subject: dist + ext.hw,
+    /* The framing's own promise, for `harness-framings.test.mjs` to hold it
+     * to against the DRAWN hull rather than against this box. */
+    fills: b.id,
+  });
+  /* Inside. The largest declared compartment, standing at eye height on its
+   * own sole and looking down its own length - so the framing is bounded by
+   * the room's far bulkhead however the hull is later re-fitted. */
+  const rooms = H.rooms ?? [];
+  let room = null;
+  for (const r of rooms) {
+    if (!room || (r.z1 - r.z0) * r.hw > (room.z1 - room.z0) * room.hw) room = r;
+  }
+  if (room) {
+    const eye = room.floorY + Math.min(1.55, (room.ceilY - room.floorY) - 0.25);
+    out.push({
+      name: `${b.id}-in`,
+      pos: berthPoint(b, 0, eye, room.z0 + 0.6),
+      look: berthPoint(b, 0, eye - 0.15, room.z1 - 0.4),
+      fov: 88,
+      subject: (room.z1 - room.z0) + 1.5,
+    });
+  }
+  return out;
+}
+
+/** Every flyable berth, framed twice. The Bastion keeps its two hand-placed rows. */
+const DOCK_HULL_VIEWS = BERTHS
+  .filter((b) => HULLS[b.id] && b.id !== 'bastion')
+  .flatMap((b) => berthViews(b, HULLS[b.id]));
+
+/**
+ * One framing per real body, aimed along its BEARING from the yard.
+ *
+ * Not at its position: `space/Backdrop.js` re-places every distant object
+ * against the camera every frame, so the only stable thing about a body out
+ * here is the direction it lies in. The camera stands 300 m off the yard so
+ * the structure is out of shot, and looks 1 km down the bearing.
+ *
+ * `subject: Infinity` because the subject IS the backdrop - the framing probe
+ * would otherwise fail every one of these for finding nothing within range,
+ * which is exactly what they are for.
+ */
+const SPACE_BEARING_VIEWS = SPACE_BODIES.map((b) => {
+  const d = Math.hypot(b.position[0], b.position[1], b.position[2]) || 1;
+  const u = [b.position[0] / d, b.position[1] / d, b.position[2] / d];
+  /* Stand off the yard along the bearing, so the yard is behind the camera. */
+  const from = [u[0] * 320, u[1] * 320, u[2] * 320];
+  return {
+    name: `bearing-${b.id}`,
+    pos: from,
+    look: [from[0] + u[0] * 1000, from[1] + u[1] * 1000, from[2] + u[2] * 1000],
+    fov: 62,
+    aerial: true,
+    subject: Infinity,
+  };
+});
 
 /**
  * Camera framings, derived from each world's actual published layout
@@ -111,6 +405,130 @@ const VIEWS = {
     { name: 'track', pos: [128, 16, 232], look: [128, 2, 162], fov: 74 },
     { name: 'pool', pos: [46, 7, 142], look: [46, 0, 111], fov: 72 },
     { name: 'entrance-portal', pos: [0, 3.5, 170], look: [0, 2.5, 150], fov: 64 },
+  ],
+  /**
+   * LODESTAR YARD, and every hull row is DERIVED rather than typed.
+   *
+   * The berths moved onto the piers and this table did not follow them. Raycast
+   * against the real built world, the framings that survived were pointing at:
+   *
+   *   kestrel-in  nearest surface 38.4 m   (it claims to be inside a cabin)
+   *   dray-hold                   52.2 m   (inside a 6 m hold)
+   *   pike-in                     52.4 m   (inside a cabin)
+   *   kestrel/dray/pike     10.8/13.9/8.8  (yard structure; hulls 120-165 m away)
+   *   berth-b1/berth-b2      14.8/17.1 m   (the berths are ~170 m away)
+   *   blast-door                  26.3 m   (a door that no longer exists)
+   *
+   * An "interior" framing whose nearest surface is 38-52 m out is standing in
+   * open air, and eight of twenty-five rows of the reported luminance table
+   * were therefore measuring the empty shop floor. `harness-measurement` passed
+   * throughout, because nothing asserted that a framing looked AT anything.
+   *
+   * So the hull rows are computed from `YardPlan.BERTHS` and `HullPlan.HULLS`
+   * by `berthViews` below, which cannot drift when a berth moves, and
+   * `harness-framings.test.mjs` now fires a ray down every framing in this file
+   * and fails when the first thing it meets is further away than the framing's
+   * own declared `subject` distance.
+   *
+   * Fixed geometry, for the rows that are still hand-placed: floor x +/-86,
+   * z -104..+58 under a roof plate at 26; the mouth is the whole north wall at
+   * z -104, 164 m wide and 23.6 m tall; five piers run out from it on x -68,
+   * -34, 0, +34, +68 to pad centres at z -143..-165; the gateway home is at
+   * (0, 0.3, +52) with rotationY PI so the arrival stands at z 49.4; catwalk at
+   * 8.0 (inner edge x +/-83.6), crane cab at (-70, 15.4, -24), trench floor at
+   * -2.2 under the keel line.
+   */
+  dock: [
+    // The first frame a player ever sees of this world, taken from the exact
+    // point `arrivalFor` puts them. If this framing is not legible, nothing
+    // else in the yard gets looked at.
+    { name: 'apron-arrival', pos: [0, 1.7, 49.4], look: [0, 6, -70], fov: 78, clear: 260 },
+    { name: 'keel-line', pos: [0, 1.7, 18], look: [0, 4, -95], fov: 76, clear: 230 },
+    { name: 'datum', pos: [5.5, 1.7, 7], look: [0, 0.1, 0], fov: 68, subject: 14 },
+    { name: 'chandlery', pos: [0, 1.7, 27], look: [-9.5, 1.2, 20], fov: 76, subject: 14 },
+    { name: 'office-door', pos: [-48, 1.7, 40], look: [-58, 1.6, 40], fov: 74, subject: 16 },
+    { name: 'office-inside', pos: [-55.5, 1.7, 40], look: [-62, 1.4, 41], fov: 82, subject: 12 },
+    // The trench: the only place in the yard you cannot see the roof from.
+    { name: 'trench', pos: [0, -0.7, -14], look: [0, -1.3, -62], fov: 80, subject: 60 },
+    { name: 'gantry-port', pos: [-84.8, 9.6, 24], look: [-84.8, 8.6, -70], fov: 78, subject: 120 },
+    { name: 'gantry-crossing', pos: [0, 9.6, 12], look: [0, 4, -70], fov: 82, subject: 120 },
+    { name: 'crane-cab', pos: [-69, 16.8, -24], look: [10, 5, -40], fov: 84, aerial: true, subject: 110 },
+    { name: 'signal-post', pos: [26, 12.6, -97], look: [0, 6, -60], fov: 80, aerial: true, subject: 70 },
+    { name: 'yard-wide', pos: [62, 19, 44], look: [-16, 6, -64], fov: 84, aerial: true, subject: 150 },
+    /* The mouth and the piers: the three framings that answer the brief -
+     * "a hangar bay with space piers stretching from the hangar into space, at
+     * the end of each pier is a spaceship". `blast-door` used to stand here and
+     * the door it framed has been deleted. */
+    { name: 'mouth-inside', pos: [0, 3.4, -60], look: [0, 11, -210], fov: 82, clear: 300 },
+    { name: 'berth-zero-walk', pos: [0, 1.7, -128], look: [0, 0.4, -176], fov: 76, subject: 55 },
+    { name: 'mouth-from-space', pos: [0, 16, -226], look: [0, 9, -70], fov: 80, aerial: true, subject: 220 },
+    { name: 'pier-one', pos: [-68, 1.7, -112], look: [-68, 4, -150], fov: 78, subject: 50 },
+    /* The hulls, derived from the berths. Two framings each and the reason is
+     * the same one every time: a ship in this world is a silhouette from the
+     * pier and a set of rooms from inside, and neither picture says anything
+     * about the other. The `-in` framings are also where the second half of the
+     * interior light measurement is taken - mean frame luma needs a real
+     * renderer, so `dock-hulls.test.mjs` asserts the declared illuminance and
+     * this is where the pixels come from. */
+    ...DOCK_HULL_VIEWS,
+    { name: 'bastion-ribs', pos: [30, 2.4, -88], look: [44, 4.0, -95], fov: 82, subject: 22 },
+    { name: 'bastion-crown', pos: [26, 12.5, -50], look: [40, 9.6, -70], fov: 80, aerial: true, subject: 34 },
+  ],
+  /**
+   * OPEN SPACE, and it is 800 km of volume rather than the 60 m platform this
+   * table used to describe. Its comment named a platform, a starfield on a
+   * 1,400 m shell and a portal at (0, 0.3, +22), none of which exist.
+   *
+   * Everything distant out here is placed by `space/Backdrop.js` RELATIVE TO
+   * THE CAMERA every frame, so a framing cannot aim at a body's true
+   * coordinates - it has to aim along the body's BEARING, which is what the
+   * generated rows do. The bearings are recomputed from `space/Bodies.js` here
+   * rather than copied, so a body that moves takes its framing with it.
+   *
+   * The yard is the one thing with a fixed place: it is at the origin with its
+   * mouth at (0, 0, -18), and the return portal stands at (0, 0.3, -24).
+   * `subject: Infinity` on the bearing rows says they are aimed at the
+   * backdrop, which is the one case the framing probe must not fail.
+   */
+  space: [
+    /* `subject: Infinity` on ALL of these, and it is not an excuse. `space`
+     * registers no colliders at all - there is nothing to walk on out here, and
+     * the yard itself is a `Backdrop` STRUCTURE proxy-placed against the camera
+     * every frame, so a ray fired in the true frame would find it in the wrong
+     * place even if it were solid. What these framings actually have to get
+     * right is their BEARING, and that is asserted directly in
+     * `harness-framings.test.mjs` against `space/Bodies.js`. */
+    { name: 'arrival', pos: [0, 1.7, -38], look: [0, 3, -18], fov: 78, subject: Infinity },
+    { name: 'portal-home', pos: [0, 2.4, -34], look: [0, 3.2, -24], fov: 66, subject: Infinity },
+    { name: 'yard-astern', pos: [0, 40, -340], look: [0, 0, 0], fov: 74, aerial: true, subject: Infinity },
+    ...SPACE_BEARING_VIEWS,
+  ],
+  /**
+   * CINDER, the volcanic planet - and there was no entry for it at all, so the
+   * first landable world in the game had no framings.
+   *
+   * The playfield is +/-400. Three landing sites: Ashfall Flat (150, 205) r30,
+   * Rimhold Shelf (9.4, -185.5) r20 and Colonnade Deck (250, 40) r22. The lava
+   * lake is a 25 m disc at (-52, -96) with its surface at y 59.9, feeding a
+   * ribbon out to a 42 m pool at (-322, -276) at y 3.
+   *
+   * `groundRelative` means the `y` in `pos` is a height ABOVE THE SURFACE and
+   * the harness resolves it against the built height field. A planet's terrain
+   * is generated, so a hard-coded y is a camera underground the first time a
+   * landform is retuned.
+   */
+  cinder: [
+    { name: 'pad-ashfall', pos: [150, 2.0, 248], look: [150, 3, 200], fov: 76, groundRelative: true, subject: 60 },
+    { name: 'ashfall-outward', pos: [150, 3.0, 205], look: [-40, 60, 20], fov: 82, groundRelative: true, subject: 400 },
+    /* From the plain, looking at the massif: the camera is on the Ashfall side
+     * at 9 m of ground and the rim is 128 m up 190 m away, which is the shot
+     * that shows this world has relief in it. Aimed at the RIM and not at the
+     * lake - the lake is inside the crater and a framing pointed at it from
+     * out here is a framing pointed at the ground in front of the camera. */
+    { name: 'caldera', pos: [150, 3.0, 120], look: [0, 128, 0], fov: 78, groundRelative: true, subject: 220 },
+    { name: 'lava-shore', pos: [-52, 3.0, -46], look: [-52, 58, -96], fov: 76, groundRelative: true, subject: 70 },
+    { name: 'rimhold', pos: [9.4, 3.0, -142], look: [9.4, 3, -186], fov: 76, groundRelative: true, subject: 55 },
+    { name: 'aerial', pos: [180, 190, 260], look: [-60, 40, -80], fov: 84, aerial: true, subject: 500 },
   ],
   // Entrance forecourt centred at (1260, -10); maze grid runs from origin to 2394 m
   // on both axes; hedges 5 m tall. Levels are 9 m apart: level 0 at y=0, level 3 at y=27.
@@ -410,6 +828,19 @@ class Harness {
       const computed = await this._computeView(v.name, worldId);
       if (!computed) throw new Error(`harness: could not compute view "${name}"`);
       spec = computed;
+    }
+    /* `groundRelative` resolves `pos[1]` against the real surface under it.
+     * A planet's terrain is GENERATED, so a framing with a hard-coded y is a
+     * camera buried in a lava flow the first time a landform is retuned - and
+     * a buried camera renders black, which reads as a lighting bug. Only the
+     * camera's own height is resolved; `look` is left alone, because these
+     * framings aim at things (a caldera rim, a lava lake) whose height is the
+     * point of the shot. */
+    if (spec.groundRelative) {
+      const g = this.game.physics?.groundHeight?.(spec.pos[0], spec.pos[2], spec.pos[1] + 400, 900);
+      if (g !== null && g !== undefined && Number.isFinite(g)) {
+        spec = { ...spec, pos: [spec.pos[0], g + spec.pos[1], spec.pos[2]] };
+      }
     }
 
     /* `keepPlayer` is a property of the FRAMING, not of the caller: a view that

@@ -485,6 +485,15 @@ export const VOLCANIC = definePlanet({
   /* ---------------------------------------------------------------- */
   liquid: {
     name: 'lava',
+    /**
+     * Stated rather than inferred. `liquidKind` already reads 'lava' off
+     * `emissive: 2.1` and the material is byte-identical either way - this
+     * planet is the calibrated reference and its shader must not move - but
+     * the substance now decides swimmability and lethality as well as which
+     * way round the colour channels mean things, and a planet that kills you
+     * should say so in one word rather than by arithmetic on a brightness.
+     */
+    kind: 'lava',
     /* Radii are tuned so each body's edge meets the terrain within the skirt
      * the mesh hangs below it - measured, not eyeballed, by
      * `planet-relief.test.mjs`'s shoreline case. */
@@ -518,7 +527,22 @@ export const VOLCANIC = definePlanet({
     /** ONE light, on the crater lake. `RIG_BUDGET.point` is 12 for the whole
      *  game and every one of them is compiled into every shader. */
     glowLight: { body: 0, color: 0xff7a2a, intensity: 34, distance: 130 },
-    lethal: false,
+    /**
+     * TRUE. Lava kills, and until now it did not: `PlanetWorld` fenced the
+     * shore and reported this flag in the census precisely so that its
+     * dormancy was visible. `Swim._burn` reads it.
+     *
+     * 240 dps against 100 hp is dead in 0.42 s. That is not a difficulty
+     * number, it is the only honest one: there is no version of standing in a
+     * lava lake that a player should survive, and a rate that leaves time to
+     * scramble out teaches that there is. Sallow's acid is 14 for exactly the
+     * opposite reason.
+     *
+     * The 819 shore posts stay. Between them and this, getting into the lava
+     * takes a sustained free climb over a 3.4 m wall - and then it is over.
+     */
+    lethal: true,
+    hazard: { dps: 240 },
   },
 
   /* ---------------------------------------------------------------- */
@@ -678,8 +702,56 @@ export const VOLCANIC = definePlanet({
        * exactly like the commonest, and a player has no way to tell a 190 cr
        * flake from an 18 cr nodule at ten metres. Cold is the one hue nothing
        * else on this planet has - the ground is red-brown, the sun is
-       * 0xffc98f, sulfur is yellow and iridite is orange. */
-      color: 0xb8ccd6, glow: 0x2e6a7a,
+       * 0xffc98f, sulfur is yellow and iridite is orange.
+       *
+       * ── AND THE FIRST COLD COLOUR WAS NOT COLD, IT WAS WHITE ────────────
+       * `0xb8ccd6` is a swatch whose own HSL saturation is 0.267 and whose
+       * lightness is 0.78, and both halves of that were the defect. Measured at
+       * a real node with `.probe/mineral-sweep.mjs` - which masks the ore's
+       * exact pixels by hiding the mesh and differencing the frame against a
+       * control pair, so it cannot quietly re-pick its sample:
+       *
+       *     albedo    glow      luma  sat    facet spread
+       *     b8ccd6    2e6a7a     185  0.26   x1.15   the shipped defect
+       *     3f6478    2e6a7a     147  0.38   x1.23   albedo alone: still bright
+       *     3f6478    173a44     125  0.33   x1.32   both, and this is shipped
+       *
+       * Tephra is the control and measures x1.56-1.62 across the same three
+       * runs, so the spread column is comparable and the ore has gone from a
+       * quarter of the control's facet separation to four fifths of it.
+       *
+       * A node at mean 185 is most of the way up the ACES shoulder, where the
+       * curve desaturates toward white and a lit facet and a shaded one land on
+       * the same pixel - which is the same failure `ORE_ALBEDO_CEIL` was
+       * introduced for, arriving one step later. The ceiling caps the BRIGHTEST
+       * CHANNEL at 0.48, so it could only ever pull this swatch down to a paler
+       * version of the same hueless thing; it cannot put chroma into a colour
+       * that has none.
+       *
+       * `0x3f6478` is authored UNDER that ceiling (its brightest channel is
+       * 120 of 255 = 0.471), so what is written here is what renders and no
+       * second rule is silently rescaling it. Saturation 0.31 in the swatch,
+       * lightness 0.36: a steel blue-grey rather than a pale one. It is still
+       * the only cold thing on the planet, it is still nothing like tephra's
+       * 0x4a3b2e, and the "metallic silver" half of the sentence above is now
+       * carried by the 0.28 roughness and the emissive rim rather than by an
+       * albedo that tried to be silver by being nearly white.
+       *
+       * ── AND THE ALBEDO ALONE WAS NOT ENOUGH, WHICH THE TABLE SHOWS ─────
+       * The middle row is the swatch fixed with the emissive left where it was,
+       * and it is still at luma 147 with a x1.23 spread: `emissiveIntensity` is
+       * 2.2 and a flat emissive adds the SAME value to every facet, so it
+       * compresses the ratio between a lit facet and a shaded one no matter
+       * what the albedo does. `0x173a44` is the same teal at 62% of the value.
+       * The saturation goes down slightly when it comes off (0.38 -> 0.33)
+       * because the emissive was carrying chroma of its own, and the facet
+       * spread goes UP by more than that trade costs - which is the number the
+       * original complaint was about, and the reason this is the shipped row.
+       *
+       * The glow is not deleted, and must not be: `PlanetWorld` only lights ore
+       * that declares one, and a rare seam a player has walked 760 m for has to
+       * be findable in the last thirty of them.                                */
+      color: 0x3f6478, glow: 0x173a44,
       unitValue: ORE('rheniite'), spread: 0.25,
       size: 0.75, count: 12, spacing: 12,
       /* THE LIPS OF THE CHANNEL, AND NEITHER THE FLOOR NOR THE WALLS.
@@ -716,15 +788,120 @@ export const VOLCANIC = definePlanet({
   ],
 
   /* ---------------------------------------------------------------- */
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   *  THE PAD YOU ARRIVE AT, AND WHY IT IS NO LONGER ASHFALL FLAT
+   * ═════════════════════════════════════════════════════════════════════════
+   *
+   * `primary` is not a label. `Piloting._descend` aims EVERY atmospheric entry
+   * at it, `PlanetWorld._placeSpawn` puts a player who arrives on foot on it,
+   * and `Unstuck` returns them to it. It is the first ground a new pilot sees
+   * in this game, because Cinder is the nearest planet and the tutorial
+   * destination.
+   *
+   * It was Ashfall Flat, which is the POOREST of the three. Measured, a
+   * best-value 10 m3 Kestrel load off each pad's own nearest seams:
+   *
+   *     ashfall       481 cr     reaches tephra and ferrobasalt - the two
+   *                              cheapest ores per cubic metre, so the hold
+   *                              fills on bulk
+   *     colonnade   1,059 cr     2.20x
+   *     rimhold     4,154 cr     8.6x, and unusable - see below
+   *
+   * Walked, with `Mining.MINE_TIME` per node and the game's own ground speed,
+   * that is 114 cr against 497 and 2,839, i.e. FIVE round trips to clear the
+   * 500 cr first ore rung from Ashfall against two from the Colonnade. At the
+   * flown 46 s out and about 90 s back, seventeen minutes against four and a
+   * half - for the same objective, on the same planet, decided entirely by
+   * which of these three rows carried a `primary: true`.
+   *
+   * ── WHY NOT RIMHOLD, WHICH IS RICHER STILL ───────────────────────────────
+   *
+   * Because it is the EXOTIC pad, and it is a shelf. Two separate refusals and
+   * either one is enough:
+   *
+   *   1. The whole ten-planet mining design is "the exotic seam is a SECOND
+   *      LANDING, not a longer walk" - iridite is 9-of-9 from Rimhold and
+   *      0-of-9 from everywhere else, and `planet-envelope.test.mjs` asserts
+   *      that registry-wide. An arrival pad that carries the exotic seam
+   *      deletes the design on this planet.
+   *   2. `PlanetWorld._padDrop` reads 270 degrees of horizon falling away over
+   *      66.9 m. It is one of the pads a player can walk off and not climb back
+   *      onto. Sending a new pilot there swaps a slow objective for a
+   *      stranding.
+   *
+   * So the arrival pad is the RICHEST pad that is returnable and exotic-free,
+   * which on Cinder is the Colonnade Deck. That rule is not typed here: it is
+   * derived from the descriptor and asserted for all ten planets by
+   * `planet-envelope.test.mjs`, so an eleventh planet cannot ship this defect
+   * quietly.
+   *
+   * ── WHAT WAS MEASURED BEFORE THE FLAG MOVED ──────────────────────────────
+   *
+   *   the exotic guarantee survives   iridite 0/9 from Ashfall AND 0/9 from
+   *                                   the Colonnade, at 38 deg, at the real
+   *                                   56.63 deg envelope, and again with
+   *                                   Cinder's own 1.228 m running-leap apex.
+   *                                   Only Rimhold reaches it: 9/9.
+   *   the road is bidirectional       the switchback up the east face floods
+   *                                   433 k m2 outward and 433 k m2 BACK, and
+   *                                   Ashfall is reachable from it on foot. It
+   *                                   is not a one-way shelf like Rimhold.
+   *   nothing below exotic is lost    tephra 34/34, sulfur 26/26, obsidian
+   *                                   20/20, ferrobasalt 18/18 from either pad
+   *                                   - byte-identical.
+   *
+   * ── AND THE DISC IS NOT WIDENED, WHICH WAS THE OTHER HALF OF THE DOUBT ───
+   *
+   * The objection to this move was that it puts a first landing on a 22 m mesa
+   * disc instead of a 30 m disc on an open plain. Measured, both halves of that
+   * are answered and the answer is to leave the disc alone:
+   *
+   *   - the disc is not tight. A pad in this project is not levelled by
+   *     `PlanetWorld` - it is a ring drawn on whatever the landforms built - and
+   *     the ground inside this one measures 0.00 m of relief and 0.0 deg of
+   *     grade over the full 22 m, which is flatter than Ashfall's 0.1 deg. 44 m
+   *     across holds a 14 m Kestrel or a 28 m Dray with room either side.
+   *   - widening it makes it WORSE by the game's own published number.
+   *     `_padDrop` marches from `r + 2` to `r + 46`, and the ground round the
+   *     mesa falls away hard at about 70 m out:
+   *
+   *         r 20   53 deg of rim      r 26   360 deg
+   *         r 22   75 deg             r 28   360 deg
+   *         r 24   90 deg             r 30   360 deg
+   *
+   *     At r 26 the whole horizon trips the 8 m sill, which is past
+   *     `SpaceObjectives.PAD_RIM_LIMIT` - so `Piloting` would read the disc out
+   *     as a shelf on final approach, and `padIsHome` would refuse to recommend
+   *     it on any build with no return flood to consult, the rim being all that
+   *     fallback has. It is NOT what would ring the pad in hazard blocks: those
+   *     are painted from `PlanetWorld._padReturn`, the measured return flood,
+   *     and by that measure this pad comes home. 22 m is the disc the mesa
+   *     actually has.
+   *
+   * What IS different from Ashfall is the surroundings - 75 degrees of rim
+   * against 38 - and that is a cliff BEHIND the pad rather than a way of
+   * getting stuck on it. `PlanetWorld._padReturn` asks the question that
+   * matters by flooding the height field out of each disc and back to it:
+   * 95.5% of everything a body can walk to from the Colonnade can walk back,
+   * the same figure Ashfall reads, against 2.6% from Rimhold. That is why
+   * Rimhold is the only pad on this planet ringed in amber hazard blocks and
+   * the Colonnade is not - the ring means "you cannot get back on", and here
+   * it would be a lie.
+   *
+   * The two measures disagree elsewhere in the registry and the flood is the
+   * one to trust: Tessera's Raysedge reads 300 degrees of rim and comes home
+   * 98.2% of the time. See `SpaceObjectives.padIsHome`.
+   */
   landing: [
     {
-      id: 'ashfall', name: 'Ashfall Flat', x: 150, z: 205, r: 30, primary: true, yaw: -2.2,
+      id: 'ashfall', name: 'Ashfall Flat', x: 150, z: 205, r: 30, yaw: -2.2,
     },
     {
       id: 'rimhold', name: 'Rimhold Shelf', x: RIM_PAD[0], z: RIM_PAD[1], r: 20, yaw: 2.1,
     },
     {
-      id: 'colonnade', name: 'Colonnade Deck', x: 250, z: 40, r: 22, yaw: 1.4,
+      id: 'colonnade', name: 'Colonnade Deck', x: 250, z: 40, r: 22, primary: true, yaw: 1.4,
     },
   ],
 

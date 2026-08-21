@@ -32,3 +32,6 @@ output/
 
 # Agent scratch probes - never commit
 .probe/
+
+claude-skills-threejs-ecs-ts/
+dray-bow.txt

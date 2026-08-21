@@ -13,6 +13,7 @@ const {
   FIELD_CREDITS, SYSTEM_ORE_CREDITS,
   KILL_TIERS, ORE_TIERS, ASSAY_CREDITS, SURVEY_SET_COSMETIC,
   LANDFALL_SET_COSMETIC, LANDFALL_SET_POWER,
+  padIsHome, PAD_RIM_LIMIT,
 } = await import('../../src/systems/SpaceObjectives.js');
 const { SPACE_BODIES, BODY_BY_ID, DOCK_ANCHOR, landableBodies } =
   await import('../../src/worlds/space/Bodies.js');
@@ -576,32 +577,79 @@ test('the kill ladder is built on one full sweep of the inner system', async () 
     `the ladder pays ${ladder} against ${earned} of bounty - out of band`);
 });
 
-test('the first mining brief names the pad worth flying to, and never names a shelf', async () => {
+test('the pad a ship arrives at needs no hint, and the poor pad is told where to go', async () => {
   const r = await rig();
-  await goto(r, 'cinder');
   r.piloting.shipId = 'kestrel';
-  const { obj } = await ledger(r);
-  const w = r.wm.active;
-  const sites = w.landingSites;
 
   /**
    * ═══════════════════════════════════════════════════════════════════════
-   *  SEVENTEEN MINUTES VERSUS FOUR, DECIDED BY A CHOICE NOBODY MENTIONED
+   *  SEVENTEEN MINUTES VERSUS FOUR, AND THE HALF OF IT THAT MOVED
    * ═══════════════════════════════════════════════════════════════════════
    *
-   * Every atmospheric entry lands at the `primary` pad, and on Cinder that is
-   * Ashfall Flat - the poorest of its three. Walked, a 10 m3 Kestrel load is
-   * 114 cr off Ashfall, 497 off Colonnade and 2,839 off Rimhold, so the 500 cr
-   * ore rung is five trips from where the game puts you and one from the rim.
+   * Every atmospheric entry lands at the `primary` pad. On Cinder that used to
+   * be Ashfall Flat - the poorest of its three - and a walked 10 m3 Kestrel
+   * load off it is 114 cr against 497 off the Colonnade and 2,839 off the rim,
+   * so the 500 cr ore rung was five round trips from where the game put you and
+   * one from the shelf. Seventeen minutes against four and a half.
    *
-   * `richerPad` is the one-sentence fix, and this is what it must never do:
-   * name RIMHOLD. It is the richest pad on the planet by a factor of four and
-   * it reads 270 degrees of horizon falling away over a 66.9 m drop - it is
-   * one of the pads a player can walk off and not climb back onto. Sending a
-   * new pilot there would swap a slow objective for a stranding.
+   * `primary` HAS SINCE MOVED, under the rule `planet-envelope.test.mjs`
+   * asserts for all ten planets: the arrival pad is the richest pad that is
+   * returnable AND carries no exotic seam. Cinder arrives at the Colonnade Deck
+   * now, so the sentence this case was written about is correctly SILENT on the
+   * pad a ship arrives at, and what is left is the other pads.
+   *
+   * `richerPad` is the one-sentence fix, and this is what it must now do:
+   *
+   *   on the pad the game puts you on     the hint must say NOTHING, because
+   *                                       there is nowhere better you can fly
+   *                                       home from. Silence is the fix having
+   *                                       landed.
+   *   on the poor pad                     it must still fire, and name the
+   *                                       arrival pad. A player who flew to
+   *                                       Ashfall on purpose is owed the same
+   *                                       sentence a player who was dumped
+   *                                       there used to be.
+   *   on the SHELF                        never. Rimhold Shelf is the richest
+   *                                       pad on the planet by a factor of four
+   *                                       and reads 270 degrees of horizon
+   *                                       falling away over 66.9 m - it is one
+   *                                       of the pads a player can walk off and
+   *                                       not climb back onto. Naming it would
+   *                                       swap a slow objective for a
+   *                                       stranding.
+   *
+   * -- AND A SECOND PLANET, FOR THE CASE CINDER CANNOT MAKE ----------------
+   *
+   * This half used to stand on Carnelian and assert the hint still FIRED from
+   * the primary, on the stated grounds that Carnelian is "somewhere the exotic
+   * pad is one you can come back from". Both halves of that were wrong. The
+   * Kiln returns 49.8% and `padIsHome` refuses it, so the pad the hint actually
+   * named was Anvil Deck - and it only had something to name because
+   * Carnelian's `primary` was still on Redgate, i.e. because the planet was
+   * carrying the very defect the rule above exists to remove. The assertion
+   * passed for a reason its own comment denied. Anvil Deck is the primary now,
+   * and the sentence is correctly silent standing on it.
+   *
+   * What Carnelian is genuinely the world for is the OTHER exclusion, and it is
+   * the one Cinder cannot demonstrate. On Cinder the two measures agree: the
+   * shelf reads 270 degrees of rim AND returns 2.6%, so a hint driven by either
+   * one would have refused it. On Carnelian they disagree as hard as they do
+   * anywhere in the registry - Kiln Deck is the richest pad on the planet at
+   * 5,205 credits a hold, 2.4x the pad the game lands you on, it returns 49.8%,
+   * and `_padDrop` reads ZERO degrees of rim on it, because the chamber floor is
+   * level and the cliff is the 85-degree slot you came down to get there. A
+   * rim-driven hint would have sent a new pilot down the Deep Reach.
+   *
+   * So the three claims below are: silent on the arrival pad (a second world
+   * for the first half), firing from the poor pad and naming the arrival pad (a
+   * second world for the second half), and never naming the one-way pad the
+   * PROXY would have allowed - which is the case Cinder cannot make at all.
    */
-  const worth = (id) => {
-    const near = w.mineralNodes.filter((n) => {
+
+  /** Credits of a best-value stock-Kestrel hold off one pad's own nearest seams. */
+  const worthOn = (world) => (id) => {
+    const sites = world.landingSites;
+    const near = world.mineralNodes.filter((n) => {
       let best = null;
       let bd = Infinity;
       for (const s of sites) {
@@ -616,6 +664,14 @@ test('the first mining brief names the pad worth flying to, and never names a sh
     for (const n of near) { if (n.size > room) continue; room -= n.size; paid += n.credits; if (room <= 1e-6) break; }
     return paid;
   };
+
+  /* ---- Cinder: the arrival pad, and the shelf that is never named ---- */
+
+  await goto(r, 'cinder');
+  const { obj } = await ledger(r);
+  const w = r.wm.active;
+  const sites = w.landingSites;
+  const worth = worthOn(w);
   for (const s of sites) {
     console.log(`    ${s.id.padEnd(11)} ${s.primary ? 'PRIMARY' : '       '} rim ${String(s.drop?.deg ?? '?').padStart(3)} deg / `
       + `${String(s.drop?.metres ?? '?').padStart(5)} m   best load ${String(worth(s.id)).padStart(5)} cr`);
@@ -623,30 +679,245 @@ test('the first mining brief names the pad worth flying to, and never names a sh
 
   const primary = sites.find((s) => s.primary);
   assert.ok(primary, 'the planet has no primary pad, so there is nothing to be landed at');
+  /* THE SHELF IS FOUND BY THE FLOOD, not by the cliff behind the disc.
+   * `PlanetWorld._padReturn` measures what a body can walk to from each pad and
+   * how much of it can walk back; Rimhold returns 2.6%. The rim proxy agrees
+   * here (270 degrees) and disagrees on three pads elsewhere in the registry -
+   * Tessera's Raysedge reads 300 degrees and comes home 98.2% of the time - so
+   * the rule this asserts is the one `SpaceObjectives` actually uses. */
+  const shelf = sites.find((s) => !padIsHome(s));
+  assert.ok(shelf, 'no pad on Cinder is one-way, so the exclusion below proves nothing');
+  assert.ok((shelf.drop?.deg ?? 0) > PAD_RIM_LIMIT,
+    `${shelf.id} is one-way and the rim proxy would have allowed it - which is fine, but this case `
+    + 'no longer demonstrates that the two agree on Cinder');
+  assert.ok(worth(shelf.id) > worth(primary.id) * 2,
+    `${shelf.id} is only ${worth(shelf.id)} against ${worth(primary.id)} - it is not the temptation `
+    + 'this exclusion exists to resist');
+
+  /* Standing where an entry puts you: nothing to say. */
   r.piloting._landedSite = { id: primary.id, name: primary.name };
+  assert.equal(obj.richerPad(), null,
+    `standing on ${primary.id}, the pad the game lands you on, the brief still sent the player somewhere`);
+  const quiet = obj.hint();
+  console.log(`    on ${primary.id}: "${quiet}"`);
+  for (const s of sites) {
+    assert.ok(!quiet.includes(s.name),
+      `the brief names ${s.name} to a player standing on the pad the game chose for them: "${quiet}"`);
+  }
 
+  /* Standing on the poor one: it fires, and it names the pad the game would
+   * have landed you on rather than the rim. */
+  const poor = sites
+    .filter((s) => s.id !== primary.id && (s.drop?.deg ?? 0) <= PAD_RIM_LIMIT)
+    .reduce((a, b) => (worth(b.id) < worth(a.id) ? b : a));
+  r.piloting._landedSite = { id: poor.id, name: poor.name };
   const pick = obj.richerPad();
-  assert.ok(pick, `standing on ${primary.id}, the richest pad on the planet, nothing was suggested`);
-  console.log(`    from ${primary.id}: "${pick.name}" at ${pick.credits} cr a load`);
-  assert.notEqual(pick.id, primary.id, 'the hint names the pad the player is already standing on');
-  assert.ok(pick.credits >= worth(primary.id) * 1.5,
-    `${pick.id} is only ${pick.credits} against ${worth(primary.id)} - not worth crossing a planet for`);
-
-  const shelf = sites.find((s) => (s.drop?.deg ?? 0) > 180);
-  assert.ok(shelf, 'no pad on Cinder is a shelf, so the exclusion below proves nothing');
+  assert.ok(pick, `standing on ${poor.id} at ${worth(poor.id)} cr a load, nothing was suggested`);
+  console.log(`    on ${poor.id}: "${pick.name}" at ${pick.credits} cr a load`);
+  assert.equal(pick.id, primary.id,
+    `from ${poor.id} the brief names ${pick.id}, not ${primary.id} - the pad an entry would have used`);
   assert.notEqual(pick.id, shelf.id,
-    `the hint sends a new pilot to ${shelf.id}, which loses ${shelf.drop.deg} degrees of horizon over `
-    + `${shelf.drop.metres} m - a pad you can walk off and not climb back onto`);
-
+    `the hint sends a new pilot to ${shelf.id}, where only ${shelf.home?.pct}% of what a body can `
+    + `walk to can walk back (and the rim reads ${shelf.drop.deg} degrees over ${shelf.drop.metres} m) `
+    + '- a pad you walk off and cannot climb back onto');
+  assert.ok(pick.credits >= worth(poor.id) * 1.5,
+    `${pick.id} is only ${pick.credits} against ${worth(poor.id)} - not worth crossing a planet for`);
   const said = obj.hint();
   console.log(`    hint: "${said}"`);
   assert.ok(said.includes(pick.name), `the brief does not name the pad it picked: "${said}"`);
-
-  /* ...and standing on the good one, it says nothing about pads at all. */
-  r.piloting._landedSite = { id: pick.id, name: pick.name };
-  assert.equal(obj.richerPad(), null, 'the hint sends a player to the pad they are standing on');
-  assert.ok(!obj.hint().includes(pick.name), 'the brief still names the pad underfoot');
   obj.dispose();
+
+  /* ---- Carnelian: the pad the RIM would have sent a new pilot to ---- */
+
+  await goto(r, 'carnelian');
+  const { obj: obj2 } = await ledger(r);
+  const w2 = r.wm.active;
+  const worth2 = worthOn(w2);
+  const primary2 = w2.landingSites.find((s) => s.primary);
+  assert.ok(primary2, 'Carnelian has no primary landing site');
+  for (const s of w2.landingSites) {
+    console.log(`    ${s.id.padEnd(11)} ${s.primary ? 'PRIMARY' : '       '} rim ${String(s.drop?.deg ?? '?').padStart(3)} deg / `
+      + `${String(s.drop?.metres ?? '?').padStart(5)} m   home ${String(s.home?.pct ?? '?').padStart(5)}%   `
+      + `best load ${String(worth2(s.id)).padStart(5)} cr`);
+  }
+
+  /* THE PAD THE PROXY WOULD HAVE ALLOWED. Kiln Deck is the richest disc on this
+   * planet and a one-way trip, and its rim reads ZERO - so it is the pad that
+   * proves `padIsHome` has to read the flood and not the cliff. If a future
+   * change makes the two measures agree here, this case stops making its point,
+   * and the assertion below says so rather than passing quietly. */
+  const trap = w2.landingSites.find((s) => !padIsHome(s));
+  assert.ok(trap, 'no pad on Carnelian is one-way, so the exclusion below proves nothing');
+  assert.ok((trap.drop?.deg ?? 0) <= PAD_RIM_LIMIT,
+    `${trap.id} is one-way AND reads ${trap.drop?.deg} degrees of rim, so the rim proxy would have `
+    + 'refused it too - Carnelian no longer demonstrates that the two measures disagree, and this '
+    + 'case has to move to a planet where they still do');
+  assert.ok(worth2(trap.id) > worth2(primary2.id) * 2,
+    `${trap.id} is only ${worth2(trap.id)} against ${worth2(primary2.id)} - it is not the temptation `
+    + 'this exclusion exists to resist');
+
+  /* 1. Standing where an entry puts you: nothing to say, on a second world. */
+  r.piloting._landedSite = { id: primary2.id, name: primary2.name };
+  assert.equal(obj2.richerPad(), null,
+    `standing on ${primary2.id}, the pad the game lands you on, the brief still sent the player `
+    + `somewhere - and the only pad richer than it is ${trap.id}, which returns ${trap.home?.pct}%`);
+  const quiet2 = obj2.hint();
+  console.log(`    carnelian, on ${primary2.id}: "${quiet2}"`);
+  for (const s of w2.landingSites) {
+    assert.ok(!quiet2.includes(s.name),
+      `the brief names ${s.name} to a player standing on the pad the game chose for them: "${quiet2}"`);
+  }
+
+  /* 2. Standing on the poor one: it fires, it names the arrival pad, and it
+   *    does NOT name the richest pad on the planet. */
+  const poor2 = w2.landingSites
+    .filter((s) => s.id !== primary2.id && padIsHome(s))
+    .reduce((a, b) => (worth2(b.id) < worth2(a.id) ? b : a));
+  r.piloting._landedSite = { id: poor2.id, name: poor2.name };
+  const pick2 = obj2.richerPad();
+  assert.ok(pick2,
+    `standing on ${poor2.id} at ${worth2(poor2.id)} cr a load, the brief named nowhere to go`);
+  console.log(`    carnelian, on ${poor2.id}: "${pick2.name}" at ${pick2.credits} cr a load`);
+  assert.equal(pick2.id, primary2.id,
+    `from ${poor2.id} the brief names ${pick2.id}, not ${primary2.id} - the pad an entry would have used`);
+  assert.notEqual(pick2.id, trap.id,
+    `the hint sends a new pilot to ${trap.id}, worth ${worth2(trap.id)} cr a load and returning only `
+    + `${trap.home?.pct}% of what a body can walk to - and its rim reads ${trap.drop?.deg} degrees, so `
+    + 'nothing but the flood was ever going to catch it');
+  const named = w2.landingSites.find((s) => s.id === pick2.id);
+  assert.ok(padIsHome(named),
+    `${pick2.id} returns only ${named?.home?.pct}% of what a body can walk to from it and should `
+    + 'never have been named to a pilot who has not been there before');
+  assert.ok(pick2.credits >= worth2(poor2.id) * 1.5,
+    `${pick2.id} is only ${pick2.credits} against ${worth2(poor2.id)} - not worth crossing a planet for`);
+  const said2 = obj2.hint();
+  console.log(`    hint: "${said2}"`);
+  assert.ok(said2.includes(pick2.name), `the brief does not name the pad it picked: "${said2}"`);
+  obj2.dispose();
+});
+
+test('ON FOOT, and the exotic pad: the mining brief on all ten planets', async () => {
+  /**
+   * ═══════════════════════════════════════════════════════════════════════
+   *  TWO DEFECTS THE CASE ABOVE COULD NOT SEE, BECAUSE OF HOW IT DRIVES
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * Every case above sets `r.piloting._landedSite` before it calls
+   * `richerPad()`, because they were written about a SHIP that has landed. That
+   * is one of the two ways a player gets onto a planet, and it is the one where
+   * the method was already right.
+   *
+   * 1. ON FOOT, `landedSite` IS NULL. `Piloting` sets it on touchdown and
+   *    clears it on lift-off, so a direct world entry, a portal, an `Unstuck`
+   *    return and a dev warp all leave it null - and `PlanetWorld._placeSpawn`
+   *    puts every one of them on the PRIMARY pad. With `here` null the
+   *    self-suppression could not fire, so the brief named the pad the player
+   *    was standing on: "The Colonnade Deck carries the richer seams", said to
+   *    somebody standing on the Colonnade Deck. ON ALL TEN PLANETS, including
+   *    five that nothing in the arrival-pad change had touched.
+   *
+   * 2. AND ON TWO OF THEM IT NAMED THE EXOTIC PAD. `richerPad`'s docblock
+   *    claimed "every exotic pad in the registry is one a walker cannot get
+   *    back off - padIsHome refuses all of them". False for two of ten:
+   *
+   *        tessera/coldwell   home 100.0%   1,757 cr a hold
+   *        shoal/sunder       home  98.4%   2,694 cr a hold
+   *
+   *    Both are honestly returnable - a bowl and a shelf you walk back onto -
+   *    so `padIsHome` allowed both, and both were named. Standing on Tessera's
+   *    Mosaic the brief said "The Cold Well carries the richer seams"; on
+   *    Shoal's Kelphold it said "Sunder Deck". That is the one thing the
+   *    ten-planet mining design forbids - the exotic seam costs a SECOND
+   *    LANDING - deleted on two planets by a sentence. It bit on the flown path
+   *    too, not only on foot.
+   *
+   * A pad being returnable and a pad being the exotic pad are two different
+   * questions, and one was standing in for the other. This case drives BOTH,
+   * from every pad on every planet, so neither can come back on a world nobody
+   * is looking at.
+   */
+  const r = await rig();
+
+  /** The pads whose own nearest ore includes a seam the descriptor calls exotic. */
+  const exoticPadsOf = (world) => {
+    const exotic = new Set(world.planet.minerals.filter((m) => m.rarity === 'exotic').map((m) => m.id));
+    const pads = new Set();
+    for (const n of world.mineralNodes) {
+      if (!exotic.has(n.type)) continue;
+      let best = null;
+      let bd = Infinity;
+      for (const s of world.landingSites) {
+        const d = n.position.distanceToSquared(s.position);
+        if (d < bd) { bd = d; best = s; }
+      }
+      if (best) pads.add(best.id);
+    }
+    return pads;
+  };
+
+  const selfNamed = [];
+  const strandings = [];
+  console.log('   planet      arrival pad      on foot   from each pad');
+  for (const id of Object.keys(PLANETS)) {
+    await goto(r, id);
+    r.piloting.shipId = 'kestrel';
+    const { obj } = await ledger(r);
+    const w = r.wm.active;
+    const primary = w.landingSites.find((s) => s.primary);
+    const exoticPads = exoticPadsOf(w);
+    /* Every planet HAS one, or this case is asserting over an empty set on that
+     * world and would pass by having nothing to refuse. */
+    assert.ok(exoticPads.size,
+      `${id} publishes no pad carrying its exotic seam, so the exclusion below proves nothing there`);
+
+    /* THE ON-FOOT PATH, DRIVEN THE WAY THE GAME LEAVES IT. Not a stub - null is
+     * what `Piloting.landedSite` actually reads after an entry that was not a
+     * landing, and the assertion says so rather than trusting the rig. */
+    r.piloting._landedSite = null;
+    assert.equal(r.piloting.landedSite, null,
+      `${id}: the rig recorded a landing without one, so the case below is not on foot`);
+    const foot = obj.richerPad();
+    const footHint = obj.hint();
+    if (foot && foot.id === primary.id) {
+      selfNamed.push(`${id}: on foot the brief names ${foot.name}, the pad the player is standing on`);
+    }
+    if (foot && exoticPads.has(foot.id)) {
+      const site = w.landingSites.find((x) => x.id === foot.id);
+      strandings.push(`${id}: on foot the brief names ${foot.name}, which carries the exotic seam`
+        + ` (home ${site?.home?.pct ?? '?'}%)`);
+    }
+    /* The SENTENCE and not only the pick: the hint is what a player reads, and
+     * a silent `richerPad` with a chatty `hint` would be the same defect. */
+    if (!foot) {
+      for (const s of w.landingSites) {
+        assert.ok(!footHint.includes(s.name),
+          `${id}: richerPad() is silent on foot and the brief still names ${s.name}: "${footHint}"`);
+      }
+    }
+
+    const from = [];
+    for (const s of w.landingSites) {
+      r.piloting._landedSite = { id: s.id, name: s.name };
+      const pick = obj.richerPad();
+      from.push(`${s.id}->${pick?.id ?? '-'}`);
+      if (pick && exoticPads.has(pick.id)) {
+        const site = w.landingSites.find((x) => x.id === pick.id);
+        strandings.push(`${id}: standing on ${s.id} the brief names ${pick.name}, which carries the`
+          + ` exotic seam (home ${site?.home?.pct ?? '?'}%) - the tier that is supposed to cost a`
+          + ' second landing');
+      }
+      if (pick) {
+        assert.notEqual(pick.id, s.id,
+          `${id}: standing on ${s.id} the brief names ${s.id}`);
+      }
+    }
+    console.log(`   ${id.padEnd(11)} ${primary.id.padEnd(16)} ${String(foot?.id ?? 'silent').padEnd(9)} ${from.join('  ')}`);
+    obj.dispose();
+  }
+  assert.deepEqual(selfNamed, [],
+    `the mining brief tells a player on foot to fly to the pad they are standing on:\n  ${selfNamed.join('\n  ')}`);
+  assert.deepEqual(strandings, [],
+    `the mining brief names a pad that carries the exotic seam:\n  ${strandings.join('\n  ')}`);
 });
 
 test('every wing pays its own bounty back, and no wing pays the session total', async () => {

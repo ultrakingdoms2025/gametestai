@@ -24,7 +24,26 @@ import { CONFIG } from '../core/Config.js';
  * the pool wall or sink into the river bed. In shallowing water the bed pushes
  * the feet up, which is what makes the depth test and the visual agree.
  *
- * ## 3. The body has to look like it is swimming
+ * ## 3. Not everything you can be in is water
+ *
+ * Ten planets pour liquid and six have some. Two of those six pour something
+ * that is not water at all - Cinder's lava and Sallow's acid - and the answer
+ * for those is not a nicer swim, it is that you do not swim in them and being
+ * in them costs health. So this module no longer asks "is there water here",
+ * it asks `WaterVolumes.liquidAt`, which answers with the substance as well as
+ * the height, and it splits on the answer:
+ *
+ *   swimmable   take the movement step, as below.
+ *   lethal      take NO movement step - the player keeps walking, wading or
+ *               falling on the real bed - and burn them for every second any
+ *               part of them is under the surface.
+ *
+ * The damage is applied BEFORE the swimmable test and outside the swim state
+ * entirely, because the whole point is that it does not need a swim to happen.
+ * A player who leaps a shore wall into Cinder's crater lake is dead in 0.42 s
+ * whether or not they were ever "swimming".
+ *
+ * ## 4. The body has to look like it is swimming
  *
  * `PlayerAvatar` is owned by another agent and cannot be edited, but it drives
  * the shared `NPCAnimator`, whose bone locals are identity at rest. So the pose
@@ -39,8 +58,34 @@ const clamp = THREE.MathUtils.clamp;
 const damp = THREE.MathUtils.damp;
 const approach = (cur, target, rate, dt) => cur + (target - cur) * (1 - Math.exp(-rate * dt));
 
-/** Bed depth at which swimming starts, and the shallower one at which it stops. */
-const ENTER_DEPTH = 1.3;
+/**
+ * Bed depth at which swimming starts, and the shallower one at which it stops.
+ *
+ * EXPORTED because it is now a WORLD-BUILDING number as well as a movement one.
+ * Water shallower than this is walked through - Sirocco's brine pans are 38 cm
+ * deep and Verdigris's river is 1.21 m, and a body wades both - so it is the
+ * line between "liquid you stand on the bed of" and "liquid you float in", and
+ * every reach probe that models a shore has to draw it in the same place the
+ * player does. Re-typing 1.3 into a probe is how a fence ends up guarding a
+ * puddle. @see ../../scripts/tests/planet-envelope.test.mjs
+ */
+export const ENTER_DEPTH = 1.3;
+
+/* RISE_SPEED, DIVE_SPEED and MAX_OXYGEN are exported beside it for the same
+ * reason ENTER_DEPTH is: they are the DIVER'S LUNG, and content that has to sit
+ * inside it is authored on ten planets by people who cannot see this file.
+ *
+ * `planet-dive.test.mjs` derives the drowning ceiling from them
+ * (`MAX_OXYGEN / (1/DIVE_SPEED + 1/RISE_SPEED)` = 15.7 m, working 11.2 m with
+ * four seconds in hand) and asserts nothing underwater on any swimmable planet
+ * is deeper than that. It was SCRAPING them out of the source text because they
+ * were module-private, which works until somebody renames one. A constant that
+ * a test has to scrape is a constant that wants exporting.
+ *
+ * Note what these are NOT: a property of a planet. Shoal's sea reaches 66% of
+ * itself inside this lung and the rest is map-edge rim with nothing on it, so
+ * the answer to "the deep bed is unreachable" was shallower content, not more
+ * air. If a lung ever grows it should grow as equipment, on the player. */
 const EXIT_DEPTH = 1.0;
 /** Feet must be this far under the surface before a wade becomes a swim. */
 const ENTER_SUBMERSION = 0.55;
@@ -52,31 +97,32 @@ const RISE_LIMIT = 1.06;
 const SWIM_SPEED = 2.2;
 const SWIM_SPRINT = 3.15;
 const SWIM_ACCEL = 7.5;
-const RISE_SPEED = 2.1;
-const DIVE_SPEED = 2.4;
+export const RISE_SPEED = 2.1;
+export const DIVE_SPEED = 2.4;
 /**
  * Vertical spring toward the waterline, and its terminal speeds.
  *
- * NO GRAVITY TERM, and after the per-world gravity pass there is still none.
- * Not an oversight and not laziness - it is unreachable. `PlanetWorld` sets
- * `swim: false` in its rules for all ten planets (a sea there is flown to, not
- * swum in), and `Player` gates this module on `allows(world, 'swim')`, so the
- * only worlds this code ever runs in are the hand-built ones, every one of
- * which publishes no gravity and therefore has a ratio of exactly 1. There is
- * nothing for a gravity term to multiply.
+ * ── THE GRAVITY TERM THIS BLOCK USED TO SAY WAS UNREACHABLE ───────────────
+ * It said, correctly at the time: `PlanetWorld` sets `swim: false` for all ten
+ * planets, so the only worlds this code runs in are the hand-built ones, every
+ * one of which publishes no gravity and therefore has a ratio of exactly 1.
+ * That is no longer true - four planets now publish swimmable water - so this
+ * is the block it told the next person to revisit, revisited.
  *
- * It would also have almost nothing to say if it were reachable: the two low-g
- * bodies, Tessera at 1.62 and Lathe at 1.90, publish `liquid: null` - neither
- * has anything liquid on it - and the six planets that DO have a sea run 7.80
- * to 10.10 m/s², i.e. 0.80 to 1.03 g. Physically a buoyant restoring force
- * scales with g, so the correction over that whole span is a few per cent of a
- * spring whose job is to stop a documented oscillation at the waterline. The
- * risk of destabilising that is larger than the fidelity gained.
+ * It also told them HOW, and that instruction is followed rather than
+ * improvised: the honest scaling is `BUOY_UP_MAX`/`BUOY_DOWN_MAX` as TERMINAL
+ * SPEEDS (√r under quadratic drag), not `BUOYANCY`, which is a 1/s rate and is
+ * the thing holding the documented waterline oscillation down. So the rate is
+ * untouched and the two speed caps are scaled by `sqrt(ratio)`.
  *
- * If a planet is ever authored with `swim: true`, THIS is the block to revisit,
- * and the honest scaling is `BUOY_UP_MAX`/`BUOY_DOWN_MAX` as terminal speeds
- * (√r under quadratic drag), not `BUOYANCY`, which is a 1/s rate.
- * @see ../worlds/PlanetWorld.js `rules`
+ * The correction is small on purpose, because the span is small: the four
+ * swimmable planets run 7.80 to 10.10 m/s², i.e. 0.80 to 1.03 g, so the caps
+ * move by -11% to +1.5%. Tessera (1.62) and Lathe (1.90) publish
+ * `liquid: null` and are not reachable through here at all; if a low-gravity
+ * sea is ever authored, √0.165 = 0.41 is a bob that is four tenths as brisk,
+ * which is the physically right direction and is why the exponent is a half
+ * rather than a one.
+ * @see ../worlds/WorldRules.js `worldGravityRatio`
  */
 const BUOYANCY = 2.8;
 const BUOY_UP_MAX = 1.7;
@@ -86,7 +132,7 @@ const BOB_AMP = 0.05;
 const BOB_FREQ = 1.35;
 
 /** Seconds of air, and the damage rate once it is gone. */
-const MAX_OXYGEN = 14;
+export const MAX_OXYGEN = 14;
 const DROWN_DPS = 9;
 
 /* Scratch. Each function owns its own - see the note in physics/Physics.js. */
@@ -122,6 +168,14 @@ export class Swim {
     this._bobPhase = 0;
     this._enteredAt = -999;
     this._emittedDepth = -999;
+
+    /* --- hazard state ---------------------------------------------- *
+     * `_hazardCarry` is the same fractional-damage accumulator drowning uses:
+     * `applyDamage` takes whole points, and 240 dps at 60 Hz is 4 points a
+     * step, but 14 dps is 0.23 - which truncated to an integer is ZERO
+     * FOREVER. Acid that does nothing is worse than acid that is not there. */
+    this._hazardCarry = 0;
+    this._hazardName = null;
 
     /* --- pose state ------------------------------------------------ */
     this._poseWeight = 0;
@@ -166,9 +220,32 @@ export class Swim {
     return this._poseWeight;
   }
 
+  /** True while the body is in a liquid that is doing it harm. */
+  get burning() {
+    return this._hazardName !== null;
+  }
+
   /** @param {import('../systems/WaterVolumes.js').WaterVolumes|null} volumes */
   setVolumes(volumes) {
     this.water = volumes ?? null;
+  }
+
+  /**
+   * What is at (x, z), as `{ surfaceY, swimmable, lethal, dps, cause, name }`.
+   *
+   * `WaterVolumes.liquidAt` is the real answer. The fallback exists because
+   * this module is handed its volumes over the bus and a hand-rolled provider
+   * (several tests build one) may only implement `surfaceYAt` - and everything
+   * that came before this change WAS swimmable, harmless water, so that is
+   * what an old provider means.
+   */
+  _liquidAt(x, z) {
+    const w = this.water;
+    if (!w) return null;
+    if (typeof w.liquidAt === 'function') return w.liquidAt(x, z);
+    const surfaceY = w.surfaceYAt(x, z);
+    if (surfaceY === null || !Number.isFinite(surfaceY)) return null;
+    return { surfaceY, swimmable: true, lethal: false, dps: 0, cause: 'water', name: 'water' };
   }
 
   /* ================================================================ */
@@ -189,14 +266,36 @@ export class Swim {
     if (!water || p.isDead) {
       this._setActive(false, elapsed);
       this._recoverOxygen(dt);
+      this._endHazard();
       return false;
     }
 
     const pos = p.position;
-    const surfaceY = water.surfaceYAt(pos.x, pos.z);
+    const liquid = this._liquidAt(pos.x, pos.z);
+    const surfaceY = liquid === null ? null : liquid.surfaceY;
 
-    // Above the water plane (a bridge, the pool deck) or nowhere near water.
+    // Above the liquid plane (a bridge, the pool deck) or nowhere near any.
     if (surfaceY === null || pos.y > surfaceY + 0.02) {
+      this._setActive(false, elapsed);
+      this._recoverOxygen(dt);
+      this._endHazard();
+      return false;
+    }
+
+    /* THE BURN COMES FIRST, and it is not inside the swim state.
+     *
+     * A body in lava is in lava whether or not anything is "swimming", and the
+     * two cases this has to cover are exactly the ones a swim-gated version
+     * would miss: a player who WALKED into a 38 cm acid shallow (no swim - the
+     * bed is too high for one), and a player who LEAPT a shore wall into the
+     * crater lake and is still in freefall on the frame they cross the plane. */
+    this._burn(dt, liquid);
+
+    /* Lava and acid take no movement step. `Player` reads the `false` and runs
+     * its own ground movement, so the body walks, wades or falls on the real
+     * bed - which is what being in a lava lake should look like. Swimming in it
+     * would be a bath with a timer. */
+    if (!liquid.swimmable) {
       this._setActive(false, elapsed);
       this._recoverOxygen(dt);
       return false;
@@ -303,7 +402,14 @@ export class Swim {
       this._bobPhase += dt * BOB_FREQ;
       const bob = Math.sin(this._bobPhase * Math.PI * 2) * BOB_AMP;
       const rest = this._surfaceY - FLOAT_DEPTH + bob;
-      targetY = clamp((rest - pos.y) * BUOYANCY, -BUOY_DOWN_MAX, BUOY_UP_MAX);
+      /* Terminal speeds go as sqrt(g): a buoyant restoring FORCE scales with
+       * gravity and the drag opposing it is quadratic in speed, so the speed
+       * the two balance at goes as the square root. The RATE is deliberately
+       * not scaled - see the block on BUOYANCY. `gravityRatio` is already
+       * clamped finite into [0.01, 4] by `worldGravityRatio`, so the sqrt
+       * cannot be NaN and the caps cannot be zero. */
+      const gr = Math.sqrt(Math.max(1e-3, this.player?.gravityRatio ?? 1));
+      targetY = clamp((rest - pos.y) * BUOYANCY, -BUOY_DOWN_MAX * gr, BUOY_UP_MAX * gr);
     }
     v.y = approach(v.y, targetY, 6.5, dt);
 
@@ -343,6 +449,46 @@ export class Swim {
       this.bus?.emit('player:drowning', { oxygen: 0, health: p.health });
     }
     void elapsed;
+  }
+
+  /**
+   * LETHAL LIQUID. `liquid.lethal` finally does something.
+   *
+   * Runs on any frame the feet are under a liquid plane, swim or no swim. The
+   * "unmistakable" the brief asked for is three things at once, because any
+   * one of them alone is missable: the health bar drops fast enough to see,
+   * the HUD's damage flash fires on every `player:damaged`, and
+   * `player:liquid` names the substance on entry so anything that wants to say
+   * ACID on the screen can.
+   *
+   * @param {number} dt
+   * @param {{lethal:boolean, dps:number, cause:string, name:string}} liquid
+   */
+  _burn(dt, liquid) {
+    if (!liquid.lethal || !(liquid.dps > 0)) {
+      this._endHazard();
+      return;
+    }
+    const p = this.player;
+    if (this._hazardName !== liquid.name) {
+      this._hazardName = liquid.name;
+      this._hazardCarry = 0;
+      this.bus?.emit('player:liquid', { in: true, name: liquid.name, cause: liquid.cause, dps: liquid.dps });
+    }
+    this._hazardCarry += liquid.dps * dt;
+    if (this._hazardCarry < 1) return;
+    const whole = Math.floor(this._hazardCarry);
+    this._hazardCarry -= whole;
+    p.applyDamage(whole, null, liquid.cause);
+  }
+
+  /** Leave the hazard, once, so `player:liquid` is an edge and not a stream. */
+  _endHazard() {
+    if (this._hazardName === null) return;
+    const name = this._hazardName;
+    this._hazardName = null;
+    this._hazardCarry = 0;
+    this.bus?.emit('player:liquid', { in: false, name });
   }
 
   _recoverOxygen(dt) {
@@ -386,6 +532,10 @@ export class Swim {
       this.bus?.emit('player:swim', { swimming: false, depth: 0 });
     }
     this._oxygen = MAX_OXYGEN;
+    /* A world change taken while standing in lava must not carry the burn into
+     * the next world: `fixedUpdate` would not reach `_endHazard` again until
+     * after the teleport, so nothing else would ever clear it. */
+    this._endHazard();
   }
 
   /* ================================================================ */

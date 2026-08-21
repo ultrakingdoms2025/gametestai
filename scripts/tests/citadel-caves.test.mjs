@@ -269,6 +269,13 @@ function built() {
       sites[c.id] = { relief: c.profile.relief, lift: c.lift, vac: c.vacancy, base: c.base };
     }
     const caveMs = shipped.reduce((a, c) => a + c.ms, 0);
+    /* WORK, not wall clock. `CitadelWorld._buildCaves` publishes `colliders` as
+     * `built.colliders.length + base.colliders.length`, and every one of those
+     * comes from a `Caves.js` `solid()` that emits exactly one merged box - so
+     * this one number is both the collider count and the box count for
+     * everything inside the timed window. See the cost case for why the
+     * milliseconds beside it are printed rather than asserted. */
+    const caveWork = shipped.map((c) => ({ id: c.id, boxes: c.colliders, lights: c.lights, ms: c.ms }));
     const group = world.group;
 
     // The FINAL collider set: Citadel's own plus the caves', after everything.
@@ -276,7 +283,7 @@ function built() {
     const reports = system.caves.map((c) => auditCave(c.plan, field, c.lights));
     return {
       world, physics, scene, group, system, field, reports,
-      worldMs, caveMs, baseColliders, sites,
+      worldMs, caveMs, caveWork, baseColliders, sites,
     };
   })();
   return _built;
@@ -870,14 +877,114 @@ test('what a cave actually costs', async () => {
    * collider count fails here. C4's budget for the whole world at 5x is 20,000
    * colliders; a cave taking 1% of that is cheap and a cave taking 10% is a
    * decision somebody has to make on purpose.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   *  COUNTED, NOT TIMED - AND WHY THE WALL CLOCK HAD TO GO
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * This case asserted `b.caveMs < 60` and was reported independently by three
+   * agents as a pre-existing flake: green in isolation, red under a loaded
+   * parallel `npm test`. Measured on this machine (24 logical cores), the same
+   * two shipped caves:
+   *
+   *     idle                       min 12.10   median 12.58   max 13.88 ms
+   *     8 concurrent test loops    min 13.97   median 17.2    max 20.77
+   *     24 concurrent              min 28.65   median 38.2    max 55.92
+   *     32 concurrent              min 30.06   median 54.2    max 97.29
+   *
+   * and end to end, eight runs of this file under 32 loaders went RED five
+   * times, reporting 62.4, 70.1, 76.0, 148.3 and 168.9 ms. The worst is 13.4x
+   * the true value. A ceiling that survived it would have to be about 200 ms -
+   * sixteen times the honest number - at which point a cave could quadruple its
+   * cost and stay green. **A time ceiling here cannot be both safe and
+   * meaningful**, which is why it is not widened, it is replaced.
+   *
+   * ── WHAT REPLACES IT, AND WHY IT IS THE SAME BUDGET ──────────────────────
+   *
+   * `citadel-budgets.test.mjs`'s C5 gate hit this exact wall against this exact
+   * 24 ms slice budget and answered it by counting COLLIDERS BETWEEN YIELDS,
+   * with a measured conversion of 12 colliders per millisecond and a floor of
+   * 250 for a 24 ms slice. Three more cases in this suite reached the same
+   * conclusion from other directions (`physics-remove`, `npc-route-follow`,
+   * `medieval-spatial-index`). This follows all four.
+   *
+   * A cave IS a slice: `CitadelWorld._buildCaves` takes exactly one `breathe()`
+   * per cave, so the per-cave count is the per-slice count, the same way a tank
+   * is a slice for the oases.
+   *
+   * The proxy is EXACT here rather than approximate, which is the one thing the
+   * oasis version could not claim. Everything inside the timed window that
+   * emits geometry goes through `Caves.js`'s `solid()` - once in `buildCave`
+   * and once in `buildPlinth` - and each call emits exactly one merged box and
+   * registers exactly one collider. So `c.colliders`, which the world already
+   * publishes, is the box count as well. Verified: 89 shell + 10 plinth for the
+   * Quarry Adit and 71 + 9 for the Sunken Hall, against 89/71 and 10/9 boxes.
+   *
+   *   floor     <= 250 colliders in one cave's build slice
+   *   achieved  quarry-adit 99, sunken-hall 80
+   *   ceiling   the 20,000-collider world budget C4 sets, which this is 0.5% of
+   *
+   * ── THE BLIND SPOT, STATED RATHER THAN ASSERTED AROUND ───────────────────
+   *
+   * `buildPlinth` samples the terrain lattice under the footprint to find the
+   * ground - 2,420 calls for the Quarry Adit and 3,243 for the Sunken Hall -
+   * and produces only ten and nine boxes from them. That is 10-15% of the warm
+   * cost and no count here sees it. It is invisible to this measure exactly the
+   * way collider-free dressing is invisible to C5's, and the honest thing is to
+   * say so rather than to invent a number for it. A plinth that started
+   * sampling a hundred times as much ground would not be caught here.
+   *
+   * The wall clock is still MEASURED and PRINTED, because a number nobody can
+   * trust as a gate is still a number worth reading in a run log. Run six times
+   * under 28 concurrent test processes after this rewrite, it printed 12.3,
+   * 12.9, 13.3, 14.4, 20.6 and 73.2 ms and passed 6/6 - the 73.2 is the old
+   * assertion going red on a build with nothing wrong with it, reproduced in the
+   * same run that proves the replacement holds.
+   *
+   * ── AND THE "~45 FAILURES WITH A BROWSER OPEN", WHICH ARE NOT THIS ───────
+   *
+   * The suite is also said to report about forty-five failures across the heavy
+   * ship and planet sim files when a browser and a preview server are live.
+   * That was chased and could NOT be reproduced, and the reason is worth
+   * writing down so nobody chases it again from the same end: **there are only
+   * eleven wall-clock assertions in the whole suite**, and none of them is in a
+   * ship or planet file. Six are in `npc-budget.test.mjs`, one here, one in
+   * `citadel-oasis`, one in `citadel-traffic-live`, one in `dock-hulls`, one in
+   * `maze-solvable`. Eleven assertions cannot make forty-five failures.
+   *
+   * Run directly: all eleven `_flightrig`-based files (`dock-sky`,
+   * `harness-framings`, `pilot-downed`, `pilot-look`, `pilot-mode-guards`,
+   * `piloting-loop`, `piloting-return`, `planet-atmosphere`, `ship-transit`,
+   * `space-combat`, `space-objectives`) under 32 concurrent heavy loops gave
+   * the SAME result as idle - zero extra failures. No test binds a port or
+   * reaches localhost; the four `execFileSync` GLB builders pass no timeout.
+   *
+   * So the browser is not making assertions fail through CPU contention. The
+   * untested hypothesis left is MEMORY: 24 node processes each holding a fully
+   * built world, plus headless Chrome and SwiftShader, on one box. The
+   * measurement nobody has taken is the SIGNATURE of those failures - next time
+   * a browser is live, `npm test 2>&1 | grep "^not ok"` and check whether they
+   * are `ERR_ASSERTION` at all rather than OOM, `ERR_WORKER_OUT_OF_MEMORY` or
+   * an unhandled rejection. "Contention, not regression" is a diagnosis nobody
+   * has evidence for; the honest advice remains to kill the browser before
+   * taking a suite reading, but for a reason that is still unknown.
    */
   const b = await built();
   const perCave = b.system.colliders.length / b.system.caves.length;
   assert.ok(perCave < 120,
     `${perCave.toFixed(0)} colliders per cave against a 20,000 budget for the whole world at 5x`);
-  assert.ok(b.caveMs < 60,
-    `${b.caveMs.toFixed(1)} ms to build two caves against C5's 24 ms per slice - a cave has to fit `
-    + 'inside a background build slice');
+
+  console.log('\n    cave            colliders  lights   slice');
+  for (const w of b.caveWork) {
+    console.log(`    ${w.id.padEnd(15)}${String(w.boxes).padStart(6)}${String(w.lights).padStart(9)}`
+      + `   ${w.ms.toFixed(1)} ms`);
+  }
+  console.log(`    ${b.caveMs.toFixed(1)} ms for both, on this machine, this run - printed, not asserted`);
+  for (const w of b.caveWork) {
+    assert.ok(w.boxes <= 250,
+      `${w.id} merges ${w.boxes} boxes and registers ${w.boxes} colliders between two yields; `
+      + 'floor 250, which is C5\'s 24 ms slice at citadel-budgets\' measured 12 colliders/ms');
+  }
 
   // Geometry, measured the way C2 measures it: attribute bytes.
   const physics = new Physics();

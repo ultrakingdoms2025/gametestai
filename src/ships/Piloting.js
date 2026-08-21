@@ -401,6 +401,17 @@ export const TRANSIT_CLEAR = 4000;
 export const TRANSIT_KEY = 'KeyZ';
 
 /**
+ * Seconds before the lock-broken sentence may be said again.
+ *
+ * `SpaceCombat._locked` releases after `LOCK_GRACE` of nothing in reach and
+ * re-arms the moment a hostile is gaining again, so a single fight can break
+ * and re-take a lock several times while the pilot manoeuvres. Eight seconds is
+ * longer than that oscillation and shorter than the gap between two zones on
+ * any lane in the volume - the closest pair is 128 km apart.
+ */
+export const LOCK_SAY_COOLDOWN = 8;
+
+/**
  * Metres from the yard's centre inside which the drive is mass-locked.
  *
  * The requirement is "inside the dock's handoff radius", which is
@@ -447,6 +458,19 @@ export const TRANSIT_REASONS = Object.freeze({
    * holding you against it. */
   hull: 'Transit drive cut - pressure hull.',
   interdicted: 'Interdicted. Transit drive will not spin up while something has a lock.',
+  /* THE RESCISSION, and the reason there has to be one.
+   *
+   * Every other sentence here is a refusal that a player can act on: get clear,
+   * lift off, pull away. `interdicted` was the only one with no way back - the
+   * lock breaks silently, the drive stays off because it is LATCHED, and
+   * nothing on screen says the key will be taken again. Flown end to end, that
+   * silence is the single most expensive thing in the volume: the dock-to-Lathe
+   * leg times 134.8 s for a pilot who never presses Z again and 92.8 s for one
+   * who does, on the same route with the same two interdictions. Forty-two
+   * seconds of holding W, bought back by one sentence.
+   *
+   * `good` rather than `info`, because it is the end of something bad. */
+  released: `Lock broken. Transit drive ready - press ${TRANSIT_KEY.replace(/^Key/, '')}.`,
   hit: 'Transit drive cut - hull under fire.',
   pilot: 'Transit drive disengaged.',
 });
@@ -587,6 +611,10 @@ export class Piloting {
      * mode still runs identically with no combat system present at all.
      */
     this.interdicted = false;
+    /** Last step's `interdicted`, so `_announceLock` fires on the EDGE. */
+    this._wasInterdicted = false;
+    /** Seconds until the lock-broken sentence may be said again. */
+    this._lockSaid = 0;
     /** Last transit state the bus was told about, so `pilot:transit` is an
      *  EDGE and the audio director is not asked to start a sound per step. */
     this._transitSaid = 'off';
@@ -1040,6 +1068,7 @@ export class Piloting {
      * `_stepTransit` is announced on the step it fired rather than a frame
      * later. It is an edge compare and a return when nothing moved. */
     this._announceTransit();
+    this._announceLock(wid, dt);
 
     /* TRANSIT. Displacement only - see the header. The integrator above ran
      * with the honest numbers and `f.speed` still reports them. */
@@ -1388,6 +1417,60 @@ export class Piloting {
     if (why) { this._sayTransit(why); return; }
     f.engageTransit();
     this.bus?.emit?.('hud:notify', { text: 'Transit drive spinning up.', tone: 'info' });
+  }
+
+  /**
+   * THE LOCK BROKE. SAY SO, ONCE, AND ONLY WHEN THE KEY WOULD WORK.
+   *
+   * `SpaceCombat` writes `interdicted` and clears it - when the wing dies, when
+   * it stands down, or when `LOCK_GRACE` runs out because nothing is in reach
+   * or gaining. All three are invisible: the drive is a LATCH, so it does not
+   * come back on its own, and until this method existed nothing told the pilot
+   * it would take the key again. `_pollTransit`'s header says a control that
+   * silently does nothing is worse than one that is not there; a refusal with
+   * no rescission is the same defect one step later.
+   *
+   * ── WHAT IT IS WORTH, FLOWN ──────────────────────────────────────────────
+   *
+   * Dock to Lathe, real boot, encounters live, two interdictions on the lane:
+   *
+   *     134.8 s   pressing Z once, at the start
+   *      92.8 s   pressing Z again each time the lock clears
+   *
+   * The 42 s is not the fights. It is the 140 km flown after the first
+   * interdiction on the x8 courtesy multiplier at 210 m/s instead of the
+   * drive's 4,200, because nobody said the drive was available.
+   *
+   * ── THREE GUARDS, EACH FOR A DIFFERENT WRONG SENTENCE ────────────────────
+   *
+   *   the EDGE          `interdicted` is written every step; without the edge
+   *                     this would say it sixty times a second.
+   *   `transitRefusal`  the lock can break INSIDE a gravity well - Cinder's
+   *                     picket sits 16.8 km outside its atmosphere and a fight
+   *                     drifts. Telling a pilot the drive is ready where the
+   *                     mass lock will refuse it is a worse sentence than
+   *                     silence, so the same ring `_pollTransit` asks is asked
+   *                     here.
+   *   the COOLDOWN      `SpaceCombat._locked` re-arms when a hostile comes back
+   *                     into reach or starts gaining, so the lock can flicker
+   *                     inside one fight. An edge alone would chatter.
+   *
+   * @param {string|null} wid the active world id
+   * @param {number} dt fixed step, seconds
+   */
+  _announceLock(wid, dt) {
+    if (this._lockSaid > 0) this._lockSaid = Math.max(0, this._lockSaid - dt);
+    const held = !!this.interdicted;
+    const was = this._wasInterdicted;
+    this._wasInterdicted = held;
+    if (held || !was) return;
+    if (this._lockSaid > 0) return;
+    /* A live drive needs no invitation, and neither does a pilot standing on a
+     * pad: `transitRefusal` answers both, plus the well and the yard. */
+    if (this.flight.transitLive || wid !== 'space') return;
+    if (this.transitRefusal()) return;
+    this._lockSaid = LOCK_SAY_COOLDOWN;
+    this._sayTransit('released', 'good');
   }
 
   /** One sentence from `TRANSIT_REASONS`, on the channel the HUD already draws. */

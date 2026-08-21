@@ -355,3 +355,76 @@ test('a NaN position is still rescued, and does not become NaN again', async () 
     assert.ok(Number.isFinite(v), `recovery left the player at ${rig.player.position.toArray()}`);
   }
 });
+
+/* ================================================================== */
+/* THE BACKSTOP IS A CATCH, NOT A DESTINATION                          */
+/* ================================================================== */
+
+test('a body standing on a planet\'s backstop is out of the world', async () => {
+  /* ═══════════════════════════════════════════════════════════════════════
+   * Every planet carries a flat height field 6 m under its deepest terrain,
+   * so a body that gets under the ground - off the edge of the playfield, or
+   * pushed past the height field's own lip by the solver - lands on something
+   * instead of falling until the void catch notices at `bounds.min.y - 25`.
+   *
+   * That closes the fall and opens this: the backstop is an invisible plane
+   * 1,260 m across with nothing on it, and a body standing on it is grounded,
+   * not penetrating, and well above `bounds.min.y`. Every detector in
+   * `Unstuck` reads "playing normally".
+   *
+   * MEASURED in a real boot after the backstop shipped. Walk off the edge of
+   * Verdigris at (438, 40, 0): the body lands on the backstop at y -6.2 at
+   * 2.3 s and is still standing there, hp 100, at 21.6 s, with no rescue and
+   * no [K] prompt. Cinder survived the same walk only because the fall there
+   * is long enough to be lethal and the death respawn cleaned up after it.
+   *
+   * MUTATION: drop the `census.floor` branch from `_isOutOfWorld` and this
+   * reports a body at the backstop's own height as perfectly fine.
+   * ═══════════════════════════════════════════════════════════════════════ */
+  const rig = makeRig({ pads: PAD });
+  /* A planet-shaped world: terrain bottoming out at -0.15, a backstop 6 m under
+   * that, and `bounds.min.y` 6 m under the backstop. Verdigris's real numbers. */
+  rig.world.census = { floor: { top: -6.15, half: 630, terrainMinY: -0.15 } };
+  rig.world.bounds.min.y = -12.15;
+  const u = await system(rig);
+
+  // Standing on the backstop: grounded, unpenetrated, above bounds.min.y.
+  assert.equal(u._isOutOfWorld(new THREE.Vector3(438, -6.15, 0)), true,
+    'a body standing on the backstop reads as being in the world, so nothing will ever come for it');
+  assert.equal(u._isOutOfWorld(new THREE.Vector3(438, -6.0, 0)), true,
+    'a body a hand\'s breadth over the backstop is still on it');
+
+  /* And the clearance is real: the deepest REAL ground on this world is 6 m
+   * above the backstop, so nothing standing on the map can trip this. */
+  assert.equal(u._isOutOfWorld(new THREE.Vector3(0, -0.15, 0)), false,
+    'the deepest ground on the map now reads as out of the world - the backstop is too close to it');
+  assert.equal(u._isOutOfWorld(new THREE.Vector3(0, 40, 0)), false, 'open air over the map');
+
+  // The old rule still applies on a world with no backstop published.
+  const plain = makeRig({});
+  const u2 = await system(plain);
+  assert.equal(u2._isOutOfWorld(new THREE.Vector3(0, -84, 0)), false, 'inside the void margin');
+  assert.equal(u2._isOutOfWorld(new THREE.Vector3(0, -86, 0)), true, 'past bounds.min.y - 25');
+});
+
+test('the rescue off a backstop is a carry, not a nudge', async () => {
+  /* A body on the backstop HAS FOOTING - that is the whole point of a backstop -
+   * so the rungs that address a body the solver is fighting must not be offered,
+   * and the recall must be. This is the same rule the file opens with, applied
+   * to the one place where "there is a floor under you" is not reassuring. */
+  const rig = makeRig({ pads: PAD });
+  rig.world.census = { floor: { top: -6.15, half: 630, terrainMinY: -0.15 } };
+  rig.world.bounds.min.y = -12.15;
+  rig.player.position.set(438, -6.15, 0);
+  const u = await system(rig);
+  u.recordPad?.(PAD[0]);
+
+  const moved = u.unstuck('out-of-world');
+  assert.equal(moved, true, 'a body on the backstop was not moved');
+  assert.ok(rig.player.position.y > -6.0,
+    `the rescue left the body at y ${rig.player.position.y.toFixed(2)}, still under the map`);
+  const ev = rig.events.filter((e) => e.evt === 'player:unstuck').pop();
+  assert.ok(ev, 'no player:unstuck was emitted');
+  assert.notEqual(ev.payload.method, 'nudge',
+    'the backstop rescue used the cheap lift, which moves a body a few centimetres and leaves it under the map');
+});

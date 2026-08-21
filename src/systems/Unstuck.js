@@ -940,8 +940,46 @@ export class UnstuckSystem {
   /* Internals                                                         */
   /* ================================================================ */
 
+  /**
+   * Is the body outside the world?
+   *
+   * Two ways, and the second one exists because closing the first opened it.
+   *
+   * ── 1. BELOW THE WORLD'S OWN LOWER BOUND ─────────────────────────────────
+   * `bounds.min.y - VOID_MARGIN`. This is the falling-for-ever case and it is
+   * what this method has always been.
+   *
+   * ── 2. STANDING ON THE BACKSTOP, WHICH IS NOT THE SAME AS BEING SAVED ────
+   * Every planet now carries a flat backstop height field 6 m under its deepest
+   * terrain (`PlanetWorld._buildFloor`), so a body that gets under the terrain
+   * lands on something instead of falling until the void catch notices. That is
+   * the right fix for the fall and it CANNOT be the end of the story: the
+   * backstop is an invisible plane 1,260 m across with nothing on it, outside
+   * the playfield, and a body standing on it is grounded, not penetrating and
+   * comfortably above `bounds.min.y` - so every detector in this file reads
+   * "playing normally".
+   *
+   * MEASURED, in a real boot, after the backstop landed. Walk off the edge of
+   * Verdigris at (438, 40, 0):
+   *
+   *     t 2.3 s   lands on the backstop at y -6.2, 45.7 m/s, 100 damage
+   *     t 2.3 s to 21.6 s   y -6.2, hp 100, grounded, NOTHING HAPPENS
+   *
+   * Twenty seconds of standing on a grey plane under the map with no rescue
+   * offered and no [K] prompt, because nothing was detectably wrong. On Cinder
+   * the same walk survived only by accident: the fall there is long enough to
+   * be lethal, so the death respawn cleaned it up.
+   *
+   * `census.floor.top` is the backstop's own published height. 1.5 m of
+   * tolerance catches a body standing on it; the nearest REAL ground is 6 m
+   * above it by construction (`FLOOR_DROP`), so there is 4.5 m of clearance
+   * before this could ever fire on a body that is genuinely somewhere.
+   */
   _isOutOfWorld(position) {
-    const bounds = this.worldManager?.active?.bounds;
+    const world = this.worldManager?.active;
+    const backstop = world?.census?.floor?.top;
+    if (Number.isFinite(backstop) && position.y < backstop + 1.5) return true;
+    const bounds = world?.bounds;
     const floor = Number.isFinite(bounds?.min?.y) ? bounds.min.y : -100;
     return position.y < floor - VOID_MARGIN;
   }

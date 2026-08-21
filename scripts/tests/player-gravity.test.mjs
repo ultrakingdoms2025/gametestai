@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
 import { Physics } from '../../src/physics/Physics.js';
 import { CONFIG } from '../../src/core/Config.js';
-import { worldGravity } from '../../src/worlds/WorldRules.js';
+import { worldGravity, worldGravityRatio, GRAVITY_RATIO_MIN } from '../../src/worlds/WorldRules.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const readSrc = async (p) => (await readFile(path.join(root, p), 'utf8')).replace(/\r\n/g, '\n');
@@ -612,13 +612,21 @@ test('the free drop and the lethal drop both scale with the world', () => {
 /* ================================================================== */
 
 test('the walk envelope the planet reach probes flood models no gravity, and still need not', async () => {
-  /* `planet-reach.test.mjs` and `planet-minerals.test.mjs` prove every mineral
-   * node on every planet can be WALKED to: a lattice flood with a 0.45 m
-   * step-up, a 38 degree slope ceiling, a 3.0 m drop cap and no jump. Those
-   * files contain no integrator and no gravity term at all, which is exactly
-   * why this change cannot invalidate them - but "contains no gravity term" is
-   * checkable, so it is checked rather than asserted in a comment. */
-  for (const file of ['scripts/tests/planet-reach.test.mjs', 'scripts/tests/planet-minerals.test.mjs']) {
+  /* `planet-reach.test.mjs` and `planet-walk-kit.mjs` prove every mineral node
+   * on every planet can be WALKED to: a lattice flood with a 0.45 m step-up, a
+   * 38 degree slope ceiling, a 3.0 m drop cap and no jump. Those files contain
+   * no integrator and no gravity term at all, which is exactly why this change
+   * cannot invalidate them - but "contains no gravity term" is checkable, so it
+   * is checked rather than asserted in a comment.
+   *
+   * THE SECOND NAME MOVED, and this case went red on the move rather than
+   * quietly passing over a file that no longer had the constants in it. The
+   * lattice was `planet-minerals.test.mjs`'s until a second case in that file
+   * needed to flood the same graph; it lives in `planet-walk-kit.mjs` now and
+   * `planet-minerals.test.mjs` imports it. The `assert.match` lines below are
+   * what caught it - a scrape that cannot tell "absent" from "moved" would have
+   * gone green on a file with no walk graph in it at all. */
+  for (const file of ['scripts/tests/planet-reach.test.mjs', 'scripts/tests/planet-walk-kit.mjs']) {
     const src = await readSrc(file);
     /* `gravity:` appears in both, but only inside the descriptor they build a
      * probe world from - a PUBLISHED value, never a consumed one. What must
@@ -1474,16 +1482,66 @@ test('a weapon carries its own droop between worlds, and the reasoning is writte
   }
 });
 
-test('buoyancy has no gravity term, and cannot reach a world that would give it one', async () => {
-  /* Not an oversight: `PlanetWorld` sets `swim: false` for all ten planets and
-   * `Player` gates `Swim` on it, so the only worlds this code runs in publish
-   * no gravity at all. The two low-g bodies do not even have a liquid. */
+test('buoyancy scales its terminal speeds with gravity, and not its rate', async () => {
+  /* THE CASE THAT USED TO STAND HERE said buoyancy had no gravity term and
+   * could not reach a world that would give it one, because `PlanetWorld` set
+   * `swim: false` for all ten planets. That is no longer true - swimmability
+   * is per LIQUID now, and four planets publish water - so this is the same
+   * question asked of the code that exists.
+   *
+   * The note on `BUOYANCY` told the next person exactly how to answer it, and
+   * what is asserted here is that the instruction was followed rather than
+   * improvised: "the honest scaling is `BUOY_UP_MAX`/`BUOY_DOWN_MAX` as
+   * terminal speeds (sqrt(r) under quadratic drag), not `BUOYANCY`, which is a
+   * 1/s rate". A rate scaled by gravity is a stiffer spring, and the spring is
+   * what holds down the documented oscillation at the waterline. */
   const swim = await readSrc('src/player/Swim.js');
   const planetWorld = await readSrc('src/worlds/PlanetWorld.js');
-  assert.match(planetWorld, /swim: false/,
-    'a planet can be swum in now - Swim.js has a gravity question to answer, see BUOYANCY');
-  assert.doesNotMatch(swim, /worldGravity|gravityRatio/,
-    'Swim has grown a gravity term; the note on BUOYANCY says why it had none');
+  assert.match(planetWorld, /swim: liquidSwimmable\(P\.liquid\)/,
+    'PlanetWorld no longer decides swimming per liquid - if it is back to a flat false, '
+    + 'the gravity term below is unreachable again and this case should say so');
+
+  /* The ratio comes from the ONE shared reader, through the player, and is
+   * never re-derived. `worldGravityRatio` owns the clamp and the warning, and
+   * a second division by `gravityReference` anywhere in the tree is the exact
+   * defect the case below this one exists to prevent. */
+  assert.match(swim, /this\.player\?\.gravityRatio/,
+    'Swim derives a gravity ratio of its own rather than reading the player\'s');
+  assert.doesNotMatch(swim, /gravityReference/,
+    'Swim divides by the gravity reference itself - there is a second ratio in the tree now');
+
+  /* The rate is untouched and the two caps are square-rooted, in source. */
+  assert.match(swim, /const BUOYANCY = 2\.8;/, 'the buoyancy rate moved');
+  assert.match(swim, /Math\.sqrt\(Math\.max\(1e-3, this\.player\?\.gravityRatio \?\? 1\)\)/,
+    'the buoyancy scaling is no longer a guarded square root of the shared ratio');
+  assert.match(swim, /-BUOY_DOWN_MAX \* gr, BUOY_UP_MAX \* gr/,
+    'the terminal speeds are no longer the things being scaled');
+  assert.doesNotMatch(swim, /BUOYANCY \* gr|gr \* BUOYANCY/,
+    'the buoyancy RATE has been scaled by gravity - see the note on BUOYANCY');
+
+  /* And the arithmetic, over the range that is actually reachable. The four
+   * swimmable planets run 7.80 to 10.10 m/s^2, so the caps move by -11% to
+   * +1.5%: small, correct, and specifically not large enough to be worth
+   * destabilising the spring for. */
+  const { PLANETS } = await import('../../src/worlds/planets/index.js');
+  const { liquidSwimmable } = await import('../../src/worlds/planets/PlanetLiquid.js');
+  const wet = Object.values(PLANETS).filter((P) => liquidSwimmable(P.liquid));
+  assert.ok(wet.length >= 1, 'no planet is swimmable, so this case is measuring nothing');
+  const rows = wet.map((P) => {
+    const r = worldGravityRatio(P);
+    const gr = Math.sqrt(r);
+    assert.ok(Number.isFinite(gr) && gr > 0, `${P.id}: sqrt of the ratio is ${gr}`);
+    return `${P.id} ${P.gravity} m/s^2 (${r.toFixed(4)}x) -> rise cap ${(1.7 * gr).toFixed(3)} m/s`;
+  });
+  console.log(`   buoyancy caps on the swimmable planets: ${rows.join(', ')}`);
+
+  /* The floor of the clamp is what stops a low-gravity sea producing a zero.
+   * `worldGravityRatio` clamps to 0.01, so the worst reachable cap is a tenth
+   * of the default rather than nothing at all - a bob that never converges is
+   * a swimmer stuck under the waterline. */
+  const floor = Math.sqrt(GRAVITY_RATIO_MIN);
+  assert.ok(floor > 0.09 && Number.isFinite(floor),
+    `the clamped floor puts the buoyancy cap at ${floor}x, which is not a bob`);
 });
 
 test('the ship and the player still read one field through one predicate, in source', async () => {

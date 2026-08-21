@@ -75,7 +75,7 @@
  *                       round and 0 of 22 anorthite nodes reachable from any
  *                       pad. An `outcrop` keeps its edge and gets a route.
  *
- *   MOSAIC FLAT         the primary landing, (-250, 200), out on the open
+ *   MOSAIC FLAT         the open-ground landing, (-250, 200), out on the open
  *                       regolith with Crown of Rays' rim on the skyline dead
  *                       ahead at 143 m. The nearest regolith is 46 m from the
  *                       ramp and the nearest anorthite 125 m up the Stair.
@@ -92,7 +92,7 @@
  *                       four of them cutting or lapping another's rim, and
  *                       every one of the seven small ones has a floor a body
  *                       can walk down into and back out of (measured, 384 to
- *                       854 m from the primary pad).
+ *                       854 m from Mosaic Flat).
  *
  * ==========================================================================
  *  WHY THE NUMBERS ARE THESE NUMBERS
@@ -165,7 +165,7 @@
  * The three "texture" craters with a p95 or max over 38 are steep on ONE arc
  * each, where they sit on another feature's flank and the two gradients add;
  * the flood proves every one of their floors is walkable in and out anyway
- * (384-854 m from the primary pad). They are still not gates. Nothing is placed
+ * (384-854 m from Mosaic Flat). They are still not gates. Nothing is placed
  * in any of them that has to be reached.
  *
  * ── Fog, on a world with no air ──────────────────────────────────────────
@@ -337,8 +337,8 @@ const GHOST_ARC = [G(-100), G(-70), G(-45), G(-20), G(5)];
  * The Pale Bench is a 26 m plateau with a 28 m edge, which is a 54 deg face on
  * every bearing. Measured with the reach probe before this ramp existed:
  * anorthite 0 of 22 nodes reachable, from any of the three pads. An entire
- * rarity tier standing on a table with no way up - built, visible from the
- * primary landing, and behind glass. The edge is not a mistake (an `outcrop` is
+ * rarity tier standing on a table with no way up - built, visible from Mosaic
+ * Flat, and behind glass. The edge is not a mistake (an `outcrop` is
  * high ground WITH an edge, and a 68 m skirt gentle enough to walk from any
  * bearing would have made it a swell), so the fix is a route and not a softer
  * shape: Cinder's colonnade solved the same problem with a switchback up its
@@ -361,6 +361,24 @@ const BENCH_STAIR = [[-196, 216], [-162, 206], [-136, 200]];
  * is a streak of gravel. */
 const RAY_NE = [C(CROWN_R, -20), [140, -152], [258, -196], [341, -228]];
 const RAY_S = [C(CROWN_R, 66), [10, 190], [70, 330]];
+
+/**
+ * THE RAY CORRIDORS, DECLARED ONCE AND USED TWICE.
+ *
+ * These two records are the region the bright chips are scattered in AND the
+ * region the ground under them is painted in - the same object, not a copy.
+ * That is the entire reason `palette.patch` takes a region record rather than a
+ * shape of its own: a ray is one place, and a streak of albedo whose corridor
+ * had drifted four metres from the corridor the debris was in would be a bright
+ * band with gravel alongside it.
+ *
+ * `clearOfPads` is honoured by the scatter and ignored by the palette, and that
+ * asymmetry is deliberate and stated in the schema: nothing should be DROPPED
+ * where a ship comes down, but a ray that stopped short of the pad it runs past
+ * would have a hole punched in it.
+ */
+const RAY_NE_REGION = { shape: 'corridor', pts: RAY_NE, width: 22, slopeMaxDeg: 26, clearOfPads: 4 };
+const RAY_S_REGION = { shape: 'corridor', pts: RAY_S, width: 20, slopeMaxDeg: 26, clearOfPads: 4 };
 
 /* ------------------------------------------------------------------ */
 /* The sky, derived rather than typed                                  */
@@ -694,6 +712,101 @@ export const TESSERA = definePlanet({
      *  it - the term is applied as `n * n * amount`, so most of the field never
      *  gets near the ceiling. */
     mottle: { scale: 88, amount: 0.58, color: 0x5a6270 },
+    /**
+     * ══════════════════════════════════════════════════════════════════════
+     *  THE RAYS, AS ALBEDO - which is the thing the crater is named for
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * Crown of Rays had rays made of gravel and no rays made of light, because
+     * until `palette.patch` existed there was no way to say "this streak is
+     * brighter" without saying it about every contour at the same height on the
+     * map. From the crater rim the two streaks now run away to the north-east
+     * and to the south across the plain, which is the ONE view this feature is
+     * named for and the one it did not have.
+     *
+     * The regions are `RAY_NE_REGION` and `RAY_S_REGION`, the same objects the
+     * chip fields are scattered in - see the note where they are declared.
+     *
+     * FOUR RECORDS FOR TWO RAYS. A real ray fades along its length: a blaze at
+     * the crater, a smudge at the tip. Patches accumulate in declaration order,
+     * so each ray is its full corridor at moderate strength with a narrower,
+     * brighter inner section laid over it - a fade built out of the vocabulary
+     * rather than a gradient term bolted onto it.
+     *
+     * The colours are the chip tints (0xc9c6bc .. 0xe6e2d4) pulled slightly
+     * toward the ground, so the plates still read as plates lying ON the streak
+     * rather than as the streak itself.
+     *
+     * MEASURED OFF THE BUILT MESH, in linear luma, sampled on the corridor and
+     * 60 m to the side of it: the north-east ray reads about 0.50 against 0.29
+     * and the south ray 0.52 against 0.13.
+     *
+     * THE CEILING IS THE ANORTHOSITE BAND, 0xd9d3c0 at 0.651, and no patch
+     * colour here goes over it. The Pale Bench is supposed to stay the one
+     * thing on this surface that is not a hole or the rubble from one, and a
+     * ray painted brighter than the brightest rock on the moon would take that
+     * away. The fade from tip to crater is therefore bought with STRENGTH -
+     * 0.52 over the full corridor, 0.62 over the inner half - rather than by
+     * reaching for a brighter colour the table does not have.
+     *
+     * `grain` is high (0.42-0.52) on every one of them. A ray is thrown
+     * material and it lands in blotches; a corridor filled evenly with one
+     * colour reads as a painted road, which is the failure mode this term has
+     * and the reason the breakup is not optional here.
+     */
+    patch: [
+      /**
+       * THE CONTINUOUS EJECTA BLANKET, and it is here because of what the
+       * screenshots showed rather than because the brief asked for it.
+       *
+       * The two rays came out measurably brighter than the ground - 0.50 of
+       * linear luma against 0.29 on the built mesh - and still read weakly from
+       * a standing eye, for a reason that is nothing to do with the palette:
+       * this world's key is 7.6 at 18.6 degrees of elevation with an ambient of
+       * 0.11, so flat ground receives sin(18.6) = 0.32 of it and every albedo
+       * difference is scaled by that before it reaches the eye. Two 22 m lanes
+       * cannot carry a crater on their own at that light level.
+       *
+       * What a young crater actually has, and what this adds, is the thing the
+       * rays are the outliers OF: a bright apron of fines all the way round,
+       * from the rim crest out. It is a wash at strength 0.34 with heavy
+       * breakup - loud enough to make the crater read as a bright feature from
+       * Mosaic Flat, quiet enough that the two rays are still the streaks.
+       *
+       * It stops at y 34, BELOW the 39 m rim crest, so it lies on the plain
+       * outside the crest rather than painting the crest and the Raysedge pad
+       * on top of it - which is where a continuous blanket is anyway. And its
+       * outer edge at 250 m clears the Pale Bench (262 m away) and the Ghost
+       * Ring (311 m), so it laps neither.
+       */
+      {
+        id: 'crown_blanket',
+        region: { shape: 'annulus', x: CX, z: CZ, r0: 146, r1: 250, slopeMaxDeg: 30, yMax: 34 },
+        color: 0xb8b4a6, strength: 0.34, feather: 34, grain: 0.55, grainScale: 42,
+      },
+      {
+        id: 'ray_ne_albedo',
+        region: RAY_NE_REGION,
+        color: 0xcdc9ba, strength: 0.52, feather: 13, grain: 0.44, grainScale: 27,
+      },
+      {
+        /* The inner 3 of 4 stations - 200 m of the 346. Narrower as well as
+         * brighter, because the debris lane tightens toward the crater. */
+        id: 'ray_ne_core',
+        region: { shape: 'corridor', pts: RAY_NE.slice(0, 3), width: 14, slopeMaxDeg: 26 },
+        color: 0xd2cec0, strength: 0.62, feather: 9, grain: 0.36, grainScale: 18,
+      },
+      {
+        id: 'ray_s_albedo',
+        region: RAY_S_REGION,
+        color: 0xcdc9ba, strength: 0.52, feather: 12, grain: 0.44, grainScale: 27,
+      },
+      {
+        id: 'ray_s_core',
+        region: { shape: 'corridor', pts: RAY_S.slice(0, 2), width: 13, slopeMaxDeg: 26 },
+        color: 0xd2cec0, strength: 0.60, feather: 9, grain: 0.36, grainScale: 18,
+      },
+    ],
   },
 
   sky: {
@@ -913,28 +1026,29 @@ export const TESSERA = definePlanet({
     },
     {
       /**
-       * A RAY, AND WHY IT IS PROPS.
+       * A RAY IS PROPS *AND* ALBEDO, AND IT USED TO BE ONLY THE FIRST.
        *
-       * A ray system is the one thing on this planet the vocabulary cannot
-       * author as authored SHAPE: rays have essentially no relief - they are
-       * albedo, a streak of bright pulverised rock lying on top of darker
-       * weathered ground - and there is no radial term in `palette` and no
-       * `ray` landform. Faking the brightness with a `ridge` would be authoring
-       * a metre of relief that is not there, and mottle is isotropic.
+       * A ray system has essentially no relief: it is a streak of bright
+       * pulverised rock lying on top of darker weathered ground. Faking the
+       * brightness with a `ridge` would author a metre of height that is not
+       * there, and `mottle` is isotropic, so for as long as `palette` was
+       * height plus slope plus one global noise the only honest thing to build
+       * was the debris itself - bright chips, thin, at a shallow tilt, in a
+       * corridor that starts ON the rim crest.
        *
-       * So a ray here is what a ray physically is: the debris itself, thrown
-       * out of the crater and lying on the surface. Bright chips, thin, at a
-       * shallow tilt, in a corridor that starts ON the rim crest. `collide:
-       * false` - they are centimetres of plate and a body walks over them, and
-       * 360 more colliders across the two main walking routes would be a tax
-       * for nothing.
+       * That was right and it was half the feature. The other half - the ALBEDO
+       * STREAK, which is what a ray actually reads as from the rim - is now
+       * `palette.patch`, and it uses `RAY_NE_REGION` and `RAY_S_REGION`: the
+       * SAME two records these fields are scattered in. Chips on bright ground,
+       * one corridor each.
        *
-       * Said plainly in the report as a gap: a `ray` region shape, or a radial
-       * albedo term in the palette, is a thing nobody has built.
+       * `collide: false` stands - they are centimetres of plate and a body
+       * walks over them, and 360 more colliders across the two main walking
+       * routes would be a tax for nothing.
        */
       id: 'ray_ne',
       kind: 'slabs',
-      region: { shape: 'corridor', pts: RAY_NE, width: 22, slopeMaxDeg: 26, clearOfPads: 4 },
+      region: RAY_NE_REGION,
       count: 200, spacing: 6,
       size: { w: [0.8, 2.4], d: [0.6, 2.0], t: [0.15, 0.45], tilt: 0.35 },
       tint: [0xc9c6bc, 0xdcd8cc, 0xb4b1a8, 0xe6e2d4],
@@ -948,7 +1062,7 @@ export const TESSERA = definePlanet({
        * set and a ray you cannot see the crater at the end of is a gravel path. */
       id: 'ray_s',
       kind: 'slabs',
-      region: { shape: 'corridor', pts: RAY_S, width: 20, slopeMaxDeg: 26, clearOfPads: 4 },
+      region: RAY_S_REGION,
       count: 160, spacing: 6,
       size: { w: [0.8, 2.4], d: [0.6, 2.0], t: [0.15, 0.45], tilt: 0.35 },
       tint: [0xc9c6bc, 0xdcd8cc, 0xb4b1a8, 0xe6e2d4],
@@ -1098,18 +1212,111 @@ export const TESSERA = definePlanet({
    * the thing the site exists to look at, computed once here rather than
    * guessed - a landing site whose first frame faces a blank plain has wasted
    * the one moment the player is guaranteed to be looking.                    */
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   *  THE PAD YOU ARRIVE AT, AND WHY IT IS NO LONGER MOSAIC FLAT
+   * ═════════════════════════════════════════════════════════════════════════
+   *
+   * The registry-wide rule, asserted for all ten planets by
+   * `planet-envelope.test.mjs`: the arrival pad is the RICHEST pad that is
+   * RETURNABLE and carries no EXOTIC seam. Cinder established it and
+   * `planets/Volcanic.js` records what it cost to find.
+   *
+   * Measured, a best-value 10 m3 Kestrel load off each pad's own nearest seams:
+   *
+   *     mosaic       245 cr     regolith, and regolith alone - the common tier,
+   *                             3 m3 a lump, so the hold is full of the
+   *                             cheapest thing on the planet before it holds
+   *                             anything else.
+   *     raysedge   1,756 cr     7.17x. Sperrylite is RARE and 0.82 m of node,
+   *                             and the Slump Road puts the melt sheet 167 m
+   *                             from this disc instead of 343.
+   *     coldwell   1,757 cr     the exotic pad. One credit richer and refused
+   *                             anyway - see below.
+   *
+   * ── WHY NOT THE COLD WELL, WHICH MEASURES ONE CREDIT MORE ────────────────
+   *
+   * Because it is the EXOTIC pad, and on this planet that is the ONLY refusal
+   * available - which makes Tessera the world that proves the exotic half of
+   * the rule is not redundant with the returnable half. The Cold Well reads 0
+   * degrees of rim and returns 100% of what it reaches; it is the safest disc
+   * in the registry. It is also the only ground helion sits on: 7 of 7 from
+   * this pad at 26 m, 0 of 7 from either other pad at any distance, at every
+   * envelope. The Well's wall measures 52 deg median and 62 at p95 on every
+   * bearing - there is no long way round. Arriving there would hand a new pilot
+   * the top of the rarity ladder in the first forty seconds and delete the
+   * second landing this planet is built around.
+   *
+   * (The 1,757 against 1,756 is not the reason and must not be read as one. If
+   * the mineral table were re-cut tomorrow and the Well came out at double,
+   * the answer would be the same answer.)
+   *
+   * ── WHAT HID THIS ONE: THE RIM PROXY, READ BACKWARDS ─────────────────────
+   *
+   * Raysedge reads 300 degrees of horizon falling away over 51.0 m, the second
+   * highest in the registry, so every instrument that asked the CLIFF question
+   * refused it. The cliff is real - the pad is notched 12 m outside a rim crest
+   * over a 296 m bowl - and it is not the question being asked.
+   * `PlanetWorld._padReturn` floods the collision bed out of the disc and back:
+   * 98.2% of everything a body can walk to from here can walk back, the same
+   * figure Mosaic Flat reads, because the Slump Road descends 69.2 m over 401 m
+   * of polyline at 10.1 degrees mean and walks both ways. This pad and
+   * Vitrine's Blackhorn Bench are the two the proxy was silently refusing, and
+   * they are the two richest returnable pads on their planets.
+   * @see `SpaceObjectives.padIsHome`
+   *
+   * ── WHAT WAS MEASURED BEFORE THE FLAG MOVED ──────────────────────────────
+   *
+   *   the exotic guarantee survives   helion 0/7 from Raysedge at the legacy 38
+   *                                   deg envelope, at the real 56.63 deg one,
+   *                                   again with Tessera's 1.70 m jump apex -
+   *                                   the BIGGEST in the system, off the
+   *                                   lightest gravity in it, and the one most
+   *                                   likely to open a gate that a walk cannot
+   *                                   - and again with the swim envelope.
+   *                                   Identical to Mosaic Flat's own 0/7 in all
+   *                                   four columns.
+   *   the pad is a round trip         98.2% home, not one-way, so no hazard
+   *                                   ring.
+   *   nothing below exotic is lost    regolith 40/40, anorthite 22/22,
+   *                                   sperrylite 12/12 from Raysedge, at every
+   *                                   envelope. The walk improves at both ends
+   *                                   of the ladder that matters: sperrylite
+   *                                   343 m -> 167 and anorthite 121 -> 125,
+   *                                   against regolith 46 -> 78.
+   *
+   * ── AND THE DISC WAS MEASURED, NOT ASSUMED ───────────────────────────────
+   *
+   * 20 m against Mosaic Flat's 30, and the ground inside it measures 0.000 m of
+   * relief and 0.0 degrees of grade over the full 20. The `pad` landform under
+   * it is r 24 with an 18 m blend - deliberately larger than the landing disc,
+   * so the notch swallows the crest rather than balancing on it - and the
+   * ground stays dead level all the way out to that 24.
+   *
+   * Widening is still refused, by the bowl rather than by the deck:
+   *
+   *     r 20   0.00 m relief    0.0 deg    rim 300
+   *     r 24   0.00 m           0.0 deg    rim 315   (the pad landform's edge)
+   *     r 26   0.41 m          14.5 deg    rim 315
+   *     r 28   1.55 m          31.5 deg    rim 315
+   *     r 30   3.47 m          42.7 deg    rim 315
+   *
+   * Past r 24 the disc starts eating the inner wall. 20 m is the disc, and the
+   * four spare metres of `pad` are the notch it sits in.
+   */
   landing: [
     {
       /* Out on the open regolith, 143 m from Crown of Rays' rim crest and 160 m
-       * from the Pale Bench. Both tiers the primary is required to reach are a
-       * short walk, and the crater's rim is on the skyline dead ahead. */
-      id: 'mosaic', name: 'Mosaic Flat', x: -250, z: 200, r: 30, primary: true, yaw: -0.46,
+       * from the Pale Bench, with the crater's rim on the skyline dead ahead.
+       * It was the primary; see the block above for why it is not. */
+      id: 'mosaic', name: 'Mosaic Flat', x: -250, z: 200, r: 30, yaw: -0.46,
     },
     {
-      /* Notched into the rim crest, at the head of the Slump Road. Facing the
-       * crater's axis, so the first frame is the lit far wall across a 296 m
-       * bowl with the melt sheet at the bottom of it. */
-      id: 'raysedge', name: 'Raysedge', x: RIM_PAD[0], z: RIM_PAD[1], r: 20, yaw: -0.31,
+      /* THE PRIMARY. Notched into the rim crest, at the head of the Slump Road.
+       * Facing the crater's axis, so the first frame is the lit far wall across
+       * a 296 m bowl with the melt sheet at the bottom of it - which is the best
+       * first frame on the planet and now the one every arrival gets. */
+      id: 'raysedge', name: 'Raysedge', x: RIM_PAD[0], z: RIM_PAD[1], r: 20, primary: true, yaw: -0.31,
     },
     {
       /* On the floor of the Cold Well, 52 m below its own rim, and the only way

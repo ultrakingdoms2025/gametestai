@@ -1078,7 +1078,13 @@ test('every refusal code has a sentence, and every sentence names an action', ()
   /* A missing key here is a control that refuses silently - `_sayTransit`
    * returns early on an unknown code. Both directions are checked so a code
    * added without prose, or prose left behind by a deleted code, is a failure. */
-  const codes = ['world', 'landed', 'dock', 'approach', 'atmosphere', 'interdicted', 'hit', 'pilot', 'hull'];
+  /* `released` is the odd one out and belongs here anyway: it is not a refusal
+   * but the RESCISSION of one, and it goes through `_sayTransit` and this same
+   * table precisely so it cannot drift away from the sentence it cancels. It is
+   * held to the action rule rather than exempted from it - "press Z" is the
+   * action, and a rescission that did not name one would be a status light. */
+  const codes = ['world', 'landed', 'dock', 'approach', 'atmosphere', 'interdicted', 'hit', 'pilot', 'hull',
+    'released'];
   assert.deepEqual(Object.keys(PIL.TRANSIT_REASONS).sort(), [...codes].sort());
   for (const c of codes) {
     const s = PIL.TRANSIT_REASONS[c];
@@ -1093,8 +1099,103 @@ test('every refusal code has a sentence, and every sentence names an action', ()
      * telling the pilot to pull away would be instructions they are already
      * following. */
     if (!['atmosphere', 'hit', 'pilot', 'hull'].includes(c)) {
-      assert.ok(/first|Launch|Lift|Clear|will not/.test(s),
+      assert.ok(/first|Launch|Lift|Clear|will not|press/.test(s),
         `"${c}" states a condition without an action: "${s}"`);
     }
   }
+});
+
+test('the interdiction has a rescission, said once, and only where the key would work', async () => {
+  /**
+   * =======================================================================
+   *  A REFUSAL WITH NO WAY BACK IS THE SAME DEFECT ONE STEP LATER
+   * =======================================================================
+   *
+   * `_pollTransit`'s header says a control that silently does nothing is worse
+   * than one that is not there. `interdicted` was the one refusal in the table
+   * with no rescission: the lock breaks when the wing dies, stands down, or
+   * simply stops gaining, and all three are INVISIBLE - the drive is a latch,
+   * so it does not come back on its own, and nothing said it would take the
+   * key again.
+   *
+   * Flown end to end in a real boot with the encounters live, dock to Lathe,
+   * two interdictions on the lane:
+   *
+   *     134.8 s   pressing Z once, at the start
+   *      92.8 s   pressing Z again each time the lock clears
+   *
+   * Forty-two seconds, and none of it is the fights: it is 140 km flown on the
+   * x8 courtesy multiplier at 210 m/s instead of the drive's 4,200, because
+   * nobody said the drive was available. That is what this sentence buys, and
+   * it is worth more than moving any picket.
+   */
+  const r = await rig();
+  await resetToYard(r);
+  const f = await launch(r, 'kestrel');
+  const out = clearSpot();
+  f.place(out);
+  f.dropTransit(null, true);
+  r.piloting.interdicted = false;
+  for (let i = 0; i < 4; i++) r.piloting.fixedUpdate(DT, i * DT);
+  assert.equal(r.piloting.transitRefusal(), null, 'the clear spot is not clear');
+
+  /* The lock arrives, then breaks. */
+  r.piloting.interdicted = true;
+  for (let i = 0; i < 4; i++) r.piloting.fixedUpdate(DT, i * DT);
+  assert.equal(r.piloting.transitRefusal(), 'interdicted', 'the lock did not take');
+  r.piloting.interdicted = false;
+  const said = captureNotices(r, () => {
+    for (let i = 0; i < 4; i++) r.piloting.fixedUpdate(DT, i * DT);
+  });
+  assert.ok(said.includes(PIL.TRANSIT_REASONS.released),
+    `the lock broke and the pilot was told ${JSON.stringify(said)}`);
+
+  /* ONCE. `interdicted` is written every step, so without the edge this is
+   * sixty sentences a second. */
+  const again = captureNotices(r, () => {
+    for (let i = 0; i < 60; i++) r.piloting.fixedUpdate(DT, i * DT);
+  });
+  assert.ok(!again.includes(PIL.TRANSIT_REASONS.released),
+    'the rescission repeated on a step where nothing changed');
+
+  /* AND IT CHATTERS ON NOTHING. `SpaceCombat._locked` re-arms the moment a
+   * hostile is gaining again, so one fight can break and re-take a lock
+   * several times; the cooldown is what stops that being a wall of text. */
+  const flicker = captureNotices(r, () => {
+    for (let k = 0; k < 4; k++) {
+      r.piloting.interdicted = true;
+      for (let i = 0; i < 3; i++) r.piloting.fixedUpdate(DT, i * DT);
+      r.piloting.interdicted = false;
+      for (let i = 0; i < 3; i++) r.piloting.fixedUpdate(DT, i * DT);
+    }
+  });
+  assert.equal(flicker.filter((s) => s === PIL.TRANSIT_REASONS.released).length, 0,
+    `four break-and-retake cycles inside ${PIL.LOCK_SAY_COOLDOWN} s said the rescission `
+    + `${flicker.filter((s) => s === PIL.TRANSIT_REASONS.released).length} times`);
+
+  /* Let the cooldown run out on real steps rather than by poking the field. */
+  const steps = Math.ceil(PIL.LOCK_SAY_COOLDOWN / DT) + 30;
+  f.place(out);
+  for (let i = 0; i < steps; i++) r.piloting.fixedUpdate(DT, i * DT);
+
+  /* ── AND NOT INSIDE A GRAVITY WELL ─────────────────────────────────────
+   *
+   * A picket sits well outside its body's atmosphere but a fight DRIFTS, and
+   * the lock can break with the ship inside the approach ring - where
+   * `_pollTransit` would refuse the key it just invited. Telling a pilot the
+   * drive is ready where it is not is a worse sentence than silence. */
+  f.place(atRangeFrom(CINDER, CINDER.radius * 5));
+  f.dropTransit(null, true);
+  assert.ok(r.piloting.transitRefusal(),
+    'the well spot is not mass-locked, so the exclusion below proves nothing');
+  r.piloting.interdicted = true;
+  for (let i = 0; i < 4; i++) r.piloting.fixedUpdate(DT, i * DT);
+  r.piloting.interdicted = false;
+  const inWell = captureNotices(r, () => {
+    for (let i = 0; i < 8; i++) r.piloting.fixedUpdate(DT, i * DT);
+  });
+  assert.ok(!inWell.includes(PIL.TRANSIT_REASONS.released),
+    `the drive was called ready inside the well, where the key is refused: ${JSON.stringify(inWell)}`);
+  assert.equal(r.piloting.transitRefusal(), 'approach',
+    'and the reason it is refused there is still the well');
 });

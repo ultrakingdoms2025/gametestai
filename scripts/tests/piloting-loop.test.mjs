@@ -290,8 +290,14 @@ test('the whole loop: board, launch, cross, descend, land, walk, mine, return, d
   log.push(['descent', res.t]);
   assert.equal(r.wm.active.id, 'cinder', 'bounced back off the planet instead of landing on it');
   assert.equal(r.piloting.landed, true);
-  assert.equal(r.piloting.landedSite?.id, 'ashfall',
-    `set down at ${r.piloting.landedSite?.id ?? 'open ground'} rather than the primary pad`);
+  /* `pad.id`, not a typed name. This read `'ashfall'` and went red the day
+   * Cinder's `primary` moved to the Colonnade Deck - while `pad` five lines up
+   * was already derived from `primary`, so the case was half typed and half
+   * measured and only the typed half could rot. What is being claimed is that a
+   * ship flown onto the pad the entry aimed at lands ON it, and that claim does
+   * not know the pad's name. */
+  assert.equal(r.piloting.landedSite?.id, pad.id,
+    `set down at ${r.piloting.landedSite?.id ?? 'open ground'} rather than ${pad.id}, the primary pad`);
   assert.equal(r.player.damageTaken, 0, 'a controlled approach still hurt the pilot');
 
   /* AND IT IS SITTING FLAT.

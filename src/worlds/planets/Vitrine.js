@@ -35,12 +35,15 @@
  *                        from everywhere on the map and the only warm colour
  *                        on the planet. Cryolite is on the bench.
  *
- *   THE HORN ROAD        the only way onto the bench on foot. A `ramp` that
- *                        leaves the Blackhorn pad and spirals 288 deg round the
- *                        bench rim at 9.5 deg, out to the flank. It exists
- *                        because a bench you can see and cannot reach is the
- *                        exact defect this project keeps shipping, and because
- *                        cryolite is UNCOMMON - the primary pad has to reach it.
+ *   THE HORN ROAD        the only way on or off the bench on foot. A `ramp`
+ *                        that leaves the Blackhorn pad and spirals 288 deg
+ *                        round the bench rim at 9.5 deg, out to the flank. It
+ *                        exists because a bench you can see and cannot reach is
+ *                        the exact defect this project keeps shipping - and
+ *                        since the Blackhorn pad became the PRIMARY it is also
+ *                        the road every arriving pilot walks DOWN to reach the
+ *                        two common tiers. It carries both directions: 95.4% of
+ *                        what a body can walk to from the bench walks back.
  *
  *   THE SHATTER          the crevasse field, and the planet's signature. Five
  *                        en-echelon `trench` cuts across the south, the master
@@ -62,7 +65,7 @@
  *                        dead-flat 18 - 48 m below the rim and 28 m below the
  *                        sheet outside. Ringed with ice columns and floored
  *                        with the fallen plates of its own roof. Hyaline is
- *                        here, and it is UNREACHABLE from the primary pad.
+ *                        here, and it is UNREACHABLE from either other pad.
  *
  *   THE VAULT ROAD       the way down into it. A `ramp` from the Vaultmouth pad
  *                        spiralling 264 deg down the inner wall at 10.2 deg.
@@ -107,9 +110,9 @@
  *   azurine     rare        12/12       415 m        firn, through the Neck
  *   hyaline     exotic       8/8        287 m        vaultmouth ONLY
  *
- *   from firn (primary)  : hyaline 0 of 8
- *   from blackhorn       : hyaline 0 of 8
- *   from vaultmouth      : everything else 0, hyaline 8 of 8
+ *   from blackhorn (primary) : hyaline 0 of 8
+ *   from firn                : hyaline 0 of 8
+ *   from vaultmouth          : everything else 0, hyaline 8 of 8
  *
  * The last three lines are the design in one block. The exotic tier is not a
  * longer walk, it is a SECOND LANDING, and the vault is an island either way
@@ -292,7 +295,7 @@ const VAULT_ROAD = [
   V(26, 208.4),
 ];
 
-/* ---- The primary pad ---- */
+/* ---- The open-sheet pad. Was the primary; see the `landing` block. ---- */
 const FIRN_PAD = [-150, -30];
 
 /* ------------------------------------------------------------------ */
@@ -738,6 +741,14 @@ export const VITRINE = definePlanet({
    */
   liquid: {
     name: 'meltwater',
+    /**
+     * Water. 1.60-1.63 m at the deepest point of each pool, measured on the
+     * bed the collider was built from, which is just over `Swim.ENTER_DEPTH`
+     * (1.3 m) - so these three are swimmable, barely, and wadeable round every
+     * edge. A glacial melt pool you can drop into is worth more than a blue
+     * decal with 298 fence posts round it.
+     */
+    kind: 'water',
     bodies: [
       { shape: 'disc', x: -60, z: 196, r: 22, y: 45.2 },
       { shape: 'disc', x: 96, z: 84, r: 15, y: 46.4 },
@@ -905,7 +916,7 @@ export const VITRINE = definePlanet({
    *                                     or land on it
    *   rare       azurine     fissure    the Shatter's lips, through the Neck
    *   exotic     hyaline     cave       the vault floor, and UNREACHABLE from
-   *                                     the primary pad at any distance
+   *                                     either other pad at any distance
    *
    * `credits` is absent from every row on purpose - `definePlanet` computes it
    * from `unitValue * hold` and REFUSES a hand-written one.
@@ -1022,20 +1033,115 @@ export const VITRINE = definePlanet({
   ],
 
   /* ---------------------------------------------------------------- */
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   *  THE PAD YOU ARRIVE AT, AND WHY IT IS NO LONGER FIRN FLAT
+   * ═════════════════════════════════════════════════════════════════════════
+   *
+   * The registry-wide rule, asserted for all ten planets by
+   * `planet-envelope.test.mjs`: the arrival pad is the RICHEST pad that is
+   * RETURNABLE and carries no EXOTIC seam. Cinder established it and
+   * `planets/Volcanic.js` records what it cost to find. Vitrine was the WORST
+   * failure of it in the registry.
+   *
+   * Measured, a best-value 10 m3 Kestrel load off each pad's own nearest seams:
+   *
+   *     firn         290 cr     the poorest arrival pad of the thirty in the
+   *                             registry. Rime and clathrate are both COMMON
+   *                             and both bulky - 3 m3 and 2 m3 a lump - so an
+   *                             open sheet of them fills a hold on volume and
+   *                             pays almost nothing for it.
+   *     blackhorn  2,382 cr     8.21x, the largest gap on any planet. Cryolite
+   *                             is UNCOMMON, one cubic metre a lump, and it is
+   *                             24 m from this disc.
+   *     vaultmouth 3,316 cr     the exotic pad, and refused twice over - see
+   *                             below.
+   *
+   * Eight times the ore per trip, decided entirely by which of these three rows
+   * carried a `primary: true`.
+   *
+   * ── WHY NOT VAULTMOUTH, WHICH IS RICHER STILL ────────────────────────────
+   *
+   *   1. It is the EXOTIC pad. Hyaline is 8 of 8 from Vaultmouth and 0 of 8
+   *      from either other disc at every envelope. The Vault Road is the whole
+   *      cost of the exotic tier and an arrival pad at the top of it deletes
+   *      the tier.
+   *   2. It is ONE-WAY. `PlanetWorld._padReturn` returns 4.6% - you spiral 264
+   *      degrees down the inner wall and the wall does not let you back up
+   *      anywhere else. It wears the amber hazard ring for exactly this.
+   *
+   * ── WHAT HID THIS ONE: THE RIM PROXY, READ BACKWARDS ─────────────────────
+   *
+   * Blackhorn Bench reads 263 degrees of horizon falling away over 51.2 m,
+   * which is past `SpaceObjectives.PAD_RIM_LIMIT`, so every instrument that
+   * asked the CLIFF question refused it. The cliff is real and it is the point
+   * of the nunatak - a 70 degree face with rock standing 54 m out of the sheet.
+   * It is also not the question. `_padReturn` floods the collision bed out of
+   * the disc and back to it: 95.4% of everything a body can walk to from this
+   * bench can walk back, the same figure Firn Flat reads, because the Horn Road
+   * is a road and roads work in both directions. A cliff BEHIND a pad is not a
+   * way of getting stuck ON it. @see `SpaceObjectives.padIsHome`
+   *
+   * ── WHAT WAS MEASURED BEFORE THE FLAG MOVED ──────────────────────────────
+   *
+   *   the exotic guarantee survives   hyaline 0/8 from Blackhorn Bench at the
+   *                                   legacy 38 deg envelope, at the real 56.63
+   *                                   deg one, again with Vitrine's own 1.00 m
+   *                                   jump apex, and again with the swim
+   *                                   envelope over the melt ponds. Identical
+   *                                   to Firn Flat's own 0/8 in all four
+   *                                   columns. Only Vaultmouth reaches it.
+   *   the pad is a round trip         95.4% home, not one-way, so no hazard
+   *                                   ring - the Horn Road spirals 288 degrees
+   *                                   at 9.5 degrees and walks both ways.
+   *   nothing below exotic is lost    rime 42/42, clathrate 30/30, cryolite
+   *                                   20/20, azurine 12/12 from the bench, at
+   *                                   every envelope. The WALK inverts, which
+   *                                   is the improvement: cryolite goes 510 m
+   *                                   -> 24, azurine 415 -> 395, while rime
+   *                                   goes 44 -> 173 and clathrate 183 -> 624.
+   *                                   The cheap bulky ore is now the far one.
+   *
+   * ── AND THE DISC WAS MEASURED, NOT ASSUMED ───────────────────────────────
+   *
+   * 20 m against Firn Flat's 30, and the ground inside it measures 0.000 m of
+   * relief and 0.0 degrees of grade over the full 20 - the bench is a levelled
+   * `pad` landform and it is dead flat. 40 m across holds a 14 m Kestrel or a
+   * 28 m Dray.
+   *
+   * Widening it is refused by the bench, hard. The `pad` landform is r 20 with
+   * a 16 m blend and the bench itself is only 54 m across behind a 70 degree
+   * cliff, so a wider disc walks straight off it:
+   *
+   *     r 20   0.00 m relief    0.0 deg    rim 263
+   *     r 22   0.15 m           6.5 deg    rim 263
+   *     r 24   0.74 m          15.3 deg    rim 263
+   *     r 26   2.27 m          26.8 deg    rim 278
+   *     r 28   4.79 m          45.3 deg    rim 285
+   *     r 30   9.22 m          59.0 deg    rim 300
+   *
+   * At r 28 the disc is steeper than anything a body can stand on. 20 m is the
+   * disc the bench actually has, and it is the reason the pad was authored at
+   * 20 in the first place.
+   */
   landing: [
     {
-      /** The primary. Open sheet, north of the ablation front, 112 m off the
-       *  shelf's edge and clear of every pressure ridge. */
-      id: 'firn', name: 'Firn Flat', x: FIRN_PAD[0], z: FIRN_PAD[1], r: 30, primary: true, yaw: 1.95,
+      /** Open sheet, north of the ablation front, 112 m off the shelf's edge
+       *  and clear of every pressure ridge. It was the primary; see the block
+       *  above for why it is not. Still the pad for a clathrate run, and
+       *  `SpaceObjectives.richerPad` names the bench to anyone who lands here. */
+      id: 'firn', name: 'Firn Flat', x: FIRN_PAD[0], z: FIRN_PAD[1], r: 30, yaw: 1.95,
     },
     {
-      /** On the bench, facing the horn. A second approach to cryolite for a
-       *  player who does not want the 288 deg of the Horn Road. */
-      id: 'blackhorn', name: 'Blackhorn Bench', x: HORN_PAD[0], z: HORN_PAD[1], r: 20, yaw: 0.15,
+      /** THE PRIMARY. On the bench, facing the horn - so the first frame on
+       *  this planet is the 38 m spire that is its silhouette from everywhere,
+       *  seen from underneath. Cryolite is 24 m away and the Horn Road is the
+       *  way down to everything else. */
+      id: 'blackhorn', name: 'Blackhorn Bench', x: HORN_PAD[0], z: HORN_PAD[1], r: 20, primary: true, yaw: 0.15,
     },
     {
       /** The second landing, and the exotic tier's entire reason to exist.
-       *  Nothing walks here from Firn Flat. */
+       *  Nothing walks here from either other pad, at any envelope. */
       id: 'vaultmouth', name: 'Vaultmouth', x: VAULT_PAD[0], z: VAULT_PAD[1], r: 20, yaw: -2.53,
     },
   ],

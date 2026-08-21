@@ -952,6 +952,17 @@ export const SALLOW = definePlanet({
    */
   liquid: {
     name: 'acid',
+    /**
+     * ACID, AND IT NOW BURNS.
+     *
+     * The substance is its own field because the RENDERING kind cannot carry
+     * it: this liquid draws through `PlanetLiquid`'s water branch (emissive
+     * 0.16, no incandescence, a depth term) and must behave like nothing of
+     * the sort. `liquidKind` still answers 'water' here and the look is
+     * untouched; `liquidSubstance` answers 'acid' and `liquidSwimmable`
+     * answers false.
+     */
+    kind: 'acid',
     bodies: [
       /* Each disc's radius is where its pool's BED BLEND has climbed back to
        * the disc's own surface height, so the drawn edge lands on the bank
@@ -971,7 +982,23 @@ export const SALLOW = definePlanet({
     emissive: 0.16,
     flow: 0.07,
     glowLight: null,
-    lethal: false,
+    /**
+     * TRUE, and this is the first descriptor in the game where it does
+     * anything. `liquid.lethal` has been in the schema since the first planet
+     * with a note saying it was there "so the day it turns true nothing has to
+     * be re-plumbed"; `Swim._burn` is the plumbing, and this is the day.
+     *
+     * 14 dps is 7.1 s from full health to dead. Deliberately survivable and
+     * deliberately not comfortable: Stillwater is 132 m across and 3.0 m deep,
+     * so crossing a corner of it is a decision with a cost, and standing in it
+     * is a death. Lava is the other end of that scale - see Volcanic.js, where
+     * the same field is 240 and there is no crossing anything.
+     *
+     * The pools keep their 648 shore posts. The wall is what stops you falling
+     * in; the burn is what happens when you get past it anyway.
+     */
+    lethal: true,
+    hazard: { dps: 14 },
   },
 
   /* ---------------------------------------------------------------- *

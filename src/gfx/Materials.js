@@ -1036,11 +1036,45 @@ function shadeSnow(u, v, o) {
  * smooth because a sastruga has a sharp windward lip and a soft lee, and
  * domain-warped so the combing wanders instead of ruling parallel lines across
  * 400 m of shelf.
+ *
+ * ── AND THE WARP HAS TO BE ANISOTROPIC, WHICH IT WAS NOT ─────────────────
+ *
+ * It was `domainWarp2D(u, v, 3, 0.09, 3301)` - one amplitude on both axes -
+ * and at standing height that reads as wind-scoured snow, which is why it
+ * shipped. At 1.6 m looking down at the shelf it does not: the surface is a
+ * mass of S-bends, hooks and closed loops, a fingerprint rather than a comb.
+ * Photographed sastrugi are long parallel ridges that meander a little and
+ * break; nothing about them curls.
+ *
+ * The arithmetic says exactly why, and it is not a matter of taste. The comb
+ * runs at 4 cycles a tile ALONG the ridge and 60 ACROSS it, so an isotropic
+ * 0.09 displacement is
+ *
+ *     along   0.09 x 4  = 0.36 of one period      a gentle meander
+ *     across  0.09 x 60 = 5.4  periods            five whole ridges of swing
+ *
+ * A field pushed sideways by five times its own spacing folds over itself, and
+ * folded ridge lines ARE whorls. So the two axes get their own amplitudes:
+ * `WIND_WANDER` keeps the long-axis meander that stops the shelf ruling
+ * parallel lines, and `WIND_DRIFT` is sized so the lateral swing stays under
+ * ONE ridge spacing (0.010 x 60 = 0.6) - the lines still wander, and they can
+ * no longer double back across each other.
+ *
+ * `domainWarp2D` is called with `amount: 1` so the raw offsets come back and
+ * each can be scaled on its own axis; everything else about the field, its
+ * seed and its octaves included, is untouched, so the change is one that only
+ * moves the direction of the combing.
  */
+/** Along-ridge warp: how far the combing meanders down the shelf. */
+const WIND_WANDER = 0.10;
+/** Across-ridge warp, in tile units. Times the 60-cycle cross frequency this is
+ *  0.6 of one ridge spacing - under one, which is the whole rule. */
+const WIND_DRIFT = 0.010;
+
 function shadeIceSheet(u, v, o) {
-  const warp = domainWarp2D(u, v, 3, 0.09, 3301);
-  const wu = warp[0];
-  const wv = warp[1];
+  const warp = domainWarp2D(u, v, 3, 1, 3301);
+  const wu = u + (warp[0] - u) * WIND_WANDER;
+  const wv = v + (warp[1] - v) * WIND_DRIFT;
 
   const comb = ridgedFbm2D(wu, wv, 4, 60, 3, 3307, 0.55);
   const lip = smoothstep(0.42, 0.95, comb);

@@ -451,7 +451,27 @@ export function makeBodyMaterial(body, starDir) {
 
   const u = {
     uStarDir: { value: starDir },
-    uAmbient: { value: new THREE.Color(0x121c2e) },
+    /* ── THE NIGHT SIDE WAS A HOLE, AND ITS OWN COMMENT SAID IT SHOULD NOT BE ──
+     *
+     * `LIT`'s docblock says this ambient exists "so the night side is a shape
+     * rather than a hole". It was 0x121c2e — linear (0.006, 0.012, 0.027) —
+     * which against a gas albedo of ~0.35 lands under 1% of display at exposure
+     * 1.02. Measured across Ceraunus's unlit face from the hull wall, clear of
+     * the ship: **median 3.1 of 255 at 1.70 radii and 1.4 at 2.10**, with
+     * samples of literally [0,0,0]. The ring system was visibly passing behind a
+     * black cut-out.
+     *
+     * The unlit face itself is CORRECT and is not what changed: the player
+     * always arrives from the yard side, and the two positions fix the phase
+     * angle at 130 degrees — an illuminated fraction of 0.18. A gas giant seen
+     * mostly at night is the honest picture. It just has to be a SHAPE.
+     *
+     * 0x243a5c is the same hue, doubled. The day side moves by an additive
+     * amount that is negligible against a `dayFactor` of ~1, and the peak stays
+     * far under the space grade's 1.60 bloom threshold — the constraint that
+     * governs everything else in this file. `.probe/tk/cer-nightside.mjs` samples
+     * a line across the disc and prints the number; re-run it if this moves. */
+    uAmbient: { value: new THREE.Color(0x243a5c) },
     uBase: { value: new THREE.Color(look.base ?? 0x808080) },
     uHigh: { value: new THREE.Color(look.high ?? 0xffffff) },
     uLow: { value: new THREE.Color(look.low ?? 0x202020) },

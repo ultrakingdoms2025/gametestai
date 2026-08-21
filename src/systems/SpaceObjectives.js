@@ -222,6 +222,42 @@ export const LANDFALL_S = 42.5;
 export const PAD_RIM_LIMIT = 180;
 
 /**
+ * CAN A BODY WALK BACK ONTO THIS PAD? The measured answer, or the proxy.
+ *
+ * `PAD_RIM_LIMIT` above ends "the day a flood result is published per pad, this
+ * reads that instead". That day arrived: `PlanetWorld._padReturn` floods the
+ * height field out of every pad and back to it and publishes
+ * `home: { oneWay, pct, metres, area }` on each landing site, with `oneWay` set
+ * when less than `RETURN_ONE_WAY` percent of what a body can walk to can walk
+ * back. So this reads that, and keeps the rim as the fallback.
+ *
+ * ── AND THE PROXY WAS WRONG, IN BOTH DIRECTIONS ──────────────────────────
+ *
+ * Measured across the ten planets, the two disagree on three pads and every
+ * disagreement matters:
+ *
+ *     tessera/raysedge    rim 300 deg, and 98.2% of the walk comes home
+ *     vitrine/blackhorn   rim 263 deg, and 95.4% comes home
+ *     cathedra/gallery    rim   0 deg, and 24.8% comes home
+ *
+ * The first two are the richest returnable pads on their planets - 1,756 and
+ * 2,382 credits a hold against arrival pads worth 245 and 290 - and the rim
+ * proxy was silently refusing to name either of them. The third is a pad the
+ * proxy called safe and a walker cannot leave. A cliff behind a pad is not the
+ * same question as a way back onto it, and this is the question being asked.
+ *
+ * A site with no `home` block is a world that predates the flood, and the safe
+ * reading of "unknown" is still "allowed" - a hint that silently stops existing
+ * is worse than one that is occasionally generous.
+ *
+ * @param {{drop?:{deg:number}, home?:{oneWay:boolean}}} site a published landing site
+ */
+export function padIsHome(site) {
+  if (site?.home && typeof site.home.oneWay === 'boolean') return !site.home.oneWay;
+  return (site?.drop?.deg ?? 0) <= PAD_RIM_LIMIT;
+}
+
+/**
  * The in-world half of a descent, in seconds per kilometre of handoff altitude.
  *
  * 16.3 s of the flown leg above was spent BELOW the handoff - inside the
@@ -638,7 +674,13 @@ export const SYSTEM_ORE_CREDITS = 101048;
  *   pad          a Dray load (40 m3)                a Kestrel load (10 m3)
  *   ashfall       1,659 cr, 20 nodes,   748 m, 108 s   114 cr,  4 nodes,  46 s
  *   rimhold       5,635 cr, 29 nodes, 1,933 m, 260 s 2,839 cr,  9 nodes, 108 s
- *   colonnade     1,931 cr, 20 nodes,   458 m,  73 s   497 cr,  5 nodes,  21 s
+ *   colonnade*    1,931 cr, 20 nodes,   458 m,  73 s   497 cr,  5 nodes,  21 s
+ *
+ * (* Cinder's `primary` - the pad an entry arrives at - was Ashfall Flat when
+ * these were walked and is now the Colonnade. The rungs above were spaced
+ * against the FIELD rather than against any one pad, so nothing here moves;
+ * what moved is that the first rung is now two loads from where the game puts
+ * you instead of five. See `richerPad` and `planets/Volcanic.js`.)
  *
  * Rimhold Shelf carries more nodes per load because the two rare kinds are 1 m3
  * each - the crater rim is where the value is AND where the volume is cheapest,
@@ -1132,31 +1174,56 @@ export class SpaceObjectives {
    * THE PAD ON THIS WORLD WORTH FLYING TO INSTEAD, or null when you are on it.
    *
    * ═══════════════════════════════════════════════════════════════════════
-   *  SEVENTEEN MINUTES VERSUS FOUR
+   *  IT USED TO BE THE FIX. IT IS NOW THE SECOND HALF OF ONE.
    * ═══════════════════════════════════════════════════════════════════════
    *
-   * Every atmospheric entry lands at the world's `primary` pad, and on Cinder
-   * that is Ashfall Flat, which is the POOREST of its three. Measured, per
-   * 10 m3 Kestrel load:
+   * Every atmospheric entry lands at the world's `primary` pad. This method was
+   * written when Cinder's was Ashfall Flat, the POOREST of its three - 114 cr a
+   * walked Kestrel load against 497 off the Colonnade and 2,839 off the rim,
+   * i.e. five round trips to clear the 500 cr ore rung against two and one, or
+   * about seventeen minutes against four and a half. Telling the player was the
+   * cheapest thing that could be done about it without moving `ORE_TIERS`, the
+   * field or the hold.
    *
-   *     ashfall (primary)   114 cr    5 trips to clear the 500 cr rung
-   *     colonnade           497 cr    2 trips
-   *     rimhold           2,839 cr    1 trip
+   * `primary` HAS SINCE MOVED. Cinder arrives at the Colonnade Deck, and the
+   * rule it moved under - the arrival pad is the richest pad that is returnable
+   * AND carries no exotic seam - is asserted for all ten planets by
+   * `planet-envelope.test.mjs`. So on a correctly authored planet this method
+   * now says nothing at all about the pad you land on, and that is the right
+   * outcome: silence means the game already put you on the best ground you can
+   * fly home from.
    *
-   * (Those are WALKED loads, from a greedy nearest-node tour. The ranking
-   * below is computed from a best-value load instead - 481 / 1,059 / 4,154 -
-   * which orders the three pads the same way and needs no walk.)
+   * What it still does, and what it is now FOR, is THE OTHER PAD - the one that
+   * is richer than the one you are standing on and that you can still fly home
+   * from. `ARRIVAL_DEFECTS` in `planet-envelope.test.mjs` is EMPTY now: all ten
+   * planets arrive at their richest returnable exotic-free pad, so from the
+   * arrival pad this method is silent on all ten. It still fires from any OTHER
+   * pad, which is the case that is left: you flew to a poor one, or you walked.
    *
-   * At the flown 45 s out and 90 s back that is about seventeen minutes from
-   * Ashfall against four and a half from the rim - for the same objective, on
-   * the same planet, decided entirely by a choice the game never mentioned.
-   * Ashfall reaches only the two cheapest ores per cubic metre, so the hold
-   * fills on bulk and the pad is not a bad pad, it is a THIN one.
+   * ── AND IT DOES NOT ADVERTISE THE EXOTIC SEAM. MEASURED, NOT ASSUMED ─────
    *
-   * The fix is one sentence rather than a rebalance: nothing here moves
-   * `ORE_TIERS`, the field, the hold or which pad `primary` is. A player who
-   * is TOLD that another pad carries the richer seams can fly there; one who
-   * is not spends the seventeen minutes finding out.
+   * This used to read "every exotic pad in the registry is one a walker cannot
+   * get back off ... {@link padIsHome} refuses all of them". THAT WAS FALSE ON
+   * TWO OF TEN, and both were live:
+   *
+   *     tessera/coldwell   home 100.0%   1,757 cr a hold
+   *     shoal/sunder       home  98.4%   2,694 cr a hold
+   *
+   * `padIsHome` is a question about CLIMBING BACK ON, and on those two the
+   * answer is honestly yes - the Cold Well is a bowl and Sunder Deck is a
+   * shelf you can walk off and back onto. So both were nameable, and both WERE
+   * named: standing on Tessera's Mosaic the brief said "The Cold Well carries
+   * the richer seams", and on Shoal's Kelphold it said "Sunder Deck". That
+   * sends a new pilot to the exotic seam, which is the one thing the ten-planet
+   * mining design says has to cost a SECOND LANDING - and it deleted that
+   * design on two planets through a sentence.
+   *
+   * A pad being returnable and a pad being the exotic pad are two different
+   * questions and one was standing in for the other. So the exotic exclusion is
+   * now ITS OWN test, derived from the mineral table the same way the credits
+   * are: any pad whose nearest ore includes a seam the descriptor calls
+   * `exotic` is refused outright, however returnable it is. `padIsHome` keeps
+   * the seven one-way pads out; this keeps the other two out.
    *
    * ── IT IS DERIVED, AND THE RIM TEST IS NOT DECORATION ────────────────────
    *
@@ -1199,6 +1266,18 @@ export class SpaceObjectives {
      * So each pad is valued at the best load its own nearest seams can fill:
      * sort by credits per m3, take until the hold is full. */
     const hold = Math.max(1, Number(this.piloting?.cargoCapacity) || 10);
+    /* The seams the descriptor calls `exotic`, by node type. Read off the
+     * planet the world was built from, so an eleventh planet or a re-cut
+     * mineral table needs no edit here. A world that publishes no mineral table
+     * yields an empty set, and then `padIsHome` is the only filter there is -
+     * which is the behaviour this had before, kept as the degraded case rather
+     * than as the design. */
+    const exotic = new Set(
+      (w.planet?.minerals ?? [])
+        .filter((m) => m.rarity === 'exotic')
+        .map((m) => m.id)
+    );
+    const exoticPads = new Set();
     const byPad = new Map();
     for (const n of nodes) {
       let best = null;
@@ -1208,6 +1287,7 @@ export class SpaceObjectives {
         if (d < bestD) { bestD = d; best = s; }
       }
       if (!best) continue;
+      if (exotic.has(n.type)) exoticPads.add(best.id);
       let list = byPad.get(best.id);
       if (!list) { list = []; byPad.set(best.id, list); }
       list.push(n);
@@ -1230,10 +1310,8 @@ export class SpaceObjectives {
     let pick = null;
     let pickWorth = 0;
     for (const s of sites) {
-      /* A pad with no published rim is a pad from a world that predates the
-       * measurement, and the safe reading of "unknown" is "allowed" - the
-       * alternative is a hint that silently stops existing. */
-      if ((s.drop?.deg ?? 0) > PAD_RIM_LIMIT) continue;
+      if (!padIsHome(s)) continue;
+      if (exoticPads.has(s.id)) continue;
       const v = worth.get(s.id) ?? 0;
       if (v > pickWorth) { pickWorth = v; pick = s; }
     }
@@ -1243,7 +1321,26 @@ export class SpaceObjectives {
      * HALF again rather than any margin at all: two pads within a few percent
      * of each other are the same decision, and a sentence that sent a player
      * across a planet for 4% would be worse than silence. */
-    const here = this.piloting?.landedSite?.id ?? null;
+    /* ── WHERE THE PLAYER IS, AND WHY `landedSite` IS NOT THAT QUESTION ────
+     *
+     * `Piloting._landedSite` is set on TOUCHDOWN and cleared on lift-off, so it
+     * answers "where did the ship come down". On the ship path that is also
+     * where the player is, and this line was written for that path.
+     *
+     * It is null for a player who never flew - a direct world entry, a portal,
+     * an `Unstuck` return, a dev warp - and `PlanetWorld._placeSpawn` puts all
+     * of those on the PRIMARY pad. With `here` null the self-suppression below
+     * could not fire, so on foot the brief named the pad the player was
+     * standing on, on ALL TEN planets: "Colonnade Deck carries the richer
+     * seams", said to somebody standing on the Colonnade Deck. Correctly silent
+     * on the ship path, which is why nothing caught it - every case that drove
+     * this method set `_landedSite` first.
+     *
+     * So the fallback is the pad an entry would have used, which is the same
+     * pad every non-flying arrival is actually standing on. */
+    const here = this.piloting?.landedSite?.id
+      ?? sites.find((s) => s.primary)?.id
+      ?? null;
     if (pick.id === here) return null;
     const mine = here ? (worth.get(here) ?? 0) : 0;
     if (mine > 0 && pickWorth < mine * 1.5) return null;

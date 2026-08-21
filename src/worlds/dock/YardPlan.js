@@ -607,6 +607,35 @@ const STAND_APEX = (PLAYER.jumpVelocity * PLAYER.jumpVelocity) / (2 * -PLAYER.gr
 /** The running leap's apex: the standing apex times LEAP_LIFT squared. */
 export const MOUTH_LEAP_APEX = STAND_APEX * LEAP_LIFT * LEAP_LIFT;
 /**
+ * HOW TALL A GUARD HAS TO BE WHEN WHAT IS BEHIND IT IS VACUUM.
+ *
+ * One number for the whole yard, because there is one player and one move.
+ * `leapApex + MAX_RISE + head room` — the sum, for the reason the block on
+ * `MOUTH_SCREEN_H` below sets out at length: `Player` offers the mantle on the
+ * JUMP PRESS and `Climb._probe` measures the rise from the FEET, so a body
+ * jumps, presses jump again at the top of the arc, and the two reaches ADD.
+ *
+ * ── IT IS NOT ONLY THE MOUTH ──────────────────────────────────────────────
+ * The mouth screen was fixed alone, and the note left behind said what was
+ * still open: "the pier rails (`RAIL_H` 1.1 m) are the same defect the mouth
+ * was". They are. `dock-reach` leaned on the sentence the mouth's own comment
+ * used to contain — that a player who gets over a pier rail is recovered
+ * rather than lost — and that is the sentence a rescue system is not allowed
+ * to be asked to write. Driven for real, 900 m of pier rail against sprint+jump
+ * (`.probe/pier-drive.mjs`, 45 runs at two jump phases from five piers):
+ *
+ *     walk          held at 5 of 5.                     the case that passed
+ *     sprint+jump   OVER at 23 of 40, into the void.
+ *
+ * So every guard in the yard that has the void behind it is this tall, and it
+ * is the SAME constant rather than the same arithmetic written twice.
+ *
+ * A rail inside the shed is not: a body that goes over the gantry rail lands on
+ * the assembly floor eight metres down, which costs health and is a place. The
+ * rule is about what is behind the rail, not about how high the rail is.
+ */
+export const VOID_GUARD_H = MOUTH_LEAP_APEX + MANTLE_MAX + 0.35;
+/**
  * Top of the glazed screen over the balustrade, above `DECK_Y`.
  *
  * ── THE TWO REACHES ADD, and that is the number ──────────────────────────
@@ -633,7 +662,7 @@ export const MOUTH_LEAP_APEX = STAND_APEX * LEAP_LIFT * LEAP_LIFT;
  * 1.15 m of solid kerb and 2.75 m of glass, in a 23.6 m aperture: 16% of the
  * opening, and you see the piers, the ships and the starfield through all of it.
  */
-export const MOUTH_SCREEN_H = MOUTH_LEAP_APEX + MANTLE_MAX + 0.35;
+export const MOUTH_SCREEN_H = VOID_GUARD_H;
 
 /* ------------------------------------------------------------------ */
 /* THE PIERS                                                           */

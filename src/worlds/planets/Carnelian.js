@@ -40,8 +40,9 @@
  *                       dust over deflated hardpan, with THE CUP - a degraded
  *                       impact bowl - breaking the southern skyline. `ochre`,
  *                       the common ore and the bulky one, is the ground
- *                       itself. REDGATE, the primary pad, is here at
- *                       (-300, 120).
+ *                       itself. REDGATE is here at (-300, 120); it was the
+ *                       primary pad until the arrival rule moved the flag to
+ *                       Anvil Deck - see the block over `landing`.
  *
  *   THE LOW SCARP       fault one. A line running the full 880 m from the
  *                       north edge to the south edge at x about -210, standing
@@ -62,8 +63,8 @@
  *
  *   THE ANVIL           the top shelf, y 102 - and it is the hematite
  *                       PAVEMENT, the near-silver top band of the palette and
- *                       the brightest ground on the planet. ANVIL DECK lands
- *                       on it at (130, -200); THE DIMPLE, a small crater,
+ *                       the brightest ground on the planet. ANVIL DECK, the
+ *                       primary pad, lands on it at (130, -200); THE DIMPLE, a small crater,
  *                       breaks its southern half.
  *
  *   THE TWO STAIRS      the only two ways up this planet, and both are cut
@@ -1079,19 +1080,109 @@ export const CARNELIAN = definePlanet({
   ],
 
   /* ---------------------------------------------------------------- */
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   *  THE PAD YOU ARRIVE AT, AND WHY IT IS NO LONGER REDGATE
+   * ═════════════════════════════════════════════════════════════════════════
+   *
+   * The registry-wide rule, asserted for all ten planets by
+   * `planet-envelope.test.mjs`: the arrival pad is the RICHEST pad that is
+   * RETURNABLE and carries no EXOTIC seam. Cinder established it and
+   * `planets/Volcanic.js` records what it cost to find. Carnelian was one of
+   * four planets still failing it.
+   *
+   * Measured, a best-value 10 m3 Kestrel load off each pad's own nearest seams:
+   *
+   *     redgate      823 cr     ochre, and ochre alone. The common ore is the
+   *                             ground the pad stands on and it is the BULKY
+   *                             one - 3 m3 a lump - so the hold fills on
+   *                             volume before it fills on value.
+   *     anvil      2,134 cr     2.59x. Hematite at 98 m and carnelite at 163 m
+   *                             down the Rimway, both worth more per cubic
+   *                             metre than anything on the Flats.
+   *     kiln       5,205 cr     the richest pad on the planet, and refused
+   *                             twice over - see below.
+   *
+   * ── WHY NOT THE KILN, WHICH IS RICHER THAN BOTH TOGETHER ─────────────────
+   *
+   *   1. It is the EXOTIC pad. Monazite is 7 of 7 from Kiln Deck and 0 of 7
+   *      from here at every envelope the game can be played in. An arrival pad
+   *      that reaches the exotic seam deletes the second landing, which is what
+   *      this planet is built around.
+   *   2. It is ONE-WAY. `PlanetWorld._padReturn` floods the collision bed out
+   *      of the disc and back: 49.8% of what a body can walk to from the Kiln
+   *      can walk back. The slot walls stand at 85 degrees for their whole
+   *      length and the chamber apron at 81 - you go down the Deep Reach and
+   *      you do not come up it.
+   *
+   *      AND THE RIM PROXY WOULD HAVE ALLOWED IT. `_padDrop` reads 0 degrees
+   *      on Kiln Deck, because the chamber floor is level and the 8 m sill is
+   *      measured on the ground AROUND the disc rather than on the way off the
+   *      planet. This is the pad in the registry where "is there a cliff behind
+   *      it" and "can you get back onto it" disagree hardest, and it is why
+   *      `SpaceObjectives.padIsHome` reads the flood and keeps the rim only as
+   *      a fallback.
+   *
+   * ── WHAT WAS MEASURED BEFORE THE FLAG MOVED ──────────────────────────────
+   *
+   *   the exotic guarantee survives   monazite 0/7 from Anvil Deck at the
+   *                                   legacy 38 deg envelope, at the real
+   *                                   56.63 deg one, again with Carnelian's own
+   *                                   1.02 m jump apex, and again with the swim
+   *                                   envelope on top. Byte-identical to
+   *                                   Redgate's own 0/7 in all four columns.
+   *                                   Only the Kiln reaches it: 7/7 at 34 m.
+   *   the pad is a round trip         92.2% of everything a body can walk to
+   *                                   from Anvil Deck can walk back - the same
+   *                                   figure Redgate reads, because the two
+   *                                   stairs make the whole east of the map one
+   *                                   region. Not one-way, so no hazard ring.
+   *   nothing below exotic is lost    ochre 38/38, hematite 20/20, carnelite
+   *                                   12/12 from Anvil Deck, at every envelope.
+   *                                   What changes is the WALK: hematite goes
+   *                                   341 m -> 98 and carnelite 1,087 m -> 163,
+   *                                   while ochre goes 36 m -> 878. The common
+   *                                   ore is now the far one, which is the
+   *                                   right way round for a rarity ladder.
+   *
+   * ── AND THE DISC WAS MEASURED, NOT ASSUMED ───────────────────────────────
+   *
+   * The objection to any of these moves is that it puts a first landing on a
+   * smaller disc. Anvil Deck is 24 m against Redgate's 30, and the ground
+   * inside it measures 0.000 m of relief and 0.0 degrees of grade over the full
+   * 24 - it is the hematite pavement, the flattest ground on the planet. 48 m
+   * across holds a 14 m Kestrel or a 28 m Dray with room either side.
+   *
+   * Widening it is refused by the pavement itself rather than by taste: the
+   * `pad` landform is r 24 with a 16 m blend, and sampled past its own rim the
+   * disc starts to inherit the shelf's swell - 0.06 m of relief at r 26, 0.20
+   * at r 28, 0.39 at r 30. The rim stays 0 degrees throughout, so nothing is
+   * gained and the deck stops being level. 24 m is the disc the pavement has.
+   *
+   * ── WHAT IS LOST, SAID PLAINLY ───────────────────────────────────────────
+   *
+   * Redgate's first frame was the staircase: the Low Scarp as the near horizon,
+   * the Dust Table over it, the Anvil's silver crest behind both. That was the
+   * planet introducing itself, and arriving on the Anvil spends it. What is
+   * bought is the other end of the same shape - the first frame is now 159 m of
+   * silver pavement and then a 107 m hole in it - and two round trips instead
+   * of five for the first ore rung. Redgate is still authored, still reachable,
+   * and `SpaceObjectives.richerPad` still names Anvil Deck to a player who
+   * lands there on purpose.
+   */
   landing: [
     {
       /* Facing east-north-east: from here the Low Scarp is the near horizon,
        * the Dust Table stands over it and the Anvil's silver crest is the
-       * skyline behind both. The first thing a player sees on this planet has
-       * to be the staircase, or the staircase is not what the planet is
-       * about. */
-      id: 'redgate', name: 'Redgate', x: -300, z: 120, r: 30, primary: true, yaw: -1.11,
+       * skyline behind both - the staircase, end-on, which is what this planet
+       * is about. It is no longer the first frame (see the block above); it is
+       * the one a player who flies back down to the Flats gets. */
+      id: 'redgate', name: 'Redgate', x: -300, z: 120, r: 30, yaw: -1.11,
     },
     {
-      /* Facing east-south-east, at the gorge: 159 m of open pavement, then a
-       * 107 m hole with a road cut down into it. */
-      id: 'anvil', name: 'Anvil Deck', x: 130, z: -200, r: 24, yaw: -1.35,
+      /* THE PRIMARY. Facing east-south-east, at the gorge: 159 m of open
+       * pavement, then a 107 m hole with a road cut down into it. */
+      id: 'anvil', name: 'Anvil Deck', x: 130, z: -200, r: 24, primary: true, yaw: -1.35,
     },
     {
       /* Facing north, up the slot at the box-canyon head 40 m away. */

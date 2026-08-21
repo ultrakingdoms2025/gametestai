@@ -684,6 +684,15 @@ export const SIROCCO = definePlanet({
    */
   liquid: {
     name: 'brine',
+    /**
+     * Water, so it is enterable - and at 38 cm at its deepest it is WADED
+     * rather than swum: `Swim.ENTER_DEPTH` is 1.3 m of bed depth, and nothing
+     * on this planet comes close. That is the right read for a salt pan, and
+     * it is what these pans always looked like. What they did NOT do was let
+     * you walk into them: the shore barrier put 442 posts round two puddles
+     * you can see the bottom of. Those are gone.
+     */
+    kind: 'water',
     /* Both surfaces are AUTHORED heights over their own levelled beds, never
      * derived from the terrain. Each radius is set where the bed's blend has
      * climbed back to the surface height, so the shoreline is the mesh edge and

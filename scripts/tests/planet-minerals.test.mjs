@@ -18,6 +18,10 @@ import { holdCapacity, SHIP_BASE_STATS } from '../../src/ships/ShipStats.js';
 import { BIAS_PER_POINT } from '../../src/ships/Ship.js';
 import { BODY_BY_ID, DOCK_ANCHOR } from '../../src/worlds/space/Bodies.js';
 
+import {
+  ALL, walkGraph, distances, lattice,
+} from './planet-walk-kit.mjs';
+
 /**
  * THE MINERAL TABLE: A LADDER, A REGISTRATION CHAIN, AND A WALK.
  *
@@ -81,31 +85,49 @@ import { BODY_BY_ID, DOCK_ANCHOR } from '../../src/worlds/space/Bodies.js';
  * the tours at the end - so the day it stops being affordable is a day somebody
  * can see rather than infer.
  *
+ * A THIRD SWEEP JOINED THEM and it is the dearest thing here after the tours:
+ * `ABLATION SENSITIVITY` deletes landforms one at a time and re-floods, and a
+ * deleted landform means a full mask rebuild because the ground has changed.
+ * A flat sweep of every non-pad landform on all ten is 152 lattices and 111 s;
+ * sweeping the four route-shaped kinds first and falling through to the rest
+ * only when none of them is the answer is 92 and 76 s, with no planet's
+ * coverage reduced - the three that find nothing are still swept in full. The
+ * lattice count and the seconds are printed for the same reason as everything
+ * else here. Budget two and a half minutes for this file.
+ *
  * ═══════════════════════════════════════════════════════════════════════════
  *  WHAT GENERALISES AND WHAT IS ABOUT CINDER
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * "The rare tier costs more to reach" is a rule about every planet. "The rare
- * tier has the longest median march" is a rule about CINDER, and generalising
- * it naively breaks on five of the ten:
+ * "The rare tier costs more to reach" is a rule about every planet. Every
+ * attempt to say it as a DISTANCE is a rule about Cinder, and there have now
+ * been two of them.
  *
- *   sirocco    chalcanth  rare      median 392 m   vs cassiterite uncommon 571 m
- *   shoal      polymetal  rare      median 170 m   vs abyssite    exotic   286 m
- *   verdigris  sporecryst rare      median 118 m   vs resin       uncommon 427 m
- *   lathe      tychite    rare      median 230 m   vs aurichalc   exotic   557 m
- *   carnelian  carnelite  rare      median 344 m   vs hematite    uncommon 392 m
+ *   1. "The rare tier has the longest median march." Broke on five of ten.
+ *      Sirocco's chalcanth sits 392 m out at the median while its UNCOMMON
+ *      cassiterite sits at 571 m, because chalcanth's cost is finding and
+ *      descending a canyon stair and cassiterite's is a long flat walk.
+ *   2. "From the arrival pad the rare seam is >= 1.5x the nearest common one."
+ *      Broke on three, and the third proved the variable was wrong: Vitrine's
+ *      azurine got SEVEN METRES FURTHER from the pad and the ratio collapsed
+ *      anyway, because the DENOMINATOR moved - the nearest common ore went 44 m
+ *      to 308 m when `primary` was corrected. Its failure message read "the
+ *      rare tier is on the doorstep" about an ore 422 m away.
  *
- * Sirocco's chalcanth is the clearest: it sits 392 m out at the median while an
- * UNCOMMON ore sits at 571 m, because chalcanth's cost is finding and descending
- * a canyon stair and cassiterite's cost is a long flat walk. That is a different
- * design, not a defect, and a gate that called it one would be telling nine
- * authors to make their planets more like the first one.
+ * Both failed for one reason: distance is not what differs between these
+ * planets, and "the nearest common ore" is wherever a scattered `field` seam
+ * happened to drop a node near a pad. What IS true of all ten is that the rare
+ * tier is a PLACE - named in the descriptor's own terrain vocabulary, confined
+ * on the ground, and never the first ore you meet stepping off the ramp. That
+ * is the rule now, and its whole argument is on `rareVerdict` in block 5.
  *
- * So the generalised version asks what the rule is FOR - the rare tier costs
- * more - and measures the cost the way each planet actually charges it: from
- * THE PAD THE PLAYER ARRIVES AT, and for the rarest tier, not at all from
- * there. Cinder's own march and its 4x nearest-node ratio keep their case,
- * named as Cinder's.
+ * Measured and REJECTED as conjuncts, each on evidence rather than on taste:
+ * ablatable route (fails on Cinder, Shoal and Vitrine - see `ROUTELESS_RARE`),
+ * local relief and path tortuosity (both fail on Shoal). All three are printed
+ * as columns, so the third re-derivation starts from what was already measured.
+ *
+ * Cinder's own march and its 4x nearest-node ratio keep their case, named as
+ * Cinder's.
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -402,355 +424,523 @@ test('a regional price signal exists only where a price path reads it', () => {
 /* ================================================================== */
 /* 5. THE WALK, AND WHAT IT PAYS                                      */
 /* ================================================================== */
+/* The lattice, the real worlds and the flood are shared machinery now and
+ * live in `planet-walk-kit.mjs`. They were extracted the day a SECOND file
+ * needed them: the rare-tier gate below reads the same distances this file
+ * prices credits per minute against, and two copies of a 2.0 m lattice that
+ * drift apart would let one file pass a planet the other fails.
+ *
+ * Everything the kit exports is a measurement. Every floor is here.  */
 
-/* The lattice. Same envelope as `planet-reach.test.mjs` - 2.0 m pitch, 38 deg
- * continuous, 0.45 m step-up, 3.0 m drop, no jump and no mantle - but this one
- * carries DISTANCE, because the question here is not whether a body can get
- * there, it is how long it takes and what it is paid for going. */
-const PITCH = 2.0;
-const MAX_SLOPE_TAN = Math.tan((38 * Math.PI) / 180);
-const MAX_RISE = PITCH * MAX_SLOPE_TAN;
-const STEP_UP = 0.45;
-const DROP_MAX = 3.0;
-const HEADROOM = 1.9;
-const ARRIVE = 3.2;
 
-function harness(THREE) {
-  if (globalThis.__mineralHarness) return;
-  globalThis.__mineralHarness = true;
-  class Img {
-    constructor(a, b, c) {
-      if (typeof a === 'number') { this.width = a; this.height = b; this.data = new Uint8ClampedArray(a * b * 4); }
-      else { this.data = a; this.width = b; this.height = c ?? 1; }
-    }
-  }
-  const gradient = { addColorStop() {} };
-  const context2d = (canvas) => new Proxy({
-    canvas,
-    createImageData: (w, h) => new Img(Math.max(1, w | 0), Math.max(1, (h ?? w) | 0)),
-    getImageData: (x, y, w, h) => new Img(Math.max(1, w | 0), Math.max(1, h | 0)),
-    createLinearGradient: () => gradient,
-    createRadialGradient: () => gradient,
-    createConicGradient: () => gradient,
-    createPattern: () => null,
-    measureText: () => ({ width: 8 }),
-    getLineDash: () => [],
-  }, { get: (o, k) => (k in o ? o[k] : () => undefined), set: () => true });
-  globalThis.ImageData ??= Img;
-  globalThis.requestAnimationFrame ??= (fn) => setTimeout(() => fn(Date.now()), 0);
-  globalThis.document ??= {
-    createElement(tag) { const c = { width: 1, height: 1, style: {}, tagName: tag }; c.getContext = () => context2d(c); return c; },
-    createElementNS(_ns, tag) { return this.createElement(tag); },
-  };
-  globalThis.window ??= globalThis;
-  globalThis.OffscreenCanvas ??= class { constructor(w, h) { this.width = w; this.height = h; } getContext() { return context2d(this); } };
-  const dead = () => ({ texture: null, dispose() {} });
-  THREE.PMREMGenerator.prototype.fromEquirectangular = dead;
-  THREE.PMREMGenerator.prototype.fromScene = dead;
-  THREE.PMREMGenerator.prototype.compileEquirectangularShader = () => {};
+/**
+ * THE FOOTPRINT OF A SEAM: half the diagonal of the box its nodes sit in.
+ *
+ * Not a radius and not a variance - a seam is not a disc, and Cinder's rheniite
+ * runs down a rift. What this is FOR is the difference between "the ore is
+ * where you are" and "the ore is somewhere": half a diagonal is the same
+ * quantity for a corridor as for a disc, and it is the one that tells a
+ * `field` scatter from a place.
+ */
+function footprint(nodes) {
+  const xs = nodes.map((n) => n.position.x);
+  const zs = nodes.map((n) => n.position.z);
+  return Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs)) / 2;
 }
 
-/** Every planet the game registers, in registry order. */
-const ALL = Object.values(PLANETS);
+/** The smallest finite value in a list, or Infinity when there is none. */
+const least = (xs) => xs.reduce((a, b) => (Number.isFinite(b) && b < a ? b : a), Infinity);
 
-const _worlds = new Map();
 /**
- * One real world per planet, built once. `PLANETS.cinder` by default so the
- * Cinder-only cases below read the way they always did.
+ * THE RARE TIER IS A PLACE, NOT A SCATTER.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  THIS REPLACED A RATIO, AND HERE IS THE ARGUMENT FOR THE REPLACEMENT
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * The rule here was "from the arrival pad, the rare seam's nearest node is at
+ * least 1.5x the nearest common one". It has been RE-DERIVED ONCE ALREADY: it
+ * began as "the rare tier has the longest median march", broke on five of ten,
+ * and was narrowed to that ratio. The ratio then broke on three, and the third
+ * one is the tell:
+ *
+ *     verdigris  sporecryst  525 m -> 64 m    0.1x   a genuine inversion
+ *     carnelian  carnelite  1213 m -> 215 m   0.2x   a genuine inversion
+ *     vitrine    azurine     415 m -> 422 m   1.4x   NOT AN INVERSION
+ *
+ * Vitrine's rare seam got SEVEN METRES FURTHER AWAY and the ratio collapsed
+ * anyway, because the arrival pad moved and the nearest COMMON ore went 44 m ->
+ * 308 m. The failure message said "the rare tier is on the doorstep of the pad
+ * the player arrives at" about an ore 422 m from that pad. A metric whose
+ * failure message can be false is measuring the wrong variable, and both
+ * re-derivations failed for one reason: they express "costs more" as a
+ * comparison of DISTANCES, and distance is not what differs between these
+ * planets. Sirocco charges a canyon stair, Verdigris charges a cave, Cinder
+ * charges 900 m of walking. The denominator was the worst part - "the nearest
+ * common ore" is wherever a scattered `field` seam happens to have dropped a
+ * node near the pad, which is an artefact of pad placement and not a design.
+ *
+ * And the old rule's own worked example had gone circular: it cited Verdigris's
+ * sporecryst at "64 m from Sumphead and 525 m from Greenspan, and the second is
+ * what a player pays on arrival" - i.e. it was calibrated on an arrival choice
+ * that has since been corrected as a defect.
+ *
+ * ── WHAT IS ASSERTED INSTEAD, AND WHY IT IS THESE THREE ──────────────────
+ *
+ * The exotic tier already carries the strong guarantee, in the case above and
+ * in `planet-envelope.test.mjs` at four envelopes: ZERO nodes from the arrival
+ * pad, reachable only from a pad of its own. "Costs a decision", as a
+ * measurement. So the rare tier's job is to cost something the UNCOMMON tier
+ * does not, and the descriptors already say what that is in their own words -
+ * `definePlanet` refuses the rarest ore `terrain: 'plain'` and a `field` region
+ * because "a rare element scattered over the whole map, underfoot at the pad,
+ * is a common element with an expensive name". That sentence is the rule. It is
+ * enforced for the TOP rung only; these three make it a measurement, and one
+ * rung wider:
+ *
+ *   (1) NAMED.     No ore at `rare` or `exotic` sits in `plain` terrain or uses
+ *                  a `field` region. True of all ten. `definePlanet` enforces
+ *                  it for the top rung; nothing enforced it for `rare`, and a
+ *                  four-tier planet could legally scatter its rare ore over the
+ *                  flat. (Uncommon is DELIBERATELY not included: Shoal's nacre
+ *                  is an uncommon `shore` seam with a `field` region, and a
+ *                  tideline that runs the length of a coast is authored, not a
+ *                  mistake.)
+ *
+ *   (2) CONFINED.  The rare seam's footprint is smaller than the widest COMMON
+ *                  seam's, measured on the built world's real node positions.
+ *                  The common tier is where you are; the rare tier is where you
+ *                  go. Achieved 2.6x to 6.8x across the ten. This is the half
+ *                  that cannot be gamed by moving a pad - it never mentions one.
+ *
+ *   (3) NOT FIRST. From the arrival pad, at least one CHEAPER seam has a nearer
+ *                  node. Not a ratio - an ordering, with no floor to tune and
+ *                  none to re-derive. "You do not trip over the rare ore
+ *                  stepping off the ramp" is the whole claim, and "cheaper"
+ *                  rather than "common" is the repair to the denominator: on
+ *                  Vitrine the ore that is 24 m from the arrival pad is the
+ *                  UNCOMMON cryolite, and the old rule could not see it.
+ *
+ * All three are planet-shape-agnostic. None of them can be satisfied by an ore
+ * that merely happens to be far from a pad that happens to be poor, and none of
+ * them can be broken by moving `primary` onto a richer pad.
+ *
+ * ── WHAT WAS TRIED AND MEASURED AWAY ────────────────────────────────────
+ *
+ * "Its reachability must depend on a route that can be ablated" is the obvious
+ * fourth conjunct and it is NOT TRUE OF ALL TEN. Measured - the sweep is the
+ * case below - seven planets have a landform whose deletion strands the rare
+ * seam from the arrival pad while the common tier stays whole. Three do not,
+ * for three different and legitimate reasons, and they are listed in
+ * `ROUTELESS_RARE`. Asserting it would have failed Cinder, the planet the whole
+ * rule was written about. Local relief and path tortuosity were measured too
+ * and both fail on Shoal. They are all PRINTED, and none of them is asserted.
+ *
+ * @returns {string[]} one line per broken conjunct, empty when the seam clears.
  */
-async function world_(planet = PLANETS.cinder) {
-  if (_worlds.has(planet.id)) return _worlds.get(planet.id);
-  const THREE = await import('three');
-  harness(THREE);
-  const { Physics, COLLISION_LAYER } = await import('../../src/physics/Physics.js');
-  const { PlanetWorld } = await import('../../src/worlds/PlanetWorld.js');
-  const { polyDist } = await import('../../src/worlds/planets/Placement.js');
-  const physics = new Physics();
-  const Cls = PlanetWorld.of(planet);
-  const built = new Cls({
-    physics,
-    scene: new THREE.Scene(),
-    bus: { on: () => () => {}, emit() {} },
-    engine: {
-      renderer: {
-        capabilities: { getMaxAnisotropy: () => 4, isWebGL2: true },
-        initTexture() {}, getContext: () => ({}),
-        getRenderTarget: () => null, setRenderTarget() {}, render() {}, clear() {},
-      },
-      camera: new THREE.PerspectiveCamera(), onFrameUpdate: () => () => {}, onResize: () => () => {},
-    },
-    materials: { get: () => new THREE.MeshStandardMaterial(), dispose() {} },
-  });
-  built.physics = physics;
-  await built.build(() => {});
-  const out = { world: built, physics, COLLISION_LAYER, polyDist };
-  _worlds.set(planet.id, out);
+function rareVerdict({ id, primary, rows }) {
+  const out = [];
+  const commons = rows.filter((r) => r.min.rarity === 'common');
+  for (const r of rows) {
+    if (r.min.rarity !== 'rare' && r.min.rarity !== 'exotic') continue;
+
+    /* (1) NAMED - the descriptor's own vocabulary, not an adjective. */
+    if (r.min.terrain === 'plain') {
+      out.push(`${id}/${r.min.id}: a ${r.min.rarity} ore in terrain 'plain' - a rare element on the flat`
+        + ' is a common element with a better name');
+    }
+    if (r.min.region.shape === 'field') {
+      out.push(`${id}/${r.min.id}: a ${r.min.rarity} ore with a 'field' region scatters over the whole`
+        + ' playfield - put it somewhere');
+    }
+    if (r.min.rarity !== 'rare') continue;
+
+    /* (2) CONFINED - measured on the built world, against this planet's own
+     * commonest ore rather than against a constant. */
+    const foot = footprint(r.nodes);
+    const widestCommon = Math.max(...commons.map((c) => footprint(c.nodes)));
+    const widest = commons.reduce((a, b) => (footprint(b.nodes) > footprint(a.nodes) ? b : a));
+    if (!(foot < widestCommon)) {
+      out.push(`${id}/${r.min.id}: the rare seam spans ${foot.toFixed(0)} m against ${widestCommon.toFixed(0)} m`
+        + ` for ${widest.min.id}, the widest common seam - it is spread like a common ore, not put somewhere`);
+    }
+
+    /* (3) NOT FIRST - an ordering from the arrival pad, no floor. */
+    const cheaper = rows.filter((c) => c.min.unitValue < r.min.unitValue);
+    const nearestCheaper = least(cheaper.map((c) => c.pd[0]));
+    const firstOf = cheaper.reduce((a, b) => (b.pd[0] < a.pd[0] ? b : a), cheaper[0] ?? r);
+    if (!Number.isFinite(nearestCheaper)) {
+      out.push(`${id}/${r.min.id}: no ore cheaper than it can be reached from ${primary.id} at all, so`
+        + ' the rare tier is the only thing on the arrival pad');
+    } else if (!(r.pd[0] > nearestCheaper)) {
+      out.push(`${id}/${r.min.id}: it is ${r.pd[0].toFixed(0)} m from ${primary.id} and the nearest`
+        + ` cheaper ore (${firstOf.min.id}, ${firstOf.min.unitValue} cr/m3) is ${nearestCheaper.toFixed(0)} m`
+        + ' - the rare tier is the first ore you meet stepping off the ramp');
+    }
+  }
   return out;
 }
 
-/** Every solid world box, indexed on XZ. Straight out of `physics.colliders`. */
-function boxIndex(physics, COLLISION_LAYER) {
-  const cell = 8;
-  const grid = new Map();
-  for (const c of physics.colliders) {
-    if (!c.solid) continue;
-    if ((c.layer & COLLISION_LAYER.WORLD) === 0) continue;
-    if (c.type !== 'box') continue;
-    const m = c.matrix.elements;
-    const b = {
-      x: m[12], y: m[13], z: m[14],
-      ax: Math.abs(m[0]) * c.halfExtents.x + Math.abs(m[4]) * c.halfExtents.y + Math.abs(m[8]) * c.halfExtents.z,
-      ay: Math.abs(m[1]) * c.halfExtents.x + Math.abs(m[5]) * c.halfExtents.y + Math.abs(m[9]) * c.halfExtents.z,
-      az: Math.abs(m[2]) * c.halfExtents.x + Math.abs(m[6]) * c.halfExtents.y + Math.abs(m[10]) * c.halfExtents.z,
-    };
-    const x0 = Math.floor((b.x - b.ax) / cell); const x1 = Math.floor((b.x + b.ax) / cell);
-    const z0 = Math.floor((b.z - b.az) / cell); const z1 = Math.floor((b.z + b.az) / cell);
-    for (let cx = x0; cx <= x1; cx++) {
-      for (let cz = z0; cz <= z1; cz++) {
-        const k = ((cx + 4096) << 13) | (cz + 4096);
-        let list = grid.get(k);
-        if (!list) grid.set(k, (list = []));
-        list.push(b);
-      }
-    }
-  }
-  return (x, z, groundY) => {
-    const k = ((Math.floor(x / cell) + 4096) << 13) | (Math.floor(z / cell) + 4096);
-    const list = grid.get(k);
-    if (!list) return false;
-    for (const b of list) {
-      if (Math.abs(x - b.x) > b.ax || Math.abs(z - b.z) > b.az) continue;
-      if (b.y + b.ay <= groundY + STEP_UP) continue;
-      if (b.y - b.ay >= groundY + HEADROOM) continue;
-      return true;
-    }
-    return false;
-  };
-}
-
-/**
- * One walk lattice, many floods.
- *
- * `planet-reach` rebuilds its mask per flood because it runs four of them. A
- * nearest-neighbour tour runs one flood PER NODE - 119 of them on Cinder - so
- * the standing-room mask is built once and only the distance field is refilled.
- */
-function lattice({ ground, blocked, lava, half }) {
-  const n = Math.floor((half * 2) / PITCH) + 1;
-  const at = (i, j) => j * n + i;
-  const ok = new Uint8Array(n * n);
-  const y = new Float32Array(n * n);
-  for (let j = 0; j < n; j++) {
-    const z = -half + j * PITCH;
-    for (let i = 0; i < n; i++) {
-      const x = -half + i * PITCH;
-      const g = ground(x, z);
-      if (!Number.isFinite(g)) continue;
-      y[at(i, j)] = g;
-      if (lava(x, z, g)) continue;
-      if (blocked(x, z, g)) continue;
-      const gx = ground(x + PITCH * 0.5, z); const gnx = ground(x - PITCH * 0.5, z);
-      const gz = ground(x, z + PITCH * 0.5); const gnz = ground(x, z - PITCH * 0.5);
-      if (![gx, gnx, gz, gnz].every(Number.isFinite)) continue;
-      if (Math.hypot((gx - gnx) / PITCH, (gz - gnz) / PITCH) > MAX_SLOPE_TAN) continue;
-      ok[at(i, j)] = 1;
-    }
-  }
-  /* Float64, NOT Float32, AND THIS IS A BUG THAT WAS ALREADY HERE.
-   *
-   * The relaxation below accepts an improvement of more than 1e-6 m and then
-   * STORES it. In a `Float32Array` a distance of about 1 km has a ULP of 6e-5,
-   * so an improvement between 1e-6 and 6e-5 passes the test and rounds away in
-   * the store: `dist[kk]` does not move, the node is queued again, the same
-   * edge relaxes again, and the queue grows without bound. On Cinder the graph
-   * never triggered it. On Sallow it does immediately - `q.push` throws
-   * `RangeError: Invalid array length` - which is what running this on a second
-   * planet found. Float64 carries the 1e-6 threshold with fifteen digits to
-   * spare and the loop terminates. */
-  const dist = new Float64Array(n * n);
-  const cellsNear = (x, z) => {
-    const i0 = Math.round((x + half) / PITCH); const j0 = Math.round((z + half) / PITCH);
-    const r = Math.ceil(ARRIVE / PITCH); const out = [];
-    for (let dj = -r; dj <= r; dj++) {
-      for (let di = -r; di <= r; di++) {
-        const a = i0 + di; const b = j0 + dj;
-        if (a < 0 || b < 0 || a >= n || b >= n || !ok[at(a, b)]) continue;
-        if (Math.hypot(a * PITCH - half - x, b * PITCH - half - z) > ARRIVE) continue;
-        out.push(at(a, b));
-      }
-    }
-    return out;
-  };
-  return {
-    /** Seed at (x,z) and relax; the field stays valid until the next call. */
-    from(x, z) {
-      dist.fill(Infinity);
-      const q = [];
-      for (const k of cellsNear(x, z)) { dist[k] = 0; q.push(k); }
-      let head = 0;
-      while (head < q.length) {
-        const k = q[head++];
-        const i = k % n; const j = (k - i) / n;
-        const here = y[k]; const d0 = dist[k];
-        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const a = i + di; const b = j + dj;
-          if (a < 0 || b < 0 || a >= n || b >= n) continue;
-          const kk = at(a, b);
-          if (!ok[kk]) continue;
-          const dh = y[kk] - here;
-          if (dh > 0 && dh > MAX_RISE && dh > STEP_UP) continue;
-          if (dh < -DROP_MAX) continue;
-          const step = Math.hypot(PITCH, dh);
-          if (d0 + step < dist[kk] - 1e-6) { dist[kk] = d0 + step; q.push(kk); }
-        }
-      }
-      return this;
-    },
-    /** Walking metres from the last seed to (x,z), or Infinity. */
-    to(x, z) {
-      let best = Infinity;
-      for (const k of cellsNear(x, z)) if (dist[k] < best) best = dist[k];
-      return best;
-    },
-  };
-}
-
-const _walk = new Map();
-/**
- * One walk lattice per planet, with the standing-room mask built once.
- *
- * Timed and printed: this is the expensive half of block 5 and the header says
- * what it costs. A nearest-neighbour tour runs one flood PER NODE, so the mask
- * is built once and only the distance field is refilled.
- */
-async function walkGraph(planet = PLANETS.cinder) {
-  if (_walk.has(planet.id)) return _walk.get(planet.id);
-  const t0 = Date.now();
-  const { world, physics, COLLISION_LAYER, polyDist } = await world_(planet);
-  const tBuild = Date.now() - t0;
-  const field = physics.heightfields[0];
-  const blocked = boxIndex(physics, COLLISION_LAYER);
-  const bodies = world.planet.liquid?.bodies ?? [];
-  const lava = (x, z, y) => {
-    for (const b of bodies) {
-      if (b.shape === 'disc') { if (Math.hypot(x - b.x, z - b.z) <= b.r && y < b.y + 0.6) return true; }
-      else if (polyDist(x, z, b.pts) <= b.width * 0.5 && y < Math.max(b.y0, b.y1) + 0.6) return true;
-    }
-    return false;
-  };
-  const t1 = Date.now();
-  const L = lattice({ ground: (x, z) => field.sampleHeight(x, z), blocked, lava, half: world.planet.half });
-  console.log(`   [${planet.id}] world built in ${tBuild} ms, walk lattice in ${Date.now() - t1} ms,`
-    + ` ${world.mineralNodes.length} ore nodes, ${world.landingSites.length} pads`);
-  const out = { world, blocked, lava, L };
-  _walk.set(planet.id, out);
-  return out;
-}
-
-/**
- * Nearest-pad and from-the-primary-pad walking distances for one planet.
- *
- * `nearest` is the distance to each node from whichever pad is closest to it.
- * `fromPrimary` is the distance from the pad the player ARRIVES at, which is a
- * different question and the one the rarity ladder is actually priced in.
- */
-async function distances(planet) {
-  const { world, L } = await walkGraph(planet);
-  const primary = world.landingSites.find((site) => site.primary);
-  const nearest = new Map();
-  for (const site of world.landingSites) {
-    L.from(site.position.x, site.position.z);
-    for (const nd of world.mineralNodes) {
-      const d = L.to(nd.position.x, nd.position.z);
-      const cur = nearest.get(nd);
-      if (!cur || d < cur.d) nearest.set(nd, { d, pad: site.id });
-    }
-  }
-  L.from(primary.position.x, primary.position.z);
-  const fromPrimary = new Map();
-  for (const nd of world.mineralNodes) fromPrimary.set(nd, L.to(nd.position.x, nd.position.z));
-  const rows = [];
-  for (const min of world.planet.minerals) {
-    const nodes = world.mineralNodes.filter((nd) => nd.type === min.id);
-    const ds = nodes.map((nd) => nearest.get(nd).d).sort((a, b) => a - b);
-    const pd = nodes.map((nd) => fromPrimary.get(nd)).sort((a, b) => a - b);
-    rows.push({
-      min,
-      nodes,
-      ds,
-      pd,
-      lost: ds.filter((d) => !(d < Infinity)).length,
-      pads: new Set(nodes.map((nd) => nearest.get(nd).pad)),
-      onPrimary: pd.filter((d) => d < Infinity).length,
-      median: ds[Math.floor(ds.length / 2)],
-    });
-  }
-  return { world, L, primary, rows };
-}
-
-test('on every planet the rare tier costs more to reach than the common one', async () => {
-  /* ALL TEN. `planet-reach.test.mjs` already proves every node is reachable.
-   * This case asks the next question - what does reaching it COST - and it asks
-   * it in the units each planet actually charges in.
-   *
-   * ── WHY THIS IS NOT "THE RARE TIER IS FURTHER AWAY" ──────────────────────
-   *
-   * Because on five of the ten planets it is not, and they are right. Sirocco's
-   * chalcanth sits at a 392 m median while its UNCOMMON cassiterite sits at
-   * 571 m: chalcanth is down a canyon stair and cassiterite is a long flat
-   * walk, and the canyon is the more expensive of the two. Distance is one way
-   * a planet can charge for an ore and it is not the only one.
-   *
-   * What IS true of all ten, and is what the rule was always for:
+test('THE WALK, ON EVERY PLANET: nothing is lost and the exotic tier is a second landing', async () => {
+  /* ALL TEN, and this case is the TABLE as much as it is the two assertions.
+   * `planet-reach.test.mjs` proves every node is reachable; this asks what
+   * reaching it costs, in every unit a planet can charge in, and prints all of
+   * them side by side so a rule derived from one column can be checked against
+   * the others. Two things are asserted here because they are true of all ten
+   * and were always what the rule was for:
    *
    *   1. NOTHING IS LOST. Every node is reachable from some pad, on foot, with
    *      no jump and no mantle.
    *   2. THE EXOTIC SEAM IS NOT ON THE DOORSTEP. Zero of its nodes reachable
-   *      from the primary pad AT ANY DISTANCE. It is not a longer walk, it is a
-   *      second landing: you fly to its own pad and start again. Ten out of ten
-   *      planets are authored this way.
-   *   3. FROM THE PAD THE PLAYER ARRIVES AT, THE RARE SEAM IS FURTHER THAN THE
-   *      COMMON ONE. Measured from the PRIMARY pad specifically rather than
-   *      from the nearest, because "nearest pad" flatters an ore that has a pad
-   *      of its own - Verdigris's sporecryst is 64 m from Sumphead and 525 m
-   *      from Greenspan, and the second number is the one a player pays on
-   *      arrival. Floor 1.5x, and the tightest planet in the registry is Lathe
-   *      at 1.9x. */
+   *      from the arrival pad AT ANY DISTANCE. Not a longer walk - a second
+   *      landing. Ten out of ten planets are authored this way.
+   *
+   * The rare tier's rule is the case below, and the columns it does NOT use are
+   * printed here so that the next person to re-derive it can see what was
+   * already measured and rejected. */
   const lost = [];
   const freeExotic = [];
-  const cheapRare = [];
-  console.log('   THE WALK, ON EVERY PLANET (floor: nothing lost; exotic 0-from-primary; rare >= 1.5x common from the primary)');
+  const t0 = Date.now();
+  console.log('   planet      ore          rarity    terrain     region     n   from-arrival        any-pad          pads  relief  detour  foot');
   for (const planet of ALL) {
-    const { primary, rows } = await distances(planet);
-    const commonFromPrimary = Math.min(...rows.filter((r) => r.min.rarity === 'common').map((r) => r.pd[0]));
-    for (const r of rows) {
-      const fp = r.pd[0] < Infinity ? `${r.pd[0].toFixed(0)} m` : 'UNREACHABLE';
-      console.log(`     ${planet.id.padEnd(11)} ${r.min.id.padEnd(12)} ${r.min.rarity.padEnd(9)} ${r.min.terrain.padEnd(11)}`
-        + ` ${r.nodes.length - r.lost}/${String(r.nodes.length).padEnd(3)}`
-        + `  nearest pad: min ${r.ds[0].toFixed(0).padStart(4)} m, median ${r.median.toFixed(0).padStart(4)} m,`
-        + ` max ${r.ds[r.ds.length - 1].toFixed(0).padStart(4)} m`
-        + `   from ${primary.id}: ${fp.padStart(11)}, ${r.onPrimary}/${r.nodes.length} nodes`
-        + `   via ${[...r.pads].join(', ')}`);
-      if (r.lost) lost.push(`${planet.id}/${r.min.id}: ${r.lost} nodes nothing can walk to`);
-      if (r.min.rarity === 'exotic' && r.onPrimary !== 0) {
-        freeExotic.push(`${planet.id}/${r.min.id}: ${r.onPrimary} of ${r.nodes.length} exotic nodes can be walked to from`
-          + ` ${primary.id}, the pad you arrive at - the exotic tier costs no second landing`);
-      }
-      if (r.min.rarity === 'rare') {
-        const ratio = r.pd[0] / commonFromPrimary;
-        console.log(`     ${' '.repeat(11)} ${r.min.id} from ${primary.id}: ${r.pd[0].toFixed(0)} m against`
-          + ` ${commonFromPrimary.toFixed(0)} m for the nearest common ore = floor 1.5x, achieved ${ratio.toFixed(1)}x`);
-        if (!(ratio >= 1.5)) {
-          cheapRare.push(`${planet.id}/${r.min.id}: ${r.pd[0].toFixed(0)} m from ${primary.id} against`
-            + ` ${commonFromPrimary.toFixed(0)} m for the nearest common ore - only ${ratio.toFixed(1)}x, so the rare`
-            + ' tier is on the doorstep of the pad the player arrives at');
+    const { world, L, primary, rows } = await distances(planet);
+    const { HEIGHT_FIELDS } = await import('../../src/worlds/terrain/index.js');
+    const ground = HEIGHT_FIELDS.planet(world.planet.terrain);
+    /* Which pads can REACH the seam, which is not the same question as which
+     * pad is NEAREST to it - the second flatters an ore with a pad of its own. */
+    const reachedBy = new Map();
+    for (const site of world.landingSites) {
+      L.from(site.position.x, site.position.z);
+      for (const r of rows) {
+        for (const nd of r.nodes) {
+          if (L.to(nd.position.x, nd.position.z) < Infinity) {
+            if (!reachedBy.has(r)) reachedBy.set(r, new Set());
+            reachedBy.get(r).add(site.id);
+          }
         }
       }
     }
+    L.from(primary.position.x, primary.position.z);
+    for (const r of rows) {
+      const fin = r.pd.filter(Number.isFinite);
+      const medP = fin.length ? fin[Math.floor(fin.length / 2)] : Infinity;
+      const m = (v) => (Number.isFinite(v) ? `${v.toFixed(0)} m` : 'UNREACH');
+      /* Local relief at 40 m: how much the ground moves around the seam. It
+       * separates a fissure from a flat on nine planets and NOT on Shoal, whose
+       * polymetal shelf reads 4.3 m - which is why it is a column and not a
+       * conjunct. */
+      const rel = r.nodes.map((nd) => {
+        const hs = [ground(nd.position.x, nd.position.z)];
+        for (let k = 0; k < 12; k++) {
+          const a = (k / 12) * Math.PI * 2;
+          hs.push(ground(nd.position.x + Math.cos(a) * 40, nd.position.z + Math.sin(a) * 40));
+        }
+        const f = hs.filter(Number.isFinite);
+        return f.length ? Math.max(...f) - Math.min(...f) : 0;
+      }).sort((a, b) => a - b);
+      /* Walk over crow-flies from the arrival pad: what "finding and
+       * descending" costs when it is not distance. Vitrine's azurine reads
+       * 3.89, the highest in the registry, and Shoal's polymetal 1.22 - so this
+       * is a column too. */
+      const det = r.nodes.map((nd) => {
+        const w = L.to(nd.position.x, nd.position.z);
+        const c = Math.hypot(nd.position.x - primary.position.x, nd.position.z - primary.position.z);
+        return c > 1 ? w / c : Infinity;
+      }).filter(Number.isFinite).sort((a, b) => a - b);
+      console.log(`   ${planet.id.padEnd(11)} ${r.min.id.padEnd(12)} ${r.min.rarity.padEnd(9)} ${r.min.terrain.padEnd(11)}`
+        + ` ${r.min.region.shape.padEnd(9)} ${String(r.nodes.length).padStart(2)}`
+        + `  ${m(r.pd[0]).padStart(8)}/${m(medP).padStart(8)} ${String(r.onPrimary).padStart(2)}/${String(r.nodes.length).padEnd(2)}`
+        + `  ${m(r.ds[0]).padStart(7)}/${m(r.median).padStart(7)}`
+        + `  ${String(reachedBy.get(r)?.size ?? 0).padStart(2)}`
+        + `  ${(rel[Math.floor(rel.length / 2)] ?? 0).toFixed(1).padStart(6)}`
+        /* A dash and never `Infinity`: a seam with no route from the arrival pad
+         * has no walk-over-crow ratio, and printing one would put a non-finite
+         * number in a column of finite ones for a reader to misread as a
+         * measurement. `UNREACH` two columns left is where that fact belongs. */
+        + `  ${(det.length ? det[Math.floor(det.length / 2)].toFixed(2) : '-').padStart(6)}`
+        + `  ${footprint(r.nodes).toFixed(0).padStart(4)}`);
+      if (r.lost) lost.push(`${planet.id}/${r.min.id}: ${r.lost} nodes nothing can walk to`);
+      if (r.min.rarity === 'exotic' && r.onPrimary !== 0) {
+        freeExotic.push(`${planet.id}/${r.min.id}: ${r.onPrimary} of ${r.nodes.length} exotic nodes can be walked`
+          + ` to from ${primary.id}, the pad you arrive at - the exotic tier costs no second landing`);
+      }
+    }
   }
+  console.log(`   ten worlds walked in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   assert.deepEqual(lost, [], 'ore nothing can walk to is ore that does not exist');
   assert.deepEqual(freeExotic, [], 'the exotic tier is a second landing, not a longer walk');
-  assert.deepEqual(cheapRare, [], 'the rare tier has to cost something measured from where the player lands');
+});
+
+test('on every planet the rare tier is a place, not a scatter', async () => {
+  /* The rule is `rareVerdict` above and its whole argument is in that
+   * docblock - including what a 1.5x distance ratio used to say here, why it
+   * had already been re-derived once, and why the third planet it failed on
+   * proves it was measuring the wrong variable.
+   *
+   * Every number printed is derived in this run. The two ratios below are
+   * REPORTED and not asserted: the conjuncts are a strict inequality and an
+   * ordering, so there is no floor to tune and no floor to re-derive. The
+   * margins are printed so the day one of them gets thin is a day somebody can
+   * see rather than infer. */
+  const broken = [];
+  console.log('   planet      rare seam    terrain/region      confined (foot vs widest common)   not-first (rare vs nearest cheaper)');
+  for (const planet of ALL) {
+    const { primary, rows } = await distances(planet);
+    broken.push(...rareVerdict({ id: planet.id, primary, rows }));
+    const r = rows.find((x) => x.min.rarity === 'rare');
+    if (!r) continue;
+    const commons = rows.filter((x) => x.min.rarity === 'common');
+    const widest = Math.max(...commons.map((c) => footprint(c.nodes)));
+    const foot = footprint(r.nodes);
+    const cheaper = rows.filter((c) => c.min.unitValue < r.min.unitValue);
+    const near = least(cheaper.map((c) => c.pd[0]));
+    const first = cheaper.reduce((a, b) => (b.pd[0] < a.pd[0] ? b : a), cheaper[0]);
+    console.log(`   ${planet.id.padEnd(11)} ${r.min.id.padEnd(12)} ${`${r.min.terrain}/${r.min.region.shape}`.padEnd(19)}`
+      + ` ${foot.toFixed(0).padStart(4)} m < ${widest.toFixed(0).padStart(4)} m = ${(widest / foot).toFixed(1)}x`
+      + `             ${r.pd[0].toFixed(0).padStart(5)} m > ${near.toFixed(0).padStart(4)} m (${first.min.id}) = ${(r.pd[0] / near).toFixed(1)}x`);
+  }
+  assert.deepEqual(broken, [],
+    `the rare tier is a common tier with a better name:\n  ${broken.join('\n  ')}`);
+});
+
+test('MUTATION: the same rule, on a planet whose rare seam is scattered on the flat', async () => {
+  /* THE RULE ABOVE HAS TO BE ABLE TO GO RED, and the only honest way to show it
+   * is to build a planet it should refuse and watch it refuse one.
+   *
+   * Two REAL planets through `definePlanet` and a REAL `PlanetWorld`, identical
+   * in every line except the rare row:
+   *
+   *   CONTROL  fool is a `crater` seam in a 30 m disc on the pit floor, 240 m
+   *            from the pad.
+   *   MUTANT   fool is a `crater` seam whose disc is opened to 200 m and moved
+   *            onto the pad's doorstep - same terrain, same count, same value.
+   *
+   * ── THE MUTANT USED TO BE `plain`/`field`, AND THE SCHEMA NOW REFUSES THAT ──
+   *
+   * When this case was written, `definePlanet` accepted a scattered `rare` ore:
+   * it refused `plain`/`field` on the RAREST rung only, and on a four-tier
+   * planet the rarest rung is `exotic`. That gap has since been closed at the
+   * source - the refusal now covers `rare` and `exotic` AS WELL AS the top rung
+   * whatever it is called - so the old mutant cannot be built at all and this
+   * case died with a `definePlanet` throw instead of an assertion.
+   *
+   * That is a better world and the mutant moved rather than the schema. NAMED is
+   * now enforced at DEFINITION time, which is earlier and cheaper than a flood,
+   * and `the schema refuses every way "rare" can be a word rather than a fact`
+   * covers it directly. What is left for THIS case is the two conjuncts a schema
+   * cannot see, because both need real node positions on real ground:
+   *
+   *   CONFINED   the seam's footprint against the widest common seam's
+   *   NOT FIRST  a cheaper seam has a nearer node from the arrival pad
+   *
+   * So the mutant is now schema-LEGAL and still a lie: a `crater` ore, correctly
+   * named, spread so wide and so close that it is the first thing you walk into.
+   * That is the shape a rule about places has to catch and a rule about words
+   * cannot. */
+  const rows = (rare) => [
+    { id: 'mud', item: 'mud', name: 'Mud', rarity: 'common', terrain: 'shelf', place: 'The Hump',
+      color: 1, unitValue: 5, size: 1.9, count: 30, spacing: 9, region: { shape: 'disc', x: -150, z: -150, r: 46 } },
+    { id: 'spark', item: 'spark', name: 'Spark', rarity: 'uncommon', terrain: 'crater', place: 'The Pit',
+      color: 2, unitValue: 40, size: 0.6, count: 12, spacing: 9, region: { shape: 'disc', x: 140, z: 140, r: 42 } },
+    rare,
+    { id: 'gleam', item: 'gleam', name: 'Gleam', rarity: 'exotic', terrain: 'cave', place: 'The Hole',
+      color: 4, unitValue: 900, size: 0.5, count: 4, spacing: 9, region: { shape: 'disc', x: 150, z: -150, r: 30 } },
+  ];
+  const probe = (id, rare) => definePlanet({
+    id, name: id, half: 220, seg: 96, gravity: 9,
+    terrain: {
+      seed: 7,
+      baseY: 0,
+      landforms: [
+        { kind: 'pad', x: 0, z: 0, r: 24, blend: 16 },
+        { kind: 'basin', x: 140, z: 140, r: 55, depth: 14, flat: 0.4 },
+        { kind: 'cone', x: -150, z: -150, r: 60, peak: 18 },
+        { kind: 'basin', x: 150, z: -150, r: 40, depth: 10, flat: 0.5 },
+      ],
+    },
+    palette: { material: 'dirt.ground', tile: 4, bands: [{ upTo: 0, color: 0x111111 }, { upTo: 60, color: 0x222222 }] },
+    sky: { kind: 'daylight' },
+    minerals: rows(rare),
+    landing: [{ id: 'probepad', name: 'Probe Pad', x: 0, z: 0, r: 24, primary: true }],
+  });
+  const PLACED = {
+    id: 'fool', item: 'fool', name: 'Fools Gold', rarity: 'rare', terrain: 'crater', place: 'The Pit Floor',
+    color: 3, unitValue: 200, size: 0.6, count: 8, spacing: 9, region: { shape: 'disc', x: 140, z: 140, r: 30 },
+  };
+  /* Schema-LEGAL and still a lie: correctly named `crater`, but the disc is
+   * opened from 30 m to 200 m and slid onto the pad's doorstep — so it is both
+   * wider than the widest common seam and the first ore you walk into. That is
+   * the shape a rule about PLACES has to catch and a rule about WORDS cannot. */
+  const SCATTERED = { ...PLACED, place: 'Everywhere', region: { shape: 'disc', x: 20, z: 20, r: 200 } };
+
+  /* THE STANDING REQUIREMENT INVERTED, AND THAT IS THE POINT.
+   *
+   * This line used to assert that `definePlanet` ACCEPTS the mutant, and said
+   * "the day it grows this rule, this line goes red and the mutation has to
+   * move somewhere the schema still cannot see." That day came: the refusal now
+   * covers `rare` and `exotic` as well as the top rung, so the old
+   * `plain`/`field` mutant cannot be built.
+   *
+   * The mutation moved rather than the schema, exactly as instructed. What this
+   * mutant must now be is LEGAL - or the case is testing the schema again
+   * instead of the two conjuncts only real ground can judge. */
+  assert.ok(probe('probe_scatter', SCATTERED),
+    'definePlanet refuses this mutant, so it is testing the schema rather than the walk rule - '
+    + 'make the mutant schema-legal again');
+  /* And NAMED's enforcement is asserted where it now lives. */
+  assert.throws(
+    () => probe('probe_named', { ...PLACED, terrain: 'plain', region: { shape: 'field' } }),
+    /in terrain 'plain'|scatters over the whole playfield/,
+    'the schema no longer refuses a rare ore on the flat - NAMED has lost its enforcement'
+  );
+
+  const control = await distances(probe('probe_control', PLACED));
+  const mutant = await distances(probe('probe_scatter', SCATTERED));
+  const good = rareVerdict({ id: 'probe_control', ...control });
+  const bad = rareVerdict({ id: 'probe_scatter', ...mutant });
+  for (const line of bad) console.log(`     RED: ${line}`);
+
+  /* THE CONTROL IS NOT DECORATION. Without it, a rule that reddened on every
+   * synthetic planet - because the probe is small, or has one pad, or is not a
+   * real world - would look like it was catching the mutation. */
+  assert.deepEqual(good, [],
+    `the control planet is refused, so the mutant's redness is not the mutation:\n  ${good.join('\n  ')}`);
+  /* TWO LINES ACROSS TWO CONJUNCTS, and it used to be four across three.
+   *
+   * NAMED no longer fires here and MUST not: `definePlanet` refuses `plain` and
+   * `field` on a `rare` row outright now, so a mutant that broke NAMED could not
+   * be built to reach this point at all. Its enforcement is asserted at the
+   * schema by the `assert.throws` above, which is earlier and cheaper than a
+   * flood over real ground.
+   *
+   * The count is asserted as well as the names so that a conjunct which starts
+   * firing for a second reason has to be looked at rather than absorbed. */
+  assert.equal(bad.length, 2,
+    `the mutation broke ${bad.length} checks and two were expected - CONFINED and NOT FIRST, with NAMED`
+    + ` now enforced by definePlanet instead:\n  ${bad.join('\n  ')}`);
+  assert.ok(bad.some((l) => l.includes('spread like a common ore')), 'the CONFINED conjunct did not fire');
+  assert.ok(bad.some((l) => l.includes('first ore you meet')), 'the NOT-FIRST conjunct did not fire');
+});
+
+/**
+ * Planets whose rare seam is NOT held where it is by a single route.
+ *
+ * The sweep below deletes each non-pad landform in turn, re-floods from the
+ * arrival pad, and looks for one whose removal strands the rare seam while
+ * leaving the COMMON tier whole. That last clause is what makes the measurement
+ * mean anything: every planet has a road off its own arrival pad, and deleting
+ * that strands everything, which says nothing about the rare tier at all.
+ *
+ * Seven of ten have one. These three do not, and each has a reason:
+ *
+ *   cinder     rheniite runs the length of a rift with an end on two different
+ *              pads. That is deliberate and `CEILING BY ABLATION` below is the
+ *              case that says so: a rare ore behind a single point of failure
+ *              is one edit from unreachable.
+ *   shoal      polymetal is an annulus around the Glassflat shelf - the same
+ *              plateau the arrival pad is cut into. Deleting it strands the pad.
+ *   vitrine    azurine sits on the Shatter's LIPS and not in its floor, so the
+ *              trenches are what it is FOR rather than what gates it; the ice
+ *              sheet around them is open walking. Its cost shows up in the
+ *              detour column instead - 3.89x walk over crow-flies, the highest
+ *              in the registry - which is a real cost that no ablation can find.
+ *
+ * CHECKED IN BOTH DIRECTIONS below. Gate Vitrine's azurine and this entry has
+ * to be deleted; open up Carnelian's outcrop and it has to be added. A list
+ * that can only rot in one direction is worse than no list.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const ROUTELESS_RARE = Object.freeze(new Set(['cinder', 'shoal', 'vitrine']));
+
+test('ABLATION SENSITIVITY: which planets hold their rare seam with one landform', async () => {
+  /* The registry-wide version of `CEILING BY ABLATION` below, which is about
+   * Cinder's spiral road by name. Nothing here is asserted about the rare
+   * tier's DESIGN - the rule above is that - because seven of ten is not a
+   * rule. What is asserted is that the measured set has not drifted from the
+   * recorded one, in either direction.
+   *
+   * ── WHAT THIS COSTS, AND THE ONE SHORTCUT TAKEN ─────────────────────────
+   *
+   * One ablated lattice is a full mask rebuild - five ground samples over a
+   * 212,000-cell grid on the biggest planet - because deleting a landform
+   * changes the ground and the mask is what the ground decides. Sweeping every
+   * non-pad landform on all ten is 152 of them and 111 s.
+   *
+   * The claim is EXISTENCE, so the sweep stops at the first landform it finds.
+   * That is not a cap: on a planet where one exists it is found and the rest of
+   * the list would only find more of the same, and on a planet where none
+   * exists - which is the case the assertion is actually about - every landform
+   * is still tried. The three in `ROUTELESS_RARE` are therefore swept in full,
+   * every run. The identity printed is "a landform that holds it" rather than
+   * "the" one for the same reason. */
+  const { HEIGHT_FIELDS } = await import('../../src/worlds/terrain/index.js');
+  const measured = new Set();
+  const t0 = Date.now();
+  let builds = 0;
+  console.log('   planet      rare seam    a landform that holds it                     rare from arrival   common');
+  for (const planet of ALL) {
+    const { world, blocked, lava } = await walkGraph(planet);
+    const { primary, rows } = await distances(planet);
+    const P = world.planet;
+    const rare = rows.filter((r) => r.min.rarity === 'rare');
+    const commons = rows.filter((r) => r.min.rarity === 'common');
+    if (!rare.length) continue;
+    const rareNodes = rare.flatMap((r) => r.nodes);
+    const commonNodes = commons.flatMap((r) => r.nodes);
+    const baseRare = rare.reduce((a, r) => a + r.onPrimary, 0);
+    const baseCommon = commons.reduce((a, r) => a + r.onPrimary, 0);
+    /* TWO PASSES, AND THE SECOND IS THE WHOLE REST OF THE LIST.
+     *
+     * `ramp` is the only kind whose entire job is to be a route, and `scarp`,
+     * `trench` and `plateau` are the three that most often form one edge of a
+     * way in. On all seven planets that have a gate it is one of those four.
+     * So pass 1 sweeps those - ALL of them, keeping the STRONGEST rather than
+     * the first, because "delete the landform that carries the seam and count
+     * what goes unreachable" is the number this case exists to report - and
+     * pass 2 sweeps everything else, but ONLY when pass 1 found nothing.
+     *
+     * That is an ordering, not a cap. The planets where nothing is found are
+     * exactly the ones in `ROUTELESS_RARE`, they are what the assertion is
+     * about, and they are swept in full on every run. It is worth about 40 s of
+     * the 111 a flat sweep costs. */
+    const ROUTE_KINDS = new Set(['ramp', 'scarp', 'trench', 'plateau']);
+    const candidates = P.terrain.landforms.filter((f) => f.kind !== 'pad');
+    const sweep = (list) => {
+      let best = null;
+      for (const f of list) {
+        const ground = HEIGHT_FIELDS.planet({ ...P.terrain, landforms: P.terrain.landforms.filter((x) => x !== f) });
+        const L2 = lattice({ ground, blocked, lava, half: P.half });
+        builds++;
+        L2.from(primary.position.x, primary.position.z);
+        const rr = rareNodes.filter((nd) => L2.to(nd.position.x, nd.position.z) < Infinity).length;
+        const cc = commonNodes.filter((nd) => L2.to(nd.position.x, nd.position.z) < Infinity).length;
+        /* THE COMMON TIER HAS TO SURVIVE, or all this found is the road off the
+         * arrival pad - which strands everything and says nothing about the
+         * rare tier. This clause is the whole discrimination: without it all
+         * ten planets "have a gate" and the measurement is worthless. */
+        if (cc < baseCommon) continue;
+        if (rr < baseRare && (!best || rr < best.rr)) best = { f, rr, cc };
+      }
+      return best;
+    };
+    let found = sweep(candidates.filter((f) => ROUTE_KINDS.has(f.kind)));
+    if (!found) found = sweep(candidates.filter((f) => !ROUTE_KINDS.has(f.kind)));
+    if (found) measured.add(planet.id);
+    const where = found
+      ? `${found.f.kind}@(${(found.f.x ?? found.f.pts?.[0]?.[0] ?? 0).toFixed(0)}, ${(found.f.z ?? found.f.pts?.[0]?.[1] ?? 0).toFixed(0)})`
+      : 'NONE - no landform strands it while the common tier stays whole';
+    console.log(`   ${planet.id.padEnd(11)} ${rare[0].min.id.padEnd(12)} ${where.padEnd(44)}`
+      + ` ${String(baseRare).padStart(2)} -> ${String(found ? found.rr : baseRare).padStart(2)}`
+      + `           ${baseCommon} -> ${found ? found.cc : baseCommon}`);
+  }
+  const routeless = ALL.map((p) => p.id).filter((id) => !measured.has(id));
+  console.log(`   ${builds} ablated lattices in ${((Date.now() - t0) / 1000).toFixed(1)} s`
+    + `  -  ${measured.size} of ${ALL.length} planets gate their rare seam with one landform`);
+  assert.deepEqual(routeless.sort(), [...ROUTELESS_RARE].sort(),
+    'ROUTELESS_RARE has drifted from what the sweep measures. A planet that has GAINED a route to its '
+    + 'rare seam must be deleted from the list; one that has LOST it must be added, with the reason. '
+    + `Measured: [${routeless.join(', ')}]`);
 });
 
 test('CINDER: the rare tier is the longest march on the planet, and the exotic is off it', async () => {

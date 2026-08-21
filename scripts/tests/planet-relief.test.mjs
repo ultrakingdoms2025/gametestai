@@ -815,8 +815,9 @@ test('every lake on every planet meets the ground inside its own skirt', () => {
 
 test('Cinder\'s lava has NOTHING standing out of it', () => {
   /* CINDER ONLY, and it is the material that makes it so. Lava is opaque and
-   * it is `lethal: true`; a rock standing 20 cm out of it is a rock the player
-   * can see, aim a jump at, and die on. Water, brine and acid are none of those
+   * it is `lethal: true` - which as of this pass is a claim with teeth behind
+   * it rather than a dormant flag: 240 dps, dead in 0.42 s. A rock standing
+   * 20 cm out of it is a rock the player can see, aim a jump at, and die on. Water, brine and acid are none of those
    * things, so the registry-wide case above asks for a WET FRACTION and this
    * one keeps the 5 cm that Cinder's four bodies actually measure (-1.00 m to
    * -0.20 m: every one of them is strictly below its own surface). */
@@ -873,9 +874,14 @@ test('a sea has islands in it, and a pad you can stand on above it', () => {
    *   THERE IS LAND IN IT. A sea with nothing standing out of it is a blue
    *   plane, and the planet is "islands over a shelf".
    *
-   *   YOU NEVER HAVE TO SWIM. `PlanetWorld` sets `swim: false`, so water is a
-   *   wall. Every landing pad has to be dry ground with clear air over the sea
-   *   level, or the player arrives in something they cannot get out of. */
+   *   YOU ARRIVE ON DRY GROUND. This used to read "you never have to swim -
+   *   `PlanetWorld` sets `swim: false`, so water is a wall", and the assertion
+   *   it justified is unchanged while its reason is gone: the sea is swimmable
+   *   now. A pad under the waterline is still wrong, and for a better reason
+   *   than "you would drown in it". A ship comes down on `primary` and a
+   *   player who walks off a portal stands on it; a pad at sea level is a pad
+   *   the descent puts a hull into water, and one every arrival has to swim out
+   *   of before the planet starts. 1.0 m of freeboard is the floor. */
   let seas = 0;
   for (const planet of ALL) {
     for (const [i, b] of (planet.liquid?.bodies ?? []).entries()) {
@@ -899,8 +905,8 @@ test('a sea has islands in it, and a pad you can stand on above it', () => {
         `${planet.id}: ${land.toFixed(1)}% of the map is above sea level - that is a continent with a pond on it`);
       for (const q of pads) {
         assert.ok(q.clear > 1.0,
-          `${planet.id}: landing pad ${q.id} sits ${q.clear.toFixed(1)} m above the sea, and \`swim\` is false`
-          + ' - the player arrives in water they cannot get out of');
+          `${planet.id}: landing pad ${q.id} sits ${q.clear.toFixed(1)} m above the sea`
+          + ' - the descent puts a hull in the water and every arrival starts with a swim');
       }
     }
   }

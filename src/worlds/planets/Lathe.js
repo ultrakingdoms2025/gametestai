@@ -333,6 +333,94 @@ const STAR_DIR = _STAR.dir;
 const CATHEDRA_DIR = _CATH.dir;
 const CATHEDRA_ANGULAR = +_CATH.ang.toFixed(5);
 
+/* ================================================================== */
+/* THE RINGS                                                           */
+/* ================================================================== */
+
+/**
+ * Ceraunus's ring system, in this world's own frame - and it is now DRAWN.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ *  THE EDGE-ON DECISION, AND IT WAS MEASURED RATHER THAN TAKEN ON TASTE
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * `Bodies.js` places Lathe exactly in the ring plane, which is what a shepherd
+ * moon IS, and the measured opening angle from this playfield is 2.05 degrees.
+ * The obvious complaint about that is that a hoop arching overhead would be a
+ * better payoff, and the obvious fix is to incline the orbit. Both were
+ * considered and both were refused, for three reasons in ascending order of
+ * weight:
+ *
+ *  1. An inclined moon does not shepherd anything, and this world is built out
+ *     of that fact. THE SWEEP is ring ice the moon sweeps up on its leading
+ *     face; `DRIFT_ANGLE` is COMPUTED from the orbit and comes out dead along
+ *     the east-west axis precisely because the site was walked north from the
+ *     sub-Ceraunus point INSIDE the plane. Tilt the orbit and the drifts point
+ *     somewhere else, the `rimefall` in their troughs stops having a reason to
+ *     be there, and the world's own name stops meaning anything.
+ *
+ *  2. It is not a cheap change. Lathe's bearing sets four things `Bodies.js`
+ *     documents and three test files enforce - the 0.02-of-screen-height floor
+ *     from the dock, the 2x(rA+rB) surface separation, the front-lit
+ *     dot < 0.35, and the satellite exemption in `harness-framings.test.mjs`.
+ *
+ *  3. AND IT IS NOT ACTUALLY THIN. This is the measurement that decided it.
+ *     "Edge on" sounds like a hairline, and from a distance it would be, but
+ *     the observer here stands 2.76 Ceraunus-radii from the centre - INSIDE the
+ *     sphere the outer ring edge sweeps. Measured off the two body records:
+ *
+ *       the outer edge, straight at the planet      18.0 km away
+ *       the inner edge, straight at the planet      50.7 km away
+ *       the outer ansa (tangent point)              58.8 km away
+ *       Ceraunus's centre                          104.8 km away
+ *
+ *     The NEAR ARM is therefore a foreground object at a fifth of the planet's
+ *     distance, and parallax opens it out: it crosses the sky 4.2 degrees below
+ *     the planet's centre at its inner edge and 11.7 degrees below at its
+ *     outer, so it lies across the LOWER HALF of a 42.5-degree disc as a band
+ *     seven and a half degrees wide, not as a line. The far arm passes 1.1 to
+ *     1.4 degrees below the centre, hidden behind the globe until it clears the
+ *     limb, and runs out to ansae 31.0 to 55.8 degrees from the centre on each
+ *     side - a bright thread from 22 degrees of elevation in the south-east, up
+ *     through the gas giant due south at 42, and down to 22 again in the
+ *     south-west. 111.6 degrees of sky, tip to tip.
+ *
+ *     And it is BRIGHT. The star stands 6.3 degrees above the ring plane and
+ *     the line of sight only 2.0, so the slant path through the rings is 28x
+ *     the normal one: an annulus that is 38% gap at normal incidence is opaque
+ *     from here. The shader's mu0/(mu0+mu) term lands at 0.75, which is the
+ *     whole reason this reads as a thread of light instead of a smear.
+ *
+ * So: edge on, and the sky was already right - it was the shader that had no
+ * ring term. Everything below is read off `BODY_BY_ID.ceraunus.ring` rather
+ * than typed, so the day the gas giant's rings are re-proportioned this view
+ * changes with them.
+ */
+const _CER_RING = _CERAUNUS.ring;
+if (!_CER_RING) throw new Error('[Lathe] Ceraunus carries no ring record - this world exists for that view');
+
+/** Ceraunus's spin axis IS the ring normal: rings lie in a body's equator. */
+const _CAX = _unit(_CERAUNUS.axis);
+/** That axis, in the playfield's own frame - `+x` east, `+y` up, `+z` south. */
+const RING_NORMAL = _fix([_dot(_CAX, _EAST), _dot(_CAX, _UP), -_dot(_CAX, _NORTH)]);
+
+/**
+ * (inner, outer, gapInner, gapOuter) in Ceraunus-radii, straight off the body.
+ *
+ * A ring with no division is stated as a zero-width one rather than as a null,
+ * because the shader compares `gapOuter > gapInner` and a missing pair would
+ * otherwise have to be spelled with an undefined that becomes a NaN uniform.
+ */
+const RING_RADII = [
+  _CER_RING.inner,
+  _CER_RING.outer,
+  _CER_RING.gap ? _CER_RING.gap[0] : _CER_RING.outer,
+  _CER_RING.gap ? _CER_RING.gap[1] : _CER_RING.outer,
+];
+
+/** The measured opening angle, for the record and for the test that pins it. */
+export const RING_OPENING_DEG = +(Math.asin(Math.abs(_dot(CERAUNUS_DIR, RING_NORMAL))) * (180 / Math.PI)).toFixed(3);
+
 /**
  * The drift bearing, computed from the orbit rather than chosen.
  *
@@ -737,12 +825,13 @@ export const LATHE = definePlanet({
      * white and a warm cream: on this world ice and excavated regolith are the
      * two bright things and they are not the same white.
      *
-     * WHAT THIS CANNOT DO, stated because it shaped the map: bands are GLOBAL
-     * and keyed on absolute height. Newfall's floor is at y 5 and so is any
-     * other ground at y 5, so a young crater cannot be given a bright floor
-     * without giving one to every contour at that height across the whole map.
-     * Newfall therefore reads young by its rim, its rays and its debris, not by
-     * its floor.
+     * WHAT THIS CANNOT DO, and what `patch` below now does instead. Bands are
+     * GLOBAL and keyed on absolute height: Newfall's floor is at y 8 and so is
+     * any other ground at y 8, so for as long as height was the only handle a
+     * young crater could not be given a bright floor without giving one to
+     * every contour at that height across the whole map. That is exactly the
+     * limitation `palette.patch` was added for, and the six records below are
+     * what a young crater is supposed to look like.
      */
     bands: [
       { upTo: -18, color: 0x241f2b },
@@ -762,6 +851,87 @@ export const LATHE = definePlanet({
      *  contour map. Applied as `n * n * amount`, so most of the field never
      *  approaches the ceiling. */
     mottle: { scale: 58, amount: 0.60, color: 0x6d5c46 },
+    /**
+     * ══════════════════════════════════════════════════════════════════════
+     *  NEWFALL, PAINTED YOUNG
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * A crater's age on an airless body is read off its ALBEDO before it is
+     * read off its shape. Fresh material is bright because it has not had four
+     * billion years of solar wind and micrometeorite gardening to darken it,
+     * and it darkens from the outside in - so a young crater is a bright floor,
+     * inside a bright blanket, inside bright rays. All three are here and all
+     * three are the same colour family as the `rayfall` slabs scattered over
+     * them (0xd8dee2 down to 0xaeb8c0), because they are the same rock.
+     *
+     * THE RAY CORRIDORS ARE THE SAME POLYLINES THE RIDGES ARE. `RAYS` is
+     * declared once, the ADD layer lays 2.2 m of relief down it and these
+     * records lay the brightness on the same line. Move a bearing and both go.
+     *
+     * Every record is height-gated as well as shape-gated, which is the whole
+     * reason `patch` takes a REGION rather than a shape: the floor record is
+     * "inside this disc AND below y 14", which no band can say and no shape can
+     * say on its own. The rays stop at y 30 so they lie on the plain and do not
+     * climb the Shepherd's flank or wash over the rimefall drifts, both of
+     * which are already the bright end of the table.
+     *
+     * ── THE COLOURS ARE SET AGAINST A MEASURED BASE, NOT PICKED ──────────
+     *
+     * The first pass used the `rayfall` slab tints directly (0xc6d0d8 and down)
+     * and produced a young crater DARKER than the ground round it. The reason
+     * is in the transect, run out of Newfall's centre due south over the built
+     * field, in linear luma:
+     *
+     *     d 0-16   the floor          0.40
+     *     d 48     the inner wall     0.11   (the slope override)
+     *     d 64     the rim crest      0.48
+     *     d 80-192 the plain          0.55 - 0.62
+     *
+     * The plain around Newfall stands at y 33-38, not at the y 24 the band
+     * table calls the plain, because the crater's own ejecta and six ray ridges
+     * lift it - so locally the ground is already up in the rimefall-ice band. A
+     * patch LERPS toward its colour, so to come out brighter than that it has
+     * to BE brighter than that: 0.55 of base luma is the number every colour
+     * below was chosen against, and the floor now measures about 0.70.
+     *
+     * The blanket is deliberately the weakest of the three (about +7% over the
+     * plain). Ejecta thins outward, and a blanket as loud as the floor would
+     * put a painted disc 300 m across in the middle of the map.
+     */
+    patch: [
+      /** THE FLOOR. Newfall's bowl bottoms out at y 8 and the flat part of it
+       *  is r 20; the disc is drawn wider and the height filter does the
+       *  shaping, so the bright ground climbs the lower wall the way melt and
+       *  slumped debris actually do. */
+      {
+        id: 'newfall_floor',
+        region: { shape: 'disc', x: NX, z: NZ, r: 40, yMax: 14 },
+        color: 0xe8eff4, strength: 0.84, feather: 12, grain: 0.24, grainScale: 26,
+      },
+      /** THE BLANKET. Continuous ejecta, from the rim crest out to 150 m -
+       *  inside the 230 m the `rayfall` slabs cover, because the plates carry
+       *  on further than the fines do. Weak, wide and heavily broken up: this
+       *  is a wash, and a clean-edged one would read as a painted ring. */
+      {
+        id: 'newfall_apron',
+        region: { shape: 'annulus', x: NX, z: NZ, r0: 58, r1: 152, slopeMaxDeg: 30, yMax: 36 },
+        color: 0xd6e0e8, strength: 0.36, feather: 30, grain: 0.55, grainScale: 38,
+      },
+      /** THE SIX RAYS. Same polylines as the ridges in the ADD layer, 15 m
+       *  either side of them. Two records over one line: the full length at
+       *  half strength and the inner two thirds brighter, because a ray fades
+       *  outward and one flat corridor reads as a road. */
+      ...RAYS.map((pts, i) => ({
+        id: `newfall_ray_${i}`,
+        region: { shape: 'corridor', pts, width: 15, slopeMaxDeg: 28, yMax: 34 },
+        color: 0xdfe8ef, strength: 0.52, feather: 9, grain: 0.44, grainScale: 21,
+      })),
+      ...RAYS.map((pts, i) => ({
+        id: `newfall_ray_${i}_core`,
+        region: { shape: 'corridor', pts: pts.slice(0, 2), width: 10, slopeMaxDeg: 28, yMax: 34 },
+        color: 0xf2f7fa, strength: 0.46, feather: 7, grain: 0.36, grainScale: 16,
+      })),
+    ],
   },
 
   /* ---------------------------------------------------------------- */
@@ -777,24 +947,30 @@ export const LATHE = definePlanet({
        * thing to a gas giant in the whole file); give it two body colours; and
        * cap it in white at high latitude.
        *
-       * IT CANNOT DRAW THE RINGS. There is no ring term anywhere in
-       * `SPACE_FRAGMENT` - `uPlanetAngular` makes a disc and nothing else. So
-       * read this plainly: the rings are NOT in this world's sky. Nothing below
-       * fakes them and no comment here should be read as claiming otherwise.
+       * AND IT CAN NOW DRAW THE RINGS. That paragraph used to say it could not,
+       * and it was the largest single gap in this world: `uPlanetAngular` made
+       * a disc and nothing else. `SPACE_FRAGMENT` now carries a ring term that
+       * RAY-TRACES the real plane rather than pasting an ellipse round the
+       * disc, which it has to, because from here the near arm is 18 km away and
+       * the far arm is 191 - see THE RINGS above for the measurements and for
+       * why the orbit stayed in the plane.
        *
-       * AND THE RINGS ARE ONLY HALF A SHADER PROBLEM. Measured off the two body
-       * records, Lathe's centre lies exactly in Ceraunus's ring plane, so the
-       * ring opening angle from the playfield is 2.05 degrees - EDGE ON. What is
-       * missing is not a great hoop arcing overhead; it is a razor-thin thread
-       * of light through the gas giant's equator, reaching out to ansae 55.8
-       * degrees from its centre on each side, brightest at the tips - about 112
-       * degrees of sky, and almost no solid angle at all. The planet's shadow on
-       * the rings and the rings' shadow on the planet are missing too. If rings
-       * arcing across the sky are wanted, that is a change to Lathe's ORBIT in
-       * `Bodies.js` (an inclined orbit rather than a ring-plane one), not to
-       * this record.
+       * WHAT THE RING TERM CAN SAY: the annulus with its Cassini division, at
+       * its true perspective, in front of the disc on the near side and behind
+       * it on the far; its opacity through the slant path, so an edge-on ring
+       * goes opaque; reflected light off the lit face and transmission through
+       * an unlit one; the planet's shadow lying along the rings; and the rings'
+       * shadow lying across the planet.
        *
-       * The other two gas-giant compromises, named:
+       * WHAT IT STILL CANNOT: the ring is INFINITELY THIN, so there is no
+       * shading of a ring seen exactly edge-on and no self-shadowing between
+       * ringlets. It has no opposition surge - the sharp brightening a real
+       * ring shows within a degree of zero phase, which THIS WORLD sits at
+       * (5.5 degrees off), so the rings here are if anything understated. And
+       * the star is treated as a direction rather than a point, which is worth
+       * a fraction of a degree in the shadow's edge over a 191 km arm.
+       *
+       * The two gas-giant compromises that remain, named:
        *  - The shader's "continents" are an fbm land mask over an ocean. There
        *    is no land here, so `planetLand` and `planetOcean` are set to
        *    Ceraunus's own light zone and dark belt from `Bodies.js`, and the
@@ -847,6 +1023,30 @@ export const LATHE = definePlanet({
       /* Cathedra, 288 km away, in the moon slot. Both numbers computed. */
       moonDirection: CATHEDRA_DIR,
       moonAngularRadius: CATHEDRA_ANGULAR,
+
+      /* ── THE RINGS. Every number read off Ceraunus's own record. ────────
+       *
+       * `ringNormal` is the gas giant's spin axis in this playfield's frame,
+       * which is what a ring plane is; `ringRadii` and `ringColor` are its
+       * `ring` block verbatim. Nothing here is a second copy of anything.        */
+      ringNormal: RING_NORMAL,
+      ringRadii: RING_RADII,
+      ringColor: _CER_RING.tint,
+      ringDensity: _CER_RING.density,
+      /**
+       * The particles' albedo, and it is set against the BLOOM THRESHOLD rather
+       * than by eye.
+       *
+       * The `space` grade thresholds at 1.60 linear and anything over that
+       * stops reading as a surface and starts reading as a lens flare - the
+       * same trap that put Vitrine's `atmoStrength` at 0.9. Worked through: the
+       * tint 0xd8c4a2 is 0.686 linear in red, the slant-path reflectance
+       * mu0/(mu0+mu) lands at 0.754 from this site, so the brightest ring pixel
+       * is 0.686 x 0.754 x this. At 1.45 that is 0.75 linear - bright enough to
+       * be the brightest thing in the frame after the gas giant itself, and
+       * less than half the threshold, so the rings glow rather than blooming.
+       */
+      ringBrightness: 1.45,
 
       /** Up from 1.0. There is no air and no star above the horizon, so the
        *  starfield is the only thing between the gas giant and the ground and it

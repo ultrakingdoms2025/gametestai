@@ -55,12 +55,42 @@ import * as THREE from 'three';
  * The first case below asserts the game constant has not drifted away from
  * what `SLOPE.REAL` computes, so this can never silently go stale again.
  *
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  AND THEN THE WATER STOPPED BEING A WALL
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Every envelope above modelled liquid the way the shipped probes did: a cell
+ * whose ground is under a liquid surface is not walkable, full stop. That was
+ * exact while `PlanetWorld` set `swim: false` for all ten planets and fenced
+ * every waterline. It is not exact any more - four planets publish swimmable
+ * water - and two DIFFERENT things had to change, which is worth separating
+ * because they are separate claims:
+ *
+ *   WADING is a claim about STANDING, and it belongs in the mask. The line is
+ *   `Swim.ENTER_DEPTH`, imported and not re-typed: under 1.3 m of bed depth
+ *   the player walks on the bed. Sirocco's brine pans are 38 cm at their
+ *   deepest and Verdigris's river is 1.21 m, so both were being modelled as
+ *   walls by every probe in the repo AND fenced by the renderer - 442 posts
+ *   round two puddles, 1,500 round a knee-deep river. Both are now ground, in
+ *   every envelope, because that is what they are.
+ *
+ *   SWIMMING is a claim about TRAVERSAL, and it is its own envelope (d). Deep
+ *   water becomes a node you can cross with no slope and no rise, and you may
+ *   leave it onto any standing ground within one `walkRise` of the waterline.
+ *   That is deliberately generous - a GATE has to hold at the ceiling - and it
+ *   is what found the one seam this change broke: Shoal's abyssite went 0 of 7
+ *   to 7 of 7 from the Glassflat pad, because Sundering Head's `plateau` edge
+ *   is a 44-degree ramp and not the "61-degree cliffs on every bearing" its
+ *   own header claims. 44 is a wall at (a) and a walk at (b). See
+ *   `Shoal.js`'s `liquid.guard`.
+ *
  * ── What is NOT modelled ─────────────────────────────────────────────────
- * No mantle, no climb, no ladder. Liquid is not a floor, on any planet - the
- * same concession `planet-reach.test.mjs` makes. Sprint is not modelled in the
- * jump hop either; the hop reach uses `CONFIG.player.walkSpeed`, and the
- * sprint figure is PRINTED next to it so the difference is visible rather than
- * assumed away.
+ * No mantle, no climb, no ladder. LETHAL liquid is not a floor and is not
+ * crossable on any envelope - Cinder's lava and Sallow's acid kill you now,
+ * which is a stronger statement than the wall the probes used to model. Sprint
+ * is not modelled in the jump hop either; the hop reach uses
+ * `CONFIG.player.walkSpeed`, and the sprint figure is PRINTED next to it so
+ * the difference is visible rather than assumed away.
  */
 
 /* ================================================================== */
@@ -69,6 +99,10 @@ import * as THREE from 'three';
 
 import { CONFIG } from '../../src/core/Config.js';
 import { WALKABLE_NORMAL_Y } from '../../src/npc/Grounding.js';
+/** The bed depth at which the player stops walking and starts floating.
+ *  Imported from the movement code, never re-typed. */
+import { ENTER_DEPTH } from '../../src/player/Swim.js';
+import { liquidSurfaceAt, liquidSwimmable } from '../../src/worlds/planets/PlanetLiquid.js';
 
 /** Lattice pitch, metres. Same 2.0 as the two probes this file audits. */
 const PITCH = 2.0;
@@ -130,11 +164,21 @@ test('the probes and the game agree on what a body can stand on', () => {
  * third number into either of them and it goes red naming the file, which is
  * the whole point: the defect was never a wrong constant, it was an UNNAMED
  * one that nobody could compare against the game's.
+ *
+ * ── AND THE LIST FOLLOWS THE CONSTANTS, NOT THE FILENAMES ────────────────
+ *
+ * `planet-minerals.test.mjs` used to be the second probe. Its lattice was
+ * lifted into `planet-walk-kit.mjs` the day a second case in that file needed
+ * to flood the same graph, and THIS AUDIT WENT RED ON THE MOVE - "no longer
+ * declares a slope ceiling this case can find" - which is exactly the failure
+ * the last assertion below exists to produce. The repair is to follow the
+ * constant to where it lives now, and never to delete the file that has stopped
+ * declaring one.
  */
 test('no reach probe floods at a slope that is neither envelope', async () => {
   const { readFile } = await import('node:fs/promises');
   const named = [SLOPE.LEGACY, SLOPE.REAL];
-  const probes = ['planet-reach.test.mjs', 'planet-minerals.test.mjs'];
+  const probes = ['planet-reach.test.mjs', 'planet-walk-kit.mjs'];
   for (const file of probes) {
     let src;
     try { src = await readFile(new URL(file, import.meta.url), 'utf8'); } catch { continue; }
@@ -204,6 +248,8 @@ const { PlanetWorld } = await import('../../src/worlds/PlanetWorld.js');
 const { PLANETS } = await import('../../src/worlds/planets/index.js');
 const { polyDist } = await import('../../src/worlds/planets/Placement.js');
 const { Player } = await import('../../src/player/Player.js');
+const { holdCapacity } = await import('../../src/ships/ShipStats.js');
+const { PAD_RIM_LIMIT, padIsHome } = await import('../../src/systems/SpaceObjectives.js');
 
 /** Build one planet for real: real physics, real colliders, real node placement. */
 async function buildPlanet(id) {
@@ -268,16 +314,47 @@ function boxIndex(physics) {
   };
 }
 
-/** True where the descriptor's liquid covers the ground. Liquid is not a floor. */
+/**
+ * What the liquid does to a lattice cell: 0 nothing, 1 blocked, 2 open water.
+ *
+ * ── 1, BLOCKED ────────────────────────────────────────────────────────────
+ * Lethal liquid, at the shipped probes' own `surface + 0.6` freeboard. Lava
+ * and acid are not floors and are not crossings, and after this change they
+ * are not survivable either.
+ *
+ * ── 2, OPEN WATER ─────────────────────────────────────────────────────────
+ * Water more than `Swim.ENTER_DEPTH` deep. Not standing room in any envelope;
+ * crossable in (d).
+ *
+ * ── 0, GROUND ─────────────────────────────────────────────────────────────
+ * Water SHALLOWER than that, which is ground you happen to be wet on. This is
+ * the line the old mask got wrong in the other direction, and it was not a
+ * rounding error: Sirocco's brine is 38 cm deep and Verdigris's river 1.21 m,
+ * and both were modelled as walls and fenced as walls.
+ *
+ * The disc test is the NOMINAL radius rather than `discRadiusAt`'s wobbly one,
+ * as the shipped probes' masks are - kept identical on purpose so this file
+ * still audits the same envelope they flood.
+ */
 function liquidMask(planet) {
-  const bodies = planet.liquid?.bodies ?? [];
-  if (!bodies.length) return () => false;
+  const L = planet.liquid;
+  const bodies = L?.bodies ?? [];
+  if (!bodies.length) return () => 0;
+  const swimmable = liquidSwimmable(L);
   return (x, z, y) => {
+    let over = false;
+    let surf = -Infinity;
     for (const b of bodies) {
-      if (b.shape === 'disc') { if (Math.hypot(x - b.x, z - b.z) <= b.r && y < b.y + 0.6) return true; }
-      else if (polyDist(x, z, b.pts) <= b.width * 0.5 && y < Math.max(b.y0, b.y1) + 0.6) return true;
+      const inside = b.shape === 'disc'
+        ? Math.hypot(x - b.x, z - b.z) <= b.r
+        : polyDist(x, z, b.pts) <= b.width * 0.5;
+      if (!inside) continue;
+      const sy = b.shape === 'disc' ? b.y : Math.max(b.y0, b.y1);
+      if (y < sy + 0.6) { over = true; if (sy > surf) surf = sy; }
     }
-    return false;
+    if (!over) return 0;
+    if (!swimmable) return 1;
+    return surf - y >= ENTER_DEPTH ? 2 : 0;
   };
 }
 
@@ -335,8 +412,13 @@ function jumpOf(gravity) {
  */
 function maskFor(o) {
   const { ground, blocked, liquid, half, slopeTan } = o;
+  const L = o.planet?.liquid ?? null;
   const n = Math.floor((half * 2) / PITCH) + 1;
   const ok = new Uint8Array(n * n);
+  /** Open water: not standing room, crossable in envelope (d). */
+  const wet = new Uint8Array(n * n);
+  /** The waterline over a wet cell - what a swimmer climbs out from. */
+  const surf = new Float32Array(n * n);
   const y = new Float32Array(n * n);
   for (let j = 0; j < n; j++) {
     const z = -half + j * PITCH;
@@ -346,7 +428,31 @@ function maskFor(o) {
       const g = ground(x, z);
       if (!Number.isFinite(g)) { y[k] = NaN; continue; }
       y[k] = g;
-      if (liquid(x, z, g)) continue;
+      const lq = liquid(x, z, g);
+      if (lq === 2) {
+        const sy = L ? (liquidSurfaceAt(L, x, z) ?? g) : g;
+        /* A SWIMMER MEETS COLLIDERS AT THE WATERLINE, NOT AT THE BED.
+         *
+         * `blocked` is the standing-room test - "is there a box between
+         * `groundY + stepHeight` and `groundY + headroom`" - and handing it the
+         * BED height is what a walker wants. It is wrong for a floating body by
+         * the whole depth of the water: at Shoal's guard the posts stand from
+         * about y 3.5 to y 9.9 and the sea bed under them is at -20, so the
+         * walker's test says "that box is far above my head, ignore it" and the
+         * flood swims straight through a wall the engine would stop it at.
+         *
+         * Handing it the WATERLINE instead is the same test asked about the
+         * body that is actually there. It is what makes the probe and the
+         * renderer agree about `Shoal.js`'s `liquid.guard` - without it the
+         * guard is invisible here and abyssite reads 7 of 7 from the pad it
+         * must not be reachable from. */
+        if (!blocked(x, z, sy)) {
+          wet[k] = 1;
+          surf[k] = sy;
+        }
+        continue;
+      }
+      if (lq === 1) continue;
       if (blocked(x, z, g)) continue;
       const gx = ground(x + PITCH * 0.5, z); const gnx = ground(x - PITCH * 0.5, z);
       const gz = ground(x, z + PITCH * 0.5); const gnz = ground(x, z - PITCH * 0.5);
@@ -355,7 +461,7 @@ function maskFor(o) {
       ok[j * n + i] = 1;
     }
   }
-  return { n, ok, y, half };
+  return { n, ok, wet, surf, y, half };
 }
 
 /**
@@ -388,7 +494,8 @@ function maskFor(o) {
 function flood(o) {
   const { mask, walkRise, jumpRise, dropMax, hopCells, seed } = o;
   const rev = !!o.reverse;
-  const { n, ok, y, half } = mask;
+  const swim = !!o.swim;
+  const { n, ok, wet, surf, y, half } = mask;
   const N = n * n;
   const at = (i, j) => j * n + i;
   const dist = new Float32Array(N).fill(Infinity);
@@ -420,6 +527,31 @@ function flood(o) {
     const i = k % n; const j = (k - i) / n;
     const here = y[k]; const d0 = dist[k];
     for (const [di, dj] of DIRS) {
+      /* ---- the water, in envelope (d) --------------------------------
+       * A swimmer floats, so no slope and no rise applies between two wet
+       * cells; getting IN is free from any bank at any height (you fall in);
+       * getting OUT is the one constrained edge, and it is measured from the
+       * WATERLINE rather than from the bed - a swimmer's feet are at the
+       * surface, not on the bottom of a 40 m sea.
+       *
+       * `walkRise` and not the mantle: this file models no climb anywhere, and
+       * `walkRise` at the REAL envelope is 3.05 m, which is already more
+       * generous than the 2.4 m mantle a swimmer actually gets. A gate has to
+       * hold at the ceiling. */
+      if (swim) {
+        const a1 = i + di; const b1 = j + dj;
+        if (a1 < 0 || b1 < 0 || a1 >= n || b1 >= n) continue;
+        const k1 = at(a1, b1);
+        if (wet[k]) {
+          if (!wet[k1] && (!ok[k1] || y[k1] - surf[k] > walkRise + 1e-6)) continue;
+          if (d0 + PITCH < dist[k1] - 1e-6) { dist[k1] = d0 + PITCH; push(k1); }
+          continue;
+        }
+        if (wet[k1]) {
+          if (d0 + PITCH < dist[k1] - 1e-6) { dist[k1] = d0 + PITCH; push(k1); }
+          continue;
+        }
+      }
       let peak = -Infinity;
       for (let m = 1; m <= hopCells + 1; m++) {
         const a = i + di * m; const b = j + dj * m;
@@ -487,8 +619,8 @@ async function measure(id) {
   const hopCells = Math.floor((CONFIG.player.walkSpeed * jump.hang) / PITCH);
 
   const masks = {
-    legacy: maskFor({ ground, blocked, liquid, half: P.half, slopeTan: tanOf(SLOPE.LEGACY.deg) }),
-    real: maskFor({ ground, blocked, liquid, half: P.half, slopeTan: tanOf(SLOPE.REAL.deg) }),
+    legacy: maskFor({ planet: P, ground, blocked, liquid, half: P.half, slopeTan: tanOf(SLOPE.LEGACY.deg) }),
+    real: maskFor({ planet: P, ground, blocked, liquid, half: P.half, slopeTan: tanOf(SLOPE.REAL.deg) }),
   };
   /* Nineteen NaN pixels once blacked out a 921,600-pixel frame through the
    * bloom pass in this project. A landform edit is exactly how a height field
@@ -501,9 +633,64 @@ async function measure(id) {
     { key: 'a', label: `${SLOPE.LEGACY.deg} deg no jump`, mask: masks.legacy, walkRise: walkRiseOf(SLOPE.LEGACY.deg), jumpRise: 0, hopCells: 0 },
     { key: 'b', label: `${SLOPE.REAL.deg.toFixed(1)} deg no jump`, mask: masks.real, walkRise: walkRiseOf(SLOPE.REAL.deg), jumpRise: 0, hopCells: 0 },
     { key: 'c', label: `${SLOPE.REAL.deg.toFixed(1)} deg + jump`, mask: masks.real, walkRise: walkRiseOf(SLOPE.REAL.deg), jumpRise: STEP_UP + jump.apex, hopCells },
+    /* (d) is (c) plus the water. On a planet with no swimmable liquid it is
+     * (c) exactly - `mask.wet` is empty, so every swim branch is dead - which
+     * is why it is run on all ten rather than only on the four. A column that
+     * is only computed where it might be interesting is a column nobody
+     * notices going wrong somewhere else. */
+    { key: 'd', label: `${SLOPE.REAL.deg.toFixed(1)} deg + jump + swim`, mask: masks.real, walkRise: walkRiseOf(SLOPE.REAL.deg), jumpRise: STEP_UP + jump.apex, hopCells, swim: true },
   ];
 
-  const pads = world.landingSites.map((s) => ({ id: s.id, x: s.position.x, z: s.position.z, primary: !!s.primary }));
+  /**
+   * Each pad, plus the two things the ARRIVAL rule below is decided on.
+   *
+   * `load` is the credits of a best-value stock-Kestrel hold off this pad's own
+   * nearest seams - `SpaceObjectives.richerPad`'s arithmetic, restated here
+   * rather than imported because that method wants a live `Piloting`. The unit
+   * is a HOLD and not the field total on purpose: what limits a trip is volume,
+   * and on Cinder the field totals rank the three pads at a 1.4x spread while
+   * one load ranks them at 8.6x, because the rich pads carry ore worth more per
+   * cubic metre rather than simply more of it.
+   *
+   * `rim` is `PlanetWorld._padDrop`'s published horizon loss - the proxy for
+   * "can you walk back ONTO it", which is the other half of the rule.
+   */
+  const HOLD = holdCapacity('kestrel', 0);
+  const pads = world.landingSites.map((s) => ({
+    id: s.id, x: s.position.x, z: s.position.z, primary: !!s.primary,
+    radius: s.radius, rim: s.drop?.deg ?? null, load: 0, exoticNear: 0,
+    /* The WALKER's question, measured by `PlanetWorld._padReturn` rather than
+     * guessed at from the cliff behind the disc. `home` carries the flood; the
+     * rim is kept beside it because the two disagree on three pads in the
+     * registry and every disagreement changes an answer. */
+    home: s.home ? { oneWay: !!s.home.oneWay, pct: s.home.pct } : null,
+    canReturn: padIsHome(s),
+  }));
+  {
+    const rarityOf = new Map(P.minerals.map((m) => [m.id, m.rarity]));
+    const mine = new Map(pads.map((p) => [p.id, []]));
+    for (const nd of world.mineralNodes) {
+      let best = null; let bestD = Infinity;
+      for (const s of world.landingSites) {
+        const d = nd.position.distanceToSquared(s.position);
+        if (d < bestD) { bestD = d; best = s; }
+      }
+      if (best) mine.get(best.id).push(nd);
+    }
+    for (const pad of pads) {
+      const list = mine.get(pad.id);
+      list.sort((a, b) => (b.credits / Math.max(1e-6, b.size)) - (a.credits / Math.max(1e-6, a.size)));
+      let room = HOLD; let paid = 0;
+      for (const nd of list) {
+        const v = Number(nd.size) || 0;
+        if (v > room) continue;
+        room -= v; paid += Number(nd.credits) || 0;
+        if (room <= 1e-6) break;
+      }
+      pad.load = Math.round(paid);
+      pad.exoticNear = list.filter((nd) => rarityOf.get(nd.type) === 'exotic').length;
+    }
+  }
   const tiers = P.minerals.map((m) => ({
     id: m.id,
     rarity: m.rarity,
@@ -520,7 +707,7 @@ async function measure(id) {
     union[env.key] = {};
     const anyPad = new Map(tiers.map((t) => [t.id, new Set()]));
     for (const pad of pads) {
-      const args = { mask: env.mask, walkRise: env.walkRise, jumpRise: env.jumpRise, dropMax: DROP_MAX, hopCells: env.hopCells };
+      const args = { mask: env.mask, walkRise: env.walkRise, jumpRise: env.jumpRise, dropMax: DROP_MAX, hopCells: env.hopCells, swim: !!env.swim };
       const fwd = flood({ ...args, seed: [pad.x, pad.z] });
       const back = flood({ ...args, seed: [pad.x, pad.z], reverse: true });
       const cell = {};
@@ -539,7 +726,11 @@ async function measure(id) {
        * allowance rises with the slope ceiling while the 3 m drop does not, so
        * a ledge that is one-way at 38 deg can be a round trip at 56.63. Both
        * are recorded. */
-      if (fwd.covered > 0 && back.covered < fwd.covered) {
+      /* Not for (d). A one-way shelf is a claim about WALKING off something
+       * and not being able to walk back; the swim envelope crosses open water
+       * in both directions, so every wet cell it touches would land in this
+       * list and bury the seven real ones. */
+      if (!env.swim && fwd.covered > 0 && back.covered < fwd.covered) {
         oneWay.push({ env: env.key, pad: pad.id, out: fwd.covered, back: back.covered, stranded: fwd.covered - back.covered });
       }
     }
@@ -572,16 +763,18 @@ test('THE TABLE: every mineral tier, every pad, all three envelopes', async () =
     console.log(`     pads: ${r.pads.map((p) => (p.primary ? `${p.id}*` : p.id)).join(', ')}   (* = primary, the pad you arrive at)`);
     const w = Math.max(12, ...r.tiers.map((t) => t.id.length + 1));
     console.log(`     ${'tier'.padEnd(w)} ${'rarity'.padEnd(9)} ${'pad'.padEnd(12)} `
-      + `${'(a) 38 no jump'.padEnd(15)} ${`(b) ${SLOPE.REAL.deg.toFixed(1)} no jump`.padEnd(15)} (c) ${SLOPE.REAL.deg.toFixed(1)} + jump`);
+      + `${'(a) 38 no jump'.padEnd(15)} ${`(b) ${SLOPE.REAL.deg.toFixed(1)} no jump`.padEnd(15)} `
+      + `${`(c) ${SLOPE.REAL.deg.toFixed(1)} + jump`.padEnd(15)} (d) + swim`);
     for (const t of [...r.tiers].sort((x, y) => RARITY_ORDER.indexOf(x.rarity) - RARITY_ORDER.indexOf(y.rarity))) {
       for (const pad of r.pads) {
-        const cells = ['a', 'b', 'c'].map((k) => {
+        const cells = ['a', 'b', 'c', 'd'].map((k) => {
           const c = r.rows[k][pad.id][t.id];
           const d = c.near < Infinity ? ` @${c.near.toFixed(0)}m` : '';
           return `${c.reach}/${c.total}${d}`.padEnd(15);
         });
         const flag = t.rarity === 'exotic' && pad.primary
-          && (r.rows.b[pad.id][t.id].reach > 0 || r.rows.c[pad.id][t.id].reach > 0) ? '  <<< BROKEN' : '';
+          && (r.rows.b[pad.id][t.id].reach > 0 || r.rows.c[pad.id][t.id].reach > 0
+            || r.rows.d[pad.id][t.id].reach > 0) ? '  <<< BROKEN' : '';
         console.log(`     ${t.id.padEnd(w)} ${t.rarity.padEnd(9)} ${(pad.primary ? `${pad.id}*` : pad.id).padEnd(12)} `
           + `${cells.join(' ')}${flag}`);
       }
@@ -611,19 +804,48 @@ test('THE TABLE: every mineral tier, every pad, all three envelopes', async () =
 /* 6. The guarantee, at the envelope the game actually walks           */
 /* ================================================================== */
 
-test('the exotic tier is a second landing under the REAL envelope, with and without a jump', async () => {
+test('the exotic tier is a second landing under the REAL envelope, with and without a jump - and now with a swim', async () => {
+  /* ENVELOPE (d) IS THE ONE THIS CHANGE ADDED, and it is the reason
+   * `Shoal.js` now carries a `liquid.guard`. Making the sea swimmable moved
+   * exactly one seam in the system - abyssite from the Glassflat pad, 0 of 7
+   * to 7 of 7 - and it moved it because Sundering Head's plateau `edge: 54`
+   * is a 44-degree ramp rather than the cliff its header describes. The other
+   * five liquid planets did not move at all. */
   const broken = [];
+  /* PRINTED IN BOTH DIRECTIONS, because "0 of N" on its own is only half the
+   * claim. `reach` is the forward flood - can a body walk from the arrival pad
+   * to the seam - and it is what the assertion below is about. `home` is the
+   * SAME graph with every edge reversed: can a body standing on the seam walk
+   * to the arrival pad. Both have to be zero for the seam to be a genuine
+   * second landing rather than a one-way chute into it, and the reverse number
+   * was being computed and thrown away. Four arrival pads moved in one change
+   * and the evidence for them should not need a debugger to reproduce. */
+  console.log('   THE EXOTIC SEAM FROM THE ARRIVAL PAD, forward and reversed, at every envelope:');
   for (const id of ids) {
     const r = await measure(id);
     const primary = r.pads.find((p) => p.primary);
     assert.ok(primary, `${id} has no primary landing site`);
     for (const t of r.tiers) {
       if (t.rarity !== 'exotic') continue;
-      for (const key of ['b', 'c']) {
+      const cols = ['a', 'b', 'c', 'd'].map((key) => {
+        const c = r.rows[key][primary.id][t.id];
+        return `(${key}) ${c.reach}/${c.home} of ${c.total}`.padEnd(17);
+      });
+      console.log(`     ${id.padEnd(11)} ${t.id.padEnd(12)} from ${primary.id.padEnd(15)} ${cols.join(' ')}`);
+      for (const key of ['b', 'c', 'd']) {
         const c = r.rows[key][primary.id][t.id];
         if (c.reach > 0) {
           broken.push(`${id}/${t.id} envelope (${key}): ${c.reach} of ${c.total} nodes walkable from ${primary.id}`
             + ` at ${c.near.toFixed(0)} m (envelope (a) said ${r.rows.a[primary.id][t.id].reach})`);
+        }
+        /* The reverse direction is REPORTED and not asserted on, deliberately.
+         * A seam that can walk TO the arrival pad while the pad cannot walk to
+         * it is not a broken gate - it is a one-way drop, and the seven one-way
+         * pads in the registry are design. It is printed so that if one ever
+         * appears it is visible rather than discovered. */
+        if (c.home > 0 && c.reach === 0) {
+          console.log(`       note: ${id}/${t.id} (${key}) - ${c.home} of ${c.total} nodes can walk TO ${primary.id}`
+            + ' while none can walk from it: a one-way drop into the arrival pad, not a route out of it');
         }
       }
     }
@@ -631,6 +853,155 @@ test('the exotic tier is a second landing under the REAL envelope, with and with
   if (broken.length) console.log(`   BROKEN:\n     ${broken.join('\n     ')}`);
   assert.deepEqual(broken, [], 'the exotic ore is reachable on foot from the pad you arrive at:\n  '
     + broken.join('\n  '));
+});
+
+/* ================================================================== */
+/* 6b. WHICH pad you arrive at, which is a different question          */
+/* ================================================================== */
+
+/**
+ * Planets whose `primary` is NOT the pad the rule below says it should be.
+ *
+ * -- THESE ARE DEFECTS, NOT EXEMPTIONS ------------------------------------
+ *
+ * Cinder shipped one of these and it cost seventeen minutes of a new player's
+ * first hour (the whole measurement is in `planets/Volcanic.js`). Sweeping the
+ * registry for the same shape found FOUR more - Vitrine at 8.21x, Tessera at
+ * 7.17x, Carnelian at 2.59x and Verdigris at 2.13x - and the change that fixed
+ * Cinder was scoped to Cinder's descriptor and could not touch theirs. So they
+ * were RECORDED here, with the numbers, rather than left for somebody to
+ * rediscover by playing.
+ *
+ * -- AND THE LIST IS NOW EMPTY, WHICH IS THE POINT OF IT --------------------
+ *
+ * All four have been fixed, in their own descriptors, each with the exotic
+ * spine re-measured at envelopes (b), (c) and (d) and the arrival disc measured
+ * underfoot before the flag moved. `ARRIVAL_DEFECTS` is kept EMPTY rather than
+ * deleted, for two reasons:
+ *
+ *   1. The staleness machinery below is what forced the delisting. An empty
+ *      object keeps it armed at zero cost, so the eleventh planet - or a
+ *      re-cut mineral table that changes which pad is richest - goes red on
+ *      the `wrong` assertion straight away instead of being quietly listed.
+ *   2. Re-listing is the escape hatch a future author needs if a planet is
+ *      genuinely better off arriving somewhere poorer. It has to cost a
+ *      deliberate entry WITH a note, not a deleted assertion.
+ *
+ * Each entry is CHECKED FOR STALENESS below: the case asserts a listed planet
+ * is still wrong and still wrong in the way the entry describes. Fix one - it
+ * is one word, moving `primary: true` onto the named row - and this case goes
+ * red until the entry is deleted. An exception list that can rot silently is
+ * worse than no list at all, and this one was not allowed to.
+ *
+ * @type {Readonly<Record<string, Readonly<{primary:string, better:string, note:string}>>>}
+ */
+const ARRIVAL_DEFECTS = Object.freeze({});
+
+test('the pad you arrive at is the richest one you can come back from', async () => {
+  /**
+   * =======================================================================
+   *  THE RULE, AND WHY IT IS TWO CONDITIONS AND NOT ONE
+   * =======================================================================
+   *
+   * `primary` is the only thing that decides where an atmospheric entry puts a
+   * ship (`Piloting._descend`), where a player who arrives on foot stands
+   * (`PlanetWorld._placeSpawn`) and where `Unstuck` returns them. It is the
+   * first ground a new pilot sees. The case above proves it is not the EXOTIC
+   * pad; this one proves it is not the POOR one.
+   *
+   *   RETURNABLE     `drop.deg <= PAD_RIM_LIMIT`. Seven of the ten worlds have
+   *                  a pad a player can walk off and never climb back onto.
+   *                  Arriving on one of those is a stranding, however rich it
+   *                  is.
+   *   EXOTIC-FREE    exotic reach 0 at envelopes (b) AND (c). The whole
+   *                  ten-planet mining design is that the exotic seam costs a
+   *                  SECOND LANDING; an arrival pad that reaches it deletes the
+   *                  design on that planet. Measured rather than assumed - this
+   *                  reads the same flood the case above asserts on.
+   *
+   * Both conditions bite, on different planets, which is why neither can be
+   * dropped. Cathedra's Lantern loses only 113 degrees of horizon and is by far
+   * the richest pad on the planet - 5,941 credits a hold against the Pavement's
+   * 1,536 - and it is excluded ONLY by the exotic rule. Cinder's Rimhold Shelf
+   * carries the exotic seam AND reads 270 degrees, which is why it is the pad
+   * this whole rule was written about.
+   *
+   * -- THE VALUE IS A HOLD, NOT A FIELD -------------------------------------
+   *
+   * `pad.load` is what ONE stock-Kestrel hold off that pad's own nearest seams
+   * is worth, because volume is what limits a trip. On Cinder the field totals
+   * rank the three pads at a 1.4x spread and one load ranks them at 8.6x: the
+   * rich pads carry ore worth more per cubic metre rather than simply more of
+   * it, and only the second ranking is what a player experiences.
+   */
+  const wrong = [];
+  const stale = [];
+  const notes = [];
+  console.log('\n   planet      pad            pri  rim    home         exotic   load cr  eligible');
+  for (const id of ids) {
+    const r = await measure(id);
+    const exotics = r.tiers.filter((t) => t.rarity === 'exotic');
+    /* (b), (c) AND (d) - the same three the guarantee case above asserts on.
+     * (d) is the swim envelope and it is not decoration: making the sea
+     * swimmable took Shoal's abyssite from 0-of-7 to 7-of-7 off a ramp its
+     * own header called a cliff. An arrival pad has to be clear of the
+     * exotic seam under every envelope the game can actually be played in. */
+    const walksToExotic = (pad) => exotics.some((t) => ['b', 'c', 'd'].some((k) => r.rows[k][pad.id][t.id].reach > 0));
+
+    for (const pad of r.pads) {
+      pad.exoticWalk = walksToExotic(pad);
+      pad.eligible = pad.canReturn && !pad.exoticWalk;
+    }
+    for (const pad of r.pads) {
+      console.log(`   ${id.padEnd(11)} ${pad.id.padEnd(15)}${pad.primary ? '*' : ' '} ${String(pad.rim).padStart(4)}`
+        + `  ${String(pad.home ? pad.home.pct + '%' : '?').padStart(6)} ${pad.canReturn ? 'home  ' : 'ONEWAY'}`
+        + `  ${(pad.exoticWalk ? 'YES' : '-').padStart(4)}   ${String(pad.load).padStart(7)}  ${pad.eligible ? 'yes' : 'no'}`);
+    }
+
+    const primary = r.pads.find((p) => p.primary);
+    /* The arrival pad itself clears both bars on every planet with no exception
+     * available. A `primary` that is a shelf or an exotic seam is not a balance
+     * question, it is a broken world. */
+    assert.ok(primary.home,
+      `${id}: ${primary.id} publishes no return flood, so "can a pilot walk back onto the pad the game `
+      + 'lands them on" is being answered by a proxy again. `PlanetWorld._padReturn` publishes `home`; '
+      + 'if it has gone, this rule and `SpaceObjectives.padIsHome` both want it back.');
+    assert.ok(primary.canReturn,
+      `${id}: a ship arrives at ${primary.id}, and only ${primary.home?.pct}% of what a body can walk `
+      + 'to from it can walk back - that is a pad you step off and cannot climb back onto');
+    assert.ok(!primary.exoticWalk,
+      `${id}: the exotic seam is walkable from ${primary.id}, which is the pad a ship arrives at`);
+
+    const eligible = r.pads.filter((p) => p.eligible);
+    assert.ok(eligible.length, `${id}: no pad is both returnable and exotic-free, so there is nowhere to arrive`);
+    const best = eligible.reduce((a, b) => (b.load > a.load ? b : a));
+    const listed = ARRIVAL_DEFECTS[id];
+    const ratio = (best.load / Math.max(1, primary.load)).toFixed(2);
+
+    if (listed) {
+      if (best.id === primary.id) {
+        stale.push(`${id} is listed in ARRIVAL_DEFECTS and no longer measures wrong - delete the entry`);
+      } else if (listed.primary !== primary.id || listed.better !== best.id) {
+        stale.push(`${id} is listed as ${listed.primary} -> ${listed.better} but measures `
+          + `${primary.id} -> ${best.id} - the entry is out of date`);
+      } else {
+        notes.push(`${id}: KNOWN DEFECT - arrives at ${primary.id} (${primary.load} cr a hold) while `
+          + `${best.id} is ${best.load} (${ratio}x). ${listed.note}`);
+      }
+      continue;
+    }
+    if (best.id !== primary.id) {
+      wrong.push(`${id}: a ship arrives at ${primary.id} (${primary.load} cr a hold) while ${best.id} is `
+        + `${best.load} - ${ratio}x - and is just as returnable and just as free of the exotic seam`);
+    }
+  }
+  if (notes.length) {
+    console.log('\n   RECORDED, OUT OF SCOPE WHEN MEASURED:');
+    for (const line of notes) console.log(`     ${line}`);
+  }
+  assert.deepEqual(stale, [], `the ARRIVAL_DEFECTS list has rotted:\n  ${stale.join('\n  ')}`);
+  assert.deepEqual(wrong, [],
+    `the pad a ship arrives at is not the richest one it can come back from:\n  ${wrong.join('\n  ')}`);
 });
 
 test('the exotic tier is still reachable from its OWN pad, under every envelope', async () => {

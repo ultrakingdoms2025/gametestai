@@ -10,7 +10,8 @@
  * 55-68 m into it whose rims are LINES rather than slopes. You land on top or
  * you land in the bottom, and they are different places with different ore.
  *
- *   THE GREENSPAN      the upland, and the primary landing. A bench of open
+ *   THE GREENSPAN      the upland, and the second of the two walkable
+ *                      landings. A bench of open
  *                      sward and standing growth east of the gorge, y 74 with
  *                      about 8 m of swell on it. Humic nodules lie in the open
  *                      ground; the resinwood canopy starts a hundred metres
@@ -31,7 +32,7 @@
  *                      enough to set a hull on.
  *
  *   THE STAIRGILL      the only walking route between the two levels. A side
- *                      gully leaving the primary pad's own centre, cutting 30 m
+ *                      gully leaving the Greenspan pad's own centre, cutting 30 m
  *                      into the bench over 180 m, then running down the inside
  *                      of the east wall to the gorge floor. 313 m of polyline
  *                      at a measured 12.2 deg, which floods at 387 walking
@@ -188,7 +189,7 @@ const BASE = 48;
 /** Rim scarp: how far the bench stands above the corridor, and over what run. */
 const SCARP_H = 26;
 const SCARP_RUN = 9;
-/** The bench, i.e. the ground the primary pad sits on. Derived, never typed twice. */
+/** The bench, i.e. the ground the Greenspan pad sits on. Derived, never typed twice. */
 const BENCH = BASE + SCARP_H;
 
 /** Half-width of the gorge, and therefore where the rim lines go. */
@@ -281,7 +282,7 @@ const EAST_BANK = OFFSET(RIVER, 18);
 /* The routes                                                          */
 /* ------------------------------------------------------------------ */
 
-/** The primary pad's centre. Quoted, not typed twice - the Stair starts on it. */
+/** The Greenspan pad's centre. Quoted, not typed twice - the Stair starts on it. */
 const GREENSPAN = [-40, 150];
 
 /**
@@ -375,7 +376,7 @@ const S = (d, deg) => [
  * the axis, which is what stops the ring reading as a terrace.
  *
  * Bearing 212 for the head rather than the 200 the first draft used: at 200 the
- * road's first point stood 70 m from the primary pad's centre, and once that
+ * road's first point stood 70 m from the Greenspan pad's centre, and once that
  * pad's blend went out to 34 m (see STAIR) the two overlapped. A road head
  * inside a pad's apron is the same argument as the one that severed the
  * Stairgill, and it is cheaper to move the road than to argue with it. 212 puts
@@ -571,7 +572,7 @@ export const VERDIGRIS = definePlanet({
        * river - which is inside the river floor's own 26-40 m blend annulus.
        * Cut first, the floor's blend wrote straight over the trail's ledge and
        * the flood measured 49-56 deg across it for forty metres: 0-of-20
-       * malachite and 0-of-11 sporecryst from the primary pad, with a trail that
+       * malachite and 0-of-11 sporecryst from the Greenspan, with a trail that
        * profiled at a clean 12.2 deg along its own centreline the whole way.
        *
        * A grade measured ALONG a trail says nothing about whether a body can
@@ -847,6 +848,18 @@ export const VERDIGRIS = definePlanet({
    */
   liquid: {
     name: 'river water',
+    /**
+     * Water. The river is 1.21 m deep at its deepest, against
+     * `Swim.ENTER_DEPTH` of 1.3 - so it is WADED, exactly as the note on the
+     * ribbon below always said it should be ("a 1.1 m river is a river you
+     * wade"). What has changed is that this is now true in the engine as well
+     * as on paper: the 1,500 posts that fenced a knee-deep river are gone, and
+     * the 9,451 lattice cells they were standing on are walkable again.
+     *
+     * The Crown tarn is 1.80 m and IS swimmable, which is the only place on
+     * this planet a body floats.
+     */
+    kind: 'water',
     bodies: [
       /**
        * The river. 20 m wide down a 52 m floor, which leaves 16 m of dry bank
@@ -1076,10 +1089,12 @@ export const VERDIGRIS = definePlanet({
    *                                        7/7  Crown      36 m
    *
    * The last row is the design in one line, and the third-from-last is the other
-   * half of it: sporecryst IS reachable from the primary, at 525 m through a
-   * gully, down a canyon wall, along a river bank and 125 m into a slot - which
-   * is a long walk and is meant to be. Verdite is not reachable from the primary
-   * at any distance, which is a different thing entirely.
+   * half of it: sporecryst IS reachable on foot from BOTH walkable pads - 64 m
+   * from Sumphead, which is now the primary, and 525 m from the Greenspan
+   * through a gully, down a canyon wall, along a river bank and 125 m into a
+   * slot. A long walk from one end and a short one from the other is what a
+   * RARE tier should be. Verdite is not reachable from either of them at any
+   * distance, which is a different thing entirely.
    *
    * The two uncommon seams are 88 m and 342 m from the Greenspan, and that gap
    * is deliberate: resin is what you pick up on the way to the ship, malachite
@@ -1127,7 +1142,7 @@ export const VERDIGRIS = definePlanet({
        * body genuinely cannot get to - the Stairgill lands on the east side and
        * the river is 20 m of water on a world with `swim: false`. A `field`
        * region would have scattered a fifth of the COMMONEST ore over there,
-       * and a common ore you cannot reach from the primary pad is not a common
+       * and a common ore you cannot reach from a pad is not a common
        * ore. Cinder can afford a field for its tephra because its plain is one
        * connected surface; this one is two.
        */
@@ -1316,17 +1331,116 @@ export const VERDIGRIS = definePlanet({
   ],
 
   /* ---------------------------------------------------------------- */
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   *  THE PAD YOU ARRIVE AT, AND WHY IT IS NO LONGER THE GREENSPAN
+   * ═════════════════════════════════════════════════════════════════════════
+   *
+   * The registry-wide rule, asserted for all ten planets by
+   * `planet-envelope.test.mjs`: the arrival pad is the RICHEST pad that is
+   * RETURNABLE and carries no EXOTIC seam. Cinder established it and
+   * `planets/Volcanic.js` records what it cost to find.
+   *
+   * Measured, a best-value 10 m3 Kestrel load off each pad's own nearest seams:
+   *
+   *     greenspan  1,264 cr     humic and resin - the common tier and one of
+   *                             the two uncommons, both bulky.
+   *     sumphead   2,689 cr     2.13x. Malachite at 41 m and sporecryst at 61,
+   *                             i.e. an uncommon and the RARE tier both inside
+   *                             a minute's walk of the disc.
+   *     crown      3,433 cr     the exotic pad, and refused twice over.
+   *
+   * ── WHY NOT THE CROWN ────────────────────────────────────────────────────
+   *
+   *   1. It is the EXOTIC pad. Verdite is 7 of 7 from the Crown deck at 36 m
+   *      and 0 of 7 from either other disc at every envelope. The seam block
+   *      above records why there is deliberately NO road up the mesa; an
+   *      arrival pad on top of it would make the road irrelevant anyway.
+   *   2. It is ONE-WAY. `PlanetWorld._padReturn` returns 7% - you can step off
+   *      the mesa and you cannot climb back on. It wears the amber hazard ring.
+   *
+   * ── THE ONE THAT NEEDED A LOOK AT THE DISC AND NOT THE CREDITS ───────────
+   *
+   * Sumphead was the doubtful one of the four, and it was doubtful on a number
+   * that turns out to be an instrument artefact rather than a property of the
+   * pad. `.probe/pad-relief.mjs` reported 19.0 degrees of worst local grade
+   * here - the steepest of any pad in the registry, by a factor of five - which
+   * would have been a real reason to refuse a first landing.
+   *
+   * It is not the pad. That probe central-differences over +-0.5 m at every
+   * sample whose CENTRE is inside the ring, so at the rim it differences ACROSS
+   * the disc edge and reports the ground outside. Re-measured with both samples
+   * of the difference constrained to the disc, Sumphead reads:
+   *
+   *     relief over the full 20 m disc      0.000 m
+   *     worst interior grade                0.0 deg
+   *
+   * - dead level, the same as every other pad in the registry, because it is a
+   * `pad` landform with an authored `y: 7.9` and a `pad` is a LEVEL. The 19
+   * degrees is the east wall of the gorge starting two metres outside the ring,
+   * which is what a shelf notched 66 m down into a wall is SUPPOSED to look
+   * like. Both numbers are correct; they answer different questions, and only
+   * the interior one is a question about landing on it.
+   *
+   * That wall is also why the disc must not be widened, and here the two
+   * measures agree emphatically:
+   *
+   *     r 20   0.00 m relief    0.0 deg
+   *     r 22   5.05 m          74.8 deg
+   *     r 24  17.67 m          81.9 deg
+   *     r 26  34.54 m          83.4 deg
+   *
+   * Two metres of extra radius buys five metres of climb. 20 m is the shelf.
+   *
+   * ── WHAT WAS MEASURED BEFORE THE FLAG MOVED ──────────────────────────────
+   *
+   *   the exotic guarantee survives   verdite 0/7 from Sumphead at the legacy
+   *                                   38 deg envelope, at the real 56.63 deg
+   *                                   one, again with Verdigris's 0.92 m jump
+   *                                   apex - the SMALLEST in the system, off
+   *                                   the heaviest gravity in it - and again
+   *                                   with the swim envelope over the river,
+   *                                   which runs past this pad's west edge and
+   *                                   is the one water a swimmer could have used
+   *                                   to get somewhere new. Identical to the
+   *                                   Greenspan's own 0/7 in all four columns.
+   *   the pad is a round trip         93.4% home, not one-way, so no hazard
+   *                                   ring - the Stairgill carries both ways.
+   *   nothing below exotic is lost    humic 40/40, malachite 20/20, resin
+   *                                   18/18, sporecryst 11/11 from Sumphead, at
+   *                                   every envelope. The ladder inverts the
+   *                                   right way: sporecryst 507 m -> 61 and
+   *                                   malachite 322 -> 41, against humic 56 ->
+   *                                   453 and resin 88 -> 416.
+   *   the rim reads 0 either way      Sumphead 0 degrees, the Greenspan 30 -
+   *                                   the one pad of the four where the proxy
+   *                                   and the flood never disagreed. It was
+   *                                   hidden by the disc note above and by
+   *                                   nothing else.
+   *
+   * ── WHAT IS LOST, SAID PLAINLY ───────────────────────────────────────────
+   *
+   * The Greenspan's first frame is the bench with the Crown on the skyline
+   * north-east and the Horn north-west, which is the planet stating its two
+   * landmarks in one shot. Sumphead's is the gorge from the bottom of it: 66 m
+   * of east wall, the river along the west edge of the disc, canopy overhead.
+   * That is a smaller frame and a much stronger place, and it is where the ore
+   * a player is sent for actually is.
+   */
   landing: [
     {
       /* The Greenspan. On the bench, at the head of the Stairgill, with the
-       * Crown on the skyline to the north-east and the Horn to the north-west. */
-      id: 'greenspan', name: 'Greenspan Clearing', x: GREENSPAN[0], z: GREENSPAN[1], r: 30, primary: true, yaw: -1.9,
+       * Crown on the skyline to the north-east and the Horn to the north-west.
+       * It was the primary; see the block above for why it is not. */
+      id: 'greenspan', name: 'Greenspan Clearing', x: GREENSPAN[0], z: GREENSPAN[1], r: 30, yaw: -1.9,
     },
     {
-      /* Sumphead. River level, inside the gorge, notched into the east wall.
-       * It exists so the malachite and sporecryst runs are a landing rather
-       * than a 280 m descent and a 280 m climb with a full hold. */
-      id: 'sumphead', name: 'Sumphead Shelf', x: -140, z: 300, r: 20, yaw: -0.6,
+      /* THE PRIMARY. Sumphead: river level, inside the gorge, notched into the
+       * east wall. It exists so the malachite and sporecryst runs are a landing
+       * rather than a 280 m descent and a 280 m climb with a full hold - and
+       * since it became the arrival pad that is the trip every pilot gets by
+       * default rather than the one they have to know to ask for. */
+      id: 'sumphead', name: 'Sumphead Shelf', x: -140, z: 300, r: 20, primary: true, yaw: -0.6,
     },
     {
       /* The Crown deck. The exotic tier's whole cost. */

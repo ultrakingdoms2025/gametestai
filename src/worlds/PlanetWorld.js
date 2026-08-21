@@ -5,12 +5,15 @@ import { genPool } from '../workers/GenPool.js';
 import { createSky } from '../gfx/Sky.js';
 import { HEIGHT_FIELDS } from './terrain/index.js';
 import { fbm } from './terrain/PlanetHeight.js';
-import { scatter } from './planets/Placement.js';
+import { scatter, regionDepth } from './planets/Placement.js';
 import { buildPropField, buildPlumes } from './planets/PlanetProps.js';
 import {
   createLiquidMaterial, createSkirtMaterial, bodyGeometry,
   liquidCellMask, liquidContour, liquidWalls, liquidDepth, liquidKind, bodySurfaceAt,
+  liquidSurfaceAt, liquidSubstance, liquidSwimmable, liquidHazard, liquidWallMask,
+  liquidGuards,
 } from './planets/PlanetLiquid.js';
+import { COLLISION_LAYER } from '../physics/Physics.js';
 
 /**
  * THE SHORE WALL: a run of square posts standing ON the waterline.
@@ -30,12 +33,101 @@ import {
  * engine agree by construction, which is the same principle the terrain mesh
  * and its collider are built on one grid for.
  *
+ * ── AND A POST IS 0.50 m DEEP, WHICH IS THE WHOLE OF WHY IT HOLDS ────────
+ *
+ * `FreeClimb` grabs any vertical face with Space held and every planet
+ * publishes `climb: true`, so NO HEIGHT closes this wall. That is deliberate -
+ * it is the mechanic the citadel is built around - and it is not the end of
+ * the argument, because a free climb does not end by itself. It tops out at
+ * the lip and hands to `Climb.tryStart`, and `Climb._probe` step 4 completes a
+ * hoist only onto REAL STANDING ROOM: it seats a test capsule `P.radius +
+ * LAND_INSET` = 0.77 m inboard of the face it climbed and requires the solver
+ * to report it grounded there, within 0.2 m of where it was put. A guard
+ * thinner than that reach has no top for the capsule to sit on, the mantle is
+ * refused, and the climber hangs at the lip until they let go.
+ *
+ * THAT is what holds the yard's mouth screen: 0.5 m deep, crossed 0 of 6 with
+ * Space held for nine seconds, at 2.70 m and again at 3.92 m. And the shore
+ * posts were the counter-example that proved it, because they were 2.2 m square
+ * and DID have standable tops - the one shape in the game a sustained climb
+ * still got over.
+ *
+ * 0.50 m is not a guess and not a copy. `.probe/mantle-depth.mjs` sweeps the
+ * box depth through the real `Physics.resolveCapsule` with the real player
+ * constants and finds the knee exactly:
+ *
+ *     depth 0.60 m   not grounded            the hoist is refused
+ *     depth 0.65 m   grounded, moved 0.003   the hoist completes
+ *
+ * The knee is at 0.63 rather than at 0.77 because the capsule's lower sphere
+ * centre sits 0.32 m above the top face and can still catch the far top EDGE of
+ * a box narrower than the reach. 0.50 clears the measured knee by 0.13 m, which
+ * is margin against the solver rather than against the arithmetic.
+ *
+ * ── SO WHY IS THE POST STILL 2.2 m? BECAUSE THE OTHER HALF OF IT IS. ─────
+ *
+ * The first version of this fix simply shrank the post to 0.50 m square and
+ * tightened the span to keep consecutive posts overlapping. It closed the climb
+ * and it opened something worse, and `planet-liquid`'s own walled-shore march
+ * caught it immediately: **21 of 136 approaches ended under the lava, worst
+ * 1.45 m**. That march steps a capsule 0.5 m at a time - 30 m/s at 60 fps,
+ * twice anything the game can produce, which is what a gate has to be tested at
+ * - and `resolveCapsule` ejects a capsule to whichever side of a box's CENTRE
+ * it is on. So the thickness of a box is its tunnelling margin, and the
+ * arithmetic is exact:
+ *
+ *     a capsule resting against the landward face sits at `centre - 1.45`
+ *     one 0.5 m step puts it at `centre - 0.95`, still landward: it is pushed
+ *     back. At 0.50 m square the same capsule starts INSIDE the post (the face
+ *     stands `WALL_BIAS` onto the bank and the march's start points are cell
+ *     centres, which can be anywhere) and one step carries it past the centre,
+ *     where depenetration finishes the job and puts it in the lake.
+ *
+ * A post has to be at least 1.7 m thick for its centre to stay half a metre
+ * seaward of any dry start, and no more than 0.63 m thick for its top to refuse
+ * a mantle. Those do not intersect. ONE BOX CANNOT DO BOTH.
+ *
+ * ── A PLINTH AND A CAP, AND THE CAP IS FLUSH WITH THE CLIMBED FACE ───────
+ *
+ * They are not the same requirement at the same HEIGHT, which is what makes
+ * this soluble. Thickness is needed where a body walks - feet on the ground,
+ * head 1.75 m up. Thinness is needed at the top, four metres up, which is the
+ * only place a free climb tops out. So:
+ *
+ *   PLINTH  `POST_HALF` 1.1 m, exactly the box that used to be the whole post,
+ *           from the same bottom up to `stand + PLINTH_HEAD`. Same footprint,
+ *           same axis alignment, same bounding box - so every reach probe in
+ *           the repo sees precisely what it saw before this change, which is
+ *           the property that makes it safe to make at all.
+ *   CAP     `CAP_HALF` 0.25 m, from the plinth's top to the full gate height,
+ *           FLUSH WITH THE PLINTH'S LANDWARD FACE. Flush is load-bearing:
+ *           `Climb._probe` step 1 takes the first vertical face in front of the
+ *           body, and the two members share that plane, so a climber is always
+ *           climbing the cap and the landing test is always run 0.77 m inboard
+ *           of the cap - which is 0.62 m past its back, over a plinth top two
+ *           metres below. Nothing to stand on, so no hoist.
+ *
+ * The plinth's top is `PLINTH_HEAD` above the highest ground within reach, so a
+ * body walking at the wall is inside the thick part for its whole height and
+ * never meets the cap at all - which also keeps the two members from
+ * disagreeing about which way to push, the failure mode a full-height cap
+ * would have had.
+ *
  * ── The numbers ──────────────────────────────────────────────────────────
  * `POST_HALF` 1.1 m, dropped along the waterline every `POST_SPAN` 1.3 m so
- * consecutive posts always overlap (any spacing under 2 x POST_HALF does, in
+ * consecutive plinths always overlap (any spacing under 2 x POST_HALF does, in
  * any direction). Each post is pushed `POST_HALF - WALL_BIAS` INTO the water,
  * so it reaches only `WALL_BIAS` onto the bank - and the bank is where
  * `terrain: 'channel'` and `terrain: 'shore'` ore is deliberately placed.
+ *
+ * The CAPS do not overlap - 0.5 m squares 1.3 m apart leave 0.8 m gaps - and
+ * that is stated rather than overlooked. The only place a body can be at cap
+ * height is standing on the plinth top, and the plinth top is 1.9 m up with a
+ * mantle onto it refused from the land side, so the only approach to those gaps
+ * is from the water: they leak OUT of the liquid, never in. Every walled shore
+ * in the game is lethal liquid nothing swims in, and closing them would cost a
+ * cap every 0.45 m - 2.9x the collider count - to fence a direction the barrier
+ * does not exist to fence.
  *
  * `WALL_BIAS` also absorbs the contour's own error: `liquidWalls` lets the true
  * waterline wander 0.35 m from the straight run that replaces it, so a face
@@ -51,6 +143,61 @@ const POST_HALF = 1.1;
 const POST_SPAN = 1.3;
 const WALL_BIAS = 0.35;
 const WALL_SUB = 2;
+/**
+ * Half-depth of the cap that carries the top of the wall.
+ *
+ * 0.25 - a cap 0.50 m deep, the same depth as the yard's mouth screen, which is
+ * the guard this whole property was measured on. `.probe/mantle-depth.mjs`
+ * sweeps a box depth through the real solver and the real player constants and
+ * finds the knee: at 0.60 m the hoist is refused, at 0.65 m it completes. The
+ * knee sits at 0.63 rather than at the 0.77 m landing reach because the test
+ * capsule's lower sphere centre is 0.32 m above the top face and can still
+ * catch the far top EDGE of a box narrower than the reach. 0.50 clears the
+ * MEASURED knee by 0.13 m, which is margin against the solver rather than
+ * against arithmetic.
+ */
+const CAP_HALF = 0.25;
+/**
+ * How far the plinth's top stands above the highest ground within reach of it.
+ *
+ * The plinth exists to be thick where a body IS, so it has to cover a standing
+ * capsule for its whole height: `CONFIG.player.height` is 1.75 and this is 1.9.
+ * Above that the wall is the cap and nothing walks into it.
+ */
+const PLINTH_HEAD = 1.9;
+/**
+ * The shortest a cap may be, in metres, and therefore a ceiling on the plinth.
+ *
+ * Two jobs, and they are the same number by coincidence rather than by
+ * derivation, so both are written down:
+ *
+ *  - `planet-liquid` asserts every barrier collider is over 2 m tall on the
+ *    grounds that "nothing is stopped by that". A cap is `clearance -
+ *    PLINTH_HEAD`, and `clearance` is smaller on a heavy world, so without a
+ *    floor the cap eventually falls under it.
+ *  - the plinth's top must clear the CROWN of a standing capsule, not just its
+ *    segment: `P.height` 1.75. If the cap's base dropped to the capsule's crown
+ *    the two members would both be in contact at walking height and would push
+ *    a marching body opposite ways, which is the failure the plinth exists to
+ *    prevent.
+ *
+ * At Cinder's and Sallow's measured 3.98 m of clearance this does not bind -
+ * the cap is 2.08 m and the plinth top is the full `PLINTH_HEAD` up.
+ */
+const CAP_MIN_H = 2.1;
+/**
+ * The playfield-edge wall's half-thickness, and it is NOT `POST_HALF`.
+ *
+ * These are four long boxes standing on the world boundary in open water, and
+ * they answer a different question from the shore fence. Nothing is on the far
+ * side of them to climb onto, so the mantle argument above does not apply; what
+ * DOES apply is that a swimmer meets them at speed, and `planet-liquid`'s own
+ * crossing test marches a capsule at them in 0.5 m steps. A half-metre wall
+ * against a half-metre step is a wall a body can end up past the midplane of,
+ * and depenetration then pushes it out the FAR side. Thickness here is the
+ * tunnelling margin, so it stays where it was.
+ */
+const EDGE_HALF = 1.1;
 
 /* ══════════════════════════════════════════════════════════════════════════
  *  HOW TALL THE SHORE WALL HAS TO BE, AND WHAT IT IS MEASURED FROM
@@ -103,10 +250,19 @@ const WALL_SUB = 2;
  *   mantle      `Climb.MAX_RISE`, which does not scale - it is how far a pair of
  *               arms reaches, not how hard the world pulls.
  *
- * The posts are 2.2 m square, so their tops ARE standing room and the mantle has
- * somewhere to land. That is not incidental: the yard's mouth screen is 0.5 m
- * deep and holds at 2.70 m against the same input, because there is nowhere on
- * top of it to put a body. A fat wall has to be taller than a thin one.
+ * ── AND THE HEIGHT IS NO LONGER THE ONLY THING HOLDING IT ────────────────
+ * This paragraph used to read "the posts are 2.2 m square, so their tops ARE
+ * standing room and the mantle has somewhere to land", and it was the honest
+ * description of a hole. A wall sized against `leap + mantle` stops a body that
+ * runs at it; it does not stop a body that holds Space and climbs the face,
+ * and 2 of 8 bearings at a shore went over that way. The posts are 0.50 m deep
+ * now and there is nowhere on top of one to put a body, which is the property
+ * the yard's guards have held by all along.
+ *
+ * The height stays exactly as it was. Depth answers the sustained climb; height
+ * answers the running leap, which is the input the game actually teaches, and a
+ * wall that could be hurdled would be a hurdle whatever its top was like.
+ * @see the block above POST_HALF for the measured depth knee
  *
  * @see ../player/Player.js `setWorldGravity`, and the mantle offered on `jumpEdge`
  * @see ../player/Parkour.js `LEAP_LIFT`
@@ -165,6 +321,100 @@ const LAND_BEARINGS = 8;
  */
 const WALL_MAX = 30;
 
+/* Scratch for the per-frame submersion test. See `_underwater`. */
+const _underEye = new THREE.Vector3();
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  THE FLOOR OF THE WORLD
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * A body that gets under the terrain heightfield used to fall for ever, and it
+ * is far easier to get under it than anyone had looked for. MEASURED on Shoal,
+ * dropping a player capsule at the deepest sea-bed sample (-431, 440):
+ *
+ *     resolveCapsule pushes it OUT of the field at z = 440.33 - 33 cm past the
+ *     footprint's own edge - and from there `sampleHeight` is null, nothing
+ *     else is under it, and it falls: -60, -200, -400, with no floor at any
+ *     depth. The playthrough that reported "hp 0 at -33.9 and the body kept
+ *     falling to -116.7" is this, and the void catch never fired because the
+ *     3.2 s respawn beat it there.
+ *
+ * The push-out is not a bug in the solver - at the edge of a height field the
+ * nearest point on the last triangle IS outside it, so the correction has a
+ * horizontal component and there is nowhere for it to point but off. Every one
+ * of the ten planets has a `rim` that falls away at its edge, so every one of
+ * them ends in a lip a body can be nudged over.
+ *
+ * ONE FLAT HEIGHTFIELD, under everything, wider than the field it backs.
+ *
+ * A BOX WAS THE WRONG SHAPE, and for a reason that only shows up at this size:
+ * `Physics._insertToGrid` buckets every box over the broadphase cells it
+ * covers, and the grid is 12 m. Shoal's slab is 1,280 m square, so a box would
+ * have put itself into 11,449 buckets - one entry in every cell of the world -
+ * and been handed to the solver by every query for the rest of the session.
+ * Heightfields live outside that grid entirely (see the note on
+ * `Physics.heightfields`) and are matched by footprint, so the same slab costs
+ * one entry and nothing else.
+ *
+ * It is also strictly cheaper to reject. `_closestPoint`'s heightfield branch
+ * opens with `point.y - maxY > maxDist`, so a body standing anywhere on the
+ * real ground is out in one subtraction; the box path would have run the
+ * bounding-sphere test (radius 905 m, so it always passes) and then two matrix
+ * transforms, on every resolve, for ever.
+ *
+ * The header on `_buildLiquidBarrier` argues the opposite way - BOXES, not a
+ * heightfield - and both are right, because they want opposite things. A
+ * heightfield is solid from its surface DOWN and recovers anything underneath
+ * by pushing it straight up. At a waterline that makes the fence a staircase.
+ * At the bottom of the world it is the entire specification.
+ *
+ * `FLOOR_DROP` is how far below the terrain's own minimum the slab's top sits.
+ * 6 m: deep enough that no ground query, no probe lattice and no
+ * `boxIndex` can ever mistake it for standing room (every one of them tests
+ * `top <= groundY + stepHeight`, and 6 m clears 0.45 m by more than a decimal
+ * order), shallow enough that it catches a body long before the void does. On
+ * Shoal that is a floor at -40.7 against a void catch that used to wait for
+ * -85 and a corpse that reached -116.7.
+ *
+ * `FLOOR_MARGIN` is how far past the playfield the slab reaches. 200 m covers
+ * the 33 cm push-out with four orders of margin and, more usefully, covers a
+ * swimmer who leaves the map: Shoal's sea is drawn out to 2,700 m and the
+ * ground stops at 440.
+ */
+const FLOOR_DROP = 6;
+const FLOOR_MARGIN = 200;
+
+/**
+ * How far below the floor the world's own lower bound is set.
+ *
+ * `bounds.min.y` is the datum `UnstuckSystem._isOutOfWorld` measures from -
+ * `position.y < bounds.min.y - 25` is "out of the world" - and it was a
+ * hard-coded -60 on every planet regardless of how deep that planet went. The
+ * ordering that has to hold is FLOOR above BOUND above VOID, so that a falling
+ * body meets the floor first and the void catch is what it was always meant to
+ * be: the thing that fires when the floor has failed.
+ */
+const BOUND_BELOW_FLOOR = 6;
+
+/**
+ * The look from under a swimmable surface.
+ *
+ * A playthrough that got past the shore barrier reported "a dry, dusty grey
+ * plain to the horizon under an open sky, while the minimap is solid blue with
+ * you in the middle of it", and both halves of that are the same bug: the
+ * liquid surface is a one-sided fan wound to face UP, so from below it is
+ * backface-culled and simply is not there.
+ *
+ * Two things fix it and both are needed. The material goes `DoubleSide`, so
+ * the surface reads as a surface from underneath - and then the world under
+ * water is still the world above water with a ceiling on it, so the fog is
+ * replaced while the eye is submerged. `UNDER_FAR` is short on purpose: 26 m
+ * of visibility is what makes a sea read as a sea rather than as a tinted
+ * room, and it is also what hides the sea bed's own horizon.
+ */
+const UNDER_NEAR = 0.4;
+const UNDER_FAR = 26;
+
 /**
  * PLANET SURFACES - one world class, any number of planets.
  *
@@ -214,6 +464,10 @@ const WALL_MAX = 30;
 const _v = new THREE.Vector3();
 const _m4 = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
+/* A second quaternion, because an ore crystal composes two rotations - a yaw in
+ * its own frame and an outward lean - and `q.multiply(q)` cannot read and write
+ * the same object. See the note in physics/Physics.js on shared scratch. */
+const _qB = new THREE.Quaternion();
 const _e = new THREE.Euler();
 const _s = new THREE.Vector3();
 const _col = new THREE.Color();
@@ -301,6 +555,118 @@ function oreAlbedo(hex) {
   return new THREE.Color().setRGB(r * k, g * k, b * k, THREE.SRGBColorSpace);
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+ *  WHAT AN ORE NODE IS SHAPED LIKE
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── THE DEFECT, REPORTED TWICE ────────────────────────────────────────────
+ * Every ore on every planet was `IcosahedronGeometry(1, 0)` at a near-uniform
+ * scale: one twenty-sided lump, ten planets, thirty-odd seams. A previous pass
+ * fixed the SHADING of it (`ORE_ALBEDO_CEIL`) and left the form, so what
+ * shipped was a correctly-lit potato. The method's own header has said "a small
+ * cluster of faceted crystals" the whole time.
+ *
+ * ── THE HOUSE RULE, AND WHICH WAY ROUND IT CUTS ───────────────────────────
+ * THE PRIMITIVE IS THE PROBLEM. This project shipped spacecraft assembled from
+ * 197 stacked boxes and had them rejected three times, and the rule that came
+ * out of it is in `planets/PlanetProps.js`: an organic or crystalline form is a
+ * lathed, tapered or faceted primitive with per-instance non-uniform scale and
+ * rotation - NEVER a stack of cuboids. So the answer to "these are not
+ * crystals" is not a pile of little boxes arranged in a crystal shape. It is
+ * the primitive being the shape, which for a mineral really is a low-order
+ * prism with a termination on it.
+ *
+ * `PlanetProps`' `spires` kind already solved exactly this for ice pinnacles
+ * and this is built on its three findings:
+ *
+ *   1. A near-zero but NOT zero tip. A true point is a vertex the light never
+ *      catches. A chipped tip reads as broken crystal and costs `facets`
+ *      triangles.
+ *   2. Four to seven sides, so the silhouette is a polygon rather than a
+ *      circle. A crystal IS a low-order prism.
+ *   3. A PER-COLUMN RADIUS JITTER baked into the geometry, so the cross-section
+ *      is irregular and a per-instance yaw actually changes the silhouette
+ *      instead of rotating a symmetry.
+ *
+ * ── WHY THE HABIT COMES FROM THE RARITY ───────────────────────────────────
+ * One geometry per seam is free - the seam already builds its own mesh and its
+ * own material, and the draw-call budget counts MESHES. So the habit is
+ * authored per tier, because the descriptor's own tiers already say what these
+ * things are: "Tephra Nodules" and "Sulfur Crust" are chunky broken stuff and
+ * "Rheniite" and "Iridite" are the crystals a player flew 62 km for. A common
+ * ore gets a squat prism with a blunt truncated termination; an exotic one gets
+ * a tall five-sided shaft that comes to a chip. That is one number moving in
+ * four rows of a table, and it is the difference between "the ore" and "an
+ * ore".
+ *
+ * `taper` is where the shaft stops and the termination starts, as a fraction of
+ * height; `tip` is the top radius. Both are fractions of the widest radius, so
+ * the instance matrix still owns the size.
+ */
+const ORE_HABIT = {
+  common: { facets: 7, taper: 0.62, tip: 0.34, tall: [1.5, 0.9] },
+  uncommon: { facets: 6, taper: 0.66, tip: 0.24, tall: [1.9, 1.2] },
+  rare: { facets: 6, taper: 0.70, tip: 0.13, tall: [2.4, 1.6] },
+  exotic: { facets: 5, taper: 0.74, tip: 0.08, tall: [2.7, 1.8] },
+};
+
+/** A deterministic 0..1 from one integer. `PlanetProps.hash1`'s job, locally. */
+function oreHash(i) {
+  const x = Math.sin(i * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+/**
+ * One seam's crystal, at unit height with its FOOT at y = 0 and its widest
+ * radius at 1.
+ *
+ * Foot at the origin rather than centred, so the instance loop can bury a
+ * measured fraction of it and a crystal grows out of the rock instead of
+ * hovering with its lower half inside it. The widest ring is a third of the way
+ * up - a prism that is widest at its base looks poured, and one that is widest
+ * at its shoulder looks grown.
+ *
+ * @param {string} rarity one of {@link ORE_HABIT}'s keys
+ * @param {number} seed   per-seam, so two seams on one planet are not one
+ *                        crystal drawn twice
+ */
+function oreCrystal(rarity, seed) {
+  const h = ORE_HABIT[rarity] ?? ORE_HABIT.common;
+  const facets = h.facets;
+  /* Three height segments put a ring exactly at the shoulder and one at the
+   * taper, which is what makes the termination a termination rather than a
+   * cone: rings at t = 0, 1/3, 2/3, 1. */
+  const g = new THREE.CylinderGeometry(1, 1, 1, facets, 3, false);
+  const pos = g.attributes.position;
+  const TAU = Math.PI * 2;
+  /** The profile: radius as a fraction of the widest, at height fraction `t`. */
+  const profile = (t) => {
+    if (t <= 1 / 3) return 0.84 + t * 3 * 0.16;          // foot -> shoulder
+    if (t <= h.taper) return 1 - ((t - 1 / 3) / (h.taper - 1 / 3)) * 0.06;
+    return 1 - 0.06 - ((t - h.taper) / (1 - h.taper)) * (1 - 0.06 - h.tip);
+  };
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const rad = Math.hypot(x, z);
+    if (rad < 1e-6) continue;  // cap centres: no angle to jitter along
+    const col = Math.round((Math.atan2(z, x) / TAU) * facets);
+    const j = 1 + 0.26 * (oreHash(col + seed * 13) - 0.5);
+    const f = profile(y + 0.5) * j;
+    pos.setXYZ(i, x * f, y, z * f);
+  }
+  g.translate(0, 0.5, 0);
+  /* Non-indexed so the normals are per-face for real. The material sets
+   * `flatShading` as well, which would fake it in the shader, but a geometry
+   * whose stored normals disagree with its own faces is a trap for anything
+   * that ever reads them. */
+  const flat = g.toNonIndexed();
+  g.dispose();
+  flat.computeVertexNormals();
+  return flat;
+}
+
 /** Ash motes drifting past the camera. One `Points`, animated in the shader. */
 const ASH_VERT = /* glsl */`
   uniform float uTime;
@@ -338,6 +704,93 @@ const ASH_FRAG = /* glsl */`
     gl_FragColor = vec4(uColor, a);
   }
 `;
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  CAN YOU WALK BACK TO YOUR SHIP?
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * `_padDrop` measures how much of the horizon around a disc FALLS AWAY within
+ * 46 m. That is a cliff test, and it is the right instrument for the question a
+ * PILOT asks on final - "is the thing I am about to sit on a clearing or a
+ * shelf" - which is why `Piloting` and `SpaceObjectives` read it and why it is
+ * left exactly as it is.
+ *
+ * It is the wrong instrument for the question a WALKER asks, which is the one
+ * the amber rim blocks were put there to answer: "if I step off here, can I get
+ * back to my ship". MEASURED on all ten planets (`.probe/pad-frac.mjs`), the
+ * two questions do not even correlate:
+ *
+ *     pad                cliff test     can walk home
+ *     tessera raysedge   300 deg        98.2%      painted, and perfectly safe
+ *     shoal   sunder     263 deg        99.9%      painted, and perfectly safe
+ *     lathe   highwall   233 deg       100.0%      painted, and perfectly safe
+ *     verdigris crown      0 deg         6.7%      SILENT, and a one-way trip
+ *     cathedra  gallery    0 deg        24.9%      SILENT, and a one-way trip
+ *     carnelian kiln       0 deg        49.8%      SILENT, and a one-way trip
+ *
+ * ── AND THE ANSWER IS NOT PER-BEARING ─────────────────────────────────────
+ * The obvious repair - march each bearing until it leaves the return set, and
+ * paint the ones that do - was built and measured first (`.probe/pad-return.mjs`)
+ * and it does not discriminate. On a 900 m world nearly every bearing off
+ * nearly every pad eventually reaches ground that cannot walk back, and the
+ * distance at which it happens says nothing either: Rimhold, which is 2.7%
+ * returnable, commits you at 48 m, and Ashfall, which is 95.2% returnable,
+ * commits you at 50 m. What separates them is HOW MUCH of the ground below is
+ * one-way, and that is a property of the pad rather than of a compass point.
+ *
+ * So the marking is a property of the pad: a COMPLETE ring of hazard blocks, or
+ * none at all. One ring means exactly one thing - *most of the ground you can
+ * reach on foot from this disc cannot walk back to it* - and a player who
+ * learns it once on Rimhold reads it correctly on the Crown.
+ *
+ * ── THE TWO FLOODS ────────────────────────────────────────────────────────
+ * Both run over the COLLISION BED - `_bed.heights`, the same samples the
+ * heightfield collider was registered with - so this measures the surface the
+ * capsule actually stands on rather than a re-evaluation of the height
+ * function. The bed's own grid is the lattice, which is why this costs no
+ * height evaluations at all.
+ *
+ *   end-up   where a body can arrive, having left the pad: a walk, plus the one
+ *            edge a fall adds - downhill is ALWAYS available, over any face and
+ *            any distance, because stepping off a shelf is something a player
+ *            can always do. This is why flooding forwards alone found no trap
+ *            anywhere: a walk cannot cross a 60 degree face, and a body can.
+ *   return   where a walk gets BACK from: the forward rule, reversed, so a
+ *            ledge you dropped off is not an edge you can climb.
+ *
+ * `returnPct` is the share of the first that is in the second.
+ *
+ * ── THE NUMBERS ARE THE PLAYER'S OWN ──────────────────────────────────────
+ * `RETURN_SLOPE_TAN` is `Physics`' walkable-slope limit, `RETURN_STEP_UP` is
+ * `CONFIG.player.stepHeight` and `RETURN_DROP_MAX` is the drop `planet-reach`
+ * allows a walk, all restated here because the lattice pitch is the bed's
+ * (3.1 m) rather than the probe's (2 m) and the rise per step has to be derived
+ * from whichever it is. Measured both ways: the verdicts are the same on all
+ * thirty pads, and the worst disagreement in the fraction is 5 points on a pad
+ * that is 97% returnable either way.
+ */
+/** tan of the steepest face a walk crosses. `Physics` resolves 38 degrees. */
+const RETURN_SLOPE_TAN = Math.tan((38 * Math.PI) / 180);
+/** `CONFIG.player.stepHeight`: the rise a walk absorbs however short the run. */
+const RETURN_STEP_UP = 0.45;
+/** The tallest drop a route may use. `planet-reach`'s number: a route that costs
+ *  health is not a route. */
+const RETURN_DROP_MAX = 3.0;
+/** Clear air a surface needs to be standing room. The capsule plus 15 cm. */
+const RETURN_HEADROOM = 1.9;
+/**
+ * Below this share of returnable ground, the pad wears the ring.
+ *
+ * 70%, and it is a threshold sitting in a GAP rather than a tuned number: the
+ * thirty pads measure 1.5, 2.7, 4.7, 6.7, 8.0, 17.6, 24.9, 45.1, 49.8 and then
+ * nothing at all until 91.6, 95.1, 95.2, 97.2, 97.9, 98.2, 99.5, 99.9, 100.
+ * Nine one-way pads on eight planets, which is the "seven of ten planets have a
+ * pad you can walk off and never walk back onto" the rim marking was written
+ * for, found by measurement instead of by eye.
+ */
+const RETURN_ONE_WAY = 70;
+/** Hazard blocks in a full rim ring. 48 at 7.5 degrees apart. */
+const RIM_BLOCKS = 48;
 
 export class PlanetWorld extends World {
   static id = 'planet';
@@ -393,7 +846,19 @@ export class PlanetWorld extends World {
       races: false,
       interiors: false,
       crowd: false,
-      swim: false,
+      /* PER LIQUID, NOT PER WORLD - and that one word is most of this change.
+       *
+       * This was a flat `false` for all ten planets, and the comment on
+       * `Shoal.js` that begins "THE ONE CONSTRAINT THAT DESIGNED THIS PLANET"
+       * is what it cost: an ocean world whose ocean was a painted sheet with a
+       * fence round it, because the same line that (correctly) refuses to let
+       * anyone swim in Cinder's lava also refused Shoal's sea.
+       *
+       * `liquidSwimmable` asks the LIQUID. Water is swimmable; lava and acid
+       * are not, and they get the hazard instead - which is what
+       * `liquid.lethal` was declared for.
+       * @see ./planets/PlanetLiquid.js `liquidSwimmable`, `liquidHazard` */
+      swim: liquidSwimmable(P.liquid),
       /* Caches and relics OFF, and this is a look bug as much as a design one.
        * Both systems scatter their own sites without asking the world where the
        * ground, the lava or the cliffs are, and with them on a review screenshot
@@ -437,6 +902,20 @@ export class PlanetWorld extends World {
     this._owned = [];
     this._sky = null;
     this._liquidUniforms = null;
+    /**
+     * This world's own answer for its liquid, read by `WaterVolumes` instead of
+     * a geometry scan. Built in `_buildLiquid`; null on a dry planet.
+     * @see ../systems/WaterVolumes.js
+     * @type {{surfaceAt:(x:number,z:number)=>number|null, swimmable:boolean,
+     *         lethal:boolean, dps:number, cause:string, name:string}|null}
+     */
+    this.liquidField = null;
+    /** True while the camera is under a liquid surface. @see `_underwater` */
+    this._under = false;
+    /** The colour the world is painted while submerged. Never `environment`'s
+     *  own instance: assigning that to `scene.background` and then writing to
+     *  it would edit the world's palette from the inside. */
+    this._underColor = new THREE.Color(0x0d3348);
     this._plumes = [];
     this._ash = null;
     this._t = 0;
@@ -479,13 +958,19 @@ export class PlanetWorld extends World {
       + `${this.census.drawCalls} draws, ${this.census.colliders} colliders, `
       + `${this.mineralNodes.length} mineral nodes, ${this.landingSites.length} landing sites`
       + (this.census.liquid
-        ? `, ${this.census.liquid.kind} over ${this.census.liquid.wetCells}/${this.census.liquid.cells} cells `
-          + `walled by ${this.census.liquid.barrierPosts} posts on ${this.census.liquid.barrierRuns} runs, `
-          + `${this.census.liquid.parapet} m over the bank (leap apex ${this.census.liquid.leapApex} m), `
-          + `worst gate ${this.census.liquid.worstGate} m, tallest +${this.census.liquid.tallestAboveWater} m over the water`
+        ? `, ${this.census.liquid.substance} over ${this.census.liquid.wetCells}/${this.census.liquid.cells} cells `
+          + (this.census.liquid.swimmable ? 'SWIMMABLE' : 'not swimmable')
+          + (this.census.liquid.lethal ? ` and LETHAL at ${this.census.liquid.hazardDps} dps` : '')
+          + `, walled by ${this.census.liquid.barrierPosts} posts on ${this.census.liquid.barrierRuns} runs`
+          + (this.census.liquid.guards ? ` (${this.census.liquid.guards} guard)` : '')
+          + (this.census.liquid.barrierPosts
+            ? `, ${this.census.liquid.parapet} m over the bank (leap apex ${this.census.liquid.leapApex} m), `
+              + `worst gate ${this.census.liquid.worstGate} m, tallest +${this.census.liquid.tallestAboveWater} m over the water`
+            : '')
           + (this.census.liquid.clampedPosts ? `, ${this.census.liquid.clampedPosts} clamped at ${WALL_MAX} m` : '')
-          + (this.census.liquid.lethal ? ' (lethal)' : '')
+          + (this.census.edgeWall ? `, ${this.census.edgeWall} edge-wall boxes` : '')
         : '')
+      + (this.census.floor ? `, floor at ${this.census.floor.top} m (bound ${this.bounds.min.y.toFixed(1)})` : '')
     );
   }
 
@@ -622,6 +1107,57 @@ export class PlanetWorld extends World {
       stepX: size / P.seg,
       stepZ: size / P.seg,
     };
+
+    this._buildFloor();
+  }
+
+  /**
+   * THE FLOOR OF THE WORLD - one slab, under everything, wider than the map.
+   *
+   * @see the design block on FLOOR_DROP at the top of this file for the
+   * measurement that forced it: a capsule resolved at Shoal's own deepest
+   * sea-bed sample is pushed 33 cm past the height field's footprint and then
+   * falls without limit, and a corpse doing it beat the void catch to -116.7 m
+   * because the respawn timer is 3.2 s and the void waits for -85.
+   *
+   * This also sets `bounds.min.y`, which until now was a hard-coded -60 on
+   * every planet whether its terrain bottomed out at -0.2 (Verdigris) or -44.7
+   * (Tessera). The bound is the void catch's datum, so a planet that is deeper
+   * than its bound is a planet whose void catch fires INSIDE the playable
+   * world; one that is shallower wastes 25 m of falling. Deriving it from the
+   * floor makes the three depths order themselves - floor, then bound, then
+   * void - on every planet by construction.
+   */
+  _buildFloor() {
+    const P = this.planet;
+    const minY = Number.isFinite(this._terrainMinY) ? this._terrainMinY : -60;
+    const top = minY - FLOOR_DROP;
+    const half = P.half + FLOOR_MARGIN;
+    /* Two samples on a side is the whole field: it is a plane, and
+     * `sampleHeight` interpolates a constant to a constant. */
+    const heights = new Float32Array(4).fill(top);
+    this.track(this.physics.addHeightfield({
+      heights,
+      nx: 2,
+      nz: 2,
+      originX: -half,
+      originZ: -half,
+      stepX: half * 2,
+      stepZ: half * 2,
+      minY: top,
+      maxY: top,
+      /* 400 m of solid under it, so a body moving fast cannot be below the
+       * base in the same step it crossed the surface. `baseY` is where a
+       * heightfield stops being solid - the one way through this floor. */
+      baseY: top - 400,
+      /* Tagged for the same reason the shore posts are: a probe has to be able
+       * to name the backstop rather than find a second height field in its
+       * lattice and wonder what built it. */
+      userData: { planetFloor: true },
+    }));
+    this.census.colliders++;
+    this.census.floor = { top: Number(top.toFixed(2)), half, terrainMinY: Number(minY.toFixed(2)) };
+    this.bounds.min.y = top - BOUND_BELOW_FLOOR;
   }
 
   /**
@@ -682,6 +1218,14 @@ export class PlanetWorld extends World {
    *   MOTTLE  large-scale drift, so the bands do not print as a contour map.
    *           The one term with no physical justification and the one that does
    *           the most work.
+   *   PATCH   colour SOMEWHERE IN PARTICULAR, through the same region records
+   *           the props and the minerals are placed with. The three terms above
+   *           are global functions of the ground and between them cannot say
+   *           "this feature is a different colour" - which is why an ejecta ray,
+   *           whose entire physical signature is albedo, could only be built as
+   *           a corridor of bright chips, and why a young crater could not have
+   *           a bright floor without giving one to every contour at that height
+   *           on the map. @see `palette.patch` in `PlanetDescriptor.js`.
    */
   _terrainColors(t, N) {
     const pal = this.planet.palette;
@@ -693,6 +1237,29 @@ export class PlanetWorld extends World {
     if (mottle) _colB.setHex(mottle.color);
     const slopeFrom = slope ? Math.cos((slope.fromDeg * Math.PI) / 180) : 0;
     const slopeTo = slope ? Math.cos((slope.toDeg * Math.PI) / 180) : 0;
+
+    /* Patches, prepared once. `definePlanet` has already filled every default
+     * and frozen the list, so nothing here has to guess what an absent
+     * `strength` meant. The colour is resolved per patch rather than per vertex
+     * because `setHex` is the expensive part of this loop. */
+    const patches = (pal.patch ?? []).map((q) => ({
+      region: q.region,
+      color: new THREE.Color().setHex(q.color),
+      strength: q.strength,
+      feather: q.feather,
+      grain: q.grain,
+      grainInv: 1 / q.grainScale,
+      /* The region's own filters, hoisted so the inner loop is comparisons.
+       * `clearOfLiquid`/`clearOfPads` are deliberately not read - see the
+       * schema note; they are scatter-rejection rules and a patch that avoided
+       * pads would draw a ring round every landing site. */
+      yMin: q.region.yMin ?? -Infinity,
+      yMax: q.region.yMax ?? Infinity,
+      cosMax: q.region.slopeMaxDeg !== undefined
+        ? Math.cos((q.region.slopeMaxDeg * Math.PI) / 180) : -2,
+      cosMin: q.region.slopeMinDeg !== undefined
+        ? Math.cos((q.region.slopeMinDeg * Math.PI) / 180) : 2,
+    }));
 
     for (let i = 0; i < N * N; i++) {
       const y = t.heights[i];
@@ -725,6 +1292,35 @@ export class PlanetWorld extends World {
         const n = fbm(x * mInv, z * mInv, 5501, 3);
         _col.lerp(_colB.setHex(mottle.color), n * n * mottle.amount);
       }
+      /* PATCHES LAST, and on purpose: an ejecta ray is fresh material lying ON
+       * a weathered surface, so it covers the drift rather than being tinted by
+       * it. They are applied in declaration order and accumulate, which is how
+       * a ray is made brighter at the crater than at its tip - two records over
+       * one polyline, not a second gradient term nobody asked for. */
+      if (patches.length) {
+        const x = t.positions[i * 3];
+        const z = t.positions[i * 3 + 2];
+        const ny = t.normals[i * 3 + 1];
+        for (let k = 0; k < patches.length; k++) {
+          const q = patches[k];
+          if (y < q.yMin || y > q.yMax) continue;
+          /* Slope from the MESH NORMAL rather than a central difference over
+           * the collision step. `scatter` uses the difference because it is
+           * deciding whether a capsule can stand there; this is deciding what
+           * a surface looks like, and the normal is the surface. They agree to
+           * within a degree on everything but a single-cell spike. */
+          if (ny < q.cosMax || ny > q.cosMin) continue;
+          const depth = regionDepth(q.region, x, z);
+          if (!(depth > 0)) continue;
+          let w = q.feather > 0 ? Math.min(1, depth / q.feather) : 1;
+          /* Breakup, from the SAME fbm the mottle is made of: fresh ejecta is
+           * scattered material and not paint, and a patch with a clean edge and
+           * a flat interior reads as a decal. One call to a function already in
+           * the module graph. */
+          if (q.grain > 0) w *= 1 - q.grain * (1 - fbm(x * q.grainInv, z * q.grainInv, 7717, 3));
+          if (w > 0) _col.lerp(q.color, w * q.strength);
+        }
+      }
       out[i * 3] = _col.r;
       out[i * 3 + 1] = _col.g;
       out[i * 3 + 2] = _col.b;
@@ -736,6 +1332,8 @@ export class PlanetWorld extends World {
   _buildLiquid() {
     const L = this.planet.liquid;
     if (!L) return;
+    const swimmable = liquidSwimmable(L);
+    const hazard = liquidHazard(L);
     /* The bed texture is built only when the depth term will use it, so a lava
      * planet allocates nothing. `liquidDepth` decides; see `PlanetLiquid`. */
     const wantsDepth = liquidDepth(L).amount > 0;
@@ -743,6 +1341,26 @@ export class PlanetWorld extends World {
     const { material, uniforms, depth } = createLiquidMaterial(L, bed);
     this._liquidDepth = depth;
     const skirtMat = createSkirtMaterial(L);
+
+    /* ── THE VIEW FROM UNDERNEATH ────────────────────────────────────────
+     * A disc is a fan and a ribbon is a strip, both wound to face UP - which
+     * `planet-relief.test.mjs` asserts, because a face-down sea is 340 m of
+     * river that simply is not in the frame. The cost of getting that right is
+     * that from BELOW the surface is culled, and a playthrough that got into
+     * Shoal's sea reported exactly that: "a dry, dusty grey plain to the
+     * horizon under an open sky, while the minimap is solid blue".
+     *
+     * `DoubleSide` on a swimmable liquid, and not on lava: nothing gets under
+     * Cinder's crater lake, and Cinder is the calibrated reference. The
+     * material is a `MeshStandardMaterial`, so the back face is lit through
+     * `gl_FrontFacing` with the normal flipped - i.e. lit from below, by
+     * ambient only, which is dark. That is the correct read: the underside of
+     * water is dark. The apron gets it too, or the shore is a hole from
+     * underneath. */
+    if (swimmable) {
+      material.side = THREE.DoubleSide;
+      skirtMat.side = THREE.DoubleSide;
+    }
     this._own(material);
     this._own(skirtMat);
     this._liquidUniforms = uniforms;
@@ -784,7 +1402,29 @@ export class PlanetWorld extends World {
       g.add(light);
     }
 
+    /* ── WHAT `WaterVolumes` READS ───────────────────────────────────────
+     * The world answers for its own liquid rather than being scanned. See the
+     * header of `WaterVolumes`: Shoal's sea is a 128-triangle fan 2,700 m
+     * across, and decomposing it onto that system's 8 m lattice would build
+     * roughly 450,000 `Box3` volumes for a shape `liquidSurfaceAt` answers
+     * exactly, in constant memory, from the same function the mesh was built
+     * from.
+     *
+     * Published even when the liquid is NOT swimmable, because `Swim` still
+     * has to know where Cinder's lava is in order to burn anything standing in
+     * it - `rules.swim` gates the swim, not the knowledge. */
+    this.liquidField = {
+      surfaceAt: (x, z) => liquidSurfaceAt(L, x, z),
+      swimmable,
+      lethal: hazard.lethal,
+      dps: hazard.dps,
+      cause: hazard.cause,
+      name: L.name ?? hazard.kind,
+    };
+    this._underColor.set(L.color ?? 0x0d3348);
+
     this._buildLiquidBarrier(L);
+    this._buildEdgeWall(L);
   }
 
   /**
@@ -807,30 +1447,63 @@ export class PlanetWorld extends World {
    * backwards: the test was right and the world was wrong.
    *
    * ═══════════════════════════════════════════════════════════════════════
-   *  WHY A FENCE AT THE WATERLINE AND NOT THE OTHER TWO OPTIONS
+   *  WHAT THE FENCE IS FOR NOW, WHICH IS NOT WHAT IT WAS FOR
    * ═══════════════════════════════════════════════════════════════════════
    *
-   * SWIMMING was refused first, and not on taste. Wiring planet liquid into
-   * `WaterVolumes` needs `swim: true`, and the probes that model liquid as a
-   * wall would then all be wrong - `Shoal.js` is designed around the walkable
-   * world being exactly the ground above its sea, with one island severed on
-   * purpose so it can only be flown to. Making the sea swimmable makes every
-   * one of those decisions false, and there is no reading of "the probes and
-   * the renderer must agree" where the renderer wins that argument.
+   * The block that used to stand here refused swimming, and it refused it for
+   * a reason that was true when it was written: the probes model liquid as a
+   * wall, and making the sea swimmable makes every reachability decision on
+   * Shoal false. That is still the risk. What has changed is that the risk was
+   * MEASURED rather than reasoned about, and it turns out to be one island
+   * wide.
+   *
+   * SWIMMING IS NOW THE ANSWER FOR WATER. `liquidSwimmable` splits the six
+   * liquid planets: Shoal's sea, Sirocco's brine, Vitrine's meltwater and
+   * Verdigris's river are water and are entered; Cinder's lava and Sallow's
+   * acid are not and are fenced. Flooding all six at the REAL envelope
+   * (56.63 deg) with swim crossings, against the same flood with liquid as a
+   * wall, moves exactly one seam:
+   *
+   *     sirocco    fulgurite 0/7 -> 0/7      (+2,610 walkable cells: the brine
+   *                                           pans are 38 cm deep and were
+   *                                           fenced. You wade them now.)
+   *     vitrine    hyaline   0/8 -> 0/8      (+840)
+   *     verdigris  verdite   0/7 -> 0/7      (+9,451: the river is 1.21 m and
+   *                                           is waded, not swum)
+   *     shoal      abyssite  0/7 -> 7/7      <<< BROKEN
+   *
+   * So the fence survives in exactly two places and both are named rather than
+   * assumed:
+   *
+   *   LETHAL LIQUID, every metre of it. Lava and acid are things to be kept
+   *   out of, and now that `liquid.lethal` is wired the wall and the burn are
+   *   belt and braces on the same intent: the wall is what stops you falling
+   *   in by accident, the burn is what happens when you get past it anyway.
+   *
+   *   A DECLARED GUARD on a swimmable shore. Shoal names one, round Sundering
+   *   Head, because the Head's `plateau` edge is a 44-degree ramp rather than
+   *   the "61-degree cliffs on every bearing" its own header claims, and 44 is
+   *   a wall at the probes' LEGACY envelope and a walk at the REAL one. See
+   *   `liquidGuards` in PlanetLiquid.js for the traced route.
+   *
+   * The count: 6,829 posts across the system before the swim pass, 2,150 after
+   * - Cinder 819, Sallow 648, Shoal's guard 683 - and Shoal alone dropped from
+   * 3,122 to 683.
+   *
+   * IT IS 1,467 STATIONS NOW, and the difference is not this rule: Shoal's
+   * descriptor has since deleted its guard in favour of steepening the terrain
+   * that made the guard necessary, so the walled shores are Cinder's lava and
+   * Sallow's acid and nothing else. Each station is two colliders since the
+   * plinth-and-cap change, so `census.liquid.barrierPosts` reads 1,638 on
+   * Cinder against 819 stations - the two numbers are both published and they
+   * are not the same number. @see the design block above POST_HALF
    *
    * A SOLID SURFACE AT THE LIQUID PLANE - the obvious reading of "make it
-   * solid" - is what the geometry actually refuses. Fill a body from its bed up
-   * to its surface and a beach becomes a ramp onto a dead-flat floor at the
-   * waterline: the player is not stopped at the shore, they walk out onto the
-   * sea. On Cinder they would walk onto the lava. Anything that stops a body at
-   * the water's edge has to stand ABOVE the water, which is a wall.
-   *
-   * LETHAL is the right long-term answer for lava and it is not available:
-   * `liquid.lethal` is in the schema, the descriptor docs say it is there "so
-   * the day it turns true nothing has to be re-plumbed", and NOTHING IN THE
-   * BUILD READS IT - not this file, not `Placement`, not a system. It is false
-   * on every descriptor, a world has no reference to the player to damage, and
-   * both are outside this change. It is reported rather than faked.
+   * solid" - is still what the geometry refuses, and it is why the fence is a
+   * fence. Fill a body from its bed up to its surface and a beach becomes a
+   * ramp onto a dead-flat floor at the waterline: the player is not stopped at
+   * the shore, they walk out onto the lava. Anything that stops a body at the
+   * edge has to stand ABOVE it, which is a wall.
    *
    * ═══════════════════════════════════════════════════════════════════════
    *  HOW IT IS BUILT
@@ -858,6 +1531,12 @@ export class PlanetWorld extends World {
     const bed = this._bed;
     if (!bed || !L?.bodies?.length) return;
     const P = this.planet;
+    const hazard = liquidHazard(L);
+    const guards = liquidGuards(L);
+    /* Built ONCE and closed over the guard list, because it is asked per
+     * candidate post - 3,122 times on Shoal - and rebuilding (and
+     * re-validating) the guards on each would be the whole cost of the pass. */
+    const walled = liquidWallMask(L);
 
     const segments = liquidContour({ liquid: L, ...bed, sub: WALL_SUB });
     const runs = liquidWalls(segments);
@@ -903,10 +1582,17 @@ export class PlanetWorld extends World {
     const clearance = apexLeap + MANTLE_MAX + GATE_MARGIN;
     const inset = POST_HALF - WALL_BIAS;
 
+    /* `posts` counts COLLIDERS, not stations, and has to: `planet-liquid`
+     * asserts the census against the tagged collider list, and a census that
+     * counted stations while the physics held twice as many boxes would be a
+     * number nobody could check. `stations` is the other one, reported beside
+     * it so the two-member shape is visible from outside. */
     let posts = 0;
+    let stations = 0;
     let tallest = 0;
     let clamped = 0;
     let minGate = Infinity;
+    let shortestCap = Infinity;
     for (const run of runs) {
       /* Down past the ground the post stands on, so nothing steps under it,
        * and no further: on a cliff shore the bed is tens of metres down and an
@@ -922,6 +1608,25 @@ export class PlanetWorld extends World {
         const px = run.cx + run.ux * run.len * t + run.nx * inset;
         const pz = run.cz + run.uz * run.len * t + run.nz * inset;
 
+        /* PER POST, not per run. A run is up to 14 m long and a guard has a
+         * radius, so a run that straddles a guard's edge is half walled and
+         * half open - and testing at the run's centre would round that to all
+         * or nothing, which on Shoal's guard is up to 14 m of shore either
+         * open when it should not be or fenced when the sea is swimmable. */
+        if (!walled(px, pz)) continue;
+
+        /* WHERE THE CAP STANDS, worked out before the bank is sampled because
+         * the cap is the member whose top IS the gate, and the ground it has to
+         * out-top is the ground around IT. The cap is flush with the plinth's
+         * landward face, so its centre sits `POST_HALF - CAP_HALF` back along
+         * the run's inward normal - 0.85 m further up the bank, where the
+         * ground is higher. Sampling the ring at the plinth and hanging the cap
+         * 0.85 m inland of it measured the gate in the wrong place and lost
+         * 0.71 m of it on Cinder. */
+        const back = POST_HALF - CAP_HALF;
+        const cx = px - run.nx * back;
+        const cz = pz - run.nz * back;
+
         /* THE LAUNCH PAD, per post rather than per run. `run.ground` is the
          * LOWEST ground the run spans AT THE CONTOUR, which is the right number
          * for the post's footing and the wrong one for its top: a 14 m run can
@@ -932,8 +1637,8 @@ export class PlanetWorld extends World {
           const a = (bi / LAND_BEARINGS) * Math.PI * 2;
           const ca = Math.cos(a);
           const sa = Math.sin(a);
-          for (const back of LAND_PROBE) {
-            const g = bedAt(px + ca * back, pz + sa * back);
+          for (const bk of LAND_PROBE) {
+            const g = bedAt(cx + ca * bk, cz + sa * bk);
             if (Number.isFinite(g) && g > bank) bank = g;
           }
         }
@@ -946,17 +1651,42 @@ export class PlanetWorld extends World {
         if (gate < minGate) minGate = gate;
         if (top - run.surf > tallest) tallest = top - run.surf;
 
-        const hy = (top - bottom) * 0.5;
-        const cy = (top + bottom) * 0.5;
+        /* ── TWO MEMBERS PER STATION. See the design block at the top. ─────
+         *
+         * The plinth is the box this used to be, stopped at head height; the
+         * cap carries the rest of the gate on a 0.50 m footprint flush with the
+         * plinth's LANDWARD face, which is the face a climber meets.
+         *
+         * `capBase` is clamped so a cap is never shorter than `CAP_MIN_H` -
+         * on a world whose gate clearance is small the plinth gives way, not
+         * the cap, because the cap is the member the whole property rests on. */
+        const capBase = Math.min(stand + PLINTH_HEAD, top - CAP_MIN_H);
+        const plinthTop = Math.max(capBase, bottom + 0.5);
+        const hy = (plinthTop - bottom) * 0.5;
+        const cy = (plinthTop + bottom) * 0.5;
         this.track(this.physics.addBox(px, cy, pz, POST_HALF, hy, POST_HALF, {
           /* TAGGED, so an ablation can take the barrier out of a build without
            * rebuilding it. "The barrier costs N ore nodes" is a claim only a
            * flood with and without these boxes can make, and the first version
            * of it cost eleven of Verdigris's twenty malachite.
-           * @see .probe/planet-flood.mjs */
-          userData: { planetLiquidBarrier: true },
+           * @see .probe/planet-flood.mjs
+           *
+           * `barrierCap` separates the member that carries the GATE from the
+           * member that carries the THICKNESS. They are asserted on
+           * differently and a test that measured the plinth's top against the
+           * running leap would be measuring the wrong member.  */
+          userData: { planetLiquidBarrier: true, barrierCap: false },
         }));
         posts++;
+
+        const chy = (top - capBase) * 0.5;
+        const ccy = (top + capBase) * 0.5;
+        this.track(this.physics.addBox(cx, ccy, cz, CAP_HALF, chy, CAP_HALF, {
+          userData: { planetLiquidBarrier: true, barrierCap: true },
+        }));
+        posts++;
+        stations++;
+        if (chy * 2 < shortestCap) shortestCap = chy * 2;
       }
     }
 
@@ -975,14 +1705,113 @@ export class PlanetWorld extends World {
        * proud of the water at its tallest, and the WORST gate anywhere on it,
        * which is the one a test should assert on. */
       parapet: Number(clearance.toFixed(2)),
+      /* THE SHAPE OF THE WALL, published because it is half of what makes it a
+       * wall and nothing outside this file could otherwise see it. A top
+       * deeper than `Climb`'s 0.77 m landing reach is a top a sustained free
+       * climb can be hoisted onto, and the height then stops mattering.
+       * @see the block above POST_HALF, and barrier-leap.test.mjs */
+      barrierStations: stations,
+      capDepth: Number((CAP_HALF * 2).toFixed(2)),
+      plinthDepth: Number((POST_HALF * 2).toFixed(2)),
+      shortestCap: Number.isFinite(shortestCap) ? Number(shortestCap.toFixed(2)) : null,
       leapApex: Number(apexLeap.toFixed(3)),
       tallestAboveWater: Number(tallest.toFixed(2)),
       worstGate: Number.isFinite(minGate) ? Number(minGate.toFixed(2)) : null,
       clampedPosts: clamped,
-      /* Reported because nothing reads `liquid.lethal` yet and a false that
-       * nobody can see is how a flag stays dormant for another nine planets. */
-      lethal: !!L.lethal,
+      /* `lethal` used to be reported here BECAUSE nothing read it - a false
+       * nobody can see is how a flag stays dormant for another nine planets.
+       * It is read now, by `Swim`, so what the census owes is the whole of what
+       * the flag does: whether a body can be in this, what it costs per second
+       * to be in it anyway, and how much of the shore is still walled. */
+      lethal: hazard.lethal,
+      substance: hazard.kind,
+      swimmable: liquidSwimmable(L),
+      hazardDps: hazard.dps,
+      guards: guards.length,
+      guardRadius: guards.map((g) => g.r),
     };
+  }
+
+  /**
+   * THE EDGE OF THE PLAYFIELD, WHERE IT IS UNDER SWIMMABLE LIQUID.
+   *
+   * Shoal's sea is drawn as one disc 2,700 m across and the ground stops at
+   * 440: MEASURED, 1,764 of 1,764 samples of the playfield boundary are under
+   * water. Before this change that did not matter, because the shore fence
+   * meant nobody could be in the water at all. Now a swimmer who strikes out
+   * from the beach swims off the map - past the last terrain sample, over the
+   * backstop floor, with `Swim` still finding a surface because the disc goes
+   * on for another two kilometres.
+   *
+   * Four boxes, or as many as the wet stretches of the boundary merge into
+   * (Verdigris's river mouth crosses it in one place and gets one). They are
+   * AXIS-ALIGNED and they stand ON the boundary, so `boxIndex` in every reach
+   * probe sees them exactly - the same reason the shore posts are square.
+   *
+   * This is the world's edge rather than the water's, so it goes up whether or
+   * not the liquid is swimmable: wading off the end of Verdigris's gorge is the
+   * same fall.
+   */
+  _buildEdgeWall(L) {
+    const bed = this._bed;
+    if (!bed || !L?.bodies?.length) return;
+    const P = this.planet;
+    const half = P.half;
+    const ratio = worldGravityRatio(P) ?? 1;
+    const apexStand = ((6.4 * 6.4) / (2 * 22)) * Math.pow(Math.max(1e-3, ratio), -1 / 3);
+    const clearance = apexStand * LEAP_LIFT * LEAP_LIFT + MANTLE_MAX + GATE_MARGIN;
+    const step = bed.stepZ;
+    let boxes = 0;
+
+    /* One pass per side. `axis` says which coordinate runs along the edge. */
+    const sides = [
+      { fx: (t) => -half, fz: (t) => t, alongX: false, sign: -1 },
+      { fx: (t) => half, fz: (t) => t, alongX: false, sign: 1 },
+      { fx: (t) => t, fz: (t) => -half, alongX: true, sign: -1 },
+      { fx: (t) => t, fz: (t) => half, alongX: true, sign: 1 },
+    ];
+    for (const side of sides) {
+      let runStart = null;
+      let runSurf = -Infinity;
+      let runGround = Infinity;
+      const flush = (t0, t1) => {
+        if (t1 <= t0) return;
+        const mid = (t0 + t1) * 0.5;
+        const halfLen = (t1 - t0) * 0.5 + step * 0.5;
+        const top = runSurf + clearance;
+        const bottom = Math.min(runGround, runSurf) - 2.5;
+        if (!(top > bottom) || !Number.isFinite(top) || !Number.isFinite(bottom)) return;
+        const cy = (top + bottom) * 0.5;
+        const hy = (top - bottom) * 0.5;
+        const cx = side.alongX ? mid : side.sign * half;
+        const cz = side.alongX ? side.sign * half : mid;
+        const hx = side.alongX ? halfLen : EDGE_HALF;
+        const hz = side.alongX ? EDGE_HALF : halfLen;
+        this.track(this.physics.addBox(cx, cy, cz, hx, hy, hz, {
+          userData: { planetEdgeWall: true },
+        }));
+        boxes++;
+      };
+      for (let t = -half; t <= half + 1e-6; t += step) {
+        const x = side.fx(t);
+        const z = side.fz(t);
+        const surf = liquidSurfaceAt(L, x, z);
+        const g = this.groundAt(x, z);
+        const wet = surf !== null && Number.isFinite(g) && g < surf;
+        if (wet) {
+          if (runStart === null) { runStart = t; runSurf = -Infinity; runGround = Infinity; }
+          if (surf > runSurf) runSurf = surf;
+          if (g < runGround) runGround = g;
+        } else if (runStart !== null) {
+          flush(runStart, t - step);
+          runStart = null;
+        }
+      }
+      if (runStart !== null) flush(runStart, half);
+    }
+    if (!boxes) return;
+    this.census.colliders += boxes;
+    this.census.edgeWall = boxes;
   }
 
   /** Every prop field the descriptor asks for. One draw call each. */
@@ -1092,7 +1921,10 @@ export class PlanetWorld extends World {
         landing: P.landing,
       });
 
-      const geo = new THREE.IcosahedronGeometry(1, 0);
+      /* ONE GEOMETRY PER SEAM, and it is a crystal rather than a lump.
+       * @see oreCrystal, and ORE_HABIT for why the habit follows the tier. */
+      const geo = oreCrystal(spec.rarity, seed);
+      geo.name = `planet.mineral.${spec.id}.crystal`;
       this._own(geo);
       const mat = new THREE.MeshStandardMaterial({
         name: `planet.mineral.${spec.id}`,
@@ -1146,6 +1978,10 @@ export class PlanetWorld extends World {
        * past and a seam you walk to. */
       const SHOW = { common: 1.0, uncommon: 1.2, rare: 1.5, exotic: 1.9 };
       const show = spec.size * (SHOW[spec.rarity] ?? 1.0);
+      /* The same row `oreCrystal` built the geometry from, for the aspect
+       * ratio: a habit that is a squat prism in the mesh and a tall one in the
+       * instance matrix is two different decisions about one object. */
+      const habit = ORE_HABIT[spec.rarity] ?? ORE_HABIT.common;
 
       // Four crystals per node, so a deposit is a cluster and not a pebble.
       const PER = 4;
@@ -1179,16 +2015,42 @@ export class PlanetWorld extends World {
           slot: k,
           slotCount: PER,
         });
+        /* ── FOUR CRYSTALS, SPLAYED, AND NO TWO OF THEM ALIKE ──────────────
+         *
+         * The instance matrix is where the variety has to come from: the
+         * geometry is shared by every node of the seam, so a per-instance yaw,
+         * an independent width on each horizontal axis and an outward LEAN are
+         * the three things that stop a cluster reading as one object stamped
+         * four times.
+         *
+         * The lean is the part that makes it a druse rather than a bundle:
+         * satellites tip AWAY from the node's centre, about the horizontal
+         * axis perpendicular to their own offset, which is how crystals that
+         * nucleated on one seam actually grow. The rotation that takes +Y
+         * toward the outward direction `d` is about `Y x d`; the yaw is applied
+         * first, in the crystal's own frame, so the lean does not undo it.
+         *
+         * The scale envelope is deliberately the one the icosahedron had -
+         * width `sc`, full height `sc * 2.2..4.0` - so this changes the SHAPE
+         * of a node and not its size, and every framing, reach probe and
+         * screenshot distance that was tuned against the old one still holds.
+         * `bury` takes a tenth of the height below the ground for the same
+         * reason the foot is at the geometry's origin. */
         for (let c = 0; c < PER; c++) {
           const a = (roll * (7 + c * 13.7)) % 1;
           const b = (roll * (31 + c * 5.1)) % 1;
           const ang = (c / PER) * Math.PI * 2 + roll * 6.28;
           const off = c === 0 ? 0 : show * (0.35 + a * 0.5);
           const sc = show * (c === 0 ? 0.55 : 0.24 + b * 0.24);
-          _e.set(a * 1.1 - 0.55, b * 6.28, b * 1.1 - 0.55);
-          _q.setFromEuler(_e);
-          _v.set(pt.x + Math.cos(ang) * off, pt.y + sc * 0.35, pt.z + Math.sin(ang) * off);
-          _s.set(sc, sc * (1.1 + a * 0.9), sc);
+          const hgt = sc * (habit.tall[0] + a * habit.tall[1]);
+          /* The head crystal stands nearly upright; the satellites splay. */
+          const lean = c === 0 ? 0.03 + a * 0.10 : 0.22 + b * 0.34;
+          _v.set(Math.sin(ang), 0, -Math.cos(ang));
+          _q.setFromAxisAngle(_v, lean);
+          _e.set(0, b * 6.28, 0);
+          _q.multiply(_qB.setFromEuler(_e));
+          _v.set(pt.x + Math.cos(ang) * off, pt.y - hgt * 0.10, pt.z + Math.sin(ang) * off);
+          _s.set(sc * (0.82 + a * 0.36), hgt, sc * (0.82 + b * 0.36));
           _m4.compose(_v, _q, _s);
           mesh.setMatrixAt(k++, _m4);
         }
@@ -1197,7 +2059,11 @@ export class PlanetWorld extends World {
       mesh.computeBoundingSphere();
       this.group.add(mesh);
       this.census.drawCalls++;
-      this.census.triangles += 20 * k;
+      /* ASKED OF THE GEOMETRY, not retyped. The hard-coded 20 was the
+       * icosahedron's face count and would have gone on reporting 20 for ever
+       * after the crystal replaced it - a census that describes the build it
+       * used to be is worse than no census. */
+      this.census.triangles += (geo.getAttribute('position').count / 3) * k;
       this.census.minerals[spec.id] = { placed: res.points.length, requested: res.requested, rejects: res.rejects };
     }
   }
@@ -1261,12 +2127,24 @@ export class PlanetWorld extends World {
      * into a crater rim and walks north sees ash, then more ash, then a slope,
      * and finds out what they have done forty seconds later.
      *
-     * So the drop is measured (`_padDrop`) and PAINTED, on the bearings it is
-     * on. Amber-black hazard blocks around the rim of the disc where the ground
-     * falls away: the same language a lift shaft and a pier edge use elsewhere
-     * in this project, and the only one available on a wilderness pad with no
-     * signage system anywhere near it. No collider - the marking says where the
-     * edge is, it does not stop you leaving.
+     * ── THE RING MEANS ONE THING, AND IT IS NOT "CLIFF" ─────────────────
+     * The first version of this painted the bearings `_padDrop` found a cliff
+     * on, which is a different question and measured a different set of pads:
+     * Ray's Edge wore 300 degrees of hazard block and is 98.2% returnable,
+     * while the Crown wore none and is 6.7%. So the blocks are driven by
+     * `_padReturn` now - a flood over the real collision bed - and they go on
+     * as a COMPLETE ring or not at all, because the measurement that separates
+     * these pads is a property of the pad rather than of a compass point.
+     *
+     * A ring says: most of the ground you can reach on foot from this disc
+     * cannot walk back to it. Amber-black hazard blocks, the same language a
+     * lift shaft and a pier edge use elsewhere in this project and the only one
+     * available on a wilderness pad with no signage system anywhere near it. No
+     * collider - the marking says what leaving costs, it does not stop you.
+     *
+     * The cliff number is not lost and is not painted: `drop` is still
+     * published, and `Piloting` puts it on the flight HUD on final approach,
+     * which is where "is that a shelf" is the question being asked.
      */
     const edgeMat = new THREE.MeshStandardMaterial({
       name: `planet.${P.id}.padedge`,
@@ -1280,6 +2158,9 @@ export class PlanetWorld extends World {
     this._own(postMat);
     this._own(edgeMat);
 
+    /* ONE lattice for the whole world, flooded twice per pad. @see _padReturn */
+    const homeward = this._padReturn();
+
     for (const s of P.landing) {
       const y = this.groundAt(s.x, s.z);
       const ring = new THREE.Mesh(new THREE.RingGeometry(s.r - 1.4, s.r, 64), ringMat);
@@ -1290,13 +2171,14 @@ export class PlanetWorld extends World {
       this.census.drawCalls++;
 
       const drop = this._padDrop(s, y);
-      if (drop.bearings.length) {
+      const back = homeward.get(s.id) ?? { oneWay: false, pct: 100, metres: 0, area: 0 };
+      if (back.oneWay) {
         const blockGeo = new THREE.BoxGeometry(1.6, 0.34, 0.9);
         this._own(blockGeo);
-        const blocks = new THREE.InstancedMesh(blockGeo, edgeMat, drop.bearings.length);
+        const blocks = new THREE.InstancedMesh(blockGeo, edgeMat, RIM_BLOCKS);
         blocks.name = `planet:${P.id}:padedge:${s.id}`;
-        for (let i = 0; i < drop.bearings.length; i++) {
-          const a = drop.bearings[i];
+        for (let i = 0; i < RIM_BLOCKS; i++) {
+          const a = (i / RIM_BLOCKS) * Math.PI * 2;
           const bx = s.x + Math.cos(a) * (s.r - 0.7);
           const bz = s.z + Math.sin(a) * (s.r - 0.7);
           _e.set(0, -a, 0);
@@ -1310,7 +2192,7 @@ export class PlanetWorld extends World {
         blocks.computeBoundingSphere();
         g.add(blocks);
         this.census.drawCalls++;
-        this.census.triangles += 12 * drop.bearings.length;
+        this.census.triangles += 12 * RIM_BLOCKS;
       }
 
       const inner = new THREE.Mesh(new THREE.RingGeometry(s.r * 0.32, s.r * 0.32 + 0.9, 48), innerMat);
@@ -1351,11 +2233,27 @@ export class PlanetWorld extends World {
         primary: !!s.primary,
         /* PUBLISHED, so a HUD, a test or a rescue can ask how exposed a pad is
          * without re-deriving it from the height field. `deg` is how much of the
-         * horizon around the disc falls away, `metres` how far it falls. */
+         * horizon around the disc falls away, `metres` how far it falls. Read by
+         * `Piloting._readout` and `SpaceObjectives`; this is the CLIFF, and it
+         * is a pilot's question. @see _padDrop */
         drop: { deg: drop.deg, metres: Number(drop.worst.toFixed(1)) },
+        /* And this is the WALKER's question, which is a different one and
+         * measures a different set of pads. `oneWay` is what the rim ring is
+         * painted from. @see _padReturn */
+        home: {
+          oneWay: !!back.oneWay,
+          pct: Number(back.pct.toFixed(1)),
+          metres: Number(back.metres.toFixed(1)),
+          area: back.area,
+        },
       });
       this.census.pads = this.census.pads ?? {};
-      this.census.pads[s.id] = { deg: drop.deg, metres: Number(drop.worst.toFixed(1)) };
+      this.census.pads[s.id] = {
+        deg: drop.deg,
+        metres: Number(drop.worst.toFixed(1)),
+        returnPct: Number(back.pct.toFixed(1)),
+        oneWay: !!back.oneWay,
+      };
     }
   }
 
@@ -1395,6 +2293,214 @@ export class PlanetWorld extends World {
       if (fall > SILL) bearings.push(a);
     }
     return { bearings, worst, deg: Math.round((bearings.length / BEARINGS) * 360) };
+  }
+
+  /**
+   * CAN A BODY WALK BACK TO ITS SHIP? One answer per pad, over the real bed.
+   *
+   * @see the design block on `RETURN_ONE_WAY` for why this exists alongside
+   * `_padDrop` rather than replacing it, and why the verdict is per PAD and not
+   * per bearing.
+   *
+   * Run once for the whole world: the lattice is the expensive part and every
+   * pad floods the same one. Measured headless, the whole method costs 27-58 ms
+   * on a planet whose terrain job alone costs 140-440 ms.
+   *
+   * @returns {Map<string, {oneWay:boolean, pct:number, metres:number, area:number}>}
+   */
+  _padReturn() {
+    const out = new Map();
+    const P = this.planet;
+    const bed = this._bed;
+    const sites = P.landing ?? [];
+    if (!bed || !sites.length) return out;
+
+    const { heights, nx, nz, originX, originZ, stepX, stepZ } = bed;
+    /* The bed is square by construction (`_buildTerrain` builds it from one
+     * `seg`), and the rise a walk absorbs over one step is derived from the
+     * pitch rather than typed - at 3.1 m a 38 degree slope is 2.4 m of rise and
+     * at 2 m it is 1.6, and a constant that did not know which would be wrong
+     * the moment a descriptor changed `seg`. */
+    const pitch = stepX;
+    const maxRise = Math.max(RETURN_STEP_UP, pitch * RETURN_SLOPE_TAN);
+    const N = nx * nz;
+
+    /* ---- 1. WHAT A BODY MAY STAND ON -------------------------------- */
+    const dry = new Uint8Array(N);
+    const ok = new Uint8Array(N);
+    const mask = liquidCellMask({ liquid: P.liquid, heights, nx, nz, originX, originZ, stepX, stepZ });
+    /** A node is wet when any of the up-to-four cells around it is. */
+    const wetNode = (i, j) => {
+      for (let cj = j - 1; cj <= j; cj++) {
+        if (cj < 0 || cj >= mask.cz) continue;
+        for (let ci = i - 1; ci <= i; ci++) {
+          if (ci < 0 || ci >= mask.cx) continue;
+          if (mask.wet[cj * mask.cx + ci]) return true;
+        }
+      }
+      return false;
+    };
+    const blocked = this._solidIndex();
+    /* The border ring is left out: a central difference needs a neighbour on
+     * both sides, and the outermost samples are the rim the world falls off
+     * anyway. */
+    for (let j = 1; j < nz - 1; j++) {
+      for (let i = 1; i < nx - 1; i++) {
+        const k = j * nx + i;
+        const g = heights[k];
+        if (!Number.isFinite(g)) continue;
+        if (mask.wetCount && wetNode(i, j)) continue;
+        dry[k] = 1;
+        const dx = (heights[k + 1] - heights[k - 1]) / (2 * pitch);
+        const dz = (heights[k + nx] - heights[k - nx]) / (2 * pitch);
+        if (Math.hypot(dx, dz) > RETURN_SLOPE_TAN) continue;
+        if (blocked(originX + i * stepX, originZ + j * stepZ, g)) continue;
+        ok[k] = 1;
+      }
+    }
+
+    /* ---- 2. TWO FLOODS PER PAD -------------------------------------- */
+    const seen = new Uint8Array(N);
+    const home = new Uint8Array(N);
+    /* Every node is marked before it is pushed, so the stack can never hold
+     * more than one entry per node and this is exactly big enough. */
+    const stack = new Int32Array(N);
+    const flood = (visit, seed, edge) => {
+      visit[seed] = 1;
+      let top = 0;
+      stack[top++] = seed;
+      while (top > 0) {
+        const k = stack[--top];
+        const i = k % nx;
+        const j = (k - i) / nx;
+        const here = heights[k];
+        for (let d = 0; d < 4; d++) {
+          const a = i + (d === 0 ? 1 : d === 1 ? -1 : 0);
+          const b = j + (d === 2 ? 1 : d === 3 ? -1 : 0);
+          if (a < 1 || b < 1 || a >= nx - 1 || b >= nz - 1) continue;
+          const m = b * nx + a;
+          if (visit[m]) continue;
+          if (!edge(here, m)) continue;
+          visit[m] = 1;
+          stack[top++] = m;
+        }
+      }
+    };
+
+    const area = pitch * pitch;
+    for (const s of sites) {
+      const si = Math.round((s.x - originX) / stepX);
+      const sj = Math.round((s.z - originZ) / stepZ);
+      const seed = sj * nx + si;
+      if (si < 1 || sj < 1 || si >= nx - 1 || sj >= nz - 1 || !ok[seed]) {
+        /* A pad whose own centre sample is not standable is a pad this
+         * instrument cannot speak about - a disc notched into a face, or one
+         * standing in liquid. Silence, and say so, rather than a ring nobody
+         * can account for. */
+        out.set(s.id, { oneWay: false, pct: 100, metres: 0, area: 0, unmeasured: true });
+        continue;
+      }
+      const padY = heights[seed];
+      seen.fill(0);
+      home.fill(0);
+      /* WHERE A BODY CAN END UP. Downhill is always available, over any face:
+       * that is what stepping off a shelf is, and it is the edge a forward walk
+       * flood does not have. Uphill only where a walk could take it. */
+      flood(seen, seed, (here, m) => {
+        if (!dry[m]) return false;
+        const d = heights[m] - here;
+        if (d <= 0) return true;
+        return !!ok[m] && d <= maxRise;
+      });
+      /* WHERE A WALK RETURNS FROM: expand u -> v when the FORWARD step v -> u
+       * is legal, which is the reverse graph and not the same graph. */
+      flood(home, seed, (here, m) => {
+        if (!ok[m]) return false;
+        const d = here - heights[m];
+        return d <= maxRise && d >= -RETURN_DROP_MAX;
+      });
+
+      let total = 0;
+      let back = 0;
+      let worst = 0;
+      for (let k = 0; k < N; k++) {
+        if (!seen[k] || !ok[k]) continue;
+        total++;
+        if (home[k]) continue;
+        const fall = padY - heights[k];
+        if (fall > worst) worst = fall;
+      }
+      for (let k = 0; k < N; k++) if (seen[k] && ok[k] && home[k]) back++;
+      const pct = total ? (100 * back) / total : 100;
+      out.set(s.id, {
+        oneWay: pct < RETURN_ONE_WAY,
+        pct,
+        metres: worst,
+        area: Math.round(total * area),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * EVERY SOLID BOX IN THE WORLD, ON AN XZ GRID, so the return flood can see a
+   * boulder standing in a gap.
+   *
+   * It is not optional detail. Carnelian's Kiln Deck measures 49.8% returnable
+   * WITH the props in and 98.7% with them out: what pens that pad in is the
+   * talus scatter round it rather than the shape of the ground, and an
+   * instrument that only read the height field would have called it open.
+   *
+   * Each collider is read by its AXIS-ALIGNED bounds, the way
+   * `Unstuck._boxIndex` and `planet-reach` read theirs. A rotated box is
+   * therefore over-estimated - which can only make a pad read as MORE penned in
+   * than it is, and over-warning is the safe direction for a warning.
+   *
+   * The build runs against a scratch `Physics` per world (`WorldManager._runBuild`),
+   * so this sees this planet's colliders and nothing else.
+   */
+  _solidIndex() {
+    const cell = 8;
+    const grid = new Map();
+    const list = this.physics?.colliders ?? [];
+    for (const c of list) {
+      if (!c.solid || c.type !== 'box') continue;
+      if (((c.layer ?? COLLISION_LAYER.WORLD) & COLLISION_LAYER.WORLD) === 0) continue;
+      const m = c.matrix.elements;
+      const b = {
+        x: m[12], y: m[13], z: m[14],
+        ax: Math.abs(m[0]) * c.halfExtents.x + Math.abs(m[4]) * c.halfExtents.y + Math.abs(m[8]) * c.halfExtents.z,
+        ay: Math.abs(m[1]) * c.halfExtents.x + Math.abs(m[5]) * c.halfExtents.y + Math.abs(m[9]) * c.halfExtents.z,
+        az: Math.abs(m[2]) * c.halfExtents.x + Math.abs(m[6]) * c.halfExtents.y + Math.abs(m[10]) * c.halfExtents.z,
+      };
+      if (!Number.isFinite(b.x) || !Number.isFinite(b.z) || !Number.isFinite(b.ax) || !Number.isFinite(b.az)) continue;
+      const x0 = Math.floor((b.x - b.ax) / cell);
+      const x1 = Math.floor((b.x + b.ax) / cell);
+      const z0 = Math.floor((b.z - b.az) / cell);
+      const z1 = Math.floor((b.z + b.az) / cell);
+      for (let cx = x0; cx <= x1; cx++) {
+        for (let cz = z0; cz <= z1; cz++) {
+          const k = ((cx + 4096) << 13) | (cz + 4096);
+          let bucket = grid.get(k);
+          if (!bucket) grid.set(k, (bucket = []));
+          bucket.push(b);
+        }
+      }
+    }
+    return (x, z, groundY) => {
+      const k = ((Math.floor(x / cell) + 4096) << 13) | (Math.floor(z / cell) + 4096);
+      const bucket = grid.get(k);
+      if (!bucket) return false;
+      for (let i = 0; i < bucket.length; i++) {
+        const b = bucket[i];
+        if (Math.abs(x - b.x) > b.ax || Math.abs(z - b.z) > b.az) continue;
+        // Under the foot, or over the head: neither is in the way.
+        if (b.y + b.ay <= groundY + RETURN_STEP_UP) continue;
+        if (b.y - b.ay >= groundY + RETURN_HEADROOM) continue;
+        return true;
+      }
+      return false;
+    };
   }
 
   /** Ash in the air. One `Points`, wrapped around the camera in the shader. */
@@ -1658,6 +2764,7 @@ export class PlanetWorld extends World {
 
   update(dt, elapsed) {
     this._t = elapsed;
+    this._underwater();
     if (this._sky) this._sky.update(dt);
     if (this._liquidUniforms) this._liquidUniforms.uTime.value = elapsed;
     for (let i = 0; i < this._plumes.length; i++) this._plumes[i].material.uniforms.uTime.value = elapsed;
@@ -1670,10 +2777,95 @@ export class PlanetWorld extends World {
     }
   }
 
+  /**
+   * SUBMERGED: what the world looks like from under its own water.
+   *
+   * ── The defect ───────────────────────────────────────────────────────────
+   * A playthrough that got past the shore barrier on Shoal reported "a dry,
+   * dusty grey plain to the horizon under an open sky, while the minimap is
+   * solid blue with you in the middle of it". Three separate things were
+   * producing that one sentence and all three are fixed here or in
+   * `_buildLiquid`:
+   *
+   *   the surface was not there    a fan wound to face up is culled from
+   *                                below. `DoubleSide` on swimmable liquid.
+   *   the air was still air        the world's own fog runs to 600 m on a
+   *                                planet, so the sea bed had a horizon.
+   *   the sky was still the sky    `Sky` builds its dome with `fog: false` on
+   *                                purpose, so no fog change could ever have
+   *                                hidden it, and it is centred on the camera
+   *                                so it is always in shot.
+   *
+   * ── Why this is per frame and not an event ──────────────────────────────
+   * It is a question about the CAMERA, not the player: in third person the eye
+   * can be a metre out of the water while the body is under it, and vice
+   * versa, and it is the eye that decides what the frame looks like. There is
+   * no event for "the camera crossed a plane".
+   *
+   * `scene.fog` and `scene.background` belong to `main.js`'s `applyEnvironment`,
+   * which runs once per world change. Both are restored from this world's own
+   * `environment` the moment the camera surfaces, and again on deactivate, so
+   * the borrow is never visible outside the water.
+   */
+  _underwater() {
+    const cam = this.engine?.camera;
+    const scene = this.scene;
+    const field = this.liquidField;
+    let under = false;
+    if (cam && scene && field) {
+      cam.getWorldPosition(_underEye);
+      const surf = field.surfaceAt(_underEye.x, _underEye.z);
+      /* Only for liquid you can be in. A camera clipping under Cinder's lava
+       * plane is a camera bug, and painting the frame black-red would hide it
+       * rather than report it. */
+      under = field.swimmable && Number.isFinite(surf) && _underEye.y < surf;
+    }
+    if (under === this._under) return;
+    this._under = under;
+    const env = this.environment;
+    if (under) {
+      if (this._sky) this._sky.mesh.visible = false;
+      scene.background = this._underColor;
+      if (scene.fog) {
+        scene.fog.color.copy(this._underColor);
+        scene.fog.near = UNDER_NEAR;
+        scene.fog.far = UNDER_FAR;
+      }
+    } else {
+      if (this._sky) this._sky.mesh.visible = true;
+      scene.background = env.background ?? null;
+      if (scene.fog) {
+        scene.fog.color.copy(env.fogColor);
+        scene.fog.near = env.fogNear;
+        scene.fog.far = env.fogFar;
+      }
+    }
+  }
+
   onActivate() {
     super.onActivate();
     // The dome has to ride the camera or the player walks out of the sky.
     if (this._sky && this.engine?.camera) this._sky.mesh.position.copy(this.engine.camera.position);
+  }
+
+  onDeactivate() {
+    /* Leaving the world while submerged would otherwise hand the next one this
+     * world's fog and a hidden sky dome. `_underwater` restores on the edge, so
+     * forcing the flag and calling it is the whole of the fix. */
+    if (this._under) {
+      this._under = false;
+      if (this._sky) this._sky.mesh.visible = true;
+      const env = this.environment;
+      if (this.scene) {
+        this.scene.background = env.background ?? null;
+        if (this.scene.fog) {
+          this.scene.fog.color.copy(env.fogColor);
+          this.scene.fog.near = env.fogNear;
+          this.scene.fog.far = env.fogFar;
+        }
+      }
+    }
+    super.onDeactivate();
   }
 
   dispose() {
@@ -1689,6 +2881,7 @@ export class PlanetWorld extends World {
      * visit's ground alive behind the new one. */
     this._bed = null;
     this._liquidDepth = null;
+    this.liquidField = null;
     this.mineralNodes.length = 0;
     this.landingSites.length = 0;
     super.dispose();

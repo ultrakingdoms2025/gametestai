@@ -135,6 +135,21 @@ uniform float uPlanetSpin;
 uniform vec3  uMoonDir;
 uniform float uMoonAngular;
 
+/* ── THE RING SYSTEM ────────────────────────────────────────────────────────
+ * Everything here is in PLANET RADII, which is how a ring system is actually
+ * proportioned and how 'space/Bodies.js' already states one, so a body that is
+ * resized keeps its rings.
+ *
+ * 'uRingRadii' is (inner, outer, gapInner, gapOuter). A gap whose outer edge is
+ * not beyond its inner one is no gap, so an undivided ring is '(g, g)'.
+ * 'uRingDensity' is the NORMAL optical depth and 0 switches the whole term off,
+ * which is what every world without rings ships.                             */
+uniform vec3  uRingNormal;
+uniform vec4  uRingRadii;
+uniform vec3  uRingColor;
+uniform float uRingDensity;
+uniform float uRingBrightness;
+
 uniform float uStarBrightness;
 uniform float uExposure;
 
@@ -221,6 +236,155 @@ vec3 starLayer(vec3 dir, float scale, float density, float sizeMul, float bright
   return col * (core + halo) * bright * (0.14 + 1.25 * mag) * twinkle;
 }
 
+/* ==================================================================== *
+ *  RINGS                                                               *
+ * ====================================================================
+ *
+ * WHY THIS IS RAY-TRACED AND THE PLANET IS NOT.
+ *
+ * 'planet()' draws a disc from a direction and an angular radius, which is the
+ * far-field approximation and is exact enough for a body you are eighty radii
+ * away from. A ring system cannot be drawn that way, because the interesting
+ * case is the one this was built for: Lathe stands 2.76 Ceraunus-radii from the
+ * centre, INSIDE the sphere the outer ring edge sweeps, so the near arm of the
+ * rings is 0.47 radii away and the far arm is 5.0. That is not a picture of an
+ * ellipse pasted round a disc; it is a plane the viewer is nearly lying in, and
+ * only a real ray-plane intersection gets the perspective, the crossing in
+ * front of the disc, and the ansae right.
+ *
+ * THE DISTANCE COMES FOR FREE. The observer is '1 / sin(uPlanetAngular)' planet
+ * radii from the centre - that is what an angular radius MEANS - so the whole
+ * geometry is driven off a uniform the sky already had, and a ring system can
+ * never disagree with the disc it belongs to.
+ *
+ * Every length below is in planet radii, with the observer at the origin.
+ */
+
+/**
+ * The ring's NORMAL-INCIDENCE optical depth at an in-plane position, ~0.1 to 1.6
+ * inside the annulus and zero outside it.
+ *
+ * It takes the position rather than the radius so the noise can vary with
+ * BEARING as well as with radius. That is not decoration: the first version was
+ * radial only, and driven in a browser it produced a ring that was the same
+ * cream all the way round and read as a plastic hoop. A ring system is clumpy
+ * in both axes and the clumps are what make it look like a swarm of ice.
+ *
+ * THE DYNAMIC RANGE IS THE WHOLE POINT. It started at 0.72..1.22, and at that
+ * spread every part of the annulus saturated the slant path and the structure
+ * was invisible: 1 - exp(-tau/mu) is 0.999 at both ends of a range that narrow.
+ * 0.1 to 1.6 puts the thin lanes at an alpha near 0.4 on the near arm, so the
+ * gas giant shows THROUGH them, which is the strongest cue in the frame that
+ * this is a swarm of particles and not a ribbon.
+ *
+ * The edges are softened over 0.4% of the outer radius: wide enough that the
+ * near arm - where radius changes fastest per pixel - antialiases, narrow
+ * enough that the ansa still has an edge to it.
+ */
+float ringProfile(vec3 rel) {
+  float r = length(rel);
+  float inner = uRingRadii.x;
+  float outer = uRingRadii.y;
+  float w = max(outer * 0.004, 1e-4);
+  float band = smoothstep(inner - w, inner + w, r) * (1.0 - smoothstep(outer - w, outer + w, r));
+  // A gap whose outer edge is not beyond its inner one is no gap.
+  float division = uRingRadii.w > uRingRadii.z
+    ? smoothstep(uRingRadii.z - w, uRingRadii.z + w, r) * (1.0 - smoothstep(uRingRadii.w - w, uRingRadii.w + w, r))
+    : 0.0;
+  band *= 1.0 - 0.97 * division;
+  /* Three octaves, and none of them fine enough to shimmer. The coarse one is
+   * a cell per 0.14 radii, which on Ceraunus is 5.4 km - wider than a pixel
+   * from anywhere a player can stand. */
+  float coarse = vnoise(vec3(r * 7.0, 3.17, 1.71));
+  float fine = vnoise(vec3(r * 21.0, 7.31, 5.09));
+  float clump = vnoise(rel * 1.7 + 11.0);
+  return band * (0.10 + 1.55 * (coarse * 0.55 + fine * 0.25 + clump * 0.20));
+}
+
+/** True when the ring term is switched on AND its normal is usable. */
+bool ringsLive() {
+  return uRingDensity > 0.0 && length(uRingNormal) > 0.5;
+}
+
+/**
+ * Trace the ring plane.
+ *
+ * @param  dir    view direction, unit
+ * @param  pd     direction to the planet, unit
+ * @param  ang    the planet's angular radius
+ * @param  alpha  out: coverage, 0..1
+ * @param  depth  out: distance to the hit in planet radii, -1 for a miss
+ * @return the ring's colour (NOT premultiplied)
+ */
+vec3 rings(vec3 dir, vec3 pd, float ang, out float alpha, out float depth) {
+  alpha = 0.0;
+  depth = -1.0;
+  if (!ringsLive()) return vec3(0.0);
+
+  vec3 n = normalize(uRingNormal);
+  vec3 P = pd / max(sin(ang), 1e-4);      // planet centre, observer at origin
+
+  /* THE DIVIDE THIS SHADER IS BUILT AROUND, GUARDED.
+   * A ray parallel to the ring plane never meets it, and 1/0 would reach the
+   * bloom pass as NaN - nineteen of which blacked out a 921,600-pixel frame in
+   * this repository once. Rejected, not clamped: there is no crossing to draw. */
+  float nd = dot(dir, n);
+  if (abs(nd) < 1e-5) return vec3(0.0);
+  float t = dot(P, n) / nd;
+  // Behind the viewer, or so oblique the hit is far outside any ring.
+  if (t <= 0.0 || t > 400.0) return vec3(0.0);
+
+  vec3 X = dir * t;
+  // The hit measured from the planet's centre: an in-plane position by
+  // construction, which is what the profile wants.
+  vec3 rel = X - P;
+  float prof = ringProfile(rel);
+  if (prof <= 0.0) return vec3(0.0);
+
+  vec3 sun = normalize(uSunDir);
+  /* Both cosines are floored at 0.015 (0.86 deg). Nothing here divides by a raw
+   * dot product. */
+  float mu = clamp(abs(nd), 0.015, 1.0);            // ray against the ring normal
+  float mu0 = clamp(abs(dot(sun, n)), 0.015, 1.0);  // star against the ring normal
+
+  /* SLANT PATH. A ring that is 38% gap at normal incidence is opaque seen two
+   * degrees off its own plane, because the line of sight crosses 28 times as
+   * much of it. That is why an edge-on ring reads as a solid thread of light
+   * and not as a faint smear, and it is the whole reason this world works
+   * without inclining anybody's orbit. */
+  float tau = uRingDensity * prof;
+  alpha = 1.0 - exp(-tau / mu);
+
+  /* Which face is turned toward us, and is the star on it? 't > 0' forces
+   * 'sign(nd)' to match the side the observer is on, so -sign(nd) IS the
+   * outward normal of the visible face. */
+  float faceLit = step(0.0, dot(sun, n) * -sign(nd));
+
+  /* Reflected: a single-scattering slab of finite thickness.
+   *
+   * mu0/(mu0+mu) is the semi-infinite limit and it saturates rather than
+   * collapsing at grazing incidence, which is correct - the ring gets dimmer
+   * per particle and there are proportionally more particles in the way. The
+   * second factor is what makes it FINITE, and it is not cosmetic: without it
+   * a lane at a tenth of the optical depth is exactly as bright as the densest
+   * part of the annulus, which is how the first draft came out looking moulded. */
+  float refl = (mu0 / max(mu0 + mu, 1e-4)) * (1.0 - exp(-tau * (1.0 / mu + 1.0 / mu0)));
+  /* Transmitted: what a ring lit from behind lets through. Near zero once the
+   * slant path is thick, which is what makes an unlit face read as a silhouette. */
+  float trans = exp(-tau / mu0) * 0.60;
+  float shade = mix(trans, refl, faceLit);
+
+  /* THE PLANET'S SHADOW ON THE RINGS. The star is far enough away to treat as a
+   * direction, so the shadow is a unit cylinder down 'sun' from the centre. */
+  vec3 q = P - X;
+  float along = dot(q, sun);
+  float perp = sqrt(max(dot(q, q) - along * along, 0.0));
+  shade *= 1.0 - 0.94 * step(0.0, along) * (1.0 - smoothstep(0.94, 1.06, perp));
+
+  depth = t;
+  return uRingColor * shade * uRingBrightness;
+}
+
 // Shaded planet disc. Returns colour; "cover" is 1 inside the solid disc.
 vec3 planet(vec3 dir, vec3 pd, float ang, out float cover) {
   cover = 0.0;
@@ -284,6 +448,31 @@ vec3 planet(vec3 dir, vec3 pd, float ang, out float cover) {
   vec3 lit = surf * (lam * 1.25 + 0.008);
   lit += spec * uSunColor * term;
   lit = mix(lit, vec3(0.94, 0.96, 1.00) * (lam * 1.30 + 0.005), cloud * 0.82);
+
+  /* THE RINGS' SHADOW ON THE PLANET.
+   *
+   * 'N' is the surface point measured from the centre in planet radii, so the
+   * ray to the star is 'N + s * sun' and the ring plane is the plane through
+   * the centre with the ring normal. Solve for the crossing, look the ring's
+   * own profile up at that radius, and darken the DIRECT light only - the limb,
+   * the airglow and the night side below are not lit through the rings.
+   *
+   * It shows as a thin equatorial band while the star is near the ring plane
+   * and as a broad belt when it is not, which is the seasonal behaviour a real
+   * ringed planet has. On a world seen at opposition the ring hides its own
+   * shadow almost exactly - correct, and worth expecting rather than debugging. */
+  if (ringsLive()) {
+    vec3 rn = normalize(uRingNormal);
+    float sn = dot(sun, rn);
+    // Star in the ring plane: the shadow degenerates to the plane itself.
+    if (abs(sn) > 1e-4) {
+      float s = -dot(N, rn) / sn;
+      if (s > 0.0) {
+        float occ = 1.0 - exp(-uRingDensity * ringProfile(N + sun * s) / clamp(abs(sn), 0.015, 1.0));
+        lit *= 1.0 - 0.82 * occ;
+      }
+    }
+  }
 
   // Limb: atmosphere thickens toward the edge and scatters blue, then red at
   // the terminator where the light path through air is longest. The base term
@@ -368,13 +557,37 @@ void main() {
   col += stars * uStarBrightness;
 
   /* --- bodies -------------------------------------------------------- */
+  vec3 pd = normalize(uPlanetDir);
   float pCover = 0.0;
-  vec3 pCol = planet(dir, normalize(uPlanetDir), uPlanetAngular, pCover);
+  vec3 pCol = planet(dir, pd, uPlanetAngular, pCover);
   float mCover = 0.0;
   vec3 mCol = moon(dir, normalize(uMoonDir), uMoonAngular, mCover);
 
+  /* --- rings, in two passes, because they are on BOTH sides of the planet ---
+   *
+   * From a shepherd moon the near arm is nearer than the disc and the far arm
+   * is behind it, and the same annulus supplies both - so the ring cannot be
+   * composited as one layer. Depth decides: the planet's own near surface is
+   * '|P| - 1' radii away, and a ring hit closer than that is in front.
+   *
+   * The far arm goes under the moon slot as well as under the planet. That is
+   * exact for the planet and an approximation for the moon, and it is stated
+   * rather than hidden: a second body drawn between a ringed planet and its
+   * rings would need its own distance, which the far-field 'moon()' does not
+   * carry. On the one world that has both, Cathedra sits 25.6 degrees off the
+   * ring plane and never touches the arms. */
+  float ringAlpha = 0.0;
+  float ringDepth = -1.0;
+  vec3 ringCol = rings(dir, pd, uPlanetAngular, ringAlpha, ringDepth);
+  float planetNear = max(1.0 / max(sin(uPlanetAngular), 1e-4) - 1.0, 0.0);
+  float inFront = (ringDepth > 0.0 && ringDepth < planetNear) ? 1.0 : 0.0;
+  float aFront = ringAlpha * inFront;
+  float aBack = ringAlpha - aFront;
+
+  col = mix(col, ringCol, aBack);
   col *= (1.0 - clamp(pCover + mCover, 0.0, 1.0));
   col += pCol + mCol;
+  col = mix(col, ringCol, aFront);
 
   /* --- local star ----------------------------------------------------- */
   float sd = dot(dir, normalize(uSunDir));
@@ -382,7 +595,7 @@ void main() {
   float bleed = pow(clamp(sd, 0.0, 1.0), 3000.0) * 1.8
               + pow(clamp(sd, 0.0, 1.0), 400.0) * 0.10
               + pow(clamp(sd, 0.0, 1.0), 40.0) * 0.008;
-  col += uSunColor * (disc * 9.0 + bleed) * (1.0 - clamp(pCover + mCover, 0.0, 1.0));
+  col += uSunColor * (disc * 9.0 + bleed) * (1.0 - clamp(pCover + mCover + aFront, 0.0, 1.0));
 
   gl_FragColor = vec4(max(col * uExposure, 0.0), 1.0);
 }
@@ -578,6 +791,21 @@ const SPACE_DEFAULTS = {
   planetSpinSpeed: 0.006,
   moonDirection: new THREE.Vector3(0.28, 0.46, -0.84),
   moonAngularRadius: 0.055,
+  /* RINGS, OFF. `ringDensity` 0 is the whole switch: the shader's `ringsLive()`
+   * is false, `rings()` returns on its first line and nothing else in the frame
+   * changes. Nine of the ten worlds ship exactly this. The radii and the plane
+   * are still stated so a descriptor that wants rings overrides one field at a
+   * time rather than all six. */
+  ringNormal: new THREE.Vector3(0, 1, 0),
+  /** (inner, outer, gapInner, gapOuter) in PLANET RADII, matching the `ring`
+   *  record in `space/Bodies.js`. Saturn's proportions, as a starting point. */
+  ringRadii: [1.24, 2.27, 1.95, 2.02],
+  ringColor: 0xd8c4a2,
+  /** Normal-incidence optical depth. 0 switches the term off entirely. */
+  ringDensity: 0,
+  /** The particles' albedo, folded into one number the descriptor can trim
+   *  against the grade's bloom threshold. */
+  ringBrightness: 1.0,
   starBrightness: 1.0,
   exposure: 1.0,
 };
@@ -634,6 +862,29 @@ function toVec3(value, fallback) {
   return fallback.clone().normalize();
 }
 
+/**
+ * (inner, outer, gapInner, gapOuter) as a `Vector4`, refusing anything the
+ * shader would divide or compare into nonsense.
+ *
+ * A ring whose outer radius is not beyond its inner one is not a ring, and a
+ * NaN here reaches `ringProfile` and then the bloom pass. Caught at build time
+ * with a name attached rather than as a black frame.
+ */
+function toRingRadii(value, fallback) {
+  if (value === undefined) return new THREE.Vector4(...fallback);
+  const v = Array.isArray(value) && value.length === 4 ? value : null;
+  const ok = v && v.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0) && v[1] > v[0];
+  if (!ok) {
+    /* Warned rather than thrown, and warned for EVERY rejected shape including
+     * the ones that are not arrays at all: a descriptor that hands in nonsense
+     * and silently gets Saturn is a descriptor whose author believes a number
+     * that is not in the build. */
+    console.warn(`[Sky] ring radii ${JSON.stringify(value)} are not four finite numbers with inner < outer - falling back.`);
+    return new THREE.Vector4(...fallback);
+  }
+  return new THREE.Vector4(v[0], v[1], v[2], v[3]);
+}
+
 function toColor(value, fallback) {
   if (value instanceof THREE.Color) return value.clone();
   if (value !== undefined && value !== null) return new THREE.Color(value);
@@ -687,6 +938,11 @@ export function createSky(kind, params = {}) {
         uPlanetSpin: { value: 0 },
         uMoonDir: { value: toVec3(p.moonDirection, preset.moonDirection) },
         uMoonAngular: { value: p.moonAngularRadius },
+        uRingNormal: { value: toVec3(p.ringNormal, preset.ringNormal) },
+        uRingRadii: { value: toRingRadii(p.ringRadii, preset.ringRadii) },
+        uRingColor: { value: toColor(p.ringColor, preset.ringColor) },
+        uRingDensity: { value: p.ringDensity ?? 0 },
+        uRingBrightness: { value: p.ringBrightness ?? 1 },
         uStarBrightness: { value: p.starBrightness },
         uExposure: { value: p.exposure },
       },

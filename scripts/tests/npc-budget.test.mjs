@@ -138,7 +138,48 @@ test("Navigation's neighbour separation walks the WHOLE population, and it is na
   };
   const at24 = run(24);
   const at200 = run(200);
-  assert.ok(at200 > at24, 'the neighbour loop is being optimised away; the measurement is meaningless');
+
+  /* ── COUNTED, NOT TIMED, and this one had to be ──────────────────────────
+   *
+   * This was `assert.ok(at200 > at24, 'the neighbour loop is being optimised
+   * away')` - a bare inequality between two INDEPENDENTLY timed windows, which
+   * is the exact shape `physics-remove.test.mjs` abandoned after it failed a
+   * full-suite run while passing 3/3 alone, and which the header of this file
+   * already predicted would go first. `best()` takes minima, which helps, but
+   * an unlucky small paired with a lucky large still inverts it with nothing
+   * wrong, and when it does the message tells the reader the loop was optimised
+   * away - which will not be true.
+   *
+   * The claim is in the test's own name: the loop walks the WHOLE population.
+   * `Navigation.update`'s separation pass reads `other.isDead` once per
+   * neighbour before it does anything else (`Navigation.js:561`), so counting
+   * those reads counts the iterations exactly. Identical on every machine, and
+   * it goes red for the reason the sentence claims - a loop that broke early, or
+   * an index that replaced it - rather than for the weather.
+   *
+   *   floor     one visit per neighbour per update, at both populations
+   *   achieved  24/24 and 200/200
+   *   ceiling   a loop that stopped at the first hit would read 1
+   */
+  const visits = (n) => {
+    let seen = 0;
+    const npcs = [];
+    for (let i = 0; i < n; i++) {
+      const stub = stubNPC((i % 12) * 2.5 - 15, ((i / 12) | 0) * 2.5 - 15, i);
+      Object.defineProperty(stub, 'isDead', { get() { seen++; return false; } });
+      npcs.push(stub);
+    }
+    const nav = new Navigation({ physics });
+    nav.target.set(30, 0, 30);
+    nav.hasTarget = true;
+    nav.update(DT, new THREE.Vector3(0, 0, 0), 3, new THREE.Vector3(0, 0, -1), npcs);
+    return seen;
+  };
+  for (const n of [24, 200]) {
+    assert.equal(visits(n), n,
+      `one update over ${n} neighbours touched ${visits(n)} of them - the separation pass is not `
+      + 'walking the whole population, so the cost measured below is not the cost that ships');
+  }
   // Per agent-step at 200 neighbours, in microseconds. Generous ceiling.
   assert.ok((at200 * 1000) / 20000 < 5,
     `${((at200 * 1000) / 20000).toFixed(2)} us per agent-step at 200 neighbours`);

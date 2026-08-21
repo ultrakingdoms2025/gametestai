@@ -52,7 +52,22 @@ export const DEFAULT_RULES = Object.freeze({
    * the world's own `npcSpawns` is the whole cast, nothing added.
    */
   crowd: true,
-  /** Water volume scanning and swimming. */
+  /**
+   * Swimming, and the geometry scan that finds swimmable water.
+   *
+   * Two things used to be one thing, and a planet is where they came apart.
+   * `PlanetWorld` set this false for all ten planets and `WaterVolumes` read it
+   * as "do not look for liquid here at all" - which was right while liquid was
+   * scenery and wrong the moment lava had to burn someone. A world that
+   * forbids swimming may still have liquid the player can be killed by.
+   *
+   * So the flag now means exactly what its name says: MAY A BODY SWIM HERE.
+   * It still gates the geometry scan, because that scan only ever finds
+   * swimmable water. It does NOT gate a world's own `liquidField`, which is
+   * installed either way - that is how Cinder tells `Swim` where its lava is
+   * while publishing `swim: false`.
+   * @see ../systems/WaterVolumes.js `rebuildFromWorld`
+   */
   swim: true,
   /**
    * Jumping. Retained in the maze on purpose - disabling climbing does not

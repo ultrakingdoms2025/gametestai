@@ -95,6 +95,56 @@
  *   mottle        object   { scale, amount, color } - large-scale colour drift,
  *                          which is what stops a banded terrain reading as a
  *                          contour map.
+ *   patch         array    [{ region, color, strength?, feather?, grain?,
+ *                          grainScale? }] - COLOUR SOMEWHERE IN PARTICULAR.
+ *
+ *                          The three terms above are all GLOBAL functions of
+ *                          the ground: height, steepness and one isotropic
+ *                          noise. Between them they cannot say "this feature
+ *                          is a different colour", and three planet authors hit
+ *                          the same wall independently:
+ *                            - Tessera's ejecta rays are an ALBEDO streak with
+ *                              essentially no relief, so they were props and
+ *                              nothing else;
+ *                            - Lathe's young crater could not have a bright
+ *                              floor without giving one to every contour at
+ *                              that height on the map;
+ *                            - Carnelian's gorge terrace and its Dust Table sit
+ *                              four metres apart in height and share a band.
+ *
+ *                          A patch is a REGION - the same placement language
+ *                          the props and the minerals use, listed below - and a
+ *                          colour to lerp toward inside it. Reusing the region
+ *                          record is the whole point: a ray and the chips lying
+ *                          along it are one polyline and one width, declared
+ *                          once, so they cannot drift apart. The `yMin`/`yMax`/
+ *                          `slopeMaxDeg`/`slopeMinDeg` filters all apply, which
+ *                          is what lets a crater floor be addressed as "inside
+ *                          this disc AND below this height" - the thing a
+ *                          height band on its own cannot say.
+ *
+ *                            region      any region record (see REGIONS below)
+ *                            color       what to lerp toward
+ *                            strength    0..1, how far. Default 1.
+ *                            feather     metres the edge fades over, measured
+ *                                        INWARD from the region boundary.
+ *                                        Default 0 - a hard stencil, which is
+ *                                        almost never what ground looks like.
+ *                            grain       0..1, how much the SAME fbm the mottle
+ *                                        uses breaks the patch up, so it reads
+ *                                        as scattered material rather than as
+ *                                        paint. Default 0.
+ *                            grainScale  metres per noise cell. Default 24.
+ *
+ *                          Patches are applied in order, AFTER the mottle, and
+ *                          they accumulate: two overlapping records are how a
+ *                          ray is made brighter near the crater it came out of
+ *                          than at its tip.
+ *
+ *                          `clearOfLiquid` and `clearOfPads` are NOT honoured -
+ *                          they are scatter-rejection rules, and refusing to
+ *                          colour ground near a pad would draw a ring round
+ *                          every landing site.
  *
  * sky           object     the air and the light.
  *   kind          string   'daylight' | 'alpine' | 'space' - the dome shader.
@@ -454,6 +504,42 @@ export function definePlanet(d) {
   for (let i = 1; i < palette.bands.length; i++) {
     need(palette.bands[i].upTo > palette.bands[i - 1].upTo, `palette.bands must ascend by upTo (index ${i})`);
   }
+  /* ---- palette.patch -------------------------------------------------- *
+   * Defaults are filled in HERE rather than in the renderer, so the frozen
+   * descriptor a test reads is the same record `_terrainColors` walks and
+   * "what is the strength of this patch" has one answer.                    */
+  const patches = [];
+  const rawPatches = palette.patch ?? [];
+  need(Array.isArray(rawPatches), 'palette.patch must be an array of { region, color, ... }');
+  for (let i = 0; i < rawPatches.length; i++) {
+    const q = rawPatches[i];
+    const at = `palette.patch[${i}]`;
+    need(q && typeof q === 'object', `${at} is missing`);
+    validateRegion(q.region, `${at}.region`);
+    num(q.color, `${at}.color`);
+    const strength = q.strength ?? 1;
+    num(strength, `${at}.strength`);
+    need(strength > 0 && strength <= 1,
+      `${at}.strength is ${strength} - a patch that changes nothing is a record nobody can see`);
+    const feather = q.feather ?? 0;
+    num(feather, `${at}.feather`);
+    need(feather >= 0, `${at}.feather must not be negative`);
+    const grain = q.grain ?? 0;
+    num(grain, `${at}.grain`);
+    need(grain >= 0 && grain <= 1, `${at}.grain must be 0..1, got ${grain}`);
+    const grainScale = q.grainScale ?? 24;
+    num(grainScale, `${at}.grainScale`);
+    need(grainScale > 0, `${at}.grainScale must be positive - it divides`);
+    patches.push(Object.freeze({
+      id: q.id ?? `patch${i}`,
+      region: Object.freeze({ ...q.region }),
+      color: q.color,
+      strength,
+      feather,
+      grain,
+      grainScale,
+    }));
+  }
   const sky = d.sky ?? {};
   need(SKY_KINDS.has(sky.kind ?? 'daylight'), `sky.kind "${sky.kind}" unknown`);
 
@@ -578,12 +664,46 @@ export function definePlanet(d) {
    * Skipped when `common` is the only tier there is. A planet with one grade
    * of ore is making no claim about rarity, and refusing to let it lie on the
    * flat would be refusing the honest case in the name of the dishonest one. */
+  /* ── IT APPLIES TO `rare` AS WELL AS TO THE TOP RUNG, AND IT DID NOT ────
+   *
+   * This used to check only `tiers[tiers.length - 1]`. On a four-tier planet
+   * that is `exotic`, so **a `rare` ore scattered over the whole playfield in
+   * open ground was legal** - the exact thing the sentence below refuses,
+   * permitted one rung down. Found while re-deriving the rare tier's cost rule:
+   * a mutant planet with `rarity: 'rare', terrain: 'plain', region: field` was
+   * accepted by this validator without complaint.
+   *
+   * `rare` and `exotic` are the two rungs that are supposed to be somewhere.
+   * `uncommon` is deliberately NOT included - Cinder's ferrobasalt is 20 m from
+   * a pad on purpose, and a ladder whose second rung already costs a march has
+   * nowhere left to go.
+   *
+   * Still skipped when `common` is the only tier: a planet with one grade of
+   * ore is making no claim about rarity, and refusing to let it lie on the flat
+   * would be refusing the honest case in the name of the dishonest one. */
+  /* THE UNION, and the first draft of this got it wrong in a way worth keeping.
+   *
+   * I replaced "the top rung" with "rare and exotic" — and that silently STOPPED
+   * catching a scattered top rung on a TWO-tier planet, where the top is
+   * `uncommon`. The suite caught it immediately ("Missing expected exception:
+   * the rarest ore lying on the flat"), which is the case doing exactly its job.
+   *
+   * Both halves are true and neither implies the other: the TOP rung must cost
+   * something whatever it is called, AND `rare`/`exotic` must cost something
+   * even when they are not the top. So it is the union of the two. */
+  const SOMEWHERE = new Set(['rare', 'exotic']);
   const top = tiers[tiers.length - 1];
-  for (const m of (top.rarity === 'common' ? [] : top.of)) {
+  const mustBeSomewhere = tiers.length > 1
+    ? [...new Set([
+      ...(top.rarity === 'common' ? [] : top.of),
+      ...tiers.filter((t) => SOMEWHERE.has(t.rarity)).flatMap((t) => t.of),
+    ])]
+    : [];
+  for (const m of mustBeSomewhere) {
     need(m.terrain !== 'plain',
-      `the rarest ore "${m.id}" is in terrain 'plain' - a rare element on the flat is a common element with a better name`);
+      `the ${m.rarity} ore "${m.id}" is in terrain 'plain' - a rare element on the flat is a common element with a better name`);
     need(m.region.shape !== 'field',
-      `the rarest ore "${m.id}" scatters over the whole playfield - put it somewhere`);
+      `the ${m.rarity} ore "${m.id}" scatters over the whole playfield - put it somewhere`);
   }
 
   /* ---- landing sites, and the promise they make ------------------------ */
@@ -617,7 +737,7 @@ export function definePlanet(d) {
     seg,
     gravity: d.gravity,
     terrain: Object.freeze(terrain),
-    palette: Object.freeze(palette),
+    palette: Object.freeze({ ...palette, patch: Object.freeze(patches) }),
     sky: Object.freeze(sky),
     liquid: liquid ? Object.freeze(liquid) : null,
     props: Object.freeze(props),

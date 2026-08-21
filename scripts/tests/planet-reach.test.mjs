@@ -402,8 +402,22 @@ test('the ground the probe walks on IS the collider the game registered', async 
   for (const planet of ALL) {
     const { world, physics } = await built(planet);
     const hf = physics.heightfields;
-    assert.equal(hf.length, 1, `${planet.id}: a planet publishes exactly one heightfield for its whole surface`);
-    const field = hf[0];
+    /* ONE SURFACE, plus the backstop floor.
+     *
+     * This asserted `hf.length === 1` and it meant "the ground is one field",
+     * which is still the claim. What changed is that a planet now also
+     * registers a flat field 6 m under its own terrain minimum and 200 m wider
+     * than the map, so that a body pushed off the edge of the height field
+     * lands on something - `resolveCapsule` at Shoal's deepest sea-bed sample
+     * ejects a capsule 33 cm past the footprint, and from there it used to fall
+     * for ever. It is tagged, so the surface is still exactly identifiable. */
+    const ground = hf.filter((h) => !h.userData?.planetFloor);
+    const floors = hf.filter((h) => h.userData?.planetFloor);
+    assert.equal(ground.length, 1, `${planet.id}: a planet publishes exactly one heightfield for its whole surface`);
+    assert.equal(floors.length, 1, `${planet.id}: no backstop floor - a body off the edge falls for ever`);
+    assert.ok(floors[0].maxY < ground[0].minY,
+      `${planet.id}: the backstop floor at ${floors[0].maxY} is not below the terrain minimum ${ground[0].minY}`);
+    const field = ground[0];
     const err = [];
     let seed = 12345;
     const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);

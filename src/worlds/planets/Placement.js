@@ -96,25 +96,58 @@ function regionBounds(region, half) {
   }
 }
 
-function inRegion(region, x, z) {
+/**
+ * How far INSIDE a region's shape (x, z) lies, in metres. Negative outside.
+ *
+ * `inRegion` is this predicate thresholded at zero, and it is written this way
+ * round rather than the other because a second consumer needs the DISTANCE and
+ * not the boolean: `palette.patch` paints ground colour through the same region
+ * records the props and the minerals are placed with, and a hard-edged albedo
+ * patch is a stencil rather than a ray. Feathering needs an edge to fade from.
+ *
+ * Two implementations of "is this point in this corridor" would be two things
+ * to keep in step, and the first time somebody adjusted a width the bright
+ * streak and the chips lying on it would part company - which is the exact
+ * failure this module's header opens by refusing.
+ *
+ * The filters (`yMin`, `slopeMaxDeg`, `clearOfPads`, ...) are NOT here: they
+ * are properties of the ground rather than of the shape, and each caller has
+ * its own way of measuring them.
+ *
+ * @returns {number} metres inside the boundary; `Infinity` for `field`.
+ */
+export function regionDepth(region, x, z) {
   switch (region.shape) {
     case 'disc': {
       const d = Math.hypot(x - region.x, z - region.z);
-      return d <= region.r && d >= (region.rInner ?? 0);
+      const inner = region.rInner ?? 0;
+      // A disc with no hole has no inner edge to be near, so do not make one -
+      // otherwise a feathered patch would fade out at its own centre.
+      return inner > 0 ? Math.min(region.r - d, d - inner) : region.r - d;
     }
     case 'annulus': {
       const d = Math.hypot(x - region.x, z - region.z);
-      return d >= region.r0 && d <= region.r1;
+      return Math.min(region.r1 - d, d - region.r0);
     }
-    case 'rect':
-      return x >= Math.min(region.x0, region.x1) && x <= Math.max(region.x0, region.x1)
-        && z >= Math.min(region.z0, region.z1) && z <= Math.max(region.z0, region.z1);
+    case 'rect': {
+      const x0 = Math.min(region.x0, region.x1);
+      const x1 = Math.max(region.x0, region.x1);
+      const z0 = Math.min(region.z0, region.z1);
+      const z1 = Math.max(region.z0, region.z1);
+      return Math.min(x - x0, x1 - x, z - z0, z1 - z);
+    }
     case 'corridor': {
       const d = polyDist(x, z, region.pts);
-      return d <= region.width && d >= (region.widthInner ?? 0);
+      const inner = region.widthInner ?? 0;
+      return inner > 0 ? Math.min(region.width - d, d - inner) : region.width - d;
     }
-    default: return true;
+    default: return Infinity;
   }
+}
+
+/** Whether (x, z) falls inside a region's SHAPE. Filters are the caller's. */
+export function inRegion(region, x, z) {
+  return regionDepth(region, x, z) >= 0;
 }
 
 /** Horizontal distance to the nearest liquid surface, or Infinity if none. */

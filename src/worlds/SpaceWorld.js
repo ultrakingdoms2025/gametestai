@@ -617,6 +617,62 @@ export class SpaceWorld extends World {
    * wings were swapped with it so that the fight a player meets FIRST is still
    * the smallest one in the system.
    *
+   * ── AND THEN THE LATHE LEG WAS FLOWN, WHICH IT HAD NOT BEEN ─────────────
+   *
+   * The move above was made without flying the route it moved the toll ONTO.
+   * Its author said so: "the Lathe leg is now ~19 s longer and I did not fly it
+   * end to end; the pigeonhole is forced by the placement test, so the decision
+   * was only which lane pays." Flown, in a real boot of the static build with
+   * the encounters live, stock Kestrel, all six legs in ONE session so the
+   * numbers are comparable:
+   *
+   *     leg        km   zones   Z pressed once   Z re-pressed   again, clean
+   *     cinder     62     1         49.4 s          58.0 s         64.8 s
+   *     lathe     185     2        134.8 s          92.8 s         87.9 s
+   *     cathedra  288     1         95.0 s          91.3 s         94.9 s
+   *
+   * (Two independent boots for the right-hand pair, because a leg time is a
+   * wall-clock number taken in a browser and one session is an anecdote. They
+   * agree within 8%, and in the second the Lathe leg comes in UNDER Cathedra's.)
+   *
+   * Read the re-pressed columns first, because they are the game working as
+   * designed: a pilot who re-engages the drive when the lock clears reaches
+   * Lathe in 88-93 s against the longest leg in the system at 91-95. The
+   * doubled lane costs what the far edge of the volume costs - the top of the
+   * band, not outside it. **Two interdictions on the 185 km run is content, and
+   * the placement stands.**
+   *
+   * ── THE LEFT-HAND COLUMN, AND WHY IT IS NOT A PICKET PROBLEM ─────────────
+   *
+   * A pilot who presses Z once and never again reaches Lathe in 134.8 s - 42%
+   * longer than Cathedra at 288 km, which is precisely the shape of the defect
+   * this whole move was made to remove, wearing a different lane.
+   *
+   * It is tempting to move the toll again, onto the longest lane, and the
+   * arithmetic says that makes it WORSE. The doubled zone cannot leave the
+   * inner system: `space-objectives.test.mjs` derives `KILL_TIERS` rung 2 from
+   * one full sweep of everything inside Cinder's orbit, which is three zones
+   * and nine hostiles, so wherever it goes it is an EARLY toll at 45 km. An
+   * early toll on a drive that is never re-engaged costs the rest of the leg at
+   * the x8 courtesy multiplier's 1,680 m/s instead of the drive's 4,200 - about
+   * 0.36 s per remaining kilometre. On Lathe's 185 km lane that is 50 s; on
+   * Cathedra's 288 km lane it would be 87 s. Every lane long enough to satisfy
+   * the placement test's "doubled route > 2x the shortest" is long enough to
+   * invert against Cathedra, and the only lanes that would not are the two
+   * shortest, which are the tutorial run and the one after it.
+   *
+   * SO THERE IS NO PLACEMENT THAT FIXES IT, and the reason is not the picket:
+   * it is that the transit drive is a LATCH which nothing ever said had come
+   * back. `Piloting.TRANSIT_REASONS.released` is the fix - the lock now says
+   * when it breaks - and it is worth 42 seconds on this lane against the ~19
+   * the move was weighed on.
+   *
+   * Flown with that sentence in the build, it fires exactly once on the whole
+   * dock-Lathe-Cathedra circuit: on the Lathe outer screen, in open space, where
+   * re-engaging is worth about forty-five seconds. The other three locks on that
+   * circuit break inside a gravity well, where the drive would refuse the key
+   * anyway, and it correctly says nothing.
+   *
    * ── THE PICKETS VARY, BECAUSE THE ROUTES ARE NOT THE SAME ROUTE ──────────
    *
    * A lawless belt is not an approach to a body somebody is already working.
@@ -911,7 +967,10 @@ export class SpaceWorld extends World {
          *   - and on the run the PICKETS table already calls "the run worth
          *     defending", which is where a second toll is content rather than
          *     a tax. Nineteen seconds on a 185 km leg is a fifth of what it
-         *     was on a 62 km one.
+         *     was on a 62 km one - and the leg has since been FLOWN rather
+         *     than argued about: 92.8 s with the drive re-engaged, against
+         *     the longest leg in the system at 91.3. The table, and what
+         *     the left-hand column of it cost, are in the method header.
          *
          * It takes Cinder's old wing with it - see the note on `cinder` in
          * PICKETS - because the heavier of the two belongs on the richer run. */

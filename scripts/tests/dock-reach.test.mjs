@@ -717,13 +717,22 @@ test('the bay lip cannot be walked off, and every gate in it leads to a pier', a
    *
    * So: march the whole lip at 0.25 m and, at every station, one of exactly
    * two things must be true — there is pier deck to walk onto, or there is a
-   * solid the height of the balustrade standing in the way. `MOUTH_KERB_H` is
-   * 1.15, over `stepHeight` 0.45 and under the 1.55 m a mantle needs, so
-   * "solid" here means a body is stopped rather than slowed.
+   * solid standing in the way that a body cannot get over.
+   *
+   * ── "CANNOT GET OVER" USED TO MEAN 0.65 m, AND THAT WAS THE HOLE ────────
+   * This case used to accept any solid `stepHeight + 0.2` tall, on the reasoning
+   * in the sentence it printed: that `MOUTH_KERB_H` 1.15 was "over stepHeight
+   * 0.45 and under the 1.55 m a mantle needs". Both halves of that were wrong.
+   * `Climb.MIN_RISE_GROUND` is 1.0, not 1.55, so 1.15 was INSIDE the mantle
+   * band; and a running leap peaks at 1.168 m on this world, so it went over
+   * 1.15 without mantling at all — measured, at ten x positions out of ten, in
+   * a real browser. The bar here is `VOID_GUARD_H` now: the leap apex plus the
+   * mantle reach that follows it, from the player's own constants, which is the
+   * same bar `barrier-leap` holds the mouth and the piers to.
    *
    * MUTATION: shrink the gate list to four piers and this reports the fifth
    * pier's own 7.4 m gate as 30 unguarded stations; publish the balustrade at
-   * 0.40 m and every one of the 640 stations between the gates fails.
+   * its old 1.15 m and every one of the 640 stations between the gates fails.
    * ═══════════════════════════════════════════════════════════════════════ */
   const { cols } = await measure();
   const lip = PLAN.MOUTH_Z;
@@ -745,8 +754,8 @@ test('the bay lip cannot be walked off, and every gate in it leads to a pier', a
      * at least a step-height over the deck, standing in the 0.5 m band the
      * balustrade occupies. */
     const spans = cols.spans(x, lip + 0.25);
-    const wall = spans.some((s) => s[1] >= PLAN.DECK_Y + STEP_UP + 0.2 && s[0] <= PLAN.DECK_Y + 0.3);
-    if (!wall) open.push(`x ${x.toFixed(2)}: no pier and no balustrade - a walk into the void`);
+    const wall = spans.some((s) => s[1] >= PLAN.DECK_Y + PLAN.VOID_GUARD_H - 0.01 && s[0] <= PLAN.DECK_Y + 0.3);
+    if (!wall) open.push(`x ${x.toFixed(2)}: no pier and no balustrade over the running leap - a leap into the void`);
   }
 
   assert.deepEqual(open.slice(0, 12), [],

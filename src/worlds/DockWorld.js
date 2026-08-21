@@ -22,7 +22,7 @@ import {
   STAIR_RISERS, STAIR_RUN, STAIR_W, STAIRS, CROSSINGS, CROSSING_COLUMN_X,
   BERTHS, SECTIONS, COUNTER_X, COUNTERS, APRON_Z, OFFICE, CRANE_CAB, CRANE_RUN, CRANE_WALK,
   SIGNAL_POST, SIGNAL_POST_HD, SIGNAL_RUN, SPARES_PILE, FLOOR_AREA,
-  MOUTH_Z, MOUTH_HW, MOUTH_Y1, MOUTH_KERB_H, MOUTH_SCREEN_H, ROOF_CUT_Z,
+  MOUTH_Z, MOUTH_HW, MOUTH_Y1, MOUTH_KERB_H, MOUTH_SCREEN_H, VOID_GUARD_H, ROOF_CUT_Z,
   PIERS, PIER_HW, PIER_T, PIER_GATE_HW, pierPad, pierOf,
   STAR_SHELL, BODIES,
 } from './dock/YardPlan.js';
@@ -174,8 +174,15 @@ export class DockWorld extends World {
      * a dressing settle nor a fixed-point prop solidify pass is needed. */
     /* The bay is 172 x 162 m; the piers add 76 m of structure past its north
      * lip and Berth Zero's pad reaches z -180. `min.y` is the void floor
-     * `Unstuck` rescues a body below (`Unstuck.js:460`), and it is the reason
-     * a player who gets over a pier rail is recovered rather than lost. */
+     * `Unstuck` rescues a body below (`Unstuck.js:460`).
+     *
+     * IT IS NOT THE EDGE TREATMENT AND MUST NEVER BE CITED AS ONE. This comment
+     * used to end "and it is the reason a player who gets over a pier rail is
+     * recovered rather than lost", which is the same sentence the mouth
+     * balustrade's comment carried while sprint+jump went over it at ten
+     * positions out of ten. The pier rails were 1.1 m against a 1.168 m running
+     * leap and were crossed at 23 of 40 driven runs; they are `VOID_GUARD_H`
+     * now. A rescue is what happens when the world has already failed. */
     this.bounds = new THREE.Box3(
       new THREE.Vector3(-115, -8, -196),
       new THREE.Vector3(115, 34, 74)
@@ -1132,13 +1139,25 @@ export class DockWorld extends World {
    * one to the other, halfway out, is the moment the pier stops being a bridge
    * and becomes a berth.
    *
-   * ── Every pier is railed, and that is not timidity ───────────────────────
+   * ── Every pier is railed, to `VOID_GUARD_H`, and that is not timidity ────
    * There is no ground out here. A body that leaves a pier falls until
    * `Unstuck` notices it is below `bounds.min.y` and puts it back, which works
-   * and is not an edge treatment. `railRun` glazes its infill, so the rail is
-   * something you see the void THROUGH rather than a fence across it, and the
-   * 1.15 m mouth balustrade in `_buildMouth` closes the 164 m of threshold
-   * between the piers for the same reason.
+   * and is not an edge treatment.
+   *
+   * These runs were `RAIL_H` 1.1 m, which is a handrail and not a barrier: the
+   * running leap peaks at 1.168 m on this world and the mantle reaches 2.4 m off
+   * the top of that. Driven with real key events at five piers, two jump phases
+   * each (`.probe/pier-drive.mjs`): a WALK held at 5 of 5 and sprint+jump went
+   * over at 23 of 40, ending in the void every time. So the pier runs pass
+   * `YardPlan.VOID_GUARD_H` — the same derived height, from the same player
+   * constants, as the mouth screen, because it is the same defect and the yard
+   * should not hold two opinions about how high a body can get.
+   *
+   * `railRun` glazes its infill, so the rail is something you see the void
+   * THROUGH rather than a fence across it — 3.9 m of glass over a 1.1 m
+   * handrail line, and the piers, the ships and the starfield read through all
+   * of it. The mouth balustrade in `_buildMouth` closes the 164 m of threshold
+   * between the piers to the same height for the same reason.
    *
    * ── Colliders ─────────────────────────────────────────────────────────────
    * Deck and rails only. The trusses, the mooring bollards, the umbilical
@@ -1193,7 +1212,7 @@ export class DockWorld extends World {
         edgeZ(p.x + s * (PIER_HW - 0.16), spineZ1, MOUTH_Z);
         railRun(put, solid, {
           axis: 'z', a: spineZ1, b: MOUTH_Z, fixed: p.x + s * PIER_HW,
-          y: DECK_Y, facing: -s, accent: 'emCyan',
+          y: DECK_Y, facing: -s, accent: 'emCyan', h: VOID_GUARD_H,
         });
       }
 
@@ -1232,13 +1251,19 @@ export class DockWorld extends World {
        * rule is the yard's rule everywhere else: a rail with nothing arriving
        * at it is a fall with nothing in front of it, and a rail across
        * something that does arrive is a walkway that ends at a fence. */
-      railRun(put, solid, { axis: 'x', a: p.x - p.hw, b: p.x + p.hw, fixed: pad.z1, y: DECK_Y, facing: -1, accent: 'emCyan' });
+      railRun(put, solid, {
+        axis: 'x', a: p.x - p.hw, b: p.x + p.hw, fixed: pad.z1,
+        y: DECK_Y, facing: -1, accent: 'emCyan', h: VOID_GUARD_H,
+      });
       railRun(put, solid, {
         axis: 'x', a: p.x - p.hw, b: p.x + p.hw, fixed: pad.z0, y: DECK_Y, facing: 1, accent: 'emCyan',
-        gaps: [[p.x - PIER_GATE_HW, p.x + PIER_GATE_HW]],
+        gaps: [[p.x - PIER_GATE_HW, p.x + PIER_GATE_HW]], h: VOID_GUARD_H,
       });
       for (const s of [-1, 1]) {
-        railRun(put, solid, { axis: 'z', a: pad.z1, b: pad.z0, fixed: p.x + s * p.hw, y: DECK_Y, facing: -s, accent: 'emCyan' });
+        railRun(put, solid, {
+          axis: 'z', a: pad.z1, b: pad.z0, fixed: p.x + s * p.hw,
+          y: DECK_Y, facing: -s, accent: 'emCyan', h: VOID_GUARD_H,
+        });
       }
 
       /* ── Lighting the walk ────────────────────────────────────────────── */

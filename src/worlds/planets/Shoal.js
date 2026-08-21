@@ -6,21 +6,18 @@
  * anywhere else in the build and there must not be.
  *
  * ==========================================================================
- *  THE ONE CONSTRAINT THAT DESIGNED THIS PLANET
+ *  THE ONE CONSTRAINT THAT DESIGNED THIS PLANET, AND THE DAY IT LIFTED
  * ==========================================================================
  *
- * `PlanetWorld` sets `swim: false`. THE PLAYER CANNOT SWIM. Worse - and this
- * is the part that is not in the rule name - the liquid surface gets NO
- * collider either (`PlanetWorld._buildLiquid` adds meshes and at most one
- * point light, and never touches `this.physics`). So water on a planet is
- * neither swimmable nor solid: it is an opaque sheet with nothing behind it.
+ * This file was written under a rule that no longer holds, and everything
+ * below it is still shaped by that rule, so the rule is recorded first.
  *
- * The consequence for an ocean world is blunt. Every reachability probe in
- * this project - `planet-minerals.test.mjs`, `planet-reach.test.mjs` - marks a
- * lattice cell BLOCKED when the ground under it is below a liquid body's
- * surface, and that is the honest model of what a player can do here: walking
- * into the sea puts you under an opaque ceiling with the daylight still on.
- * So the design rule for Shoal is not "make the swim nice", it is:
+ * WHAT IT WAS. `PlanetWorld` set `swim: false` for all ten planets, and the
+ * liquid surface got no collider either - so water on a planet was neither
+ * swimmable nor solid, an opaque sheet with nothing behind it. Every
+ * reachability probe marked a lattice cell BLOCKED when the ground under it
+ * was below a liquid surface, and that was the honest model. The design rule
+ * for Shoal was therefore not "make the swim nice", it was:
  *
  *   THE WALKABLE WORLD IS EXACTLY THE GROUND STANDING ABOVE y = 6.6, AND
  *   EVERY DEPOSIT THE PRIMARY PAD IS SUPPOSED TO REACH MUST BE ON ONE
@@ -30,6 +27,24 @@
  * archipelago is NOT a scatter of islands: it is ONE landmass - three islands
  * standing on one continuous emergent shelf, joined by two spits - plus one
  * deliberately severed island that exists to be a second landing.
+ *
+ * WHAT IT IS NOW. `liquidSwimmable` moved the decision from the WORLD to the
+ * LIQUID, and this sea says yes. The rule above SURVIVES UNCHANGED as a rule
+ * about ORE - every deposit is still on connected dry ground and the probes
+ * still measure it that way - and it stops being a rule about the PLAYER. Two
+ * things followed, and both are the substance of this file's last pass:
+ *
+ *   THE FENCE STOPPED WORKING AS A DESIGN. 3,122 shore posts held the exotic
+ *   guarantee up on a shore nobody could cross. Take them away and Sundering
+ *   Head, whose header claimed 61-degree cliffs and whose terrain built a
+ *   44-degree ramp, became a walk: abyssite 0 of 7 to 7 of 7 from the primary
+ *   pad. The Head is cut at `edge: 18` now and measures 70.8 degrees at the
+ *   waterline, so the severance is geometry rather than furniture, and Shoal
+ *   carries ZERO barrier posts. @see the SUNDERING HEAD landform.
+ *
+ *   THE SEA BECAME SOMEWHERE TO GO, WHICH MEANT THE BED HAD TO BE SOMEWHERE.
+ *   It was empty, so two fields now stand on it, both inside a measured lung.
+ *   @see `LUNG` and the two underwater prop fields.
  *
  * ==========================================================================
  *  THE MAP, in words
@@ -62,15 +77,26 @@
  *                      with its blend, and it is the only way between the two
  *                      on foot. Cut it and half the planet is an island.
  *
+ *   THE SOUND          the drowned basin the Thread crosses: 6 to 13 m of
+ *                      water between Meridian's bench and the Glassflat, and
+ *                      the one part of the sea bed the planet asks you to
+ *                      swim down and look at. Kelp on it, all of it inside
+ *                      one lungful.
+ *
  *   BARROW             an atoll on the south-eastern corner of the shelf: a
  *                      21 m reef ring round a drowned lagoon whose floor is
- *                      5 m under the sea. Reached by BARROW SPIT, 52 m.
+ *                      6 m under the sea, with coral on it. Reached by BARROW
+ *                      SPIT, 52 m, and then by getting wet.
  *
  *   SUNDERING HEAD     THE SECOND LANDING, and it is an island on purpose. A
  *                      98 m limestone stack standing 52 m out of deep water
- *                      with 61-degree cliffs on every bearing - 91 m of sea
- *                      between it and the nearest walkable ground, and no
- *                      spit. You fly to it or you do not go.
+ *                      on a face that MEASURES 70.8 degrees at its shallowest
+ *                      and 75.9 at its median, with 99.5 m of sea at its
+ *                      narrowest between it and the nearest ground a body can
+ *                      stand on, and no spit. You fly to it or you do not go.
+ *                      This line used to say "61-degree cliffs" and the
+ *                      terrain built 44; see `edge` on the landform, which is
+ *                      the number that had to move.
  *
  *   THE TIDE CHASM     a 42 m slot cut clean across the Head, 13 m wide, its
  *                      floor a dry 10.0 - four metres of air above the sea,
@@ -123,6 +149,28 @@
  * claim is stronger and it is the one the probe ran: 67,127 standable cells on
  * a 2 m lattice, and the two pads between them reach 59,830 and 7,297 - which
  * sum to 67,127 exactly. There is no orphan ground on this planet.
+ *
+ * -- And the FLOOR, which turned out to be two different places --------------
+ *
+ * "-34.7" in the table above is the honest minimum of the height field and it
+ * is a misleading thing to quote as a sea bed, which is what a review of the
+ * swimmable sea did quote it as: "Oxygen is 14 s, so Shoal's deepest bed (40 m)
+ * is not divable." Measured over all 78,961 samples, the bed splits in two:
+ *
+ *     INSIDE `terrain.rim.start` (398)   deepest 16.3 m, and 98.1% of it is
+ *                                        14 m or shallower. This is the sea.
+ *     OUTSIDE it, the 42 m skirt          20 to 40.7 m. This is the map edge
+ *                                        falling away, which is what `rim` is
+ *                                        FOR, and there is nothing on it.
+ *
+ * So the 40 m is not unreachable content, it is the boundary of the world with
+ * water over it. The sea proper is a diver's sea: 66% of the bed inside the rim
+ * is within `LUNG` - four seconds of air still in hand at the bottom - and its
+ * deepest single sample is 16.3 m against a 15.7 m drowning ceiling, which is
+ * six tenths of a second of over-run and five damage. What WAS true is that
+ * every metre of that bed was empty, including the 6 m lagoon inside Barrow
+ * that this file's own map entry describes as something you look into. It is
+ * not empty now. @see `LUNG`, `SOUND`, and the two underwater prop fields.
  *
  * -- Why the sea is ONE disc, and 2,700 m across --------------------------
  *
@@ -258,6 +306,32 @@ const SHELF = 7.25;
 /** The open sea bed. Deep enough that nothing on it ever surfaces - see the header. */
 const BED = -6;
 
+/**
+ * THE LUNG - the deepest bed a diver reaches and comes back from, in metres of
+ * water, and the only number on this planet that is a property of the PLAYER
+ * rather than of the ground.
+ *
+ * `Swim` gives 14 s of oxygen, 2.4 m/s down and 2.1 m/s up. Straight down and
+ * straight back is `d * (1/2.4 + 1/2.1)` = 0.893 d seconds, so the absolute
+ * ceiling is 15.7 m with the last breath spent arriving at the surface. That is
+ * not a budget, it is a drowning. Reserve four seconds to be somewhere:
+ *
+ *     (14 - 4) / 0.893 = 11.2 m
+ *
+ * Nothing this file places under water sits below `SEA - LUNG`, and
+ * `planet-dive.test.mjs` asserts it against `Swim.js`'s own constants
+ * rather than against this comment, so the day somebody retunes the lung the
+ * assertion moves with it and this planet goes red instead of quietly growing
+ * a kelp bed nobody can reach.
+ *
+ * Those three constants are NOT exported (`ENTER_DEPTH` is, and is imported by
+ * every probe that models a shore). The test therefore reads them out of
+ * `Swim.js`'s source, which is the same thing `planet-envelope.test.mjs` does
+ * to the two reach probes' slope ceilings. Exporting them would be better and
+ * `Swim.js` belongs to somebody else.
+ */
+const LUNG = 11.2;
+
 /* -- The three benches that make one landmass ----------------------------- */
 
 /** Meridian's bench: the north-west lobe of the shelf. */
@@ -273,6 +347,24 @@ const HEAD = { x: 300, z: -290, r: 98 };
 const HEAD_Y = 52;
 /** The Tide Chasm's floor: 42 m down from the Head's top, 4.0 m above the sea. */
 const CHASM_Y = 10.0;
+
+/* -- The drowned half of the map ------------------------------------------ */
+
+/**
+ * THE SOUND - the drowned basin the Thread crosses, and the one part of the sea
+ * bed this planet asks you to go and look at.
+ *
+ * Not authored: FOUND. The bed here is the untouched noise field between
+ * Meridian's bench and the Glassflat, and it was measured on a 10 m grid before
+ * this record existed - 6 to 13 m of water over about a 250 m spread, with the
+ * shallow end running right up under the Thread's middle legs. A disc of r 140
+ * about (46, -104) is what covers the part of it inside `LUNG`, and the depth
+ * window on the field does the rest of the shaping.
+ */
+const SOUND = { x: 46, z: -104, r: 140 };
+
+/** Barrow's drowned lagoon: floor at 0.0, so 6.0 m of water, and 34 m across. */
+const LAGOON = { x: 306, z: 288, r: 38 };
 
 /* ------------------------------------------------------------------ */
 /* The features, as polylines                                          */
@@ -444,16 +536,69 @@ export const SHOAL = definePlanet({
       { kind: 'plateau', x: 306, z: 288, r: 56, y: 21, edge: 88 },
 
       /**
-       * SUNDERING HEAD. The severed island.
+       * SUNDERING HEAD. The severed island, and the one number on this planet
+       * that was a claim rather than a measurement until the sea got deep.
        *
-       * 52 m of top over a bed at -6 across 54 m of edge is a maximum face of
-       * 61 degrees, and that is the point of the number rather than a side
-       * effect: the reach lattice refuses anything over 38, so there is no
-       * bearing on which a body can climb out of the water onto this island
-       * even if it could get to the water. The severance is geometric, not
-       * asserted.
+       * ── WHAT `edge: 54` ACTUALLY BUILT ───────────────────────────────────
+       *
+       * This block used to say "52 m of top over a bed at -6 across 54 m of
+       * edge is a maximum face of 61 degrees ... the reach lattice refuses
+       * anything over 38, so there is no bearing on which a body can climb out
+       * of the water onto this island". Every clause of that was wrong in a
+       * different way, and the sea hid all three for as long as it was a fence.
+       *
+       *   THE 61 WAS THE PEAK, NOT THE FACE. `plateauAt` blends with a
+       *   smoothstep, whose gradient is `1.5 * fall / edge` at the MIDDLE of
+       *   the annulus and zero at both ends. 61 degrees was the middle of the
+       *   fall, at y ~ 23 - forty metres above anything a swimmer can touch.
+       *
+       *   THE WATERLINE IS THE PART THAT MATTERS, and it sits at t ~ 0.78 down
+       *   the same curve, where the gradient has already fallen to about
+       *   `0.9 * fall / edge`. MEASURED on the collision heightfield: the
+       *   shallowest cell in the band a swimmer can climb out into was
+       *   **44.2 degrees**, the median 53.3, and 412 of the 575 cells in that
+       *   band were standing room.
+       *
+       *   38 WAS THE WRONG CEILING. `Grounding.WALKABLE_NORMAL_Y` puts the
+       *   real one at `acos(0.55)` = 56.63 degrees. 44 is a wall at 38 and a
+       *   walk at 56.63, which is why ten authors read a cliff here.
+       *
+       * The consequence, once the sea became swimmable, was measured rather
+       * than argued: abyssite from the Glassflat pad went 0 of 7 to 7 of 7 -
+       * swim across, wade ashore on the west flank at (250, -162), walk the
+       * ramp, walk the chasm floor. A `liquid.guard` circle held it for one
+       * build; this is the terrain change that made the guard unnecessary and
+       * deleted it.
+       *
+       * ── WHY 18, AND WHY THE AUTHORED FIGURE OVERSHOOTS ───────────────────
+       *
+       * The gate has to hold at REAL + jump + swim, and the number it has to
+       * beat is the gradient at the WATERLINE, not the peak. Solving the
+       * smoothstep at the height the sea cuts it:
+       *
+       *     edge 54   waterline 44.2 deg   MEASURED   412 exit cells standable
+       *     edge 40   waterline 51.5 deg   MEASURED    29 exit cells standable
+       *     edge 32   waterline 59.5 deg   MEASURED     0
+       *     edge 18   waterline 70.8 deg   MEASURED     0, median face 75.9
+       *
+       * 32 is where the gate closes and 18 is where it closes with 14 degrees
+       * in hand. The margin is not timidity: THE COLLIDER IS A DISCRETISED
+       * HEIGHTFIELD - 880 m over 280 segments, a 3.143 m cell - so what a
+       * probe can measure is rise per cell however sharp the analytic profile
+       * is. Lathe's author authored a 64.3-degree flank and measured 54. Every
+       * figure in the table above is read off the same bilinear sample the
+       * physics heightfield hands out, at the same 2 m central difference the
+       * reach lattice uses, so it is what the game has rather than what the
+       * arithmetic promised.
+       *
+       * What 18 costs: the Head's footprint falls from r 152 to r 116, so
+       * there is 36 m more open water round it and the stack reads as a stack
+       * instead of a cone. What it does not cost is the inside - the Sunder
+       * Deck pad sits at d 81 and the Sunder Stair turns at d 96, both inside
+       * the 98 m top, so abyssite stays 7 of 7 from its own pad on every
+       * envelope. Re-measured in both directions; see the header.
        */
-      { kind: 'plateau', x: HEAD.x, z: HEAD.z, r: HEAD.r, y: HEAD_Y, edge: 54 },
+      { kind: 'plateau', x: HEAD.x, z: HEAD.z, r: HEAD.r, y: HEAD_Y, edge: 18 },
 
       /** The wrack bar, on the Glassflat. */
       { kind: 'ridge', pts: WRACK, width: 30, height: 2.2, taper: 0.25 },
@@ -584,16 +729,16 @@ export const SHOAL = definePlanet({
      * change, and the tester who walked it wrote "one flat salmon-brown hue".
      * Value structure alone is a black-and-white photograph of a planet.
      * `planet-atmosphere.test.mjs` now puts a floor of 40 degrees of hue
-     * spread and 15 points of saturation spread on the table. This one runs
-     * 153 degrees and 68 points, and none of it is arbitrary - it is the six
-     * things you can actually stand on, in order:
+     * spread and 15 points of saturation spread on the table. This one clears
+     * both easily, and none of it is arbitrary - it is the things you can
+     * actually stand on, in order:
      *
      *   y   5.6  #123a3e  hue 186  the drowned bed. Never seen (the sea is
      *                              opaque) but it is what the shoreline lerps
      *                              FROM, so it has to be a plausible wet dark.
-     *   y   7.0  #3f7a6a  hue 164  the wet strand: weed and saturated sand in
-     *                              the first metre above the waterline.
-     *   y   9.6  #d9cda6  hue  44  the flats. Bleached shell sand, and the
+     *   y   6.4  #3f7a6a  hue 164  the wet strand: weed and saturated sand.
+     *   y   7.45 #a89a74  hue  44  DAMP SHELL SAND - the ripple troughs.
+     *   y   8.2  #d9cda6  hue  44  the flats: bleached crest sand, and the
      *                              lightest thing at eye level anywhere on the
      *                              planet - which is what makes the ring of
      *                              shelf round each island read at 400 m.
@@ -606,21 +751,56 @@ export const SHOAL = definePlanet({
      *                              value in the frame and the silhouette holds
      *                              against a bright sky.
      *
-     * The value structure is kept (dark at the water, bright at the top) and
-     * every remaining degree of freedom is spent on hue and saturation, which
-     * on Cinder were both flat and both free.
+     * ── WHY 7.0 AND 9.6 MOVED: THE GLASSFLAT WAS ONE FLAT GREEN ──────────
+     *
+     * A tester standing on the primary pad wrote that the near field was one
+     * uniform green, which is the exact defect this table was built against,
+     * arriving in a table with 153 degrees of hue in it. MEASURED, off the
+     * same lerp `PlanetWorld._terrainColors` runs:
+     *
+     *   the pad's own ground is y 7.77, and the old anchors either side of it
+     *   were 7.0 (#3f7a6a, a teal) and 9.6 (#d9cda6, a sand). f came out 0.30,
+     *   so the pad rendered **#879980** - and the whole near field, 15,600 of
+     *   the 17,000 dry samples within 160 m, sat between #598370 and #9fa78a.
+     *
+     * NEITHER OF THOSE IS A BAND. They are the 70/30 blend between two anchors
+     * 2.6 m apart, in a place where the ground only varies by one metre, and a
+     * lerp from teal to tan passes straight through mud-green. The table was
+     * not lying about the flats; the flats' colour simply never appeared
+     * anywhere, because no ground on this planet is at y 9.6.
+     *
+     * So this is a boundary nudge and not a repaint - every hex above except
+     * the new #a89a74 is the one that was already there:
+     *
+     *   7.0 -> 6.4    the strand becomes the strand: 0.4 m of shore, which is
+     *                 the same window `nacre` is scattered in (6.75..7.22) and
+     *                 the last thing above the sea that is genuinely wet.
+     *   NEW 7.45      damp shell sand, at the bottom of the Glassflat's own
+     *                 dune range.
+     *   9.6 -> 8.2    the bleached sand, at the TOP of it. The dunes run 0.85 m
+     *                 (0.30 global + 0.55 on the flat), so the pair now
+     *                 brackets the ripples instead of spanning three metres of
+     *                 nothing: troughs read damp, crests read bleached, and
+     *                 "ripple-marked sand" is a thing you can see rather than a
+     *                 line in a comment. The pad itself lands at f 0.43,
+     *                 **#bdb18d** - warm pale sand.
+     *
+     * The `mottle` is untouched and is the other half of why this works. A
+     * teal stain at 0.58 over a teal base is invisible; over sand it is weed.
      *
      * ── The two numbers this is not free to move ─────────────────────────
      * The atmosphere test asserts the haze is LIGHTER and no more SATURATED
      * than the mean of this table, measured in the working (linear) space
-     * `THREE.Color.getHSL` reports in. Measured: ground L 0.306 / S 0.428
-     * against a fog at L 0.519 / S 0.261. Both hold with room, and the test
-     * re-derives them from this table every run rather than from a copy.
+     * `THREE.Color.getHSL` reports in. The new anchor is a mid sand, so it
+     * lifts the ground mean slightly and the fog has to stay clear of it;
+     * re-measured, both hold with room, and the test re-derives them from this
+     * table every run rather than from a copy.
      */
     bands: [
       { upTo: 5.6, color: 0x123a3e },
-      { upTo: 7.0, color: 0x3f7a6a },
-      { upTo: 9.6, color: 0xd9cda6 },
+      { upTo: 6.4, color: 0x3f7a6a },
+      { upTo: 7.45, color: 0xa89a74 },
+      { upTo: 8.2, color: 0xd9cda6 },
       { upTo: 19, color: 0xb08a5c },
       { upTo: 34, color: 0x6b7a4a },
       { upTo: 58, color: 0x8c9298 },
@@ -681,28 +861,57 @@ export const SHOAL = definePlanet({
     /**
      * ── The fog, and the horizon it has to build ──────────────────────────
      *
-     * `half` is 440, so the playfield diagonal is 1,244 m. 1,370 is 1.10x it:
-     * the far corner is fully extinguished, and NOT further, because the
-     * terrain mesh ends at +/-440 and fog is what hides the edge of it. At
-     * 2,000 the rim of the playfield would be a quarter fogged from the middle
-     * of the map and you would see the land stop. `CONFIG.render.far` is 2,000
-     * so this also stays inside the far plane, which is the ceiling the
-     * atmosphere test puts on it.
+     * `half` is 440, so the playfield diagonal is 1,244 m. The atmosphere test
+     * puts a FLOOR there (fog shorter than the diagonal makes the far half of
+     * the map one flat colour) and a CEILING at `CONFIG.render.far` = 2,000
+     * (fog longer than the far plane leaves geometry popping at the clip).
+     * 300..1,900 sits between them, at 1.53x the diagonal.
      *
-     * `near` 110 rather than Cinder's 120 because aerial perspective IS the
-     * subject on a world made of water and distance: at 490 m - Glassflat Deck
-     * to Coral Crown - the Crown sits under 25% haze, which is what puts air
-     * between the player and the only silhouette on the planet.
+     * ── IT WAS 110..1,370, AND THE PLANET WAS A GREY-BLUE WASH ───────────
      *
-     * The colour is lifted and DESATURATED off the ground, and both halves are
-     * asserted against the palette's own bands rather than by eye. Measured in
-     * the working (linear) space: ground L 0.306 / S 0.428, fog L 0.519 /
-     * S 0.261. A marine haze is lighter and greyer than the sand it hangs
-     * over, exactly as a dust sky is lighter and greyer than its basalt - and
-     * a sea-coloured fog over a sea-coloured sea would be Cinder's "big dark
-     * room" repeated in blue, which is the one thing this planet cannot be.
+     * A reviewer looking at the overview wrote that the islands read
+     * near-monochrome from altitude and the sea washed to grey-blue. Linear
+     * fog, so that is arithmetic rather than taste. `shoot-planets.mjs` puts
+     * the overview camera at `[half*0.78, half*1.15, half*0.78]`, which is
+     * 701 m from the middle of the map:
+     *
+     *                       at 490 m    at 701 m    at the 1,244 m corner
+     *     110..1,370          30%         47%            90%
+     *     300..1,900          12%         25%            59%
+     *
+     * Forty-seven per cent haze over the centre of the map is not aerial
+     * perspective, it is a wash, and everything under it converges on one
+     * colour - which is the same failure as Cinder's flat salmon-brown
+     * arriving by a different route.
+     *
+     * ── WHY THIS PLANET MAY HAVE THE LONGEST FOG OF THE EIGHT WITH AIR ───
+     *
+     * The old comment's reason for stopping at 1.10x was "the terrain mesh
+     * ends at +/-440 and fog is what hides the edge of it". THAT IS NOT TRUE
+     * HERE, and this file says so twice already: `terrain.rim` drops the map
+     * edge 26 m, the sea bed there is 20-34 m under the surface, and the SEA
+     * runs on to 2,700 m. The edge of the land is not merely fogged on Shoal,
+     * it is UNDERWATER, and the thing beyond it is more ocean. Nine planets
+     * need a fog that hides where the ground stops. This one does not, and
+     * paying the price of one anyway cost it its islands.
+     *
+     * The seam that does have to disappear is where the sea meets the dome,
+     * and that is still handled: the disc is clipped at the 2,000 m far plane,
+     * where 1,900 has already reached 100%, and `sky.hazeColor` is the same
+     * hex as this colour so the two agree exactly at the horizon.
+     *
+     * `near` 300 rather than 110 for the other half of it: at 490 m - the
+     * Glassflat Deck to Coral Crown sight line, the only silhouette on the
+     * planet - the Crown now sits under 12% haze instead of 30%, which is air
+     * rather than gauze.
+     *
+     * The colour is unchanged, lifted and DESATURATED off the ground, and both
+     * halves are asserted against the palette's own bands rather than by eye:
+     * a marine haze is lighter and greyer than the sand it hangs over, and a
+     * sea-coloured fog over a sea-coloured sea would be Cinder's "big dark
+     * room" repeated in blue.
      */
-    fog: { color: 0xa8c2d2, near: 110, far: 1370 },
+    fog: { color: 0xa8c2d2, near: 300, far: 1900 },
     /**
      * Ambient 0.62 - the highest on any planet so far, and it is earned rather
      * than lazy: two thirds of the visible hemisphere from anywhere on this
@@ -734,6 +943,22 @@ export const SHOAL = definePlanet({
   liquid: {
     name: 'sea water',
     /**
+     * WATER, AND THEREFORE SWIMMABLE. The rule the header opens with -
+     * "`PlanetWorld` sets `swim: false`. THE PLAYER CANNOT SWIM" - is no
+     * longer true, and this is the field that ends it. `PlanetWorld` now asks
+     * the LIQUID (`liquidSwimmable`) rather than asserting for all ten planets
+     * at once, so Cinder's lava stays out of bounds and this sea does not.
+     *
+     * The design rule the header states - the walkable world is exactly the
+     * ground above y 6.6, and the ore the primary pad should reach is all on
+     * one connected piece of it - survives intact, and it was RE-MEASURED
+     * rather than assumed, on every pad and every seam, at all four envelopes.
+     * The one place it did not survive was Sundering Head, and that was fixed
+     * in the terrain rather than fenced: see the landform, and the note below
+     * about the `guard` this record no longer carries.
+     */
+    kind: 'water',
+    /**
      * ONE BODY. See the header for why it is one, why it is 2,700 m, and why
      * its `wobble` is zero.
      *
@@ -759,6 +984,43 @@ export const SHOAL = definePlanet({
     /** Null on purpose - see the header. Water does not emit. */
     glowLight: null,
     lethal: false,
+    /*
+     * NO `guard`, AND THAT IS A CHANGE RATHER THAN AN OMISSION.
+     *
+     * This record carried one for a build: a declared 150 m barrier circle
+     * round Sundering Head, 683 shore posts, because the Head's `plateau`
+     * edge was a 44-degree ramp and not the cliff this file claimed, and the
+     * exotic guarantee died the moment the sea became swimmable. Its author
+     * wrote the honest version of what it was: "The guard is a wall, not a
+     * fix. Steepening that `edge` and deleting the guard is the real change."
+     *
+     * That is what happened. `edge` is 18, the face measures 70.8 degrees at
+     * its shallowest above the wading line against a 56.63-degree envelope,
+     * and there is no cell anywhere round the Head that a swimmer can climb
+     * out onto. The severance is geometric again, which is what the header
+     * always said it was. Re-measured with the guard GONE, at REAL + jump +
+     * swim: abyssite 0 of 7 from `glassflat` and from `kelphold`, 7 of 7 from
+     * `sunder`, every other seam unchanged.
+     *
+     * AND THE GUARD HAD ALREADY STOPPED HOLDING, which is the part worth
+     * keeping. Measured on the tree this change was made in, with the guard
+     * still in place and the terrain still at `edge: 54`:
+     *
+     *     shoal/abyssite envelope (d): 7 of 7 nodes walkable from glassflat
+     *     at 734 m (envelope (a) said 0)                       <<< BROKEN
+     *
+     * Somebody moved a barrier post - not this file - and the 150 m circle
+     * silently stopped being a fence, in the one build between the guard being
+     * written and this being read. That is the whole argument against holding
+     * a design guarantee up with furniture: the furniture belongs to somebody
+     * else, and a wall that fails fails quietly. A 70-degree cliff belongs to
+     * this file and cannot be moved by anybody who is not editing it.
+     *
+     * So Shoal's whole 3 km of shore is now open water you swim in, with zero
+     * barrier posts on it - the state `barrier-leap.test.mjs` derives rather
+     * than lists, so deleting this field moved this planet from its WALLED
+     * list to its OPEN one by itself.
+     */
   },
 
   /* ---------------------------------------------------------------- *
@@ -767,8 +1029,25 @@ export const SHOAL = definePlanet({
    * Every region carries a `yMin` and none carries `clearOfLiquid`, for the
    * reason in the header: on a planet whose sea covers the playfield,
    * `clearOfLiquid` rejects every sample and `yMin` is both the working guard
-   * and the truthful question. A boulder under the sea is not merely wasted -
-   * it is an invisible collider in water the player should not be in.
+   * and the truthful question.
+   *
+   * ── THE SENTENCE THAT USED TO END THAT PARAGRAPH ────────────────────────
+   *
+   * It read: "A boulder under the sea is not merely wasted - it is an
+   * invisible collider in water the player should not be in." That was exact
+   * while `PlanetWorld` set `swim: false`. It is now backwards. The last two
+   * fields in this list are DELIBERATELY under water, and the rule that
+   * replaces it is the depth one:
+   *
+   *   NOTHING GOES BELOW `SEA - LUNG`, AND NOTHING STICKS OUT OF THE WATER.
+   *
+   * The first half is reachability - see `LUNG`. The second half is the one
+   * that has to be checked by hand, because `scatter` places a POINT and
+   * `PlanetProps` picks the height off the size range afterwards, with no idea
+   * how deep the water over it is: a 8 m kelp stipe on a bed 2 m down is a
+   * tree standing in the sea. So each underwater field's `yMax` and its
+   * tallest `h` are chosen together, and the sum is under SEA on every
+   * instance. The kelp: bed at or under 0.0, tallest 5.4, top 5.4 < 6.0.
    *
    * `spires`, `growth` and `slabs` were being added to `PROP_KINDS` by another
    * agent while this file was written; they are present in
@@ -863,6 +1142,137 @@ export const SHOAL = definePlanet({
       glowStrength: 0.55,
       collide: true,
     },
+
+    /* ---- UNDER THE WATER ------------------------------------------- *
+     *
+     * THE DEFECT THESE TWO FIELDS CLOSE, AND THE MEASUREMENT THAT SIZED THEM.
+     *
+     * Reported after the sea became swimmable: "Oxygen is 14 s, so Shoal's
+     * deepest bed (40 m) is not divable - the deep sea bed is still content
+     * nobody sees." Built and not reachable is this project's signature
+     * defect, and on the ocean world it would be landing on the sea itself.
+     *
+     * So the bed was measured rather than argued about, over all 78,961
+     * samples of the height field:
+     *
+     *     water depth     share of the wet map     cumulative
+     *      0 -  2 m            4.9%                   4.9%
+     *      2 -  5 m            6.3%                  11.2%
+     *      5 -  8 m            7.9%                  19.1%
+     *      8 - 11 m           28.2%                  47.3%
+     *     11 - 14 m           28.8%                  76.1%
+     *     14 - 18 m            4.8%                  81.0%
+     *     18 - 26 m            5.6%                  86.6%
+     *     26 - 40.7 m         13.4%                 100.0%
+     *
+     * TWO THINGS FELL OUT OF IT AND THEY POINT OPPOSITE WAYS.
+     *
+     *   THE 40 m IS THE MAP EDGE, NOT THE SEA BED. Every sample deeper than
+     *   about 16 m is outside `terrain.rim.start` (398) - it is the skirt this
+     *   file already describes as doing no visual work, the world falling away
+     *   at its boundary. INSIDE the rim the deepest water on Shoal is 16.3 m
+     *   and 98.1% of it is 14 m or less. There is nothing down the 40 m and
+     *   there never was: it is not unreachable content, it is the edge.
+     *
+     *   THE REST OF THE BED WAS REACHABLE ALL ALONG AND EMPTY. 66% of the bed
+     *   inside the rim is within `LUNG`, four seconds of air still in hand, and
+     *   there was not one object on any of it. The lagoon at Barrow is the
+     *   sharpest version: a 6 m basin inside a reef ring, reached on foot down
+     *   Barrow Spit, and the header's own line about it is "You look into a
+     *   lagoon." You looked into it and it was bare sand.
+     *
+     * THE DESIGN THAT FOLLOWS FROM THAT: the shallow shelf carries the
+     * interest, and the deep water is a reason not to go there rather than a
+     * place with things in it. The reason is already in the engine and was
+     * nowhere in this file - `PlanetWorld` swaps the fog for `UNDER_FAR` = 26 m
+     * of the liquid's own colour the moment the camera goes under, so below
+     * about 12 m Shoal is a dark blue room with a clock running in it. That is
+     * a good thing for an ocean to be. It is only a defect if something is
+     * hidden in it, so nothing is.
+     *
+     * BOTH FIELDS ARE ENTIRELY INSIDE THE LUNG AND INSIDE THE 26 m SIGHT LINE,
+     * and `planet-dive.test.mjs` measures both claims off `Swim.js`'s own
+     * constants.                                                             */
+    {
+      id: 'kelp',
+      kind: 'growth',
+      /**
+       * THE SOUND'S KELP BEDS. `growth` again, on a bed instead of a hillside,
+       * and the same geometry answers both because a stipe with a frond mass
+       * on it IS a trunk with a canopy - the difference is the droop, which is
+       * 0.9 here against the scrub's 0.5 because kelp hangs.
+       *
+       * -- The depth window is doing three jobs at once ---------------------
+       *
+       *   yMin -5.2   is `SEA - LUNG` exactly: 11.2 m of water, the deepest a
+       *               diver reaches with four seconds still in hand.
+       *   yMax 0.0    is 6.0 m of water, and it is what keeps the tallest
+       *               stipe (5.4 m) under the surface. Kelp poking out of the
+       *               sea would be the CAD version of a forest.
+       *   slope 26    keeps it off the drowned flanks, where it would be
+       *               growing out of a wall.
+       *
+       * 200 at 5 m in a disc of r 140 places 200 - measured, 100%, against the
+       * suite's 90% floor. The disc is bigger than the bed because only the
+       * part of it inside the window is eligible; shrinking it to fit would
+       * make the count depend on a boundary nobody can see.
+       *
+       * `collide: false`, and that is the one deliberate difference from every
+       * other field on this planet. A kelp bed you cannot swim through is a
+       * wall in the middle of the only water on the planet worth swimming in,
+       * and `growth`'s collider is the TRUNK - a 10 cm stipe is not something
+       * a body should be stopped by in three dimensions.
+       */
+      region: { shape: 'disc', x: SOUND.x, z: SOUND.z, r: SOUND.r, yMin: SEA - LUNG, yMax: 0.0, slopeMaxDeg: 26 },
+      count: 200, spacing: 5,
+      size: { trunk: [0.06, 0.15], h: [2.6, 5.4], canopy: [0.9, 2.4], droop: 0.9 },
+      tint: [0x2f4a2c, 0x3d5a30, 0x24361f, 0x486234],
+      trunkTint: [0x4a4a30, 0x3a3a26],
+      collide: false,
+    },
+    {
+      id: 'lagoon_coral',
+      kind: 'spires',
+      /**
+       * BARROW LAGOON'S FLOOR - the one enclosed piece of water on the planet,
+       * 4.7 to 6.0 m down, walked to down Barrow Spit and then swum into.
+       *
+       * The height ceiling is the whole record. The lagoon's floor sits at 0.0
+       * and its inner wall climbs to 1.3 within the region, so a 3.4 m head on
+       * the shallowest of them tops out at 4.7 - more than a metre under the
+       * sea. A coral head breaking the surface here would not merely look
+       * wrong, it would be a standable island in the middle of a basin the
+       * reach probes have always modelled as drowned.
+       *
+       * ── THE PROPORTIONS ARE THE DIFFERENCE BETWEEN CORAL AND A MENHIR ────
+       *
+       * The first pass copied `coral_heads`' shape off the Glassflat -
+       * `h [2.2, 7.5]` on a `base [0.45, 1.5]`, about 5:1 - and photographed
+       * as a field of standing stones on a sea floor. That aspect is right for
+       * something standing in AIR at the edge of a tidal flat, where it is a
+       * silhouette; 4 m down in water whose fog is 26 m of dark blue there is
+       * no silhouette, and all that is left is the mass. So this is 1.5:1:
+       * squat, wide-footed bommies, with more lean so no two read as the same
+       * cone.
+       *
+       * The SPACING is then set by the wider foot, exactly as the chimneys'
+       * was: a 1.6 m maximum base gives about a 2.6 m collider footprint, so
+       * 5 m of spacing leaves a 2.4 m lane and the floor stays something you
+       * can swim down into rather than a reef maze. The count is what the
+       * region holds at that spacing - measured, 40 places 39, and it
+       * saturates around 40, which is why it asks for 40 and not the 56 that
+       * fitted when the heads were spikes.
+       *
+       * `collide: true`, unlike the kelp: coral is rock, the collider is the
+       * spire's foot, and nothing in the field is tall enough to reach the
+       * waterline where the swim flood would see it.
+       */
+      region: { shape: 'disc', x: LAGOON.x, z: LAGOON.z, r: LAGOON.r, yMin: -0.6, yMax: 5.2, slopeMaxDeg: 34 },
+      count: 40, spacing: 5,
+      size: { h: [1.0, 3.4], base: [0.6, 1.6], lean: 0.24, facets: 6 },
+      tint: [0xc98a6e, 0xd9a377, 0xb4705f, 0xe0c08f],
+      collide: true,
+    },
   ],
 
   /* ---------------------------------------------------------------- *
@@ -877,10 +1287,13 @@ export const SHOAL = definePlanet({
    *
    * The last row is the design in one line, and it is the shape Volcanic.js
    * proved: THE EXOTIC TIER IS A SECOND LANDING, NOT A LONGER WALK. Sundering
-   * Head is 91 m of open water from the nearest walkable ground on every
-   * bearing and its shores are 61-degree cliffs, so abyssite is not "far" from
-   * Glassflat Deck - it is unreachable at any distance, and the probe measures
-   * that rather than asserting it.
+   * Head is 99.5 m of open water at its narrowest from the nearest ground a
+   * body can stand on, and its shores measure 70.8 degrees at their shallowest
+   * against a 56.63-degree envelope, so abyssite is not "far" from Glassflat
+   * Deck - it is unreachable at any distance, and the probe measures that
+   * rather than asserting it. It went 0 of 7 to 7 of 7 for one build when the
+   * sea became swimmable and those two numbers were 91 and 44; see the
+   * landform, which is where the fix is.
    *
    * `size` is the node radius AND the hold volume (`max(1, round(size*1.6))`),
    * so the cheap ore is the bulky ore: three cubic metres of brine salt for 30
@@ -910,7 +1323,7 @@ export const SHOAL = definePlanet({
        * common tier and correct for this one: brine salt is an evaporite and
        * every tidal flat on the planet grows it. The 14-degree ceiling is what
        * keeps it off Sundering Head - the Head's shore passes through this
-       * height window inside a 61-degree cliff, and without the ceiling forty
+       * height window inside a 70-degree cliff, and without the ceiling forty
        * nodes would scatter partly onto ground no pad can reach. */
       region: { shape: 'field', yMin: 6.9, yMax: 9.8, slopeMaxDeg: 14, clearOfPads: 7 },
     },
@@ -989,7 +1402,7 @@ export const SHOAL = definePlanet({
        * of a 13 m trench with vertical walls, with a seam down there nothing
        * could walk to - and the fix there was `widthInner` to address the lips
        * instead. Here the floor is the reachable part, because the Sunder
-       * Stair was built to it, and the lips are the 61-degree part.
+       * Stair was built to it, and the lips are the 68-degree part.
        *
        * `yMin: 8.5` is the sea guard. There is no `clearOfLiquid` on this
        * planet (see the header) and the chasm floor's 10.0 is the smallest

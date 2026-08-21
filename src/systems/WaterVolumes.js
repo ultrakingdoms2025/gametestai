@@ -27,6 +27,30 @@ import { allows } from '../worlds/WorldRules.js';
  * Depth queries are deliberately *not* answered here. How deep the water is at
  * a point is a question about the river bed, which is collision data; `Swim`
  * owns the physics reference and probes it.
+ *
+ * ## 3. A world may ANSWER instead of being scanned
+ *
+ * The inference above exists because the hand-built worlds have no authored
+ * water data. The ten planets do: `PlanetWorld` knows every disc and ribbon it
+ * poured, to the wobble on the outline. Scanning them would be worse in every
+ * dimension - Shoal's sea is a 128-triangle fan 2,700 m across, so the 8 m
+ * lattice would decompose it into roughly 450,000 `Box3` volumes for a shape
+ * `liquidSurfaceAt` answers exactly, in constant memory, with the same
+ * function the mesh was built from.
+ *
+ * So a world may publish `liquidField` and be believed:
+ *
+ *   {
+ *     surfaceAt(x, z) -> number | null   the highest liquid surface there
+ *     swimmable, lethal, dps, cause      what being in it does to a body
+ *     name, worldId
+ *   }
+ *
+ * That is also the only way the non-swimmable liquids get in at all. Lava and
+ * acid are not water and `rules.swim` is false on their worlds, so the scan
+ * never runs there - but `Swim` still has to know where Cinder's lava is in
+ * order to burn anything standing in it. The field is installed whether or not
+ * swimming is permitted; only the GEOMETRY SCAN is gated.
  */
 
 /** Material or object names that mean water. */
@@ -91,6 +115,12 @@ export class WaterVolumes {
     this._grid = new Map();
     /** Which world the current volumes came from, so a rebuild can be skipped. */
     this._worldId = null;
+    /**
+     * The active world's own answer for its liquid, when it publishes one.
+     * @type {{surfaceAt:(x:number,z:number)=>number|null, swimmable:boolean,
+     *         lethal:boolean, dps:number, cause:string, name:string}|null}
+     */
+    this._field = null;
     /** Per-world summary, kept so `describe()` can be read back from the console. */
     this._report = [];
 
@@ -135,6 +165,30 @@ export class WaterVolumes {
     this._grid.clear();
     this._report.length = 0;
     this._worldId = id;
+    this._field = null;
+
+    /* THE WORLD'S OWN ANSWER FIRST, and installed even when swimming is
+     * forbidden here: a lava planet publishes `swimmable: false` and still has
+     * to tell `Swim` where the lava is, or nothing can burn for standing in
+     * it. @see the header, section 3. */
+    const field = world?.liquidField ?? null;
+    if (field && typeof field.surfaceAt === 'function') {
+      this._field = {
+        surfaceAt: field.surfaceAt,
+        swimmable: !!field.swimmable,
+        lethal: !!field.lethal,
+        dps: Number.isFinite(field.dps) ? Math.max(0, field.dps) : 0,
+        cause: field.cause ?? 'liquid',
+        name: field.name ?? 'liquid',
+      };
+      console.info(
+        `[WaterVolumes] ${id ?? '?'}: the world answers for its own liquid - `
+        + `${this._field.name}, swimmable=${this._field.swimmable}`
+        + (this._field.lethal ? `, LETHAL at ${this._field.dps} dps` : '')
+      );
+      this._announce();
+      return;
+    }
 
     if (!world?.group) {
       console.info('[WaterVolumes] no world group - no swimmable water');
@@ -183,6 +237,10 @@ export class WaterVolumes {
    */
   contains(point) {
     if (!point) return false;
+    if (this._field) {
+      const s = this._field.surfaceAt(point.x, point.z);
+      return s !== null && point.y <= s + SURFACE_EPS;
+    }
     const list = this._grid.get(cellKey(Math.floor(point.x / CELL), Math.floor(point.z / CELL)));
     if (!list) return false;
     for (let i = 0; i < list.length; i++) {
@@ -202,6 +260,10 @@ export class WaterVolumes {
    * @returns {number|null} null when there is no water above this point
    */
   surfaceYAt(x, z) {
+    if (this._field) {
+      const s = this._field.surfaceAt(x, z);
+      return Number.isFinite(s) ? s : null;
+    }
     const list = this._grid.get(cellKey(Math.floor(x / CELL), Math.floor(z / CELL)));
     if (!list) return null;
     let best = null;
@@ -223,12 +285,44 @@ export class WaterVolumes {
     return s === null ? null : s - DEPTH;
   }
 
+  /**
+   * WHAT IS AT (x, z), AND WHAT IT DOES TO A BODY.
+   *
+   * The one query `Swim` asks. It has to be one query rather than two because
+   * "how high is the surface" and "will this kill me" have to come from the
+   * SAME body: answering them separately is how a swimmer ends up floating at
+   * the height of a lake while taking damage from a lava flow forty metres
+   * away, and on Cinder those two are the same descriptor.
+   *
+   * Scanned water is swimmable and harmless, which is what it has always been
+   * in the four hand-built worlds - there is no lava in a medieval moat.
+   *
+   * @param {number} x
+   * @param {number} z
+   * @returns {{surfaceY:number, swimmable:boolean, lethal:boolean, dps:number,
+   *            cause:string, name:string}|null} null where there is no liquid
+   */
+  liquidAt(x, z) {
+    const f = this._field;
+    if (f) {
+      const s = f.surfaceAt(x, z);
+      if (!Number.isFinite(s)) return null;
+      return { surfaceY: s, swimmable: f.swimmable, lethal: f.lethal, dps: f.dps, cause: f.cause, name: f.name };
+    }
+    const s = this.surfaceYAt(x, z);
+    if (s === null) return null;
+    return { surfaceY: s, swimmable: true, lethal: false, dps: 0, cause: 'water', name: 'water' };
+  }
+
   /** Human-readable summary of what the last scan found. */
   describe() {
     return {
       world: this._worldId,
       surfaces: this._report.slice(),
       volumes: this._volumes.length,
+      field: this._field
+        ? { name: this._field.name, swimmable: this._field.swimmable, lethal: this._field.lethal, dps: this._field.dps }
+        : null,
     };
   }
 
@@ -237,6 +331,7 @@ export class WaterVolumes {
     this._offs.length = 0;
     this._volumes.length = 0;
     this._grid.clear();
+    this._field = null;
   }
 
   /* ================================================================ */

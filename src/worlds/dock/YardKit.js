@@ -43,36 +43,61 @@ export const RAIL_H = 1.1;
  *                              seen from the walkway rather than from the void
  * @param {string} o.accent     emissive material key for the top bead
  * @param {Array<[number,number]>} [o.gaps]  openings in the run's own axis
+ * @param {number} [o.h]        top of the handrail above `y`. Defaults to
+ *                              {@link RAIL_H}; pass `YardPlan.VOID_GUARD_H` for
+ *                              a run with vacuum behind it. @see the block below
  */
 export function railRun(put, solid, o) {
-  const { axis, a, b, fixed, y, facing = 1, accent = 'emCyan', gaps = [] } = o;
+  const { axis, a, b, fixed, y, facing = 1, accent = 'emCyan', gaps = [], h = RAIL_H } = o;
+  /**
+   * A RUN IS AS TALL AS WHAT IS BEHIND IT, and the height is a parameter for
+   * exactly that reason.
+   *
+   * 1.1 m is a handrail: waist-high, what a hand rests on, and the right height
+   * for a catwalk in a shed where going over it means landing on the floor. It
+   * is NOT a barrier — a running leap peaks at 1.168 m on this world and a
+   * mantle reaches 2.4 m off the top of that — and the piers, which are 900 m
+   * of walkway with nothing under them, were guarded at it. Driven for real,
+   * sprint+jump crossed 23 of 40 pier runs. So `h` exists and the piers pass
+   * `VOID_GUARD_H`.
+   *
+   * The 1.1 m line SURVIVES on a tall run: it is drawn as the intermediate rail
+   * rather than as the top one, so the thing your hand rests on is where it has
+   * always been and the glass carries on above it. Without that a 3.9 m run is
+   * one unbroken sheet with a handrail out of reach over your head.
+   */
+  const tall = h > RAIL_H + 0.2;
   for (const [s0, s1] of railSpans(Math.min(a, b), Math.max(a, b), gaps)) {
     const c = (s0 + s1) / 2;
     const len = s1 - s0;
     if (len < 0.2) continue;
+    // Stanchions every 2.4 m, so the run reads as built rather than extruded.
+    const n = Math.max(2, Math.round(len / 2.4));
+    /* Intermediate rails: the half-height one every run has had, plus the old
+     * handrail line where the run is tall enough for it to be a different
+     * height from the top. */
+    const mids = tall ? [h * 0.5, RAIL_H] : [h * 0.5];
+    const glassH = h - 0.24;
     if (axis === 'x') {
-      put('steelDark', boxGeo(len, 0.11, 0.11, 1), c, y + RAIL_H, fixed);
-      put(accent, boxGeo(len, 0.05, 0.05, 1), c, y + RAIL_H + 0.085, fixed);
-      put('steelDark', boxGeo(len, 0.09, 0.09, 1), c, y + RAIL_H * 0.5, fixed);
-      // Stanchions every 2.4 m, so the run reads as built rather than extruded.
-      const n = Math.max(2, Math.round(len / 2.4));
+      put('steelDark', boxGeo(len, 0.11, 0.11, 1), c, y + h, fixed);
+      put(accent, boxGeo(len, 0.05, 0.05, 1), c, y + h + 0.085, fixed);
+      for (const m of mids) put('steelDark', boxGeo(len, 0.09, 0.09, 1), c, y + m, fixed);
       for (let i = 0; i <= n; i++) {
-        put('steelDark', boxGeo(0.1, RAIL_H, 0.1, 1), s0 + (len * i) / n, y + RAIL_H / 2, fixed);
+        put('steelDark', boxGeo(0.1, h, 0.1, 1), s0 + (len * i) / n, y + h / 2, fixed);
       }
-      put('glass', new THREE.PlaneGeometry(len, RAIL_H - 0.24),
-        c, y + (RAIL_H - 0.24) / 2 + 0.06, fixed, facing > 0 ? 0 : Math.PI);
-      solid(c, y + RAIL_H / 2, fixed, len / 2, RAIL_H / 2, 0.09);
+      put('glass', new THREE.PlaneGeometry(len, glassH),
+        c, y + glassH / 2 + 0.06, fixed, facing > 0 ? 0 : Math.PI);
+      solid(c, y + h / 2, fixed, len / 2, h / 2, 0.09);
     } else {
-      put('steelDark', boxGeo(0.11, 0.11, len, 1), fixed, y + RAIL_H, c);
-      put(accent, boxGeo(0.05, 0.05, len, 1), fixed, y + RAIL_H + 0.085, c);
-      put('steelDark', boxGeo(0.09, 0.09, len, 1), fixed, y + RAIL_H * 0.5, c);
-      const n = Math.max(2, Math.round(len / 2.4));
+      put('steelDark', boxGeo(0.11, 0.11, len, 1), fixed, y + h, c);
+      put(accent, boxGeo(0.05, 0.05, len, 1), fixed, y + h + 0.085, c);
+      for (const m of mids) put('steelDark', boxGeo(0.09, 0.09, len, 1), fixed, y + m, c);
       for (let i = 0; i <= n; i++) {
-        put('steelDark', boxGeo(0.1, RAIL_H, 0.1, 1), fixed, y + RAIL_H / 2, s0 + (len * i) / n);
+        put('steelDark', boxGeo(0.1, h, 0.1, 1), fixed, y + h / 2, s0 + (len * i) / n);
       }
-      put('glass', new THREE.PlaneGeometry(len, RAIL_H - 0.24),
-        fixed, y + (RAIL_H - 0.24) / 2 + 0.06, c, facing > 0 ? Math.PI / 2 : -Math.PI / 2);
-      solid(fixed, y + RAIL_H / 2, c, 0.09, RAIL_H / 2, len / 2);
+      put('glass', new THREE.PlaneGeometry(len, glassH),
+        fixed, y + glassH / 2 + 0.06, c, facing > 0 ? Math.PI / 2 : -Math.PI / 2);
+      solid(fixed, y + h / 2, c, 0.09, h / 2, len / 2);
     }
   }
 }

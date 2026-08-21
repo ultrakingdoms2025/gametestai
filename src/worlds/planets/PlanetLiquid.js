@@ -80,6 +80,183 @@ export function liquidKind(liquid) {
 }
 
 /**
+ * WHAT THE LIQUID IS, which is not the same question as what its shader is.
+ *
+ * `liquidKind` above answers "which way round do the four colour channels
+ * mean things", and it has exactly two answers because the material has
+ * exactly two behaviours. That is a RENDERING fact and it must not move:
+ * Cinder's look was calibrated against it.
+ *
+ * What a body does to a player is a different fact with more answers. Sallow
+ * pours acid, which renders through the water branch (`emissive` 0.16, no
+ * incandescence) and must burn anything that steps in it. Reading swimmability
+ * off `liquidKind` would therefore have made acid swimmable, and inventing a
+ * third rendering kind would have re-tuned Cinder to say something about
+ * Sallow. So the substance is its own axis, defaulting to the rendering kind
+ * for every descriptor that does not name one.
+ *
+ * @param {object|null} liquid
+ * @returns {'water'|'lava'|'acid'}
+ */
+export function liquidSubstance(liquid) {
+  const k = liquid?.kind;
+  if (k === 'water' || k === 'lava' || k === 'acid') return k;
+  return liquidKind(liquid);
+}
+
+/**
+ * Damage per second a lethal liquid does when nothing names a rate.
+ *
+ * Two numbers, and the gap between them is the whole point - the brief was
+ * "Cinder's lava should KILL; Sallow's acid should HURT", and those are
+ * different mechanics rather than different numbers on the same one.
+ *
+ *   lava  240 dps against 100 hp is dead in 0.42 s. There is no version of
+ *         standing in a lava lake that is survivable, and a rate that leaves
+ *         a player time to scramble out teaches that there is.
+ *   acid   14 dps is 7.1 s from full health to dead, and Sallow's deepest pool
+ *         is 3.0 m across 132 m. You can cross the shallows, you cannot
+ *         loiter, and the HUD's damage flash is the whole instruction.
+ */
+const DEFAULT_DPS = Object.freeze({ lava: 240, acid: 14, water: 0 });
+
+/**
+ * THE HAZARD, WIRED AT LAST.
+ *
+ * `liquid.lethal` has been in the schema since the first planet, the
+ * descriptor docs say it is there "so the day it turns true nothing has to be
+ * re-plumbed", and until now NOTHING IN THE BUILD READ IT - not `PlanetWorld`,
+ * not `Placement`, not a system. It was reported in the census precisely so
+ * that its dormancy was visible. This is the function that ends that.
+ *
+ * `dps` is 0 whenever `lethal` is false, so a caller can multiply by it
+ * unconditionally and a non-lethal liquid costs nothing. Every field is
+ * finite by construction: a descriptor that writes `hazard: { dps: NaN }`
+ * gets the default rather than a NaN reaching `applyDamage`.
+ *
+ * @param {object|null} liquid
+ * @returns {{ kind: 'water'|'lava'|'acid', lethal: boolean, dps: number, cause: string }}
+ */
+export function liquidHazard(liquid) {
+  const kind = liquidSubstance(liquid);
+  const lethal = !!liquid?.lethal;
+  const named = liquid?.hazard?.dps;
+  const dps = lethal
+    ? Math.max(0, Number.isFinite(named) ? named : (DEFAULT_DPS[kind] ?? 20))
+    : 0;
+  return { kind, lethal, dps, cause: liquid?.hazard?.cause ?? kind };
+}
+
+/**
+ * CAN A PLAYER BE IN THIS?
+ *
+ * Per LIQUID, never per world - that distinction is the whole of this change.
+ * `PlanetWorld` used to set `swim: false` for all ten planets at once, which
+ * is a statement about Cinder's lava that Shoal's ocean was made to sign.
+ *
+ * Water you can enter and swim. Lava and acid you cannot: they are lethal, and
+ * a lethal liquid you can swim in is a bath with a timer, which reads as a
+ * mechanic rather than as "do not go in there".
+ *
+ * @param {object|null} liquid
+ * @returns {boolean}
+ */
+export function liquidSwimmable(liquid) {
+  if (!liquid?.bodies?.length) return false;
+  return liquidSubstance(liquid) === 'water' && !liquid.lethal;
+}
+
+/**
+ * SHORES THAT STAY WALLED EVEN THOUGH THE LIQUID IS SWIMMABLE.
+ *
+ * ── Why this exists, measured ────────────────────────────────────────────
+ * Shoal's SUNDERING HEAD is a second landing: 91 m of sea between it and the
+ * nearest walkable ground, the abyssite seam in the Tide Chasm on it, and its
+ * own pad and stair as the only way in. Its header calls it "52 m out of deep
+ * water with 61-degree cliffs on every bearing".
+ *
+ * That is not what the height field builds. The Head is a `plateau` at y 52
+ * with `edge: 54`, i.e. 52 m of fall over 54 m of run - a **44-degree ramp**.
+ * At the LEGACY probe envelope (38 deg) 44 is a wall, which is why ten authors
+ * measured it and every one of them read a cliff. At the REAL envelope -
+ * `acos(Grounding.WALKABLE_NORMAL_Y)`, 56.63 deg, which is what the game
+ * stands on - it is a walk.
+ *
+ * Today nothing notices, because the sea is a fence and no body can ever
+ * stand at the foot of that ramp. Make the sea swimmable and it can. MEASURED,
+ * flooding the real world at 56.63 deg with swim crossings: abyssite from the
+ * primary pad goes **0 of 7 to 7 of 7**, and the traced route is swim, wade
+ * ashore on the Head's west flank at (250, -162), then walk the ramp and the
+ * chasm floor to every node. The guarantee ten planets are designed around
+ * dies on the spot.
+ *
+ * The honest fix is terrain - the Head should have the cliffs its header
+ * claims - and that is not this change's to make. So the descriptor may name
+ * the stretches of ITS OWN shore that stay walled, and say why. Shoal names
+ * one; nothing else in the system does. With it: abyssite 0 of 7 from the two
+ * mainland pads and 7 of 7 from `sunder`, which is the design, and the other
+ * ~2,440 posts that used to fence the open sea are gone.
+ *
+ * @param {object|null} liquid
+ * @returns {Array<{x:number,z:number,r:number,why:string}>}
+ */
+export function liquidGuards(liquid) {
+  const raw = liquid?.guard;
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const g of raw) {
+    /* Non-finite here would be a guard that silently matches nothing (or
+     * everything), i.e. a gate that is not there and a build that says it is. */
+    if (!Number.isFinite(g?.x) || !Number.isFinite(g?.z) || !(g?.r > 0)) {
+      throw new Error(`[PlanetLiquid] liquid.guard needs finite x, z and a positive r - got ${JSON.stringify(g)}`);
+    }
+    out.push({ x: g.x, z: g.z, r: g.r, why: g.why ?? '' });
+  }
+  return out;
+}
+
+/**
+ * DOES THE SHORE AT (x, z) GET A WALL?
+ *
+ * TRUE for every metre of a lethal liquid's edge - that is what the barrier is
+ * FOR now - and for the guarded stretches of a swimmable one. FALSE everywhere
+ * else, which after this change is most of the liquid in the game: 5,362 of
+ * the system's 6,829 posts stood on shores that are now open water you can
+ * swim in, and 683 of the remaining ones are Shoal's single guard.
+ *
+ * Returned as a CLOSURE because the caller asks it once per candidate post -
+ * 3,122 times on Shoal alone - and the guard list would otherwise be rebuilt
+ * (and re-validated) on every one of them. The one-shot `liquidWalled` below
+ * delegates to it, so a probe and the builder cannot answer differently.
+ *
+ * @param {object|null} liquid
+ * @returns {(x:number, z:number) => boolean}
+ */
+export function liquidWallMask(liquid) {
+  if (!liquid?.bodies?.length) return () => false;
+  if (!liquidSwimmable(liquid)) return () => true;
+  const guards = liquidGuards(liquid);
+  if (!guards.length) return () => false;
+  return (x, z) => {
+    for (let i = 0; i < guards.length; i++) {
+      const g = guards[i];
+      if (Math.hypot(x - g.x, z - g.z) <= g.r) return true;
+    }
+    return false;
+  };
+}
+
+/**
+ * The same question asked once. @see liquidWallMask
+ * @param {object|null} liquid
+ * @param {number} x
+ * @param {number} z
+ */
+export function liquidWalled(liquid, x, z) {
+  return liquidWallMask(liquid)(x, z);
+}
+
+/**
  * The depth term's settings, with per-kind defaults.
  *
  * `amount` 0 removes the term from the shader entirely (see

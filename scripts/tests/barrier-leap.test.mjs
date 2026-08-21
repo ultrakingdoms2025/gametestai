@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { CONFIG } from '../../src/core/Config.js';
 import { PLANETS } from '../../src/worlds/planets/index.js';
 import { worldGravityRatio } from '../../src/worlds/WorldRules.js';
+import { liquidSwimmable, liquidGuards } from '../../src/worlds/planets/PlanetLiquid.js';
 import {
   MOUTH_Z, MOUTH_HW, MOUTH_KERB_H, MOUTH_SCREEN_H, MOUTH_LEAP_APEX,
   PIERS, PIER_GATE_HW, DECK_Y,
@@ -26,6 +27,12 @@ import {
  *     walk          stopped at the waterline on 8 of 8.
  *     sprint+jump   OVER on 7 of 8, landing at y -1.96 to -8.15, 14 m under a
  *                   sea the player takes no damage in and cannot swim in.
+ *
+ *   THAT SHORE NO LONGER EXISTS. Shoal's sea is swimmable, so getting into it
+ *   is the point rather than the defect, and the 3,122 posts that used to
+ *   fence it are down to the 683 that guard Sundering Head. The measurement
+ *   above is kept because it is still what a wall has to survive - it is just
+ *   that far fewer places now need one. See `WALLED_IDS` below.
  *
  *   The Lodestar Yard's mouth rail, ten x positions 16 m inside the bay
  *     walk          stopped at z -103.2 at 10 of 10.
@@ -103,6 +110,10 @@ const BASE_APEX = (P.jumpVelocity * P.jumpVelocity) / (2 * -P.gravity);
 const apexOn = (planet) => BASE_APEX * Math.pow(Math.max(1e-3, worldGravityRatio(planet) ?? 1), -1 / 3);
 /** The running leap's apex is the standing apex times LEAP_LIFT SQUARED. */
 const leapApexOn = (planet) => apexOn(planet) * LEAP_LIFT * LEAP_LIFT;
+/** `PlanetWorld.POST_HALF`: half-depth of a shore station's PLINTH. */
+const POST_HALF = num(SRC_PLANET, 'POST_HALF');
+/** `PlanetWorld.CAP_HALF`: half-depth of the CAP that carries the wall's top. */
+const CAP_HALF = num(SRC_PLANET, 'CAP_HALF');
 
 test('the leap constants the barriers are sized from are the ones the player uses', () => {
   /* THE WHOLE FILE RESTS ON THESE THREE NUMBERS, and two of them are duplicated
@@ -195,6 +206,42 @@ async function planet(id) {
 
 const LIQUID_IDS = Object.keys(PLANETS).filter((id) => PLANETS[id].liquid?.bodies?.length);
 
+/**
+ * The shores that are still supposed to stop a body, and the ones that are not.
+ *
+ * When this file was written every waterline in the game was fenced, so
+ * "liquid planet" and "walled planet" were the same list. They are not any
+ * more: water is entered and swum, and the fence survives round LETHAL liquid
+ * (Cinder's lava, Sallow's acid, which now burn as well as block) and round
+ * the one stretch of swimmable shore a descriptor declares a guard on (Shoal's
+ * Sundering Head).
+ *
+ * Derived rather than listed, so a descriptor that turns `lethal` on or off,
+ * or adds a guard, moves this list with it instead of going quietly red.
+ * @see ../../src/worlds/planets/PlanetLiquid.js `liquidWalled`
+ */
+const WALLED_IDS = LIQUID_IDS.filter(
+  (id) => !liquidSwimmable(PLANETS[id].liquid) || liquidGuards(PLANETS[id].liquid).length > 0
+);
+const OPEN_IDS = LIQUID_IDS.filter((id) => !WALLED_IDS.includes(id));
+
+test('a shore with nothing to guard has no wall on it at all', async () => {
+  /* THE COUNTERWEIGHT to every case in this file. A wall that is not there
+   * cannot be leapt, and 5,362 of the system's 6,829 shore posts are now not
+   * there - 3,122 of them round an ocean, 1,500 round a river 1.21 m deep and
+   * 442 round two brine pans 38 cm deep. This asserts they stayed gone. */
+  assert.ok(OPEN_IDS.length > 0, 'every liquid in the game is still fenced');
+  for (const id of OPEN_IDS) {
+    const { world, physics } = await planet(id);
+    const posts = physics.colliders.filter((c) => c.userData?.planetLiquidBarrier);
+    assert.equal(posts.length, 0,
+      `${id}: ${posts.length} shore posts on a shore that is swimmable and unguarded`);
+    assert.equal(world.census.liquid.barrierPosts, 0);
+    assert.equal(world.rules.swim, true, `${id}: an unwalled shore that cannot be swum is a hole, not a beach`);
+  }
+  console.log(`   open shores: ${OPEN_IDS.join(', ')}   walled: ${WALLED_IDS.join(', ')}`);
+});
+
 test('every shore post out-tops the running leap FROM THE BANK, not from the water', async () => {
   /* THE MEASUREMENT IS TAKEN OFF THE REAL COLLIDERS AND THE REAL HEIGHT FIELD.
    *
@@ -206,7 +253,7 @@ test('every shore post out-tops the running leap FROM THE BANK, not from the wat
    * was built from. */
   const rows = [];
   const failures = [];
-  for (const id of LIQUID_IDS) {
+  for (const id of WALLED_IDS) {
     const { world, physics } = await planet(id);
     const leap = leapApexOn(world.planet);
     /* THE TWO REACHES ADD. The mantle is offered on the jump press and measures
@@ -217,8 +264,51 @@ test('every shore post out-tops the running leap FROM THE BANK, not from the wat
      * @see the design block in PlanetWorld.js */
     const need = leap + MANTLE_MAX;
 
-    const posts = physics.colliders.filter((c) => c.userData?.planetLiquidBarrier);
+    /* ── THE GATE IS THE CAP'S TOP, AND ONLY THE CAP'S ─────────────────
+     *
+     * A shore station is two members now: a 2.2 m PLINTH that stops a body
+     * walking, and a 0.5 m CAP that carries the top of the wall and refuses a
+     * free climber's mantle because there is nowhere on half a metre to put
+     * one. The plinth deliberately stops at head height, so measuring ITS top
+     * against a running leap would be measuring the wrong member and would
+     * fail on a wall that holds.
+     *
+     * Nothing goes unmeasured for that: the plinths are asserted below, on the
+     * property that is theirs - that every one of them is capped, and that the
+     * cap over it is the thing this case measures.
+     * @see src/worlds/PlanetWorld.js, the design block above POST_HALF */
+    const all = physics.colliders.filter((c) => c.userData?.planetLiquidBarrier);
+    const posts = all.filter((c) => c.userData?.barrierCap);
+    const plinths = all.filter((c) => !c.userData?.barrierCap);
     assert.ok(posts.length > 0, `${id}: no shore posts at all`);
+    assert.equal(posts.length, plinths.length,
+      `${id}: ${posts.length} caps against ${plinths.length} plinths - a station is missing a member`);
+
+    /* EVERY PLINTH IS CAPPED. A plinth on its own is a 2.2 m square top with
+     * standing room on it, which is exactly the shape this whole change exists
+     * to delete, so "there is a cap directly over it" is the plinth's own
+     * invariant and it is checked here rather than assumed. */
+    const capAt = new Map();
+    for (const c of posts) {
+      const m = c.matrix.elements;
+      capAt.set(`${m[12].toFixed(3)}/${m[14].toFixed(3)}`, c);
+    }
+    let orphans = 0;
+    for (const c of plinths) {
+      const m = c.matrix.elements;
+      const pTop = m[13] + c.halfExtents.y;
+      let found = null;
+      for (const [, cap] of capAt) {
+        const cm = cap.matrix.elements;
+        if (Math.hypot(cm[12] - m[12], cm[14] - m[14]) > POST_HALF) continue;
+        if (Math.abs((cm[13] - cap.halfExtents.y) - pTop) > 0.02) continue;
+        found = cap;
+        break;
+      }
+      if (!found) orphans++;
+    }
+    assert.equal(orphans, 0,
+      `${id}: ${orphans} plinths have no cap sitting on them - a bare plinth top is 2.2 m of standing room`);
 
     let worst = Infinity;
     let worstAt = null;
@@ -258,7 +348,7 @@ test('every shore post out-tops the running leap FROM THE BANK, not from the wat
 });
 
 test('the shore census reports the gate, and no post was clamped short', async () => {
-  for (const id of LIQUID_IDS) {
+  for (const id of WALLED_IDS) {
     const { world } = await planet(id);
     const c = world.census.liquid;
     const leap = leapApexOn(world.planet);
@@ -365,4 +455,319 @@ test('the mouth collider IS that tall, everywhere except the pier gates', async 
   assert.ok(openGates >= PIERS.length * PIER_GATE_HW,
     'the pier gates have been fenced - the screen has closed the route as well as the hole');
   world.dispose?.();
+});
+
+/* ================================================================== */
+/* 3. THE PIERS                                                        */
+/* ================================================================== */
+
+test('every pier edge out-tops the running leap and the mantle, all 900 m of it', async () => {
+  /* THE SAME DEFECT AS THE MOUTH, LEFT OPEN WHEN THE MOUTH WAS CLOSED.
+   *
+   * The agent that raised the mouth screen wrote the note this case exists to
+   * answer: "the pier rails (RAIL_H 1.1 m) are the same defect as the mouth
+   * was. I only touched the mouth." They were. `dock-reach` leaned on the
+   * sentence "a player who gets over a pier rail is recovered rather than
+   * lost" - which is exactly the sentence the mouth's own comment carried while
+   * sprint+jump crossed it at ten positions out of ten - and the piers run out
+   * into open space, so going over one is a fall into the void with a rescue
+   * system for an edge treatment.
+   *
+   * DRIVEN, before the fix, with real key events at five piers and two jump
+   * phases each (`.probe/pier-drive.mjs`):
+   *
+   *     walk          held at 5 of 5.                the case that always passed
+   *     sprint+jump   OVER at 23 of 40, into the void.
+   *
+   * This is the mouth's own march moved onto the piers: the real colliders out
+   * of a real build, walked along every metre of every rail line, requiring a
+   * solid standing on the deck whose top clears the running leap PLUS the
+   * mantle that follows it. The one opening that must stay open is the gate in
+   * each pad's bay-side run, which is where the spine arrives.
+   *
+   * MUTATION: put `h: RAIL_H` back on any one of the six `railRun` calls in
+   * `_buildPiers` and this reports that run, metre by metre.
+   */
+  const THREE = await import('three');
+  harness(THREE);
+  const { Physics } = await import('../../src/physics/Physics.js');
+  const { DockWorld } = await import('../../src/worlds/DockWorld.js');
+  const PLAN = await import('../../src/worlds/dock/YardPlan.js');
+  const physics = new Physics();
+  const world = new DockWorld({
+    physics,
+    scene: new THREE.Scene(),
+    bus: { on: () => () => {}, emit() {} },
+    engine: {
+      renderer: {
+        capabilities: { getMaxAnisotropy: () => 4, isWebGL2: true },
+        initTexture() {}, getContext: () => ({}),
+        getRenderTarget: () => null, setRenderTarget() {}, render() {}, clear() {},
+      },
+      camera: new THREE.PerspectiveCamera(), onFrameUpdate: () => () => {}, onResize: () => () => {},
+    },
+    materials: { get: () => new THREE.MeshStandardMaterial(), dispose() {} },
+  });
+  world.physics = physics;
+  await world.build(() => {});
+
+  /* Every solid box that stands ON the pier deck, by its axis-aligned bounds.
+   * Nothing here is rotated; if one ever is, this over-estimates its footprint,
+   * which can only hide a hole rather than invent one - so the console line
+   * below prints the lowest guard found as well as the failures. */
+  const boxes = [];
+  for (const c of physics.colliders) {
+    if (!c.solid || c.type !== 'box') continue;
+    const m = c.matrix.elements;
+    const hx = Math.abs(m[0]) * c.halfExtents.x + Math.abs(m[4]) * c.halfExtents.y + Math.abs(m[8]) * c.halfExtents.z;
+    const hy = Math.abs(m[1]) * c.halfExtents.x + Math.abs(m[5]) * c.halfExtents.y + Math.abs(m[9]) * c.halfExtents.z;
+    const hz = Math.abs(m[2]) * c.halfExtents.x + Math.abs(m[6]) * c.halfExtents.y + Math.abs(m[10]) * c.halfExtents.z;
+    if (m[14] + hz > PLAN.MOUTH_Z + 1) continue;             // north of the mouth only
+    if (m[13] - hy > DECK_Y + P.stepHeight) continue;        // standing on the deck
+    if (m[13] + hy < DECK_Y + 0.3) continue;                 // not the deck slab itself
+    boxes.push({ x0: m[12] - hx, x1: m[12] + hx, z0: m[14] - hz, z1: m[14] + hz, top: m[13] + hy });
+  }
+  assert.ok(boxes.length > 20, `only ${boxes.length} guard boxes north of the mouth - the sampler is missing them`);
+
+  /** The tallest solid standing over (x, z), as a height above the deck. */
+  const guard = (x, z) => {
+    let top = -Infinity;
+    for (const b of boxes) {
+      if (x < b.x0 - 0.12 || x > b.x1 + 0.12 || z < b.z0 - 0.12 || z > b.z1 + 0.12) continue;
+      if (b.top > top) top = b.top;
+    }
+    return Number.isFinite(top) ? top - DECK_Y : 0;
+  };
+
+  const leap = BASE_APEX * LEAP_LIFT * LEAP_LIFT;
+  const need = leap + MANTLE_MAX;
+  const holes = [];
+  let lowest = Infinity;
+  let stations = 0;
+  let gateOpen = 0;
+
+  for (const p of PLAN.PIERS) {
+    const pad = PLAN.pierPad(p);
+    /** One rail line: `axis` is the direction it runs, `fixed` the other. */
+    const line = (o) => {
+      for (let t = o.a + 0.5; t <= o.b - 0.5; t += 1) {
+        const x = o.axis === 'x' ? t : o.fixed;
+        const z = o.axis === 'x' ? o.fixed : t;
+        const h = guard(x, z);
+        if (o.gate && Math.abs(x - p.x) <= PIER_GATE_HW) {
+          // The route through, where the spine arrives. It must NOT be fenced.
+          if (h <= P.stepHeight) gateOpen++;
+          continue;
+        }
+        stations++;
+        if (h < lowest) lowest = h;
+        if (!(h > need)) holes.push(`${p.id} ${o.name} at (${x.toFixed(0)}, ${z.toFixed(0)}): ${h.toFixed(2)} m`);
+      }
+    };
+    for (const s of [-1, 1]) {
+      line({ name: `spine ${s > 0 ? '+X' : '-X'}`, axis: 'z', a: pad.z0, b: PLAN.MOUTH_Z, fixed: p.x + s * PLAN.PIER_HW });
+      line({ name: `pad ${s > 0 ? '+X' : '-X'}`, axis: 'z', a: pad.z1, b: pad.z0, fixed: p.x + s * p.hw });
+    }
+    line({ name: 'pad far', axis: 'x', a: p.x - p.hw, b: p.x + p.hw, fixed: pad.z1 });
+    line({ name: 'pad near', axis: 'x', a: p.x - p.hw, b: p.x + p.hw, fixed: pad.z0, gate: true });
+  }
+
+  console.log(`   the piers marched at 1 m: ${stations} stations on ${PLAN.PIERS.length} piers,`
+    + ` lowest guard ${lowest.toFixed(2)} m, need > ${need.toFixed(3)} m,`
+    + ` ${gateOpen} m of open spine gate; VOID_GUARD_H ${PLAN.VOID_GUARD_H.toFixed(2)} m`);
+  assert.deepEqual(holes.slice(0, 12), [],
+    `floor: 0 stations of pier edge under the running leap plus the mantle. achieved: ${holes.length}\n  `
+    + holes.slice(0, 12).join('\n  '));
+  assert.ok(gateOpen >= PLAN.PIERS.length * 3,
+    'the spine gates have been fenced - the guard has closed the route as well as the hole');
+  world.dispose?.();
+});
+
+test('the yard has ONE height for a guard with vacuum behind it', async () => {
+  /* The mouth and the piers are the same defect and must not be able to drift
+   * into two different answers. `MOUTH_SCREEN_H` IS `VOID_GUARD_H` - not a
+   * number that happens to equal it - and a handrail is still a handrail. */
+  const PLAN = await import('../../src/worlds/dock/YardPlan.js');
+  assert.equal(PLAN.MOUTH_SCREEN_H, PLAN.VOID_GUARD_H,
+    'the mouth screen has been given a height of its own again');
+  assert.ok(PLAN.VOID_GUARD_H > BASE_APEX * LEAP_LIFT * LEAP_LIFT + MANTLE_MAX,
+    `VOID_GUARD_H ${PLAN.VOID_GUARD_H} does not clear the leap plus the mantle`);
+});
+
+/* ================================================================== */
+/* 4. FREE CLIMBING, AND THE ONE THING THAT DOES CLOSE IT              */
+/* ================================================================== */
+
+test('no guard in the yard has a top a mantle can land on', async () => {
+  /* ═══════════════════════════════════════════════════════════════════════
+   *  THE FREE-CLIMB QUESTION, DECIDED.
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * `FreeClimb` grabs any vertical face with Space held and every world here
+   * publishes `climb: true`, so NO HEIGHT closes it - that much is true and is
+   * deliberate: it is the mechanic the citadel is built around, not a hole in a
+   * wall, and the file above says so.
+   *
+   * What is NOT true is that nothing closes it. A free climb does not end by
+   * itself: `FreeClimb` tops out at the lip and hands off to `Climb.tryStart`,
+   * because getting OVER a lip is the scripted hoist `Climb` already does. And
+   * `Climb._probe` step 4 will only complete a hoist onto REAL STANDING ROOM -
+   * it seats a test capsule `radius + LAND_INSET` inboard of the face it
+   * climbed and requires the solver to report it grounded there. A guard
+   * thinner than that reach has no top for the capsule to be seated on, so the
+   * mantle is refused and the climber hangs at the lip until they let go.
+   *
+   * THAT is what actually held the mouth. Driven with Space held for nine
+   * seconds at six positions, the 3.92 m screen was crossed 0 times - and the
+   * 2.70 m version of it, before the leap-plus-mantle sum was understood, was
+   * crossed 0 times too, because the screen is 0.5 m deep and there is nowhere
+   * on top of half a metre of rail to put a body. The same run at the piers,
+   * whose runs are 0.18 m deep: held, at a peak of 3.3 m.
+   *
+   * The shore wall was the counter-example that proved it is depth and not
+   * height: `POST_HALF` is 1.1, so a shore post used to be 2.2 m square and DID
+   * have a standable top, and it was the one shape in the game a sustained
+   * climb still got over. It is not built that way any more - the case below
+   * this one asserts the shore on the same terms - and this is the case that
+   * keeps the yard so.
+   *
+   * So no `noGrip` flag, and the decision is recorded rather than assumed: a
+   * second invisible rule saying "some walls refuse to be climbed" would be a
+   * new mechanic across every world, for a defect that measurement says these
+   * guards do not have. What is asserted instead is the structural property
+   * they hold BY, so a guard that ever gets thick enough to stand on reports
+   * itself here rather than in a playthrough.
+   */
+  const PLAN = await import('../../src/worlds/dock/YardPlan.js');
+  /** `Climb.LAND_INSET`: how far inboard of the face the hoist tries to land. */
+  const LAND_INSET = num(SRC_CLIMB, 'LAND_INSET');
+  /** The whole reach from the climbed face to the landing capsule's centre. */
+  const landing = P.radius + LAND_INSET;
+
+  const THREE = await import('three');
+  harness(THREE);
+  const { Physics } = await import('../../src/physics/Physics.js');
+  const { DockWorld } = await import('../../src/worlds/DockWorld.js');
+  const physics = new Physics();
+  const world = new DockWorld({
+    physics,
+    scene: new THREE.Scene(),
+    bus: { on: () => () => {}, emit() {} },
+    engine: {
+      renderer: {
+        capabilities: { getMaxAnisotropy: () => 4, isWebGL2: true },
+        initTexture() {}, getContext: () => ({}),
+        getRenderTarget: () => null, setRenderTarget() {}, render() {}, clear() {},
+      },
+      camera: new THREE.PerspectiveCamera(), onFrameUpdate: () => () => {}, onResize: () => () => {},
+    },
+    materials: { get: () => new THREE.MeshStandardMaterial(), dispose() {} },
+  });
+  world.physics = physics;
+  await world.build(() => {});
+
+  const thick = [];
+  let count = 0;
+  let widest = 0;
+  for (const c of physics.colliders) {
+    if (!c.solid || c.type !== 'box') continue;
+    const m = c.matrix.elements;
+    const hx = Math.abs(m[0]) * c.halfExtents.x + Math.abs(m[4]) * c.halfExtents.y + Math.abs(m[8]) * c.halfExtents.z;
+    const hy = Math.abs(m[1]) * c.halfExtents.x + Math.abs(m[5]) * c.halfExtents.y + Math.abs(m[9]) * c.halfExtents.z;
+    const hz = Math.abs(m[2]) * c.halfExtents.x + Math.abs(m[6]) * c.halfExtents.y + Math.abs(m[10]) * c.halfExtents.z;
+    // Only the VOID guards: standing on the deck, as tall as the rule asks.
+    if (m[13] - hy > DECK_Y + P.stepHeight) continue;
+    if (Math.abs((m[13] + hy) - (DECK_Y + PLAN.VOID_GUARD_H)) > 0.02) continue;
+    count++;
+    const depth = Math.min(hx, hz) * 2;
+    if (depth > widest) widest = depth;
+    if (depth >= landing) {
+      thick.push(`a guard at (${m[12].toFixed(0)}, ${m[14].toFixed(0)}) is ${depth.toFixed(2)} m deep`);
+    }
+  }
+
+  console.log(`   ${count} void guards in the yard, deepest ${widest.toFixed(2)} m,`
+    + ` against a ${landing.toFixed(2)} m mantle landing reach - a free climb tops out and finds nothing to stand on`);
+  assert.ok(count >= 30, `only ${count} guards at VOID_GUARD_H - the sampler is missing them`);
+  assert.deepEqual(thick, [],
+    'a void guard is now deep enough for Climb to land a hoist on its top, which is the one thing that '
+    + 'lets a sustained free climb get OVER it rather than hang off it');
+  world.dispose?.();
+});
+
+test('no shore cap has a top a mantle can land on either', async () => {
+  /* ═══════════════════════════════════════════════════════════════════════
+   *  THE SHORE JOINS THE SET ABOVE.
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * The case above used to end by naming the shore wall as the one shape in
+   * the game that did NOT hold by this property: `POST_HALF` 1.1 made a post
+   * 2.2 m square, its top was standing room, and a held-Space climb was hoisted
+   * onto it and over. The wall is two members now - a 2.2 m plinth for
+   * thickness, stopped at head height, and a 0.50 m cap carrying the gate - and
+   * this asserts the cap on exactly the terms the yard's guards are asserted
+   * on.
+   *
+   * ── AND THE THRESHOLD IS MEASURED, NOT ASSUMED ────────────────────────
+   * 0.77 m is the LANDING REACH and it is not the depth at which a hoist stops
+   * completing. The test capsule's lower sphere centre sits 0.32 m above the
+   * top face, so it still catches the far top EDGE of a box narrower than the
+   * reach. `.probe/mantle-depth.mjs` sweeps the depth through the real
+   * `Physics.resolveCapsule` with the real player constants and finds the knee
+   * between 0.60 m (refused) and 0.65 m (completed). The bar asserted here is
+   * that knee rather than the reach, because a 0.70 m cap would pass a naive
+   * "under 0.77" test and be climbable.
+   */
+  const LAND_INSET = num(SRC_CLIMB, 'LAND_INSET');
+  const landing = P.radius + LAND_INSET;
+  /** The measured knee. @see .probe/mantle-depth.mjs */
+  const KNEE = 0.63;
+  assert.ok(landing > KNEE, 'the landing reach is now under the knee - one of the two numbers moved');
+  assert.ok(CAP_HALF * 2 < KNEE,
+    `PlanetWorld.CAP_HALF makes a ${(CAP_HALF * 2).toFixed(2)} m cap, at or over the ${KNEE} m depth`
+    + ' at which a hoist starts completing again');
+
+  const rows = [];
+  for (const id of WALLED_IDS) {
+    const { world, physics } = await planet(id);
+    const all = physics.colliders.filter((c) => c.userData?.planetLiquidBarrier);
+    const caps = all.filter((c) => c.userData?.barrierCap);
+    assert.ok(caps.length > 0, `${id}: no shore caps at all`);
+
+    let wallTop = -Infinity;
+    for (const c of caps) wallTop = Math.max(wallTop, c.matrix.elements[13] + c.halfExtents.y);
+    const thick = [];
+    let widest = 0;
+    let shortest = Infinity;
+    for (const c of caps) {
+      const m = c.matrix.elements;
+      const depth = Math.min(c.halfExtents.x, c.halfExtents.z) * 2;
+      widest = Math.max(widest, depth);
+      shortest = Math.min(shortest, c.halfExtents.y * 2);
+      if (depth >= KNEE) thick.push(`a cap at (${m[12].toFixed(0)}, ${m[14].toFixed(0)}) is ${depth.toFixed(2)} m deep`);
+    }
+    assert.deepEqual(thick, [],
+      `${id}: a shore cap is deep enough for Climb to land a hoist on its top, which is the one input `
+      + 'that got a body over this wall while 2,500 tests were green');
+
+    /* NOTHING FAT REACHES THE TOP. Every plinth has to stop clear of the cap it
+     * carries, by enough that a climber who tops out on a cap and reaches
+     * 0.77 m inboard finds the plinth OUT OF RANGE below rather than under
+     * their feet: `Climb._probe` accepts a landing down to `topY - 0.35`. */
+    let high = 0;
+    for (const c of all) {
+      if (c.userData?.barrierCap) continue;
+      const top = c.matrix.elements[13] + c.halfExtents.y;
+      if (top > wallTop - 0.35) high++;
+    }
+    assert.equal(high, 0,
+      `${id}: ${high} plinths reach within 0.35 m of the top of the wall - a hoist that tops out on a `
+      + 'cap lands 0.77 m inboard, and at that height the plinth top would be standing room again');
+
+    rows.push(`     ${id.padEnd(11)} ${String(caps.length).padStart(4)} caps, deepest ${widest.toFixed(2)} m,`
+      + ` shortest ${shortest.toFixed(2)} m tall, against a ${landing.toFixed(2)} m landing reach`
+      + ` and a ${KNEE} m measured knee`);
+  }
+  console.log('   THE SHORE WALL HOLDS BY DEPTH, THE SAME WAY THE YARD DOES');
+  for (const r of rows) console.log(r);
 });

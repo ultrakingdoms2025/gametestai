@@ -44,6 +44,15 @@ const MIN_HIGH_DROP = 7;
 const HIGH_PROBE_R = 9;
 /** Inner ring: the cache has to be standing on something level, not a slope. */
 const INNER_R = 3;
+/**
+ * Minimum separation between two high caches.
+ *
+ * Was the literal `30` inside `_findHigh`'s dart loop. It is a constant now
+ * because the AUTHORED channel has to apply the same rule - two caches thirty
+ * metres apart is a find and a bonus, and two caches four metres apart is one
+ * find that pays twice.
+ */
+const HIGH_APART = 30;
 /** Keep clear of the invisible boundary colliders that fence each world. */
 const EDGE_INSET = 24;
 /** Seconds before a collected cache restocks. */
@@ -179,7 +188,10 @@ export class Caches {
     if (!world || !this.physics || !this.loot) return;
 
     const rnd = mulberry(hashString(`cache:${id}`));
-    const b = world.bounds;
+    /* `contentBounds` where a world draws a line between its playfield and the
+     * part of it that has anything in it; `bounds` otherwise. See the same read
+     * in `Relics._onWorld`, which owns the reasoning. */
+    const b = world.contentBounds ?? world.bounds;
     const minX = b?.min?.x ?? -180;
     const maxX = b?.max?.x ?? 180;
     const minZ = b?.min?.z ?? -180;
@@ -200,44 +212,113 @@ export class Caches {
     const extent = Math.max(maxX - minX, maxZ - minZ, 1);
     const highWanted = Math.min(12, Math.max(PER_WORLD.high, Math.round(PER_WORLD.high * (extent / 400) ** 1.5)));
 
-    /* Authored sites first, where a world publishes them.
-     *
-     * `_findHigh` is a dart from above and it cannot work under a ROOF: it
-     * takes the first thing the ray meets, which in a roofed world is always
-     * the roof. Measured in Lodestar Yard, whose shed is a flat 172 x 162 m
-     * plate at y 26: 400 of 400 darts landed on it at 26.80, all eight ring
-     * probes came back on the same continuous plate so `sheer` was 0 every
-     * time, and the world placed ZERO caches - silently, because the log line
-     * below only prints when something landed. That took the only in-world
-     * source of three of that world's items with it.
-     *
-     * So a world may name its own, exactly as it may name its relic ground
-     * (`Relics._onWorld`), and for the same reason: a world knows where a body
-     * can get to and a probe does not. `y` is the site's own height here, not
-     * a surface to be lifted off. A world that publishes nothing is unchanged.
-     */
-    const authored = [];
-    for (const c of world._caches ?? []) authored.push({ x: c.x, y: c.y, z: c.z });
-    for (let i = authored.length - 1; i > 0; i--) {
-      const j = Math.floor(rnd() * (i + 1));
-      [authored[i], authored[j]] = [authored[j], authored[i]];
-    }
-
     for (let i = 0; i < PER_WORLD.sunken; i++) {
       const p = this._findSunken(rnd, minX, maxX, minZ, maxZ);
       if (p) this.sites.push({ kind: 'sunken', pos: p, pickup: null, restock: 0 });
     }
-    for (let i = 0; i < highWanted; i++) {
-      const p = this._findHigh(rnd, minX, maxX, minZ, maxZ, authored);
+    /* ---- AUTHORED HIGH SITES FIRST, AND WHY THIS CHANNEL EXISTS -------
+     *
+     * Two separate defects converged on one answer, so they share one channel.
+     *
+     * THE FIRST IS AREA. `_findHigh` is a UNIFORM DART at the content box, and
+     * a uniform dart spends its budget in proportion to AREA, not to content.
+     * That was a fair trade while the box and the town were the same 400 m. The
+     * citadel's outer ring broke it in the only way that never shows up in a
+     * log: the box went to 805 m and the nine caches the area law asks for came
+     * out SEVEN on the old mesa and TWO on the aqueduct, with the Undercliff,
+     * the Deepworks, Ashfall, the Eyrie and the Caravanserai holding NONE -
+     * five authored regions, hundreds of decks, and not one reason to go and
+     * stand on any of them. The log said "0 sunken, 9 high" and every one of
+     * the nine was real.
+     *
+     * THE SECOND IS A ROOF. The dart starts above the map and takes the first
+     * thing it hits, which under a shed is always the shed. Measured in
+     * Lodestar Yard, whose hangar is a flat 172 x 162 m plate at y 26: 400 of
+     * 400 darts landed on it at 26.80, all eight ring probes came back on the
+     * same continuous plate so `sheer` was 0 every time, and the world placed
+     * ZERO caches - silently, because the log line below only prints when
+     * something landed. That took the only in-world source of three of that
+     * world's items with it, and with them quest 54 step 1.
+     *
+     * The answer to both is the one `Relics` already uses: let the world
+     * nominate places, because a world knows where its high places are and a
+     * dart does not.
+     *
+     * WHAT IS NOT COPIED FROM `Relics` IS BLANKET TRUST, and the split is
+     * exactly the roof. A nomination that gives only `x, z` is a HINT ABOUT
+     * WHERE TO LOOK: it goes through {@link Caches#_highAt}, the same predicate
+     * the dart has to satisfy, against the same real colliders, and a site that
+     * stopped being prominent because somebody built a terrace beside it is
+     * REFUSED and logged. A nomination that also carries a finite `y` is a
+     * DECISION: the world is naming a deck under its own roof, where the probe
+     * cannot see and has already been measured returning the roof instead, so
+     * the probe is skipped and the height is taken as authored. The one rule
+     * that holds either way is separation, because three "finds" thirty metres
+     * apart are one find.
+     */
+    /* COUNTED IN HIGH SITES, NOT IN ALL SITES, and the difference is the bug.
+     *
+     * The guard was `this.sites.length >= PER_WORLD.sunken + highWanted`, which
+     * reserves three slots for sunken caches whether or not any were placed.
+     * Citadel had no water when that was written: `_findSunken` placed 0 and
+     * the world logged "0 sunken, 9 high" - it now has two oasis tanks, and
+     * with `WaterVolumes` wired the same world logs "2 sunken, 9 high", so the
+     * shortfall is one rather than three. The bug the guard had is unchanged by
+     * that and so is its fix, because a world with no water at all is still the
+     * common case: the authored channel was free to run to TWELVE high sites
+     * against a `highWanted` of 9 - and because the dart loop below starts at
+     * `fromAuthored`, it would then contribute nothing and `placement.darted`
+     * would read 0 while `placed` quietly exceeded `want`. */
+    let high = 0;
+    for (const raw of world.cacheSites ?? []) {
+      if (high >= highWanted) break;
+      const x = Number(raw?.x);
+      const z = Number(raw?.z);
+      if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+      if (this._tooClose(x, z, HIGH_APART)) continue;
+      const y = Number(raw?.y);
+      if (Number.isFinite(y)) {
+        /* Authored height: a deck under a roof. No probe - see above. */
+        this.sites.push({ kind: 'high', pos: new THREE.Vector3(x, y, z), pickup: null, restock: 0, authored: true });
+        high++;
+        continue;
+      }
+      const hit = this._highAt(x, z);
+      if (!hit || !hit.strict) {
+        console.warn(`[Caches] "${id}": authored site ${raw?.label ?? `(${x}, ${z})`} refused`
+          + ` - ${hit ? `sheer ${hit.sheer}/8, level ${hit.flat}/6` : 'no surface'}`);
+        continue;
+      }
+      this.sites.push({ kind: 'high', pos: hit.pos, pickup: null, restock: 0, authored: true });
+      high++;
+    }
+    const fromAuthored = high;
+
+    for (let i = fromAuthored; i < highWanted; i++) {
+      const p = this._findHigh(rnd, minX, maxX, minZ, maxZ);
       if (p) this.sites.push({ kind: 'high', pos: p, pickup: null, restock: 0 });
     }
 
     for (const s of this.sites) this._stock(s);
 
+    /**
+     * Where the high sites came from. See the same field on `Relics`.
+     * @type {{want:number, placed:number, authored:number, darted:number,
+     *   nominated:number}}
+     */
+    this.placement = {
+      want: highWanted,
+      placed: this.sites.filter((s) => s.kind === 'high').length,
+      authored: fromAuthored,
+      darted: this.sites.filter((s) => s.kind === 'high').length - fromAuthored,
+      nominated: (world.cacheSites ?? []).length,
+    };
+
     if (this.sites.length) {
       const sunk = this.sites.filter((s) => s.kind === 'sunken').length;
       console.info(
         `[Caches] "${id}": ${sunk} sunken, ${this.sites.length - sunk} high`
+        + ` (${fromAuthored} authored, ${this.placement.darted} darted)`
       );
     }
     this.bus?.emit('caches:changed', { worldId: id, sites: this.markers });
@@ -280,19 +361,7 @@ export class Caches {
    * anything you could simply walk onto, and cheap enough to run a few hundred
    * times during a world change.
    */
-  _findHigh(rnd, minX, maxX, minZ, maxZ, authored = []) {
-    /* An authored site is a decision, not a candidate.
-     *
-     * The world named it because a body can get to it, so none of the tests
-     * below apply - they exist to decide whether a random point is worth
-     * walking to. The one rule that still holds is separation, because three
-     * "finds" thirty metres apart are one find. */
-    while (authored.length) {
-      const a = authored.shift();
-      if (this._tooClose(a.x, a.z, 30)) continue;
-      return new THREE.Vector3(a.x, a.y, a.z);
-    }
-
+  _findHigh(rnd, minX, maxX, minZ, maxZ) {
     /* Best-effort fallback.
      *
      * The strict test wants a level platform with a sheer drop, which is a
@@ -320,62 +389,81 @@ export class Caches {
     for (let t = 0; t < TRIES; t++) {
       const x = lx + rnd() * (hx - lx);
       const z = lz + rnd() * (hz - lz);
-      _pl.set(x, 320, z);
-      const hit = this.physics.raycast(_pl, _dn, 640, COLLISION_LAYER.WORLD);
+      if (this._tooClose(x, z, HIGH_APART)) continue;
+      const hit = this._highAt(x, z);
       if (!hit) continue;
-      // Has to be a surface you could stand on, not a wall or a spire.
-      if (Math.abs(hit.normal?.y ?? 1) < 0.75) continue;
-      const y = hit.point.y;
-      // Underwater ledges are the other cache type's job.
-      const surface = this.water?.surfaceYAt?.(x, z);
-      if (surface !== null && surface !== undefined && surface > y) continue;
 
-      /* Two rings, and both tests matter.
-       *
-       * A single "is there a long drop all round" ring rejected every roof in
-       * the game, because a castle roof is wider than the ring: all eight
-       * probes land back on the same roof and report no drop at all. And on its
-       * own it would happily accept the top of a grassy hill, which the player
-       * can simply walk up.
-       *
-       * So: the inner ring must come back *level* - this is a platform, not a
-       * slope - and the outer ring must mostly fall away. That pair is the
-       * signature of a roof, a gantry or a ledge, and nothing else. */
-      let sheer = 0;
-      for (let i = 0; i < 8; i++) {
-        const a = (i / 8) * Math.PI * 2;
-        const rx = x + Math.cos(a) * HIGH_PROBE_R;
-        const rz = z + Math.sin(a) * HIGH_PROBE_R;
-        const ry = this.physics.groundHeight(rx, rz, y + 2, 220);
-        // A probe that finds nothing at all is open air - the best drop there is.
-        if (ry === null || y - ry >= MIN_HIGH_DROP) sheer++;
-      }
-      if (sheer < 5) continue;
-      if (this._tooClose(x, z, 30)) continue;
-      // Physics is not enough on its own: a boundary collider is a real surface
-      // with nothing to stand on. Only run this on candidates that already
-      // passed - it walks the render tree, which is far too costly per dart.
-      if (!this._hasVisibleFloor(x, y, z)) continue;
-
-      // Remember it even if the platform test fails below: a pitched roof with
-      // a 10 m drop on every side is still somewhere you have to fly to.
-      const score = y + sheer;
+      // Remember it even if the platform test failed: a pitched roof with a
+      // 10 m drop on every side is still somewhere you have to fly to.
+      const score = hit.pos.y + hit.sheer;
       if (score > fallbackScore) {
         fallbackScore = score;
-        fallback = new THREE.Vector3(x, y + 0.2, z);
+        fallback = hit.pos;
       }
-
-      let flat = 0;
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2;
-        const iy = this.physics.groundHeight(x + Math.cos(a) * INNER_R, z + Math.sin(a) * INNER_R, y + 2, 8);
-        if (iy !== null && Math.abs(iy - y) < 1.5) flat++;
-      }
-      if (flat < 5) continue;
-
-      return new THREE.Vector3(x, y + 0.2, z);
+      if (hit.strict) return hit.pos;
     }
     return fallback;
+  }
+
+  /**
+   * Is (x, z) a ledge or roof with a long drop all round?
+   *
+   * Lifted out of `_findHigh` verbatim so the AUTHORED channel in `_onWorld`
+   * runs the identical test rather than a second copy of it. Two predicates
+   * that are supposed to agree about what a high place is, and do not, is how
+   * a nominated site gets placed inside a wall while the dart loop three lines
+   * below would have refused the same point.
+   *
+   * Two rings, and both tests matter:
+   *
+   * A single "is there a long drop all round" ring rejected every roof in the
+   * game, because a castle roof is wider than the ring - all eight probes land
+   * back on the same roof and report no drop at all. On its own it would also
+   * happily accept the top of a grassy hill, which the player can walk up.
+   *
+   * So: the inner ring must come back LEVEL (this is a platform, not a slope)
+   * and the outer ring must mostly fall away. That pair is the signature of a
+   * roof, a gantry or a ledge, and nothing else.
+   *
+   * @param {number} x
+   * @param {number} z
+   * @returns {{pos:THREE.Vector3, sheer:number, flat:number, strict:boolean}|null}
+   *   null when there is no standable, visible, dry surface there at all;
+   *   `strict` false for a surface that drops away but is not level on top.
+   */
+  _highAt(x, z) {
+    _pl.set(x, 320, z);
+    const hit = this.physics.raycast(_pl, _dn, 640, COLLISION_LAYER.WORLD);
+    if (!hit) return null;
+    // Has to be a surface you could stand on, not a wall or a spire.
+    if (Math.abs(hit.normal?.y ?? 1) < 0.75) return null;
+    const y = hit.point.y;
+    // Underwater ledges are the other cache type's job.
+    const surface = this.water?.surfaceYAt?.(x, z);
+    if (surface !== null && surface !== undefined && surface > y) return null;
+
+    let sheer = 0;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const rx = x + Math.cos(a) * HIGH_PROBE_R;
+      const rz = z + Math.sin(a) * HIGH_PROBE_R;
+      const ry = this.physics.groundHeight(rx, rz, y + 2, 220);
+      // A probe that finds nothing at all is open air - the best drop there is.
+      if (ry === null || y - ry >= MIN_HIGH_DROP) sheer++;
+    }
+    if (sheer < 5) return null;
+    /* Physics is not enough on its own: a boundary collider is a real surface
+     * with nothing to stand on. Only run this on candidates that already
+     * passed - it walks the render tree, which is far too costly per dart. */
+    if (!this._hasVisibleFloor(x, y, z)) return null;
+
+    let flat = 0;
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const iy = this.physics.groundHeight(x + Math.cos(a) * INNER_R, z + Math.sin(a) * INNER_R, y + 2, 8);
+      if (iy !== null && Math.abs(iy - y) < 1.5) flat++;
+    }
+    return { pos: new THREE.Vector3(x, y + 0.2, z), sheer, flat, strict: flat >= 5 };
   }
 
   /**

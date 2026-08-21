@@ -112,10 +112,24 @@ export const LEAP_BAND = 2.5;
  *
  * The hub is built once at boot from a static list, so the rows have to exist
  * before the anchors do; each one is `visible()`-gated on there being an anchor
- * at its index. Five are needed today (the citadel's five viewpoints), with
- * headroom for a world that publishes more.
+ * at its index. `main.js:509` splices `hubItems()` in at boot with no argument,
+ * so THIS CONSTANT IS THE HARD CEILING on how many anchors a player can ever
+ * travel to - an eleventh viewpoint would synchronise, pay its prize, reveal
+ * its district and then have nowhere in the menu to be travelled to.
+ *
+ * It was 8 while the citadel published five. The outer ring took it to TEN -
+ * the great tower, four minarets, and one apiece on the Caravanserai, the
+ * Undercliff, the Deepworks, Ashfall and the Eyrie - so eight silently dropped
+ * the last two off the bottom of the list, and the two it dropped were the
+ * Eyrie and Ashfall: the hardest climbs in the world, paying the least.
+ *
+ * TWELVE, not ten: the number is a menu allocation rather than a fact about a
+ * world, and a floor pinned exactly to today's content is a floor that fails
+ * the next time a region is authored. `citadel-objectives.test.mjs` asserts
+ * headroom over the real published count rather than the constant, which is
+ * the assertion that would have caught the 8.
  */
-export const MAX_TRAVEL_ROWS = 8;
+export const MAX_TRAVEL_ROWS = 12;
 
 /** Default platform radius when a world publishes a viewpoint without one. */
 const DEFAULT_R = 6;

@@ -405,6 +405,18 @@ export class Loot {
 
   _onNPCKilled(event) {
     if (!event || event.byPlayer !== true || !event.npc) return;
+    /* A HERBIVORE CARRIES NO ARROWS.
+     *
+     * `BeastNPC` files every animal as `type: 'hostile'`, which is right for
+     * the respawn queue and wrong for a drop table: the citadel's is the
+     * GARRISON's - crown coins, broadhead arrows, medkits, a nexus shard - and
+     * a camel carrying six to sixteen arrows is not a near miss, it is a
+     * different kind of thing. The Sunspire camels are `predator: false`, have
+     * 220 HP, cannot fight back by three independent locks and respawn 22 s
+     * after they are killed, so without this any wayside well is a coin and
+     * arrow farm against an animal that cannot run out. Predators are
+     * untouched: a wolf in the vale still drops what it always did. */
+    if (event.npc.isBeast && event.npc.def?.predator === false) return;
     this._dropFor(event.npc);
   }
 

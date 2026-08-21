@@ -221,17 +221,65 @@ const CONTRACT = [
    * threads, with no error anywhere. Takes the count 75 -> 77. */
   {
     file: 'src/worlds/CitadelWorld.js',
-    exports: ['CitadelWorld'],
+    exports: ['CitadelWorld', 'CITADEL_LAYOUT'],
     methods: ['build', 'update', 'dispose'],
     /* The five surfaces the other four agents' code is built on, and the class
      * name is not one of them. `MinigameManager.arm` reads `minigameVenues`,
      * `Viewpoints._onWorld` reads `viewpoints`, `Relics._onWorld` reads
      * `_roofs` and `_towers` (and `_roofs[].anchor` inside them),
-     * `_publishVenues` and the minimap read `ropeBridges`. Each is consumed by
-     * an optional-chained property read, so a rename is not an error anywhere -
-     * it is a trial venue that never arms, a leap prompt that never fires and
-     * thirty relics scattered by random dart instead of onto the skyline. */
-    fields: ['minigameVenues', 'viewpoints', '_roofs', '_towers', 'ropeBridges'],
+     * `_publishVenues` and the minimap read `ropeBridges`, and
+     * `Caches._onWorld` reads `cacheSites`. Each is consumed by an
+     * optional-chained property read, so a rename is not an error anywhere - it
+     * is a trial venue that never arms, a leap prompt that never fires, a
+     * hundred relics scattered by random dart instead of onto the skyline, and
+     * five of the six outer regions holding no cache while the log says nine. */
+    fields: ['minigameVenues', 'viewpoints', '_roofs', '_towers', 'ropeBridges',
+      'contentBounds', 'cacheSites'],
+  },
+  /* Drop Three's two modules, and both are consumed across a boundary.
+   *
+   * `citadel/Districts.js` is the spatial split `CitadelWorld._splitDistricts`
+   * and `_registerLod` are built on, and it is also read directly by
+   * `citadel-districts.test.mjs` and `citadel-budgets.test.mjs` - the budget
+   * assertions ARE the contract, so `districtStats`, `MAX_DISTRICT_RADIUS` and
+   * `splitDistricts` disappearing would take design 5.4's C2 and C3 with them
+   * and leave two green test files measuring nothing.
+   *
+   * `citadel/TerrainDetail.js` decides how far away each ground tile may swap to
+   * half resolution. It exists because `medieval/TerrainTiles.js` publishes a
+   * constant that is right for the vale and worth 637 m on this field - a
+   * rename that quietly reverted the call site to that constant would flatten
+   * the ring's quarry benches and karst faces from everywhere, with no distance
+   * at which they came back, and nothing would throw. Takes the count 80 -> 82. */
+  {
+    file: 'src/worlds/citadel/Districts.js',
+    exports: ['splitGeometry', 'splitMesh', 'splitDistricts', 'lowDetail', 'registerDistricts',
+      'bandCanFire', 'sourceSphere', 'subPixelDistance', 'districtStats', 'triangleCount',
+      'geometryBytes', 'MAX_DISTRICT_RADIUS', 'MIN_LEAF_TRIANGLES'],
+  },
+  {
+    file: 'src/worlds/citadel/TerrainDetail.js',
+    exports: ['loDeviation', 'swapDistance', 'PIXELS_PER_RADIAN', 'PIXEL_BUDGET'],
+  },
+  /* `citadel/Regions.js` is the outer ring's six regions, and every export here
+   * is consumed across a boundary rather than inside it.
+   *
+   * `buildRegions` is what `CitadelWorld._buildRegions` calls; `REGIONS` and
+   * `TIERS` are read directly by `citadel-regions.test.mjs`, which re-measures
+   * every authored gap out of the collider set and flies every crossing at the
+   * budget the tier names. `jumpSpan` and `gapFor` are the derivation the whole
+   * difficulty curve rests on - the integrator that knows gravity is applied
+   * BEFORE the move, so a jump apex is 0.878 m and not the closed form's 0.930
+   * - and `LAND_COST` is what a landing costs in metres of that arc.
+   *
+   * A rename here is not an error anywhere: it is a world whose gaps quietly
+   * stop being solved from the body that has to cross them, which is precisely
+   * the state Drop Two measured and found `pearson(ring, gap) = 0.1485`.
+   * Takes the count 82 -> 83. */
+  {
+    file: 'src/worlds/citadel/Regions.js',
+    exports: ['buildRegions', 'REGIONS', 'TIERS', 'TIER', 'BUDGETS', 'jumpSpan', 'gapFor',
+      'LAND_COST', 'LIP', 'RegionSite'],
   },
   /* Drop Two's three new modules, each consumed by a DIFFERENT agent's file -
    * which is precisely the shape this checker exists for. `Viewpoints` is
@@ -371,20 +419,23 @@ const CONTRACT = [
    * optional chain by a system that names no world - `Interiors` reads
    * `enterables`, `Viewpoints` reads `viewpoints`, `Parkour` reads
    * `haystacks`, `MinigameManager` reads `minigameVenues`, `Relics` reads
-   * `_roofs` and `_towers`, `Caches` reads `_caches`, the ship stage reads
+   * `_roofs` and `_towers`, `Caches` reads `cacheSites`, the ship stage reads
    * `shipSpecs`, `PortalSystem` reads `portalSpecs`, `NPCManager` reads
    * `npcSpawns` and `Minimap` reads `minimapShapes` - so a typo in any of them
    * is a whole system quietly finding nothing, one browser boot later. And
-   * `_caches` is the newest and the most silent of them: without it this world
-   * places no caches at all and says nothing, because the dart that would find
-   * them lands on the shed roof. */
+   * `cacheSites` is the newest and the most silent of them: without it this
+   * world places no caches at all and says nothing, because the dart that would
+   * find them lands on the shed roof. It is the SAME field name Citadel
+   * publishes, and deliberately so: one channel, with the presence of a `y` on
+   * an entry telling `Caches` the site is a deck under a roof and must be taken
+   * as authored rather than probed from above. */
   {
     file: 'src/worlds/DockWorld.js',
     exports: ['DockWorld'],
     methods: ['build', 'update', 'dispose'],
     fields: [
       'enterables', 'viewpoints', 'haystacks', 'minigameVenues',
-      '_roofs', '_towers', '_caches', 'shipSpecs', 'ships', 'portalSpecs', 'npcSpawns', 'minimapShapes',
+      '_roofs', '_towers', 'cacheSites', 'shipSpecs', 'ships', 'portalSpecs', 'npcSpawns', 'minimapShapes',
     ],
   },
   /* The yard's plan, three-free so the tests can read the numbers the world is

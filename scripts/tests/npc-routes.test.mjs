@@ -209,7 +209,11 @@ const WORLDS = [
   { id: 'station', path: '../../src/worlds/StationWorld.js', cls: 'StationWorld', minRoutes: 40 },
   { id: 'medieval', path: '../../src/worlds/MedievalWorld.js', cls: 'MedievalWorld', minRoutes: 20 },
   { id: 'sports', path: '../../src/worlds/SportsWorld.js', cls: 'SportsWorld', minRoutes: 15 },
-  { id: 'citadel', path: '../../src/worlds/CitadelWorld.js', cls: 'CitadelWorld', minRoutes: 0 },
+  /* 29 rounds: 9 drovers (three per caravan road, sharing the road's own
+   * waypoints), 8 well keepers, 10 lone travellers and the 2 oasis water
+   * carriers. 25 is a floor under that with room for one to be dropped by a
+   * siting refusal, not a restatement of it. */
+  { id: 'citadel', path: '../../src/worlds/CitadelWorld.js', cls: 'CitadelWorld', minRoutes: 25 },
   { id: 'race', path: '../../src/worlds/RaceWorld.js', cls: 'RaceWorld', minRoutes: 0 },
   /* Lodestar Yard. Four of its seven authored friendlies carry a patrol - the
    * Yard Warden down the keel line and the three yard hands round their own
@@ -413,11 +417,23 @@ test('every world builds headlessly and is asked about its routes', () => {
     assert.ok(w.routes.length >= w.minRoutes,
       `${w.id} produced ${w.routes.length} routes, expected at least ${w.minRoutes}`);
   }
-  // Citadel and the race circuits author spawns with no `patrol` at all. That
-  // is a fact about them, and it is asserted rather than assumed so that the
-  // day one of them gains a route, it gains this file's attention with it.
+  /* The race circuits author spawns with no `patrol` at all. That is a fact
+   * about them, and it is asserted rather than assumed so that the day one of
+   * them gains a route, it gains this file's attention with it.
+   *
+   * THE CITADEL IS HERE BECAUSE THAT DAY CAME. It shipped its 900 m ring with
+   * nothing in the flats between the six regions, and the traffic that answers
+   * that - three caravan roads, eight wayside herds and ten lone travellers,
+   * all streamed by `citadel/Caravans.js` - is 29 authored rounds, published on
+   * `world._population.people` for exactly the reason the `routesOf` docstring
+   * gives. The first draft of those roads was taken off a reach-graph path and
+   * two of its waypoints resolved onto a souk roof at 18.71 m, which left 24.0
+   * and 55.8 m legs of open air: this file caught it, which is what it is for. */
   const withRoutes = AUDIT.filter((w) => w.routes.length > 0).map((w) => w.id);
-  assert.deepEqual(withRoutes.sort(), ['dock', 'medieval', 'sports', 'station']);
+  /* SURVEY IS GONE FROM THIS LIST BECAUSE THE WORLD IS GONE: `SurveyWorld`
+   * was the deliberate placeholder and Lodestar Yard replaced it, so the yard's
+   * own dock crews are what stand in its place here. */
+  assert.deepEqual(withRoutes.sort(), ['citadel', 'dock', 'medieval', 'sports', 'station']);
   const total = AUDIT.reduce((n, w) => n + w.routes.length, 0);
   assert.ok(total >= 90, `only ${total} routes found across every world`);
 });

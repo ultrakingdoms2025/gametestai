@@ -115,6 +115,32 @@ function mulberry32(seed) {
 }
 
 /**
+ * Which part of the world an authored anchor belongs to.
+ *
+ * Read off the tags the world ALREADY puts on its own decks rather than off a
+ * position, because a position needs a table of district boxes and a table of
+ * district boxes is a second copy of the world's layout living in here. The
+ * citadel tags a souk roof with its `ring` and an outer-region deck with its
+ * `region`; a world that tags neither has one district called `core` and gets
+ * exactly the behaviour this file had before districts existed.
+ *
+ * The souk splits by RING and not as one lump on purpose: the rings are the
+ * world's authored difficulty gradient (design §4.2), so "one relic per ring
+ * per round" is the same statement as "the collection walks the gradient".
+ * Lumping the souk together and dealing it one anchor a round against six
+ * regions would have taken the mesa from 64 relics to 8 - fewer than the 30 it
+ * held before the map was ever expanded.
+ *
+ * @param {{region?:string, ring?:number}} a a published roof or tower
+ * @returns {string}
+ */
+function districtOf(a) {
+  if (typeof a?.region === 'string' && a.region) return a.region;
+  if (Number.isFinite(a?.ring)) return `ring:${a.ring}`;
+  return 'core';
+}
+
+/**
  * The halo's alpha, as a function of distance from the middle of its quad.
  *
  * ── The defect ─────────────────────────────────────────────────────────────
@@ -164,6 +190,66 @@ const GLOW_TEX = 64;
  * them nearly transparent.
  */
 const GLOW_SPREAD = 1.7;
+
+/**
+ * Widest the halo's quad ever gets, in metres, and the range it gets there.
+ *
+ * Both are the old law's own numbers: it read `min(2.6, 0.5 + d * 0.045)`, so
+ * it topped out at 2.6 m and reached that at (2.6 - 0.5) / 0.045 = 46.67 m.
+ * Beyond 46.67 m nothing below changes anything at all.
+ */
+const GLOW_MAX = 2.6;
+const GLOW_HOLD = 46.67;
+/**
+ * Narrowest, in metres, also the old law's constant term. The relic itself is
+ * an `OctahedronGeometry(0.32)` - 0.64 m across - and a halo has to be wider
+ * than the thing it is a halo around, so the quad has a floor and does not
+ * follow the range all the way down to nothing.
+ */
+const GLOW_MIN = 0.5;
+/**
+ * Metres of quad per metre of range: the APPARENT size the halo holds.
+ *
+ * 2.6 / 46.67. Multiplied by `GLOW_SPREAD` that is 0.0947 rad, or 5.42
+ * degrees across - measured as 99 px in a 1600 px frame at the default 75
+ * degree fov, which is exactly what the halo already subtends at 46.67 m.
+ */
+const GLOW_ARC = GLOW_MAX / GLOW_HOLD;
+
+/**
+ * How wide the halo's quad is, in metres, for a relic `d` metres from the eye.
+ *
+ * ── The defect ────────────────────────────────────────────────────────────
+ * The law was `min(2.6, 0.5 + d * 0.045) * GLOW_SPREAD`, and the `+` is the
+ * bug. `d * 0.045` alone is an apparent-size law - a quad that grows in step
+ * with its range holds the same number of pixels - but ADDING it to 0.5 leaves
+ * a fixed 0.85 m of quad that does not, so the halo's screen size ran away as
+ * the player approached. Quad width in a 1600 px frame at 75 deg fov: 99 px at
+ * 46.67 m, 124 px at 20 m, 174 px at 9.4 m, 523 px at 2 m.
+ *
+ * That is what two relics on adjacent Caravanserai roofs look like: the pair
+ * in `output/cv-caravan-desert.jpeg` stand 8.2 m and 9.6 m from the camera and
+ * measure 110 px and 101 px across at half power, each with a 60 px flat top
+ * where {@link glowFalloff}'s clamped core is at full HDR radiance. Nothing is
+ * wrong with the colour, the blending or the bloom: this is the same quad as
+ * the warm points that read correctly on the souk roofs in
+ * `output/citadel-baseline-town.jpeg` - fourteen of them clear luminance 235
+ * there - and the only difference between them is range.
+ *
+ * ── The law ───────────────────────────────────────────────────────────────
+ * A clamp instead of an offset. Between 8.97 m (where the floor lets go) and
+ * 46.67 m (where the ceiling takes over) the halo holds 5.42 degrees, which is
+ * the size it already had at 46.67 m; outside that band it is a fixed 0.85 m
+ * near and a fixed 4.42 m far, both unchanged from before. It is never WIDER
+ * than the old law at any range, which is the property that makes this a
+ * reduction and not a re-author, and `relic-glow.test.mjs` floors all of it.
+ *
+ * @param {number} d metres from the camera to the relic
+ * @returns {number} the quad's width in metres, `GLOW_SPREAD` included
+ */
+export function glowScale(d) {
+  return Math.min(GLOW_MAX, Math.max(GLOW_MIN, d * GLOW_ARC)) * GLOW_SPREAD;
+}
 
 /**
  * The halo texture: white, with `glowFalloff` in its alpha.
@@ -483,7 +569,24 @@ export class Relics {
     if (!world || !this.physics) return;
 
     const rnd = mulberry32(hashString(`relic:${id}`));
-    const b = world.bounds;
+    /**
+     * `contentBounds` if the world publishes one, `bounds` otherwise.
+     *
+     * The budget below is an AREA law, and it is only a sane law while the
+     * published box is the area a relic can actually be hidden in. The Citadel
+     * broke that assumption: its playfield went 400 m -> 900 m while its town
+     * stayed exactly where it was, so `bounds` said 5.06x the area and this
+     * function asked for 110 relics and 330 darts. The extra darts land in open
+     * desert, where `MIN_PROMINENCE` 2.5 is unreachable by construction - flat
+     * sand is never 2.5 m above the flat sand around it - so the honest reading
+     * of that world is "a 400 m world with a lot of scenery round it", which is
+     * what `contentBounds` says.
+     *
+     * Deliberately not a Citadel special case in here. Every world that grows a
+     * decorative surround has the same problem, and the one that has it now is
+     * the one that publishes the box.
+     */
+    const b = world.contentBounds ?? world.bounds;
     const minX = (b?.min?.x ?? -180) + EDGE_INSET;
     const maxX = (b?.max?.x ?? 180) - EDGE_INSET;
     const minZ = (b?.min?.z ?? -180) + EDGE_INSET;
@@ -508,7 +611,9 @@ export class Relics {
      * belongs, and using them means the citadel's relics sit on the skyline
      * rather than wherever a dart happened to land. */
     const authored = [];
-    for (const t of world._towers ?? []) authored.push({ x: t.x, y: t.y, z: t.z });
+    for (const t of world._towers ?? []) {
+      authored.push({ x: t.x, y: t.y, z: t.z, district: districtOf(t) });
+    }
     /* `anchor`, not the centre, where the world publishes one.
      *
      * A roof's `x/z` is its FOOTPRINT centre, and 30% of the citadel's souk
@@ -520,7 +625,7 @@ export class Relics {
      * a world that publishes no anchor is unchanged. */
     for (const r of world._roofs ?? []) {
       const a = r.anchor ?? r;
-      authored.push({ x: a.x, y: a.y, z: a.z });
+      authored.push({ x: a.x, y: a.y, z: a.z, district: districtOf(r) });
     }
     // Shuffle deterministically so the same subset is not used every time.
     for (let i = authored.length - 1; i > 0; i--) {
@@ -528,11 +633,84 @@ export class Relics {
       [authored[i], authored[j]] = [authored[j], authored[i]];
     }
 
+    /* ── ONE ANCHOR TO EACH DISTRICT, THEN ROUND AGAIN ────────────────────
+     *
+     * The old loop walked the shuffled list straight through and took the
+     * first `want` anchors far enough apart, which spends the budget in
+     * proportion to how many DECKS a district happens to have. That was
+     * invisible while the only world publishing anchors was 264 m across and
+     * one place. It stopped being invisible the moment the citadel grew six
+     * outer regions: measured on the built world, the straight walk put 64 of
+     * the 109 relics inside the old mesa - 59% of the collection in 12% of the
+     * map - and left the Eyrie, thirteen decks up a karst face and the longest
+     * climb in the game, holding THREE.
+     *
+     * Dealing one anchor to each district per round fixes the STARVATION
+     * without naming a single world. A district is whatever the world already
+     * tags its own decks with ({@link districtOf}); a bucket that runs out
+     * stops being dealt to and the others absorb the remainder; and a world
+     * that tags nothing has exactly one bucket and byte-identical behaviour to
+     * before.
+     *
+     * ── WHAT IT DOES NOT FIX, stated because it reads as if it does ───────
+     *
+     * It does not move the mesa/ring RATIO, and nobody should read the
+     * paragraph above as a claim that it does. `districtOf` splits the mesa
+     * into eight buckets (`core` plus `ring:0..6`) against the ring's six, so
+     * the mesa is dealt 8/14 of the budget by construction - almost exactly
+     * what the straight walk already spent there. Measured on the built world,
+     * same seed, same anchor list, same `MIN_APART`:
+     *
+     *                    mesa   ring
+     *   straight walk      64     45
+     *   round-robin        63     46
+     *
+     * ONE relic. What actually moved is the shape inside those totals: the
+     * Eyrie 3 -> 6, `ring:1` 3 -> 8, `ring:0` 4 -> 8, and `ring:6` 15 -> 8.
+     * The spread across the fourteen buckets went from 3..15 to 6..8, which is
+     * the property this deal delivers and the property the test floors.
+     *
+     * Cycling over seven buckets instead - the six regions plus one composite
+     * mesa - WOULD move the ratio, to about 16 mesa and 93 ring, and it is
+     * deliberately not done: 16 is below the 30 the mesa held before the map
+     * was ever expanded, and the souk's rings are the world's authored
+     * difficulty gradient, so "one relic per ring per round" is the same
+     * statement as "the collection walks the gradient". Changing that is an
+     * authoring decision with a number attached, not a bug fix.
+     *
+     * The floors AND the ceiling are per district in
+     * `citadel-objectives.test.mjs`, which is what stops a later re-author
+     * quietly starving one again or handing one fifteen.
+     */
+    const buckets = new Map();
     for (const a of authored) {
-      if (this.sites.length >= want) break;
-      if (this._tooClose(a.x, a.z)) continue;
-      this.sites.push({ pos: new THREE.Vector3(a.x, a.y + 0.55, a.z), taken: false, phase: rnd() * 6.283 });
+      const list = buckets.get(a.district);
+      if (list) list.push(a);
+      else buckets.set(a.district, [a]);
     }
+    /* Insertion order is the SHUFFLED order, so which district is dealt first
+     * is itself seeded rather than alphabetical - a fixed order would always
+     * hand the odd anchor to the same district when `want` does not divide. */
+    const order = [...buckets.values()];
+    const perDistrict = new Map();
+    while (this.sites.length < want) {
+      let dealt = 0;
+      for (const list of order) {
+        if (this.sites.length >= want) break;
+        // The first anchor in this district that is not on top of another.
+        while (list.length) {
+          const a = list.shift();
+          if (this._tooClose(a.x, a.z)) continue;
+          this.sites.push({ pos: new THREE.Vector3(a.x, a.y + 0.55, a.z), taken: false, phase: rnd() * 6.283 });
+          perDistrict.set(a.district, (perDistrict.get(a.district) ?? 0) + 1);
+          dealt++;
+          break;
+        }
+      }
+      // Every bucket empty, or every anchor left is too close to a site.
+      if (dealt === 0) break;
+    }
+    const fromAuthored = this.sites.length;
 
     // Then probe for anything else prominent enough to be worth a climb.
     for (let t = 0; t < tries && this.sites.length < want; t++) {
@@ -558,12 +736,42 @@ export class Relics {
       this.sites.push({ pos: new THREE.Vector3(x, y + 0.55, z), taken: false, phase: rnd() * 6.283 });
     }
 
+    /**
+     * Where the sites came from, for the floor that has to exist.
+     *
+     * `MIN_PROMINENCE` 2.5 measured at r = 4 m is an ARCHITECTURAL test: it
+     * asks whether a point stands proud of the ground beside it, and flat sand
+     * never does. The dart loop therefore cannot place anything at all in the
+     * 700 m of desert this world grew - and a world whose authored list ran
+     * short would not fail loudly. It would place nine, log "9/9 hidden", and
+     * the number on the HUD would be the count it MANAGED rather than the count
+     * it wanted. That is a defect this project has already shipped once.
+     *
+     * So the split is recorded rather than inferred, and
+     * `citadel-objectives.test.mjs` floors `darted` at zero and `placed`
+     * against `want`. A report is the only thing that can tell "the world
+     * published enough places" apart from "the search got lucky".
+     *
+     * @type {{want:number, placed:number, authored:number, darted:number,
+     *   candidates:number, districts:Object<string,number>}}
+     */
+    this.placement = {
+      want,
+      placed: this.sites.length,
+      authored: fromAuthored,
+      darted: this.sites.length - fromAuthored,
+      candidates: authored.length,
+      districts: Object.fromEntries([...perDistrict.entries()].sort((a, b) => b[1] - a[1])),
+    };
+
     // Mark the first N as already taken, so a returning player does not
     // re-collect a world they have already stripped.
     this._applyFound();
 
     if (this.sites.length) {
-      console.info(`[Relics] "${id}": ${this.remaining}/${this.sites.length} hidden`);
+      console.info(`[Relics] "${id}": ${this.remaining}/${this.sites.length} hidden`
+        + ` (${fromAuthored} authored, ${this.sites.length - fromAuthored} darted,`
+        + ` ${perDistrict.size} districts)`);
     }
     this._announce();
   }
@@ -627,8 +835,10 @@ export class Relics {
       this.mesh.setMatrixAt(n++, _rm);
 
       if (cam) {
-        /* Camera-facing, distance-scaled: the halo is what you spot from the
-         * far side of the souk, so it must not shrink to nothing.
+        /* Camera-facing, and sized by {@link glowScale} - which is a whole
+         * function because the sizing is where this halo's one visual defect
+         * lived, and a law that has to be argued about wants to be checkable
+         * without a GPU.
          *
          * `GLOW_SPREAD` is what pays for the falloff. The card used to be
          * bright to its own edge, so the quad's width WAS the halo's width;
@@ -637,7 +847,7 @@ export class Relics {
          * from. The quad grows, the core stays about the size it always was,
          * and what is new is the soft tail around it. */
         const d = _rv.distanceTo(cam.position);
-        const gs = Math.min(2.6, 0.5 + d * 0.045) * GLOW_SPREAD;
+        const gs = glowScale(d);
         _rm.copy(cam.matrixWorld);
         _rm.setPosition(_rv);
         _rm.scale(_rs.set(gs, gs, gs));

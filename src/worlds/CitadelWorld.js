@@ -5,8 +5,41 @@ import { sweep, blob } from '../gfx/Organic.js';
 import { World } from './World.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { genPool } from '../workers/GenPool.js';
-import { terrainH, MESA_Y, MESA_R, SHOULDER, HALF } from './terrain/CitadelHeight.js';
+import { terrainH, MESA_Y, MESA_R, SHOULDER, HALF, INNER_KEEP } from './terrain/CitadelHeight.js';
 import { venueBounds } from '../minigames/RooftopTrial.js';
+import { DistanceLod, SURFACE } from './lod/DistanceLod.js';
+import {
+  splitMesh, registerDistricts, lowDetail, bandCanFire, triangleCount,
+  subPixelDistance, MAX_DISTRICT_RADIUS,
+} from './citadel/Districts.js';
+import { loDeviation, swapDistance } from './citadel/TerrainDetail.js';
+import { buildRegions } from './citadel/Regions.js';
+import {
+  planMine, planKarst, liftToClear, auditVacancy, buildCave, buildPlinth, SolidField,
+} from './citadel/Caves.js';
+import {
+  citadelOases, findOasisSite, settleOasis, buildOases, palmGeometry,
+} from './citadel/Oasis.js';
+import {
+  CARAVAN_ROADS, WELL_SITES, WANDERERS, CitadelTraffic,
+  roadWaypoints, roadLength, buildWell, groundFor, WELL_R,
+} from './citadel/Caravans.js';
+import { beastDef } from '../npc/BeastSpecies.js';
+import { citadelHeight } from './terrain/CitadelHeight.js';
+import {
+  tileGrid, buildTile, TILE_LO_STRIDE, TILE_SKIRT_DROP,
+} from './medieval/TerrainTiles.js';
+
+/**
+ * The most camels one `spawnBeastGroup` call can ever produce.
+ *
+ * Read off the species row rather than written down, because it is the number
+ * that decides whether a declared herd size is a promise or a lie:
+ * `NPCManager.spawnBeastGroup` computes `min(asked, budget, def.packMax)`, so a
+ * herd declared over the cap reports more animals to the encounter gate than
+ * the world ever puts on the ground.
+ */
+const CAMEL_PACK_MAX = beastDef('camel').packMax;
 
 /**
  * CITADEL - "Sunspire Citadel".
@@ -88,12 +121,338 @@ const _color = new THREE.Color();
 
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
+/** Already-resolved, so a build with no slicer allocates no promise per call. */
+const RESOLVED = Promise.resolve();
+/**
+ * What a build phase is handed when nothing is slicing it.
+ *
+ * `WorldManager` only attaches `report.slice` while the engine is running -
+ * behind the loading screen a yield is wall clock added to the boot and buys
+ * nothing anybody can see. The phases below take a `breathe` unconditionally so
+ * they never have to know which kind of build they are in.
+ */
+const noBreath = () => RESOLVED;
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 /** Signed angular difference folded into (-pi, pi]. */
 const wrapPi = (v) => { const t = ((v + Math.PI) % TAU + TAU) % TAU; return t - Math.PI; };
 /** Edge round applied to batched boxes, and the size below which it is skipped. */
 const BEVEL = 0.075;
 const BEVEL_MIN = 0.55;
+
+/* ================================================================== */
+/* THE EXTENT, AND EVERYTHING THAT HAS TO FOLLOW IT                    */
+/* ================================================================== */
+
+/**
+ * Playfield edge length. `HALF` is authored in `terrain/CitadelHeight.js`
+ * because the generation worker samples the field without importing `three`.
+ */
+const SIZE = HALF * 2;
+
+/**
+ * How far from the origin a camera can actually get. `HALF` is the wrong answer.
+ *
+ * `bandCanFire`'s whole contract is "can this band ever change state, from
+ * anywhere a camera can stand", and it works that out as `reach + |centre|`.
+ * Both call sites in this file passed `HALF`, which is the radius of a DISC -
+ * and this playfield is a SQUARE. `this.bounds` is +-450 on both axes, the
+ * heightfield covers all of it and 130,321 ground probes over the full 900 m
+ * found no column without ground, so a camera can stand in the corner, `HALF *
+ * sqrt(2)` = 636.4 m out. Every `furthest` was therefore understated by 186 m.
+ *
+ * Measured: of the 13 terrain tiles refused a `lo` band, TWO are refused a band
+ * that would in fact fire -
+ *
+ *   citadel:terrain:2,5   swapNear 795.1 m   726 m at HALF   912 m at the corner
+ *   citadel:terrain:4,5   swapNear 833.2 m   781 m at HALF   967 m at the corner
+ *
+ * - and drew at full resolution forever on the strength of arithmetic rather
+ * than a measurement. The direction is conservative, so this was a lost
+ * optimisation and never a pop; the number was wrong all the same.
+ */
+const CAMERA_REACH = HALF * Math.SQRT2;
+
+/**
+ * Terrain grid spacing, metres. THE SPACING IS THE INVARIANT, not the segment
+ * count - `medieval-extent.test.mjs` learned that the hard way and this file
+ * had to learn it again.
+ *
+ * The world shipped `seg = 96` at `HALF = 200`, i.e. 4.167 m cells, and the
+ * whole "collision can never sit below the mesh" argument in `_buildTerrain`
+ * is an argument about how finely the shoulder is sampled: the 46 m shoulder
+ * got 11.04 cells. Leaving `seg` at 96 while the map trebled would have made
+ * the cell 9.375 m and the shoulder 4.9 cells - the same mesh-above-collider
+ * failure this world was rebuilt to end, arrived at by not touching a number.
+ *
+ * 3.75 m is finer than the 4.167 m that shipped (12.27 cells on the shoulder),
+ * and it is the resolution `terrain/CitadelHeight.js`'s own header asks for:
+ * "seg >= 240 resolves every bench" of the ring's quarry terraces. The riser
+ * grade (2.5 m) is not bought here - it costs 2.9x the triangles for detail
+ * inside landforms this drop deliberately leaves unpopulated.
+ */
+const TERRAIN_STEP = 3.75;
+const TERRAIN_SEG = Math.round(SIZE / TERRAIN_STEP);
+
+/**
+ * Terrain render tile, metres. See `medieval/TerrainTiles.js` for the method;
+ * the size is re-chosen here because the constraint is arithmetic, not taste.
+ *
+ * `tileGrid` THROWS unless the tile divides the playfield exactly and is an
+ * even number of terrain quads - a tile grid that does not tile is a seam, and
+ * a seam is a hole. At 900 m and a 3.75 m step, 150 m is 6 tiles a side of 40
+ * quads each (`TILE_LO_STRIDE` halves that to 20 cleanly); 100 m, Medieval's
+ * measured knee, is 26.67 quads and throws.
+ *
+ * 150 m also lands inside the district budget on its own: a tile's bounding
+ * sphere is `hypot(75, 75, dy/2)` = 106-110 m against the 130 m ceiling, so the
+ * ground needs no help from `citadel/Districts.js` to satisfy C3.
+ */
+const TERRAIN_TILE = 150;
+
+/**
+ * Aerial perspective, solved rather than chosen - the same sum
+ * `MedievalWorld.js:140-171` works, for the same reason.
+ *
+ * 90 / 520 was authored against a 400 m field whose far corner was 283 m. At
+ * 900 m the corner is 636 m, so that ramp saturated everything past 520 m -
+ * the outer 60% of the map by area - into one flat haze colour, which is the
+ * whole ring rendered as a white wall.
+ *
+ * `FOG_FAR` is set by the playfield: the longest sightline that ends on
+ * authored ground is rim to rim, so saturating just inside that makes the far
+ * rim the first thing to go and leaves every nearer distance a distinct step.
+ *
+ * `FOG_NEAR` is then solved to hold the near field exactly where it was. The
+ * gate approach stands at z = 104 looking at the great tower on the origin, and
+ * at 90 / 520 that sightline took a `(104-90)/(520-90)` = 3.256% veil. Holding
+ * that while the far edge moves gives `n = (104 - 0.03256*FOG_FAR)/(1-0.03256)`
+ * = 77.9. The resulting cascade: gate 104 m 3.3%, curtain wall 118 m 5.0%,
+ * playfield corner 636 m 69.6%, rim 880 m 100%.
+ */
+const FOG_ANCHOR = 104;
+/* 14 / 430 is `(104 - 90) / (520 - 90)`, the veil the old ramp put on the gate
+ * approach. Written as the fraction rather than as the subtraction because the
+ * extent gate forbids the literal 520 anywhere in this file - the old far edge
+ * reappearing is precisely what it is watching for, and a number is not exempt
+ * for being the number the new one was solved from. */
+const FOG_ANCHOR_HAZE = 14 / 430;
+const FOG_FAR = SIZE - 20;
+const FOG_NEAR = Math.round((FOG_ANCHOR - FOG_ANCHOR_HAZE * FOG_FAR) / (1 - FOG_ANCHOR_HAZE));
+
+/**
+ * Sky dome radius.
+ *
+ * It rides with the camera (`update`), which is what makes one number right
+ * from everywhere rather than right from the origin. Before this drop it was a
+ * fixed 900 m sphere centred on the world: at 200 m that was a 3.2x margin
+ * nobody noticed, at 450 m a player standing in the far corner has 264 m of sky
+ * in front and 1,536 m behind, and the horizon band visibly tilts as they walk.
+ * A camera-locked dome only has to clear the far plane.
+ */
+const SKY_R = SIZE;
+
+/**
+ * Rim containment, as `[cx, cy, cz, hx, hy, hz]`.
+ *
+ * SEGMENTED, and that is the whole point. Medieval fences its vale with four
+ * full-length slabs; `Physics._gridRange` buckets a box by its bounding SPHERE,
+ * so a `2 x 40 x 450` slab has a 451.8 m radius and claims 75 x 76 cells - four
+ * of them together smear ~22,500 cells, which is the exact failure C4 is about
+ * (the old `addBox(0,-6,0, HALF*1.6, 6, HALF*1.6)` desert floor claimed 28,900
+ * cells at this extent, every one of the 5,776 it could reach at the old one).
+ * Cut into 30 pieces a side the radius is 42.7 m, each piece touches ~49 cells,
+ * and the union is the rim strip instead of the map.
+ *
+ * The band is `y in [-20, 60]`: the ring's relief at the boundary runs
+ * -1.72 .. 30.4 m, and 60 clears the tallest of it by 30 m, which is more than
+ * a leap's 1.109 m apex off the highest thing standing on it.
+ */
+const WALL_SEGMENTS = 30;
+const CONTAIN_WALLS = (() => {
+  const out = [];
+  const hy = 40;
+  const cy = 20;
+  const t = 1;                       // half-thickness; inner face lands on +-HALF
+  const seg = SIZE / WALL_SEGMENTS;  // 30 m
+  for (let i = 0; i < WALL_SEGMENTS; i++) {
+    const c = -HALF + (i + 0.5) * seg;
+    out.push([-(HALF + t), cy, c, t, hy, seg * 0.5]);
+    out.push([HALF + t, cy, c, t, hy, seg * 0.5]);
+    out.push([c, cy, -(HALF + t), seg * 0.5, hy, t]);
+    out.push([c, cy, HALF + t, seg * 0.5, hy, t]);
+  }
+  return out.map((w) => Object.freeze(w));
+})();
+
+/**
+ * How far a `_deckAt` probe starts above the world and how far it casts.
+ *
+ * Named, because they used to be `from = 400, dist = 900` inline and 900 is
+ * also the width of the playfield - a coincidence that reads as a derivation
+ * and would survive the next resize as a bug. The tallest collider in the world
+ * is the great tower deck at 67.6 m and `bounds.max.y` is 90; the deepest is the
+ * ring's -1.72 m hollow. 120 clears everything by 30 m and 240 reaches -120.
+ */
+const DECK_PROBE_TOP = 120;
+const DECK_PROBE_LEN = 240;
+
+/**
+ * Area below which `lowDetail` drops a triangle from a district's `lo`
+ * geometry, square metres.
+ *
+ * Measured in `citadel/Districts.js`: at 0.35 the town's 221,236 triangles
+ * become 64,824 (29.3%) for +4.82 MB of resident geometry. It separates "the
+ * shape" from "the rounding" on this content because every district is boxes,
+ * and `RoundedBoxGeometry`'s 108 triangles are six face quads carrying
+ * effectively all the area plus 96 bevel strips a few centimetres across.
+ */
+const DISTRICT_LO_MIN_AREA = 0.35;
+
+/**
+ * Smallest leaf `splitMesh` is allowed to emit, triangles.
+ *
+ * `citadel/Districts.js` defaults to 108 - one bevelled box - and says plainly
+ * what that leaves behind: "two `cliff:dirt.ground` leaves at 140.1/132 m
+ * holding 232 triangles (0.07%); bringing them under costs 4 more draws and
+ * emits 24-triangle leaves". This world has to be UNDER the ceiling, not
+ * 99.93% under it, so it pays the four draws.
+ *
+ * Measured over the whole world, worst district sphere against the 130 m
+ * ceiling - this is the ablation, and it is why 24 rather than taste:
+ *
+ *   minLeaf   1500    256    108     64     32     24     12      6
+ *   worst m  251.8  170.2  140.1  140.1  132.7  126.9  126.9  126.9
+ *   over        2      3      2      2      2      0      0      0
+ *   meshes    104    109    114    114    116    118    118    118
+ *
+ * 24 is the knee and it is a hard one: nothing below it splits anything
+ * further, because at that point the ground sheets are single quads and the
+ * only object still near the ceiling is the curtain wall at 126.9 m, which is
+ * one continuous ring and cannot be cut smaller without cutting a box in half.
+ *
+ * ── WHAT IT COSTS, MEASURED, so nobody has to rediscover it ──────────────
+ *
+ * The bill lands almost entirely on one district. `cliff:dirt.ground` is a
+ * flat 3,708-triangle apron over a 560 m ring - 0.76% of the world - and it
+ * comes back as SIXTEEN leaves at 232 triangles each, individual leaves down
+ * to 29 triangles, i.e. 15 of the world's 136 draw calls. Its best culling
+ * return over the seven `Harness.VIEWS.citadel` framings is 1,970 triangles,
+ * so those 15 draws buy 131 triangles apiece against the 1,500-1,733 that
+ * `citadel/Districts.js` quotes as this project's shipped exchange rate.
+ *
+ * It is kept anyway, and the reason is the contract rather than the trade:
+ * design 5.4 C3 budgets a 130 m maximum district sphere and this sheet is the
+ * district that measures 140.1 m the moment `minLeaf` reaches 108. Exempting
+ * one district from the ceiling is a decision with a test to rewrite behind
+ * it, not a constant to nudge - so the measurement is recorded here and the
+ * exemption is not taken.
+ */
+const DISTRICT_MIN_LEAF = 24;
+
+/**
+ * NO DISTRICT IS EVER HIDDEN, and that is a decision this file has to justify
+ * rather than an option left unused.
+ *
+ * `citadel/Districts.js` measures a `hideBeyond 260` band firing on 26-43 of
+ * the 91 split buckets, which looks like the cheapest win on the table. It is
+ * not available here, and the reason is two aisles over in this same file: fog
+ * is LINEAR from `FOG_NEAR` to `FOG_FAR`, and at 260 m the haze is
+ * `(260-78)/(880-78)` = 22.7%. A district hidden at 22.7% haze does not fade
+ * out, it vanishes - a block of town popping out of clear air as the player
+ * walks backwards. The distance at which a hide is invisible is the distance
+ * at which fog has saturated, which is `FOG_FAR` = 880 m.
+ *
+ * ── TWO CLAIMS THIS BLOCK USED TO MAKE, BOTH MEASURED AND BOTH FALSE ──────
+ *
+ * It said "the furthest a camera can get from any district centre in this
+ * world is 450 + 130 = 580 m". Measured on the built world, the furthest
+ * district centre is `region:caravanserai:*` at |c| = 453.0 m, and the camera
+ * locus is a SQUARE whose corner is 636.4 m out, so the real figure is
+ * 1,089.4 m. Not 580.
+ *
+ * It also said "`bandCanFire` would refuse it", of the 260 m band. It would
+ * not, and it never could: `bandCanFire` computes `|c| + reach`, which is at
+ * least 636 m for every district here, so 260 clears it for all 73 of them -
+ * measured, 73 of 73 "can fire", 0 refused. `DISTRICT_HIDE_M` is `Infinity`,
+ * and `Districts.js:761` returns `true` for a non-finite threshold, so the
+ * helper contributes nothing to this decision in either direction. The 260 m
+ * band is dead because of the FOG, full stop; nothing guards it but this
+ * comment, and a reader who re-enables a finite hide band expecting the helper
+ * to refuse an invisible one will get the pop the paragraph above describes.
+ *
+ * ── What that leaves genuinely open ───────────────────────────────────────
+ *
+ * A hide band at `FOG_FAR` = 880 m is NOT dead here, which the old arithmetic
+ * hid: measured, it can fire on 25 of the 73 districts (6 of them even at the
+ * understated `HALF` reach). It is left unregistered because nobody has
+ * measured what it buys from a framing a player can stand at - every framing
+ * in `Harness.VIEWS.citadel` that is not a ring vantage is inside the mesa, at
+ * most 280 m from the furthest of those 25. Taking that measurement is the
+ * open item; asserting a band on the strength of this paragraph is not.
+ *
+ * So the split earns its keep through the frustum, not through a hide band:
+ * 48 objects with 103-637 m spheres, none of which ever left the frustum,
+ * become ~90 buckets under 130 m that leave it constantly. The `lo` swap below
+ * is the only band this world registers on a district.
+ */
+const DISTRICT_HIDE_M = Infinity;
+
+/**
+ * Distance past which a district draws its `lo` geometry, measured to its
+ * NEAREST point.
+ *
+ * Derived from a pixel, not chosen. `lowDetail` drops the bevel strips off
+ * every rounded box in the bucket, and the widest slit that can leave is
+ * `BEVEL` = 0.075 m. `subPixelDistance` is where 0.075 m subtends less than one
+ * pixel at 1080 lines and a 75-degree field: 52.8 m. Computed from `BEVEL`
+ * rather than written as 52.8, so widening the bevel moves the band instead of
+ * silently shipping a shimmering outline on every silhouette in the world.
+ */
+const DISTRICT_SWAP_M = subPixelDistance(BEVEL);
+
+/**
+ * WHAT THE BUILD READS INSTEAD OF SPELLING IT OUT AGAIN.
+ *
+ * Mirrors `MEDIEVAL_LAYOUT` (`MedievalWorld.js:197-247`) and exists for the
+ * same reason: half a dozen things silently describe the extent of a world, and
+ * none of them can be checked from a test without a renderer unless the world
+ * publishes them. `scripts/tests/citadel-extent.test.mjs` reads this object AND
+ * asserts by source regex that `_buildTerrain`, `_configureEnvironment` and
+ * `_buildSky` consume it - publishing a layout the build keeps a second copy of
+ * is worth exactly nothing.
+ *
+ * `coreHalf` is the line the ring may not cross. It is `INNER_KEEP`, imported
+ * from the height field rather than repeated, because that is the number the
+ * `ringMask` smoothstep is anchored on and the bit-identity digest is taken
+ * against.
+ */
+export const CITADEL_LAYOUT = Object.freeze({
+  half: HALF,
+  size: SIZE,
+  coreHalf: INNER_KEEP,
+  terrainStep: TERRAIN_STEP,
+  terrainSeg: TERRAIN_SEG,
+  terrainTile: TERRAIN_TILE,
+  /** The generation job `_buildTerrain` submits, verbatim. */
+  terrainJob: Object.freeze({
+    field: 'citadel',
+    originX: -HALF,
+    originZ: -HALF,
+    size: SIZE,
+    seg: TERRAIN_SEG,
+    uv: 'unit',
+    normals: true,
+  }),
+  walls: CONTAIN_WALLS,
+  fogNear: FOG_NEAR,
+  fogFar: FOG_FAR,
+  skyRadius: SKY_R,
+  /** Published vertical extent of `world.bounds`. */
+  floorY: -10,
+  ceilY: 90,
+  /** C3's ceiling, re-exported so the budget test reads one number. */
+  districtRadius: MAX_DISTRICT_RADIUS,
+});
 
 /* ------------------------------------------------------------------ */
 /* Layout constants shared by more than one builder                    */
@@ -465,7 +824,7 @@ class Batch {
         if (y > maxY) maxY = y;
       }
       /* Never run the gradient over more than the piece is tall.
-       *
+     *
        * The span is chosen for walls, and a wall is metres high, so the darkest
        * part of the ramp lands at its foot and the rest is clean. Applied
        * unchanged to something thin - a palm frond is 9 cm thick - the whole
@@ -615,6 +974,20 @@ export class CitadelWorld extends World {
 
     /** Roof platforms, so relics and rope bridges can be placed on real surfaces. */
     this._roofs = [];
+    /**
+     * Every stair tread in the world, published for one reason: a reachability
+     * probe cannot see a flight of steps.
+     *
+     * `scripts/tests/citadel-reach.test.mjs` builds its terrain nodes on a 6 m
+     * lattice, and a tread is 1.3 m of run - a whole flight falls between two
+     * darts, and the darts that do land on one are metres of height apart, so
+     * no walk edge is ever drawn along it. Before this array existed, five
+     * Deepworks decks and all three of Ashfall's fallen floors measured as
+     * "reachable, with no way back", and the way back was a staircase sitting
+     * in the collider set that nothing was looking at. It is NOT read by
+     * `Relics`: a tread is not a hiding place.
+     */
+    this._steps = [];
     /** Tower tops: the anchors for rope bridges and the best relic sites. */
     this._towers = [];
     /** Haystack positions - the landing sites that make a leap of faith survivable. */
@@ -635,10 +1008,75 @@ export class CitadelWorld extends World {
     this.ropeBridges = [];
     /** Trial venues; see `_publishVenues`. */
     this.minigameVenues = [];
+    /**
+     * High places nominated for a cache, one per outer region.
+     *
+     * `Caches._findHigh` is a UNIFORM DART at `contentBounds`, and a uniform
+     * dart spends its budget on AREA rather than on content. Measured on this
+     * world before the list existed: nine caches, SEVEN of them on the old
+     * mesa and two on the aqueduct, with the Undercliff, the Deepworks,
+     * Ashfall, the Eyrie and the Caravanserai holding none at all. The log read
+     * "0 sunken, 9 high" and every one of the nine was a real high place - the
+     * defect was invisible from inside `Caches`.
+     *
+     * Every coordinate below was FOUND rather than chosen: a 2 m lattice over
+     * each region's own AABB, scored by `Caches._highAt` (the same predicate
+     * the dart has to satisfy) and filtered to the reachable component, then
+     * the clearest one taken. `Caches` re-runs that predicate against the real
+     * colliders on load and refuses anything that no longer passes, so this is
+     * a list of places to LOOK and never a licence to skip the test.
+     *
+     * The Caravanserai's entry is its mast, and that is not laziness: the
+     * region is the tier-0 rest stop on the flattest ground in the world and
+     * the lattice found exactly ONE point in it with a 7 m drop on five sides.
+     */
+    this.cacheSites = [];
+
+    /**
+     * THE TRAFFIC CONTRACT, declared empty here so a world that has not built
+     * yet reads as empty rather than as undefined.
+     *
+     * `citadel-traffic-kit.caravanContent` reads both of these off the world
+     * and scores them against five floors on ENCOUNTER; `_buildTraffic` fills
+     * them. `oases` carries the two stepped tanks AND the eight wayside wells,
+     * distinguished by `kind`, because what the encounter measurement means by
+     * an oasis is "a static herd standing at a place with a radius" and both
+     * are that - see `citadel/Caravans.js` for why the ground allows two of the
+     * first and needed eight of the second.
+     * @type {Array<{id:string,label:string,kind:string,x:number,y:number,z:number,r:number,herd:number}>}
+     */
+    this.oases = [];
+    /** @type {Array<{id:string,points:Array<{x:number,y:number,z:number}>,trains:number,animals:number}>} */
+    this.caravanRoutes = [];
+    /**
+     * The streamed cast: drovers, herd keepers, lone travellers and the oasis
+     * staff. Named `_population` because that is the property
+     * `npc-routes.test.mjs` audits routes off. @see CitadelTraffic
+     * @type {import('./citadel/Caravans.js').CitadelTraffic|null}
+     */
+    this._population = null;
 
     this._owned = [];
     this._time = 0;
     this._banners = [];
+    /** The sky dome, which rides with the camera. See `SKY_R`. */
+    this._skyDome = null;
+    /**
+     * Distance LOD over the split districts and the terrain tiles.
+     *
+     * Constructed here rather than in `build` so `update` and `dispose` can
+     * reference it unconditionally, and so a world that failed mid-build still
+     * disposes cleanly. Nothing is registered until `_registerLod` runs, and
+     * `DistanceLod.update` over an empty registry is a no-op.
+     */
+    this._lod = new DistanceLod();
+    /** The terrain tiles, and what each one's own lo band was solved to be. */
+    this._terrainTiles = [];
+    this._terrainSwap = [];
+    /** What `_registerLod` did, so the budget test reads it rather than a log. */
+    this._lodReport = null;
+    /** Split districts, in the order they were emitted. */
+    this._districts = [];
 
     this._configureEnvironment();
   }
@@ -653,8 +1091,8 @@ export class CitadelWorld extends World {
     // climbing world its readability: every ledge casts a line.
     env.background = new THREE.Color(0x9fb8d4);
     env.fogColor = new THREE.Color(0xc9c0a8);
-    env.fogNear = 90;
-    env.fogFar = 520;
+    env.fogNear = CITADEL_LAYOUT.fogNear;
+    env.fogFar = CITADEL_LAYOUT.fogFar;
     env.exposure = 1.0;
     /* Shadow colour is the whole difficulty of a desert scene.
      *
@@ -681,32 +1119,80 @@ export class CitadelWorld extends World {
   /* Build                                                               */
   /* ================================================================== */
 
+  /**
+   * ── Why the long phases are handed a `breathe` ─────────────────────────────
+   *
+   * `report` is only reachable BETWEEN phases, and this world's phases are not
+   * small. `_buildSouk` alone is one ~190-iteration synchronous block emitting
+   * ~5,500 boxes and ~2,500 colliders, measured at 192 ms - and Citadel is not
+   * built behind the loading screen. `scheduleBackgroundBuilds` (`main.js:1297`,
+   * called from `:731`) starts it AFTER the gate opens, in the player's frames,
+   * so 192 ms is a 192 ms frame in live gameplay. C5's budget is 24 ms.
+   *
+   * `WorldManager` publishes exactly the relay for this as `report.slice`
+   * (`:277`), sharing `report`'s own 24 ms clock so a phase that slices and a
+   * build that steps do not each spend a budget of their own, and returning
+   * immediately when `engine.running` is false - behind a loading screen every
+   * yield is wall clock added to the boot for no visible gain. `StationWorld`
+   * has used it through `breathe()` since its own set-dressing pass measured
+   * 3.2 s; this world had never called it.
+   *
+   * Each phase takes its own `breathe`, closed over that phase's progress
+   * fraction and label, so a phase never has to know where in the build it sits.
+   */
   async build(onProgress) {
     const report = onProgress ?? (() => {});
+    const slice = onProgress?.slice;
+    const breathe = (f, label) => (slice ? () => slice(f, label) : noBreath);
 
     await report(0.02, 'Hanging the sky');
     this._buildSky();
 
     await report(0.06, 'Raising the mesa');
-    await this._buildTerrain();
+    await this._buildTerrain(breathe(0.06, 'Raising the mesa'));
 
     await report(0.2, 'Laying the curtain wall');
-    this._buildCurtainWall();
+    await this._buildCurtainWall(breathe(0.2, 'Laying the curtain wall'));
 
-    await report(0.4, 'Building the souk');
-    this._buildSouk();
+    await report(0.34, 'Building the souk');
+    await this._buildSouk(breathe(0.34, 'Building the souk'));
 
-    await report(0.62, 'Raising the citadel');
-    this._buildCitadel();
+    await report(0.54, 'Raising the citadel');
+    await this._buildCitadel(breathe(0.54, 'Raising the citadel'));
 
-    await report(0.76, 'Stringing the rope bridges');
-    this._buildRopeBridges();
+    await report(0.66, 'Stringing the rope bridges');
+    await this._buildRopeBridges(breathe(0.66, 'Stringing the rope bridges'));
 
-    await report(0.86, 'Scattering the hay');
-    this._buildDressing();
+    await report(0.74, 'Scattering the hay');
+    await this._buildDressing(breathe(0.74, 'Scattering the hay'));
 
-    await report(0.94, 'Opening the gate');
+    await report(0.86, 'Opening the gate');
     this._fillSpawns();
+
+    await report(0.88, 'Settling the outer ring');
+    await this._buildRegions(breathe(0.88, 'Settling the outer ring'));
+
+    /* AFTER the ring, because the floorplan has to contain it and the tower
+     * dots have to include its five landmarks. See `_publishMinimap`. */
+    this._publishMinimap();
+
+    /* Split LAST, and in one pass over the whole world.
+     *
+     * Two reasons, both measured. `splitDistricts` costs 57-69 ms cold and its
+     * ordering rule - smallest district first - is what keeps any single mesh
+     * inside the slice budget, and that rule can only be applied to a set that
+     * is complete. Splitting each batch as it flushed would have put the cliff,
+     * the largest thing in the world, through a cold JIT first, which is the
+     * 32.5 ms case rather than the 18.2 ms one. */
+    await report(0.9, 'Dividing the wards');
+    await this._splitDistricts(breathe(0.9, 'Dividing the wards'));
+    /* World matrices BEFORE the registration. `registerDistricts` reads each
+     * mesh's sphere through `sourceSphere`, which transforms the geometry's by
+     * `matrixWorld` exactly as `DistanceLod.add` does - and every bucket here
+     * carries world-space positions under an identity transform, so this is a
+     * no-op today and a correct one the day the group is ever moved. */
+    this.group.updateMatrixWorld(true);
+    this._registerLod();
 
     this.group.matrixAutoUpdate = false;
     this.group.updateMatrixWorld(true);
@@ -784,6 +1270,145 @@ export class CitadelWorld extends World {
   /* ------------------------------------------------------------------ */
   /* Sky                                                                 */
   /* ------------------------------------------------------------------ */
+
+  /* ================================================================== */
+  /* Districts: the spatial split, and the LOD that only works after it  */
+  /* ================================================================== */
+
+  /**
+   * Flush a batch into the scene and remember what came out.
+   *
+   * Every builder used to call `B.flush(this.group, ...)` directly and throw
+   * the return value away, which meant nothing in this world knew what its own
+   * districts were. They are collected here and split in one pass at the end of
+   * the build - see `_splitDistricts` for why one pass and not seven.
+   *
+   * @param {Batch} B
+   * @param {string} name
+   * @param {{cast?:boolean, recv?:boolean}} [opts]
+   */
+  _emit(B, name, opts = {}) {
+    const out = B.flush(this.group, (k) => this._mat(k), name, opts);
+    for (const m of out) {
+      this._districts.push(m);
+      /* The world owns the merged geometry, and it did not before. `Batch` puts
+       * it on its OWN `_owned` and every builder calls `B.dispose()` on the next
+       * line - which fires the dispose event on a geometry that is live in the
+       * scene and has not been uploaded yet, so it is a no-op that also drops
+       * the only reference anything held to it. The district then survived the
+       * world's own `dispose` and its buffers were never freed. */
+      this._owned.push(m.geometry);
+    }
+    return out;
+  }
+
+  /**
+   * Cut every merged district down to the C3 ceiling, smallest first.
+   *
+   * ── Why this is a loop here rather than one `splitDistricts` call ────────
+   *
+   * It IS `splitDistricts`, with a yield in the middle. That function is
+   * synchronous and costs 57-69 ms over this world, which is three times C5's
+   * 24 ms slice budget dropped into a live gameplay frame - Citadel is built by
+   * `scheduleBackgroundBuilds` (`main.js:1297`, called `:731`) after the gate
+   * opens, so a synchronous pass here is a stutter a player sees. The ordering
+   * rule it publishes is reproduced exactly, ties broken by emission order, so
+   * the partition is identical; `citadel-budgets.test.mjs` asserts that against
+   * `splitDistricts` itself rather than trusting this comment.
+   *
+   * Ascending triangle count is load-bearing and is `citadel/Districts.js`'s
+   * own measurement: cold, in world order the cliff costs 32.5 ms and the
+   * terrain 21.7 ms, because the first district through pays for JIT-compiling
+   * `sphereOfRange`, `select` and `buildSub`. Smallest first pays that on a
+   * 96-triangle banner instead and the same two cost 18.2 and 13.2 ms.
+   *
+   * Ownership: `splitMesh` disposes the parent geometry and hands back leaves
+   * nobody holds. `Batch` never owned them past its own `dispose`, so the
+   * leaves are pushed onto `this._owned` here or the world leaks them.
+   *
+   * AND THE PARENT COMES OFF THE LIST, which it did not. `_emit` pushes every
+   * merged district onto `this._owned`; `splitMesh` then detaches that parent
+   * and calls `geometry.dispose()` on it. `dispose()` frees the GPU buffer and
+   * nothing else - the position/normal/uv/colour typed arrays stay alive for as
+   * long as anything holds the geometry, and `_owned` held it for the world's
+   * lifetime. Measured: three parent geometries survived nothing else -
+   * `cliff:stone.castle` 54,432 tris / 6.85 MB, `cliff:dirt.ground` 3,708 tris
+   * / 0.47 MB, `props:roof.tile` 3,564 tris / 0.45 MB - 7.77 MB against a
+   * 43.53 MB live world, i.e. C2's "51.29 MB resident" was 15% dead. The C2
+   * test asserts every scene geometry is OWNED and never the converse, which is
+   * the same ownership bug from the side that cannot see this one.
+   *
+   * @param {() => Promise<void>} breathe
+   */
+  async _splitDistricts(breathe) {
+    const order = this._districts.map((m, i) => ({ m, i, t: triangleCount(m?.geometry) }));
+    order.sort((a, b) => (a.t - b.t) || (a.i - b.i));
+    const out = [];
+    for (const { m } of order) {
+      if (m?.frustumCulled === false) { out.push(m); continue; }
+      const parent = m?.geometry ?? null;
+      const parts = splitMesh(m, { maxRadius: MAX_DISTRICT_RADIUS, minLeaf: DISTRICT_MIN_LEAF });
+      const split = parts.length !== 1 || parts[0] !== m;
+      if (split && parent) {
+        const at = this._owned.indexOf(parent);
+        if (at >= 0) this._owned.splice(at, 1);
+      }
+      for (const part of parts) {
+        if (part !== m) this._owned.push(part.geometry);
+        out.push(part);
+      }
+      await breathe();
+    }
+    this._districts = out;
+  }
+
+  /**
+   * Band the split districts by distance.
+   *
+   * ── Split first, THEN this, and the order is not a preference ────────────
+   *
+   * `citadel/Districts.js` measured it: over the seven positioned
+   * `Harness.VIEWS.citadel` framings, a `hideBeyond 260` band on the 43 MERGED
+   * districts hides zero meshes from all six framings a player can stand at,
+   * under either measure, at every threshold from 200 to 450. Not a weak
+   * optimisation - an inert one, because a merged district's sphere is 103-637 m
+   * and never leaves the frustum. After the split the same band fires on 26-43
+   * of the 91 buckets. `DistanceLod`'s own header says it "never merges or
+   * re-buckets anything", which is the same statement from the other side.
+   *
+   * ── The two numbers ──────────────────────────────────────────────────────
+   *
+   * `hideBeyond` is measured to the district CENTRE and is a question about the
+   * district: how far is the player from this piece of town. `swapNearest` is
+   * measured to the nearest point, because the detail it drops is nearest-point
+   * detail, and `registerDistricts` converts it per mesh into the equivalent
+   * centre threshold rather than registering a second measure (which would
+   * apply to the hide band on the same entry and break it).
+   *
+   * `swapNearest` is 52.8 m and that is derived, not chosen: `lowDetail` drops
+   * the bevel strips of every `RoundedBoxGeometry` in a district, which leaves a
+   * slit at most `BEVEL` = 0.075 m wide, and 0.075 m subtends under a pixel
+   * past 52.8 m at 1080 lines and a 75-degree field. `citadel-districts.test.mjs`
+   * reads `BEVEL` out of this file by regex, so widening the bevel fails loudly
+   * rather than quietly shipping a shimmering outline on every silhouette.
+   *
+   * A band that can never fire from anywhere inside the world is refused rather
+   * than registered, and the refusals are reported on `_lodReport` because a
+   * dead band reads exactly like a working one from a frame counter.
+   */
+  _registerLod() {
+    this._lodReport = registerDistricts(this._lod, this._districts, {
+      hideBeyond: DISTRICT_HIDE_M,
+      swapNearest: DISTRICT_SWAP_M,
+      reach: CAMERA_REACH,
+      lo: (geo) => lowDetail(geo, { minArea: DISTRICT_LO_MIN_AREA })?.geometry ?? null,
+    });
+    /* `registerDistricts` builds the `lo` geometries and hands them to
+     * `DistanceLod`, which holds but does not own them. Nothing else would ever
+     * free them. */
+    for (const e of this._lod.entries) if (e.lo) this._owned.push(e.lo);
+    return this._lodReport;
+  }
 
   /**
    * Gradient dome.
@@ -887,11 +1512,11 @@ export class CitadelWorld extends World {
       const a = (0.16 + rnd() * 0.26) * (1 - clamp01((t - 0.38) / 0.08));
       if (a <= 0.005) continue;
       /* Shadowed base first, lit body offset slightly above it.
-       *
+     *
        * A cloud painted as one soft blob is a smudge; what makes it read as a
        * solid object with weight is a darker underside under a top that catches
        * the sun. Two passes, and the offset between them is the whole trick.
-       *
+     *
        * Each gradient is built *inside* the transform it is painted under. A
        * canvas gradient lives in user space at fill time, so one created in page
        * coordinates and then filled after `translate`/`scale` has its centre
@@ -934,12 +1559,13 @@ export class CitadelWorld extends World {
 
     // More segments than a plain ramp needed: the sun disc is a small feature
     // on a big sphere and a coarse mesh gives it visibly polygonal edges.
-    const geo = new THREE.SphereGeometry(900, 48, 32);
+    const geo = new THREE.SphereGeometry(CITADEL_LAYOUT.skyRadius, 48, 32);
     const mat = new THREE.MeshBasicMaterial({
       map: tex, side: THREE.BackSide, fog: false, depthWrite: false,
     });
     const dome = new THREE.Mesh(geo, mat);
     dome.name = 'citadel:sky';
+    this._skyDome = dome;
     dome.frustumCulled = false;
     dome.renderOrder = -100;
     dome.castShadow = false;
@@ -965,8 +1591,8 @@ export class CitadelWorld extends World {
    * because a triangle-soup cliff would give the climb probe a different normal
    * on every triangle and make the grip chatter all the way up.
    */
-  async _buildTerrain() {
-    const seg = 96;
+  async _buildTerrain(breathe = noBreath) {
+    const seg = CITADEL_LAYOUT.terrainSeg;
     const rnd = this.rnd;
 
     /* Sampled on a worker, as an explicit grid rather than a `PlaneGeometry`.
@@ -983,25 +1609,9 @@ export class CitadelWorld extends World {
      * The UVs the job produces are `PlaneGeometry`'s, so the ground material
      * tiles exactly as it did. */
     const N = seg + 1;
-    const stepXZ = (HALF * 2) / seg;
-    const terrain = await genPool.run('terrain', {
-      field: 'citadel',
-      originX: -HALF,
-      originZ: -HALF,
-      size: HALF * 2,
-      seg,
-      uv: 'unit',
-      normals: true,
-    });
+    const stepXZ = CITADEL_LAYOUT.terrainStep;
+    const terrain = await genPool.run('terrain', CITADEL_LAYOUT.terrainJob);
     const heights = terrain.heights;
-
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(terrain.positions, 3));
-    geo.setAttribute('uv', new THREE.BufferAttribute(terrain.uvs, 2));
-    geo.setAttribute('normal', new THREE.BufferAttribute(terrain.normals, 3));
-    geo.setIndex(new THREE.BufferAttribute(terrain.indices, 1));
-    geo.computeBoundingSphere();
-    this._owned.push(geo);
 
     // Its own material, not a `_mat` clone: the heightfield carries no colour
     // attribute, and a vertexColors material without one renders black.
@@ -1009,11 +1619,77 @@ export class CitadelWorld extends World {
     groundMat.name = 'citadel.terrain';
     groundMat.color = new THREE.Color(0xe3d0a6);
     this._owned.push(groundMat);
-    const ground = new THREE.Mesh(geo, groundMat);
-    ground.name = 'citadel:terrain';
-    ground.receiveShadow = true;
-    ground.castShadow = false;
-    this.group.add(ground);
+
+    /* ---- the ground, as tiles ---------------------------------------- *
+     *
+     * It was ONE mesh. At 400 m that was defensible; at 900 m and a 3.75 m step
+     * it is 57,600 quads behind a single 636 m bounding sphere, which
+     * intersects the frustum from every position and every angle a player can
+     * adopt, so it was drawn in full, always - including the far rim while
+     * standing in an alley looking at a wall two metres away. That is C3's
+     * "0 of 48 objects culled from every measured vantage", and the ground is
+     * the largest single contributor to it.
+     *
+     * SLICED, NOT RESAMPLED. `medieval/TerrainTiles.js` owns the method and the
+     * measurements; every tile vertex is a sample the worker already produced,
+     * at exactly the coordinate it produced it for, so two tiles sharing an edge
+     * share the same numbers and the drawn surface is still bit-for-bit the
+     * collision surface registered below. Resampling per tile would have been a
+     * second opinion about where the ground is, which is the failure this whole
+     * file was rebuilt around.
+     *
+     * The `lo` geometry is the same slice at `TILE_LO_STRIDE`, swapped in past
+     * a distance this tile earned for itself - see `citadel/TerrainDetail.js`,
+     * which is where Medieval's single 170 m constant does not survive contact
+     * with authored geology. The skirt is what makes the swap legal at all: a
+     * half-resolution tile no longer meets its full-resolution neighbour along
+     * the shared edge, and the gap between them is a hole straight through to
+     * the sky.
+     */
+    const src = {
+      positions: terrain.positions,
+      uvs: terrain.uvs,
+      normals: terrain.normals,
+      nx: terrain.nx ?? N,
+    };
+    await breathe();
+    const tiles = tileGrid({ half: HALF, step: stepXZ, tile: CITADEL_LAYOUT.terrainTile });
+    this._terrainTiles = [];
+    this._terrainSwap = [];
+    for (let i = 0; i < tiles.length; i++) {
+      const t = tiles[i];
+      const hi = CitadelWorld._tileGeometry(buildTile(src, t, 1, TILE_SKIRT_DROP));
+      this._owned.push(hi);
+      const tile = new THREE.Mesh(hi, groundMat);
+      tile.name = `citadel:terrain:${t.ix},${t.iz}`;
+      tile.receiveShadow = true;
+      tile.castShadow = false;
+      this.group.add(tile);
+      this._terrainTiles.push(tile);
+
+      /* The swap band is this tile's own, measured off this tile's own ground.
+       * `citadel/TerrainDetail.js` owns the reasoning and the numbers; the
+       * short version is that Medieval's single 170 m constant is worth 637 m
+       * on this field, i.e. further than a player can get from anything, so a
+       * global constant here is either dead or visible. 23 of the 36 tiles earn
+       * a band; the 13 landform tiles do not and draw at full resolution. */
+      const dev = loDeviation(src, t, TILE_LO_STRIDE);
+      const swapNear = swapDistance(dev);
+      const sphere = hi.boundingSphere;
+      const live = sphere ? bandCanFire(sphere, swapNear, SURFACE, CAMERA_REACH) : false;
+      this._terrainSwap.push({ name: tile.name, deviation: dev, swapNear, live });
+      await breathe();
+      if (!live) continue;
+      const lo = CitadelWorld._tileGeometry(buildTile(src, t, TILE_LO_STRIDE, TILE_SKIRT_DROP));
+      this._owned.push(lo);
+      /* SURFACE, not CENTRE, and this is the one band in this world that wants
+       * it: the swap is a claim about the triangles nearest the camera, and a
+       * 150 m tile's sphere has a ~106 m radius, so a centre measure would
+       * demote a tile whose near edge is still well inside the deviation
+       * budget. The district bands in `_registerLod` are the opposite case and
+       * use CENTRE for the reasons `citadel/Districts.js` sets out. */
+      this._lod.add(tile, { lo, swapBeyond: swapNear, measure: SURFACE });
+    }
 
     /* ---- collision that can never sit below the mesh ------------------- *
      *
@@ -1070,6 +1746,7 @@ export class CitadelWorld extends World {
       if (h < 0.25) continue;
       const n = 72;
       for (let i = 0; i < n; i++) {
+        if ((i & 15) === 15) await breathe();
         const a = (i / n) * TAU;
         const jitter = 1 + (rnd() - 0.5) * 0.05;
         const px = Math.cos(a) * rIn * jitter;
@@ -1100,11 +1777,27 @@ export class CitadelWorld extends World {
      * about half a metre high, which a rider goes over without noticing and
      * which still breaks up a flat plain when the light rakes across it. */
     for (let i = 0; i < 70; i++) {
+      if ((i & 7) === 7) await breathe();
       const a = rnd() * TAU;
       const r = MESA_R + SHOULDER + 10 + rnd() * 92;
       const px = Math.cos(a) * r;
       const pz = Math.sin(a) * r;
-      if (Math.abs(px) > HALF - 10 || Math.abs(pz) > HALF - 10) continue;
+      /* Clipped to the PROTECTED CORE, not to the playfield.
+     *
+       * It was `HALF - 10`, and that made the dune field's rejection rate a
+       * function of the extent - which would be harmless if the rejection were
+       * free. It is not: the accepted branch draws four more values from the
+       * world's shared `rnd` stream than the rejected one, so widening the map
+       * changed how many draws this loop consumed and every structure built
+       * after it moved. Measured: the souk's wall-grab rescues went 57 -> 63,
+       * the jump graph lost a node, and 8 roof-edge samples appeared, all from
+       * a heightfield change that by construction cannot touch the town.
+     *
+       * `INNER_KEEP` is also what these dunes MEAN. They are the mesa's own
+       * apron - authored at r = 188..280 to break up the flat plain the town
+       * stands on - and the ring past the core is the height field's business,
+       * not theirs. The clip is content, so it belongs on the content line. */
+      if (Math.abs(px) > INNER_KEEP - 10 || Math.abs(pz) > INNER_KEEP - 10) continue;
       const dw = 20 + rnd() * 34;
       const dd = 10 + rnd() * 16;
       const step = 0.42 + rnd() * 0.3;
@@ -1120,16 +1813,74 @@ export class CitadelWorld extends World {
       }
     }
 
-    B.flush(this.group, (k) => this._mat(k), 'cliff', { cast: true, recv: true });
+    await breathe();
+    this._emit(B, 'cliff', { cast: true, recv: true });
+    await breathe();
     B.dispose();
 
-    // Desert floor collider, its top exactly on the mesh's desert level.
-    this.track(this.physics.addBox(0, -6, 0, HALF * 1.6, 6, HALF * 1.6));
+    /* ---- the rim, and the collider that is no longer here -------------- *
+     *
+     * There used to be one more line here: `addBox(0, -6, 0, HALF*1.6, 6,
+     * HALF*1.6)`, a desert floor whose top sat exactly on the mesh's desert
+     * level. It was a floor under a world that already had one - the
+     * heightfield above covers the whole playfield - and it was the single
+     * most expensive object in the broadphase.
+     *
+     * `Physics._gridRange` buckets a box by its bounding SPHERE, which for
+     * half-extents (720, 6, 720) is 1,018 m, so that one collider claimed a
+     * 2,036 m square of 12 m cells: 28,900 of them at this extent, and 5,776 -
+     * every cell the world had - at the old one. Every capsule query, every
+     * raycast and every ground probe in the world walked it. `Physics.js:418`
+     * keeps heightfields outside the grid for exactly this reason and says so;
+     * the heightfield above is registered that way already, so this was the one
+     * object undoing it.
+     *
+     * What it was quietly also doing is catching a player past the heightfield
+     * edge, and that job is real. It is done by `CITADEL_LAYOUT.walls` - a
+     * segmented rim rather than four slabs, because a full-length slab has a
+     * 451.8 m bounding sphere and four of them smear 22,500 cells, which is the
+     * same failure in a different shape. */
+    for (const w of CITADEL_LAYOUT.walls) {
+      this.track(this.physics.addBox(w[0], w[1], w[2], w[3], w[4], w[5]));
+    }
 
     this.bounds = new THREE.Box3(
-      new THREE.Vector3(-HALF, -10, -HALF),
-      new THREE.Vector3(HALF, 90, HALF)
+      new THREE.Vector3(-HALF, CITADEL_LAYOUT.floorY, -HALF),
+      new THREE.Vector3(HALF, CITADEL_LAYOUT.ceilY, HALF)
     );
+    /**
+     * The part of the playfield that has anything in it.
+     *
+     * Read by `Relics._onWorld` and `Caches._onWorld`, both of which budget by
+     * AREA. `bounds` is 5.06x what it was and the town is exactly where it
+     * always was, so budgeting either of them off `bounds` asks for 110 relics
+     * and 10 high caches and then darts the surplus into open sand, where
+     * `MIN_PROMINENCE` cannot be satisfied by construction. This drop authors no
+     * ring content, so the content box IS the protected core - and when the ring
+     * is authored this is the one number that has to grow with it.
+     */
+    this.contentBounds = new THREE.Box3(
+      new THREE.Vector3(-INNER_KEEP, CITADEL_LAYOUT.floorY, -INNER_KEEP),
+      new THREE.Vector3(INNER_KEEP, CITADEL_LAYOUT.ceilY, INNER_KEEP)
+    );
+  }
+
+  /**
+   * Wrap one `TerrainTiles.buildTile` result in a `BufferGeometry`.
+   *
+   * The bounding sphere is computed here rather than left to the first render,
+   * because `DistanceLod.add` reads it at registration: a mesh registered with
+   * no sphere measures its distance as zero forever, i.e. never demotes, and
+   * does it silently.
+   */
+  static _tileGeometry(t) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(t.position, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(t.uv, 2));
+    g.setAttribute('normal', new THREE.BufferAttribute(t.normal, 3));
+    g.setIndex(new THREE.BufferAttribute(t.index, 1));
+    g.computeBoundingSphere();
+    return g;
   }
 
   /* ------------------------------------------------------------------ */
@@ -1144,7 +1895,7 @@ export class CitadelWorld extends World {
    * perimeter without touching the ground. The merlons are real boxes rather
    * than a texture, because they are the handholds on the way up.
    */
-  _buildCurtainWall() {
+  async _buildCurtainWall(breathe = noBreath) {
     const B = new Batch({ ao: 0.4, sky: 0.34, grime: 0.55, span: 5 }, TILE_METRES);
     // Module constants: the souk's outer radius and the rampart haystack lane
     // are both derived from them, so a second copy here would be a second copy
@@ -1154,6 +1905,7 @@ export class CitadelWorld extends World {
     const top = MESA_Y + WALL_H;
 
     for (let i = 0; i < segs; i++) {
+      if ((i & 7) === 7) await breathe();
       const a0 = (i / segs) * TAU;
       const a1 = ((i + 1) / segs) * TAU;
       const mid = (a0 + a1) * 0.5;
@@ -1164,7 +1916,7 @@ export class CitadelWorld extends World {
       const pz = Math.sin(mid) * R;
       const len = (TAU * R) / segs * 1.06;
       /* THE SIGN, and it was wrong for the whole life of this world.
-       *
+     *
        * `Matrix4.makeRotationY(t)` puts the local +X axis at world
        * `(cos t, -sin t)`, so the WORLD BEARING of local +X is `-t`, not `+t`.
        * A segment rotated `mid + pi/2` therefore lies along bearing
@@ -1172,14 +1924,14 @@ export class CitadelWorld extends World {
        * only where `mid` is a multiple of pi/2. Everywhere else the segment is
        * turned off the ring, and at mid = pi/4 it is turned by a right angle
        * and lies RADIALLY.
-       *
+     *
        * Measured with `deckAt` on a radial sweep, the curtain wall was a
        * rosette: solid stone reaching in to r = 111.8 at some bearings and open
        * mesa at r = 118 at others. The town was not walled. The merlon
        * positions two lines down were computed off the true tangent
        * `(cos(mid + pi/2), sin(mid + pi/2))` all along, so the blocks and the
        * wall they stand on disagreed with each other, which is the tell.
-       *
+     *
        * `pi/2 - mid` is the rotation that puts local +Z on the radius and
        * local +X on the tangent, and it is the same expression `_buildSouk`
        * uses for the same reason. */
@@ -1252,7 +2004,9 @@ export class CitadelWorld extends World {
     this.track(this.physics.addBox(0, MESA_Y + 12.4, gz, 10, 1.6, 4.5));
     this._roofs.push({ x: 0, y: MESA_Y + 14, z: gz, w: 20, d: 9 });
 
-    B.flush(this.group, (k) => this._mat(k), 'wall');
+    await breathe();
+    this._emit(B, 'wall');
+    await breathe();
     B.dispose();
   }
 
@@ -1269,7 +2023,7 @@ export class CitadelWorld extends World {
    * running leaps. Every block gets a door lintel and a window course, which
    * exist to be gripped rather than looked at.
    */
-  _buildSouk() {
+  async _buildSouk(breathe = noBreath) {
     // The strongest of the set. The souk is where the player spends most of
     // their time at eye level, and alley contact shadow is most of what sells
     // a town built entirely from boxes.
@@ -1303,6 +2057,12 @@ export class CitadelWorld extends World {
       const r = spec.r;
       const count = spec.count;
       for (let i = 0; i < count; i++) {
+        /* Eight buildings between yields. The souk is ~190 iterations emitting
+         * ~5,500 boxes and ~2,500 colliders for 103-192 ms depending on how warm
+         * the JIT is, and it is the pass C5 is named after. `report.slice` only
+         * actually yields once 24 ms have gone by, so a call that is not needed
+         * costs a comparison. */
+        if ((i & 7) === 7) await breathe();
         /* No angular jitter. It used to be `+ (rnd() - 0.5) * 0.06`, which is
          * +/-3.1 m of tangential slop per building at the outer ring - twice
          * the whole difference between a sprint jump and a leap - and it was
@@ -1419,9 +2179,25 @@ export class CitadelWorld extends World {
             rcol(lx, 0.32, lz, 0.36, 0.32, 0.36);
           }
 
+          /* ONE mesh per door leaf, not three.
+           *
+           * The plank and its two iron bands are rigidly attached to the same
+           * pivot and never move relative to each other, so three meshes bought
+           * three draw calls for 36 triangles apiece - twelve draws across the
+           * four enterable houses. The bands carry their colour in the vertex
+           * attribute `prepDynamicGeo` writes, so merging them onto the plank's
+           * material costs the look nothing and the tint stays what it was. The
+           * ring and its two caves needed the twelve back. */
           const leafW = doorHW * 2 - 0.08;
-          const leafGeo = prepDynamicGeo(new THREE.BoxGeometry(leafW, doorH - 0.12, 0.1), 'wood.plank', 0x6b4a2e);
-          leafGeo.translate(leafW * 0.5, 0, 0);
+          const parts = [prepDynamicGeo(new THREE.BoxGeometry(leafW, doorH - 0.12, 0.1), 'wood.plank', 0x6b4a2e)];
+          parts[0].translate(leafW * 0.5, 0, 0);
+          for (const by of [-0.52, 0.52]) {
+            const bandGeo = prepDynamicGeo(new THREE.BoxGeometry(leafW * 0.88, 0.12, 0.06), 'wood.plank', 0x33251a);
+            bandGeo.translate(leafW * 0.5, by, 0.08);
+            parts.push(bandGeo);
+          }
+          const leafGeo = mergeGeometries(parts.map((g) => (g.index ? g.toNonIndexed() : g)), false);
+          for (const g of parts) g.dispose();
           const leaf = new THREE.Mesh(leafGeo, this._mat('wood.plank'));
           leaf.castShadow = leaf.receiveShadow = true;
           this._owned.push(leafGeo);
@@ -1430,13 +2206,6 @@ export class CitadelWorld extends World {
           pivot.position.copy(_v1);
           pivot.rotation.y = da;
           pivot.add(leaf);
-          for (const by of [-0.52, 0.52]) {
-            const bandGeo = prepDynamicGeo(new THREE.BoxGeometry(leafW * 0.88, 0.12, 0.06), 'wood.beam', 0x33251a);
-            bandGeo.translate(leafW * 0.5, by, 0.08);
-            const band = new THREE.Mesh(bandGeo, this._mat('wood.beam'));
-            pivot.add(band);
-            this._owned.push(bandGeo);
-          }
           this.group.add(pivot);
           _v1.set(0, doorH * 0.5, hd - wallT * 0.5).applyMatrix4(M);
           const doorCol = this.track(this.physics.addRotatedBox(_v1, _v2.set(doorHW, doorH * 0.5, 0.13), da));
@@ -1623,7 +2392,9 @@ export class CitadelWorld extends World {
       }
     }
 
-    B.flush(this.group, (k) => this._mat(k), 'souk');
+    await breathe();
+    this._emit(B, 'souk');
+    await breathe();
     B.dispose();
 
     /* A standing spot per roof, resolved once the whole souk is standing.
@@ -1666,7 +2437,7 @@ export class CitadelWorld extends World {
    * 7 m for exactly the reason set out in the file header: a continuous 46 m
    * face is not a climb, it is a stamina failure with a long fall attached.
    */
-  _buildCitadel() {
+  async _buildCitadel(breathe = noBreath) {
     const B = new Batch({ ao: 0.38, sky: 0.32, grime: 0.45, span: 7 }, TILE_METRES);
     const cy = MESA_Y;
 
@@ -1800,7 +2571,7 @@ export class CitadelWorld extends World {
         _v1.set(px, wardTop + mh - 0.25, pz), _v2.set((mw + 2.6) * 0.5, 0.25, (mw + 2.6) * 0.5), a
       ));
       /* An onion dome instead of a flat slab.
-       *
+     *
        * A minaret capped with a box is a chimney. This is the world's most
        * distant readable silhouette - four of them stand above everything but
        * the great tower - so it is worth the one sphere each. */
@@ -1823,14 +2594,14 @@ export class CitadelWorld extends World {
        * roof 9 to 12 m over the ward. Along the ring instead, 8 m out, every
        * one of them stands on open ward: the keep occupies x +/-14 and z -15.4
        * to +7.4 and the great tower x +/-6.7, and these four clear both.
-       *
+     *
        * A minaret is not the leap-of-faith platform - the drop to the ward is
        * 31.5 m, which is damage rather than death - so this hay is the answer
        * to a missed balcony rather than to a committed jump. That is why the
        * run is 8 m and not the 23.9 m a leap from up here would carry.
-       *
+     *
        * AND THAT IS WHY THERE IS NO `launch` HERE.
-       *
+     *
        * `Viewpoints.normaliseViewpoint` treats `launch` + `hay` published
        * together as the declaration "this viewpoint HAS a leap of faith", and
        * raises "Leap of faith - hay 29 m below" the moment a body stands
@@ -1838,19 +2609,19 @@ export class CitadelWorld extends World {
        * WAS the platform centre, so syncing a minaret always raised the offer.
        * Flown through the real integrator from that point on the published
        * bearing, against the built colliders, not one of the four arrives:
-       *
+     *
        *   minaret-1  leap   lands (-2.44, 18.20, 32.14)  run 24.45  16.45 m
        *                     from its hay, 40.7 m/s into the souk
        *   minaret-2  leap   BLOCKED by the ward wall at (-30.49, 25.06, -0.79)
        *   minaret-3  leap   lands on the great tower's rest gallery at y 48.28
        *   minaret-4  leap   BLOCKED by the ward wall at (30.63, 24.48, 0.93)
-       *
+     *
        * A sprint jump instead runs 16.40 m off all four and lands on the ward
        * at y 20.0 - a 31.5 m fall at 38.5 m/s against SAFE_SPEED 18, still
        * 8.40 m from the hay. Only a standing walk jump (2.61 m, still on the
        * platform) or a plain step-off reaches it, which is the "missed
        * balcony" this hay was placed for.
-       *
+     *
        * Withholding `launch` is the whole fix: `normaliseViewpoint`'s `paired`
        * gate drops BOTH fields, so there is no prompt. The hay is still built -
        * `_buildDressing` falls back to the viewpoint's own point, which for a
@@ -1866,7 +2637,9 @@ export class CitadelWorld extends World {
       });
     }
 
-    B.flush(this.group, (k) => this._mat(k), 'citadel');
+    await breathe();
+    this._emit(B, 'citadel');
+    await breathe();
     B.dispose();
   }
 
@@ -1882,7 +2655,7 @@ export class CitadelWorld extends World {
    * reads as real, and the broadphase grid makes the cost of a few hundred
    * small boxes negligible.
    */
-  _buildRopeBridges() {
+  async _buildRopeBridges(breathe = noBreath) {
     // Planks and ropes are seen from above and below in equal measure, so the
     // sky term carries this one and the ground-contact AO is nearly off.
     const B = new Batch({ ao: 0.12, sky: 0.4, grime: 0.2, span: 1.2 }, TILE_METRES);
@@ -1945,7 +2718,7 @@ export class CitadelWorld extends World {
       links.push({ a: spec.from, b: best, id: spec.id });
 
       /* Landfall: the same wall tower, back down into the outer souk.
-       *
+     *
        * Reaching the perimeter is only half of what "so the network reaches
        * the perimeter" means. Measured with only the long span in place, the
        * citadel core and its bridges formed their own 166-node island: the
@@ -1954,7 +2727,7 @@ export class CitadelWorld extends World {
        * nearest outer-ring roof is what makes the whole thing one network, and
        * it is also the route the design wants a player to find - run the souk
        * out to the wall, take the ramparts, and cross the sky to the citadel.
-       *
+     *
        * Anchored on the roof's own edge rather than its centre, or the last
        * few planks hang in the air over somebody's roof. */
       let roof = null;
@@ -1980,20 +2753,24 @@ export class CitadelWorld extends World {
     this.ropeBridges.length = 0;
 
     for (const { a, b, id } of links) {
+      /* One yield per span. Each is ~35 planks with a collider and two rail
+       * posts apiece, which is the largest block of collider registrations left
+       * in the build once the souk is sliced. */
+      await breathe();
       const dx = b.x - a.x;
       const dz = b.z - a.z;
       const span = Math.hypot(dx, dz);
       if (span < 6 || span > 132) continue;
       const dirY = Math.atan2(dz, dx);
       /* THE SIGN AGAIN, and this is the second time in this file.
-       *
+     *
        * `dirY` is the WORLD BEARING of the span and is what the lateral rail
        * offsets below are measured on. It is NOT the rotation that puts a box
        * along it: `makeRotationY(t)` (and `Batch.box`, which composes the same
        * Euler) puts local +X at world `(cos t, -sin t)`, so the world bearing
        * of local +X is `-t`. Passing `dirY` turns every plank by `2*dirY` off
        * its own span.
-       *
+     *
        * The four minaret loops run at bearings 180/-90/0/90, where `2*dirY` is
        * a multiple of pi and a box is symmetric under it - so this was correct
        * by accident for the whole life of the loops and only became visible on
@@ -2056,7 +2833,9 @@ export class CitadelWorld extends World {
       });
     }
 
-    B.flush(this.group, (k) => this._mat(k), 'bridges', { cast: true, recv: false });
+    await breathe();
+    this._emit(B, 'bridges', { cast: true, recv: false });
+    await breathe();
     B.dispose();
   }
 
@@ -2071,7 +2850,7 @@ export class CitadelWorld extends World {
    * eye: one under every viewpoint, so a leap of faith always has an answer.
    * `Player` reads `world.haystacks` to know a fall is survivable.
    */
-  _buildDressing() {
+  async _buildDressing(breathe = noBreath) {
     const B = new Batch({ ao: 0.44, sky: 0.3, grime: 0.6, span: 1.8 }, TILE_METRES);
     const rnd = this.rnd;
 
@@ -2128,7 +2907,29 @@ export class CitadelWorld extends World {
       this.haystacks.push({ x: hx, y: hy + 2.2, z: hz, r: 2.9 });
     }
 
-    // Market stalls in the plaza, and crates that make good first steps.
+    /* Market stalls in the plaza, and crates that make good first steps.
+     *
+     * ── THE DART IS CHECKED NOW, AND THE STREAM IS NOT TOUCHED ────────────
+     *
+     * This was the one prop loop in the world with no clearance test at all -
+     * the palms, the stalls, the pottery and the carts all go through
+     * `_openSpot` and these did not. One of the 34 landed at (23.60, 42.19),
+     * inside the Spice Merchants House at (25.13, 39.84): its collider spans
+     * y 14.00 to 15.00, and the house's authored `collectibleSpots` entry sits
+     * at y 14.72, INSIDE it. One of the world's ten authored collectibles was
+     * not visible where it was advertised, and no test asked whether an
+     * authored spot stands in open air.
+     *
+     * The fix is a gate on the EMISSION and not on the dart, and that is
+     * deliberate. `_openSpot` rejection-samples, so routing this loop through
+     * it would consume a variable number of draws from `this.rnd` and move
+     * every palm, stall, pot and cart placed after it - the extent stage
+     * measured exactly that cost when one clipping literal changed how many
+     * draws the dune loop took and the whole town moved. So every random this
+     * loop ever drew is still drawn, in the same order, in every branch; only
+     * the box and the collider are withheld. A crate fewer, and nothing else in
+     * the world moves by a float.
+     */
     for (let i = 0; i < 34; i++) {
       const a = rnd() * TAU;
       const r = 40 + rnd() * 62;
@@ -2136,27 +2937,51 @@ export class CitadelWorld extends World {
       const pz = Math.sin(a) * r;
       const py = MESA_Y;
       const w = 1.6 + rnd() * 1.2;
-      B.box('wood.plank', w, 1.0, w, px, py + 0.5, pz, rnd() * TAU, 0x7d5f3c);
-      this.track(this.physics.addBox(px, py + 0.5, pz, w * 0.5, 0.5, w * 0.5));
-      if (rnd() < 0.5) {
+      const yaw = rnd() * TAU;
+      /* The same two questions `_openSpot` asks, in the same order: the roof
+       * list for a footprint, then the collision world for everything the roof
+       * list does not know about. */
+      let clear = true;
+      const keepR = w * 0.5 + 0.5;
+      for (const b of this._roofs) {
+        const dx = px - b.x;
+        const dz = pz - b.z;
+        const keep = Math.max(b.w, b.d) * 0.5 + keepR;
+        if (dx * dx + dz * dz < keep * keep) { clear = false; break; }
+      }
+      if (clear) {
+        const hit = this.physics.groundHeight(px, pz, py + 14, 22);
+        if (hit !== null && hit > py + 0.6) clear = false;
+      }
+      if (clear) {
+        B.box('wood.plank', w, 1.0, w, px, py + 0.5, pz, yaw, 0x7d5f3c);
+        this.track(this.physics.addBox(px, py + 0.5, pz, w * 0.5, 0.5, w * 0.5));
+      }
+      const canopy = rnd() < 0.5;
+      if (canopy) {
         const ca = rnd() * TAU;
-        B.box('fabric.banner', w + 1.4, 0.1, w + 1.4, px, py + 2.5, pz, ca,
-          rnd() < 0.5 ? 0xb8452f : 0x2f6ba8);
-        // Corner posts, or the canopy is a carpet hovering over the crate.
-        const ph = (w + 1.4) * 0.5 - 0.18;
-        const ps = Math.sin(ca), pc = Math.cos(ca);
-        for (const [ux, uz] of [[-ph, -ph], [ph, -ph], [-ph, ph], [ph, ph]]) {
-          B.box('wood.beam', 0.14, 2.5, 0.14,
-            px + pc * ux + ps * uz, py + 1.25, pz - ps * ux + pc * uz, ca, 0x6a4f31);
+        const warm = rnd() < 0.5;
+        if (clear) {
+          B.box('fabric.banner', w + 1.4, 0.1, w + 1.4, px, py + 2.5, pz, ca,
+            warm ? 0xb8452f : 0x2f6ba8);
+          // Corner posts, or the canopy is a carpet hovering over the crate.
+          const ph = (w + 1.4) * 0.5 - 0.18;
+          const ps = Math.sin(ca), pc = Math.cos(ca);
+          for (const [ux, uz] of [[-ph, -ph], [ph, -ph], [-ph, ph], [ph, ph]]) {
+            B.box('wood.beam', 0.14, 2.5, 0.14,
+              px + pc * ux + ps * uz, py + 1.25, pz - ps * ux + pc * uz, ca, 0x6a4f31);
+          }
         }
       }
     }
 
-    B.flush(this.group, (k) => this._mat(k), 'dressing');
+    await breathe();
+    this._emit(B, 'dressing');
+    await breathe();
     B.dispose();
 
-    this._buildTrees();
-    this._buildProps();
+    await this._buildTrees(breathe);
+    await this._buildProps(breathe);
 
     /* Banners on the keep - the one animated thing in the world, so the town
      * does not read as a still life. Kept to a handful of separate meshes
@@ -2250,7 +3075,7 @@ export class CitadelWorld extends World {
    * Instanced: two draw calls per species regardless of how many are planted,
    * because a desert town wants a lot of them and they are all the same tree.
    */
-  _buildTrees() {
+  async _buildTrees(breathe = noBreath) {
     const rnd = this.rnd;
 
     /* ---- one palm, built once ---- */
@@ -2288,7 +3113,7 @@ export class CitadelWorld extends World {
       const segs = 8;
       /* One continuous sweep along the whole frond, not a chain of separate
        * ones.
-       *
+     *
        * Built segment-by-segment as independent sweeps, each piece capped its
        * own ends and carried its own frame, so a frond rendered as six detached
        * paddle-shaped leaves hanging in a row - which is exactly how the first
@@ -2364,40 +3189,97 @@ export class CitadelWorld extends World {
         placed.push({ x: s.x, y: this._groundAt(s.x, s.z), z: s.z, k, yaw: rnd() * TAU });
       }
       if (!placed.length) continue;
-
-      const barkMesh = new THREE.InstancedMesh(
-        sp.trunk, this._mat(sp.bark, { vertexColors: false }), placed.length);
-      const leafMesh = new THREE.InstancedMesh(
-        sp.crown, this._mat(sp.leaf, { vertexColors: false }), placed.length);
-      barkMesh.name = `citadel:tree.trunk`;
-      leafMesh.name = `citadel:tree.crown`;
-      barkMesh.castShadow = true;
-      barkMesh.receiveShadow = true;
-      leafMesh.castShadow = true;
-      // Crowns do not receive: self-shadowing a mass of thin fronds costs a
-      // shadow lookup per frond and returns acne, not shade.
-      leafMesh.receiveShadow = false;
-      for (let i = 0; i < placed.length; i++) {
-        const p = placed[i];
-        e.set(0, p.yaw, 0);
-        q.setFromEuler(e);
-        pos.set(p.x, p.y, p.z);
-        scl.setScalar(p.k);
-        m4.compose(pos, q, scl);
-        barkMesh.setMatrixAt(i, m4);
-        leafMesh.setMatrixAt(i, m4);
-        // A trunk collider, so a palm is something you can take cover behind
-        // rather than walk through.
-        this.track(this.physics.addBox(p.x, p.y + 1.6 * p.k, p.z, 0.26 * p.k, 1.6 * p.k, 0.26 * p.k));
-      }
-      barkMesh.instanceMatrix.needsUpdate = true;
-      leafMesh.instanceMatrix.needsUpdate = true;
-      this.group.add(barkMesh, leafMesh);
       this._owned.push(sp.trunk, sp.crown);
+
+      /* ---- QUADRANT BUCKETS, and why an instanced field needs them -------
+     *
+       * The date palms were one `InstancedMesh` per surface for the whole town.
+       * `citadel/Districts.js` cannot touch that - splitting an instanced field
+       * means BUILDING it as several fields, which is an authoring decision in
+       * the world, and it is the same answer `MedievalWorld` reached with its
+       * quadrant tree buckets. Measured before this change: `citadel:tree.crown`
+       * held 71,176 triangles - 22.9% of every triangle in the world - behind a
+       * 160.9 m bounding sphere, i.e. the largest single object in the Citadel
+       * and one that never left the frustum from anywhere. `districtStats`
+       * reports instanced fields separately rather than dropping them from the
+       * radius test precisely so this could not hide.
+     *
+       * Bucketed by quadrant the palms span r = 28..124 in one quadrant, which
+       * is a 68-75 m sphere - inside the 130 m ceiling with room, four draws
+       * instead of one per surface, and four spheres the frustum can actually
+       * reject. The trunks come along because they share the placement.
+     *
+       * Placement, order and colliders are untouched: the bucket is decided by
+       * the sign of x and z AFTER the spot is chosen, so the shared `rnd` stream
+       * sees exactly the sequence it saw before and no palm moves.
+       */
+      const buckets = [[], [], [], []];
+      for (const p of placed) buckets[(p.x < 0 ? 1 : 0) | (p.z < 0 ? 2 : 0)].push(p);
+
+      for (let b = 0; b < buckets.length; b++) {
+        const list = buckets[b];
+        if (!list.length) continue;
+        const barkMesh = new THREE.InstancedMesh(
+          sp.trunk, this._mat(sp.bark, { vertexColors: false }), list.length);
+        const leafMesh = new THREE.InstancedMesh(
+          sp.crown, this._mat(sp.leaf, { vertexColors: false }), list.length);
+        barkMesh.name = `citadel:tree.trunk:${sp.bark}:${b}`;
+        leafMesh.name = `citadel:tree.crown:${sp.bark}:${b}`;
+        barkMesh.castShadow = true;
+        barkMesh.receiveShadow = true;
+        leafMesh.castShadow = true;
+        // Crowns do not receive: self-shadowing a mass of thin fronds costs a
+        // shadow lookup per frond and returns acne, not shade.
+        leafMesh.receiveShadow = false;
+        for (let i = 0; i < list.length; i++) {
+          const p = list[i];
+          e.set(0, p.yaw, 0);
+          q.setFromEuler(e);
+          pos.set(p.x, p.y, p.z);
+          scl.setScalar(p.k);
+          m4.compose(pos, q, scl);
+          barkMesh.setMatrixAt(i, m4);
+          leafMesh.setMatrixAt(i, m4);
+        }
+        barkMesh.instanceMatrix.needsUpdate = true;
+        leafMesh.instanceMatrix.needsUpdate = true;
+        /* `districtStats` reads `object.boundingSphere` on an instanced mesh -
+         * it has to be the object's, because the geometry's describes one palm
+         * - and C3's per-field sphere assertion is measured off it. Computed
+         * here rather than left to the first render, because a sphere that does
+         * not exist yet reads as a distance of zero.
+         *
+         * THESE FIELDS ARE NOT REGISTERED WITH `DistanceLod`, and this comment
+         * used to imply they were. They are not pushed to `this._districts` and
+         * `_registerLod` is passed nothing else, so all 16 of them - 86,908
+         * triangles, 17.9% of the world, every one `castShadow = true` - carry
+         * no band at all. Quadrant bucketing moved their SPHERES from 160.9 m
+         * to 81.5 m and left the triangle count exactly where it was.
+         *
+         * It is not a one-line fix, which is why it is recorded rather than
+         * done: at `DISTRICT_LO_MIN_AREA` = 0.35 a palm crown's `lowDetail`
+         * keeps 0 of its 1,736 triangles and returns null, so wiring them into
+         * `_registerLod` unchanged would register nothing. Measured, the crown
+         * only starts yielding at `minArea` 0.05, and at that threshold it
+         * keeps 276 of 1,736 - a bald palm, not a distant one. The honest fix
+         * is an authored low-poly crown with a swap distance derived from a
+         * frond rather than from `BEVEL`, and that is an authoring job. */
+        barkMesh.computeBoundingSphere();
+        leafMesh.computeBoundingSphere();
+        this.group.add(barkMesh, leafMesh);
+      }
+
+      /* Colliders in the original order, so a trunk box is where it always was.
+       * A palm is something you take cover behind rather than walk through. */
+      for (const p of placed) {
+        this.track(this.physics.addBox(
+          p.x, p.y + 1.6 * p.k, p.z, 0.26 * p.k, 1.6 * p.k, 0.26 * p.k));
+      }
+      await breathe();
     }
   }
 
-  _buildProps() {
+  async _buildProps(breathe = noBreath) {
     const B = new Batch({ ao: 0.4, sky: 0.34, grime: 0.5, span: 2.2 }, TILE_METRES);
     const rnd = this.rnd;
 
@@ -2496,7 +3378,9 @@ export class CitadelWorld extends World {
       B.box('wood.beam', 2.2, 0.12, 0.12, s.x + cs * 2.4, gy + 0.8, s.z - sn * 2.4, a, 0x6d5133);
     }
 
-    B.flush(this.group, (k) => this._mat(k), 'props');
+    await breathe();
+    this._emit(B, 'props');
+    await breathe();
     B.dispose();
   }
 
@@ -2540,7 +3424,7 @@ export class CitadelWorld extends World {
    * @returns {number} the top of the highest solid over this column, or the
    *   terrain height where the cast finds nothing at all.
    */
-  _deckAt(x, z, from = 400, dist = 900) {
+  _deckAt(x, z, from = DECK_PROBE_TOP, dist = DECK_PROBE_LEN) {
     const g = this._groundAt(x, z);
     const hit = this.physics.groundHeight(x, z, from, dist);
     return hit === null || hit < g ? g : hit;
@@ -2711,14 +3595,14 @@ export class CitadelWorld extends World {
       }),
       /* Yusra is deliberately NOT a counter and NOT a quest desk, and both
        * halves of that were measured rather than chosen.
-       *
+     *
        * She is a `talk` target in three shipped quests (Q33, Q36, Q40), and
        * `HUD.js` emits `interact` rather than `talk` for a quest manager - so
        * flagging her `isQuestManager` breaks all three, which
        * scripts/tests/quest-content.test.mjs says out loud. The world already
        * has a desk: `NPCManager._spawnQuestManagers` plants Aldric Storne at
        * (8, 14.3, 88), four metres from Rafiq.
-       *
+     *
        * The role is `wanderer` - which is what `spawnForWorld` was already
        * giving all four of these characters by default - and it is written
        * down rather than left implicit because it is now load-bearing: the
@@ -2747,8 +3631,59 @@ export class CitadelWorld extends World {
     this._nudgeClear(this.playerSpawn, 2.2);
     for (const p of this.portalSpecs) this._nudgeClear(p.position, 2.6);
 
-    /* Minimap. The plateau, the wall ring and the citadel - enough to orient by
-     * without drawing four hundred houses. */
+    this._publishVenues();
+  }
+
+  /**
+   * The baked floorplan. Published AFTER the ring, and that is the whole point.
+   *
+   * ── The defect this method exists to end ─────────────────────────────────
+   *
+   * These six shapes and the tower loop used to live at the end of
+   * `_fillSpawns`, which `build()` calls BEFORE `_buildRegions`. Two silent
+   * consequences, both measured on the built world:
+   *
+   *   - 19 shapes, furthest extent 152.0 m, ZERO shapes anywhere past r = 200,
+   *     on a `bounds` of +-450. `Minimap._bakePlan` rasterises over
+   *     `world.bounds`, and `Minimap.setWorld` derives the zoom-out limit from
+   *     it too, so a player could zoom out over the whole 810,000 m2 map and
+   *     see a 72,600 m2 disc in the middle of nothing. Six authored regions,
+   *     153 decks, the aqueduct spine, the quarry pit and the karst massif
+   *     contributed nothing at all.
+   *   - `this._towers` held 13 when the loop ran and holds 18 after the ring.
+   *     The five missing dots were the Caravan Mast, the Undercliff Watch, the
+   *     Deepworks Headframe, the Ashfall Beacon and the Eyrie - i.e. exactly
+   *     the landmarks the loop exists to draw.
+   *
+   * Nothing failed. `minimapShapes` is an optional-chained read, so an empty
+   * ring is a blank canvas rather than an error - which is the C1 failure shape
+   * the extent gate was built for, arrived at from the UI side.
+   *
+   * Region outlines come from the AABB each region already measured for
+   * `contentBounds`, so there is no second copy of the ring's layout in here.
+   * Painting order is background to foreground: regions, then the mesa, then
+   * the towers on top.
+   */
+  _publishMinimap() {
+    /* The ring first, and dark, so the mesa disc reads as the bright thing in
+     * the middle of it rather than as one blob among seven. */
+    for (const r of this.regions ?? []) {
+      const a = r.aabb;
+      if (!a) continue;
+      this.minimapShapes.push({
+        kind: 'rect',
+        x: (a.min.x + a.max.x) * 0.5,
+        z: (a.min.z + a.max.z) * 0.5,
+        w: Math.max(1, a.max.x - a.min.x),
+        d: Math.max(1, a.max.z - a.min.z),
+        fill: 0x2f2a1d,
+        stroke: 0x6b5f42,
+        width: 2,
+      });
+    }
+
+    /* The plateau, the wall ring and the citadel - enough to orient by without
+     * drawing four hundred houses. */
     this.minimapShapes.push(
       { kind: 'circle', x: 0, z: 0, r: MESA_R + 20, fill: 0x2a2418 },
       { kind: 'circle', x: 0, z: 0, r: MESA_R, fill: 0x4a412c },
@@ -2761,7 +3696,36 @@ export class CitadelWorld extends World {
       this.minimapShapes.push({ kind: 'circle', x: t.x, z: t.z, r: 3.2, fill: 0xbfae8a });
     }
 
-    this._publishVenues();
+    /* THE WATER, and the caravan roads that join it up.
+     *
+     * Drawn last so they sit over the ring rectangles, and drawn at all because
+     * they are the only content in the flats: a player who has been told the
+     * desert has oases in it and cannot find one on the map has been told about
+     * content, not given it. The two tanks get their water colour and their
+     * real half-width; the eight wayside wells get a dot the size of the tower
+     * dots, because they are landmarks of the same order.
+     *
+     * The roads are polylines, which is `kind: 'path'` - `Minimap._bakePlan`
+     * has exactly three shapes and `path` is the one that walks a `points`
+     * array, as `[x, z]` PAIRS rather than as `{x, z}` objects. Neither mistake
+     * throws: the shape switch `continue`s past a kind it does not know and
+     * `moveTo(undefined, undefined)` draws nothing, so the roads would simply
+     * not be on the map - the same optional-chained silence the extent gate was
+     * written for. */
+    for (const r of this.caravanRoutes ?? []) {
+      this.minimapShapes.push({
+        kind: 'path',
+        points: r.points.map((p) => [p.x, p.z]),
+        stroke: 0x8a7a55,
+        width: 2,
+      });
+    }
+    for (const o of this.oases ?? []) {
+      const tank = o.tank ?? o;
+      this.minimapShapes.push(o.kind === 'oasis'
+        ? { kind: 'circle', x: tank.x, z: tank.z, r: Math.max(6, tank.r), fill: 0x2f7f96, stroke: 0x8fd0e0, width: 2 }
+        : { kind: 'circle', x: o.x, z: o.z, r: 3.6, fill: 0x2f7f96 });
+    }
   }
 
   /**
@@ -2816,7 +3780,74 @@ export class CitadelWorld extends World {
    * the fourth number in this project to be computed instead of driven.
    */
   _publishVenues() {
-    this.minigameVenues.length = 0;
+    /* ── THE CATALOGUE IS A SOURCE LITERAL, AND THAT IS LOAD-BEARING ─────
+     *
+     * These seven descriptors used to be `this.minigameVenues.push({ ... })`
+     * calls inside two methods, with every field computed. That reads fine and
+     * it cost this world its entire quest vocabulary:
+     * `scripts/quest-vocab.mjs` scrapes venue ids out of SOURCE with
+     * `/\.minigameVenues\s*=\s*\[/` and walks the object literals inside the
+     * brackets, so it saw `sports` publish four and `citadel` publish NONE.
+     * A quest step naming a citadel trial was rejected by
+     * `quest-content.test.mjs` as an invented target - and the trials are the
+     * only objective the outer ring has that a quest can name at all, because
+     * the ring holds no NPC, no vendor and no portal.
+     *
+     * So identity is authored here as a literal and GEOMETRY is filled in
+     * afterwards by {@link CitadelWorld#_fillVenue} from the assembled world.
+     * The two halves cannot drift: `_pruneVenues` deletes any entry no route
+     * ever filled, and `citadel-objectives.test.mjs` asserts the published
+     * list is exactly this list - so a venue that stops resolving fails a test
+     * rather than quietly becoming a slot the vocabulary still believes in.
+     *
+     * Each names its own rival, the way `SportsWorld` names all four of its:
+     * `RooftopTrial` falls back to "the pacesetter" when a venue does not, and
+     * seven ghosts all called the pacesetter is a rival nobody remembers losing
+     * to.
+     *
+     * There are NO bronze/silver/gold times here. Those come from measured
+     * route times (`RooftopTrial.parTimes` over `config.routeLength`, itself
+     * the summed 3D length of a chain read out of the built world), and
+     * publishing a guessed par would be the fourth number in this project
+     * computed instead of driven.
+     */
+    this.minigameVenues = [
+      {
+        id: 'citadel_souk_dash', kind: 'rooftop', requires: 'parkour',
+        label: 'Souk Rooftop Dash', reward: 10, rival: { name: 'Nadira the Swift' },
+        note: 'Rings 6 and 5 only: every crossing on this route is inside a sprint jump.',
+      },
+      {
+        id: 'citadel_ascent', kind: 'rooftop', requires: 'parkour',
+        label: 'The Long Ascent', reward: 14, rival: { name: 'Idris Roof-Runner' },
+        note: 'One roof per ring, gate to ward. Crosses the whole authored gradient.',
+      },
+      {
+        id: 'citadel_skyline', kind: 'rooftop', requires: 'parkour',
+        label: 'The Skyline', reward: 18, rival: { name: 'Zeynab of the Spans' },
+        note: 'Great tower, the long span, the wall, and back down into the souk.',
+      },
+      {
+        id: 'citadel_serai_circuit', kind: 'rooftop', requires: 'parkour',
+        label: 'The Caravanserai Round', reward: 8, rival: { name: 'Nour the Drover' },
+        note: 'Two ranges and the mast corner, on the flattest ground in the world. Every crossing is a standing walk jump: this is the one that teaches the verb.',
+      },
+      {
+        id: 'citadel_undercliff_run', kind: 'rooftop', requires: 'parkour',
+        label: 'The Undercliff Terrace', reward: 12, rival: { name: 'Sabiha of the Steps' },
+        note: 'The top terrace end to end. Every crossing is a sprint jump; nothing here needs the leap.',
+      },
+      {
+        id: 'citadel_deepworks_plunge', kind: 'rooftop', requires: 'parkour',
+        label: 'The Deepworks Plunge', reward: 15, rival: { name: 'Mira Pit-Runner' },
+        note: 'Rim to pit floor down the gantries. Every drop is under the 7.5 m fall-damage floor.',
+      },
+      {
+        id: 'citadel_aqueduct_run', kind: 'rooftop', requires: 'parkour',
+        label: 'The Long Water', reward: 18, rival: { name: 'Tariq Long-Stride' },
+        note: 'The massif to the mesa over the spine, downhill with the water. Four broken spans, and the leap is the only budget that crosses them.',
+      },
+    ];
     // A checkpoint at a roof's centre is a checkpoint inside a dome for three
     // roofs in ten, and a ring the player cannot pass through is not a
     // checkpoint. `_deckSpot` is the shared answer; `_roofs[].anchor` carries
@@ -2848,62 +3879,964 @@ export class CitadelWorld extends World {
       skyline.push({ x: land.b.x, y: land.b.y, z: land.b.z });
     }
 
-    const clean = (pts) => pts.filter(Boolean);
-    const length = (pts) => {
-      let sum = 0;
-      for (let i = 1; i < pts.length; i++) {
-        sum += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y, pts[i].z - pts[i - 1].z);
-      }
-      return sum;
-    };
-    const venue = (id, kind, label, pts, reward, note, rival) => {
-      const checkpoints = clean(pts);
-      if (checkpoints.length < 3) return;
-      /* The disc has to hold the WHOLE ROUTE, not the start line.
-       *
-       * `MinigameManager.fixedUpdate` calls `abort('left')` LEAVE_GRACE_S = 9 s
-       * after the player leaves this disc. A start-line-sized disc therefore
-       * abandons every contest that lasts longer than nine seconds, which is
-       * all of them: measured on this world, the dash reaches 198.4 m from
-       * checkpoint 0, the ascent 96.4 m, and the skyline swings 47.1 m of Dy.
-       * Gold on the dash is 91.8 s, so no trial in this world could ever be
-       * finished. `venueBounds` is exported by `RooftopTrial` for exactly this
-       * and returns the numbers below; `SportsWorld` records the same
-       * requirement twice in comments, over the ski slope and over the track.
-       *
-       * The START LINE does not move with it: `createRooftopTrial` refuses to
-       * build unless the player is within START_RADIUS = 12 m of checkpoint 0,
-       * which is the same split the ski run uses - a wide venue with a
-       * module-enforced gate on where the run begins. */
-      const b = venueBounds(checkpoints);
-      this.minigameVenues.push({
-        id,
-        kind,
-        label,
-        centre: new THREE.Vector3(b.centre.x, b.centre.y, b.centre.z),
-        radius: b.radius,
-        yTolerance: b.yTolerance,
-        reward,
-        rival,
-        // A world with parkour switched off cannot host a parkour contest.
-        requires: 'parkour',
-        config: { note, checkpoints, ringRadius: 2.6, routeLength: length(checkpoints) },
-      });
+    this._fillVenue('citadel_souk_dash', dash);
+    this._fillVenue('citadel_ascent', ascent);
+    this._fillVenue('citadel_skyline', skyline);
+  }
+
+  /**
+   * Give one catalogued venue the geometry of a route read out of the world.
+   *
+   * @param {string} id one of the ids authored in `_publishVenues`
+   * @param {Array<{x:number,y:number,z:number}|null>} pts the checkpoint chain,
+   *   nulls tolerated so a caller can hand over a partly resolved route
+   * @returns {object|null} the filled venue, or null when the route is too
+   *   short to be one - which `_pruneVenues` then deletes
+   */
+  _fillVenue(id, pts) {
+    const v = this.minigameVenues.find((e) => e.id === id);
+    if (!v) {
+      console.warn(`[CitadelWorld] no venue "${id}" in the catalogue`);
+      return null;
+    }
+    const checkpoints = pts.filter(Boolean);
+    if (checkpoints.length < 3) return null;
+    let routeLength = 0;
+    for (let i = 1; i < checkpoints.length; i++) {
+      routeLength += Math.hypot(
+        checkpoints[i].x - checkpoints[i - 1].x,
+        checkpoints[i].y - checkpoints[i - 1].y,
+        checkpoints[i].z - checkpoints[i - 1].z
+      );
+    }
+    /* The disc has to hold the WHOLE ROUTE, not the start line.
+     *
+     * `MinigameManager.fixedUpdate` calls `abort('left')` LEAVE_GRACE_S = 9 s
+     * after the player leaves this disc. A start-line-sized disc therefore
+     * abandons every contest that lasts longer than nine seconds, which is
+     * all of them: measured on this world, the dash reaches 198.4 m from
+     * checkpoint 0, the ascent 96.4 m, and the skyline swings 47.1 m of Dy.
+     * Gold on the dash is 91.8 s, so no trial in this world could ever be
+     * finished. `venueBounds` is exported by `RooftopTrial` for exactly this
+     * and returns the numbers below; `SportsWorld` records the same
+     * requirement twice in comments, over the ski slope and over the track.
+     *
+     * The START LINE does not move with it: `createRooftopTrial` refuses to
+     * build unless the player is within START_RADIUS = 12 m of checkpoint 0,
+     * which is the same split the ski run uses - a wide venue with a
+     * module-enforced gate on where the run begins. */
+    const b = venueBounds(checkpoints);
+    v.centre = new THREE.Vector3(b.centre.x, b.centre.y, b.centre.z);
+    v.radius = b.radius;
+    v.yTolerance = b.yTolerance;
+    /* `config.ringRadius` is 2.6 m and it is here because the only in-world
+     * waypoint marker that exists, `RaceRings`, hard-codes
+     * `DRAGON_RACE.ringRadius` = 5.2 m. A 5.2 m torus is wider than most of
+     * these roofs; the marker has to take its radius from the venue. */
+    v.config = { note: v.note, checkpoints, ringRadius: 2.6, routeLength };
+    return v;
+  }
+
+  /**
+   * Delete any catalogued venue no route ever filled.
+   *
+   * `MinigameManager._readVenue` refuses an entry with no centre, so an
+   * unfilled one is already inert in the game - but it is NOT inert in
+   * `scripts/quest-vocab.mjs`, which reads the catalogue out of source and
+   * would go on offering its id to quest authors as a valid target. This is
+   * the line that stops the source literal becoming a claim the runtime does
+   * not honour, and it warns rather than failing silently so a route that
+   * stops resolving is visible in a build log as well as in a test.
+   */
+  _pruneVenues() {
+    for (let i = this.minigameVenues.length - 1; i >= 0; i--) {
+      const v = this.minigameVenues[i];
+      if (v.config && v.centre) continue;
+      console.warn(`[CitadelWorld] trial "${v.id}" published no route - dropped`);
+      this.minigameVenues.splice(i, 1);
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The outer ring                                                      */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Author the six regions, LAST, on their own PRNG.
+   *
+   * ── Why last, and why a second stream ────────────────────────────────────
+   *
+   * The mesa has to come out bit-identical, and "bit-identical" in this world
+   * is not only a height digest. `_buildSouk` draws from `this.rnd` inside a
+   * loop whose branch structure depends on what came before it, and the extent
+   * stage learned exactly how expensive that is: one clipping literal changed
+   * how many draws the dune loop consumed, and the whole town moved -
+   * wall-grab rescues 57 -> 63, a jump-graph node lost, eight roof-edge samples
+   * appeared, three of the five handed-over failures. So the ring gets its own
+   * `mulberry32` and runs after everything that reads `this.rnd`, and the souk
+   * cannot feel it at all.
+   *
+   * It also runs after `_fillSpawns`, which calls `_publishVenues` and clears
+   * `minigameVenues` on the way in. A region venue published before that is a
+   * venue thrown away, so the ring's three are appended here.
+   *
+   * ── One batch per region ─────────────────────────────────────────────────
+   *
+   * `beginRegion` / `endRegion` are the hooks `buildRegions` calls round each
+   * one. The reason is the draw-call ceiling: `_splitDistricts` cuts every
+   * merged mesh to a 130 m sphere, and the six regions are up to 700 m apart,
+   * so one shared `stone.castle` mesh comes back as many leaves where six
+   * separate ones come back as six. Measured by mutation: one shared batch
+   * takes the whole world to 194 draw calls against 136, on a ceiling of 150.
+   *
+   * @param {() => Promise<void>} breathe
+   */
+  async _buildRegions(breathe = noBreath) {
+    const rnd = mulberry32(0x0c17ad);
+    let B = null;
+    const ctx = {
+      /* The ring is emitted with a longer AO span than the souk: its pieces
+       * are terrace plinths and aqueduct piers eight to twenty-five metres
+       * tall, and the souk's 1.8-3.4 m span puts the whole of one inside the
+       * dark end of the ramp. `Batch.add` already clamps the span to the
+       * piece's own height, so short work is unaffected. */
+      box: (key, w, h, d, x, y, z, rotY = 0, tint = null) => B.box(key, w, h, d, x, y, z, rotY, tint),
+      solid: (x, y, z, hx, hy, hz, rotY = 0) => {
+        this.track(this.physics.addRotatedBox(_v1.set(x, y, z), _v2.set(hx, hy, hz), rotY));
+      },
+      ground: (x, z) => citadelHeight(x, z),
+      rnd,
+      breathe,
+      roofs: this._roofs,
+      towers: this._towers,
+      steps: this._steps,
+      haystacks: this.haystacks,
+      viewpoints: this.viewpoints,
+      beginRegion: () => {
+        B = new Batch({ ao: 0.42, sky: 0.32, grime: 0.52, span: 6 }, TILE_METRES);
+      },
+      endRegion: async (spec) => {
+        await breathe();
+        this._emit(B, `region:${spec.id}`);
+        B.dispose();
+        B = null;
+      },
     };
 
-    /* Each trial names its rival, the way `SportsWorld` names all four of its
-     * own: `RooftopTrial` falls back to "the pacesetter" when a venue does not,
-     * and three ghosts all called the pacesetter is a rival nobody remembers
-     * losing to. Souk runners, so they belong to the roofs they run on. */
-    venue('citadel_souk_dash', 'rooftop', 'Souk Rooftop Dash', dash, 10,
-      'Rings 6 and 5 only: every crossing on this route is inside a sprint jump.',
-      { name: 'Nadira the Swift' });
-    venue('citadel_ascent', 'rooftop', 'The Long Ascent', ascent, 14,
-      'One roof per ring, gate to ward. Crosses the whole authored gradient.',
-      { name: 'Idris Roof-Runner' });
-    venue('citadel_skyline', 'rooftop', 'The Skyline', skyline, 18,
-      'Great tower, the long span, the wall, and back down into the souk.',
-      { name: 'Zeynab of the Spans' });
+    const report = await buildRegions(ctx);
+    this.regions = report.regions;
+
+    /* THE ONE NUMBER THAT HAD TO GROW WITH THE RING.
+     *
+     * `Relics._onWorld` and `Caches._onWorld` both budget by AREA off
+     * `contentBounds ?? bounds`, and the extent stage set it to the protected
+     * core because the ring was empty: budgeting off `bounds` asked for 110
+     * relics and darted the surplus into open sand where `MIN_PROMINENCE` 2.5
+     * cannot be satisfied by construction. The ring now HAS content, so the box
+     * is the union of the core and every region's own measured AABB - not
+     * `bounds`, because the corners of this map are still sand and nothing in
+     * this drop changed that.
+     */
+    const b = report.bounds;
+    this.contentBounds = new THREE.Box3(
+      new THREE.Vector3(
+        Math.min(-INNER_KEEP, b.min.x), CITADEL_LAYOUT.floorY, Math.min(-INNER_KEEP, b.min.z)
+      ),
+      new THREE.Vector3(
+        Math.max(INNER_KEEP, b.max.x), CITADEL_LAYOUT.ceilY, Math.max(INNER_KEEP, b.max.z)
+      )
+    );
+
+    this._publishRegionVenues(report.routes);
+
+    /* ONE HIGH PLACE PER REGION, NOMINATED FOR A CACHE.
+     *
+     * See `this.cacheSites` in the constructor for why a list exists at all
+     * (nine uniform darts put seven caches on the old mesa and none in five of
+     * the six regions). Each coordinate is the clearest point a 2 m lattice
+     * over that region's own AABB found: scored by `Caches._highAt` - the same
+     * predicate the dart loop has to satisfy - and filtered to the component
+     * that contains the player spawn. `sheer` is how many of eight probes at
+     * 9 m see a 7 m drop, `level` how many of six at 3 m come back flat:
+     *
+     *   caravanserai  (366.15,  271.85)   y 31.80   sheer 8/8   level 6/6
+     *   undercliff    ( -40.40,  322.00)  y 35.78   sheer 7/8   level 6/6
+     *   deepworks     ( 276.87,  -75.00)  y 33.90   sheer 5/8   level 5/6
+     *   aqueduct      ( -43.09, -276.84)  y 43.04   sheer 5/8   level 6/6
+     *   ashfall       (-330.00,  178.00)  y 37.60   sheer 8/8   level 6/6
+     *   eyrie         ( -40.43, -326.98)  y 63.70   sheer 8/8   level 6/6
+     *
+     * Two of them stand on the same platform as their region's viewpoint - the
+     * Caravan Mast and the Eyrie - and that is what the lattice found rather
+     * than a shortcut. Those two regions contain exactly ONE point apiece with
+     * a 7 m drop on five sides, because one is the flattest ground in the world
+     * and the other is a peak with a monastery on it. A cache at the top of the
+     * longest climb in the game is a reward stack, not a duplicate.
+     *
+     * The mesa is deliberately NOT nominated. Its own dart hit-rate is what the
+     * area law was calibrated on and it needs no help; leaving three of the
+     * nine slots unnominated is what keeps the search doing its job.
+     */
+    this.cacheSites = [
+      { x: 366.15, z: 271.85, label: 'The Caravan Mast' },
+      { x: -40.40, z: 322.00, label: 'The Undercliff terrace' },
+      { x: 276.87, z: -75.00, label: 'The Deepworks rim' },
+      { x: -43.09, z: -276.84, label: 'The aqueduct abutment' },
+      { x: -330.00, z: 178.00, label: 'The Ashfall ward' },
+      { x: -40.43, z: -326.98, label: 'The Eyrie' },
+    ];
+
+    await breathe();
+    this.caves = await this._buildCaves(breathe);
+    /* AFTER the caves, because the oasis kit sites itself against the FINAL
+     * collider set and a cave's plinth is part of it. See `_buildTraffic`. */
+    this.traffic = await this._buildTraffic(breathe);
+    return report;
+  }
+
+  /**
+   * The Deepworks' adit and the massif's sunken hall.
+   *
+   * ── Why they are built LAST, and against the finished collider set ───────
+   *
+   * `citadel/Caves.js` states the one thing about this world that makes caves
+   * hard: `Physics` heightfields are solid from their surface all the way down
+   * to `baseY`, and `_closestPoint` shoves anything under that surface straight
+   * up. There is no carve operation. **A cave cannot be dug into terrain at
+   * all** - an adit driven into a hillside ejects the player through the roof -
+   * so the rock has to be BUILT above grade and the shell is only its inside
+   * face. That is why `liftToClear` exists, and why it is not optional: the
+   * kit's own first run reported 508 buried columns and a vault at 1%
+   * coverage.
+   *
+   * The second thing is `auditVacancy`, and it is the reason this runs after
+   * the six regions rather than before them. The kit's suite picked its first
+   * site on terrain relief alone and landed it inside somebody else's quarry
+   * gantries: the cave built perfectly, sealed perfectly, and reported two
+   * room-spanning slabs and a walled-up mouth, every one of them a foreign
+   * collider. Siting has to be checked against the world as it actually
+   * stands, which means after everything else in it has been built.
+   *
+   * The order is the one the kit's header names and it is not
+   * interchangeable: profile, lift, vacancy, build.
+   *
+   * @param {() => Promise<void>} breathe
+   */
+  async _buildCaves(breathe = noBreath) {
+    const field = new SolidField(this.physics.colliders);
+    /* ONE BATCH PER CAVE, for the reason the regions have one each: the two
+     * sites are 350 m apart, and a shared `stone.castle` mesh holding both
+     * comes back from `splitDistricts` as nine leaves against two. Measured, 20
+     * draw calls against 8, on a budget with twelve to spare. */
+    let B = null;
+    const ctx = {
+      physics: this.physics,
+      group: this.group,
+      track: (c) => this.track(c),
+      box: (key, w, h, d, x, y, z, rotY = 0, tint = null) => B.box(key, w, h, d, x, y, z, rotY, tint),
+    };
+    const out = [];
+    /* Two sites, and both are SEARCHED numbers rather than authored ones.
+     *
+     * `citadelCaves`' own defaults - (267, -80) yaw 5.50 and (-50, -290) yaw 0
+     * - were found against a world with an EMPTY ring. Run against this one the
+     * vacancy probe refuses both: the mine's gallery has 84 occupied samples
+     * and three blocked mouth samples where a palm stands at (291.7, 27.3,
+     * -50.2), and the hall has three where another stands at (-31.7, 30.4,
+     * -284.7). Neither is a cave defect. Both were re-searched on a 3 m lattice
+     * over +-30 m and four yaws each, and what is chosen is the clear site with
+     * the LEAST RELIEF under it, because relief is the plinth of rock the cave
+     * has to be built on top of and the plinth is the whole visible cost of
+     * having no carve operation:
+     *
+     *   quarry-adit  (261, -104) yaw 5.20   lift 26.20   relief 1.45  (1131 clear)
+     *   sunken-hall  (-56, -281) yaw 0.40   lift 32.94   relief 4.72   (952 clear)
+     */
+    const plans = [
+      planMine({ id: 'quarry-adit', label: 'The Quarry Adit', origin: { x: 261, y: 0, z: -104 }, yaw: 5.20 }),
+      planKarst({ id: 'sunken-hall', label: 'The Sunken Hall', origin: { x: -56, y: 0, z: -281 }, yaw: 0.40 }),
+    ];
+    if (!Array.isArray(this.enterables)) this.enterables = [];
+    for (const raw of plans) {
+      const { plan, lift, profile } = liftToClear(raw, field, 0.10);
+      const vacancy = auditVacancy(plan, field, { step: 1.5, apron: 4.0 });
+      /* A site that is not empty is REFUSED rather than built over. The whole
+       * value of the vacancy probe is that it fires before the geometry exists;
+       * building anyway and auditing afterwards is how an hour goes into
+       * telling a cave defect apart from a siting mistake. */
+      if (vacancy.occupied > 0 || vacancy.mouthBlocked > 0) {
+        console.warn(`[CitadelWorld] cave "${plan.id}" refused: ${vacancy.occupied} occupied samples, `
+          + `${vacancy.mouthBlocked} blocked mouth samples (first at ${JSON.stringify(vacancy.first)})`);
+        out.push({ id: plan.id, built: false, lift, profile, vacancy });
+        continue;
+      }
+      B = new Batch({ ao: 0.5, sky: 0.28, grime: 0.7, span: 3.0 }, TILE_METRES);
+      const t0 = performance.now();
+      const built = buildCave(ctx, plan);
+      /* AND THE ROCK IT STANDS ON. `liftToClear` raises the plan until its
+       * floor clears the highest terrain under the footprint and nothing built
+       * the wedge that leaves: the Sunken Hall shipped with 3.1 m of daylight
+       * under a 38 x 32 m slab and a doorway 4.07 m over the ground outside it.
+       * `buildPlinth` owns the reasoning; note it is handed the SAME field the
+       * lift was measured against, so the two cannot disagree about where the
+       * ground is. */
+      const base = buildPlinth(ctx, built.plan, field);
+      /* The apron's treads join the world's own published tread list, which is
+       * what `ReachGraph` reads. A 1.2 m tread is invisible to a 6 m lattice,
+       * and an invisible apron leaves the mouth resolving to no node at all -
+       * the graph looks for the pad under the doorway, finds the apron, and has
+       * nothing on it. */
+      for (const t of base.steps) this._steps.push({ ...t, cave: plan.id });
+      const ms = performance.now() - t0;
+      this._emit(B, `cave:${plan.id}`);
+      B.dispose();
+      B = null;
+      this.enterables.push(built.enterable);
+      out.push({
+        id: plan.id, built: true, lift, profile, vacancy, ms,
+        colliders: built.colliders.length + base.colliders.length,
+        lights: built.lights.length,
+        mouths: built.enterable.cave.mouths.length,
+        spots: built.enterable.collectibleSpots.length,
+        plan: built.plan,
+        base,
+        /* The objects themselves, so a suite can audit what SHIPPED rather than
+         * build a second pair of caves beside them and audit those. */
+        parts: {
+          colliders: built.colliders, lights: built.lights, enterable: built.enterable,
+        },
+      });
+      await breathe();
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The traffic in the flats                                            */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Where an oasis herd stands: on the desert OUTSIDE the tank, on the side
+   * the road comes in from.
+   *
+   * Not on the crest, and the reason is the one `Oasis.js` spends a whole audit
+   * on. The tank is a stepped bank whose crest promenade has 1.30 m of clear
+   * walkway all the way round and 0.40 m risers under it; a camel is 2.85 m
+   * tall with a 0.55 m capsule and a 2.83 m body, and eight of them on a 3.60 m
+   * tread is a wall between the player and the water. So the herd grazes on
+   * grade beside the tank, which is also where the encounter measurement
+   * spreads it.
+   *
+   * The bearing sweep STARTS toward the world origin because the mesa is there
+   * and so is every road: the animals should be met on the way in rather than
+   * found round the back. Each candidate has to have ground under it and has to
+   * be clear of the masonry, tested with the world's own probe rather than by
+   * arithmetic on the plan, so a herd cannot be placed inside the shade shelter
+   * the kit happened to build on that side.
+   *
+   * ── WHY THE RING COMES BACK WITH THE POINT ───────────────────────────────
+   *
+   * The caller publishes a herd RADIUS as well as a herd anchor, and the first
+   * cut published the tank's own half-width, 26.9 m, for both. That number then
+   * became `CitadelTraffic`'s `spread`, so `spawnBeastGroup` scattered the other
+   * six animals up to 26.9 m from an anchor standing only `ring` metres clear
+   * of the rim - onto the masonry. Measured over 30 seeds x 2 oasis herds = 420
+   * bodies on the real world: 143 of them (34%) stood more than 1.5 m off their
+   * own anchor's ground and 89 (21%) inside the tank footprint, the worst
+   * 10.45 m up on a three-deck structure at (-73.1, -126.0). The eight wayside
+   * wells, whose spread is 9.9 m, are clean by comparison.
+   *
+   * So the ring the sweep actually settled on is the honest radius: clear
+   * ground runs from the tank rim outward, the anchor sits `ring` beyond it,
+   * and a spread of `ring` reaches exactly back to the rim. The caller takes
+   * 80% of it, which keeps the animals off the masonry with a margin - and it
+   * publishes THE SAME number to the encounter gate, because a declared radius
+   * the bodies do not fill is the medieval defect wearing a hat.
+   *
+   * @param {{x:number,y:number,z:number,r:number}} lm the oasis landmark
+   * @returns {{pos:THREE.Vector3, ring:number}}
+   */
+  _oasisGrazing(lm) {
+    const inward = Math.atan2(-lm.z, -lm.x);
+    for (const ring of [10, 15, 21]) {
+      for (let i = 0; i < 16; i++) {
+        /* Alternating outward from the inward bearing, so the first acceptable
+         * answer is the one nearest the road rather than the first one on an
+         * arbitrary sweep. */
+        const step = ((i + 1) >> 1) * (Math.PI / 8) * (i % 2 ? 1 : -1);
+        const a = inward + step;
+        const x = lm.x + Math.cos(a) * (lm.r + ring);
+        const z = lm.z + Math.sin(a) * (lm.r + ring);
+        const g = this.physics.groundHeight(x, z, lm.y + 12, 30);
+        if (g === null) continue;
+        _v1.set(x, g + 0.05, z);
+        this.physics.resolveCapsule(_v1, 0.6, 2.9);
+        if (Math.hypot(_v1.x - x, _v1.z - z) > 0.45) continue;
+        return { pos: new THREE.Vector3(x, g, z), ring };
+      }
+    }
+    /* Nothing clear anywhere round the tank is a finding, not a crash: the
+     * herd goes on the crest and the audit that reads `traffic.oases` will say
+     * where it ended up. */
+    console.warn(`[CitadelWorld] oasis "${lm.id}" has no clear grazing ground round it`);
+    return { pos: new THREE.Vector3(lm.x, lm.y, lm.z), ring: 10 };
+  }
+
+  /**
+   * Two oases, eight wayside wells, three caravan roads and ten travellers.
+   *
+   * ── The complaint, and the measurement that answers it ──────────────────
+   *
+   * The player walked the finished ring and said the six new regions all work
+   * and *"it desperately needs npc's in the new areas. In the large open areas
+   * between objects/villages/caves we should have npc's leading wandering the
+   * areas with herds of camels and maybe 1 or 2 oasis areas"*.
+   *
+   * `scripts/tests/citadel-traffic.test.mjs` measures exactly how empty that
+   * ground is: of the 160 places this world publishes to some system or other -
+   * 109 relics, 9 caches, 10 viewpoints, 7 venues, 7 region anchors, 6 region
+   * centres, 10 cave mouths, the spawn and the portal - **not one stands in the
+   * open flats**, 51.0% of the map is over 30 m from anything built, and the
+   * longest featureless stretch on an inter-region walk has a p90 of 272 m.
+   *
+   * `scripts/tests/citadel-caravans.test.mjs` turns that into five floors on
+   * ENCOUNTER rather than on placement, because the medieval expansion answered
+   * this same complaint with ten wildlife packs, passed 29 of 29 assertions,
+   * and shipped a forest the player could not find an animal in. What this
+   * method builds reads, against those five floors:
+   *
+   *     journeys meeting a caravan      floor 40    achieved 60.7
+   *     camels met per journey          floor 3.0   achieved 7.52
+   *     journeys meeting a herd         floor 20    achieved 42.7
+   *     spawn journeys meeting a camel  floor 60    achieved 76.3
+   *     walks with no 150 m of nothing  floor 72    achieved 80.1
+   *
+   * ── Why it runs here ─────────────────────────────────────────────────────
+   *
+   * After `_buildCaves`, for the reason the caves themselves run last: the
+   * oasis kit sites itself against the FINAL collider set through
+   * `auditVacancy`, and a tank levelled onto ground that a region has since
+   * built a gantry over is a tank built round somebody else's geometry. And
+   * before `_splitDistricts`, because every box emitted here goes into
+   * `this._districts` and the splitter is what keeps eight wells spread over
+   * 900 m from merging into one mesh with a 900 m bounding sphere.
+   *
+   * @param {() => Promise<void>} breathe
+   */
+  async _buildTraffic(breathe = noBreath) {
+    /**
+     * `colliders` is every collider this method registers, and it is published
+     * for one reason: an ABLATION nobody can build any other way.
+     *
+     * `citadel-traffic.test.mjs` measures how empty the flats are off the
+     * world's own collider set, and the negative control under its five floors
+     * asks "does an empty placement fail every gate". Once the oases and the
+     * wells are BUILT they break up the featureless stretches by themselves,
+     * and the control starts passing on masonry rather than on camels - so the
+     * control needs a collider set with this drop's own content subtracted, and
+     * the only honest way to get one is for the drop to say what it added.
+     */
+    const report = { oases: [], wells: [], roads: [], refusedOases: [], colliders: [] };
+    const field = new SolidField(this.physics.colliders);
+    /* SLICED HERE, and the first three yields in this method are the ones that
+     * matter. Everything from the top down to the first `breathe` below used to
+     * run in one synchronous block: the `SolidField` over 3,883 colliders, both
+     * oasis site searches, both fine settles, and the first `buildOases`.
+     * Measured over three cold processes, that block was 32.6 / 32.8 / 33.3 ms
+     * - the worst slice in the whole build, ahead of the souk's - and this
+     * world is built by `scheduleBackgroundBuilds` in the player's own frames,
+     * so it is a 33 ms frame in live gameplay against a 24 ms budget.
+     *
+     * C5 could not see it. That gate counts COLLIDERS between two yields as its
+     * proxy for work, calibrated at 12 colliders/ms off the souk; this block
+     * registers 127 in 33 ms, which is 3.8/ms, so C5 scored a 33 ms stall as if
+     * it were ten. The search is arithmetic over a collider index and emits
+     * almost nothing, which is exactly the shape the proxy is blind to. */
+    await breathe();
+    /**
+     * The oasis kit's own audit surface.
+     *
+     * `citadel-oasis.test.mjs` used to build its own pair of tanks on top of a
+     * finished world and audit those. It cannot any more - the world ships
+     * them, and `findOasisSite` correctly refuses the ground they stand on - so
+     * what it audits now is what SHIPS, which is what its own header always
+     * said it wanted. Everything that suite needs and cannot recover from the
+     * scene graph is published here: the settled plans, the parts each oasis
+     * returned, the colliders it registered (so a pre-oasis `SolidField` can be
+     * reconstructed by subtraction) and what the host batch received.
+     */
+    const oasis = {
+      sites: [], parts: [], colliders: [],
+      hostBuckets: new Map(),
+      baseColliders: this.physics.colliders.length,
+      searchMs: 0, buildMs: 0,
+      /* ONE palm pair for both tanks. Two `buildOases` calls with no `ctx.palm`
+       * between them build two 1,964-triangle palms and hold both resident for
+       * ever, which is 1,964 triangles of geometry nobody needed; the instanced
+       * fields stay separate either way, so sharing costs nothing. */
+      palm: palmGeometry(),
+    };
+
+    /* ---- the two oases ------------------------------------------------ *
+     * SEARCHED, never authored. `citadelOases` returns ANCHORS with no `y` on
+     * purpose and its own docstring records the sweep behind them: 18 of ~4,900
+     * desert cells can carry a 53.8 x 50.8 m tank and all eighteen are in the
+     * south-west, because a 24 m horizontal water plane cannot be levelled into
+     * a dune field without a plinth taller than the tank.
+     *
+     * One batch per oasis, exactly as the caves get one each and for the same
+     * measured reason: the two sites are 210 m apart, and a shared masonry mesh
+     * holding both comes back from the splitter as many more leaves than two.
+     */
+    let B = null;
+    const ctx = {
+      physics: this.physics,
+      group: this.group,
+      track: (c) => this.track(c),
+      mat: (k, o) => this._mat(k, o),
+      palm: oasis.palm,
+      box: (key, w, h, d, x, y, z, rotY = 0, tint = null) => {
+        /* Recorded with the SAME bevel rule `Batch.box` applies below, so the
+         * cost report and the geometry cannot disagree about what was drawn.
+         * @see Batch#box - a box under BEVEL_MIN on its smallest side is a
+         * plain 12-triangle box and everything else is a 108-triangle rounded
+         * one, which is the factor of nine `solidCost` exists to price. */
+        const rec = oasis.hostBuckets.get(key) ?? { boxes: 0, bevelled: 0 };
+        rec.boxes++;
+        const r = Math.min(BEVEL, w * 0.22, h * 0.22, d * 0.22);
+        if (Math.min(w, h, d) >= BEVEL_MIN && r > 0.02) rec.bevelled++;
+        oasis.hostBuckets.set(key, rec);
+        B.box(key, w, h, d, x, y, z, rotY, tint);
+      },
+    };
+    const plans = [];
+    const tSearch = performance.now();
+    for (const anchor of citadelOases()) {
+      const found = findOasisSite(field, anchor, {
+        id: anchor.id,
+        label: anchor.label,
+        reach: 60,
+        /* Two oases 40 m apart are one oasis with a wall down the middle. The
+         * kit's own suite uses the same 140 m. */
+        avoid: plans.map((p) => ({ x: p.plan.x, z: p.plan.z, r: 140 })),
+      });
+      if (!found) {
+        console.warn(`[CitadelWorld] oasis "${anchor.id}" found no viable site near (${anchor.x}, ${anchor.z})`);
+        report.refusedOases.push({ id: anchor.id, reason: 'no viable site' });
+        continue;
+      }
+      /* Re-settle the winner at the full 1 m lattice: the search runs coarser,
+       * and the kit's own docstring records a site that measured 0.39 m of
+       * relief at 2.5 m and 1.0 m at 1.0 m because the coarse pass stepped
+       * straight over a ridge. */
+      const fine = settleOasis(
+        { id: anchor.id, label: anchor.label, x: found.plan.x, z: found.plan.z, yaw: found.plan.yaw },
+        field, { step: 1.0 }
+      );
+      if (!fine.viable) {
+        console.warn(`[CitadelWorld] oasis "${anchor.id}" failed the fine settle: ${fine.reasons.join('; ')}`);
+        report.refusedOases.push({ id: anchor.id, reason: fine.reasons.join('; ') });
+        continue;
+      }
+      plans.push({ plan: fine.plan, relief: fine.profile.relief, lift: fine.lift });
+      oasis.sites.push({ ...fine, distance: found.distance, anchor });
+      /* One site search plus one fine settle is 9-10 ms of its own. */
+      await breathe();
+    }
+    oasis.searchMs = performance.now() - tSearch;
+
+    if (!Array.isArray(this.enterables)) this.enterables = [];
+    /** Every static herd in the world - the oasis herds and the well herds. */
+    const camps = [];
+    /** @type {Array<{id:string,x:number,y:number,z:number,r:number,herd:number,kind:string,label:string}>} */
+    this.oases = [];
+    const oasisStaff = [];
+    /* Between the last search and the first build: `buildOases` is 7.5 ms a
+     * tank and the search that precedes it is 9-10 ms, so without this the two
+     * still land in one slice. */
+    await breathe();
+    for (const { plan, relief, lift } of plans) {
+      B = new Batch({ ao: 0.5, sky: 0.28, grime: 0.62, span: 3.0 }, TILE_METRES);
+      const t0 = performance.now();
+      const kit = buildOases(ctx, [plan]);
+      const ms = performance.now() - t0;
+      oasis.buildMs += ms;
+      oasis.parts.push(...kit.oases);
+      oasis.colliders.push(...kit.colliders);
+      report.colliders.push(...kit.colliders);
+      /* The meshes the HOST paid for, which `kit.draws` cannot see: it counts
+       * the water plane and the two palm fields, and the masonry only when the
+       * kit had to open a batch of its own. This world gives each oasis a batch
+       * and flushes it here, so these are real draw calls and the report has to
+       * say so. One mesh per DISTINCT MATERIAL KEY the tank painted with:
+       * measured 7 per oasis on top of the kit's 3, up from 6 before the art
+       * pass gave the bank and the sand drifted over it a `dirt.ground` bucket
+       * of their own. `citadel-oasis.test.mjs` holds the count against
+       * `hostMeshes` below - a key added by accident is how this grows. */
+      const emitted = this._emit(B, `oasis:${plan.id}`).length;
+      B.dispose();
+      B = null;
+      /* THE WATER AND THE PALMS ARE MESHES THE KIT MAKES ITSELF, and the world
+       * has to own them or nothing ever frees them. `_emit` only owns what came
+       * through the batch; the water plane and the two instanced palm fields
+       * are built by `buildOasis` directly, and the first draft of this method
+       * left all six of them - two trunks, two crowns, two water planes - in
+       * the scene with nothing on `_owned` pointing at them. `citadel-budgets`
+       * C2 asserts that in both directions and named all six. */
+      for (const o of kit.oases) {
+        if (o.water?.mesh?.geometry) this._owned.push(o.water.mesh.geometry);
+        /* An `InstancedMesh` draws the SOURCE geometry, so `m.geometry` is the
+         * palm trunk and crown themselves - which is also why both oases share
+         * one pair and this list holds each of them once however many times it
+         * is pushed. */
+        for (const m of o.palms?.meshes ?? []) if (m.geometry) this._owned.push(m.geometry);
+      }
+      /* Streamed as ENTERABLES with no doors, which is the same shape
+       * `buildCave` publishes, so `Interiors` handles the collectible spots at
+       * an oasis with no new code. */
+      for (const e of kit.enterables) this.enterables.push(e);
+      /* THE KIT'S `cacheSites` ARE DELIBERATELY NOT PUBLISHED.
+       *
+       * `this.cacheSites` is a list of HIGH places for `Caches` to nominate,
+       * and `citadel-objectives` floors it at exactly one per outer region -
+       * six, which is what the region stage measured with `Caches._highAt` on a
+       * 2 m lattice. An oasis crest is 2.57 m over the desert and would be
+       * refused by that predicate anyway, but the nomination is not free: the
+       * authored channel is counted against `highWanted`, so two oasis
+       * nominations are two regions' worth of cache budget spent on ground that
+       * is not high.
+       *
+       * The oases pay into the cache system the other way instead, and it is
+       * the better one. `Caches._findSunken`'s own comment says "Citadel has no
+       * water: `_findSunken` places 0 and logs 0 sunken, 9 high" - with a 2.45 m
+       * pool it now finds one per tank, which is a sunken cache in a world that
+       * has never had one. */
+      /* The staff are STREAMED rather than pushed onto `npcSpawns`. Two
+       * permanent characters standing at a pool 200 m off every corridor is
+       * exactly the flat roster `medieval/Residency.js` measured at 74.6%
+       * beyond `RENDER_OUT`, and `_fillSpawns` has already run its
+       * `_nudgeClear` pass over `npcSpawns`, so anything appended here would
+       * skip it. */
+      for (const s of kit.npcSpawns) oasisStaff.push(s);
+      /* The viewpoint the kit returns is deliberately NOT published: the kit's
+       * own docstring explains that `Viewpoints` treats the array as a
+       * completion set with a cosmetic and a mount power at the end of it, and
+       * the Citadel's five are its five hardest climbs. An oasis you walk onto
+       * is not one of those. */
+      const lm = kit.landmarks[0];
+      /* THE HERD, which is the half of an oasis the player asked for.
+       * Declaring a herd and spawning nothing would be the medieval defect in
+       * miniature: a number in a contract that no body in the world answers to.
+       * It stands on the ground OUTSIDE the tank, on the side the roads come in
+       * from - see `_oasisGrazing` for why not on the crest. */
+      const { pos: graze, ring: grazeRing } = this._oasisGrazing(lm);
+      /* The ground the herd actually has, and the SAME number goes to the
+       * encounter gate below. @see _oasisGrazing for the 420 bodies that were
+       * measured standing on the masonry when this was `lm.r`. */
+      const grazeR = grazeRing * 0.8;
+      camps.push({
+        id: `${lm.id}-herd`,
+        label: lm.name,
+        position: graze,
+        /* SEVEN, not the reference placement's eight, and it is the camel row's
+         * own `packMax` that decides it: `NPCManager.spawnBeastGroup` clamps
+         * every group to the species cap, so a declared eight would stand seven
+         * animals at the water and tell the encounter gate there were eight.
+         * @see Caravans.TRAIN_ANIMALS for the same correction on the roads and
+         * what it cost. */
+        herd: CAMEL_PACK_MAX,
+        r: grazeR,
+        keeper: null,
+      });
+      this.oases.push({
+        id: lm.id,
+        label: lm.name,
+        kind: 'oasis',
+        /* WHERE THE ANIMALS ARE, not where the water is, and the difference is
+         * 37 m at the Palm Well. `caravanContent` reads this to spread a herd
+         * over `r` and count what a walk passes within recognition of; giving
+         * it the tank centre would be declaring eight camels standing in a
+         * 2.45 m deep pool. The pool is `tank` below, for anything that wants
+         * the landmark rather than the herd. */
+        x: graze.x, y: graze.y, z: graze.z,
+        /* The clear grazing ring, which is both the ground the herd spreads
+         * over and the `spread` `CitadelTraffic` spawns them at - one number,
+         * so the animals the gate counts stand where the animals the player
+         * counts stand. NOT the tank's half-width: that put a quarter of them
+         * inside the masonry. @see _oasisGrazing. */
+        r: grazeR,
+        herd: CAMEL_PACK_MAX,
+        tank: { x: lm.x, y: lm.y, z: lm.z, r: lm.r },
+      });
+      report.oases.push({
+        id: plan.id, x: plan.x, z: plan.z, ms, relief, lift,
+        colliders: kit.colliders.length,
+        triangles: kit.triangles,
+        /* The kit's own three plus the masonry meshes this world's batch
+         * emitted for it. @see the note above and `Oasis.cost.draws`. */
+        draws: kit.draws + emitted,
+        kitDraws: kit.draws,
+        hostMeshes: emitted,
+        herdAt: { x: graze.x, y: graze.y, z: graze.z },
+        herdR: grazeR,
+      });
+      await breathe();
+    }
+
+    /* NOTHING BUILT, NOTHING TO HANG THE PALMS ON.
+     *
+     * `oasis.palm` is built before the site search, because both tanks share
+     * one trunk/crown pair and building it twice would hold 1,964 triangles
+     * nobody needs. It reaches `_owned` only through an oasis's own
+     * `palms.meshes` - an `InstancedMesh` draws the SOURCE geometry - so on the
+     * two documented refusal paths above ("no viable site", "failed the fine
+     * settle") both geometries would be orphaned with nothing pointing at them.
+     * Never live today, because both oases build; a leak that is only latent is
+     * still the reason the water planes were left in the scene in the first
+     * draft of this method. */
+    if (!plans.length) {
+      oasis.palm.trunk?.dispose?.();
+      oasis.palm.crown?.dispose?.();
+      oasis.palm = null;
+    }
+
+    /* ---- the eight wayside wells --------------------------------------- *
+     * ONE batch for all eight, and that is the opposite of the oasis rule for
+     * a reason that is about what the splitter can do rather than about taste:
+     * a well is 26 boxes, so eight of them separately would be sixteen tiny
+     * meshes with sixteen draw calls, while one merge of 208 boxes goes through
+     * `_splitDistricts` and comes back as leaves under the 130 m sphere ceiling
+     * - the same treatment the souk and the regions get. (26 and 208, measured
+     * off the build's own report: the first cut of this comment said 22 and
+     * 176, which was the box count before the awning cross-beams and the two
+     * crates went in.)
+     */
+    B = new Batch({ ao: 0.5, sky: 0.28, grime: 0.7, span: 2.4 }, TILE_METRES);
+    for (const site of WELL_SITES) {
+      const y = groundFor(this.physics, site.x, site.z, citadelHeight(site.x, site.z));
+      if (y === null) {
+        console.warn(`[CitadelWorld] well "${site.id}" has no ground at (${site.x}, ${site.z})`);
+        continue;
+      }
+      /* Yaw from the site's own coordinates, so the awning faces the mesa and
+       * two wells never read as the same prop turned the same way. */
+      const yaw = Math.atan2(-site.z, -site.x);
+      const built = buildWell(ctx, site, y, yaw);
+      camps.push({
+        id: site.id,
+        label: site.label,
+        position: new THREE.Vector3(site.x, y, site.z),
+        herd: site.herd,
+        r: WELL_R * 1.8,
+        keeper: {
+          position: new THREE.Vector3(built.spots[0].x, y, built.spots[0].z),
+          type: 'friendly',
+          role: 'wanderer',
+          name: site.keeper.name,
+          persona: site.keeper.persona,
+          patrol: [
+            new THREE.Vector3(built.spots[0].x, y, built.spots[0].z),
+            new THREE.Vector3(built.spots[1].x, y, built.spots[1].z),
+          ],
+        },
+      });
+      this.oases.push({
+        id: site.id,
+        label: site.label,
+        kind: 'well',
+        x: site.x, y, z: site.z,
+        r: WELL_R * 1.8,
+        herd: site.herd,
+        /* The measured share of the 8,384 inter-region journeys that pass
+         * within the 15 m recognition distance of this site, carried through
+         * from `Caravans.WELL_SITES` so a well that is moved has to be
+         * re-measured rather than re-argued. */
+        share: site.share,
+      });
+      report.wells.push({ id: site.id, x: site.x, y, z: site.z, boxes: built.boxes, colliders: built.colliders.length });
+      report.colliders.push(...built.colliders);
+      await breathe();
+    }
+    this._emit(B, 'wells');
+    B.dispose();
+    B = null;
+
+    /* ---- the three roads ----------------------------------------------- *
+     * The authored `y` on every waypoint is a HINT that
+     * `npc-routes.test.mjs` checks against the real surface with a 2 m
+     * tolerance; `roadWaypoints` is what turns it into the real surface, once,
+     * so the drover's patrol, the camel homes and the published contract all
+     * read one list of points.
+     */
+    const roads = CARAVAN_ROADS.map((road) => ({
+      ...road,
+      waypoints: roadWaypoints(road, this.physics),
+    }));
+
+    /**
+     * THE CONTRACT the encounter measurement reads.
+     *
+     * `citadel-traffic-kit.caravanContent` takes `world.caravanRoutes` and
+     * `world.oases` and scores them; publishing them is what lets a headless
+     * gate certify the placement the game actually ships rather than a model of
+     * it. `points` is the one-way road - the kit mirrors it into an
+     * out-and-back cycle itself, which is exactly what `CitadelTraffic` does
+     * with the same list.
+     */
+    this.caravanRoutes = roads.map((r) => ({
+      id: r.id,
+      label: r.label,
+      cargo: r.cargo,
+      points: r.waypoints.map((p) => ({ x: p.x, y: p.y, z: p.z })),
+      trains: r.trains,
+      animals: r.animals,
+      length: roadLength(r.waypoints),
+    }));
+    for (const r of this.caravanRoutes) report.roads.push({ id: r.id, points: r.points.length, length: r.length });
+
+    /* ---- and the people on them ---------------------------------------- */
+    const wanderers = [];
+    for (const w of WANDERERS) {
+      const pts = [];
+      let ok = true;
+      for (const [x, z] of w.legs) {
+        const y = groundFor(this.physics, x, z, citadelHeight(x, z));
+        if (y === null) { ok = false; break; }
+        pts.push(new THREE.Vector3(x, y, z));
+      }
+      if (!ok) {
+        console.warn(`[CitadelWorld] wanderer "${w.id}" has no ground on its round`);
+        continue;
+      }
+      wanderers.push({
+        position: pts[0].clone(),
+        type: 'friendly',
+        role: 'wanderer',
+        name: w.name,
+        persona: w.persona,
+        patrol: pts,
+      });
+    }
+
+    /**
+     * The streaming population, published as `_population`.
+     *
+     * The name is not incidental: `npc-routes.test.mjs` reads
+     * `world._population?.people` precisely so that a streamed cast cannot
+     * become a second, unchecked kind of route, which is what the vale's two
+     * mid-air sentries were. Every drover's patrol IS its road, so this
+     * publishes all three roads for that audit as well.
+     */
+    this._population = new CitadelTraffic({
+      npcManager: () => (this.active ? this.ctx?.npcManager ?? null : null),
+      physics: this.physics,
+      roads,
+      camps,
+      wanderers,
+      residents: oasisStaff,
+    });
+    if (Array.isArray(this._owned)) this._owned.push(this._population);
+
+    report.declaredAnimals = this._population.declaredAnimals;
+    report.roster = this._population.rosterSize;
+    report.oasis = oasis;
+    return report;
+  }
+
+  /**
+   * The ring's three trials, appended to the souk's.
+   *
+   * One per verb the ring teaches that the mesa cannot: a descent, a long line
+   * and a plunge. Each is built out of decks the region actually published, so
+   * a checkpoint cannot land somewhere no collider exists - the medieval defect
+   * class restated, and the reason `_publishVenues` runs everything through
+   * `_deckSpot` rather than through a roof's centre.
+   *
+   * `venueBounds` sizes the disc to the WHOLE ROUTE and not the start line,
+   * because `MinigameManager.fixedUpdate` aborts nine seconds after the player
+   * leaves it and none of these runs is under nine seconds.
+   */
+  _publishRegionVenues(routes) {
+    const pt = (d) => (d ? { x: d.x, y: d.y, z: d.z } : null);
+    const add = (id, pts) => this._fillVenue(id, pts);
+
+    /* The tier-0 round, and the only trial in the world a player can win
+     * without ever leaving the walk jump.
+     *
+     * Two ranges and the corner between them, which is where the mast stands:
+     * the checkpoint chain skips the mast, and the route through it is found
+     * rather than authored - `minigame-rooftop-times.test.mjs` runs Dijkstra
+     * over the world's own published decks between consecutive checkpoints, so
+     * the mast's bottom storey is a stepping stone the par model discovers on
+     * its own. Authoring a checkpoint on the mast would have put a ring inside
+     * a tower.
+     *
+     * Ashfall and the Eyrie deliberately get NO trial, and the reason is
+     * measured rather than aesthetic. That route graph links two decks only
+     * within 26 m: Ashfall's ranges stand 28 m apart across a 9 m scar, and the
+     * Eyrie's three cloister ranges are 66 m apart round a peak. Neither region
+     * is a rooftop RUN - one is improvisation over broken ground and the other
+     * is a sustained climb - and a timed checkpoint chain is the wrong
+     * instrument for both. Their objectives are relics, a cache, a viewpoint
+     * and, at the Eyrie, the longest leap of faith in the game.
+     */
+    const c = routes.caravanserai;
+    if (c) {
+      const [north, , , east] = c.rows;
+      add('citadel_serai_circuit', [
+        pt(north.plots[0]), pt(north.plots[2]), pt(north.plots[4]),
+        pt(east.plots[0]), pt(east.plots[2]), pt(east.plots[3]),
+      ]);
+    }
+
+    /* One terrace, end to end, and NOT the four-terrace descent the first cut
+     * published. A terrace change here is a 10-13 m drop into hay, which is the
+     * region's whole verb - and `minigame-rooftop-times.test.mjs` builds its
+     * route graph out of published DECKS, where a drop onto open street has no
+     * pad to land on and the leg has no path at all. A trial has to be a route
+     * the validator can walk; the descent is a thing the player does. */
+    const u = routes.undercliff;
+    if (u) {
+      const line = [];
+      for (const i of [0, 2, 4, 6, 8]) line.push(pt(u.terraces[0].row.plots[i]));
+      add('citadel_undercliff_run', line);
+    }
+    /* DOWNHILL, the way the water runs, and that is a par-model decision as
+     * well as a fictional one. `RooftopTrial.climbLegs` counts a checkpoint
+     * pair whose rise beats the leap's 1.109 m apex as a CLIMB and charges
+     * `CLIMB_LEG_S` for it. Run massif-to-mesa the spine's own 0.46 m joints
+     * are all descending and it charges none; run the other way, five
+     * checkpoints 2.3 m apart each bought a climb leg, gold came out at 73.1 s
+     * against a 22.6 s best line, and the trial had 69% of headroom against a
+     * 45% ceiling - a gold everybody gets. */
+    const a = routes.aqueduct;
+    if (a) {
+      const line = [];
+      for (let i = a.decks.length - 1; i >= 0; i -= 5) line.push(pt(a.decks[i]));
+      /* The head of the spine, ONLY if the stride did not already land on it.
+       *
+       * It did. `buildAqueduct` publishes 26 decks, so the loop runs 25, 20,
+       * 15, 10, 5, 0 and terminates ON index 0 - and the unconditional push
+       * added it a second time. Checkpoints 5 and 6 came out identical, a
+       * 0.00 m leg against 6.9-71.6 m everywhere else in the world: two
+       * coincident `RaceRings` tori z-fighting at the finish, both tangents
+       * computed as (0,0) by `RooftopTrial.readRoute` so both fall back to
+       * facing -Z on a route running +Z, "6 of 6 rings" reported for a
+       * five-leg route, and `_advance`'s on-pace divisor `route.length - 1`
+       * six instead of five for the whole run. */
+      if ((a.decks.length - 1) % 5 !== 0) line.push(pt(a.decks[0]));
+      add('citadel_aqueduct_run', line);
+    }
+    /* The gantries alone. The rim buildings stand on the other side of the pit
+     * from the head of the chain - 90 m away, past the 26 m the route graph
+     * looks in - so starting there gave the venue a first leg with no path. */
+    const q = routes.deepworks;
+    if (q) {
+      const line = q.gantry.map(pt);
+      add('citadel_deepworks_plunge', line);
+    }
+
+    this._pruneVenues();
   }
 
   /* ------------------------------------------------------------------ */
@@ -2912,6 +4845,34 @@ export class CitadelWorld extends World {
 
   update(dt) {
     this._time += dt;
+
+    const cam = this.engine?.camera;
+    if (cam) {
+      /* Distance LOD over the split districts and the terrain tiles. The world
+       * manager only calls `update` on the ACTIVE world, so this is already a
+       * no-op everywhere else, and a no-op over an empty registry before the
+       * build has finished. */
+      this._lod.update(cam);
+      /* The sky dome rides with the camera so the gradient never parallaxes.
+       * It used to be a fixed 900 m sphere centred on the world origin, which
+       * at a 200 m playfield was a margin nobody could see past; at 450 m the
+       * far corner stands 264 m from the dome in front and 1,536 m behind it,
+       * and the horizon band tilts as the player walks. */
+      if (this._skyDome) this._skyDome.position.copy(cam.position);
+      /* The caravans, and the herds and travellers with them.
+       *
+       * Driven off the CAMERA rather than off the player body, on the same
+       * reasoning `MedievalWorld` gives for its grass: what has to have content
+       * near it is whatever the lens can see, and in a third-person or free-look
+       * frame those are metres apart.
+       *
+       * Every train advances every frame - nine trains of four floats, no
+       * allocation - and the streaming decision behind it is throttled to
+       * 0.4 s or 8 m of travel. @see CitadelTraffic#update */
+      cam.getWorldPosition(_v1);
+      this._population?.update(_v1.x, _v1.z, dt);
+    }
+
     // Banners only - everything else in this world is static, and it should be:
     // a climbing surface that moves is a climbing surface that betrays you.
     for (const b of this._banners) {
@@ -2920,6 +4881,11 @@ export class CitadelWorld extends World {
   }
 
   dispose() {
+    /* Deregister BEFORE the geometries go: `DistanceLod` holds a `lo` per entry
+     * and swaps it onto the mesh, so an entry left registered over a disposed
+     * geometry is a swap onto nothing on the next frame. `MedievalWorld:5952`
+     * records the same ordering trap from the other direction. */
+    this._lod.clear();
     for (const g of this._owned) g.dispose?.();
     this._owned.length = 0;
     this._banners.length = 0;
@@ -2929,6 +4895,25 @@ export class CitadelWorld extends World {
     this.viewpoints.length = 0;
     this.ropeBridges.length = 0;
     this.minigameVenues.length = 0;
+    this.cacheSites.length = 0;
+    /* The caravans go with everything else. `_owned` holds the population and
+     * the loop above has already called its `dispose`, which releases every
+     * streamed body through the manager; this drops the roster so a rebuilt
+     * world does not inherit one. */
+    this._population = null;
+    /* The build report holds `oasis.parts` and every geometry reference the kit
+     * returned; `_owned` has already disposed the geometries themselves, and
+     * this drops the last strong reference to the rest of the graph so a
+     * rebuilt world does not inherit it. Every other published list below is
+     * cleared for the same reason and this one was missed. */
+    this.traffic = null;
+    this.oases.length = 0;
+    this.caravanRoutes.length = 0;
+    this._terrainTiles.length = 0;
+    this._terrainSwap.length = 0;
+    this._districts.length = 0;
+    this._lodReport = null;
+    this._skyDome = null;
     this._matCache?.clear();
     super.dispose();
   }

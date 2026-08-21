@@ -1,5 +1,7 @@
+import { BEASTS, isPredator } from './BeastSpecies.js';
+
 /**
- * Pack coordination for wolves.
+ * Pack coordination for wolves, and the two things a HERD is not.
  *
  * ── The problem a pack solves, and the one it creates ─────────────────────
  * Four wolves that each independently run the "close on the target" behaviour
@@ -24,9 +26,49 @@
  * something tells the rest, which is the difference between a pack and four
  * animals that happen to be standing near each other.
  *
+ * ── A HERD IS THIS CLASS WITH THE TWO PURSUIT MECHANISMS TAKEN OUT ────────
+ * Camels are grouped by the same code path - `NPCManager.spawnBeastGroup`
+ * builds one of these for any group above one, whatever the species - so the
+ * honest thing to say is exactly which parts carry over and which do not.
+ *
+ * WHAT CARRIES OVER, unchanged: membership, the re-indexing on `remove` (a herd
+ * that has lost a member must not leave a hole either), `firstLiving` (a herd
+ * still needs one member to own the clock, and it still must not be a corpse),
+ * and `liveCount`.
+ *
+ * WHAT DOES NOT, and is refused outright for a non-predator species:
+ *
+ *   - `share`. Shared aggro is what makes four wolves one animal. A herd that
+ *     shared a target would be worse than useless: `BeastNPC._roam` re-adopts
+ *     `pack.target` the moment a member is idle, so one camel that had been
+ *     shot would drag the whole herd into STALK on the player. It returns 0 and
+ *     never sets `target`, so `pack.target` on a herd is permanently null and
+ *     that re-adopt branch can never fire.
+ *   - `requestAttack`. There is no attack. It returns false, which sends
+ *     `_stalk` down its `holdRing` branch - itself unreachable for a camel, but
+ *     false is the answer that is true rather than the answer that is safe.
+ *
+ * WHAT IS NOT HERE, AND CANNOT BE. A herd's real behaviour is loose cohesion
+ * around a leader, and this class cannot deliver it, because it does not steer
+ * anything: every destination in the game is chosen inside `BeastNPC._roam` and
+ * `_stalk`, from `this.home` and `this.nav`, and a pack has no channel into
+ * either. Writing one would mean either reaching into members' navigation from
+ * here - which is what this class was built to avoid - or editing `_roam`.
+ *
+ * The cohesion that DOES exist comes free from a mechanism that was already
+ * there: `spawnBeastGroup` gives every member of a group the SAME `home`, and
+ * `_roam` keeps each animal wandering inside `def.territory` of its own home.
+ * So a herd is a shared anchor plus a shared radius, and the camel's territory
+ * (16 m) is set as a grazing disc rather than as a hunting range for exactly
+ * that reason. `herdBearing` below is the one piece of ring machinery worth
+ * keeping for it: a stable, spread, NON-ROTATING bearing a caller can use to
+ * lay out members around the anchor. The ring's rotation is a hunting
+ * behaviour - it is what makes a pack circle - and a herd does not get it.
+ *
  * Deliberately free of THREE and of the NPC class: a pack is bookkeeping over
  * a list of members, and keeping it that way is what lets
- * `scripts/tests/beast-pack.test.mjs` drive it with stubs.
+ * `scripts/tests/beast-pack.test.mjs` drive it with stubs. `BeastSpecies` is
+ * the one import, and it is a table.
  */
 
 const TAU = Math.PI * 2;
@@ -70,6 +112,21 @@ export class BeastPack {
     this._committed = new Set();
     /** Which way round the ring the pack orbits; a coin flip per pack. */
     this.orbitSign = (seed >>> 3) & 1 ? 1 : -1;
+    /**
+     * Does this group hunt?
+     *
+     * Read once, from the species table, so a caller cannot get it wrong and a
+     * spawner does not have to know that a herd is a different thing - it asks
+     * for `new BeastPack({ species })` exactly as it always did. Absent means
+     * predator, so the wolf's and the bear's rows carry no new field and this
+     * is `true` for both of them. @see isPredator
+     */
+    this.predator = isPredator(BEASTS[species]);
+  }
+
+  /** A herd is a pack that neither shares aggro nor hands out attack slots. */
+  get isHerd() {
+    return !this.predator;
   }
 
   add(beast) {
@@ -123,6 +180,12 @@ export class BeastPack {
    */
   share(target, from, radius = SHARE_RADIUS) {
     if (!target) return 0;
+    /* A herd does not pass word along, and crucially does not RECORD the
+     * target either - `BeastNPC._roam` re-adopts `pack.target` whenever a
+     * member is idle, so a stored target here would pull the whole herd onto
+     * whoever shot one of them, several seconds after the fact. @see the herd
+     * note at the top of this file. */
+    if (!this.predator) return 0;
     this.target = target;
     this.targetAge = 0;
     const r2 = radius * radius;
@@ -188,6 +251,8 @@ export class BeastPack {
    * @returns {boolean}
    */
   requestAttack(beast) {
+    // There is no attack to be granted a slot in. @see the herd note above.
+    if (!this.predator) return false;
     if (this._committed.has(beast)) return true;
     if (this._committed.size < this.attackSlots) {
       this._committed.add(beast);
@@ -240,6 +305,60 @@ export class BeastPack {
       if (!m.isDead) rank++;
     }
     return this.orbit + (rank / live) * TAU;
+  }
+
+  /**
+   * The animal a herd is arranged around.
+   *
+   * `firstLiving` by another name, and deliberately so: a herd's leader is not
+   * a role anything grants, it is just whichever member is still alive and
+   * first in the roster, exactly as the pack's clock-owner is. Naming it
+   * separately is worth one line because "the leader" is what a caller laying
+   * out a herd is actually looking for, and because a herd that quietly used
+   * `firstLiving` would read as borrowing the pack's clock rather than as
+   * having a leader.
+   *
+   * @returns {any|null}
+   */
+  leader() {
+    return this.firstLiving();
+  }
+
+  /**
+   * A stable, spread, NON-ROTATING bearing for one member of a herd.
+   *
+   * `slotAngle` above is the hunting version and differs in the two ways that
+   * matter: it adds `this.orbit`, which turns, and it ranks over LIVING members
+   * so the circle closes when one dies. Both are right for a pack working a
+   * target and both are wrong for a herd. A herd does not circle anything - the
+   * rotation is what makes a pack read as working you - and it does not close
+   * ranks when one of its number is shot; the survivors stay where they were
+   * grazing and the gap is the point.
+   *
+   * So this ranks over the ROSTER and adds nothing. Same member, same bearing,
+   * for the life of the herd.
+   *
+   * What a caller does with it: `spawnBeastGroup` already gives every member of
+   * a group the same `home`, which is the whole of the herd's cohesion (see the
+   * note at the top of this file). This is for laying the bodies out around
+   * that anchor at spawn, or for anything else that wants a spread direction
+   * per member without allocating - it returns a number, so it is safe to call
+   * from a loop or a frame handler.
+   *
+   * Accepts a member or a plain index, because the useful moment to ask is
+   * during spawning, before the bodies exist to be passed in.
+   *
+   * @param {any|number} beastOrIndex
+   * @param {number} [count] roster size, when an index is passed
+   * @returns {number} radians
+   */
+  herdBearing(beastOrIndex, count = this.members.length) {
+    const n = Math.max(1, typeof beastOrIndex === 'number' ? count : this.members.length);
+    let rank = typeof beastOrIndex === 'number'
+      ? beastOrIndex
+      : this.members.indexOf(beastOrIndex);
+    if (!(rank >= 0)) rank = 0;
+    return ((rank % n) / n) * TAU;
   }
 
   /**

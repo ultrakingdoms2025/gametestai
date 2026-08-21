@@ -1346,7 +1346,7 @@ test('the relics are reached by walking, except the ones that are reached by cli
 
 test('the yard places its caches, stocks them from its own table, and they are reachable', async () => {
   /* `PER_WORLD.high` is 3 and the yard's extent does not scale it up, so three
-   * is the whole of it. Before the yard published `_caches` this was ZERO -
+   * is the whole of it. Before the yard published `cacheSites` this was ZERO -
    * see the block header. The stock assertion is the other half: a cache that
    * lands but rolls the station's table is the silent-fallback defect, and the
    * three items named here are the ones the dock quest line collects. */

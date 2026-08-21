@@ -1,5 +1,10 @@
 /**
- * Predator statistics: what a wolf and a bear ARE, as numbers.
+ * Beast statistics: what a wolf, a bear and a camel ARE, as numbers.
+ *
+ * Two of the three are predators and the design target below is written for
+ * them. The camel is the exception and carries its own reasoning on its own
+ * row: it is not balanced against the player at all, because it never touches
+ * them - see the three locks documented there.
  *
  * ── The design target ─────────────────────────────────────────────────────
  * "Genuine threat, survivable." Every figure below is chosen against that one
@@ -74,6 +79,8 @@
  * @property {number} territory        metres it roams from home
  * @property {number} loseInterest     metres past which it gives up a chase
  * @property {number} courage          0..1; below this fraction of health it flees
+ * @property {boolean} [predator]      absent means true, so the two carnivore
+ *   rows carry no new field and stay byte-identical. @see isPredator
  */
 
 /** @type {Record<string, BeastDef>} */
@@ -194,6 +201,156 @@ export const BEASTS = {
     loseInterest: 34,
     courage: 0.0,
   },
+
+  /**
+   * CAMEL - a dromedary, and the first animal in this table that is not a
+   * predator.
+   *
+   * -- WHY A HERBIVORE IS A ROW AND NOT A CLASS ------------------------------
+   * `BeastNPC` and `BeastPack` contain no medieval reference and no wolf
+   * reference; this file contained one word ("Predator statistics") at the top
+   * of it. Everything the machinery does - body, gait, grounding, capsule, LOD
+   * band, respawn, hit capsule, corpse sink - is quadruped, not carnivore. Only
+   * ONE part of it is carnivore: the ATTACK branch of `BeastNPC`'s state
+   * machine. So the camel is a row, and the whole design problem is making that
+   * one branch unreachable from a table this file owns.
+   *
+   * -- THE THREE INDEPENDENT LOCKS ON THE MAUL -------------------------------
+   * `_beginAttack` is reached from exactly one line, in `BeastNPC._stalk`:
+   *
+   *     wantsToCommit = attackTimer <= 0 && losClear && _spooked <= 0
+   *                     && (!pack || pack.requestAttack(this))
+   *     if (wantsToCommit && dist <= def.reach + this.radius) this._beginAttack()
+   *
+   * and each of the three below breaks it on its own. None of them needs a line
+   * of `BeastNPC` changed, which is the point: a camel cannot maul the player
+   * because of arithmetic, not because of a flag somebody remembered to set.
+   *
+   *  1. `reach` is -1. `this.radius` IS `def.bodyRadius`, so the test reads
+   *     `dist <= -1 + 0.55 = -0.45`, and `dist` is a distance. There is no
+   *     position either body can occupy that satisfies it. -1 is not a small
+   *     reach; it is the sentinel for an animal that has no strike, and it is
+   *     the only one of the three that holds however a spawner arranges packs.
+   *     Everything downstream degrades safely: the stalk ring is
+   *     `max(def.reach + 1.6, 4.2)`, which clamps to 4.2 m.
+   *
+   *  2. `fovDegrees` is 0 and `scent` is 0. `BeastNPC.fovCos` is
+   *     `cos(fovDegrees * PI / 360)` = 1, and `_canSee` rejects anything whose
+   *     bearing dot product is under the cone, so no candidate is ever seen and
+   *     `losClear` - which `wantsToCommit` requires - is never set. Read the
+   *     pair as what it is: `sight` by `fovDegrees` is the PREY sense, because
+   *     `_candidates()` is a list of things to hunt, and a camel's prey sense is
+   *     twelve metres of nothing at all. It is also, exactly, the brief:
+   *     "otherwise ignore the player".
+   *
+   *  3. `predator: false`. `BeastPack` reads it and refuses both pursuit
+   *     mechanisms - `share`, so a herd never holds a collective target for
+   *     `_roam` to re-adopt, and `requestAttack`, so no member is ever granted
+   *     an attack slot. @see BeastPack
+   *
+   * -- AND IT RUNS: `courage` 1.0 --------------------------------------------
+   * `onDamaged` flees when `health < maxHealth * courage`. Every other row is
+   * under 0.2, which is "flee when you are losing". At 1.0 the test is true the
+   * instant any non-fatal blow lands, so being hit at all is what makes a camel
+   * run - which is the whole of its temperament. The order inside `onDamaged`
+   * matters and works in our favour: `_acquire` may flip the state to STALK,
+   * and the courage check immediately after overwrites it with FLEE, in the
+   * same call, before `_think` can ever tick a STALK.
+   *
+   * -- WHY `sight` AND `territory` ARE NOT SIMPLY ZERO -----------------------
+   * Because two invariants asserted over the WHOLE species table forbid it, and
+   * both are real rules about placement rather than about animals:
+   *
+   *     territory > 10                                        (beast-combat)
+   *     (territory + sight) * TRACK_SHARE + TRACK_MARGIN > territory,
+   *         TRACK_SHARE = 0.55, TRACK_MARGIN = 4          (medieval-wildlife)
+   *
+   * The second says a placement rule must be able to keep an animal off a road
+   * it could otherwise wander onto, and it constrains `territory` and `sight`
+   * TOGETHER. With `sight` 0 the pair reduces to `territory < 8.89`, which the
+   * first forbids. 16 and 12 clear it by 3.4 m and give a herd a sensible
+   * grazing disc; the zero that actually matters is the cone.
+   *
+   * -- THE FIGURES THAT ARE REAL ---------------------------------------------
+   * A dromedary stands about 1.85 m at the withers and 2.20 m at the crest of
+   * the hump, is roughly 3 m nose to tail root, and weighs half a tonne. The
+   * player capsule is 1.75 m, so a camel is a head and a half taller than the
+   * person looking at it, which is the one fact the silhouette has to sell.
+   * `chargeSpeed` sits where every other row's does: above a walk (4.6) and
+   * below a sprint (8.2), so a startled camel leaves a walking player behind
+   * and cannot outrun one who commits to the chase.
+   *
+   * -- THE MAUL FIELDS BELOW ARE THE TABLE'S SHAPE, NOT A DESIGN -------------
+   * `telegraph`, `strikeWindow`, `recover`, `knockback`, `knockUp`,
+   * `strikeRadius`, `damageSpread`, `viewKick` and `attackDamage` describe a
+   * blow this animal cannot throw. They hold the smallest values the table's
+   * shared invariants accept, and they are never read - `_beginAttack` is
+   * unreachable by (1), and `camel.test.mjs` proves that by exhausting the
+   * distance axis rather than by asserting it. Do not tune them; there is
+   * nothing on the other end of them to tune.
+   */
+  camel: {
+    id: 'camel',
+    name: 'Camel',
+    gait: 'camel',
+    /** No stalk, no maul, no attack. @see BeastPack and the three locks above. */
+    predator: false,
+    /* Four sword hits at 65, the same as a bear: a half-tonne animal that dies
+     * to two is a prop. It runs long before it gets there. */
+    health: 220,
+    /* Crest of the hump. `BeastBody`'s camel profile height is this same
+     * number, which `beast-body`'s scaling assertion requires, and the head is
+     * carried well ABOVE it - the opposite of a bear, whose head hangs below
+     * its hump. */
+    shoulderHeight: 2.2,
+    bodyRadius: 0.55,
+    bodyLength: 3.0,
+    /* Grazing pace. Slower than a wolf's roam, because a camel that is not
+     * frightened is eating. */
+    roamSpeed: 1.15,
+    /* Unreached: `_stalk` is never ticked. Left plausible rather than zero so
+     * that `_poseIntent`'s `stalking` flag - `moveSpeed < stalkSpeed * 1.2` -
+     * cannot latch true at a standstill and ask the animator for a crouch.
+     * `BeastAnimator` refuses a crouch for a non-predator anyway; this is the
+     * belt to that pair of braces. */
+    stalkSpeed: 2.4,
+    /* The bolt. `_flee` runs at 0.95 of this, so 6.56 m/s. */
+    chargeSpeed: 6.9,
+    /* The prey sense, and it is off - see lock 2. The RANGE is set by the
+     * placement inequality above, not by the animal's eyes. */
+    sight: 12,
+    fovDegrees: 0,
+    scent: 0,
+    /* Never landed. @see the note on the maul fields. */
+    attackDamage: 1,
+    damageSpread: 0,
+    telegraph: 0.4,
+    strikeWindow: 0.06,
+    recover: 0.25,
+    attackCooldown: 3,
+    /** THE SENTINEL. `dist <= reach + bodyRadius` is `dist <= -0.45`. @see lock 1. */
+    reach: -1,
+    strikeRadius: 0.1,
+    knockback: 3.5,
+    knockUp: 0.5,
+    /* No bleed at all: nothing bites, so nothing leaves a wound. */
+    bleedRate: 0,
+    bleedTime: 0,
+    viewKick: 0,
+    /* A herd, not a pack. `NPCManager.spawnBeastGroup` builds one `BeastPack`
+     * for any group above one and gives every member the SAME `home`, which is
+     * where the cohesion actually comes from - see the herd note in
+     * `BeastPack`. */
+    packMin: 3,
+    packMax: 7,
+    /* The grazing disc. Every member wanders inside this radius of the herd's
+     * shared home, so a herd holds a patch of flat rather than dispersing
+     * across it. Paired with `sight` by the placement inequality above. */
+    territory: 16,
+    loseInterest: 16,
+    /** 1.0: any blow at all sends it running. @see the courage note above. */
+    courage: 1.0,
+  },
 };
 
 /**
@@ -215,6 +372,27 @@ export function beastDef(id) {
 
 /** Every species id a world may author. */
 export const BEAST_IDS = Object.keys(BEASTS);
+
+/**
+ * Does this species hunt?
+ *
+ * ABSENT MEANS TRUE, and that is the whole reason the predicate exists rather
+ * than a `predator: true` on every row: the wolf and the bear tables have to be
+ * byte-identical to what they were before a herbivore was added to this file,
+ * and `camel.test.mjs` pins their SHA-256 to prove it. A default that has to be
+ * written out is a default that changes the two rows it is written on.
+ *
+ * Only `BeastPack` consults this today, to refuse the two pursuit mechanisms -
+ * shared aggro and the attack token - to a herd. It is not the thing that stops
+ * a camel mauling anybody; three separate locks do that, and they are set out
+ * on the `camel` row above.
+ *
+ * @param {BeastDef|null|undefined} def
+ * @returns {boolean}
+ */
+export function isPredator(def) {
+  return def?.predator !== false;
+}
 
 /**
  * THE HOME LEASH: how far from its `home` a beast will hunt, metres.

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 
-import { Relics, glowFalloff } from '../../src/systems/Relics.js';
+import { Relics, glowFalloff, glowScale } from '../../src/systems/Relics.js';
 
 /**
  * The relic halo is a GLOW and not a card.
@@ -105,4 +105,110 @@ test('the halo material carries the falloff, and still costs one draw', () => {
   assert.ok(mid > 20 && mid < 240, `the halo texture goes ${mid} a quarter of the way out - no ramp`);
 
   relics.dispose();
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * THE HALO'S SIZE, which is a different defect in the same quad
+ *
+ * ── What was wrong ────────────────────────────────────────────────────────
+ * `min(2.6, 0.5 + d * 0.045) * 1.7`. The `d * 0.045` half is an APPARENT-size
+ * law: a quad that grows in step with its range covers a constant number of
+ * pixels. Adding it to 0.5 leaves 0.85 m of quad that does not, so the closer
+ * a player got the bigger the halo grew on screen - quad width 99 px at
+ * 46.67 m, 124 px at 20 m, 174 px at 9.4 m, 523 px at 2 m, in a 1600 px frame
+ * at the default 75 degree fov. Two relics on adjacent Caravanserai roofs at 8.2 m and 9.6 m
+ * (`output/cv-caravan-desert.jpeg`) measure 110 px and 101 px across at half
+ * power with a 60 px flat top, against 9 px at half power for the same halo on
+ * a souk roof 300 m away, and read as two white blobs rather than as relics.
+ *
+ * ── What is asserted ──────────────────────────────────────────────────────
+ * The law as a pure function, because that is where the property lives and it
+ * needs no GPU. Three claims carry the fix and each one can fail on its own:
+ * the apparent size is CONSTANT through the band where it used to run away;
+ * the far half of the curve did not move at all; and the quad is never wider
+ * than it was before at any range, which is what makes this a reduction rather
+ * than a re-author of a thing that already reads correctly at distance.
+ */
+
+/** The law as it shipped, kept here as the thing being ruled out. */
+const oldGlowScale = (d) => Math.min(2.6, 0.5 + d * 0.045) * 1.7;
+
+/** Pixels per radian in a 1600 px frame at the game's default 75 degree fov. */
+const PX_PER_RAD = 800 / Math.tan((75 * Math.PI) / 360);
+
+/** Where `glowFalloff` crosses half strength, in half-widths. Scanned, not
+ *  asserted from memory, so the two functions are tied to each other. */
+const HALF_POWER = (() => {
+  let d = 0;
+  for (let t = 0; t <= 1; t += 1e-5) if (glowFalloff(t) >= 0.5) d = t;
+  return d;
+})();
+
+test('the halo holds one apparent size instead of running away up close', () => {
+  /* 8.97 m is where the 0.5 m floor lets go and 46.67 m is where the 2.6 m
+   * ceiling takes over. Between them the quad grows exactly in step with its
+   * range, which is the definition of holding still on screen. */
+  const arc = glowScale(20) / 20;
+  for (let d = 9.0; d <= 46.6; d += 0.1) {
+    assert.ok(Math.abs(glowScale(d) / d - arc) < 1e-9,
+      `the halo subtends ${(glowScale(d) / d).toFixed(5)} at ${d.toFixed(1)} m`
+      + ` against ${arc.toFixed(5)} at 20 m - it is still range-dependent`);
+  }
+  // And that one size is the size it already had at the top of the ramp.
+  assert.ok(Math.abs(arc - 4.42 / 46.67) < 1e-6,
+    `the held size is ${(arc * 1000).toFixed(2)} mrad, not the 94.7 mrad it had at 46.67 m`);
+});
+
+test('nothing beyond 46.67 m moved, because nothing out there was wrong', () => {
+  /* The halos on the souk roofs in `output/citadel-baseline-town.jpeg` are
+   * this same quad at 100-300 m and they read correctly. A fix that touched
+   * them would be a re-author. */
+  for (const d of [46.67, 50, 60, 100, 180, 300, 900]) {
+    assert.equal(glowScale(d), oldGlowScale(d),
+      `the halo at ${d} m changed size - the far half of the curve was not the defect`);
+  }
+  assert.ok(Math.abs(glowScale(300) - 4.42) < 1e-9, 'the far ceiling is no longer 2.6 m of quad');
+});
+
+test('the halo is never wider than it used to be, at any range', () => {
+  for (let d = 0.05; d <= 600; d += 0.05) {
+    assert.ok(glowScale(d) <= oldGlowScale(d) + 1e-12,
+      `the halo is ${glowScale(d).toFixed(3)} m at ${d.toFixed(2)} m,`
+      + ` wider than the ${oldGlowScale(d).toFixed(3)} m it was`);
+  }
+  // Monotone: a halo that shrank as it receded would read as a light going out.
+  let prev = -Infinity;
+  for (let d = 0; d <= 600; d += 0.05) {
+    const w = glowScale(d);
+    assert.ok(w >= prev - 1e-12, `the halo shrinks with range at ${d.toFixed(2)} m`);
+    prev = w;
+  }
+});
+
+test('the two Caravanserai blobs come back under the size the rest of the world reads at', () => {
+  /* The two in the screenshot, solved out of their measured half-power widths
+   * (101 px and 110 px at 1600 px / 75 deg) against the shipped law. */
+  for (const [d, wasPx] of [[9.61, 101], [8.24, 110]]) {
+    const wasFwhm = HALF_POWER * oldGlowScale(d) * PX_PER_RAD / d;
+    assert.ok(Math.abs(wasFwhm - wasPx) < 3,
+      `the old law puts a relic at ${d} m at ${wasFwhm.toFixed(0)} px, not the`
+      + ` ${wasPx} px measured in output/cv-caravan-desert.jpeg`);
+    const nowFwhm = HALF_POWER * glowScale(d) * PX_PER_RAD / d;
+    assert.ok(nowFwhm < 65,
+      `the blob at ${d} m is still ${nowFwhm.toFixed(0)} px across at half power`);
+  }
+  // Not so far the other way that a relic stops being findable.
+  assert.ok(HALF_POWER * glowScale(9.61) * PX_PER_RAD / 9.61 > 40,
+    'the halo at 9.6 m is now too small to be the thing a player spots');
+});
+
+test('the halo always covers the relic inside it', () => {
+  /* `OctahedronGeometry(0.32)` - 0.64 m across. A quad narrower than that
+   * would leave the gem sticking out of its own glow when you walk up to it,
+   * which is what a naive apparent-size law does at close range. */
+  for (const d of [0, 0.5, 1, 2, 5, 8.96, 9, 40, 300]) {
+    assert.ok(glowScale(d) > 0.64,
+      `the halo is ${glowScale(d).toFixed(3)} m at ${d} m - narrower than the 0.64 m relic`);
+  }
+  assert.equal(glowScale(0), 0.85, 'the near floor is not 0.5 m of quad');
 });

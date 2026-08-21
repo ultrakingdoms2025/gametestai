@@ -281,7 +281,7 @@ export class DockWorld extends World {
      * map and takes the first thing it hits, which under a shed is always the
      * shed. See `_publish`.
      */
-    this._caches = [];
+    this.cacheSites = [];
     /**
      * THE BERTH ANCHORS. The contract between the yard and the hulls on it.
      * @type {Array<object>}
@@ -3905,7 +3905,7 @@ export class DockWorld extends World {
      * height, not a surface to be lifted off. All three are round-trip
      * reachable on `dock-reach`'s walk graph and at least 30 m apart, which is
      * the separation `_findHigh` applies to authored sites too. */
-    this._caches.push(
+    this.cacheSites.push(
       { x: 0, y: TRENCH_Y + 0.25, z: -56 },
       { x: -RUN_X, y: GANTRY_Y + 0.2, z: 30 },
       { x: RUN_X, y: GANTRY_Y + 0.2, z: -60 },
@@ -4024,7 +4024,7 @@ export class DockWorld extends World {
     this.ships.length = 0;
     this._roofs.length = 0;
     this._towers.length = 0;
-    this._caches.length = 0;
+    this.cacheSites.length = 0;
     super.dispose();
   }
 }

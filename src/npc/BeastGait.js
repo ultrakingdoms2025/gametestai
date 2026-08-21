@@ -59,6 +59,16 @@ export const LEG_ORDER = ['FL', 'FR', 'HL', 'HR'];
  *    reason a bear never reads as a big wolf.
  *  - `charge` is the bear's bounding run - the same grouping as the gallop, on
  *    a shorter, heavier duty factor.
+ *  - `pace` is the camel's, and it is the strongest species cue in this whole
+ *    file. A pace is the LATERAL couplets moving in EXACT synchrony - not the
+ *    bear's staggered lateral sequence, which is an amble, but both feet on one
+ *    side leaving and landing together. That is what rolls a camel from side to
+ *    side and it is why a camel is a ship. Two beats, like the trot, off the
+ *    opposite pairing: [0, 0.5, 0, 0.5] is FL with HL, FR with HR.
+ *  - `gallop` is the camel's flat-out bolt, four beats with the hind pair
+ *    grouped ahead of the fore pair. It is deliberately NOT named `sprint` or
+ *    `charge`: those two names are what `beast-gait.test.mjs` counts to prove
+ *    the wolf and the bear each still own exactly one running gait.
  */
 export const GAIT_PHASE = {
   stand:  [0, 0, 0, 0],
@@ -67,6 +77,8 @@ export const GAIT_PHASE = {
   sprint: [0.3, 0.42, 0.0, 0.12],
   amble:  [0, 0.5, 0.1, 0.6],
   charge: [0.3, 0.42, 0.0, 0.12],
+  pace:   [0, 0.5, 0, 0.5],
+  gallop: [0.30, 0.44, 0.0, 0.14],
 };
 
 /**
@@ -78,6 +90,13 @@ export const GAIT_PHASE = {
  * @property {number} lift    peak foot lift, metres
  * @property {number} reach   peak fore/aft swing of the upper leg, radians
  * @property {number} bob     vertical body travel, metres
+ * @property {number} [roll]  peak LATERAL body roll, radians, one full cycle of
+ *   it per stride cycle. Absent on every four-legged gait whose footfalls are
+ *   diagonal or staggered, because those cancel sideways; present only on the
+ *   camel's `pace`, where both legs on one side leave the ground together and
+ *   the body genuinely falls toward the unsupported side. `BeastAnimator` adds
+ *   the term only when it is non-zero, so a gait without it is bit-for-bit the
+ *   animation it was before this field existed.
  */
 
 /**
@@ -101,6 +120,29 @@ export const GAITS = {
     { name: 'stand',  max: 0.15,     stride: 0,   swing: 0,    lift: 0,    reach: 0,    bob: 0 },
     { name: 'amble',  max: 3.0,      stride: 2.8, swing: 0.36, lift: 0.13, reach: 0.50, bob: 0.030 },
     { name: 'charge', max: Infinity, stride: 4.2, swing: 0.58, lift: 0.26, reach: 0.86, bob: 0.095 },
+  ],
+  /**
+   * CAMEL - two gaits, and the slow one is the whole character.
+   *
+   * A camel has no trot. It PACES at everything short of a bolt, which is why
+   * the band below runs all the way to 3.4 m/s off a single table: there is no
+   * intermediate gear to build, because the animal does not have one.
+   *
+   * The strides are long because the legs are - 3.4 m a cycle against a bear's
+   * 2.8 on an animal only a little longer - and that is what keeps the cycle
+   * rate down at 1.0/s at the top of the pace band. A camel walking looks slow
+   * and covers ground, and the arithmetic is where that comes from: it is the
+   * lowest cycle rate of any gait in this file, and the wolf's trot at the top
+   * of its own band is 1.55.
+   *
+   * `roll` is the ship. @see the field note on the Gait typedef.
+   */
+  camel: [
+    { name: 'stand',  max: 0.15,     stride: 0,   swing: 0,    lift: 0,    reach: 0,    bob: 0 },
+    { name: 'pace',   max: 3.4,      stride: 3.4, swing: 0.45, lift: 0.20, reach: 0.58, bob: 0.055,
+      roll: 0.075 },
+    { name: 'gallop', max: Infinity, stride: 4.8, swing: 0.58, lift: 0.30, reach: 0.86, bob: 0.105,
+      roll: 0.022 },
   ],
 };
 

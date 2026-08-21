@@ -1027,16 +1027,40 @@ function buildWorlds() {
     const minigameVenues = [];
 
     for (const f of ownFiles) {
+      const raw = f === rel ? src : read(f);
       /* Comments blanked, strings kept. Everything below scrapes CODE; a
        * docstring that merely mentions `type: 'hostile'` or `role: 'guard'` is
        * describing the engine, not populating a world. */
-      const text = stripComments(f === rel ? src : read(f));
+      const text = stripComments(raw);
+      /**
+       * A file whose cast is STREAMED rather than authored into `npcSpawns`.
+       *
+       * `residentsOf` is a list of NPCs GUARANTEED a body, and the guarantee
+       * comes from `spawnForWorld` walking `world.npcSpawns` in order. A
+       * character that a residency class spawns only when the player is inside
+       * its radius has no such guarantee, so naming one in a quest is a quest
+       * that cannot be advanced from the other side of the map.
+       *
+       * The vale never needed a marker because `MedievalResidency`'s people are
+       * named by a seeded planner at run time and appear in no source file at
+       * all. `citadel/Caravans.js` is the first streamed roster with LITERAL
+       * names in it - nine drovers, eight herd keepers and ten travellers - and
+       * without this they were scraped as authored cast, which took the
+       * citadel's count to 31 against an `authoredCap` of 24 and reported seven
+       * characters as silently dropped by a budget that never sees them.
+       *
+       * Roles are still harvested below, on the same reasoning the note there
+       * gives for the vale: a streamed NPC is real and its ROLE is reachable
+       * even when its name is not.
+       */
+      const streamedCast = /@streamedCast\b/.test(raw);
       const found = scanHostiles(text);
       for (const h of found.names) hostiles.add(h);
       unnamedHostiles = unnamedHostiles || found.unnamed;
 
       /** @param {string} name @param {string} record */
       const remember = (name, record) => {
+        if (streamedCast) return;
         const role = /\brole\s*:\s*'([a-z_]+)'/.exec(record)?.[1] ?? null;
         const questManager = /isQuestManager\s*:\s*true/.test(record);
         const prev = friendly.get(name);

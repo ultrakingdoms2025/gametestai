@@ -57,7 +57,19 @@ const TS = path.join(ROOT, 'site/lib/marketplaceCatalog.ts');
  * product is worse than not having it offline.
  */
 function serverRows() {
-  const src = readFileSync(TS, 'utf8');
+  /* LINE ENDINGS ARE NORMALISED BEFORE ANY SCRAPE.
+   *
+   * The anchors below contain `\n`, and this repository checks out with
+   * `core.autocrlf` on — `site/lib/marketplaceCatalog.ts` has 1,212 CRLF pairs
+   * and not one bare LF in a normal clone. So the end anchor matched at -1 and
+   * this case failed with "the end of the BASE_ITEMS literal could not be
+   * found", on a file nobody had touched.
+   *
+   * It passed in a `git worktree` (which produced LF) and failed in the main
+   * checkout, which is the worst shape a test can have: green where the work is
+   * done, red where it is merged, and blaming the wrong change when it goes. A
+   * textual scrape must not care how the file was checked out. */
+  const src = readFileSync(TS, 'utf8').split('\r\n').join('\n');
   const start = src.indexOf('export const BASE_ITEMS');
   assert.ok(start > 0, 'BASE_ITEMS has been renamed or moved out of marketplaceCatalog.ts');
   const end = src.indexOf('] as const;\n\nexport function buildMarketplaceSeedItems', start);

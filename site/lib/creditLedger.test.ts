@@ -60,9 +60,18 @@ suite('creditLedger (integration)', () => {
 
     // A minimal stand-in for the real players table: only the column the ledger
     // touches. The ledger must not depend on anything else about it.
+    //
+    // `id` is TEXT because PRODUCTION's is TEXT (admin/lib/db.ts:130), holding
+    // UUID-shaped strings from randomUUID(). This started as UUID, which made
+    // every test below pass against a schema production does not have: the real
+    // ensureCreditSchema throws "foreign key constraint
+    // credit_events_player_id_fkey cannot be implemented" against a TEXT id, so
+    // the ledger could never have been created on production. A stand-in that
+    // does not match production is not a stand-in, it is a second system that
+    // agrees with you.
     await db.query(`
       CREATE TABLE IF NOT EXISTS players (
-        id             UUID PRIMARY KEY,
+        id             TEXT PRIMARY KEY,
         credit_balance INTEGER NOT NULL DEFAULT 0,
         updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )

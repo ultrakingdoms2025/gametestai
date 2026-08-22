@@ -160,3 +160,72 @@ cross-device play work at all, and Phase 5 (mobile) depends on it.
 - Every existing balance survives the migration byte-identical.
 - **A playthrough agent earns from each source and the ledger agrees with the HUD.** A unit test
   proves the endpoint; only a playthrough proves nothing stopped paying.
+
+---
+
+## 7. What has landed, and one thing step 1 got wrong
+
+**Step 1 — ledger and pricing.** Done (`3507188`, `5646e5b`). `creditPricing.ts`,
+`creditLedger.ts`, and an integration suite against a real Postgres.
+
+**A defect in step 1, found before it could ship.** `credit_events.player_id` was
+declared `UUID NOT NULL REFERENCES players(id)`. Production's `players.id` is
+**TEXT** (`admin/lib/db.ts:130`), holding UUID-shaped strings from `randomUUID()`.
+Postgres refuses a UUID → TEXT foreign key outright:
+
+```
+foreign key constraint "credit_events_player_id_fkey" cannot be implemented
+```
+
+So `ensureCreditSchema` would have thrown on its first production call and the
+ledger table could never have been created. Confirmed twice: by running the real
+function against a prod-shaped `players` table, and by a read-only query against
+production, which shows `players.id = text` and **no `credit_events` table**.
+
+The reason the suite passed anyway is the part worth keeping: the test built its
+own stand-in `players` with `id UUID`. It was not testing the ledger against
+production's schema, it was testing it against a schema invented to suit it. That
+is the same shape as the reach probes and the flight rig — *a gate that measures
+something the system does not do reports confidence it has not earned.* The
+stand-in now declares `id TEXT` and carries a comment saying why, so the next
+person to widen it has to argue with production rather than with me.
+
+**Step 2 — the marketplace purchase transaction.** Done.
+`purchaseMarketplaceItem` prices from `marketplace_items.cost_buy` under a row
+lock, debits a locked player row, decrements stock and writes the admin sale
+record, all in ONE transaction. The client names an item; there is no field in
+the request in which a price could be smuggled.
+
+`spendCredits` was split into `debitInTransaction` plus a wrapper, because
+Postgres has no nested `BEGIN` — an inner `COMMIT` would commit the outer
+transaction — so anything that must be atomic with a debit has to share the
+debit's transaction rather than call something that opens its own.
+
+### Two things the tests only proved after being made to fail
+
+Every test below passed on first run, which is not evidence. Each guarantee was
+then re-checked by breaking the implementation:
+
+1. **Removing the retry check** failed exactly one test — the one that says a
+   retry is told `duplicate` rather than `insufficient`. The trap it guards is
+   specific: the first attempt has already spent the credits, so a retry that is
+   simply re-evaluated sees the reduced balance and reports failure for a
+   purchase that succeeded, and the player sees an error for an item they own.
+
+2. **Removing the player row lock changed nothing** — 15 tests, three runs, all
+   green. The "cannot double-spend" test could not see it, because buying takes a
+   `FOR UPDATE` lock on the ITEM row, and that serialises two buyers of the same
+   item all by itself. The balance lock only matters when one player buys **two
+   different items** at once, and nothing tested that. Added; it now fails 3 of 3
+   with the lock removed and passes 3 of 3 with it restored.
+
+   Worth stating plainly, because it nearly repeated the step-1 mistake one layer
+   down: **a concurrency test can pass for a reason that has nothing to do with
+   the lock it claims to be testing.** Mutating the code is what tells the
+   difference; a green run does not.
+
+### Still to do, unchanged
+
+Steps 3–6 in section 5. Note that the opening `kind = 'migration'` row per player
+(section 4) has not been written yet, and `credit_events` still does not exist on
+production — the first call to `ensureCreditSchema` will create it.

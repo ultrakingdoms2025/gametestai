@@ -1,4 +1,6 @@
-import { Client } from 'pg';
+import { randomUUID } from 'node:crypto';
+import { Client, type PoolClient } from 'pg';
+import { debitInTransaction, ensureCreditSchema } from './creditLedger';
 import {
   buildMarketplaceSeedItems,
   MARKETPLACE_ACTIONS,
@@ -381,4 +383,238 @@ export async function removeMarketplaceItem(id: string): Promise<MarketplaceItem
     [id]
   );
   return rows[0] ? rowToItem(rows[0]) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Buying: the transaction this module has never had
+// ---------------------------------------------------------------------------
+
+/**
+ * Why this exists.
+ *
+ * Buying was client-side arithmetic against a client-held wallet. The browser
+ * decided the price, decided it could afford it, subtracted it, and the server
+ * learned the result only through `POST /api/game/state`, which wrote whatever
+ * balance the browser last claimed. There was no purchase transaction anywhere.
+ *
+ * Here the client names an ITEM, never a price. The cost is read from
+ * `marketplace_items.cost_buy` under a row lock, the debit runs against a locked
+ * player row, and the stock decrement shares that one transaction — so a sale
+ * either happens completely or not at all.
+ *
+ * ── Lock ordering ──────────────────────────────────────────────────────────
+ *
+ * Item first, then player, on every path through this function. Two buyers of
+ * one item queue on the item; one buyer of two items queues on the player.
+ * Neither can form a cycle, because nothing here ever takes the player lock
+ * before the item lock. `applyCreditEvent` takes only the player lock, so it
+ * cannot close a cycle either.
+ */
+
+export type MarketplacePurchaseReason =
+  | 'ok'
+  | 'duplicate'
+  | 'insufficient'
+  | 'not_found'
+  | 'inactive'
+  | 'stock'
+  | 'invalid';
+
+export interface MarketplacePurchaseResult {
+  applied: boolean;
+  reason: MarketplacePurchaseReason;
+  /** Authoritative balance after the call, whatever the outcome. */
+  balance: number;
+  /** What the SERVER charged. Zero unless a debit happened. */
+  cost: number;
+  /** Remaining stock, or null for an unlimited item. */
+  stock: number | null;
+  /** Enough for the client to apply the grant. Null when nothing was sold. */
+  item: {
+    id: string;
+    source_key: string | null;
+    name: string;
+    game_action: string;
+    action_config: Record<string, unknown>;
+    world_name: string;
+  } | null;
+}
+
+type PurchaseDb = Client | PoolClient;
+
+/** marketplace_items.id is a UUID column: a malformed id must not reach it. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function balanceOf(db: PurchaseDb, playerId: string): Promise<number> {
+  const r = await db.query('SELECT credit_balance FROM players WHERE id = $1', [playerId]);
+  return Number(r.rows[0]?.credit_balance ?? 0);
+}
+
+/**
+ * Buy one catalogue item, server-priced, inside one transaction.
+ *
+ * `eventKey` is the idempotency key. A retried or replayed request charges once
+ * — and, importantly, a retry REPORTS THE ORIGINAL OUTCOME rather than being
+ * re-evaluated. Re-evaluating a retry is a trap worth naming: the first attempt
+ * has already spent the credits, so a naive second pass sees the reduced balance
+ * and answers `insufficient`, telling the client a purchase failed that in fact
+ * succeeded. The client would then show an error for an item the player owns.
+ */
+export async function purchaseMarketplaceItem(
+  db: PurchaseDb,
+  playerId: string,
+  request: { itemId: string; eventKey: string }
+): Promise<MarketplacePurchaseResult> {
+  const { itemId, eventKey } = request;
+
+  const refuse = async (
+    reason: MarketplacePurchaseReason
+  ): Promise<MarketplacePurchaseResult> => ({
+    applied: false,
+    reason,
+    balance: await balanceOf(db, playerId),
+    cost: 0,
+    stock: null,
+    item: null,
+  });
+
+  if (typeof eventKey !== 'string' || eventKey.length === 0 || eventKey.length > 200) {
+    return refuse('invalid');
+  }
+  if (typeof itemId !== 'string' || !UUID_RE.test(itemId)) {
+    // Not found rather than invalid: a syntactically impossible id and a deleted
+    // one are the same thing to a caller, and handing it to Postgres would raise
+    // "invalid input syntax for type uuid" and 500 the route.
+    return refuse('not_found');
+  }
+
+  await db.query('BEGIN');
+  try {
+    // A replay answers with what happened the first time.
+    const prior = await db.query(
+      'SELECT delta FROM credit_events WHERE player_id = $1 AND event_key = $2',
+      [playerId, eventKey]
+    );
+    if (prior.rows[0]) {
+      const balance = await balanceOf(db, playerId);
+      await db.query('ROLLBACK');
+      return {
+        applied: false,
+        reason: 'duplicate',
+        balance,
+        cost: Math.abs(Number(prior.rows[0].delta)),
+        stock: null,
+        item: null,
+      };
+    }
+
+    const found = await db.query(
+      `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
+              is_active, world_name
+         FROM marketplace_items
+        WHERE id = $1
+          FOR UPDATE`,
+      [itemId]
+    );
+    const row = found.rows[0];
+    if (!row) {
+      await db.query('ROLLBACK');
+      return refuse('not_found');
+    }
+
+    const item = {
+      id: String(row.id),
+      source_key: row.source_key != null ? String(row.source_key) : null,
+      name: String(row.name ?? ''),
+      game_action: String(row.game_action ?? ''),
+      action_config: (row.action_config ?? {}) as Record<string, unknown>,
+      world_name: String(row.world_name ?? ''),
+    };
+    const stock = row.quantity == null ? null : Number(row.quantity);
+    const cost = Number(row.cost_buy);
+
+    if (!row.is_active) {
+      await db.query('ROLLBACK');
+      return { applied: false, reason: 'inactive', balance: await balanceOf(db, playerId), cost: 0, stock, item };
+    }
+    if (!Number.isInteger(cost) || cost <= 0) {
+      // A zero or negative price is a catalogue authoring error, not a gift: it
+      // would hand out limited stock for nothing while skipping the balance
+      // check entirely. No seed row is priced this way today.
+      await db.query('ROLLBACK');
+      return { applied: false, reason: 'invalid', balance: await balanceOf(db, playerId), cost: 0, stock, item };
+    }
+    if (stock !== null && stock <= 0) {
+      await db.query('ROLLBACK');
+      return { applied: false, reason: 'stock', balance: await balanceOf(db, playerId), cost: 0, stock, item };
+    }
+
+    const detail = `item:${item.source_key ?? item.id}`;
+    const debit = await debitInTransaction(db, playerId, { cost, detail, eventKey });
+    if (!debit.applied) {
+      await db.query('ROLLBACK');
+      const reason: MarketplacePurchaseReason =
+        debit.reason === 'insufficient'
+          ? 'insufficient'
+          : debit.reason === 'duplicate'
+            ? 'duplicate'
+            : 'invalid';
+      return { applied: false, reason, balance: debit.balance, cost: 0, stock, item };
+    }
+
+    let remaining = stock;
+    if (stock !== null) {
+      const dec = await db.query(
+        `UPDATE marketplace_items
+            SET quantity = quantity - 1, updated_at = NOW()
+          WHERE id = $1 AND quantity > 0
+          RETURNING quantity`,
+        [itemId]
+      );
+      if (!dec.rows[0]) {
+        // Unreachable while the row lock above is held. Left in because the
+        // alternative to failing loudly here is selling stock that is not there.
+        await db.query('ROLLBACK');
+        return { applied: false, reason: 'stock', balance: debit.balance + cost, cost: 0, stock, item };
+      }
+      remaining = Number(dec.rows[0].quantity);
+    }
+
+    // The admin-visible sale record, in the SAME transaction as the money. It
+    // used to be written from the client's `trades` array via /api/game/state,
+    // best-effort, for a purchase the server had never authorised.
+    // amount_cents is 0 because no real money moved.
+    await db.query(
+      `INSERT INTO purchases (id, player_id, stripe_intent_enc, amount_cents, currency,
+                              type, credits_amount, status)
+       VALUES ($1, $2, $3, 0, 'credits', 'market_buy', $4, 'completed')`,
+      [randomUUID(), playerId, `game:buy:${item.name.slice(0, 60)} x1`, cost]
+    );
+
+    await db.query('COMMIT');
+    return { applied: true, reason: 'ok', balance: debit.balance, cost, stock: remaining, item };
+  } catch (err) {
+    await db.query('ROLLBACK').catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * The same purchase, opening and closing its own connection — the idiom the rest
+ * of this module uses. Ensures both schemas first, because a purchase touches
+ * `marketplace_items` and `credit_events` together.
+ */
+export async function purchaseMarketplaceItemForPlayer(
+  playerId: string,
+  request: { itemId: string; eventKey: string }
+): Promise<MarketplacePurchaseResult> {
+  await ensureMarketplaceSchema();
+  const client = makeClient();
+  await client.connect();
+  try {
+    await ensureCreditSchema(client);
+    return await purchaseMarketplaceItem(client, playerId, request);
+  } finally {
+    await client.end();
+  }
 }

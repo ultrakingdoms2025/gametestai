@@ -77,7 +77,12 @@ export async function ensureCreditSchema(db: Db): Promise<void> {
   await db.query(`
     CREATE TABLE IF NOT EXISTS credit_events (
       id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      player_id     UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      -- TEXT, not UUID. Production's players.id is TEXT (admin/lib/db.ts:130)
+      -- holding UUID-shaped strings, and Postgres refuses a UUID -> TEXT foreign
+      -- key outright: "constraint credit_events_player_id_fkey cannot be
+      -- implemented". Declared UUID here, this table could never be created on
+      -- production -- measured, not guessed.
+      player_id     TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
       event_key     TEXT NOT NULL,
       kind          TEXT NOT NULL,
       detail        TEXT,
@@ -239,6 +244,53 @@ export async function applyCreditEvent(
 }
 
 /**
+ * Debit a player inside a transaction the CALLER owns.
+ *
+ * Split out of `spendCredits` so a marketplace purchase can debit the credits,
+ * decrement the stock and record the sale in ONE transaction. Postgres has no
+ * nested `BEGIN` — an inner `COMMIT` would commit the outer transaction too — so
+ * anything that must be atomic with a debit has to SHARE the debit's transaction
+ * rather than call something that opens its own.
+ *
+ * Contract, and it matters: the caller must already have issued `BEGIN`, and on
+ * any result where `applied` is false the caller must `ROLLBACK`. This function
+ * deliberately does neither, because it cannot know what else the caller has
+ * written into the same transaction.
+ *
+ * The balance is re-read under `FOR UPDATE` rather than passed in. By then the
+ * row is usually already locked, so it costs a primary-key lookup — and it makes
+ * the helper impossible to hand a stale number, which is the one mistake that
+ * would silently reintroduce the overdraw this whole phase exists to stop.
+ */
+export async function debitInTransaction(
+  db: Db,
+  playerId: string,
+  request: SpendRequest
+): Promise<LedgerResult> {
+  const { cost, detail = null, eventKey } = request;
+
+  const balance = await readBalanceLocked(db, playerId);
+  if (balance === null) return { applied: false, delta: 0, balance: 0, reason: 'invalid' };
+
+  if (!Number.isInteger(cost) || cost <= 0 || !validKey(eventKey)) {
+    return { applied: false, delta: 0, balance, reason: 'invalid' };
+  }
+  if (balance < cost) {
+    return { applied: false, delta: 0, balance, reason: 'insufficient' };
+  }
+
+  const next = balance - cost;
+  const id = await insertEvent(db, playerId, eventKey, 'purchase', detail, -cost, next);
+  if (!id) return { applied: false, delta: 0, balance, reason: 'duplicate' };
+
+  await db.query('UPDATE players SET credit_balance = $1, updated_at = NOW() WHERE id = $2', [
+    next,
+    playerId,
+  ]);
+  return { applied: true, delta: -cost, balance: next, reason: 'ok' };
+}
+
+/**
  * Debit a player, refusing to overdraw.
  *
  * The balance stays locked for the whole read-decide-write, so two purchases
@@ -250,37 +302,15 @@ export async function spendCredits(
   playerId: string,
   request: SpendRequest
 ): Promise<LedgerResult> {
-  const { cost, detail = null, eventKey } = request;
-
-  if (!Number.isInteger(cost) || cost <= 0 || !validKey(eventKey)) {
-    return { applied: false, delta: 0, balance: await currentBalance(db, playerId), reason: 'invalid' };
-  }
-
   await db.query('BEGIN');
   try {
-    const balance = await readBalanceLocked(db, playerId);
-    if (balance === null) {
+    const result = await debitInTransaction(db, playerId, request);
+    if (!result.applied) {
       await db.query('ROLLBACK');
-      return { applied: false, delta: 0, balance: 0, reason: 'invalid' };
+      return result;
     }
-    if (balance < cost) {
-      await db.query('ROLLBACK');
-      return { applied: false, delta: 0, balance, reason: 'insufficient' };
-    }
-
-    const next = balance - cost;
-    const id = await insertEvent(db, playerId, eventKey, 'purchase', detail, -cost, next);
-    if (!id) {
-      await db.query('ROLLBACK');
-      return { applied: false, delta: 0, balance, reason: 'duplicate' };
-    }
-
-    await db.query('UPDATE players SET credit_balance = $1, updated_at = NOW() WHERE id = $2', [
-      next,
-      playerId,
-    ]);
     await db.query('COMMIT');
-    return { applied: true, delta: -cost, balance: next, reason: 'ok' };
+    return result;
   } catch (err) {
     await db.query('ROLLBACK').catch(() => {});
     throw err;

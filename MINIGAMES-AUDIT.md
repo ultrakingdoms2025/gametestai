@@ -1,5 +1,23 @@
 # Sports Minigames — build + verification state
 
+> ## ⚠️ SUPERSEDED — 2026-08-22
+>
+> Verified against the tree during the implementation-brief recon. This document
+> covers three games; the registry holds twice that.
+>
+> | This document says | The tree says |
+> |---|---|
+> | three games (swim, tennis, ski) | **Six kinds across 12 playable venues** — `src/main.js:440-486` |
+> | — | also `run` (track race), `rooftop` (**7** citadel venues, all `requires: 'parkour'`), `test_fire` (dock butts) |
+> | "19 impossible sports race steps" | Resolved by removing them. `SportsWorld` still publishes no `trackPath`; the `run` venue is the substitute |
+> | 1,266–1,334 tests | **2,570**, all green |
+>
+> Quest wiring is live: 15 `minigame` steps across sports (9), citadel (5) and
+> dock (1). A finish emits `quest:activity {type:'minigame', target, won, place,
+> score}`; an abort pays nothing and emits nothing.
+>
+> Current state: `docs/superpowers/specs/2026-08-21-implementation-brief-roadmap.md`, section 2.
+
 Goal (user): tennis vs NPC / swim challenge / ski run at real venues; prompt on
 approach; start/stop with quit mid-match; best-of-3 tennis; 10 CR on a win;
 animations; then quests wired to them. Contests are ABSTRACTED (user-confirmed).

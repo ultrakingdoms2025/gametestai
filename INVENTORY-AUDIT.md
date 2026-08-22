@@ -1,5 +1,26 @@
 # Inventory System Audit — working state
 
+> ## ⚠️ SUPERSEDED — 2026-08-22
+>
+> Verified against the tree during the implementation-brief recon. Its headline
+> gaps are closed.
+>
+> | This document says | The tree says |
+> |---|---|
+> | gap 1: "shield / firepower boosts are never sold" | In the catalogue **and** the offline mirror — `site/lib/marketplaceCatalog.ts:814-874` |
+> | gap 8: "no automated tests for inventory/items/marketplace anywhere" | At least four: `marketplace-offline`, `mount-catalog`, `citadel-economy`, `dock-economy` |
+> | "`WORLD_MARKETS` omits race" | Includes race **and** dock |
+> | "145 marketplace items" | 505 rows seeded; `ITEMS` holds **94** ids |
+> | 1,266–1,334 tests | **2,570**, all green |
+>
+> One thing it does not mention matters more than anything it does: there is
+> **no server-side purchase transaction**. `marketplaceDb.ts` is CRUD only,
+> buying is client-side arithmetic against a client-held wallet, and
+> `POST /api/game/state` writes whatever balance the browser sends. That is
+> Phase 2 of the roadmap.
+>
+> Current state: `docs/superpowers/specs/2026-08-21-implementation-brief-roadmap.md`, sections 1 and 2.
+
 Goal: AAA-grade inventory. Every one of the 145 marketplace items has a purpose,
 that purpose is applied in game, and consumables are removed on use.
 

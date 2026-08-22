@@ -1,5 +1,27 @@
 # Quest System Audit + Rebuild Plan
 
+> ## ⚠️ SUPERSEDED — 2026-08-22
+>
+> Checked line by line against the tree during the implementation-brief recon.
+> Its open items are closed and several of its counts are wrong, so reading it as
+> current will send you to rebuild things that already exist.
+>
+> | This document says | The tree says |
+> |---|---|
+> | "REMAINING: medieval, citadel, sports, race" | All authored, plus dock. **78 quests / 398 steps**, zero dead-verb steps, 64 carrying prerequisites |
+> | "wire the per-world quest modules into `admin/lib/db.ts`" | Done — `admin/lib/db.ts:19,553` |
+> | "close the validator's spawn-budget blind spot" | Done — `scripts/quest-vocab.mjs:28-56` |
+> | "DECISION NEEDED: repeatable" | Decided and enforced — `site/lib/playerDb.ts:646-653`, 409 `already_completed` |
+> | "`DROP_TABLES` has no citadel entry" | Has citadel **and** dock |
+> | "Item ids: 23 total" | **94** |
+> | 1,266–1,334 tests | **2,570**, all green |
+>
+> It also holds `Contracts.js` up as "the model to copy". That file is
+> unreachable: `accept()`, `turnIn()`, `forNPC()` and `nearestGiver()` have no
+> callers anywhere, and it tracks progress against a state no code path can set.
+>
+> Current state: `docs/superpowers/specs/2026-08-21-implementation-brief-roadmap.md`, section 2.
+
 ## VERDICT (two independent agents converged)
 
 **0 of 50 seeded quests are completable. ~6 of 184 steps can fire, and every one

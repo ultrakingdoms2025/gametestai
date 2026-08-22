@@ -8,6 +8,22 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-21-implementation-brief-roadmap.md`, section "Phase 0".
 
+**Status: complete on `prod-integrity`, not merged, not deployed.** Six commits.
+Two things found during execution that were not in the plan:
+
+1. **Task 2 grew.** The plan removed a middleware bypass and a secret fallback.
+   Auditing what the middleware was protecting showed that **all nine dashboard
+   pages relied on it as their only gate** — four with no check at all, five
+   checking inside their `'use server'` actions, which guards the write and
+   leaves the read open. Grepping for the identifier said five of nine were
+   fine; reading where the call sat said none were. Declared is not enforced.
+2. **Task 5 was closed by Task 4 without touching the bundler.** See below.
+
+**Two environment variables must be set before this is deployed**, or it changes
+nothing: `ADMIN_EMAILS` (site project) and, if diagnostics are wanted,
+`HEALTH_DETAIL_KEY`. The allowlist now fails closed, so an unset `ADMIN_EMAILS`
+means no marketplace administrators at all.
+
 **Tech Stack:** Next.js 16 App Router + TypeScript (`site/`, `admin/`), vitest (`site/`), `node --test` (game root), GitHub Actions.
 
 **Conventions for every task**
@@ -83,15 +99,30 @@
 - [ ] **Step 5: Build verification** — `npx vite build` must succeed
 - [ ] **Step 6: Commit**
 
-## Task 5: The bundler stops swallowing failures
+## Task 5: The bundler stops swallowing failures — **CLOSED BY TASK 4, bundler unchanged**
 
-**Files:**
-- Modify: `site/scripts/bundle-game.mjs`
+**Files:** none. `site/scripts/bundle-game.mjs` is left exactly as it was.
 
-- [ ] **Step 1: Read the current `--if-available` semantics**
-- [ ] **Step 2: Distinguish "the game source is absent" (legitimately skip) from "the build ran and failed" (exit non-zero)**
-- [ ] **Step 3: Verify a forced failure exits non-zero**
-- [ ] **Step 4: Commit**
+- [x] **Step 1: Read the current `--if-available` semantics**
+- [x] **Step 2: Decide** — and the decision reversed the plan.
+
+`--if-available` is not an oversight. Its docblock (`bundle-game.mjs:13-25`)
+records the incident that produced it: `site` is a separate Vercel project whose
+build was plain `next build`, so four commits of gameplay fixes shipped without
+regenerating the bundle and the deployed game sat two weeks behind the
+repository. The flag exists so that wiring the bundle into the site build can
+never take the storefront down with it — *"a stale game is a bad day, a site
+that will not deploy is a worse one."*
+
+Making it fail hard would reverse a documented decision on no new evidence,
+which is the failure shape this project has paid for repeatedly. **The defect
+was never the flag — it was that a failed game build was invisible.** Task 4's
+CI job runs `npx vite build` and fails the push, so a broken build is caught
+before it can reach a deploy at all. The flag stays as the safety valve it was
+designed to be.
+
+Left for later, if it ever earns its place: emitting a build marker so a stale
+bundle is detectable from the deployed tree rather than only from the log.
 
 ## Task 6: Retire the stale audit documents
 

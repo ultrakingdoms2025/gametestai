@@ -1,0 +1,103 @@
+# Continuous integration for AETHER NEXUS.
+#
+# Until this file existed there was no CI at all: 190 test files, ~2,570 tests,
+# a vitest suite and a 114-file contract checker, none of which ran on a push.
+# The deployed game is a hand-committed bundle, and `bundle-game.mjs` runs with
+# `--if-available`, so a broken build exits zero and ships the previous bundle.
+# The commit history records that happening.
+#
+# Nothing here deploys — Vercel's git integration owns that. These jobs only
+# decide whether a push should have been allowed to reach it.
+#
+# `contract-check` is a SEPARATE step because it is deliberately not part of
+# `npm test`: most of the codebase touches `document` or WebGL at module scope
+# and cannot be imported under Node, so the checker verifies the API surface
+# textually instead.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  game:
+    name: Game — tests, contracts, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # ~2,570 tests across 190 files. Takes roughly three minutes.
+      - name: Unit tests
+        run: npm test
+
+      # Not covered by `npm test` — see the note at the top of this file.
+      - name: Contract check
+        run: node scripts/contract-check.mjs
+
+      # The bundle that ships is committed by hand, so a build that fails here
+      # is a build that would have shipped stale. Fail the push instead.
+      - name: Production build
+        run: npx vite build
+
+  site:
+    name: Site — types and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # lib/**/*.test.ts and components/**/*.test.ts — pure logic, no database.
+      - name: Unit tests
+        run: npx vitest run
+
+  admin:
+    name: Admin — types
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: admin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: admin/package-lock.json
+
+      - run: npm ci
+
+      # The admin app has no test suite yet. Typecheck is the gate that exists,
+      # and it is the one guarding the session work done in this phase.
+      - name: Typecheck
+        run: npx tsc --noEmit

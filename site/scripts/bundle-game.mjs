@@ -25,7 +25,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { cp, mkdir, rm, stat } from 'node:fs/promises';
+import { cp, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -138,8 +138,51 @@ async function main() {
   await mkdir(dest, { recursive: true });
   await cp(dist, dest, { recursive: true });
 
+  await writeBuildStamp(dest);
+
   console.log(`\nCopied the build into ${path.relative(site, dest)}.`);
   console.log('It is served at /game/index.html and gated by /play.');
+}
+
+/* Which commit is actually deployed.
+ *
+ * The bundle is committed by hand and this script is allowed to fail softly, so
+ * "is the deployed game current?" has always been a real question. It used to be
+ * answered by grepping the sourcemaps for a source-level marker -- the only
+ * place one survives once the chunk is minified. Those maps are no longer
+ * shipped, because they published the whole source tree, so the answer moves
+ * here.
+ *
+ * Written LAST, and only after the copy succeeded, so its presence means a build
+ * genuinely ran. A stale stamp then means a stale bundle, which is precisely the
+ * question worth being able to ask.
+ */
+async function writeBuildStamp(dir) {
+  let commit = 'unknown';
+  try {
+    commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: game, encoding: 'utf8' }).trim();
+  } catch {
+    // A source tarball with no git history still builds; it just cannot say
+    // which commit it came from, and "unknown" beats failing the build.
+  }
+
+  let count = 0;
+  let bytes = 0;
+  for (const entry of await readdir(dir, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    count++;
+    try {
+      bytes += (await stat(path.join(entry.parentPath ?? entry.path, entry.name))).size;
+    } catch {
+      /* counted but unmeasurable; the count is the load-bearing half */
+    }
+  }
+
+  const stamp = { commit, builtAt: new Date().toISOString(), files: count, bytes };
+  await writeFile(path.join(dir, 'build.json'), `${JSON.stringify(stamp, null, 2)}\n`, 'utf8');
+  console.log(
+    `[bundle-game] stamped build.json: ${commit.slice(0, 7)}, ${count} files, ${(bytes / 1e6).toFixed(1)} MB`
+  );
 }
 
 main().catch((e) => {

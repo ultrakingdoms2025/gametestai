@@ -143,24 +143,58 @@ failing test and on a failed game build; `/api/health` says nothing useful to a 
 
 ### Phase 1 — Production smoothness · `perf-production`
 
-**Brief 4.1.2.** Already diagnosed; cheap; every later phase adds content that worsens the multiplier.
+**Brief 4.1.2.**
 
-1. **Make the light count constant.** Attach weapon and mount light rigs permanently at
-   construction and toggle `intensity`/`visible`, which do not change the program key. One
-   configuration means one compile — and the per-configuration boot warmup can be deleted outright.
-2. **Audit the ~390 programs** for near-duplicate materials that can share one instance.
-3. **Warm asynchronously after the title card**, not before it.
-4. **Confirm `KHR_parallel_shader_compile` exists on the PC target.** If it is missing,
-   `compileAsync` is synchronous — which alone explains the PC-versus-Android gap the brief reports.
-5. Fold in `TODO-V4` items 2 and 4 (car first-use freeze; freeze returning after a portal) — same cause.
-6. Trim the 3.28 MB main chunk where it is free to do so.
+> **REWRITTEN 2026-08-22 after recon. The original plan here was wrong.** It was
+> written from `TODO-V4.md`, which is stale in the same way the three audit
+> documents were: **items 2, 4 and 5 have already shipped.** `src/gfx/LightRig.js`
+> (642 lines) implements the exact "make the light count constant" design — a
+> fixed pool of 19 slots added once at boot, with every other light in the game
+> demoted to a `visible = false` *source* copied into a slot per frame. The
+> deployed bundle contains it (`rig:point`, `rig:dirShadow`, `RIG_BUDGET` all
+> present). Do not rebuild it.
+>
+> Two corrections to my own earlier text, verified against three 0.185.1 source:
+> `visible = false` on a light is **not** a safe toggle — `projectObject` returns
+> at `WebGLRenderer.js:1833` before `pushLight`, so the count drops and every
+> program recompiles. Nor is `castShadow`, which feeds `numDirLightShadows` into
+> the cache key. **Only `intensity` is safe**; it merely multiplies a colour
+> uniform (`WebGLLights.js:281,313,362,375,409`) and never gates inclusion.
 
-**Acceptance:** in **production**, no frame gap over 250 ms on first mount launch, first weapon
-change per world, world entry, first keybind use, or repeated entry/exit. Measured, not felt.
+The real causes are production-only, which is why local was always smoother.
+
+1. **DONE — the per-asset auth gate.** `site/proxy.ts` matched every path under
+   `/game`, so a cold first load ran a middleware function per file: a JWT decode
+   plus an HMAC verify, 59 times. Vercel runs middleware *before* the cache, so
+   the `immutable` headers in `next.config.ts` spared the second visit, never the
+   first. Hashed artefacts are now excluded from the matcher. `lib/gatePaths.ts`,
+   11 tests.
+2. **DONE — 18 MB of sourcemaps.** Shipped in the bundle, publishing the whole
+   source tree, against the intent already recorded in `042e753`. Removed;
+   `bundle-game.mjs` now writes `build.json` (commit, time, files, bytes) so
+   deploy verification has a better marker than grepping maps. Bundle 42 MB → 24 MB.
+3. **OPEN — bundle splitting.** `src/worlds` is **49%** of the 3.28 MB index chunk
+   and `vite.config.js` has no `manualChunks` at all. Splitting needs
+   `worldManager.register` to accept a lazy factory, because all eight world
+   classes are statically imported by `main.js`. Architectural, not a config tweak.
+4. **OPEN, latent — 61 world lights created visible.** `Caves.js:859` and
+   `MazeChunks.js:393` create theirs `visible = false` with tests enforcing it, and
+   say why: the frame between creation and `LightRig`'s next walk is a frame in
+   which they count, and one such frame is a full recompile. 61 sites across 12
+   world files do not. `claim()` on `world:changed` currently closes the window for
+   build-time lights, so this is fragility rather than a live fault.
+5. **OPEN — measure production.** The diagnosed cause was already fixed, so the
+   remaining gap should be measured before more is spent on it. Production is
+   cookie-gated, so this needs either an authenticated session or a local
+   production build compared against the deployed one.
+
+**Acceptance:** in **production**, no frame gap over 250 ms on first mount launch,
+first weapon change per world, world entry, first keybind use, or repeated
+entry/exit. Measured, not felt.
 
 **Trap:** `HARNESS.ready()` must drive the real loop — an automated browser holds no pointer
 lock, so NPC and world LOD never run and every figure reads as the LOD-disabled worst case
-(`outstanding-work-aug-2026`).
+(`outstanding-work-aug-2026`). And `TODO-V4.md` should be read as history, not as a plan.
 
 ---
 

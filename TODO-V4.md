@@ -1,5 +1,20 @@
 # AETHER NEXUS — v4 backlog
 
+> ## ⚠️ SUPERSEDED — 2026-08-22
+>
+> **Items 2, 4 and 5 are DONE.** The fix they propose — making the light count
+> constant so Three stops invalidating its program cache — shipped as
+> `src/gfx/LightRig.js`: a fixed pool of 19 slots added once at boot, with every
+> other light demoted to a hidden source copied into a slot per frame. The
+> deployed bundle contains it.
+>
+> Item 2 specifically: `car` **is** in `mounts.prebuild()` (`main.js:1012`), and
+> `Car._buildLightRig()` runs from the constructor. Item 3 (assets outside map
+> borders) has not been checked and may still stand.
+>
+> Planning from this file will re-solve a solved problem. Current state:
+> `docs/superpowers/specs/2026-08-21-implementation-brief-roadmap.md`, Phase 1.
+
 Reported by the user after the v3 batch. Addressed once the six v3 agents land.
 
 ---

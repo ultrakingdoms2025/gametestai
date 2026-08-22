@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { audit, listPurchases, purchaseStats, recordPurchase } from '@/lib/db';
-import { getSession } from '@/lib/session';
+import { getSession, requireAdminPage } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,6 +14,8 @@ export default async function PurchasesPage({
 }: {
   searchParams: Promise<{ page?: string; saved?: string; error?: string }>;
 }) {
+  await requireAdminPage();
+
   const { page = '0', saved, error } = await searchParams;
   const [rows, stats] = await Promise.all([listPurchases(Number(page)), purchaseStats()]);
 

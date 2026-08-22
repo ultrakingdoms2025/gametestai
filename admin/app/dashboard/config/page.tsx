@@ -3,7 +3,7 @@ import QRCode from 'qrcode';
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { audit, getAdminById, listConfigKeys, setConfig, updateAdminPassword, updateAdminTotpSecret } from '@/lib/db';
-import { getSession } from '@/lib/session';
+import { getSession, requireAdminPage } from '@/lib/session';
 import { encrypt } from '@/lib/encrypt';
 import { generateTotpSecret, totpUri } from '@/lib/totp';
 
@@ -18,11 +18,14 @@ export default async function ConfigPage({
 }: {
   searchParams: Promise<{ saved?: string; error?: string; totpSecret?: string; adminSaved?: string }>;
 }) {
+  // Guards the read path. The `'use server'` actions below check separately —
+  // they run on their own requests, and a guarded render does not guard a POST.
+  const session = await requireAdminPage();
+
   const { saved, error, totpSecret, adminSaved } = await searchParams;
-  const session = await getSession();
   const [rows, admin] = await Promise.all([
     listConfigKeys(),
-    session.adminId ? getAdminById(session.adminId) : Promise.resolve(null),
+    getAdminById(session.adminId),
   ]);
 
   async function saveConfig(formData: FormData) {

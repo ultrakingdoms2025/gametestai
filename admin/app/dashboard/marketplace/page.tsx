@@ -1,6 +1,10 @@
+import { requireAdminPage } from '@/lib/session';
+
 export const dynamic = 'force-dynamic';
 
-export default function MarketplacePage() {
+export default async function MarketplacePage() {
+  await requireAdminPage();
+
   const target = process.env.NEXT_PUBLIC_MARKETPLACE_ADMIN_URL || 'https://aethernexus.games/admin/marketplace';
 
   return (

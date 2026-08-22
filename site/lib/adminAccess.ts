@@ -1,27 +1,31 @@
 import { auth } from './auth';
 import { getUserById } from './db';
+import { adminAllowlist, isAllowedAdminEmail } from './adminAllowlist';
 
-function parseEmails(value: string | undefined): Set<string> {
-  return new Set(
-    String(value ?? '')
-      .split(/[,\n;]+/g)
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean)
+/**
+ * Marketplace admin authorisation.
+ *
+ * The allowlist decision lives in `./adminAllowlist`, which imports nothing, so
+ * it can be tested without loading next-auth and `pg`. See that file for why an
+ * unconfigured allowlist now denies everyone rather than allowing them.
+ */
+
+// The operator needs to know why the panel is shut; the caller must not. One
+// line per process, so a scripted probe cannot flood the log.
+let warnedUnconfigured = false;
+
+function warnIfUnconfigured(): void {
+  if (warnedUnconfigured || adminAllowlist().size > 0) return;
+  warnedUnconfigured = true;
+  console.warn(
+    '[adminAccess] Marketplace admin is disabled because no allowlist is set. ' +
+      'Set ADMIN_EMAILS (or MARKETPLACE_ADMIN_EMAILS) to a comma-separated list ' +
+      'of administrator addresses to enable it.'
   );
 }
 
-const ADMIN_EMAILS = new Set([
-  ...parseEmails(process.env.MARKETPLACE_ADMIN_EMAILS),
-  ...parseEmails(process.env.ADMIN_EMAILS),
-]);
-
 export function isMarketplaceAdminEmail(email: string | null | undefined): boolean {
-  if (!email) return false;
-  // Bootstrap-safe default: when no allowlist is configured, any signed-in user
-  // can access marketplace admin. Once env values are present, strict allowlist
-  // checks apply.
-  if (ADMIN_EMAILS.size === 0) return true;
-  return ADMIN_EMAILS.has(email.trim().toLowerCase());
+  return isAllowedAdminEmail(email);
 }
 
 export async function requireMarketplaceAdmin() {
@@ -29,6 +33,9 @@ export async function requireMarketplaceAdmin() {
   if (!session?.user?.id || !session.user.email) return null;
   const user = await getUserById(session.user.id);
   if (!user) return null;
-  if (!isMarketplaceAdminEmail(user.email)) return null;
+  if (!isAllowedAdminEmail(user.email)) {
+    warnIfUnconfigured();
+    return null;
+  }
   return { session, user };
 }

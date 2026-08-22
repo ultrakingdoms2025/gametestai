@@ -1,7 +1,7 @@
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { audit, listLoreEntries, upsertLoreEntry } from '@/lib/db';
-import { getSession } from '@/lib/session';
+import { getSession, requireAdminPage } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,6 +32,8 @@ export default async function LorePage({
 }: {
   searchParams: Promise<{ saved?: string; error?: string }>;
 }) {
+  await requireAdminPage();
+
   const { saved, error } = await searchParams;
   const rows = await listLoreEntries();
   const byScope = new Map(rows.map((row: Record<string, unknown>) => [String(row.scope), row]));

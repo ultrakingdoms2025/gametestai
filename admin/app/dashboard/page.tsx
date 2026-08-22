@@ -1,8 +1,12 @@
 ﻿import { countPlayers, countActivePlayers, purchaseStats, listAudit, verifyAuditChain } from '@/lib/db';
+import { requireAdminPage } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardHome() {
+  // Guard before the queries, not after: proxy.ts is defence in depth, not the gate.
+  await requireAdminPage();
+
   const [total, active, stats, recent, chain] = await Promise.all([
     countPlayers(),
     countActivePlayers(),

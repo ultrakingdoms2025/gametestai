@@ -15,7 +15,7 @@ import {
   resetPlayerQuestEngagement,
 } from '@/lib/db';
 import { computePlayerAccessSnapshot } from '@/lib/playerAccess';
-import { getSession } from '@/lib/session';
+import { getSession, requireAdminPage } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -78,6 +78,8 @@ export default async function PlayerPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string; saved?: string }>;
 }) {
+  await requireAdminPage();
+
   const { id } = await params;
   const creating = id === 'new';
   const { error, saved } = await searchParams;

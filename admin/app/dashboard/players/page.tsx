@@ -1,5 +1,6 @@
 ﻿import { listPlayers } from '@/lib/db';
 import { computePlayerAccessSnapshot } from '@/lib/playerAccess';
+import { requireAdminPage } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,6 +9,8 @@ export default async function PlayersPage({
 }: {
   searchParams: Promise<{ page?: string; search?: string }>;
 }) {
+  await requireAdminPage();
+
   const { page = '0', search } = await searchParams;
   const rows = await listPlayers(Number(page), search);
 

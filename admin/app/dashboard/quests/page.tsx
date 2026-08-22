@@ -1,7 +1,7 @@
 import { revalidatePath } from 'next/cache';
 import { redirect, notFound } from 'next/navigation';
 import { audit, createQuest, deleteQuest, getQuestById, listQuests, updateQuest } from '@/lib/db';
-import { getSession } from '@/lib/session';
+import { getSession, requireAdminPage } from '@/lib/session';
 import QuestStepEditor from './StepEditor';
 import type { Step } from './StepEditor';
 
@@ -71,6 +71,8 @@ export default async function QuestsPage({
 }: {
   searchParams: Promise<{ quest?: string; saved?: string; error?: string }>;
 }) {
+  await requireAdminPage();
+
   const { quest, saved, error } = await searchParams;
   const rows = await listQuests();
   const questLineOptions = Array.from(

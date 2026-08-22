@@ -1,4 +1,15 @@
+# Build artefacts and local secrets for the admin app.
+#
+# `site/.gitignore` already carries these rules; `admin/` had none, which is how
+# `tsconfig.tsbuildinfo` — a TypeScript incremental-build cache — reached the
+# index during Phase 0.
+
+node_modules/
+.next/
+out/
+*.tsbuildinfo
 .vercel
-.env*
-.next
-totp-qr.svg
+
+.env
+.env.*
+!.env.local.example

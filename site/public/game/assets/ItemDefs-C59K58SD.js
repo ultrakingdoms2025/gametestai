@@ -152,4 +152,3 @@ var e=[{id:`char_aurora`,name:`Aurora Racer`,blurb:`Glacier teal with a cyan pul
     <rect x="6" y="6" width="20" height="20" rx="3" fill="rgba(120,180,210,0.12)" stroke="${t}" stroke-width="1"/>
     <path d="M16 20 v-2 q3 -1 3 -3.5 a3 3 0 1 0 -6 0" fill="none" stroke="${t}" stroke-width="1.5"/>
     <circle cx="16" cy="23.5" r="1.2" fill="${t}"/>`};export{r as _,y as a,v as c,u as d,l as f,o as g,e as h,p as i,S as l,b as m,s as n,w as o,x as p,f as r,g as s,c as t,h as u,i as v};
-//# sourceMappingURL=ItemDefs-C59K58SD.js.map

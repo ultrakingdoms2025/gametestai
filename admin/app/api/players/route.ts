@@ -27,7 +27,7 @@ export async function PATCH(req: NextRequest) {
   // Adjust credits
   const cred = creditSchema.safeParse(body);
   if (cred.success) {
-    await adjustCredits(cred.data.playerId, cred.data.delta);
+    await adjustCredits(cred.data.playerId, cred.data.delta, username);
     await audit(username, 'player.adjust_credits', `player:${cred.data.playerId}`,
                 `delta=${cred.data.delta} reason=${cred.data.reason ?? '—'}`);
     return NextResponse.json({ ok: true });

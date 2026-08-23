@@ -395,6 +395,17 @@ const CONTRACT = [
   { file: 'public/assets/maze/manifest.json', exports: [] },
   { file: 'public/assets/maze/newel-finial.glb', exports: [] },
   { file: 'docs/assets/LICENCES.md', exports: [] },
+  /* Phase 6: authored hero-character features for the station's eleven
+   * referenced roles. Registered as files for exactly the reason the maze's
+   * are - the loader is built to degrade silently to the procedural character,
+   * so a stray delete would cost the whole art pass and fail nothing. The
+   * generator is registered too, because the byte-diff test re-runs it and a
+   * rename would leave the committed .glb unreproducible. */
+  { file: 'src/npc/HeroAssets.js', exports: ['loadHeroAssets', 'heroParts', 'heroRoles', 'HERO_PART_KEYS', 'HERO_BONES', 'resetHeroAssets', 'installHeroAssets'] },
+  { file: 'scripts/make-npc-glb.mjs', exports: ['FRAME', 'SLOT', 'TRI_BUDGET'] },
+  { file: 'public/assets/npc/manifest.json', exports: [] },
+  { file: 'public/assets/npc/raider.glb', exports: [] },
+  { file: 'public/assets/npc/crew.glb', exports: [] },
   /* Phase 6 Task 6. One BatchedMesh per material family, capacity derived
    * from the residency radius; the streamed set's draw calls stop scaling
    * with district count. Registered like MazeChunks: a renamed export here

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { heroParts } from './HeroAssets.js';
 
 /**
  * Procedural humanoid characters.
@@ -1417,33 +1418,229 @@ function interpKeys(keys, field, value, lerpFn) {
   return lerpFn(keys[n - 1], keys[n - 1], 0);
 }
 
+/* ------------------------------------------------------------------ */
+/* The ape body plan                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ── The problem ───────────────────────────────────────────────────────────
+ *
+ * Phase 6 gave the station's eleven named roles an authored ape head and the
+ * right kit on a human body. The head read. The silhouette did not, and the
+ * silhouette is what a player perceives first at any distance. `demopics/g1`
+ * to `g4` and `n1`/`n2` are all one animal: short legs, a long deep barrel
+ * torso, a shoulder line half again as wide as a person's, and arms that hang
+ * past the crotch toward the knee.
+ *
+ * ── Why this is a vertical REMAP and not a second set of key tables ───────
+ *
+ * The obvious implementation is `APE_TORSO_KEYS` beside `TORSO_KEYS`. It is
+ * the wrong one, and the reason is the outfits. Every garment in this file is
+ * authored against absolute heights - a waistband at y 0.96, a hem at 1.02, a
+ * belt, a boot cuff, and the authored `.glb` kit on top of them. Re-authoring
+ * the body tables alone would leave forty garment heights pointing at a body
+ * that is no longer there, and re-authoring those too is forty more numbers
+ * with no way to check them but the eye.
+ *
+ * A monotone remap of y applied to the FINISHED vertices and to the bone table
+ * moves the body, the garments, the belt, the boots and the authored kit
+ * together, by construction. One function, one choke point, and nothing can
+ * fall out of step with anything else.
+ *
+ * ── Why the bands are windowed rather than interpolated ───────────────────
+ *
+ * `scale` is a sum of bump functions, each exactly zero outside its own
+ * window. That is not decoration. Above 1.38 the scale is EXACTLY one, so the
+ * map there is a pure translation - and the head has to be a pure translation,
+ * because the eyes, the hair shell and the headgear are all placed on the head
+ * bone at an offset computed as `faceY - P.headY` in canonical space. Any
+ * residual stretch in that band, of the kind a spline through knots leaks
+ * upward, would slide the eyes out of their sockets by however much it leaked.
+ * A monotone cubic through landmark knots was written first and thrown away
+ * for exactly that: it put a 20% stretch on the skull.
+ *
+ * Everything below 0.10 is untouched for the same kind of reason - the sole of
+ * the foot has to stay on the ground, and the shoe has to keep its shape.
+ *
+ * The two constants below were solved, not guessed, against the two landmarks
+ * the references actually show: hips at 0.715 (a person's are at 0.955) and a
+ * crown 56 mm lower than a person's, which after `headScale` lands the head at
+ * ~21% of standing height against `n2`'s 19%.
+ */
+const APE_LEG_SCALE = 0.690;
+const APE_TORSO_SCALE = 1.493;
+/** Metres the neck and head are set forward of the chest. */
+const APE_NECK_FORWARD = 0.055;
+/** Forearm extension about the elbow. @see makeProportions */
+const APE_FOREARM = 1.30;
+
+/** Table resolution for the integrated map. 0.5 mm; the error is ~1e-8 m. */
+const APE_STEP = 0.0005;
+const APE_TOP = 2.0;
+/** Below this the scale is exactly 1: the shoe, and the ground under it. */
+const APE_FLAT = 0.10;
+
+/** d/dx of `smoothstep`, needed to carry authored normals through the remap. */
+const dSmoothstep = (e0, e1, x) => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return (6 * t * (1 - t)) / (e1 - e0);
+};
+
+/**
+ * Build the vertical profile for ape strength `t` (0 = a person, 1 = `g1`).
+ *
+ * `y` is the height map, `scaleY` its derivative, `z` the forward set of the
+ * neck and `dz` that curve's derivative. The last two exist only so authored
+ * normals can be carried through: for x' = x, y' = f(y), z' = z + g(y) the
+ * normal transform is the inverse transpose of the Jacobian, which works out
+ * to n' = (n.x, (n.y - n.z g') / f', n.z), renormalised.
+ */
+function makeApeProfile(t) {
+  const legScale = lerp(1, APE_LEG_SCALE, t);
+  const torsoScale = lerp(1, APE_TORSO_SCALE, t);
+  const neck = APE_NECK_FORWARD * t;
+
+  /* Two bumps. The legs are compressed from the top of the shoe to the hip;
+   * the torso is stretched from the hip to just under the collar line. They
+   * share the 0.90-1.00 crossover, which is inside the pelvis where a garment
+   * covers the handover. */
+  const scaleY = (y) =>
+    1
+    + (legScale - 1) * (smoothstep(APE_FLAT, 0.20, y) - smoothstep(0.90, 1.00, y))
+    + (torsoScale - 1) * (smoothstep(0.90, 1.00, y) - smoothstep(1.30, 1.38, y));
+
+  const n = Math.round(APE_TOP / APE_STEP) + 1;
+  const map = new Float64Array(n);
+  let prev = scaleY(0);
+  for (let i = 1; i < n; i++) {
+    const s = scaleY(i * APE_STEP);
+    map[i] = map[i - 1] + (prev + s) * 0.5 * APE_STEP;
+    prev = s;
+  }
+  const top = map[n - 1];
+
+  return {
+    scaleY,
+    y: (v) => {
+      /* Below the first window the scale is EXACTLY one, so the map there is
+       * exactly the identity - and it has to be returned as such rather than
+       * as the integral's answer. Summing 196 trapezoid steps to reach the
+       * ankle at 0.098 lands on 0.09800000000000007, and the animator drives
+       * its foot IK targets from that number: seven parts in 10^17 is nothing
+       * to a renderer and is not nothing to an equality a test can state. */
+      if (v <= APE_FLAT) return v;
+      if (v >= APE_TOP) return top + (v - APE_TOP);
+      const f = v / APE_STEP;
+      const i = f | 0;
+      return lerp(map[i], map[i + 1], f - i);
+    },
+    z: (y) => -neck * smoothstep(1.20, 1.40, y),
+    dz: (y) => -neck * dSmoothstep(1.20, 1.40, y),
+  };
+}
+
+/**
+ * Push a point through the profile, in place, on a flat xyz array.
+ * `z` is displaced using the ORIGINAL y, then y is remapped.
+ */
+function profilePoint(pr, a, i) {
+  const y = a[i + 1];
+  a[i + 2] += pr.z(y);
+  a[i + 1] = pr.y(y);
+}
+
+/**
+ * Apply the profile to every built vertex, immediately before the merge.
+ *
+ * This is the single choke point the whole design rests on: the body, the
+ * outfit and the authored `.glb` kit are all in `parts` by the time this runs,
+ * and `buildSkeletonSpec` has already put the bones through the same map, so
+ * skin weighting - which measures distance from a vertex to a bone SEGMENT -
+ * sees one consistent body.
+ *
+ * @param {object} P @param {Part[]} parts
+ */
+function applyProfile(P, parts) {
+  const pr = P.profile;
+  if (!pr) return;
+  for (const part of parts) {
+    const pos = part.pos;
+    if (part.nrm) {
+      /* The authored normals ALIAS the cached glTF attribute - `addHeroParts`
+       * hands over `attribute.array` itself, and eleven hero roles share those
+       * buffers. Writing through that alias would deform the asset for every
+       * character built after this one. */
+      const src = part.nrm;
+      const nrm = new Float32Array(src.length);
+      for (let i = 0; i < pos.length; i += 3) {
+        const y = pos[i + 1];
+        const f = pr.scaleY(y);
+        const g = pr.dz(y);
+        const nx = src[i];
+        const ny = (src[i + 1] - src[i + 2] * g) / f;
+        const nz = src[i + 2];
+        const len = Math.hypot(nx, ny, nz) || 1;
+        nrm[i] = nx / len;
+        nrm[i + 1] = ny / len;
+        nrm[i + 2] = nz / len;
+      }
+      part.nrm = nrm;
+    }
+    for (let i = 0; i < pos.length; i += 3) profilePoint(pr, pos, i);
+  }
+}
+
 /**
  * A body archetype: girth, shoulder/hip ratio and limb thickness modifiers
  * applied on top of the canonical profiles above.
  *
- * @param {{build:number, frame:number, shoulderScale:number}} opts
- *   build 0 slim / 1 average / 2 heavy; frame 0 broad-shouldered / 1 narrower.
+ * @param {{build:number, frame:number, shoulderScale:number, ape?:number}} opts
+ *   build 0 slim / 1 average / 2 heavy; frame 0 broad-shouldered / 1 narrower;
+ *   `ape` 0..1 is the body plan of `demopics/g1`-`g4` and `n1`/`n2`, and is
+ *   passed by exactly one caller - `NPCManager._heroLook`, for the eleven
+ *   named station roles. Absent or zero, every number below is what it was.
  */
 export function makeProportions(opts) {
   const build = clamp(opts.build | 0, 0, 2);
   const frame = clamp(opts.frame | 0, 0, 1);
   const girth = [0.90, 1.0, 1.17][build];
   const belly = [-0.008, 0.0, 0.034][build];
-  const limb = [0.90, 1.0, 1.13][build];
+  /* Ape strength, quantised to the same 1/20 the shoulder is, so it cannot
+   * mint an unbounded number of geometry cache families. */
+  const ape = Math.round(clamp(opts.ape ?? 0, 0, 1) * 20) / 20;
+  /* Everything below is `1` at ape 0, so a person is untouched by arithmetic
+   * as well as by intent. The four are the four things the references show
+   * that a wider, heavier human does not already give you. */
+  const apeShoulder = 1 + 0.22 * ape;   // the span that reads first at distance
+  const apeChestF = 1 + 0.28 * ape;     // barrel depth, front and back
+  const apeChestX = 1 + 0.12 * ape;     // and the width to go with it
+  const apeLimb = 1 + 0.14 * ape;       // heavier arms and shorter thicker legs
+  /* A gorilla's forearm is nearly as long as its humerus; the vertical remap
+   * on its own stretches the upper arm (it crosses the torso band) and
+   * compresses the lower one (it crosses the leg band), which is the ratio
+   * backwards. This puts it right, about the elbow, so the shoulder does not
+   * move and `u` still parameterises the same fractions of the same arm -
+   * which is what keeps every sleeve range in `buildOutfit` valid. */
+  const forearm = lerp(1, APE_FOREARM, ape);
+  const limb = [0.90, 1.0, 1.13][build] * apeLimb;
+  const profile = ape > 0 ? makeApeProfile(ape) : null;
   // A shoulder line that is narrow *and* rounded is the loudest anatomical tell
   // in a full-body shot - the figure reads as a bottle with a head balanced on
   // it. The broad frame goes to 1.14 and the narrow one to 1.00, and the
   // outboard deltoid term below is raised to match, so the arm is actually
   // capped by a mass rather than sloping straight into the sleeve.
-  const shoulderW = (frame === 0 ? 1.14 : 1.0) * (opts.shoulderScale ?? 1);
+  const shoulderW = (frame === 0 ? 1.14 : 1.0) * (opts.shoulderScale ?? 1) * apeShoulder;
   const hipW = frame === 0 ? 0.96 : 1.08;
   const chestF = frame === 0 ? 1.0 : 1.06;
 
   const P = {
     build,
     frame,
+    ape,
     girth,
     limbScale: limb,
+    /** Vertical remap and forward neck set, or null for a person. */
+    profile,
     hipY: 0.955,
     pelvisY: 0.995,
     chestY: 1.29,
@@ -1453,7 +1650,10 @@ export function makeProportions(opts) {
     headY: 1.545,
     ankleY: 0.098,
     legSideX: 0.095,
-    key: `b${build}f${frame}s${Math.round((opts.shoulderScale ?? 1) * 20)}`,
+    /* The ape suffix is not cosmetic. Every merged body, hair shell and
+     * headgear is memoised on this string; without it a Breaker Frame and a
+     * dock hand of the same build would be served each other's geometry. */
+    key: `b${build}f${frame}s${Math.round((opts.shoulderScale ?? 1) * 20)}${ape > 0 ? `a${Math.round(ape * 20)}` : ''}`,
   };
 
   /** Torso cross-section at world height `y`. */
@@ -1463,10 +1663,16 @@ export function makeProportions(opts) {
       const wMul =
         lerp(1, shoulderW, smoothstep(1.15, 1.36, y)) * lerp(1, hipW, smoothstep(1.1, 0.93, y));
       const bellyAdd = belly * gauss(y, 1.06, 0.16);
+      /* The barrel. A gorilla's chest is deep front-to-back before it is wide,
+       * and the remap above only ever moves heights - so without this the ape
+       * reads as a tall human torso rather than a cask. Ramped in over the
+       * abdomen so the waist still narrows into the hip. */
+      const apeF = lerp(1, apeChestF, smoothstep(0.98, 1.20, y));
+      const apeX = lerp(1, apeChestX, smoothstep(0.98, 1.20, y));
       return {
-        rx: lerp(a.rx, b.rx, t) * girth * wMul,
-        rf: (lerp(a.rf, b.rf, t) * girth + bellyAdd) * lerp(1, chestF, smoothstep(1.15, 1.32, y)),
-        rb: lerp(a.rb, b.rb, t) * girth + bellyAdd * 0.35,
+        rx: lerp(a.rx, b.rx, t) * girth * wMul * apeX,
+        rf: (lerp(a.rf, b.rf, t) * girth + bellyAdd) * lerp(1, chestF, smoothstep(1.15, 1.32, y)) * apeF,
+        rb: (lerp(a.rb, b.rb, t) * girth + bellyAdd * 0.35) * apeF,
         e: lerp(a.e, b.e, t),
       };
     });
@@ -1511,10 +1717,45 @@ export function makeProportions(opts) {
    * hand in the hip. Taking a running maximum from the elbow down keeps the
    * result monotonic, so clearing the hip does not put a bulge in the forearm.
    */
+  /* Raw polyline height at `u`, before the ape forearm extension. */
+  const rawArmY = (u) =>
+    interpKeys(ARM_KEYS, 'u', u, (c, d, s) => lerp(c.p[1], d.p[1], s));
+  /* The elbow and the wrist of the authored polyline, so the extension can be
+   * expressed as "hold the shoulder, drop the wrist, carry the hand with it". */
+  const ELBOW_U = 0.36;
+  const elbowY0 = rawArmY(ELBOW_U);
+  const wristY0 = rawArmY(WRIST_U);
+  /** Where the wrist ends up once the forearm has been lengthened. */
+  const wristY = elbowY0 - (elbowY0 - wristY0) * forearm;
+  /**
+   * Pre-stretch for the hand, which is the one part of the body that is built
+   * at an absolute size INSIDE a band the vertical remap compresses.
+   *
+   * Everything else survives the remap because it is authored as a height:
+   * a garment hem at y 1.02 lands wherever 1.02 lands. `buildHand` is not - it
+   * measures 85 mm of palm and 79 mm of finger down the forearm axis from the
+   * wrist, so left alone the ape's hand comes out 31% shorter than a person's
+   * while the palm stays full width. That is a paddle, and it is also a
+   * contract breach: `WEAPON_MOUNTS` places every grip at an ABSOLUTE offset
+   * in the hand bone's frame, so shrinking the hand walks the rifle up toward
+   * the wrist. Dividing by the local scale before the remap divides it back.
+   */
+  const handStretch = profile ? 1 / profile.scaleY(wristY) : 1;
+  /** Height at `u`: the forearm lengthens about the elbow, the hand follows. */
+  const ARM_PLAIN = forearm === 1 && handStretch === 1;
+  const armY = (u) => {
+    const y = rawArmY(u);
+    // Not just a fast path: `a - (a - y)` is not exactly `y` in binary floating
+    // point, and a person's arm must come out bit-identical.
+    if (ARM_PLAIN || u <= ELBOW_U) return y;
+    if (u <= WRIST_U) return elbowY0 - (elbowY0 - y) * forearm;
+    return wristY - (wristY0 - y) * handStretch;
+  };
+
   P.arm = (u, side) =>
     interpKeys(ARM_KEYS, 'u', u, (a, b, t) => {
       const x = lerp(a.p[0], b.p[0], t);
-      const y = lerp(a.p[1], b.p[1], t);
+      const y = ARM_PLAIN ? lerp(a.p[1], b.p[1], t) : armY(u);
       const rx = lerp(a.rx, b.rx, t) * limb;
       const outboard = (shoulderW - 1) * (0.09 + 0.26 * smoothstep(0.5, 0.0, u));
 
@@ -1524,8 +1765,7 @@ export function makeProportions(opts) {
         let widest = 0;
         for (let k = 0; k <= 6; k++) {
           const uu = lerp(0.30, u, k / 6);
-          const yy = interpKeys(ARM_KEYS, 'u', uu, (c, d, s) => lerp(c.p[1], d.p[1], s));
-          widest = Math.max(widest, P.bodyOuterX(yy));
+          widest = Math.max(widest, P.bodyOuterX(armY(uu)));
         }
         // 26 mm was measured against the *bare* body, and every outfit in the
         // file then drapes a 20-50 mm shell over the hip on top of it. The
@@ -1549,6 +1789,13 @@ export function makeProportions(opts) {
     });
 
   P.shoulderX = P.arm(0, 1).armX;
+  /** @see the `handStretch` note above. 1 for a person. */
+  P.handStretch = handStretch;
+  /* A gorilla's hand is a big broad slab. `buildHand` is already 9% over
+   * anatomical for readability; this is the ape's share on top of it, and it
+   * is deliberately modest - the grips are absolute offsets in the hand's own
+   * frame, so a much larger palm would start to slide them off the fist. */
+  P.handScale = 1 + 0.10 * ape;
   return P;
 }
 
@@ -1587,6 +1834,20 @@ export function buildSkeletonSpec(P) {
     add(`calf${s}`, `thigh${s}`, [sx * side, 0.515, -0.012], [sx * side, P.ankleY, 0.01]);
     add(`foot${s}`, `calf${s}`, [sx * side, P.ankleY, 0.01], [sx * side, 0.03, -0.12]);
     add(`toe${s}`, `foot${s}`, [sx * side, 0.03, -0.12], [sx * side, 0.026, -0.19]);
+  }
+  /* The bones go through the same vertical remap the vertices do, and for the
+   * same reason: skin weighting measures a vertex's distance to a bone
+   * SEGMENT, so a skeleton left in canonical space beside a remapped body
+   * would weight the ape's knee to its own thigh's midpoint.
+   *
+   * This is also what makes the animator correct for free. Every landmark it
+   * drives - pelvis height, ankle height, chest height, hip offset - it reads
+   * off this table, so it is already in the space the character stands in. */
+  if (P.profile) {
+    for (const d of defs) {
+      profilePoint(P.profile, d.pos, 0);
+      profilePoint(P.profile, d.tail, 0);
+    }
   }
   return defs;
 }
@@ -1639,6 +1900,9 @@ class Part {
     this.idx = [];
     /** Baked albedo multiplier (face cavity). Padded to white on merge. */
     this.col = [];
+    /** Authored normals, or null to weld them from the positions on merge.
+     *  Only authored hero features set this. @see addHeroParts */
+    this.nrm = null;
   }
   get vertexCount() {
     return this.pos.length / 3;
@@ -1977,6 +2241,57 @@ function assignSkinWeights(part, boneIndex, spec, power = 3.6) {
   return { skinIndex, skinWeight };
 }
 
+/**
+ * Turn the authored hero features for a role into `Part`s the merge understands.
+ *
+ * This is the join between the authored pipeline and the procedural one, and
+ * it is deliberately the only one. Everything upstream of here is a `.glb`
+ * whose materials were discarded; everything downstream is the same merge that
+ * has always welded a sleeve to a torso. What arrives is geometry in character
+ * space - the same space `assignSkinWeights` measures bone distances in - and
+ * what leaves is a part in one of the six existing material slots, rigidly
+ * skinned to one bone.
+ *
+ * RIGID, not distance-weighted, and that is deliberate: `assignSkinWeights` is
+ * given only the bones a part may belong to, so every vertex of a pauldron
+ * follows the clavicle exactly and none of it is dragged by the neck. Blending
+ * is right for skin over a joint and wrong for a plate strapped across one -
+ * a bandolier that stretches is a worse artefact than one that clips.
+ *
+ * A SYMMETRIC PART NAMES BOTH BONES. This is not a nicety. A pair of knuckled
+ * hands authored across the centreline and bound to `handR` alone puts the left
+ * hand on the right wrist, and the character folds in half the moment it moves
+ * an arm - which is exactly what the first screenshot of an Arc Lance Sentry
+ * showed. With both bones offered, the weighting binds each vertex to whichever
+ * is nearer, and the two hands are 0.44 m apart, so the split is exact rather
+ * than approximate.
+ *
+ * A missing loader, a missing file or a missing part all arrive here as an
+ * empty list, and an empty list is a procedural character. There is no error
+ * path because there is nothing to recover from.
+ *
+ * @param {string|null} hero role id, or null for a plain procedural character
+ * @param {Array} out parts list being accumulated for this body
+ */
+function addHeroParts(hero, out) {
+  if (!hero) return;
+  const parts = heroParts(hero);
+  if (!parts) return;
+  for (const { slot, bone, geometry } of parts) {
+    const pos = geometry.getAttribute('position');
+    const nor = geometry.getAttribute('normal');
+    const uv = geometry.getAttribute('uv');
+    const idx = geometry.getIndex();
+    if (!pos || !idx) continue;
+    const part = new Part(slot, (Array.isArray(bone) ? bone : [bone]).map((n) => B(n)));
+    part.pos = Array.from(pos.array);
+    part.nrm = nor ? nor.array : null;
+    part.uv = uv ? Array.from(uv.array) : new Array(pos.count * 2).fill(0);
+    part.idx = Array.from(idx.array);
+    out.push(part);
+  }
+}
+
 /** Merge parts into one indexed BufferGeometry with per-slot draw groups. */
 function mergeParts(parts, boneIndex, spec) {
   const bySlot = [];
@@ -2005,7 +2320,11 @@ function mergeParts(parts, boneIndex, spec) {
     if (list.length === 0) continue;
     const groupStart = iOff;
     for (const p of list) {
-      const nrm = computeWeldedNormals(p.pos, p.idx);
+      /* Authored parts carry their own normals; lofted ones are welded here.
+       * The distinction matters: welding at 0.125 mm merges a box's coincident
+       * corner vertices into one averaged normal, which is exactly right for a
+       * lofted limb and rounds every hard edge off a pauldron. */
+      const nrm = p.nrm ?? computeWeldedNormals(p.pos, p.idx);
       const skin = assignSkinWeights(p, boneIndex, spec);
       position.set(p.pos, vOff * 3);
       normal.set(nrm, vOff * 3);
@@ -2633,12 +2952,20 @@ function buildHand(part, P, side) {
   const across = new THREE.Vector3(0, 0, 1);
   const inward = new THREE.Vector3(-side, 0, 0);
 
-  const at = (along, z, x) =>
-    wrist
+  /* The hand is measured down the forearm axis from the wrist, so on an ape it
+   * is built inside a band the vertical remap compresses. `handStretch` is the
+   * exact inverse of that compression and is 1 for a person - and is applied
+   * to the height only, because the remap only ever moves heights. */
+  const stretch = P.handStretch ?? 1;
+  const at = (along, z, x) => {
+    const p = wrist
       .clone()
       .addScaledVector(dir, along)
       .addScaledVector(across, z)
       .addScaledVector(inward, x);
+    if (stretch !== 1) p.y = wrist.y + (p.y - wrist.y) * stretch;
+    return p;
+  };
 
   // A game hand is deliberately oversized. Hands are the second-most-read
   // feature on a humanoid after the face, they sit at exactly the height a
@@ -2646,7 +2973,7 @@ function buildHand(part, P, side) {
   // disappear into the hip garment at any distance past two metres - which is
   // precisely what the reviewer saw ("the left hand is not resolvable at all").
   // Every shipped character in the genre runs 8-12% over; this is 9%.
-  const HS = 1.09;
+  const HS = 1.09 * (P.handScale ?? 1);
 
   // --- palm: a flattened slab that swells to the knuckle line --------
   const palm = [
@@ -4643,11 +4970,11 @@ export class HumanoidFactory {
     this._propCache = new Map();
   }
 
-  _proportions(build, frame, shoulderScale) {
-    const key = `${build}|${frame}|${shoulderScale.toFixed(2)}`;
+  _proportions(build, frame, shoulderScale, ape = 0) {
+    const key = `${build}|${frame}|${shoulderScale.toFixed(2)}|${ape.toFixed(2)}`;
     let P = this._propCache.get(key);
     if (!P) {
-      P = makeProportions({ build, frame, shoulderScale });
+      P = makeProportions({ build, frame, shoulderScale, ape });
       this._propCache.set(key, P);
     }
     return P;
@@ -4669,16 +4996,27 @@ export class HumanoidFactory {
    *   from a different outfit to the torso
    * @param {string[]} held keys this character will hand back on dispose
    */
-  _bodyGeometry(P, theme, variant, FA, bottom, held) {
+  _bodyGeometry(P, theme, variant, FA, bottom, held, hero) {
     // The cache is keyed on both halves. Without the bottom in the key a
     // tunic-over-tracksuit would be served whatever tunic combination happened
     // to be built first, and every later pairing would silently be wrong.
     const b = bottom ? `|${bottom.theme}.${bottom.variant}` : '';
-    const key = `body|${theme}|${variant}${b}|${P.key}|f${FA.id}`;
+    /* `hero` joins the key for exactly the same reason, and it is what makes
+     * authored features cost nothing per character: the station's ~68 hero
+     * characters resolve to eleven role geometries at most, each welded once
+     * and then shared. Leave it out of the key and a Breaker Frame would be
+     * served whichever role happened to be built first. */
+    const h = hero ? `|h${hero}` : '';
+    const key = `body|${theme}|${variant}${b}${h}|${P.key}|f${FA.id}`;
     return this._shared(key, () => {
       const parts = [];
       buildBody(P, parts, FA);
       buildOutfit(P, theme, variant, parts, bottom);
+      addHeroParts(hero, parts);
+      /* LAST, and after the authored kit. Body, garment and `.glb` are all in
+       * `parts` by here, so one pass puts the whole character on the ape body
+       * plan without a single garment height being re-authored. */
+      applyProfile(P, parts);
       const spec = this._spec(P);
       const boneIndex = new Map(spec.map((d, i) => [d.name, i]));
       return mergeParts(parts, boneIndex, spec);
@@ -4715,7 +5053,20 @@ export class HumanoidFactory {
     const variants = THEME_VARIANTS[theme];
     const variant = params.variant ?? variants[(rng() * variants.length) | 0];
     const paletteList = PALETTES[theme];
-    const pal = paletteList[params.palette ?? ((rng() * paletteList.length) | 0)];
+    /* `palette` is normally an INDEX into the theme's list. An OBJECT is
+     * allowed too, and is used by exactly one caller: the authored attackers.
+     *
+     * Every station palette carries a deliberately high-value secondary - see
+     * the value contract written above `PALETTES.station` - because a station
+     * civilian has to separate from a mid-grey container wall. An attacker has
+     * the opposite problem: `g1`-`g4` are one dark violet mass whose only
+     * bright note is a glowing eye, and a pale shoulder yoke cuts that mass in
+     * half. Adding a seventh station palette would have put a hostile-only
+     * scheme in a table every civilian draws from, so the exception is passed
+     * in by the one caller that needs it instead. */
+    const pal = (params.palette && typeof params.palette === 'object')
+      ? params.palette
+      : paletteList[params.palette ?? ((rng() * paletteList.length) | 0)];
 
     const build = params.build ?? (rng() < 0.3 ? 0 : rng() < 0.78 ? 1 : 2);
     const frame = params.frame ?? (rng() < 0.55 ? 0 : 1);
@@ -4723,7 +5074,7 @@ export class HumanoidFactory {
     const height = clamp(params.height ?? 1.58 + rng() * 0.34, 1.5, 2.0);
     const heightScale = height / BASE_HEIGHT;
 
-    const P = this._proportions(build, frame, Math.round(shoulderScale * 20) / 20);
+    const P = this._proportions(build, frame, Math.round(shoulderScale * 20) / 20, params.ape ?? 0);
     const spec = this._spec(P);
     const FA = faceArchetype(params.faceId ?? (rng() * FACE_COUNT) | 0);
     /* An independent lower body, when one is asked for.
@@ -4737,7 +5088,11 @@ export class HumanoidFactory {
     /** Every cached geometry this character takes a hold on, in acquire order.
      *  Handed straight to the Humanoid, which gives them all back on dispose. */
     const held = [];
-    const geo = this._bodyGeometry(P, theme, variant, FA, legsSpec, held);
+    /* Authored hero features, when this character is one of the eleven roles
+     * the references name and the assets actually loaded. Absent - a plain
+     * crowd civilian, a headless test, a failed download - this is null and
+     * the character is exactly what it was before Phase 6. @see HeroAssets.js */
+    const geo = this._bodyGeometry(P, theme, variant, FA, legsSpec, held, params.hero ?? null);
 
     const skinTone = params.skinTone ?? SKIN_TONES[(rng() * SKIN_TONES.length) | 0];
     const hairColor = params.hairColor ?? pickHairColor(skinTone, rng);
@@ -4842,10 +5197,21 @@ export class HumanoidFactory {
     // so without this every average-build character in a crowd shares one skull
     // and the crowd reads as one mannequin repeated. Scaling the head bone is
     // free and changes the single silhouette element a player actually looks at.
+    /* `headScale` on top of that, for the authored hero characters.
+     *
+     * An ape's head is not a human head with a muzzle stuck on it - it is a
+     * third again as large against the same shoulders, and that ratio is most
+     * of what the eye uses to tell the two apart at any distance. Scaling the
+     * BONE rather than the geometry is what makes this a one-line change: the
+     * authored cranium, brow, muzzle, ears and fangs are all skinned to the
+     * head bone, so they grow with the skull underneath them and stay seated
+     * on it. Screenshotting the first pass without this was what showed it up -
+     * the characters read as heavyweight men wearing gorilla masks. */
+    const hs = params.headScale ?? 1;
     headBone.scale.set(
-      0.96 + rng() * 0.085,
-      0.965 + rng() * 0.075,
-      0.96 + rng() * 0.08
+      (0.96 + rng() * 0.085) * hs,
+      (0.965 + rng() * 0.075) * hs,
+      (0.96 + rng() * 0.08) * hs
     );
 
 

@@ -3099,10 +3099,10 @@ export function buildConstruction(ctx) {
    * a brawler on open ground is just a shooter that cannot shoot.
    */
   const KINDS = {
-    rifle: ['Rogue Security Unit', 'A hijacked station security drone running corrupted enforcement code. It does not negotiate.', 'rifle'],
-    breaker: ['Breaker Frame', 'A riot-suppression frame with its restraint governor stripped out. It carries a shock baton, closes the distance and does not stop to talk about it.', 'baton'],
-    scout: ['Skirmish Drone', 'A light patrol drone that lost its handshake with traffic control and now treats every moving thing on the deck as an incursion. Fast, jumpy, badly armed.', 'sidearm'],
-    lance: ['Arc Lance Sentry', 'A heavy emplacement walker running an old perimeter-denial routine. Its lance takes almost a second to charge, and it has never seen a reason to hurry.', 'staff'],
+    rifle: ['Rogue Security Unit', 'The registry still files it as a security unit. What comes down the aisle is a raider in stripped enforcement plate, carrying the rifle the plate came with. It does not negotiate.', 'rifle'],
+    breaker: ['Breaker Frame', 'Named for the riot frame it tore the pauldrons off and wears. A heavyset brawler with a shock baton, no use for range, and no interest in talking about it.', 'baton'],
+    scout: ['Skirmish Drone', 'Whatever traffic control has it logged as, it is a young raider with a sidearm and a grudge, treating every moving thing on the deck as an incursion. Fast, jumpy, badly armed.', 'sidearm'],
+    lance: ['Arc Lance Sentry', 'A silverback holding a salvaged arc lance on a perimeter line nobody told him was abandoned. The lance takes almost a second to charge, and he has never seen a reason to hurry.', 'staff'],
   };
   for (const [kind, a, r, a2, r2, a3, r3] of [
     ['rifle', 1.2, 98, 1.7, 124, 0.8, 130],

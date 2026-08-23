@@ -15,6 +15,79 @@ import { DEFAULT_LORE, buildLorePersona, loreEntryForScope } from '../content/Lo
 import { allows } from '../worlds/WorldRules.js';
 import { pastBand } from '../worlds/lod/DistanceLod.js';
 
+/* ------------------------------------------------------------------ */
+/* Authored hero characters (Phase 6, decision D4)                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A station hostile's archetype, read off the weapon it was authored with.
+ *
+ * These four pairings are not invented here - they are `HOSTILE_KIND` in
+ * `StationWorld._fillSpawns` and `KINDS` in `zones/Construction.js`, which are
+ * copy-pasted from each other and both key on exactly this. Keying on the
+ * weapon rather than on a new field means the mapping cannot fall out of step
+ * with the encounter design, because the encounter design IS the weapon.
+ *
+ * The names on the right are the manifest's role keys and the reference files
+ * they were authored against; see `public/assets/npc/manifest.json`.
+ */
+const HERO_BY_WEAPON = Object.freeze({
+  rifle: 'rifle',    // Rogue Security Unit - g1
+  baton: 'breaker',  // Breaker Frame       - g3
+  sidearm: 'scout',  // Skirmish Drone      - g2
+  staff: 'lance',    // Arc Lance Sentry    - g4
+});
+
+/** The seven fixed roles the references cover. @see NPCRoles.ROLE */
+const HERO_ROLES = new Set([
+  ROLE.VENDOR, ROLE.GUARD, ROLE.LOITERER, ROLE.SPECTATOR,
+  ROLE.WANDERER, ROLE.LOREKEEPER, ROLE.QUEST_MANAGER,
+]);
+
+/** Which of the eleven are attackers, for the colour split in `_heroLook`. */
+const HERO_RAIDERS = new Set(Object.values(HERO_BY_WEAPON));
+
+/**
+ * Fur tones.
+ *
+ * Both sets are near-black because the references are, and because the SKIN
+ * slot draws the cranium, muzzle, ears and knuckles together - so this one
+ * number is the whole colour of the animal. The three-way spread stops a
+ * plaza of crew reading as one model repeated, which is the failure mode the
+ * procedural crowd already spends a lot of effort avoiding.
+ *
+ * The raiders' violet does NOT come from here. It comes from the GLOW-slot eye
+ * caps and the violet rim light in `_heroLook`, because a violet ALBEDO under
+ * the station's amber key reads muddy brown, whereas a violet rim separates
+ * the silhouette from the deck exactly the way `THEME_RIM` was written to.
+ */
+const RAIDER_TONES = Object.freeze([0x241d28, 0x1d1a22, 0x2b2130]);
+const CREW_TONES = Object.freeze([0x2a2622, 0x1f1c19, 0x332d27]);
+
+/**
+ * The attackers' own palette, passed as an object rather than an index.
+ *
+ * `PALETTES.station` is built on a documented VALUE contract - a pale
+ * ~30%-coverage secondary worn as collar and shoulder yoke - so that a
+ * civilian separates from a mid-grey container wall. An attacker needs the
+ * opposite. `g1`-`g4` are a single dark violet mass with one bright note in
+ * it, and the first screenshot of these with a station palette showed exactly
+ * why: pale bands across the shins and shoulders chopped the silhouette into
+ * three pieces and the character stopped reading as one animal.
+ *
+ * Everything here is under 0.06 linear except the glow. The violet is carried
+ * by the rim light and the eye caps, not by the albedo - a violet albedo under
+ * the station's amber key goes muddy brown, which is a lesson `THEME_RIM`
+ * already records for the crowd.
+ */
+const RAIDER_PALETTE = Object.freeze({
+  primary: 0x211c26,
+  secondary: 0x2a2431,
+  leather: 0x342b3a,
+  metal: 0x6b6472,
+  glow: 0xa855f7,
+});
+
 /**
  * Owns every NPC in the active world: spawning, budget, level of detail,
  * hit queries, chat proximity and hostile respawn.
@@ -1330,14 +1403,113 @@ export class NPCManager {
    *          groupFocus?:THREE.Vector3, posture?:string, signLines?:string[],
    *          vendorCategories?:string[], vendorTitle?:string}} o
    */
+  /**
+   * Which authored hero role, if any, this spawn is.
+   *
+   * ── Derived from what the spawn already says, on purpose ─────────────────
+   * The obvious implementation is a `heroKind` field on every station spawn
+   * descriptor. That would mean editing two duplicated hostile tables in two
+   * files plus every named friendly in four zone files, and it would put an art
+   * decision in the encounter design - so the next person who adds a Breaker
+   * Frame to a new alley would get a human unless they remembered a field.
+   *
+   * Instead it is read off the two things the spawn ALREADY carries and cannot
+   * omit: a hostile's fixed `weaponId`, which is what the four archetypes are
+   * distinguished by in the first place (see `HOSTILE_KIND` in StationWorld),
+   * and a friendly's `role`. A new hostile authored with a baton is a Breaker
+   * Frame and looks like one without anyone doing anything.
+   *
+   * STATION ONLY. Phase 6 is the station's characters. The medieval valley's
+   * townsfolk and the citadel's traders are Phase 9's problem, and giving them
+   * ape features here would be a silent, world-wide art change nobody asked
+   * for - which is exactly the shape of mistake this codebase keeps recording.
+   *
+   * @returns {string|null} a `manifest.roles` key, or null for procedural
+   */
+  _heroRole(o) {
+    if (this.worldId !== 'station') return null;
+    if (o.hostile) {
+      /* The archetype is the weapon. A hostile whose weapon was DEALT rather
+       * than authored has no stable identity to dress - `weaponFixed` is what
+       * `StationWorld` sets on the four named archetypes - so an unfixed
+       * hostile stays procedural rather than changing species on respawn. */
+      if (!o.weaponFixed) return null;
+      return HERO_BY_WEAPON[o.weaponId] ?? null;
+    }
+    const role = o.role ?? ROLE.WANDERER;
+    return HERO_ROLES.has(role) ? role : null;
+  }
+
+  /**
+   * The colour half of a hero character.
+   *
+   * Authored geometry, procedural colour: the shapes come out of the `.glb` and
+   * everything that makes an attacker read as violet-black and a crew ape as
+   * dark-furred is chosen here, through the same `create()` parameters any
+   * character has always taken. No new material, no new texture.
+   *
+   * A gorilla is nearly black all over, so `skinTone` does the work for the
+   * cranium, muzzle, ears and knuckles at once - they all draw in the SKIN
+   * slot. `hairStyle: 'bald'` is not cosmetic: the procedural hair shell is a
+   * cranium-shaped cap, and leaving it on puts a human haircut on top of an
+   * ape's crested skull.
+   */
+  _heroLook(hero, seed) {
+    const raider = HERO_RAIDERS.has(hero);
+    const tones = raider ? RAIDER_TONES : CREW_TONES;
+    return {
+      hero,
+      hairStyle: 'bald',
+      headgear: 'none',
+      skinTone: tones[seed % tones.length],
+      // Crew keep the station's civilian palette - `n2` and `n4` are pale
+      // suits, so the value contract is already right for them.
+      palette: raider ? RAIDER_PALETTE : undefined,
+      // Deep-set eyes under a heavy brow read as dark whatever colour they are;
+      // the raiders' violet comes from the GLOW-slot eye caps, not from here.
+      eyeColor: raider ? 0x2a1030 : 0x3a2416,
+      /* Heavier and broader than a person, and then the body plan on top.
+       *
+       * The first pass stopped at `build`/`frame`/`shoulderScale`, which is a
+       * wider heavier PERSON, and the screenshot of it against `g1` is the
+       * whole argument for this line: an authored ape head on a human body
+       * reads as a man in a gorilla mask, because a silhouette is what a
+       * player perceives first and a silhouette is legs, arms and shoulders.
+       * `ape` is the vertical remap in `makeProportions` - short legs, a long
+       * deep torso, arms that hang toward the knee, a neck set forward.
+       *
+       * The crew sit at 0.85 rather than 1. `n1` and `n2` are the same animal
+       * as `g1` inside a pressure suit that squares off the shoulders and pads
+       * the legs, and they photograph a little closer to human than the
+       * attackers do; the two values are also two geometry cache families,
+       * which is what these eleven already cost. */
+      build: 2,
+      frame: 0,
+      ape: raider ? 1 : 0.85,
+      shoulderScale: raider ? 1.16 : 1.08,
+      height: raider ? 1.86 : 1.72,
+      /* The head ratio is the tell. @see Humanoid `headScale`. The raiders are
+       * bigger-headed than the crew because `g1`-`g4` are: a roaring open jaw
+       * needs the mass behind it or it reads as a shout rather than a threat. */
+      /* Measured off the studio shots against `n2`: at 1.30 the crew's head
+       * came out 16.6% of standing height where the reference is 19%, and the
+       * raider's 1.42 already lands at 21%. The gap read as the crew being a
+       * slightly different animal to the attackers, which they are not. */
+      headScale: raider ? 1.42 : 1.38,
+      rim: raider ? { hex: 0xa855f7, strength: 0.55 } : undefined,
+    };
+  }
+
   _createNPC(o) {
     const seed = (this._hashSeed(this.worldId ?? '') ^ (this._seedCounter++ * 2654435761)) >>> 0;
+    const hero = this._heroRole(o);
     const humanoid = this.factory.create({
       seed,
       theme: this.theme,
       // Hostiles read as a unit: heavier builds and the armoured variant.
       variant: o.hostile ? this._hostileVariant() : undefined,
       build: o.hostile ? (seed % 3 === 0 ? 2 : 1) : undefined,
+      ...(hero ? this._heroLook(hero, seed) : null),
     });
 
     const ctx = {

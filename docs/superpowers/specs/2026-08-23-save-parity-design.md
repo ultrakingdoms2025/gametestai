@@ -272,3 +272,54 @@ players and wants the most care.
   finds it intact. A unit test proves the merge; only a playthrough proves nothing stopped
   recording. This shape has cost World 06 nine separate times: *a gate that measures something the
   game does not do is worse than no gate.*
+
+---
+
+## 10. What landed
+
+All four slices, on `save-parity`. **Not yet playthrough-verified** — see the open item below.
+
+| Slice | Commit | Content |
+|---|---|---|
+| 1 | `8556b66` | Relic identities, `Relics.merge`, milestone settling on world entry |
+| 2 | `923a0bb` | `progressLedger.ts`, two tables, `/api/game/progress`, 13 Postgres tests |
+| 3 | — | `ProgressSync.js`, the translation layer, wired after the local load |
+| 4 | — | `piloting` + `character` on the blob, `adoptRemoteIfNewer` timestamp arbitration |
+
+### The boot order is the correctness argument
+
+```
+save.load()            local first: the fuller copy on the device last used
+adoptRemoteIfNewer()   the one genuine conflict, settled on a timestamp
+syncAccountProgress()  the union, against whichever copy just won
+game:started           arms the autosave
+```
+
+`adoptRemoteIfNewer` must run **after** the load or it reads the pristine boot state's timestamp
+and concludes the server is newer every time. That ordering cannot be asserted behaviourally —
+it lives in `main.js`, which no test can construct — so it is scraped, scoped to the `enter()`
+body. Scoping matters: the first version searched the whole file, found each function's
+*declaration* rather than its call, and was green about the wrong thing.
+
+### Two things worth knowing
+
+**New Game no longer erases discovery.** The sync runs for a new game as well as a CONTINUE,
+because that is what lets a fresh install on a second device recover the account's relics and best
+times — the entire point of the phase. The consequence is that "New Game" resets this device's
+world, position and inventory but **not** account-wide discovery, because the ledger never
+subtracts. A true account reset is a separate, deliberate action and does not exist yet. This is a
+behaviour change and it should be confirmed rather than assumed.
+
+**The blob fight is settled, not abolished.** `inventory` / `mounts` / `cosmetics` still cannot
+merge — inventory goes down as well as up — so they remain last-write-wins on `state.at`. That is
+strictly better than the previous behaviour, where localStorage won unconditionally regardless of
+which device was used last, but it is still a clock, and two devices editing an inventory offline
+will lose one side's edits. Recorded honestly rather than dressed up.
+
+### Still open
+
+- **The playthrough.** Section 9's last bullet is the one gate not yet run. Everything above is
+  proved by unit tests and a real Postgres; nothing has yet earned a relic in a browser, reloaded,
+  and confirmed it came back.
+- Step 6, `site_users` / `players` consolidation, is untouched.
+- `admin/lib/db.ts:791` still adjusts `credit_balance` outside the ledger.

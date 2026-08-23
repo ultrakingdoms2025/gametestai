@@ -80,8 +80,13 @@ export const KINDS: Readonly<Record<string, { shape: 'set' } | { shape: 'value';
     trial: { shape: 'value', mode: 'min' },
     kills: { shape: 'value', mode: 'max' },
     ore: { shape: 'value', mode: 'max' },
+    // 'sighted' and 'landed' encode as 1 and 2, so GREATEST is "the furthest
+    // this player ever got with that body" and a sighting cannot un-land it.
     survey: { shape: 'value', mode: 'max' },
     mining_stat: { shape: 'value', mode: 'max' },
+    // Ladder rungs already paid - a receipt, like relic_paid, but ordered, so
+    // the higher rung subsumes the lower and GREATEST is exactly right.
+    tier: { shape: 'value', mode: 'max' },
   });
 
 export type ProgressKind = keyof typeof KINDS;

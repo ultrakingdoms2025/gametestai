@@ -56,6 +56,7 @@ import { Contracts } from './systems/Contracts.js';
 import { QuestSystem } from './systems/QuestSystem.js';
 import { AdminCheats } from './systems/AdminCheats.js';
 import { Relics } from './systems/Relics.js';
+import { syncProgress } from './systems/ProgressSync.js';
 import { Viewpoints } from './systems/Viewpoints.js';
 import { SpaceObjectives } from './systems/SpaceObjectives.js';
 import { Interiors } from './systems/Interiors.js';
@@ -562,6 +563,8 @@ const schedulePersist = (reason) => {
  * the durable one. Merchant trades are batched and flushed with the state so
  * the admin purchase history shows in-game buys/sells too. */
 let accountActive = false;
+/** The account payload from boot, kept for the post-load arbitration. */
+let accountState = null;
 let remoteTimer = null;
 let remoteInFlight = false;
 let remoteDirty = false;
@@ -578,6 +581,15 @@ function buildRemotePayload() {
       inventory: inventory?.serialize?.() ?? null,
       mounts: mounts?.serialize?.() ?? null,
       cosmetics: cosmetics?.serialize?.() ?? null,
+      /* Last-write-wins state, arbitrated by `at` above.
+       *
+       * These two are the only progress that is NOT monotone, which is why they
+       * ride in this blob instead of the merge ledger. A ship has one position
+       * and a body has one appearance; there is no union of two of them, so the
+       * newer one has to win and a timestamp is unavoidable. Everything that
+       * CAN merge does, in /api/game/progress, where no clock is consulted. */
+      piloting: piloting?.serialize?.() ?? null,
+      character: avatar?.characterConfig ?? null,
     },
   };
   if (pendingTrades.length) payload.trades = pendingTrades.splice(0, pendingTrades.length);
@@ -603,6 +615,84 @@ async function pushRemoteState() {
   } finally {
     remoteInFlight = false;
     if (remoteDirty) { remoteDirty = false; scheduleRemotePersist('retry'); }
+  }
+}
+
+/**
+ * Cross-device progress: push what this device found, adopt the merged answer.
+ *
+ * Separate from `/api/game/state` on purpose. That route keeps one opaque blob
+ * and can only hold whichever copy arrived last, which is how a phone and a PC
+ * each holding half a world's relics ends with one half deleted. `/api/game/
+ * progress` merges instead - union for sets, best-of for numbers - so neither
+ * device can lose the other's work and the order they sync in cannot matter.
+ *
+ * Called once, after the local load and before `game:started`. Failure is not
+ * retried: everything it carries is monotone, so the next boot sends the same
+ * facts and nothing is lost by missing one.
+ *
+ * NOTE, deliberate and worth knowing: this runs for a NEW GAME too, not only a
+ * CONTINUE. That is what makes a fresh install on a second device recover the
+ * account's relics and best times - the whole point of the phase. The
+ * consequence is that "New Game" resets this device's world, position and
+ * inventory but does NOT erase account-wide discovery, because the ledger never
+ * subtracts. A true reset is an account-level action and is not built yet.
+ */
+/**
+ * Settle the one genuine conflict: two copies of state that cannot merge.
+ *
+ * `hydrateAccountSession` applies the account's inventory, mounts and cosmetics
+ * at boot, and then CONTINUE runs `save.load()`, whose restore steps write the
+ * local copy straight over them. localStorage therefore won every time, silently
+ * and regardless of which device was actually used last -- so playing on a phone
+ * and coming back to a PC meant the PC's stale copy overwrote the phone's
+ * afternoon and then pushed itself up as the new truth.
+ *
+ * Neither copy is "right" here. Inventory goes down as well as up, a ship has
+ * one position, a body has one appearance: there is no union to take, so the
+ * newer one wins and a timestamp is the only honest tie-break. That is why this
+ * is a small function and the merge ledger is a large one - everything that
+ * COULD merge already did, upstream, without consulting a clock.
+ *
+ * Runs after the load, so it sees the local save's real timestamp rather than
+ * the pristine boot state's.
+ */
+function adoptRemoteIfNewer() {
+  if (!accountActive || !accountState) return;
+  const remote = accountState.game_state;
+  const remoteAt = Number(remote?.at);
+  if (!Number.isFinite(remoteAt)) return;
+
+  const localAt = Number(save.savedAt?.()) || 0;
+  if (remoteAt <= localAt) return;   // this device is the fresher one; the push carries it up
+
+  const apply = (label, value, fn) => {
+    if (!value || typeof fn !== 'function') return;
+    try { fn(value); } catch (err) {
+      console.warn(`[account] could not adopt server ${label}:`, err?.message ?? err);
+    }
+  };
+  apply('inventory', remote.inventory, (v) => inventory.deserialize(v));
+  apply('mounts', remote.mounts, (v) => mounts.deserialize(v));
+  apply('cosmetics', remote.cosmetics, (v) => cosmetics.deserialize(v));
+  apply('piloting', remote.piloting, (v) => piloting.deserialize(v));
+  apply('character', remote.character, (v) => avatar.setCharacterConfig(v));
+
+  console.info(`[account] adopted the server copy (${new Date(remoteAt).toISOString()}`
+    + `, newer than this device's ${localAt ? new Date(localAt).toISOString() : 'no save'})`);
+}
+
+async function syncAccountProgress() {
+  if (!accountActive) return;
+  const res = await syncProgress({
+    relics,
+    viewpoints,
+    mining,
+    objectives,
+    trials: { read: () => save.trialLedger(), merge: (best) => save.mergeTrials(best) },
+  });
+  if (res.ok && (res.applied || res.changed)) {
+    console.info(`[progress] merged: ${res.changed} new on the server, ${res.applied} systems updated`);
   }
 }
 
@@ -886,6 +976,7 @@ async function hydrateAccountSession() {
   const account = await accountStatePromise;
   if (!account) return;
   accountActive = true;
+  accountState = account;
 
   if (typeof account.credits === 'number') {
     economy.set(account.credits, 'account-sync');
@@ -2262,6 +2353,15 @@ function createLoadingScreen(root, hooks = {}) {
     Promise.resolve()
       .then(() => (resume ? hooks.resume?.() : null))
       .catch((err) => { console.error('[boot] could not restore the save:', err); })
+      /* AFTER the local load, and only then. The local save is the fuller copy
+       * on the device the player last used, so it goes first and the account's
+       * copy merges on top - union, never replacement. Running this before the
+       * load would let `SaveGame.load`'s REPLACE semantics undo the merge.
+       *
+       * Signed out, this is a no-op: `syncAccountProgress` checks
+       * `accountActive` and returns. */
+      .then(() => { adoptRemoteIfNewer(); return syncAccountProgress(); })
+      .catch((err) => { console.warn('[boot] progress sync skipped:', err?.message ?? err); })
       .then(() => bus.emit('game:started'));
   };
 

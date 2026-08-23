@@ -174,7 +174,7 @@ export default async function PlayerPage({
     if (!session.adminId) redirect('/login');
     const delta = Number(s(formData.get('delta')) || 0);
     const reason = s(formData.get('reason')) || 'manual_adjustment';
-    await adjustCredits(id, delta);
+    await adjustCredits(id, delta, session.username);
     await audit(session.username, 'player.adjust_credits', `player:${id}`, `delta=${delta} reason=${reason}`);
     revalidatePath('/dashboard/players');
     revalidatePath(`/dashboard/players/${id}`);

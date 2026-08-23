@@ -5,6 +5,7 @@
  */
 import { Client } from 'pg';
 import { createCipheriv, createHmac, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { ensureCreditSchema } from './creditLedger';
 
 function makeClient() {
   const connStr = process.env.POSTGRES_URL ?? '';
@@ -48,9 +49,22 @@ function sha256(input: string): string {
   return createHash('sha256').update(input.toLowerCase().trim()).digest('hex');
 }
 
+/**
+ * Throws when `HMAC_SECRET` is missing, exactly as `admin/lib/hmac.ts:5` does.
+ *
+ * This used to fall back to the literal string 'fallback', which is worse than
+ * failing in a way that is easy to miss: the audit rows it signs are
+ * well-formed and land in the same chained `audit_log` the admin app verifies.
+ * `verifyAuditChain()` would then fail at the first site-written row and stay
+ * failed for every row after it, and the reported cause would be tamper
+ * detection rather than a missing environment variable.
+ *
+ * `siteAudit` already catches and logs, so a missing secret costs an audit row
+ * and never a player's request.
+ */
 function hmacSign(data: string): string {
   const s = process.env.HMAC_SECRET;
-  if (!s) return createHmac('sha256', 'fallback').update(data).digest('hex');
+  if (!s) throw new Error('HMAC_SECRET env var is not set');
   return createHmac('sha256', s).update(data, 'utf8').digest('hex');
 }
 
@@ -134,6 +148,31 @@ export async function isHandleAvailable(handle: string, excludePlayerId?: string
   const normalized = normalizeHandle(handle);
   if (normalized.length < 3) return false;
   return !(await isHandleTaken(normalized, excludePlayerId));
+}
+
+/**
+ * Is this email already spoken for by a DIFFERENT player row?
+ *
+ * `players.email_hash` is UNIQUE, and `site_users.email` is UNIQUE, and until
+ * now only the second was checked before an email change. So a user could pick
+ * an address that no site account held but that an admin-created player row
+ * did: `updateUserEmail` committed against `site_users`, the follow-up UPDATE
+ * against `players` raised 23505, the route 500'd, and the two tables were left
+ * permanently disagreeing about that person's email - with no path back, since
+ * the next attempt collides on the site table instead.
+ *
+ * Both uniqueness rules have to be checked before either is written.
+ */
+export async function isEmailClaimedByOtherPlayer(
+  email: string,
+  exceptPlayerId?: string | null
+): Promise<boolean> {
+  const { rows } = await pgQuery<{ id: string }>(
+    `SELECT id FROM players
+      WHERE email_hash = $1 AND ($2::text IS NULL OR id <> $2) LIMIT 1`,
+    [sha256(email), exceptPlayerId ?? null]
+  );
+  return !!rows[0];
 }
 
 export async function findOrCreatePlayer(siteUserId: string, email: string): Promise<string> {
@@ -258,11 +297,38 @@ export async function syncPlayerProfile(
   } = {}
 ): Promise<string> {
   const playerId = await findOrCreatePlayer(siteUserId, email);
-  const { rows } = await pgQuery<{ handle: string | null; full_name: string | null }>(
-    'SELECT handle, full_name FROM players WHERE id = $1 LIMIT 1',
+  const { rows } = await pgQuery<{
+    handle: string | null;
+    full_name: string | null;
+    email_hash: string | null;
+  }>(
+    'SELECT handle, full_name, email_hash FROM players WHERE id = $1 LIMIT 1',
     [playerId]
   );
-  const current = rows[0] ?? { handle: null, full_name: null };
+  const current = rows[0] ?? { handle: null, full_name: null, email_hash: null };
+
+  /* The site's email is the login credential, so for a linked player it is the
+   * identity and these columns mirror it. But this used to rewrite them on
+   * EVERY call - and `auth.ts` calls it on every Google sign-in - so an admin
+   * correcting a player's email in the dashboard watched the correction vanish
+   * the next time that player signed in, with nothing anywhere saying why.
+   *
+   * Two changes. The columns are only written when they would actually change,
+   * so an ordinary sign-in stops touching them at all. And when they DO diverge
+   * on an existing row, the overwrite is recorded, because a silent revert of
+   * someone's deliberate edit is the part that wasted their afternoon. */
+  const emailHash = sha256(email);
+  const emailDiverged = !!current.email_hash && current.email_hash !== emailHash;
+  if (emailDiverged) {
+    await siteAudit(
+      'site:auth',
+      'player.email_resynced',
+      `player:${playerId}`,
+      'the account email differed from the player record; the site copy won. '
+        + 'An admin edit to a linked player\'s email does not persist - the login '
+        + 'address is the identity.'
+    );
+  }
 
   const fullName = opts.fullName?.trim() ? opts.fullName.trim().slice(0, 80) : null;
   const wantsHandle = typeof opts.handle === 'string';
@@ -270,17 +336,18 @@ export async function syncPlayerProfile(
     ? await resolveHandle(opts.handle ?? '', playerId, opts.autoAdjustHandle === true)
     : null;
 
+  const writeEmail = current.email_hash !== emailHash;
   await pgQuery(
     `UPDATE players
-     SET email_hash = $1,
-         email_enc = $2,
+     SET email_hash = COALESCE($1, email_hash),
+         email_enc  = CASE WHEN $1::text IS NULL THEN email_enc ELSE $2 END,
          handle = $3,
          full_name = $4,
          updated_at = NOW()
      WHERE id = $5`,
     [
-      sha256(email),
-      encryptMaybe(email),
+      writeEmail ? emailHash : null,
+      writeEmail ? encryptMaybe(email) : null,
       wantsHandle
         ? (opts.overwrite || !current.handle ? resolvedHandle : current.handle)
         : current.handle,
@@ -422,11 +489,48 @@ export async function recordSitePurchase(opts: {
     );
   }
 
-  // Add credits to balance
+  /* Add credits to the balance AND record why, in one statement.
+   *
+   * `credit_events` is meant to be the source of truth for every change to
+   * `players.credit_balance` -- that is what makes `balance_after` a chain
+   * worth checking. A bare UPDATE here left the ledger with a hole exactly the
+   * size of every Stripe purchase ever made, so every row after one had a
+   * `balance_after` that could not be derived from the rows before it, and the
+   * ledger's self-check became noise.
+   *
+   * One CTE rather than an UPDATE followed by an INSERT: the two must not be
+   * able to come apart, because a balance that moved without a row is the
+   * defect, and a row without the balance move is worse. `ON CONFLICT DO
+   * NOTHING` on the order key makes a retried webhook a no-op, matching the
+   * `if (existing[0]) return false` guard above rather than relying on it. */
   if (opts.creditsAmount > 0) {
+    /* The ledger's own definition, not a copy of it here: two schema
+     * declarations for one table drift, and the one that drifts is always the
+     * copy nobody remembers exists. */
+    const schemaClient = makeClient();
+    await schemaClient.connect();
+    try {
+      await ensureCreditSchema(schemaClient);
+    } finally {
+      await schemaClient.end();
+    }
+
     await pgQuery(
-      `UPDATE players SET credit_balance = credit_balance + $1, updated_at = NOW() WHERE id = $2`,
-      [opts.creditsAmount, opts.playerId]
+      `WITH moved AS (
+         UPDATE players
+            SET credit_balance = credit_balance + $1, updated_at = NOW()
+          WHERE id = $2
+          RETURNING id, credit_balance
+       )
+       INSERT INTO credit_events (player_id, event_key, kind, detail, delta, balance_after)
+       SELECT id, $3, 'purchase', $4, $1, credit_balance FROM moved
+       ON CONFLICT (player_id, event_key) DO NOTHING`,
+      [
+        opts.creditsAmount,
+        opts.playerId,
+        `stripe:${opts.orderId}`,
+        `stripe ${opts.type} ${opts.amountCents}c`,
+      ]
     );
   }
 

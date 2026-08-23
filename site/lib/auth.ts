@@ -4,6 +4,8 @@ import Credentials from 'next-auth/providers/credentials';
 import { getUserByEmail, getUserByGoogleId, createUser, getUserById, linkGoogleAccount, verifyPassword } from '@/lib/db';
 import { sendWelcomeEmail } from '@/lib/email';
 import { getPlayerStatus, syncPlayerProfile } from '@/lib/playerDb';
+import { verifyTotp } from '@/lib/totp';
+import { readTotpSecret } from '@/lib/db';
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   secret: process.env.NEXTAUTH_SECRET ?? process.env.APP_SECRET ?? 'dev-secret-change-me',
@@ -21,10 +23,12 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       credentials: {
         email: { label: 'Email', type: 'email' },
         password: { label: 'Password', type: 'password' },
+        code: { label: 'Authenticator code', type: 'text' },
       },
       async authorize(credentials) {
         const email = typeof credentials?.email === 'string' ? credentials.email : '';
         const password = typeof credentials?.password === 'string' ? credentials.password : '';
+        const code = typeof credentials?.code === 'string' ? credentials.code : '';
         if (!email || !password) return null;
 
         const user = await getUserByEmail(email);
@@ -33,6 +37,22 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
         const ok = await verifyPassword(user, password);
         if (!ok) return null;
+
+        /* The second factor, which this function did not ask for until now.
+         *
+         * `totp_enabled` was set by the setup flow, the account page rendered
+         * "2FA is enabled on your account", and sign-in never read either
+         * column - so the control was decorative. Anyone who turned it on was
+         * told they had a second factor and had exactly one, their password.
+         *
+         * Deliberately AFTER the password check, so a wrong password and a
+         * wrong code are indistinguishable from outside; asking for a code only
+         * once the password is right would tell an attacker when they had
+         * guessed it. */
+        if (user.totp_enabled) {
+          const secret = readTotpSecret(user);
+          if (!secret || !verifyTotp(secret, code)) return null;
+        }
 
         return { id: user.id, email: user.email, name: user.email.split('@')[0] };
       },

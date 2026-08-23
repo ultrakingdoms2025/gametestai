@@ -35,6 +35,7 @@ function LoginForm() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
   const [error, setError] = useState(errorMessage);
   const [pending, startTransition] = useTransition();
 
@@ -45,10 +46,14 @@ function LoginForm() {
       const res = await signIn('credentials', {
         email,
         password,
+        code,
         redirect: false,
       });
       if (res?.error) {
-        setError('Invalid email or password.');
+        /* One message for all three failures - wrong email, wrong password,
+         * wrong code - because distinguishing them tells an attacker which part
+         * they have already got right. */
+        setError('Invalid email, password or authenticator code.');
       } else {
         router.push(callbackUrl);
       }
@@ -103,6 +108,27 @@ function LoginForm() {
           required
           autoComplete="current-password"
           placeholder="Enter your password"
+        />
+
+        {/* Always shown, and optional.
+          *
+          * The alternative is to ask for the password first and reveal this
+          * only when the account turns out to have 2FA - which tells anyone
+          * trying passwords the moment they get one right. An always-present
+          * optional field costs a signed-out visitor one ignorable input and
+          * gives an attacker nothing. */}
+        <label className="auth-label" htmlFor="code">
+          Authenticator code <span className="auth-hint">(only if you have 2FA enabled)</span>
+        </label>
+        <input
+          id="code"
+          type="text"
+          className="auth-input"
+          value={code}
+          onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          placeholder="123456"
         />
 
         <div className="auth-row">

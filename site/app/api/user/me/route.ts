@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { getUserByEmail, getUserById, updateUserEmail } from '@/lib/db';
-import { findOrCreatePlayer, getPlayerStatus, isHandleAvailable, normalizeHandle, syncPlayerProfile } from '@/lib/playerDb';
+import { findOrCreatePlayer, getPlayerStatus, isEmailClaimedByOtherPlayer, isHandleAvailable, normalizeHandle, syncPlayerProfile } from '@/lib/playerDb';
 
 async function buildResponse(userId: string) {
   const user = await getUserById(userId);
@@ -66,6 +66,20 @@ export async function PATCH(req: NextRequest) {
   const currentProfile = await getPlayerStatus(session.user.id);
   if (!(await isHandleAvailable(handle, currentProfile?.playerId)) && currentProfile?.handle?.toLowerCase() !== handle.toLowerCase()) {
     return NextResponse.json({ error: 'That handle is already in use.' }, { status: 409 });
+  }
+
+  /* Both uniqueness rules, before either table is written.
+   *
+   * `site_users.email` was checked above; `players.email_hash` is ALSO unique
+   * and was not. Committing the site row first and discovering the collision
+   * afterwards left the two tables permanently disagreeing, with no way back:
+   * the next attempt collides on the site table instead. */
+  if (email !== current.email
+      && await isEmailClaimedByOtherPlayer(email, currentProfile?.playerId)) {
+    return NextResponse.json(
+      { error: 'An account with that email already exists.' },
+      { status: 409 }
+    );
   }
 
   if (email !== current.email) {

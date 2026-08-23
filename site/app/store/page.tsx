@@ -1,7 +1,6 @@
 import Link from 'next/link';
 import CreditPicker from '@/components/CreditPicker';
 import { getCurrentAccessState } from '@/lib/access';
-import { readPass } from '@/lib/entitlement';
 import { stripeConfigured } from '@/lib/stripe';
 
 export const dynamic = 'force-dynamic';
@@ -10,7 +9,6 @@ export const metadata = { title: 'Buy credits — AETHER NEXUS' };
 
 export default async function Store() {
   const { hasAccess } = await getCurrentAccessState();
-  const pass = await readPass();
 
   return (
     <main>
@@ -40,16 +38,14 @@ export default async function Store() {
             </div>
           ) : null}
 
-          {pass && pass.credits > 0 ? (
-            <div className="banner" role="status" style={{ borderColor: 'rgba(82,233,255,0.4)', background: 'rgba(10,40,55,0.4)', color: '#cfe6f2' }}>
-              <b>Waiting</b>
-              <span>
-                You have <strong>{pass.credits.toLocaleString('en-US')}</strong> credits
-                bought and not yet collected. They are added to your balance the next time
-                you enter the game.
-              </span>
-            </div>
-          ) : null}
+          {/* A "Waiting — you have N credits bought and not yet collected, they
+              are added the next time you enter the game" banner used to sit
+              here, driven by the pass cookie. It was false in both halves: the
+              purchase is credited to the account at checkout by
+              `recordSitePurchase`, and the cookie copy was never collected by
+              anything, because `claimCredits` had no callers. So it showed
+              permanently to anyone who had ever paid, telling them credits they
+              already held were still pending. */}
 
           <CreditPicker needsEntry={!hasAccess} />
         </div>

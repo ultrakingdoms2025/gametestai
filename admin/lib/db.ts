@@ -1,9 +1,30 @@
 ﻿/**
  * Database layer — Vercel Postgres via @vercel/postgres.
  *
- * All sensitive columns (email, Stripe IDs) are encrypted at rest with
- * AES-256-GCM (see lib/encrypt.ts). Email is also stored as a SHA-256 hash
- * so lookups are possible without decrypting first.
+ * Sensitive columns ON THIS TABLE (email, Stripe IDs) are encrypted at rest
+ * with AES-256-GCM (see lib/encrypt.ts). Email is also stored as a SHA-256
+ * hash so lookups are possible without decrypting first.
+ *
+ * ── Read the scope of that sentence carefully ─────────────────────────────
+ *
+ * It used to read "all sensitive columns", and that was false about the
+ * database even while being true about these columns. The site owns
+ * `site_users` in this same Postgres, and it holds `email` in CLEARTEXT --
+ * the same address, in the next table along, with a UNIQUE index on it
+ * because it is the login identity and has to be looked up by value.
+ *
+ * So `players.email_enc` buys very little today. Anyone who can read
+ * `credit_events` can read `site_users.email`, and every player has a row in
+ * both. The encryption is not useless -- it protects an admin-created player
+ * who has never signed up on the site -- but it does not do what the original
+ * sentence promised, and someone reading that sentence while assessing risk
+ * would have reached the wrong conclusion.
+ *
+ * `site_users.totp_secret` WAS also cleartext and is now sealed
+ * (`site/lib/secretBox.ts`), because a second factor is worth more than an
+ * address. The email is the item still outstanding, and it is a bigger job:
+ * encrypting a column that is looked up by value means adding a hash column
+ * and migrating the auth path.
  *
  * The audit_log table uses an HMAC chain: each row's entry_hash is a
  * HMAC over (seq | actor | action | resource | prev_entry_hash). Any
@@ -246,6 +267,36 @@ export async function initSchema() {
       ip_hash     TEXT,              -- sha256(ip)
       created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `;
+
+  /* The credit ledger.
+   *
+   * CANONICAL DEFINITION IS `site/lib/creditLedger.ts` (`ensureCreditSchema`).
+   * This declaration must stay identical to it, and exists only so that an
+   * admin support grant cannot fail on a database where the site has not yet
+   * served a request -- `adjustCredits` writes a ledger row in the same
+   * statement as the balance move, and would otherwise error on a missing
+   * table. Both use CREATE TABLE IF NOT EXISTS, so whichever app runs first
+   * wins and the other is a no-op.
+   *
+   * `player_id` is TEXT because `players.id` is TEXT. Postgres refuses a
+   * UUID -> TEXT foreign key outright; the site's copy records that this was
+   * measured rather than assumed. */
+  await sql`
+    CREATE TABLE IF NOT EXISTS credit_events (
+      id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      player_id     TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      event_key     TEXT NOT NULL,
+      kind          TEXT NOT NULL,
+      detail        TEXT,
+      delta         INTEGER NOT NULL,
+      balance_after INTEGER NOT NULL,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS credit_events_player_key_idx
+      ON credit_events (player_id, event_key)
   `;
 
   await sql`
@@ -785,11 +836,42 @@ export async function resetPlayerQuestEngagement(engagementId: string) {
   `;
 }
 
-export async function adjustCredits(playerId: string, delta: number) {
+/**
+ * A support grant or correction, applied to a player's balance.
+ *
+ * Writes the ledger row in the SAME statement as the balance move.
+ * `credit_events` is the site's source of truth for every change to
+ * `credit_balance` -- that is what makes its `balance_after` column a chain
+ * worth checking -- and this function used to move the balance without one. A
+ * player's chain was therefore wrong from their first support grant onward, and
+ * the ledger's self-check reported that as corruption rather than as this.
+ *
+ * One CTE, not an UPDATE then an INSERT: a balance that moved without a row is
+ * the defect being fixed, and a row without the move would be worse than either.
+ *
+ * The event key is random rather than derived, because an operator adjusting a
+ * balance twice by the same amount means it twice; there is no order id here to
+ * deduplicate against, and inventing a deterministic one would silently swallow
+ * the second adjustment.
+ *
+ * `kind` is 'grant'. The site's pricing table does not know that word and does
+ * not need to -- it prices what players report, and this did not come from a
+ * player. The column is free text; what matters is that the row exists and says
+ * where the credits came from.
+ */
+export async function adjustCredits(playerId: string, delta: number, actor?: string) {
   await sql`
-    UPDATE players
-    SET    credit_balance = credit_balance + ${delta}, updated_at = NOW()
-    WHERE  id = ${playerId}
+    WITH moved AS (
+      UPDATE players
+      SET    credit_balance = credit_balance + ${delta}, updated_at = NOW()
+      WHERE  id = ${playerId}
+      RETURNING id, credit_balance
+    )
+    INSERT INTO credit_events (player_id, event_key, kind, detail, delta, balance_after)
+    SELECT id, ${`grant:${randomUUID()}`}, 'grant', ${`admin adjustment by ${actor ?? 'admin'}`},
+           ${delta}, credit_balance
+      FROM moved
+    ON CONFLICT (player_id, event_key) DO NOTHING
   `;
 }
 

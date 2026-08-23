@@ -160,15 +160,19 @@ export async function writePass(pass: Pass): Promise<void> {
 export type GrantResult = { pass: Pass; applied: boolean };
 
 /**
- * Grant access and add credits, once per order.
+ * Grant browser-scoped access, once per order.
  *
- * `orderId` makes this idempotent: settling the same order twice is a no-op
- * rather than a second helping of credits. Callers that genuinely have no order
- * — there are none right now — can omit it, and then it is the caller's problem.
+ * Access only. Credits are the account's, granted by `recordSitePurchase` at
+ * checkout and held in `players.credit_balance`; this cookie used to add its
+ * own copy alongside, which nothing ever collected. See the `credits` line
+ * below and the note where `claimCredits` used to be.
+ *
+ * `orderId` still makes this idempotent, because settling the same order twice
+ * must not re-grant access either. Callers that genuinely have no order — there
+ * are none right now — can omit it, and then it is the caller's problem.
  */
 export async function grant(opts: {
   paid?: boolean;
-  addCredits?: number;
   orderId?: string;
 }): Promise<GrantResult> {
   const current = await readPass();
@@ -186,7 +190,18 @@ export async function grant(opts: {
   const next: Pass = {
     v: VERSION,
     paid: opts.paid ?? current?.paid ?? false,
-    credits: (current?.credits ?? 0) + Math.max(0, Math.floor(opts.addCredits ?? 0)),
+    /* NOT `+ addCredits`. This cookie stopped being an accounting record when
+     * the credit ledger landed: `recordSitePurchase` credits
+     * `players.credit_balance` at purchase time, idempotently per order, and
+     * that balance is the only one there is. Adding here as well produced a
+     * second, browser-held credit number - precisely the thing Phase 2 removed
+     * - which nothing ever drained, because `claimCredits` had no callers.
+     *
+     * Existing cookies keep whatever number they were carrying; it is ignored,
+     * and the purchases it represents are already in the server balance.
+     * `paid` still lives here, because access entitlement genuinely is a
+     * browser-scoped thing. */
+    credits: current?.credits ?? 0,
     iat: Math.floor(Date.now() / 1000),
     seen: seen.slice(-SEEN_MAX),
   };
@@ -198,20 +213,18 @@ function emptyPass(): Pass {
   return { v: VERSION, paid: false, credits: 0, iat: Math.floor(Date.now() / 1000), seen: [] };
 }
 
-/**
- * Hand the purchased credits to the game and zero the balance held here.
+/* `claimCredits` was here: it zeroed the cookie's credit field and returned the
+ * amount, for a caller that would hand it to the game.
  *
- * The site is a shop, not a save file: once the game has taken delivery the
- * balance belongs to the save, and leaving a copy here would let the same
- * purchase be claimed twice by reloading.
- */
-export async function claimCredits(): Promise<number> {
-  const current = await readPass();
-  if (!current || current.credits <= 0) return 0;
-  const taken = current.credits;
-  await writePass({ ...current, credits: 0, iat: Math.floor(Date.now() / 1000) });
-  return taken;
-}
+ * It never had one. Not a single call site, in any app, at any point - so every
+ * credit ever written to that field is still sitting in it, and the store page
+ * told anyone who had paid that their credits were "not yet collected" and
+ * would arrive "the next time you enter the game". Both halves were false: the
+ * purchase had already been added to `players.credit_balance` by
+ * `recordSitePurchase`, and nothing was ever going to collect the cookie copy.
+ *
+ * Deleted rather than wired up, because wiring it up would recreate the hole
+ * Phase 2 closed - a browser handing the server a credit figure. */
 
 /** Has this order already been settled on this browser? */
 export async function alreadySettled(orderId: string): Promise<boolean> {

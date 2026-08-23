@@ -236,6 +236,29 @@ export class NPCAnimator {
     this.restUpperArm = { R: dir('upperArmR', new THREE.Vector3()), L: dir('upperArmL', new THREE.Vector3()) };
     this.restForeArm = { R: dir('foreArmR', new THREE.Vector3()), L: dir('foreArmL', new THREE.Vector3()) };
 
+    /* ── Landmarks come off the BONE TABLE, not off the archetype ──────────
+     *
+     * `makeProportions` describes a canonical 1.78 m person; `buildSkeletonSpec`
+     * is what a character is actually built and skinned to, and for the ape
+     * body plan the two are deliberately different heights - the hips sit 24 cm
+     * lower on a rig whose crown is only 6 cm lower.
+     *
+     * Every one of these was `this.P.<field>` and every one of them is still
+     * exactly equal to it for a person - pinned to the bit by "reading
+     * landmarks off the rig gives a person exactly what the archetype did" in
+     * npc-ape-proportions.test.mjs. Reading them from the rig is simply the
+     * honest source: the solver drives bones, so it should measure bones. */
+    const at = (name) => spec.find((s) => s.name === name).pos;
+    this.P = {
+      ...this.P,
+      pelvisY: at('pelvis')[1],
+      hipY: at('thighR')[1],
+      chestY: at('spine03')[1],
+      headY: at('head')[1],
+      ankleY: at('footR')[1],
+      legSideX: at('thighR')[0],
+    };
+
     // --- animation state -------------------------------------------
     this.phase = rnd();
     this.speed = 0;

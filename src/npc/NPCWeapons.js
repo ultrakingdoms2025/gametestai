@@ -409,6 +409,30 @@ function staffGeo(head) {
 }
 
 /**
+ * Where each model sits in the fist, and where its business end is.
+ *
+ * Mount transforms are per model: a pistol sits in the fist, a bow hangs from
+ * it side-on, a staff is gripped a third of the way up the shaft.
+ *
+ * ── Why this is module-level and exported ─────────────────────────────────
+ * These are offsets in the HAND BONE's own frame, which makes them the
+ * contract between a weapon and the arm that holds it: the right hand closes
+ * on `pos`, and the left hand supports the barrel somewhere along `pos` ->
+ * `muzzle`. Phase 6's ape body plan moves the humerus and the forearm, so that
+ * contract needed a test, and a test cannot check a table it cannot see.
+ * Hidden inside `buildWeaponModel` it was only reachable through a canvas the
+ * test runner has no way to bake.
+ *
+ * @type {Readonly<Record<string, {pos:number[], rot:number[], muzzle:number[]}>>}
+ */
+export const WEAPON_MOUNTS = Object.freeze({
+  pistol: { pos: [0.01, -0.04, -0.03], rot: [-1.35, 0.06, 0], muzzle: [0, 0.012, -0.19] },
+  rifle: { pos: [0.01, -0.05, -0.05], rot: [-1.35, 0.06, 0], muzzle: [0, 0.006, -0.71] },
+  bow: { pos: [0.02, -0.05, -0.06], rot: [-1.5, 0.0, 1.45], muzzle: [0, 0.02, -0.34] },
+  staff: { pos: [0.02, -0.06, -0.04], rot: [-1.42, 0.05, 0.1], muzzle: [0, 0.02, -1.12] },
+});
+
+/**
  * Build (or fetch from the shared cache) the meshes for one weapon.
  *
  * Geometry is cached on `assets.geoCache` and materials come from the shared
@@ -468,15 +492,7 @@ export function buildWeaponModel(weaponId, assets, theme) {
       break;
   }
 
-  // Mount transforms are per model: a pistol sits in the fist, a bow hangs from
-  // it side-on, a staff is gripped a third of the way up the shaft.
-  const MOUNTS = {
-    pistol: { pos: [0.01, -0.04, -0.03], rot: [-1.35, 0.06, 0], muzzle: [0, 0.012, -0.19] },
-    rifle: { pos: [0.01, -0.05, -0.05], rot: [-1.35, 0.06, 0], muzzle: [0, 0.006, -0.71] },
-    bow: { pos: [0.02, -0.05, -0.06], rot: [-1.5, 0.0, 1.45], muzzle: [0, 0.02, -0.34] },
-    staff: { pos: [0.02, -0.06, -0.04], rot: [-1.42, 0.05, 0.1], muzzle: [0, 0.02, -1.12] },
-  };
-  const mount = MOUNTS[def.model] ?? MOUNTS.rifle;
+  const mount = WEAPON_MOUNTS[def.model] ?? WEAPON_MOUNTS.rifle;
   group.position.set(mount.pos[0], mount.pos[1], mount.pos[2]);
   group.rotation.set(mount.rot[0], mount.rot[1], mount.rot[2]);
   return { group, muzzle: mount.muzzle, mount, glow };

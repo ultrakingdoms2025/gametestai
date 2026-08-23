@@ -1468,18 +1468,34 @@ export class NPCManager {
       // Deep-set eyes under a heavy brow read as dark whatever colour they are;
       // the raiders' violet comes from the GLOW-slot eye caps, not from here.
       eyeColor: raider ? 0x2a1030 : 0x3a2416,
-      /* Heavier and broader than a person. An ape's shoulder line is the first
-       * thing a player reads at distance, and the references are all shoulders.
-       * These stay inside the ranges `makeProportions` already accepts, so no
-       * new body archetype and no new cached geometry family. */
+      /* Heavier and broader than a person, and then the body plan on top.
+       *
+       * The first pass stopped at `build`/`frame`/`shoulderScale`, which is a
+       * wider heavier PERSON, and the screenshot of it against `g1` is the
+       * whole argument for this line: an authored ape head on a human body
+       * reads as a man in a gorilla mask, because a silhouette is what a
+       * player perceives first and a silhouette is legs, arms and shoulders.
+       * `ape` is the vertical remap in `makeProportions` - short legs, a long
+       * deep torso, arms that hang toward the knee, a neck set forward.
+       *
+       * The crew sit at 0.85 rather than 1. `n1` and `n2` are the same animal
+       * as `g1` inside a pressure suit that squares off the shoulders and pads
+       * the legs, and they photograph a little closer to human than the
+       * attackers do; the two values are also two geometry cache families,
+       * which is what these eleven already cost. */
       build: 2,
       frame: 0,
+      ape: raider ? 1 : 0.85,
       shoulderScale: raider ? 1.16 : 1.08,
       height: raider ? 1.86 : 1.72,
       /* The head ratio is the tell. @see Humanoid `headScale`. The raiders are
        * bigger-headed than the crew because `g1`-`g4` are: a roaring open jaw
        * needs the mass behind it or it reads as a shout rather than a threat. */
-      headScale: raider ? 1.42 : 1.30,
+      /* Measured off the studio shots against `n2`: at 1.30 the crew's head
+       * came out 16.6% of standing height where the reference is 19%, and the
+       * raider's 1.42 already lands at 21%. The gap read as the crew being a
+       * slightly different animal to the attackers, which they are not. */
+      headScale: raider ? 1.42 : 1.38,
       rim: raider ? { hex: 0xa855f7, strength: 0.55 } : undefined,
     };
   }

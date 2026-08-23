@@ -10181,27 +10181,39 @@ export class StationWorld extends World {
      * rifles, container alleys and half-built decks get breakers, because a
      * brawler is only interesting where you cannot simply walk backwards.
      *
+     * ── Why the personas talk about apes and the NAMES do not ──────────────
+     * The four names are kill-step targets in 78 quests and eight test files,
+     * so they are fixed. They are also, read as what they are, a REGISTRY -
+     * the designations a station security system files a contact under. The
+     * personas used to agree with the registry and describe drones, which
+     * stopped being true the moment Phase 6 put an ape in the plate: a player
+     * who has just been charged by a silverback and is then told it is an
+     * emplacement walker has been told something the screen contradicts.
+     * The lines below describe the animal and let the name stay the label the
+     * station put on it. Every mechanical fact in them - the weapon, the
+     * lance's telegraph, the scout's range - still matches the table.
+     *
      * @type {Record<string, {name:string, persona:string, weaponId:string}>}
      */
     const HOSTILE_KIND = {
       rifle: {
         name: 'Rogue Security Unit',
-        persona: 'A hijacked station security drone running corrupted enforcement code. It does not negotiate.',
+        persona: 'The registry still files it as a security unit. What comes down the aisle is a raider in stripped enforcement plate, carrying the rifle the plate came with. It does not negotiate.',
         weaponId: 'rifle',
       },
       breaker: {
         name: 'Breaker Frame',
-        persona: 'A riot-suppression frame with its restraint governor stripped out. It carries a shock baton, closes the distance and does not stop to talk about it.',
+        persona: 'Named for the riot frame it tore the pauldrons off and wears. A heavyset brawler with a shock baton, no use for range, and no interest in talking about it.',
         weaponId: 'baton',
       },
       scout: {
         name: 'Skirmish Drone',
-        persona: 'A light patrol drone that lost its handshake with traffic control and now treats every moving thing on the deck as an incursion. Fast, jumpy, badly armed.',
+        persona: 'Whatever traffic control has it logged as, it is a young raider with a sidearm and a grudge, treating every moving thing on the deck as an incursion. Fast, jumpy, badly armed.',
         weaponId: 'sidearm',
       },
       lance: {
         name: 'Arc Lance Sentry',
-        persona: 'A heavy emplacement walker running an old perimeter-denial routine. Its lance takes almost a second to charge, and it has never seen a reason to hurry.',
+        persona: 'A silverback holding a salvaged arc lance on a perimeter line nobody told him was abandoned. The lance takes almost a second to charge, and he has never seen a reason to hurry.',
         weaponId: 'staff',
       },
     };

@@ -537,6 +537,15 @@ export async function purchaseMarketplaceItem(
       await db.query('ROLLBACK');
       return { applied: false, reason: 'inactive', balance: await balanceOf(db, playerId), cost: 0, stock, item };
     }
+    // `credits` is a VIRTUAL item id: Inventory._addCredits turns it straight
+    // into balance (Inventory.js:437). The client derives its grant id from
+    // `source_key`, so an admin-authored row keyed 'credits' would be a machine
+    // for turning cost_buy into an arbitrary payout -- and if the grant exceeded
+    // the price, an unbounded one. Nothing legitimate sells credits for credits.
+    if (item.source_key === 'credits') {
+      await db.query('ROLLBACK');
+      return { applied: false, reason: 'invalid', balance: await balanceOf(db, playerId), cost: 0, stock, item };
+    }
     if (!Number.isInteger(cost) || cost <= 0) {
       // A zero or negative price is a catalogue authoring error, not a gift: it
       // would hand out limited stock for nothing while skipping the balance

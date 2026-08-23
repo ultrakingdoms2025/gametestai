@@ -22,7 +22,21 @@ export async function GET() {
 
 /**
  * POST → persist the live game state.
- * Body: { credits: number, state?: object, trades?: Array<{kind, itemName, credits, qty}> }
+ * Body: { state?: object, trades?: Array<{kind, itemName, credits, qty}> }
+ *
+ * ── The hole this route used to be ────────────────────────────────────────
+ *
+ * It took `credits` from the body and wrote it to `players.credit_balance` with
+ * only a non-negative check, every ~1.5 s and on `pagehide`. A player's balance
+ * was whatever their browser last said it was. That is closed: the balance moves
+ * only through `credit_events`, via POST /api/game/credits, which prices what it
+ * can and bounds what it cannot.
+ *
+ * A `credits` field in the body is now IGNORED rather than rejected. That is
+ * deliberate: a browser holding a cached copy of the old bundle will keep
+ * sending one for as long as its tab is open, and answering 400 would stop that
+ * player's INVENTORY saving too — punishing them for our deploy timing. Ignoring
+ * it costs nothing, because the field no longer reaches a write.
  */
 export async function POST(req: Request) {
   const session = await auth();
@@ -31,7 +45,6 @@ export async function POST(req: Request) {
   }
 
   let body: {
-    credits?: unknown;
     state?: unknown;
     trades?: Array<{ kind?: unknown; itemName?: unknown; credits?: unknown; qty?: unknown }>;
   };
@@ -41,16 +54,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
   }
 
-  const credits = Number(body.credits);
-  if (!Number.isFinite(credits) || credits < 0) {
-    return NextResponse.json({ error: 'credits must be a non-negative number.' }, { status: 400 });
-  }
-
   // Make sure the player row exists before writing to it.
   const user = await getUserById(session.user.id);
   if (user) await findOrCreatePlayer(session.user.id, user.email);
 
-  const saved = await saveGameState(session.user.id, credits, body.state ?? null);
+  const saved = await saveGameState(session.user.id, body.state ?? null);
   if (!saved) {
     return NextResponse.json({ error: 'Player profile not found.' }, { status: 404 });
   }

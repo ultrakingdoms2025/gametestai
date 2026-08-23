@@ -1,5 +1,11 @@
 import type { Client, PoolClient } from 'pg';
-import { priceEvent, capFor, type CreditEvent, type CreditEventKind } from './creditPricing';
+import {
+  priceEvent,
+  capFor,
+  resolveReportedEvent,
+  type CreditEvent,
+  type CreditEventKind,
+} from './creditPricing';
 
 /**
  * The credit ledger: the only thing allowed to move `players.credit_balance`.
@@ -68,10 +74,30 @@ export interface SpendRequest {
   cost: number;
   detail?: string;
   eventKey: string;
+  /**
+   * What the debit was. Defaults to 'purchase' (a marketplace sale); reported
+   * in-game spending arrives as 'spend' so the two are distinguishable in the
+   * ledger without reading the detail string.
+   */
+  kind?: 'purchase' | 'spend';
 }
 
 /** Kinds whose amount the caller supplies, because it comes from the database. */
-const CALLER_PRICED = new Set<string>(['loot', 'purchase', 'quest', 'migration']);
+const CALLER_PRICED = new Set<string>([
+  'loot',
+  'purchase',
+  'quest',
+  'migration',
+  // Declared by the client and bounded rather than priced -- see
+  // DECLARED_KINDS and PER_EVENT_MAX in creditPricing.ts.
+  'ore',
+  'contract',
+  'bounty',
+  'sell',
+  'race',
+  'minigame',
+  'objective',
+]);
 
 export async function ensureCreditSchema(db: Db): Promise<void> {
   await db.query(`
@@ -267,7 +293,7 @@ export async function debitInTransaction(
   playerId: string,
   request: SpendRequest
 ): Promise<LedgerResult> {
-  const { cost, detail = null, eventKey } = request;
+  const { cost, detail = null, eventKey, kind = 'purchase' } = request;
 
   const balance = await readBalanceLocked(db, playerId);
   if (balance === null) return { applied: false, delta: 0, balance: 0, reason: 'invalid' };
@@ -280,7 +306,7 @@ export async function debitInTransaction(
   }
 
   const next = balance - cost;
-  const id = await insertEvent(db, playerId, eventKey, 'purchase', detail, -cost, next);
+  const id = await insertEvent(db, playerId, eventKey, kind, detail, -cost, next);
   if (!id) return { applied: false, delta: 0, balance, reason: 'duplicate' };
 
   await db.query('UPDATE players SET credit_balance = $1, updated_at = NOW() WHERE id = $2', [
@@ -315,4 +341,110 @@ export async function spendCredits(
     await db.query('ROLLBACK').catch(() => {});
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Reported gameplay events, and the opening balance
+// ---------------------------------------------------------------------------
+
+export interface ReportedEvent {
+  /** Idempotency key, minted by the client and stable across retries. */
+  key: string;
+  /** The game's own `credits:changed` reason tag. */
+  reason: string;
+  /** Signed: positive is an earn, negative is a spend. */
+  delta: number;
+}
+
+export type ReportOutcome = LedgerReason | 'unknown_source' | 'refused' | 'too_large';
+
+export interface ReportResult {
+  key: string;
+  applied: boolean;
+  delta: number;
+  balance: number;
+  reason: ReportOutcome;
+}
+
+/**
+ * Apply one reported change.
+ *
+ * The client says what happened and in which direction; `resolveReportedEvent`
+ * decides what that is worth and whether it is honoured at all. A refused event
+ * is not an error for the caller to retry — it is an answer.
+ */
+export async function applyReportedEvent(
+  db: Db,
+  playerId: string,
+  event: ReportedEvent
+): Promise<ReportResult> {
+  const key = event?.key;
+  if (!validKey(key)) {
+    return {
+      key: typeof key === 'string' ? key : '',
+      applied: false,
+      delta: 0,
+      balance: await currentBalance(db, playerId),
+      reason: 'invalid',
+    };
+  }
+
+  const resolved = resolveReportedEvent(event.reason, event.delta);
+  if (!resolved.ok) {
+    return {
+      key,
+      applied: false,
+      delta: 0,
+      balance: await currentBalance(db, playerId),
+      reason: resolved.reason,
+    };
+  }
+
+  if (resolved.kind === 'spend') {
+    const r = await spendCredits(db, playerId, {
+      cost: resolved.amount ?? 0,
+      detail: resolved.detail,
+      eventKey: key,
+      kind: 'spend',
+    });
+    return { key, applied: r.applied, delta: r.delta, balance: r.balance, reason: r.reason };
+  }
+
+  const r = await applyCreditEvent(db, playerId, {
+    kind: resolved.kind,
+    detail: resolved.detail,
+    eventKey: key,
+    // Null for a server-priced kind: applyCreditEvent ignores `amount` unless the
+    // kind is caller-priced, so a client cannot talk it into a better rate.
+    ...(resolved.amount === null ? {} : { amount: resolved.amount }),
+  });
+  return { key, applied: r.applied, delta: r.delta, balance: r.balance, reason: r.reason };
+}
+
+/**
+ * Record where a player's balance started, once.
+ *
+ * `players.credit_balance` already holds every live player's real total, and
+ * there is no history to recompute it from — so the ledger does not try. It
+ * opens with one row stating the number it inherited, and every row after that
+ * is a change it made itself. Without this the ledger's `balance_after` column
+ * would be self-consistent but wrong from its first entry.
+ *
+ * Idempotent by the same UNIQUE constraint as everything else: the key is fixed
+ * per player, so a second call cannot open a second balance.
+ */
+export async function ensureOpeningBalance(db: Db, playerId: string): Promise<void> {
+  const existing = await db.query(
+    "SELECT 1 FROM credit_events WHERE player_id = $1 AND kind = 'migration' LIMIT 1",
+    [playerId]
+  );
+  if (existing.rows[0]) return;
+
+  const balance = await currentBalance(db, playerId);
+  await db.query(
+    `INSERT INTO credit_events (player_id, event_key, kind, detail, delta, balance_after)
+     VALUES ($1, $2, 'migration', 'opening balance', $3, $3)
+     ON CONFLICT (player_id, event_key) DO NOTHING`,
+    [playerId, `migration:${playerId}`, balance]
+  );
 }

@@ -229,3 +229,115 @@ then re-checked by breaking the implementation:
 Steps 3–6 in section 5. Note that the opening `kind = 'migration'` row per player
 (section 4) has not been written yet, and `credit_events` still does not exist on
 production — the first call to `ensureCreditSchema` will create it.
+
+---
+
+## 8. Steps 3 and 4 — the client migrated, the hole closed
+
+Shipped together, as section 4 requires.
+
+### The choke point, and why not 22 edits
+
+`Economy.add(amount, reason)` / `.spend(...)` is the funnel every credit change in
+the game already passes through, and all three mutators emit exactly one event
+from exactly one line (`Economy.js:160` — verified as the only emitter in the
+tree). `CreditReporter` listens there. Nothing else changed at a call site.
+
+That matters because **section 4's list of 13 sources was wrong: there are 22.**
+It missed `ore` — the entire World 06 mining economy — plus `bounty`,
+marketplace sell income, `relic-set`, and four separate `SpaceObjectives`
+channels. Hand-migrating a list that was already incomplete is precisely how a
+source silently stops paying.
+
+Two gates now stand where the list used to:
+
+- **`creditReasons.test.ts` scrapes `src/`** for every reason tag reaching
+  `add`/`spend` and fails if one is missing from `REASON_KIND`. Dynamic reasons
+  (`SpaceObjectives._payTier`'s `channel`) must be enumerated by hand in the test,
+  so adding one forces a visit. It also flags a mapped reason that nothing emits
+   — which is how the `kill` grant was found hiding as `this.add()` INSIDE
+  `Economy`, invisible to a scrape looking for `economy.add`.
+- **A constant-drift test** reads `CREDITS_PER_KILL`, `VALUE`, `SET_CREDITS`,
+  `SYNC_CREDITS`, `MAZE_CENTRE_VALUE` and `MAZE_TOKEN_VALUE` out of the game and
+  asserts the server prices them identically.
+
+### The flat price table was wrong on four of five rows
+
+Step 1's prices were written from memory of what the client does rather than
+measured from it, and every error was in the direction that looks like theft:
+
+| kind | step 1 said | the game actually pays |
+|---|---|---|
+| relic | 15 | 120, and 500 for a set |
+| viewpoint | 10 | 150 |
+| maze | 25 | 100 centre, 6 token |
+| objective | 20 | 225 – 3,000 by tier |
+
+Worse, `race` and `minigame` were priced from a `detail` field — a placing, or
+`'won'` — that a reported event does not carry. Both would have paid **zero**,
+for every player, silently.
+
+So the model is now explicit about its two halves:
+
+- **Priced** (client's number discarded): `kill` 5, `relic` 120/500,
+  `viewpoint` 150, `maze` 100/6. All constants, all pinned to source by the drift
+  test.
+- **Declared and bounded** (client's number honoured, with a per-event ceiling
+  and a rate cap): `ore`, `sell`, `contract`, `bounty`, `loot`, `race`,
+  `minigame`, `objective`, and every spend. The ceilings sit far above the
+  measured maximum of each — an over-ceiling event is refused and recorded, never
+  truncated, because truncation pays a wrong number and leaves no trace.
+
+This is weaker than pricing everything and is not dressed up as more. Pricing
+`ore` properly means porting the ore tables and having the client report a cargo
+manifest instead of a total. Worth doing; not this change.
+
+### `quest` is refused, because it is already paid
+
+`completeQuestEngagement` prices a quest server-side and grants it; the client
+then mirrors the returned balance. Honouring a reported `quest` would pay twice.
+
+### Filtering on the operation, not the tag
+
+`QuestSystem` writes that authoritative balance with `economy.set(next, 'quest')`
+— the same tag it uses for a reward `add`. A reporter that blocklisted tags would
+have reported a player's entire net worth as freshly earned credits the first
+time a quest completed. `Economy._emit` now carries `op`, and only `add` and
+`spend` are reported. A blocklist of reasons was the first implementation, and it
+was wrong.
+
+### Durability, and why replays are free
+
+The queue is written to localStorage on every change and is deliberately NOT
+cleared by the `pagehide` beacon, which cannot confirm delivery. The next boot
+re-sends it; `UNIQUE (player_id, event_key)` refuses whatever already landed.
+Losing a duplicate is free, losing an earning is not.
+
+The mirror only adopts the server's balance once the queue has drained. Mid-flush
+the local number is legitimately ahead, and adopting there would visibly take
+credits off the HUD and hand them back a second later.
+
+### The hole
+
+`POST /api/game/state` no longer reads `credits`, and `saveGameState` no longer
+takes one. `setPlayerCreditBalance` — exported, and with no callers — is deleted
+rather than left, because an unused function that does exactly the forbidden
+thing is an invitation with a docblock on it.
+
+A `credits` field in the body is **ignored, not rejected**: a browser holding a
+cached copy of the old bundle keeps sending one until its tab closes, and a 400
+would stop that player's inventory saving too.
+
+### Also closed: buying credits with credits
+
+`credits` is a virtual item id that `Inventory._addCredits` turns straight into
+balance. An admin-authored catalogue row keyed `source_key: 'credits'` would have
+converted `cost_buy` into an arbitrary payout. The purchase transaction refuses
+that id outright.
+
+### Known gap, recorded rather than fixed
+
+`admin/lib/db.ts:791` adjusts `credit_balance` directly for support grants. That
+bypasses the ledger, so a player's `balance_after` chain is wrong from the first
+adjustment onward. The fix is one insert; it is in a third app with no test suite
+and was left out of this change deliberately rather than done unverified.

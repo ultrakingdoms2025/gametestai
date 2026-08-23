@@ -194,6 +194,27 @@ suite('marketplace purchase (integration)', () => {
     expect(await sales()).toBe(0);
   });
 
+  it('refuses to sell the virtual credits item', async () => {
+    // `credits` is not a thing you own, it is the balance. Inventory turns that
+    // id straight into credits, so a catalogue row keyed 'credits' would convert
+    // cost_buy into an arbitrary payout.
+    await db.query(
+      `INSERT INTO marketplace_items
+         (id, source_key, name, description, category, game_action, quantity,
+          cost_buy, cost_sell, world_name, is_active)
+       VALUES ($1, 'credits', 'Credit Chip', 'test row', 'tools', 'grant_item', 5, 10, 1, 'station', TRUE)
+       ON CONFLICT (id) DO UPDATE SET source_key = 'credits', cost_buy = 10`,
+      ['11111111-1111-4111-8111-111111111106']
+    );
+    const r = await purchaseMarketplaceItem(db, PLAYER, {
+      itemId: '11111111-1111-4111-8111-111111111106',
+      eventKey: 'creditchip',
+    });
+    expect(r.applied).toBe(false);
+    expect(r.reason).toBe('invalid');
+    expect(await balance()).toBe(100);
+  });
+
   it('refuses an inactive item', async () => {
     const r = await purchaseMarketplaceItem(db, PLAYER, { itemId: INACTIVE, eventKey: 'p-6' });
     expect(r.applied).toBe(false);

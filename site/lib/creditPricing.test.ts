@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { priceEvent, capFor, CREDIT_EVENT_KINDS, type CreditEvent } from './creditPricing';
+import {
+  priceEvent,
+  capFor,
+  CREDIT_EVENT_KINDS,
+  DECLARED_KINDS,
+  type CreditEvent,
+} from './creditPricing';
 
 /**
  * What an event is worth, decided here and never by the caller.
@@ -28,20 +34,33 @@ describe('priceEvent — the client never sets the amount', () => {
     expect(priceEvent(hostile as unknown as CreditEvent)).toBe(5);
   });
 
-  it('prices race placings by position, not by claim', () => {
-    expect(priceEvent(ev('race', '1'))).toBe(10);
-    expect(priceEvent(ev('race', '2'))).toBe(5);
-    expect(priceEvent(ev('race', '3'))).toBe(2);
+  it('prices the two-valued kinds by their reason tag', () => {
+    // One kind, two constants in the game, told apart by the tag the client
+    // reported. Both numbers are pinned to source by creditReasons.test.ts.
+    expect(priceEvent(ev('relic', 'relic'))).toBe(120);
+    expect(priceEvent(ev('relic', 'relic-set'))).toBe(500);
+    expect(priceEvent(ev('maze', 'maze-centre'))).toBe(100);
+    expect(priceEvent(ev('maze', 'maze-token'))).toBe(6);
   });
 
-  it('pays nothing for a placing outside the podium', () => {
-    expect(priceEvent(ev('race', '4'))).toBe(0);
-    expect(priceEvent(ev('race', '99'))).toBe(0);
+  it('underpays rather than overpays an unrecognised tail', () => {
+    // Only reachable from a forged request, since the real tags are pinned.
+    expect(priceEvent(ev('relic', 'relic-museum'))).toBe(120);
+    expect(priceEvent(ev('maze', 'maze-jackpot'))).toBe(6);
   });
 
-  it('prices a minigame win', () => {
-    expect(priceEvent(ev('minigame', 'won'))).toBe(10);
-    expect(priceEvent(ev('minigame', 'lost'))).toBe(0);
+  it('does not flat-price race or minigame', () => {
+    // This test used to assert race = 10/5/2 and a minigame win = 10, which was
+    // wrong twice over. A race pays its placing PLUS up to 128 in pickups
+    // (Pickups.js), and a minigame pays 10 at most venues but 120 at the yard
+    // butts (YardPlan.js BUTTS_REWARD) -- so a flat price would have quietly
+    // capped both. Worse, the reported event carries no placing or win/lose
+    // detail at all, so the old rule would have priced every race and every
+    // minigame at ZERO. They are declared and bounded instead.
+    expect(priceEvent(ev('race', '1'))).toBe(0);
+    expect(priceEvent(ev('minigame', 'won'))).toBe(0);
+    expect(DECLARED_KINDS.has('race')).toBe(true);
+    expect(DECLARED_KINDS.has('minigame')).toBe(true);
   });
 
   it('refuses a kind it does not know', () => {
@@ -75,8 +94,10 @@ describe('priceEvent — the client never sets the amount', () => {
   });
 
   it('is not confused by a detail that is not a string', () => {
-    expect(priceEvent(ev('race', { toString: () => '1' }))).toBe(0);
-    expect(priceEvent(ev('race', 1))).toBe(0);
+    // Retargeted onto a kind that still READS detail; race no longer does, so
+    // asserting it here would have passed for the wrong reason.
+    expect(priceEvent(ev('relic', { toString: () => 'relic-set' }))).toBe(120);
+    expect(priceEvent(ev('relic', 1))).toBe(120);
     expect(priceEvent(ev('kill', null))).toBe(5);
   });
 });

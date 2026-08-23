@@ -27,6 +27,7 @@ import { PlayerAvatar } from './player/PlayerAvatar.js';
 import { Loadout } from './player/Loadout.js';
 import { ProjectileSystem } from './systems/Projectiles.js';
 import { Economy } from './systems/Economy.js';
+import { CreditReporter } from './systems/CreditReporter.js';
 import { SaveGame } from './systems/SaveGame.js';
 import { UnstuckSystem } from './systems/Unstuck.js';
 import { MountManager } from './mounts/MountManager.js';
@@ -222,6 +223,13 @@ player.cameraRig = cameraRig;
 player.avatar = avatar;
 
 const economy = new Economy({ bus });
+/* Reports every credit change to the account so the SERVER owns the balance.
+ * Idle until `start()`, which only happens for a signed-in player -- a guest's
+ * credits stay local exactly as before. It listens to `credits:changed`, the
+ * one event every earn and spend in the game passes through, so no source can
+ * be missed and a source added later is covered without its author knowing
+ * this exists. */
+const creditReporter = new CreditReporter({ bus, economy });
 const projectiles = new ProjectileSystem({ ...ctx, player, npcManager, combat });
 
 // Loadout adopts the machine gun Player already built rather than making a
@@ -548,7 +556,9 @@ const pendingTrades = [];
 
 function buildRemotePayload() {
   const payload = {
-    credits: Math.max(0, Math.floor(economy?.credits ?? 0)),
+    // No `credits` field. The balance is the server's, moved only by
+    // /api/game/credits; this route used to accept whatever number was put here
+    // and write it straight to the account.
     state: {
       v: 1,
       at: Date.now(),
@@ -599,6 +609,10 @@ window.addEventListener('pagehide', () => {
   try {
     const blob = new Blob([JSON.stringify(buildRemotePayload())], { type: 'application/json' });
     navigator.sendBeacon?.('/api/game/state', blob);
+    // Earnings from the last few seconds, which would otherwise be lost with the
+    // tab. The queue is NOT cleared -- sendBeacon cannot confirm delivery, so the
+    // next boot re-sends and the server refuses whatever already landed.
+    creditReporter.beacon();
   } catch { /* best effort */ }
 });
 
@@ -859,6 +873,13 @@ async function hydrateAccountSession() {
   if (typeof account.credits === 'number') {
     economy.set(account.credits, 'account-sync');
   }
+
+  /* Only now: the balance above is the server's opening answer, and starting
+   * before it landed would report the local number as if it were fresh earnings.
+   * `start()` also flushes anything a previous session queued and could not
+   * deliver -- a closed tab or a dropped connection, replayed safely because
+   * every queued event carries its original idempotency key. */
+  creditReporter.start();
 
   // Server-saved inventory takes precedence over whatever the fresh boot
   // seeded - it is the durable copy of what the player actually owns.

@@ -533,11 +533,24 @@ const save = new SaveGame({
  * downstream depends on the answer. */
 save.requestDurableStorage();
 let persistTimer = null;
+/* Debounced background persist.
+ *
+ * `save.autoSave`, never `save.save`. Everything that reaches this function is
+ * an EVENT - a balance changing, an inventory changing, a merchant trade - and
+ * not one of them is the player asking to save. `save()` skips the `_started`
+ * and `_loading` guards and arms the autosave on its way past; `autoSave()`
+ * honours them.
+ *
+ * That distinction is not academic. `hydrateAccountSession` applies the
+ * server's balance at boot, which emits `credits:changed`, which lands here
+ * while the player is still on the title screen with nothing loaded. Through
+ * `save()` that wrote a pristine spawn state over the save CONTINUE was about
+ * to read - every returning signed-in player, every boot. */
 const schedulePersist = (reason) => {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    save.save(reason);
+    save.autoSave(reason);
     scheduleRemotePersist(reason);
   }, 750);
 };

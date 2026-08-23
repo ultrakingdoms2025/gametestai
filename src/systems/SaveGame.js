@@ -190,7 +190,7 @@ export class SaveGame {
     this._onBeforeUnload = (e) => {
       // Never throws: save() is fully guarded, and an exception here would be
       // swallowed by the browser anyway - along with the save.
-      this._autoSave('unload');
+      this.autoSave('unload');
       /* And ask before the window actually goes.
        *
        * Crouch is Ctrl and forward is W, so crouch-walking is Ctrl+W, which
@@ -213,7 +213,7 @@ export class SaveGame {
 
     if (bus) {
       this._offs.push(bus.on('game:started', () => { this._started = true; }));
-      this._offs.push(bus.on('world:changed', () => this._autoSave('world-change')));
+      this._offs.push(bus.on('world:changed', () => this.autoSave('world-change')));
       this._offs.push(bus.on('minigame:finished', (r) => this._recordTrial(r)));
     }
 
@@ -400,12 +400,30 @@ export class SaveGame {
     this.disableAutosave();
     const period = Math.max(5, Number(seconds) || AUTOSAVE_DEFAULT);
     this._autosaveSeconds = period;
-    this._autosaveTimer = setInterval(() => this._autoSave('autosave'), period * 1000);
+    this._autosaveTimer = setInterval(() => this.autoSave('autosave'), period * 1000);
     return this;
   }
 
-  /** Unattended write: only once the player is in, and never mid-load. */
-  _autoSave(reason) {
+  /**
+   * Unattended write: only once the player is in, and never mid-load.
+   *
+   * Public, and deliberately so. Every background persist - the periodic
+   * timer, `world:changed`, `beforeunload`, and the orchestrator's debounced
+   * writes on `credits:changed` / `inventory:changed` / merchant events - must
+   * come through here rather than through `save()`.
+   *
+   * `save()` is the wrong call for anything the player did not ask for: it
+   * skips both guards below AND arms `_started` on the way past. A background
+   * event firing before the title screen is dismissed would therefore write a
+   * pristine spawn state over the save it was about to load, and leave the
+   * autosave armed to keep doing it. That is not hypothetical - the boot-time
+   * `economy.set(credits, 'account-sync')` did exactly this to every returning
+   * signed-in player. See `scripts/tests/save-boot-order.test.mjs`.
+   *
+   * @param {string} [reason] tag for logging / the autosave pip
+   * @returns {boolean} true when the payload reached localStorage
+   */
+  autoSave(reason) {
     if (this._loading || !this._started) return false;
     return this.save(reason);
   }

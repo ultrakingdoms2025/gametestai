@@ -94,13 +94,25 @@ suite('findOrCreatePlayer account linking (integration)', () => {
   });
 
   afterAll(async () => {
-    await db?.query('DELETE FROM players WHERE email_hash = $1', [emailHash]);
+    await wipe().catch(() => {});
     await db?.end();
   });
 
-  beforeEach(async () => {
+  /* Children first. `purchases` and `credit_events` both FK to players, so
+   * deleting the player row alone fails once a test has recorded a purchase. */
+  const wipe = async () => {
+    const ids = await db.query<{ id: string }>(
+      'SELECT id FROM players WHERE email_hash = $1',
+      [emailHash]
+    );
+    for (const { id } of ids.rows) {
+      await db.query('DELETE FROM purchases WHERE player_id = $1', [id]).catch(() => {});
+      await db.query('DELETE FROM credit_events WHERE player_id = $1', [id]).catch(() => {});
+    }
     await db.query('DELETE FROM players WHERE email_hash = $1', [emailHash]);
-  });
+  };
+
+  beforeEach(wipe);
 
   const linkOf = async (id: string) => {
     const r = await db.query('SELECT site_user_id FROM players WHERE id = $1', [id]);
@@ -179,6 +191,40 @@ suite('findOrCreatePlayer account linking (integration)', () => {
 
     expect(await isEmailClaimedByOtherPlayer(EMAIL, 'someone-else')).toBe(true);
     expect(await isEmailClaimedByOtherPlayer(EMAIL, 'other-1')).toBe(false);
+  });
+
+  it('a paid-for credit top-up lands in the ledger, not just the balance', async () => {
+    /* `credit_events` is meant to be the source of truth for every change to
+     * `credit_balance`; a bare UPDATE left the chain with a hole the size of
+     * every Stripe purchase ever made, and `balance_after` became underivable
+     * from that point on. */
+    const { recordSitePurchase } = await import('./playerDb');
+    await db.query(
+      `INSERT INTO players (id, email_hash, credit_balance) VALUES ('buyer-1', $1, 100)`,
+      [emailHash]
+    );
+
+    const ok = await recordSitePurchase({
+      playerId: 'buyer-1',
+      type: 'credits',
+      amountCents: 500,
+      creditsAmount: 250,
+      orderId: 'order-abc',
+      actorEmail: 'buyer@example.invalid',
+    });
+    expect(ok).toBe(true);
+
+    const bal = await db.query('SELECT credit_balance FROM players WHERE id = $1', ['buyer-1']);
+    expect(Number(bal.rows[0].credit_balance)).toBe(350);
+
+    const ev = await db.query(
+      `SELECT kind, delta, balance_after FROM credit_events
+        WHERE player_id = 'buyer-1' AND event_key = 'stripe:order-abc'`
+    );
+    expect(ev.rows).toHaveLength(1);
+    expect(ev.rows[0].kind).toBe('purchase');
+    expect(Number(ev.rows[0].delta)).toBe(250);
+    expect(Number(ev.rows[0].balance_after)).toBe(350);
   });
 
   it('two concurrent first-time calls settle on one player, not two', async () => {

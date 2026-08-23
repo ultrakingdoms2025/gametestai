@@ -5,6 +5,7 @@
  */
 import { Client } from 'pg';
 import { createCipheriv, createHmac, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { ensureCreditSchema } from './creditLedger';
 
 function makeClient() {
   const connStr = process.env.POSTGRES_URL ?? '';
@@ -488,11 +489,48 @@ export async function recordSitePurchase(opts: {
     );
   }
 
-  // Add credits to balance
+  /* Add credits to the balance AND record why, in one statement.
+   *
+   * `credit_events` is meant to be the source of truth for every change to
+   * `players.credit_balance` -- that is what makes `balance_after` a chain
+   * worth checking. A bare UPDATE here left the ledger with a hole exactly the
+   * size of every Stripe purchase ever made, so every row after one had a
+   * `balance_after` that could not be derived from the rows before it, and the
+   * ledger's self-check became noise.
+   *
+   * One CTE rather than an UPDATE followed by an INSERT: the two must not be
+   * able to come apart, because a balance that moved without a row is the
+   * defect, and a row without the balance move is worse. `ON CONFLICT DO
+   * NOTHING` on the order key makes a retried webhook a no-op, matching the
+   * `if (existing[0]) return false` guard above rather than relying on it. */
   if (opts.creditsAmount > 0) {
+    /* The ledger's own definition, not a copy of it here: two schema
+     * declarations for one table drift, and the one that drifts is always the
+     * copy nobody remembers exists. */
+    const schemaClient = makeClient();
+    await schemaClient.connect();
+    try {
+      await ensureCreditSchema(schemaClient);
+    } finally {
+      await schemaClient.end();
+    }
+
     await pgQuery(
-      `UPDATE players SET credit_balance = credit_balance + $1, updated_at = NOW() WHERE id = $2`,
-      [opts.creditsAmount, opts.playerId]
+      `WITH moved AS (
+         UPDATE players
+            SET credit_balance = credit_balance + $1, updated_at = NOW()
+          WHERE id = $2
+          RETURNING id, credit_balance
+       )
+       INSERT INTO credit_events (player_id, event_key, kind, detail, delta, balance_after)
+       SELECT id, $3, 'purchase', $4, $1, credit_balance FROM moved
+       ON CONFLICT (player_id, event_key) DO NOTHING`,
+      [
+        opts.creditsAmount,
+        opts.playerId,
+        `stripe:${opts.orderId}`,
+        `stripe ${opts.type} ${opts.amountCents}c`,
+      ]
     );
   }
 

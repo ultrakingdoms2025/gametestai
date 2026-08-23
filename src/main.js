@@ -59,6 +59,8 @@ import { Relics } from './systems/Relics.js';
 import { syncProgress } from './systems/ProgressSync.js';
 import { Viewpoints } from './systems/Viewpoints.js';
 import { SpaceObjectives } from './systems/SpaceObjectives.js';
+import { Charters } from './systems/Charters.js';
+import { Onboarding } from './systems/Onboarding.js';
 import { Interiors } from './systems/Interiors.js';
 import { AudioDirector } from './audio/AudioDirector.js';
 import { AudioMenu } from './ui/AudioMenu.js';
@@ -529,6 +531,38 @@ const save = new SaveGame({
    * keys every column by identity - see the note in `SpaceObjectives`. */
   objectives,
 });
+
+/* WHAT THE GAME IS FOR, AND THE FIRST TWO MINUTES OF IT.
+ *
+ * `Charters` is the mission spine: eighteen gateways, eighteen records, and a
+ * charter restored for each world whose record is complete. It authors nothing
+ * - every denominator is learned from what a world publishes and every
+ * numerator is recomputed from the identity sets `relics`, `viewpoints`,
+ * `mining`, `objectives` and the two best-time ledgers already keep.
+ *
+ * Constructed AFTER `save` because those two ledgers live in `SaveGame` (see
+ * its `_trialLedger`), and handed BACK to it on the next line - the same late
+ * wire `itemUse.viewpoints` takes, and for the same reason: two systems that
+ * each need the other cannot both be first.
+ *
+ * `Onboarding` is deliberately independent of `QuestSystem`. Quests need an
+ * account and a live Postgres to appear at all, so the de-facto tutorial did
+ * not exist for a first-run player; this one is local events over local state
+ * and works signed out, which is the product decision this phase implements. */
+const charters = new Charters({
+  bus,
+  worldManager,
+  relics,
+  viewpoints,
+  mining,
+  objectives,
+  cosmetics,
+  trials: { read: () => save.trialLedger() },
+  races: { read: () => save.raceLedger() },
+});
+save.charters = charters;
+const onboarding = new Onboarding({ bus, inventory });
+save.onboarding = onboarding;
 /* Ask the browser not to evict this origin's storage under pressure. Fire and
  * forget - it resolves to false on browsers that do not offer it, and nothing
  * downstream depends on the answer. */
@@ -690,6 +724,13 @@ async function syncAccountProgress() {
     mining,
     objectives,
     trials: { read: () => save.trialLedger(), merge: (best) => save.mergeTrials(best) },
+    /* Circuit bests, in the same `{read, merge}` pair shape and for the same
+     * reason: `RaceManager` emits and forgets, so `SaveGame` keeps the ledger. */
+    races: { read: () => save.raceLedger(), merge: (best) => save.mergeRaces(best) },
+    /* The mission spine. Only the charter and deed SETS travel - the learned
+     * rosters stay on the device that learned them. */
+    charters,
+    onboarding,
   });
   if (res.ok && (res.applied || res.changed)) {
     console.info(`[progress] merged: ${res.changed} new on the server, ${res.applied} systems updated`);
@@ -923,6 +964,11 @@ if (overrides.dev) {
   cheats, audio, audioMenu, relics, viewpoints, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   ships, shipMenu, piloting, spaceCombat, flightHUD, mining, objectives,
   interiors, mazeMap, minigames, minigameUI,
+    /* The mission spine and the opening sequence. Exposed for the same reason
+     * `creditReporter` is: the only way to check that a record actually fills
+     * in is to play the world and read the board back, and a unit test proves
+     * the arithmetic rather than the loop. */
+    charters, onboarding,
     /* The only door out of this file the harness is allowed through. Kept
      * behind `__dev` rather than spread across GAME so it is obvious at a call
      * site that a measurement is reaching into the integration layer. */

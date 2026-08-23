@@ -97,6 +97,13 @@ export class QuestSystem {
       this._offs.push(this.bus.on('portal:entering',  (e) => this._onPortalEntering(e)));
       this._offs.push(this.bus.on('market:trade',    (e) => this._onMarketTrade(e)));
       this._offs.push(this.bus.on('character:changed', (e) => this._onCharacterChanged(e)));
+      /* Wheels down. A DEDICATED subscription rather than a `quest:activity`,
+       * for the same reason `race:finished` has one: `Piloting` already emits
+       * the fact with the world and the pad on it, and routing it through the
+       * generic channel would mean editing `Piloting` to say a second time
+       * something it already says. `_onActivity` forwards `e.type` verbatim, so
+       * only channels that go through it need an emitter edit. */
+      this._offs.push(this.bus.on('pilot:landed',    (e) => this._onLanded(e)));
       this._offs.push(this.bus.on('quest:activity',  (e) => this._onActivity(e)));
     }
 
@@ -608,6 +615,24 @@ export class QuestSystem {
     if (!type) return;
     this._advanceSteps(type, (step, meta) => this._matchesStepTarget(step, meta), { event: e });
   }
+
+  /**
+   * Wheels down on a body.
+   *
+   * The second of the two verbs the mission survey named as significant
+   * omissions - piloting and mining are the whole second half of the game, and
+   * neither had any mission representation at all. There are still zero quests
+   * authored for space or any of the ten planets; this is the machinery that
+   * makes writing one possible.
+   *
+   * Only a real touchdown reaches this. `_forceSetDown` - the anti-stranding
+   * recovery that puts a buried or over-speed hull back on the nearest pad -
+   * emits `pilot:impact` and NOT `pilot:landed`, so a crash cannot complete a
+   * step that asked the player to land.
+   */
+  _onLanded(e) {
+    this._advanceSteps('pilot', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
+  }
  
   _onMarketTrade(e) {
     this._advanceSteps('purchase', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
@@ -865,6 +890,32 @@ export class QuestSystem {
             push(gameId);
           }
         }
+        break;
+      case 'mine':
+        /* Seam identity, as of `Mining._cut`'s own `quest:activity`
+         * (`Mining.js`). The element TYPE is the useful spelling - "cut five
+         * Rheniite" - and the node id and display name ride along so a step can
+         * name one particular deposit or use the words the HUD showed.
+         *
+         * The world is offered too, so `{type:'mine', target:'cinder'}` means
+         * "cut anything on Cinder". That is safe here in a way it would not be
+         * for `collect`: this channel only ever fires from a seam. */
+        push(event?.target);
+        push(event?.id);
+        push(event?.name);
+        push(event?.worldId);
+        break;
+      case 'pilot':
+        /* Landfall identity, as of `Piloting._touchDown`'s `pilot:landed`.
+         * `world` is the planet's world id (`cinder`, `tessera`), `site` is the
+         * pad under the keel and is NULL on open ground - which is correct and
+         * not a gap: a step naming a pad should not complete for a landing
+         * three kilometres away from it. `shipId` is offered so a step can ask
+         * for a particular hull to be the one that made the trip. */
+        push(event?.world);
+        push(event?.site?.id);
+        push(event?.site?.name);
+        push(event?.shipId);
         break;
       case 'purchase':
         push(event?.itemId);

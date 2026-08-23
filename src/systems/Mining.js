@@ -253,6 +253,26 @@ export class Mining {
      * did a thing to a named target", so a future ore contract needs no new
      * plumbing. Same call shape `Portals` and `Interiors` already make. */
     this.bus?.emit?.('quest:activity', { type: 'collect', target: node.type, id: node.id });
+    /* AND a `mine` of its own, which is not the same claim.
+     *
+     * `collect` fires for every pickup in the game - a dropped medkit, a credit
+     * stack, a cache - so a step that meant "cut a seam" could be finished by
+     * walking over something named after an ore. Mining and piloting were the
+     * two verbs the mission survey named as the significant omissions from the
+     * step vocabulary, and this is the emitter half of closing the first one.
+     * Both events fire, because both claims are true: you cut a seam, and you
+     * now hold the rock.
+     *
+     * The payload carries the element type, the node's own id and the world,
+     * so a step can say "cut five Rheniite" or "work the Colonnade seam" and
+     * `quest-vocab.mjs` can derive both spellings from the descriptor. */
+    this.bus?.emit?.('quest:activity', {
+      type: 'mine',
+      target: node.type,
+      id: node.id,
+      name: node.name,
+      worldId: this.worldManager?.active?.id ?? null,
+    });
     return { ok: true, credits: node.credits ?? 0 };
   }
 

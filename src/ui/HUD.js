@@ -610,6 +610,7 @@ export class HUD {
     this._buildCredits(col);
     this._buildHealth(col);
     this._buildStamina(col);
+    this._buildCharter(col);
     this._buildQuestTracker(col);
     this._buildCollectibles(col);
     this._buildObjectives(col);
@@ -631,6 +632,208 @@ export class HUD {
    * be made to overlap its neighbours by a panel changing height — which is the
    * same reason the vitals were stacked in the first place.
    */
+  /**
+   * THE OBJECTIVE PANEL: what the game is for, and what to do first.
+   *
+   * ── Why one panel and not two ──────────────────────────────────────────
+   * A first-run player needs a tutorial and a returning one needs the mission
+   * board, and they are never both wanted at once - so this panel has two
+   * FACES rather than two panels. While the opening sequence is unfinished it
+   * shows one instruction and one locked reward; once it is done it shows
+   * "Chart the Nexus", the record of the world the player is standing in, and
+   * one sentence saying what is left. Two stacked panels would have meant a new
+   * player reading a board of eighteen rows they cannot act on, above the one
+   * line they can.
+   *
+   * It is FIRST in the vitals column, above the quest tracker, because it is
+   * the only thing on screen that answers "what is this game about" - and
+   * because a signed-out player has no quest tracker at all (quests need an
+   * account and a live Postgres to appear), so anything below it would leave a
+   * gap at the top of the column rather than under it.
+   *
+   * Same flex column and the same reason as `_buildQuestTracker`: every corner
+   * is spoken for, and a column that lays its children out by flow cannot be
+   * made to overlap its neighbours by a panel changing height.
+   */
+  _buildCharter(col) {
+    const p = el('div', 'panel charter');
+    const head = el('div', 'cht-head');
+    this.chLabel = el('div', 'panel-label', 'Objective');
+    this.chRank = el('div', 'cht-rank', '');
+    this.chRank.hidden = true;
+    head.append(this.chLabel, this.chRank);
+    p.appendChild(head);
+
+    /* The headline: "Chart the Nexus  3/18" once the opening is done, and
+     * "Getting started  2/8" before it. One row, two writes. */
+    const top = el('div', 'col-row cht-top');
+    this.chTitle = el('div', 'col-name', '');
+    this.chCount = el('div', 'col-count', '');
+    top.append(this.chTitle, this.chCount);
+    p.appendChild(top);
+
+    /* One sentence saying what to do next. Prose, so it wraps - every row above
+     * and below it is a label and a number on one line. Never authored here:
+     * `Charters._hint` and `Onboarding.next` both derive it from the same state
+     * the rows are drawn from, so the sentence cannot disagree with them. */
+    this.chHint = el('div', 'cht-hint', '');
+    this.chHint.hidden = true;
+    p.appendChild(this.chHint);
+
+    /* The record of the world the player is IN, one row per column that world
+     * publishes. Built empty and grown to fit, so this file holds no copy of
+     * the column list - a world that grows a set of viewpoints grows a row. */
+    this.chRows = el('div', 'cht-rows');
+    this.chRows.hidden = true;
+    p.appendChild(this.chRows);
+    this._chRowEls = [];
+
+    /* The one aspirational locked reward. Visible only during the opening
+     * sequence: after that it would be a permanent advertisement, and the
+     * charter board is the thing to be reading. */
+    this.chLocked = el('div', 'cht-locked', '');
+    this.chLocked.hidden = true;
+    p.appendChild(this.chLocked);
+
+    p.hidden = true;
+    col.appendChild(p);
+    this.charterPanel = p;
+  }
+
+  /**
+   * The tutorial face.
+   *
+   * Wins over the charter face while it is showing, because a player who has
+   * not yet fired a shot cannot act on a record. `_charterState` remembers
+   * which face is live so the two handlers cannot fight over the panel.
+   *
+   * @param {{done:number,total:number,complete:boolean,
+   *          next:{title:string,text:string}|null,
+   *          locked:{name:string,how:string}|null}} p
+   */
+  _setOnboarding(p) {
+    const panel = this.charterPanel;
+    if (!panel || !p) return;
+    this._onboardDone = p.complete === true;
+    if (this._onboardDone) {
+      /* Hand the panel over. The charter face redraws on its own next event,
+       * and `charter:changed` fires on every world change, so the hand-off is
+       * never longer than one gateway. Redrawn immediately from the last
+       * payload so it is not blank in between. */
+      if (this._charterLast) this._setCharter(this._charterLast);
+      return;
+    }
+
+    if (panel.hidden) panel.hidden = false;
+    this._writeText(this.chLabel, '_chLabelText', 'Getting started');
+    this._writeText(this.chTitle, '_chTitleText', p.next?.title ?? '');
+    this._writeText(this.chCount, '_chCountText', `${p.done}/${p.total}`);
+    this._setCharterHint(p.next?.text ?? '');
+    if (!this.chRows.hidden) this.chRows.hidden = true;
+    if (this.chRank && !this.chRank.hidden) this.chRank.hidden = true;
+
+    const locked = p.locked ? `Locked — ${p.locked.name}: ${p.locked.how}` : '';
+    this._writeText(this.chLocked, '_chLockedText', locked);
+    this.chLocked.hidden = !locked;
+  }
+
+  /**
+   * The mission face: eighteen gateways, and the record of the one you are in.
+   *
+   * Every write is compared first, like everything else in this file, and this
+   * is driven off `charter:changed` rather than a frame - the panel costs
+   * nothing between events.
+   *
+   * @param {{chartered:number,total:number,rank:string|null,
+   *          here:any|null, hint:string}} p
+   */
+  _setCharter(p) {
+    const panel = this.charterPanel;
+    if (!panel || !p) return;
+    this._charterLast = p;
+    // The tutorial owns the panel until it is finished. See `_setOnboarding`.
+    if (this._onboardDone === false) return;
+
+    if (panel.hidden) panel.hidden = false;
+    this._writeText(this.chLabel, '_chLabelText', 'Objective');
+    this._writeText(this.chTitle, '_chTitleText', 'Chart the Nexus');
+    this._writeText(this.chCount, '_chCountText', `${p.chartered}/${p.total}`);
+
+    const rank = typeof p.rank === 'string' && p.rank ? p.rank.toUpperCase() : '';
+    if (this._chRankText !== rank) {
+      this._chRankText = rank;
+      this.chRank.textContent = rank;
+      this.chRank.hidden = !rank;
+    }
+
+    this._setCharterRows(p.here);
+    this._setCharterHint(p.hint ?? '');
+    if (!this.chLocked.hidden) this.chLocked.hidden = true;
+  }
+
+  /**
+   * The record rows for the world the player is standing in.
+   *
+   * Rebuilt only when the SHAPE changes - a different world, or a world that
+   * grew a column - and otherwise only the counts are written. A world with an
+   * unknown record (one nobody has surveyed yet) draws no rows at all rather
+   * than a row of zeroes: "unsurveyed" and "none found" are different
+   * sentences, and the hint above says which.
+   *
+   * @param {{columns:Array<{key:string,label:string,have:number,need:number}>}|null} here
+   */
+  _setCharterRows(here) {
+    const host = this.chRows;
+    if (!host) return;
+    const cols = Array.isArray(here?.columns) ? here.columns : [];
+    if (cols.length === 0) {
+      if (!host.hidden) host.hidden = true;
+      return;
+    }
+    if (host.hidden) host.hidden = false;
+
+    const shape = cols.map((c) => c.key).join(',');
+    if (this._chShape !== shape) {
+      this._chShape = shape;
+      host.textContent = '';
+      this._chRowEls = cols.map((c) => {
+        const row = el('div', 'col-row');
+        const value = el('div', 'col-count', '');
+        row.append(el('div', 'col-name', c.label), value);
+        host.appendChild(row);
+        return { value, text: '' };
+      });
+    }
+    for (let i = 0; i < cols.length; i++) {
+      const slot = this._chRowEls[i];
+      if (!slot) continue;
+      const text = `${cols[i].have}/${cols[i].need}`;
+      if (slot.text === text) continue;
+      slot.text = text;
+      slot.value.textContent = text;
+      slot.value.classList.toggle('done', cols[i].have >= cols[i].need);
+    }
+  }
+
+  /** The one sentence under the counts. Hidden when there is nothing to say. */
+  _setCharterHint(text) {
+    const node = this.chHint;
+    if (!node) return;
+    const t = typeof text === 'string' ? text : '';
+    if (this._chHintText === t) return;
+    this._chHintText = t;
+    node.textContent = t;
+    node.hidden = !t;
+  }
+
+  /** Write a node's text only when it has actually changed. */
+  _writeText(node, cacheKey, text) {
+    if (!node) return;
+    if (this[cacheKey] === text) return;
+    this[cacheKey] = text;
+    node.textContent = text;
+  }
+
   _buildQuestTracker(col) {
     const p = el('div', 'panel questtrack');
     p.appendChild(el('div', 'panel-label', 'Objective'));
@@ -1520,6 +1723,15 @@ export class HUD {
      * right from the first frame in the yard rather than after the first kill -
      * the same contract the two discovery counters above already have. */
     this._on('objectives:changed', (p) => this._setObjectives(p));
+
+    /* The mission spine and the opening sequence, which share one panel - see
+     * `_buildCharter`. Both emit on every world change as well as on every
+     * advance, so the panel is right from the first frame rather than after the
+     * first thing the player does; that matters more here than anywhere else,
+     * because this is the panel that answers "what is this game about" for
+     * somebody who has been playing for four seconds. */
+    this._on('charter:changed', (p) => this._setCharter(p));
+    this._on('onboarding:changed', (p) => this._setOnboarding(p));
 
     this._on('portal:entering', ({ to, duration }) => this._runWipe(to, duration));
 

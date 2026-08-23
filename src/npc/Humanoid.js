@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { heroParts } from './HeroAssets.js';
 
 /**
  * Procedural humanoid characters.
@@ -1639,6 +1640,9 @@ class Part {
     this.idx = [];
     /** Baked albedo multiplier (face cavity). Padded to white on merge. */
     this.col = [];
+    /** Authored normals, or null to weld them from the positions on merge.
+     *  Only authored hero features set this. @see addHeroParts */
+    this.nrm = null;
   }
   get vertexCount() {
     return this.pos.length / 3;
@@ -1977,6 +1981,57 @@ function assignSkinWeights(part, boneIndex, spec, power = 3.6) {
   return { skinIndex, skinWeight };
 }
 
+/**
+ * Turn the authored hero features for a role into `Part`s the merge understands.
+ *
+ * This is the join between the authored pipeline and the procedural one, and
+ * it is deliberately the only one. Everything upstream of here is a `.glb`
+ * whose materials were discarded; everything downstream is the same merge that
+ * has always welded a sleeve to a torso. What arrives is geometry in character
+ * space - the same space `assignSkinWeights` measures bone distances in - and
+ * what leaves is a part in one of the six existing material slots, rigidly
+ * skinned to one bone.
+ *
+ * RIGID, not distance-weighted, and that is deliberate: `assignSkinWeights` is
+ * given only the bones a part may belong to, so every vertex of a pauldron
+ * follows the clavicle exactly and none of it is dragged by the neck. Blending
+ * is right for skin over a joint and wrong for a plate strapped across one -
+ * a bandolier that stretches is a worse artefact than one that clips.
+ *
+ * A SYMMETRIC PART NAMES BOTH BONES. This is not a nicety. A pair of knuckled
+ * hands authored across the centreline and bound to `handR` alone puts the left
+ * hand on the right wrist, and the character folds in half the moment it moves
+ * an arm - which is exactly what the first screenshot of an Arc Lance Sentry
+ * showed. With both bones offered, the weighting binds each vertex to whichever
+ * is nearer, and the two hands are 0.44 m apart, so the split is exact rather
+ * than approximate.
+ *
+ * A missing loader, a missing file or a missing part all arrive here as an
+ * empty list, and an empty list is a procedural character. There is no error
+ * path because there is nothing to recover from.
+ *
+ * @param {string|null} hero role id, or null for a plain procedural character
+ * @param {Array} out parts list being accumulated for this body
+ */
+function addHeroParts(hero, out) {
+  if (!hero) return;
+  const parts = heroParts(hero);
+  if (!parts) return;
+  for (const { slot, bone, geometry } of parts) {
+    const pos = geometry.getAttribute('position');
+    const nor = geometry.getAttribute('normal');
+    const uv = geometry.getAttribute('uv');
+    const idx = geometry.getIndex();
+    if (!pos || !idx) continue;
+    const part = new Part(slot, (Array.isArray(bone) ? bone : [bone]).map((n) => B(n)));
+    part.pos = Array.from(pos.array);
+    part.nrm = nor ? nor.array : null;
+    part.uv = uv ? Array.from(uv.array) : new Array(pos.count * 2).fill(0);
+    part.idx = Array.from(idx.array);
+    out.push(part);
+  }
+}
+
 /** Merge parts into one indexed BufferGeometry with per-slot draw groups. */
 function mergeParts(parts, boneIndex, spec) {
   const bySlot = [];
@@ -2005,7 +2060,11 @@ function mergeParts(parts, boneIndex, spec) {
     if (list.length === 0) continue;
     const groupStart = iOff;
     for (const p of list) {
-      const nrm = computeWeldedNormals(p.pos, p.idx);
+      /* Authored parts carry their own normals; lofted ones are welded here.
+       * The distinction matters: welding at 0.125 mm merges a box's coincident
+       * corner vertices into one averaged normal, which is exactly right for a
+       * lofted limb and rounds every hard edge off a pauldron. */
+      const nrm = p.nrm ?? computeWeldedNormals(p.pos, p.idx);
       const skin = assignSkinWeights(p, boneIndex, spec);
       position.set(p.pos, vOff * 3);
       normal.set(nrm, vOff * 3);
@@ -4669,16 +4728,23 @@ export class HumanoidFactory {
    *   from a different outfit to the torso
    * @param {string[]} held keys this character will hand back on dispose
    */
-  _bodyGeometry(P, theme, variant, FA, bottom, held) {
+  _bodyGeometry(P, theme, variant, FA, bottom, held, hero) {
     // The cache is keyed on both halves. Without the bottom in the key a
     // tunic-over-tracksuit would be served whatever tunic combination happened
     // to be built first, and every later pairing would silently be wrong.
     const b = bottom ? `|${bottom.theme}.${bottom.variant}` : '';
-    const key = `body|${theme}|${variant}${b}|${P.key}|f${FA.id}`;
+    /* `hero` joins the key for exactly the same reason, and it is what makes
+     * authored features cost nothing per character: the station's ~68 hero
+     * characters resolve to eleven role geometries at most, each welded once
+     * and then shared. Leave it out of the key and a Breaker Frame would be
+     * served whichever role happened to be built first. */
+    const h = hero ? `|h${hero}` : '';
+    const key = `body|${theme}|${variant}${b}${h}|${P.key}|f${FA.id}`;
     return this._shared(key, () => {
       const parts = [];
       buildBody(P, parts, FA);
       buildOutfit(P, theme, variant, parts, bottom);
+      addHeroParts(hero, parts);
       const spec = this._spec(P);
       const boneIndex = new Map(spec.map((d, i) => [d.name, i]));
       return mergeParts(parts, boneIndex, spec);
@@ -4715,7 +4781,20 @@ export class HumanoidFactory {
     const variants = THEME_VARIANTS[theme];
     const variant = params.variant ?? variants[(rng() * variants.length) | 0];
     const paletteList = PALETTES[theme];
-    const pal = paletteList[params.palette ?? ((rng() * paletteList.length) | 0)];
+    /* `palette` is normally an INDEX into the theme's list. An OBJECT is
+     * allowed too, and is used by exactly one caller: the authored attackers.
+     *
+     * Every station palette carries a deliberately high-value secondary - see
+     * the value contract written above `PALETTES.station` - because a station
+     * civilian has to separate from a mid-grey container wall. An attacker has
+     * the opposite problem: `g1`-`g4` are one dark violet mass whose only
+     * bright note is a glowing eye, and a pale shoulder yoke cuts that mass in
+     * half. Adding a seventh station palette would have put a hostile-only
+     * scheme in a table every civilian draws from, so the exception is passed
+     * in by the one caller that needs it instead. */
+    const pal = (params.palette && typeof params.palette === 'object')
+      ? params.palette
+      : paletteList[params.palette ?? ((rng() * paletteList.length) | 0)];
 
     const build = params.build ?? (rng() < 0.3 ? 0 : rng() < 0.78 ? 1 : 2);
     const frame = params.frame ?? (rng() < 0.55 ? 0 : 1);
@@ -4737,7 +4816,11 @@ export class HumanoidFactory {
     /** Every cached geometry this character takes a hold on, in acquire order.
      *  Handed straight to the Humanoid, which gives them all back on dispose. */
     const held = [];
-    const geo = this._bodyGeometry(P, theme, variant, FA, legsSpec, held);
+    /* Authored hero features, when this character is one of the eleven roles
+     * the references name and the assets actually loaded. Absent - a plain
+     * crowd civilian, a headless test, a failed download - this is null and
+     * the character is exactly what it was before Phase 6. @see HeroAssets.js */
+    const geo = this._bodyGeometry(P, theme, variant, FA, legsSpec, held, params.hero ?? null);
 
     const skinTone = params.skinTone ?? SKIN_TONES[(rng() * SKIN_TONES.length) | 0];
     const hairColor = params.hairColor ?? pickHairColor(skinTone, rng);
@@ -4842,10 +4925,21 @@ export class HumanoidFactory {
     // so without this every average-build character in a crowd shares one skull
     // and the crowd reads as one mannequin repeated. Scaling the head bone is
     // free and changes the single silhouette element a player actually looks at.
+    /* `headScale` on top of that, for the authored hero characters.
+     *
+     * An ape's head is not a human head with a muzzle stuck on it - it is a
+     * third again as large against the same shoulders, and that ratio is most
+     * of what the eye uses to tell the two apart at any distance. Scaling the
+     * BONE rather than the geometry is what makes this a one-line change: the
+     * authored cranium, brow, muzzle, ears and fangs are all skinned to the
+     * head bone, so they grow with the skull underneath them and stay seated
+     * on it. Screenshotting the first pass without this was what showed it up -
+     * the characters read as heavyweight men wearing gorilla masks. */
+    const hs = params.headScale ?? 1;
     headBone.scale.set(
-      0.96 + rng() * 0.085,
-      0.965 + rng() * 0.075,
-      0.96 + rng() * 0.08
+      (0.96 + rng() * 0.085) * hs,
+      (0.965 + rng() * 0.075) * hs,
+      (0.96 + rng() * 0.08) * hs
     );
 
 

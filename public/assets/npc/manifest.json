@@ -1,0 +1,148 @@
+{
+  "comment": "Authored hero-character features for the station's eleven referenced roles (Phase 6, decision D4). Written by scripts/make-npc-glb.mjs; the .glb files are reproduced byte for byte by re-running it, and scripts/tests/npc-assets.test.mjs holds every number below against the file on disk. glTF materials are DISCARDED on load - each part draws in the character material slot named here, so nothing in this manifest can add a shader program. 'roles' is the whole reason there are two files rather than eleven: which parts a role shows is a manifest decision, not a geometry one. 'bones' takes an ARRAY for a part authored across the centreline: a pair of hands bound to handR alone puts the left hand on the right wrist and folds the character in half the moment it moves an arm.",
+  "assets": [
+    {
+      "id": "raider",
+      "file": "raider.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-npc-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": [
+        "cranium",
+        "brow",
+        "muzzle",
+        "fangs",
+        "ear",
+        "eyeGlow",
+        "pauldron",
+        "harness",
+        "harnessGlow",
+        "spineSpikes",
+        "armSpikes",
+        "belt",
+        "knuckle"
+      ],
+      "tris": 3436,
+      "bytes": 141208
+    },
+    {
+      "id": "crew",
+      "file": "crew.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-npc-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": [
+        "cranium",
+        "brow",
+        "muzzle",
+        "ear",
+        "collar",
+        "backpack",
+        "chestRig",
+        "chestLamp",
+        "belt",
+        "boot",
+        "knuckle"
+      ],
+      "tris": 3088,
+      "bytes": 122788
+    }
+  ],
+  "slots": {
+    "cranium": 0,
+    "brow": 0,
+    "muzzle": 0,
+    "ear": 0,
+    "knuckle": 0,
+    "boot": 1,
+    "harness": 3,
+    "chestRig": 3,
+    "belt": 3,
+    "fangs": 4,
+    "pauldron": 4,
+    "spineSpikes": 4,
+    "armSpikes": 4,
+    "collar": 4,
+    "backpack": 4,
+    "eyeGlow": 5,
+    "harnessGlow": 5,
+    "chestLamp": 5
+  },
+  "bones": {
+    "cranium": "head",
+    "brow": "head",
+    "muzzle": "head",
+    "fangs": "head",
+    "ear": "head",
+    "eyeGlow": "head",
+    "collar": "neck",
+    "pauldron": "clavicleR",
+    "harness": "spine02",
+    "harnessGlow": "spine02",
+    "spineSpikes": "spine02",
+    "backpack": "spine02",
+    "chestRig": "spine02",
+    "chestLamp": "spine02",
+    "armSpikes": ["foreArmR", "foreArmL"],
+    "belt": "pelvis",
+    "boot": ["footR", "footL"],
+    "knuckle": ["handR", "handL"]
+  },
+  "roles": {
+    "rifle": {
+      "asset": "raider",
+      "note": "g1 - furred, one pauldron, crossed bandolier. The line archetype, so the plainest.",
+      "parts": ["cranium", "brow", "muzzle", "fangs", "ear", "eyeGlow", "pauldron", "harness", "belt", "knuckle"]
+    },
+    "breaker": {
+      "asset": "raider",
+      "note": "g3 - no pauldron, a single harness with lit nodes. A brawler, so nothing on the shoulder to catch.",
+      "parts": ["cranium", "brow", "muzzle", "fangs", "ear", "eyeGlow", "harness", "harnessGlow", "belt", "knuckle"]
+    },
+    "scout": {
+      "asset": "raider",
+      "note": "g2 - crested and spined, no armour at all. Fast and badly equipped, and it should look it.",
+      "parts": ["cranium", "brow", "muzzle", "fangs", "ear", "eyeGlow", "spineSpikes", "belt", "knuckle"]
+    },
+    "lance": {
+      "asset": "raider",
+      "note": "g4 - the most armoured: pauldron, dorsal spikes and forearm spikes.",
+      "parts": ["cranium", "brow", "muzzle", "fangs", "ear", "eyeGlow", "pauldron", "spineSpikes", "armSpikes", "belt", "knuckle"]
+    },
+    "vendor": {
+      "asset": "crew",
+      "note": "n1 - working a stall, so a chest rig and no life-support pack.",
+      "parts": ["cranium", "brow", "muzzle", "ear", "collar", "chestRig", "belt", "boot", "knuckle"]
+    },
+    "guard": {
+      "asset": "crew",
+      "note": "n2 - full rig, pack and lit chest panel.",
+      "parts": ["cranium", "brow", "muzzle", "ear", "collar", "chestRig", "chestLamp", "backpack", "belt", "boot", "knuckle"]
+    },
+    "loiterer": {
+      "asset": "crew",
+      "note": "n3 - off duty. Belt and boots only, which is what makes the others read as on duty.",
+      "parts": ["cranium", "brow", "muzzle", "ear", "collar", "belt", "boot", "knuckle"]
+    },
+    "spectator": {
+      "asset": "crew",
+      "note": "n5 - seated, watching. Rig without the pack, which would be in the way of a bench.",
+      "parts": ["cranium", "brow", "muzzle", "ear", "collar", "chestRig", "belt", "boot", "knuckle"]
+    },
+    "wanderer": {
+      "asset": "crew",
+      "note": "n4 - carrying a pack because they are going somewhere.",
+      "parts": ["cranium", "brow", "muzzle", "ear", "collar", "backpack", "belt", "boot", "knuckle"]
+    },
+    "lorekeeper": {
+      "asset": "crew",
+      "note": "n6 - seated at a gateway with a lit panel to read from.",
+      "parts": ["cranium", "brow", "muzzle", "ear", "collar", "chestRig", "chestLamp", "belt", "boot", "knuckle"]
+    },
+    "quest_manager": {
+      "asset": "crew",
+      "note": "n7 - the dispatcher: everything, because they are the one you are meant to walk towards.",
+      "parts": ["cranium", "brow", "muzzle", "ear", "collar", "chestRig", "chestLamp", "backpack", "belt", "boot", "knuckle"]
+    }
+  }
+}

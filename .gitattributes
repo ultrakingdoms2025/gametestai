@@ -1,2 +1,17 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Binary assets, said out loud rather than left to git's NUL-byte heuristic.
+#
+# Three test files assert that re-running a generator reproduces a committed
+# .glb BYTE FOR BYTE (ship-assets, bastion-asset, ship-dray, pike-assets,
+# npc-assets). Any line-ending normalisation applied to those bytes on
+# checkout would fail every one of them, and it would fail them in a way this
+# project has already been bitten by once: `core.autocrlf` has previously made
+# a scrape green in a worktree and red in the checkout of the same commit.
+#
+# The heuristic would almost certainly get these right on its own. "Almost
+# certainly" is not what a byte-for-byte assertion should rest on.
+*.glb binary
+*.ktx2 binary
+*.wasm binary

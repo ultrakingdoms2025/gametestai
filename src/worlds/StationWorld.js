@@ -34,6 +34,7 @@ import { buildOuterRing, LINK_MOUTH_HALF_DEG } from './station/OuterRing.js';
 import { buildTower, drawFloorSign, railRect } from './station/Tower.js';
 import { buildControlTower } from './station/ControlTower.js';
 import { DistanceLod } from './lod/DistanceLod.js';
+import { loadHeroAssets } from '../npc/HeroAssets.js';
 
 /**
  * AETHER NEXUS - "Aether Nexus Station", the entry world.
@@ -1884,6 +1885,21 @@ export class StationWorld extends World {
     onProgress?.(0.16, 'Fabricating materials');
     await yieldFrame();
     this._buildMaterials();
+
+    /* The authored hero-character features (Phase 6, decision D4).
+     *
+     * AWAITED HERE, and here specifically, for the same reason `DockWorld`
+     * awaits the hull skins before it builds a ship: `NPCManager.spawnForWorld`
+     * is called synchronously by `WorldManager` after this build resolves, and
+     * `heroParts()` is a synchronous read of whatever has already landed. A
+     * fetch merely *started* early would be a race the station would usually
+     * win and occasionally lose, and the failure mode of losing it is silent -
+     * a plaza of procedural humans that looks like nothing was ever built.
+     *
+     * Never rejects. A missing manifest or a 404 resolves to an empty map and
+     * every character is the procedural one the whole test suite measures. */
+    onProgress?.(0.18, 'Thawing the ring crew');
+    await loadHeroAssets();
 
     await step(0.22, 'Opening the sky', this._buildSpace);
     await step(0.32, 'Raising the pressure hull', this._buildHull);

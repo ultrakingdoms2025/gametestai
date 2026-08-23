@@ -87,6 +87,7 @@ export class SaveGame {
   constructor({
     bus, player, worldManager, economy, loadout, mounts, input, inventory, avatar, cosmetics,
     relics, viewpoints, trials, races, ships, piloting, mining, objectives, charters, onboarding,
+    retention, caches,
   }) {
     this.bus = bus;
     this.player = player;
@@ -146,6 +147,28 @@ export class SaveGame {
      * @type {any}
      */
     this.charters = charters ?? null;
+    /**
+     * The daily, the weekly and the season record.
+     *
+     * Assigned in `main.js` beside `charters`, because it reads the same board.
+     * Two sets of ids - which periods were claimed, and which worlds were
+     * charted inside which window - and nothing numeric: the run of consecutive
+     * days is derived on read, so there is no stored number for a load to
+     * disagree with.
+     * @type {any}
+     */
+    this.retention = retention ?? null;
+    /**
+     * Which caches are still on their restock clock.
+     *
+     * Assigned in `main.js` rather than constructed here, because `Caches`
+     * exists long before this file does. It is in the save for one measured
+     * reason: the restock timer used to die on `world:changed`, so stepping
+     * through a gateway and back refilled every cache in the world you left.
+     * With the ledger persisted the 210 seconds mean 210 seconds.
+     * @type {any}
+     */
+    this.caches = caches ?? null;
     /**
      * The opening sequence, by step id.
      *
@@ -563,6 +586,13 @@ export class SaveGame {
       /* Which opening steps are done. One set of ids - see
        * `Onboarding.serialize` for why there is no index beside it. */
       onboarding: safe(() => this.onboarding?.serialize?.()) ?? null,
+      /* Claimed days and weeks, and the season record. Two more sets of ids. */
+      retention: safe(() => this.retention?.serialize?.()) ?? null,
+      /* Which caches are still on their restock clock, keyed by site identity.
+       * Not the site LIST - placement is derived from the world and rebuilds
+       * itself on entry, so a saved list of positions would be a second copy of
+       * something the world already knows. */
+      caches: safe(() => this.caches?.serialize?.()) ?? null,
     };
   }
 
@@ -874,6 +904,17 @@ export class SaveGame {
    * @param {any} data the whole payload
    */
   _restoreProgress(data) {
+    /* FIRST, and before anything announces. `Charters.deserialize` below
+     * re-derives every record and publishes a board that can jump by a hundred
+     * relics at once; the retention loop watches that channel, and without this
+     * window a returning player would be handed a free daily on every boot.
+     *
+     * A method rather than an event, because the ordering of two subscribers on
+     * one channel is not something to rest a guarantee on - and closed by
+     * `resume()` at the bottom of THIS method rather than by the `save:loaded`
+     * the caller emits, because that emit is skipped on the failure path and
+     * the loop would stay switched off for the rest of the session. */
+    this.retention?.resync?.();
     try {
       if (data.relics) this.relics?.deserialize?.(data.relics);
     } catch (err) {
@@ -931,6 +972,23 @@ export class SaveGame {
     } catch (err) {
       console.warn('[SaveGame] onboarding restore skipped:', err?.message ?? err);
     }
+    /* AFTER charters, like everything else that reads the board. The `resync`
+     * at the top of this method is what stops the announcement `charters`
+     * just made from reading as a day's play; the `save:loaded` emitted by the
+     * caller closes that window. */
+    try {
+      if (data.retention) this.retention?.deserialize?.(data.retention);
+    } catch (err) {
+      console.warn('[SaveGame] retention restore skipped:', err?.message ?? err);
+    }
+    try {
+      if (data.caches) this.caches?.deserialize?.(data.caches);
+    } catch (err) {
+      console.warn('[SaveGame] cache restock restore skipped:', err?.message ?? err);
+    }
+    /* The other end of the `resync` at the top. Every step between the two is
+     * individually guarded, so this line is reached whatever any of them did. */
+    this.retention?.resume?.();
   }
 
   /**

@@ -62,6 +62,7 @@ import { syncProgress } from './systems/ProgressSync.js';
 import { Viewpoints } from './systems/Viewpoints.js';
 import { SpaceObjectives } from './systems/SpaceObjectives.js';
 import { Charters } from './systems/Charters.js';
+import { Retention } from './systems/Retention.js';
 import { Onboarding } from './systems/Onboarding.js';
 import { Interiors } from './systems/Interiors.js';
 import { AudioDirector } from './audio/AudioDirector.js';
@@ -603,6 +604,18 @@ const charters = new Charters({
   races: { read: () => save.raceLedger() },
 });
 save.charters = charters;
+/* THE CLOCK. A daily drawn from the player's own incomplete records, a weekly
+ * that asks for a different world, and a season that names a window rather than
+ * wiping one. It authors no tasks - the pool IS `charters.records()` - and it
+ * pays no credits: the reward is the record it just advanced, plus a
+ * consignment of the caches already emptied in that world.
+ *
+ * Constructed after both of the things it reads, and handed to `save` on the
+ * next line for the same reason `charters` is. */
+const retention = new Retention({ bus, charters, caches });
+save.retention = retention;
+/* The cache restock ledger, so the 210-second timer survives a gateway. */
+save.caches = caches;
 const onboarding = new Onboarding({ bus, inventory });
 save.onboarding = onboarding;
 /* Ask the browser not to evict this origin's storage under pressure. Fire and
@@ -772,6 +785,10 @@ async function syncAccountProgress() {
     /* The mission spine. Only the charter and deed SETS travel - the learned
      * rosters stay on the device that learned them. */
     charters,
+    /* The claimed day and week ids, and which worlds were charted in which
+     * window. Two unions of ids; nothing numeric travels - see the note on
+     * `retention` in `progressLedger.ts`. */
+    retention,
     onboarding,
   });
   if (res.ok && (res.applied || res.changed)) {
@@ -1031,7 +1048,7 @@ if (overrides.dev) {
      * `creditReporter` is: the only way to check that a record actually fills
      * in is to play the world and read the board back, and a unit test proves
      * the arithmetic rather than the loop. */
-    charters, onboarding,
+    charters, retention, onboarding,
     /* The only door out of this file the harness is allowed through. Kept
      * behind `__dev` rather than spread across GAME so it is obvious at a call
      * site that a measurement is reaching into the integration layer. */

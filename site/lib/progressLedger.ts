@@ -89,6 +89,22 @@ export const KINDS: Readonly<Record<string, { shape: 'set' } | { shape: 'value';
     // player who finished the tutorial on a phone is not shown it again on a
     // desktop - which is exactly what signing in is sold on.
     onboarding: { shape: 'set' },
+    // The retention loop. `retention` is the set of period ids already claimed
+    // ('daily/2026-08-23', 'weekly/2026-W34'); `season` is scoped by season id
+    // and holds the worlds whose record was completed inside that window.
+    //
+    // SETS, deliberately, and not values. The only number the loop has is a run
+    // of consecutive days, and there is no honest merge rule for one: MAX would
+    // mean "whichever device's clock ran furthest ahead wins". So it is derived
+    // on read from the day ids on the device asking, and never travels.
+    //
+    // Both are unions of ids, which is what this ledger is FOR, and both are
+    // grow-only by construction: a missed day is a day absent from the set, and
+    // a season turning over adds an id rather than replacing one. Nothing here
+    // ever needs to come out, which is what makes a never-subtracting merge the
+    // right merge rather than merely a safe one.
+    retention: { shape: 'set' },
+    season: { shape: 'set' },
 
     /* Values. */
     // A best time, and the reason `mode` exists at all: every other number here

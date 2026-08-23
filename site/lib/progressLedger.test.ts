@@ -258,4 +258,70 @@ suite('progressLedger (integration)', () => {
       await other.end();
     }
   });
+
+  /* ------------------------------------------------------------------ */
+  /* The retention loop                                                  */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Two devices, two evenings, and no clock.
+   *
+   * The retention loop is the one thing in this ledger whose data is ABOUT
+   * time, which is exactly why it must not be reconciled BY time. A day id is
+   * an id: 'daily/2026-08-23' means the same thing whichever device wrote it
+   * and whatever either device's clock says, so the union that cannot lose is
+   * the same union relics get, and a phone a few minutes fast cannot delete a
+   * desktop's Tuesday.
+   *
+   * A value kind with a MAX would have been the obvious shape for a run of
+   * consecutive days and is the trap: it would mean "whichever device's clock
+   * ran furthest ahead wins". The run is derived on the device that asks, from
+   * these ids, and never travels.
+   */
+  it('claimed days and weeks union across devices without a clock', async () => {
+    const phone = {
+      items: [{ kind: 'retention', scope: '', keys: ['daily/2026-08-22', 'weekly/2026-W34'] }],
+    };
+    const desktop = {
+      items: [{ kind: 'retention', scope: '', keys: ['daily/2026-08-23', 'weekly/2026-W34'] }],
+    };
+    // Desktop first, deliberately: the later day arrives before the earlier one.
+    await mergeProgress(db, PLAYER, desktop);
+    const merged = await mergeProgress(db, PLAYER, phone);
+
+    expect(merged.state.items.retention['']).toEqual(
+      ['daily/2026-08-22', 'daily/2026-08-23', 'weekly/2026-W34']
+    );
+    // The week both devices claimed is one row, not two.
+    expect(merged.changed).toBe(1);
+  });
+
+  it('a season keeps its own window, and a new one takes nothing away', async () => {
+    await mergeProgress(db, PLAYER, {
+      items: [{ kind: 'season', scope: '2026-Q3', keys: ['medieval', 'sports'] }],
+    });
+    /* A later season, and a payload that says nothing at all about the earlier
+     * one. That omission is a device that has not seen it, never a device
+     * reporting it was lost - the inference that makes last-write-wins destroy
+     * data, and the reason nothing in this loop can expire. */
+    const after = await mergeProgress(db, PLAYER, {
+      items: [{ kind: 'season', scope: '2026-Q4', keys: ['citadel'] }],
+    });
+
+    expect(after.state.items.season['2026-Q3']).toEqual(['medieval', 'sports']);
+    expect(after.state.items.season['2026-Q4']).toEqual(['citadel']);
+  });
+
+  it('nothing numeric may be filed under the retention loop', async () => {
+    /* Fails closed, and it has to: a value entry under a set kind is refused
+     * rather than stored, so a client that tried to file its own run of days as
+     * a number gets told no instead of quietly opening a second ledger nobody
+     * knows how to merge. */
+    const res = await mergeProgress(db, PLAYER, {
+      values: [{ kind: 'retention', scope: '', key: 'streak', value: 400 }],
+    });
+    expect(res.rejected).toContain('retention');
+    expect(res.changed).toBe(0);
+    expect(res.state.values.retention).toBeUndefined();
+  });
 });

@@ -313,27 +313,28 @@ export class QuestSystem {
     }
   }
 
-  /**
-   * Manually mark a non-auto step as done (called from QuestBoard).
-   * @param {string} engagementId
-   * @param {number} stepOrder
-   */
-  async markStepDone(engagementId, stepOrder) {
-    const entry = this.engagements.get(engagementId);
-    if (!entry || entry.engagement.status !== 'in_progress') return;
-    const steps = this._parseSteps(entry.quest?.steps);
-    const stepDef = steps.find((s) => s.order === stepOrder);
-    if (!stepDef) return;
-    const state = entry.stepStates[stepOrder] ?? { done: false, have: 0 };
-    if (state.done) return;
-    state.have  = stepDef.count;
-    state.done  = true;
-    entry.stepStates[stepOrder] = state;
-    this.bus?.emit('hud:notify', { text: `Step done: ${stepDef.label}`, tone: 'good' });
-    this._syncQueue.add(engagementId);
-    this._checkQuestComplete(engagementId);
-    this.bus?.emit('quests:changed', { engagements: this.engagements });
-  }
+  /* `markStepDone(engagementId, stepOrder)` was here, documented as "called
+   * from QuestBoard". It was called from nowhere - one reference in the whole
+   * tree, its own definition - and it had been that way long enough that no
+   * board ever grew the button.
+   *
+   * What it did was set `have = stepDef.count; done = true` with NO validation
+   * of the step type, then call `_checkQuestComplete`, which posts the
+   * completion the server pays out on. Any step of any kind, including a `kill`
+   * step, could be marked satisfied by calling it - and `window.GAME` exposes
+   * `questSystem` under `?dev=1`, which `main.js:908` is explicit is "not a
+   * security boundary, because anyone who wants the handle can simply add the
+   * parameter".
+   *
+   * So it was an unused method whose only remaining function was to be a free
+   * quest completion. Deleted rather than guarded: a manual-completion path
+   * that nothing calls has no behaviour to preserve, and if a board ever needs
+   * one it should be written against the step types that genuinely cannot
+   * auto-track, rather than against all eleven.
+   *
+   * Note this does not close quest forgery in general - `completeQuestEngagement`
+   * never reads `step_states`, so the completion POST is itself the assertion.
+   * That is recorded in the mission architecture, section 11. */
 
   destroy() {
     for (const off of this._offs) off?.();
@@ -519,7 +520,13 @@ export class QuestSystem {
      * rather than on the species, so a predator added later still counts. */
     if (npc.isBeast && npc.def?.predator === false) return;
     this._advanceSteps('kill', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
-    this._advanceSteps('defend', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
+    /* `defend` is NOT advanced here, and that is the fix rather than an
+     * omission. Every authored defend step means "land N hits" and says so in
+     * its own label - "every hit counts, she does not have to fall". A killing
+     * blow emits `npc:damaged` and then `npc:killed`, so advancing on both made
+     * the final hit count twice: "land 6 hits" fell to three kills, and the
+     * label was lying to the player about its own rule. `_onNpcDamaged` is the
+     * single path now, and it sees the killing blow like any other. */
   }
   
   _onNpcDamaged(e) {

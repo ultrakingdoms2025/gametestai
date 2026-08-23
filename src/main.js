@@ -812,6 +812,10 @@ if (overrides.dev) {
   window.GAME = {
     engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
+    /* The reporter that makes the SERVER own the balance. Exposed because the
+     * only way to check a credit source still pays is to play and look at what
+     * it queued -- a unit test proves the endpoint, never the loop. */
+    creditReporter,
     waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, mountMenu, caches, contracts,
   cheats, audio, audioMenu, relics, viewpoints, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   ships, shipMenu, piloting, spaceCombat, flightHUD, mining, objectives,

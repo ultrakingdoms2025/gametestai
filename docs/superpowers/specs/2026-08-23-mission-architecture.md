@@ -62,6 +62,27 @@ Today six of the eight worlds are near-duplicates: relics + caches + a vendor + 
 + interiors. The differences that exist are real but unstated. This assigns each place one job it
 alone does, and makes its record reflect that job.
 
+> **CORRECTION, after Phase 4 implemented this.** The "Record is" column below
+> contradicts §1 and §1 wins. §1 says a record is **learned from what a world
+> publishes**; this column hand-writes one per world, which is exactly the
+> constant that goes stale — the failure this repository records more than any
+> other. Three rows were wrong on contact with the tree:
+>
+> - **Station.** "First trade, first mount, first gateway" implies a quick first
+>   charter. The station publishes **110 relics**, so under the learn rule its
+>   record is 110 relics plus its deeds, and the first charter is a long haul.
+>   Phase 4 kept the learn rule. If a fast first charter is wanted it has to come
+>   from somewhere other than redefining the record — a smaller opening deed set,
+>   or the tutorial's own completion.
+> - **The Coil.** "Centres reached" is persisted by nothing. Phase 4 made it a
+>   deed off `maze:centre-found`, which is new persistence this document did not
+>   describe.
+> - **Dock and planets.** "Hulls flown" and "elements assayed" are not per-world
+>   anywhere. Not built.
+>
+> Read the column below as **intent about what each place is FOR**, which still
+> holds, and never as the record's definition. The definition is §1.
+
 | Place | Its job | Record is |
 |---|---|---|
 | **Station** (hub, 744 m dome) | Arrival, orientation, the only place with all five shop categories | The onboarding record: first trade, first mount, first gateway |

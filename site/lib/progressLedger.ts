@@ -72,12 +72,37 @@ export const KINDS: Readonly<Record<string, { shape: 'set' } | { shape: 'value';
     mining: { shape: 'set' },
     wing: { shape: 'set' },
     objective_paid: { shape: 'set' },
+    // The mission spine. `charter` is the set of world ids whose record is
+    // complete; `deed` is scoped per world and holds the named one-off acts
+    // (first trade, first mount, the centre of the Coil) that no other system
+    // keeps. Both are unions of ids, which is what this ledger is for.
+    //
+    // Deliberately NOT here: the learned per-world ROSTERS. They are a record
+    // of what a world published, not of what a player did - the same reason
+    // `elements` and `wingRoster` stay local (see ProgressSync's header). A
+    // roster rebuilds itself the next time the player walks in, and syncing one
+    // would let a device running an older build hand another device a
+    // denominator its own world no longer has.
+    charter: { shape: 'set' },
+    deed: { shape: 'set' },
+    // The opening sequence, by step id. Small, monotone, and the reason a
+    // player who finished the tutorial on a phone is not shown it again on a
+    // desktop - which is exactly what signing in is sold on.
+    onboarding: { shape: 'set' },
 
     /* Values. */
-    // A best time. The ONLY 'min' in the file, and the reason `mode` exists at
-    // all: every other number here grows, and a lap time that grew would be a
-    // player's record being deleted by their worse run on another device.
+    // A best time, and the reason `mode` exists at all: every other number here
+    // grows, and a lap time that grew would be a player's record being deleted
+    // by their worse run on another device. (It was the only 'min' in the file
+    // until `race` joined it below, which is the same claim about the same
+    // hazard on a different clock.)
     trial: { shape: 'value', mode: 'min' },
+    // A circuit best, scoped by world and keyed `circuitId/difficulty`. The
+    // SECOND 'min' in the file, and it is one for the same reason `trial` is:
+    // a slower run on another device is not news, and a last-write-wins sync
+    // would let it delete a personal best. Races persisted nothing at all
+    // before the mission drop - not locally and not here.
+    race: { shape: 'value', mode: 'min' },
     kills: { shape: 'value', mode: 'max' },
     ore: { shape: 'value', mode: 'max' },
     // 'sighted' and 'landed' encode as 1 and 2, so GREATEST is "the furthest

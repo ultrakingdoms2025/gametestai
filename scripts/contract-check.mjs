@@ -316,6 +316,22 @@ const CONTRACT = [
     methods: ['update', 'progress', 'chart', 'reached', 'serialize', 'deserialize', 'dispose'],
   },
   {
+    /* The mission spine. `record` and `records` are what the HUD and the pause
+     * hub draw; `progress` is the one-object read every panel takes. */
+    file: 'src/systems/Charters.js',
+    exports: ['Charters', 'CHARTER_COLUMNS', 'CHARTER_DEEDS', 'CHARTER_RANKS', 'reputationOf'],
+    methods: ['record', 'records', 'progress', 'mastery', 'collection',
+      'isChartered', 'serialize', 'deserialize', 'dispose'],
+  },
+  {
+    /* The opening sequence. `next` is the contract the acceptance test rests
+     * on - a first-run player always has a next action - so it is named here
+     * rather than left as an implementation detail. */
+    file: 'src/systems/Onboarding.js',
+    exports: ['Onboarding', 'ONBOARDING_STEPS', 'ONBOARDING_GRANT'],
+    methods: ['next', 'steps', 'progress', 'lockedReward', 'serialize', 'deserialize', 'dispose'],
+  },
+  {
     file: 'src/minigames/RooftopTrial.js',
     exports: ['createRooftopTrial', 'RooftopTrial', 'ROOFTOP_GAME_ID', 'parTimes', 'medalFor',
       'venueBounds', 'venueCoversRoute', 'START_RADIUS'],
@@ -901,7 +917,14 @@ const CONTRACT_V2 = [
   { file: 'src/weapons/Bow.js', exports: [], methods: ['tryFire'] },
   { file: 'src/systems/Projectiles.js', exports: ['ProjectileSystem'], methods: ['spawn', 'fixedUpdate'] },
   { file: 'src/systems/Economy.js', exports: ['Economy'], methods: ['add', 'serialize', 'deserialize'] },
-  { file: 'src/systems/SaveGame.js', exports: ['SaveGame'], methods: ['save', 'load', 'hasSave'] },
+  {
+    file: 'src/systems/SaveGame.js',
+    exports: ['SaveGame'],
+    /* The two best-time ledgers are named because `Charters` and `ProgressSync`
+     * both call them by name and neither has an owning system to fall back on -
+     * a rename would be a silent loss of every circuit record. */
+    methods: ['save', 'load', 'hasSave', 'trialLedger', 'mergeTrials', 'raceLedger', 'mergeRaces'],
+  },
   { file: 'src/systems/Unstuck.js', exports: ['UnstuckSystem'], methods: ['fixedUpdate', 'unstuck'] },
   { file: 'src/mounts/MountManager.js', exports: ['MountManager'], methods: ['summon', 'dismount', 'update'] },
   { file: 'src/mounts/Hoverboard.js', exports: [], methods: [] },

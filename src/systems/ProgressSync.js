@@ -18,10 +18,12 @@
  * ── What travels, and what does not ───────────────────────────────────────
  *
  * Only monotone facts: which relics, which viewpoints, which seams, which
- * wings, best times, high-water counters. Rosters (`elements`, `wingRoster`)
- * do NOT travel - they are lookups learned from the worlds a player has
- * visited, not progress, and they rebuild themselves. Position, health, the
- * active world and the loadout do not travel either; see the design note in
+ * wings, which charters, which deeds, which opening steps, best times, and
+ * high-water counters. Rosters (`elements`, `wingRoster`, and the charter
+ * board's per-world rosters) do NOT travel - they are lookups learned from the
+ * worlds a player has visited, not progress, and they rebuild themselves.
+ * Position, health, the active world and the loadout do not travel either; see
+ * the design note in
  * `docs/superpowers/specs/2026-08-23-save-parity-design.md` section 6.
  *
  * Because rosters stay local, applying the server's answer never replaces a
@@ -51,7 +53,9 @@ const keysOf = (v) => (isObj(v) ? Object.keys(v) : []);
  * mining, or with a system that throws in `serialize`, must still sync the
  * others rather than lose the lot.
  */
-export function toPayload({ relics, viewpoints, mining, objectives, trials } = {}) {
+export function toPayload({
+  relics, viewpoints, mining, objectives, trials, races, charters, onboarding,
+} = {}) {
   const items = [];
   const values = [];
   const set = (kind, scope, keys) => {
@@ -122,6 +126,45 @@ export function toPayload({ relics, viewpoints, mining, objectives, trials } = {
     }
   }
 
+  const rc = safe(() => races?.read?.());
+  if (isObj(rc) && isObj(rc.best)) {
+    for (const key of keysOf(rc.best)) {
+      const row = rc.best[key];
+      if (!isObj(row)) continue;
+      /* Keyed `worldId/circuitId/difficulty` locally. The ledger scopes by
+       * world, so the remaining TWO parts stay together as the item key - the
+       * grade is half the identity, not a qualifier on it. See
+       * `SaveGame._recordRace`. */
+      const slash = key.indexOf('/');
+      const world = slash > 0 ? key.slice(0, slash) : '';
+      const rest = slash > 0 ? key.slice(slash + 1) : key;
+      // Milliseconds, for the same reason a trial time is: the column is BIGINT.
+      val('race', world, rest, Math.round(Number(row.time) * 1000));
+    }
+  }
+
+  /* The mission spine. Only the two identity SETS travel; the learned rosters
+   * stay local, exactly as `elements` and `wingRoster` do and for the reason in
+   * this file's header - a roster is a record of what a world published, not of
+   * what a player did, and it rebuilds itself on the next visit. */
+  const c = safe(() => charters?.serialize?.());
+  if (isObj(c)) {
+    set('charter', '', c.charters);
+    /* `worldId/deedId` locally; scoped by world here, so a deed cannot be
+     * confused with the same-named deed of another world. */
+    const byWorld = {};
+    for (const key of Array.isArray(c.deeds) ? c.deeds : []) {
+      if (typeof key !== 'string') continue;
+      const slash = key.indexOf('/');
+      if (slash <= 0) continue;
+      (byWorld[key.slice(0, slash)] ??= []).push(key.slice(slash + 1));
+    }
+    for (const world of keysOf(byWorld)) set('deed', world, byWorld[world]);
+  }
+
+  const ob = safe(() => onboarding?.serialize?.());
+  if (isObj(ob)) set('onboarding', '', ob.done);
+
   return { items, values };
 }
 
@@ -138,7 +181,9 @@ const valuesOf = (state, kind) => (isObj(state?.values) && isObj(state.values[ki
  * Returns the number of systems it actually reached, so a caller can tell
  * "nothing to do" from "everything failed".
  */
-export function applyState(state, { relics, viewpoints, mining, objectives, trials } = {}) {
+export function applyState(state, {
+  relics, viewpoints, mining, objectives, trials, races, charters, onboarding,
+} = {}) {
   if (!isObj(state)) return 0;
   let applied = 0;
   const safe = (fn) => { try { return fn(); } catch { return false; } };
@@ -253,6 +298,61 @@ export function applyState(state, { relics, viewpoints, mining, objectives, tria
       }
     }
     if (safe(() => trials.merge(best)) !== false) applied++;
+  }
+
+  const raceVals = valuesOf(state, 'race');
+  if (typeof races?.merge === 'function' && keysOf(raceVals).length) {
+    const best = {};
+    for (const world of keysOf(raceVals)) {
+      for (const rest of keysOf(raceVals[world])) {
+        best[`${world}/${rest}`] = { time: Number(raceVals[world][rest]) / 1000, worldId: world };
+      }
+    }
+    if (safe(() => races.merge(best)) !== false) applied++;
+  }
+
+  /* Charters and deeds. The local ROSTERS are kept and only the two sets are
+   * overwritten, the same rule the objectives block above follows for its
+   * rosters - and for the stronger version of the reason: a roster arriving
+   * from another device could name content this build's worlds no longer have,
+   * which would leave a denominator nobody can fill.
+   *
+   * The charter set is handed over as a claim, not as truth.
+   * `Charters.deserialize` clamps every id in it against the record that earned
+   * it, so a device that finished a world contributes its charter only where
+   * the underlying relics, viewpoints and seams merged across with it. */
+  if (charters?.deserialize && charters?.serialize) {
+    const base = safe(() => charters.serialize());
+    if (isObj(base)) {
+      const next = { ...base };
+      let touched = false;
+      const won = itemsOf(state, 'charter')[''];
+      if (won?.length) {
+        next.charters = [...new Set([...(base.charters ?? []), ...won])];
+        touched = true;
+      }
+      const deedWorlds = itemsOf(state, 'deed');
+      if (keysOf(deedWorlds).length) {
+        const merged = new Set(base.deeds ?? []);
+        for (const world of keysOf(deedWorlds)) {
+          for (const id of deedWorlds[world] ?? []) merged.add(`${world}/${id}`);
+        }
+        next.deeds = [...merged];
+        touched = true;
+      }
+      if (touched && safe(() => charters.deserialize(next)) !== false) applied++;
+    }
+  }
+
+  const steps = itemsOf(state, 'onboarding')[''];
+  if (onboarding?.deserialize && steps?.length) {
+    /* UNION with what this device already has, never a replacement. A phone
+     * that has done three steps must not un-teach the five this desktop did,
+     * and `deserialize` REPLACES by design - so the union is built here, which
+     * is the same shape the objectives block uses. */
+    const base = safe(() => onboarding.serialize?.());
+    const done = new Set([...(isObj(base) && Array.isArray(base.done) ? base.done : []), ...steps]);
+    if (safe(() => onboarding.deserialize({ done: [...done] })) !== false) applied++;
   }
 
   return applied;

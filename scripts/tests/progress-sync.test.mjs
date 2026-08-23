@@ -272,3 +272,140 @@ test('the last-write-wins blob carries a timestamp to arbitrate on', () => {
   assert.ok(!/\bcredits:/.test(body),
     'the balance is the server\'s and must never ride this payload again');
 });
+
+/* ====================================================================== */
+/* The mission spine                                                       */
+/* ====================================================================== */
+
+test('every kind this file sends is a kind the ledger knows', async () => {
+  /* THE GATE THAT MATTERS MOST HERE, and it is new with the mission drop
+   * because that drop added four kinds at once.
+   *
+   * `mergeProgress` REJECTS an unknown kind rather than storing it: it lands in
+   * `rejected[]`, the client logs one console line nobody reads, and the
+   * player's progress in that kind silently never crosses a device. Nothing
+   * errors. So the two lists are compared directly, against a payload that
+   * exercises every producer in `toPayload`. */
+  const { Charters } = await import('../../src/systems/Charters.js');
+  const ledgerSrc = readFileSync(new URL('../../site/lib/progressLedger.ts', import.meta.url), 'utf8');
+  const block = ledgerSrc.slice(
+    ledgerSrc.indexOf('Object.freeze({'),
+    ledgerSrc.indexOf('export type ProgressKind')
+  );
+  const known = new Set([...block.matchAll(/^\s{4}(\w+):\s*\{\s*shape/gm)].map((m) => m[1]));
+  assert.ok(known.size >= 10, `the KINDS scrape found ${known.size} kinds - it has broken`);
+
+  const bus = { on: () => () => {}, emit: () => {} };
+  const charters = new Charters({ bus, worldManager: { ids: ['station'], displayNameOf: (i) => i } });
+  /* All three station deeds, so the record is COMPLETE and there is a charter
+   * in the payload. With an incomplete record `toPayload` sends no `charter`
+   * group at all - an empty list is not a group - and this case passed with the
+   * kind deleted from the ledger, which is the failure it exists to catch. */
+  charters.deserialize({
+    rosters: {},
+    charters: [],
+    deeds: ['station/trade', 'station/mount', 'station/gateway'],
+  });
+  assert.equal(charters.charteredCount, 1, 'the fixture does not produce a charter');
+
+  const { items, values } = toPayload({
+    relics: recorder({ found: { citadel: 1 }, foundIds: { citadel: ['0:0'] }, paid: ['a'] }),
+    viewpoints: recorder({ worlds: { citadel: ['v'] }, charts: { citadel: ['c'] }, sets: ['citadel'] }),
+    mining: recorder({ taken: ['cinder/tephra_1'], mined: 1, credits: 9 }),
+    objectives: recorder({
+      wings: ['ashlane'], kills: { skiff: 2 }, survey: { cinder: 'landed' },
+      ore: { tephra: { n: 1, credits: 9 } }, killTier: 1, oreTier: 0,
+      wingSet: true, surveySet: false, landfallSet: false,
+    }),
+    trials: { read: () => ({ best: { 'citadel/ascent': { time: 63 } } }) },
+    races: { read: () => ({ best: { 'race/vellum/expert': { time: 101.5 } } }) },
+    charters,
+    onboarding: { serialize: () => ({ done: ['move'] }) },
+  });
+
+  const sent = new Set([...items.map((g) => g.kind), ...values.map((v) => v.kind)]);
+  assert.ok(sent.size >= 14, `only ${sent.size} kinds were produced - the fixture has stopped exercising them`);
+  for (const kind of sent) {
+    assert.ok(known.has(kind), `ProgressSync sends "${kind}", which progressLedger.ts refuses`);
+  }
+});
+
+test('charters and deeds travel, and the learned rosters do not', async () => {
+  const { Charters } = await import('../../src/systems/Charters.js');
+  const bus = { on: () => () => {}, emit: () => {} };
+  const charters = new Charters({ bus, worldManager: { ids: ['maze'], displayNameOf: (i) => i } });
+  charters.deserialize({
+    rosters: { maze: { deeds: 1 }, cinder: { seams: 110 } },
+    charters: [],
+    deeds: ['maze/centre'],
+  });
+
+  const { items } = toPayload({ charters });
+  const deed = items.find((g) => g.kind === 'deed');
+  assert.ok(deed, 'no deed group was sent');
+  assert.equal(deed.scope, 'maze', 'a deed is not scoped to the world it belongs to');
+  assert.deepEqual(deed.keys, ['centre']);
+
+  /* The rosters are what a WORLD published, not what a player did. A device on
+   * an older build could otherwise hand this one a denominator its own worlds
+   * no longer have, and the charter would become uncompletable. */
+  const flat = JSON.stringify(items);
+  assert.ok(!flat.includes('110'), 'a learned roster was sent to the server');
+  assert.ok(!items.some((g) => g.kind === 'roster'), 'the rosters are travelling');
+});
+
+test('a charter arriving from another device is a claim, not a verdict', async () => {
+  const { Charters } = await import('../../src/systems/Charters.js');
+  const bus = { on: () => () => {}, emit: () => {} };
+  const charters = new Charters({
+    bus, worldManager: { ids: ['maze', 'citadel'], displayNameOf: (i) => i },
+  });
+
+  /* The server says both are charted. The Coil's record is one deed and this
+   * device does not hold it; the citadel's record is not even known here. A
+   * sync that took either on trust would mint charter rank from a POST. */
+  applyState({ items: { charter: { '': ['maze', 'citadel'] } }, values: {} }, { charters });
+
+  assert.equal(charters.isChartered('maze'), false, 'a forged charter was adopted');
+  assert.equal(charters.isChartered('citadel'), false, 'a charter for an unsurveyed world was adopted');
+
+  /* And with the deed it is made of, it stands - which is the half that has to
+   * work or nothing crosses devices at all. */
+  applyState({
+    items: { charter: { '': ['maze'] }, deed: { maze: ['centre'] } },
+    values: {},
+  }, { charters });
+  assert.equal(charters.isChartered('maze'), true, 'a charter backed by its own deed did not cross');
+});
+
+test('a circuit best crosses with its grade intact', () => {
+  const { values } = toPayload({
+    races: { read: () => ({ best: { 'race/cinder/expert': { time: 101.5 } } }) },
+  });
+  const row = values.find((v) => v.kind === 'race');
+  assert.ok(row, 'no circuit time was sent');
+  assert.equal(row.scope, 'race');
+  assert.equal(row.key, 'cinder/expert', 'the grade was dropped, so easy and expert are one record');
+  assert.equal(row.value, 101500, 'the time was not sent in milliseconds and a BIGINT would truncate it');
+
+  const merged = [];
+  applyState({ items: {}, values: { race: { race: { 'cinder/expert': 88250 } } } }, {
+    races: { merge: (best) => merged.push(best) },
+  });
+  assert.deepEqual(merged, [{ 'race/cinder/expert': { time: 88.25, worldId: 'race' } }]);
+});
+
+test('the opening sequence unions across devices rather than replacing', () => {
+  const local = { done: ['move', 'talk'] };
+  const seen = [];
+  applyState({ items: { onboarding: { '': ['fire'] } }, values: {} }, {
+    onboarding: {
+      serialize: () => local,
+      deserialize: (d) => { seen.push(d); return true; },
+    },
+  });
+  /* A phone three steps behind must not un-teach what this desktop already
+   * did. `deserialize` REPLACES by design, so the union is built here. */
+  assert.equal(seen.length, 1);
+  assert.deepEqual([...seen[0].done].sort(), ['fire', 'move', 'talk']);
+});

@@ -86,7 +86,7 @@ export class SaveGame {
    */
   constructor({
     bus, player, worldManager, economy, loadout, mounts, input, inventory, avatar, cosmetics,
-    relics, viewpoints, trials, ships, piloting, mining, objectives,
+    relics, viewpoints, trials, races, ships, piloting, mining, objectives, charters, onboarding,
   }) {
     this.bus = bus;
     this.player = player;
@@ -130,6 +130,32 @@ export class SaveGame {
      * @type {any}
      */
     this.objectives = objectives ?? null;
+    /**
+     * Which gateways are charted, and what each world was last seen to publish.
+     *
+     * Assigned rather than constructed here in `main.js`, because `Charters`
+     * reads the two best-time ledgers THIS file keeps - so one of the two has
+     * to be handed to the other after both exist. Same late wire `itemUse`
+     * takes for `viewpoints`, and for the same reason.
+     *
+     * Restored in the late pass with the rest of the progress layer, and
+     * deliberately LAST inside it: every charter is re-derived from the relic,
+     * viewpoint, seam and best-time sets around it, so restoring it before them
+     * would clamp every receipt against ledgers that were still empty and drop
+     * the lot.
+     * @type {any}
+     */
+    this.charters = charters ?? null;
+    /**
+     * The opening sequence, by step id.
+     *
+     * Assigned in `main.js` beside `charters`. It is here rather than in its own
+     * storage key because a tutorial the player has finished is progress like
+     * any other, and progress that lives outside the save is progress a
+     * "start fresh" would not clear.
+     * @type {any}
+     */
+    this.onboarding = onboarding ?? null;
     this.input = input ?? null;
     /** @type {any} Optional - the game is playable without an inventory wired. */
     this.inventory = inventory ?? null;
@@ -159,6 +185,21 @@ export class SaveGame {
     this.trials = trials ?? null;
     /** @type {Map<string, {time:number, label:string, worldId:string|null}>} */
     this._trials = new Map();
+    /**
+     * Best circuit times. Optional, and absent by default for the same reason
+     * `trials` is - see `_raceLedger`.
+     *
+     * The twelve minigame venues have kept a personal best since the progress
+     * layer landed; the three circuits on Vellum Ridge kept NOTHING. Run the
+     * Cinder Gorge on expert, win it, reload, and the game had no record it
+     * happened. That is also why Vellum Ridge could not have a charter: its
+     * whole job is racing, and there was no ledger for its record to be made
+     * of.
+     * @type {any}
+     */
+    this.races = races ?? null;
+    /** @type {Map<string, {time:number, label:string, worldId:string|null, circuitId:string, difficulty:string}>} */
+    this._races = new Map();
     /**
      * The player's body, for the character configuration. Optional and resolved
      * lazily by `_avatar()`: `main.js` builds the avatar before this system, but
@@ -215,6 +256,7 @@ export class SaveGame {
       this._offs.push(bus.on('game:started', () => { this._started = true; }));
       this._offs.push(bus.on('world:changed', () => this.autoSave('world-change')));
       this._offs.push(bus.on('minigame:finished', (r) => this._recordTrial(r)));
+      this._offs.push(bus.on('race:finished', (r) => this._recordRace(r)));
     }
 
     // On by default: the contract requires a 30 s autosave, and a feature that
@@ -509,6 +551,18 @@ export class SaveGame {
        * `Relics.serialize`, which now writes `foundIds` for the same reason. */
       objectives: safe(() => this.objectives?.serialize?.()) ?? null,
       trials: this._trialLedger(),
+      /* Best circuit times, keyed `worldId/circuitId/difficulty`. New in the
+       * mission drop; every save written before it simply has no key here, and
+       * absence is valid - the same old-save rule `character` and `cosmetics`
+       * carry. */
+      races: this._raceLedger(),
+      /* Which gateways are charted, plus what each world was last seen to
+       * publish. No numerator: every one of those is recomputed from the
+       * identity sets above. See `Charters.serialize`. */
+      charters: safe(() => this.charters?.serialize?.()) ?? null,
+      /* Which opening steps are done. One set of ids - see
+       * `Onboarding.serialize` for why there is no index beside it. */
+      onboarding: safe(() => this.onboarding?.serialize?.()) ?? null,
     };
   }
 
@@ -650,6 +704,164 @@ export class SaveGame {
     }
   }
 
+  /* ================================================================ */
+  /* Circuit times                                                     */
+  /* ================================================================ */
+
+  /**
+   * Best circuit times, keyed `worldId/circuitId/difficulty`.
+   *
+   * Three parts, not two, and the third is load-bearing. `RaceWorld` rebuilds
+   * its chicanes for the grade (`setDifficulty`, `RaceWorld.js:1691`), so an
+   * expert lap of the Cinder Gorge is not a standard lap with a faster field on
+   * it - it is a different circuit. Keyed on the circuit alone, an easy run
+   * would overwrite an expert one with a "better" time and the two would be
+   * silently the same record.
+   *
+   * @returns {{best:Object<string,object>}|null}
+   */
+  _raceLedger() {
+    const custom = safe(() => this.races?.serialize?.());
+    if (custom && typeof custom === 'object') return custom;
+    if (!this._races.size) return null;
+    const best = {};
+    for (const [key, row] of this._races) best[key] = { ...row };
+    return { best };
+  }
+
+  /**
+   * Note a finished race, keeping only the quicker of the two.
+   *
+   * ── A FINISH, not a win ───────────────────────────────────────────────────
+   * `_recordTrial` records only a win and says why. A race is different in the
+   * one way that matters: a contest is you against a rival, and a race is you
+   * against ten cars on expert. Requiring first place at every grade would put
+   * a whole gateway's charter behind beating the hardest AI in the game three
+   * times over - "a gold nobody can reach is the same defect as a relic nobody
+   * can find". So finishing counts, and only a DNF does not, because a DNF has
+   * no time to be the best of.
+   *
+   * ── Why a missing circuit id is dropped ──────────────────────────────────
+   * `RaceManager` falls back to `null` for the synthetic test circuit, which no
+   * world publishes. A row keyed on that would be a personal best for a circuit
+   * that does not exist, sitting in a charter's numerator against a denominator
+   * that can never match it.
+   *
+   * Guarded end to end: this is a bus handler, and `EventBus.emit` swallows
+   * exceptions - so a throw here would lose the row and say nothing.
+   *
+   * @param {{circuitId?:string, circuitName?:string, difficulty?:string,
+   *          time?:number, dnf?:boolean, place?:number}} r
+   */
+  _recordRace(r) {
+    try {
+      if (!r || r.dnf === true) return;
+      const circuitId = typeof r.circuitId === 'string' && r.circuitId.trim()
+        ? r.circuitId.trim() : null;
+      if (!circuitId) return;
+      const time = Number(r.time);
+      if (!Number.isFinite(time) || time <= 0) return;
+      const difficulty = typeof r.difficulty === 'string' && r.difficulty
+        ? r.difficulty : 'standard';
+      const worldId = this.worldManager?.active?.id ?? null;
+      const key = `${worldId ?? '?'}/${circuitId}/${difficulty}`;
+      const prev = this._races.get(key);
+      if (prev && prev.time <= time) return;
+      this._races.set(key, {
+        time,
+        label: typeof r.circuitName === 'string' && r.circuitName ? r.circuitName : circuitId,
+        worldId,
+        circuitId,
+        difficulty,
+      });
+      this.bus?.emit('race:best', {
+        key, circuitId, difficulty, worldId, time, previous: prev?.time ?? null,
+      });
+    } catch (err) {
+      console.warn('[SaveGame] race time not recorded:', err?.message ?? err);
+    }
+  }
+
+  /**
+   * The best recorded time for one circuit at one grade, or null.
+   * @param {string} circuitId
+   * @param {string} [difficulty]
+   * @param {string|null} [worldId]
+   */
+  bestRaceTime(circuitId, difficulty = 'standard', worldId = null) {
+    const row = this._races.get(`${worldId ?? '?'}/${circuitId}/${difficulty}`);
+    return row ? row.time : null;
+  }
+
+  /** The circuit ledger, in the shape `_snapshot` writes it. @see mergeRaces */
+  raceLedger() {
+    return this._raceLedger();
+  }
+
+  /**
+   * Fold another device's circuit times into this one's. Quicker wins, always.
+   *
+   * MIN, never replace, for the identical reason `mergeTrials` gives: a slower
+   * run on a second device is not news, and a last-write-wins sync would let it
+   * delete a personal best.
+   *
+   * @param {Record<string, {time:number, label?:string, worldId?:string,
+   *                         circuitId?:string, difficulty?:string}>} best
+   * @returns {number} how many records this actually improved
+   */
+  mergeRaces(best) {
+    if (!best || typeof best !== 'object' || Array.isArray(best)) return 0;
+    let improved = 0;
+    for (const key of Object.keys(best)) {
+      const row = best[key];
+      const time = Number(row?.time);
+      if (!Number.isFinite(time) || time <= 0) continue;
+      const prev = this._races.get(key);
+      if (prev && Number(prev.time) <= time) continue;
+      /* The key is the authority for what this row IS, because it is what the
+       * ledger merged on. The fields are display only, and are taken from
+       * whichever side already had them. */
+      const parts = key.split('/');
+      this._races.set(key, {
+        time,
+        label: prev?.label ?? (typeof row.label === 'string' ? row.label : parts[1] ?? key),
+        worldId: prev?.worldId ?? (typeof row.worldId === 'string' ? row.worldId : parts[0] ?? null),
+        circuitId: prev?.circuitId ?? (typeof row.circuitId === 'string' ? row.circuitId : parts[1] ?? ''),
+        difficulty: prev?.difficulty ?? (typeof row.difficulty === 'string' ? row.difficulty : parts[2] ?? 'standard'),
+      });
+      improved++;
+    }
+    return improved;
+  }
+
+  /**
+   * Put a stored circuit ledger back. Non-fatal exactly as `_restoreTrials` is.
+   * @param {any} snap
+   */
+  _restoreRaces(snap) {
+    if (!snap || typeof snap !== 'object' || Array.isArray(snap)) return;
+    try {
+      if (this.races?.deserialize?.(snap)) return;
+      const best = snap.best;
+      if (!best || typeof best !== 'object' || Array.isArray(best)) return;
+      for (const key of Object.keys(best)) {
+        const row = best[key];
+        const time = Number(row?.time);
+        if (!Number.isFinite(time) || time <= 0) continue;
+        const parts = key.split('/');
+        this._races.set(key, {
+          time,
+          label: typeof row.label === 'string' ? row.label : parts[1] ?? key,
+          worldId: typeof row.worldId === 'string' ? row.worldId : parts[0] ?? null,
+          circuitId: typeof row.circuitId === 'string' ? row.circuitId : parts[1] ?? '',
+          difficulty: typeof row.difficulty === 'string' ? row.difficulty : parts[2] ?? 'standard',
+        });
+      }
+    } catch (err) {
+      console.warn('[SaveGame] race restore skipped:', err?.message ?? err);
+    }
+  }
+
   /**
    * Relic tallies and synchronised viewpoints.
    *
@@ -702,6 +914,23 @@ export class SaveGame {
       console.warn('[SaveGame] objective restore skipped:', err?.message ?? err);
     }
     this._restoreTrials(data.trials);
+    this._restoreRaces(data.races);
+    /* LAST, and the ordering is load-bearing. Every charter is re-derived from
+     * the relic, viewpoint, seam, objective and best-time sets above, and
+     * `Charters.deserialize` CLAMPS each restored charter against the record
+     * that earned it. Restored first, every one of those clamps would run
+     * against ledgers that were still empty and the whole objective would be
+     * dropped on the floor by the load that was meant to restore it. */
+    try {
+      if (data.charters) this.charters?.deserialize?.(data.charters);
+    } catch (err) {
+      console.warn('[SaveGame] charter restore skipped:', err?.message ?? err);
+    }
+    try {
+      if (data.onboarding) this.onboarding?.deserialize?.(data.onboarding);
+    } catch (err) {
+      console.warn('[SaveGame] onboarding restore skipped:', err?.message ?? err);
+    }
   }
 
   /**

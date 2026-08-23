@@ -241,6 +241,27 @@ export const STEP_TYPE_EMITTERS = {
     emitter: 'QuestSystem.update() timer, one count per SURVIVE_TICK_S (30 s) without damage',
     note: 'Event carries the CURRENT world as its only candidate.',
   },
+  mine: {
+    emitter: "quest:activity type 'mine' (Mining.js, beside its existing 'collect') → _onActivity",
+    note: 'Added with `pilot` in the mission drop, under this file\'s own rule: an emitter '
+      + 'FIRST. `Mining._cut` already emitted a `collect`, and it still does - the ore really '
+      + 'is a thing you now hold - but `collect` fires for every pickup in the game, so a step '
+      + 'meaning "cut a seam" could be finished by walking over a dropped item named after an '
+      + 'ore. Candidates are the element type (`tephra`), the node id (`tephra_17`), the '
+      + 'display name and the world id. The vocabulary is scraped from each planet '
+      + 'descriptor\'s `minerals` block, so a mineral added to a planet is writable the day '
+      + 'it is placed.',
+  },
+  pilot: {
+    emitter: "bus.on('pilot:landed') → _onLanded (Piloting._touchDown, Piloting.js:1636)",
+    note: 'A DEDICATED subscription, not a quest:activity, for the same reason `race` has one: '
+      + 'the fact is already published with the world and the pad on it. `_forceSetDown` - the '
+      + 'anti-stranding recovery - emits `pilot:impact` and NOT `pilot:landed`, so a crash '
+      + 'cannot complete a landing step. Candidates are the world id, the pad id and name, and '
+      + 'the hull id; the pads are scraped from each descriptor\'s `pads` block. `site` is '
+      + 'null on open ground, so a step naming a pad does not complete three kilometres away '
+      + 'from it.',
+  },
   minigame: {
     emitter: "quest:activity type 'minigame' (MinigameManager.js:679) → _onActivity",
     note: 'Emitted on any FINISH, win or loss — never on an abort, so quitting counts for '
@@ -1112,7 +1133,33 @@ function planetEntries() {
      * descriptor is broken in a way that throws where it is built. */
     const namePart = topLevelParts(obj).find((p) => /^\s*name\s*:/.test(p));
     const name = (namePart && /^\s*name\s*:\s*'([^']+)'/.exec(namePart)?.[1]) || id;
-    out.push({ id, name, file });
+
+    /* ── THE TWO NEW VOCABULARIES: what can be MINED and where you can LAND ──
+     *
+     * Read off the SAME top-level object, and scoped to their own block rather
+     * than scraped from the file, for exactly the reason the `id` above is:
+     * every mineral, every prop and every pad in a descriptor has an `id` and a
+     * `name` of its own, and the first one down the file is not the one you
+     * want. `topLevelParts` keeps each block to itself.
+     *
+     * `mineralNodes` is built from `minerals` with `type: spec.id` and
+     * `name: spec.name` (`PlanetWorld.js:1998`), and `landingSites` from
+     * `landing` with `{id, name}` (`Piloting._siteUnder` publishes exactly those
+     * two on `pilot:landed`). So these two lists ARE the candidate lists the
+     * engine will offer, not an approximation of them.
+     *
+     * A planet that publishes neither yields neither, which is the honest
+     * answer: a step cannot name a seam on a planet with no seams. */
+    const parts = topLevelParts(obj);
+    const rows = (key, re) => {
+      const part = parts.find((p) => new RegExp(`^\\s*${key}\\s*:`).test(p));
+      if (!part) return [];
+      return [...part.matchAll(re)].map((m) => ({ id: m[1], name: m[2] }));
+    };
+    const minerals = rows('minerals', /\bid:\s*'([a-z0-9_]+)'\s*,\s*item:\s*'[a-z0-9_]+'\s*,\s*name:\s*'([^']*)'/g);
+    const landing = rows('landing', /\bid:\s*'([a-z0-9_]+)'\s*,\s*name:\s*'([^']*)'/g);
+
+    out.push({ id, name, file, minerals, landing });
   }
 
   _planetEntries = out;
@@ -1379,7 +1426,7 @@ function buildWorlds() {
       + 'them, so none of them would appear at all');
   }
   if (base) {
-    for (const { id, name: displayName, file: rel } of entries) {
+    for (const { id, name: displayName, file: rel, minerals, landing } of entries) {
       worlds.set(id, {
         ...base,
         id,
@@ -1387,6 +1434,12 @@ function buildWorlds() {
         files: [...base.files, rel],
         theme: THEMES.get(id) ?? base.theme,
         themed: THEMES.has(id),
+        /* The `mine` and `pilot` vocabularies, per planet. On the world record
+         * rather than in a side table, so `candidatesFor` asks the same object
+         * every other verb asks and a planet with neither simply has empty
+         * arrays. See `planetEntries`. */
+        minerals,
+        landing,
       });
     }
   }
@@ -2063,6 +2116,41 @@ export function candidatesFor(type, worldId = null) {
     case 'customize': {
       for (const [field, values] of Object.entries(VOCAB.character)) {
         for (const v of values) add(v, `character-${field}`, 'src/player/PlayerAvatar.js');
+      }
+      break;
+    }
+
+    case 'mine': {
+      /* Mirror of the `mine` branch of `_eventTargetCandidates`, over what this
+       * planet's descriptor actually declares. `Mining._cut` publishes the
+       * element type, the node id and the display name; the node ids are
+       * `${type}_${n}` and generated at build time, so the two spellings an
+       * author can WRITE are the type and the name. The world id rides along
+       * because the same emit carries it, and "cut anything on Cinder" is a
+       * legitimate step.
+       *
+       * A world with no minerals offers nothing, which is the honest answer:
+       * only the ten planets have seams, and a `mine` step written for the
+       * station is a step nobody can finish. */
+      for (const m of world.minerals ?? []) {
+        add(m.id, 'mineral', `${world.files[world.files.length - 1]} minerals`);
+        if (m.name) add(m.name, 'mineral-name', `${world.files[world.files.length - 1]} minerals`);
+      }
+      if ((world.minerals ?? []).length) add(world.id, 'world', `${world.file} static id`);
+      break;
+    }
+
+    case 'pilot': {
+      /* Mirror of the `pilot` branch of `_eventTargetCandidates`. `pilot:landed`
+       * carries `world` always and `site` only when the keel came down inside a
+       * pad's radius, so both are offered - and only for a world that publishes
+       * pads, because you cannot set a hull down on the station concourse. */
+      const pads = world.landing ?? [];
+      if (!pads.length) break;
+      add(world.id, 'world', `${world.file} static id`);
+      for (const p of pads) {
+        add(p.id, 'landing-pad', `${world.files[world.files.length - 1]} landing`);
+        if (p.name) add(p.name, 'landing-pad-name', `${world.files[world.files.length - 1]} landing`);
       }
       break;
     }

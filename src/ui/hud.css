@@ -4719,3 +4719,149 @@ body {
 .prompt.keyless {
   padding-left: 18px;
 }
+
+/* ==========================================================================
+   THE CHARTER PANEL  (what the game is for)
+   ==========================================================================
+   One panel with two faces - see `HUD._buildCharter`. Before the opening
+   sequence is finished it is the tutorial: one instruction and one locked
+   reward. After, it is the mission board: eighteen gateways, the record of the
+   world you are standing in, and one sentence saying what is left.
+
+   Its accent is VIOLET, and that is the whole visual argument for it. Health is
+   red, stamina is green, discoveries are mint and the space campaign is amber;
+   a fifth panel in any of those hues would read as a variation on one of them.
+   This one is the only thing on screen that answers "what is this game about",
+   so it gets a colour nothing else in the HUD uses. */
+.charter {
+  padding: 8px 15px 9px;
+  clip-path: var(--clip-br);
+  opacity: 0.94;
+  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.charter[hidden] {
+  display: none;
+}
+
+.charter::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(186, 156, 255, 0.6);
+}
+
+/* ---- why every class here is `cht-` and not `ch-` ------------------------
+   `ch-` is the CHARACTER menu's prefix and has been for a long time:
+   `character.css` owns `.ch-head`, `.ch-hint`, `.ch-panel` and thirty more.
+   This panel shipped as `ch-` for about an hour and the collision was found in
+   a browser, not by a test: the charter's hint line read "Changes apply to your
+   body at once", because `.ch-hint` already meant something else and the two
+   stylesheets were both loaded. Nothing errored and nothing was red.
+
+   Prefixes are cheap and collisions are silent, so this one is `cht-`. */
+
+/* Label and rank on one baseline, so the chip cannot shove the heading around
+   as the title grows from RUNNER to CHARTER OF THE NEXUS. Same arrangement as
+   `.obj-head`, which solved the same problem for the same reason. */
+.cht-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cht-rank {
+  flex: 0 0 auto;
+  font-family: var(--f-disp);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #d6c4ff;
+  text-shadow: 0 0 10px rgba(150, 110, 255, 0.35);
+  white-space: nowrap;
+}
+
+.cht-rank[hidden] {
+  display: none;
+}
+
+/* The headline row is the one the eye lands on, so it is a size up from the
+   record rows under it - a board where "Chart the Nexus 3/18" and "Relics 4/30"
+   are the same weight is a board with no headline. */
+.cht-top .col-name {
+  font-size: 13px;
+  color: var(--txt);
+}
+
+.cht-top .col-count {
+  font-size: 13px;
+  color: #d6c4ff;
+}
+
+/* The record of the world you are in. Dimmer than the headline and separated
+   by a rule, because these are the parts and that is the whole. */
+.cht-rows {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.cht-rows[hidden] {
+  display: none;
+}
+
+.cht-rows .col-count {
+  color: rgba(214, 196, 255, 0.8);
+}
+
+/* A finished column, in the same mint the discoveries panel uses for what you
+   already hold. Not a tick glyph: the count IS the statement, and a tick beside
+   "30/30" says the same thing twice. */
+.cht-rows .col-count.done {
+  color: #8affd0;
+}
+
+/* One sentence saying what to do next. Prose, so it wraps; dimmer than the
+   counts, because it is instruction and they are score. The same treatment
+   `.obj-hint` gets, for the same reason. */
+.cht-hint {
+  margin-top: 7px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  letter-spacing: 0.02em;
+  color: rgba(230, 222, 255, 0.78);
+}
+
+.cht-hint[hidden] {
+  display: none;
+}
+
+/* The aspirational locked reward, shown only during the opening sequence.
+   Deliberately quiet: it is a thing you cannot have yet, and a bright row for
+   something unobtainable reads as a paywall rather than a promise. */
+.cht-locked {
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid var(--rule-soft);
+  font-size: 10.5px;
+  line-height: 1.4;
+  letter-spacing: 0.03em;
+  color: rgba(214, 196, 255, 0.5);
+}
+
+.cht-locked[hidden] {
+  display: none;
+}
+
+/* Same treatment every other vitals panel gets when a full-screen sheet is up
+   and the corner belongs to it. */
+.hud.overlaid .charter,
+.hud.chatting .charter,
+.hud.dead .charter {
+  opacity: 0;
+  transform: translateY(6px);
+}

@@ -213,11 +213,20 @@ suite('progressLedger (integration)', () => {
     expect(res.changed).toBe(0);
   });
 
-  it('every declared kind has a shape, and trial is the only min', () => {
+  it('every declared kind has a shape, and only the two clocks are min', () => {
+    /* `trial` and `race` are the ONLY kinds where a smaller number is the better
+     * one, and this list is pinned rather than counted because the hazard is
+     * asymmetric: a `min` added by mistake to a growing counter deletes a
+     * player's progress on every sync, silently and permanently. Every other
+     * number in the ledger grows.
+     *
+     * `race` joined `trial` in the mission drop - circuits persisted nothing at
+     * all before it, locally or here. */
     const mins = Object.entries(KINDS)
       .filter(([, spec]) => spec.shape === 'value' && spec.mode === 'min')
-      .map(([kind]) => kind);
-    expect(mins).toEqual(['trial']);
+      .map(([kind]) => kind)
+      .sort();
+    expect(mins).toEqual(['race', 'trial']);
 
     for (const [kind, spec] of Object.entries(KINDS)) {
       expect(['set', 'value'], `${kind} has no valid shape`).toContain(spec.shape);

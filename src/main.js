@@ -27,6 +27,7 @@ import { PlayerAvatar } from './player/PlayerAvatar.js';
 import { Loadout } from './player/Loadout.js';
 import { ProjectileSystem } from './systems/Projectiles.js';
 import { Economy } from './systems/Economy.js';
+import { CreditReporter } from './systems/CreditReporter.js';
 import { SaveGame } from './systems/SaveGame.js';
 import { UnstuckSystem } from './systems/Unstuck.js';
 import { MountManager } from './mounts/MountManager.js';
@@ -222,6 +223,13 @@ player.cameraRig = cameraRig;
 player.avatar = avatar;
 
 const economy = new Economy({ bus });
+/* Reports every credit change to the account so the SERVER owns the balance.
+ * Idle until `start()`, which only happens for a signed-in player -- a guest's
+ * credits stay local exactly as before. It listens to `credits:changed`, the
+ * one event every earn and spend in the game passes through, so no source can
+ * be missed and a source added later is covered without its author knowing
+ * this exists. */
+const creditReporter = new CreditReporter({ bus, economy });
 const projectiles = new ProjectileSystem({ ...ctx, player, npcManager, combat });
 
 // Loadout adopts the machine gun Player already built rather than making a
@@ -525,11 +533,24 @@ const save = new SaveGame({
  * downstream depends on the answer. */
 save.requestDurableStorage();
 let persistTimer = null;
+/* Debounced background persist.
+ *
+ * `save.autoSave`, never `save.save`. Everything that reaches this function is
+ * an EVENT - a balance changing, an inventory changing, a merchant trade - and
+ * not one of them is the player asking to save. `save()` skips the `_started`
+ * and `_loading` guards and arms the autosave on its way past; `autoSave()`
+ * honours them.
+ *
+ * That distinction is not academic. `hydrateAccountSession` applies the
+ * server's balance at boot, which emits `credits:changed`, which lands here
+ * while the player is still on the title screen with nothing loaded. Through
+ * `save()` that wrote a pristine spawn state over the save CONTINUE was about
+ * to read - every returning signed-in player, every boot. */
 const schedulePersist = (reason) => {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    save.save(reason);
+    save.autoSave(reason);
     scheduleRemotePersist(reason);
   }, 750);
 };
@@ -548,7 +569,9 @@ const pendingTrades = [];
 
 function buildRemotePayload() {
   const payload = {
-    credits: Math.max(0, Math.floor(economy?.credits ?? 0)),
+    // No `credits` field. The balance is the server's, moved only by
+    // /api/game/credits; this route used to accept whatever number was put here
+    // and write it straight to the account.
     state: {
       v: 1,
       at: Date.now(),
@@ -599,6 +622,10 @@ window.addEventListener('pagehide', () => {
   try {
     const blob = new Blob([JSON.stringify(buildRemotePayload())], { type: 'application/json' });
     navigator.sendBeacon?.('/api/game/state', blob);
+    // Earnings from the last few seconds, which would otherwise be lost with the
+    // tab. The queue is NOT cleared -- sendBeacon cannot confirm delivery, so the
+    // next boot re-sends and the server refuses whatever already landed.
+    creditReporter.beacon();
   } catch { /* best effort */ }
 });
 
@@ -798,6 +825,10 @@ if (overrides.dev) {
   window.GAME = {
     engine, input, physics, materials, worldManager, player, npcManager, portals, combat, hud, bus, THREE, CONFIG,
     cameraRig, avatar, loadout, projectiles, economy, mounts, unstuck, save, lightRig,
+    /* The reporter that makes the SERVER own the balance. Exposed because the
+     * only way to check a credit source still pays is to play and look at what
+     * it queued -- a unit test proves the endpoint, never the loop. */
+    creditReporter,
     waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, mountMenu, caches, contracts,
   cheats, audio, audioMenu, relics, viewpoints, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   ships, shipMenu, piloting, spaceCombat, flightHUD, mining, objectives,
@@ -859,6 +890,13 @@ async function hydrateAccountSession() {
   if (typeof account.credits === 'number') {
     economy.set(account.credits, 'account-sync');
   }
+
+  /* Only now: the balance above is the server's opening answer, and starting
+   * before it landed would report the local number as if it were fresh earnings.
+   * `start()` also flushes anything a previous session queued and could not
+   * deliver -- a closed tab or a dropped connection, replayed safely because
+   * every queued event carries its original idempotency key. */
+  creditReporter.start();
 
   // Server-saved inventory takes precedence over whatever the fresh boot
   // seeded - it is the durable copy of what the player actually owns.

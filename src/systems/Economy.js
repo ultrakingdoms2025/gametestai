@@ -77,7 +77,7 @@ export class Economy {
     if (!Number.isFinite(delta) || delta <= 0) return this._credits;
     this._credits += delta;
     this._earned += delta;
-    this._emit(delta, reason);
+    this._emit(delta, reason, 'add');
     return this._credits;
   }
 
@@ -93,7 +93,7 @@ export class Economy {
     if (cost > this._credits) return false;
     this._credits -= cost;
     this._spent += cost;
-    this._emit(-cost, reason);
+    this._emit(-cost, reason, 'spend');
     return true;
   }
 
@@ -108,7 +108,7 @@ export class Economy {
     const delta = next - this._credits;
     if (delta === 0) return this._credits;
     this._credits = next;
-    this._emit(delta, reason);
+    this._emit(delta, reason, 'set');
     return this._credits;
   }
 
@@ -156,8 +156,20 @@ export class Economy {
   /* Internals                                                         */
   /* ================================================================ */
 
-  _emit(delta, reason) {
-    this.bus?.emit('credits:changed', { credits: this._credits, delta, reason });
+  /**
+   * @param {number} delta
+   * @param {string} reason
+   * @param {'add'|'spend'|'set'} op which call produced this change
+   *
+   * `op` exists because `reason` cannot be trusted to say what happened.
+   * `CreditReporter` must report gameplay and must NOT report bookkeeping, and
+   * the two are not distinguishable by tag: `QuestSystem` both `add`s a reward
+   * and `set`s an absolute balance under the same 'quest' tag, and a reporter
+   * filtering on tags alone would re-report the whole balance as if it were
+   * fresh earnings. The operation is the honest discriminator.
+   */
+  _emit(delta, reason, op) {
+    this.bus?.emit('credits:changed', { credits: this._credits, delta, reason, op });
   }
 
   /** Stable de-duplication key for an NPC. */

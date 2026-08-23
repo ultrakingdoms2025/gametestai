@@ -256,14 +256,13 @@ export async function syncPlayerProfile(
   return playerId;
 }
 
-export async function setPlayerCreditBalance(siteUserId: string, credits: number): Promise<void> {
-  await pgQuery(
-    `UPDATE players
-     SET credit_balance = $1, updated_at = NOW()
-     WHERE site_user_id = $2`,
-    [Math.max(0, Math.floor(credits)), siteUserId]
-  );
-}
+/*
+ * `setPlayerCreditBalance` used to live here: an exported "write this balance"
+ * helper with no callers. It is gone rather than left, because the credit ledger
+ * is now the only thing allowed to move `players.credit_balance`, and an
+ * unused function that does exactly the forbidden thing is an invitation with a
+ * docblock on it. Grant credits with `applyCreditEvent`.
+ */
 
 // ---------------------------------------------------------------------------
 // Game state persistence (credits + inventory snapshot from the live game)
@@ -292,19 +291,23 @@ export async function getGameState(siteUserId: string): Promise<unknown | null> 
   }
 }
 
-export async function saveGameState(
-  siteUserId: string,
-  credits: number,
-  state: unknown
-): Promise<boolean> {
+/**
+ * Persist the inventory/mounts/cosmetics snapshot.
+ *
+ * It no longer takes a balance. This function used to write
+ * `credit_balance = $1` from the browser's own number, which is the hole phase 2
+ * exists to close: a player's balance was whatever their tab last claimed. The
+ * balance now moves only through `credit_events`.
+ */
+export async function saveGameState(siteUserId: string, state: unknown): Promise<boolean> {
   await ensureGameStateColumn();
   const stateJson = state == null ? null : JSON.stringify(state).slice(0, 200_000);
   const { rows } = await pgQuery<{ id: string }>(
     `UPDATE players
-     SET credit_balance = $1, game_state = COALESCE($2, game_state), updated_at = NOW()
-     WHERE site_user_id = $3
+     SET game_state = COALESCE($1, game_state), updated_at = NOW()
+     WHERE site_user_id = $2
      RETURNING id`,
-    [Math.max(0, Math.floor(credits)), stateJson, siteUserId]
+    [stateJson, siteUserId]
   );
   return !!rows[0];
 }

@@ -25,7 +25,8 @@
  */
 export const PAUSE_MENU_IDS = [
   'resume', 'character', 'mount', 'ship', 'inventory', 'quests', 'map', 'race', 'minigame-quit',
-  'help', 'audio', 'keybinds', 'fullscreen', 'diagnostics', 'save', 'load', 'bug-report', 'quit',
+  'help', 'audio', 'keybinds', 'fullscreen', 'graphics', 'diagnostics', 'save', 'load',
+  'bug-report', 'quit',
 ];
 
 /** Resolve a `string | () => string` field. */

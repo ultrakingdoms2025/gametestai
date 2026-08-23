@@ -16,13 +16,31 @@
   backdrop-filter: blur(3px);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 160ms ease;
+  /* `pointer-events: none` above does NOT cover the children.
+   *
+   * hud.css opts every `#ui-root button, input, textarea` back in explicitly,
+   * and an explicit declaration on the child beats an inherited one from the
+   * parent - so while this panel was invisible at `opacity: 0`, its buttons and
+   * sliders were still hit-testable across the WHOLE viewport at z-index 84.
+   * Under pointer lock that never mattered, because a locked pointer delivers
+   * nothing to the DOM at all. With a finger it does: measured on an iPhone
+   * emulation, a closed audio panel was taking taps in the middle of the
+   * screen, over the game.
+   *
+   * `visibility: hidden` is the fix that reaches the subtree, since visibility
+   * IS inherited and a hidden element is not hit-testable whatever its
+   * `pointer-events` says. Delayed by the fade so the panel still fades out
+   * rather than vanishing. */
+  visibility: hidden;
+  transition: opacity 160ms ease, visibility 0s linear 160ms;
   font-family: 'Chakra Petch', system-ui, sans-serif;
 }
 
 .aud.on {
   opacity: 1;
   pointer-events: auto;
+  visibility: visible;
+  transition: opacity 160ms ease, visibility 0s;
 }
 
 .aud-card {

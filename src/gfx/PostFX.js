@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CONFIG } from '../core/Config.js';
+import { resolveTier } from './QualityTier.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
@@ -75,7 +76,12 @@ const SHAFTS_DISABLED = QUERY.get('godrays') === '0';
  * wire. 4x MSAA supplies that coverage before anything else touches the frame;
  * SMAA then cleans up the shading and alpha-test edges MSAA leaves behind.
  *
- * Overridable with `?msaa=0|2|4|8` for A/B and for the perf floor.
+ * Overridable with `?msaa=0|2|4|8` for A/B and for the perf floor; otherwise it
+ * comes from the resolved quality tier, because MSAA is a property of the
+ * composer's render target and there is no honest way to change it after the
+ * target exists. A phone therefore has to be on the low tier BEFORE this module
+ * is imported, which is why `main.js` resolves the tier before it builds
+ * anything. @see QualityTier.js
  */
 const MSAA_SAMPLES = (() => {
   const raw = QUERY.get('msaa');
@@ -83,7 +89,7 @@ const MSAA_SAMPLES = (() => {
     const n = Number(raw);
     return Number.isFinite(n) ? Math.max(0, Math.min(8, Math.round(n))) : 4;
   }
-  return 4;
+  return resolveTier().msaa;
 })();
 
 /** Rec.709 luminance weights, used identically on the CPU and in both shaders. */

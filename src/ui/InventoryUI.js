@@ -62,16 +62,15 @@ export function menuFocusOut(input, relock, othersOpen = false) {
   document.body.classList.remove('inv-menu-open');
   if (!relock) return;
   setTimeout(() => {
-    try {
-      // Re-acquire pointer lock. Also call relockKeyboard so navigator.keyboard
-      // is re-armed (exitLock released both; the previous path only reclaimed
-      // pointer lock and left browser shortcuts like F1 uncaptured).
-      input?.relockKeyboard?.();
-      const p = input?.canvas?.requestPointerLock?.();
-      if (p && typeof p.catch === 'function') p.catch(() => {});
-    } catch {
-      /* the pause overlay is the fallback; never throw out of a menu close */
-    }
+    /* Re-engage. `reengage()` re-arms `navigator.keyboard` as well as taking
+     * the pointer back (`exitLock` released both, and reclaiming only the
+     * pointer leaves browser shortcuts like Ctrl+W live), and it decides WHICH
+     * engagement to re-take - which is the whole point: this used to be a bare
+     * `canvas.requestPointerLock()`, a method a phone does not have, so closing
+     * this panel on touch left the player stood down with `standby` still held
+     * and the world frozen behind nothing. @see core/Input.js `reengage` */
+    const p = input?.reengage?.();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
   }, 140);
 }
 

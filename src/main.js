@@ -6,6 +6,7 @@ import { Input } from './core/Input.js';
 import { Physics } from './physics/Physics.js';
 import { MaterialLibrary } from './gfx/Materials.js';
 import { createPostFX } from './gfx/PostFX.js';
+import { resolveTier, applyBootTier, applyTier, storeTierId, TIER_IDS, TIERS } from './gfx/QualityTier.js';
 import { WorldManager } from './worlds/WorldManager.js';
 import { mapActionOwner } from './worlds/WorldRules.js';
 import { StationWorld } from './worlds/StationWorld.js';
@@ -40,6 +41,7 @@ import { Cosmetics } from './systems/Cosmetics.js';
 import { ItemUseSystem } from './systems/ItemUse.js';
 import { HelpMenu } from './ui/HelpMenu.js';
 import { MountWheel } from './ui/MountWheel.js';
+import { TouchControls } from './ui/TouchControls.js';
 import { MazeMap } from './ui/MazeMap.js';
 import { KeybindMenu } from './ui/KeybindMenu.js';
 import { CharacterMenu } from './ui/CharacterMenu.js';
@@ -92,6 +94,18 @@ import { planCompileWarm, chunkUnits, runSliced } from './gfx/PreviewWarm.js';
 
 const overrides = applyUrlOverrides();
 
+/* The renderer quality tier, resolved FIRST and written into `CONFIG` before
+ * anything reads it.
+ *
+ * Four of a tier's settings cannot be applied later: MSAA lives on the
+ * composer's HDR render target, and the far plane, the pixel-ratio ceiling and
+ * the shadow map's resolution are read out of `CONFIG.render` by the `Engine`
+ * constructor and by the light rig below. Applied after `new Engine(...)` this
+ * would set a far plane on a camera that had already been built with the old
+ * one. @see gfx/QualityTier.js */
+let qualityTier = resolveTier();
+applyBootTier(qualityTier, CONFIG);
+
 const canvas = document.getElementById('viewport');
 const uiRoot = document.getElementById('ui-root');
 
@@ -101,6 +115,30 @@ const physics = new Physics(bus);
 const materials = new MaterialLibrary(engine.renderer);
 
 engine.postfx = createPostFX(engine);
+
+/* The half of the tier that CAN move at runtime: the five post passes, the
+ * shadow toggle, the far plane, the pixel-ratio ceiling and the resolution
+ * floor. Applied here at boot and again from the hub's Graphics row. */
+function setQualityTier(id) {
+  storeTierId(id);
+  qualityTier = resolveTier();
+  applyTier(qualityTier, {
+    renderer: engine.renderer,
+    camera: engine.camera,
+    engine,
+    postfx: engine.postfx,
+    config: CONFIG,
+  });
+  bus.emit('gfx:quality', { id: qualityTier.id, chosen: id });
+  return qualityTier;
+}
+applyTier(qualityTier, {
+  renderer: engine.renderer,
+  camera: engine.camera,
+  engine,
+  postfx: engine.postfx,
+  config: CONFIG,
+});
 
 /* ------------------------------------------------------------------ */
 /* Lighting                                                            */
@@ -272,6 +310,10 @@ const itemUse = new ItemUseSystem({ bus, player, inventory, loot, portals, npcMa
 const market = new Marketplace({ bus, economy, inventory, cosmetics, mounts, player, npcManager, input, root: uiRoot });
 const helpMenu = new HelpMenu({ root: uiRoot, bus, input });
 const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts, worldManager });
+/* The on-screen touch layer. Constructed unconditionally and hidden until
+ * `input:touchmode` says the session is being driven by a finger, so a desktop
+ * player never has it and a tablet that is picked up mid-session does. */
+const touchControls = new TouchControls({ root: uiRoot, bus, input });
 /* The maze's M map. It owns its own keydown listener rather than going through
  * `input.pressed`, like the other panels, and shares the `map` action with the
  * mount wheel above - `mapActionOwner` decides which of them M means in the
@@ -882,6 +924,27 @@ hud.setPauseMenuItems([
             if (on) document.documentElement.requestFullscreen?.()?.catch?.(() => {});
             else if (document.fullscreenElement) document.exitFullscreen?.()?.catch?.(() => {});
           } catch { /* refused; the preference still stands for the next resume */ }
+        },
+      },
+      {
+        /* The only UI the quality tiers have ever had. `PostFX.setQuality()`
+         * has existed for as long as the post chain and was reachable from
+         * nothing at all - no menu, no key, no query parameter - so a player on
+         * a phone had 4x MSAA, GTAO, bloom, shafts and SMAA and no way to reach
+         * any of it. One `keepOpen` row, cycling, because a submenu for four
+         * values is a panel and this is a setting.
+         *
+         * The hint is honest about the half of a tier that cannot move: MSAA is
+         * a property of the composer's render target and the shadow map's size
+         * is baked in when the rig is built, so both wait for a reload. */
+        id: 'graphics',
+        label: () => `Graphics: ${TIERS[qualityTier.id]?.label ?? qualityTier.id}`,
+        hint: 'Effects and resolution apply now; anti-aliasing and shadow detail on reload',
+        keepOpen: true,
+        run: () => {
+          const next = TIER_IDS[(TIER_IDS.indexOf(qualityTier.id) + 1) % TIER_IDS.length];
+          setQualityTier(next);
+          hud?.notify?.(`Graphics: ${TIERS[next].label}`, 'info');
         },
       },
       {
@@ -2043,6 +2106,7 @@ engine.onFrameUpdate((dt, elapsed) => {
   // to where the player was looking last frame.
   audio.update(dt);
   helpMenu.update?.(dt);
+  touchControls.update?.(dt);
   characterMenu.update?.(dt);
   mountMenu.update?.(dt);
   shipMenu.update?.(dt);

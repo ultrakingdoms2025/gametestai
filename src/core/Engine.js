@@ -109,6 +109,11 @@ export class Engine {
     this._frameTimeIndex = 0;
     this._resolutionScale = 1;
     this.adaptiveResolution = true;
+    /* How far the scaler may drop. A tier setting rather than a constant since
+     * Phase 5: the 0.8 floor below was argued from the composer's MSAA, and a
+     * low-end device runs with MSAA off, so the argument does not reach it.
+     * @see gfx/QualityTier.js */
+    this._resolutionFloor = 0.8;
 
     // `frameMs` is the mean (what the debug panel wants to show); `frameMsMedian`
     // is what quality decisions are made on. A world streaming in on a background
@@ -373,6 +378,29 @@ export class Engine {
   }
 
   /**
+   * How far the adaptive scaler may drop this session.
+   *
+   * The default 0.8 exists because "below ~0.8 the upscale reintroduces exactly
+   * the stair-stepping the composer's MSAA is there to remove" - a true
+   * argument that stops applying the moment MSAA is 0, which is what the low
+   * quality tier does. So the floor moves with the tier rather than being a
+   * constant that only ever held for the desktop settings.
+   *
+   * A scale already below the new floor is raised to it, so tightening the
+   * floor mid-session takes effect immediately rather than on the next hitch.
+   *
+   * @param {number} floor 0.25..1
+   */
+  setResolutionFloor(floor) {
+    if (!Number.isFinite(floor)) return;
+    this._resolutionFloor = Math.max(0.25, Math.min(1, floor));
+    if (this._resolutionScale < this._resolutionFloor) {
+      this._resolutionScale = this._resolutionFloor;
+      this.resize();
+    }
+  }
+
+  /**
    * Nudge internal resolution to hold ~60fps. Steps are small and hysteretic so
    * the image never visibly pumps.
    */
@@ -382,11 +410,9 @@ export class Engine {
     // player a permanently soft, aliased image.
     const avg = this.stats.frameMsMedian;
     const prev = this._resolutionScale;
-    // Floor raised from 0.65: below ~0.8 the upscale reintroduces exactly the
-    // stair-stepping the composer's MSAA is there to remove, so it is better to
-    // shed post-processing passes (PostFX does that itself) than more pixels.
-    if (avg > target * 1.35 && this._resolutionScale > 0.8) {
-      this._resolutionScale = Math.max(0.8, this._resolutionScale - 0.05);
+    const floor = this._resolutionFloor;
+    if (avg > target * 1.35 && this._resolutionScale > floor) {
+      this._resolutionScale = Math.max(floor, this._resolutionScale - 0.05);
     } else if (avg < target * 0.7 && this._resolutionScale < 1) {
       this._resolutionScale = Math.min(1, this._resolutionScale + 0.05);
     }

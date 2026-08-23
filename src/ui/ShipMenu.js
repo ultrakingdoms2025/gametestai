@@ -422,10 +422,13 @@ export class ShipMenu {
        * exit too closely, and an uncaught rejection surfaces as a console error
        * mid-game. */
       setTimeout(() => {
-        try {
-          const p = this.input?.canvas?.requestPointerLock?.();
-          if (p && typeof p.catch === 'function') p.catch(() => {});
-        } catch { /* the pause overlay is the fallback */ }
+        /* `reengage()` decides which engagement to re-take: the pointer lock
+         * on a mouse session, the touch session on a phone. It used to be
+         * `canvas.requestPointerLock()` here, which on a touch device does
+         * nothing and left the player stood down with the world frozen behind
+         * no card. @see core/Input.js `reengage` */
+        const p = this.input?.reengage?.();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
       }, 140);
     }
     this.bus?.emit('ship:menu:close', {});

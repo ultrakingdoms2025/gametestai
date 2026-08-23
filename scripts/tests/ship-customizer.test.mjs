@@ -678,9 +678,15 @@ test('the ship panel carries the four traps the mount panel paid for', async () 
    *    and the part visibly DARKENS — "put it back" makes it worse.
    * 3. The livery cache is saved and restored around the sync loop, so a nested
    *    sync cannot leave it pointing at the wrong hull.
-   * 4. The pointer relock is deferred 140 ms, because browsers reject a lock
-   *    that follows an Escape-driven exit too closely and the rejection
-   *    surfaces as a console error mid-game.
+   * 4. The relock is deferred 140 ms, because browsers reject a lock that
+   *    follows an Escape-driven exit too closely and the rejection surfaces as
+   *    a console error mid-game.
+   *
+   * Trap 4 used to be spelled `canvas.requestPointerLock()` here. Phase 5 moved
+   * every such call behind `Input.reengage()`, because on a touch device that
+   * method does not exist and closing this panel left the player stood down
+   * with the world frozen behind no card. The 140 ms deferral - which is what
+   * this trap is actually about - is unchanged and still pinned below.
    */
   const src = await readFile(path.join(ROOT, 'src/ui/ShipMenu.js'), 'utf8');
 
@@ -690,8 +696,8 @@ test('the ship panel carries the four traps the mount panel paid for', async () 
     'trap 2: the factory-swatch no-op is missing, so "put it back" darkens the part');
   assert.match(src, /const prev = this\._liveryCache;[\s\S]{0,400}finally \{\s*this\._liveryCache = prev;/,
     'trap 3: the livery cache is not saved and restored around the sync loop');
-  assert.match(src, /requestPointerLock[\s\S]{0,200}\}, 140\);/,
-    'trap 4: the pointer relock is not deferred, so an Escape-driven exit logs a rejection');
+  assert.match(src, /reengage[\s\S]{0,200}\}, 140\);/,
+    'trap 4: the relock is not deferred, so an Escape-driven exit logs a rejection');
 
   // ...and it never raises `needsUpdate` itself, which is the stall the station
   // work spent weeks removing.

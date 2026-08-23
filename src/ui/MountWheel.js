@@ -1,6 +1,7 @@
 import './mountwheel.css';
 import { allows } from '../worlds/WorldRules.js';
 import { mapActionOwner } from '../worlds/WorldRules.js';
+import { integrateAim } from './MountWheelAim.js';
 
 /**
  * The mount selector radial.
@@ -132,6 +133,7 @@ export class MountWheel {
     window.addEventListener('keydown', this._onKey, true);
     window.addEventListener('keyup', this._onKey, true);
     window.addEventListener('mousemove', this._onMove);
+    this._wireLook();
   }
 
   get isOpen() {
@@ -268,23 +270,38 @@ export class MountWheel {
     }
   }
 
+  /** The mouse feeder. A thin adapter, so it cannot drift from the touch one. */
   _move(e) {
+    this._integrate(e.movementX ?? 0, e.movementY ?? 0);
+  }
+
+  /**
+   * Subscribe to the look deltas `Input.applyLook` publishes.
+   *
+   * The second feeder, and the reason the arithmetic moved out to
+   * `MountWheelAim`. `movementX/Y` only exists under pointer lock, so without
+   * this the roster opened on a phone and could not be aimed at all - the
+   * wheel was reachable and unusable.
+   */
+  _wireLook() {
+    this._offLook?.();
+    this._offLook = this.bus?.on?.('input:look', ({ dx, dy }) => this._integrate(dx, dy)) ?? null;
+  }
+
+  /**
+   * The single entry point both feeders go through.
+   *
+   * @param {number} dx
+   * @param {number} dy
+   */
+  _integrate(dx, dy) {
     if (!this._open) return;
-    this._vx += e.movementX ?? 0;
-    this._vy += e.movementY ?? 0;
-    const len = Math.hypot(this._vx, this._vy);
-    // Dead zone, so a hand that has not moved does not pick the sector the
-    // mouse drifted a pixel towards.
-    if (len < 26) { this._select(-1); this._aim(0, 0); return; }
-    this._moved = true;
-    // Clamped, or a long sweep leaves the vector so large that coming back
-    // takes as long as it went out.
-    if (len > 220) { this._vx *= 220 / len; this._vy *= 220 / len; }
-    // Screen angle -> ring index. -PI/2 is twelve o'clock, matching the layout.
-    let a = Math.atan2(this._vy, this._vx) + Math.PI / 2;
-    if (a < 0) a += Math.PI * 2;
-    this._aim(a, (Math.min(len, 220) - 26) / (120 - 26));
-    this._select(Math.round((a / (Math.PI * 2)) * MOUNTS.length) % MOUNTS.length);
+    const r = integrateAim(this._vx, this._vy, dx, dy, MOUNTS.length);
+    this._vx = r.vx;
+    this._vy = r.vy;
+    if (r.moved) this._moved = true;
+    this._aim(r.angle, r.reach);
+    this._select(r.sel);
   }
 
   _select(i) {
@@ -395,6 +412,8 @@ export class MountWheel {
     window.removeEventListener('keydown', this._onKey, true);
     window.removeEventListener('keyup', this._onKey, true);
     window.removeEventListener('mousemove', this._onMove);
+    this._offLook?.();
+    this._offLook = null;
     this.el.remove();
   }
 }

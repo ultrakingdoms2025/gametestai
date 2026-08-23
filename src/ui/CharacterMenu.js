@@ -628,12 +628,13 @@ export class CharacterMenu {
       // Browsers reject a lock request that follows an Escape-driven exit too
       // closely, and an uncaught rejection surfaces as a console error mid-game.
       setTimeout(() => {
-        try {
-          const p = this.input?.canvas?.requestPointerLock?.();
+          /* `reengage()` decides which engagement to re-take: the pointer
+           * lock on a mouse session, the touch session on a phone. It used to
+           * be `canvas.requestPointerLock()` here, which on a touch device does
+           * nothing at all and left the player stood down with the world frozen
+           * behind no card. @see core/Input.js `reengage` */
+          const p = this.input?.reengage?.();
           if (p && typeof p.catch === 'function') p.catch(() => {});
-        } catch {
-          /* the pause overlay is the fallback; never throw out of a menu close */
-        }
       }, 140);
     }
     this.bus?.emit('character:close', {});

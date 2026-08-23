@@ -363,13 +363,13 @@ export class MazeMap {
        * closely, and `exitLock` released the KEYBOARD lock as well as the
        * pointer - re-taking only the pointer leaves Ctrl+W live again. */
       setTimeout(() => {
-        try {
-          this.input?.relockKeyboard?.();
-          const p = this.input?.canvas?.requestPointerLock?.();
+          /* `reengage()` decides which engagement to re-take: the pointer
+           * lock on a mouse session, the touch session on a phone. It used to
+           * be `canvas.requestPointerLock()` here, which on a touch device does
+           * nothing at all and left the player stood down with the world frozen
+           * behind no card. @see core/Input.js `reengage` */
+          const p = this.input?.reengage?.();
           if (p && typeof p.catch === 'function') p.catch(() => {});
-        } catch {
-          /* the STANDBY overlay is the fallback; never throw out of a close */
-        }
       }, 140);
     }
     this.bus?.emit('ui:modal', { id: 'maze-map', open: false });

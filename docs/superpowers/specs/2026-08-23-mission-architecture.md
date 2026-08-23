@@ -284,6 +284,28 @@ A forger can reach a content cap. So can an honest completionist. The board then
 and a forger merely arrives sooner at a ceiling everyone shares. That is a bounded, survivable
 failure. A total or a time has no ceiling, so a forger's advantage is unbounded — which is not.
 
+> **CORRECTION, from implementing this.** The paragraph above is right about the rule and wrong
+> about why. "A forger can reach a content cap" silently assumes a forger is limited to **real
+> identities**. `/api/game/progress` assumes nothing of the sort — it accepts up to 4,000 arbitrary
+> text keys per group. Count a player's rows and "distinct relics found" is exactly as unbounded as
+> a credit total, and the whole bounded-failure argument evaporates.
+>
+> **The cap only binds if the counting mechanism enumerates a manifest and clamps.** A global board
+> must not count what a player holds and then remove what does not belong; it must enumerate the
+> platform content manifest in the `FROM` clause and ask which of those identities the player holds
+> — `FROM unnest($worlds) AS w(id) JOIN player_progress_items p ON p.scope = w.id`. A forged id is
+> not in the `FROM` clause, so there is no filter to forget. Then `LEAST(n, ceiling)` for the case
+> where a forgery collides with a real identity, with ceilings **sourced** rather than invented
+> (110 relics per world is `Relics.MAX_PER_WORLD` — the instanced mesh cannot draw a 111th).
+>
+> **Two of the five rankable rows below cannot be built server-side today.** "Elements assayed" and
+> "wings broken" have no server-side denominator: `ProgressSync` keeps those rosters local
+> deliberately, so a device on an older build cannot hand another a denominator its own world no
+> longer has. "Bodies surveyed" is in the ledger as a **value** kind — a number the client chose —
+> which sits badly under a rule whose other half refuses client numbers. Declared and refused rather
+> than given an invented ceiling, because a board ranked on a maximum nobody measured is precisely
+> the gate-that-measures-nothing failure this document keeps naming.
+
 | Rankable | Why |
 |---|---|
 | Distinct relics found | Capped by content (109 in citadel), identity-keyed, server-verifiable against the manifest |

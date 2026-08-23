@@ -1,9 +1,30 @@
 ﻿/**
  * Database layer — Vercel Postgres via @vercel/postgres.
  *
- * All sensitive columns (email, Stripe IDs) are encrypted at rest with
- * AES-256-GCM (see lib/encrypt.ts). Email is also stored as a SHA-256 hash
- * so lookups are possible without decrypting first.
+ * Sensitive columns ON THIS TABLE (email, Stripe IDs) are encrypted at rest
+ * with AES-256-GCM (see lib/encrypt.ts). Email is also stored as a SHA-256
+ * hash so lookups are possible without decrypting first.
+ *
+ * ── Read the scope of that sentence carefully ─────────────────────────────
+ *
+ * It used to read "all sensitive columns", and that was false about the
+ * database even while being true about these columns. The site owns
+ * `site_users` in this same Postgres, and it holds `email` in CLEARTEXT --
+ * the same address, in the next table along, with a UNIQUE index on it
+ * because it is the login identity and has to be looked up by value.
+ *
+ * So `players.email_enc` buys very little today. Anyone who can read
+ * `credit_events` can read `site_users.email`, and every player has a row in
+ * both. The encryption is not useless -- it protects an admin-created player
+ * who has never signed up on the site -- but it does not do what the original
+ * sentence promised, and someone reading that sentence while assessing risk
+ * would have reached the wrong conclusion.
+ *
+ * `site_users.totp_secret` WAS also cleartext and is now sealed
+ * (`site/lib/secretBox.ts`), because a second factor is worth more than an
+ * address. The email is the item still outstanding, and it is a bigger job:
+ * encrypting a column that is looked up by value means adding a hash column
+ * and migrating the auth path.
  *
  * The audit_log table uses an HMAC chain: each row's entry_hash is a
  * HMAC over (seq | actor | action | resource | prev_entry_hash). Any

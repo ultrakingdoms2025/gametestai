@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { toDataURL } from 'qrcode';
 import { auth } from '@/lib/auth';
-import { getUserById, setTotpSecret } from '@/lib/db';
+import { getUserById, setTotpSecret, readTotpSecret } from '@/lib/db';
 import { base32Encode, verifyTotp, generateTotpSecret } from '@/lib/totp';
 
 export async function GET() {
@@ -33,9 +33,10 @@ export async function POST(req: NextRequest) {
   const user = await getUserById(session.user.id);
   if (!user?.totp_secret) return NextResponse.json({ error: 'Setup not started.' }, { status: 400 });
 
-  const valid = verifyTotp(user.totp_secret, code.trim());
+  const secret = readTotpSecret(user);
+  const valid = !!secret && verifyTotp(secret, code.trim());
   if (!valid) return NextResponse.json({ error: 'Invalid code. Try again.' }, { status: 400 });
 
-  await setTotpSecret(session.user.id, user.totp_secret, true);
+  await setTotpSecret(session.user.id, secret, true);
   return NextResponse.json({ ok: true });
 }

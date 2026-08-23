@@ -67,6 +67,51 @@ describe('totp', () => {
   });
 });
 
+describe('secrets at rest', () => {
+  const KEY = Buffer.alloc(32, 7).toString('base64');
+
+  it('seals and opens a secret', async () => {
+    process.env.ENCRYPTION_KEY = KEY;
+    const { seal, open, isSealed } = await import('./secretBox');
+    const secret = generateTotpSecret();
+
+    const sealed = seal(secret)!;
+    expect(sealed).not.toContain(secret);
+    expect(isSealed(sealed)).toBe(true);
+    expect(open(sealed)).toBe(secret);
+  });
+
+  it('passes through a secret written before sealing existed', async () => {
+    /* Every TOTP secret stored before this drop is raw. Refusing those would
+     * lock every current 2FA user out of their own account at the next
+     * sign-in - a confidentiality fix traded for an availability outage. */
+    process.env.ENCRYPTION_KEY = KEY;
+    const { open, isSealed } = await import('./secretBox');
+    const legacy = generateTotpSecret();
+
+    expect(isSealed(legacy)).toBe(false);
+    expect(open(legacy)).toBe(legacy);
+    expect(verifyTotp(open(legacy)!, totp(legacy))).toBe(true);
+  });
+
+  it('null round-trips as null', async () => {
+    process.env.ENCRYPTION_KEY = KEY;
+    const { seal, open } = await import('./secretBox');
+    expect(seal(null)).toBeNull();
+    expect(open(null)).toBeNull();
+  });
+
+  it('a tampered sealed value throws rather than being read as plaintext', async () => {
+    process.env.ENCRYPTION_KEY = KEY;
+    const { seal, open } = await import('./secretBox');
+    const sealed = seal('ABCDEFGHIJKLMNOP')!;
+    const [iv, ct, tag] = sealed.split(':');
+    const flipped = `${iv}:${ct.replace(/^../, ct.slice(0, 2) === 'ff' ? '00' : 'ff')}:${tag}`;
+
+    expect(() => open(flipped)).toThrow();
+  });
+});
+
 describe('the sign-in path enforces it', () => {
   const authSrc = () =>
     readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'auth.ts'), 'utf8');

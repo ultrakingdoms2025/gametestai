@@ -5,6 +5,9 @@
  */
 import { Client } from 'pg';
 import { hash, compare } from 'bcryptjs';
+// `open` is aliased: unaliased it resolves to the DOM's window.open in this
+// project's lib set, and the mistake typechecks.
+import { seal, open as unseal } from './secretBox';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -156,11 +159,36 @@ export async function updateUserEmail(userId: string, email: string): Promise<vo
   );
 }
 
+/**
+ * Store a TOTP secret, sealed.
+ *
+ * It used to go in as cleartext, next to columns the admin app encrypts and
+ * describes as "encrypted at rest". A TOTP secret is worth more than the email
+ * beside it: it IS the second factor, so anyone who reads the row can mint
+ * valid codes for that account indefinitely. Read it back with `getTotpSecret`,
+ * which also passes through the plaintext secrets written before this.
+ */
 export async function setTotpSecret(userId: string, secret: string | null, enabled = false): Promise<void> {
   await query(
     'UPDATE site_users SET totp_secret = $1, totp_enabled = $2, updated_at = now() WHERE id = $3',
-    [secret, enabled, userId]
+    [seal(secret), enabled, userId]
   );
+}
+
+/**
+ * The usable secret for a user, whether it was stored sealed or in the clear.
+ *
+ * Legacy plaintext is accepted rather than rejected: every secret written
+ * before sealing existed is raw, and refusing those would lock every current
+ * 2FA user out at their next sign-in. They re-seal on the next write.
+ */
+export function readTotpSecret(user: { totp_secret: string | null } | null): string | null {
+  try {
+    return unseal(user?.totp_secret ?? null);
+  } catch (err) {
+    console.error('[db] could not open a stored TOTP secret:', (err as Error)?.message);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

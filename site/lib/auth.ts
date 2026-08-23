@@ -5,6 +5,7 @@ import { getUserByEmail, getUserByGoogleId, createUser, getUserById, linkGoogleA
 import { sendWelcomeEmail } from '@/lib/email';
 import { getPlayerStatus, syncPlayerProfile } from '@/lib/playerDb';
 import { verifyTotp } from '@/lib/totp';
+import { readTotpSecret } from '@/lib/db';
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   secret: process.env.NEXTAUTH_SECRET ?? process.env.APP_SECRET ?? 'dev-secret-change-me',
@@ -48,8 +49,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
          * wrong code are indistinguishable from outside; asking for a code only
          * once the password is right would tell an attacker when they had
          * guessed it. */
-        if (user.totp_enabled && user.totp_secret) {
-          if (!verifyTotp(user.totp_secret, code)) return null;
+        if (user.totp_enabled) {
+          const secret = readTotpSecret(user);
+          if (!secret || !verifyTotp(secret, code)) return null;
         }
 
         return { id: user.id, email: user.email, name: user.email.split('@')[0] };

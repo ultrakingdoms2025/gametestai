@@ -315,6 +315,24 @@ const CONTRACT = [
       'LANDFALL_CREDITS', 'ASSAY_CREDITS'],
     methods: ['update', 'progress', 'chart', 'reached', 'serialize', 'deserialize', 'dispose'],
   },
+  /* The caches, registered here for the first time and only now worth it: this
+   * file grew a serialize/deserialize pair and a `consign` that `Retention`
+   * calls by name, so a rename is now a silent loss of the restock ledger
+   * rather than a missing pickup somebody would notice. */
+  {
+    file: 'src/systems/Caches.js',
+    exports: ['Caches', 'cacheSiteId', 'RESTOCK_SECONDS'],
+    methods: ['update', 'consign', 'serialize', 'deserialize', 'dispose'],
+  },
+  /* The clock: the daily, the weekly and the season record. `resync` is named
+   * because `SaveGame` calls it by hand before it restores anything - see the
+   * note there - and a rename would take the guard that stops a load reading as
+   * a day's play with it, silently. */
+  {
+    file: 'src/systems/Retention.js',
+    exports: ['Retention', 'dayKey', 'weekKey', 'seasonKey'],
+    methods: ['season', 'seasons', 'progress', 'resync', 'resume', 'serialize', 'deserialize', 'dispose'],
+  },
   {
     /* The mission spine. `record` and `records` are what the HUD and the pause
      * hub draw; `progress` is the one-object read every panel takes. */

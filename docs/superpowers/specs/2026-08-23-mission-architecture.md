@@ -207,6 +207,27 @@ Two pieces are already built and unused for this:
   **non-farmable daily enforced by the same machinery that bounds every other source** — the
   "not farmable" requirement of brief 5.5 needs no new mechanism.
 
+> **CORRECTION, from implementing this. The `daily` credit kind above cannot exist.** The cap
+> mechanism is real and works, but the only route into the ledger is `POST /api/game/credits` →
+> `resolveReportedEvent`, whose third statement is
+> `if (!Number.isInteger(d) || d === 0) return { ok: false, reason: 'invalid' }`. **A zero-credit
+> event cannot enter.** So the kind exists only if the daily *pays* — and `creditReasons.test.ts`
+> separately refuses any `REASON_KIND` entry with no `economy.add` emitter, so "declare it now,
+> price it later" is not available either.
+>
+> The conclusion ("not farmable needs no new mechanism") survives; the mechanism named does not.
+> Phase 10 got non-farmability structurally instead, and better: **a daily completes only when a
+> record column advances, and every record column is a content-capped identity set.** Winding the
+> browser clock forward a hundred days buys a hundred day keys and nothing else. That is §9's rule
+> applied to a reward rather than to a board, and unlike a rate cap it holds offline with no server.
+>
+> **And this section understated its own first piece.** It calls the cache restock "in-memory and
+> dies on `world:changed`" as though a feature were missing. It is an **open faucet**: `_onWorld`
+> cleared the site list and re-stocked every cache from scratch, so stepping through a gateway and
+> back refilled the world you left. The 210 s timer was decoration — the real restock interval was
+> two portal transits, and the loot converts to credits through `market` → `sell`. Closing that is a
+> faucet closed, not a feature added.
+
 **Loop:** a daily charter task drawn from the player's *incomplete* records, so it always points at
 something that advances the objective; a weekly that requires a different world; a season that
 resets nothing and instead names a window in which records were completed. Nothing expires —

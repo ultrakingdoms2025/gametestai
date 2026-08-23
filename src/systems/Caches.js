@@ -55,8 +55,45 @@ const INNER_R = 3;
 const HIGH_APART = 30;
 /** Keep clear of the invisible boundary colliders that fence each world. */
 const EDGE_INSET = 24;
-/** Seconds before a collected cache restocks. */
-const RESTOCK = 210;
+/**
+ * Seconds before a collected cache restocks.
+ *
+ * Exported because it is now a REAL interval rather than a session one, and the
+ * cases in `retention.test.mjs` have to wind a clock past it. Until the
+ * retention drop this number was decoration: `_onWorld` cleared the site list
+ * and re-stocked from scratch, so the actual restock interval was however long
+ * it takes to walk through a gateway twice. See `_emptied` below.
+ */
+export const RESTOCK_SECONDS = 210;
+const RESTOCK = RESTOCK_SECONDS;
+
+/**
+ * A cache site's identity: where it is, not where it came in the list.
+ *
+ * ── Why this is not an index ───────────────────────────────────────────────
+ *
+ * `Relics.serialize` once wrote `{ found: { citadel: 17 } }`, and a reload
+ * marked the first seventeen sites in publication order - the tally right and
+ * every marked thing wrong. The same trap is open here and it is not hypothetical:
+ * placement is seeded, but it is also PROBED against live physics. `_findHigh`
+ * darts at a content box whose extent depends on what the world built, and
+ * `_highAt` refuses candidates against real colliders. Build a terrace beside a
+ * ledge and the dart budget spends differently from that point on, so the site
+ * that was index 4 is index 3 - and an index-keyed restock ledger would leave
+ * the wrong cache empty.
+ *
+ * Rounded to whole metres on purpose. A site is a PLACE, and two placements a
+ * few centimetres apart because a float came out differently are the same place.
+ *
+ * @param {string} worldId
+ * @param {string} kind 'sunken' or 'high'
+ * @param {number} x
+ * @param {number} z
+ * @returns {string}
+ */
+export function cacheSiteId(worldId, kind, x, z) {
+  return `${worldId}/${kind}/${Math.round(x)}_${Math.round(z)}`;
+}
 /** Caches per world, per kind. Small - they should feel like a find. */
 const PER_WORLD = { sunken: 3, high: 3 };
 /** Placement attempts per cache before giving up on that slot. */
@@ -154,17 +191,50 @@ export class Caches {
    * @param {{bus:any, physics:any, player:any, loot:any, worldManager:any,
    *          waterVolumes:any}} ctx
    */
-  constructor({ bus, physics, player, loot, worldManager, waterVolumes } = {}) {
+  constructor({ bus, physics, player, loot, worldManager, waterVolumes, now } = {}) {
     this.bus = bus ?? null;
     this.physics = physics ?? null;
     this.player = player ?? null;
     this.loot = loot ?? null;
     this.worldManager = worldManager ?? null;
     this.water = waterVolumes ?? null;
+    /**
+     * Wall clock, injectable.
+     *
+     * A cache is a feature of the map, so a player who comes back tomorrow
+     * should find it stocked - which a play-time counter cannot express. The
+     * usual objection to a wall clock is that a browser's date can be moved,
+     * and here it buys nothing: winding the clock forward restocks caches,
+     * which is exactly what waiting 210 seconds already does for free.
+     * @type {() => number}
+     */
+    this.now = typeof now === 'function' ? now : () => Date.now();
 
-    /** @type {Array<{kind:string, pos:THREE.Vector3, pickup:object|null, restock:number}>} */
+    /** @type {Array<{id:string, kind:string, pos:THREE.Vector3, pickup:object|null, restock:number}>} */
     this.sites = [];
     this._worldId = null;
+
+    /**
+     * Site id -> the epoch millisecond it is allowed to restock.
+     *
+     * ── The faucet this closes ────────────────────────────────────────────
+     *
+     * `_onWorld` clears `this.sites` and stocks every site from scratch, and
+     * before this map existed that was the whole story: step through a gateway
+     * and back and every cache in the world you left was full again. The
+     * restock timer was decoration and the real interval was two portal
+     * transits - an unbounded item faucet, in a game whose economy was measured
+     * at 22 credit sources against 5 sinks, and cache loot converts to credits
+     * at any market under the already-mapped `market` reason.
+     *
+     * Keyed by {@link cacheSiteId}, so it survives a world change, a reload and
+     * a placement that came out in a different order. Entries whose deadline
+     * has passed are dropped on entry and on load, so the map is bounded by the
+     * restock window rather than by lifetime play.
+     *
+     * @type {Map<string, number>}
+     */
+    this._emptied = new Map();
 
     /** @type {Array<() => void>} */
     this._offs = [];
@@ -231,7 +301,7 @@ export class Caches {
 
     for (let i = 0; i < PER_WORLD.sunken; i++) {
       const p = this._findSunken(rnd, minX, maxX, minZ, maxZ);
-      if (p) this.sites.push({ kind: 'sunken', pos: p, pickup: null, restock: 0 });
+      if (p) this.sites.push(this._site('sunken', p));
     }
     /* ---- AUTHORED HIGH SITES FIRST, AND WHY THIS CHANNEL EXISTS -------
      *
@@ -296,7 +366,7 @@ export class Caches {
       const y = Number(raw?.y);
       if (Number.isFinite(y)) {
         /* Authored height: a deck under a roof. No probe - see above. */
-        this.sites.push({ kind: 'high', pos: new THREE.Vector3(x, y, z), pickup: null, restock: 0, authored: true });
+        this.sites.push(this._site('high', new THREE.Vector3(x, y, z), true));
         high++;
         continue;
       }
@@ -306,17 +376,22 @@ export class Caches {
           + ` - ${hit ? `sheer ${hit.sheer}/8, level ${hit.flat}/6` : 'no surface'}`);
         continue;
       }
-      this.sites.push({ kind: 'high', pos: hit.pos, pickup: null, restock: 0, authored: true });
+      this.sites.push(this._site('high', hit.pos, true));
       high++;
     }
     const fromAuthored = high;
 
     for (let i = fromAuthored; i < highWanted; i++) {
       const p = this._findHigh(rnd, minX, maxX, minZ, maxZ);
-      if (p) this.sites.push({ kind: 'high', pos: p, pickup: null, restock: 0 });
+      if (p) this.sites.push(this._site('high', p));
     }
 
-    for (const s of this.sites) this._stock(s);
+    /* Not `_stock` unconditionally. A site the player emptied within the last
+     * RESTOCK seconds - in this session, in a previous one, or before the world
+     * change they just made - stays empty and carries what is left of its own
+     * countdown. That is the whole difference between a timer and a portal hop. */
+    this._prune();
+    for (const s of this.sites) this._restore(s);
 
     /**
      * Where the high sites came from. See the same field on `Relics`.
@@ -549,6 +624,65 @@ export class Caches {
     return out;
   }
 
+  /**
+   * One site, with its identity attached at birth.
+   *
+   * Every push in `_onWorld` goes through here so there is exactly one place
+   * that decides what a site is called. Four call sites each formatting their
+   * own key is four chances for one of them to disagree.
+   *
+   * @param {string} kind
+   * @param {THREE.Vector3} pos
+   * @param {boolean} [authored]
+   */
+  _site(kind, pos, authored = false) {
+    return {
+      id: cacheSiteId(this._worldId, kind, pos.x, pos.z),
+      kind,
+      pos,
+      pickup: null,
+      restock: 0,
+      authored,
+    };
+  }
+
+  /** Forget every deadline that has already passed. Keeps `_emptied` bounded. */
+  _prune() {
+    const now = this.now();
+    for (const [id, at] of this._emptied) if (at <= now) this._emptied.delete(id);
+  }
+
+  /**
+   * Stock a site on entry, unless the player emptied it recently enough that it
+   * is still on its own clock.
+   *
+   * This is the line that turns the restock timer from decoration into a rule.
+   * Before it, entering a world stocked everything, so the interval a player
+   * actually experienced was two portal transits.
+   */
+  _restore(site) {
+    const at = this._emptied.get(site.id);
+    if (at === undefined) {
+      this._stock(site);
+      return;
+    }
+    const left = (at - this.now()) / 1000;
+    if (left <= 0) {
+      this._emptied.delete(site.id);
+      this._stock(site);
+      return;
+    }
+    /* Despawn, not merely forget. `_onWorld` builds fresh sites with no pickup,
+     * so the only caller that can reach a STOCKED site here is `deserialize` -
+     * a save restored while a world is live - and dropping the reference
+     * without releasing it would leave a collectable cache standing in the
+     * world with nothing tracking it. `despawn` is deliberately silent, so
+     * nothing downstream reads it as a collection. */
+    if (site.pickup) this.loot?.despawn?.(site.pickup);
+    site.pickup = null;
+    site.restock = left;
+  }
+
   _stock(site) {
     if (!this.loot || site.pickup) return;
     const contents = this._roll();
@@ -562,17 +696,96 @@ export class Caches {
       tag: `cache:${site.kind}`,
     });
     site.restock = 0;
+    this._emptied.delete(site.id);
+  }
+
+  /**
+   * Mark a site empty, in the live list AND in the ledger that outlives it.
+   *
+   * Both writes belong together: `update` and `_onCollected` each used to do
+   * only the first, which is precisely how the timer came to mean nothing.
+   */
+  _empty(site) {
+    site.pickup = null;
+    site.restock = RESTOCK;
+    if (site.id) this._emptied.set(site.id, this.now() + RESTOCK * 1000);
   }
 
   _onCollected(e) {
     const p = e?.pickup ?? null;
     for (const s of this.sites) {
       if (s.pickup && (s.pickup === p || !s.pickup.active)) {
-        s.pickup = null;
-        s.restock = RESTOCK;
+        this._empty(s);
         this.bus?.emit('caches:changed', { worldId: this._worldId, sites: this.markers });
       }
     }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Consignment - the retention loop's only material reward             */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Release one world's emptied caches so they restock at once.
+   *
+   * This is what a completed daily pays, and it is deliberately not credits:
+   * the economy was measured at 22 sources against 5 sinks with a whole-game
+   * faucet over 250,000 CR, and a daily that paid would deepen the hole the
+   * mission design says is the problem. What it pays instead is a reason to go
+   * back to a place - which is what a cache already is.
+   *
+   * @param {string} worldId
+   * @returns {number} sites released, so a caller can say nothing when there
+   *   was nothing to release
+   */
+  consign(worldId) {
+    if (typeof worldId !== 'string' || !worldId) return 0;
+    const prefix = `${worldId}/`;
+    let n = 0;
+    for (const id of [...this._emptied.keys()]) {
+      if (id.startsWith(prefix)) { this._emptied.delete(id); n++; }
+    }
+    if (n && worldId === this._worldId) {
+      for (const s of this.sites) if (!s.pickup) this._stock(s);
+      this.bus?.emit('caches:changed', { worldId: this._worldId, sites: this.markers });
+    }
+    return n;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Persistence                                                         */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * The restock ledger, keyed by site identity.
+   *
+   * Deliberately NOT the site list: placement is derived from the world and
+   * rebuilds itself on entry, and a saved list of positions would be a second
+   * copy of something a world already knows - the same reason `Charters` does
+   * not sync its learned rosters.
+   */
+  serialize() {
+    this._prune();
+    const emptied = {};
+    for (const [id, at] of this._emptied) emptied[id] = at;
+    return { emptied };
+  }
+
+  /** REPLACE, not merge: a load has to be able to take a deadline away too. */
+  deserialize(data) {
+    if (!data || typeof data !== 'object') return false;
+    this._emptied.clear();
+    const rows = data.emptied;
+    if (rows && typeof rows === 'object') {
+      const now = this.now();
+      for (const id of Object.keys(rows)) {
+        const at = Number(rows[id]);
+        if (!Number.isFinite(at) || at <= now) continue;
+        this._emptied.set(id, at);
+      }
+    }
+    for (const s of this.sites) this._restore(s);
+    return true;
   }
 
   /**
@@ -584,10 +797,28 @@ export class Caches {
     let changed = false;
     for (const s of this.sites) {
       if (s.pickup) {
-        // Loot may have released it without an event (world clear, recycle).
+        /* Loot may have released it without an event (world clear, recycle).
+         *
+         * This is a safety net and it must stay one, because it WRITES A
+         * DEADLINE: a site emptied here is off the board for RESTOCK seconds
+         * whether or not anybody collected it. Three things make it unreachable
+         * in the shipped game, and they are worth writing down because two of
+         * them are somebody else's file:
+         *
+         *   - a world change clears Loot FIRST (`Loot` subscribes at
+         *     `main.js:303`, `Caches` at `:405`, and the bus fires in
+         *     subscription order), and `_onWorld` then rebuilds the site list
+         *     from scratch, so no stale pickup ever survives into this loop;
+         *   - `_recycleOldest` refuses to evict a `persistent` pickup, which
+         *     every cache is;
+         *   - a real collection emits `loot:collected` and `_onCollected` has
+         *     already nulled the reference before this runs.
+         *
+         * `retention.test.mjs` pins the first of those, because it is the one
+         * that lives in another file and could be reordered by someone who has
+         * no reason to look here. */
         if (!s.pickup.active) {
-          s.pickup = null;
-          s.restock = RESTOCK;
+          this._empty(s);
           changed = true;
         }
         continue;
@@ -613,6 +844,7 @@ export class Caches {
     for (const off of this._offs) off?.();
     this._offs.length = 0;
     this.sites.length = 0;
+    this._emptied.clear();
   }
 }
 

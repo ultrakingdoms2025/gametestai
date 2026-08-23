@@ -32,6 +32,43 @@
  *   minigame  MinigameManager payout, 10 on a win
  */
 
+/**
+ * ── The `daily` kind that is deliberately not here ─────────────────────────
+ *
+ * The mission architecture's section 6 proposed one, and the reasoning was
+ * sound as far as it went: `CAPS` below takes `maxEvents` over `windowSeconds`,
+ * so `{ maxEvents: 1, windowSeconds: 86400 }` is a once-a-day ceiling enforced
+ * by the server's clock rather than the browser's, and brief 5.5's "not
+ * farmable" requirement would need no new mechanism.
+ *
+ * It was evaluated for Phase 10 and refused, for two reasons that are facts
+ * about this file rather than opinions about the design.
+ *
+ *   1. A KIND HERE IS A KIND THAT PAYS. The only route into the ledger is
+ *      `POST /api/game/credits`, and every item goes through
+ *      `resolveReportedEvent`, whose third statement refuses an event with a
+ *      zero delta outright. There is no such thing as a zero-credit kind, so
+ *      "add the machinery now and decide the payout later" is not available:
+ *      the kind either pays on the day it lands or it does not exist.
+ *
+ *   2. THE MEASURED PROBLEM IS THE OTHER DIRECTION. The economy was measured at
+ *      a whole-game faucet over 250,000 CR against exactly five `spend` call
+ *      sites, with one clear of one world out of eighteen buying ~90% of every
+ *      permanent item. A new source, however small and however tightly capped,
+ *      moves the wrong number.
+ *
+ * So the retention loop pays no credits at all. Its "not farmable" guarantee is
+ * structural instead of rate-limited, and stronger for it: a daily is completed
+ * only when a charter record column advances, and every record column is an
+ * identity set capped by content, so winding a clock forward buys day keys and
+ * nothing else. See `src/systems/Retention.js` and the design at
+ * `docs/superpowers/specs/2026-08-23-retention-loops-design.md` section 0.
+ *
+ * `REASON_KIND` therefore maps no retention reason, and
+ * `scripts/tests/retention.test.mjs` fails if one appears - because a mapped
+ * reason is a paid reason, and adding one should cost an argument.
+ */
+
 /** Every kind the server will consider. Anything else is refused. */
 export const CREDIT_EVENT_KINDS = [
   'kill',

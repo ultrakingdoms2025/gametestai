@@ -18,8 +18,8 @@
  * ── What travels, and what does not ───────────────────────────────────────
  *
  * Only monotone facts: which relics, which viewpoints, which seams, which
- * wings, which charters, which deeds, which opening steps, best times, and
- * high-water counters. Rosters (`elements`, `wingRoster`, and the charter
+ * wings, which charters, which deeds, which opening steps, which days and
+ * weeks the retention loop has claimed, best times, and high-water counters. Rosters (`elements`, `wingRoster`, and the charter
  * board's per-world rosters) do NOT travel - they are lookups learned from the
  * worlds a player has visited, not progress, and they rebuild themselves.
  * Position, health, the active world and the loadout do not travel either; see
@@ -54,7 +54,7 @@ const keysOf = (v) => (isObj(v) ? Object.keys(v) : []);
  * others rather than lose the lot.
  */
 export function toPayload({
-  relics, viewpoints, mining, objectives, trials, races, charters, onboarding,
+  relics, viewpoints, mining, objectives, trials, races, charters, onboarding, retention,
 } = {}) {
   const items = [];
   const values = [];
@@ -165,6 +165,25 @@ export function toPayload({
   const ob = safe(() => onboarding?.serialize?.());
   if (isObj(ob)) set('onboarding', '', ob.done);
 
+  /* The retention loop. Two sets of ids and no numbers - see the note on
+   * `retention` in `progressLedger.ts` for why the run of consecutive days
+   * stays on the device that computed it. */
+  const rt = safe(() => retention?.serialize?.());
+  if (isObj(rt)) {
+    set('retention', '', rt.done);
+    /* `seasonId/worldId` locally; scoped by season here, so a world charted in
+     * one window cannot be confused with the same world charted in another -
+     * the same split the deed block above makes on the world id. */
+    const bySeason = {};
+    for (const key of Array.isArray(rt.season) ? rt.season : []) {
+      if (typeof key !== 'string') continue;
+      const slash = key.indexOf('/');
+      if (slash <= 0) continue;
+      (bySeason[key.slice(0, slash)] ??= []).push(key.slice(slash + 1));
+    }
+    for (const id of keysOf(bySeason)) set('season', id, bySeason[id]);
+  }
+
   return { items, values };
 }
 
@@ -182,7 +201,7 @@ const valuesOf = (state, kind) => (isObj(state?.values) && isObj(state.values[ki
  * "nothing to do" from "everything failed".
  */
 export function applyState(state, {
-  relics, viewpoints, mining, objectives, trials, races, charters, onboarding,
+  relics, viewpoints, mining, objectives, trials, races, charters, onboarding, retention,
 } = {}) {
   if (!isObj(state)) return 0;
   let applied = 0;
@@ -341,6 +360,30 @@ export function applyState(state, {
         touched = true;
       }
       if (touched && safe(() => charters.deserialize(next)) !== false) applied++;
+    }
+  }
+
+  /* Retention. UNION with what this device already has, never a replacement,
+   * for the same reason the onboarding block below unions: `deserialize`
+   * REPLACES by design, and a phone that claimed Tuesday must not un-claim the
+   * Monday this desktop did. Nothing in this loop ever needs to come out, so
+   * the union is not merely safe here - it is the only correct operation. */
+  if (retention?.deserialize && retention?.serialize) {
+    const base = safe(() => retention.serialize());
+    if (isObj(base)) {
+      const days = itemsOf(state, 'retention')[''];
+      const seasonScopes = itemsOf(state, 'season');
+      if (days?.length || keysOf(seasonScopes).length) {
+        const done = new Set(Array.isArray(base.done) ? base.done : []);
+        for (const k of days ?? []) done.add(k);
+        const season = new Set(Array.isArray(base.season) ? base.season : []);
+        for (const id of keysOf(seasonScopes)) {
+          for (const world of seasonScopes[id] ?? []) season.add(`${id}/${world}`);
+        }
+        if (safe(() => retention.deserialize({ done: [...done], season: [...season] })) !== false) {
+          applied++;
+        }
+      }
     }
   }
 

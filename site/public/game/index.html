@@ -2,7 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <!--
+      `viewport-fit=cover` is what makes `env(safe-area-inset-*)` report a real
+      number. Without it the four insets are always 0, so every safe-area
+      calculation in `hud.css` and `touch.css` silently resolves to the same
+      layout it had before anybody wrote them - which is a whole class of fix
+      that looks done and is not.
+
+      `maximum-scale=1.0, user-scalable=no` is gone. It fails WCAG 1.4.4, and
+      the thing it was there to prevent - a pinch or a double tap zooming the
+      game instead of aiming it - is already prevented properly: `html, body`
+      and `.touch` all declare `touch-action: none`, which stops the gesture at
+      the element rather than taking magnification away from the whole page.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>AETHER NEXUS</title>
     <!--
       Inline so there is no second request and no file to lose. Without any
@@ -24,14 +37,14 @@
       href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&display=swap"
       rel="stylesheet"
     />
-    <script type="module" crossorigin src="/game/assets/index-DEi6A6dl.js"></script>
+    <script type="module" crossorigin src="/game/assets/index-CZQTmwwO.js"></script>
     <link rel="modulepreload" crossorigin href="/game/assets/three.core-Co-9pgkG.js">
     <link rel="modulepreload" crossorigin href="/game/assets/YardPlan-BVyv_ct4.js">
     <link rel="modulepreload" crossorigin href="/game/assets/BufferGeometryUtils-NQeNCw5n.js">
     <link rel="modulepreload" crossorigin href="/game/assets/StationKit-BZYzBpct.js">
     <link rel="modulepreload" crossorigin href="/game/assets/terrain-B-2kqJbh.js">
     <link rel="modulepreload" crossorigin href="/game/assets/ItemDefs-Dm8f-0rP.js">
-    <link rel="stylesheet" crossorigin href="/game/assets/index-BhXol5e1.css">
+    <link rel="stylesheet" crossorigin href="/game/assets/index-_nRrTwVA.css">
   </head>
   <body>
     <canvas id="viewport"></canvas>

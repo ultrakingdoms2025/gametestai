@@ -88,6 +88,21 @@ export const SET_CREDITS = 500;
 const PICKUP_R = 2.0;
 /** Minimum separation, so a rooftop never gets two. */
 const MIN_APART = 14;
+/**
+ * How far a stored relic id may be from a live site and still be the same relic.
+ *
+ * MUST stay below `MIN_APART / 2`. `_tooClose` refuses any site within
+ * `MIN_APART` of another in XZ, on BOTH the authored deal and the dart pass, so
+ * with a tolerance under half that separation the assignment from stored keys to
+ * live sites is provably ONE-TO-ONE: no key can lie within `MATCH_R` of two
+ * sites, and no site can be claimed by two keys.
+ *
+ * This is what makes a position usable as an identity at all. Matching on the
+ * quantised STRING would flip the moment a deck drifted across a cell boundary;
+ * matching on nearest-within-tolerance absorbs that, and a drift larger than the
+ * tolerance drops the relic back to un-found - the generous direction.
+ */
+export const MATCH_R = 6;
 /** How high above its surroundings a spot must be to count as hidden. */
 const MIN_PROMINENCE = 2.5;
 /** Placement attempts per relic. */
@@ -261,6 +276,33 @@ export function glowScale(d) {
  * multiplying it by a ramp as well would darken the core toward the tail
  * instead of just thinning it.
  */
+/**
+ * The identity of a relic site: its position on the ground plane, quantised.
+ *
+ * XZ only, and deliberately. `_tooClose` separates sites in XZ alone, so two
+ * relics can never share a column and `y` adds nothing to uniqueness - while
+ * including it would break every id the first time a deck height was tweaked.
+ *
+ * Half-metre resolution: far inside the `MIN_APART / sqrt(2)` = 9.9 m cell size
+ * at which a grid could first hold two sites, so the quantisation itself can
+ * never collide.
+ */
+function idOf(pos) {
+  const q = (n) => Math.round(Number(n) * 2) / 2;
+  return `${q(pos.x)}:${q(pos.z)}`;
+}
+
+/** Decode an id back to the point it was minted from. Null if malformed. */
+function pointOfId(id) {
+  if (typeof id !== 'string') return null;
+  const i = id.indexOf(':');
+  if (i <= 0) return null;
+  const x = Number(id.slice(0, i));
+  const z = Number(id.slice(i + 1));
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+  return { x, z };
+}
+
 function makeGlowTexture() {
   const n = GLOW_TEX;
   const data = new Uint8Array(n * n * 4);
@@ -319,8 +361,25 @@ export class Relics {
     this.sites = [];
     this._worldId = null;
     this._time = 0;
-    /** Per-world tally, so a returning player is not told to find them twice. */
+    /**
+     * Legacy per-world tally, kept for saves written before the identity ledger
+     * existed and for worlds this session has not entered yet. Once a world has
+     * ids in `_foundIds`, that world's entry here is superseded and removed.
+     * @type {Map<string, number>}
+     */
     this._found = new Map();
+    /**
+     * WHICH relics, per world - the authority.
+     *
+     * A count was the original design and it was defensible for one device: the
+     * number and the money round-trip exactly, and only which N of the N is
+     * wrong. It stopped being defensible the moment progress had to merge across
+     * devices, because a count CANNOT merge. Find {1,3,7} on a phone and {2,4}
+     * on a PC and the union is five relics; the maximum of the counts is three,
+     * and two relics are destroyed silently.
+     * @type {Map<string, Set<string>>}
+     */
+    this._foundIds = new Map();
     /**
      * Milestones already paid, keyed `worldId:half` / `worldId:set`.
      *
@@ -394,20 +453,33 @@ export class Relics {
    * collectible in the game that is explicitly finite was in fact infinite, and
    * the "count is the progress bar" claim in this file's header was false.
    *
-   * A count per world rather than a set of site ids, because that is exactly
-   * what `_onWorld` restores: placement is deterministic per world id, so the
-   * first N sites in the generated order are the found ones. Storing ids would
-   * imply a stability the placement does not have - change `PER_WORLD`, the
-   * bounds or the authored roof list and every id would move.
+   * Both shapes are written. `foundIds` is the authority - the set of relic
+   * identities recovered in each world. `found` is the legacy count, DERIVED
+   * from that set so the two can never disagree, and kept so a build from before
+   * this drop still reads a save written after it.
    *
-   * @returns {{found:Object<string,number>, paid:string[]}}
+   * This file used to argue against ids: "storing ids would imply a stability
+   * the placement does not have". That objection is answered by an invariant the
+   * file already enforces - see `MATCH_R`. Sites are never within `MIN_APART` of
+   * each other, so a position IS an identity, provided it is matched with a
+   * tolerance rather than by string equality.
+   *
+   * @returns {{found:Object<string,number>, foundIds:Object<string,string[]>, paid:string[]}}
    */
   serialize() {
     const found = {};
-    for (const [worldId, n] of this._found) {
-      if (worldId && n > 0) found[worldId] = n;
+    const foundIds = {};
+    for (const [worldId, ids] of this._foundIds) {
+      if (!worldId || !ids || ids.size === 0) continue;
+      foundIds[worldId] = [...ids].sort();
+      found[worldId] = ids.size;
     }
-    return { found, paid: [...this._paid] };
+    /* A world this session never entered still holds only a legacy count, and
+     * dropping it here would delete its progress on the very next write. */
+    for (const [worldId, n] of this._found) {
+      if (worldId && n > 0 && found[worldId] == null) found[worldId] = n;
+    }
+    return { found, foundIds, paid: [...this._paid] };
   }
 
   /**
@@ -424,16 +496,33 @@ export class Relics {
    * a world with nothing found in it, which is exactly what `serialize` does
    * with a zero tally.
    *
-   * @param {{found?:Object<string,number>, paid?:string[]}|null} data
+   * Contrast `Relics.merge`, which must NEVER take progress away. The two rules
+   * are opposites on purpose: a load restores a moment, a merge reconciles two
+   * devices. They stay separate entry points for that reason.
+   *
+   * @param {{found?:Object<string,number>, foundIds?:Object<string,string[]>,
+   *          paid?:string[]}|null} data
    * @returns {boolean} true when a well-formed payload was applied
    */
   deserialize(data) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
     this._found.clear();
+    this._foundIds.clear();
     this._paid.clear();
+    const ids = data.foundIds;
+    if (ids && typeof ids === 'object' && !Array.isArray(ids)) {
+      for (const worldId of Object.keys(ids)) {
+        if (!Array.isArray(ids[worldId])) continue;
+        const set = new Set();
+        for (const key of ids[worldId]) if (typeof key === 'string' && key) set.add(key);
+        if (set.size) this._foundIds.set(worldId, set);
+      }
+    }
     const found = data.found;
     if (found && typeof found === 'object' && !Array.isArray(found)) {
       for (const worldId of Object.keys(found)) {
+        // Ids win: the count is the same progress, expressed worse.
+        if (this._foundIds.has(worldId)) continue;
         const n = Math.max(0, Math.floor(Number(found[worldId])));
         if (Number.isFinite(n) && n > 0) this._found.set(worldId, n);
       }
@@ -452,35 +541,169 @@ export class Relics {
   /**
    * Mark the first N sites of the active world taken, from `_found`.
    *
-   * ── KNOWN LIMITATION, decided rather than overlooked ──────────────────────
+   * ── THE LIMITATION THIS USED TO CARRY, and how it was answered ────────────
    *
-   * N is a COUNT, so this marks the first N sites in generation order - not the
-   * N the player actually picked up. Within one session that is the same set,
-   * because `_collect` takes them in whatever order the player walks and the
-   * count only ever grows; ACROSS A RELOAD it is not. Collect the four relics
-   * on the wall towers and reload, and the four the generator happened to emit
-   * first are gone instead: a relic the player really took can be standing
-   * there again, and one they never went near has vanished.
+   * This method stored a COUNT and marked the first N sites in generation order
+   * - not the N the player actually picked up. Within one session those coincide;
+   * across a reload they do not, because `sites` is regenerated by a seeded
+   * shuffle, a district deal and a dart pass, and generation order has no
+   * relationship to pickup order. Collect the four relics on the wall towers,
+   * reload, and the four the generator happened to emit first were gone instead.
    *
-   * What is exactly right either way is the number and the money - `remaining`,
-   * the HUD counter, the milestone thresholds and the 120 CR a relic pays are
-   * all functions of N alone, and N round-trips exactly. What is wrong is only
-   * WHICH thirty of the thirty, which is unobservable except to a player who
-   * remembers a rooftop.
+   * It was documented and accepted, on the grounds that "there are no stable ids
+   * to store": placement is `mulberry32(hashString('relic:' + worldId))` over
+   * `world._roofs` and `world._towers`, so changing `PER_WORLD`, the bounds or
+   * the authored roof list renumbers every site, and a stored INDEX set would
+   * mark the wrong sites after any content change - the same defect with a
+   * longer fuse.
    *
-   * The alternative is a set of site ids, and there are no stable ids to store:
-   * placement is `mulberry32(hashString('relic:' + worldId))` over
-   * `world._roofs` and `world._towers` with a random shuffle and a random dart
-   * pass, so changing `PER_WORLD`, the world bounds, the authored roof list or
-   * anything upstream of the shuffle renumbers every site. A stored id set
-   * would silently mark the WRONG sites after any content change, which is the
-   * same defect with a longer fuse and a save-schema migration on top. So: the
-   * count is kept, and the consequence is written down here rather than left
-   * for the next reader to rediscover.
+   * That reasoning is right about indices and wrong about identity. The file
+   * already enforces an invariant strong enough to make a POSITION an id:
+   * `_tooClose` keeps every site at least `MIN_APART` from every other in XZ, on
+   * both placement paths. So a quantised position collides with nothing, and
+   * matching it to the nearest live site within `MATCH_R < MIN_APART / 2` is
+   * one-to-one by construction. Content change degrades gracefully rather than
+   * corruptly: an id that matches nothing leaves that relic re-findable, instead
+   * of silently marking a different one.
+   *
+   * What forced the change was the merge. A count cannot be unioned across two
+   * devices without destroying whichever finds are rarer, and no amount of care
+   * elsewhere recovers them. See `Relics.merge`.
    */
   _applyFound() {
+    const ids = this._foundIds.get(this._worldId);
+    if (ids && ids.size) { this._applyIds(ids); return; }
+
+    /* Legacy path: a save written before the identity ledger. Reproduce the old
+     * behaviour exactly - mark the first N in generation order - and then
+     * UPGRADE, so the next write carries ids and this branch is never taken for
+     * this world again. The upgrade is no more wrong than the restore already
+     * was; it simply stops being wrong from here on. */
     const already = this._found.get(this._worldId) ?? 0;
     for (let i = 0; i < this.sites.length; i++) this.sites[i].taken = i < already;
+    if (already > 0 && this.sites.length) this._upgradeLegacy();
+  }
+
+  /**
+   * Claim each stored id's NEAREST live site, within `MATCH_R`.
+   *
+   * One-to-one by construction: sites are at least `MIN_APART` apart and
+   * `MATCH_R < MIN_APART / 2`, so no key is in range of two sites, and a site
+   * already claimed is skipped. A key that matches nothing - the relic moved, or
+   * the world's content changed under it - simply goes un-restored, which puts
+   * that relic back on the map rather than marking the wrong one.
+   */
+  _applyIds(ids) {
+    for (const site of this.sites) site.taken = false;
+    const r2 = MATCH_R * MATCH_R;
+    for (const key of ids) {
+      const p = pointOfId(key);
+      if (!p) continue;
+      let best = -1;
+      let bestD = r2;
+      for (let i = 0; i < this.sites.length; i++) {
+        const site = this.sites[i];
+        if (site.taken) continue;
+        const dx = site.pos.x - p.x;
+        const dz = site.pos.z - p.z;
+        const d = dx * dx + dz * dz;
+        if (d <= bestD) { bestD = d; best = i; }
+      }
+      if (best >= 0) this.sites[best].taken = true;
+    }
+  }
+
+  /** Mint ids for whatever a legacy count marked, and retire the count. */
+  _upgradeLegacy() {
+    const set = new Set();
+    for (const site of this.sites) if (site.taken) set.add(idOf(site.pos));
+    if (!set.size) return;
+    this._foundIds.set(this._worldId, set);
+    this._found.delete(this._worldId);
+  }
+
+  /** Record one recovered relic against the active world. */
+  _noteFound(site) {
+    if (!this._worldId) return;
+    let set = this._foundIds.get(this._worldId);
+    if (!set) {
+      /* First pickup in a world still on a legacy count: carry the sites that
+       * count already marked, or its progress would be thrown away. */
+      set = new Set();
+      for (const s of this.sites) if (s.taken && s !== site) set.add(idOf(s.pos));
+      this._foundIds.set(this._worldId, set);
+      this._found.delete(this._worldId);
+    }
+    set.add(idOf(site.pos));
+  }
+
+  /**
+   * Stamp the ledger onto a world that has just come up, and settle any
+   * milestone it already satisfies.
+   *
+   * `_payMilestones` used to run only from `_collect`, which was correct while a
+   * world could only be completed by picking something up. A merge breaks that:
+   * device A holds relics 1-15, device B holds 16-30, the union completes the
+   * world, and there is no next pickup to trigger the prize. `_claim` keeps this
+   * idempotent, so re-entering a finished world still pays nothing.
+   * `Viewpoints` records hitting the same case and settling it on world entry.
+   */
+  _enterWorldLedger() {
+    this._applyFound();
+    this._payMilestones();
+  }
+
+  /**
+   * Reconcile two saved relic ledgers. Union, never subtraction.
+   *
+   * The opposite rule to `deserialize`, and the reason this is a separate entry
+   * point. Commutative and idempotent, so it does not matter which device synced
+   * first and a replayed payload changes nothing - which is precisely why no
+   * device clock is consulted anywhere in here. Clocks disagree; sets do not.
+   *
+   * @returns {{found:Object<string,number>, foundIds:Object<string,string[]>, paid:string[]}}
+   */
+  static merge(a, b) {
+    const sides = [a, b].filter((s) => s && typeof s === 'object' && !Array.isArray(s));
+    const ids = new Map();
+    for (const side of sides) {
+      const fi = side.foundIds;
+      if (!fi || typeof fi !== 'object' || Array.isArray(fi)) continue;
+      for (const worldId of Object.keys(fi)) {
+        if (!Array.isArray(fi[worldId])) continue;
+        if (!ids.has(worldId)) ids.set(worldId, new Set());
+        const set = ids.get(worldId);
+        for (const key of fi[worldId]) if (typeof key === 'string' && key) set.add(key);
+      }
+    }
+
+    const found = {};
+    const foundIds = {};
+    for (const [worldId, set] of ids) {
+      if (!set.size) continue;
+      foundIds[worldId] = [...set].sort();
+      found[worldId] = set.size;
+    }
+
+    /* A world with no ids on EITHER side is still on a legacy count, and the
+     * larger of the two is the best available answer for it. */
+    for (const side of sides) {
+      const fc = side.found;
+      if (!fc || typeof fc !== 'object' || Array.isArray(fc)) continue;
+      for (const worldId of Object.keys(fc)) {
+        if (ids.has(worldId)) continue;
+        const n = Math.max(0, Math.floor(Number(fc[worldId])) || 0);
+        if (n > 0) found[worldId] = Math.max(found[worldId] ?? 0, n);
+      }
+    }
+
+    const paid = new Set();
+    for (const side of sides) {
+      if (!Array.isArray(side.paid)) continue;
+      for (const key of side.paid) if (typeof key === 'string' && key) paid.add(key);
+    }
+
+    return { found, foundIds, paid: [...paid].sort() };
   }
 
   /* ------------------------------------------------------------------ */
@@ -764,9 +987,10 @@ export class Relics {
       districts: Object.fromEntries([...perDistrict.entries()].sort((a, b) => b[1] - a[1])),
     };
 
-    // Mark the first N as already taken, so a returning player does not
-    // re-collect a world they have already stripped.
-    this._applyFound();
+    // Stamp the ledger onto the freshly generated sites so a returning player
+    // does not re-collect a world they have already stripped, and settle any
+    // milestone a merged ledger already satisfies.
+    this._enterWorldLedger();
 
     if (this.sites.length) {
       console.info(`[Relics] "${id}": ${this.remaining}/${this.sites.length} hidden`
@@ -869,7 +1093,7 @@ export class Relics {
 
   _collect(site) {
     site.taken = true;
-    this._found.set(this._worldId, (this._found.get(this._worldId) ?? 0) + 1);
+    this._noteFound(site);
     this.economy?.add?.(VALUE, 'relic');
     // Also add a relic_coin to the store so it shows up in the inventory panel.
     this.inventory?.add?.('relic_coin', 1);

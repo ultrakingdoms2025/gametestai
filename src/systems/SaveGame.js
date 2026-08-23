@@ -504,8 +504,9 @@ export class SaveGame {
       piloting: safe(() => this.piloting?.serialize?.()) ?? null,
       mining: safe(() => this.mining?.serialize?.()) ?? null,
       /* Kills by class, wings broken, bodies reached, elements assayed. Every
-       * one of them keyed by IDENTITY rather than by a count, which is the one
-       * thing the relic ledger above got wrong. */
+       * one of them keyed by IDENTITY rather than by a count - which is what the
+       * relic ledger above got wrong for a long time, and no longer does: see
+       * `Relics.serialize`, which now writes `foundIds` for the same reason. */
       objectives: safe(() => this.objectives?.serialize?.()) ?? null,
       trials: this._trialLedger(),
     };
@@ -577,6 +578,50 @@ export class SaveGame {
   bestTrialTime(venueId, worldId = null) {
     const row = this._trials.get(`${worldId ?? '?'}/${venueId}`);
     return row ? row.time : null;
+  }
+
+  /**
+   * The best-time ledger, in the shape `_snapshot` writes it.
+   *
+   * Public counterpart to `mergeTrials`, so the cross-device sync can read this
+   * record without reaching into a private. @see mergeTrials
+   */
+  trialLedger() {
+    return this._trialLedger();
+  }
+
+  /**
+   * Fold another device's best times into this one's. Quicker wins, always.
+   *
+   * Public because this ledger has no owning system to hang a merge off - see
+   * `_trialLedger`. `MinigameManager` emits and forgets, so `SaveGame` keeps the
+   * record itself, and a cross-device merge therefore has to enter here.
+   *
+   * MIN, never replace. A slower run on a second device is not news, and a
+   * last-write-wins sync would let it delete a personal best - which is the one
+   * thing a record is for. The label is kept from whichever side already had
+   * one, since it is a display string rather than progress.
+   *
+   * @param {Record<string, {time:number, label?:string, worldId?:string}>} best
+   * @returns {number} how many records this actually improved
+   */
+  mergeTrials(best) {
+    if (!best || typeof best !== 'object' || Array.isArray(best)) return 0;
+    let improved = 0;
+    for (const key of Object.keys(best)) {
+      const row = best[key];
+      const time = Number(row?.time);
+      if (!Number.isFinite(time) || time <= 0) continue;
+      const prev = this._trials.get(key);
+      if (prev && Number(prev.time) <= time) continue;
+      this._trials.set(key, {
+        time,
+        label: prev?.label ?? (typeof row.label === 'string' ? row.label : ''),
+        worldId: prev?.worldId ?? (typeof row.worldId === 'string' ? row.worldId : null),
+      });
+      improved++;
+    }
+    return improved;
   }
 
   /**

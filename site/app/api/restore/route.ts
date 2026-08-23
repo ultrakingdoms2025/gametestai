@@ -82,7 +82,6 @@ export async function POST(req: Request) {
         const credits = intent === 'entry' ? 0 : clampCredits(meta.credits);
         const { applied } = await grant({
           paid: meta.grantsAccess === 'true' ? true : undefined,
-          addCredits: credits,
           orderId: session.id,
         });
         if (applied) {

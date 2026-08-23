@@ -101,7 +101,6 @@ export async function GET(req: Request) {
     const orderId = url.searchParams.get('order') || `sim_${randomUUID()}`;
     await grant({
       paid: intent !== 'credits' ? true : undefined,
-      addCredits: credits,
       orderId,
     });
     await recordForUser({ intent, credits, amountCents: 0, orderId });
@@ -131,7 +130,6 @@ export async function GET(req: Request) {
      * arrive here at the same moment the webhook is settling the same order. */
     const { applied } = await grant({
       paid: meta.grantsAccess === 'true' ? true : undefined,
-      addCredits: credits,
       orderId: session.id,
     });
     if (!applied) console.log(`[confirm] Order ${session.id} was already settled; no double credit.`);

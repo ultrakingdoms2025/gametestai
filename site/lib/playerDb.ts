@@ -15,12 +15,14 @@ function makeClient() {
 async function pgQuery<T = Record<string, unknown>>(
   text: string,
   values?: unknown[]
-): Promise<{ rows: T[] }> {
+): Promise<{ rows: T[]; rowCount: number }> {
   const client = makeClient();
   await client.connect();
   try {
     const result = await client.query(text, values);
-    return { rows: result.rows as T[] };
+    // `rowCount` matters for conditional UPDATEs, where "matched nothing" is the
+    // answer rather than an error - see `findOrCreatePlayer`.
+    return { rows: result.rows as T[], rowCount: result.rowCount ?? 0 };
   } finally {
     await client.end();
   }
@@ -151,11 +153,45 @@ export async function findOrCreatePlayer(siteUserId: string, email: string): Pro
     [emailHash]
   );
   if (byEmail[0]) {
-    await pgQuery(
-      'UPDATE players SET site_user_id = $1, updated_at = NOW() WHERE id = $2',
+    /* Claim it ONLY if nobody holds it.
+     *
+     * This UPDATE used to be unconditional, and that was an account-transfer
+     * bug with a one-field trigger. An admin edits a player's email in the
+     * dashboard (`admin/lib/db.ts` rewrites `email_hash`/`email_enc`, and knows
+     * nothing about `site_user_id`); the next time whoever really owns that
+     * address signs in, step 1 misses, step 2 matches on the hash, and they
+     * inherit the other player's credits, game_state, quest engagements and
+     * purchase history. The original owner's next request misses both lookups
+     * and mints them a fresh, empty player. No error, no audit trail, and
+     * nothing afterwards can tell the two apart.
+     *
+     * `AND site_user_id IS NULL` in the statement rather than a SELECT first,
+     * for the reason the credit ledger states: a check-then-act is two requests
+     * away from both passing. */
+    const claimed = await pgQuery(
+      `UPDATE players SET site_user_id = $1, updated_at = NOW()
+        WHERE id = $2 AND site_user_id IS NULL`,
       [siteUserId, byEmail[0].id]
     );
-    return byEmail[0].id;
+    if (claimed.rowCount === 1) return byEmail[0].id;
+
+    /* Matched nothing: someone holds it. Us, if two of our own requests raced -
+     * which is ordinary and must not be an error. */
+    const { rows: held } = await pgQuery<{ id: string; site_user_id: string | null }>(
+      'SELECT id, site_user_id FROM players WHERE id = $1',
+      [byEmail[0].id]
+    );
+    if (held[0]?.site_user_id === siteUserId) return held[0].id;
+
+    /* Someone else. There is no safe answer here: `email_hash` is UNIQUE, so a
+     * second player cannot be minted for this address, and handing this one over
+     * is the bug above. Refusing loudly costs this user the game until a human
+     * looks; continuing costs the other user everything they have. */
+    throw new Error(
+      `player ${byEmail[0].id} is already linked to a different site user; `
+        + 'refusing to reassign it. This usually means an admin edited an email '
+        + 'to one that another account owns.'
+    );
   }
 
   // 3. Create new player record

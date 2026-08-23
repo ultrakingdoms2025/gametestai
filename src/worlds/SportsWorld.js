@@ -8825,6 +8825,43 @@ export class SportsWorld extends World {
         patrol: [P(-24, 84), P(-6, 92), P(10, 74), P(-14, 62)],
       },
       {
+        /* The kit and refreshments stand, by the entrance building.
+         *
+         * There was no trader here at all. `WORLD_MARKETS.sports` has a full
+         * price table (`ItemDefs.js:1093`) and this world never turned
+         * `merchants` off, but `Marketplace._findVendor` keys on `role`, an
+         * explicit `vendor` flag, or trade words in a name or persona, and not
+         * one of the six voices here matched any of them - so `B` answered
+         * "No vendor nearby" everywhere on the site.
+         *
+         * That was not merely a missing shop. `admin/lib/quests/sports.mjs`
+         * quest 44 spends two of its four steps here: "Press B to open the
+         * marketplace and buy the medkit twin-pack" and "Open the marketplace
+         * again (B) ... Sell 2 stacks back". Both were uncompletable, and its
+         * own authoring note asserts a stand exists - "the kit stand opens the
+         * WHOLE catalogue" - so the quest was written against a trader that was
+         * never spawned.
+         *
+         * NO `vendorCategories`, deliberately, because that note is the
+         * specification: an unrestricted trader makes the whole catalogue
+         * available, which is what the medkit step needs. Exactly the fix
+         * `RaceWorld.js:3251` records making for the identical defect.
+         *
+         * Placed at the entrance building on the minimap plan (-46, 138), a
+         * short walk left of the arrival portal at (0, 150), so "find the
+         * stand" is a thing a new player does by looking around.
+         */
+        position: P(-46, 130, 0),
+        type: 'friendly',
+        name: 'Odile Fenner',
+        persona:
+          'Runs the kit and refreshments stand by the main gate. Sells everything from spare goggles to hot chocolate, knows precisely which of the regulars is about to injure themselves, and has strong views on the mark-up she is obliged to charge. Calls every customer "champ" regardless of evidence.',
+        role: 'vendor',
+        vendorTitle: 'Meridian Kit & Refreshments',
+        signLines: ['KIT & REFRESHMENTS', 'MAIN GATE'],
+        patrol: [P(-46, 130), P(-38, 134), P(-52, 136), P(-50, 126)],
+      },
+      {
         position: P(62, -48, 0),
         type: 'friendly',
         name: 'Priya Raghunathan',

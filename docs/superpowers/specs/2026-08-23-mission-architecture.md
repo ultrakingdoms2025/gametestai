@@ -319,26 +319,33 @@ the tier the spine sits on.
   paying without its steps — is a Phase 4 item and should be recorded as one rather than left in
   this document.
 
-## 12. Defects found while writing this, which belong to other phases
+## 12. Defects found while writing this
 
-Each is small, live, and none is fixed here — Phase 3 is document-only.
+Found while surveying, and fixed immediately after this document landed rather
+than deferred — see `scripts/tests/defect-sweep.test.mjs`, which pins six of the
+eight. **Item 7 turned out not to be a defect at all.**
 
-1. **Sports has no vendor, and its quests tell players to shop there.** `WORLD_MARKETS.sports`
+Every one of them was silent: a missing vendor answered "No vendor nearby", a
+missing loot table fell back to another world's, a double-counted step simply
+completed sooner than its own label promised. None produced an error, a warning
+or a failing test.
+
+1. ✅ **FIXED. Sports had no vendor, and its quests tell players to shop there.** `WORLD_MARKETS.sports`
    exists and `merchants` is on, but no NPC carries `role: 'vendor'` and no crowd name matches
    `VENDOR_WORDS`, so `Marketplace.open()` always answers "No vendor nearby" — while
    `admin/lib/quests/sports.mjs:355,357` instructs *"Press B to open the marketplace and buy the
    medkit twin-pack"*. Two quest steps are uncompletable. `RaceWorld.js:3251` records fixing exactly
    this by adding a vendor; sports never got the same fix.
-2. **`RaceWorld` caches pay from the station table.** `CACHE_TABLES` has no `race` row and
+2. ✅ **FIXED. `RaceWorld` caches paid from the station table.** A `race` row was added, and the fallback now warns instead of swallowing. `CACHE_TABLES` has no `race` row and
    `Caches.js:510` falls back silently, so Vellum Ridge caches drop station loot.
-3. **Gateway 01 is signed "Ashfall Reach"; the world is "Aldermoor Vale".** The sign atlas says it
+3. ✅ **FIXED. Gateway 01 was signed "Ashfall Reach"; the world is "Aldermoor Vale".** The sign atlas says it
    twice; the HUD toast, the lore, the quest manager's sign and the market label all say Aldermoor
    Vale. "Ashfall" is a Citadel region *and* a Cinder landing pad.
-4. **`markStepDone` validates no step type** (`QuestSystem.js:321`) — reachable via `?dev=1`, which
+4. ✅ **FIXED (deleted). `markStepDone` validated no step type** (`QuestSystem.js:321`) — reachable via `?dev=1`, which
    the file itself says is not a security boundary.
-5. **Untargeted quest steps match everything** (`:722`), so `{type:'kill', count:5}` with no target
+5. ✅ **FENCED. Untargeted quest steps match everything** (`:722`), so `{type:'kill', count:5}` with no target
    completes on any five hostiles anywhere.
-6. **`defend` double-fires** — a killing blow advances it through both `npc:killed` and
+6. ✅ **FIXED. `defend` double-fired** — a killing blow advances it through both `npc:killed` and
    `npc:damaged`.
-7. **`survive` is global** — one 30 s tick credits every in-progress engagement.
-8. **`admin/lib/quests/index.mjs:16` says 73 quests; there are 78.**
+7. ❌ **NOT A DEFECT.** `survive` credits every in-progress engagement per tick, which is correct: `_onPlayerDamaged` resets the accumulator, steps are world-targeted, and one tick credits at most once. If you survive an unbroken minute, every quest that asked for an unbroken minute in that world has genuinely been satisfied. Reported as a bug by the survey; verified as working and left alone.
+8. ✅ **FIXED. `admin/lib/quests/index.mjs` said 73 quests; there are 78** (citadel has 15, not 10).

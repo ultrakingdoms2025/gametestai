@@ -110,6 +110,23 @@ const CACHE_TABLES = {
     { id: 'laser_cell', min: 20, max: 50 },
     { id: 'medkit', min: 1, max: 2 },
   ],
+  /* Vellum Ridge. This row was missing entirely, and `_roll` falls back to the
+   * station table without saying so - so the circuit's caches paid out station
+   * bullets, station alloy and station shards, in a world whose whole subject
+   * is cars. Nothing errored and nothing looked wrong; the loot was simply from
+   * somewhere else.
+   *
+   * A racing world's forgotten stores box holds what a garage holds. Tyre
+   * compound reads as `alloy_scrap` (the salvage line every world shares) and
+   * the rest is what a car needs: fuel for the boost, a medkit for the driver.
+   * Bullets stay, in smaller number than the station's - there are hostiles
+   * here, but shooting is not what anyone came for. */
+  race: [
+    { id: 'alloy_scrap', min: 3, max: 8 },
+    { id: 'nexus_shard', min: 1, max: 2 },
+    { id: 'bullet', min: 20, max: 45 },
+    { id: 'medkit', min: 1, max: 2 },
+  ],
 };
 
 /** Deterministic PRNG so a world's caches land in the same places every time. */
@@ -507,7 +524,19 @@ export class Caches {
   /* ------------------------------------------------------------------ */
 
   _roll(rnd = Math.random) {
-    const table = CACHE_TABLES[this._worldId] ?? CACHE_TABLES.station;
+    /* The fallback used to be silent, which is how Vellum Ridge spent its whole
+     * life paying out station loot without anyone noticing. A world that allows
+     * caches and has no table is an authoring omission, so it says so once. */
+    let table = CACHE_TABLES[this._worldId];
+    if (!table) {
+      if (!this._warnedNoTable) {
+        this._warnedNoTable = true;
+        console.warn(`[Caches] no CACHE_TABLES row for "${this._worldId}"`
+          + ' - falling back to the station table. Add a row rather than leaving'
+          + ' this world paying out another world\'s goods.');
+      }
+      table = CACHE_TABLES.station;
+    }
     const out = [];
     // Two or three distinct lines, so no two caches read the same.
     const want = 2 + (rnd() < 0.5 ? 1 : 0);

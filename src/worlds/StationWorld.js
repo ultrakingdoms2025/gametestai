@@ -1030,7 +1030,7 @@ const SIGNS = [
   ['CAUTION', 'PRESSURE DOOR', '#ffcc33'],
   ['AETHER NEXUS', 'GATEWAY PLAZA', '#7fe9ff'],
   // --- wayfinding, reserved by role: never share a cell with a shop fascia ---
-  ['GATEWAY 01', 'ASHFALL REACH', '#ffb347'],
+  ['GATEWAY 01', 'ALDERMOOR VALE', '#ffb347'],
   ['GATEWAY 02', 'MERIDIAN COMPLEX', '#5cffb0'],
   /* The two approach boards, on the gateway axis about 20 m in front of each
    * arch. They used to read PLATFORM A and PLATFORM B - generic transit
@@ -1038,7 +1038,7 @@ const SIGNS = [
    * sign a player reads on the walk in. The copy names the destination now;
    * the lintel 20 m behind still carries the gateway number, so the two boards
    * complement each other instead of competing. */
-  ['ASHFALL REACH', 'GATEWAY 01 AHEAD', '#ffb347'],
+  ['ALDERMOOR VALE', 'GATEWAY 01 AHEAD', '#ffb347'],
   ['MERIDIAN COMPLEX', 'GATEWAY 02 AHEAD', '#5cffb0'],
   ['RING CONCOURSE', 'LEVEL 2 // PROMENADE', '#7fe9ff'],
   ['TRANSIT CONTROL', 'REPORT ANOMALIES', '#c0d4ff'],
@@ -1991,7 +1991,7 @@ export class StationWorld extends World {
     /* Cells are 768 x 384, up from 512 x 256.
      *
      * Signage legibility was called out by two reviewers independently: the
-     * primary line resolved, the secondary line ("ASHFALL REACH", "STAND CLEAR
+     * primary line resolved, the secondary line ("ALDERMOOR VALE", "STAND CLEAR
      * OF DOORS") came back as grey mush. That is not a filtering problem, it is
      * a source-resolution problem - a 33 px cap height rendered into a 256 px
      * cell, then minified onto a 2 m board seen from 25 m, has no letterforms
@@ -6186,7 +6186,7 @@ export class StationWorld extends World {
       { target: 'sports', label: 'Meridian Athletic Complex', accent: 0x2ffb9a, em: 'emGreen', signRole: SIGN_ROLE.gatewaySports },
       { target: 'maze', label: 'The Verdant Coil', accent: 0x8fd67a, em: 'emGreen', signRole: SIGN_ROLE.gatewayMaze },
       { target: 'citadel', label: 'Sunspire Citadel', accent: 0xffc46b, em: 'emAmber', signRole: SIGN_ROLE.gatewayCitadel },
-      { target: 'medieval', label: 'Ashfall Reach', accent: 0xffb347, em: 'emAmber', signRole: SIGN_ROLE.gatewayMedieval },
+      { target: 'medieval', label: 'Aldermoor Vale', accent: 0xffb347, em: 'emAmber', signRole: SIGN_ROLE.gatewayMedieval },
       /* The sixth, and no longer a placeholder: Survey Site 06 was commissioned
        * and is Lodestar Yard now. The row is EDITED rather than added -
        * `GATEWAY_BEARINGS_DEG` is still six long and the length check below

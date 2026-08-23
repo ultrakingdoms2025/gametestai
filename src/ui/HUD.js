@@ -688,6 +688,22 @@ export class HUD {
     p.appendChild(this.chRows);
     this._chRowEls = [];
 
+    /* Today and this week.
+     *
+     * Rows in THIS panel rather than a panel of their own, because the design
+     * draws the daily from the player's incomplete records - so the task is
+     * always the objective, sliced by a clock. A second box would compete with
+     * the charter board for the same corner while rephrasing what it says.
+     *
+     * It also means these inherit the measured responsive layout instead of
+     * needing a new placement proved from scratch. */
+    this.chToday = el('div', 'cht-today');
+    this.chToday.hidden = true;
+    this.chDaily = el('div', 'col-row cht-task');
+    this.chWeekly = el('div', 'col-row cht-task');
+    this.chToday.append(this.chDaily, this.chWeekly);
+    p.appendChild(this.chToday);
+
     /* The one aspirational locked reward. Visible only during the opening
      * sequence: after that it would be a permanent advertisement, and the
      * charter board is the thing to be reading. */
@@ -769,6 +785,50 @@ export class HUD {
     this._setCharterRows(p.here);
     this._setCharterHint(p.hint ?? '');
     if (!this.chLocked.hidden) this.chLocked.hidden = true;
+  }
+
+  /**
+   * Today's task and this week's, under the objective they advance.
+   *
+   * Driven off `retention:changed`, which carries `Retention.progress()`
+   * whole - the same payload the system tests assert on, so this panel cannot
+   * disagree with the loop about what the task is.
+   *
+   * A finished task reads "done", never "0 left". `progress()` carries
+   * `dailyDone`/`weeklyDone` precisely so the panel does not infer completion
+   * from a count, and "0 left" reads as a task nobody has started.
+   *
+   * Guarded for absence rather than assuming: `Retention` is optional the way
+   * every progress system here is, and an unwired build must leave the panel as
+   * it was rather than throw into the frame loop.
+   *
+   * @param {{daily:any, weekly:any, dailyDone:boolean, weeklyDone:boolean,
+   *          streak:number, best:number, season:string}|null} p
+   */
+  _setRetention(p) {
+    const host = this.chToday;
+    if (!host) return;
+    if (!p) { if (!host.hidden) host.hidden = true; return; }
+
+    const write = (row, task, done, word) => {
+      if (!row) return;
+      if (!task) { row.hidden = true; return; }
+      row.hidden = false;
+      const name = task.world ? `${word} — ${task.world}` : word;
+      const what = task.label ?? '';
+      const text = what ? `${name}: ${what}` : name;
+      /* `done` beats the count: a claimed task shows what it was, not a zero. */
+      const count = done || task.done ? 'done' : `${task.left} left`;
+      if (row.dataset.t !== text) { row.dataset.t = text; row.textContent = ''; row.append(el('div', 'col-name', text), el('div', 'col-count', count)); return; }
+      const c = row.lastChild;
+      if (c && c.textContent !== count) c.textContent = count;
+    };
+
+    write(this.chDaily, p.daily, p.dailyDone, 'Today');
+    write(this.chWeekly, p.weekly, p.weeklyDone, 'This week');
+
+    const any = !this.chDaily.hidden || !this.chWeekly.hidden;
+    if (host.hidden === any) host.hidden = !any;
   }
 
   /**
@@ -1734,6 +1794,7 @@ export class HUD {
      * because this is the panel that answers "what is this game about" for
      * somebody who has been playing for four seconds. */
     this._on('charter:changed', (p) => this._setCharter(p));
+    this._on('retention:changed', (p) => this._setRetention(p));
     this._on('onboarding:changed', (p) => this._setOnboarding(p));
 
     this._on('portal:entering', ({ to, duration }) => this._runWipe(to, duration));

@@ -35,10 +35,12 @@ import { ALIEN_CLASSES } from '../npc/AlienShip.js';
  *  IDENTITY, NOT COUNT. THE ONE DEFECT THIS FILE MUST NOT REPEAT
  * ===========================================================================
  *
- * `Relics.serialize` writes `{ found: { citadel: 17 } }` - a COUNT - and
- * `_applyFound` stamps the first seventeen sites in publication order on the
- * way back in. Reload after finding relics 3, 9 and 21 and the map marks 1, 2
- * and 3. The tally is right and every marked thing is wrong.
+ * `Relics.serialize` used to write `{ found: { citadel: 17 } }` - a COUNT - and
+ * `_applyFound` stamped the first seventeen sites in publication order on the
+ * way back in. Reload after finding relics 3, 9 and 21 and the map marked 1, 2
+ * and 3. The tally was right and every marked thing was wrong. (It stores
+ * `foundIds` now, keyed by quantised position; the cautionary tale stands even
+ * though this instance of it has been fixed.)
  *
  * So nothing here persists a bare number that a set could persist instead:
  *

@@ -504,8 +504,9 @@ export class SaveGame {
       piloting: safe(() => this.piloting?.serialize?.()) ?? null,
       mining: safe(() => this.mining?.serialize?.()) ?? null,
       /* Kills by class, wings broken, bodies reached, elements assayed. Every
-       * one of them keyed by IDENTITY rather than by a count, which is the one
-       * thing the relic ledger above got wrong. */
+       * one of them keyed by IDENTITY rather than by a count - which is what the
+       * relic ledger above got wrong for a long time, and no longer does: see
+       * `Relics.serialize`, which now writes `foundIds` for the same reason. */
       objectives: safe(() => this.objectives?.serialize?.()) ?? null,
       trials: this._trialLedger(),
     };

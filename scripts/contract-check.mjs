@@ -907,6 +907,27 @@ const CONTRACT_V2 = [
   { file: 'src/mounts/Hoverboard.js', exports: [], methods: [] },
   { file: 'src/mounts/Dragon.js', exports: [], methods: [] },
   { file: 'src/ui/WeaponWheel.js', exports: [], methods: [] },
+  /* Phase 5, mobile/tablet. Registered for the same reason every other entry
+   * is: three of these four are reached only from `main.js` or from a module
+   * scope that runs before anything is constructed, so a renamed export would
+   * surface as a phone with no controls, or a desktop silently on the low tier,
+   * one browser boot later rather than as a failed check here. */
+  {
+    file: 'src/ui/TouchControls.js',
+    exports: ['TouchControls'],
+    methods: ['update', 'dispose'],
+  },
+  {
+    file: 'src/ui/TouchActions.js',
+    exports: ['TOUCH_ACTIONS', 'STICK_ACTIONS', 'touchCode', 'sendTouchAction'],
+  },
+  { file: 'src/ui/touch.css', exports: [] },
+  { file: 'src/ui/MountWheelAim.js', exports: ['integrateAim', 'AIM_DEAD_ZONE', 'AIM_CLAMP'] },
+  {
+    file: 'src/gfx/QualityTier.js',
+    exports: ['TIERS', 'TIER_IDS', 'detectTierId', 'resolveTier', 'resolveTierId',
+      'storeTierId', 'applyTier', 'applyBootTier'],
+  },
 ];
 // v2 files are only enforced once they exist, so this script stays useful mid-build.
 for (const entry of CONTRACT_V2) {

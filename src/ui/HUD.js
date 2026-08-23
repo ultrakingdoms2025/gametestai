@@ -2339,6 +2339,20 @@ export class HUD {
    */
   _requestLock(fresh = true) {
     if (this.input.locked) return;
+    /* Touch: engage and stop. None of the machinery below applies.
+     *
+     * This IS the defect Phase 5 item 1 names. On a phone the call at the
+     * bottom of this method returns `undefined` - iOS Safari has no
+     * `requestPointerLock` - so there is no promise to reject, `_lockWait`
+     * expires, `_lockRefused` puts the PAUSED card up and schedules four more
+     * attempts that will fail the same way. Meanwhile `pointerlockchange`
+     * never fires, so main.js never adds `standby` and the world runs behind
+     * the card. `Input.requestLock` knows which engagement this session uses;
+     * the retry budget is for Chrome's post-Escape cooldown and nothing else. */
+    if (this.input.touchMode) {
+      this.input.requestLock();
+      return;
+    }
     if (fresh) this._lockTries = LOCK_TRIES;
     this._lockWait = LOCK_CONFIRM_S;
     this._lockRetryIn = 0;

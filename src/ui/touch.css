@@ -1,0 +1,224 @@
+/*
+ * The on-screen touch layer.
+ *
+ * A NEW stylesheet rather than a section of `hud.css`, and deliberately so:
+ * `hud.css` is 4,721 lines with 875 hardcoded px, zero `rem` and no breakpoint
+ * below 1280 px, and its responsive rewrite is Phase 5 item 3 - which is
+ * landing on a different branch, after Phase 4's HUD work. Everything here is
+ * self-contained, so the two can be merged without a conflict and this layer
+ * does not inherit the units it is trying to escape.
+ *
+ * Sizes are in `rem` against the root, targets are at least 3rem (48 px, above
+ * the 44 px minimum), the layer is measured in `dvh` so an iOS Safari URL bar
+ * sliding away does not move the controls, and every edge is inset by
+ * `env(safe-area-inset-*)` so nothing sits under a notch or a home indicator.
+ */
+
+.touch {
+  position: fixed;
+  inset: 0;
+  /* The overlay ladder, read out of the other stylesheets: HUD 10, minimap 20,
+   * pause 60, weapon strip 62, world wipe 70, help / inventory 80, character
+   * 82, audio 84. 64 puts the controls above the weapon strip - which on a
+   * 390 px screen is 731 px wide and was landing directly on top of the fire
+   * button, so the strip took the tap - and below everything that is a real
+   * panel. Nothing below 64 can be reached by a finger while the layer is up,
+   * which is correct: the layer only shows while the player is ENGAGED, and
+   * every panel that must beat it either sits above it or hides it. */
+  z-index: 64;
+  display: none;
+  /* The browser must not treat any of this as a scroll, a pinch or a
+   * double-tap-to-zoom. Without it a look drag scrolls the page instead. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  font-family: 'Rajdhani', system-ui, sans-serif;
+}
+
+.touch.on {
+  display: block;
+}
+
+/* The look pad fills the screen and sits under everything else in the layer, so
+ * a drag that starts on a button belongs to the button and a drag anywhere else
+ * is a look. No hit-testing anywhere in the JS. */
+.touch-look {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  /* Not optional, and not obvious. `#ui-root` is `pointer-events: none` with a
+   * rule that opts `button`, `input`, `textarea` and `.interactive` back in -
+   * so a plain `div` in the UI layer receives NOTHING. Measured: with this line
+   * missing, 37 of 45 probe points across the screen fell through to the
+   * document and neither the look drag nor the virtual stick registered a
+   * single event, while the buttons worked perfectly. That is a failure that
+   * looks exactly like "touch is broken" and is one declaration deep. */
+  pointer-events: auto;
+}
+
+/* ── The floating stick ─────────────────────────────────────────────────── */
+
+.touch-stick {
+  position: absolute;
+  width: 8rem;
+  height: 8rem;
+  margin: -4rem 0 0 -4rem;
+  border-radius: 50%;
+  border: 1px solid rgba(47, 224, 255, 0.35);
+  background: radial-gradient(circle, rgba(11, 18, 32, 0.35), rgba(11, 18, 32, 0.12));
+  opacity: 0;
+  transition: opacity 120ms ease;
+  pointer-events: none;
+}
+
+.touch-stick.on {
+  opacity: 1;
+}
+
+.touch-stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3.4rem;
+  height: 3.4rem;
+  border-radius: 50%;
+  background: rgba(47, 224, 255, 0.28);
+  border: 1px solid rgba(47, 224, 255, 0.7);
+  transform: translate(-50%, -50%);
+}
+
+/* ── Button clusters ────────────────────────────────────────────────────── */
+
+.touch-primary,
+.touch-left {
+  position: absolute;
+  bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-wrap: wrap-reverse;
+  gap: 0.5rem;
+  max-width: 42vw;
+}
+
+.touch-primary {
+  right: calc(1rem + env(safe-area-inset-right, 0px));
+  justify-content: flex-end;
+}
+
+.touch-left {
+  left: calc(1rem + env(safe-area-inset-left, 0px));
+  flex-direction: column-reverse;
+  align-items: flex-start;
+}
+
+.touch-btn {
+  min-width: 3.4rem;
+  min-height: 3.4rem;
+  padding: 0.25rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1rem;
+  border-radius: 0.85rem;
+  border: 1px solid rgba(47, 224, 255, 0.4);
+  background: rgba(11, 18, 32, 0.55);
+  color: #cfe9f5;
+  font: inherit;
+  line-height: 1;
+  touch-action: none;
+  backdrop-filter: blur(2px);
+}
+
+.touch-btn.on {
+  border-color: #ffb03a;
+  background: rgba(255, 176, 58, 0.22);
+  color: #ffe9c6;
+}
+
+.touch-glyph {
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.touch-glyph:empty {
+  display: none;
+}
+
+.touch-label {
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.touch-hint {
+  font-size: 0.55rem;
+  opacity: 0.55;
+}
+
+/* The primary cluster is glyph-led: at a thumb's distance the symbol is what is
+ * read, and six full captions would not fit beside a stick anyway. */
+.touch-primary .touch-label {
+  display: none;
+}
+
+.touch-a-fire {
+  min-width: 4.6rem;
+  min-height: 4.6rem;
+  border-color: rgba(255, 90, 90, 0.6);
+}
+
+/* ── The tray ───────────────────────────────────────────────────────────── */
+
+.touch-tray {
+  position: absolute;
+  inset: auto calc(0.75rem + env(safe-area-inset-right, 0px))
+    calc(6.5rem + env(safe-area-inset-bottom, 0px))
+    calc(0.75rem + env(safe-area-inset-left, 0px));
+  max-height: 55dvh;
+  overflow-y: auto;
+  padding: 0.6rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(47, 224, 255, 0.3);
+  background: rgba(6, 11, 20, 0.92);
+  display: none;
+}
+
+.touch-tray.open {
+  display: block;
+}
+
+.touch-tray-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+  gap: 0.5rem;
+}
+
+.touch-tray .touch-btn {
+  width: 100%;
+  min-height: 3.4rem;
+}
+
+/* Landscape on a phone is short: the tray takes the room it can and the primary
+ * cluster tightens rather than stacking off the bottom of the screen. */
+@media (orientation: landscape) and (max-height: 500px) {
+  .touch-primary,
+  .touch-left {
+    bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .touch-btn {
+    min-width: 3rem;
+    min-height: 3rem;
+  }
+
+  .touch-a-fire {
+    min-width: 3.8rem;
+    min-height: 3.8rem;
+  }
+
+  .touch-tray {
+    max-height: 62dvh;
+  }
+}

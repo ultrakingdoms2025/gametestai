@@ -1,11 +1,34 @@
 import { CONFIG } from './Config.js';
 
 /**
- * Keyboard + mouse input with pointer-lock capture.
+ * Keyboard + mouse + touch input with pointer-lock capture.
  *
  * Exposes an immediate-mode snapshot (`state`) that gameplay code samples each
  * frame, plus edge-triggered helpers (`pressed`) that consume a keypress so a
  * single tap cannot fire twice.
+ *
+ * ── Engagement, and why `locked` is a union ───────────────────────────────
+ *
+ * `main.js` derives the `standby` gameplay block from `input.locked`, so on a
+ * phone the game was unplayable in the worst possible way: iOS Safari does not
+ * implement `requestPointerLock`, the optional call returned `undefined` with
+ * nothing to reject, `pointerlockchange` never fired, `standby` was never added
+ * - and **the world simulated behind the full-screen PAUSED card**, which owns
+ * pointer events. The player was being shot at, drowning and falling behind a
+ * menu they had no way to dismiss.
+ *
+ * The cure is not to stop blocking gameplay. `standby` is what stops the world
+ * running behind a menu on every platform and weakening it would trade one
+ * silent-simulation bug for another. The cure is that the pointer lock was
+ * never the requirement: it was a PROXY for "the player has handed the canvas
+ * their input", and a thumb on an on-screen stick is the same fact arriving
+ * through a different API.
+ *
+ * So `get locked()` is the union of the two engagement sources, and the private
+ * `_locked` keeps meaning *pointer lock* for the three handlers that genuinely
+ * mean pointer lock (`mousemove`'s delta gate, `requestPointerLock`,
+ * `exitPointerLock`). Every one of the thirteen call sites outside this file
+ * already asks the getter, and every one of them means "is the player playing".
  */
 
 /* Ctrl is NOT a game key.
@@ -73,6 +96,19 @@ const BIND_STORAGE = 'aether-nexus:binds:v1';
 const FS_STORAGE = 'aether:fullscreen';
 
 /**
+ * Metres of look per CSS pixel of drag, before `mouseSensitivity`.
+ *
+ * A drag is not a mouse delta and must not be scaled like one. Pointer lock
+ * reports raw device movement, which on a desktop mouse is several counts per
+ * CSS pixel; a finger reports exactly the pixels it crossed. Feeding drag
+ * pixels through `mouseSensitivity` unmodified gives a look so slow the player
+ * runs out of screen before they have turned ninety degrees. 2.6 puts a
+ * half-screen sweep at roughly a 180, which is the gesture every phone shooter
+ * has trained players to expect.
+ */
+const TOUCH_LOOK_GAIN = 2.6;
+
+/**
  * Keys the game cannot give up without breaking its own escape hatches, plus
  * the ones the BROWSER will never really hand over.
  *
@@ -128,6 +164,22 @@ export class Input {
     this._loadBinds();
     this._locked = false;
     this._enabled = true;
+
+    /* ── Touch engagement ────────────────────────────────────────────────
+     *
+     * `_touchEngaged` is the second half of `get locked()`. It is only ever set
+     * on a device that has told us it is being touched, so a mouse-and-keyboard
+     * session cannot reach it and desktop standby behaviour is unchanged. */
+    this._touchEngaged = false;
+    /* Latched at construction where the API is simply missing (iOS Safari, and
+     * the reason the original failure was silent), and again on the first
+     * `pointerType: 'touch'` pointerdown - because Android Chrome DOES
+     * implement pointer lock, so detection-by-absence alone would leave every
+     * Android player on the desktop path with no on-screen controls at all. */
+    this._touchMode = !Input.pointerLockSupported();
+    /** Analog stick, folded into the axes by `_syncAxes` alongside the keys. */
+    this._touchForward = 0;
+    this._touchRight = 0;
     /** While the chat box has focus we swallow all gameplay input. */
     this._textCaptured = false;
 
@@ -142,8 +194,33 @@ export class Input {
     this._bind();
   }
 
+  /**
+   * Does the browser implement pointer lock at all?
+   *
+   * `exitPointerLock` rather than `requestPointerLock`, because it is on
+   * `document` and can be asked before any canvas exists. iOS Safari ships
+   * neither; every desktop browser ships both.
+   *
+   * @returns {boolean}
+   */
+  static pointerLockSupported() {
+    return typeof document !== 'undefined' && typeof document.exitPointerLock === 'function';
+  }
+
+  /**
+   * Is the player's input going into the game?
+   *
+   * The union of pointer lock and touch engagement - see the class docblock.
+   * This is the question every caller outside this file is actually asking,
+   * including the one that decides whether the world may simulate.
+   */
   get locked() {
-    return this._locked;
+    return this._locked || this._touchEngaged;
+  }
+
+  /** True while this session is being driven by touch rather than a mouse. */
+  get touchMode() {
+    return this._touchMode;
   }
 
   get textCaptured() {
@@ -188,8 +265,58 @@ export class Input {
     }
   }
 
+  /**
+   * Switch this session between the mouse path and the touch path.
+   *
+   * Leaving touch mode disengages first: a tablet that has just had a mouse
+   * plugged in must not be left holding a touch engagement no on-screen control
+   * can release, which would be `standby` cleared with nothing driving it.
+   *
+   * @param {boolean} on
+   */
+  setTouchMode(on) {
+    const want = !!on;
+    if (want === this._touchMode) return;
+    if (!want) this._setTouchEngaged(false);
+    this._touchMode = want;
+    this.bus?.emit?.('input:touchmode', { touch: want });
+  }
+
+  /**
+   * The touch half of `get locked()`. Emits the same `input:lockchange` the
+   * pointer-lock path does, so `main.js`'s `standby` derivation and the HUD's
+   * retry budget both need no touch-specific branch at all.
+   *
+   * @param {boolean} on
+   */
+  _setTouchEngaged(on) {
+    const want = !!on;
+    if (want === this._touchEngaged) return;
+    this._touchEngaged = want;
+    if (!want) {
+      this._keys.clear();
+      this._resetAxes();
+    }
+    this.bus.emit('input:lockchange', { locked: this.locked, touch: true });
+  }
+
   requestLock() {
-    if (this._locked) return;
+    if (this.locked) return;
+
+    /* Touch: engage directly, synchronously, with no retry budget.
+     *
+     * Deliberately BEFORE the pointer-lock call and not after it. Asking first
+     * and falling back is what produced the original defect - the request
+     * neither succeeds nor rejects on iOS, so there is nothing to fall back
+     * FROM, and the four-attempt retry loop in `HUD._requestLock` is what the
+     * player ends up looking at. Fullscreen and `navigator.keyboard.lock` are
+     * skipped too: iOS Safari implements neither, and Ctrl+W - the entire
+     * reason the keyboard lock exists - is not a gesture a phone can make. */
+    if (this._touchMode) {
+      this._setTouchEngaged(true);
+      return;
+    }
+
     /* In newer browsers this returns a promise, and it rejects for reasons that
      * are entirely normal: the document lost focus, the user pressed Escape
      * moments ago and the engagement timer has not elapsed, or the click was
@@ -220,9 +347,57 @@ export class Input {
     }
   }
 
+  /**
+   * Stand the player down.
+   *
+   * Releases BOTH engagement sources. Every panel calls this on open (see
+   * `menuFocusIn`), and one that only released a pointer lock would leave a
+   * touch player still playing behind the inventory - the same
+   * simulating-behind-a-menu defect this phase exists to close, wearing the
+   * other hat.
+   */
   exitLock() {
     if (this._locked) document.exitPointerLock?.();
+    this._setTouchEngaged(false);
     this._unlockKeyboard();
+  }
+
+  /**
+   * Put the player back in the world after a panel closes.
+   *
+   * ── The defect this exists for ────────────────────────────────────────
+   *
+   * Six modules used to do this themselves, with
+   * `input.canvas.requestPointerLock()` and a `try/catch` copied between them -
+   * bypassing this class entirely. On a phone that method does not exist, so
+   * closing the inventory, the character sheet, the mount menu, the ship menu
+   * or the maze map left the player stood down with `standby` still held: the
+   * world frozen, nothing on screen to explain it, and no way back in. It was
+   * found by playing a touch session, not by reading code, and no unit gate
+   * could see it because none of them went through a panel.
+   *
+   * The delay those call sites wrap this in is theirs to keep - browsers refuse
+   * a lock that follows an Escape-driven exit too closely - but the decision
+   * about WHICH engagement to re-take belongs here, where it can be made once.
+   *
+   * @returns {Promise<void>|undefined} whatever the browser returned, so the
+   *   caller can keep attaching its own rejection handler. Nothing on touch,
+   *   where there is no request and so nothing to reject.
+   */
+  reengage() {
+    if (this._touchMode) {
+      this.requestLock();
+      return undefined;
+    }
+    /* `exitLock` released the KEYBOARD lock as well as the pointer, so
+     * re-taking only the pointer would leave Ctrl+W live again. */
+    this.relockKeyboard();
+    try {
+      return this.canvas?.requestPointerLock?.();
+    } catch {
+      // The standby overlay is the fallback; never throw out of a menu close.
+      return undefined;
+    }
   }
 
   /** Re-arm navigator.keyboard after a menu close. No-op if not in fullscreen. */
@@ -232,6 +407,13 @@ export class Input {
 
   _resetAxes() {
     const s = this.state;
+    /* The stick is cleared here rather than only in the callers, because every
+     * caller means the same thing: input has been stood down. A thumb resting
+     * on the stick when the inventory opens would otherwise keep pushing, and
+     * because `_syncAxes` FOLDS the stick in, zeroing `s.forward` alone would
+     * last exactly until the next key event put it back. */
+    this._touchForward = 0;
+    this._touchRight = 0;
     s.forward = 0;
     s.right = 0;
     s.jump = false;
@@ -243,6 +425,80 @@ export class Input {
     s.interact = false;
     s.lookX = 0;
     s.lookY = 0;
+  }
+
+  /* ================================================================== */
+  /* Touch                                                              */
+  /*                                                                    */
+  /* Three methods, and between them they are the whole touch input      */
+  /* surface. Everything else a finger can do is a synthesised            */
+  /* `KeyboardEvent` dispatched on `window` by `ui/TouchControls.js` -    */
+  /* which is not a shortcut but the only correct route: half the panels  */
+  /* in this game bind their own capture-phase `keydown` (they have to,   */
+  /* because `Input` stops reporting while they are open), so a button    */
+  /* that poked `_keys` directly could open the mount wheel and then be   */
+  /* unable to close it.                                                  */
+  /* ================================================================== */
+
+  /**
+   * A look delta from a drag rather than from `movementX/Y`.
+   *
+   * Not gated on `_locked`, and that is the point: there is no pointer lock on
+   * a touch device to gate it with, and the `mousemove` handler's gate is
+   * exactly what would swallow every drag. It writes the same `lookX/lookY`
+   * accumulator `consumeLook()` drains, so the player controller, the flight
+   * model and the mount steering all receive it without knowing it came from a
+   * finger.
+   *
+   * The raw delta is also published on the bus, unscaled, for `MountWheel` -
+   * which integrates deltas into a direction vector of its own and needs them
+   * in the same units the mouse gives it.
+   *
+   * @param {number} dx CSS pixels
+   * @param {number} dy CSS pixels
+   */
+  applyLook(dx, dy) {
+    if (!this._enabled || this._textCaptured) return;
+    const x = Number.isFinite(dx) ? dx : 0;
+    const y = Number.isFinite(dy) ? dy : 0;
+    const sens = CONFIG.player.mouseSensitivity * TOUCH_LOOK_GAIN;
+    this.state.lookX += x * sens;
+    this.state.lookY += y * sens;
+    this.bus?.emit?.('input:look', { dx: x, dy: y });
+  }
+
+  /**
+   * The virtual stick. Components are -1..1 and are FOLDED INTO the axes rather
+   * than assigned to them, because `_syncAxes()` rewrites `forward`/`right` on
+   * every single key event - a stick that merely wrote them would be zeroed by
+   * the next button press.
+   *
+   * The analog magnitude is passed through even though `Player._move`
+   * normalises the wish vector, because two things downstream do read it:
+   * diagonals arrive at the right angle, and `wishLen > 0.1` is what stops a
+   * hair of stick drift from arming a sprint.
+   *
+   * @param {number} forward +1 is ahead
+   * @param {number} right +1 is right
+   */
+  setMoveAxis(forward, right) {
+    if (!this._enabled || this._textCaptured) return;
+    const clamp = (v) => (Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0);
+    this._touchForward = clamp(forward);
+    this._touchRight = clamp(right);
+    this._syncAxes();
+  }
+
+  /**
+   * The fire and aim buttons, writing the same two flags `mousedown` sets.
+   *
+   * @param {'fire'|'aim'} which
+   * @param {boolean} down
+   */
+  setPointerButton(which, down) {
+    if (which !== 'fire' && which !== 'aim') return;
+    if (!this._enabled || this._textCaptured) return;
+    this.state[which] = !!down;
   }
 
   /**
@@ -332,9 +588,35 @@ export class Input {
       this._resetAxes();
     });
 
+    /* Which kind of pointer is driving this session.
+     *
+     * On `window` and in the CAPTURE phase, deliberately: the boot card is a
+     * full-screen div with its own `click` handler that calls `requestLock()`,
+     * and a bubbling listener on the canvas would never see the tap at all.
+     * Capture-phase `pointerdown` on `window` runs before that click, so touch
+     * mode is already set by the time the boot tap asks to engage - which is
+     * what makes the very first gesture of a phone session take the right path
+     * rather than the pointer-lock one that cannot succeed.
+     *
+     * `pen` counts as touch: a stylus on a tablet has no pointer lock either.
+     */
+    window.addEventListener(
+      'pointerdown',
+      (e) => {
+        const t = e?.pointerType;
+        if (t === 'touch' || t === 'pen') this.setTouchMode(true);
+        else if (t === 'mouse' && Input.pointerLockSupported()) this.setTouchMode(false);
+      },
+      true
+    );
+
     this.canvas.addEventListener('mousedown', (e) => {
       if (!this._enabled || this._textCaptured) return;
-      if (!this._locked) {
+      /* Browsers fire a compatibility `mousedown` after a tap that was not
+       * `preventDefault`ed, so on touch this handler would turn a look drag
+       * into a shot. The touch layer owns firing; see `setPointerButton`. */
+      if (this._touchMode) return;
+      if (!this.locked) {
         this.requestLock();
         return;
       }
@@ -408,8 +690,28 @@ export class Input {
     // a row in the rebinding panel, and losing them would be a regression for
     // anyone who uses them.
     const b = (code) => k.has(this._bindsInverse.get(code) ?? code);
-    s.forward = (b('KeyW') || k.has('ArrowUp') ? 1 : 0) - (b('KeyS') || k.has('ArrowDown') ? 1 : 0);
-    s.right = (b('KeyD') || k.has('ArrowRight') ? 1 : 0) - (b('KeyA') || k.has('ArrowLeft') ? 1 : 0);
+    /* Keys and stick ADD, then clamp - they are two sources for one axis, not
+     * two modes. A tablet with a keyboard attached can use both in the same
+     * second, and opposed inputs should cancel exactly as W and S do rather
+     * than have one silently win.
+     *
+     * The `|| 0` is not decoration. These axes are multiplied into the wish
+     * vector in `Player._move`, so a single undefined would put a NaN into the
+     * player's velocity and from there into its position - an unrecoverable
+     * state with no error anywhere. The constructor always sets both fields, so
+     * the only way to reach that is a stub built with `Object.create`, which is
+     * how half the tests in this repo drive this class. */
+    const clamp = (v) => Math.max(-1, Math.min(1, v));
+    s.forward = clamp(
+      (b('KeyW') || k.has('ArrowUp') ? 1 : 0)
+      - (b('KeyS') || k.has('ArrowDown') ? 1 : 0)
+      + (this._touchForward || 0)
+    );
+    s.right = clamp(
+      (b('KeyD') || k.has('ArrowRight') ? 1 : 0)
+      - (b('KeyA') || k.has('ArrowLeft') ? 1 : 0)
+      + (this._touchRight || 0)
+    );
     s.jump = b('Space');
     s.sprint = b('ShiftLeft') || k.has('ShiftRight');
     /* Held, and on ONE key, which is deliberately not a modifier.

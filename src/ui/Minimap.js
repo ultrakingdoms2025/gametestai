@@ -90,8 +90,17 @@ export class Minimap {
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.round(this.size * this.dpr);
     canvas.height = Math.round(this.size * this.dpr);
-    canvas.style.width = `${this.size}px`;
-    canvas.style.height = `${this.size}px`;
+    /* The PRESENTED size is `--map` in `hud.css` and is deliberately not
+     * written here.
+     *
+     * `canvas.style.width` is an inline style, so while these two lines
+     * existed no stylesheet could shrink the map: a 390 px phone got the same
+     * 220 px square a 1920 px desktop does, alongside a 296 px vitals column,
+     * and the two overlapped by 186 px. The backing store above still carries
+     * `this.size` and the device pixel ratio - it is the drawing coordinate
+     * space every `_bake` and `draw` works in - and the browser scales that
+     * bitmap into whatever box the stylesheet gives it, which on a desktop is
+     * the identical 220 px. Only the box moved. */
 
     this.ctx = canvas.getContext('2d', { alpha: true });
     this.ctx.scale(this.dpr, this.dpr);

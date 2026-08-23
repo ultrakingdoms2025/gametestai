@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      DELIBERATELY EMPTY.
+
+      The viewport meta is the thing under test - `index.html` shipped
+      `maximum-scale=1.0, user-scalable=no` and no `viewport-fit=cover`. If this
+      harness declared its own, the probe would be measuring the harness.
+      `hud-viewport.js` copies the real one out of `/index.html` at boot and
+      installs it here, and `hud-viewport-probe.mjs` asserts against it.
+    -->
+    <title>HUD viewport harness</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../../src/ui/hud.css" />
+    <link rel="stylesheet" href="../../src/ui/pause-menu.css" />
+    <style>
+      /*
+        MEASURE THE END STATE, NOT THE CURVE.
+
+        The weapon strip fades in over `0.55s ease 0.2s`; the pause card, the
+        chat panel and every toast have their own. Measured mid-transition, a
+        panel's opacity is somewhere on a cubic bezier and the probe's own
+        visibility test starts flickering - which is how a layout gate becomes
+        a coin toss that occasionally reports the wrong layout as clean.
+
+        Durations only. Fill modes, final opacities and every geometry
+        declaration are untouched, so what is measured is exactly where each
+        panel comes to rest.
+      */
+      *, *::before, *::after {
+        transition-duration: 0s !important;
+        transition-delay: 0s !important;
+        animation-duration: 0.01ms !important;
+        animation-delay: 0s !important;
+        animation-iteration-count: 1 !important;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="viewport"></canvas>
+    <div id="ui-root"></div>
+    <script type="module" src="./hud-viewport.js"></script>
+  </body>
+</html>

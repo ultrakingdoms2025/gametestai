@@ -54,6 +54,19 @@ jobs:
       - name: Production build
         run: npx vite build
 
+      # Thirty layouts: six viewport sizes x five interface states, measured in
+      # real Chrome against a Vite dev server on a fresh port. It is separate
+      # from `npm test` because it needs a browser and a server; `npm test`
+      # still carries the source half of the same contract.
+      #
+      # No `playwright install`: the runner image ships google-chrome, the
+      # probe finds it on PATH, and the whole thing talks CDP over Node 22's
+      # built-in WebSocket rather than adding a dependency. If no browser is
+      # found the probe FAILS rather than skipping - a gate that quietly
+      # measures nothing is the failure shape this project keeps paying for.
+      - name: HUD layout
+        run: npm run test:layout
+
   site:
     name: Site — types and tests
     runs-on: ubuntu-latest

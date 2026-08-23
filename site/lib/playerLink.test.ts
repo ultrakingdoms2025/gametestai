@@ -83,8 +83,8 @@ suite('findOrCreatePlayer account linking (integration)', () => {
       )
     `);
     for (const col of [
-      'email_hash TEXT', 'site_user_id TEXT', 'auth_provider TEXT',
-      'status TEXT', 'updated_at TIMESTAMPTZ',
+      'email_hash TEXT', 'email_enc TEXT', 'site_user_id TEXT', 'auth_provider TEXT',
+      'status TEXT', 'handle TEXT', 'full_name TEXT', 'updated_at TIMESTAMPTZ',
     ]) {
       await db.query(`ALTER TABLE players ADD COLUMN IF NOT EXISTS ${col}`);
     }
@@ -146,6 +146,39 @@ suite('findOrCreatePlayer account linking (integration)', () => {
     const id = await findOrCreatePlayer(SITE_A, EMAIL);
     expect(id).toBeTruthy();
     expect(await linkOf(id)).toBe(SITE_A);
+  });
+
+  it('an ordinary sign-in does not rewrite the identity columns', async () => {
+    /* `syncPlayerProfile` rewrote email_hash/email_enc on EVERY call, and
+     * `auth.ts` calls it on every Google sign-in. An admin correcting a
+     * player's email watched the correction vanish at the player's next login,
+     * with nothing anywhere explaining why. */
+    const { syncPlayerProfile } = await import('./playerDb');
+    await db.query(
+      `INSERT INTO players (id, email_hash, site_user_id, email_enc)
+       VALUES ('sync-1', $1, $2, 'sentinel-value')`,
+      [emailHash, SITE_A]
+    );
+
+    await syncPlayerProfile(SITE_A, EMAIL, { handle: 'Somebody', overwrite: true });
+
+    const r = await db.query('SELECT email_enc, handle FROM players WHERE id = $1', ['sync-1']);
+    expect(r.rows[0].email_enc).toBe('sentinel-value',
+    );
+    expect(r.rows[0].handle).toBe('Somebody');
+  });
+
+  it('reports an email that is already on another player row', async () => {
+    /* players.email_hash is UNIQUE as well as site_users.email, and only the
+     * second used to be checked before an email change was committed. */
+    const { isEmailClaimedByOtherPlayer } = await import('./playerDb');
+    await db.query(
+      `INSERT INTO players (id, email_hash) VALUES ('other-1', $1)`,
+      [emailHash]
+    );
+
+    expect(await isEmailClaimedByOtherPlayer(EMAIL, 'someone-else')).toBe(true);
+    expect(await isEmailClaimedByOtherPlayer(EMAIL, 'other-1')).toBe(false);
   });
 
   it('two concurrent first-time calls settle on one player, not two', async () => {

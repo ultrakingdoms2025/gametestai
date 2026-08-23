@@ -2,7 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <!--
+      `viewport-fit=cover` is what makes `env(safe-area-inset-*)` report a real
+      number. Without it the four insets are always 0, so every safe-area
+      calculation in `hud.css` and `touch.css` silently resolves to the same
+      layout it had before anybody wrote them - which is a whole class of fix
+      that looks done and is not.
+
+      `maximum-scale=1.0, user-scalable=no` is gone. It fails WCAG 1.4.4, and
+      the thing it was there to prevent - a pinch or a double tap zooming the
+      game instead of aiming it - is already prevented properly: `html, body`
+      and `.touch` all declare `touch-action: none`, which stops the gesture at
+      the element rather than taking magnification away from the whole page.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>AETHER NEXUS</title>
     <!--
       Inline so there is no second request and no file to lose. Without any

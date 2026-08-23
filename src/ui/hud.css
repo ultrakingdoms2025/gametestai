@@ -64,6 +64,83 @@
   --clip-bl: polygon(0 0, 100% 0, 100% 100%, 14px 100%, 0 calc(100% - 14px));
 
   --noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+
+  /* ==== THE LAYOUT FRAME ==================================================
+
+     Everything below is Phase 5 item 3. Before it, this file was 4,867 lines
+     with 894 hardcoded px, zero `rem`, no breakpoint under 1280 px and no
+     `env(safe-area-inset-*)` anywhere - which is why a 731 px weapon strip sat
+     on a 390 px screen, the 296 px vitals column and the 220 px minimap fought
+     over the same 186 px, and the pause hub had a 444 px minimum.
+
+     The 894 px values are NOT all rewritten. Most of them are paddings, border
+     radii, glyph sizes and shadow offsets, and converting those wholesale
+     would be 894 chances to regress a layout that is shipped and correct. What
+     is expressed here is the geometry that DECIDES WHERE A PANEL LANDS: the
+     edge insets, the two readout columns, the minimap, the ammo panel, the
+     weapon slot and the touch minimum. Those are the numbers a viewport has an
+     opinion about; the rest are internal to a panel and travel with it.
+
+     Every value below resolves to exactly what shipped at >= 1280 px. The
+     breakpoints at the foot of this file are the only place they change.
+     ====================================================================== */
+
+  /* The notch, the home indicator and the rounded corners. Read through
+     tokens rather than inline `env()` for two reasons: it is written once
+     instead of at twenty edges, and it gives `hud-viewport-probe.mjs` a way to
+     drive a real inset into a headless browser, which has no notch to report
+     and no CDP command that would give it one. */
+  --sa-t: env(safe-area-inset-top, 0px);
+  --sa-r: env(safe-area-inset-right, 0px);
+  --sa-b: env(safe-area-inset-bottom, 0px);
+  --sa-l: env(safe-area-inset-left, 0px);
+
+  /* The two edge insets this file has always used: 30 px for the panels on the
+     top rail, 34 px for the two that hang off the bottom corners. */
+  --hud-gap: 1.875rem;
+  --hud-gap-lg: 2.125rem;
+
+  --hud-t: calc(var(--hud-gap) + var(--sa-t));
+  --hud-r: calc(var(--hud-gap) + var(--sa-r));
+  --hud-b: calc(var(--hud-gap) + var(--sa-b));
+  --hud-l: calc(var(--hud-gap) + var(--sa-l));
+  --hud-r-lg: calc(var(--hud-gap-lg) + var(--sa-r));
+  --hud-b-lg: calc(var(--hud-gap-lg) + var(--sa-b));
+  --hud-l-lg: calc(var(--hud-gap-lg) + var(--sa-l));
+
+  /* ---- the two readout columns ------------------------------------------
+     The vitals stack owns the left, the minimap / ammo / toasts own the right,
+     and the gutter between them is subtracted before either is sized. That is
+     what makes an overlap ARITHMETICALLY IMPOSSIBLE rather than merely absent
+     at the three widths somebody happened to measure: the columns are cut from
+     the width that is actually there, and both are capped at what shipped so a
+     desktop never sees the formula at all. */
+  --hud-span: calc(100vw - var(--hud-l) - var(--hud-r));
+  --hud-gutter: 1.5rem;
+  --hud-col: min(18.5rem, calc((var(--hud-span) - var(--hud-gutter)) * 0.45));
+  --hud-col-r: min(16.75rem, calc((var(--hud-span) - var(--hud-gutter)) * 0.55));
+  /** Minimap edge. `Minimap.js` draws into its own coordinate space and the
+      canvas is scaled to this, so the map follows the column it lives in. */
+  --map: min(13.75rem, var(--hud-col-r));
+  /** Vertical room reserved for the ammo panel when it sits under the map. */
+  --ammo-h: 11rem;
+
+  --wslot-w: 11rem;
+  --wslot-gap: 0.5625rem;
+  --mount-w: min(16.375rem, calc(100vw - var(--hud-l) - var(--hud-r)));
+
+  /* The pause card's frame. `pause-menu.css` owns the list inside it and reads
+     `--pm-min` from here, so the two cannot disagree about how narrow the hub
+     is allowed to get - which is what produced the 444 px minimum: a 320 px
+     list plus 2 x 62 px of padding, neither of which knew about the other. */
+  --pause-pad-y: 2.5rem;
+  --pause-pad-x: 3.875rem;
+  --pm-min: 20rem;
+  --chat-w: min(26.5rem, calc(100vw - var(--hud-l-lg) - var(--hud-r-lg)));
+
+  /** The smallest thing a thumb can reliably hit. Not negotiable, and not a
+      taste: it is the floor every platform's own guidance lands on. */
+  --tap: 2.75rem;
 }
 
 /* ------------------------------------------------------------------ reset -- */
@@ -96,8 +173,12 @@ body {
 #viewport {
   position: fixed;
   inset: 0;
-  width: 100vw;
-  height: 100vh;
+  /* `dvh`, not `vh`. `100vh` is the LARGE viewport: on a phone it includes the
+     space the URL bar is sitting in, so the bottom of the canvas is under the
+     browser chrome for as long as the bar is showing and the crosshair is not
+     where the player is looking. `dvh` tracks what is actually visible. */
+  width: 100dvw;
+  height: 100dvh;
   display: block;
   outline: none;
   cursor: crosshair;
@@ -934,9 +1015,9 @@ body {
    ========================================================================== */
 .vitals {
   position: absolute;
-  left: 30px;
-  top: 30px;
-  width: 296px;
+  left: var(--hud-l);
+  top: var(--hud-t);
+  width: var(--hud-col);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1404,9 +1485,9 @@ body {
    AMMO  (bottom-right)
    ========================================================================== */
 .ammo {
-  right: 34px;
-  bottom: 34px;
-  width: 268px;
+  right: var(--hud-r-lg);
+  bottom: var(--hud-b-lg);
+  width: var(--hud-col-r);
   padding: 12px 16px 13px;
   clip-path: var(--clip-tl);
   text-align: right;
@@ -1740,8 +1821,8 @@ body {
    ========================================================================== */
 .helpchip {
   position: absolute;
-  left: 30px;
-  bottom: 30px;
+  left: var(--hud-l);
+  bottom: var(--hud-b);
   display: flex;
   align-items: center;
   gap: 9px;
@@ -1786,8 +1867,8 @@ body {
    ========================================================================== */
 .minimap {
   position: absolute;
-  right: 30px;
-  top: 30px;
+  right: var(--hud-r);
+  top: var(--hud-t);
 }
 
 /* The map sat behind a `filter: drop-shadow(0 12px 30px …)`, over a canvas that
@@ -1818,9 +1899,19 @@ body {
   );
 }
 
+/* The map's PRESENTED size is CSS, not JavaScript.
+ *
+ * `Minimap.js` used to write `canvas.style.width` from `CONFIG.minimap.size`,
+ * which is an inline style - so no stylesheet could ever shrink it and a phone
+ * got the same 220 px square a 1920 px desktop does, with the vitals column
+ * already 296 px into a 390 px screen. The backing store is still sized in JS
+ * (it has to be: it is the drawing coordinate space, and it carries the device
+ * pixel ratio); only the box it is scaled into moved here. */
 .minimap canvas {
   display: block;
   position: relative;
+  width: var(--map);
+  height: var(--map);
 }
 
 .minimap-world {
@@ -1843,9 +1934,14 @@ body {
 /* ==========================================================================
    KILL FEED (under the minimap)
    ========================================================================== */
+/* Under the map. The `top` used to be written from JS as
+ * `30 + CONFIG.minimap.size + 18`, which pinned it to a map size the
+ * stylesheet can now change; it is arithmetic in the same units, in the file
+ * that owns the units. */
 .killfeed {
   position: absolute;
-  right: 30px;
+  right: var(--hud-r);
+  top: calc(var(--hud-t) + var(--map) + 1.125rem);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -2016,7 +2112,7 @@ body {
 .toasts {
   position: absolute;
   left: 50%;
-  top: 76px;
+  top: calc(var(--hud-t) + 2.875rem);
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
@@ -2515,7 +2611,21 @@ body {
 
 .pause-in {
   text-align: center;
-  padding: 40px 62px;
+  padding: var(--pause-pad-y) var(--pause-pad-x);
+  /* The card is `place-items: center` inside a full-screen grid, so anything
+     larger than the viewport is clipped at BOTH ends - the same failure the
+     list's own `max-height` note describes, turned ninety degrees.
+
+     The bound is the SAFE AREA plus a 1rem margin, and deliberately not
+     `--hud-t/--hud-b`, which also carry the 30 px HUD edge inset. Those come
+     to 740 px at 1280 x 800 against a card that is naturally 743 - so the
+     stricter version clipped three pixels off a desktop hub and moved every
+     row in it by one and a half. Caught by an A/B of all eight desktop cases
+     against the previous commit; there is no version of "responsive" that is
+     worth 1.5 px of the shipped product. */
+  max-width: calc(100vw - var(--sa-l) - var(--sa-r) - 2rem);
+  max-height: calc(100dvh - var(--sa-t) - var(--sa-b) - 2rem);
+  overflow: auto;
   background: linear-gradient(160deg, rgba(16, 28, 44, 0.6), rgba(4, 8, 15, 0.72));
   border: 1px solid var(--rule-soft);
   border-top-color: var(--rule);
@@ -2570,10 +2680,15 @@ body {
    DEBUG PANEL (F3)
    ========================================================================== */
 .debug {
-  left: 30px;
+  left: var(--hud-l);
   /* Sits under the credits ledger, which now owns the top-left corner. */
-  top: 100px;
-  min-width: 244px;
+  top: calc(var(--hud-t) + 4.375rem);
+  /* Capped to the left column so a diagnostics panel can never reach across a
+     narrow screen and land on the minimap. `min()` on the floor keeps the
+     shipped 244 px wherever the column is wider than that, which is every
+     desktop. */
+  min-width: min(15.25rem, var(--hud-col));
+  max-width: var(--hud-col);
   padding: 10px 14px 12px;
   clip-path: var(--clip-tr);
   display: none;
@@ -2649,9 +2764,9 @@ body {
    ========================================================================== */
 .chat {
   position: absolute;
-  left: 34px;
-  bottom: 34px;
-  width: 424px;
+  left: var(--hud-l-lg);
+  bottom: var(--hud-b-lg);
+  width: var(--chat-w);
   z-index: 20;
   display: flex;
   flex-direction: column;
@@ -3065,12 +3180,12 @@ body {
 .wstrip {
   position: absolute;
   left: 50%;
-  bottom: 30px;
+  bottom: var(--hud-b);
   transform: translateX(-50%);
   z-index: 62;
   display: flex;
   align-items: flex-end;
-  gap: 9px;
+  gap: var(--wslot-gap);
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.55s ease 0.2s, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
@@ -3102,7 +3217,7 @@ body {
   display: flex;
   align-items: center;
   gap: 9px;
-  width: 176px;
+  width: var(--wslot-w);
   padding: 18px 11px 9px 9px;
   margin: 0;
   appearance: none;
@@ -3703,9 +3818,15 @@ body {
    ========================================================================== */
 .mount {
   left: 50%;
-  bottom: 112px;
-  width: 262px;
-  margin-left: -131px;
+  bottom: calc(var(--hud-b) + 5.125rem);
+  /* Still centred by a negative margin rather than a transform, and
+     deliberately: `.mount.in` runs `wslot-pop`, which writes `transform`
+     outright, so a `translateX(-50%)` here would be thrown away for the half
+     second of the pop and the panel would jump a hundred and thirty pixels
+     right every time the player mounted. The margin is half `--mount-w`, so
+     the two cannot disagree. */
+  width: var(--mount-w);
+  margin-left: calc(var(--mount-w) / -2);
   padding: 9px 13px 10px;
   clip-path: var(--clip-tr);
   opacity: 0;
@@ -4151,8 +4272,19 @@ body {
 
 .help-card {
   position: relative;
-  width: min(1420px, 94vw);
-  max-height: 92vh;
+  /* The shipped `94vw` / `92vh` are KEPT, with a second bound beside them: the
+     visible box minus the HUD's own edge inset, which carries
+     `env(safe-area-inset-*)`. Neither original term knew about a notch - on a
+     phone `94vw` puts the card's corners under the rounded screen corners and
+     `92vh` measures against the viewport the URL bar is sitting in, so the last
+     rows sit behind the browser chrome.
+
+     `min()` of both rather than a replacement, because on a desktop the two
+     new terms are the larger ones and the card comes out at exactly the width
+     and height it shipped with. Replacing them outright made it 17 px wider at
+     1280 px, which the desktop A/B caught. */
+  width: min(1420px, 94vw, calc(100vw - var(--hud-l) - var(--hud-r)));
+  max-height: min(92dvh, calc(100dvh - var(--hud-t) - var(--hud-b)));
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 26px 34px 24px;
@@ -4404,28 +4536,28 @@ body {
   .health-num {
     font-size: 32px;
   }
+  :root {
+    --hud-col: min(17.125rem, calc((var(--hud-span) - var(--hud-gutter)) * 0.45));
+  }
   .vitals {
-    width: 274px;
     gap: 6px;
   }
 }
 
 @media (max-height: 720px) {
+  /* The edge insets tighten, rather than each panel naming its own bottom in
+     px - which is what used to happen here, and which threw away the
+     safe-area term on every one of them. */
+  :root {
+    --hud-gap: 1.25rem;
+    --hud-gap-lg: 1.375rem;
+  }
   .chat-log {
     height: 168px;
   }
-  .ammo,
-  .chat {
-    bottom: 22px;
-  }
-  .helpchip {
-    bottom: 22px;
-  }
-  .wstrip {
-    bottom: 20px;
-  }
   .mount {
-    bottom: 96px;
+    /* 20 px inset + 76 px = the 96 px this rule used to name outright. */
+    bottom: calc(var(--hud-b) + 4.75rem);
   }
   .stuck {
     bottom: 27%;
@@ -4443,8 +4575,15 @@ body {
 
 /* Narrow viewports: shrink the strip before it collides with health/ammo. */
 @media (max-width: 1280px) {
+  :root {
+    --wslot-w: 8.25rem;
+  }
+  /* `gap: 7px` is the gap INSIDE a slot - icon to meta - and not the gap
+     between slots, which stays at `--wslot-gap`. They read the same on the
+     page and are not the same number: tokenising this one as the strip's gap
+     narrowed the whole strip from 555 px to 549 px at 1280, which the desktop
+     A/B caught. Six pixels of a shipped layout is still a shipped layout. */
   .wslot {
-    width: 132px;
     gap: 7px;
     padding: 7px 9px 8px 8px;
   }
@@ -4864,4 +5003,371 @@ body {
 .hud.dead .charter {
   opacity: 0;
   transform: translateY(6px);
+}
+
+/* ==========================================================================
+   RESPONSIVE LAYER — Phase 5 item 3
+
+   Everything above this line is the layout as it shipped: one design, sized
+   for 1280 px and wider, with 894 hardcoded px and no breakpoint under
+   1280 px. This section is the only place that changes, and every rule in it
+   is anchored to a measured failure in `.probe/hud-viewport/report.json`.
+
+   THE DESIGN, IN ONE PARAGRAPH. The readouts live in two columns cut from the
+   width that is actually on the screen: the vitals stack on the left, the
+   minimap / ammo / kill feed / toasts on the right, with `--hud-gutter`
+   removed before either is sized. Both are capped at what shipped, so at
+   1280 px and above the formula never binds and the layout is identical. The
+   bottom of the screen belongs to whatever is driving: the weapon strip under
+   a mouse, the on-screen controls under a thumb, and never both.
+
+   WHAT IS NOT HERE. No `!important`, no scaling transform on the whole HUD,
+   and no wholesale px-to-rem sweep. A transform would have made every panel
+   soft and every hit box a lie; the sweep would have been 894 chances to
+   regress a shipped layout in order to fix eleven measured collisions.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. THE BOTTOM OF THE SCREEN HAS ONE OWNER
+
+   Two rules, both driven by state rather than by width, because both defects
+   they close happen at EVERY width.
+   -------------------------------------------------------------------------- */
+
+/* The on-screen controls are up: the strip comes off.
+ *
+ * Phase 5a raised `touch.css` to z-index 64 because the 731 px strip was
+ * landing on the fire button and taking the tap. That stopped the theft; it
+ * left four dead controls sitting under six live ones. The strip is redundant
+ * the moment the touch layer exists - the tray switches weapons by name and
+ * the ammo panel says what is in hand - so it goes, and comes straight back
+ * the moment `input:touchmode` says a mouse is driving again. */
+#ui-root:has(> .touch.on) .wstrip {
+  display: none;
+}
+
+/* A conversation is open: the strip comes off too.
+ *
+ * MEASURED ON A 1280 px DESKTOP, not on a phone: the chat panel is 424 px at
+ * the bottom-left and the strip is 549 px in the centre, so they share 93 px -
+ * and the strip is z-index 62 against the panel's 20. A player aiming for
+ * SEND got a weapon switch. `visibility`, not `pointer-events`, because
+ * `#ui-root button` opts every slot back into pointer events by selector and
+ * would have undone it. */
+#ui-root:has(> .chat.open) .wstrip {
+  visibility: hidden;
+}
+
+/* --------------------------------------------------------------------------
+   2. COARSE POINTERS — the 44 px floor
+
+   Keyed on the pointer and not on the width, because the two are independent:
+   a 1366 px tablet is a thumb and a 900 px browser window is a mouse. Nothing
+   here moves anything; it only enlarges what has to be hit.
+   -------------------------------------------------------------------------- */
+@media (pointer: coarse) {
+  :root {
+    /* Read by `pause-menu.css`. Unset elsewhere, so the desktop hub keeps its
+       30 px density. */
+    --pm-row: var(--tap);
+  }
+
+  /* A baseline-aligned row with a minimum height puts its text against the
+     top of a 44 px box; centring it makes the extra room read as padding. */
+  .pm-item {
+    align-items: center;
+  }
+
+  /* THE HIT BOX IS WHAT THE RECTANGLE SAYS IT IS.
+   *
+   * An inactive slot rests at `translateY(7px) scale(0.965)`, which is a nice
+   * way of saying "not this one" under a mouse and, under a thumb, is a
+   * control that is 3.5% smaller than the size the stylesheet claims: a slot
+   * given `min-height: 44px` measured 42.46 px, because the scale is applied
+   * to the box the finger has to find. The depth cue goes; the opacity
+   * difference already carries the same meaning. */
+  .wslot,
+  .wslot:hover {
+    min-height: var(--tap);
+    transform: none;
+  }
+
+  .chat-close {
+    min-width: var(--tap);
+    min-height: var(--tap);
+  }
+
+  .chat-send {
+    min-height: var(--tap);
+  }
+
+  .chat-input {
+    min-height: var(--tap);
+  }
+
+  .help-close {
+    min-width: var(--tap);
+    min-height: var(--tap);
+  }
+
+  /* There is no F1 on a thumb, and the chip sits exactly where `touch.css`
+     puts the sprint and menu buttons. */
+  .helpchip {
+    display: none;
+  }
+
+  /* Both of these sat inside the primary thumb cluster. The prompt is the
+     line that says what E does, so it has to be readable at the moment a
+     finger is over the Use button; the mount readout carries the boost meter,
+     which is watched while both thumbs are busy.
+
+     `.hud.mounted .prompt` is repeated here rather than left to the base rule
+     because it is TWO classes deep and would otherwise win: the prompt would
+     move for a player on foot and quietly drop back under the Use button the
+     moment they got on a hoverboard, which is the half of the bug that would
+     have shipped. */
+  .prompt,
+  .hud.mounted .prompt {
+    bottom: 34%;
+  }
+
+  .mount {
+    bottom: calc(var(--hud-b) + 14rem);
+  }
+
+  /* The strip is z-index 62 and the pause veil is 60, deliberately: under a
+   * mouse the only moment a slot CAN be clicked is while the cursor is free,
+   * which is while the card is up. Under a thumb that same rule puts four
+   * slots on top of the hub's list and the rows beneath them stop answering.
+   * There is no lock to release here and the tray switches weapons anyway. */
+  #ui-root:has(> .pause.show) .wstrip {
+    visibility: hidden;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   3. TABLETS AND SMALL WINDOWS — 1024 px and under
+
+   The right-hand column becomes a stack. The ammo panel is the reason: at the
+   bottom-right it was 268 px of a 768 px bottom rail that already had a 549 px
+   weapon strip on it, and the two shared 67 px at 1024 px wide.
+   -------------------------------------------------------------------------- */
+@media (max-width: 1024px) {
+  :root {
+    --hud-gap: 1.25rem;
+    --hud-gap-lg: 1.375rem;
+  }
+
+  /* Under the map rather than on the bottom rail. Same panel, same width
+     token, right-aligned either way - only the anchor moved. */
+  .ammo {
+    top: calc(var(--hud-t) + var(--map) + 0.75rem);
+    bottom: auto;
+    right: var(--hud-r);
+  }
+
+  /* Then the feed, then the toasts. The offsets are arithmetic in one
+     direction - each is the sum of what is above it - so a taller map or a
+     wider ammo panel moves the whole column rather than colliding with it. */
+  .killfeed {
+    top: calc(var(--hud-t) + var(--map) + var(--ammo-h) + 1.25rem);
+  }
+
+  .toasts {
+    left: auto;
+    right: var(--hud-r);
+    top: calc(var(--hud-t) + var(--map) + var(--ammo-h) + 7.25rem);
+    transform: none;
+    align-items: flex-end;
+    max-width: var(--hud-col-r);
+  }
+
+  /* A 1024 px window has a 549 px strip on its bottom rail. There is no room
+     left for a persistent hint chip beside it, and the card it points at is
+     one key away. */
+  .helpchip {
+    display: none;
+  }
+
+  .pause-in {
+    --pause-pad-y: 1.75rem;
+    --pause-pad-x: 2rem;
+  }
+
+  /* Same reason as the coarse-pointer rule above, for a narrow window with a
+   * mouse in it: below 1024 px the hub's card is tall enough to reach the
+   * bottom rail the strip sits on. */
+  #ui-root:has(> .pause.show) .wstrip {
+    visibility: hidden;
+  }
+}
+
+/* A LANDSCAPE TABLET IS SHORT AND WIDE AT THE SAME TIME.
+ *
+ * 1024 x 768 with a 21 px home-bar inset leaves 727 px of height for a vitals
+ * column that is 670 px tall and starts 20 px down - and the weapon strip is
+ * on the bottom rail underneath it. They shared 9.6 px, which is enough for
+ * the strip's first slot to sit on the objectives panel.
+ *
+ * Both conditions are required. Width alone would take the panel off a 768 px
+ * tablet in PORTRAIT, which has 1024 px of height and all the room it needs;
+ * height alone would take it off a 1280 x 800 desktop, which is the shipped
+ * layout and is not allowed to change. */
+@media (max-width: 1024px) and (max-height: 820px) {
+  .collect {
+    display: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   4. PHONES — 560 px and under
+
+   The width at which the two columns stop being a convenience and become the
+   only thing holding the interface apart. At 390 px the left column is 152 px
+   and the right is 186 px, cut from 362 px of usable width with a 24 px
+   gutter: they cannot meet.
+   -------------------------------------------------------------------------- */
+@media (max-width: 560px) {
+  :root {
+    --hud-gap: 0.875rem;
+    --hud-gap-lg: 1rem;
+    --map: min(8.5rem, var(--hud-col-r));
+    /* The panel is narrower here, so its rows wrap and it stands taller. */
+    --ammo-h: 12rem;
+    /* Icon and key only - see `.wslot-meta` below. */
+    --wslot-w: 3.5rem;
+    --wslot-gap: 0.375rem;
+  }
+
+  /* THE STRIP, COMPACT. Four slots at 56 px plus three 6 px gaps is 242 px,
+     inside the 362 px a 390 px screen has. What comes off is the text: a
+     weapon's name and its magazine are both already on the ammo panel, and at
+     this width the name wrapped to three lines inside a 132 px slot. */
+  .wslot {
+    flex-direction: column;
+    gap: 4px;
+    width: var(--wslot-w);
+    min-height: var(--tap);
+    padding: 6px 4px 5px;
+    align-items: center;
+  }
+
+  .wslot-meta,
+  .wslot-bar {
+    display: none;
+  }
+
+  /* The two ladders in the vitals stack are the space world's progress
+     record, not a live readout, and together they are 230 px of a 844 px
+     phone. The quest tracker and the charter board stay: those are what the
+     player is doing right now. Both ladders are in the Esc hub. */
+  .collect,
+  .objectives {
+    display: none;
+  }
+
+  .pause-in {
+    --pause-pad-y: 1.5rem;
+    --pause-pad-x: 1.25rem;
+  }
+
+  .pause-t {
+    font-size: 26px;
+    letter-spacing: 0.24em;
+    text-indent: 0.24em;
+  }
+
+  .help-card {
+    padding: 16px 14px 14px;
+  }
+
+  .help-title {
+    font-size: 22px;
+  }
+
+  .help-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   5. SHORT VIEWPORTS — a phone on its side
+
+   844 x 390 is the same phone as 390 x 844 and a completely different
+   problem: the width is fine and there are 390 px of height for a stack that
+   is 670 px tall. Keyed on height, so a small desktop window in the same
+   shape gets the same treatment.
+   -------------------------------------------------------------------------- */
+@media (max-height: 560px) {
+  :root {
+    --hud-gap: 0.75rem;
+    --hud-gap-lg: 0.875rem;
+    --map: min(7.5rem, var(--hud-col-r));
+    --ammo-h: 8.5rem;
+  }
+
+  /* The pack total. `.ammo-res` already prints the reserve two lines above it,
+     and on a 390 px-tall screen those 34 px are the difference between the
+     right-hand stack ending above the thumb cluster and ending inside it. */
+  .ammo-bag {
+    display: none;
+  }
+
+  /* Everything below the three live readouts comes off. Credits, health and
+     stamina are what a player checks mid-fight; the quest step, the charter
+     board and the two ladders are all reference, all reachable from the Esc
+     hub, and together they are more than the whole height of the screen. */
+  .questtrack,
+  .collect,
+  .objectives,
+  .charter {
+    display: none;
+  }
+
+  .health-num {
+    font-size: 26px;
+  }
+
+  .vitals {
+    gap: 5px;
+  }
+
+  .health {
+    padding: 8px 12px 9px;
+  }
+
+  .chat-log {
+    height: 120px;
+  }
+
+  /* Back to the centre, and narrow.
+   *
+   * The right-hand stack is map + ammo + feed, and on a 390 px-tall screen
+   * the first two already reach the bottom rail - a third thing under them
+   * lands 25 px off the end of the screen. The centre band between the two
+   * columns is 278 px wide at 844 x 390 and is otherwise empty, so the stack
+   * goes back where it was on a desktop and is capped to fit between them. */
+  .toasts {
+    left: 50%;
+    right: auto;
+    top: calc(var(--hud-t) + 2.875rem);
+    transform: translateX(-50%);
+    align-items: center;
+    /* Exactly the band between the two columns, minus a gutter on each side -
+       not a percentage of the viewport. `30vw` was the first version of this
+       and it was 253 px against a 160 px band the moment a landscape phone
+       reported its 59 px side insets: the toast reached straight into the
+       ammo panel. The band is what is actually left over, so it cannot. */
+    max-width: calc(
+      100vw - var(--hud-l) - var(--hud-col) - var(--hud-r) - var(--hud-col-r)
+        - var(--hud-gutter) * 2
+    );
+  }
+
+  /* Three rows of who-killed-whom, in a right-hand column that has no room
+     for them and over a game that is 390 px tall. The hit marker and the
+     damage numbers carry the same news where the player is already looking. */
+  .killfeed {
+    display: none;
+  }
 }

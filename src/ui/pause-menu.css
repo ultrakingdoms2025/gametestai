@@ -8,11 +8,19 @@
   gap: 18px;
   margin-top: 24px;
   text-align: left;
-  min-width: 320px;
+  /* `--pm-min` is declared in `hud.css`, which also owns the card's padding -
+     so the hub's real minimum width (list + 2 x padding) is decided in one
+     place. It used to be 320 px here plus 62 px of padding either side that
+     this file could not see: a 444 px floor on a 390 px phone, clipped at both
+     ends by the card's own centring. The `min()` means the list gives way
+     before the screen does. */
+  min-width: min(var(--pm-min, 20rem), 100%);
   /* Seventeen items plus two headings overflow a short window, and the card is
      centre-placed so the overflow is clipped at BOTH ends - Quit becomes
-     unreachable with no indication it is there. Scroll the list, not the page. */
-  max-height: 70vh;
+     unreachable with no indication it is there. Scroll the list, not the page.
+     `dvh`, not `vh`: on a phone `70vh` is measured against the viewport the
+     URL bar is sitting in, so the list is longer than the room it has. */
+  max-height: 70dvh;
   overflow-y: auto;
 }
 
@@ -36,6 +44,10 @@
   gap: 10px;
   width: 100%;
   padding: 7px 12px;
+  /* 30 px rows are fine under a mouse and are a miss under a thumb. The
+     minimum only applies where the primary pointer is coarse, so the desktop
+     list keeps its density. */
+  min-height: var(--pm-row, auto);
   font-family: var(--f-ui);
   font-size: 13px;
   font-weight: 600;

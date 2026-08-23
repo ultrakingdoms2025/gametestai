@@ -1364,8 +1364,11 @@ export class HUD {
       viewpoints: this.viewpoints,
     });
 
+    /* The feed's `top` used to be written here as `30 + CONFIG.minimap.size +
+     * 18`, which pinned it to a map size the stylesheet is now allowed to
+     * change per viewport. Same arithmetic, same units, moved to `.killfeed`
+     * in `hud.css` where the map's own size token lives. */
     this.killfeed = el('div', 'killfeed');
-    this.killfeed.style.top = `${30 + CONFIG.minimap.size + 18}px`;
     hud.appendChild(this.killfeed);
   }
 

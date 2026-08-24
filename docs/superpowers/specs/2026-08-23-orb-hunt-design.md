@@ -18,11 +18,16 @@ Null floor first, because a number without one is not a measurement. The probe
 renders with `dt` exactly 0, which makes the film grain reproduce, so two
 frames with nothing changed between them are **bit-identical**:
 
-| framing | null pair (whole frame) | orbs with `relics:glow` visible | with it hidden | footprints removed |
-| --- | --- | ---: | ---: | ---: |
-| `medieval/hills-vista` | peak ΔLum **0.0**, 0 px over 1.0 | **8** | **0** | 6 |
-| `citadel/tower-top` | peak ΔLum **0.0**, 0 px over 1.0 | **19** | **0** | **230** |
-| `citadel/souk-roofs` | peak ΔLum **0.7**, 0 px over 1.0 | **6** | **0** | **83** |
+| framing | harness | null pair (whole frame) | orbs, `relics:glow` visible | with it hidden | footprints removed | peak ΔLum |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| `medieval/hills-vista` | **repaired** | **0.0**, 0 px over 1.0 | **4** | **0** | 28 | 210.1 |
+| `medieval/hills-vista` | old | **0.0**, 0 px over 1.0 | 8 | **0** | 6 | 210.0 |
+| `citadel/tower-top` | old | **0.0**, 0 px over 1.0 | **19** | **0** | **230** | 217.3 |
+| `citadel/souk-roofs` | old | **0.7**, 0 px over 1.0 | **6** | **0** | **83** | 232.0 |
+
+The medieval row was re-measured after merging the `Harness.ready()` repair, so
+the headline claim does not rest on a frame taken during boot's own warm-up
+(§5.1). The orb population halves; the attribution does not move at all.
 
 Hiding one `InstancedMesh` takes every orb out of three framings in two worlds.
 The mesh named `relics` (the octahedron body) accounts for almost none of it —
@@ -34,12 +39,20 @@ nearest projected relic instance:
 
 | framing | orbs | worst screen-space miss |
 | --- | ---: | ---: |
-| `medieval/hills-vista` | 8 | **9.5 px** (six of eight within 3.0 px) |
+| `medieval/hills-vista` (repaired harness) | 4 | **8.9 px** — and two of the four are the *same* relic, #94 at 56.6 m, caught as two blobs |
+| `medieval/hills-vista` (old harness) | 8 | 9.5 px (six of eight within 3.0 px) |
 | `citadel/tower-top` | 19 | **4.5 px** |
 | `citadel/souk-roofs` | 6 | 13.2 px |
 
 That is an identification, not a correlation: the ablation removes them and the
 projection says which one each was.
+
+The ablation itself, on the repaired harness — the right-hand frame is the same
+frame with one `InstancedMesh` set `visible = false` and nothing else changed:
+
+| `medieval/hills-vista` | the same frame, `relics:glow` hidden |
+| --- | --- |
+| ![on](img/2026-08-23-orb-hunt/ablation-relics-on.jpg) | ![off](img/2026-08-23-orb-hunt/ablation-glow-hidden.jpg) |
 
 | `medieval/hills-vista`, haze off (as five branches saw it) | the same framing with the halo obeying the haze |
 | --- | --- |
@@ -340,6 +353,14 @@ Measured on the old `Harness.ready()`, `hills-vista` showed **8** detected orbs.
 On the repaired one — which no longer returns while `prewarm()` is still running,
 and so no longer photographs the world inside `rehearse()`'s `forceDrawable` —
 the same framing shows **4**.
+
+The attribution was re-run in full on the repaired harness and did not move:
+null pair **0.0**, ablating `relics:glow` alone takes it **4 → 0** at peak
+ΔLum **210.1**, and all four orbs sit within **8.9 px** of a projected relic
+(two of them are the same relic, #94 at 56.6 m, split into two blobs by the
+detector). `relic.glow` is still absent from the 27 world-group material names
+and `glow.boundingSphere` is still `{c:[0,0,0], r:-1}` with **0** direct
+raycast hits.
 
 So the sibling `harness-instruments` hypothesis is **partly right**: some of the
 orb population in the old reports was the harness holding objects visible

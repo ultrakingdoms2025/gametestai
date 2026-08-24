@@ -98,7 +98,10 @@ carries the identical rules, with no `/play` override:
 normally — pointer-events do not block the keyboard. So a determined keyboard user gets in. Nothing
 on the page tells them the button is there.
 
-Screenshot: `play-entry-blocked.png` (repo root) — the panel is a faint ghost behind the logo.
+Screenshot: `img/2026-08-24-e2e-signed-in/play-entry-blocked.png` — a black page with the panel a
+faint ghost behind the logo.
+
+![/play, signed in and paid up: the mode panel is invisible under the header](img/2026-08-24-e2e-signed-in/play-entry-blocked.png)
 
 **Limit of this evidence.** This reproduces against a local production build of *this tree*. I did
 not check the deployed site, because the brief said not to point anything at production. An

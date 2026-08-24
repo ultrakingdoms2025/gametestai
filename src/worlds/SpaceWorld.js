@@ -14,7 +14,8 @@ import {
   navTargets,
 } from './space/Bodies.js';
 import { Backdrop } from './space/Backdrop.js';
-import { Belt } from './space/Belt.js';
+import { Belt, HERO_RADIUS } from './space/Belt.js';
+import { loadBeltAssets } from './space/BeltAssets.js';
 import { DockExterior, APRON_Z, APRON_Z1, APRON_HALF_W } from './space/DockExterior.js';
 import {
   makeBodyMaterial,
@@ -64,24 +65,45 @@ import { screenFraction, NEAR_FIELD } from './space/Scale.js';
  * star that the real geometry cannot draw.
  *
  * ===========================================================================
- *  BUDGET - every number below was measured in Chrome at 1600x900, not
- *  estimated. `world.skyReport()` reproduces the per-frame one.
+ *  BUDGET
  * ===========================================================================
  *
- *   meshes in
- *   world:space   41   sky 1, bodies 9 (5 surfaces, 2 halos, 1 ring,
- *                      1 corona), belt 3, dock 28 including the beacon
- *   triangles     72,634 in the group. The five body spheres and two halo
- *                 shells are 43,008 of it (one shared 64x48 unit sphere), the
- *                 belt 20,800, the sky dome 4,096, the dock about 4,400
- *   drawn/frame   92 standing off a planet, 116 on the apron, 146 from 6 km
- *                 off the yard. Those are WHOLE-FRAME counts including the
- *                 HUD, the viewmodel and the shared systems every world runs;
- *                 this world contributes at most its 41
+ * ┌──────────────────────────────────────────────────────────────────────────┐
+ * │ THIS BLOCK WAS STALE BY A FACTOR OF TWO AND NOTHING TESTED IT.           │
+ * └──────────────────────────────────────────────────────────────────────────┘
+ *
+ * It said 41 meshes and 72,634 triangles, and described "bodies 9 (5 surfaces,
+ * 2 halos...)". Those were Phase 1 numbers. Phase 2 added seven more bodies -
+ * seven more 6,016-triangle spheres and their halos - and nobody came back.
+ * Re-measured in Chrome at 1600x900 over all fifteen `VIEWS.space` framings by
+ * `scripts/world-shot.mjs`, on the Phase 9 tree:
+ *
+ *   renderables   45   sky 1; bodies 22 (12 surfaces, 8 halo shells, 1 ring,
+ *   in the group       1 corona); belt 4; dock 18 including the beacon
+ *   triangles     163,892 from a bearing framing, 184,970 standing on the
+ *                 apron - the exterior hides its window, lamp and ring detail
+ *                 beyond a few kilometres, so the range is LOD and not noise.
+ *                 The twelve body spheres and eight halo shells are 120,320 of
+ *                 it (one shared 64x48 unit sphere), the belt 39,280, the sky
+ *                 dome 3,968, the dock 12,280 at the mouth
+ *   drawn/frame   117 down a bearing, 179 on the apron. WHOLE-FRAME counts
+ *                 including the HUD, the viewmodel, the GTAO prepass and the
+ *                 shared systems every world runs; this world contributes at
+ *                 most its 45
+ *   materials     41, every one of them NAMED - see `_mat`
+ *   programs      423 once the run has settled. This number is the one to
+ *                 watch and the one that is hardest to read: it is a CACHE,
+ *                 it only grows, and the per-framing value is wherever the
+ *                 warm-up happened to have got to. Measured twice on identical
+ *                 code, the same framing swung by up to +39 mid-run and landed
+ *                 on 423 both times. Compare the settled value; a mid-run
+ *                 delta is noise.
  *   point lights  0. The star is the scene directional; everything that looks
  *                 like a lamp is emissive geometry above the bloom threshold.
  *                 `RIG_BUDGET.point` is 12 for the whole game and every one of
  *                 them is compiled into every shader in every world.
+ *   world lights  1 - the rim fill in `_buildRim`, created INVISIBLE. See the
+ *                 note there; it is not tidiness, it is a recompile.
  *   per frame     0.020 to 0.030 ms for `Backdrop.update` over 7 members PLUS
  *                 all 260 belt placements, averaged over 300-400 frames across
  *                 several runs. No allocation after `build`.
@@ -90,6 +112,12 @@ import { screenFraction, NEAR_FIELD } from './space/Scale.js';
  * see the note in DockExterior.js. It is the one structure here that is on
  * screen from nearly every vantage, so it is the one whose draw count is paid
  * continuously rather than occasionally.
+ *
+ * `scripts/tests/space-art.test.mjs` holds the parts of this block a test can
+ * hold - the light count, the light's visibility, the material names. The
+ * triangle and draw figures are a browser measurement and live here as a dated
+ * record, which is exactly how the numbers above went stale. Re-run
+ * `node scripts/world-shot.mjs --world space` before trusting them.
  */
 
 /* Module-level scratch. */
@@ -220,7 +248,26 @@ export class SpaceWorld extends World {
     this._corona = null;
   }
 
-  _mat(m) {
+  /**
+   * Track a material for teardown, and NAME IT.
+   *
+   * The name is not decoration. `scripts/world-shot.mjs --ablate` - the A/B
+   * that answers "which system owns this pixel" - identifies materials BY
+   * NAME, and `art-station` found all 225 of its world's materials anonymous
+   * and its whole ablation silently useless. Open space was in the same state:
+   * 43 materials, of which exactly one (`Sky.space`) had a name.
+   *
+   * The name is required rather than optional, because the next material
+   * somebody adds is the one that would have been left out. It costs nothing:
+   * `WebGLPrograms.getProgramCacheKey` never reads it, so the program cache
+   * cannot move.
+   *
+   * @param {string} name
+   * @param {THREE.Material} m
+   */
+  _mat(name, m) {
+    if (!name) throw new Error('[SpaceWorld] every material needs a name - see --ablate');
+    m.name = name;
     this._mats.push(m);
     return m;
   }
@@ -240,6 +287,15 @@ export class SpaceWorld extends World {
     this._buildBodies();
     onProgress?.(0.56, 'Placing the worlds');
 
+    /* The authored hero boulder, before the belt is built rather than after -
+     * `Belt._build` reads the resolved cache synchronously, and an asset that
+     * lands one tick later is an asset the field was already built without.
+     *
+     * `loadBeltAssets` never rejects and resolves to null when the file is
+     * absent, which is the arm every head-less build in the suite takes; see
+     * the header of `space/BeltAssets.js`. It is awaited between two progress
+     * ticks so a slow first fetch reads as a loading bar rather than a stall. */
+    await loadBeltAssets();
     this._buildBelt();
     onProgress?.(0.72, 'Scattering Halberd Reach');
 
@@ -343,7 +399,7 @@ export class SpaceWorld extends World {
       const spinNode = new THREE.Object3D();
       axisNode.add(spinNode);
 
-      const mat = this._mat(makeBodyMaterial(body, this.starDirection));
+      const mat = this._mat(`space:body:${body.id}:surface`, makeBodyMaterial(body, this.starDirection));
       const mesh = new THREE.Mesh(sphere, mat);
       mesh.name = `space:body:${body.id}:surface`;
       mesh.scale.setScalar(body.radius);
@@ -369,7 +425,9 @@ export class SpaceWorld extends World {
        * is exactly what the first screenshot showed. A real atmosphere is a
        * percent or two of the radius, and 1.05 is what that looks like. */
       if (body.atmosphere > body.radius && (body.look.atmoStrength ?? 0) > 0) {
-        const shell = new THREE.Mesh(sphere, this._mat(makeAtmosphereMaterial(body, this.starDirection)));
+        const shell = new THREE.Mesh(sphere, this._mat(
+          `space:body:${body.id}:air`, makeAtmosphereMaterial(body, this.starDirection)
+        ));
         shell.name = `space:body:${body.id}:air`;
         shell.scale.setScalar(body.radius * (body.look.haloScale ?? 1.05));
         shell.frustumCulled = false;
@@ -387,7 +445,7 @@ export class SpaceWorld extends World {
         const ringGeo = this._geo(
           new THREE.RingGeometry(body.ring.inner, body.ring.outer, 160, 1)
         );
-        ringMat = this._mat(makeRingMaterial(body, this.starDirection));
+        ringMat = this._mat(`space:body:${body.id}:ring`, makeRingMaterial(body, this.starDirection));
         const ring = new THREE.Mesh(ringGeo, ringMat);
         ring.name = `space:body:${body.id}:ring`;
         ring.rotation.x = -Math.PI / 2;
@@ -405,7 +463,7 @@ export class SpaceWorld extends World {
       if (body.kind === 'star') {
         const corona = new THREE.Mesh(
           this._geo(new THREE.PlaneGeometry(1, 1)),
-          this._mat(makeCoronaMaterial(body))
+          this._mat(`space:body:${body.id}:corona`, makeCoronaMaterial(body))
         );
         corona.name = 'space:body:erenmark:corona';
         corona.scale.setScalar(body.radius * (body.look.coronaScale ?? 3));
@@ -1060,6 +1118,29 @@ export class SpaceWorld extends World {
   _buildRim() {
     this._rim = new THREE.DirectionalLight(0x9fc4ff, 0.85);
     this._rim.castShadow = false;
+    /**
+     * CREATED INVISIBLE, and it is not cosmetic.
+     *
+     * `LightRig` demotes every world light it claims to `visible = false` and
+     * copies it into a fixed slot, so the number of lights compiled into every
+     * shader never moves. But it claims on `world:changed`, and the frame
+     * between `new THREE.DirectionalLight(...)` and that walk is a frame in
+     * which this light COUNTS - and one such frame is a full recompile of
+     * roughly 390 programs, which is the single most expensive thing that
+     * happens in this game.
+     *
+     * `Caves.js:859` and `MazeChunks.js:393` already create theirs this way
+     * with tests enforcing it; the implementation-brief roadmap lists 61 sites
+     * across 12 world files that do not, as Phase 1's open item 4. This is one
+     * of them, it is in this world's file, and it is one line.
+     *
+     * Safe against the rig: `LightRig._walk` deliberately ignores a light's
+     * OWN `visible` flag when deciding whether to claim it - "the rig is what
+     * set it to false" - and only skips lights under a hidden ANCESTOR. So an
+     * invisible source is still claimed and still lights the scene through its
+     * slot. `space-yard-exterior.test.mjs` holds the flag.
+     */
+    this._rim.visible = false;
     this._rim.name = 'space:rim';
     this.group.add(this._rim);
     this.group.add(this._rim.target);

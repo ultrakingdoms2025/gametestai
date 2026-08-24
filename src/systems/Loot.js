@@ -236,6 +236,79 @@ function makeBeamTexture() {
   return t;
 }
 
+/* ------------------------------------------------------------------ */
+/* Aerial perspective for the ADDITIVE layers                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `fog: true` on its own would make a pickup at range WORSE, not better.
+ *
+ * Three's stock `<fog_fragment>` is `mix( colour, fogColor, fogFactor )`.
+ * That is right for a surface, which is being *veiled* by haze. It is wrong
+ * for an additive layer, which is being *added* to whatever is behind it: a
+ * fully fogged additive card would add `fogColor` at full strength, so the
+ * ring, the halo and the beam would paint a hard dot of pure haze colour over
+ * the sky - a brighter dot at 800 m than at 8 m. Turning the flag on and
+ * walking away is the trap here.
+ *
+ * Emitted light is SWALLOWED by haze, not tinted by it, so the additive
+ * layers multiply toward zero instead. This is not a new idea in this
+ * repository: `systems/Projectiles.js` and `systems/VFX.js` both carry
+ * `#ifdef ADDITIVE_BLEND col *= 1.0 - fogFactor;` in their own particle
+ * shaders, with the same one-line reason. Those two own their shaders
+ * outright; these three are stock Three materials, so the same rule arrives
+ * as a chunk replacement.
+ *
+ * The chunk sits after `<tonemapping_fragment>` and `<colorspace_fragment>`
+ * in both `meshbasic` and `sprite`, so the multiply lands on the encoded
+ * value. That is deliberate and left alone: it attenuates the emitted light
+ * by `(1 - fogFactor) ^ 2.4` in linear terms, i.e. slightly faster than the
+ * haze veils a surface, which is the right side to err on for the things
+ * that were punching through it.
+ *
+ * WORLDS WITH NO FOG ARE UNCHANGED. `USE_FOG` needs `scene.fog` as well as
+ * `material.fog`, and `main.js applyEnvironment` leaves `scene.fog = null`
+ * wherever `environment.fogFar` is 0 (the station interior, the maze). A
+ * world with no aerial perspective has none for a pickup to match, and this
+ * compiles out to nothing there.
+ */
+const ADDITIVE_FOG_FRAGMENT = /* glsl */ `
+#ifdef USE_FOG
+  #ifdef FOG_EXP2
+    float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+  #else
+    float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+  #endif
+  gl_FragColor.rgb *= 1.0 - fogFactor;
+#endif
+`;
+
+/**
+ * ONE function object for every additive loot material, and it has to be one.
+ *
+ * `Material.customProgramCacheKey()` returns `onBeforeCompile.toString()` by
+ * default, so a patch declared inside the per-kind loop would hand fifteen
+ * identically-shaped-but-distinct closures to the program cache. Three
+ * hashes the *text*, so those fifteen would in fact still collide - but the
+ * explicit key below says so rather than relying on it, which is the same
+ * argument `worlds/planets/PlanetLiquid.js` makes where it sets one.
+ */
+function swallowInHaze(shader) {
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <fog_fragment>',
+    ADDITIVE_FOG_FRAGMENT
+  );
+}
+const ADDITIVE_FOG_KEY = () => 'loot.additive-fog.v1';
+
+/** Give one additive layer the scene's own aerial perspective. */
+function hazeAdditive(mat) {
+  mat.fog = true;
+  mat.onBeforeCompile = swallowInHaze;
+  mat.customProgramCacheKey = ADDITIVE_FOG_KEY;
+  return mat;
+}
+
 export class Loot {
   /**
    * @param {{ scene:THREE.Scene, engine?:any, physics?:any, bus?:any, materials?:any,
@@ -304,45 +377,79 @@ export class Loot {
     this._mats = {};
     for (const kind of ACCENT_PRIORITY) {
       const col = new THREE.Color(KIND_ACCENT[kind] ?? '#52e9ff');
+      /* ---- WHY THESE NUMBERS ARE NOT THE ONES THIS SHIPPED WITH -------
+       *
+       * Four world art branches photographed a *violet* trinket as a pure
+       * white blob and each declined to fix a system shared by nine worlds.
+       * Measured on a controlled ladder - one accent, one backdrop, eight
+       * marks on eight bearings from one vantage - the pixel at the centre of
+       * a `trinket` read `rgb(252,211,249)`, saturation 0.16, with red hard
+       * against 255 at three of the marks. The kind colour is a gameplay signal
+       * (cyan is ammo, violet is a trinket, amber is money) and it was being
+       * clipped away at the one range where the player can act on it.
+       *
+       * The cause is stacking, not any single layer. The renderer is
+       * ACESFilmic (`core/Engine.js`) and ACES desaturates as it compresses,
+       * so four coincident layers - emissive 2.6 plus additive 0.75 + 0.85 +
+       * 0.35 - put ~3.5x the accent's linear radiance through a curve that
+       * answers with white. Bloom then spread that white onto the ground
+       * around it: every world's threshold is scene-referred (medieval 1.30,
+       * dock 2.40) and 3.5 clears all of them by a mile.
+       *
+       * So the totals come down to land the composite BELOW the ceiling with
+       * its hue intact, rather than any one layer being "too bright":
+       *
+       *   core  emissiveIntensity 2.6  -> 1.1   albedo x0.35 -> x0.5
+       *   ring  opacity           0.75 -> 0.5
+       *   halo  opacity           0.85 -> 0.4
+       *   beam  opacity           0.35 -> 0.25
+       *
+       * The core keeps the largest share because it is the thing with a
+       * silhouette, and the halo gives up the most because it is the layer
+       * that sat exactly on top of the core and did the clipping. The albedo
+       * goes UP to compensate: with less emissive, more of the octahedron's
+       * read has to come from its lit facets, and that is the half of it that
+       * carries a highlight and a shape. */
       const core = new THREE.MeshStandardMaterial({
-        color: col.clone().multiplyScalar(0.35),
+        color: col.clone().multiplyScalar(0.5),
         emissive: col,
-        emissiveIntensity: 2.6,
+        emissiveIntensity: 1.1,
         metalness: 0.4,
         roughness: 0.3,
         flatShading: true,
       });
       core.name = `loot.core.${kind}`;
-      const ring = new THREE.MeshBasicMaterial({
+      /* The core needs nothing doing about fog: `MeshStandardMaterial`
+       * defaults `fog` to true and always has, so it was already receding
+       * with the rest of the scene. Only the three additive layers below were
+       * opted out, and they are the ones that reach 300 m. */
+      const ring = hazeAdditive(new THREE.MeshBasicMaterial({
         color: col,
         transparent: true,
-        opacity: 0.75,
+        opacity: 0.5,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
-        fog: false,
-      });
+      }));
       ring.name = `loot.ring.${kind}`;
-      const halo = new THREE.SpriteMaterial({
+      const halo = hazeAdditive(new THREE.SpriteMaterial({
         map: this._haloTex,
         color: col,
         transparent: true,
-        opacity: 0.85,
+        opacity: 0.4,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         depthTest: true,
-        fog: false,
-      });
+      }));
       halo.name = `loot.halo.${kind}`;
-      const beam = new THREE.MeshBasicMaterial({
+      const beam = hazeAdditive(new THREE.MeshBasicMaterial({
         map: this._beamTex,
         color: col,
         transparent: true,
-        opacity: 0.35,
+        opacity: 0.25,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.DoubleSide,
-        fog: false,
-      });
+      }));
       beam.name = `loot.beam.${kind}`;
       this._mats[kind] = { core, ring, halo, beam };
     }

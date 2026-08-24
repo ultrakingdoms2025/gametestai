@@ -1,0 +1,2816 @@
+{
+  "world": "medieval",
+  "view": "hills-vista",
+  "gl": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5080 (0x00002C02) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "gameplayDriven": true,
+  "nullPair": {
+    "maxDeltaLum": 0.21,
+    "pixelsOver1": 0,
+    "at": [
+      317,
+      639
+    ],
+    "w": 1600,
+    "h": 900
+  },
+  "orbs": [
+    {
+      "id": 0,
+      "cx": 551,
+      "cy": 734,
+      "px": 554,
+      "py": 732,
+      "area": 137,
+      "spanX": 20,
+      "spanY": 14,
+      "peakLum": 228.5,
+      "ringLum": 125.9,
+      "rgb": [
+        238,
+        229,
+        196
+      ]
+    },
+    {
+      "id": 1,
+      "cx": 583,
+      "cy": 499,
+      "px": 582,
+      "py": 501,
+      "area": 21,
+      "spanX": 5,
+      "spanY": 5,
+      "peakLum": 235.7,
+      "ringLum": 49.9,
+      "rgb": [
+        250,
+        236,
+        191
+      ]
+    },
+    {
+      "id": 2,
+      "cx": 472,
+      "cy": 549,
+      "px": 472,
+      "py": 549,
+      "area": 8,
+      "spanX": 6,
+      "spanY": 2,
+      "peakLum": 228.5,
+      "ringLum": 56,
+      "rgb": [
+        241,
+        229,
+        187
+      ]
+    },
+    {
+      "id": 3,
+      "cx": 664,
+      "cy": 395,
+      "px": 664,
+      "py": 395,
+      "area": 4,
+      "spanX": 2,
+      "spanY": 3,
+      "peakLum": 239.8,
+      "ringLum": 136.4,
+      "rgb": [
+        253,
+        240,
+        199
+      ]
+    },
+    {
+      "id": 4,
+      "cx": 542,
+      "cy": 742,
+      "px": 541,
+      "py": 741,
+      "area": 4,
+      "spanX": 2,
+      "spanY": 3,
+      "peakLum": 226.8,
+      "ringLum": 164.4,
+      "rgb": [
+        235,
+        227,
+        201
+      ]
+    },
+    {
+      "id": 5,
+      "cx": 746,
+      "cy": 397,
+      "px": 746,
+      "py": 397,
+      "area": 3,
+      "spanX": 2,
+      "spanY": 2,
+      "peakLum": 237,
+      "ringLum": 144,
+      "rgb": [
+        251,
+        237,
+        196
+      ]
+    },
+    {
+      "id": 6,
+      "cx": 564,
+      "cy": 405,
+      "px": 564,
+      "py": 406,
+      "area": 3,
+      "spanX": 2,
+      "spanY": 2,
+      "peakLum": 230,
+      "ringLum": 127.6,
+      "rgb": [
+        248,
+        230,
+        177
+      ]
+    },
+    {
+      "id": 7,
+      "cx": 877,
+      "cy": 454,
+      "px": 877,
+      "py": 454,
+      "area": 3,
+      "spanX": 1,
+      "spanY": 3,
+      "peakLum": 236.5,
+      "ringLum": 57.7,
+      "rgb": [
+        251,
+        237,
+        189
+      ]
+    }
+  ],
+  "relics": {
+    "hasRelicsSystem": true,
+    "relicsHasGroup": false,
+    "relicKeys": [
+      "scene",
+      "bus",
+      "physics",
+      "player",
+      "economy",
+      "inventory",
+      "cosmetics",
+      "mounts",
+      "worldManager",
+      "sites",
+      "_worldId",
+      "_time",
+      "_found",
+      "_foundIds",
+      "_paid",
+      "mesh",
+      "glow",
+      "_disposables",
+      "_offs",
+      "placement"
+    ],
+    "glowFound": true,
+    "glowParentIsScene": true,
+    "glowCount": 110,
+    "glowCapacity": 110,
+    "bodyCount": 110,
+    "bodyParentIsScene": true,
+    "proj": [
+      {
+        "i": 0,
+        "world": [
+          -109,
+          8,
+          -349
+        ],
+        "screen": [
+          1029,
+          432
+        ],
+        "onScreen": true,
+        "dist": 520.5,
+        "quadW": 4.42
+      },
+      {
+        "i": 1,
+        "world": [
+          251,
+          14.3,
+          -34
+        ],
+        "screen": [
+          97994,
+          7046
+        ],
+        "onScreen": false,
+        "dist": 201.1,
+        "quadW": 4.42
+      },
+      {
+        "i": 2,
+        "world": [
+          206,
+          12.5,
+          -289
+        ],
+        "screen": [
+          1771,
+          451
+        ],
+        "onScreen": false,
+        "dist": 416.3,
+        "quadW": 4.42
+      },
+      {
+        "i": 3,
+        "world": [
+          176,
+          12.3,
+          -319
+        ],
+        "screen": [
+          1609,
+          444
+        ],
+        "onScreen": false,
+        "dist": 440.9,
+        "quadW": 4.42
+      },
+      {
+        "i": 4,
+        "world": [
+          -79,
+          5.8,
+          -334
+        ],
+        "screen": [
+          1055,
+          436
+        ],
+        "onScreen": true,
+        "dist": 494.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 5,
+        "world": [
+          161,
+          20.4,
+          251
+        ],
+        "screen": [
+          1139,
+          375
+        ],
+        "onScreen": false,
+        "dist": 139.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 6,
+        "world": [
+          -274,
+          17.2,
+          -154
+        ],
+        "screen": [
+          742,
+          422
+        ],
+        "onScreen": true,
+        "dist": 478.9,
+        "quadW": 4.42
+      },
+      {
+        "i": 7,
+        "world": [
+          -364,
+          35.3,
+          -34
+        ],
+        "screen": [
+          568,
+          401
+        ],
+        "onScreen": true,
+        "dist": 507.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 8,
+        "world": [
+          -394,
+          42.7,
+          -289
+        ],
+        "screen": [
+          777,
+          397
+        ],
+        "onScreen": true,
+        "dist": 655.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 9,
+        "world": [
+          -94,
+          3.2,
+          116
+        ],
+        "screen": [
+          350,
+          490
+        ],
+        "onScreen": true,
+        "dist": 215.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 10,
+        "world": [
+          348,
+          29.7,
+          -204
+        ],
+        "screen": [
+          6429,
+          384
+        ],
+        "onScreen": false,
+        "dist": 394.6,
+        "quadW": 4.42
+      },
+      {
+        "i": 11,
+        "world": [
+          296,
+          2.6,
+          141.8
+        ],
+        "screen": [
+          445,
+          316
+        ],
+        "onScreen": false,
+        "dist": 179.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 12,
+        "world": [
+          196,
+          6.1,
+          344
+        ],
+        "screen": [
+          1121,
+          351
+        ],
+        "onScreen": false,
+        "dist": 239.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 13,
+        "world": [
+          -365.2,
+          12.2,
+          230.7
+        ],
+        "screen": [
+          67,
+          438
+        ],
+        "onScreen": true,
+        "dist": 498.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 14,
+        "world": [
+          -361,
+          23.2,
+          -152
+        ],
+        "screen": [
+          691,
+          414
+        ],
+        "onScreen": true,
+        "dist": 551.6,
+        "quadW": 4.42
+      },
+      {
+        "i": 15,
+        "world": [
+          26,
+          4.7,
+          146
+        ],
+        "screen": [
+          -13,
+          639
+        ],
+        "onScreen": false,
+        "dist": 100.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 16,
+        "world": [
+          -169,
+          15.2,
+          -274
+        ],
+        "screen": [
+          922,
+          424
+        ],
+        "onScreen": true,
+        "dist": 487.2,
+        "quadW": 4.42
+      },
+      {
+        "i": 17,
+        "world": [
+          -175.4,
+          7.4,
+          -44.7
+        ],
+        "screen": [
+          687,
+          443
+        ],
+        "onScreen": true,
+        "dist": 337.9,
+        "quadW": 4.42
+      },
+      {
+        "i": 18,
+        "world": [
+          89.7,
+          5.3,
+          27.1
+        ],
+        "screen": [
+          1114,
+          555
+        ],
+        "onScreen": true,
+        "dist": 98.5,
+        "quadW": 4.42
+      },
+      {
+        "i": 19,
+        "world": [
+          -12.6,
+          10.3,
+          -34.6
+        ],
+        "screen": [
+          877,
+          457
+        ],
+        "onScreen": true,
+        "dist": 202.9,
+        "quadW": 4.42
+      },
+      {
+        "i": 20,
+        "world": [
+          326,
+          18.1,
+          401
+        ],
+        "screen": [
+          926,
+          394
+        ],
+        "onScreen": false,
+        "dist": 350.2,
+        "quadW": 4.42
+      },
+      {
+        "i": 21,
+        "world": [
+          -344,
+          2.4,
+          107
+        ],
+        "screen": [
+          360,
+          448
+        ],
+        "onScreen": true,
+        "dist": 464.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 22,
+        "world": [
+          -49,
+          9.5,
+          -154
+        ],
+        "screen": [
+          967,
+          442
+        ],
+        "onScreen": true,
+        "dist": 320.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 23,
+        "world": [
+          -92.8,
+          9,
+          -134.6
+        ],
+        "screen": [
+          886,
+          441
+        ],
+        "onScreen": true,
+        "dist": 330.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 24,
+        "world": [
+          -94,
+          15.1,
+          266
+        ],
+        "screen": [
+          -1241,
+          514
+        ],
+        "onScreen": false,
+        "dist": 260.5,
+        "quadW": 4.42
+      },
+      {
+        "i": 25,
+        "world": [
+          289.1,
+          7.6,
+          193.5
+        ],
+        "screen": [
+          637,
+          347
+        ],
+        "onScreen": false,
+        "dist": 186.3,
+        "quadW": 4.42
+      },
+      {
+        "i": 26,
+        "world": [
+          236,
+          3.1,
+          101
+        ],
+        "screen": [
+          163,
+          230
+        ],
+        "onScreen": false,
+        "dist": 119.9,
+        "quadW": 4.42
+      },
+      {
+        "i": 27,
+        "world": [
+          39.3,
+          3.8,
+          -115.4
+        ],
+        "screen": [
+          1110,
+          470
+        ],
+        "onScreen": true,
+        "dist": 248.1,
+        "quadW": 4.42
+      },
+      {
+        "i": 28,
+        "world": [
+          -37.9,
+          5.5,
+          24.8
+        ],
+        "screen": [
+          704,
+          476
+        ],
+        "onScreen": true,
+        "dist": 184.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 29,
+        "world": [
+          281,
+          14.9,
+          -49
+        ],
+        "screen": [
+          -9707,
+          -185
+        ],
+        "onScreen": false,
+        "dist": 232.3,
+        "quadW": 4.42
+      },
+      {
+        "i": 30,
+        "world": [
+          326,
+          13.6,
+          -64
+        ],
+        "screen": [
+          -3266,
+          193
+        ],
+        "onScreen": false,
+        "dist": 275.3,
+        "quadW": 4.42
+      },
+      {
+        "i": 31,
+        "world": [
+          -277.7,
+          15.9,
+          -74.6
+        ],
+        "screen": [
+          657,
+          425
+        ],
+        "onScreen": true,
+        "dist": 442.1,
+        "quadW": 4.42
+      },
+      {
+        "i": 32,
+        "world": [
+          311,
+          10.7,
+          26
+        ],
+        "screen": [
+          -456,
+          297
+        ],
+        "onScreen": false,
+        "dist": 212.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 33,
+        "world": [
+          -394,
+          31.6,
+          326
+        ],
+        "screen": [
+          -248,
+          402
+        ],
+        "onScreen": false,
+        "dist": 554.5,
+        "quadW": 4.42
+      },
+      {
+        "i": 34,
+        "world": [
+          101,
+          3.8,
+          -289
+        ],
+        "screen": [
+          1364,
+          456
+        ],
+        "onScreen": true,
+        "dist": 408.2,
+        "quadW": 4.42
+      },
+      {
+        "i": 35,
+        "world": [
+          -394,
+          41.8,
+          -244
+        ],
+        "screen": [
+          747,
+          397
+        ],
+        "onScreen": true,
+        "dist": 628.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 36,
+        "world": [
+          146,
+          6.2,
+          -394
+        ],
+        "screen": [
+          1488,
+          447
+        ],
+        "onScreen": true,
+        "dist": 513.1,
+        "quadW": 4.42
+      },
+      {
+        "i": 37,
+        "world": [
+          -379,
+          22,
+          -364
+        ],
+        "screen": [
+          830,
+          414
+        ],
+        "onScreen": true,
+        "dist": 693.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 38,
+        "world": [
+          86,
+          4.8,
+          -109
+        ],
+        "screen": [
+          1258,
+          481
+        ],
+        "onScreen": true,
+        "dist": 230.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 39,
+        "world": [
+          -2.9,
+          2.8,
+          129.1
+        ],
+        "screen": [
+          256,
+          564
+        ],
+        "onScreen": true,
+        "dist": 125.9,
+        "quadW": 4.42
+      },
+      {
+        "i": 40,
+        "world": [
+          -268,
+          2.7,
+          69.3
+        ],
+        "screen": [
+          444,
+          451
+        ],
+        "onScreen": true,
+        "dist": 391.9,
+        "quadW": 4.42
+      },
+      {
+        "i": 41,
+        "world": [
+          -274,
+          11.8,
+          176
+        ],
+        "screen": [
+          181,
+          443
+        ],
+        "onScreen": true,
+        "dist": 398.6,
+        "quadW": 4.42
+      },
+      {
+        "i": 42,
+        "world": [
+          296,
+          2.6,
+          105.8
+        ],
+        "screen": [
+          258,
+          298
+        ],
+        "onScreen": false,
+        "dist": 178.2,
+        "quadW": 4.42
+      },
+      {
+        "i": 43,
+        "world": [
+          96.8,
+          4.9,
+          245.4
+        ],
+        "screen": [
+          1740,
+          214
+        ],
+        "onScreen": false,
+        "dist": 131.5,
+        "quadW": 4.42
+      },
+      {
+        "i": 44,
+        "world": [
+          -430.7,
+          4.1,
+          182.5
+        ],
+        "screen": [
+          217,
+          444
+        ],
+        "onScreen": true,
+        "dist": 555,
+        "quadW": 4.42
+      },
+      {
+        "i": 45,
+        "world": [
+          -274,
+          13.1,
+          -349
+        ],
+        "screen": [
+          886,
+          423
+        ],
+        "onScreen": true,
+        "dist": 611.2,
+        "quadW": 4.42
+      },
+      {
+        "i": 46,
+        "world": [
+          401,
+          7.9,
+          -244
+        ],
+        "screen": [
+          10581,
+          839
+        ],
+        "onScreen": false,
+        "dist": 458.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 47,
+        "world": [
+          -344,
+          2.5,
+          31
+        ],
+        "screen": [
+          489,
+          443
+        ],
+        "onScreen": true,
+        "dist": 472.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 48,
+        "world": [
+          -304,
+          16.9,
+          -49
+        ],
+        "screen": [
+          612,
+          423
+        ],
+        "onScreen": true,
+        "dist": 455.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 49,
+        "world": [
+          -202.4,
+          8,
+          233.8
+        ],
+        "screen": [
+          -143,
+          473
+        ],
+        "onScreen": false,
+        "dist": 343.2,
+        "quadW": 4.42
+      },
+      {
+        "i": 50,
+        "world": [
+          -34,
+          9.3,
+          -4
+        ],
+        "screen": [
+          778,
+          460
+        ],
+        "onScreen": true,
+        "dist": 197.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 51,
+        "world": [
+          -184,
+          9.6,
+          -79
+        ],
+        "screen": [
+          726,
+          437
+        ],
+        "onScreen": true,
+        "dist": 362.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 52,
+        "world": [
+          -118.5,
+          8,
+          -150.7
+        ],
+        "screen": [
+          872,
+          440
+        ],
+        "onScreen": true,
+        "dist": 359.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 53,
+        "world": [
+          371,
+          9.8,
+          -409
+        ],
+        "screen": [
+          2747,
+          472
+        ],
+        "onScreen": false,
+        "dist": 584,
+        "quadW": 4.42
+      },
+      {
+        "i": 54,
+        "world": [
+          41,
+          4.8,
+          -349
+        ],
+        "screen": [
+          1243,
+          444
+        ],
+        "onScreen": true,
+        "dist": 474.2,
+        "quadW": 4.42
+      },
+      {
+        "i": 55,
+        "world": [
+          266,
+          10.8,
+          41
+        ],
+        "screen": [
+          -602,
+          252
+        ],
+        "onScreen": false,
+        "dist": 166,
+        "quadW": 4.42
+      },
+      {
+        "i": 56,
+        "world": [
+          -214,
+          30.5,
+          371
+        ],
+        "screen": [
+          -1719,
+          394
+        ],
+        "onScreen": false,
+        "dist": 419,
+        "quadW": 4.42
+      },
+      {
+        "i": 57,
+        "world": [
+          372,
+          4.9,
+          99.3
+        ],
+        "screen": [
+          256,
+          339
+        ],
+        "onScreen": false,
+        "dist": 253.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 58,
+        "world": [
+          401,
+          9.1,
+          281
+        ],
+        "screen": [
+          698,
+          377
+        ],
+        "onScreen": false,
+        "dist": 325.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 59,
+        "world": [
+          132,
+          5.2,
+          -2.8
+        ],
+        "screen": [
+          1546,
+          581
+        ],
+        "onScreen": true,
+        "dist": 123.6,
+        "quadW": 4.42
+      },
+      {
+        "i": 60,
+        "world": [
+          -300,
+          15.2,
+          340
+        ],
+        "screen": [
+          -567,
+          449
+        ],
+        "onScreen": false,
+        "dist": 475.2,
+        "quadW": 4.42
+      },
+      {
+        "i": 61,
+        "world": [
+          372,
+          5,
+          137.7
+        ],
+        "screen": [
+          401,
+          348
+        ],
+        "onScreen": false,
+        "dist": 253.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 62,
+        "world": [
+          116,
+          4.6,
+          -139
+        ],
+        "screen": [
+          1398,
+          482
+        ],
+        "onScreen": true,
+        "dist": 258.1,
+        "quadW": 4.42
+      },
+      {
+        "i": 63,
+        "world": [
+          191,
+          12.9,
+          -364
+        ],
+        "screen": [
+          1644,
+          440
+        ],
+        "onScreen": false,
+        "dist": 487.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 64,
+        "world": [
+          326,
+          11.8,
+          -34
+        ],
+        "screen": [
+          -1620,
+          252
+        ],
+        "onScreen": false,
+        "dist": 256.5,
+        "quadW": 4.42
+      },
+      {
+        "i": 65,
+        "world": [
+          311,
+          23.6,
+          -154
+        ],
+        "screen": [
+          6134,
+          480
+        ],
+        "onScreen": false,
+        "dist": 332.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 66,
+        "world": [
+          -409,
+          41.1,
+          -334
+        ],
+        "screen": [
+          798,
+          399
+        ],
+        "onScreen": true,
+        "dist": 695.9,
+        "quadW": 4.42
+      },
+      {
+        "i": 67,
+        "world": [
+          -19,
+          4.7,
+          71
+        ],
+        "screen": [
+          584,
+          500
+        ],
+        "onScreen": true,
+        "dist": 148.6,
+        "quadW": 4.42
+      },
+      {
+        "i": 68,
+        "world": [
+          281,
+          27.3,
+          311
+        ],
+        "screen": [
+          889,
+          408
+        ],
+        "onScreen": false,
+        "dist": 251.3,
+        "quadW": 4.42
+      },
+      {
+        "i": 69,
+        "world": [
+          -404,
+          2.7,
+          62.5
+        ],
+        "screen": [
+          429,
+          441
+        ],
+        "onScreen": true,
+        "dist": 527.5,
+        "quadW": 4.42
+      },
+      {
+        "i": 70,
+        "world": [
+          208.9,
+          3.8,
+          169.4
+        ],
+        "screen": [
+          696,
+          277
+        ],
+        "onScreen": false,
+        "dist": 105.5,
+        "quadW": 4.42
+      },
+      {
+        "i": 71,
+        "world": [
+          -154,
+          3,
+          116
+        ],
+        "screen": [
+          347,
+          473
+        ],
+        "onScreen": true,
+        "dist": 275.1,
+        "quadW": 4.42
+      },
+      {
+        "i": 72,
+        "world": [
+          -268,
+          2.8,
+          32.9
+        ],
+        "screen": [
+          511,
+          448
+        ],
+        "onScreen": true,
+        "dist": 398,
+        "quadW": 4.42
+      },
+      {
+        "i": 73,
+        "world": [
+          311,
+          12.9,
+          -379
+        ],
+        "screen": [
+          2288,
+          454
+        ],
+        "onScreen": false,
+        "dist": 532.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 74,
+        "world": [
+          26,
+          7.1,
+          -169
+        ],
+        "screen": [
+          1122,
+          453
+        ],
+        "onScreen": true,
+        "dist": 302.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 75,
+        "world": [
+          -404,
+          2.7,
+          130.5
+        ],
+        "screen": [
+          316,
+          444
+        ],
+        "onScreen": true,
+        "dist": 524.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 76,
+        "world": [
+          -94,
+          16.7,
+          -259
+        ],
+        "screen": [
+          992,
+          424
+        ],
+        "onScreen": true,
+        "dist": 433.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 77,
+        "world": [
+          -10.6,
+          6.6,
+          -202.4
+        ],
+        "screen": [
+          1073,
+          447
+        ],
+        "onScreen": true,
+        "dist": 346.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 78,
+        "world": [
+          220.4,
+          9.1,
+          -253.5
+        ],
+        "screen": [
+          1910,
+          470
+        ],
+        "onScreen": false,
+        "dist": 385.3,
+        "quadW": 4.42
+      },
+      {
+        "i": 79,
+        "world": [
+          -379,
+          32.2,
+          296
+        ],
+        "screen": [
+          -148,
+          401
+        ],
+        "onScreen": false,
+        "dist": 529.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 80,
+        "world": [
+          101,
+          4.2,
+          341
+        ],
+        "screen": [
+          1553,
+          310
+        ],
+        "onScreen": false,
+        "dist": 225.1,
+        "quadW": 4.42
+      },
+      {
+        "i": 81,
+        "world": [
+          -64,
+          9.1,
+          -4
+        ],
+        "screen": [
+          732,
+          456
+        ],
+        "onScreen": true,
+        "dist": 221.6,
+        "quadW": 4.42
+      },
+      {
+        "i": 82,
+        "world": [
+          -109,
+          12.6,
+          341
+        ],
+        "screen": [
+          -5121,
+          696
+        ],
+        "onScreen": false,
+        "dist": 320,
+        "quadW": 4.42
+      },
+      {
+        "i": 83,
+        "world": [
+          -199,
+          13.4,
+          -349
+        ],
+        "screen": [
+          943,
+          424
+        ],
+        "onScreen": true,
+        "dist": 565.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 84,
+        "world": [
+          250.9,
+          11.6,
+          245.2
+        ],
+        "screen": [
+          832,
+          361
+        ],
+        "onScreen": false,
+        "dist": 183.2,
+        "quadW": 4.42
+      },
+      {
+        "i": 85,
+        "world": [
+          -409.8,
+          19.1,
+          363.9
+        ],
+        "screen": [
+          -386,
+          429
+        ],
+        "onScreen": false,
+        "dist": 584.1,
+        "quadW": 4.42
+      },
+      {
+        "i": 86,
+        "world": [
+          -326.8,
+          16,
+          280.9
+        ],
+        "screen": [
+          -159,
+          437
+        ],
+        "onScreen": false,
+        "dist": 475.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 87,
+        "world": [
+          -369.3,
+          29.9,
+          265.4
+        ],
+        "screen": [
+          -46,
+          406
+        ],
+        "onScreen": false,
+        "dist": 511.1,
+        "quadW": 4.42
+      },
+      {
+        "i": 88,
+        "world": [
+          146.2,
+          7.2,
+          138.9
+        ],
+        "screen": [
+          778,
+          58
+        ],
+        "onScreen": false,
+        "dist": 39.4,
+        "quadW": 3.73
+      },
+      {
+        "i": 89,
+        "world": [
+          -387.9,
+          42.2,
+          -137.2
+        ],
+        "screen": [
+          665,
+          396
+        ],
+        "onScreen": true,
+        "dist": 568.6,
+        "quadW": 4.42
+      },
+      {
+        "i": 90,
+        "world": [
+          -309.7,
+          18.7,
+          370.6
+        ],
+        "screen": [
+          -775,
+          440
+        ],
+        "onScreen": false,
+        "dist": 498.5,
+        "quadW": 4.42
+      },
+      {
+        "i": 91,
+        "world": [
+          306.3,
+          0.4,
+          130.7
+        ],
+        "screen": [
+          391,
+          308
+        ],
+        "onScreen": false,
+        "dist": 188.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 92,
+        "world": [
+          -45.7,
+          5.2,
+          -13.8
+        ],
+        "screen": [
+          779,
+          467
+        ],
+        "onScreen": true,
+        "dist": 213,
+        "quadW": 4.42
+      },
+      {
+        "i": 93,
+        "world": [
+          -381.2,
+          15.2,
+          425.8
+        ],
+        "screen": [
+          -879,
+          448
+        ],
+        "onScreen": false,
+        "dist": 588.3,
+        "quadW": 4.42
+      },
+      {
+        "i": 94,
+        "world": [
+          72.5,
+          -0.3,
+          105.4
+        ],
+        "screen": [
+          551,
+          739
+        ],
+        "onScreen": true,
+        "dist": 56.7,
+        "quadW": 4.42
+      },
+      {
+        "i": 95,
+        "world": [
+          291.1,
+          12.2,
+          -138.2
+        ],
+        "screen": [
+          5022,
+          629
+        ],
+        "onScreen": false,
+        "dist": 308.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 96,
+        "world": [
+          153.7,
+          14.7,
+          -295.3
+        ],
+        "screen": [
+          1534,
+          439
+        ],
+        "onScreen": true,
+        "dist": 414.8,
+        "quadW": 4.42
+      },
+      {
+        "i": 97,
+        "world": [
+          -200.6,
+          1.4,
+          79.6
+        ],
+        "screen": [
+          441,
+          463
+        ],
+        "onScreen": true,
+        "dist": 324,
+        "quadW": 4.42
+      },
+      {
+        "i": 98,
+        "world": [
+          338.9,
+          -1.5,
+          110.6
+        ],
+        "screen": [
+          296,
+          309
+        ],
+        "onScreen": false,
+        "dist": 221,
+        "quadW": 4.42
+      },
+      {
+        "i": 99,
+        "world": [
+          -339.4,
+          12,
+          -91.4
+        ],
+        "screen": [
+          643,
+          427
+        ],
+        "onScreen": true,
+        "dist": 505.1,
+        "quadW": 4.42
+      },
+      {
+        "i": 100,
+        "world": [
+          -3.8,
+          -0.8,
+          98.4
+        ],
+        "screen": [
+          474,
+          552
+        ],
+        "onScreen": true,
+        "dist": 128.6,
+        "quadW": 4.42
+      },
+      {
+        "i": 101,
+        "world": [
+          -369.7,
+          27.5,
+          -127.9
+        ],
+        "screen": [
+          665,
+          410
+        ],
+        "onScreen": true,
+        "dist": 548,
+        "quadW": 4.42
+      },
+      {
+        "i": 102,
+        "world": [
+          -351.4,
+          30.4,
+          -27.5
+        ],
+        "screen": [
+          565,
+          407
+        ],
+        "onScreen": true,
+        "dist": 493.3,
+        "quadW": 4.42
+      },
+      {
+        "i": 103,
+        "world": [
+          -187,
+          14.1,
+          332.1
+        ],
+        "screen": [
+          -1282,
+          489
+        ],
+        "onScreen": false,
+        "dist": 374.6,
+        "quadW": 4.42
+      },
+      {
+        "i": 104,
+        "world": [
+          219.5,
+          3.5,
+          107.8
+        ],
+        "screen": [
+          215,
+          212
+        ],
+        "onScreen": false,
+        "dist": 102.9,
+        "quadW": 4.42
+      },
+      {
+        "i": 105,
+        "world": [
+          81.7,
+          1.7,
+          131.5
+        ],
+        "screen": [
+          -56,
+          1050
+        ],
+        "onScreen": false,
+        "dist": 48.4,
+        "quadW": 4.42
+      },
+      {
+        "i": 106,
+        "world": [
+          125.5,
+          12.9,
+          272.3
+        ],
+        "screen": [
+          1387,
+          331
+        ],
+        "onScreen": false,
+        "dist": 155.1,
+        "quadW": 4.42
+      },
+      {
+        "i": 107,
+        "world": [
+          -363.8,
+          11.7,
+          19.6
+        ],
+        "screen": [
+          499,
+          430
+        ],
+        "onScreen": true,
+        "dist": 493.9,
+        "quadW": 4.42
+      },
+      {
+        "i": 108,
+        "world": [
+          211.5,
+          12.6,
+          293.1
+        ],
+        "screen": [
+          1015,
+          364
+        ],
+        "onScreen": false,
+        "dist": 198.2,
+        "quadW": 4.42
+      },
+      {
+        "i": 109,
+        "world": [
+          298.4,
+          27,
+          -229.1
+        ],
+        "screen": [
+          3026,
+          415
+        ],
+        "onScreen": false,
+        "dist": 390.3,
+        "quadW": 4.42
+      }
+    ]
+  },
+  "worldGroup": {
+    "worldGroup": "world:medieval",
+    "glowInWorldGroup": false,
+    "bodyInWorldGroup": false,
+    "worldMaterialNames": [
+      "medieval.alloy",
+      "medieval.ashlar",
+      "medieval.banner",
+      "medieval.bark",
+      "medieval.beam",
+      "medieval.canopy",
+      "medieval.cobble",
+      "medieval.contact",
+      "medieval.daub",
+      "medieval.distant",
+      "medieval.flagstone",
+      "medieval.folk",
+      "medieval.glass",
+      "medieval.glow",
+      "medieval.hay",
+      "medieval.iron",
+      "medieval.leaf",
+      "medieval.plank",
+      "medieval.puddle",
+      "medieval.rock",
+      "medieval.rubble",
+      "medieval.skirt",
+      "medieval.sky",
+      "medieval.slate",
+      "medieval.terrain",
+      "medieval.thatch",
+      "medieval.water"
+    ],
+    "hasRelicGlowName": false,
+    "count": 27
+  },
+  "match": [
+    {
+      "orb": 0,
+      "at": [
+        551,
+        734
+      ],
+      "rgb": [
+        238,
+        229,
+        196
+      ],
+      "peakLum": 228.5,
+      "area": 137,
+      "nearestRelic": 94,
+      "screenDist": 5,
+      "relicDist": 56.7,
+      "quadW": 4.42
+    },
+    {
+      "orb": 1,
+      "at": [
+        583,
+        499
+      ],
+      "rgb": [
+        250,
+        236,
+        191
+      ],
+      "peakLum": 235.7,
+      "area": 21,
+      "nearestRelic": 67,
+      "screenDist": 1.4,
+      "relicDist": 148.6,
+      "quadW": 4.42
+    },
+    {
+      "orb": 2,
+      "at": [
+        472,
+        549
+      ],
+      "rgb": [
+        241,
+        229,
+        187
+      ],
+      "peakLum": 228.5,
+      "area": 8,
+      "nearestRelic": 100,
+      "screenDist": 3.6,
+      "relicDist": 128.6,
+      "quadW": 4.42
+    },
+    {
+      "orb": 3,
+      "at": [
+        664,
+        395
+      ],
+      "rgb": [
+        253,
+        240,
+        199
+      ],
+      "peakLum": 239.8,
+      "area": 4,
+      "nearestRelic": 89,
+      "screenDist": 1.4,
+      "relicDist": 568.6,
+      "quadW": 4.42
+    },
+    {
+      "orb": 4,
+      "at": [
+        542,
+        742
+      ],
+      "rgb": [
+        235,
+        227,
+        201
+      ],
+      "peakLum": 226.8,
+      "area": 4,
+      "nearestRelic": 94,
+      "screenDist": 9.5,
+      "relicDist": 56.7,
+      "quadW": 4.42
+    },
+    {
+      "orb": 5,
+      "at": [
+        746,
+        397
+      ],
+      "rgb": [
+        251,
+        237,
+        196
+      ],
+      "peakLum": 237,
+      "area": 3,
+      "nearestRelic": 35,
+      "screenDist": 1,
+      "relicDist": 628.8,
+      "quadW": 4.42
+    },
+    {
+      "orb": 6,
+      "at": [
+        564,
+        405
+      ],
+      "rgb": [
+        248,
+        230,
+        177
+      ],
+      "peakLum": 230,
+      "area": 3,
+      "nearestRelic": 102,
+      "screenDist": 2.2,
+      "relicDist": 493.3,
+      "quadW": 4.42
+    },
+    {
+      "orb": 7,
+      "at": [
+        877,
+        454
+      ],
+      "rgb": [
+        251,
+        237,
+        189
+      ],
+      "peakLum": 236.5,
+      "area": 3,
+      "nearestRelic": 19,
+      "screenDist": 3,
+      "relicDist": 202.9,
+      "quadW": 4.42
+    }
+  ],
+  "nullFrameDiff": {
+    "pixelsOver2": 0,
+    "pixelsOver6": 0,
+    "pixelsOver40": 0,
+    "peakDeltaLum": 0,
+    "peakAt": null,
+    "sumDeltaLum": 0
+  },
+  "ablateGlow": {
+    "hidden": [
+      "relics:glow"
+    ],
+    "diff": {
+      "pixelsOver2": 100697,
+      "pixelsOver6": 26068,
+      "pixelsOver40": 3579,
+      "peakDeltaLum": 210,
+      "peakAt": [
+        472,
+        549
+      ],
+      "sumDeltaLum": 1173099
+    },
+    "orbSample": [
+      {
+        "id": 0,
+        "sum": 114365,
+        "peak": 180.9
+      },
+      {
+        "id": 1,
+        "sum": 15054,
+        "peak": 209.8
+      },
+      {
+        "id": 2,
+        "sum": 21776,
+        "peak": 210
+      },
+      {
+        "id": 3,
+        "sum": 1306,
+        "peak": 94
+      },
+      {
+        "id": 4,
+        "sum": 81492,
+        "peak": 180.9
+      },
+      {
+        "id": 5,
+        "sum": 936,
+        "peak": 87.9
+      },
+      {
+        "id": 6,
+        "sum": 2261,
+        "peak": 115
+      },
+      {
+        "id": 7,
+        "sum": 2869,
+        "peak": 168
+      }
+    ]
+  },
+  "ablateBoth": {
+    "hidden": [
+      "relics:glow",
+      "relics"
+    ],
+    "diff": {
+      "pixelsOver2": 100611,
+      "pixelsOver6": 26031,
+      "pixelsOver40": 3621,
+      "peakDeltaLum": 212,
+      "peakAt": [
+        472,
+        549
+      ],
+      "sumDeltaLum": 1183188
+    },
+    "orbSample": [
+      {
+        "id": 0,
+        "sum": 118690,
+        "peak": 174.4
+      },
+      {
+        "id": 1,
+        "sum": 15751,
+        "peak": 211
+      },
+      {
+        "id": 2,
+        "sum": 21749,
+        "peak": 212
+      },
+      {
+        "id": 3,
+        "sum": 1361,
+        "peak": 102.6
+      },
+      {
+        "id": 4,
+        "sum": 85869,
+        "peak": 174.4
+      },
+      {
+        "id": 5,
+        "sum": 952,
+        "peak": 88.9
+      },
+      {
+        "id": 6,
+        "sum": 2268,
+        "peak": 117.6
+      },
+      {
+        "id": 7,
+        "sum": 2941,
+        "peak": 167.2
+      }
+    ]
+  },
+  "orbsAfter": [],
+  "nearest": [
+    {
+      "pixel": [
+        551,
+        734
+      ],
+      "origin": [
+        120,
+        28,
+        118
+      ],
+      "dir": [
+        -0.841,
+        -0.493,
+        -0.224
+      ],
+      "nearest": [
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.09,
+          "along": 0.1,
+          "extra": "Mesh"
+        }
+      ]
+    },
+    {
+      "pixel": [
+        583,
+        499
+      ],
+      "origin": [
+        120,
+        28,
+        118
+      ],
+      "dir": [
+        -0.937,
+        -0.154,
+        -0.314
+      ],
+      "nearest": [
+        {
+          "label": "Mesh",
+          "perp": 0.04,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.04,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.04,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.04,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh#893",
+          "perp": 0.05,
+          "along": 159,
+          "extra": "instance"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        }
+      ]
+    },
+    {
+      "pixel": [
+        472,
+        549
+      ],
+      "origin": [
+        120,
+        28,
+        118
+      ],
+      "dir": [
+        -0.964,
+        -0.219,
+        -0.151
+      ],
+      "nearest": [
+        {
+          "label": "Mesh",
+          "perp": 0.05,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.05,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.05,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.05,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.08,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.08,
+          "along": 0.1,
+          "extra": "Mesh"
+        }
+      ]
+    },
+    {
+      "pixel": [
+        664,
+        395
+      ],
+      "origin": [
+        120,
+        28,
+        118
+      ],
+      "dir": [
+        -0.894,
+        0.026,
+        -0.448
+      ],
+      "nearest": [
+        {
+          "label": "Mesh",
+          "perp": 0.03,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.03,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.03,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.03,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.06,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.06,
+          "along": 0.1,
+          "extra": "Mesh"
+        }
+      ]
+    },
+    {
+      "pixel": [
+        542,
+        742
+      ],
+      "origin": [
+        120,
+        28,
+        118
+      ],
+      "dir": [
+        -0.84,
+        -0.5,
+        -0.21
+      ],
+      "nearest": [
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.09,
+          "along": 0.1,
+          "extra": "Mesh"
+        }
+      ]
+    },
+    {
+      "pixel": [
+        746,
+        397
+      ],
+      "origin": [
+        120,
+        28,
+        118
+      ],
+      "dir": [
+        -0.818,
+        0.023,
+        -0.574
+      ],
+      "nearest": [
+        {
+          "label": "Mesh",
+          "perp": 0.04,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.04,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.04,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.04,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.04,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.04,
+          "along": 0.1,
+          "extra": "Mesh"
+        }
+      ]
+    },
+    {
+      "pixel": [
+        564,
+        405
+      ],
+      "origin": [
+        120,
+        28,
+        118
+      ],
+      "dir": [
+        -0.956,
+        0.007,
+        -0.294
+      ],
+      "nearest": [
+        {
+          "label": "Mesh",
+          "perp": 0.02,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.02,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.02,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.02,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.07,
+          "along": 0.1,
+          "extra": "Mesh"
+        }
+      ]
+    },
+    {
+      "pixel": [
+        877,
+        454
+      ],
+      "origin": [
+        120,
+        28,
+        118
+      ],
+      "dir": [
+        -0.654,
+        -0.082,
+        -0.752
+      ],
+      "nearest": [
+        {
+          "label": "Mesh",
+          "perp": 0.03,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.03,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.03,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.03,
+          "along": 0.1,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.04,
+          "along": 0.6,
+          "extra": "Mesh"
+        },
+        {
+          "label": "Mesh",
+          "perp": 0.04,
+          "along": 0.6,
+          "extra": "Mesh"
+        }
+      ]
+    }
+  ],
+  "rays": [
+    {
+      "pixel": [
+        551,
+        734
+      ],
+      "hits": [
+        {
+          "d": 57.8,
+          "name": "medieval:terrain:5,5",
+          "mat": "medieval.terrain"
+        },
+        {
+          "d": 877.7,
+          "name": "medieval:sky",
+          "mat": "medieval.sky"
+        }
+      ],
+      "glowDirectHits": 0,
+      "bodyDirectHits": 0,
+      "glowBoundingSphere": {
+        "c": [
+          0,
+          0,
+          0
+        ],
+        "r": -1
+      },
+      "glowMaterialSide": 0
+    },
+    {
+      "pixel": [
+        583,
+        499
+      ],
+      "hits": [
+        {
+          "d": 156.8,
+          "name": "Mesh",
+          "mat": "medieval.contact"
+        },
+        {
+          "d": 157,
+          "name": "Mesh",
+          "mat": ""
+        },
+        {
+          "d": 157,
+          "name": "Mesh",
+          "mat": ""
+        },
+        {
+          "d": 157.1,
+          "name": "Mesh",
+          "mat": ""
+        },
+        {
+          "d": 157.9,
+          "name": "Mesh",
+          "mat": ""
+        },
+        {
+          "d": 158,
+          "name": "Mesh",
+          "mat": ""
+        }
+      ],
+      "glowDirectHits": 0,
+      "bodyDirectHits": 0,
+      "glowBoundingSphere": {
+        "c": [
+          0,
+          0,
+          0
+        ],
+        "r": -1
+      },
+      "glowMaterialSide": 0
+    },
+    {
+      "pixel": [
+        472,
+        549
+      ],
+      "hits": [
+        {
+          "d": 132,
+          "name": "medieval:rubble",
+          "mat": "medieval.rubble"
+        },
+        {
+          "d": 135.2,
+          "name": "medieval:cobbles4",
+          "mat": "medieval.cobble"
+        },
+        {
+          "d": 135.4,
+          "name": "medieval:skirts",
+          "mat": "medieval.skirt"
+        },
+        {
+          "d": 135.4,
+          "name": "medieval:terrain:4,5",
+          "mat": "medieval.terrain"
+        },
+        {
+          "d": 878.3,
+          "name": "medieval:sky",
+          "mat": "medieval.sky"
+        }
+      ],
+      "glowDirectHits": 0,
+      "bodyDirectHits": 0,
+      "glowBoundingSphere": {
+        "c": [
+          0,
+          0,
+          0
+        ],
+        "r": -1
+      },
+      "glowMaterialSide": 0
+    },
+    {
+      "pixel": [
+        664,
+        395
+      ],
+      "hits": [
+        {
+          "d": 878.4,
+          "name": "medieval:sky",
+          "mat": "medieval.sky"
+        },
+        {
+          "d": 891.1,
+          "name": "Mesh",
+          "mat": "medieval.leaf"
+        },
+        {
+          "d": 891.2,
+          "name": "Mesh",
+          "mat": "medieval.leaf"
+        },
+        {
+          "d": 891.6,
+          "name": "Mesh",
+          "mat": "medieval.leaf"
+        },
+        {
+          "d": 891.7,
+          "name": "Mesh",
+          "mat": "medieval.leaf"
+        },
+        {
+          "d": 892.1,
+          "name": "Mesh",
+          "mat": "medieval.leaf"
+        }
+      ],
+      "glowDirectHits": 0,
+      "bodyDirectHits": 0,
+      "glowBoundingSphere": {
+        "c": [
+          0,
+          0,
+          0
+        ],
+        "r": -1
+      },
+      "glowMaterialSide": 0
+    },
+    {
+      "pixel": [
+        542,
+        742
+      ],
+      "hits": [
+        {
+          "d": 54.3,
+          "name": "medieval:river",
+          "mat": "medieval.water"
+        },
+        {
+          "d": 58.1,
+          "name": "medieval:terrain:5,5",
+          "mat": "medieval.terrain"
+        },
+        {
+          "d": 877.9,
+          "name": "medieval:sky",
+          "mat": "medieval.sky"
+        }
+      ],
+      "glowDirectHits": 0,
+      "bodyDirectHits": 0,
+      "glowBoundingSphere": {
+        "c": [
+          0,
+          0,
+          0
+        ],
+        "r": -1
+      },
+      "glowMaterialSide": 0
+    },
+    {
+      "pixel": [
+        746,
+        397
+      ],
+      "hits": [
+        {
+          "d": 877.9,
+          "name": "medieval:sky",
+          "mat": "medieval.sky"
+        },
+        {
+          "d": 944.1,
+          "name": "Mesh",
+          "mat": "medieval.distant"
+        }
+      ],
+      "glowDirectHits": 0,
+      "bodyDirectHits": 0,
+      "glowBoundingSphere": {
+        "c": [
+          0,
+          0,
+          0
+        ],
+        "r": -1
+      },
+      "glowMaterialSide": 0
+    }
+  ]
+}

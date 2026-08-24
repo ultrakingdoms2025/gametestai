@@ -315,8 +315,10 @@ const HELP = `world-shot - screenshots and the render budget for one world
                      the SAME maze. MazeWorld re-seeds from Math.random() on
                      every activation - right for a player, ruinous for a
                      before/after - and over 64 seeds the spawn-resident set
-                     alone swings from 2 to 11 shafts. The seed actually used
-                     is recorded in report.json either way.
+                     alone swings from 2 to 11 shafts. Rebuilds the maze when
+                     it is already live, and FAILS THE RUN rather than report
+                     a seed it is not using. The seed actually used is recorded
+                     in report.json either way, pinned or not.
   --dist <m>         subject framing: camera distance, default 7
   --rise <m>         subject framing: camera height above the subject, default 1.6
   --width/--height   viewport, default 1600x900
@@ -442,15 +444,40 @@ async function main() {
 
     const bootWorld = await evaluate('window.HARNESS.ready({ timeoutMs: 240000 })', { awaitPromise: true });
     console.log(`ready: world "${bootWorld}"`);
-    /* BEFORE the goto, because a volatile world re-seeds inside `build()` and
-     * `goto` is what triggers it. */
+    /* ── `--seed` USED TO PRINT A NUMBER AND CHANGE NOTHING ───────────────
+     *
+     * This block used to write `MazeWorld.seedOverride` and print "maze seed
+     * pinned to N". The override only decides the seed of the next `build()`,
+     * a volatile world's next build is its next activation, and the `goto`
+     * below is skipped whenever the boot world is already the world asked for
+     * - which it ALWAYS is, because the page URL a few lines up carries
+     * `world=${args.world}`. Measured on the shipped script: it reported
+     * "pinned to 20250823" and then "in use: 4124197018", and "3030693222" on
+     * the next run of the same commit.
+     *
+     * `HARNESS.pinMazeSeed` is the setter that finishes the job: it rebuilds
+     * the maze when the maze is live, and it throws rather than return with
+     * the override and the live seed disagreeing. It is called BEFORE the goto
+     * on purpose - when the maze is not yet the active world there is nothing
+     * to rebuild and the pin costs nothing.
+     *
+     * `mazeSeed().applied` is then re-checked AFTER the goto, below, which is
+     * the assertion that makes this impossible to get wrong again: no table is
+     * printed under a seed the run is not using. */
+    let settleAgain = false;
     if (args.seed !== null && Number.isFinite(args.seed)) {
-      await evaluate(`window.HARNESS.mazeSeed(${args.seed})`);
-      console.log(`maze seed pinned to ${args.seed >>> 0}`);
+      const pin = await evaluate(`window.HARNESS.pinMazeSeed(${args.seed})`, { awaitPromise: true });
+      console.log(
+        `maze seed override ${args.seed >>> 0}`
+        + (pin?.bouncedVia ? ` (maze was live - rebuilt via "${pin.bouncedVia}")` : '')
+        + (pin?.applied === true ? ' - IN USE' : ' - pending the world build')
+      );
+      if (pin?.bouncedVia) settleAgain = true;
     }
     if (bootWorld !== args.world) {
       console.log(`goto: ${args.world}`);
       await evaluate(`window.HARNESS.goto(${JSON.stringify(args.world)})`, { awaitPromise: true });
+      settleAgain = true;
     }
     /* The HUD is not the subject and its panels sit over the corners the art
      * lives in. `dismissBoot` is separate: `autostart=1` clicks through the
@@ -477,6 +504,23 @@ async function main() {
      * reproduced or even compared against themselves. */
     report.mazeSeed = await evaluate('window.HARNESS.mazeSeed ? window.HARNESS.mazeSeed() : null');
     if (report.mazeSeed?.active != null) console.log(`maze seed in use: ${report.mazeSeed.active}`);
+    /* ── AND THE RUN DIES HERE RATHER THAN CAPTION A TABLE WITH A LIE ────
+     * `applied` is `false` only when an override is set AND the live maze was
+     * built from something else. That is precisely the state this script used
+     * to print "pinned to N" over. There is nothing to salvage from such a run
+     * - every figure below belongs to a world nobody asked for. */
+    if (report.mazeSeed?.applied === false) {
+      throw new Error(
+        `--seed ${report.mazeSeed.override} did not take: the live maze was built from `
+        + `${report.mazeSeed.active}. Nothing measured here is reproducible.`
+      );
+    }
+    if (args.seed !== null && Number.isFinite(args.seed) && report.mazeSeed?.active === null) {
+      throw new Error(
+        `--seed only pins the maze, and this run photographed "${args.world}". `
+        + 'Drop --seed, or run it against --world maze.'
+      );
+    }
 
     const driven = await evaluate('window.HARNESS.gameplayDriven');
     if (!driven) {
@@ -495,7 +539,18 @@ async function main() {
      * whole world force-drawn (783,008 triangles over 334 objects with none
      * culled, against a settled 768,782 over 225 with 109 culled) and the
      * background warm moves `programs` by hundreds. @see src/dev/Harness.js */
+    /* ── AND IT IS RE-SETTLED WHEN THE WORLD CHANGED UNDER IT ────────────
+     * `ready()` settles the BOOT world. A `goto` to another world, or the
+     * rebuild `--seed` performs, generates geometry the boot warm never saw
+     * and starts the program cache growing again - so the settle that
+     * `report.warm` describes has to be the settle of the world that is about
+     * to be photographed, not of the one that happened to boot. */
+    if (settleAgain) {
+      console.log('re-settling: the world changed after boot');
+      await evaluate('window.HARNESS.settleBoot({ timeoutMs: 240000 })', { awaitPromise: true });
+    }
     report.warm = await evaluate('window.HARNESS.stats().warm');
+    report.warm = report.warm ? { ...report.warm, resettled: settleAgain } : report.warm;
     if (report.warm && report.warm.programsSettled === false) {
       console.warn('WARNING: the shader program cache was still growing when measuring started - `programs` below is a moving number.');
     }

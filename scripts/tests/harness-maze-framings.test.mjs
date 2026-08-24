@@ -191,7 +191,7 @@ test('the maze seed can be pinned, and is null for every player', () => {
   const g = mazeGame(SEED_WITH_RESIDENT_LIFT);
   const h = new Harness(g);
   try {
-    assert.deepEqual(h.mazeSeed(), { override: null, active: SEED_WITH_RESIDENT_LIFT },
+    assert.deepEqual(h.mazeSeed(), { override: null, active: SEED_WITH_RESIDENT_LIFT, applied: null },
       'and it must report the seed actually in use even when nothing was pinned - '
       + 'a run that did not pin one still has to say which maze it photographed');
     h.mazeSeed(4242);
@@ -202,6 +202,255 @@ test('the maze seed can be pinned, and is null for every player', () => {
   } finally {
     MazeWorld.seedOverride = null;
   }
+});
+
+/* ═════════════════════════════════════════════════════════════════════════
+ *  THE SEED THAT WAS PRINTED AND NEVER USED
+ * ═════════════════════════════════════════════════════════════════════════
+ *
+ * `mazeSeed(n)` writes `MazeWorld.seedOverride`, and that decides the seed of
+ * the NEXT `build()`. A volatile world's next build is its next ACTIVATION -
+ * and `scripts/world-shot.mjs` wrote the override after boot had already built
+ * the maze, then skipped its rebuild `goto` because the boot world was already
+ * the world asked for, which it always is: the page URL carries
+ * `world=${args.world}`.
+ *
+ * Measured on the shipped script: it printed "maze seed pinned to 20250823"
+ * and then "maze seed in use: 4124197018", and 3030693222 on the next run of
+ * the same commit. Every before/after of that world was a measurement of the
+ * seed.
+ *
+ * ── WHY A BOUNCE AND NOT A REBUILD IN PLACE ──────────────────────────────
+ * `WorldManager.build` regenerates a volatile world only when it is NOT the
+ * active one, on purpose - rebuilding the live world generates into a scratch
+ * physics world while the live collision world keeps serving the geometry that
+ * was just discarded, which is invisible walls rather than missing ones. And
+ * `activate` returns early when its target is already active. So the only way
+ * to regenerate the live maze from the harness is to stop it being live: one
+ * activation of another world, then `goto` back.
+ *
+ * The stub below models exactly those two rules and nothing else. That is
+ * deliberate: a stub that simply rebuilt on demand would pass with
+ * `pinMazeSeed` reverted to a plain setter, which is the version that shipped.
+ */
+function seedRig(firstSeed) {
+  let nextSeed = firstSeed;
+  const rolls = [];
+  const instances = new Map();
+  const built = new Set();
+  const wm = {
+    active: null,
+    ids: ['maze', 'station'],
+    isVolatile: (id) => id === 'maze',
+    isBuilt: (id) => built.has(id),
+    async build(id) {
+      const world = instances.get(id) ?? { id, cells: null, chunks: { residentKeys: () => [] } };
+      instances.set(id, world);
+      /* WorldManager.build: a volatile world that is NOT active is disposed
+       * and regenerated; one that IS active is served from cache. */
+      if (built.has(id) && wm.isVolatile(id) && wm.active !== world) built.delete(id);
+      if (built.has(id)) return world;
+      if (id === 'maze') {
+        world.seed = MazeWorld.seedOverride ?? (nextSeed = (nextSeed * 1664525 + 1013904223) >>> 0);
+        rolls.push(world.seed);
+      }
+      built.add(id);
+      return world;
+    },
+    async activate(id) {
+      const world = await wm.build(id);
+      if (wm.active === world) return world;   // WorldManager._activate's early return
+      wm.active = world;
+      return world;
+    },
+  };
+  const game = {
+    THREE,
+    CONFIG: { player: { eyeHeight: 1.62 } },
+    engine: {
+      camera: new THREE.PerspectiveCamera(75, 16 / 9, 0.1, 2000),
+      scene: new THREE.Scene(), running: true, _paused: false,
+      setPaused() {}, onFrameUpdate: () => () => {}, onFixedUpdate: () => () => {},
+      stats: { fps: 60, frameMs: 16, frameMsMedian: 16, drawCalls: 0, triangles: 0, programs: 0 },
+      renderer: { info: { render: { calls: 0, triangles: 0 } } },
+    },
+    player: { position: new THREE.Vector3(), teleport() {}, _harnessFrozen: false },
+    worldManager: wm,
+    __dev: { isGameplayDriven: () => true, setGameplayDriven: () => true, gameplayBlocks: () => [] },
+  };
+  return { game, wm, rolls };
+}
+
+test('pinning a seed while the maze is LIVE rebuilds it, and the pin is in force', async () => {
+  const { game, wm, rolls } = seedRig(7);
+  const h = new Harness(game);
+  try {
+    await wm.activate('maze');
+    const bootSeed = wm.active.seed;
+    assert.ok(Number.isFinite(bootSeed), 'the boot build must have rolled a seed');
+
+    /* What the shipped setter does on its own, and it is the whole defect:
+     * the override is set and the live world is still the other maze. */
+    h.mazeSeed(20250823);
+    assert.equal(h.mazeSeed().active, bootSeed);
+    assert.equal(h.mazeSeed().applied, false,
+      'a written override over a live maze built from something else is NOT applied, and the '
+      + 'report has to say so - this is the state world-shot used to print "pinned to N" over');
+
+    const pin = await h.pinMazeSeed(20250823);
+    assert.equal(pin.applied, true, 'pinMazeSeed must leave the pin actually in force');
+    assert.equal(wm.active.seed, 20250823, 'and the LIVE world must be that maze');
+    assert.equal(wm.active.id, 'maze', 'and it must hand the maze back, not the world it bounced through');
+    assert.ok(pin.bouncedVia && pin.bouncedVia !== 'maze',
+      'the rebuild can only have happened by leaving the maze first; say which world it used');
+    assert.ok(rolls.length >= 2, 'the maze must have been generated a second time, not re-served from cache');
+  } finally {
+    MazeWorld.seedOverride = null;
+  }
+});
+
+test('pinning a seed BEFORE the maze is live costs no rebuild at all', async () => {
+  const { game, wm, rolls } = seedRig(11);
+  const h = new Harness(game);
+  try {
+    await wm.activate('station');
+    const pin = await h.pinMazeSeed(4242);
+    assert.equal(pin.bouncedVia, null, 'nothing to rebuild: the maze has not been built yet');
+    assert.equal(pin.applied, null, 'and there is nothing to compare against yet either');
+    assert.equal(rolls.length, 0);
+
+    await h.goto('maze');
+    assert.equal(wm.active.seed, 4242, 'the first build must take the override');
+    assert.equal(h.mazeSeed().applied, true);
+  } finally {
+    MazeWorld.seedOverride = null;
+  }
+});
+
+test('a pin that cannot be applied throws rather than report a seed nobody used', async () => {
+  /* The maze is live and there is no other world registered, so there is
+   * nothing to bounce through and `WorldManager.build` will not regenerate the
+   * live world. The one thing this must NOT do is return quietly. */
+  const { game, wm } = seedRig(13);
+  wm.ids = ['maze'];
+  const h = new Harness(game);
+  try {
+    await wm.activate('maze');
+    await assert.rejects(() => h.pinMazeSeed(31337), /cannot pin the maze seed/,
+      'a half-pinned seed is worse than none: the caller has to be told');
+    assert.notEqual(wm.active.seed, 31337);
+  } finally {
+    MazeWorld.seedOverride = null;
+  }
+});
+
+/* ═════════════════════════════════════════════════════════════════════════
+ *  AND THE FRAMING THAT `lift-car`'s OWN FIX BROKE
+ * ═════════════════════════════════════════════════════════════════════════
+ *
+ * `tower-top` searched `_findResidentShaft(0)` and returned null when it found
+ * nothing - the identical shape `lift-car` was fixed for, and it is the LAST
+ * framing in `VIEWS.maze`, so every other framing was already measured when
+ * the run died.
+ *
+ * Driven over 64 seeds against the real topology generator with the real
+ * `RESIDENCY_RADIUS` neighbourhood, in the order `world-shot` takes the
+ * framings (shaft-up, lift-car, tower-top):
+ *
+ *   no level-0 shaft resident at the COLD SPAWN            1 of 64  =  1.6%
+ *   no level-0 shaft resident AFTER `lift-car` has run    10 of 64  = 15.6%
+ *
+ * The second number is caused by the first fix. `lift-car` now MAKES a lift
+ * resident, the nearest lift is on level 1 or 2 for 23 of those 64 seeds, and
+ * residency follows the player - so the level-0 districts stream out and there
+ * is nothing left for `tower-top` to find.
+ *
+ * ── WHAT WAS REFUSED ─────────────────────────────────────────────────────
+ * Dropping the level restriction makes it pass on every seed in one line, and
+ * makes the framing photograph a DIFFERENT LEVEL'S canopy run to run. That is
+ * the unpinned-seed defect wearing another hat: a framing whose meaning moves
+ * is not a measurement. So it does what `lift-car` does instead - find the
+ * nearest level-0 shaft in the whole topology, walk the player there, let
+ * residency follow. Measured with that in place: 0 of the same 64 seeds fail.
+ */
+const SEED_WITHOUT_LEVEL0_RESIDENT = 5;
+const SEED_WITH_LEVEL0_RESIDENT = 1;
+
+test('the tower-top sweep this file is built on still holds', () => {
+  /* The guard, for the same reason the lift sweep has one: a topology change
+   * could grow seed 5 a level-0 shaft at the spawn, and then the case below
+   * would be testing nothing and passing. */
+  const bad = new Harness(mazeGame(SEED_WITHOUT_LEVEL0_RESIDENT));
+  assert.equal(bad._findResidentShaft(0), null,
+    `seed ${SEED_WITHOUT_LEVEL0_RESIDENT} was measured to have NO level-0 shaft in its spawn-resident `
+    + 'set; if it has one now the topology has changed and these fixtures need re-measuring');
+  assert.ok(bad._findResidentShaft(), 'and it must still have SOME resident shaft, or the fixture is wrong');
+  assert.ok(bad._findAnyShaft(0), 'and a level-0 shaft must exist somewhere in the topology to walk to');
+
+  const ok = new Harness(mazeGame(SEED_WITH_LEVEL0_RESIDENT));
+  assert.ok(ok._findResidentShaft(0),
+    `seed ${SEED_WITH_LEVEL0_RESIDENT} was measured to HAVE a level-0 shaft resident at the spawn`);
+});
+
+test('tower-top frames a level-0 shaft on a seed that has none resident, instead of killing the run', async () => {
+  const g = mazeGame(SEED_WITHOUT_LEVEL0_RESIDENT);
+  const h = new Harness(g);
+  assert.equal(h._findResidentShaft(0), null);
+
+  /* Driven through the framing itself. A case that called `_findAnyShaft` and
+   * `_makeResident` directly would still pass with `_computeTowerTop` reverted
+   * to `if (!shaft) return null` - which is the version that shipped. */
+  const framing = await h._computeTowerTop();
+  assert.ok(framing, 'tower-top returned null on a seed with no resident level-0 shaft - that is the '
+    + 'failure that threw away five other framings measurements to report this one');
+  assert.equal(framing.keepPlayer, true, 'this framing places the player itself; the vantage must not move them again');
+
+  const at = h._findResidentShaft(0);
+  assert.ok(at, 'after the move, a LEVEL-0 shaft must actually be resident');
+  const w = cellToWorld(at.x, at.z, at.level);
+  assert.ok(Math.hypot(framing.pos[0] - (w.x - 1.6), framing.pos[2] - (w.z - 1.6)) < 0.01,
+    'the camera must stand over the shaft it found');
+  /* And it must still be LEVEL 0 that it found: the framing looks down on the
+   * landing one level up, and a framing that lands on a different level on a
+   * different seed is a framing that means something new every run. */
+  assert.equal(at.level, 0);
+  assert.ok(Math.abs(framing.look[1] - MAZE.LEVEL_HEIGHT) < 1e-6,
+    `the landing must be level 1 (y ${MAZE.LEVEL_HEIGHT}), not whatever level happened to be streamed`);
+});
+
+test('tower-top survives lift-car having walked the player up two levels', async () => {
+  /* The 15.6% case, driven in the order `world-shot` actually takes them
+   * rather than asserted on a fixture: shaft-up, then lift-car - which on this
+   * seed teleports the player to a lift on level 2 - then tower-top. */
+  const g = mazeGame(2);
+  const h = new Harness(g);
+  assert.ok(h._findResidentShaft(0), 'seed 2 starts with a level-0 shaft resident');
+
+  const shaft = h._findShaftFraming();
+  g.player.position.set(shaft.pos[0], shaft.pos[1], shaft.pos[2]);
+  const lift = await h._findLiftFraming();
+  assert.ok(lift);
+  g.player.position.set(lift.pos[0], lift.pos[1], lift.pos[2]);
+  assert.equal(Math.round(g.player.position.y / MAZE.LEVEL_HEIGHT), 2,
+    'the fixture depends on lift-car having moved the player to level 2');
+  assert.equal(h._findResidentShaft(0), null,
+    'and that is what strands tower-top: no level-0 district is resident any more');
+
+  const framing = await h._computeTowerTop();
+  assert.ok(framing, 'tower-top must recover the ground floor rather than abort the run');
+  assert.ok(h._findResidentShaft(0));
+});
+
+test('a level-0 shaft that IS resident is framed without a second teleport', async () => {
+  const g = mazeGame(SEED_WITH_LEVEL0_RESIDENT);
+  const h = new Harness(g);
+  const framing = await h._computeTowerTop();
+  assert.ok(framing);
+  /* Exactly one: the move onto the landing that this framing has always made.
+   * Two would mean `_makeResident` ran when it had no need to, which is a
+   * framing that changed the world it is measuring. */
+  assert.equal(g.player.teleports.length, 1,
+    'nothing may be walked anywhere when a level-0 shaft is already built');
 });
 
 test('the same seed builds the same maze, and different seeds do not', () => {

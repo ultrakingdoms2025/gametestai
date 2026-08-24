@@ -630,6 +630,36 @@ const VIEWS = {
      * look point aims at the planet's origin plane from whatever height the
      * terrain happens to be. */
     { name: 'rimhold', pos: [9.4, 3.0, -142], look: [9.4, 108.5, -186], fov: 76, groundRelative: true, subject: 49 },
+    /* THE PRIMARY LANDING PAD, WHICH HAD NO FRAMING AT ALL.
+     *
+     * `landingSites` publishes three pads and exactly one of them carries
+     * `primary: true`: Colonnade Deck, at (250, 48, 40) with a 22 m radius. It
+     * is the pad a ship is sent to when a player flies to this planet without
+     * choosing, which makes it the first thing anyone ever sees of Cinder - and
+     * the only two framings anywhere near it looked at Ashfall Flat, 165 m
+     * away, and at the caldera.
+     *
+     * Composed by `art-planets`, re-measured here against the built world:
+     * the camera stands ON the pad, 18 m east of its centre and inside its own
+     * radius, 1.8 m over a deck the height field puts at 48.00, and looks WNW
+     * across it. The look point at y = 50 is two metres over that deck - which
+     * is the distinction `rimhold` above was broken on. Pitch 0.3 degrees UP,
+     * not 70.8 down. First surface 57.10 m against a declared 57 (100.2%), and
+     * 30.6% of the frame is basalt colonnade inside 8 m, which is the subject
+     * rather than an obstruction: the nearest column is 3.06 m away and there
+     * is nothing at all inside 3 m. */
+    { name: 'colonnade', pos: [268, 1.8, 40], look: [230, 50, 34], fov: 76, groundRelative: true, subject: 57 },
+    /* The far end of the lava ribbon. The 25 m lake in the crater feeds a run
+     * out to a 42 m pool at (-322, -276), and the only framing that had ever
+     * looked at molten rock was `lava-shore`, standing on the crater rim.
+     *
+     * Measured: camera on 4.20 m of ground at (-300, -230), pitched 4.7 degrees
+     * down across the pool; first surface 57.25 m against a declared 57
+     * (100.4%). The lava surface itself is not a collider, so the ray crosses
+     * the pool and meets the far bank, which is the shot - the pool in the
+     * middle distance with the ground closing behind it. Nothing inside 5.41 m
+     * of the lens. */
+    { name: 'toe-lake', pos: [-300, 2.0, -230], look: [-322, 2.0, -276], fov: 76, groundRelative: true, subject: 57 },
     { name: 'aerial', pos: [180, 190, 260], look: [-60, 40, -80], fov: 84, aerial: true, subject: 500 },
   ],
   // Entrance forecourt centred at (1260, -10); maze grid runs from origin to 2394 m
@@ -832,6 +862,78 @@ const VIEWS = {
      * culling anywhere in the world at 4.4%. Ray meets the mesa's own cliff
      * mass at 306.3 m of 311.9, which is the subject. */
     { name: 'eyrie-summit', pos: [-40.43, 65.12, -326.98], look: [0, 52, -18], fov: 72, ring: true, clear: 300.0 },
+  ],
+  /**
+   * VELLUM RIDGE, and this table had NO ENTRY FOR IT.
+   *
+   * Three circuits, 8,169 colliders and every piece of trackside furniture the
+   * `race-trackside-placement` suite exists to keep on the ground, and not one
+   * framing to look at any of it. `world-shot --world race` listed no views at
+   * all, so the world that Phase 9's ninth art pass rebuilt could only be
+   * reviewed by playing it.
+   *
+   * Composed by `art-race`, which was not allowed to touch this file and handed
+   * the coordinates up instead. EVERY ONE WAS RE-RAYCAST HERE against the built
+   * world before it was written down, and that re-measurement is not a
+   * formality - it threw one of the six out. Measured, camera first, first
+   * surface down the centre ray second:
+   *
+   *   grandstand      8.54 m of a 10 m subject   (85.4%)  a 12.8x10x14 stand
+   *   marshal-post    6.99 m of  7.4            (94.4%)  the post's own box,
+   *                                                      centred on the point
+   *                                                      the framing names
+   *   tyre-stack      5.42 m of  6.0            (90.3%)  the 1.24 m tyre box
+   *   chicane-block   5.25 m of  5.9            (88.9%)  the first of three
+   *   gorge-wall      7.27 m of  9.0            (80.7%)  see below
+   *
+   * None of those five has ANYTHING between the lens and its subject: sampled
+   * on a 32x18 grid over each frame, the foreground - geometry nearer than
+   * (named point - 3 m) - is 0.0% for four of them and 12.3% for
+   * `chicane-block`, which is the second and third blocks of its own chicane.
+   *
+   * ── AND `start-grid` WAS PRESSED AGAINST A LIGHTING MAST ─────────────────
+   *
+   * The handed-up `start-grid` stood at (30, 3.2, 224) looking at (30, 1.6,
+   * 150) and declared 40 m of clear air. Its centre ray is clear for 45.75 m,
+   * so it passed every distance assertion in `harness-framings.test.mjs`. The
+   * frame it takes is another matter. On the same 32x18 grid:
+   *
+   *   34.4% of the frame is one 1.50 x 9.60 x 1.50 mast at (31.07, 4.83,
+   *         223.98) - 1.07 m from the camera in plan, and the nearest ray
+   *         meets it at 0.40 m
+   *   17.0% of the frame is inside HALF A METRE
+   *    2 of the 20 published grid slots are in shot; the other 18 are not
+   *
+   * It was also not looking down the grid. `startGrid` runs from the pole at
+   * (13.85, 198.91) away in -X to (-73.20, 200.02) on a centre line at
+   * z = 203.76; that camera stood 21 m the wrong side of it and looked ACROSS
+   * the circuit. Recomposed by searching the vantages behind the pole and
+   * measuring each: 12 m back from pole position, on the grid's own centre
+   * line, at the same 3.2 m the original asked for -
+   *
+   *   all 20 grid slots inside the frame, nothing within 5 m of the lens
+   *   (nearest ray 5.56 m), camera outside every collider, and 99.1 m of
+   *   clear air down the centre ray.
+   *
+   * `clear: 90` is that 99.1 m with the margin the rest of this file uses.
+   * `harness-framings.test.mjs` pins the twenty slots as well as the clear
+   * line, DERIVED from `world.startGrid` rather than typed, so the framing
+   * cannot drift off the grid again without failing.
+   *
+   * ── `gorge-wall` FRAMES A POST, WITH THE GORGE BEHIND IT ────────────────
+   * Its centre ray meets a 3.20 x 2.60 x 2.60 marshal post at 7.27 m, centred
+   * on (-249.88, 7.12, -314.83) - which is the point the framing names. The
+   * gorge's own face is the backdrop: 45.3% of the frame is terrain from 6.3 m
+   * out, and the post is 5.7% of it. So the declared 9 m subject is the POST,
+   * and that is written here rather than left to be re-derived from the name.
+   */
+  race: [
+    { name: 'start-grid', pos: [25.85, 3.2, 203.76], look: [-53.2, 1.0, 203.76], fov: 70, clear: 90 },
+    { name: 'grandstand', pos: [12, 4.0, 224], look: [10, 3.4, 234], fov: 62, subject: 10 },
+    { name: 'marshal-post', pos: [465.24, 32, 264.5], look: [465.24, 31, 257.1], fov: 55, subject: 7.4 },
+    { name: 'tyre-stack', pos: [215.21, 5.75, 163.42], look: [219.45, 5.04, 167.66], fov: 58, subject: 6 },
+    { name: 'chicane-block', pos: [-331.44, 2.58, -243.74], look: [-325.44, 1.86, -243.74], fov: 58, subject: 5.9 },
+    { name: 'gorge-wall', pos: [-249.9, 9.0, -306], look: [-249.9, 8.0, -315], fov: 60, subject: 9 },
   ],
 };
 
@@ -1241,37 +1343,44 @@ class Harness {
   }
 
   /**
-   * Every cell in the whole maze whose EMITTED connector is a lift, nearest to
-   * the player first.
+   * Every cell in the whole maze that carries a vertical connector, nearest to
+   * the player first, optionally restricted to one level and/or one EMITTED
+   * connector kind.
    *
    * Deliberately the whole 400 x 400 x 4 grid, which is the exact opposite of
    * `_findResidentShaft`'s rule - and the two are not in conflict, because
    * they answer different questions. `_findResidentShaft` asks "what has been
    * BUILT", and that must never be widened, or a framing points at void. This
-   * asks "where would the player have to stand for a lift to be built", which
-   * is only useful precisely because it ignores residency.
+   * asks "where would the player have to stand for one to be built", which is
+   * only useful precisely because it ignores residency.
    *
-   * Sparse in practice: a maze holds 33-58 lifts out of ~299 vertical links,
-   * measured across 24 seeds, so the `shaftColliders` call runs a few hundred
-   * times and the rest is an array read.
+   * Sparse in practice for the `kind` queries: a maze holds 33-58 lifts out of
+   * ~299 vertical links, measured across 24 seeds, so the `shaftColliders`
+   * call runs a few hundred times and the rest is an array read. A query with
+   * no `kind` never calls `shaftColliders` at all.
    *
+   * @param {number|null} [level] restrict to one level, or search all of them.
+   * @param {string|null} [kind] 'lift' | 'tunnel' | 'stair', by what was
+   *   EMITTED rather than by what the topology chose.
    * @returns {{x:number, z:number, level:number}|null}
    */
-  _findAnyLift() {
+  _findAnyShaft(level = null, kind = null) {
     const w = this.game.worldManager.active;
     if (w?.id !== 'maze' || !w.cells) return null;
     const p = this.game.player?.position;
     const N = MAZE.DISTRICT * MAZE.DISTRICTS;
     let best = null;
     let bestD = Infinity;
-    for (let level = 0; level < MAZE.LEVELS; level++) {
+    for (let l = 0; l < MAZE.LEVELS; l++) {
+      if (level !== null && l !== level) continue;
       for (let z = 0; z < N; z++) {
         for (let x = 0; x < N; x++) {
-          if (!isOpen(w.cells, cellIndex(x, z, level), DIR.UP)) continue;
-          if (!shaftColliders(w.cells, x, z, level).some((k) => k.kind === 'lift')) continue;
-          const c = cellToWorld(x, z, level);
+          if (!isOpen(w.cells, cellIndex(x, z, l), DIR.UP)) continue;
+          const c = cellToWorld(x, z, l);
           const d = p ? (c.x - p.x) ** 2 + (c.z - p.z) ** 2 : 0;
-          if (d < bestD) { bestD = d; best = { x, z, level }; }
+          if (d >= bestD) continue;
+          if (kind && !shaftColliders(w.cells, x, z, l).some((k) => k.kind === kind)) continue;
+          bestD = d; best = { x, z, level: l };
         }
       }
     }
@@ -1332,7 +1441,7 @@ class Harness {
   async _findLiftFraming() {
     let lift = this._findResidentShaft(null, 'lift');
     if (!lift) {
-      const any = this._findAnyLift();
+      const any = this._findAnyShaft(null, 'lift');
       /* Null here means the TOPOLOGY has no lift anywhere, which is a maze
        * defect rather than a framing one - and saying which is the point. */
       if (!any) return null;
@@ -1411,14 +1520,53 @@ class Harness {
    * meant to show - the same fix shape as `_findShaftFraming`, applied to
    * the half of the state a camera move alone cannot reach.
    *
+   * ── AND IT ABORTED THE RUN ON ONE RUN IN SIX ────────────────────────────
+   *
+   * This searched `_findResidentShaft(0)` and returned null when it found
+   * nothing, which is the identical shape `lift-car` was fixed for: `view()`
+   * throws `could not compute view "tower-top"`, and it is the LAST framing in
+   * `VIEWS.maze`, so every framing before it was already measured and the run
+   * still failed.
+   *
+   * Driven over 64 seeds against the real topology generator with the real
+   * `RESIDENCY_RADIUS` neighbourhood, in the order `world-shot` actually takes
+   * the framings (shaft-up, then lift-car, then this):
+   *
+   *   no level-0 shaft resident at the COLD SPAWN            1 of 64  = 1.6%
+   *   no level-0 shaft resident AFTER `lift-car` has run    10 of 64  = 15.6%
+   *
+   * The second number is the real one and it is not a coincidence. `lift-car`
+   * now MAKES a lift resident, and the nearest lift is on level 1 or 2 for 23
+   * of those 64 seeds; residency follows the player, so by the time this runs
+   * the level-0 districts have streamed out and there is no level-0 shaft left
+   * to find. The framing that was fixed broke the framing after it.
+   *
+   * ── THE ANSWER IS `lift-car`'s, NOT A NEW LEVEL ─────────────────────────
+   *
+   * Widening the search to "any level" would make this pass on every seed and
+   * would photograph a DIFFERENT LEVEL'S canopy run to run, which is a framing
+   * that means something new every time it is taken - the same class of defect
+   * as the unpinned seed. So this does what `_findLiftFraming` does instead:
+   * find the nearest level-0 shaft in the whole topology, walk the player
+   * there, and let residency follow. Level 0 stays level 0.
+   *
    * @returns {Promise<{pos:number[], look:number[], fov:number}|null>}
    */
   async _computeTowerTop() {
     // Search from wherever the player currently is (a cold load's resident
     // set, centred on the fixed entrance) rather than the destination level -
     // nothing is resident up there yet to search.
-    const shaft = this._findResidentShaft(0);
-    if (!shaft) return null;
+    let shaft = this._findResidentShaft(0);
+    if (!shaft) {
+      const any = this._findAnyShaft(0);
+      /* Null here means the TOPOLOGY has no level-0 vertical link at all,
+       * which is a maze defect rather than a framing one - and a maze with no
+       * way up from the ground floor is not a maze this framing can repair. */
+      if (!any) return null;
+      await this._makeResident(any);
+      shaft = this._findResidentShaft(0);
+      if (!shaft) return null;
+    }
 
     const w = cellToWorld(shaft.x, shaft.z, shaft.level);
     const landingY = w.y + MAZE.LEVEL_HEIGHT;
@@ -2140,19 +2288,101 @@ class Harness {
    * used is reported whether it was pinned or not - so a run that did NOT pin
    * one still says which maze it photographed and can be re-flown exactly.
    *
-   * Takes effect on the next `build()`, which for a volatile world means the
-   * next `goto('maze')`.
+   * ── THIS IS THE REPORTER. `pinMazeSeed` IS THE SETTER THAT WORKS ────────
+   *
+   * Writing the override only decides the seed of the NEXT `build()`, and a
+   * volatile world's next build is its next activation. `world-shot --seed`
+   * wrote it after boot had already built the maze and then skipped its
+   * rebuild `goto` because the boot world was already the world asked for -
+   * which it always is, since `world-shot` puts `?world=<id>` in the page URL.
+   * So it printed "maze seed pinned to 20250823" over a run that was
+   * photographing 4124197018, and a different maze again on the next run.
+   *
+   * `applied` is what stops that being possible to print. It is not a guess:
+   * it compares the override against the seed the LIVE world is carrying, and
+   * `world-shot` fails the run on `applied === false` rather than captioning
+   * a table with a seed nobody used.
+   *
+   *   applied === true   the live maze was built from the override
+   *   applied === false  it was NOT - the override is pending a rebuild
+   *   applied === null   nothing to check: no override, or the maze is not
+   *                      the active world, in which case the next activation
+   *                      will build from it (`WorldManager.build` disposes and
+   *                      regenerates a volatile world that is not active)
    *
    * @param {number|null} [seed] omit to read the current override.
    */
   mazeSeed(seed) {
     if (seed !== undefined) MazeWorld.seedOverride = seed === null ? null : (seed >>> 0);
+    const override = MazeWorld.seedOverride;
+    const world = this.game.worldManager.active;
+    const active = world?.id === 'maze' ? world.seed : null;
     return {
-      override: MazeWorld.seedOverride,
-      active: this.game.worldManager.active?.id === 'maze'
-        ? this.game.worldManager.active.seed
-        : null,
+      override,
+      active,
+      applied: override === null || active === null ? null : active === override,
     };
+  }
+
+  /**
+   * Pin the maze's seed AND make the live world be that maze.
+   *
+   * `mazeSeed(n)` writes the override. That is not the same thing as the world
+   * being built from it, and the gap between the two is the whole of the
+   * defect recorded above. This closes it, and it either succeeds or throws -
+   * a harness that half-pinned a seed is worse than one that never offered to.
+   *
+   * ── WHY IT HAS TO BOUNCE THROUGH ANOTHER WORLD ─────────────────────────
+   *
+   * `WorldManager.build` regenerates a volatile world - but only when that
+   * world is NOT the active one, and deliberately: rebuilding the live world
+   * would clear its group and generate into a scratch physics world while the
+   * live collision world kept serving the geometry that had just been thrown
+   * away. Invisible walls, not missing ones. And `activate` returns early when
+   * the target is already active, so re-activating the maze does nothing at
+   * all. There is therefore no way to regenerate the live maze from inside
+   * this file except to stop it being live first, and that is what this does:
+   * one activation of another world, then `goto` back, which regenerates.
+   *
+   * The bounce is skipped entirely when the maze is not the active world -
+   * the override then applies on its own at the next activation - so a run
+   * that pins its seed BEFORE entering the maze pays nothing.
+   *
+   * @param {number|null} seed
+   * @param {string} [via] the world to bounce through. Defaults to something
+   *   already built (free), then to `space` (100 colliders), then to whatever
+   *   non-volatile world is registered.
+   * @returns {Promise<{override:number|null, active:number|null, applied:boolean|null, bouncedVia:string|null}>}
+   */
+  async pinMazeSeed(seed, via) {
+    this.mazeSeed(seed);
+    const wm = this.game.worldManager;
+    let bouncedVia = null;
+    if (MazeWorld.seedOverride !== null
+      && wm.active?.id === 'maze'
+      && wm.active.seed !== MazeWorld.seedOverride) {
+      const ids = wm.ids ?? [];
+      const usable = (id) => !!id && ids.includes(id) && id !== 'maze' && !wm.isVolatile?.(id);
+      const alreadyBuilt = ids.filter((id) => usable(id) && wm.isBuilt?.(id));
+      bouncedVia = [via, ...alreadyBuilt, 'space', ...ids].find(usable) ?? null;
+      if (!bouncedVia) {
+        throw new Error(
+          'harness: cannot pin the maze seed - the maze is live and there is no other world to '
+          + 'bounce through, so `WorldManager.build` will not regenerate it'
+        );
+      }
+      await wm.activate(bouncedVia);
+      /* `goto` -> `activate` -> `build`, and `build` disposes and regenerates
+       * a volatile world that is not active. That is the rebuild. */
+      await this.goto('maze');
+    }
+    const s = this.mazeSeed();
+    if (s.applied === false) {
+      throw new Error(
+        `harness: pinned maze seed ${s.override} but the live maze is ${s.active} - the rebuild did not take`
+      );
+    }
+    return { ...s, bouncedVia };
   }
 
   /**

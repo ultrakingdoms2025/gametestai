@@ -36,6 +36,7 @@ import { WaterVolumes } from './systems/WaterVolumes.js';
 import { Stamina } from './systems/Stamina.js';
 import { Inventory } from './systems/Inventory.js';
 import { Loot } from './systems/Loot.js';
+import { MapOverlay } from './systems/MapOverlay.js';
 import { Marketplace } from './systems/Marketplace.js';
 import { Cosmetics } from './systems/Cosmetics.js';
 import { ItemUseSystem } from './systems/ItemUse.js';
@@ -303,6 +304,11 @@ const stamina = new Stamina({ bus, player });
 
 const inventory = new Inventory({ bus, economy, input, root: uiRoot });
 const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
+/* The admin map editor's placement overlay. Arms itself off `world:changed` and
+ * needs nothing else, exactly as WaterVolumes does; a world with no overlay, or
+ * a player who is not signed in, is the world every player had before it
+ * existed. It never writes world source -- see src/systems/MapOverlay.js. */
+const mapOverlay = new MapOverlay({ bus, physics, loot });
 // Permanent purchasable skins. Bought at a merchant, worn from the F2 (character)
 // or F10 (mount) menu, and round-tripped through both save paths so a
 // limited-edition unlock sticks.
@@ -1059,6 +1065,10 @@ if (overrides.dev) {
      * only way to check a credit source still pays is to play and look at what
      * it queued -- a unit test proves the endpoint, never the loop. */
     creditReporter,
+    /* The map overlay, for the same reason: `mapOverlay.report` is the only
+     * place that says which of an admin's edits actually resolved against the
+     * world that was built, and only playing into the world produces it. */
+    mapOverlay,
     waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, mountMenu, caches, contracts,
   cheats, audio, audioMenu, relics, viewpoints, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   ships, shipMenu, piloting, spaceCombat, flightHUD, mining, objectives,

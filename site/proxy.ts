@@ -3,7 +3,18 @@ import { launchCookieName, verifyLaunchCookieValue } from '@/lib/gameLaunch';
 import { isGameAssetPath, isGatedGamePath } from '@/lib/gatePaths';
 import { NextResponse } from 'next/server';
 
-const PROTECTED = ['/play', '/checkout', '/store', '/account'];
+/*
+ * `/admin` is here as DEFENCE IN DEPTH, not as the gate.
+ *
+ * The gate is each admin page's own `requireMarketplaceAdmin()` and each admin
+ * route's, because a proxy is one request header away from being no gate at all
+ * — which is why Next 16 renamed `middleware.ts` to `proxy.ts` after
+ * CVE-2025-29927, and why nine unguarded admin pages leaning on a proxy was a
+ * production incident here. What this line adds is that an anonymous visitor
+ * meets the login page instead of a rendered shell; a signed-in non-admin still
+ * gets the page's own locked banner, and neither ever reaches the data.
+ */
+const PROTECTED = ['/play', '/checkout', '/store', '/account', '/admin'];
 
 export default auth(async (req) => {
   const { nextUrl } = req;

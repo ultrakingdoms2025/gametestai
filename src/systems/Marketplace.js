@@ -75,7 +75,7 @@ const MARKETPLACE_CONSUMABLE_ITEMS = {
  * @param {string} key
  * @returns {string|null}
  */
-function consumableItemFor(key) {
+export function consumableItemFor(key) {
   // Own-property only: a `source_key` of `constructor` must not resolve to a
   // function off Object.prototype.
   const has = (k) => Object.prototype.hasOwnProperty.call(MARKETPLACE_CONSUMABLE_ITEMS, k);

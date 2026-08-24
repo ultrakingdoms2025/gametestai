@@ -436,3 +436,46 @@ test('frameValidity catches a camera-relative backdrop the camera has left behin
   assert.equal(v.ok, false);
   assert.match(v.problems[0], /past the 2000 m far plane/);
 });
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  SCOPE: a shared system parented to the SCENE must be reachable
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * This one line is why a defect survived five art branches.
+ *
+ * `ablate` used to walk `worldManager.active.group`. `Relics` parents
+ * `relics:glow` to the SCENE, so its material was not among medieval's 27 or
+ * citadel's 14 world-group material names — a 69-name ablation sweep could
+ * never reach it, `worldTriangles()` never counted it, and the material census
+ * never listed it. Five branches hunted the white orbs it draws; every
+ * instrument they had started at the world group, so none of them could see it.
+ *
+ * Widening the SEARCH costs nothing in precision, which is the argument for
+ * doing it: an ablation names a material, so a wider walk can only make a named
+ * material findable — it can never hide something nobody asked for. The second
+ * assertion below is the one that pins that, and it is the one a future
+ * narrowing would break first.
+ */
+test('ablate reaches a scene-parented system, not only the world group', () => {
+  const g = stubGame();
+
+  /* A shared system that lives beside the world rather than inside it —
+   * relics, loot and portals are all built this way. */
+  const glow = box('relics:glow', 'relic.glow', 6);
+  g.engine.scene.add(glow);
+  g.engine.scene.updateMatrixWorld(true);
+
+  const h = new Harness(g);
+  const r = h.ablate(['relic.glow']);
+
+  assert.equal(r.meshes, 1,
+    'a scene-parented system must be findable; scoping the walk to the world group is ' +
+    'exactly what hid relic.glow from five branches');
+  assert.deepEqual(r.missing, [], 'the name matched, so nothing may be reported missing');
+  assert.equal(glow.visible, false, 'and it must actually be hidden');
+
+  /* The world group must be untouched by a name that does not live there. */
+  assert.equal(meshNamed(g, 'lawn').visible, true,
+    'widening the search must not widen what gets hidden — ablation names a material');
+});

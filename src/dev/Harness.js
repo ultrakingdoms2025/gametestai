@@ -1972,10 +1972,27 @@ class Harness {
     const group = world?.group;
     if (!group) throw new Error('harness.ablate: no active world to ablate');
 
+    /* THE SCENE, NOT THE WORLD GROUP - and this one line is the whole reason a
+     * defect survived five art branches.
+     *
+     * This used to traverse `world.group`. `Relics` parents `relics:glow` to the
+     * SCENE, so its material was not among medieval's 27 or citadel's 14
+     * world-group material names: a 69-name ablation sweep could never reach it,
+     * `worldTriangles()` never counted it, and the material census never listed
+     * it. Five branches looked for the white orbs it draws and none could find
+     * them, because every instrument they had started at the world group.
+     *
+     * Widening the SEARCH costs nothing in precision: ablation names a material,
+     * so a wider walk can only make a named material findable, never hide
+     * something nobody asked for. Anything scene-parented and shared - loot,
+     * relics, portals, the avatar - is now reachable by the instrument that is
+     * supposed to be able to answer 'which system drew this pixel'. */
+    const root = this.game.engine?.scene ?? group;
+
     /** @type {Array<[object, boolean]>} the mesh and the visibility it had. */
     const saved = [];
     const matched = new Set();
-    group.traverse((o) => {
+    root.traverse((o) => {
       const m = o.material;
       if (!m) return;
       for (const mm of (Array.isArray(m) ? m : [m])) {

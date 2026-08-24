@@ -281,7 +281,41 @@ async function loadAll() {
 }
 
 /**
- * Every mesh in the file, by name, with its node transform baked in.
+ * THE NAME IN THE FILE IS NOT THE NAME THAT ARRIVES.
+ *
+ * `GLTFLoader` runs every node name through `PropertyBinding.sanitizeNodeName`,
+ * because `[].:/` are reserved by the animation track-binding syntax. It does
+ * not escape them - it DELETES them. So the marshal's parts, which are named
+ * for race material keys, arrive as
+ *
+ *     metal.panel  ->  metalpanel
+ *     metal.trim   ->  metaltrim
+ *     hazard.stripe -> hazardstripe
+ *
+ * and a loader comparing against the key finds nothing, warns once into a
+ * console nobody is reading, and returns null. The world then draws the boxes
+ * it always drew, correctly, silently, for ever.
+ *
+ * This is worth the paragraph because of HOW it was found. Eighteen assertions
+ * over the committed bytes were green - the file parses, the names in it are
+ * exactly the three material keys, the triangles are the budget, the world
+ * builds both ways. Every one of those reads the GLB directly. The browser
+ * reads it through `GLTFLoader`, and that is a different string. It took a
+ * screenshot of a post that had not changed to notice, which is the roadmap's
+ * own line: a gate that measures something the game does not do is worse than
+ * no gate. `race-assets.test.mjs` now parses through the real loader.
+ *
+ * Matching on the sanitised form rather than renaming the parts, deliberately:
+ * the mesh name IS the material key, `_buildTrackside` looks the bucket up by
+ * it, and a file whose names were `metal-panel` would need a second table
+ * mapping them back - one more place for the contract to drift.
+ */
+const RESERVED = /[[\].:/]/g;
+const sane = (s) => s.replace(/\s/g, '_').replace(RESERVED, '');
+
+/**
+ * Every mesh in the file, by PUBLISHED part key, with its node transform baked
+ * in.
  *
  * The glTF MATERIAL is deliberately never touched. Both assets draw in
  * materials the world already has - `race.paint.enamel` for the crowd,
@@ -292,12 +326,14 @@ async function loadAll() {
  * @returns {Record<string, object>|null}
  */
 function namedParts(gltf, id) {
-  const legal = id === 'spectator' ? Object.keys(SPECTATOR_PARTS) : MARSHAL_PART_KEYS;
+  const legal = id === 'spectator' ? Object.keys(SPECTATOR_PARTS) : [...MARSHAL_PART_KEYS];
+  const bySane = new Map(legal.map((k) => [sane(k), k]));
   const out = {};
   gltf.scene.updateMatrixWorld(true);
   gltf.scene.traverse((o) => {
     if (!o.isMesh || !o.geometry) return;
-    if (!legal.includes(o.name)) {
+    const key = bySane.get(o.name);
+    if (!key) {
       warnOnce(`part:${id}:${o.name}`,
         `'${id}' has a mesh named '${o.name}', which is not a part this loader wires`);
       return;
@@ -307,13 +343,13 @@ function namedParts(gltf, id) {
        * materials that carry an albedo, a normal and an ORM map. A file that
        * arrived without UVs would render every facet sampling texel (0,0) -
        * one flat colour over the whole crowd, and no error anywhere. */
-      warnOnce(`unwrapped:${id}:${o.name}`, `'${id}.${o.name}' carries no UVs`);
+      warnOnce(`unwrapped:${id}:${key}`, `'${id}.${key}' carries no UVs`);
       return;
     }
     const geo = o.geometry;
     geo.applyMatrix4(o.matrixWorld);
-    geo.name = `race.authored.${id}.${o.name}`;
-    out[o.name] = geo;
+    geo.name = `race.authored.${id}.${key}`;
+    out[key] = geo;
   });
   const missing = legal.filter((k) => !out[k]);
   if (missing.length) {
@@ -357,6 +393,14 @@ function mergeSpectator(THREE, mergeGeometries, parts) {
   }
   merged.name = 'race.authored.spectator';
   return merged;
+}
+
+/**
+ * The name a part key arrives under once `GLTFLoader` has sanitised it.
+ * Published so the test can assert the round trip rather than assume it.
+ */
+export function loadedPartName(key) {
+  return sane(key);
 }
 
 /** Session teardown for tests. The game never calls this. */

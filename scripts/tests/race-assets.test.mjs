@@ -17,8 +17,9 @@ import {
   SPECTATOR_PARTS, SPECTATOR_TRIS, SPECTATOR_HEIGHT,
   MARSHAL_PART_KEYS, MARSHAL_SHELL, MARSHAL_TRIS,
   installRaceAssets, resetRaceAssets, spectatorGeometry, marshalParts,
-  mergeSpectatorParts,
+  mergeSpectatorParts, loadedPartName,
 } from '../../src/worlds/race/RaceAssets.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 /**
  * THE RACE WORLD'S TWO AUTHORED ASSETS, AND WHAT THEY ARE ALLOWED TO COST.
@@ -504,6 +505,81 @@ test('the marshal recess is geometry standing proud, not a colour inside a solid
   assert.ok(proud > 0.10,
     `the front's deepest and shallowest planes are ${proud.toFixed(3)} m apart - `
     + 'that is not a recess a shadow can fall into');
+});
+
+
+/* ================================================================== */
+/* 3b. THROUGH THE PARSER THE BROWSER ACTUALLY USES                    */
+/* ================================================================== */
+
+/**
+ * EVERY assertion above this line reads the GLB directly, and every one of
+ * them was green on a build where the marshal post never loaded at all.
+ *
+ * `GLTFLoader` runs each node name through `PropertyBinding.sanitizeNodeName`,
+ * which DELETES `[].:/` because they are reserved by the animation
+ * track-binding syntax. The marshal's parts are named for race material keys,
+ * so `metal.panel` arrives as `metalpanel`, the loader matched nothing, warned
+ * once into a console nobody reads, and the world drew the boxes it always
+ * drew. Correctly. Silently. For ever.
+ *
+ * It took a screenshot of a post that had not changed to notice. So these two
+ * go through the real parser, on the real bytes, and assert the names the
+ * BROWSER sees rather than the names the file contains.
+ */
+
+async function parsed(id) {
+  const buf = readFileSync(path.join(DIR, ASSETS[id].file));
+  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  return new GLTFLoader().parseAsync(ab, '');
+}
+
+test('GLTFLoader delivers every part under the name the loader looks for', async () => {
+  for (const id of Object.keys(ASSETS)) {
+    const gltf = await parsed(id);
+    const seen = [];
+    gltf.scene.traverse((o) => { if (o.isMesh) seen.push(o.name); });
+    const want = ASSETS[id].parts.map(loadedPartName);
+    assert.deepEqual(seen.sort(), [...want].sort(),
+      `${id}: the parser delivers ${JSON.stringify(seen)} but the loader looks for `
+      + `${JSON.stringify(want)}. The names IN the file are the material keys and the `
+      + 'names OUT of the parser are not - sanitizeNodeName deletes the dots.');
+  }
+});
+
+test('the whole load path resolves both assets from the committed bytes', async () => {
+  /* Not a name check - the actual part grab and shade bake, so a future change
+   * to either is held to producing something the world can use. */
+  const grab = (gltf, keys) => {
+    const out = {};
+    gltf.scene.updateMatrixWorld(true);
+    gltf.scene.traverse((o) => {
+      if (!o.isMesh) return;
+      const key = keys.find((k) => loadedPartName(k) === o.name);
+      if (key) out[key] = o.geometry;
+    });
+    return out;
+  };
+  const spec = grab(await parsed('spectator'), Object.keys(SPECTATOR_PARTS));
+  const marshal = grab(await parsed('marshal'), [...MARSHAL_PART_KEYS]);
+  assert.equal(Object.keys(spec).length, Object.keys(SPECTATOR_PARTS).length,
+    'the spectator lost a part between the bytes and the parser');
+  assert.equal(Object.keys(marshal).length, MARSHAL_PART_KEYS.length,
+    'the marshal lost a part between the bytes and the parser - the world will draw boxes');
+
+  resetRaceAssets();
+  installRaceAssets({
+    spectator: mergeSpectatorParts(THREE, mergeGeometries, spec),
+    marshal,
+  });
+  const g = spectatorGeometry();
+  assert.ok(g && g.attributes.color, 'the spectator did not survive the real parse');
+  const m = marshalParts();
+  assert.ok(m, 'the marshal did not survive the real parse');
+  for (const k of MARSHAL_PART_KEYS) {
+    assert.ok(m[k] && m[k].attributes.position, `the marshal is missing '${k}'`);
+  }
+  resetRaceAssets();
 });
 
 /* ================================================================== */

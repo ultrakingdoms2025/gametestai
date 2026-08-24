@@ -3162,11 +3162,16 @@ export class RaceWorld extends World {
          * `race-assets.test.mjs` off the built world rather than left to this
          * comment. */
         const face = inboard ? yaw + Math.PI : yaw;
-        _be1.set(0, face, 0);
-        _bq1.setFromEuler(_be1);
-        _bm1.compose(_bv1.set(_v1.x, _v1.y, _v1.z), _bq1, _bv2.set(1, 1, 1));
+        /* Module scratch, and NOT `Batch`'s private `_b*`: those exist because
+         * this block holds its road point in `_v1` across several calls, and
+         * borrowing them back out here would be the same aliasing in mirror
+         * image. `compose` reads `_v1` without writing it, and `_v2`/`_v3` are
+         * still free for the collider below. */
+        _e1.set(0, face, 0);
+        _q1.setFromEuler(_e1);
+        _m1.compose(_v1, _q1, _v4.set(1, 1, 1));
         for (const key of MARSHAL_PART_KEYS) {
-          B.add(key, post[key].clone(), _bm1, MARSHAL_TINT[key]);
+          B.add(key, post[key].clone(), _m1, MARSHAL_TINT[key]);
         }
       } else {
         /* No asset: the three boxes this world has always drawn, in the same

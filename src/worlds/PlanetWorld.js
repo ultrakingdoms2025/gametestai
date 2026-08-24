@@ -7,6 +7,7 @@ import { HEIGHT_FIELDS } from './terrain/index.js';
 import { fbm } from './terrain/PlanetHeight.js';
 import { scatter, regionDepth } from './planets/Placement.js';
 import { buildPropField, buildPlumes } from './planets/PlanetProps.js';
+import { loadPlanetAssets, blockGeometry } from './planets/PlanetAssets.js';
 import {
   createLiquidMaterial, createSkirtMaterial, bodyGeometry,
   liquidCellMask, liquidContour, liquidWalls, liquidDepth, liquidKind, bodySurfaceAt,
@@ -933,7 +934,12 @@ export class PlanetWorld extends World {
     this._buildSky();
 
     onProgress?.(0.10, 'Sampling the surface');
-    await this._buildTerrain();
+    /* The authored ejecta block, alongside the terrain job rather than in front
+     * of it. `loadPlanetAssets` never rejects and resolves to null when the file
+     * is missing - which is the whole headless suite and any deploy without the
+     * asset - so this is a settle, not a dependency, and `_buildProps` reads the
+     * cache synchronously afterwards. @see planets/PlanetAssets.js. */
+    await Promise.all([this._buildTerrain(), loadPlanetAssets()]);
 
     onProgress?.(0.52, 'Pouring the flows');
     this._buildLiquid();
@@ -1829,6 +1835,10 @@ export class PlanetWorld extends World {
         liquid: P.liquid,
         landing: P.landing,
         material: rockMat,
+        /* The authored ejecta block, or null. Read here rather than inside
+         * `PlanetProps` so the prop file stays a pure function of its inputs
+         * and the test can build a field both ways by handing this in. */
+        authored: { boulders: blockGeometry() },
         physics: this.physics,
         group: this.group,
         track: (c) => this.track(c),

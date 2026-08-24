@@ -1,0 +1,19 @@
+{
+  "comment": "Authored geometry for the ten planet surfaces (Phase 9, decision D4). Written by scripts/make-planet-glb.mjs; the .glb is reproduced byte for byte by re-running it, and scripts/tests/planet-assets.test.mjs holds every number below against the file on disk. The mesh's NAME IS A PROP KIND - not a material key, because every prop family on a planet already draws in one shared material (PlanetWorld._propMaterial) so a material name would say nothing. src/worlds/planets/PlanetAssets.js reads the kind off the mesh, discards the glTF material unread, and PlanetProps.geometryFor SUBSTITUTES the geometry inside the field's existing InstancedMesh. Nothing is added: no renderable, no instanced mesh, no draw call, no material, no shader program, no light, no collider - which is a stronger position than the belt's hero rock could take, because there every boulder was not the same case and a fourth bucket had to be bought. Which boulders use it is the descriptor's own word for what the thing is, kind: 'boulders' - all 8,880 of them across thirteen fields on nine of the ten planets. A file missing at runtime degrades to IcosahedronGeometry(1, 0) at the same twenty triangles in the same places with the same colliders - see PlanetAssets.js - and that is the arm the whole headless suite takes.",
+  "assets": [
+    {
+      "id": "ejecta-block",
+      "file": "ejecta-block.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-planet-glb.mjs - procedurally authored in this repository, 2026-08-24",
+      "parts": ["boulders"],
+      "splits": 0,
+      "tris": 20,
+      "verts": 60,
+      "bytes": 3300,
+      "radius": [0.7373, 0.9759],
+      "note": "A unit-radius ejecta block at exactly the twenty triangles of the IcosahedronGeometry(1, 0) it replaces, so the substitution is free in every axis the budget measures. Three octaves of deterministic value noise on the radius, biased inward so the body has bays rather than bulges, and two seeded fracture planes shearing 31-to-37-degree flats through it because ejecta is a fragment of something larger. Every face carries its OWN UV island at a seeded offset and at 1:1 with the block's unit space: the polyhedron UVs it replaces pinch to a point at the poles and carry a wrap seam down the front of the lit face, and the prop material is stone.castle at repeat 1.4 with an albedo, a normal and an ORM map. The radial envelope stays inside the 1.0 the icosahedron reaches, so the drawn block spills no further outside its own collider than it already did."
+    }
+  ]
+}

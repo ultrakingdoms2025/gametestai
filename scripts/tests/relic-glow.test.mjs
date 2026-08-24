@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 
 import { Relics, glowFalloff, glowScale } from '../../src/systems/Relics.js';
+import { hazeAdditive } from '../../src/systems/Loot.js';
 
 /**
  * The relic halo is a GLOW and not a card.
@@ -78,16 +79,44 @@ test('the halo material carries the falloff, and still costs one draw', () => {
   assert.equal(mat.depthWrite, false);
   assert.equal(mat.toneMapped, false, 'an HDR halo that is tone mapped is just a white square');
 
-  /* No custom program. `onBeforeCompile` or a `customProgramCacheKey` on this
-   * material would fork a shader program for one quad type - which is what
-   * writing the ramp in GLSL would have cost, and this project counts programs
-   * because light counts and material variants fold into the cache key. */
-  const stock = new THREE.MeshBasicMaterial();
-  assert.equal(mat.onBeforeCompile, stock.onBeforeCompile,
-    'the halo material patches its own shader');
-  assert.equal(mat.customProgramCacheKey(), stock.customProgramCacheKey(),
-    'the halo material forks its own shader program');
-  stock.dispose();
+  /* NO PRIVATE PROGRAM - which is a different claim from "no program".
+   *
+   * This assertion used to read `onBeforeCompile === stock.onBeforeCompile`,
+   * i.e. the material patches no shader at all, and its stated reason was that
+   * writing the FALLOFF RAMP in GLSL would have cost a forked program for one
+   * quad type. That reason still stands and the ramp is still a texture.
+   *
+   * What changed is that the halo now also has to obey the scene's haze, and
+   * the project has exactly one patch for that - `hazeAdditive`, shared with
+   * `Loot`'s three additive layers and matching the hand-written rule in
+   * `Projectiles` and `VFX`. So the guarantee worth pinning is not "stock", it
+   * is "THE SHARED ONE": same function object, same cache key, so no matter
+   * how many systems adopt the law the program cache still sees one entry.
+   * That is strictly stronger than the old assertion, which would have passed
+   * for a private copy of the same six lines. */
+  const shared = hazeAdditive(new THREE.MeshBasicMaterial());
+  assert.equal(typeof mat.onBeforeCompile, 'function',
+    'the halo has no additive-haze patch - it will not recede with distance');
+  assert.equal(mat.onBeforeCompile, shared.onBeforeCompile,
+    'the halo has its OWN haze patch closure instead of the shared one');
+  assert.equal(mat.customProgramCacheKey(), shared.customProgramCacheKey(),
+    'the halo has its own program cache key - the cache will split');
+  shared.dispose();
+
+  /* The law itself, applied to a stub shader, because "fog: true" on its own
+   * makes this WORSE and a flag assertion cannot tell the difference.
+   *
+   * Three's stock `<fog_fragment>` mixes toward `fogColor`. On an additive
+   * quad that means a fully fogged relic ADDS haze colour at full strength -
+   * a brighter dot at 880 m than at 88 m, which is the defect upside down.
+   * The patch has to MULTIPLY toward zero. */
+  assert.equal(mat.fog, true, 'the halo opts out of the scene fog - this is the orb defect');
+  const stub = { fragmentShader: 'void main(){ #include <fog_fragment> }' };
+  mat.onBeforeCompile(stub);
+  assert.ok(!/mix\s*\(/.test(stub.fragmentShader),
+    'the halo MIXES toward fogColor - a fogged additive quad paints haze colour, not nothing');
+  assert.match(stub.fragmentShader, /\*=\s*1\.0\s*-\s*fogFactor/,
+    'the halo does not multiply itself down by the fog factor');
 
   /* The texture, sampled where it matters: full in the middle, nothing in the
    * corner. This is the same claim as the first test, made against the bytes

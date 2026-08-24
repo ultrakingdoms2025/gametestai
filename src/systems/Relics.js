@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { allows } from '../worlds/WorldRules.js';
+import { hazeAdditive } from './Loot.js';
 
 /**
  * Hidden relics - the collectible that pays.
@@ -742,10 +743,49 @@ export class Relics {
      * eight bytes of texture per texel. As a stock material with a map it is
      * still ONE draw call for every relic in the world, still one material, and
      * the program it compiles is a variant three already builds for every other
-     * mapped basic material in the scene. */
+     * mapped basic material in the scene.
+     *
+     * ── `hazeAdditive`: the orbs ───────────────────────────────────────────
+     * This material carried `fog: false` until now, and that is what five art
+     * branches photographed and none could name. A relic 630 m across
+     * Aldermoor Vale was drawn at exactly the strength of one at 50 m, in a
+     * valley whose every other surface is on a `Fog(86, 880)` ramp - and
+     * because `glowScale` clamps the quad at 4.42 m for everything past
+     * 46.67 m, what reached the film was a hard cream dot of constant size and
+     * constant brightness sitting on top of graded haze. Measured in
+     * `medieval/hills-vista`: hiding this one mesh took the frame from 8 hard
+     * orbs to 0, and in `citadel/tower-top` from 19 to 0, against a null floor
+     * of 0.0. `docs/superpowers/specs/2026-08-23-orb-hunt-design.md` has the
+     * frames and the numbers.
+     *
+     * `fog: true` ALONE would make it worse rather than better, which is the
+     * trap `hazeAdditive` exists to route around: three's stock
+     * `<fog_fragment>` MIXES toward `fogColor`, so a fully fogged additive
+     * quad would add haze colour at full strength and paint a brighter dot at
+     * 880 m than at 88 m. Emitted light is swallowed by haze, not tinted by
+     * it, so the shared patch multiplies by `1 - fogFactor` instead. It is the
+     * same law `systems/Loot.js`, `systems/Projectiles.js` and `systems/VFX.js`
+     * already carry, imported rather than copied so the program cache sees one
+     * patch function and one key across all of them.
+     *
+     * Note this lands on a LINEAR value here, not an encoded one: the scene
+     * renders into the composer's HalfFloat target, and three forces
+     * `NoToneMapping` and a linear output colour space for every material
+     * whenever the render target is not null. So the attenuation is exactly
+     * `1 - fogFactor` rather than the `(1 - fogFactor) ^ 2.4` the same chunk
+     * gives on a direct-to-canvas draw.
+     *
+     * `toneMapped: false` is left exactly as it was, and it is worth writing
+     * down that it currently does NOTHING on the shipped path for the reason
+     * just given - three ignores `material.toneMapped` when rendering to a
+     * render target. It only bites on the fallback where `PostFX` is disabled
+     * and the scene is drawn straight to the canvas, where it would clip this
+     * HDR colour to a flat white square. That is a real latent defect and a
+     * separate argument from this one, so it is reported rather than changed
+     * here. */
     const gGeo = new THREE.PlaneGeometry(1, 1);
     const gTex = makeGlowTexture();
-    const gMat = new THREE.MeshBasicMaterial({
+    const gMat = hazeAdditive(new THREE.MeshBasicMaterial({
       name: 'relic.glow',
       color: new THREE.Color(3.2, 1.9, 0.7),
       map: gTex,
@@ -754,8 +794,7 @@ export class Relics {
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       toneMapped: false,
-      fog: false,
-    });
+    }));
     this.glow = new THREE.InstancedMesh(gGeo, gMat, MAX_PER_WORLD);
     this.glow.name = 'relics:glow';
     this.glow.instanceMatrix.setUsage(THREE.DynamicDrawUsage);

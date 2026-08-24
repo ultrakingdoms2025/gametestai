@@ -141,8 +141,44 @@ describe('admin pages', () => {
     expect(adminPages.length).toBeGreaterThanOrEqual(2);
   });
 
+  /**
+   * Pages whose audience is not platform staff, and what they must do instead.
+   *
+   * ── Why an exception exists at all, and why it is narrow ──────────────────
+   *
+   * `/admin/servers` is a CUSTOMER-facing page. A custom-server owner is an
+   * ordinary player who has paid for hosting; `requireMarketplaceAdmin` gates on
+   * `ADMIN_EMAILS`, which is the list of people allowed to price the platform's
+   * own economy. Putting an owner's dashboard behind it would mean either giving
+   * every paying customer a staff credential or not selling the feature.
+   *
+   * So the rule this test enforces is widened rather than punctured: an admin
+   * page must either require the STAFF ALLOWLIST, or require a SESSION and
+   * delegate every authorisation decision to the routes it calls. The second
+   * form is checked here too — a page in this list that stopped calling `auth()`
+   * fails exactly as loudly as one that never had a guard.
+   *
+   * The allowlist remains the default. A page added under `app/admin/` without
+   * either still fails, which is the omission Phase 0 was written about.
+   */
+  const SESSION_GATED: readonly string[] = ['app/admin/servers/page.tsx'];
+
   for (const file of adminPages) {
     const rel = relative(SITE, file).replace(/\\/g, '/');
+    if (SESSION_GATED.includes(rel)) {
+      it(`${rel} requires a session and delegates authorisation`, () => {
+        const src = source(file);
+        expect(src, 'must establish who is calling').toMatch(/await auth\(\)/);
+        /* And must act on the answer. Calling `auth()` and ignoring it is the
+         * failure this whole file exists to catch, in a different costume. */
+        expect(src).toMatch(/if \(!session\?\.user\?\.id\) redirect\(/);
+        /* Whatever it renders must be a client panel that talks to routes which
+         * do the real check — not a server component reading the database
+         * directly, which would be authorisation this page had to perform. */
+        expect(src).not.toMatch(/from '@\/lib\/(customServers|serverContent|serverCredits)'/);
+      });
+      continue;
+    }
     it(`${rel} guards its render`, () => {
       expect(source(file)).toContain(GUARD);
     });

@@ -10,24 +10,40 @@ import {
   completeQuestEngagement,
   failQuestEngagement,
 } from '@/lib/playerDb';
+import { currentServer } from '@/lib/serverRoutes';
 
 export async function GET(request: NextRequest) {
   const worldRaw = request.nextUrl.searchParams.get('world') ?? 'station';
   const world = String(worldRaw).trim().toLowerCase() || 'station';
-  const quests = await listActiveQuestsForWorld(world);
 
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ quests, engagements: [], player_id: null });
+    /* Signed out: the platform catalogue, exactly as before. `serverId` omitted
+     * means the platform partition — never "no filter" — so this branch is
+     * unchanged by custom servers existing. */
+    return NextResponse.json({
+      quests: await listActiveQuestsForWorld(world),
+      engagements: [],
+      player_id: null,
+    });
   }
   const user = await getUserById(session.user.id);
   if (!user) {
-    return NextResponse.json({ quests, engagements: [], player_id: null });
+    return NextResponse.json({
+      quests: await listActiveQuestsForWorld(world),
+      engagements: [],
+      player_id: null,
+    });
   }
 
   const playerId = await findOrCreatePlayer(session.user.id, user.email);
+  /* D2: entry with that server's items IN ADDITION TO defaults. `currentServer`
+   * re-checks membership, so a player removed since their last request drops
+   * back to the platform catalogue on this very call. */
+  const serverId = await currentServer(playerId);
+  const quests = await listActiveQuestsForWorld(world, serverId);
   const engagements = await getPlayerQuestEngagements(playerId);
-  return NextResponse.json({ quests, engagements, player_id: playerId });
+  return NextResponse.json({ quests, engagements, player_id: playerId, server_id: serverId });
 }
 
 export async function POST(request: NextRequest) {
@@ -57,7 +73,14 @@ export async function POST(request: NextRequest) {
     if (typeof questId !== 'string' || !questId.trim()) {
       return NextResponse.json({ ok: false, error: 'questId is required.' }, { status: 400 });
     }
-    const result = await acceptQuestEngagement(playerId, questId.trim());
+    /* The scope is resolved server-side, never read from the body.
+     *
+     * It does two jobs: an owner quest is only acceptable by somebody in that
+     * owner's server, and a PLATFORM quest accepted inside a custom server
+     * accrues to that server (D2 gives a member both catalogues). Both are
+     * decided by acceptQuestEngagement, from the quest row plus this value. */
+    const serverId = await currentServer(playerId);
+    const result = await acceptQuestEngagement(playerId, questId.trim(), serverId);
     if (!result.ok) {
       if (result.reason === 'quest_not_found') {
         return NextResponse.json(

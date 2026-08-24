@@ -134,3 +134,37 @@ and is excluded and named: `maze/tower-top` on `main`'s first maze run
 (`_computeView` found no tower on that seed — the same class of failure
 `lift-car` has).
 
+---
+
+## 2. The sweep, world by world
+
+Baseline `06b79f6` → `main` `86425d3`, first run of each. Every cell is the
+range of the per-framing delta over that world's whole framing set. **Bold**
+means the delta was the *same number in every framing*.
+
+| world | framings | materials | renderables | instanced | instances | world lights | world triangles | draw calls | programs (end of run) |
+|---|---|---|---|---|---|---|---|---|---|
+| station | 21 | **0** | **0** | **0** | **0** | **0** | 0 … +47,328 | −1,448 … +1,118 | 512 → 580 (+68) |
+| medieval | 7 | **0** | **0** | **0** | **0** | **0** | **0** | −38 … +17 | 427 → 350 (−77) |
+| citadel | 13 | **0** | **0** | **0** | **0** | **0** | 0 … +88,468 | −120 … +18 | 391 → 375 (−16) |
+| sports | 8 | **0** | **0** | **0** | **0** | **0** | +4,860 … +23,772 | −52 … +20 | 540 → 541 (+1) |
+| dock | 24 | **0** | **0** | **0** | **0** | **0** | −1,066 … −250 | −16 … +16 | 490 → 488 (−2) |
+| space | 15 | **−2** | **+1** | **+1** | **0** | **0** | **+18,480** | −15 … +8 | 423 → 420 (−3) |
+| cinder (planets) | 6 | **0** | **0** | **0** | **0** | **0** | **0** | −48 … 0 | 342 → 352 (+10) |
+| race | 12 | **−1** | **0** | **0** | **0** | **0** | +648 … +2,088 | **0** | 441 → 441 (0) |
+| maze | see §4 | — | — | — | — | — | — | — | — |
+
+The absolute figures on the baseline tree, first framing of each world, all
+reproduce the architecture baselines the branches declared before they authored
+anything:
+
+```
+  cinder    mats   18  meshes    34  inst   15  instances    2202  lights     1
+  citadel   mats   16  meshes   166  inst   20  instances     156  lights    63
+  dock      mats   86  meshes   166  inst   17  instances     762  lights   186
+  medieval  mats   41  meshes   654  inst  221  instances  178598  lights   156
+  race      mats   29  meshes   453  inst  129  instances    5506  lights     0
+  space     mats   43  meshes    44  inst    6  instances     537  lights     1
+  sports    mats  112  meshes   334  inst   74  instances   15071  lights     4
+  station   mats  225  meshes  1354  inst  217  instances   54837  lights   226
+```

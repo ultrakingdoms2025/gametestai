@@ -3605,9 +3605,36 @@ export class MedievalWorld extends World {
    * it. Without IBL, standard materials go dead flat in the shadowed half of
    * a golden-hour scene; this is what puts warm bounce back into the stone.
    */
+  /**
+   * THE WIDTH IS A PROGRAM CACHE KEY, NOT A QUALITY DIAL.
+   *
+   * `PMREMGenerator.fromEquirectangular` sizes its cube from `image.width / 4`
+   * and nothing else, and the resulting `envMapCubeUVHeight` is one of the
+   * fields Three folds into every program's cache key. At the 192 this used to
+   * be, medieval's prefiltered map came out 128 high while every other
+   * environment in the game - `Materials.getEnvMap`, sports, the yard, all of
+   * which go through `fromScene`, whose default cube is 256 - came out 1024.
+   *
+   * So arriving in the vale changed a cache key for every physical material on
+   * screen, including the player's own avatar and viewmodels, which no world
+   * warm can reach because they are not in any world's group. Measured on the
+   * production bundle: 24 of the 28 programs the arrival frame linked differed
+   * from an existing program in `envMapCubeUVHeight` and in nothing else.
+   *
+   * 1024 puts `_setSize` at 256 and the cube at the same 1024 as everything
+   * else, so the key stops moving and those programs cease to exist rather
+   * than being warmed around. This is the same fix as the light-slot pooling
+   * in gfx/LightRig.js, for the same reason: a cache-key ingredient that
+   * varies per world costs the whole program set at every crossing.
+   *
+   * The bake is a smooth analytic sky, so the extra resolution buys little and
+   * costs a one-off pass behind the loading screen; it is here for the key.
+   * The 8 MB float buffer is transient - `equirect.dispose()` is three lines
+   * below the upload.
+   */
   _buildEnvMap() {
-    const W = 192;
-    const H = 96;
+    const W = 1024;
+    const H = 512;
     const p = this._skyPalette();
     const sun = this.environment.sunDirection;
     const data = new Float32Array(W * H * 4);

@@ -2240,6 +2240,19 @@ export class SportsWorld extends World {
     sun.shadow.map = null;
   }
 
+  /**
+   * The exponential fog this world installs on the live scene for itself.
+   *
+   * Declared rather than left private because `fogExp2` is in Three's program
+   * cache key and this is the only world in the game that changes it - see the
+   * long note on `World.sceneFog`. The gateway preview warm reads this so it
+   * warms the program set the ARRIVAL asks for instead of one keyed to a
+   * linear fog that only the preview window ever uses.
+   */
+  get sceneFog() {
+    return this._fog;
+  }
+
   onActivate() {
     super.onActivate();
     this._setShadowMapSize(this._shadowMapSize);

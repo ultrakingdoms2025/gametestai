@@ -2470,7 +2470,23 @@ export class PortalSystem {
     this._previewScene.background = env.background ?? null;
     this._previewScene.environment = env.envMap ?? null;
     this._previewScene.environmentIntensity = env.envMapIntensity ?? 1;
-    if (env.fogFar > 0) {
+    /* THE DESTINATION'S OWN FOG, WHEN IT HAS ONE.
+     *
+     * `fogExp2` is in Three's program cache key. A world that installs its own
+     * exponential fog on the live scene - see `World.sceneFog`, and sports is
+     * the only one - therefore asks for a program set that a preview dressed
+     * in a linear fog never builds. That warm then linked, held for, drew and
+     * cached a set the game asks for nowhere except inside the gateway window,
+     * and the arrival frame paid for the real one in full: measured on the
+     * production bundle, 79 programs and a 28-42 s block on the frame the
+     * player stepped through.
+     *
+     * Taking the world's own instance also makes the window a truer picture of
+     * where it leads, which is what this method already says it is for. */
+    const ownFog = world.sceneFog ?? null;
+    if (ownFog) {
+      this._previewScene.fog = ownFog;
+    } else if (env.fogFar > 0) {
       this._previewFog.color.copy(env.fogColor);
       this._previewFog.near = env.fogNear;
       this._previewFog.far = env.fogFar;

@@ -1318,6 +1318,38 @@ async function prewarm() {
     avatar?.setVisible?.(true);
   } catch { /* non-fatal */ }
 
+  /* DEMOTE THE HEADLAMPS BEFORE COMPILING ANYTHING.
+   *
+   * `rehearse` runs `lightRig.update()` before every one of its frames and
+   * says why: "`warmSpawn` and `forceDrawable` between them can expose a light
+   * that was hidden (a car's headlamps), and one such light reaching
+   * `projectObject` would rebuild every program in the scene against a light
+   * count that never occurs again." The six mounts parked above have just been
+   * made VISIBLE, headlamps and all, and this compile had no such guard.
+   *
+   * Measured on the production bundle, by reading the cache key off every
+   * program in `renderer.info.programs` at the moment the boot warm finished:
+   *
+   *     107 of 358   numPointLights 12, numSpotLights 2   <- the live rig
+   *     230 of 358   numPointLights 33, numSpotLights 3   <- nothing, ever
+   *
+   * `RIG_BUDGET` is 12 point and 2 spot and `LightRig.update` hides everything
+   * outside the slots on every rendered frame, so a real frame cannot have 33.
+   * Nearly two thirds of the most expensive thing in the boot - a single frame
+   * measured between 46 s and 120 s - was building a program set the game can
+   * never ask for, and every first-use stall it was supposed to remove was
+   * still waiting for the player.
+   *
+   * One call, the same call `rehearse` makes, before the compile and before
+   * each warm frame that follows it. Nothing here moves a light, but the frames
+   * are cheap and the failure is silent, which is the wrong pair of properties
+   * to economise on. */
+  try {
+    lightRig.update(1 / 60);
+  } catch (err) {
+    console.warn('[prewarm] light rig update failed; the warm may be mis-keyed:', err);
+  }
+
   try {
     engine.renderer.compile(engine.scene, engine.camera);
   } catch (err) {
@@ -1328,6 +1360,7 @@ async function prewarm() {
   // light count means one program set, so there is nothing left to vary.
   for (let i = 0; i < 2; i++) {
     try {
+      lightRig.update(1 / 60);
       if (engine.postfx) engine.postfx.render(1 / 60);
       else engine.renderer.render(engine.scene, engine.camera);
     } catch { /* a warmup frame must never abort the boot */ }
@@ -1346,6 +1379,9 @@ async function prewarm() {
     for (const inst of loadout.instances ?? []) {
       loadout.select(inst.id);
       inst.setVisible?.(true);
+      // Selecting a weapon can show a viewmodel's own fill light; see the note
+      // on the compile above for what one stray light does to the key.
+      lightRig.update(1 / 60);
       if (engine.postfx) engine.postfx.render(1 / 60);
       else engine.renderer.render(engine.scene, engine.camera);
       await nextFrame();

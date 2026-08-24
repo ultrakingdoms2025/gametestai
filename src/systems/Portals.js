@@ -2219,7 +2219,48 @@ export class PortalSystem {
         transparent: true,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
-        side: THREE.DoubleSide,
+        /* ── FrontSide, AND IT HAS TO BE ──────────────────────────────────
+         *
+         * This was `DoubleSide`, and with two meshes that made every gateway
+         * sign in the game draw its own mirror image on top of itself.
+         *
+         * The plate below is built twice - a `front`, and a `back` turned
+         * through PI so its text reads the right way round from the other
+         * side. `DoubleSide` then draws BOTH of them from BOTH sides, so each
+         * view got the text plus a reversed copy of the text, summed by
+         * `AdditiveBlending` at 2 cm apart. `art-space` measured the strip at
+         * 9.3% asymmetric against 132% for a same-size control strip of wall,
+         * which is what a letterform plus its own mirror looks like. Affects
+         * at least citadel, dock, sports, space and medieval.
+         *
+         * Measured, per mesh and per side, before this was changed:
+         *
+         *   viewer in front   front mesh  +Z face   reads left-to-right
+         *                     back  mesh  -Z face   reads MIRRORED
+         *   viewer behind     front mesh  -Z face   reads MIRRORED
+         *                     back  mesh  +Z face   reads left-to-right
+         *
+         * So exactly one of the two is right from either side, and the whole
+         * defect is that the wrong one was drawn as well.
+         *
+         * ── AND DELETING THE BACK MESH IS NOT THE FIX ────────────────────
+         * The obvious repair is to drop `back` and let `DoubleSide` serve the
+         * reverse, and it does not work: the same measurement says the front
+         * plate alone reads MIRRORED from behind, because a double-sided plane
+         * shows its texture's +u axis to the viewer's LEFT when seen from its
+         * -Z face. `back` is what makes a sign readable from behind at all,
+         * and removing it would trade a mirrored overlay for mirrored text.
+         *
+         * `FrontSide` keeps both plates and draws each from its own side only:
+         * one legible copy per side, no mirror, and half the fill - the two
+         * additive plates used to rasterise on top of each other and the sign
+         * was drawing at twice the brightness it was authored for.
+         *
+         * It does NOT save a draw call. Both meshes are still submitted;
+         * back-face rejection happens in the rasteriser, not in
+         * `projectObject`, so the render list is the same length either way.
+         * The saving is fill rate. */
+        side: THREE.FrontSide,
       });
       this._signCache.set(key, mat);
     }

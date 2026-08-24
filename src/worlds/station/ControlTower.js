@@ -1,8 +1,6 @@
 import * as THREE from 'three';
-/* Lights are created HIDDEN. `LightRig` would hide them on its next walk
- * anyway, but the frame between construction and that walk is a frame in
- * which they count for Three's program cache key, and one such frame
- * re-links every program on screen. See gfx/WorldLight.js. */
+/* Lights are born HIDDEN: one frame with a world's own lights live re-links
+ * every program on screen. gfx/WorldLight.js has the whole of it. */
 import { pointLight } from '../../gfx/WorldLight.js';
 import { boxGeo, cylGeo, uvScale, GeoBatch } from './StationKit.js';
 import { CENTRE } from '../lod/DistanceLod.js';

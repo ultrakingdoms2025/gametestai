@@ -447,11 +447,19 @@ squares**. Its own comment records that brightness and size were already reduced
 exactly this complaint (*"reads as falling snow — or worse, as sensor noise on the lens"*), and
 photographed at 100% they still read as hard cream squares.
 
-**Measured before touching it**, using the ablation the naming in §2.1 made possible: pollen owns
-**2,064 px of a 1,440,000 px frame — 0.14%**. That is `art-dock`'s bloom, in a different
-costume: a still frame at 100% zoom is the wrong instrument for a system whose own comment says
-*"the motion is what sells it"*, and a shape change on `PointsMaterial` is a program-key change
-made on a screenshot read for a seventh of a percent of the frame. Refused.
+**Measured before touching it**, using the ablation the naming in §2.1 made possible. A
+small-bright-blob detector over a `corridor` framing with the cloud drawn and one with
+`--ablate maze.pollen` counts **5,329 speck pixels against 3,265** — so the cloud owns roughly
+**2,000 px of a 1,440,000 px frame, about 0.14%**. (Roughly, and stated as roughly: the two runs
+are different seeds, so the residue is hedge-texture noise that is not identical between them.
+It is an order of magnitude, and the order of magnitude is what decides this.)
+
+That is `art-dock`'s bloom in a different costume: a still frame at 100% zoom is the wrong
+instrument for a system whose own comment says *"the motion is what sells it"*, the fix is a
+program-key change on `PointsMaterial`, and the thing being fixed is a seventh of a percent of
+the frame. Refused — and flagged as the first thing to look at if this world gets another pass,
+because unlike the items above it the diagnosis is certain (three renders a mapless point sprite
+as a hard square) and only the cost/benefit is in doubt.
 
 ### 5.3 The ivy standoff
 

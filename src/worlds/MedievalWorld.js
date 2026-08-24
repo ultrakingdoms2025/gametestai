@@ -59,6 +59,7 @@ import {
   tileGrid, buildTile, TILE_METRES, TILE_LO_STRIDE, TILE_SWAP_DISTANCE, TILE_SKIRT_DROP,
 } from './medieval/TerrainTiles.js';
 import { GrassResidency } from './medieval/GrassResidency.js';
+import { loadBeastAssets } from './medieval/BeastAssets.js';
 
 /**
  * ALDERMOOR VALE - the medieval world.
@@ -1350,6 +1351,21 @@ export class MedievalWorld extends World {
       await fn.call(this);
     };
 
+    /* The authored beast features, started FIRST and awaited LAST.
+     *
+     * They are needed by `BeastBody`, which is constructed by
+     * `NPCManager.spawnForWorld` at activation - after this whole method has
+     * returned - so anything that resolves before the last line is early
+     * enough. Kicking the fetch off here rather than awaiting it in place lets
+     * two files and a lazily-imported glTF parser download across the fifteen
+     * seconds of world generation that follow instead of in front of them.
+     *
+     * `loadBeastAssets` never rejects: a 404 resolves to an empty map and
+     * every wolf in the vale is the procedural one, which is exactly what
+     * `node --test` builds and what a player on a bad connection gets. So this
+     * needs no `catch` and can never fail a boot. */
+    const beastAssets = loadBeastAssets();
+
     await step(0.02, 'Mixing pigments', this._buildTextures);
     await step(0.18, 'Tempering materials', this._buildMaterials);
     await step(0.26, 'Raising the vale', this._buildTerrain);
@@ -1365,6 +1381,7 @@ export class MedievalWorld extends World {
     await step(0.94, 'Sowing the woods', this._buildNature);
     await step(0.97, 'Lighting the hearths', this._buildAtmosphere);
     await step(0.99, 'Opening the sky-gate', this._buildGateAndSpawns);
+    await beastAssets;
     onProgress?.(1, 'Aldermoor Vale');
   }
 

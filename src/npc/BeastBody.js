@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { sweep, blob, blade } from '../gfx/Organic.js';
+import { beastParts } from '../worlds/medieval/BeastAssets.js';
 
 /**
  * Procedural quadruped bodies: the wolf, the bear and the camel.
@@ -874,6 +875,20 @@ export class BeastBody {
     return m;
   }
 
+  /**
+   * The authored geometries bound to one `node:slot` pair, or an empty array.
+   *
+   * Returned by reference and NEVER disposed here: the cache in `BeastAssets`
+   * owns them and every animal in a pack merges the same buffers. `merge()`
+   * calls `toNonIndexed()` on an indexed input and disposes only that copy,
+   * which is why the loader refuses a non-indexed part.
+   *
+   * @param {string} pair e.g. `'head:dark'`
+   */
+  _welds(pair) {
+    return this._authored?.get(pair) ?? [];
+  }
+
   /** Add a mesh, own its geometry, and file it as a shadow caster. */
   _add(parent, geo, mat, { cast = true, detail = false } = {}) {
     this._owned.push(geo);
@@ -911,6 +926,26 @@ export class BeastBody {
     const claw = this._mat(C.claw, { roughness: 0.35, metalness: 0.1 });
     this.materialSet = { coat, belly, dark, claw };
 
+    /**
+     * Authored hero features, or an empty list.
+     *
+     * Read ONCE per animal and bucketed by the `node:slot` pair the manifest
+     * names, so the merge lists below can splice their share in without each
+     * knowing the loader exists. Empty is the normal case in `node --test` and
+     * the correct case for a player whose download failed: every merge below
+     * is `[...procedural, ...authored]`, and with nothing authored that is
+     * byte-for-byte the animal that shipped before.
+     *
+     * @see src/worlds/medieval/BeastAssets.js for why they are merged rather
+     * than parented, and why they are never cloned.
+     */
+    this._authored = new Map();
+    for (const part of beastParts(this.species) ?? []) {
+      const pair = `${part.node}:${part.slot}`;
+      if (!this._authored.has(pair)) this._authored.set(pair, []);
+      this._authored.get(pair).push(part.geometry);
+    }
+
     /* ---- body: one merged, continuous mass ----
      *
      * Two descriptions of the same thing, and a profile carries exactly one of
@@ -922,6 +957,10 @@ export class BeastBody {
     const bodyParts = [P.hull ? loft(P.hull, 24) : sweep(P.barrel, 18)];
     for (const m of P.masses) bodyParts.push(massGeo(m, 1));
     if (P.hump) bodyParts.push(massGeo(P.hump, 1, 14));
+    // The dorsal crest, if this species has one authored. Appended rather than
+    // inserted, so with nothing authored the merge order - and therefore the
+    // resulting buffer - is exactly what it was.
+    bodyParts.push(...this._welds('body:coat'));
     const bodyMesh = this._add(this.tilt, merge(bodyParts), coat);
     /** The manager's LOD and the combat flash both look for this. */
     this.mesh = bodyMesh;
@@ -932,7 +971,21 @@ export class BeastBody {
     this.neck = new THREE.Group();
     this.neck.position.set(...P.neck.at);
     this.tilt.add(this.neck);
-    this._add(this.neck, sweep(P.neck.sections, 16, { capStart: false }), coat);
+    /* The ruff, if this species has one authored - and the un-merged sweep if
+     * it does not.
+     *
+     * The branch is not a micro-optimisation, it is a correctness gate that
+     * `camel.test.mjs` caught. Every other weld site here was ALREADY a
+     * `merge()`, so appending an empty list to it changes nothing; the neck
+     * was a bare `sweep`, and `merge()` calls `toNonIndexed()` on its inputs -
+     * so wrapping it unconditionally expanded an indexed neck into a
+     * non-indexed one on every animal in the game, including the ones with no
+     * authored parts at all. `bodyDigest` pins the wolf's and the bear's
+     * vertices and said so immediately. A player whose download failed must
+     * get the animal that shipped before, to the last bit. */
+    const neckWelds = this._welds('neck:coat');
+    const neckGeo = sweep(P.neck.sections, 16, { capStart: false });
+    this._add(this.neck, neckWelds.length ? merge([neckGeo, ...neckWelds]) : neckGeo, coat);
 
     this.head = new THREE.Group();
     this.head.position.set(...P.head.at);
@@ -943,6 +996,7 @@ export class BeastBody {
         sweep(P.head.sections, 16),
         massGeo(P.head.cheeks, -1, 10),
         massGeo(P.head.cheeks, 1, 10),
+        ...this._welds('head:coat'),
       ]),
       coat
     );
@@ -963,9 +1017,15 @@ export class BeastBody {
       rz: 0.014,
     };
     const eyeRz = eye.rz ?? eye.r;
+    /* The authored nose pad rides in here, and that is a decision rather than
+     * a convenience: `dark` is the head's only non-coat surface, so a nose
+     * merged into the eyes arrives already the right colour and costs no mesh.
+     * It inherits `detail: true` with them, which is correct - a 3 cm pad and
+     * a 1.7 cm eye bead stop being resolvable at the same distance. */
     const eyeGeo = merge([
       blob(eye.r, eye.r, eyeRz, -eye.x, eye.y, eye.z, 8),
       blob(eye.r, eye.r, eyeRz, eye.x, eye.y, eye.z, 8),
+      ...this._welds('head:dark'),
     ]);
     this._add(this.head, eyeGeo, dark, { cast: false, detail: true });
 
@@ -997,7 +1057,14 @@ export class BeastBody {
     this.jaw.position.set(...J.at);
     this.head.add(this.jaw);
     this.jawGape = J.gape;
-    this._add(this.jaw, sweep(J.sections, 12, { capStart: false }), coat);
+    /* COUNTERSHADING, part one. See the note on `belly` above: this mesh and
+     * the four lower legs already existed and already cost a draw call each,
+     * so moving them onto the `belly` surface is free and is the difference
+     * between an animal and a single-value lozenge. The lower jaw is the right
+     * place for it because every mammal's is pale (or, on a bear, DARK -
+     * `bear.colours.belly` is under its coat range, and the same swap reads
+     * correctly for the opposite reason). */
+    this._add(this.jaw, sweep(J.sections, 12, { capStart: false }), belly);
 
     /* Canines, top and bottom. Built into the skull and the jaw respectively
      * so the gape opens the mouth rather than sliding the teeth apart. */
@@ -1044,10 +1111,23 @@ export class BeastBody {
       const lower = new THREE.Group();
       lower.position.set(0, L.kneeY, 0);
       upper.add(lower);
+      /* COUNTERSHADING, part two - the cannon and the paw, on `belly`.
+       *
+       * This is where the wasted clone becomes the point. Every profile in
+       * this file declares a `belly` colour, a material was cloned for it on
+       * every animal built since the file was written, and it was assigned to
+       * nothing: a wolf whose table says its underside is 0x9a9184 shipped one
+       * flat 0x6b6259 from nose to tail. Photographed at 5.5 m the pack read
+       * as four identical single-value lozenges.
+       *
+       * Below the knee is the right half of the animal to spend it on. It is
+       * what a viewer sees against the ground - the highest-contrast edge on a
+       * quadruped - and unlike a belly panel it needs no new mesh, because the
+       * lower leg is already its own draw call. Countershading for nothing. */
       this._add(lower, merge([
         sweep(L.lower.map((k) => ({ y: k.y, z: 0, rx: k.rx, ry: k.ry })), 12, { capStart: false }),
         blob(L.paw.r[0], L.paw.r[1], L.paw.r[2], L.paw.p[0], L.paw.p[1], L.paw.p[2], 10),
-      ]), coat);
+      ]), belly);
 
       /* Claws: short spikes off the front of the paw.
        *

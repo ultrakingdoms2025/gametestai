@@ -77,7 +77,18 @@ test('the halo material carries the falloff, and still costs one draw', () => {
   assert.ok(mat.map, 'the halo material has no map - it is a flat card again');
   assert.equal(mat.blending, THREE.AdditiveBlending);
   assert.equal(mat.depthWrite, false);
-  assert.equal(mat.toneMapped, false, 'an HDR halo that is tone mapped is just a white square');
+  /* `toneMapped: false` is pinned, but NOT for the reason this line used to
+   * give ("an HDR halo that is tone mapped is just a white square"). On the
+   * shipped path the flag does nothing at all: three 0.185.1 only applies
+   * in-shader tone mapping when the render target is null
+   * (`WebGLPrograms.getParameters`), and `PostFX` renders the scene into a
+   * HalfFloat composer target with ACES applied later by `OutputPass`. The
+   * flag bites on exactly one path - `PostFX` disabled, `renderer.render`
+   * straight to the canvas - where it WOULD clip this HDR colour to a flat
+   * white square. So it is pinned as a known-latent property rather than as a
+   * live defence, and the next person to reach for it should read
+   * `docs/superpowers/specs/2026-08-23-orb-hunt-design.md` section 3.1 first. */
+  assert.equal(mat.toneMapped, false, 'the halo stopped opting out of tone mapping');
 
   /* NO PRIVATE PROGRAM - which is a different claim from "no program".
    *

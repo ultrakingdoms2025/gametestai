@@ -35,9 +35,11 @@
  *     and that regularity is what the eye reads as "primitive". Eight of the
  *     twenty faces are split into four here and the other twelve are left
  *     alone, so the facet SIZES differ by 4x across one body.
- *   - **Fracture planes.** Two seeded half-space cuts. Ejecta is a fragment:
- *     it came off something, and the faces it came off on are flat and large
- *     and meet the rest on a hard edge. Flattening costs no triangles at all.
+ *   - **Asymmetry.** Two seeded half-space cuts, each pulling one vertex in on
+ *     a non-opposed axis. Note what this is NOT: at twenty triangles it is not
+ *     a fracture FACE, because a 37-degree cap cannot contain two of twelve
+ *     vertices that are 63.4 degrees apart. See step 3 below, where that was
+ *     measured off the committed bytes rather than assumed.
  *   - **A silhouette with bays in it.** Three octaves of value noise on the
  *     radius rather than the regular hull, so the outline is not a rounded
  *     polygon - and so the per-instance tumble `buildPropField` already
@@ -335,19 +337,37 @@ export function buildBlock(splits = SPLITS, seed = 0x51a7c0) {
     else tris.push([x, m1, z], [m1, m2, z]);
   }
 
-  /* ---- 3. Two fracture planes ----------------------------------------
-   * A half-space cut: every vertex beyond the plane is PROJECTED onto it, which
-   * flattens a cap into one broad face without adding or removing a triangle.
+  /* ---- 3. Two clipping planes ----------------------------------------
    *
-   * The offsets are 0.80 and 0.86, and both numbers are a lesson borrowed
-   * rather than re-learned. `make-belt-glb.mjs` records that its first
-   * fracture planes sat at 0.58-0.74 and each of them sheared a 55-degree cap -
-   * a quarter of the whole body - so the lit hemisphere came out as one
-   * unbroken plane and read as a smooth disc, "the same defect the 80-triangle
-   * rock had, arrived at from the other side". A plane at offset `o` on a unit
-   * body shears a cap of half-angle `acos(o)`: 0.80 is 37 degrees, 0.86 is 31.
-   * They are also on deliberately non-opposed normals, because two parallel
-   * cuts make a slab. */
+   * A half-space cut: every vertex beyond the plane is PROJECTED onto it,
+   * without adding or removing a triangle.
+   *
+   * ── AND AT TWENTY TRIANGLES THIS IS NOT A FRACTURE FACE ──────────────
+   *
+   * It was described as one until the committed bytes were measured, and they
+   * do not support the claim. A plane at offset `o` on a unit body catches
+   * every vertex inside a cap of half-angle `acos(o)` - 37 degrees at 0.80,
+   * 31 at 0.86 - and an icosahedron's twelve vertices are **63.4 degrees
+   * apart**, so a cap that size contains at most ONE of them. One projected
+   * vertex tilts the five faces around it; it does not make any two of them
+   * coplanar. Measured off the committed file: the most nearly parallel pair
+   * of faces in the whole body is at dot 0.877, against 0.7947 for a regular
+   * icosahedron's adjacent faces, and there are ZERO coplanar pairs.
+   *
+   * A broad shear facet spanning several triangles is simply not expressible
+   * at this tessellation. `make-belt-glb.mjs` gets one because it has 500
+   * triangles and 252 vertices to cut across; that file's warning about
+   * over-cutting (its first planes sheared 55-degree caps and the lit
+   * hemisphere came out as one unbroken plane reading as a smooth disc) is the
+   * opposite failure and cannot happen here for the same reason.
+   *
+   * So what the planes DO buy, stated as what it is: asymmetry. Two vertices
+   * pulled in on non-opposed axes make the body lopsided in a way three
+   * octaves of radial noise on their own do not, and lopsided is what makes
+   * the per-instance tumble read as a different rock each time. Kept for that,
+   * and the offsets are unchanged - they are the right numbers for the job
+   * they actually do. Non-opposed normals because two parallel cuts make a
+   * slab. */
   const planes = [];
   for (let k = 0; k < 2; k++) {
     const t = hash1(seed + k * 71) * Math.PI * 2;

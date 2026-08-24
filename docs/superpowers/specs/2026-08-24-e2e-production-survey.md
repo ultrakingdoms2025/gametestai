@@ -626,9 +626,40 @@ adds. No game or site source file was modified.
 | `scripts/e2e-worlds.mjs` | the eighteen-world pass and the repeated entry/exit rounds |
 | `docs/superpowers/specs/2026-08-24-e2e-production-survey.md` | this document |
 | `docs/superpowers/specs/2026-08-24-e2e-frame-gaps.json` | the gap distributions behind §6, both runs, so the criterion can be re-read |
+| `scripts/flake-hunt.mjs` | runs the suite N times and names every test that failed in any run (§10) |
 
 Nothing under `src/`, `site/`, `admin/` or `scripts/tests/` was touched. `git diff --stat`
 against the surveyed commit shows only the five files above.
+
+---
+
+## 10. The suite did not give the same answer twice
+
+Eight runs of `npm test` on an unchanged tree (only new scripts and documents added):
+
+| runs | result |
+|---|---|
+| **7** | `3279 pass, 0 fail` |
+| **1** | `3263 pass, **2 fail**` |
+
+The failing run is the one that mattered least and cost most: **its output had gone through
+`tail -8`, so the two names were lost** — my own mistake, and the reason
+`scripts/flake-hunt.mjs` now exists and keeps the full TAP of every run.
+
+**Not reproduced in seven further attempts**, so this is an observation, not a diagnosis.
+The one datum worth passing on is the circumstance: the failing run was the only one
+executed **while the playthrough browser and the preview server were both running**, i.e.
+under heavy CPU and GPU contention. The other seven had the machine largely to themselves.
+That is consistent with two timing-sensitive tests, and it is consistent with several other
+things; I did not confirm it.
+
+**Why it is worth a line in this report at all.** This suite is the merge gate. A gate that
+goes red twice in a thousand for no visible reason trains everyone who sees it red to run it
+again rather than read it — and that habit is precisely how a real failure gets waved
+through. The names are cheap to find (`node scripts/flake-hunt.mjs --runs 20` under load)
+and expensive to keep not knowing.
+
+---
 
 ### One number worth a second look
 

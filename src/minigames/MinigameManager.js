@@ -221,6 +221,8 @@ export class MinigameManager {
      * 12 m of the crown centre and the leap prompt reaches 3 m of a point 8.2 m
      * away from it, so both are pressable from their own spots. */
     this._viewpointPrompt = null;
+    /** A talkable NPC whose HUD prompt outranks a venue. See `_keyTaken`. */
+    this._priorityNpc = null;
 
     /** @type {Array<() => void>} */
     this._offs = [];
@@ -228,6 +230,25 @@ export class MinigameManager {
       this._offs.push(bus.on('interior:prompt', (e) => { this._interiorPrompt = e?.text ?? null; }));
       this._offs.push(bus.on('portal:near', (e) => { this._nearPortal = e?.portal ?? null; }));
       this._offs.push(bus.on('viewpoint:prompt', (e) => { this._viewpointPrompt = e?.text ?? null; }));
+      /* A QUEST MANAGER or LOREKEEPER outranks a venue in the HUD's prompt,
+       * so it must outrank it for the KEY too. Those two are named rather
+       * than "any talkable NPC" because the HUD puts exactly those two above
+       * the venue branch and every other NPC below it - the lifeguard patrols
+       * the pool deck, and being offered a match there rather than a chat is
+       * deliberate and documented.
+       *
+       * Without this, the station hub deck reads "E - Quest Board" while E
+       * does nothing: the concourse round's disc has to hold the whole
+       * contest, so it covers most of the deck, and 7 of the 12 talkable NPCs
+       * stand inside it. The words and the key disagreed, which is the exact
+       * fault the `viewpoint:prompt` line above was added to fix - and the
+       * note in `HUD._updatePrompt` says why the repair belongs HERE rather
+       * than in the branch order: reordering the HUD would have changed the
+       * words without changing the key. */
+      this._offs.push(bus.on('chat:available', (e) => {
+        const npc = e?.npc ?? null;
+        this._priorityNpc = (npc?.isQuestManager || npc?.isLorekeeper) ? npc : null;
+      }));
       // A contest is bound to the world it started in. Leaving mid-contest
       // abandons it rather than leaving a state machine running over a pool
       // that is no longer in the scene. Same reasoning as RaceManager's.
@@ -244,6 +265,7 @@ export class MinigameManager {
        * comment over the same decision, for the same bug. */
       this._offs.push(bus.on('world:changed', ({ id, world }) => {
         this._worldId = id ?? null;
+        this._priorityNpc = null;
         this.arm(world ?? null);
       }));
       this._offs.push(bus.on('player:died', () => this._teardown()));
@@ -642,7 +664,8 @@ export class MinigameManager {
 
   /** True when another system has a better claim on E this frame. */
   get _keyTaken() {
-    return !!this._interiorPrompt || !!this._nearPortal || !!this._viewpointPrompt;
+    return !!this._interiorPrompt || !!this._nearPortal || !!this._viewpointPrompt
+      || !!this._priorityNpc;
   }
 
   _pollPrompt() {

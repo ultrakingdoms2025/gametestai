@@ -151,7 +151,7 @@ means the delta was the *same number in every framing*.
 | dock | 24 | **0** | **0** | **0** | **0** | **0** | −1,066 … −250 | −16 … +16 | 490 → 488 (−2) |
 | space | 15 | **−2** | **+1** | **+1** | **0** | **0** | **+18,480** | −15 … +8 | 423 → 420 (−3) |
 | cinder (planets) | 6 | **0** | **0** | **0** | **0** | **0** | **0** | −48 … 0 | 342 → 352 (+10) |
-| race | 12 | **−1** | **0** | **0** | **0** | **0** | +648 … +2,088 | **0** | 441 → 441 (0) |
+| race | 12 | **−1** | **0** | **0** | **0** | **0** | +648 … +2,088 | −6 … 0 | 441 → 441 (0) |
 | maze | see §4 | — | — | — | — | — | — | — | — |
 
 The absolute figures on the baseline tree, first framing of each world, all
@@ -168,3 +168,164 @@ anything:
   sports    mats  112  meshes   334  inst   74  instances   15071  lights     4
   station   mats  225  meshes  1354  inst  217  instances   54837  lights   226
 ```
+
+---
+
+## 3. Attribution: every non-zero delta, matched to the branch that declared it
+
+### 3.1 station — `art-station` (`8452d71`)
+
+Declared: *"materials 225 → 225, renderables 1354 → 1354, instanced meshes 217
+→ 217, world lights 226 → 226. ZERO in all 21"*, and **+47,328 world
+triangles** — 204 crowd figures × 232 triangles each, declared in its §4.1 as
+*"the correct place for the cost and it is reported rather than hidden"*.
+
+Re-measured, framing for framing:
+
+```
+plaza-wide               3040870 -> 3088198 (+47328)
+plaza-centre             3000812 -> 3048140 (+47328)
+portal-medieval          2953922 -> 3001250 (+47328)
+portal-sports            2744594 -> 2791922 (+47328)
+street-level             2880964 -> 2928292 (+47328)
+district-east            3147140 -> 3194468 (+47328)
+hull-outward             2786914 -> 2830994 (+44080)
+window-apron             2627314 -> 2671394 (+44080)
+apron-wide               3306496 -> 3353824 (+47328)
+dome-inside              3272342 -> 3319670 (+47328)
+hab-stacks               2651312 -> 2691072 (+39760)
+hab-lobby                2637302 -> 2677062 (+39760)
+link-galley              2337798 -> 2337798 (0)
+zone-habitation          2180736 -> 2180736 (0)
+zone-habitation-court    3322754 -> 3370082 (+47328)
+zone-gym                 2156800 -> 2156800 (0)
+zone-gym-court           2203364 -> 2203364 (0)
+zone-construction        2120816 -> 2120816 (0)
+zone-construction-court  2419360 -> 2419360 (0)
+zone-canteen             2309204 -> 2309204 (0)
+zone-canteen-court       3319994 -> 3367322 (+47328)
+```
+
+That is `art-station`'s published table **to the triangle, in all 21 rows** —
+the same twelve at +47,328, the same two at +44,080, the same two at +39,760
+and the same five zeros, off the same absolute before-values. **Declared.
+Matched.**
+
+### 3.2 medieval — `art-medieval` (`830f598`)
+
+Declared: *"shader programs 352 → 352, materials 41 → 41, world triangles
+identical to the triangle. Zero by construction"* — the authored geometry
+belongs to beasts, beasts are NPCs, and `worldTriangles()` does not walk them.
+
+Re-measured: world triangles identical in all seven framings (2,286,650 /
+2,162,308 / 2,469,140 / 2,319,604 / 2,291,376 / 1,840,998 / 2,639,514, both
+trees), materials 41, renderables 654–655, instanced meshes 221–222, lights
+156 — every one of them zero. **Declared. Matched.**
+
+### 3.3 citadel — `art-citadel` (`dd97f35`)
+
+Declared: +80,460 / +80,428 / +80,428 / +88,468 / +88,468 / +88,468 / +88,468
+on the eight mesa framings, +2,504 on three ring framings, 0 on three, with
+materials, renderables, instanced meshes and world lights identical in all
+thirteen.
+
+Re-measured:
+
+```
+gate-approach        351259 -> 431719 (+80460)
+gate-spawn           342159 -> 422587 (+80428)
+souk-alley           264753 -> 345181 (+80428)
+souk-roofs           345172 -> 433640 (+88468)
+ward-centre          307492 -> 395960 (+88468)
+minaret-bridge       313248 -> 401716 (+88468)
+tower-top            308631 -> 397099 (+88468)
+desert-overview      237743 -> 240247  (+2504)
+caravanserai-mast     23968 ->  23968      (0)
+undercliff-terrace   108848 -> 108848      (0)
+deepworks-rim        268591 -> 271095  (+2504)
+ashfall-ward          57368 ->  57368      (0)
+eyrie-summit         272843 -> 275347  (+2504)
+```
+
+Thirteen rows, thirteen matches, absolute values included. **Declared. Matched.**
+
+### 3.4 sports — `art-sports` (`76e36d5`)
+
+Declared: **+23,772** in six of seven framings and **+23,088** at `ski-slope`,
+the 684 difference being *"exactly the 19-figure `carry` mesh outside the
+frustum, 19 × 36"*.
+
+Re-measured: +23,772 at `skatepark-wide`, `skatepark-bowl`, `bowl-interior`,
+`courts` and `pool`; **+23,088** at `ski-slope` **and** at `track`; +4,860 at
+`entrance-portal`. The two rows that differ from the branch's table are the two
+framings that branch had itself recorded as broken — `entrance-portal`
+photographed the *station* in its run, and `track` photographed the car park
+from off the terrain edge. On this sweep both landed inside sports, on both
+trees, and both moved by exactly the declared shape (23,772 less the carry
+mesh, or a partial crowd in frustum). Materials 112, renderables 334, instanced
+74, lights 4 — zero in all eight. **Declared. Matched.**
+
+### 3.5 dock — `art-dock` (`e067a5b`)
+
+Declared: **−250 triangles in 21 of 24 framings**, −1,066 in the three `-in`
+framings, materials 86, renderables 166, instanced 17, lights 186 unmoved,
+programs 490 → 490.
+
+Re-measured: −250 in exactly 21 framings, **−1,066 in exactly `kestrel-in`,
+`dray-in` and `pike-in`**, 86 / 166 / 17 / 186 flat in all 24, programs at end
+of run 490 → 488. The one world where the phase made the budget **smaller**,
+and it still does. **Declared. Matched.**
+
+### 3.6 space — `art-space` (`b47ca48`)
+
+The one branch that declared an overrun rather than a zero: *"+1 renderable, +1
+instanced mesh, +2 draw calls, +18,480 triangles"*, with four costed
+alternatives, and **materials 43 → 41** — three byte-identical belt materials
+merged into one.
+
+Re-measured: **+18,480 triangles in every one of the fifteen framings,
+exactly**; materials −2; renderables +1; instanced meshes +1; instances and
+lights unmoved; geometries 332 → 333; draw calls +2 in twelve and 0 in three.
+Every number that branch declared, and no number it did not. **Declared.
+Matched.**
+
+### 3.7 cinder / the planets — `art-planets` (`a57c4fe`)
+
+Declared: *"World triangles: 0 in all six framings. The substitution is exactly
+free."*
+
+Re-measured: **0 in all six**; materials 18, renderables 34, instanced meshes
+15, lights 1, geometries 328 — all zero. Draw calls −48 … 0, which is the
+excursion band `art-planets` §6.2 measured **on this exact world on identical
+code** (*"−2..+48 across runs"*) and warned was not a noise floor even when
+three runs agreed. **Declared. Matched.**
+
+### 3.8 race — `art-race` (`0cc1e24`)
+
+Declared: materials **29 → 28** (one *fewer*), triangles **+648 … +2,088**,
+draw calls unchanged, renderables 453, instanced 129, instances 5,506, lights
+0, programs 441 at the end of both runs.
+
+Re-measured, and this is the strongest single result in the sweep: the twelve
+subject framings reproduce the `before-report.json` and `after-report.json`
+`art-race` committed **byte for byte** on draw calls, world triangles,
+materials, renderables, instanced meshes, instances and world lights.
+
+```
+marshal-post-profile        810504 -> 811944 (+1440)
+marshal-post-three-quarter  684036 -> 684828  (+792)
+marshal-post-front          709112 -> 710552 (+1440)
+grandstand-profile          724268 -> 725060  (+792)
+grandstand-three-quarter    661430 -> 662222  (+792)
+grandstand-front            647842 -> 649282 (+1440)
+tyre-stack-profile          871992 -> 873432 (+1440)
+tyre-stack-three-quarter    729886 -> 731326 (+1440)
+tyre-stack-front            648546 -> 649986 (+1440)
+chicane-profile             363818 -> 364466  (+648)
+chicane-three-quarter       488644 -> 489292  (+648)
+chicane-front               891288 -> 893376 (+2088)
+```
+
+The baseline column is also `art-race`'s own before-column, which means nothing
+between `06b79f6` and that branch's merge base touched this world at all.
+Programs at end of run: **441 → 441**. **Declared. Matched.**

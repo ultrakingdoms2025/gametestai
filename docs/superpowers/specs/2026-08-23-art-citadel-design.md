@@ -274,12 +274,66 @@ this pass: the caravans, the streamed cast and the loot are alive and are not in
 same places twice, and the two framings that move most (`deepworks-rim` −158,
 `caravanserai-mast` −48) are the two with a caravan road through them.
 
-**Programs.** See §4.3 — this is the one number the pass had to go and re-measure
-rather than report.
+**Programs.** Zero in eleven of thirteen. The two that moved are the last two ring
+framings, and §4.3 is the four-run experiment showing the base tree's own last view
+swinging by 61 on unchanged code — this is the one number the pass had to go and
+re-measure rather than report.
 
 ### 4.3 The programs: cache-fill order, not a cost
 
-PROGRAM_VARIANCE_SECTION
+The `after` run showed `caravanserai-mast` at +51 programs and `eyrie-summit` at
++26, against zero in the other eleven. Reporting that as a cost would have been
+wrong, and reporting it as "probably variance" would have been worse - so it was
+measured. **Four runs of the same script, two on this branch and two on the base
+commit `a60f1ae` checked out into this same worktree:**
+
+| view | base run 1 | base run 2 | after run 1 | after run 2 |
+|---|---|---|---|---|
+| gate-approach | 239 | 239 | 239 | 239 |
+| gate-spawn | 239 | 239 | 239 | 239 |
+| souk-alley | 239 | 239 | 239 | 239 |
+| souk-roofs | 239 | 239 | 239 | 239 |
+| ward-centre | 239 | 239 | 239 | 239 |
+| minaret-bridge | 239 | 239 | 239 | 239 |
+| tower-top | 239 | 239 | 239 | 239 |
+| desert-overview | 239 | **300** | 239 | **285** |
+| caravanserai-mast | 239 | **329** | **290** | **329** |
+| undercliff-terrace | 329 | 329 | 329 | 329 |
+| deepworks-rim | 329 | 329 | 329 | 329 |
+| ashfall-ward | 329 | **340** | 329 | 329 |
+| eyrie-summit | 329 | **390** | **355** | **366** |
+
+**The base tree's own last view swings 329 to 390 - a spread of 61 - on code that
+did not change.** Both of this branch's values, 355 and 366, sit inside that
+spread and below the base tree's higher run. The eight framings the pass actually
+changes are pinned at 239 in all four runs.
+
+The mechanism is cache-fill order, not cost: the outer ring's regions and caves
+compile their programs as the harness walks the player out to them, and the
+framing at which the fill completes moves by one or two views between runs
+because the caravans, the streamed cast and the light rig are not in the same
+state twice. `renderer.info.programs.length` is a live count of what has been
+compiled so far, not of what the world needs.
+
+**So: no program cost is detectable, and this harness cannot resolve one at the
+last two framings.** What can be stated without a caveat is the thing that
+*creates* a program family, and all three are pinned by measurements that do not
+move: no material was added (headless A/B, `15 -> 15`, and the material name sets
+compare `deepEqual`), no light was added (`worldLights` delta 0 in all thirteen
+framings), and no render-state flag changed (`renderables`, `instancedMeshes`
+delta 0 in all thirteen).
+
+The same experiment settles the draw calls in §4.2. Base run 1 against base run 2,
+unchanged code: `tower-top` 753 -> 805, `minaret-bridge` 912 -> 876,
+`ward-centre` 1044 -> 1038. Run-to-run motion of +-50 draws on a flat renderable
+count, which is the band the -158..+2 in the before/after table sits inside.
+
+`art-medieval` recorded one instance of this as "pre-existing run-to-run variance
+in when the program cache fills" and moved on. This is the same thing measured
+rather than asserted, and the finding for the seven `art-<world>` branches still
+to come is: **`programs` is only a gate on the framings that reach it before the
+cache stops filling. Past that point it needs a repeat run on the base tree
+before any delta means anything.**
 
 ---
 
@@ -299,13 +353,16 @@ argument rests on are committed alongside this spec:
 | `…/before-tower-top.jpg` | the roofscape the world is played on: a field of identical tan slabs |
 | `…/after-tower-top.jpg` | shade canopies, washing, jars and stair heads, and the first colour on any roof |
 | `…/before-souk-roofs.jpg` / `…/after-souk-roofs.jpg` | the same from inside the network |
+| `…/before-desert-overview.jpg` / `…/after-desert-overview.jpg` | the whole mesa from 231 m: the same skyline, with a roofscape that now has awnings on it |
 | `…/after-facade-close.jpg` | a sunlit ring-6 facade at 9 m: cornice, screened windows, string course, arched doorways |
 | `…/after-door-close.jpg` | an authored interior's front door under its arch |
 | `…/defect-nan-normals-gate.jpg` | **the gatehouse as a white cloud.** 64 zero-length normals in a valid `.glb`, and what they do through bloom. §3 |
 
 Full run directories while this worktree lives:
-`.probe/art-citadel/{before,mid1,mid2,mid3,mid4,after,after2,facade,screen}/`, each
-with a `report.json`, and `after/diff.json`.
+`.probe/art-citadel/{before,before2,mid1,mid2,mid3,mid4,after,after2,facade,screen}/`,
+each with a `report.json`, plus `after/diff.json` and `after2/diff.json`. `before2`
+is the base commit `a60f1ae` checked out into this same worktree and shot with the
+same script — the control run §4.3 rests on.
 
 ---
 

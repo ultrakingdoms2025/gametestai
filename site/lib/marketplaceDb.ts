@@ -57,6 +57,20 @@ export async function ensureMarketplaceSchema() {
       updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `);
+  /* `server_id` is READ by the catalogue queries below, which state their
+   * scope as `server_id IS NULL` for the platform partition. Phase 7 added the
+   * column, but its only `ALTER` lived in `customServers.ts` — a module this
+   * route never calls. So in production the SELECT threw
+   * `column "server_id" does not exist` (42703) and `/api/marketplace/items`
+   * answered 500 to every caller, for as long as nothing happened to have
+   * ensured the custom-server schema first.
+   *
+   * `lore.ts` predicted this exact failure in a comment and defended against
+   * it — "must not depend on another module having run first" — which is why
+   * `/api/lore` was the only Postgres-backed route still answering 200. An
+   * ensure belongs with the READ that needs it, not with whichever module
+   * happened to introduce the column. */
+  await query(`ALTER TABLE marketplace_items ADD COLUMN IF NOT EXISTS server_id TEXT`).catch(() => {});
   await query(`CREATE INDEX IF NOT EXISTS marketplace_items_world_idx ON marketplace_items(world_name, is_active, sort_order, name)`);
   await query(`CREATE INDEX IF NOT EXISTS marketplace_items_category_idx ON marketplace_items(category, is_active, sort_order, name)`);
   await query(`CREATE INDEX IF NOT EXISTS marketplace_items_search_idx ON marketplace_items USING GIN (to_tsvector('simple', name || ' ' || description))`).catch(() => {});

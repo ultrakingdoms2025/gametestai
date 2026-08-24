@@ -604,6 +604,21 @@ async function runQuestSchema(): Promise<void> {
   // exist. `repeatable` defaults FALSE so any quest authored before the column
   // existed stays one-shot — the safe direction for the credit economy.
   await pgQuery(`ALTER TABLE quests ADD COLUMN IF NOT EXISTS steps TEXT`).catch(() => {});
+  /* `server_id` is READ by `listActiveQuestsForWorld` (and every other quest
+   * read, which all state their scope as `server_id IS NULL` for the platform
+   * partition). Phase 7 added the column, but its only `ALTER` lived in
+   * `leaderboard.ts` — a module this route never calls. So in production the
+   * SELECT threw `column "server_id" does not exist` (42703) and
+   * `/api/game/quests` answered 500 to every caller, signed in or out: 78
+   * quests and 398 steps unreachable, for as long as nothing happened to have
+   * called the leaderboard first.
+   *
+   * `lore.ts` predicted this exact failure in a comment and defended against
+   * it — "must not depend on another module having run first" — which is why
+   * `/api/lore` was the only Postgres-backed route still answering 200. An
+   * ensure belongs with the READ that needs it, not with whichever module
+   * happened to introduce the column. */
+  await pgQuery(`ALTER TABLE quests ADD COLUMN IF NOT EXISTS server_id TEXT`).catch(() => {});
   await pgQuery(
     `ALTER TABLE quests ADD COLUMN IF NOT EXISTS repeatable BOOLEAN NOT NULL DEFAULT FALSE`
   ).catch(() => {});

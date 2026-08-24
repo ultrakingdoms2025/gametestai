@@ -146,6 +146,33 @@ function toQuest(row: Record<string, unknown>): ServerQuest {
  * Not part of `ensureCustomServerSchema` because it is the only object here that
  * belongs to a table another app owns, and because it is cheap and idempotent.
  */
+/**
+ * Ensure the columns THIS module reads and writes exist.
+ *
+ * Every function here stamps and filters on `server_id`, on tables another app
+ * owns. Phase 7 put those `ALTER`s wherever the column was introduced rather
+ * than with the reads: `quests.server_id` only in `leaderboard.ts`, and
+ * `marketplace_items.server_id` only in `customServers.ts` — which does NOT
+ * cover `quests`. So this module depended on one of two unrelated modules
+ * having run first.
+ *
+ * That dependency is not theoretical. In production it took
+ * `/api/game/quests` and `/api/marketplace/items` to HTTP 500 for every
+ * caller, signed in or out, with `column "server_id" does not exist` (42703).
+ * `lore.ts` is the one module that ensured its own column, wrote down why —
+ * "must not depend on another module having run first" — and is the one
+ * Postgres-backed route that stayed up.
+ *
+ * Idempotent and additive, so it is safe on every call and on a database that
+ * already has them.
+ */
+async function ensureServerContentColumns(db: Db): Promise<void> {
+  await db.query(`ALTER TABLE quests ADD COLUMN IF NOT EXISTS server_id TEXT`).catch(() => {});
+  await db
+    .query(`ALTER TABLE marketplace_items ADD COLUMN IF NOT EXISTS server_id TEXT`)
+    .catch(() => {});
+}
+
 async function ensureQuestSequence(db: Db): Promise<void> {
   await db.query(
     `CREATE SEQUENCE IF NOT EXISTS server_quest_number_seq START ${OWNER_QUEST_NUMBER_FLOOR}`
@@ -172,6 +199,7 @@ export async function createServerQuest(
   input: ServerQuestInput
 ): Promise<ServerQuest> {
   const sid = requireServerId(serverId);
+  await ensureServerContentColumns(db);
   await ensureQuestSequence(db);
 
   const next = await db.query(`SELECT nextval('server_quest_number_seq')::int AS n`);
@@ -232,6 +260,7 @@ export async function updateServerQuest(
   patch: ServerQuestPatch
 ): Promise<ServerQuest | null> {
   const sid = requireServerId(serverId);
+  await ensureServerContentColumns(db);
   const r = await db.query(
     `UPDATE quests SET
        world            = COALESCE($3, world),
@@ -274,6 +303,7 @@ export async function deleteServerQuest(
   questId: string
 ): Promise<boolean> {
   const sid = requireServerId(serverId);
+  await ensureServerContentColumns(db);
   const r = await db.query(`DELETE FROM quests WHERE id = $1 AND server_id = $2 RETURNING id`, [
     questId,
     sid,
@@ -284,6 +314,7 @@ export async function deleteServerQuest(
 /** One server's quests. Never the platform catalogue. */
 export async function listServerQuests(db: Db, serverId: string): Promise<ServerQuest[]> {
   const sid = requireServerId(serverId);
+  await ensureServerContentColumns(db);
   const r = await db.query(
     `SELECT ${QUEST_COLS} FROM quests WHERE server_id = $1 ORDER BY quest_number`,
     [sid]
@@ -445,6 +476,7 @@ export async function createServerMarketplaceItem(
   input: ServerItemInput
 ): Promise<ServerItem> {
   const sid = requireServerId(serverId);
+  await ensureServerContentColumns(db);
   const id = randomUUID();
   const r = await db.query(
     `INSERT INTO marketplace_items
@@ -479,6 +511,7 @@ export async function updateServerMarketplaceItem(
   patch: Partial<ServerItemInput>
 ): Promise<ServerItem | null> {
   const sid = requireServerId(serverId);
+  await ensureServerContentColumns(db);
   const r = await db.query(
     `UPDATE marketplace_items SET
        name        = COALESCE($3, name),
@@ -521,6 +554,7 @@ export async function retireServerMarketplaceItem(
   itemId: string
 ): Promise<boolean> {
   const sid = requireServerId(serverId);
+  await ensureServerContentColumns(db);
   const r = await db.query(
     `UPDATE marketplace_items SET is_active = FALSE, updated_at = NOW()
       WHERE id = $1 AND server_id = $2 RETURNING id`,
@@ -535,6 +569,7 @@ export async function listServerMarketplaceItems(
   opts: { activeOnly?: boolean } = {}
 ): Promise<ServerItem[]> {
   const sid = requireServerId(serverId);
+  await ensureServerContentColumns(db);
   const r = await db.query(
     `SELECT ${ITEM_COLS} FROM marketplace_items
       WHERE server_id = $1 ${opts.activeOnly === false ? '' : 'AND is_active = TRUE'}

@@ -913,6 +913,14 @@ export class MazeWorld extends World {
       transparent: true, opacity: 0.3, depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
+    /* Named for the same reason every material in `MazeMaterials` now is:
+     * `world-shot --ablate` identifies a system by its material's NAME, and
+     * an anonymous material is a system no A/B can switch off. This one is
+     * declared here rather than in `buildMazeMaterials` because the cloud is
+     * built per world rather than cached per session, and `maze-materials`'s
+     * tripwire only greps MazeWorld for `Mesh*Material` - so it would not
+     * have caught a nameless one. */
+    mat.name = 'maze.pollen';
     const pts = new THREE.Points(geo, mat);
     pts.name = 'maze:pollen';
     pts.frustumCulled = false;      // it is always around the camera

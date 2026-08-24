@@ -95,8 +95,38 @@ export { extentClass, quantiseExtent, PREFAB_BUDGET };
  * inside the box anyway, so the exemption stays headroom rather than debt.
  */
 export const DRESSING_KINDS = Object.freeze({
-  footing: true, plate: true, candle: true, newel: true,
+  footing: true, plate: true, candle: true, newel: true, sprig: true,
 });
+
+/**
+ * The sprig's dressing box, and the ONE place its size is written.
+ *
+ * Exactly the `BoxGeometry(0.5, 0.5, 0.5)` that `MazeChunks.buildSprigInstances`
+ * used to allocate per district. Every scale in `MazeFoliage` - the hedge
+ * growth's `(s, 1.4s, s)` and the ivy leaf's flattening onto a wall normal -
+ * is expressed against that half-metre cube, so the authored tuft is authored
+ * to the same bounding box and this commit changes SHAPE and nothing else.
+ *
+ * Routing the sprig through the registry rather than through a `new
+ * THREE.BoxGeometry` inside the instancer is not only how the authored file
+ * gets adopted: it also stops the world allocating and disposing one
+ * identical box geometry PER RESIDENT DISTRICT (twenty-one of them at the
+ * entrance, rebuilt on every residency change), because `MazeChunks` already
+ * skips `dispose()` for anything `isPrefab` owns.
+ */
+export const SPRIG_HALF = Object.freeze({ hx: 0.25, hy: 0.25, hz: 0.25 });
+
+/**
+ * The shared geometry every sprig instance - hedge growth and shaft ivy alike
+ * - is drawn with: the authored leaf tuft when `MazeAssets` resolved it, the
+ * procedural box when it did not.
+ *
+ * @param {{[id:string]: import('three').BufferGeometry}|null} [assets]
+ * @returns {THREE.BufferGeometry} cached - callers must never dispose it
+ */
+export function sprigGeometry(assets = null) {
+  return prefabFor({ kind: 'sprig', ...SPRIG_HALF, assets });
+}
 
 /** `${kind}:${extentClass}:${lod}[:asset]` -> geometry. */
 const _prefabs = new Map();

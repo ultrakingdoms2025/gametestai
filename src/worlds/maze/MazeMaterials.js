@@ -793,6 +793,29 @@ export function buildMazeMaterials() {
     }),
     canopy: new THREE.MeshStandardMaterial({ color: 0x24391f, roughness: 1, metalness: 0 }),
   };
+  /* EVERY MATERIAL CARRIES ITS KEY AS ITS NAME.
+   *
+   * `scripts/world-shot.mjs --ablate` hides meshes by material NAME, and it
+   * is the only instrument in this repository that can answer "which system
+   * drew this pixel". Run against the maze before this line existed, every
+   * report's `materialNames` read a census of the CONSTRUCTOR -
+   * `MeshStandardMaterial x47, MeshBasicMaterial x6, PointsMaterial x1` -
+   * so the A/B silently hid nothing and an art pass could conclude a system
+   * was innocent because the ablation never reached it. The `art-station`
+   * branch lost a whole measurement to exactly this and wrote it up; this is
+   * that lesson applied here.
+   *
+   * Free, and provably so: three's program cache key is built from material
+   * type, parameters, defines and `customProgramCacheKey`. `name` is in none
+   * of them - which is also why `materialFingerprint` above does not read it,
+   * so the family gate is unmoved by this loop.
+   *
+   * `shaftWall` and `newel` are ALIASES of `stair` (one object, three keys),
+   * so whichever key is written last wins for all three. That is stated here
+   * rather than worked around: they are one material and they ablate as one,
+   * and `maze-materials.test.mjs` pins the alias identity so the name can
+   * never imply three separate surfaces. */
+  for (const [key, m] of Object.entries(_materials)) m.name = `maze.${key}`;
   return _materials;
 }
 

@@ -35,8 +35,45 @@ import { connectorHoleBounds, stairWellBounds } from './MazeShafts.js';
 /** Sprigs per hedge segment. Cheap - one instanced draw per district. */
 const SPRIGS_PER_HEDGE = 9;
 
-/** How far a sprig may lean past the hedge's own footprint, metres. */
-const SPRIG_OVERHANG = 0.22;
+/**
+ * How far a sprig's CENTRE may sit off the hedge's own centre line, metres.
+ *
+ * Renamed from `SPRIG_OVERHANG` in Phase 9 because the old name was a claim
+ * the arithmetic never made. A hedge is `MAZE.HEDGE_THICK` = 1.2 m through,
+ * so its half-thickness is 0.60 m; the widest a sprig has ever been is
+ * `0.25 * 0.84 = 0.21` m in plan. 0.22 + 0.21 = 0.43 m, which is 17 cm SHORT
+ * of the hedge's own face - so in four phases of this world's life not one
+ * sprig has ever overhung anything. Nothing is changed here; the constant is
+ * simply described as what it is, so the next person to read it does not go
+ * looking for the overhang in a screenshot.
+ */
+const SPRIG_OFFSET = 0.22;
+
+/**
+ * The fraction of a sprig's own half-height that stays buried in the hedge.
+ *
+ * Phase 9 replaced a flat 0.16 m sink with a fraction, and the difference is
+ * not tuning. Sprig half-height is `0.25 * s * 1.4` = `0.35 * s`, and `s`
+ * ranges 0.34 to 0.84 - so a flat 0.16 m sink swallowed the whole of any
+ * sprig with `s < 0.457`, which is 23% of them. They were drawn, they were
+ * instanced, they cost their triangles, and they were entirely inside an
+ * opaque hedge: invisible since the day they were written, with no error and
+ * no failing test. A fraction cannot do that at any scale, and the SMALLEST
+ * sprig now breaks the top edge exactly as proportionally as the largest.
+ *
+ * The VALUE is set by the authored tuft's own outline rather than by taste.
+ * `leaf-tuft.glb` is a crown of five shoot tips at heights 1.00, 0.78, 0.50,
+ * 0.12 and -0.28 of its half-extent; at 0.15 the top three clear the hedge by
+ * 4-25 cm and the bottom two fall below it, so the line is broken by a ragged
+ * row of shoots with notches between them rather than by a row of identical
+ * points. The first authored pass used 0.55 and photographed as a row of
+ * little green traffic cones - because at that depth the only part of the
+ * tuft above the hedge was its single tallest tip.
+ */
+const SPRIG_SINK = 0.15;
+
+/** How far a hedge-top tuft may lean from vertical, radians. */
+const SPRIG_LEAN = 0.42;
 
 /**
  * Instance transforms for one district's foliage.
@@ -65,14 +102,31 @@ export function foliageTransforms(descs, seedish = 0) {
     for (let s = 0; s < SPRIGS_PER_HEDGE; s++) {
       const h = hash32(seedish, i, s, 0x5b7);
       const t = ((h & 0xffff) / 0x10000) * 2 - 1;              // -1..1 along
-      const lean = (((h >>> 16) & 0xff) / 0xff - 0.5) * 2 * SPRIG_OVERHANG;
+      const off = (((h >>> 16) & 0xff) / 0xff - 0.5) * 2 * SPRIG_OFFSET;
       const scale = 0.34 + ((h >>> 24) & 0xff) / 0xff * 0.5;
-      const ry = ((h >>> 8) & 0xff) / 0xff * Math.PI;
+      /* The FULL circle, where this used to take half of one.
+       *
+       * Half a turn was right for the box this used to draw - a square in
+       * plan repeats itself every quarter turn, so anything past PI/2 was
+       * already a duplicate and PI was generous. The authored tuft is
+       * five-fold and irregular: it has no symmetry at all, so every angle in
+       * the full circle is a distinct silhouette and clamping to half of them
+       * would throw away half the variation the shape exists to provide. */
+      const ry = ((h >>> 8) & 0xff) / 0xff * Math.PI * 2;
+      /* And a lean, from a bit of the hash nothing else reads. Growth does
+       * not stand to attention; a row of upright tufts on a straight hedge
+       * top is the "bricks laid by hand" read the before-shots caught. */
+      const tilt = (((h >>> 4) & 0xf) / 0xf - 0.5) * 2 * SPRIG_LEAN;
       out.push({
-        x: d.cx + (alongX ? t * half * 0.92 : lean),
-        y: top - 0.16,
-        z: d.cz + (alongX ? lean : t * half * 0.92),
+        x: d.cx + (alongX ? t * half * 0.92 : off),
+        /* Derived from this sprig's OWN half-height, not from a constant -
+         * see SPRIG_SINK. `0.25` is the tuft's authored half-extent and
+         * `1.4` is the y stretch `buildSprigInstances` applies, so this is
+         * literally "sink 55% of what this instance will actually be". */
+        y: top - 0.25 * scale * 1.4 * SPRIG_SINK,
+        z: d.cz + (alongX ? off : t * half * 0.92),
         ry,
+        tilt,
         s: scale,
       });
     }

@@ -1499,18 +1499,97 @@ test('THE FRAME COST: advancing nine caravans every frame is free', async () => 
   const us = (ms * 1000) / N;
   const syncs = pop.stats.syncs;
 
+  /* ═══════════════════════════════════════════════════════════════════════
+   *  COUNTED, NOT TIMED - THE SECOND FLAKE IN THIS SUITE, FOUND THE SAME WAY
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * This asserted `us < 30` on a wall-clock window, and it is one of the
+   * eleven wall-clock assertions the note in `citadel-caves.test.mjs` counted.
+   * Measured on this machine, 24 logical cores:
+   *
+   *     idle          3.67 us/frame against a 30 us ceiling  (8.2x margin)
+   *     32 burners    RED 1 of 8 runs of this file
+   *
+   * An 8x margin and it still went, which is the point: contention here
+   * inflated the number by more than eight times, and a ceiling that survived
+   * that would have to be about 250 us - past the 30-50 us a single resident
+   * character costs, which is the whole comparison the gate is making. A time
+   * ceiling here cannot be both safe and meaningful. Same conclusion, same
+   * remedy, and the fourth file in this repo to reach it: `citadel-caves`,
+   * `citadel-budgets`, `physics-remove` and `npc-budget` (whose
+   * `_separateBodies` gate was the OTHER half of Phase 12's red run).
+   *
+   * ── WHAT IS COUNTED, AND WHY IT IS THE WHOLE COST ──────────────────────
+   *
+   * A frame of `CitadelTraffic.update` does exactly two things that scale: it
+   * projects each drover onto his own road to test the leash
+   * (`projectOnRoad`, which walks that road's points), and every 0.4 s it runs
+   * a full `sync`, which walks them again. Both land on `road.points`, so
+   * counting index reads on those arrays counts both - exactly, on every
+   * machine, in one number.
+   *
+   * Measured on the built world (3 roads of 11/13/15 points, 9 trains, 4 with
+   * a live drover): 20,780 reads over 240 frames carrying 10 syncs, and
+   * 2,078 over the next 24 frames carrying 1. 86.58 reads per frame.
+   *
+   * `road.arcs` is deliberately NOT wrapped: it is a `Float64Array` and a
+   * Proxy over a TypedArray breaks `.length` (`Method get
+   * TypedArray.prototype.length called on incompatible receiver`). `points` is
+   * a plain array and every walk touches both, so one is enough to count them.
+   *
+   * ── THE CEILING, CONVERTED FROM THE ONE THE DESIGN ACTUALLY MAKES ──────
+   *
+   * The claim is unchanged: the bookkeeping for every caravan in the world
+   * must cost less than ONE of the animals it is bookkeeping for, which the
+   * manager's own ablation prices at 30-50 us. The conversion is measured:
+   * 3.67 us buys 86.58 reads, so 42 ns a read, so 30 us is 708 reads. 700 is
+   * that, and it preserves the 8.1x margin the time ceiling had.
+   *
+   *   achieved   105.49 reads per frame, over the 2,400 frames counted below,
+   *              identical on two runs
+   *   ceiling    700  (= the 30 us a resident character costs)
+   *
+   * ── ABLATION, BOTH WAYS ────────────────────────────────────────────────
+   * Nine extra `_leashed` projections per train per frame - a per-body leash
+   * test where a per-train one belongs - reads 1,032.58 a frame and fails
+   * this. Removing the 0.4 s throttle so `sync` runs every frame reads only
+   * 164.83 and does NOT: like the time ceiling it replaces, this is a
+   * generous order-of-magnitude gate rather than a 20% one, and the throttle
+   * regression is the sync COUNT below, which caught that ablation at
+   * 36,001 syncs in 36,000 frames. Two gates, two failure modes, and neither
+   * of them is a clock.
+   *
+   * The microseconds are still measured and still printed. They are just not
+   * asserted, exactly as `citadel-caves.test.mjs` prints its cave milliseconds.
+   */
+  const M = 2400;
+  let reads = 0;
+  const roads = new Set();
+  for (const t of pop.trains) {
+    if (roads.has(t.road)) continue;
+    roads.add(t.road);
+    t.road.points = new Proxy(t.road.points, {
+      get(target, key, recv) {
+        if (typeof key === 'string' && /^(0|[1-9]\d*)$/.test(key)) reads++;
+        return Reflect.get(target, key, recv);
+      },
+    });
+  }
+  const syncsBefore = pop.stats.syncs;
+  for (let i = 0; i < M; i++) pop.update(at.x, at.z, 1 / 60);
+  const perFrame = reads / M;
+
   console.log('\n  ten minutes of frames with a caravan standing on the player:');
   console.log(`    animals resident                     ${i5(resident)}`);
-  console.log(`    per frame, whole update              ${f(us, 3)} us`);
+  console.log(`    per frame, whole update              ${f(us, 3)} us   - printed, not asserted`);
   console.log(`    syncs run in ${N} frames         ${i5(syncs)}  (throttle is 0.4 s or 8 m)`);
+  console.log(`    road points read per frame           ${f(perFrame, 2)}  over ${M} more frames`
+    + ` carrying ${pop.stats.syncs - syncsBefore} syncs`);
 
-  /* The ceiling is one resident CHARACTER, which the manager's own ablation
-   * measures at 30-50 us of frame time. If the bookkeeping for every caravan in
-   * the world costs more than one of the animals it is bookkeeping for, the
-   * design is upside down. */
-  assert.ok(us < 30,
-    `the whole traffic update costs ${us.toFixed(2)} us/frame, which is more than the 30-50 us a single `
-    + 'resident character costs - the bookkeeping is more expensive than the content');
+  assert.ok(perFrame <= 700,
+    `the whole traffic update reads ${perFrame.toFixed(1)} road points a frame, which converts to more `
+    + 'than the 30-50 us a single resident character costs - the bookkeeping is more expensive than the '
+    + 'content it is bookkeeping for');
   /* And the throttle really is throttling: 36,000 frames of standing still is
    * 600 s, so 1,500 syncs at 0.4 s. */
   assert.ok(syncs < N / 20,

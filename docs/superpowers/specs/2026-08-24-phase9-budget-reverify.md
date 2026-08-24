@@ -401,6 +401,86 @@ it applies identically to both columns above.
 
 ---
 
+## 5. The noise floor, taken the only way it can be
+
+A cross-tree delta means nothing until you know what the *same* tree does to
+itself. Both trees were swept a second time, on the same machine, with the same
+instrument. Below: the same-tree band on each side, next to the phase's delta.
+
+### 5.1 The five census axes do not move at all
+
+| world | materials | renderables | instanced | instances | world lights | world triangles |
+|---|---|---|---|---|---|---|
+| station | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| medieval | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| citadel | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| sports | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| dock | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| space | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| cinder | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+(base run 1 → base run 2 / main run 1 → main run 2. Every framing of every
+world. The maze is excluded: its seed, not its code, is what moves — see §4.)
+
+**Zero. Not "inside a band" — identical, framing by framing, on both trees.**
+That is what makes §2 and §3 evidence: on these six axes there is no noise for a
+regression to hide in, so every delta reported there is signal, and every one of
+them was declared.
+
+It is also worth saying plainly what this does to the three branches that wrote
+around a "noise floor" on these axes. `art-maze` recorded materials swinging
+14–18 and renderables 46–92 on unchanged code; `art-citadel` recorded a
+draw-call spread of ±50 and a program spread of 61. None of that was the
+renderer. On the repaired instrument these axes are exact.
+
+### 5.2 Draw calls: the band is bigger than the phase, everywhere
+
+| world | base → base | main → main | **base → main (the phase)** |
+|---|---|---|---|
+| station | −1,146 … +348 | −1,423 … +353 | −1,448 … +1,118 |
+| medieval | −48 … +8 | −12 … +4 | −38 … +17 |
+| citadel | −160 … +52 | −86 … +50 | −120 … +18 |
+| sports | −58 … +8 | −4 … +30 | −52 … +20 |
+| dock | −16 … +18 | −12 … +36 | −16 … +16 |
+| space | −15 … +4 | −2 … 0 | −15 … +8 |
+| cinder | −48 … 0 | 0 … +4 | −48 … 0 |
+| race | — | — | −6 … 0 |
+
+Every world's cross-tree range sits inside, or level with, its own same-tree
+range. `cinder`'s −48 is the excursion `art-planets` §6.2 chased and reproduced
+on identical code, and it appears here on the *baseline* tree against itself.
+Draw calls in this game are a measurement of where the streamed cast happened to
+be standing.
+
+### 5.3 Shader programs: two worlds move, and only one moves up
+
+`programs` is compared at the end of a run only (§1.3). Four samples, two per
+tree:
+
+| world | baseline | main | verdict |
+|---|---|---|---|
+| dock | 490, 379 | 488, 488 | baseline's own spread is **111**. No signal. |
+| citadel | 391, 377 | 375, 389 | ranges overlap. No signal. |
+| cinder | 342, 364 | 352, 351 | ranges overlap. No signal. |
+| sports | 540, 540 | 541, 542 | +1 … +2. No signal. |
+| race | 441 | 441 | 0, and `art-race` measured 441 twice as well. |
+| space | 423, 423 | 420, 420 | **−3**, disjoint but negligible. |
+| **medieval** | **427, 426** | **350, 350** | **−76, disjoint and reproducible — a decrease.** |
+| **station** | **512, 536** | **580, 580** | **+44 … +68, disjoint and reproducible — an increase.** |
+
+Two of eight moved outside their own spread, and one of the two is an
+improvement. On medieval the baseline sits at 352 for six framings and jumps to
+427 at `hills-vista`; `main` never leaves 350. That framing is the one full of
+relics, and `orb-hunt` joined the relic halo's shader-cache key to the loot
+system's shared `additive-fog.v1` so *"the two systems cannot split the program
+cache"* — a reduction it declared in prose and never put a number on. This is
+the number: **−76 programs on the vale.**
+
+The station's +44 … +68 is the only axis anywhere in this sweep that moved the
+wrong way outside its own noise, and §6 is about it.
+
+---
+
 ## 7. Instrument defects found while doing this, handed back rather than fixed
 
 `scripts/world-shot.mjs`, `src/dev/**` and `src/gfx/**` are outside this

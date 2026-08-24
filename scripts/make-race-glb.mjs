@@ -121,6 +121,14 @@ import * as THREE from 'three';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+/* The shades, the part names, the shell and both triangle counts live in the
+ * LOADER, not here, so that the loader, this generator, the manifest and the
+ * test cannot drift apart. Same arrangement as `planets/PlanetAssets.js`, and
+ * it is why that module is careful to stay importable under plain Node. */
+import {
+  SPECTATOR_PARTS, SPECTATOR_TRIS, SPECTATOR_HEIGHT,
+  MARSHAL_PART_KEYS, MARSHAL_SHELL, MARSHAL_TRIS,
+} from '../src/worlds/race/RaceAssets.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -129,15 +137,28 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 /* ------------------------------------------------------------------ */
 
 /**
- * Per-file triangle reservation.
+ * Per-file triangle reservation, and both numbers are EXACT rather than round.
  *
- * The spectator is instanced 801 times and the marshal placed 29 times, so
- * these two numbers are the whole triangle cost of this branch's authoring:
- * 801 * spectator + 29 * marshal. At the caps below that is at most 240,300 +
- * 11,600 = 251,900 against the 1,812,804 the world already draws, and the
- * shipped build comes in well under - see the manifest and the design note.
+ * The whole triangle cost of this branch's authoring is
+ * `819 * spectator + 29 * marshal`, and the two multipliers are three orders
+ * of magnitude apart, so they do not get the same rule:
+ *
+ *   spectator  144, which is EXACTLY what the primitive it replaces costs.
+ *              819 instances and 12.6% of a measured frame; see
+ *              {@link SPECTATOR_TRIS} for the arithmetic that refused 276.
+ *              Delta: ZERO.
+ *   marshal    204 against the 132 the three shipped boxes cost. 29 posts, so
+ *              +2,088 triangles across the whole 1.3 km map - +0.03% of the
+ *              810,504 measured in one frame from the start/finish straight.
+ *              Paid, on the record, and 108 of the 132 it replaces are the
+ *              BEVEL on one `RoundedBoxGeometry` crate: dropping that buys
+ *              nine plain solids for the price of one rounded one.
+ *
+ * A round ceiling would let a tessellation change through unnoticed, so these
+ * are the counts the files actually come out at and the build throws if either
+ * moves by one triangle.
  */
-const TRI_BUDGET = { spectator: 300, marshal: 400 };
+const TRI_BUDGET = { spectator: SPECTATOR_TRIS, marshal: MARSHAL_TRIS };
 
 /**
  * Texel density. `race.paint.enamel` is authored for 0.6 m per UV tile and the
@@ -170,25 +191,48 @@ class Quads {
     this.nor = [];
     this.uv = [];
     this.idx = [];
-    /** Directed edges, by rounded position, for the manifold gate. */
-    this._edges = new Map();
-    /** Twice the signed volume, accumulated per triangle. */
-    this._vol2 = 0;
+    /**
+     * THE GATES ARE PER SOLID, AND THE INHERITED VERSION WAS NOT.
+     *
+     * This class was written claiming that "two solids that share a face plane
+     * are still each closed" under one global directed-edge tally. They are
+     * not, and the first run of the marshal proved it: the shell's front face
+     * runs its bottom edge +X -> -X at (±1.6, 0, -1.16), and the sill box that
+     * abuts it runs its own BOTTOM face's last edge +X -> -X through the same
+     * two points. Same direction, twice, in two individually closed boxes.
+     *
+     * A part here is a SET of closed solids by design, so the tally that means
+     * anything is per solid. `box`, `prism` and `solid()` each open one; every
+     * quad and triangle written lands in whichever is open.
+     */
+    this._solids = [];
+    this._open = null;
+  }
+
+  /** Begin a new closed solid. Everything written until the next call is in it. */
+  solid(fn) {
+    this._open = { edges: new Map(), vol2: 0, tris: 0, from: this.idx.length / 3 };
+    this._solids.push(this._open);
+    if (fn) fn();
+    return this;
   }
 
   /** Position key for the manifold gate. 0.1 mm, which is finer than anything here. */
   static _k(p) { return `${Math.round(p[0] * 1e4)},${Math.round(p[1] * 1e4)},${Math.round(p[2] * 1e4)}`; }
 
   _face(a, b, c) {
+    const s = this._open;
+    if (!s) throw new Error(`${this.name}: a face was written outside any solid`);
     const K = Quads._k;
     for (const [p, q] of [[a, b], [b, c], [c, a]]) {
       const key = `${K(p)}|${K(q)}`;
-      this._edges.set(key, (this._edges.get(key) ?? 0) + 1);
+      s.edges.set(key, (s.edges.get(key) ?? 0) + 1);
     }
+    s.tris++;
     /* Divergence theorem: sum of a . (b x c) over every triangle is six times
      * the enclosed signed volume. Positive means the faces are wound
      * outward-facing, which is the only thing the sign can tell us. */
-    this._vol2 +=
+    s.vol2 +=
       a[0] * (b[1] * c[2] - b[2] * c[1])
       - a[1] * (b[0] * c[2] - b[2] * c[0])
       + a[2] * (b[0] * c[1] - b[1] * c[0]);
@@ -250,6 +294,7 @@ class Quads {
    * written at the same scale only so the file reads sanely in a viewer.
    */
   box(cx, cy, cz, hx, hy, hz, uvScale = ENAMEL_TILE) {
+    this.solid();
     const P = (sx, sy, sz) => [cx + sx * hx, cy + sy * hy, cz + sz * hz];
     const uvOf = (a, b) => [[0, 0], [2 * a / uvScale, 0], [2 * a / uvScale, 2 * b / uvScale], [0, 2 * b / uvScale]];
     this.quad(P(-1, -1, 1), P(1, -1, 1), P(1, 1, 1), P(-1, 1, 1), uvOf(hx, hy));    // +Z
@@ -275,6 +320,7 @@ class Quads {
    * silhouette rather than only the shading.
    */
   prism(sections, sides, { phase = 0, uvScale = ENAMEL_TILE, capTop = true, capBottom = true, xOff = 0 } = {}) {
+    this.solid();
     const ring = (s) => {
       const out = [];
       for (let k = 0; k < sides; k++) {
@@ -331,18 +377,25 @@ class Quads {
    * inside out is invisible from ALL of them, which is worse.
    */
   check() {
-    let open = 0;
-    for (const [key, n] of this._edges) {
-      if (n !== 1) throw new Error(`${this.name}: edge ${key} used ${n} times in the same direction`);
-      const [a, b] = key.split('|');
-      if ((this._edges.get(`${b}|${a}`) ?? 0) !== 1) open++;
-    }
-    if (open) throw new Error(`${this.name}: ${open} unmatched directed edge(s) - not a closed manifold`);
-    if (!(this._vol2 > 0)) {
-      throw new Error(`${this.name}: signed volume ${(this._vol2 / 6).toFixed(4)} is not positive - wound inside out`);
-    }
+    if (!this._solids.length) throw new Error(`${this.name}: no geometry`);
+    this._solids.forEach((s, i) => {
+      const where = `${this.name}: solid ${i} of ${this._solids.length}`;
+      let open = 0;
+      for (const [key, n] of s.edges) {
+        if (n !== 1) throw new Error(`${where}: edge ${key} used ${n} times in the same direction`);
+        const [a, b] = key.split('|');
+        if ((s.edges.get(`${b}|${a}`) ?? 0) !== 1) open++;
+      }
+      if (open) throw new Error(`${where}: ${open} unmatched directed edge(s) - not a closed manifold`);
+      if (!(s.vol2 > 0)) {
+        throw new Error(`${where}: signed volume ${(s.vol2 / 6).toFixed(4)} is not positive - wound inside out`);
+      }
+    });
     return this;
   }
+
+  /** Per-solid triangle counts, for the report and the manifest. */
+  get solidTris() { return this._solids.map((s) => s.tris); }
 
   geometry() {
     this.check();
@@ -397,15 +450,14 @@ class Quads {
 const SPEC = {
   height: 1.70,
   sole: 0.0,
-  ankle: 0.10,
+  ankle: 0.09,
   knee: 0.46,
   hip: 0.90,
   waist: 1.04,
   chest: 1.24,
   shoulder: 1.42,
-  neck: 1.47,
+  neck: 1.46,
   jaw: 1.545,
-  brow: 1.615,
   crown: 1.70,
   /** Half the shoulder span. 0.21 gives a 0.42 m shoulder line at scale 1. */
   shoulderHalf: 0.21,
@@ -417,23 +469,20 @@ const SPEC = {
   waistDepth: 0.092,
   hipDepth: 0.105,
   /** Arms hang just clear of the flank, so daylight shows between them. */
-  armX: 0.235,
-  armTop: 1.38,
-  armElbow: 1.09,
+  armX: 0.238,
+  armTop: 1.37,
   armWrist: 0.80,
-  armR: 0.052,
+  armR: 0.053,
   /** Legs. */
-  legX: 0.082,
-  legR: 0.062,
-  shoeLen: 0.135,
-  shoeHalfW: 0.052,
+  legX: 0.083,
+  legR: 0.063,
   /** Head. A skull is 0.145 across and 0.185 deep, which is 1/7.5 of height. */
   headHalf: 0.0755,
   headDepth: 0.093,
 };
 
 /**
- * The five parts, and the value each is drawn at.
+ * The four parts, and the value each is drawn at.
  *
  * ── THE CONSTRAINT THIS FIGURE IS BUILT AROUND ──────────────────────────
  *
@@ -442,29 +491,64 @@ const SPEC = {
  * loader bakes from these shades MULTIPLIES it, which means no part of this
  * figure can have a hue the shirt does not have.
  *
- * That is the same constraint `make-crowd-glb.mjs` accepted for the station's
- * plaza crowd, and it is accepted here for the same reason: the alternative is
- * a second `InstancedMesh` per grandstand for skin, which is +3 renderables
- * and +3 draw calls on a budget whose whole instruction is that renderables do
- * not move. So the head is HAIR at 0.30 rather than skin at 1.0, and the shirt
- * palette in `RaceWorld` is desaturated to match - a dark version of your own
- * coat colour is what dark hair looks like, and it varies person to person for
- * free.
+ * That constraint is accepted rather than paid off, and this is what it costs:
+ * a second `InstancedMesh` per grandstand for skin is +3 renderables and +3
+ * draw calls on a budget whose whole instruction is that renderables do not
+ * move. So the head is HAIR at 0.30 rather than skin at 1.0, and the face is
+ * a pale patch under it at 1.34 - the one part above 1.0. Against a
+ * desaturated shirt that lands on a warm highlight under a dark fringe, which
+ * at 6 m is a face and at 40 m is the value break that says "this has a head".
  *
- * The face is the one part above 1.0. A shade of 1.34 against a desaturated
- * shirt lands on a pale warm patch under a dark fringe, which at 6 m is a
- * face and at 40 m is the value break that says "this thing has a head".
+ * Stated out loud because it was chosen, not stumbled into: this crowd's skin
+ * tone is a function of its shirt.
  *
- * Stated out loud because it is a constraint that was accepted, not an
- * accident: this crowd's skin tone is a function of its shirt.
+ * ── AND IT IS THE FIX FOR THE DEFECT THIS ASSET EXISTS FOR ──────────────
+ *
+ * The shipped figure merges body and head into ONE geometry with
+ * `vertexColors: false` and hands it one `setColorAt`. So the head is painted
+ * the shirt colour - a spectator in a green shirt has a green head, and all
+ * 819 of them do. Nothing here adds a draw call to fix that; the shades below
+ * are a vertex attribute the loader bakes once, into geometry that was going
+ * to be uploaded anyway.
  */
-export const SPECTATOR_PARTS = Object.freeze({
-  torso: 0.98,
-  head: 0.30,
-  face: 1.34,
-  legs: 0.44,
-  shoes: 0.16,
-});
+
+/**
+ * EXACTLY the triangle count of the primitive this replaces, and that is the
+ * whole design constraint rather than a target it happened to hit.
+ *
+ * Measured off the shipped tree: `_spawnCrowd` merges
+ * `sweep([4 sections], 8) + blob(0.12, 0.14, 0.12, 0, 1.08, 0, 8)` into 144
+ * triangles, and instances it 819 times - 615 on Vellum's grandstand, 102 on
+ * each of the other two - for 117,936 triangles. Photographed from the
+ * start/finish straight it is the SECOND largest object in the world, 102,384
+ * triangles in one frame, 12.6% of everything drawn.
+ *
+ * So a figure at the generator's first-draft 276 would have been +108,108
+ * world-wide and +11.9% on a measured frame, for background crowd. Refused.
+ * The budget is 144 and the shipped figure is 144.
+ *
+ * Where they go is the interesting part. Eighty of the shipped 144 - MORE THAN
+ * HALF the whole figure - are an eight-by-eight sphere used as a head, on a
+ * body with no shoulders, no arms and no legs. Re-spending those eighty is
+ * where a silhouette comes from, and it costs nothing:
+ *
+ *   torso   6-sided, hip/waist/chest/shoulder   36 + 12 caps  =  48
+ *   arms    2 x 4-sided, wrist/shoulder          16 + 16 caps =  32
+ *   head    4-sided, neck/brow/crown             16 +  8 caps =  24
+ *   face    a triangular prism, brow to chin      6 +  2 ends =   8
+ *   legs    2 x 4-sided, ankle/hip               16 + 16 caps =  32
+ *                                                               ---
+ *                                                               144
+ *
+ * ── WHAT WAS CUT TO PAY FOR THAT, AND WHY IT WAS THE RIGHT CUT ─────────
+ *
+ * Shoes. A projecting toe is most of what makes a leg read as ending in a
+ * foot, and it is 24 triangles for two. It is cut because of where these
+ * figures stand: `_buildFullPaddock` sets them back on the deck behind a
+ * 0.42 m seat plank, which hides everything below the knee from the circuit.
+ * A detail the framing occludes is the cheapest thing in the file to lose,
+ * and the arms it pays for are visible from every angle.
+ */
 
 /** @returns {Record<string, Quads>} keyed by the names in {@link SPECTATOR_PARTS}. */
 export function buildSpectator() {
@@ -473,7 +557,6 @@ export function buildSpectator() {
   const head = new Quads('spectator:head');
   const face = new Quads('spectator:face');
   const legs = new Quads('spectator:legs');
-  const shoes = new Quads('spectator:shoes');
 
   /* ── Trunk ──────────────────────────────────────────────────────────────
    * Six sides with `phase = 0`, so a flat face lands at +X and -X and the
@@ -482,15 +565,17 @@ export function buildSpectator() {
    * and a dark half with a crease between them, which is a torso. A cylinder
    * gets a smooth ramp, which is a bollard.
    *
-   * Four stations rather than two because the WAIST is the only value break
+   * Four stations rather than three because the WAIST is the only value break
    * available between the shoulder and the hip, and it is what stops the
-   * garment reading as a barrel. */
+   * garment reading as a barrel. It is also the one station whose band is not
+   * paid for twice - the caps are fixed at 12 triangles however many stations
+   * there are, so a fourth station costs 12 and buys the silhouette's only
+   * inward curve. */
   torso.prism([
     { y: S.hip - 0.02, rx: S.hipHalf, rz: S.hipDepth },
     { y: S.waist, rx: S.waistHalf, rz: S.waistDepth },
     { y: S.chest, rx: S.chestHalf, rz: S.chestDepth },
     { y: S.shoulder, rx: S.shoulderHalf, rz: S.chestDepth * 0.96 },
-    { y: S.neck, rx: S.shoulderHalf * 0.72, rz: S.chestDepth * 0.80 },
   ], 6);
 
   /* ── Arms ───────────────────────────────────────────────────────────────
@@ -498,84 +583,83 @@ export function buildSpectator() {
    * to the flank is a bulge on a silhouette, and an arm hanging 2 cm clear
    * puts a strip of background between it and the body. At 40 m that strip is
    * the difference between a person and a post - it is the same argument the
-   * station crowd's hands made at 3 m, one distance band out. */
+   * station crowd's hands made at 3 m, one distance band out.
+   *
+   * `phase: PI/4` puts a flat face outboard rather than a corner. Four sides
+   * at phase 0 is a diamond in plan, and a diamond arm catches one specular
+   * line down its ridge and reads as a pipe. */
   for (const s of [-1, 1]) {
     torso.prism([
-      { y: S.armWrist, rx: S.armR * 0.82, rz: S.armR * 0.82, dz: 0.012, dx: s * 0.020 },
-      { y: S.armElbow, rx: S.armR * 0.90, rz: S.armR * 0.94, dz: 0.004, dx: s * 0.010 },
-      { y: S.armTop, rx: S.armR * 1.18, rz: S.armR * 1.24, dz: -0.006, dx: 0 },
+      { y: S.armWrist, rx: S.armR * 0.82, rz: S.armR * 0.86, dz: 0.012, dx: s * 0.022 },
+      { y: S.armTop, rx: S.armR * 1.20, rz: S.armR * 1.26, dz: -0.006, dx: 0 },
     ], 4, { phase: Math.PI / 4, xOff: s * S.armX });
   }
 
   /* ── Legs ───────────────────────────────────────────────────────────────
    * Trousers, at shade 0.44. A grandstand seen from the circuit is a band of
    * coloured torsos over a dark base, and the dark base is legs - so this part
-   * carries more of the read than its triangle count suggests. */
+   * carries more of the read than its triangle count suggests. Two of them,
+   * not one mass: the gap between is what a leg is. */
   for (const s of [-1, 1]) {
     legs.prism([
-      { y: S.ankle, rx: S.legR * 0.78, rz: S.legR * 0.82 },
-      { y: S.knee, rx: S.legR * 0.86, rz: S.legR * 0.90 },
+      { y: S.ankle, rx: S.legR * 0.80, rz: S.legR * 0.84 },
       { y: S.hip + 0.01, rx: S.legR * 1.16, rz: S.legR * 1.10 },
     ], 4, { phase: Math.PI / 4, xOff: s * S.legX });
   }
 
-  /* ── Shoes ──────────────────────────────────────────────────────────────
-   * A toe that projects past the ankle and a heel that does not. `art-station`
-   * found that asymmetry is most of what makes a leg read as ending in a foot
-   * rather than in a peg, and a crowd standing on a deck is a row of feet. */
-  for (const s of [-1, 1]) {
-    shoes.box(s * S.legX, S.ankle * 0.5, -0.026, S.shoeHalfW, S.ankle * 0.5, S.shoeLen * 0.5);
-    shoes.box(s * S.legX, S.ankle * 0.34, -0.026 - S.shoeLen * 0.5 - 0.021, S.shoeHalfW * 0.86, S.ankle * 0.34, 0.021);
-  }
-
   /* ── Head ───────────────────────────────────────────────────────────────
-   * Six-sided, four stations: the neck, the jaw, the brow and the crown. The
-   * jaw is WIDER than the crown - a skull tapers upward - which is the one
-   * proportion a sphere cannot have and the reason the old figure read as a
-   * bowling pin.
+   * Four-sided at `phase: PI/4`, so there is a flat brow at -Z for the face to
+   * stand on and flat temples at +/-X. Three stations: the neck, the brow and
+   * the crown, and the BROW IS THE WIDEST of them. A skull tapers upward and a
+   * neck is narrower than a jaw; a sphere can have neither, which is why the
+   * shipped figure reads as a bowling pin whichever way you turn it.
    *
    * Drawn at shade 0.30, so this whole mass is the hair. */
   head.prism([
-    { y: S.neck - 0.005, rx: S.headHalf * 0.56, rz: S.headDepth * 0.56 },
-    { y: S.jaw, rx: S.headHalf * 0.94, rz: S.headDepth * 0.92 },
-    { y: S.brow, rx: S.headHalf, rz: S.headDepth, dz: -0.004 },
-    { y: S.crown - 0.018, rx: S.headHalf * 0.90, rz: S.headDepth * 0.88, dz: -0.006 },
-    { y: S.crown, rx: S.headHalf * 0.58, rz: S.headDepth * 0.56, dz: -0.008 },
-  ], 6);
+    { y: S.neck - 0.005, rx: S.headHalf * 0.58, rz: S.headDepth * 0.58 },
+    { y: S.jaw + 0.055, rx: S.headHalf, rz: S.headDepth, dz: -0.004 },
+    { y: S.crown, rx: S.headHalf * 0.62, rz: S.headDepth * 0.60, dz: -0.010 },
+  ], 4, { phase: Math.PI / 4 });
 
   /* ── Face ───────────────────────────────────────────────────────────────
-   * A closed wedge standing 1.4 cm proud of the front of the skull, not a
-   * plane on it: a plane cannot be checked by the manifold or the volume gate,
-   * and this file's rule is that every part is a closed solid so that all
-   * three gates apply to all of it.
+   * A triangular prism lying on its side: a flat back against the skull, an
+   * apex ridge running down the centre line, and two triangular ends. Eight
+   * triangles, and every one of them earns its place -
    *
-   * It sits BELOW the brow station, so the hair above it overhangs and casts
-   * the fringe line that separates them. */
+   *   * it is a CLOSED SOLID, so the manifold and volume gates apply to it.
+   *     A plane stuck on the front of the head cannot be checked by either,
+   *     and this file's rule is that all three gates apply to all of it.
+   *   * the ridge splits the pale patch into a lit half and a shaded half,
+   *     which is a nose. A flat patch at shade 1.34 is a sticker.
+   *
+   * It stands 1.5 cm proud of the brow and stops below the crown station, so
+   * the hair above overhangs it and casts the fringe line that separates
+   * them. */
   {
-    const zb = -(S.headDepth * 0.90) + 0.020;   // buried in the skull
-    const zf = -(S.headDepth * 0.90) - 0.014;   // 1.4 cm proud of it
-    const y0 = S.jaw - 0.004;
-    const y1 = S.brow - 0.012;
-    const hw = S.headHalf * 0.62;
-    const hw2 = hw * 0.86;
-    const B0 = [-hw, y0, zb];
-    const B1 = [hw, y0, zb];
-    const B2 = [hw, y1, zb];
-    const B3 = [-hw, y1, zb];
-    const F0 = [-hw2, y0 + 0.006, zf];
-    const F1 = [hw2, y0 + 0.006, zf];
-    const F2 = [hw2, y1 - 0.006, zf];
-    const F3 = [-hw2, y1 - 0.006, zf];
-    const u = [[0, 0], [2 * hw / ENAMEL_TILE, 0], [2 * hw / ENAMEL_TILE, (y1 - y0) / ENAMEL_TILE], [0, (y1 - y0) / ENAMEL_TILE]];
-    face.quad(F1, F0, F3, F2, u);      // the face itself, -Z
-    face.quad(B0, B1, B2, B3, u);      // the back, against the skull, +Z
-    face.quad(B1, B0, F0, F1, u);      // under the chin
-    face.quad(B3, B2, F2, F3, u);      // the brow shelf
-    face.quad(B1, F1, F2, B2, u);      // +X cheek
-    face.quad(F0, B0, B3, F3, u);      // -X cheek
+    const zb = -(S.headDepth * 0.92) + 0.022;   // buried in the skull
+    const zf = -(S.headDepth * 0.92) - 0.015;   // 1.5 cm proud of it
+    const y0 = S.jaw - 0.028;
+    const y1 = S.jaw + 0.088;
+    const hw = S.headHalf * 0.60;
+    const A = [-hw, y0, zb];     // back, bottom, -X
+    const B = [hw, y0, zb];      // back, bottom, +X
+    const C = [hw, y1, zb];      // back, top,    +X
+    const D = [-hw, y1, zb];     // back, top,    -X
+    const R0 = [-hw * 0.94, (y0 + y1) * 0.5, zf];   // ridge, -X end
+    const R1 = [hw * 0.94, (y0 + y1) * 0.5, zf];    // ridge, +X end
+    const wu = 2 * hw / ENAMEL_TILE;
+    const hu = (y1 - y0) / ENAMEL_TILE;
+    const u4 = [[0, 0], [wu, 0], [wu, hu], [0, hu]];
+    face.solid(() => {
+      face.quad(A, B, C, D, u4);            // the back, against the skull (+Z)
+      face.quad(B, A, R0, R1, u4);          // under the ridge, facing down-front
+      face.quad(D, C, R1, R0, u4);          // over the ridge, facing up-front
+      face.tri(B, R1, C, [[0, 0], [hu, 0], [0, hu]]);   // +X end
+      face.tri(A, D, R0, [[0, 0], [hu, 0], [0, hu]]);   // -X end
+    });
   }
 
-  return { torso, head, face, legs, shoes };
+  return { torso, head, face, legs };
 }
 
 /* ------------------------------------------------------------------ */
@@ -596,7 +680,7 @@ export function buildSpectator() {
  *   and towards it for one at negative. `RaceWorld` therefore adds PI to the
  *   yaw on the inboard side, and `race-assets.test.mjs` pins that rule.
  */
-const POST = { hx: 1.6, hz: 1.3, h: 2.6 };
+const POST = MARSHAL_SHELL;
 
 /** @returns {Record<string, Quads>} keyed by RACE MATERIAL KEY. */
 export function buildMarshal() {
@@ -696,7 +780,6 @@ export function buildMarshal() {
  * against its own live material set, and the test reads that set off a real
  * built `RaceWorld` rather than off a copy of it.
  */
-export const MARSHAL_PART_KEYS = Object.freeze(['metal.panel', 'metal.trim', 'hazard.stripe']);
 
 /** Everything this generator writes, in file order. */
 export const RACE_ASSETS = Object.freeze([
@@ -862,8 +945,12 @@ if (isMain) {
   for (const a of RACE_ASSETS) {
     if (only && only !== a.id) continue;
     const { glb, tris, verts, report } = writeGlb(a.id, a.parts, a.build());
-    if (tris > TRI_BUDGET[a.id]) {
-      throw new Error(`${a.id} is ${tris} tris - over the ${TRI_BUDGET[a.id]} reservation`);
+    /* EXACT, not a ceiling. A round reservation lets a tessellation change
+     * through unnoticed, and the whole argument for both of these files is a
+     * per-instance triangle count multiplied by 819 or by 29. */
+    if (tris !== TRI_BUDGET[a.id]) {
+      throw new Error(`${a.id} is ${tris} tris, not the ${TRI_BUDGET[a.id]} `
+        + 'its budget is fixed at - see src/worlds/race/RaceAssets.js');
     }
     const out = outOverride
       ? path.resolve(outOverride)

@@ -489,6 +489,9 @@ async function runOnce(args, pageUrl, runIndex) {
     await evalIn('window.HARNESS.dismissBoot(), window.HARNESS.setGameplayDriven(true), 1');
     out.warm = await evalIn('JSON.stringify(window.HARNESS.stats().warm)').then((s) => JSON.parse(s));
     out.events.boot = await closePhase('boot');
+    out.cacheKeysAfterBoot = args.cacheKeys
+      ? JSON.parse(await evalIn('JSON.stringify(window.GAME.engine.renderer.info.programs.map((p) => p.cacheKey))'))
+      : null;
 
     /* --- CPU attribution --------------------------------------------------
      *
@@ -531,6 +534,16 @@ async function runOnce(args, pageUrl, runIndex) {
       await sleep(args.settleAfterReady);
       if (args.profile === 'background') await profileOff('background-chain');
       out.events.backgroundChain = await closePhase('background-chain');
+      /* WHICH STAGE BUILT WHICH PROGRAMS.
+       *
+       * The boot warm and the background chain build against different scene
+       * state, and only one of the two can be the state a real frame renders
+       * in. Snapshotting the cache-key set at the end of each says which
+       * signatures each stage is responsible for, and a signature no live
+       * frame ever asks for is warm time and GPU memory spent on nothing. */
+      out.cacheKeysAfterChain = args.cacheKeys
+        ? JSON.parse(await evalIn('JSON.stringify(window.GAME.engine.renderer.info.programs.map((p) => p.cacheKey))'))
+        : null;
       out.backgroundChainMs = Date.now() - t0;
       console.log(`background chain finished after ${Math.round(out.backgroundChainMs / 1000)}s`);
     } else if (args.warmWait > 0) {

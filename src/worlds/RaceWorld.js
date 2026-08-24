@@ -109,6 +109,40 @@ const _q1 = new THREE.Quaternion();
 const _e1 = new THREE.Euler();
 const _color = new THREE.Color();
 
+/* ── Batch's OWN scratch, and why it may not share the block above ──────────
+ *
+ * `Batch.box` used `_v1`/`_v2`/`_m1`/`_q1`/`_e1` to compose its placement
+ * matrix, and its CALLERS use `_v1` to hold the road point they are placing
+ * things relative to:
+ *
+ *     this._roadPoint(co, i, lat, w, _v1);              // _v1.y = road height
+ *     B.box('metal.panel', 3.2, 2.6, 2.6, _v1.x, _v1.y + 1.3, _v1.z, ...);
+ *     B.box('metal.trim',  3.6, 0.3, 3.0, _v1.x, _v1.y + 2.75, _v1.z, ...);
+ *
+ * Both halves are individually correct - one scratch vector per module is the
+ * house rule, and `_roadPoint` writing into a caller-supplied vector is the
+ * house rule too. Together they are a bug: the first `B.box` overwrites `_v1`
+ * with its OWN centre, so every later line in the block is measured from the
+ * previous piece rather than from the ground, and each one compounds.
+ *
+ * Measured on the shipped tree, per marshal post: the lid went 1.30 m above
+ * the box it caps, the hazard band 3.75 m above the box it is painted on, and
+ * the post's collider 6.35 m into the air with nothing solid under it. The
+ * same shape misplaced the tyre stacks, the chicane blocks, the road
+ * obstacles, the wind-mast blades and one leg of every lattice pylon - six
+ * systems, four of them carrying collision. None of it is visible in the
+ * source and all of it is visible in a photograph.
+ *
+ * So `Batch` gets private scratch. Nothing else in this file may use these,
+ * and nothing in `Batch` may use the module block above.
+ */
+const _bv1 = new THREE.Vector3();
+const _bv2 = new THREE.Vector3();
+const _bm1 = new THREE.Matrix4();
+const _bq1 = new THREE.Quaternion();
+const _be1 = new THREE.Euler();
+const _bcolor = new THREE.Color();
+
 /* The road's collision used to be built twice: a raycast layer at the true
  * surface and a solid "character" layer 0.28 m below it, because `Car` could
  * not climb any gradient without the road pushing it to a standstill. That was
@@ -357,15 +391,15 @@ class Batch {
     /* The colour attribute is always written, white when no tint was asked for:
      * a missing attribute both breaks the merge and reads as *zero* under
      * `vertexColors`, which renders black rather than untinted. */
-    _color.set(tint === null ? 0xffffff : tint);
+    _bcolor.set(tint === null ? 0xffffff : tint);
     const n = g.attributes.position.count;
     const col = new Float32Array(n * 3);
     const sh = this.shade;
     if (!sh) {
       for (let i = 0; i < n; i++) {
-        col[i * 3] = _color.r;
-        col[i * 3 + 1] = _color.g;
-        col[i * 3 + 2] = _color.b;
+        col[i * 3] = _bcolor.r;
+        col[i * 3 + 1] = _bcolor.g;
+        col[i * 3 + 2] = _bcolor.b;
       }
     } else {
       const posA = g.attributes.position;
@@ -389,9 +423,9 @@ class Batch {
         let f = 1 - ao * (1 - rise);
         if (nrmA) f *= 1 - sky * (1 - (nrmA.getY(i) * 0.5 + 0.5));
         const d = (1 - f) * grime;
-        col[i * 3] = _color.r * f * (1 - d * 0.14);
-        col[i * 3 + 1] = _color.g * f * (1 - d * 0.06);
-        col[i * 3 + 2] = _color.b * f;
+        col[i * 3] = _bcolor.r * f * (1 - d * 0.14);
+        col[i * 3 + 1] = _bcolor.g * f * (1 - d * 0.06);
+        col[i * 3 + 2] = _bcolor.b * f;
       }
     }
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -408,17 +442,19 @@ class Batch {
    * is trim nobody can see, and a bevelled box costs 108 triangles against 12.
    */
   box(key, w, h, d, x, y, z, rotY = 0, tint = null) {
-    _e1.set(0, rotY, 0);
-    _q1.setFromEuler(_e1);
-    _v1.set(x, y, z);
-    _v2.set(1, 1, 1);
-    _m1.compose(_v1, _q1, _v2);
+    /* `_bv1` and friends, NOT `_v1`: the callers of this method hold their road
+     * point in `_v1` across several calls. See the scratch block at the top. */
+    _be1.set(0, rotY, 0);
+    _bq1.setFromEuler(_be1);
+    _bv1.set(x, y, z);
+    _bv2.set(1, 1, 1);
+    _bm1.compose(_bv1, _bq1, _bv2);
     const min = Math.min(w, h, d);
     const r = Math.min(BEVEL, w * 0.22, h * 0.22, d * 0.22);
     const geo = min >= BEVEL_MIN && r > 0.02
       ? new RoundedBoxGeometry(w, h, d, 1, r)
       : new THREE.BoxGeometry(w, h, d);
-    this.add(key, geo, _m1, tint);
+    this.add(key, geo, _bm1, tint);
   }
 
   /** Box with an arbitrary basis - used for anything following the road. */

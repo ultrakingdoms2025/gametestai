@@ -8,6 +8,7 @@ import { buildYardTextures, buildYardMaterials, YARD_SIGN, yardSignUV } from './
 import { railRun, stairTreads, signBoard, paintQuad, workLight } from './dock/YardKit.js';
 import { ShipBuild, shipMaterials, fitOut } from './dock/ShipKit.js';
 import { buildKestrel, buildDray, buildPike, buildBastion } from './dock/Hulls.js';
+import { loadYardAssets, sectionParts, YARD_PART_KEYS } from './dock/YardAssets.js';
 import { HULLS, WALKABLE, BROW, boardSide } from './dock/HullPlan.js';
 import { Ship } from '../ships/Ship.js';
 import { loadShipAssets } from '../ships/ShipAssets.js';
@@ -129,6 +130,13 @@ const DECK_T = 0.14;
 const GRATE_T = 0.1;
 /** Structural bay pitch — the shed's portal frames and the chalk grid share it. */
 const BAY = 12;
+/**
+ * The keel line's paint colour, in ONE place because the line is struck by two
+ * methods 400 m apart and a keel line that changes colour at the bay mouth is
+ * a defect visible in a single screenshot. See `_buildFloor`'s note for why it
+ * is this value and not the 0x7fd8ef it shipped as.
+ */
+const KEEL_PAINT = 0x9fb4c0;
 
 export class DockWorld extends World {
   static id = 'dock';
@@ -400,6 +408,12 @@ export class DockWorld extends World {
       metalness: 0.1,
       roughness: 0.35,
       toneMapped: true,
+      /* Named for the same reason every other yard material is - see the
+       * naming loop at the end of `buildYardMaterials`. This one is declared
+       * out here, so it has to say its own name or it is the one hole in the
+       * ablation set, which is exactly the shape of hole that makes a tool
+       * report "innocent" about a system it never hid. */
+      name: 'yard.emPier',
     });
     for (const m of Object.values(this.mat)) this._mats.push(m);
 
@@ -435,6 +449,16 @@ export class DockWorld extends World {
      * Never rejects. A missing file resolves to an empty map and every hull
      * builds procedurally, which is the hull the whole test suite measures. */
     onProgress?.(0.78, 'Unpacking the hull skins');
+    /* Both asset sets on one wait.
+     *
+     * `loadShipAssets` has to finish before `_buildShips` at 0.80;
+     * `loadYardAssets` only has to finish before `_buildSections` at 0.938.
+     * Started together anyway, because they are two fetches to the same origin
+     * and serialising them would put the section drums' 371 KB behind the
+     * hulls' 1.2 MB for no reason. Neither ever rejects: a missing file
+     * resolves to an empty map and the hull or the section builds
+     * procedurally, which is what the whole headless suite measures. */
+    const yardAssets = loadYardAssets();
     await loadShipAssets();
     await step(0.80, 'Pinning the hulls together', this._buildShips);
     await step(0.86, 'Fitting out the site office', this._buildOffice);
@@ -442,6 +466,7 @@ export class DockWorld extends World {
     await step(0.90, 'Striking the containment field', this._buildMouth);
     await step(0.92, 'Rigging the gantry crane', this._buildCrane);
     await step(0.935, 'Running the services', this._buildServices);
+    await yardAssets;
     await step(0.938, 'Setting up the section jigs', this._buildSections);
     await step(0.94, 'Scattering set dressing', this._buildDressing);
     await step(0.96, 'Striking the worklights', this._buildLights);
@@ -902,7 +927,36 @@ export class DockWorld extends World {
      * door with the berths staggered either side of it. Done as vertex-
      * coloured quads in the paint buckets, so the strip, the chalk grid and
      * the four bay outlines are one draw call per ground between them. */
-    runZ(KEEL_HW * 2, 0, YARD_Z0 + 1, YARD_Z1 - 1, 0.03, 0x7fd8ef, 4);
+    /* ── 0x9fb4c0, and it used to be 0x7fd8ef ─────────────────────────────
+     *
+     * MEASURED, not preferred. The Phase 9 shot of `apron-arrival` — the
+     * framing whose own comment says "if this framing is not legible, nothing
+     * else in the yard gets looked at" — puts this strip across the near half
+     * of the frame, and the pixels inside it read mean luma 66.8 at
+     * SATURATION 0.498 against a whole-frame 46.7 / 0.31. The strip was the
+     * most saturated large surface in the first frame of this world by half
+     * again, and it is 8 m wide and 160 m long: a third of the visible floor.
+     *
+     * That is this world's own colour script broken by its own wayfinding.
+     * `YardTextures.buildYardMaterials` states the rule out loud — sodium owns
+     * the value peaks, "cyan is reserved for wayfinding ... and runs BELOW
+     * them so the shed never reads as one cyan chord" — and then the largest
+     * cyan object in the yard was run at half again the frame's saturation.
+     * Photographed, the apron half does not read as chalk struck on concrete;
+     * it reads as a lit panel let into the floor.
+     *
+     * 0x9fb4c0 is the same line with the chroma taken out of the PAINT and
+     * left in the two things that are meant to carry it: the brass inlay beads
+     * immediately below (`emCyan`, unchanged) and the pier edge run. Value is
+     * held — a chalk strip IS lighter than plate, and dimming it would have
+     * cost the legibility this is defending — so the change is
+     * saturation-only: 0.469 to 0.171 at the source colour.
+     *
+     * Struck on BOTH grounds through `runZ`, so the deck half moves with it.
+     * The deck half was never the offender (the chequer plate's normal breaks
+     * it up), but two keel lines of two different colours either side of the
+     * apron kerb is a worse defect than the one being fixed. */
+    runZ(KEEL_HW * 2, 0, YARD_Z0 + 1, YARD_Z1 - 1, 0.03, KEEL_PAINT, 4);
     // Brass inlay strips down both edges of the chalk, on both grounds.
     for (const s of [-1, 1]) {
       for (const [a, b] of [[YARD_Z0 + 1, APRON_Z], [APRON_Z, YARD_Z1 - 1]]) {
@@ -1370,22 +1424,60 @@ export class DockWorld extends World {
         put('hazard', boxGeo(s.r * 2.3, 0.08, 1.2, 1), wx(0, t * s.len), 1.94, wz(0, t * s.len), s.yaw);
       }
 
-      /* The section. A drum on its side with a bolted string course at every
-       * frame line, which is the shape the lore has claimed since drop one:
-       * nothing bigger than a gateway arch has ever come through a gateway, so
-       * every hull here arrived in pieces this size. */
+      /* ── The section ───────────────────────────────────────────────────
+       *
+       * A drum on its side with a bolted string course at every frame line,
+       * which is the shape the lore has claimed since drop one: nothing bigger
+       * than a gateway arch has ever come through a gateway, so every hull here
+       * arrived in pieces this size.
+       *
+       * AUTHORED IF THE FILE IS THERE, PROCEDURAL IF IT IS NOT. Both arms sit
+       * on the same `cy`, the same `_solidRot` collider and the same batch
+       * keys, so a failed download changes what the section LOOKS like and
+       * nothing else about the world — the jig, the staging, the collision and
+       * every reach test are identical either way. See `dock/YardAssets.js`
+       * and `scripts/make-yard-glb.mjs` for why this one object is authored
+       * and the rest of the yard is not.
+       */
       const cy = 1.9 + s.r;
-      const drum = new THREE.CylinderGeometry(s.r, s.r, s.len, 16, 1, true).rotateX(Math.PI / 2);
-      put('plate', drum, s.x, cy, s.z, s.yaw);
-      this._solidRot(s.x, cy, s.z, s.r, s.r, s.len / 2, s.yaw);
-      for (let i = 0; i <= s.frames; i++) {
-        const lz = (i / s.frames - 0.5) * s.len;
-        put('steel', new THREE.TorusGeometry(s.r + 0.06, 0.13, 6, 20),
-          wx(0, lz), cy, wz(0, lz), s.yaw + Math.PI / 2, 0, 0);
+      const authored = sectionParts(s.id);
+      if (authored) {
+        for (const { key, geometry } of authored) {
+          /* Re-checked against the LIVE material set rather than trusted from
+           * the manifest. `GeoBatch.flush` builds `new THREE.Mesh(merged,
+           * materials[key])`, and three replaces an undefined material with a
+           * default white `MeshBasicMaterial` - a new draw call, a new
+           * material and a new shader program, silently, which is the one cost
+           * this whole pipeline exists to avoid. The loader's allow-list is
+           * the first gate and this is the second, because the loader's list
+           * is a constant and `this.mat` is what actually exists. */
+          if (!this.mat[key] || !YARD_PART_KEYS.includes(key)) {
+            console.warn(`[dock] section '${s.id}' part '${key}' has no yard material - skipped`);
+            continue;
+          }
+          /* CLONED. `GeoBatch.add` applies the placement matrix in place and
+           * `flush` disposes what it merged, and the loader's cache is
+           * session-scoped: a second build of this world would otherwise place
+           * an already-placed geometry, and the section would be in the right
+           * spot once and 30 m into the floor after that. */
+          put(key, geometry.clone(), s.x, cy, s.z, s.yaw);
+        }
+      } else {
+        const drum = new THREE.CylinderGeometry(s.r, s.r, s.len, 16, 1, true).rotateX(Math.PI / 2);
+        put('plate', drum, s.x, cy, s.z, s.yaw);
+        for (let i = 0; i <= s.frames; i++) {
+          const lz = (i / s.frames - 0.5) * s.len;
+          put('steel', new THREE.TorusGeometry(s.r + 0.06, 0.13, 6, 20),
+            wx(0, lz), cy, wz(0, lz), s.yaw + Math.PI / 2, 0, 0);
+        }
+        // The open end, so it reads as a section and not as a tank.
+        put('steelDark', new THREE.TorusGeometry(s.r - 0.35, 0.3, 6, 20),
+          wx(0, s.len / 2), cy, wz(0, s.len / 2), s.yaw + Math.PI / 2, 0, 0);
       }
-      // The open end, so it reads as a section and not as a tank.
-      put('steelDark', new THREE.TorusGeometry(s.r - 0.35, 0.3, 6, 20),
-        wx(0, s.len / 2), cy, wz(0, s.len / 2), s.yaw + Math.PI / 2, 0, 0);
+      this._solidRot(s.x, cy, s.z, s.r, s.r, s.len / 2, s.yaw);
+      /* The inspection lamp clamped to the cut end. Outside the branch: it is
+       * a fitting on the jig, not part of the section, and a yard that lost
+       * its lamps because a download failed would be a different world. */
       put('emAmber', boxGeo(1.1, 0.1, 0.1, 1), wx(s.r * 0.7, s.len / 2 + 0.2), cy + s.r * 0.5,
         wz(s.r * 0.7, s.len / 2 + 0.2), s.yaw);
 
@@ -1449,11 +1541,17 @@ export class DockWorld extends World {
   _buildDockPier(p, pad) {
     const put = this._put;
 
-    // The keel line, continued out of the bay and down the pier. This is the
-    // one piece of wayfinding this world has ever had and it now ends
-    // somewhere.
+    /* The keel line, continued out of the bay and down the pier. This is the
+     * one piece of wayfinding this world has ever had and it now ends
+     * somewhere.
+     *
+     * Same colour as the bay's, and it has to be the same LITERAL: this is one
+     * line 400 m long that happens to be struck by two methods, and a keel
+     * line that changes colour at the mouth is a defect a screenshot finds
+     * immediately (`mouth-inside` frames both halves at once). See the note at
+     * the bay's `runZ` for why it is no longer 0x7fd8ef. */
     paintQuad(put, KEEL_HW * 2, MOUTH_Z - pad.z1 - 2, 0, DECK_Y + 0.03,
-      (MOUTH_Z + pad.z1 + 2) / 2, 0, 0x7fd8ef, 4);
+      (MOUTH_Z + pad.z1 + 2) / 2, 0, KEEL_PAINT, 4);
     for (const s of [-1, 1]) {
       put('emPier', boxGeo(0.1, 0.05, MOUTH_Z - pad.z1 - 2, 1),
         s * (KEEL_HW - 0.12), DECK_Y + 0.05, (MOUTH_Z + pad.z1 + 2) / 2);
@@ -2967,8 +3065,24 @@ export class DockWorld extends World {
     }
     put('steelDark', boxGeo(3.4, 0.16, 3.4, 2), c.x, c.y + 2.6, c.z);
     put('emCyan', boxGeo(1.2, 0.08, 0.5, 1), c.x, c.y + 1.05, c.z + 1.1);
-    /* The cab's open side faces -X, out over the bay: that is the launch point
-     * for the leap of faith, and it is the ONLY side without a rail. */
+    /* ── Which way the cab is open, corrected ──────────────────────────────
+     *
+     * This said "the cab's open side faces -X, out over the bay ... and it is
+     * the ONLY side without a rail", and both halves were wrong about the
+     * geometry immediately above them. The two `railRun`s here guard +Z and
+     * -Z, so BOTH X faces are open, and the arithmetic says which is which:
+     * the spur arrives at `c.x - 1.5` from `CRANE_WALK.x` = -74.4, outboard
+     * toward the port wall, so **-X is the way in**; the viewpoint's `launch`
+     * is at `CRANE_CAB.x + 1.4` bearing on `SPARES_PILE` at x -64.5, inboard,
+     * so **+X is the open side over the bay** and the leap of faith goes that
+     * way. Left as it was, the next person to move a rail would have railed
+     * the launch.
+     *
+     * The framing `VIEWS.dock` calls `crane-cab` stands inside the cab at
+     * x -69 looking +X, which is out of the open side and down at the floor -
+     * correct, and worth saying here because the shot is dominated by the
+     * cab's own back panel and glazing 1.5 m either side of the lens, which
+     * reads at first glance like a camera stuck in a box. */
     railRun(put, solidW, { axis: 'x', a: c.x - 1.5, b: c.x + 1.5, fixed: c.z + 1.5, y: c.y, facing: 1, accent: 'emCyan' });
     railRun(put, solidW, { axis: 'x', a: c.x - 1.5, b: c.x + 1.5, fixed: c.z - 1.5, y: c.y, facing: -1, accent: 'emCyan' });
 

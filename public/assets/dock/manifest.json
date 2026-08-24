@@ -1,0 +1,55 @@
+{
+  "comment": "Authored hero geometry for Lodestar Yard's three hull sections (Phase 9, decision D4). Written by scripts/make-yard-glb.mjs; the .glb files are reproduced byte for byte by re-running it, and scripts/tests/yard-assets.test.mjs holds every number below against the file on disk. A part's NAME IS A YARD MATERIAL KEY: src/worlds/dock/YardAssets.js reads the key off the mesh, discards the glTF material unread, and DockWorld._buildSections hands the geometry to the same GeoBatch bucket every other yard surface goes into - so an authored section merges into a mesh the yard already draws and cannot add a draw call, a material or a shader program. Every key here MUST exist in buildYardMaterials: a bucket with no material would be flushed as new THREE.Mesh(geo, undefined), which three fills in with a white MeshBasicMaterial - a new draw, a new material and a new program, silently. The loader refuses one, the generator refuses one, and the test reads the material set off the real buildYardMaterials rather than a copy of it. A file missing at runtime degrades to the procedural drum - see YardAssets.js and the asset arm of DockWorld._buildSections.",
+  "assets": [
+    {
+      "id": "sec-b1",
+      "file": "sec-b1.glb",
+      "kind": "geometry",
+      "section": "sec-b1",
+      "licence": "generated",
+      "source": "scripts/make-yard-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": ["plate", "steel", "steelDark", "hazard"],
+      "tris": 1634,
+      "bytes": 118472
+    },
+    {
+      "id": "sec-b2",
+      "file": "sec-b2.glb",
+      "kind": "geometry",
+      "section": "sec-b2",
+      "licence": "generated",
+      "source": "scripts/make-yard-glb.mjs (YARD_GLB_SECTION=sec-b2) - procedurally authored in this repository, 2026-08-23",
+      "parts": ["plate", "steel", "steelDark", "hazard"],
+      "tris": 1858,
+      "bytes": 134152
+    },
+    {
+      "id": "sec-b3",
+      "file": "sec-b3.glb",
+      "kind": "geometry",
+      "section": "sec-b3",
+      "licence": "generated",
+      "source": "scripts/make-yard-glb.mjs (YARD_GLB_SECTION=sec-b3) - procedurally authored in this repository, 2026-08-23",
+      "parts": ["plate", "steel", "steelDark", "hazard"],
+      "tris": 1634,
+      "bytes": 118472
+    }
+  ],
+  "sections": {
+    "sec-b1": {
+      "asset": "sec-b1",
+      "note": "Berth one's forward section, 6.2 m across and 11 m long on the jig at (-30, 22) - the first one a player walks past on the way in from the gateway, and the reason the arrival framing has anything with a scale in it. Five bays of lapped plating between five flanged ring frames, a bulkhead at the joined end and a torn rim at the cut end.",
+      "parts": ["plate", "steel", "steelDark", "hazard"]
+    },
+    "sec-b2": {
+      "asset": "sec-b2",
+      "note": "The big one: 8.8 m across and 16 m long at (34, -2), the largest single object on the yard floor and the one the `chandlery` and `yard-wide` framings are carried by. Six bays, and the only section whose cut end is wide enough to read the collar frame and the eight stringers inside it from the keel line.",
+      "parts": ["plate", "steel", "steelDark", "hazard"]
+    },
+    "sec-b3": {
+      "asset": "sec-b3",
+      "note": "Berth three's midships section at (-34, -34), 6.8 m across and 13 m long. Same five-bay build as sec-b1 at a different radius; its tear is seeded off its own id, so the three sections do not come apart on the same line.",
+      "parts": ["plate", "steel", "steelDark", "hazard"]
+    }
+  }
+}

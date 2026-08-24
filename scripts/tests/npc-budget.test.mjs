@@ -128,6 +128,17 @@ test('_separateBodies is quadratic, and still trivial at three times the budget'
    *     32 burners        at72 11.84-12.01     at200   193.6-235.3   ratio 16.2-19.7
    *     RED 6 of 10 runs
    *
+   * And end to end, which is the form that matters: with this gate as it was,
+   * a FULL `npm test` under 16 burners went red on run 2 of 2 at
+   *
+   *     3292 pass / 1 fail   `_separateBodies went from 11.40 ms to 258.14 ms`
+   *
+   * - the shape Phase 12 reported (3263 pass / 2 fail) with the name its own
+   * `tail` had cut off. 258.14 ms would have failed the second assertion in
+   * this test too, `at200 < 200`; both are gone below. With the counted
+   * version in place, three full-suite runs under the same 16 burners were
+   * green at 3293 / 0.
+   *
    * Look at which half moved. `at72` barely shifts because each of its five
    * reps is a 6 ms window that usually gets a clean slice; `at200`'s reps are
    * 55 ms windows, long enough that all five are interrupted, so the minimum

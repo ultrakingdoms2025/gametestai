@@ -329,3 +329,67 @@ chicane-front               891288 -> 893376 (+2088)
 The baseline column is also `art-race`'s own before-column, which means nothing
 between `06b79f6` and that branch's merge base touched this world at all.
 Programs at end of run: **441 → 441**. **Declared. Matched.**
+
+---
+
+## 7. Instrument defects found while doing this, handed back rather than fixed
+
+`scripts/world-shot.mjs`, `src/dev/**` and `src/gfx/**` are outside this
+branch's boundary. Two defects were hit; both were worked around inside
+throwaway measurement worktrees, and neither is fixed here.
+
+### 7.1 `world-shot --seed` is inert exactly where it is used
+
+`--seed` exists so two runs photograph the same maze. It does not bind.
+
+```
+maze seed pinned to 20250823
+maze seed in use: 4124197018        <- baseline tree
+maze seed in use: 3030693222        <- main tree
+```
+
+The sequence is: `world-shot` puts `?world=maze` on the page URL, so `boot()`
+**builds the maze** and `HARNESS.ready()` returns after that; only then does the
+script write `MazeWorld.seedOverride`; and the `goto` that would rebuild is
+skipped because `bootWorld === args.world`. The comment above the pin —
+*"BEFORE the goto, because a volatile world re-seeds inside `build()` and `goto`
+is what triggers it"* — is right about the mechanism and wrong about the order,
+because for the world being measured there is no goto.
+
+`WorldManager.build` will not rescue it either: it only disposes and
+re-generates a volatile world `if (world._built && volatile && this._active !==
+world)`, so a same-world `goto` cannot rebuild it. The workaround used here is
+a bounce — `goto('station')` then `goto('maze')` — which does re-enter while the
+maze is not active and does bind the seed.
+
+**Cost of leaving it:** every maze measurement anyone takes with `--seed`
+believes it is comparing two runs of one world and is comparing two different
+worlds, over a noise floor `art-maze` measured at **90%** on `shaft-up`'s
+triangle count. This is the same class of defect as the one this branch exists
+to check: an instrument that reports the number it was asked for rather than the
+number it measured.
+
+**Suggested fix** (one branch, `scripts/world-shot.mjs`): when a seed is pinned
+and the boot world is already the world asked for, re-enter it via another
+world before framing. Better still, hand the seed to the page in the URL so the
+boot itself uses it and no rebuild is needed.
+
+### 7.2 `VIEWS.maze`'s `tower-top` aborts a run like `lift-car` does
+
+`main`'s first maze run lost its last framing to
+`harness: could not compute view "tower-top"` — `_computeView` found no tower on
+that seed. `art-maze` §0 recorded the same shape for `lift-car` (**16 of 40
+seeds** have no resident lift) and worked around it by naming the other five
+framings on the command line. `tower-top` has it too, and nothing says so; a
+`maze` sweep run with default views fails on some seeds and not others. The
+report is still written — that repair landed — but the run exits non-zero and
+the framing is lost.
+
+### 7.3 `race` still has no `VIEWS` entry
+
+`art-race` §7 composed and measured six `VIEWS.race` framings and did not commit
+them, because `src/dev/Harness.js` was outside its boundary. The result is that
+`world-shot --world race` takes **zero** framings today, and the only way to
+re-fly that branch's evidence is to lift four coordinates out of the
+`subjectAt` fields of the reports it committed — which is what this branch did.
+The six proposed framings are still in that document and still uncommitted.

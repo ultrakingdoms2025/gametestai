@@ -211,14 +211,26 @@ test('ready() waits out a rehearsal that is still up', async () => {
 
 test('settleBoot waits for the shader program cache to stop growing', async () => {
   const g = stubGame();
-  g.engine.renderer.info.programs = new Array(249).fill(0);
   const h = new Harness(g);
-  const grow = setInterval(() => {
-    if (g.engine.renderer.info.programs.length < 615) g.engine.renderer.info.programs.push(0);
-    else clearInterval(grow);
-  }, 4);
-  const w = await h.settleBoot({ timeoutMs: 8000, stableMs: 60, sampleMs: 10 });
-  clearInterval(grow);
+
+  /* The cache grows ON BEING READ rather than on a wall-clock timer, and that
+   * is not a convenience - a timer-driven fixture made this case fail under a
+   * loaded full-suite run (it sampled 612 of 615 before the interval had
+   * finished) which is a test that reports the machine rather than the code.
+   * Twelve reads take it from the 249 programs measured just after ready() to
+   * the 615 the same run settled at; after that it holds, so the only thing
+   * being measured is whether `settleBoot` waits for it to hold. */
+  let reads = 0;
+  Object.defineProperty(g.engine.renderer.info, 'programs', {
+    configurable: true,
+    get() {
+      reads++;
+      return new Array(reads < 12 ? 249 + reads * 30 : 615).fill(0);
+    },
+  });
+
+  const w = await h.settleBoot({ timeoutMs: 30000, stableMs: 60, sampleMs: 10 });
+  assert.equal(w.timedOut, false, 'the fixture must settle well inside the budget');
   assert.equal(w.programs, 615,
     'settleBoot handed back a program count that was still moving - this is the 329->390 '
     + '"noise floor" three branches attributed to the renderer');

@@ -53,6 +53,34 @@ function topLevelFn(src, header) {
   return next === -1 ? rest : rest.slice(0, next);
 }
 
+/**
+ * `body` with every `steps.push(...)` argument removed, parens balanced.
+ *
+ * The invariant this file is protecting is "nothing here compiles outside a
+ * scheduled step", and that used to be spelled as "there are exactly two
+ * compile calls and here is their exact text". Which held right up until a
+ * third scheduled step was added, at which point a gate that was supposed to
+ * catch an unsliced compile went red for a sliced one - a gate measuring the
+ * shape rather than the property. Deleting the pushes and looking at what is
+ * left measures the property.
+ */
+function withoutScheduledSteps(body) {
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const at = body.indexOf('steps.push(', i);
+    if (at === -1) { out += body.slice(i); return out; }
+    out += body.slice(i, at);
+    let depth = 0;
+    let j = at + 'steps.push'.length;
+    for (; j < body.length; j++) {
+      if (body[j] === '(') depth++;
+      else if (body[j] === ')' && --depth === 0) { j++; break; }
+    }
+    i = j;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* 1. The plan covers what compile() covers                            */
 /* ------------------------------------------------------------------ */
@@ -177,24 +205,36 @@ test('warmWorld compiles through the slicer, never in one call', async () => {
     'nothing cancels the warm when the world it planned against is rebuilt or '
     + 'disposed, so the plan would compile objects belonging to a dead world');
 
-  // Every compile in here is a slice: one for a batch of plan units, one for the
-  // broadening pass. A third, or either of these hoisted out of `steps.push`, is
-  // the defect coming back.
+  // Every compile in here is a slice: a batch of plan units, the broadening
+  // pass over the whole group, and the roots that belong to no world group.
+  // Any of them hoisted out of `steps.push` is the defect coming back.
   assert.match(
     body,
-    /steps\.push\(\(\) => \{\s*for \(const o of batch\) engine\.renderer\.compile\(o, engine\.camera, engine\.scene\);\s*\}\)/,
+    /steps\.push\(\(\) => withArrivalKey\(world, \(\) => \{\s*for \(const o of batch\) warmCompile\(o, engine\.camera, engine\.scene\);\s*\}\)\)/,
     'the per-unit compile is not a scheduled step',
   );
   assert.match(
     body,
-    /steps\.push\(\(\) => engine\.renderer\.compile\(group, engine\.camera, engine\.scene\)\)/,
+    /steps\.push\(\(\) => withArrivalKey\(world, \(\) => warmCompile\(group, engine\.camera, engine\.scene\)\)\)/,
     'the broadening whole-group compile is not a scheduled step - as a bare call '
     + 'it is the original block, with extra work in front of it',
   );
-  assert.equal(
-    (body.match(/renderer\.compile\(/g) ?? []).length, 2,
-    'warmWorld makes a compile call that is neither the sliced unit compile nor '
-    + 'the broadening pass. Anything unsliced here lands in a gameplay frame',
+  assert.match(
+    body,
+    /for \(const root of persistentWarmRoots\(\)\)[\s\S]{0,200}steps\.push\(/,
+    'the persistent-root compiles are not scheduled steps. That list is the '
+    + 'avatar, the viewmodels, the mounts, the gateways, the NPCs and the loot '
+    + 'pool - compiled in one call it is every material the player carries, in '
+    + 'one gameplay frame',
+  );
+  /* The property, not the shape: whatever is scheduled is fine, and nothing
+   * outside a scheduled step may compile at all. @see withoutScheduledSteps */
+  const unsliced = withoutScheduledSteps(body);
+  assert.doesNotMatch(
+    unsliced,
+    /warmCompile\(|renderer\.compile\(/,
+    'warmWorld compiles outside a scheduled step. Anything unsliced here lands '
+    + 'in a gameplay frame, with the player standing in the entry world',
   );
 
   const size = src.match(/const WORLD_WARM_UNITS_PER_COMPILE = (\d+)/);
@@ -265,19 +305,22 @@ test('nothing after engine.start() compiles a whole scene in one call', async ()
    * the loading screen, before `engine.start()`, and the un-sliced cost is the
    * loading screen telling the truth. Everything the background chain reaches
    * runs after the gate opens, in the player's frames. */
+  /* `warmCompile` and not `renderer.compile`: the compile itself has not moved,
+   * it has grown a render-target bind in front of it so its programs are keyed
+   * to the path the session will actually draw with. @see program-cache-key. */
   const prewarm = topLevelFn(src, 'async function prewarm()');
-  assert.match(prewarm, /engine\.renderer\.compile\(engine\.scene, engine\.camera\)/,
+  assert.match(prewarm, /warmCompile\(engine\.scene, engine\.camera\)/,
     'prewarm no longer compiles the live scene behind the loading screen');
 
   const boot = topLevelFn(src, 'async function boot()');
   const started = boot.indexOf('engine.start()');
   assert.ok(started > 0, 'boot() no longer starts the engine');
-  assert.doesNotMatch(boot.slice(started), /renderer\.compile\(/,
+  assert.doesNotMatch(boot.slice(started), /warmCompile\(|renderer\.compile\(/,
     'boot() compiles something after engine.start() - that cost is paid in a '
     + 'gameplay frame with the loading screen already gone');
 
   const background = topLevelFn(src, 'function scheduleBackgroundBuilds(startWorld)');
-  assert.doesNotMatch(background, /renderer\.compile\(/,
+  assert.doesNotMatch(background, /warmCompile\(|renderer\.compile\(/,
     'the background build chain compiles directly instead of through the sliced '
     + 'warmWorld');
 
@@ -296,7 +339,7 @@ test('nothing after engine.start() compiles a whole scene in one call', async ()
   const recover = topLevelFn(src, 'async function recoverFromContextLoss()');
   assert.match(recover, /createRecoveryScreen\(/,
     'the recovery blocks with nothing on screen - the compile is a freeze the player cannot read');
-  assert.match(recover, /r\.compile\(engine\.scene, engine\.camera\)/,
+  assert.match(recover, /warmCompile\(engine\.scene, engine\.camera\)/,
     'the recovery no longer compiles the live scene; a restored context is a cold program cache '
     + 'and every program would be re-linked inside gameplay frames instead');
   const engineSrc = await readCode('src/core/Engine.js');

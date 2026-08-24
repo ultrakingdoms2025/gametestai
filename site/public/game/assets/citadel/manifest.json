@@ -1,0 +1,58 @@
+{
+  "comment": "Authored hero architecture for Sunspire Citadel (Phase 9, decision D4). Written by scripts/make-citadel-glb.mjs; the .glb is reproduced byte for byte by re-running it, and scripts/tests/citadel-assets.test.mjs holds every number below against the file on disk. glTF materials are DISCARDED on load - each part is handed to the world's own Batch under the material key named in 'bind' and MERGED into the bucket that batch already flushes, so nothing in this manifest can add a draw call, a material or a shader program. 'batches' is why there are batch names at all: Batch.flush makes one THREE.Mesh per material key per batch, so a part in a key its batch does not already emit would be a new mesh in a world whose whole render argument is 166 meshes for ~350,000 triangles - and the loader refuses one.",
+  "assets": [
+    {
+      "id": "citadel",
+      "file": "citadel.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-citadel-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": [
+        "arch",
+        "screen",
+        "corbel"
+      ],
+      "tris": 544,
+      "bytes": 41068
+    }
+  ],
+  "bind": {
+    "arch": {
+      "slot": "stone.castle",
+      "batches": [
+        "wall",
+        "souk"
+      ]
+    },
+    "screen": {
+      "slot": "wood.beam",
+      "batches": [
+        "souk"
+      ]
+    },
+    "corbel": {
+      "slot": "stone.castle",
+      "batches": [
+        "citadel",
+        "wall"
+      ]
+    }
+  },
+  "parts": {
+    "arch": {
+      "tris": 212,
+      "frame": "x in [-1,1] is the span, y=0 is the springing line rising to y=1.41421 at the crown, z in [-0.5,0.5] is the wall thickness.",
+      "note": "The pointed-arch surround: two spandrels, an archivolt moulding round the curve, and a keystone. A SURROUND rather than a whole arch, because the world's openings already exist - the gatehouse is a real hole and a souk doorway is a painted recess - and the same piece turns either into a pointed opening. _buildCurtainWall's own comment calls the gatehouse 'the arch the player walks in under' and it was a rectangular hole under a flat lintel; this is the repair. A curved void is the one shape Batch.box cannot make."
+    },
+    "screen": {
+      "tris": 168,
+      "frame": "x and y in [-0.5,0.5] are the opening, z in [-0.5,0.5] is the reveal depth.",
+      "note": "The mashrabiya panel: a framed lattice with a pointed head, set over the near-black recess _buildSouk already paints. From the alley the recess reads as a hole; with a screen over it, as a window somebody lives behind. A lattice could be approximated with sixteen boxes at the same triangle cost - the argument for authoring it is the HEAD, which is the same curve as the arch below and which a box batch cannot make. A screen with a square head is a prison grille."
+    },
+    "corbel": {
+      "tris": 164,
+      "frame": "x in [-0.5,0.5] is the run's length along the wall, y in [-1,0] hangs below the slab it carries, z in [0,1] projects out from the wall face.",
+      "note": "One straight run of a muqarnas bracket course: two tiers of stepped brackets, the upper offset half a cell from the lower, on a backing panel. Built first as nested hollow NICHES and photographed - the course read as a row of dark hanging teeth, because every surface in a cavity faces inward where Batch's baked sky term darkens it, and open cells silhouette against the sky between their neighbours. A bracket course reads as mass with shadow in it, not as shadow with mass around it, and the difference is entirely the backing panel. What makes a minaret a minaret is the corbelled course that carries its gallery, and the four minarets are the world's most distant readable silhouette - desert-overview and eyrie-summit both photograph them from a quarter of a kilometre."
+    }
+  }
+}

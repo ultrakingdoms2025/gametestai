@@ -257,6 +257,55 @@ test('the destination warm wears the destination fog, and reaches what is in no 
   );
 });
 
+test('one set of gateway materials outlives clear(), so their shader ids hold still', async () => {
+  /* Three caches a ShaderMaterial's compiled stages by SOURCE STRING and
+   * `WebGLShaderCache.remove()` deletes a stage the instant its last material
+   * is disposed. The gateway's four shaders come from four module constants -
+   * byte-identical for every gateway in the game - but the cache entry carries
+   * an incrementing `id` and that id is IN the program cache key. So disposing
+   * the departure world's gateways evicted the stages, `buildForWorld` made
+   * fresh materials from the same source milliseconds later, they got new ids,
+   * and the identical GLSL was compiled and linked again from cold.
+   *
+   * Measured on the production bundle: every crossing to a gateway world
+   * linked exactly four such programs - disc, halo, motes, embers - and the
+   * key diff said `customVertexShaderID 60 -> 92` with every other field
+   * equal. Repeated entry/exit paid it again on every crossing and could never
+   * converge, because no warm can pre-build a program whose id will not exist
+   * until the material does.
+   *
+   * Retaining one set holds `usedTimes` above zero and the ids steady. It reads
+   * like a leak, which is exactly why it needs a test standing next to it. */
+  const code = await readCode('src/systems/Portals.js');
+  const start = code.indexOf('clear() {');
+  assert.ok(start > 0, 'PortalSystem has no clear()');
+  const body = code.slice(start, code.indexOf('\n  }', start));
+  assert.match(
+    body,
+    /if\s*\(\s*!this\._shaderAnchor\s*\)/,
+    'PortalSystem.clear() no longer retains a set of gateway materials. Every '
+    + 'world crossing goes back to re-linking the disc, the halo, the motes and '
+    + 'the embers from byte-identical GLSL, and repeated entry/exit never '
+    + 'converges.',
+  );
+  for (const mat of ['discMat', 'haloMat', 'moteMat', 'emberMat']) {
+    assert.match(
+      body,
+      new RegExp(`_shaderAnchor\\s*=\\s*\\{[\\s\\S]{0,240}${mat}:`),
+      `the retained set does not include ${mat}. A shader stage held by nothing `
+      + 'is evicted, and that one material\'s program is re-linked on every crossing.',
+    );
+  }
+  /* And the other half: it is retained, not leaked once per crossing. */
+  assert.match(
+    body,
+    /\}\s*else\s*\{[\s\S]{0,240}discMat\.dispose\(\)/,
+    'clear() no longer disposes the gateway materials once an anchor exists, so '
+    + 'every crossing leaks a full set. One is a fixed cost; one per crossing is '
+    + 'a leak with a shader program attached to it.',
+  );
+});
+
 test('withArrivalKey restores what it swapped, and swaps nothing across a yield', async () => {
   const code = await readCode('src/main.js');
   const start = code.indexOf('function withArrivalKey(');

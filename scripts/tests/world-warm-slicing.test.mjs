@@ -221,7 +221,7 @@ test('warmWorld compiles through the slicer, never in one call', async () => {
   );
   assert.match(
     body,
-    /for \(const root of persistentWarmRoots\(\)\)[\s\S]{0,200}steps\.push\(/,
+    /persistentWarmRoots\(\)[\s\S]{0,200}steps\.push\(/,
     'the persistent-root compiles are not scheduled steps. That list is the '
     + 'avatar, the viewmodels, the mounts, the gateways, the NPCs and the loot '
     + 'pool - compiled in one call it is every material the player carries, in '

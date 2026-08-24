@@ -869,6 +869,8 @@ export class PortalSystem {
     this._haloGeo = new THREE.RingGeometry(DISC_R * 0.9, DISC_R * 1.72, 96, 1);
     this._moteGeo = this._buildMoteGeometry(520);
     this._emberGeo = this._buildEmberGeometry(180);
+    /** One set of gateway materials, kept for the session. @see clear() */
+    this._shaderAnchor = null;
 
     this._buildPreviewRig();
     this._buildWarpOverlay();
@@ -3462,10 +3464,48 @@ export class PortalSystem {
     for (const p of this._portals) {
       this.scene.remove(p.root);
       p.rt?.dispose();
-      p.discMat.dispose();
-      p.haloMat.dispose();
-      p.moteMat.dispose();
-      p.emberMat.dispose();
+      /* KEEP ONE SET OF GATEWAY MATERIALS ALIVE FOR THE WHOLE SESSION.
+       *
+       * Not a leak, and not thrift: it is the only way this game's gateways
+       * can stop re-linking themselves on every crossing.
+       *
+       * Three caches a ShaderMaterial's compiled stages by their SOURCE
+       * STRING, and `WebGLShaderCache.remove()` deletes a stage the moment its
+       * last material is disposed. The four shaders below come from four
+       * module constants - byte-identical for every gateway in the game - but
+       * their cache entry carries an incrementing `id`, and that id is part of
+       * the program cache key. So disposing the departure world's gateways
+       * evicted the stages, `buildForWorld` created fresh materials from the
+       * same source a few milliseconds later, they were handed NEW ids, and
+       * the identical GLSL was compiled and linked again from cold.
+       *
+       * Measured on the production bundle: every crossing to a world with a
+       * gateway linked exactly four such programs - the disc, the halo, the
+       * motes and the embers - and the diff against the existing cache said so
+       * in one line, `customVertexShaderID 60 -> 92` with every other field
+       * equal. Repeated entry/exit paid it again on every crossing and never
+       * converged, because there is nothing a warm can pre-build for an id
+       * that will not exist until the material does.
+       *
+       * One retained set holds `usedTimes` above zero, so the ids are stable
+       * for the session and the next world's gateways resolve to programs that
+       * already exist. It is never rendered again - it is a reference, not an
+       * object - so `uPreview` is released to keep it from pinning a disposed
+       * render target.
+       *
+       * The spill light below is pooled for the same shape of reason.
+       */
+      if (!this._shaderAnchor) {
+        this._shaderAnchor = {
+          discMat: p.discMat, haloMat: p.haloMat, moteMat: p.moteMat, emberMat: p.emberMat,
+        };
+        if (p.discMat.uniforms?.uPreview) p.discMat.uniforms.uPreview.value = null;
+      } else {
+        p.discMat.dispose();
+        p.haloMat.dispose();
+        p.moteMat.dispose();
+        p.emberMat.dispose();
+      }
       // The spill light is pooled and outlives the portal - hand it back dark
       // rather than disposing it, or the count would drop on every world swap.
       if (p.light) p.light.intensity = 0;
@@ -3497,6 +3537,12 @@ export class PortalSystem {
     if (this._warpMesh.parent) this._warpMesh.parent.remove(this._warpMesh);
     this._warpMesh.geometry.dispose();
     this._warpMat.dispose();
+    // The set `clear()` retains to hold three's shader-stage ids steady. A full
+    // teardown is the one moment nothing is coming back to reuse them.
+    if (this._shaderAnchor) {
+      for (const mat of Object.values(this._shaderAnchor)) mat.dispose?.();
+      this._shaderAnchor = null;
+    }
     this._discGeo.dispose();
     this._haloGeo.dispose();
     this._moteGeo.dispose();

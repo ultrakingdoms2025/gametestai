@@ -1400,6 +1400,45 @@ function persistentWarmRoots() {
 let _parkedMountRoots = [];
 
 /**
+ * What the persistent set's programs are actually keyed on, for one
+ * destination.
+ *
+ * Three keys on the fog TYPE, the environment's `mapping` and its cubeUV
+ * height - not on which world published them. Sixteen worlds share three
+ * values between them, so warming the avatar, the viewmodels, the mounts, the
+ * gateways and the NPCs once per world is fifteen passes that compile nothing
+ * and still cost an idle callback each. Warming once per distinct key is the
+ * same coverage for a fraction of the background settle.
+ *
+ * `envMap === undefined` reads the live scene, because that is what
+ * `applyEnvironment` leaves in place for a world that publishes no map.
+ *
+ * @param {any} world
+ * @returns {string}
+ */
+function arrivalKeyOf(world) {
+  const env = world?.environment ?? {};
+  const fog = world?.sceneFog ?? (env.fogFar > 0 ? _warmFog : null);
+  const map = env.envMap === undefined ? engine.scene.environment : env.envMap;
+  return [
+    fog ? fog.type : 'none',
+    map ? map.mapping : 'none',
+    map?.image ? map.image.height : 'none',
+  ].join('|');
+}
+
+/**
+ * Arrival keys whose persistent set has already been warmed.
+ *
+ * Cleared by `recoverFromContextLoss`: a restored WebGL context is a cold
+ * program cache, and a set that remembers warming something the driver no
+ * longer has is a warm that skips the only work it had left to do.
+ *
+ * @type {Set<string>}
+ */
+const _persistentWarmed = new Set();
+
+/**
  * Pay every first-use shader cost behind the loading screen.
  *
  * ── Why this is now one call ──────────────────────────────────────────────
@@ -1856,6 +1895,11 @@ async function recoverFromContextLoss() {
   const r = engine.renderer;
   const p0 = r.info.programs.length;
   const screen = createRecoveryScreen(uiRoot);
+  /* A restored context is a cold program cache, so nothing the warm remembers
+   * building is still built. Leaving this set populated would have
+   * `rewarmOtherWorlds` skip the persistent pass for every key it had already
+   * covered - a warm that skips the only work it has left to do. */
+  _persistentWarmed.clear();
   try {
     // One frame with the overlay up before anything blocking: the whole point
     // of showing it is that the player sees it *during* the stall, not after.
@@ -2134,13 +2178,19 @@ function warmWorld(id) {
     }
     steps.push(() => withArrivalKey(world, () => warmCompile(group, engine.camera, engine.scene)));
     /* The half of the arrival frame that is in no world group at all - see
-     * `persistentWarmRoots`. One unit each, because a viewmodel or an NPC is a
-     * handful of materials where a world group is thousands, and because the
-     * list is read live: a gateway built since the plan was made is picked up
-     * by the step rather than missed by it. */
+     * `persistentWarmRoots`. Once per distinct arrival KEY rather than once per
+     * world: sixteen worlds share three keys between them, so the other
+     * thirteen passes compile nothing and still cost an idle callback per root.
+     * The list is read at that moment rather than planned up front, so a
+     * gateway or an NPC that appeared since is picked up rather than missed. */
     steps.push(() => {
-      for (const root of persistentWarmRoots()) {
-        steps.push(() => withArrivalKey(world, () => warmCompile(root, engine.camera, engine.scene)));
+      const key = arrivalKeyOf(world);
+      if (_persistentWarmed.has(key)) return;
+      _persistentWarmed.add(key);
+      for (const batch of chunkUnits(persistentWarmRoots(), WORLD_WARM_UNITS_PER_COMPILE)) {
+        steps.push(() => withArrivalKey(world, () => {
+          for (const root of batch) warmCompile(root, engine.camera, engine.scene);
+        }));
       }
     });
   });

@@ -45,6 +45,7 @@ Three, in the order they would stop a player.
 | **L1** | A paid-up signed-in player cannot enter the game with a mouse. The `/play` mode-select panel renders entirely underneath the site header. | `site/app/globals.css:940` + `1806` | §2 |
 | **L2** | A custom-server owner mints unlimited **platform** credits. Phase 7's "server credits cannot reach the platform economy" is breached — not through `serverCredits.ts`, which holds, but through the quest payout, which never reads `server_id`. | `site/lib/playerDb.ts:939-1011` | §3 |
 | **L3** | A platform admin cannot durably suspend a server. Any owner PATCH that omits `status` reinstates it. Which means L2 cannot be contained by suspending the offending server. | `site/lib/customServers.ts:562-573` | §4 |
+| **L4** | One owner-authored marketplace item with an unvalidated `game_action` takes `/api/marketplace/items` to a bodiless 500 for every member of that server — the 612 platform items included. Server-scoped and owner-recoverable, so a rung below the others. | `site/lib/serverContent.ts:490` vs `site/lib/marketplaceDb.ts:210-215` | §6 F8 |
 
 L2 and L3 compose: the abuse is unlimited, and the tool built to stop it does not hold.
 
@@ -306,15 +307,52 @@ No device clock is consulted anywhere; nothing subtracts. **The merge rules are 
 
 The one gap — `min`-mode kinds have no lower bound (§6, F7).
 
-### 5.6 Marketplace — **there is no purchase to test**
+### 5.6 Marketplace — **there is no purchase to test**, and the catalogue is brittle
 
 `GET /api/marketplace/items` works and returns 612 items. That is the entire marketplace HTTP
-surface for a player. See §6, F5.
+surface for a player — there is no purchase route and no purchase UI (§6 F5).
+
+The read is also brittle in a way the write side does not know about: one row with an
+unrecognised `game_action` kills the whole list. An owner can plant one through the real content
+route (F8), and the site's own test suite already plants six (F9).
 
 ### 5.7 Quests — **two defects**, §6 F1 and F2
 
 There is no quest UI on the site at all; quests are game-client-only, so this flow was driven
 through the HTTP API from the signed-in browser session.
+
+### 5.8 The gated API surface, both ways
+
+The brief's point exactly: a 401 for an anonymous caller is a **gate pass**, not an end-to-end
+pass. Every gated route was exercised twice — once with no cookie, once as a real signed-in player
+with a real body. Only the right-hand column is evidence the route works.
+
+| Route | anonymous | signed in |
+|---|---|---|
+| `GET  /api/user/me` | 401 | 200 profile |
+| `GET  /api/game/session` | 401 | 200 player_id, handle, credits, server_credits |
+| `GET  /api/game/progress` | 401 | 200 merged state |
+| `POST /api/game/progress` | 401 | 200 `{state, changed, rejected}` |
+| `GET  /api/game/state` | 401 | 200 opaque blob |
+| `POST /api/game/state` | 401 | 200 `{ok:true}` |
+| `POST /api/game/credits` | 401 | 200 `{balance, results:[{applied:true,…}]}` |
+| `GET  /api/game/quests` | **200** (open by design — platform catalogue, no engagements) | 200 + engagements + server_id |
+| `POST /api/game/quests` | 401 | 404 `quest_not_found` for a bogus id (correct) |
+| `GET  /api/game/server` | 401 | 200 current, memberships, joinable |
+| `POST /api/game/server` | 401 | 200 heartbeat |
+| `GET  /api/game/server-credits` | 401 | 200 balances, history, kinds |
+| `POST /api/game/server-credits` | 401 | 200 `{applied:true, delta:10, balance:5010}` |
+| `GET  /api/game/chat` | 401 | 200 messages, cursor, active players |
+| `POST /api/game/chat` | 401 | 200 `{id:8}` — message stored and readable |
+| `GET  /api/game/leaderboard` | 401 | 200 boards |
+| `GET  /api/servers` | 401 | 200 owned, memberships, entitlement, sku |
+| `POST /api/servers` | 401 | 402 `no_entitlement` (correct — paywall) |
+| `GET  /api/marketplace/items` | 200 | 200, 612 items (open by design) |
+| `GET  /api/lore` | 503 | 503 — F10 |
+
+Server chat is included and works end to end: `POST` stored message id 8, and `GET` returns it with
+the active-player list, scoped to the caller's current server with no `serverId` accepted from the
+body.
 
 ---
 
@@ -497,10 +535,102 @@ out ranking on totals or times outright, and names quest forgery as one of its r
 corrupts a player's own personal-best display and nothing else. A `value > 0` check on `min`-mode
 kinds is the missing guard.
 
-### F8 — `POST /api/game/quests` has no error boundary. (low)
+### F8 — One owner-authored item 500s the whole catalogue for that server. (high, new)
+
+`createServerMarketplaceItem` stores `game_action` as free text —
+`text(input.gameAction, 60)` (`serverContent.ts:490`) — with no check against the action table.
+`rowToItem` **throws** on an unrecognised one (`marketplaceDb.ts:210-215`), and
+`listMarketplaceItems` maps *every* row through it (`marketplaceDb.ts:328`). One bad row and the
+whole list dies.
+
+**Driven live through the real routes.** Owner authors one item; a second signed-in member of the
+same server reads the catalogue:
+
+```
+--- baseline: GET /api/marketplace/items ---
+  owner   -> 200 (612 items)
+  member  -> 200 (612 items)
+  anon    -> 200 (612 items)
+
+--- owner authors ONE item with gameAction "totally_bogus" ---
+  POST /api/servers/<id>/content -> 201  {"item":{"id":"84650a71-…","name":"Catalogue Bomb",…}}
+
+--- after ---
+  owner   -> 500  body: ""
+  member  -> 500  body: ""
+  anon    -> 200 (612 items)
+```
+
+Server log: `Error: Invalid game action: totally_bogus at normalizeAction (lib\marketplaceDb.ts:214:9)
+→ rowToItem → listMarketplaceItems → GET (app\api\marketplace\items\route.ts:43:17)`.
+
+**Blast radius.** Every member of that server loses the entire marketplace — the 612 platform items
+included, not just the server's own. Anonymous and non-member callers are unaffected, because the
+scope clause `server_id IS NULL OR server_id = $2` excludes the row from their query. So it is a
+denial of service **inside one server**, not platform-wide.
+
+**Recoverable.** `DELETE /api/servers/<id>/content?kind=item&id=<id>` → `{"removed":true}`, and both
+callers went back to 200 (612 items). The owner can undo it — but only the owner, and only if they
+work out what happened from an empty 500.
+
+`category` and `world_name` have the same shape: written with `text(...).toLowerCase()`
+(`serverContent.ts:488, 496`), read with `normalizeCategory` / `normalizeWorld`, which also throw.
+The write path and the read path disagree about what the column may contain, and the read path is
+the strict one.
+
+### F9 — The site's own test suite leaves the marketplace 500ing. (medium, new)
+
+`marketplacePurchase.test.ts:147` seeds six fixture rows with
+`game_action = 'grant_item'` — which is an `action_config.effect` in the catalogue, never an action
+`id` — and never removes them. They are `server_id IS NULL`, so they are platform rows.
+
+Consequence, observed by accident during the closing sweep and then confirmed:
+
+```
+GET /api/marketplace/items    anonymous 500     signed in 500     (both with an empty body)
+```
+
+After deleting exactly those six rows, both went back to `200 (612 items)`. **Any database the
+site suite has been run against serves a dead marketplace to every caller until someone removes
+them.** The suite is green while the route it shares a table with is not.
+
+This is the same family as F8 — the fixture is only able to do this because nothing validates
+`game_action` on write — and it is a good argument for fixing F8 at the write side rather than
+making the reader lenient.
+
+### F10 — `/api/lore` is the one route that cannot take a direct connection string. (medium, new)
+
+`site/lib/lore.ts:1` is the only module in `site/lib` that uses `@vercel/postgres`. Every other one
+uses raw `pg`, and `playerDb.ts:4` says why in as many words:
+
+> "Uses raw pg (not @vercel/postgres) to support direct Neon connection strings."
+
+`@vercel/postgres` refuses a non-pooled string outright. With `POSTGRES_URL` set to a direct
+connection string, `/api/lore` answers `503 {"error":"Lore data unavailable."}` to every caller
+while every other Postgres-backed route is fine.
+
+Isolated to the client, not the data or the schema — same URL, same table, two clients:
+
+```
+connection string is pooled (contains "-pooler"): false
+raw pg              -> OK, 9 lore_entries rows readable
+@vercel/postgres    -> FAILS: invalid_connection_string
+```
+
+`getLore` catches this and falls back to placeholder prose, which its own comment
+(`lore.ts:17-23`) calls *"a silent, total content outage"* — every world showing fallback signage
+with nothing in the response to say so.
+
+**Caveat.** Production presumably uses a pooled Neon string, in which case this is dormant there,
+and I could not check. It is a configuration fragility with one module out of step with a rule the
+repo has already written down — and worth noting that `lore.ts` was the *one* route that survived
+the Phase 7 incident, and is the *one* route that fails this.
+
+### F11 — `POST /api/game/quests` has no error boundary. (low)
 
 Every branch of the POST handler runs outside a try/catch (`route.ts:49-160`). Any database fault
-becomes an uncaught 500 with an empty body. Demonstrated in F6.
+becomes an uncaught 500 with an empty body. Demonstrated in F6. `GET /api/marketplace/items` has
+the same shape — F8 and F9 both produced 500s with nothing in them.
 
 ---
 
@@ -538,9 +668,29 @@ production works.**
 ## 9. Nothing was fixed
 
 Per the brief: reported, not patched. F4 is a genuine one-liner and F7 is close to one, but the
-headline defect (F3) is not, and fixing two of seven would have made the survey harder to read
-rather than easier to act on. No source file outside `docs/superpowers/**` was modified. The
-probe scripts live under gitignored `.probe/` directories and are not committed.
+headline defect (F3) is not, and fixing two of eleven would have made the survey harder to read
+rather than easier to act on. **No source file was modified** — the only two files this branch
+changes are this document and one screenshot. Probe scripts live under gitignored `.probe/`
+directories and are not committed.
+
+### State the `aether_test` database was left in
+
+It is a survey artefact, not a fixture, and it should be rebuilt before it is trusted:
+
+- Schema rebuilt from `admin` `initSchema()` + the site's own ensures; **78 quests / 398 steps**
+  seeded by the admin app's `seedQuests()`.
+- Two synthetic accounts, `survey-alpha@aether.test` and `survey-bravo@aether.test`, with
+  balances of 2,000,510,348 and 1,000,000,005 platform credits — the evidence for F3.
+- One custom server, `Survey Outpost`, holding two owner quests including a repeatable
+  1,000,000,000-credit one.
+- One `server_entitlements` row written by hand as the Stripe stand-in (§8).
+- The six `game_action='grant_item'` fixture rows from `marketplacePurchase.test.ts` were deleted
+  so the F8 baseline was the product rather than my own test run (F9). Re-running the site suite
+  puts them back.
+
+`node admin/.probe/bootstrap.mts --drop` style rebuild — or simply running the suites again —
+restores it. Nothing here ever touched any database but `aether_test`, and every script refuses
+any other by name.
 
 ---
 

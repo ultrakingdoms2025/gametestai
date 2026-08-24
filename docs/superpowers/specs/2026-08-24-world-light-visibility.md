@@ -308,7 +308,36 @@ by the time any framing was taken.
 
 ---
 
-## 7. Files
+## 7. What this deliberately did not touch
+
+Sixteen light constructions outside `src/worlds` are **still born visible**, and
+every one of them is a `LightRig` source in exactly the same way a world's is:
+
+| file | sites | born at |
+|---|---:|---|
+| `src/weapons/Fireball.js` | 3 | key 1.0, rim 0.55, core 0 |
+| `src/player/Weapon.js` | 3 | key 1.1, rim 0.6, flash 0 |
+| `src/weapons/Bow.js` | 2 | key 1.1, rim 0.55 |
+| `src/weapons/Sword.js` | 2 | key 1.15, rim 0.6 |
+| `src/mounts/{Car,Dragon,Hoverboard}.js` | 3 | 0 |
+| `src/systems/{Portals,Projectiles,VFX}.js` | 3 | 0 |
+
+Intensity is not the defence. `WebGLLights.setup` increments `pointLength` for
+every light it is handed **without consulting intensity** — `gfx/LightAnchor.js`
+says so in its own docblock — so a pooled muzzle flash born at intensity 0 still
+counts for the frame before the rig's next walk, exactly like a hearth lamp born
+at 90 does. The eight viewmodel key/rim lights are worse only in that they are
+born *lit* as well as counted.
+
+They are left because they are outside this branch's file boundary
+(`src/weapons/**`, `src/player/**`, `src/mounts/**` and `src/systems/**` belong
+to `perf-world-entry`), not because they are safe. The fix is mechanical and
+already written: the same three factories, and `WORLDS_DIR` in the gate widened
+to `src/`, with `src/gfx/LightRig.js` and `src/main.js`'s sun as the two
+exemptions the `EXEMPT` list was built for — those *are* the slots the counts
+are made of and must stay visible.
+
+## 8. Files
 
 | file | change |
 |---|---|

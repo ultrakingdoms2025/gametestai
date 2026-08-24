@@ -1,0 +1,18 @@
+{
+  "comment": "Authored hero geometry for Halberd Reach, the asteroid field in open space (Phase 9, decision D4). Written by scripts/make-belt-glb.mjs; the .glb is reproduced byte for byte by re-running it, and scripts/tests/belt-assets.test.mjs holds every number below against the file on disk. The mesh's NAME IS THE BELT MATERIAL KEY: src/worlds/space/BeltAssets.js reads the key off the mesh, discards the glTF material unread, and Belt._build hands the geometry to a fourth InstancedMesh that shares the SAME MeshStandardMaterial instance as the three procedural silhouettes - so the asset adds no material and no shader program. It does add one renderable, one instanced mesh and one draw call, because an InstancedMesh carries exactly one geometry; that is paid back twice over by the belt now sharing one material where it built three byte-identical ones. Which rocks use it is not a number invented here: it is Belt.HERO_RADIUS, the same threshold the collider set uses, so every rock the flight model can hit is a rock drawn at hero detail. A file missing at runtime degrades to the procedural rock - see BeltAssets.js and the heroMesh arm of Belt._build - and that is the arm the whole headless suite takes.",
+  "assets": [
+    {
+      "id": "reach-boulder",
+      "file": "reach-boulder.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-belt-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": ["rock"],
+      "detail": 4,
+      "tris": 500,
+      "bytes": 40128,
+      "radius": [0.705, 1.097],
+      "note": "A unit-radius boulder: four octaves of value noise for the body, nine crater bowls with raised rims, and three seeded fracture planes shearing 20-to-31-degree flats through the lot. Drawn by every rock at or above Belt.HERO_RADIUS - 44 of the field's 260, and the only ones a pilot ever sees from inside a kilometre. The radial envelope stays inside the 1.24 the procedural rock reaches, so the drawn rock does not spill any further outside its own collider than it already did."
+    }
+  ]
+}

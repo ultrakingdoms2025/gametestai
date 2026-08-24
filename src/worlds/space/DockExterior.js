@@ -547,6 +547,27 @@ export class DockExterior {
     };
     this._M = M;
 
+    /**
+     * NAME EVERY MATERIAL, from the key it is already filed under.
+     *
+     * `scripts/world-shot.mjs --ablate` — the A/B that answers "which system
+     * owns this pixel", and the only tool this project has for that question —
+     * identifies materials BY NAME. `art-station` found all 225 of its world's
+     * materials anonymous, so the harness silently reported a class-name
+     * fallback (`MeshStandardMaterial x 14`) and the whole ablation was
+     * useless. Open space was in exactly that state: 43 materials, of which
+     * ONE (`Sky.space`) carried a name.
+     *
+     * Done as a loop over `M` rather than a `name:` on each literal because a
+     * loop cannot miss the next one somebody adds. The name is not part of
+     * three's program cache key — `WebGLPrograms.getProgramCacheKey` never
+     * reads it — so this is free.
+     */
+    for (const [key, v] of Object.entries(M)) {
+      if (Array.isArray(v)) v.forEach((m, i) => { m.name = `space:dock:${key}${i}`; });
+      else v.name = `space:dock:${key}`;
+    }
+
     this._buildKeel(M);
     this._buildHallWalls(M);
     this._buildHallInterior(M);
@@ -1584,6 +1605,7 @@ export class DockExterior {
     const amberMat = this._mat(new THREE.MeshBasicMaterial({
       color: new THREE.Color(2.6, 1.5, 0.6), fog: false, toneMapped: false,
     }));
+    amberMat.name = 'space:dock:lights';
     const amberMesh = new THREE.InstancedMesh(sphere, amberMat, amber.length);
     amberMesh.name = 'space:dock:lights';
     const dummy = new THREE.Object3D();
@@ -1599,6 +1621,7 @@ export class DockExterior {
     const navMat = this._mat(new THREE.MeshBasicMaterial({
       color: 0xffffff, fog: false, toneMapped: false,
     }));
+    navMat.name = 'space:dock:nav';
     const navMesh = new THREE.InstancedMesh(
       this._geo(new THREE.SphereGeometry(1.1, 8, 5)), navMat, nav.length
     );
@@ -1639,6 +1662,7 @@ export class DockExterior {
     const mat = this._mat(new THREE.MeshBasicMaterial({
       color: 0xffffff, fog: false, toneMapped: false, side: THREE.FrontSide,
     }));
+    mat.name = 'space:dock:windows';
     const mesh = new THREE.InstancedMesh(this._geo(new THREE.PlaneGeometry(1, 1)), mat, n);
     mesh.name = 'space:dock:windows';
     const dummy = new THREE.Object3D();
@@ -1722,6 +1746,7 @@ export class DockExterior {
     const band = new THREE.Mesh(wm, this._mat(new THREE.MeshBasicMaterial({
       color: new THREE.Color(2.3, 1.7, 1.0), fog: false, toneMapped: false,
     })));
+    band.material.name = 'space:dock:ring:windows';
     band.name = 'space:dock:ring:windows';
     ring.add(band);
 
@@ -1766,6 +1791,7 @@ export class DockExterior {
         /** The strobe. Set per frame. */
         uPulse: { value: 1 },
       },
+      name: 'space:dock:beacon',
       vertexShader: /* glsl */ `
         varying vec2 vUv;
         void main() {

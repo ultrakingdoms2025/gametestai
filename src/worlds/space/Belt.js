@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { proxyPlacement } from './Scale.js';
+import { heroGeometry } from './BeltAssets.js';
 
 /**
  * HALBERD REACH - the asteroid field, and the one thing out here you fly INTO
@@ -56,6 +57,51 @@ import { proxyPlacement } from './Scale.js';
  * stretch and its own tumble. One shared shape with random rotation still
  * reads as one shape - the eye locks onto a repeated silhouette faster than
  * onto a repeated colour.
+ *
+ * ===========================================================================
+ *  PHASE 9 (art-space): TWO THINGS A PHOTOGRAPH FOUND THAT NOTHING TESTED
+ * ===========================================================================
+ *
+ * The field was screenshotted at 900 m from its largest rock - a second and a
+ * half of cruise, and a distance the collider set says a pilot can reach.
+ * It measured **mean luma 4.9 with 99.6% of its pixels under 48/255**. Two
+ * separate faults, and the second is invisible until the first is fixed.
+ *
+ * 1. THE ALBEDO WAS APPLIED TWICE. The material carried `color: tint` AND
+ *    every instance carried `setColorAt(i, tint * variation)`. Three
+ *    multiplies `vColor` into `diffuseColor`, so the field's albedo was
+ *    `0x5d564e` SQUARED: linear 0.0117 against the 0.108 the tint names, which
+ *    is charcoal. The material is now white and the whole albedo rides on the
+ *    per-instance colour, which is where the variation already lived. A/B on
+ *    three facets of the same rock in the same framing: 4.5 -> 36.8,
+ *    8.4 -> 57.8, 8.9 -> 56.6.
+ *
+ *    It is worth naming the shape of this bug, because it is not a typo: both
+ *    halves are individually correct and each has a comment explaining itself.
+ *    Only the product is wrong, and nothing renders in a unit test.
+ *
+ * 2. EIGHTY TRIANGLES IS A DIE, NOT A BOULDER. On an 18 m pebble drawn four
+ *    pixels across, 80 is generous. On the 336 m rock above it is twenty
+ *    visible facets over 700 px of screen. The rocks at or above `HERO_RADIUS`
+ *    now draw from an authored 500-triangle mesh with craters and fracture
+ *    planes in it - see `BeltAssets.js` and `scripts/make-belt-glb.mjs` - and
+ *    the other 216 keep the three procedural silhouettes unchanged.
+ *
+ * ---- What that costs, stated rather than buried --------------------------
+ *
+ * One renderable, one instanced mesh and one draw call: an `InstancedMesh`
+ * carries exactly one geometry, so hero detail for the 44 rocks that need it
+ * is either a fourth bucket or a silhouette taken away from the 216 that do
+ * not, and the paragraph above argues for keeping three.
+ *
+ * It is paid back twice over in materials. This file built THREE
+ * byte-identical `MeshStandardMaterial`s, one per silhouette, for no reason
+ * anyone recorded - the per-instance colour is an attribute and needs no
+ * material of its own. There is now one, shared by every bucket, so the
+ * world's material count goes DOWN by two even with the fourth mesh added.
+ * Shader programs do not move either way: three keys its program cache on
+ * material CONFIGURATION, and three identical configurations were always one
+ * program.
  */
 
 /* Module-level scratch. See the house rule. */
@@ -67,6 +113,20 @@ const _scl = new THREE.Vector3();
 const _axis = new THREE.Vector3();
 const _mat = new THREE.Matrix4();
 const _place = { d: 0, scale: 0 };
+
+/**
+ * Radius at or above which a rock is drawn from the authored hero mesh.
+ *
+ * It is the SAME number the collider set uses, and that is the rule rather
+ * than a coincidence: **every rock the flight model can hit is a rock drawn at
+ * hero detail**. A second threshold would be a second number to keep in step
+ * with the first. Exported so `SpaceWorld._buildBelt` and
+ * `scripts/tests/belt-assets.test.mjs` read it rather than repeat it.
+ */
+export const HERO_RADIUS = 90;
+
+/** Procedural silhouettes for the bulk field. See the header on why three. */
+const SHAPES = 3;
 
 /** Deterministic PRNG. A field that re-rolled between visits is not a place. */
 function makeRandom(seed) {
@@ -140,6 +200,13 @@ export class Belt {
 
     /** @type {THREE.InstancedMesh[]} */
     this.meshes = [];
+    /**
+     * Index of the authored hero bucket in `meshes`, or -1 when no asset was
+     * loaded. -1 is the whole headless suite and any deploy missing the file;
+     * see `BeltAssets.js`. Read by tests rather than re-derived.
+     * @type {number}
+     */
+    this.heroMesh = -1;
     /** @type {THREE.BufferGeometry[]} */
     this._geoms = [];
     /** @type {THREE.Material[]} */
@@ -159,16 +226,30 @@ export class Belt {
     const [ex, ey, ez] = spec.extent;
     const [cx, cy, cz] = spec.position;
     const [rLo, rHi] = spec.rockRadius;
-    const SHAPES = 3;
 
     for (let i = 0; i < SHAPES; i++) this._geoms.push(makeRockGeometry(rand));
 
-    // Bucket first so each InstancedMesh can be allocated at its exact size.
-    const perMesh = new Array(SHAPES).fill(0);
+    /**
+     * The authored hero mesh, or null. Null is the normal path in the whole
+     * headless suite and on any deploy where the file is missing; see the
+     * header of `BeltAssets.js`.
+     *
+     * CLONED, because `dispose()` below disposes every geometry it was given
+     * and the session cache outlives one build of this world. A second build
+     * handed the same buffer would draw from a disposed one.
+     */
+    const hero = heroGeometry();
+    this.heroMesh = hero ? SHAPES : -1;
+    if (hero) this._geoms.push(hero.clone());
+
+    /* The provisional bucket, one `rand()` per rock. This loop is UNCHANGED
+     * and must stay unchanged: it consumes exactly `count` values out of the
+     * shared stream, and every position, radius, stretch and tumble in the
+     * field is drawn from what follows it. Moving a single call re-rolls the
+     * whole of Halberd Reach, including the collider set that
+     * `space-backdrop.test.mjs` measures. */
     for (let i = 0; i < this.count; i++) {
-      const m = Math.floor(rand() * SHAPES) % SHAPES;
-      this.mesh[i] = m;
-      this.slot[i] = perMesh[m]++;
+      this.mesh[i] = Math.floor(rand() * SHAPES) % SHAPES;
     }
 
     for (let i = 0; i < this.count; i++) {
@@ -207,7 +288,7 @@ export class Belt {
        * the field its sense of mass. */
       this.rate[i] = (0.05 + rand() * 0.22) * (60 / (r + 60));
 
-      if (r >= 90) {
+      if (r >= HERO_RADIUS) {
         this.colliderRocks.push({
           x: this.trueX[i],
           y: this.trueY[i],
@@ -217,18 +298,45 @@ export class Belt {
       }
     }
 
-    const tint = new THREE.Color(spec.tint);
-    for (let m = 0; m < SHAPES; m++) {
-      const mat = new THREE.MeshStandardMaterial({
-        color: tint,
-        roughness: 0.94,
-        metalness: 0.06,
-        flatShading: true,
-        fog: false,
-      });
-      this._mats.push(mat);
+    /* Now the radii are known, move every rock big enough to be worth a
+     * collider into the hero bucket, and only then hand out slots. No `rand()`
+     * is consulted here - the field is already decided; this only re-labels
+     * which mesh draws which rock. With no authored geometry the label never
+     * changes and the buckets are exactly the three this world always had. */
+    const meshCount = this.heroMesh >= 0 ? SHAPES + 1 : SHAPES;
+    const perMesh = new Array(meshCount).fill(0);
+    for (let i = 0; i < this.count; i++) {
+      if (this.heroMesh >= 0 && this.radius[i] >= HERO_RADIUS) this.mesh[i] = this.heroMesh;
+      this.slot[i] = perMesh[this.mesh[i]]++;
+    }
+
+    /**
+     * ONE material, shared by every bucket, and WHITE.
+     *
+     * White because the tint rides on the per-instance colour below and three
+     * multiplies the two together - see fault 1 in the header. Shared because
+     * three identical `MeshStandardMaterial`s are three material instances,
+     * one shader program and no difference at all; the per-instance colour is
+     * an `InstancedBufferAttribute` and has never needed a material of its own.
+     *
+     * Named, and that is not decoration: `scripts/world-shot.mjs --ablate`
+     * identifies materials BY NAME, and `art-station` found all 225 of its
+     * world's materials anonymous and its whole A/B silently useless. The name
+     * is not part of three's program cache key, so it is free.
+     */
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.94,
+      metalness: 0.06,
+      flatShading: true,
+      fog: false,
+    });
+    mat.name = 'space:belt:rock';
+    this._mats.push(mat);
+
+    for (let m = 0; m < meshCount; m++) {
       const im = new THREE.InstancedMesh(this._geoms[m], mat, perMesh[m]);
-      im.name = `space:belt:rock${m}`;
+      im.name = m === this.heroMesh ? 'space:belt:hero' : `space:belt:rock${m}`;
       im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       /* Off, both ways. The shadow cascade covers 120 m around the player and
        * these are drawn at proxy positions the cascade knows nothing about;
@@ -243,10 +351,21 @@ export class Belt {
       this.group.add(im);
     }
 
-    /* Per-instance colour, so the field is not one flat grey. Three tints
-     * around the base: cold iron, warm dust, and a pale icy one. Set once. */
+    /**
+     * Per-instance colour, so the field is not one flat grey. Three tints
+     * around the base: cold iron, warm dust, and a pale icy one. Set once.
+     *
+     * This now carries the WHOLE albedo, because the material above is white.
+     * Nothing in this loop changed - it always produced `tint * variation`,
+     * which is exactly the albedo the spec names - and that is the point: the
+     * bug was never here, it was that the material multiplied the tint in a
+     * second time. The counter walks the same ascending-`i` order the slots
+     * were handed out in, so instance `slot[i]` and colour `counters[m]` are
+     * the same rock.
+     */
+    const tint = new THREE.Color(spec.tint);
     const c = new THREE.Color();
-    const counters = new Array(SHAPES).fill(0);
+    const counters = new Array(meshCount).fill(0);
     const r2 = makeRandom(0x5eed11);
     for (let i = 0; i < this.count; i++) {
       const m = this.mesh[i];

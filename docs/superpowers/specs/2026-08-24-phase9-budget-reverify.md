@@ -332,6 +332,75 @@ Programs at end of run: **441 → 441**. **Declared. Matched.**
 
 ---
 
+## 4. maze — the one world that needed a second sweep to be comparable at all
+
+`MazeWorld.build()` re-seeds from `Math.random()` on every activation, so two
+runs of one commit photograph two different worlds. `art-maze` §0 measured what
+that costs: **90%** swing on `shaft-up`'s triangle count and **63%** on
+`tower-top`'s, across seven runs of unchanged code, plus materials 14–18,
+renderables 46–92, instanced meshes 32–78 and world lights 675–950 — every axis
+this re-verification is about, moving by more than any art pass could.
+
+`--seed` exists to close that, and **it does not bind** (§7.1). The first sweep
+therefore photographed seed `4124197018` on the baseline and `3030693222` on
+`main` and is not evidence about anything:
+
+```
+                    (NOT COMPARABLE - different seeds)
+forecourt        1179510 -> 1113316   materials 15 -> 15   meshes 56 -> 55
+lift-car         1072654 -> 1633494   materials 15 -> 17   meshes 98 -> 81
+```
+
+The second sweep re-entered the maze through another world so the pin took, and
+both trees then built **seed 20250823**:
+
+| framing | draws | world triangles | materials | renderables | instanced | instances | lights | geometries |
+|---|---|---|---|---|---|---|---|---|
+| `forecourt` | −2 | 1,198,234 → 1,130,566 (**−67,668**) | **0** | **0** | **0** | **0** | **0** | −54 |
+| `shaft-up` | 0 | 809,286 → 806,288 (**−2,998**) | **0** | **0** | **0** | **0** | **0** | −55 |
+| `lift-car` | +1 | 1,312,746 → 1,301,142 (**−11,604**) | **0** | **0** | **0** | **0** | **0** | −64 |
+| `tower-top` | 0 | 1,159,378 → 1,137,360 (**−22,018**) | **0** | **0** | **0** | **0** | **0** | −47 |
+
+Absolutes, identical on both trees: materials 18 (19 at `tower-top`),
+renderables 62 / 62 / 90 / 75, instanced meshes 47 / 47 / 76 / 60, world lights
+525 / 525 / 850 / 675.
+
+`art-maze` declared: materials, renderables, instanced meshes, world lights and
+shader programs *"inside the noise floor"*; `geometries` **down**; and world
+triangles **down**, with the true delta computed off the pure modules at
+**−74,985** (−82,000 … −69,822 across eight seeds) — the hedge sprigs' −151,292
+and the ivy's −8,952 against the candles' declared **+85,260**.
+
+Re-measured at one bound seed with one instrument, the five census axes are
+**identical to the object**, geometries are down, and triangles are down in all
+four usable framings. **Declared. Matched** — and this is the first maze
+before/after in the repository taken on the same maze.
+
+Two of the six framings are excluded, on both trees, for the same two reasons:
+
+- `corridor` photographed the **station**. The re-entry bounce leaves the
+  maze's return gateway pointing at the world it came from, and `view()`'s
+  player pin is a plane-side crossing, so `Portals._autoEnter` fires. The
+  harness caught it and said so — *"photographed world "station", not "maze""*,
+  *"the player is 1309.1 m from the camera"* — which is the repaired instrument
+  doing exactly the job the old one could not.
+- `above-entrance` then failed outright, because the run was standing in the
+  station when it was asked for a maze framing.
+
+Both happen identically on both trees, and both are artefacts of the workaround
+in §7.1 rather than of either tree.
+
+### 4.1 One trap deliberately not reported as a finding
+
+`HARNESS.worldTriangles()` now counts a `BatchedMesh` **per visible instance**
+rather than once at its reserved buffer size. The maze is the world built on
+that class, so its absolute triangle numbers here are far larger than the ones
+`art-maze` published (1.1–1.3 M against 0.7–0.8 M) and they are **not**
+comparable to that document. That is a fixed instrument, not a regression, and
+it applies identically to both columns above.
+
+---
+
 ## 7. Instrument defects found while doing this, handed back rather than fixed
 
 `scripts/world-shot.mjs`, `src/dev/**` and `src/gfx/**` are outside this

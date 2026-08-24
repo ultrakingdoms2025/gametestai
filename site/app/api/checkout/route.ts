@@ -10,6 +10,10 @@ import {
   type Quote,
 } from '@/lib/pricing';
 import { getStripe, siteOrigin, stripeConfigured } from '@/lib/stripe';
+import { auth } from '@/lib/auth';
+import { getUserById } from '@/lib/db';
+import { findOrCreatePlayer } from '@/lib/playerDb';
+import { SERVER_HOSTING_SKU, quoteServerHosting } from '@/lib/premium';
 
 /**
  * Start a checkout.
@@ -42,6 +46,22 @@ export async function POST(req: Request) {
   const { hasAccess } = await getCurrentAccessState();
 
   const requested = String(body.intent ?? 'entry');
+
+  /* ---- the subscription SKU ------------------------------------------- *
+   *
+   * Handled before the one-off branch and returning early, because almost
+   * nothing below applies to it: there is no `hasAccess` substitution (hosting
+   * is not access), no credit quantity, and no simulated path.
+   *
+   * Simulated checkout is refused for a subscription on purpose. The whole point
+   * of 7b is a REAL webhook that writes entitlement, and a simulated flow would
+   * have to fake the entitlement write — which is the one thing worth
+   * exercising. `sk_test_` keys make the real path free, so there is nothing to
+   * gain from a pretend one.
+   */
+  if (requested === SERVER_HOSTING_SKU) {
+    return startServerHostingCheckout(req);
+  }
   // A customer who has already paid for access cannot be sold it again, whatever
   // the request says.
   const intent: 'entry' | 'credits' | 'entry+credits' =
@@ -134,6 +154,95 @@ export async function POST(req: Request) {
     return NextResponse.json({ url: session.url, simulated: false });
   } catch (e) {
     console.error('[checkout] Stripe session creation failed:', e);
+    return NextResponse.json(
+      { error: 'Could not reach the payment provider. Nothing has been charged.' },
+      { status: 502 }
+    );
+  }
+}
+
+/**
+ * Start the recurring charge for custom-server hosting.
+ *
+ * ── Why `price_data.recurring` rather than a dashboard Price id ───────────
+ *
+ * A Price object created in the dashboard has a different id in test mode and in
+ * live, so it becomes an environment variable — and an environment variable that
+ * is wrong produces a checkout that is silently the wrong price. Building the
+ * price inline means the amount comes from `premium.ts` in every environment,
+ * which is the same argument `pricing.ts` makes about the one-off SKUs and the
+ * reason simulated and live have never disagreed on a total here.
+ *
+ * ── `client_reference_id` is the whole attribution story ──────────────────
+ *
+ * A subscription renews with no browser attached, so `/api/confirm` cannot be
+ * the thing that grants on month two. Only the webhook can — and the webhook has
+ * no session, so the ONLY way it can tell whose entitlement to write is a value
+ * carried on the Stripe objects themselves.
+ *
+ * Both places, deliberately: `client_reference_id` is echoed on the checkout
+ * session, and `subscription_data.metadata` puts the same id on the SUBSCRIPTION,
+ * so every later `customer.subscription.*` event carries it too. The checkout
+ * session is long gone by the second month.
+ */
+async function startServerHostingCheckout(req: Request) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: 'Sign in first.' }, { status: 401 });
+  }
+  const user = await getUserById(session.user.id);
+  if (!user) return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+  const playerId = await findOrCreatePlayer(session.user.id, user.email);
+
+  const stripe = getStripe();
+  if (!stripe) {
+    /* No simulated fallback, unlike the one-off SKUs. Simulating this would mean
+     * faking the entitlement write, which is the one thing 7b exists to
+     * exercise — and `sk_test_` keys make the real path free, so there is
+     * nothing to gain from a pretend one. */
+    return NextResponse.json(
+      {
+        error:
+          'Server hosting needs Stripe configured. Set STRIPE_SECRET_KEY — a sk_test_ key is enough.',
+      },
+      { status: 503 }
+    );
+  }
+
+  const quote = quoteServerHosting();
+  const origin = siteOrigin(req);
+
+  try {
+    const checkout = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      client_reference_id: playerId,
+      customer_email: user.email,
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: 'usd',
+            unit_amount: quote.totalCents,
+            recurring: { interval: 'month' },
+            product_data: {
+              name: 'Aether Nexus — custom server',
+              description: quote.detail,
+            },
+          },
+        },
+      ],
+      subscription_data: {
+        metadata: { playerId, sku: SERVER_HOSTING_SKU },
+      },
+      metadata: { playerId, sku: SERVER_HOSTING_SKU },
+      success_url: `${origin}/admin/servers?subscribed=1`,
+      cancel_url: `${origin}/admin/servers`,
+    });
+
+    if (!checkout.url) throw new Error('Stripe returned a session with no URL.');
+    return NextResponse.json({ url: checkout.url, simulated: false });
+  } catch (e) {
+    console.error('[checkout] Stripe subscription session failed:', e);
     return NextResponse.json(
       { error: 'Could not reach the payment provider. Nothing has been charged.' },
       { status: 502 }

@@ -113,11 +113,17 @@ async function syncMarketplaceSeedItems() {
 }
 
 async function backfillMarketplaceImages() {
+  /* Platform rows only. An owner's item has an owner-supplied image and an
+   * owner-supplied world, and `buildMarketplaceAiImageUrl` only knows the
+   * platform's categories and worlds — so a backfill over owner rows would
+   * quietly replace their artwork with a generated placeholder for a world it
+   * had to substitute a default for. */
   const { rows } = await query<Record<string, unknown>>(
     `SELECT id, name, category, world_name
      FROM marketplace_items
-     WHERE COALESCE(TRIM(image), '') = ''
-       OR image LIKE 'data:image/svg+xml%'`
+     WHERE server_id IS NULL
+       AND (COALESCE(TRIM(image), '') = ''
+            OR image LIKE 'data:image/svg+xml%')`
   );
 
   for (const row of rows) {
@@ -228,16 +234,49 @@ function rowToItem(row: Record<string, unknown>): MarketplaceItemRecord {
   };
 }
 
+/**
+ * The catalogue, for one content scope.
+ *
+ * `serverId` is optional and its ABSENCE means the platform partition, never
+ * "everything". That default is the whole of 7a's promise here: every caller
+ * written before custom servers existed keeps seeing exactly today's content,
+ * without being edited, because omitting the argument selects the rows those
+ * callers have always seen.
+ *
+ * A custom server's catalogue is its own items IN ADDITION TO the defaults
+ * (decision D2), which is why `includePlatform` exists and defaults to true —
+ * the owner's items are an overlay, not a replacement.
+ */
 export async function listMarketplaceItems(filters: {
   search?: string;
   category?: string;
   world?: string;
   activeOnly?: boolean;
+  /** A server's items, in addition to the defaults. Absent means platform only. */
+  serverId?: string | null;
 } = {}): Promise<MarketplaceItemRecord[]> {
   await ensureMarketplaceSchema();
   const clauses: string[] = [];
   const values: unknown[] = [];
   let i = 1;
+
+  /* The scope, first and unconditionally, written as a LITERAL clause rather
+   * than assembled from a helper.
+   *
+   * That is not stylistic. These queries open their own connection through a
+   * module-private helper, so there is no seam for a test to inject a fake
+   * client into — the only thing `contentScoping.test.ts` can check is the SQL
+   * in the file, and a clause hidden behind `${aVariable}` is a clause it cannot
+   * see. A scope that a test can read is worth more here than a scope that is
+   * DRY, because the failure being guarded against is a read path with no scope
+   * at all.
+   *
+   * `COALESCE($n, '')` when the server id is null yields `server_id = ''`, which
+   * matches nothing — every server id is a UUID — so a player in default mode
+   * gets exactly the platform partition. With an id it is the platform IN
+   * ADDITION TO that server, which is decision D2 verbatim. */
+  values.push(String(filters.serverId ?? '').trim() || null);
+  i += 1;
 
   if (filters.activeOnly !== false) {
     clauses.push(`is_active = TRUE`);
@@ -259,29 +298,75 @@ export async function listMarketplaceItems(filters: {
     }
   }
 
-  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  /* The scope is in the literal, and only the OPTIONAL filters are interpolated.
+   * A scope hidden behind `${where}` is a scope no source test can see, and the
+   * failure being guarded against is a read path with no scope at all. */
+  const extra = clauses.length ? `AND ${clauses.join(' AND ')}` : '';
   const { rows } = await query<Record<string, unknown>>(
     `SELECT id, source_key, name, description, category, image, game_action, action_config,
             quantity, cost_buy, cost_sell, world_name, is_active, sort_order, created_at, updated_at
      FROM marketplace_items
-     ${where}
+     WHERE (server_id IS NULL OR server_id = COALESCE($1, ''))
+     ${extra}
      ORDER BY sort_order ASC, name ASC, created_at ASC`,
     values
   );
   return rows.map(rowToItem);
 }
 
+/**
+ * One item, in the platform partition.
+ *
+ * Scoped even though `id` is a primary key, because the callers are the platform
+ * catalogue admin and the platform-scoped update below, and neither should be
+ * able to reach an owner's item by pasting its id. The mirror image of
+ * `serverContent.ts`'s guard, and for the same reason: an owner's item edited
+ * through the platform CRUD is an owner's item the owner did not change.
+ */
 export async function getMarketplaceItem(id: string): Promise<MarketplaceItemRecord | null> {
   await ensureMarketplaceSchema();
   const { rows } = await query<Record<string, unknown>>(
     `SELECT id, source_key, name, description, category, image, game_action, action_config,
             quantity, cost_buy, cost_sell, world_name, is_active, sort_order, created_at, updated_at
      FROM marketplace_items
-     WHERE id = $1
+     WHERE id = $1 AND server_id IS NULL
      LIMIT 1`,
     [id]
   );
   return rows[0] ? rowToItem(rows[0]) : null;
+}
+
+/**
+ * One item from any scope — for platform-admin oversight only (7c).
+ *
+ * Named so a call site says what it is doing. `getMarketplaceItem` is the one
+ * every ordinary path should use; this exists because the roadmap asks for
+ * "platform-admin visibility over all servers and user-created items", and
+ * visibility is a different thing from the CRUD above.
+ */
+export async function getAnyMarketplaceItem(
+  id: string
+): Promise<(MarketplaceItemRecord & { server_id: string | null }) | null> {
+  await ensureMarketplaceSchema();
+  /* `server_id` is in the projection, and that is what earns this read its
+   * missing WHERE. The rule `contentScoping.test.ts` enforces is that a read
+   * over a scoped table either FILTERS by scope or RETURNS it — an unscoped read
+   * that also hides the scope hands a row to a caller with no way to tell whose
+   * it is, and that is the shape that goes wrong. */
+  const { rows } = await query<Record<string, unknown>>(
+    `SELECT id, source_key, name, description, category, image, game_action, action_config,
+            quantity, cost_buy, cost_sell, world_name, is_active, sort_order,
+            server_id, created_at, updated_at
+     FROM marketplace_items
+     WHERE id = $1
+     LIMIT 1`,
+    [id]
+  );
+  if (!rows[0]) return null;
+  return {
+    ...rowToItem(rows[0]),
+    server_id: rows[0].server_id == null ? null : String(rows[0].server_id),
+  };
 }
 
 export async function createMarketplaceItem(input: MarketplaceItemInput): Promise<MarketplaceItemRecord> {
@@ -349,7 +434,10 @@ export async function updateMarketplaceItem(id: string, patch: MarketplaceItemPa
          sort_order = $12,
          source_key = $13,
          updated_at = NOW()
-     WHERE id = $14
+     -- Platform-scoped, mirroring serverContent.ts. An owner's item has a
+     -- non-NULL server_id, so it is out of reach of the platform CRUD by
+     -- construction rather than by a check this route remembers to make.
+     WHERE id = $14 AND server_id IS NULL
      RETURNING id, source_key, name, description, category, image, game_action, action_config,
                quantity, cost_buy, cost_sell, world_name, is_active, sort_order, created_at, updated_at`,
     [
@@ -377,7 +465,7 @@ export async function removeMarketplaceItem(id: string): Promise<MarketplaceItem
   const { rows } = await query<Record<string, unknown>>(
     `UPDATE marketplace_items
      SET is_active = FALSE, updated_at = NOW()
-     WHERE id = $1
+     WHERE id = $1 AND server_id IS NULL
      RETURNING id, source_key, name, description, category, image, game_action, action_config,
                quantity, cost_buy, cost_sell, world_name, is_active, sort_order, created_at, updated_at`,
     [id]
@@ -463,9 +551,22 @@ async function balanceOf(db: PurchaseDb, playerId: string): Promise<number> {
 export async function purchaseMarketplaceItem(
   db: PurchaseDb,
   playerId: string,
-  request: { itemId: string; eventKey: string }
+  request: { itemId: string; eventKey: string; serverId?: string | null }
 ): Promise<MarketplacePurchaseResult> {
   const { itemId, eventKey } = request;
+  /* Which catalogue this buyer is shopping in. Absent means the platform one —
+   * the same default `listMarketplaceItems` has, so a caller written before
+   * custom servers existed buys exactly what it has always bought.
+   *
+   * This is load-bearing rather than tidy. Without it a player in default mode
+   * could POST an owner's item id and buy it: the id is a UUID, but ids are not
+   * secrets and the ONLY thing standing between an unscoped `WHERE id = $1` and
+   * a cross-server purchase would be that nobody had guessed one.
+   *
+   * Written as a literal clause with a COALESCE rather than assembled from
+   * a shared helper, for the reason `listMarketplaceItems` records: a
+   * clause behind a `${variable}` is a clause the source test cannot read. */
+  const scope = String(request.serverId ?? '').trim() || null;
 
   const refuse = async (
     reason: MarketplacePurchaseReason
@@ -513,8 +614,9 @@ export async function purchaseMarketplaceItem(
               is_active, world_name
          FROM marketplace_items
         WHERE id = $1
+          AND (server_id IS NULL OR server_id = COALESCE($2, ''))
           FOR UPDATE`,
-      [itemId]
+      [itemId, scope]
     );
     const row = found.rows[0];
     if (!row) {

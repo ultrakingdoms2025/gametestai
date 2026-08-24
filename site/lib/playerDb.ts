@@ -668,14 +668,24 @@ export type QuestRow = {
   title: string; reward_credits: number; duration_minutes: number | null;
   pre_steps: string | null; steps: string | null; is_active: boolean;
   repeatable: boolean;
+  /** null for a platform quest; a server id for one an owner authored. */
+  server_id: string | null;
 };
 
-/** Authoritative quest lookup — never trust the client for these fields. */
+/**
+ * Authoritative quest lookup — never trust the client for these fields.
+ *
+ * `server_id` is now among them, and it is the most important one: it is what
+ * `acceptQuestEngagement` copies onto the engagement, and the engagement stamp
+ * is what decides which leaderboard a completion can reach. Read from the row
+ * rather than from the request, so a client that wanted its custom-server
+ * completion counted globally would have to edit a row it cannot write.
+ */
 export async function getQuestById(questId: string): Promise<QuestRow | null> {
   await ensureQuestSchema();
   const { rows } = await pgQuery<QuestRow>(
     `SELECT id, quest_number, world, quest_line, title, reward_credits,
-            duration_minutes, pre_steps, steps, is_active, repeatable
+            duration_minutes, pre_steps, steps, is_active, repeatable, server_id
      FROM quests WHERE id = $1 LIMIT 1`,
     [questId]
   );
@@ -708,19 +718,34 @@ export async function findMissingPrerequisites(
   return required.filter((line) => !completed.has(line.trim().toLowerCase()));
 }
 
-export async function listActiveQuestsForWorld(world: string) {
+/**
+ * The quests a world serves, in one content scope.
+ *
+ * `serverId` defaults to null, and null means the PLATFORM catalogue — not "no
+ * filter". That default is 7a's promise: every caller written before custom
+ * servers existed keeps seeing exactly today's content without being edited.
+ *
+ * A member of a custom server gets that server's quests IN ADDITION TO the
+ * platform ones, which is decision D2 verbatim — the owner's catalogue is an
+ * overlay, not a replacement.
+ */
+export async function listActiveQuestsForWorld(world: string, serverId: string | null = null) {
   await ensureQuestSchema();
   const normalizedWorld = String(world ?? '').trim().toLowerCase();
+  const scoped = String(serverId ?? '').trim() || null;
   const { rows } = await pgQuery<{
     id: string; quest_number: number; world: string; quest_line: string;
     title: string; reward_credits: number; duration_minutes: number | null;
     pre_steps: string | null; steps: string | null; is_active: boolean;
+    server_id: string | null;
   }>(
     `SELECT id, quest_number, world, quest_line, title, reward_credits,
-            duration_minutes, pre_steps, steps, is_active
-     FROM quests WHERE is_active = TRUE AND LOWER(world) = $1
+            duration_minutes, pre_steps, steps, is_active, server_id
+     FROM quests
+     WHERE is_active = TRUE AND LOWER(world) = $1
+       AND (server_id IS NULL OR server_id = COALESCE($2, ''))
      ORDER BY quest_number ASC`,
-    [normalizedWorld]
+    [normalizedWorld, scoped]
   );
   return rows;
 }
@@ -770,7 +795,22 @@ export type AcceptQuestResult =
  */
 export async function acceptQuestEngagement(
   playerId: string,
-  questId: string
+  questId: string,
+  /**
+   * The server this player is currently in, or null for default mode.
+   *
+   * Used for two different things, and they are worth separating:
+   *
+   *   - **Eligibility.** A quest an owner authored is only acceptable by
+   *     somebody who is in that server. Checked below, before anything is
+   *     written.
+   *   - **Provenance.** A PLATFORM quest completed inside a custom server
+   *     accrues to that server (D2 gives a member both catalogues), so when the
+   *     quest row has no stamp the player's current server supplies one.
+   *
+   * Defaults to null so every existing caller keeps its behaviour exactly.
+   */
+  serverId: string | null = null
 ): Promise<AcceptQuestResult> {
   await ensureQuestSchema();
   const { rows: existing } = await pgQuery<{ id: string }>(
@@ -782,6 +822,15 @@ export async function acceptQuestEngagement(
 
   const quest = await getQuestById(questId);
   if (!quest) return { ok: false, reason: 'quest_not_found' };
+
+  /* An owner's quest is only acceptable inside that owner's server. Reported as
+   * `quest_not_found` rather than as a refusal, because to a player who is not
+   * in that server it genuinely does not exist — and because a distinct refusal
+   * would confirm the id, turning this endpoint into a way to enumerate other
+   * people's content. */
+  if (quest.server_id && quest.server_id !== (String(serverId ?? '').trim() || null)) {
+    return { ok: false, reason: 'quest_not_found' };
+  }
 
   // One-shot quests may only ever pay out once. Checked AFTER the in_progress
   // lookup so an accept already in flight still returns its existing row.
@@ -799,13 +848,26 @@ export async function acceptQuestEngagement(
 
   const id = randomUUID();
   await pgQuery(
+    /* `server_id` is copied from the QUEST ROW, which is the whole point.
+     *
+     * The engagement stamp is what decides which leaderboard a completion can
+     * reach: `leaderboard.ts`'s quest board partitions on `e.server_id`, so a
+     * completion inside a custom server accrues to that server and never to the
+     * global board — Phase 7's rule verbatim, including for a PLATFORM quest
+     * completed there, because D2 gives a member the platform catalogue in
+     * addition to the owner's.
+     *
+     * Taken from `quest.server_id` and never from a request body: a client that
+     * wanted its custom-server completion counted globally would have to change
+     * a row it cannot write. */
     `INSERT INTO player_quest_engagements
        (id, player_id, quest_id, quest_number, quest_title, world, duration_minutes,
-        status, quest_line, reward_credits)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 'in_progress', $8, $9)`,
+        status, quest_line, reward_credits, server_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'in_progress', $8, $9, $10)`,
     [
       id, playerId, quest.id, quest.quest_number, quest.title, quest.world,
       quest.duration_minutes, quest.quest_line, quest.reward_credits ?? 0,
+      quest.server_id ?? serverId ?? null,
     ]
   );
   return { ok: true, engagementId: id, existing: false };

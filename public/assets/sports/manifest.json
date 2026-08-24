@@ -1,0 +1,87 @@
+{
+  "comment": "Authored hero features for Meridian Athletic Grounds' crowd (Phase 9, decision D4). Written by scripts/make-sports-crowd-glb.mjs; the .glb files are reproduced byte for byte by re-running it, and scripts/tests/sports-crowd-assets.test.mjs holds every number below against the file on disk. glTF materials are DISCARDED on load - each part is MERGED into the geometry SportsWorld._buildCrowd already builds for the 'slot' named in 'bind', so nothing in this manifest can add a draw call, a material or a shader program. The crowd is TEN instanced meshes for 583 people and it stays ten. 'slot' is only ever 'cloth' (crowd.cloth, the garment) or 'skin' (crowd.skin, flesh) because those are the only two materials the crowd draws in - a third would be a candidate new shader program. Unlike the station's crowd, BOTH of this world's crowd materials are vertexColors: true, so EVERY part carries a 'shade' - a part without one would be drawn pure black by the generic vertex-attribute default of (0,0,0). The shade multiplies that instance's tint, so hair at 0.22 is a near-black version of that figure's own top and a shoe at 0.30 is a dark version of it. One file per pose because a wrist and an ankle are in a completely different place in each of the five.",
+  "assets": [
+    {
+      "id": "stand",
+      "file": "crowd-stand.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-sports-crowd-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": ["hair", "hand", "shoe"],
+      "tris": 84,
+      "bytes": 8316
+    },
+    {
+      "id": "carry",
+      "file": "crowd-carry.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-sports-crowd-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": ["hair", "hand", "shoe"],
+      "tris": 84,
+      "bytes": 8316
+    },
+    {
+      "id": "lean",
+      "file": "crowd-lean.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-sports-crowd-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": ["hair", "hand", "shoe"],
+      "tris": 84,
+      "bytes": 8312
+    },
+    {
+      "id": "sit",
+      "file": "crowd-sit.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-sports-crowd-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": ["hair", "hand", "shoe"],
+      "tris": 84,
+      "bytes": 8308
+    },
+    {
+      "id": "crouch",
+      "file": "crowd-crouch.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-sports-crowd-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": ["hair", "hand", "shoe"],
+      "tris": 84,
+      "bytes": 8292
+    }
+  ],
+  "bind": {
+    "hair": { "slot": "cloth", "shade": 0.22 },
+    "hand": { "slot": "skin", "shade": 1.0 },
+    "shoe": { "slot": "cloth", "shade": 0.3 }
+  },
+  "sets": {
+    "stand": {
+      "asset": "stand",
+      "note": "The 132 standing figures - the pad, the piste, the pool deck, the court fence, the track infield and the arrival plaza. Photographed at four metres before this landed, a figure was a mannequin: a bare sphere for a head with no hair anywhere on it, and every arm and leg ending in the visibly CUT HEXAGON of a six-sided cylinder cap. The hair is the part that fixes the read at every distance, because a smooth sphere under this world's single 14-degree key has no self-occlusion anywhere; the shoe is the part that fixes it at the bottom of the frame, because a mass that projects forward past the ankle is the only thing that turns a peg into a leg.",
+      "parts": ["hair", "hand", "shoe"]
+    },
+    "carry": {
+      "asset": "carry",
+      "note": "The 19 figures arriving with kit. Its left arm WAS raised at 0.9 rad, which put the arm's -Y end - the end this generator hangs a hand on - at the centre of the chest and its +Y end 44 cm out at shoulder height: a salute, photographed on the arrival plaza before this pass, and a hand about to be welded into an armpit. The arm now hangs with 0.10 rad of outward cant so the hand comes to rest against the bag, and the bag - which was a 0.5 m plank lying across the hips - is a bag on a strap. Hands are placed in the ARM's own frame rather than at a typed point, so a future re-pose moves them with it.",
+      "parts": ["hair", "hand", "shoe"]
+    },
+    "lean": {
+      "asset": "lean",
+      "note": "The 42 figures standing with their weight on one hip along the barriers and the fence lines.",
+      "parts": ["hair", "hand", "shoe"]
+    },
+    "sit": {
+      "asset": "sit",
+      "note": "The 382 spectators in the four stands - by a factor of three the largest population in this world, and the one a player can walk right up to, because the stands are walkable. Its shins are vertical and end on the tread, so its shoes sit at the same height above the ankle as a standing figure's; its forearms rake forward onto its thighs at 0.7 rad, so its hands do not.",
+      "parts": ["hair", "hand", "shoe"]
+    },
+    "crouch": {
+      "asset": "crouch",
+      "note": "The 8 figures squatting on the coping and on the starting blocks. The only pose whose limbs are NOT rebuilt open-ended by the world, because its thigh and shin end faces are 30 cm apart in z and its shoulders sit clear of its torso - so both of those caps are genuinely visible and opening them would punch holes in the figure.",
+      "parts": ["hair", "hand", "shoe"]
+    }
+  }
+}

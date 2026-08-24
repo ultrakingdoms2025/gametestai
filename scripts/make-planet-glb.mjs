@@ -405,21 +405,42 @@ export function buildBlock(splits = SPLITS, seed = 0x51a7c0) {
     const cl = Math.hypot(cx, cy, cz) || 1;
     worstDot = Math.min(worstDot, (n[0] * cx + n[1] * cy + n[2] * cz) / cl);
 
-    /* PER-FACE UV ISLAND. The face is unwrapped onto its own plane with an
-     * orthonormal basis, then dropped at a seeded offset in the tile. The scale
-     * is 1:1 with the block's own unit space, so texel density is the SAME on
-     * every facet of every boulder in the game whatever the instance scale
-     * stretched it to - which is what the spherical UVs it replaces could not
-     * do, pinching to a point at the poles and carrying a wrap seam down the
-     * front of the lit face. */
-    let u0 = [e1[0], e1[1], e1[2]];
-    const ul = Math.hypot(u0[0], u0[1], u0[2]) || 1;
-    u0 = [u0[0] / ul, u0[1] / ul, u0[2] / ul];
-    const v0 = [
-      n[1] * u0[2] - n[2] * u0[1],
-      n[2] * u0[0] - n[0] * u0[2],
-      n[0] * u0[1] - n[1] * u0[0],
+    /* PER-FACE UV ISLAND, AT A SEEDED ROTATION.
+     *
+     * The face is unwrapped onto its own plane and dropped at a seeded offset
+     * AND a seeded angle. Both halves were measured rather than assumed, and
+     * the angle is the half that was missing from the first build.
+     *
+     * The offset alone is not enough, and the screenshot that proved it is in
+     * the design doc. Unwrapping every face onto a basis built from its own
+     * first edge leaves adjacent facets sampling the texture in nearly the same
+     * DIRECTION - and the prop texture is anisotropic - so the strong lines in
+     * it ran on across facet boundaries into long ladders spanning the whole
+     * body. The rock came out looking like a paved terrace: worse than the
+     * seam this replaced, and worse in a way the spherical UVs had been hiding
+     * by stretching the texture into vagueness.
+     *
+     * What this DOES fix, stated exactly rather than generously: texel density
+     * is now even across the facets of one block. `PolyhedronGeometry`'s
+     * spherical UVs pinch to a point at the poles and carry a wrap seam down
+     * one meridian, so density varied by an order of magnitude within a single
+     * rock. It does NOT make density equal between one boulder and another -
+     * the UVs are in the block's own unit space and the instance matrix scales
+     * it from 0.4 m to 8 m across, so a big rock still gets a coarser texture
+     * than a small one. Fixing that needs per-instance UVs, which an
+     * `InstancedMesh` sharing one geometry cannot have. */
+    const th = hash1(t * 5 + 41 + seed) * Math.PI * 2;
+    let t1 = [e1[0], e1[1], e1[2]];
+    const ul = Math.hypot(t1[0], t1[1], t1[2]) || 1;
+    t1 = [t1[0] / ul, t1[1] / ul, t1[2] / ul];
+    const t2 = [
+      n[1] * t1[2] - n[2] * t1[1],
+      n[2] * t1[0] - n[0] * t1[2],
+      n[0] * t1[1] - n[1] * t1[0],
     ];
+    const cs = Math.cos(th); const sn = Math.sin(th);
+    const u0 = [t1[0] * cs + t2[0] * sn, t1[1] * cs + t2[1] * sn, t1[2] * cs + t2[2] * sn];
+    const v0 = [t2[0] * cs - t1[0] * sn, t2[1] * cs - t1[1] * sn, t2[2] * cs - t1[2] * sn];
     const ox = hash1(t * 3 + 11 + seed);
     const oy = hash1(t * 3 + 97 + seed);
     const base = pos.length / 3;

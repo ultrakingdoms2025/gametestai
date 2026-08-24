@@ -1875,11 +1875,48 @@ export class PlanetWorld extends World {
     }
   }
 
-  /** Shared rock material for every prop family. One clone, `vertexColors` on
-   *  for the per-instance tint. */
+  /**
+   * Shared rock material for every prop family. One clone, `vertexColors` on
+   * for the per-instance tint.
+   *
+   * ── IT WAS `stone.castle`, AND THAT IS A CASTLE WALL ────────────────────
+   *
+   * `Materials.js` files `stone.castle` under `--- medieval ---` and
+   * `shadeStoneCastle` is exactly what the name says: a 5 x 3 grid of DRESSED
+   * ASHLAR BLOCKS with mortar joints, chamfered arrises, tool marks and
+   * LICHEN. Every prop on every planet drew with it - 15,700 instances of
+   * boulder, spire, slab, shard, column and vent across ten worlds, including
+   * an ice moon, a salt pan and a lava field, all of them wearing masonry
+   * courses and green lichen.
+   *
+   * It was invisible for the same reason the belt's squared albedo was: at
+   * the distance the preset framings photograph a prop it is a few pixels,
+   * and the polyhedron's spherical UVs stretched the coursing into vagueness.
+   * It became unmissable the moment this pass gave the authored block honest
+   * per-face UVs - the first shot came out looking like a paved terrace, and
+   * the mortar lines were the tell. That screenshot is in the design doc; it
+   * is the one place in this pass where a change made a thing look WORSE and
+   * the worse picture was the diagnosis.
+   *
+   * `rock.neutral` is the fix and it is not a new idea - `Materials.js` files
+   * it under `--- planet ground ---`, nine of the ten planets already use it
+   * for their TERRAIN, and its own comment calls it "an honest description of
+   * regolith, volcanic ash, iron hardpan, salt crust, a drained sea bed and
+   * crystalline gravel alike". Identical build options to `dirt.ground`; the
+   * only difference is that its albedo is hue-free, which is what lets each
+   * planet's own `palette` and the per-instance tint carry the colour instead
+   * of being filtered through somebody else's brown.
+   *
+   * ── THE REPEAT IS 1.4 AND STAYS 1.4 ────────────────────────────────────
+   *
+   * Deliberately unchanged. The library keys its cache on `key:repeat`, so
+   * moving it would be a second variable in the same measurement; and 1.4 over
+   * a prop's own UV span is a texel density that was tuned against these
+   * shapes. What changed here is WHICH SURFACE, not how big it is.
+   */
   _propMaterial() {
     if (this._propMat) return this._propMat;
-    const m = this.materials.get('stone.castle:1.4').clone();
+    const m = this.materials.get('rock.neutral:1.4').clone();
     m.name = `planet.${this.planet.id}.rock`;
     m.vertexColors = true;
     m.color = new THREE.Color(0xffffff);

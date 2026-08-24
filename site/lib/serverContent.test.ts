@@ -276,6 +276,27 @@ suite('the hostile quest, end to end (integration)', () => {
         repeatable BOOLEAN NOT NULL DEFAULT FALSE, updated_by TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    /* Reconcile a `quests` table an EARLIER SUITE may already have created.
+     *
+     * `aether_test` is shared and PERSISTS between runs, so the CREATE above
+     * is a silent no-op whenever another suite got there first —
+     * `leaderboard.test.ts` writes a narrower `quests` with no
+     * `duration_minutes`. The mismatch never surfaces at setup; it surfaces
+     * far away as `column "duration_minutes" does not exist` on the first
+     * INSERT, which is how a fixture collision reads as a Phase 7 bug.
+     * Additive and idempotent — the same shape `admin/lib/db.ts` uses on the
+     * real table, and the same reconciliation `leaderboard.test.ts` already
+     * does for `players.handle`. */
+    for (const col of [
+      `duration_minutes INTEGER`,
+      `pre_steps TEXT`,
+      `steps TEXT`,
+      `repeatable BOOLEAN NOT NULL DEFAULT FALSE`,
+      `updated_by TEXT`,
+      `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+    ]) {
+      await db.query(`ALTER TABLE quests ADD COLUMN IF NOT EXISTS ${col}`);
+    }
     await db.query(`
       CREATE TABLE IF NOT EXISTS player_quest_engagements (
         id TEXT PRIMARY KEY,

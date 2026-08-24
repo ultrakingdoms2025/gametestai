@@ -142,6 +142,13 @@ describe('mapping Stripe status onto entitlement', () => {
 /* ---------------------------------------------------------------------- */
 
 /** ...0010. See serverContent.test.ts for the register of claimed ids. */
+/* Fixture server names carry a suite-unique prefix because a server SLUG is
+ * globally unique and derived from the name, while `aether_test` is shared and
+ * vitest runs test FILES in parallel. `customServers.test.ts` also wanted a
+ * "Lodestar Annexe"; distinct player ids do not separate them, because the
+ * clash is on the slug, not the owner. Whichever suite got there first won and
+ * the other failed `slug_taken` — so the FAILURE MOVED BETWEEN SUITES from run
+ * to run, which reads as flakiness rather than as a name collision. */
 const OWNER = '00000000-0000-4000-8000-000000000010';
 
 suite('entitlement (integration)', () => {
@@ -189,12 +196,12 @@ suite('entitlement (integration)', () => {
   it('a signed subscription event is what makes a server creatable', async () => {
     /* Before: no entitlement, so no server. This is the whole point of 7b — the
      * SKU is not decoration, it gates the feature. */
-    const before = await createServer(db, OWNER, { name: 'Too Early' });
+    const before = await createServer(db, OWNER, { name: 'Premium Too Early' });
     expect(before.ok).toBe(false);
     if (!before.ok) expect(before.reason).toBe('no_entitlement');
 
     await writeEntitlement(db, fact());
-    const after = await createServer(db, OWNER, { name: 'Lodestar Annexe' });
+    const after = await createServer(db, OWNER, { name: 'Premium Lodestar Annexe' });
     expect(after.ok).toBe(true);
   });
 
@@ -202,9 +209,9 @@ suite('entitlement (integration)', () => {
     await writeEntitlement(db, fact());
     expect((await readEntitlement(db, OWNER)).maxServers).toBe(SERVERS_PER_SUBSCRIPTION);
     for (let i = 0; i < SERVERS_PER_SUBSCRIPTION; i += 1) {
-      expect((await createServer(db, OWNER, { name: `Server ${i}` })).ok).toBe(true);
+      expect((await createServer(db, OWNER, { name: `Premium Server ${i}` })).ok).toBe(true);
     }
-    const over = await createServer(db, OWNER, { name: 'One Too Many' });
+    const over = await createServer(db, OWNER, { name: 'Premium One Too Many' });
     expect(over.ok).toBe(false);
     if (!over.ok) expect(over.reason).toBe('quota');
   });
@@ -240,7 +247,7 @@ suite('entitlement (integration)', () => {
     expect(after.maxServers).toBe(0);
     expect(entitlementPermitsHosting(after)).toBe(false);
 
-    const refused = await createServer(db, OWNER, { name: 'After Cancellation' });
+    const refused = await createServer(db, OWNER, { name: 'Premium After Cancellation' });
     expect(refused.ok).toBe(false);
     if (!refused.ok) expect(refused.reason).toBe('no_entitlement');
   });

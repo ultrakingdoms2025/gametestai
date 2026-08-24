@@ -194,6 +194,53 @@ describe('admin pages', () => {
  * meet the login page rather than a rendered shell with a banner in it, and the
  * proxy is the only thing that can do that before the page runs at all.
  */
+/**
+ * The customer-facing server routes, which are NOT under `app/api/admin`.
+ *
+ * `/admin/servers/page.tsx` is allowed to be session-gated rather than
+ * allowlist-gated only because it "delegates every authorisation decision to
+ * the routes it calls". That sentence moved the guarantee OUT of the page and
+ * into four files the walk above cannot reach — `app/api/servers/**` is not
+ * `app/api/admin/**`. An exception is only as good as the gate on the place it
+ * points at, so this is that gate.
+ *
+ * Every handler must establish the caller AND act on the answer. Resolving an
+ * actor and then proceeding regardless is unauthenticated with extra steps —
+ * the failure the allowlist tests exist to catch, in a different costume, and
+ * the Phase 0 shape exactly: nine unguarded pages, every one a file somebody
+ * wrote correctly with another added beside it later.
+ */
+describe('customer-facing server routes', () => {
+  const serverRoutes = walk(join(SITE, 'app', 'api', 'servers')).filter((f) =>
+    /route\.tsx?$/.test(f)
+  );
+
+  it('finds the routes at all, so an empty walk cannot pass silently', () => {
+    expect(serverRoutes.length).toBeGreaterThanOrEqual(4);
+  });
+
+  for (const file of serverRoutes) {
+    const rel = relative(SITE, file).replace(/\\/g, '/');
+    const src = source(file);
+    const exported = METHODS.filter((m) =>
+      new RegExp(`export\\s+(?:async\\s+)?function\\s+${m}\\s*\\(`).test(src)
+    );
+
+    it(`${rel} exports at least one handler`, () => {
+      expect(exported.length).toBeGreaterThan(0);
+    });
+
+    for (const method of exported) {
+      it(`${rel} — ${method} establishes the caller and acts on it`, () => {
+        const body = handlerBody(src, method);
+        expect(body).not.toBeNull();
+        expect(body!, 'must establish who is calling').toContain('resolveActor()');
+        expect(body!, 'must refuse an anonymous caller').toMatch(/if \(!actor\)\s*return/);
+      });
+    }
+  }
+});
+
 describe('the proxy', () => {
   const proxy = source(join(SITE, 'proxy.ts'));
 

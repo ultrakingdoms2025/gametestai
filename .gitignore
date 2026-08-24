@@ -35,3 +35,8 @@ output/
 
 claude-skills-threejs-ecs-ts/
 dray-bow.txt
+
+# Transient per-agent worktrees created by the harness. Never tracked: they
+# live inside the repo, so an untracked one can make git resolve a new
+# worktree against the checkout above it.
+.claude/worktrees/

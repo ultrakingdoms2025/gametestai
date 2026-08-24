@@ -1,0 +1,4569 @@
+{
+  "note": "Phase 12 survey evidence. Frame gaps are performance.now() deltas between consecutive rAF callbacks, sampled in the page across each action. Full state dumps live in .probe/, which this repo gitignores as agent scratch.",
+  "gates": {
+    "npmTest": "3279/3279 pass",
+    "contractCheck": "129/129",
+    "build": "exit 0"
+  },
+  "runs": {
+    "productionBundle": {
+      "what": "the built bundle, byte-identical to what www.aethernexus.games serves (index sha256 cd67bed6..., harness sha256 e8c1a446...), served over vite preview and driven with real CDP key events",
+      "gl": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5080 (0x00002C02) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "at": "2026-08-24T16:23:17.422Z",
+      "worlds": [
+        {
+          "world": "station",
+          "order": 1,
+          "landedIn": "station",
+          "spawn": [
+            -33.95,
+            0.08,
+            2.35
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:station",
+            "frames": 36,
+            "max": 75,
+            "p99": 75,
+            "p50": 57.9,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              68.9,
+              69.7,
+              71.5,
+              73.1,
+              75
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:station",
+            "frames": 56,
+            "max": 674.5,
+            "p99": 674.5,
+            "p50": 23.7,
+            "over250": 2,
+            "over100": 2,
+            "worst5": [
+              37.4,
+              37.4,
+              50.7,
+              557.2,
+              674.5
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:station",
+            "frames": 99,
+            "max": 686,
+            "p99": 686,
+            "p50": 82.9,
+            "over250": 3,
+            "over100": 33,
+            "worst5": [
+              225.1,
+              236.9,
+              343.1,
+              441.5,
+              686
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:station",
+            "frames": 60,
+            "max": 97.5,
+            "p99": 97.5,
+            "p50": 34.3,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              44.3,
+              44.9,
+              46.3,
+              47.3,
+              97.5
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "true"
+            },
+            "activeAfter": "hoverboard",
+            "rodeDistance": 7.09,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              -33.95,
+              0.08,
+              2.35
+            ],
+            "to": [
+              -27.04,
+              0.16,
+              2.35
+            ],
+            "moved": 6.91
+          },
+          "jump": {
+            "from": 0.16,
+            "peak": 1.03,
+            "rise": 0.87
+          },
+          "minigameVenues": 2,
+          "portals": 6,
+          "npcs": 68,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "medieval",
+          "order": 2,
+          "landedIn": "medieval",
+          "spawn": [
+            14,
+            8.11,
+            -15
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:medieval",
+            "frames": 35,
+            "max": 12343.2,
+            "p99": 12343.2,
+            "p50": 28.1,
+            "over250": 1,
+            "over100": 1,
+            "worst5": [
+              32.8,
+              33.2,
+              40.3,
+              88.5,
+              12343.2
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:medieval",
+            "frames": 72,
+            "max": 813.1,
+            "p99": 813.1,
+            "p50": 147.8,
+            "over250": 15,
+            "over100": 38,
+            "worst5": [
+              513.5,
+              535.6,
+              539.5,
+              798.2,
+              813.1
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:medieval",
+            "frames": 151,
+            "max": 1977.7,
+            "p99": 356.5,
+            "p50": 17,
+            "over250": 3,
+            "over100": 7,
+            "worst5": [
+              204.4,
+              211.1,
+              277.4,
+              356.5,
+              1977.7
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:medieval",
+            "frames": 69,
+            "max": 191.8,
+            "p99": 191.8,
+            "p50": 16.4,
+            "over250": 0,
+            "over100": 1,
+            "worst5": [
+              27.6,
+              39.4,
+              84,
+              88.6,
+              191.8
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "true"
+            },
+            "activeAfter": "hoverboard",
+            "rodeDistance": 14.35,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              14,
+              8.11,
+              -15
+            ],
+            "to": [
+              10.83,
+              8.02,
+              -9.89
+            ],
+            "moved": 6.01
+          },
+          "jump": {
+            "from": 8.02,
+            "peak": 8.9,
+            "rise": 0.88
+          },
+          "minigameVenues": 0,
+          "portals": 1,
+          "npcs": 55,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "sports",
+          "order": 3,
+          "landedIn": "sports",
+          "spawn": [
+            0,
+            0.7,
+            145
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:sports",
+            "frames": 34,
+            "max": 40.5,
+            "p99": 40.5,
+            "p50": 16.5,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              22.7,
+              23.9,
+              26.4,
+              35.3,
+              40.5
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:sports",
+            "frames": 53,
+            "max": 42.5,
+            "p99": 42.5,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              20.7,
+              21.1,
+              21.2,
+              25.3,
+              42.5
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:sports",
+            "frames": 160,
+            "max": 547.2,
+            "p99": 101.9,
+            "p50": 16.7,
+            "over250": 1,
+            "over100": 2,
+            "worst5": [
+              24.3,
+              25,
+              46.7,
+              101.9,
+              547.2
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:sports",
+            "frames": 67,
+            "max": 27.1,
+            "p99": 27.1,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              20.6,
+              20.8,
+              22.1,
+              23.4,
+              27.1
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "true"
+            },
+            "activeAfter": "hoverboard",
+            "rodeDistance": 8.26,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              0,
+              0.7,
+              145
+            ],
+            "to": [
+              0,
+              0.08,
+              138.34
+            ],
+            "moved": 6.69
+          },
+          "jump": {
+            "from": 0.08,
+            "peak": 0.96,
+            "rise": 0.88
+          },
+          "minigameVenues": 4,
+          "portals": 1,
+          "npcs": 41,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "citadel",
+          "order": 4,
+          "landedIn": "citadel",
+          "spawn": [
+            0,
+            14.62,
+            104
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:citadel",
+            "frames": 35,
+            "max": 22.8,
+            "p99": 22.8,
+            "p50": 16.1,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              20.4,
+              20.7,
+              22.3,
+              22.4,
+              22.8
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:citadel",
+            "frames": 54,
+            "max": 25.9,
+            "p99": 25.9,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              20.8,
+              21.7,
+              22,
+              23.2,
+              25.9
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:citadel",
+            "frames": 164,
+            "max": 28.2,
+            "p99": 26,
+            "p50": 17.1,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              23.8,
+              24.6,
+              24.9,
+              26,
+              28.2
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:citadel",
+            "frames": 69,
+            "max": 26.7,
+            "p99": 26.7,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              23.7,
+              24.3,
+              24.7,
+              26.3,
+              26.7
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "true"
+            },
+            "activeAfter": "hoverboard",
+            "rodeDistance": 11.53,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              0,
+              14.62,
+              104
+            ],
+            "to": [
+              -0.26,
+              14,
+              97.35
+            ],
+            "moved": 6.68
+          },
+          "jump": {
+            "from": 14,
+            "peak": 14.88,
+            "rise": 0.88
+          },
+          "minigameVenues": 7,
+          "portals": 1,
+          "npcs": 58,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "race",
+          "order": 5,
+          "landedIn": "race",
+          "spawn": [
+            -10.5,
+            0.04,
+            151.52
+          ],
+          "health": 55.599999999999994,
+          "entry": {
+            "label": "enter:race",
+            "frames": 34,
+            "max": 3877.6,
+            "p99": 3877.6,
+            "p50": 16.5,
+            "over250": 1,
+            "over100": 2,
+            "worst5": [
+              20.9,
+              21.5,
+              59.8,
+              110.5,
+              3877.6
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:race",
+            "frames": 55,
+            "max": 21.9,
+            "p99": 21.9,
+            "p50": 16.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              19.5,
+              19.6,
+              19.7,
+              20.5,
+              21.9
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:race",
+            "frames": 162,
+            "max": 21.5,
+            "p99": 21.3,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              20.8,
+              20.9,
+              21.2,
+              21.3,
+              21.5
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:race",
+            "frames": 65,
+            "max": 28.3,
+            "p99": 28.3,
+            "p50": 16.5,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              21.1,
+              21.9,
+              23.9,
+              26.3,
+              28.3
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "machinegun",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "true"
+            },
+            "activeAfter": "hoverboard",
+            "rodeDistance": 0,
+            "activeAfterDismountKey": "hoverboard"
+          },
+          "walk": {
+            "from": [
+              -10.5,
+              0.04,
+              151.52
+            ],
+            "to": [
+              -10.5,
+              0.04,
+              151.52
+            ],
+            "moved": 0
+          },
+          "jump": {
+            "from": 0.04,
+            "peak": 0.04,
+            "rise": 0
+          },
+          "minigameVenues": 2,
+          "portals": 1,
+          "npcs": 31,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "maze",
+          "order": 6,
+          "landedIn": "maze",
+          "spawn": [
+            1260,
+            0,
+            60
+          ],
+          "health": 95.6,
+          "entry": {
+            "label": "enter:maze",
+            "frames": 127,
+            "max": 1511.7,
+            "p99": 143.5,
+            "p50": 19.7,
+            "over250": 1,
+            "over100": 2,
+            "worst5": [
+              69.7,
+              88.5,
+              88.9,
+              143.5,
+              1511.7
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:maze",
+            "frames": 55,
+            "max": 21.3,
+            "p99": 21.3,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              19.2,
+              19.8,
+              19.9,
+              20.4,
+              21.3
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:maze",
+            "frames": 144,
+            "max": 53.2,
+            "p99": 47.5,
+            "p50": 17.2,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              42.9,
+              43.7,
+              46.1,
+              47.5,
+              53.2
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:maze",
+            "frames": 67,
+            "max": 21.7,
+            "p99": 21.7,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.9,
+              19,
+              20.3,
+              21.2,
+              21.7
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "machinegun",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.74,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              1260,
+              0,
+              60
+            ],
+            "to": [
+              1260,
+              0,
+              60
+            ],
+            "moved": 0
+          },
+          "jump": {
+            "from": 0,
+            "peak": 0,
+            "rise": 0
+          },
+          "minigameVenues": 0,
+          "portals": 1,
+          "npcs": 21,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "dock",
+          "order": 7,
+          "landedIn": "dock",
+          "spawn": [
+            0,
+            0.12,
+            46
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:dock",
+            "frames": 36,
+            "max": 5929,
+            "p99": 5929,
+            "p50": 19.1,
+            "over250": 1,
+            "over100": 1,
+            "worst5": [
+              23.2,
+              23.7,
+              23.9,
+              27.5,
+              5929
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:dock",
+            "frames": 59,
+            "max": 31.9,
+            "p99": 31.9,
+            "p50": 17.1,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              20.9,
+              21.8,
+              22.2,
+              23.4,
+              31.9
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:dock",
+            "frames": 164,
+            "max": 38.4,
+            "p99": 31.9,
+            "p50": 17,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              24.9,
+              26.9,
+              27.5,
+              31.9,
+              38.4
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:dock",
+            "frames": 70,
+            "max": 24.3,
+            "p99": 24.3,
+            "p50": 16.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              21.3,
+              21.4,
+              21.4,
+              21.5,
+              24.3
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "true"
+            },
+            "activeAfter": "hoverboard",
+            "rodeDistance": 15.92,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              0,
+              0.12,
+              46
+            ],
+            "to": [
+              0,
+              0.12,
+              39.35
+            ],
+            "moved": 6.65
+          },
+          "jump": {
+            "from": 0.12,
+            "peak": 1,
+            "rise": 0.88
+          },
+          "minigameVenues": 1,
+          "portals": 2,
+          "npcs": 31,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "space",
+          "order": 8,
+          "landedIn": "space",
+          "spawn": [
+            0,
+            0,
+            -38
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:space",
+            "frames": 39,
+            "max": 5547.7,
+            "p99": 5547.7,
+            "p50": 18.9,
+            "over250": 3,
+            "over100": 5,
+            "worst5": [
+              144.8,
+              230.5,
+              569.1,
+              574.6,
+              5547.7
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:space",
+            "frames": 52,
+            "max": 21.5,
+            "p99": 21.5,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.7,
+              20.1,
+              20.8,
+              21.2,
+              21.5
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:space",
+            "frames": 159,
+            "max": 19.4,
+            "p99": 19.3,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.6,
+              18.8,
+              18.8,
+              19.3,
+              19.4
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:space",
+            "frames": 66,
+            "max": 22.5,
+            "p99": 22.5,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.5,
+              18.6,
+              19.1,
+              20.6,
+              22.5
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.78,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              0,
+              0,
+              -38
+            ],
+            "to": [
+              0,
+              0,
+              -44.88
+            ],
+            "moved": 6.88
+          },
+          "jump": {
+            "from": 0,
+            "peak": 0.88,
+            "rise": 0.88
+          },
+          "minigameVenues": 0,
+          "portals": 1,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "cinder",
+          "order": 9,
+          "landedIn": "cinder",
+          "spawn": [
+            250,
+            48,
+            49.9
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:cinder",
+            "frames": 33,
+            "max": 18.8,
+            "p99": 18.8,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.3,
+              17.6,
+              17.8,
+              18.3,
+              18.8
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:cinder",
+            "frames": 52,
+            "max": 20.5,
+            "p99": 20.5,
+            "p50": 16.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.7,
+              18.9,
+              18.9,
+              19.9,
+              20.5
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:cinder",
+            "frames": 159,
+            "max": 19.1,
+            "p99": 19,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.7,
+              18.8,
+              18.9,
+              19,
+              19.1
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:cinder",
+            "frames": 65,
+            "max": 18.6,
+            "p99": 18.6,
+            "p50": 16.5,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18,
+              18.1,
+              18.1,
+              18.3,
+              18.6
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.78,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              250,
+              48,
+              49.9
+            ],
+            "to": [
+              243.46,
+              48,
+              48.77
+            ],
+            "moved": 6.64
+          },
+          "jump": {
+            "from": 48,
+            "peak": 48.93,
+            "rise": 0.93
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "tessera",
+          "order": 10,
+          "landedIn": "tessera",
+          "spawn": [
+            -169.44,
+            39.1,
+            101.17
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:tessera",
+            "frames": 33,
+            "max": 18.4,
+            "p99": 18.4,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.4,
+              17.5,
+              17.8,
+              17.9,
+              18.4
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:tessera",
+            "frames": 51,
+            "max": 19.7,
+            "p99": 19.7,
+            "p50": 16.4,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.5,
+              17.6,
+              17.6,
+              17.9,
+              19.7
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:tessera",
+            "frames": 159,
+            "max": 18.3,
+            "p99": 18,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.8,
+              17.9,
+              17.9,
+              18,
+              18.3
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:tessera",
+            "frames": 65,
+            "max": 18.4,
+            "p99": 18.4,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.2,
+              17.2,
+              17.2,
+              17.8,
+              18.4
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.72,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              -169.44,
+              39.1,
+              101.17
+            ],
+            "to": [
+              -167.4,
+              39.1,
+              94.79
+            ],
+            "moved": 6.7
+          },
+          "jump": {
+            "from": 39.1,
+            "peak": 40.72,
+            "rise": 1.62
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "sirocco",
+          "order": 11,
+          "landedIn": "sirocco",
+          "spawn": [
+            262,
+            12,
+            213.5
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:sirocco",
+            "frames": 34,
+            "max": 619.1,
+            "p99": 619.1,
+            "p50": 16.6,
+            "over250": 1,
+            "over100": 1,
+            "worst5": [
+              17.4,
+              17.5,
+              17.7,
+              17.8,
+              619.1
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:sirocco",
+            "frames": 51,
+            "max": 19.1,
+            "p99": 19.1,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.1,
+              18.3,
+              18.3,
+              18.6,
+              19.1
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:sirocco",
+            "frames": 159,
+            "max": 18.3,
+            "p99": 18.2,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.1,
+              18.1,
+              18.2,
+              18.2,
+              18.3
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:sirocco",
+            "frames": 65,
+            "max": 18.1,
+            "p99": 18.1,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.9,
+              17.9,
+              18,
+              18.1,
+              18.1
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.72,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              262,
+              12,
+              213.5
+            ],
+            "to": [
+              266.72,
+              12,
+              218.16
+            ],
+            "moved": 6.63
+          },
+          "jump": {
+            "from": 12,
+            "peak": 12.9,
+            "rise": 0.9
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "shoal",
+          "order": 12,
+          "landedIn": "shoal",
+          "spawn": [
+            168,
+            7.77,
+            99.5
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:shoal",
+            "frames": 33,
+            "max": 18,
+            "p99": 18,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17,
+              17.2,
+              17.2,
+              17.4,
+              18
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:shoal",
+            "frames": 51,
+            "max": 19.1,
+            "p99": 19.1,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.6,
+              17.7,
+              18.2,
+              18.6,
+              19.1
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:shoal",
+            "frames": 159,
+            "max": 20.5,
+            "p99": 18.3,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.1,
+              18.1,
+              18.1,
+              18.3,
+              20.5
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:shoal",
+            "frames": 65,
+            "max": 18.4,
+            "p99": 18.4,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.1,
+              18.2,
+              18.3,
+              18.4,
+              18.4
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.72,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              168,
+              7.77,
+              99.5
+            ],
+            "to": [
+              162.45,
+              7.77,
+              95.86
+            ],
+            "moved": 6.64
+          },
+          "jump": {
+            "from": 7.77,
+            "peak": 8.66,
+            "rise": 0.89
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "vitrine",
+          "order": 13,
+          "landedIn": "vitrine",
+          "spawn": [
+            189,
+            102,
+            120
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:vitrine",
+            "frames": 33,
+            "max": 17.6,
+            "p99": 17.6,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.3,
+              17.4,
+              17.5,
+              17.5,
+              17.6
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:vitrine",
+            "frames": 51,
+            "max": 18.6,
+            "p99": 18.6,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.4,
+              17.4,
+              17.5,
+              17.5,
+              18.6
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:vitrine",
+            "frames": 159,
+            "max": 18.5,
+            "p99": 18.5,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.1,
+              18.2,
+              18.4,
+              18.5,
+              18.5
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:vitrine",
+            "frames": 65,
+            "max": 19,
+            "p99": 19,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18,
+              18.2,
+              18.4,
+              18.6,
+              19
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.72,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              189,
+              102,
+              120
+            ],
+            "to": [
+              188.01,
+              102,
+              113.44
+            ],
+            "moved": 6.63
+          },
+          "jump": {
+            "from": 102,
+            "peak": 102.96,
+            "rise": 0.96
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "verdigris",
+          "order": 14,
+          "landedIn": "verdigris",
+          "spawn": [
+            -140,
+            7.9,
+            309
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:verdigris",
+            "frames": 34,
+            "max": 22,
+            "p99": 22,
+            "p50": 16.9,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.7,
+              17.7,
+              18.1,
+              18.2,
+              22
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:verdigris",
+            "frames": 51,
+            "max": 19.6,
+            "p99": 19.6,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.1,
+              18.2,
+              19,
+              19.2,
+              19.6
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:verdigris",
+            "frames": 163,
+            "max": 42.1,
+            "p99": 26.6,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              24.4,
+              25.2,
+              26.2,
+              26.6,
+              42.1
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:verdigris",
+            "frames": 66,
+            "max": 19.7,
+            "p99": 19.7,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.5,
+              18.7,
+              18.7,
+              18.7,
+              19.7
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 6.03,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              -140,
+              7.9,
+              309
+            ],
+            "to": [
+              -136.26,
+              7.9,
+              303.54
+            ],
+            "moved": 6.62
+          },
+          "jump": {
+            "from": 7.9,
+            "peak": 8.77,
+            "rise": 0.87
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "lathe",
+          "order": 15,
+          "landedIn": "lathe",
+          "spawn": [
+            180,
+            24.53,
+            -10.3
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:lathe",
+            "frames": 33,
+            "max": 18.1,
+            "p99": 18.1,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.4,
+              17.4,
+              18,
+              18,
+              18.1
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:lathe",
+            "frames": 52,
+            "max": 20,
+            "p99": 20,
+            "p50": 16.5,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.3,
+              18.4,
+              19.3,
+              19.9,
+              20
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:lathe",
+            "frames": 159,
+            "max": 18.8,
+            "p99": 18.7,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.1,
+              18.2,
+              18.5,
+              18.7,
+              18.8
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:lathe",
+            "frames": 65,
+            "max": 18.1,
+            "p99": 18.1,
+            "p50": 16.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18,
+              18,
+              18.1,
+              18.1,
+              18.1
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.71,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              180,
+              24.53,
+              -10.3
+            ],
+            "to": [
+              180,
+              24.53,
+              -3.68
+            ],
+            "moved": 6.62
+          },
+          "jump": {
+            "from": 24.53,
+            "peak": 26.1,
+            "rise": 1.57
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "carnelian",
+          "order": 16,
+          "landedIn": "carnelian",
+          "spawn": [
+            130,
+            102.29,
+            -189.2
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:carnelian",
+            "frames": 33,
+            "max": 18.5,
+            "p99": 18.5,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.3,
+              17.5,
+              17.9,
+              17.9,
+              18.5
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:carnelian",
+            "frames": 51,
+            "max": 20.3,
+            "p99": 20.3,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.3,
+              17.3,
+              17.6,
+              18.2,
+              20.3
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:carnelian",
+            "frames": 160,
+            "max": 21.8,
+            "p99": 19.6,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.8,
+              18.8,
+              18.9,
+              19.6,
+              21.8
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:carnelian",
+            "frames": 65,
+            "max": 19.3,
+            "p99": 19.3,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.8,
+              17.9,
+              18.2,
+              18.7,
+              19.3
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.7,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              130,
+              102.29,
+              -189.2
+            ],
+            "to": [
+              136.5,
+              102.29,
+              -190.66
+            ],
+            "moved": 6.66
+          },
+          "jump": {
+            "from": 102.29,
+            "peak": 103.26,
+            "rise": 0.97
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "sallow",
+          "order": 17,
+          "landedIn": "sallow",
+          "spawn": [
+            200,
+            36.57,
+            -45.6
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:sallow",
+            "frames": 33,
+            "max": 19.1,
+            "p99": 19.1,
+            "p50": 16.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.6,
+              17.7,
+              17.7,
+              18,
+              19.1
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:sallow",
+            "frames": 58,
+            "max": 23.5,
+            "p99": 23.5,
+            "p50": 16.3,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              19.6,
+              20.4,
+              20.7,
+              20.8,
+              23.5
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:sallow",
+            "frames": 161,
+            "max": 20.6,
+            "p99": 19.8,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              19.1,
+              19.5,
+              19.7,
+              19.8,
+              20.6
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:sallow",
+            "frames": 67,
+            "max": 24.4,
+            "p99": 24.4,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.8,
+              19.4,
+              19.5,
+              23,
+              24.4
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.7,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              200,
+              36.57,
+              -45.6
+            ],
+            "to": [
+              201.7,
+              36.57,
+              -52
+            ],
+            "moved": 6.62
+          },
+          "jump": {
+            "from": 36.57,
+            "peak": 37.51,
+            "rise": 0.94
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "cathedra",
+          "order": 18,
+          "landedIn": "cathedra",
+          "spawn": [
+            150,
+            26.4,
+            93.5
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:cathedra",
+            "frames": 33,
+            "max": 18,
+            "p99": 18,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.5,
+              17.6,
+              17.7,
+              17.7,
+              18
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:cathedra",
+            "frames": 51,
+            "max": 18.7,
+            "p99": 18.7,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.4,
+              17.5,
+              17.6,
+              17.7,
+              18.7
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:cathedra",
+            "frames": 159,
+            "max": 19.2,
+            "p99": 18.8,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.3,
+              18.3,
+              18.7,
+              18.8,
+              19.2
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:cathedra",
+            "frames": 77,
+            "max": 130.9,
+            "p99": 130.9,
+            "p50": 17.1,
+            "over250": 0,
+            "over100": 1,
+            "worst5": [
+              54.8,
+              77.2,
+              92.3,
+              98.7,
+              130.9
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.78,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              150,
+              26.4,
+              93.5
+            ],
+            "to": [
+              143.71,
+              26.4,
+              91.2
+            ],
+            "moved": 6.7
+          },
+          "jump": {
+            "from": 26.4,
+            "peak": 27.42,
+            "rise": 1.02
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        }
+      ],
+      "repeatedEntry": [
+        {
+          "label": "repeat:station->medieval #1",
+          "gaps": {
+            "label": "repeat:station->medieval #1",
+            "frames": 52,
+            "max": 5412.5,
+            "p99": 5412.5,
+            "p50": 44.1,
+            "over250": 3,
+            "over100": 3,
+            "worst5": [
+              70.4,
+              75.1,
+              542.8,
+              866.6,
+              5412.5
+            ]
+          }
+        },
+        {
+          "label": "repeat:station->medieval #2",
+          "gaps": {
+            "label": "repeat:station->medieval #2",
+            "frames": 52,
+            "max": 1992.9,
+            "p99": 1992.9,
+            "p50": 32,
+            "over250": 2,
+            "over100": 2,
+            "worst5": [
+              44.5,
+              47.6,
+              54,
+              926.6,
+              1992.9
+            ]
+          }
+        },
+        {
+          "label": "repeat:station->medieval #3",
+          "gaps": {
+            "label": "repeat:station->medieval #3",
+            "frames": 52,
+            "max": 1638.7,
+            "p99": 1638.7,
+            "p50": 25.3,
+            "over250": 2,
+            "over100": 3,
+            "worst5": [
+              35.2,
+              48.2,
+              219.5,
+              634.1,
+              1638.7
+            ]
+          }
+        }
+      ]
+    },
+    "devServer": {
+      "what": "the same tree over the vite dev server, for comparison only",
+      "at": "2026-08-24T16:11:00.929Z",
+      "worlds": [
+        {
+          "world": "station",
+          "order": 1,
+          "landedIn": "station",
+          "spawn": [
+            -15.55,
+            0,
+            -7.77
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:station",
+            "frames": 36,
+            "max": 22.3,
+            "p99": 22.3,
+            "p50": 17.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              21.4,
+              21.8,
+              21.8,
+              22.1,
+              22.3
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:station",
+            "frames": 57,
+            "max": 891.3,
+            "p99": 891.3,
+            "p50": 17.3,
+            "over250": 1,
+            "over100": 1,
+            "worst5": [
+              25.7,
+              26.8,
+              27.4,
+              34.3,
+              891.3
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:station",
+            "frames": 154,
+            "max": 31.4,
+            "p99": 30.9,
+            "p50": 18.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              29.6,
+              29.8,
+              30.1,
+              30.9,
+              31.4
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:station",
+            "frames": 68,
+            "max": 29.8,
+            "p99": 29.8,
+            "p50": 18.3,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              25.3,
+              26.4,
+              26.6,
+              28.8,
+              29.8
+            ]
+          },
+          "weaponResult": {
+            "start": "sword",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "true"
+            },
+            "activeAfter": "hoverboard",
+            "rodeDistance": 8.02,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              -15.55,
+              0,
+              -7.77
+            ],
+            "to": [
+              -15.59,
+              0.08,
+              -14.45
+            ],
+            "moved": 6.68
+          },
+          "jump": {
+            "from": 0.08,
+            "peak": 0.96,
+            "rise": 0.88
+          },
+          "minigameVenues": 2,
+          "portals": 6,
+          "npcs": 68,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "medieval",
+          "order": 2,
+          "landedIn": "medieval",
+          "spawn": [
+            14,
+            8.11,
+            -15
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:medieval",
+            "frames": 36,
+            "max": 16375.1,
+            "p99": 16375.1,
+            "p50": 16.8,
+            "over250": 1,
+            "over100": 2,
+            "worst5": [
+              27,
+              28.1,
+              30.1,
+              108.6,
+              16375.1
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:medieval",
+            "frames": 56,
+            "max": 34.4,
+            "p99": 34.4,
+            "p50": 17.1,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              24.9,
+              25.4,
+              27.3,
+              28.5,
+              34.4
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:medieval",
+            "frames": 163,
+            "max": 863.2,
+            "p99": 133.6,
+            "p50": 16.4,
+            "over250": 1,
+            "over100": 2,
+            "worst5": [
+              27.4,
+              27.8,
+              51.6,
+              133.6,
+              863.2
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:medieval",
+            "frames": 65,
+            "max": 23,
+            "p99": 23,
+            "p50": 16.3,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              20.8,
+              21.4,
+              21.4,
+              22.5,
+              23
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "true"
+            },
+            "activeAfter": "hoverboard",
+            "rodeDistance": 15.7,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              14,
+              8.11,
+              -15
+            ],
+            "to": [
+              12.37,
+              8.1,
+              -12.32
+            ],
+            "moved": 3.14
+          },
+          "jump": {
+            "from": 8.1,
+            "peak": 8.98,
+            "rise": 0.88
+          },
+          "minigameVenues": 0,
+          "portals": 1,
+          "npcs": 55,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "sports",
+          "order": 3,
+          "landedIn": "sports",
+          "spawn": [
+            0,
+            0.7,
+            145
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:sports",
+            "frames": 34,
+            "max": 84.2,
+            "p99": 84.2,
+            "p50": 16.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              23.6,
+              24.5,
+              29.5,
+              40.5,
+              84.2
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:sports",
+            "frames": 49,
+            "max": 114.3,
+            "p99": 114.3,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 1,
+            "worst5": [
+              20.2,
+              20.9,
+              21.1,
+              21.2,
+              114.3
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:sports",
+            "frames": 161,
+            "max": 613.4,
+            "p99": 110.7,
+            "p50": 16.6,
+            "over250": 1,
+            "over100": 2,
+            "worst5": [
+              36.3,
+              39.3,
+              39.7,
+              110.7,
+              613.4
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:sports",
+            "frames": 66,
+            "max": 21.1,
+            "p99": 21.1,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              20.7,
+              20.7,
+              21,
+              21.1,
+              21.1
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "true"
+            },
+            "activeAfter": "hoverboard",
+            "rodeDistance": 8.45,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              0,
+              0.7,
+              145
+            ],
+            "to": [
+              0,
+              0.08,
+              138.33
+            ],
+            "moved": 6.7
+          },
+          "jump": {
+            "from": 0.08,
+            "peak": 0.95,
+            "rise": 0.87
+          },
+          "minigameVenues": 4,
+          "portals": 1,
+          "npcs": 41,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "citadel",
+          "order": 4,
+          "landedIn": "citadel",
+          "spawn": [
+            0,
+            14.62,
+            104
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:citadel",
+            "frames": 35,
+            "max": 1076,
+            "p99": 1076,
+            "p50": 21.2,
+            "over250": 2,
+            "over100": 2,
+            "worst5": [
+              35.5,
+              35.5,
+              44,
+              771.4,
+              1076
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:citadel",
+            "frames": 57,
+            "max": 38.7,
+            "p99": 38.7,
+            "p50": 22.4,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              32.5,
+              32.7,
+              32.7,
+              34.2,
+              38.7
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:citadel",
+            "frames": 163,
+            "max": 1061.3,
+            "p99": 97.1,
+            "p50": 18.3,
+            "over250": 1,
+            "over100": 1,
+            "worst5": [
+              31.5,
+              34.4,
+              35.7,
+              97.1,
+              1061.3
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:citadel",
+            "frames": 69,
+            "max": 28.8,
+            "p99": 28.8,
+            "p50": 18.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              24.6,
+              25.1,
+              25.8,
+              27.4,
+              28.8
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "true"
+            },
+            "activeAfter": "hoverboard",
+            "rodeDistance": 11.88,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              0,
+              14.62,
+              104
+            ],
+            "to": [
+              -0.26,
+              14,
+              97.17
+            ],
+            "moved": 6.86
+          },
+          "jump": {
+            "from": 14,
+            "peak": 14.88,
+            "rise": 0.88
+          },
+          "minigameVenues": 7,
+          "portals": 1,
+          "npcs": 58,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "race",
+          "order": 5,
+          "landedIn": "race",
+          "spawn": [
+            -10.5,
+            0.04,
+            151.52
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:race",
+            "frames": 36,
+            "max": 2988,
+            "p99": 2988,
+            "p50": 26.4,
+            "over250": 2,
+            "over100": 3,
+            "worst5": [
+              36,
+              50.6,
+              229.8,
+              1292.8,
+              2988
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:race",
+            "frames": 53,
+            "max": 23.3,
+            "p99": 23.3,
+            "p50": 16.5,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.4,
+              18.4,
+              18.8,
+              21.8,
+              23.3
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:race",
+            "frames": 159,
+            "max": 21.8,
+            "p99": 21.8,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              20,
+              20.1,
+              20.5,
+              21.8,
+              21.8
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:race",
+            "frames": 66,
+            "max": 27,
+            "p99": 27,
+            "p50": 15.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              22.1,
+              22.2,
+              23.1,
+              23.4,
+              27
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "machinegun",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "true"
+            },
+            "activeAfter": "hoverboard",
+            "rodeDistance": 0,
+            "activeAfterDismountKey": "hoverboard"
+          },
+          "walk": {
+            "from": [
+              -10.5,
+              0.04,
+              151.52
+            ],
+            "to": [
+              -10.5,
+              0.04,
+              151.52
+            ],
+            "moved": 0
+          },
+          "jump": {
+            "from": 0.04,
+            "peak": 0.04,
+            "rise": 0
+          },
+          "minigameVenues": 2,
+          "portals": 1,
+          "npcs": 31,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "maze",
+          "order": 6,
+          "landedIn": "maze",
+          "spawn": [
+            1260,
+            0,
+            60
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:maze",
+            "frames": 146,
+            "max": 2743.7,
+            "p99": 766.1,
+            "p50": 25.9,
+            "over250": 4,
+            "over100": 8,
+            "worst5": [
+              244.7,
+              251.6,
+              267.2,
+              766.1,
+              2743.7
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:maze",
+            "frames": 57,
+            "max": 25.6,
+            "p99": 25.6,
+            "p50": 21.1,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              23.5,
+              23.5,
+              23.7,
+              24,
+              25.6
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:maze",
+            "frames": 131,
+            "max": 132.1,
+            "p99": 71.7,
+            "p50": 21.3,
+            "over250": 0,
+            "over100": 1,
+            "worst5": [
+              58,
+              59,
+              67.9,
+              71.7,
+              132.1
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:maze",
+            "frames": 70,
+            "max": 35.8,
+            "p99": 35.8,
+            "p50": 17.5,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              28.1,
+              29.2,
+              31.5,
+              33.2,
+              35.8
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "machinegun",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.44,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              1260,
+              0,
+              60
+            ],
+            "to": [
+              1260,
+              0,
+              60
+            ],
+            "moved": 0
+          },
+          "jump": {
+            "from": 0,
+            "peak": 0,
+            "rise": 0
+          },
+          "minigameVenues": 0,
+          "portals": 1,
+          "npcs": 16,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "dock",
+          "order": 7,
+          "landedIn": "dock",
+          "spawn": [
+            0,
+            0.12,
+            46
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:dock",
+            "frames": 36,
+            "max": 5149.3,
+            "p99": 5149.3,
+            "p50": 16.8,
+            "over250": 1,
+            "over100": 1,
+            "worst5": [
+              22.4,
+              22.7,
+              24.8,
+              26.3,
+              5149.3
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:dock",
+            "frames": 58,
+            "max": 25.2,
+            "p99": 25.2,
+            "p50": 16.2,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              21.6,
+              22.9,
+              23,
+              23.7,
+              25.2
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:dock",
+            "frames": 167,
+            "max": 25.2,
+            "p99": 24.9,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              23.7,
+              24,
+              24.2,
+              24.9,
+              25.2
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:dock",
+            "frames": 68,
+            "max": 23.6,
+            "p99": 23.6,
+            "p50": 16.4,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              21.7,
+              22.8,
+              23,
+              23.3,
+              23.6
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "true"
+            },
+            "activeAfter": "hoverboard",
+            "rodeDistance": 15.68,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              0,
+              0.12,
+              46
+            ],
+            "to": [
+              0,
+              0.12,
+              39.29
+            ],
+            "moved": 6.71
+          },
+          "jump": {
+            "from": 0.12,
+            "peak": 1,
+            "rise": 0.88
+          },
+          "minigameVenues": 1,
+          "portals": 2,
+          "npcs": 31,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "space",
+          "order": 8,
+          "landedIn": "space",
+          "spawn": [
+            0,
+            0,
+            -38
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:space",
+            "frames": 34,
+            "max": 7296.4,
+            "p99": 7296.4,
+            "p50": 16.6,
+            "over250": 1,
+            "over100": 1,
+            "worst5": [
+              18.4,
+              19.1,
+              20.3,
+              26.9,
+              7296.4
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:space",
+            "frames": 53,
+            "max": 27.6,
+            "p99": 27.6,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              19.9,
+              20.9,
+              21.9,
+              21.9,
+              27.6
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:space",
+            "frames": 159,
+            "max": 20.4,
+            "p99": 19.4,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              19,
+              19.1,
+              19.3,
+              19.4,
+              20.4
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:space",
+            "frames": 65,
+            "max": 19.5,
+            "p99": 19.5,
+            "p50": 16.9,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.4,
+              18.7,
+              19.2,
+              19.3,
+              19.5
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.7,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              0,
+              0,
+              -38
+            ],
+            "to": [
+              0,
+              0,
+              -44.62
+            ],
+            "moved": 6.62
+          },
+          "jump": {
+            "from": 0,
+            "peak": 0.8,
+            "rise": 0.8
+          },
+          "minigameVenues": 0,
+          "portals": 1,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "cinder",
+          "order": 9,
+          "landedIn": "cinder",
+          "spawn": [
+            250,
+            48,
+            49.9
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:cinder",
+            "frames": 34,
+            "max": 3157.3,
+            "p99": 3157.3,
+            "p50": 16.7,
+            "over250": 1,
+            "over100": 1,
+            "worst5": [
+              17.5,
+              17.6,
+              17.6,
+              17.7,
+              3157.3
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:cinder",
+            "frames": 51,
+            "max": 19.6,
+            "p99": 19.6,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.5,
+              18.6,
+              18.7,
+              19.2,
+              19.6
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:cinder",
+            "frames": 159,
+            "max": 18.9,
+            "p99": 18.5,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.2,
+              18.3,
+              18.3,
+              18.5,
+              18.9
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:cinder",
+            "frames": 65,
+            "max": 18.9,
+            "p99": 18.9,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.8,
+              17.8,
+              18,
+              18.2,
+              18.9
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.71,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              250,
+              48,
+              49.9
+            ],
+            "to": [
+              243.4,
+              48,
+              48.76
+            ],
+            "moved": 6.7
+          },
+          "jump": {
+            "from": 48,
+            "peak": 48.93,
+            "rise": 0.93
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "tessera",
+          "order": 10,
+          "landedIn": "tessera",
+          "spawn": [
+            -169.44,
+            39.1,
+            101.17
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:tessera",
+            "frames": 33,
+            "max": 17.9,
+            "p99": 17.9,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.4,
+              17.4,
+              17.6,
+              17.7,
+              17.9
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:tessera",
+            "frames": 51,
+            "max": 19.8,
+            "p99": 19.8,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.4,
+              17.5,
+              17.8,
+              18.5,
+              19.8
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:tessera",
+            "frames": 159,
+            "max": 18.7,
+            "p99": 18.6,
+            "p50": 16.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.2,
+              18.4,
+              18.4,
+              18.6,
+              18.7
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:tessera",
+            "frames": 65,
+            "max": 18.7,
+            "p99": 18.7,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.1,
+              18.2,
+              18.4,
+              18.7,
+              18.7
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.71,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              -169.44,
+              39.1,
+              101.17
+            ],
+            "to": [
+              -167.42,
+              39.1,
+              94.85
+            ],
+            "moved": 6.63
+          },
+          "jump": {
+            "from": 39.1,
+            "peak": 40.72,
+            "rise": 1.62
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "sirocco",
+          "order": 11,
+          "landedIn": "sirocco",
+          "spawn": [
+            262,
+            12,
+            213.5
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:sirocco",
+            "frames": 33,
+            "max": 19,
+            "p99": 19,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.5,
+              17.7,
+              18.5,
+              18.9,
+              19
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:sirocco",
+            "frames": 51,
+            "max": 18.8,
+            "p99": 18.8,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.4,
+              17.5,
+              17.6,
+              18.5,
+              18.8
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:sirocco",
+            "frames": 159,
+            "max": 26,
+            "p99": 18.8,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.2,
+              18.4,
+              18.4,
+              18.8,
+              26
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:sirocco",
+            "frames": 65,
+            "max": 18.6,
+            "p99": 18.6,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.6,
+              18,
+              18.1,
+              18.5,
+              18.6
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.71,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              262,
+              12,
+              213.5
+            ],
+            "to": [
+              266.71,
+              12,
+              218.15
+            ],
+            "moved": 6.62
+          },
+          "jump": {
+            "from": 12,
+            "peak": 12.9,
+            "rise": 0.9
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "shoal",
+          "order": 12,
+          "landedIn": "shoal",
+          "spawn": [
+            168,
+            7.77,
+            99.5
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:shoal",
+            "frames": 33,
+            "max": 27,
+            "p99": 27,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.4,
+              17.4,
+              17.8,
+              18.2,
+              27
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:shoal",
+            "frames": 51,
+            "max": 19.6,
+            "p99": 19.6,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18,
+              18.1,
+              18.3,
+              18.3,
+              19.6
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:shoal",
+            "frames": 158,
+            "max": 18.4,
+            "p99": 18.2,
+            "p50": 16.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.9,
+              18,
+              18,
+              18.2,
+              18.4
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:shoal",
+            "frames": 65,
+            "max": 20.3,
+            "p99": 20.3,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18,
+              18,
+              18,
+              19.4,
+              20.3
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.7,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              168,
+              7.77,
+              99.5
+            ],
+            "to": [
+              162.4,
+              7.77,
+              95.83
+            ],
+            "moved": 6.7
+          },
+          "jump": {
+            "from": 7.77,
+            "peak": 8.66,
+            "rise": 0.89
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "vitrine",
+          "order": 13,
+          "landedIn": "vitrine",
+          "spawn": [
+            189,
+            102,
+            120
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:vitrine",
+            "frames": 33,
+            "max": 18,
+            "p99": 18,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.3,
+              17.3,
+              17.4,
+              17.6,
+              18
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:vitrine",
+            "frames": 51,
+            "max": 19.4,
+            "p99": 19.4,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.6,
+              17.6,
+              17.6,
+              18.2,
+              19.4
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:vitrine",
+            "frames": 158,
+            "max": 19.3,
+            "p99": 18.8,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.1,
+              18.4,
+              18.6,
+              18.8,
+              19.3
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:vitrine",
+            "frames": 65,
+            "max": 18.2,
+            "p99": 18.2,
+            "p50": 16.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.6,
+              17.7,
+              17.8,
+              17.9,
+              18.2
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.71,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              189,
+              102,
+              120
+            ],
+            "to": [
+              188.01,
+              102,
+              113.44
+            ],
+            "moved": 6.63
+          },
+          "jump": {
+            "from": 102,
+            "peak": 102.96,
+            "rise": 0.96
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "verdigris",
+          "order": 14,
+          "landedIn": "verdigris",
+          "spawn": [
+            -140,
+            7.9,
+            309
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:verdigris",
+            "frames": 33,
+            "max": 18.5,
+            "p99": 18.5,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.5,
+              17.6,
+              17.8,
+              18.2,
+              18.5
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:verdigris",
+            "frames": 51,
+            "max": 19.9,
+            "p99": 19.9,
+            "p50": 16.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.7,
+              18.2,
+              18.3,
+              18.5,
+              19.9
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:verdigris",
+            "frames": 159,
+            "max": 93.9,
+            "p99": 38,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              23.4,
+              25.7,
+              29.8,
+              38,
+              93.9
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:verdigris",
+            "frames": 65,
+            "max": 18.3,
+            "p99": 18.3,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.6,
+              17.7,
+              17.8,
+              18,
+              18.3
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.7,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              -140,
+              7.9,
+              309
+            ],
+            "to": [
+              -136.25,
+              7.9,
+              303.52
+            ],
+            "moved": 6.64
+          },
+          "jump": {
+            "from": 7.9,
+            "peak": 8.77,
+            "rise": 0.87
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "lathe",
+          "order": 15,
+          "landedIn": "lathe",
+          "spawn": [
+            180,
+            24.53,
+            -10.3
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:lathe",
+            "frames": 33,
+            "max": 18.6,
+            "p99": 18.6,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.4,
+              17.7,
+              17.8,
+              17.8,
+              18.6
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:lathe",
+            "frames": 52,
+            "max": 24.5,
+            "p99": 24.5,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.4,
+              18.4,
+              19.4,
+              19.9,
+              24.5
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:lathe",
+            "frames": 158,
+            "max": 192.5,
+            "p99": 152.5,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 2,
+            "worst5": [
+              52.8,
+              71.3,
+              75.6,
+              152.5,
+              192.5
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:lathe",
+            "frames": 65,
+            "max": 18.6,
+            "p99": 18.6,
+            "p50": 16.8,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.9,
+              18.1,
+              18.4,
+              18.5,
+              18.6
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.41,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              180,
+              24.53,
+              -10.3
+            ],
+            "to": [
+              180,
+              24.53,
+              -3.2
+            ],
+            "moved": 7.1
+          },
+          "jump": {
+            "from": 24.53,
+            "peak": 26.1,
+            "rise": 1.57
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "carnelian",
+          "order": 16,
+          "landedIn": "carnelian",
+          "spawn": [
+            130,
+            102.29,
+            -189.2
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:carnelian",
+            "frames": 36,
+            "max": 52.4,
+            "p99": 52.4,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              23.8,
+              24.4,
+              27.6,
+              42.2,
+              52.4
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:carnelian",
+            "frames": 52,
+            "max": 19.8,
+            "p99": 19.8,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.1,
+              18.5,
+              18.8,
+              18.9,
+              19.8
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:carnelian",
+            "frames": 159,
+            "max": 19.3,
+            "p99": 18.3,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.2,
+              18.3,
+              18.3,
+              18.3,
+              19.3
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:carnelian",
+            "frames": 65,
+            "max": 18.4,
+            "p99": 18.4,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.7,
+              17.7,
+              18,
+              18.2,
+              18.4
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.72,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              130,
+              102.29,
+              -189.2
+            ],
+            "to": [
+              136.46,
+              102.29,
+              -190.65
+            ],
+            "moved": 6.62
+          },
+          "jump": {
+            "from": 102.29,
+            "peak": 103.26,
+            "rise": 0.97
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "sallow",
+          "order": 17,
+          "landedIn": "sallow",
+          "spawn": [
+            200,
+            36.57,
+            -45.6
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:sallow",
+            "frames": 33,
+            "max": 18,
+            "p99": 18,
+            "p50": 16.5,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.5,
+              17.6,
+              17.9,
+              17.9,
+              18
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:sallow",
+            "frames": 51,
+            "max": 19.4,
+            "p99": 19.4,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.2,
+              18.3,
+              18.9,
+              19.2,
+              19.4
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:sallow",
+            "frames": 159,
+            "max": 19.2,
+            "p99": 19.1,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.8,
+              18.8,
+              18.9,
+              19.1,
+              19.2
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:sallow",
+            "frames": 65,
+            "max": 19.5,
+            "p99": 19.5,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18,
+              18,
+              18.2,
+              18.4,
+              19.5
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.7,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              200,
+              36.57,
+              -45.6
+            ],
+            "to": [
+              201.72,
+              36.57,
+              -52.07
+            ],
+            "moved": 6.69
+          },
+          "jump": {
+            "from": 36.57,
+            "peak": 37.51,
+            "rise": 0.94
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        },
+        {
+          "world": "cathedra",
+          "order": 18,
+          "landedIn": "cathedra",
+          "spawn": [
+            150,
+            26.4,
+            93.5
+          ],
+          "health": 100,
+          "entry": {
+            "label": "enter:cathedra",
+            "frames": 33,
+            "max": 18.2,
+            "p99": 18.2,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.7,
+              17.9,
+              17.9,
+              18,
+              18.2
+            ]
+          },
+          "weaponChange": {
+            "label": "weapon:cathedra",
+            "frames": 53,
+            "max": 19,
+            "p99": 19,
+            "p50": 16.5,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.6,
+              18.7,
+              18.7,
+              18.8,
+              19
+            ]
+          },
+          "mountLaunch": {
+            "label": "mount:cathedra",
+            "frames": 159,
+            "max": 18.6,
+            "p99": 18.5,
+            "p50": 16.6,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              18.3,
+              18.3,
+              18.4,
+              18.5,
+              18.6
+            ]
+          },
+          "firstKeybind": {
+            "label": "keybind:cathedra",
+            "frames": 65,
+            "max": 18.6,
+            "p99": 18.6,
+            "p50": 16.7,
+            "over250": 0,
+            "over100": 0,
+            "worst5": [
+              17.8,
+              18.3,
+              18.4,
+              18.5,
+              18.6
+            ]
+          },
+          "weaponResult": {
+            "start": "machinegun",
+            "after2": "fireball",
+            "after1": "machinegun",
+            "count": 4
+          },
+          "mountResult": {
+            "available": [
+              "hoverboard",
+              "dragon",
+              "car",
+              "horse",
+              "eagle",
+              "bicycle"
+            ],
+            "activeBefore": null,
+            "summon": {
+              "summoned": "hoverboard",
+              "via": "summon()",
+              "returned": "false"
+            },
+            "activeAfter": null,
+            "rodeDistance": 5.72,
+            "activeAfterDismountKey": null
+          },
+          "walk": {
+            "from": [
+              150,
+              26.4,
+              93.5
+            ],
+            "to": [
+              143.78,
+              26.4,
+              91.22
+            ],
+            "moved": 6.62
+          },
+          "jump": {
+            "from": 26.4,
+            "peak": 27.41,
+            "rise": 1.01
+          },
+          "minigameVenues": 0,
+          "portals": 0,
+          "npcs": 0,
+          "questCount": 0,
+          "pageErrors": 0
+        }
+      ],
+      "repeatedEntry": [
+        {
+          "label": "repeat:station->medieval #1",
+          "gaps": {
+            "label": "repeat:station->medieval #1",
+            "frames": 52,
+            "max": 7721.3,
+            "p99": 7721.3,
+            "p50": 38.8,
+            "over250": 2,
+            "over100": 2,
+            "worst5": [
+              63.4,
+              75.4,
+              82.8,
+              826.4,
+              7721.3
+            ]
+          }
+        },
+        {
+          "label": "repeat:station->medieval #2",
+          "gaps": {
+            "label": "repeat:station->medieval #2",
+            "frames": 59,
+            "max": 6352.5,
+            "p99": 6352.5,
+            "p50": 48.5,
+            "over250": 12,
+            "over100": 17,
+            "worst5": [
+              437.8,
+              514.3,
+              2889.3,
+              3004.3,
+              6352.5
+            ]
+          }
+        },
+        {
+          "label": "repeat:station->medieval #3",
+          "gaps": {
+            "label": "repeat:station->medieval #3",
+            "frames": 52,
+            "max": 1850.1,
+            "p99": 1850.1,
+            "p50": 29,
+            "over250": 2,
+            "over100": 3,
+            "worst5": [
+              40.8,
+              46.6,
+              230.9,
+              960.5,
+              1850.1
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { World } from './World.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
+import { POSES, POSE_KEYS, BAND, LIMB_SEGMENTS } from './sports/CrowdKit.js';
+import {
+  loadSportsCrowdAssets, sportsCrowdParts, sportsCrowdHas,
+} from './sports/SportsCrowdAssets.js';
 
 /**
  * SPORTS COMPLEX - "Meridian Athletic Grounds".
@@ -370,8 +374,22 @@ function xform(geo, x, y, z, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) {
  * seats, the lane ropes and the car park all rendered as unpigmented white.
  */
 function whiteColor(geo) {
+  return shadeColor(geo, 1);
+}
+
+/**
+ * The same, at a constant value other than white.
+ *
+ * Because `instanceColor` and `vColor` MULTIPLY, a geometry written at 0.52
+ * comes out as a dark version of whatever colour that instance was tinted -
+ * which is how one instanced draw call can carry a figure with trousers a
+ * different value from its shirt. See `BAND` in `sports/CrowdKit.js` for why
+ * that is a multiplier and not an independently chosen colour, and for the
+ * constraint that follows from it.
+ */
+function shadeColor(geo, shade) {
   const n = geo.getAttribute('position').count;
-  const c = new Float32Array(n * 3).fill(1);
+  const c = new Float32Array(n * 3).fill(shade);
   geo.setAttribute('color', new THREE.BufferAttribute(c, 3));
   return geo;
 }
@@ -884,6 +902,110 @@ function skiHeight(x, z) {
 }
 
 /* ------------------------------------------------------------------ */
+/* The crowd figure                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Build one crowd pose as a {cloth, skin} geometry pair, from
+ * `sports/CrowdKit.js` and whatever authored hero features have landed.
+ *
+ * AT MODULE SCOPE, and exported, deliberately. It was a closure inside
+ * `_buildCrowd`, and a closure inside a method that needs a renderer, a
+ * physics world and a live texture library is a thing no `node --test` can
+ * reach. This function touches no instance state at all - it is arithmetic and
+ * two module imports - so lifting it out is what makes the whole budget
+ * argument below testable headlessly rather than only in a screenshot.
+ *
+ * ── Three things happen here that did not before ─────────────────────────
+ *
+ * **1. The figure has value bands.** Every vertex used to carry colour 1.0, so
+ * a single `setColorAt` painted shirt, sleeves and trousers one flat value.
+ * Photographed at four metres (`before-crowdpad-front.jpg`) that is the
+ * loudest "toy" cue a figure has, because a monochrome body gives the eye no
+ * landmark anywhere between the shoes and the head. `BAND` multiplies the
+ * instance tint per limb. It costs nothing: same triangles, same material,
+ * same draw call, same shader program.
+ *
+ * **2. Limbs whose end faces are covered lose their end caps.** A
+ * `CylinderGeometry(r0, r1, len, 6)` is 24 triangles and HALF of them are the
+ * two end discs. Once a shoe covers a leg's end face and a hand covers a
+ * sleeve's, those discs are interior geometry that can never be seen - so the
+ * limb is built `openEnded` and gives twelve triangles back. Across 583
+ * figures that returns 25,428 of the 48,972 the authored parts spend.
+ *
+ * Gated on the part having actually LANDED, per pose, because an open-ended
+ * leg with no shoe on it is a hollow tube: strictly worse than the mannequin
+ * this pass set out to fix, and exactly the failure a graceful degradation is
+ * supposed to prevent rather than cause. `CrowdKit.SPARED` in the generator
+ * lists which limbs qualify and why the others do not.
+ *
+ * **3. The neck is always open.** Its bottom cap is inside the torso and its
+ * top cap is inside the head sphere by construction, at every pose, with no
+ * authored part involved - so those twelve triangles were never visible under
+ * any condition.
+ *
+ * @param {string} pose one of `POSE_KEYS`
+ * @returns {{cloth: THREE.BufferGeometry, skin: THREE.BufferGeometry}}
+ */
+export function crowdFigure(pose) {
+  const P = POSES[pose];
+  if (!P) throw new Error(`crowdFigure: no such pose "${pose}"`);
+  const cloth = [];
+  const skin = [];
+  /* Which of this pose's roles may go open-ended: only the ones whose far end
+   * will really be covered by a part that really arrived. */
+  const spared = new Set();
+  if (sportsCrowdHas(pose, 'shoe')) spared.add('leg');
+  if (sportsCrowdHas(pose, 'hand')) spared.add('arm');
+
+  const limb = (s, openEnded) => {
+    const g = new THREE.CylinderGeometry(s.r0, s.r1, s.len, LIMB_SEGMENTS, 1, openEnded);
+    if (s.rx) g.rotateX(s.rx);
+    if (s.rz) g.rotateZ(s.rz);
+    return g.translate(s.at[0], s.at[1], s.at[2]);
+  };
+  const boxOf = (s) => {
+    const g = new THREE.BoxGeometry(s.size[0], s.size[1], s.size[2]);
+    if (s.rx) g.rotateX(s.rx);
+    if (s.rz) g.rotateZ(s.rz);
+    return g.translate(s.at[0], s.at[1], s.at[2]);
+  };
+
+  for (const s of P.cloth) {
+    cloth.push(shadeColor(limb(s, !!s.open && spared.has(s.role)), BAND[s.role] ?? 1));
+  }
+  if (P.bag) {
+    cloth.push(shadeColor(boxOf(P.bag.body), BAND.bag));
+    for (const st of P.bag.straps) cloth.push(shadeColor(boxOf(st), BAND.strap));
+  }
+  skin.push(shadeColor(
+    new THREE.SphereGeometry(P.head.r, P.head.wseg, P.head.hseg)
+      .translate(P.head.at[0], P.head.at[1], P.head.at[2]),
+    1
+  ));
+  skin.push(shadeColor(limb(P.neck, true), 1));
+
+  /* Authored hero features, merged into the two surfaces the crowd already
+   * draws. `mergeGeometries` returns null on a mismatched attribute set rather
+   * than throwing, so the fallback runs BEFORE anything is disposed and says
+   * why once - a site with no people on it is worse than a bald one. */
+  const authored = sportsCrowdParts(pose);
+  const weld = (own, extra, what) => {
+    let merged = extra?.length ? mergeGeometries([...own, ...extra], false) : null;
+    if (extra?.length && !merged) {
+      console.warn(`SportsWorld: authored crowd parts for ${pose}/${what} would not merge - using the procedural figure`);
+    }
+    if (!merged) merged = mergeGeometries(own, false);
+    for (const g of own) g.dispose();
+    return merged;
+  };
+  return {
+    cloth: weld(cloth, authored?.cloth, 'cloth'),
+    skin: weld(skin, authored?.skin, 'skin'),
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* World                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -1076,6 +1198,21 @@ export class SportsWorld extends World {
       await fn.call(this);
     };
 
+    /* The authored crowd features (Phase 9, decision D4).
+     *
+     * AWAITED HERE, before anything is built, for the reason `StationWorld`
+     * awaits its own: `_buildCrowd` runs inside `_buildLandscaping` and reads
+     * `sportsCrowdParts()` SYNCHRONOUSLY, and it also asks
+     * `sportsCrowdHas()` whether it may build a limb open-ended. A fetch merely
+     * *started* early would be a race this world usually wins and occasionally
+     * loses, and losing it is silent in the worse direction: a crowd of bald,
+     * handless figures, or - if the two questions disagreed - hollow legs.
+     *
+     * Never rejects. A missing manifest or a 404 resolves to an empty map and
+     * every figure is the procedural one every headless test measures. */
+    onProgress?.(0.01, 'Opening the turnstiles');
+    await loadSportsCrowdAssets();
+
     await stage(0.02, 'Mixing concrete', () => this._buildTextures());
     await stage(0.16, 'Raising the sky', () => this._buildSky());
     await stage(0.24, 'Mowing the grass', () => this._buildGround());
@@ -1088,6 +1225,11 @@ export class SportsWorld extends World {
     await stage(0.93, 'Planting trees', () => this._buildLandscaping());
     await stage(0.98, 'Unlocking the gates', () => this._buildSpawns());
     this._installSunRig();
+    /* Both naming passes, after everything that can make a material has run.
+     * See `_mat` for why a name is the difference between `--ablate` working on
+     * this world and not. */
+    this._nameMaterials();
+    this._nameStrayMaterials();
     onProgress?.(1, 'Ready to play');
 
     this.group.matrixAutoUpdate = false;
@@ -1125,9 +1267,87 @@ export class SportsWorld extends World {
     return tex;
   }
 
+  /**
+   * Register a material under a key AND give it that key as its name.
+   *
+   * The name is not decoration. `scripts/world-shot.mjs --ablate <names>` hides
+   * every mesh drawn with a named material and shoots again, and the difference
+   * between the two frames is the only answer this repository has to "which
+   * system drew this pixel". It matches on `material.name`.
+   *
+   * Run against this world before this pass, every framing's material census
+   * read `MeshStandardMaterial x247, paint.enamel x77, MeshBasicMaterial x5,
+   * MeshPhysicalMaterial x4, ShaderMaterial x1` - the CONSTRUCTOR names, which
+   * is the harness's fallback when a name is empty. One name in the whole
+   * world, and it was not even this world's: `paint.enamel` is the shared
+   * library surface `_metal` clones, so the only label sports published told
+   * you a mesh was painted metal and nothing about which of the eleven systems
+   * that use `_metal` had painted it. The A/B was unavailable here, which is
+   * the same hole `art-station` and `art-dock` each found in their own worlds.
+   *
+   * `_metal`'s clones are renamed to their own key deliberately: a clone
+   * inherits `paint.enamel` from `Material.clone`, and 77 meshes all answering
+   * to one name is an ablation that hides eleven systems at once and reports
+   * the wrong one with confidence.
+   *
+   * A name is metadata. `WebGLPrograms.getProgramCacheKey` reads material type,
+   * parameters, defines and `customProgramCacheKey`; it does not read `name`.
+   * The measurement in the branch ledger confirms the program count did not
+   * move.
+   */
   _mat(key, material) {
     this._materials.set(key, material);
+    material.name = `sports.${key}`;
     return material;
+  }
+
+  /**
+   * Name any material reachable from the built group that `_mat` never saw.
+   *
+   * `_mat` covers everything routed through the library, but a world this size
+   * also makes one-off materials at the point of use - the scoreboards, the
+   * kiosks and the plaza banners each make their own. Those are registered in
+   * `_materials` under their own keys, so `_nameMaterials` catches them; this
+   * pass is the backstop for anything that is neither, and it names by the
+   * nearest NAMED ancestor rather than by the mesh's class, because
+   * `mesh:Mesh` is the same useless label the whole change exists to replace.
+   *
+   * @returns {number} how many materials this pass had to name
+   */
+  _nameStrayMaterials() {
+    let named = 0;
+    const label = (o) => {
+      for (let n = o; n; n = n.parent) {
+        if (n === this.group) break;
+        if (n.name) return n.name;
+      }
+      return o.type;
+    };
+    this.group?.traverse((o) => {
+      const m = o.material;
+      if (!m) return;
+      for (const mm of (Array.isArray(m) ? m : [m])) {
+        if (!mm || mm.name) continue;
+        mm.name = `mesh:${label(o)}`;
+        named++;
+      }
+    });
+    return named;
+  }
+
+  /**
+   * Give every material in the library its key as a name.
+   *
+   * Separate from `_mat` because three of this world's material families are
+   * put into `_materials` directly rather than through it - the scoreboards,
+   * the kiosks and the banners, each of which mints one material per instance
+   * under a generated key. Naming from the map rather than from the call site
+   * means a fourth family added the same way is named for free.
+   */
+  _nameMaterials() {
+    for (const [key, m] of this._materials) {
+      if (m && !m.name) m.name = `sports.${key}`;
+    }
   }
 
   /**
@@ -8441,72 +8661,27 @@ export class SportsWorld extends World {
   /**
    * Static crowd layer.
    *
-   * Six InstancedMeshes (three poses x clothing/skin) carry ~180 human-scale
-   * figures. They are not animated - at these distances a silhouette with the
-   * right proportions and a varied clothing colour is what sells the place as
+   * TEN InstancedMeshes (five poses x cloth/skin) carry **583** human-scale
+   * figures - stand 132, sit 382, lean 42, carry 19, crouch 8, counted off a
+   * named-material harness run rather than estimated. The docblock here said
+   * "six InstancedMeshes (three poses x clothing/skin) carry ~180" and had
+   * said it since before two poses and four hundred people were added; it is
+   * corrected because a stale comment about a system's SIZE is how the next
+   * person under-budgets a change to it, and this is the largest single system
+   * in the world (21% of every triangle it draws).
+   *
+   * They are not animated - at these distances a silhouette with the right
+   * proportions and a varied clothing colour is what sells the place as
    * inhabited, and the NPC system already provides the handful of animated
    * characters near the spawn.
+   *
+   * The figure itself is `crowdFigure` at module scope; see its docblock for
+   * the value bands, the open-ended limbs and the authored hero features.
    */
   _buildCrowd() {
     const rng = makeRng(70707);
 
-    /** Build one pose as a {cloth, skin} geometry pair. */
-    const figure = (pose) => {
-      const cloth = [];
-      const skin = [];
-      const limb = (r0, r1, len) => new THREE.CylinderGeometry(r0, r1, len, 6);
-      if (pose === 'crouch') {
-        // Deep squat on the coping / kerb edge: the single most common
-        // skatepark posture and completely absent from the previous three.
-        cloth.push(limb(0.09, 0.11, 0.42).rotateX(1.25).translate(-0.11, 0.5, 0.12));
-        cloth.push(limb(0.09, 0.11, 0.42).rotateX(1.25).translate(0.11, 0.5, 0.12));
-        cloth.push(limb(0.075, 0.09, 0.42).rotateX(-0.35).translate(-0.11, 0.2, 0.3));
-        cloth.push(limb(0.075, 0.09, 0.42).rotateX(-0.35).translate(0.11, 0.2, 0.3));
-        cloth.push(limb(0.175, 0.15, 0.5).rotateX(0.28).translate(0, 0.78, -0.05));
-        cloth.push(limb(0.055, 0.05, 0.46).rotateX(1.0).translate(-0.2, 0.72, 0.14));
-        cloth.push(limb(0.055, 0.05, 0.46).rotateX(1.0).translate(0.2, 0.72, 0.14));
-        skin.push(new THREE.SphereGeometry(0.105, 8, 6).translate(0, 1.12, -0.06));
-        skin.push(limb(0.045, 0.045, 0.09).translate(0, 1.02, -0.05));
-      } else if (pose === 'carry') {
-        // Standing, weight on one hip, kit bag over the shoulder.
-        cloth.push(limb(0.085, 0.105, 0.88).rotateZ(-0.07).translate(-0.13, 0.44, 0));
-        cloth.push(limb(0.085, 0.105, 0.88).rotateZ(0.03).translate(0.1, 0.44, 0.02));
-        cloth.push(limb(0.185, 0.15, 0.62).rotateZ(0.06).translate(0, 1.18, 0));
-        cloth.push(limb(0.055, 0.05, 0.5).rotateZ(0.9).translate(-0.24, 1.3, 0.02));
-        cloth.push(limb(0.055, 0.05, 0.58).rotateZ(-0.1).translate(0.23, 1.16, -0.01));
-        cloth.push(new THREE.BoxGeometry(0.5, 0.24, 0.22).translate(-0.3, 1.02, 0.06));
-        skin.push(new THREE.SphereGeometry(0.108, 8, 6).translate(0.01, 1.62, 0));
-        skin.push(limb(0.046, 0.046, 0.1).translate(0.01, 1.5, 0));
-      } else if (pose === 'sit') {
-        // Thighs forward, shins down, torso upright.
-        cloth.push(limb(0.085, 0.1, 0.44).rotateX(Math.PI / 2).translate(-0.1, 0.44, 0.2));
-        cloth.push(limb(0.085, 0.1, 0.44).rotateX(Math.PI / 2).translate(0.1, 0.44, 0.2));
-        cloth.push(limb(0.07, 0.085, 0.44).translate(-0.1, 0.22, 0.4));
-        cloth.push(limb(0.07, 0.085, 0.44).translate(0.1, 0.22, 0.4));
-        cloth.push(limb(0.17, 0.145, 0.52).translate(0, 0.72, 0.02));
-        cloth.push(limb(0.055, 0.05, 0.42).rotateX(0.7).translate(-0.19, 0.66, 0.16));
-        cloth.push(limb(0.055, 0.05, 0.42).rotateX(0.7).translate(0.19, 0.66, 0.16));
-        skin.push(new THREE.SphereGeometry(0.105, 8, 6).translate(0, 1.06, 0));
-        skin.push(limb(0.045, 0.045, 0.09).translate(0, 0.96, 0));
-      } else if (pose === 'lean') {
-        cloth.push(limb(0.08, 0.1, 0.86).rotateZ(0.12).translate(-0.14, 0.43, 0));
-        cloth.push(limb(0.08, 0.1, 0.86).rotateZ(0.04).translate(0.09, 0.43, 0));
-        cloth.push(limb(0.18, 0.15, 0.6).rotateZ(-0.14).translate(0.02, 1.16, 0));
-        cloth.push(limb(0.055, 0.05, 0.56).rotateZ(0.5).translate(-0.26, 1.12, 0.02));
-        cloth.push(limb(0.055, 0.05, 0.56).rotateZ(-0.2).translate(0.25, 1.1, 0.04));
-        skin.push(new THREE.SphereGeometry(0.108, 8, 6).translate(0.08, 1.58, 0.02));
-        skin.push(limb(0.046, 0.046, 0.1).translate(0.06, 1.46, 0.01));
-      } else {
-        cloth.push(limb(0.085, 0.105, 0.88).translate(-0.11, 0.44, 0));
-        cloth.push(limb(0.085, 0.105, 0.88).translate(0.11, 0.44, 0.02));
-        cloth.push(limb(0.185, 0.15, 0.62).translate(0, 1.18, 0));
-        cloth.push(limb(0.055, 0.05, 0.58).rotateZ(0.13).translate(-0.23, 1.16, 0.01));
-        cloth.push(limb(0.055, 0.05, 0.58).rotateZ(-0.13).translate(0.23, 1.16, -0.01));
-        skin.push(new THREE.SphereGeometry(0.108, 8, 6).translate(0, 1.62, 0));
-        skin.push(limb(0.046, 0.046, 0.1).translate(0, 1.5, 0));
-      }
-      return { cloth: whiteColor(mergeGeometries(cloth)), skin: whiteColor(mergeGeometries(skin)) };
-    };
+    const figure = crowdFigure;
 
     /*
      * These two materials had `color: 0xffffff` and no `vertexColors`.
@@ -8729,11 +8904,14 @@ export class SportsWorld extends World {
       }
     }
 
-    const poses = [
-      ['stand', stand], ['sit', sit], ['lean', lean],
-      ['crouch', crouch], ['carry', carry],
-    ];
-    for (const [pose, list] of poses) {
+    /* Driven off `POSE_KEYS` rather than off a second list typed here, so a
+     * pose added to the kit without a placement list here throws immediately
+     * instead of building an empty `InstancedMesh` and a manifest entry
+     * nothing draws. */
+    const lists = { stand, sit, lean, crouch, carry };
+    for (const pose of POSE_KEYS) {
+      const list = lists[pose];
+      if (!list) throw new Error(`SportsWorld: CrowdKit pose "${pose}" has no placement list`);
       if (!list.length) continue;
       const { cloth, skin } = figure(pose);
       const cm = this._instanced(cloth, clothMat, list);

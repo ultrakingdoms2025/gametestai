@@ -142,17 +142,22 @@ Baseline `06b79f6` → `main` `86425d3`, first run of each. Every cell is the
 range of the per-framing delta over that world's whole framing set. **Bold**
 means the delta was the *same number in every framing*.
 
-| world | framings | materials | renderables | instanced | instances | world lights | world triangles | draw calls | programs (end of run) |
+| world | framings | materials | renderables | instanced | instances | world lights | world triangles | draw calls | programs (settled boot) |
 |---|---|---|---|---|---|---|---|---|---|
-| station | 21 | **0** | **0** | **0** | **0** | **0** | 0 … +47,328 | −1,448 … +1,118 | 512 → 580 (+68) |
-| medieval | 7 | **0** | **0** | **0** | **0** | **0** | **0** | −38 … +17 | 427 → 350 (−77) |
-| citadel | 13 | **0** | **0** | **0** | **0** | **0** | 0 … +88,468 | −120 … +18 | 391 → 375 (−16) |
-| sports | 8 | **0** | **0** | **0** | **0** | **0** | +4,860 … +23,772 | −52 … +20 | 540 → 541 (+1) |
-| dock | 24 | **0** | **0** | **0** | **0** | **0** | −1,066 … −250 | −16 … +16 | 490 → 488 (−2) |
-| space | 15 | **−2** | **+1** | **+1** | **0** | **0** | **+18,480** | −15 … +8 | 423 → 420 (−3) |
-| cinder (planets) | 6 | **0** | **0** | **0** | **0** | **0** | **0** | −48 … 0 | 342 → 352 (+10) |
-| race | 12 | **−1** | **0** | **0** | **0** | **0** | +648 … +2,088 | −6 … 0 | 441 → 441 (0) |
+| station | 21 | **0** | **0** | **0** | **0** | **0** | 0 … +47,328 | −1,448 … +1,118 | **+1** |
+| medieval | 7 | **0** | **0** | **0** | **0** | **0** | **0** | −38 … +17 | **−1 … −2** |
+| citadel | 13 | **0** | **0** | **0** | **0** | **0** | 0 … +88,468 | −120 … +18 | **−2** |
+| sports | 8 | **0** | **0** | **0** | **0** | **0** | +4,860 … +23,772 | −52 … +20 | **0 … +1** |
+| dock | 24 | **0** | **0** | **0** | **0** | **0** | −1,066 … −250 | −16 … +16 | **−3** |
+| space | 15 | **−2** | **+1** | **+1** | **0** | **0** | **+18,480** | −15 … +8 | **−2** |
+| cinder (planets) | 6 | **0** | **0** | **0** | **0** | **0** | **0** | −48 … 0 | **0** |
+| race | 12 | **−1** | **0** | **0** | **0** | **0** | +648 … +2,088 | −6 … 0 | **−2** |
 | maze | see §4 | — | — | — | — | — | — | — | — |
+
+The `programs` column is `stats().warm.programs` — the cache at the settled
+boot, before any framing moves the camera. The end-of-run figure every Phase 9
+table used is a warm-up ramp and is not comparable; §5.3 shows a third run
+breaking it.
 
 The absolute figures on the baseline tree, first framing of each world, all
 reproduce the architecture baselines the branches declared before they authored
@@ -452,32 +457,72 @@ on identical code, and it appears here on the *baseline* tree against itself.
 Draw calls in this game are a measurement of where the streamed cast happened to
 be standing.
 
-### 5.3 Shader programs: two worlds move, and only one moves up
+### 5.3 Shader programs: the end of a run is the wrong number, and a third run proves it
 
-`programs` is compared at the end of a run only (§1.3). Four samples, two per
-tree:
+`art-race` established the rule this sweep started with: *"`programs` climbs
+monotonically through a run — 241 at the first framing to 441 at the twelfth, on
+identical code, in both baselines … The end value agreed exactly (441 both
+times), and that is the only program figure below."* Two runs of one world
+agreeing made the end-of-run value look comparable.
 
-| world | baseline | main | verdict |
+It is not. Two runs of the station on each tree said this:
+
+| | run 1 | run 2 |
+|---|---|---|
+| baseline | 512 | 536 |
+| main | 580 | 580 |
+
+which reads as a reproducible **+44 … +68** — the only axis anywhere in this
+sweep that appeared to move the wrong way outside its own spread. A **third**
+run on each tree was taken to name the extra programs by cache key. It did not
+need to:
+
+| | run 1 | run 2 | run 3 |
 |---|---|---|---|
-| dock | 490, 379 | 488, 488 | baseline's own spread is **111**. No signal. |
-| citadel | 391, 377 | 375, 389 | ranges overlap. No signal. |
-| cinder | 342, 364 | 352, 351 | ranges overlap. No signal. |
-| sports | 540, 540 | 541, 542 | +1 … +2. No signal. |
-| race | 441 | 441 | 0, and `art-race` measured 441 twice as well. |
-| space | 423, 423 | 420, 420 | **−3**, disjoint but negligible. |
-| **medieval** | **427, 426** | **350, 350** | **−76, disjoint and reproducible — a decrease.** |
-| **station** | **512, 536** | **580, 580** | **+44 … +68, disjoint and reproducible — an increase.** |
+| baseline | 512 | 536 | **536** |
+| main | 580 | 580 | **535** |
 
-Two of eight moved outside their own spread, and one of the two is an
-improvement. On medieval the baseline sits at 352 for six framings and jumps to
-427 at `hills-vista`; `main` never leaves 350. That framing is the one full of
-relics, and `orb-hunt` joined the relic halo's shader-cache key to the loot
-system's shared `additive-fog.v1` so *"the two systems cannot split the program
-cache"* — a reduction it declared in prose and never put a number on. This is
-the number: **−76 programs on the vale.**
+The ranges overlap. There is no +68. Two samples a side was luck, and the rule
+that produced it — "the end of a run is stable" — is wrong: the end of a run
+measures how far the walk got into material configurations the boot warm never
+linked, and that depends on where the streamed cast happened to be standing.
+The cache-key diff between the two 535/536 runs confirms it: **10 programs in
+one and not the other, 11 the other way**, all of them `basic` and `sprite`
+variants of the same additive systems, in both directions.
 
-The station's +44 … +68 is the only axis anywhere in this sweep that moved the
-wrong way outside its own noise, and §6 is about it.
+### 5.3.1 The figure that IS comparable: the cache at the settled boot
+
+`settleBoot` already records it. `warm.programs` is the size of the program
+cache at the moment the boot warm stopped growing and before any framing moves
+the camera — the same instant on every run, by construction. It is nearly
+deterministic:
+
+| world | baseline | main | phase delta |
+|---|---|---|---|
+| cinder (planets) | 225, 225 | 225, 225 | **0** |
+| sports | 449, 449 | 449, 450 | **0 … +1** |
+| station | 357, 357, 357 | 358, 358, 358 | **+1** |
+| maze | 232, 233 | 231, 231 | **−1 … −2** |
+| medieval | 352, 351 | 350, 350 | **−1 … −2** |
+| citadel | 239, 239 | 237, 237 | **−2** |
+| race | 243 | 241 | **−2** |
+| space | 245, 245 | 243, 243 | **−2** |
+| dock | 275, 275 | 272, 272 | **−3** |
+
+Nine worlds, reproducible to within one program, and the whole phase moved the
+shader-program budget by **−3 to +1**. Six worlds went down; two are flat; the
+station is one program up.
+
+Every branch that claimed "shader programs unchanged" was right, and the
+hundreds-wide swings three of them argued around — `art-citadel`'s spread of 61,
+`art-space`'s +39, `art-sports`' ±22, `art-planets`' +37, `art-dock`'s 275 → 349
+at `trench` — were all the ramp, and all of them are gone the moment the figure
+is read at the settled boot instead of at the end of a walk.
+
+**This is the one methodological change this branch would recommend**: budget
+tables should quote `stats().warm.programs`, not `renderer.info.programs.length`
+at the last framing. The value is already recorded in every report Phase 9's
+harness has written since the `ready()` fix.
 
 ---
 

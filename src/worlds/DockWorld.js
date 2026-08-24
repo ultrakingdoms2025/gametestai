@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+/* Lights are born HIDDEN: one frame with a world's own lights live re-links
+ * every program on screen. gfx/WorldLight.js has the whole of it. */
+import { pointLight } from '../gfx/WorldLight.js';
 import { World } from './World.js';
 import { makeRules } from './WorldRules.js';
 import { GeoBatch, boxGeo, uvScale, instanced, RAMP_PROXY_FLAG, RAMP_PROXY_NAME } from './station/StationKit.js';
@@ -1519,7 +1522,7 @@ export class DockWorld extends World {
    * what proves they are not standing in the way.
    */
   _pierLamp(x, z, yaw) {
-    const l = new THREE.PointLight(0xffcb96, 34, 40, 2.0);
+    const l = pointLight(0xffcb96, 34, 40, 2.0);
     l.castShadow = false;
     l.position.set(x, 4.4, z);
     this._group.add(l);
@@ -1583,7 +1586,7 @@ export class DockWorld extends World {
         put('emLaunch', new THREE.CylinderGeometry(0.44, 0.44, 0.6, 10), bx, 4.4, bz);
       }
     }
-    const beacon = new THREE.PointLight(0x9fd8ff, 26, 42, 2.0);
+    const beacon = pointLight(0x9fd8ff, 26, 42, 2.0);
     beacon.castShadow = false;
     beacon.position.set(0, 6.0, cz);
     this._group.add(beacon);
@@ -2220,7 +2223,7 @@ export class DockWorld extends World {
       const lights = [];
       for (const l of out.lights ?? []) {
         const w = b.P(l.x, l.y, l.z);
-        const pl = new THREE.PointLight(0xffd9a8, l.intensity, l.distance, 2.0);
+        const pl = pointLight(0xffd9a8, l.intensity, l.distance, 2.0);
         pl.castShadow = false;
         pl.position.copy(w);
         this._group.add(pl);
@@ -3510,7 +3513,7 @@ export class DockWorld extends World {
     const put = this._put;
     const lamps = [];
     const hang = (x, z, colour = 0xffa860, intensity = 26, dist = 42) => {
-      const l = new THREE.PointLight(colour, intensity, dist, 1.9);
+      const l = pointLight(colour, intensity, dist, 1.9);
       l.castShadow = false;
       l.position.set(x, 9, z);
       this._group.add(l);
@@ -3555,7 +3558,7 @@ export class DockWorld extends World {
        * the side — which is what the flank measurement below says they should
        * have been all along — plus a mast head over the cradle. */
       if (b.pier) {
-        const mast = new THREE.PointLight(0xffd0a2, 30, 40, 2.0);
+        const mast = pointLight(0xffd0a2, 30, 40, 2.0);
         mast.castShadow = false;
         mast.position.set(b.x, 11.5, b.z);
         this._group.add(mast);
@@ -3582,7 +3585,7 @@ export class DockWorld extends World {
         // Local +X maps to world (cos yaw, -sin yaw) - `GeoBatch.localAt`.
         const wx = b.x + sg * off * c;
         const wz = b.z - sg * off * sn;
-        const l = new THREE.PointLight(0xffc79a, 14, 20, 2.0);
+        const l = pointLight(0xffc79a, 14, 20, 2.0);
         l.castShadow = false;
         l.position.set(wx, 5.5, wz);
         this._group.add(l);
@@ -3633,7 +3636,7 @@ export class DockWorld extends World {
      * Wall brackets over the run instead, on the same 24 m pitch, close enough
      * in that the cone lands on the walkway rather than on the cladding. */
     const bracket = (x, z, yaw) => {
-      const l = new THREE.PointLight(0xffc79a, 12, 22, 2.0);
+      const l = pointLight(0xffc79a, 12, 22, 2.0);
       l.castShadow = false;
       l.position.set(x, GANTRY_Y + 2.5, z);
       this._group.add(l);
@@ -3662,7 +3665,7 @@ export class DockWorld extends World {
      * that is a different game". */
     for (const [z0, z1] of TRENCH_RUNS) {
       for (let z = z0 + 6; z < z1; z += 12) {
-        const trench = new THREE.PointLight(0xffb066, 10, 20, 2.0);
+        const trench = pointLight(0xffb066, 10, 20, 2.0);
         trench.castShadow = false;
         trench.position.set(0, TRENCH_Y + 1.9, z);
         this._group.add(trench);
@@ -3676,12 +3679,12 @@ export class DockWorld extends World {
      * makes on the floor and nothing on the four walls that are most of what a
      * camera at eye height sees: the `office-inside` framing measured 15.6 of
      * 255 mean frame luma against the brief's 40. */
-    const office = new THREE.PointLight(0xffe0b0, 16, 14, 2.0);
+    const office = pointLight(0xffe0b0, 16, 14, 2.0);
     office.castShadow = false;
     office.position.set(OFFICE.x, OFFICE.h - 0.4, OFFICE.z);
     this._group.add(office);
     for (const sg of [-1, 1]) {
-      const w = new THREE.PointLight(0xffd9a8, 6, 9, 2.0);
+      const w = pointLight(0xffd9a8, 6, 9, 2.0);
       w.castShadow = false;
       w.position.set(OFFICE.x + sg * (OFFICE.w / 2 - 1.2), 1.75, OFFICE.z + sg * (OFFICE.d / 2 - 1.4));
       this._group.add(w);

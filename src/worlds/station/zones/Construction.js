@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+/* Lights are born HIDDEN: one frame with a world's own lights live re-links
+ * every program on screen. gfx/WorldLight.js has the whole of it. */
+import { pointLight } from '../../../gfx/WorldLight.js';
 import { boxGeo, cylGeo, uvScale, instanced, seamLift, CoplanarLevels } from '../StationKit.js';
 import { buildZoneTower } from '../Tower.js';
 
@@ -926,7 +929,7 @@ export function buildConstruction(ctx) {
      * entrance steps rather than either half-extent. */
     claim(lx, lz, Math.hypot(BLOCK_D.w / 2, BLOCK_D.d / 2 + 3.4) + 2);
 
-    const light = new THREE.PointLight(0xffd2a0, 1700, 50, 2);
+    const light = pointLight(0xffd2a0, 1700, 50, 2);
     light.position.copy(ctx.P(lx - Math.sin(BLOCK_D.bearing) * 15, 6, lz - Math.cos(BLOCK_D.bearing) * 15));
     light.castShadow = false;
     ctx.group.add(light);
@@ -2799,7 +2802,7 @@ export function buildConstruction(ctx) {
    * that a set is lit from somewhere off camera.
    */
   const lamp = (lx, ly, lz, hex, power, dist) => {
-    const l = new THREE.PointLight(hex, power, dist, 2);
+    const l = pointLight(hex, power, dist, 2);
     l.position.copy(ctx.P(lx, ly, lz));
     l.castShadow = false;
     ctx.group.add(l);

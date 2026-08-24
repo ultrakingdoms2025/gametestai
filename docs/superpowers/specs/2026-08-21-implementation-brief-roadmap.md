@@ -205,12 +205,26 @@ The real causes are production-only, which is why local was always smoother.
    hero geometry and the JS did not grow, because decision D4 ships every authored asset
    as a separate lazily-fetched `.glb` rather than bundling it. So the art phase did not
    make this item worse, and the 49% figure still stands.
-4. **OPEN, latent — 61 world lights created visible.** `Caves.js:859` and
-   `MazeChunks.js:393` create theirs `visible = false` with tests enforcing it, and
-   say why: the frame between creation and `LightRig`'s next walk is a frame in
-   which they count, and one such frame is a full recompile. 61 sites across 12
-   world files do not. `claim()` on `world:changed` currently closes the window for
-   build-time lights, so this is fragility rather than a live fault.
+4. **DONE — world lights are born hidden.** Branch `world-light-visibility`; see
+   `2026-08-24-world-light-visibility.md`. The real count was **60 sites across 11
+   files**, not 61 across 12: the roadmap's figure predated `art-space`, which fixed
+   the twelfth. Rather than sixty hand-edits, construction moved to
+   `src/gfx/WorldLight.js` — `pointLight` / `spotLight` / `dirLight`, `THREE`'s own
+   argument lists, `visible = false` before the caller has a reference — and
+   `scripts/tests/world-light-visibility.test.mjs` forbids `new THREE.*Light(`
+   anywhere under `src/worlds/` at all, with an empty `EXEMPT` list. The gate's
+   second half builds nine real worlds with no `LightRig` in context and asserts
+   the tuple `getProgramCacheKey` is made of does not move: `d5p12s2h0a0r0/ds2ps0ss0`
+   against 1,162 authored lights. Reverting ONE of the 64 converted sites fails four
+   cases in that file and nothing else in the other 3,301.
+
+   **This was fragility, and it stayed fragility.** `WorldManager._activate` is one
+   synchronous block from `onActivate()` to `bus.emit('world:changed')`, so no frame
+   can render between a world's lights going live and `claim()` hiding them; nothing
+   measurable changed and nothing was claimed to. What was measured is the size of
+   the hazard: five of the nine worlds would have arrived carrying a different cache
+   key — the station at `d9 p233 s3` against the rig's `d5 p12 s2`, 19x the live
+   point-light count every shader is built for.
 5. **OPEN — measure production.** The diagnosed cause was already fixed, so the
    remaining gap should be measured before more is spent on it. Production is
    cookie-gated, so this needs either an authenticated session or a local

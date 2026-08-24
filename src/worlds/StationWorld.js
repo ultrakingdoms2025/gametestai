@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+/* Lights are born HIDDEN: one frame with a world's own lights live re-links
+ * every program on screen. gfx/WorldLight.js has the whole of it. */
+import { pointLight, spotLight, dirLight } from '../gfx/WorldLight.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { World } from './World.js';
 // The station frames each gateway with its own iris and rings, so it needs the
@@ -5596,7 +5599,7 @@ export class StationWorld extends World {
         D.at('panelDark', boxGeo(0.5, 0.4, 2.6, 1.4), ax, 8.5, az - Math.sign(ax) * 0);
         D.at('emWhite', boxGeo(0.42, 0.16, 2.2, 1), ax, 8.26, az);
         this._contact(ax, az, 3.2);
-        const l = new THREE.PointLight(0xbfe0ff, 1150, 58, 2);
+        const l = pointLight(0xbfe0ff, 1150, 58, 2);
         l.position.set(ax, 8.0, az);
         l.castShadow = false;
         g.add(l);
@@ -6259,12 +6262,12 @@ export class StationWorld extends World {
     // 9 m gets the near field off the deck, and 210 cd at 4.5 m of throw is a
     // practical rather than a flash unit.
     const lampAt = W(0, 0.5);
-    const lamp = new THREE.PointLight(s.accent, 210, 32, 2);
+    const lamp = pointLight(s.accent, 210, 32, 2);
     lamp.position.set(lampAt.x, 9.0, lampAt.z);
     lamp.castShadow = false;
     g.add(lamp);
     const spillAt = W(0, -9);
-    const spill = new THREE.PointLight(s.accent, 60, 20, 2);
+    const spill = pointLight(s.accent, 60, 20, 2);
     spill.position.set(spillAt.x, 1.6, spillAt.z);
     spill.castShadow = false;
     g.add(spill);
@@ -7109,7 +7112,7 @@ export class StationWorld extends World {
       // throws: at 1.6 m an inverse-square light needs about a seventh of the
       // energy or it clips the cladding to white.
       for (const rl of [96, 127, 158]) {
-        const l = new THREE.PointLight(0xffae66, 190, 26, 2);
+        const l = pointLight(0xffae66, 190, 26, 2);
         l.position.set(rl, 4.3, zW + side * 2.2);
         l.castShadow = false;
         g.add(l);
@@ -7320,7 +7323,7 @@ export class StationWorld extends World {
 
     B.flush(g, M, 'hangar', { cast: true, recv: true });
 
-    const bayLight = new THREE.PointLight(0xbfe4ff, 2600, 90, 2);
+    const bayLight = pointLight(0xbfe4ff, 2600, 90, 2);
     bayLight.position.set(p.x, 16, p.z);
     g.add(bayLight);
 
@@ -7778,12 +7781,12 @@ export class StationWorld extends World {
     beacon.position.set(p.x, H + 14.4, p.z);
     g.add(beacon);
     this._anim.beacons.push(beacon);
-    const beaconLight = new THREE.PointLight(0xff4b45, 1400, 70, 2);
+    const beaconLight = pointLight(0xff4b45, 1400, 70, 2);
     beaconLight.position.copy(beacon.position);
     g.add(beaconLight);
     this._anim.beaconLights.push(beaconLight);
 
-    const towerLight = new THREE.PointLight(0x9fe0ff, 1600, 60, 2);
+    const towerLight = pointLight(0x9fe0ff, 1600, 60, 2);
     towerLight.position.set(p.x, H + 1, p.z);
     g.add(towerLight);
 
@@ -7910,7 +7913,7 @@ export class StationWorld extends World {
 
     B.flush(g, M, 'cargo', { cast: true, recv: true });
 
-    const yardLight = new THREE.PointLight(0xffc98a, 2200, 80, 2);
+    const yardLight = pointLight(0xffc98a, 2200, 80, 2);
     yardLight.position.set(gp.x, legH, gp.z);
     g.add(yardLight);
 
@@ -9892,7 +9895,7 @@ export class StationWorld extends World {
     this.group.add(g);
 
     const add = (color, intensity, dist, x, y, z) => {
-      const l = new THREE.PointLight(color, intensity, dist, 2);
+      const l = pointLight(color, intensity, dist, 2);
       l.position.set(x, y, z);
       l.castShadow = false;
       g.add(l);
@@ -9984,7 +9987,7 @@ export class StationWorld extends World {
      * means. Exposure comes back down to compensate.
      */
     const KEY_DIR = new THREE.Vector3(0.45, 0.62, 0.64).normalize();
-    const key = new THREE.DirectionalLight(0xd7e7ff, 5.4);
+    const key = dirLight(0xd7e7ff, 5.4);
     key.position.copy(KEY_DIR).multiplyScalar(190);
     key.target.position.set(0, 0.5, 0);
     key.castShadow = true;
@@ -10020,7 +10023,7 @@ export class StationWorld extends World {
     // Monument accent. This used to be the shadow caster; it is now a pure
     // shaping light on the spire and the dais nosings, which is all a 0.5
     // half-angle cone at 40 m was ever actually doing.
-    const accent = new THREE.SpotLight(0xdcefff, 3400, 110, 0.5, 0.55, 2);
+    const accent = spotLight(0xdcefff, 3400, 110, 0.5, 0.55, 2);
     accent.position.set(-14, 40, 26);
     accent.target.position.set(2, 1, -4);
     accent.castShadow = false;
@@ -10033,7 +10036,7 @@ export class StationWorld extends World {
     // unit the key has to out-shout before a shadow becomes visible.
     // 0.34 was measurably doing nothing for figure separation against a key of
     // 5.4; a crowd photographed as flat dark posts partly because of it.
-    const rim = new THREE.DirectionalLight(0x8fc7ff, 0.52);
+    const rim = dirLight(0x8fc7ff, 0.52);
     rim.position.set(-140, 60, -90);
     rim.target.position.set(20, 0, 20);
     rim.castShadow = false;
@@ -10042,7 +10045,7 @@ export class StationWorld extends World {
 
     // A low warm counter-fill from the plaza's -Z side, kept just strong enough
     // that a bench leg facing away from the key is dark rather than black.
-    const counter = new THREE.DirectionalLight(0xffbd8a, 0.16);
+    const counter = dirLight(0xffbd8a, 0.16);
     counter.position.set(90, 26, 120);
     counter.target.position.set(-10, 2, -20);
     counter.castShadow = false;
@@ -10061,7 +10064,7 @@ export class StationWorld extends World {
      * ceiling. Aimed straight up so it grazes nothing at deck level and cannot
      * flatten the key's shadows.
      */
-    const bounce = new THREE.DirectionalLight(0x8aa5c4, 0.62);
+    const bounce = dirLight(0x8aa5c4, 0.62);
     bounce.position.set(0, 0, 0);
     bounce.target.position.set(0, CEIL_Y, 0);
     bounce.castShadow = false;

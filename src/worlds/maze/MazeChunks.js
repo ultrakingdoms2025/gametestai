@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+/* Lights are born HIDDEN: one frame with a world's own lights live re-links
+ * every program on screen. gfx/WorldLight.js has the whole of it. */
+import { pointLight } from '../../gfx/WorldLight.js';
 import { MAZE, DIR, districtCoords, districtAtWorld, neighbourhoodKeys } from './MazeTopology.js';
 import { districtColliders } from './MazeColliders.js';
 import {
@@ -401,11 +404,11 @@ export class MazeChunks {
     const flames = [];
     for (const cd of candles) {
       if (!cd.lit) continue;
-      /* Hidden on creation, exactly like the district lantern - the rig would
+      /* Hidden on creation, exactly like the district lantern: the rig would
        * hide it anyway but not until its next walk, and one visible frame is
-       * one frame that can compile. */
-      const f = new THREE.PointLight(CANDLE_COLOUR, CANDLE_INTENSITY, CANDLE_RANGE);
-      f.visible = false;
+       * one frame that can compile. `pointLight` is what makes that true here
+       * and at every other light in the game - see gfx/WorldLight.js. */
+      const f = pointLight(CANDLE_COLOUR, CANDLE_INTENSITY, CANDLE_RANGE);
       /* IN the flame, not in the wax.
        *
        * `cd.y` is the candle's centre and the prop is 0.52 m tall, so +0.18
@@ -424,8 +427,7 @@ export class MazeChunks {
     const w0 = districtCoords(key);
     const cx = (w0.dx * MAZE.DISTRICT + MAZE.DISTRICT / 2) * MAZE.CELL;
     const cz = (w0.dz * MAZE.DISTRICT + MAZE.DISTRICT / 2) * MAZE.CELL;
-    const lantern = new THREE.PointLight(LANTERN_COLOUR, LANTERN_INTENSITY, LANTERN_RANGE);
-    lantern.visible = false;
+    const lantern = pointLight(LANTERN_COLOUR, LANTERN_INTENSITY, LANTERN_RANGE);
     lantern.position.set(cx, w0.level * MAZE.LEVEL_HEIGHT + MAZE.HEDGE_HEIGHT * 0.8, cz);
     this.group.add(lantern);
 

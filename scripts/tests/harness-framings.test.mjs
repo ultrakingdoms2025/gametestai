@@ -62,6 +62,48 @@ const { VIEWS, frameCoverage } = await import('../../src/dev/Harness.js');
 /** How much further than its declared subject a framing's first hit may be. */
 const SLACK = 1.7;
 
+/**
+ * The least of its declared subject distance a framing's first hit may be.
+ *
+ * ── "HITS SOMETHING" IS NOT "FRAMES ITS SUBJECT", THIRD OCCURRENCE ────────
+ * The `subject` assertion below only ever asked whether the first surface is
+ * TOO FAR. A framing pressed against whatever is in front of it meets a
+ * surface immediately, and that reads as a very close subject and passes. Two
+ * live framings were doing exactly that, and both had passed this file for as
+ * long as it has existed:
+ *
+ *   cinder/rimhold      3.0 m against subject 55  ( 5.4%)  70.8 deg down
+ *   dock/signal-post    3.4 m against subject 70  ( 4.8%)   yard at 87.25 m
+ *
+ * `rimhold` is the instructive one. It is `groundRelative`, so its camera sat
+ * on 126.59 m of ground - and its look point was at y = 3 ABSOLUTE, which from
+ * up there is a 70.8-degree dive into the ash at its own feet. A ground-
+ * relative camera with an absolute look point aims at the planet's origin
+ * plane from whatever height the terrain happens to be.
+ *
+ * ── THE THRESHOLD IS FROM THE DATA, AND THE GAP IS WIDE ──────────────────
+ * Every declaring framing in dock, cinder and sports, by hit/subject, worst
+ * first:
+ *
+ *   signal-post 4.8%   rimhold 5.4%   |   pad-ashfall 18.3%   kestrel 20.7%
+ *   pike 23.7%   bastion-ribs 27.9%   office-door 33.8%   ... up to 155.0%
+ *
+ * The two broken ones are at 4.8% and 5.4%; the nearest legitimate framing is
+ * at 18.3%. That is a factor of 3.4 of clear air, so 12% sits in the middle of
+ * a real gap rather than being fitted to the answer.
+ *
+ * ── AND THIS WAS REFUSED ONCE, WRONGLY ───────────────────────────────────
+ * An earlier pass on this file measured the same ratios and refused a floor,
+ * on the grounds that they run from 0.05 to 1.55 with no separation. That was
+ * reading the wrong question: it lumped this together with "is there something
+ * legitimately in the near field", where there is indeed no threshold and
+ * `containsPoint` is the right instrument. The question a floor answers is
+ * narrower - is the first surface a plausible fraction of the DECLARED
+ * subject - and on that question the gap above was always there. `art-planets`
+ * was right and the earlier refusal was wrong.
+ */
+const NEAR_FLOOR = 0.12;
+
 /** `Harness._vantage` puts the player's feet this far under the camera. */
 const EYE_HEIGHT = 1.62;
 
@@ -253,6 +295,13 @@ for (const worldId of ['dock', 'cinder', 'sports', 'citadel']) {
         bad.push(`${x.name}: nothing solid within ${(x.v.subject * SLACK).toFixed(0)} m down its own view axis`);
       } else if (x.hit > x.v.subject * SLACK) {
         bad.push(`${x.name}: first surface at ${x.hit.toFixed(1)} m against a declared subject of ${x.v.subject} m`);
+      } else if (x.hit < x.v.subject * NEAR_FLOOR) {
+        /* The other end of the same assertion. See NEAR_FLOOR. */
+        bad.push(
+          `${x.name}: first surface at ${x.hit.toFixed(1)} m is only `
+          + `${((x.hit / x.v.subject) * 100).toFixed(1)}% of its declared ${x.v.subject} m subject - `
+          + 'this framing is pressed against something, and what it photographs is that'
+        );
       }
     }
     assert.deepEqual(bad, [],

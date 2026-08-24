@@ -535,7 +535,13 @@ const VIEWS = {
     { name: 'gantry-port', pos: [-84.8, 9.6, 24], look: [-84.8, 8.6, -70], fov: 78, subject: 120 },
     { name: 'gantry-crossing', pos: [0, 9.6, 12], look: [0, 4, -70], fov: 82, subject: 120 },
     { name: 'crane-cab', pos: [-69, 16.8, -24], look: [10, 5, -40], fov: 84, aerial: true, subject: 110 },
-    { name: 'signal-post', pos: [26, 12.6, -97], look: [0, 6, -60], fov: 80, aerial: true, subject: 70 },
+    /* RAISED 0.8 m, AND THAT IS THE WHOLE EDIT. At y 12.6 this framing's centre
+     * ray met a narrow piece of yard structure at 3.36 m - 4.8% of its declared
+     * 70 m subject - and the yard it exists to show sits at 87.25 m behind it.
+     * Measured by stepping the ray origin past the blocker. Every distance test
+     * passed it, because the ray does meet something. At 13.4 m the same camera,
+     * same plan position, same look point, meets the yard itself at 82.98 m. */
+    { name: 'signal-post', pos: [26, 13.4, -97], look: [0, 6, -60], fov: 80, aerial: true, subject: 83 },
     { name: 'yard-wide', pos: [62, 19, 44], look: [-16, 6, -64], fov: 84, aerial: true, subject: 150 },
     /* The mouth and the piers: the three framings that answer the brief -
      * "a hangar bay with space piers stretching from the hangar into space, at
@@ -609,7 +615,21 @@ const VIEWS = {
      * out here is a framing pointed at the ground in front of the camera. */
     { name: 'caldera', pos: [150, 3.0, 120], look: [0, 128, 0], fov: 78, groundRelative: true, subject: 220 },
     { name: 'lava-shore', pos: [-52, 3.0, -46], look: [-52, 58, -96], fov: 76, groundRelative: true, subject: 70 },
-    { name: 'rimhold', pos: [9.4, 3.0, -142], look: [9.4, 3, -186], fov: 76, groundRelative: true, subject: 55 },
+    /* THIS FRAMING PHOTOGRAPHED THE ASH AT ITS OWN FEET.
+     *
+     * `groundRelative` put the camera on 126.59 m of ground and the look point
+     * was at y = 3 ABSOLUTE, so the view axis pitched 70.8 degrees DOWN and met
+     * the ground 2.96 m away - 5.4% of a declared 55 m subject. It passed every
+     * distance assertion in `harness-framings.test.mjs` for the same reason
+     * `signal-post` did: the ray meets something.
+     *
+     * Replacement measured by `art-planets` and re-measured here against the
+     * built world: 48.73 m against a 49 m subject, 25.6 degrees down. The look
+     * point is now above the camera's own ground rather than at absolute zero,
+     * which is the actual error - a `groundRelative` camera with an absolute
+     * look point aims at the planet's origin plane from whatever height the
+     * terrain happens to be. */
+    { name: 'rimhold', pos: [9.4, 3.0, -142], look: [9.4, 108.5, -186], fov: 76, groundRelative: true, subject: 49 },
     { name: 'aerial', pos: [180, 190, 260], look: [-60, 40, -80], fov: 84, aerial: true, subject: 500 },
   ],
   // Entrance forecourt centred at (1260, -10); maze grid runs from origin to 2394 m

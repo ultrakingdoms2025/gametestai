@@ -6,7 +6,7 @@ import { SPACE_BODIES } from '../../src/worlds/space/Bodies.js';
 import { portalAperture, PORTAL_ENTRY_RADIUS } from '../../src/systems/Portals.js';
 
 domHarness();
-const { VIEWS, frameCoverage } = await import('../../src/dev/Harness.js');
+const { VIEWS, frameCoverage, ndcOf } = await import('../../src/dev/Harness.js');
 
 /**
  * DOES EVERY HARNESS FRAMING LOOK AT ANYTHING?
@@ -221,7 +221,60 @@ function table(rows) {
  * the player's spawn, which is a defect in `CitadelWorld`, not in the framing
  * - and it is recorded on the framing itself in `src/dev/Harness.js`.
  */
-for (const worldId of ['dock', 'cinder', 'sports', 'citadel']) {
+/* ═══════════════════════════════════════════════════════════════════════════
+ *  "THE FIRST HIT IS NEAR THE POINT THE FRAMING NAMES" - MEASURED, REFUSED
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * `art-race` withdrew a seventh framing rather than ship it. `aurora-loop` met
+ * something at 25.21 m against a declared subject of 28 - 90%, comfortably
+ * inside the near floor below, and it would pass this file today - but the hit
+ * point was 9.0 m from the point the framing names. There is a committed
+ * photograph of exactly that failure mode (`after-post-face.png`: a framing
+ * computed to look into a marshal post's observation slot, photographing a
+ * conifer standing in front of it), so the question is a fair one: should a
+ * framing have to meet its subject NEAR the point it aims at?
+ *
+ * It was measured across every declaring framing in every world this file can
+ * build - dock, cinder, sports, citadel and race, 56 rows - as
+ * |first hit - distance to the look point|. To flag `aurora-loop` the ceiling
+ * would have to sit under 9.0 m. Rows already ABOVE 9.0 m, worst first:
+ *
+ *   citadel/gate-approach  136.66 m   cinder/aerial          131.05 m
+ *   cinder/ashfall-outward  73.72     dock/gantry-crossing    58.71
+ *   cinder/pad-ashfall      37.57     dock/signal-post        37.15
+ *   dock/gantry-port        34.00     dock/crane-cab          32.98
+ *   citadel/minaret-bridge  27.92     cinder/lava-shore       25.91
+ *   dock/yard-wide          23.91     dock/mouth-from-space   22.82
+ *   citadel/gate-spawn      20.64     cinder/colonnade        18.63
+ *   dock/pier-one           15.33     dock/pike               14.75
+ *   citadel/ward-centre     14.14     dock/kestrel            13.51
+ *   sports/bowl-interior    12.57     sports/skatepark-wide   10.36
+ *   dock/bastion-ribs        9.59
+ *
+ * TWENTY-ONE correct framings, to catch one bad one. And they are correct for
+ * a reason the check cannot see: `gate-approach` aims at the gate arch 19 m
+ * away and looks THROUGH it at the citadel 155.7 m beyond, which is the shot;
+ * `signal-post` was deliberately raised so its ray would clear a near blocker
+ * and reach the yard at 83 m past a look point at 45.8 m; `cinder/aerial`
+ * aims down a bearing at a planet's far relief. Naming a near aim point and
+ * photographing what is behind it is not a defect, it is how you frame through
+ * something.
+ *
+ * The relative form separates no better. |hit - named| / named on the same 56
+ * rows runs from 0% to 718%, with `dock/pike-in` - a correct cabin interior -
+ * at 147% and `citadel/minaret-bridge` at 88%.
+ *
+ * So no threshold is adopted, and this is the second time that answer has been
+ * reached on this file's central question by measurement rather than by taste
+ * (see the `gate-spawn` obstruction note below). What DOES separate, with no
+ * threshold at all, is asking the world what the framing is supposed to
+ * contain: `a hull framing puts the hull across the frame` does it for the
+ * yard's ships off `YardPlan.BERTHS`, and `the start-grid framing has the
+ * start grid in it` does it for the circuit off `world.startGrid`. That is the
+ * instrument this question actually wanted, and it is derived rather than
+ * chosen.
+ */
+for (const worldId of ['dock', 'cinder', 'sports', 'citadel', 'race']) {
   test(`every ${worldId} framing looks at something inside its own subject distance`, async () => {
     const rows = await probe(worldId);
     const t = table(rows);
@@ -395,6 +448,61 @@ test('a hull framing puts the hull across the frame, not a corner of it', async 
   assert.deepEqual(bad, [], `${bad.join('\n  ')}\n\n  ${rows.join('\n  ')}`);
 });
 
+test('the start-grid framing has the start grid in it', async () => {
+  /* ═══════════════════════════════════════════════════════════════════════
+   *  THE CHECK THAT SEPARATES WHERE NO THRESHOLD DID
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * `start-grid` was handed up at (30, 3.2, 224) looking at (30, 1.6, 150)
+   * with 40 m of clear air declared. Its centre ray IS clear for 45.75 m, so
+   * every distance assertion above passed it. Two things were wrong with it
+   * and neither is a distance:
+   *
+   *   34.4% of the frame was a 1.50 x 9.60 x 1.50 lighting mast at (31.07,
+   *         4.83, 223.98) - 1.07 m from the camera in plan, first met at
+   *         0.40 m - with 17.0% of the frame inside HALF A METRE
+   *   18 of the world's 20 published grid slots were out of shot, because the
+   *         camera stood 21 m the wrong side of the start line and looked
+   *         ACROSS the circuit rather than down the grid
+   *
+   * The near-field half of that has no threshold: `citadel/souk-alley` puts
+   * 37.8% of its frame inside 3 m and is correct, because it is an alley. The
+   * grid half needs none - `RaceWorld` PUBLISHES `startGrid`, so the question
+   * "is the start grid in the start-grid framing" is answerable off the
+   * world's own contract, exactly as `a hull framing puts the hull across the
+   * frame` answers it off `YardPlan.BERTHS`.
+   *
+   * Twenty slots and all twenty are asserted, so this cannot be satisfied by
+   * catching a corner of the grid, and it cannot be made green by deleting the
+   * grid: the count is asserted first. */
+  const r = await rig();
+  if (!r.wm.isBuilt?.('race')) await r.wm.build('race');
+  await goto(r, 'race');
+  const grid = r.wm.active?.startGrid ?? [];
+  assert.ok(grid.length >= 20, `RaceWorld published ${grid.length} grid slots; a circuit has 20`);
+
+  const v = (VIEWS.race ?? []).find((x) => x.name === 'start-grid');
+  assert.ok(v, 'no "start-grid" framing in VIEWS.race');
+
+  /* A slot is a car's worth of tarmac, so the point checked is the car's
+   * middle rather than the paint - a framing that clipped every roof off
+   * would otherwise read as fine. */
+  const pts = grid.map((g) => [g.x, g.y + 0.6, g.z]);
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    /* `ndcOf` rather than arithmetic written here: a checker that re-derives
+     * the projection is a second copy of it that can be wrong on its own, and
+     * this is the same function `Harness.view` frames through. */
+    const [x, y, z] = ndcOf(pts[i], v.pos, v.look, v.fov);
+    if (!(z > 0 && Math.abs(x) <= 1 && Math.abs(y) <= 1)) {
+      out.push(`slot ${i} at (${pts[i][0].toFixed(1)}, ${pts[i][2].toFixed(1)}) is `
+        + (z <= 0 ? 'BEHIND the camera' : `outside the frame at ndc (${x.toFixed(2)}, ${y.toFixed(2)})`));
+    }
+  }
+  assert.deepEqual(out, [],
+    `${out.length} of ${pts.length} start-grid slots are not in the "start-grid" framing:\n  ${out.join('\n  ')}`);
+});
+
 test('every space bearing framing actually has its body in shot', async () => {
   /* The bearing rows are aimed at planets 60-640 km away that `Backdrop` draws
    * as camera-relative proxies, so the only thing that can be checked is the
@@ -476,7 +584,7 @@ test('every framing declares what it is looking at, and aims somewhere else', ()
    * is a zero vector and the ray goes nowhere. Both are caught here rather than
    * silently excused there. */
   const bad = [];
-  for (const worldId of ['dock', 'space', 'cinder', 'sports', 'citadel']) {
+  for (const worldId of ['dock', 'space', 'cinder', 'sports', 'citadel', 'race']) {
     for (const v of VIEWS[worldId] ?? []) {
       if (v.computed) continue;
       const declared = v.clear !== undefined || v.subject !== undefined;

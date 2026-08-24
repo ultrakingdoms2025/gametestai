@@ -100,7 +100,7 @@ const FRAME_TARGET = 0.88;
  * @returns {[number, number, number]} x, y, and camera-space depth (negative
  *   means the point is behind the camera).
  */
-function ndcOf(p, eye, at, fovDeg, aspect = FRAME_ASPECT) {
+export function ndcOf(p, eye, at, fovDeg, aspect = FRAME_ASPECT) {
   let fx = at[0] - eye[0], fy = at[1] - eye[1], fz = at[2] - eye[2];
   const fl = Math.hypot(fx, fy, fz) || 1;
   fx /= fl; fy /= fl; fz /= fl;

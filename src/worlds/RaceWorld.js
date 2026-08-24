@@ -5,6 +5,7 @@ import { sweep, blob } from '../gfx/Organic.js';
 import { World } from './World.js';
 import { DistanceLod, SURFACE } from './lod/DistanceLod.js';
 import { Collider } from '../physics/Physics.js';
+import { settlePoints, discFor } from '../minigames/VenueGround.js';
 import {
   RaceCourse, Lattice, slabMatrix, mulberry32,
   clamp, clamp01, lerp, smoothstep, TAU,
@@ -534,6 +535,8 @@ export class RaceWorld extends World {
      * take you round it, or the ramp is scenery a car passes through. */
     /** @type {Array<object>} */
     this.loops = [];
+    /** Contests on foot; see `_publishVenues`. @type {Array<object>} */
+    this.minigameVenues = [];
     /* Difficulty changes the circuit, not just the opposition.
      *
      * A world is generated once and never rebuilt, so for a while the three
@@ -682,10 +685,170 @@ export class RaceWorld extends World {
     await report(0.97, 'Painting the grid');
     this._finishWorld();
 
+    /* After every collider this world will ever have. Each venue point is
+     * settled onto the surface the built world really has, and the road slabs,
+     * the barriers and the scenery are all part of that surface. See
+     * `_publishVenues`. */
+    this._publishVenues();
+
     this.group.matrixAutoUpdate = false;
     this.group.updateMatrixWorld(true);
     this.group.visible = this.active;
     await report(1, 'Circuits ready');
+  }
+
+  /* ================================================================== */
+  /* Contests on foot                                                    */
+  /* ================================================================== */
+
+  /**
+   * Vellum Ridge's two minigame venues - and the first this world has ever had.
+   *
+   * ── The gap these fill ──────────────────────────────────────────────────
+   *
+   * A world with 1,600 m of circuit and no reason at all to get out of the car.
+   * `2026-08-23-mission-architecture.md` §2 gives the estate a job it cannot do
+   * without one: it has no PB ledger, no on-foot objective and nothing a quest
+   * step can name here except a race. Both venues below are on foot, both are
+   * away from the racing line, and both are `minigame` targets the quest
+   * vocabulary will offer.
+   *
+   * ── THE CATALOGUE IS A SOURCE LITERAL ───────────────────────────────────
+   *
+   * `scripts/quest-vocab.mjs` scrapes venue ids with
+   * `/\.minigameVenues\s*=\s*\[/` and walks the object literals inside it, so
+   * identity is authored here and GEOMETRY is filled in afterwards from the
+   * assembled world. `CitadelWorld._publishVenues` records what happens when
+   * the descriptors are pushed one at a time instead: the scrape sees none, and
+   * every quest step naming one is rejected as an invented target.
+   *
+   * ── The points were CHOSEN by flooding, not by looking at a map ─────────
+   *
+   * Every point below settles onto the real surface (`settlePoints`) and every
+   * one of them was checked by flooding a 4 m walk lattice out of the depot
+   * across the whole estate. That gate is not decoration: the first three drops
+   * chosen off a height map read as perfect flat ground and TWO OF THEM WERE
+   * UNREACHABLE ON FOOT - (70, 132) and (0, 118) sit behind the Vellum road's
+   * barrier line, which a height probe cannot see and a flood can. That is this
+   * repo's signature defect - built, not reachable - caught before it shipped
+   * rather than by a player. `race-minigames.test.mjs` runs the same flood.
+   *
+   * ── The two venues are 644 m apart, and that is structural ──────────────
+   *
+   * `MinigameManager._pollNear` picks, among the venues containing the player,
+   * the one whose CENTRE is nearest, so two overlapping discs shadow each other
+   * and the loser can never be started. The round sits in the Vellum paddock
+   * and the splice sits in Cinder Gorge's infield, 644 m away with 90 m and
+   * 74 m discs: they cannot both contain anybody.
+   */
+  _publishVenues() {
+    this.minigameVenues = [
+      {
+        id: 'vellum_paddock_round',
+        kind: 'courier',
+        label: 'The Paddock Parts Round',
+        reward: 12,
+        note: 'Three parts crates from the paddock stores out to the marshal posts, one at a time. The only reason on this estate to be out of a car.',
+      },
+      {
+        id: 'gorge_relay_splice',
+        kind: 'hack',
+        label: 'The Gorge Relay Splice',
+        reward: 10,
+        note: "Six timing relays across Cinder Gorge's infield, spliced in turn against a trace clock.",
+      },
+    ];
+
+    /* The probe's envelope: from well above the highest landform down through
+     * the deepest cut. Race world heights run -1 to +35. */
+    const GROUND = { from: 220, depth: 420, lift: 0.05 };
+
+    const round = settlePoints(this.physics, [
+      { id: 'depot', label: 'the paddock stores', x: 0, z: 158 },
+      { id: 'post-west', label: 'the west marshal post', x: -75, z: 140 },
+      { id: 'post-north', label: 'the north marshal post', x: -80, z: 210 },
+      { id: 'post-east', label: 'the east marshal post', x: 60, z: 170 },
+    ], GROUND);
+
+    const relays = settlePoints(this.physics, [
+      { id: 'relay-1', label: 'Gorge Relay 1', x: -450, z: -360 },
+      { id: 'relay-2', label: 'Gorge Relay 2', x: -420, z: -330 },
+      { id: 'relay-3', label: 'Gorge Relay 3', x: -390, z: -300 },
+      { id: 'relay-4', label: 'Gorge Relay 4', x: -345, z: -315 },
+      { id: 'relay-5', label: 'Gorge Relay 5', x: -330, z: -360 },
+      { id: 'relay-6', label: 'Gorge Relay 6', x: -375, z: -390 },
+    ], GROUND);
+
+    this._fillVenue('vellum_paddock_round', round.points, {
+      minPoints: 3,
+      shape: 'round',
+      /* The three legs are 77, 95 and 61 m, which are 16.8, 20.7 and 13.3 s at
+       * `CONFIG.player.walkSpeed`; 0.28 s/m plus 8 s of grace gives 30, 35 and
+       * 25 - between 1.68x and 1.89x the straight line. Wider than the station's
+       * band because this ground ROLLS: the paddock runs from -0.2 to +2.4 m
+       * over a leg and the straight line is not the walk. A mount makes it easy,
+       * which is correct in a world about going fast. */
+      config: { dropR: 4.0, band: 3.5, pace: 0.28, grace: 8, seconds: 220 },
+      band: 6,
+    });
+    this._fillVenue('gorge_relay_splice', relays.points, {
+      minPoints: 4,
+      shape: 'nodes',
+      /* The chain is 42, 42, 47, 47 and 54 m - 234 m, or 50.8 s walked - plus
+       * six 3.5 s holds, so a walker needs 71.8 s. 40 s of trace and five 10 s
+       * bonuses is 90, leaving 18 s of slack; at half pace the same run needs
+       * 122.6 s and cannot be done. `race-minigames.test.mjs` drives both ends
+       * against the real ground rather than trusting this arithmetic. */
+      config: { holdR: 3.5, band: 3.0, holdS: 3.5, decay: 1.8, bonus: 10, seconds: 40 },
+      band: 6,
+    });
+    this._pruneVenues();
+  }
+
+  /**
+   * Give one catalogued venue the geometry of points read out of the world.
+   *
+   * @param {string} id one of the ids authored in `_publishVenues`
+   * @param {Array<{id:string,label:string,x:number,y:number,z:number}>} points
+   * @param {{minPoints:number, config:object, shape:'nodes'|'round', band?:number}} spec
+   * @returns {object|null} the filled venue, or null when too few points
+   *   survived - which `_pruneVenues` then deletes
+   */
+  _fillVenue(id, points, spec) {
+    const v = this.minigameVenues.find((e) => e.id === id);
+    if (!v) {
+      console.warn(`[RaceWorld] no venue "${id}" in the catalogue`);
+      return null;
+    }
+    if (!Array.isArray(points) || points.length < spec.minPoints) {
+      console.warn(`[RaceWorld] venue "${id}": ${points?.length ?? 0} usable points of ${spec.minPoints} needed`);
+      return null;
+    }
+    /* The disc has to hold the WHOLE route or `MinigameManager` abandons every
+     * run that reaches the far end of it, nine seconds after it gets there -
+     * `citadel_skyline`'s recorded lesson. So it is measured from the points. */
+    const disc = discFor(points, { margin: 12, band: spec.band ?? 6 });
+    if (!disc) return null;
+    v.centre = disc.centre;
+    v.radius = disc.radius;
+    v.yTolerance = disc.yTolerance;
+    if (spec.shape === 'nodes') {
+      v.config = { ...spec.config, nodes: points };
+    } else {
+      const [depot, ...drops] = points;
+      v.config = { ...spec.config, depot, depotLabel: depot.label, drops };
+    }
+    return v;
+  }
+
+  /** Delete every catalogued venue no route ever filled. */
+  _pruneVenues() {
+    for (let i = this.minigameVenues.length - 1; i >= 0; i--) {
+      const v = this.minigameVenues[i];
+      if (v.config && Number.isFinite(v.radius) && v.radius > 0) continue;
+      console.warn(`[RaceWorld] venue "${v.id}" resolved no geometry and was dropped`);
+      this.minigameVenues.splice(i, 1);
+    }
   }
 
   /* ================================================================== */
@@ -3384,6 +3547,7 @@ export class RaceWorld extends World {
     }
     this.circuits.length = 0;
     this.tracks.length = 0;
+    this.minigameVenues.length = 0;
     // These alias a circuit's arrays, which have just been emptied; drop the
     // references too so a stale contract cannot be read off a disposed world.
     this.trackPath = [];

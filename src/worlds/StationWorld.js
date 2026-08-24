@@ -35,6 +35,7 @@ import { buildTower, drawFloorSign, railRect } from './station/Tower.js';
 import { buildControlTower } from './station/ControlTower.js';
 import { DistanceLod } from './lod/DistanceLod.js';
 import { loadHeroAssets } from '../npc/HeroAssets.js';
+import { settlePoints, discFor } from '../minigames/VenueGround.js';
 
 /**
  * AETHER NEXUS - "Aether Nexus Station", the entry world.
@@ -1769,6 +1770,8 @@ export class StationWorld extends World {
      * step 0.77, well before the pods at 0.905, so the first `push` landed on
      * `undefined` and took the whole world build down with it. */
     this.enterables = [];
+    /** Contest venues on the hub deck; see `_publishVenues`. */
+    this.minigameVenues = [];
     /** Animated handles resolved during build; update() only touches these. */
     this._anim = {
       holoRings: [],
@@ -1939,6 +1942,12 @@ export class StationWorld extends World {
     this._hubCaches();
     this._fillSpawns();
     this._fillEnvironment();
+    /* Strictly last, and strictly after `_solidifyProps`: every venue point is
+     * settled onto the floor the built world really has, and the 2,226 solid
+     * set-dressing props are part of that floor. Run before them and half the
+     * hub deck's crates would be invisible to the probe; run after and a node
+     * that lands on one is caught and dropped. See `_publishVenues`. */
+    this._publishVenues();
 
     // Scene membership belongs to WorldManager - it adds this group in
     // `_activate` and removes it on the way out. Adding it here parked a world
@@ -10509,6 +10518,210 @@ export class StationWorld extends World {
     );
   }
 
+  /* ---------------------------------------------------------------- */
+  /* Contests on the hub deck                                          */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * The station's two minigame venues - and the first it has ever had.
+   *
+   * ── Why the station had none, and why that was the wrong shape ──────────
+   *
+   * Twelve venues shipped across six kinds, and the hub - the world every
+   * player starts in, the one place they cannot avoid - carried zero. Sports
+   * has four, the citadel seven, the yard one. A player's first hour is spent
+   * in the world with nothing to enter.
+   *
+   * ── THE CATALOGUE IS A SOURCE LITERAL, AND THAT IS LOAD-BEARING ─────────
+   *
+   * `scripts/quest-vocab.mjs` scrapes venue ids out of SOURCE with
+   * `/\.minigameVenues\s*=\s*\[/` and walks the object literals inside the
+   * brackets. `CitadelWorld._publishVenues` records what happens when the
+   * descriptors are pushed one at a time from inside a method instead: the
+   * scrape sees NONE, and every quest step naming one of them is rejected as an
+   * invented target. So identity is authored here as a literal and GEOMETRY is
+   * filled in afterwards from the assembled world.
+   *
+   * ── ..and the geometry is DERIVED, never authored ───────────────────────
+   *
+   * Every point below is a bearing and a radius on the hub deck, and its height
+   * is whatever `settlePoints` finds when it asks the built world. A point with
+   * no floor, no headroom, or no walkable neighbours - the top of one of the
+   * deck's 2,226 solid set-dressing props - is DROPPED, and a venue left with
+   * too few points is pruned rather than published. That is the difference
+   * between a venue that exists and a venue that can be played: this repo's
+   * signature defect is content that was built and cannot be reached, and a
+   * relay node settled onto a packing crate at 5.45 m over a 0.08 m deck is
+   * exactly that defect wearing a contest's clothes. Two of the first six
+   * candidates did land on props, which is how the rule got written.
+   *
+   * ── The two venues are on DIFFERENT LEVELS, and that is structural ──────
+   *
+   * `MinigameManager._pollNear` picks, among the venues whose disc contains the
+   * player, the one whose CENTRE is nearest. Two venues laid out concentrically
+   * on the hub deck therefore shadow one another: the first version of this
+   * method put a 42 m ring of masts and a 46 m ring of drops both around the
+   * origin, and measured against `_pollNear`, the round won at every point of
+   * the splice - including the splice's own access mast. The splice could not
+   * have been started at all, and nothing would have said so.
+   *
+   * The fix is not a tie-break; it is a floor. The round runs on the hub deck
+   * at y = 0.1 and the splice runs on the promenade walkway at y = 10.005, and
+   * `_inVenue` tests a HEIGHT BAND as well as a radius. With each venue's band
+   * derived from its own points (`discFor`), the deck venue reaches y = 4.1 and
+   * the promenade venue starts at y = 6.6: they cannot both contain a body, so
+   * `_pollNear` never has to choose. It also makes the splice a place you have
+   * to find the stairs to, which is a better contest than one more ring.
+   *
+   * ── The bearings avoid the gateways, deliberately ───────────────────────
+   *
+   * The six gateway discs stand at r = 54 on the hub floor, on bearings 30, 90,
+   * 150, 210, 270 and 330. `Portals` raises its own prompt within
+   * `activationRange + radius + 1.4` = 5.8 m of one, and
+   * `MinigameManager._keyTaken` stands the venue prompt down while a portal is
+   * in reach - correctly, because E belongs to the door. Every deck point here
+   * sits on an intermediate bearing, and the promenade is ten metres over the
+   * gateway ring's head.
+   */
+  _publishVenues() {
+    this.minigameVenues = [
+      {
+        id: 'station_relay_splice',
+        kind: 'hack',
+        label: 'The Trunk Relay Splice',
+        reward: 12,
+        note: 'Six relay masts around the promenade walkway, spliced in turn against a trace clock. The one contest in the game that asks you to stand still.',
+      },
+      {
+        id: 'station_concourse_round',
+        kind: 'courier',
+        label: 'The Concourse Round',
+        reward: 10,
+        note: 'Three parcels, one at a time, from the freight kiosk out to the rim kiosks and back. Half of every run is the leg home.',
+      },
+    ];
+
+    const D = Math.PI / 180;
+    /** A bearing and a radius, as a plan point. */
+    const at = (id, label, deg, r) => ({
+      id, label, x: Math.cos(deg * D) * r, z: Math.sin(deg * D) * r,
+    });
+    /* Two probe envelopes, and the second is the interesting one.
+     *
+     * DECK starts above the deck and below the dome ribs and reaches the
+     * trench: a probe started at the default 200 m finds the DOME ROOF and
+     * settles every point 40 m in the air, which is precisely the "planet that
+     * was a hologram" failure World 06 recorded.
+     *
+     * PROMENADE has to find the walkway at 10.005 and must NOT be able to reach
+     * the floor at 0.1, or a mast whose bearing missed the deck would settle
+     * quietly onto the concourse ten metres below and the chain would be
+     * unwalkable. From 18 m down 9 m spans 9..18: the walkway is inside it and
+     * the floor is not, so a miss is reported as "no floor" and dropped.
+     *
+     * `lift` is the 5 cm that keeps a settled point off the surface it was
+     * measured against, so an arrival band is measured from a body's feet
+     * rather than from inside the plate. */
+    const DECK = { from: 26, depth: 40, lift: 0.05 };
+    const PROMENADE = { from: 18, depth: 9, lift: 0.05 };
+
+    /* ---- the splice: six masts around the promenade ---- */
+    const masts = settlePoints(this.physics, [0, 60, 120, 180, 240, 300].map((deg, i) =>
+      at(`mast-${i + 1}`, `Relay Mast ${i + 1}`, deg, LOOP_R)), PROMENADE);
+    /* ---- the round: a kiosk inboard, three drops out on the rim ---- */
+    const depot = settlePoints(this.physics, [at('depot', 'the freight kiosk', 0, 18)], DECK);
+    const drops = settlePoints(this.physics, [
+      at('rim-a', 'Rim Kiosk A', 15, 46),
+      at('rim-b', 'Rim Kiosk B', 135, 46),
+      /* 240, not 255. The bearing-255 kiosk was flat, clear, headroom-clean and
+       * NOT WALKABLE TO: the 1.5 m flood out of the freight kiosk stops at the
+       * dressing between them. `station-minigames.test.mjs` found it, which is
+       * the third point this phase's reachability gate has rejected on ground
+       * that every geometric check called perfect. */
+      at('rim-c', 'Rim Kiosk C', 240, 46),
+    ], DECK);
+
+    this._fillVenue('station_relay_splice', masts.points, {
+      minPoints: 4,
+      /* Trace and bonus, sized against the ring the masts actually stand on
+       * rather than chosen. Adjacent masts are 60 degrees apart on a 72 m
+       * walkway, so the walk between them is an ARC of 75.4 m and not the 72 m
+       * chord - 16.4 s at `CONFIG.player.walkSpeed`. A mast therefore costs
+       * 16.4 + 3.5 = 19.9 s and the whole chain costs 103 s walked; 62 s of
+       * trace plus five 12 s bonuses is 122, which leaves a walker 19 s of
+       * slack and somebody at half pace none at all. `station-minigames.test.mjs`
+       * drives both ends against the real geometry rather than trusting this
+       * arithmetic.
+       *
+       * `band: 2.5` is what keeps the splice on the walkway: the deck below is
+       * 10 m down and the dome ribs are well above, so nothing but a body ON
+       * the promenade is ever inside a mast's field. */
+      config: { holdR: 3.2, band: 2.5, holdS: 3.5, decay: 1.8, bonus: 12, seconds: 62 },
+      shape: 'nodes',
+      band: 3.5,
+    });
+    this._fillVenue('station_concourse_round', [...depot.points, ...drops.points], {
+      minPoints: 3,
+      /* `pace` is seconds allowed per metre. The three legs are 29, 60 and 54 m,
+       * which are 6.3, 13.1 and 11.6 s walked; 0.26 s/m plus 6 s of grace gives
+       * 13.5, 21.6 and 19.9 - between 1.7x and 2.1x the straight line. The deck
+       * is busy (2,226 solid props, six gateway plinths and a standing crowd),
+       * so a straight line is not what anybody actually walks and the margin is
+       * that difference rather than generosity. */
+      config: { dropR: 3.4, band: 3.0, pace: 0.26, grace: 6, seconds: 150 },
+      shape: 'round',
+      band: 4,
+    });
+    this._pruneVenues();
+  }
+
+  /**
+   * Give one catalogued venue the geometry of points read out of the world.
+   *
+   * @param {string} id one of the ids authored in `_publishVenues`
+   * @param {Array<{id:string,label:string,x:number,y:number,z:number}>} points
+   * @param {{minPoints:number, config:object, shape:'nodes'|'round', band?:number}} spec
+   * @returns {object|null} the filled venue, or null when too few points
+   *   survived to be one - which `_pruneVenues` then deletes
+   */
+  _fillVenue(id, points, spec) {
+    const v = this.minigameVenues.find((e) => e.id === id);
+    if (!v) {
+      console.warn(`[StationWorld] no venue "${id}" in the catalogue`);
+      return null;
+    }
+    if (!Array.isArray(points) || points.length < spec.minPoints) {
+      console.warn(`[StationWorld] venue "${id}": ${points?.length ?? 0} usable points of ${spec.minPoints} needed`);
+      return null;
+    }
+    /* The disc has to hold the WHOLE route or `MinigameManager` abandons every
+     * run that reaches the far end of it, nine seconds after it gets there.
+     * That is `citadel_skyline`'s recorded lesson, and it is why the disc is
+     * measured from the points rather than authored beside them. */
+    const disc = discFor(points, { margin: 12, band: spec.band ?? 4 });
+    if (!disc) return null;
+    v.centre = disc.centre;
+    v.radius = disc.radius;
+    v.yTolerance = disc.yTolerance;
+    if (spec.shape === 'nodes') {
+      v.config = { ...spec.config, nodes: points };
+    } else {
+      const [depot, ...drops] = points;
+      v.config = { ...spec.config, depot, depotLabel: depot.label, drops };
+    }
+    return v;
+  }
+
+  /** Delete every catalogued venue no route ever filled. */
+  _pruneVenues() {
+    for (let i = this.minigameVenues.length - 1; i >= 0; i--) {
+      const v = this.minigameVenues[i];
+      if (v.config && Number.isFinite(v.radius) && v.radius > 0) continue;
+      console.warn(`[StationWorld] venue "${v.id}" resolved no geometry and was dropped`);
+      this.minigameVenues.splice(i, 1);
+    }
+  }
+
   _fillEnvironment() {
     const env = this.environment;
     env.background = new THREE.Color(0x02030a);
@@ -11084,6 +11297,7 @@ export class StationWorld extends World {
     this._escalators.length = 0;
     this._lod.clear();
     this._roofs.length = 0;
+    this.minigameVenues.length = 0;
     this._keyLight = null;
     this._fillLight = null;
     this._shaftUniforms = null;

@@ -77,6 +77,8 @@ import { createTennisMatch } from './minigames/TennisMatch.js';
 import { createTrackRace } from './minigames/TrackRace.js';
 import { createRooftopTrial } from './minigames/RooftopTrial.js';
 import { createTestFire } from './minigames/TestFire.js';
+import { createDeliveryRun } from './minigames/DeliveryRun.js';
+import { createDroneHack } from './minigames/DroneHack.js';
 import { TennisPose } from './minigames/TennisPose.js';
 import { MinigameUI } from './ui/MinigameUI.js';
 import { QuestBoard } from './ui/QuestBoard.js';
@@ -537,6 +539,23 @@ minigames.registerGame('rooftop', (venue, ctx) =>
  * rival here, only the clock. */
 minigames.registerGame('test_fire', (venue, ctx) =>
   createTestFire(venue, { ...ctx, inventory, worldManager })
+);
+/* Courier rounds and relay splices - Phase 11's two new kinds, and the first
+ * contests the station and Vellum Ridge have ever had.
+ *
+ * Both take `worldManager` for the same reason `test_fire` does and no more
+ * than that: their markers have to parent into the ACTIVE world's group rather
+ * than the scene root, because an object left on the root survives a world
+ * change and hangs in the next world at the same coordinates. Neither needs an
+ * NPC factory (there is no rival - the opposition is a schedule and a trace
+ * clock), neither needs the frame hook (nothing here is animated per frame),
+ * and neither needs the mount authority: a courier on a hoverboard is a faster
+ * courier, which is the point, and a splice is decided by standing still. */
+minigames.registerGame('courier', (venue, ctx) =>
+  createDeliveryRun(venue, { ...ctx, worldManager })
+);
+minigames.registerGame('hack', (venue, ctx) =>
+  createDroneHack(venue, { ...ctx, worldManager })
 );
 const minigameUI = new MinigameUI({ root: uiRoot, bus, input, minigames });
 /* The fourth and fifth late-pose modules, run as one pass. Assigned onto the

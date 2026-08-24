@@ -524,6 +524,95 @@ tables should quote `stats().warm.programs`, not `renderer.info.programs.length`
 at the last framing. The value is already recorded in every report Phase 9's
 harness has written since the `ready()` fix.
 
+### 5.4 The relic halos: the one system no budget table has ever contained
+
+`Relics` parents `relics:glow` to the **scene**, so `worldTriangles()` and the
+material census — both world-group walks — have never counted it, in any of the
+ten Phase 9 tables or in §2 above. `86425d3` widened `--ablate` to the scene, so
+for the first time there is an instrument that can see it: `ablationCheck()`
+reports what the hidden meshes *would be drawing in this frame*.
+
+`--world medieval --ablate relic.glow`, three framings, both trees:
+
+| framing | baseline | main |
+|---|---|---|
+| `hills-vista` | 1 mesh held hidden, **220 triangles removed** | 1 mesh, **220** |
+| `castle-gate` | 1 mesh, **220** | 1 mesh, **220** |
+| `village-square` | 1 mesh, **220** | 1 mesh, **220** |
+
+Identical. The whole relic-halo system draws **220 triangles** — 0.008% of the
+vale's 2.6 M — and the phase did not change it. `orb-hunt` and `fd91ac0` moved
+its fog and its radiance, which is colour, not geometry, and this confirms they
+cost nothing.
+
+It is worth saying what this is not: 220 triangles is not what those halos
+*cost*. They are 4.42 m additive quads with `depthWrite: false` and they are a
+fill-rate system, which is why `orb-hunt` and the radiance cap argued about
+luminance and not about counts. This measurement closes the *budget* question
+for them and nothing else.
+
+---
+
+## 6. The verdict
+
+**No. No regression hid in the noise.**
+
+Nine worlds, 112 framings on each tree, every one taken on a settled frame with
+the boot warm finished and no force-draw in effect. Across the six axes Phase 9
+was merged on:
+
+| axis | worlds where it moved | every move declared? |
+|---|---|---|
+| materials | space (−2), race (−1) | **yes** — both declared, both *reductions* |
+| renderables | space (+1) | **yes** — declared, with four costed alternatives |
+| instanced meshes | space (+1) | **yes** — same declaration |
+| instances | none | — |
+| world lights | none | — |
+| world triangles | station, citadel, sports, space, race (up); dock, maze (down); medieval, cinder unmoved | **yes** — every one matches its branch's published table, framing for framing |
+| shader programs (settled boot) | −3 … +1 across all nine | **yes** — every "unchanged" claim holds |
+
+**There is no undeclared overrun anywhere in the sweep.** Not one axis, in one
+world, in one framing.
+
+And the claim is stronger than "inside the noise", because on five of those six
+axes there *is* no noise: two runs of one tree produce byte-identical materials,
+renderables, instanced meshes, instances, world lights and world triangles in
+every world and every framing (§5.1). A regression on those axes could not have
+hidden; it would have shown as a number.
+
+The two axes that are genuinely noisy — draw calls and the end-of-run program
+count — are noisy on *both* trees by more than the phase moved them (§5.2,
+§5.3), and neither is a property of a world's budget. The settled-boot program
+count, which is a property of it, moved by at most three programs in either
+direction.
+
+### 6.1 What did move, and none of it is a surprise
+
+- **+47,328 triangles on the station** (the authored crowd) — declared and
+  costed by `art-station` at 204 figures × 232 triangles.
+- **+80,428 … +88,468 triangles on the citadel mesa** — declared by
+  `art-citadel`, thirteen framings, thirteen matches.
+- **+23,772 triangles on sports** — declared by `art-sports`, with the
+  `ski-slope` −684 derived from the carry mesh leaving the frustum.
+- **+18,480 triangles, +1 renderable, +1 instanced mesh, −2 materials on
+  space** — the one branch that declared an overrun instead of a zero, with
+  four costed alternatives.
+- **+648 … +2,088 triangles and −1 material on race** — declared; the numbers
+  reproduce its committed reports byte for byte.
+- **−250 triangles on the dock**, **−67,668 … −2,998 on the maze** — two worlds
+  where the phase made the budget *smaller*, both declared.
+- **0 on medieval and on Cinder** — declared as zero, and zero it is.
+
+### 6.2 Two things nobody claimed, both in the game's favour
+
+- **Shader programs went DOWN in six of nine worlds** at the settled boot —
+  dock −3, citadel/race/space −2, medieval and maze −1 to −2 — and are flat or
+  +1 in the other three. `orb-hunt` said in prose that joining the relic halo's
+  cache key to loot's meant *"the two systems cannot split the program cache"*
+  and never put a number on it. These are the numbers.
+- **The relic halo system costs 220 triangles**, measured for the first time
+  (§5.4), and the phase did not move it.
+
 ---
 
 ## 7. Instrument defects found while doing this, handed back rather than fixed
@@ -587,3 +676,80 @@ them, because `src/dev/Harness.js` was outside its boundary. The result is that
 re-fly that branch's evidence is to lift four coordinates out of the
 `subjectAt` fields of the reports it committed — which is what this branch did.
 The six proposed framings are still in that document and still uncommitted.
+
+### 7.4 `--ablate` can now reach a scene-parented mesh and then calls it detached
+
+`86425d3` widened `Harness.ablate`'s search from `worldManager.active.group` to
+the scene, so `relic.glow` is findable for the first time. `ablationCheck()`'s
+liveness test did not move with it:
+
+```js
+for (const o of a.meshes) {
+  let n = o;
+  while (n && n !== world?.group) n = n.parent;   // <- world group, not scene
+  if (!n) detached++;
+}
+```
+
+`relics:glow` is parented to the scene, so `world.group` is never on its
+ancestor chain and it reads as detached on **every** framing. The measurement
+itself is right — 220 triangles removed in 3 of 3 framings, on both trees — but
+the run then fails with:
+
+```
+hills-vista: 1 ablated mesh(es) are no longer under the active world group
+             - the world was rebuilt and this ablation is of the old one
+```
+
+which is false: nothing was rebuilt. That message is the same shape as the bug
+its own comment block records ("*this walked to the top of the hierarchy … and
+every mesh read as detached … a check that measures the wrong thing does not
+produce a bad answer, it produces a confident wrong one*"). The fix is the same
+size: the walk should terminate at the SCENE when the ablation was found there,
+or the check should record which root each mesh was found under and walk to that
+one.
+
+**Cost of leaving it:** every scene-parented ablation — loot, relics, portals,
+the avatar, the viewmodel, which is the whole set the widening was for — exits
+non-zero and tells the operator the world was rebuilt. The next agent to ablate
+one of those will chase a rebuild that did not happen.
+
+---
+
+## 8. What this sweep could not measure
+
+### 8.1 Scene-parented systems are outside every triangle and material count
+
+`HARNESS.worldTriangles()` and `world-shot`'s material census both walk
+`worldManager.active.group`. `Relics` parents `relics:glow` to the **scene**;
+so do loot, portals, the avatar and the viewmodel. `86425d3` widened
+`--ablate` to the scene but left those two counters where they were, so
+**nothing in §2 or §3 — on either tree — includes a relic halo, a loot pickup,
+a portal disc or the player's own body.** That was equally true of all ten
+original tables, so the comparison is fair; it is not complete.
+
+§5.4 measures the relic halos' drawn triangles directly, through the one
+instrument that can now see them, and finds no change across the phase. The
+other scene-parented systems are not measured here.
+
+### 8.2 Nine of the ten planets
+
+`PlanetWorld` generates a class per planet from a descriptor and only `cinder`
+has a `VIEWS` entry, so `cinder` is the only planet either `art-planets` or this
+sweep photographed. `art-planets`' change — `_propMaterial` from `stone.castle`
+to `rock.neutral` — applies to **15,700 props across all ten**, and it is a
+material swap inside an existing `InstancedMesh`, which is exactly the shape
+that costs nothing anywhere if it costs nothing on Cinder. That is an inference,
+not a measurement, and it is the same inference `art-planets` made.
+
+### 8.3 Frame time
+
+Every figure here is a count. `fps` and `frameMsMedian` are in the reports and
+are deliberately not compared: the two sweeps ran concurrently on one GPU so
+that their *counts* would be taken under symmetric load, which is the opposite
+of what a timing comparison needs.
+
+### 8.4 The maze beyond four framings and one seed
+
+See §4. Two of the maze's six framings are lost on both trees to the same two
+causes, and the seed used is one seed.

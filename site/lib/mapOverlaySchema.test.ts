@@ -154,7 +154,12 @@ describe('normaliseOverlayEntries', () => {
     const { entries } = normaliseOverlayEntries([
       move({ position: { x: 1.23456789, y: 0, z: 0 } }),
     ]);
-    expect((entries[0] as Extract<OverlayEntry, { kind: 'move' }>).position.x).toBe(1.235);
+    /* `position` is `Vec3 | null` because a move entry may only HIDE an object.
+     * This case builds one with a position, so the assertion is safe - but it
+     * says so rather than letting `.x` read through a null. */
+    const moved = entries[0] as Extract<OverlayEntry, { kind: 'move' }>;
+    expect(moved.position).not.toBeNull();
+    expect(moved.position!.x).toBe(1.235);
   });
 
   it('wraps rotationY into a single turn', () => {

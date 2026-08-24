@@ -39,7 +39,15 @@ function world(id = 'station') {
   return { id, group, crate };
 }
 
-function bus() {
+/**
+ * A partial EventBus, cast once here rather than at each call site.
+ *
+ * This case exercises the overlay's apply path, not EventBus's queue, `once`
+ * or `off`. Growing the double into a full implementation would produce a test
+ * double that itself needs tests; casting at the factory keeps the seam in one
+ * place and keeps `tsc --noEmit` clean, which `main` is and should stay.
+ */
+function bus(): any {
   const handlers = new Map<string, Set<(p: unknown) => void>>();
   return {
     on(name: string, fn: (p: unknown) => void) {
@@ -80,14 +88,15 @@ describe('an overlay written by the editor applies in the game', () => {
       bus: b,
       physics,
       loot: { spawn: () => null, despawn: () => true },
-      fetch: async () => ({ ok: true, status: 200, json: async () => document }),
+      // Only `ok` and `json` are read; the rest of Response is not this test's subject.
+      fetch: (async () => ({ ok: true, status: 200, json: async () => document })) as unknown as typeof fetch,
     });
 
     b.emit('world:changed', { id: w.id, world: w });
     await system.applying;
 
     expect(w.crate.position.toArray()).toEqual([40, 3, -20]);
-    expect(collider.center.x).toBeCloseTo(40, 6);
+    expect(collider!.center.x).toBeCloseTo(40, 6);
     expect(system.report.unresolved).toEqual([]);
     expect(system.report.applied).toEqual([{ id: 'm1', ok: true, colliders: 1 }]);
   });
@@ -120,7 +129,8 @@ describe('an overlay written by the editor applies in the game', () => {
         },
         despawn: () => true,
       },
-      fetch: async () => ({ ok: true, status: 200, json: async () => document }),
+      // Only `ok` and `json` are read; the rest of Response is not this test's subject.
+      fetch: (async () => ({ ok: true, status: 200, json: async () => document })) as unknown as typeof fetch,
     });
 
     const w = world();
@@ -142,7 +152,8 @@ describe('an overlay written by the editor applies in the game', () => {
       bus: b,
       physics: new Physics(b),
       loot: { spawn: () => null, despawn: () => true },
-      fetch: async () => ({ ok: true, status: 200, json: async () => document }),
+      // Only `ok` and `json` are read; the rest of Response is not this test's subject.
+      fetch: (async () => ({ ok: true, status: 200, json: async () => document })) as unknown as typeof fetch,
     });
 
     const w = world();

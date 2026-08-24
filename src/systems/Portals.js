@@ -158,6 +158,60 @@ const ENTRY_R2 = DISC_R * DISC_R * 0.86;
 const REARM_R2 = DISC_R * DISC_R * 1.55;
 const REARM_DEPTH = 1.15;
 /**
+ * How high above the feet the crossing test is taken. `fixedUpdate` below uses
+ * this literal; it is named here so a checker cannot drift from it.
+ */
+const CHEST_RISE = 0.95;
+
+/**
+ * Where a body standing at `feet` sits relative to a gateway's aperture.
+ *
+ * ── WHY THIS IS EXPORTED ─────────────────────────────────────────────────
+ * A review framing that stands behind a gateway, inside its silhouette, is not
+ * a framing of that world: `Harness._vantage` pins the player at the camera,
+ * the pin is a plane-side crossing, `fixedUpdate` below fires `enter`, and the
+ * shot is of somewhere else. `VIEWS.sports`' `entrance-portal` did exactly
+ * that and its row reported 3.1 M triangles of the STATION as sports'.
+ *
+ * `scripts/tests/harness-framings.test.mjs` checks every framing against this,
+ * and it calls THIS function rather than re-deriving the arithmetic, because a
+ * checker that re-derives is a second copy that can be wrong on its own. The
+ * numbers below - the disc offset, the normal, the aperture, the chest rise -
+ * are the ones `fixedUpdate` uses, and there is only one of each.
+ *
+ * @param {{position:{x:number,y:number,z:number}, rotationY:number}} spec a
+ *   world's `portalSpecs` row.
+ * @param {number[]} feet world position of the standing body's FEET.
+ * @returns {{side:number, depth:number, radius:number, insideAperture:boolean,
+ *   wouldCross:boolean}} `side` +1 is the near (world) side of the disc;
+ *   `wouldCross` means a body appearing here is on the far side AND inside the
+ *   aperture, which is the state that fires an entry.
+ */
+export function portalAperture(spec, feet) {
+  const rot = spec.rotationY ?? 0;
+  const nx = Math.sin(rot);
+  const nz = Math.cos(rot);
+  const rx = Math.cos(rot);
+  const rz = -Math.sin(rot);
+  const dx = feet[0] - spec.position.x;
+  const dy = (feet[1] + CHEST_RISE) - (spec.position.y + DISC_Y);
+  const dz = feet[2] - spec.position.z;
+  const w = dx * nx + dz * nz;
+  const u = dx * rx + dz * rz;
+  const rad2 = u * u + dy * dy;
+  const insideAperture = rad2 < ENTRY_R2;
+  return {
+    side: w >= 0 ? 1 : -1,
+    depth: w,
+    radius: Math.sqrt(rad2),
+    insideAperture,
+    wouldCross: w < 0 && insideAperture,
+  };
+}
+
+/** The aperture radius a chest must be inside for a crossing to count. */
+export const PORTAL_ENTRY_RADIUS = Math.sqrt(ENTRY_R2);
+/**
  * Grace period after a world swap. `WorldManager.activate` drops the player a
  * couple of metres in front of the return gateway and the capsule then settles
  * onto the dais over the next few fixed steps; without this window that settle
@@ -3159,7 +3213,7 @@ export class PortalSystem {
     for (let i = 0; i < this._portals.length; i++) {
       const p = this._portals[i];
       // Test the player's chest, which is what actually crosses the disc.
-      _v1.set(feet.x, feet.y + 0.95, feet.z).sub(p.discPosition);
+      _v1.set(feet.x, feet.y + CHEST_RISE, feet.z).sub(p.discPosition);
       const w = _v1.dot(p.normal);
       const side = w >= 0 ? 1 : -1;
       const u = _v1.dot(p.right);

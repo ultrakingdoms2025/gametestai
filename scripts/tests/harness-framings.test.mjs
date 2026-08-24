@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { rig, goto, domHarness } from './_flightrig.mjs';
 import { SPACE_BODIES } from '../../src/worlds/space/Bodies.js';
+import { portalAperture, PORTAL_ENTRY_RADIUS } from '../../src/systems/Portals.js';
 
 domHarness();
 const { VIEWS, frameCoverage } = await import('../../src/dev/Harness.js');
@@ -61,6 +62,9 @@ const { VIEWS, frameCoverage } = await import('../../src/dev/Harness.js');
 /** How much further than its declared subject a framing's first hit may be. */
 const SLACK = 1.7;
 
+/** `Harness._vantage` puts the player's feet this far under the camera. */
+const EYE_HEIGHT = 1.62;
+
 const _dir = new THREE.Vector3();
 const _from = new THREE.Vector3();
 
@@ -74,6 +78,9 @@ function resolve(v, physics) {
 
 async function probe(worldId) {
   const r = await rig();
+  // `rig()` builds only the three worlds its flying suites need; anything else
+  // has to be built before it can be activated.
+  if (!r.wm.isBuilt?.(worldId)) await r.wm.build(worldId);
   await goto(r, worldId);
   const rows = [];
   for (const v of VIEWS[worldId] ?? []) {
@@ -83,7 +90,17 @@ async function probe(worldId) {
     _dir.set(v.look[0] - pos[0], v.look[1] - pos[1], v.look[2] - pos[2]).normalize();
     const want = v.clear ?? (Number.isFinite(v.subject) ? v.subject * SLACK : 4000);
     const hit = r.physics.raycast(_from, _dir, want);
-    rows.push({ v, name: v.name, hit: hit ? hit.distance : null });
+    /* The framing pins the player's FEET an eye-height under the camera; see
+     * `Harness._vantage`. That is the body `Portals.fixedUpdate` tests. */
+    const feet = [pos[0], pos[1] - EYE_HEIGHT, pos[2]];
+    const gates = (r.wm.active?.portalSpecs ?? [])
+      .map((spec) => portalAperture(spec, feet))
+      .filter((a) => a.wouldCross);
+    rows.push({
+      v, name: v.name, hit: hit ? hit.distance : null,
+      inside: r.physics.containsPoint(_from.clone()),
+      gates,
+    });
   }
   return rows;
 }
@@ -96,7 +113,16 @@ function table(rows) {
   }).join('\n  ');
 }
 
-for (const worldId of ['dock', 'cinder']) {
+/* `sports` is here because it was NOT, and that absence was the whole defect.
+ * Not one of its eight framings declared a `subject` or a `clear`, so the loop
+ * below skipped every one of them and this file's ray assertion was vacuous on
+ * the entire world - for as long as the world has existed. Two of the eight
+ * were photographing something else the whole time: `track` was aimed at the
+ * car park from 2.32 m under the terrain, and `entrance-portal` stood behind
+ * the gateway and teleported the player through it, filing 3.1 M triangles of
+ * the STATION as sports'. A world with no declarations is not a world that
+ * passes; it is a world nobody looked at. */
+for (const worldId of ['dock', 'cinder', 'sports']) {
   test(`every ${worldId} framing looks at something inside its own subject distance`, async () => {
     const rows = await probe(worldId);
     const t = table(rows);
@@ -105,6 +131,60 @@ for (const worldId of ['dock', 'cinder']) {
     assert.ok(rows.length >= 5, `only ${rows.length} framings in "${worldId}"\n  ${t}`);
     const bad = [];
     for (const x of rows) {
+      /* ── THE CAMERA IS NOT ALLOWED TO BE INSIDE SOMETHING ──────────────
+       *
+       * Everything below asks how FAR the first surface is. That catches a
+       * framing that meets nothing and one that meets its subject too late,
+       * and it is blind to the opposite failure: a camera buried in the
+       * scenery meets a surface almost immediately, which reads as a very
+       * close subject and passes.
+       *
+       * `VIEWS.sports`' `track` was exactly that. It stood at (128, 16, 232)
+       * where the ground is 18.32 - 2.32 m INSIDE the hill - and its ray met
+       * the inside of that hill at 14.46 m against a subject of 132. Every
+       * distance test in this file passed it, and the picture was the inside
+       * of a terrain skirt.
+       *
+       * ── WHY THIS TEST AND NOT A RATIO ─────────────────────────────────
+       * The obvious guard is a floor on `hit / subject`, and the data refuses
+       * it. Measured across all 38 declaring framings, that ratio runs from
+       * 0.05 (`dock/signal-post`, `cinder/rimhold` - both legitimately have a
+       * post or a rock in the near field) to 1.55 (`dock/pike-in`). There is
+       * no floor that separates them, so a ratio gate would be a threshold
+       * invented to fit rather than measured, which is the shape this whole
+       * directory exists to refuse.
+       *
+       * `containsPoint` needs no threshold, and it was measured before it was
+       * adopted: across dock, cinder and sports it flags exactly one framing -
+       * the buried one - with no false positive on the yard's interiors, the
+       * trench at y -0.7, the crane cab, or any ground-relative planet row. */
+      if (x.inside) {
+        bad.push(`${x.name}: the camera is INSIDE a collider - this framing photographs the inside of whatever it is buried in`);
+      }
+      /* ── AND IT IS NOT ALLOWED TO STAND INSIDE A GATEWAY ───────────────
+       *
+       * The worst failure a framing can have is not a bad picture, it is a
+       * picture OF SOMEWHERE ELSE filed under this world's name.
+       * `Harness._vantage` pins the player at the camera; the pin is a
+       * plane-side crossing; `Portals.fixedUpdate` fires `enter`.
+       *
+       * `VIEWS.sports`' `entrance-portal` stood at (0, 3.5, 170), which is
+       * behind a gateway whose normal is (0, 0, -1), with its chest 0.266 m
+       * off the disc axis against an aperture of 2.226 m. It photographed the
+       * station in a black frame and reported 225 materials and 3.1 M
+       * triangles as SPORTS'. Nothing in the numbers said the world had
+       * changed, because nothing was looking.
+       *
+       * The aperture arithmetic comes from `Portals.portalAperture` rather
+       * than being copied here: a checker that re-derives the rule is a second
+       * copy of it that can be wrong on its own. */
+      for (const a of x.gates) {
+        bad.push(
+          `${x.name}: the camera stands ${Math.abs(a.depth).toFixed(2)} m BEHIND a gateway and `
+          + `${a.radius.toFixed(2)} m off its axis, inside the ${PORTAL_ENTRY_RADIUS.toFixed(2)} m entry aperture - `
+          + 'pinning the player here walks them through it and photographs the destination'
+        );
+      }
       if (x.v.clear !== undefined) {
         if (x.hit !== null) {
           bad.push(`${x.name}: declares ${x.v.clear} m of clear air and meets a surface at ${x.hit.toFixed(1)} m`);
@@ -290,7 +370,7 @@ test('every framing declares what it is looking at, and aims somewhere else', ()
    * is a zero vector and the ray goes nowhere. Both are caught here rather than
    * silently excused there. */
   const bad = [];
-  for (const worldId of ['dock', 'space', 'cinder']) {
+  for (const worldId of ['dock', 'space', 'cinder', 'sports']) {
     for (const v of VIEWS[worldId] ?? []) {
       if (v.computed) continue;
       const declared = v.clear !== undefined || v.subject !== undefined;

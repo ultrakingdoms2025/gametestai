@@ -408,18 +408,84 @@ const VIEWS = {
     { name: 'portal', pos: [2, 11, 6], look: [2, 10.5, -22], fov: 62 },
     { name: 'hills-vista', pos: [120, 28, 118], look: [-40, 12, -20], fov: 80 },
   ],
-  // Skate park centre (-75, 38) with bowls at (-95,40) r13 and (-77,34) r10;
-  // ski zone centre (-62,-136); courts at (112,26) and (78,21)/(78,32);
-  // track (128,162); pool (46,111); entrance portal at (0, 0.4, 150).
+  /**
+   * THE SPORTS PARK, AND TWO FRAMINGS THAT PHOTOGRAPHED SOMETHING ELSE.
+   *
+   * This table's own comment said "track (128,162)". `SportsWorld`'s `TRACK`
+   * is `{ cx: 105, cz: -100 }`. The thing at (128, 162) is the CAR PARK - a
+   * slab on x 88..168, z 132..192 with three rows of bays and five lamp posts
+   * - and the running track is 262 m away on the other side of the site. So
+   * the `track` row photographed a car park, and it did it from a camera
+   * 2.32 m UNDER the terrain (ground at (128, 232) is 18.32 and the camera
+   * stood at 16), whose view ray met the inside of the hill at 14.46 m.
+   *
+   * `entrance-portal` was worse, because it did not merely mis-frame - it left
+   * the world. The gateway is at (0, 0.42, 150) with `rotationY` PI, so its
+   * normal is (0, 0, -1) and the SPORTS side is z < 150. The camera stood at
+   * z = 170: 20 m behind it. `_vantage` pins the player at the camera and
+   * `Portals` tests the chest against the disc silhouette - measured, that
+   * chest sat 0.27 m off the disc axis against an entry aperture of 2.23 m, so
+   * the pin was a plane-side crossing inside the aperture and the gateway
+   * fired. The row that came back reported 225 materials and 3.1 M triangles
+   * OF THE STATION as sports'.
+   *
+   * ── AND NOT ONE OF THE EIGHT DECLARED A SUBJECT ────────────────────────
+   * `harness-framings.test.mjs` fires a ray down every framing that declares
+   * `subject` or `clear`, and skips one that declares neither - so this whole
+   * world was exempt from the one test that would have caught both of the
+   * above on the day they were written. Every row below now declares, and the
+   * number is the distance its centre ray ACTUALLY travels, measured against
+   * the built world (377 colliders) rather than chosen:
+   *
+   *   skatepark-wide    82.81 m  skate-pad heightfield at (-88.0, -1.6, 29.7)
+   *   skatepark-bowl    30.16 m  bowl A floor at (-95.0, -3.3, 37.0)
+   *   bowl-interior     39.50 m  a pad box at (-84.7, 0.7, 11.9)
+   *   ski-slope        107.40 m  the ski mound at (-62.0, 34.2, -151.2)
+   *   courts            55.30 m  the courts enclosure at (105.1, 0.1, 20.4)
+   *   track            131.44 m  THE TRACK GRANDSTAND (bleacher box)
+   *   pool              39.98 m  the pool basin at (46.0, -1.8, 103.0)
+   *   entrance-portal   19.46 m  THE GATEWAY DAIS
+   *
+   * `track` is aimed at the grandstand and not at the infield deliberately.
+   * The infield, the lanes and the bends are all the site heightfield, so a
+   * ray that meets only the heightfield would still meet it with the whole
+   * track deleted; the grandstand and the start gantry are track-specific
+   * geometry, and a framing whose subject is track-specific is one that fails
+   * when the track goes away. Coverage of the track's own extent from this
+   * vantage is 100% of frame width by 41% of height.
+   *
+   * `entrance-portal` stands 10 m off the gate axis on the SPORTS side: far
+   * outside the 2.23 m entry aperture, so the pin cannot cross the gateway,
+   * and the whole gate structure (dais, jambs and the plinth's 8.7 m surround
+   * uprights) is inside the frame at ndc x -0.39..0.37, y -0.46..0.96.
+   *
+   * Site constants, read from `SportsWorld.js` rather than remembered:
+   * PAD x -125..-25 z 0..75; bowls at (-95,40) r13 and (-77,34) r9.5; SKI
+   * x -129..4 z -201..-71 summit y 52; courts enclosure x 63..127 z 3..49;
+   * POOL deck x 25..75 z 100..125, basin centre (46,111); TRACK centre
+   * (105,-100), outer lane x 16.55..193.45 z -146.26..-53.74, grandstand
+   * x 84..126 z -162.95..-157 deck top y 3.60, start gantry at z -149.76;
+   * gateway (0, 0.42, 150); player spawn (0, 0.90, 145). Terrain runs to
+   * +/-260 and there is nothing past it.
+   */
   sports: [
-    { name: 'skatepark-wide', pos: [-40, 11, 96], look: [-82, 0, 38], fov: 72 },
-    { name: 'skatepark-bowl', pos: [-95, 5, 66], look: [-95, -3, 38], fov: 74 },
-    { name: 'bowl-interior', pos: [-95, 1.6, 50], look: [-88, 1, 24], fov: 80 },
-    { name: 'ski-slope', pos: [-62, 18, -45], look: [-62, 34, -150], fov: 74 },
-    { name: 'courts', pos: [95, 9, 74], look: [104, 1, 26], fov: 70 },
-    { name: 'track', pos: [128, 16, 232], look: [128, 2, 162], fov: 74 },
-    { name: 'pool', pos: [46, 7, 142], look: [46, 0, 111], fov: 72 },
-    { name: 'entrance-portal', pos: [0, 3.5, 170], look: [0, 2.5, 150], fov: 64 },
+    { name: 'skatepark-wide', pos: [-40, 11, 96], look: [-82, 0, 38], fov: 72, subject: 83 },
+    { name: 'skatepark-bowl', pos: [-95, 5, 66], look: [-95, -3, 38], fov: 74, subject: 31 },
+    /* NOT AN INTERIOR, AND THE NUMBER SAYS SO. This is named for the inside of
+     * bowl A and its nearest surface down the view axis is 39.5 m away - it
+     * looks out of the bowl and across the pad at the half-pipe. That is the
+     * same shape as the yard's `kestrel-in` "inside a cabin" at 38.4 m, and it
+     * is left alone rather than quietly re-aimed: an art branch is reviewing
+     * against this vantage now and moving it would invalidate their
+     * before/after. The measured replacement, when it is wanted, is
+     * pos [-95, 0.6, 50] look [-93, -3.0, 41] fov 80 - inside bowl A, 3.84 m
+     * over its floor, first surface at 10.27 m. */
+    { name: 'bowl-interior', pos: [-95, 1.6, 50], look: [-88, 1, 24], fov: 80, subject: 40 },
+    { name: 'ski-slope', pos: [-62, 18, -45], look: [-62, 34, -150], fov: 74, subject: 108 },
+    { name: 'courts', pos: [95, 9, 74], look: [104, 1, 26], fov: 70, subject: 56 },
+    { name: 'track', pos: [105, 22, -30], look: [105, 2.6, -159], fov: 78, aerial: true, subject: 132 },
+    { name: 'pool', pos: [46, 7, 142], look: [46, 0, 111], fov: 72, subject: 40 },
+    { name: 'entrance-portal', pos: [-10, 5, 138], look: [0, 1.2, 150], fov: 62, subject: 20 },
   ],
   /**
    * LODESTAR YARD, and every hull row is DERIVED rather than typed.

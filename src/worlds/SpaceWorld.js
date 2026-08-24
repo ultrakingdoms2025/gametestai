@@ -1,4 +1,9 @@
 import * as THREE from 'three';
+/* Lights are created HIDDEN. `LightRig` would hide them on its next walk
+ * anyway, but the frame between construction and that walk is a frame in
+ * which they count for Three's program cache key, and one such frame
+ * re-links every program on screen. See gfx/WorldLight.js. */
+import { dirLight } from '../gfx/WorldLight.js';
 import { World } from './World.js';
 import { makeRules } from './WorldRules.js';
 import { createSky } from '../gfx/Sky.js';
@@ -1116,31 +1121,32 @@ export class SpaceWorld extends World {
    * are the other two things in this world made of plate.
    */
   _buildRim() {
-    this._rim = new THREE.DirectionalLight(0x9fc4ff, 0.85);
-    this._rim.castShadow = false;
     /**
      * CREATED INVISIBLE, and it is not cosmetic.
      *
      * `LightRig` demotes every world light it claims to `visible = false` and
      * copies it into a fixed slot, so the number of lights compiled into every
-     * shader never moves. But it claims on `world:changed`, and the frame
-     * between `new THREE.DirectionalLight(...)` and that walk is a frame in
+     * shader never moves. But it demotes on its next walk, and the frame
+     * between constructing a directional light and that walk is a frame in
      * which this light COUNTS - and one such frame is a full recompile of
      * roughly 390 programs, which is the single most expensive thing that
      * happens in this game.
      *
-     * `Caves.js:859` and `MazeChunks.js:393` already create theirs this way
-     * with tests enforcing it; the implementation-brief roadmap lists 61 sites
-     * across 12 world files that do not, as Phase 1's open item 4. This is one
-     * of them, it is in this world's file, and it is one line.
+     * This file used to carry that as a line of its own, and `Caves.js` and
+     * `MazeChunks.js` carried theirs, while sixty other sites across eleven
+     * world files carried nothing - Phase 1's open item 4. `dirLight` is where
+     * the line lives now, for all of them, and a world file may no longer
+     * construct a light any other way. See gfx/WorldLight.js.
      *
      * Safe against the rig: `LightRig._walk` deliberately ignores a light's
      * OWN `visible` flag when deciding whether to claim it - "the rig is what
      * set it to false" - and only skips lights under a hidden ANCESTOR. So an
      * invisible source is still claimed and still lights the scene through its
-     * slot. `space-yard-exterior.test.mjs` holds the flag.
+     * slot. `space-art.test.mjs` holds the flag on this light in particular;
+     * `world-light-visibility.test.mjs` holds it on every light in the game.
      */
-    this._rim.visible = false;
+    this._rim = dirLight(0x9fc4ff, 0.85);
+    this._rim.castShadow = false;
     this._rim.name = 'space:rim';
     this.group.add(this._rim);
     this.group.add(this._rim.target);

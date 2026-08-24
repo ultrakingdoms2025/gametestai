@@ -1,4 +1,9 @@
 import * as THREE from 'three';
+/* Lights are created HIDDEN. `LightRig` would hide them on its next walk
+ * anyway, but the frame between construction and that walk is a frame in
+ * which they count for Three's program cache key, and one such frame
+ * re-links every program on screen. See gfx/WorldLight.js. */
+import { pointLight } from '../../gfx/WorldLight.js';
 import { boxGeo, cylGeo, uvScale, GeoBatch } from './StationKit.js';
 import { CENTRE } from '../lod/DistanceLod.js';
 import { drawFloorSign } from './Tower.js';
@@ -749,7 +754,7 @@ export function buildControlTower(world, B, g, spec) {
   const trimStrip = new THREE.Mesh(boxGeo(carHalf * 1.9, 0.06, 0.1, 1), M[accent] ?? M.emWhite);
   trimStrip.position.set(0, 2.2, -(carHalf - 0.08));
   car.add(trimStrip);
-  const carLight = new THREE.PointLight(0xbfe4ff, 520, 9, 2);
+  const carLight = pointLight(0xbfe4ff, 520, 9, 2);
   carLight.position.set(0, 1.9, 0);
   car.add(carLight);
   car.position.set(carP.x, stops[0], carP.z);

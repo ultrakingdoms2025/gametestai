@@ -1,4 +1,9 @@
 import * as THREE from 'three';
+/* Lights are created HIDDEN. `LightRig` would hide them on its next walk
+ * anyway, but the frame between construction and that walk is a frame in
+ * which they count for Three's program cache key, and one such frame
+ * re-links every program on screen. See gfx/WorldLight.js. */
+import { pointLight } from '../../../gfx/WorldLight.js';
 import { boxGeo, cylGeo, instanced, seamLift } from '../StationKit.js';
 import { buildZoneTower } from '../Tower.js';
 
@@ -1112,7 +1117,7 @@ function buildServery(ctx, K) {
    * the brightest thing in the room, which is the only reason a player 300 m
    * away starts walking toward it. */
   for (const d of [160, 170, 180, 190, 200]) {
-    const l = new THREE.PointLight(0xffc08a, 1500, 52, 2);
+    const l = pointLight(0xffc08a, 1500, 52, 2);
     l.position.copy(ctx.P(...at3(d, SERVERY_R - 2, 9.5)));
     l.castShadow = false;
     ctx.group.add(l);
@@ -1280,7 +1285,7 @@ function buildBackOfHouse(ctx, K) {
 
   /* --- Light: cool and even, so it reads as work rather than as service -- */
   for (const d of [BOH_A0 + 10, 180, BOH_A1 - 10]) {
-    const l = new THREE.PointLight(0xd8e8ff, 900, 40, 2);
+    const l = pointLight(0xd8e8ff, 900, 40, 2);
     l.position.copy(ctx.P(...at3(d, 180, 6.5)));
     l.castShadow = false;
     ctx.group.add(l);
@@ -1332,7 +1337,7 @@ function buildOrderPoints(ctx, K) {
       inst(ctx, K.marker, ...at3(d, KIOSK_R - 2.0 - i * 1.6, 0.14), yaw);
     }
 
-    const l = new THREE.PointLight(0xffd9a8, 520, 26, 2);
+    const l = pointLight(0xffd9a8, 520, 26, 2);
     l.position.copy(ctx.P(c[0], 6.0, c[1]));
     l.castShadow = false;
     ctx.group.add(l);
@@ -1383,7 +1388,7 @@ function buildProvisions(ctx, K) {
   // Behind the shelving, where only somebody who walked round the back looks.
   ctx.relic(...at3(STALL_A, STALL_R + 3.9, 1.9, 2.2), 'rare');
 
-  const l = new THREE.PointLight(0xffcf90, 420, 24, 2);
+  const l = pointLight(0xffcf90, 420, 24, 2);
   l.position.copy(ctx.P(...at3(STALL_A, STALL_R - 0.5, 3.2)));
   l.castShadow = false;
   ctx.group.add(l);
@@ -1721,7 +1726,7 @@ function buildIsland(ctx, K) {
   });
 
   for (const d of [30, 120, 210, 300]) {
-    const l = new THREE.PointLight(0xffc08a, 1400, 48, 2);
+    const l = pointLight(0xffc08a, 1400, 48, 2);
     l.position.copy(ctx.P(...at3(d, ISLAND_R, 6.2)));
     l.castShadow = false;
     ctx.group.add(l);
@@ -1791,7 +1796,7 @@ function buildRefectoryBlock(ctx) {
   // A practical over the door. The galley is lit warm; the entrance has to
   // read as a way in from the far side of the court.
   const [lx, lz] = at(REFECTORY.deg, REFECTORY.r - 15);
-  const light = new THREE.PointLight(ctx.spec.accentHex, 1600, 48, 2);
+  const light = pointLight(ctx.spec.accentHex, 1600, 48, 2);
   light.position.copy(ctx.P(lx, 6, lz));
   light.castShadow = false;
   ctx.group.add(light);
@@ -2115,7 +2120,7 @@ function buildMezzanine(ctx, K) {
   });
 
   for (const d of [MEZZ_A0 + 12, (MEZZ_A0 + MEZZ_A1) / 2, MEZZ_A1 - 12]) {
-    const l = new THREE.PointLight(0xffc98a, 700, 34, 2);
+    const l = pointLight(0xffc98a, 700, 34, 2);
     l.position.copy(ctx.P(...at3(d, RMID, MEZZ_Y + 4.5)));
     l.castShadow = false;
     ctx.group.add(l);
@@ -2239,7 +2244,7 @@ function buildWindowSeating(ctx, K) {
   }
 
   for (const d of [270, 310, 40, 136]) {
-    const l = new THREE.PointLight(0xffd2a0, 460, 28, 2);
+    const l = pointLight(0xffd2a0, 460, 28, 2);
     l.position.copy(ctx.P(...at3(d, 187, 4.5)));
     l.castShadow = false;
     ctx.group.add(l);
@@ -2354,7 +2359,7 @@ function buildGardenCourt(ctx, K) {
   /* --- Grow lights -------------------------------------------------------- */
   for (let i = 0; i < 4; i++) {
     const a = (i / 4) * TAU + 0.4;
-    const l = new THREE.PointLight(0x9fffcf, 2200, 74, 2);
+    const l = pointLight(0x9fffcf, 2200, 74, 2);
     l.position.copy(ctx.P(Math.sin(a) * 16, 20, Math.cos(a) * 16));
     l.castShadow = false;
     ctx.group.add(l);

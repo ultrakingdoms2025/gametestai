@@ -1,4 +1,9 @@
 import * as THREE from 'three';
+/* Lights are created HIDDEN. `LightRig` would hide them on its next walk
+ * anyway, but the frame between construction and that walk is a frame in
+ * which they count for Three's program cache key, and one such frame
+ * re-links every program on screen. See gfx/WorldLight.js. */
+import { pointLight, dirLight } from '../gfx/WorldLight.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { World } from './World.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
@@ -2167,7 +2172,7 @@ export class SportsWorld extends World {
     // Cascade 1: fixed box over the whole site, rendered once. See the note on
     // `_farShadowRange` in the constructor.
     const farRadius = this._farShadowRange;
-    const far = new THREE.DirectionalLight(
+    const far = dirLight(
       this.environment.sunColor,
       this.environment.sunIntensity * (1 - this._keySplitNear)
     );
@@ -2215,13 +2220,13 @@ export class SportsWorld extends World {
     // Bounce: directly opposite the sun at *negative* elevation, so it reads as
     // light coming back up off the ground rather than as a second key. At 0.42
     // and +140 m it was doing exactly that and cancelling the terminator.
-    const bounce = new THREE.DirectionalLight(0x9fc4e8, 0.12);
+    const bounce = dirLight(0x9fc4e8, 0.12);
     place(bounce, az + Math.PI, -25);
 
     // Rim: warm, 160 deg round in azimuth from the key at a shallow +8 deg, so
     // vertical silhouettes - masts, fence posts, tree trunks, the bowl coping -
     // separate from whatever is behind them.
-    const rim = new THREE.DirectionalLight(0xffe8c4, 0.5);
+    const rim = dirLight(0xffe8c4, 0.5);
     place(rim, az + 160 * DEG, 8);
 
     this._detachSunRig = this.engine.onFrameUpdate(() => this._updateSunRig());
@@ -7853,7 +7858,7 @@ export class SportsWorld extends World {
     const floodMesh = new THREE.Mesh(mergeGeometries(flood), this._materials.get('metal.dark'));
     floodMesh.matrixAutoUpdate = false;
     this._add(floodMesh);
-    const light = new THREE.PointLight(0x2fe6ff, 26, 22, 2);
+    const light = pointLight(0x2fe6ff, 26, 22, 2);
     light.position.set(px, 3.4, pz);
     this.group.add(light);
 

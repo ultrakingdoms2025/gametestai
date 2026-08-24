@@ -1,4 +1,9 @@
 import * as THREE from 'three';
+/* Lights are created HIDDEN. `LightRig` would hide them on its next walk
+ * anyway, but the frame between construction and that walk is a frame in
+ * which they count for Three's program cache key, and one such frame
+ * re-links every program on screen. See gfx/WorldLight.js. */
+import { pointLight } from '../../gfx/WorldLight.js';
 import {
   DEG, DECK_R, HULL_R, ROAD_W,
   ZONES, ZONE_R, ZONE_CENTRE_R, LINK_LEN,
@@ -741,7 +746,7 @@ function buildLink(world, spec) {
   /* --- Light ------------------------------------------------------------ */
   for (let i = 0; i <= 4; i++) {
     const p = roadPos(deg, R0 + (L * i) / 4, 0, 0, new THREE.Vector3());
-    const l = new THREE.PointLight(0xcfe4ff, 620, 42, 2);
+    const l = pointLight(0xcfe4ff, 620, 42, 2);
     l.position.set(p.x, CEIL - 1.2, p.z);
     l.castShadow = false;
     g.add(l);
@@ -935,7 +940,7 @@ function buildZone(world, spec, actors) {
    * shader cache key never moves however many are authored here. */
   const addLight = (lx, lz, ly, hex, power, dist) => {
     const p = zoneLocal(spec.deg, lx, ly, lz);
-    const l = new THREE.PointLight(hex, power, dist, 2);
+    const l = pointLight(hex, power, dist, 2);
     l.position.copy(p);
     l.castShadow = false;
     g.add(l);

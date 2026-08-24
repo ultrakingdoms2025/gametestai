@@ -1,4 +1,9 @@
 import * as THREE from 'three';
+/* Lights are created HIDDEN. `LightRig` would hide them on its next walk
+ * anyway, but the frame between construction and that walk is a frame in
+ * which they count for Three's program cache key, and one such frame
+ * re-links every program on screen. See gfx/WorldLight.js. */
+import { pointLight } from '../gfx/WorldLight.js';
 import { World } from './World.js';
 import { makeRules, worldGravityRatio } from './WorldRules.js';
 import { genPool } from '../workers/GenPool.js';
@@ -1401,7 +1406,7 @@ export class PlanetWorld extends World {
     const gl = L.glowLight;
     if (gl) {
       const b = L.bodies[gl.body ?? 0];
-      const light = new THREE.PointLight(gl.color ?? 0xff7a2a, gl.intensity ?? 30, gl.distance ?? 120, 1.8);
+      const light = pointLight(gl.color ?? 0xff7a2a, gl.intensity ?? 30, gl.distance ?? 120, 1.8);
       light.castShadow = false;
       light.position.set(b.x ?? b.pts[0][0], (b.y ?? b.y0) + 6, b.z ?? b.pts[0][1]);
       light.name = 'planet:liquid:glow';

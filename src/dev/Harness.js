@@ -2022,11 +2022,21 @@ class Harness {
      * frame updater that stopped running is exactly the silent failure this
      * whole file exists to refuse. */
     const stillDrawn = walk.byMaterial.filter((b) => a.names.includes(b.key));
+    /* WALK UP UNTIL THE WORLD GROUP, NOT UNTIL THE ROOT.
+     *
+     * This walked to the top of the hierarchy and compared that against
+     * `world.group` - and a world group is parented into `engine.scene`, so
+     * the walk always ended at the SCENE and every mesh read as detached. The
+     * first real browser run reported "77 ablated mesh(es) are no longer under
+     * the active world group - the world was rebuilt" for a world that had not
+     * been rebuilt at all. A check that measures the wrong thing does not
+     * produce a bad answer, it produces a confident wrong one; this file is
+     * about that, and it is worth recording that it happened here too. */
     let detached = 0;
     for (const o of a.meshes) {
       let n = o;
-      while (n.parent) n = n.parent;
-      if (n !== world?.group) detached++;
+      while (n && n !== world?.group) n = n.parent;
+      if (!n) detached++;
     }
     const reasserted = a.reasserted;
     a.reasserted = 0;

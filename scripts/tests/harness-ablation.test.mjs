@@ -93,13 +93,22 @@ function stubGame() {
   group.add(box('lawn', 'test.grass', -20));
   group.add(box('lawn-behind', 'test.grass', 20));
   group.add(box('wall', 'test.stone', -24));
+  /* PARENTED INTO A SCENE, exactly as a real world group is. The fixture used
+   * to leave it loose, and that hid a real bug: `ablationCheck` walked each
+   * mesh to the top of its hierarchy and compared THAT against `world.group`,
+   * which is only ever true when the group has no parent. The first browser
+   * run reported all 77 ablated meshes as detached, on a world that had not
+   * been rebuilt. A fixture that is simpler than the game is a fixture that
+   * cannot see the game's bugs. */
+  const scene = new THREE.Scene();
+  scene.add(group);
   group.updateMatrixWorld(true);
 
   const frameUpdaters = new Set();
   const fixedUpdaters = new Set();
   const engine = {
     camera,
-    scene: new THREE.Scene(),
+    scene,
     running: true,
     _paused: false,
     setPaused(p) { this._paused = !!p; },
@@ -112,7 +121,7 @@ function stubGame() {
     THREE,
     CONFIG: { player: { eyeHeight: 1.62 } },
     engine,
-    scene: engine.scene,
+    scene,
     player: { position: new THREE.Vector3(), _harnessFrozen: false, teleport() {} },
     npcManager: { npcs: [] },
     worldManager: { active: { id: 'test', group } },
@@ -302,6 +311,20 @@ test('ablationCheck reports the triangles the ablation removes FROM THIS FRAMING
   g.engine.camera.updateMatrixWorld(true);
   assert.equal(h.ablationCheck().removedTriangles, 0,
     'with neither in shot the ablation removes nothing, and the run must be told so');
+});
+
+test('ablationCheck reports meshes only as detached when the world really lost them', () => {
+  const g = stubGame();
+  const h = new Harness(g);
+  h.ablate(['test.grass']);
+  assert.equal(h.ablationCheck().detachedMeshes, 0,
+    'a world group parented into a scene is still the world group - this check walked to the '
+    + 'top of the hierarchy and called every mesh detached, on a world nothing had rebuilt');
+
+  /* Now really take one away, which is what a rebuild does. */
+  meshNamed(g, 'lawn').removeFromParent();
+  assert.equal(h.ablationCheck().detachedMeshes, 1,
+    'and a mesh the world actually dropped must still be reported');
 });
 
 test('unablate puts the meshes back exactly as they were', () => {

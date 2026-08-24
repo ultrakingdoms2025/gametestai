@@ -10,38 +10,47 @@
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * Phase 9 / decision D4: authored `.glb` hero assets through the pipeline
- * already proven five times (`make-newel-glb.mjs`, `make-ship-glb.mjs`,
+ * already proven eight times (`make-newel-glb.mjs`, `make-ship-glb.mjs`,
  * `make-npc-glb.mjs`, `make-beast-glb.mjs`, `make-crowd-glb.mjs`,
- * `make-yard-glb.mjs`, `make-citadel-glb.mjs`); procedural systems for bulk
- * content.
+ * `make-yard-glb.mjs`, `make-citadel-glb.mjs`, `make-planet-glb.mjs`);
+ * procedural systems for bulk content.
  *
  * The architecture was measured before anything was authored. The race world
- * builds 453 renderables from 29 materials for 1.81 M triangles, already
- * merged by material per district plus 129 tiled `InstancedMesh` systems - the
+ * builds 453 renderables from 29 materials over 129 tiled `InstancedMesh`
+ * systems (5,506 instances), already merged by material per district - the
  * citadel/dock shape, not the sports one. There is no draw-call win here and
  * none was attempted, and the roadmap forbids porting the maze's `BatchedMesh`
  * machinery into a world whose many-meshes-one-material split is deliberate
  * spatial partitioning for the frustum culler.
+ *
+ * (An inherited note added "for 1.81 M triangles" to that list. It is struck
+ * out rather than corrected: world triangles are counted per FRAME, and the
+ * frame this branch measures from the start/finish straight is 810,504.)
  *
  * Then the subjects were photographed at conversational distance, which is
  * what actually decided this file's contents.
  *
  * ── 1. The spectator ────────────────────────────────────────────────────
  *
- * `RaceWorld._spawnCrowd` builds 801 grandstand figures - the largest single
- * population in the world and the only one a player can walk up to - as
+ * `RaceWorld._spawnCrowd` builds 819 grandstand figures - 615 on Vellum's
+ * grandstand and 102 on each of the other two, the largest population in the
+ * world and the only one a player can walk up to - as
  *
  *     sweep([{y:0,rx:.20,ry:.13}, ... {y:.94,rx:.11,ry:.09}], 8)
  *     + blob(0.12, 0.14, 0.12, 0, 1.08, 0, 8)
  *
  * which is a lofted cone with a sphere balanced on it: 1.22 m tall, no
  * shoulders, no arms, no legs, no shoes, and a head that is exactly as wide as
- * the neck it stands on. Photographed from 6.5 m
- * (`img/2026-08-23-art-race/before-crowd-front.jpg`) it is a shelf of
+ * the neck it stands on. Photographed at 7 m
+ * (`img/2026-08-23-art-race/before-grandstand-front.png`) it is a shelf of
  * skittles, and one thing is louder than the silhouette: **the head is painted
- * the shirt colour.** Body and head are merged into ONE geometry and handed
- * ONE `setColorAt` per instance, so a spectator in a green shirt has a green
- * head. Every one of the 801 does.
+ * the shirt colour.** Body and head are merged into ONE geometry drawn with
+ * `vertexColors: false` and handed ONE `setColorAt` per instance, so a
+ * spectator in a green shirt has a green head. All 819 do.
+ *
+ * It is also, at 144 triangles times 819, the SECOND largest object in this
+ * world: 102,384 triangles in a measured frame, 12.6% of everything drawn.
+ * That is why {@link SPECTATOR_TRIS} is 144 and not one more.
  *
  * ── 2. The marshal post ─────────────────────────────────────────────────
  *
@@ -53,11 +62,14 @@
  *     B.box('hazard.stripe', 3.3, 0.5, 0.2, ...)   a band nobody has ever seen
  *
  * The band is 0.2 m deep, drawn at the post's own centre, inside a box 2.6 m
- * deep. It is the citadel's window recesses again: arithmetic that reads
- * perfectly, a comment that describes what it was meant to do, and not one
- * rendered pixel since the day it was written. (It was also, separately,
- * placed 3.75 m into the air by the scratch-vector aliasing this branch fixes
- * in `RaceWorld.Batch.box` - so it was invisible for two independent reasons.)
+ * deep. 93% of its surface is buried; the 7% that renders is a 5 cm tab on
+ * each END, side-on to the road, so from a car it has never been visible at
+ * all. It is the citadel's window recesses again: arithmetic that reads
+ * perfectly, a comment that describes what it was meant to do, and one narrow
+ * sliver of rendered pixel since the day it was written. (It was also,
+ * separately, placed 4.05 m into the air by the scratch-vector aliasing this
+ * branch fixes in `RaceWorld.Batch.box` - so it was wrong for two independent
+ * reasons.)
  *
  * A marshal post is a flag point. It has a face you can see into, a rail, a
  * roof that overhangs, and a hazard band that reads from every side. None of
@@ -69,10 +81,14 @@
  *
  * The **tyre stacks** (314 of them, three tyres each) stay procedural. A tyre
  * is a surface of revolution, which is the shape a runtime primitive is *good*
- * at - the citadel's jar argument, from the other side. They become
- * eight-sided drums rather than authored toruses because a 12x5 torus is 120
- * triangles against 32, and 942 of them is +102,000 triangles of trackside
- * furniture seen from a car at 30 m/s.
+ * at - the citadel's jar argument, from the other side. A 12x5 authored torus
+ * is 120 triangles against the 12 a box costs, and 942 of them is +102,000
+ * triangles of trackside furniture seen from a car at 30 m/s.
+ *
+ * What they DID need was collision that touches them, which is the other half
+ * of this branch: every tyre stack on all three circuits had its collider
+ * 3.21 m in the air and was driven straight through. See
+ * `scripts/tests/race-trackside-placement.test.mjs`.
  *
  * The **conifers, rocks, city, terrain, road ribbon, kerbs and barriers** are
  * bulk content over 1.7 km^2 and are exactly what D4 keeps procedural.
@@ -82,11 +98,18 @@
  * Nothing here brings a material. The marshal's three meshes are NAMED FOR
  * RACE MATERIAL KEYS and are merged by `Batch.add` into the `trackside.<id>`
  * bucket of that key, so they land inside a mesh the world already draws. The
- * spectator's five meshes are merged into ONE geometry at load and drawn by
+ * spectator's four meshes are merged into ONE geometry at load and drawn by
  * the same single `race:crowd` InstancedMesh, with each part's `shade` written
  * into a vertex-colour attribute that multiplies the per-instance shirt.
  *
- *   no new draw call, no new material, no new shader program, no new node.
+ *   no new draw call, no new shader program, no new node - and ONE MATERIAL
+ *   FEWER, because the shade attribute means the crowd stops needing the
+ *   `paint.enamel|novc` clone that was the only `vertexColors: false` material
+ *   in the scene. Measured: 29 -> 28.
+ *
+ * The mesh NAME is not the name that arrives. `GLTFLoader` deletes `[].:/`
+ * from node names, so `metal.panel` reaches the loader as `metalpanel` -
+ * see `race/RaceAssets.js`, which cost this branch a whole measurement run.
  *
  * That last one is why the rule is a rule. Three keys its program cache on
  * material configuration, this project boots by warming the cartesian product
@@ -106,15 +129,27 @@
  *   1. **No degenerate face.** Refused in `quad`/`tri`, at the line where the
  *      winding is decided, and re-asserted against the committed bytes by
  *      `scripts/tests/race-assets.test.mjs`.
- *   2. **Closed manifold.** Every directed edge matched by exactly one
- *      opposite directed edge, compared BY POSITION rather than by index, so
- *      two solids that share a face plane are still each closed.
+ *   2. **Closed manifold, PER SOLID.** Every directed edge matched by exactly
+ *      one opposite directed edge, compared BY POSITION rather than by index,
+ *      and tallied inside one solid rather than across a part. The inherited
+ *      version tallied globally and claimed that abutting solids were still
+ *      each closed; they are not, and its own gate proved it on the first run
+ *      anybody ever gave this file - the marshal's shell and the sill box
+ *      against it share a bottom edge in the same direction. `Quads.solid()`
+ *      is where a solid begins.
  *   3. **Positive signed volume.** The divergence-theorem sum over the faces.
  *      A part wound entirely inside out passes (1) and (2) and fails this.
  *
  * Every part in this file is a set of closed solids, deliberately, so all
- * three apply to all of it. That is also why the spectator's face is a shallow
- * closed wedge rather than a plane: a plane cannot be checked.
+ * three apply to all of it. That is also why the spectator's face is a closed
+ * triangular prism rather than a plane on the front of the skull: a plane
+ * cannot be checked by either of the last two.
+ *
+ * And all three read the geometry as it is BUILT. `scripts/tests/
+ * race-assets.test.mjs` re-asserts them against the committed bytes, and then
+ * - because eighteen assertions over those bytes were once green on a build
+ * where one of these two files never loaded at all - parses them through the
+ * real `GLTFLoader` as well.
  */
 
 import * as THREE from 'three';

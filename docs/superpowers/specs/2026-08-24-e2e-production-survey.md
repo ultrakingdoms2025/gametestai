@@ -560,7 +560,15 @@ proof that it need not be so — it takes **30.5 seconds of wall time** to build
 worst frame is **84.2 ms**, because it does the work without blocking the frame loop.
 Whatever `sports` does, `medieval` does not.
 
-### 6.5 A frame stall long enough to eat a keypress
+### 6.5 One number worth a second look
+
+`medieval`'s first weapon change is not a single spike: **15 frames over 250 ms** in that
+window, with a median frame of **147.8 ms**. The criterion is written in terms of the worst
+gap, and by that measure it is one failure — but a player experiences fifteen consecutive
+bad frames, which is a second of unresponsiveness rather than one dropped frame. The same
+window in the sixteen worlds after it has a median of ~19 ms.
+
+### 6.6 A frame stall long enough to eat a keypress
 
 `maze`'s entry stall swallowed a **1.4-second key hold** whole — keydown and keyup both
 landed inside one stalled frame, so the game saw the key down for zero game time (§4.3).
@@ -659,12 +667,3 @@ again rather than read it — and that habit is precisely how a real failure get
 through. The names are cheap to find (`node scripts/flake-hunt.mjs --runs 20` under load)
 and expensive to keep not knowing.
 
----
-
-### One number worth a second look
-
-`medieval`'s first weapon change is not a single spike: **15 frames over 250 ms** in that
-window, with a median frame of **147.8 ms**. The criterion is written in terms of the worst
-gap, and by that measure it is one failure — but a player experiences fifteen consecutive
-bad frames, which is a second of unresponsiveness rather than one dropped frame. The same
-window in the sixteen worlds after it has a median of ~19 ms.

@@ -48,12 +48,71 @@ function geometryTriangles(geo) {
   return Math.max(0, Math.floor(count / 3));
 }
 
+/**
+ * Triangles and visible instances in a `BatchedMesh`, counted EXACTLY.
+ *
+ * This used to return 1 and say so: "three exposes no public count, so fall
+ * back to 1 rather than guess". The comment was honest and the number was
+ * still wrong in a way that mattered — `obj.geometry` on a BatchedMesh is the
+ * RESERVED buffer shared by every batched geometry, so the walker was
+ * reporting one copy of the whole reservation. The maze is the world built on
+ * this class, and its headline triangle number therefore never included the
+ * static maze at all. A measuring instrument reporting a confident wrong
+ * number is the thing this repository keeps paying for.
+ *
+ * three r185 does expose enough to be exact: `instanceCount`, `getVisibleAt`,
+ * `getGeometryIdAt` and `getGeometryRangeAt`.
+ *
+ * Instance ids are SPARSE — `deleteInstance` returns an id to a free list and
+ * `instanceCount` is active-count, not a high-water mark, so iterating
+ * `0..instanceCount-1` walks off the end of a batch that has ever deleted one.
+ * Iterate to `maxInstanceCount` and stop once `instanceCount` live ids have
+ * been seen; the accessors throw on a dead id, which is what the catch is for.
+ *
+ * @returns {{tris: number, instances: number}|null} null when this is not a
+ *   BatchedMesh, or the build is too old to answer, in which case the caller
+ *   keeps the old arithmetic rather than inventing a number.
+ */
+function batchedCount(obj) {
+  if (!obj.isBatchedMesh) return null;
+  const active = obj.instanceCount;
+  if (!Number.isFinite(active)) return null;
+  const max = Number.isFinite(obj.maxInstanceCount) ? obj.maxInstanceCount : active;
+
+  let tris = 0;
+  let instances = 0;
+  let seen = 0;
+  const range = {};
+
+  for (let i = 0; i < max && seen < active; i++) {
+    let visible;
+    let gid;
+    try {
+      visible = obj.getVisibleAt(i);
+      gid = obj.getGeometryIdAt(i);
+    } catch {
+      continue;
+    }
+    seen += 1;
+    if (!visible || !(gid >= 0)) continue;
+    try {
+      obj.getGeometryRangeAt(gid, range);
+    } catch {
+      continue;
+    }
+    const c = range.indexCount > 0 ? range.indexCount : range.vertexCount;
+    if (!Number.isFinite(c)) continue;
+    tris += Math.max(0, Math.floor(c / 3));
+    instances += 1;
+  }
+  return { tris, instances };
+}
+
 /** How many copies of the geometry a single object submits. */
 function instanceCount(obj) {
   if (obj.isInstancedMesh) return obj.count;
-  // BatchedMesh reports its own per-instance visibility; without walking its
-  // internals the honest answer is "one geometry's worth per drawn instance",
-  // and three exposes no public count, so fall back to 1 rather than guess.
+  /* BatchedMesh is handled exactly by batchedCount() above; a caller that
+   * reaches here for one is counting a single submission. */
   return 1;
 }
 
@@ -134,12 +193,16 @@ export function walkWorldTriangles(root, camera, opts = {}) {
     if (obj.isMesh) {
       const layersOk = !camera.layers || obj.layers.test(camera.layers);
       if (layersOk) {
-        const tris = geometryTriangles(obj.geometry) * instanceCount(obj);
+        const batched = batchedCount(obj);
+        const tris = batched
+          ? batched.tris
+          : geometryTriangles(obj.geometry) * instanceCount(obj);
+        const submissions = batched ? batched.instances : instanceCount(obj);
         const inFrustum = obj.frustumCulled === false || _frustum.intersectsObject(obj);
         if (inFrustum) {
           result.triangles += tris;
           result.objects += 1;
-          result.instances += instanceCount(obj);
+          result.instances += submissions;
           if (breakdown) {
             bump(byMaterial, materialKey(obj.material), tris);
             bump(byName, nameOf(obj, root), tris);

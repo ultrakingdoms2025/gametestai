@@ -189,6 +189,20 @@ positional argument of every exported function in `serverContent.ts`, validated 
 *authoring*. Nothing governs *payout*, because the payout lives in `playerDb.ts`, which predates
 Phase 7 and takes no `serverId` argument at all.
 
+**The destination the reward was meant to reach already exists, bounded, and has no caller.**
+`SERVER_CREDIT_KINDS` (`serverCredits.ts:69`) has a `quest` kind with `perEventMax: 5_000` and this
+rationale attached to it, which the API returns verbatim:
+
+> "Quest reward — The owner sets reward_credits; this bounds one payout, not the owner's economy."
+
+That is exactly this payout, priced and capped for exactly this reason. But `earnServerCredits` has
+one caller in the whole repo — `app/api/game/server-credits/route.ts:90`, which the game client
+never calls — and `spendServerCredits` has none at all. **The bounded destination was built and the
+quest route was never pointed at it.** The fix direction is therefore already designed: when
+`player_quest_engagements.server_id` is non-NULL, the completion belongs in
+`earnServerCredits(db, serverId, playerId, {kind:'quest', …})`, where the 5,000 ceiling is waiting
+for it, and never in `players.credit_balance`.
+
 ---
 
 ## 4. L3 — suspension is undone by a rename

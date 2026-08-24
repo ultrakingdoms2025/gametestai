@@ -3160,8 +3160,37 @@ export class PortalSystem {
     const t0 = performance.now();
     const before = renderer.info.programs.length;
     try {
+      /* BIND WHAT THE FRAMES BELOW WILL DRAW INTO.
+       *
+       * Three folds the bound render target into the program cache key twice -
+       * `outputColorSpace`, and whether the material carries the tone map at
+       * all - and with nothing bound it builds the DIRECT-to-canvas set. The
+       * two frames on the far side of this go through `postfx.render`, which
+       * draws into the composer's half-float target, so an unbound compile
+       * here issued a set of links nothing would use and then paid for the
+       * real ones inside those frames, at up to two seconds a program.
+       *
+       * Measured across a whole session on the production bundle: 230 of the
+       * 485 programs alive at the end of the background chain were keyed
+       * `srgb`, and every program a world entry linked was `srgb-linear`.
+       *
+       * The restore is immediately after the call and NOT in a `finally` on
+       * the await, deliberately: `compileAsync` runs its `compile()`
+       * synchronously and only then returns a promise that polls for the link,
+       * so the target matters for exactly the duration of this statement.
+       * Holding it bound across the await would leave the composer's buffer
+       * bound to every frame the warp still has to draw. */
+      const want = this.engine?.postfx?.scenePassTarget ?? null;
+      const prevTarget = renderer.getRenderTarget();
+      let compiled;
+      try {
+        renderer.setRenderTarget(want);
+        compiled = renderer.compileAsync(this.scene, camera);
+      } finally {
+        renderer.setRenderTarget(prevTarget);
+      }
       await Promise.race([
-        renderer.compileAsync(this.scene, camera),
+        compiled,
         new Promise((r) => setTimeout(r, PORTAL_WARM_BUDGET_MS)),
       ]);
     } catch (err) {

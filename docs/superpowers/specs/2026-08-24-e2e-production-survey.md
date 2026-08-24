@@ -615,6 +615,36 @@ adds. No game or site source file was modified.
    other program sets.
 4. **World entry.** `sports` builds for 30.5 s of wall time with an 84 ms worst frame;
    `medieval` blocks one frame for 12.3 s. The fix is whatever `sports` is already doing.
+
+> **CORRECTION (orchestrator, 2026-08-24).** This recommendation is superseded, and the
+> text above it overstates the gap. `scripts/tests/piloting-return.test.mjs` already
+> exercises the planet-side half **by flying**, with ablation on both directions, and all
+> 30 of its cases pass on the surveyed tree. Its header states the brief this survey was
+> quoting: *"A player who lands and cannot take off, or flies out and cannot find the dock,
+> is stranded. Prove both with a driven test."*
+>
+> Specifically covered, and verified green while writing this note:
+>
+> - *the take-off on the card own keys leaves every pad, and costs the pilot nothing* —
+>   every authored landing site on Cinder, including the 2% flood island reachable only by
+>   ship. Ablation: the same climb with the engines cut.
+> - *the yard can be flown home to from anywhere, on the nav readout alone* — twelve
+>   bearings over the whole volume, flown on `navReport()` rather than the target
+>   coordinates. Ablation: the same legs on a fixed heading.
+> - *a save taken on a planet resumes on the planet, on foot, beside the ship* — which is
+>   the specific case the paragraph above worried about, since a planet publishes no portal.
+> - *dying on a planet brings the pilot home, not just the hull* — the strand case this
+>   repository's memory records.
+> - *a hull driven under the surface is set down, not lost inside the planet.*
+>
+> What the survey observed is still true and still worth having: the browser driver could
+> not hold sustained pointer-driven flight, so this flow is untested **through the real
+> input path**. That is a narrower and more accurate statement of the gap than "not
+> exercised", and it is a driver limitation rather than a hole in the game.
+>
+> The `HARNESS.goto('cinder')` observation stands on its own merits — that state has no
+> exit and is not player-reachable — and is worth keeping for whoever next drives a planet
+> from the harness.
 5. **Play a planet landing and take-off** (§5). It is the only required flow this survey
    could not reach, and it is the one with a loop-blocker in its history.
 6. **The venue prompt radius** (§2b). One radius produces two symptoms: E stolen from 7 of

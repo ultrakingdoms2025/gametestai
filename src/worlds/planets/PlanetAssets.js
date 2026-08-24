@@ -80,21 +80,35 @@ export const BLOCK_PART_KEY = 'boulders';
  * SPLITS rather than as a triangle total because the point of the number is
  * that the facets come out UNEQUAL:
  *
- *   0 splits   20 triangles - the shipped count, and the shipped problem is
- *              not the count. A noise-displaced, plane-sheared icosahedron at
- *              twenty triangles is already a different object from a regular
- *              one, and it costs nothing at all.
- *   8 splits   44 triangles. Eight regions of the body carry four small facets
- *              where the other twelve carry one large one, which is what a
- *              fractured block looks like: a few broad conchoidal faces and a
- *              lot of chipped edge. +24 triangles on 1,100 instances is
- *              +26,400 on Cinder, 13.8% of that world's whole count.
- *   20 splits  80 triangles, `IcosahedronGeometry(1, 1)`'s count, and the
- *              facets are equal again - which is the thing being fixed.
+ *   0 splits   20 triangles. The count the icosahedron already cost, so the
+ *              substitution is free in every axis the budget measures. A
+ *              noise-displaced, plane-sheared body at twenty triangles is
+ *              already a different OBJECT from a regular one, because what
+ *              made the shipped rock read as a die was its regularity and its
+ *              spherical UVs, not its budget.
+ *   8 splits   58 triangles - NOT 44. Splitting a face into four puts a
+ *              midpoint on each of its three edges, and the neighbour across
+ *              each of those edges has to close against it or the body has a
+ *              hole in it, so eight red faces drag green refinement into their
+ *              neighbours. +38 per instance is +26,400 on Cinder: 13.8% of
+ *              that world's whole triangle count.
+ *   20 splits  80 triangles, `IcosahedronGeometry(1, 1)`'s count, and every
+ *              facet is the same size again - which is the thing being fixed.
  *
- * Eight is the one that survives a screenshot and the budget together; the
- * before/after that decided it is in
- * `docs/superpowers/specs/2026-08-23-art-planets-design.md` §5.
+ * ── AND IT IS ZERO, DECIDED BY THE STOPPING RULE RATHER THAN BY TASTE ─────
+ *
+ * Both arms were built and photographed on the same two boulders from the same
+ * cameras. `tall-three-quarter` is the framing most favourable to the extra
+ * triangles that exists in this world: seven metres from the tallest ejecta
+ * block on Cinder, filling a 1600 x 900 frame. Whole-frame, 20 against 58:
+ *
+ *     mean luma  30.07 -> 29.33      Sobel edge energy  1.48 -> 1.45
+ *
+ * A 0.03 change in edge energy, in the one shot built to flatter it, for
+ * +13.8% of the world's triangles every frame. `art-space`'s experiment
+ * protocol is "adopt only if the pixels move"; they do not, so this is
+ * REFUSED and written down rather than shipped. The pairs are in
+ * `docs/superpowers/specs/img/2026-08-23-art-planets/`.
  */
 export const BLOCK_SPLITS = 0;
 

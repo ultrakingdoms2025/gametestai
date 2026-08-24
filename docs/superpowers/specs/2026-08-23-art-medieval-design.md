@@ -58,6 +58,44 @@ What the shots did show:
 
 ### 2.1 The white blow-out — NOT this world's, and not fixed here
 
+> **CORRECTED 2026-08-24 by `orb-hunt`. The attribution below is WRONG.**
+>
+> The orbs are **not** `src/systems/Loot.js`. They are `relic.glow` —
+> the halo billboard in **`src/systems/Relics.js`**, an `InstancedMesh`
+> parented to the **scene**, not to any world group.
+>
+> `art-loot` disproved the loot attribution first (hiding the loot group left
+> fourteen orbs standing, moving −1.0 to +1.0 lum) but could not say what they
+> were. `orb-hunt` then named them, in pixels, against a null floor of **0.0**:
+> hiding `relics:glow` alone took `medieval/hills-vista` from **8 orbs to 0**
+> and `citadel/tower-top` from **19 to 0**, and every orb sat within
+> **1.0–9.5 px** of a projected relic instance.
+>
+> The reason four branches could not find it: every ablation tool in the repo
+> walks `worldManager.active.group`, and these meshes are not in it —
+> `relic.glow` is not among this world's 27 world-group material names, so
+> `--ablate` could never reach it whatever name it was given.
+>
+> Two further corrections to the paragraphs below:
+>
+> - **"a dozen scattered across the vale" was partly the harness.** On the
+>   repaired `Harness.ready()` (which no longer returns during `prewarm`),
+>   `hills-vista` shows **4**, not the dozen reported here. The rest were
+>   objects `rehearse()`'s `forceDrawable` was holding visible mid-warm.
+> - The **`fog: false`** half of the diagnosis was right, and right about the
+>   wrong file. `relic.glow` carried it; it now carries the shared
+>   `hazeAdditive` law instead, which is worth **−11 to −42 lum** on the 13
+>   relics beyond 455 m in this framing (control floor 5.9).
+>
+> What is left in this framing after that fix is **4 relic halos at 57–203 m**,
+> which no fog law can touch because Aldermoor Vale's fog is `near 86 / far 880`
+> and is still under 3% attenuation at 200 m. Those are a *radiance* defect, not
+> a fog one, and they are handed back deliberately — see
+> `2026-08-23-orb-hunt-design.md` §5.
+>
+> The original text follows, unedited, because the ablation it records is real
+> and is what ruled out `medieval.glow`.
+
 Four of seven framings carry hard white orbs: one searing blob in the village square, three
 on the castle approach, a dozen scattered across the vale in `hills-vista` — in empty
 fields, on the river, 300 m out.
@@ -75,6 +113,12 @@ loot.halo.trinket    SpriteMaterial        AdditiveBlending  fog: false
 loot.beam.trinket    MeshBasicMaterial     AdditiveBlending  fog: false
 ```
 
+*(The probe found a real loot pickup at 14.1 m. What it did not establish is that
+the pickup was what any given orb was made of — the projection put a pickup near
+a blob, and the inference from "near" to "is" is the whole error. `orb-hunt`'s
+projection puts a RELIC within 1.0–9.5 px of every orb, and then removes them by
+hiding that mesh.)*
+
 Two separate faults, both global:
 
 1. Four additive/emissive layers at intensity 2.6 saturate every channel, so a violet pickup
@@ -83,6 +127,10 @@ Two separate faults, both global:
 2. **`fog: false`** means a pickup at 300 m is drawn at exactly the brightness of one at
    10 m, with no aerial perspective at all — which is why they punch through the haze as
    hard dots across a whole valley that is otherwise carefully graded.
+
+*(Both faults were real and both are now fixed — fault 1 and fault 2 in `Loot.js`
+by `art-loot`, and the same fault 2 in `Relics.js` by `orb-hunt`. Neither fix
+made this framing calm, because the orbs in it were never loot.)*
 
 **Deliberately not fixed on this branch.** `Loot.js` is a shared system used by all nine
 worlds; the placement is medieval's (`medieval/Treasures.js` publishes the collectible

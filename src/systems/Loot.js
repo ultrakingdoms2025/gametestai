@@ -299,10 +299,29 @@ function swallowInHaze(shader) {
     ADDITIVE_FOG_FRAGMENT
   );
 }
-const ADDITIVE_FOG_KEY = () => 'loot.additive-fog.v1';
+/**
+ * ONE key string for the whole game, not one per system.
+ *
+ * It used to read `loot.additive-fog.v1`. `systems/Relics.js` now carries the
+ * same law on its halo (see `hazeAdditive` below), and a key that names the
+ * system rather than the law would have handed the program cache two tokens
+ * for one patch the moment a second caller appeared.
+ */
+const ADDITIVE_FOG_KEY = () => 'additive-fog.v1';
 
-/** Give one additive layer the scene's own aerial perspective. */
-function hazeAdditive(mat) {
+/**
+ * Give one additive layer the scene's own aerial perspective.
+ *
+ * EXPORTED, and that is the point: `systems/Relics.js` needs exactly this law
+ * on its halo, and the guarantee the loot test already makes - one patch
+ * function object and one cache key, so the program cache cannot split - is
+ * only worth anything if it holds ACROSS the systems that use it, not within
+ * each of them. A second copy of these six lines somewhere else would be a
+ * second function object, a second key and a silent second program.
+ *
+ * @param {THREE.Material} mat an ADDITIVELY blended material
+ */
+export function hazeAdditive(mat) {
   mat.fog = true;
   mat.onBeforeCompile = swallowInHaze;
   mat.customProgramCacheKey = ADDITIVE_FOG_KEY;

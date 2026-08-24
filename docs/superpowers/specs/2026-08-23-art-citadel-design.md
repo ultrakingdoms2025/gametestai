@@ -82,6 +82,38 @@ by.
 
 ### 1.6 The white blobs — NOT this world's, and NOT fixed here
 
+> **CORRECTED 2026-08-24 by `orb-hunt`. The attribution below is WRONG.**
+>
+> They are not `Loot.js`. They are **`relic.glow`** — the halo billboard in
+> **`src/systems/Relics.js`**, an `InstancedMesh` parented to the **scene**
+> rather than to the citadel's group.
+>
+> Measured in this world, null floor **0.0** over the whole frame: hiding
+> `relics:glow` alone took `tower-top` from **19 detected orbs to 0** and
+> `souk-roofs` from **6 to 0**, removing **230** and **83** connected
+> footprints respectively. Every orb sat within **1.0–4.5 px** of a projected
+> relic instance — worst miss 4.5 px over 19 orbs.
+>
+> Note the sentence "Proved by ablation during `art-medieval`" — it was not.
+> `art-medieval` ablated `medieval.glow` and ruled it out, then attributed the
+> orbs to loot by a *projection near* a blob. This section inherited that
+> inference as a proof, which is how a guess became a fact in two documents.
+>
+> Why `--ablate` could never have found it here: it walks
+> `worldManager.active.group`, and `relic.glow` is not among this world's
+> **14** world-group material names.
+>
+> **This world is the one the fix helps least.** Citadel's fog is
+> `near 78 / far 880` and its rooftop relics sit at **80–160 m**, where the
+> ramp is under 2%. `orb-hunt` gave the halo the scene's aerial perspective,
+> which clears the distant orbs in Aldermoor Vale and does close to nothing
+> here. What remains in `tower-top` is a *radiance* defect — a 4.42 m additive
+> quad at linear 2.88 against a bloom threshold of 2.30 — and it is handed back
+> rather than re-authored, because dimming a collectible is a gameplay call.
+> See `2026-08-23-orb-hunt-design.md` §5.
+>
+> The original text follows, unedited.
+
 Every rooftop and aerial framing carries dozens of hard white orbs. This is
 `src/systems/Loot.js`: four stacked additive/emissive layers at intensity 2.6 with
 `fog: false`, so a pickup at 300 m is drawn as bright as one at 10. Proved by

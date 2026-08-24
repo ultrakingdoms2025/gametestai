@@ -1,0 +1,2101 @@
+{
+  "world": "medieval",
+  "view": "hills-vista",
+  "gl": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5080 (0x00002C02) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "gameplayDriven": true,
+  "size": {
+    "w": 1600,
+    "h": 900,
+    "cssW": 1600,
+    "cssH": 900
+  },
+  "nullPair": {
+    "maxDeltaLum": 0,
+    "pixelsOver1": 0,
+    "at": null,
+    "w": 1600,
+    "h": 900
+  },
+  "orbs": [
+    {
+      "id": 0,
+      "cx": 551,
+      "cy": 734,
+      "px": 556,
+      "py": 732,
+      "area": 116,
+      "spanX": 19,
+      "spanY": 11,
+      "peakLum": 228.6,
+      "ringLum": 128.5,
+      "rgb": [
+        239,
+        229,
+        194
+      ]
+    },
+    {
+      "id": 1,
+      "cx": 583,
+      "cy": 499,
+      "px": 584,
+      "py": 499,
+      "area": 21,
+      "spanX": 5,
+      "spanY": 5,
+      "peakLum": 239.3,
+      "ringLum": 50.5,
+      "rgb": [
+        249,
+        239,
+        214
+      ]
+    },
+    {
+      "id": 2,
+      "cx": 472,
+      "cy": 549,
+      "px": 472,
+      "py": 549,
+      "area": 8,
+      "spanX": 4,
+      "spanY": 2,
+      "peakLum": 228.5,
+      "ringLum": 57,
+      "rgb": [
+        241,
+        229,
+        187
+      ]
+    },
+    {
+      "id": 3,
+      "cx": 664,
+      "cy": 395,
+      "px": 664,
+      "py": 395,
+      "area": 3,
+      "spanX": 2,
+      "spanY": 2,
+      "peakLum": 239.1,
+      "ringLum": 137.4,
+      "rgb": [
+        253,
+        239,
+        199
+      ]
+    },
+    {
+      "id": 4,
+      "cx": 746,
+      "cy": 397,
+      "px": 746,
+      "py": 397,
+      "area": 3,
+      "spanX": 2,
+      "spanY": 2,
+      "peakLum": 238.7,
+      "ringLum": 144.1,
+      "rgb": [
+        252,
+        239,
+        197
+      ]
+    },
+    {
+      "id": 5,
+      "cx": 564,
+      "cy": 406,
+      "px": 564,
+      "py": 406,
+      "area": 3,
+      "spanX": 2,
+      "spanY": 2,
+      "peakLum": 233.9,
+      "ringLum": 127.4,
+      "rgb": [
+        249,
+        234,
+        188
+      ]
+    },
+    {
+      "id": 6,
+      "cx": 544,
+      "cy": 741,
+      "px": 543,
+      "py": 741,
+      "area": 3,
+      "spanX": 2,
+      "spanY": 2,
+      "peakLum": 227.5,
+      "ringLum": 163.9,
+      "rgb": [
+        236,
+        228,
+        197
+      ]
+    },
+    {
+      "id": 7,
+      "cx": 541,
+      "cy": 742,
+      "px": 541,
+      "py": 741,
+      "area": 3,
+      "spanX": 2,
+      "spanY": 2,
+      "peakLum": 226.8,
+      "ringLum": 164,
+      "rgb": [
+        235,
+        227,
+        201
+      ]
+    }
+  ],
+  "leaves": 798,
+  "rows": [
+    {
+      "id": 62,
+      "meta": {
+        "id": 62,
+        "name": "relics:glow",
+        "type": "Mesh",
+        "path": "Scene/relics:glow",
+        "mat": "relic.glow",
+        "matType": "MeshBasicMaterial",
+        "count": 110
+      },
+      "peak": 211.7,
+      "peakOrb": 1,
+      "total": 322499,
+      "per": [
+        {
+          "id": 0,
+          "sum": 113094,
+          "peak": 176.9
+        },
+        {
+          "id": 1,
+          "sum": 16105,
+          "peak": 211.7
+        },
+        {
+          "id": 2,
+          "sum": 22428,
+          "peak": 210.2
+        },
+        {
+          "id": 3,
+          "sum": 1306,
+          "peak": 95
+        },
+        {
+          "id": 4,
+          "sum": 918,
+          "peak": 88.4
+        },
+        {
+          "id": 5,
+          "sum": 2385,
+          "peak": 115
+        },
+        {
+          "id": 6,
+          "sum": 88336,
+          "peak": 176.9
+        },
+        {
+          "id": 7,
+          "sum": 77927,
+          "peak": 176.9
+        }
+      ]
+    },
+    {
+      "id": 586,
+      "meta": {
+        "id": 586,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.bark",
+        "matType": "MeshStandardMaterial",
+        "count": 16
+      },
+      "peak": 180.7,
+      "peakOrb": 1,
+      "total": 4962,
+      "per": [
+        {
+          "id": 1,
+          "sum": 4941,
+          "peak": 180.7
+        },
+        {
+          "id": 2,
+          "sum": 3,
+          "peak": 0.7
+        },
+        {
+          "id": 3,
+          "sum": 7,
+          "peak": 0.7
+        },
+        {
+          "id": 4,
+          "sum": 2,
+          "peak": 0.7
+        },
+        {
+          "id": 5,
+          "sum": 9,
+          "peak": 0.9
+        }
+      ]
+    },
+    {
+      "id": 508,
+      "meta": {
+        "id": 508,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.bark",
+        "matType": "MeshStandardMaterial",
+        "count": 58
+      },
+      "peak": 174.4,
+      "peakOrb": 1,
+      "total": 4241,
+      "per": [
+        {
+          "id": 1,
+          "sum": 4233,
+          "peak": 174.4
+        },
+        {
+          "id": 3,
+          "sum": 1,
+          "peak": 0.7
+        },
+        {
+          "id": 4,
+          "sum": 1,
+          "peak": 0.7
+        },
+        {
+          "id": 5,
+          "sum": 5,
+          "peak": 0.9
+        }
+      ]
+    },
+    {
+      "id": 112,
+      "meta": {
+        "id": 112,
+        "name": "medieval:terrain:4,5",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:4,5",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 169.4,
+      "peakOrb": 1,
+      "total": 29290,
+      "per": [
+        {
+          "id": 0,
+          "sum": 10,
+          "peak": 0.7
+        },
+        {
+          "id": 1,
+          "sum": 25498,
+          "peak": 169.4
+        },
+        {
+          "id": 2,
+          "sum": 3595,
+          "peak": 104
+        },
+        {
+          "id": 3,
+          "sum": 51,
+          "peak": 0.9
+        },
+        {
+          "id": 4,
+          "sum": 31,
+          "peak": 0.8
+        },
+        {
+          "id": 5,
+          "sum": 89,
+          "peak": 1
+        },
+        {
+          "id": 6,
+          "sum": 8,
+          "peak": 0.7
+        },
+        {
+          "id": 7,
+          "sum": 8,
+          "peak": 0.9
+        }
+      ]
+    },
+    {
+      "id": 312,
+      "meta": {
+        "id": 312,
+        "name": "medieval:rubble",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:rubble",
+        "mat": "medieval.rubble",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 149.4,
+      "peakOrb": 2,
+      "total": 30853,
+      "per": [
+        {
+          "id": 0,
+          "sum": 9,
+          "peak": 0.7
+        },
+        {
+          "id": 1,
+          "sum": 173,
+          "peak": 1
+        },
+        {
+          "id": 2,
+          "sum": 30534,
+          "peak": 149.4
+        },
+        {
+          "id": 3,
+          "sum": 36,
+          "peak": 0.7
+        },
+        {
+          "id": 4,
+          "sum": 18,
+          "peak": 0.8
+        },
+        {
+          "id": 5,
+          "sum": 64,
+          "peak": 0.9
+        },
+        {
+          "id": 6,
+          "sum": 9,
+          "peak": 0.7
+        },
+        {
+          "id": 7,
+          "sum": 10,
+          "peak": 0.9
+        }
+      ]
+    },
+    {
+      "id": 113,
+      "meta": {
+        "id": 113,
+        "name": "medieval:terrain:5,5",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:5,5",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 109.6,
+      "peakOrb": 6,
+      "total": 45210,
+      "per": [
+        {
+          "id": 0,
+          "sum": 14534,
+          "peak": 109.2
+        },
+        {
+          "id": 1,
+          "sum": 394,
+          "peak": 1
+        },
+        {
+          "id": 2,
+          "sum": 520,
+          "peak": 1.2
+        },
+        {
+          "id": 3,
+          "sum": 89,
+          "peak": 0.9
+        },
+        {
+          "id": 4,
+          "sum": 76,
+          "peak": 1
+        },
+        {
+          "id": 5,
+          "sum": 106,
+          "peak": 1
+        },
+        {
+          "id": 6,
+          "sum": 15595,
+          "peak": 109.6
+        },
+        {
+          "id": 7,
+          "sum": 13896,
+          "peak": 108.1
+        }
+      ]
+    },
+    {
+      "id": 99,
+      "meta": {
+        "id": 99,
+        "name": "medieval:terrain:0,4",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:0,4",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 107.6,
+      "peakOrb": 5,
+      "total": 4493,
+      "per": [
+        {
+          "id": 1,
+          "sum": 8,
+          "peak": 0.7
+        },
+        {
+          "id": 2,
+          "sum": 6,
+          "peak": 0.7
+        },
+        {
+          "id": 3,
+          "sum": 8,
+          "peak": 0.7
+        },
+        {
+          "id": 4,
+          "sum": 1,
+          "peak": 0.7
+        },
+        {
+          "id": 5,
+          "sum": 4470,
+          "peak": 107.6
+        }
+      ]
+    },
+    {
+      "id": 652,
+      "meta": {
+        "id": 652,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.leaf",
+        "matType": "MeshStandardMaterial",
+        "count": 3229
+      },
+      "peak": 107.6,
+      "peakOrb": 5,
+      "total": 2704,
+      "per": [
+        {
+          "id": 1,
+          "sum": 2,
+          "peak": 0.7
+        },
+        {
+          "id": 3,
+          "sum": 186,
+          "peak": 22.1
+        },
+        {
+          "id": 4,
+          "sum": 11,
+          "peak": 0.7
+        },
+        {
+          "id": 5,
+          "sum": 2504,
+          "peak": 107.6
+        }
+      ]
+    },
+    {
+      "id": 313,
+      "meta": {
+        "id": 313,
+        "name": "medieval:cobble",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:cobble",
+        "mat": "medieval.cobble",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 101.8,
+      "peakOrb": 2,
+      "total": 1752,
+      "per": [
+        {
+          "id": 2,
+          "sum": 1752,
+          "peak": 101.8
+        }
+      ]
+    },
+    {
+      "id": 380,
+      "meta": {
+        "id": 380,
+        "name": "medieval:slate",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:slate",
+        "mat": "medieval.slate",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 98.8,
+      "peakOrb": 3,
+      "total": 1545,
+      "per": [
+        {
+          "id": 3,
+          "sum": 1439,
+          "peak": 98.8
+        },
+        {
+          "id": 4,
+          "sum": 106,
+          "peak": 21.4
+        }
+      ]
+    },
+    {
+      "id": 146,
+      "meta": {
+        "id": 146,
+        "name": "medieval:river",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:river",
+        "mat": "medieval.water",
+        "matType": "ShaderMaterial",
+        "count": null
+      },
+      "peak": 90.9,
+      "peakOrb": 2,
+      "total": 28142,
+      "per": [
+        {
+          "id": 0,
+          "sum": 721,
+          "peak": 20.3
+        },
+        {
+          "id": 1,
+          "sum": 34,
+          "peak": 0.7
+        },
+        {
+          "id": 2,
+          "sum": 6652,
+          "peak": 90.9
+        },
+        {
+          "id": 3,
+          "sum": 8,
+          "peak": 0.7
+        },
+        {
+          "id": 4,
+          "sum": 3,
+          "peak": 0.8
+        },
+        {
+          "id": 5,
+          "sum": 18,
+          "peak": 0.8
+        },
+        {
+          "id": 6,
+          "sum": 7899,
+          "peak": 61.9
+        },
+        {
+          "id": 7,
+          "sum": 12807,
+          "peak": 75.9
+        }
+      ]
+    },
+    {
+      "id": 81,
+      "meta": {
+        "id": 81,
+        "name": "medieval:terrain:0,2",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:0,2",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 83.8,
+      "peakOrb": 4,
+      "total": 2949,
+      "per": [
+        {
+          "id": 1,
+          "sum": 1,
+          "peak": 0.7
+        },
+        {
+          "id": 3,
+          "sum": 336,
+          "peak": 19.4
+        },
+        {
+          "id": 4,
+          "sum": 2611,
+          "peak": 83.8
+        },
+        {
+          "id": 5,
+          "sum": 1,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 61,
+      "meta": {
+        "id": 61,
+        "name": "relics",
+        "type": "Mesh",
+        "path": "Scene/relics",
+        "mat": "relic.body",
+        "matType": "MeshStandardMaterial",
+        "count": 110
+      },
+      "peak": 79.2,
+      "peakOrb": 1,
+      "total": 9231,
+      "per": [
+        {
+          "id": 0,
+          "sum": 2311,
+          "peak": 20.8
+        },
+        {
+          "id": 1,
+          "sum": 1637,
+          "peak": 79.2
+        },
+        {
+          "id": 2,
+          "sum": 106,
+          "peak": 1.9
+        },
+        {
+          "id": 3,
+          "sum": 115,
+          "peak": 21.9
+        },
+        {
+          "id": 4,
+          "sum": 259,
+          "peak": 3.7
+        },
+        {
+          "id": 5,
+          "sum": 37,
+          "peak": 9.1
+        },
+        {
+          "id": 6,
+          "sum": 2533,
+          "peak": 20.8
+        },
+        {
+          "id": 7,
+          "sum": 2233,
+          "peak": 20.8
+        }
+      ]
+    },
+    {
+      "id": 144,
+      "meta": {
+        "id": 144,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.distant",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 62,
+      "peakOrb": 3,
+      "total": 21157,
+      "per": [
+        {
+          "id": 1,
+          "sum": 10,
+          "peak": 0.7
+        },
+        {
+          "id": 3,
+          "sum": 11575,
+          "peak": 62
+        },
+        {
+          "id": 4,
+          "sum": 5577,
+          "peak": 60.6
+        },
+        {
+          "id": 5,
+          "sum": 3993,
+          "peak": 31.6
+        }
+      ]
+    },
+    {
+      "id": 509,
+      "meta": {
+        "id": 509,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.leaf",
+        "matType": "MeshStandardMaterial",
+        "count": 58
+      },
+      "peak": 58.2,
+      "peakOrb": 1,
+      "total": 2617,
+      "per": [
+        {
+          "id": 1,
+          "sum": 2612,
+          "peak": 58.2
+        },
+        {
+          "id": 4,
+          "sum": 2,
+          "peak": 0.7
+        },
+        {
+          "id": 5,
+          "sum": 2,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 589,
+      "meta": {
+        "id": 589,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.leaf",
+        "matType": "MeshStandardMaterial",
+        "count": 13
+      },
+      "peak": 57.7,
+      "peakOrb": 5,
+      "total": 700,
+      "per": [
+        {
+          "id": 5,
+          "sum": 700,
+          "peak": 57.7
+        }
+      ]
+    },
+    {
+      "id": 90,
+      "meta": {
+        "id": 90,
+        "name": "medieval:terrain:0,3",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:0,3",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 55.4,
+      "peakOrb": 3,
+      "total": 3602,
+      "per": [
+        {
+          "id": 3,
+          "sum": 3596,
+          "peak": 55.4
+        },
+        {
+          "id": 5,
+          "sum": 6,
+          "peak": 3.7
+        }
+      ]
+    },
+    {
+      "id": 655,
+      "meta": {
+        "id": 655,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.leaf",
+        "matType": "MeshStandardMaterial",
+        "count": 1395
+      },
+      "peak": 49.2,
+      "peakOrb": 1,
+      "total": 3485,
+      "per": [
+        {
+          "id": 1,
+          "sum": 3485,
+          "peak": 49.2
+        }
+      ]
+    },
+    {
+      "id": 100,
+      "meta": {
+        "id": 100,
+        "name": "medieval:terrain:1,4",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:1,4",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 47.3,
+      "peakOrb": 5,
+      "total": 9636,
+      "per": [
+        {
+          "id": 1,
+          "sum": 19,
+          "peak": 0.7
+        },
+        {
+          "id": 2,
+          "sum": 13,
+          "peak": 0.7
+        },
+        {
+          "id": 3,
+          "sum": 9,
+          "peak": 0.7
+        },
+        {
+          "id": 4,
+          "sum": 3,
+          "peak": 0.7
+        },
+        {
+          "id": 5,
+          "sum": 9592,
+          "peak": 47.3
+        }
+      ]
+    },
+    {
+      "id": 311,
+      "meta": {
+        "id": 311,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Object3D/Mesh",
+        "mat": "medieval.plank",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 41.7,
+      "peakOrb": 2,
+      "total": 2909,
+      "per": [
+        {
+          "id": 1,
+          "sum": 2,
+          "peak": 0.7
+        },
+        {
+          "id": 2,
+          "sum": 2904,
+          "peak": 41.7
+        },
+        {
+          "id": 5,
+          "sum": 3,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 381,
+      "meta": {
+        "id": 381,
+        "name": "medieval:beam",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:beam",
+        "mat": "medieval.beam",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 40.2,
+      "peakOrb": 3,
+      "total": 131,
+      "per": [
+        {
+          "id": 3,
+          "sum": 82,
+          "peak": 40.2
+        },
+        {
+          "id": 4,
+          "sum": 49,
+          "peak": 12.6
+        }
+      ]
+    },
+    {
+      "id": 547,
+      "meta": {
+        "id": 547,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.leaf",
+        "matType": "MeshStandardMaterial",
+        "count": 4
+      },
+      "peak": 38.6,
+      "peakOrb": 5,
+      "total": 577,
+      "per": [
+        {
+          "id": 5,
+          "sum": 577,
+          "peak": 38.6
+        }
+      ]
+    },
+    {
+      "id": 626,
+      "meta": {
+        "id": 626,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.bark",
+        "matType": "MeshStandardMaterial",
+        "count": 89
+      },
+      "peak": 37.3,
+      "peakOrb": 3,
+      "total": 96,
+      "per": [
+        {
+          "id": 3,
+          "sum": 89,
+          "peak": 37.3
+        },
+        {
+          "id": 4,
+          "sum": 7,
+          "peak": 3.1
+        }
+      ]
+    },
+    {
+      "id": 151,
+      "meta": {
+        "id": 151,
+        "name": "medieval:cobbles4",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:cobbles4",
+        "mat": "medieval.cobble",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 35.8,
+      "peakOrb": 2,
+      "total": 616,
+      "per": [
+        {
+          "id": 1,
+          "sum": 6,
+          "peak": 2.1
+        },
+        {
+          "id": 2,
+          "sum": 610,
+          "peak": 35.8
+        }
+      ]
+    },
+    {
+      "id": 627,
+      "meta": {
+        "id": 627,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.leaf",
+        "matType": "MeshStandardMaterial",
+        "count": 89
+      },
+      "peak": 34.6,
+      "peakOrb": 3,
+      "total": 672,
+      "per": [
+        {
+          "id": 3,
+          "sum": 610,
+          "peak": 34.6
+        },
+        {
+          "id": 4,
+          "sum": 62,
+          "peak": 27.3
+        }
+      ]
+    },
+    {
+      "id": 654,
+      "meta": {
+        "id": 654,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.leaf",
+        "matType": "MeshStandardMaterial",
+        "count": 2263
+      },
+      "peak": 31.6,
+      "peakOrb": 1,
+      "total": 1645,
+      "per": [
+        {
+          "id": 1,
+          "sum": 1638,
+          "peak": 31.6
+        },
+        {
+          "id": 3,
+          "sum": 1,
+          "peak": 0.7
+        },
+        {
+          "id": 4,
+          "sum": 1,
+          "peak": 0.7
+        },
+        {
+          "id": 5,
+          "sum": 3,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 557,
+      "meta": {
+        "id": 557,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.leaf",
+        "matType": "MeshStandardMaterial",
+        "count": 3
+      },
+      "peak": 28.1,
+      "peakOrb": 3,
+      "total": 763,
+      "per": [
+        {
+          "id": 3,
+          "sum": 749,
+          "peak": 28.1
+        },
+        {
+          "id": 4,
+          "sum": 14,
+          "peak": 9.1
+        }
+      ]
+    },
+    {
+      "id": 677,
+      "meta": {
+        "id": 677,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.contact",
+        "matType": "MeshBasicMaterial",
+        "count": 2747
+      },
+      "peak": 27.8,
+      "peakOrb": 1,
+      "total": 661,
+      "per": [
+        {
+          "id": 1,
+          "sum": 658,
+          "peak": 27.8
+        },
+        {
+          "id": 5,
+          "sum": 3,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 675,
+      "meta": {
+        "id": 675,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.rock",
+        "matType": "MeshStandardMaterial",
+        "count": 90
+      },
+      "peak": 26.2,
+      "peakOrb": 3,
+      "total": 346,
+      "per": [
+        {
+          "id": 1,
+          "sum": 10,
+          "peak": 0.7
+        },
+        {
+          "id": 2,
+          "sum": 9,
+          "peak": 0.7
+        },
+        {
+          "id": 3,
+          "sum": 285,
+          "peak": 26.2
+        },
+        {
+          "id": 4,
+          "sum": 20,
+          "peak": 3.9
+        },
+        {
+          "id": 5,
+          "sum": 22,
+          "peak": 0.9
+        }
+      ]
+    },
+    {
+      "id": 382,
+      "meta": {
+        "id": 382,
+        "name": "medieval:glass",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:glass",
+        "mat": "medieval.glass",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 25.2,
+      "peakOrb": 3,
+      "total": 27,
+      "per": [
+        {
+          "id": 3,
+          "sum": 27,
+          "peak": 25.2
+        }
+      ]
+    },
+    {
+      "id": 588,
+      "meta": {
+        "id": 588,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.bark",
+        "matType": "MeshStandardMaterial",
+        "count": 13
+      },
+      "peak": 24.5,
+      "peakOrb": 5,
+      "total": 197,
+      "per": [
+        {
+          "id": 5,
+          "sum": 197,
+          "peak": 24.5
+        }
+      ]
+    },
+    {
+      "id": 72,
+      "meta": {
+        "id": 72,
+        "name": "medieval:terrain:0,1",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:0,1",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 21.7,
+      "peakOrb": 4,
+      "total": 432,
+      "per": [
+        {
+          "id": 1,
+          "sum": 2,
+          "peak": 0.7
+        },
+        {
+          "id": 3,
+          "sum": 1,
+          "peak": 0.7
+        },
+        {
+          "id": 4,
+          "sum": 428,
+          "peak": 21.7
+        },
+        {
+          "id": 5,
+          "sum": 1,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 673,
+      "meta": {
+        "id": 673,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.leaf",
+        "matType": "MeshStandardMaterial",
+        "count": 420
+      },
+      "peak": 21.5,
+      "peakOrb": 3,
+      "total": 298,
+      "per": [
+        {
+          "id": 1,
+          "sum": 136,
+          "peak": 21.2
+        },
+        {
+          "id": 3,
+          "sum": 129,
+          "peak": 21.5
+        },
+        {
+          "id": 4,
+          "sum": 4,
+          "peak": 0.7
+        },
+        {
+          "id": 5,
+          "sum": 29,
+          "peak": 6.6
+        }
+      ]
+    },
+    {
+      "id": 145,
+      "meta": {
+        "id": 145,
+        "name": "medieval:sky",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:sky",
+        "mat": "medieval.sky",
+        "matType": "ShaderMaterial",
+        "count": null
+      },
+      "peak": 19.1,
+      "peakOrb": 3,
+      "total": 2699,
+      "per": [
+        {
+          "id": 3,
+          "sum": 1145,
+          "peak": 19.1
+        },
+        {
+          "id": 4,
+          "sum": 1403,
+          "peak": 19.1
+        },
+        {
+          "id": 5,
+          "sum": 151,
+          "peak": 6.4
+        }
+      ]
+    },
+    {
+      "id": 587,
+      "meta": {
+        "id": 587,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.leaf",
+        "matType": "MeshStandardMaterial",
+        "count": 16
+      },
+      "peak": 18.7,
+      "peakOrb": 1,
+      "total": 562,
+      "per": [
+        {
+          "id": 1,
+          "sum": 562,
+          "peak": 18.7
+        }
+      ]
+    },
+    {
+      "id": 378,
+      "meta": {
+        "id": 378,
+        "name": "medieval:rubble",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:rubble",
+        "mat": "medieval.rubble",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 17.8,
+      "peakOrb": 3,
+      "total": 422,
+      "per": [
+        {
+          "id": 3,
+          "sum": 352,
+          "peak": 17.8
+        },
+        {
+          "id": 4,
+          "sum": 70,
+          "peak": 14.5
+        }
+      ]
+    },
+    {
+      "id": 299,
+      "meta": {
+        "id": 299,
+        "name": "medieval:beam",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:beam",
+        "mat": "medieval.beam",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 17.1,
+      "peakOrb": 1,
+      "total": 159,
+      "per": [
+        {
+          "id": 1,
+          "sum": 159,
+          "peak": 17.1
+        }
+      ]
+    },
+    {
+      "id": 111,
+      "meta": {
+        "id": 111,
+        "name": "medieval:terrain:3,5",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:3,5",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 16.3,
+      "peakOrb": 1,
+      "total": 467,
+      "per": [
+        {
+          "id": 1,
+          "sum": 467,
+          "peak": 16.3
+        }
+      ]
+    },
+    {
+      "id": 556,
+      "meta": {
+        "id": 556,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.bark",
+        "matType": "MeshStandardMaterial",
+        "count": 3
+      },
+      "peak": 14.1,
+      "peakOrb": 3,
+      "total": 61,
+      "per": [
+        {
+          "id": 3,
+          "sum": 58,
+          "peak": 14.1
+        },
+        {
+          "id": 4,
+          "sum": 3,
+          "peak": 0.9
+        }
+      ]
+    },
+    {
+      "id": 567,
+      "meta": {
+        "id": 567,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.leaf",
+        "matType": "MeshStandardMaterial",
+        "count": 28
+      },
+      "peak": 13.6,
+      "peakOrb": 3,
+      "total": 167,
+      "per": [
+        {
+          "id": 3,
+          "sum": 165,
+          "peak": 13.6
+        },
+        {
+          "id": 4,
+          "sum": 2,
+          "peak": 2.1
+        }
+      ]
+    },
+    {
+      "id": 546,
+      "meta": {
+        "id": 546,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.bark",
+        "matType": "MeshStandardMaterial",
+        "count": 4
+      },
+      "peak": 11.6,
+      "peakOrb": 5,
+      "total": 111,
+      "per": [
+        {
+          "id": 5,
+          "sum": 111,
+          "peak": 11.6
+        }
+      ]
+    },
+    {
+      "id": 310,
+      "meta": {
+        "id": 310,
+        "name": "medieval:skirts",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:skirts",
+        "mat": "medieval.skirt",
+        "matType": "MeshBasicMaterial",
+        "count": null
+      },
+      "peak": 9.1,
+      "peakOrb": 2,
+      "total": 432,
+      "per": [
+        {
+          "id": 1,
+          "sum": 2,
+          "peak": 0.7
+        },
+        {
+          "id": 2,
+          "sum": 428,
+          "peak": 9.1
+        },
+        {
+          "id": 5,
+          "sum": 2,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 383,
+      "meta": {
+        "id": 383,
+        "name": "medieval:plank",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:plank",
+        "mat": "medieval.plank",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 5.8,
+      "peakOrb": 3,
+      "total": 18,
+      "per": [
+        {
+          "id": 3,
+          "sum": 18,
+          "peak": 5.8
+        }
+      ]
+    },
+    {
+      "id": 674,
+      "meta": {
+        "id": 674,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.rock",
+        "matType": "MeshStandardMaterial",
+        "count": 300
+      },
+      "peak": 4.7,
+      "peakOrb": 3,
+      "total": 24,
+      "per": [
+        {
+          "id": 3,
+          "sum": 18,
+          "peak": 4.7
+        },
+        {
+          "id": 4,
+          "sum": 1,
+          "peak": 0.7
+        },
+        {
+          "id": 5,
+          "sum": 5,
+          "peak": 1
+        }
+      ]
+    },
+    {
+      "id": 679,
+      "meta": {
+        "id": 679,
+        "name": "",
+        "type": "Points",
+        "path": "Scene/world:medieval/Points",
+        "mat": "ShaderMaterial",
+        "matType": "ShaderMaterial",
+        "count": 3066
+      },
+      "peak": 4.6,
+      "peakOrb": 3,
+      "total": 165,
+      "per": [
+        {
+          "id": 3,
+          "sum": 106,
+          "peak": 4.6
+        },
+        {
+          "id": 4,
+          "sum": 59,
+          "peak": 3.2
+        }
+      ]
+    },
+    {
+      "id": 667,
+      "meta": {
+        "id": 667,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "MeshStandardMaterial",
+        "matType": "MeshStandardMaterial",
+        "count": 4298
+      },
+      "peak": 2,
+      "peakOrb": 2,
+      "total": 7,
+      "per": [
+        {
+          "id": 2,
+          "sum": 7,
+          "peak": 2
+        }
+      ]
+    },
+    {
+      "id": 110,
+      "meta": {
+        "id": 110,
+        "name": "medieval:terrain:2,5",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:2,5",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 1.9,
+      "peakOrb": 2,
+      "total": 182,
+      "per": [
+        {
+          "id": 0,
+          "sum": 1,
+          "peak": 0.7
+        },
+        {
+          "id": 1,
+          "sum": 40,
+          "peak": 0.9
+        },
+        {
+          "id": 2,
+          "sum": 86,
+          "peak": 1.9
+        },
+        {
+          "id": 3,
+          "sum": 18,
+          "peak": 0.7
+        },
+        {
+          "id": 4,
+          "sum": 7,
+          "peak": 0.7
+        },
+        {
+          "id": 5,
+          "sum": 30,
+          "peak": 0.9
+        }
+      ]
+    },
+    {
+      "id": 315,
+      "meta": {
+        "id": 315,
+        "name": "medieval:beam",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:beam",
+        "mat": "medieval.beam",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 1.9,
+      "peakOrb": 2,
+      "total": 7,
+      "per": [
+        {
+          "id": 2,
+          "sum": 7,
+          "peak": 1.9
+        }
+      ]
+    },
+    {
+      "id": 676,
+      "meta": {
+        "id": 676,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "MeshStandardMaterial",
+        "matType": "MeshStandardMaterial",
+        "count": 5200
+      },
+      "peak": 1.9,
+      "peakOrb": 2,
+      "total": 7,
+      "per": [
+        {
+          "id": 2,
+          "sum": 7,
+          "peak": 1.9
+        }
+      ]
+    },
+    {
+      "id": 680,
+      "meta": {
+        "id": 680,
+        "name": "",
+        "type": "Points",
+        "path": "Scene/world:medieval/Points",
+        "mat": "ShaderMaterial",
+        "matType": "ShaderMaterial",
+        "count": 1400
+      },
+      "peak": 1.9,
+      "peakOrb": 1,
+      "total": 12,
+      "per": [
+        {
+          "id": 1,
+          "sum": 10,
+          "peak": 1.9
+        },
+        {
+          "id": 5,
+          "sum": 2,
+          "peak": 0.9
+        }
+      ]
+    },
+    {
+      "id": 308,
+      "meta": {
+        "id": 308,
+        "name": "medieval:rock",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:rock",
+        "mat": "medieval.rock",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 0.9,
+      "peakOrb": 1,
+      "total": 2,
+      "per": [
+        {
+          "id": 1,
+          "sum": 2,
+          "peak": 0.9
+        }
+      ]
+    },
+    {
+      "id": 379,
+      "meta": {
+        "id": 379,
+        "name": "medieval:ashlar",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:ashlar",
+        "mat": "medieval.ashlar",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 0.9,
+      "peakOrb": 3,
+      "total": 1,
+      "per": [
+        {
+          "id": 3,
+          "sum": 1,
+          "peak": 0.9
+        }
+      ]
+    },
+    {
+      "id": 85,
+      "meta": {
+        "id": 85,
+        "name": "medieval:terrain:4,2",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:4,2",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 0.7,
+      "peakOrb": 1,
+      "total": 2,
+      "per": [
+        {
+          "id": 1,
+          "sum": 1,
+          "peak": 0.7
+        },
+        {
+          "id": 4,
+          "sum": 1,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 94,
+      "meta": {
+        "id": 94,
+        "name": "medieval:terrain:4,3",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:4,3",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 0.7,
+      "peakOrb": 5,
+      "total": 1,
+      "per": [
+        {
+          "id": 5,
+          "sum": 1,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 95,
+      "meta": {
+        "id": 95,
+        "name": "medieval:terrain:5,3",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:5,3",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 0.7,
+      "peakOrb": 5,
+      "total": 1,
+      "per": [
+        {
+          "id": 5,
+          "sum": 1,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 103,
+      "meta": {
+        "id": 103,
+        "name": "medieval:terrain:4,4",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:4,4",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 0.7,
+      "peakOrb": 5,
+      "total": 1,
+      "per": [
+        {
+          "id": 5,
+          "sum": 1,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 104,
+      "meta": {
+        "id": 104,
+        "name": "medieval:terrain:5,4",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:terrain:5,4",
+        "mat": "medieval.terrain",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 0.7,
+      "peakOrb": 4,
+      "total": 1,
+      "per": [
+        {
+          "id": 4,
+          "sum": 1,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 158,
+      "meta": {
+        "id": 158,
+        "name": "medieval:ashlar",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:ashlar",
+        "mat": "medieval.ashlar",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 0.7,
+      "peakOrb": 5,
+      "total": 1,
+      "per": [
+        {
+          "id": 5,
+          "sum": 1,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 297,
+      "meta": {
+        "id": 297,
+        "name": "medieval:rubble",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:rubble",
+        "mat": "medieval.rubble",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 0.7,
+      "peakOrb": 5,
+      "total": 1,
+      "per": [
+        {
+          "id": 5,
+          "sum": 1,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 540,
+      "meta": {
+        "id": 540,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.bark",
+        "matType": "MeshStandardMaterial",
+        "count": 5
+      },
+      "peak": 0.7,
+      "peakOrb": 5,
+      "total": 1,
+      "per": [
+        {
+          "id": 5,
+          "sum": 1,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 665,
+      "meta": {
+        "id": 665,
+        "name": "",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/Mesh",
+        "mat": "medieval.leaf",
+        "matType": "MeshStandardMaterial",
+        "count": 108
+      },
+      "peak": 0.7,
+      "peakOrb": 3,
+      "total": 3,
+      "per": [
+        {
+          "id": 3,
+          "sum": 3,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 682,
+      "meta": {
+        "id": 682,
+        "name": "medieval:rock",
+        "type": "Mesh",
+        "path": "Scene/world:medieval/medieval:rock",
+        "mat": "medieval.rock",
+        "matType": "MeshStandardMaterial",
+        "count": null
+      },
+      "peak": 0.7,
+      "peakOrb": 1,
+      "total": 21,
+      "per": [
+        {
+          "id": 1,
+          "sum": 2,
+          "peak": 0.7
+        },
+        {
+          "id": 3,
+          "sum": 7,
+          "peak": 0.7
+        },
+        {
+          "id": 4,
+          "sum": 9,
+          "peak": 0.7
+        },
+        {
+          "id": 5,
+          "sum": 3,
+          "peak": 0.7
+        }
+      ]
+    },
+    {
+      "id": 722,
+      "meta": {
+        "id": 722,
+        "name": "",
+        "type": "Points",
+        "path": "Scene/portal:station/Points",
+        "mat": "ShaderMaterial",
+        "matType": "ShaderMaterial",
+        "count": 180
+      },
+      "peak": 0.7,
+      "peakOrb": 5,
+      "total": 1,
+      "per": [
+        {
+          "id": 5,
+          "sum": 1,
+          "peak": 0.7
+        }
+      ]
+    }
+  ]
+}

@@ -79,6 +79,16 @@ import { getMaxAnisotropy } from '../../gfx/Textures.js';
  */
 export const MAZE_ASSET_PREFABS = Object.freeze({
   newel: 'newel-finial',
+  /* Phase 9. `sprig` is the dressing kind whose geometry BOTH the hedge-top
+   * growth and the shaft ivy instance - one authored tuft, scaled upright for
+   * a shoot and squashed flat on a wall's normal for a leaf. It is the single
+   * most-drawn geometry in this world by a wide margin (measured: 3,600
+   * instances per district, 21 districts resident at the entrance, and the
+   * fourteen largest objects in every framing were fourteen of its meshes),
+   * which is why the authored file is TEN triangles - two fewer than the box
+   * it replaces. See scripts/make-maze-glb.mjs. */
+  sprig: 'leaf-tuft',
+  candle: 'hedge-candle',
 });
 
 /**

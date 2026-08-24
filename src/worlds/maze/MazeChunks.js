@@ -11,7 +11,9 @@ import { PLATE_HALF_HEIGHT, PLATE_HALF_WIDTH } from './MazeShafts.js';
  * cached geometry already built at world scale and a matrix carrying only
  * where to put it. See MazeMeshes.js for why that separation is what lets the
  * art change without any headless proof being re-run. */
-import { prefabFor, groupByExtentClass, isPrefab, releasePrefabs } from './MazeMeshes.js';
+import {
+  prefabFor, groupByExtentClass, isPrefab, releasePrefabs, sprigGeometry,
+} from './MazeMeshes.js';
 /* The LOD bands, pure. One definition, shared with the headless triangle-
  * budget test, so the bands the browser renders are the bands the suite
  * priced. See MazeProfiles.js for the derivation. */
@@ -270,9 +272,14 @@ export class MazeChunks {
         kind: 'footing', cx: f.x, cy: f.y, cz: f.z, hx: f.hx, hy: f.hy, hz: f.hz,
       })));
     }
+    /* ONE shared tuft geometry for every sprig in the world, hedge growth and
+     * shaft ivy alike - see `MazeMeshes.sprigGeometry`. Resolved once per
+     * district rather than once per mesh only because it is two map lookups;
+     * the registry hands back the same object either way. */
+    const tuft = sprigGeometry(this.assets);
     const sprigs = foliageTransforms(descs, key);
     if (sprigs.length && this.materials.foliage) {
-      const sm = buildSprigInstances(sprigs, this.materials.foliage, `maze:foliage:${key}`, this.group);
+      const sm = buildSprigInstances(sprigs, this.materials.foliage, `maze:foliage:${key}`, this.group, tuft);
       if (sm) meshes.push(sm);
     }
 
@@ -281,7 +288,7 @@ export class MazeChunks {
      * the handful of districts that have one and none at all in the rest. */
     const ivy = shaftIvyTransforms(descs, key);
     if (ivy.length && this.materials.ivy) {
-      const im = buildSprigInstances(ivy, this.materials.ivy, `maze:ivy:${key}`, this.group);
+      const im = buildSprigInstances(ivy, this.materials.ivy, `maze:ivy:${key}`, this.group, tuft);
       if (im) meshes.push(im);
     }
 
@@ -378,9 +385,17 @@ export class MazeChunks {
 
     const candles = candlePlacements(descs, key);
     if (candles.length && this.materials.candle) {
-      /* Batched; castShadow=false lives on the candle family's batch now. */
+      /* Batched; castShadow=false lives on the candle family's batch now.
+       *
+       * `assets` is what lets the authored wax pillar (Phase 9,
+       * `hedge-candle.glb`) be adopted for this kind exactly the way the
+       * newel above is - it merges into the SAME single candle batch, drawn
+       * with the SAME cached emissive material, so it costs no draw call, no
+       * material and no program. Absent, `prefabFor` builds the box this
+       * shipped as and nothing else changes. */
       batched.push(...candles.map((cd) => ({
         kind: 'candle', cx: cd.x, cy: cd.y, cz: cd.z, hx: 0.09, hy: 0.26, hz: 0.09,
+        assets: this.assets,
       })));
     }
     const flames = [];
@@ -391,7 +406,16 @@ export class MazeChunks {
        * one frame that can compile. */
       const f = new THREE.PointLight(CANDLE_COLOUR, CANDLE_INTENSITY, CANDLE_RANGE);
       f.visible = false;
-      f.position.set(cd.x, cd.y + 0.18, cd.z);
+      /* IN the flame, not in the wax.
+       *
+       * `cd.y` is the candle's centre and the prop is 0.52 m tall, so +0.18
+       * put the light 8 cm BELOW the top of what used to be a plain glowing
+       * slab - which was arbitrary but invisible, because the slab had no
+       * flame for it to be in the wrong place relative to. The authored
+       * candle's flame occupies the top 5.6 cm of the same box, so the light
+       * moves 5 cm up to sit inside it. The intensity, colour and range are
+       * untouched: this is where the existing light is, not a new one. */
+      f.position.set(cd.x, cd.y + 0.23, cd.z);
       this.group.add(f);
       flames.push(f);
     }
@@ -1054,30 +1078,52 @@ export function districtLodDistance(px, py, pz, key) {
 }
 
 /**
- * One InstancedMesh of small leaning boxes, for foliage.
+ * One InstancedMesh of small leaning tufts, for foliage.
  *
- * Separate from `buildBoxInstances` because a sprig needs a Y ROTATION and a
- * uniform scale, and a hedge needs neither - threading rotation through the
+ * Separate from `buildBoxInstances` because a sprig needs a ROTATION and a
+ * per-axis scale, and a hedge needs neither - threading rotation through the
  * hot path that builds ten thousand walls per district to serve the dressing
  * would be the wrong trade.
  *
- * Foliage casts no shadow: at five sprigs per hedge segment across 25 resident
- * districts that is tens of thousands of shadow casters for detail nobody
- * reads, and shadow cost is the one budget the canopy work already showed this
- * world is sensitive to.
+ * Foliage casts no shadow: at nine sprigs per hedge segment across 21+
+ * resident districts that is tens of thousands of shadow casters for detail
+ * nobody reads, and shadow cost is the one budget the canopy work already
+ * showed this world is sensitive to.
+ *
+ * IT DOES RECEIVE ONE, and that is a Phase 9 correction rather than a
+ * preference. Every other opaque mesh in this world receives: `MazeBatches`
+ * sets `batch.receiveShadow = true` on all seven families and
+ * `buildBoxInstances` sets it on every mover. The sprig instancer was the one
+ * exception, and it had no stated reason - the comment above it justified
+ * `castShadow` and said nothing about receiving. The result was measurable,
+ * not theoretical: on levels 0-2 the whole maze stands under the floor above
+ * and is therefore in shadow, so a sprig sitting on a hedge top came out at
+ * **luma 96.9 against the hedge's 21.2 thirty centimetres away** - a 4.6:1
+ * ratio under identical sun, which is why the growth photographed as
+ * highlighter marks rather than as new leaf. The first hypothesis was that
+ * the flat colour `0x86ab55` had gone stale when Task 9 swapped the
+ * procedural hedge bake for the ambientCG albedo; it had not - that colour is
+ * within 6% of the procedural hedge's own light tint, exactly the "shade
+ * lighter and yellower" its comment claims. The colour was never the defect.
+ * The missing shadow was.
  *
  * @param {Array<{x:number,y:number,z:number,ry:number,s:number}>} sprigs
+ * @param {THREE.BufferGeometry} geometry the SHARED tuft from
+ *   `MazeMeshes.sprigGeometry` - registry-owned, never disposed here (the
+ *   release paths above already skip anything `isPrefab` owns). Defaulted so
+ *   a caller that only wants the placement behaviour still works.
  * @returns {THREE.InstancedMesh|null}
  */
-export function buildSprigInstances(sprigs, material, name, group) {
+export function buildSprigInstances(sprigs, material, name, group, geometry = null) {
   if (sprigs.length === 0) return null;
-  const geo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+  const geo = geometry ?? sprigGeometry();
   const mesh = new THREE.InstancedMesh(geo, material, sprigs.length);
   mesh.name = name;
   mesh.castShadow = false;
-  mesh.receiveShadow = false;
+  mesh.receiveShadow = true;
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
+  const qTilt = new THREE.Quaternion();
   const up = new THREE.Vector3(0, 1, 0);
   const axisX = new THREE.Vector3(1, 0, 0);
   const axisZ = new THREE.Vector3(0, 0, 1);
@@ -1100,6 +1146,21 @@ export function buildSprigInstances(sprigs, material, name, group) {
      * normal: rolling about the normal leaves the thin axis exactly where it
      * was and varies the leaf only within the plane of the stone. */
     q.setFromAxisAngle(s.axis === 'x' ? axisX : s.axis === 'z' ? axisZ : up, s.ry);
+    /* An optional LEAN, applied in the instance's own frame BEFORE the yaw
+     * above, so that a tuft leans in whatever direction its yaw happens to
+     * face rather than every tuft on the hedge leaning the same way.
+     *
+     * Only the hedge growth asks for one. Every sprig in this world stood
+     * perfectly upright until Phase 9, and with an axis-aligned box for a
+     * geometry that made a hedge top read as a row of bricks laid by hand -
+     * the one thing five hundred metres of clipped hedge must not look like.
+     * Ivy deliberately does NOT lean: its whole placement argument is that
+     * the leaf's thin axis must stay on the wall's normal, and a lean is
+     * exactly the rotation that takes it off. */
+    if (s.tilt) {
+      qTilt.setFromAxisAngle(axisX, s.tilt);
+      q.multiply(qTilt);
+    }
     /* Per-axis scale when a sprig asks for one. Hedge-top growth is a chunky
      * little bush and wants the uniform default; ivy is a leaf lying flat on
      * stone and has to be squashed on the wall's normal, or it reads as dice

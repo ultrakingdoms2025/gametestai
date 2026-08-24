@@ -11,6 +11,26 @@
       "bytes": 12092
     },
     {
+      "id": "leaf-tuft",
+      "file": "leaf-tuft.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-maze-glb.mjs - procedurally authored in this repository, 2026-08-23. The hedge-top sprig AND the shaft ivy leaf: one irregular five-fold tuft, authored to the same 0.5m bounding cube as the BoxGeometry it replaces so every scale in MazeFoliage keeps its meaning. TEN triangles against the box's twelve, because this is the single most-instanced geometry in the world.",
+      "tris": 10,
+      "verts": 30,
+      "bytes": 2244
+    },
+    {
+      "id": "hedge-candle",
+      "file": "hedge-candle.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-maze-glb.mjs - procedurally authored in this repository, 2026-08-23. A seven-sided wax pillar with a melted lip and a flame, authored inside the candle descriptor's own 0.18 x 0.52 x 0.18 dressing box. All one material: MazeMaterials.candle is a single emissive wax and a batched prefab cannot carry a second, so there is no iron bracket.",
+      "tris": 70,
+      "verts": 210,
+      "bytes": 8416
+    },
+    {
       "id": "surf-hedge-albedo",
       "file": "tex/hedge-albedo.ktx2",
       "kind": "texture",

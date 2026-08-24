@@ -258,7 +258,20 @@ for (const [name, fam] of Object.entries(BATCH_FAMILIES)) {
  * (one class, one tier - the registry hands the same object back at every
  * LOD, so it cannot double the way the two-tier kinds do). Pool cost of the
  * raise: 26 x 512 = 13,312 reserved verts (~0.6 MB with attributes) against
- * the old 4,608 - still under half of one resident set's hedges. */
+ * the old 4,608 - still under half of one resident set's hedges.
+ *
+ * RE-SIZED FOR PHASE 9: `candle` gains the authored wax pillar
+ * (`hedge-candle.glb`, 210 verts / 210 indices against the box's 24 / 36).
+ * The old reservation was 24 / 36 - EXACTLY one box, with no headroom at all
+ * - so adopting the authored file without this line would not have looked
+ * wrong, it would have thrown inside `BatchedMesh.addGeometry` on the first
+ * district streamed, at boot. Raised to 256 / 384, which is the authored file
+ * with ~1.2x margin; the family still registers one class, so the pool cost
+ * is 8 x 256 = 2,048 reserved verts (~90 KB) against the old 192.
+ *
+ * The SPRIG is deliberately absent from this table. It is dressing drawn by
+ * `buildSprigInstances` on its own InstancedMesh, not by a batch, so it has
+ * no buffer to reserve - see `MazeMeshes.sprigGeometry`. */
 export const GEOMETRY_BUDGET = Object.freeze({
   hedge: { prefabs: 32, verts: 96, indices: 132 },
   floor: { prefabs: 288, verts: 96, indices: 132 },
@@ -266,7 +279,7 @@ export const GEOMETRY_BUDGET = Object.freeze({
   tunnel: { prefabs: 16, verts: 24, indices: 36 },
   footing: { prefabs: 32, verts: 96, indices: 132 },
   plate: { prefabs: 8, verts: 24, indices: 36 },
-  candle: { prefabs: 8, verts: 24, indices: 36 },
+  candle: { prefabs: 8, verts: 256, indices: 384 },
 });
 
 /** Scratch for instance placement. One per module, never re-entrant. */

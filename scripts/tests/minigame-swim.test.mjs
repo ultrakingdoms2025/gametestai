@@ -12,6 +12,7 @@ import {
   MinigameManager,
   MINIGAME_STATE,
   MINIGAME_PRIZE,
+  consolationFor,
 } from '../../src/minigames/MinigameManager.js';
 import { createSwimChallenge, SWIM_GAME_ID } from '../../src/minigames/SwimChallenge.js';
 import { QuestSystem } from '../../src/systems/QuestSystem.js';
@@ -390,7 +391,7 @@ test('swimming the two lengths cleanly wins and pays exactly 10 credits', () => 
   assert.ok(fin.time > 0);
 });
 
-test('dawdling loses to the pace swimmer, and a loss pays nothing', () => {
+test('dawdling loses to the pace swimmer, and a loss pays the participation floor', () => {
   const rig = makeRig();
   beginRace(rig);
   swimTo(rig, 34);
@@ -401,8 +402,16 @@ test('dawdling loses to the pace swimmer, and a loss pays nothing', () => {
   assert.equal(rig.mg.state, MINIGAME_STATE.FINISHED);
   const fin = rig.seen.find((s) => s.type === 'minigame:finished')?.e;
   assert.equal(fin.won, false);
-  assert.equal(fin.credits, 0);
-  assert.equal(rig.economy.credits, 0, 'losing must not pay');
+  /* A COMPLETED loss pays the participation floor; an abandoned one still pays
+   * nothing (see the quit test below). The number this replaced was zero, and
+   * `2026-08-23-mission-architecture.md` §8 measured the cost of that: "Zero
+   * for a completed contest against a named rival teaches players not to
+   * enter." The floor is a quarter of the venue's own prize, clamped strictly
+   * below it, so winning is still the point. */
+  const floor = consolationFor(rig.mg._venue);
+  assert.ok(floor > 0 && floor < (rig.mg._venue?.reward ?? MINIGAME_PRIZE));
+  assert.equal(fin.credits, floor);
+  assert.equal(rig.economy.credits, floor, 'a completed loss paid the wrong floor');
   assert.equal(fin.rivalName, 'Tavius Okonkwo');
 });
 

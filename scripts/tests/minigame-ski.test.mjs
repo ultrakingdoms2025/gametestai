@@ -11,6 +11,7 @@ import {
   MinigameManager,
   MINIGAME_STATE,
   MINIGAME_PRIZE,
+  consolationFor,
 } from '../../src/minigames/MinigameManager.js';
 import {
   createSkiRun,
@@ -410,7 +411,7 @@ test('skipping one gate costs the stated 4 s and a fast run still wins', () => {
   assert.match(missEvent?.text ?? '', /MISSED — \+4s/, 'the miss and its price are announced');
 });
 
-test('straight-lining the course hands it to the ghost, and a loss pays nothing', () => {
+test('straight-lining the course hands it to the ghost, and a loss pays the participation floor', () => {
   const rig = makeRig();
   beginRun(rig);
 
@@ -426,8 +427,17 @@ test('straight-lining the course hands it to the ghost, and a loss pays nothing'
   assert.equal(fin.won, false);
   assert.equal(fin.detail.reason, 'rival', 'the accumulated penalties put the ghost home first');
   assert.ok(fin.detail.missed >= 5, `the misses are what lost it (${fin.detail.missed} recorded)`);
-  assert.equal(fin.credits, 0);
-  assert.equal(rig.economy.credits, 0, 'losing must not pay');
+  /* A COMPLETED loss pays the participation floor, and an abandoned one still
+   * pays nothing - see the quit test below. The number this replaced was zero,
+   * and `2026-08-23-mission-architecture.md` §8 measured what that costs:
+   * "Zero for a completed contest against a named rival teaches players not to
+   * enter." The floor is a quarter of the venue's own prize, clamped strictly
+   * below it, so winning is still the point. */
+  const floor = consolationFor(rig.mg.venue ?? rig.mg._venue);
+  assert.ok(floor > 0, 'the ski venue pays nothing for finishing a losing run');
+  assert.equal(fin.credits, floor);
+  assert.equal(rig.economy.credits, floor, 'a completed loss paid the wrong floor');
+  assert.ok(floor < (rig.mg._venue?.reward ?? 10), 'the floor is not below the prize');
   assert.equal(fin.rivalName, 'Kjell Nordvik');
   assert.equal(rig.mounts.dismounted, 1, 'the board is handed back on a loss too');
 });

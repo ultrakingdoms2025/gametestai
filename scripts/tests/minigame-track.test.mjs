@@ -13,6 +13,7 @@ import {
   MinigameManager,
   MINIGAME_STATE,
   MINIGAME_PRIZE,
+  consolationFor,
 } from '../../src/minigames/MinigameManager.js';
 import {
   createTrackRace,
@@ -437,7 +438,7 @@ test('a committed sprinter beats the field narrowly and collects exactly 10 cred
   assert.match(splits[0].e.text, /^CHECKPOINT 1\/12 — /);
 });
 
-test('jogging loses to the whole field the moment the leader is home, and pays nothing', () => {
+test('jogging loses to the whole field the moment the leader is home, and pays the floor', () => {
   const rig = makeRig();
   beginRace(rig);
   runLane(rig, { speed: CONFIG.player.walkSpeed });
@@ -448,8 +449,13 @@ test('jogging loses to the whole field the moment the leader is home, and pays n
   assert.equal(fin.detail.reason, 'rival');
   assert.equal(fin.rivalName, 'Priya Raghunathan', 'the venue names the leader, and the leader won');
   assert.ok(fin.place >= 2 && fin.place <= 4, `a jogger finishes down the field (P${fin.place})`);
-  assert.equal(fin.credits, 0);
-  assert.equal(rig.economy.credits, 0, 'losing must not pay');
+  /* A COMPLETED loss pays the participation floor; an abandoned one still pays
+   * nothing (see the quit test below). See
+   * `2026-08-23-mission-architecture.md` §8 and `consolationFor`. */
+  const floor = consolationFor(rig.mg._venue);
+  assert.ok(floor > 0 && floor < (rig.mg._venue?.reward ?? MINIGAME_PRIZE));
+  assert.equal(fin.credits, floor);
+  assert.equal(rig.economy.credits, floor, 'a completed loss paid the wrong floor');
   /* The loss lands when the LEADER's tuned curve integrates home: the lane-1
    * 402 m at 5.05→5.70 m/s is ~74.9 s. This is the other half of the
    * winnability boundary — if a retune moves the leader, this notices. */

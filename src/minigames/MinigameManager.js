@@ -55,6 +55,73 @@ export const MINIGAME_STATE = {
  */
 export const MINIGAME_PRIZE = 10;
 
+/**
+ * Share of the prize a COMPLETED loss pays.
+ *
+ * ── The number this replaces, and why it was wrong ───────────────────────────
+ *
+ * It was zero, and `2026-08-23-mission-architecture.md` §8 measured what that
+ * costs: "Zero for a completed contest against a named rival teaches players
+ * not to enter. A participation floor below the win prize keeps the contest
+ * meaningful and the venue used."
+ *
+ * ── ..and the number it must not become ──────────────────────────────────────
+ *
+ * §5 of the same document, equally measured: the whole-game faucet is over
+ * 250,000 CR against FIVE spend sites, and one clear of one world buys 90% of
+ * everything permanent. So this is a sink problem, and a participation floor is
+ * the last place to open a new faucet. Three properties keep it from being one:
+ *
+ *  - It is a SHARE of a prize that did not move, so the ceiling of the faucet is
+ *    exactly what it was. A player who wins everything gains nothing here.
+ *  - It is clamped strictly below the prize ({@link consolationFor}), so winning
+ *    never stops being the point.
+ *  - It is paid by `_finish` only, which `abort` never reaches. Walking out of a
+ *    contest still pays nothing, so the floor cannot be farmed by starting
+ *    contests and leaving them - you have to see one out, which at 45-180 s a
+ *    run pays worse per minute than anything else in the game.
+ *
+ * A quarter puts the shipped 8-18 band at 2-4 CR: enough that finishing is not
+ * nothing, far too little to be a strategy.
+ */
+export const MINIGAME_FLOOR_SHARE = 0.25;
+
+/**
+ * Credits a completed loss pays at this venue.
+ *
+ * Exported because the number is a DESIGN decision that a test has to be able
+ * to state, and because a venue is allowed to override it: a contest with no
+ * rival and no risk may publish `consolation: 0` and pay nothing, and one that
+ * is mostly a long walk may publish more.
+ *
+ * The clamp is the part worth reading. Two edges break a bare
+ * `Math.floor(prize * share)`:
+ *
+ *  - **Below the prize, always.** A published floor at or above the prize is a
+ *    typo, and obeying it would make winning optional. Clamped to `prize - 1`.
+ *  - **Never negative, and never a fractional credit.** `resolveReportedEvent`
+ *    refuses anything that is not a non-zero integer, so a floor that came out
+ *    as 2.5 or -1 would be a server-side refusal logged against a payout that
+ *    was correct. `_finish` separately declines to report a zero.
+ *
+ * @param {{reward?:number, consolation?:number}|null|undefined} venue
+ * @returns {number} whole credits in `[0, prize)`
+ */
+export function consolationFor(venue) {
+  const raw = Number(venue?.reward);
+  const prize = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : MINIGAME_PRIZE;
+  const ceiling = Math.max(0, prize - 1);
+  const named = Number(venue?.consolation);
+  if (Number.isFinite(named)) {
+    return Math.min(ceiling, Math.max(0, Math.floor(named)));
+  }
+  /* One whole credit is the floor of the floor. A quarter of a two-credit prize
+   * rounds to nothing, and "nothing" is the state this whole constant exists to
+   * leave - so the derived floor never rounds a payable contest back down to
+   * zero. Only a venue that ASKS for zero gets it, which is the branch above. */
+  return Math.min(ceiling, Math.max(ceiling > 0 ? 1 : 0, Math.floor(prize * MINIGAME_FLOOR_SHARE)));
+}
+
 /** Seconds of "on your marks" before a contest begins. */
 const COUNTDOWN_S = 4.0;
 
@@ -528,6 +595,10 @@ export class MinigameManager {
        * swimmer or offer a race to somebody on a gantry overhead. */
       yTolerance: Number.isFinite(Number(raw.yTolerance)) ? Number(raw.yTolerance) : 8,
       reward: Number.isFinite(reward) && reward > 0 ? Math.floor(reward) : MINIGAME_PRIZE,
+      /* A venue's own participation floor, kept RAW and resolved by
+       * `consolationFor` at payout. Normalising it here would have to know the
+       * reward, and a venue is allowed to publish the two in either order. */
+      consolation: raw.consolation,
       /** World rule this venue needs; see `arm`. */
       requires: typeof raw.requires === 'string' ? raw.requires : null,
       /** Opaque to this file - handed straight to the game module. */
@@ -656,7 +727,15 @@ export class MinigameManager {
     const venue = this._venue;
     const game = this._game;
     const won = !!outcome.won;
-    const credits = won ? (venue?.reward ?? MINIGAME_PRIZE) : 0;
+    /* A COMPLETED loss pays the participation floor; an abandoned one never
+     * reaches this method at all. See `consolationFor` for why the floor exists
+     * and why it is a share of a prize that did not move.
+     *
+     * The `> 0` guard is not tidiness: `resolveReportedEvent`'s third statement
+     * is `if (!Number.isInteger(d) || d === 0) return { ok:false, reason:'invalid' }`,
+     * so reporting a zero would be a server-side refusal recorded against a
+     * payout that was exactly right. */
+    const credits = won ? (venue?.reward ?? MINIGAME_PRIZE) : consolationFor(venue);
     if (credits > 0) this.economy?.add?.(credits, 'minigame');
 
     const result = {
@@ -713,10 +792,17 @@ export class MinigameManager {
       worldId: this._worldId,
     });
 
+    /* The loss notice NAMES the floor.
+     *
+     * A credit the player is not told about is a credit they do not know they
+     * earned, and the whole reason the floor exists is to change what finishing
+     * a losing contest feels like. Saying "lost" and quietly adding 3 CR would
+     * leave the design decision invisible to the only person it is for. */
+    const took = result.rivalName ? ` — ${result.rivalName} took it` : '';
     this.bus?.emit('hud:notify', {
       text: won
         ? `${result.label} won — +${credits} credits`
-        : `${result.label} lost${result.rivalName ? ` — ${result.rivalName} took it` : ''}`,
+        : `${result.label} lost${took}${credits > 0 ? ` — +${credits} for finishing` : ''}`,
       tone: won ? 'good' : 'warn',
     });
   }

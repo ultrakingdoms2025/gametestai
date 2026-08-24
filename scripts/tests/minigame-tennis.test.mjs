@@ -12,6 +12,7 @@ import {
   MinigameManager,
   MINIGAME_STATE,
   MINIGAME_PRIZE,
+  consolationFor,
 } from '../../src/minigames/MinigameManager.js';
 import {
   createTennisMatch,
@@ -578,7 +579,7 @@ test('winning the match 2-0 pays exactly 10 credits and frees Deborah', () => {
   assert.equal(rig.frameFns.size, 0, 'the late-frame hook must be released');
 });
 
-test('never swinging loses the match and pays nothing', () => {
+test('never swinging loses the match and pays the participation floor', () => {
   const rig = makeRig(); // 0.5: she returns everything she reaches, no winners
   beginMatch(rig);
 
@@ -590,8 +591,13 @@ test('never swinging loses the match and pays nothing', () => {
   assert.equal(rig.mg.state, MINIGAME_STATE.FINISHED);
   const fin = rig.seen.find((s) => s.type === 'minigame:finished')?.e;
   assert.equal(fin.won, false);
-  assert.equal(fin.credits, 0);
-  assert.equal(rig.economy.credits, 0, 'losing must not pay');
+  /* A COMPLETED loss pays the participation floor; an abandoned one still pays
+   * nothing (see the teardown tests below). See
+   * `2026-08-23-mission-architecture.md` §8 and `consolationFor`. */
+  const floor = consolationFor(rig.mg._venue);
+  assert.ok(floor > 0 && floor < (rig.mg._venue?.reward ?? MINIGAME_PRIZE));
+  assert.equal(fin.credits, floor);
+  assert.equal(rig.economy.credits, floor, 'a completed loss paid the wrong floor');
   assert.equal(fin.score, '0-2');
   assert.equal(rig.deborah._minigameLock, false, 'a loss frees her exactly like a win');
 });

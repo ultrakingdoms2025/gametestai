@@ -192,6 +192,11 @@ The real causes are production-only, which is why local was always smoother.
    and `vite.config.js` has no `manualChunks` at all. Splitting needs
    `worldManager.register` to accept a lazy factory, because all eight world
    classes are statically imported by `main.js`. Architectural, not a config tweak.
+   **Re-measured 2026-08-24, after all nine Phase 9 art passes:** the index chunk is
+   **3,305 KB** — essentially the 3.28 MB above, unmoved. Nine worlds gained authored
+   hero geometry and the JS did not grow, because decision D4 ships every authored asset
+   as a separate lazily-fetched `.glb` rather than bundling it. So the art phase did not
+   make this item worse, and the 49% figure still stands.
 4. **OPEN, latent — 61 world lights created visible.** `Caves.js:859` and
    `MazeChunks.js:393` create theirs `visible = false` with tests enforcing it, and
    say why: the frame between creation and `LightRig`'s next walk is a frame in

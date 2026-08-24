@@ -417,7 +417,7 @@ A cross-tree delta means nothing until you know what the *same* tree does to
 itself. Both trees were swept a second time, on the same machine, with the same
 instrument. Below: the same-tree band on each side, next to the phase's delta.
 
-### 5.1 The five census axes do not move at all
+### 5.1 The six census axes do not move at all
 
 | world | materials | renderables | instanced | instances | world lights | world triangles |
 |---|---|---|---|---|---|---|
@@ -437,11 +437,21 @@ That is what makes §2 and §3 evidence: on these six axes there is no noise for
 regression to hide in, so every delta reported there is signal, and every one of
 them was declared.
 
-It is also worth saying plainly what this does to the three branches that wrote
-around a "noise floor" on these axes. `art-maze` recorded materials swinging
-14–18 and renderables 46–92 on unchanged code; `art-citadel` recorded a
-draw-call spread of ±50 and a program spread of 61. None of that was the
-renderer. On the repaired instrument these axes are exact.
+It is worth separating the two things that were called "noise floor" in Phase 9,
+because only one of them was real.
+
+- `art-maze`'s materials 14–18, renderables 46–92, instanced meshes 32–78 and
+  lights 675–950 across seven runs were **real**, and they were the *seed*: it
+  was comparing seven different mazes. Pin the seed and all four are exact
+  (§4). The world was volatile; the instrument was not the problem there.
+- `art-citadel`'s program spread of 61 across four runs of unchanged code, and
+  the same shape in `art-space` (+39), `art-sports` (±22), `art-planets` (+37)
+  and `art-dock` (275 → 349 at `trench`), were **the ramp** — the end-of-run
+  read of a cache that is still filling (§5.3). Read at the settled boot they
+  are gone.
+
+Neither was the renderer, and on the repaired instrument these six axes are
+exact in every non-volatile world.
 
 ### 5.2 Draw calls: the band is bigger than the phase, everywhere
 

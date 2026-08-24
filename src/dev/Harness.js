@@ -37,6 +37,7 @@ import { MAZE, DIR, cellIndex, districtCoords, isOpen, connectorAt } from '../wo
 import { cellToWorld } from '../worlds/maze/MazeColliders.js';
 import { shaftColliders, connectorHoleBounds } from '../worlds/maze/MazeShafts.js';
 import { setMazeSurfaceMode, mazeSurfaceMode } from '../worlds/maze/MazeMaterials.js';
+import { MazeWorld } from '../worlds/MazeWorld.js';
 import { walkWorldTriangles, drawnTrianglesOf } from './WorldTriangles.js';
 import { rehearsalInForce } from '../gfx/RehearsalDraw.js';
 import { BERTHS } from '../worlds/dock/YardPlan.js';
@@ -1191,6 +1192,66 @@ class Harness {
   }
 
   /**
+   * Every cell in the whole maze whose EMITTED connector is a lift, nearest to
+   * the player first.
+   *
+   * Deliberately the whole 400 x 400 x 4 grid, which is the exact opposite of
+   * `_findResidentShaft`'s rule - and the two are not in conflict, because
+   * they answer different questions. `_findResidentShaft` asks "what has been
+   * BUILT", and that must never be widened, or a framing points at void. This
+   * asks "where would the player have to stand for a lift to be built", which
+   * is only useful precisely because it ignores residency.
+   *
+   * Sparse in practice: a maze holds 33-58 lifts out of ~299 vertical links,
+   * measured across 24 seeds, so the `shaftColliders` call runs a few hundred
+   * times and the rest is an array read.
+   *
+   * @returns {{x:number, z:number, level:number}|null}
+   */
+  _findAnyLift() {
+    const w = this.game.worldManager.active;
+    if (w?.id !== 'maze' || !w.cells) return null;
+    const p = this.game.player?.position;
+    const N = MAZE.DISTRICT * MAZE.DISTRICTS;
+    let best = null;
+    let bestD = Infinity;
+    for (let level = 0; level < MAZE.LEVELS; level++) {
+      for (let z = 0; z < N; z++) {
+        for (let x = 0; x < N; x++) {
+          if (!isOpen(w.cells, cellIndex(x, z, level), DIR.UP)) continue;
+          if (!shaftColliders(w.cells, x, z, level).some((k) => k.kind === 'lift')) continue;
+          const c = cellToWorld(x, z, level);
+          const d = p ? (c.x - p.x) ** 2 + (c.z - p.z) ** 2 : 0;
+          if (d < bestD) { bestD = d; best = { x, z, level }; }
+        }
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Put the player somewhere, and wait for the maze to stream in around them.
+   *
+   * The same move `_computeTowerTop` makes and for the same reason: residency
+   * is driven off `player.position` in `MazeWorld.update`, so a camera sent
+   * somewhere nothing has been built photographs void. Moving the player is
+   * the only thing that makes geometry exist there.
+   *
+   * @param {{x:number, z:number, level:number}} cell
+   */
+  async _makeResident(cell) {
+    const w = cellToWorld(cell.x, cell.z, cell.level);
+    this.unpinPlayer();
+    this.freezeCamera(false);
+    /* The far corner, diagonally opposite the well - `MazeColliders` offsets
+     * every well into the cell's +x/+z quadrant, so the raw centre can be the
+     * hole itself. Same corner `_computeTowerTop` lands on. */
+    this.game.player.teleport(new this.game.THREE.Vector3(w.x - 1.6, w.y + 0.1, w.z - 1.6), 0);
+    for (let i = 0; i < 12; i++) await frame();
+    this.freezeCamera(true);
+  }
+
+  /**
    * Frame a real, resident LIFT - the car in its shaft, seen from the level-N
    * doorway it is entered through.
    *
@@ -1198,11 +1259,38 @@ class Harness {
    * districts and check what was actually EMITTED, so this cannot frame a
    * lift that was never built or a district nobody streamed.
    *
-   * @returns {{pos:number[], look:number[], fov:number}|null}
+   * -- WHAT THIS USED TO COST, AND IT WAS THE WHOLE RUN --------------------
+   * It returned null whenever no lift happened to be resident, `view()` threw
+   * `could not compute view "lift-car"`, and the throw escaped `world-shot`
+   * before `report.json` was written - so four good framings' measurements
+   * were destroyed in order to report the fifth one's absence.
+   *
+   * And it was not rare. Measured over 64 seeds at the fixed entrance, the
+   * cold-spawn resident set holds 0 to 3 lifts and THIRTY OF THE SIXTY-FOUR
+   * hold none: this framing failed on 46.9% of runs. (`shaft-up` is safe by
+   * comparison - the same 64 seeds never had fewer than 2 resident shafts.)
+   *
+   * A seed is not the fix on its own, because a fixed seed means the review
+   * only ever sees one maze. So this now MAKES a lift resident instead: find
+   * the nearest one in the whole topology - median 186 m from spawn, worst
+   * 523 m over 24 seeds, and a maze always has 33 to 58 of them - walk the
+   * player there, and let residency follow. `world-shot` can still pin the
+   * seed when it wants a repeatable before/after; this makes the framing work
+   * either way, which is the property a review instrument needs first.
+   *
+   * @returns {Promise<{pos:number[], look:number[], fov:number}|null>}
    */
-  _findLiftFraming() {
-    const lift = this._findResidentShaft(null, 'lift');
-    if (!lift) return null;
+  async _findLiftFraming() {
+    let lift = this._findResidentShaft(null, 'lift');
+    if (!lift) {
+      const any = this._findAnyLift();
+      /* Null here means the TOPOLOGY has no lift anywhere, which is a maze
+       * defect rather than a framing one - and saying which is the point. */
+      if (!any) return null;
+      await this._makeResident(any);
+      lift = this._findResidentShaft(null, 'lift');
+      if (!lift) return null;
+    }
     const world = this.game.worldManager.active;
     const w = cellToWorld(lift.x, lift.z, lift.level);
     const idx = cellIndex(lift.x, lift.z, lift.level);
@@ -1942,6 +2030,37 @@ class Harness {
     if (!a) return { active: false };
     for (const [o, visible] of a.saved) o.visible = visible;
     return { active: false, restored: a.saved.length };
+  }
+
+  /**
+   * Pin the maze's seed, so two runs of one commit photograph the same maze.
+   *
+   * -- WHY AN INSTRUMENT NEEDS THIS AND A PLAYER MUST NOT HAVE IT ----------
+   * `MazeWorld` is `volatile` and re-seeds on every activation, deliberately:
+   * "the maze that cannot be learned is the entire point". For a review that
+   * is fatal. Two runs of the SAME COMMIT build two unrelated mazes, so every
+   * number in a before/after is a measurement of the seed. Measured over 64
+   * seeds at the fixed entrance, the resident set alone swings from 2 to 11
+   * shafts and 0 to 3 lifts.
+   *
+   * `MazeWorld.seedOverride` is null in every normal boot. This is the only
+   * thing that writes it, it only exists under `?dev=1`, and the seed actually
+   * used is reported whether it was pinned or not - so a run that did NOT pin
+   * one still says which maze it photographed and can be re-flown exactly.
+   *
+   * Takes effect on the next `build()`, which for a volatile world means the
+   * next `goto('maze')`.
+   *
+   * @param {number|null} [seed] omit to read the current override.
+   */
+  mazeSeed(seed) {
+    if (seed !== undefined) MazeWorld.seedOverride = seed === null ? null : (seed >>> 0);
+    return {
+      override: MazeWorld.seedOverride,
+      active: this.game.worldManager.active?.id === 'maze'
+        ? this.game.worldManager.active.seed
+        : null,
+    };
   }
 
   /**

@@ -294,6 +294,17 @@ export class MazeWorld extends World {
   static volatile = true;
 
   /**
+   * Force the next build's seed, or null for the usual fresh random one.
+   *
+   * NULL IN EVERY NORMAL BOOT. Only `src/dev/Harness.js` writes it, only under
+   * `?dev=1`, and it exists because a review instrument cannot compare two
+   * runs of a world that is different every time. See `build()`.
+   *
+   * @type {number|null}
+   */
+  static seedOverride = null;
+
+  /**
    * How many pollen motes ride with the player.
    *
    * One draw call regardless, so the number is chosen for how it looks rather
@@ -456,8 +467,24 @@ export class MazeWorld extends World {
 
   async build(onProgress) {
     /* A fresh seed per build. `build()` runs on every activation because this
-     * world is volatile, so this is what makes the maze unlearnable. */
-    this.seed = (Math.random() * 0xffffffff) >>> 0;
+     * world is volatile, so this is what makes the maze unlearnable.
+     *
+     * ── THE ONE EXCEPTION, AND WHY IT IS HERE ────────────────────────────
+     * Unlearnable is right for a player and ruinous for an instrument. Two
+     * runs of the SAME COMMIT photograph two different mazes, so a Phase 9
+     * before/after of this world compares two unrelated worlds and any delta
+     * it reports is the seed. Measured across 64 seeds at the fixed entrance:
+     * the resident set holds 2 to 11 shafts and 0 to 3 lifts, and 30 of the 64
+     * have no lift at all - which is also why `VIEWS.maze`'s `lift-car` used to
+     * abort a whole run.
+     *
+     * `MazeWorld.seedOverride` is null in every normal boot, so the player's
+     * maze is untouched. `src/dev/Harness.js` sets it under `?dev=1` and
+     * `scripts/world-shot.mjs --seed` passes it in; both RECORD the seed they
+     * used, so a run that did not fix one still says which maze it
+     * photographed and any seed can be re-flown. That is the whole of the
+     * change to this file. */
+    this.seed = MazeWorld.seedOverride ?? ((Math.random() * 0xffffffff) >>> 0);
 
     await onProgress?.(0.05, 'Growing the hedges');
 

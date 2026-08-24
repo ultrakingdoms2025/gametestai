@@ -204,7 +204,28 @@ function weld(parts) {
  * the base) so the instance matrix carries all the size. That keeps one
  * geometry per family however many size bands a descriptor asks for.
  */
-function geometryFor(kind, size) {
+function geometryFor(kind, size, authored = null) {
+  /* ── THE AUTHORED SUBSTITUTION ────────────────────────────────────────
+   *
+   * An authored `.glb` part REPLACES the primitive inside the field's existing
+   * `InstancedMesh` rather than earning a bucket of its own. Everything after
+   * this point - the instance loop, the tints, the colliders, the draw call -
+   * is unchanged and does not know which arm it got. So the asset costs no
+   * renderable, no instanced mesh, no draw call, no material and no shader
+   * program; only triangles move.
+   *
+   * CLONED, and that is not defensive. `blockGeometry()` hands back ONE
+   * geometry for the session and thirteen fields across ten planets each pass
+   * theirs to an `InstancedMesh` whose `dispose()` disposes it - so the second
+   * planet in a session would instance a disposed buffer, and the symptom is an
+   * empty field with no error.
+   *
+   * Null is the normal path, not an error branch: `node --test` has no `fetch`,
+   * a deploy can be missing the file, and a slow network times out. @see
+   * `planets/PlanetAssets.js`. */
+  const part = authored?.[kind];
+  if (part) return part.clone();
+
   switch (kind) {
     case 'columns': {
       /* A hexagonal prism, because that is what cooling basalt does - and it is
@@ -377,6 +398,7 @@ function geometryFor(kind, size) {
  * @param {object} spec the descriptor's `props[i]` record
  * @param {{ height:(x,z)=>number, half:number, slopeStep:number, seed:number,
  *           liquid:object|null, landing:object[], material:THREE.Material,
+ *           authored?:Record<string, THREE.BufferGeometry|null>,
  *           physics:any, group:THREE.Group, track:(c:any)=>any }} ctx
  * @returns {{ mesh: THREE.InstancedMesh, material: THREE.Material, placed: number,
  *             requested: number, colliders: number, points: object[] }}
@@ -395,7 +417,7 @@ export function buildPropField(spec, ctx) {
   });
 
   const sz = spec.size ?? {};
-  const geo = geometryFor(spec.kind, sz);
+  const geo = geometryFor(spec.kind, sz, ctx.authored);
 
   /* A `growth` field paints its trunk vertices with the trunk/canopy ratio
    * before a single instance exists - see `trunkShade`. The geometry knows

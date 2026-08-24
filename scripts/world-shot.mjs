@@ -67,7 +67,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 function parseArgs(argv) {
   const out = {
     world: 'medieval', views: null, out: null, compare: null, ablate: null,
-    subjects: null, dist: 7, rise: 1.6,
+    subjects: null, dist: 7, rise: 1.6, seed: null,
     width: 1600, height: 900, settle: 14, keep: false, help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -82,6 +82,7 @@ function parseArgs(argv) {
     else if (a === '--settle') out.settle = Number(next());
     else if (a === '--ablate') out.ablate = next().split(',').map((s) => s.trim()).filter(Boolean);
     else if (a === '--subject') (out.subjects ??= []).push(next());
+    else if (a === '--seed') out.seed = Number(next());
     else if (a === '--dist') out.dist = Number(next());
     else if (a === '--rise') out.rise = Number(next());
     else if (a === '--keep') out.keep = true;
@@ -310,6 +311,12 @@ const HELP = `world-shot - screenshots and the render budget for one world
                      The named views are all landscape framings; a character or
                      a beast has to be photographed where it happens to be
                      standing, and it moves, so it cannot be a fixed vantage.
+  --seed <n>         pin the maze's seed, so two runs of one commit photograph
+                     the SAME maze. MazeWorld re-seeds from Math.random() on
+                     every activation - right for a player, ruinous for a
+                     before/after - and over 64 seeds the spawn-resident set
+                     alone swings from 2 to 11 shafts. The seed actually used
+                     is recorded in report.json either way.
   --dist <m>         subject framing: camera distance, default 7
   --rise <m>         subject framing: camera height above the subject, default 1.6
   --width/--height   viewport, default 1600x900
@@ -435,6 +442,12 @@ async function main() {
 
     const bootWorld = await evaluate('window.HARNESS.ready({ timeoutMs: 240000 })', { awaitPromise: true });
     console.log(`ready: world "${bootWorld}"`);
+    /* BEFORE the goto, because a volatile world re-seeds inside `build()` and
+     * `goto` is what triggers it. */
+    if (args.seed !== null && Number.isFinite(args.seed)) {
+      await evaluate(`window.HARNESS.mazeSeed(${args.seed})`);
+      console.log(`maze seed pinned to ${args.seed >>> 0}`);
+    }
     if (bootWorld !== args.world) {
       console.log(`goto: ${args.world}`);
       await evaluate(`window.HARNESS.goto(${JSON.stringify(args.world)})`, { awaitPromise: true });
@@ -458,6 +471,12 @@ async function main() {
     if (/swiftshader|software/i.test(report.renderer ?? '')) {
       console.warn('WARNING: software GL - frame times from this run are not comparable to a real device.');
     }
+
+    /* Which maze this actually is, pinned or not. A run that did not pin a seed
+     * still has to say which world it photographed, or its numbers cannot be
+     * reproduced or even compared against themselves. */
+    report.mazeSeed = await evaluate('window.HARNESS.mazeSeed ? window.HARNESS.mazeSeed() : null');
+    if (report.mazeSeed?.active != null) console.log(`maze seed in use: ${report.mazeSeed.active}`);
 
     const driven = await evaluate('window.HARNESS.gameplayDriven');
     if (!driven) {

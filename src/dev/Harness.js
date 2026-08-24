@@ -685,11 +685,40 @@ const VIEWS = {
   citadel: [
     // Outside the wall on the approach, looking through the gate arch. The
     // camera stands on a cliff-ring step: deck 14.22 at (0, 136).
-    { name: 'gate-approach', pos: [0, 15.84, 136], look: [0, 22, 118], fov: 72 },
+    { name: 'gate-approach', pos: [0, 15.84, 136], look: [0, 22, 118], fov: 72, subject: 156 },
     // The player's own spawn eye, framing what this world opens on: the souk
     // stepping up ring by ring, the keep, and the great tower above it. The
     // keep occludes the tower below y ~ 43; everything above that is in shot.
-    { name: 'gate-spawn', pos: [0, 15.92, 104], look: [0, 34, -14], fov: 74 },
+    /* ── 44% OF THE MIDDLE OF THIS FRAME IS A PALM, AND IT IS NOT THE
+     *    FRAMING'S FAULT ──────────────────────────────────────────────────
+     *
+     * Measured against the built world, 576 rays on a 32x18 grid over the
+     * drawn geometry, blockers inside a third of the 98.7 m subject distance:
+     *
+     *   citadel:tree.crown:wood.beam:0   104 rays (18.1%)   2.9 - 4.0 m
+     *   citadel:terrain:2,3 and :3,3     140 rays (24.3%)   4.3 - 14.8 m
+     *   citadel:tree.crown:bark.palm:0    39 rays  (6.8%)   7.5 - 11.4 m
+     *   citadel:tree.trunk:bark.palm:0    11 rays  (1.9%)   8.2 -  8.8 m
+     *   citadel:tree.trunk:wood.beam:0     6 rays  (1.0%)   2.9 -  3.0 m
+     *
+     * 23.6% of the whole frame is blocked inside 5 m and 44.4% of its central
+     * half is blocked inside 32.9 m. The nearest trunk is at (2.3, 16.0,
+     * 102.2), which is 2.9 m from this camera and 2.9 m from the PLAYER SPAWN
+     * at (0, 14.3, 104).
+     *
+     * That is the finding, and it is not about the framing: a palm is planted
+     * three metres in front of where every player arrives in this world, and
+     * its crown covers a fifth of the first thing they see. Moving the camera
+     * would hide a world defect behind a better photograph, and this framing's
+     * entire value is that it IS the spawn eye. It stays where it is and the
+     * measurement stays written down. `CitadelWorld` is not this branch's to
+     * change; the palm is reported instead.
+     *
+     * The framing probe passes it either way, because the centre ray does meet
+     * the citadel's own stone at 98.74 m. "Hits something" is not "frames its
+     * subject" - see the note on that in `harness-framings.test.mjs`, which
+     * also records why no threshold was adopted for it. */
+    { name: 'gate-spawn', pos: [0, 15.92, 104], look: [0, 34, -14], fov: 74, subject: 99 },
     /* A real alley, found by probing rather than by picking a radius, and
      * RE-probed against the re-authored rings.
      *
@@ -720,7 +749,7 @@ const VIEWS = {
      * keep's 41.4 m roof line. The ward's four corners are NOT open - ring 0
      * of the souk is at r = 34 and the 60 m square reaches r = 42 at the
      * diagonal, so houses stand on the slab there. */
-    { name: 'ward-centre', pos: [0, 21.7, 28], look: [0, 40, -6], fov: 78 },
+    { name: 'ward-centre', pos: [0, 21.7, 28], look: [0, 40, -6], fov: 78, subject: 25 },
     /* The rope bridges. Square on to the +Z minaret span, minarets flanking,
      * tower behind; the ray from here to the middle of that span is clear over
      * all 31.8 m of it.
@@ -734,14 +763,14 @@ const VIEWS = {
      * The two long ones are what put the whole rooftop network on one
      * component; they are 35 m over the mesa and want a framing of their own,
      * which is a measurement nobody has taken yet. */
-    { name: 'minaret-bridge', pos: [0, 56, 46], look: [0, 49.6, 14.85], fov: 70, aerial: true },
+    { name: 'minaret-bridge', pos: [0, 56, 46], look: [0, 49.6, 14.85], fov: 70, aerial: true, subject: 60 },
     { name: 'tower-top', computed: true },
     /* The mesa from outside it. Placed at bearing -40 deg, about 78 deg off
      * the sun's own bearing (`sunDirection` (0.55, 0.42, 0.72) -> 37.4 deg),
      * so the town is cross-lit and every ledge casts the line this world was
      * built to be read by. 231 m out, inside the +-200 heightfield on both
      * axes, so nothing beyond the mesh edge is in shot. */
-    { name: 'desert-overview', pos: [-150, 76, 176], look: [0, 46, -10], fov: 74, aerial: true },
+    { name: 'desert-overview', pos: [-150, 76, 176], look: [0, 46, -10], fov: 74, aerial: true, subject: 245 },
 
     /* ---- THE OUTER RING ------------------------------------------------
      *

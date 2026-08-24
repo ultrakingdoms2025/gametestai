@@ -76,12 +76,30 @@ function resolve(v, physics) {
   return [v.pos[0], g + v.pos[1], v.pos[2]];
 }
 
+/** Citadel has its own build kit; everything else comes off the flight rig. */
+let _citadel = null;
+async function worldRig(worldId) {
+  if (worldId !== 'citadel') {
+    const r = await rig();
+    // `rig()` builds only the three worlds its flying suites need; anything
+    // else has to be built before it can be activated.
+    if (!r.wm.isBuilt?.(worldId)) await r.wm.build(worldId);
+    await goto(r, worldId);
+    return r;
+  }
+  /* `buildCitadel` rather than the flight rig, because that is the apparatus
+   * six other citadel suites already build this world with, and a second way
+   * to build a world is a second world to keep in step. */
+  if (!_citadel) {
+    const { buildCitadel } = await import('./citadel-reach-kit.mjs');
+    const { world, physics } = await buildCitadel();
+    _citadel = { physics, wm: { active: world, isBuilt: () => true } };
+  }
+  return _citadel;
+}
+
 async function probe(worldId) {
-  const r = await rig();
-  // `rig()` builds only the three worlds its flying suites need; anything else
-  // has to be built before it can be activated.
-  if (!r.wm.isBuilt?.(worldId)) await r.wm.build(worldId);
-  await goto(r, worldId);
+  const r = await worldRig(worldId);
   const rows = [];
   for (const v of VIEWS[worldId] ?? []) {
     if (v.computed) continue;
@@ -122,7 +140,46 @@ function table(rows) {
  * the gateway and teleported the player through it, filing 3.1 M triangles of
  * the STATION as sports'. A world with no declarations is not a world that
  * passes; it is a world nobody looked at. */
-for (const worldId of ['dock', 'cinder', 'sports']) {
+/* ── AND `citadel`, WHICH HAD FIVE UNDECLARED FRAMINGS ──────────────────────
+ *
+ * Same hole as sports, half as wide: `gate-approach`, `gate-spawn`,
+ * `ward-centre`, `minaret-bridge` and `desert-overview` declared neither a
+ * subject nor a clear distance, so the loop skipped five of this world's
+ * twelve rows. All five now declare the distance their centre ray actually
+ * travels, measured against the built world:
+ *
+ *   gate-approach    155.69 m   gate-spawn        98.74 m
+ *   ward-centre       24.48 m   minaret-bridge    59.72 m
+ *   desert-overview  244.06 m
+ *
+ * ── WHAT WAS MEASURED AND REFUSED ────────────────────────────────────────
+ * `gate-spawn` is 44.4% obscured across the central half of its frame, mostly
+ * by a palm crown 2.9 m from the lens, and it passes every distance test here
+ * because its centre ray does reach the citadel's stone at 98.7 m. "Hits
+ * something" is not "frames its subject", and closing that gap was tried.
+ *
+ * It cannot be closed with a threshold, and the numbers say so. Central-half
+ * obstruction inside a third of the declared subject distance, all twelve
+ * citadel framings, worst first:
+ *
+ *   gate-approach 88.1%   souk-alley 85.0%   gate-spawn 44.4%
+ *   souk-roofs    23.8%   eyrie-summit 14.4% undercliff-terrace 10.0%
+ *   caravanserai-mast 5.6%  ashfall-ward 5.6%
+ *   ward-centre / minaret-bridge / desert-overview / deepworks-rim  0.0%
+ *
+ * The two framings ABOVE `gate-spawn` are both correct. `gate-approach` looks
+ * through the gate arch, so the curtain wall fills the frame around it by
+ * design; `souk-alley` is an alley, and walls close on both sides is what an
+ * alley is. Near-field coverage and minimum-blocker-distance were tried too
+ * and separate no better - `souk-alley` has 37.8% of its frame inside 3 m.
+ *
+ * So there is no threshold in this data that flags the bad framing without
+ * flagging two good ones, and none is invented here. What the measurement
+ * DID establish is that the obstruction is a palm three metres in front of
+ * the player's spawn, which is a defect in `CitadelWorld`, not in the framing
+ * - and it is recorded on the framing itself in `src/dev/Harness.js`.
+ */
+for (const worldId of ['dock', 'cinder', 'sports', 'citadel']) {
   test(`every ${worldId} framing looks at something inside its own subject distance`, async () => {
     const rows = await probe(worldId);
     const t = table(rows);
@@ -370,7 +427,7 @@ test('every framing declares what it is looking at, and aims somewhere else', ()
    * is a zero vector and the ray goes nowhere. Both are caught here rather than
    * silently excused there. */
   const bad = [];
-  for (const worldId of ['dock', 'space', 'cinder', 'sports']) {
+  for (const worldId of ['dock', 'space', 'cinder', 'sports', 'citadel']) {
     for (const v of VIEWS[worldId] ?? []) {
       if (v.computed) continue;
       const declared = v.clear !== undefined || v.subject !== undefined;

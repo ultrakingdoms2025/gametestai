@@ -252,3 +252,51 @@ test('the halo always covers the relic inside it', () => {
   }
   assert.equal(glowScale(0), 0.85, 'the near floor is not 0.5 m of quad');
 });
+
+/**
+ * THE RADIANCE CEILING.
+ *
+ * `orb-hunt` proved this material is what five branches were chasing, and fixed
+ * its fog. The fog fix left `medieval/hills-vista` with four orbs and citadel
+ * untouched, because what remained was RADIANCE: a 4.42 m additive quad at
+ * linear 2.88, against bloom thresholds of 1.30 (medieval) to 1.80 (dock). It
+ * clipped every channel and answered cream, so the relic lost the colour that
+ * says what it is.
+ *
+ * Two things are asserted, and the SECOND is the one that matters. Capping the
+ * level is easy to get right and easy to undo; holding the HUE while capping it
+ * is the part a future edit would quietly break, by dimming one channel and
+ * changing what a collectible looks like.
+ *
+ * The ceiling is enforced by construction in `Relics.js` — `glowColour()`
+ * derives the colour from the authored hue rather than storing it — so this
+ * test is a floor under the construction, not the only thing holding the line.
+ */
+test('the halo cannot out-radiate the bloom threshold, and keeps its hue doing it', () => {
+  const relics = new Relics({ scene: { add: () => {} } });
+  const mat = relics.glow.material;
+  assert.ok(mat, 'the glow material must exist to be measured');
+
+  const { r: cr, g: cg, b: cb } = mat.color;
+  const peak = Math.max(cr, cg, cb) * mat.opacity;
+
+  assert.ok(peak <= 1.6 + 1e-9,
+    `the halo peaks at ${peak.toFixed(4)} after opacity; the ceiling is 1.6, which is the ` +
+    `coincident-sum ceiling Loot.js already pins. Above it the quad clips every channel ` +
+    `through a bloom threshold of 1.30-1.80 and answers cream.`);
+
+  /* The authored hue is 3.2 : 1.9 : 0.7. Ratios, not values: the level is
+   * allowed to move and the colour is not. Dimming one channel to get under the
+   * ceiling would pass the assertion above and change what a relic looks like,
+   * which is a gameplay signal, not a look. */
+  assert.ok(cr > 0, 'the red channel must carry the hue');
+  assert.ok(Math.abs(cg / cr - 1.9 / 3.2) < 1e-6,
+    `green/red is ${(cg / cr).toFixed(6)}, authored ${(1.9 / 3.2).toFixed(6)} — the hue moved`);
+  assert.ok(Math.abs(cb / cr - 0.7 / 3.2) < 1e-6,
+    `blue/red is ${(cb / cr).toFixed(6)}, authored ${(0.7 / 3.2).toFixed(6)} — the hue moved`);
+
+  /* And it must still be worth seeing. Cutting a collectible until it stops
+   * being findable would satisfy every assertion above. */
+  assert.ok(Math.max(cr, cg, cb) > 1.0,
+    'the halo must still be brighter than white paper, or the relic stops being a beacon');
+});

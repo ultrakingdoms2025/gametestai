@@ -193,6 +193,50 @@ export function glowFalloff(d) {
 }
 
 /** Edge of the halo texture, in texels. Small: it is a smooth ramp. */
+/**
+ * The authored hue, and the ceiling that stops it saturating to white.
+ *
+ * `orb-hunt` identified this material as the source of the white orbs that five
+ * art branches chased across medieval and citadel, and fixed half of it: the
+ * halo carried `fog: false`, so a relic at 800 m drew as bright as one at 8 m.
+ * That is now the shared `hazeAdditive` law. It was not enough.
+ *
+ * What remained is RADIANCE. A 4.42 m additive quad at linear 2.88 sits 1.6-2.2x
+ * over the worlds' bloom thresholds (1.30 in medieval, 1.80 in dock), so it
+ * clips every channel and answers cream — the relic loses its own colour, which
+ * is the thing that says what it is. Fog cannot help inside its near plane, and
+ * the vale's is 86 m: the four surviving orbs in `hills-vista` are relics at
+ * 57-203 m, where the fog factor is under 3%.
+ *
+ * THE HUE IS HELD AND ONLY THE LEVEL MOVES. `GLOW_HUE` keeps the authored
+ * 1 : 0.59 : 0.22 exactly; `glowColour()` scales all three by one factor so the
+ * peak channel lands on `GLOW_CEILING` after `opacity`. Cutting a channel
+ * instead would change the colour of a collectible, which is a gameplay signal.
+ *
+ * `GLOW_CEILING` is 1.6 to match the coincident-sum ceiling `Loot.js` already
+ * pins, so the two additive systems in the game answer to one number rather than
+ * drifting apart. Computed rather than typed: a constant that is DERIVED cannot
+ * be edited past its own invariant, which is what `relic-glow.test.mjs` would
+ * otherwise be left to catch after the fact.
+ *
+ * This is deliberately NOT a distance falloff. `art-loot` refused one for
+ * `Loot.js` on the grounds that "recedes like everything else" means the
+ * scene's own law and not a second one invented here, and the same holds.
+ */
+const GLOW_HUE = Object.freeze({ r: 3.2, g: 1.9, b: 0.7 });
+const GLOW_OPACITY = 0.9;
+const GLOW_CEILING = 1.6;
+
+/**
+ * The authored hue scaled so `max(channel) * opacity <= GLOW_CEILING`.
+ * @returns {THREE.Color}
+ */
+function glowColour(opacity = GLOW_OPACITY) {
+  const peak = Math.max(GLOW_HUE.r, GLOW_HUE.g, GLOW_HUE.b) * opacity;
+  const k = peak > GLOW_CEILING ? GLOW_CEILING / peak : 1;
+  return new THREE.Color(GLOW_HUE.r * k, GLOW_HUE.g * k, GLOW_HUE.b * k);
+}
+
 const GLOW_TEX = 64;
 /**
  * How much wider the halo's QUAD is than the card it replaces.
@@ -787,10 +831,10 @@ export class Relics {
     const gTex = makeGlowTexture();
     const gMat = hazeAdditive(new THREE.MeshBasicMaterial({
       name: 'relic.glow',
-      color: new THREE.Color(3.2, 1.9, 0.7),
+      color: glowColour(GLOW_OPACITY),
       map: gTex,
       transparent: true,
-      opacity: 0.9,
+      opacity: GLOW_OPACITY,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       toneMapped: false,

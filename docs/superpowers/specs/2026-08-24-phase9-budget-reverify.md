@@ -112,7 +112,10 @@ framing. Two rules are built into it:
 - **`programs` is compared only at the end of a run.** It climbs monotonically
   *within* one — 241 at the first framing to 441 at the twelfth on unchanged
   code — because a sweep walks the player into material configurations the boot
-  warm never linked.
+  warm never linked. **This rule was inherited from `art-race` and §5.3 shows it
+  is wrong**; the comparable figure turned out to be `stats().warm.programs`,
+  the cache at the settled boot, which the reports already carry. The tool still
+  prints the end-of-run value, and it is still the wrong one.
 - **A framing whose row reports `rehearsalInForce`, `bootWarmRunning`,
   `gameplayDriven: false`, or a world that is not the one asked for is excluded
   and named**, rather than averaged in. Those four states are exactly what made
@@ -277,8 +280,8 @@ framings, materials 86, renderables 166, instanced 17, lights 186 unmoved,
 programs 490 → 490.
 
 Re-measured: −250 in exactly 21 framings, **−1,066 in exactly `kestrel-in`,
-`dray-in` and `pike-in`**, 86 / 166 / 17 / 186 flat in all 24, programs at end
-of run 490 → 488. The one world where the phase made the budget **smaller**,
+`dray-in` and `pike-in`**, 86 / 166 / 17 / 186 flat in all 24, and shader programs at the
+settled boot 275 → 272. The one world where the phase made the budget **smaller**,
 and it still does. **Declared. Matched.**
 
 ### 3.6 space — `art-space` (`b47ca48`)
@@ -333,7 +336,9 @@ chicane-front               891288 -> 893376 (+2088)
 
 The baseline column is also `art-race`'s own before-column, which means nothing
 between `06b79f6` and that branch's merge base touched this world at all.
-Programs at end of run: **441 → 441**. **Declared. Matched.**
+Shader programs at the settled boot: **243 → 241**; at the end of the run,
+**441 → 441**, which is the figure `art-race` published and the figure §5.3
+shows should not be trusted even when it agrees. **Declared. Matched.**
 
 ---
 

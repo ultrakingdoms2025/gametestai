@@ -78,15 +78,18 @@
  *
  * ── Which rocks get it, and why that threshold ───────────────────────────
  *
- * `HERO_RADIUS` is imported from `Belt.js` and it is the SAME number the
- * collider set uses. That is not a coincidence, it is the rule:
+ * `Belt.HERO_RADIUS` decides, and it is the SAME number the collider set uses.
+ * That is not a coincidence, it is the rule:
  *
  *   **every rock the flight model can hit is a rock drawn at hero detail.**
  *
  * A threshold invented here would be a second number to keep in step with the
  * first, and `space-backdrop.test.mjs` already pins the size distribution the
- * two are derived from. `scripts/tests/belt-assets.test.mjs` asserts the two
- * sets are the same set, off a real `Belt`.
+ * two are derived from. This file does not import it - the shape it writes is
+ * scale-free and has no opinion about which rocks use it - so the guarantee is
+ * a test rather than a shared constant: `scripts/tests/belt-assets.test.mjs`
+ * asserts the hero bucket and the collider set are the SAME SET, off a real
+ * `Belt`, rather than asserting that two files read the same number.
  */
 
 import * as THREE from 'three';

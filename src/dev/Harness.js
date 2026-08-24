@@ -384,11 +384,25 @@ const VIEWS = {
   ],
   // Castle occupies x -130..-14, z -109..-7 (centre -72,-58); village clusters
   // around (34,18); portal back to the station at (2, 9.3, -22).
+  /* THE TWO STREET FRAMINGS WERE UNDER THE GROUND.
+   *
+   * `medievalHeight` is 4.58 m at (20, 40) and 4.40 m at (58, 48). The street
+   * camera sat at y = 2.2 - two and a third metres BELOW the terrain - and its
+   * look target at y = 3.5 was 1.4 m under the ground it was aimed at, so the
+   * shot was of the underside of the terrain skirt with tree canopies floating
+   * in it. The square camera sat 0.6 m over the ground, which is knee height.
+   *
+   * Both now stand at eye height on the ground they were written for. This is
+   * exactly the failure shape World 06 paid for nine times: a gate that
+   * measures something the game does not do is worse than no gate, and one of
+   * this world's seven authored framings had been blind for however long the
+   * terrain has been where it is. `medieval-framings.test.mjs` pins the
+   * clearance so a terrain edit cannot bury one again silently. */
   medieval: [
     { name: 'castle-approach', pos: [-40, 12, 55], look: [-72, 20, -45], fov: 70 },
     { name: 'castle-gate', pos: [-72, 8, 15], look: [-72, 16, -40], fov: 68 },
-    { name: 'village-square', pos: [58, 5, 48], look: [28, 4, 12], fov: 74 },
-    { name: 'village-street', pos: [20, 2.2, 40], look: [36, 3.5, 14], fov: 76 },
+    { name: 'village-square', pos: [58, 6.1, 48], look: [28, 6.0, 12], fov: 74 },
+    { name: 'village-street', pos: [20, 6.2, 40], look: [36, 6.1, 14], fov: 76 },
     { name: 'ramparts-vista', pos: [-72, 32, -58], look: [34, 6, 20], fov: 78 },
     { name: 'portal', pos: [2, 11, 6], look: [2, 10.5, -22], fov: 62 },
     { name: 'hills-vista', pos: [120, 28, 118], look: [-40, 12, -20], fov: 80 },

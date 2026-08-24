@@ -1,0 +1,43 @@
+{
+  "comment": "Authored hero features for Aldermoor Vale's two beasts (Phase 9, decision D4). Written by scripts/make-beast-glb.mjs; the .glb files are reproduced byte for byte by re-running it, and scripts/tests/beast-assets.test.mjs holds every number below against the file on disk. glTF materials are DISCARDED on load - each part is MERGED into the mesh BeastBody already draws for the (node, slot) pair named in 'bind', so nothing in this manifest can add a draw call, a material or a shader program. 'node' is why there are node names at all: a beast is not one skinned mesh but a hierarchy of groups the animator rotates, so a brow authored in body space would stay behind when the head turned. Every (node, slot) pair here MUST already have a mesh in BeastBody._build - a pair with no mesh would be a new THREE.Mesh on an animal that already spends 22 and streams eight at a time, and the loader refuses one.",
+  "assets": [
+    {
+      "id": "wolf",
+      "file": "wolf.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-beast-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": ["hackles", "ruff", "brow", "nose"],
+      "tris": 884,
+      "bytes": 37648
+    },
+    {
+      "id": "bear",
+      "file": "bear.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-beast-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": ["hackles", "ruff", "brow", "nose"],
+      "tris": 860,
+      "bytes": 35964
+    }
+  ],
+  "bind": {
+    "hackles": { "node": "body", "slot": "coat" },
+    "ruff": { "node": "neck", "slot": "coat" },
+    "brow": { "node": "head", "slot": "coat" },
+    "nose": { "node": "head", "slot": "dark" }
+  },
+  "species": {
+    "wolf": {
+      "asset": "wolf",
+      "note": "The pack predator. Raised dorsal hackles over the shoulder, a wide lateral ruff that binds the four leg-top masses into one shoulder, a supraorbital shelf, and a dark nose pad. Photographed at 5.5 m before this landed, the wolf read as a smooth barrel with four pods bolted to it; the ruff is the part that fixes that, and the hackles are what make it read as a predator rather than a large dog.",
+      "parts": ["hackles", "ruff", "brow", "nose"]
+    },
+    "bear": {
+      "asset": "bear",
+      "note": "The solitary one. Crest over the HUMP rather than over the withers - the hump is a bear's tallest point and the shoulder blade is not - a shallower ruff, a heavy brow, and the big nose pad that is most of what says 'bear' head-on, where the hump is edge-on and carries nothing.",
+      "parts": ["hackles", "ruff", "brow", "nose"]
+    }
+  }
+}

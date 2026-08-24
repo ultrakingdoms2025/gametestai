@@ -68,13 +68,18 @@ const PINNED = {
   wolf: {
     spec: 'be32756af7fb5c00e276bc507c0b168e',
     gaits: '1952e62d9af2868329ed0a5443d77013',
-    body: { 1: 'a7fc27d4348621ffdfdc7c7baf47b6b3', 7: '05295f0e0600fbd91b4e48549a0148bd', 4242: 'af12cdeb49b558e737b0c69ec47f157a' },
+    /* REPINNED 2026-08-23 (Phase 9, `art-medieval`). The wolf's jaw and its
+     * four lower legs moved from `coat` to `belly`; `bodyDigest` hashes every
+     * material colour, so a deliberate countershading pass moves it. Geometry
+     * is untouched - see the note above the test. */
+    body: { 1: '86997d24638c59964d700ed85dbbe340', 7: 'c7f890d316d2053c6b2d077a00786e86', 4242: 'eec637532f9f6daca5e41509f09a4907' },
     anim: { 1: '10b0759be46383734426d614f95fb12c', 7: '8142fd094bff6d2106f54065254771e1' },
   },
   bear: {
     spec: '8db41314a609b060fee60f65f099107a',
     gaits: 'a6d0ede7a9398ce9b56fb7a6ce9e2e4a',
-    body: { 1: '9f5d4a6032bb39564172a46208262cd0', 7: '99454198825f4a7d62cbc68df8909060', 4242: '5810bd08bdfc7b28c467467e71c77f4f' },
+    /* REPINNED 2026-08-23, same change and same reason as the wolf's. */
+    body: { 1: 'c8b74347b107b83354d81ad0d0eeb4de', 7: '6ecc824b52c51d4cc39358fc3614c043', 4242: '508d3034f2a5f7bc2ffed30a93065e27' },
     anim: { 1: '12491f5c24ae1c358555926e6837403a', 7: 'a5682a8464b4ba6ecdf774c964131662' },
   },
 };
@@ -179,7 +184,29 @@ test('the wolf and the bear build to exactly the vertices they used to', () => {
    * the original multiplication ORDER, because floating-point multiplication is
    * not associative and a reordered product is a different animal in the last
    * bit. This is the assertion that makes that claim checkable rather than
-   * asserted. */
+   * asserted.
+   *
+   * ── The digests were repinned once, deliberately, on 2026-08-23 ─────────
+   *
+   * `bodyDigest` hashes "every vertex, every world transform, EVERY MATERIAL
+   * COLOUR", and Phase 9's `art-medieval` pass moved the jaw and the four
+   * lower legs of every beast from the `coat` surface onto `belly` - a colour
+   * every profile already declared and no mesh had ever worn. That is a
+   * visible art change and it is supposed to move this digest.
+   *
+   * What it must NOT have moved is the geometry, because the authored `.glb`
+   * features are welded in only when they load and `node --test` has no fetch.
+   * That half is still pinned by the VERTEX COUNTS inside these digests and by
+   * `beast-assets.test.mjs`, which builds one animal with the committed
+   * geometry installed and one without and asserts the mesh count and the
+   * material count are identical across the pair.
+   *
+   * The failure this test caught on the way there is worth recording, because
+   * it is exactly the kind it exists for: wrapping the neck's bare `sweep` in
+   * a `merge()` to make room for the ruff turned an indexed geometry into a
+   * non-indexed one for every animal in the game, authored parts or not.
+   * Nothing else would have noticed. `BeastBody` now takes the merge only when
+   * there is something to merge. */
   for (const species of ['wolf', 'bear']) {
     for (const seed of [1, 7, 4242]) {
       assert.equal(bodyDigest(species, seed), PINNED[species].body[seed],

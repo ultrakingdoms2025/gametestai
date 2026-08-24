@@ -28,6 +28,11 @@ Phase 1's long-open acceptance criterion was **measured against the production b
 (byte-verified against what the live site serves) and **fails on four of its five events**;
 see §6. The one it passes is first keybind use.
 
+One control lies: at the station quest manager the HUD prompts **"E — Quest Board"** and E
+does not open it, because a mini-game venue 33 m away has claimed the key and then declines
+it (§2b). Seven of station's twelve talkable NPCs stand inside that radius. **J** still
+works, which is why this is not filed as a blocker.
+
 ---
 
 ## 1. Method
@@ -180,6 +185,65 @@ not, and no test covers it (`grep -rn offline scripts/tests/quest*.test.mjs` →
 **Why it matters more than it looks.** "No quests in this category" is indistinguishable
 from "you have completed everything". A player in production today is told, in the
 game's own words, that there is nothing for them to do.
+
+---
+
+---
+
+## 2b. A control that lies — E at the quest manager
+
+Not a loop-blocker, because **J still works**. Filed immediately after the blockers because
+"a control that lies" is on this phase's own list, and this is one, measured.
+
+**What I did.** Stood in front of **Zara Vex**, the station quest manager, at
+`(-22, 0, 14.5)`. The HUD prompt read:
+
+> **E — Quest Board — Zara Vex**
+
+Pressed **E** (real key event), and sampled every 25 ms for 2.5 seconds.
+
+**What happened.** Nothing opened. `questBoard._open` stayed `false` across all 100
+samples; chat never opened; the mini-game stayed `idle`. Two toasts fired instead:
+
+> "The Concourse Round loads at the depot, 43 m away"
+> "The Concourse Round is not available"
+
+Pressing **J** at the same spot opened the board immediately — whose own footer reads
+*"Press J, **E** or ESC to close"*.
+
+**What should have happened.** The prompt the HUD is drawing should be the thing E does.
+
+**Cause, measured rather than reasoned.** At that spot:
+
+```
+hud._chatNpc          = "Zara Vex"  (isQuestManager: true)
+hud._minigamePrompt   = "Start The Concourse Round"
+hud._nearPortal       = null
+guard passes          = false
+distance to venue centre = 33.3 m   (venue prompt radius 64.8 m)
+```
+
+`HUD.js:2732` guards its E branch with `!this._minigamePrompt`, so the mini-game wins the
+key — and then `MinigameManager.start()` declines, because the run loads at a depot 43 m
+away. Meanwhile `PromptSlots` goes on drawing the quest-board prompt. **The HUD's prompt
+renderer and the HUD's key handler disagree about who owns E.**
+
+The guard's own comment explains the intent — *"The venue wins, because walking up to a
+pool and being offered a match is the whole point"* — and that reasoning is right when the
+player is **at** the venue. The problem is the radius it is applied over.
+
+**Scope, counted in the live world.** Station has two venues with prompt radii of **84 m**
+and **64.8 m**. Inside them stand **18 of the world's 68 NPCs — and 7 of its 12 talkable
+ones**: Zara Vex, plus the lorekeepers for Vellum Ridge, Meridian Athletic Complex, The
+Verdant Coil, Sunspire Citadel, Aldermoor Vale and Lodestar Yard. Those six lorekeepers are
+the signposts to six other worlds.
+
+The same over-wide radius is what produced the mini-game wart in §4.3: a venue that offers
+"Start" from 64.8 m out but only starts from the depot. One radius, two symptoms.
+
+*(A third "E does nothing" reading, at a citadel lorekeeper, turned out to be my own error —
+the teleport had put the player on a portal pad and they had already travelled. E opened
+that chat correctly. Recorded so the count above is not inflated.)*
 
 ---
 
@@ -514,6 +578,10 @@ adds. No game or site source file was modified.
    `medieval` blocks one frame for 12.3 s. The fix is whatever `sports` is already doing.
 5. **Play a planet landing and take-off** (§5). It is the only required flow this survey
    could not reach, and it is the one with a loop-blocker in its history.
+6. **The venue prompt radius** (§2b). One radius produces two symptoms: E stolen from 7 of
+   station's 12 talkable NPCs, and a "Start" prompt offered from where starting is
+   impossible. Separating the *prompt* radius from the *start* radius, or making the HUD's
+   prompt renderer agree with its key handler, fixes both.
 
 ---
 

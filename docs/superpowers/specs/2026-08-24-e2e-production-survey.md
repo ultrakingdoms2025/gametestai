@@ -4,6 +4,9 @@
 **Tree surveyed:** `6c61e34` "Bundle: the race world, the relic ceiling, and the ninth art pass".
 **Gates on that tree, run before anything else:** `npm test` **3279/3279 pass**,
 `node scripts/contract-check.mjs` **129/129**, `npm run build` **exit 0**.
+Re-run at the end of the branch (only new scripts and documents added): contract-check
+**129/129**, build **exit 0**, and `npm test` — see §10, because it did not give the same
+answer twice.
 
 Roadmap §Phase 12. This is a survey, not a repair. Two live loop-blockers are reported
 with root cause and are **deliberately left unfixed** — see §7 for why.
@@ -175,6 +178,14 @@ comment:
 
 > And the board is told, so it can say "offline" rather than "empty" — **the same
 > distinction the marketplace draws.**
+
+**The two side by side, both measured in a running game with the service down:**
+
+| | quest board | marketplace |
+|---|---|---|
+| system flag | `questSystem._questsOfflineLogged: true` | `market.offline: true` |
+| content shown | **0 quests** | **39 items**, with real prices (Rifle Round Pack 195, Arrow Bundle 169, Ember Core Cell 221) |
+| what the player is told | *"No quests in this category."* | *"Trade network unreachable — showing the counter's standing stock. Prices are local."* |
 
 **The board never reads it.** `src/ui/QuestBoard.js:89` is
 `this.bus.on('quests:changed', () => this._refresh())` — the payload is dropped by an
@@ -420,6 +431,26 @@ filed two loop-blockers that do not exist.
    on a volcano is a joke the player did not make. The ship is the mount here."* The maze
    forbids mounts too, and `mapActionOwner` re-points **M** at the map there
    (`WorldRules.js:135`). `quests: false` on planets likewise explains their zero quests.
+
+### 4.5 Known-open items, confirmed or not, in play
+
+I was asked to confirm the `citadel` gate-spawn framing if I saw it. **Confirmed, and it
+is worse in motion than the note describes.** Screenshot `.probe/e2e/citadel-gate-spawn.png`,
+taken from the spawn eye with the HUD hidden:
+
+- a palm **crown fills the entire right ~20% of the frame** as an out-of-focus green mass;
+- a **second palm trunk stands centre-right**, directly across the sightline to the keep
+  and the great tower — the two things this framing exists to show;
+- the player's own avatar occupies the centre of the frame.
+
+The rest of the world reads well from that spot — the souk rings, the merchants, the
+cast and the architecture all render correctly — which is what makes the palms conspicuous
+rather than incidental. The existing record of this defect is accurate; nothing new to add
+beyond the confirmation and the picture.
+
+The other known-open items (bundle splitting, the 61 world lights, race's drawn-only
+marshal-post collision, inert `toneMapped`) were not re-investigated and are not
+re-reported here.
 
 ---
 

@@ -151,7 +151,10 @@ test('forceDrawable puts back what it changed, not what it remembers', () => {
     + 'this is the defect that cost four branches their ablation evidence');
   assert.equal(b.visible, true, 'and it must still restore everything nobody else touched');
   assert.equal(res.leftAlone, 1, 'and it must SAY it left one alone, so the caller can report it');
-  assert.equal(res.restored, 1);
+  /* Two: `b`, and the group itself - `forceDrawable` walks the root as well as
+   * its children, and a Group's `frustumCulled` is true by default so it is
+   * snapshotted too. */
+  assert.equal(res.restored, 2);
 });
 
 test('rehearsalInForce says when the scene is force-drawn, and clears afterwards', () => {
@@ -190,13 +193,20 @@ test('ready() waits out a rehearsal that is still up', async () => {
   const g = stubGame();
   const h = new Harness(g);
   const restore = forceDrawable([g._group]);
-  let returned = false;
-  const p = h.ready({ timeoutMs: 5000 }).then(() => { returned = true; });
-  await new Promise((r) => setTimeout(r, 120));
-  assert.equal(returned, false, 'a force-draw was up and ready() returned anyway');
-  restore();
-  await p;
-  assert.equal(h.stats().warm.rehearsalCleared, true);
+  /* Released in a `finally`: a leaked force-draw is process-global, so a
+   * failure here would otherwise make the NEXT case fail for the wrong
+   * reason - which is the same class of confusion this file is about. */
+  try {
+    let returned = false;
+    const p = h.ready({ timeoutMs: 5000 }).then(() => { returned = true; });
+    await new Promise((r) => setTimeout(r, 120));
+    assert.equal(returned, false, 'a force-draw was up and ready() returned anyway');
+    restore();
+    await p;
+    assert.equal(h.stats().warm.rehearsalCleared, true);
+  } finally {
+    restore();
+  }
 });
 
 test('settleBoot waits for the shader program cache to stop growing', async () => {

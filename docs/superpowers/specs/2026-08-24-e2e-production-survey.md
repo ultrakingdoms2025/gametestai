@@ -15,12 +15,18 @@ with root cause and are **deliberately left unfixed** — see §7 for why.
 **The game is playable and the client is in good shape. The server half is not.**
 Eighteen worlds were entered with real key events; all eighteen load, spawn a live
 player, and answer movement, jump, sprint, crouch, camera, weapon and mount input with
-**zero page errors in any world**. Against that, **two production API routes return HTTP
-500 to every caller**, and one of them is the mission spine: `/api/game/quests`. No quest
-can be loaded in production by anybody, signed in or out. The cause is a single missing
-database column, and the code contains a comment — in a third module — that predicts this
-exact failure and defends against it. Two modules with the same dependency did not get
-that defence.
+**zero page errors across the entire session** — including a portal round trip on foot, a
+mini-game played to a result that paid out, and a ship boarded, launched and flown to
+space with the player's health and hold intact. Against that, **two production API routes
+return HTTP 500 to every caller**, and one of them is the mission spine:
+`/api/game/quests`. No quest can be loaded in production by anybody, signed in or out. The
+cause is a single missing database column, and the code contains a comment — in a third
+module — that predicts this exact failure and defends against it. Two modules with the
+same dependency did not get that defence.
+
+Phase 1's long-open acceptance criterion was **measured against the production bundle**
+(byte-verified against what the live site serves) and **fails on four of its five events**;
+see §6. The one it passes is first keybind use.
 
 ---
 
@@ -274,10 +280,61 @@ other than the one asked for.
 | **Mini-games** | 16 venues found across 5 worlds, prompts fire | station 2, sports 4, citadel 7, race 2, dock 1; `_near` and `_promptText` populate on approach |
 | **NPCs** | 68 in station, 55 medieval, 58 citadel, 41 sports | `npcManager.npcs`; nearest-NPC approach + **E** exercised |
 | **Marketplace** | offline catalogue + notice works | `Marketplace.js:311-323`, `mkt-offline` rendered |
+| **Portals** | round trip on foot, both directions | §4.3 |
+| **Ships / piloting** | board, door, lift-off, world change, transit drive | §4.3 |
+| **Rewards** | a real payout arrived from a played contest | `economy._credits` 0 → 2, §4.3 |
+| **Page errors** | **zero, across the entire session** | `window.__HARNESS_ERRORS__.length === 0` after 18 worlds, 2 portal traversals, a contest played to a result, and a flight to space |
 | **Quests** | **cannot be tested end to end** | see §5 |
 | **Custom servers** | **cannot be tested end to end** | see §5 |
+| **Server-authoritative credits** | **not exercised** | `creditReporter.active: false` with no signed-in session; the 2 CR stayed local and nothing was queued (`_queue: []`, `_seq: 0`, `_dropped: 0`). Correct offline behaviour; says nothing about the server path. |
 
-### 4.3 Two "the player cannot move" results that were both wrong
+### 4.3 Flows played end to end, on the production bundle
+
+Everything below was driven with real key events on the byte-verified production build.
+
+**Portal round trip — station → race → station.** Walked into the `station->race` portal
+holding **W**; world changed to `race`, player landed at `(-10.6, 0.8, 144.1)`. Pressed
+**Esc** to clear the circuit sheet, held **S** back through `race->station`
+(`ready: true`, `state: "online"`); world changed back to `station` at `(49.0, 2.8, 28.3)`.
+**Health 100 the whole way.** A world a player can walk into and walk out of.
+
+**Mini-game, start to payout — The Concourse Round (courier, station).**
+Standing 52 m out, the HUD prompt read *"Start The Concourse Round"* and **E** did nothing.
+The game **does** explain itself — two toasts fired: *"The Concourse Round loads at the
+depot, 52 m away"* and *"The Concourse Round is not available"*. Moved to the depot
+`(18, 0.13, 0)`; **E** then started it — `state: countdown`, 2.07 s. It ran, and finished
+on its own timer with a real result object:
+
+```json
+{"gameId":"delivery_run","venueId":"station_concourse_round","kind":"courier",
+ "won":false,"place":2,"total":2,"score":0,"scoreLabel":"0/3 parcels",
+ "detail":"late to Rim Kiosk A","time":13.55,"credits":2,"worldId":"station"}
+```
+
+`economy._credits` went **0 → 2** and `_earned` **0 → 2**. The consolation payout arrived.
+**A reward that actually arrives** — the loop closes. (The run was lost because the driver
+stood still; that is the correct outcome for standing still.)
+*Wart, not a blocker:* the prompt radius is 64.8 m while the start radius is much smaller,
+so the HUD offers "Start" from where starting is impossible. The toast rescues it by naming
+the place and the distance, which is why this is filed here and not in §2.
+
+**Ship boarding, lift-off and the run to space — the flow this repo's memory flags.**
+The recorded historical loop-blocker is *"take-off killing the player and deleting their
+hold"*. It is fixed, and this is the play that shows it:
+
+| step | real input | result |
+|---|---|---|
+| stand at Kestrel apron `(-60, 2, -143)` | — | prompt: **"F — Board the Kestrel"** |
+| board | **F** | `shipId: "kestrel"`, `landed: true`, player at berth `(-68, 1.2, -143)` |
+| open door | **E** | prompt flips to "Close door" |
+| lift off | **Space** 2.5 s | y **1.2 → 193.52**, `landed: false`, `airborne: true` |
+| run out | **W** 4 s | world changed **dock → space**, at `(-68, 60, -1197)` |
+| transit drive | **Z** | `_transit: 1`, travelled 470 m to `z −1667` |
+
+**Health 100 at every step. Inventory 3 items before and after. Credits 2 before and
+after.** Take-off does not kill the player and does not delete the hold.
+
+### 4.4 Two "the player cannot move" results that were both wrong
 
 Both are recorded because a survey that stopped at the first measurement would have
 filed two loop-blockers that do not exist.
@@ -310,16 +367,110 @@ filed two loop-blockers that do not exist.
 | **Custom-server flows** | `/api/servers` is correctly gated (401 anonymous). Testing owner CRUD, membership and server-scoped content needs an authenticated owner account. Not attempted. |
 | **Purchases / checkout** | Deliberately not attempted. No purchase was initiated at any point. |
 | **Signed-in API surface** | `/api/game/state`, `/leaderboard`, `/map-overlay`, `/progress`, `/servers`, `/user/me` all return 401 anonymously — correct — but a 401 gate fires *before* the data path, so those are gate-passes, not end-to-end passes. **They share `playerDb.ts`'s raw-`pg` helper with the two routes that 500.** Whether they also fail for a signed-in user is **unverified**; §8 recommends it be checked first. |
+| **Landing on a planet, and taking off from one** | **Not exercised.** The ten planets publish **zero portals** — by design, because the ship is the way in and out. Reaching one properly means flying from `space` to a body and landing, which needs sustained pointer-driven flight the driver could not hold. Note that `HARNESS.goto('cinder')` puts the player on the surface with `shipId: null` and no portal — *that state has no exit*, but it is not player-reachable: a player only arrives by landing, which leaves their ship parked. **The half of this flow that could be tested passed** (§4.3: board, lift off, reach space, transit drive, hold and health intact). The planet-side half is the single most valuable thing left to test, precisely because it is where this repo's memory records a loop-blocker before. |
 | **Touch / mobile** | Out of scope for this pass; the driver's touch look path was used only as a pointer-lock fallback. |
+| **Pointer-lock mouse look** | An automated browser could not hold a pointer lock, so aiming and free look were not exercised. Turning was done with `HARNESS.teleport`'s yaw argument, labelled as such wherever it was used. |
 
 ---
 
-## 6. Phase 1's acceptance criterion
+## 6. Phase 1's acceptance criterion — **measured, and it fails on four of its five events**
 
 > in **production**, no frame gap over 250 ms on first mount launch, first weapon change
 > per world, world entry, first keybind use, or repeated entry/exit. **Measured, not felt.**
 
-*(§6.1 and §6.2 below.)*
+### 6.1 How "production" was reached
+
+`/game` is cookie-gated, so a signed-in production session was not available. Instead the
+**production bundle itself** was measured: `npm run build` on this tree produces
+`index-BwKb403X.js` **byte-identical** to what `www.aethernexus.games` serves
+(`sha256 cd67bed6…`), and so is the harness chunk that makes measurement possible
+(`Harness-B8SLjNVg.js`, `sha256 e8c1a446…`, verified against the live fetch). That build
+was served over `vite preview` — the server's own copy re-hashed to `cd67bed6…` before the
+run — and driven with real key events.
+
+So this is the **production artifact, on real hardware, under real input**. What it is not
+is Vercel's CDN. That difference is download time, not frame pacing, and every figure below
+is a `performance.now()` delta between consecutive rAF callbacks *after* boot.
+
+Environment: headless Chrome, `ANGLE (NVIDIA, NVIDIA GeForce RTX 5080 (0x00002C02)
+Direct3D11 vs_5_0 ps_5_0, D3D11)` — a real GPU, not SwiftShader.
+`gameplayDriven: true` throughout.
+
+**Evidence:** `docs/superpowers/specs/2026-08-24-e2e-frame-gaps.json` — every gap
+distribution behind the tables below, for both the production bundle and the dev server,
+so the numbers can be re-read rather than taken on trust. (`.probe/` holds the full state
+dumps and the 36 screenshots, but this repo gitignores it as agent scratch — hence the
+extract.)
+
+### 6.2 The numbers
+
+Worst single inter-frame gap, in milliseconds, per event per world:
+
+| world | world entry | first weapon change | first mount launch | first keybind use |
+|---|---|---|---|---|
+| station | 75.0 | **674.5** | **686.0** | 97.5 |
+| medieval | **12343.2** | **813.1** | **1977.7** | 191.8 |
+| sports | 40.5 | 42.5 | **547.2** | 27.1 |
+| citadel | 22.8 | 25.9 | 28.2 | 26.7 |
+| race | **3877.6** | 21.9 | 21.5 | 28.3 |
+| maze | **1511.7** | 21.3 | 53.2 | 21.7 |
+| dock | **5929.0** | 31.9 | 38.4 | 24.3 |
+| space | **5547.7** | 21.5 | 19.4 | 22.5 |
+| cinder | 18.8 | 20.5 | 19.1 | 18.6 |
+| tessera | 18.4 | 19.7 | 18.3 | 18.4 |
+| sirocco | **619.1** | 19.1 | 18.3 | 18.1 |
+| shoal | 18.0 | 19.1 | 20.5 | 18.4 |
+| vitrine | 17.6 | 18.6 | 18.5 | 19.0 |
+| verdigris | 22.0 | 19.6 | 42.1 | 19.7 |
+| lathe | 18.1 | 20.0 | 18.8 | 18.1 |
+| carnelian | 18.5 | 20.3 | 21.8 | 19.3 |
+| sallow | 19.1 | 23.5 | 20.6 | 24.4 |
+| cathedra | 18.0 | 18.7 | 19.2 | 130.9 |
+| **over 250 ms** | **6 / 18** | **2 / 18** | **3 / 18** | **0 / 18** |
+
+Repeated entry/exit, `station ⇄ medieval`, three consecutive rounds:
+
+| round | worst gap | frames over 250 ms | five worst gaps (ms) |
+|---|---|---|---|
+| 1 | **5412.5** | 3 | 70.4, 75.1, 542.8, 866.6, 5412.5 |
+| 2 | **1992.9** | 2 | 44.5, 47.6, 54.0, 926.6, 1992.9 |
+| 3 | **1638.7** | 2 | 35.2, 48.2, 219.5, 634.1, 1638.7 |
+
+### 6.3 Verdict, event by event
+
+| criterion event | verdict |
+|---|---|
+| **first keybind use** | **PASS** — 0 of 18 worlds over 250 ms; worst 191.8 ms |
+| **first weapon change per world** | **FAIL** — 674.5 ms and 813.1 ms |
+| **first mount launch** | **FAIL** — up to 1977.7 ms |
+| **world entry** | **FAIL** — 6 of 18 over; worst 12,343.2 ms |
+| **repeated entry/exit** | **FAIL** — all three rounds over; improves 5412 → 1993 → 1639 ms but never clears |
+
+### 6.4 The shape of it, which the criterion's wording misses
+
+The criterion says "first weapon change **per world**". The data says the cost is **per
+session, not per world**: weapon change is expensive in the first two worlds visited
+(674.5 ms, 813.1 ms) and then costs 18–43 ms in the other sixteen. First mount launch is
+the same — expensive in the first three (686, 1978, 547 ms), 18–53 ms thereafter.
+
+That is the shader-cache behaviour this repo already has written down — three keys its
+program cache on light count, so the first weapon and the first mount in a session pay for
+program compilation and everything after them is a cache hit. **Anything that warms those
+two program sets once during boot would move both of these events under the bar**, and
+would leave world entry as the only real failure.
+
+World entry is a different animal and is not a warm-up effect: `medieval` 12.3 s, `dock`
+5.9 s, `space` 5.5 s are cold world *builds* blocking the main thread. `sports` is the
+proof that it need not be so — it takes **30.5 seconds of wall time** to build and its
+worst frame is **84.2 ms**, because it does the work without blocking the frame loop.
+Whatever `sports` does, `medieval` does not.
+
+### 6.5 A frame stall long enough to eat a keypress
+
+`maze`'s entry stall swallowed a **1.4-second key hold** whole — keydown and keyup both
+landed inside one stalled frame, so the game saw the key down for zero game time (§4.3).
+That is not a measurement artefact to be waved away: a player pressing a key during
+world entry gets exactly the same nothing.
 
 ---
 
@@ -349,10 +500,20 @@ adds. No game or site source file was modified.
 ## 8. Recommended order of work
 
 1. **LB-1 / LB-2** — the missing `server_id` column. Then re-check the six gated
-   endpoints with a signed-in session **before** assuming they were fine.
+   endpoints with a signed-in session **before** assuming they were fine: they share the
+   same helper and a 401 gate fires before the data path, so none of them has been proved.
 2. **LB-3** — `QuestBoard` should read the `offline` flag its own upstream already sends.
-   One line, plus the test that does not currently exist.
-3. The entry-stall figures in §6.
+   One line, plus the test that does not currently exist. Worth doing *regardless* of
+   LB-1: a quest service can be unreachable for reasons other than this bug, and the
+   board will lie in exactly the same way every time.
+3. **Warm the first weapon and the first mount during boot.** §6.4 shows both costs are
+   per-session, not per-world; warming them once would move two of the criterion's five
+   events under the bar for the price of a boot-time step this engine already does for
+   other program sets.
+4. **World entry.** `sports` builds for 30.5 s of wall time with an 84 ms worst frame;
+   `medieval` blocks one frame for 12.3 s. The fix is whatever `sports` is already doing.
+5. **Play a planet landing and take-off** (§5). It is the only required flow this survey
+   could not reach, and it is the one with a loop-blocker in its history.
 
 ---
 
@@ -365,3 +526,15 @@ adds. No game or site source file was modified.
 | `scripts/e2e-sweep.mjs` | the per-world battery of input probes |
 | `scripts/e2e-worlds.mjs` | the eighteen-world pass and the repeated entry/exit rounds |
 | `docs/superpowers/specs/2026-08-24-e2e-production-survey.md` | this document |
+| `docs/superpowers/specs/2026-08-24-e2e-frame-gaps.json` | the gap distributions behind §6, both runs, so the criterion can be re-read |
+
+Nothing under `src/`, `site/`, `admin/` or `scripts/tests/` was touched. `git diff --stat`
+against the surveyed commit shows only the five files above.
+
+### One number worth a second look
+
+`medieval`'s first weapon change is not a single spike: **15 frames over 250 ms** in that
+window, with a median frame of **147.8 ms**. The criterion is written in terms of the worst
+gap, and by that measure it is one failure — but a player experiences fifteen consecutive
+bad frames, which is a second of unresponsiveness rather than one dropped frame. The same
+window in the sixteen worlds after it has a median of ~19 ms.

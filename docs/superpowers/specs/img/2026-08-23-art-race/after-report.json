@@ -1,0 +1,3236 @@
+{
+  "world": "race",
+  "browser": "C:\\Users\\markc\\AppData\\Local\\ms-playwright\\chromium-1223\\chrome-win64\\chrome.exe",
+  "url": "http://127.0.0.1:54245/game/index.html?dev=1&autostart=1&world=race",
+  "viewport": {
+    "width": 1600,
+    "height": 900
+  },
+  "at": "2026-08-24T12:18:55.028Z",
+  "views": {
+    "marshal-post-profile": {
+      "world": "race",
+      "gameplayDriven": true,
+      "rehearsalInForce": 0,
+      "bootWarmRunning": false,
+      "unculledMeshes": 4,
+      "cameraToPlayer": 1.6,
+      "frameValidity": {
+        "ok": true,
+        "problems": [],
+        "skyOffCentre": 180.61,
+        "far": 2000
+      },
+      "drawCalls": 821,
+      "rendererTriangles": 2953540,
+      "worldTriangles": 811944,
+      "byMaterial": [
+        {
+          "key": "race.foliage.frond",
+          "triangles": 218208,
+          "objects": 9
+        },
+        {
+          "key": "race.grass.field",
+          "triangles": 191496,
+          "objects": 4
+        },
+        {
+          "key": "race.paint.enamel",
+          "triangles": 127512,
+          "objects": 17
+        },
+        {
+          "key": "race.concrete.wall",
+          "triangles": 65780,
+          "objects": 28
+        },
+        {
+          "key": "race.bark.palm",
+          "triangles": 52080,
+          "objects": 9
+        },
+        {
+          "key": "race.dirt.ground",
+          "triangles": 37430,
+          "objects": 5
+        },
+        {
+          "key": "race.asphalt.court",
+          "triangles": 31834,
+          "objects": 2
+        },
+        {
+          "key": "race.glass.window",
+          "triangles": 25140,
+          "objects": 2
+        },
+        {
+          "key": "race.concrete.skatepark",
+          "triangles": 18468,
+          "objects": 2
+        },
+        {
+          "key": "race.concrete.road",
+          "triangles": 11612,
+          "objects": 5
+        },
+        {
+          "key": "race.metal.iron",
+          "triangles": 8028,
+          "objects": 4
+        },
+        {
+          "key": "race.paint.white",
+          "triangles": 7708,
+          "objects": 6
+        },
+        {
+          "key": "race.metal.panel",
+          "triangles": 6936,
+          "objects": 8
+        },
+        {
+          "key": "MeshBasicMaterial",
+          "triangles": 3336,
+          "objects": 4
+        }
+      ],
+      "byName": [
+        {
+          "key": "race:terrain.grass",
+          "triangles": 182512,
+          "objects": 1
+        },
+        {
+          "key": "race:crowd",
+          "triangles": 102384,
+          "objects": 2
+        },
+        {
+          "key": "race:tree.crown.16",
+          "triangles": 57024,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.17",
+          "triangles": 51840,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.12",
+          "triangles": 28512,
+          "objects": 1
+        },
+        {
+          "key": "city.glass:glass.window",
+          "triangles": 24948,
+          "objects": 1
+        },
+        {
+          "key": "race:terrain.rock",
+          "triangles": 20066,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.11",
+          "triangles": 19872,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.track.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.15",
+          "triangles": 17160,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.10",
+          "triangles": 16080,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.barrier.wall",
+          "triangles": 15980,
+          "objects": 2
+        },
+        {
+          "key": "paddock.vellum:concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race:cinder.track.asphalt.court",
+          "triangles": 14256,
+          "objects": 1
+        }
+      ],
+      "programs": 241,
+      "geometries": 718,
+      "textures": 312,
+      "materials": 28,
+      "materialNames": [
+        [
+          "race.paint.enamel",
+          155
+        ],
+        [
+          "race.concrete.wall",
+          83
+        ],
+        [
+          "race.metal.iron",
+          60
+        ],
+        [
+          "race.bark.palm",
+          25
+        ],
+        [
+          "race.foliage.frond",
+          25
+        ],
+        [
+          "race.fence.chain",
+          16
+        ],
+        [
+          "race.paint.white",
+          13
+        ],
+        [
+          "race.metal.panel",
+          13
+        ],
+        [
+          "race.concrete.road",
+          9
+        ],
+        [
+          "race.dirt.ground",
+          8
+        ],
+        [
+          "race.metal.trim",
+          8
+        ],
+        [
+          "race.grass.field",
+          7
+        ],
+        [
+          "race.metal.rail",
+          6
+        ],
+        [
+          "MeshBasicMaterial",
+          4
+        ],
+        [
+          "race.asphalt.court",
+          4
+        ],
+        [
+          "race.glass.window",
+          4
+        ],
+        [
+          "race.hazard.stripe",
+          4
+        ],
+        [
+          "race.concrete.skatepark",
+          3
+        ],
+        [
+          "race.metal.hull",
+          3
+        ],
+        [
+          "race.rubber.track",
+          1
+        ]
+      ],
+      "renderables": 453,
+      "instancedMeshes": 129,
+      "instances": 5506,
+      "worldLights": 0,
+      "worldLightsLit": 0,
+      "npcs": 31,
+      "fps": 35,
+      "frameMsMedian": 6.6,
+      "errors": [],
+      "expectPlayerAtCamera": true,
+      "subjectAt": {
+        "x": 28.67,
+        "y": 1.33,
+        "z": 177.03
+      }
+    },
+    "marshal-post-three-quarter": {
+      "world": "race",
+      "gameplayDriven": true,
+      "rehearsalInForce": 0,
+      "bootWarmRunning": false,
+      "unculledMeshes": 4,
+      "cameraToPlayer": 1.6,
+      "frameValidity": {
+        "ok": true,
+        "problems": [],
+        "skyOffCentre": 174.83,
+        "far": 2000
+      },
+      "drawCalls": 524,
+      "rendererTriangles": 2393398,
+      "worldTriangles": 684828,
+      "byMaterial": [
+        {
+          "key": "race.foliage.frond",
+          "triangles": 207408,
+          "objects": 9
+        },
+        {
+          "key": "race.grass.field",
+          "triangles": 188904,
+          "objects": 3
+        },
+        {
+          "key": "race.paint.enamel",
+          "triangles": 100776,
+          "objects": 8
+        },
+        {
+          "key": "race.concrete.wall",
+          "triangles": 52500,
+          "objects": 27
+        },
+        {
+          "key": "race.bark.palm",
+          "triangles": 49560,
+          "objects": 9
+        },
+        {
+          "key": "race.dirt.ground",
+          "triangles": 29654,
+          "objects": 3
+        },
+        {
+          "key": "race.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race.concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race.concrete.road",
+          "triangles": 6428,
+          "objects": 3
+        },
+        {
+          "key": "race.paint.white",
+          "triangles": 4780,
+          "objects": 4
+        },
+        {
+          "key": "race.metal.iron",
+          "triangles": 4104,
+          "objects": 1
+        },
+        {
+          "key": "MeshBasicMaterial",
+          "triangles": 3336,
+          "objects": 4
+        },
+        {
+          "key": "race.metal.panel",
+          "triangles": 2100,
+          "objects": 4
+        },
+        {
+          "key": "race.fence.chain",
+          "triangles": 900,
+          "objects": 4
+        }
+      ],
+      "byName": [
+        {
+          "key": "race:terrain.grass",
+          "triangles": 182512,
+          "objects": 1
+        },
+        {
+          "key": "race:crowd",
+          "triangles": 86544,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.16",
+          "triangles": 57024,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.17",
+          "triangles": 51840,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.12",
+          "triangles": 28512,
+          "objects": 1
+        },
+        {
+          "key": "race:terrain.rock",
+          "triangles": 20066,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.11",
+          "triangles": 19872,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.track.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.15",
+          "triangles": 17160,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.10",
+          "triangles": 16080,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.barrier.wall",
+          "triangles": 15980,
+          "objects": 2
+        },
+        {
+          "key": "paddock.vellum:concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.16",
+          "triangles": 13728,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.17",
+          "triangles": 12480,
+          "objects": 1
+        }
+      ],
+      "programs": 241,
+      "geometries": 718,
+      "textures": 312,
+      "materials": 28,
+      "materialNames": [
+        [
+          "race.paint.enamel",
+          155
+        ],
+        [
+          "race.concrete.wall",
+          83
+        ],
+        [
+          "race.metal.iron",
+          60
+        ],
+        [
+          "race.bark.palm",
+          25
+        ],
+        [
+          "race.foliage.frond",
+          25
+        ],
+        [
+          "race.fence.chain",
+          16
+        ],
+        [
+          "race.paint.white",
+          13
+        ],
+        [
+          "race.metal.panel",
+          13
+        ],
+        [
+          "race.concrete.road",
+          9
+        ],
+        [
+          "race.dirt.ground",
+          8
+        ],
+        [
+          "race.metal.trim",
+          8
+        ],
+        [
+          "race.grass.field",
+          7
+        ],
+        [
+          "race.metal.rail",
+          6
+        ],
+        [
+          "MeshBasicMaterial",
+          4
+        ],
+        [
+          "race.asphalt.court",
+          4
+        ],
+        [
+          "race.glass.window",
+          4
+        ],
+        [
+          "race.hazard.stripe",
+          4
+        ],
+        [
+          "race.concrete.skatepark",
+          3
+        ],
+        [
+          "race.metal.hull",
+          3
+        ],
+        [
+          "race.rubber.track",
+          1
+        ]
+      ],
+      "renderables": 453,
+      "instancedMeshes": 129,
+      "instances": 5506,
+      "worldLights": 0,
+      "worldLightsLit": 0,
+      "npcs": 31,
+      "fps": 39,
+      "frameMsMedian": 5.1,
+      "errors": [],
+      "expectPlayerAtCamera": true,
+      "subjectAt": {
+        "x": 28.67,
+        "y": 1.33,
+        "z": 177.03
+      }
+    },
+    "marshal-post-front": {
+      "world": "race",
+      "gameplayDriven": true,
+      "rehearsalInForce": 0,
+      "bootWarmRunning": false,
+      "unculledMeshes": 4,
+      "cameraToPlayer": 1.6,
+      "frameValidity": {
+        "ok": true,
+        "problems": [],
+        "skyOffCentre": 172.46,
+        "far": 2000
+      },
+      "drawCalls": 673,
+      "rendererTriangles": 2591828,
+      "worldTriangles": 710552,
+      "byMaterial": [
+        {
+          "key": "race.grass.field",
+          "triangles": 193784,
+          "objects": 5
+        },
+        {
+          "key": "race.foliage.frond",
+          "triangles": 159456,
+          "objects": 7
+        },
+        {
+          "key": "race.paint.enamel",
+          "triangles": 125628,
+          "objects": 14
+        },
+        {
+          "key": "race.concrete.wall",
+          "triangles": 59856,
+          "objects": 25
+        },
+        {
+          "key": "race.bark.palm",
+          "triangles": 38224,
+          "objects": 7
+        },
+        {
+          "key": "race.dirt.ground",
+          "triangles": 36974,
+          "objects": 5
+        },
+        {
+          "key": "race.asphalt.court",
+          "triangles": 32582,
+          "objects": 3
+        },
+        {
+          "key": "race.concrete.skatepark",
+          "triangles": 18468,
+          "objects": 2
+        },
+        {
+          "key": "race.concrete.road",
+          "triangles": 11356,
+          "objects": 6
+        },
+        {
+          "key": "race.paint.white",
+          "triangles": 9020,
+          "objects": 9
+        },
+        {
+          "key": "race.metal.iron",
+          "triangles": 7596,
+          "objects": 2
+        },
+        {
+          "key": "race.metal.trim",
+          "triangles": 4740,
+          "objects": 5
+        },
+        {
+          "key": "race.metal.panel",
+          "triangles": 4212,
+          "objects": 6
+        },
+        {
+          "key": "MeshBasicMaterial",
+          "triangles": 3336,
+          "objects": 4
+        }
+      ],
+      "byName": [
+        {
+          "key": "race:terrain.grass",
+          "triangles": 182512,
+          "objects": 1
+        },
+        {
+          "key": "race:crowd",
+          "triangles": 99504,
+          "objects": 2
+        },
+        {
+          "key": "race:tree.crown.16",
+          "triangles": 57024,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.17",
+          "triangles": 51840,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.12",
+          "triangles": 28512,
+          "objects": 1
+        },
+        {
+          "key": "race:terrain.rock",
+          "triangles": 20066,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.track.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.barrier.wall",
+          "triangles": 15980,
+          "objects": 2
+        },
+        {
+          "key": "paddock.vellum:concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.16",
+          "triangles": 13728,
+          "objects": 1
+        },
+        {
+          "key": "race:aurora.track.asphalt.court",
+          "triangles": 13420,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.17",
+          "triangles": 12480,
+          "objects": 1
+        },
+        {
+          "key": "race:aurora.barrier.wall",
+          "triangles": 12200,
+          "objects": 2
+        },
+        {
+          "key": "race:vellum.track.dirt.ground",
+          "triangles": 9588,
+          "objects": 2
+        }
+      ],
+      "programs": 288,
+      "geometries": 718,
+      "textures": 314,
+      "materials": 28,
+      "materialNames": [
+        [
+          "race.paint.enamel",
+          155
+        ],
+        [
+          "race.concrete.wall",
+          83
+        ],
+        [
+          "race.metal.iron",
+          60
+        ],
+        [
+          "race.bark.palm",
+          25
+        ],
+        [
+          "race.foliage.frond",
+          25
+        ],
+        [
+          "race.fence.chain",
+          16
+        ],
+        [
+          "race.paint.white",
+          13
+        ],
+        [
+          "race.metal.panel",
+          13
+        ],
+        [
+          "race.concrete.road",
+          9
+        ],
+        [
+          "race.dirt.ground",
+          8
+        ],
+        [
+          "race.metal.trim",
+          8
+        ],
+        [
+          "race.grass.field",
+          7
+        ],
+        [
+          "race.metal.rail",
+          6
+        ],
+        [
+          "MeshBasicMaterial",
+          4
+        ],
+        [
+          "race.asphalt.court",
+          4
+        ],
+        [
+          "race.glass.window",
+          4
+        ],
+        [
+          "race.hazard.stripe",
+          4
+        ],
+        [
+          "race.concrete.skatepark",
+          3
+        ],
+        [
+          "race.metal.hull",
+          3
+        ],
+        [
+          "race.rubber.track",
+          1
+        ]
+      ],
+      "renderables": 453,
+      "instancedMeshes": 129,
+      "instances": 5506,
+      "worldLights": 0,
+      "worldLightsLit": 0,
+      "npcs": 31,
+      "fps": 60,
+      "frameMsMedian": 9.1,
+      "errors": [],
+      "expectPlayerAtCamera": true,
+      "subjectAt": {
+        "x": 28.67,
+        "y": 1.33,
+        "z": 177.03
+      }
+    },
+    "grandstand-profile": {
+      "world": "race",
+      "gameplayDriven": true,
+      "rehearsalInForce": 0,
+      "bootWarmRunning": false,
+      "unculledMeshes": 4,
+      "cameraToPlayer": 2.6,
+      "frameValidity": {
+        "ok": true,
+        "problems": [],
+        "skyOffCentre": 234.46,
+        "far": 2000
+      },
+      "drawCalls": 506,
+      "rendererTriangles": 2385724,
+      "worldTriangles": 725060,
+      "byMaterial": [
+        {
+          "key": "race.foliage.frond",
+          "triangles": 207648,
+          "objects": 8
+        },
+        {
+          "key": "race.grass.field",
+          "triangles": 188904,
+          "objects": 3
+        },
+        {
+          "key": "race.paint.enamel",
+          "triangles": 100752,
+          "objects": 10
+        },
+        {
+          "key": "race.concrete.wall",
+          "triangles": 63340,
+          "objects": 27
+        },
+        {
+          "key": "race.bark.palm",
+          "triangles": 49616,
+          "objects": 8
+        },
+        {
+          "key": "race.dirt.ground",
+          "triangles": 29654,
+          "objects": 3
+        },
+        {
+          "key": "race.glass.window",
+          "triangles": 25140,
+          "objects": 2
+        },
+        {
+          "key": "race.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race.concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race.concrete.road",
+          "triangles": 6392,
+          "objects": 2
+        },
+        {
+          "key": "race.metal.panel",
+          "triangles": 5916,
+          "objects": 3
+        },
+        {
+          "key": "race.metal.iron",
+          "triangles": 4320,
+          "objects": 3
+        },
+        {
+          "key": "race.paint.white",
+          "triangles": 4156,
+          "objects": 3
+        },
+        {
+          "key": "MeshBasicMaterial",
+          "triangles": 3336,
+          "objects": 4
+        }
+      ],
+      "byName": [
+        {
+          "key": "race:terrain.grass",
+          "triangles": 182512,
+          "objects": 1
+        },
+        {
+          "key": "race:crowd",
+          "triangles": 86544,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.16",
+          "triangles": 57024,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.17",
+          "triangles": 51840,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.12",
+          "triangles": 28512,
+          "objects": 1
+        },
+        {
+          "key": "city.glass:glass.window",
+          "triangles": 24948,
+          "objects": 1
+        },
+        {
+          "key": "race:terrain.rock",
+          "triangles": 20066,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.11",
+          "triangles": 19872,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.track.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.15",
+          "triangles": 17160,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.10",
+          "triangles": 16080,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.barrier.wall",
+          "triangles": 15980,
+          "objects": 2
+        },
+        {
+          "key": "paddock.vellum:concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.16",
+          "triangles": 13728,
+          "objects": 1
+        }
+      ],
+      "programs": 333,
+      "geometries": 1051,
+      "textures": 360,
+      "materials": 28,
+      "materialNames": [
+        [
+          "race.paint.enamel",
+          155
+        ],
+        [
+          "race.concrete.wall",
+          83
+        ],
+        [
+          "race.metal.iron",
+          60
+        ],
+        [
+          "race.bark.palm",
+          25
+        ],
+        [
+          "race.foliage.frond",
+          25
+        ],
+        [
+          "race.fence.chain",
+          16
+        ],
+        [
+          "race.paint.white",
+          13
+        ],
+        [
+          "race.metal.panel",
+          13
+        ],
+        [
+          "race.concrete.road",
+          9
+        ],
+        [
+          "race.dirt.ground",
+          8
+        ],
+        [
+          "race.metal.trim",
+          8
+        ],
+        [
+          "race.grass.field",
+          7
+        ],
+        [
+          "race.metal.rail",
+          6
+        ],
+        [
+          "MeshBasicMaterial",
+          4
+        ],
+        [
+          "race.asphalt.court",
+          4
+        ],
+        [
+          "race.glass.window",
+          4
+        ],
+        [
+          "race.hazard.stripe",
+          4
+        ],
+        [
+          "race.concrete.skatepark",
+          3
+        ],
+        [
+          "race.metal.hull",
+          3
+        ],
+        [
+          "race.rubber.track",
+          1
+        ]
+      ],
+      "renderables": 453,
+      "instancedMeshes": 129,
+      "instances": 5506,
+      "worldLights": 0,
+      "worldLightsLit": 0,
+      "npcs": 31,
+      "fps": 31,
+      "frameMsMedian": 5,
+      "errors": [],
+      "expectPlayerAtCamera": true,
+      "subjectAt": {
+        "x": 9.92,
+        "y": 2.09,
+        "z": 233.82
+      }
+    },
+    "grandstand-three-quarter": {
+      "world": "race",
+      "gameplayDriven": true,
+      "rehearsalInForce": 0,
+      "bootWarmRunning": false,
+      "unculledMeshes": 4,
+      "cameraToPlayer": 1.6,
+      "frameValidity": {
+        "ok": true,
+        "problems": [],
+        "skyOffCentre": 228.91,
+        "far": 2000
+      },
+      "drawCalls": 487,
+      "rendererTriangles": 2308960,
+      "worldTriangles": 662222,
+      "byMaterial": [
+        {
+          "key": "race.foliage.frond",
+          "triangles": 191328,
+          "objects": 8
+        },
+        {
+          "key": "race.grass.field",
+          "triangles": 188904,
+          "objects": 3
+        },
+        {
+          "key": "race.paint.enamel",
+          "triangles": 100680,
+          "objects": 6
+        },
+        {
+          "key": "race.concrete.wall",
+          "triangles": 51600,
+          "objects": 26
+        },
+        {
+          "key": "race.bark.palm",
+          "triangles": 45808,
+          "objects": 8
+        },
+        {
+          "key": "race.dirt.ground",
+          "triangles": 29654,
+          "objects": 3
+        },
+        {
+          "key": "race.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race.concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race.concrete.road",
+          "triangles": 6392,
+          "objects": 2
+        },
+        {
+          "key": "race.paint.white",
+          "triangles": 4156,
+          "objects": 3
+        },
+        {
+          "key": "race.metal.iron",
+          "triangles": 4104,
+          "objects": 1
+        },
+        {
+          "key": "MeshBasicMaterial",
+          "triangles": 3336,
+          "objects": 4
+        },
+        {
+          "key": "race.metal.panel",
+          "triangles": 2076,
+          "objects": 2
+        },
+        {
+          "key": "race.metal.trim",
+          "triangles": 780,
+          "objects": 2
+        }
+      ],
+      "byName": [
+        {
+          "key": "race:terrain.grass",
+          "triangles": 182512,
+          "objects": 1
+        },
+        {
+          "key": "race:crowd",
+          "triangles": 86544,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.16",
+          "triangles": 57024,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.17",
+          "triangles": 51840,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.12",
+          "triangles": 28512,
+          "objects": 1
+        },
+        {
+          "key": "race:terrain.rock",
+          "triangles": 20066,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.11",
+          "triangles": 19872,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.track.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.15",
+          "triangles": 17160,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.barrier.wall",
+          "triangles": 15980,
+          "objects": 2
+        },
+        {
+          "key": "paddock.vellum:concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.16",
+          "triangles": 13728,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.17",
+          "triangles": 12480,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.track.dirt.ground",
+          "triangles": 9588,
+          "objects": 2
+        }
+      ],
+      "programs": 333,
+      "geometries": 1051,
+      "textures": 360,
+      "materials": 28,
+      "materialNames": [
+        [
+          "race.paint.enamel",
+          155
+        ],
+        [
+          "race.concrete.wall",
+          83
+        ],
+        [
+          "race.metal.iron",
+          60
+        ],
+        [
+          "race.bark.palm",
+          25
+        ],
+        [
+          "race.foliage.frond",
+          25
+        ],
+        [
+          "race.fence.chain",
+          16
+        ],
+        [
+          "race.paint.white",
+          13
+        ],
+        [
+          "race.metal.panel",
+          13
+        ],
+        [
+          "race.concrete.road",
+          9
+        ],
+        [
+          "race.dirt.ground",
+          8
+        ],
+        [
+          "race.metal.trim",
+          8
+        ],
+        [
+          "race.grass.field",
+          7
+        ],
+        [
+          "race.metal.rail",
+          6
+        ],
+        [
+          "MeshBasicMaterial",
+          4
+        ],
+        [
+          "race.asphalt.court",
+          4
+        ],
+        [
+          "race.glass.window",
+          4
+        ],
+        [
+          "race.hazard.stripe",
+          4
+        ],
+        [
+          "race.concrete.skatepark",
+          3
+        ],
+        [
+          "race.metal.hull",
+          3
+        ],
+        [
+          "race.rubber.track",
+          1
+        ]
+      ],
+      "renderables": 453,
+      "instancedMeshes": 129,
+      "instances": 5506,
+      "worldLights": 0,
+      "worldLightsLit": 0,
+      "npcs": 31,
+      "fps": 44,
+      "frameMsMedian": 4.9,
+      "errors": [],
+      "expectPlayerAtCamera": true,
+      "subjectAt": {
+        "x": 9.92,
+        "y": 2.09,
+        "z": 233.82
+      }
+    },
+    "grandstand-front": {
+      "world": "race",
+      "gameplayDriven": true,
+      "rehearsalInForce": 0,
+      "bootWarmRunning": false,
+      "unculledMeshes": 4,
+      "cameraToPlayer": 1.6,
+      "frameValidity": {
+        "ok": true,
+        "problems": [],
+        "skyOffCentre": 227.07,
+        "far": 2000
+      },
+      "drawCalls": 499,
+      "rendererTriangles": 2282932,
+      "worldTriangles": 649282,
+      "byMaterial": [
+        {
+          "key": "race.grass.field",
+          "triangles": 191344,
+          "objects": 4
+        },
+        {
+          "key": "race.foliage.frond",
+          "triangles": 151296,
+          "objects": 6
+        },
+        {
+          "key": "race.paint.enamel",
+          "triangles": 116436,
+          "objects": 10
+        },
+        {
+          "key": "race.concrete.wall",
+          "triangles": 51800,
+          "objects": 21
+        },
+        {
+          "key": "race.bark.palm",
+          "triangles": 36320,
+          "objects": 6
+        },
+        {
+          "key": "race.dirt.ground",
+          "triangles": 33314,
+          "objects": 4
+        },
+        {
+          "key": "race.concrete.skatepark",
+          "triangles": 18468,
+          "objects": 2
+        },
+        {
+          "key": "race.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race.metal.iron",
+          "triangles": 7596,
+          "objects": 2
+        },
+        {
+          "key": "race.concrete.road",
+          "triangles": 6392,
+          "objects": 2
+        },
+        {
+          "key": "race.metal.trim",
+          "triangles": 4692,
+          "objects": 3
+        },
+        {
+          "key": "race.paint.white",
+          "triangles": 4372,
+          "objects": 4
+        },
+        {
+          "key": "race.metal.panel",
+          "triangles": 3696,
+          "objects": 3
+        },
+        {
+          "key": "MeshBasicMaterial",
+          "triangles": 3336,
+          "objects": 4
+        }
+      ],
+      "byName": [
+        {
+          "key": "race:terrain.grass",
+          "triangles": 182512,
+          "objects": 1
+        },
+        {
+          "key": "race:crowd",
+          "triangles": 99504,
+          "objects": 2
+        },
+        {
+          "key": "race:tree.crown.16",
+          "triangles": 57024,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.17",
+          "triangles": 51840,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.12",
+          "triangles": 28512,
+          "objects": 1
+        },
+        {
+          "key": "race:terrain.rock",
+          "triangles": 20066,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.track.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.barrier.wall",
+          "triangles": 15980,
+          "objects": 2
+        },
+        {
+          "key": "paddock.vellum:concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.16",
+          "triangles": 13728,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.17",
+          "triangles": 12480,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.track.dirt.ground",
+          "triangles": 9588,
+          "objects": 2
+        },
+        {
+          "key": "race:vellum.track.paint.enamel",
+          "triangles": 9588,
+          "objects": 2
+        },
+        {
+          "key": "race:tree.trunk.12",
+          "triangles": 6864,
+          "objects": 1
+        }
+      ],
+      "programs": 395,
+      "geometries": 1052,
+      "textures": 362,
+      "materials": 28,
+      "materialNames": [
+        [
+          "race.paint.enamel",
+          155
+        ],
+        [
+          "race.concrete.wall",
+          83
+        ],
+        [
+          "race.metal.iron",
+          60
+        ],
+        [
+          "race.bark.palm",
+          25
+        ],
+        [
+          "race.foliage.frond",
+          25
+        ],
+        [
+          "race.fence.chain",
+          16
+        ],
+        [
+          "race.paint.white",
+          13
+        ],
+        [
+          "race.metal.panel",
+          13
+        ],
+        [
+          "race.concrete.road",
+          9
+        ],
+        [
+          "race.dirt.ground",
+          8
+        ],
+        [
+          "race.metal.trim",
+          8
+        ],
+        [
+          "race.grass.field",
+          7
+        ],
+        [
+          "race.metal.rail",
+          6
+        ],
+        [
+          "MeshBasicMaterial",
+          4
+        ],
+        [
+          "race.asphalt.court",
+          4
+        ],
+        [
+          "race.glass.window",
+          4
+        ],
+        [
+          "race.hazard.stripe",
+          4
+        ],
+        [
+          "race.concrete.skatepark",
+          3
+        ],
+        [
+          "race.metal.hull",
+          3
+        ],
+        [
+          "race.rubber.track",
+          1
+        ]
+      ],
+      "renderables": 453,
+      "instancedMeshes": 129,
+      "instances": 5506,
+      "worldLights": 0,
+      "worldLightsLit": 0,
+      "npcs": 31,
+      "fps": 35,
+      "frameMsMedian": 5.2,
+      "errors": [],
+      "expectPlayerAtCamera": true,
+      "subjectAt": {
+        "x": 9.92,
+        "y": 2.09,
+        "z": 233.82
+      }
+    },
+    "tyre-stack-profile": {
+      "world": "race",
+      "gameplayDriven": true,
+      "rehearsalInForce": 0,
+      "bootWarmRunning": false,
+      "unculledMeshes": 4,
+      "cameraToPlayer": 1.6,
+      "frameValidity": {
+        "ok": true,
+        "problems": [],
+        "skyOffCentre": 281.83,
+        "far": 2000
+      },
+      "drawCalls": 996,
+      "rendererTriangles": 2902194,
+      "worldTriangles": 873432,
+      "byMaterial": [
+        {
+          "key": "race.foliage.frond",
+          "triangles": 243648,
+          "objects": 12
+        },
+        {
+          "key": "race.grass.field",
+          "triangles": 194088,
+          "objects": 5
+        },
+        {
+          "key": "race.paint.enamel",
+          "triangles": 127896,
+          "objects": 29
+        },
+        {
+          "key": "race.concrete.wall",
+          "triangles": 90176,
+          "objects": 41
+        },
+        {
+          "key": "race.bark.palm",
+          "triangles": 58016,
+          "objects": 12
+        },
+        {
+          "key": "race.dirt.ground",
+          "triangles": 37430,
+          "objects": 5
+        },
+        {
+          "key": "race.asphalt.court",
+          "triangles": 31834,
+          "objects": 2
+        },
+        {
+          "key": "race.glass.window",
+          "triangles": 25152,
+          "objects": 3
+        },
+        {
+          "key": "race.concrete.skatepark",
+          "triangles": 18468,
+          "objects": 2
+        },
+        {
+          "key": "race.concrete.road",
+          "triangles": 11660,
+          "objects": 6
+        },
+        {
+          "key": "race.paint.white",
+          "triangles": 8956,
+          "objects": 8
+        },
+        {
+          "key": "race.metal.iron",
+          "triangles": 8604,
+          "objects": 9
+        },
+        {
+          "key": "race.metal.panel",
+          "triangles": 7452,
+          "objects": 11
+        },
+        {
+          "key": "MeshBasicMaterial",
+          "triangles": 3336,
+          "objects": 4
+        }
+      ],
+      "byName": [
+        {
+          "key": "race:terrain.grass",
+          "triangles": 182512,
+          "objects": 1
+        },
+        {
+          "key": "race:crowd",
+          "triangles": 102384,
+          "objects": 2
+        },
+        {
+          "key": "race:tree.crown.16",
+          "triangles": 57024,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.17",
+          "triangles": 51840,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.12",
+          "triangles": 28512,
+          "objects": 1
+        },
+        {
+          "key": "city.glass:glass.window",
+          "triangles": 24948,
+          "objects": 1
+        },
+        {
+          "key": "race:terrain.rock",
+          "triangles": 20066,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.11",
+          "triangles": 19872,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.track.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.15",
+          "triangles": 17160,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.10",
+          "triangles": 16080,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.barrier.wall",
+          "triangles": 15980,
+          "objects": 2
+        },
+        {
+          "key": "paddock.vellum:concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race:cinder.track.asphalt.court",
+          "triangles": 14256,
+          "objects": 1
+        }
+      ],
+      "programs": 440,
+      "geometries": 1052,
+      "textures": 362,
+      "materials": 28,
+      "materialNames": [
+        [
+          "race.paint.enamel",
+          155
+        ],
+        [
+          "race.concrete.wall",
+          83
+        ],
+        [
+          "race.metal.iron",
+          60
+        ],
+        [
+          "race.bark.palm",
+          25
+        ],
+        [
+          "race.foliage.frond",
+          25
+        ],
+        [
+          "race.fence.chain",
+          16
+        ],
+        [
+          "race.paint.white",
+          13
+        ],
+        [
+          "race.metal.panel",
+          13
+        ],
+        [
+          "race.concrete.road",
+          9
+        ],
+        [
+          "race.dirt.ground",
+          8
+        ],
+        [
+          "race.metal.trim",
+          8
+        ],
+        [
+          "race.grass.field",
+          7
+        ],
+        [
+          "race.metal.rail",
+          6
+        ],
+        [
+          "MeshBasicMaterial",
+          4
+        ],
+        [
+          "race.asphalt.court",
+          4
+        ],
+        [
+          "race.glass.window",
+          4
+        ],
+        [
+          "race.hazard.stripe",
+          4
+        ],
+        [
+          "race.concrete.skatepark",
+          3
+        ],
+        [
+          "race.metal.hull",
+          3
+        ],
+        [
+          "race.rubber.track",
+          1
+        ]
+      ],
+      "renderables": 453,
+      "instancedMeshes": 129,
+      "instances": 5506,
+      "worldLights": 0,
+      "worldLightsLit": 0,
+      "npcs": 31,
+      "fps": 47,
+      "frameMsMedian": 7.7,
+      "errors": [],
+      "expectPlayerAtCamera": true,
+      "subjectAt": {
+        "x": 219.45,
+        "y": 4.65,
+        "z": 167.66
+      }
+    },
+    "tyre-stack-three-quarter": {
+      "world": "race",
+      "gameplayDriven": true,
+      "rehearsalInForce": 0,
+      "bootWarmRunning": false,
+      "unculledMeshes": 4,
+      "cameraToPlayer": 0.7,
+      "frameValidity": {
+        "ok": true,
+        "problems": [],
+        "skyOffCentre": 276.6,
+        "far": 2000
+      },
+      "drawCalls": 491,
+      "rendererTriangles": 2136890,
+      "worldTriangles": 731326,
+      "byMaterial": [
+        {
+          "key": "race.foliage.frond",
+          "triangles": 199488,
+          "objects": 9
+        },
+        {
+          "key": "race.grass.field",
+          "triangles": 191344,
+          "objects": 4
+        },
+        {
+          "key": "race.paint.enamel",
+          "triangles": 110304,
+          "objects": 11
+        },
+        {
+          "key": "race.concrete.wall",
+          "triangles": 63720,
+          "objects": 30
+        },
+        {
+          "key": "race.bark.palm",
+          "triangles": 47712,
+          "objects": 9
+        },
+        {
+          "key": "race.dirt.ground",
+          "triangles": 33314,
+          "objects": 4
+        },
+        {
+          "key": "race.asphalt.court",
+          "triangles": 30998,
+          "objects": 2
+        },
+        {
+          "key": "race.concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race.concrete.road",
+          "triangles": 8868,
+          "objects": 4
+        },
+        {
+          "key": "race.metal.iron",
+          "triangles": 7704,
+          "objects": 3
+        },
+        {
+          "key": "race.paint.white",
+          "triangles": 7436,
+          "objects": 7
+        },
+        {
+          "key": "race.metal.trim",
+          "triangles": 4692,
+          "objects": 3
+        },
+        {
+          "key": "race.metal.panel",
+          "triangles": 3696,
+          "objects": 3
+        },
+        {
+          "key": "MeshBasicMaterial",
+          "triangles": 3336,
+          "objects": 4
+        }
+      ],
+      "byName": [
+        {
+          "key": "race:terrain.grass",
+          "triangles": 182512,
+          "objects": 1
+        },
+        {
+          "key": "race:crowd",
+          "triangles": 86544,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.16",
+          "triangles": 57024,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.17",
+          "triangles": 51840,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.12",
+          "triangles": 28512,
+          "objects": 1
+        },
+        {
+          "key": "race:terrain.rock",
+          "triangles": 20066,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.11",
+          "triangles": 19872,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.track.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.15",
+          "triangles": 17160,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.barrier.wall",
+          "triangles": 15980,
+          "objects": 2
+        },
+        {
+          "key": "paddock.vellum:concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.16",
+          "triangles": 13728,
+          "objects": 1
+        },
+        {
+          "key": "race:aurora.track.asphalt.court",
+          "triangles": 13420,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.17",
+          "triangles": 12480,
+          "objects": 1
+        }
+      ],
+      "programs": 441,
+      "geometries": 1052,
+      "textures": 362,
+      "materials": 28,
+      "materialNames": [
+        [
+          "race.paint.enamel",
+          155
+        ],
+        [
+          "race.concrete.wall",
+          83
+        ],
+        [
+          "race.metal.iron",
+          60
+        ],
+        [
+          "race.bark.palm",
+          25
+        ],
+        [
+          "race.foliage.frond",
+          25
+        ],
+        [
+          "race.fence.chain",
+          16
+        ],
+        [
+          "race.paint.white",
+          13
+        ],
+        [
+          "race.metal.panel",
+          13
+        ],
+        [
+          "race.concrete.road",
+          9
+        ],
+        [
+          "race.dirt.ground",
+          8
+        ],
+        [
+          "race.metal.trim",
+          8
+        ],
+        [
+          "race.grass.field",
+          7
+        ],
+        [
+          "race.metal.rail",
+          6
+        ],
+        [
+          "MeshBasicMaterial",
+          4
+        ],
+        [
+          "race.asphalt.court",
+          4
+        ],
+        [
+          "race.glass.window",
+          4
+        ],
+        [
+          "race.hazard.stripe",
+          4
+        ],
+        [
+          "race.concrete.skatepark",
+          3
+        ],
+        [
+          "race.metal.hull",
+          3
+        ],
+        [
+          "race.rubber.track",
+          1
+        ]
+      ],
+      "renderables": 453,
+      "instancedMeshes": 129,
+      "instances": 5506,
+      "worldLights": 0,
+      "worldLightsLit": 0,
+      "npcs": 31,
+      "fps": 60,
+      "frameMsMedian": 5.5,
+      "errors": [],
+      "expectPlayerAtCamera": true,
+      "subjectAt": {
+        "x": 219.45,
+        "y": 4.65,
+        "z": 167.66
+      }
+    },
+    "tyre-stack-front": {
+      "world": "race",
+      "gameplayDriven": true,
+      "rehearsalInForce": 0,
+      "bootWarmRunning": false,
+      "unculledMeshes": 4,
+      "cameraToPlayer": 1.6,
+      "frameValidity": {
+        "ok": true,
+        "problems": [],
+        "skyOffCentre": 272.05,
+        "far": 2000
+      },
+      "drawCalls": 420,
+      "rendererTriangles": 1831142,
+      "worldTriangles": 649986,
+      "byMaterial": [
+        {
+          "key": "race.grass.field",
+          "triangles": 190588,
+          "objects": 4
+        },
+        {
+          "key": "race.foliage.frond",
+          "triangles": 160896,
+          "objects": 8
+        },
+        {
+          "key": "race.paint.enamel",
+          "triangles": 114804,
+          "objects": 22
+        },
+        {
+          "key": "race.concrete.wall",
+          "triangles": 46846,
+          "objects": 24
+        },
+        {
+          "key": "race.bark.palm",
+          "triangles": 38560,
+          "objects": 8
+        },
+        {
+          "key": "race.dirt.ground",
+          "triangles": 32180,
+          "objects": 4
+        },
+        {
+          "key": "race.concrete.skatepark",
+          "triangles": 18468,
+          "objects": 2
+        },
+        {
+          "key": "race.asphalt.court",
+          "triangles": 15004,
+          "objects": 2
+        },
+        {
+          "key": "race.metal.iron",
+          "triangles": 8172,
+          "objects": 7
+        },
+        {
+          "key": "race.concrete.road",
+          "triangles": 4928,
+          "objects": 3
+        },
+        {
+          "key": "race.metal.trim",
+          "triangles": 4488,
+          "objects": 4
+        },
+        {
+          "key": "race.paint.white",
+          "triangles": 4240,
+          "objects": 5
+        },
+        {
+          "key": "MeshBasicMaterial",
+          "triangles": 3336,
+          "objects": 4
+        },
+        {
+          "key": "race.metal.panel",
+          "triangles": 3300,
+          "objects": 3
+        }
+      ],
+      "byName": [
+        {
+          "key": "race:terrain.grass",
+          "triangles": 182512,
+          "objects": 1
+        },
+        {
+          "key": "race:crowd",
+          "triangles": 99504,
+          "objects": 2
+        },
+        {
+          "key": "race:tree.crown.16",
+          "triangles": 57024,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.17",
+          "triangles": 51840,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.12",
+          "triangles": 28512,
+          "objects": 1
+        },
+        {
+          "key": "race:terrain.rock",
+          "triangles": 20066,
+          "objects": 1
+        },
+        {
+          "key": "paddock.vellum:concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.16",
+          "triangles": 13728,
+          "objects": 1
+        },
+        {
+          "key": "race:aurora.track.asphalt.court",
+          "triangles": 13420,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.17",
+          "triangles": 12480,
+          "objects": 1
+        },
+        {
+          "key": "race:aurora.barrier.wall",
+          "triangles": 12200,
+          "objects": 2
+        },
+        {
+          "key": "race:tree.crown.18",
+          "triangles": 8160,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.barrier.wall",
+          "triangles": 7990,
+          "objects": 1
+        },
+        {
+          "key": "race:aurora.track.dirt.ground",
+          "triangles": 7320,
+          "objects": 2
+        }
+      ],
+      "programs": 441,
+      "geometries": 1052,
+      "textures": 362,
+      "materials": 28,
+      "materialNames": [
+        [
+          "race.paint.enamel",
+          155
+        ],
+        [
+          "race.concrete.wall",
+          83
+        ],
+        [
+          "race.metal.iron",
+          60
+        ],
+        [
+          "race.bark.palm",
+          25
+        ],
+        [
+          "race.foliage.frond",
+          25
+        ],
+        [
+          "race.fence.chain",
+          16
+        ],
+        [
+          "race.paint.white",
+          13
+        ],
+        [
+          "race.metal.panel",
+          13
+        ],
+        [
+          "race.concrete.road",
+          9
+        ],
+        [
+          "race.dirt.ground",
+          8
+        ],
+        [
+          "race.metal.trim",
+          8
+        ],
+        [
+          "race.grass.field",
+          7
+        ],
+        [
+          "race.metal.rail",
+          6
+        ],
+        [
+          "MeshBasicMaterial",
+          4
+        ],
+        [
+          "race.asphalt.court",
+          4
+        ],
+        [
+          "race.glass.window",
+          4
+        ],
+        [
+          "race.hazard.stripe",
+          4
+        ],
+        [
+          "race.concrete.skatepark",
+          3
+        ],
+        [
+          "race.metal.hull",
+          3
+        ],
+        [
+          "race.rubber.track",
+          1
+        ]
+      ],
+      "renderables": 453,
+      "instancedMeshes": 129,
+      "instances": 5506,
+      "worldLights": 0,
+      "worldLightsLit": 0,
+      "npcs": 31,
+      "fps": 60,
+      "frameMsMedian": 4.3,
+      "errors": [],
+      "expectPlayerAtCamera": true,
+      "subjectAt": {
+        "x": 219.45,
+        "y": 4.65,
+        "z": 167.66
+      }
+    },
+    "chicane-profile": {
+      "world": "race",
+      "gameplayDriven": true,
+      "rehearsalInForce": 0,
+      "bootWarmRunning": false,
+      "unculledMeshes": 4,
+      "cameraToPlayer": 1,
+      "frameValidity": {
+        "ok": true,
+        "problems": [],
+        "skyOffCentre": 401.03,
+        "far": 2000
+      },
+      "drawCalls": 325,
+      "rendererTriangles": 1176064,
+      "worldTriangles": 364466,
+      "byMaterial": [
+        {
+          "key": "race.grass.field",
+          "triangles": 187696,
+          "objects": 3
+        },
+        {
+          "key": "race.foliage.frond",
+          "triangles": 49440,
+          "objects": 4
+        },
+        {
+          "key": "race.dirt.ground",
+          "triangles": 27842,
+          "objects": 3
+        },
+        {
+          "key": "race.paint.enamel",
+          "triangles": 26892,
+          "objects": 11
+        },
+        {
+          "key": "race.concrete.wall",
+          "triangles": 22676,
+          "objects": 13
+        },
+        {
+          "key": "race.asphalt.court",
+          "triangles": 14256,
+          "objects": 1
+        },
+        {
+          "key": "race.bark.palm",
+          "triangles": 11536,
+          "objects": 4
+        },
+        {
+          "key": "race.concrete.road",
+          "triangles": 5232,
+          "objects": 3
+        },
+        {
+          "key": "race.paint.white",
+          "triangles": 4176,
+          "objects": 4
+        },
+        {
+          "key": "race.metal.iron",
+          "triangles": 3960,
+          "objects": 3
+        },
+        {
+          "key": "race.concrete.skatepark",
+          "triangles": 3888,
+          "objects": 1
+        },
+        {
+          "key": "MeshBasicMaterial",
+          "triangles": 3336,
+          "objects": 4
+        },
+        {
+          "key": "race.metal.panel",
+          "triangles": 1464,
+          "objects": 2
+        },
+        {
+          "key": "race.fence.chain",
+          "triangles": 680,
+          "objects": 4
+        }
+      ],
+      "byName": [
+        {
+          "key": "race:terrain.grass",
+          "triangles": 182512,
+          "objects": 1
+        },
+        {
+          "key": "race:terrain.rock",
+          "triangles": 20066,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.10",
+          "triangles": 16080,
+          "objects": 1
+        },
+        {
+          "key": "race:crowd",
+          "triangles": 15840,
+          "objects": 1
+        },
+        {
+          "key": "race:cinder.track.asphalt.court",
+          "triangles": 14256,
+          "objects": 1
+        },
+        {
+          "key": "race:cinder.barrier.wall",
+          "triangles": 12960,
+          "objects": 2
+        },
+        {
+          "key": "race:tree.crown.5",
+          "triangles": 11760,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.0",
+          "triangles": 11040,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.6",
+          "triangles": 10560,
+          "objects": 1
+        },
+        {
+          "key": "race:cinder.track.dirt.ground",
+          "triangles": 7776,
+          "objects": 2
+        },
+        {
+          "key": "race:cinder.track.paint.enamel",
+          "triangles": 7776,
+          "objects": 2
+        },
+        {
+          "key": "race:cinder.track.concrete.road",
+          "triangles": 5184,
+          "objects": 2
+        },
+        {
+          "key": "race:cinder.track.grass.field",
+          "triangles": 5184,
+          "objects": 2
+        },
+        {
+          "key": "paddock.cinder:concrete.skatepark",
+          "triangles": 3888,
+          "objects": 1
+        }
+      ],
+      "programs": 441,
+      "geometries": 1052,
+      "textures": 362,
+      "materials": 28,
+      "materialNames": [
+        [
+          "race.paint.enamel",
+          155
+        ],
+        [
+          "race.concrete.wall",
+          83
+        ],
+        [
+          "race.metal.iron",
+          60
+        ],
+        [
+          "race.bark.palm",
+          25
+        ],
+        [
+          "race.foliage.frond",
+          25
+        ],
+        [
+          "race.fence.chain",
+          16
+        ],
+        [
+          "race.paint.white",
+          13
+        ],
+        [
+          "race.metal.panel",
+          13
+        ],
+        [
+          "race.concrete.road",
+          9
+        ],
+        [
+          "race.dirt.ground",
+          8
+        ],
+        [
+          "race.metal.trim",
+          8
+        ],
+        [
+          "race.grass.field",
+          7
+        ],
+        [
+          "race.metal.rail",
+          6
+        ],
+        [
+          "MeshBasicMaterial",
+          4
+        ],
+        [
+          "race.asphalt.court",
+          4
+        ],
+        [
+          "race.glass.window",
+          4
+        ],
+        [
+          "race.hazard.stripe",
+          4
+        ],
+        [
+          "race.concrete.skatepark",
+          3
+        ],
+        [
+          "race.metal.hull",
+          3
+        ],
+        [
+          "race.rubber.track",
+          1
+        ]
+      ],
+      "renderables": 453,
+      "instancedMeshes": 129,
+      "instances": 5506,
+      "worldLights": 0,
+      "worldLightsLit": 0,
+      "npcs": 31,
+      "fps": 60,
+      "frameMsMedian": 4.5,
+      "errors": [],
+      "expectPlayerAtCamera": true,
+      "subjectAt": {
+        "x": -325.44,
+        "y": 1.48,
+        "z": -243.74
+      }
+    },
+    "chicane-three-quarter": {
+      "world": "race",
+      "gameplayDriven": true,
+      "rehearsalInForce": 0,
+      "bootWarmRunning": false,
+      "unculledMeshes": 4,
+      "cameraToPlayer": 1.6,
+      "frameValidity": {
+        "ok": true,
+        "problems": [],
+        "skyOffCentre": 406.33,
+        "far": 2000
+      },
+      "drawCalls": 334,
+      "rendererTriangles": 1430188,
+      "worldTriangles": 489292,
+      "byMaterial": [
+        {
+          "key": "race.grass.field",
+          "triangles": 187696,
+          "objects": 3
+        },
+        {
+          "key": "race.foliage.frond",
+          "triangles": 137856,
+          "objects": 7
+        },
+        {
+          "key": "race.concrete.wall",
+          "triangles": 40496,
+          "objects": 24
+        },
+        {
+          "key": "race.bark.palm",
+          "triangles": 32736,
+          "objects": 7
+        },
+        {
+          "key": "race.dirt.ground",
+          "triangles": 27842,
+          "objects": 3
+        },
+        {
+          "key": "race.paint.enamel",
+          "triangles": 26784,
+          "objects": 8
+        },
+        {
+          "key": "race.asphalt.court",
+          "triangles": 14256,
+          "objects": 1
+        },
+        {
+          "key": "race.concrete.road",
+          "triangles": 5184,
+          "objects": 2
+        },
+        {
+          "key": "race.concrete.skatepark",
+          "triangles": 3888,
+          "objects": 1
+        },
+        {
+          "key": "race.metal.iron",
+          "triangles": 3708,
+          "objects": 1
+        },
+        {
+          "key": "MeshBasicMaterial",
+          "triangles": 3336,
+          "objects": 4
+        },
+        {
+          "key": "race.paint.white",
+          "triangles": 2592,
+          "objects": 2
+        },
+        {
+          "key": "race.metal.panel",
+          "triangles": 972,
+          "objects": 1
+        },
+        {
+          "key": "race.fence.chain",
+          "triangles": 566,
+          "objects": 3
+        }
+      ],
+      "byName": [
+        {
+          "key": "race:terrain.grass",
+          "triangles": 182512,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.16",
+          "triangles": 57024,
+          "objects": 1
+        },
+        {
+          "key": "race:terrain.rock",
+          "triangles": 20066,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.11",
+          "triangles": 19872,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.15",
+          "triangles": 17160,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.10",
+          "triangles": 16080,
+          "objects": 1
+        },
+        {
+          "key": "race:crowd",
+          "triangles": 15840,
+          "objects": 1
+        },
+        {
+          "key": "race:cinder.track.asphalt.court",
+          "triangles": 14256,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.trunk.16",
+          "triangles": 13728,
+          "objects": 1
+        },
+        {
+          "key": "race:cinder.barrier.wall",
+          "triangles": 12960,
+          "objects": 2
+        },
+        {
+          "key": "race:tree.crown.5",
+          "triangles": 11760,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.6",
+          "triangles": 10560,
+          "objects": 1
+        },
+        {
+          "key": "race:cinder.track.dirt.ground",
+          "triangles": 7776,
+          "objects": 2
+        },
+        {
+          "key": "race:cinder.track.paint.enamel",
+          "triangles": 7776,
+          "objects": 2
+        }
+      ],
+      "programs": 441,
+      "geometries": 1052,
+      "textures": 362,
+      "materials": 28,
+      "materialNames": [
+        [
+          "race.paint.enamel",
+          155
+        ],
+        [
+          "race.concrete.wall",
+          83
+        ],
+        [
+          "race.metal.iron",
+          60
+        ],
+        [
+          "race.bark.palm",
+          25
+        ],
+        [
+          "race.foliage.frond",
+          25
+        ],
+        [
+          "race.fence.chain",
+          16
+        ],
+        [
+          "race.paint.white",
+          13
+        ],
+        [
+          "race.metal.panel",
+          13
+        ],
+        [
+          "race.concrete.road",
+          9
+        ],
+        [
+          "race.dirt.ground",
+          8
+        ],
+        [
+          "race.metal.trim",
+          8
+        ],
+        [
+          "race.grass.field",
+          7
+        ],
+        [
+          "race.metal.rail",
+          6
+        ],
+        [
+          "MeshBasicMaterial",
+          4
+        ],
+        [
+          "race.asphalt.court",
+          4
+        ],
+        [
+          "race.glass.window",
+          4
+        ],
+        [
+          "race.hazard.stripe",
+          4
+        ],
+        [
+          "race.concrete.skatepark",
+          3
+        ],
+        [
+          "race.metal.hull",
+          3
+        ],
+        [
+          "race.rubber.track",
+          1
+        ]
+      ],
+      "renderables": 453,
+      "instancedMeshes": 129,
+      "instances": 5506,
+      "worldLights": 0,
+      "worldLightsLit": 0,
+      "npcs": 31,
+      "fps": 60,
+      "frameMsMedian": 4,
+      "errors": [],
+      "expectPlayerAtCamera": true,
+      "subjectAt": {
+        "x": -325.44,
+        "y": 1.48,
+        "z": -243.74
+      }
+    },
+    "chicane-front": {
+      "world": "race",
+      "gameplayDriven": true,
+      "rehearsalInForce": 0,
+      "bootWarmRunning": false,
+      "unculledMeshes": 4,
+      "cameraToPlayer": 1.6,
+      "frameValidity": {
+        "ok": true,
+        "problems": [],
+        "skyOffCentre": 410.84,
+        "far": 2000
+      },
+      "drawCalls": 569,
+      "rendererTriangles": 2289412,
+      "worldTriangles": 893376,
+      "byMaterial": [
+        {
+          "key": "race.foliage.frond",
+          "triangles": 232128,
+          "objects": 12
+        },
+        {
+          "key": "race.grass.field",
+          "triangles": 196528,
+          "objects": 6
+        },
+        {
+          "key": "race.paint.enamel",
+          "triangles": 130680,
+          "objects": 23
+        },
+        {
+          "key": "race.concrete.wall",
+          "triangles": 91260,
+          "objects": 41
+        },
+        {
+          "key": "race.bark.palm",
+          "triangles": 55328,
+          "objects": 12
+        },
+        {
+          "key": "race.asphalt.court",
+          "triangles": 45254,
+          "objects": 3
+        },
+        {
+          "key": "race.dirt.ground",
+          "triangles": 41090,
+          "objects": 6
+        },
+        {
+          "key": "race.glass.window",
+          "triangles": 25140,
+          "objects": 2
+        },
+        {
+          "key": "race.concrete.skatepark",
+          "triangles": 18468,
+          "objects": 2
+        },
+        {
+          "key": "race.concrete.road",
+          "triangles": 14052,
+          "objects": 6
+        },
+        {
+          "key": "race.metal.iron",
+          "triangles": 11736,
+          "objects": 7
+        },
+        {
+          "key": "race.paint.white",
+          "triangles": 9144,
+          "objects": 8
+        },
+        {
+          "key": "race.metal.panel",
+          "triangles": 8520,
+          "objects": 6
+        },
+        {
+          "key": "race.metal.trim",
+          "triangles": 5304,
+          "objects": 5
+        }
+      ],
+      "byName": [
+        {
+          "key": "race:terrain.grass",
+          "triangles": 182512,
+          "objects": 1
+        },
+        {
+          "key": "race:crowd",
+          "triangles": 99504,
+          "objects": 2
+        },
+        {
+          "key": "race:tree.crown.16",
+          "triangles": 57024,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.17",
+          "triangles": 51840,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.12",
+          "triangles": 28512,
+          "objects": 1
+        },
+        {
+          "key": "city.glass:glass.window",
+          "triangles": 24948,
+          "objects": 1
+        },
+        {
+          "key": "race:terrain.rock",
+          "triangles": 20066,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.11",
+          "triangles": 19872,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.track.asphalt.court",
+          "triangles": 17578,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.15",
+          "triangles": 17160,
+          "objects": 1
+        },
+        {
+          "key": "race:tree.crown.10",
+          "triangles": 16080,
+          "objects": 1
+        },
+        {
+          "key": "race:vellum.barrier.wall",
+          "triangles": 15980,
+          "objects": 2
+        },
+        {
+          "key": "paddock.vellum:concrete.skatepark",
+          "triangles": 14580,
+          "objects": 1
+        },
+        {
+          "key": "race:cinder.track.asphalt.court",
+          "triangles": 14256,
+          "objects": 1
+        }
+      ],
+      "programs": 441,
+      "geometries": 1052,
+      "textures": 362,
+      "materials": 28,
+      "materialNames": [
+        [
+          "race.paint.enamel",
+          155
+        ],
+        [
+          "race.concrete.wall",
+          83
+        ],
+        [
+          "race.metal.iron",
+          60
+        ],
+        [
+          "race.bark.palm",
+          25
+        ],
+        [
+          "race.foliage.frond",
+          25
+        ],
+        [
+          "race.fence.chain",
+          16
+        ],
+        [
+          "race.paint.white",
+          13
+        ],
+        [
+          "race.metal.panel",
+          13
+        ],
+        [
+          "race.concrete.road",
+          9
+        ],
+        [
+          "race.dirt.ground",
+          8
+        ],
+        [
+          "race.metal.trim",
+          8
+        ],
+        [
+          "race.grass.field",
+          7
+        ],
+        [
+          "race.metal.rail",
+          6
+        ],
+        [
+          "MeshBasicMaterial",
+          4
+        ],
+        [
+          "race.asphalt.court",
+          4
+        ],
+        [
+          "race.glass.window",
+          4
+        ],
+        [
+          "race.hazard.stripe",
+          4
+        ],
+        [
+          "race.concrete.skatepark",
+          3
+        ],
+        [
+          "race.metal.hull",
+          3
+        ],
+        [
+          "race.rubber.track",
+          1
+        ]
+      ],
+      "renderables": 453,
+      "instancedMeshes": 129,
+      "instances": 5506,
+      "worldLights": 0,
+      "worldLightsLit": 0,
+      "npcs": 31,
+      "fps": 60,
+      "frameMsMedian": 4.9,
+      "errors": [],
+      "expectPlayerAtCamera": true,
+      "subjectAt": {
+        "x": -325.44,
+        "y": 1.48,
+        "z": -243.74
+      }
+    }
+  },
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5080 (0x00002C02) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "mazeSeed": {
+    "override": null,
+    "active": null
+  },
+  "gameplayDriven": true,
+  "warm": {
+    "bootWarmWaitedMs": 84242,
+    "engineRunning": true,
+    "rehearsalCleared": true,
+    "rehearsalWaitedMs": 0,
+    "programs": 241,
+    "programsSettled": true,
+    "programsWaitedMs": 4003,
+    "timedOut": false,
+    "totalMs": 88245
+  },
+  "viewErrors": [],
+  "pageLog": [
+    "warning: THREE.WebGLProgram: Program Info Log: (97,1-6): warning X4000: use of potentially uninitialized variable (dyn_index_vec4_float4_int)\n\n\n\u0000",
+    "info: [rehearse] 71 programs in 36609ms, +427 geometries +69 textures uploaded - state clean",
+    "info: [prewarm] shader warmup took 84123ms, 241 programs",
+    "info: [boot] playable at 92370ms (84153ms of that behind the menu)",
+    "warning: [QuestSystem] quest service unreachable; the board will show what is bundled and nothing else: http 502",
+    "info: [harness] boot settled in 88245ms (engine.running=true, rehearsal cleared=true, programs=241)",
+    "info: [harness] gameplayDriven = true",
+    "warning: [harness] no animation frame for 10000ms - the window is very likely backgrounded or occluded. Nothing is updating, including the sun's shadow camera.",
+    "info: [station] hull collision: 26 panels, 4 link mouths left open",
+    "info: [station] dome: roof collided in 10 bands, 381 panels",
+    "info: [station] outer ring: 4 zones, 1887 actors, 28 enterables (198 collectible spots, 77 loose), 120 published roofs, 14 escalator banks",
+    "info: [station] set dressing settled: 178 of 806 props lifted out of the surface they were sunk into (worst 2.65 m, 14640ms)",
+    "info: [station] 2227 set-dressing props made solid",
+    "info: [station] structure collided from geometry: 328702 triangles found, 144629 already inside a box, 184073 kept in 8192 chunks (6.3 MB), 1352 planting proxies, 972ms",
+    "info: [station] hub caches: 16 ground-level collectables",
+    "info: [World] built \"station\" in 66168ms (26345 colliders, 59 npc spawns)",
+    "info: [warm] \"station\" precompiled in 1150ms across 64 slices (complete, +51 programs, 292 total)",
+    "info: [warm] gateway preview to \"station\" linked in 8793ms across 119 slices (complete, 333 programs total)",
+    "warning: THREE.WebGLProgram: Program Info Log: (210,81-129): warning X4122: sum of 0.996094 and -2.98545e-017 cannot be represented accurately in double precision\n(209,37-61): warning X4122: sum of 1 and -1.49272e-017 cannot be represented accurately in double precision\n(210,82-106): warning X4122: sum of 1 and -1.49272e-017 cannot be represented accurately in double precision\n(209,37-61): warning X4122: sum of 1 and -1.66644e-018 cannot be represented accurately in double precision\n(210,82-106): warning X4122: sum of 1 and -1.66644e-018 cannot be represented accurately in double precision\n\n\n\u0000",
+    "info: [World] built \"medieval\" in 4911ms (4254 colliders, 22 npc spawns)",
+    "info: [warm] \"medieval\" precompiled in 381ms across 13 slices (complete, +37 programs, 370 total)",
+    "info: [World] built \"sports\" in 7348ms (377 colliders, 17 npc spawns)",
+    "info: [warm] \"sports\" precompiled in 1436ms across 31 slices (complete, +38 programs, 409 total)",
+    "info: [World] built \"citadel\" in 791ms (4425 colliders, 12 npc spawns)",
+    "info: [warm] \"citadel\" precompiled in 258ms across 5 slices (complete, +5 programs, 414 total)",
+    "info: [dock] Lodestar Yard: 27864 m2 of floor, 5 piers, 4 berths, 714 colliders, 5 viewpoints, 6 enterables",
+    "info: [World] built \"dock\" in 951ms (714 colliders, 7 npc spawns)",
+    "info: [warm] \"dock\" precompiled in 465ms across 23 slices (complete, +11 programs, 425 total)",
+    "info: [World] built \"space\" in 63ms (100 colliders, 0 npc spawns)",
+    "info: [warm] \"space\" precompiled in 235ms across 11 slices (complete, +8 programs, 433 total)",
+    "info: [PlanetWorld] cinder: 186,731 tris in 34 draws, 2902 colliders, 119 mineral nodes, 3 landing sites, lava over 1607/65536 cells not swimmable and LETHAL at 240 dps, walled by 1638 posts on 178 runs, 3.98 m over the bank (leap apex 1.228 m), worst gate 3.98 m, tallest +14.05 m over the water, floor at -19.21 m (bound -25.2)",
+    "info: [World] built \"cinder\" in 393ms (2902 colliders, 0 npc spawns)",
+    "info: [warm] \"cinder\" precompiled in 157ms across 5 slices (complete, +6 programs, 439 total)",
+    "info: [PlanetWorld] tessera: 141,340 tris in 20 draws, 1159 colliders, 81 mineral nodes, 3 landing sites, floor at -50.68 m (bound -56.7)",
+    "info: [World] built \"tessera\" in 323ms (1159 colliders, 0 npc spawns)",
+    "info: [warm] \"tessera\" precompiled in 105ms across 3 slices (complete, +0 programs, 439 total)",
+    "info: [PlanetWorld] sirocco: 214,778 tris in 27 draws, 1414 colliders, 138 mineral nodes, 3 landing sites, water over 1038/78400 cells SWIMMABLE, walled by 0 posts on 109 runs, floor at -29.09 m (bound -35.1)",
+    "info: [World] built \"sirocco\" in 261ms (1414 colliders, 0 npc spawns)",
+    "info: [warm] \"sirocco\" precompiled in 138ms across 4 slices (complete, +1 programs, 440 total)",
+    "info: [PlanetWorld] shoal: 240,888 tris in 24 draws, 1484 colliders, 79 mineral nodes, 3 landing sites, water over 48446/78400 cells SWIMMABLE, walled by 0 posts on 376 runs, 4 edge-wall boxes, floor at -40.69 m (bound -46.7)",
+    "info: [World] built \"shoal\" in 254ms (1484 colliders, 0 npc spawns)",
+    "info: [warm] \"shoal\" precompiled in 132ms across 4 slices (complete, +0 programs, 440 total)",
+    "info: [PlanetWorld] vitrine: 221,711 tris in 30 draws, 493 colliders, 112 mineral nodes, 3 landing sites, water over 312/82944 cells SWIMMABLE, walled by 0 posts on 54 runs, floor at 8.79 m (bound 2.8)",
+    "info: [World] built \"vitrine\" in 303ms (493 colliders, 0 npc spawns)",
+    "info: [warm] \"vitrine\" precompiled in 126ms across 4 slices (complete, +0 programs, 440 total)",
+    "info: [PlanetWorld] verdigris: 283,582 tris in 28 draws, 2096 colliders, 96 mineral nodes, 3 landing sites, water over 1839/73984 cells SWIMMABLE, walled by 0 posts on 156 runs, 2 edge-wall boxes, floor at -6.15 m (bound -12.2)",
+    "info: [World] built \"verdigris\" in 301ms (2096 colliders, 0 npc spawns)",
+    "info: [warm] \"verdigris\" precompiled in 132ms across 5 slices (complete, +0 programs, 440 total)",
+    "info: [PlanetWorld] lathe: 128,496 tris in 21 draws, 1504 colliders, 69 mineral nodes, 3 landing sites, floor at -33.94 m (bound -39.9)",
+    "info: [World] built \"lathe\" in 132ms (1504 colliders, 0 npc spawns)",
+    "info: [warm] \"lathe\" precompiled in 101ms across 3 slices (complete, +0 programs, 440 total)",
+    "info: [PlanetWorld] carnelian: 212,472 tris in 22 draws, 2124 colliders, 77 mineral nodes, 3 landing sites, floor at -29.65 m (bound -35.7)",
+    "info: [World] built \"carnelian\" in 162ms (2124 colliders, 0 npc spawns)",
+    "info: [warm] \"carnelian\" precompiled in 104ms across 3 slices (complete, +0 programs, 440 total)",
+    "info: [PlanetWorld] sallow: 174,897 tris in 32 draws, 2220 colliders, 92 mineral nodes, 3 landing sites, acid over 1928/65536 cells not swimmable and LETHAL at 14 dps, walled by 1296 posts on 86 runs, 3.99 m over the bank (leap apex 1.245 m), worst gate 3.99 m, tallest +5.52 m over the water, floor at -27 m (bound -33.0)",
+    "info: [World] built \"sallow\" in 235ms (2220 colliders, 0 npc spawns)",
+    "info: [warm] \"sallow\" precompiled in 166ms across 5 slices (complete, +1 programs, 441 total)",
+    "info: [PlanetWorld] cathedra: 183,372 tris in 25 draws, 1494 colliders, 71 mineral nodes, 3 landing sites, floor at -22.33 m (bound -28.3)",
+    "info: [World] built \"cathedra\" in 150ms (1494 colliders, 0 npc spawns)",
+    "info: [warm] \"cathedra\" precompiled in 131ms across 4 slices (complete, +0 programs, 441 total)"
+  ]
+}

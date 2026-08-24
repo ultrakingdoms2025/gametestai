@@ -37,7 +37,8 @@ import { MAZE, DIR, cellIndex, districtCoords, isOpen, connectorAt } from '../wo
 import { cellToWorld } from '../worlds/maze/MazeColliders.js';
 import { shaftColliders, connectorHoleBounds } from '../worlds/maze/MazeShafts.js';
 import { setMazeSurfaceMode, mazeSurfaceMode } from '../worlds/maze/MazeMaterials.js';
-import { walkWorldTriangles } from './WorldTriangles.js';
+import { walkWorldTriangles, drawnTrianglesOf } from './WorldTriangles.js';
+import { rehearsalInForce } from '../gfx/RehearsalDraw.js';
 import { BERTHS } from '../worlds/dock/YardPlan.js';
 import { HULLS } from '../worlds/dock/HullPlan.js';
 import { SPACE_BODIES } from '../worlds/space/Bodies.js';
@@ -731,10 +732,16 @@ class Harness {
     /** {pos, yaw} the player is re-asserted to every step, or null. */
     this._pin = null;
     this._pinDetach = null;
+    /** What `settleBoot` last observed. Reported by `stats()`. */
+    this._warm = null;
+    /** The live `--ablate`, or null. See `ablate`. */
+    this._ablation = null;
+    this._ablationDetach = null;
   }
 
   /**
-   * Resolve once the first world is active and a few frames have rendered.
+   * Resolve once the first world is active, BOOT HAS FINISHED WARMING, and a
+   * few frames have rendered.
    *
    * `drive` defaults TRUE, and that default is the whole point: without it the
    * pointer-lock loss that every automated session suffers leaves the gameplay
@@ -742,19 +749,122 @@ class Harness {
    * and calling it a frame cost is the exact mistake this harness exists to
    * stop. Pass `{ drive: false }` if you specifically want the frozen game.
    *
-   * @param {{ timeoutMs?: number, drive?: boolean }|number} [opts] a number is
-   *   read as `timeoutMs`, which is how this used to be called.
+   * ── THE WAIT THIS USED NOT TO DO, AND WHAT IT COST ────────────────────────
+   * This used to return the moment `worldManager.active` existed. `boot()` in
+   * main.js sets that BEFORE it calls `prewarm()`, and `prewarm` is by a long
+   * way the most expensive thing in a cold boot. Measured on a headless sports
+   * boot: `ready()` returned at 95.9 s, `[boot] playable` printed at 172.0 s,
+   * and the background program warm ran on to 250 s. So every world-shot run
+   * has been measuring a game that was still booting.
+   *
+   * Three separate confident-wrong-number failures come out of that one hole:
+   *
+   *  1. `rehearse()` holds a `forceDrawable` over the whole world - measured up
+   *     at t+140 s, forty-four seconds AFTER `ready()` returned. Everything is
+   *     `visible` and `frustumCulled === false` under it, so `worldTriangles`
+   *     counted 783,008 triangles across 334 objects with NOTHING culled where
+   *     the settled world counts 768,782 across 225 with 109 culled.
+   *  2. Its restore replayed a snapshot taken before `--ablate` ran, silently
+   *     putting every ablated mesh back. Four branches cited that ablation as
+   *     evidence. @see ../gfx/RehearsalDraw.js
+   *  3. `programs` - the figure this phase is gated on - climbed 249 -> 367 ->
+   *     615 across one run purely because the background warm was still
+   *     linking. That is the "programs swing 329->390 on unchanged code" noise
+   *     floor three branches worked around instead of explaining.
+   *
+   * Pass `{ settle: false }` to skip the wait, and then do not quote the
+   * numbers: `stats().warm` records that you did.
+   *
+   * @param {{ timeoutMs?: number, drive?: boolean, settle?: boolean }|number} [opts]
+   *   a number is read as `timeoutMs`, which is how this used to be called.
    */
   async ready(opts = {}) {
-    const { timeoutMs = 120000, drive = true } = typeof opts === 'number' ? { timeoutMs: opts } : opts;
+    const o = typeof opts === 'number' ? { timeoutMs: opts } : opts;
+    const { timeoutMs = 120000, drive = true, settle = true } = o;
     const t0 = performance.now();
     while (!this.game.worldManager.active) {
       if (performance.now() - t0 > timeoutMs) throw new Error('harness: world never activated');
       await frame();
     }
+    if (settle) await this.settleBoot({ timeoutMs });
+    else this._warm = { skipped: true };
     this.setGameplayDriven(drive);
     for (let i = 0; i < 3; i++) await frame();
     return this.game.worldManager.active.id;
+  }
+
+  /**
+   * Wait until the boot's own warm is finished and the scene has stopped
+   * changing under the instrument.
+   *
+   * Three waits, each on a signal this file can see without reaching into
+   * main.js, and each reported rather than assumed:
+   *
+   *   `engine.running`   main.js calls `engine.start()` on the line after
+   *                      `await prewarm()`. It is the one honest "boot has
+   *                      finished" flag in the build, and it is on the engine.
+   *   `rehearsalInForce` a force-draw may still be up - and a force-draw makes
+   *                      every visibility and frustum figure meaningless.
+   *   program quiescence the background world warms keep linking for a minute
+   *                      after play starts. Nothing announces the end of them,
+   *                      so the honest test is measurement: sample the cache
+   *                      and wait for it to stop moving.
+   *
+   * Every one degrades to a no-op against a game that does not publish the
+   * signal, so the class still drives under `node --test` against a stub.
+   *
+   * @param {{timeoutMs?:number, stableMs?:number, sampleMs?:number}} [opts]
+   */
+  async settleBoot({ timeoutMs = 240000, stableMs = 4000, sampleMs = 1000 } = {}) {
+    const engine = this.game.engine;
+    const t0 = performance.now();
+    const left = () => timeoutMs - (performance.now() - t0);
+    const w = {
+      bootWarmWaitedMs: 0, engineRunning: null,
+      rehearsalCleared: null, rehearsalWaitedMs: 0,
+      programs: null, programsSettled: null, programsWaitedMs: 0,
+      timedOut: false,
+    };
+
+    if (typeof engine?.running === 'boolean') {
+      while (!engine.running && left() > 0) await frame();
+      w.engineRunning = engine.running;
+      w.bootWarmWaitedMs = Math.round(performance.now() - t0);
+      if (!engine.running) {
+        console.warn('[harness] engine.start() never ran - the boot warm is STILL going and every figure below is taken during it');
+      }
+    }
+
+    const t1 = performance.now();
+    while (rehearsalInForce() > 0 && left() > 0) await frame();
+    w.rehearsalCleared = rehearsalInForce() === 0;
+    w.rehearsalWaitedMs = Math.round(performance.now() - t1);
+
+    const programs = () => engine?.renderer?.info?.programs?.length ?? null;
+    if (programs() !== null) {
+      const t2 = performance.now();
+      let last = programs();
+      let stableSince = performance.now();
+      while (left() > 0) {
+        await wait(sampleMs);
+        const now = programs();
+        if (now !== last) { last = now; stableSince = performance.now(); continue; }
+        if (performance.now() - stableSince >= stableMs) break;
+      }
+      w.programs = programs();
+      w.programsSettled = performance.now() - stableSince >= stableMs;
+      w.programsWaitedMs = Math.round(performance.now() - t2);
+    }
+
+    w.timedOut = left() <= 0;
+    w.totalMs = Math.round(performance.now() - t0);
+    this._warm = w;
+    console.info(
+      `[harness] boot settled in ${w.totalMs}ms `
+      + `(engine.running=${w.engineRunning}, rehearsal cleared=${w.rehearsalCleared}, `
+      + `programs=${w.programs}${w.programsSettled === false ? ' STILL MOVING' : ''})`
+    );
+    return w;
   }
 
   /**
@@ -1399,6 +1509,27 @@ class Harness {
       documentHidden: typeof document !== 'undefined' ? document.hidden : null,
       rafStalls: window.__HARNESS_RAF_STALLS__ ?? 0,
       frozenAll: !!this._stubs,
+      /* ── IS THE GAME EVEN FINISHED BOOTING? ─────────────────────────────
+       * `boot()` activates the world and only then runs `prewarm()`, so a
+       * measurement can land in the middle of the warm. Two things there
+       * change the answer rather than the cost:
+       *
+       *   `rehearsalInForce > 0` - `gfx/RehearsalDraw.js` has the whole world
+       *     forced visible and `frustumCulled = false`. Every geometry figure
+       *     below is then the whole world rather than what is in shot: 783,008
+       *     triangles over 334 objects with 0 culled, against a settled
+       *     768,782 over 225 with 109 culled, measured on sports.
+       *   `bootWarmRunning` - `engine.start()` has not run yet. The background
+       *     world warms that follow it move `programs` by hundreds, which is
+       *     the figure this phase is gated on.
+       *
+       * `unculledMeshes` is the direct symptom and is cheap: a settled sports
+       * world has 5 (its sky domes); under a rehearsal it has all 334. */
+      rehearsalInForce: rehearsalInForce(),
+      bootWarmRunning: typeof engine?.running === 'boolean' ? !engine.running : null,
+      unculledMeshes: this._unculledMeshes(),
+      warm: this._warm,
+      ablation: this._ablation ? this.ablationCheck() : null,
       /* The sun's shadow camera is fitted around the PLAYER. Non-zero here
        * means the shadow map is covering somewhere other than what you can
        * see, and every shadow figure below is about that other place. */
@@ -1428,6 +1559,96 @@ class Harness {
       npcs: G.npcManager?.npcs?.length ?? 0,
       portals: G.portals?.portals?.length ?? 0,
     };
+  }
+
+  /**
+   * Is this frame a picture of the world at all?
+   *
+   * ── THE HALF-HOUR THIS EXISTS TO SAVE ────────────────────────────────────
+   * `space` draws nothing where it says it is. Its sky is a 1,920 m dome and
+   * every body is a `Backdrop` proxy, and BOTH are re-placed against the camera
+   * every frame inside the world's own `update()`. A framing that leaves one of
+   * them behind - because the world stopped updating, because something else
+   * anchors them, because the camera was moved after the last update - gets a
+   * dome the camera is no longer inside: a large soft black ellipse eating the
+   * star field, with bodies simply absent. `art-space` lost half an hour to
+   * exactly that shape, reported as a world defect.
+   *
+   * Nothing in the numbers said so. Triangles were unchanged, draws were
+   * unchanged, and the only witness was the picture - which is the one thing a
+   * harness cannot read. So this measures the invariant instead:
+   *
+   *   every camera-anchored object is INSIDE the camera's far plane, and the
+   *   sky dome is centred ON the camera.
+   *
+   * Measured on the current tree, at four vantages including one with the
+   * camera 287 m from the player: every backdrop member sits at 1,765-1,825 m
+   * against a 2,000 m far plane and the dome is centred to within a metre, so
+   * this passes and costs a traverse. That is the point - it is cheap while it
+   * is true, and it is the whole answer the moment it is not.
+   *
+   * @returns {{ok:boolean, problems:string[], skyOffCentre:number|null, far:number|null}}
+   */
+  frameValidity() {
+    const cam = this.game.engine?.camera;
+    const group = this.game.worldManager.active?.group;
+    const out = { ok: true, problems: [], skyOffCentre: null, far: cam?.far ?? null };
+    if (!cam || !group) return out;
+    const V = this.game.THREE?.Vector3;
+    if (!V) return out;
+    const camPos = new V();
+    cam.getWorldPosition(camPos);
+    const at = new V();
+    let worst = 0;
+    let worstName = null;
+    group.traverse((o) => {
+      if (!o.isMesh && !o.isPoints) return;
+      /* Only the camera-anchored dressing. A real object beyond the far plane
+       * is a fact about the world; a PROXY beyond it is a broken frame.
+       * `frustumCulled === false` is the flag those proxies carry, because
+       * they are drawn wherever the camera points. */
+      if (o.frustumCulled !== false) return;
+      o.getWorldPosition(at);
+      const d = at.distanceTo(camPos);
+      if (/sky/i.test(o.name ?? '')) {
+        out.skyOffCentre = Math.round(d * 100) / 100;
+        /* The dome is drawn from the inside. Off-centre by more than a few
+         * metres of its own radius and its far wall crosses the far plane. */
+        const r = o.geometry?.boundingSphere?.radius
+          ?? (o.geometry?.computeBoundingSphere?.(), o.geometry?.boundingSphere?.radius) ?? null;
+        if (r && d + r > cam.far) {
+          out.problems.push(
+            `sky dome "${o.name}" is ${d.toFixed(0)} m off the camera; its far wall at `
+            + `${(d + r).toFixed(0)} m crosses the ${cam.far} m far plane - this frame has a hole in it`
+          );
+        }
+        return;
+      }
+      if (d > worst) { worst = d; worstName = o.name || o.type; }
+    });
+    if (cam.far && worst > cam.far) {
+      out.problems.push(
+        `camera-relative object "${worstName}" is ${worst.toFixed(0)} m out, past the ${cam.far} m far plane - it is not in this picture`
+      );
+    }
+    out.ok = out.problems.length === 0;
+    return out;
+  }
+
+  /**
+   * Meshes in the active world that have opted OUT of frustum culling.
+   *
+   * A handful is normal - sky domes and backdrops are drawn wherever the camera
+   * points. A number close to the world's whole mesh count means something has
+   * force-drawn the world, and every geometry figure taken beside it is about
+   * the whole world rather than about the shot.
+   */
+  _unculledMeshes() {
+    const group = this.game.worldManager.active?.group;
+    if (!group) return null;
+    let n = 0;
+    group.traverse((o) => { if (o.isMesh && o.frustumCulled === false) n++; });
+    return n;
   }
 
   /**
@@ -1492,6 +1713,169 @@ class Harness {
       note: 'deterministic; renderer.info.triangles is not - it includes the shadow and GTAO passes',
       rendererInfoTriangles: this.game.engine.renderer.info.render.triangles,
     };
+  }
+
+  /* ================================================================== */
+  /* ABLATION - the A/B that says which system owns a pixel               */
+  /* ================================================================== */
+
+  /**
+   * Hide every mesh drawn with one of these material NAMES, and HOLD them
+   * hidden for the rest of the run.
+   *
+   * ── WHY THIS IS A HARNESS METHOD AND NOT SIX LINES IN THE SCRIPT ─────────
+   * It was six lines in `scripts/world-shot.mjs`: traverse, match the name,
+   * `visible = false`, count the hits, print the count. Every part of that is
+   * right and the whole is worthless, because a hit count is not evidence. Two
+   * separate mechanisms can take an ablation away again between the hiding and
+   * the measurement:
+   *
+   *   - `rehearse()`'s `forceDrawable` snapshot, whose restore replayed a
+   *     pre-ablation `visible = true` over the top. Measured: an ablation of
+   *     77 meshes was undone 100% by that restore, and the run printed "77
+   *     mesh(es) hidden" and then measured an unablated world. Four Phase 9
+   *     branches cite ablations taken in that window as decisive evidence.
+   *     `gfx/RehearsalDraw.js` no longer clobbers a later write, and this
+   *     re-asserts on every frame as well, because that is not the only
+   *     mechanism: `worlds/lod/DistanceLod.js` writes `e.object.visible` on
+   *     every band transition and the harness MOVES THE CAMERA between
+   *     framings, which is exactly what makes a band transition happen.
+   *
+   * So the contract is no longer "trust the hit count". It is:
+   *
+   *   1. the names have to match something (`missing` names are reported and
+   *      the caller must refuse them),
+   *   2. the hiding has to be HELD - `reasserted` counts every frame something
+   *      fought back, so a world that keeps re-showing its own meshes is
+   *      reported rather than silently winning,
+   *   3. and the ablation has to REMOVE DRAWN TRIANGLES from at least one
+   *      framing, or it changed no pixels and is not evidence of anything.
+   *      `ablationCheck().removedTriangles` is that number, per framing, and
+   *      it is what `world-shot` now fails on.
+   *
+   * Hidden by material name rather than object name for the original reason:
+   * these worlds merge by material, so "which system drew this" and "which
+   * material is this" are the same question, and the material name is the one
+   * label that survives the merge.
+   *
+   * @param {string[]|string} names
+   * @returns {{names:string[], missing:string[], meshes:number,
+   *   drawnTrianglesAtApply:number, world:string|null}}
+   */
+  ablate(names) {
+    const want = (Array.isArray(names) ? names : [names]).map(String);
+    this.unablate();
+    const world = this.game.worldManager.active;
+    const group = world?.group;
+    if (!group) throw new Error('harness.ablate: no active world to ablate');
+
+    /** @type {Array<[object, boolean]>} the mesh and the visibility it had. */
+    const saved = [];
+    const matched = new Set();
+    group.traverse((o) => {
+      const m = o.material;
+      if (!m) return;
+      for (const mm of (Array.isArray(m) ? m : [m])) {
+        if (!mm || !want.includes(mm.name)) continue;
+        matched.add(mm.name);
+        saved.push([o, o.visible]);
+        break;
+      }
+    });
+    const missing = want.filter((n) => !matched.has(n));
+    const meshes = saved.map(([o]) => o);
+    /* Measured BEFORE the hiding, because afterwards nothing can say what the
+     * hiding was worth - `walkWorldTriangles` stops at an invisible object by
+     * design. This is the framing at apply time, which is the spawn vantage;
+     * the per-framing figure is the one that matters and comes from
+     * `ablationCheck`. */
+    const atApply = drawnTrianglesOf(meshes, this.game.engine.camera);
+    for (const o of meshes) o.visible = false;
+
+    this._ablation = {
+      names: want, missing, saved, meshes,
+      world: world.id ?? null, reasserted: 0, removedEver: atApply.triangles,
+    };
+    /* HELD, not set once. Same reasoning as `pinPlayer`: a value written once
+     * and then measured a hundred frames later is a value somebody else has
+     * had a hundred chances to change. */
+    const hold = () => {
+      const a = this._ablation;
+      if (!a) return;
+      for (const o of a.meshes) {
+        if (o.visible) { o.visible = false; a.reasserted++; }
+      }
+    };
+    const offFrame = this.game.engine.onFrameUpdate?.(hold) ?? (() => {});
+    const offFixed = this.game.engine.onFixedUpdate?.(hold) ?? (() => {});
+    this._ablationDetach = () => { offFrame(); offFixed(); };
+
+    return {
+      names: want, missing, meshes: meshes.length,
+      drawnTrianglesAtApply: atApply.triangles, world: world.id ?? null,
+    };
+  }
+
+  /**
+   * Is the ablation still in force, and is it actually taking anything out of
+   * THIS framing?
+   *
+   * `removedTriangles` is the whole point: it is what the hidden meshes would
+   * be drawing right now if they were not hidden. Zero means this framing sees
+   * none of the ablated system, so a "no change" result from this framing says
+   * nothing about that system - which is precisely how an ablation that hid
+   * the wrong two meshes read as "the grass is not what is bright".
+   */
+  ablationCheck() {
+    const a = this._ablation;
+    if (!a) return { active: false };
+    const world = this.game.worldManager.active;
+    const cam = this.game.engine.camera;
+    const would = drawnTrianglesOf(a.meshes, cam);
+    a.removedEver = Math.max(a.removedEver, would.triangles);
+    const walk = walkWorldTriangles(world?.group, cam, { breakdown: true });
+    /* A backstop, not the primary check: if the hold is working nothing here
+     * can be non-empty. It is here because the hold is a frame updater, and a
+     * frame updater that stopped running is exactly the silent failure this
+     * whole file exists to refuse. */
+    const stillDrawn = walk.byMaterial.filter((b) => a.names.includes(b.key));
+    let detached = 0;
+    for (const o of a.meshes) {
+      let n = o;
+      while (n.parent) n = n.parent;
+      if (n !== world?.group) detached++;
+    }
+    const reasserted = a.reasserted;
+    a.reasserted = 0;
+    return {
+      active: true,
+      names: a.names,
+      world: world?.id ?? null,
+      worldChanged: (world?.id ?? null) !== a.world,
+      meshes: a.meshes.length,
+      hidden: a.meshes.filter((o) => !o.visible).length,
+      /** What this framing loses by the ablation. 0 = this framing proves nothing. */
+      removedTriangles: would.triangles,
+      /** The most any framing has lost so far, so a run can be judged as a whole. */
+      removedEver: a.removedEver,
+      /** Non-empty means the hiding is NOT holding. Any value here voids the run. */
+      stillDrawn,
+      /** Meshes no longer under the active world group - a rebuild took them. */
+      detachedMeshes: detached,
+      /** Frames on which something re-showed an ablated mesh and was overruled. */
+      reasserted,
+    };
+  }
+
+  /** Release an ablation and put the meshes back exactly as they were. */
+  unablate() {
+    const a = this._ablation;
+    this._ablationDetach?.();
+    this._ablationDetach = null;
+    this._ablation = null;
+    if (!a) return { active: false };
+    for (const [o, visible] of a.saved) o.visible = visible;
+    return { active: false, restored: a.saved.length };
   }
 
   /**
@@ -1616,6 +2000,11 @@ class Harness {
  * rather than reject: a genuine 10 s frame is possible during shader warmup,
  * and failing the boot would be worse than saying so.
  */
+/** Wall-clock wait. Used where the thing being waited for is not per-frame. */
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function frame(timeoutMs = 10000) {
   return new Promise((resolve) => {
     const t = setTimeout(() => {

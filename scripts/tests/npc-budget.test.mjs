@@ -82,6 +82,30 @@ function best(fn, reps = 5) {
 /* What the sweeps actually cost                                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * How many roster entries one `_separateBodies` sweep actually reads.
+ *
+ * A `Proxy` over the array the sweep is handed, counting index reads. That is
+ * the whole of what the function does with the roster - `list[i]` in the outer
+ * loop and `list[j]` in the inner - so the count is a COMPLETE measure of the
+ * sweep's shape, and it is identical on every machine and every run.
+ */
+function rosterScans(n) {
+  const npcs = [];
+  for (let i = 0; i < n; i++) npcs.push(stubNPC((i % 10) * 4 - 20, ((i / 10) | 0) * 4 - 20, i));
+  let reads = 0;
+  const ctx = {
+    _npcs: new Proxy(npcs, {
+      get(target, key, recv) {
+        if (typeof key === 'string' && /^(0|[1-9]\d*)$/.test(key)) reads++;
+        return Reflect.get(target, key, recv);
+      },
+    }),
+  };
+  NPCManager.prototype._separateBodies.call(ctx);
+  return reads;
+}
+
 test('_separateBodies is quadratic, and still trivial at three times the budget', () => {
   /* Recorded here because it is the cost everyone assumes is the reason, and
    * it is not. Measured on this machine, crowd packed into a 40 m square:
@@ -89,21 +113,67 @@ test('_separateBodies is quadratic, and still trivial at three times the budget'
    *     n= 44  2.5 us/step      n=140  24.1 us/step
    *     n= 72  6.3 us/step      n=200  55.6 us/step
    * 55.6 us per fixed step at 200 characters is 3.3 ms per SECOND of wall
-   * clock, i.e. 0.06 ms per frame. */
-  const run = (n) => {
-    const npcs = [];
-    for (let i = 0; i < n; i++) npcs.push(stubNPC((i % 10) * 4 - 20, ((i / 10) | 0) * 4 - 20, i));
-    const ctx = { _npcs: npcs };
-    return best(() => { for (let s = 0; s < 1000; s++) NPCManager.prototype._separateBodies.call(ctx); });
-  };
-  const at72 = run(72);
-  const at200 = run(200);
-  // Quadratic: 200 is 7.7x the pairs of 72. Anything worse than 15x is a new
-  // term in the loop, not noise.
-  assert.ok(at200 / Math.max(at72, 1e-6) < 15,
-    `_separateBodies went from ${at72.toFixed(2)} ms to ${at200.toFixed(2)} ms - worse than quadratic`);
-  // The absolute claim, generously: 1000 steps of 200 characters under 200 ms.
-  assert.ok(at200 < 200, `${at200.toFixed(1)} ms for 1000 steps at n=200`);
+   * clock, i.e. 0.06 ms per frame.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   *  COUNTED, NOT TIMED - AND THIS FILE'S OWN HEADER CALLED IT
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * This asserted `at200 / at72 < 15` on two `best()`-of-five wall-clock
+   * windows, and it is the flake behind Phase 12's one red run in eight
+   * (3263 pass / 2 fail, names lost to a `tail`). Measured on this machine,
+   * 24 logical cores, ten runs of this file under 32 concurrent CPU burners:
+   *
+   *     idle              at72  6.17-6.72 ms   at200  54.9-55.7 ms   ratio 8.2-9.0
+   *     32 burners        at72 11.84-12.01     at200   193.6-235.3   ratio 16.2-19.7
+   *     RED 6 of 10 runs
+   *
+   * Look at which half moved. `at72` barely shifts because each of its five
+   * reps is a 6 ms window that usually gets a clean slice; `at200`'s reps are
+   * 55 ms windows, long enough that all five are interrupted, so the minimum
+   * of five is still contended. The ratio therefore inflates by about 2x under
+   * load with NOTHING WRONG - which is exactly the "two halves timed in
+   * different contention windows" failure `physics-remove.test.mjs` abandoned
+   * this idiom over, made worse here by the two windows being ten times apart
+   * in length. The header of this file predicted a gate here would go and said
+   * what to do about it: "If any of them flakes, count work rather than
+   * widening the threshold."
+   *
+   * ── WHAT REPLACES IT, AND WHY IT IS THE SAME CLAIM ─────────────────────
+   *
+   * `_separateBodies` reads the roster and nothing else: `list[i]` outside,
+   * `list[j]` inside. So ENTRIES SCANNED is not a proxy for its shape, it IS
+   * its shape, and it comes out exactly `n + n(n-1)/2` - measured at every one
+   * of n = 24, 44, 72, 100, 140, 200. A second inner loop, a re-scan, or a
+   * cubic term all move it; contention cannot.
+   *
+   *   n= 24    300      n=100   5,050
+   *   n= 44    990      n=140   9,870
+   *   n= 72  2,628      n=200  20,100
+   *
+   * The conversion back to wall clock is measured and recorded rather than
+   * asserted: 20,100 scans per step costs 55.6 us, i.e. 2.77 ns per scan, so
+   * the old "1000 steps at n=200 under 200 ms" claim is 55.6 ms - and it is
+   * the SCAN COUNT that would have to change for that to stop being true.
+   * What this no longer catches is a per-pair body that got a hundred times
+   * more expensive without scanning more; that is the acknowledged price of
+   * the trade, and it is the same one `citadel-caves`, `citadel-budgets`,
+   * `physics-remove` and `medieval-spatial-index` all paid for the same
+   * reason. A time ceiling here cannot be both safe and meaningful. */
+  const at72 = rosterScans(72);
+  const at200 = rosterScans(200);
+  const closed = (n) => n + (n * (n - 1)) / 2;
+
+  /* Quadratic and exactly quadratic: one pass over every ordered pair, plus
+   * the outer read. Held as equality because the closed form is what "is
+   * quadratic" MEANS here, and an inequality would let a second sweep through
+   * as long as it stayed under the ratio. */
+  assert.equal(at72, closed(72), `_separateBodies scanned ${at72} roster entries at n=72, not ${closed(72)}`);
+  assert.equal(at200, closed(200), `_separateBodies scanned ${at200} roster entries at n=200, not ${closed(200)}`);
+  // 200 is 7.65x the scans of 72. Anything worse than 15x is a new term in the
+  // loop - and now nothing else can make it look like one.
+  assert.ok(at200 / at72 < 15,
+    `_separateBodies went from ${at72} scans to ${at200} - worse than quadratic`);
 });
 
 test('_updateLOD is linear and free at any budget under consideration', () => {

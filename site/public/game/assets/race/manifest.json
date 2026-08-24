@@ -1,0 +1,31 @@
+{
+  "comment": "Authored hero geometry for the race world (Phase 9, decision D4). Written by scripts/make-race-glb.mjs; both .glb files are reproduced byte for byte by re-running it, and scripts/tests/race-assets.test.mjs holds every number below against the files on disk. The architecture was measured BEFORE anything was authored: race builds 453 renderables from 29 materials, already merged by material per district plus 129 tiled InstancedMesh systems - the citadel/dock shape, not the sports one - so no draw-call win was available and none was attempted. Neither asset adds a bucket. The spectator's four parts are merged into ONE geometry by src/worlds/race/RaceAssets.js and handed to the race:crowd InstancedMesh the world already builds; the marshal's three parts are NAMED FOR RACE MATERIAL KEYS and go into the trackside.<id> Batch bucket of that key, which is a mesh the world already draws. No new renderable, no new instanced mesh, no new draw call, no new shader program, no new light, no new collider. Materials move by one, DOWNWARD: carrying a per-part shade needs vertexColors, and the crowd's paint.enamel|novc clone was the only material in the scene with that configuration, so the crowd joins the shared race.paint.enamel and the world draws 28 instead of 29. Files missing at runtime degrade to exactly what the world built before - the swept cone for the crowd, three B.box calls for the post, same places, same colliders - and that is the arm the whole headless suite takes.",
+  "assets": [
+    {
+      "id": "spectator",
+      "file": "spectator.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-race-glb.mjs - procedurally authored in this repository, 2026-08-24",
+      "parts": ["torso", "head", "face", "legs"],
+      "tris": 144,
+      "verts": 342,
+      "bytes": 15916,
+      "height": 1.7,
+      "note": "EXACTLY the 144 triangles of the primitive it replaces, so the substitution is free on every axis the budget measures. That cap is not taste: _spawnCrowd instances this 819 times - 615 on Vellum's grandstand, 102 on each of the other two - and photographed from the start/finish straight the crowd is the SECOND largest object in the world, 102,384 triangles in one frame, 12.6% of everything drawn. A first draft at 276 triangles would have been +108,108 world-wide and +11.9% on that frame, for background crowd; it was refused. Eighty of the shipped 144 - more than half the figure - are an eight-by-eight sphere used as a head, on a body with no shoulders, no arms and no legs, so re-spending those eighty costs nothing: a six-sided trunk with a waist (48), two four-sided arms hanging 6 cm clear of the flank so daylight shows through (32), a four-sided skull that is WIDEST AT THE BROW because a sphere cannot taper (24), a nose ridge as a closed triangular prism (8) and two legs (32). Shoes were cut to pay for the arms - the figures stand behind a 0.42 m seat plank that hides everything below the knee, so a projecting toe is the cheapest detail in the file to lose. The part shades in RaceAssets.js are what actually fixes the defect this asset exists for: body and head used to be ONE geometry drawn with vertexColors:false and handed ONE setColorAt, so the head was painted the shirt colour and all 819 of them were. The head is now hair at 0.30 of the shirt and the face a pale patch at 1.34, baked into a vertex attribute at load; RaceWorld's shirt palette is desaturated to match, because 0.30 of a saturated primary is not hair, it is the same primary in shadow. Figure is 1.70 m against the 1.22 it replaces, and the grandstands now stand it on the DECK set back 0.45 m rather than on top of the seat plank - the old heads were at the right height and the old PEOPLE were 1.2 m tall."
+    },
+    {
+      "id": "marshal",
+      "file": "marshal.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-race-glb.mjs - procedurally authored in this repository, 2026-08-24",
+      "parts": ["metal.panel", "metal.trim", "hazard.stripe"],
+      "tris": 204,
+      "verts": 408,
+      "bytes": 17424,
+      "shell": [1.6, 1.3, 2.6],
+      "note": "204 triangles against the 132 the three shipped boxes cost: +2,088 across 29 posts, which is +0.03% of a measured frame, paid on the record. It is affordable because 108 of the 132 it replaces are the BEVEL on one RoundedBoxGeometry crate - dropping that buys nine plain solids for the price of one rounded one. What the nine solids buy is the defect: the shipped hazard band is 3.3 x 0.5 x 0.2 drawn at the centre of a solid 3.2 x 2.6 x 2.6, so 93% of its surface is INSIDE the crate and the 7% that renders is a 5 cm tab on each END, side-on to the road. Photographed at 7 m it is one narrow sliver. The authored band is four bars standing 0.06 m proud on all four faces, so it wraps and reads from a car. The rest: the front is no longer one flat quad but a SURROUND - sill, head, two jambs and a mullion - standing 0.14 m proud of a recessed observation slot, which is a recess made of geometry rather than a dark colour painted inside a solid (art-citadel's 800 window openings, none of which ever drew a pixel); plus a working platform, two kick rails, a roof with a real drip edge under its overhang, and a grab rail down each flank. The SHELL is unchanged at 3.2 x 2.6 x 2.6 with its origin on the ground at the footprint centre, because _buildTrackside puts a collider on the shell and art does not move collision. The platform and the rails stand outside that collider and are drawn-only, which is what they were as boxes too. Local -Z is the observation slot; a Y-rotation by atan2(rx, rz) maps local +Z onto the road's right-hand normal, so the inboard half of the posts are turned by PI or they face the country."
+    }
+  ]
+}

@@ -1065,5 +1065,32 @@ export function buildYardMaterials(T) {
    */
   M.paintApron = painted(T.apron, { metalness: 0.04, roughness: 0.9, env: 0.45 });
 
+  /**
+   * EVERY MATERIAL IN THIS SET CARRIES ITS KEY AS ITS NAME.
+   *
+   * Not tidiness — it is the only thing that makes the Phase 9 evidence
+   * harness usable on this world. `scripts/world-shot.mjs --ablate` hides every
+   * mesh drawn with a NAMED material and re-shoots, and that A/B is the only
+   * way to answer "which system owns this pixel"; the medieval pass used it to
+   * clear the system it was about to fix. Run against the yard before this
+   * line, `--ablate` had exactly one name to offer (`yard.stars`, set by hand
+   * in `_buildVoid`) and `materialNames` in every report read
+   * "116 MeshStandardMaterial" — a census of the constructor, which tells you
+   * nothing about the yard.
+   *
+   * Named here rather than at each declaration so the name and the key cannot
+   * drift: the key IS the name, and `DockWorld._flushBatch` looks materials up
+   * by that same key, so a material this loop cannot see is a material nothing
+   * draws. `scripts/tests/yard-assets.test.mjs` holds the pair together, and
+   * it does it by reading the set off a REAL built world rather than off a
+   * copy of this list.
+   *
+   * Safe against the budget: Three's program cache key is built from the
+   * material's TYPE, parameters and defines (plus `customProgramCacheKey`,
+   * which `emissive()` above sets). `name` is not in it. Measured across all
+   * 24 dock framings: 490 programs before, 490 after.
+   */
+  for (const [key, m] of Object.entries(M)) m.name = `yard.${key}`;
+
   return M;
 }

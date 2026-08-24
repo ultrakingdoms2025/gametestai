@@ -1246,6 +1246,160 @@ async function boot() {
 }
 
 /**
+ * `renderer.compile()`, keyed to the render path this session will actually
+ * take.
+ *
+ * ── The defect this exists to close ───────────────────────────────────────
+ *
+ * Three folds two properties of the BOUND RENDER TARGET into every program's
+ * cache key - `outputColorSpace` and, through it, whether the material carries
+ * the tone map at all. A bare `renderer.compile()` runs with nothing bound, so
+ * it builds the programs the DIRECT-to-canvas path needs. With the PostFX
+ * chain up - which is every session that did not ask for `?postfx=0` and did
+ * not fall back off a broken driver - the scene is drawn into the composer's
+ * half-float target instead, and not one of those programs is ever used.
+ *
+ * Read off the production bundle, by tallying the cache key of every program
+ * at the moment the background world chain finished:
+ *
+ *     254 of 485   srgb-linear   the set every frame in the session drew with
+ *     230 of 485   srgb          the set nothing drew with, ever
+ *
+ * and every program a world entry linked in front of the player - 46 for
+ * sports, 12 for dock, 11 for medieval - was `srgb-linear`. The warm was
+ * building one path and the game was running the other.
+ *
+ * This is deliberately NOT a quality-tier decision. `setQuality` toggles
+ * individual passes; even `low` renders the scene into the chain's target
+ * through `OutputPass`. Which path a session takes is settled before the first
+ * frame, so the warm can read it rather than hedge - see
+ * `PostFX.scenePassTarget`, which is the whole of the answer.
+ *
+ * Synchronous, and the target is restored in a `finally`: a compile that threw
+ * with the composer's buffer still bound would leave the next frame drawing
+ * into it.
+ *
+ * @param {any} root scene, group or single object - `compile` traverses what it is given
+ * @param {any} camera
+ * @param {any} [targetScene] the scene lights and shadows resolve against
+ */
+function warmCompile(root, camera, targetScene) {
+  const r = engine.renderer;
+  const want = engine.postfx?.scenePassTarget ?? null;
+  const prev = r.getRenderTarget();
+  if (want === prev) {
+    r.compile(root, camera, targetScene);
+    return;
+  }
+  try {
+    r.setRenderTarget(want);
+    r.compile(root, camera, targetScene);
+  } finally {
+    r.setRenderTarget(prev);
+  }
+}
+
+/**
+ * The scene fog a warm needs so its programs are keyed the way the arrival
+ * will ask for them.
+ *
+ * Only the TYPE is a cache key - `fog` and `fogExp2` are booleans in the
+ * parameter array, and the colour, near and far are uniforms. So a single
+ * scratch instance covers every world that installs a linear fog, and a world
+ * that installs its own (`sceneFog`, which today is only sports and its
+ * `FogExp2`) hands over the very instance it will install.
+ */
+const _warmFog = new THREE.Fog(0, 1, 100);
+
+/**
+ * Run `fn` with the scene dressed as it will be when the player arrives in
+ * `world`.
+ *
+ * ── Why a warm that does not do this warms nothing ────────────────────────
+ *
+ * `warmWorld` compiles a destination against the LIVE scene - the world the
+ * player is standing in. Three folds `fog`, `fogExp2`, `envMapMode` and
+ * `envMapCubeUVHeight` into every program's cache key and `applyEnvironment`
+ * rewrites all four on arrival, so the programs the warm built are keyed to
+ * the DEPARTURE world and the arrival frame asks for a different set - which
+ * it then links, one at a time, with the player watching. Measured on the
+ * production bundle, that link wait is 0.4-2.0 SECONDS per program on this
+ * driver: three programs cost the race arrival 6,068 ms of `getProgramInfoLog`
+ * in a single frame.
+ *
+ * This is the same substitution `Portals._configurePreview` already makes for
+ * the gateway window, and the same one `scripts/frame-gaps.mjs --env-warm`
+ * makes to prove the attribution. It is safe because it spans a SYNCHRONOUS
+ * compile and nothing else: there is no yield between the swap and the
+ * restore, so no frame can ever render under it, and the restore is in a
+ * `finally` so a throwing compile cannot leave the station wearing sports' fog.
+ *
+ * `env.envMap === undefined` is left alone rather than cleared, because that is
+ * exactly what `applyEnvironment` does - a world that publishes no map keeps
+ * whatever was there.
+ *
+ * @param {any} world
+ * @param {() => void} fn
+ */
+function withArrivalKey(world, fn) {
+  const scene = engine.scene;
+  const env = world?.environment ?? {};
+  const fog = scene.fog;
+  const environment = scene.environment;
+  try {
+    scene.fog = world?.sceneFog ?? (env.fogFar > 0 ? _warmFog : null);
+    if (env.envMap !== undefined) scene.environment = env.envMap;
+    fn();
+  } finally {
+    scene.fog = fog;
+    scene.environment = environment;
+  }
+}
+
+/**
+ * Everything drawn on an arrival frame that belongs to no world.
+ *
+ * The avatar, the viewmodels, the mounts, the gateway arches, the NPCs and the
+ * loot pool are parented to the SCENE, not to a world group - so `warmWorld`,
+ * which is handed `world.group`, cannot reach a single one of them, and neither
+ * can the gateway preview warm, which parks that same group into the preview
+ * scene. They are nonetheless keyed on the scene's fog and environment like
+ * everything else, so a world that changes either re-links all of them on
+ * arrival.
+ *
+ * That is the whole of sports' residual cost, measured on the production
+ * bundle: of the 46 programs its arrival still linked, 23 differed from an
+ * existing program in `fogExp2` and in nothing else, and they were the
+ * player's own kit - `physical` and `basic` bodies, a `sprite` name sign, a
+ * `points` effect.
+ *
+ * The mounts come from a list `prewarm` captured, because `unpark` takes their
+ * roots back out of the scene and `MountManager` publishes no accessor for
+ * them; everything else is read live, so a gateway or an NPC that did not
+ * exist when the warm was planned is simply not in it.
+ *
+ * @returns {any[]}
+ */
+function persistentWarmRoots() {
+  const roots = [];
+  const push = (o) => { if (o) roots.push(o); };
+  try {
+    push(avatar?.root);
+    for (const inst of loadout?.instances ?? []) push(inst.root);
+    for (const root of _parkedMountRoots) push(root);
+    for (const p of portals?.portals ?? []) push(p.root);
+    for (const npc of npcManager?.npcs ?? []) push(npc.root);
+    push(loot?.group);
+  } catch (err) {
+    console.warn('[warm] persistent roots unavailable:', err);
+  }
+  return roots;
+}
+
+/** @type {any[]} Mount roots `prewarm` built; see `persistentWarmRoots`. */
+let _parkedMountRoots = [];
+
+/**
  * Pay every first-use shader cost behind the loading screen.
  *
  * ── Why this is now one call ──────────────────────────────────────────────
@@ -1294,6 +1448,10 @@ async function prewarm() {
     // geometry and its shader programs on the spot - which is the stall this
     // whole prewarm exists to prevent.
     parked = mounts.prebuild?.(['hoverboard', 'dragon', 'car', 'horse', 'eagle', 'bicycle']) ?? [];
+    // Kept for `persistentWarmRoots`. `unpark` below takes these back out of
+    // the scene, and a mount is drawn on every arrival frame the player is
+    // riding one - so the destination warm still has to reach them.
+    _parkedMountRoots = parked;
   } catch (err) {
     console.warn('[prewarm] mount prebuild failed:', err);
   }
@@ -1351,7 +1509,7 @@ async function prewarm() {
   }
 
   try {
-    engine.renderer.compile(engine.scene, engine.camera);
+    warmCompile(engine.scene, engine.camera);
   } catch (err) {
     console.warn('[prewarm] compile failed, falling back to lazy compile:', err);
   }
@@ -1704,7 +1862,7 @@ async function recoverFromContextLoss() {
     await nextFrame();
 
     try {
-      r.compile(engine.scene, engine.camera);
+      warmCompile(engine.scene, engine.camera);
     } catch (err) {
       console.warn('[recover] compile failed, falling back to lazy compile:', err);
     }
@@ -1970,11 +2128,21 @@ function warmWorld(id) {
     const batches = chunkUnits(planCompileWarm(group), WORLD_WARM_UNITS_PER_COMPILE);
     slices = batches.length;
     for (const batch of batches) {
-      steps.push(() => {
-        for (const o of batch) engine.renderer.compile(o, engine.camera, engine.scene);
-      });
+      steps.push(() => withArrivalKey(world, () => {
+        for (const o of batch) warmCompile(o, engine.camera, engine.scene);
+      }));
     }
-    steps.push(() => engine.renderer.compile(group, engine.camera, engine.scene));
+    steps.push(() => withArrivalKey(world, () => warmCompile(group, engine.camera, engine.scene)));
+    /* The half of the arrival frame that is in no world group at all - see
+     * `persistentWarmRoots`. One unit each, because a viewmodel or an NPC is a
+     * handful of materials where a world group is thousands, and because the
+     * list is read live: a gateway built since the plan was made is picked up
+     * by the step rather than missed by it. */
+    steps.push(() => {
+      for (const root of persistentWarmRoots()) {
+        steps.push(() => withArrivalKey(world, () => warmCompile(root, engine.camera, engine.scene)));
+      }
+    });
   });
 
   return runSliced({

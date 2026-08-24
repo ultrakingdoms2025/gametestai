@@ -1359,6 +1359,57 @@ class PostFX {
   }
 
   /**
+   * The render target a scene draw actually lands in, or `null` for the canvas.
+   *
+   * ── Why anything outside this file needs to know ──────────────────────────
+   *
+   * Three folds TWO properties of the bound render target into every program's
+   * cache key, and both of them differ between the two paths below:
+   *
+   *   - `outputColorSpace` is `renderer.outputColorSpace` (`srgb`) when no
+   *     target is bound, and the working colour space (`srgb-linear`) when one
+   *     is. It decides whether the fragment shader ends in an sRGB transfer.
+   *   - `toneMapping` is the renderer's when no target is bound and
+   *     `NoToneMapping` when one is - because with a chain the tone map belongs
+   *     to `OutputPass`, not to the material.
+   *
+   * So a `renderer.compile()` with nothing bound builds programs for the
+   * DIRECT path. With the chain up, no frame in the game ever draws that way,
+   * and every one of those programs is warm time and GPU memory spent on a
+   * render path this session will not take - while the set the game does ask
+   * for is still linked lazily, in front of the player.
+   *
+   * Measured on the production bundle, by reading the cache key off every
+   * program at the end of the background world chain:
+   *
+   *     254 of 485   srgb-linear   what every frame draws with
+   *     230 of 485   srgb          what nothing in the session drew with
+   *
+   * and every single program a world entry linked - 46 for sports, 12 for
+   * dock, 11 for medieval, 5 for the citadel - was `srgb-linear`.
+   *
+   * ── Why this is a fact and not a preference ───────────────────────────────
+   *
+   * Which path a session takes is settled before the first frame: `?postfx=0`,
+   * or the composer failing to build on a driver that cannot give us a
+   * half-float target. It is NOT a quality-tier choice - `setQuality` only
+   * toggles individual passes, and `low` still renders the scene into the
+   * chain's target through `OutputPass`. So a warm can simply ask which path
+   * this session is on and build that one, rather than building both and
+   * guessing.
+   *
+   * `readBuffer` rather than `renderTarget1` because it is literally what
+   * `RenderPass` binds; the two alternate as the composer swaps, and either
+   * satisfies the key, but the honest answer is the one the pass uses.
+   *
+   * @returns {import('three').WebGLRenderTarget|null}
+   */
+  get scenePassTarget() {
+    if (!this._enabled || !this.composer) return null;
+    return this.composer.readBuffer ?? this.composer.renderTarget1 ?? null;
+  }
+
+  /**
    * Manual quality override; also used by the automatic frame-budget guard.
    * @param {{ ao?: boolean, shafts?: boolean, bloom?: boolean, smaa?: boolean, film?: boolean }} flags
    */

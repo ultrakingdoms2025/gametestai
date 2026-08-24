@@ -8,6 +8,15 @@ first**, because the maze re-rolls its own seed on every build.
 
 **Evidence:** `docs/superpowers/specs/img/2026-08-23-art-maze/`.
 
+The pair that carries this pass is `before-sprig-three-quarter.jpg` / `after-sprig-three-quarter.jpg`
+— a hedge top at 2.4 m, before and after, +65% edge energy at unchanged luma. The pair beside it
+is `before-candle-matched.jpg` / `after-candle-matched.jpg`: the same object in the same corridor
+framing, cropped and scaled to the same apparent size, going from a flat cream rectangle to a
+tapered wax pillar with a wick. `work-rejected-cone-tuft.jpg` is the authored tuft that was
+photographed, rejected and re-cut inside this branch — see §3.1.
+`noise-floor-tower-top-second-base-run.jpg` is the same framing as `before-tower-top.jpg`, same
+commit, same machine, a different maze — which is §0.
+
 ---
 
 ## 0. The finding that governs every number in this document
@@ -19,23 +28,30 @@ this.seed = (Math.random() * 0xffffffff) >>> 0;
 ```
 
 The maze is `static volatile = true` and re-generates on every activation. **Two runs of the
-same commit do not photograph the same world.** Before anything was authored, the unchanged
-base tree was run through `scripts/world-shot.mjs` four times, same machine, same five framings:
+same commit do not photograph the same world.** The unchanged base tree was run through
+`scripts/world-shot.mjs` **seven** times on this machine — four before any work started and
+three more after it was committed, from the base commit checked out into this same worktree:
 
-| | run 1 | run 2 | run 3 | run 4 |
-|---|---|---|---|---|
-| `forecourt` draw calls | 304 | 332 | 338 | 328 |
-| `forecourt` worldTriangles | 964,222 | 931,590 | 955,414 | 931,794 |
-| `shaft-up` worldTriangles | 564,114 | 820,408 | 564,654 | 779,276 |
-| `tower-top` worldTriangles | — | 1,339,364 | 822,496 | 822,646 |
-| materials | 17 | 18 | 16 | 15–16 |
-| renderables | 65 | 54 | 64 | 66 |
-| shader programs | 236 | 232 | 233 | 233 |
+| on unchanged code, 7 runs | min | max | spread |
+|---|---|---|---|
+| `forecourt` worldTriangles | 897,370 | 972,002 | 8% |
+| `corridor` worldTriangles | 853,950 | 921,662 | 8% |
+| `shaft-up` worldTriangles | 431,766 | 820,408 | **90%** |
+| `tower-top` worldTriangles | 822,496 | 1,339,364 | **63%** |
+| `forecourt` draw calls | 310 | 338 | 9% |
+| materials | 14 | 18 | 4 |
+| renderables | 46 | 92 | 46 |
+| instanced meshes | 32 | 78 | 46 |
+| shader programs | 232 | 233 | 1 |
+| world lights, `tower-top` | 675 | 950 | 275 |
 
-`shaft-up` swings **45%** and `tower-top` **63%** on code that did not change. Materials move by
-three, renderables by twelve, programs by four. Every "before → after" below is therefore
-reported as a **range over three runs each way**, and every claim that something is *unchanged*
-is carried by a headless deterministic test rather than by the browser figure.
+`shaft-up` swings **90%** on code that did not change; `tower-top` 63%. Materials move by four,
+renderables by forty-six. Every "before → after" below is therefore reported as a **range over
+runs**, and every claim that something is *unchanged* is carried by a headless deterministic
+test rather than by the browser figure.
+
+`noise-floor-tower-top-second-base-run.jpg` beside `before-tower-top.jpg` is the picture of this:
+same commit, same framing, same machine, and not the same maze.
 
 That is the first thing a sibling branch should take from this file: in this world a single
 before/after pair is not evidence of anything.
@@ -261,11 +277,54 @@ the three above, which admit exactly one answer and do not care what shape the s
 
 Three runs each way, same machine, same order, `gameplayDriven: true`. Ranges, because §0.
 
-### 4.1 Per framing, before → after
+**Seven** base runs and **three** after runs, and the base runs are not a memory: after the work
+was committed, the base commit `a7734ed` was checked out into this same worktree and re-run
+three more times, the `art-citadel` protocol, so both distributions come from the same machine
+under the same conditions.
 
-_(filled from the committed reports — see §4.4 for the honest caveat about triangles)_
+### 4.1 The lines that must not move
 
-### 4.2 The triangle number the browser reports is NOT the triangle number
+| | before (7 runs) | after (3 runs) | verdict |
+|---|---|---|---|
+| **materials** | 14–18 | 15–18 | inside the noise floor |
+| **renderables** | 46–92 | 50–78 | inside |
+| **instancedMeshes** | 32–78 | 36–64 | inside |
+| **worldLights** | 525 ground / 675–950 tower | 525 ground / 675 tower | inside |
+| **shader programs** | 232–233 | **233**, every framing of every run | inside |
+| `renderer.info.memory.geometries` | 373–417 | **361–385** | **down** — one shared sprig geometry instead of one per resident district |
+
+The **program** line is the one this phase is gated on, and it is 233 in all fifteen framings of
+the three shipped runs, against a base that reads 232 or 233. One caveat recorded rather than
+buried: two INTERMEDIATE runs of this branch — the rejected bipyramid build of §3.1 — reported
+**269** and **261** at `tower-top` while reading 233 at every other framing. It was chased. It
+did not reproduce: three runs of the shipped build read 233 at `tower-top`, as do all seven base
+runs. `programs` is `renderer.info.programs.length`, a cumulative live cache whose value depends
+on the order in which materials first entered a frustum, and `tower-top` is the one framing that
+teleports the player onto another level and streams a fresh district set of a re-rolled maze.
+Nine samples are on the record; two of them are unexplained.
+
+The stronger statement is headless and deterministic, and does not depend on any of the above:
+`maze-materials.test.mjs` holds every material in the built set to `MAZE_PROGRAM_FAMILIES` by
+name, and that list is **unchanged by this branch**. A new program can only come from a new
+feature-set, and there is no new feature-set — both authored assets are drawn with cached
+materials that pre-date this work.
+
+### 4.2 Draw calls and triangles, per framing
+
+| framing | draw calls before | after | worldTriangles before | after |
+|---|---|---|---|---|
+| `forecourt` | 310–338 | 280–364 | 897,370–972,002 | **762,918–806,068** |
+| `corridor` | 178–256 | 218–244 | 853,950–921,662 | **726,832–751,046** |
+| `above-entrance` | 186–246 | 192–232 | 940,482–1,027,554 | **798,830–842,070** |
+| `shaft-up` | 129–165 | 135–145 | 431,766–820,408 | 295,430–474,396 |
+| `tower-top` | 153–241 | 155–188 | 822,496–1,339,364 | **727,986–764,100** |
+
+Draw calls overlap everywhere — as they must: nothing here adds or removes a mesh. Triangles are
+**cleanly separated** at four of the five framings (the after maximum is below the before
+minimum); `shaft-up` overlaps, and `shaft-up` is also the framing whose base range spans 1.9:1
+on unchanged code.
+
+### 4.3 The triangle number the browser reports is NOT the triangle number
 
 `src/dev/WorldTriangles.js` counts a `BatchedMesh` as **one** instance:
 
@@ -274,13 +333,30 @@ _(filled from the committed reports — see §4.4 for the honest caveat about tr
 > fall back to 1 rather than guess.*
 
 The maze is the only world that uses `BatchedMesh`, and it draws its entire static structure
-through seven of them. So `HARNESS.worldTriangles()` for this world is essentially **the
-instanced meshes plus one copy of each batch's shared buffer** — it sees the foliage saving in
-full and it sees the candle cost as **+58 triangles in total** rather than +58 per candle.
+through seven of them. Worse: `geometryTriangles` honours `drawRange`, and a `BatchedMesh`
+publishes its whole **reserved** index buffer — so what the harness reports for a batch is the
+size of its `GEOMETRY_BUDGET` reservation. The material naming of §2.1 makes this visible for
+the first time, in the `byMaterial` breakdown of an after run:
 
-Both numbers are reported below and neither is allowed to stand for the other.
+```
+maze.foliage  683,280  (19 objects)   <- real: 19 InstancedMeshes x count x 10
+maze.ivy       33,680  (4)            <- real
+maze.newel     13,312  (1)            <- the STONE batch's reservation, 26 x 1536 / 3
+maze.floor     12,672  (1)            <- the FLOOR batch's reservation
+maze.hedge      1,408  (1)            <- the HEDGE batch's reservation
+maze.candle     1,024  (1)            <- the CANDLE batch's reservation, 8 x 384 / 3
+```
 
-### 4.3 The true delta, computed off the pure modules
+Before this branch that whole table read `MeshStandardMaterial: 888,094 across 40 objects`.
+
+Two consequences, both stated rather than glossed. The candle cost is invisible to the browser
+figure — it sees **+928** (the reservation rising from 8×36 to 8×384 indices) where the real cost
+is +85,260. And the harness's whole-world triangle number for the maze has never included the
+static maze at all.
+
+Both numbers are reported and neither is allowed to stand for the other.
+
+### 4.4 The true delta, computed off the pure modules
 
 21 entrance-resident districts, 8 seeds, means:
 
@@ -293,6 +369,45 @@ Both numbers are reported below and neither is allowed to stand for the other.
 
 Range across seeds: −82,000 … −69,822. **Triangles went down**, and the sprig's two-triangle
 saving is what paid for the candle.
+
+### 4.5 What the art actually did, measured on the pixels
+
+Mean luma is the wrong instrument for "does this object have form" — it is the same number
+whether a tuft is a cube or a crown. Edge energy is the right one. Same close-up framing logic,
+same 2.4 m subject distance, whole frame:
+
+| `sprig-three-quarter` | before | after |
+|---|---|---|
+| mean luma | 34.78 | 35.19 |
+| mean saturation | 0.504 | 0.535 |
+| **mean gradient magnitude** | **2.083** | **3.438 (+65%)** |
+
+The lighting did not change. The surface did.
+
+And the defect of §2.3, on the two surfaces that sit 30 cm apart under the same sun:
+
+| | before | after |
+|---|---|---|
+| a sprig's face | luma 96.9 | luma 22.4 |
+| the hedge top beside it | luma 21.2 | luma 14.9 |
+| **ratio** | **4.57 : 1** | **1.50 : 1** |
+
+1.50:1 is what `MazeMaterials.foliage`'s own comment has claimed since Phase 5 — *"a shade
+lighter and yellower than the hedge itself so it reads as new growth against clipped body"* —
+and it is the first time the world has actually drawn it.
+
+### 4.6 And nothing else moved
+
+Whole-frame statistics, before and after, on the framings this pass did not aim at:
+
+| | before | after |
+|---|---|---|
+| `above-entrance` luma / saturation | 145.17 / 0.152 | 145.08 / 0.151 |
+| `forecourt` luma / sat / gradient | 50.86 / 0.506 / 6.228 | 51.04 / 0.516 / 6.226 |
+| **clipped pixels, every framing** | **0.00%** | **0.00%** |
+
+The forecourt is authored geometry with no sprigs and no candles in it, and it reads identically
+to three significant figures. Nothing in this pass went near the grade, and nothing clips.
 
 ---
 
@@ -359,8 +474,24 @@ what the code and its test both ask for. A change here would have been tuning on
 
 | | |
 |---|---|
-| `npm test` | **3029 pass, 0 fail** (+22: 17 in `maze-glb.test.mjs`, 5 in `maze-sprig-placement.test.mjs`) |
+| `npm test` | **3034 pass, 0 fail** (3012 before; +22 — 17 in `maze-glb.test.mjs`, 5 in `maze-sprig-placement.test.mjs`) |
 | `node scripts/contract-check.mjs` | **129/129 files present, all contracts satisfied** |
 | `npm run build` | **green** |
 | licence | two `generated` entries, one ledger line each, byte-diff enforced |
 | screenshots | `docs/superpowers/specs/img/2026-08-23-art-maze/` |
+
+## 7. For the next branch through here
+
+1. **`--views` must exclude `lift-car`** or the run has a 40% chance of dying at framing four of
+   five with nothing written. §5.1.
+2. **Take at least three runs each way.** §0. One pair proves nothing in this world.
+3. **`worldTriangles` for a batched world is not the frame's triangle count.** §4.3. If any other
+   world ever adopts `BatchedMesh`, its triangle budget stops being measurable by this harness on
+   the day it does.
+4. **Name your world's materials.** It costs nothing, it is not in the program cache key, and it
+   is the difference between `--ablate` working and `--ablate` throwing. §2.1.
+5. **Check the batch reservations before authoring into a batched world.** A `GEOMETRY_BUDGET`
+   entry sized to exactly one box is a boot-time throw waiting for the first `.glb`. §3.2.
+6. **Do not use a star-shaped facing gate in a generator.** Use closed-manifold plus signed
+   volume — it is exact, it needs no assumption about the solid, and it does not reject correct
+   geometry. §3.4.

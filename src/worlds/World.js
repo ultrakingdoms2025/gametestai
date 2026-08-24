@@ -107,6 +107,42 @@ export class World {
     return this.constructor.displayName;
   }
 
+  /**
+   * The fog object this world puts on the live scene, when it is not the
+   * linear one `applyEnvironment` authors from `environment.fogNear/fogFar`.
+   *
+   * ── Why this is a declaration and not an implementation detail ────────────
+   *
+   * `fogExp2` is one of the fields Three folds into every program's cache key,
+   * alongside the light counts this project already had to pool into a fixed
+   * slot set for exactly the same reason. It is a property of the SCENE, not
+   * of a material, so a world that swaps the scene's fog for an exponential
+   * one invalidates the program set of everything on screen - its own
+   * geometry, the player's avatar, the viewmodels, the mounts, the gateways
+   * and the NPC name sprites - not merely its own.
+   *
+   * Measured on the production bundle, arriving at the one world that does
+   * this created 79 programs whose keys differed from an existing program in
+   * `fogExp2` and nothing else, and the arrival frame blocked the main thread
+   * for 28-42 seconds waiting for the driver to link them.
+   *
+   * A world that swaps the fog therefore has to SAY SO, because the gateway
+   * preview warm - the machinery that pays that link cost in the background,
+   * a few programs per idle callback - dresses its preview scene in the
+   * destination's environment and has to be able to dress it in the
+   * destination's fog too. Warming a fog the destination does not use links a
+   * program set nothing ever asks for and leaves the real one to the arrival
+   * frame, which is precisely what was happening.
+   *
+   * Null means "the linear fog from `environment`", which is every other
+   * world, and needs no override.
+   *
+   * @returns {import('three').FogBase | null}
+   */
+  get sceneFog() {
+    return null;
+  }
+
   /** Subclasses override. Must be idempotent-safe via the `_built` guard. */
   async build() {
     throw new Error(`${this.constructor.name} must implement build()`);

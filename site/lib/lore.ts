@@ -14,8 +14,26 @@ export const getLoreEntries: LoreFetcher = async () => {
       sign_label TEXT NOT NULL DEFAULT 'Lorekeeper', body TEXT NOT NULL,
       updated_by TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+  /* Additive, and declared HERE as well as in `customServers.ts` because this
+   * function creates the table it reads and must not depend on another module
+   * having run first. Without it, a database where the custom-server schema has
+   * not been ensured answers the SELECT below with "column server_id does not
+   * exist" — which `getLore` catches and turns into every world showing its
+   * fallback prose. A silent, total content outage from a missing column. */
+  await sql`ALTER TABLE lore_entries ADD COLUMN IF NOT EXISTS server_id TEXT`;
+  /* `server_id IS NULL` is the platform partition.
+   * Every row in this table is NULL today, so this changes nothing now — and
+   * that is exactly why it is added now: the read states its scope while the
+   * column is still always NULL, so there is no later "and now add the filter"
+   * step to forget. The same argument `leaderboard.ts` makes for stamping the
+   * progress tables before a writer existed.
+   *
+   * Owner lore lives in `server_lore_entries`, a table of its own — see
+   * `customServers.ts` for why relaxing this table's `scope` primary key was
+   * refused. So this clause is belt as well as braces, and it is cheap. */
   const { rows } = await sql`
     SELECT scope, title, sign_label, body, updated_at FROM lore_entries
+    WHERE server_id IS NULL
     ORDER BY CASE scope
       WHEN 'overall' THEN 0 WHEN 'station' THEN 1 WHEN 'medieval' THEN 2
       WHEN 'sports' THEN 3 WHEN 'citadel' THEN 4 WHEN 'race' THEN 5

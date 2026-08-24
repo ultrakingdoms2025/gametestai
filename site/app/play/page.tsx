@@ -3,6 +3,7 @@ import path from 'node:path';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentAccessState } from '@/lib/access';
+import { PlayShell } from '@/components/PlayShell';
 import { ENTRY_CENTS, formatCents, grossUp } from '@/lib/pricing';
 
 export const dynamic = 'force-dynamic';
@@ -57,14 +58,10 @@ export default async function Play() {
     );
   }
 
-  return (
-    <main className="play-shell">
-      <iframe
-        src={src}
-        title="Aether Nexus"
-        allow="pointer-lock; fullscreen; gamepad; autoplay; clipboard-write"
-        allowFullScreen
-      />
-    </main>
-  );
+  /* The start panel (7d) chooses default mode or a server BEFORE the iframe is
+   * mounted, because the game resolves its quest and marketplace scope during
+   * boot and a choice made afterwards would arrive too late. `PlayShell` is the
+   * client component that holds that one piece of state; everything else on this
+   * page stays a server component. */
+  return <PlayShell src={src} />;
 }

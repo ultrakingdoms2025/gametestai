@@ -450,9 +450,7 @@ class Quads {
 const SPEC = {
   height: 1.70,
   sole: 0.0,
-  ankle: 0.09,
-  knee: 0.46,
-  hip: 0.90,
+  hip: 0.88,
   waist: 1.04,
   chest: 1.24,
   shoulder: 1.42,
@@ -469,17 +467,34 @@ const SPEC = {
   waistDepth: 0.092,
   hipDepth: 0.105,
   /** Arms hang just clear of the flank, so daylight shows between them. */
-  armX: 0.238,
+  armX: 0.216,
   armTop: 1.37,
-  armWrist: 0.80,
-  armR: 0.053,
-  /** Legs. */
-  legX: 0.083,
-  legR: 0.063,
-  /** Head. A skull is 0.145 across and 0.185 deep, which is 1/7.5 of height. */
-  headHalf: 0.0755,
+  armWrist: 0.78,
+  armHalfTop: 0.055,
+  armHalfWrist: 0.042,
+  /** Legs, from the SOLE. There are no shoes; see SPECTATOR_TRIS. */
+  legX: 0.086,
+  legHalfHip: 0.077,
+  legHalfSole: 0.058,
+  legDepthSole: 0.070,
+  /** Head. A skull is 0.150 across and 0.186 deep, which is 1/7.5 of height. */
+  headHalf: 0.075,
   headDepth: 0.093,
 };
+
+/**
+ * A four-sided prism at `phase = PI/4` has FLAT faces, not corners, at +/-X and
+ * +/-Z - which is what an arm, a leg and a skull want. But `prism` places its
+ * ring on a circle of radius `rx`, so the flat face lands at `rx * cos(PI/4)`
+ * and every half-width above would come out 29% narrower than it says.
+ *
+ * Written down because it already went wrong once: the first build of this file
+ * put a 0.107 m skull on a 1.70 m figure - a head five sixths of the size it
+ * was specified at, and nothing in the generator, the gates or the manifest
+ * would have said so. Everything below is a half-width AT THE FACE, and this is
+ * what turns one into a radius.
+ */
+const FLAT4 = Math.SQRT2;
 
 /**
  * The four parts, and the value each is drawn at.
@@ -590,8 +605,10 @@ export function buildSpectator() {
    * line down its ridge and reads as a pipe. */
   for (const s of [-1, 1]) {
     torso.prism([
-      { y: S.armWrist, rx: S.armR * 0.82, rz: S.armR * 0.86, dz: 0.012, dx: s * 0.022 },
-      { y: S.armTop, rx: S.armR * 1.20, rz: S.armR * 1.26, dz: -0.006, dx: 0 },
+      { y: S.armWrist, rx: S.armHalfWrist * FLAT4, rz: S.armHalfWrist * 1.06 * FLAT4,
+        dz: 0.012, dx: s * 0.018 },
+      { y: S.armTop, rx: S.armHalfTop * FLAT4, rz: S.armHalfTop * 1.06 * FLAT4,
+        dz: -0.006, dx: 0 },
     ], 4, { phase: Math.PI / 4, xOff: s * S.armX });
   }
 
@@ -602,8 +619,8 @@ export function buildSpectator() {
    * not one mass: the gap between is what a leg is. */
   for (const s of [-1, 1]) {
     legs.prism([
-      { y: S.ankle, rx: S.legR * 0.80, rz: S.legR * 0.84 },
-      { y: S.hip + 0.01, rx: S.legR * 1.16, rz: S.legR * 1.10 },
+      { y: S.sole, rx: S.legHalfSole * FLAT4, rz: S.legDepthSole * FLAT4, dz: -0.012 },
+      { y: S.hip + 0.02, rx: S.legHalfHip * FLAT4, rz: S.legHalfHip * 1.02 * FLAT4 },
     ], 4, { phase: Math.PI / 4, xOff: s * S.legX });
   }
 
@@ -616,9 +633,9 @@ export function buildSpectator() {
    *
    * Drawn at shade 0.30, so this whole mass is the hair. */
   head.prism([
-    { y: S.neck - 0.005, rx: S.headHalf * 0.58, rz: S.headDepth * 0.58 },
-    { y: S.jaw + 0.055, rx: S.headHalf, rz: S.headDepth, dz: -0.004 },
-    { y: S.crown, rx: S.headHalf * 0.62, rz: S.headDepth * 0.60, dz: -0.010 },
+    { y: S.neck - 0.005, rx: S.headHalf * 0.58 * FLAT4, rz: S.headDepth * 0.58 * FLAT4 },
+    { y: S.jaw + 0.055, rx: S.headHalf * FLAT4, rz: S.headDepth * FLAT4, dz: -0.004 },
+    { y: S.crown, rx: S.headHalf * 0.62 * FLAT4, rz: S.headDepth * 0.60 * FLAT4, dz: -0.010 },
   ], 4, { phase: Math.PI / 4 });
 
   /* ── Face ───────────────────────────────────────────────────────────────
@@ -636,11 +653,14 @@ export function buildSpectator() {
    * the hair above overhangs it and casts the fringe line that separates
    * them. */
   {
-    const zb = -(S.headDepth * 0.92) + 0.022;   // buried in the skull
-    const zf = -(S.headDepth * 0.92) - 0.015;   // 1.5 cm proud of it
+    /* The brow station's FLAT front face, not its ring radius - see FLAT4.
+     * Getting this wrong is a nose 3.5 cm long on a 0.15 m head. */
+    const brow = -S.headDepth;
+    const zb = brow + 0.010;   // 1 cm buried in the skull
+    const zf = brow - 0.016;   // 1.6 cm proud of it
     const y0 = S.jaw - 0.028;
     const y1 = S.jaw + 0.088;
-    const hw = S.headHalf * 0.60;
+    const hw = S.headHalf * 0.58;
     const A = [-hw, y0, zb];     // back, bottom, -X
     const B = [hw, y0, zb];      // back, bottom, +X
     const C = [hw, y1, zb];      // back, top,    +X

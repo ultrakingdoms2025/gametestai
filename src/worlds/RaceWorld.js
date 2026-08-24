@@ -13,6 +13,9 @@ import {
 import {
   HALF, SEG, QUAD, CITY, CIRCUITS, CourseSet, baseTerrain, worldControls, circuitById,
 } from './RaceCircuits.js';
+import {
+  loadRaceAssets, spectatorGeometry, marshalParts, MARSHAL_PART_KEYS,
+} from './race/RaceAssets.js';
 
 /**
  * RACE - three circuits on one 1.3 km map.
@@ -108,6 +111,32 @@ const _m1 = new THREE.Matrix4();
 const _q1 = new THREE.Quaternion();
 const _e1 = new THREE.Euler();
 const _color = new THREE.Color();
+
+/**
+ * How far back from a terrace's seat plank a spectator stands, in metres.
+ *
+ * Both grandstands lay a 1.6 m deep step and drop a 0.5 m deep plank on its
+ * centre line, so the plank spans -0.25..+0.25 of the step centre and the next
+ * step up starts at +0.70. A figure 0.21 m deep at +0.45 clears the plank's
+ * rear face by 0.20 m and the step behind it by 0.14 m. Below about 0.30 it
+ * stands in the bench; above about 0.55 it stands in the next terrace.
+ */
+const STAND_BACK = 0.45;
+
+/**
+ * The marshal post's per-part tints - the SAME three the boxes carried, so an
+ * asset that lands changes the shape and not the palette.
+ *
+ * `Batch.add` multiplies these into the vertex colour it bakes, which is what
+ * `Batch.box` already did with its `tint` argument. Keeping them identical is
+ * what makes the authored/procedural pair a geometry substitution rather than
+ * a re-grade smuggled in beside one.
+ */
+const MARSHAL_TINT = {
+  'metal.panel': 0xe8e4d8,
+  'metal.trim': 0xb0b6ba,
+  'hazard.stripe': 0xffdd44,
+};
 
 /* ── Batch's OWN scratch, and why it may not share the block above ──────────
  *
@@ -660,6 +689,16 @@ export class RaceWorld extends World {
      * exist before the first vertex is written. Surveying is cheap - a few
      * thousand samples and a spatial hash each - next to the 110 000 probes
      * that follow. */
+    /* The two authored hero assets, before anything is placed.
+     *
+     * Awaited rather than raced, and it is the same reason every other world's
+     * loader is awaited: `_spawnCrowd` and `_buildTrackside` each choose an
+     * ARM off the cache, so a load that lands mid-build would give one
+     * grandstand authored figures and the next one cones. It never rejects and
+     * it is bounded at 12 s; null is the procedural build, which is what the
+     * whole headless suite takes. @see race/RaceAssets.js */
+    await loadRaceAssets();
+
     await report(0.02, 'Surveying the circuits');
     for (const def of CIRCUITS) {
       const course = new RaceCourse(worldControls(def), {
@@ -2585,10 +2624,11 @@ export class RaceWorld extends World {
           // Thinner than Vellum's: a club meeting, not a grand prix.
           if (rnd() < 0.62) continue;
           const lx = (c / 6 - 0.5) * 11;
+          // On the deck, behind the plank. See the full paddock's note.
           crowd.push({
-            x: px + Math.cos(yaw) * lx,
-            y: y + 0.4,
-            z: pz - Math.sin(yaw) * lx,
+            x: px + Math.cos(yaw) * lx + ox * STAND_BACK,
+            y,
+            z: pz - Math.sin(yaw) * lx + oz * STAND_BACK,
             yaw: yaw + (rnd() - 0.5) * 0.5,
             c: rnd(),
           });
@@ -2757,10 +2797,20 @@ export class RaceWorld extends World {
         for (let c = 0; c < 7; c++) {
           if (rnd() < 0.34) continue;
           const lx = (c / 6 - 0.5) * 11;
+          /* ON THE DECK AND BEHIND THE PLANK, not standing on the plank.
+           *
+           * `y + 0.42` put the figure's feet on TOP of the 0.42 m seat plank,
+           * which is where they had to be while the figure was 1.22 m tall -
+           * that put its head at deck + 1.64, almost exactly where a standing
+           * adult's head belongs. So the head heights were right all along and
+           * the PEOPLE were 1.2 m. The authored figure is 1.70, so it stands
+           * on the deck and steps back past the plank, and the head lands at
+           * deck + 1.70. STAND_BACK clears the plank's rear face by 0.20 m and
+           * the next terrace's front by 0.14 m; see the constant. */
           crowd.push({
-            x: px + Math.cos(yaw) * lx,
-            y: y + 0.42,
-            z: pz - Math.sin(yaw) * lx,
+            x: px + Math.cos(yaw) * lx + ox * STAND_BACK,
+            y,
+            z: pz - Math.sin(yaw) * lx + oz * STAND_BACK,
             yaw: yaw + (rnd() - 0.5) * 0.5,
             c: rnd(),
           });
@@ -2796,25 +2846,67 @@ export class RaceWorld extends World {
    */
   _spawnCrowd(list) {
     if (!list.length) return;
-    const body = sweep([
-      { y: 0, z: 0, rx: 0.20, ry: 0.13 },
-      { y: 0.42, z: 0, rx: 0.24, ry: 0.16 },
-      { y: 0.78, z: 0, rx: 0.20, ry: 0.14 },
-      { y: 0.94, z: 0, rx: 0.11, ry: 0.09 },
-    ], 8);
-    const head = blob(0.12, 0.14, 0.12, 0, 1.08, 0, 8);
-    // `sweep` already returns non-indexed and `blob` does not; asking either
-    // for a conversion it does not need logs a warning per build.
-    const nonIdx = (g) => (g.index ? g.toNonIndexed() : g);
-    const geo = mergeGeometries([nonIdx(body), nonIdx(head)], false);
-    body.dispose();
-    head.dispose();
-    const mat = this._mat('paint.enamel', { vertexColors: false });
+    const authored = spectatorGeometry();
+    /* The authored figure is one merged geometry that already carries its
+     * per-part shades; the procedural one is a cone with a ball on it and
+     * carries nothing. Both arms end holding a geometry with a `color`
+     * attribute, because both are about to be drawn with a `vertexColors`
+     * material - see below. */
+    let geo;
+    if (authored) {
+      geo = authored.clone();
+    } else {
+      const body = sweep([
+        { y: 0, z: 0, rx: 0.20, ry: 0.13 },
+        { y: 0.42, z: 0, rx: 0.24, ry: 0.16 },
+        { y: 0.78, z: 0, rx: 0.20, ry: 0.14 },
+        { y: 0.94, z: 0, rx: 0.11, ry: 0.09 },
+      ], 8);
+      const head = blob(0.12, 0.14, 0.12, 0, 1.08, 0, 8);
+      // `sweep` already returns non-indexed and `blob` does not; asking either
+      // for a conversion it does not need logs a warning per build.
+      const nonIdx = (g) => (g.index ? g.toNonIndexed() : g);
+      geo = mergeGeometries([nonIdx(body), nonIdx(head)], false);
+      body.dispose();
+      head.dispose();
+      /* WHITE, and it is not decoration.
+       *
+       * The material below has `vertexColors` on. A geometry with no colour
+       * attribute under `vertexColors` reads as ZERO, which renders BLACK
+       * rather than untinted - the trap `Batch.add` already carries a comment
+       * about, one method away. The fallback arm is the arm the whole headless
+       * suite takes and the arm any deploy missing the asset takes, so it does
+       * not get to be the arm that ships a grandstand full of silhouettes. */
+      const n = geo.attributes.position.count;
+      geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3).fill(1), 3));
+    }
+
+    /* THE SHARED MATERIAL, not a `novc` clone, and this is where the green
+     * head is fixed.
+     *
+     * The crowd used to draw with `_mat('paint.enamel', { vertexColors:
+     * false })`: one geometry, one material, one `setColorAt` per figure - so
+     * the head was painted the shirt colour, and all 819 of them were. A head
+     * needs a value of its own, a value of its own needs a colour attribute,
+     * and a colour attribute needs `vertexColors`. Which is the material every
+     * batched mesh in this world already uses, so the crowd stops being the
+     * only thing in the scene holding the `paint.enamel|novc` clone and the
+     * world draws one material fewer than it did. */
+    const mat = this._mat('paint.enamel');
     const mesh = new THREE.InstancedMesh(geo, mat, list.length);
     mesh.name = 'race:crowd';
     mesh.castShadow = false;
     mesh.receiveShadow = false;
-    const SHIRTS = [0xd0453a, 0x3f6fa8, 0xe8c34a, 0x4a9a5a, 0xdcdcd8, 0x8a4a9a, 0xe08a3a, 0x2a3540];
+    /* Desaturated on purpose, and only because of what multiplies it.
+     *
+     * The authored figure's head is drawn at 0.30 of the shirt and its face at
+     * 1.34, because one `setColorAt` is the only per-figure colour an
+     * `InstancedMesh` has. 0.30 of a fully saturated primary is not hair, it
+     * is the same primary in shadow; 0.30 of a muted coat colour is. These are
+     * the same eight hues pulled roughly a third of the way to their own
+     * luminance, so the crowd still reads as a crowd of different people and
+     * every head in it reads as hair. */
+    const SHIRTS = [0xb35a50, 0x54708f, 0xc4ae74, 0x63886c, 0xcbcbc7, 0x7d5c85, 0xc08a5c, 0x3a4450];
     for (let i = 0; i < list.length; i++) {
       const p = list[i];
       _e1.set(0, p.yaw, 0);
@@ -3047,15 +3139,42 @@ export class RaceWorld extends World {
     const B = new Batch({ ao: 0.34, sky: 0.32, grime: 0.4, span: 2.4 });
     const N = co.count;
     const postEvery = Math.max(1, Math.round(150 / co.step));
+    const post = marshalParts();
     for (let i = 0; i < N; i += postEvery) {
       const w = co.w[i];
       const W = co.W[i];
-      const lat = (i / postEvery) % 2 === 0 ? -(W + 3.5) : W + 3.5;
+      const inboard = (i / postEvery) % 2 === 0;
+      const lat = inboard ? -(W + 3.5) : W + 3.5;
       this._roadPoint(co, i, lat, w, _v1);
       const yaw = Math.atan2(co.rx[i], co.rz[i]);
-      B.box('metal.panel', 3.2, 2.6, 2.6, _v1.x, _v1.y + 1.3, _v1.z, yaw, 0xe8e4d8);
-      B.box('metal.trim', 3.6, 0.3, 3.0, _v1.x, _v1.y + 2.75, _v1.z, yaw, 0xb0b6ba);
-      B.box('hazard.stripe', 3.3, 0.5, 0.2, _v1.x, _v1.y + 2.3, _v1.z, yaw, 0xffdd44);
+      if (post) {
+        /* WHICH WAY THE POST FACES, and it is not the same on both sides.
+         *
+         * A Y-rotation by `yaw = atan2(rx, rz)` maps the post's local +Z onto
+         * the road's RIGHT-HAND normal, which is the direction `_roadPoint`
+         * measures `lat` along. The authored post's observation slot is on its
+         * local -Z. So a post at +lat is already looking back at the circuit
+         * and a post at -lat is looking away from it into the country, and the
+         * inboard half of them need turning round.
+         *
+         * That was invisible while the post was a symmetric crate. It is the
+         * first thing an authored one gets wrong, so it is asserted in
+         * `race-assets.test.mjs` off the built world rather than left to this
+         * comment. */
+        const face = inboard ? yaw + Math.PI : yaw;
+        _be1.set(0, face, 0);
+        _bq1.setFromEuler(_be1);
+        _bm1.compose(_bv1.set(_v1.x, _v1.y, _v1.z), _bq1, _bv2.set(1, 1, 1));
+        for (const key of MARSHAL_PART_KEYS) {
+          B.add(key, post[key].clone(), _bm1, MARSHAL_TINT[key]);
+        }
+      } else {
+        /* No asset: the three boxes this world has always drawn, in the same
+         * places, with the same collider. @see race/RaceAssets.js */
+        B.box('metal.panel', 3.2, 2.6, 2.6, _v1.x, _v1.y + 1.3, _v1.z, yaw, 0xe8e4d8);
+        B.box('metal.trim', 3.6, 0.3, 3.0, _v1.x, _v1.y + 2.75, _v1.z, yaw, 0xb0b6ba);
+        B.box('hazard.stripe', 3.3, 0.5, 0.2, _v1.x, _v1.y + 2.3, _v1.z, yaw, 0xffdd44);
+      }
       this.track(this.physics.addRotatedBox(
         _v2.set(_v1.x, _v1.y + 1.3, _v1.z), _v3.set(1.6, 1.3, 1.3), yaw));
     }

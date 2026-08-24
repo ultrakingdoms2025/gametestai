@@ -69,6 +69,9 @@
  * synchronous cache read that returns null rather than throwing.
  */
 
+import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
 /**
  * The spectator's parts and the VALUE each is drawn at, published from here so
  * the loader, the generator, the manifest and the test cannot drift.
@@ -231,12 +234,16 @@ async function loadAll() {
     return none;
   }
 
-  let THREE;
-  let mergeGeometries;
+  /* The glTF parser is the only DYNAMIC import here.
+   *
+   * `three` and `BufferGeometryUtils` are statically imported at the top of
+   * this file: every mount and half the worlds already import them statically,
+   * so asking the bundler for them dynamically does not move a byte into
+   * another chunk - it only prints INEFFECTIVE_DYNAMIC_IMPORT at every build.
+   * `GLTFLoader` is genuinely only reached on the arm that has a file to
+   * parse, so it stays lazy. */
   let loader;
   try {
-    THREE = await import('three');
-    ({ mergeGeometries } = await import('three/addons/utils/BufferGeometryUtils.js'));
     const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
     loader = new GLTFLoader();
   } catch (e) {

@@ -14,6 +14,7 @@ import {
 } from './citadel/Districts.js';
 import { loDeviation, swapDistance } from './citadel/TerrainDetail.js';
 import { buildRegions } from './citadel/Regions.js';
+import { loadCitadelAssets, citadelPart, CITADEL_WELDABLE } from './citadel/CitadelAssets.js';
 import {
   planMine, planKarst, liftToClear, auditVacancy, buildCave, buildPlinth, SolidField,
 } from './citadel/Caves.js';
@@ -657,6 +658,43 @@ const TILE_METRES = (key) => {
   }
 };
 
+/**
+ * One storage jar, lathed once and cloned per placement.
+ *
+ * Built lazily and cached at module scope because the souk places sixty or so
+ * of them and the profile never changes; `Batch.add` consumes what it is given,
+ * so every caller clones.
+ *
+ * A jar is a surface of revolution, which is the shape a swept profile is GOOD
+ * at - so it is procedural here rather than authored in `citadel.glb`. That is
+ * decision D4's split stated from the other side, and it is the reason the
+ * `.glb` contains an arch, a pierced screen and a corbel course and does not
+ * contain a pot: authoring one would have been authoring what the tooling
+ * already does well.
+ *
+ * Eight radial segments, not sixteen. These stand on roofs, are read from a
+ * rooftop or a tower, and are 0.9 m tall: eight facets on a 0.3 m radius is a
+ * 5.7 cm chord, under a pixel past nine metres. Sixteen would double the
+ * largest procedural line this pass adds to make a silhouette nobody resolves
+ * rounder.
+ */
+let _jarGeo = null;
+function jarGeometry() {
+  if (_jarGeo) return _jarGeo;
+  const profile = [
+    new THREE.Vector2(0.0, 0.0),
+    new THREE.Vector2(0.14, 0.0),
+    new THREE.Vector2(0.22, 0.12),
+    new THREE.Vector2(0.30, 0.38),
+    new THREE.Vector2(0.24, 0.62),
+    new THREE.Vector2(0.13, 0.78),
+    new THREE.Vector2(0.16, 0.88),
+    new THREE.Vector2(0.13, 0.92),
+  ];
+  _jarGeo = new THREE.LatheGeometry(profile, 8);
+  return _jarGeo;
+}
+
 /** Weathered sandstone, for the cliff the mesa stands on. */
 const CLIFF = [0xc0ad86, 0xb6a37c, 0xcab791, 0xac9a73, 0xc4b088, 0xbaa87f];
 
@@ -1148,8 +1186,25 @@ export class CitadelWorld extends World {
     await report(0.02, 'Hanging the sky');
     this._buildSky();
 
+    /* The authored architecture, started here and awaited after the terrain.
+     *
+     * Started rather than awaited, because the mesa is the longest phase in
+     * the build and a 35 KB fetch has no business sitting in front of it. And
+     * awaited rather than left to resolve whenever, because `_buildCurtainWall`
+     * is the first consumer and a part that arrives one phase late is a gate
+     * with no arch on it and no error anywhere.
+     *
+     * `loadCitadelAssets` never rejects. Under `node --test` there is no fetch
+     * to a relative URL at all, so this resolves to an empty map and every
+     * placement below falls back to the rectangle the world drew before this
+     * pass - which is exactly what every headless budget test in the citadel
+     * suite measures, and why `citadel-assets.test.mjs` installs the real
+     * committed bytes and builds the world a SECOND time to price them. */
+    const assets = loadCitadelAssets();
+
     await report(0.06, 'Raising the mesa');
     await this._buildTerrain(breathe(0.06, 'Raising the mesa'));
+    await assets;
 
     await report(0.2, 'Laying the curtain wall');
     await this._buildCurtainWall(breathe(0.2, 'Laying the curtain wall'));
@@ -1300,6 +1355,266 @@ export class CitadelWorld extends World {
       this._owned.push(m.geometry);
     }
     return out;
+  }
+
+  /**
+   * Place one authored part into a batch, or say it is not there.
+   *
+   * ── Every line of this is a cost rule ────────────────────────────────────
+   *
+   * `citadelPart` returns null when the `.glb` did not load, which is the case
+   * in every headless test that does not install it and the case for a player
+   * whose download failed. The caller draws the rectangle it always drew, so a
+   * missing asset is a plainer town rather than a hole in one.
+   *
+   * The bind is re-checked HERE as well as in the loader, against the batch
+   * this call is actually adding to. The loader can only check what the
+   * manifest claims; this checks the call site, and the two together are why a
+   * part can never open a bucket `Batch.flush` would turn into another mesh.
+   *
+   * `.clone()` is not defensive tidiness: `Batch.add` converts to non-indexed,
+   * deletes attributes, applies the matrix IN PLACE and disposes the original.
+   * The master is cached for the session and placed a few hundred times, so
+   * handing it over once would leave every arch after the first building from
+   * freed buffers.
+   *
+   * @param {Batch} B
+   * @param {string} key one of `CITADEL_PART_KEYS`
+   * @param {string} batchName the name `_emit` will flush this batch under
+   * @param {THREE.Matrix4} matrix world placement
+   * @param {number} [tint] per-vertex tint, exactly as `Batch.box` takes one
+   * @returns {boolean} false when nothing was placed
+   */
+  _authored(B, key, batchName, matrix, tint = null) {
+    const part = citadelPart(key);
+    if (!part) return false;
+    if (!CITADEL_WELDABLE.includes(`${batchName}:${part.slot}`)) return false;
+    B.add(part.slot, part.geometry.clone(), matrix, tint);
+    /* Counted, because a placement rule that stops firing is otherwise silent.
+     * A part that loads and is never used passes every cost assertion in
+     * `citadel-assets.test.mjs` - zero meshes, zero materials, zero colliders -
+     * and is a manifest entry pretending to be art. The test holds each key
+     * against a floor rather than an exact number, because the counts follow
+     * `SOUK_RINGS` and the minaret count and neither belongs to that file. */
+    this._authoredCount = (this._authoredCount ?? 0) + 1;
+    (this._authoredBy ??= {})[key] = (this._authoredBy[key] ?? 0) + 1;
+    return true;
+  }
+
+  /**
+   * One piece of rooftop life per roof, so the world's play surface is a place.
+   *
+   * ── THE RANDOM STREAM IS NOT TOUCHED, AND THAT IS THE WHOLE PREAMBLE ─────
+   *
+   * `_buildSouk` shares one `this.rnd` with the palms, the stalls, the pottery,
+   * the carts and the crates. Drawing from it here would move every prop in the
+   * town and, worse, would move the +-0.25 m footprint jitter of every building
+   * placed after this one - and the footprint is what `SOUK_RINGS` solves the
+   * gap spectrum from. The extent stage measured exactly this failure when one
+   * clipping literal changed how many draws the dune loop took and the whole
+   * town moved. So this takes a LOCAL `mulberry32` seeded from the building's
+   * own (ring, index): deterministic, reproducible, and invisible to everything
+   * outside this method.
+   *
+   * ── NO COLLIDERS, AND WHERE IT IS ALLOWED TO STAND ──────────────────────
+   *
+   * Every gap, reach, landing and route measurement in the citadel suite is
+   * taken against the colliders. Art may not move a route, so nothing here has
+   * a body - the same rule the parapet stubs above already live by, and for the
+   * same reason: a solid on a deck is a wall across the middle of a landing.
+   *
+   * It is also kept off two places by construction. The roof LIP is where a
+   * jump lands, so nothing goes past 62% of the half-extent; and the roof
+   * CENTRE is where `_deckSpot` resolves standing spots and where
+   * `_publishVenues` puts rooftop-trial points, so nothing sits inside 30%. One
+   * feature per roof, in the band between.
+   *
+   * ── WHY ONE FEATURE AND NOT A SET ───────────────────────────────────────
+   *
+   * Triangles. There are ~190 roofs; at four features each this is the third
+   * largest thing in the world. One feature per roof, drawn from five kinds, is
+   * ~18,000 triangles across the whole souk and still gives any rooftop view
+   * five different silhouettes to read a route against.
+   *
+   * @param {Batch} B
+   * @param {number} ring
+   * @param {number} idx building index on the ring
+   * @param {number} px world centre
+   * @param {number} pz world centre
+   * @param {number} deckY top of the roof lip
+   * @param {number} w tangential footprint
+   * @param {number} d radial footprint
+   * @param {number} rot the building's own yaw
+   */
+  _roofLife(B, ring, idx, px, pz, deckY, w, d, rot) {
+    const rng = mulberry32(ring * 977 + idx * 31 + 17);
+    const cs = Math.cos(rot);
+    const sn = Math.sin(rot);
+    /* Local (lx, lz) -> world, in the building's own frame. Same expression
+     * `_buildProps` uses for its stalls; a detail offset by the RADIUS instead
+     * lands in the air beside its own roof, which is the mistake the parapet
+     * and awning comments above are both about. */
+    const wx = (lx, lz) => px + cs * lx + sn * lz;
+    const wz = (lx, lz) => pz - sn * lx + cs * lz;
+    // The band: outside the venue/standing centre, inside the landing lip.
+    const bx = (w * 0.5) * (0.30 + rng() * 0.32) * (rng() < 0.5 ? -1 : 1);
+    const bz = (d * 0.5) * (0.30 + rng() * 0.32) * (rng() < 0.5 ? -1 : 1);
+    const yaw = rot + rng() * TAU;
+
+    /* The one saturated palette in a town that is otherwise nine shades of
+     * sand. `desert-overview` and `tower-top` are both monochrome pictures, and
+     * cloth is the only thing on a roof that has any business being a colour. */
+    const CLOTH = [0xc4472e, 0x2f6ba8, 0x2f7a55, 0xb8892a, 0x8a4a7a, 0xd8d0c0];
+
+    const kind = (rng() * 5) | 0;
+    if (kind === 0) {
+      /* Water jars. The one lathe in this method, and the only rooftop object
+       * that is not a box: a storage jar is a surface of revolution, which is
+       * the shape a swept profile is GOOD at - so it is procedural here rather
+       * than authored in the `.glb`, which is decision D4's split stated the
+       * other way round. */
+      const n = 2 + ((rng() * 2) | 0);
+      for (let j = 0; j < n; j++) {
+        const jx = bx + (rng() - 0.5) * 1.1;
+        const jz = bz + (rng() - 0.5) * 1.1;
+        const k = 0.82 + rng() * 0.4;
+        _e1.set(0, rng() * TAU, 0);
+        _q1.setFromEuler(_e1);
+        _v1.set(wx(jx, jz), deckY, wz(jx, jz));
+        _v2.set(k, k, k);
+        _m1.compose(_v1, _q1, _v2);
+        B.add('plaster.wall', jarGeometry().clone(), _m1,
+          pick(rng, [0xb0693a, 0x9a5c34, 0xc07a48, 0x8a5030]));
+      }
+    } else if (kind === 1) {
+      /* A washing line between two posts. Cloth is what says somebody lives
+       * here, and from the tower it is the only thing on the whole roofscape
+       * with a hue. */
+      const span = Math.min(w, d) * 0.5;
+      for (const s of [-1, 1]) {
+        B.box('wood.beam', 0.09, 1.45, 0.09,
+          wx(bx + Math.cos(yaw) * span * s, bz + Math.sin(yaw) * span * s), deckY + 0.72,
+          wz(bx + Math.cos(yaw) * span * s, bz + Math.sin(yaw) * span * s), rot, 0x6a4f31);
+      }
+      const sheets = 3;
+      for (let j = 0; j < sheets; j++) {
+        const t = (j + 0.5) / sheets - 0.5;
+        const lx = bx + Math.cos(yaw) * span * 2 * t;
+        const lz = bz + Math.sin(yaw) * span * 2 * t;
+        const sh = 0.55 + rng() * 0.45;
+        B.box('fabric.banner', 0.62, sh, 0.05, wx(lx, lz), deckY + 1.36 - sh * 0.5, wz(lx, lz),
+          rot + yaw, pick(rng, CLOTH));
+      }
+    } else if (kind === 2) {
+      /* A shade frame: four posts and a canopy that SAGS. Every piece of cloth
+       * in this world was a 9-12 cm slab lying flat on its posts, which is what
+       * makes the caravanserai read as a row of plastic tables in
+       * `caravanserai-mast`. A catenary strip costs four more triangles than
+       * the slab it replaces and is the difference between fabric and board. */
+      const hw = Math.min(w, d) * 0.26;
+      const ph = 1.9;
+      for (const [ox, oz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        B.box('wood.beam', 0.1, ph, 0.1,
+          wx(bx + ox * hw, bz + oz * hw), deckY + ph * 0.5, wz(bx + ox * hw, bz + oz * hw),
+          rot, 0x6a4f31);
+      }
+      const colour = pick(rng, CLOTH);
+      const SEGS = 5;
+      const sag = 0.26;
+      for (let j = 0; j < SEGS; j++) {
+        const t0 = j / SEGS - 0.5;
+        const t1 = (j + 1) / SEGS - 0.5;
+        const mid = (t0 + t1) * 0.5;
+        // Parabolic droop, thickest at the middle of the span.
+        const dy = -sag * (1 - 4 * mid * mid);
+        const lx = bx + mid * hw * 2;
+        B.box('fabric.banner', (hw * 2) / SEGS + 0.02, 0.06, hw * 2 + 0.3,
+          wx(lx, bz), deckY + ph + dy, wz(lx, bz), rot, colour);
+      }
+    } else if (kind === 3) {
+      /* The stair head. Every one of these roofs is reachable from inside the
+       * building in fiction and from nowhere in fact; a hooded hatch is the one
+       * prop that says the roof is part of the house. */
+      const hw = 0.62;
+      B.box('plaster.wall', hw * 2, 1.05, hw * 1.7, wx(bx, bz), deckY + 0.52, wz(bx, bz),
+        yaw, 0xe2d4b2);
+      B.box('wood.plank', hw * 2.2, 0.1, hw * 1.9, wx(bx, bz), deckY + 1.08, wz(bx, bz),
+        yaw, 0x7d5f3c);
+      B.box('stone.castle', hw * 2.3, 0.16, 0.2,
+        wx(bx + Math.cos(yaw) * hw, bz + Math.sin(yaw) * hw), deckY + 1.14,
+        wz(bx + Math.cos(yaw) * hw, bz + Math.sin(yaw) * hw), yaw, 0xcdbb95);
+    } else {
+      /* Baskets and a rolled rug against the parapet - the cheapest kind, and
+       * the one that keeps the average down so the four above can be worth
+       * their triangles. */
+      const n = 2 + ((rng() * 3) | 0);
+      for (let j = 0; j < n; j++) {
+        const s = 0.34 + rng() * 0.26;
+        B.box('wood.plank', s, s * 1.1, s,
+          wx(bx + (rng() - 0.5) * 1.3, bz + (rng() - 0.5) * 1.3), deckY + s * 0.55,
+          wz(bx + (rng() - 0.5) * 1.3, bz + (rng() - 0.5) * 1.3), rng() * TAU,
+          pick(rng, [0x8a6842, 0x7d5f3c, 0x9a784e]));
+      }
+      B.box('fabric.banner', 1.35, 0.3, 0.3, wx(bx, bz), deckY + 0.15, wz(bx, bz),
+        yaw, pick(rng, CLOTH));
+    }
+  }
+
+  /**
+   * A corbel course on all four sides of a square tower, under a slab.
+   *
+   * Every gallery in this world is a square slab sitting proud of a square
+   * shaft, so the run is the same four times with a quarter turn between them,
+   * and the arithmetic is worth writing once rather than four times in three
+   * places.
+   *
+   * `shaftHalf` is the half-width of the tower the course hangs on and
+   * `slabWidth` the full width of the slab it carries; the projection is
+   * derived from the two so a course can never be deeper than the overhang it
+   * is pretending to hold up, which is the one way this reads as a mistake
+   * rather than as architecture.
+   *
+   * `_corbelRing` is not called for the wall towers, and that is a triangle
+   * decision recorded rather than an oversight: there are eight of them, they
+   * are 8.5 m across, and their string course is a rest ledge on a climb -
+   * ornamenting a handhold at the cost of 656 triangles buys nothing that
+   * `desert-overview` can resolve.
+   *
+   * @param {Batch} B
+   * @param {string} batchName the name `_emit` will flush this batch under
+   * @param {number} cx tower axis
+   * @param {number} topY underside of the slab the course carries
+   * @param {number} cz tower axis
+   * @param {number} yaw the tower's own rotation
+   * @param {[number,number]} half the shaft's half-extents on its own local
+   *   x and z. Two numbers and not one, because the keep is 26 x 20.8: fed one
+   *   half-width its two long faces would have been dressed 2.6 m inside the
+   *   building, which is a course you can only see by standing in the masonry.
+   * @param {number} slabOut how far the slab overhangs the shaft
+   * @param {{drop:number, project:number, tint:number}} opts
+   */
+  _corbelRing(B, batchName, cx, topY, cz, yaw, half, slabOut, opts) {
+    const project = Math.min(opts.project, slabOut + 0.15);
+    if (project <= 0.05) return;
+    for (let s = 0; s < 4; s++) {
+      const fa = yaw + s * Math.PI * 0.5;
+      // Same radial frame the rest of this world uses: a part at `rotY = fa`
+      // has its local +Z along (sin fa, cos fa), which is the outward normal
+      // of the face it is dressing, and its local +X along the face.
+      const nx = Math.sin(fa);
+      const nz = Math.cos(fa);
+      // On the local +-Z faces the standoff is the z half-extent and the run is
+      // the x one; on the +-X faces they swap.
+      const onZ = (s & 1) === 0;
+      const standoff = onZ ? half[1] : half[0];
+      const run = (onZ ? half[0] : half[1]) * 2;
+      _e1.set(0, fa, 0);
+      _q1.setFromEuler(_e1);
+      _v1.set(cx + nx * standoff, topY, cz + nz * standoff);
+      _v2.set(run, opts.drop, project);
+      _m1.compose(_v1, _q1, _v2);
+      this._authored(B, 'corbel', batchName, _m1, opts.tint);
+    }
   }
 
   /**
@@ -2004,6 +2319,57 @@ export class CitadelWorld extends World {
     this.track(this.physics.addBox(0, MESA_Y + 12.4, gz, 10, 1.6, 4.5));
     this._roofs.push({ x: 0, y: MESA_Y + 14, z: gz, w: 20, d: 9 });
 
+    /* THE ARCH THE COMMENT ABOVE HAS ALWAYS CLAIMED.
+     *
+     * The gatehouse is two flanking blocks at x = +-6.5, each 7 m wide, so the
+     * opening is 6.0 m across between their inner faces at x = +-3.0, and it
+     * runs from the mesa deck to the underside of the lintel at MESA_Y + 10.8.
+     * A rectangular hole - which is what `gate-approach` photographed, and what
+     * the line four above it calls "the arch the player walks in under".
+     *
+     * The authored surround turns it into a pointed opening. Half-span 3.0, so
+     * the rise is 3.0 * 1.41421 = 4.24 m and the springing line lands at
+     * MESA_Y + 6.56: a 6.6 m vertical jamb under a 4.2 m head, which is the
+     * proportion of the gates this town is dressed as.
+     *
+     * NO COLLIDER, and that is deliberate rather than an omission. The lintel
+     * already carries the opening's ceiling collider and the flanking blocks
+     * its jambs; a spandrel with a body would narrow the world's front door by
+     * a metre and a half at head height, and every gap, reach and route
+     * measurement in the citadel suite is taken against the colliders. Art may
+     * not move a route. The crown clears the deck by 10.8 m regardless, so
+     * there is nothing here a player could walk into.
+     *
+     * Placed twice, mirrored: the archivolt stands proud of the FRONT face
+     * only (see the generator), and this opening is 9 m deep and read from
+     * both sides - from the approach on the way in and from the plaza on the
+     * way out. One placement would have a moulding on one side and a raw edge
+     * on the other. */
+    const GATE_HALF = 3.0;
+    const GATE_SPRING = MESA_Y + 10.8 - GATE_HALF * Math.SQRT2;
+    for (const face of [1, -1]) {
+      _e1.set(0, face > 0 ? 0 : Math.PI, 0);
+      _q1.setFromEuler(_e1);
+      _v1.set(0, GATE_SPRING, gz + face * 4.0);
+      _v2.set(GATE_HALF, GATE_HALF, 1.0);
+      _m1.compose(_v1, _q1, _v2);
+      this._authored(B, 'arch', 'wall', _m1, 0xcdbd9b);
+    }
+
+    /* A corbel course under each flanking block's string course, on the face
+     * that looks down the approach road. The gatehouse is the first
+     * architecture in the world and it had no ornament at all; a bracket
+     * course under a projecting band is what says a mason built this rather
+     * than a level designer. Same no-collider rule. */
+    for (const sx of [-6.5, 6.5]) {
+      _e1.set(0, 0, 0);
+      _q1.setFromEuler(_e1);
+      _v1.set(sx, MESA_Y + 8.1, gz + 4.5);
+      _v2.set(6.4, 1.0, 0.62);
+      _m1.compose(_v1, _q1, _v2);
+      this._authored(B, 'corbel', 'wall', _m1, 0xd8c8a6);
+    }
+
     await breathe();
     this._emit(B, 'wall');
     await breathe();
@@ -2163,6 +2529,28 @@ export class CitadelWorld extends World {
           rcol(0, doorH + (h - doorH) * 0.5, hd - wallT * 0.5,
             doorHW, (h - doorH) * 0.5, wallT * 0.5 + 0.04);
 
+          /* The arch over the four authored front doors, placed HERE and not
+             in the `fa === 0` block below, because `site.flipDoor` puts half of
+             these on the opposite face from the one that block walks. This is a
+             real 1.72 m opening with a swinging leaf in it, so the surround
+             spans `doorHW` and springs where the head at `doorH` leaves room -
+             and, exactly as at the gate, it carries NO collider: the lintel
+             above it and the leaf's own box already own that airspace, and
+             every reach measurement in the citadel suite is taken against the
+             colliders rather than against the picture. */
+          {
+            _e1.set(0, da, 0);
+            _q1.setFromEuler(_e1);
+            _v1.set(
+              px + Math.sin(da) * (hd - wallT * 0.5 + 0.03),
+              y0 + doorH - doorHW * Math.SQRT2,
+              pz + Math.cos(da) * (hd - wallT * 0.5 + 0.03)
+            );
+            _v2.set(doorHW, doorHW, 0.34);
+            _m1.compose(_v1, _q1, _v2);
+            this._authored(B, 'arch', 'souk', _m1, 0xc9b78f);
+          }
+
           // Interior floor/ceiling and simple market furnishings.
           B.box('stone.cobble', w - 0.25, 0.16, d - 0.25, px, y0 + 0.08, pz, da, 0xd3c09a);
           rcol(0, 0.04, 0, hw - 0.12, 0.08, hd - 0.12);
@@ -2245,7 +2633,32 @@ export class CitadelWorld extends World {
         const bands = h > 9 ? 2 : 1;
         for (let bnd = 0; bnd < bands; bnd++) {
           const by = y0 + h * (bnd === 0 ? 0.42 : 0.74);
-          B.box('wood.beam', w + 0.5, 0.34, d + 0.5, px, by, pz, rot, 0x6d5334);
+          /* THE COLOUR, WHICH WAS THE LOUDEST THING IN `souk-alley`.
+           *
+           * 0x6d5334 against `wood.beam`'s 0xf0e2cc tint resolves to 0x674e31,
+           * which is 20% luminance sitting on plaster at 92%. Photographed from
+           * the alley these read as two hard black slabs running the length of
+           * both walls, and they are the only feature on either - the shot is a
+           * white corridor with black stripes in it, not a street.
+           *
+           * The bands themselves are right and stay: they are the handholds
+           * that make a plaster face climbable, and they are colliders because
+           * a detail the player can see and not grab would be a lie in a world
+           * whose whole subject is that a wall is a route. What was wrong is
+           * that a sun-bleached timber string course on a desert town is a
+           * WARM MID-TONE, not an absence of light. 0xa8825a lands at 52%,
+           * which reads as weathered cedar against limestone and still gives
+           * the eye the horizontal line the climb is signposted by.
+           *
+           * Per-house rather than flat, because two identical bands the length
+           * of a ring is most of why the alley reads as extruded rather than
+           * built. Derived from `ring` and `i` and NOT from `rnd()`: this loop
+           * shares one stream with the palms, stalls, pots and carts, and one
+           * extra draw here moves every prop in the town - the extent stage
+           * measured exactly that when one clipping literal changed how many
+           * draws the dune loop took. */
+          const shade = 0xc09468 + ((ring * 7 + i * 5) % 5) * 0x000806 - ((i % 3) * 0x060402);
+          B.box('wood.beam', w + 0.5, 0.34, d + 0.5, px, by, pz, rot, shade);
           this.track(this.physics.addRotatedBox(
             _v1.set(px, by, pz), _v2.set((w + 0.5) * 0.5, 0.17, (d + 0.5) * 0.5), rot
           ));
@@ -2298,8 +2711,34 @@ export class CitadelWorld extends World {
               const oz = pz + nz * half + tz * off;
               const ww = 1.05 + rnd() * 0.45;
               const wh = 1.35 + rnd() * 0.5;
-              // Recess: pushed 0.16 in, so the wall itself shades it.
-              B.box('stone.castle', ww, wh, 0.1, ox - nx * 0.16, wy, oz - nz * 0.16, wa, 0x2b2119);
+              /* ── THE WINDOW THAT WAS NEVER THERE ────────────────────────
+               *
+               * This line used to read `ox - nx * 0.16`, under the comment
+               * "pushed 0.16 in, so the wall itself shades it", and the block
+               * comment above it calls the panel "what the eye reads as depth".
+               *
+               * The house is a SOLID box - `B.box('plaster.wall', w, h, d,
+               * ...)` a few lines up, faces at +-d/2 - and `half` is exactly
+               * d/2. A panel 16 cm inside a solid is inside a solid. **Every
+               * window recess in Sunspire Citadel was buried in masonry and had
+               * never rendered a pixel.** What `souk-alley` photographs as a
+               * row of dark slots is the LINTELS, which are proud; the openings
+               * themselves were not there. Two hundred houses, four faces each,
+               * and the one feature that says a wall is a building.
+               *
+               * Invisible in source - the arithmetic reads perfectly, and the
+               * comment describes what it was meant to do - and unmissable the
+               * moment somebody went looking for a window to put a mashrabiya
+               * in and could not find one. Same shape as `art-medieval`'s
+               * framing that photographed the inside of a hill.
+               *
+               * Fixed by bringing the panel just PROUD of the face, 0.065 m,
+               * and leaving the lintel and sill where they already were at
+               * 0.17-0.22 m proud. The panel is then a dark plane a hand's
+               * width behind its own trim, which is a recess - and this time
+               * the geometry agrees with the sentence. No collider either way:
+               * the sill below it is the grabbable part and always was. */
+              B.box('stone.castle', ww, wh, 0.1, ox + nx * 0.015, wy, oz + nz * 0.015, wa, 0x2b2119);
               // Lintel above, sill below - both proud, both grabbable.
               B.box('wood.beam', ww + 0.34, 0.2, 0.24, ox + nx * 0.05, wy + wh * 0.5 + 0.1, oz + nz * 0.05, wa, 0x6a4f31);
               B.box('stone.castle', ww + 0.42, 0.16, 0.3, ox + nx * 0.07, wy - wh * 0.5 - 0.08, oz + nz * 0.07, wa, 0xcdbb95);
@@ -2307,6 +2746,47 @@ export class CitadelWorld extends World {
                 _v1.set(ox + nx * 0.07, wy - wh * 0.5 - 0.08, oz + nz * 0.07),
                 _v2.set((ww + 0.42) * 0.5, 0.08, 0.15), wa
               ));
+              /* A mashrabiya over the recess, on the street frontage only, on
+               * the lower row only, on every other bay.
+               *
+               * Every one of those three restrictions is a triangle argument
+               * and none is a taste one. The screen is 168 triangles and there
+               * are of the order of 1,400 window reveals in this souk; dressing
+               * all of them is a quarter of a million triangles to put tracery
+               * on the back of a house nobody can reach. `fa === 0` is the face
+               * that looks down the hill, `row === 0` is the band at eye height
+               * from the street below, and the parity halves what is left. That
+               * is where `souk-alley` is standing, and it is the only place in
+               * this world a window is ever seen from three metres.
+               *
+               * The parity is derived from the loop indices and NOT from
+               * `rnd()`, for the reason set out on the band shade above: this
+               * loop shares one random stream with every prop in the town.
+               *
+               * Visual only. The sill under it is already the collider - the
+               * grabbable part of a window in this world is its sill, and a
+               * screen with a body would put a second grab surface 16 cm proud
+               * of the one every reach measurement was taken against. */
+              if (fa === 0 && row === 0 && ((i + cidx) & 1) === 0) {
+                _e1.set(0, wa, 0);
+                _q1.setFromEuler(_e1);
+                /* In FRONT of the panel and behind the trim: 0.03 to 0.19 m
+                 * proud, against a panel face at 0.065 and lintel and sill
+                 * fronts at 0.17-0.22. That is also what a mashrabiya IS - a
+                 * screen that PROJECTS from the facade rather than one set into
+                 * it - so the depth that works here is the historically correct
+                 * one, which is a pleasant accident rather than an argument.
+                 *
+                 * The first version sat 0.05 m INTO the wall, which showed five
+                 * centimetres of lattice edge-on: 147 of them were placed and
+                 * not one was visible from the alley they were placed for. That
+                 * is the same defect as the recess above, made freshly, in the
+                 * same hour, by reading the same arithmetic. */
+                _v1.set(ox + nx * 0.11, wy, oz + nz * 0.11);
+                _v2.set(ww * 0.94, wh * 0.94, 0.16);
+                _m1.compose(_v1, _q1, _v2);
+                this._authored(B, 'screen', 'souk', _m1, 0x8a6a44);
+              }
             }
           }
 
@@ -2320,6 +2800,38 @@ export class CitadelWorld extends World {
             const dh = 2.3;
             B.box('stone.castle', dw, dh, 0.12, px + nx * (half - 0.14), y0 + dh * 0.5, pz + nz * (half - 0.14), wa, 0x241c15);
             B.box('wood.beam', dw + 0.4, 0.26, 0.28, px + nx * (half + 0.05), y0 + dh + 0.13, pz + nz * (half + 0.05), wa, 0x6a4f31);
+            }
+            /* The doorway arch, on exactly the door the branch above paints.
+             *
+             * The condition is `!enterable && hasDecorDoor` and not one term
+             * looser, because an arch over a door that is not there is a
+             * moulding floating on blank plaster - and the four authored
+             * interiors carry their own, placed where their own `da` is in
+             * scope, because `site.flipDoor` puts half of them on the opposite
+             * face from this one. `hasDecorDoor` is drawn either way, so the
+             * random stream does not move.
+             *
+             * The painted door is 1.25 m wide with its head at y0 + 2.3, so the
+             * surround sits ON that head, spandrels filling the corners of the
+             * rectangle the lintel already spans.
+             *
+             * This is the change `souk-alley` is about. Every street in this
+             * world is walled with rectangles, and the one motif the whole
+             * architecture is dressed in - the pointed arch - was absent from a
+             * town of two hundred houses. Visual only, like every other facade
+             * detail above the sill line. */
+            if (!enterable && hasDecorDoor) {
+              const DOOR_HALF = 0.78;
+              _e1.set(0, wa, 0);
+              _q1.setFromEuler(_e1);
+              _v1.set(
+                px + nx * (half - 0.02),
+                y0 + 2.30 - DOOR_HALF * Math.SQRT2,
+                pz + nz * (half - 0.02)
+              );
+              _v2.set(DOOR_HALF, DOOR_HALF, 0.30);
+              _m1.compose(_v1, _q1, _v2);
+              this._authored(B, 'arch', 'souk', _m1, 0xc9b78f);
             }
           }
         }
@@ -2338,6 +2850,22 @@ export class CitadelWorld extends World {
             px + Math.sin(rot) * d * 0.45, y0 + h + ph * 0.5 - 0.02,
             pz + Math.cos(rot) * d * 0.45, rot, tint);
         }
+
+        /* THE ROOFSCAPE, WHICH IS THE SURFACE THIS WORLD IS PLAYED ON.
+         *
+         * `tower-top`, `souk-roofs`, `minaret-bridge` and `desert-overview` -
+         * four of the thirteen framings, and between them every picture of what
+         * this world actually IS - photograph a field of identical flat tan
+         * rectangles. The souk's facades have had four rounds of art (cornices,
+         * domes, window reveals, awnings, parapet stubs); its ROOFS have had a
+         * lip. A game whose subject is rooftop traversal was asking the player
+         * to spend its whole second act on undressed slabs, and a roof with
+         * something on it is also a roof you can navigate by.
+         *
+         * `_roofLife` is the procedural half of decision D4: this is bulk
+         * content across two hundred buildings, it is boxes and one lathe, and
+         * authoring it would be authoring two hundred of the same jar. */
+        this._roofLife(B, ring, i, px, pz, y0 + h + 0.55, w, d, rot);
 
         /* An awning over the street, and its posts: cover, and a mid-height
          * perch. It projects 1.8 m rather than the old 3.2, because the ring
@@ -2471,6 +2999,15 @@ export class CitadelWorld extends World {
     B.box('stone.castle', kw + 2, 1.4, kw * 0.8 + 2, 0, wardTop + kh + 0.7, -4, 0, 0xc3b28f);
     this.track(this.physics.addBox(0, wardTop + kh + 0.7, -4, (kw + 2) * 0.5, 0.7, (kw * 0.8 + 2) * 0.5));
     this._roofs.push({ x: 0, y: wardTop + kh + 1.4, z: -4, w: kw, d: kw * 0.8 });
+    /* The keep's crowning cornice. `ward-centre` frames this face and nothing
+     * else; it was 26 m of unbroken checkerboard ashlar under a plain slab. The
+     * course runs on all four sides because the ward is walked round, and the
+     * keep is the only building in the world seen from every bearing inside the
+     * wall. Its shaft is 26 x 20.8 rather than square, which is exactly why
+     * `_corbelRing` takes two half-extents: fed one it would have dressed the
+     * two long faces 2.6 m inside the masonry. */
+    this._corbelRing(B, 'citadel', 0, wardTop + kh, -4, 0, [kw * 0.5, kw * 0.4], 1.0,
+      { drop: 1.2, project: 1.15, tint: 0xd6c6a2 });
 
     /* Great tower. The high anchor and the leap-of-faith platform. */
     const tw = 11;
@@ -2505,6 +3042,18 @@ export class CitadelWorld extends World {
       this.track(this.physics.addBox(tx, wardTop + y, tz,
         tw * 0.5 + LEDGE_OUT, 0.28, tw * 0.5 + LEDGE_OUT));
     }
+    /* A corbel course under the top rest gallery, which is the one the crown
+     * overhangs and the one a leap of faith is caught by. Only the top one:
+     * there are six galleries up this tower, they are the same slab six times,
+     * and dressing all of them would be 1,968 triangles to repeat a detail
+     * nobody reads twice. The top gallery is the one in `tower-top`,
+     * `minaret-bridge` and every silhouette from the ring. */
+    {
+      const topLedge = wardTop + Math.floor((th - 1) / 7) * 7;
+      this._corbelRing(B, 'citadel', tx, topLedge - 0.28, tz, 0, [tw * 0.5, tw * 0.5], LEDGE_OUT,
+        { drop: 1.4, project: 1.6, tint: 0xd8c9a4 });
+    }
+
     // Crown and the jutting beam a leap of faith launches from.
     B.box('stone.castle', tw + 2.4, 1.6, tw + 2.4, tx, wardTop + th + 0.8, tz, 0, 0xcabb96);
     this.track(this.physics.addBox(tx, wardTop + th + 0.8, tz, (tw + 2.4) * 0.5, 0.8, (tw + 2.4) * 0.5));
@@ -2563,6 +3112,8 @@ export class CitadelWorld extends World {
         this.track(this.physics.addRotatedBox(
           _v1.set(px, wardTop + by, pz), _v2.set((mw + 2.2) * 0.5, 0.2, (mw + 2.2) * 0.5), a
         ));
+        this._corbelRing(B, 'citadel', px, wardTop + by - 0.2, pz, a, [mw * 0.5, mw * 0.5], 1.1,
+          { drop: 0.85, project: 1.1, tint: 0xe6d8b4 });
       }
       // Gallery under the cap - the ring a muezzin would stand on, and the last
       // rest before the top of the hardest climb in the world.
@@ -2570,6 +3121,12 @@ export class CitadelWorld extends World {
       this.track(this.physics.addRotatedBox(
         _v1.set(px, wardTop + mh - 0.25, pz), _v2.set((mw + 2.6) * 0.5, 0.25, (mw + 2.6) * 0.5), a
       ));
+      /* The muezzin's gallery gets the deepest course of the three. This is the
+       * ring `desert-overview` and `eyrie-summit` read the minaret by from 231
+       * and 312 m: below it the shaft is in shadow, above it the cap is lit, and
+       * the corbels are what put a hard line between the two. */
+      this._corbelRing(B, 'citadel', px, wardTop + mh - 0.5, pz, a, [mw * 0.5, mw * 0.5], 1.3,
+        { drop: 0.95, project: 1.25, tint: 0xe6d8b4 });
       /* An onion dome instead of a flat slab.
      *
        * A minaret capped with a box is a chimney. This is the world's most

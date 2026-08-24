@@ -479,3 +479,36 @@ test('ablate reaches a scene-parented system, not only the world group', () => {
   assert.equal(meshNamed(g, 'lawn').visible, true,
     'widening the search must not widen what gets hidden — ablation names a material');
 });
+
+/**
+ * The liveness anchor must follow the ablation's own root.
+ *
+ * When `ablate` was widened from `world.group` to the scene so that
+ * `relic.glow` and the other scene-parented systems became reachable, this walk
+ * was left anchored on `world.group`. A scene-parented mesh never reaches that
+ * anchor, so every one of them counted as detached and the run aborted with
+ * "the world was rebuilt" for a world nothing had rebuilt.
+ *
+ * That is the SECOND confident wrong number this one check has produced — its
+ * own comment block records the first, where it walked to the top of the
+ * hierarchy and compared against `world.group`, which a world group is parented
+ * into. Hence the anchor is carried from the ablation rather than re-derived.
+ */
+test('ablationCheck does not call a scene-parented system detached', () => {
+  const g = stubGame();
+  const glow = box('relics:glow', 'relic.glow', 6);
+  g.engine.scene.add(glow);
+  g.engine.scene.updateMatrixWorld(true);
+
+  const h = new Harness(g);
+  h.ablate(['relic.glow']);
+  step(g);
+
+  const check = h.ablationCheck();
+  assert.equal(check.active, true);
+  assert.equal(check.detachedMeshes, 0,
+    'a scene-parented mesh is not detached — anchoring the liveness walk on world.group ' +
+    'while ablating the whole scene reports every one of them as detached, and the run ' +
+    'then aborts claiming the world was rebuilt');
+  assert.equal(check.worldChanged, false, 'nothing changed the world');
+});

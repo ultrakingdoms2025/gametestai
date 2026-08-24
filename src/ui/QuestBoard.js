@@ -86,7 +86,23 @@ export class QuestBoard {
     if (this.bus) {
       this._offs.push(this.bus.on('quests:board:open',  () => this.open()));
       this._offs.push(this.bus.on('quests:board:close', () => this.close()));
-      this._offs.push(this.bus.on('quests:changed',     () => this._refresh()));
+      /* TAKE THE PAYLOAD. `QuestSystem` sends `offline: true` when the quest
+       * service is unreachable, and its comment says why: "so it can say
+       * offline rather than empty - the same distinction the marketplace
+       * draws". This handler used to be a no-argument arrow, so the flag was
+       * dropped on the floor and the word "offline" appeared nowhere in this
+       * file.
+       *
+       * That is not cosmetic. While /api/game/quests was returning 500 to
+       * every caller in production, the marketplace showed "Trade network
+       * unreachable" and this board showed "No quests in this category" - so
+       * a total outage of 78 quests read to a player as a world that simply
+       * had nothing to do in it. The sender was right and the receiver threw
+       * the distinction away. */
+      this._offs.push(this.bus.on('quests:changed', (p) => {
+        this._offline = p?.offline === true;
+        this._refresh();
+      }));
     }
   }
 
@@ -226,7 +242,12 @@ export class QuestBoard {
 
     list.innerHTML = '';
     if (!items.length) {
-      list.innerHTML = '<div class="qb-empty">No quests in this category.</div>';
+      /* An unreachable service and an empty category are different facts, and
+       * only one of them is the player's problem to solve. */
+      list.innerHTML = this._offline
+        ? '<div class="qb-empty qb-offline">Quest service unreachable &mdash; showing what is '
+          + 'bundled with this world. Your progress is safe.</div>'
+        : '<div class="qb-empty">No quests in this category.</div>';
     }
 
     for (const item of items) {

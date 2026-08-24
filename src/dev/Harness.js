@@ -2014,6 +2014,10 @@ class Harness {
 
     this._ablation = {
       names: want, missing, saved, meshes,
+      /* The root the search actually used, so the liveness check below anchors
+       * on the same thing. Anchoring on `world.group` while ablating the whole
+       * scene calls every scene-parented mesh detached. */
+      root,
       world: world.id ?? null, reasserted: 0, removedEver: atApply.triangles,
     };
     /* HELD, not set once. Same reasoning as `pinPlayer`: a value written once
@@ -2053,7 +2057,9 @@ class Harness {
     const cam = this.game.engine.camera;
     const would = drawnTrianglesOf(a.meshes, cam);
     a.removedEver = Math.max(a.removedEver, would.triangles);
-    const walk = walkWorldTriangles(world?.group, cam, { breakdown: true });
+    /* The same root, for the same reason: a backstop that cannot see a
+     * scene-parented material cannot tell you it is still being drawn. */
+    const walk = walkWorldTriangles(a.root ?? world?.group, cam, { breakdown: true });
     /* A backstop, not the primary check: if the hold is working nothing here
      * can be non-empty. It is here because the hold is a frame updater, and a
      * frame updater that stopped running is exactly the silent failure this
@@ -2069,10 +2075,20 @@ class Harness {
      * been rebuilt at all. A check that measures the wrong thing does not
      * produce a bad answer, it produces a confident wrong one; this file is
      * about that, and it is worth recording that it happened here too. */
+    /* ANCHOR ON THE ROOT THE ABLATION SEARCHED, not on the world group.
+     *
+     * When the search was widened to the scene so `relic.glow` and the other
+     * scene-parented systems could be reached, this walk was left anchored on
+     * `world.group` - so a scene-parented mesh never reached the anchor and
+     * every one of them read as detached. The run then failed with "the world
+     * was rebuilt" for a world nothing had rebuilt. That is the SECOND time
+     * this exact check has produced a confident wrong number, which is why the
+     * anchor is now carried from the ablation rather than re-derived here. */
+    const anchor = a.root ?? world?.group;
     let detached = 0;
     for (const o of a.meshes) {
       let n = o;
-      while (n && n !== world?.group) n = n.parent;
+      while (n && n !== anchor) n = n.parent;
       if (!n) detached++;
     }
     const reasserted = a.reasserted;

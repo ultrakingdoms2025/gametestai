@@ -1390,6 +1390,12 @@ export class CitadelWorld extends World {
     if (!part) return false;
     if (!CITADEL_WELDABLE.includes(`${batchName}:${part.slot}`)) return false;
     B.add(part.slot, part.geometry.clone(), matrix, tint);
+    /* Counted, because a placement rule that stops firing is otherwise silent.
+     * A part that loads and is never used passes every cost assertion in
+     * `citadel-assets.test.mjs` - zero meshes, zero materials, zero colliders -
+     * and is a manifest entry pretending to be art. The test holds each key
+     * against a floor rather than an exact number, because the counts follow
+     * `SOUK_RINGS` and the minaret count and neither belongs to that file. */
     this._authoredCount = (this._authoredCount ?? 0) + 1;
     (this._authoredBy ??= {})[key] = (this._authoredBy[key] ?? 0) + 1;
     return true;

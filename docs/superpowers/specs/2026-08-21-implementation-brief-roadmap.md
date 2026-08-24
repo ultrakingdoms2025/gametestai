@@ -1,8 +1,23 @@
 # AETHER NEXUS — Implementation Brief Roadmap
 
 **Source:** "AetherNexus AI Coding Agent Implementation Brief" (7 pp), supplied 2026-08-21.
-**Status:** Approved in outline. Not started. The four decisions in section 8 were taken
-2026-08-22 and are folded into the phases below.
+**Status (2026-08-23):** Phases 0-8 and 10-11 SHIPPED to main and production. Phase 9 is
+four worlds of nine done and shipped (`station`, `medieval`, `citadel`, `dock`); `sports`,
+`maze`, `space` and a cross-world `art-loot` branch are in flight; `race` and `planets` are
+not started and need `VIEWS` entries in `src/dev/Harness.js`, which they do not yet have.
+Phase 12 (production E2E) is deliberately last, so it tests the finished whole.
+
+Eleven production deploys, each verified in LIVE BYTES rather than by assuming the push
+landed - by fetching the hashed asset and comparing its hash to the local file, and by
+grepping the live chunk for STRING LITERALS (symbols do not survive minification, and a
+symbol search returns a confident false negative).
+
+The four decisions in section 8 were taken 2026-08-22 and are folded into the phases below.
+
+**This status line was itself stale for a whole session** - it read "Not started" while
+eleven phases were live in production. That is the failure this repository has been bitten
+by repeatedly: a planning document that is wrong in the direction of optimism, and later
+work planned from it. Re-read the tree before you plan from this file.
 **Basis:** four-agent recon of 2026-08-21 against `main` @ `86f3cdb`, clean tree. Every claim
 below was read out of the tree or measured; none is assumed.
 

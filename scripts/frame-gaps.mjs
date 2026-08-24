@@ -70,7 +70,7 @@ function parseArgs(argv) {
     width: 1600, height: 900, repeat: 1, keep: false, help: false,
     entryWorld: 'station', settleMs: 240000, skipBuild: false,
     profile: null, events: 'keybind,weapon,mount,entry,repeat',
-    warmWait: 0,
+    warmWait: 0, awaitReady: true, settleAfterReady: 8000, envWarm: false, envWarmSoak: 30000, cacheKeys: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -86,6 +86,11 @@ function parseArgs(argv) {
     else if (a === '--entry') out.entryWorld = next();
     else if (a === '--events') out.events = next();
     else if (a === '--warm-wait') out.warmWait = Number(next());
+    else if (a === '--cold') out.awaitReady = false;
+    else if (a === '--profile') out.profile = next();
+    else if (a === '--env-warm') out.envWarm = true;
+    else if (a === '--env-warm-soak') out.envWarmSoak = Number(next());
+    else if (a === '--cache-keys') out.cacheKeys = true;
     else if (a === '--skip-build') out.skipBuild = true;
     else if (a === '--keep') out.keep = true;
     else if (a === '--help' || a === '-h') out.help = true;
@@ -101,8 +106,12 @@ const HELP = `frame-gaps - the Phase 1 frame-gap criterion, measured
   --worlds a,b,c     worlds to enter (default: every registered world)
   --entry <id>       world the session boots into (default: station)
   --events <list>    subset of keybind,weapon,mount,entry,repeat
-  --warm-wait <ms>   after boot settles, wait this long for the background
-                     world warm before touching anything
+  --warm-wait <ms>   with --cold: idle this long after boot before measuring
+  --cold             do NOT wait for the background world chain to finish.
+                     What a player who does not wait actually gets.
+  --profile background|entry   CPU-sample the background world chain, or the
+                     first world entry, and fold the samples into a self-time
+                     table. Use with --serve dev, where names survive.
   --out <dir>        output directory (default: .probe/frame-gaps)
   --floor <ms>       keep every frame gap at least this long (default 24)
   --budget <ms>      the criterion (default 250)
@@ -299,6 +308,26 @@ const RECORDER = `(() => {
       return p;
     },
   };
+  /* IS THE MAIN THREAD BLOCKED, OR IS THE FRAME JUST NOT COMING?
+   *
+   * The two are indistinguishable in an rAF gap and they have opposite fixes.
+   * A 4 ms timer chain runs on the same main thread but is NOT gated on the
+   * compositor, so during a gap it either keeps ticking - the thread is free
+   * and the frame is stuck behind the GPU or the presenter - or it stops with
+   * the frames, and the thread is the problem. "beats" on a gap is how many
+   * times the timer fired inside it; "blockedMs" is the longest single stretch
+   * the TIMER lost, which is real synchronous JavaScript and nothing else. */
+  let beat = performance.now();
+  let beats = 0;
+  let worstBeat = 0;
+  setInterval(() => {
+    const t = performance.now();
+    const d = t - beat;
+    beat = t;
+    beats++;
+    if (d > worstBeat) worstBeat = d;
+  }, 4);
+
   let last = performance.now();
   let prev = F.info();
   /* THE PHASE A GAP BELONGS TO IS THE ONE OPEN WHEN IT STARTED.
@@ -317,6 +346,8 @@ const RECORDER = `(() => {
     const now = F.info();
     const owner = lastPhase;
     lastPhase = F.phase;
+    const gapBeats = beats; const gapBlocked = worstBeat;
+    beats = 0; worstBeat = 0;
     const p = F.phases[owner] ??= { frames: 0, ms: 0, worst: 0, over: 0, p0: now.p, g0: now.g, x0: now.x };
     p.frames++; p.ms += dt;
     if (dt > p.worst) p.worst = Math.round(dt * 10) / 10;
@@ -326,6 +357,10 @@ const RECORDER = `(() => {
         at: Math.round(t), ms: Math.round(dt * 10) / 10, phase: owner,
         dPrograms: now.p - prev.p, dGeometries: now.g - prev.g, dTextures: now.x - prev.x,
         programs: now.p,
+        /* How much of the gap was synchronous JavaScript. The rest is a frame
+         * that did not arrive while the thread had nothing to do. */
+        blockedMs: Math.round(gapBlocked), beats: gapBeats,
+        hidden: document.hidden,
       });
       if (F.gaps.length > 8000) F.gaps.splice(0, 2000);
     }
@@ -455,7 +490,50 @@ async function runOnce(args, pageUrl, runIndex) {
     out.warm = await evalIn('JSON.stringify(window.HARNESS.stats().warm)').then((s) => JSON.parse(s));
     out.events.boot = await closePhase('boot');
 
-    if (args.warmWait > 0) {
+    /* --- CPU attribution --------------------------------------------------
+     *
+     * `--profile background` samples the CPU while the background world chain
+     * runs, and folds the samples into a self-time table. It answers the one
+     * question the gap deltas cannot: a gap with dPrograms=0, dGeometries=0
+     * and dTextures=0 is CPU work that never touched the GPU, and this says
+     * WHOSE. Run it with `--serve dev`, where the function names survive; the
+     * production bundle is minified and its table reads as `pv`, `Bt`, `Hn`. */
+    const profileOn = async () => {
+      if (!args.profile) return;
+      await call('Profiler.enable');
+      await call('Profiler.setSamplingInterval', { interval: 1000 });
+      await call('Profiler.start');
+    };
+    const profileOff = async (label) => {
+      if (!args.profile) return;
+      const { profile } = await call('Profiler.stop');
+      out.profile = { label, serve: args.serve, top: foldProfile(profile) };
+    };
+
+    /* --- the background chain --------------------------------------------
+     *
+     * `settleBoot` returns when the ENTRY world is warm. Every other world is
+     * still to be generated, and `scheduleBackgroundBuilds` does that inside
+     * the player's frames. Measured on this bundle, that chain alone spends 26
+     * s of dead main thread across 85 s, in blocks of 8.1, 6.2 and 5.8 s, with
+     * nobody touching a key. Any event measured inside that window is measuring
+     * the chain, so this waits it out and says how long it took - and `--cold`
+     * skips the wait deliberately, because what the chain does to a player who
+     * does not wait is a result too. */
+    if (args.awaitReady) {
+      await mark('background-chain');
+      if (args.profile === 'background') await profileOn();
+      const t0 = Date.now();
+      await waitFor(() => evalIn(
+        'window.GAME.worldManager.ids.every((id) => window.GAME.worldManager.isVolatile(id)'
+        + ' || window.GAME.worldManager.isBuilt(id))',
+      ), { timeout: 600000, every: 1000, what: 'every world to be built' });
+      await sleep(args.settleAfterReady);
+      if (args.profile === 'background') await profileOff('background-chain');
+      out.events.backgroundChain = await closePhase('background-chain');
+      out.backgroundChainMs = Date.now() - t0;
+      console.log(`background chain finished after ${Math.round(out.backgroundChainMs / 1000)}s`);
+    } else if (args.warmWait > 0) {
       await mark('warm-wait');
       await sleep(args.warmWait);
       out.events.warmWait = await closePhase('warm-wait');
@@ -510,15 +588,89 @@ async function runOnce(args, pageUrl, runIndex) {
       for (const id of worlds) {
         if (id === args.entryWorld) continue;
         const label = `entry:${id}`;
-        const pre = await evalIn(
-          `JSON.stringify({ built: !!window.GAME.worldManager.isBuilt(${JSON.stringify(id)}),`
-          + ` programs: window.GAME.engine.renderer.info.programs.length })`,
-        ).then((s) => JSON.parse(s));
+        /* THE PROGRAM CACHE KEY, BEFORE AND AFTER.
+         *
+         * Three folds `envMap`, `envMapMode`, `envMapCubeUVHeight` and `fog`
+         * into every program's cache key. `applyEnvironment` writes all of
+         * them on arrival, so a warm taken in the departure world builds
+         * programs under one key and the arrival frame asks for another. This
+         * records the key's ingredients either side of the crossing, so a
+         * table of arrival costs can be read against what actually changed. */
+        const KEY = '(() => { const s = window.GAME.engine.scene, e = s.environment;'
+          + ' return JSON.stringify({ envMap: !!e, envUuid: e ? e.uuid : null,'
+          + ' envHeight: e && e.image ? e.image.height : null, envMapping: e ? e.mapping : null,'
+          + ' fog: !!s.fog, fogType: s.fog ? s.fog.type : null,'
+          + ' programs: window.GAME.engine.renderer.info.programs.length }); })()';
+        const KEYS = 'JSON.stringify(window.GAME.engine.renderer.info.programs.map((p) => p.cacheKey))';
+        const pre = JSON.parse(await evalIn(KEY));
+        const keysBefore = args.cacheKeys ? JSON.parse(await evalIn(KEYS)) : null;
+        pre.built = await evalIn(`!!window.GAME.worldManager.isBuilt(${JSON.stringify(id)})`);
+        /* --- THE EXPERIMENT -------------------------------------------
+         *
+         * `warmWorld` precompiles a destination against the LIVE scene, which
+         * is the world the player is standing in. Three folds `scene.fog` and
+         * `scene.environment` into its program cache key, and `applyEnvironment`
+         * changes both on arrival - so the programs the warm built are keyed to
+         * the departure world and the arrival frame asks for a different set.
+         *
+         * This applies the destination's own fog and environment for the
+         * duration of one synchronous compile, restores them, and reports what
+         * that compile cost and how many programs it created. If the arrival
+         * gap collapses by that amount, the attribution is proved rather than
+         * argued. */
+        if (args.envWarm) {
+          out.events[`envwarm:${id}`] = JSON.parse(await evalIn(`(() => {
+            const G = window.GAME, r = G.engine.renderer, sc = G.engine.scene;
+            const w = G.worldManager.getWorld(${JSON.stringify(id)});
+            if (!w || !w.group) return JSON.stringify({ skipped: 'not built' });
+            const env = w.environment;
+            const oldFog = sc.fog, oldEnv = sc.environment;
+            /* The scene state the ARRIVAL will have, not the one the warm
+             * happens to run under. \`_fog\` is the exponential fog a world may
+             * install for itself; everything else gets the linear one
+             * applyEnvironment authors from fogNear/fogFar. */
+            if (w._fog) sc.fog = w._fog;
+            else if (env.fogFar > 0) sc.fog = new G.THREE.Fog(env.fogColor.getHex(), env.fogNear, env.fogFar);
+            else sc.fog = null;
+            if (env.envMap !== undefined) sc.environment = env.envMap;
+            const p0 = r.info.programs.length;
+            const t0 = performance.now();
+            try {
+              G.lightRig.claim(w.group);
+              r.compile(w.group, G.engine.camera, sc);
+              /* The persistent half: the avatar, the viewmodels, the mounts,
+               * the gateways and every NPC are drawn on the arrival frame too,
+               * and they are keyed on the same fog and environment. */
+              r.compile(sc, G.engine.camera, sc);
+            } finally { sc.fog = oldFog; sc.environment = oldEnv; }
+            return JSON.stringify({
+              ms: Math.round(performance.now() - t0),
+              dPrograms: r.info.programs.length - p0,
+              usedWorldFog: !!w._fog, envHeight: env.envMap && env.envMap.image ? env.envMap.image.height : null,
+            });
+          })()`));
+          /* Issuing the link is not resolving it: three reads LINK_STATUS on
+           * first use, and that read is the stall. The background chain issues
+           * these a minute before the player arrives, so the experiment has to
+           * give the driver the same head start or it measures nothing. */
+          await sleep(args.envWarmSoak);
+        }
+
         await mark(label);
+        const profiling = args.profile === 'entry' && !out.profile;
+        if (profiling) await profileOn();
         await evalIn(`window.HARNESS.goto(${JSON.stringify(id)}).then(() => 1)`);
         await sleep(2500);
+        if (profiling) await profileOff(label);
         const phase = await closePhase(label);
-        out.events[label] = { ...phase, builtBefore: pre.built, programsBefore: pre.programs };
+        const post = JSON.parse(await evalIn(KEY));
+        out.events[label] = { ...phase, builtBefore: pre.built, key: { pre, post } };
+        if (args.cacheKeys) {
+          const after = JSON.parse(await evalIn(KEYS));
+          const had = new Set(keysBefore);
+          out.events[label].newCacheKeys = after.filter((k) => !had.has(k));
+          out.events[label].oldCacheKeys = keysBefore;
+        }
 
         // First weapon change and first mount launch IN THIS WORLD - the
         // criterion says "per world", so it is measured per world.
@@ -577,6 +729,29 @@ async function runOnce(args, pageUrl, runIndex) {
 /* ---------------------------------------------------------------- */
 /* Reporting                                                         */
 /* ---------------------------------------------------------------- */
+
+/**
+ * A `Profiler.stop()` result, folded into self time per function.
+ *
+ * Self time, not total: the question is which code is ON the stack when the
+ * clock ticks, and a total-time table answers "which call chain contains the
+ * work", which for a build that is one deep call is always the same answer.
+ */
+function foldProfile(profile, top = 30) {
+  const byId = new Map(profile.nodes.map((n) => [n.id, n]));
+  const self = new Map();
+  const deltas = profile.timeDeltas ?? [];
+  profile.samples.forEach((id, i) => {
+    const n = byId.get(id);
+    if (!n) return;
+    const f = n.callFrame;
+    const key = `${f.functionName || '(anonymous)'}  ${(f.url || '').split('/').pop()}:${f.lineNumber + 1}`;
+    self.set(key, (self.get(key) ?? 0) + (deltas[i] ?? 0) / 1000);
+  });
+  return [...self.entries()]
+    .sort((a, b) => b[1] - a[1]).slice(0, top)
+    .map(([fn, ms]) => ({ fn, ms: Math.round(ms) }));
+}
 
 function summarise(run, budget) {
   const rows = [];

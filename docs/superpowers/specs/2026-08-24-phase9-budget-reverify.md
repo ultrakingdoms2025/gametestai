@@ -117,3 +117,20 @@ framing. Two rules are built into it:
   `gameplayDriven: false`, or a world that is not the one asked for is excluded
   and named**, rather than averaged in. Those four states are exactly what made
   the original tables wrong.
+
+### 1.4 Every framing was measured on a settled frame
+
+The whole point of re-measuring is that the original tables were not. Every
+report in this sweep carries `settleBoot`'s own verdict, and all of them agree:
+
+| tree | worlds | framings | `engineRunning` | `rehearsalCleared` | `programsSettled` | `timedOut` |
+|---|---|---|---|---|---|---|
+| `06b79f6` | 8 + race | 100 + 12 | true | true | true | false |
+| `86425d3` | 8 + race | 100 + 12 | true | true | true | false |
+
+No framing reported `rehearsalInForce`, `bootWarmRunning`, `gameplayDriven:
+false`, or a world other than the one asked for. One framing failed outright
+and is excluded and named: `maze/tower-top` on `main`'s first maze run
+(`_computeView` found no tower on that seed — the same class of failure
+`lift-car` has).
+

@@ -71,6 +71,7 @@ function parseArgs(argv) {
     entryWorld: 'station', settleMs: 240000, skipBuild: false,
     profile: null, events: 'keybind,weapon,mount,entry,repeat',
     warmWait: 0, awaitReady: true, settleAfterReady: 8000, envWarm: false, envWarmSoak: 30000, cacheKeys: false,
+    gl: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -91,6 +92,7 @@ function parseArgs(argv) {
     else if (a === '--env-warm') out.envWarm = true;
     else if (a === '--env-warm-soak') out.envWarmSoak = Number(next());
     else if (a === '--cache-keys') out.cacheKeys = true;
+    else if (a === '--gl') out.gl = true;
     else if (a === '--skip-build') out.skipBuild = true;
     else if (a === '--keep') out.keep = true;
     else if (a === '--help' || a === '-h') out.help = true;
@@ -112,6 +114,11 @@ const HELP = `frame-gaps - the Phase 1 frame-gap criterion, measured
   --profile background|entry   CPU-sample the background world chain, or the
                      first world entry, and fold the samples into a self-time
                      table. Use with --serve dev, where names survive.
+  --gl               time every WebGL call that can block and charge each frame
+                     gap to the driver entry points it was spent inside. Works
+                     on the PRODUCTION bundle - a driver entry point keeps its
+                     name where a minified JS function does not. Off by default:
+                     the criterion is measured without it.
   --out <dir>        output directory (default: .probe/frame-gaps)
   --floor <ms>       keep every frame gap at least this long (default 24)
   --budget <ms>      the criterion (default 250)
@@ -280,6 +287,76 @@ async function serveDist(dir, base) {
 /* The in-page recorder, installed before the bundle is parsed       */
 /* ---------------------------------------------------------------- */
 
+/**
+ * A WebGL call-timing shim, installed on the prototype before any context
+ * exists. Opt-in, because it is not free and the criterion must be measured
+ * with the instrument the criterion was written against.
+ *
+ * ── Why this and not a CPU profile ────────────────────────────────────────
+ *
+ * A `Profiler.stop()` table on the production bundle reads `pv`, `Bt`, `Hn` -
+ * the minifier ate the names, so attribution needs `--serve dev`, and a dev
+ * number can never answer a production question. But the interesting work in
+ * this project is not JavaScript at all: it is time spent INSIDE a driver
+ * entry point, and those keep their names in every build. `bufferData` is
+ * `bufferData` in `dist/`.
+ *
+ * So each wrapped call is timed and charged to its own name, the totals are
+ * differenced per rAF gap, and a 14-second frame comes back as a table -
+ * "11,900 ms in getProgramParameter over 41 calls, 380 ms in bufferData over
+ * 325" - which is an attribution rather than a hint.
+ *
+ * ── What is wrapped, and what deliberately is not ─────────────────────────
+ *
+ * Only calls that can plausibly block: link/compile and the queries that WAIT
+ * for them, buffer and texture uploads, draws, framebuffer binds and the
+ * explicit syncs. `uniform*` and the state setters are thousands per frame and
+ * are never the answer; wrapping them would cost more than it could find. Two
+ * `performance.now()` per call at roughly 50 ns each, over the ~1,500 wrapped
+ * calls a heavy frame makes, is well under a tenth of a millisecond - visible
+ * in a 4 ms budget, invisible in a 250 ms one.
+ */
+const GL_SHIM = `(() => {
+  const NAMES = [
+    'linkProgram', 'compileShader', 'shaderSource', 'attachShader',
+    'getProgramParameter', 'getProgramInfoLog', 'getShaderParameter',
+    'getShaderInfoLog', 'useProgram', 'createProgram', 'deleteProgram',
+    'bufferData', 'bufferSubData', 'bindVertexArray', 'createVertexArray',
+    'vertexAttribPointer', 'texImage2D', 'texImage3D', 'texSubImage2D',
+    'texStorage2D', 'compressedTexImage2D', 'generateMipmap',
+    'drawElements', 'drawArrays', 'drawElementsInstanced', 'drawArraysInstanced',
+    'bindFramebuffer', 'framebufferTexture2D', 'blitFramebuffer',
+    'checkFramebufferStatus', 'renderbufferStorageMultisample',
+    'readPixels', 'finish', 'flush', 'clientWaitSync', 'fenceSync', 'getError',
+  ];
+  const T = window.__GL = { ms: {}, n: {} };
+  const now = performance.now.bind(performance);
+  for (const proto of [window.WebGL2RenderingContext, window.WebGLRenderingContext]) {
+    if (!proto) continue;
+    for (const name of NAMES) {
+      const orig = proto.prototype[name];
+      if (typeof orig !== 'function') continue;
+      T.ms[name] = 0; T.n[name] = 0;
+      proto.prototype[name] = function (...args) {
+        const t0 = now();
+        try { return orig.apply(this, args); }
+        finally { T.ms[name] += now() - t0; T.n[name]++; }
+      };
+    }
+  }
+  /** Everything since \`prev\`, as a sorted table, milliseconds rounded. */
+  T.since = (prev) => {
+    const rows = [];
+    for (const k in T.ms) {
+      const ms = T.ms[k] - (prev.ms[k] ?? 0);
+      const n = T.n[k] - (prev.n[k] ?? 0);
+      if (ms >= 1 || n > 0) rows.push([k, Math.round(ms), n]);
+    }
+    return rows.sort((a, b) => b[1] - a[1]);
+  };
+  T.snap = () => ({ ms: { ...T.ms }, n: { ...T.n } });
+})()`;
+
 const RECORDER = `(() => {
   if (window.__FG) return;
   const F = window.__FG = {
@@ -293,8 +370,13 @@ const RECORDER = `(() => {
       const i = F.info();
       const p = F.phases[name];
       if (p.p0 == null) { p.p0 = i.p; p.g0 = i.g; p.x0 = i.x; }
+      /* Kept beside the phase rather than on it: a snapshot is ~70 numbers and
+       * every phase is serialised into the report. */
+      if (window.__GL && !F.gl0[name]) F.gl0[name] = window.__GL.snap();
       return t;
     },
+    /** Per-phase GL baselines, by phase name. Empty without --gl. */
+    gl0: {},
     info() {
       const n = window.GAME?.engine?.renderer?.info;
       return { p: n?.programs?.length ?? -1, g: n?.memory?.geometries ?? -1, x: n?.memory?.textures ?? -1 };
@@ -305,6 +387,7 @@ const RECORDER = `(() => {
       if (!p) return null;
       const i = F.info();
       p.dPrograms = i.p - p.p0; p.dGeometries = i.g - p.g0; p.dTextures = i.x - p.x0;
+      if (window.__GL && F.gl0[name]) p.gl = window.__GL.since(F.gl0[name]).slice(0, 12);
       return p;
     },
   };
@@ -330,6 +413,10 @@ const RECORDER = `(() => {
 
   let last = performance.now();
   let prev = F.info();
+  /* The GL shim's totals as of the last frame. Present only with --gl; the
+   * gate's own runs carry no gl field at all, so a number measured with the
+   * shim can never be quoted as one measured without it. */
+  let prevGl = window.__GL ? window.__GL.snap() : null;
   /* THE PHASE A GAP BELONGS TO IS THE ONE OPEN WHEN IT STARTED.
    *
    * Not the one open when the frame finally lands. A driver stall blocks the
@@ -352,6 +439,7 @@ const RECORDER = `(() => {
     p.frames++; p.ms += dt;
     if (dt > p.worst) p.worst = Math.round(dt * 10) / 10;
     if (dt > 250) p.over++;
+    const glNow = window.__GL ? window.__GL.snap() : null;
     if (dt >= F.floor) {
       F.gaps.push({
         at: Math.round(t), ms: Math.round(dt * 10) / 10, phase: owner,
@@ -361,9 +449,13 @@ const RECORDER = `(() => {
          * that did not arrive while the thread had nothing to do. */
         blockedMs: Math.round(gapBlocked), beats: gapBeats,
         hidden: document.hidden,
+        /* Which driver entry points the gap was spent inside, if --gl. Only
+         * rows worth a millisecond survive, most gaps carry two or three. */
+        ...(glNow ? { gl: window.__GL.since(prevGl).filter((r) => r[1] >= 1).slice(0, 8) } : {}),
       });
       if (F.gaps.length > 8000) F.gaps.splice(0, 2000);
     }
+    prevGl = glNow;
     prev = now;
     requestAnimationFrame(tick);
   }
@@ -458,6 +550,10 @@ async function runOnce(args, pageUrl, runIndex) {
       }
     });
 
+    // The shim first: it patches the context prototype, and it has to be in
+    // place before the page can create a context, not merely before the
+    // recorder's first frame.
+    if (args.gl) await call('Page.addScriptToEvaluateOnNewDocument', { source: GL_SHIM });
     await call('Page.addScriptToEvaluateOnNewDocument', { source: RECORDER });
     await call('Page.navigate', { url: pageUrl });
 

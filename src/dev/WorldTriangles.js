@@ -224,4 +224,43 @@ export function walkWorldTriangles(root, camera, opts = {}) {
   return result;
 }
 
+/**
+ * What a set of objects WOULD draw in this frustum, whether or not they are
+ * visible right now.
+ *
+ * The counterpart `walkWorldTriangles` cannot provide: it stops at an invisible
+ * object by design, so once something is hidden it can no longer say how much
+ * hiding it was worth. That is exactly the question an ablation has to answer -
+ * "did switching this off remove anything the camera could see?" - and without
+ * it `--ablate` can only report how many meshes it touched, which is what let
+ * an ablation that changed nothing at all read as evidence.
+ *
+ * Ancestors' visibility is ignored too, on purpose: the objects handed in are
+ * the ones the caller hid, and their parents are not the subject.
+ *
+ * @param {Iterable<import('three').Object3D>} objects
+ * @param {import('three').Camera} camera
+ * @returns {{triangles:number, objects:number, culledObjects:number}}
+ */
+export function drawnTrianglesOf(objects, camera) {
+  const out = { triangles: 0, objects: 0, culledObjects: 0 };
+  if (!objects || !camera) return out;
+  camera.updateMatrixWorld();
+  _proj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  _frustum.setFromProjectionMatrix(_proj);
+  for (const obj of objects) {
+    if (!obj?.isMesh) continue;
+    obj.updateWorldMatrix(true, false);
+    if (camera.layers && !obj.layers.test(camera.layers)) continue;
+    const tris = geometryTriangles(obj.geometry) * instanceCount(obj);
+    if (obj.frustumCulled === false || _frustum.intersectsObject(obj)) {
+      out.triangles += tris;
+      out.objects += 1;
+    } else {
+      out.culledObjects += 1;
+    }
+  }
+  return out;
+}
+
 export default walkWorldTriangles;

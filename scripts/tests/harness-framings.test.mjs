@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { rig, goto, domHarness } from './_flightrig.mjs';
 import { SPACE_BODIES } from '../../src/worlds/space/Bodies.js';
+import { portalAperture, PORTAL_ENTRY_RADIUS } from '../../src/systems/Portals.js';
 
 domHarness();
 const { VIEWS, frameCoverage } = await import('../../src/dev/Harness.js');
@@ -61,6 +62,51 @@ const { VIEWS, frameCoverage } = await import('../../src/dev/Harness.js');
 /** How much further than its declared subject a framing's first hit may be. */
 const SLACK = 1.7;
 
+/**
+ * The least of its declared subject distance a framing's first hit may be.
+ *
+ * ── "HITS SOMETHING" IS NOT "FRAMES ITS SUBJECT", THIRD OCCURRENCE ────────
+ * The `subject` assertion below only ever asked whether the first surface is
+ * TOO FAR. A framing pressed against whatever is in front of it meets a
+ * surface immediately, and that reads as a very close subject and passes. Two
+ * live framings were doing exactly that, and both had passed this file for as
+ * long as it has existed:
+ *
+ *   cinder/rimhold      3.0 m against subject 55  ( 5.4%)  70.8 deg down
+ *   dock/signal-post    3.4 m against subject 70  ( 4.8%)   yard at 87.25 m
+ *
+ * `rimhold` is the instructive one. It is `groundRelative`, so its camera sat
+ * on 126.59 m of ground - and its look point was at y = 3 ABSOLUTE, which from
+ * up there is a 70.8-degree dive into the ash at its own feet. A ground-
+ * relative camera with an absolute look point aims at the planet's origin
+ * plane from whatever height the terrain happens to be.
+ *
+ * ── THE THRESHOLD IS FROM THE DATA, AND THE GAP IS WIDE ──────────────────
+ * Every declaring framing in dock, cinder and sports, by hit/subject, worst
+ * first:
+ *
+ *   signal-post 4.8%   rimhold 5.4%   |   pad-ashfall 18.3%   kestrel 20.7%
+ *   pike 23.7%   bastion-ribs 27.9%   office-door 33.8%   ... up to 155.0%
+ *
+ * The two broken ones are at 4.8% and 5.4%; the nearest legitimate framing is
+ * at 18.3%. That is a factor of 3.4 of clear air, so 12% sits in the middle of
+ * a real gap rather than being fitted to the answer.
+ *
+ * ── AND THIS WAS REFUSED ONCE, WRONGLY ───────────────────────────────────
+ * An earlier pass on this file measured the same ratios and refused a floor,
+ * on the grounds that they run from 0.05 to 1.55 with no separation. That was
+ * reading the wrong question: it lumped this together with "is there something
+ * legitimately in the near field", where there is indeed no threshold and
+ * `containsPoint` is the right instrument. The question a floor answers is
+ * narrower - is the first surface a plausible fraction of the DECLARED
+ * subject - and on that question the gap above was always there. `art-planets`
+ * was right and the earlier refusal was wrong.
+ */
+const NEAR_FLOOR = 0.12;
+
+/** `Harness._vantage` puts the player's feet this far under the camera. */
+const EYE_HEIGHT = 1.62;
+
 const _dir = new THREE.Vector3();
 const _from = new THREE.Vector3();
 
@@ -72,9 +118,30 @@ function resolve(v, physics) {
   return [v.pos[0], g + v.pos[1], v.pos[2]];
 }
 
+/** Citadel has its own build kit; everything else comes off the flight rig. */
+let _citadel = null;
+async function worldRig(worldId) {
+  if (worldId !== 'citadel') {
+    const r = await rig();
+    // `rig()` builds only the three worlds its flying suites need; anything
+    // else has to be built before it can be activated.
+    if (!r.wm.isBuilt?.(worldId)) await r.wm.build(worldId);
+    await goto(r, worldId);
+    return r;
+  }
+  /* `buildCitadel` rather than the flight rig, because that is the apparatus
+   * six other citadel suites already build this world with, and a second way
+   * to build a world is a second world to keep in step. */
+  if (!_citadel) {
+    const { buildCitadel } = await import('./citadel-reach-kit.mjs');
+    const { world, physics } = await buildCitadel();
+    _citadel = { physics, wm: { active: world, isBuilt: () => true } };
+  }
+  return _citadel;
+}
+
 async function probe(worldId) {
-  const r = await rig();
-  await goto(r, worldId);
+  const r = await worldRig(worldId);
   const rows = [];
   for (const v of VIEWS[worldId] ?? []) {
     if (v.computed) continue;
@@ -83,7 +150,17 @@ async function probe(worldId) {
     _dir.set(v.look[0] - pos[0], v.look[1] - pos[1], v.look[2] - pos[2]).normalize();
     const want = v.clear ?? (Number.isFinite(v.subject) ? v.subject * SLACK : 4000);
     const hit = r.physics.raycast(_from, _dir, want);
-    rows.push({ v, name: v.name, hit: hit ? hit.distance : null });
+    /* The framing pins the player's FEET an eye-height under the camera; see
+     * `Harness._vantage`. That is the body `Portals.fixedUpdate` tests. */
+    const feet = [pos[0], pos[1] - EYE_HEIGHT, pos[2]];
+    const gates = (r.wm.active?.portalSpecs ?? [])
+      .map((spec) => portalAperture(spec, feet))
+      .filter((a) => a.wouldCross);
+    rows.push({
+      v, name: v.name, hit: hit ? hit.distance : null,
+      inside: r.physics.containsPoint(_from.clone()),
+      gates,
+    });
   }
   return rows;
 }
@@ -96,7 +173,55 @@ function table(rows) {
   }).join('\n  ');
 }
 
-for (const worldId of ['dock', 'cinder']) {
+/* `sports` is here because it was NOT, and that absence was the whole defect.
+ * Not one of its eight framings declared a `subject` or a `clear`, so the loop
+ * below skipped every one of them and this file's ray assertion was vacuous on
+ * the entire world - for as long as the world has existed. Two of the eight
+ * were photographing something else the whole time: `track` was aimed at the
+ * car park from 2.32 m under the terrain, and `entrance-portal` stood behind
+ * the gateway and teleported the player through it, filing 3.1 M triangles of
+ * the STATION as sports'. A world with no declarations is not a world that
+ * passes; it is a world nobody looked at. */
+/* ── AND `citadel`, WHICH HAD FIVE UNDECLARED FRAMINGS ──────────────────────
+ *
+ * Same hole as sports, half as wide: `gate-approach`, `gate-spawn`,
+ * `ward-centre`, `minaret-bridge` and `desert-overview` declared neither a
+ * subject nor a clear distance, so the loop skipped five of this world's
+ * twelve rows. All five now declare the distance their centre ray actually
+ * travels, measured against the built world:
+ *
+ *   gate-approach    155.69 m   gate-spawn        98.74 m
+ *   ward-centre       24.48 m   minaret-bridge    59.72 m
+ *   desert-overview  244.06 m
+ *
+ * ── WHAT WAS MEASURED AND REFUSED ────────────────────────────────────────
+ * `gate-spawn` is 44.4% obscured across the central half of its frame, mostly
+ * by a palm crown 2.9 m from the lens, and it passes every distance test here
+ * because its centre ray does reach the citadel's stone at 98.7 m. "Hits
+ * something" is not "frames its subject", and closing that gap was tried.
+ *
+ * It cannot be closed with a threshold, and the numbers say so. Central-half
+ * obstruction inside a third of the declared subject distance, all twelve
+ * citadel framings, worst first:
+ *
+ *   gate-approach 88.1%   souk-alley 85.0%   gate-spawn 44.4%
+ *   souk-roofs    23.8%   eyrie-summit 14.4% undercliff-terrace 10.0%
+ *   caravanserai-mast 5.6%  ashfall-ward 5.6%
+ *   ward-centre / minaret-bridge / desert-overview / deepworks-rim  0.0%
+ *
+ * The two framings ABOVE `gate-spawn` are both correct. `gate-approach` looks
+ * through the gate arch, so the curtain wall fills the frame around it by
+ * design; `souk-alley` is an alley, and walls close on both sides is what an
+ * alley is. Near-field coverage and minimum-blocker-distance were tried too
+ * and separate no better - `souk-alley` has 37.8% of its frame inside 3 m.
+ *
+ * So there is no threshold in this data that flags the bad framing without
+ * flagging two good ones, and none is invented here. What the measurement
+ * DID establish is that the obstruction is a palm three metres in front of
+ * the player's spawn, which is a defect in `CitadelWorld`, not in the framing
+ * - and it is recorded on the framing itself in `src/dev/Harness.js`.
+ */
+for (const worldId of ['dock', 'cinder', 'sports', 'citadel']) {
   test(`every ${worldId} framing looks at something inside its own subject distance`, async () => {
     const rows = await probe(worldId);
     const t = table(rows);
@@ -105,6 +230,60 @@ for (const worldId of ['dock', 'cinder']) {
     assert.ok(rows.length >= 5, `only ${rows.length} framings in "${worldId}"\n  ${t}`);
     const bad = [];
     for (const x of rows) {
+      /* ── THE CAMERA IS NOT ALLOWED TO BE INSIDE SOMETHING ──────────────
+       *
+       * Everything below asks how FAR the first surface is. That catches a
+       * framing that meets nothing and one that meets its subject too late,
+       * and it is blind to the opposite failure: a camera buried in the
+       * scenery meets a surface almost immediately, which reads as a very
+       * close subject and passes.
+       *
+       * `VIEWS.sports`' `track` was exactly that. It stood at (128, 16, 232)
+       * where the ground is 18.32 - 2.32 m INSIDE the hill - and its ray met
+       * the inside of that hill at 14.46 m against a subject of 132. Every
+       * distance test in this file passed it, and the picture was the inside
+       * of a terrain skirt.
+       *
+       * ── WHY THIS TEST AND NOT A RATIO ─────────────────────────────────
+       * The obvious guard is a floor on `hit / subject`, and the data refuses
+       * it. Measured across all 38 declaring framings, that ratio runs from
+       * 0.05 (`dock/signal-post`, `cinder/rimhold` - both legitimately have a
+       * post or a rock in the near field) to 1.55 (`dock/pike-in`). There is
+       * no floor that separates them, so a ratio gate would be a threshold
+       * invented to fit rather than measured, which is the shape this whole
+       * directory exists to refuse.
+       *
+       * `containsPoint` needs no threshold, and it was measured before it was
+       * adopted: across dock, cinder and sports it flags exactly one framing -
+       * the buried one - with no false positive on the yard's interiors, the
+       * trench at y -0.7, the crane cab, or any ground-relative planet row. */
+      if (x.inside) {
+        bad.push(`${x.name}: the camera is INSIDE a collider - this framing photographs the inside of whatever it is buried in`);
+      }
+      /* ── AND IT IS NOT ALLOWED TO STAND INSIDE A GATEWAY ───────────────
+       *
+       * The worst failure a framing can have is not a bad picture, it is a
+       * picture OF SOMEWHERE ELSE filed under this world's name.
+       * `Harness._vantage` pins the player at the camera; the pin is a
+       * plane-side crossing; `Portals.fixedUpdate` fires `enter`.
+       *
+       * `VIEWS.sports`' `entrance-portal` stood at (0, 3.5, 170), which is
+       * behind a gateway whose normal is (0, 0, -1), with its chest 0.266 m
+       * off the disc axis against an aperture of 2.226 m. It photographed the
+       * station in a black frame and reported 225 materials and 3.1 M
+       * triangles as SPORTS'. Nothing in the numbers said the world had
+       * changed, because nothing was looking.
+       *
+       * The aperture arithmetic comes from `Portals.portalAperture` rather
+       * than being copied here: a checker that re-derives the rule is a second
+       * copy of it that can be wrong on its own. */
+      for (const a of x.gates) {
+        bad.push(
+          `${x.name}: the camera stands ${Math.abs(a.depth).toFixed(2)} m BEHIND a gateway and `
+          + `${a.radius.toFixed(2)} m off its axis, inside the ${PORTAL_ENTRY_RADIUS.toFixed(2)} m entry aperture - `
+          + 'pinning the player here walks them through it and photographs the destination'
+        );
+      }
       if (x.v.clear !== undefined) {
         if (x.hit !== null) {
           bad.push(`${x.name}: declares ${x.v.clear} m of clear air and meets a surface at ${x.hit.toFixed(1)} m`);
@@ -116,6 +295,13 @@ for (const worldId of ['dock', 'cinder']) {
         bad.push(`${x.name}: nothing solid within ${(x.v.subject * SLACK).toFixed(0)} m down its own view axis`);
       } else if (x.hit > x.v.subject * SLACK) {
         bad.push(`${x.name}: first surface at ${x.hit.toFixed(1)} m against a declared subject of ${x.v.subject} m`);
+      } else if (x.hit < x.v.subject * NEAR_FLOOR) {
+        /* The other end of the same assertion. See NEAR_FLOOR. */
+        bad.push(
+          `${x.name}: first surface at ${x.hit.toFixed(1)} m is only `
+          + `${((x.hit / x.v.subject) * 100).toFixed(1)}% of its declared ${x.v.subject} m subject - `
+          + 'this framing is pressed against something, and what it photographs is that'
+        );
       }
     }
     assert.deepEqual(bad, [],
@@ -290,7 +476,7 @@ test('every framing declares what it is looking at, and aims somewhere else', ()
    * is a zero vector and the ray goes nowhere. Both are caught here rather than
    * silently excused there. */
   const bad = [];
-  for (const worldId of ['dock', 'space', 'cinder']) {
+  for (const worldId of ['dock', 'space', 'cinder', 'sports', 'citadel']) {
     for (const v of VIEWS[worldId] ?? []) {
       if (v.computed) continue;
       const declared = v.clear !== undefined || v.subject !== undefined;

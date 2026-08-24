@@ -37,7 +37,9 @@ import { MAZE, DIR, cellIndex, districtCoords, isOpen, connectorAt } from '../wo
 import { cellToWorld } from '../worlds/maze/MazeColliders.js';
 import { shaftColliders, connectorHoleBounds } from '../worlds/maze/MazeShafts.js';
 import { setMazeSurfaceMode, mazeSurfaceMode } from '../worlds/maze/MazeMaterials.js';
-import { walkWorldTriangles } from './WorldTriangles.js';
+import { MazeWorld } from '../worlds/MazeWorld.js';
+import { walkWorldTriangles, drawnTrianglesOf } from './WorldTriangles.js';
+import { rehearsalInForce } from '../gfx/RehearsalDraw.js';
 import { BERTHS } from '../worlds/dock/YardPlan.js';
 import { HULLS } from '../worlds/dock/HullPlan.js';
 import { SPACE_BODIES } from '../worlds/space/Bodies.js';
@@ -407,18 +409,84 @@ const VIEWS = {
     { name: 'portal', pos: [2, 11, 6], look: [2, 10.5, -22], fov: 62 },
     { name: 'hills-vista', pos: [120, 28, 118], look: [-40, 12, -20], fov: 80 },
   ],
-  // Skate park centre (-75, 38) with bowls at (-95,40) r13 and (-77,34) r10;
-  // ski zone centre (-62,-136); courts at (112,26) and (78,21)/(78,32);
-  // track (128,162); pool (46,111); entrance portal at (0, 0.4, 150).
+  /**
+   * THE SPORTS PARK, AND TWO FRAMINGS THAT PHOTOGRAPHED SOMETHING ELSE.
+   *
+   * This table's own comment said "track (128,162)". `SportsWorld`'s `TRACK`
+   * is `{ cx: 105, cz: -100 }`. The thing at (128, 162) is the CAR PARK - a
+   * slab on x 88..168, z 132..192 with three rows of bays and five lamp posts
+   * - and the running track is 262 m away on the other side of the site. So
+   * the `track` row photographed a car park, and it did it from a camera
+   * 2.32 m UNDER the terrain (ground at (128, 232) is 18.32 and the camera
+   * stood at 16), whose view ray met the inside of the hill at 14.46 m.
+   *
+   * `entrance-portal` was worse, because it did not merely mis-frame - it left
+   * the world. The gateway is at (0, 0.42, 150) with `rotationY` PI, so its
+   * normal is (0, 0, -1) and the SPORTS side is z < 150. The camera stood at
+   * z = 170: 20 m behind it. `_vantage` pins the player at the camera and
+   * `Portals` tests the chest against the disc silhouette - measured, that
+   * chest sat 0.27 m off the disc axis against an entry aperture of 2.23 m, so
+   * the pin was a plane-side crossing inside the aperture and the gateway
+   * fired. The row that came back reported 225 materials and 3.1 M triangles
+   * OF THE STATION as sports'.
+   *
+   * ── AND NOT ONE OF THE EIGHT DECLARED A SUBJECT ────────────────────────
+   * `harness-framings.test.mjs` fires a ray down every framing that declares
+   * `subject` or `clear`, and skips one that declares neither - so this whole
+   * world was exempt from the one test that would have caught both of the
+   * above on the day they were written. Every row below now declares, and the
+   * number is the distance its centre ray ACTUALLY travels, measured against
+   * the built world (377 colliders) rather than chosen:
+   *
+   *   skatepark-wide    82.81 m  skate-pad heightfield at (-88.0, -1.6, 29.7)
+   *   skatepark-bowl    30.16 m  bowl A floor at (-95.0, -3.3, 37.0)
+   *   bowl-interior     39.50 m  a pad box at (-84.7, 0.7, 11.9)
+   *   ski-slope        107.40 m  the ski mound at (-62.0, 34.2, -151.2)
+   *   courts            55.30 m  the courts enclosure at (105.1, 0.1, 20.4)
+   *   track            131.44 m  THE TRACK GRANDSTAND (bleacher box)
+   *   pool              39.98 m  the pool basin at (46.0, -1.8, 103.0)
+   *   entrance-portal   19.46 m  THE GATEWAY DAIS
+   *
+   * `track` is aimed at the grandstand and not at the infield deliberately.
+   * The infield, the lanes and the bends are all the site heightfield, so a
+   * ray that meets only the heightfield would still meet it with the whole
+   * track deleted; the grandstand and the start gantry are track-specific
+   * geometry, and a framing whose subject is track-specific is one that fails
+   * when the track goes away. Coverage of the track's own extent from this
+   * vantage is 100% of frame width by 41% of height.
+   *
+   * `entrance-portal` stands 10 m off the gate axis on the SPORTS side: far
+   * outside the 2.23 m entry aperture, so the pin cannot cross the gateway,
+   * and the whole gate structure (dais, jambs and the plinth's 8.7 m surround
+   * uprights) is inside the frame at ndc x -0.39..0.37, y -0.46..0.96.
+   *
+   * Site constants, read from `SportsWorld.js` rather than remembered:
+   * PAD x -125..-25 z 0..75; bowls at (-95,40) r13 and (-77,34) r9.5; SKI
+   * x -129..4 z -201..-71 summit y 52; courts enclosure x 63..127 z 3..49;
+   * POOL deck x 25..75 z 100..125, basin centre (46,111); TRACK centre
+   * (105,-100), outer lane x 16.55..193.45 z -146.26..-53.74, grandstand
+   * x 84..126 z -162.95..-157 deck top y 3.60, start gantry at z -149.76;
+   * gateway (0, 0.42, 150); player spawn (0, 0.90, 145). Terrain runs to
+   * +/-260 and there is nothing past it.
+   */
   sports: [
-    { name: 'skatepark-wide', pos: [-40, 11, 96], look: [-82, 0, 38], fov: 72 },
-    { name: 'skatepark-bowl', pos: [-95, 5, 66], look: [-95, -3, 38], fov: 74 },
-    { name: 'bowl-interior', pos: [-95, 1.6, 50], look: [-88, 1, 24], fov: 80 },
-    { name: 'ski-slope', pos: [-62, 18, -45], look: [-62, 34, -150], fov: 74 },
-    { name: 'courts', pos: [95, 9, 74], look: [104, 1, 26], fov: 70 },
-    { name: 'track', pos: [128, 16, 232], look: [128, 2, 162], fov: 74 },
-    { name: 'pool', pos: [46, 7, 142], look: [46, 0, 111], fov: 72 },
-    { name: 'entrance-portal', pos: [0, 3.5, 170], look: [0, 2.5, 150], fov: 64 },
+    { name: 'skatepark-wide', pos: [-40, 11, 96], look: [-82, 0, 38], fov: 72, subject: 83 },
+    { name: 'skatepark-bowl', pos: [-95, 5, 66], look: [-95, -3, 38], fov: 74, subject: 31 },
+    /* NOT AN INTERIOR, AND THE NUMBER SAYS SO. This is named for the inside of
+     * bowl A and its nearest surface down the view axis is 39.5 m away - it
+     * looks out of the bowl and across the pad at the half-pipe. That is the
+     * same shape as the yard's `kestrel-in` "inside a cabin" at 38.4 m, and it
+     * is left alone rather than quietly re-aimed: an art branch is reviewing
+     * against this vantage now and moving it would invalidate their
+     * before/after. The measured replacement, when it is wanted, is
+     * pos [-95, 0.6, 50] look [-93, -3.0, 41] fov 80 - inside bowl A, 3.84 m
+     * over its floor, first surface at 10.27 m. */
+    { name: 'bowl-interior', pos: [-95, 1.6, 50], look: [-88, 1, 24], fov: 80, subject: 40 },
+    { name: 'ski-slope', pos: [-62, 18, -45], look: [-62, 34, -150], fov: 74, subject: 108 },
+    { name: 'courts', pos: [95, 9, 74], look: [104, 1, 26], fov: 70, subject: 56 },
+    { name: 'track', pos: [105, 22, -30], look: [105, 2.6, -159], fov: 78, aerial: true, subject: 132 },
+    { name: 'pool', pos: [46, 7, 142], look: [46, 0, 111], fov: 72, subject: 40 },
+    { name: 'entrance-portal', pos: [-10, 5, 138], look: [0, 1.2, 150], fov: 62, subject: 20 },
   ],
   /**
    * LODESTAR YARD, and every hull row is DERIVED rather than typed.
@@ -467,7 +535,13 @@ const VIEWS = {
     { name: 'gantry-port', pos: [-84.8, 9.6, 24], look: [-84.8, 8.6, -70], fov: 78, subject: 120 },
     { name: 'gantry-crossing', pos: [0, 9.6, 12], look: [0, 4, -70], fov: 82, subject: 120 },
     { name: 'crane-cab', pos: [-69, 16.8, -24], look: [10, 5, -40], fov: 84, aerial: true, subject: 110 },
-    { name: 'signal-post', pos: [26, 12.6, -97], look: [0, 6, -60], fov: 80, aerial: true, subject: 70 },
+    /* RAISED 0.8 m, AND THAT IS THE WHOLE EDIT. At y 12.6 this framing's centre
+     * ray met a narrow piece of yard structure at 3.36 m - 4.8% of its declared
+     * 70 m subject - and the yard it exists to show sits at 87.25 m behind it.
+     * Measured by stepping the ray origin past the blocker. Every distance test
+     * passed it, because the ray does meet something. At 13.4 m the same camera,
+     * same plan position, same look point, meets the yard itself at 82.98 m. */
+    { name: 'signal-post', pos: [26, 13.4, -97], look: [0, 6, -60], fov: 80, aerial: true, subject: 83 },
     { name: 'yard-wide', pos: [62, 19, 44], look: [-16, 6, -64], fov: 84, aerial: true, subject: 150 },
     /* The mouth and the piers: the three framings that answer the brief -
      * "a hangar bay with space piers stretching from the hangar into space, at
@@ -541,7 +615,21 @@ const VIEWS = {
      * out here is a framing pointed at the ground in front of the camera. */
     { name: 'caldera', pos: [150, 3.0, 120], look: [0, 128, 0], fov: 78, groundRelative: true, subject: 220 },
     { name: 'lava-shore', pos: [-52, 3.0, -46], look: [-52, 58, -96], fov: 76, groundRelative: true, subject: 70 },
-    { name: 'rimhold', pos: [9.4, 3.0, -142], look: [9.4, 3, -186], fov: 76, groundRelative: true, subject: 55 },
+    /* THIS FRAMING PHOTOGRAPHED THE ASH AT ITS OWN FEET.
+     *
+     * `groundRelative` put the camera on 126.59 m of ground and the look point
+     * was at y = 3 ABSOLUTE, so the view axis pitched 70.8 degrees DOWN and met
+     * the ground 2.96 m away - 5.4% of a declared 55 m subject. It passed every
+     * distance assertion in `harness-framings.test.mjs` for the same reason
+     * `signal-post` did: the ray meets something.
+     *
+     * Replacement measured by `art-planets` and re-measured here against the
+     * built world: 48.73 m against a 49 m subject, 25.6 degrees down. The look
+     * point is now above the camera's own ground rather than at absolute zero,
+     * which is the actual error - a `groundRelative` camera with an absolute
+     * look point aims at the planet's origin plane from whatever height the
+     * terrain happens to be. */
+    { name: 'rimhold', pos: [9.4, 3.0, -142], look: [9.4, 108.5, -186], fov: 76, groundRelative: true, subject: 49 },
     { name: 'aerial', pos: [180, 190, 260], look: [-60, 40, -80], fov: 84, aerial: true, subject: 500 },
   ],
   // Entrance forecourt centred at (1260, -10); maze grid runs from origin to 2394 m
@@ -617,11 +705,40 @@ const VIEWS = {
   citadel: [
     // Outside the wall on the approach, looking through the gate arch. The
     // camera stands on a cliff-ring step: deck 14.22 at (0, 136).
-    { name: 'gate-approach', pos: [0, 15.84, 136], look: [0, 22, 118], fov: 72 },
+    { name: 'gate-approach', pos: [0, 15.84, 136], look: [0, 22, 118], fov: 72, subject: 156 },
     // The player's own spawn eye, framing what this world opens on: the souk
     // stepping up ring by ring, the keep, and the great tower above it. The
     // keep occludes the tower below y ~ 43; everything above that is in shot.
-    { name: 'gate-spawn', pos: [0, 15.92, 104], look: [0, 34, -14], fov: 74 },
+    /* ── 44% OF THE MIDDLE OF THIS FRAME IS A PALM, AND IT IS NOT THE
+     *    FRAMING'S FAULT ──────────────────────────────────────────────────
+     *
+     * Measured against the built world, 576 rays on a 32x18 grid over the
+     * drawn geometry, blockers inside a third of the 98.7 m subject distance:
+     *
+     *   citadel:tree.crown:wood.beam:0   104 rays (18.1%)   2.9 - 4.0 m
+     *   citadel:terrain:2,3 and :3,3     140 rays (24.3%)   4.3 - 14.8 m
+     *   citadel:tree.crown:bark.palm:0    39 rays  (6.8%)   7.5 - 11.4 m
+     *   citadel:tree.trunk:bark.palm:0    11 rays  (1.9%)   8.2 -  8.8 m
+     *   citadel:tree.trunk:wood.beam:0     6 rays  (1.0%)   2.9 -  3.0 m
+     *
+     * 23.6% of the whole frame is blocked inside 5 m and 44.4% of its central
+     * half is blocked inside 32.9 m. The nearest trunk is at (2.3, 16.0,
+     * 102.2), which is 2.9 m from this camera and 2.9 m from the PLAYER SPAWN
+     * at (0, 14.3, 104).
+     *
+     * That is the finding, and it is not about the framing: a palm is planted
+     * three metres in front of where every player arrives in this world, and
+     * its crown covers a fifth of the first thing they see. Moving the camera
+     * would hide a world defect behind a better photograph, and this framing's
+     * entire value is that it IS the spawn eye. It stays where it is and the
+     * measurement stays written down. `CitadelWorld` is not this branch's to
+     * change; the palm is reported instead.
+     *
+     * The framing probe passes it either way, because the centre ray does meet
+     * the citadel's own stone at 98.74 m. "Hits something" is not "frames its
+     * subject" - see the note on that in `harness-framings.test.mjs`, which
+     * also records why no threshold was adopted for it. */
+    { name: 'gate-spawn', pos: [0, 15.92, 104], look: [0, 34, -14], fov: 74, subject: 99 },
     /* A real alley, found by probing rather than by picking a radius, and
      * RE-probed against the re-authored rings.
      *
@@ -652,7 +769,7 @@ const VIEWS = {
      * keep's 41.4 m roof line. The ward's four corners are NOT open - ring 0
      * of the souk is at r = 34 and the 60 m square reaches r = 42 at the
      * diagonal, so houses stand on the slab there. */
-    { name: 'ward-centre', pos: [0, 21.7, 28], look: [0, 40, -6], fov: 78 },
+    { name: 'ward-centre', pos: [0, 21.7, 28], look: [0, 40, -6], fov: 78, subject: 25 },
     /* The rope bridges. Square on to the +Z minaret span, minarets flanking,
      * tower behind; the ray from here to the middle of that span is clear over
      * all 31.8 m of it.
@@ -666,14 +783,14 @@ const VIEWS = {
      * The two long ones are what put the whole rooftop network on one
      * component; they are 35 m over the mesa and want a framing of their own,
      * which is a measurement nobody has taken yet. */
-    { name: 'minaret-bridge', pos: [0, 56, 46], look: [0, 49.6, 14.85], fov: 70, aerial: true },
+    { name: 'minaret-bridge', pos: [0, 56, 46], look: [0, 49.6, 14.85], fov: 70, aerial: true, subject: 60 },
     { name: 'tower-top', computed: true },
     /* The mesa from outside it. Placed at bearing -40 deg, about 78 deg off
      * the sun's own bearing (`sunDirection` (0.55, 0.42, 0.72) -> 37.4 deg),
      * so the town is cross-lit and every ledge casts the line this world was
      * built to be read by. 231 m out, inside the +-200 heightfield on both
      * axes, so nothing beyond the mesh edge is in shot. */
-    { name: 'desert-overview', pos: [-150, 76, 176], look: [0, 46, -10], fov: 74, aerial: true },
+    { name: 'desert-overview', pos: [-150, 76, 176], look: [0, 46, -10], fov: 74, aerial: true, subject: 245 },
 
     /* ---- THE OUTER RING ------------------------------------------------
      *
@@ -731,10 +848,16 @@ class Harness {
     /** {pos, yaw} the player is re-asserted to every step, or null. */
     this._pin = null;
     this._pinDetach = null;
+    /** What `settleBoot` last observed. Reported by `stats()`. */
+    this._warm = null;
+    /** The live `--ablate`, or null. See `ablate`. */
+    this._ablation = null;
+    this._ablationDetach = null;
   }
 
   /**
-   * Resolve once the first world is active and a few frames have rendered.
+   * Resolve once the first world is active, BOOT HAS FINISHED WARMING, and a
+   * few frames have rendered.
    *
    * `drive` defaults TRUE, and that default is the whole point: without it the
    * pointer-lock loss that every automated session suffers leaves the gameplay
@@ -742,19 +865,122 @@ class Harness {
    * and calling it a frame cost is the exact mistake this harness exists to
    * stop. Pass `{ drive: false }` if you specifically want the frozen game.
    *
-   * @param {{ timeoutMs?: number, drive?: boolean }|number} [opts] a number is
-   *   read as `timeoutMs`, which is how this used to be called.
+   * ── THE WAIT THIS USED NOT TO DO, AND WHAT IT COST ────────────────────────
+   * This used to return the moment `worldManager.active` existed. `boot()` in
+   * main.js sets that BEFORE it calls `prewarm()`, and `prewarm` is by a long
+   * way the most expensive thing in a cold boot. Measured on a headless sports
+   * boot: `ready()` returned at 95.9 s, `[boot] playable` printed at 172.0 s,
+   * and the background program warm ran on to 250 s. So every world-shot run
+   * has been measuring a game that was still booting.
+   *
+   * Three separate confident-wrong-number failures come out of that one hole:
+   *
+   *  1. `rehearse()` holds a `forceDrawable` over the whole world - measured up
+   *     at t+140 s, forty-four seconds AFTER `ready()` returned. Everything is
+   *     `visible` and `frustumCulled === false` under it, so `worldTriangles`
+   *     counted 783,008 triangles across 334 objects with NOTHING culled where
+   *     the settled world counts 768,782 across 225 with 109 culled.
+   *  2. Its restore replayed a snapshot taken before `--ablate` ran, silently
+   *     putting every ablated mesh back. Four branches cited that ablation as
+   *     evidence. @see ../gfx/RehearsalDraw.js
+   *  3. `programs` - the figure this phase is gated on - climbed 249 -> 367 ->
+   *     615 across one run purely because the background warm was still
+   *     linking. That is the "programs swing 329->390 on unchanged code" noise
+   *     floor three branches worked around instead of explaining.
+   *
+   * Pass `{ settle: false }` to skip the wait, and then do not quote the
+   * numbers: `stats().warm` records that you did.
+   *
+   * @param {{ timeoutMs?: number, drive?: boolean, settle?: boolean }|number} [opts]
+   *   a number is read as `timeoutMs`, which is how this used to be called.
    */
   async ready(opts = {}) {
-    const { timeoutMs = 120000, drive = true } = typeof opts === 'number' ? { timeoutMs: opts } : opts;
+    const o = typeof opts === 'number' ? { timeoutMs: opts } : opts;
+    const { timeoutMs = 120000, drive = true, settle = true } = o;
     const t0 = performance.now();
     while (!this.game.worldManager.active) {
       if (performance.now() - t0 > timeoutMs) throw new Error('harness: world never activated');
       await frame();
     }
+    if (settle) await this.settleBoot({ timeoutMs });
+    else this._warm = { skipped: true };
     this.setGameplayDriven(drive);
     for (let i = 0; i < 3; i++) await frame();
     return this.game.worldManager.active.id;
+  }
+
+  /**
+   * Wait until the boot's own warm is finished and the scene has stopped
+   * changing under the instrument.
+   *
+   * Three waits, each on a signal this file can see without reaching into
+   * main.js, and each reported rather than assumed:
+   *
+   *   `engine.running`   main.js calls `engine.start()` on the line after
+   *                      `await prewarm()`. It is the one honest "boot has
+   *                      finished" flag in the build, and it is on the engine.
+   *   `rehearsalInForce` a force-draw may still be up - and a force-draw makes
+   *                      every visibility and frustum figure meaningless.
+   *   program quiescence the background world warms keep linking for a minute
+   *                      after play starts. Nothing announces the end of them,
+   *                      so the honest test is measurement: sample the cache
+   *                      and wait for it to stop moving.
+   *
+   * Every one degrades to a no-op against a game that does not publish the
+   * signal, so the class still drives under `node --test` against a stub.
+   *
+   * @param {{timeoutMs?:number, stableMs?:number, sampleMs?:number}} [opts]
+   */
+  async settleBoot({ timeoutMs = 240000, stableMs = 4000, sampleMs = 1000 } = {}) {
+    const engine = this.game.engine;
+    const t0 = performance.now();
+    const left = () => timeoutMs - (performance.now() - t0);
+    const w = {
+      bootWarmWaitedMs: 0, engineRunning: null,
+      rehearsalCleared: null, rehearsalWaitedMs: 0,
+      programs: null, programsSettled: null, programsWaitedMs: 0,
+      timedOut: false,
+    };
+
+    if (typeof engine?.running === 'boolean') {
+      while (!engine.running && left() > 0) await frame();
+      w.engineRunning = engine.running;
+      w.bootWarmWaitedMs = Math.round(performance.now() - t0);
+      if (!engine.running) {
+        console.warn('[harness] engine.start() never ran - the boot warm is STILL going and every figure below is taken during it');
+      }
+    }
+
+    const t1 = performance.now();
+    while (rehearsalInForce() > 0 && left() > 0) await frame();
+    w.rehearsalCleared = rehearsalInForce() === 0;
+    w.rehearsalWaitedMs = Math.round(performance.now() - t1);
+
+    const programs = () => engine?.renderer?.info?.programs?.length ?? null;
+    if (programs() !== null) {
+      const t2 = performance.now();
+      let last = programs();
+      let stableSince = performance.now();
+      while (left() > 0) {
+        await wait(sampleMs);
+        const now = programs();
+        if (now !== last) { last = now; stableSince = performance.now(); continue; }
+        if (performance.now() - stableSince >= stableMs) break;
+      }
+      w.programs = programs();
+      w.programsSettled = performance.now() - stableSince >= stableMs;
+      w.programsWaitedMs = Math.round(performance.now() - t2);
+    }
+
+    w.timedOut = left() <= 0;
+    w.totalMs = Math.round(performance.now() - t0);
+    this._warm = w;
+    console.info(
+      `[harness] boot settled in ${w.totalMs}ms `
+      + `(engine.running=${w.engineRunning}, rehearsal cleared=${w.rehearsalCleared}, `
+      + `programs=${w.programs}${w.programsSettled === false ? ' STILL MOVING' : ''})`
+    );
+    return w;
   }
 
   /**
@@ -1015,6 +1241,66 @@ class Harness {
   }
 
   /**
+   * Every cell in the whole maze whose EMITTED connector is a lift, nearest to
+   * the player first.
+   *
+   * Deliberately the whole 400 x 400 x 4 grid, which is the exact opposite of
+   * `_findResidentShaft`'s rule - and the two are not in conflict, because
+   * they answer different questions. `_findResidentShaft` asks "what has been
+   * BUILT", and that must never be widened, or a framing points at void. This
+   * asks "where would the player have to stand for a lift to be built", which
+   * is only useful precisely because it ignores residency.
+   *
+   * Sparse in practice: a maze holds 33-58 lifts out of ~299 vertical links,
+   * measured across 24 seeds, so the `shaftColliders` call runs a few hundred
+   * times and the rest is an array read.
+   *
+   * @returns {{x:number, z:number, level:number}|null}
+   */
+  _findAnyLift() {
+    const w = this.game.worldManager.active;
+    if (w?.id !== 'maze' || !w.cells) return null;
+    const p = this.game.player?.position;
+    const N = MAZE.DISTRICT * MAZE.DISTRICTS;
+    let best = null;
+    let bestD = Infinity;
+    for (let level = 0; level < MAZE.LEVELS; level++) {
+      for (let z = 0; z < N; z++) {
+        for (let x = 0; x < N; x++) {
+          if (!isOpen(w.cells, cellIndex(x, z, level), DIR.UP)) continue;
+          if (!shaftColliders(w.cells, x, z, level).some((k) => k.kind === 'lift')) continue;
+          const c = cellToWorld(x, z, level);
+          const d = p ? (c.x - p.x) ** 2 + (c.z - p.z) ** 2 : 0;
+          if (d < bestD) { bestD = d; best = { x, z, level }; }
+        }
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Put the player somewhere, and wait for the maze to stream in around them.
+   *
+   * The same move `_computeTowerTop` makes and for the same reason: residency
+   * is driven off `player.position` in `MazeWorld.update`, so a camera sent
+   * somewhere nothing has been built photographs void. Moving the player is
+   * the only thing that makes geometry exist there.
+   *
+   * @param {{x:number, z:number, level:number}} cell
+   */
+  async _makeResident(cell) {
+    const w = cellToWorld(cell.x, cell.z, cell.level);
+    this.unpinPlayer();
+    this.freezeCamera(false);
+    /* The far corner, diagonally opposite the well - `MazeColliders` offsets
+     * every well into the cell's +x/+z quadrant, so the raw centre can be the
+     * hole itself. Same corner `_computeTowerTop` lands on. */
+    this.game.player.teleport(new this.game.THREE.Vector3(w.x - 1.6, w.y + 0.1, w.z - 1.6), 0);
+    for (let i = 0; i < 12; i++) await frame();
+    this.freezeCamera(true);
+  }
+
+  /**
    * Frame a real, resident LIFT - the car in its shaft, seen from the level-N
    * doorway it is entered through.
    *
@@ -1022,11 +1308,38 @@ class Harness {
    * districts and check what was actually EMITTED, so this cannot frame a
    * lift that was never built or a district nobody streamed.
    *
-   * @returns {{pos:number[], look:number[], fov:number}|null}
+   * -- WHAT THIS USED TO COST, AND IT WAS THE WHOLE RUN --------------------
+   * It returned null whenever no lift happened to be resident, `view()` threw
+   * `could not compute view "lift-car"`, and the throw escaped `world-shot`
+   * before `report.json` was written - so four good framings' measurements
+   * were destroyed in order to report the fifth one's absence.
+   *
+   * And it was not rare. Measured over 64 seeds at the fixed entrance, the
+   * cold-spawn resident set holds 0 to 3 lifts and THIRTY OF THE SIXTY-FOUR
+   * hold none: this framing failed on 46.9% of runs. (`shaft-up` is safe by
+   * comparison - the same 64 seeds never had fewer than 2 resident shafts.)
+   *
+   * A seed is not the fix on its own, because a fixed seed means the review
+   * only ever sees one maze. So this now MAKES a lift resident instead: find
+   * the nearest one in the whole topology - median 186 m from spawn, worst
+   * 523 m over 24 seeds, and a maze always has 33 to 58 of them - walk the
+   * player there, and let residency follow. `world-shot` can still pin the
+   * seed when it wants a repeatable before/after; this makes the framing work
+   * either way, which is the property a review instrument needs first.
+   *
+   * @returns {Promise<{pos:number[], look:number[], fov:number}|null>}
    */
-  _findLiftFraming() {
-    const lift = this._findResidentShaft(null, 'lift');
-    if (!lift) return null;
+  async _findLiftFraming() {
+    let lift = this._findResidentShaft(null, 'lift');
+    if (!lift) {
+      const any = this._findAnyLift();
+      /* Null here means the TOPOLOGY has no lift anywhere, which is a maze
+       * defect rather than a framing one - and saying which is the point. */
+      if (!any) return null;
+      await this._makeResident(any);
+      lift = this._findResidentShaft(null, 'lift');
+      if (!lift) return null;
+    }
     const world = this.game.worldManager.active;
     const w = cellToWorld(lift.x, lift.z, lift.level);
     const idx = cellIndex(lift.x, lift.z, lift.level);
@@ -1399,6 +1712,27 @@ class Harness {
       documentHidden: typeof document !== 'undefined' ? document.hidden : null,
       rafStalls: window.__HARNESS_RAF_STALLS__ ?? 0,
       frozenAll: !!this._stubs,
+      /* ── IS THE GAME EVEN FINISHED BOOTING? ─────────────────────────────
+       * `boot()` activates the world and only then runs `prewarm()`, so a
+       * measurement can land in the middle of the warm. Two things there
+       * change the answer rather than the cost:
+       *
+       *   `rehearsalInForce > 0` - `gfx/RehearsalDraw.js` has the whole world
+       *     forced visible and `frustumCulled = false`. Every geometry figure
+       *     below is then the whole world rather than what is in shot: 783,008
+       *     triangles over 334 objects with 0 culled, against a settled
+       *     768,782 over 225 with 109 culled, measured on sports.
+       *   `bootWarmRunning` - `engine.start()` has not run yet. The background
+       *     world warms that follow it move `programs` by hundreds, which is
+       *     the figure this phase is gated on.
+       *
+       * `unculledMeshes` is the direct symptom and is cheap: a settled sports
+       * world has 5 (its sky domes); under a rehearsal it has all 334. */
+      rehearsalInForce: rehearsalInForce(),
+      bootWarmRunning: typeof engine?.running === 'boolean' ? !engine.running : null,
+      unculledMeshes: this._unculledMeshes(),
+      warm: this._warm,
+      ablation: this._ablation ? this.ablationCheck() : null,
       /* The sun's shadow camera is fitted around the PLAYER. Non-zero here
        * means the shadow map is covering somewhere other than what you can
        * see, and every shadow figure below is about that other place. */
@@ -1428,6 +1762,96 @@ class Harness {
       npcs: G.npcManager?.npcs?.length ?? 0,
       portals: G.portals?.portals?.length ?? 0,
     };
+  }
+
+  /**
+   * Is this frame a picture of the world at all?
+   *
+   * ── THE HALF-HOUR THIS EXISTS TO SAVE ────────────────────────────────────
+   * `space` draws nothing where it says it is. Its sky is a 1,920 m dome and
+   * every body is a `Backdrop` proxy, and BOTH are re-placed against the camera
+   * every frame inside the world's own `update()`. A framing that leaves one of
+   * them behind - because the world stopped updating, because something else
+   * anchors them, because the camera was moved after the last update - gets a
+   * dome the camera is no longer inside: a large soft black ellipse eating the
+   * star field, with bodies simply absent. `art-space` lost half an hour to
+   * exactly that shape, reported as a world defect.
+   *
+   * Nothing in the numbers said so. Triangles were unchanged, draws were
+   * unchanged, and the only witness was the picture - which is the one thing a
+   * harness cannot read. So this measures the invariant instead:
+   *
+   *   every camera-anchored object is INSIDE the camera's far plane, and the
+   *   sky dome is centred ON the camera.
+   *
+   * Measured on the current tree, at four vantages including one with the
+   * camera 287 m from the player: every backdrop member sits at 1,765-1,825 m
+   * against a 2,000 m far plane and the dome is centred to within a metre, so
+   * this passes and costs a traverse. That is the point - it is cheap while it
+   * is true, and it is the whole answer the moment it is not.
+   *
+   * @returns {{ok:boolean, problems:string[], skyOffCentre:number|null, far:number|null}}
+   */
+  frameValidity() {
+    const cam = this.game.engine?.camera;
+    const group = this.game.worldManager.active?.group;
+    const out = { ok: true, problems: [], skyOffCentre: null, far: cam?.far ?? null };
+    if (!cam || !group) return out;
+    const V = this.game.THREE?.Vector3;
+    if (!V) return out;
+    const camPos = new V();
+    cam.getWorldPosition(camPos);
+    const at = new V();
+    let worst = 0;
+    let worstName = null;
+    group.traverse((o) => {
+      if (!o.isMesh && !o.isPoints) return;
+      /* Only the camera-anchored dressing. A real object beyond the far plane
+       * is a fact about the world; a PROXY beyond it is a broken frame.
+       * `frustumCulled === false` is the flag those proxies carry, because
+       * they are drawn wherever the camera points. */
+      if (o.frustumCulled !== false) return;
+      o.getWorldPosition(at);
+      const d = at.distanceTo(camPos);
+      if (/sky/i.test(o.name ?? '')) {
+        out.skyOffCentre = Math.round(d * 100) / 100;
+        /* The dome is drawn from the inside. Off-centre by more than a few
+         * metres of its own radius and its far wall crosses the far plane. */
+        const r = o.geometry?.boundingSphere?.radius
+          ?? (o.geometry?.computeBoundingSphere?.(), o.geometry?.boundingSphere?.radius) ?? null;
+        if (r && d + r > cam.far) {
+          out.problems.push(
+            `sky dome "${o.name}" is ${d.toFixed(0)} m off the camera; its far wall at `
+            + `${(d + r).toFixed(0)} m crosses the ${cam.far} m far plane - this frame has a hole in it`
+          );
+        }
+        return;
+      }
+      if (d > worst) { worst = d; worstName = o.name || o.type; }
+    });
+    if (cam.far && worst > cam.far) {
+      out.problems.push(
+        `camera-relative object "${worstName}" is ${worst.toFixed(0)} m out, past the ${cam.far} m far plane - it is not in this picture`
+      );
+    }
+    out.ok = out.problems.length === 0;
+    return out;
+  }
+
+  /**
+   * Meshes in the active world that have opted OUT of frustum culling.
+   *
+   * A handful is normal - sky domes and backdrops are drawn wherever the camera
+   * points. A number close to the world's whole mesh count means something has
+   * force-drawn the world, and every geometry figure taken beside it is about
+   * the whole world rather than about the shot.
+   */
+  _unculledMeshes() {
+    const group = this.game.worldManager.active?.group;
+    if (!group) return null;
+    let n = 0;
+    group.traverse((o) => { if (o.isMesh && o.frustumCulled === false) n++; });
+    return n;
   }
 
   /**
@@ -1491,6 +1915,210 @@ class Harness {
       /* Said out loud next to the number it contradicts. */
       note: 'deterministic; renderer.info.triangles is not - it includes the shadow and GTAO passes',
       rendererInfoTriangles: this.game.engine.renderer.info.render.triangles,
+    };
+  }
+
+  /* ================================================================== */
+  /* ABLATION - the A/B that says which system owns a pixel               */
+  /* ================================================================== */
+
+  /**
+   * Hide every mesh drawn with one of these material NAMES, and HOLD them
+   * hidden for the rest of the run.
+   *
+   * ── WHY THIS IS A HARNESS METHOD AND NOT SIX LINES IN THE SCRIPT ─────────
+   * It was six lines in `scripts/world-shot.mjs`: traverse, match the name,
+   * `visible = false`, count the hits, print the count. Every part of that is
+   * right and the whole is worthless, because a hit count is not evidence. Two
+   * separate mechanisms can take an ablation away again between the hiding and
+   * the measurement:
+   *
+   *   - `rehearse()`'s `forceDrawable` snapshot, whose restore replayed a
+   *     pre-ablation `visible = true` over the top. Measured: an ablation of
+   *     77 meshes was undone 100% by that restore, and the run printed "77
+   *     mesh(es) hidden" and then measured an unablated world. Four Phase 9
+   *     branches cite ablations taken in that window as decisive evidence.
+   *     `gfx/RehearsalDraw.js` no longer clobbers a later write, and this
+   *     re-asserts on every frame as well, because that is not the only
+   *     mechanism: `worlds/lod/DistanceLod.js` writes `e.object.visible` on
+   *     every band transition and the harness MOVES THE CAMERA between
+   *     framings, which is exactly what makes a band transition happen.
+   *
+   * So the contract is no longer "trust the hit count". It is:
+   *
+   *   1. the names have to match something (`missing` names are reported and
+   *      the caller must refuse them),
+   *   2. the hiding has to be HELD - `reasserted` counts every frame something
+   *      fought back, so a world that keeps re-showing its own meshes is
+   *      reported rather than silently winning,
+   *   3. and the ablation has to REMOVE DRAWN TRIANGLES from at least one
+   *      framing, or it changed no pixels and is not evidence of anything.
+   *      `ablationCheck().removedTriangles` is that number, per framing, and
+   *      it is what `world-shot` now fails on.
+   *
+   * Hidden by material name rather than object name for the original reason:
+   * these worlds merge by material, so "which system drew this" and "which
+   * material is this" are the same question, and the material name is the one
+   * label that survives the merge.
+   *
+   * @param {string[]|string} names
+   * @returns {{names:string[], missing:string[], meshes:number,
+   *   drawnTrianglesAtApply:number, world:string|null}}
+   */
+  ablate(names) {
+    const want = (Array.isArray(names) ? names : [names]).map(String);
+    this.unablate();
+    const world = this.game.worldManager.active;
+    const group = world?.group;
+    if (!group) throw new Error('harness.ablate: no active world to ablate');
+
+    /** @type {Array<[object, boolean]>} the mesh and the visibility it had. */
+    const saved = [];
+    const matched = new Set();
+    group.traverse((o) => {
+      const m = o.material;
+      if (!m) return;
+      for (const mm of (Array.isArray(m) ? m : [m])) {
+        if (!mm || !want.includes(mm.name)) continue;
+        matched.add(mm.name);
+        saved.push([o, o.visible]);
+        break;
+      }
+    });
+    const missing = want.filter((n) => !matched.has(n));
+    const meshes = saved.map(([o]) => o);
+    /* Measured BEFORE the hiding, because afterwards nothing can say what the
+     * hiding was worth - `walkWorldTriangles` stops at an invisible object by
+     * design. This is the framing at apply time, which is the spawn vantage;
+     * the per-framing figure is the one that matters and comes from
+     * `ablationCheck`. */
+    const atApply = drawnTrianglesOf(meshes, this.game.engine.camera);
+    for (const o of meshes) o.visible = false;
+
+    this._ablation = {
+      names: want, missing, saved, meshes,
+      world: world.id ?? null, reasserted: 0, removedEver: atApply.triangles,
+    };
+    /* HELD, not set once. Same reasoning as `pinPlayer`: a value written once
+     * and then measured a hundred frames later is a value somebody else has
+     * had a hundred chances to change. */
+    const hold = () => {
+      const a = this._ablation;
+      if (!a) return;
+      for (const o of a.meshes) {
+        if (o.visible) { o.visible = false; a.reasserted++; }
+      }
+    };
+    const offFrame = this.game.engine.onFrameUpdate?.(hold) ?? (() => {});
+    const offFixed = this.game.engine.onFixedUpdate?.(hold) ?? (() => {});
+    this._ablationDetach = () => { offFrame(); offFixed(); };
+
+    return {
+      names: want, missing, meshes: meshes.length,
+      drawnTrianglesAtApply: atApply.triangles, world: world.id ?? null,
+    };
+  }
+
+  /**
+   * Is the ablation still in force, and is it actually taking anything out of
+   * THIS framing?
+   *
+   * `removedTriangles` is the whole point: it is what the hidden meshes would
+   * be drawing right now if they were not hidden. Zero means this framing sees
+   * none of the ablated system, so a "no change" result from this framing says
+   * nothing about that system - which is precisely how an ablation that hid
+   * the wrong two meshes read as "the grass is not what is bright".
+   */
+  ablationCheck() {
+    const a = this._ablation;
+    if (!a) return { active: false };
+    const world = this.game.worldManager.active;
+    const cam = this.game.engine.camera;
+    const would = drawnTrianglesOf(a.meshes, cam);
+    a.removedEver = Math.max(a.removedEver, would.triangles);
+    const walk = walkWorldTriangles(world?.group, cam, { breakdown: true });
+    /* A backstop, not the primary check: if the hold is working nothing here
+     * can be non-empty. It is here because the hold is a frame updater, and a
+     * frame updater that stopped running is exactly the silent failure this
+     * whole file exists to refuse. */
+    const stillDrawn = walk.byMaterial.filter((b) => a.names.includes(b.key));
+    /* WALK UP UNTIL THE WORLD GROUP, NOT UNTIL THE ROOT.
+     *
+     * This walked to the top of the hierarchy and compared that against
+     * `world.group` - and a world group is parented into `engine.scene`, so
+     * the walk always ended at the SCENE and every mesh read as detached. The
+     * first real browser run reported "77 ablated mesh(es) are no longer under
+     * the active world group - the world was rebuilt" for a world that had not
+     * been rebuilt at all. A check that measures the wrong thing does not
+     * produce a bad answer, it produces a confident wrong one; this file is
+     * about that, and it is worth recording that it happened here too. */
+    let detached = 0;
+    for (const o of a.meshes) {
+      let n = o;
+      while (n && n !== world?.group) n = n.parent;
+      if (!n) detached++;
+    }
+    const reasserted = a.reasserted;
+    a.reasserted = 0;
+    return {
+      active: true,
+      names: a.names,
+      world: world?.id ?? null,
+      worldChanged: (world?.id ?? null) !== a.world,
+      meshes: a.meshes.length,
+      hidden: a.meshes.filter((o) => !o.visible).length,
+      /** What this framing loses by the ablation. 0 = this framing proves nothing. */
+      removedTriangles: would.triangles,
+      /** The most any framing has lost so far, so a run can be judged as a whole. */
+      removedEver: a.removedEver,
+      /** Non-empty means the hiding is NOT holding. Any value here voids the run. */
+      stillDrawn,
+      /** Meshes no longer under the active world group - a rebuild took them. */
+      detachedMeshes: detached,
+      /** Frames on which something re-showed an ablated mesh and was overruled. */
+      reasserted,
+    };
+  }
+
+  /** Release an ablation and put the meshes back exactly as they were. */
+  unablate() {
+    const a = this._ablation;
+    this._ablationDetach?.();
+    this._ablationDetach = null;
+    this._ablation = null;
+    if (!a) return { active: false };
+    for (const [o, visible] of a.saved) o.visible = visible;
+    return { active: false, restored: a.saved.length };
+  }
+
+  /**
+   * Pin the maze's seed, so two runs of one commit photograph the same maze.
+   *
+   * -- WHY AN INSTRUMENT NEEDS THIS AND A PLAYER MUST NOT HAVE IT ----------
+   * `MazeWorld` is `volatile` and re-seeds on every activation, deliberately:
+   * "the maze that cannot be learned is the entire point". For a review that
+   * is fatal. Two runs of the SAME COMMIT build two unrelated mazes, so every
+   * number in a before/after is a measurement of the seed. Measured over 64
+   * seeds at the fixed entrance, the resident set alone swings from 2 to 11
+   * shafts and 0 to 3 lifts.
+   *
+   * `MazeWorld.seedOverride` is null in every normal boot. This is the only
+   * thing that writes it, it only exists under `?dev=1`, and the seed actually
+   * used is reported whether it was pinned or not - so a run that did NOT pin
+   * one still says which maze it photographed and can be re-flown exactly.
+   *
+   * Takes effect on the next `build()`, which for a volatile world means the
+   * next `goto('maze')`.
+   *
+   * @param {number|null} [seed] omit to read the current override.
+   */
+  mazeSeed(seed) {
+    if (seed !== undefined) MazeWorld.seedOverride = seed === null ? null : (seed >>> 0);
+    return {
+      override: MazeWorld.seedOverride,
+      active: this.game.worldManager.active?.id === 'maze'
+        ? this.game.worldManager.active.seed
+        : null,
     };
   }
 
@@ -1616,6 +2244,11 @@ class Harness {
  * rather than reject: a genuine 10 s frame is possible during shader warmup,
  * and failing the boot would be worse than saying so.
  */
+/** Wall-clock wait. Used where the thing being waited for is not per-frame. */
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function frame(timeoutMs = 10000) {
   return new Promise((resolve) => {
     const t = setTimeout(() => {

@@ -82,6 +82,12 @@ const { WorldManager } = await import('../../src/worlds/WorldManager.js');
 const { DockWorld } = await import('../../src/worlds/DockWorld.js');
 const { SpaceWorld } = await import('../../src/worlds/SpaceWorld.js');
 const { StationWorld } = await import('../../src/worlds/StationWorld.js');
+/* Registered, never built by `rig()` itself. `harness-framings.test.mjs` asks
+ * for it and builds it on demand; nothing else pays for it. Registration is
+ * what lets a suite `goto('sports')` at all - a world the manager has never
+ * heard of cannot be activated, and that is why the sports framings had no
+ * ray probe of their own for as long as they have existed. */
+const { SportsWorld } = await import('../../src/worlds/SportsWorld.js');
 const { worldClasses } = await import('../../src/worlds/planets/index.js');
 const { Piloting } = await import('../../src/ships/Piloting.js');
 const { Mining } = await import('../../src/systems/Mining.js');
@@ -294,7 +300,7 @@ export async function rig() {
     materials: { get: () => new THREE.MeshStandardMaterial(), dispose() {} },
   };
   const wm = new WorldManager(ctx);
-  wm.register(DockWorld).register(SpaceWorld).register(StationWorld);
+  wm.register(DockWorld).register(SpaceWorld).register(StationWorld).register(SportsWorld);
   for (const C of worldClasses()) wm.register(C);
 
   const player = fakePlayer();

@@ -67,7 +67,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 function parseArgs(argv) {
   const out = {
     world: 'medieval', views: null, out: null, compare: null, ablate: null,
-    subjects: null, dist: 7, rise: 1.6,
+    subjects: null, dist: 7, rise: 1.6, seed: null,
     width: 1600, height: 900, settle: 14, keep: false, help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -82,6 +82,7 @@ function parseArgs(argv) {
     else if (a === '--settle') out.settle = Number(next());
     else if (a === '--ablate') out.ablate = next().split(',').map((s) => s.trim()).filter(Boolean);
     else if (a === '--subject') (out.subjects ??= []).push(next());
+    else if (a === '--seed') out.seed = Number(next());
     else if (a === '--dist') out.dist = Number(next());
     else if (a === '--rise') out.rise = Number(next());
     else if (a === '--keep') out.keep = true;
@@ -242,7 +243,27 @@ const MEASURE = `(() => {
   const stats = H.stats();
   const tri = H.worldTriangles({ breakdown: true, top: 14 });
   return {
+    /* WHICH WORLD IS THIS ACTUALLY A PICTURE OF.
+     *
+     * Not a formality. VIEWS.sports' entrance-portal stands behind the
+     * gateway, the harness's own player teleport is a plane-side crossing, and
+     * Portals._autoEnter fires - so that row reported 225 materials and 3.1 M
+     * triangles as SPORTS'. Every figure below belongs to whatever world this
+     * says, and world-shot refuses a row whose world is not the one asked for
+     * rather than filing it under the wrong heading. */
+    world: world?.id ?? null,
     gameplayDriven: stats.gameplayDriven,
+    /* Is the game finished booting? A force-draw makes every geometry figure
+     * below the whole world instead of the shot. See Harness.settleBoot. */
+    rehearsalInForce: stats.rehearsalInForce,
+    bootWarmRunning: stats.bootWarmRunning,
+    unculledMeshes: stats.unculledMeshes,
+    /* The sun's shadow camera is a 120 m box fitted around the PLAYER, not
+     * around the render camera. A framing whose camera is a long way from the
+     * player is a framing whose shadow map covers somewhere else, and its
+     * shadow cost is a measurement of that other place. */
+    cameraToPlayer: stats.cameraToPlayer,
+    frameValidity: H.frameValidity(),
     drawCalls: stats.drawCalls,
     rendererTriangles: stats.triangles,
     worldTriangles: tri.triangles,
@@ -279,12 +300,23 @@ const HELP = `world-shot - screenshots and the render budget for one world
                      The A/B that tells you which system owns a pixel: shoot
                      once normally, once with a system switched off, and the
                      difference is the answer. Reading the source is not.
+                     The hiding is HELD against anything that re-shows it, and
+                     every framing reports how many drawn triangles the
+                     ablation actually removed FROM THAT FRAMING. A run in
+                     which no framing lost anything FAILS: the system was never
+                     in shot, so "nothing changed" is not a result about it.
   --subject "name=<js>"  frame a live object instead of a fixed vantage. The
                      expression runs in the page and returns {x,y,z} - e.g.
                      "wolf=GAME.npcManager.npcs.find(n=>n.species==='wolf').position".
                      The named views are all landscape framings; a character or
                      a beast has to be photographed where it happens to be
                      standing, and it moves, so it cannot be a fixed vantage.
+  --seed <n>         pin the maze's seed, so two runs of one commit photograph
+                     the SAME maze. MazeWorld re-seeds from Math.random() on
+                     every activation - right for a player, ruinous for a
+                     before/after - and over 64 seeds the spawn-resident set
+                     alone swings from 2 to 11 shafts. The seed actually used
+                     is recorded in report.json either way.
   --dist <m>         subject framing: camera distance, default 7
   --rise <m>         subject framing: camera height above the subject, default 1.6
   --width/--height   viewport, default 1600x900
@@ -410,6 +442,12 @@ async function main() {
 
     const bootWorld = await evaluate('window.HARNESS.ready({ timeoutMs: 240000 })', { awaitPromise: true });
     console.log(`ready: world "${bootWorld}"`);
+    /* BEFORE the goto, because a volatile world re-seeds inside `build()` and
+     * `goto` is what triggers it. */
+    if (args.seed !== null && Number.isFinite(args.seed)) {
+      await evaluate(`window.HARNESS.mazeSeed(${args.seed})`);
+      console.log(`maze seed pinned to ${args.seed >>> 0}`);
+    }
     if (bootWorld !== args.world) {
       console.log(`goto: ${args.world}`);
       await evaluate(`window.HARNESS.goto(${JSON.stringify(args.world)})`, { awaitPromise: true });
@@ -434,34 +472,62 @@ async function main() {
       console.warn('WARNING: software GL - frame times from this run are not comparable to a real device.');
     }
 
+    /* Which maze this actually is, pinned or not. A run that did not pin a seed
+     * still has to say which world it photographed, or its numbers cannot be
+     * reproduced or even compared against themselves. */
+    report.mazeSeed = await evaluate('window.HARNESS.mazeSeed ? window.HARNESS.mazeSeed() : null');
+    if (report.mazeSeed?.active != null) console.log(`maze seed in use: ${report.mazeSeed.active}`);
+
     const driven = await evaluate('window.HARNESS.gameplayDriven');
     if (!driven) {
       console.warn('WARNING: gameplay is NOT driven - every figure below is the LOD-disabled worst case.');
     }
     report.gameplayDriven = driven;
 
+    /* The boot warm, and whether this run waited it out.
+     *
+     * `HARNESS.ready()` used to return as soon as the world was activated,
+     * which `boot()` does BEFORE the shader warm. Measured headless on sports:
+     * `ready()` at 95.9 s, `[boot] playable` at 172.0 s, background program
+     * warm still linking at 250 s - so every framing below used to be taken
+     * during the boot. Recorded next to the numbers because the two things it
+     * changes are the two things this harness reports: `rehearse()` holds the
+     * whole world force-drawn (783,008 triangles over 334 objects with none
+     * culled, against a settled 768,782 over 225 with 109 culled) and the
+     * background warm moves `programs` by hundreds. @see src/dev/Harness.js */
+    report.warm = await evaluate('window.HARNESS.stats().warm');
+    if (report.warm && report.warm.programsSettled === false) {
+      console.warn('WARNING: the shader program cache was still growing when measuring started - `programs` below is a moving number.');
+    }
+
     if (args.ablate?.length) {
-      /* Hide by MATERIAL NAME rather than by object name: these worlds merge
-       * by material, so "which system drew this" and "which material is this"
-       * are the same question, and the material name is the one label that
-       * survives the merge. Reported back so a typo'd name cannot pass as a
-       * system that turned out to be innocent. */
-      const hidden = await evaluate(`(() => {
-        const names = ${JSON.stringify(args.ablate)};
-        const hit = [];
-        window.GAME.worldManager.active?.group?.traverse((o) => {
-          const m = o.material;
-          if (!m) return;
-          for (const mm of (Array.isArray(m) ? m : [m])) {
-            if (mm && names.includes(mm.name)) { o.visible = false; hit.push(mm.name); break; }
-          }
-        });
-        return hit;
-      })()`);
+      /* THE ABLATION IS NO LONGER A HIT COUNT.
+       *
+       * It used to be: traverse, match the material name, `visible = false`,
+       * print how many meshes were touched. That reported "2 mesh(es) hidden"
+       * on a run where `rehearse()`'s `forceDrawable` restore put both of them
+       * straight back, and the table that followed was of an unablated world.
+       * Four Phase 9 branches cite an ablation taken that way as evidence.
+       *
+       * `HARNESS.ablate` HOLDS the hiding against anything that re-shows it,
+       * and `HARNESS.ablationCheck()` is asked at every framing for the one
+       * number that makes an ablation evidence at all: how many triangles the
+       * hidden meshes would be drawing in THIS frame. A framing that loses
+       * nothing proves nothing about the system, and a RUN that loses nothing
+       * anywhere is not an experiment - it fails below rather than printing a
+       * table of unchanged numbers. @see src/dev/Harness.js `ablate` */
+      const abl = await evaluate(`window.HARNESS.ablate(${JSON.stringify(args.ablate)})`);
       report.ablated = args.ablate;
-      report.ablatedMeshes = hidden.length;
-      console.log(`ablated: ${args.ablate.join(', ')} - ${hidden.length} mesh(es) hidden`);
-      if (!hidden.length) throw new Error(`--ablate matched no material in "${args.world}" - check the name`);
+      report.ablation = abl;
+      report.ablatedMeshes = abl.meshes;
+      console.log(`ablated: ${args.ablate.join(', ')} - ${abl.meshes} mesh(es) held hidden`);
+      if (abl.missing.length) {
+        throw new Error(
+          `--ablate matched no material named ${abl.missing.map((n) => `"${n}"`).join(', ')} in "${args.world}".\n`
+          + 'Material names are the merge labels; run without --ablate and read `materialNames` out of report.json.'
+        );
+      }
+      if (!abl.meshes) throw new Error(`--ablate matched no material in "${args.world}" - check the name`);
     }
 
     const all = await evaluate(`window.HARNESS.viewNames(${JSON.stringify(args.world)})`);
@@ -475,21 +541,66 @@ async function main() {
     }
     console.log(`views: ${views.join(', ')}`);
 
+    /* ── ONE FRAMING MUST NOT COST THE RUN ITS REPORT ────────────────────
+     *
+     * `VIEWS.maze`'s `lift-car` is computed, and 40% of maze seeds have no
+     * resident lift at the entrance for it to find - so `view()` throws at
+     * framing 4 of 5, the throw escaped to the outer catch, and `report.json`
+     * was never written. Four framings' worth of measurements were thrown away
+     * to report one framing's failure.
+     *
+     * So a framing that fails is now RECORDED as failed and the run carries
+     * on. The failures are re-raised at the end, after the report is on disk:
+     * the run still fails - loudly, with every framing's error in the console
+     * and in `report.json` - and the evidence survives it. */
+    const viewErrors = [];
+    const ablationSeen = [];
     for (const view of views) {
-      await evaluate(`window.HARNESS.view(${JSON.stringify(view)}, { settle: ${args.settle} })`, { awaitPromise: true });
-      /* Settle in wall-clock too: the world's own LOD bands, the residency
-       * systems and the grass all step on their own schedules, and a shot
-       * taken the frame the camera arrives catches them mid-band. */
-      await sleep(1500);
-      const m = await evaluate(MEASURE);
-      report.views[view] = m;
-      const shot = await call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
-      await writeFile(path.join(outDir, `${view}.png`), Buffer.from(shot.data, 'base64'));
-      console.log(
-        `  ${view.padEnd(18)} draws ${String(m.drawCalls).padStart(5)}  `
-        + `tris ${String(m.worldTriangles).padStart(9)}  mats ${String(m.materials).padStart(4)}  `
-        + `progs ${String(m.programs).padStart(4)}  meshes ${String(m.renderables).padStart(5)}`
-      );
+      try {
+        const placed = await evaluate(`window.HARNESS.view(${JSON.stringify(view)}, { settle: ${args.settle} })`, { awaitPromise: true });
+        /* Settle in wall-clock too: the world's own LOD bands, the residency
+         * systems and the grass all step on their own schedules, and a shot
+         * taken the frame the camera arrives catches them mid-band. */
+        await sleep(1500);
+        const m = await evaluate(MEASURE);
+        /* `keepPlayer` framings (the maze's `above-entrance`, its `tower-top`)
+         * deliberately leave the player elsewhere, so only the framings that
+         * asked for the player are held to standing where the camera is. */
+        m.expectPlayerAtCamera = placed?.playerMoved === true;
+        report.views[view] = m;
+        const shot = await call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+        await writeFile(path.join(outDir, `${view}.png`), Buffer.from(shot.data, 'base64'));
+        console.log(
+          `  ${view.padEnd(18)} draws ${String(m.drawCalls).padStart(5)}  `
+          + `tris ${String(m.worldTriangles).padStart(9)}  mats ${String(m.materials).padStart(4)}  `
+          + `progs ${String(m.programs).padStart(4)}  meshes ${String(m.renderables).padStart(5)}`
+        );
+        checkFrame(view, m, args, viewErrors);
+        if (args.ablate?.length) {
+          const chk = await evaluate('window.HARNESS.ablationCheck()');
+          m.ablation = chk;
+          ablationSeen.push({ view, ...chk });
+          checkAblation(view, chk, viewErrors);
+          console.log(
+            `  ${''.padEnd(18)} ablation removes ${String(chk.removedTriangles).padStart(8)} tris from this framing`
+            + (chk.reasserted ? `  (re-hidden ${chk.reasserted}x - something keeps re-showing it)` : '')
+          );
+        }
+      } catch (e) {
+        const msg = e.message ?? String(e);
+        viewErrors.push(`${view}: ${msg}`);
+        report.views[view] = { error: msg };
+        console.error(`  ${view.padEnd(18)} FAILED: ${msg}`);
+        /* A framing that entered a gateway leaves the run standing in another
+         * world, and every framing after it would photograph that one. Go back
+         * before the next row rather than filing five more under the wrong
+         * heading. */
+        const now = await evaluate('window.GAME.worldManager.active?.id ?? null').catch(() => null);
+        if (now && now !== args.world) {
+          console.error(`  ${''.padEnd(18)} ... the active world is now "${now}" - returning to "${args.world}"`);
+          await evaluate(`window.HARNESS.goto(${JSON.stringify(args.world)})`, { awaitPromise: true }).catch(() => {});
+        }
+      }
     }
 
     /* ---- subject framings -------------------------------------------
@@ -531,25 +642,83 @@ async function main() {
       at = await evaluate(`(() => { const p = (${expr}); return p ? {x:p.x, y:p.y, z:p.z} : null; })()`) ?? at;
       await evaluate('window.HARNESS.freezeAll(true); true');
 
+      /* ── THE PLAYER COMES TO EVERY HEADING, NOT JUST THE FIRST ──────────
+       *
+       * These three used to pass `movePlayer: false`, and only the `profile`
+       * heading happened to coincide with the vantage the player had been
+       * walked to - so two of every three subject rows were taken with the
+       * player standing somewhere else. Two things are wrong with that and
+       * both are in this harness's own docstrings already:
+       *
+       *  - the sun's shadow camera is a 120 m box fitted around the PLAYER, so
+       *    those two rows report the shadow cost of the ground the player is
+       *    on rather than of the subject in shot (`_vantage`'s own header);
+       *  - anything a world places against the player - and `space` places its
+       *    1,920 m sky dome and every `Backdrop` body against the CAMERA,
+       *    measured, but nothing guarantees the next world will - is then
+       *    de-centred by the whole stand-off.
+       *
+       * `freezeAll(true)` is already in force, so moving the player is one
+       * teleport with the engine paused: it cannot disturb the pose the three
+       * headings are of. `pinPlayer` drops the mannequin and keeps its shadow
+       * (`avatar.harnessShadowOnly`), so the body does not walk into the shot.
+       * `frameValidity()` and the `cameraToPlayer` check below then hold the
+       * result rather than trusting this comment. */
       for (const [tag, angle] of [['profile', Math.PI / 2], ['three-quarter', Math.PI * 0.78], ['front', Math.PI]]) {
         const cx = at.x + Math.sin(angle) * args.dist;
         const cz = at.z + Math.cos(angle) * args.dist;
         await evaluate(
           `window.HARNESS.look([${cx},${at.y + args.rise},${cz}], [${at.x},${at.y + 0.5},${at.z}], 45, `
-          + `{ settle: ${args.settle}, movePlayer: false })`,
+          + `{ settle: ${args.settle} })`,
           { awaitPromise: true }
         );
         await sleep(900);
         const m = await evaluate(MEASURE);
+        m.expectPlayerAtCamera = true;
         const key = `${name}-${tag}`;
         report.views[key] = { ...m, subjectAt: at };
         const shot = await call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
         await writeFile(path.join(outDir, `${key}.png`), Buffer.from(shot.data, 'base64'));
         console.log(`  ${key.padEnd(24)} at ${at.x.toFixed(1)},${at.y.toFixed(1)},${at.z.toFixed(1)}  draws ${m.drawCalls}  tris ${m.worldTriangles}`);
+        checkFrame(key, m, args, viewErrors);
       }
       await evaluate('window.HARNESS.freezeAll(false); true');
     }
 
+    /* ---- the ablation's verdict, and it is a verdict ------------------
+     *
+     * An ablation that removed no drawn triangles from ANY framing is not a
+     * negative result, it is a failed experiment: the system was never in
+     * shot, so "the numbers did not move" says nothing whatever about it.
+     * That is exactly what happened when `--ablate sports.grass.field` moved a
+     * crop's mean luma by 0.00 - and what was reported was the 0.00.
+     *
+     * The per-framing figure is in each row, so a reviewer can also see WHICH
+     * framings the ablation was an experiment in and which it was not. */
+    if (args.ablate?.length && ablationSeen.length) {
+      const best = Math.max(...ablationSeen.map((r) => r.removedTriangles ?? 0));
+      const touched = ablationSeen.filter((r) => (r.removedTriangles ?? 0) > 0).map((r) => r.view);
+      report.ablationVerdict = { best, framingsTouched: touched, framingsMeasured: ablationSeen.length };
+      const reasserted = ablationSeen.reduce((n, r) => n + (r.reasserted ?? 0), 0);
+      if (reasserted) {
+        report.ablationVerdict.reasserted = reasserted;
+        console.warn(
+          `WARNING: something re-showed the ablated meshes ${reasserted} time(s) and the harness overruled it. `
+          + 'The pictures are right; the world is fighting the ablation.'
+        );
+      }
+      if (best === 0) {
+        viewErrors.push(
+          `--ablate ${args.ablate.join(',')}: removed 0 drawn triangles from every one of the `
+          + `${ablationSeen.length} framing(s) measured. Nothing in this run is evidence about that system - `
+          + 'it was never in shot. Pick a framing that sees it, or a material that is drawn.'
+        );
+      } else {
+        console.log(`ablation removed up to ${best} triangles, in ${touched.length}/${ablationSeen.length} framings: ${touched.join(', ')}`);
+      }
+    }
+
+    report.viewErrors = viewErrors;
     report.pageLog = pageLog.slice(-60);
     await writeFile(path.join(outDir, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`\nwrote ${path.join(outDir, 'report.json')}`);
@@ -559,6 +728,17 @@ async function main() {
       const diff = compare(prev, report);
       await writeFile(path.join(outDir, 'diff.json'), JSON.stringify(diff, null, 2));
       printDiff(diff);
+    }
+
+    /* Last, and only after the evidence is on disk. A run that fails still has
+     * to leave its measurements behind - the alternative is what `lift-car`
+     * did to the maze, which was to throw away four good framings in order to
+     * report the fifth one's failure. */
+    if (viewErrors.length) {
+      throw new Error(
+        `${viewErrors.length} framing(s) in "${args.world}" did not measure what they claim to:\n  `
+        + viewErrors.join('\n  ')
+      );
     }
   } catch (e) {
     console.error(e.stack ?? String(e));
@@ -570,6 +750,63 @@ async function main() {
     if (!args.keep) await rm(userDir, { recursive: true, force: true }).catch(() => {});
   }
   return code;
+}
+
+/* ---------------------------------------------------------------- */
+/* What makes a row worth printing                                   */
+/* ---------------------------------------------------------------- */
+
+/** How far a framing's camera may sit from the player before the shadow map is about somewhere else. */
+const SHADOW_BOX_SLACK = 8;
+
+/**
+ * Refuse a measurement that is about something other than what was asked for.
+ *
+ * Every check here is a row that WAS printed, in a table where every other
+ * number was real, and read as evidence:
+ *
+ *   `world`            `VIEWS.sports`' `entrance-portal` stands behind the
+ *                      gateway and the harness's own player teleport crosses
+ *                      it, so `Portals._autoEnter` fired: 225 materials and
+ *                      3.1 M triangles of STATION were filed under sports.
+ *   `rehearsalInForce` boot's shader warm still had the world force-drawn,
+ *                      so nothing was culled and the figure was the whole
+ *                      world rather than the shot.
+ *   `cameraToPlayer`   the sun's shadow camera is a 120 m box on the PLAYER.
+ *                      A camera left behind measures the shadow cost of the
+ *                      slab the player is standing on, not of the shot.
+ *   `frameValidity`    a camera-relative backdrop that got left behind. The
+ *                      numbers do not move and the picture is broken.
+ */
+function checkFrame(view, m, args, errors) {
+  if (m.world && m.world !== args.world) {
+    errors.push(`${view}: photographed world "${m.world}", not "${args.world}" - this framing left the world it claims to measure`);
+  }
+  if (m.rehearsalInForce) {
+    errors.push(`${view}: ${m.rehearsalInForce} force-draw(s) were up - every geometry figure in this row is the whole world, not the shot`);
+  }
+  if (m.frameValidity && m.frameValidity.ok === false) {
+    errors.push(`${view}: ${m.frameValidity.problems.join('; ')}`);
+  }
+  if (m.expectPlayerAtCamera && m.cameraToPlayer !== null && m.cameraToPlayer > SHADOW_BOX_SLACK) {
+    errors.push(`${view}: the player is ${m.cameraToPlayer} m from the camera - the sun's shadow box is over there, not here`);
+  }
+}
+
+/** Refuse an ablation that is no longer in force, or that never was. */
+function checkAblation(view, chk, errors) {
+  if (!chk.active) { errors.push(`${view}: the ablation is not in force any more`); return; }
+  if (chk.stillDrawn.length) {
+    errors.push(
+      `${view}: the ablation is NOT holding - ${chk.stillDrawn.map((b) => `${b.key} still draws ${b.triangles} triangles across ${b.objects} object(s)`).join('; ')}`
+    );
+  }
+  if (chk.detachedMeshes) {
+    errors.push(`${view}: ${chk.detachedMeshes} ablated mesh(es) are no longer under the active world group - the world was rebuilt and this ablation is of the old one`);
+  }
+  if (chk.worldChanged) {
+    errors.push(`${view}: the world is "${chk.world}" now and the ablation was applied in a different one - it is not in force here`);
+  }
 }
 
 const KEYS = ['drawCalls', 'worldTriangles', 'materials', 'programs', 'renderables', 'instancedMeshes', 'worldLights'];
@@ -600,4 +837,14 @@ function printDiff(diff) {
   }
 }
 
-process.exit(await main());
+/* The refusal rules are exported and the run is gated on being the entry
+ * point, so `scripts/tests/harness-ablation.test.mjs` can drive them directly.
+ * A rule that decides whether a measurement is publishable is itself a thing
+ * that can be wrong, and the only way to find out is to test it - which is not
+ * possible if importing this file boots Chrome. */
+export { checkFrame, checkAblation, SHADOW_BOX_SLACK };
+
+const entry = process.argv[1] ? path.resolve(process.argv[1]) : null;
+if (entry && entry === path.resolve(fileURLToPath(import.meta.url))) {
+  process.exit(await main());
+}

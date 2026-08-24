@@ -1,23 +1,31 @@
 # AETHER NEXUS — Implementation Brief Roadmap
 
 **Source:** "AetherNexus AI Coding Agent Implementation Brief" (7 pp), supplied 2026-08-21.
-**Status (2026-08-23):** Phases 0-8 and 10-11 SHIPPED to main and production. Phase 9 is
-four worlds of nine done and shipped (`station`, `medieval`, `citadel`, `dock`); `sports`,
-`maze`, `space` and a cross-world `art-loot` branch are in flight; `race` and `planets` are
-not started and need `VIEWS` entries in `src/dev/Harness.js`, which they do not yet have.
-Phase 12 (production E2E) is deliberately last, so it tests the finished whole.
+**Status (2026-08-24): ALL THIRTEEN PHASES HAVE RUN.** Phases 0-12 are shipped to main and
+production across twenty deploys, each verified in LIVE BYTES - the hashed asset fetched and
+hashed against the local file, and the live chunk grepped for STRING LITERALS, because symbols
+do not survive minification and a symbol search returns a confident false negative.
 
-Eleven production deploys, each verified in LIVE BYTES rather than by assuming the push
-landed - by fetching the hashed asset and comparing its hash to the local file, and by
-grepping the live chunk for STRING LITERALS (symbols do not survive minification, and a
-symbol search returns a confident false negative).
+Phase 9 is complete: all nine world art branches merged, plus a cross-world `art-loot`, an
+`orb-hunt`, a `harness-instruments` and a `harness-framings` branch for the instrument defects
+those nine handed up. Phase 12 surveyed the finished whole with a playthrough agent driving real
+OS key events, and found **two live production loop-blockers no gate in this repository could
+have caught** - `/api/game/quests` and `/api/marketplace/items` had been HTTP 500 to every caller
+since Phase 7 deployed. Both fixed; production verified serving 23 station quests and 612
+marketplace items.
+
+**Phase 1's acceptance criterion has now been measured** for the first time, on the production
+bundle. First keybind, first weapon change and first mount launch PASS. **World entry and
+repeated entry/exit still FAIL** - worst 38.2 s - and section 4's Phase 1 entry carries what
+remains, with the cost of each. The criterion's own wording is wrong in three places; see the
+Phase 1 section.
 
 The four decisions in section 8 were taken 2026-08-22 and are folded into the phases below.
 
-**This status line was itself stale for a whole session** - it read "Not started" while
-eleven phases were live in production. That is the failure this repository has been bitten
-by repeatedly: a planning document that is wrong in the direction of optimism, and later
-work planned from it. Re-read the tree before you plan from this file.
+**This status line read "Not started" through eleven production deploys** before it was
+corrected. That is the failure this repository has been bitten by repeatedly: a planning
+document wrong in the direction of optimism, and later work planned from it. Re-read the tree
+before you plan from this file.
 **Basis:** four-agent recon of 2026-08-21 against `main` @ `86f3cdb`, clean tree. Every claim
 below was read out of the tree or measured; none is assumed.
 

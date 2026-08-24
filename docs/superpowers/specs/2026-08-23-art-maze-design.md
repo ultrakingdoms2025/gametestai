@@ -275,7 +275,8 @@ the three above, which admit exactly one answer and do not care what shape the s
 
 ## 4. The budget
 
-Three runs each way, same machine, same order, `gameplayDriven: true`. Ranges, because §0.
+Same machine, same order, same five framings, `gameplayDriven: true`, hardware GL. Ranges rather
+than single values, because §0.
 
 **Seven** base runs and **three** after runs, and the base runs are not a memory: after the work
 was committed, the base commit `a7734ed` was checked out into this same worktree and re-run

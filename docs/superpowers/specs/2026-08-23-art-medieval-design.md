@@ -205,7 +205,27 @@ The 399 at `hills-vista` in the before column is pre-existing run-to-run varianc
 program cache fills, not a regression this pass removed. Recorded because a later run that
 reports 399 there should not be read as one either.
 
-## 5. Gates
+## 5. The evidence
+
+`.probe/` is gitignored, so the run directories die with the worktree. The shots that carry
+the argument are committed alongside this spec, in the shape the maze phase's were
+(`img/2026-08-09-phase-6/`):
+
+| file | what it shows |
+|---|---|
+| `img/2026-08-23-art-medieval/before-village-street.jpg` | the camera two and a third metres inside the hill: a flat beige field with tree canopies hanging in it |
+| `…/after-village-street.jpg` | the same framing at eye height - church tower, market stalls, cobbles, villagers |
+| `…/before-village-square.jpg` | knee height, and a searing white blob in the middle of the square |
+| `…/after-village-square.jpg` | eye height |
+| `…/before-wolf.jpg` | a smooth barrel with four pods bolted to it, one flat colour nose to tail |
+| `…/after-wolf.jpg` | a hackle ridge along the topline and pale lower legs |
+| `…/loot-blowout-hills-vista.jpg` | a dozen hard white orbs across the vale, in empty fields and over the river at 300 m |
+| `…/loot-blowout-glow-ablated.jpg` | the same framing with `medieval.glow` hidden. **The orbs are still there.** The ablation that stopped this pass fixing the wrong system |
+
+The full run directories, while this worktree lives, are `.probe/art-medieval/{before,after,
+beasts-before,beasts-after,ablate-glow}/`, each with a `report.json` and `after/diff.json`.
+
+## 6. Gates
 
 - `npm test` — 2804 before, more after; every new number in the manifest asserted against the
   file on disk.

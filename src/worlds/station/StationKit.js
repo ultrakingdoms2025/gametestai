@@ -581,6 +581,122 @@ export const SIGN_COLS = 4;
 export const SIGN_ROWS = 11;
 
 /* ------------------------------------------------------------------ */
+/* The ambient crowd's skeleton                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Every joint the plaza crowd is built from, in one table, in body space.
+ *
+ * ── Why these numbers moved out of `StationWorld._crowdBodyGeo` ───────────
+ *
+ * They were literals inside three sibling builders (`_crowdBodyGeo`,
+ * `_crowdSeatedGeo`, `_crowdHeadGeo`), which was fine while the only thing
+ * that read them was the mesh they were typed into. Phase 9 adds a SECOND
+ * reader: `scripts/make-crowd-glb.mjs` authors hands, hair, a collar and shoes
+ * that have to land ON those joints, and it runs in Node, hours before the
+ * world is built, with no access to a class method's inline constants.
+ *
+ * `make-ship-glb.mjs` paid for the alternative once already: asserting two of
+ * a plan's fields let a 0.40 m divergence ship unnoticed. `make-beast-glb.mjs`
+ * answered it by deriving its anchors from `BeastBody.PROFILES` - the same
+ * table the game builds from - so a profile edit that moves a skull moves the
+ * brow with it, or fails the gate. This is that answer, applied to a crowd.
+ *
+ * A wrist is therefore not a number anybody types twice. It is `crowdWrist()`,
+ * below, computed from the arm's own pivot, length and tilt, and
+ * `crowd-assets.test.mjs` asserts the authored hand actually sits there.
+ *
+ * ── The one asymmetry, which is deliberate and is NOT a mirror ────────────
+ *
+ * `FORE_R` / `FORE_L` are different numbers. The legs are offset fore and aft
+ * as well as laterally so a figure reads as standing rather than as a pair of
+ * pillars, and that means the two feet are NOT mirror images across x. A shoe
+ * authored on one side and mirrored would be 16 cm out of place on the other -
+ * the same shape of defect as the hero pass's hands bound across the
+ * centreline, which cost a whole round before a screenshot found it.
+ */
+export const CROWD = Object.freeze({
+  /* Head. The sphere is scaled non-uniformly, so a hair cap sitting on it has
+   * to be scaled by the same triple or it floats off the crown at the sides. */
+  HEAD_Y: 1.66, HEAD_R: 0.105, HEAD_SX: 0.94, HEAD_SY: 1.12, HEAD_SZ: 1.0,
+  JAW_Y: 1.60, JAW_Z: 0.03, JAW_W: 0.13, JAW_H: 0.07, JAW_D: 0.11,
+  NECK_Y: 1.535, NECK_RT: 0.055, NECK_RB: 0.07, NECK_H: 0.10,
+  /* Shoulder yoke: a capsule laid along x, so its half-extent is L/2 + R. */
+  YOKE_Y: 1.40, YOKE_R: 0.09, YOKE_L: 0.30,
+  CHEST_Y: 1.20, CHEST_R: 0.20, CHEST_L: 0.44,
+  HIP_Y: 0.95, HIP_RT: 0.215, HIP_RB: 0.185, HIP_H: 0.30,
+  /* Arms. `ARM_TILT` is a rotation about z, mirrored by side. */
+  ARM_X: 0.30, ARM_Y: 1.16, ARM_Z: 0.01, ARM_R: 0.062, ARM_L: 0.46, ARM_TILT: 0.14,
+  /* Legs, and the stance offsets that make them not a mirror pair. */
+  LEG_X: 0.16, LEG_Y: 0.50, LEG_R: 0.085, LEG_L: 0.52, LEG_TILT: 0.06,
+  FORE_R: 0.09, FORE_L: -0.07,
+  FOOT_Y: 0.04, FOOT_DZ: 0.04, FOOT_W: 0.12, FOOT_H: 0.07, FOOT_D: 0.26,
+
+  /* --- The seated variant, authored around a 0.66 m bench seat ------- */
+  SEAT_HEAD_DY: -0.38, SEAT_HEAD_DZ: 0.02,
+  SEAT_CHEST_Y: 1.06, SEAT_CHEST_Z: 0.02, SEAT_CHEST_L: 0.38, SEAT_CHEST_RX: -0.10,
+  SEAT_HIP_Y: 0.79, SEAT_HIP_RB: 0.20, SEAT_HIP_H: 0.26,
+  SEAT_YOKE_Y: 1.26, SEAT_YOKE_Z: 0.01,
+  SEAT_THIGH_X: 0.14, SEAT_THIGH_Y: 0.72, SEAT_THIGH_Z: -0.24, SEAT_THIGH_R: 0.085, SEAT_THIGH_L: 0.34,
+  SEAT_CALF_Y: 0.36, SEAT_CALF_Z: -0.44, SEAT_CALF_R: 0.075, SEAT_CALF_L: 0.34, SEAT_CALF_RX: 0.12,
+  SEAT_FOOT_Y: 0.04, SEAT_FOOT_Z: -0.50,
+  /* Forearm resting on the thigh. Composed 'YXZ' with ry = 0, i.e. Rx * Rz. */
+  SEAT_ARM_X: 0.26, SEAT_ARM_Y: 1.00, SEAT_ARM_Z: -0.06,
+  SEAT_ARM_R: 0.06, SEAT_ARM_L: 0.30, SEAT_ARM_TILT: 0.10, SEAT_ARM_RX: 0.55,
+});
+
+/**
+ * Where a standing figure's arm actually ends, derived rather than typed.
+ *
+ * The arm is a capsule of length `ARM_L` and radius `ARM_R` about a pivot at
+ * (`side * ARM_X`, `ARM_Y`, `ARM_Z`), rotated `side * ARM_TILT` about z. Its
+ * free end is therefore `ARM_L / 2 + ARM_R` down the capsule's own axis, which
+ * the tilt swings outward. Get the sign of that swing wrong and both hands end
+ * up inside the torso.
+ *
+ * @param {number} side -1 (left) or +1 (right)
+ * @returns {[number, number, number]} body-space wrist centre
+ */
+export function crowdWrist(side) {
+  const C = CROWD;
+  const reach = C.ARM_L / 2 + C.ARM_R;
+  const th = side * C.ARM_TILT;
+  /* Rz(th) applied to (0, -reach, 0). */
+  return [side * C.ARM_X + reach * Math.sin(th), C.ARM_Y - reach * Math.cos(th), C.ARM_Z];
+}
+
+/**
+ * The same, for the seated variant, whose forearm is raked forward and down
+ * onto the thigh by an Euler composed 'YXZ' with ry = 0 - i.e. Rx * Rz, in
+ * that order. Composing it the other way puts the hands in mid-air beside the
+ * hips, which reads as a shrug.
+ *
+ * @param {number} side -1 (left) or +1 (right)
+ * @returns {[number, number, number]}
+ */
+export function crowdSeatedWrist(side) {
+  const C = CROWD;
+  const reach = C.SEAT_ARM_L / 2 + C.SEAT_ARM_R;
+  const tz = side * C.SEAT_ARM_TILT;
+  /* Rz first: (0, -reach, 0) -> (reach sin tz, -reach cos tz, 0). */
+  const x = reach * Math.sin(tz);
+  const y = -reach * Math.cos(tz);
+  /* then Rx(SEAT_ARM_RX): y' = y cos - z sin, z' = y sin + z cos, with z = 0. */
+  const rx = C.SEAT_ARM_RX;
+  return [
+    side * C.SEAT_ARM_X + x,
+    C.SEAT_ARM_Y + y * Math.cos(rx),
+    C.SEAT_ARM_Z + y * Math.sin(rx),
+  ];
+}
+
+/**
+ * The fore/aft stance offset for one side. Not a mirror - see `CROWD`.
+ * @param {number} side -1 or +1
+ */
+export const crowdFore = (side) => (side > 0 ? CROWD.FORE_R : CROWD.FORE_L);
+
+/* ------------------------------------------------------------------ */
 /* Deterministic noise + rng                                           */
 /* ------------------------------------------------------------------ */
 

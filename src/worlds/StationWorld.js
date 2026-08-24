@@ -21,6 +21,7 @@ import {
   NON_SOLID_KEYS, PROXY_KEYS,
   SPAWN_X, SPAWN_Z, SPAWN_YAW,
   SIGN_COLS, SIGN_ROWS,
+  CROWD, crowdFore,
   mulberry32, hashi, tnoise, tfbm,
   boxUV, uvScale, cylUV, cylGeo, atlasUV, signUV, boxGeo,
   instanced, GeoBatch, chunkTriangles, chunkTrianglesBySpan,
@@ -30,6 +31,7 @@ import {
   gatewayCentre, gatewayFrameYaw, avenueClearance,
 } from './station/StationKit.js';
 import { StationActors } from './station/StationActors.js';
+import { loadCrowdAssets, crowdParts } from './station/CrowdAssets.js';
 import { buildOuterRing, LINK_MOUTH_HALF_DEG } from './station/OuterRing.js';
 import { buildTower, drawFloorSign, railRect } from './station/Tower.js';
 import { buildControlTower } from './station/ControlTower.js';
@@ -1902,7 +1904,16 @@ export class StationWorld extends World {
      * Never rejects. A missing manifest or a 404 resolves to an empty map and
      * every character is the procedural one the whole test suite measures. */
     onProgress?.(0.18, 'Thawing the ring crew');
-    await loadHeroAssets();
+    /* Both asset families at once. `_buildDressing` builds the crowd at 0.95
+     * and reads `crowdParts()` synchronously, exactly as `spawnForWorld` reads
+     * `heroParts()` - so this has to have LANDED, not merely been started. A
+     * fetch begun early would be a race the station usually wins and
+     * occasionally loses, and losing it is silent: a plaza of bald,
+     * handless figures that looks like nothing was ever built.
+     *
+     * Neither rejects. A missing manifest or a 404 resolves to an empty map
+     * and every figure is the procedural one the whole test suite measures. */
+    await Promise.all([loadHeroAssets(), loadCrowdAssets()]);
 
     await step(0.22, 'Opening the sky', this._buildSpace);
     await step(0.32, 'Raising the pressure hull', this._buildHull);
@@ -1948,6 +1959,9 @@ export class StationWorld extends World {
      * hub deck's crates would be invisible to the probe; run after and a node
      * that lands on one is caught and dropped. See `_publishVenues`. */
     this._publishVenues();
+    /* Last, because it names whatever every builder above happened to create
+     * outside the material table. See `_nameMaterials`. */
+    this._nameStrayMaterials();
 
     // Scene membership belongs to WorldManager - it adds this group in
     // `_activate` and removes it on the way out. Adding it here parked a world
@@ -2844,6 +2858,88 @@ export class StationWorld extends World {
       roughness: 0.62,
       envMapIntensity: 0.95,
     });
+
+    this._nameMaterials();
+  }
+
+  /**
+   * Give every material a name, so `scripts/world-shot.mjs --ablate` can work
+   * on this world at all.
+   *
+   * ── What this is fixing, and how it was found ─────────────────────────────
+   *
+   * The art harness's ablation switch - hide every mesh drawn with a named
+   * material, shoot again, and the difference is which system owns a pixel -
+   * matches on `material.name`. It is the tool that stopped the medieval pass
+   * "fixing" the wrong system: the vale's white blow-out looked exactly like
+   * its own light-spill cards, and `--ablate medieval.glow` proved in one shot
+   * that it was not.
+   *
+   * The station's first baseline run reported its material breakdown as
+   * `MeshStandardMaterial x1070, MeshBasicMaterial x244` - the class names,
+   * which is what the harness falls back to when `material.name` is empty. Not
+   * one of this world's 225 materials had a name, so ablation could not name a
+   * system here, and the entry world was the one place in the game where the
+   * A/B was unavailable.
+   *
+   * Two passes, in this order:
+   *
+   *  1. Every entry in `this.mat` gets `station.<key>` - the authoritative
+   *     name, and the same key the `GeoBatch` call sites already use, so
+   *     `--ablate station.foliage` reads the way a builder reads.
+   *  2. Anything still unnamed when the build finishes is named after the mesh
+   *     that draws it (`_nameStrayMaterials`). Those are the one-off locals -
+   *     the backdrop, the holo markers, a cloned pool surface - which are not
+   *     in the table and would otherwise stay anonymous.
+   *
+   * A name is metadata. `WebGLPrograms.getProgramCacheKey` does not read it,
+   * so this cannot move the program count, and the budget table proves it did
+   * not.
+   */
+  _nameMaterials() {
+    for (const [key, m] of Object.entries(this.mat)) {
+      /* `!m.name` rather than an unconditional write: `M.plazaOnDeck` and
+       * `M.shaftBig` are clones, and a clone made after its source was named
+       * would arrive carrying the SOURCE's name - so ablating one would hide
+       * both. Naming in table order with the guard gives each the first name
+       * that reaches it, which is its own. */
+      if (m && m.isMaterial && !m.name) m.name = `station.${key}`;
+    }
+  }
+
+  /**
+   * Second naming pass, run once the world is built: anything drawn in the
+   * world group that is still anonymous is named after its mesh.
+   *
+   * Deliberately not `station.<something>`: these are not table materials and
+   * pretending they are would invite somebody to look for a key that does not
+   * exist. `mesh:<name>` says where to find it.
+   */
+  _nameStrayMaterials() {
+    let named = 0;
+    /* Walk UP for a name rather than stopping at the mesh and its parent.
+     * The first version did stop there and produced seven materials called
+     * `mesh:Mesh` - the class name, which is exactly the useless label this
+     * whole pass exists to replace, just spelled differently. The backdrop and
+     * the holo markers are anonymous meshes under anonymous groups under a
+     * named one, and the named one is the answer somebody typing `--ablate`
+     * actually wants. */
+    const label = (o) => {
+      for (let n = o; n && n !== this.group; n = n.parent) {
+        if (n.name) return n.name;
+      }
+      return o.type;
+    };
+    this.group.traverse((o) => {
+      const m = o.material;
+      if (!m) return;
+      for (const mm of (Array.isArray(m) ? m : [m])) {
+        if (!mm || mm.name) continue;
+        mm.name = `mesh:${label(o)}`;
+        named++;
+      }
+    });
+    return named;
   }
 
   /* ---------------------------------------------------------------- */
@@ -5900,8 +5996,14 @@ export class StationWorld extends World {
      * hue, and deliberately *not* distance-graded, because a beacon that fades
      * with range is not a beacon.
      */
+    /* Named here rather than by `_nameMaterials`: the six gateway materials
+     * are added to the table long after that pass has run, and an unnamed one
+     * would fall to `_nameStrayMaterials` and be called after a mesh instead of
+     * after its gateway - which is the one label an ablation of "is the portal
+     * beacon what is blowing out this frame" needs to be able to type. */
     const key = `emGate_${s.target}`;
     M[key] = new THREE.MeshStandardMaterial({
+      name: `station.${key}`,
       color: 0x05070a,
       emissive: new THREE.Color(s.accent),
       emissiveIntensity: 3.4,
@@ -8348,9 +8450,10 @@ export class StationWorld extends World {
       geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
       parts.push(geo);
     };
+    const C = CROWD;
     // Torso: a tapered capsule reads as a coat at 40 m; a box reads as a crate.
-    put(new THREE.CapsuleGeometry(0.20, 0.44, 3, 10), 0, 1.20, 0, 1.0);
-    put(new THREE.CylinderGeometry(0.215, 0.185, 0.30, 10), 0, 0.95, 0, 0.86);
+    put(new THREE.CapsuleGeometry(C.CHEST_R, C.CHEST_L, 3, 10), 0, C.CHEST_Y, 0, 1.0);
+    put(new THREE.CylinderGeometry(C.HIP_RT, C.HIP_RB, C.HIP_H, 10), 0, C.HIP_Y, 0, 0.86);
 
     /* Shoulders and stance.
      *
@@ -8362,14 +8465,14 @@ export class StationWorld extends World {
      * uses to identify a person.
      */
     for (const s of [-1, 1]) {
-      put(new THREE.CapsuleGeometry(0.062, 0.46, 2, 6), s * 0.30, 1.16, 0.01, 0.94, s * 0.14);
+      put(new THREE.CapsuleGeometry(C.ARM_R, C.ARM_L, 2, 6), s * C.ARM_X, C.ARM_Y, C.ARM_Z, 0.94, s * C.ARM_TILT);
       // Fore/aft offset as well as lateral: a stance, not a pair of pillars.
-      const fore = s > 0 ? 0.09 : -0.07;
-      put(new THREE.CapsuleGeometry(0.085, 0.52, 2, 6), s * 0.16, 0.50, fore, 0.58, s * 0.06);
-      put(new THREE.BoxGeometry(0.12, 0.07, 0.26), s * 0.16, 0.04, fore + 0.04, 0.34);
+      const fore = crowdFore(s);
+      put(new THREE.CapsuleGeometry(C.LEG_R, C.LEG_L, 2, 6), s * C.LEG_X, C.LEG_Y, fore, 0.58, s * C.LEG_TILT);
+      put(new THREE.BoxGeometry(C.FOOT_W, C.FOOT_H, C.FOOT_D), s * C.LEG_X, C.FOOT_Y, fore + C.FOOT_DZ, 0.34);
     }
     // Shoulder yoke: closes the gap the wider arms open at the top.
-    put(new THREE.CapsuleGeometry(0.09, 0.30, 2, 8), 0, 1.40, 0, 1.0, Math.PI / 2);
+    put(new THREE.CapsuleGeometry(C.YOKE_R, C.YOKE_L, 2, 8), 0, C.YOKE_Y, 0, 1.0, Math.PI / 2);
 
     /* Silhouette-breaking accessories.
      *
@@ -8389,8 +8492,46 @@ export class StationWorld extends World {
       put(new THREE.BoxGeometry(0.05, 0.52, 0.04), 0.08, 1.22, -0.02, 0.5, -0.42);
     }
 
-    const merged = mergeGeometries(parts, false);
-    for (const p of parts) p.dispose();
+    return this._mergeCrowd(parts, 'standing', 'body');
+  }
+
+  /**
+   * Merge a figure's own primitives with whatever authored hero parts have
+   * landed for that set and surface.
+   *
+   * Split out because all four call sites need exactly the same three rules
+   * and getting any of them wrong is silent:
+   *
+   *  1. **The authored geometries are CACHED and SHARED.** `_crowdBodyGeo` is
+   *     called once per variant off the same map, so they are merged and never
+   *     disposed - only the primitives this call built are its to free. A
+   *     `dispose()` over the whole list would hand the second variant freed
+   *     buffers, which presents as a whole body variant missing from the plaza
+   *     rather than as an error.
+   *  2. **Attribute sets must match.** `M.crowd` is `vertexColors: true` and
+   *     `M.skin` is not, so a body part carries a `color` attribute and a skin
+   *     part carries none. `CrowdAssets` bakes that at load, from the slot the
+   *     manifest names.
+   *  3. **A missing asset is not a missing crowd.** `crowdParts` returns null
+   *     when nothing loaded, and the figure is the procedural one every
+   *     headless test measures.
+   *
+   * @param {THREE.BufferGeometry[]} own primitives built by the caller
+   * @param {'standing'|'seated'} set
+   * @param {'body'|'skin'} slot
+   */
+  _mergeCrowd(own, set, slot) {
+    const authored = crowdParts(set)?.[slot] ?? [];
+    let merged = authored.length ? mergeGeometries([...own, ...authored], false) : null;
+    /* `mergeGeometries` returns null on a mismatched attribute set rather than
+     * throwing. Falling back to the procedural merge keeps a crowd on the deck
+     * instead of an empty plaza, and says why once - and the fallback runs
+     * BEFORE anything is disposed, or the fallback merges freed buffers. */
+    if (authored.length && !merged) {
+      console.warn(`StationWorld: authored crowd parts for ${set}/${slot} would not merge - using the procedural figure`);
+    }
+    if (!merged) merged = mergeGeometries(own, false);
+    for (const p of own) p.dispose();
     return merged;
   }
 
@@ -8423,21 +8564,20 @@ export class StationWorld extends World {
       geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
       parts.push(geo);
     };
+    const C = CROWD;
     // Torso leaning very slightly back, hips on the seat.
-    put(new THREE.CapsuleGeometry(0.20, 0.38, 3, 10), 0, 1.06, 0.02, 1.0, 0, -0.10);
-    put(new THREE.CylinderGeometry(0.215, 0.20, 0.26, 10), 0, 0.79, 0, 0.86);
-    put(new THREE.CapsuleGeometry(0.09, 0.30, 2, 8), 0, 1.26, 0.01, 1.0, Math.PI / 2);
+    put(new THREE.CapsuleGeometry(C.CHEST_R, C.SEAT_CHEST_L, 3, 10), 0, C.SEAT_CHEST_Y, C.SEAT_CHEST_Z, 1.0, 0, C.SEAT_CHEST_RX);
+    put(new THREE.CylinderGeometry(C.HIP_RT, C.SEAT_HIP_RB, C.SEAT_HIP_H, 10), 0, C.SEAT_HIP_Y, 0, 0.86);
+    put(new THREE.CapsuleGeometry(C.YOKE_R, C.YOKE_L, 2, 8), 0, C.SEAT_YOKE_Y, C.SEAT_YOKE_Z, 1.0, Math.PI / 2);
     for (const s of [-1, 1]) {
       // Thigh forward (-Z), calf down, foot planted.
-      put(new THREE.CapsuleGeometry(0.085, 0.34, 2, 6), s * 0.14, 0.72, -0.24, 0.58, 0, Math.PI / 2);
-      put(new THREE.CapsuleGeometry(0.075, 0.34, 2, 6), s * 0.14, 0.36, -0.44, 0.58, 0, 0.12);
-      put(new THREE.BoxGeometry(0.12, 0.07, 0.26), s * 0.14, 0.04, -0.50, 0.34);
+      put(new THREE.CapsuleGeometry(C.SEAT_THIGH_R, C.SEAT_THIGH_L, 2, 6), s * C.SEAT_THIGH_X, C.SEAT_THIGH_Y, C.SEAT_THIGH_Z, 0.58, 0, Math.PI / 2);
+      put(new THREE.CapsuleGeometry(C.SEAT_CALF_R, C.SEAT_CALF_L, 2, 6), s * C.SEAT_THIGH_X, C.SEAT_CALF_Y, C.SEAT_CALF_Z, 0.58, 0, C.SEAT_CALF_RX);
+      put(new THREE.BoxGeometry(C.FOOT_W, C.FOOT_H, C.FOOT_D), s * C.SEAT_THIGH_X, C.SEAT_FOOT_Y, C.SEAT_FOOT_Z, 0.34);
       // Forearm resting on the thigh: the pose reads even in silhouette.
-      put(new THREE.CapsuleGeometry(0.06, 0.30, 2, 6), s * 0.26, 1.00, -0.06, 0.94, s * 0.10, 0.55);
+      put(new THREE.CapsuleGeometry(C.SEAT_ARM_R, C.SEAT_ARM_L, 2, 6), s * C.SEAT_ARM_X, C.SEAT_ARM_Y, C.SEAT_ARM_Z, 0.94, s * C.SEAT_ARM_TILT, C.SEAT_ARM_RX);
     }
-    const merged = mergeGeometries(parts, false);
-    for (const p of parts) p.dispose();
-    return merged;
+    return this._mergeCrowd(parts, 'seated', 'body');
   }
 
   /**
@@ -8445,25 +8585,34 @@ export class StationWorld extends World {
    * pool. Sharing the garment material meant a navy jacket produced a navy
    * face, which is a large part of why the figures read as plastic.
    *
+   * The HANDS live here too, for a reason that is not obvious: they are skin,
+   * and this is the only geometry the crowd draws in `M.skin`. The two meshes
+   * are handed the same instance matrix every frame, so a hand authored in
+   * body space at the wrist lands on the wrist of the arm in the *other* mesh
+   * and stays there. `set` is which file's hands to take, because a seated
+   * figure's forearms are on its thighs and a standing one's are at its sides.
+   *
+   * @param {number} [dy] head offset, for the seated variant
+   * @param {number} [dz]
+   * @param {'standing'|'seated'} [set]
    * @returns {THREE.BufferGeometry}
    */
-  _crowdHeadGeo(dy = 0, dz = 0) {
+  _crowdHeadGeo(dy = 0, dz = 0, set = 'standing') {
+    const C = CROWD;
     const parts = [];
-    const neck = new THREE.CylinderGeometry(0.055, 0.07, 0.10, 8);
-    neck.translate(0, 1.535 + dy, dz);
+    const neck = new THREE.CylinderGeometry(C.NECK_RT, C.NECK_RB, C.NECK_H, 8);
+    neck.translate(0, C.NECK_Y + dy, dz);
     parts.push(neck);
-    const head = new THREE.SphereGeometry(0.105, 12, 10);
-    head.scale(0.94, 1.12, 1.0);
-    head.translate(0, 1.66 + dy, dz);
+    const head = new THREE.SphereGeometry(C.HEAD_R, 12, 10);
+    head.scale(C.HEAD_SX, C.HEAD_SY, C.HEAD_SZ);
+    head.translate(0, C.HEAD_Y + dy, dz);
     parts.push(head);
     // A brow/jaw break so the head is not a perfect ball at close range.
-    const jaw = new THREE.BoxGeometry(0.13, 0.07, 0.11);
-    jaw.translate(0, 1.60 + dy, 0.03 + dz);
+    const jaw = new THREE.BoxGeometry(C.JAW_W, C.JAW_H, C.JAW_D);
+    jaw.translate(0, C.JAW_Y + dy, C.JAW_Z + dz);
     parts.push(jaw);
     for (const p of parts) uvScale(p, 2, 2);
-    const merged = mergeGeometries(parts, false);
-    for (const p of parts) p.dispose();
-    return merged;
+    return this._mergeCrowd(parts, set, 'skin');
   }
 
   /**
@@ -8735,7 +8884,7 @@ export class StationWorld extends World {
     for (let i = 0; i < entries.length; i++) if (variants[i] !== 3) standing.push(i);
     for (const [list, geo] of [
       [standing, this._crowdHeadGeo()],
-      [groups[3], this._crowdHeadGeo(-0.38, 0.02)],
+      [groups[3], this._crowdHeadGeo(CROWD.SEAT_HEAD_DY, CROWD.SEAT_HEAD_DZ, 'seated')],
     ]) {
       if (!list.length) { geo.dispose(); continue; }
       const idx = Int32Array.from(list);

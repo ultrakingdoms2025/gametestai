@@ -1,0 +1,43 @@
+{
+  "comment": "Authored hero features for Aether Nexus Station's ambient plaza crowd (Phase 9, decision D4). Written by scripts/make-crowd-glb.mjs; the .glb files are reproduced byte for byte by re-running it, and scripts/tests/crowd-assets.test.mjs holds every number below against the file on disk. glTF materials are DISCARDED on load - each part is MERGED into the geometry StationWorld already builds for the 'slot' named in 'bind', so nothing in this manifest can add a draw call, a material or a shader program. The crowd is SIX draw calls for ~180 people and it stays six. 'slot' is only ever 'body' (M.crowd, the garment material, vertexColors: true) or 'skin' (M.skin, flesh, no vertexColors) because those are the only two materials the crowd draws in - a third would be a candidate new shader program on the world where boot time is measured. 'shade' is the vertex-colour value baked on at load for body parts and multiplies the instance's garment colour; skin parts must not carry one, because M.skin has no vertexColors to read it.",
+  "assets": [
+    {
+      "id": "standing",
+      "file": "standing.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-crowd-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": ["hair", "collar", "hand", "shoe"],
+      "tris": 232,
+      "bytes": 18264
+    },
+    {
+      "id": "seated",
+      "file": "seated.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-crowd-glb.mjs - procedurally authored in this repository, 2026-08-23",
+      "parts": ["hair", "collar", "hand", "shoe"],
+      "tris": 232,
+      "bytes": 18256
+    }
+  ],
+  "bind": {
+    "hair": { "slot": "body", "shade": 0.26, "uv": 2 },
+    "collar": { "slot": "body", "shade": 1.22, "uv": 3 },
+    "hand": { "slot": "skin", "uv": 2 },
+    "shoe": { "slot": "body", "shade": 0.3, "uv": 3 }
+  },
+  "sets": {
+    "standing": {
+      "asset": "standing",
+      "note": "The three standing body variants (plain, backpack, hood) and the standing head mesh. Photographed at 3.4 m before this landed, a crowd figure was a mannequin: arms ending in the round cap of a capsule, a bare scaled sphere for a head, one unbroken barrel from neck to waist, and a box for a foot. The hands are the part that fixes the first read at plaza distance - the gateway steps put figures at 3-10 m in the entry world's hero framings - and the hair is the part that fixes it at every distance, because a bald ovoid lit by a single overhead key has no self-occlusion anywhere and reads as moulded plastic.",
+      "parts": ["hair", "collar", "hand", "shoe"]
+    },
+    "seated": {
+      "asset": "seated",
+      "note": "The bench variant, whose skull sits 0.38 m lower and 0.02 m forward of a standing one and whose forearms rest on its thighs at a rake of 0.55 rad. Authored as its own file rather than as a translation of the standing one because only the hair moves rigidly with the head; the hands are at a completely different place and a different angle, and a seated figure is the one a player walks right up to.",
+      "parts": ["hair", "collar", "hand", "shoe"]
+    }
+  }
+}

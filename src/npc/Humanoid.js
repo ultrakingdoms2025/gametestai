@@ -563,6 +563,61 @@ const OPAQUE_SHELL = {
 };
 
 /**
+ * How many bytes of released-but-unfreed character geometry to keep.
+ *
+ * ── The bound IS the design ───────────────────────────────────────────────
+ *
+ * Holder counting was introduced to fix a leak - 807 to 1,177 geometries over
+ * ten world entries - and a cache of released entries is that leak again unless
+ * something evicts. So the number is not a tuning knob to be raised when a hit
+ * rate disappoints; it is the whole safety property, and
+ * `character-geometry-cache.test.mjs` asserts against it directly.
+ *
+ * ── Why bytes and not entries ─────────────────────────────────────────────
+ *
+ * A merged body and an eye sclera are both one entry and differ by three orders
+ * of magnitude. Measured on the live station, sixty-one live entries were 50.2
+ * MB - a merged body is very nearly a megabyte on its own - so a count would
+ * bound nothing in the case that matters.
+ *
+ * ── Why THIS many bytes ───────────────────────────────────────────────────
+ *
+ * One cast. The station's is the largest in the game at 50.2 MB, and the whole
+ * point is that crossing out of a world and back in finds that world's cast
+ * still there; a budget under one cast keeps a fraction of it and rebuilds the
+ * rest. 64 MB is that measurement with room for a world that grows.
+ *
+ * The cost is honest and it is memory: the game holds one departed cast that it
+ * used to free. That is the same bargain `WorldManager` already strikes for
+ * geometry - every world visited stays built, its group and buffers resident,
+ * because rebuilding it is worse - applied to the characters standing in them.
+ */
+export const GEO_FREE_BYTES = 64 * 1024 * 1024;
+/**
+ * The ceiling that applies BETWEEN casts, where nothing yet knows which of the
+ * two worlds in flight is wanted. See `releaseGeometry`.
+ */
+export const GEO_FREE_HARD_BYTES = GEO_FREE_BYTES * 2;
+
+/**
+ * Roughly what a geometry costs to keep: its attribute buffers and its index.
+ *
+ * "Roughly" is the right precision. This decides eviction order and when a
+ * budget is reached, and being out by the object header is worth nothing next
+ * to being out by a whole merged body.
+ *
+ * @param {THREE.BufferGeometry} g
+ * @returns {number} bytes
+ */
+export function geometryBytes(g) {
+  let n = 0;
+  const attrs = g?.attributes;
+  if (attrs) for (const key in attrs) n += attrs[key]?.array?.byteLength ?? 0;
+  if (g?.index) n += g.index.array?.byteLength ?? 0;
+  return n;
+}
+
+/**
  * Owns every texture and material a character can use. One instance is shared
  * by the whole NPCManager so 16 characters cost a handful of GPU uploads.
  */
@@ -584,6 +639,17 @@ export class CharacterAssets {
      * @type {Map<string, number>}
      */
     this._geoRefs = new Map();
+    /**
+     * Released geometry that has NOT been disposed, oldest first.
+     *
+     * See `acquireGeometry` for why it exists and `trimGeometry` for what
+     * bounds it. Insertion order is release order, which is what makes a plain
+     * `Map` an adequate LRU here.
+     * @type {Map<string, THREE.BufferGeometry>}
+     */
+    this._free = new Map();
+    /** Bytes held in `_free`. The quantity the bound is expressed in. */
+    this._freeBytes = 0;
   }
 
   _t(key, make) {
@@ -1221,14 +1287,27 @@ export class CharacterAssets {
    * Reference counting is the strategy because this code can support it
    * exactly: there is one acquire site (`HumanoidFactory.create`, plus the
    * player's hair swap) and one release site (`Humanoid.dispose`), and a
-   * character's held keys are recorded on the character itself. A bounded LRU
-   * would still need this liveness information to know what it may evict, and
-   * purging at world teardown would only be correct because of the same
-   * information; neither buys anything over counting the holders directly.
+   * character's held keys are recorded on the character itself.
    *
    * Failure is asymmetric and lands on the safe side: a character that is
    * dropped without `dispose()` leaks its entry (as today) rather than freeing
    * something live.
+   *
+   * ── The free list, and why the last release no longer disposes ────────────
+   *
+   * Holder counting fixed the leak and left a bill. Leaving a world disposes
+   * the whole cast, so re-entering lofts, welds, skins and merges every body
+   * again: measured on the production bundle, `spawnForWorld` is 455 ms of a
+   * 1,278 ms station crossing and 416 ms of that is inside these `make()`
+   * closures - forty-eight bodies at nine milliseconds each, every one of them
+   * a body the player had already been looking at a moment ago. @see
+   * docs/superpowers/specs/2026-08-24-crossing-cost-ledger.md
+   *
+   * So the last release now PARKS the entry in {@link CharacterAssets#_free}
+   * instead of disposing it, and an acquire revives it from there. `geoCache`
+   * still means exactly what it meant - the entries with a live holder - which
+   * is why the cases that pin "a geometry a live mesh draws is never freed"
+   * read the same as they did.
    *
    * @param {string} key
    * @param {() => THREE.BufferGeometry|null} make
@@ -1238,12 +1317,61 @@ export class CharacterAssets {
   acquireGeometry(key, make) {
     let g = this.geoCache.get(key);
     if (!g) {
+      /* Parked by a previous cast. Reviving it is the whole point: this is a
+       * body the player was looking at one world ago. */
+      g = this._free.get(key);
+      if (g) {
+        this._free.delete(key);
+        this._freeBytes -= geometryBytes(g);
+        this.geoCache.set(key, g);
+      }
+    }
+    if (!g) {
       g = make();
       if (!g) return null;
       this.geoCache.set(key, g);
     }
     this._geoRefs.set(key, (this._geoRefs.get(key) ?? 0) + 1);
     return g;
+  }
+
+  /**
+   * Drop parked geometry, oldest first, until the free list is inside `budget`.
+   *
+   * ── Why this is not called from `releaseGeometry` ─────────────────────────
+   *
+   * It cannot be. A crossing releases the DEPARTING cast before it acquires the
+   * arriving one, so at the moment of release the list holds the world we are
+   * going back TO and the world we are leaving, and nothing has yet said which
+   * of them is wanted. Evicting oldest-first there throws away precisely the
+   * cast that is about to be asked for - which is how a cache with a perfectly
+   * good hit rate measures at zero.
+   *
+   * `NPCManager.spawnForWorld` therefore trims at its END, once the arriving
+   * cast has revived everything it wants and the list holds only what nobody
+   * asked for. Until then {@link GEO_FREE_HARD_BYTES} is the only ceiling, and
+   * it is deliberately loose enough to hold two casts at once.
+   *
+   * @param {number} [budget] bytes to trim down to
+   */
+  trimGeometry(budget = GEO_FREE_BYTES) {
+    if (this._freeBytes <= budget) return 0;
+    let freed = 0;
+    // Map iterates in insertion order, and an entry is re-inserted when it is
+    // parked, so the front of it is the least recently released.
+    for (const [key, g] of this._free) {
+      if (this._freeBytes <= budget) break;
+      this._free.delete(key);
+      this._freeBytes -= geometryBytes(g);
+      g.dispose();
+      freed++;
+    }
+    return freed;
+  }
+
+  /** Bytes of parked, holder-less geometry. The number the bound is on. */
+  get freeBytes() {
+    return this._freeBytes;
   }
 
   /**
@@ -1266,7 +1394,20 @@ export class CharacterAssets {
     this._geoRefs.delete(key);
     const g = this.geoCache.get(key);
     this.geoCache.delete(key);
-    g?.dispose();
+    if (!g) return true;
+    /* PARKED, NOT FREED. See `acquireGeometry` for why, and `trimGeometry` for
+     * why nothing is evicted here.
+     *
+     * The hard ceiling is the only bound that applies at this point, and it is
+     * two casts wide on purpose: a crossing holds the world it is leaving and
+     * the world it is arriving in at the same moment, and trimming to the
+     * ordinary budget here would throw away exactly the cast about to be asked
+     * for. Above the ceiling something other than a crossing is going on - a
+     * long fight with many respawns, a streaming world dealing and re-dealing -
+     * and dropping the oldest is right. */
+    this._free.set(key, g);
+    this._freeBytes += geometryBytes(g);
+    if (this._freeBytes > GEO_FREE_HARD_BYTES) this.trimGeometry(GEO_FREE_HARD_BYTES);
     return true;
   }
 
@@ -1274,10 +1415,13 @@ export class CharacterAssets {
     for (const t of this._tex.values()) t.dispose();
     for (const m of this._mat.values()) m.dispose();
     for (const g of this.geoCache.values()) g.dispose();
+    for (const g of this._free.values()) g.dispose();
     this._tex.clear();
     this._mat.clear();
     this.geoCache.clear();
     this._geoRefs.clear();
+    this._free.clear();
+    this._freeBytes = 0;
   }
 }
 

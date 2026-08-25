@@ -719,29 +719,54 @@ export class Caches {
    * @param {THREE.Object3D} group
    */
   _indexVisible(group) {
-    /** Leaves reachable through a cell. An entry names one of these. */
+    /** Every raycastable leaf, once. Entries and `seen` are indexed by this. */
     const leaves = [];
+    /** Leaf index by object, so an instanced mesh files many entries as one. */
+    const indexOf = new Map();
     /** Cell key -> entry indices. */
     const cells = new Map();
     /** Entries: which leaf, and the height band it covers in its cells. */
     const entLeaf = [];
     const entMinY = [];
     const entMaxY = [];
-    /** Leaves too wide to bucket, kept whole with their exact box. */
+    /** Boxes too wide to bucket, kept whole and tested exactly. */
     const wide = [];
     /** Leaves with no bound that can be trusted: candidates for every query. */
     const always = [];
     const base = THREE.Object3D.prototype.raycast;
+    /** Diagnostics, read by scripts/frame-gaps.mjs. Cheap and worth having. */
+    const stats = { instanced: 0, instances: 0, wideFromInstances: 0 };
 
-    /** File one box against a leaf. False when it spans too many cells. */
-    const bucket = (li, minX, minY, minZ, maxX, maxY, maxZ) => {
+    const leafIndex = (o) => {
+      let li = indexOf.get(o);
+      if (li === undefined) {
+        li = leaves.length;
+        leaves.push(o);
+        indexOf.set(o, li);
+      }
+      return li;
+    };
+
+    /**
+     * File one world-space box against a leaf.
+     *
+     * A box that would touch more cells than it is worth goes in `wide` with
+     * its exact extents instead. That is not a fallback to "candidate
+     * everywhere" - it is a tighter test than a cell bucket, just a linear one,
+     * and keeping it exact is what stops one awkward mesh from undoing the
+     * index for every probe.
+     */
+    const file = (li, minX, minY, minZ, maxX, maxY, maxZ) => {
       const cx0 = Math.floor(minX / VIS_CELL);
       const cx1 = Math.floor(maxX / VIS_CELL);
       const cz0 = Math.floor(minZ / VIS_CELL);
       const cz1 = Math.floor(maxZ / VIS_CELL);
       if (!Number.isFinite(cx0) || !Number.isFinite(cx1)
         || !Number.isFinite(cz0) || !Number.isFinite(cz1)) return false;
-      if ((cx1 - cx0 + 1) * (cz1 - cz0 + 1) > VIS_MAX_CELLS) return false;
+      if ((cx1 - cx0 + 1) * (cz1 - cz0 + 1) > VIS_MAX_CELLS) {
+        wide.push({ li, minX, maxX, minZ, maxZ, minY, maxY });
+        return true;
+      }
       const e = entLeaf.length;
       entLeaf.push(li);
       entMinY.push(minY);
@@ -768,69 +793,61 @@ export class Caches {
       /* AN INSTANCED MESH IS A THOUSAND THINGS WEARING ONE BOX, AND THAT BOX IS
        * THE MAP.
        *
-       * This is where the whole cost actually was, and it is not what the shape
-       * of the code suggests. Measured on the live station, EVERY probe was
-       * handed 2,287,006 triangles and 1.9 million of them were the ambient
-       * crowd - `StationActors:head` alone is 490,620 - because ten instanced
-       * body parts scattered over a 1,488 m station each bound to a box that
-       * covers everything. One box round all of them says nothing.
+       * This is where the cost actually was, and it is not what the shape of
+       * the code suggests. Measured on the live station, every probe was handed
+       * 2,287,006 triangles and 1.9 million of them were the ambient crowd -
+       * `StationActors:head` alone is 490,620 - because instanced body parts
+       * scattered over a 1,488 m station each bound to a box that covers
+       * everything. One box round a thousand people says nothing.
        *
-       * So the INSTANCES are filed, not the object: a person-sized sphere each,
-       * and the object becomes a candidate only where one of its instances
-       * actually is. `Sphere.applyMatrix4` scales the radius by the largest
-       * axis scale, so the bound stays conservative under any transform. */
+       * So the INSTANCES are filed and not the object: a person-sized sphere
+       * each, via `Sphere.applyMatrix4`, which scales the radius by the largest
+       * axis scale and so stays conservative under any transform. The object
+       * becomes a candidate only where one of its instances actually is. */
       if (o.isInstancedMesh && o.count > 0 && o.instanceMatrix) {
         const g = o.geometry;
         if (g && !g.boundingSphere) g.computeBoundingSphere?.();
         if (g?.boundingSphere) {
-          const li = leaves.length;
-          leaves.push(o);
-          const e0 = entLeaf.length;
+          const li = leafIndex(o);
           const arr = o.instanceMatrix.array;
+          const n = Math.min(o.count, (arr.length / 16) | 0);
           let ok = true;
-          for (let k = 0; k < o.count; k++) {
+          for (let k = 0; k < n; k++) {
             _m4.fromArray(arr, k * 16).premultiply(o.matrixWorld);
             _sph.copy(g.boundingSphere).applyMatrix4(_m4);
             const r = _sph.radius;
             const c = _sph.center;
-            // `!(r < max)` rather than `r >= max`, so a NaN radius bails too.
-            if (!(r < VIS_MAX_INSTANCE_R)) { ok = false; break; }
-            if (!bucket(li, c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r)) {
+            const before = wide.length;
+            if (!file(li, c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r)) {
+              // A matrix with no finite bound at all. Nothing can be said about
+              // where this object is, so it goes back to being asked always.
               ok = false;
               break;
             }
+            if (wide.length > before) stats.wideFromInstances++;
           }
-          if (ok) return;
-          /* One instance is not a prop - a scattered ground plane, say. Retire
-           * the entries written so far by giving them an empty height band, and
-           * fall through to treat the object as one wide leaf. */
-          for (let e = e0; e < entLeaf.length; e++) {
-            entMinY[e] = Infinity;
-            entMaxY[e] = -Infinity;
+          if (ok) {
+            stats.instanced++;
+            stats.instances += n;
+            return;
           }
+          always.push(o);
+          return;
         }
       }
 
       const b = leafBox(o);
       if (!b) { always.push(o); return; }
-      const li = leaves.length;
-      leaves.push(o);
-      if (!bucket(li, b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z)) {
-        leaves.pop();
-        wide.push({
-          o,
-          minX: b.min.x, maxX: b.max.x,
-          minZ: b.min.z, maxZ: b.max.z,
-          minY: b.min.y, maxY: b.max.y,
-        });
+      if (!file(leafIndex(o), b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z)) {
+        always.push(o);
       }
     });
 
     this._vis = {
-      cells, always, wide, leaves, entLeaf, entMinY, entMaxY,
+      cells, always, wide, leaves, entLeaf, entMinY, entMaxY, stats,
       /* One slot per leaf, holding the id of the query that last took it. An
-       * instanced leaf has an entry per instance and a wide-ish one an entry
-       * per cell, so a single query can reach the same object many times. */
+       * instanced leaf has an entry per instance and a wide one an entry per
+       * awkward box, so a single query can reach the same object many times. */
       seen: new Int32Array(leaves.length),
       qid: 0,
     };
@@ -857,7 +874,9 @@ export class Caches {
     for (const w of v.wide) {
       if (x < w.minX || x > w.maxX || z < w.minZ || z > w.maxZ) continue;
       if (w.minY > yHi || w.maxY < yLo) continue;
-      out.push(w.o);
+      if (v.seen[w.li] === qid) continue;
+      v.seen[w.li] = qid;
+      out.push(v.leaves[w.li]);
     }
     const list = v.cells.get(Math.floor(x / VIS_CELL) * VIS_STRIDE + Math.floor(z / VIS_CELL));
     if (list) {

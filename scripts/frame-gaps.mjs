@@ -957,6 +957,23 @@ async function runOnce(args, pageUrl, runIndex) {
           out.visWide = C._vis.wide.length;
           out.visEntries = C._vis.entLeaf.length;
           out.visCells = C._vis.cells.size;
+          out.visStats = C._vis.stats;
+          /* WHAT IS STILL WIDE, AND WHY. A leaf that keeps its exact box is
+           * fine; an object whose per-instance filing collapsed into one box
+           * the size of the map is the failure this whole index is about, and
+           * from the outside the two look identical in a candidate count. */
+          out.visWidest = C._vis.wide
+            .map((w) => {
+              const o = C._vis.leaves[w.li];
+              const g = o.geometry;
+              return [
+                (o.name || o.type) + (o.isInstancedMesh ? ' x' + o.count : ''),
+                Math.round(w.maxX - w.minX), Math.round(w.maxY - w.minY), Math.round(w.maxZ - w.minZ),
+                g && g.boundingSphere ? Math.round(g.boundingSphere.radius * 10) / 10 : null,
+              ];
+            })
+            .sort((a, b) => (b[1] * b[3]) - (a[1] * a[3]))
+            .slice(0, 8);
           let allTris = 0, alwaysTris = 0, biggest = [];
           const tri = (o) => {
             const g = o.geometry;
@@ -965,7 +982,7 @@ async function runOnce(args, pageUrl, runIndex) {
           };
           for (const o of C._vis.leaves) { const t2 = tri(o); allTris += t2; biggest.push([o.name || o.type, t2]); }
           for (const o of C._vis.always) { const t2 = tri(o); alwaysTris += t2; allTris += t2; biggest.push([(o.name || o.type) + ' [always]', t2]); }
-          for (const w of C._vis.wide) { const t2 = tri(w.o); allTris += t2; biggest.push([(w.o.name || w.o.type) + ' [wide]', t2]); }
+          for (const w of C._vis.wide) { const o2 = C._vis.leaves[w.li]; const t2 = tri(o2); allTris += t2; biggest.push([(o2.name || o2.type) + " [wide]", t2]); }
           biggest.sort((x, y) => y[1] - x[1]);
           out.visTriangles = allTris;
           out.visAlwaysTriangles = alwaysTris;

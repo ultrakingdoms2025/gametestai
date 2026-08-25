@@ -798,6 +798,30 @@ async function runOnce(args, pageUrl, runIndex) {
     '--no-first-run', '--no-default-browser-check',
     '--hide-scrollbars', '--mute-audio', '--disable-extensions',
     '--force-device-scale-factor=1',
+    /* AN OCCLUDED WINDOW STOPS DELIVERING ANIMATION FRAMES AND NOTHING ELSE.
+     *
+     * Windows computes native window occlusion for headless windows too, and a
+     * renderer it decides is occluded stops receiving BeginFrame - so
+     * `requestAnimationFrame` stops while timers, promises and CDP evals all
+     * keep running at full rate. Every gap this script measures is an rAF
+     * interval, so an occluded stretch is recorded as one enormous frame gap
+     * with an idle main thread inside it.
+     *
+     * Measured: a 32,517.5 ms gap carrying 8,004 heartbeats of a 4 ms timer -
+     * one every 4.06 ms, end to end - and a single 445 ms genuine block inside
+     * it. The game's own `dev/Harness.js` watchdog printed "no animation frame
+     * for 10000ms - the window is very likely backgrounded or occluded" from
+     * inside the same gap. It lands on a different world every run, and one
+     * such gap was written into a ledger as "race: 31,284.1 ms, a volatile
+     * world rebuilt" - race is not volatile, and its crossing was 442 ms.
+     *
+     * These four are the standard set; `CalculateNativeWinOcclusion` is the
+     * one that matters on this platform. `beats` on every gap is the check
+     * that they are still working. */
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
+    '--disable-features=CalculateNativeWinOcclusion',
     ...(process.env.FRAME_GAPS_GL === 'swiftshader'
       ? ['--use-angle=swiftshader']
       : ['--use-angle=default', '--enable-gpu-rasterization', '--ignore-gpu-blocklist']),
@@ -1549,6 +1573,12 @@ async function runOnce(args, pageUrl, runIndex) {
     out.pageErrors = parsed.errors;
     out.log = parsed.log;
     out.stats = await evalIn('JSON.stringify(window.HARNESS.stats())').then((s) => JSON.parse(s));
+    /* The game's own watchdog. `dev/Harness.js` counts every await of an
+     * animation frame that waited 10 s without one and says the window is
+     * probably occluded. It has been there the whole time and this script has
+     * never read it; a run that reports a multi-second gap AND a non-zero
+     * count here is reporting the compositor, not the game. */
+    out.rafStalls = await evalIn('window.__HARNESS_RAF_STALLS__ ?? 0');
   } finally {
     client?.close();
     browser.kill();
@@ -1583,13 +1613,42 @@ function foldProfile(profile, top = 30) {
     .map(([fn, ms]) => ({ fn, ms: Math.round(ms) }));
 }
 
+/**
+ * WAS THE THREAD BUSY, OR WAS THE FRAME JUST NOT COMING?
+ *
+ * `blockedMs` is the longest stretch the 4 ms heartbeat lost inside a gap, and
+ * that timer is on the same main thread and is NOT gated on the compositor. So
+ * a gap whose heartbeat kept ticking is a gap in which no JavaScript ran: the
+ * frame simply never arrived. That is a real freeze for a player, but it is
+ * not a cost anything in `src/` can be changed to remove, and reading one as
+ * though it were has already put "race: 31,284.1 ms, a volatile world rebuilt"
+ * into a ledger about a world that is not volatile.
+ *
+ * Both halves are printed. A starved gap still counts against the budget - the
+ * screen was frozen - but it is labelled, so it can never be attributed to the
+ * phase's own work by someone reading the table alone.
+ */
+function isStarved(g, budget) {
+  return g.ms > budget && g.blockedMs <= budget && g.beats * 4 >= g.ms * 0.5;
+}
+
 function summarise(run, budget) {
   const rows = [];
+  /* The worst GAP per phase, so the summary can say how much of the phase's
+   * worst number was the main thread. The recorder keeps only the scalar. */
+  const worstGap = new Map();
+  for (const g of run.gaps ?? []) {
+    const cur = worstGap.get(g.phase);
+    if (!cur || g.ms > cur.ms) worstGap.set(g.phase, g);
+  }
   for (const [name, p] of Object.entries(run.events)) {
     if (!p) continue;
+    const g = worstGap.get(name) ?? null;
     rows.push({
       event: name, worst: p.worst ?? 0, over: p.over ?? 0, frames: p.frames ?? 0,
       dPrograms: p.dPrograms ?? 0, dGeometries: p.dGeometries ?? 0, dTextures: p.dTextures ?? 0,
+      blocked: g ? g.blockedMs : null,
+      starved: g ? isStarved(g, budget) : false,
       pass: (p.worst ?? 0) <= budget,
     });
   }
@@ -1598,13 +1657,14 @@ function summarise(run, budget) {
 
 function printTable(rows, budget) {
   const w = Math.max(...rows.map((r) => r.event.length), 10);
-  console.log(`\n${'event'.padEnd(w)}  ${'worst ms'.padStart(9)} ${'>250'.padStart(5)} ${'dProg'.padStart(6)} ${'dGeom'.padStart(6)} ${'dTex'.padStart(5)}  verdict`);
-  console.log('-'.repeat(w + 45));
+  console.log(`\n${'event'.padEnd(w)}  ${'worst ms'.padStart(9)} ${'blocked'.padStart(8)} ${'>250'.padStart(5)} ${'dProg'.padStart(6)} ${'dGeom'.padStart(6)} ${'dTex'.padStart(5)}  verdict`);
+  console.log('-'.repeat(w + 54));
   for (const r of rows) {
     console.log(
-      `${r.event.padEnd(w)}  ${String(r.worst).padStart(9)} ${String(r.over).padStart(5)} `
+      `${r.event.padEnd(w)}  ${String(r.worst).padStart(9)} ${String(r.blocked ?? '-').padStart(8)} ${String(r.over).padStart(5)} `
       + `${String(r.dPrograms).padStart(6)} ${String(r.dGeometries).padStart(6)} ${String(r.dTextures).padStart(5)}  `
-      + (r.pass ? 'pass' : `FAIL (>${budget})`),
+      + (r.pass ? 'pass' : `FAIL (>${budget})`)
+      + (r.starved ? '  STARVED - no rAF, main thread idle; not this phase\'s work' : ''),
     );
   }
 }
@@ -1865,6 +1925,11 @@ async function main() {
       await writeFile(path.join(outDir, `run-${i}.json`), JSON.stringify(run, null, 2));
       const rows = summarise(run, args.budget);
       printTable(rows, args.budget);
+      if (run.rafStalls) {
+        console.log(`\n!! the page's own watchdog counted ${run.rafStalls} stretch(es) of 10 s with no`
+          + ' animation frame. Every STARVED row above is that, and no row is safe to attribute'
+          + " to the phase's own work until it reads zero.");
+      }
       printCrossings(run);
       printListeners(run);
       printCacheKeys(run);

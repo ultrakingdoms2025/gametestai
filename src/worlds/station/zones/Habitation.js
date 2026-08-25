@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+/* Lights are born HIDDEN: one frame with a world's own lights live re-links
+ * every program on screen. gfx/WorldLight.js has the whole of it. */
+import { pointLight } from '../../../gfx/WorldLight.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { boxGeo, cylGeo, uvScale, instanced, seamLift } from '../StationKit.js';
 import { buildZoneTower } from '../Tower.js';
@@ -1432,7 +1435,7 @@ function habStacks(ctx) {
 
     // A practical at the entrance, so the door is legible from across the court.
     const lp = ctx.P(lx - Math.sin(a) * 14, 6, lz - Math.cos(a) * 14);
-    const light = new THREE.PointLight(spec.accentHex, 1500, 46, 2);
+    const light = pointLight(spec.accentHex, 1500, 46, 2);
     light.position.copy(lp);
     light.castShadow = false;
     ctx.group.add(light);

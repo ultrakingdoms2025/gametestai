@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+/* Lights are born HIDDEN: one frame with a world's own lights live re-links
+ * every program on screen. gfx/WorldLight.js has the whole of it. */
+import { pointLight } from '../../gfx/WorldLight.js';
 import { boxGeo, cylGeo, uvScale, GeoBatch } from './StationKit.js';
 import { CENTRE } from '../lod/DistanceLod.js';
 import { drawFloorSign } from './Tower.js';
@@ -749,7 +752,7 @@ export function buildControlTower(world, B, g, spec) {
   const trimStrip = new THREE.Mesh(boxGeo(carHalf * 1.9, 0.06, 0.1, 1), M[accent] ?? M.emWhite);
   trimStrip.position.set(0, 2.2, -(carHalf - 0.08));
   car.add(trimStrip);
-  const carLight = new THREE.PointLight(0xbfe4ff, 520, 9, 2);
+  const carLight = pointLight(0xbfe4ff, 520, 9, 2);
   carLight.position.set(0, 1.9, 0);
   car.add(carLight);
   car.position.set(carP.x, stops[0], carP.z);

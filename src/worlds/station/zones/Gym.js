@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+/* Lights are born HIDDEN: one frame with a world's own lights live re-links
+ * every program on screen. gfx/WorldLight.js has the whole of it. */
+import { pointLight } from '../../../gfx/WorldLight.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { atlasUV, boxGeo, cylGeo, instanced, uvScale } from '../StationKit.js';
 import { buildZoneTower } from '../Tower.js';
@@ -619,7 +622,7 @@ function scope(base) {
    * those are not free at any count.
    */
   const lamp = (lx, ly, lz, hex, power, dist) => {
-    const l = new THREE.PointLight(hex, power, dist, 2);
+    const l = pointLight(hex, power, dist, 2);
     l.position.copy(ctx.P(lx, ly, lz));
     l.castShadow = false;
     ctx.group.add(l);

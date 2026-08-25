@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+/* Lights are born HIDDEN: one frame with a world's own lights live re-links
+ * every program on screen. gfx/WorldLight.js has the whole of it. */
+import { pointLight, dirLight } from '../gfx/WorldLight.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { World } from './World.js';
 import { InteriorKit } from './InteriorKit.js';
@@ -1866,7 +1869,7 @@ export class MedievalWorld extends World {
     /** The diagonal of the cottage the 46 was tuned in: 7.4 x 6.0 m. */
     const REF = 9.5;
     const gain = Math.min(2, Math.max(1, (diag / REF) ** 2));
-    const l = new THREE.PointLight(0xffb26a, 46 * gain, reach, 2);
+    const l = pointLight(0xffb26a, 46 * gain, reach, 2);
     l.position.copy(pos);
     this.group.add(l);
     return l;
@@ -5523,7 +5526,7 @@ export class MedievalWorld extends World {
     // Only two of the braziers actually carry a light: the wall walk needs a
     // warm focal accent, not twenty more entries in the forward light loop.
     for (const [bx, bz] of [[wallW + 12, wallN + inset], [wallW + inset, wallN + 39]]) {
-      const l = new THREE.PointLight(0xff8a2e, 64, 26, 2);
+      const l = pointLight(0xff8a2e, 64, 26, 2);
       l.position.set(bx, WT + 2.1, bz);
       this.group.add(l);
       this._addGlow(bx, WT + 0.14, bz, 5.5, 0x50301a);
@@ -5676,7 +5679,7 @@ export class MedievalWorld extends World {
         place(bzx + Math.cos(a) * 0.35, DECK + 0.52, bzz + Math.sin(a) * 0.35), 0x332d26);
     }
     B.add('ember', cylGeo(0.54, 0.44, 0.32, 12, 1.0), place(bzx, DECK + 1.46, bzz), 0xffb070);
-    const roofFire = new THREE.PointLight(0xff8a2e, 78, 26, 2);
+    const roofFire = pointLight(0xff8a2e, 78, 26, 2);
     roofFire.position.set(bzx, DECK + 1.9, bzz);
     this.group.add(roofFire);
     this._addGlow(bzx, DECK + 0.06, bzz, 6.5, 0x50301a);
@@ -5739,7 +5742,7 @@ export class MedievalWorld extends World {
     B.add('rubble', boxGeo(1.6, 1.0, 5.0, 0.6), place(wX + 1.4, G + 3.6, KZ), 0xcfc6b2);
     B.add('rubble', boxGeo(1.1, 4.0, 2.6, 0.6), place(wX + 1.3, G + 9.4, KZ), 0xd4cbb8);
     B.add('ember', boxGeo(0.7, 0.35, 3.0, 1.0), place(wX + 1.4, G + 0.35, KZ), 0xffb060);
-    const hearth = new THREE.PointLight(0xff8a2e, 90, 26, 2);
+    const hearth = pointLight(0xff8a2e, 90, 26, 2);
     hearth.position.set(wX + 2.6, CASTLE.ground + 1.6, KZ);
     this.group.add(hearth);
 
@@ -5766,7 +5769,7 @@ export class MedievalWorld extends World {
       B.add('ember', cylGeo(0.06, 0.06, 0.34, 6, 1.4),
         place(KX - 8 + i * 4, G + 1.7, KZ + (i % 2 ? 4 : -4)), 0xffc47a);
     }
-    const hallLight = new THREE.PointLight(0xffb45a, 55, 30, 2);
+    const hallLight = pointLight(0xffb45a, 55, 30, 2);
     hallLight.position.set(KX, CASTLE.ground + 6.5, KZ);
     this.group.add(hallLight);
 
@@ -5833,7 +5836,7 @@ export class MedievalWorld extends World {
           place(bx + Math.cos(a) * 0.4, G + 0.5, bz + Math.sin(a) * 0.4), 0x332d26);
       }
       B.add('ember', cylGeo(0.62, 0.5, 0.35, 10, 1.0), place(bx, G + 1.5, bz), 0xffb070);
-      const l = new THREE.PointLight(0xff7a22, 80, 24, 2);
+      const l = pointLight(0xff7a22, 80, 24, 2);
       l.position.set(bx, G + 2.0, bz);
       this.group.add(l);
     }
@@ -6374,7 +6377,7 @@ export class MedievalWorld extends World {
       if (o.light) {
         // 22/13 with inverse-square decay contributed nothing past four metres
         // at this exposure. 62/20 puts a readable pool of key on the cobbles.
-        const l = new THREE.PointLight(0xffa63c, 62, 20, 2);
+        const l = pointLight(0xffa63c, 62, 20, 2);
         l.position.set(o.x, baseY + 1.9, o.z);
         this.group.add(l);
       }
@@ -6550,7 +6553,7 @@ export class MedievalWorld extends World {
       B.add('iron', boxGeo(0.24, 0.34, 0.24, 1.6), _obj, 0x2f2924);
       B.add('ember', boxGeo(0.14, 0.2, 0.14, 2.0), _obj, 0xffc074);
     }
-    const tavLight = new THREE.PointLight(0xffa64a, 78, 22, 2);
+    const tavLight = pointLight(0xffa64a, 78, 22, 2);
     this._buildParishChurch({
       x: -146, z: -30, halfW: 5.2, halfD: 8.6, label: 'West Parish Church',
     });
@@ -8371,7 +8374,7 @@ export class MedievalWorld extends World {
       this._box(b.x, y + b.h / 2, b.z, 0.9, b.h / 2, 0.9);
       this._contacts.push(b.x, y, b.z, 1.6);
       this._smokeOrigins.push(b.x, y + b.h + 1.0, b.z);
-      const bl = new THREE.PointLight(0xffa63c, 120, 34, 2);
+      const bl = pointLight(0xffa63c, 120, 34, 2);
       bl.position.set(b.x, y + b.h + 1.2, b.z);
       this.group.add(bl);
     }
@@ -8665,7 +8668,7 @@ export class MedievalWorld extends World {
     }
     this._addGlow(x, y + 0.06, z, 7.0, 0x7a4416);
     if (f.smoke !== false) this._smokeOrigins.push(x, y + 0.6, z);
-    const fl = new THREE.PointLight(0xff9436, 46, 16, 2);
+    const fl = pointLight(0xff9436, 46, 16, 2);
     fl.position.set(x, y + 0.8, z);
     this.group.add(fl);
     this._contacts.push(x, y, z, r + 0.8);
@@ -10137,7 +10140,7 @@ export class MedievalWorld extends World {
     B.add('beam', boxGeo(0.16, 2.2, 3.0, 1.0), place(sx0 - 2.4, MY + 1.1, sz0 + 1.6), 0x6f5539);
     this._box(sx0, MY + 0.9, sz0, 1.8, 0.9, 1.5);
     this._box(sx0 - 1.0, MY + 2.75, sz0 - 0.4, 0.75, 2.75, 0.75);
-    const forge = new THREE.PointLight(0xff7418, 96, 24, 2);
+    const forge = pointLight(0xff7418, 96, 24, 2);
     forge.position.set(sx0 + 0.4, MY + 2.2, sz0);
     this.group.add(forge);
     this._addGlow(sx0 + 0.6, MY + 0.12, sz0 + 0.4, 7.5, 0x5a2c0e);
@@ -10161,7 +10164,7 @@ export class MedievalWorld extends World {
       this._box(lx, ly + 1.65, lz, 0.16, 1.65, 0.16);
       this._addGlow(lx + 0.62, ly + 0.1, lz, 6.4, 0x4c2b12);
       if (i % 3 === 0) {
-        const l = new THREE.PointLight(0xff9a3c, 72, 19, 2);
+        const l = pointLight(0xff9a3c, 72, 19, 2);
         l.position.set(lx + 0.62, ly + 2.9, lz);
         this.group.add(l);
       }
@@ -12218,7 +12221,7 @@ export class MedievalWorld extends World {
      * their edges. A separation rim has to graze: dropped to y = 0.075 (4
      * degrees) and nearly doubled, so a merlon, a roof ridge or a gable end
      * picks up a cool line and the flat face beside it does not. */
-    const rim = new THREE.DirectionalLight(0x8fb4e8, 1.35);
+    const rim = dirLight(0x8fb4e8, 1.35);
     rim.position.set(-0.82, 0.075, -0.57).normalize().multiplyScalar(320);
     rim.castShadow = false;
     this.group.add(rim);
@@ -12230,7 +12233,7 @@ export class MedievalWorld extends World {
      * is what keeps eaves, jetty undersides, arch soffits and the batter of a
      * curtain wall from going to a single dead value. Aimed *upward* from just
      * below the horizon on the key side, shadowless and weak. */
-    const bounce = new THREE.DirectionalLight(0xffa04a, 0.60);
+    const bounce = dirLight(0xffa04a, 0.60);
     bounce.position.set(0.42, -0.34, 0.20).normalize().multiplyScalar(320);
     bounce.castShadow = false;
     this.group.add(bounce);
@@ -12558,7 +12561,7 @@ export class MedievalWorld extends World {
       B.add('ember', boxGeo(0.14, 2.4, 0.2, 1.4), _obj, 0x3ce8ff);
       this._rbox(px, gy + 2.4, pz, 0.4, 2.4, 0.55, 0);
     }
-    const gateGlow = new THREE.PointLight(0x38e0ff, 45, 26, 2);
+    const gateGlow = pointLight(0x38e0ff, 45, 26, 2);
     gateGlow.position.set(cx, gy + 2.6, cz);
     this.group.add(gateGlow);
 

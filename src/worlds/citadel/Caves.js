@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+/* Lights are born HIDDEN: one frame with a world's own lights live re-links
+ * every program on screen. gfx/WorldLight.js has the whole of it. */
+import { pointLight } from '../../gfx/WorldLight.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CONFIG } from '../../core/Config.js';
 import { RIG_BUDGET } from '../../gfx/LightRig.js';
@@ -848,15 +851,16 @@ export function buildCave(ctx, plan) {
   }
 
   /* --- Lights ------------------------------------------------------------
-   * Created HIDDEN. `LightRig` would hide them on its next walk anyway, but
-   * the frame between creation and that walk is a frame in which they count
-   * for Three's program cache key, and one such frame is a full recompile.
-   * `MazeChunks` learned this the same way. */
+   * Created HIDDEN by `pointLight`, and this file is where that rule was first
+   * written down: the frame between creation and `LightRig`'s next walk is a
+   * frame in which a light counts for Three's program cache key, and one such
+   * frame is a full recompile. It is a property of the constructor now - see
+   * gfx/WorldLight.js - rather than a line each of sixty-four sites had to
+   * remember. */
   const lights = [];
   for (const l of p.lights) {
     const spec = lightSpec(l.kind);
-    const light = new THREE.PointLight(spec.colour, spec.intensity, spec.range, 2);
-    light.visible = false;
+    const light = pointLight(spec.colour, spec.intensity, spec.range, 2);
     light.name = `cave:${p.id}:${l.kind}`;
     light.position.set(l.position.x, l.position.y, l.position.z);
     ctx.group.add(light);

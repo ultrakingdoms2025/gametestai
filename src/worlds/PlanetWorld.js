@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+/* Lights are born HIDDEN: one frame with a world's own lights live re-links
+ * every program on screen. gfx/WorldLight.js has the whole of it. */
+import { pointLight } from '../gfx/WorldLight.js';
 import { World } from './World.js';
 import { makeRules, worldGravityRatio } from './WorldRules.js';
 import { genPool } from '../workers/GenPool.js';
@@ -1401,7 +1404,7 @@ export class PlanetWorld extends World {
     const gl = L.glowLight;
     if (gl) {
       const b = L.bodies[gl.body ?? 0];
-      const light = new THREE.PointLight(gl.color ?? 0xff7a2a, gl.intensity ?? 30, gl.distance ?? 120, 1.8);
+      const light = pointLight(gl.color ?? 0xff7a2a, gl.intensity ?? 30, gl.distance ?? 120, 1.8);
       light.castShadow = false;
       light.position.set(b.x ?? b.pts[0][0], (b.y ?? b.y0) + 6, b.z ?? b.pts[0][1]);
       light.name = 'planet:liquid:glow';

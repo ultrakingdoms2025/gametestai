@@ -20,15 +20,21 @@ driver. The brief that came with it named four suspects:
 > ~135 ms of every crossing frame is the frame that RECEIVES a world:
 > `updateMatrixWorld`, culling, the shadow pass, sixty characters' first update.
 
-**All four are wrong.** Measured on the frame the station arrives on:
+Three of the four are wrong outright and the fourth is right about the place and
+wrong about the reason. Measured on the frame the station arrives on:
 
 | | ms | calls |
 | --- | ---: | ---: |
 | `scene.updateMatrixWorld` | **1.9** | 2 |
 | the shadow pass | **3.3** | 27 |
-| every frame updater, sixty characters included | **4.4** | 5 |
+| every frame updater, sixty characters' first update included | **4.4** | 5 |
 | `renderBufferDirect` — all submission | **8.6** | 1,737 |
 | **`SkinnedMesh.computeBoundingSphere`** | **123.6** | **27** |
+
+Culling is where it lands and culling is not what it is. The frustum test is 0.4
+ms on every other frame of the same run; on this one it is 124, because
+`Frustum.intersectsObject` is also the place three lazily builds a bound, and
+for a `SkinnedMesh` building one means CPU-skinning the whole body.
 
 ## 1. The instrument, because nothing existing could see this
 

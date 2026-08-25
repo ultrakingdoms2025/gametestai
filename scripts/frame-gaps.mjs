@@ -825,7 +825,7 @@ async function runOnce(args, pageUrl, runIndex) {
         const rows = [];
         const wrapped = new Set();
         for (const fn of set) {
-          const row = { ms: 0, calls: 0, src: String(fn).replace(/\s+/g, ' ').slice(0, 140) };
+          const row = { ms: 0, calls: 0, src: String(fn).replace(/\\s+/g, ' ').slice(0, 140) };
           rows.push(row);
           wrapped.add((payload) => {
             const t = performance.now();
@@ -866,6 +866,38 @@ async function runOnce(args, pageUrl, runIndex) {
           out.events[label].cost = [JSON.parse(costTo), JSON.parse(costBack)];
         }
       }
+    }
+
+    /* --- THE SUBSYSTEM AUTOPSY -----------------------------------------
+     *
+     * The listener table above says one closure spends nearly all of the
+     * fan-out, and five separate systems register the identical shape
+     * `({id, world}) => this._onWorld(id, world)`. Minification keeps the
+     * member name and throws the identity away, so the table cannot say WHICH.
+     *
+     * These call the same rebuilds again by name, on the live world, and time
+     * each one. Every entry is idempotent by construction - each resets its own
+     * list before repopulating it, which is exactly what it does on a normal
+     * crossing - so this measures a real second crossing rather than a
+     * half-state. It runs after the last repeat and before `done`, so nothing
+     * the gate reports is measured through it. */
+    if (args.listeners) {
+      out.autopsy = JSON.parse(await evalIn(`(() => {
+        const G = window.GAME, w = G.worldManager.active, id = w && w.id;
+        const out = {};
+        const time = (name, fn) => {
+          const t = performance.now();
+          try { fn(); } catch (err) { out[name + ':error'] = String(err && err.message || err); }
+          out[name] = Math.round((performance.now() - t) * 10) / 10;
+        };
+        time('caches._onWorld', () => G.caches && G.caches._onWorld(id, w));
+        time('relics._onWorld', () => G.relics && G.relics._onWorld(id, w));
+        time('waterVolumes.rebuildFromWorld', () => G.waterVolumes && G.waterVolumes.rebuildFromWorld(w, true));
+        time('npcManager.spawnForWorld', () => G.npcManager && G.npcManager.spawnForWorld(w));
+        time('loot._onWorld', () => G.loot && G.loot._onWorld && G.loot._onWorld(id, w));
+        out.world = id;
+        return JSON.stringify(out);
+      })()`));
     }
 
     if (args.listeners) {

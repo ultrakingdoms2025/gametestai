@@ -247,7 +247,11 @@ test('main.js registers a recovery, and it is the boot warm rather than a log li
   const next = rest.search(/\n(?:async )?function \w+\(/);
   const fn = next === -1 ? rest : rest.slice(0, next);
 
-  assert.match(fn, /\.compile\(engine\.scene, engine\.camera\)/,
+  /* `warmCompile`, not a bare `renderer.compile`: the compile has not moved,
+   * it binds the render target the session's frames will draw into first, so
+   * the programs it issues are keyed to that path rather than to the
+   * direct-to-canvas one nothing takes. @see program-cache-key.test.mjs */
+  assert.match(fn, /warmCompile\(engine\.scene, engine\.camera\)/,
     'the recovery no longer issues the links');
   assert.match(fn, /postfx\.render|renderer\.render|r\.render/,
     'the recovery no longer draws - `compile()` issues linkProgram and DRAWING is what waits for '

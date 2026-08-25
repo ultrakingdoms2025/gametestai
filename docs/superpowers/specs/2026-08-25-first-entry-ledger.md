@@ -285,29 +285,44 @@ boundary, so it is written down here and not taken.
 
 ## 5. Where the six now stand, and what each one is
 
-`--serve prod --events entry --frames --cache-keys`, this tree:
+`--serve prod --events entry,repeat --repeat 2` on this tree, plus the three
+`--frames --cache-keys` runs, gives four to five samples per world. Genuine
+gaps only — the starved ones are named underneath:
 
-| world | worst gap | blocked | dProg | what it is |
+| world | worst gap | `_activate` | dProg | what it is |
 | --- | ---: | ---: | ---: | --- |
-| dock | **316.6 – 366.7** | 322–354 | **0** (was 7) | the crossing: `npcs 243.7`, `portals 45.9` |
-| medieval | **683.3 – 749.9** | 703–760 | **1** (was 7) | first cast, `npcs 428–460` |
-| citadel | **466.7** | 495 | 0 | first cast, `npcs 305.9` |
-| race | **450 – 483** | 462–497 | 0 | first cast + `changed 203–244` (darts) |
-| maze | 1,933 – 4,150 | 1,969–4,151 | 7–12 | the only unwarmed world; §4 |
-| sports | 6,183.6 | 6,192 | **45** (was 52) | its `FogExp2`; decided, kept |
-| the other eleven | 16.8 – 17.1 | — | 0 | — |
+| dock | **316.6 · 333.2 · 366.7** | 296.8–319.7 | **0** (was 7) | the crossing: `npcs 243.7–264.0`, `portals 45.1–54.4` |
+| citadel | **449.9 · 466.7** | 372.8–382.5 | 0 | first cast, `npcs 305.9–316.4` |
+| race | **450.0 · 450.0 · 483.4** | 444.3–487.2 | 0 | first cast + `changed 203–244` (the darts) |
+| medieval | **683.3 · 699.9 · 733.2 · 733.4 · 749.9** | 561.9–586.8 | **1** (was 7) | first cast, `npcs 428–461` |
+| maze | 1,933 · 4,151 · 4,167 · 6,367 | 20.4–21.0 | 6–12 | the only unwarmed world; §4 |
+| sports | 6,166.9 · 6,183.6 · 6,683.5 | 294.3 | **45** (was 52) | its `FogExp2`; decided, kept |
+| the other eleven | 16.8 – 17.1 | 1.6–6.2 | 0 | — |
 
 **Four of the six are now a first cast being built, and no shader at all.**
-`NPCManager.spawnForWorld` is 244–460 ms of a first entry in dock, medieval,
+`NPCManager.spawnForWorld` is 223–461 ms of a first entry in dock, medieval,
 citadel and race, and the crossing-subsystems ledger already established what
 that is: lofting, welding, skinning and merging every body in the cast, ~8.7 ms
 per geometry, memoised only after it has been paid once. Its free list makes a
-RE-entry free; a first entry has nothing to revive.
+RE-entry free; a first entry has nothing to revive. Race adds 203–244 ms of
+`world:changed` on top, which is 8 darted caches and 43 darted relics.
 
-Nothing here is under 250 ms except the eleven that already were. What changed
-is that five of the six are now one named cost apiece instead of a shader
-stall, and the two that were seconds of driver time — dock, and six sevenths of
-medieval — are milliseconds.
+None of the six is under 250 ms. What changed is that four of them are now one
+named CPU cost apiece with `dProg 0`, where two of them were seconds of driver
+time.
+
+The repeat criterion is unmoved: `repeat:1` and `repeat:2` are **100.0, 100.0,
+99.9** ms across the two runs (one `repeat:1` of 583.3 ms carried `dProg 1`,
+and so did a `repeat:0` on the tree before this change — see §6).
+
+### The instrument earned its keep in the same two runs
+
+`entry:dock` in run 1 read **27,700.7 ms with `blocked 21`** and was labelled
+STARVED, with the watchdog line under the table saying the page had counted one
+10-second stretch with no animation frame. In run 2 the same crossing read
+333.2 ms with `blocked 354`. Two more rows (`entry:citadel` 883.6/`blocked 35`,
+`entry:race` 616.7/`blocked 127`) were caught the same way. Before this branch
+every one of those would have been a per-world cost in a table.
 
 ## 6. What was not taken
 
@@ -322,15 +337,36 @@ medieval — are milliseconds.
   `src/npc/`, and it is a design question rather than a defect.
 - **Race's one-in-four 12.3 s shadow pass.** §1. Not reproduced under `--gl`,
   so it has no attribution and this branch will not guess one.
-- **The occlusion itself.** The flags reduced it and did not remove it — one
-  STARVED row still appeared in two of the six runs taken with them. Every
-  number quoted in this ledger is from a gap whose `blocked` is within
-  measurement noise of its `ms`.
+- **Medieval's last program, and the one that wanders.** Its remaining `dProg 1`
+  is one key, in every run, differing from an existing program in two bits:
+  `instancing` and `instancingColor`, on a material that already carries
+  `alphaTest`. Something with instance colours is created after the warm has
+  walked the world group. The same single program shows up on one repeat in
+  three — `repeat:1` at 583.3 ms here, `repeat:0` at 816.6 ms on the tree
+  before this change — so it is not new and it is not the rim. Finding it means
+  naming which object it belongs to, which `--cache-keys` cannot do: it reports
+  the key, not the mesh.
+- **The occlusion itself.** The flags reduced it and did not remove it — a
+  STARVED row still appeared in four of the eight runs taken with them, and the
+  worst was 27.7 s. Every number quoted in this ledger is from a gap whose
+  `blocked` is within measurement noise of its `ms`. Removing it entirely
+  probably means driving frames with `HeadlessExperimental.beginFrame` rather
+  than letting the compositor schedule them, which changes what a "frame gap"
+  in this instrument means and would have to be argued before it was done.
 
 ## 7. The budget
 
-`stats().warm.programs`: **151 before, 143 after**, in every run on each tree.
+`stats().warm.programs`: **151 before, 143 after**, in every run on each tree —
+five runs on the shipped tree and six on this one, byte-identical each time.
 `boot`'s `dPrograms`: 152 → 143. Nothing rose.
+
+`world-shot --world medieval`, all seven framings: `materials 41`,
+`meshes 654–655`, `progs 137` (177 at the two framings that see a gateway),
+`tris 1,840,998 – 2,639,514`. The rim key is not in any of those axes and could
+not be — three's cache key reads material type, parameters, defines and
+`customProgramCacheKey`, and nothing reads it back. Characters were photographed
+close up in the village to confirm the cool medieval rim is still on them and
+the warm station one is not.
 
 ## 8. Reading it yourself
 

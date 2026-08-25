@@ -27,8 +27,12 @@ and the crossing itself:
 
 | crossing | before | after |
 | --- | ---: | ---: |
-| into `station` (26,345 colliders) | 1,228 – 1,371 ms | **85.5 – 95.8 ms** |
-| into `medieval`, repeated | 317 – 362 ms | **93.9 – 100.8 ms** |
+| into `station` (26,345 colliders) | 1,228 – 1,371 ms | **79.6 – 97.9 ms** |
+| into `medieval`, repeated | 317 – 362 ms | **93.7 – 104.7 ms** |
+| worst frame gap on a repeat | 1,383 – 1,483 ms | **216.6 – 250.1 ms** |
+
+The criterion is 250 ms and the answer is "on the line, not past it" — the
+distribution and the reason are at the end.
 
 Both numbers were taken the way the ledger insists on: exact counters beside the
 clock (`Physics.gridWrites` is 234,341 into the station in every run, before and
@@ -176,16 +180,105 @@ Five cases in `character-geometry-cache.test.mjs` assert the bound rather than
 trusting the constant, and each was confirmed by injection: an unbounded free
 list and a trim that walks the live cache each fail four of them.
 
-## What is left, and it is not JavaScript
+## 3. The lettered boards, which were a texture and a linked program
 
-After both fixes the crossing into the station is 85–96 ms of JavaScript and the
-frame gap around it is 233–317 ms. The difference is not the crossing: the gap
-carries **+1 program and +25 textures**, and the listener table — which now
-records the upload triple per listener — shows that **no `world:changed`
-listener creates any of them**. They are the arriving world's first render.
+With both subsystems dealt with, the crossing was 85–98 ms of JavaScript inside
+a 233–267 ms frame gap. Every one of those gaps carried **+1 linked program and
++15 to +32 textures**, the listener table — which now records the upload triple
+per listener — charged none of them to any `world:changed` handler, and the
+autopsy charged them to one place: `npcManager.spawnForWorld:uploads` read
+`tex -24 prog -1`.
 
-That is a different problem in a different file, and it is the one standing
-between this criterion and a comfortable margin rather than a marginal one.
+`NPC._attachSign` letters a 512×160 canvas per vendor and throws it away with
+the character. A crossing therefore disposes every sign in the world it leaves
+and letters every sign in the world it arrives in — and the program is the
+sharper half, because a sign sprite is the only `SpriteMaterial` in the frame,
+so disposing the last one releases its program and the next cast re-links it.
+
+A sign is its TEXT and the text is authored, so `CharacterAssets.signMaterial`
+keeps it and every merchant under those words wears it. This is a memo and not
+the parked cache the geometry uses: the key set is closed and small, so there is
+nothing here for a holder count to protect — which makes the CAP the only thing
+standing in for one. Past it a board is private to its character exactly as
+every sign was before, so the cap fails toward the old cost rather than toward a
+leak.
+
+**It removed the program link and it did not move the frame gap.** `dProg` on a
+crossing went 1 → 0 and the gap stayed at 217–250 ms. It is kept for the axis
+this phase has spent three branches on, not for the criterion, and it is
+reported here as a change that did not do what it was aimed at.
+
+## What is left is not the crossing at all
+
+`--gl` charges every blocking WebGL call in a gap to its driver entry point. In
+a 233 ms crossing gap the largest is `bindVertexArray` — **1 ms across 2,055
+calls**. The residual is not uploads and not the driver.
+
+So the ablation was re-run with a phase marked around it, which the predecessor's
+version did not do: stub both subsystems out entirely and record the GAP, not
+only `activationCost.total`.
+
+```
+the same crossing into "station" with the two stubbed out: total 64.4 ms
+ablated              166.7     0      0      9   -18  pass
+```
+
+**166.7 ms in both runs.** A crossing with no visible-floor probe and no cast at
+all still costs 167 ms of frame, of which 64 ms is the crossing. The other ~100
+ms — ~135 ms with a real cast in it — is the frame that receives a world:
+`updateMatrixWorld`, culling, the shadow pass and sixty characters' first update,
+in the engine's own loop.
+
+That is the floor this criterion is measured against, and it is in a different
+file from anything this branch touched.
+
+## The verdict, stated exactly
+
+Fifteen true repeat phases across five production runs, after everything above:
+
+```
+216.6  216.7  216.7  233.2  233.2  233.3  233.3  233.4  233.5  250.0   pass
+250.1  250.1  250.1  733.4  750.0                                      fail
+```
+
+Ten of fifteen pass. Three of the five failures are **250.1 ms against a 250 ms
+budget** — a tenth of a millisecond, and the gaps are quantised to the 16.7 ms
+vsync interval, so the whole distribution is one frame wide. The two long tails
+both carried `dProg 1`: a crossing that links a program is half a second worse
+than one that does not, which is the finding this phase already knew.
+
+Against the 1,204–2,578 ms this started at, the crossing is gone. Against the
+criterion, it is on the line and not past it — and the ablation says no further
+work on THESE two subsystems can move it, because 167 ms of the remaining 217 is
+there when neither of them runs at all.
+
+## The budget, re-measured
+
+`world-shot` on both criterion worlds, before and after, two framings each:
+
+| axis | station | medieval |
+| --- | --- | --- |
+| materials | 225 → 225 | 41 → 41 |
+| programs | 151 → 151, 188 → 188 | 146 → 146 |
+| renderables / instancedMeshes / instances | unchanged | unchanged |
+| worldLights / worldLightsLit | unchanged | unchanged |
+| worldTriangles | 3,088,198 → 3,088,198 | unchanged |
+| npcs / unculledMeshes | unchanged | unchanged |
+| geometries | unchanged | 880 → 883 |
+| textures | unchanged | 365 → 362 |
+
+`stats().warm.programs` is **151 in all nine frame-gap runs**, before and after.
+
+The `geometries` +3 is the parked cast, by design. The `textures` −3 is the
+shared boards.
+
+One axis needed a second look: `drawCalls` at `plaza-wide` read 2,409 before and
+2,723 after, which is a 13% rise on a framing whose `worldTriangles` and
+`byMaterial` breakdown are byte-identical. Re-running the BEFORE tree gave
+**2,721**. The before number was a sample from a distribution — the cast was
+re-rolled on every activation, so no station framing was reproducible — and the
+after tree reads 2,723 and 2,721. Making the cast deterministic did not add draw
+calls; it made the count repeatable.
 
 ## Reading it yourself
 

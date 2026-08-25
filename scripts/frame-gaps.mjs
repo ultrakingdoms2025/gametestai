@@ -1113,11 +1113,21 @@ async function runOnce(args, pageUrl, runIndex) {
         if (G.npcManager) G.npcManager.spawnForWorld = () => {};
         return 1;
       })()`);
+      /* MARKED, so the ablated crossing gets a GAP and not only a step total.
+       *
+       * Once the crossing's JavaScript is 8% of what it was, its `total` stops
+       * being the interesting number: the frame that carries a crossing is
+       * ~150 ms longer than the crossing, in every measurement, before and
+       * after. Stubbing the two subsystems and reading only `activationCost`
+       * cannot tell whether that ~150 ms belongs to them or to the frame. A
+       * phase around it can. */
+      await mark('ablated');
       await evalIn(`window.HARNESS.goto(${JSON.stringify(other)}).then(() => 1)`);
       await sleep(900);
       await evalIn(`window.HARNESS.goto(${JSON.stringify(args.entryWorld)}).then(() => 1)`);
       out.ablated = JSON.parse(await evalIn('JSON.stringify(window.GAME.worldManager.activationCost ?? null)'));
       await sleep(600);
+      out.events.ablated = await closePhase('ablated');
       await evalIn(`(() => {
         const G = window.GAME;
         if (G.caches) delete G.caches._hasVisibleFloor;

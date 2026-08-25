@@ -517,6 +517,7 @@ const FRAME_SHIM = `(() => {
       wrap(T.BatchedMesh.prototype, 'computeBoundingSphere', 'x.batchBound');
       wrap(T.BatchedMesh.prototype, 'onBeforeRender', 'x.batchCull');
     }
+    if (T.SkinnedMesh) wrap(T.SkinnedMesh.prototype, 'computeBoundingSphere', 'x.skinBound');
     if (T.Skeleton) wrap(T.Skeleton.prototype, 'update', 'x.skeleton');
     if (T.SkinnedMesh) wrap(T.SkinnedMesh.prototype, 'updateMatrixWorld', 'x.skinMatrix');
   }
@@ -1377,6 +1378,55 @@ async function runOnce(args, pageUrl, runIndex) {
         return 1;
       })()`);
     }
+    /* --- THE SKINNED BOUND, ABLATED ------------------------------------
+     *
+     * `Frustum.intersectsObject` reads `object.boundingSphere` when the object
+     * defines one, and `SkinnedMesh` defines it as null and computes it by
+     * CPU-SKINNING EVERY VERTEX. Nothing ever invalidates it, so the value the
+     * game ships with is whatever one arbitrary pose gave - which means a
+     * sphere taken from the bind pose is the same kind of approximation, not a
+     * weaker one.
+     *
+     * This replaces the method with that version and crosses three more times.
+     * It is a measurement, not a fix: it runs after every phase the gate
+     * reports, and it is undone afterwards. If the receive frame does not
+     * collapse, the attribution above is wrong.
+     */
+    if (args.frames) {
+      const other = worlds.find((w) => w !== args.entryWorld) ?? 'medieval';
+      out.skinPatch = await evalIn(`(() => {
+        const T = window.GAME.THREE;
+        const proto = T.SkinnedMesh.prototype;
+        if (proto.__skinAblated) return 'already';
+        const orig = proto.computeBoundingSphere;
+        proto.__skinOrig = orig;
+        proto.__skinAblated = 1;
+        proto.computeBoundingSphere = function () {
+          const g = this.geometry;
+          if (!g) return orig.call(this);
+          if (g.boundingSphere === null) g.computeBoundingSphere();
+          if (this.boundingSphere === null) this.boundingSphere = new T.Sphere();
+          this.boundingSphere.copy(g.boundingSphere);
+          this.boundingSphere.radius *= 1.8;
+        };
+        return 'patched';
+      })()`);
+      for (let i = 0; i < 3; i++) {
+        const label = `skinbound:${i}`;
+        await mark(label);
+        await evalIn(`window.HARNESS.goto(${JSON.stringify(other)}).then(() => 1)`);
+        await sleep(900);
+        await evalIn(`window.HARNESS.goto(${JSON.stringify(args.entryWorld)}).then(() => 1)`);
+        await sleep(900);
+        out.events[label] = await closePhase(label);
+      }
+      await evalIn(`(() => {
+        const proto = window.GAME.THREE.SkinnedMesh.prototype;
+        if (proto.__skinOrig) proto.computeBoundingSphere = proto.__skinOrig;
+        delete proto.__skinOrig; delete proto.__skinAblated;
+        return 1;
+      })()`);
+    }
     if (args.listeners) {
       out.listeners = JSON.parse(await evalIn('JSON.stringify(window.__LISTENERS ?? [])'))
         .filter((r) => r.calls > 0)
@@ -1622,7 +1672,7 @@ async function main() {
       printTable(rows, args.budget);
       printCrossings(run);
       printListeners(run);
-      if (args.frames) printFrames(run, { phases: ['repeat', 'ablated', 'entry'], top: 8 });
+      if (args.frames) printFrames(run, { phases: ["repeat", "ablated", "entry", "skinbound"], top: 10 });
       runs.push({ run: i, rows, warm: run.warm });
     }
   } finally {

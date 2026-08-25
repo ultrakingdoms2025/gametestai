@@ -402,9 +402,12 @@ const GL_SHIM = `(() => {
  *
  * The rows OVERLAP by construction - `r.matrixWorld` is inside `r.render` is
  * inside `fx.scene` is inside `postfx`, and none of those is inside an updater
- * - and that is the point: culling has no entry point to wrap, so it is read as
- * `r.render - r.matrixWorld - r.shadow - r.draw`, which is the only number in
- * the table that is a subtraction.
+ * - and that is the point: culling has no entry point to wrap, so `r.cull*` is
+ * read as `r.render - r.matrixWorld - r.shadow - r.draw`. It is the only number
+ * in the table that is a subtraction and the only one that can lie: `r.draw`
+ * counts the portal previews' draws and `r.render` (main scene only) does not,
+ * so on a frame heavy with preview work it under-reports. `x.frustum` is the
+ * direct measurement, and it is what the receive-frame finding rests on.
  *
  * The accumulator is drained by the recorder's own rAF callback, which is
  * registered before the bundle is parsed and therefore runs BEFORE the engine

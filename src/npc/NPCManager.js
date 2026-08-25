@@ -748,9 +748,33 @@ export class NPCManager {
    * geometry or hovering above it.
    */
   spawnForWorld(world) {
+    /* A WORLD'S CAST IS A FEATURE OF THE WORLD, LIKE ITS CACHES.
+     *
+     * `_createNPC` seeds each character from `hash(worldId) ^ counter`, and the
+     * counter was never reset - so the fourth civilian of a world got a
+     * different seed on every visit and the whole cast was re-rolled by walking
+     * through a door. It is the same argument `Caches` makes for its own
+     * placement ("a player can learn where the moat cache is and go back for
+     * it"), and the town crier who is a different person each time you come
+     * back is the version of that argument nobody wrote down.
+     *
+     * It is also what makes the geometry cache worth having. The cache is keyed
+     * on the appearance combination, so a re-rolled cast asks for keys nobody
+     * has built: measured on the production bundle, only 27 of the 52 keys a
+     * station re-entry wanted had been in the cast it just tore down. Resetting
+     * the counter is what turns that into "the same cast", and the same cast is
+     * one the free list can actually answer. @see
+     * docs/superpowers/specs/2026-08-24-crossing-cost-ledger.md
+     *
+     * A respawn or a streamed arrival mid-visit still walks the counter forward
+     * from wherever the cast left it, so nothing inside one visit doubles up. */
+    this._seedCounter = 1;
     this.clear();
     this.gravityWorld = world ?? null;
-    if (!world) return;
+    if (!world) {
+      this.assets?.trimGeometry?.();
+      return;
+    }
     this.worldId = world.id;
     this.theme = THEME_BY_WORLD[world.id] ?? 'station';
     /* A world may forbid hostiles outright - the maze has NPCs purely to talk
@@ -918,6 +942,16 @@ export class NPCManager {
     for (const npc of this._hostiles) npc.prebuildWeapons?.();
     this._seatCivilians();
     this.validateGrounding();
+    /* HERE, and not in `CharacterAssets.releaseGeometry`, because here is the
+     * first moment anything knows what the arriving world wanted.
+     *
+     * `clear()` above released the departing cast into the free list, where it
+     * sat beside the cast of the world we are going back TO. Trimming at that
+     * point evicts oldest-first, and oldest-first is precisely the cast about
+     * to be asked for - a cache with a perfect hit rate that measures zero. By
+     * now everything this world wanted has been revived out of the list, so
+     * what is left in it is what nobody asked for. */
+    this.assets?.trimGeometry?.();
   }
 
   /**

@@ -824,12 +824,31 @@ async function runOnce(args, pageUrl, runIndex) {
         if (!set) return 0;
         const rows = [];
         const wrapped = new Set();
+        /* The upload triple per LISTENER, not per gap.
+         *
+         * Once a crossing's JavaScript is gone its frame gap does not go with
+         * it, and what is left is uploads. The gate reports dProg/dGeom/dTex
+         * against the gap, which cannot say which subsystem made them. */
+        const R = window.GAME.engine && window.GAME.engine.renderer;
         for (const fn of set) {
-          const row = { ms: 0, calls: 0, src: String(fn).replace(/\\s+/g, ' ').slice(0, 140) };
+          const row = { ms: 0, calls: 0, tex: 0, geom: 0, prog: 0, src: String(fn).replace(/\\s+/g, ' ').slice(0, 140) };
           rows.push(row);
           wrapped.add((payload) => {
+            const t0 = R ? R.info.memory.textures : 0;
+            const g0 = R ? R.info.memory.geometries : 0;
+            const p0 = R ? R.info.programs.length : 0;
             const t = performance.now();
-            try { return fn(payload); } finally { row.ms += performance.now() - t; row.calls++; }
+            try {
+              return fn(payload);
+            } finally {
+              row.ms += performance.now() - t;
+              row.calls++;
+              if (R) {
+                row.tex += R.info.memory.textures - t0;
+                row.geom += R.info.memory.geometries - g0;
+                row.prog += R.info.programs.length - p0;
+              }
+            }
           });
         }
         bus._handlers.set('world:changed', wrapped);
@@ -885,10 +904,25 @@ async function runOnce(args, pageUrl, runIndex) {
       out.autopsy = JSON.parse(await evalIn(`(() => {
         const G = window.GAME, w = G.worldManager.active, id = w && w.id;
         const out = {};
+        /* Time, and the GPU-object deltas beside it.
+         *
+         * Once the JavaScript in a crossing is gone the gap does not go with
+         * it, and the difference is uploads: the gate reports dProg/dGeom/dTex
+         * per gap and says nothing about WHICH subsystem created them. Same
+         * triple, per named rebuild. */
+        const R = G.engine && G.engine.renderer;
+        const info = () => (R ? {
+          t: R.info.memory.textures, g: R.info.memory.geometries, p: R.info.programs.length,
+        } : { t: 0, g: 0, p: 0 });
         const time = (name, fn) => {
+          const a = info();
           const t = performance.now();
           try { fn(); } catch (err) { out[name + ':error'] = String(err && err.message || err); }
           out[name] = Math.round((performance.now() - t) * 10) / 10;
+          const b = info();
+          if (b.t !== a.t || b.g !== a.g || b.p !== a.p) {
+            out[name + ':uploads'] = 'tex ' + (b.t - a.t) + ' geom ' + (b.g - a.g) + ' prog ' + (b.p - a.p);
+          }
         };
         /* THE 811 ms, SPLIT AT ITS OWN BOUNDARY.
          *
@@ -917,7 +951,79 @@ async function runOnce(args, pageUrl, runIndex) {
             try { return rawVis.apply(this, a); } finally { visMs += performance.now() - t; visN++; }
           };
         }
+        /* WHAT THE VISIBLE-FLOOR PROBE IS ACTUALLY HANDED.
+         *
+         * _hasVisibleFloor narrows the render tree to the leaves whose world
+         * box overlaps its eight-metre segment. Whether that is worth anything
+         * depends entirely on the SHAPE of the world group, which no static
+         * read of the source can tell you: a district merged into one mesh
+         * whose box spans the map is a candidate for every probe no matter how
+         * the index is built. So record, per probe, how many leaves survived
+         * the filter and how many triangles they carry. */
+        const probes = [];
+        if (rawVis && C._visibleNear) {
+          const rawNear = C._visibleNear;
+          C._visibleNear = function (...a) {
+            const list = rawNear.apply(this, a);
+            let tris = 0;
+            for (const o of list) {
+              const g = o.geometry;
+              const n = g ? (g.index ? g.index.count : (g.attributes.position?.count ?? 0)) / 3 : 0;
+              tris += n * (o.isInstancedMesh ? o.count : 1);
+            }
+            probes.push({ n: list.length, tris: Math.round(tris) });
+            return list;
+          };
+        }
         time('caches._onWorld', () => C && C._onWorld(id, w));
+        if (rawVis && C._visibleNear) delete C._visibleNear;
+        if (probes.length) {
+          out.visProbeCandidates = probes.map((p) => p.n);
+          out.visProbeTriangles = probes.map((p) => p.tris);
+        }
+        /* The index itself, built once more so its shape can be reported. */
+        if (C && C._indexVisible && w.group) {
+          const t = performance.now();
+          C._indexVisible(w.group);
+          out.visIndexMs = Math.round((performance.now() - t) * 10) / 10;
+          out.visLeaves = C._vis.leaves.length;
+          out.visAlways = C._vis.always.length;
+          out.visWide = C._vis.wide.length;
+          out.visEntries = C._vis.entLeaf.length;
+          out.visCells = C._vis.cells.size;
+          out.visStats = C._vis.stats;
+          /* WHAT IS STILL WIDE, AND WHY. A leaf that keeps its exact box is
+           * fine; an object whose per-instance filing collapsed into one box
+           * the size of the map is the failure this whole index is about, and
+           * from the outside the two look identical in a candidate count. */
+          out.visWidest = C._vis.wide
+            .map((w) => {
+              const o = C._vis.leaves[w.li];
+              const g = o.geometry;
+              return [
+                (o.name || o.type) + (o.isInstancedMesh ? ' x' + o.count : ''),
+                Math.round(w.maxX - w.minX), Math.round(w.maxY - w.minY), Math.round(w.maxZ - w.minZ),
+                g && g.boundingSphere ? Math.round(g.boundingSphere.radius * 10) / 10 : null,
+              ];
+            })
+            .sort((a, b) => (b[1] * b[3]) - (a[1] * a[3]))
+            .slice(0, 8);
+          let allTris = 0, alwaysTris = 0, biggest = [];
+          const tri = (o) => {
+            const g = o.geometry;
+            const n = g ? (g.index ? g.index.count : (g.attributes.position?.count ?? 0)) / 3 : 0;
+            return Math.round(n * (o.isInstancedMesh ? o.count : 1));
+          };
+          for (const o of C._vis.leaves) { const t2 = tri(o); allTris += t2; biggest.push([o.name || o.type, t2]); }
+          for (const o of C._vis.always) { const t2 = tri(o); alwaysTris += t2; allTris += t2; biggest.push([(o.name || o.type) + ' [always]', t2]); }
+          for (const w of C._vis.wide) { const o2 = C._vis.leaves[w.li]; const t2 = tri(o2); allTris += t2; biggest.push([(o2.name || o2.type) + " [wide]", t2]); }
+          biggest.sort((x, y) => y[1] - x[1]);
+          out.visTriangles = allTris;
+          out.visAlwaysTriangles = alwaysTris;
+          out.visBiggest = biggest.slice(0, 10);
+          C._vis = null;
+          C._visOut = null;
+        }
         /* The render-tree raycast calls no physics, so the two are disjoint
          * and rayMs here is the physics half whole. */
         out.physicsRaycastMs = Math.round(rayMs * 10) / 10;
@@ -928,7 +1034,54 @@ async function runOnce(args, pageUrl, runIndex) {
         if (rawVis) delete C._hasVisibleFloor;
         time('relics._onWorld', () => G.relics && G.relics._onWorld(id, w));
         time('waterVolumes.rebuildFromWorld', () => G.waterVolumes && G.waterVolumes.rebuildFromWorld(w, true));
+        /* --- WOULD A RETAINED CHARACTER GEOMETRY CACHE EVER HIT? -----------
+         *
+         * CharacterAssets.geoCache disposes on last release, so leaving a
+         * world frees the whole cast and re-entering welds every body again.
+         * The fix proposed for that is a bounded cache of released-but-unfreed
+         * keys - and a cache is worth exactly nothing unless the keys the
+         * SECOND visit asks for are the keys the first visit built.
+         *
+         * spawnForWorld below clears the live cast (which disposes every key
+         * it held) and builds a new one, which is what a re-entry does. So:
+         * snapshot the live key set first, record every acquire during the
+         * rebuild, and the overlap IS the hit rate a retained cache would get.
+         * geoBuildMs is the time inside the make() closures - the lofting,
+         * welding and merging a hit would skip. */
+        const A = G.npcManager && G.npcManager.assets;
+        const acquired = [];
+        let before = null, makeMs = 0, makes = 0;
+        if (A && A.geoCache) {
+          before = new Set(A.geoCache.keys());
+          const rawAcq = A.acquireGeometry;
+          A.acquireGeometry = function (key, make) {
+            acquired.push(key);
+            return rawAcq.call(this, key, () => {
+              const t = performance.now();
+              try { return make(); } finally { makeMs += performance.now() - t; makes++; }
+            });
+          };
+        }
         time('npcManager.spawnForWorld', () => G.npcManager && G.npcManager.spawnForWorld(w));
+        if (A && A.geoCache) {
+          delete A.acquireGeometry;
+          const uniq = new Set(acquired);
+          let hit = 0;
+          for (const k of uniq) if (before.has(k)) hit++;
+          let bytes = 0;
+          for (const g of A.geoCache.values()) {
+            for (const n in g.attributes) bytes += g.attributes[n].array.byteLength;
+            if (g.index) bytes += g.index.array.byteLength;
+          }
+          out.geoKeysInPreviousCast = before.size;
+          out.geoAcquires = acquired.length;
+          out.geoDistinctKeys = uniq.size;
+          out.geoKeysAlsoInPreviousCast = hit;
+          out.geoBuiltFromScratch = makes;
+          out.geoBuildMs = Math.round(makeMs * 10) / 10;
+          out.geoLiveEntries = A.geoCache.size;
+          out.geoLiveMB = Math.round(bytes / 1048576 * 100) / 100;
+        }
         time('loot._onWorld', () => G.loot && G.loot._onWorld && G.loot._onWorld(id, w));
         out.world = id;
         return JSON.stringify(out);
@@ -960,11 +1113,21 @@ async function runOnce(args, pageUrl, runIndex) {
         if (G.npcManager) G.npcManager.spawnForWorld = () => {};
         return 1;
       })()`);
+      /* MARKED, so the ablated crossing gets a GAP and not only a step total.
+       *
+       * Once the crossing's JavaScript is 8% of what it was, its `total` stops
+       * being the interesting number: the frame that carries a crossing is
+       * ~150 ms longer than the crossing, in every measurement, before and
+       * after. Stubbing the two subsystems and reading only `activationCost`
+       * cannot tell whether that ~150 ms belongs to them or to the frame. A
+       * phase around it can. */
+      await mark('ablated');
       await evalIn(`window.HARNESS.goto(${JSON.stringify(other)}).then(() => 1)`);
       await sleep(900);
       await evalIn(`window.HARNESS.goto(${JSON.stringify(args.entryWorld)}).then(() => 1)`);
       out.ablated = JSON.parse(await evalIn('JSON.stringify(window.GAME.worldManager.activationCost ?? null)'));
       await sleep(600);
+      out.events.ablated = await closePhase('ablated');
       await evalIn(`(() => {
         const G = window.GAME;
         if (G.caches) delete G.caches._hasVisibleFloor;
@@ -1085,7 +1248,9 @@ function printListeners(run) {
   if (run.listeners?.length) {
     console.log('\nworld:changed listeners, ms over every crossing in this run');
     for (const l of run.listeners.slice(0, 8)) {
-      console.log(`${String(l.ms).padStart(9)}  x${l.calls}  ${l.src.slice(0, 96)}`);
+      const up = (l.tex || l.geom || l.prog)
+        ? ` [tex ${l.tex} geom ${l.geom} prog ${l.prog}]` : '';
+      console.log(`${String(l.ms).padStart(9)}  x${l.calls}${up}  ${l.src.slice(0, 84)}`);
     }
   }
   if (run.ablated) {
@@ -1097,7 +1262,8 @@ function printListeners(run) {
     console.log(`\nrebuilt again by name on the live "${run.autopsy.world}":`);
     for (const [k, v] of Object.entries(run.autopsy)) {
       if (k === 'world') continue;
-      console.log(`${String(v).padStart(9)}  ${k}`);
+      const s = (v && typeof v === 'object') ? JSON.stringify(v) : String(v);
+      console.log(`${s.length > 9 ? s : s.padStart(9)}  ${k}`);
     }
   }
 }

@@ -103,6 +103,58 @@ const TRIES = 120;
 const _pl = new THREE.Vector3();
 const _hi = new THREE.Vector3();
 const _dn = new THREE.Vector3(0, -1, 0);
+const _box = new THREE.Box3();
+const _m4 = new THREE.Matrix4();
+const _sph = new THREE.Sphere();
+
+/**
+ * XZ cell size for the render-tree index {@link Caches#_indexVisible} builds.
+ *
+ * Twenty-four metres because the query it serves is a vertical line: the cell
+ * only has to be small enough that a district's worth of geometry does not all
+ * land in one bucket, and large enough that a building does not get filed under
+ * a hundred of them. It is not a collision grid and nothing depends on it
+ * matching `Physics`'s.
+ */
+const VIS_CELL = 24;
+/** Multiplier that packs a signed (cx, cz) pair into one integer key. */
+const VIS_STRIDE = 100003;
+/**
+ * A leaf spanning more cells than this is kept whole in the `wide` list and
+ * tested with its exact box instead of being written into every cell it covers.
+ *
+ * A merged district plate genuinely does span hundreds of cells; filing it in
+ * all of them costs more to build than the box test costs to run, and the box
+ * test is exact where the cell is only a bucket.
+ */
+const VIS_MAX_CELLS = 64;
+
+/**
+ * A leaf's world-space bounding box, or null when it cannot be trusted.
+ *
+ * Null is not a failure: the caller keeps those in a list that is raycast on
+ * every query, so an untrustworthy box costs time and never costs correctness.
+ *
+ * @param {THREE.Object3D} o
+ * @returns {THREE.Box3|null} `_box`, reused - copy it before the next call.
+ */
+function leafBox(o) {
+  /* A skinned mesh is posed on the GPU; its geometry box is the bind pose and
+   * says nothing about where the thing actually is. */
+  if (o.isSkinnedMesh) return null;
+  /* Instanced and batched meshes keep their own box across all instances -
+   * `geometry.boundingBox` would be one instance's and would be wrong. */
+  if (o.isInstancedMesh || o.isBatchedMesh) {
+    if (!o.boundingBox) o.computeBoundingBox?.();
+    if (!o.boundingBox) return null;
+    return _box.copy(o.boundingBox).applyMatrix4(o.matrixWorld);
+  }
+  const g = o.geometry;
+  if (!g) return null;
+  if (!g.boundingBox) g.computeBoundingBox?.();
+  if (!g.boundingBox) return null;
+  return _box.copy(g.boundingBox).applyMatrix4(o.matrixWorld);
+}
 
 /**
  * What a cache holds, by world. Deliberately richer than a corpse drop: a
@@ -236,6 +288,20 @@ export class Caches {
      */
     this._emptied = new Map();
 
+    /**
+     * The render-tree index `_hasVisibleFloor` queries, or null.
+     *
+     * Non-null only for the duration of one `_onWorld` call - see the note
+     * where it is built. Null here so the field exists on a fresh instance and
+     * the probe's "no index, walk the tree" branch is the default rather than
+     * something that only happens after a crossing has torn one down.
+     * @type {{cells:Map<number,number[]>, always:Array<THREE.Object3D>,
+     *   leaves:Array<THREE.Object3D>, yMin:number[], yMax:number[]}|null}
+     */
+    this._vis = null;
+    /** @type {Array<THREE.Object3D>|null} */
+    this._visOut = null;
+
     /** @type {Array<() => void>} */
     this._offs = [];
     if (this.bus) {
@@ -357,33 +423,54 @@ export class Caches {
      * `fromAuthored`, it would then contribute nothing and `placement.darted`
      * would read 0 while `placed` quietly exceeded `want`. */
     let high = 0;
-    for (const raw of world.cacheSites ?? []) {
-      if (high >= highWanted) break;
-      const x = Number(raw?.x);
-      const z = Number(raw?.z);
-      if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
-      if (this._tooClose(x, z, HIGH_APART)) continue;
-      const y = Number(raw?.y);
-      if (Number.isFinite(y)) {
-        /* Authored height: a deck under a roof. No probe - see above. */
-        this.sites.push(this._site('high', new THREE.Vector3(x, y, z), true));
+    let fromAuthored = 0;
+    /* THE RENDER-TREE INDEX, AND ITS LIFETIME.
+     *
+     * Every high candidate below - authored or darted - ends in
+     * `_hasVisibleFloor`, which raycasts the render tree. Unindexed that was
+     * 86 ms a call and 75% of a station crossing; see the block comment on
+     * `_indexVisible`. The index is built here, against the same group the
+     * probe raycasts, and dropped in the `finally` below.
+     *
+     * It exists for the length of this method and no longer, ON PURPOSE. A
+     * placement index that survived a crossing would be a cache of where the
+     * floor used to be, and a cache site placed against a floor that is no
+     * longer there is a cache hanging in the sky - which the `[Caches]` log
+     * line does not report, because it only prints when something landed. */
+    const visGroup = this.worldManager?.active?.group ?? null;
+    if (visGroup) this._indexVisible(visGroup);
+    try {
+      for (const raw of world.cacheSites ?? []) {
+        if (high >= highWanted) break;
+        const x = Number(raw?.x);
+        const z = Number(raw?.z);
+        if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+        if (this._tooClose(x, z, HIGH_APART)) continue;
+        const y = Number(raw?.y);
+        if (Number.isFinite(y)) {
+          /* Authored height: a deck under a roof. No probe - see above. */
+          this.sites.push(this._site('high', new THREE.Vector3(x, y, z), true));
+          high++;
+          continue;
+        }
+        const hit = this._highAt(x, z);
+        if (!hit || !hit.strict) {
+          console.warn(`[Caches] "${id}": authored site ${raw?.label ?? `(${x}, ${z})`} refused`
+            + ` - ${hit ? `sheer ${hit.sheer}/8, level ${hit.flat}/6` : 'no surface'}`);
+          continue;
+        }
+        this.sites.push(this._site('high', hit.pos, true));
         high++;
-        continue;
       }
-      const hit = this._highAt(x, z);
-      if (!hit || !hit.strict) {
-        console.warn(`[Caches] "${id}": authored site ${raw?.label ?? `(${x}, ${z})`} refused`
-          + ` - ${hit ? `sheer ${hit.sheer}/8, level ${hit.flat}/6` : 'no surface'}`);
-        continue;
-      }
-      this.sites.push(this._site('high', hit.pos, true));
-      high++;
-    }
-    const fromAuthored = high;
+      fromAuthored = high;
 
-    for (let i = fromAuthored; i < highWanted; i++) {
-      const p = this._findHigh(rnd, minX, maxX, minZ, maxZ);
-      if (p) this.sites.push(this._site('high', p));
+      for (let i = fromAuthored; i < highWanted; i++) {
+        const p = this._findHigh(rnd, minX, maxX, minZ, maxZ);
+        if (p) this.sites.push(this._site('high', p));
+      }
+    } finally {
+      this._vis = null;
+      this._visOut = null;
     }
 
     /* Not `_stock` unconditionally. A site the player emptied within the last
@@ -577,11 +664,240 @@ export class Caches {
     this._ray.set(_hi.set(x, y + 3, z), _dn);
     this._ray.near = 0;
     this._ray.far = 8;
-    const hits = this._ray.intersectObject(group, true);
+    /* No index means this is a direct call from outside a world change - the
+     * citadel region tests do exactly that. Answer it the whole-tree way rather
+     * than build and throw away an index for one query. */
+    const hits = this._vis
+      ? this._ray.intersectObjects(this._visibleNear(x, y + 3, y - 5, z), false)
+      : this._ray.intersectObject(group, true);
     for (const h of hits) {
       if (Math.abs(h.point.y - y) < 1.0) return true;
     }
     return false;
+  }
+
+  /**
+   * Bucket every raycastable leaf under `group` by the XZ cells its world-space
+   * box covers, so {@link Caches#_hasVisibleFloor} can hand the raycaster a
+   * handful of meshes instead of a world.
+   *
+   * ── Why the whole-tree raycast was costing 86 ms a call ────────────────────
+   *
+   * `THREE.Mesh.raycast` rejects on the world-space bounding SPHERE, then
+   * transforms the ray into local space and rejects on the geometry's bounding
+   * BOX - with `Ray.intersectsBox`, which tests the INFINITE ray. `far` is
+   * applied afterwards, per candidate triangle. So an eight-metre probe
+   * straight down is matched against every mesh the downward line passes at any
+   * height whatsoever, and this game batches its geometry by district: "any
+   * height whatsoever" means a district's triangles walked for a probe eight
+   * metres tall. Eleven of those calls were 952 ms of a 1,278 ms crossing.
+   * @see docs/superpowers/specs/2026-08-24-crossing-cost-ledger.md
+   *
+   * ── Why narrowing cannot change the answer ─────────────────────────────────
+   *
+   * An intersection lies inside the world-space box of the thing it intersected,
+   * and every hit this function can accept lies on an eight-metre segment. A
+   * leaf whose box misses that segment therefore cannot produce a hit that was
+   * being accepted before. The world box of a rotated local box is LARGER than
+   * the rotated box, so the filter errs toward keeping candidates, never toward
+   * dropping them.
+   *
+   * ── Why there is no version of this that goes stale ────────────────────────
+   *
+   * It is built at the top of one `_onWorld` call and dropped in that call's
+   * `finally`. It never survives a crossing, so it cannot describe a world the
+   * player is no longer in.
+   *
+   * Deliberately NOT filtered by `.visible`, despite the name of its caller:
+   * `THREE.Raycaster` does not test `visible` either, so a hidden mesh has
+   * always counted as a floor here. Excluding them would silently delete cache
+   * sites from any world that hides its dressing, which is a placement change
+   * wearing a performance change's clothes.
+   *
+   * @param {THREE.Object3D} group
+   */
+  _indexVisible(group) {
+    /** Every raycastable leaf, once. Entries and `seen` are indexed by this. */
+    const leaves = [];
+    /** Leaf index by object, so an instanced mesh files many entries as one. */
+    const indexOf = new Map();
+    /** Cell key -> entry indices. */
+    const cells = new Map();
+    /** Entries: which leaf, and the height band it covers in its cells. */
+    const entLeaf = [];
+    const entMinY = [];
+    const entMaxY = [];
+    /** Boxes too wide to bucket, kept whole and tested exactly. */
+    const wide = [];
+    /** Leaves with no bound that can be trusted: candidates for every query. */
+    const always = [];
+    const base = THREE.Object3D.prototype.raycast;
+    /** Diagnostics, read by scripts/frame-gaps.mjs. Cheap and worth having. */
+    const stats = { instanced: 0, instances: 0, collapsed: 0, wideFromInstances: 0 };
+
+    const leafIndex = (o) => {
+      let li = indexOf.get(o);
+      if (li === undefined) {
+        li = leaves.length;
+        leaves.push(o);
+        indexOf.set(o, li);
+      }
+      return li;
+    };
+
+    /**
+     * File one world-space box against a leaf.
+     *
+     * A box that would touch more cells than it is worth goes in `wide` with
+     * its exact extents instead. That is not a fallback to "candidate
+     * everywhere" - it is a tighter test than a cell bucket, just a linear one,
+     * and keeping it exact is what stops one awkward mesh from undoing the
+     * index for every probe.
+     */
+    const file = (li, minX, minY, minZ, maxX, maxY, maxZ) => {
+      const cx0 = Math.floor(minX / VIS_CELL);
+      const cx1 = Math.floor(maxX / VIS_CELL);
+      const cz0 = Math.floor(minZ / VIS_CELL);
+      const cz1 = Math.floor(maxZ / VIS_CELL);
+      if (!Number.isFinite(cx0) || !Number.isFinite(cx1)
+        || !Number.isFinite(cz0) || !Number.isFinite(cz1)) return false;
+      if ((cx1 - cx0 + 1) * (cz1 - cz0 + 1) > VIS_MAX_CELLS) {
+        wide.push({ li, minX, maxX, minZ, maxZ, minY, maxY });
+        return true;
+      }
+      const e = entLeaf.length;
+      entLeaf.push(li);
+      entMinY.push(minY);
+      entMaxY.push(maxY);
+      for (let cx = cx0; cx <= cx1; cx++) {
+        for (let cz = cz0; cz <= cz1; cz++) {
+          const key = cx * VIS_STRIDE + cz;
+          let list = cells.get(key);
+          if (!list) cells.set(key, (list = []));
+          list.push(e);
+        }
+      }
+      return true;
+    };
+
+    group.traverse((o) => {
+      /* Only things that answer a ray at all. `Object3D.raycast` is a no-op, so
+       * an object that has not overridden it can never contribute a hit - and
+       * no class in three, or in this repository, returns `false` from
+       * `raycast` to stop the traversal, which is what makes flattening the
+       * tree equivalent to walking it. */
+      if (o.raycast === base) return;
+
+      /* AN INSTANCED MESH IS A THOUSAND THINGS WEARING ONE BOX, AND THAT BOX IS
+       * THE MAP.
+       *
+       * This is where the cost actually was, and it is not what the shape of
+       * the code suggests. Measured on the live station, every probe was handed
+       * 2,287,006 triangles and 1.9 million of them were the ambient crowd -
+       * `StationActors:head` alone is 490,620 - because instanced body parts
+       * scattered over a 1,488 m station each bound to a box that covers
+       * everything. One box round a thousand people says nothing.
+       *
+       * So the INSTANCES are filed and not the object: a person-sized sphere
+       * each, via `Sphere.applyMatrix4`, which scales the radius by the largest
+       * axis scale and so stays conservative under any transform. The object
+       * becomes a candidate only where one of its instances actually is. */
+      if (o.isInstancedMesh && o.count > 0 && o.instanceMatrix) {
+        const g = o.geometry;
+        if (g && !g.boundingSphere) g.computeBoundingSphere?.();
+        if (g?.boundingSphere) {
+          const li = leafIndex(o);
+          const arr = o.instanceMatrix.array;
+          const n = Math.min(o.count, (arr.length / 16) | 0);
+          for (let k = 0; k < n; k++) {
+            _m4.fromArray(arr, k * 16).premultiply(o.matrixWorld);
+            _sph.copy(g.boundingSphere).applyMatrix4(_m4);
+            const r = _sph.radius;
+            const c = _sph.center;
+            /* A COLLAPSED INSTANCE, AND WHY SKIPPING IT IS NOT A SHORTCUT.
+             *
+             * `StationActors._hideActor` collapses a distance-culled figure
+             * with an ALL-ZERO matrix - deliberately, because a degenerate
+             * triangle is rejected at setup where an off-screen one is still
+             * transformed and clipped. Its bottom-right element is zero too, so
+             * `Vector3.applyMatrix4` divides by w = 0 and the sphere comes back
+             * infinite. Most of the station's ~1,900 figures are collapsed at
+             * any moment, and treating one such instance as "unboundable" put
+             * the whole mesh back in `always` - which is precisely how the
+             * first two attempts at this index moved nothing.
+             *
+             * Skipping it is exactly what three does. `InstancedMesh.raycast`
+             * runs the same `Sphere.applyMatrix4` per instance and rejects on
+             * `intersectsSphere`, which is false for any non-finite sphere, so
+             * a collapsed instance cannot contribute a hit to begin with. */
+            if (!Number.isFinite(r) || !Number.isFinite(c.x)
+              || !Number.isFinite(c.y) || !Number.isFinite(c.z)) {
+              stats.collapsed++;
+              continue;
+            }
+            const before = wide.length;
+            file(li, c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r);
+            if (wide.length > before) stats.wideFromInstances++;
+          }
+          stats.instanced++;
+          stats.instances += n;
+          return;
+        }
+      }
+
+      const b = leafBox(o);
+      if (!b) { always.push(o); return; }
+      if (!file(leafIndex(o), b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z)) {
+        always.push(o);
+      }
+    });
+
+    this._vis = {
+      cells, always, wide, leaves, entLeaf, entMinY, entMaxY, stats,
+      /* One slot per leaf, holding the id of the query that last took it. An
+       * instanced leaf has an entry per instance and a wide one an entry per
+       * awkward box, so a single query can reach the same object many times. */
+      seen: new Int32Array(leaves.length),
+      qid: 0,
+    };
+    /** Reused query buffer - see `_visibleNear`. */
+    this._visOut = [];
+  }
+
+  /**
+   * The leaves that could put a hit on the vertical segment at (x, z) between
+   * `yLo` and `yHi`.
+   *
+   * The height test is what earns the index: a district's ground plate and the
+   * roof forty metres above it share every cell and differ only in `y`.
+   *
+   * @param {number} x @param {number} yHi @param {number} yLo @param {number} z
+   * @returns {THREE.Object3D[]} reused between calls - do not retain it.
+   */
+  _visibleNear(x, yHi, yLo, z) {
+    const v = this._vis;
+    const out = this._visOut;
+    out.length = 0;
+    const qid = ++v.qid;
+    for (const o of v.always) out.push(o);
+    for (const w of v.wide) {
+      if (x < w.minX || x > w.maxX || z < w.minZ || z > w.maxZ) continue;
+      if (w.minY > yHi || w.maxY < yLo) continue;
+      if (v.seen[w.li] === qid) continue;
+      v.seen[w.li] = qid;
+      out.push(v.leaves[w.li]);
+    }
+    const list = v.cells.get(Math.floor(x / VIS_CELL) * VIS_STRIDE + Math.floor(z / VIS_CELL));
+    if (list) {
+      for (const e of list) {
+        if (v.entMinY[e] > yHi || v.entMaxY[e] < yLo) continue;
+        const li = v.entLeaf[e];
+        if (v.seen[li] === qid) continue;
+        v.seen[li] = qid;
+        out.push(v.leaves[li]);
+      }
+    }
+    return out;
   }
 
   _tooClose(x, z, r) {

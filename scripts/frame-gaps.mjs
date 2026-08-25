@@ -935,6 +935,43 @@ async function runOnce(args, pageUrl, runIndex) {
       })()`));
     }
 
+    /* --- THE ABLATION, ON THE SHIPPING BUNDLE ---------------------------
+     *
+     * The autopsy above says two subsystems are 97% of a crossing. That is
+     * arithmetic until the crossing is measured WITHOUT them, so this stubs
+     * both out and crosses once more.
+     *
+     * _hasVisibleFloor is replaced by the answer it gives for a real deck,
+     * so the dart budget, the physics probes and the placement rules all
+     * still run - only the render-tree raycast is gone. spawnForWorld is
+     * skipped outright, which removes MORE than a warm character-geometry
+     * cache would, so the number below is a floor for the crossing rather
+     * than a prediction of what fixing the cache would leave.
+     *
+     * Both stubs are own properties over prototype methods and are deleted
+     * afterwards. Nothing the gate reports is measured through them: this
+     * runs after the last repeat has been closed.
+     */
+    if (args.listeners) {
+      const other = worlds.find((w) => w !== args.entryWorld) ?? 'medieval';
+      await evalIn(`(() => {
+        const G = window.GAME;
+        if (G.caches) G.caches._hasVisibleFloor = () => true;
+        if (G.npcManager) G.npcManager.spawnForWorld = () => {};
+        return 1;
+      })()`);
+      await evalIn(`window.HARNESS.goto(${JSON.stringify(other)}).then(() => 1)`);
+      await sleep(900);
+      await evalIn(`window.HARNESS.goto(${JSON.stringify(args.entryWorld)}).then(() => 1)`);
+      out.ablated = JSON.parse(await evalIn('JSON.stringify(window.GAME.worldManager.activationCost ?? null)'));
+      await sleep(600);
+      await evalIn(`(() => {
+        const G = window.GAME;
+        if (G.caches) delete G.caches._hasVisibleFloor;
+        if (G.npcManager) delete G.npcManager.spawnForWorld;
+        return 1;
+      })()`);
+    }
     if (args.listeners) {
       out.listeners = JSON.parse(await evalIn('JSON.stringify(window.__LISTENERS ?? [])'))
         .filter((r) => r.calls > 0)
@@ -1050,6 +1087,11 @@ function printListeners(run) {
     for (const l of run.listeners.slice(0, 8)) {
       console.log(`${String(l.ms).padStart(9)}  x${l.calls}  ${l.src.slice(0, 96)}`);
     }
+  }
+  if (run.ablated) {
+    console.log(`\nthe same crossing into "${run.ablated.world}" with the two stubbed out:`
+      + ` total ${run.ablated.total} ms (npcs ${run.ablated.npcs}, changed ${run.ablated.changed},`
+      + ` physicsAdd ${run.ablated.physicsAdd})`);
   }
   if (run.autopsy) {
     console.log(`\nrebuilt again by name on the live "${run.autopsy.world}":`);

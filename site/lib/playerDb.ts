@@ -946,6 +946,49 @@ async function readCreditBalance(playerId: string): Promise<number | null> {
  *   `credit_balance` from the client's mirror; a client left guessing would
  *   overwrite this grant on its next state push.
  */
+/**
+ * WHY THIS DOES NOT READ `step_states`, AND WHY READING THEM WOULD NOT HELP.
+ *
+ * It is recorded in several places that a quest can be paid without being
+ * played, because this function never reads `step_states`. That is TRUE, and
+ * the obvious fix - require the steps to be complete before paying - IS NOT A
+ * FIX. `updateQuestStepStates` takes `stepStates` and `percentComplete`
+ * straight from the request body (`app/api/game/quests/route.ts`), so the
+ * client writes both. Requiring complete steps would move the forgery one
+ * request earlier: POST the steps, then POST the completion.
+ *
+ * That would be a gate measuring something the client controls, which is the
+ * failure this repository keeps paying for. So the absence is deliberate and
+ * documented rather than an oversight waiting to be closed.
+ *
+ * ── WHAT THE EXPOSURE ACTUALLY IS ─────────────────────────────────────────
+ *
+ * Bounded, and worth stating precisely so nobody over- or under-reacts:
+ *
+ *   - The reward is NOT client-settable. `acceptQuestEngagement` fetches the
+ *     row with `getQuestById(questId)` and stores `quest.reward_credits` on the
+ *     engagement; this function reads `q.reward_credits` or that stored copy.
+ *     A forged completion pays the CATALOGUE price, not an arbitrary number.
+ *   - A server-scoped quest cannot pay platform credits at all - see the
+ *     branch below - and its server payout is capped per event by
+ *     `SERVER_CREDIT_KINDS.quest`.
+ *   - `status = 'in_progress'` in the UPDATE predicate makes a replay pay once.
+ *
+ * So the exposure is: a player may skip the work and claim a platform quest's
+ * own reward. Real, bounded by the quest catalogue, and NOT a mint.
+ *
+ * ── WHAT A REAL FIX WOULD NEED ────────────────────────────────────────────
+ *
+ * Server-OBSERVABLE evidence of play, rather than client-reported state. Some
+ * step verbs already produce it - a purchase, a credit event, a server-priced
+ * minigame result - and those could be verified. Verbs with no server-side
+ * trace (visit, talk, interact) cannot be, without the server witnessing them.
+ * That is a design change, not an edit here.
+ *
+ * The consequence is already defended where it matters most: the rankability
+ * rule in the mission architecture spec says to rank only on sets whose
+ * maximum is fixed by content, never on totals or times, FOR THIS REASON.
+ */
 export async function completeQuestEngagement(
   engagementId: string,
   playerId: string
